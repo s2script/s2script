@@ -4,16 +4,11 @@
 // Task 1 (this file): all 4 commands (sm_votealltalk/sm_voteff/sm_votegravity/sm_voteslay) +
 // the shared Yes/No vote helper.
 
-import { plugin } from "@s2script/sdk/plugin";
-import { ADMFLAG } from "@s2script/sdk/admin";
-import { Chat } from "@s2script/sdk/chat";
-import { config } from "@s2script/sdk/config";
-import { Vote } from "@s2script/sdk/votes";
+import {
+  command, translations, ADMFLAG, Chat, config, Vote, Server, Translations,
+} from "@s2script/sdk";
+import type { Command, PhraseKey } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
-import { Server } from "@s2script/sdk/server";
-import type { CommandInvocation } from "@s2script/sdk/commands";
-import { Translations } from "@s2script/sdk/translations";
-import type { PhraseKey } from "@s2script/sdk/phrases";
 
 /** Start a Yes/No vote; on pass, run `onPass`. Refuses (via `cmd.replyT`) if a vote is already
  *  active — never queues, SM parity ("one vote at a time"). `questionKey` is resolved at the
@@ -24,7 +19,7 @@ import type { PhraseKey } from "@s2script/sdk/phrases";
  *  Pass semantics (SM parity): NOT plurality. A vote passes when the Yes SHARE of the votes cast is
  *  at least funvote_ratio (default 0.60). With no votes cast (total === 0) the share is 0 → it fails.
  *  options[0] === "Yes", so counts[0] is the Yes tally. */
-function startYesNo(cmd: CommandInvocation, questionKey: PhraseKey, questionArg: string | undefined, onPass: () => void): void {
+function startYesNo(cmd: Command, questionKey: PhraseKey, questionArg: string | undefined, onPass: () => void): void {
   if (Vote.isActive()) { cmd.replyT("Vote Already Running"); return; }
   const question = questionArg === undefined
     ? Translations.translate(-1, questionKey)
@@ -50,15 +45,15 @@ function startYesNo(cmd: CommandInvocation, questionKey: PhraseKey, questionArg:
   cmd.replyT("Vote Started");
 }
 
-export default plugin((ctx) => {
-  ctx.translations.load("funvotes", "common");
+export function OnPluginStart(): void {
+  translations.load("funvotes", "common");
 
-  ctx.commands.registerAdmin("sm_votealltalk", ADMFLAG.VOTE, cmd => {
+  command.admin("sm_votealltalk", ADMFLAG.VOTE, cmd => {
     const on = ["1", "true"].includes(Server.getCvar("sv_alltalk"));
     startYesNo(cmd, on ? "Disable Alltalk Question" : "Enable Alltalk Question", undefined, () => Server.setCvar("sv_alltalk", on ? "0" : "1"));
   });
 
-  ctx.commands.registerAdmin("sm_voteff", ADMFLAG.VOTE, cmd => {
+  command.admin("sm_voteff", ADMFLAG.VOTE, cmd => {
     const on = ["1", "true"].includes(Server.getCvar("mp_friendlyfire"));
     startYesNo(cmd, on ? "Disable Friendlyfire Question" : "Enable Friendlyfire Question", undefined, () => Server.setCvar("mp_friendlyfire", on ? "0" : "1"));
   });
@@ -67,13 +62,13 @@ export default plugin((ctx) => {
   // multi-choice vote (e.g. `sm_votegravity 200 400 800`). We keep it a single-value Yes/No vote
   // (one gravity value → pass/fail), which composes with the shared startYesNo helper. Multi-option
   // funvotes are a future item if demand appears.
-  ctx.commands.registerAdmin("sm_votegravity", ADMFLAG.VOTE, cmd => {
+  command.admin("sm_votegravity", ADMFLAG.VOTE, cmd => {
     const v = cmd.arg(0);
     if (!/^[0-9]+(\.[0-9]+)?$/.test(v)) { cmd.replyT("Usage Votegravity"); return; }
     startYesNo(cmd, "Set Gravity Question", v, () => Server.setCvar("sv_gravity", v));
   });
 
-  ctx.commands.registerAdmin("sm_voteslay", ADMFLAG.VOTE, cmd => {
+  command.admin("sm_voteslay", ADMFLAG.VOTE, cmd => {
     const targets = Player.target(cmd.arg(0), cmd.callerSlot, true);
     // Both replies below are LOCAL keys (colour-free, no "[SM] " prefix) — see phrases.ts.
     if (targets.length === 0) { cmd.replyT("Voteslay No Matching Players"); return; }
@@ -91,4 +86,4 @@ export default plugin((ctx) => {
   // NOT invent RE work. Revisit once an ignite/entity-fire capability lands (like pawn.slay for
   // sm_voteslay).
   console.log("[funvotes] onLoad — votealltalk/voteff/votegravity/voteslay registered");
-});
+}

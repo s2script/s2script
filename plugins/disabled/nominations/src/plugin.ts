@@ -1,13 +1,9 @@
-import { plugin } from "@s2script/sdk/plugin";
-import { config } from "@s2script/sdk/config";
-import { Database } from "@s2script/sdk/db";
-import { Menu, MenuCancelReason, MenuStyle } from "@s2script/sdk/menu";
-import { Server } from "@s2script/sdk/server";
+import {
+  command, translations, config, Database, Menu, MenuCancelReason, MenuStyle,
+  Server, Chat, HookResult, Translations,
+} from "@s2script/sdk";
+import type { PhraseKey, HookResultValue } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
-import { Chat } from "@s2script/sdk/chat";
-import { HookResult } from "@s2script/sdk/events";
-import { Translations } from "@s2script/sdk/translations";
-import type { PhraseKey } from "@s2script/sdk/phrases";
 
 interface MapEntry { name: string; workshopId: string | null; }
 
@@ -46,126 +42,124 @@ function resolveMap(input: string, pool: MapEntry[]): MapEntry[] {
   return pool.filter(m => m.name.toLowerCase().includes(needle));
 }
 
-export default plugin(async (ctx) => {
-  ctx.translations.load("nominations", "common");
+let db!: Database;
+let currentMap = "";     // the map we've claimed/recorded ("" until the DB is ready + first poll)
+let frameCounter = 0;    // throttles the map-change poll to ~once/sec
 
-  let currentMap = "";     // the map we've claimed/recorded ("" until the DB is ready + first poll)
-  let frameCounter = 0;    // throttles the map-change poll to ~once/sec
+async function cooldownSet(): Promise<Set<string>> {
+  const rows = await db.query("SELECT map FROM map_history GROUP BY map ORDER BY MAX(id) DESC LIMIT ?", [Math.max(0, config.getInt("map_cooldown"))]);
+  return new Set(rows.map(r => String(r.map)));
+}
+async function nominatedSet(): Promise<Set<string>> {
+  const rows = await db.query("SELECT map FROM nominations", []);
+  return new Set(rows.map(r => String(r.map)));
+}
 
-  async function cooldownSet(): Promise<Set<string>> {
-    const rows = await db.query("SELECT map FROM map_history GROUP BY map ORDER BY MAX(id) DESC LIMIT ?", [Math.max(0, config.getInt("map_cooldown"))]);
-    return new Set(rows.map(r => String(r.map)));
+// The current map is ALWAYS excluded from nomination — explicitly, not merely as a side effect of
+// map_cooldown>=1 recording it in map_history (which fails to exclude it when map_cooldown is 0).
+// Compared case-insensitively (maplist.txt names are operator-written; Server.mapName is the live map).
+function isCurrentMap(name: string): boolean {
+  const cur = Server.mapName;
+  return cur !== "" && name.toLowerCase() === cur.toLowerCase();
+}
+
+async function nominate(slot: number, name: string): Promise<void> {
+  if (isCurrentMap(name)) { Chat.toSlot(slot, Translations.translate(slot, "Nominate Is Current Map", name)); return; }
+  if ((await cooldownSet()).has(name)) { Chat.toSlot(slot, Translations.translate(slot, "Nominate Played Too Recently", name)); return; }
+  if ((await nominatedSet()).has(name)) { Chat.toSlot(slot, Translations.translate(slot, "Nominate Already Nominated", name)); return; }
+  await db.execute("DELETE FROM nominations WHERE nominator = ?", [slot]);
+  await db.execute("INSERT INTO nominations(map, nominator) VALUES(?, ?)", [name, slot]);
+  const p = Player.fromSlot(slot);
+  // Broadcast — everyone sees this, so it resolves at the server default language, not the
+  // nominator's own. "A player" (unresolvable name) is a literal fallback, not a phrase, same
+  // treatment as basechat's actorName() falling back to the literal "Console".
+  Chat.toAll(Translations.translate(-1, "Nominate Announced", (p && p.playerName) ? p.playerName : "A player", name));
+}
+
+/**
+ * Build the nominate menu.
+ *
+ * `recent` is listed FIRST and disabled. Cooldown maps used to be filtered out of the menu
+ * entirely, which is indistinguishable from the map not being in the pool at all: a player looked
+ * for the map they wanted, could not find it, and had no way to tell whether it was on cooldown,
+ * missing from maplist.txt or misspelled in their head. Showing them — unselectable, and labelled
+ * with the reason — answers that without a second command.
+ *
+ * They lead the list so they land on the first page, where the player is already looking. The
+ * `disabled` flag is what keeps them off the number keys, so the selectable maps below still
+ * number contiguously and nothing can be nominated by accident.
+ */
+function mapMenu(slot: number, available: MapEntry[], recent: MapEntry[], titleKey: PhraseKey): void {
+  const m = new Menu(Translations.translate(slot, titleKey));
+  m.style = MenuStyle.Chat;   // non-freezing (players are mid-game)
+  // The chat menu renderer prints each line through Chat.toSlot, so colour tags in the DISPLAY
+  // string expand exactly as they do in any other chat line (unlike a MenuStyle.Center menu,
+  // whose HTML renderer never expands them — see basebans' ban-duration menu, Task 7).
+  for (const e of recent) {
+    m.addItem(e.name, Translations.translate(slot, "Nominate Recent Item", e.name), { disabled: true });
   }
-  async function nominatedSet(): Promise<Set<string>> {
-    const rows = await db.query("SELECT map FROM nominations", []);
-    return new Set(rows.map(r => String(r.map)));
-  }
-
-  // The current map is ALWAYS excluded from nomination — explicitly, not merely as a side effect of
-  // map_cooldown>=1 recording it in map_history (which fails to exclude it when map_cooldown is 0).
-  // Compared case-insensitively (maplist.txt names are operator-written; Server.mapName is the live map).
-  function isCurrentMap(name: string): boolean {
-    const cur = Server.mapName;
-    return cur !== "" && name.toLowerCase() === cur.toLowerCase();
-  }
-
-  async function nominate(slot: number, name: string): Promise<void> {
-    if (isCurrentMap(name)) { Chat.toSlot(slot, Translations.translate(slot, "Nominate Is Current Map", name)); return; }
-    if ((await cooldownSet()).has(name)) { Chat.toSlot(slot, Translations.translate(slot, "Nominate Played Too Recently", name)); return; }
-    if ((await nominatedSet()).has(name)) { Chat.toSlot(slot, Translations.translate(slot, "Nominate Already Nominated", name)); return; }
-    await db.execute("DELETE FROM nominations WHERE nominator = ?", [slot]);
-    await db.execute("INSERT INTO nominations(map, nominator) VALUES(?, ?)", [name, slot]);
-    const p = Player.fromSlot(slot);
-    // Broadcast — everyone sees this, so it resolves at the server default language, not the
-    // nominator's own. "A player" (unresolvable name) is a literal fallback, not a phrase, same
-    // treatment as basechat's actorName() falling back to the literal "Console".
-    Chat.toAll(Translations.translate(-1, "Nominate Announced", (p && p.playerName) ? p.playerName : "A player", name));
-  }
-
-  /**
-   * Build the nominate menu.
-   *
-   * `recent` is listed FIRST and disabled. Cooldown maps used to be filtered out of the menu
-   * entirely, which is indistinguishable from the map not being in the pool at all: a player looked
-   * for the map they wanted, could not find it, and had no way to tell whether it was on cooldown,
-   * missing from maplist.txt or misspelled in their head. Showing them — unselectable, and labelled
-   * with the reason — answers that without a second command.
-   *
-   * They lead the list so they land on the first page, where the player is already looking. The
-   * `disabled` flag is what keeps them off the number keys, so the selectable maps below still
-   * number contiguously and nothing can be nominated by accident.
-   */
-  function mapMenu(slot: number, available: MapEntry[], recent: MapEntry[], titleKey: PhraseKey): void {
-    const m = new Menu(Translations.translate(slot, titleKey));
-    m.style = MenuStyle.Chat;   // non-freezing (players are mid-game)
-    // The chat menu renderer prints each line through Chat.toSlot, so colour tags in the DISPLAY
-    // string expand exactly as they do in any other chat line (unlike a MenuStyle.Center menu,
-    // whose HTML renderer never expands them — see basebans' ban-duration menu, Task 7).
-    for (const e of recent) {
-      m.addItem(e.name, Translations.translate(slot, "Nominate Recent Item", e.name), { disabled: true });
+  for (const e of available) m.addItem(e.name, Translations.translate(slot, "Nominate Available Item", e.name));
+  m.onSelect(e => { nominate(e.slot, e.info).catch(logErr); });   // nominate re-validates
+  // Closing without picking said nothing at all, which is indistinguishable from the menu having
+  // broken. Only the closes the PLAYER caused are worth a line: `NewMenu` means they opened
+  // something else and are looking at it, and `Disconnect` has nobody left to tell.
+  m.onCancel(e => {
+    if (e.reason === MenuCancelReason.Exit) {
+      Chat.toSlot(e.slot, Translations.translate(e.slot, "Nominate Menu Closed"));
+    } else if (e.reason === MenuCancelReason.Timeout) {
+      Chat.toSlot(e.slot, Translations.translate(e.slot, "Nominate Menu Timed Out"));
     }
-    for (const e of available) m.addItem(e.name, Translations.translate(slot, "Nominate Available Item", e.name));
-    m.onSelect(e => { nominate(e.slot, e.info).catch(logErr); });   // nominate re-validates
-    // Closing without picking said nothing at all, which is indistinguishable from the menu having
-    // broken. Only the closes the PLAYER caused are worth a line: `NewMenu` means they opened
-    // something else and are looking at it, and `Disconnect` has nobody left to tell.
-    m.onCancel(e => {
-      if (e.reason === MenuCancelReason.Exit) {
-        Chat.toSlot(e.slot, Translations.translate(e.slot, "Nominate Menu Closed"));
-      } else if (e.reason === MenuCancelReason.Timeout) {
-        Chat.toSlot(e.slot, Translations.translate(e.slot, "Nominate Menu Timed Out"));
-      }
-    });
-    m.display(slot, 30);
-  }
+  });
+  m.display(slot, 30);
+}
 
-  async function nominateMenu(slot: number): Promise<void> {
-    const pool = loadPool();
-    const cd = await cooldownSet(), nom = await nominatedSet();
-    // Nominatable = pool − cooldown − already-nominated − the current map (the last is explicit,
-    // see isCurrentMap). The current map and existing nominations stay hidden: "you cannot nominate
-    // what is already running or already nominated" is self-evident from the map name and the
-    // nomination announcement, whereas a cooldown is invisible state only the server knows.
-    const available = pool.filter(m => !cd.has(m.name) && !nom.has(m.name) && !isCurrentMap(m.name));
-    const recent = pool.filter(m => cd.has(m.name) && !isCurrentMap(m.name));
-    if (available.length === 0 && recent.length === 0) {
-      Chat.toSlot(slot, Translations.translate(slot, "Nominate None Available"));
-      return;
-    }
-    mapMenu(slot, available, recent, "Nominate Menu Title");
+async function nominateMenu(slot: number): Promise<void> {
+  const pool = loadPool();
+  const cd = await cooldownSet(), nom = await nominatedSet();
+  // Nominatable = pool − cooldown − already-nominated − the current map (the last is explicit,
+  // see isCurrentMap). The current map and existing nominations stay hidden: "you cannot nominate
+  // what is already running or already nominated" is self-evident from the map name and the
+  // nomination announcement, whereas a cooldown is invisible state only the server knows.
+  const available = pool.filter(m => !cd.has(m.name) && !nom.has(m.name) && !isCurrentMap(m.name));
+  const recent = pool.filter(m => cd.has(m.name) && !isCurrentMap(m.name));
+  if (available.length === 0 && recent.length === 0) {
+    Chat.toSlot(slot, Translations.translate(slot, "Nominate None Available"));
+    return;
   }
+  mapMenu(slot, available, recent, "Nominate Menu Title");
+}
 
-  async function recordMapStart(map: string): Promise<void> {
-    const last = await db.query("SELECT map FROM map_history ORDER BY id DESC LIMIT 1", []);
-    if (last.length && String(last[0].map) === map) return;         // already recorded (a reload) -> keep nominations
-    await db.execute("INSERT INTO map_history(map, played_at) VALUES(?, ?)", [map, Math.floor(Date.now() / 1000)]);
-    await db.execute("DELETE FROM nominations", []);                // new map -> fresh nominations
-  }
+async function recordMapStart(map: string): Promise<void> {
+  const last = await db.query("SELECT map FROM map_history ORDER BY id DESC LIMIT 1", []);
+  if (last.length && String(last[0].map) === map) return;         // already recorded (a reload) -> keep nominations
+  await db.execute("INSERT INTO map_history(map, played_at) VALUES(?, ?)", [map, Math.floor(Date.now() / 1000)]);
+  await db.execute("DELETE FROM nominations", []);                // new map -> fresh nominations
+}
 
-  // Plugins persist across a changelevel — the shim has no level-init reload hook, so onLoad fires
-  // once per plugin-load, NOT per map. Poll Server.mapName (throttled) to catch map transitions.
-  function pollMapChange(): void {
-    if (++frameCounter < 64) return;        // ~once/sec at 64-tick
-    frameCounter = 0;
-    const m = Server.mapName;
-    if (!m || m === currentMap) return;     // no change
-    currentMap = m;                          // claim synchronously so overlapping polls don't re-fire
-    recordMapStart(m).catch(logErr);
-  }
+// Plugins persist across a changelevel — the shim has no level-init reload hook, so OnPluginStart fires
+// once per plugin-load, NOT per map. Poll Server.mapName (throttled) to catch map transitions.
+function pollMapChange(): void {
+  if (++frameCounter < 64) return;        // ~once/sec at 64-tick
+  frameCounter = 0;
+  const m = Server.mapName;
+  if (!m || m === currentMap) return;     // no change
+  currentMap = m;                          // claim synchronously so overlapping polls don't re-fire
+  recordMapStart(m).catch(logErr);
+}
+
+export async function OnPluginStart(): Promise<void> {
+  translations.load("nominations", "common");
 
   loadPool();   // eager: auto-generate maplist.txt now so the operator can edit it before anyone nominates
-  const db = await Database.open("mapvote");
+  db = await Database.open("mapvote");
   await db.execute("CREATE TABLE IF NOT EXISTS map_history(id INTEGER PRIMARY KEY AUTOINCREMENT, map TEXT NOT NULL, played_at INTEGER NOT NULL)", []);
   await db.execute("CREATE TABLE IF NOT EXISTS nominations(map TEXT PRIMARY KEY, nominator INTEGER NOT NULL)", []);
-
-  // Record the current map + every later transition (plugins persist across a changelevel).
-  ctx.server.onGameFrame(pollMapChange);
 
   // DESCOPED: SM's sm_nominate_addmap (an admin command that force-adds a map to the nomination
   // list at runtime) is intentionally not implemented. maplist.txt is the authoritative,
   // operator-edited pool; there is no runtime pool-mutation surface. Revisit only if an admin
   // "nominate on a player's behalf / add off-pool map" need is proven.
-  ctx.commands.register("sm_nominate", (cmd) => {
+  command("sm_nominate", (cmd) => {
     const slot = cmd.callerSlot;
     if (slot < 0) { cmd.replyT("Must Be In Game"); return; }
     const arg = cmd.arg(0);
@@ -178,24 +172,28 @@ export default plugin(async (ctx) => {
     else mapMenu(slot, matches, [], "Nominate Disambiguation Title");
   });
 
-  /**
-   * Bare-word chat trigger, mirroring @s2script/rockthevote's `rtv`.
-   *
-   * `sm_nominate` already answers `!nominate` and `/nominate` through the command system, but nobody
-   * types the prefix — players type the word. RTV has accepted a bare `rtv` from the start, so a
-   * server running both taught two different conventions for the same pair of features.
-   *
-   * Prefix parity with RTV: a `!`-prefixed form is SWALLOWED (it was plainly a command), while the
-   * bare word passes through to chat, because "nominate" is also an ordinary English word someone
-   * may be saying to the server rather than at it.
-   */
-  ctx.clients.onSay((slot, text) => {
-    const t = text.trim().toLowerCase();
-    const bang = t === "!nominate" || t === "!nom";
-    if (!bang && t !== "nominate" && t !== "nom") return HookResult.Continue;
-    if (slot >= 0) nominateMenu(slot).catch(logErr);
-    return bang ? HookResult.Handled : HookResult.Continue;
-  });
-
   console.log("[nominations] onLoad — sm_nominate + bare 'nominate' registered");
-});
+}
+
+export function OnGameFrame(): void {
+  pollMapChange();
+}
+
+/**
+ * Bare-word chat trigger, mirroring @s2script/rockthevote's `rtv`.
+ *
+ * `sm_nominate` already answers `!nominate` and `/nominate` through the command system, but nobody
+ * types the prefix — players type the word. RTV has accepted a bare `rtv` from the start, so a
+ * server running both taught two different conventions for the same pair of features.
+ *
+ * Prefix parity with RTV: a `!`-prefixed form is SWALLOWED (it was plainly a command), while the
+ * bare word passes through to chat, because "nominate" is also an ordinary English word someone
+ * may be saying to the server rather than at it.
+ */
+export function OnClientSayCommand(slot: number, text: string, _teamonly: boolean): HookResultValue {
+  const t = text.trim().toLowerCase();
+  const bang = t === "!nominate" || t === "!nom";
+  if (!bang && t !== "nominate" && t !== "nom") return HookResult.Continue;
+  if (slot >= 0) nominateMenu(slot).catch(logErr);
+  return bang ? HookResult.Handled : HookResult.Continue;
+}

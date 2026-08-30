@@ -2,10 +2,7 @@
 // requires, paginated. Reads Commands.list() (the core command registry + flag mask) and maps each
 // flag mask to human names via ADMFLAG. No engine work beyond the core __s2_commands_list native.
 
-import { plugin } from "@s2script/sdk/plugin";
-import { Commands } from "@s2script/sdk/commands";
-import { ADMFLAG } from "@s2script/sdk/admin";
-import { Translations } from "@s2script/sdk/translations";
+import { command, translations, Commands, ADMFLAG, Translations } from "@s2script/sdk";
 
 const PER_PAGE = 10;
 
@@ -25,10 +22,10 @@ function flagsToLabel(flags: number, slot: number): string {
   return names.length ? names.join("|") : Translations.translate(slot, "Flags Admin");
 }
 
-export default plugin((ctx) => {
-  ctx.translations.load("adminhelp", "common");
+export function OnPluginStart(): void {
+  translations.load("adminhelp", "common");
 
-  ctx.commands.registerAdmin("sm_help", ADMFLAG.GENERIC, (cmd) => {
+  command.admin("sm_help", ADMFLAG.GENERIC, (cmd) => {
     const cmds = Commands.list().slice().sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     const pages = Math.max(1, Math.ceil(cmds.length / PER_PAGE));
     let page = cmd.argInt(0, 1);
@@ -44,4 +41,4 @@ export default plugin((ctx) => {
   });
 
   console.log("[adminhelp] onLoad - sm_help registered");
-});
+}

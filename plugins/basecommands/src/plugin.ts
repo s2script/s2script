@@ -1,13 +1,6 @@
-import { hook, topmenu, translations } from "@s2script/sdk/plugin";
-import { command } from "@s2script/sdk/commands";
-import type { CommandInvocation } from "@s2script/sdk/commands";
-import type { DamageInfo } from "@s2script/sdk/damage";
-import { Admin, ADMFLAG } from "@s2script/sdk/admin";
+import { hook, command, translations, Admin, ADMFLAG, Server, Plugins, Menu, MenuStyle, Translations } from "@s2script/sdk";
+import type { Command, DamageInfo } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
-import { Server } from "@s2script/sdk/server";
-import { Plugins } from "@s2script/sdk/plugins";
-import { Menu, MenuStyle } from "@s2script/sdk/menu";
-import { Translations } from "@s2script/sdk/translations";
 
 // adminmenu — Change Map proof item (Server Commands, ADMFLAG.CHANGEMAP), a curated map picker filtered
 // by Server.isMapValid so an uninstalled map never shows.
@@ -38,7 +31,7 @@ function flagString(admin: { flags: number } | null, slot: number): string {
 }
 
 /** `sm_who <target>` — SM's PerformWho: one line per resolved player, in the caller's own channel. */
-function whoOne(cmd: CommandInvocation, pattern: string): void {
+function whoOne(cmd: Command, pattern: string): void {
   const matches = Player.target(pattern, cmd.callerSlot);
   if (matches.length === 0) { cmd.replyT("No matching players"); return; }
 
@@ -91,7 +84,7 @@ export function OnPluginStart(): void {
   // fresh per onSelect and can use the calling admin's own language — it can only ever resolve at
   // the server default language (-1); still an operator-configurable string via
   // translations/basecommands.phrases.json, just not a per-viewer one.
-  topmenu.addItem("Server Commands", { id: "basecommands:map", name: Translations.translate(-1, "Change Map Item"), flags: ADMFLAG.CHANGEMAP,
+  hook.topmenu.addItem("Server Commands", { id: "basecommands:map", name: Translations.translate(-1, "Change Map Item"), flags: ADMFLAG.CHANGEMAP,
     onSelect: adminSlot => {
       const m = new Menu(Translations.translate(adminSlot, "Change Map Title"));
       m.style = MenuStyle.Center;
@@ -106,7 +99,7 @@ export function OnPluginStart(): void {
 
 // 6.3 — sm_kick <target> [reason] (ADMFLAG.KICK). Resolves the SM target string (#userid/name/@all/@me)
 // and disconnects each match via the engine KickClient. Server console / rcon is root.
-function kick(cmd: CommandInvocation): void {
+function kick(cmd: Command): void {
   const targetStr = cmd.arg(0);
   if (!targetStr) { cmd.replyT("Usage Kick"); return; }
   const customReason = cmd.argsFrom(1);
@@ -132,7 +125,7 @@ function kick(cmd: CommandInvocation): void {
 
 // 6.4 — sm_map <mapname> (ADMFLAG.CHANGEMAP). Sanitizes the name (injection guard, we build a
 // "changelevel <map>" string), rejects an invalid map cleanly, then changes level via @s2script/server.
-function map(cmd: CommandInvocation): void {
+function map(cmd: Command): void {
   const mapName = cmd.arg(0);
   if (!mapName) { cmd.replyT("Usage Map"); return; }
   if (!/^[A-Za-z0-9_]+$/.test(mapName)) { cmd.replyT("Invalid Map Name"); return; }
@@ -152,7 +145,7 @@ function map(cmd: CommandInvocation): void {
 // ONE deviation, unavoidable: SM's middle column is the admin's *username* from admins.cfg.
 // s2script has no username on AdminInfo (steamId/flags/immunity/groups), so that column carries
 // the group list, which is the nearest analog and what an admin actually wants to see.
-function who(cmd: CommandInvocation): void {
+function who(cmd: Command): void {
   const target = cmd.arg(0);
   if (target) { whoOne(cmd, target); return; }
 
@@ -179,14 +172,14 @@ function who(cmd: CommandInvocation): void {
 // FILE tier, clearing the old file entries first. The runtime tier (Admin.add, e.g. permissions a
 // plugin derives from an external source) is untouched, so this reloads the static admin list
 // without revoking anything granted programmatically.
-function reloadAdmins(cmd: CommandInvocation): void {
+function reloadAdmins(cmd: Command): void {
   Admin.reload();
   console.log("[basecommands] sm_reloadadmins by slot=" + cmd.callerSlot);
   cmd.replyT("Admin Cache Reloaded");
 }
 
 // 6.5 — sm_rcon <command> (ADMFLAG.RCON): a deliberate full server-command passthrough (highest-trust flag).
-function rcon(cmd: CommandInvocation): void {
+function rcon(cmd: Command): void {
   const c = cmd.argString.trim();
   if (!c) { cmd.replyT("Usage Rcon"); return; }
   console.log("[basecommands] sm_rcon by slot=" + cmd.callerSlot + " cmd=" + c);
@@ -195,7 +188,7 @@ function rcon(cmd: CommandInvocation): void {
 }
 
 // 6.5 — sm_exec <cfgfile> (ADMFLAG.CONFIG): exec a server config. Sanitize the filename (we build "exec <file>").
-function execCfg(cmd: CommandInvocation): void {
+function execCfg(cmd: Command): void {
   const file = cmd.arg(0);
   if (!file) { cmd.replyT("Usage Exec"); return; }
   if (!/^[A-Za-z0-9_./-]+$/.test(file) || file.indexOf("..") !== -1) { cmd.replyT("Invalid Config Name"); return; }
@@ -206,7 +199,7 @@ function execCfg(cmd: CommandInvocation): void {
 
 // 6.7 — sm_cvar <name> [value] (ADMFLAG.CVARS). No value → GET (reply the value); with a value → SET
 // (via the console) then read back. Name sanitized (we build a console command for SET).
-function cvar(cmd: CommandInvocation): void {
+function cvar(cmd: Command): void {
   const name = cmd.arg(0);
   if (!name || !/^[A-Za-z0-9_]+$/.test(name)) { cmd.replyT("Usage Cvar"); return; }
   if (cmd.argCount < 2) { cmd.replyT("Cvar Value", name, Server.getCvar(name)); return; }  // GET
@@ -228,7 +221,7 @@ function cvar(cmd: CommandInvocation): void {
 // 6.11b — chat triggers (!cmd / /cmd) are handled in the core Host_Say detour; 6.11c — CONSOLE
 // commands via the ISource2GameClients::ClientCommand hook. Every registered command is reachable
 // from chat AND the client console with the speaker as the caller, with NO per-plugin wiring.
-function sm(cmd: CommandInvocation): void {
+function sm(cmd: Command): void {
   const sub = cmd.arg(0).toLowerCase();
   if (!sub || sub === "version" || sub === "credits") {
     cmd.replyT("Sm Version");

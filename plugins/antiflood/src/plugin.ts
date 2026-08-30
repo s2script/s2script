@@ -1,30 +1,29 @@
 // @s2script/antiflood — the first non-command base plugin: a passive chat-flood moderator over the
-// raw-chat subscriber (ctx.clients.onSay). A client spamming say/say_team is throttled by a pure
+// raw-chat subscriber (OnClientSayCommand). A client spamming say/say_team is throttled by a pure
 // leaky-bucket model; a flooded message is suppressed by returning HookResult.Handled, and the client
 // gets a throttled "slow down" notice (SM parity). Config-driven (flood_time / max_tokens),
-// live-reloadable via ctx.config.onChange.
+// live-reloadable via config.onChange.
 
-import { plugin } from "@s2script/sdk/plugin";
-import { Chat } from "@s2script/sdk/chat";
-import { config } from "@s2script/sdk/config";
-import { HookResult } from "@s2script/sdk/events";
-import { Translations } from "@s2script/sdk/translations";
+import { translations, config, Chat, HookResult, Translations } from "@s2script/sdk";
 import { floodStep } from "./flood";
 
 interface SlotState { tokens: number; lastTime: number; lastNotify: number; }
 const state = new Map<number, SlotState>();
 const NOTIFY_INTERVAL = 2.0; // seconds — throttle the "slow down" notice so it isn't itself spammy
 
-export default plugin((ctx) => {
-  ctx.translations.load("antiflood", "common");
+export function OnPluginStart(): void {
+  translations.load("antiflood", "common");
 
   // Log tuning changes so an admin editing the config file sees them take effect (also opts this
   // plugin into the loader's live-reload watch, so getFloat/getInt below read fresh values).
-  ctx.config.onChange(() => {
+  config.onChange(() => {
     console.log("[antiflood] config changed — flood_time=" + config.getFloat("flood_time") + " max_tokens=" + config.getInt("max_tokens"));
   });
 
-  ctx.clients.onSay((slot, _text, _teamonly) => {
+  console.log("[antiflood] onLoad — chat flood protection active (flood_time=" + config.getFloat("flood_time") + " max_tokens=" + config.getInt("max_tokens") + ")");
+}
+
+export function OnClientSayCommand(slot: number, _text: string, _teamonly: boolean): typeof HookResult.Continue | typeof HookResult.Handled {
     const floodTime = config.getFloat("flood_time");
     if (floodTime <= 0) return HookResult.Continue; // disabled
 
@@ -44,7 +43,4 @@ export default plugin((ctx) => {
     }
     state.set(slot, { tokens: r.tokens, lastTime: r.lastTime, lastNotify });
     return r.block ? HookResult.Handled : HookResult.Continue;
-  });
-
-  console.log("[antiflood] onLoad — chat flood protection active (flood_time=" + config.getFloat("flood_time") + " max_tokens=" + config.getInt("max_tokens") + ")");
-});
+}

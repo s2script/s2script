@@ -1,10 +1,7 @@
-import { plugin } from "@s2script/sdk/plugin";
-import { Vote } from "@s2script/sdk/votes";
-import { ADMFLAG } from "@s2script/sdk/admin";
-import { Chat } from "@s2script/sdk/chat";
-import { config } from "@s2script/sdk/config";
+import {
+  command, hook, translations, Vote, ADMFLAG, Chat, config, Translations,
+} from "@s2script/sdk";
 import { Player, pickPlayer } from "@s2script/cs2";
-import { Translations } from "@s2script/sdk/translations";
 
 // Parse a command arg string into quoted (or bare) tokens: sm_vote "Kick Rex?" Yes No
 function parseTokens(s: string): string[] {
@@ -37,10 +34,10 @@ function startKickVote(userId: number, name: string): boolean {
   });
 }
 
-export default plugin((ctx) => {
-  ctx.translations.load("basevotes", "common");
+export function OnPluginStart(): void {
+  translations.load("basevotes", "common");
 
-  ctx.commands.registerAdmin("sm_vote", ADMFLAG.VOTE, (cmd) => {
+  command.admin("sm_vote", ADMFLAG.VOTE, (cmd) => {
     const toks = parseTokens(cmd.argString);
     if (toks.length < 3) { cmd.replyT("Usage Vote"); return; }
     const question = toks[0], options = toks.slice(1, 10);   // up to 9 options (single-digit chat)
@@ -54,7 +51,7 @@ export default plugin((ctx) => {
     }
   });
 
-  ctx.commands.registerAdmin("sm_votekick", ADMFLAG.VOTE, (cmd) => {
+  command.admin("sm_votekick", ADMFLAG.VOTE, (cmd) => {
     const targetStr = cmd.arg(0);
     if (!targetStr) { cmd.replyT("Usage Votekick"); return; }
     const targets = Player.target(targetStr, cmd.callerSlot, true);
@@ -70,10 +67,10 @@ export default plugin((ctx) => {
   // `name` is a static field set once here, before any admin has opened the menu, so — same as
   // basecommands' "Change Map Item" — it can only resolve at the server default language (-1), not
   // per-viewer.
-  ctx.topmenu.addItem("Voting Commands", { id: "basevotes:votekick", name: Translations.translate(-1, "Vote Kick Item"), flags: ADMFLAG.VOTE,
+  hook.topmenu.addItem("Voting Commands", { id: "basevotes:votekick", name: Translations.translate(-1, "Vote Kick Item"), flags: ADMFLAG.VOTE,
     onSelect: adminSlot => pickPlayer(adminSlot, t => {
       if (!startKickVote(t.userId, t.playerName ?? "player")) Chat.toSlot(adminSlot, Translations.translate(adminSlot, "Vote In Progress"));
     }) });
 
   console.log("[basevotes] onLoad — sm_vote/sm_votekick registered");
-});
+}

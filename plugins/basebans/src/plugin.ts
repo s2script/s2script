@@ -8,18 +8,14 @@
 //  - ADDBAN (sm_addban): offline ban by SteamID64 without a live player (e.g. from logs or a roster).
 //
 //  Connect enforcement (sub-project 3): a banned SteamID64 is NOT instant-rejected at connect anymore —
-//  the shim admits every client, and this plugin enforces the ban in JS via Clients.onConnect, showing the
+//  the shim admits every client, and this plugin enforces the ban in JS via OnClientConnected, showing the
 //  reason (chat + console) then kicking (Client.kickWithReason). sm_ban still kicks the ONLINE player
-//  immediately; the onConnect handler is the RECONNECT enforcement + is where a 3rd party would query
+//  immediately; OnClientConnected is the RECONNECT enforcement + is where a 3rd party would query
 //  their own ban store instead of ours.
 
-import { plugin } from "@s2script/sdk/plugin";
-import { ADMFLAG } from "@s2script/sdk/admin";
-import { Bans } from "@s2script/sdk/bans";
-import { Clients } from "@s2script/sdk/clients";
+import { command, hook, translations, ADMFLAG, Bans, Clients, Menu, MenuStyle, Translations } from "@s2script/sdk";
+import type { Client } from "@s2script/sdk";
 import { Player, pickPlayer } from "@s2script/cs2";
-import { Menu, MenuStyle } from "@s2script/sdk/menu";
-import { Translations } from "@s2script/sdk/translations";
 
 // Canonical (untranslated) placeholder for "the adminmenu Ban flow banned with no free-text reason"
 // — that flow has a duration sub-menu, never a text box, so it always supplies this exact literal.
@@ -47,13 +43,13 @@ function banMessage(slot: number, reason: string, until: number): string {
   return Translations.translate(slot, "Ban Message", reasonText, expiry);
 }
 
-export default plugin((ctx) => {
-  ctx.translations.load("basebans", "common");
+export function OnPluginStart(): void {
+  translations.load("basebans", "common");
 
   // sm_ban <target> <minutes> [reason] — ADMFLAG.BAN
   // Resolves the target live, validates the SteamID, adds the ban, and kicks the player.
   // NO_MULTI: banning is destructive — a single target only.
-  ctx.commands.registerAdmin("sm_ban", ADMFLAG.BAN, (cmd) => {
+  command.admin("sm_ban", ADMFLAG.BAN, (cmd) => {
     const target = cmd.arg(0);
     if (!target) {
       cmd.replyT("Usage Ban");
@@ -103,7 +99,7 @@ export default plugin((ctx) => {
 
   // sm_unban <steamid> — ADMFLAG.UNBAN
   // Removes a ban by SteamID64. No live player required — offline bans supported.
-  ctx.commands.registerAdmin("sm_unban", ADMFLAG.UNBAN, (cmd) => {
+  command.admin("sm_unban", ADMFLAG.UNBAN, (cmd) => {
     const sid = cmd.arg(0);
     if (!/^\d+$/.test(sid)) {
       cmd.replyT("Usage Unban");
@@ -115,7 +111,7 @@ export default plugin((ctx) => {
 
   // sm_addban <steamid> <minutes> [reason] — ADMFLAG.BAN
   // Adds an offline ban by SteamID64 without a live player (e.g. from logs or a server roster).
-  ctx.commands.registerAdmin("sm_addban", ADMFLAG.BAN, (cmd) => {
+  command.admin("sm_addban", ADMFLAG.BAN, (cmd) => {
     const sid = cmd.arg(0);
     if (!/^\d+$/.test(sid)) {
       cmd.replyT("Usage Addban");
@@ -138,25 +134,13 @@ export default plugin((ctx) => {
     cmd.replyT("Addban Success", sid, durText, reasonText);
   });
 
-  // Connect-time enforcement: admit -> show reason (chat + console) -> kick. Runs for every connecting
-  // client; a banned SteamID64 gets kickWithReason (delivered once they're in-game, then kicked ~5s later).
-  // A 3rd-party ban system would register its OWN ctx.clients.onConnect here, querying its store instead of Bans.
-  ctx.clients.onConnect((c) => {
-    if (c.isBot) return;                                   // bots have steamId "0" — never banned
-    const b = Bans.get(c.steamId);
-    if (!b) return;
-    const now = Date.now() / 1000;
-    if (b.until !== 0 && b.until <= now) return;           // expired — let them in
-    c.kickWithReason(banMessage(c.slot, b.reason, b.until));
-  });
-
   // adminmenu — Kick + Ban proof items, same ADMFLAG as their text commands, via pickPlayer.
   // `name` is a static field set once here, before any admin has opened the menu, so — same as
   // basecommands' "Change Map Item" — it can only resolve at the server default language (-1), not
   // per-viewer.
-  ctx.topmenu.addItem("Player Commands", { id: "basebans:kick", name: Translations.translate(-1, "Kick Item"), flags: ADMFLAG.KICK,
+  hook.topmenu.addItem("Player Commands", { id: "basebans:kick", name: Translations.translate(-1, "Kick Item"), flags: ADMFLAG.KICK,
     onSelect: adminSlot => pickPlayer(adminSlot, t => t.kick(Translations.translate(t.slot, "Kick By Admin"))) });
-  ctx.topmenu.addItem("Player Commands", { id: "basebans:ban", name: Translations.translate(-1, "Ban Item"), flags: ADMFLAG.BAN,
+  hook.topmenu.addItem("Player Commands", { id: "basebans:ban", name: Translations.translate(-1, "Ban Item"), flags: ADMFLAG.BAN,
     onSelect: adminSlot => pickPlayer(adminSlot, t => {
       const sid = t.steamId, uid = t.userId, name = t.playerName || "player";
       if (!sid || sid === "0") {   // bot / unauthenticated — never ban (sm_ban parity: a "0" entry is shared)
@@ -197,4 +181,16 @@ export default plugin((ctx) => {
     }) });
 
   console.log("[basebans] onLoad - sm_ban/sm_unban/sm_addban + connect enforcement registered");
-});
+}
+
+// Connect-time enforcement: admit -> show reason (chat + console) -> kick. Runs for every connecting
+// client; a banned SteamID64 gets kickWithReason (delivered once they're in-game, then kicked ~5s later).
+// A 3rd-party ban system would export its OWN OnClientConnected, querying its store instead of Bans.
+export function OnClientConnected(c: Client): void {
+  if (c.isBot) return;                                   // bots have steamId "0" — never banned
+  const b = Bans.get(c.steamId);
+  if (!b) return;
+  const now = Date.now() / 1000;
+  if (b.until !== 0 && b.until <= now) return;           // expired — let them in
+  c.kickWithReason(banMessage(c.slot, b.reason, b.until));
+}

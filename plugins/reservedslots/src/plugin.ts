@@ -12,17 +12,19 @@
 //   "kick an existing non-reserved player to make room for a connecting reserved one" variant is deferred
 //   (needs victim selection / a ping primitive we don't have yet).
 
-import { plugin } from "@s2script/sdk/plugin";
-import { Server } from "@s2script/sdk/server";
-import { Admin, ADMFLAG } from "@s2script/sdk/admin";
+import { translations, Server, Admin, ADMFLAG, config, Translations } from "@s2script/sdk";
+import type { Client } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
-import { config } from "@s2script/sdk/config";
-import { Translations } from "@s2script/sdk/translations";
 
-export default plugin((ctx) => {
-  ctx.translations.load("reservedslots", "common");
+export function OnPluginStart(): void {
+  translations.load("reservedslots", "common");
 
-  ctx.clients.onActive((c) => {
+  console.log(
+    "[reservedslots] onLoad — reserved_slots=" + config.getInt("reserved_slots") + " maxPlayers=" + Server.maxPlayers,
+  );
+}
+
+export function OnClientActive(c: Client): void {
     const reserved = config.getInt("reserved_slots");
     if (reserved <= 0) return; // disabled
     if (c.isBot) return; // bots are never reservation-gated
@@ -35,9 +37,4 @@ export default plugin((ctx) => {
       // Recipient is the kicked client itself (c.slot) — translate for THEM, not any admin/actor.
       c.kick(Translations.translate(c.slot, "Kick Reserved Slot"));
     }
-  });
-
-  console.log(
-    "[reservedslots] onLoad — reserved_slots=" + config.getInt("reserved_slots") + " maxPlayers=" + Server.maxPlayers,
-  );
-});
+}
