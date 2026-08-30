@@ -1967,14 +1967,24 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   var hook = {
     damage: function (h) { __s2_load_ctx_or_throw("hook.damage()").entities.onDamage(h); },
+    event: function (name, handler, phase) {
+      var c = __s2_load_ctx_or_throw("hook.event()");
+      if (phase === "pre") c.events.onPre(name, handler);
+      else c.events.on(name, handler);
+    },
+    output: function (classname, output, handler) {
+      __s2_load_ctx_or_throw("hook.output()").entities.onOutput(classname, output, handler);
+    },
   };
   function publish(name, impl) { return __s2_load_ctx_or_throw("publish()").publish(name, impl); }
   function use(name) { return __s2_load_ctx_or_throw("use()").use(name); }
   function tryUse(name) { return __s2_load_ctx_or_throw("tryUse()").tryUse(name); }
+  function createScope() { return __s2_load_ctx_or_throw("createScope()").createScope(); }
   var topmenu = {
     addCategory: function (n) { __s2_load_ctx_or_throw("topmenu.addCategory()").topmenu.addCategory(n); },
     addItem: function (c, i) { __s2_load_ctx_or_throw("topmenu.addItem()").topmenu.addItem(c, i); },
   };
+  hook.topmenu = topmenu;
   var translations = {
     load: function () {
       var c = __s2_load_ctx_or_throw("translations.load()");
@@ -1986,11 +1996,20 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_plugin.publish = publish;
   globalThis.__s2pkg_plugin.use = use;
   globalThis.__s2pkg_plugin.tryUse = tryUse;
+  globalThis.__s2pkg_plugin.createScope = createScope;
   globalThis.__s2pkg_plugin.topmenu = topmenu;
   globalThis.__s2pkg_plugin.translations = translations;
+  globalThis.__s2_on_all_plugins_loaded = null;
+  globalThis.__s2_fire_all_plugins_loaded = function () {
+    var fn = globalThis.__s2_on_all_plugins_loaded;
+    globalThis.__s2_on_all_plugins_loaded = null;
+    if (typeof fn === "function") {
+      try { fn(); } catch (e) { console.log("[s2script] OnAllPluginsLoaded threw: " + ((e && e.stack) || e)); }
+    }
+  };
 
   // def = plugin() artifact or undefined; exports = module.exports (named publics).
-  // Order: factory if present → OnGameFrame/OnMapStart subscribe → OnPluginStart() →
+  // Order: factory if present → subscribe named publics → OnPluginStart() →
   // OnPluginEnd attached as hooks.onUnload. Load window stays open until settle.
   globalThis.__s2_run_factory = function (def, exports) {
     var ctx = __s2_make_ctx();
@@ -2008,7 +2027,27 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       var startOut;
       try {
         if (typeof exp.OnGameFrame === "function") ctx.server.onGameFrame(exp.OnGameFrame);
-        if (typeof exp.OnMapStart === "function") ctx.server.onMapStart(exp.OnMapStart);
+        var hasMapStart = typeof exp.OnMapStart === "function";
+        var hasMapEnd = typeof exp.OnMapEnd === "function";
+        var hasConfigs = typeof exp.OnConfigsExecuted === "function";
+        if (hasMapStart || hasMapEnd || hasConfigs) {
+          var seenMap = false;
+          ctx.server.onMapStart(function (map) {
+            if (seenMap && hasMapEnd) exp.OnMapEnd();
+            seenMap = true;
+            if (hasConfigs) exp.OnConfigsExecuted();
+            if (hasMapStart) exp.OnMapStart(map);
+          });
+        }
+        if (typeof exp.OnClientConnected === "function") ctx.clients.onConnect(exp.OnClientConnected);
+        if (typeof exp.OnClientPutInServer === "function") ctx.clients.onPutInServer(exp.OnClientPutInServer);
+        if (typeof exp.OnClientActive === "function") ctx.clients.onActive(exp.OnClientActive);
+        if (typeof exp.OnClientPostAdminCheck === "function") ctx.clients.onFullyConnect(exp.OnClientPostAdminCheck);
+        if (typeof exp.OnClientDisconnect === "function") ctx.clients.onDisconnect(exp.OnClientDisconnect);
+        if (typeof exp.OnClientSayCommand === "function") ctx.clients.onSay(exp.OnClientSayCommand);
+        if (typeof exp.OnAllPluginsLoaded === "function") {
+          globalThis.__s2_on_all_plugins_loaded = exp.OnAllPluginsLoaded;
+        }
         if (typeof exp.OnPluginStart === "function") startOut = exp.OnPluginStart();
         if (typeof exp.OnPluginEnd === "function") {
           var prevUnload = hooks && hooks.onUnload;

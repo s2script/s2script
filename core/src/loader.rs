@@ -382,6 +382,11 @@ thread_local! {
     static WAITING: std::cell::RefCell<HashMap<String, WaitingLoad>> = std::cell::RefCell::new(HashMap::new());
 }
 
+/// True if any plugin is parked waiting on a hard-dependency producer.
+pub(crate) fn has_waiting() -> bool {
+    WAITING.with(|w| !w.borrow().is_empty())
+}
+
 /// A parsed load parked pending its hard dependencies (L1 lifecycle v2).
 struct WaitingLoad {
     path: PathBuf,

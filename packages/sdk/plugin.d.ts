@@ -231,6 +231,11 @@ export interface PluginDefinition {
  * Define a plugin from its factory. `export default` the result — the host calls the factory once at load.
  * Alternative: `export function OnPluginStart()` (SourceMod-shaped publics; no `plugin()` wrapper).
  * Either form is a valid artifact; both may appear (factory first, then publics).
+ *
+ * Optional named exports the host subscribes if present: `OnPluginEnd`, `OnGameFrame`,
+ * `OnMapStart`, `OnMapEnd`, `OnConfigsExecuted`, `OnAllPluginsLoaded`,
+ * `OnClientConnected`, `OnClientPutInServer`, `OnClientActive`, `OnClientPostAdminCheck`,
+ * `OnClientDisconnect`, `OnClientSayCommand`. Missing export = the host does not subscribe.
  * @example
  * import { plugin } from "@s2script/sdk/plugin";
  * // examples/greeter-plugin/src/plugin.ts:8
@@ -252,7 +257,22 @@ export declare function plugin(factory: PluginFactory): PluginDefinition;
 export declare const hook: {
   /** Damage pre-hook (SDKHooks-equivalent): same contract as {@link CtxEntities.onDamage}. */
   damage(handler: (info: DamageInfo) => HookResultValue | void): void;
+  /**
+   * Game-event subscription. Default is post (`ctx.events.on`). Pass `"pre"` for `onPre`
+   * (`Handled`/`Stop` suppress the client broadcast). The {@link GameEvent} is valid only synchronously.
+   */
+  event(name: string, handler: (ev: GameEvent) => HookResultValue | void, phase?: "pre" | "post"): void;
+  /** Entity I/O pre-hook: same contract as {@link CtxEntities.onOutput}. */
+  output(classname: string, output: string, handler: (ev: OutputEvent) => HookResultValue | void): void;
+  /** TopMenu contribution. Same object as the {@link topmenu} export. */
+  readonly topmenu: CtxTopMenu;
 };
+
+/**
+ * Allocate a disposable subscription scope. Load-window only — same contract as
+ * {@link PluginContext.createScope}.
+ */
+export declare function createScope(): Scope;
 
 /**
  * Publish this plugin's manifest-declared interface. Load-window only (buffered, armed at Active).
