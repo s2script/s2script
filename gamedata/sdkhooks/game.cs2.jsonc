@@ -16,15 +16,76 @@
 // as `offsets` — the boot resolver derives the slot from the unique signature + vtable walk
 // and prints `gamedata OK Touch (slot N)`.
 //
-// Lifecycle keys (PR B): Spawn, Think, PreThink, PostThink, Use, GetMaxHealth, ShouldCollide,
-// VPhysicsUpdate, GroundEntChangedPost, CanBeAutobalanced. Empty until self-resolved against
-// OUR libserver.so (docs/re-strategy.md). Missing row = skip without boot FAIL; vp_add returns 0.
-// CSSharp/SM slot numbers are HINTS only.
+// Patterns: unique subclass OVERRIDE prologues from source2rosetta `rosetta-cs2.json`
+// (version cs2-25000182-0, source_build 25000182, core tier, validated:true). The base
+// CBaseEntity::{StartTouch,Touch,EndTouch,Spawn} records in that dump are offset-only
+// (147 / 148 / 149 / 10) — HINTS, never shipped. Unique-scan + vtable-member at boot
+// against OUR libserver.so is the gate (docs/re-strategy.md). A missing or failed row
+// skips without boot FAIL; SDKHook returns false for that type.
 //
-// A type with no row here is not attempted: SDKHook returns false (named degrade is the
-// missing OK line, not a crash). Rows land when self-resolved against OUR libserver.so
-// (docs/re-strategy.md). CSSharp/SM slot numbers are HINTS only.
+// VScript is dead in CS2. Rosetta's `CBaseEntity::DispatchTraceAttack` `name-contradicted`
+// (VScript registry → ScriptTrigger) is not an identity check. DTA stays in gamedata/core/.
+//
+// Still empty (no ABI-matching unique linux prologue in that dump): Spawn, Think, PreThink,
+// Use, GetMaxHealth, ShouldCollide, VPhysicsUpdate, GroundEntChangedPost, CanBeAutobalanced.
+// Do not substitute CBaseEntity::SetGroundEntity for GroundEntChangedPost (that is the setter).
+// CTriggerTeleport::Touch is the teleport body (measured 6 int / 4 float, prototype mismatch)
+// — not the Touch virtual.
 {
   "signatures": {
+    // CBaseTrigger StartTouch override. Base CBaseEntity::StartTouch is offset-only (147).
+    // Prologue uniqueness is the `call [rax+0x870]` (another virtual on `this`); slot 0x870
+    // may drift — missing match degrades this type, never a crash. vtable-member is the
+    // TRIGGER class: the override address is not a slot of CBaseEntity's primary vtable.
+    "StartTouch": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 56 41 55 49 89 F5 41 54 53 48 89 FB 48 83 EC 10 48 8B 07 FF 90 70 08 00 00",
+        "resolve": "direct",
+        "validate": { "vtable-member": "CBaseTrigger" }
+      }
+    },
+    // CTriggerPush Touch override. Same ABI as CBaseEntity::Touch (this, other). Rosetta's
+    // CBaseEntity::Touch prototype lists this (CTriggerPush*, CBaseEntity*) overload; the
+    // base record itself is offset-only (148).
+    "Touch": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 49 89 F5 41 54 53 48 89 FB 48 83 EC 58",
+        "resolve": "direct",
+        "validate": { "vtable-member": "CTriggerPush" }
+      }
+    },
+    // CBaseTrigger EndTouch override. Base CBaseEntity::EndTouch is offset-low-conf (149 @ 58%)
+    // in Rosetta and not emitted; CTriggerBrush::EndTouch is offset-only (149) — HINT.
+    "EndTouch": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 BA FF FF FF FF 48 89 E5 41 57 41 56 41 55 49 89 F5",
+        "resolve": "direct",
+        "validate": { "vtable-member": "CBaseTrigger" }
+      }
+    },
+    // CFuncPlat::Blocked — unique linux prologue + "%s Blocked by %s", measured 2 int regs,
+    // prototype verified (CBaseEntity* other). No named CBaseEntity::Blocked record in the dump.
+    "Blocked": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 55 41 54 4C 8D AD C0 FE FF FF 49 89 F4 53 48 89 FB 48 81 EC 28 01 00 00",
+        "resolve": "direct",
+        "validate": { "vtable-member": "CFuncPlat" }
+      }
+    },
+    // CCSPlayerPawn::PostThink. Not wiki PlayerPostThink (that name is offset-low-conf).
+    // Anchor in the dump: enter_rescue_zone. Pattern includes `cmp byte [rbx+0x15b4], 0`
+    // (a pawn field) — uniqueness helper; a schema-offset drift degrades this type.
+    "PostThink": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 56 41 55 41 54 53 48 89 FB 48 83 EC 10 E8 ? ? ? ? 80 BB B4 15 00 00 00",
+        "resolve": "direct",
+        "validate": { "vtable-member": "CCSPlayerPawn" }
+      }
+    }
   }
 }
