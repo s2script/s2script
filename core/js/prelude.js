@@ -834,6 +834,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     GroundEntChangedPost: "GroundEntChangedPost",
     CanBeAutobalanced: "CanBeAutobalanced",
   };
+  // Assigned after the literal so a parallel lifecycle PR can append members inside the object.
+  SDKHookType.SetTransmit = "SetTransmit";
   function SDKHookKnown(type) {
     for (var k in SDKHookType) if (SDKHookType[k] === type) return true;
     return false;

@@ -5840,7 +5840,9 @@ void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nIn
         }
         RETURN_META(MRES_IGNORED);                  // never mutate on the validating snapshot
     }
-    if (s_transmitLayoutState != 1 || s_transmitTable.empty()) RETURN_META(MRES_IGNORED);
+    if (s_transmitLayoutState != 1) RETURN_META(MRES_IGNORED);
+    const int setTransmitActive = s2script_core_sdkhook_settransmit_active();
+    if (s_transmitTable.empty() && !setTransmitActive) RETURN_META(MRES_IGNORED);
 
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -5876,6 +5878,31 @@ void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nIn
             if (bv && bv->IsBitSet(entIndex)) { bv->Clear(entIndex); s_transmitBitsCleared++; }
         }
         ++it;
+    }
+    // SDKHook SetTransmit: AND-merge hide-only. After native Transmit.setVisibleTo clears, JS
+    // may clear bits that are STILL set. Never SET a bit (cannot un-hide a native mask clear).
+    // Empty table is skipped above via setTransmitActive == 0 (zero JS).
+    if (setTransmitActive) {
+        static int stIdx[MAX_EDICTS];
+        static int stSer[MAX_EDICTS];
+        int nHooked = s2script_core_sdkhook_settransmit_snapshot(stIdx, stSer, MAX_EDICTS);
+        for (int i = 0; i < nInfoCount; i++) {
+            uint8_t* raw = reinterpret_cast<uint8_t*>(ppInfoList[i]);
+            if (!raw) continue;
+            int v = *reinterpret_cast<const int32_t*>(raw + s_ctiClientOff);
+            int slot = s_transmitClientIsEntIndex ? (v - 1) : v;
+            if (slot < 0 || slot >= 64) continue;
+            if (slot < kMaxClientSlots && s_trackedSignon[slot] != kSignonFull) continue;
+            CBitVec<16384>* bv = ppInfoList[i]->m_pTransmitEntity;
+            if (!bv) continue;
+            for (int k = 0; k < nHooked; k++) {
+                int entIndex = stIdx[k];
+                if (entIndex < 0 || entIndex >= MAX_EDICTS) continue;
+                if (!bv->IsBitSet(entIndex)) continue;   // already clear — no JS
+                int r = s2script_core_dispatch_sdkhook_settransmit(entIndex, stSer[k], slot);
+                if (r >= 2) { bv->Clear(entIndex); s_transmitBitsCleared++; }
+            }
+        }
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
     uint64_t ns = (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ull
