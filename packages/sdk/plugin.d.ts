@@ -9,7 +9,6 @@
 import type { GameEvent, HookResultValue } from "./events";
 import type { Client } from "./clients";
 import type { EntityRef, OutputEvent } from "./entity";
-import type { DamageInfo } from "./damage";
 import type { CommandHandler } from "./commands";
 import type { Config } from "./config";
 import type { PublishHandle } from "./interfaces";
@@ -57,7 +56,7 @@ export interface CtxClients {
   /** Per-tick usercmd hook (SM `OnPlayerRunCmd`): read/modify {@link UserCmdView}; return `Handled` to block the tick. */
   onRunCmd(handler: (cmd: UserCmdView, info: { slot: number }) => HookResultValue | void): void;
 }
-/** Entity lifecycle + damage subscriptions on this plugin's load-scope ({@link PluginContext.entities}). */
+/** Entity lifecycle / I/O subscriptions on this plugin's load-scope ({@link PluginContext.entities}). */
 export interface CtxEntities {
   /** An entity of `className` was created (not yet spawned). @param className - match, or `"*"` for all. */
   onCreate(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
@@ -67,13 +66,6 @@ export interface CtxEntities {
   onDelete(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
   /** Hook a named entity output (`FireOutputInternal`); return a {@link HookResultValue} to suppress it. */
   onOutput(classname: string, output: string, handler: (ev: OutputEvent) => HookResultValue | void): void;
-  /**
-   * Damage pre-hook (SDKHooks-equivalent): read/modify {@link DamageInfo}; return `Handled` semantics via `info`.
-   * @example
-   * // plugins/basecommands/src/plugin.ts:81 — halve incoming damage
-   * ctx.entities.onDamage((info) => { info.damage = info.damage / 2; });
-   */
-  onDamage(handler: (info: DamageInfo) => HookResultValue | void): void;
 }
 /** Per-frame + map/precache hooks on this plugin's load-scope ({@link PluginContext.server}). */
 export interface CtxServer {
@@ -162,7 +154,7 @@ export interface Scope {
   readonly events: CtxEvents;
   /** Client-lifecycle subscriptions bound to this scope. */
   readonly clients: CtxClients;
-  /** Entity/damage subscriptions bound to this scope. */
+  /** Entity lifecycle / I/O subscriptions bound to this scope. */
   readonly entities: CtxEntities;
   /** Per-frame/map subscriptions bound to this scope. */
   readonly server: CtxServer;
@@ -188,7 +180,7 @@ export interface PluginContext {
   readonly events: CtxEvents;
   /** Client-lifecycle subscriptions ({@link CtxClients}). */
   readonly clients: CtxClients;
-  /** Entity/damage subscriptions ({@link CtxEntities}). */
+  /** Entity lifecycle / I/O subscriptions ({@link CtxEntities}). */
   readonly entities: CtxEntities;
   /** Per-frame/map/precache subscriptions ({@link CtxServer}). */
   readonly server: CtxServer;
@@ -226,11 +218,12 @@ export interface PluginHooks {
  * Map/frame: `OnMapStart(map)` / `OnMapEnd()` / `OnGameFrame()` / `OnPrecache(pc)`
  * Client: `OnClientConnected` / `PutInServer` / `Active` / `PostAdminCheck` / `Disconnect` /
  *   `SayCommand` / `SettingsChanged` / `Voice` / `CookiesCached` / `OnPlayerRunCmd`
- * Entity: `OnEntityCreated` / `OnEntitySpawned` / `OnEntityDestroyed` / `OnTakeDamage`
+ * Entity: `OnEntityCreated` / `OnEntitySpawned` / `OnEntityDestroyed`
  *
  * `OnGameFrame` is SourceMod's public (before simulation). Post-simulation paint is
  * {@link Scope}'s `server.onGameFrame(fn, { phase: "post" })` — Metamod's post hook, not a SM public.
  * Filtered entity I/O is {@link onOutput}, not a public — SourceMod `HookEntityOutput`.
+ * Per-entity damage is `SDKHook` (`SDKHookType.OnTakeDamage`), not a named public.
  */
 
 /**

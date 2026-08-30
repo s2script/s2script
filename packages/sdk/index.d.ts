@@ -32,6 +32,7 @@ export * from "./net";
 export * from "./phrases";
 export * from "./plugin";
 export * from "./plugins";
+export * from "./sdkhooks";
 export * from "./server";
 export * from "./sound";
 export * from "./timers";
