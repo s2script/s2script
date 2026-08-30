@@ -1192,6 +1192,31 @@
       "c_ret": "int",
       "c_params": "void* argView, int index, int serial, int offset",
       "shim": "S2_HookSelfMatchesField"
+    },
+    {
+      "name": "sdkhook_vp_add",
+      "alias": "SdkhookVpAddFn",
+      "rust": "extern \"C\" fn(c_int, c_int, *const c_char, c_int) -> c_int",
+      "group": "SDKHooks VP — install per-entity SourceHook",
+      "c_ret": "int",
+      "c_params": "int index, int serial, const char* type, int post",
+      "shim": "s2_sdkhook_vp_add"
+    },
+    {
+      "name": "sdkhook_vp_remove",
+      "alias": "SdkhookVpRemoveFn",
+      "rust": "extern \"C\" fn(c_int, c_int, *const c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "int index, int serial, const char* type, int post",
+      "shim": "s2_sdkhook_vp_remove"
+    },
+    {
+      "name": "sdkhook_vp_drop",
+      "alias": "SdkhookVpDropFn",
+      "rust": "extern \"C\" fn(c_int, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "int index, int serial",
+      "shim": "s2_sdkhook_vp_drop"
     }
   ]
 }

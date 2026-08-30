@@ -7,8 +7,9 @@
 // Owner-scoped gamedata (A5a). See docs/superpowers/specs/2026-08-01-gamedata-tiering-design.md.
 //
 // SourceMod's model, ported: gamedata is partitioned on two ORTHOGONAL axes.
-//   * OWNER  — the directory (gamedata/core, gamedata/cs2). Who consumes the fact. Namespaced:
-//              two owners may define the same key with different values and neither sees the other.
+//   * OWNER  — the directory (gamedata/core, gamedata/cs2, gamedata/sdkhooks, …). Who consumes
+//              the fact. Namespaced: two owners may define the same key with different values
+//              and neither sees the other. Kind (Core / Game / Extension) is on the loader table.
 //   * TARGET — the file within it, selected by master.gamedata.jsonc (common / engine.X / game.Y).
 //              What the fact is resolved against.
 // core's own facts resolved against CS2's libserver.so live in gamedata/core/game.cs2.jsonc. Both
@@ -138,7 +139,7 @@ struct GameConfig {
 // Build one owner's merged view.
 //
 //   gamedataRoot  absolute path to the gamedata/ directory
-//   owner         subdirectory name ("core", "cs2")
+//   owner         subdirectory name ("core", "cs2", "sdkhooks")
 //   engine        engine id, matched against a master entry's "engine" condition ("source2")
 //   game          mod directory name, matched against "game" ("csgo")
 //   platform      platform key whose nested details are lifted ("linuxsteamrt64")

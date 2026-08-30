@@ -68,6 +68,7 @@
 #include "defer_queue.h"    // deferred-dispatch slice: the engine-free queue/drain policy (ops-injected)
 #include "hook_dispatch.h"  // declarative inbound hooks: the engine-free policy half (ops-injected)
 #include "engine_hooks.h"   // declarative inbound hooks: S2_HookInstall/ArmBypass (the two appended ops)
+#include "sdkhooks_vp.h"    // SDKHooks per-entity VP hooks (Touch family; reads s_gdSdkhooks)
 #include <cstring>
 #include <cstdio>
 #include <ctime>    // Voice-control slice: time()/time_t for the per-slot ClientVoice notify throttle
@@ -3057,9 +3058,10 @@ static GameConfig s_gdCore;   // the core owner's merged gamedata, rebuilt each 
 static GameConfig s_gdGame;   // the cs2 game-package owner's, likewise (spec §8: loader-exercised
                               // from the first commit, so a mistyped master fails HERE, not in the
                               // slice that first consumes one of its entries)
+static GameConfig s_gdSdkhooks;  // SDKHooks virtuals (extension owner; keys MAY be named in shim)
 // Kept for GamedataBanner(): the summary an operator is pointed at must report the load errors
 // too, otherwise a broken custom/ override looks exactly like "my fix didn't work".
-static std::string s_gdErrorCore, s_gdErrorGame, s_gdModDir;
+static std::string s_gdErrorCore, s_gdErrorGame, s_gdErrorSdkhooks, s_gdModDir;
 
 // THE owner set this build loads, and where each owner's merged view and load error live. Single
 // source of truth: Load(), GamedataBanner() and the crash fingerprint all walk this array, and
@@ -3071,14 +3073,20 @@ static std::string s_gdErrorCore, s_gdErrorGame, s_gdModDir;
 // string literal ANYWHERE in there — including inside a `//` or `/* */` comment on one of the rows
 // — becomes a phantom owner and fails the gate with a confusing "<phantom>: owner directory
 // missing". Keep the braces free of quoted text other than the real owner-name initializers.
-struct GamedataOwner { const char* name; GameConfig* cfg; std::string* error; };
+// Kind is an UNQUOTED enumerator: a quoted kind string would also become a phantom owner.
+enum class GdOwnerKind { Core, Game, Extension };
+struct GamedataOwner { const char* name; GameConfig* cfg; std::string* error; GdOwnerKind kind; };
 static const GamedataOwner kGamedataOwners[] = {
-    { "core", &s_gdCore, &s_gdErrorCore },
-    { "cs2",  &s_gdGame, &s_gdErrorGame },
+    { "core", &s_gdCore, &s_gdErrorCore, GdOwnerKind::Core },
+    { "cs2",  &s_gdGame, &s_gdErrorGame, GdOwnerKind::Game },
+    { "sdkhooks", &s_gdSdkhooks, &s_gdErrorSdkhooks, GdOwnerKind::Extension },
 };
 static void GamedataResult(const char* name, bool ok, const char* reason) {
     if (ok) { s_gdOk++;  META_CONPRINTF("[s2script]   gamedata OK    %s\n", name); }
     else    { s_gdFail++; META_CONPRINTF("[s2script]   gamedata FAIL  %s — %s\n", name, reason ? reason : "?"); }
+}
+void S2GamedataResult(const char* name, bool ok, const char* reason) {
+    GamedataResult(name, ok, reason);
 }
 // Resolve a "direct"/"ctor-body-xref"/"lea-disp" signature AND verify it matches UNIQUELY (Rule 2): 0 = the
 // pattern moved (stale), >1 = ambiguous. Records the result and returns the resolved module offset, or kFail.
@@ -5001,6 +5009,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // only incremented by GamedataResult() inside the (skipped, in that case) acquisition block, so
     // they correctly read 0/0 there; the per-owner error/overridden state GamedataBanner() also
     // reports is populated by loadOwner() above, before this gate, on both paths.
+    // SDKHooks VP virtuals: resolve Touch-family signatures against s_gdSdkhooks (never s_gdCore)
+    // and SH_MANUALHOOK_RECONFIGURE the derived slots. Missing rows degrade by name (vp_add → 0).
+    S2SdkhooksVpLoad(s_gdSdkhooks);
     GamedataBanner();
 
     META_CONPRINTF("[s2script] Load(): initializing V8 core\n");
@@ -5190,6 +5201,9 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
                        SH_MEMBER(this, &S2ScriptPlugin::Hook_DispatchConCommand), false);
         s_conCmdDispatchHookInstalled = false;
     }
+    // Per-entity SDKHook VP hooks dispatch into core — remove them before the isolate dies.
+    S2SdkhooksVpUnload();
+
     META_CONPRINTF("[s2script] Unload(): shutting down V8 core\n");
 
     // deferred-dispatch: free every queued IGameEvent duplicate and drop the queue. The frame hook

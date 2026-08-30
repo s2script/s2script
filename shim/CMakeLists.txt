@@ -69,6 +69,9 @@ add_library(s2script SHARED
     # and the block-scoped arg view. Cannot be unit-tested outside the game (it marshals a receiver
     # through the entity system), which is precisely why the policy lives in the TU above.
     src/engine_hooks.cpp
+    # SDKHooks virtuals: per-entity SH_ADD_MANUALHOOK (Touch family). Isolated so s2script_mm.cpp
+    # does not grow another resolution loop; reads gamedata/sdkhooks, never s_gdCore.
+    src/sdkhooks_vp.cpp
     ${HL2SDK}/entity2/entitykeyvalues.cpp
     ${HL2SDK}/tier1/keyvalues3.cpp
     ${HL2SDK}/public/tier0/memoverride.cpp   # CSSharp compiles this — routes operator new/delete

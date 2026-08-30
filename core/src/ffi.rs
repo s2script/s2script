@@ -308,6 +308,30 @@ pub extern "C" fn s2script_core_dispatch_damage() {
     let _ = catch_unwind(|| v8host::dispatch_damage());
 }
 
+/// Shim → core: a per-entity SDKHook VP virtual (Touch family). `type` is the wiki name
+/// (`Touch` / `TouchPost`). `other_handle` is a packed `CEntityHandle` (`ToInt()`), or `-1`.
+/// Returns collapsed `HookResult` 0..=3; shim SUPERCEDEs the original when `>= Handled` on pre.
+/// `catch_unwind` → 0 (fail-open: a core bug must never skip a virtual it didn't mean to).
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_sdkhook_touch(
+    this_index: c_int,
+    this_serial: c_int,
+    other_handle: c_int,
+    post: c_int,
+    type_name: *const c_char,
+) -> c_int {
+    catch_unwind(|| {
+        if type_name.is_null() {
+            return 0;
+        }
+        let Ok(t) = (unsafe { CStr::from_ptr(type_name) }).to_str() else {
+            return 0;
+        };
+        crate::sdkhooks::dispatch_touch(this_index, this_serial, other_handle, post, t)
+    })
+    .unwrap_or(0)
+}
+
 /// Usercmd primitive Task 2/3: called by the (Task 3) shim's per-tick input-processing detour, once per player per
 /// batched tick, with the firing player's `slot`. Runs the `UserCmd.onRun` subscribers SYNCHRONOUSLY
 /// over the shim's current `CUserCmd` (read/modified in place via the Task-3 `usercmd_read`/`_write`

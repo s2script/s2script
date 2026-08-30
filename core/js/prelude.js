@@ -818,20 +818,25 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
   });
   globalThis.__s2pkg_damage = { DamageInfo: DamageInfo };
-  var SDKHookType = { OnTakeDamage: "OnTakeDamage" };
+  var SDKHookType = {
+    OnTakeDamage: "OnTakeDamage",
+    StartTouch: "StartTouch", Touch: "Touch", EndTouch: "EndTouch", Blocked: "Blocked",
+    StartTouchPost: "StartTouchPost", TouchPost: "TouchPost",
+    EndTouchPost: "EndTouchPost", BlockedPost: "BlockedPost",
+  };
+  function SDKHookKnown(type) {
+    for (var k in SDKHookType) if (SDKHookType[k] === type) return true;
+    return false;
+  }
   function SDKHook(entity, type, callback) {
     if (entity == null || typeof entity.index !== "number" || typeof entity.id !== "number") return false;
-    if (type !== SDKHookType.OnTakeDamage) {
-      throw new Error("s2script: SDKHook type '" + type + "' is not supported");
-    }
+    if (!SDKHookKnown(type)) throw new Error("s2script: SDKHook type '" + type + "' is not supported");
     if (typeof callback !== "function") throw new TypeError("s2script: SDKHook callback must be a function");
     return __s2_sdkhook(entity.index, entity.id, type, callback);
   }
   function SDKUnhook(entity, type, callback) {
     if (entity == null || typeof entity.index !== "number" || typeof entity.id !== "number") return false;
-    if (type !== SDKHookType.OnTakeDamage) {
-      throw new Error("s2script: SDKHook type '" + type + "' is not supported");
-    }
+    if (!SDKHookKnown(type)) throw new Error("s2script: SDKUnhook type '" + type + "' is not supported");
     if (typeof callback !== "function") throw new TypeError("s2script: SDKUnhook callback must be a function");
     return __s2_sdkunhook(entity.index, entity.id, type, callback);
   }

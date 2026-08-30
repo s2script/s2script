@@ -6,13 +6,33 @@ import type { EntityRef } from "./entity";
 import type { DamageInfo } from "./damage";
 import type { HookResultValue } from "./events";
 
+type TouchCallback = (entity: EntityRef, other: EntityRef | null) => HookResultValue | void;
+type TouchPostCallback = (entity: EntityRef, other: EntityRef | null) => void;
+
 /**
- * Shipped SDKHook types. New members land with engine backing in the same PR — this object is not
- * a catalog of names that throw.
+ * Shipped SDKHook types. Wiki names without the `SDKHook_` prefix. A wiki name whose engine
+ * backing failed or is absent returns `false` from {@link SDKHook} (does not throw). A string
+ * that is not a member here throws.
  */
 export declare const SDKHookType: {
   /** Pre-apply damage (`DispatchTraceAttack`). Mutate {@link DamageInfo.damage} in place. */
   readonly OnTakeDamage: "OnTakeDamage";
+  /** `CBaseEntity::StartTouch` pre. `Handled` / `Stop` skip the original virtual. */
+  readonly StartTouch: "StartTouch";
+  /** `CBaseEntity::Touch` pre. `Handled` / `Stop` skip the original virtual. */
+  readonly Touch: "Touch";
+  /** `CBaseEntity::EndTouch` pre. `Handled` / `Stop` skip the original virtual. */
+  readonly EndTouch: "EndTouch";
+  /** `CBaseEntity::Blocked` pre. `Handled` / `Stop` skip the original virtual. */
+  readonly Blocked: "Blocked";
+  /** `StartTouch` post. Return is ignored. */
+  readonly StartTouchPost: "StartTouchPost";
+  /** `Touch` post. Return is ignored. */
+  readonly TouchPost: "TouchPost";
+  /** `EndTouch` post. Return is ignored. */
+  readonly EndTouchPost: "EndTouchPost";
+  /** `Blocked` post. Return is ignored. */
+  readonly BlockedPost: "BlockedPost";
 };
 
 /**
@@ -47,6 +67,23 @@ export declare function SDKHook(
   type: "OnTakeDamage",
   callback: (info: DamageInfo) => HookResultValue | void,
 ): boolean;
+/**
+ * Touch-family pre-hook. Callback is `(entity, other)`. Omit return = Continue.
+ * `Handled` / `Stop` SUPERCEDE the original virtual (`Stop` also skips later callbacks).
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "StartTouch" | "Touch" | "EndTouch" | "Blocked",
+  callback: TouchCallback,
+): boolean;
+/**
+ * Touch-family post-hook. Return is ignored; the original virtual already ran.
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "StartTouchPost" | "TouchPost" | "EndTouchPost" | "BlockedPost",
+  callback: TouchPostCallback,
+): boolean;
 
 /**
  * Remove one matching `(entity, type, callback)` hook. Callback identity is the function reference.
@@ -56,4 +93,16 @@ export declare function SDKUnhook(
   entity: EntityRef | null,
   type: "OnTakeDamage",
   callback: (info: DamageInfo) => HookResultValue | void,
+): boolean;
+/** Remove a Touch-family pre-hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type: "StartTouch" | "Touch" | "EndTouch" | "Blocked",
+  callback: TouchCallback,
+): boolean;
+/** Remove a Touch-family post-hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type: "StartTouchPost" | "TouchPost" | "EndTouchPost" | "BlockedPost",
+  callback: TouchPostCallback,
 ): boolean;

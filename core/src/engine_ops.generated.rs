@@ -145,6 +145,9 @@ pub type EntitySetModelScaleFn = extern "C" fn(c_int, c_int, f32) -> c_int;
 pub type CvarSetFn = extern "C" fn(name: *const c_char, value: *const c_char) -> c_int;
 pub type HookReadU16AtQFn = extern "C" fn(*mut std::ffi::c_void, c_int, c_int, *mut u16) -> c_int;
 pub type HookSelfMatchesFieldFn = extern "C" fn(*mut std::ffi::c_void, c_int, c_int, c_int) -> c_int;
+pub type SdkhookVpAddFn = extern "C" fn(c_int, c_int, *const c_char, c_int) -> c_int;
+pub type SdkhookVpRemoveFn = extern "C" fn(c_int, c_int, *const c_char, c_int) -> c_int;
+pub type SdkhookVpDropFn = extern "C" fn(c_int, c_int) -> c_int;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -319,6 +322,10 @@ pub struct S2EngineOps {
     pub hook_read_u16_at_q: Option<HookReadU16AtQFn>,
     // --- Pickup-gate accessors — does this live entity's pointer-at-offset equal the view self ---
     pub hook_self_matches_field: Option<HookSelfMatchesFieldFn>,
+    // --- SDKHooks VP — install per-entity SourceHook ---
+    pub sdkhook_vp_add: Option<SdkhookVpAddFn>,
+    pub sdkhook_vp_remove: Option<SdkhookVpRemoveFn>,
+    pub sdkhook_vp_drop: Option<SdkhookVpDropFn>,
 }
 
 impl S2EngineOps {
