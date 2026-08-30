@@ -1,6 +1,7 @@
 /**
  * Shared factory locator: finds the function passed to `plugin(...)` in
- * `export default plugin(<factory>)`, where `plugin` was imported from "@s2script/sdk/plugin".
+ * `export default plugin(<factory>)`, where `plugin` was imported from "@s2script/sdk/plugin"
+ * or the root barrel "@s2script/sdk".
  * Import-source matching (not scope analysis) keeps it dependency-light; shadowing `plugin`
  * between the import and the export is not a pattern worth chasing.
  */
@@ -11,7 +12,10 @@ export type FactoryNode = TSESTree.ArrowFunctionExpression | TSESTree.FunctionEx
 export function findFactory(ast: TSESTree.Program): FactoryNode | null {
   let pluginLocal: string | null = null;
   for (const stmt of ast.body) {
-    if (stmt.type === "ImportDeclaration" && stmt.source.value === "@s2script/sdk/plugin") {
+    if (
+      stmt.type === "ImportDeclaration" &&
+      (stmt.source.value === "@s2script/sdk/plugin" || stmt.source.value === "@s2script/sdk")
+    ) {
       for (const spec of stmt.specifiers) {
         if (
           spec.type === "ImportSpecifier" &&

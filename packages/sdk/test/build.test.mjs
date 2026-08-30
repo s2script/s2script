@@ -50,6 +50,15 @@ test("authoring-command typechecks and bundles command/hook as externals", async
   assert.match(js, /require\(["']@s2script\/sdk\/plugin["']\)/);
 });
 
+test("authoring-barrel typechecks a root @s2script/sdk import and bundles it as external", async () => {
+  const out = await buildPlugin(join(here, "fixtures", "authoring-barrel"), packagesDir);
+  const js = openZip(out).readAsText("plugin.js");
+  assert.match(js, /OnPluginStart/);
+  assert.match(js, /require\(["']@s2script\/sdk["']\)/);
+  assert.doesNotMatch(js, /require\(["']@s2script\/sdk\/commands["']\)/);
+  assert.doesNotMatch(js, /__s2plugin/);
+});
+
 test("authoring-publics typechecks OnPluginStart and bundles named exports", async () => {
   const out = await buildPlugin(join(here, "fixtures", "authoring-publics"), packagesDir);
   const js = openZip(out).readAsText("plugin.js");

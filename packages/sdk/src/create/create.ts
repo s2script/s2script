@@ -203,15 +203,14 @@ export function fileDevDeps(packagesDir: string, game: GameChoice): Record<strin
 
 function pluginSource(game: GameChoice): string {
   if (game === "cs2") {
-    return `import { command } from "@s2script/sdk/commands";
-import type { CommandInvocation } from "@s2script/sdk/commands";
-import { Chat } from "@s2script/sdk/chat";
+    return `import { command, Chat } from "@s2script/sdk";
+import type { Command } from "@s2script/sdk";
 
 export function OnPluginStart(): void {
   command("hello", hello);
 }
 
-function hello(cmd: CommandInvocation): void {
+function hello(cmd: Command): void {
   cmd.reply("hello from s2script");
   if (cmd.callerSlot >= 0) {
     Chat.toSlot(cmd.callerSlot, "hello from s2script");
@@ -219,7 +218,7 @@ function hello(cmd: CommandInvocation): void {
 }
 `;
   }
-  return `import { delay } from "@s2script/sdk/timers";
+  return `import { delay } from "@s2script/sdk";
 
 let n = 0;
 
