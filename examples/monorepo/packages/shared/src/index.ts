@@ -1,6 +1,6 @@
 /**
  * A tiny workspace LIBRARY — not a plugin. It carries no `s2script.publishes`, so nothing can
- * `ctx.use()` it; instead `plugins/producer` and `plugins/consumer` each `import` it directly and
+ * `use()` it; instead `plugins/producer` and `plugins/consumer` each `import` it directly and
  * esbuild bundles it straight into their `.s2sp`, the same build-time factoring
  * examples/monorepo-plugin used to demonstrate for a single plugin (see this workspace's README).
  *

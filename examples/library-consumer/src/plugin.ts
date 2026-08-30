@@ -7,12 +7,13 @@
 // base64")` anywhere in the output for the host to resolve; by the time this plugin loads, the
 // codec is just more of this file.
 import { encode, decode } from "@example/base64";
-import { command } from "@s2script/sdk/commands";
+import { command, HookResult } from "@s2script/sdk";
 
 export function OnPluginStart(): void {
   command("sm_b64", (cmd) => {
     const input = cmd.argsFrom(0);
     cmd.reply(input ? `${input} -> ${encode(input)}` : "usage: sm_b64 <text>");
+    return HookResult.Handled;
   });
 
   command("sm_unb64", (cmd) => {
@@ -22,5 +23,6 @@ export function OnPluginStart(): void {
     } catch (e) {
       cmd.reply(`not base64: ${(e as Error).message}`);
     }
+    return HookResult.Handled;
   });
 }

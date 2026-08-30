@@ -15,9 +15,7 @@
  * Every entry echoes what was selected before it acts, because "did the server actually see my
  * pick?" is the question this panel exists to answer.
  */
-import { Menu, MenuStyle } from "@s2script/sdk/menu";
-import { Server } from "@s2script/sdk/server";
-import { Chat } from "@s2script/sdk/chat";
+import { Menu, MenuStyle, Server, Chat } from "@s2script/sdk";
 import { Player, Pawn, ChatColors, CsItem } from "@s2script/cs2";
 import type { Pawn as PawnType } from "@s2script/cs2";
 import type { DemoHud } from "./demohud";

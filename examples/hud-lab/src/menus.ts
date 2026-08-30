@@ -8,7 +8,7 @@
  * run `sm_hud_menu chat`, then `sm_hud_menu center`, then the HUD path, and the difference in what
  * the client actually draws is the whole story.
  */
-import { Menu, MenuStyle, MenuCancelReason } from "@s2script/sdk/menu";
+import { Menu, MenuStyle, MenuCancelReason } from "@s2script/sdk";
 import { Pawn, CsItem } from "@s2script/cs2";
 import { moveTypeName } from "./movement";
 

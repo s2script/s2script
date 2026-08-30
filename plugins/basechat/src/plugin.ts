@@ -53,24 +53,27 @@ export function OnPluginStart(): void {
   // `cmd` — so those call Translations.translate(slot, key) directly instead.
   command.admin("sm_say", ADMFLAG.CHAT, (cmd) => {
     const msg = cmd.argString.trim();
-    if (!msg) { cmd.replyT("Usage Say"); return; }
+    if (!msg) { cmd.replyT("Usage Say"); return HookResult.Handled; }
     doSay(cmd.callerSlot, msg);
+    return HookResult.Handled;
   });
 
   command.admin("sm_chat", ADMFLAG.CHAT, (cmd) => {
     const msg = cmd.argString.trim();
-    if (!msg) { cmd.replyT("Usage Chat"); return; }
+    if (!msg) { cmd.replyT("Usage Chat"); return HookResult.Handled; }
     doAdminChat(cmd.callerSlot, msg);
+    return HookResult.Handled;
   });
 
   command.admin("sm_psay", ADMFLAG.CHAT, (cmd) => {
     const s = cmd.argString.trim();
     const sp = s.indexOf(" ");
-    if (sp < 0) { cmd.replyT("Usage Psay"); return; }
+    if (sp < 0) { cmd.replyT("Usage Psay"); return HookResult.Handled; }
     const targetPat = s.slice(0, sp), msg = s.slice(sp + 1).trim();
-    if (!msg) { cmd.replyT("Usage Psay"); return; }
+    if (!msg) { cmd.replyT("Usage Psay"); return HookResult.Handled; }
     const t = resolveOne(targetPat, cmd.callerSlot, (m) => cmd.reply(m));
     if (t) doPsay(cmd.callerSlot, t, msg);
+    return HookResult.Handled;
   });
 }
 

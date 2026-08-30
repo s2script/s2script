@@ -44,8 +44,6 @@ function nextMap(): string {
 
 export function OnPluginStart(): void {
   translations.load("basetriggers", "common");
-
-  console.log("[basetriggers] onLoad — timeleft/thetime/currentmap/nextmap");
 }
 
 export function OnClientSayCommand(_slot: number, text: string, _teamonly: boolean): HookResultValue {

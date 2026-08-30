@@ -1,8 +1,5 @@
-import type { Recipe } from "../recipe.ts";
-import { Server } from "@s2script/sdk/server";
-import { Clients } from "@s2script/sdk/clients";
+import { Server, Clients, command, HookResult } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
-import { command } from "@s2script/sdk/commands";
 
 /**
  * Server ties together three primitives: a plugin-owned ConVar (register at
@@ -12,41 +9,43 @@ import { command } from "@s2script/sdk/commands";
  * engine-generic Clients list cross-referenced against the CS2 Player
  * wrapper.
  */
-export const serverRecipe: Recipe = {
-  name: "server",
-  describe: "a registered cvar, OnMapStart, and the connected client list (sm_server)",
-  onMapStart(map: string) {
-    console.log(`[cookbook] server: onMapStart: ${map}`);
-  },
-  register() {
-    // Server.onCvarChange — SourceMod HookConVarChange parity. Notify-only: the engine applies the
-    // value first, so a handler cannot veto it. "*" watches every cvar; the name argument says which.
-    let watching = false;
-    let watch: { dispose(): void } | null = null;
-    command("sm_cvarwatch", (cmd) => {
-      const name = cmd.arg(0) ?? "*";
-      if (watching) { watch?.dispose(); watch = null; watching = false;
-        cmd.reply("[cookbook] server: cvar watch OFF"); return; }
-      watch = Server.onCvarChange(name, (n, next, prev) => {
-        console.log(`[cookbook] server: cvar ${n}: ${JSON.stringify(prev)} -> ${JSON.stringify(next)}`);
-      });
-      watching = true;
-      cmd.reply(`[cookbook] server: watching ${JSON.stringify(name)} — change it and watch the console`);
-    });
+export const name = "server";
+export const describe = "a registered cvar, OnMapStart, and the connected client list (sm_server)";
 
-    const ok = Server.registerCvar("s2_demo_mode", {
-      type: "int", default: 42, help: "cookbook clientlist/convar/mapstart demo cvar", min: 0, max: 100,
-    });
-    console.log(`[cookbook] server: registerCvar s2_demo_mode -> ${ok} value=${Server.getCvar("s2_demo_mode")}`);
+export function OnMapStart(map: string): void {
+  console.log(`[cookbook] server: onMapStart: ${map}`);
+}
 
-    command("sm_server", (cmd) => {
-      const cs = Clients.all();
-      cmd.reply(`[cookbook] server: clients=${cs.length} players=${Player.allConnected().length} map=${Server.mapName}`);
-      for (const c of cs) {
-        const back = Player.fromUserId(c.userId);
-        cmd.reply(`  slot=${c.slot} name=${c.name} userId=${c.userId} signon=${c.signonState} ` +
-                  `steamid=${c.steamId} fromUserId->slot=${back ? back.slot : -1}`);
-      }
+export function OnPluginStart(): void {
+  // Server.onCvarChange — SourceMod HookConVarChange parity. Notify-only: the engine applies the
+  // value first, so a handler cannot veto it. "*" watches every cvar; the name argument says which.
+  let watching = false;
+  let watch: { dispose(): void } | null = null;
+  command("sm_cvarwatch", (cmd) => {
+    const name = cmd.arg(0) ?? "*";
+    if (watching) { watch?.dispose(); watch = null; watching = false;
+      cmd.reply("[cookbook] server: cvar watch OFF"); return HookResult.Handled; }
+    watch = Server.onCvarChange(name, (n, next, prev) => {
+      console.log(`[cookbook] server: cvar ${n}: ${JSON.stringify(prev)} -> ${JSON.stringify(next)}`);
     });
-  },
-};
+    watching = true;
+    cmd.reply(`[cookbook] server: watching ${JSON.stringify(name)} — change it and watch the console`);
+    return HookResult.Handled;
+  });
+
+  const ok = Server.registerCvar("s2_demo_mode", {
+    type: "int", default: 42, help: "cookbook clientlist/convar/mapstart demo cvar", min: 0, max: 100,
+  });
+  console.log(`[cookbook] server: registerCvar s2_demo_mode -> ${ok} value=${Server.getCvar("s2_demo_mode")}`);
+
+  command("sm_server", (cmd) => {
+    const cs = Clients.all();
+    cmd.reply(`[cookbook] server: clients=${cs.length} players=${Player.allConnected().length} map=${Server.mapName}`);
+    for (const c of cs) {
+      const back = Player.fromUserId(c.userId);
+      cmd.reply(`  slot=${c.slot} name=${c.name} userId=${c.userId} signon=${c.signonState} ` +
+                `steamid=${c.steamId} fromUserId->slot=${back ? back.slot : -1}`);
+    }
+    return HookResult.Handled;
+  });
+}

@@ -9,7 +9,7 @@
 // backend: engine-accurate edges, no per-frame position math, and it can see non-player entities too. A tiny
 // poll remains only to emit `stay` for currently-inside players (no position tests — just re-emitting the
 // engine-maintained inside-set).
-import { command, onOutput, translations, publish, createScope, ADMFLAG, Database, Server, config, Vector, Chat, Translations } from "@s2script/sdk";
+import { command, onOutput, translations, publish, createScope, ADMFLAG, Database, Server, config, Vector, Chat, Translations, HookResult } from "@s2script/sdk";
 import type { PublishHandle } from "@s2script/sdk";
 import { Player, Pawn, TriggerZone, TriggerZoneHandle, Beam, BeamHandle } from "@s2script/cs2";
 import type { Zones } from "../api";
@@ -298,10 +298,8 @@ export async function OnPluginStart(): Promise<void> {
   try { await db.execute("ALTER TABLE zones ADD COLUMN tags TEXT"); } catch { /* duplicate column name — already migrated */ }
 
   await loadMap(Server.mapName);
-  console.log("[zones] onLoad — DB ready (real-trigger backend)");
 
   iface = publish<Zones>("@s2script/zones", zonesImpl);
-  console.log("[zones] publishing @s2script/zones");
 
   // ENTER/LEAVE come from the engine's own touch outputs on OUR trigger entities. onOutput fires for
   // ALL trigger_multiple (incl. map triggers), so we filter to our zone triggers by the firing entity.
@@ -341,64 +339,68 @@ export async function OnPluginStart(): Promise<void> {
   // sm_zone_add <name> <x1 y1 z1 x2 y2 z2>  |  sm_zone_add <name> [size]  |  sm_zone_add <name> (in-game: mark corners with E)
   command.admin("sm_zone_add", ADMFLAG.GENERIC, (cmd) => {
     const name = sanitizeName(cmd.args[0] || "");
-    if (!name) { cmd.replyT("Usage Zone Add"); return; }
+    if (!name) { cmd.replyT("Usage Zone Add"); return HookResult.Handled; }
     let box: { min: Vec3; max: Vec3 } | null = null;
     if (cmd.args.length >= 7) {
       const n = cmd.args.slice(1, 7).map((s) => parseFloat(s));
-      if (n.some((v) => !isFinite(v))) { cmd.replyT("Invalid Coordinates"); return; }
+      if (n.some((v) => !isFinite(v))) { cmd.replyT("Invalid Coordinates"); return HookResult.Handled; }
       box = normBox({ x: n[0], y: n[1], z: n[2] }, { x: n[3], y: n[4], z: n[5] });
     } else if (cmd.args.length === 1) {
       // Bare in-game form: start the interactive E-mark session (same as sm_zone_edit).
-      if (cmd.callerSlot < 0) { cmd.replyT("Zone Add Console Only"); return; }
+      if (cmd.callerSlot < 0) { cmd.replyT("Zone Add Console Only"); return HookResult.Handled; }
       if (!startMarking(cmd.callerSlot, name)) cmd.replyT("No Position Spawn Coords");
-      return;
+      return HookResult.Handled;
     } else {
       // name + size (2..6 args): box around you (in-game). length is 2..6 here, so args[1] (the size) always exists.
-      if (cmd.callerSlot < 0) { cmd.replyT("Zone Add Console Only"); return; }
+      if (cmd.callerSlot < 0) { cmd.replyT("Zone Add Console Only"); return HookResult.Handled; }
       const pw = Pawn.forSlot(cmd.callerSlot);
       const o = pw ? pw.origin : null;
-      if (!o) { cmd.replyT("No Position Spawn Coords"); return; }
+      if (!o) { cmd.replyT("No Position Spawn Coords"); return HookResult.Handled; }
       const size = Math.abs(parseFloat(cmd.args[1])) || 128;
       box = normBox({ x: o.x - size, y: o.y - size, z: o.z - size }, { x: o.x + size, y: o.y + size, z: o.z + size });
     }
-    if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) { cmd.replyT("Zero Volume Zone Rejected"); return; }
+    if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) { cmd.replyT("Zero Volume Zone Rejected"); return HookResult.Handled; }
     const b = box;
     const minStr = `${b.min.x.toFixed(0)},${b.min.y.toFixed(0)},${b.min.z.toFixed(0)}`;
     const maxStr = `${b.max.x.toFixed(0)},${b.max.y.toFixed(0)},${b.max.z.toFixed(0)}`;
     upsertZone(name, b)
       .then(() => cmd.replyT("Zone Add Saved", name, minStr, maxStr))
       .catch((e) => cmd.replyT("Zone Add Save Failed", String(e)));
+    return HookResult.Handled;
   });
 
   // sm_zone_edit <name> — in-game: press E at two opposite corners; a live rubber-band box tracks between.
   command.admin("sm_zone_edit", ADMFLAG.GENERIC, (cmd) => {
-    if (cmd.callerSlot < 0) { cmd.replyT("Zone Edit Ingame Only"); return; }
+    if (cmd.callerSlot < 0) { cmd.replyT("Zone Edit Ingame Only"); return HookResult.Handled; }
     const raw = cmd.args[0] || "";
     if (!raw || raw === "cancel") {
       if (edits.has(cmd.callerSlot)) { cancelEdit(cmd.callerSlot); cmd.replyT("Zone Edit Cancelled"); }
       else cmd.replyT("Usage Zone Edit");
-      return;
+      return HookResult.Handled;
     }
     const name = sanitizeName(raw);
-    if (!name) { cmd.replyT("Invalid Zone Name"); return; }
+    if (!name) { cmd.replyT("Invalid Zone Name"); return HookResult.Handled; }
     if (!startMarking(cmd.callerSlot, name)) cmd.replyT("No Position Spawn First");
+    return HookResult.Handled;
   });
 
   command.admin("sm_zone_delete", ADMFLAG.GENERIC, (cmd) => {
     const name = sanitizeName(cmd.args[0] || "");
-    if (!name || !zones.has(name)) { cmd.replyT("Zone Not Found", name); return; }
+    if (!name || !zones.has(name)) { cmd.replyT("Zone Not Found", name); return HookResult.Handled; }
     dropZone(name);
     cmd.replyT("Zone Deleted", name);
+    return HookResult.Handled;
   });
 
   command.admin("sm_zone_tag", ADMFLAG.GENERIC, (cmd) => {
     const name = sanitizeName(cmd.args[0] || "");
     const z = zones.get(name);
-    if (!name || !z) { cmd.replyT("Zone Tag Not Found", name); return; }
+    if (!name || !z) { cmd.replyT("Zone Tag Not Found", name); return HookResult.Handled; }
     const tags = cmd.args.slice(1).map((t) => sanitizeTag(t)).filter((t) => t.length > 0);
     z.tags = tags;
     db.execute("UPDATE zones SET tags = ? WHERE map = ? AND name = ?", [tags.join(","), currentMap, name]).catch(() => {});
     cmd.replyT(tags.length > 0 ? "Zone Tags Set" : "Zone Tags Cleared", name, tags.join(", "));
+    return HookResult.Handled;
   });
 
   command.admin("sm_zone_list", ADMFLAG.GENERIC, (cmd) => {
@@ -421,6 +423,7 @@ export async function OnPluginStart(): Promise<void> {
         z.inside.size,
         z.trigger ? "yes" : "pending",
       );
+    return HookResult.Handled;
   });
 
   command.admin("sm_zone_export", ADMFLAG.GENERIC, (cmd) => {
@@ -428,13 +431,14 @@ export async function OnPluginStart(): Promise<void> {
     for (const z of zones.values()) out[z.name] = { min: [z.min.x, z.min.y, z.min.z], max: [z.max.x, z.max.y, z.max.z], tags: z.tags };
     config.writeFile(zonesFile(currentMap), JSON.stringify(out, null, 2));
     cmd.replyT("Zone Export Done", zones.size, zonesFile(currentMap));
+    return HookResult.Handled;
   });
 
   command.admin("sm_zone_import", ADMFLAG.GENERIC, (cmd) => {
     const raw = config.readFile(zonesFile(currentMap));
-    if (!raw) { cmd.replyT("Zone Import No File", currentMap); return; }
+    if (!raw) { cmd.replyT("Zone Import No File", currentMap); return HookResult.Handled; }
     let parsed: Record<string, { min: number[]; max: number[]; tags?: string[] }>;
-    try { parsed = JSON.parse(raw); } catch { cmd.replyT("Zone Import Bad Json"); return; }
+    try { parsed = JSON.parse(raw); } catch { cmd.replyT("Zone Import Bad Json"); return HookResult.Handled; }
     let n = 0;
     const pend: Promise<void>[] = [];
     for (const key of Object.keys(parsed)) {
@@ -447,32 +451,33 @@ export async function OnPluginStart(): Promise<void> {
       n++;
     }
     Promise.all(pend).then(() => cmd.replyT("Zone Import Done", n)).catch((err) => cmd.replyT("Zone Import Error", String(err)));
+    return HookResult.Handled;
   });
 
   command.admin("sm_zone_show", ADMFLAG.GENERIC, (cmd) => {
     const arg = cmd.args[0] || "";
-    if (!arg) { cmd.replyT("Usage Zone Show"); return; }
+    if (!arg) { cmd.replyT("Usage Zone Show"); return HookResult.Handled; }
     const seconds = cmd.args.length > 1 ? Math.max(0, cmd.argFloat(1, 30)) : 30;
     if (arg === "all") {
       for (const z of zones.values()) showZone(z, seconds);
       cmd.replyT(seconds > 0 ? "Zone Show All Timed" : "Zone Show All Persistent", zones.size, seconds);
-      return;
+      return HookResult.Handled;
     }
     const z = zones.get(sanitizeName(arg));
-    if (!z) { cmd.replyT("Zone Not Found", sanitizeName(arg)); return; }
+    if (!z) { cmd.replyT("Zone Not Found", sanitizeName(arg)); return HookResult.Handled; }
     showZone(z, seconds);
     cmd.replyT(seconds > 0 ? "Zone Show One Timed" : "Zone Show One Persistent", z.name, seconds);
+    return HookResult.Handled;
   });
   command.admin("sm_zone_hide", ADMFLAG.GENERIC, (cmd) => {
     const arg = cmd.args[0] || "all";
-    if (arg === "all") { const n = shown.size; clearAllBeams(); cmd.replyT("Zone Hide All Done", n); return; }
+    if (arg === "all") { const n = shown.size; clearAllBeams(); cmd.replyT("Zone Hide All Done", n); return HookResult.Handled; }
     const name = sanitizeName(arg);
-    if (!shown.has(name)) { cmd.replyT("Zone Not Shown", name); return; }
+    if (!shown.has(name)) { cmd.replyT("Zone Not Shown", name); return HookResult.Handled; }
     hideZone(name);
     cmd.replyT("Zone Hide One Done", name);
+    return HookResult.Handled;
   });
-
-  console.log("[zones] onLoad — commands registered (real-trigger backend)");
 }
 
 export function OnMapStart(map: string): void {

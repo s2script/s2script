@@ -15,9 +15,8 @@
  * `defuser` on OnBombDefuse are deprecated, so the watcher reads the userid slot instead and does
  * not depend on either field.
  */
-import { hook } from "@s2script/sdk/plugin";
-import { Entity } from "@s2script/sdk/entity";
-import type { EntityRef } from "@s2script/sdk/entity";
+import { hook, Entity } from "@s2script/sdk";
+import type { EntityRef } from "@s2script/sdk";
 import { wrapEntity, Player, CsItem } from "@s2script/cs2";
 import type { Pawn } from "@s2script/cs2";
 
@@ -46,7 +45,7 @@ export function setWatching(on: boolean): boolean {
 /**
  * Subscribe once at load, for every watched event.
  *
- * Subscribing at load rather than on `sm_bomb_watch` is deliberate: `ctx.events.on` is load-scoped
+ * Subscribing at load rather than on `sm_bomb_watch` is deliberate: `hook.on` is load-scoped
  * and ledgered, so toggling subscriptions per command would churn the ledger for no benefit. The
  * flag gates the LOGGING, not the subscription.
  */

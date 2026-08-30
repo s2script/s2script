@@ -161,18 +161,17 @@ export async function OnPluginStart(): Promise<void> {
   // "nominate on a player's behalf / add off-pool map" need is proven.
   command("sm_nominate", (cmd) => {
     const slot = cmd.callerSlot;
-    if (slot < 0) { cmd.replyT("Must Be In Game"); return; }
+    if (slot < 0) { cmd.replyT("Must Be In Game"); return HookResult.Handled; }
     const arg = cmd.arg(0);
-    if (!arg) { nominateMenu(slot).catch(logErr); return; }
+    if (!arg) { nominateMenu(slot).catch(logErr); return HookResult.Handled; }
     const matches = resolveMap(arg, loadPool());
     if (matches.length === 0) cmd.replyT("No Map Matching", arg);
     else if (matches.length === 1) nominate(slot, matches[0].name).catch(logErr);
     // Disambiguation lists exactly what the player's text matched, so every entry stays selectable
     // and there is no cooldown section — `nominate` re-validates and explains a refusal itself.
     else mapMenu(slot, matches, [], "Nominate Disambiguation Title");
+    return HookResult.Handled;
   });
-
-  console.log("[nominations] onLoad — sm_nominate + bare 'nominate' registered");
 }
 
 export function OnGameFrame(): void {

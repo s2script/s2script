@@ -14,13 +14,10 @@ const NOTIFY_INTERVAL = 2.0; // seconds — throttle the "slow down" notice so i
 export function OnPluginStart(): void {
   translations.load("antiflood", "common");
 
-  // Log tuning changes so an admin editing the config file sees them take effect (also opts this
-  // plugin into the loader's live-reload watch, so getFloat/getInt below read fresh values).
+  // Arm the config-file watcher so flood_time / max_tokens pick up live edits.
   config.onChange(() => {
-    console.log("[antiflood] config changed — flood_time=" + config.getFloat("flood_time") + " max_tokens=" + config.getInt("max_tokens"));
+    /* getters read rematerialized values on the next message */
   });
-
-  console.log("[antiflood] onLoad — chat flood protection active (flood_time=" + config.getFloat("flood_time") + " max_tokens=" + config.getInt("max_tokens") + ")");
 }
 
 export function OnClientSayCommand(slot: number, _text: string, _teamonly: boolean): typeof HookResult.Continue | typeof HookResult.Handled {

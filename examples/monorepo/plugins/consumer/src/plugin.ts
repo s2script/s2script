@@ -13,11 +13,10 @@
 // a copy kept in sync by hand.
 import type { Greeter } from "@monorepo-example/producer";
 import { Tally, shout } from "@monorepo-example/shared";
-import { command } from "@s2script/sdk/commands";
-import { use } from "@s2script/sdk/plugin";
+import { command, use, HookResult } from "@s2script/sdk";
 
 export function OnPluginStart(): void {
-  // ctx.use returns a proxy that throws InterfaceUnavailable while the producer is unloaded, so a
+  // use() returns a proxy that throws InterfaceUnavailable while the producer is unloaded, so a
   // producer reload degrades this command instead of crashing the plugin.
   const producer = use<Greeter>("@monorepo-example/producer");
 
@@ -37,6 +36,7 @@ export function OnPluginStart(): void {
     } catch (e) {
       cmd.reply(`producer unavailable: ${String(e)}`);
     }
+    return HookResult.Handled;
   });
 
   // shout() is called here too, straight from this plugin's own bundled copy of @monorepo-example/

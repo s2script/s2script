@@ -1,6 +1,4 @@
-import type { Recipe } from "../recipe.ts";
-import { config } from "@s2script/sdk/config";
-import { command } from "@s2script/sdk/commands";
+import { config, command, HookResult } from "@s2script/sdk";
 
 /**
  * A plugin declares its config under `s2script.config` in package.json — see this cookbook's own
@@ -10,21 +8,21 @@ import { command } from "@s2script/sdk/commands";
  * key the operator hasn't touched still falls back to its declared default at read time.
  *
  * `config.getString/getInt/getFloat/getBool` read the CURRENT materialized value — call them
- * fresh rather than caching the result, because `ctx.config.onChange` fires whenever an operator
+ * fresh rather than caching the result, because `config.onChange` fires whenever an operator
  * edits the file live, and re-reading inside that handler is how a plugin picks up the edit
  * without a restart (see plugins/antiflood for a config-driven plugin doing exactly this).
  */
-export const configRecipe: Recipe = {
-  name: "config",
-  describe: "read the plugin's operator-editable config file, live-reloadable (sm_config)",
-  register() {
-    config.onChange(() => {
-      console.log("[cookbook] config changed — greeting=" + JSON.stringify(config.getString("greeting")));
-    });
+export const name = "config";
+export const describe = "read the plugin's operator-editable config file, live-reloadable (sm_config)";
 
-    command("sm_config", (cmd) => {
-      cmd.reply("greeting = " + JSON.stringify(config.getString("greeting")));
-      cmd.reply("edit the materialized config file, save, then re-run sm_config to see it live-reload");
-    });
-  },
-};
+export function OnPluginStart(): void {
+  config.onChange(() => {
+    console.log("[cookbook] config changed — greeting=" + JSON.stringify(config.getString("greeting")));
+  });
+
+  command("sm_config", (cmd) => {
+    cmd.reply("greeting = " + JSON.stringify(config.getString("greeting")));
+    cmd.reply("edit the materialized config file, save, then re-run sm_config to see it live-reload");
+    return HookResult.Handled;
+  });
+}

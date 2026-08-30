@@ -6,6 +6,7 @@
 
 import {
   command, translations, ADMFLAG, Chat, config, Vote, Server, Translations,
+  HookResult,
 } from "@s2script/sdk";
 import type { Command, PhraseKey } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
@@ -51,11 +52,13 @@ export function OnPluginStart(): void {
   command.admin("sm_votealltalk", ADMFLAG.VOTE, cmd => {
     const on = ["1", "true"].includes(Server.getCvar("sv_alltalk"));
     startYesNo(cmd, on ? "Disable Alltalk Question" : "Enable Alltalk Question", undefined, () => Server.setCvar("sv_alltalk", on ? "0" : "1"));
+    return HookResult.Handled;
   });
 
   command.admin("sm_voteff", ADMFLAG.VOTE, cmd => {
     const on = ["1", "true"].includes(Server.getCvar("mp_friendlyfire"));
     startYesNo(cmd, on ? "Disable Friendlyfire Question" : "Enable Friendlyfire Question", undefined, () => Server.setCvar("mp_friendlyfire", on ? "0" : "1"));
+    return HookResult.Handled;
   });
 
   // DEVIATION FROM SM: SourceMod's sm_votegravity can present MULTIPLE gravity options in one
@@ -64,26 +67,27 @@ export function OnPluginStart(): void {
   // funvotes are a future item if demand appears.
   command.admin("sm_votegravity", ADMFLAG.VOTE, cmd => {
     const v = cmd.arg(0);
-    if (!/^[0-9]+(\.[0-9]+)?$/.test(v)) { cmd.replyT("Usage Votegravity"); return; }
+    if (!/^[0-9]+(\.[0-9]+)?$/.test(v)) { cmd.replyT("Usage Votegravity"); return HookResult.Handled; }
     startYesNo(cmd, "Set Gravity Question", v, () => Server.setCvar("sv_gravity", v));
+    return HookResult.Handled;
   });
 
   command.admin("sm_voteslay", ADMFLAG.VOTE, cmd => {
     const targets = Player.target(cmd.arg(0), cmd.callerSlot, true);
     // Both replies below are LOCAL keys (colour-free, no "[SM] " prefix) — see phrases.ts.
-    if (targets.length === 0) { cmd.replyT("Voteslay No Matching Players"); return; }
-    if (targets.length > 1) { cmd.replyT("Voteslay Ambiguous Target"); return; }
+    if (targets.length === 0) { cmd.replyT("Voteslay No Matching Players"); return HookResult.Handled; }
+    if (targets.length > 1) { cmd.replyT("Voteslay Ambiguous Target"); return HookResult.Handled; }
     const uid = targets[0].userId;
     const name = targets[0].playerName ?? "player";
     startYesNo(cmd, "Slay Question", name, () => {
       const p = Player.fromUserId(uid);   // re-resolve at end (pick-time slot/pawn may be stale)
       if (p && p.pawn) p.pawn.slay();
     });
+    return HookResult.Handled;
   });
 
   // DESCOPED: SM's sm_voteburn (vote to ignite a player) is intentionally not implemented — it
   // needs a player-ignite primitive that does not exist in the framework yet, and this slice does
   // NOT invent RE work. Revisit once an ignite/entity-fire capability lands (like pawn.slay for
   // sm_voteslay).
-  console.log("[funvotes] onLoad — votealltalk/voteff/votegravity/voteslay registered");
 }

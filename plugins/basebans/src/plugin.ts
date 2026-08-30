@@ -13,7 +13,7 @@
 //  immediately; OnClientConnected is the RECONNECT enforcement + is where a 3rd party would query
 //  their own ban store instead of ours.
 
-import { command, topmenu, translations, ADMFLAG, Bans, Clients, Menu, MenuStyle, Translations } from "@s2script/sdk";
+import { command, topmenu, translations, ADMFLAG, Bans, Clients, Menu, MenuStyle, Translations, HookResult } from "@s2script/sdk";
 import type { Client } from "@s2script/sdk";
 import { Player, pickPlayer } from "@s2script/cs2";
 
@@ -53,13 +53,13 @@ export function OnPluginStart(): void {
     const target = cmd.arg(0);
     if (!target) {
       cmd.replyT("Usage Ban");
-      return;
+      return HookResult.Handled;
     }
     if (!/^\d+$/.test(cmd.arg(1))) {
       // A missing OR non-numeric minutes arg must NOT silently become a permanent ban
       // (argInt falls back to 0 = permanent for NaN). Require explicit digits; "0" = permanent.
       cmd.replyT("Usage Ban");
-      return;
+      return HookResult.Handled;
     }
     const minutes = cmd.argInt(1);
     const reason = cmd.argsFrom(2);
@@ -67,19 +67,19 @@ export function OnPluginStart(): void {
     const targets = Player.target(target, cmd.callerSlot, true);
     if (targets.length === 0) {
       cmd.replyT("No matching players");
-      return;
+      return HookResult.Handled;
     }
     // NO_MULTI: banning is destructive — single target only, do NOT allow @all or ambiguous names.
     if (targets.length > 1) {
       cmd.replyT("Ban Ambiguous Target", target);
-      return;
+      return HookResult.Handled;
     }
 
     const p = targets[0];
     const sid = p.steamId;
     if (!sid || sid === "0") {
       cmd.replyT("Cannot Ban No Steamid", p.playerName ?? "");
-      return;
+      return HookResult.Handled;
     }
 
     Bans.add(sid, minutes, reason);
@@ -95,6 +95,7 @@ export function OnPluginStart(): void {
       : Translations.translate(cmd.callerSlot, "Ban Duration Permanently");
     const reasonText = reason ? Translations.translate(cmd.callerSlot, "Ban Reason Suffix", reason) : "";
     cmd.replyT("Ban Success", p.playerName ?? "", durText, reasonText);
+    return HookResult.Handled;
   });
 
   // sm_unban <steamid> — ADMFLAG.UNBAN
@@ -103,10 +104,11 @@ export function OnPluginStart(): void {
     const sid = cmd.arg(0);
     if (!/^\d+$/.test(sid)) {
       cmd.replyT("Usage Unban");
-      return;
+      return HookResult.Handled;
     }
     const was = Bans.remove(sid);
     cmd.replyT(was ? "Unban Success" : "Unban Not Banned", sid);
+    return HookResult.Handled;
   });
 
   // sm_addban <steamid> <minutes> [reason] — ADMFLAG.BAN
@@ -115,12 +117,12 @@ export function OnPluginStart(): void {
     const sid = cmd.arg(0);
     if (!/^\d+$/.test(sid)) {
       cmd.replyT("Usage Addban");
-      return;
+      return HookResult.Handled;
     }
     if (!/^\d+$/.test(cmd.arg(1))) {
       // Missing or non-numeric minutes → usage, not a silent permanent ban (see sm_ban).
       cmd.replyT("Usage Addban");
-      return;
+      return HookResult.Handled;
     }
     const minutes = cmd.argInt(1);
     const reason = cmd.argsFrom(2);
@@ -132,6 +134,7 @@ export function OnPluginStart(): void {
       : Translations.translate(cmd.callerSlot, "Addban Duration Permanent");
     const reasonText = reason ? Translations.translate(cmd.callerSlot, "Addban Reason Suffix", reason) : "";
     cmd.replyT("Addban Success", sid, durText, reasonText);
+    return HookResult.Handled;
   });
 
   // adminmenu — Kick + Ban proof items, same ADMFLAG as their text commands, via pickPlayer.
@@ -179,8 +182,6 @@ export function OnPluginStart(): void {
       });
       dm.display(adminSlot, 30);
     }) });
-
-  console.log("[basebans] onLoad - sm_ban/sm_unban/sm_addban + connect enforcement registered");
 }
 
 // Connect-time enforcement: admit -> show reason (chat + console) -> kick. Runs for every connecting

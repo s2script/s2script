@@ -18,10 +18,6 @@ import { Player } from "@s2script/cs2";
 
 export function OnPluginStart(): void {
   translations.load("reservedslots", "common");
-
-  console.log(
-    "[reservedslots] onLoad — reserved_slots=" + config.getInt("reserved_slots") + " maxPlayers=" + Server.maxPlayers,
-  );
 }
 
 export function OnClientActive(c: Client): void {

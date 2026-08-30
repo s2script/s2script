@@ -12,8 +12,8 @@
  * back the panel/class/dialog-variable counts after spawn is how we tell those two worlds apart:
  * a layout that loaded registers panel ids; one that did not reports zero.
  */
-import { createEntity, Entity } from "@s2script/sdk/entity";
-import type { EntityRef } from "@s2script/sdk/entity";
+import { createEntity, Entity } from "@s2script/sdk";
+import type { EntityRef } from "@s2script/sdk";
 
 /** The entity class added by the update. */
 export const HUD_CLASS = "custom_hud_layout";

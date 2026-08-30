@@ -39,14 +39,12 @@
  *   sm_hud_menu [chat|center]                  SourceMod menu feature test
  *   sm_buymenu [chat|center]                   categorised buy menu
  */
-import { ADMFLAG } from "@s2script/sdk/admin";
-import { config } from "@s2script/sdk/config";
-import { Chat } from "@s2script/sdk/chat";
+import { ADMFLAG, config, Chat, hook, command, HookResult } from "@s2script/sdk";
+import type { CommandInvocation, Client } from "@s2script/sdk";
 import { Player, Pawn, ui } from "@s2script/cs2";
 import type { Hud } from "@s2script/cs2";
 import { LIVE_HUD, LIVE_PANELS } from "./livehud";
 import { LiveDemo } from "./livedemo";
-import type { CommandInvocation } from "@s2script/sdk/commands";
 
 import * as layout from "./layout";
 import * as camera from "./camera";
@@ -55,9 +53,6 @@ import * as movement from "./movement";
 import * as menus from "./menus";
 import { DemoHud, sendOnce } from "./demohud";
 import { LAYOUT, STATE, LAYOUT_SIZE, globalStateField } from "./offsets";
-import { hook } from "@s2script/sdk/plugin";
-import { command } from "@s2script/sdk/commands";
-import type { Client } from "@s2script/sdk/clients";
 import {
   readLayoutInfo, isInputCaptureEnabled, setInputCaptureEnabled, dumpWindow, probeLayout,
   readPlayerClasses, setPlayerClassStatus, playerStateCount,
@@ -135,18 +130,20 @@ export function OnPluginStart(): void {
     cmd.reply("  addons: 3790153369 (MultiAddonManager)");
     cmd.reply(`${TAG} ── TIER C (ui.onCustomHudClicked) ──`);
     cmd.reply("  ARMED via game-package hook — use sm_kit / sm_hud_show, then click s2_btn_*");
+    return HookResult.Handled;
   });
 
   // ── Offset verification ─────────────────────────────────────────────────────────────────────
   command.admin("sm_hud_probe", ADMFLAG.ROOT, (cmd) => {
     const ref = layout.preferred();
-    if (!ref) { cmd.reply(`${TAG} no custom_hud_layout in the world — run sm_hud_create first`); return; }
+    if (!ref) { cmd.reply(`${TAG} no custom_hud_layout in the world — run sm_hud_create first`); return HookResult.Handled; }
     // Default window brackets the global state, the field this plugin actually writes.
     const start = cmd.argInt(0, LAYOUT.globalLayoutState);
     const len = Math.min(cmd.argInt(1, 64), 256);
     cmd.reply(`${TAG} entity #${ref.index}, sizeof=${LAYOUT_SIZE}, window +${start}..+${start + len}`);
     cmd.reply(`  m_bInputCaptureEnabled is expected at +${globalStateField(STATE.inputCaptureEnabled)}`);
     for (const line of dumpWindow(ref, start, len)) cmd.reply(`  ${line}`);
+    return HookResult.Handled;
   });
 
   // ── Why does the MAP's entity render and ours not? ──────────────────────────────────────────
@@ -161,7 +158,7 @@ export function OnPluginStart(): void {
     if (!mine || !theirs) {
       cmd.reply(`${TAG} need BOTH a map-authored and a plugin-created layout in the world`);
       cmd.reply(`${TAG} load editor/zoo/script_zoo, then sm_hud_create`);
-      return;
+      return HookResult.Handled;
     }
     cmd.reply(`${TAG} diffing map-authored #${theirs.index} vs ours #${mine.index} over ${LAYOUT_SIZE} bytes`);
     const runs: string[] = [];
@@ -187,18 +184,19 @@ export function OnPluginStart(): void {
         runStart = -1;
       }
     }
-    if (runs.length === 0) { cmd.reply("  IDENTICAL — the difference is not in this entity's memory"); return; }
+    if (runs.length === 0) { cmd.reply("  IDENTICAL — the difference is not in this entity's memory"); return HookResult.Handled; }
     cmd.reply(`  ${runs.length} differing run(s):`);
     // Cap the reply: a full dump would flood rcon and the interesting fields are the early ones.
     for (const r of runs.slice(0, 24)) cmd.reply(r);
     if (runs.length > 24) cmd.reply(`  … ${runs.length - 24} more`);
+    return HookResult.Handled;
   });
 
   // ── Layout entity lifecycle ─────────────────────────────────────────────────────────────────
   command.admin("sm_hud_create", ADMFLAG.ROOT, (cmd) => {
     const name = cmd.argCount > 0 ? cmd.argsFrom(0) : config.getString("layout");
     const result = layout.create(name);
-    if (result.error) { cmd.reply(`${TAG} ${result.error}`); return; }
+    if (result.error) { cmd.reply(`${TAG} ${result.error}`); return HookResult.Handled; }
     const info = readLayoutInfo(result.ref!);
     cmd.reply(`${TAG} created entity #${info.index} with keyvalues ${JSON.stringify(result.keyvalues)}`);
     cmd.reply(
@@ -218,11 +216,12 @@ export function OnPluginStart(): void {
     }
     cmd.reply(`  layout pointer: ${info.hasLayoutString ? "SET" : "NULL — the keyvalue did not take"}`);
     if (!info.probe.ok) cmd.reply(`  PROBE FAILED: ${info.probe.reasons.join("; ")}`);
+    return HookResult.Handled;
   });
 
   command.admin("sm_hud_list", ADMFLAG.GENERIC, (cmd) => {
     const all = layout.findAll();
-    if (all.length === 0) { cmd.reply(`${TAG} no custom_hud_layout entities`); return; }
+    if (all.length === 0) { cmd.reply(`${TAG} no custom_hud_layout entities`); return HookResult.Handled; }
     for (const ref of all) {
       const info = readLayoutInfo(ref);
       const owned = info.targetname === layout.OWNED_TARGETNAME ? " (ours)" : " (map-authored)";
@@ -232,44 +231,49 @@ export function OnPluginStart(): void {
         `capture=${info.inputCapture}`,
       );
     }
+    return HookResult.Handled;
   });
 
   command.admin("sm_hud_remove", ADMFLAG.ROOT, (cmd) => {
     cmd.reply(`${TAG} removed ${layout.removeOwned()} plugin-created layout entit(ies)`);
+    return HookResult.Handled;
   });
 
   // ── Tier A: input capture ───────────────────────────────────────────────────────────────────
   command.admin("sm_hud_capture", ADMFLAG.ROOT, (cmd) => {
     const ref = layout.preferred();
-    if (!ref) { cmd.reply(`${TAG} no custom_hud_layout — run sm_hud_create first`); return; }
+    if (!ref) { cmd.reply(`${TAG} no custom_hud_layout — run sm_hud_create first`); return HookResult.Handled; }
     if (cmd.argCount === 0) {
       cmd.reply(`${TAG} IsInputCaptureEnabled = ${isInputCaptureEnabled(ref)}`);
-      return;
+      return HookResult.Handled;
     }
     const on = cmd.arg(0) === "1" || cmd.arg(0).toLowerCase() === "true";
     const err = setInputCaptureEnabled(ref, on);
     cmd.reply(err ? `${TAG} SetInputCaptureEnabled(${on}) refused — ${err}` : `${TAG} SetInputCaptureEnabled(${on}) OK (read back ${on})`);
+    return HookResult.Handled;
   });
 
   // ── Tier B: classes and dialog variables ────────────────────────────────────────────────────
   command.admin("sm_hud_class", ADMFLAG.ROOT, (cmd) => {
-    if (cmd.argCount < 3) { cmd.reply(`${TAG} usage: sm_hud_class <panelId> <className> <1|0|-1> [target]`); return; }
+    if (cmd.argCount < 3) { cmd.reply(`${TAG} usage: sm_hud_class <panelId> <className> <1|0|-1> [target]`); return HookResult.Handled; }
     const slot = resolveOptionalSlot(cmd, 3, cmd.callerSlot);
     const status = parseClassStatus(cmd.arg(2));
     const err = kitHud.setClass(slot, cmd.arg(0), cmd.arg(1), status === 1);
     cmd.reply(err ? `${TAG} ${err}` : `${TAG} setClass slot ${slot} "${cmd.arg(0)}" "${cmd.arg(1)}" -> ${status}`);
+    return HookResult.Handled;
   });
 
   command.admin("sm_hud_var", ADMFLAG.ROOT, (cmd) => {
-    if (cmd.argCount < 3) { cmd.reply(`${TAG} usage: sm_hud_var <panelId> <variableName> <value> [target]`); return; }
+    if (cmd.argCount < 3) { cmd.reply(`${TAG} usage: sm_hud_var <panelId> <variableName> <value> [target]`); return HookResult.Handled; }
     const slot = resolveOptionalSlot(cmd, 3, cmd.callerSlot);
     const err = kitHud.setText(slot, cmd.arg(0), cmd.argsFrom(2));
     cmd.reply(err ? `${TAG} ${err}` : `${TAG} setText slot ${slot} "${cmd.arg(0)}"`);
+    return HookResult.Handled;
   });
 
   // ── Tier A: the SetHUDVisibility entity input ───────────────────────────────────────────────
   command.admin("sm_hud_visible", ADMFLAG.SLAY, (cmd) => {
-    if (cmd.argCount < 2) { cmd.reply(`${TAG} usage: sm_hud_visible <target> <0|1>`); return; }
+    if (cmd.argCount < 2) { cmd.reply(`${TAG} usage: sm_hud_visible <target> <0|1>`); return HookResult.Handled; }
     const on = cmd.arg(1) === "1";
     let n = 0;
     for (const p of Player.target(cmd.arg(0), cmd.callerSlot)) {
@@ -279,68 +283,76 @@ export function OnPluginStart(): void {
       if (pawn?.isValid && pawn.ref.acceptInput("SetHUDVisibility", on ? "1" : "0")) n++;
     }
     cmd.reply(`${TAG} queued SetHUDVisibility=${on ? 1 : 0} on ${n} pawn(s) — queued, not confirmed`);
+    return HookResult.Handled;
   });
 
   // ── Camera ──────────────────────────────────────────────────────────────────────────────────
   command.admin("sm_cam_create", ADMFLAG.ROOT, (cmd) => {
     const pawn = requireCallerPawn(cmd);
-    if (!pawn) return;
+    if (!pawn) return HookResult.Handled;
     const origin = pawn.origin;
     const angles = pawn.angles;
-    if (!origin || !angles) { cmd.reply(`${TAG} cannot read caller transform`); return; }
+    if (!origin || !angles) { cmd.reply(`${TAG} cannot read caller transform`); return HookResult.Handled; }
     const result = camera.create([origin.x, origin.y, origin.z + EYE_HEIGHT], [angles.x, angles.y, angles.z]);
     cmd.reply(result.error ? `${TAG} ${result.error}` : `${TAG} created cs_player_camera #${result.ref?.index}`);
+    return HookResult.Handled;
   });
 
   command.admin("sm_cam_enable", ADMFLAG.ROOT, (cmd) => {
     const pawn = requireCallerPawn(cmd);
-    if (!pawn) return;
+    if (!pawn) return HookResult.Handled;
     const cam = camera.findAll()[0];
-    if (!cam) { cmd.reply(`${TAG} no cs_player_camera — run sm_cam_create first`); return; }
+    if (!cam) { cmd.reply(`${TAG} no cs_player_camera — run sm_cam_create first`); return HookResult.Handled; }
     const on = cmd.arg(0) === "1";
     const queued = camera.setEnabled(cam, on, pawn.ref);
     cmd.reply(`${TAG} ${on ? "Enable" : "Disable"} queued=${queued} — an unknown input queues then drops silently, so judge by your view, not this line`);
+    return HookResult.Handled;
   });
 
   command.admin("sm_cam_angles", ADMFLAG.ROOT, (cmd) => {
     const pawn = requireCallerPawn(cmd);
-    if (!pawn) return;
+    if (!pawn) return HookResult.Handled;
     const cam = camera.findAll()[0];
-    if (!cam) { cmd.reply(`${TAG} no cs_player_camera — run sm_cam_create first`); return; }
+    if (!cam) { cmd.reply(`${TAG} no cs_player_camera — run sm_cam_create first`); return HookResult.Handled; }
     const queued = camera.setControllingAngles(cam, cmd.arg(0) === "1", pawn.ref);
     cmd.reply(`${TAG} ${camera.PROBED_INPUTS.controlAngles} queued=${queued} (probe — input name is a guess)`);
+    return HookResult.Handled;
   });
 
   command.admin("sm_cam_remove", ADMFLAG.ROOT, (cmd) => {
     cmd.reply(`${TAG} removed ${camera.removeOwned()} plugin-created camera(s)`);
+    return HookResult.Handled;
   });
 
   // ── Bomb ────────────────────────────────────────────────────────────────────────────────────
   command.admin("sm_bomb_watch", ADMFLAG.GENERIC, (cmd) => {
     const on = cmd.argCount === 0 ? !bomb.isWatching() : cmd.arg(0) === "1";
     cmd.reply(`${TAG} bomb watch ${bomb.setWatching(on) ? "ON" : "off"} — logging ${bomb.WATCHED_EVENTS.join(", ")}`);
+    return HookResult.Handled;
   });
 
   command.admin("sm_bomb_info", ADMFLAG.GENERIC, (cmd) => {
     const info = bomb.readBomb();
-    if (!info.found) { cmd.reply(`${TAG} no weapon_c4 in the world`); return; }
+    if (!info.found) { cmd.reply(`${TAG} no weapon_c4 in the world`); return HookResult.Handled; }
     cmd.reply(
       `${TAG} c4 #${info.index} startedArming=${info.startedArming} armedTime=${info.armedTime} ` +
       `planted=${info.bombPlanted} viaUse=${info.isPlantingViaUse} carrier=${info.carrierName ?? "none"}`,
     );
     cmd.reply("  GetPlantFinishTime ~ armedTime; there is no m_flPlantStartTime field — cs_script derives it.");
+    return HookResult.Handled;
   });
 
   command.admin("sm_bomb_abort", ADMFLAG.SLAY, (cmd) => {
     const result = bomb.abortPlant();
     cmd.reply(result.reason ? `${TAG} ${result.reason}` : `${TAG} AbortPlant queued=${result.queued} — confirm with sm_bomb_info (startedArming should clear)`);
+    return HookResult.Handled;
   });
 
   // ── Movement ────────────────────────────────────────────────────────────────────────────────
   command.admin("sm_movetype", ADMFLAG.SLAY, (cmd) => {
     const pattern = cmd.argCount > 0 ? cmd.arg(0) : "@me";
     const targets = Player.target(pattern, cmd.callerSlot);
-    if (targets.length === 0) { cmd.reply(`${TAG} no matching players`); return; }
+    if (targets.length === 0) { cmd.reply(`${TAG} no matching players`); return HookResult.Handled; }
 
     // No second argument = read-only. Listing the testable values on a bad token beats a bare
     // "invalid" when the update may well have added a value we do not know about.
@@ -349,12 +361,12 @@ export function OnPluginStart(): void {
         const pawn = p.pawn;
         if (pawn?.isValid) cmd.reply(`${TAG} ${p.playerName}: ${movement.moveTypeName(movement.get(pawn))}`);
       }
-      return;
+      return HookResult.Handled;
     }
     const value = movement.parseMoveType(cmd.arg(1));
     if (value === null) {
       cmd.reply(`${TAG} unknown movetype "${cmd.arg(1)}" — try: ${movement.TESTABLE.map((t) => t.name).join(", ")}`);
-      return;
+      return HookResult.Handled;
     }
     for (const p of targets) {
       const pawn = p.pawn;
@@ -362,17 +374,20 @@ export function OnPluginStart(): void {
       const r = movement.set(pawn, value);
       cmd.reply(`${TAG} ${p.playerName}: set ${movement.moveTypeName(value)} -> read back ${movement.moveTypeName(r.readBack)}${r.ok ? "" : " (MISMATCH)"}`);
     }
+    return HookResult.Handled;
   });
 
   // ── Menus ───────────────────────────────────────────────────────────────────────────────────
   command.admin("sm_hud_menu", ADMFLAG.GENERIC, (cmd) => {
-    if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_hud_menu needs an in-game caller`); return; }
+    if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_hud_menu needs an in-game caller`); return HookResult.Handled; }
     menus.showDemo(cmd.callerSlot, menus.parseStyle(cmd.arg(0)), log);
+    return HookResult.Handled;
   });
 
   command.admin("sm_buymenu", ADMFLAG.GENERIC, (cmd) => {
-    if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_buymenu needs an in-game caller`); return; }
+    if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_buymenu needs an in-game caller`); return HookResult.Handled; }
     menus.showBuyMenu(cmd.callerSlot, menus.parseStyle(cmd.arg(0)), log);
+    return HookResult.Handled;
   });
 
   // ── Drive OUR OWN published kit ──────────────────────────────────────────────────────────────
@@ -408,9 +423,9 @@ export function OnPluginStart(): void {
   });
 
   command.admin("sm_hud", ADMFLAG.GENERIC, (cmd) => {
-    if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_hud needs an in-game caller`); return; }
+    if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_hud needs an in-game caller`); return HookResult.Handled; }
     const spawn = ui.createLayout();
-    if (spawn !== null) { cmd.reply(`${TAG} ${spawn}`); return; }
+    if (spawn !== null) { cmd.reply(`${TAG} ${spawn}`); return HookResult.Handled; }
     const slot = cmd.callerSlot;
     const arg = cmd.arg(0).toLowerCase();
     const want = arg === "" ? !demo.has(slot) : (arg === "1" || arg === "on");
@@ -422,10 +437,11 @@ export function OnPluginStart(): void {
       demo.stop(slot);
       cmd.reply(`${TAG} live HUD off`);
     }
+    return HookResult.Handled;
   });
 
   command.admin("sm_motd", ADMFLAG.GENERIC, (cmd) => {
-    if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_motd needs an in-game caller`); return; }
+    if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_motd needs an in-game caller`); return HookResult.Handled; }
     const slot = cmd.callerSlot;
     const name = Player.fromSlot(slot)?.playerName ?? `slot ${slot}`;
     const errs: string[] = [];
@@ -473,10 +489,11 @@ export function OnPluginStart(): void {
     cmd.reply(errs.length
       ? `${TAG} ${errs.length} call(s) refused; first: ${errs[0]}`
       : `${TAG} live HUD driven for ${name} — click OK to dismiss`);
+    return HookResult.Handled;
   });
 
   command.admin("sm_kit", ADMFLAG.GENERIC, (cmd) => {
-    if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_kit needs an in-game caller`); return; }
+    if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_kit needs an in-game caller`); return HookResult.Handled; }
     const slot = cmd.callerSlot;
 
     kitHud.setText(slot, "s2_dialog_title", "s2script kit");
@@ -490,20 +507,23 @@ export function OnPluginStart(): void {
 
     const err = kitHud.show(slot, "s2_dialog", { cursor: true });
     cmd.reply(err ? `${TAG} show refused: ${err}` : `${TAG} kit visible — click s2_btn_0..s2_btn_3`);
+    return HookResult.Handled;
   });
 
   command.admin("sm_hud_show", ADMFLAG.GENERIC, (cmd) => {
     const slot = resolveOptionalSlot(cmd, 0, cmd.callerSlot);
-    if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_show [target]`); return; }
+    if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_show [target]`); return HookResult.Handled; }
     const err = kitHud.show(slot, "s2_dialog", { cursor: true });
     cmd.reply(err ? `${TAG} ${err}` : `${TAG} shown for slot ${slot} (class cleared + cursor on)`);
+    return HookResult.Handled;
   });
 
   command.admin("sm_hud_hide", ADMFLAG.GENERIC, (cmd) => {
     const slot = resolveOptionalSlot(cmd, 0, cmd.callerSlot);
-    if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_hide [target]`); return; }
+    if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_hide [target]`); return HookResult.Handled; }
     const err = kitHud.hide(slot, "s2_dialog");
     cmd.reply(err ? `${TAG} ${err}` : `${TAG} hidden for slot ${slot}`);
+    return HookResult.Handled;
   });
 
   // ── The NATIVE panel: drive a map-authored custom_hud_layout with no engine call ───────────
@@ -514,7 +534,7 @@ export function OnPluginStart(): void {
   // engine call, none of the ABI problem that crashed the server.
   command.admin("sm_hud_states", ADMFLAG.GENERIC, (cmd) => {
     const ref = layout.preferred();
-    if (!ref) { cmd.reply(`${TAG} no custom_hud_layout in the world`); return; }
+    if (!ref) { cmd.reply(`${TAG} no custom_hud_layout in the world`); return HookResult.Handled; }
     cmd.reply(`${TAG} #${ref.index} playerStates=${playerStateCount(ref)}`);
     const only = cmd.argCount > 0 ? cmd.argInt(0, -1) : -1;
     let shown = 0;
@@ -531,30 +551,32 @@ export function OnPluginStart(): void {
       }
     }
     if (shown === 0) cmd.reply("  no slot has a class entry yet — join the map and let its script apply one");
+    return HookResult.Handled;
   });
 
   command.admin("sm_hud_cursor", ADMFLAG.GENERIC, (cmd) => {
     const slot = cmd.argCount > 1 ? cmd.argInt(1, cmd.callerSlot) : cmd.callerSlot;
-    if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_cursor <0|1> [slot]`); return; }
+    if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_cursor <0|1> [slot]`); return HookResult.Handled; }
     if (cmd.argCount === 0) {
       cmd.reply(`${TAG} usage: sm_hud_cursor <0|1> [slot]`);
-      return;
+      return HookResult.Handled;
     }
     const on = cmd.arg(0) === "1" || cmd.arg(0).toLowerCase() === "on";
     const err = kitHud.cursor(slot, on);
     cmd.reply(err ? `${TAG} refused: ${err}` : `${TAG} slot ${slot} cursor -> ${on}`);
+    return HookResult.Handled;
   });
 
   command.admin("sm_hud_toggle", ADMFLAG.GENERIC, (cmd) => {
     const ref = layout.preferred();
-    if (!ref) { cmd.reply(`${TAG} no custom_hud_layout in the world`); return; }
+    if (!ref) { cmd.reply(`${TAG} no custom_hud_layout in the world`); return HookResult.Handled; }
     const slot = cmd.argCount > 0 ? cmd.argInt(0, cmd.callerSlot) : cmd.callerSlot;
-    if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_toggle [slot] [entry] [0|1]  (needs an in-game caller or a slot)`); return; }
+    if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_toggle [slot] [entry] [0|1]  (needs an in-game caller or a slot)`); return HookResult.Handled; }
     const entryIdx = cmd.argInt(1, 0);
     const entries = readPlayerClasses(ref, slot);
     if (entries.length === 0) {
       cmd.reply(`${TAG} slot ${slot} has no class entry — the map's script applies one when you interact with the panel`);
-      return;
+      return HookResult.Handled;
     }
     const current = entries[entryIdx]?.status ?? -1;
     const want = cmd.argCount > 2 ? cmd.argInt(2, 1) : (current === 1 ? 0 : 1);
@@ -562,11 +584,12 @@ export function OnPluginStart(): void {
     cmd.reply(err
       ? `${TAG} refused: ${err}`
       : `${TAG} slot ${slot} entry ${entryIdx}: status ${current} -> ${want} (NATIVE panel, raw write + notify)`);
+    return HookResult.Handled;
   });
 
   // ── The HUD that works ───────────────────────────────────────────────────────────────────────
   command.admin("sm_hud_demo", ADMFLAG.GENERIC, (cmd) => {
-    if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_hud_demo needs an in-game caller`); return; }
+    if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_hud_demo needs an in-game caller`); return HookResult.Handled; }
     const arg = cmd.arg(0).toLowerCase();
     const want = arg === "" ? !hud.has(cmd.callerSlot) : arg === "1" || arg === "on";
     if (want) {
@@ -579,24 +602,27 @@ export function OnPluginStart(): void {
       hud.hide(cmd.callerSlot);
       cmd.reply(`${TAG} demo HUD off — it clears within ~1s (the panel expires on its own)`);
     }
+    return HookResult.Handled;
   });
 
   command.admin("sm_hud_demo_all", ADMFLAG.ROOT, (cmd) => {
     const on = cmd.arg(0) !== "0" && cmd.arg(0).toLowerCase() !== "off";
-    if (!on) { hud.hideAll(); cmd.reply(`${TAG} demo HUD cleared for everyone`); return; }
+    if (!on) { hud.hideAll(); cmd.reply(`${TAG} demo HUD cleared for everyone`); return HookResult.Handled; }
     let n = 0;
     for (const p of Player.target("@all", cmd.callerSlot)) { hud.show(p.slot); n++; }
     cmd.reply(`${TAG} demo HUD ON for ${n} player(s)`);
+    return HookResult.Handled;
   });
 
   command.admin("sm_hud_say", ADMFLAG.GENERIC, (cmd) => {
-    if (cmd.argCount === 0) { cmd.reply(`${TAG} usage: sm_hud_say <text>  (one-shot centre-panel message)`); return; }
+    if (cmd.argCount === 0) { cmd.reply(`${TAG} usage: sm_hud_say <text>  (one-shot centre-panel message)`); return HookResult.Handled; }
     const text = cmd.argsFrom(0);
     // Deliberately NOT escaped: this is the command for trying centre-panel markup by hand
     // (<font color='#ff0000'>, <br>, fontSize-l/m/sm/s). Root-gated for that reason.
     let n = 0;
     for (const p of Player.target("@all", cmd.callerSlot)) if (sendOnce(p.slot, text)) n++;
     cmd.reply(`${TAG} sent to ${n} player(s)`);
+    return HookResult.Handled;
   });
 
   // ── shared helpers ──────────────────────────────────────────────────────────────────────────

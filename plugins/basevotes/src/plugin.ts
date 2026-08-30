@@ -1,5 +1,6 @@
 import {
   command, topmenu, translations, Vote, ADMFLAG, Chat, config, Translations,
+  HookResult,
 } from "@s2script/sdk";
 import { Player, pickPlayer } from "@s2script/cs2";
 
@@ -39,7 +40,7 @@ export function OnPluginStart(): void {
 
   command.admin("sm_vote", ADMFLAG.VOTE, (cmd) => {
     const toks = parseTokens(cmd.argString);
-    if (toks.length < 3) { cmd.replyT("Usage Vote"); return; }
+    if (toks.length < 3) { cmd.replyT("Usage Vote"); return HookResult.Handled; }
     const question = toks[0], options = toks.slice(1, 10);   // up to 9 options (single-digit chat)
     if (!Vote.start({ question, options, duration: config.getInt("vote_duration"), showLiveTally: config.getBool("show_live_tally"),
                       onEnd: (r) => {
@@ -49,19 +50,21 @@ export function OnPluginStart(): void {
                       } })) {
       cmd.replyT("Vote In Progress");
     }
+    return HookResult.Handled;
   });
 
   command.admin("sm_votekick", ADMFLAG.VOTE, (cmd) => {
     const targetStr = cmd.arg(0);
-    if (!targetStr) { cmd.replyT("Usage Votekick"); return; }
+    if (!targetStr) { cmd.replyT("Usage Votekick"); return HookResult.Handled; }
     const targets = Player.target(targetStr, cmd.callerSlot, true);
-    if (targets.length === 0) { cmd.replyT("No matching players"); return; }
+    if (targets.length === 0) { cmd.replyT("No matching players"); return HookResult.Handled; }
     // Reuse common's ambiguous-target phrase (it takes the attempted pattern as {1}) rather than a
     // bare local "Ambiguous target." — same meaning, more informative, no advisory text lost.
-    if (targets.length > 1) { cmd.replyT("More than one client matched", targetStr); return; }
+    if (targets.length > 1) { cmd.replyT("More than one client matched", targetStr); return HookResult.Handled; }
     const p = targets[0];
-    if (Vote.isActive()) { cmd.replyT("Vote In Progress"); return; }
+    if (Vote.isActive()) { cmd.replyT("Vote In Progress"); return HookResult.Handled; }
     startKickVote(p.userId, p.playerName ?? "player");
+    return HookResult.Handled;
   });
 
   // `name` is a static field set once here, before any admin has opened the menu, so — same as
@@ -71,6 +74,4 @@ export function OnPluginStart(): void {
     onSelect: adminSlot => pickPlayer(adminSlot, t => {
       if (!startKickVote(t.userId, t.playerName ?? "player")) Chat.toSlot(adminSlot, Translations.translate(adminSlot, "Vote In Progress"));
     }) });
-
-  console.log("[basevotes] onLoad — sm_vote/sm_votekick registered");
 }

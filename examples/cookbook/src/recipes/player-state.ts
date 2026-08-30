@@ -1,7 +1,5 @@
-import type { Recipe } from "../recipe.ts";
 import { Player } from "@s2script/cs2";
-import { hook } from "@s2script/sdk/plugin";
-import { command } from "@s2script/sdk/commands";
+import { hook, command, HookResult } from "@s2script/sdk";
 
 /**
  * Player.respawn() calls CCSPlayerController::Respawn on this call, so the
@@ -14,42 +12,43 @@ import { command } from "@s2script/sdk/commands";
  *   sm_respawn <slot>   respawn one slot, called from a command handler
  *   sm_respawn_all      respawn every dead in-game player in one dispatch
  */
-export const playerStateRecipe: Recipe = {
-  name: "player-state",
-  describe: "respawn a player and observe the resulting player_spawn (sm_respawn / sm_respawn_all)",
-  register() {
-    hook.on("player_spawn", (e) => {
-      const slot = e.getPlayerSlot("userid");
-      const p = Player.fromSlot(slot);
-      const pawn = p ? p.pawn : null;
-      console.log(
-        "[cookbook] player-state: player_spawn slot=" + slot +
-        " alive=" + (p ? p.pawnIsAlive : null) +
-        " health=" + (pawn ? pawn.health : null)
-      );
-    });
+export const name = "player-state";
+export const describe = "respawn a player and observe the resulting player_spawn (sm_respawn / sm_respawn_all)";
 
-    hook.on("player_death", (e) => {
-      console.log("[cookbook] player-state: player_death slot=" + e.getPlayerSlot("userid"));
-    });
+export function OnPluginStart(): void {
+  hook.on("player_spawn", (e) => {
+    const slot = e.getPlayerSlot("userid");
+    const p = Player.fromSlot(slot);
+    const pawn = p ? p.pawn : null;
+    console.log(
+      "[cookbook] player-state: player_spawn slot=" + slot +
+      " alive=" + (p ? p.pawnIsAlive : null) +
+      " health=" + (pawn ? pawn.health : null)
+    );
+  });
 
-    // sm_respawn <slot> — single-target respawn from a command handler.
-    command("sm_respawn", (cmd) => {
-      const slot = cmd.argInt(0, -1);
-      const p = slot >= 0 ? Player.fromSlot(slot) : null;
-      if (!p) { cmd.reply("sm_respawn: no player in slot " + slot); return; }
-      const ok = p.respawn();
-      cmd.reply("sm_respawn slot=" + slot + " -> " +
-        (ok ? "ok" : "no-op (already alive / stale ref / degraded descriptor)"));
-    });
+  hook.on("player_death", (e) => {
+    console.log("[cookbook] player-state: player_death slot=" + e.getPlayerSlot("userid"));
+  });
 
-    // sm_respawn_all — respawn every dead in-game player in one dispatch.
-    command("sm_respawn_all", (cmd) => {
-      let ok = 0, skipped = 0;
-      for (const p of Player.all()) {
-        if (p.respawn()) ok++; else skipped++;
-      }
-      cmd.reply("sm_respawn_all: ok=" + ok + " skipped=" + skipped);
-    });
-  },
-};
+  // sm_respawn <slot> — single-target respawn from a command handler.
+  command("sm_respawn", (cmd) => {
+    const slot = cmd.argInt(0, -1);
+    const p = slot >= 0 ? Player.fromSlot(slot) : null;
+    if (!p) { cmd.reply("sm_respawn: no player in slot " + slot); return HookResult.Handled; }
+    const ok = p.respawn();
+    cmd.reply("sm_respawn slot=" + slot + " -> " +
+      (ok ? "ok" : "no-op (already alive / stale ref / degraded descriptor)"));
+    return HookResult.Handled;
+  });
+
+  // sm_respawn_all — respawn every dead in-game player in one dispatch.
+  command("sm_respawn_all", (cmd) => {
+    let ok = 0, skipped = 0;
+    for (const p of Player.all()) {
+      if (p.respawn()) ok++; else skipped++;
+    }
+    cmd.reply("sm_respawn_all: ok=" + ok + " skipped=" + skipped);
+    return HookResult.Handled;
+  });
+}

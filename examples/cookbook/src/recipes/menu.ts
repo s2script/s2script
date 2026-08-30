@@ -1,7 +1,5 @@
-import type { Recipe } from "../recipe.ts";
-import { Menu, MenuStyle } from "@s2script/sdk/menu";
+import { Menu, MenuStyle, command, HookResult } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
-import { command } from "@s2script/sdk/commands";
 
 function showMenu(slot: number, style: MenuStyle): void {
   const m = new Menu("s2script Menu Demo");
@@ -36,31 +34,33 @@ function showMenu(slot: number, style: MenuStyle): void {
 let verbose = false;
 let frames = 0;
 
-export const menuRecipe: Recipe = {
-  name: "menu",
-  describe: "show a center or chat menu (sm_menu / sm_menu_chat / sm_menu verbose)",
-  onGameFrame() {
-    if (!verbose) return;
-    if (++frames % 128 !== 0) return;
-    const p = Player.fromSlot(0); if (!p) return;
-    const pawn = p.pawn; if (!pawn) return;
-    console.log(`[cookbook] menu frame=${frames} bot0 movementServices=${pawn.movementServices ? "live" : "null"}`);
-  },
-  register() {
-    command("sm_menu", cmd => {
-      if (cmd.arg(0) === "verbose") {
-        verbose = !verbose;
-        cmd.reply(`menu verbose frame-probe logging = ${verbose ? "on" : "off"}`);
-        return;
-      }
-      if (cmd.callerSlot < 0) { cmd.reply("run in-game"); return; }
-      showMenu(cmd.callerSlot, MenuStyle.Center);
-      cmd.reply("center menu shown — W/S to move, E to select");
-    });
-    command("sm_menu_chat", cmd => {
-      if (cmd.callerSlot < 0) { cmd.reply("run in-game"); return; }
-      showMenu(cmd.callerSlot, MenuStyle.Chat);
-      cmd.reply("chat menu shown — type the number");
-    });
-  },
-};
+export const name = "menu";
+export const describe = "show a center or chat menu (sm_menu / sm_menu_chat / sm_menu verbose)";
+
+export function OnGameFrame(): void {
+  if (!verbose) return;
+  if (++frames % 128 !== 0) return;
+  const p = Player.fromSlot(0); if (!p) return;
+  const pawn = p.pawn; if (!pawn) return;
+  console.log(`[cookbook] menu frame=${frames} bot0 movementServices=${pawn.movementServices ? "live" : "null"}`);
+}
+
+export function OnPluginStart(): void {
+  command("sm_menu", cmd => {
+    if (cmd.arg(0) === "verbose") {
+      verbose = !verbose;
+      cmd.reply(`menu verbose frame-probe logging = ${verbose ? "on" : "off"}`);
+      return HookResult.Handled;
+    }
+    if (cmd.callerSlot < 0) { cmd.reply("run in-game"); return HookResult.Handled; }
+    showMenu(cmd.callerSlot, MenuStyle.Center);
+    cmd.reply("center menu shown — W/S to move, E to select");
+    return HookResult.Handled;
+  });
+  command("sm_menu_chat", cmd => {
+    if (cmd.callerSlot < 0) { cmd.reply("run in-game"); return HookResult.Handled; }
+    showMenu(cmd.callerSlot, MenuStyle.Chat);
+    cmd.reply("chat menu shown — type the number");
+    return HookResult.Handled;
+  });
+}

@@ -12,7 +12,7 @@
  * against examples/greeter-consumer, which keeps exactly that kind of copy.
  *
  * `s2script.publishes` is set explicitly to `"self"` in this package's package.json rather than
- * left for `s2s build` to auto-derive from `ctx.publish("@monorepo-example/producer", …)` (which
+ * left for `s2s build` to auto-derive from `publish("@monorepo-example/producer", …)` (which
  * examples/greeter-plugin relies on): a CONSUMER's build reads a sibling's package.json directly,
  * before that sibling has been built itself, so there is no scanned code to derive from yet. An
  * authored `publishes` is what makes the contract resolvable from the outside.

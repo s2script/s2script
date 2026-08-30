@@ -203,18 +203,19 @@ export function fileDevDeps(packagesDir: string, game: GameChoice): Record<strin
 
 function pluginSource(game: GameChoice): string {
   if (game === "cs2") {
-    return `import { command, Chat } from "@s2script/sdk";
-import type { Command } from "@s2script/sdk";
+    return `import { command, Chat, HookResult } from "@s2script/sdk";
+import type { Command, HookResultValue } from "@s2script/sdk";
 
 export function OnPluginStart(): void {
   command("hello", hello);
 }
 
-function hello(cmd: Command): void {
+function hello(cmd: Command): HookResultValue {
   cmd.reply("hello from s2script");
   if (cmd.callerSlot >= 0) {
     Chat.toSlot(cmd.callerSlot, "hello from s2script");
   }
+  return HookResult.Handled;
 }
 `;
   }
@@ -232,7 +233,7 @@ export function OnGameFrame(): void {
 `;
 }
 
-/** A library's entry point is a plain module, not a `plugin(...)`-wrapped one — build-time code
+/** A library's entry point is a plain module, not a plugin — build-time code
  *  has no load-scoped context to receive. Replace the body; keep exporting real, typed functions. */
 const LIBRARY_ENTRY = `/** Encode a string. Replace this with the library's real surface. */
 export function encode(input: string): string {

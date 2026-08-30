@@ -1,7 +1,5 @@
-import type { Recipe } from "../recipe.ts";
-import { UserMessages } from "@s2script/sdk/usermessages";
-import { HookResult, type HookResultValue } from "@s2script/sdk/events";
-import { command } from "@s2script/sdk/commands";
+import { UserMessages, HookResult, command } from "@s2script/sdk";
+import type { HookResultValue } from "@s2script/sdk";
 
 /**
  * UserMessages.onPre intercepts an outbound user message before delivery:
@@ -15,38 +13,38 @@ import { command } from "@s2script/sdk/commands";
  * entity handle — logged raw AND bit-split both ways (14/15-bit index) since
  * the packing (pawn vs. controller index) is worth seeing directly.
  */
-export const usermessagesRecipe: Recipe = {
-  name: "usermessages",
-  describe: "intercept RadioText + FireBullets user messages, typed reads + suppress (sm_usermsg)",
-  register() {
-    let blockRadio = false; // blanket-blocks ALL radio text
-    let blockShots = false;
+export const name = "usermessages";
+export const describe = "intercept RadioText + FireBullets user messages, typed reads + suppress (sm_usermsg)";
 
-    UserMessages.onPre("CCSUsrMsg_RadioText", (m): HookResultValue | void => {
-      console.log("[cookbook] usermsg RadioText id=" + m.id + " msg_name=" + m.readString("msg_name") +
-                  " client=" + m.readInt("client") + " recipients=[" + m.recipients.join(",") + "]");
-      if (blockRadio) return HookResult.Handled;
-    });
+export function OnPluginStart(): void {
+  let blockRadio = false; // blanket-blocks ALL radio text
+  let blockShots = false;
 
-    UserMessages.onPre("CMsgTEFireBullets", (m): HookResultValue | void => {
-      const item = m.readInt("item_def_index");
-      const player = m.readInt("player");  // the shooter handle, top-level fixed32
-      const ox = m.readFloat("origin.x");  // dotted nested read — the capability CSSharp lacks
-      console.log("[cookbook] usermsg FireBullets item_def_index=" + item + " player=" + player +
-                  " origin.x=" + ox +
-                  (player !== null && player !== 16777215
-                     ? " idx14=" + (player & 0x3fff) + "/ser" + (player >>> 14) +
-                       " idx15=" + (player & 0x7fff) + "/ser" + (player >>> 15)
-                     : " (no shooter)"));
-      if (blockShots) return HookResult.Handled;
-    });
+  UserMessages.onPre("CCSUsrMsg_RadioText", (m): HookResultValue | void => {
+    console.log("[cookbook] usermsg RadioText id=" + m.id + " msg_name=" + m.readString("msg_name") +
+                " client=" + m.readInt("client") + " recipients=[" + m.recipients.join(",") + "]");
+    if (blockRadio) return HookResult.Handled;
+  });
 
-    command("sm_usermsg", (cmd) => {
-      const what = cmd.arg(0), on = cmd.arg(1) !== "0";
-      if (what === "radio") blockRadio = on;
-      else if (what === "shots") blockShots = on;
-      else { cmd.reply("[cookbook] usage: sm_usermsg <radio|shots> <0|1>"); return; }
-      cmd.reply("[cookbook] usermsg: block " + what + " = " + on);
-    });
-  },
-};
+  UserMessages.onPre("CMsgTEFireBullets", (m): HookResultValue | void => {
+    const item = m.readInt("item_def_index");
+    const player = m.readInt("player");  // the shooter handle, top-level fixed32
+    const ox = m.readFloat("origin.x");  // dotted nested read — the capability CSSharp lacks
+    console.log("[cookbook] usermsg FireBullets item_def_index=" + item + " player=" + player +
+                " origin.x=" + ox +
+                (player !== null && player !== 16777215
+                   ? " idx14=" + (player & 0x3fff) + "/ser" + (player >>> 14) +
+                     " idx15=" + (player & 0x7fff) + "/ser" + (player >>> 15)
+                   : " (no shooter)"));
+    if (blockShots) return HookResult.Handled;
+  });
+
+  command("sm_usermsg", (cmd) => {
+    const what = cmd.arg(0), on = cmd.arg(1) !== "0";
+    if (what === "radio") blockRadio = on;
+    else if (what === "shots") blockShots = on;
+    else { cmd.reply("[cookbook] usage: sm_usermsg <radio|shots> <0|1>"); return HookResult.Handled; }
+    cmd.reply("[cookbook] usermsg: block " + what + " = " + on);
+    return HookResult.Handled;
+  });
+}

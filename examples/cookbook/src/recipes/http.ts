@@ -1,6 +1,4 @@
-import type { Recipe } from "../recipe.ts";
-import { fetch } from "@s2script/sdk/http";
-import { command } from "@s2script/sdk/commands";
+import { fetch, command, HookResult } from "@s2script/sdk";
 
 /**
  * fetch() runs off-thread on the shared tokio runtime and resolves back on a
@@ -10,30 +8,31 @@ import { command } from "@s2script/sdk/commands";
  */
 let frames = 0;
 
-export const httpRecipe: Recipe = {
-  name: "http",
-  describe: "fire concurrent fetch()es without blocking the tick (sm_http)",
-  onGameFrame() { frames += 1; },
-  register() {
-    command("sm_http", (cmd) => {
-      const start = frames;
-      const N = 10;
-      cmd.reply(`firing ${N} concurrent fetches…`);
-      Promise.all(
-        Array.from({ length: N }, (_unused, i) =>
-          fetch(`https://postman-echo.com/get?i=${i}`, { timeoutMs: 15000 })
-            .then((r) => r.status)
-            .catch((e: unknown) => `ERR:${String(e)}`)
-        )
-      ).then((results) => {
-        const ok = results.filter((s) => s === 200).length;
-        const elapsed = frames - start;
-        console.log(`[cookbook] http: ${ok}/${N} ok; tick advanced ${elapsed} frames while the fetches were in flight`);
-        // cmd is safe to hold across this await (it's a plain closure, no native handle) — but it
-        // still targets the caller's SLOT, so if they disconnected mid-fetch and someone else has
-        // since taken that slot, this reply lands on the new occupant instead.
-        cmd.reply(`${ok}/${N} ok — tick advanced ${elapsed} frames meanwhile (see log)`);
-      });
+export const name = "http";
+export const describe = "fire concurrent fetch()es without blocking the tick (sm_http)";
+
+export function OnGameFrame(): void { frames += 1; }
+
+export function OnPluginStart(): void {
+  command("sm_http", (cmd) => {
+    const start = frames;
+    const N = 10;
+    cmd.reply(`firing ${N} concurrent fetches…`);
+    Promise.all(
+      Array.from({ length: N }, (_unused, i) =>
+        fetch(`https://postman-echo.com/get?i=${i}`, { timeoutMs: 15000 })
+          .then((r) => r.status)
+          .catch((e: unknown) => `ERR:${String(e)}`)
+      )
+    ).then((results) => {
+      const ok = results.filter((s) => s === 200).length;
+      const elapsed = frames - start;
+      console.log(`[cookbook] http: ${ok}/${N} ok; tick advanced ${elapsed} frames while the fetches were in flight`);
+      // cmd is safe to hold across this await (it's a plain closure, no native handle) — but it
+      // still targets the caller's SLOT, so if they disconnected mid-fetch and someone else has
+      // since taken that slot, this reply lands on the new occupant instead.
+      cmd.reply(`${ok}/${N} ok — tick advanced ${elapsed} frames meanwhile (see log)`);
     });
-  },
-};
+    return HookResult.Handled;
+  });
+}

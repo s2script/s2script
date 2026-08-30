@@ -10,14 +10,9 @@
 // Everything an entity API hands you is an EntityRef — a serial-gated handle,
 // never a raw pointer. Reads return `T | null`: if the entity died, you get
 // null, not garbage and not a crash. Hold refs across time freely.
-import { createEntity, Entity } from "@s2script/sdk/entity";
-import type { EntityRef } from "@s2script/sdk/entity";
-import { Server } from "@s2script/sdk/server";
+import { createEntity, Entity, Server, Vector, delay, onOutput, command, HookResult } from "@s2script/sdk";
+import type { EntityRef } from "@s2script/sdk";
 import { Beam } from "@s2script/cs2";
-import { Vector } from "@s2script/sdk/math";
-import { delay } from "@s2script/sdk/timers";
-import { onOutput } from "@s2script/sdk/plugin";
-import { command } from "@s2script/sdk/commands";
 
 // Schema offsets are resolved live from the engine's SchemaSystem — never
 // hardcoded. A field moving in a CS2 patch must not require a code change.
@@ -67,11 +62,12 @@ export function OnPluginStart(): void {
   // note above) — the reply is your only confirmation.
   command("sm_create", (cmd) => {
     const text = createEntity("point_worldtext");
-    if (!text) { cmd.reply("createEntity failed"); return; }
+    if (!text) { cmd.reply("createEntity failed"); return HookResult.Handled; }
     text.spawn();
     text.teleport([0, 0, 100]);
     cmd.reply(`created point_worldtext #${text.index} valid=${text.isValid()}`);
     delay(3000).then(() => cmd.reply(`removed -> ${text.remove()}`));
+    return HookResult.Handled;
   });
 
   // --- Keyvalue-configured spawn -------------------------------------------
@@ -96,6 +92,7 @@ export function OnPluginStart(): void {
     }
 
     delay(3000).then(() => { text?.remove(); counter?.remove(); });
+    return HookResult.Handled;
   });
 
   // --- Entity I/O ----------------------------------------------------------
@@ -105,10 +102,11 @@ export function OnPluginStart(): void {
   // The relay itself won't hit the "*" loggers (same re-entrancy note above).
   command("sm_io", (cmd) => {
     const relay = createEntity("logic_relay");
-    if (!relay) { cmd.reply("createEntity failed"); return; }
+    if (!relay) { cmd.reply("createEntity failed"); return HookResult.Handled; }
     relay.spawn();
     const ok = relay.acceptInput("Trigger", "", relay, relay);
     cmd.reply(`fired Trigger ok=${ok} — watch the log for the output next tick`);
+    return HookResult.Handled;
   });
 
   // --- Finding entities ----------------------------------------------------
@@ -117,14 +115,16 @@ export function OnPluginStart(): void {
     const triggers = Entity.findByClass("trigger_multiple");
     cmd.reply(`${triggers.length} trigger_multiple on ${Server.mapName}`);
     for (const t of triggers) console.log(`[ent]   #${t.index} name=${JSON.stringify(t.name)}`);
+    return HookResult.Handled;
   });
 
   // --- Beams ---------------------------------------------------------------
   command("sm_beam", (cmd) => {
     const handle = Beam.draw(new Vector(0, 0, 100), new Vector(200, 0, 100), { color: [0, 255, 0, 255], width: 3 });
-    if (!handle) { cmd.reply("beam failed"); return; }
+    if (!handle) { cmd.reply("beam failed"); return HookResult.Handled; }
     cmd.reply(`beam drawn ref valid=${handle.ref.isValid()}`);
     delay(3000).then(() => cmd.reply(`beam removed -> ${handle.remove()}`));
+    return HookResult.Handled;
   });
 
   console.log("[ent] entity-playground loaded — try sm_create, sm_kv, sm_io, sm_names, sm_beam");

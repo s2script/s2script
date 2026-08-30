@@ -13,7 +13,7 @@
  *   2. TICK, DON'T FRAME. The refresh runs on a coarse timer, not OnGameFrame. Nothing here is
  *      sub-second, so a 64Hz repaint would be pure waste.
  */
-import { delay } from "@s2script/sdk/timers";
+import { delay } from "@s2script/sdk";
 import { Player, Teams, GameRules } from "@s2script/cs2";
 import type { Hud } from "@s2script/cs2";
 import { LIVE_PANELS } from "./livehud";

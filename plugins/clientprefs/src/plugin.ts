@@ -56,7 +56,6 @@ export async function OnPluginStart(): Promise<void> {
   await db.execute(
     "CREATE TABLE IF NOT EXISTS cookies (steamid TEXT, name TEXT, value TEXT, updated INTEGER, PRIMARY KEY (steamid, name))"
   );
-  console.log("[clientprefs] table ready, lifecycle hooked");
 }
 
 export function OnClientPutInServer(client: Client): void | Promise<void> {
