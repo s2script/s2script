@@ -108,3 +108,4 @@ Rewrite **only** `plugins/basecommands/src/plugin.ts` to the new shape. Behavior
 | 2 | `cursor/authoring-publics-a8c9` | `OnPluginStart` publics; `topmenu` / `translations`; `s2s create` |
 | 3 | `cursor/es2024-target-a8c9` | ES2024 target/lib + esbuild |
 | 4 | `cursor/basecommands-dogfood-a8c9` | rewrite `plugins/basecommands/src/plugin.ts` |
+| 5 | `cursor/sm-lifecycle-publics-a8c9` | remaining SM publics; `hook.event` / `hook.output` / `hook.topmenu`; `createScope`; `Command` alias |

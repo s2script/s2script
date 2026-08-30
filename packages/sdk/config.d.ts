@@ -23,4 +23,9 @@ export declare const config: {
   readFile(name: string): string | null;
   /** Write a raw file to the configs dir (creates/overwrites). */
   writeFile(name: string, content: string): void;
+  /**
+   * Fires when this plugin's config file is re-materialized on disk. Ledgered per plugin.
+   * Not load-window-gated (safe from `OnPluginStart` or from `ctx.config.onChange`).
+   */
+  onChange(handler: (cfg: Config) => void): void;
 };

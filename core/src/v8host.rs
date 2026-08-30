@@ -7008,6 +7008,32 @@ pub(crate) fn finalize_loading_plugins() {
     }
 
     crate::loader::start_unblocked_waiters(); // T4 provides the real body; a no-op stub until then.
+    fire_all_plugins_loaded_if_quiet();
+}
+
+/// Fire each Active plugin's pending `OnAllPluginsLoaded` once the load set is quiet
+/// (no in-flight factories, no WAITING hard-dep parkers). Idempotent per plugin: the
+/// prelude clears `__s2_on_all_plugins_loaded` after one call.
+fn fire_all_plugins_loaded_if_quiet() {
+    if LOADING.with(|l| !l.borrow().is_empty()) {
+        return;
+    }
+    if crate::loader::has_waiting() {
+        return;
+    }
+    let ids: Vec<String> = PLUGINS.with(|p| {
+        p.borrow()
+            .iter()
+            .filter(|(_, pi)| pi.phase == crate::plugin::Phase::Active)
+            .map(|(id, _)| id.clone())
+            .collect()
+    });
+    for id in ids {
+        let _ = eval_in_context(
+            &id,
+            "globalThis.__s2_fire_all_plugins_loaded && globalThis.__s2_fire_all_plugins_loaded();",
+        );
+    }
 }
 
 /// Fail a never-Active load: WARN + report + record the reason + drop the LOADING entry + tear down
@@ -7116,7 +7142,7 @@ pub(crate) mod frame_tests {
     // The client-lifecycle dispatch moved to `crate::client`; the fan_out and voice tests
     // below still drive it as their vehicle.
     use crate::client::dispatch_client_event;
-    use crate::commands::{dispatch_concommand, ReplySource};
+    use crate::commands::{dispatch_chat, dispatch_concommand, ReplySource};
     use crate::ws::dispatch_pending_events as dispatch_pending_ws_events;
     use crate::net::dispatch_pending_events as dispatch_pending_net_events;
     use crate::multiplexer::{Phase, HookResult};
@@ -8423,6 +8449,100 @@ pub(crate) mod frame_tests {
             threw.contains("outside the load window"),
             "command() after OnPluginStart settle must throw, got: {}",
             threw
+        );
+        shutdown();
+    }
+
+    /// SM-named client/map/say publics subscribe during OnPluginStart's sibling export scan.
+    #[test]
+    fn sm_publics_client_map_say_and_all_plugins_loaded() {
+        init(dummy_logger()).unwrap();
+        load_plugin_js(
+            "smpub",
+            r#"
+            globalThis.__log = [];
+            module.exports.OnPluginStart = function () {};
+            module.exports.OnAllPluginsLoaded = function () { globalThis.__log.push("all"); };
+            module.exports.OnClientPutInServer = function (c) { globalThis.__log.push("put:"+c.slot); };
+            module.exports.OnClientPostAdminCheck = function (c) { globalThis.__log.push("admin:"+c.slot); };
+            module.exports.OnClientDisconnect = function (c) { globalThis.__log.push("disc:"+c.slot); };
+            module.exports.OnClientSayCommand = function (slot, text, teamonly) {
+                globalThis.__log.push("say:"+slot+":"+text+":"+teamonly);
+                return 2;
+            };
+            module.exports.OnMapStart = function (m) { globalThis.__log.push("start:"+m); };
+            module.exports.OnMapEnd = function () { globalThis.__log.push("end"); };
+            module.exports.OnConfigsExecuted = function () { globalThis.__log.push("cfg"); };
+            "#,
+            "{}",
+        );
+        assert_eq!(plugin_phase("smpub"), Some(crate::plugin::Phase::Active));
+        assert_eq!(
+            eval_in_context_string("smpub", "globalThis.__log.join(',')"),
+            "all",
+            "OnAllPluginsLoaded fires once the plugin is Active and the set is quiet"
+        );
+        let _ = dispatch_client_event("putinserver", 3);
+        let _ = dispatch_client_event("fullyconnect", 3);
+        let _ = dispatch_client_event("disconnect", 3);
+        assert!(dispatch_chat(3, "hello", true), "OnClientSayCommand Handled suppresses");
+        let _ = dispatch_map_start("de_a");
+        let _ = dispatch_map_start("de_b");
+        assert_eq!(
+            eval_in_context_string("smpub", "globalThis.__log.join(',')"),
+            "all,put:3,admin:3,disc:3,say:3:hello:true,cfg,start:de_a,end,cfg,start:de_b"
+        );
+        shutdown();
+    }
+
+    /// hook.event / hook.topmenu / createScope register during OnPluginStart and throw after settle.
+    #[test]
+    fn sm_publics_hook_event_and_create_scope() {
+        init(dummy_logger()).unwrap();
+        load_plugin_js(
+            "smhook",
+            r#"
+            module.exports.OnPluginStart = function () {
+                var p = globalThis.__s2_require("@s2script/sdk/plugin");
+                p.hook.event("round_start", function () { globalThis.__hits = (globalThis.__hits|0)+1; });
+                p.hook.topmenu.addCategory("Server Commands");
+                globalThis.__scope = p.createScope();
+                globalThis.__hook = p.hook;
+                globalThis.__createScope = p.createScope;
+            };
+            "#,
+            "{}",
+        );
+        assert_eq!(plugin_phase("smhook"), Some(crate::plugin::Phase::Active));
+        let _ = dispatch_game_event("round_start");
+        assert_eq!(eval_in_context_string("smhook", "String(globalThis.__hits|0)"), "1");
+        let threw = eval_in_context_string(
+            "smhook",
+            r#"
+            (function () {
+                try { globalThis.__hook.event("x", function () {}); return "no"; }
+                catch (e) { return String(e && e.message || e); }
+            })()
+            "#,
+        );
+        assert!(
+            threw.contains("outside the load window"),
+            "hook.event after settle must throw, got: {}",
+            threw
+        );
+        let scope_threw = eval_in_context_string(
+            "smhook",
+            r#"
+            (function () {
+                try { globalThis.__createScope(); return "no"; }
+                catch (e) { return String(e && e.message || e); }
+            })()
+            "#,
+        );
+        assert!(
+            scope_threw.contains("outside the load window"),
+            "createScope after settle must throw, got: {}",
+            scope_threw
         );
         shutdown();
     }

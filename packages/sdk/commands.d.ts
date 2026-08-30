@@ -82,6 +82,9 @@ export interface CommandInvocation {
   replyT(key: PhraseKey, ...args: (string | number)[]): void;
 }
 
+/** Alias for {@link CommandInvocation} — the SourceMod-shaped name for a parsed invocation. */
+export type Command = CommandInvocation;
+
 /**
  * A command callback: the parsed invocation, plus an optional {@link HookResultValue}.
  * Omit the return (`void`) to continue — the same as returning {@link HookResult}.Continue.
