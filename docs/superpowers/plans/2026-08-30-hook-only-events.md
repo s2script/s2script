@@ -20,4 +20,4 @@
 
 - [x] Flatten `hook` to `on` / `onPre`; add named-public wiring + `onOutput`; delete subject objects.
 - [x] Migrate plugins/examples/tools/cookbook/fixtures; isolate tests.
-- [ ] Changeset + gates.
+- [x] Changeset + gates.
