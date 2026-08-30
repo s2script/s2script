@@ -782,8 +782,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     get gameTime() { return __s2_server_game_time(); },       // GetGlobals()->curtime; 0 if unavailable
   };
   globalThis.__s2pkg_server = { Server: __s2_server };   // named export `Server`
-  // --- Slice 6.6: damage module (Damage.onPre + block-scoped DamageInfo over the current CTakeDamageInfo).
-  //     CTakeDamageInfo is a Source 2 engine type (not CS2-specific) -> engine-generic, lives in core. ---
+  // --- Slice 6.6: damage module (block-scoped DamageInfo over the current CTakeDamageInfo).
+  //     CTakeDamageInfo is a Source 2 engine type (not CS2-specific) -> engine-generic, lives in core.
+  //     Subscribe with SDKHook(entity, SDKHookType.OnTakeDamage, cb) — not a global mux. ---
   function DamageInfo() {}
   function __s2_dmg_ref(field) {
     var o = __s2_schema_offset("CTakeDamageInfo", field);
@@ -816,8 +817,25 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       }, enumerable: true, configurable: true,
     },
   });
-  var Damage = { onPre: function (handler) { return __s2_damage_subscribe(handler); } };
-  globalThis.__s2pkg_damage = { Damage: Damage, DamageInfo: DamageInfo };
+  globalThis.__s2pkg_damage = { DamageInfo: DamageInfo };
+  var SDKHookType = { OnTakeDamage: "OnTakeDamage" };
+  function SDKHook(entity, type, callback) {
+    if (entity == null || typeof entity.index !== "number" || typeof entity.id !== "number") return false;
+    if (type !== SDKHookType.OnTakeDamage) {
+      throw new Error("s2script: SDKHook type '" + type + "' is not supported");
+    }
+    if (typeof callback !== "function") throw new TypeError("s2script: SDKHook callback must be a function");
+    return __s2_sdkhook(entity.index, entity.id, type, callback);
+  }
+  function SDKUnhook(entity, type, callback) {
+    if (entity == null || typeof entity.index !== "number" || typeof entity.id !== "number") return false;
+    if (type !== SDKHookType.OnTakeDamage) {
+      throw new Error("s2script: SDKHook type '" + type + "' is not supported");
+    }
+    if (typeof callback !== "function") throw new TypeError("s2script: SDKUnhook callback must be a function");
+    return __s2_sdkunhook(entity.index, entity.id, type, callback);
+  }
+  globalThis.__s2pkg_sdkhooks = { SDKHook: SDKHook, SDKUnhook: SDKUnhook, SDKHookType: SDKHookType };
   // --- Usercmd primitive Task 4: @s2script/usercmd (UserCmd.onRun + the SINGLETON block-scoped Cmd).
   //     The per-tick input fields are Source2-shared (usercmd.proto) -> engine-generic, lives in core.
   //     Field enum (0 forwardMove/1 sideMove/2 upMove/3 pitch/4 yaw/5 roll/6 impulse)
@@ -1806,7 +1824,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       function viaId(call) { return function () { var id = call.apply(null, arguments); if (typeof id === "number") t.ids(id); }; }
       var Ev = __s2pkg_events.Events, Cl = __s2pkg_clients.Clients, En = __s2pkg_entity.Entity;
       var Sv = __s2pkg_server.Server, Fr = __s2pkg_frame.OnGameFrame, Ck = __s2pkg_cookies.Cookies;
-      var Uc = __s2pkg_usercmd.UserCmd, Dm = __s2pkg_damage.Damage, Sn = __s2pkg_sound.Sound;
+      var Uc = __s2pkg_usercmd.UserCmd, Sn = __s2pkg_sound.Sound;
       return {
         events: {
           on:    function (n, h) { regFn(viaId(function () { return Ev.on(n, h); })); },
@@ -1840,7 +1858,6 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
           onSpawn:  function (c, h) { regFn(viaId(function () { return En.onSpawn(c, h); })); },
           onDelete: function (c, h) { regFn(viaId(function () { return En.onDelete(c, h); })); },
           onOutput: function (c, o, h) { regFn(viaId(function () { return En.onOutput(c, o, h); })); },
-          onDamage: function (h) { regFn(viaId(function () { return Dm.onPre(h); })); },
         },
         server: {
           onGameFrame: function (fn, opts) { regFn(function () { var d = Fr.subscribe(fn, opts || {}); if (d && d.dispose) t.disposer(d.dispose); }); },
@@ -2031,7 +2048,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     var names = [
       "__s2pkg_plugin", "__s2pkg_commands", "__s2pkg_admin", "__s2pkg_server",
       "__s2pkg_plugins", "__s2pkg_menu", "__s2pkg_events", "__s2pkg_clients",
-      "__s2pkg_damage", "__s2pkg_chat", "__s2pkg_config", "__s2pkg_topmenu",
+      "__s2pkg_damage", "__s2pkg_sdkhooks", "__s2pkg_chat", "__s2pkg_config", "__s2pkg_topmenu",
       "__s2pkg_translations", "__s2pkg_entity", "__s2pkg_math", "__s2pkg_timers",
       "__s2pkg_bans", "__s2pkg_db", "__s2pkg_cookies", "__s2pkg_http",
       "__s2pkg_ws", "__s2pkg_net", "__s2pkg_votes", "__s2pkg_sound",
@@ -2101,7 +2118,6 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         if (typeof exp.OnEntityCreated === "function") ctx.entities.onCreate("*", exp.OnEntityCreated);
         if (typeof exp.OnEntitySpawned === "function") ctx.entities.onSpawn("*", exp.OnEntitySpawned);
         if (typeof exp.OnEntityDestroyed === "function") ctx.entities.onDelete("*", exp.OnEntityDestroyed);
-        if (typeof exp.OnTakeDamage === "function") ctx.entities.onDamage(exp.OnTakeDamage);
         if (typeof exp.OnAllPluginsLoaded === "function") {
           globalThis.__s2_on_all_plugins_loaded = exp.OnAllPluginsLoaded;
         }

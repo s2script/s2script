@@ -268,12 +268,13 @@ mod tests {
         assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.command"), "function");
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_server.Server.isMapValid('x'))"), "false");
         // Slice 6.6: the damage natives degrade without ops (read->0, victim->-1, write no-op) and the
-        // @s2script/damage module wires (Damage.onPre a function; DamageInfo reads degrade to 0/null).
+        // @s2script/sdkhooks + DamageInfo wires (SDKHook a function; DamageInfo reads degrade to 0/null).
         assert_eq!(eval_in_context_string("p", "String(__s2_damage_read_float(68))"), "0");
         assert_eq!(eval_in_context_string("p", "String(__s2_damage_read_int(60))"), "0");
         assert_eq!(eval_in_context_string("p", "String(__s2_damage_victim())"), "-1");
         assert_eq!(eval_in_context_string("p", "String(__s2_damage_write_float(68, 5))"), "undefined");
-        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_damage.Damage.onPre"), "function");
+        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_sdkhooks.SDKHook"), "function");
+        assert_eq!(eval_in_context_string("p", "typeof __s2pkg_sdkhooks.SDKUnhook"), "function");
         assert_eq!(eval_in_context_string("p", "String(new __s2pkg_damage.DamageInfo().damage)"), "0");
         assert_eq!(eval_in_context_string("p", "String(new __s2pkg_damage.DamageInfo().victim)"), "null");
         // Slice 6.7: cvar_get degrades to "" without the op; Server.getCvar/setCvar wired.

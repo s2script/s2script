@@ -242,12 +242,8 @@ thread_local! {
         = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Monotonic event-subscription id allocator (1-based; 0 = none).
     static NEXT_SUB_ID: std::cell::Cell<u64> = std::cell::Cell::new(1);
-    /// Damage pre-hook multiplexer (Slice 6.6): `Damage.onPre(h)` subscribers, keyed by the constant
-    /// "onPre" (damage has no name dimension). Same EventMux shape/discipline; handlers read/modify the
-    /// current CTakeDamageInfo in place. remove_by_owner on unload; reset on shutdown.
     // EVENT_MUX / EVENT_MUX_PRE / EVENT_RECIPIENTS moved to `crate::events`.
-    static DAMAGE_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
-        = std::cell::RefCell::new(crate::channels::Channels::new());
+    // Damage fan-out is per-entity SDKHooks (`crate::sdkhooks`), not a global mux.
     /// Config-change subscriber mux (Slice 5E.2): handlers subscribed via `config.onChange(h)`.
     /// Each handler is tagged `(owner, generation)` for liveness-gated dispatch.
     /// The loader polls opted-in plugins' config files each frame cycle and calls
@@ -276,10 +272,10 @@ thread_local! {
     /// Entity-I/O slice: `Entity.onOutput(classname, output, handler)` subscriber mux, keyed by the
     /// literal string `"<classname>\0<output>"` (a NUL separator — classnames/outputs never contain one).
     /// `"*"` is a valid wildcard for either half (matched at dispatch by querying all 4 combinations).
-    /// Unlike `DAMAGE_MUX`/`CHAT_MSG_SUBS` (whose detour is installed once, unconditionally, for the
+    /// Unlike the process-wide damage detour / `CHAT_MSG_SUBS` (installed once, unconditionally, for the
     /// process lifetime), the `FireOutputInternal` detour here is likewise installed unconditionally at
     /// shim Load — so there is no per-subscribe engine-op and no engine-op on empty teardown. Dispatch is
-    /// SYNCHRONOUS (the detour blocks on it, mirrors `DAMAGE_MUX`/`EVENT_MUX_PRE`, NOT the post-drain
+    /// SYNCHRONOUS (the detour blocks on it, mirrors SDKHooks OnTakeDamage / `EVENT_MUX_PRE`, NOT the post-drain
     /// `*_PENDING` muxes) so a handler's `HookResult` can suppress the output before the original runs.
     /// `remove_by_owner` on unload; reset on shutdown so a re-init starts empty.
     static OUTPUT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
@@ -295,8 +291,8 @@ thread_local! {
         = std::cell::RefCell::new(crate::channels::Channels::new());
 
     /// Usercmd primitive Task 2: `UserCmd.onRun(handler)` subscriber mux, keyed by the constant "onRun"
-    /// (usercmd has no name dimension, like `DAMAGE_MUX`'s "onPre"). Dispatch is SYNCHRONOUS (the
-    /// Task-3 per-tick input-processing detour blocks on it, mirrors `DAMAGE_MUX`/`OUTPUT_MUX`) so a handler's
+    /// (usercmd has no name dimension, like damage's single OnTakeDamage type). Dispatch is SYNCHRONOUS (the
+    /// Task-3 per-tick input-processing detour blocks on it, mirrors SDKHooks OnTakeDamage / `OUTPUT_MUX`) so a handler's
     /// returned `HookResult` can block the original input for that tick. The detour installs LAZILY on
     /// the first-ever subscribe (via the `usercmd_hook_install` engine op — see `s2_usercmd_subscribe`),
     /// mirroring `ENTITY_MUX`'s `entity_listener_install` trigger. `remove_by_owner` on unload; reset on
@@ -2159,20 +2155,8 @@ fn s2_iface_emit(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
 
 
 
-/// `__s2_damage_subscribe(handler)` — subscribe a JS fn to `Damage.onPre` (Slice 6.6). Owner-tracked;
-/// the shim detour is installed at Load, so no per-subscribe engine registration is needed.
-fn s2_damage_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 1 { return; }
-        // The DispatchTraceAttack detour stays installed for the process lifetime — no follow-up.
-        let Some((sub_id, _)) = subscribe_into(scope, &args, &DAMAGE_MUX, "onPre", 0) else { return };
-        rv.set(v8::Number::new(scope, sub_id as f64).into());
-    }));
-}
-
 /// `__s2_usercmd_subscribe(handler)` — subscribe a JS fn to `UserCmd.onRun` (usercmd primitive Task 2).
-/// Owner-tracked, fixed mux key "onRun" (usercmd has no name dimension, like `s2_damage_subscribe`'s
-/// "onPre"). On the FIRST-EVER subscribe (the mux was empty), calls the (Task 3) `usercmd_hook_install`
+/// Owner-tracked, fixed mux key "onRun" (usercmd has no name dimension). On the FIRST-EVER subscribe (the mux was empty), calls the (Task 3) `usercmd_hook_install`
 /// engine op so the shim lazily installs its per-tick input-processing detour — mirrors `s2_entity_listener_on`'s
 /// lazy-install trigger (zero overhead when no plugin subscribes). Degrade-never-crash: no op → the
 /// subscribe still records, the engine just never delivers.
@@ -3015,7 +2999,7 @@ fn s2_sound_precache_add(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 /// Native `__s2_output_subscribe(classname, output, handler)`. Subscribes a JS fn to `Entity.onOutput`
 /// (entity-I/O slice); owner-tracked in `OUTPUT_MUX` keyed `"<classname>\0<output>"`. The
 /// `FireOutputInternal` detour is installed unconditionally at shim Load, so no per-subscribe engine
-/// registration is needed (mirrors `s2_damage_subscribe`/`s2_chat_on_message`).
+/// registration is needed (mirrors `s2_chat_on_message`).
 fn s2_output_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 3 { return; }
@@ -3477,12 +3461,12 @@ fn s2_translations_read(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
 
 
 
-/// Slice 6.6 Stage 2: run the `Damage.onPre` subscribers over the current CTakeDamageInfo (set by the
-/// shim detour). Mirrors `dispatch_game_event`: snapshot (release the mux borrow), re-entrancy guard,
+/// Slice 6.6 Stage 2: run OnTakeDamage SDKHooks over the current CTakeDamageInfo (set by the
+/// shim detour). Mirrors `dispatch_game_event`: snapshot (release the table borrow), re-entrancy guard,
 /// per-subscriber liveness + context + TryCatch. Each handler gets `new DamageInfo()` (a block-scoped
 /// accessor over the current damage) and reads/modifies it in place; blocking = the handler setting
 /// damage to 0.
-/// Zero the live CTakeDamageInfo damage — the block power behind a `ctx.entities.onDamage` handler
+/// Zero the live CTakeDamageInfo damage — the block power behind an OnTakeDamage SDKHook
 /// returning `>= HookResult.Handled` (locked decision #8). Reuses the exact write path the JS
 /// `DamageInfo.damage = 0` setter takes: resolve `m_flDamage`'s schema offset, then the
 /// `damage_write_float` engine op with `0.0`. (CTakeDamageInfo is a Source 2 engine type, not a
@@ -3504,7 +3488,7 @@ fn zero_current_damage() {
 }
 
 pub(crate) fn dispatch_damage() {
-    let snap = DAMAGE_MUX.with(|m| m.borrow().snapshot("onPre"));
+    let snap = crate::sdkhooks::snapshot_ontakedamage();
     let result = fan_out_collapsing(
         &snap,
         "dispatch_damage",
@@ -3530,7 +3514,7 @@ pub(crate) fn dispatch_damage() {
     // rather than mid-loop.
     //
     // This is the B2 fix. The old loop `break`ed at >= Handled, so ONE plugin's Handled silently
-    // denied every other plugin's onDamage handler its dispatch for that hit. That contradicts
+    // denied every other plugin's OnTakeDamage handler its dispatch for that hit. That contradicts
     // ARCHITECTURE.md:78 — "`Stop` short-circuits. `Handled` does NOT short-circuit (a later
     // observer may still want the event)" — and multiplexer.rs's own `handled_does_not_short_circuit`
     // test. The block is a decision about the DAMAGE, not a veto over other observers; a handler that
@@ -4550,7 +4534,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_voice_set_muted", s2_voice_set_muted);
     set_native(scope, global_obj, "__s2_voice_get_muted", s2_voice_get_muted);
     // ban-reason sub-project 2: developer-console print + client IP address.
-    set_native(scope, global_obj, "__s2_damage_subscribe", s2_damage_subscribe);
+    crate::sdkhooks::install_natives(scope, global_obj);
     set_native(scope, global_obj, "__s2_damage_read_float", s2_damage_read_float);
     set_native(scope, global_obj, "__s2_damage_read_int", s2_damage_read_int);
     set_native(scope, global_obj, "__s2_damage_write_float", s2_damage_write_float);
@@ -6446,15 +6430,9 @@ pub(crate) fn register_builtin_stores() {
     // the asymmetric teardown they need.
     crate::events::register_stores();
 
-    // DAMAGE_MUX: the DispatchTraceAttack detour stays installed for the process lifetime — no follow-up.
-    crate::owner_stores::register(
-        "DAMAGE_MUX",
-        Box::new(|owner| { DAMAGE_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
-        Box::new(|ids| { DAMAGE_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
-        Box::new(|| {
-            DAMAGE_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
-        }),
-    );
+    // SDKHOOKS: per-entity OnTakeDamage (and later types). The DispatchTraceAttack detour stays
+    // installed for the process lifetime — no follow-up.
+    crate::sdkhooks::register_stores();
 
     // CHAT_MSG_SUBS + CLIENT_CMD_SUBS + CONCOMMANDS: registered by the feature module.
     crate::commands::register_stores();
@@ -8822,12 +8800,22 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
-    /// Named publics OnGameFrame / OnTakeDamage subscribe at load.
+    /// Named publics OnGameFrame subscribe at load. SDKHook after settle (not a named public).
     /// Post-simulation frame is createScope().server.onGameFrame({ phase: "post" }), not a SM public.
     /// hook.on still throws after settle.
+    extern "C" fn named_publics_damage_victim() -> c_int {
+        let bits = crate::entity::HANDLE_ENTRY_BITS;
+        ((1u32 << bits) | 5) as c_int
+    }
     #[test]
     fn named_publics_frame_and_hook_on_throw_after_settle() {
         init(dummy_logger()).unwrap();
+        crate::entity_live::reset_for_tests();
+        let id = crate::entity_live::on_created(5, 1);
+        set_engine_ops(Some(S2EngineOps {
+            damage_victim: Some(named_publics_damage_victim),
+            ..mock_event_ops()
+        }));
         load_plugin_js(
             "hookmore",
             r#"
@@ -8837,7 +8825,6 @@ pub(crate) mod frame_tests {
                 p.createScope().server.onGameFrame(function () { globalThis.__post = (globalThis.__post|0)+1; }, { phase: "post" });
             };
             module.exports.OnGameFrame = function () { globalThis.__frames = (globalThis.__frames|0)+1; };
-            module.exports.OnTakeDamage = function () { globalThis.__dmg = (globalThis.__dmg|0)+1; };
             "#,
             "{}",
         );
@@ -8845,6 +8832,21 @@ pub(crate) mod frame_tests {
         dispatch_game_frame_pre_post();
         assert_eq!(eval_in_context_string("hookmore", "String(globalThis.__frames|0)"), "1");
         assert_eq!(eval_in_context_string("hookmore", "String(globalThis.__post|0)"), "1");
+        assert_eq!(
+            eval_in_context_string(
+                "hookmore",
+                &format!(
+                    r#"
+                    globalThis.__dmg = 0;
+                    String(__s2pkg_sdkhooks.SDKHook({{index:5,id:{id}}}, "OnTakeDamage", function () {{
+                        globalThis.__dmg = (globalThis.__dmg|0)+1;
+                    }}))
+                    "#
+                ),
+            ),
+            "true",
+            "SDKHook after settle must succeed"
+        );
         dispatch_damage();
         assert_eq!(eval_in_context_string("hookmore", "String(globalThis.__dmg|0)"), "1");
         let threw = eval_in_context_string(
@@ -12881,94 +12883,8 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
-    /// Slice 6.6: Damage.onPre subscribes to DAMAGE_MUX and dispatch_damage runs the handler with a
-    /// DamageInfo (no engine ops → the handler's info.damage reads 0, but the pipeline fires).
-    #[test]
-    fn damage_dispatch_runs_subscriber() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        create_plugin_context("p");
-        eval_in_context("p", "globalThis.__dmgFired = 0; __s2pkg_damage.Damage.onPre(function (info) { globalThis.__dmgFired = 1; globalThis.__dmgVal = info.damage; });").unwrap();
-        dispatch_damage();
-        assert_eq!(eval_in_context_string("p", "String(globalThis.__dmgFired)"), "1", "the onPre handler ran");
-        assert_eq!(eval_in_context_string("p", "String(globalThis.__dmgVal)"), "0", "info.damage reads 0 without an engine op");
-        shutdown();
-    }
-
-    // L1 Task 4 (onDamage return collapse) recording seams: a fixed m_flDamage offset + a
-    // damage_write_float that records its (offset, value) so a test can assert the live damage was zeroed.
-    static DMG_WRITE_REC: std::sync::Mutex<Option<(i32, f32)>> = std::sync::Mutex::new(None);
-    extern "C" fn rec_damage_write_float(offset: c_int, value: f32) {
-        *DMG_WRITE_REC.lock().unwrap() = Some((offset, value));
-    }
-    extern "C" fn fake_dmg_schema_offset(_cls: *const c_char, _field: *const c_char) -> c_int { 68 }
-
-    /// B2 fix — this test previously asserted the OPPOSITE, and the old assertion was the bug.
-    ///
-    /// `Handled` must NOT short-circuit an `onDamage` chain. `ARCHITECTURE.md:78` states the collapse
-    /// rule outright — "`Stop` short-circuits. `Handled` does **not** short-circuit (a later observer
-    /// may still want the event)" — and `multiplexer.rs`'s own `handled_does_not_short_circuit` test
-    /// says the same. `dispatch_damage` was the one path that `break`ed at `>= Handled`, so a single
-    /// plugin blocking a hit silently denied every OTHER plugin's damage observer its dispatch. That
-    /// is precisely the cross-plugin composition the collapse rule exists to protect.
-    ///
-    /// Blocking is a decision about the damage, not a veto over other observers.
-    #[test]
-    fn damage_onpre_handled_does_not_stop_the_chain() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        create_plugin_context("p");
-        eval_in_context("p", "globalThis.__a=0; globalThis.__b=0; \
-            __s2pkg_damage.Damage.onPre(function(){ globalThis.__a++; return HookResult.Handled; }); \
-            __s2pkg_damage.Damage.onPre(function(){ globalThis.__b++; return HookResult.Continue; });").unwrap();
-        dispatch_damage();
-        assert_eq!(eval_in_context_string("p", "String(globalThis.__a)"), "1", "first handler ran");
-        assert_eq!(
-            eval_in_context_string("p", "String(globalThis.__b)"), "1",
-            "a later observer must still run after another plugin returned Handled"
-        );
-        shutdown();
-    }
-
-    /// The other half of the rule: `Stop` DOES truncate. A handler that genuinely wants to end the
-    /// chain has a way to say so — which is what makes removing the `Handled` short-circuit safe
-    /// rather than a loss of expressiveness.
-    #[test]
-    fn damage_onpre_stop_return_truncates_the_chain() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        create_plugin_context("p");
-        eval_in_context("p", "globalThis.__a=0; globalThis.__b=0; \
-            __s2pkg_damage.Damage.onPre(function(){ globalThis.__a++; return HookResult.Stop; }); \
-            __s2pkg_damage.Damage.onPre(function(){ globalThis.__b++; return HookResult.Continue; });").unwrap();
-        dispatch_damage();
-        assert_eq!(eval_in_context_string("p", "String(globalThis.__a)"), "1", "first handler ran");
-        assert_eq!(
-            eval_in_context_string("p", "String(globalThis.__b)"), "0",
-            "Stop must still truncate the remainder of the chain"
-        );
-        shutdown();
-    }
-
-    /// L1 Task 4: an `onDamage` handler returning `>= HookResult.Handled` zeroes the live damage via
-    /// the same `damage_write_float` op path the JS `info.damage = 0` setter uses.
-    #[test]
-    fn damage_onpre_handled_return_zeroes_live_damage() {
-        LOG.lock().unwrap().clear();
-        init(logger).unwrap();
-        *DMG_WRITE_REC.lock().unwrap() = None;
-        set_engine_ops(Some(S2EngineOps {
-            schema_offset: Some(fake_dmg_schema_offset),
-            damage_write_float: Some(rec_damage_write_float),
-            ..mock_event_ops()
-        }));
-        create_plugin_context("p");
-        eval_in_context("p", "__s2pkg_damage.Damage.onPre(function (info) { return HookResult.Handled; });").unwrap();
-        dispatch_damage();
-        assert_eq!(*DMG_WRITE_REC.lock().unwrap(), Some((68, 0.0)),
-            "onDamage >= Handled zeroed m_flDamage (offset 68) through the damage_write_float op");
-        shutdown();
-    }
+    // Damage OnTakeDamage SDKHook fan-out, Handled/Stop collapse, and Handled-zeroes-live-damage
+    // live in `crate::sdkhooks` isolate tests (`sdkhook_*`). A global Damage.onPre mux no longer exists.
 
     /// Usercmd primitive Task 2 (MF-3): `__s2_usercmd_subscribe` registers a RAW handler into
     /// `USERCMD_MUX` under "onRun" (no `UserCmd.onRun` wrapper exists yet — that's Task 4), and
