@@ -17,7 +17,7 @@ export interface VoteConfig {
   options: string[];
   /** seconds. */
   duration: number;
-  /** show a live center tally (default false — the SM chat-only way). */
+  /** show a live center tally (ignored when a tally renderer is registered — CS2 always paints the rail). */
   showLiveTally?: boolean;
   /** Called once when the vote ends (or is exhausted), with the tallied {@link VoteResult}. It may start a new vote (the lock is released first). */
   onEnd: (result: VoteResult) => void;
@@ -32,6 +32,8 @@ export interface VoteTally {
   total: number;
   /** Seconds remaining before the vote ends. */
   secondsLeft: number;
+  /** This slot's 0-based cast, or null if they have not voted yet. */
+  choice: number | null;
 }
 /** A live-tally display backend for votes — registered via {@link Vote.registerTallyRenderer}. */
 export interface VoteTallyRenderer {
@@ -61,6 +63,6 @@ export declare const Vote: {
   isActive(): boolean;
   /** Abort the active vote (no onEnd). */
   cancel(): void;
-  /** Register the live-tally renderer (the CS2 center-HTML renderer). */
+  /** Register the live-tally renderer (the CS2 right-side rail). */
   registerTallyRenderer(renderer: VoteTallyRenderer): void;
 };

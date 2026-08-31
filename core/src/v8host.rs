@@ -14560,7 +14560,7 @@ pub(crate) mod frame_tests {
     }
 
     #[test]
-    fn votes_no_live_tally_never_calls_renderer() {
+    fn votes_registered_renderer_paints_without_show_live_tally() {
         init(dummy_logger()).unwrap();
         let out = eval_std("vt4", r#"
             var chatHandler = null, delayed = [], calls = 0;
@@ -14571,12 +14571,53 @@ pub(crate) mod frame_tests {
             globalThis.__s2pkg_timers.delay = function () { return { then: function (cb) { delayed.push(cb); } }; };
             var V = globalThis.__s2pkg_votes.Vote;
             V.registerTallyRenderer({ show:function(){ calls++; }, clear:function(){ calls++; } });
-            V.start({ question:"Q", options:["A","B"], duration:1, onEnd:function(){} });   // showLiveTally omitted -> false
+            V.start({ question:"Q", options:["A","B"], duration:1, onEnd:function(){} });
             chatHandler(0, "1");
             while (delayed.length) delayed.shift()();
-            String(calls);
+            String(calls > 0);
         "#);
-        assert_eq!(out, "0");
+        assert_eq!(out, "true");
+        shutdown();
+    }
+
+    #[test]
+    fn votes_tally_choice_is_per_slot() {
+        init(dummy_logger()).unwrap();
+        let out = eval_std("vt4b", r#"
+            var chatHandler = null, delayed = [], choices = [];
+            globalThis.__s2pkg_chat.Chat.toAll = function () {};
+            globalThis.__s2_chat_on_message = function (fn) { chatHandler = fn; };
+            globalThis.__s2pkg_clients.Clients.onDisconnect = function () {};
+            globalThis.__s2pkg_clients.Clients.all = function () { return [{slot:0,isBot:false},{slot:1,isBot:false}]; };
+            globalThis.__s2pkg_timers.delay = function () { return { then: function (cb) { delayed.push(cb); } }; };
+            var V = globalThis.__s2pkg_votes.Vote;
+            V.registerTallyRenderer({
+                show: function (slot, t) { choices.push(slot + ":" + t.choice); },
+                clear: function () {}
+            });
+            V.start({ question:"Q", options:["A","B"], duration:2, onEnd:function(){} });
+            chatHandler(0, "1");
+            globalThis.__s2_vote_cast(1, 1);
+            JSON.stringify({ start0: choices[0], start1: choices[1], after: choices.slice(-2) });
+        "#);
+        assert_eq!(out, r#"{"start0":"0:null","start1":"1:null","after":["0:0","1:1"]}"#);
+        shutdown();
+    }
+
+    #[test]
+    fn votes_chat_is_one_line() {
+        init(dummy_logger()).unwrap();
+        let out = eval_std("vt4c", r#"
+            var sent = [];
+            globalThis.__s2pkg_chat.Chat.toAll = function (m) { sent.push(m); };
+            globalThis.__s2_chat_on_message = function () {};
+            globalThis.__s2pkg_clients.Clients.onDisconnect = function () {};
+            globalThis.__s2pkg_clients.Clients.all = function () { return [{slot:0,isBot:false}]; };
+            globalThis.__s2pkg_timers.delay = function () { return { then: function () { return { then: function () {} }; } }; };
+            globalThis.__s2pkg_votes.Vote.start({ question:"Kick Rex?", options:["Yes","No"], duration:2, onEnd:function(){} });
+            JSON.stringify(sent);
+        "#);
+        assert_eq!(out, r#"["[Vote] Kick Rex? — Tab, or type 1–2"]"#);
         shutdown();
     }
 
