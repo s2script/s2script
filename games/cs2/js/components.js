@@ -129,6 +129,19 @@
     BADGE.push({ id: bid, title: declareText(bid + "_title"), text: declareText(bid + "_text") });
   }
 
+  // The vote rail is a separate layout resource, but its fixed ids belong to the same registry:
+  // keeping them here makes the complete HUD id contract visible in one place.
+  var VOTE = { root: "s2_vote", question: declareText("s2_vote_q"), subtitle: declareText("s2_vote_sub"), options: [] };
+  PANELS.push(VOTE.root);
+  for (var vo = 0; vo < 9; vo++) {
+    var voteId = "s2_vote_o" + vo;
+    VOTE.options.push({
+      id: declareButton(voteId),
+      title: declareText(voteId + "_t"),
+      count: declareText(voteId + "_c")
+    });
+  }
+
   var LIB_DESCRIPTOR = {
     addons: ["3790153369"],
     resource: "panorama/layout/custom_game/s2script_lib.xml",

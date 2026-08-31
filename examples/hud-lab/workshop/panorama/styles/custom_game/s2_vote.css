@@ -1,0 +1,59 @@
+/* Right-side vote rail. It stays away from the crosshair and never freezes the player. */
+.s2-vote {
+	width: 280px;
+	max-height: 80%;
+	horizontal-align: right;
+	vertical-align: center;
+	margin-right: 24px;
+	padding: 12px;
+	flow-children: down;
+	background-color: #0d1219e8;
+	border: 1px solid #5db2d1aa;
+	box-shadow: #00000088 0px 0px 18px 0px;
+}
+
+.s2-vote-question {
+	width: 100%;
+	color: #f4f7f8ff;
+	font-size: 18px;
+	font-weight: bold;
+	margin-bottom: 4px;
+}
+
+.s2-vote-subtitle {
+	width: 100%;
+	color: #a9bfcbff;
+	font-size: 13px;
+	margin-bottom: 8px;
+}
+
+.s2-vote-option {
+	width: 100%;
+	min-height: 28px;
+	padding: 5px 7px;
+	margin-top: 2px;
+	flow-children: right;
+	background-color: #20313ddd;
+	border: 1px solid #78a7ba55;
+}
+
+.s2-vote-option-title {
+	width: fill-parent-flow(1.0);
+	color: #eaf4f7ff;
+	font-size: 15px;
+}
+
+.s2-vote-option-count {
+	color: #d9aa45ff;
+	font-size: 14px;
+	font-weight: bold;
+	margin-left: 8px;
+}
+
+/* The server toggles these classes per player. */
+.s2-hide { visibility: collapse; }
+.s2-vote-count-hide { visibility: collapse; }
+.s2-vote-picked {
+	background-color: #266b8bcc;
+	border: 1px solid #6cb4eecc;
+}
