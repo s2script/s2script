@@ -46,6 +46,15 @@ export type {
 export { CustomHudLayout, DEFAULT_HUD_DESCRIPTOR, hudkit, PROBE_LAYOUT, ui } from "./ui";
 export { AcquireMethod, AcquireResult, items } from "./items";
 export type { CanAcquireView, CtxItems } from "./items";
+export declare const HudInput: {
+  /** Arm Tab-to-activate for `slot`. Replaces any previous arm on that slot. */
+  arm(slot: number, opts: { onActivate: () => void }): void;
+  /** Drop the arm. Safe if nothing is armed. Does not close the HUD. */
+  disarm(slot: number): void;
+  isArmed(slot: number): boolean;
+  /** True after Tab (or an immediate activate) until disarm. */
+  isActive(slot: number): boolean;
+};
 import type { CCSPlayerPawn, CCSPlayerController } from "./schema.generated";
 export type { SceneNode, WeaponServices, MovementServices, AimPunchServices, MatchStats } from "./nav.generated";
 import type { SceneNode, WeaponServices, MovementServices, AimPunchServices, MatchStats } from "./nav.generated";

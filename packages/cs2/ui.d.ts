@@ -272,7 +272,7 @@ export interface ModalSpec {
   readonly detail?: (slot: number, row: Row | undefined, cursor: number) => readonly string[];
   // `cursor` is the ABSOLUTE index into the full row list, matching onPick and Modal.cursor().
   /** Up to 5; Prev/Next claim the trailing two automatically when the list pages. */
-  readonly buttons?: readonly FooterButton[];
+  readonly buttons?: readonly FooterButton[] | ((slot: number) => readonly FooterButton[]);
   readonly pageSize?: number;
   /** Sheet width. Default `md` (560px). */
   readonly width?: "sm" | "md" | "lg" | "xl";
@@ -281,7 +281,7 @@ export interface ModalSpec {
 /** Per-player view of a claimed {@link Modal}. */
 export interface ModalView {
   readonly slot: number;
-  open(): ModalView;
+  open(opts?: { cursor?: boolean }): ModalView;
   close(): void;
   isOpen(): boolean;
   refresh(): void;
@@ -292,8 +292,10 @@ export interface ModalView {
 }
 
 export interface Modal {
-  /** Open for `slot` and return the bound view. */
-  open(slot: number): ModalView;
+  /** Open for `slot` and return the bound view. Default grabs the cursor. */
+  open(slot: number, opts?: { cursor?: boolean }): ModalView;
+  /** Grab or release the mouse without closing the sheet. */
+  setCursor(slot: number, on: boolean): void;
   close(slot: number): void;
   isOpen(slot: number): boolean;
   /** Repaint from live data. Omit `slot` to repaint every player who has it open. */

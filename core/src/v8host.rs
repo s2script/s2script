@@ -14215,6 +14215,22 @@ pub(crate) mod frame_tests {
     }
 
     #[test]
+    fn menu_activation_defaults_and_coerces() {
+        init(dummy_logger()).unwrap();
+        let out = eval_std("ma", r#"
+            var m = new globalThis.__s2pkg_menu.Menu("T");
+            var def = m.activation;
+            m.activation = "tab";
+            var tab = m.activation;
+            m.activation = "nope";
+            var nope = m.activation;
+            JSON.stringify({ def: def, tab: tab, nope: nope });
+        "#);
+        assert_eq!(out, r#"{"def":"immediate","tab":"tab","nope":"immediate"}"#);
+        shutdown();
+    }
+
+    #[test]
     fn menu_model_center_cursor_and_confirm() {
         init(dummy_logger()).unwrap();
         let out = eval_std("mc", r#"
