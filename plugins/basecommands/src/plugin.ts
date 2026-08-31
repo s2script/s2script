@@ -36,7 +36,7 @@ export function OnPluginStart(): void {
     onSelect: (adminSlot) => {
       const m = new Menu(Translations.translate(adminSlot, "Change Map Title"));
       m.style = MenuStyle.Center;
-      m.freezePlayer = true;
+      m.freezePlayer = true;   // user-requested map picker HUD
       for (const mapName of MAP_CHOICES) if (Server.isMapValid(mapName)) m.addItem(mapName, mapName);
       m.onSelect((e) => { Server.command("changelevel " + e.info); });
       m.display(adminSlot, 30);

@@ -31,7 +31,7 @@ function showCategory(slot: number, category: string, flags: number, sheet: TopM
   const items = itemsFor(category, flags, sheet);
   const m = new Menu(categoryLabel(slot, category));
   m.style = MenuStyle.Center;
-  m.freezePlayer = true;
+  m.freezePlayer = true;   // user-requested HUD sheet — freeze while they pick
   for (const it of items) m.addItem(it.id, it.name);
   m.onSelect(e => { TopMenu.select(e.info, slot); });
   m.display(slot, 30);
@@ -44,7 +44,7 @@ function showSheet(slot: number, sheet: TopMenuSheet): boolean {
   const titleKey: PhraseKey = sheet === "admin" ? "Admin Menu Title" : "Menu Title";
   const m = new Menu(Translations.translate(slot, titleKey));
   m.style = MenuStyle.Center;
-  m.freezePlayer = true;
+  m.freezePlayer = true;   // user-requested HUD sheet — freeze while they pick
   for (const c of cats) m.addItem(c, categoryLabel(slot, c));
   m.onSelect(e => { showCategory(slot, e.info, flags, sheet); });
   m.display(slot, 30);
