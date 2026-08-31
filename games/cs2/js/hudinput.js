@@ -1,4 +1,4 @@
-(function () {
+globalThis.__s2pkg_hudinput = (function () {
   const { UserCmd } = globalThis.__s2pkg_usercmd;
   const IN_SCORE = 1n << 16n;
   const states = new Map(); // slot -> { armed, active, held }
@@ -57,5 +57,5 @@
     s.held = false;
   });
 
-  globalThis.__s2pkg_hudinput = { HudInput };
+  return { HudInput };
 })();
