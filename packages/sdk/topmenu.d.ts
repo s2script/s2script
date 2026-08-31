@@ -1,5 +1,7 @@
 /** @s2script/topmenu — the extensible admin/top menu registry. NO runtime code (injected at load). */
 
+export type TopMenuSheet = "admin" | "menu";
+
 /** A single registered top-menu entry (an admin command surfaced in the adminmenu). */
 export interface TopMenuItem {
   /** Plugin-namespaced unique id, e.g. "playercommands:slap". A duplicate id replaces. */
@@ -8,6 +10,8 @@ export interface TopMenuItem {
   name: string;
   /** Required ADMFLAG bit mask (adminmenu hides items the caller lacks flags for). */
   flags: number;
+  /** Sheets in which this item is rendered. Defaults to the admin sheet. */
+  sheets?: TopMenuSheet[];
   /** Runs in THIS plugin's context when an admin selects the item; receives the admin's 0-based slot. */
   onSelect: (adminSlot: number) => void;
 }
@@ -16,7 +20,7 @@ export interface TopMenuSnapshot {
   /** All category names, in registration order. */
   categories: string[];
   /** Every registered item's metadata (no `onSelect`), tagged with its category. */
-  items: { id: string; category: string; name: string; flags: number }[];
+  items: { id: string; category: string; name: string; flags: number; sheets: TopMenuSheet[] }[];
 }
 /**
  * The shared admin/top-menu registry — renderers read {@link TopMenu.snapshot} and dispatch picks
