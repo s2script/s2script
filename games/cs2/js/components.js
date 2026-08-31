@@ -1,9 +1,9 @@
-// @s2script/cs2 — ui.components(): a generic Panorama component library.
+// @s2script/cs2 — hudkit: a generic Panorama component library over one shared custom_hud_layout.
 //
-// WHY THIS EXISTS. ui.hud() is the primitive: it drives panel ids and dialog variables that
-// some .xml declares. Used directly, every plugin needs its OWN layout, which means every plugin
-// author must open Workshop Tools and publish an addon before drawing a single row. That is a
-// non-starter for a plugin ecosystem, and it does not scale for a second reason:
+// WHY THIS EXISTS. CustomHudLayout.create() is the primitive: it drives panel ids and dialog
+// variables that some .xml declares. Used directly, every plugin needs its OWN layout, which means
+// every plugin author must open Workshop Tools and publish an addon before drawing a single row.
+// That is a non-starter for a plugin ecosystem, and it does not scale for a second reason:
 //
 //   `CCSCustomHudLayout` interns every panel id, class name and dialog variable the SERVER
 //   references into three networked vectors, each capped at 1024 ("The maximum number of panel ids
@@ -62,6 +62,11 @@
   var CORNER = { tl: "s2-corner-tl", tr: "s2-corner-tr", bl: "s2-corner-bl", br: "s2-corner-br" };
 
   function log(msg) { if (globalThis.console) console.log("[s2script/ui] " + msg); }
+
+  function slotOf(player) {
+    if (typeof player === "number") return player;
+    return player && typeof player.slot === "number" ? player.slot : -1;
+  }
 
   // ── the library descriptor ──────────────────────────────────────────────────────────────────
   // Every id below is a LITERAL. Never build one by concatenation at drive time — that mints a
@@ -194,8 +199,14 @@
   }
 
   function makeComponents(hudApi, descriptor) {
-    var hud = hudApi.hud(descriptor || LIB_DESCRIPTOR);
+    var hud = hudApi.create ? hudApi.create(descriptor || LIB_DESCRIPTOR) : hudApi.hud(descriptor || LIB_DESCRIPTOR);
     var ownerTag = "plugin";
+    var liveModals = [];
+    var origForget = hud.forget;
+    hud.forget = function (slot) {
+      for (var li = 0; li < liveModals.length; li++) liveModals[li].forget(slot);
+      origForget(slot);
+    };
 
     // `set` spends from two vectors: the panel id and the dialog variable name. In this library
     // the two strings are equal by convention, but they are charged to different ledgers.
@@ -286,7 +297,8 @@
       var slotIds = BADGE[idx];
       var cornerCls = CORNER[s.corner] || CORNER.tr;
       var accentCls = BADGE_ACCENT[s.accent] || null;
-      return {
+      var selfBadge;
+      selfBadge = {
         show: function (slot, data) {
           var dd = data || {};
           setText(slot, slotIds.title, dd.title || s.title || "");
@@ -302,10 +314,19 @@
             }
           }
           reveal(slot, slotIds.id, FADE.badge);
+          return selfBadge.forSlot(slot);
         },
         hide: function (slot) { hide(slot, slotIds.id); },
+        forSlot: function (slot) {
+          return {
+            slot: slot,
+            show: function (data) { return selfBadge.show(slot, data); },
+            hide: function () { selfBadge.hide(slot); }
+          };
+        },
         release: function () { pool().badge[idx] = null; }
       };
+      return selfBadge;
     }
 
     // ── modals (title + paged list + detail + footer buttons) ─────────────────────────────────
@@ -401,23 +422,25 @@
 
       for (var ri = 0; ri < ROWS; ri++) {
         (function (rowIndex) {
-          hud.onClick(ids.rows[rowIndex].id, function (slot) {
+          hud.onClick(ids.rows[rowIndex].id, function (player) {
+            var slot = slotOf(player);
             var st = open[slot];
             if (!st) return;
             st.cursor = rowIndex;
             var all = rowsFor(slot);
             var row = all[st.page * pageSize + rowIndex];
-            if (row && s.onPick) s.onPick(slot, st.page * pageSize + rowIndex, row);
+            if (row && s.onPick) s.onPick(slot, st.page * pageSize + rowIndex, row, self.forSlot(slot));
             paint(slot);
           });
         })(ri);
       }
       for (var fi = 0; fi < FOOTERS; fi++) {
         (function (fIndex) {
-          hud.onClick(ids.footers[fIndex].id, function (slot) {
+          hud.onClick(ids.footers[fIndex].id, function (player) {
+            var slot = slotOf(player);
             if (!open[slot]) return;
             var fn = footerFns[fIndex];
-            if (fn) fn(slot);
+            if (fn) fn(slot, self.forSlot(slot));
           });
         })(fi);
       }
@@ -433,6 +456,7 @@
           paint(slot);                                        // fill first…
           setClass(slot, ids.root, FADE.sheet, false);         // …never leave it transparent…
           show(slot, ids.root, { cursor: true });              // …then reveal, never blank
+          return self.forSlot(slot);
         },
         close: function (slot) {
           delete open[slot];
@@ -476,8 +500,27 @@
           return st.page * pageSize + st.cursor;
         },
         forget: function (slot) { delete open[slot]; },
-        release: function () { pool().modal[idx] = null; }
+        forSlot: function (slot) {
+          return {
+            slot: slot,
+            open: function () { return self.open(slot); },
+            close: function () { self.close(slot); },
+            isOpen: function () { return self.isOpen(slot); },
+            refresh: function () { self.refresh(slot); },
+            page: function (delta) { self.page(slot, delta); },
+            select: function (index) { self.select(slot, index); },
+            cursor: function () { return self.cursor(slot); },
+            forget: function () { self.forget(slot); }
+          };
+        },
+        release: function () {
+          pool().modal[idx] = null;
+          for (var rm = 0; rm < liveModals.length; rm++) {
+            if (liveModals[rm] === self) { liveModals.splice(rm, 1); break; }
+          }
+        }
       };
+      liveModals.push(self);
       return self;
     }
 
@@ -488,20 +531,35 @@
       hud.cursor(slot, false);
     }
 
+    function forgetSlot(slot) { hud.forget(slot); }
+
     return {
+      spec: LIB_DESCRIPTOR,
       descriptor: LIB_DESCRIPTOR,
+      layout: hud,
       hud: hud,
       /**
        * Spawn the pool's layout entity. Same timing as `createLayout` — player-join, events,
-       * commands, or any post-ready callback. `components()` also spawns once a client is active,
-       * so this is only needed to force a spawn before the first `hud()` / `components()` call.
+       * commands, or any post-ready callback. `kit` also spawns once a client is active,
+       * so this is only needed to force a spawn before the first create() / kit access.
        */
-      ensure: function () { return hudApi.createLayout(descriptor || LIB_DESCRIPTOR); },
+      ensure: function () {
+        if (typeof hud.ensure === "function") return hud.ensure();
+        return hudApi.createLayout(descriptor || LIB_DESCRIPTOR);
+      },
       modal: modal,
       badge: badge,
       toast: toast,
       hideAll: hideAll,
-      forget: function (slot) { hud.forget(slot); },
+      forget: forgetSlot,
+      forSlot: function (slot) {
+        return {
+          slot: slot,
+          toast: function (spec) { return toast(slot, spec); },
+          hideAll: function () { hideAll(slot); },
+          forget: function () { forgetSlot(slot); }
+        };
+      },
       budget: function () {
         var p = pool();
         return {
@@ -519,10 +577,48 @@
   globalThis.__s2pkg_game_ctx = Object.assign({}, globalThis.__s2pkg_game_ctx, {
     ui: function (reg, viaId) {
       var base = prevUi(reg, viaId);
-      if (base && typeof base.hud === "function" && !base.components) {
-        base.components = function (descriptor) { return makeComponents(base, descriptor); };
+      if (base && (typeof base.hud === "function" || typeof base.create === "function") && !base.components) {
+        var cached = null;
+        function kitOf(descriptor) {
+          if (!descriptor) {
+            if (!cached) cached = makeComponents(base, undefined);
+            return cached;
+          }
+          return makeComponents(base, descriptor);
+        }
+        Object.defineProperty(base, "kit", {
+          get: function () { return kitOf(); },
+          enumerable: true
+        });
+        base.components = kitOf;
+        base.toast = function (slot, spec) { return kitOf().toast(slot, spec); };
       }
       return base;
     }
   });
+  if (typeof globalThis.__s2_game_ns === "function" && globalThis.__s2pkg_cs2) {
+    var layoutNs = globalThis.__s2pkg_cs2.CustomHudLayout || globalThis.__s2_game_ns("ui");
+    globalThis.__s2pkg_cs2.hudkit = {
+      modal: function (spec) { return layoutNs.kit.modal(spec); },
+      badge: function (spec) { return layoutNs.kit.badge(spec); },
+      toast: function (slot, spec) { return layoutNs.kit.toast(slot, spec); },
+      forSlot: function (slot) { return layoutNs.kit.forSlot(slot); },
+      hideAll: function (slot) { return layoutNs.kit.hideAll(slot); },
+      forget: function (slot) { return layoutNs.kit.forget(slot); },
+      ensure: function () { return layoutNs.kit.ensure(); },
+      budget: function () { return layoutNs.kit.budget(); }
+    };
+    Object.defineProperty(globalThis.__s2pkg_cs2.hudkit, "layout", {
+      get: function () { return layoutNs.kit.layout; }
+    });
+    Object.defineProperty(globalThis.__s2pkg_cs2.hudkit, "hud", {
+      get: function () { return layoutNs.kit.hud; }
+    });
+    Object.defineProperty(globalThis.__s2pkg_cs2.hudkit, "spec", {
+      get: function () { return layoutNs.kit.spec; }
+    });
+    Object.defineProperty(globalThis.__s2pkg_cs2.hudkit, "descriptor", {
+      get: function () { return layoutNs.kit.descriptor; }
+    });
+  }
 })();

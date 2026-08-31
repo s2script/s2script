@@ -200,3 +200,48 @@ test("detail() receives the absolute index too", () => {
   assert.strictEqual(last.cursor, 11, "cursor must be absolute");
   assert.strictEqual(last.row, "i11", "row and cursor must describe the SAME item");
 });
+
+test("forSlot binds modal verbs to one player", () => {
+  const { ui } = mount();
+  const m = ui.modal({ title: "T", rows: [] });
+  const view = m.forSlot(1);
+  view.open();
+  assert.ok(m.isOpen(1));
+  assert.strictEqual(view.isOpen(), true);
+  view.close();
+  assert.ok(!m.isOpen(1));
+});
+
+test("open() returns the bound view", () => {
+  const { ui } = mount();
+  const m = ui.modal({ title: "T", rows: [] });
+  const view = m.open(3);
+  assert.strictEqual(view.slot, 3);
+  assert.ok(m.isOpen(3));
+});
+
+test("a footer onClick receives the bound view so close() does not re-thread the slot", () => {
+  const { ui, clickHandlers } = mount();
+  const m = ui.modal({
+    title: "T", rows: [],
+    buttons: [{ text: "X", onClick: (_slot, view) => view.close() }],
+  });
+  m.open(1);
+  clickHandlers["s2_m0_f0"](1);
+  assert.ok(!m.isOpen(1));
+});
+
+test("forgetting the layout on disconnect closes the modal for that player", () => {
+  const { ui } = mount();
+  const m = ui.modal({ title: "T", rows: [] });
+  m.open(1);
+  assert.ok(m.isOpen(1));
+  ui.hud.forget(1);
+  assert.ok(!m.isOpen(1), "hud.forget (disconnect) must drop per-player modal state");
+});
+
+test("kit forSlot.toast drives the same player as toast(slot)", () => {
+  const { ui, calls } = mount();
+  ui.forSlot(4).toast({ title: "t", message: "m", holdSeconds: 0 });
+  assert.ok(calls.some((c) => c.op === "show" && c.slot === 4 && c.id === "s2_t0"));
+});

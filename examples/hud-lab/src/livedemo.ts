@@ -1,21 +1,21 @@
 /**
- * A HUD driven by real game state — the demo that shows what `ui` is actually for.
+ * A HUD driven by real game state — the demo that shows what `CustomHudLayout` is actually for.
  *
  * Round clock, live scoreboard, your real K/D/A, and a kill feed fed by `player_death`.
  *
  * THE THING THAT MATTERS HERE IS THE UPDATE DISCIPLINE. Every field is a networked engine call, so
  * a naive "push everything each frame" HUD would issue thousands of calls a second across a full
- * server. Two rules keep it cheap, and both are the framework's job rather than the caller's:
+ * server. Two rules keep it cheap:
  *
- *   1. DIFF BEFORE SEND. Every value is compared against what that player was last sent, and
- *      unchanged values are skipped. A round clock changes ~once a second; the scoreboard changes a
- *      few times a round. Steady-state traffic is near zero.
+ *   1. DIFF BEFORE SEND. `CustomHudLayout` compares each value against what that player was last
+ *      sent and skips unchanged ones. A round clock changes ~once a second; the scoreboard changes
+ *      a few times a round. Steady-state traffic is near zero.
  *   2. TICK, DON'T FRAME. The refresh runs on a coarse timer, not OnGameFrame. Nothing here is
  *      sub-second, so a 64Hz repaint would be pure waste.
  */
 import { delay } from "@s2script/sdk";
 import { Player, Teams, GameRules } from "@s2script/cs2";
-import type { Hud } from "@s2script/cs2";
+import type { HudLayout } from "@s2script/cs2";
 import { LIVE_PANELS } from "./livehud";
 
 /** How often the HUD re-reads game state. Fast enough that a 1s clock never visibly stutters. */
@@ -43,33 +43,23 @@ interface FeedEntry { attacker: string; weapon: string; victim: string; headshot
 
 export class LiveDemo {
   private readonly viewers = new Set<number>();
-  /** Last value sent per (slot, field) — the diff cache that keeps this cheap. */
-  private readonly sent = new Map<string, string>();
   private readonly feed: FeedEntry[] = [];
   private running = false;
 
-  constructor(private readonly hud: Hud, private readonly log: (s: string) => void) {}
+  constructor(private readonly hud: HudLayout, private readonly log: (s: string) => void) {}
 
   get count(): number { return this.viewers.size; }
   has(slot: number): boolean { return this.viewers.has(slot); }
 
-  /** Send only if the value actually changed for this player. */
+  /** Send only if the value actually changed for this player (diffed inside CustomHudLayout). */
   private put(slot: number, id: string, value: string | number): void {
-    const v = String(value);
-    const key = `${slot}:${id}`;
-    if (this.sent.get(key) === v) return;
-    const err = this.hud.set(slot, id, v);
-    if (err) { this.log(`set ${id} refused: ${err}`); return; }
-    this.sent.set(key, v);
+    const err = this.hud.forSlot(slot).set(id, value);
+    if (err) this.log(`set ${id} refused: ${err}`);
   }
 
-  /** Same diffing for classes, which are equally networked. */
+  /** Same for classes, which are equally networked. */
   private putClass(slot: number, panelId: string, className: string, on: boolean): void {
-    const key = `${slot}:${panelId}.${className}`;
-    const v = on ? "1" : "0";
-    if (this.sent.get(key) === v) return;
-    if (this.hud.setClass(slot, panelId, className, on)) return;
-    this.sent.set(key, v);
+    this.hud.forSlot(slot).setClass(panelId, className, on);
   }
 
   /** Every panel this demo owns. Order matters only for readability. */
@@ -84,8 +74,9 @@ export class LiveDemo {
    * them, before they have asked for a HUD at all.
    */
   hideAll(slot: number): void {
-    for (const id of LiveDemo.CHROME) this.hud.hide(slot, id);
-    for (const row of LIVE_PANELS.feed) this.hud.hide(slot, row);
+    const p = this.hud.forSlot(slot);
+    for (const id of LiveDemo.CHROME) p.hide(id);
+    for (const row of LIVE_PANELS.feed) p.hide(row);
   }
 
   start(slot: number): void {
@@ -95,7 +86,8 @@ export class LiveDemo {
     // so the player sees nothing until the whole thing is ready.
     this.paint(slot);
     this.paintFeed(slot);
-    for (const id of LiveDemo.CHROME) this.hud.show(slot, id);
+    const p = this.hud.forSlot(slot);
+    for (const id of LiveDemo.CHROME) p.show(id);
     this.arm();
   }
 
@@ -105,9 +97,9 @@ export class LiveDemo {
     this.forget(slot);
   }
 
-  /** Drop a disconnected player's diff cache so it cannot grow without bound. */
+  /** Drop a disconnected player's layout cache so it cannot grow without bound. */
   forget(slot: number): void {
-    for (const k of [...this.sent.keys()]) if (k.startsWith(`${slot}:`)) this.sent.delete(k);
+    this.hud.forget(slot);
   }
 
   /** Record a kill and repaint the feed for everyone watching. */
@@ -148,7 +140,7 @@ export class LiveDemo {
     const total = rules?.roundTime ?? null;
     this.put(slot, "timer_label", rules?.warmupPeriod ? "WARMUP" : "ROUND");
     this.put(slot, "timer_value", clock(left));
-    if (left !== null && total) this.hud.setMeter(slot, "timer", (left / total) * 100);
+    if (left !== null && total) this.hud.forSlot(slot).setMeter("timer", (left / total) * 100);
     // Colour states: amber under 30s, red once the bomb is down.
     this.putClass(slot, "timer", "s2-timer-low", left !== null && left <= 30);
     this.putClass(slot, "timer", "s2-timer-bomb", rules?.bombPlanted === true);

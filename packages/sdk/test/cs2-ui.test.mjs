@@ -204,7 +204,7 @@ test("rejects .vxml resource extension", () => {
   );
 });
 
-test("hud() throw prefix is ui.hud, not ctx.ui", () => {
+test("create() throw prefix is CustomHudLayout.create", () => {
   const h = makeHost();
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
@@ -217,7 +217,7 @@ test("hud() throw prefix is ui.hud, not ctx.ui", () => {
       buttons: [],
       meters: {},
     }),
-    /^Error: ui\.hud: descriptor\.addons must be a non-empty string array$/,
+    /^Error: CustomHudLayout\.create: spec\.addons must be a non-empty string array$/,
   );
 });
 
@@ -258,6 +258,7 @@ test("createLayout is idempotent by targetname", () => {
   existing.push(first);
   h.invokes.length = 0;
   ui.createLayout();
+  hud.forget(0);
   hud.show(0, "s2_dialog");
   assert.equal(h.created.length, 1, "a second createLayout must find the existing entity");
   assert.equal(h.invokes[0].index, first.index);
@@ -375,20 +376,27 @@ test("disabled button blocks dispatchClick", () => {
   assert.equal(fired, false);
 });
 
-test("click resolves exact index+id match", () => {
+test("click handler receives a HudPlayer bound to the clicker slot", () => {
   const h = makeHost();
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
   h.fireActive(0);
   ui.createLayout();
-  const hud = ui.hud();
-  let slot = -1;
-  hud.onClick("s2_btn_0", (s) => { slot = s; });
+  const hud = ui.create({
+    addons: ["3790153369"],
+    resource: "panorama/layout/custom_game/s2script_hud.xml",
+    hideClass: "s2-hidden",
+    buttons: ["s2_btn_0"],
+  });
+  let seen = null;
+  hud.onClick("s2_btn_0", (p) => { seen = p; });
   h.ctx.__s2pkg_cs2.Player = {
     all: () => [{ slot: 2, ref: { index: 7, id: 3 } }],
   };
   h.fireClick("s2_btn_0", new h.EntityRef(7, 3));
-  assert.equal(slot, 2);
+  assert.equal(seen.slot, 2);
+  assert.equal(typeof seen.hide, "function");
+  assert.equal(hud.forSlot(2), seen, "the click view is the cached forSlot object");
 });
 
 test("button id collision throws", () => {
@@ -448,4 +456,87 @@ test("onCustomHudClicked wrapper returns Continue", () => {
   assert.equal(h.hooks.length, 1);
   const ret = h.hooks[0].handler({ player: null, buttonId: "x" });
   assert.equal(ret, 0);
+});
+
+test("onClicked view includes slot, -1 when the clicker did not resolve", () => {
+  const h = makeHost();
+  const ui = h.armPlugin();
+  h.ctx.__s2_ctx_arm();
+  let seen = null;
+  ui.onClicked((view) => { seen = view; });
+  h.hooks[0].handler({ player: null, buttonId: "x" });
+  assert.equal(seen.slot, -1);
+  assert.equal(seen.buttonId, "x");
+});
+
+test("create() requires a spec; probe() is the workshop probe", () => {
+  const h = makeHost();
+  const ui = h.armPlugin();
+  h.ctx.__s2_ctx_arm();
+  assert.throws(() => ui.create(), /layout spec is required/);
+  const probe = ui.probe();
+  assert.equal(probe.spec.resource, "panorama/layout/custom_game/s2script_hud.xml");
+  assert.equal(probe.spec.hideClass, "s2-hidden");
+});
+
+test("create() fills optional spec fields", () => {
+  const h = makeHost();
+  const ui = h.armPlugin();
+  h.ctx.__s2_ctx_arm();
+  const layout = ui.create({
+    addons: ["3790153369"],
+    resource: "panorama/layout/custom_game/minimal.xml",
+  });
+  assert.equal(layout.spec.hideClass, "s2-hide");
+  assert.deepEqual(layout.spec.buttons, []);
+  assert.deepEqual(layout.spec.meters, {});
+});
+
+test("forSlot binds drive calls to one player", () => {
+  const h = makeHost();
+  const ui = h.armPlugin();
+  h.ctx.__s2_ctx_arm();
+  h.fireActive(0);
+  const layout = ui.probe();
+  const p = layout.forSlot(0);
+  assert.equal(p, layout.forSlot(0));
+  assert.notEqual(p, layout.forSlot(1));
+  const err = p.show("s2_dialog");
+  assert.equal(err, null);
+  assert.equal(h.invokes[0].name, "setHasClassForPlayer");
+  assert.deepEqual(h.invokes[0].args.slice(0, 4), [0, "s2_dialog", "s2-hidden", 0]);
+});
+
+test("set() accepts a field map", () => {
+  const h = makeHost();
+  const ui = h.armPlugin();
+  h.ctx.__s2_ctx_arm();
+  h.fireActive(0);
+  const layout = ui.probe();
+  layout.forSlot(0).set({ foo: "a", bar: "b" });
+  const vars = h.invokes.filter((i) => i.name === "setDialogVariableStringForPlayer");
+  assert.deepEqual(vars[0].args, [0, "foo", "foo", "a"]);
+  assert.deepEqual(vars[1].args, [0, "bar", "bar", "b"]);
+});
+
+test("unchanged dialog values and classes are not re-sent", () => {
+  const h = makeHost();
+  const ui = h.armPlugin();
+  h.ctx.__s2_ctx_arm();
+  h.fireActive(0);
+  const layout = ui.probe();
+  const p = layout.forSlot(0);
+  p.setText("s2_dialog_title", "hello");
+  const n = h.invokes.length;
+  p.setText("s2_dialog_title", "hello");
+  assert.equal(h.invokes.length, n, "identical setText must not invoke again");
+  p.setText("s2_dialog_title", "world");
+  assert.equal(h.invokes.length, n + 1);
+  p.show("s2_dialog");
+  const afterShow = h.invokes.length;
+  p.show("s2_dialog");
+  assert.equal(h.invokes.length, afterShow, "identical show must not invoke again");
+  layout.forget(0);
+  p.setText("s2_dialog_title", "world");
+  assert.equal(h.invokes.length, afterShow + 1, "forget clears the diff cache");
 });

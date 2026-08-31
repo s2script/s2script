@@ -1,4 +1,9 @@
-// @s2script/cs2 — lifecycle-bound custom HUD API (`ui`). ES5 IIFE concatenated after pawn.js.
+// @s2script/cs2 — custom_hud_layout (CCSCustomHudLayout). ES5 IIFE concatenated after pawn.js.
+//
+// The engine object is one layout entity. Almost every drive is per-player
+// (SetHasClassForPlayer / SetDialogVariableStringForPlayer / SetInputCaptureEnabledForPlayer),
+// so the authoring face is CustomHudLayout.create(spec) + layout.forSlot(slot).
+// `ui` remains a deprecated alias of the same load-window object.
 (function () {
   if (!globalThis.__s2pkg_entity || !globalThis.__s2pkg_cs2_calls) return;
 
@@ -85,49 +90,72 @@
     return null;
   }
 
+  function fail(msg) { throw new Error("CustomHudLayout.create: " + msg); }
+
+  function isFields(x) {
+    return x !== null && typeof x === "object" && !Array.isArray(x);
+  }
+
+  function applyFields(fields, fn) {
+    var first = null;
+    for (var k in fields) {
+      if (!Object.prototype.hasOwnProperty.call(fields, k)) continue;
+      var err = fn(k, fields[k]);
+      if (err && !first) first = err;
+    }
+    return first;
+  }
+
+  function slotPrefix(slot) { return "#" + slot + "|"; }
+
   function validateDescriptor(desc) {
-    if (!desc || typeof desc !== "object") throw new Error("ui.hud: descriptor must be an object");
+    if (!desc || typeof desc !== "object") fail("spec must be an object");
     if (!Array.isArray(desc.addons) || desc.addons.length === 0) {
-      throw new Error("ui.hud: descriptor.addons must be a non-empty string array");
+      fail("spec.addons must be a non-empty string array");
     }
     for (var a = 0; a < desc.addons.length; a++) {
       if (!/^\d+$/.test(String(desc.addons[a]))) {
-        throw new Error('ui.hud: addon id "' + desc.addons[a] + '" must be a decimal workshop id');
+        fail('addon id "' + desc.addons[a] + '" must be a decimal workshop id');
       }
     }
     if (typeof desc.resource !== "string" || !desc.resource) {
-      throw new Error("ui.hud: descriptor.resource is required");
+      fail("spec.resource is required");
     }
     if (desc.resource.indexOf("panorama/layout/custom_game/") !== 0 || !/\.xml$/i.test(desc.resource)) {
-      throw new Error('ui.hud: resource must be under panorama/layout/custom_game/ and end in .xml');
+      fail("resource must be under panorama/layout/custom_game/ and end in .xml");
     }
     var vxmlErr = rejectVxml(desc.resource);
-    if (vxmlErr) throw new Error("ui.hud: " + vxmlErr);
-    if (typeof desc.hideClass !== "string" || !desc.hideClass) {
-      throw new Error("ui.hud: descriptor.hideClass is required");
-    }
-    if (!Array.isArray(desc.buttons)) throw new Error("ui.hud: descriptor.buttons must be an array");
+    if (vxmlErr) fail(vxmlErr);
+    var buttons = Array.isArray(desc.buttons) ? desc.buttons : [];
     var seenBtn = {};
-    for (var b = 0; b < desc.buttons.length; b++) {
-      var bid = desc.buttons[b];
-      if (!bid) throw new Error("ui.hud: button ids must be non-empty");
-      if (seenBtn[bid]) throw new Error('ui.hud: duplicate button id "' + bid + '"');
+    for (var b = 0; b < buttons.length; b++) {
+      var bid = buttons[b];
+      if (!bid) fail("button ids must be non-empty");
+      if (seenBtn[bid]) fail('duplicate button id "' + bid + '"');
       seenBtn[bid] = true;
     }
     if (desc.slots) {
       for (var poolName in desc.slots) {
         if (!Object.prototype.hasOwnProperty.call(desc.slots, poolName)) continue;
         var pool = desc.slots[poolName];
-        if (!Array.isArray(pool)) throw new Error('ui.hud: slots.' + poolName + " must be an array");
+        if (!Array.isArray(pool)) fail("slots." + poolName + " must be an array");
         for (var i = 0; i < pool.length; i++) {
           var slotDef = pool[i];
           if (!slotDef || !slotDef.id || !Array.isArray(slotDef.vars)) {
-            throw new Error('ui.hud: slots.' + poolName + "[" + i + "] needs { id, vars[] }");
+            fail("slots." + poolName + "[" + i + "] needs { id, vars[] }");
           }
         }
       }
     }
-    return desc;
+    return {
+      addons: desc.addons,
+      resource: desc.resource,
+      hideClass: desc.hideClass || "s2-hide",
+      text: desc.text || {},
+      buttons: buttons,
+      meters: desc.meters || {},
+      slots: desc.slots
+    };
   }
 
   function parseMmAddons(raw) {
@@ -164,13 +192,32 @@
     var meterClass = {};
     var visiblePanels = {};
     var cursorLeases = {};
+    var lastValue = {};
+    var slotViews = {};
+
+    function cacheKey(slot, kind, a, b) {
+      return slotPrefix(slot) + kind + "|" + a + "|" + (b == null ? "" : b);
+    }
+
+    function forgetKeyed(map, slot) {
+      var prefix = slotPrefix(slot);
+      for (var key in map) {
+        if (Object.prototype.hasOwnProperty.call(map, key) && key.indexOf(prefix) === 0) {
+          delete map[key];
+        }
+      }
+    }
 
     function setClass(slot, panelId, className, on) {
       if (!setHasClassForPlayer) return "unavailable: " + engineStatus("setHasClassForPlayer");
       if (slot < 0) return "needs a player slot";
       var ent = ctxState.ensureEntity(layout);
       if (!ent) return ctxState.notReadyReason();
+      var key = cacheKey(slot, "c", panelId, className);
+      var s = on ? "1" : "0";
+      if (lastValue[key] === s) return null;
       setHasClassForPlayer(ent, slot, panelId, className, on ? CLASS_HAS : CLASS_DOES_NOT_HAVE);
+      lastValue[key] = s;
       return null;
     }
 
@@ -181,7 +228,11 @@
       if (slot < 0) return "needs a player slot";
       var ent = ctxState.ensureEntity(layout);
       if (!ent) return ctxState.notReadyReason();
-      setDialogVariableStringForPlayer(ent, slot, panelId, variableName, String(value));
+      var str = String(value);
+      var key = cacheKey(slot, "v", panelId, variableName);
+      if (lastValue[key] === str) return null;
+      setDialogVariableStringForPlayer(ent, slot, panelId, variableName, str);
+      lastValue[key] = str;
       return null;
     }
 
@@ -212,117 +263,138 @@
     }
 
     function trackVisible(slot, panelId, on) {
-      var key = slot + ":" + panelId;
+      var key = slotPrefix(slot) + panelId;
       if (on) visiblePanels[key] = true;
       else delete visiblePanels[key];
     }
 
-    return {
-      layout: layout,
-      show: function (slot, panelId, opts) {
-        opts = opts || {};
-        var err = setClass(slot, panelId, layout.hideClass, false);
+    var api = { spec: layout, layout: layout };
+
+    api.show = function (slot, panelId, opts) {
+      opts = opts || {};
+      var err = setClass(slot, panelId, layout.hideClass, false);
+      if (err) return err;
+      trackVisible(slot, panelId, true);
+      if (opts.cursor) return acquireCursor(slot, panelId);
+      return null;
+    };
+    api.hide = function (slot, panelId) {
+      var err = setClass(slot, panelId, layout.hideClass, true);
+      if (err) return err;
+      trackVisible(slot, panelId, false);
+      return releaseCursor(slot, panelId);
+    };
+    api.cursor = function (slot, on) {
+      return on ? acquireCursor(slot, "*") : releaseCursor(slot, "*");
+    };
+    api.set = function (slot, id, value) {
+      if (isFields(id)) {
+        return applyFields(id, function (k, v) { return setDialogVariable(slot, k, k, v); });
+      }
+      return setDialogVariable(slot, id, id, value);
+    };
+    api.setText = function (slot, panelId, value) {
+      if (isFields(panelId)) {
+        return applyFields(panelId, function (k, v) { return api.setText(slot, k, v); });
+      }
+      var varName = layout.text[panelId] || panelId;
+      return setDialogVariable(slot, panelId, varName, value);
+    };
+    api.setClass = setClass;
+    api.setMeter = function (slot, meterName, percent) {
+      var fillId = layout.meters[meterName];
+      if (!fillId) return 'no meter "' + meterName + '" in this layout';
+      var next = meterClassFor(percent);
+      var key = slotPrefix(slot) + fillId;
+      var prev = meterClass[key];
+      if (prev && prev !== next) {
+        var err = setClass(slot, fillId, prev, false);
         if (err) return err;
-        trackVisible(slot, panelId, true);
-        if (opts.cursor) return acquireCursor(slot, panelId);
-        return null;
-      },
-      hide: function (slot, panelId) {
-        var err = setClass(slot, panelId, layout.hideClass, true);
-        if (err) return err;
-        trackVisible(slot, panelId, false);
-        return releaseCursor(slot, panelId);
-      },
-      cursor: function (slot, on) {
-        return on ? acquireCursor(slot, "*") : releaseCursor(slot, "*");
-      },
-      set: function (slot, id, value) {
-        return setDialogVariable(slot, id, id, value);
-      },
-      setText: function (slot, panelId, value) {
-        var varName = layout.text[panelId];
-        if (!varName) return 'panel "' + panelId + '" declares no text variable in this layout';
-        return setDialogVariable(slot, panelId, varName, value);
-      },
-      setClass: setClass,
-      setMeter: function (slot, meterName, percent) {
-        var fillId = layout.meters[meterName];
-        if (!fillId) return 'no meter "' + meterName + '" in this layout';
-        var next = meterClassFor(percent);
-        var key = slot + ":" + fillId;
-        var prev = meterClass[key];
-        if (prev && prev !== next) {
-          var err = setClass(slot, fillId, prev, false);
-          if (err) return err;
+      }
+      var applied = setClass(slot, fillId, next, true);
+      if (!applied) meterClass[key] = next;
+      return applied;
+    };
+    api.capacity = function (poolName) {
+      var pool = layout.slots && layout.slots[poolName];
+      return pool ? pool.length : 0;
+    };
+    api.setPool = function (slot, poolName, entries) {
+      var pool = layout.slots && layout.slots[poolName];
+      if (!pool) return 'no pool "' + poolName + '" in this layout';
+      if (entries.length > pool.length) {
+        return 'pool "' + poolName + '" holds ' + pool.length + ' slot(s); ' + entries.length +
+          " given — paginate instead";
+      }
+      for (var i = 0; i < pool.length; i++) {
+        var slotDef = pool[i];
+        var row = entries[i];
+        if (!row) {
+          var hideErr = setClass(slot, slotDef.id, layout.hideClass, true);
+          if (hideErr) return hideErr;
+          continue;
         }
-        err = setClass(slot, fillId, next, true);
-        if (!err) meterClass[key] = next;
-        return err;
-      },
-      capacity: function (poolName) {
-        var pool = layout.slots && layout.slots[poolName];
-        return pool ? pool.length : 0;
-      },
-      setPool: function (slot, poolName, entries) {
-        var pool = layout.slots && layout.slots[poolName];
-        if (!pool) return 'no pool "' + poolName + '" in this layout';
-        if (entries.length > pool.length) {
-          return 'pool "' + poolName + '" holds ' + pool.length + ' slot(s); ' + entries.length +
-            " given — paginate instead";
-        }
-        for (var i = 0; i < pool.length; i++) {
-          var slotDef = pool[i];
-          var row = entries[i];
-          if (!row) {
-            var hideErr = setClass(slot, slotDef.id, layout.hideClass, true);
-            if (hideErr) return hideErr;
-            continue;
-          }
-          var showErr = setClass(slot, slotDef.id, layout.hideClass, false);
-          if (showErr) return showErr;
-          for (var f = 0; f < slotDef.vars.length && f < row.length; f++) {
-            var varErr = setDialogVariable(slot, slotDef.id, slotDef.vars[f], row[f]);
-            if (varErr) return varErr;
-          }
-        }
-        return null;
-      },
-      onClick: function (buttonId, handler) {
-        if (ctxState.buttonHandlers[buttonId]) {
-          throw new Error('ui: conflicting handler for button id "' + buttonId + '"');
-        }
-        ctxState.buttonHandlers[buttonId] = handler;
-        handlers[buttonId] = handler;
-        onFirstClickHandler();
-      },
-      setDisabled: function (slot, buttonId, disabledOn) {
-        var set = disabled[slot];
-        if (!set) { set = {}; disabled[slot] = set; }
-        if (disabledOn) set[buttonId] = true; else delete set[buttonId];
-        return setClass(slot, buttonId, "s2-btn-disabled", disabledOn);
-      },
-      dispatchClick: function (slot, buttonId) {
-        if (disabled[slot] && disabled[slot][buttonId]) return false;
-        var h = handlers[buttonId];
-        if (!h) return false;
-        h(slot);
-        return true;
-      },
-      forget: function (slot) {
-        delete disabled[slot];
-        delete cursorLeases[slot];
-        for (var key in meterClass) {
-          if (Object.prototype.hasOwnProperty.call(meterClass, key) && key.indexOf(slot + ":") === 0) {
-            delete meterClass[key];
-          }
-        }
-        for (var vis in visiblePanels) {
-          if (Object.prototype.hasOwnProperty.call(visiblePanels, vis) && vis.indexOf(slot + ":") === 0) {
-            delete visiblePanels[vis];
-          }
+        var showErr = setClass(slot, slotDef.id, layout.hideClass, false);
+        if (showErr) return showErr;
+        for (var f = 0; f < slotDef.vars.length && f < row.length; f++) {
+          var varErr = setDialogVariable(slot, slotDef.id, slotDef.vars[f], row[f]);
+          if (varErr) return varErr;
         }
       }
+      return null;
     };
+    api.onClick = function (buttonId, handler) {
+      if (ctxState.buttonHandlers[buttonId]) {
+        throw new Error('CustomHud: conflicting handler for button id "' + buttonId + '"');
+      }
+      ctxState.buttonHandlers[buttonId] = handler;
+      handlers[buttonId] = handler;
+      onFirstClickHandler();
+    };
+    api.setDisabled = function (slot, buttonId, disabledOn) {
+      var set = disabled[slot];
+      if (!set) { set = {}; disabled[slot] = set; }
+      if (disabledOn) set[buttonId] = true; else delete set[buttonId];
+      return setClass(slot, buttonId, "s2-btn-disabled", disabledOn);
+    };
+    api.dispatchClick = function (slot, buttonId) {
+      if (disabled[slot] && disabled[slot][buttonId]) return false;
+      var h = handlers[buttonId];
+      if (!h) return false;
+      h(api.forSlot(slot));
+      return true;
+    };
+    api.forget = function (slot) {
+      delete disabled[slot];
+      delete cursorLeases[slot];
+      forgetKeyed(meterClass, slot);
+      forgetKeyed(visiblePanels, slot);
+      forgetKeyed(lastValue, slot);
+    };
+    api.ensure = function () {
+      var ref = ctxState.createEntity(layout);
+      return ref ? null : ctxState.notReadyReason();
+    };
+    api.forSlot = function (slot) {
+      var view = slotViews[slot];
+      if (view) return view;
+      view = {
+        slot: slot,
+        show: function (panelId, opts) { return api.show(slot, panelId, opts); },
+        hide: function (panelId) { return api.hide(slot, panelId); },
+        cursor: function (on) { return api.cursor(slot, on); },
+        set: function (id, value) { return api.set(slot, id, value); },
+        setText: function (panelId, value) { return api.setText(slot, panelId, value); },
+        setClass: function (panelId, className, on) { return api.setClass(slot, panelId, className, on); },
+        setMeter: function (meterName, percent) { return api.setMeter(slot, meterName, percent); },
+        setPool: function (poolName, entries) { return api.setPool(slot, poolName, entries); },
+        setDisabled: function (buttonId, on) { return api.setDisabled(slot, buttonId, on); },
+        forget: function () { api.forget(slot); }
+      };
+      slotViews[slot] = view;
+      return view;
+    };
+    return api;
   }
 
   globalThis.__s2pkg_game_ctx = Object.assign({}, globalThis.__s2pkg_game_ctx, {
@@ -466,30 +538,44 @@
               }
             }
             for (var r = 0; r < rawClickHandlers.length; r++) {
-              rawClickHandlers[r]({ player: view.player, buttonId: view.buttonId });
+              rawClickHandlers[r]({ player: view.player, buttonId: view.buttonId, slot: slot });
             }
             return 0;
           });
         }));
       }
 
+      function getLayout(desc) {
+        maybePrintMamBanner(desc);
+        remember(desc);
+        if (!hudByResource[desc.resource]) {
+          hudByResource[desc.resource] = makeHud(desc, ctxState(), installClickHook);
+        }
+        if (ready) ctxState().createEntity(desc);
+        return hudByResource[desc.resource];
+      }
+
+      function onClicked(handler) {
+        installClickHook();
+        rawClickHandlers.push(handler);
+      }
+
       return {
-        hud: function (descriptor) {
-          var desc = validateDescriptor(descriptor || DEFAULT_DESCRIPTOR);
-          maybePrintMamBanner(desc);
-          remember(desc);
-          if (!hudByResource[desc.resource]) {
-            hudByResource[desc.resource] = makeHud(desc, ctxState(), installClickHook);
-          }
-          if (ready) ctxState().createEntity(desc);
-          return hudByResource[desc.resource];
+        PROBE: DEFAULT_DESCRIPTOR,
+        create: function (spec) {
+          if (spec == null) fail("a layout spec is required (use CustomHudLayout.probe() for the workshop probe)");
+          return getLayout(validateDescriptor(spec));
         },
+        probe: function () {
+          return getLayout(validateDescriptor(DEFAULT_DESCRIPTOR));
+        },
+        onClicked: onClicked,
         /**
-         * Spawn the layout entity for `descriptor` (default descriptor if omitted).
+         * Spawn the layout entity for `descriptor` (probe layout if omitted).
          *
          * Call from player-join, a game event, a command, or any other callback after a client
          * is active. Returns null on success, or a reason (the world is not ready yet, or spawn
-         * failed). Idempotent. `hud()` / `components()` also spawn once a client is active.
+         * failed). Idempotent. `create()` / `kit` also spawn once a client is active.
          */
         createLayout: function (descriptor) {
           var desc = validateDescriptor(descriptor || DEFAULT_DESCRIPTOR);
@@ -498,14 +584,18 @@
           var ref = st.createEntity(desc);
           return ref ? null : st.notReadyReason();
         },
-        onCustomHudClicked: function (handler) {
-          installClickHook();
-          rawClickHandlers.push(handler);
-        }
+        hud: function (descriptor) {
+          return getLayout(validateDescriptor(descriptor || DEFAULT_DESCRIPTOR));
+        },
+        onCustomHudClicked: onClicked
       };
     }
   });
   if (typeof globalThis.__s2_game_ns === "function" && globalThis.__s2pkg_cs2) {
-    globalThis.__s2pkg_cs2.ui = globalThis.__s2_game_ns("ui");
+    var ns = globalThis.__s2_game_ns("ui");
+    globalThis.__s2pkg_cs2.ui = ns;
+    globalThis.__s2pkg_cs2.CustomHudLayout = ns;
+    globalThis.__s2pkg_cs2.PROBE_LAYOUT = DEFAULT_DESCRIPTOR;
+    globalThis.__s2pkg_cs2.DEFAULT_HUD_DESCRIPTOR = DEFAULT_DESCRIPTOR;
   }
 })();
