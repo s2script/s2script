@@ -1,5 +1,33 @@
 # @s2script/cli
 
+## 0.23.0
+
+### Minor Changes
+
+- 4745b5c: Add ctx-free load-window APIs (`command` / `command.admin` / `command.server`, `hook.damage`, free `publish` / `use` / `tryUse`) bound to the plugin factory. Command handlers may return `HookResult`. `s2s build` treats producer-as-import specifiers as dependency usage.
+- 877cc23: Accept `export function OnPluginStart` as a plugin artifact (alongside `plugin()`). `s2s create` scaffolds publics. Load-window `topmenu` and `translations` bind on `@s2script/sdk/plugin`.
+- ac3fc9b: `plugin((ctx) => …)` is no longer a public authoring API. Plugins export `OnPluginStart` (plus named publics). Load-window `hook.*` / `previous()` / `pluginId()` / `command.onClientCommand` cover the remaining ctx-only gaps. CS2 `ui`, `gameRules`, `players`, and `items` are free load-window exports. 0.x minor bump.
+- 41ef7d6: Game-event subscriptions are `hook.events.on` / `hook.events.onPre` (no positional `"pre"` phase). `hook.topmenu` is removed; use the free `topmenu` export. 0.x minor bump.
+- e53d269: `hook` is game events only (`hook.on` / `hook.onPre`). Lifecycle is named publics (`OnMapEnd`, `OnTakeDamage`, `OnGameFrame`, …). `hook.client` / `hook.entity` / `hook.server` are removed. Filtered entity I/O is the free `onOutput`. 0.x minor bump.
+- c3dde5b: `hook` is nested by subject: `hook.client.onFullyConnected`, `hook.entity.onDamage`, `hook.server.onGameFrame`. Flat aliases (`hook.fullyConnect`, `hook.damage`, `hook.gameFrame`, …) are removed. `hook.event` and `hook.topmenu` stay top-level. 0.x minor bump.
+- fb2434c: Root import `from "@s2script/sdk"` is a valid authoring barrel (engine-generic names only; `Player` stays on `@s2script/cs2`). `plugin()` imported from the barrel is still visible to `no-ctx-escape`.
+- 0079d74: SDKHooks lifecycle virtuals (`Spawn` / `Think` / `Use` / `GetMaxHealth` / `ShouldCollide` / `PreThink` / `PostThink` / `VPhysicsUpdate` / `GroundEntChangedPost` / `CanBeAutobalanced` and matching `*Post`) on the existing `SDKHook` / `SDKUnhook` API, plus `UseType`. Wiki names with no engine backing return `false`; unknown type strings still throw.
+- 2a16059: SDKHookType.SetTransmit on the existing CheckTransmit POST path. AND-merge with Transmit.setVisibleTo: either API can hide; SetTransmit cannot un-hide a native mask clear. There is no SetTransmitPost.
+- b4200fb: SDKHooks Touch family (`StartTouch` / `Touch` / `EndTouch` / `Blocked` and `*Post`) on the existing `SDKHook` / `SDKUnhook` API. Wiki names with no engine backing return `false`; unknown type strings still throw.
+- cd06cab: SDKHooks remaining wiki types: `OnTakeDamagePost` (DTA after the original), Weapon\*/Reload (VP, degrade without a signature), and `OnTakeDamageAlive` / `TraceAttack` / `FireBulletsPost` (typecheck, `SDKHook` returns `false` until a live path exists).
+- 4df7325: First-party SDKHooks: `SDKHook` / `SDKUnhook` / `SDKHookType` (OnTakeDamage). The fake `OnTakeDamage` named public and `ctx.entities.onDamage` are removed. 0.x minor bump.
+- 920c823: Host-subscribe remaining SourceMod-named publics (`OnClient*`, `OnMapEnd`, `OnConfigsExecuted`, `OnAllPluginsLoaded`). `hook.event` / `hook.output` / `hook.topmenu` plus load-window `createScope`. `Command` is an alias for `CommandInvocation`; `config.onChange` is typed.
+
+### Patch Changes
+
+- f13e6ab: Document that owned command handlers return HookResult.Handled (SM Plugin_Handled).
+- 2e51352: Raise plugin typecheck and esbuild target to ES2024 so authors can use `Object.groupBy` and other ES2024 lib APIs. CLI compile (`packages/sdk/tsconfig.json`) stays ES2020.
+- 88b508c: `s2s create` CS2 scaffold and command JSDoc use the barrel + `HookResult.Handled` (SM `Plugin_Handled`).
+- 3ec0430: TriggerZone / OutputEvent docs name the current `onOutput` subscribe. The `@s2script/zones` contract's `on` is ledgered (`void`, no `off`).
+- Updated dependencies [ac3fc9b]
+- Updated dependencies [fb2434c]
+  - @s2script/eslint-plugin@0.2.1
+
 ## 0.22.0
 
 ### Minor Changes
