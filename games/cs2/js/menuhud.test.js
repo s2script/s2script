@@ -8,6 +8,7 @@ const source = readFileSync(join(__dirname, "menuhud.js"), "utf8");
 function mount(options = {}) {
   const calls = [];
   const handlers = {};
+  const frameHandlers = [];
   const claim = {
     open: (slot, opts) => calls.push({ method: "open", slot, opts }),
     close: (slot) => calls.push({ method: "close", slot }),
@@ -36,6 +37,14 @@ function mount(options = {}) {
     Menu: { registerRenderer: (renderer) => { globalThis.registeredRenderer = renderer; } }
   };
   globalThis.__s2pkg_hudinput = { HudInput: hudInput };
+  globalThis.__s2pkg_frame = {
+    OnGameFrame: {
+      subscribe: (fn) => {
+        frameHandlers.push(fn);
+        return { dispose: () => {} };
+      }
+    }
+  };
   globalThis.Player = { fromSlot: () => ({ pawn }) };
   delete globalThis.__s2pkg_menuhud;
   delete globalThis.registeredRenderer;
@@ -45,6 +54,7 @@ function mount(options = {}) {
     calls,
     handlers,
     hudInput,
+    frame: () => frameHandlers.forEach((fn) => fn()),
     pawn,
     renderer: globalThis.registeredRenderer,
     claim
@@ -81,6 +91,7 @@ test.afterEach(() => {
   delete globalThis.__s2pkg_components;
   delete globalThis.__s2pkg_menu;
   delete globalThis.__s2pkg_hudinput;
+  delete globalThis.__s2pkg_frame;
   delete globalThis.Player;
   delete globalThis.__s2pkg_menuhud;
   delete globalThis.registeredRenderer;
@@ -163,7 +174,8 @@ test("tab activation arms HudInput and opens without the cursor", () => {
   const opened = mounted.calls.find((call) => call.method === "open");
   assert.deepStrictEqual(opened.opts, { cursor: false });
   assert.strictEqual(mounted.hudInput.arms.length, 1);
-  mounted.hudInput.arms[0].opts.onActivate();
+  mounted.hudInput.active[3] = true;
+  mounted.frame();
   assert.ok(mounted.calls.some((call) =>
     call.method === "setCursor" && call.slot === 3 && call.on === true));
   mounted.renderer.hide(s);
