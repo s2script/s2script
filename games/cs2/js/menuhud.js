@@ -8,11 +8,14 @@
   var menuPackage = globalThis.__s2pkg_menu;
   var Menu = menuPackage && menuPackage.Menu;
   var HudInput = globalThis.__s2pkg_hudinput && globalThis.__s2pkg_hudinput.HudInput;
+  var OnGameFrame = globalThis.__s2pkg_frame && globalThis.__s2pkg_frame.OnGameFrame;
   var claim = hudkit && typeof hudkit.modal === "function" ? hudkit.modal() : null;
   var frozenSlots = new Set();
   var frozenMoveTypes = {};
   var activationBySlot = {};
   var routesBySlot = {};
+  var tabSlots = {};
+  var tabPoll = null;
   var MOVETYPE_NONE = 0;
 
   function log(message) {
@@ -87,6 +90,35 @@
     return value && (value.id || value.action || value.name);
   }
 
+  function stopTabPollIfIdle() {
+    for (var slot in tabSlots) {
+      if (tabSlots[slot]) return;
+    }
+    if (tabPoll && typeof tabPoll.dispose === "function") tabPoll.dispose();
+    tabPoll = null;
+  }
+
+  function observeTabActivation(slot) {
+    if (!HudInput) return;
+    var active = typeof HudInput.isActive === "function" && HudInput.isActive(slot);
+    if (!active && typeof HudInput.consumeActive === "function") {
+      active = HudInput.consumeActive(slot);
+    }
+    if (!active) return;
+    if (typeof claim.setCursor === "function") claim.setCursor(slot, true);
+    delete tabSlots[slot];
+    stopTabPollIfIdle();
+  }
+
+  function ensureTabPoll() {
+    if (tabPoll || !OnGameFrame || typeof OnGameFrame.subscribe !== "function") return;
+    tabPoll = OnGameFrame.subscribe(function () {
+      for (var slot in tabSlots) {
+        if (tabSlots[slot]) observeTabActivation(slot | 0);
+      }
+    });
+  }
+
   function display(session) {
     var slot = slotFor(session);
     if (slot < 0 || !session || typeof session.pageItems !== "function") return;
@@ -140,19 +172,10 @@
     if (activation === "immediate") {
       if (session.menu.freezePlayer) freeze(slot, session);
     } else if (HudInput && typeof HudInput.arm === "function") {
-      HudInput.arm(slot, {
-        onActivate: function () {
-          // Do not re-open the modal: activation must preserve its current page and handlers.
-          // The setCursor method is supplied by the components.js host patch. Without it,
-          // open(..., { cursor: false }) still paints the tab-waiting sheet but cannot acquire
-          // the cursor after activation.
-          if (typeof claim.setCursor === "function") claim.setCursor(slot, true);
-        }
-      });
-      if (typeof HudInput.isActive === "function" && HudInput.isActive(slot) &&
-          typeof claim.setCursor === "function") {
-        claim.setCursor(slot, true);
-      }
+      HudInput.arm(slot);
+      tabSlots[slot] = true;
+      ensureTabPoll();
+      observeTabActivation(slot);
     }
   }
 
@@ -165,6 +188,8 @@
         typeof HudInput.disarm === "function") {
       HudInput.disarm(slot);
     }
+    delete tabSlots[slot];
+    stopTabPollIfIdle();
     delete activationBySlot[slot];
     delete routesBySlot[slot];
   }
