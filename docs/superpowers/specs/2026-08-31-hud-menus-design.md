@@ -32,6 +32,7 @@ Today every interactive list is one of two CS2-specific hacks:
 8. **Votes are a right-side rail, not a Menu and not a center sheet.** Unsolicited, so they must not cover the crosshair or steal the mouse until Tab. **Waiting (Tab instead of scoreboard) lasts until the player picks or the vote expires.** After they cast (HUD click or chat digit), the rail **stays up until expiry** but is no longer waiting: `HudInput.disarm`, `cursor(false)`, pick highlighted, **counts revealed and ticking**. If they never pick, expiry still disarms and **hides** the rail. Before they cast, option labels are visible and counts are hidden (no bandwagon). Chat digits still cast. One chat line points at the rail; do not print the option list. HTML `show_survival_respawn_status` tally is retired on CS2. One vote at a time already — one rail panel, per-player `ForPlayer`.
 9. **Tab intercept is a CS2 host primitive (`HudInput`), not per-plugin `onRunCmd`.** `IN_SCORE` (`1 << 16`) is cleared on the live usercmd while a slot is armed. Live-gate must prove CS2’s scoreboard actually respects a server-side clear; if it does not, HUD still activates and the caveat is documented — do not invent a second key.
 10. **GitHub stack via `gh stack`.** Bottom: `cursor/cs2-custom-hud-layout`. This spec/plan is the next layer. Implementation layers `gh stack add` on top. Not Graphite / not `gt`.
+11. **`!menu` / `sm_menu` is the player hub over the same TopMenu registry as `sm_admin`.** Plugins **opt in** per item (`sheets: ["menu"]`). Default remains `["admin"]`, so today’s Kick/Ban/Slap stay on `sm_admin` only. The hub is a **center** HUD sheet (user-requested → immediate cursor), category → items, same drill-down as `sm_admin`. Each player only sees categories/items they can use (`flags === 0` or they have those ADMFLAGs / ROOT). An empty hub replies that nothing is available — it does not open a blank sheet.
 
 ## Explicit non-goals
 
@@ -42,14 +43,15 @@ Today every interactive list is one of two CS2-specific hacks:
 - Engine SUPERCEDE of `+showscores` as a ConCommand (usercmd bit only).
 - Replacing toasts/badges; they are not menus.
 - Making `hudkit` disabled rows refuse `onPick` globally (Menu renderer handles it; a later hudkit change may follow).
-- Re-arming Tab after a player has voted so they can HUD-revote. Chat-digit revote still updates the highlight and counts.
+- Merging `sm_admin` into `!menu`. Admins keep `sm_admin`. Player items opt into `!menu`. An item may list both sheets.
+- Auto-publishing every TopMenu item on `!menu`. Opt-in is required (`sheets`).
 
 ---
 
 ## Authoring shape
 
 ```ts
-import { Menu, MenuStyle, Vote } from "@s2script/sdk";
+import { Menu, MenuStyle, Vote, topmenu, ADMFLAG } from "@s2script/sdk";
 
 // User-requested — admin / !nominate / top menu. Cursor on immediately.
 const m = new Menu("Nominate a map");
@@ -60,6 +62,24 @@ m.addItem("de_dust2", "de_dust2");
 m.addItem("de_mirage", "de_mirage (played recently)", { disabled: true });
 m.onSelect((e) => nominate(e.slot, e.info));
 m.display(slot, 30);
+
+// Opt a category into the player hub (!menu / sm_menu). flags 0 = everyone.
+topmenu.addCategory("Maps");
+topmenu.addItem("Maps", {
+  id: "nominations:open",
+  name: "Nominate",
+  flags: 0,
+  sheets: ["menu"],
+  onSelect: (slot) => nominateMenu(slot),
+});
+
+// Existing admin items stay admin-only unless they also pass sheets: ["admin", "menu"].
+topmenu.addItem("Player Commands", {
+  id: "basebans:kick",
+  name: "Kick",
+  flags: ADMFLAG.KICK,
+  onSelect: (adminSlot) => { /* pickPlayer … */ },
+});
 
 // Votes are not a Menu. Vote.start paints a right-side rail (CS2 presenter).
 Vote.start({
@@ -92,6 +112,10 @@ plugin  →  Menu.display(slot)          user-requested lists
                 ▼
          CS2 HUD renderer  ── center hudkit sheet (s2_mN)
                 └── activation immediate → cursor [+ freeze]
+
+plugin  →  topmenu.addItem(..., { sheets: ["menu"] })
+player  →  !menu / sm_menu            same center sheet, flag-filtered
+admin   →  sm_admin                   same registry, sheets: ["admin"]
 
 plugin  →  Vote.start(...)             unsolicited ballot
                 │
@@ -221,18 +245,56 @@ Optional later: `s2-vote-left` class. v1 is right only.
 
 `Vote` stays engine-generic. CS2 registers the rail presenter; prelude does not import hudkit.
 
+### Player hub (`!menu` / `sm_menu`)
+
+Same TopMenu registry, same center HUD sheet, different filter. This is not a second widget.
+
+**`TopMenuSheet`:** `"admin"` | `"menu"`. Stored on the **item** (plugins opt in where they already `addItem`). Default `["admin"]` — existing Kick/Ban/Slap registrations do not appear on `!menu`.
+
+```ts
+topmenu.addItem("Maps", {
+  id: "nominations:open",
+  name: "Nominate",
+  flags: 0,                 // everyone
+  sheets: ["menu"],         // player hub only
+  onSelect: (slot) => nominateMenu(slot),
+});
+```
+
+An item may pass `sheets: ["admin", "menu"]` to show on both hubs.
+
+**Access:** an item is visible to `slot` when `flags === 0`, or the player is ROOT, or they have every bit in `flags` (same test as today’s `adminmenu`). A category is listed when it has ≥1 visible item **on that sheet**.
+
+**Commands** (owned by `plugins/adminmenu`, the TopMenu renderer):
+
+| Command | Sheet | Who |
+|---|---|---|
+| `sm_admin` | `"admin"` | in-game admins only (unchanged deny for non-admins) |
+| `sm_menu` / `!menu` | `"menu"` | any in-game player |
+
+`!menu` is the chat form of `sm_menu` (command system already maps `!` to `sm_`). Cookbook currently owns `sm_menu` — rename that demo to `sm_menudemo` in the hub PR.
+
+**Empty hub:** if the player has zero visible `"menu"` items, reply (do not open a sheet). Same idea as adminmenu’s “No Admin Actions Available”.
+
+**Render:** extract `showSheet(slot, sheet)` from today’s category → item drill-down. Immediate HUD, freeze like `sm_admin` (they asked). `TopMenu.select` on pick, unchanged.
+
+**Core:** `__s2_topmenu_add_item` grows an optional sheets payload (prelude default `"admin"`). `snapshot().items[]` includes `sheets: TopMenuSheet[]`. Isolate tests: default admin; menu-only item absent from `sm_admin` filter; flags 0 visible to a non-admin on the menu sheet.
+
+**Dogfood:** nominations registers `Maps` / Nominate with `sheets: ["menu"]`, `flags: 0`, `onSelect` → existing `nominateMenu`. Do not put Slap on `!menu`.
+
 ### Plugin cutover
 
 Because the renderer swap is CS2-global, **most plugins need no logic change**:
 
 | Caller | Today | After |
 |---|---|---|
-| `adminmenu` | Center + freeze | same Menu; immediate HUD + freeze |
+| `adminmenu` | Center + freeze; `sm_admin` only | same + `showSheet`; `!menu` / `sm_menu` player hub |
 | `basecommands` map picker | Center + freeze | same |
 | `basebans` duration | Center + freeze | same |
 | `pickPlayer` | Center + freeze | same |
-| `nominations` | Chat, disabled recent | same Menu; HUD immediate, recent still disabled |
-| cookbook / hud-lab demos | Center or Chat | HUD |
+| `nominations` | Chat, disabled recent | HUD immediate; also opted into `!menu` as Maps / Nominate |
+| cookbook `sm_menu` | Center demo | renamed `sm_menudemo` (hub takes `sm_menu`) |
+| hud-lab demos | Center or Chat | HUD |
 | `basevotes` / RTV / funvotes | `Vote.start` chat + optional center HTML tally | right-side rail; Tab until cast, then live counts |
 
 Comment-only edits where they say “WASD” / “type the number”. Nominations must keep `{ disabled: true }` on cooldown maps.
@@ -264,14 +326,16 @@ If step 2 still shows the scoreboard, record it and ship activate-anyway. Do not
 - New menu on the same slot: previous disarmed (`NewMenu`).
 - Disconnect: disarm.
 - Vote rail: `show` paints right-side panel, no cursor, `HudInput.isArmed`; click/digit → `choice` set, counts appear, disarmed, panel still shown; later `show` with new counts updates numbers; `clear` hides **and** disarms a slot that never voted.
-- Voted-state clicks do not recast via HUD.
+- TopMenu `sheets`: default `["admin"]`; menu-only item is omitted from the admin filter; `flags === 0` is visible to a non-admin on the menu sheet.
+- `!menu` with no opted-in items replies; does not open a sheet.
 
 **Live CS2 (cloud VM, after renderer PR):**
 
 - `sm_admin` → sheet + cursor + freeze; click a category; Tab is scoreboard (immediate, not armed).
 - `sm_nominate` (no arg, plugin enabled) → sheet with recent maps grey; click refuses them; click an available map nominates.
 - `sm_votekick` as a non-admin victim: right-side rail visible, can move/shoot, crosshair free; Tab captures mouse instead of scoreboard; click Yes; rail stays with counts ticking; Tab is scoreboard; chat `1` still casts without Tab.
-- After vote ends the rail hides.
+- `!menu` as a non-admin: only Maps/Nominate (once opted in); click opens nominate HUD. `sm_admin` still denies that player.
+- `!menu` with nothing opted in: chat reply, no sheet.
 
 ---
 
@@ -280,4 +344,4 @@ If step 2 still shows the scoreboard, record it and ship activate-anyway. Do not
 - `Menu.activation` is engine-generic (a string on the Menu model).
 - `HudInput`, IN_SCORE, cursor, freeze, hudkit paint are CS2 (`games/cs2/js`, `@s2script/cs2`).
 - `Vote` remains engine-generic; CS2 registers the rail presenter. `VoteTally.choice` is a generic additive field.
-- Workshop addon `3790153369` / `s2script_lib.xml` **gains** the `s2_vote*` family + right-dock CSS. Center modal pool is unchanged.
+- TopMenu `sheets` + snapshot field are engine-generic (core registry). `sm_menu` / `!menu` rendering stays in `adminmenu` (CS2 plugin).
