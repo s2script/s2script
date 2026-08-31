@@ -52,7 +52,7 @@ if [ -f games/cs2/js/pawn.js ]; then
     # weapon.js MUST run after schema.generated.js (needs __s2pkg_cs2_schema) and before pawn.js
     # (whose acquisition getters reference globalThis.__s2pkg_cs2.Weapon); it MERGES into
     # globalThis.__s2pkg_cs2 like csitem.generated.js, so exact position among the others doesn't matter.
-    cat games/cs2/js/schema.generated.js games/cs2/js/nav.generated.js games/cs2/js/activity.js games/cs2/js/csitem.generated.js games/cs2/js/weapon.js games/cs2/js/pawn.js games/cs2/js/ui.js games/cs2/js/components.js > "$DIST/s2script/js/pawn.js"
+    cat games/cs2/js/schema.generated.js games/cs2/js/nav.generated.js games/cs2/js/activity.js games/cs2/js/csitem.generated.js games/cs2/js/weapon.js games/cs2/js/pawn.js games/cs2/js/ui.js games/cs2/js/components.js games/cs2/js/hudinput.js games/cs2/js/menuhud.js games/cs2/js/voterail.js > "$DIST/s2script/js/pawn.js"
 fi
 
 # --- Runtime dirs (plugins drop zone + writable configs/data) ---
