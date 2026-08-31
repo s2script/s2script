@@ -1,6 +1,6 @@
-// @s2script/cs2 — ctx.ui.components(): a generic Panorama component library.
+// @s2script/cs2 — ui.components(): a generic Panorama component library.
 //
-// WHY THIS EXISTS. ctx.ui.hud() is the primitive: it drives panel ids and dialog variables that
+// WHY THIS EXISTS. ui.hud() is the primitive: it drives panel ids and dialog variables that
 // some .xml declares. Used directly, every plugin needs its OWN layout, which means every plugin
 // author must open Workshop Tools and publish an addon before drawing a single row. That is a
 // non-starter for a plugin ecosystem, and it does not scale for a second reason:
@@ -20,7 +20,8 @@
 // So plugin authors describe DATA (rows, titles, handlers) and never touch an id. Paging,
 // selection, per-player state, the two-phase reveal and the intern budget are all handled here.
 //
-// ES5 IIFE, concatenated after ui.js. Decorates the existing ctx.ui factory rather than editing it.
+// ES5 IIFE, concatenated after ui.js. Decorates the existing `ui` factory (`__s2pkg_game_ctx.ui`)
+// rather than editing it.
 (function () {
   var prevUi = globalThis.__s2pkg_game_ctx && globalThis.__s2pkg_game_ctx.ui;
   if (typeof prevUi !== "function") return;

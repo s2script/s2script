@@ -1,5 +1,5 @@
 /**
- * ctx.ui — offline tests over the real shipped CS2 addon bundle (see cs2-addon.mjs).
+ * `ui` — offline tests over the real shipped CS2 addon bundle (see cs2-addon.mjs).
  */
 import { test } from "node:test";
 import assert from "node:assert";
@@ -201,6 +201,23 @@ test("rejects .vxml resource extension", () => {
       meters: {},
     }),
     /\.xml source extension|must be under panorama/,
+  );
+});
+
+test("hud() throw prefix is ui.hud, not ctx.ui", () => {
+  const h = makeHost();
+  const ui = h.armPlugin();
+  h.ctx.__s2_ctx_arm();
+  assert.throws(
+    () => ui.hud({
+      addons: [],
+      resource: "panorama/layout/custom_game/x.xml",
+      hideClass: "h",
+      text: {},
+      buttons: [],
+      meters: {},
+    }),
+    /^Error: ui\.hud: descriptor\.addons must be a non-empty string array$/,
   );
 });
 

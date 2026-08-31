@@ -1,4 +1,4 @@
-// @s2script/cs2 — lifecycle-bound custom HUD API (ctx.ui). ES5 IIFE concatenated after pawn.js.
+// @s2script/cs2 — lifecycle-bound custom HUD API (`ui`). ES5 IIFE concatenated after pawn.js.
 (function () {
   if (!globalThis.__s2pkg_entity || !globalThis.__s2pkg_cs2_calls) return;
 
@@ -86,43 +86,43 @@
   }
 
   function validateDescriptor(desc) {
-    if (!desc || typeof desc !== "object") throw new Error("ctx.ui.hud: descriptor must be an object");
+    if (!desc || typeof desc !== "object") throw new Error("ui.hud: descriptor must be an object");
     if (!Array.isArray(desc.addons) || desc.addons.length === 0) {
-      throw new Error("ctx.ui.hud: descriptor.addons must be a non-empty string array");
+      throw new Error("ui.hud: descriptor.addons must be a non-empty string array");
     }
     for (var a = 0; a < desc.addons.length; a++) {
       if (!/^\d+$/.test(String(desc.addons[a]))) {
-        throw new Error('ctx.ui.hud: addon id "' + desc.addons[a] + '" must be a decimal workshop id');
+        throw new Error('ui.hud: addon id "' + desc.addons[a] + '" must be a decimal workshop id');
       }
     }
     if (typeof desc.resource !== "string" || !desc.resource) {
-      throw new Error("ctx.ui.hud: descriptor.resource is required");
+      throw new Error("ui.hud: descriptor.resource is required");
     }
     if (desc.resource.indexOf("panorama/layout/custom_game/") !== 0 || !/\.xml$/i.test(desc.resource)) {
-      throw new Error('ctx.ui.hud: resource must be under panorama/layout/custom_game/ and end in .xml');
+      throw new Error('ui.hud: resource must be under panorama/layout/custom_game/ and end in .xml');
     }
     var vxmlErr = rejectVxml(desc.resource);
-    if (vxmlErr) throw new Error("ctx.ui.hud: " + vxmlErr);
+    if (vxmlErr) throw new Error("ui.hud: " + vxmlErr);
     if (typeof desc.hideClass !== "string" || !desc.hideClass) {
-      throw new Error("ctx.ui.hud: descriptor.hideClass is required");
+      throw new Error("ui.hud: descriptor.hideClass is required");
     }
-    if (!Array.isArray(desc.buttons)) throw new Error("ctx.ui.hud: descriptor.buttons must be an array");
+    if (!Array.isArray(desc.buttons)) throw new Error("ui.hud: descriptor.buttons must be an array");
     var seenBtn = {};
     for (var b = 0; b < desc.buttons.length; b++) {
       var bid = desc.buttons[b];
-      if (!bid) throw new Error("ctx.ui.hud: button ids must be non-empty");
-      if (seenBtn[bid]) throw new Error('ctx.ui.hud: duplicate button id "' + bid + '"');
+      if (!bid) throw new Error("ui.hud: button ids must be non-empty");
+      if (seenBtn[bid]) throw new Error('ui.hud: duplicate button id "' + bid + '"');
       seenBtn[bid] = true;
     }
     if (desc.slots) {
       for (var poolName in desc.slots) {
         if (!Object.prototype.hasOwnProperty.call(desc.slots, poolName)) continue;
         var pool = desc.slots[poolName];
-        if (!Array.isArray(pool)) throw new Error('ctx.ui.hud: slots.' + poolName + " must be an array");
+        if (!Array.isArray(pool)) throw new Error('ui.hud: slots.' + poolName + " must be an array");
         for (var i = 0; i < pool.length; i++) {
           var slotDef = pool[i];
           if (!slotDef || !slotDef.id || !Array.isArray(slotDef.vars)) {
-            throw new Error('ctx.ui.hud: slots.' + poolName + "[" + i + "] needs { id, vars[] }");
+            throw new Error('ui.hud: slots.' + poolName + "[" + i + "] needs { id, vars[] }");
           }
         }
       }
@@ -289,7 +289,7 @@
       },
       onClick: function (buttonId, handler) {
         if (ctxState.buttonHandlers[buttonId]) {
-          throw new Error('ctx.ui: conflicting handler for button id "' + buttonId + '"');
+          throw new Error('ui: conflicting handler for button id "' + buttonId + '"');
         }
         ctxState.buttonHandlers[buttonId] = handler;
         handlers[buttonId] = handler;

@@ -1,5 +1,5 @@
 /**
- * A HUD driven by real game state — the demo that shows what ctx.ui is actually for.
+ * A HUD driven by real game state — the demo that shows what `ui` is actually for.
  *
  * Round clock, live scoreboard, your real K/D/A, and a kill feed fed by `player_death`.
  *
