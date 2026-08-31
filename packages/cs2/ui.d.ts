@@ -118,16 +118,15 @@ export interface HudPlayer {
  *
  * @example
  * import { CustomHudLayout } from "@s2script/cs2";
- * const motd = CustomHudLayout.create({
- *   addons: ["3790153369"],
- *   resource: "panorama/layout/custom_game/s2script_hud_live.xml",
- *   hideClass: "s2-hide",
- *   buttons: ["motd_ok"],
+ * const layout = CustomHudLayout.create({
+ *   addons: ["YOUR_ADDON_ID"],
+ *   resource: "panorama/layout/custom_game/your_hud.xml",
+ *   buttons: ["ok_btn"],
  * });
- * motd.onClick("motd_ok", (p) => { p.hide("motd_layer"); p.cursor(false); });
- * const p = motd.forSlot(slot);
- * p.set({ motd_title: "Hello", motd_ok_t: "OK" });
- * p.show("motd_layer", { cursor: true });
+ * layout.onClick("ok_btn", (p) => { p.hide("dialog"); p.cursor(false); });
+ * const p = layout.forSlot(slot);
+ * p.set({ title: "Hello", ok_label: "OK" });
+ * p.show("dialog", { cursor: true });
  */
 export interface HudLayout {
   readonly spec: CustomHudSpec;
@@ -152,8 +151,9 @@ export interface HudLayout {
   capacity(poolName: string): number;
   setPool(slot: number, poolName: string, entries: readonly (readonly string[])[]): HudResult;
   /**
-   * Route a button id to a handler. The handler receives the clicking player's {@link HudPlayer}
-   * (so `p.hide(...)` does not re-thread the slot).
+   * Route a layout XML button id (from {@link CustomHudSpec.buttons}) to a handler.
+   * There is no widget object — `buttonId` is a string the markup already declared.
+   * The handler receives the clicking player's {@link HudPlayer}.
    */
   onClick(buttonId: string, handler: (player: HudPlayer) => void): void;
   setDisabled(slot: number, buttonId: string, disabled: boolean): HudResult;
