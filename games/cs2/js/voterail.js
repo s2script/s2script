@@ -1,31 +1,14 @@
-// @s2script/cs2 — Vote rail presenter. Dedicated layout, not a hudkit modal.
+// @s2script/cs2 — Vote rail presenter. Same hudkit layout as menus (s2script_lib.xml), right dock.
 (function () {
   var cs2 = globalThis.__s2pkg_cs2 || {};
-  var CustomHudLayout = cs2.CustomHudLayout;
+  var hudkit = cs2.hudkit;
+  var layout = hudkit && hudkit.layout;
   var HudInput = (globalThis.__s2pkg_hudinput && globalThis.__s2pkg_hudinput.HudInput) || cs2.HudInput;
   var Vote = globalThis.__s2pkg_votes && globalThis.__s2pkg_votes.Vote;
   var Clients = globalThis.__s2pkg_clients && globalThis.__s2pkg_clients.Clients;
 
-  if (!CustomHudLayout || typeof CustomHudLayout.create !== "function" ||
+  if (!layout || typeof layout.forSlot !== "function" || typeof layout.onClick !== "function" ||
       !Vote || typeof Vote.registerTallyRenderer !== "function") return;
-
-  var DESCRIPTOR = {
-    addons: ["3790153369"],
-    resource: "panorama/layout/custom_game/s2_vote.xml",
-    hideClass: "s2-hide",
-    text: { s2_vote_q: "s2_vote_q", s2_vote_sub: "s2_vote_sub" },
-    buttons: []
-  };
-  for (var i = 0; i < 9; i++) {
-    DESCRIPTOR.text["s2_vote_o" + i + "_t"] = "s2_vote_o" + i + "_t";
-    DESCRIPTOR.text["s2_vote_o" + i + "_c"] = "s2_vote_o" + i + "_c";
-    DESCRIPTOR.buttons.push("s2_vote_o" + i);
-  }
-
-  var layout;
-  try { layout = CustomHudLayout.create(DESCRIPTOR); }
-  catch (e) { return; }
-  if (!layout || typeof layout.forSlot !== "function") return;
 
   var ROOT = "s2_vote";
   var COUNT_HIDE = "s2-vote-count-hide";
@@ -139,5 +122,5 @@
     });
   }
 
-  globalThis.__s2pkg_voterail = { descriptor: DESCRIPTOR, layout: layout, renderer: renderer };
+  globalThis.__s2pkg_voterail = { layout: layout, renderer: renderer };
 })();

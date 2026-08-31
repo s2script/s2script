@@ -1,4 +1,6 @@
-/* Right-side vote rail. It stays away from the crosshair and never freezes the player. */
+/* Right-side vote rail. Merge into (or include from) the existing s2script_lib stylesheet.
+   Same addon 3790153369 — not a second layout. `.s2-hide` already lives on the lib. */
+
 .s2-vote {
 	width: 280px;
 	max-height: 80%;
@@ -50,7 +52,6 @@
 	margin-left: 8px;
 }
 
-.s2-hide { visibility: collapse; }
 .s2-vote-count-hide { visibility: collapse; }
 .s2-vote-picked {
 	background-color: #266b8bcc;

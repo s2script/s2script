@@ -258,6 +258,16 @@ test("open() grabs the cursor unless opts.cursor is false", () => {
   assert.deepStrictEqual(shownOff.at(-1).opts, { cursor: false });
 });
 
+test("lib descriptor declares the vote rail on s2script_lib.xml, not a second layout", () => {
+  const { ui } = mount();
+  assert.strictEqual(ui.descriptor.resource, "panorama/layout/custom_game/s2script_lib.xml");
+  assert.ok(ui.descriptor.buttons.includes("s2_vote_o0"));
+  assert.ok(ui.descriptor.buttons.includes("s2_vote_o8"));
+  assert.strictEqual(ui.descriptor.text.s2_vote_q, "s2_vote_q");
+  assert.strictEqual(ui.descriptor.text.s2_vote_o3_c, "s2_vote_o3_c");
+  assert.ok(!String(ui.descriptor.resource).includes("s2_vote.xml"));
+});
+
 test("buttons may be a per-slot function", () => {
   const { ui, clickHandlers } = mount();
   const clicks = [];

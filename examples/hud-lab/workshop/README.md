@@ -97,10 +97,22 @@ and the plugin drives it entirely from the server.
 addoninfo.txt
 panorama/layout/custom_game/s2script_hud.xml
 panorama/styles/custom_game/s2script_hud.css
+panorama/layout/custom_game/s2_vote.xml      ← fragment to paste into s2script_lib.xml
+panorama/styles/custom_game/s2_vote.css      ← include/merge into the lib stylesheet
 ```
 
-That is the whole addon — no map, no models. The reference implementation it is modelled on
+That is the whole **probe** addon — no map, no models. The reference implementation it is modelled on
 (workshop item 3789924061) is 5.7 KB compiled.
+
+Production menus and the vote rail drive **workshop addon 3790153369**, layout
+`panorama/layout/custom_game/s2script_lib.xml` (not checked in here). Menus already use that
+lib (`s2_m0` / `s2_m1`). The vote rail is a new panel family **on that same layout**, not a
+second `custom_hud_layout` resource.
+
+To ship the rail: paste `panorama/layout/custom_game/s2_vote.xml` into the lib root, include
+`panorama/styles/custom_game/s2_vote.css` from `s2script_lib.xml` (or merge the CSS into the
+lib stylesheet), compile, and republish **the same** addon. Do not upload `s2_vote.xml` as its
+own layout / workshop item.
 
 ## How the server drives it
 
