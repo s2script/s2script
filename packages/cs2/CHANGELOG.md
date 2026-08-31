@@ -1,5 +1,37 @@
 # @s2script/cs2
 
+## 0.15.0
+
+### Minor Changes
+
+- ac3fc9b: `plugin((ctx) => …)` is no longer a public authoring API. Plugins export `OnPluginStart` (plus named publics). Load-window `hook.*` / `previous()` / `pluginId()` / `command.onClientCommand` cover the remaining ctx-only gaps. CS2 `ui`, `gameRules`, `players`, and `items` are free load-window exports. 0.x minor bump.
+- 63878fe: Spawn custom HUD layouts when a client becomes active.
+
+  `hud()` / `components()` / `createLayout()` register the descriptor at load and create the layout entity on `SIGNON_ACTIVE`, so player-join and game events can drive panels. `OnMapStart` still only resets. A drive never creates the entity as a side-effect of paint.
+
+### Patch Changes
+
+- 0165900: Document the public HUD API as `ui` (`import { ui } from "@s2script/cs2"`), not `ctx.ui`. Runtime still hangs the same object off the load ctx; authors import `ui`.
+- 3ec0430: TriggerZone / OutputEvent docs name the current `onOutput` subscribe. The `@s2script/zones` contract's `on` is ledgered (`void`, no `off`).
+- Updated dependencies [4745b5c]
+- Updated dependencies [877cc23]
+- Updated dependencies [f13e6ab]
+- Updated dependencies [ac3fc9b]
+- Updated dependencies [2e51352]
+- Updated dependencies [41ef7d6]
+- Updated dependencies [e53d269]
+- Updated dependencies [c3dde5b]
+- Updated dependencies [88b508c]
+- Updated dependencies [fb2434c]
+- Updated dependencies [0079d74]
+- Updated dependencies [2a16059]
+- Updated dependencies [b4200fb]
+- Updated dependencies [cd06cab]
+- Updated dependencies [4df7325]
+- Updated dependencies [920c823]
+- Updated dependencies [3ec0430]
+  - @s2script/sdk@0.23.0
+
 ## 0.14.0
 
 ### Minor Changes

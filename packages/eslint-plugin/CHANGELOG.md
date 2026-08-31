@@ -1,5 +1,12 @@
 # @s2script/eslint-plugin
 
+## 0.2.1
+
+### Patch Changes
+
+- ac3fc9b: `plugin((ctx) => …)` is no longer a public authoring API. Plugins export `OnPluginStart` (plus named publics). Load-window `hook.*` / `previous()` / `pluginId()` / `command.onClientCommand` cover the remaining ctx-only gaps. CS2 `ui`, `gameRules`, `players`, and `items` are free load-window exports. 0.x minor bump.
+- fb2434c: Root import `from "@s2script/sdk"` is a valid authoring barrel (engine-generic names only; `Player` stays on `@s2script/cs2`). `plugin()` imported from the barrel is still visible to `no-ctx-escape`.
+
 ## 0.2.0
 
 ### Minor Changes
