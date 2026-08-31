@@ -68,7 +68,6 @@ fn vp_kind(kind: &str) -> Option<(&'static str, c_int)> {
         "GroundEntChangedPost" => Some(("GroundEntChangedPost", 1)),
         "CanBeAutobalanced" => Some(("CanBeAutobalanced", 0)),
         "Reload" => Some(("Reload", 0)),
-        "ReloadPost" => Some(("Reload", 1)),
         "WeaponCanUse" => Some(("WeaponCanUse", 0)),
         "WeaponCanUsePost" => Some(("WeaponCanUse", 1)),
         "WeaponCanSwitchTo" => Some(("WeaponCanSwitchTo", 0)),
@@ -393,7 +392,7 @@ pub(crate) fn dispatch_touch(
     result as c_int
 }
 
-/// `Spawn` / `Think` / `Use` pre collapse at `Stop`; void types (PreThink, VPhysics, *Post, …)
+/// `Spawn` / `Think` / `Use` / `Reload` pre collapse at `Stop`; void types (PreThink, VPhysics, *Post, …)
 /// never read the return.
 fn collapsing_stop(type_name: &str) -> StopAt {
     match type_name {
@@ -1612,6 +1611,41 @@ mod tests {
     }
 
     #[test]
+    fn sdkhook_ontakedamage_post_setter_is_ignored() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        *DMG_WRITE_REC.lock().unwrap() = None;
+        set_engine_ops(Some(S2EngineOps {
+            schema_offset: Some(fake_dmg_schema_offset),
+            damage_write_float: Some(rec_damage_write_float),
+            damage_victim: Some(fake_damage_victim),
+            ..mock_event_ops()
+        }));
+        create_plugin_context("p");
+        eval_in_context_string(
+            "p",
+            &format!(
+                r#"
+                globalThis.__pre = function (info) {{ info.damage = 50; }};
+                globalThis.__post = function (info) {{ info.damage = 99; }};
+                String(__s2_sdkhook(5, {id}, "OnTakeDamage", globalThis.__pre)
+                    && __s2_sdkhook(5, {id}, "OnTakeDamagePost", globalThis.__post))
+            "#
+            ),
+        );
+        dispatch_damage();
+        assert_eq!(*DMG_WRITE_REC.lock().unwrap(), Some((68, 50.0)), "pre-hook setter must write");
+        *DMG_WRITE_REC.lock().unwrap() = None;
+        dispatch_damage_post();
+        assert_eq!(
+            *DMG_WRITE_REC.lock().unwrap(),
+            None,
+            "OnTakeDamagePost must not write through DamageInfo.damage"
+        );
+        shutdown();
+    }
+
+    #[test]
     fn sdkhook_ontakedamage_post_stop_does_not_truncate() {
         let _ = init(dummy_logger());
         let id = seed(5, 1);
@@ -1763,6 +1797,20 @@ mod tests {
         );
         let adds = VP_ADDS.with(|v| v.borrow().clone());
         assert_eq!(adds, vec!["Reload:0:5:1".to_string()]);
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_reloadpost_without_backing_returns_false() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        set_engine_ops(Some(ops_with_vp()));
+        create_plugin_context("p");
+        assert_eq!(
+            eval_in_context_string("p", &hook_named(5, id, "ReloadPost")),
+            "false",
+            "ReloadPost is not a this-void VP twin; no bool-return thunk yet"
+        );
         shutdown();
     }
 

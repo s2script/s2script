@@ -140,7 +140,7 @@ export declare const SDKHookType: {
   readonly FireBulletsPost: "FireBulletsPost";
   /** Weapon reload pre. `Handled` / `Stop` skip the original virtual. Missing VP → `false`. */
   readonly Reload: "Reload";
-  /** Weapon reload post. Callback is `(weapon, successful)`. Missing VP → `false`. */
+  /** Weapon reload post. `(weapon, successful)`. No bool-return thunk yet — {@link SDKHook} returns `false`. */
   readonly ReloadPost: "ReloadPost";
   /** `WeaponCanUse` pre. Callback is `(entity, weapon)`. Missing ItemServices VP → `false`. */
   readonly WeaponCanUse: "WeaponCanUse";
@@ -391,7 +391,7 @@ export declare function SDKHook(
   callback: WeaponPostCallback,
 ): boolean;
 /**
- * `ReloadPost`. Callback is `(weapon, successful)`. Missing VP → `false`.
+ * `ReloadPost`. Callback is `(weapon, successful)`. No CS2 backing yet — always returns `false`.
  */
 export declare function SDKHook(
   entity: EntityRef | null,

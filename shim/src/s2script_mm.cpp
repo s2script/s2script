@@ -745,20 +745,22 @@ static int64_t Detour_DispatchTraceAttack(void* thisptr, void* a2, void* a3, voi
         META_CONPRINTF("[s2script] DTA self-test fired — detour diverts execution on the live binary (mechanism proven)\n");
         return 0;
     }
-    // Real damage: expose the CTakeDamageInfo to Damage.onPre subscribers, then call the original with any
+    // Real damage: expose the CTakeDamageInfo to OnTakeDamage SDKHooks, then call the original with any
     // in-place modifications applied. a2 (rsi) is the most likely info arg (the prologue saves rdi/rsi/rdx);
     // the candidate log reveals which arg holds a plausible m_flDamage@68 once real damage flows in.
     auto rd = [](void* p) -> float {
         return (p && reinterpret_cast<uintptr_t>(p) > 0x10000) ? *reinterpret_cast<float*>(reinterpret_cast<char*>(p) + 68) : -1.0f;
     };
     META_CONPRINTF("[s2script] DTA fired: this=%p a2.dmg=%.1f a3.dmg=%.1f\n", thisptr, rd(a2), rd(a3));
+    void* prevInfo = s_currentDamageInfo;
+    void* prevVictim = s_currentDamageVictim;
     s_currentDamageInfo = a2;                     // block-scoped: valid only across this dispatch
     s_currentDamageVictim = thisptr;              // the victim entity (this)
     s2script_core_dispatch_damage();              // OnTakeDamage (read/modify the live info in place)
     int64_t ret = g_origDTA ? g_origDTA(thisptr, a2, a3, a4) : 0;
     s2script_core_dispatch_damage_post();         // OnTakeDamagePost (info still live)
-    s_currentDamageInfo = nullptr;
-    s_currentDamageVictim = nullptr;
+    s_currentDamageInfo = prevInfo;
+    s_currentDamageVictim = prevVictim;
     return ret;
 }
 
@@ -5407,6 +5409,8 @@ void S2ScriptPlugin::Hook_GameFramePre(bool simulating, bool first, bool last) {
         static char fakeInfo[256];
         memset(fakeInfo, 0, sizeof(fakeInfo));
         *reinterpret_cast<float*>(fakeInfo + 68) = 42.0f;   // CTakeDamageInfo::m_flDamage
+        void* prevInfo = s_currentDamageInfo;
+        void* prevVictim = s_currentDamageVictim;
         s_currentDamageInfo = fakeInfo;
         void* victimEnt = nullptr;                          // scan for a REAL entity (idx 1+) -> proves the victim path
         for (int i = 1; i < 128 && !victimEnt; ++i) victimEnt = s2_ent_by_index(i);
@@ -5415,8 +5419,8 @@ void S2ScriptPlugin::Hook_GameFramePre(bool simulating, bool first, bool last) {
                        s_frameNo, victimEnt, s2_damage_victim());
         s2script_core_dispatch_damage();
         s2script_core_dispatch_damage_post();
-        s_currentDamageInfo = nullptr;
-        s_currentDamageVictim = nullptr;
+        s_currentDamageInfo = prevInfo;
+        s_currentDamageVictim = prevVictim;
     }
     s2script_core_dispatch_game_frame(0, static_cast<int>(simulating),
                                       static_cast<int>(first), static_cast<int>(last));
