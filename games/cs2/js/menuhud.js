@@ -169,9 +169,8 @@
     // option on both paths; older hosts currently ignore the second argument and are upgraded
     // by the corresponding components.js patch.
     claim.open(slot, { cursor: activation === "immediate" });
-    if (activation === "immediate") {
-      if (session.menu.freezePlayer) freeze(slot, session);
-    } else if (HudInput && typeof HudInput.arm === "function") {
+    if (session.menu.freezePlayer) freeze(slot, session);
+    if (activation === "tab" && HudInput && typeof HudInput.arm === "function") {
       HudInput.arm(slot);
       tabSlots[slot] = true;
       ensureTabPoll();
