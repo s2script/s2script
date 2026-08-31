@@ -95,17 +95,33 @@ and the plugin drives it entirely from the server.
 
 ```
 addoninfo.txt
-panorama/layout/custom_game/s2script_hud.xml
+panorama/layout/custom_game/s2script_hud.xml     ← probe
 panorama/styles/custom_game/s2script_hud.css
+panorama/layout/custom_game/s2script_lib.xml     ← production hudkit (addon 3790153369)
+panorama/styles/custom_game/s2script_lib.css
 ```
 
-That is the whole **probe** addon — no map, no models. The reference implementation it is modelled on
-(workshop item 3789924061) is 5.7 KB compiled.
+`s2script_hud.xml` is the probe. Production menus and the vote rail drive **workshop addon
+3790153369**, layout `panorama/layout/custom_game/s2script_lib.xml`. That file is now in git
+(recovered from the published VPK, then the `s2_vote` rail was added). Republish **the same
+addon** after compiling these sources on Windows Workshop Tools. The stylesheet include must stay
+`file://{resources}/styles/custom_game/s2script_lib.css` — an `s2r://` include compiles clean and
+ships unstyled. Do not add a second layout or a third center modal.
 
-Production menus and the vote rail drive **workshop addon 3790153369**, layout
-`panorama/layout/custom_game/s2script_lib.xml` (not checked in here). That published lib already
-includes the vote rail (`.s2-vote`). Server JS addresses those existing panels through
-`hudkit.layout`. Do not add a second layout, a third modal, or duplicate `.s2-vote` CSS.
+### Production lib panels (`s2script_lib.xml`)
+
+| id | purpose |
+|---|---|
+| `s2_t0`–`s2_t3` | toasts |
+| `s2_b0`–`s2_b3` | corner badges |
+| `s2_m0` `s2_m1` | center sheets (menus) |
+| `s2_vote` | right-side vote rail (starts with `s2-hide`) |
+| `s2_vote_q` / `s2_vote_sub` | question + subtitle |
+| `s2_vote_o0`–`s2_vote_o8` | option buttons; `_t` label, `_c` count |
+
+`.s2-vote-dock` places the rail. The older `.s2-vote` card rules stay so `s2script_hud_live.xml`'s
+bottom-left yes/no tally is unchanged. Option buttons are not hidden in markup; JS hides unused
+ones.
 
 ## How the server drives it
 

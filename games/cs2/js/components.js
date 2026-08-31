@@ -129,9 +129,8 @@
     BADGE.push({ id: bid, title: declareText(bid + "_title"), text: declareText(bid + "_text") });
   }
 
-  // Vote rail already ships in addon 3790153369 / s2script_lib.xml (class .s2-vote).
-  // Declare the published ids so clicks route on the SAME entity as menus. Do not
-  // author a second layout or republish duplicate CSS.
+  // Vote rail lives on this same lib layout (s2_vote*). voterail.js drives the ids
+  // through hudkit.layout. Not a second CustomHudLayout and not a third center modal.
   var VOTE_OPTIONS = 9;
   PANELS.push("s2_vote");
   declareText("s2_vote_q");

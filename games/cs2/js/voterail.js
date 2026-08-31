@@ -1,4 +1,4 @@
-// @s2script/cs2 — Vote rail presenter. Drives the .s2-vote family already in s2script_lib.xml.
+// @s2script/cs2 — Vote rail presenter. Drives s2_vote* on s2script_lib.xml (hudkit.layout).
 (function () {
   var cs2 = globalThis.__s2pkg_cs2 || {};
   var hudkit = cs2.hudkit;

@@ -268,6 +268,35 @@ test("lib descriptor declares the published vote rail ids on s2script_lib.xml", 
   assert.ok(!String(ui.descriptor.resource).includes("s2_vote.xml"));
 });
 
+test("workshop s2script_lib.xml is the production source and contains the vote rail", () => {
+  const xml = readFileSync(
+    join(__dirname, "../../../examples/hud-lab/workshop/panorama/layout/custom_game/s2script_lib.xml"),
+    "utf8",
+  );
+  const include = xml.match(/<include\s+src="([^"]+)"\s*\/>/);
+  assert.ok(include, "lib xml must declare a stylesheet include");
+  assert.equal(include[1], "file://{resources}/styles/custom_game/s2script_lib.css");
+  assert.doesNotMatch(include[1], /s2r:\/\//);
+  assert.match(xml, /id="s2_vote"/);
+  assert.match(xml, /s2-vote-dock/);
+  assert.match(xml, /id="s2_vote" class="s2-vote s2-vote-dock s2-hide"/);
+  assert.match(xml, /id="s2_vote_q"/);
+  assert.match(xml, /id="s2_vote_sub"/);
+  assert.match(xml, /id="s2_vote_o0"/);
+  assert.match(xml, /id="s2_vote_o8"/);
+  assert.match(xml, /id="s2_vote_o0_t"/);
+  assert.match(xml, /id="s2_vote_o8_c"/);
+  assert.doesNotMatch(xml, /id="s2_vote_o[0-8]" class="[^"]*s2-hide/);
+  const css = readFileSync(
+    join(__dirname, "../../../examples/hud-lab/workshop/panorama/styles/custom_game/s2script_lib.css"),
+    "utf8",
+  );
+  assert.match(css, /\.s2-vote-dock/);
+  assert.match(css, /\.s2-vote-option/);
+  assert.match(css, /\.s2-vote-count-hide/);
+  assert.match(css, /\.s2-vote-picked/);
+});
+
 test("buttons may be a per-slot function", () => {
   const { ui, clickHandlers } = mount();
   const clicks = [];
