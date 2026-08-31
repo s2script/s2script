@@ -130,9 +130,11 @@ int s2script_core_dispatch_game_event(const char* name);
  * engine's original IGameEvent died when the original dispatch returned); the copy is FreeEvent'd
  * after, under RAII, so a throwing handler cannot leak it. */
 int s2script_core_replay_game_event(const char* name);
-// Slice 6.6 Stage 2: run the Damage.onPre subscribers over the current CTakeDamageInfo (set by the shim
-// detour). Handlers read/modify the live info in place (setting damage to 0 = block).
+// Slice 6.6 Stage 2: run OnTakeDamage SDKHooks over the current CTakeDamageInfo (set by the shim
+// detour). Handlers read/modify the live info in place (Handled/Stop on the pre-hook zeroes damage).
 void s2script_core_dispatch_damage(void);
+// OnTakeDamagePost: after the original DispatchTraceAttack. Info pointer still live. Return ignored.
+void s2script_core_dispatch_damage_post(void);
 /* Shim -> core: a per-entity SDKHook VP virtual fired (Touch family). `type` is the wiki name
  * including Post (`Touch` / `TouchPost`). `other_handle` is a packed CEntityHandle ToInt(), or -1
  * for none. Returns the collapsed HookResult (0 Continue .. 3 Stop); the caller SUPERCEDEs the

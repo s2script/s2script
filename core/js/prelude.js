@@ -784,7 +784,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_server = { Server: __s2_server };   // named export `Server`
   // --- Slice 6.6: damage module (block-scoped DamageInfo over the current CTakeDamageInfo).
   //     CTakeDamageInfo is a Source 2 engine type (not CS2-specific) -> engine-generic, lives in core.
-  //     Subscribe with SDKHook(entity, SDKHookType.OnTakeDamage, cb) — not a global mux. ---
+  //     Subscribe with SDKHook(entity, SDKHookType.OnTakeDamage, cb) — not a global mux.
+  //     OnTakeDamagePost uses the same DamageInfo view; the damage setter is frozen. ---
   function DamageInfo() {}
   function __s2_dmg_ref(field) {
     var o = __s2_schema_offset("CTakeDamageInfo", field);
@@ -820,6 +821,12 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_damage = { DamageInfo: DamageInfo };
   var SDKHookType = {
     OnTakeDamage: "OnTakeDamage",
+    OnTakeDamagePost: "OnTakeDamagePost",
+    OnTakeDamageAlive: "OnTakeDamageAlive",
+    OnTakeDamageAlivePost: "OnTakeDamageAlivePost",
+    TraceAttack: "TraceAttack",
+    TraceAttackPost: "TraceAttackPost",
+    FireBulletsPost: "FireBulletsPost",
     StartTouch: "StartTouch", Touch: "Touch", EndTouch: "EndTouch", Blocked: "Blocked",
     StartTouchPost: "StartTouchPost", TouchPost: "TouchPost",
     EndTouchPost: "EndTouchPost", BlockedPost: "BlockedPost",
@@ -833,6 +840,12 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     VPhysicsUpdate: "VPhysicsUpdate", VPhysicsUpdatePost: "VPhysicsUpdatePost",
     GroundEntChangedPost: "GroundEntChangedPost",
     CanBeAutobalanced: "CanBeAutobalanced",
+    Reload: "Reload", ReloadPost: "ReloadPost",
+    WeaponCanUse: "WeaponCanUse", WeaponCanUsePost: "WeaponCanUsePost",
+    WeaponCanSwitchTo: "WeaponCanSwitchTo", WeaponCanSwitchToPost: "WeaponCanSwitchToPost",
+    WeaponDrop: "WeaponDrop", WeaponDropPost: "WeaponDropPost",
+    WeaponEquip: "WeaponEquip", WeaponEquipPost: "WeaponEquipPost",
+    WeaponSwitch: "WeaponSwitch", WeaponSwitchPost: "WeaponSwitchPost",
   };
   // Assigned after the literal so a parallel lifecycle PR can append members inside the object.
   SDKHookType.SetTransmit = "SetTransmit";

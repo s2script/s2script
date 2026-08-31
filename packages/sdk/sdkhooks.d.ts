@@ -9,8 +9,12 @@ import type { Client } from "./clients";
 
 type TouchCallback = (entity: EntityRef, other: EntityRef | null) => HookResultValue | void;
 type TouchPostCallback = (entity: EntityRef, other: EntityRef | null) => void;
+type WeaponCallback = (entity: EntityRef, weapon: EntityRef | null) => HookResultValue | void;
+type WeaponPostCallback = (entity: EntityRef, weapon: EntityRef | null) => void;
 type ThisCallback = (entity: EntityRef) => HookResultValue | void;
 type ThisVoidCallback = (entity: EntityRef) => void;
+type FireBulletsPostCallback = (entity: EntityRef, shots: number, weaponName: string) => void;
+type ReloadPostCallback = (weapon: EntityRef, successful: boolean) => void;
 type UseCallback = (
   entity: EntityRef,
   activator: EntityRef | null,
@@ -107,7 +111,81 @@ export declare const SDKHookType: {
   readonly GroundEntChangedPost: "GroundEntChangedPost";
   /** `CanBeAutobalanced`. Return a boolean (not {@link HookResultValue}); last defined wins. */
   readonly CanBeAutobalanced: "CanBeAutobalanced";
+  /**
+   * Post-apply damage (`DispatchTraceAttack` after the original). {@link DamageInfo} is read-only
+   * for effect; mutations are not written back. Return is ignored.
+   */
+  readonly OnTakeDamagePost: "OnTakeDamagePost";
+  /**
+   * `OnTakeDamageAlive` pre. CS2 has no distinct function yet — {@link SDKHook} returns `false`.
+   */
+  readonly OnTakeDamageAlive: "OnTakeDamageAlive";
+  /**
+   * `OnTakeDamageAlive` post. CS2 has no distinct function yet — {@link SDKHook} returns `false`.
+   */
+  readonly OnTakeDamageAlivePost: "OnTakeDamageAlivePost";
+  /**
+   * `TraceAttack` pre ({@link TraceAttackInfo}). No distinct CS2 virtual yet — {@link SDKHook}
+   * returns `false` (OnTakeDamage remains the DTA mux).
+   */
+  readonly TraceAttack: "TraceAttack";
+  /**
+   * `TraceAttack` post. No distinct CS2 virtual yet — {@link SDKHook} returns `false`.
+   */
+  readonly TraceAttackPost: "TraceAttackPost";
+  /**
+   * `FireBulletsPost`. Wiki already documents this as often absent. {@link SDKHook} returns `false`
+   * until a live path is found.
+   */
+  readonly FireBulletsPost: "FireBulletsPost";
+  /** Weapon reload pre. `Handled` / `Stop` skip the original virtual. Missing VP → `false`. */
+  readonly Reload: "Reload";
+  /** Weapon reload post. `(weapon, successful)`. No bool-return thunk yet — {@link SDKHook} returns `false`. */
+  readonly ReloadPost: "ReloadPost";
+  /** `WeaponCanUse` pre. Callback is `(entity, weapon)`. Missing ItemServices VP → `false`. */
+  readonly WeaponCanUse: "WeaponCanUse";
+  /** `WeaponCanUse` post. Return is ignored. Missing VP → `false`. */
+  readonly WeaponCanUsePost: "WeaponCanUsePost";
+  /** `WeaponCanSwitchTo` pre. Callback is `(entity, weapon)`. Missing VP → `false`. */
+  readonly WeaponCanSwitchTo: "WeaponCanSwitchTo";
+  /** `WeaponCanSwitchTo` post. Return is ignored. Missing VP → `false`. */
+  readonly WeaponCanSwitchToPost: "WeaponCanSwitchToPost";
+  /** `WeaponDrop` pre. Callback is `(entity, weapon)`. Missing VP → `false`. */
+  readonly WeaponDrop: "WeaponDrop";
+  /** `WeaponDrop` post. Return is ignored. Missing VP → `false`. */
+  readonly WeaponDropPost: "WeaponDropPost";
+  /** `WeaponEquip` pre. Callback is `(entity, weapon)`. Missing VP → `false`. */
+  readonly WeaponEquip: "WeaponEquip";
+  /** `WeaponEquip` post. Return is ignored. Missing VP → `false`. */
+  readonly WeaponEquipPost: "WeaponEquipPost";
+  /** `WeaponSwitch` pre. Callback is `(entity, weapon)`. Missing VP → `false`. */
+  readonly WeaponSwitch: "WeaponSwitch";
+  /** `WeaponSwitch` post. Return is ignored. Missing VP → `false`. */
+  readonly WeaponSwitchPost: "WeaponSwitchPost";
 };
+
+/**
+ * Block-scoped view of a `TraceAttack` callback. Mutate {@link TraceAttackInfo.damage} on the
+ * pre-hook. Valid only during the handler.
+ */
+export interface TraceAttackInfo {
+  /** Incoming damage. Mutate in place on the pre-hook. */
+  damage: number;
+  /** Damage type bits. */
+  readonly damageType: number;
+  /** Ammo type index. */
+  readonly ammoType: number;
+  /** Hitbox index. */
+  readonly hitbox: number;
+  /** Hitgroup index. */
+  readonly hitgroup: number;
+  /** Attacking entity, books-gated. */
+  readonly attacker: EntityRef | null;
+  /** Inflicting entity, books-gated. */
+  readonly inflictor: EntityRef | null;
+  /** Victim entity, books-gated. */
+  readonly victim: EntityRef | null;
+}
 
 /**
  * Hook `entity` for `type`. Auto-unhooked on entity destroy and plugin unload.
@@ -142,6 +220,55 @@ export declare function SDKHook(
   callback: (info: DamageInfo) => HookResultValue | void,
 ): boolean;
 /**
+ * Post-apply damage. {@link DamageInfo} is a read of the live info after the original ran.
+ * Return is ignored; Handled does not zero the hit (that is the pre-hook).
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "OnTakeDamagePost",
+  callback: (info: DamageInfo) => void,
+): boolean;
+/**
+ * `OnTakeDamageAlive` pre. No CS2 backing yet — always returns `false`.
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "OnTakeDamageAlive",
+  callback: (info: DamageInfo) => HookResultValue | void,
+): boolean;
+/**
+ * `OnTakeDamageAlive` post. No CS2 backing yet — always returns `false`.
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "OnTakeDamageAlivePost",
+  callback: (info: DamageInfo) => void,
+): boolean;
+/**
+ * `TraceAttack` pre. No distinct CS2 virtual yet — always returns `false`.
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "TraceAttack",
+  callback: (info: TraceAttackInfo) => HookResultValue | void,
+): boolean;
+/**
+ * `TraceAttack` post. No distinct CS2 virtual yet — always returns `false`.
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "TraceAttackPost",
+  callback: (info: TraceAttackInfo) => void,
+): boolean;
+/**
+ * `FireBulletsPost`. No CS2 backing yet — always returns `false`.
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "FireBulletsPost",
+  callback: FireBulletsPostCallback,
+): boolean;
+/**
  * Touch-family pre-hook. Callback is `(entity, other)`. Omit return = Continue.
  * `Handled` / `Stop` SUPERCEDE the original virtual (`Stop` also skips later callbacks).
  */
@@ -164,7 +291,7 @@ export declare function SDKHook(
  */
 export declare function SDKHook(
   entity: EntityRef | null,
-  type: "Spawn" | "Think",
+  type: "Spawn" | "Think" | "Reload",
   callback: ThisCallback,
 ): boolean;
 /**
@@ -241,6 +368,36 @@ export declare function SDKHook(
   type: "SetTransmit",
   callback: (entity: EntityRef, client: Client) => HookResultValue | void,
 ): boolean;
+/**
+ * Weapon-family pre-hook. Callback is `(entity, weapon)`. Omit return = Continue.
+ * `Handled` / `Stop` SUPERCEDE the original virtual. Missing ItemServices VP → `false`.
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "WeaponCanUse" | "WeaponCanSwitchTo" | "WeaponDrop" | "WeaponEquip" | "WeaponSwitch",
+  callback: WeaponCallback,
+): boolean;
+/**
+ * Weapon-family post-hook. Return is ignored. Missing VP → `false`.
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type:
+    | "WeaponCanUsePost"
+    | "WeaponCanSwitchToPost"
+    | "WeaponDropPost"
+    | "WeaponEquipPost"
+    | "WeaponSwitchPost",
+  callback: WeaponPostCallback,
+): boolean;
+/**
+ * `ReloadPost`. Callback is `(weapon, successful)`. No CS2 backing yet — always returns `false`.
+ */
+export declare function SDKHook(
+  entity: EntityRef | null,
+  type: "ReloadPost",
+  callback: ReloadPostCallback,
+): boolean;
 
 /**
  * Remove one matching `(entity, type, callback)` hook. Callback identity is the function reference.
@@ -250,6 +407,42 @@ export declare function SDKUnhook(
   entity: EntityRef | null,
   type: "OnTakeDamage",
   callback: (info: DamageInfo) => HookResultValue | void,
+): boolean;
+/** Remove an `OnTakeDamagePost` hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type: "OnTakeDamagePost",
+  callback: (info: DamageInfo) => void,
+): boolean;
+/** Remove an `OnTakeDamageAlive` hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type: "OnTakeDamageAlive",
+  callback: (info: DamageInfo) => HookResultValue | void,
+): boolean;
+/** Remove an `OnTakeDamageAlivePost` hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type: "OnTakeDamageAlivePost",
+  callback: (info: DamageInfo) => void,
+): boolean;
+/** Remove a `TraceAttack` hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type: "TraceAttack",
+  callback: (info: TraceAttackInfo) => HookResultValue | void,
+): boolean;
+/** Remove a `TraceAttackPost` hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type: "TraceAttackPost",
+  callback: (info: TraceAttackInfo) => void,
+): boolean;
+/** Remove a `FireBulletsPost` hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type: "FireBulletsPost",
+  callback: FireBulletsPostCallback,
 ): boolean;
 /** Remove a Touch-family pre-hook. */
 export declare function SDKUnhook(
@@ -266,7 +459,7 @@ export declare function SDKUnhook(
 /** Remove a Spawn / Think pre-hook. */
 export declare function SDKUnhook(
   entity: EntityRef | null,
-  type: "Spawn" | "Think",
+  type: "Spawn" | "Think" | "Reload",
   callback: ThisCallback,
 ): boolean;
 /** Remove a void this-only hook. */
@@ -324,4 +517,27 @@ export declare function SDKUnhook(
   entity: EntityRef | null,
   type: "SetTransmit",
   callback: (entity: EntityRef, client: Client) => HookResultValue | void,
+): boolean;
+/** Remove a Weapon-family pre-hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type: "WeaponCanUse" | "WeaponCanSwitchTo" | "WeaponDrop" | "WeaponEquip" | "WeaponSwitch",
+  callback: WeaponCallback,
+): boolean;
+/** Remove a Weapon-family post-hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type:
+    | "WeaponCanUsePost"
+    | "WeaponCanSwitchToPost"
+    | "WeaponDropPost"
+    | "WeaponEquipPost"
+    | "WeaponSwitchPost",
+  callback: WeaponPostCallback,
+): boolean;
+/** Remove a `ReloadPost` hook. */
+export declare function SDKUnhook(
+  entity: EntityRef | null,
+  type: "ReloadPost",
+  callback: ReloadPostCallback,
 ): boolean;
