@@ -717,7 +717,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // onSelect is dispatched to the OWNER's context post-drain — see __s2_topmenu_select). ---
   globalThis.__s2pkg_topmenu = { TopMenu: {
     addCategory: function (name) { __s2_topmenu_add_category(String(name)); },
-    addItem: function (category, item) { __s2_topmenu_add_item(String(category), String(item.id), String(item.name), item.flags | 0, item.onSelect); },
+    addItem: function (category, item) { __s2_topmenu_add_item(String(category), String(item.id), String(item.name), item.flags | 0, item.onSelect, item.sheets); },
     snapshot: function () { return __s2_topmenu_snapshot(); },
     select: function (id, slot) { __s2_topmenu_select(String(id), slot | 0); },
   } };
