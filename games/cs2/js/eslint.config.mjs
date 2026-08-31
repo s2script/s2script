@@ -72,7 +72,7 @@ export default [
     //
     // components.test.js is here for the same reason, but note that components.js itself is NOT:
     // it is prelude-only, so a `require` creeping into it must still fail this lint.
-    files: ["activity.js", "activity.test.js", "components.test.js"],
+    files: ["activity.js", "activity.test.js", "components.test.js", "menuhud.test.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "script",
