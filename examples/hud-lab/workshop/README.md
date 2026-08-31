@@ -101,12 +101,13 @@ panorama/layout/custom_game/s2script_lib.xml     ← production hudkit (addon 37
 panorama/styles/custom_game/s2script_lib.css
 ```
 
-`s2script_hud.xml` is the probe. Production menus and the vote rail drive **workshop addon
-3790153369**, layout `panorama/layout/custom_game/s2script_lib.xml`. That file is now in git
-(recovered from the published VPK, then the `s2_vote` rail was added). Republish **the same
-addon** after compiling these sources on Windows Workshop Tools. The stylesheet include must stay
-`file://{resources}/styles/custom_game/s2script_lib.css` — an `s2r://` include compiles clean and
-ships unstyled. Do not add a second layout or a third center modal.
+`s2script_hud.xml` is the probe. Production menus, the vote rail, callout, banner, and MOTD
+drive **workshop addon 3790153369**, layout `panorama/layout/custom_game/s2script_lib.xml`. That
+file is now in git (recovered from the published VPK, then those panel families were added).
+Republish **the same addon** after compiling these sources on Windows Workshop Tools. The
+stylesheet include must stay `file://{resources}/styles/custom_game/s2script_lib.css` — an
+`s2r://` include compiles clean and ships unstyled. Do not add a second layout or a third
+center modal (`s2_m2`).
 
 ### Production lib panels (`s2script_lib.xml`)
 
@@ -118,10 +119,14 @@ ships unstyled. Do not add a second layout or a third center modal.
 | `s2_vote` | right-side vote rail (starts with `s2-hide`) |
 | `s2_vote_q` / `s2_vote_sub` | question + subtitle |
 | `s2_vote_o0`–`s2_vote_o8` | option buttons; `_t` label, `_c` count |
+| `s2_callout` | bottom-center hint (`s2_callout_title` / `_msg`) |
+| `s2_banner` | center-top broadcast (`s2_banner_text`) |
+| `s2_motd` | rules overlay; `s2_motd_h0`–`h2` / `_p0`–`p2`, OK `s2_motd_ok` |
 
 `.s2-vote-dock` places the rail. The older `.s2-vote` card rules stay so `s2script_hud_live.xml`'s
 bottom-left yes/no tally is unchanged. Option buttons are not hidden in markup; JS hides unused
-ones.
+ones. Callout, banner, and MOTD are one root each on this same layout — not a second
+`CustomHudLayout` and not a third center sheet.
 
 ## How the server drives it
 

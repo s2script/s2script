@@ -295,6 +295,16 @@ test("workshop s2script_lib.xml is the production source and contains the vote r
   assert.match(css, /\.s2-vote-option/);
   assert.match(css, /\.s2-vote-count-hide/);
   assert.match(css, /\.s2-vote-picked/);
+  assert.match(xml, /id="s2_callout"/);
+  assert.match(xml, /s2-callout-dock/);
+  assert.match(xml, /id="s2_banner"/);
+  assert.match(xml, /id="s2_motd"/);
+  assert.match(xml, /id="s2_motd_ok"/);
+  assert.match(xml, /id="s2_motd_h2"/);
+  assert.doesNotMatch(xml, /id="s2_m2"/);
+  assert.match(css, /\.s2-callout-dock/);
+  assert.match(css, /\.s2-callout-out/);
+  assert.match(css, /\.s2-banner-out/);
 });
 
 test("buttons may be a per-slot function", () => {
@@ -308,4 +318,92 @@ test("buttons may be a per-slot function", () => {
   m.open(2);
   clickHandlers["s2_m0_f0"](2);
   assert.deepStrictEqual(clicks, [2]);
+});
+
+test("callout paints the docked hint without grabbing the cursor", () => {
+  const { ui, calls } = mount();
+  ui.callout(1, { title: "Zone", message: "Press E", variant: "warn", holdSeconds: 0 });
+  const shown = calls.find((c) => c.op === "show" && c.id === "s2_callout");
+  assert.ok(shown, "callout root must show");
+  assert.equal(shown.opts, undefined);
+  assert.ok(classSet(calls, "s2-callout-warn"));
+  assert.ok(calls.some((c) => c.op === "cls" && c.cls === "s2-callout-out" && c.on === false));
+});
+
+test("callout hides an empty title so a one-line hint is just the message", () => {
+  const { ui, calls } = mount();
+  ui.callout(2, { message: "Press E", holdSeconds: 0 });
+  assert.ok(calls.some((c) => c.op === "hide" && c.id === "s2_callout_title"));
+  assert.ok(calls.some((c) => c.op === "show" && c.id === "s2_callout_msg"));
+});
+
+test("callout schedules dismissal through after(ms, fn)", () => {
+  const { ui, pending } = mount();
+  ui.callout(1, { message: "x", holdSeconds: 3 });
+  assert.strictEqual(pending.length, 1);
+});
+
+test("banner paints center-top text without grabbing the cursor", () => {
+  const { ui, calls } = mount();
+  ui.banner(3, { text: "Vote passed", holdSeconds: 0 });
+  const shown = calls.find((c) => c.op === "show" && c.id === "s2_banner");
+  assert.ok(shown);
+  assert.equal(shown.opts, undefined);
+  assert.ok(calls.some((c) => c.op === "set" && c.id === "s2_banner_text" && c.value === "Vote passed"));
+});
+
+test("motd is a scrim overlay with cursor, not a third sheet", () => {
+  const { ui, calls } = mount();
+  const handle = ui.motd(1, {
+    title: "Rules",
+    sections: [{ heading: "Fair play", body: "No cheats." }],
+  });
+  assert.equal(handle.slot, 1);
+  const shown = calls.find((c) => c.op === "show" && c.id === "s2_motd");
+  assert.deepStrictEqual(shown.opts, { cursor: true });
+  assert.ok(calls.some((c) => c.op === "show" && c.id === "s2_motd_h0"));
+  assert.ok(calls.some((c) => c.op === "hide" && c.id === "s2_motd_h1"));
+  assert.ok(calls.some((c) => c.op === "hide" && c.id === "s2_motd_p2"));
+  assert.ok(ui.descriptor.buttons.includes("s2_motd_ok"));
+  assert.ok(!ui.descriptor.buttons.includes("s2_m2"));
+});
+
+test("motd OK click closes, releases cursor, and fires onClose", () => {
+  const { ui, calls, clickHandlers } = mount();
+  const closed = [];
+  ui.motd(4, { title: "Hi", onClose: (slot) => closed.push(slot) });
+  clickHandlers.s2_motd_ok(4);
+  assert.deepStrictEqual(closed, [4]);
+  assert.ok(calls.some((c) => c.op === "hide" && c.id === "s2_motd" && c.slot === 4));
+});
+
+test("motd handle.close does not fire onClose", () => {
+  const { ui } = mount();
+  const closed = [];
+  const handle = ui.motd(1, { title: "Hi", onClose: (slot) => closed.push(slot) });
+  handle.close();
+  assert.deepStrictEqual(closed, []);
+});
+
+test("hideAll drops callout, banner, and motd for that player", () => {
+  const { ui, calls } = mount();
+  ui.callout(1, { message: "x", holdSeconds: 0 });
+  ui.banner(1, { text: "y", holdSeconds: 0 });
+  ui.motd(1, { title: "z" });
+  const before = calls.length;
+  ui.hideAll(1);
+  const after = calls.slice(before);
+  assert.ok(after.some((c) => c.op === "hide" && c.id === "s2_callout"));
+  assert.ok(after.some((c) => c.op === "hide" && c.id === "s2_banner"));
+  assert.ok(after.some((c) => c.op === "hide" && c.id === "s2_motd"));
+});
+
+test("forSlot.callout and forSlot.motd bind the same player", () => {
+  const { ui, calls } = mount();
+  ui.forSlot(7).callout({ message: "x", holdSeconds: 0 });
+  ui.forSlot(7).banner({ text: "y", holdSeconds: 0 });
+  ui.forSlot(7).motd({ title: "z" });
+  assert.ok(calls.some((c) => c.op === "show" && c.slot === 7 && c.id === "s2_callout"));
+  assert.ok(calls.some((c) => c.op === "show" && c.slot === 7 && c.id === "s2_banner"));
+  assert.ok(calls.some((c) => c.op === "show" && c.slot === 7 && c.id === "s2_motd"));
 });

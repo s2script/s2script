@@ -2,8 +2,9 @@
   s2script component library — workshop addon 3790153369.
 
   Production layout hudkit binds: panorama/layout/custom_game/s2script_lib.xml
-  Recovered from the published VPK, then the vote rail was added here so git
-  is the source of truth. Do not point a second custom_hud_layout at another XML.
+  Recovered from the published VPK, then vote rail / callout / banner / MOTD
+  were added here so git is the source of truth. Do not point a second
+  custom_hud_layout at another XML. Do not add a third center sheet (s2_m2).
 
   Include MUST be file://{resources}/… with the source .css. An s2r:// include
   compiles clean and ships unstyled.
@@ -251,6 +252,46 @@
 				<Label id="s2_vote_o8_t" class="s2-vote-option-title" text="{s:s2_vote_o8_t}" />
 				<Label id="s2_vote_o8_c" class="s2-vote-option-count" text="{s:s2_vote_o8_c}" />
 			</Button>
+		</Panel>
+
+		<!-- Hint. Bottom-center, no cursor, auto-hide. Not a Menu and not HintText. -->
+		<Panel id="s2_callout" class="s2-callout s2-callout-dock s2-hide">
+			<Panel class="s2-callout-bar" />
+			<Panel class="s2-callout-text">
+				<Label id="s2_callout_title" class="s2-callout-title" text="{s:s2_callout_title}" />
+				<Label id="s2_callout_msg" class="s2-callout-msg" text="{s:s2_callout_msg}" />
+			</Panel>
+		</Panel>
+
+		<!-- Broadcast strip. Center-top, one at a time, no cursor. -->
+		<Panel id="s2_banner" class="s2-banner s2-hide">
+			<Label id="s2_banner_text" class="s2-banner-text" text="{s:s2_banner_text}" />
+		</Panel>
+
+		<!-- First-join / rules overlay. Scrim + OK, not a third center sheet. -->
+		<Panel id="s2_motd" class="s2-modal s2-hide">
+			<Panel class="s2-modal-scrim" />
+			<Panel class="s2-motd">
+				<Panel class="s2-motd-head">
+					<Label id="s2_motd_title" class="s2-motd-title" text="{s:s2_motd_title}" />
+					<Label id="s2_motd_sub" class="s2-motd-sub" text="{s:s2_motd_sub}" />
+				</Panel>
+				<Panel class="s2-motd-rule" />
+				<Panel class="s2-motd-body">
+					<Label id="s2_motd_h0" class="s2-motd-h" text="{s:s2_motd_h0}" />
+					<Label id="s2_motd_p0" class="s2-motd-p" text="{s:s2_motd_p0}" />
+					<Label id="s2_motd_h1" class="s2-motd-h" text="{s:s2_motd_h1}" />
+					<Label id="s2_motd_p1" class="s2-motd-p" text="{s:s2_motd_p1}" />
+					<Label id="s2_motd_h2" class="s2-motd-h" text="{s:s2_motd_h2}" />
+					<Label id="s2_motd_p2" class="s2-motd-p" text="{s:s2_motd_p2}" />
+				</Panel>
+				<Panel class="s2-motd-foot">
+					<Label id="s2_motd_note" class="s2-motd-note" text="{s:s2_motd_note}" />
+					<Button id="s2_motd_ok" class="s2-btn s2-btn-primary">
+						<Label id="s2_motd_ok_t" class="s2-btn-label" text="{s:s2_motd_ok_t}" />
+					</Button>
+				</Panel>
+			</Panel>
 		</Panel>
 	</Panel>
 </root>

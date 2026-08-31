@@ -343,9 +343,56 @@ export interface ToastSpec {
   readonly holdSeconds?: number;
 }
 
+/** Hint-style overlay. Bottom-center, no cursor. Default hold 4s. */
+export interface CalloutSpec {
+  readonly title?: string;
+  readonly message?: string;
+  readonly variant?: "good" | "warn" | "bad";
+  /** 0 keeps it up until something replaces it. Default 4. */
+  readonly holdSeconds?: number;
+}
+
+/** Center-top broadcast strip. One at a time, no cursor. Default hold 5s. */
+export interface BannerSpec {
+  readonly text: string;
+  /** 0 keeps it up until something replaces it. Default 5. */
+  readonly holdSeconds?: number;
+}
+
+export interface MotdSection {
+  readonly heading?: string;
+  readonly body?: string;
+}
+
+/**
+ * First-join / rules overlay. Scrim + OK; not a Menu and not a third center sheet.
+ * Stays until OK or {@link MotdHandle.close}.
+ */
+export interface MotdSpec {
+  readonly title: string;
+  readonly subtitle?: string;
+  /** Up to 3 heading/body pairs. Unused slots are hidden. */
+  readonly sections?: readonly MotdSection[];
+  readonly note?: string;
+  /** OK button label. Default `"OK"`. */
+  readonly ok?: string;
+  /** Default true. */
+  readonly cursor?: boolean;
+  /** Fired when the player clicks OK. Not fired on programmatic {@link MotdHandle.close}. */
+  readonly onClose?: (slot: number) => void;
+}
+
+export interface MotdHandle {
+  readonly slot: number;
+  close(): void;
+}
+
 export interface HudKitPlayer {
   readonly slot: number;
   toast(spec: ToastSpec): HudResult;
+  callout(spec: CalloutSpec): HudResult;
+  banner(spec: BannerSpec): HudResult;
+  motd(spec: MotdSpec): MotdHandle;
   hideAll(): void;
   forget(): void;
 }
@@ -368,6 +415,9 @@ export interface HudKit {
   /** Claim a pooled corner badge. Null when all are in use. */
   badge(spec?: BadgeSpec): Badge | null;
   toast(slot: number, spec: ToastSpec): HudResult;
+  callout(slot: number, spec: CalloutSpec): HudResult;
+  banner(slot: number, spec: BannerSpec): HudResult;
+  motd(slot: number, spec: MotdSpec): MotdHandle;
   forSlot(slot: number): HudKitPlayer;
   /** Hide every pooled panel for one player. */
   hideAll(slot: number): void;
@@ -406,5 +456,8 @@ export type Components = HudKit;
  * });
  * menu?.forSlot(slot).open();
  * hudkit.forSlot(slot).toast({ title: "Saved", message: "loadout written" });
+ * hudkit.callout(slot, { message: "Press E for the next corner" });
+ * hudkit.banner(slot, { text: "Vote passed — changing map" });
+ * hudkit.motd(slot, { title: "Server rules", sections: [{ heading: "Don't cheat", body: "VAC is on." }] });
  */
 export declare const hudkit: HudKit;
