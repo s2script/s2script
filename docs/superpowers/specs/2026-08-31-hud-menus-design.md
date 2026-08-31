@@ -25,11 +25,11 @@ Today every interactive list is one of two CS2-specific hacks:
 3. **Two activation modes**, on the menu (and on the vote rail while it is waiting):
    - **`immediate`** — player *asked* for this (typed `!nominate`, `sm_admin`, a top-menu item). Center sheet is shown and input is armed now (`cursor(true)`, honor `freezePlayer`).
    - **`tab`** — player did *not* ask. Used by the **vote rail**, not by admin/nominate. Rail is shown **without** cursor. Tab activates it. Scoreboard Tab is swallowed only while this is armed and not yet activated.
-4. **Default `activation` is `immediate`.** Nominations (user-requested, currently Chat/non-freeze) become `immediate` HUD — they typed the command. Votes are not a `Menu`; they use the rail + Tab until cast.
+4. **Default `activation` is `immediate`.** Nominations (user-requested, currently Chat/non-freeze) become `immediate` HUD — they typed the command. Votes are not a `Menu`. The rail waits for Tab **until that player picks or the vote expires** (timer, full turnout, or cancel).
 5. **`freezePlayer` stays independent of activation.** Admin menus keep freeze. Nominations do not. Votes never freeze and never use a center sheet.
 6. **Disabled items stay unselectable.** Nominations’ “played recently” rows stay visible, grey, and must not fire `onSelect`. Do not rely on `hudkit`’s cosmetic `disabled` (its `onPick` still fires). The Menu HUD renderer omits those rows from click routing.
 7. **One host-lifetime modal claim for all `Menu` displays.** `hudkit.modal()` is a 2-slot *plugin* pool. The Menu renderer claims one **center** sheet at first display and never releases it. Votes do **not** take a modal slot.
-8. **Votes are a right-side rail, not a Menu and not a center sheet.** Unsolicited, so they must not cover the crosshair or steal the mouse until Tab. After the player casts (HUD click or chat digit), the rail **stays up** but is no longer waiting: `HudInput.disarm`, `cursor(false)`, that player’s pick highlighted, **counts revealed and ticking**. Before they cast, option labels are visible and counts are hidden (no bandwagon). Chat digits still cast. One chat line points at the rail; do not print the option list. HTML `show_survival_respawn_status` tally is retired on CS2. One vote at a time already — one rail panel, per-player `ForPlayer`.
+8. **Votes are a right-side rail, not a Menu and not a center sheet.** Unsolicited, so they must not cover the crosshair or steal the mouse until Tab. **Waiting (Tab instead of scoreboard) lasts until the player picks or the vote expires.** After they cast (HUD click or chat digit), the rail **stays up until expiry** but is no longer waiting: `HudInput.disarm`, `cursor(false)`, pick highlighted, **counts revealed and ticking**. If they never pick, expiry still disarms and **hides** the rail. Before they cast, option labels are visible and counts are hidden (no bandwagon). Chat digits still cast. One chat line points at the rail; do not print the option list. HTML `show_survival_respawn_status` tally is retired on CS2. One vote at a time already — one rail panel, per-player `ForPlayer`.
 9. **Tab intercept is a CS2 host primitive (`HudInput`), not per-plugin `onRunCmd`.** `IN_SCORE` (`1 << 16`) is cleared on the live usercmd while a slot is armed. Live-gate must prove CS2’s scoreboard actually respects a server-side clear; if it does not, HUD still activates and the caveat is documented — do not invent a second key.
 10. **GitHub stack via `gh stack`.** Bottom: `cursor/cs2-custom-hud-layout`. This spec/plan is the next layer. Implementation layers `gh stack add` on top. Not Graphite / not `gt`.
 
@@ -97,11 +97,14 @@ plugin  →  Vote.start(...)             unsolicited ballot
                 │
                 ▼
          CS2 vote rail presenter  ── right-side panel (s2_vote)
-                ├── waiting  → visible, no cursor, HudInput.arm
+                ├── waiting  → until pick OR vote expires
+                │                 visible, no cursor, HudInput.arm
                 │                 Tab → cursor; click/digit casts
-                └── voted    → still visible, disarm, cursor off
-                                  pick highlighted; counts tick
-                                  Tab is scoreboard again
+                ├── voted    → until vote expires
+                │                 still visible, disarm, cursor off
+                │                 pick highlighted; counts tick
+                │                 Tab is scoreboard again
+                └── expired  → hide rail, disarm (whether they voted or not)
 ```
 
 ### `Menu.activation`
@@ -138,7 +141,7 @@ Rules:
 - Swallow = `cmd.buttons &= ~IN_SCORE` (`1n << 16n`) on that tick (and while the key is held, until released, so the scoreboard does not flash). After activation, subsequent holds of Tab are left alone.
 - Disconnect: `Clients.onDisconnect` → disarm. `hud.forget(slot)` already drops per-player HUD state; HudInput must too.
 - Do not subscribe `UserCmd.onRun` until at least one slot is armed (same lazy pattern as the current Center poll).
-- Hiding is not implied. The vote rail **disarms on first cast** and leaves the panel up. Menu close still disarms **and** hides.
+- Hiding is not implied by `disarm`. The vote rail **disarms on first cast** and leaves the panel up **until the vote expires**. `clear` (timer, full turnout, or `Vote.cancel`) always disarms **and** hides, including for a player who never picked. Menu close still disarms **and** hides.
 
 ### HUD Menu renderer
 
@@ -185,16 +188,17 @@ After that player casts:
 
 **States per slot**
 
-| | Waiting | Voted |
-|---|---|---|
-| Rail | shown | shown |
-| Counts | hidden | shown, refresh on every tally tick / cast |
-| `HudInput` | armed | disarmed |
-| Cursor | off until Tab | off |
-| Highlight | none | their option |
-| Chat digit | casts (then → Voted) | revote updates highlight + counts; does not re-arm |
+| | Waiting | Voted | Expired |
+|---|---|---|---|
+| Until | pick **or** vote ends | vote ends | — |
+| Rail | shown | shown | hidden |
+| Counts | hidden | shown, live | — |
+| `HudInput` | armed | disarmed | disarmed |
+| Cursor | off until Tab | off | off |
+| Highlight | none | their option | — |
+| Chat digit | casts (then → Voted) | revote updates highlight + counts; does not re-arm | n/a |
 
-Vote end / `clear` hides the rail. Do not keep it up after the vote is over.
+**Waiting ends** when that player picks **or** the vote expires (duration elapses, every eligible voter has voted, or `cancel`). Expiry hides the rail for everyone. Do not leave a waiting Tab-hijack up after the vote is over.
 
 **Presenter** reuses `Vote.registerTallyRenderer`: `show(slot, tally)` paints/updates the rail; `clear` hides it. If a renderer is registered, prelude **always** calls it (drop the `showLiveTally` early-return). CS2 always registers, so every vote gets a rail. Non-CS2 stays chat-only. `showLiveTally` on `VoteConfig` is leftover and ignored when a renderer exists.
 
@@ -259,7 +263,7 @@ If step 2 still shows the scoreboard, record it and ship activate-anyway. Do not
 - Simulated `IN_SCORE` while armed: `onActivate` once, bit cleared, `isActive`, second tick with held Tab still cleared until release; after activate, bit left intact.
 - New menu on the same slot: previous disarmed (`NewMenu`).
 - Disconnect: disarm.
-- Vote rail: `show` paints right-side panel, no cursor, `HudInput.isArmed`; click/digit → `choice` set, counts appear, disarmed, panel still shown; later `show` with new counts updates numbers; `clear` hides.
+- Vote rail: `show` paints right-side panel, no cursor, `HudInput.isArmed`; click/digit → `choice` set, counts appear, disarmed, panel still shown; later `show` with new counts updates numbers; `clear` hides **and** disarms a slot that never voted.
 - Voted-state clicks do not recast via HUD.
 
 **Live CS2 (cloud VM, after renderer PR):**
