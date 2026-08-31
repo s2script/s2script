@@ -258,7 +258,7 @@ test("open() grabs the cursor unless opts.cursor is false", () => {
   assert.deepStrictEqual(shownOff.at(-1).opts, { cursor: false });
 });
 
-test("lib descriptor declares the vote rail on s2script_lib.xml, not a second layout", () => {
+test("lib descriptor declares the published vote rail ids on s2script_lib.xml", () => {
   const { ui } = mount();
   assert.strictEqual(ui.descriptor.resource, "panorama/layout/custom_game/s2script_lib.xml");
   assert.ok(ui.descriptor.buttons.includes("s2_vote_o0"));

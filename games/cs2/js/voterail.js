@@ -1,4 +1,4 @@
-// @s2script/cs2 — Vote rail presenter. Same hudkit layout as menus (s2script_lib.xml), right dock.
+// @s2script/cs2 — Vote rail presenter. Drives the .s2-vote family already in s2script_lib.xml.
 (function () {
   var cs2 = globalThis.__s2pkg_cs2 || {};
   var hudkit = cs2.hudkit;
