@@ -2,18 +2,21 @@ import {
   command, topmenu, translations, TopMenu, Menu, MenuStyle, Admin, ADMFLAG, Translations,
   HookResult,
 } from "@s2script/sdk";
-import type { PhraseKey } from "@s2script/sdk";
+import type { PhraseKey, TopMenuSheet } from "@s2script/sdk";
 
-// Pure helpers (no side effects) — module-level.
-function itemsFor(category: string, flags: number) {
-  return TopMenu.snapshot().items.filter(i => i.category === category && ((flags & ADMFLAG.ROOT) !== 0 || (flags & i.flags) === i.flags));
+function itemOnSheet(item: { sheets?: TopMenuSheet[] }, sheet: TopMenuSheet): boolean {
+  const sheets = item.sheets && item.sheets.length > 0 ? item.sheets : ["admin"];
+  return sheets.includes(sheet);
 }
 
-// category names this plugin owns (its own addCategory calls) -> the phrase key for their DISPLAY
-// label. `category` itself stays the untranslated matching key everywhere else (itemsFor, m.info,
-// TopMenu.select) — only the text shown in the menu is looked up here. A category this plugin does
-// not know about (a third-party plugin's own) falls back to showing its raw name, unchanged from
-// today's behavior.
+function itemsFor(category: string, flags: number, sheet: TopMenuSheet) {
+  return TopMenu.snapshot().items.filter(i =>
+    i.category === category &&
+    itemOnSheet(i, sheet) &&
+    ((flags & ADMFLAG.ROOT) !== 0 || (flags & i.flags) === i.flags)
+  );
+}
+
 const CATEGORY_LABEL_KEY: Record<string, PhraseKey> = {
   "Player Commands": "Category Player Commands",
   "Server Commands": "Category Server Commands",
@@ -24,16 +27,28 @@ function categoryLabel(slot: number, category: string): string {
   return key ? Translations.translate(slot, key) : category;
 }
 
-function showCategory(slot: number, category: string, flags: number): void {
-  const items = itemsFor(category, flags);
+function showCategory(slot: number, category: string, flags: number, sheet: TopMenuSheet): void {
+  const items = itemsFor(category, flags, sheet);
   const m = new Menu(categoryLabel(slot, category));
   m.style = MenuStyle.Center;
-  m.freezePlayer = true;   // WASD nav — freeze movement while the menu is open
-  // it.id/it.name are OTHER plugins' own TopMenuItem registrations (e.g. basebans' "Kick") — out of
-  // scope for this conversion, left exactly as rendered today.
+  m.freezePlayer = true;
   for (const it of items) m.addItem(it.id, it.name);
   m.onSelect(e => { TopMenu.select(e.info, slot); });
   m.display(slot, 30);
+}
+
+function showSheet(slot: number, sheet: TopMenuSheet): boolean {
+  const flags = Admin.forSlot(slot)?.flags ?? 0;
+  const cats = TopMenu.snapshot().categories.filter(c => itemsFor(c, flags, sheet).length > 0);
+  if (cats.length === 0) return false;
+  const titleKey: PhraseKey = sheet === "admin" ? "Admin Menu Title" : "Menu Title";
+  const m = new Menu(Translations.translate(slot, titleKey));
+  m.style = MenuStyle.Center;
+  m.freezePlayer = true;
+  for (const c of cats) m.addItem(c, categoryLabel(slot, c));
+  m.onSelect(e => { showCategory(slot, e.info, flags, sheet); });
+  m.display(slot, 30);
+  return true;
 }
 
 export function OnPluginStart(): void {
@@ -51,16 +66,14 @@ export function OnPluginStart(): void {
     if (slot < 0) { cmd.replyT("Must Be In Game"); return HookResult.Handled; }
     const admin = Admin.forSlot(slot);
     if (!admin) { cmd.replyT("No access"); return HookResult.Handled; }
-    const snap = TopMenu.snapshot();
-    // Only categories with >=1 visible item.
-    const cats = snap.categories.filter(c => itemsFor(c, admin.flags).length > 0);
-    if (cats.length === 0) { cmd.replyT("No Admin Actions Available"); return HookResult.Handled; }
-    const m = new Menu(Translations.translate(slot, "Admin Menu Title"));
-    m.style = MenuStyle.Center;
-    m.freezePlayer = true;   // WASD nav — freeze movement while the menu is open
-    for (const c of cats) m.addItem(c, categoryLabel(slot, c));
-    m.onSelect(e => { showCategory(slot, e.info, admin.flags); });
-    m.display(slot, 30);
+    if (!showSheet(slot, "admin")) cmd.replyT("No Admin Actions Available");
+    return HookResult.Handled;
+  });
+
+  command("sm_menu", (cmd) => {
+    const slot = cmd.callerSlot;
+    if (slot < 0) { cmd.replyT("Must Be In Game Menu"); return HookResult.Handled; }
+    if (!showSheet(slot, "menu")) cmd.replyT("No Menu Actions Available");
     return HookResult.Handled;
   });
 }
