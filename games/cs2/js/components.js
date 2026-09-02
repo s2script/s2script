@@ -725,21 +725,16 @@
     };
   }
 
-  // One kit per V8 context. ctx.ui.kit and hudkit.* must be the same instance so modal pool
-  // claims stay host-global. Do NOT close over __s2_game_ns("ui"): that proxy throws
-  // "ui outside the load window" during run_prelude, which is before __s2_load_ctx exists.
-  var sharedKit = null;
-  function defaultKit(hudApi) {
-    if (!sharedKit) sharedKit = makeComponents(hudApi, undefined);
-    return sharedKit;
-  }
-
   globalThis.__s2pkg_game_ctx = Object.assign({}, globalThis.__s2pkg_game_ctx, {
     ui: function (reg, viaId) {
       var base = prevUi(reg, viaId);
       if (base && (typeof base.hud === "function" || typeof base.create === "function") && !base.components) {
+        var cached = null;
         function kitOf(descriptor) {
-          if (!descriptor) return defaultKit(base);
+          if (!descriptor) {
+            if (!cached) cached = makeComponents(base, undefined);
+            return cached;
+          }
           return makeComponents(base, descriptor);
         }
         Object.defineProperty(base, "kit", {
@@ -752,49 +747,32 @@
       return base;
     }
   });
-  if (globalThis.__s2pkg_cs2) {
-    function hostKit() {
-      if (sharedKit) return sharedKit;
-      var gameCtx = globalThis.__s2pkg_game_ctx;
-      if (!gameCtx || typeof gameCtx.ui !== "function") return null;
-      var base = gameCtx.ui(function (fn) {
-        if (typeof fn === "function") fn();
-      }, function (fn) { return fn; });
-      if (!base) return null;
-      if (base.kit) return base.kit;
-      if (typeof base.create === "function" || typeof base.hud === "function") return defaultKit(base);
-      return null;
-    }
-    function kitFn(name) {
-      return function (a, b) {
-        var kit = hostKit();
-        return kit ? kit[name](a, b) : null;
-      };
-    }
+  if (typeof globalThis.__s2_game_ns === "function" && globalThis.__s2pkg_cs2) {
+    var layoutNs = globalThis.__s2pkg_cs2.CustomHudLayout || globalThis.__s2_game_ns("ui");
     globalThis.__s2pkg_cs2.hudkit = {
-      modal: kitFn("modal"),
-      badge: kitFn("badge"),
-      toast: kitFn("toast"),
-      callout: kitFn("callout"),
-      banner: kitFn("banner"),
-      motd: kitFn("motd"),
-      forSlot: kitFn("forSlot"),
-      hideAll: kitFn("hideAll"),
-      forget: kitFn("forget"),
-      ensure: kitFn("ensure"),
-      budget: kitFn("budget")
+      modal: function (spec) { return layoutNs.kit.modal(spec); },
+      badge: function (spec) { return layoutNs.kit.badge(spec); },
+      toast: function (slot, spec) { return layoutNs.kit.toast(slot, spec); },
+      callout: function (slot, spec) { return layoutNs.kit.callout(slot, spec); },
+      banner: function (slot, spec) { return layoutNs.kit.banner(slot, spec); },
+      motd: function (slot, spec) { return layoutNs.kit.motd(slot, spec); },
+      forSlot: function (slot) { return layoutNs.kit.forSlot(slot); },
+      hideAll: function (slot) { return layoutNs.kit.hideAll(slot); },
+      forget: function (slot) { return layoutNs.kit.forget(slot); },
+      ensure: function () { return layoutNs.kit.ensure(); },
+      budget: function () { return layoutNs.kit.budget(); }
     };
     Object.defineProperty(globalThis.__s2pkg_cs2.hudkit, "layout", {
-      get: function () { var kit = hostKit(); return kit && kit.layout; }
+      get: function () { return layoutNs.kit.layout; }
     });
     Object.defineProperty(globalThis.__s2pkg_cs2.hudkit, "hud", {
-      get: function () { var kit = hostKit(); return kit && kit.hud; }
+      get: function () { return layoutNs.kit.hud; }
     });
     Object.defineProperty(globalThis.__s2pkg_cs2.hudkit, "spec", {
-      get: function () { var kit = hostKit(); return kit && kit.spec; }
+      get: function () { return layoutNs.kit.spec; }
     });
     Object.defineProperty(globalThis.__s2pkg_cs2.hudkit, "descriptor", {
-      get: function () { var kit = hostKit(); return kit && kit.descriptor; }
+      get: function () { return layoutNs.kit.descriptor; }
     });
   }
 })();
