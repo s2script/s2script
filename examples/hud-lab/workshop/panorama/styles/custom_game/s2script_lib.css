@@ -1,6 +1,7 @@
 /* s2script component library stylesheet — workshop addon 3790153369.
-   Recovered from the published VPK. Vote-rail dock/option rules are appended; the
-   existing .s2-vote card (hud_live yes/no tally) is left as-is. */
+   Recovered from the published VPK. Vote-rail / callout / banner rules are appended;
+   existing .s2-vote / .s2-callout / .s2-banner / .s2-motd cards stay so hud_live
+   showcase markup is unchanged. */
 
 .s2-root
 {
@@ -2003,6 +2004,40 @@
 {
 	background-color: #4c8dff24;
 	border: 1px solid #4c8dff55;
+}
+
+/* Lib overlays. Dock/out classes are separate so in-flow .s2-callout / .s2-banner
+   cards (hud_live) keep their own placement. MOTD reuses .s2-motd + .s2-modal. */
+.s2-callout-dock
+{
+	width: 440px;
+	horizontal-align: center;
+	vertical-align: bottom;
+	margin-bottom: 96px;
+	z-index: 6;
+	transition-property: opacity, transform;
+	transition-duration: 0.22s;
+	transition-timing-function: ease-out;
+	opacity: 1.0;
+}
+
+.s2-callout-out
+{
+	opacity: 0;
+	transform: translatey( 18px );
+}
+
+.s2-banner
+{
+	transition-property: opacity, transform;
+	transition-duration: 0.22s;
+	transition-timing-function: ease-out;
+}
+
+.s2-banner-out
+{
+	opacity: 0;
+	transform: translatey( -12px );
 }
 
 .s2-dd

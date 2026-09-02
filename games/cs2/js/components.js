@@ -52,8 +52,10 @@
   };
   // The fade class differs per component family — one shared "out" class would transition the
   // wrong property on the wrong element.
-  var FADE = { sheet: "s2-sheet-out", toast: "s2-toast-out", badge: "s2-hudbadge-out" };
+  var FADE = { sheet: "s2-sheet-out", toast: "s2-toast-out", badge: "s2-hudbadge-out",
+               callout: "s2-callout-out", banner: "s2-banner-out" };
   var TOAST_VARIANT = { good: "s2-toast-good", warn: "s2-toast-warn", bad: "s2-toast-bad" };
+  var CALLOUT_VARIANT = { good: "s2-callout-good", warn: "s2-callout-warn", bad: "s2-callout-bad" };
   var BADGE_ACCENT = { accent: "s2-hudbadge-accent", good: "s2-hudbadge-good",
                        warn: "s2-hudbadge-warn", bad: "s2-hudbadge-bad" };
   var BTN_VARIANT = { primary: "s2-btn-primary", good: "s2-btn-good", bad: "s2-btn-bad",
@@ -142,6 +144,25 @@
     declareText(vid + "_c");
   }
 
+  // Callout / banner / MOTD: one root each, like the vote rail. MOTD is a scrim
+  // overlay with OK, not a third center sheet (no s2_m2).
+  var MOTD_SECTIONS = 3;
+  PANELS.push("s2_callout");
+  declareText("s2_callout_title");
+  declareText("s2_callout_msg");
+  PANELS.push("s2_banner");
+  declareText("s2_banner_text");
+  PANELS.push("s2_motd");
+  declareText("s2_motd_title");
+  declareText("s2_motd_sub");
+  var MOTD_SECTION = [];
+  for (var ms = 0; ms < MOTD_SECTIONS; ms++) {
+    MOTD_SECTION.push({ h: declareText("s2_motd_h" + ms), p: declareText("s2_motd_p" + ms) });
+  }
+  declareText("s2_motd_note");
+  declareButton("s2_motd_ok");
+  declareText("s2_motd_ok_t");
+
   var LIB_DESCRIPTOR = {
     addons: ["3790153369"],
     resource: "panorama/layout/custom_game/s2script_lib.xml",
@@ -199,8 +220,8 @@
   function internVar(name) { chargeTo("variables", name); }
 
   // `__s2pkg_timers.delay()` takes NO callback — it returns a Promise, and a function passed to it
-  // is silently ignored. `after(ms, fn)` is the callback form. Only the toast hold needs a timer at
-  // all now; showing a panel does not.
+  // is silently ignored. `after(ms, fn)` is the callback form. Toast / callout / banner holds
+  // use this; showing a panel does not.
   function afterSeconds(seconds, fn) {
     var t = globalThis.__s2pkg_timers;
     if (t && typeof t.after === "function") { t.after(Math.max(0, seconds) * 1000, fn); return true; }
@@ -215,9 +236,14 @@
     var hud = hudApi.create ? hudApi.create(descriptor || LIB_DESCRIPTOR) : hudApi.hud(descriptor || LIB_DESCRIPTOR);
     var ownerTag = "plugin";
     var liveModals = [];
+    var calloutGen = {};
+    var bannerGen = {};
+    var motdOpen = {};
+    var motdOnClose = {};
     var origForget = hud.forget;
     hud.forget = function (slot) {
       for (var li = 0; li < liveModals.length; li++) liveModals[li].forget(slot);
+      closeMotd(slot, false);
       origForget(slot);
     };
 
@@ -299,6 +325,104 @@
         });
       });
       return null;
+    }
+
+    // ── callout (hint: bottom-center, no cursor) ─────────────────────────────────────────────
+
+    function callout(slot, opts) {
+      var o = opts || {};
+      calloutGen[slot] = (calloutGen[slot] || 0) + 1;
+      var gen = calloutGen[slot];
+      var title = o.title || "";
+      var message = o.message || "";
+      setText(slot, "s2_callout_title", title);
+      setText(slot, "s2_callout_msg", message);
+      if (!title) hide(slot, "s2_callout_title"); else show(slot, "s2_callout_title");
+      if (!message) hide(slot, "s2_callout_msg"); else show(slot, "s2_callout_msg");
+      var want = CALLOUT_VARIANT[o.variant] || null;
+      for (var vk in CALLOUT_VARIANT) {
+        if (Object.prototype.hasOwnProperty.call(CALLOUT_VARIANT, vk)) {
+          setClass(slot, "s2_callout", CALLOUT_VARIANT[vk], CALLOUT_VARIANT[vk] === want);
+        }
+      }
+      reveal(slot, "s2_callout", FADE.callout);
+      var hold = o.holdSeconds == null ? 4 : o.holdSeconds;
+      if (hold <= 0) return null;
+      afterSeconds(hold, function () {
+        if (calloutGen[slot] !== gen) return;
+        setClass(slot, "s2_callout", FADE.callout, true);
+        afterSeconds(0.25, function () {
+          if (calloutGen[slot] !== gen) return;
+          hide(slot, "s2_callout");
+        });
+      });
+      return null;
+    }
+
+    // ── banner (center-top, one at a time, no cursor) ────────────────────────────────────────
+
+    function banner(slot, opts) {
+      var o = opts || {};
+      bannerGen[slot] = (bannerGen[slot] || 0) + 1;
+      var gen = bannerGen[slot];
+      setText(slot, "s2_banner_text", o.text == null ? "" : String(o.text));
+      reveal(slot, "s2_banner", FADE.banner);
+      var hold = o.holdSeconds == null ? 5 : o.holdSeconds;
+      if (hold <= 0) return null;
+      afterSeconds(hold, function () {
+        if (bannerGen[slot] !== gen) return;
+        setClass(slot, "s2_banner", FADE.banner, true);
+        afterSeconds(0.25, function () {
+          if (bannerGen[slot] !== gen) return;
+          hide(slot, "s2_banner");
+        });
+      });
+      return null;
+    }
+
+    // ── MOTD (scrim + OK). Not a third center sheet. ─────────────────────────────────────────
+
+    function closeMotd(slot, fromClick) {
+      if (!motdOpen[slot]) return;
+      delete motdOpen[slot];
+      hide(slot, "s2_motd");
+      hud.cursor(slot, false);
+      var fn = motdOnClose[slot];
+      delete motdOnClose[slot];
+      if (fromClick && typeof fn === "function") fn(slot);
+    }
+
+    hud.onClick("s2_motd_ok", function (player) {
+      closeMotd(slotOf(player), true);
+    });
+
+    function motd(slot, opts) {
+      var o = opts || {};
+      motdOpen[slot] = true;
+      motdOnClose[slot] = o.onClose || null;
+      setText(slot, "s2_motd_title", o.title == null ? "" : String(o.title));
+      var sub = o.subtitle == null ? "" : String(o.subtitle);
+      setText(slot, "s2_motd_sub", sub);
+      if (!sub) hide(slot, "s2_motd_sub"); else show(slot, "s2_motd_sub");
+      var sections = Array.isArray(o.sections) ? o.sections : [];
+      for (var i = 0; i < MOTD_SECTIONS; i++) {
+        var sec = sections[i] || {};
+        var heading = sec.heading == null ? "" : String(sec.heading);
+        var body = sec.body == null ? "" : String(sec.body);
+        setText(slot, MOTD_SECTION[i].h, heading);
+        setText(slot, MOTD_SECTION[i].p, body);
+        if (!heading) hide(slot, MOTD_SECTION[i].h); else show(slot, MOTD_SECTION[i].h);
+        if (!body) hide(slot, MOTD_SECTION[i].p); else show(slot, MOTD_SECTION[i].p);
+      }
+      var note = o.note == null ? "" : String(o.note);
+      setText(slot, "s2_motd_note", note);
+      if (!note) hide(slot, "s2_motd_note"); else show(slot, "s2_motd_note");
+      setText(slot, "s2_motd_ok_t", o.ok == null ? "OK" : String(o.ok));
+      show(slot, "s2_motd", { cursor: o.cursor !== false });
+      return {
+        slot: slot,
+        close: function () { closeMotd(slot, false); }
+      };
     }
 
     // ── badges (persistent corner HUD) ────────────────────────────────────────────────────────
@@ -541,6 +665,11 @@
     }
 
     function hideAll(slot) {
+      calloutGen[slot] = (calloutGen[slot] || 0) + 1;
+      bannerGen[slot] = (bannerGen[slot] || 0) + 1;
+      hide(slot, "s2_callout");
+      hide(slot, "s2_banner");
+      closeMotd(slot, false);
       for (var m2 = 0; m2 < MODALS; m2++) hide(slot, MODAL[m2].root);
       for (var t2 = 0; t2 < TOASTS; t2++) hide(slot, TOAST[t2].id);
       for (var b2 = 0; b2 < BADGES; b2++) hide(slot, BADGE[b2].id);
@@ -566,12 +695,18 @@
       modal: modal,
       badge: badge,
       toast: toast,
+      callout: callout,
+      banner: banner,
+      motd: motd,
       hideAll: hideAll,
       forget: forgetSlot,
       forSlot: function (slot) {
         return {
           slot: slot,
           toast: function (spec) { return toast(slot, spec); },
+          callout: function (spec) { return callout(slot, spec); },
+          banner: function (spec) { return banner(slot, spec); },
+          motd: function (spec) { return motd(slot, spec); },
           hideAll: function () { hideAll(slot); },
           forget: function () { forgetSlot(slot); }
         };
@@ -618,6 +753,9 @@
       modal: function (spec) { return layoutNs.kit.modal(spec); },
       badge: function (spec) { return layoutNs.kit.badge(spec); },
       toast: function (slot, spec) { return layoutNs.kit.toast(slot, spec); },
+      callout: function (slot, spec) { return layoutNs.kit.callout(slot, spec); },
+      banner: function (slot, spec) { return layoutNs.kit.banner(slot, spec); },
+      motd: function (slot, spec) { return layoutNs.kit.motd(slot, spec); },
       forSlot: function (slot) { return layoutNs.kit.forSlot(slot); },
       hideAll: function (slot) { return layoutNs.kit.hideAll(slot); },
       forget: function (slot) { return layoutNs.kit.forget(slot); },
