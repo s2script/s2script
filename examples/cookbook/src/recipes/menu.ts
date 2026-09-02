@@ -4,7 +4,7 @@ import { Player } from "@s2script/cs2";
 function showMenu(slot: number, style: MenuStyle): void {
   const m = new Menu("s2script Menu Demo");
   m.style = style;
-  m.freezePlayer = style === MenuStyle.Center;   // freeze movement while the WASD menu is open (nav still works)
+  m.freezePlayer = style === MenuStyle.Center;   // freeze on the center HUD demo only
   m.addItem("hp", "Heal to 100");
   m.addItem("noclip", "Toggle Noclip");
   m.addItem("disabled", "Coming soon", { disabled: true });
@@ -22,11 +22,9 @@ function showMenu(slot: number, style: MenuStyle): void {
 }
 
 /**
- * Menu paginates automatically and picks a renderer by style: the CS2
- * center-screen HTML backend (WASD nav + E to select) or the chat-log
- * backend (type the number). This also proves the WASD input primitive
- * live by logging a bot's button mask changing every couple of seconds
- * (bots press buttons) — opt-in via `sm_menudemo verbose` (off by default), same
+ * Menu paginates automatically. On CS2 both styles paint the same hudkit
+ * sheet — click a row. This also probes pawn movementServices on a bot
+ * every couple of seconds — opt-in via `sm_menudemo verbose` (off by default), same
  * reasoning as recipes/damage.ts defaulting its effect off: a subscription
  * this cookbook registers unconditionally at load must not spam the console
  * on its own.
@@ -54,13 +52,13 @@ export function OnPluginStart(): void {
     }
     if (cmd.callerSlot < 0) { cmd.reply("run in-game"); return HookResult.Handled; }
     showMenu(cmd.callerSlot, MenuStyle.Center);
-    cmd.reply("center menu shown — W/S to move, E to select");
+    cmd.reply("center menu shown — click a row");
     return HookResult.Handled;
   });
   command("sm_menudemo_chat", cmd => {
     if (cmd.callerSlot < 0) { cmd.reply("run in-game"); return HookResult.Handled; }
     showMenu(cmd.callerSlot, MenuStyle.Chat);
-    cmd.reply("chat menu shown — type the number");
+    cmd.reply("chat-style menu shown — on CS2 this is the same HUD sheet");
     return HookResult.Handled;
   });
 }

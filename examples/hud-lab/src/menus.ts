@@ -1,12 +1,9 @@
 /**
  * The SourceMod-parity menu half: a feature-exercising demo menu and a categorised weapon buy menu.
  *
- * Neither needs the new update — `@s2script/sdk/menu` already ships both backends (Chat: numbered
- * lines; Center: the CS2 center-screen HTML panel driven by W/S/E). They are here because the whole
- * point of the new custom-HUD API is to eventually REPLACE this rendering, so having the existing
- * behaviour on the same server, under adjacent commands, is what makes the comparison concrete:
- * run `sm_hud_menu chat`, then `sm_hud_menu center`, then the HUD path, and the difference in what
- * the client actually draws is the whole story.
+ * On CS2 both Chat and Center paint the same hudkit sheet (click to pick). They are here because
+ * the custom-HUD API replaced the old WASD HTML / chat-number backends: run `sm_hud_menu chat` or
+ * `sm_hud_menu center` and you get the same sheet, with freeze only on Center.
  */
 import { Menu, MenuStyle, MenuCancelReason } from "@s2script/sdk";
 import { Pawn, CsItem } from "@s2script/cs2";
@@ -39,8 +36,7 @@ export function showDemo(slot: number, style: MenuStyle, log: (line: string) => 
   const m = new Menu("hud-lab — menu feature test");
   m.style = style;
   m.exitButton = true;
-  // Only the Center renderer honours this; the Chat renderer ignores it, which is itself worth
-  // seeing side by side.
+  // CS2 paints both styles as a HUD sheet; freeze is still Center-only so Chat-style demos stay mobile.
   m.freezePlayer = style === MenuStyle.Center;
 
   m.addItem("heal", "Heal to 100");

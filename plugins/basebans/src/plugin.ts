@@ -156,7 +156,7 @@ export function OnPluginStart(): void {
       // safe to resolve its text to THAT admin's language up front rather than per-recipient.
       const dm = new Menu(Translations.translate(adminSlot, "Ban Menu Title", name));
       dm.style = MenuStyle.Center;
-      dm.freezePlayer = true;   // WASD nav — keep the admin frozen through the duration sub-menu
+      dm.freezePlayer = true;   // keep the admin frozen through the duration HUD sheet
       const mins = [0, 5, 30, 60];   // 0 = permanent
       for (const m of mins) {
         dm.addItem(String(m), m === 0

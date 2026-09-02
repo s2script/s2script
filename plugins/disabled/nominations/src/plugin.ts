@@ -86,15 +86,13 @@ async function nominate(slot: number, name: string): Promise<void> {
  * with the reason — answers that without a second command.
  *
  * They lead the list so they land on the first page, where the player is already looking. The
- * `disabled` flag is what keeps them off the number keys, so the selectable maps below still
- * number contiguously and nothing can be nominated by accident.
+ * `disabled` flag keeps them unselectable on the HUD sheet (and off chat number keys on non-CS2).
  */
 function mapMenu(slot: number, available: MapEntry[], recent: MapEntry[], titleKey: PhraseKey): void {
   const m = new Menu(Translations.translate(slot, titleKey));
-  m.style = MenuStyle.Chat;   // non-freezing (players are mid-game)
-  // The chat menu renderer prints each line through Chat.toSlot, so colour tags in the DISPLAY
-  // string expand exactly as they do in any other chat line (unlike a MenuStyle.Center menu,
-  // whose HTML renderer never expands them — see basebans' ban-duration menu, Task 7).
+  m.style = MenuStyle.Chat;   // ignored on CS2 (HUD either way); freeze stays off mid-round
+  // Colour tags in the DISPLAY string still expand on a Chat backend. CS2 paints a HUD sheet, so
+  // they render as plain labels there — the disabled cooldown rows stay visible and unselectable.
   for (const e of recent) {
     m.addItem(e.name, Translations.translate(slot, "Nominate Recent Item", e.name), { disabled: true });
   }
