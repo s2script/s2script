@@ -403,6 +403,7 @@ struct TopMenuItem {
     category: String,
     name: String,
     flags: i64,
+    sheets: Vec<String>,
     owner: String,
     generation: u64,
     seq: u64,
@@ -2593,8 +2594,9 @@ fn s2_topmenu_add_category(scope: &mut v8::PinScope, args: v8::FunctionCallbackA
     }));
 }
 
-/// `__s2_topmenu_add_item(category, id, name, flags, onSelectFn)` — register/replace an item owned by
-/// current_plugin. Auto-creates the category (order hint). Mirrors s2_concommand's owner+gen+Global store.
+/// `__s2_topmenu_add_item(category, id, name, flags, onSelectFn, sheets?)` — register/replace an item
+/// owned by current_plugin. Auto-creates the category (order hint). Mirrors s2_concommand's owner+gen+Global
+/// store. `sheets` defaults to `["admin"]`; only the known sheet names are accepted.
 fn s2_topmenu_add_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 5 { return; }
@@ -2603,6 +2605,32 @@ fn s2_topmenu_add_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
         let name = args.get(2).to_rust_string_lossy(scope);
         let flags = args.get(3).integer_value(scope).unwrap_or(0);
         let func_local = match v8::Local::<v8::Function>::try_from(args.get(4)) { Ok(f) => f, Err(_) => return };
+        let sheets = if args.length() < 6 || args.get(5).is_undefined() {
+            vec!["admin".to_string()]
+        } else {
+            let Ok(sheet_array) = v8::Local::<v8::Array>::try_from(args.get(5)) else {
+                throw_named(scope, "TopMenuInvalidSheet", "sheets must be an array of \"admin\" or \"menu\"");
+                return;
+            };
+            let mut sheets = Vec::with_capacity(sheet_array.length() as usize);
+            for index in 0..sheet_array.length() {
+                let Some(value) = sheet_array.get_index(scope, index) else {
+                    throw_named(scope, "TopMenuInvalidSheet", &format!("sheets[{}] is missing", index));
+                    return;
+                };
+                if !value.is_string() {
+                    throw_named(scope, "TopMenuInvalidSheet", &format!("sheets[{}] must be a string", index));
+                    return;
+                }
+                let sheet = value.to_rust_string_lossy(scope);
+                if sheet != "admin" && sheet != "menu" {
+                    throw_named(scope, "TopMenuInvalidSheet", &format!("unknown sheet name {:?}", sheet));
+                    return;
+                }
+                sheets.push(sheet);
+            }
+            sheets
+        };
         let on_select = v8::Global::new(scope.as_ref(), func_local);
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
@@ -2610,11 +2638,12 @@ fn s2_topmenu_add_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
         // Reuse the existing seq on a re-add (reload) so positions stay stable; else take the next counter.
         let seq = TOPMENU_ITEMS.with(|m| m.borrow().get(&id).map(|it| it.seq))
             .unwrap_or_else(|| TOPMENU_SEQ.with(|c| { let s = c.get(); c.set(s + 1); s }));
-        TOPMENU_ITEMS.with(|m| m.borrow_mut().insert(id, TopMenuItem { category, name, flags, owner, generation, seq, on_select }));
+        TOPMENU_ITEMS.with(|m| m.borrow_mut().insert(id, TopMenuItem { category, name, flags, sheets, owner, generation, seq, on_select }));
     }));
 }
 
-/// `__s2_topmenu_snapshot() -> { categories: string[], items: [{id, category, name, flags}] }` (metadata only).
+/// `__s2_topmenu_snapshot() -> { categories: string[], items: [{id, category, name, flags, sheets}] }`
+/// (metadata only).
 fn s2_topmenu_snapshot(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let cats: Vec<String> = TOPMENU_CATEGORIES.with(|c| c.borrow().clone());
@@ -2624,7 +2653,7 @@ fn s2_topmenu_snapshot(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArgu
             let mut entries: Vec<(&String, &TopMenuItem)> = b.iter().collect();
             entries.sort_by_key(|(_, it)| it.seq);
             entries.into_iter().map(|(id, it)| {
-                serde_json::json!({ "id": id, "category": it.category, "name": it.name, "flags": it.flags })
+                serde_json::json!({ "id": id, "category": it.category, "name": it.name, "flags": it.flags, "sheets": it.sheets })
             }).collect()
         });
         let obj = serde_json::json!({ "categories": cats, "items": items });
@@ -14488,6 +14517,41 @@ pub(crate) mod frame_tests {
             globalThis.__s2pkg_topmenu.TopMenu.snapshot().items.map(function (i) { return i.name; }).join(",")
         "#);
         assert_eq!(out, "zeta,alpha,mike,bravo,yankee,charlie,delta,echo");
+        shutdown();
+    }
+
+    #[test]
+    fn topmenu_snapshot_sheets_defaults_and_validates() {
+        init(dummy_logger()).unwrap();
+        let out = eval_std("tm_sheets", r#"
+            var T = globalThis.__s2pkg_topmenu.TopMenu;
+            T.addItem("Player Commands", { id: "sheet:default", name: "Default", flags: 1, onSelect: function(){} });
+            T.addItem("Player Commands", { id: "sheet:menu", name: "Menu", flags: 2, sheets: ["menu"], onSelect: function(){} });
+            T.addItem("Player Commands", { id: "sheet:both", name: "Both", flags: 4, sheets: ["admin", "menu"], onSelect: function(){} });
+            var invalid = false, message = "";
+            try {
+                T.addItem("Player Commands", { id: "sheet:invalid", name: "Invalid", flags: 8, sheets: ["bogus"], onSelect: function(){} });
+            } catch (e) {
+                invalid = true;
+                message = String(e);
+            }
+            var items = T.snapshot().items;
+            function sheets(id) {
+                return items.filter(function (item) { return item.id === id; })[0].sheets;
+            }
+            JSON.stringify({
+                defaultSheets: sheets("sheet:default"),
+                menuSheets: sheets("sheet:menu"),
+                bothSheets: sheets("sheet:both"),
+                invalid: invalid,
+                messageHasName: message.indexOf("TopMenuInvalidSheet") !== -1,
+                messageHasSheet: message.indexOf("bogus") !== -1
+            });
+        "#);
+        assert_eq!(
+            out,
+            r#"{"defaultSheets":["admin"],"menuSheets":["menu"],"bothSheets":["admin","menu"],"invalid":true,"messageHasName":true,"messageHasSheet":true}"#
+        );
         shutdown();
     }
 

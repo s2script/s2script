@@ -1,6 +1,6 @@
 import {
   command, translations, config, Database, Menu, MenuCancelReason, MenuStyle,
-  Server, Chat, HookResult, Translations,
+  Server, Chat, HookResult, Translations, topmenu,
 } from "@s2script/sdk";
 import type { PhraseKey, HookResultValue } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
@@ -171,6 +171,15 @@ export async function OnPluginStart(): Promise<void> {
     // and there is no cooldown section — `nominate` re-validates and explains a refusal itself.
     else mapMenu(slot, matches, [], "Nominate Disambiguation Title");
     return HookResult.Handled;
+  });
+
+  topmenu.addCategory("Maps");
+  topmenu.addItem("Maps", {
+    id: "nominations:open",
+    name: "Nominate",
+    flags: 0,
+    sheets: ["menu"],
+    onSelect: (slot) => { nominateMenu(slot).catch(logErr); },
   });
 }
 
