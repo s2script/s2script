@@ -384,11 +384,18 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     this.title = title || "";
     this.style = MenuStyle.Chat;
     this.exitButton = true;
-    this.freezePlayer = false;   // a renderer that supports it (CS2 center) freezes the player while open
+    this.freezePlayer = false;   // a renderer that supports it (CS2 HUD) freezes the player while open
+    this._activation = "immediate";
     this.items = [];
     this._onSelect = null;
     this._onCancel = null;
   }
+  Object.defineProperty(Menu.prototype, "activation", {
+    get: function () { return this._activation; },
+    set: function (v) { this._activation = v === "tab" ? "tab" : "immediate"; },
+    enumerable: true,
+    configurable: true
+  });
   Menu.registerRenderer = function (name, renderer) { __s2_menu_renderers[name] = renderer; };
   Menu.prototype.addItem = function (info, display, opts) {
     this.items.push({ info: String(info), display: String(display), disabled: !!(opts && opts.disabled) });

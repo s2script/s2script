@@ -354,7 +354,7 @@
       // actually needs paging — a one-page list shows no pager.
       function footerPlan(slot) {
         var plan = [];
-        var mine = s.buttons || [];
+        var mine = typeof s.buttons === "function" ? (s.buttons(slot) || []) : (s.buttons || []);
         for (var i = 0; i < mine.length && plan.length < FOOTERS; i++) {
           plan.push({ text: mine[i].text, variant: mine[i].variant || "ghost", fn: mine[i].onClick });
         }
@@ -446,7 +446,7 @@
       }
 
       self = {
-        open: function (slot) {
+        open: function (slot, opts) {
           open[slot] = { page: 0, cursor: 0 };
           for (var wk in SHEET_WIDTH) {
             if (Object.prototype.hasOwnProperty.call(SHEET_WIDTH, wk) && SHEET_WIDTH[wk] !== "") {
@@ -455,8 +455,11 @@
           }
           paint(slot);                                        // fill first…
           setClass(slot, ids.root, FADE.sheet, false);         // …never leave it transparent…
-          show(slot, ids.root, { cursor: true });              // …then reveal, never blank
+          show(slot, ids.root, { cursor: !(opts && opts.cursor === false) });
           return self.forSlot(slot);
+        },
+        setCursor: function (slot, on) {
+          hud.cursor(slot, !!on);
         },
         close: function (slot) {
           delete open[slot];
@@ -503,7 +506,7 @@
         forSlot: function (slot) {
           return {
             slot: slot,
-            open: function () { return self.open(slot); },
+            open: function (opts) { return self.open(slot, opts); },
             close: function () { self.close(slot); },
             isOpen: function () { return self.isOpen(slot); },
             refresh: function () { self.refresh(slot); },

@@ -1,10 +1,13 @@
 /** @s2script/menu — interactive player menus (chat + center backends). NO runtime code (injected at load). */
 
+/** How a menu becomes interactive. Unknown values coerce to `"immediate"`. */
+export type MenuActivation = "immediate" | "tab";
+
 /** The display backend a {@link Menu} renders through — the value of {@link Menu.style}. */
 export declare const enum MenuStyle {
   /** Chat-log backend: numbered lines printed to chat, picked by typing the number. */
   Chat = "chat",
-  /** CS2 center-screen HTML backend: W/S move the cursor, E selects; re-painted each tick. */
+  /** CS2 HUD sheet (both styles paint the same center sheet on CS2). */
   Center = "center",
 }
 /** Why a menu closed without a selection — the {@link MenuCancelEvent.reason}. */
@@ -48,7 +51,7 @@ export interface MenuCancelEvent {
  * import { Menu, MenuStyle } from "@s2script/sdk/menu";
  * const m = new Menu("s2script Menu Demo");
  * m.style = MenuStyle.Center;
- * m.freezePlayer = true;                 // freeze movement while the WASD menu is open (nav still works)
+ * m.freezePlayer = true;                 // freeze movement while the HUD menu is open
  * m.addItem("hp", "Heal to 100");
  * m.addItem("noclip", "Toggle Noclip");
  * m.onSelect(e => { console.log(`picked ${e.info} (slot ${e.slot})`); });
@@ -62,10 +65,11 @@ export declare class Menu {
   style: MenuStyle;
   /** Append an auto Exit control (default true). */
   exitButton: boolean;
-  /** When true, a renderer that supports it (the CS2 center renderer) freezes the player's movement
-   *  while the menu is open and restores it on close — buttons still register, so WASD nav still works.
-   *  The chat renderer ignores it. Default false (movement allowed, the normal behavior). */
+  /** When true, a renderer that supports it (the CS2 HUD renderer) freezes the player's movement
+   *  while the menu is open and restores it on close. Default false. */
   freezePlayer: boolean;
+  /** `"immediate"` (default) arms cursor on open. `"tab"` paints first and waits for Tab. */
+  activation: MenuActivation;
   /** (info, display) — `info` is returned to onSelect; `display` is shown. */
   addItem(info: string, display: string, opts?: { disabled?: boolean }): void;
   /** Register the callback fired when a player picks an item. Replaces any previous handler. */

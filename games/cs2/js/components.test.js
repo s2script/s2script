@@ -16,7 +16,7 @@ function mount() {
   const hud = {
     set:      (s, id, v) => { calls.push({ op: "set", slot: s, id, value: v }); return null; },
     setClass: (s, id, cls, on) => { calls.push({ op: "cls", slot: s, id, cls, on }); return null; },
-    show:     (s, id) => { calls.push({ op: "show", slot: s, id }); return null; },
+    show:     (s, id, opts) => { calls.push({ op: "show", slot: s, id, opts }); return null; },
     hide:     (s, id) => { calls.push({ op: "hide", slot: s, id }); return null; },
     cursor:   () => null,
     forget:   () => {},
@@ -244,4 +244,29 @@ test("kit forSlot.toast drives the same player as toast(slot)", () => {
   const { ui, calls } = mount();
   ui.forSlot(4).toast({ title: "t", message: "m", holdSeconds: 0 });
   assert.ok(calls.some((c) => c.op === "show" && c.slot === 4 && c.id === "s2_t0"));
+});
+
+test("open() grabs the cursor unless opts.cursor is false", () => {
+  const { ui, calls } = mount();
+  const m = ui.modal({ title: "T", rows: [] });
+  m.open(1);
+  const shown = calls.filter((c) => c.op === "show" && c.id === "s2_m0");
+  assert.deepStrictEqual(shown[0].opts, { cursor: true });
+  m.close(1);
+  m.open(1, { cursor: false });
+  const shownOff = calls.filter((c) => c.op === "show" && c.id === "s2_m0");
+  assert.deepStrictEqual(shownOff.at(-1).opts, { cursor: false });
+});
+
+test("buttons may be a per-slot function", () => {
+  const { ui, clickHandlers } = mount();
+  const clicks = [];
+  const m = ui.modal({
+    title: "T",
+    rows: [],
+    buttons: (slot) => [{ text: "Go", onClick: () => clicks.push(slot) }],
+  });
+  m.open(2);
+  clickHandlers["s2_m0_f0"](2);
+  assert.deepStrictEqual(clicks, [2]);
 });
