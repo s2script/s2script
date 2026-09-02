@@ -1,5 +1,21 @@
 # @s2script/cli
 
+## 0.24.0
+
+### Minor Changes
+
+- 44ab392: Add TopMenu `sheets` and the `!menu` / `sm_menu` player hub.
+
+  Items default to the admin sheet. Plugins opt into the player hub with `sheets: ["menu"]`. `sm_admin` is unchanged; cookbook's demo command is now `sm_menudemo`.
+
+- 06ae122: Paint CS2 menus as hudkit center sheets.
+
+  `Menu.activation` (`immediate` | `tab`, default immediate) is generic. On CS2 both `MenuStyle.Center` and `MenuStyle.Chat` use one host-lifetime hudkit modal; Tab intercept lives on `HudInput`. Exhausted modal pool keeps the existing Chat renderer.
+
+- 0014b56: Paint CS2 votes as a right-side rail on `s2script_lib.xml` (addon 3790153369). The lib source (including `s2_vote*`) is in `examples/hud-lab/workshop/`.
+
+  `VoteTally.choice` is this slot's cast (or null). A registered tally renderer always paints; `showLiveTally` is leftover when a renderer exists. Chat is one line. HUD clicks go through `__s2_vote_cast`.
+
 ## 0.23.0
 
 ### Minor Changes

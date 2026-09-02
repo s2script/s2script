@@ -1,5 +1,34 @@
 # @s2script/cs2
 
+## 0.16.0
+
+### Minor Changes
+
+- 778061f: Reshape the CS2 HUD API around `custom_hud_layout`.
+
+  `ui` was a kitchen-sink namespace that did not match the engine object: a `custom_hud_layout` entity, driven per-player. The public face is now `CustomHudLayout.create(spec)` returning a `HudLayout`, painted through `layout.forSlot(slot)` so drive calls do not re-thread the slot. Clicks hand back that same player view. Unchanged values are not re-sent. `hudkit` is the shared modal/toast/badge pool (formerly `ui.components()`).
+
+  `ui` / `hud()` / `components()` remain as deprecated aliases of the same objects.
+
+- 7bcca3b: Add callout, banner, and MOTD panels to `s2script_lib.xml` (addon 3790153369).
+
+  `hudkit.callout` is a bottom-center hint (no cursor). `hudkit.banner` is a center-top broadcast strip. `hudkit.motd` is a scrim + OK overlay, not a third center sheet. Republish the same workshop item after compiling.
+
+- 06ae122: Paint CS2 menus as hudkit center sheets.
+
+  `Menu.activation` (`immediate` | `tab`, default immediate) is generic. On CS2 both `MenuStyle.Center` and `MenuStyle.Chat` use one host-lifetime hudkit modal; Tab intercept lives on `HudInput`. Exhausted modal pool keeps the existing Chat renderer.
+
+- 0014b56: Paint CS2 votes as a right-side rail on `s2script_lib.xml` (addon 3790153369). The lib source (including `s2_vote*`) is in `examples/hud-lab/workshop/`.
+
+  `VoteTally.choice` is this slot's cast (or null). A registered tally renderer always paints; `showLiveTally` is leftover when a renderer exists. Chat is one line. HUD clicks go through `__s2_vote_cast`.
+
+### Patch Changes
+
+- Updated dependencies [44ab392]
+- Updated dependencies [06ae122]
+- Updated dependencies [0014b56]
+  - @s2script/sdk@0.24.0
+
 ## 0.15.0
 
 ### Minor Changes
