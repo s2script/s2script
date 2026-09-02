@@ -6,10 +6,10 @@
  * the pipeline. This one is the opposite: every slot is a `{s:...}` binding, so it renders as an
  * EMPTY FRAME until the server fills it. A blank panel here is an unfilled panel, not a broken one.
  *
- * It follows the `id == varName` convention throughout, so `hud.set(slot, id, value)` is the whole
- * binding and `text` below is filled programmatically rather than hand-mapped.
+ * It follows the `id == varName` convention throughout, so `layout.forSlot(slot).set(id, value)` is
+ * the whole binding and `text` below is filled programmatically rather than hand-mapped.
  */
-import type { LayoutDescriptor } from "@s2script/cs2";
+import type { CustomHudSpec } from "@s2script/cs2";
 
 /** Every text-bearing id in the layout. id === dialog variable name. */
 const TEXT_IDS = [
@@ -30,7 +30,7 @@ const TEXT_IDS = [
 const TEXT: Record<string, string> = {};
 for (const id of TEXT_IDS) TEXT[id] = id;
 
-export const LIVE_HUD: LayoutDescriptor = {
+export const LIVE_HUD: CustomHudSpec = {
   addons: ["3790153369"],
   // `.xml` SOURCE extension — the client rejects `.vxml` / `.vxml_c`.
   resource: "panorama/layout/custom_game/s2script_hud_live.xml",

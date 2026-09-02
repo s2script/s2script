@@ -8,8 +8,8 @@
  * what is not, so that after an update you can tell the three cases apart on a live server:
  *
  *   TIER A  reachable today  — raw offset writes, entity I/O, game events, generated schema fields
- *   TIER B  ui / @s2script/cs2 — promoted HUD engine calls (SetHasClass/DialogVariable/InputCapture)
- *   TIER C  resolved — inbound clicks via ui.onCustomHudClicked (game-package hook)
+ *   TIER B  CustomHudLayout / @s2script/cs2 — promoted HUD engine calls (SetHasClass/DialogVariable/InputCapture)
+ *   TIER C  resolved — inbound clicks via CustomHudLayout.onClicked (game-package hook)
  *
  * `sm_hud_status` prints all three. Start there.
  *
@@ -41,8 +41,8 @@
  */
 import { ADMFLAG, config, Chat, hook, command, HookResult } from "@s2script/sdk";
 import type { CommandInvocation, Client } from "@s2script/sdk";
-import { Player, Pawn, ui } from "@s2script/cs2";
-import type { Hud } from "@s2script/cs2";
+import { Player, Pawn, CustomHudLayout } from "@s2script/cs2";
+import type { HudLayout } from "@s2script/cs2";
 import { LIVE_HUD, LIVE_PANELS } from "./livehud";
 import { LiveDemo } from "./livedemo";
 
@@ -66,7 +66,7 @@ function log(line: string): void {
   console.log(`${TAG} ${line}`);
 }
 
-let kitHud!: Hud;
+let kitHud!: HudLayout;
 let hud!: DemoHud;
 let demo!: LiveDemo;
 
@@ -75,20 +75,17 @@ let demo!: LiveDemo;
 const EYE_HEIGHT = 64;
 
 export function OnPluginStart(): void {
-  /** Shipped workshop kit driven through the game-package `ui` API. */
-  kitHud = ui.hud();
+  /** Shipped workshop kit driven through the game-package `CustomHudLayout` API. */
+  kitHud = CustomHudLayout.probe();
 
-  kitHud.onClick("s2_btn_3", (slot) => {
-    kitHud.hide(slot, "s2_dialog");
-    Chat.toSlot(slot, "[hud] dismissed");
+  kitHud.onClick("s2_btn_3", (p) => {
+    p.hide("s2_dialog");
+    Chat.toSlot(p.slot, "[hud] dismissed");
   });
 
-  ui.onCustomHudClicked((view) => {
-    const ref = view.player;
-    const who = ref
-      ? Player.all().find((p) => p.ref.index === ref.index && p.ref.id === ref.id) ?? null
-      : null;
-    const slot = who?.slot ?? -1;
+  CustomHudLayout.onClicked((view) => {
+    const slot = view.slot;
+    const who = slot >= 0 ? Player.fromSlot(slot) : null;
     const name = who?.playerName ?? (slot >= 0 ? `slot ${slot}` : "<unknown>");
     log(`RAW CLICK button="${view.buttonId}" by ${name} (slot ${slot})`);
   });
@@ -99,8 +96,8 @@ export function OnPluginStart(): void {
   bomb.install(log);
 
   // ── Map start ───────────────────────────────────────────────────────────────────────────────
-  // Do not spawn a custom_hud_layout from OnMapStart — the world is not up yet. `ui` waits
-  // for an active client, then spawns any layout registered via hud() / createLayout.
+  // Do not spawn a custom_hud_layout from OnMapStart — the world is not up yet. CustomHudLayout
+  // waits for an active client, then spawns any layout registered via create() / ensure().
 
   // ── Status ──────────────────────────────────────────────────────────────────────────────────
   command.admin("sm_hud_status", ADMFLAG.GENERIC, (cmd) => {
@@ -125,10 +122,10 @@ export function OnPluginStart(): void {
 
     cmd.reply(`  demo HUD viewers: ${hud.count}`);
 
-    cmd.reply(`${TAG} ── TIER B (ui / @s2script/cs2) ──`);
+    cmd.reply(`${TAG} ── TIER B (CustomHudLayout / @s2script/cs2) ──`);
     cmd.reply("  layout: panorama/layout/custom_game/s2script_hud.xml");
     cmd.reply("  addons: 3790153369 (MultiAddonManager)");
-    cmd.reply(`${TAG} ── TIER C (ui.onCustomHudClicked) ──`);
+    cmd.reply(`${TAG} ── TIER C (CustomHudLayout.onClicked) ──`);
     cmd.reply("  ARMED via game-package hook — use sm_kit / sm_hud_show, then click s2_btn_*");
     return HookResult.Handled;
   });
@@ -398,12 +395,12 @@ export function OnPluginStart(): void {
   //
   // This is the one to look at. Unlike the probe, every slot is a {s:} binding, so it renders as an
   // empty frame until filled — which is exactly why this command fills it before revealing it.
-  const liveHud = ui.hud(LIVE_HUD);
-  liveHud.onClick("motd_ok", (slot) => {
-    liveHud.hide(slot, LIVE_PANELS.motd);
-    liveHud.cursor(slot, false);
-    Chat.toSlot(slot, "[hud] MOTD dismissed");
-    log(`motd_ok clicked by slot ${slot} -> hidden, cursor released`);
+  const liveHud = CustomHudLayout.create(LIVE_HUD);
+  liveHud.onClick("motd_ok", (p) => {
+    p.hide(LIVE_PANELS.motd);
+    p.cursor(false);
+    Chat.toSlot(p.slot, "[hud] MOTD dismissed");
+    log(`motd_ok clicked by slot ${p.slot} -> hidden, cursor released`);
   });
 
   // ── The live demo: HUD driven by real game state ─────────────────────────────────────────────
@@ -424,7 +421,7 @@ export function OnPluginStart(): void {
 
   command.admin("sm_hud", ADMFLAG.GENERIC, (cmd) => {
     if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_hud needs an in-game caller`); return HookResult.Handled; }
-    const spawn = ui.createLayout();
+    const spawn = liveHud.ensure();
     if (spawn !== null) { cmd.reply(`${TAG} ${spawn}`); return HookResult.Handled; }
     const slot = cmd.callerSlot;
     const arg = cmd.arg(0).toLowerCase();
@@ -443,48 +440,45 @@ export function OnPluginStart(): void {
   command.admin("sm_motd", ADMFLAG.GENERIC, (cmd) => {
     if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_motd needs an in-game caller`); return HookResult.Handled; }
     const slot = cmd.callerSlot;
+    const p = liveHud.forSlot(slot);
     const name = Player.fromSlot(slot)?.playerName ?? `slot ${slot}`;
     const errs: string[] = [];
     const put = (r: string | null) => { if (r) errs.push(r); };
 
     // Scoreboard + timer — always-on chrome.
-    put(liveHud.set(slot, "timer_label", "ROUND"));
-    put(liveHud.set(slot, "timer_value", "1:42"));
-    put(liveHud.setMeter(slot, "timer", 70));
-    put(liveHud.set(slot, "team_ct_name", "COUNTER-TERRORISTS"));
-    put(liveHud.set(slot, "team_ct_score", "7"));
-    put(liveHud.set(slot, "team_t_name", "TERRORISTS"));
-    put(liveHud.set(slot, "team_t_score", "5"));
-
-    // Player card.
-    put(liveHud.set(slot, "pcard_name", name));
-    put(liveHud.set(slot, "pcard_meta", "driven live by s2script"));
-    put(liveHud.set(slot, "pcard_badge_t", "MVP"));
-    put(liveHud.set(slot, "pcard_k", "18"));
-    put(liveHud.set(slot, "pcard_d", "9"));
-    put(liveHud.set(slot, "pcard_a", "4"));
-    put(liveHud.set(slot, "pcard_hs", "61%"));
-    put(liveHud.set(slot, "pcard_form_label", "LAST 5"));
-
-    // One kill-feed row, and reveal it (rows start collapsed).
-    put(liveHud.set(slot, "feed_0_a", name));
-    put(liveHud.set(slot, "feed_0_w", "ak47"));
-    put(liveHud.set(slot, "feed_0_v", "bot Kadeem"));
-    put(liveHud.set(slot, "feed_0_t", "HS"));
-    put(liveHud.show(slot, LIVE_PANELS.feed[0]));
-
-    // MOTD — the interactive part. Reveal it and take the cursor so its button is clickable.
-    put(liveHud.set(slot, "motd_title", "s2script HUD"));
-    put(liveHud.set(slot, "motd_sub", "server-driven Panorama"));
-    put(liveHud.set(slot, "motd_h0", "Layout"));
-    put(liveHud.set(slot, "motd_p0", "workshop addon 3790153369, mounted per-client"));
-    put(liveHud.set(slot, "motd_h1", "Drive"));
-    put(liveHud.set(slot, "motd_p1", "ui.hud — SetHasClass / SetDialogVariableString"));
-    put(liveHud.set(slot, "motd_h2", "Clicks"));
-    put(liveHud.set(slot, "motd_p2", "CustomHudClickedReceiver detour -> ui.onCustomHudClicked"));
-    put(liveHud.set(slot, "motd_note", "click OK to dismiss"));
-    put(liveHud.set(slot, "motd_ok_t", "OK"));
-    put(liveHud.show(slot, LIVE_PANELS.motd, { cursor: true }));
+    put(p.set({
+      timer_label: "ROUND",
+      timer_value: "1:42",
+      team_ct_name: "COUNTER-TERRORISTS",
+      team_ct_score: "7",
+      team_t_name: "TERRORISTS",
+      team_t_score: "5",
+      pcard_name: name,
+      pcard_meta: "driven live by s2script",
+      pcard_badge_t: "MVP",
+      pcard_k: "18",
+      pcard_d: "9",
+      pcard_a: "4",
+      pcard_hs: "61%",
+      pcard_form_label: "LAST 5",
+      feed_0_a: name,
+      feed_0_w: "ak47",
+      feed_0_v: "bot Kadeem",
+      feed_0_t: "HS",
+      motd_title: "s2script HUD",
+      motd_sub: "server-driven Panorama",
+      motd_h0: "Layout",
+      motd_p0: "workshop addon 3790153369, mounted per-client",
+      motd_h1: "Drive",
+      motd_p1: "CustomHudLayout — SetHasClass / SetDialogVariableString",
+      motd_h2: "Clicks",
+      motd_p2: "CustomHudClickedReceiver detour -> CustomHudLayout.onClicked",
+      motd_note: "click OK to dismiss",
+      motd_ok_t: "OK",
+    }));
+    put(p.setMeter("timer", 70));
+    put(p.show(LIVE_PANELS.feed[0]));
+    put(p.show(LIVE_PANELS.motd, { cursor: true }));
 
     cmd.reply(errs.length
       ? `${TAG} ${errs.length} call(s) refused; first: ${errs[0]}`
@@ -496,16 +490,19 @@ export function OnPluginStart(): void {
     if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_kit needs an in-game caller`); return HookResult.Handled; }
     const slot = cmd.callerSlot;
 
-    kitHud.setText(slot, "s2_dialog_title", "s2script kit");
-    kitHud.setText(slot, "s2_dialog_kicker", "LIVE");
-    kitHud.setText(slot, "s2_dialog_body", `driven via ui.hud() for ${Player.fromSlot(slot)?.playerName ?? "you"}`);
-    kitHud.setText(slot, "s2_btn_0_text", "Alpha");
-    kitHud.setText(slot, "s2_btn_1_text", "Bravo");
-    kitHud.setText(slot, "s2_btn_2_text", "Charlie");
-    kitHud.setText(slot, "s2_btn_3_text", "Close");
-    kitHud.setMeter(slot, "meter", 50);
+    const p = kitHud.forSlot(slot);
+    p.setText({
+      s2_dialog_title: "s2script kit",
+      s2_dialog_kicker: "LIVE",
+      s2_dialog_body: `driven via CustomHudLayout for ${Player.fromSlot(slot)?.playerName ?? "you"}`,
+      s2_btn_0_text: "Alpha",
+      s2_btn_1_text: "Bravo",
+      s2_btn_2_text: "Charlie",
+      s2_btn_3_text: "Close",
+    });
+    p.setMeter("meter", 50);
 
-    const err = kitHud.show(slot, "s2_dialog", { cursor: true });
+    const err = p.show("s2_dialog", { cursor: true });
     cmd.reply(err ? `${TAG} show refused: ${err}` : `${TAG} kit visible — click s2_btn_0..s2_btn_3`);
     return HookResult.Handled;
   });

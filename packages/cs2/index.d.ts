@@ -18,14 +18,32 @@ export * from "./schema.generated";
 // interfaces surface automatically; no index.d.ts edit needed.
 export * from "./hooks.generated";
 export type {
+  Badge,
+  BadgeSpec,
+  BadgeView,
+  Components,
   CtxUi,
+  CustomHudClickedView,
+  CustomHudLayoutNs,
+  CustomHudSpec,
+  FooterButton,
   Hud,
+  HudKit,
+  HudKitPlayer,
+  HudLayout,
+  HudPlayer,
   HudResult,
   LayoutDescriptor,
   LayoutSlot,
+  Modal,
+  ModalSpec,
+  ModalView,
   OnCustomHudClickedView,
+  Row,
+  ToastSpec,
+  Variant,
 } from "./ui";
-export { DEFAULT_HUD_DESCRIPTOR, ui } from "./ui";
+export { CustomHudLayout, DEFAULT_HUD_DESCRIPTOR, hudkit, PROBE_LAYOUT, ui } from "./ui";
 export { AcquireMethod, AcquireResult, items } from "./items";
 export type { CanAcquireView, CtxItems } from "./items";
 import type { CCSPlayerPawn, CCSPlayerController } from "./schema.generated";
