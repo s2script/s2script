@@ -1746,30 +1746,44 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   }
   var __s2_vote_warnedNoRenderer = false;
   function __s2_vote_showTally(st) {
-    if (!st.showLiveTally) return;
-    if (!__s2_vote_tallyRenderer) {   // showLiveTally set but no renderer (a non-CS2 game) -> degrade to chat-only, warn once
-      if (!__s2_vote_warnedNoRenderer) { __s2_vote_warnedNoRenderer = true; globalThis.console && console.log("[votes] WARN: showLiveTally set but no tally renderer registered — chat-only."); }
+    if (!__s2_vote_tallyRenderer) {
+      if (st.showLiveTally && !__s2_vote_warnedNoRenderer) {
+        __s2_vote_warnedNoRenderer = true;
+        globalThis.console && console.log("[votes] WARN: showLiveTally set but no tally renderer registered — chat-only.");
+      }
       return;
     }
     var c = __s2_vote_counts(st);
     var opts = st.options.map(function (label, i) { return { label: label, count: c.counts[i] }; });
-    var tally = { question: st.question, options: opts, total: c.total, secondsLeft: st.secondsLeft };
     var slots = __s2_vote_eligibleSlots();
-    for (var i = 0; i < slots.length; i++) { try { __s2_vote_tallyRenderer.show(slots[i], tally); } catch (e) {} }
+    for (var i = 0; i < slots.length; i++) {
+      var slot = slots[i];
+      var choice = st.votes.has(slot) ? st.votes.get(slot) : null;
+      var tally = { question: st.question, options: opts, total: c.total, secondsLeft: st.secondsLeft, choice: choice };
+      try { __s2_vote_tallyRenderer.show(slot, tally); } catch (e) {}
+    }
   }
   function __s2_vote_clearTally(st) {
-    if (!st.showLiveTally || !__s2_vote_tallyRenderer) return;
+    if (!__s2_vote_tallyRenderer) return;
     var slots = __s2_vote_eligibleSlots();
     for (var i = 0; i < slots.length; i++) { try { __s2_vote_tallyRenderer.clear(slots[i]); } catch (e) {} }
   }
+  function __s2_vote_cast(slot, index) {
+    var st = __s2_vote_state; if (!st) return false;
+    index = index | 0;
+    if (index < 0 || index >= st.options.length) return false;
+    st.votes.set(slot, index);
+    __s2_vote_showTally(st);
+    return true;
+  }
+  globalThis.__s2_vote_cast = __s2_vote_cast;
   function __s2_vote_castFromChat(slot, text) {
     var st = __s2_vote_state; if (!st) return 0;                    // no active vote -> pass through
     var t = ("" + text).trim();
     if (!/^[0-9]$/.test(t)) return 0;
     var d = parseInt(t, 10);
     if (d < 1 || d > st.options.length) return 0;                  // out of range -> pass through
-    st.votes.set(slot, d - 1);                                     // revote replaces
-    __s2_vote_showTally(st);
+    __s2_vote_cast(slot, d - 1);
     // NOTE: the "every connected non-bot has voted -> end early" check (design doc Flow step 5) lives
     // in __s2_vote_tick, NOT here. Checking synchronously on every cast would end the vote the instant
     // the last eligible voter casts a FIRST vote, pre-empting a later revote from any of them within the
@@ -1818,18 +1832,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
                  showLiveTally: !!config.showLiveTally, secondsLeft: dur,
                  onEnd: (typeof config.onEnd === "function") ? config.onEnd : function () {} };
       __s2_vote_state = st;
-      // ONE LINE PER OPTION. This used to join every option into a single line
-      // ("[Vote] q — 1=a, 2=b, 3=c, ..."), which wrapped across most of the chat box the moment a
-      // ballot carried five map names and was genuinely hard to read — the opposite of what a thing
-      // you must answer by number needs to be. Plugins worked around it by suppressing this send and
-      // reprinting their own, which then double-printed whenever the suppression missed.
-      //
-      // Deliberately UNCOLOURED: colour is a game concern and this is engine-generic. An option's
-      // label is caller-owned, so a plugin that wants colour puts control bytes in the label itself.
-      globalThis.__s2pkg_chat.Chat.toAll("[Vote] " + st.question);
-      for (var vi = 0; vi < st.options.length; vi++) {
-        globalThis.__s2pkg_chat.Chat.toAll("  " + (vi + 1) + ". " + st.options[vi]);
-      }
+      // ONE LINE. Options live on the CS2 right-side rail (or are typed as 1–N). Printing the
+      // list here doubled the ballot and wrapped badly once a vote carried several map names.
+      globalThis.__s2pkg_chat.Chat.toAll("[Vote] " + st.question + " — Tab, or type 1–" + st.options.length);
       __s2_vote_showTally(st);
       __s2_vote_tick(st);                                         // starts the countdown + end
       return true;
