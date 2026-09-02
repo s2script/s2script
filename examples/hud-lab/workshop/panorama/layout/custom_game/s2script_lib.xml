@@ -1,0 +1,256 @@
+<!--
+  s2script component library — workshop addon 3790153369.
+
+  Production layout hudkit binds: panorama/layout/custom_game/s2script_lib.xml
+  Recovered from the published VPK, then the vote rail was added here so git
+  is the source of truth. Do not point a second custom_hud_layout at another XML.
+
+  Include MUST be file://{resources}/… with the source .css. An s2r:// include
+  compiles clean and ships unstyled.
+-->
+<root>
+	<styles>
+		<include src="file://{resources}/styles/custom_game/s2script_lib.css" />
+	</styles>
+	<Panel class="s2-root">
+		<Panel id="toast_stack" class="s2-toast-stack">
+			<Panel id="s2_t0" class="s2-toast s2-hide">
+				<Panel id="s2_t0_bar" class="s2-toast-bar" />
+				<Panel class="s2-toast-text">
+					<Label id="s2_t0_title" class="s2-toast-title" text="{s:s2_t0_title}" />
+					<Label id="s2_t0_msg" class="s2-toast-msg" text="{s:s2_t0_msg}" />
+				</Panel>
+			</Panel>
+			<Panel id="s2_t1" class="s2-toast s2-hide">
+				<Panel id="s2_t1_bar" class="s2-toast-bar" />
+				<Panel class="s2-toast-text">
+					<Label id="s2_t1_title" class="s2-toast-title" text="{s:s2_t1_title}" />
+					<Label id="s2_t1_msg" class="s2-toast-msg" text="{s:s2_t1_msg}" />
+				</Panel>
+			</Panel>
+			<Panel id="s2_t2" class="s2-toast s2-hide">
+				<Panel id="s2_t2_bar" class="s2-toast-bar" />
+				<Panel class="s2-toast-text">
+					<Label id="s2_t2_title" class="s2-toast-title" text="{s:s2_t2_title}" />
+					<Label id="s2_t2_msg" class="s2-toast-msg" text="{s:s2_t2_msg}" />
+				</Panel>
+			</Panel>
+			<Panel id="s2_t3" class="s2-toast s2-hide">
+				<Panel id="s2_t3_bar" class="s2-toast-bar" />
+				<Panel class="s2-toast-text">
+					<Label id="s2_t3_title" class="s2-toast-title" text="{s:s2_t3_title}" />
+					<Label id="s2_t3_msg" class="s2-toast-msg" text="{s:s2_t3_msg}" />
+				</Panel>
+			</Panel>
+		</Panel>
+		<Panel id="s2_b0" class="s2-hudbadge s2-corner-tl s2-hide">
+			<Label id="s2_b0_title" class="s2-hudbadge-title" text="{s:s2_b0_title}" />
+			<Label id="s2_b0_text" class="s2-hudbadge-text" text="{s:s2_b0_text}" />
+		</Panel>
+		<Panel id="s2_b1" class="s2-hudbadge s2-corner-tr s2-hide">
+			<Label id="s2_b1_title" class="s2-hudbadge-title" text="{s:s2_b1_title}" />
+			<Label id="s2_b1_text" class="s2-hudbadge-text" text="{s:s2_b1_text}" />
+		</Panel>
+		<Panel id="s2_b2" class="s2-hudbadge s2-corner-bl s2-hide">
+			<Label id="s2_b2_title" class="s2-hudbadge-title" text="{s:s2_b2_title}" />
+			<Label id="s2_b2_text" class="s2-hudbadge-text" text="{s:s2_b2_text}" />
+		</Panel>
+		<Panel id="s2_b3" class="s2-hudbadge s2-corner-br s2-hide">
+			<Label id="s2_b3_title" class="s2-hudbadge-title" text="{s:s2_b3_title}" />
+			<Label id="s2_b3_text" class="s2-hudbadge-text" text="{s:s2_b3_text}" />
+		</Panel>
+		<Panel id="s2_m0" class="s2-sheet s2-hide">
+			<Panel class="s2-sheet-head">
+				<Label id="s2_m0_title" class="s2-sheet-title" text="{s:s2_m0_title}" />
+				<Label id="s2_m0_sub" class="s2-sheet-sub" text="{s:s2_m0_sub}" />
+			</Panel>
+			<Panel class="s2-sheet-rule" />
+			<Panel id="s2_m0_list" class="s2-sheet-list">
+				<Button id="s2_m0_r0" class="s2-li">
+					<Label id="s2_m0_r0_a" class="s2-cell-a" text="{s:s2_m0_r0_a}" />
+					<Label id="s2_m0_r0_b" class="s2-cell-b" text="{s:s2_m0_r0_b}" />
+					<Label id="s2_m0_r0_c" class="s2-cell-c" text="{s:s2_m0_r0_c}" />
+				</Button>
+				<Button id="s2_m0_r1" class="s2-li">
+					<Label id="s2_m0_r1_a" class="s2-cell-a" text="{s:s2_m0_r1_a}" />
+					<Label id="s2_m0_r1_b" class="s2-cell-b" text="{s:s2_m0_r1_b}" />
+					<Label id="s2_m0_r1_c" class="s2-cell-c" text="{s:s2_m0_r1_c}" />
+				</Button>
+				<Button id="s2_m0_r2" class="s2-li">
+					<Label id="s2_m0_r2_a" class="s2-cell-a" text="{s:s2_m0_r2_a}" />
+					<Label id="s2_m0_r2_b" class="s2-cell-b" text="{s:s2_m0_r2_b}" />
+					<Label id="s2_m0_r2_c" class="s2-cell-c" text="{s:s2_m0_r2_c}" />
+				</Button>
+				<Button id="s2_m0_r3" class="s2-li">
+					<Label id="s2_m0_r3_a" class="s2-cell-a" text="{s:s2_m0_r3_a}" />
+					<Label id="s2_m0_r3_b" class="s2-cell-b" text="{s:s2_m0_r3_b}" />
+					<Label id="s2_m0_r3_c" class="s2-cell-c" text="{s:s2_m0_r3_c}" />
+				</Button>
+				<Button id="s2_m0_r4" class="s2-li">
+					<Label id="s2_m0_r4_a" class="s2-cell-a" text="{s:s2_m0_r4_a}" />
+					<Label id="s2_m0_r4_b" class="s2-cell-b" text="{s:s2_m0_r4_b}" />
+					<Label id="s2_m0_r4_c" class="s2-cell-c" text="{s:s2_m0_r4_c}" />
+				</Button>
+				<Button id="s2_m0_r5" class="s2-li">
+					<Label id="s2_m0_r5_a" class="s2-cell-a" text="{s:s2_m0_r5_a}" />
+					<Label id="s2_m0_r5_b" class="s2-cell-b" text="{s:s2_m0_r5_b}" />
+					<Label id="s2_m0_r5_c" class="s2-cell-c" text="{s:s2_m0_r5_c}" />
+				</Button>
+				<Button id="s2_m0_r6" class="s2-li">
+					<Label id="s2_m0_r6_a" class="s2-cell-a" text="{s:s2_m0_r6_a}" />
+					<Label id="s2_m0_r6_b" class="s2-cell-b" text="{s:s2_m0_r6_b}" />
+					<Label id="s2_m0_r6_c" class="s2-cell-c" text="{s:s2_m0_r6_c}" />
+				</Button>
+				<Button id="s2_m0_r7" class="s2-li">
+					<Label id="s2_m0_r7_a" class="s2-cell-a" text="{s:s2_m0_r7_a}" />
+					<Label id="s2_m0_r7_b" class="s2-cell-b" text="{s:s2_m0_r7_b}" />
+					<Label id="s2_m0_r7_c" class="s2-cell-c" text="{s:s2_m0_r7_c}" />
+				</Button>
+			</Panel>
+			<Panel id="s2_m0_detail" class="s2-sheet-detail">
+				<Label id="s2_m0_d0" class="s2-detail-line s2-detail-strong" text="{s:s2_m0_d0}" />
+				<Label id="s2_m0_d1" class="s2-detail-line" text="{s:s2_m0_d1}" />
+				<Label id="s2_m0_d2" class="s2-detail-line" text="{s:s2_m0_d2}" />
+				<Panel class="s2-clampbox">
+					<Label id="s2_m0_d3" class="s2-clamptext" text="{s:s2_m0_d3}" />
+				</Panel>
+			</Panel>
+			<Panel class="s2-sheet-foot">
+				<Button id="s2_m0_f0" class="s2-btn s2-btn-sm s2-btn-ghost">
+					<Label id="s2_m0_f0_t" class="s2-btn-label" text="{s:s2_m0_f0_t}" />
+				</Button>
+				<Panel class="s2-sheet-spacer" />
+				<Button id="s2_m0_f1" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m0_f1_t" class="s2-btn-label" text="{s:s2_m0_f1_t}" />
+				</Button>
+				<Button id="s2_m0_f2" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m0_f2_t" class="s2-btn-label" text="{s:s2_m0_f2_t}" />
+				</Button>
+				<Button id="s2_m0_f3" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m0_f3_t" class="s2-btn-label" text="{s:s2_m0_f3_t}" />
+				</Button>
+				<Button id="s2_m0_f4" class="s2-btn s2-btn-sm">
+					<Label id="s2_m0_f4_t" class="s2-btn-label" text="{s:s2_m0_f4_t}" />
+				</Button>
+			</Panel>
+		</Panel>
+		<Panel id="s2_m1" class="s2-sheet s2-hide">
+			<Panel class="s2-sheet-head">
+				<Label id="s2_m1_title" class="s2-sheet-title" text="{s:s2_m1_title}" />
+				<Label id="s2_m1_sub" class="s2-sheet-sub" text="{s:s2_m1_sub}" />
+			</Panel>
+			<Panel class="s2-sheet-rule" />
+			<Panel id="s2_m1_list" class="s2-sheet-list">
+				<Button id="s2_m1_r0" class="s2-li">
+					<Label id="s2_m1_r0_a" class="s2-cell-a" text="{s:s2_m1_r0_a}" />
+					<Label id="s2_m1_r0_b" class="s2-cell-b" text="{s:s2_m1_r0_b}" />
+					<Label id="s2_m1_r0_c" class="s2-cell-c" text="{s:s2_m1_r0_c}" />
+				</Button>
+				<Button id="s2_m1_r1" class="s2-li">
+					<Label id="s2_m1_r1_a" class="s2-cell-a" text="{s:s2_m1_r1_a}" />
+					<Label id="s2_m1_r1_b" class="s2-cell-b" text="{s:s2_m1_r1_b}" />
+					<Label id="s2_m1_r1_c" class="s2-cell-c" text="{s:s2_m1_r1_c}" />
+				</Button>
+				<Button id="s2_m1_r2" class="s2-li">
+					<Label id="s2_m1_r2_a" class="s2-cell-a" text="{s:s2_m1_r2_a}" />
+					<Label id="s2_m1_r2_b" class="s2-cell-b" text="{s:s2_m1_r2_b}" />
+					<Label id="s2_m1_r2_c" class="s2-cell-c" text="{s:s2_m1_r2_c}" />
+				</Button>
+				<Button id="s2_m1_r3" class="s2-li">
+					<Label id="s2_m1_r3_a" class="s2-cell-a" text="{s:s2_m1_r3_a}" />
+					<Label id="s2_m1_r3_b" class="s2-cell-b" text="{s:s2_m1_r3_b}" />
+					<Label id="s2_m1_r3_c" class="s2-cell-c" text="{s:s2_m1_r3_c}" />
+				</Button>
+				<Button id="s2_m1_r4" class="s2-li">
+					<Label id="s2_m1_r4_a" class="s2-cell-a" text="{s:s2_m1_r4_a}" />
+					<Label id="s2_m1_r4_b" class="s2-cell-b" text="{s:s2_m1_r4_b}" />
+					<Label id="s2_m1_r4_c" class="s2-cell-c" text="{s:s2_m1_r4_c}" />
+				</Button>
+				<Button id="s2_m1_r5" class="s2-li">
+					<Label id="s2_m1_r5_a" class="s2-cell-a" text="{s:s2_m1_r5_a}" />
+					<Label id="s2_m1_r5_b" class="s2-cell-b" text="{s:s2_m1_r5_b}" />
+					<Label id="s2_m1_r5_c" class="s2-cell-c" text="{s:s2_m1_r5_c}" />
+				</Button>
+				<Button id="s2_m1_r6" class="s2-li">
+					<Label id="s2_m1_r6_a" class="s2-cell-a" text="{s:s2_m1_r6_a}" />
+					<Label id="s2_m1_r6_b" class="s2-cell-b" text="{s:s2_m1_r6_b}" />
+					<Label id="s2_m1_r6_c" class="s2-cell-c" text="{s:s2_m1_r6_c}" />
+				</Button>
+				<Button id="s2_m1_r7" class="s2-li">
+					<Label id="s2_m1_r7_a" class="s2-cell-a" text="{s:s2_m1_r7_a}" />
+					<Label id="s2_m1_r7_b" class="s2-cell-b" text="{s:s2_m1_r7_b}" />
+					<Label id="s2_m1_r7_c" class="s2-cell-c" text="{s:s2_m1_r7_c}" />
+				</Button>
+			</Panel>
+			<Panel id="s2_m1_detail" class="s2-sheet-detail">
+				<Label id="s2_m1_d0" class="s2-detail-line s2-detail-strong" text="{s:s2_m1_d0}" />
+				<Label id="s2_m1_d1" class="s2-detail-line" text="{s:s2_m1_d1}" />
+				<Label id="s2_m1_d2" class="s2-detail-line" text="{s:s2_m1_d2}" />
+				<Panel class="s2-clampbox">
+					<Label id="s2_m1_d3" class="s2-clamptext" text="{s:s2_m1_d3}" />
+				</Panel>
+			</Panel>
+			<Panel class="s2-sheet-foot">
+				<Button id="s2_m1_f0" class="s2-btn s2-btn-sm s2-btn-ghost">
+					<Label id="s2_m1_f0_t" class="s2-btn-label" text="{s:s2_m1_f0_t}" />
+				</Button>
+				<Panel class="s2-sheet-spacer" />
+				<Button id="s2_m1_f1" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m1_f1_t" class="s2-btn-label" text="{s:s2_m1_f1_t}" />
+				</Button>
+				<Button id="s2_m1_f2" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m1_f2_t" class="s2-btn-label" text="{s:s2_m1_f2_t}" />
+				</Button>
+				<Button id="s2_m1_f3" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m1_f3_t" class="s2-btn-label" text="{s:s2_m1_f3_t}" />
+				</Button>
+				<Button id="s2_m1_f4" class="s2-btn s2-btn-sm">
+					<Label id="s2_m1_f4_t" class="s2-btn-label" text="{s:s2_m1_f4_t}" />
+				</Button>
+			</Panel>
+		</Panel>
+
+		<!-- Vote rail. One root (Vote is one-at-a-time), right dock, not a third center modal.
+		     games/cs2/js/voterail.js drives these ids through hudkit.layout. -->
+		<Panel id="s2_vote" class="s2-vote s2-vote-dock s2-hide">
+			<Label id="s2_vote_q" class="s2-vote-q" text="{s:s2_vote_q}" />
+			<Label id="s2_vote_sub" class="s2-vote-sub" text="{s:s2_vote_sub}" />
+			<Button id="s2_vote_o0" class="s2-vote-option">
+				<Label id="s2_vote_o0_t" class="s2-vote-option-title" text="{s:s2_vote_o0_t}" />
+				<Label id="s2_vote_o0_c" class="s2-vote-option-count" text="{s:s2_vote_o0_c}" />
+			</Button>
+			<Button id="s2_vote_o1" class="s2-vote-option">
+				<Label id="s2_vote_o1_t" class="s2-vote-option-title" text="{s:s2_vote_o1_t}" />
+				<Label id="s2_vote_o1_c" class="s2-vote-option-count" text="{s:s2_vote_o1_c}" />
+			</Button>
+			<Button id="s2_vote_o2" class="s2-vote-option">
+				<Label id="s2_vote_o2_t" class="s2-vote-option-title" text="{s:s2_vote_o2_t}" />
+				<Label id="s2_vote_o2_c" class="s2-vote-option-count" text="{s:s2_vote_o2_c}" />
+			</Button>
+			<Button id="s2_vote_o3" class="s2-vote-option">
+				<Label id="s2_vote_o3_t" class="s2-vote-option-title" text="{s:s2_vote_o3_t}" />
+				<Label id="s2_vote_o3_c" class="s2-vote-option-count" text="{s:s2_vote_o3_c}" />
+			</Button>
+			<Button id="s2_vote_o4" class="s2-vote-option">
+				<Label id="s2_vote_o4_t" class="s2-vote-option-title" text="{s:s2_vote_o4_t}" />
+				<Label id="s2_vote_o4_c" class="s2-vote-option-count" text="{s:s2_vote_o4_c}" />
+			</Button>
+			<Button id="s2_vote_o5" class="s2-vote-option">
+				<Label id="s2_vote_o5_t" class="s2-vote-option-title" text="{s:s2_vote_o5_t}" />
+				<Label id="s2_vote_o5_c" class="s2-vote-option-count" text="{s:s2_vote_o5_c}" />
+			</Button>
+			<Button id="s2_vote_o6" class="s2-vote-option">
+				<Label id="s2_vote_o6_t" class="s2-vote-option-title" text="{s:s2_vote_o6_t}" />
+				<Label id="s2_vote_o6_c" class="s2-vote-option-count" text="{s:s2_vote_o6_c}" />
+			</Button>
+			<Button id="s2_vote_o7" class="s2-vote-option">
+				<Label id="s2_vote_o7_t" class="s2-vote-option-title" text="{s:s2_vote_o7_t}" />
+				<Label id="s2_vote_o7_c" class="s2-vote-option-count" text="{s:s2_vote_o7_c}" />
+			</Button>
+			<Button id="s2_vote_o8" class="s2-vote-option">
+				<Label id="s2_vote_o8_t" class="s2-vote-option-title" text="{s:s2_vote_o8_t}" />
+				<Label id="s2_vote_o8_c" class="s2-vote-option-count" text="{s:s2_vote_o8_c}" />
+			</Button>
+		</Panel>
+	</Panel>
+</root>

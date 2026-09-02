@@ -614,7 +614,8 @@
 
   // --- CS2 vote rail ---
   // The live HTML tally (show_survival_respawn_status) used to live here. CS2 now paints votes as
-  // a right-side rail in voterail.js (concatenated after menuhud.js).
+  // a right-side rail on s2script_lib.xml (addon 3790153369). voterail.js is concatenated after
+  // menuhud.js and uses hudkit.layout.
 
   // pickPlayer(adminSlot, onPicked): a target-picker Center menu over connected players (the adminmenu
   // framework's shared player-picker). The item info is the userid (stable across the pick), re-resolved

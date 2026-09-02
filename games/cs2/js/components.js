@@ -129,6 +129,19 @@
     BADGE.push({ id: bid, title: declareText(bid + "_title"), text: declareText(bid + "_text") });
   }
 
+  // Vote rail lives on this same lib layout (s2_vote*). voterail.js drives the ids
+  // through hudkit.layout. Not a second CustomHudLayout and not a third center modal.
+  var VOTE_OPTIONS = 9;
+  PANELS.push("s2_vote");
+  declareText("s2_vote_q");
+  declareText("s2_vote_sub");
+  for (var v = 0; v < VOTE_OPTIONS; v++) {
+    var vid = "s2_vote_o" + v;
+    declareButton(vid);
+    declareText(vid + "_t");
+    declareText(vid + "_c");
+  }
+
   var LIB_DESCRIPTOR = {
     addons: ["3790153369"],
     resource: "panorama/layout/custom_game/s2script_lib.xml",

@@ -22,7 +22,6 @@ function mount() {
   const disarmed = [];
   const cast = [];
   let renderer;
-  let descriptor;
 
   const element = (id) => elements[id] || (elements[id] = fakeElement());
   const view = {
@@ -46,10 +45,18 @@ function mount() {
     forSlot: () => view,
     onClick: (id, handler) => { clickHandlers[id] = handler; },
   };
+  let created = 0;
 
   globalThis.__s2pkg_cs2 = {
     CustomHudLayout: {
-      create: (spec) => { descriptor = spec; return layout; },
+      create: () => { created++; return layout; },
+    },
+    hudkit: {
+      layout,
+      descriptor: {
+        addons: ["3790153369"],
+        resource: "panorama/layout/custom_game/s2script_lib.xml",
+      },
     },
   };
   globalThis.__s2pkg_hudinput = {
@@ -67,7 +74,7 @@ function mount() {
 
   const src = readFileSync(join(__dirname, "voterail.js"), "utf8");
   new Function(src)();
-  return { elements, clickHandlers, calls, armed, disarmed, cast, descriptor, renderer };
+  return { elements, clickHandlers, calls, armed, disarmed, cast, created, renderer };
 }
 
 function tally(choice = null) {
@@ -141,6 +148,13 @@ test("unused options receive the hidden class", () => {
 
   assert.equal(mounted.elements.s2_vote_o2.classList.contains("s2-hide"), true);
   assert.equal(mounted.elements.s2_vote_o8.classList.contains("s2-hide"), true);
-  assert.equal(mounted.descriptor.addons[0], "3790153369");
-  assert.equal(mounted.descriptor.resource, "panorama/layout/custom_game/s2_vote.xml");
+  assert.equal(mounted.created, 0, "must reuse hudkit.layout, not CustomHudLayout.create");
+});
+
+test("vote rail does not spawn a second layout resource", () => {
+  const mounted = mount();
+  assert.ok(mounted.renderer);
+  assert.equal(mounted.created, 0);
+  assert.equal(globalThis.__s2pkg_cs2.hudkit.descriptor.resource,
+    "panorama/layout/custom_game/s2script_lib.xml");
 });
