@@ -1,22 +1,46 @@
 // @s2script/cs2 — Vote rail presenter. Drives s2_vote* on s2script_lib.xml (hudkit.layout).
+// Hold hudkit here; read .layout inside functions. An eager hudkit.layout get during
+// run_prelude hits the load-window ui proxy and aborts the rest of the CS2 prelude.
 (function () {
   var cs2 = globalThis.__s2pkg_cs2 || {};
   var hudkit = cs2.hudkit;
-  var layout = hudkit && hudkit.layout;
   var HudInput = (globalThis.__s2pkg_hudinput && globalThis.__s2pkg_hudinput.HudInput) || cs2.HudInput;
   var Vote = globalThis.__s2pkg_votes && globalThis.__s2pkg_votes.Vote;
   var Clients = globalThis.__s2pkg_clients && globalThis.__s2pkg_clients.Clients;
 
-  if (!layout || typeof layout.forSlot !== "function" || typeof layout.onClick !== "function" ||
-      !Vote || typeof Vote.registerTallyRenderer !== "function") return;
+  if (!hudkit || !Vote || typeof Vote.registerTallyRenderer !== "function") return;
 
   var ROOT = "s2_vote";
   var COUNT_HIDE = "s2-vote-count-hide";
   var PICKED = "s2-vote-picked";
   var tallies = {};
   var waiting = {};
+  var clicksBound = false;
 
-  function viewFor(slot) { return layout.forSlot(slot); }
+  function layoutOf() {
+    var layout = hudkit.layout;
+    if (!layout || typeof layout.forSlot !== "function" || typeof layout.onClick !== "function") return null;
+    if (!clicksBound) {
+      clicksBound = true;
+      for (var clickIndex = 0; clickIndex < 9; clickIndex++) {
+        (function (index) {
+          layout.onClick("s2_vote_o" + index, function (player) {
+            var slot = player && player.slot;
+            var tally = tallies[slot];
+            if (slot == null || !tally || choiceOf(tally) !== null) return;
+            var cast = globalThis.__s2_vote_cast;
+            if (typeof cast === "function") cast(slot, index);
+          });
+        })(clickIndex);
+      }
+    }
+    return layout;
+  }
+
+  function viewFor(slot) {
+    var layout = layoutOf();
+    return layout && layout.forSlot(slot);
+  }
 
   function optionAt(tally, index) {
     var option = tally.options && tally.options[index];
@@ -56,6 +80,7 @@
 
   function paint(slot, tally) {
     var view = viewFor(slot);
+    if (!view) return;
     var choice = choiceOf(tally);
     var options = Array.isArray(tally.options) ? tally.options : [];
 
@@ -90,20 +115,9 @@
 
   function hide(slot) {
     delete tallies[slot];
-    viewFor(slot).hide(ROOT);
+    var view = viewFor(slot);
+    if (view) view.hide(ROOT);
     disarmWaiting(slot);
-  }
-
-  for (var clickIndex = 0; clickIndex < 9; clickIndex++) {
-    (function (index) {
-      layout.onClick("s2_vote_o" + index, function (player) {
-        var slot = player && player.slot;
-        var tally = tallies[slot];
-        if (slot == null || !tally || choiceOf(tally) !== null) return;
-        var cast = globalThis.__s2_vote_cast;
-        if (typeof cast === "function") cast(slot, index);
-      });
-    })(clickIndex);
   }
 
   var renderer = {
@@ -122,5 +136,5 @@
     });
   }
 
-  globalThis.__s2pkg_voterail = { layout: layout, renderer: renderer };
+  globalThis.__s2pkg_voterail = { layoutOf: layoutOf, renderer: renderer };
 })();
