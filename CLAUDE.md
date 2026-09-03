@@ -104,7 +104,7 @@ gamedata/    Regenerable engine facts, split by OWNER (core/ = what shim+core na
 docs/        ARCHITECTURE.md · INSTALL.md · re-strategy.md · PROGRESS.md · superpowers/{specs,plans}/.
 scripts/     Build, gate (check-*.sh), sniper build, rcon.py, package/release.
 docker/      CS2 dev server (container s2script-cs2) + mysql/postgres sidecars.
-third_party/ Vendored hl2sdk + Metamod:Source submodules (pinned, patch-capable).
+third_party/ Vendored hl2sdk + Metamod:Source + Breakpad submodules (pinned, patch-capable).
 ```
 
 ## Documentation
