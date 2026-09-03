@@ -27,7 +27,7 @@ tools/        Dev/treadmill tooling: schema-dump, s2bench, crash-test (not shipp
 gamedata/     Regenerable engine facts: signatures, offsets, schema/event/item catalogs.
 scripts/      Build, gate (check-*.sh), sniper build, rcon.py, package/release.
 docker/       CS2 dev server + database sidecars.
-third_party/  Vendored hl2sdk + Metamod:Source submodules (pinned, patch-capable).
+third_party/  Vendored hl2sdk + Metamod:Source + Breakpad submodules (pinned, patch-capable).
 ```
 
 ---
@@ -241,14 +241,16 @@ and letting an instance update itself costs that clone real disk. So: update the
 
 ## Vendored SDKs
 
-Two upstream SDKs are pinned git submodules under `third_party/`:
+Three upstream trees are pinned git submodules under `third_party/`:
 
 | Submodule | Remote | Branch |
 |---|---|---|
 | `third_party/hl2sdk` | https://github.com/alliedmodders/hl2sdk | `cs2` |
 | `third_party/metamod-source` | https://github.com/alliedmodders/metamod-source | `master` |
+| `third_party/breakpad` | https://github.com/google/breakpad | — (SHA pin; no tracking branch) |
 
-(metamod-source has no `dev` branch; `master` is where development happens.) The pinned SHAs are
+(metamod-source has no `dev` branch; `master` is where development happens. Breakpad is a
+GitHub mirror of the Chromium-hosted project; we pin a commit, not a branch.) The pinned SHAs are
 whatever the submodule pointers say — `git submodule status` is the source of truth.
 
 hl2sdk is a **patch-capable** dependency, not a trusted one: it lags Valve, so own your

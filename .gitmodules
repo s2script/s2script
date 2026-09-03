@@ -8,4 +8,4 @@
 	branch = master
 [submodule "third_party/breakpad"]
 	path = third_party/breakpad
-	url = https://chromium.googlesource.com/breakpad/breakpad
+	url = https://github.com/google/breakpad
