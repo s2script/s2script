@@ -101,13 +101,14 @@ panorama/layout/custom_game/s2script_lib.xml     ← production hudkit (addon 37
 panorama/styles/custom_game/s2script_lib.css
 ```
 
-`s2script_hud.xml` is the probe. Production menus, the vote rail, callout, banner, and MOTD
-drive **workshop addon 3790153369**, layout `panorama/layout/custom_game/s2script_lib.xml`. That
-file is now in git (recovered from the published VPK, then those panel families were added).
-Republish **the same addon** after compiling these sources on Windows Workshop Tools. The
-stylesheet include must stay `file://{resources}/styles/custom_game/s2script_lib.css` — an
-`s2r://` include compiles clean and ships unstyled. Do not add a second layout or a third
-center modal (`s2_m2`).
+`s2script_hud.xml` is the probe. Production menus, the vote rail, callout, banner, MOTD,
+and the TopMenu dashboard (`s2_dash`) drive **workshop addon 3790153369**, layout
+`panorama/layout/custom_game/s2script_lib.xml`. That file is now in git (recovered from
+the published VPK, then those panel families were added). Republish **the same addon**
+after compiling these sources on Windows Workshop Tools. The stylesheet include must
+stay `file://{resources}/styles/custom_game/s2script_lib.css` — an `s2r://` include
+compiles clean and ships unstyled. Do not add a second layout or a third center modal
+(`s2_m2`) — the hub is `s2_dash`, not another `s2_mN`.
 
 ### Production lib panels (`s2script_lib.xml`)
 

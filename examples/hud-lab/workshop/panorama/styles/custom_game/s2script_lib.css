@@ -1,7 +1,8 @@
 /* s2script component library stylesheet — workshop addon 3790153369.
-   Recovered from the published VPK. Vote-rail / callout / banner rules are appended;
-   existing .s2-vote / .s2-callout / .s2-banner / .s2-motd cards stay so hud_live
-   showcase markup is unchanged. */
+   Recovered from the published VPK. Vote-rail / callout / banner / dashboard
+   rules are appended; existing .s2-vote / .s2-callout / .s2-banner / .s2-motd
+   cards stay so hud_live showcase markup is unchanged. Compile with the
+   matching s2script_lib.xml and republish this same addon. */
 
 .s2-root
 {

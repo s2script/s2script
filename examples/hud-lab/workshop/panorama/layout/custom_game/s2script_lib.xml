@@ -2,9 +2,11 @@
   s2script component library — workshop addon 3790153369.
 
   Production layout hudkit binds: panorama/layout/custom_game/s2script_lib.xml
-  Recovered from the published VPK, then vote rail / callout / banner / MOTD
-  were added here so git is the source of truth. Do not point a second
-  custom_hud_layout at another XML. Do not add a third center sheet (s2_m2).
+  Recovered from the published VPK. Vote rail, callout, banner, MOTD, and the
+  TopMenu dashboard (s2_dash) live here so git is the source of truth. Compile
+  these sources on Windows Workshop Tools and republish this same addon.
+  Do not point a second custom_hud_layout at another XML. Do not add a third
+  center sheet (s2_m2) — the hub is s2_dash, not another s2_mN.
 
   Include MUST be file://{resources}/… with the source .css. An s2r:// include
   compiles clean and ships unstyled.
@@ -268,7 +270,7 @@
 			<Label id="s2_banner_text" class="s2-banner-text" text="{s:s2_banner_text}" />
 		</Panel>
 
-		<!-- TopMenu hub. One root, not a third menu sheet (no s2_m2). Tabs are plugin-declared. -->
+		<!-- TopMenu hub. Dedicated dashboard chrome (not s2_m0/s2_m1). Tabs are plugin-declared. -->
 		<Panel id="s2_dash" class="s2-dash s2-hide">
 			<Panel class="s2-dash-head">
 				<Panel class="s2-dash-headtext">
