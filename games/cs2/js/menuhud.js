@@ -167,16 +167,25 @@
    */
   function discardSession(slot) {
     if (typeof slot !== "number" || slot < 0) return;
-    // Nothing held, nothing to release. `onActive` fires for every player who joins, and the
-    // overwhelming majority of them never had a menu open on that slot.
-    if (sessions[slot] === undefined && frozenMoveType[slot] === undefined) return;
+    var had = sessions[slot] !== undefined || frozenMoveType[slot] !== undefined;
     delete sessions[slot];
     delete frozenMoveType[slot];
+    // UNCONDITIONAL — this used to return early when no session was tracked, on the reasoning that
+    // there was nothing to release. That reasoning was wrong in the exact case this function exists
+    // for. The session is deleted by `renderer.close`, but the CURSOR GRAB is per-player state on
+    // the layout entity and is released separately; any path that drops one without the other
+    // leaves a player captured, pointing at a menu no longer drawn — and reconnecting was then a
+    // no-op, because by that point there was no session left to find. Measured on a live server:
+    // the teardown ran and logged NOTHING, because it had already returned above this line.
+    //
+    // Releasing state that is already released is free. Failing to release it is a player who
+    // cannot play. So the teardown no longer asks whether it thinks it has anything to do.
     if (typeof claim.close === "function") claim.close(slot);
     setCursor(slot, false);
     if (HudInput && typeof HudInput.disarm === "function") HudInput.disarm(slot);
     if (typeof claim.forget === "function") claim.forget(slot);
-    log("cleared a stale menu session on slot " + slot);
+    // Only NOISE is conditional: `onActive` fires for every joiner and most never had a menu.
+    if (had) log("cleared a stale menu session on slot " + slot);
   }
 
   Menu.registerRenderer(MenuStyle.Center, renderer);

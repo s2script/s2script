@@ -231,9 +231,16 @@ test("the departed player's moveType is dropped, never written onto the next occ
   assert.equal(mounted.pawn.moveType, 2, "activate must not re-apply a stale moveType");
 });
 
-test("clearing a slot that never had a menu is a no-op", () => {
+test("clearing a slot with no TRACKED session still releases the cursor", () => {
+  // Regression. This used to assert the opposite — that an untracked slot was skipped entirely —
+  // and that early return is what left a player captured on a live server. The session is deleted
+  // by `renderer.close`, but the cursor grab is separate state on the layout entity: any path that
+  // drops one without the other leaves the player pointing at a menu that is no longer drawn, and
+  // reconnecting could not fix it because by then there was no session left to find.
   const mounted = mount();
   mounted.clientHandlers.disconnect[0]({ slot: 5 });
-  mounted.clientHandlers.active[0]({ slot: 5 });
-  assert.deepEqual(mounted.disarms, [], "nothing to disarm, so nothing is disarmed");
+  assert.ok(
+    mounted.calls.some((c) => c.method === "setCursor" && c.slot === 5 && c.on === false),
+    "the cursor is released whether or not a session was tracked",
+  );
 });
