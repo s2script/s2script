@@ -21,7 +21,24 @@
     return globalThis.__s2pkg_cs2 && globalThis.__s2pkg_cs2.Player;
   }
 
+  /**
+   * Freeze the player while the menu is up.
+   *
+   * DISABLED, and deliberately so — see the guard below. Freezing is a convenience (a player does
+   * not wander off mid-menu); being unable to move is a TRAP the moment anything about the menu
+   * fails. On a live server a broken `sm_admin` left admins frozen, unable to select anything and
+   * unable to close it, with no recovery short of a reconnect — and reconnecting did not help
+   * either, because the teardown could not find a session to clean up.
+   *
+   * The asymmetry is the whole argument: the upside of freezing is small and cosmetic, the
+   * downside is a player who cannot play. Until the menu surface can guarantee it is interactive,
+   * this stays off. `frozenMoveType` and {@link unfreeze} remain so that any player frozen by an
+   * older build is still released on the next teardown.
+   */
+  var FREEZE_ENABLED = false;
+
   function freeze(slot, session) {
+    if (!FREEZE_ENABLED) return;
     if (!session.menu.freezePlayer || frozenMoveType[slot] !== undefined) return;
     var Player = playerApi();
     var player = Player && typeof Player.fromSlot === "function" ? Player.fromSlot(slot) : null;
@@ -167,16 +184,25 @@
    */
   function discardSession(slot) {
     if (typeof slot !== "number" || slot < 0) return;
-    // Nothing held, nothing to release. `onActive` fires for every player who joins, and the
-    // overwhelming majority of them never had a menu open on that slot.
-    if (sessions[slot] === undefined && frozenMoveType[slot] === undefined) return;
+    var had = sessions[slot] !== undefined || frozenMoveType[slot] !== undefined;
     delete sessions[slot];
     delete frozenMoveType[slot];
+    // UNCONDITIONAL — this used to return early when no session was tracked, on the reasoning that
+    // there was nothing to release. That reasoning was wrong in the exact case this function exists
+    // for. The session is deleted by `renderer.close`, but the CURSOR GRAB is per-player state on
+    // the layout entity and is released separately; any path that drops one without the other
+    // leaves a player captured, pointing at a menu no longer drawn — and reconnecting was then a
+    // no-op, because by that point there was no session left to find. Measured on a live server:
+    // the teardown ran and logged NOTHING, because it had already returned above this line.
+    //
+    // Releasing state that is already released is free. Failing to release it is a player who
+    // cannot play. So the teardown no longer asks whether it thinks it has anything to do.
     if (typeof claim.close === "function") claim.close(slot);
     setCursor(slot, false);
     if (HudInput && typeof HudInput.disarm === "function") HudInput.disarm(slot);
     if (typeof claim.forget === "function") claim.forget(slot);
-    log("cleared a stale menu session on slot " + slot);
+    // Only NOISE is conditional: `onActive` fires for every joiner and most never had a menu.
+    if (had) log("cleared a stale menu session on slot " + slot);
   }
 
   Menu.registerRenderer(MenuStyle.Center, renderer);
