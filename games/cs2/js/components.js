@@ -26,7 +26,24 @@
   var prevUi = globalThis.__s2pkg_game_ctx && globalThis.__s2pkg_game_ctx.ui;
   if (typeof prevUi !== "function") return;
 
-  var MODALS = 2;
+  // Six center sheets. NOT arbitrary and NOT an engine limit: it is exactly how many `s2_m*` panel
+  // trees `s2script_lib.xml` defines, and a server can only address panels the client's layout
+  // already contains. Raising this without adding the markup would hand out sheets that paint
+  // nothing.
+  //
+  // It was 2 for as long as nothing needed more, and then three surfaces in one plugin (a shop, a
+  // round log, an admin queue) plus the framework's own menu renderer wanted four between them.
+  // The failure was quiet — `modal pool exhausted` in the server log, a shop silently degrading to
+  // the chat menu and a round log to the console — which is the worst way for a budget to be spent.
+  //
+  // The real ceiling is the intern budget (1024 per vector, see INTERN_CAP). Each sheet costs ~51
+  // panel ids; six puts the layout at 432 of 1024, leaving room for roughly as many again.
+  //
+  // A client on an older addon has only `s2_m0`/`s2_m1`. Sheets 2-5 address ids that client does
+  // not have, and Panorama ignores unknown ids silently — so such a client sees nothing for the
+  // third concurrent sheet rather than breaking. Claims are handed out lowest-first, so the common
+  // case keeps working on an old addon.
+  var MODALS = 6;
   var ROWS = 8;
   var DETAIL = 4;
   var FOOTERS = 5;
@@ -136,7 +153,8 @@
   }
 
   // Vote rail lives on this same lib layout (s2_vote*). voterail.js drives the ids
-  // through hudkit.layout. Not a second CustomHudLayout and not a third center modal.
+  // through hudkit.layout. Not a second CustomHudLayout, and not a pooled center sheet — it is
+  // one dedicated root, which is why it does not spend from the `s2_m*` pool.
   var VOTE_OPTIONS = 9;
   PANELS.push("s2_vote");
   declareText("s2_vote_q");
@@ -167,7 +185,7 @@
   declareButton("s2_motd_ok");
   declareText("s2_motd_ok_t");
 
-  // TopMenu hub. One root (like MOTD / the vote rail), not a third center modal.
+  // TopMenu hub. One dedicated root (like MOTD / the vote rail), not a pooled `s2_m*` sheet.
   var DASH_TABS = 8;
   var DASH_ROWS = 8;
   PANELS.push("s2_dash");

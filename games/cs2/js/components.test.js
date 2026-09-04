@@ -119,10 +119,13 @@ test("an empty list hides its container rather than painting blank rows", () => 
 
 test("the modal pool refuses rather than colliding when exhausted", () => {
   const { ui } = mount();
-  assert.ok(ui.modal({ title: "a", rows: [] }));
-  assert.ok(ui.modal({ title: "b", rows: [] }));
+  // Claim the whole pool, then one more. The count is deliberately derived from the layout rather
+  // than hard-coded — see the sibling test that pins MODALS to the `s2_m*` trees in the markup.
+  for (let i = 0; i < 6; i++) {
+    assert.ok(ui.modal({ title: `m${i}`, rows: [] }), `sheet ${i} must be claimable`);
+  }
   // Two plugins must never both believe they own the same pooled panel.
-  assert.strictEqual(ui.modal({ title: "c", rows: [] }), null);
+  assert.strictEqual(ui.modal({ title: "over", rows: [] }), null);
 });
 
 test("the three intern vectors are counted separately, at cap 1024", () => {
@@ -324,7 +327,18 @@ test("workshop s2script_lib.xml is the production source and contains the vote r
   assert.match(xml, /id="s2_dash_r0"/);
   assert.match(xml, /id="s2_dash_r7"/);
   assert.match(xml, /id="s2_dash_close"/);
-  assert.doesNotMatch(xml, /id="s2_m2"/);
+  // THE POOL SIZE IS THE MARKUP'S TO DECIDE. A server can only address panels the client's layout
+  // already contains, so `MODALS` in components.js must never exceed the `s2_m*` trees defined
+  // here — raising it alone hands out sheets that paint nothing. This pins the two together.
+  const modalRoots = new Set([...xml.matchAll(/id="(s2_m\d+)"/g)].map((m) => m[1]));
+  assert.equal(modalRoots.size, 6, "layout must define exactly the six pooled sheets");
+  for (let i = 0; i < 6; i++) {
+    assert.ok(modalRoots.has(`s2_m${i}`), `s2_m${i} must exist`);
+    // Every sheet needs its full complement, or a claim past the second silently half-paints.
+    assert.match(xml, new RegExp(`id="s2_m${i}_r7_c"`), `s2_m${i} needs all 8 rows`);
+    assert.match(xml, new RegExp(`id="s2_m${i}_f4_t"`), `s2_m${i} needs all 5 footers`);
+    assert.match(xml, new RegExp(`id="s2_m${i}_d3"`), `s2_m${i} needs all 4 detail lines`);
+  }
   assert.match(css, /\.s2-callout-dock/);
   assert.match(css, /\.s2-callout-out/);
   assert.match(css, /\.s2-banner-out/);
