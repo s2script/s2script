@@ -93,6 +93,23 @@ test("a disabled row is greyed but still delivers its click", () => {
   assert.deepStrictEqual(picked, [0]);
 });
 
+test("a row tone reaches a class, and the tones it did not take are cleared", () => {
+  const { ui, calls } = mount();
+  ui.modal({ title: "T", rows: [{ a: "bad kill", tone: "bad" }] }).open(1);
+  assert.ok(classSet(calls, "s2-li-bad"), "tone must be applied, not merely stored");
+  // The untaken tones must be written OFF, not left unwritten: `setClass` holds no cache, so a
+  // row that inherits a pooled slot from a toned row keeps that tone until something clears it.
+  const off = (cls) => calls.some((c) => c.op === "cls" && c.cls === cls && c.on === false);
+  assert.ok(off("s2-li-good") && off("s2-li-warn"));
+});
+
+test("a tone composes with disabled rather than replacing it", () => {
+  const { ui, calls } = mount();
+  ui.modal({ title: "T", rows: [{ a: "too dear", tone: "warn", disabled: true }] }).open(1);
+  assert.ok(classSet(calls, "s2-li-warn"));
+  assert.ok(classSet(calls, "s2-li-disabled"));
+});
+
 test("an empty list hides its container rather than painting blank rows", () => {
   const { ui, calls } = mount();
   ui.modal({ title: "Confirm?", rows: [] }).open(1);

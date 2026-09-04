@@ -250,6 +250,15 @@ export interface Row {
   readonly c?: string;
   /** Greys the row. Cosmetic only — `onPick` still fires, so you can say WHY it is unavailable. */
   readonly disabled?: boolean;
+  /**
+   * Tints the row's primary cell — green, amber, red. Composes with `disabled` and with the
+   * selection highlight, so an unaffordable-and-dangerous row can say both at once.
+   *
+   * Requires a workshop addon carrying the `.s2-li-*` rules. On an older addon the class is set
+   * and the client simply has no rule for it, so a tone degrades to an untinted row rather than
+   * breaking the sheet — never make a tone the ONLY way a row communicates something.
+   */
+  readonly tone?: "good" | "warn" | "bad";
 }
 
 export interface FooterButton {

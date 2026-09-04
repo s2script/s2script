@@ -1,0 +1,3 @@
+[mcp_servers.gt]
+command = "gt"
+args = ["mcp"]
