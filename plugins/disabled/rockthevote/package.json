@@ -39,6 +39,16 @@
         "type": "bool",
         "default": true,
         "description": "Show the live center-screen tally during the RTV vote."
+      },
+      "rtv_endofmap_seconds": {
+        "type": "int",
+        "default": 120,
+        "description": "Seconds before mp_timelimit expires to auto-start the next-map vote. 0 disables it."
+      },
+      "rtv_endofmap_min_players": {
+        "type": "int",
+        "default": 1,
+        "description": "Minimum connected non-bot players for the end-of-map vote to run. An empty server changes map without asking."
       }
     }
   }

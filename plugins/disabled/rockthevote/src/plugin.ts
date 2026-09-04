@@ -225,13 +225,17 @@ function finishVote(result: VoteResult, options: string[], entries: Map<string, 
 
   pendingMap = entry;
   votedThisMap = true;   // a change is queued for round end — block further RTV until the map changes
+  // Publish the winner where the rest of the server looks for it: basetriggers' `nextmap` chat
+  // trigger and @s2script/nextmap both read `nextlevel`, so a player who missed the announcement
+  // can still ask what is coming.
+  Server.setCvar("nextlevel", entry.name);
   console.log("[rockthevote] vote won by " + chosen + (entry.workshopId ? " (workshop " + entry.workshopId + ")" : "") + " — queued for round end");
   Chat.toAll(Translations.translate(-1, "Rtv Winner", chosen));
 }
 
 /** Start (or force) the RTV map vote: build the ballot, then hand it to @s2script/votes.
  *  Returns true if the request was accepted (the lock claimed); false if a vote is already active. */
-function startVote(force: boolean): boolean {
+function startVote(force: boolean, endOfMap = false): boolean {
   if (voteRunning || Vote.isActive()) return false;
   voteRunning = true;   // claim synchronously — closes the guard window so a concurrent requestRtv (buildBallot awaits the DB) can't double-start
   buildBallot().then(ballot => {
@@ -247,7 +251,9 @@ function startVote(force: boolean): boolean {
     // and print the ballot properly below, one option per line.
     suppressCoreVoteLine = true;
     Vote.start({
-      question: "RockTheVote",
+      // The question is shown raw, so it says what actually prompted the ballot. An automatic
+      // end-of-map vote titled "RockTheVote" reads as though somebody called it.
+      question: endOfMap ? "Next map?" : "RockTheVote",
       options,
       duration: config.getInt("rtv_vote_duration"),
       showLiveTally: config.getBool("rtv_show_tally"),
@@ -255,7 +261,8 @@ function startVote(force: boolean): boolean {
     });
     suppressCoreVoteLine = false;
     announceBallot(options);
-    console.log("[rockthevote] startVote force=" + force + " options=" + JSON.stringify(options));
+    console.log("[rockthevote] startVote force=" + force + " endOfMap=" + endOfMap +
+                " options=" + JSON.stringify(options));
   }).catch(e => { voteRunning = false; logErr(e); });   // release the lock on a build error too
   return true;
 }
@@ -316,6 +323,36 @@ function pollTick(): void {
   if (!voteRunning && !votedThisMap && rtvVoters.size > 0) {
     const pc = playerCount();
     if (pc > 0 && rtvVoters.size >= Math.ceil(config.getFloat("rtv_threshold") * pc)) startVote(false);
+  }
+
+  // ── end-of-map vote ────────────────────────────────────────────────────────────────────────
+  // SourceMod puts this in MapChooser; it lives here because this plugin already owns everything
+  // it needs — the pool, the cooldown set, the nomination list, the ballot and the map change. A
+  // separate plugin would have to duplicate all five or reach across a plugin boundary for them.
+  //
+  // The trigger reads `mp_timelimit` exactly as @s2script/nextmap does (minutes, float in CS2,
+  // against `Server.gameTime` as the map clock) so the two agree on when a map is ending rather
+  // than each inventing its own answer.
+  //
+  // `votedThisMap` is what keeps this to ONE vote per map: it is set by a winning vote and by an
+  // empty pool, and cleared only on a map change. So an end-of-map vote that ties leaves RTV open
+  // to re-accumulate, and one that wins queues the change and stops asking.
+  if (!voteRunning && !votedThisMap) {
+    const lead = config.getInt("rtv_endofmap_seconds");
+    if (lead > 0) {
+      const tl = parseFloat(Server.getCvar("mp_timelimit"));
+      if (tl > 0 && Server.gameTime >= tl * 60 - lead) {
+        // An empty (or nearly empty) server should roll over without a ballot nobody can answer.
+        if (playerCount() >= config.getInt("rtv_endofmap_min_players")) {
+          console.log("[rockthevote] end-of-map vote at " + Math.round(Server.gameTime) +
+                      "s (mp_timelimit " + tl + "m, lead " + lead + "s)");
+          startVote(true, true);
+        } else {
+          votedThisMap = true;   // do not re-check every second for the rest of the map
+          console.log("[rockthevote] end-of-map vote skipped — " + playerCount() + " player(s)");
+        }
+      }
+    }
   }
 }
 
