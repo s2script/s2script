@@ -1,5 +1,70 @@
 # @s2script/cs2
 
+## 0.17.0
+
+### Minor Changes
+
+- 8b8f46c: TopMenu hub is a tabbed dashboard; plugins declare their own tab
+
+  `sm_admin` / `sm_menu` paint `hudkit.dashboard()` over `s2_dash` on
+  `s2script_lib.xml` instead of a category → item drill-down. Each plugin that
+  contributes items calls `topmenu.addTab({ id, title })` and `addItem(tabId, item)`.
+  `addCategory(name)` is still the id==title form.
+
+  Snapshot grows `tabs: [{ id, title }]`. Republish workshop addon 3790153369
+  after compiling the new `s2_dash` panels (sources in `examples/hud-lab/workshop/`).
+
+### Patch Changes
+
+- c5ad561: menuhud: clear a slot's menu when its player leaves or re-activates
+
+  A disconnect is not a close, so a player who left mid-menu never reached
+  `renderer.close`. The session, the saved `moveType`, the cursor grab and the Tab
+  arm all stayed on the slot, and the next occupant — normally the same person
+  reconnecting — arrived frozen, input-captured, and waiting to click a sheet
+  nobody had drawn for them.
+
+  `Clients.onDisconnect` and `Clients.onActive` now both tear the slot down.
+  Activate is the backstop, because a timeout or a crash does not always deliver
+  the disconnect. The saved `moveType` is dropped rather than re-applied: the
+  replacement pawn is fresh and already has the right one.
+
+- 8ae767a: ui: add `Row.tone` so a list row can carry colour
+
+  Rows could say "unavailable" (`disabled`) but never "good", "careful" or
+  "bad" — the only levers a server has are classes and dialog variables, and no
+  class existed for a row tint. Anything that wanted to call out one line in a
+  list had to spend the text, prefixing a marker like `[BAD]` and hoping it read.
+
+  `tone: "good" | "warn" | "bad"` sets a class on the row button, and the
+  stylesheet tints the primary cell through a descendant rule — the same shape
+  `.s2-btn-good .s2-btn-label` already uses, so the tint outranks `.s2-cell-a`
+  by specificity and composes with the selection highlight and `disabled`
+  instead of fighting them.
+
+  Needs a workshop addon carrying the new `.s2-li-good` / `-warn` / `-bad`
+  rules. On an older addon the client has no rule for the class and the row
+  renders untinted, so a tone must never be the ONLY way a row says something.
+
+- 84161f4: gamedata(cs2): re-derive CCSGameRules_TerminateRound for build 1.41.7.8/14178
+
+  The pinned signature stopped matching and the descriptor degraded as designed —
+  `call 'terminateRound' unavailable: signature did not match this build` — taking
+  `onTerminateRound` with it, since the hook targets the same signature.
+
+  The function did not move; its prologue was reordered. The reason capture went
+  from `mov r15d,esi` to `mov r12d,esi` and the `lea rsi` anchor from fn+0xb to
+  fn+0x10, so `string-xref.at` moves 11 -> 16.
+
+  Re-derived by the recipe already in the file: the single rip-relative xref to
+  "TerminateRound" (0x8f4d9b) lands at 0x13cd4a0, entry 0x13cd490, and the sole
+  xref to "TerminateRound: unknown round end ID %i" sits in the same body. The new
+  pattern is unique binary-wide, and the boot gate now arms both the call and the
+  hook.
+
+- Updated dependencies [8b8f46c]
+  - @s2script/sdk@0.25.0
+
 ## 0.16.1
 
 ### Patch Changes
