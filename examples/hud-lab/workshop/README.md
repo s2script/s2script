@@ -79,7 +79,13 @@
 > The compiled header listing `m_InputDependencies` / `m_SearchPath` is not evidence either — the
 > broken-include control produced the same entries.
 >
-> **Every syntax question can only be settled by a runtime load with the client console open.**
+> **In this pipeline, "no error" is not evidence — read back what you wrote.** The failures here all
+share one shape: the null result IS the success path. A wildcard matching zero files reports
+`0 compiled` and exits 0. An unknown panel id paints nothing and says nothing. A stale layout
+publishes cleanly and simply lacks the panels the server addresses. None of them can tell you
+whether the work happened, so check the artifact afterwards rather than the operation's exit code.
+
+**Every syntax question can only be settled by a runtime load with the client console open.**
 > Combined with `RestrictFlatFileAddonsToTools 1` (loose addon files load only in tools mode), that
 > means publishing is the ONLY way to learn whether any of this works.
 >
