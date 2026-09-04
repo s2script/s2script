@@ -137,17 +137,35 @@
     // reason capture. The boot gate re-validates UNIQUE, and a SECOND semantic descriptor
     // (TerminateRound.scope-string) verifies the fn+0xb lea really targets "TerminateRound" — the exact
     // check that separates the real function from the borrowed-sig false positive. Treadmill
-    // re-resolution recipe: xref the two unique strings above. NOT virtual on this build (zero
+    // re-resolution recipe: xref the two unique strings above.
+    //
+    // RE-DERIVED 2026-09-03 on build 1.41.7.8/14178. The 2000875 pattern stopped matching and the
+    // descriptor degraded exactly as designed — `call 'terminateRound' unavailable: signature did
+    // not match this build` — which cost a debugging session, because the CONSUMER never checked
+    // the return value and a no-op round terminate reads as a round-logic bug. The function did not
+    // move semantically; the PROLOGUE was reordered:
+    //     2000875: push rbp; mov rbp,rsp; push r15; mov r15d,esi; push r14; lea rsi; push r13;
+    //              push r12; push rbx; mov rbx,rdi; sub rsp
+    //     14178:   push rbp; mov rbp,rsp; push r15; push r14; push r13; push r12; mov r12d,esi;
+    //              push rbx; lea rsi; mov rbx,rdi; sub rsp
+    // The reason capture moved r15d -> r12d and the `lea rsi` moved fn+0xb -> fn+0x10, which is why
+    // `string-xref.at` is now 16. Re-derived the same way the note above prescribes: the ONE
+    // rip-relative xref to "TerminateRound" (vaddr 0x8f4d9b) lands at 0x13cd4a0, function entry
+    // 0x13cd490, and the sole xref to "TerminateRound: unknown round end ID %i" (0x991590) sits in
+    // the same body at 0x13cf0e3. New pattern verified UNIQUE — exactly 1 match binary-wide.
+    // The ABI is unchanged and now visible in the prologue: `mov r12d,esi` (reason) and
+    // `movss [rbp-0xd8],xmm0` (delay) — delay-first in the C signature, reason in the first integer
+    // slot after `this`. NOT virtual on this build (zero
     // data-segment refs) — direct call only. TTT/CSSharp's reason-first Linux arg order is a managed-
     // marshaller artifact; the direct C call is DELAY-FIRST. args 3/4 semantics unknown in every
     // framework (all pass 0,0) — hardcoded 0, never exposed; revisit if a future build uses them.
     "CCSGameRules_TerminateRound": {
       "linuxsteamrt64": {
         "module": "libserver.so",
-        "pattern": "55 48 89 E5 41 57 41 89 F7 41 56 48 8D 35 ? ? ? ? 41 55 41 54 53 48 89 FB 48 81 EC ? ? ? ?",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 41 54 41 89 F4 53 48 8D 35 ? ? ? ? 48 89 FB 48 81 EC ? ? ? ?",
         "resolve": "direct",
         "validate": {
-          "string-xref": { "at": 11, "dispOff": 3, "instrLen": 7, "expect": "TerminateRound" }
+          "string-xref": { "at": 16, "dispOff": 3, "instrLen": 7, "expect": "TerminateRound" }
         }
       }
     },
