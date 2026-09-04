@@ -76,6 +76,7 @@ test("CS2 prelude can claim hudkit and register menu + vote renderers without a 
   assert.doesNotThrow(() => evalFile("voterail.js"));
 
   assert.equal(typeof globalThis.__s2pkg_cs2.hudkit.modal, "function");
+  assert.equal(typeof globalThis.__s2pkg_cs2.hudkit.dashboard, "function");
   assert.equal(globalThis.__s2pkg_cs2.hudkit.layout, hud);
   assert.ok(registered.center, "Menu HUD renderer must register during prelude");
   assert.ok(registered.chat, "Chat menus must use the same HUD renderer");

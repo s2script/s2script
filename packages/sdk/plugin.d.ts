@@ -12,7 +12,7 @@ import type { EntityRef, OutputEvent } from "./entity";
 import type { CommandHandler } from "./commands";
 import type { Config } from "./config";
 import type { PublishHandle } from "./interfaces";
-import type { TopMenuItem } from "./topmenu";
+import type { TopMenuItem, TopMenuTab } from "./topmenu";
 import type { PrecacheContext } from "./sound";
 import type { UserCmdView } from "./usercmd";
 
@@ -133,9 +133,14 @@ export interface CtxConfig {
 }
 /** TopMenu (adminmenu) contribution on this plugin's load-scope ({@link PluginContext.topmenu}). */
 export interface CtxTopMenu {
-  /** Add (or reuse) a top-level menu category. */
+  /** Add (or reuse) a top-level menu category. Same as {@link CtxTopMenu.addTab} with `id === title`. */
   addCategory(name: string): void;
-  /** Add an item under an existing category. */
+  /**
+   * Declare this plugin's dashboard tab. The hub (`sm_admin` / `sm_menu`) paints one tab per
+   * distinct id that still has a visible item. Call before {@link CtxTopMenu.addItem}.
+   */
+  addTab(tab: TopMenuTab): void;
+  /** Add an item under a tab id (or a legacy shared category name). */
   addItem(category: string, item: TopMenuItem): void;
 }
 

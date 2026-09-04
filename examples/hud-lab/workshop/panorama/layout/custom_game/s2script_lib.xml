@@ -2,9 +2,11 @@
   s2script component library — workshop addon 3790153369.
 
   Production layout hudkit binds: panorama/layout/custom_game/s2script_lib.xml
-  Recovered from the published VPK, then vote rail / callout / banner / MOTD
-  were added here so git is the source of truth. Do not point a second
-  custom_hud_layout at another XML. Do not add a third center sheet (s2_m2).
+  Recovered from the published VPK. Vote rail, callout, banner, MOTD, and the
+  TopMenu dashboard (s2_dash) live here so git is the source of truth. Compile
+  these sources on Windows Workshop Tools and republish this same addon.
+  Do not point a second custom_hud_layout at another XML. Do not add a third
+  center sheet (s2_m2) — the hub is s2_dash, not another s2_mN.
 
   Include MUST be file://{resources}/… with the source .css. An s2r:// include
   compiles clean and ships unstyled.
@@ -266,6 +268,109 @@
 		<!-- Broadcast strip. Center-top, one at a time, no cursor. -->
 		<Panel id="s2_banner" class="s2-banner s2-hide">
 			<Label id="s2_banner_text" class="s2-banner-text" text="{s:s2_banner_text}" />
+		</Panel>
+
+		<!-- TopMenu hub. Dedicated dashboard chrome (not s2_m0/s2_m1). Tabs are plugin-declared. -->
+		<Panel id="s2_dash" class="s2-dash s2-hide">
+			<Panel class="s2-dash-head">
+				<Panel class="s2-dash-headtext">
+					<Label id="s2_dash_title" class="s2-dash-title" text="{s:s2_dash_title}" />
+					<Label id="s2_dash_sub" class="s2-dash-sub" text="{s:s2_dash_sub}" />
+				</Panel>
+				<Button id="s2_dash_close" class="s2-btn s2-btn-sm s2-btn-ghost">
+					<Label id="s2_dash_close_t" class="s2-btn-label" text="{s:s2_dash_close_t}" />
+				</Button>
+			</Panel>
+			<Panel class="s2-dash-tabbar">
+				<Panel class="s2-tabs">
+					<Button id="s2_dash_t0" class="s2-tab">
+						<Label id="s2_dash_t0_t" class="s2-tab-label" text="{s:s2_dash_t0_t}" />
+					</Button>
+					<Button id="s2_dash_t1" class="s2-tab">
+						<Label id="s2_dash_t1_t" class="s2-tab-label" text="{s:s2_dash_t1_t}" />
+					</Button>
+					<Button id="s2_dash_t2" class="s2-tab">
+						<Label id="s2_dash_t2_t" class="s2-tab-label" text="{s:s2_dash_t2_t}" />
+					</Button>
+					<Button id="s2_dash_t3" class="s2-tab">
+						<Label id="s2_dash_t3_t" class="s2-tab-label" text="{s:s2_dash_t3_t}" />
+					</Button>
+					<Button id="s2_dash_t4" class="s2-tab">
+						<Label id="s2_dash_t4_t" class="s2-tab-label" text="{s:s2_dash_t4_t}" />
+					</Button>
+					<Button id="s2_dash_t5" class="s2-tab">
+						<Label id="s2_dash_t5_t" class="s2-tab-label" text="{s:s2_dash_t5_t}" />
+					</Button>
+					<Button id="s2_dash_t6" class="s2-tab">
+						<Label id="s2_dash_t6_t" class="s2-tab-label" text="{s:s2_dash_t6_t}" />
+					</Button>
+					<Button id="s2_dash_t7" class="s2-tab">
+						<Label id="s2_dash_t7_t" class="s2-tab-label" text="{s:s2_dash_t7_t}" />
+					</Button>
+				</Panel>
+				<Panel class="s2-tab-rule" />
+			</Panel>
+			<Panel class="s2-dash-body">
+				<Panel class="s2-view">
+					<Button id="s2_dash_r0" class="s2-toggle">
+						<Panel class="s2-toggle-text">
+							<Label id="s2_dash_r0_a" class="s2-toggle-label" text="{s:s2_dash_r0_a}" />
+							<Label id="s2_dash_r0_b" class="s2-toggle-sub" text="{s:s2_dash_r0_b}" />
+						</Panel>
+					</Button>
+					<Button id="s2_dash_r1" class="s2-toggle">
+						<Panel class="s2-toggle-text">
+							<Label id="s2_dash_r1_a" class="s2-toggle-label" text="{s:s2_dash_r1_a}" />
+							<Label id="s2_dash_r1_b" class="s2-toggle-sub" text="{s:s2_dash_r1_b}" />
+						</Panel>
+					</Button>
+					<Button id="s2_dash_r2" class="s2-toggle">
+						<Panel class="s2-toggle-text">
+							<Label id="s2_dash_r2_a" class="s2-toggle-label" text="{s:s2_dash_r2_a}" />
+							<Label id="s2_dash_r2_b" class="s2-toggle-sub" text="{s:s2_dash_r2_b}" />
+						</Panel>
+					</Button>
+					<Button id="s2_dash_r3" class="s2-toggle">
+						<Panel class="s2-toggle-text">
+							<Label id="s2_dash_r3_a" class="s2-toggle-label" text="{s:s2_dash_r3_a}" />
+							<Label id="s2_dash_r3_b" class="s2-toggle-sub" text="{s:s2_dash_r3_b}" />
+						</Panel>
+					</Button>
+					<Button id="s2_dash_r4" class="s2-toggle">
+						<Panel class="s2-toggle-text">
+							<Label id="s2_dash_r4_a" class="s2-toggle-label" text="{s:s2_dash_r4_a}" />
+							<Label id="s2_dash_r4_b" class="s2-toggle-sub" text="{s:s2_dash_r4_b}" />
+						</Panel>
+					</Button>
+					<Button id="s2_dash_r5" class="s2-toggle">
+						<Panel class="s2-toggle-text">
+							<Label id="s2_dash_r5_a" class="s2-toggle-label" text="{s:s2_dash_r5_a}" />
+							<Label id="s2_dash_r5_b" class="s2-toggle-sub" text="{s:s2_dash_r5_b}" />
+						</Panel>
+					</Button>
+					<Button id="s2_dash_r6" class="s2-toggle">
+						<Panel class="s2-toggle-text">
+							<Label id="s2_dash_r6_a" class="s2-toggle-label" text="{s:s2_dash_r6_a}" />
+							<Label id="s2_dash_r6_b" class="s2-toggle-sub" text="{s:s2_dash_r6_b}" />
+						</Panel>
+					</Button>
+					<Button id="s2_dash_r7" class="s2-toggle">
+						<Panel class="s2-toggle-text">
+							<Label id="s2_dash_r7_a" class="s2-toggle-label" text="{s:s2_dash_r7_a}" />
+							<Label id="s2_dash_r7_b" class="s2-toggle-sub" text="{s:s2_dash_r7_b}" />
+						</Panel>
+					</Button>
+				</Panel>
+			</Panel>
+			<Panel class="s2-dash-foot">
+				<Label id="s2_dash_status" class="s2-dash-status" text="{s:s2_dash_status}" />
+				<Button id="s2_dash_prev" class="s2-btn s2-btn-sm s2-btn-ghost s2-mr-sm">
+					<Label id="s2_dash_prev_t" class="s2-btn-label" text="{s:s2_dash_prev_t}" />
+				</Button>
+				<Button id="s2_dash_next" class="s2-btn s2-btn-sm s2-btn-ghost">
+					<Label id="s2_dash_next_t" class="s2-btn-label" text="{s:s2_dash_next_t}" />
+				</Button>
+			</Panel>
 		</Panel>
 
 		<!-- First-join / rules overlay. Scrim + OK, not a third center sheet. -->

@@ -70,7 +70,8 @@ export function OnPluginStart(): void {
   // `name` is a static field set once here, before any admin has opened the menu, so — same as
   // basecommands' "Change Map Item" — it can only resolve at the server default language (-1), not
   // per-viewer.
-  topmenu.addItem("Voting Commands", { id: "basevotes:votekick", name: Translations.translate(-1, "Vote Kick Item"), flags: ADMFLAG.VOTE,
+  topmenu.addTab({ id: "basevotes", title: "Votes" });
+  topmenu.addItem("basevotes", { id: "basevotes:votekick", name: Translations.translate(-1, "Vote Kick Item"), flags: ADMFLAG.VOTE,
     onSelect: adminSlot => pickPlayer(adminSlot, t => {
       if (!startKickVote(t.userId, t.playerName ?? "player")) Chat.toSlot(adminSlot, Translations.translate(adminSlot, "Vote In Progress"));
     }) });

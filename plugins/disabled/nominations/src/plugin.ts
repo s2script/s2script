@@ -171,8 +171,8 @@ export async function OnPluginStart(): Promise<void> {
     return HookResult.Handled;
   });
 
-  topmenu.addCategory("Maps");
-  topmenu.addItem("Maps", {
+  topmenu.addTab({ id: "nominations", title: "Maps" });
+  topmenu.addItem("nominations", {
     id: "nominations:open",
     name: "Nominate",
     flags: 0,

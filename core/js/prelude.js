@@ -717,6 +717,11 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // onSelect is dispatched to the OWNER's context post-drain — see __s2_topmenu_select). ---
   globalThis.__s2pkg_topmenu = { TopMenu: {
     addCategory: function (name) { __s2_topmenu_add_category(String(name)); },
+    addTab: function (tab) {
+      var id = String(tab && tab.id != null ? tab.id : "");
+      if (!id) return;
+      __s2_topmenu_add_tab(id, String(tab.title != null ? tab.title : id));
+    },
     addItem: function (category, item) { __s2_topmenu_add_item(String(category), String(item.id), String(item.name), item.flags | 0, item.onSelect, item.sheets); },
     snapshot: function () { return __s2_topmenu_snapshot(); },
     select: function (id, slot) { __s2_topmenu_select(String(id), slot | 0); },
@@ -1921,6 +1926,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     ctx.config  = { onChange: function (h) { ctxReg(function () { __s2pkg_config.config.onChange(h); }); } };
     ctx.topmenu = {
       addCategory: function (n)    { ctxReg(function () { __s2pkg_topmenu.TopMenu.addCategory(n); }); },
+      addTab:      function (t)    { ctxReg(function () { __s2pkg_topmenu.TopMenu.addTab(t); }); },
       addItem:     function (c, i) { ctxReg(function () { __s2pkg_topmenu.TopMenu.addItem(c, i); }); },
     };
     ctx.publish = function (name, impl) {
@@ -2063,6 +2069,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   function createScope() { return __s2_load_ctx_or_throw("createScope()").createScope(); }
   var topmenu = {
     addCategory: function (n) { __s2_load_ctx_or_throw("topmenu.addCategory()").topmenu.addCategory(n); },
+    addTab: function (t) { __s2_load_ctx_or_throw("topmenu.addTab()").topmenu.addTab(t); },
     addItem: function (c, i) { __s2_load_ctx_or_throw("topmenu.addItem()").topmenu.addItem(c, i); },
   };
   var translations = {

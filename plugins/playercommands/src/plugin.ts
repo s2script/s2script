@@ -88,8 +88,9 @@ export function OnPluginStart(): void {
   // `name` is a static field set once here, before any admin has opened the menu, so — same as
   // basecommands' "Change Map Item" — it can only resolve at the server default language (-1), not
   // per-viewer.
-  topmenu.addItem("Player Commands", { id: "playercommands:slap", name: Translations.translate(-1, "Slap Item"), flags: ADMFLAG.SLAY,
+  topmenu.addTab({ id: "playercommands", title: "Players" });
+  topmenu.addItem("playercommands", { id: "playercommands:slap", name: Translations.translate(-1, "Slap Item"), flags: ADMFLAG.SLAY,
     onSelect: adminSlot => pickLoop(adminSlot, t => slapPlayer(t, 5)) });   // menu default: 5 damage + knockback
-  topmenu.addItem("Player Commands", { id: "playercommands:slay", name: Translations.translate(-1, "Slay Item"), flags: ADMFLAG.SLAY,
+  topmenu.addItem("playercommands", { id: "playercommands:slay", name: Translations.translate(-1, "Slay Item"), flags: ADMFLAG.SLAY,
     onSelect: adminSlot => pickLoop(adminSlot, t => slayPlayer(t)) });
 }

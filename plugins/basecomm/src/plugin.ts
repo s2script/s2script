@@ -91,7 +91,8 @@ export function OnPluginStart(): void {
   // `name` is a static field set once here, before any admin has opened the menu, so — same as
   // basecommands' "Change Map Item" — it can only resolve at the server default language (-1), not
   // per-viewer.
-  topmenu.addItem("Player Commands", { id: "basecomm:gag", name: Translations.translate(-1, "Gag Item"), flags: ADMFLAG.CHAT,
+  topmenu.addTab({ id: "basecomm", title: "Comm" });
+  topmenu.addItem("basecomm", { id: "basecomm:gag", name: Translations.translate(-1, "Gag Item"), flags: ADMFLAG.CHAT,
     onSelect: adminSlot => pickPlayer(adminSlot, t => setGag(t, true)) });
 }
 
