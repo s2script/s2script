@@ -19,3 +19,11 @@ Releasing state that is already released is free. Failing to release it is a
 player who cannot play. The teardown no longer asks whether it thinks it has
 anything to do; only the log line stays conditional, since `onActive` fires for
 every joiner.
+
+Menus also no longer freeze the player. Freezing is a convenience — it stops
+someone wandering off mid-menu — while being unable to move is a trap the moment
+anything else about the menu fails. On a live server that trap was real: a broken
+`sm_admin` left admins frozen, unable to select anything and unable to close it.
+The upside is cosmetic and the downside is a player who cannot play, so it stays
+off until the menu surface can guarantee it is interactive. The unfreeze path is
+kept so anyone frozen by an older build is released on the next teardown.

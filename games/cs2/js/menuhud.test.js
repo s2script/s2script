@@ -149,14 +149,20 @@ test("pager footer Next calls pickNumber(9)", () => {
   assert.equal(s.actions.next, 1);
 });
 
-test("close restores a frozen pawn and disarms Tab", () => {
+test("a menu never freezes the player, even when the menu asks for it", () => {
+  // Freezing is a convenience; being unable to move is a trap the moment anything else about the
+  // menu fails — which on a live server left admins stuck in `sm_admin` with no way out. The
+  // upside is cosmetic and the downside is a player who cannot play, so it stays off.
   const mounted = mount();
-  const s = session({ freezePlayer: true });
-  mounted.registered.center.open(s);
-  assert.equal(mounted.pawn.moveType, 0);
+  mounted.registered.center.open(session({ freezePlayer: true }));
+  assert.equal(mounted.pawn.moveType, 2, "moveType is untouched");
+});
+
+test("close still hides the sheet and disarms Tab", () => {
+  const mounted = mount();
+  mounted.registered.center.open(session({ freezePlayer: true }));
   mounted.registered.center.close(3);
   assert.ok(mounted.calls.some((c) => c.method === "close" && c.slot === 3));
-  assert.equal(mounted.pawn.moveType, 2);
   assert.deepEqual(mounted.disarms, [3]);
 });
 
@@ -192,7 +198,6 @@ test("a disconnect clears the session, the cursor grab and the Tab arm", () => {
   const mounted = mount();
   const s = session({ slot: 3, freezePlayer: true, activation: "tab" });
   mounted.registered.center.open(s);
-  assert.equal(mounted.pawn.moveType, 0, "freezePlayer should have frozen the pawn");
   assert.deepEqual(mounted.arms.map((a) => a.slot), [3]);
 
   assert.equal(mounted.clientHandlers.disconnect.length, 1, "menuhud must subscribe to onDisconnect");
@@ -221,7 +226,6 @@ test("reconnecting into the same slot is not left frozen or captured", () => {
 test("the departed player's moveType is dropped, never written onto the next occupant", () => {
   const mounted = mount();
   mounted.registered.center.open(session({ slot: 3, freezePlayer: true }));
-  assert.equal(mounted.pawn.moveType, 0);
 
   mounted.clientHandlers.disconnect[0]({ slot: 3 });
   // The replacement pawn is fresh: the engine already gave it a moveType, so restoring the saved

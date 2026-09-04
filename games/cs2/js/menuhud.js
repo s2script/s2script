@@ -21,7 +21,24 @@
     return globalThis.__s2pkg_cs2 && globalThis.__s2pkg_cs2.Player;
   }
 
+  /**
+   * Freeze the player while the menu is up.
+   *
+   * DISABLED, and deliberately so — see the guard below. Freezing is a convenience (a player does
+   * not wander off mid-menu); being unable to move is a TRAP the moment anything about the menu
+   * fails. On a live server a broken `sm_admin` left admins frozen, unable to select anything and
+   * unable to close it, with no recovery short of a reconnect — and reconnecting did not help
+   * either, because the teardown could not find a session to clean up.
+   *
+   * The asymmetry is the whole argument: the upside of freezing is small and cosmetic, the
+   * downside is a player who cannot play. Until the menu surface can guarantee it is interactive,
+   * this stays off. `frozenMoveType` and {@link unfreeze} remain so that any player frozen by an
+   * older build is still released on the next teardown.
+   */
+  var FREEZE_ENABLED = false;
+
   function freeze(slot, session) {
+    if (!FREEZE_ENABLED) return;
     if (!session.menu.freezePlayer || frozenMoveType[slot] !== undefined) return;
     var Player = playerApi();
     var player = Player && typeof Player.fromSlot === "function" ? Player.fromSlot(slot) : null;
