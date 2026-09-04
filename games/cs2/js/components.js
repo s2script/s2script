@@ -53,7 +53,7 @@
   // The fade class differs per component family — one shared "out" class would transition the
   // wrong property on the wrong element.
   var FADE = { sheet: "s2-sheet-out", toast: "s2-toast-out", badge: "s2-hudbadge-out",
-               callout: "s2-callout-out", banner: "s2-banner-out" };
+               callout: "s2-callout-out", banner: "s2-banner-out", dash: "s2-dash-out" };
   var TOAST_VARIANT = { good: "s2-toast-good", warn: "s2-toast-warn", bad: "s2-toast-bad" };
   var CALLOUT_VARIANT = { good: "s2-callout-good", warn: "s2-callout-warn", bad: "s2-callout-bad" };
   var BADGE_ACCENT = { accent: "s2-hudbadge-accent", good: "s2-hudbadge-good",
@@ -163,6 +163,34 @@
   declareButton("s2_motd_ok");
   declareText("s2_motd_ok_t");
 
+  // TopMenu hub. One root (like MOTD / the vote rail), not a third center modal.
+  var DASH_TABS = 8;
+  var DASH_ROWS = 8;
+  PANELS.push("s2_dash");
+  declareText("s2_dash_title");
+  declareText("s2_dash_sub");
+  declareButton("s2_dash_close");
+  declareText("s2_dash_close_t");
+  var DASH_TAB = [];
+  for (var dt = 0; dt < DASH_TABS; dt++) {
+    var dtid = "s2_dash_t" + dt;
+    DASH_TAB.push({ id: declareButton(dtid), text: declareText(dtid + "_t") });
+  }
+  var DASH_ROW = [];
+  for (var dr = 0; dr < DASH_ROWS; dr++) {
+    var drid = "s2_dash_r" + dr;
+    DASH_ROW.push({
+      id: declareButton(drid),
+      a: declareText(drid + "_a"),
+      b: declareText(drid + "_b")
+    });
+  }
+  declareText("s2_dash_status");
+  declareButton("s2_dash_prev");
+  declareText("s2_dash_prev_t");
+  declareButton("s2_dash_next");
+  declareText("s2_dash_next_t");
+
   var LIB_DESCRIPTOR = {
     addons: ["3790153369"],
     resource: "panorama/layout/custom_game/s2script_lib.xml",
@@ -240,10 +268,13 @@
     var bannerGen = {};
     var motdOpen = {};
     var motdOnClose = {};
+    var dashSpec = null;
+    var dashOpen = {};
     var origForget = hud.forget;
     hud.forget = function (slot) {
       for (var li = 0; li < liveModals.length; li++) liveModals[li].forget(slot);
       closeMotd(slot, false);
+      closeDash(slot, false);
       origForget(slot);
     };
 
@@ -423,6 +454,171 @@
         slot: slot,
         close: function () { closeMotd(slot, false); }
       };
+    }
+
+    // ── dashboard (tabbed TopMenu hub). One spec, one root. Not a modal pool slot. ───────────
+
+    function dashTabs(slot) {
+      if (!dashSpec) return [];
+      var got = typeof dashSpec.tabs === "function" ? dashSpec.tabs(slot) : (dashSpec.tabs || []);
+      return got || [];
+    }
+
+    function closeDash(slot, fromClick) {
+      if (!dashOpen[slot]) return;
+      delete dashOpen[slot];
+      hide(slot, "s2_dash");
+      hud.cursor(slot, false);
+      if (fromClick && dashSpec && typeof dashSpec.onClose === "function") dashSpec.onClose(slot);
+    }
+
+    function paintDash(slot) {
+      var st = dashOpen[slot];
+      if (!st || !dashSpec) return;
+      var tabs = dashTabs(slot);
+      if (tabs.length === 0) { closeDash(slot, false); return; }
+      var found = false;
+      for (var ti = 0; ti < tabs.length; ti++) {
+        if (tabs[ti] && tabs[ti].id === st.tabId) { found = true; break; }
+      }
+      if (!found) { st.tabId = tabs[0].id; st.rowPage = 0; }
+
+      setText(slot, "s2_dash_title", typeof dashSpec.title === "function" ? dashSpec.title(slot) : (dashSpec.title || ""));
+      var sub = typeof dashSpec.subtitle === "function" ? dashSpec.subtitle(slot, st.tabId) : dashSpec.subtitle;
+      setText(slot, "s2_dash_sub", sub == null ? "" : String(sub));
+      setText(slot, "s2_dash_close_t", dashSpec.closeText || "Close");
+
+      var tabPages = Math.max(1, Math.ceil(tabs.length / DASH_TABS));
+      if (st.tabPage >= tabPages) st.tabPage = tabPages - 1;
+      if (st.tabPage < 0) st.tabPage = 0;
+      var tabSlice = tabs.slice(st.tabPage * DASH_TABS, st.tabPage * DASH_TABS + DASH_TABS);
+      for (var t = 0; t < DASH_TABS; t++) {
+        var tab = tabSlice[t];
+        if (!tab) { hide(slot, DASH_TAB[t].id); continue; }
+        show(slot, DASH_TAB[t].id);
+        setText(slot, DASH_TAB[t].text, tab.title || tab.id);
+        setClass(slot, DASH_TAB[t].id, "s2-tab-active", tab.id === st.tabId);
+      }
+
+      var rows = typeof dashSpec.rows === "function" ? (dashSpec.rows(slot, st.tabId) || []) : [];
+      var rowPages = Math.max(1, Math.ceil(rows.length / DASH_ROWS));
+      if (st.rowPage >= rowPages) st.rowPage = rowPages - 1;
+      if (st.rowPage < 0) st.rowPage = 0;
+      var rowSlice = rows.slice(st.rowPage * DASH_ROWS, st.rowPage * DASH_ROWS + DASH_ROWS);
+      for (var r = 0; r < DASH_ROWS; r++) {
+        var row = rowSlice[r];
+        if (!row) { hide(slot, DASH_ROW[r].id); continue; }
+        show(slot, DASH_ROW[r].id);
+        setText(slot, DASH_ROW[r].a, row.a == null ? "" : String(row.a));
+        setText(slot, DASH_ROW[r].b, row.b == null ? "" : String(row.b));
+        setClass(slot, DASH_ROW[r].id, "s2-toggle-disabled", !!row.disabled);
+        setClass(slot, DASH_ROW[r].id, "s2-toggle-active", false);
+      }
+
+      var tabTitle = "";
+      for (var tt = 0; tt < tabs.length; tt++) {
+        if (tabs[tt].id === st.tabId) { tabTitle = tabs[tt].title || tabs[tt].id; break; }
+      }
+      var status = tabTitle;
+      if (rowPages > 1) status += "  ·  " + (st.rowPage + 1) + "/" + rowPages;
+      setText(slot, "s2_dash_status", status);
+      setText(slot, "s2_dash_prev_t", "‹ Prev");
+      setText(slot, "s2_dash_next_t", "Next ›");
+      if (rowPages > 1) { show(slot, "s2_dash_prev"); show(slot, "s2_dash_next"); }
+      else { hide(slot, "s2_dash_prev"); hide(slot, "s2_dash_next"); }
+    }
+
+    hud.onClick("s2_dash_close", function (player) {
+      closeDash(slotOf(player), true);
+    });
+    for (var dti = 0; dti < DASH_TABS; dti++) {
+      (function (tabIndex) {
+        hud.onClick(DASH_TAB[tabIndex].id, function (player) {
+          var slot = slotOf(player);
+          var st = dashOpen[slot];
+          if (!st) return;
+          var tabs = dashTabs(slot);
+          var tab = tabs[st.tabPage * DASH_TABS + tabIndex];
+          if (!tab) return;
+          st.tabId = tab.id;
+          st.rowPage = 0;
+          paintDash(slot);
+        });
+      })(dti);
+    }
+    for (var dri = 0; dri < DASH_ROWS; dri++) {
+      (function (rowIndex) {
+        hud.onClick(DASH_ROW[rowIndex].id, function (player) {
+          var slot = slotOf(player);
+          var st = dashOpen[slot];
+          if (!st || !dashSpec) return;
+          var rows = typeof dashSpec.rows === "function" ? (dashSpec.rows(slot, st.tabId) || []) : [];
+          var row = rows[st.rowPage * DASH_ROWS + rowIndex];
+          if (!row || row.disabled) return;
+          if (typeof dashSpec.onPick === "function") {
+            dashSpec.onPick(slot, st.tabId, row, dashSelf.forSlot(slot));
+          }
+        });
+      })(dri);
+    }
+    hud.onClick("s2_dash_prev", function (player) {
+      var slot = slotOf(player);
+      var st = dashOpen[slot];
+      if (!st) return;
+      st.rowPage -= 1;
+      paintDash(slot);
+    });
+    hud.onClick("s2_dash_next", function (player) {
+      var slot = slotOf(player);
+      var st = dashOpen[slot];
+      if (!st) return;
+      st.rowPage += 1;
+      paintDash(slot);
+    });
+
+    var dashSelf;
+    function dashboard(spec) {
+      dashSpec = spec || {};
+      if (dashSelf) {
+        for (var k in dashOpen) { if (dashOpen[k]) paintDash(Number(k)); }
+        return dashSelf;
+      }
+      dashSelf = {
+        open: function (slot, opts) {
+          var o = opts || {};
+          var tabs = dashTabs(slot);
+          var tabId = o.tab || (tabs[0] && tabs[0].id) || "";
+          dashOpen[slot] = { tabId: tabId, tabPage: 0, rowPage: 0 };
+          paintDash(slot);
+          setClass(slot, "s2_dash", FADE.dash, false);
+          show(slot, "s2_dash", { cursor: o.cursor !== false });
+          return dashSelf.forSlot(slot);
+        },
+        close: function (slot) { closeDash(slot, false); },
+        isOpen: function (slot) { return !!dashOpen[slot]; },
+        setTab: function (slot, tabId) {
+          var st = dashOpen[slot];
+          if (!st) return;
+          st.tabId = tabId;
+          st.rowPage = 0;
+          paintDash(slot);
+        },
+        refresh: function (slot) {
+          if (slot == null) { for (var k in dashOpen) { if (dashOpen[k]) paintDash(Number(k)); } }
+          else if (dashOpen[slot]) paintDash(slot);
+        },
+        forSlot: function (slot) {
+          return {
+            slot: slot,
+            open: function (opts) { return dashSelf.open(slot, opts); },
+            close: function () { dashSelf.close(slot); },
+            isOpen: function () { return dashSelf.isOpen(slot); },
+            setTab: function (tabId) { dashSelf.setTab(slot, tabId); },
+            refresh: function () { dashSelf.refresh(slot); }
+          };
+        }
+      };
+      return dashSelf;
     }
 
     // ── badges (persistent corner HUD) ────────────────────────────────────────────────────────
@@ -670,6 +866,7 @@
       hide(slot, "s2_callout");
       hide(slot, "s2_banner");
       closeMotd(slot, false);
+      closeDash(slot, false);
       for (var m2 = 0; m2 < MODALS; m2++) hide(slot, MODAL[m2].root);
       for (var t2 = 0; t2 < TOASTS; t2++) hide(slot, TOAST[t2].id);
       for (var b2 = 0; b2 < BADGES; b2++) hide(slot, BADGE[b2].id);
@@ -693,6 +890,7 @@
         return hudApi.createLayout(descriptor || LIB_DESCRIPTOR);
       },
       modal: modal,
+      dashboard: dashboard,
       badge: badge,
       toast: toast,
       callout: callout,
@@ -773,6 +971,7 @@
     }
     globalThis.__s2pkg_cs2.hudkit = {
       modal: kitFn("modal"),
+      dashboard: kitFn("dashboard"),
       badge: kitFn("badge"),
       toast: kitFn("toast"),
       callout: kitFn("callout"),

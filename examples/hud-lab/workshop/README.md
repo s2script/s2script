@@ -122,11 +122,13 @@ center modal (`s2_m2`).
 | `s2_callout` | bottom-center hint (`s2_callout_title` / `_msg`) |
 | `s2_banner` | center-top broadcast (`s2_banner_text`) |
 | `s2_motd` | rules overlay; `s2_motd_h0`–`h2` / `_p0`–`p2`, OK `s2_motd_ok` |
+| `s2_dash` | TopMenu hub (tabs `s2_dash_t0`–`t7`, rows `s2_dash_r0`–`r7`) |
 
 `.s2-vote-dock` places the rail. The older `.s2-vote` card rules stay so `s2script_hud_live.xml`'s
 bottom-left yes/no tally is unchanged. Option buttons are not hidden in markup; JS hides unused
-ones. Callout, banner, and MOTD are one root each on this same layout — not a second
-`CustomHudLayout` and not a third center sheet.
+ones. Callout, banner, MOTD, and the TopMenu dashboard are one root each on this same
+layout — not a second `CustomHudLayout` and not a third center sheet. Republish after
+compiling so `s2_dash` reaches clients.
 
 ## How the server drives it
 

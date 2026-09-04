@@ -330,10 +330,12 @@ thread_local! {
 
     // Admin cache state moved to `crate::admin`; ban cache state to `crate::bans`.
 
-    /// TopMenu registry (adminmenu framework). Ordered category names (deduped) + items owned by a
+    /// TopMenu registry (adminmenu framework). Ordered tabs (deduped by id) + items owned by a
     /// plugin. Item `onSelect` is a Global<Function> held like a command handler (NOT marshalled;
     /// invoked in the owner's context on select). Owner-scoped teardown mirrors CONCOMMANDS.
-    static TOPMENU_CATEGORIES: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+    /// A tab is what the dashboard renders as one selectable page; `addCategory(name)` is the
+    /// id==title form of `addTab`.
+    static TOPMENU_CATEGORIES: std::cell::RefCell<Vec<TopMenuTab>> = std::cell::RefCell::new(Vec::new());
     static TOPMENU_ITEMS: std::cell::RefCell<std::collections::HashMap<String, TopMenuItem>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Slots+ids queued by __s2_topmenu_select (called under the isolate borrow from a menu onSelect);
@@ -395,6 +397,28 @@ struct AcquireSession {
     view: *mut std::ffi::c_void,
     votes: Vec<crate::acquire::AcquireVote>,
     wrote: bool,
+}
+
+/// A registered TopMenu tab (dashboard page). `id` is the addItem grouping key; `title` is the label.
+struct TopMenuTab {
+    id: String,
+    title: String,
+}
+
+/// Ensure `id` exists in registration order. `title` of `Some` replaces the label; `None` keeps
+/// an existing title (or uses `id` when inserting).
+fn topmenu_ensure_tab(id: String, title: Option<String>) {
+    TOPMENU_CATEGORIES.with(|c| {
+        let mut tabs = c.borrow_mut();
+        if let Some(tab) = tabs.iter_mut().find(|tab| tab.id == id) {
+            if let Some(title) = title {
+                tab.title = title;
+            }
+            return;
+        }
+        let title = title.unwrap_or_else(|| id.clone());
+        tabs.push(TopMenuTab { id, title });
+    });
 }
 
 /// A registered TopMenu item. `on_select` is invoked in `owner`'s context (liveness-gated by `generation`).
@@ -2585,12 +2609,24 @@ fn s2_plugins_list(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArgument
 }
 
 
-/// `__s2_topmenu_add_category(name)` — append a category if absent (order = insertion; deduped).
+/// `__s2_topmenu_add_category(name)` — append a tab if absent (order = insertion; deduped).
+/// Title defaults to `name`. `addTab` is the form that sets a distinct label.
 fn s2_topmenu_add_category(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 1 { return; }
         let name = args.get(0).to_rust_string_lossy(scope);
-        TOPMENU_CATEGORIES.with(|c| { let mut b = c.borrow_mut(); if !b.contains(&name) { b.push(name); } });
+        topmenu_ensure_tab(name, None);
+    }));
+}
+
+/// `__s2_topmenu_add_tab(id, title)` — register/replace a dashboard tab. Deduped by id;
+/// a later call updates the title and keeps insertion order.
+fn s2_topmenu_add_tab(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 2 { return; }
+        let id = args.get(0).to_rust_string_lossy(scope);
+        let title = args.get(1).to_rust_string_lossy(scope);
+        topmenu_ensure_tab(id, Some(title));
     }));
 }
 
@@ -2634,7 +2670,7 @@ fn s2_topmenu_add_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
         let on_select = v8::Global::new(scope.as_ref(), func_local);
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
-        TOPMENU_CATEGORIES.with(|c| { let mut b = c.borrow_mut(); if !b.contains(&category) { b.push(category.clone()); } });
+        topmenu_ensure_tab(category.clone(), None);
         // Reuse the existing seq on a re-add (reload) so positions stay stable; else take the next counter.
         let seq = TOPMENU_ITEMS.with(|m| m.borrow().get(&id).map(|it| it.seq))
             .unwrap_or_else(|| TOPMENU_SEQ.with(|c| { let s = c.get(); c.set(s + 1); s }));
@@ -2642,11 +2678,17 @@ fn s2_topmenu_add_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
     }));
 }
 
-/// `__s2_topmenu_snapshot() -> { categories: string[], items: [{id, category, name, flags, sheets}] }`
-/// (metadata only).
+/// `__s2_topmenu_snapshot() -> { categories: string[], tabs: [{id, title}], items: [...] }`
+/// (metadata only). `categories` is tab ids in registration order (compat); `tabs` carries titles.
 fn s2_topmenu_snapshot(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let cats: Vec<String> = TOPMENU_CATEGORIES.with(|c| c.borrow().clone());
+        let (cats, tabs): (Vec<String>, Vec<serde_json::Value>) = TOPMENU_CATEGORIES.with(|c| {
+            let tabs = c.borrow();
+            (
+                tabs.iter().map(|t| t.id.clone()).collect(),
+                tabs.iter().map(|t| serde_json::json!({ "id": t.id, "title": t.title })).collect(),
+            )
+        });
         // Sort by seq → items render in registration order (stable across restarts), not random HashMap order.
         let items: Vec<serde_json::Value> = TOPMENU_ITEMS.with(|m| {
             let b = m.borrow();
@@ -2656,7 +2698,7 @@ fn s2_topmenu_snapshot(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArgu
                 serde_json::json!({ "id": id, "category": it.category, "name": it.name, "flags": it.flags, "sheets": it.sheets })
             }).collect()
         });
-        let obj = serde_json::json!({ "categories": cats, "items": items });
+        let obj = serde_json::json!({ "categories": cats, "tabs": tabs, "items": items });
         // serialize to a JS value via the JSON string round-trip (the established snapshot pattern).
         if let Some(s) = v8::String::new(scope, &obj.to_string()) {
             if let Some(parsed) = v8::json::parse(scope, s) { rv.set(parsed); }
@@ -4656,6 +4698,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     crate::net::install_natives(scope, global_obj);
     // TopMenu registry (adminmenu framework): owner-tracked categories/items + post-drain select dispatch.
     set_native(scope, global_obj, "__s2_topmenu_add_category", s2_topmenu_add_category);
+    set_native(scope, global_obj, "__s2_topmenu_add_tab", s2_topmenu_add_tab);
     set_native(scope, global_obj, "__s2_topmenu_add_item", s2_topmenu_add_item);
     set_native(scope, global_obj, "__s2_topmenu_snapshot", s2_topmenu_snapshot);
     set_native(scope, global_obj, "__s2_topmenu_select", s2_topmenu_select);
@@ -14551,6 +14594,29 @@ pub(crate) mod frame_tests {
         assert_eq!(
             out,
             r#"{"defaultSheets":["admin"],"menuSheets":["menu"],"bothSheets":["admin","menu"],"invalid":true,"messageHasName":true,"messageHasSheet":true}"#
+        );
+        shutdown();
+    }
+
+    #[test]
+    fn topmenu_add_tab_sets_title_and_keeps_order() {
+        init(dummy_logger()).unwrap();
+        let out = eval_std("tm_tabs", r#"
+            var T = globalThis.__s2pkg_topmenu.TopMenu;
+            T.addCategory("Player Commands");
+            T.addTab({ id: "playercommands", title: "Players" });
+            T.addItem("playercommands", { id: "pc:slap", name: "Slap", flags: 16, onSelect: function(){} });
+            T.addTab({ id: "playercommands", title: "Player" });
+            var s = T.snapshot();
+            JSON.stringify({
+                cats: s.categories,
+                tabs: s.tabs,
+                itemCat: s.items[0].category
+            });
+        "#);
+        assert_eq!(
+            out,
+            r#"{"cats":["Player Commands","playercommands"],"tabs":[{"id":"Player Commands","title":"Player Commands"},{"id":"playercommands","title":"Player"}],"itemCat":"playercommands"}"#
         );
         shutdown();
     }

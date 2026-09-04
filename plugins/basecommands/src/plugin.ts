@@ -28,8 +28,8 @@ export function OnPluginStart(): void {
   command.admin("sm_cvar", ADMFLAG.CONVARS, cvar);
   command("sm", sm);
 
-  // Category string is a cross-plugin key (adminmenu matches it by equality). Untranslated on purpose.
-  topmenu.addItem("Server Commands", {
+  topmenu.addTab({ id: "basecommands", title: "Server" });
+  topmenu.addItem("basecommands", {
     id: "basecommands:map",
     name: Translations.translate(-1, "Change Map Item"),
     flags: ADMFLAG.CHANGEMAP,

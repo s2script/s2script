@@ -1315,6 +1315,16 @@
 	background-color: #ffffff0a;
 }
 
+.s2-toggle-active
+{
+	background-color: #4c8dff22;
+}
+
+.s2-toggle-disabled
+{
+	opacity: 0.4;
+}
+
 .s2-toggle-text
 {
 	width: fill-parent-flow(1.0);

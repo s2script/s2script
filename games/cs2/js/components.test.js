@@ -301,6 +301,12 @@ test("workshop s2script_lib.xml is the production source and contains the vote r
   assert.match(xml, /id="s2_motd"/);
   assert.match(xml, /id="s2_motd_ok"/);
   assert.match(xml, /id="s2_motd_h2"/);
+  assert.match(xml, /id="s2_dash"/);
+  assert.match(xml, /id="s2_dash_t0"/);
+  assert.match(xml, /id="s2_dash_t7"/);
+  assert.match(xml, /id="s2_dash_r0"/);
+  assert.match(xml, /id="s2_dash_r7"/);
+  assert.match(xml, /id="s2_dash_close"/);
   assert.doesNotMatch(xml, /id="s2_m2"/);
   assert.match(css, /\.s2-callout-dock/);
   assert.match(css, /\.s2-callout-out/);
@@ -385,17 +391,64 @@ test("motd handle.close does not fire onClose", () => {
   assert.deepStrictEqual(closed, []);
 });
 
-test("hideAll drops callout, banner, and motd for that player", () => {
+test("hideAll drops callout, banner, motd, and dashboard for that player", () => {
   const { ui, calls } = mount();
   ui.callout(1, { message: "x", holdSeconds: 0 });
   ui.banner(1, { text: "y", holdSeconds: 0 });
   ui.motd(1, { title: "z" });
+  ui.dashboard({
+    title: "Hub",
+    tabs: [{ id: "a", title: "A" }],
+    rows: () => [{ id: "a:1", a: "One" }],
+  }).open(1);
   const before = calls.length;
   ui.hideAll(1);
   const after = calls.slice(before);
   assert.ok(after.some((c) => c.op === "hide" && c.id === "s2_callout"));
   assert.ok(after.some((c) => c.op === "hide" && c.id === "s2_banner"));
   assert.ok(after.some((c) => c.op === "hide" && c.id === "s2_motd"));
+  assert.ok(after.some((c) => c.op === "hide" && c.id === "s2_dash"));
+});
+
+test("dashboard paints plugin tabs and picks an item on the active tab", () => {
+  const { ui, calls, clickHandlers } = mount();
+  const picked = [];
+  const dash = ui.dashboard({
+    title: "Admin",
+    tabs: [{ id: "players", title: "Players" }, { id: "bans", title: "Bans" }],
+    rows: (_slot, tabId) => tabId === "players"
+      ? [{ id: "pc:slap", a: "Slap" }, { id: "pc:slay", a: "Slay" }]
+      : [{ id: "bb:kick", a: "Kick" }],
+    onPick: (slot, tabId, row) => picked.push({ slot, tabId, id: row.id }),
+  });
+  dash.open(1);
+  assert.ok(calls.some((c) => c.op === "show" && c.id === "s2_dash" && c.opts?.cursor === true));
+  assert.ok(calls.some((c) => c.op === "set" && c.id === "s2_dash_title" && c.value === "Admin"));
+  assert.ok(calls.some((c) => c.op === "set" && c.id === "s2_dash_t0_t" && c.value === "Players"));
+  assert.ok(calls.some((c) => c.op === "set" && c.id === "s2_dash_t1_t" && c.value === "Bans"));
+  assert.ok(classSet(calls, "s2-tab-active"));
+  assert.ok(calls.some((c) => c.op === "set" && c.id === "s2_dash_r0_a" && c.value === "Slap"));
+  clickHandlers.s2_dash_t1(1);
+  assert.ok(calls.some((c) => c.op === "set" && c.id === "s2_dash_r0_a" && c.value === "Kick"));
+  clickHandlers.s2_dash_r0(1);
+  assert.deepStrictEqual(picked, [{ slot: 1, tabId: "bans", id: "bb:kick" }]);
+});
+
+test("dashboard Close fires onClose; programmatic close does not", () => {
+  const { ui, clickHandlers } = mount();
+  const closed = [];
+  const dash = ui.dashboard({
+    title: "Hub",
+    tabs: [{ id: "a", title: "A" }],
+    rows: () => [{ id: "a:1", a: "One" }],
+    onClose: (slot) => closed.push(slot),
+  });
+  dash.open(2);
+  clickHandlers.s2_dash_close(2);
+  assert.deepStrictEqual(closed, [2]);
+  dash.open(3);
+  dash.close(3);
+  assert.deepStrictEqual(closed, [2]);
 });
 
 test("forSlot.callout and forSlot.motd bind the same player", () => {

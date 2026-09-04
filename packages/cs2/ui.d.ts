@@ -387,6 +387,54 @@ export interface MotdHandle {
   close(): void;
 }
 
+/** One dashboard tab. `id` is the grouping key (TopMenu tab / category id). */
+export interface DashTab {
+  readonly id: string;
+  readonly title: string;
+}
+
+/** One option on the active dashboard tab. */
+export interface DashRow {
+  readonly id: string;
+  readonly a: string;
+  readonly b?: string;
+  readonly disabled?: boolean;
+}
+
+export interface DashboardSpec {
+  readonly title: string | ((slot: number) => string);
+  readonly subtitle?: string | ((slot: number, tabId: string) => string);
+  readonly closeText?: string;
+  /** Full tab list; hidden tabs are omitted by the caller. */
+  readonly tabs: readonly DashTab[] | ((slot: number) => readonly DashTab[]);
+  readonly rows: (slot: number, tabId: string) => readonly DashRow[];
+  readonly onPick?: (slot: number, tabId: string, row: DashRow, view: DashboardView) => void;
+  /** Fired when the player clicks Close. Not fired on programmatic {@link Dashboard.close}. */
+  readonly onClose?: (slot: number) => void;
+}
+
+export interface DashboardView {
+  readonly slot: number;
+  open(opts?: { tab?: string; cursor?: boolean }): DashboardView;
+  close(): void;
+  isOpen(): boolean;
+  setTab(tabId: string): void;
+  refresh(): void;
+}
+
+/**
+ * Tabbed hub over `s2_dash` on `s2script_lib.xml`. One spec at a time (last claim wins).
+ * Not a modal-pool slot and not a third `s2_mN` sheet.
+ */
+export interface Dashboard {
+  open(slot: number, opts?: { tab?: string; cursor?: boolean }): DashboardView;
+  close(slot: number): void;
+  isOpen(slot: number): boolean;
+  setTab(slot: number, tabId: string): void;
+  refresh(slot?: number): void;
+  forSlot(slot: number): DashboardView;
+}
+
 export interface HudKitPlayer {
   readonly slot: number;
   toast(spec: ToastSpec): HudResult;
@@ -412,6 +460,11 @@ export interface HudKit {
   readonly hud: HudLayout;
   /** Claim a pooled modal. Null when all are in use. */
   modal(spec: ModalSpec): Modal | null;
+  /**
+   * Bind the shared TopMenu dashboard. Last spec wins. Always returns a handle
+   * (the panel is a single root, not a pool).
+   */
+  dashboard(spec: DashboardSpec): Dashboard;
   /** Claim a pooled corner badge. Null when all are in use. */
   badge(spec?: BadgeSpec): Badge | null;
   toast(slot: number, spec: ToastSpec): HudResult;

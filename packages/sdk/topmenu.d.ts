@@ -2,6 +2,17 @@
 
 export type TopMenuSheet = "admin" | "menu";
 
+/**
+ * A plugin-owned dashboard tab. `id` is the {@link TopMenuItem} grouping key (`addItem` first
+ * argument); `title` is what the hub paints on the tab bar.
+ */
+export interface TopMenuTab {
+  /** Stable id, e.g. `"playercommands"`. A duplicate id updates the title. */
+  id: string;
+  /** Tab label. Defaults to {@link TopMenuTab.id}. */
+  title?: string;
+}
+
 /** A single registered top-menu entry (an admin command surfaced in the adminmenu). */
 export interface TopMenuItem {
   /** Plugin-namespaced unique id, e.g. "playercommands:slap". A duplicate id replaces. */
@@ -17,9 +28,11 @@ export interface TopMenuItem {
 }
 /** A handler-free copy of the whole registry — what a menu renderer reads to build the display. */
 export interface TopMenuSnapshot {
-  /** All category names, in registration order. */
+  /** Tab ids, in registration order. Same sequence as {@link TopMenuSnapshot.tabs}. */
   categories: string[];
-  /** Every registered item's metadata (no `onSelect`), tagged with its category. */
+  /** Dashboard tabs with display titles. `addCategory(name)` is `{ id: name, title: name }`. */
+  tabs: { id: string; title: string }[];
+  /** Every registered item's metadata (no `onSelect`), tagged with its tab id (`category`). */
   items: { id: string; category: string; name: string; flags: number; sheets: TopMenuSheet[] }[];
 }
 /**
