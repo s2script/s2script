@@ -68,7 +68,7 @@ bash scripts/check-colors-test.sh
 echo "== check-antiflood-test.sh =="
 bash scripts/check-antiflood-test.sh
 
-echo "== test-release-notes.sh (release notes keep the changelogs) =="
+echo "== test-release-notes.sh (GitHub generates notes; CI only uploads the zip) =="
 bash scripts/test-release-notes.sh
 
 echo "== test-gate.sh =="
