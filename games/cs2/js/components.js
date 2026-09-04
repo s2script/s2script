@@ -60,6 +60,10 @@
                        warn: "s2-hudbadge-warn", bad: "s2-hudbadge-bad" };
   var BTN_VARIANT = { primary: "s2-btn-primary", good: "s2-btn-good", bad: "s2-btn-bad",
                       warn: "s2-btn-warn", ghost: "s2-btn-ghost" };
+  // Row tone. Applied to the row BUTTON, so the stylesheet tints the cell through a descendant
+  // rule the way `.s2-btn-good .s2-btn-label` already does — the row's own classes stay untouched,
+  // which is what keeps `selected` and `disabled` composable with a tone.
+  var LI_TONE = { good: "s2-li-good", warn: "s2-li-warn", bad: "s2-li-bad" };
   var SHEET_WIDTH = { sm: "s2-sheet-sm", md: "", lg: "s2-sheet-lg", xl: "s2-sheet-xl" };
   var CORNER = { tl: "s2-corner-tl", tr: "s2-corner-tr", bl: "s2-corner-bl", br: "s2-corner-br" };
 
@@ -530,6 +534,16 @@
           // Cosmetic only. onPick still fires for a disabled row so the caller can explain why —
           // a row that silently does nothing reads as a broken menu.
           setClass(slot, ids.rows[i].id, CLS.disabled, !!row.disabled);
+          // Tone is orthogonal to selected/disabled: a row can be the cursor, unaffordable AND
+          // bad at once. Every tone is written each paint (like the footer variants) because
+          // `setClass` holds no cache — the untaken ones must be cleared or a row keeps the tone
+          // of whatever occupied that slot on the previous page.
+          var wantTone = LI_TONE[row.tone];
+          for (var tk in LI_TONE) {
+            if (Object.prototype.hasOwnProperty.call(LI_TONE, tk)) {
+              setClass(slot, ids.rows[i].id, LI_TONE[tk], LI_TONE[tk] === wantTone);
+            }
+          }
         }
 
         // ABSOLUTE index, like `onPick` and `cursor()`. Callers index their own full list with

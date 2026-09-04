@@ -2689,6 +2689,29 @@
 	white-space: nowrap;
 }
 
+/* Row tone — set by the server through `Row.tone`, on the row BUTTON (`.s2-li`).
+
+   A descendant rule rather than a class on the label itself, matching `.s2-btn-good
+   .s2-btn-label`: two classes outrank the single-class `.s2-cell-a`, so the tint wins regardless
+   of where these rules sit in the file, and `s2-li-selected` / `s2-li-disabled` still compose on
+   the same element. Only the primary cell is tinted — `b` and `c` stay deliberately muted, so a
+   toned row reads as one coloured statement instead of three competing ones. */
+
+.s2-li-good .s2-cell-a
+{
+	color: #7ee787;
+}
+
+.s2-li-warn .s2-cell-a
+{
+	color: #e3b341;
+}
+
+.s2-li-bad .s2-cell-a
+{
+	color: #ff7b72;
+}
+
 .s2-detail-line
 {
 	width: 100%;
