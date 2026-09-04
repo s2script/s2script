@@ -16,8 +16,10 @@ function mount(options = {}) {
     open: (slot, opts) => calls.push({ method: "open", slot, opts }),
     close: (slot) => calls.push({ method: "close", slot }),
     refresh: (slot) => calls.push({ method: "refresh", slot }),
-    setCursor: (slot, on) => calls.push({ method: "setCursor", slot, on })
+    setCursor: (slot, on) => calls.push({ method: "setCursor", slot, on }),
+    forget: (slot) => calls.push({ method: "forget", slot })
   };
+  const clientHandlers = { disconnect: [], active: [] };
 
   globalThis.__s2pkg_cs2 = {
     hudkit: {
@@ -40,9 +42,15 @@ function mount(options = {}) {
       disarm: (slot) => disarms.push(slot)
     }
   };
+  globalThis.__s2pkg_clients = {
+    Clients: {
+      onDisconnect: (fn) => clientHandlers.disconnect.push(fn),
+      onActive: (fn) => clientHandlers.active.push(fn)
+    }
+  };
   delete globalThis.__s2pkg_menuhud;
   new Function(source)();
-  return { calls, registered, arms, disarms, pawn, spec, claim };
+  return { calls, registered, arms, disarms, pawn, spec, claim, clientHandlers };
 }
 
 function session(options = {}) {
@@ -87,6 +95,7 @@ test.afterEach(() => {
   delete globalThis.__s2pkg_cs2;
   delete globalThis.__s2pkg_menu;
   delete globalThis.__s2pkg_hudinput;
+  delete globalThis.__s2pkg_clients;
   delete globalThis.__s2pkg_menuhud;
 });
 
@@ -175,4 +184,56 @@ test("exhausted modal pool leaves Chat registered as the fallback", () => {
   const mounted = mount({ claimNull: true });
   assert.deepEqual(mounted.registered, {});
   assert.equal(globalThis.__s2pkg_menuhud, undefined);
+});
+
+// ── a slot outliving its player ───────────────────────────────────────────────────────────────
+
+test("a disconnect clears the session, the cursor grab and the Tab arm", () => {
+  const mounted = mount();
+  const s = session({ slot: 3, freezePlayer: true, activation: "tab" });
+  mounted.registered.center.open(s);
+  assert.equal(mounted.pawn.moveType, 0, "freezePlayer should have frozen the pawn");
+  assert.deepEqual(mounted.arms.map((a) => a.slot), [3]);
+
+  assert.equal(mounted.clientHandlers.disconnect.length, 1, "menuhud must subscribe to onDisconnect");
+  mounted.clientHandlers.disconnect[0]({ slot: 3 });
+
+  assert.deepEqual(mounted.disarms, [3], "the Tab arm must be dropped");
+  assert.ok(
+    mounted.calls.some((c) => c.method === "setCursor" && c.slot === 3 && c.on === false),
+    "the cursor grab must be released",
+  );
+  assert.ok(mounted.calls.some((c) => c.method === "forget" && c.slot === 3));
+  assert.deepEqual(mounted.spec.rows(3), [], "the session must be gone");
+});
+
+test("reconnecting into the same slot is not left frozen or captured", () => {
+  const mounted = mount();
+  mounted.registered.center.open(session({ slot: 3, freezePlayer: true, activation: "tab" }));
+  // The disconnect never arrives — a timeout or a crash. Activate is the backstop.
+  mounted.clientHandlers.active[0]({ slot: 3 });
+
+  assert.deepEqual(mounted.disarms, [3]);
+  assert.deepEqual(mounted.spec.rows(3), []);
+  assert.deepEqual(mounted.spec.buttons(3), [], "no footer buttons for a slot with no session");
+});
+
+test("the departed player's moveType is dropped, never written onto the next occupant", () => {
+  const mounted = mount();
+  mounted.registered.center.open(session({ slot: 3, freezePlayer: true }));
+  assert.equal(mounted.pawn.moveType, 0);
+
+  mounted.clientHandlers.disconnect[0]({ slot: 3 });
+  // The replacement pawn is fresh: the engine already gave it a moveType, so restoring the saved
+  // one would be handing a new player a dead one's movement state.
+  mounted.pawn.moveType = 2;
+  mounted.clientHandlers.active[0]({ slot: 3 });
+  assert.equal(mounted.pawn.moveType, 2, "activate must not re-apply a stale moveType");
+});
+
+test("clearing a slot that never had a menu is a no-op", () => {
+  const mounted = mount();
+  mounted.clientHandlers.disconnect[0]({ slot: 5 });
+  mounted.clientHandlers.active[0]({ slot: 5 });
+  assert.deepEqual(mounted.disarms, [], "nothing to disarm, so nothing is disarmed");
 });

@@ -8,6 +8,7 @@
   var MenuStyle = menuPkg && menuPkg.MenuStyle;
   var HudInput = (globalThis.__s2pkg_hudinput && globalThis.__s2pkg_hudinput.HudInput) ||
     (globalThis.__s2pkg_cs2 && globalThis.__s2pkg_cs2.HudInput);
+  var Clients = globalThis.__s2pkg_clients && globalThis.__s2pkg_clients.Clients;
   var MOVETYPE_NONE = 0;
   var sessions = {};
   var frozenMoveType = {};
@@ -150,7 +151,50 @@
     }
   };
 
+  /**
+   * Tear a slot's menu down WITHOUT restoring its saved moveType.
+   *
+   * A player who leaves mid-menu never reaches `renderer.close`: a disconnect is not a close, and
+   * the plugin that owns the Menu has no reason to close one for someone who is gone. Everything
+   * this renderer put on the slot then outlives them — the session, the saved moveType, the cursor
+   * grab and the Tab arm — and the next occupant of that slot inherits all of it. In practice that
+   * is the SAME person reconnecting, who arrives frozen, input-captured, and waiting to click a
+   * sheet that nobody drew for them.
+   *
+   * `unfreeze` is deliberately not used: it would write a departed player's moveType onto whoever
+   * holds the slot now. The replacement pawn is fresh and already has the right one, so the saved
+   * value is dropped rather than applied.
+   */
+  function discardSession(slot) {
+    if (typeof slot !== "number" || slot < 0) return;
+    // Nothing held, nothing to release. `onActive` fires for every player who joins, and the
+    // overwhelming majority of them never had a menu open on that slot.
+    if (sessions[slot] === undefined && frozenMoveType[slot] === undefined) return;
+    delete sessions[slot];
+    delete frozenMoveType[slot];
+    if (typeof claim.close === "function") claim.close(slot);
+    setCursor(slot, false);
+    if (HudInput && typeof HudInput.disarm === "function") HudInput.disarm(slot);
+    if (typeof claim.forget === "function") claim.forget(slot);
+    log("cleared a stale menu session on slot " + slot);
+  }
+
   Menu.registerRenderer(MenuStyle.Center, renderer);
   Menu.registerRenderer(MenuStyle.Chat, renderer);
-  globalThis.__s2pkg_menuhud = { renderer: renderer, rows: itemRows, buttons: footerButtons };
+
+  // Both edges, because neither alone is enough. A timeout or a crash does not always deliver the
+  // disconnect, so ACTIVATE is the backstop — the last moment before the new occupant of a slot can
+  // be frozen by state they never created. Both are idempotent.
+  if (Clients) {
+    if (typeof Clients.onDisconnect === "function") {
+      Clients.onDisconnect(function (client) { discardSession(client && client.slot); });
+    }
+    if (typeof Clients.onActive === "function") {
+      Clients.onActive(function (client) { discardSession(client && client.slot); });
+    }
+  }
+
+  globalThis.__s2pkg_menuhud = {
+    renderer: renderer, rows: itemRows, buttons: footerButtons, discardSession: discardSession
+  };
 })();
