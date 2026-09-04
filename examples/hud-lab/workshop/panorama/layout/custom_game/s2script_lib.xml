@@ -213,7 +213,311 @@
 			</Panel>
 		</Panel>
 
-		<!-- Vote rail. One root (Vote is one-at-a-time), right dock, not a third center modal.
+		<Panel id="s2_m2" class="s2-sheet s2-hide">
+			<Panel class="s2-sheet-head">
+				<Label id="s2_m2_title" class="s2-sheet-title" text="{s:s2_m2_title}" />
+				<Label id="s2_m2_sub" class="s2-sheet-sub" text="{s:s2_m2_sub}" />
+			</Panel>
+			<Panel class="s2-sheet-rule" />
+			<Panel id="s2_m2_list" class="s2-sheet-list">
+				<Button id="s2_m2_r0" class="s2-li">
+					<Label id="s2_m2_r0_a" class="s2-cell-a" text="{s:s2_m2_r0_a}" />
+					<Label id="s2_m2_r0_b" class="s2-cell-b" text="{s:s2_m2_r0_b}" />
+					<Label id="s2_m2_r0_c" class="s2-cell-c" text="{s:s2_m2_r0_c}" />
+				</Button>
+				<Button id="s2_m2_r1" class="s2-li">
+					<Label id="s2_m2_r1_a" class="s2-cell-a" text="{s:s2_m2_r1_a}" />
+					<Label id="s2_m2_r1_b" class="s2-cell-b" text="{s:s2_m2_r1_b}" />
+					<Label id="s2_m2_r1_c" class="s2-cell-c" text="{s:s2_m2_r1_c}" />
+				</Button>
+				<Button id="s2_m2_r2" class="s2-li">
+					<Label id="s2_m2_r2_a" class="s2-cell-a" text="{s:s2_m2_r2_a}" />
+					<Label id="s2_m2_r2_b" class="s2-cell-b" text="{s:s2_m2_r2_b}" />
+					<Label id="s2_m2_r2_c" class="s2-cell-c" text="{s:s2_m2_r2_c}" />
+				</Button>
+				<Button id="s2_m2_r3" class="s2-li">
+					<Label id="s2_m2_r3_a" class="s2-cell-a" text="{s:s2_m2_r3_a}" />
+					<Label id="s2_m2_r3_b" class="s2-cell-b" text="{s:s2_m2_r3_b}" />
+					<Label id="s2_m2_r3_c" class="s2-cell-c" text="{s:s2_m2_r3_c}" />
+				</Button>
+				<Button id="s2_m2_r4" class="s2-li">
+					<Label id="s2_m2_r4_a" class="s2-cell-a" text="{s:s2_m2_r4_a}" />
+					<Label id="s2_m2_r4_b" class="s2-cell-b" text="{s:s2_m2_r4_b}" />
+					<Label id="s2_m2_r4_c" class="s2-cell-c" text="{s:s2_m2_r4_c}" />
+				</Button>
+				<Button id="s2_m2_r5" class="s2-li">
+					<Label id="s2_m2_r5_a" class="s2-cell-a" text="{s:s2_m2_r5_a}" />
+					<Label id="s2_m2_r5_b" class="s2-cell-b" text="{s:s2_m2_r5_b}" />
+					<Label id="s2_m2_r5_c" class="s2-cell-c" text="{s:s2_m2_r5_c}" />
+				</Button>
+				<Button id="s2_m2_r6" class="s2-li">
+					<Label id="s2_m2_r6_a" class="s2-cell-a" text="{s:s2_m2_r6_a}" />
+					<Label id="s2_m2_r6_b" class="s2-cell-b" text="{s:s2_m2_r6_b}" />
+					<Label id="s2_m2_r6_c" class="s2-cell-c" text="{s:s2_m2_r6_c}" />
+				</Button>
+				<Button id="s2_m2_r7" class="s2-li">
+					<Label id="s2_m2_r7_a" class="s2-cell-a" text="{s:s2_m2_r7_a}" />
+					<Label id="s2_m2_r7_b" class="s2-cell-b" text="{s:s2_m2_r7_b}" />
+					<Label id="s2_m2_r7_c" class="s2-cell-c" text="{s:s2_m2_r7_c}" />
+				</Button>
+			</Panel>
+			<Panel id="s2_m2_detail" class="s2-sheet-detail">
+				<Label id="s2_m2_d0" class="s2-detail-line s2-detail-strong" text="{s:s2_m2_d0}" />
+				<Label id="s2_m2_d1" class="s2-detail-line" text="{s:s2_m2_d1}" />
+				<Label id="s2_m2_d2" class="s2-detail-line" text="{s:s2_m2_d2}" />
+				<Panel class="s2-clampbox">
+					<Label id="s2_m2_d3" class="s2-clamptext" text="{s:s2_m2_d3}" />
+				</Panel>
+			</Panel>
+			<Panel class="s2-sheet-foot">
+				<Button id="s2_m2_f0" class="s2-btn s2-btn-sm s2-btn-ghost">
+					<Label id="s2_m2_f0_t" class="s2-btn-label" text="{s:s2_m2_f0_t}" />
+				</Button>
+				<Panel class="s2-sheet-spacer" />
+				<Button id="s2_m2_f1" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m2_f1_t" class="s2-btn-label" text="{s:s2_m2_f1_t}" />
+				</Button>
+				<Button id="s2_m2_f2" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m2_f2_t" class="s2-btn-label" text="{s:s2_m2_f2_t}" />
+				</Button>
+				<Button id="s2_m2_f3" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m2_f3_t" class="s2-btn-label" text="{s:s2_m2_f3_t}" />
+				</Button>
+				<Button id="s2_m2_f4" class="s2-btn s2-btn-sm">
+					<Label id="s2_m2_f4_t" class="s2-btn-label" text="{s:s2_m2_f4_t}" />
+				</Button>
+			</Panel>
+		</Panel>
+
+		<Panel id="s2_m3" class="s2-sheet s2-hide">
+			<Panel class="s2-sheet-head">
+				<Label id="s2_m3_title" class="s2-sheet-title" text="{s:s2_m3_title}" />
+				<Label id="s2_m3_sub" class="s2-sheet-sub" text="{s:s2_m3_sub}" />
+			</Panel>
+			<Panel class="s2-sheet-rule" />
+			<Panel id="s2_m3_list" class="s2-sheet-list">
+				<Button id="s2_m3_r0" class="s2-li">
+					<Label id="s2_m3_r0_a" class="s2-cell-a" text="{s:s2_m3_r0_a}" />
+					<Label id="s2_m3_r0_b" class="s2-cell-b" text="{s:s2_m3_r0_b}" />
+					<Label id="s2_m3_r0_c" class="s2-cell-c" text="{s:s2_m3_r0_c}" />
+				</Button>
+				<Button id="s2_m3_r1" class="s2-li">
+					<Label id="s2_m3_r1_a" class="s2-cell-a" text="{s:s2_m3_r1_a}" />
+					<Label id="s2_m3_r1_b" class="s2-cell-b" text="{s:s2_m3_r1_b}" />
+					<Label id="s2_m3_r1_c" class="s2-cell-c" text="{s:s2_m3_r1_c}" />
+				</Button>
+				<Button id="s2_m3_r2" class="s2-li">
+					<Label id="s2_m3_r2_a" class="s2-cell-a" text="{s:s2_m3_r2_a}" />
+					<Label id="s2_m3_r2_b" class="s2-cell-b" text="{s:s2_m3_r2_b}" />
+					<Label id="s2_m3_r2_c" class="s2-cell-c" text="{s:s2_m3_r2_c}" />
+				</Button>
+				<Button id="s2_m3_r3" class="s2-li">
+					<Label id="s2_m3_r3_a" class="s2-cell-a" text="{s:s2_m3_r3_a}" />
+					<Label id="s2_m3_r3_b" class="s2-cell-b" text="{s:s2_m3_r3_b}" />
+					<Label id="s2_m3_r3_c" class="s2-cell-c" text="{s:s2_m3_r3_c}" />
+				</Button>
+				<Button id="s2_m3_r4" class="s2-li">
+					<Label id="s2_m3_r4_a" class="s2-cell-a" text="{s:s2_m3_r4_a}" />
+					<Label id="s2_m3_r4_b" class="s2-cell-b" text="{s:s2_m3_r4_b}" />
+					<Label id="s2_m3_r4_c" class="s2-cell-c" text="{s:s2_m3_r4_c}" />
+				</Button>
+				<Button id="s2_m3_r5" class="s2-li">
+					<Label id="s2_m3_r5_a" class="s2-cell-a" text="{s:s2_m3_r5_a}" />
+					<Label id="s2_m3_r5_b" class="s2-cell-b" text="{s:s2_m3_r5_b}" />
+					<Label id="s2_m3_r5_c" class="s2-cell-c" text="{s:s2_m3_r5_c}" />
+				</Button>
+				<Button id="s2_m3_r6" class="s2-li">
+					<Label id="s2_m3_r6_a" class="s2-cell-a" text="{s:s2_m3_r6_a}" />
+					<Label id="s2_m3_r6_b" class="s2-cell-b" text="{s:s2_m3_r6_b}" />
+					<Label id="s2_m3_r6_c" class="s2-cell-c" text="{s:s2_m3_r6_c}" />
+				</Button>
+				<Button id="s2_m3_r7" class="s2-li">
+					<Label id="s2_m3_r7_a" class="s2-cell-a" text="{s:s2_m3_r7_a}" />
+					<Label id="s2_m3_r7_b" class="s2-cell-b" text="{s:s2_m3_r7_b}" />
+					<Label id="s2_m3_r7_c" class="s2-cell-c" text="{s:s2_m3_r7_c}" />
+				</Button>
+			</Panel>
+			<Panel id="s2_m3_detail" class="s2-sheet-detail">
+				<Label id="s2_m3_d0" class="s2-detail-line s2-detail-strong" text="{s:s2_m3_d0}" />
+				<Label id="s2_m3_d1" class="s2-detail-line" text="{s:s2_m3_d1}" />
+				<Label id="s2_m3_d2" class="s2-detail-line" text="{s:s2_m3_d2}" />
+				<Panel class="s2-clampbox">
+					<Label id="s2_m3_d3" class="s2-clamptext" text="{s:s2_m3_d3}" />
+				</Panel>
+			</Panel>
+			<Panel class="s2-sheet-foot">
+				<Button id="s2_m3_f0" class="s2-btn s2-btn-sm s2-btn-ghost">
+					<Label id="s2_m3_f0_t" class="s2-btn-label" text="{s:s2_m3_f0_t}" />
+				</Button>
+				<Panel class="s2-sheet-spacer" />
+				<Button id="s2_m3_f1" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m3_f1_t" class="s2-btn-label" text="{s:s2_m3_f1_t}" />
+				</Button>
+				<Button id="s2_m3_f2" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m3_f2_t" class="s2-btn-label" text="{s:s2_m3_f2_t}" />
+				</Button>
+				<Button id="s2_m3_f3" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m3_f3_t" class="s2-btn-label" text="{s:s2_m3_f3_t}" />
+				</Button>
+				<Button id="s2_m3_f4" class="s2-btn s2-btn-sm">
+					<Label id="s2_m3_f4_t" class="s2-btn-label" text="{s:s2_m3_f4_t}" />
+				</Button>
+			</Panel>
+		</Panel>
+
+		<Panel id="s2_m4" class="s2-sheet s2-hide">
+			<Panel class="s2-sheet-head">
+				<Label id="s2_m4_title" class="s2-sheet-title" text="{s:s2_m4_title}" />
+				<Label id="s2_m4_sub" class="s2-sheet-sub" text="{s:s2_m4_sub}" />
+			</Panel>
+			<Panel class="s2-sheet-rule" />
+			<Panel id="s2_m4_list" class="s2-sheet-list">
+				<Button id="s2_m4_r0" class="s2-li">
+					<Label id="s2_m4_r0_a" class="s2-cell-a" text="{s:s2_m4_r0_a}" />
+					<Label id="s2_m4_r0_b" class="s2-cell-b" text="{s:s2_m4_r0_b}" />
+					<Label id="s2_m4_r0_c" class="s2-cell-c" text="{s:s2_m4_r0_c}" />
+				</Button>
+				<Button id="s2_m4_r1" class="s2-li">
+					<Label id="s2_m4_r1_a" class="s2-cell-a" text="{s:s2_m4_r1_a}" />
+					<Label id="s2_m4_r1_b" class="s2-cell-b" text="{s:s2_m4_r1_b}" />
+					<Label id="s2_m4_r1_c" class="s2-cell-c" text="{s:s2_m4_r1_c}" />
+				</Button>
+				<Button id="s2_m4_r2" class="s2-li">
+					<Label id="s2_m4_r2_a" class="s2-cell-a" text="{s:s2_m4_r2_a}" />
+					<Label id="s2_m4_r2_b" class="s2-cell-b" text="{s:s2_m4_r2_b}" />
+					<Label id="s2_m4_r2_c" class="s2-cell-c" text="{s:s2_m4_r2_c}" />
+				</Button>
+				<Button id="s2_m4_r3" class="s2-li">
+					<Label id="s2_m4_r3_a" class="s2-cell-a" text="{s:s2_m4_r3_a}" />
+					<Label id="s2_m4_r3_b" class="s2-cell-b" text="{s:s2_m4_r3_b}" />
+					<Label id="s2_m4_r3_c" class="s2-cell-c" text="{s:s2_m4_r3_c}" />
+				</Button>
+				<Button id="s2_m4_r4" class="s2-li">
+					<Label id="s2_m4_r4_a" class="s2-cell-a" text="{s:s2_m4_r4_a}" />
+					<Label id="s2_m4_r4_b" class="s2-cell-b" text="{s:s2_m4_r4_b}" />
+					<Label id="s2_m4_r4_c" class="s2-cell-c" text="{s:s2_m4_r4_c}" />
+				</Button>
+				<Button id="s2_m4_r5" class="s2-li">
+					<Label id="s2_m4_r5_a" class="s2-cell-a" text="{s:s2_m4_r5_a}" />
+					<Label id="s2_m4_r5_b" class="s2-cell-b" text="{s:s2_m4_r5_b}" />
+					<Label id="s2_m4_r5_c" class="s2-cell-c" text="{s:s2_m4_r5_c}" />
+				</Button>
+				<Button id="s2_m4_r6" class="s2-li">
+					<Label id="s2_m4_r6_a" class="s2-cell-a" text="{s:s2_m4_r6_a}" />
+					<Label id="s2_m4_r6_b" class="s2-cell-b" text="{s:s2_m4_r6_b}" />
+					<Label id="s2_m4_r6_c" class="s2-cell-c" text="{s:s2_m4_r6_c}" />
+				</Button>
+				<Button id="s2_m4_r7" class="s2-li">
+					<Label id="s2_m4_r7_a" class="s2-cell-a" text="{s:s2_m4_r7_a}" />
+					<Label id="s2_m4_r7_b" class="s2-cell-b" text="{s:s2_m4_r7_b}" />
+					<Label id="s2_m4_r7_c" class="s2-cell-c" text="{s:s2_m4_r7_c}" />
+				</Button>
+			</Panel>
+			<Panel id="s2_m4_detail" class="s2-sheet-detail">
+				<Label id="s2_m4_d0" class="s2-detail-line s2-detail-strong" text="{s:s2_m4_d0}" />
+				<Label id="s2_m4_d1" class="s2-detail-line" text="{s:s2_m4_d1}" />
+				<Label id="s2_m4_d2" class="s2-detail-line" text="{s:s2_m4_d2}" />
+				<Panel class="s2-clampbox">
+					<Label id="s2_m4_d3" class="s2-clamptext" text="{s:s2_m4_d3}" />
+				</Panel>
+			</Panel>
+			<Panel class="s2-sheet-foot">
+				<Button id="s2_m4_f0" class="s2-btn s2-btn-sm s2-btn-ghost">
+					<Label id="s2_m4_f0_t" class="s2-btn-label" text="{s:s2_m4_f0_t}" />
+				</Button>
+				<Panel class="s2-sheet-spacer" />
+				<Button id="s2_m4_f1" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m4_f1_t" class="s2-btn-label" text="{s:s2_m4_f1_t}" />
+				</Button>
+				<Button id="s2_m4_f2" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m4_f2_t" class="s2-btn-label" text="{s:s2_m4_f2_t}" />
+				</Button>
+				<Button id="s2_m4_f3" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m4_f3_t" class="s2-btn-label" text="{s:s2_m4_f3_t}" />
+				</Button>
+				<Button id="s2_m4_f4" class="s2-btn s2-btn-sm">
+					<Label id="s2_m4_f4_t" class="s2-btn-label" text="{s:s2_m4_f4_t}" />
+				</Button>
+			</Panel>
+		</Panel>
+
+		<Panel id="s2_m5" class="s2-sheet s2-hide">
+			<Panel class="s2-sheet-head">
+				<Label id="s2_m5_title" class="s2-sheet-title" text="{s:s2_m5_title}" />
+				<Label id="s2_m5_sub" class="s2-sheet-sub" text="{s:s2_m5_sub}" />
+			</Panel>
+			<Panel class="s2-sheet-rule" />
+			<Panel id="s2_m5_list" class="s2-sheet-list">
+				<Button id="s2_m5_r0" class="s2-li">
+					<Label id="s2_m5_r0_a" class="s2-cell-a" text="{s:s2_m5_r0_a}" />
+					<Label id="s2_m5_r0_b" class="s2-cell-b" text="{s:s2_m5_r0_b}" />
+					<Label id="s2_m5_r0_c" class="s2-cell-c" text="{s:s2_m5_r0_c}" />
+				</Button>
+				<Button id="s2_m5_r1" class="s2-li">
+					<Label id="s2_m5_r1_a" class="s2-cell-a" text="{s:s2_m5_r1_a}" />
+					<Label id="s2_m5_r1_b" class="s2-cell-b" text="{s:s2_m5_r1_b}" />
+					<Label id="s2_m5_r1_c" class="s2-cell-c" text="{s:s2_m5_r1_c}" />
+				</Button>
+				<Button id="s2_m5_r2" class="s2-li">
+					<Label id="s2_m5_r2_a" class="s2-cell-a" text="{s:s2_m5_r2_a}" />
+					<Label id="s2_m5_r2_b" class="s2-cell-b" text="{s:s2_m5_r2_b}" />
+					<Label id="s2_m5_r2_c" class="s2-cell-c" text="{s:s2_m5_r2_c}" />
+				</Button>
+				<Button id="s2_m5_r3" class="s2-li">
+					<Label id="s2_m5_r3_a" class="s2-cell-a" text="{s:s2_m5_r3_a}" />
+					<Label id="s2_m5_r3_b" class="s2-cell-b" text="{s:s2_m5_r3_b}" />
+					<Label id="s2_m5_r3_c" class="s2-cell-c" text="{s:s2_m5_r3_c}" />
+				</Button>
+				<Button id="s2_m5_r4" class="s2-li">
+					<Label id="s2_m5_r4_a" class="s2-cell-a" text="{s:s2_m5_r4_a}" />
+					<Label id="s2_m5_r4_b" class="s2-cell-b" text="{s:s2_m5_r4_b}" />
+					<Label id="s2_m5_r4_c" class="s2-cell-c" text="{s:s2_m5_r4_c}" />
+				</Button>
+				<Button id="s2_m5_r5" class="s2-li">
+					<Label id="s2_m5_r5_a" class="s2-cell-a" text="{s:s2_m5_r5_a}" />
+					<Label id="s2_m5_r5_b" class="s2-cell-b" text="{s:s2_m5_r5_b}" />
+					<Label id="s2_m5_r5_c" class="s2-cell-c" text="{s:s2_m5_r5_c}" />
+				</Button>
+				<Button id="s2_m5_r6" class="s2-li">
+					<Label id="s2_m5_r6_a" class="s2-cell-a" text="{s:s2_m5_r6_a}" />
+					<Label id="s2_m5_r6_b" class="s2-cell-b" text="{s:s2_m5_r6_b}" />
+					<Label id="s2_m5_r6_c" class="s2-cell-c" text="{s:s2_m5_r6_c}" />
+				</Button>
+				<Button id="s2_m5_r7" class="s2-li">
+					<Label id="s2_m5_r7_a" class="s2-cell-a" text="{s:s2_m5_r7_a}" />
+					<Label id="s2_m5_r7_b" class="s2-cell-b" text="{s:s2_m5_r7_b}" />
+					<Label id="s2_m5_r7_c" class="s2-cell-c" text="{s:s2_m5_r7_c}" />
+				</Button>
+			</Panel>
+			<Panel id="s2_m5_detail" class="s2-sheet-detail">
+				<Label id="s2_m5_d0" class="s2-detail-line s2-detail-strong" text="{s:s2_m5_d0}" />
+				<Label id="s2_m5_d1" class="s2-detail-line" text="{s:s2_m5_d1}" />
+				<Label id="s2_m5_d2" class="s2-detail-line" text="{s:s2_m5_d2}" />
+				<Panel class="s2-clampbox">
+					<Label id="s2_m5_d3" class="s2-clamptext" text="{s:s2_m5_d3}" />
+				</Panel>
+			</Panel>
+			<Panel class="s2-sheet-foot">
+				<Button id="s2_m5_f0" class="s2-btn s2-btn-sm s2-btn-ghost">
+					<Label id="s2_m5_f0_t" class="s2-btn-label" text="{s:s2_m5_f0_t}" />
+				</Button>
+				<Panel class="s2-sheet-spacer" />
+				<Button id="s2_m5_f1" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m5_f1_t" class="s2-btn-label" text="{s:s2_m5_f1_t}" />
+				</Button>
+				<Button id="s2_m5_f2" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m5_f2_t" class="s2-btn-label" text="{s:s2_m5_f2_t}" />
+				</Button>
+				<Button id="s2_m5_f3" class="s2-btn s2-btn-sm s2-mr-sm">
+					<Label id="s2_m5_f3_t" class="s2-btn-label" text="{s:s2_m5_f3_t}" />
+				</Button>
+				<Button id="s2_m5_f4" class="s2-btn s2-btn-sm">
+					<Label id="s2_m5_f4_t" class="s2-btn-label" text="{s:s2_m5_f4_t}" />
+				</Button>
+			</Panel>
+		</Panel>
+
+		<!-- Vote rail. One root (Vote is one-at-a-time), right dock — a DOCKED rail, not a center sheet.
 		     games/cs2/js/voterail.js drives these ids through hudkit.layout. -->
 		<Panel id="s2_vote" class="s2-vote s2-vote-dock s2-hide">
 			<Label id="s2_vote_q" class="s2-vote-q" text="{s:s2_vote_q}" />
