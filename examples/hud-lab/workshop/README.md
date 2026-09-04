@@ -107,8 +107,26 @@ and the TopMenu dashboard (`s2_dash`) drive **workshop addon 3790153369**, layou
 the published VPK, then those panel families were added). Republish **the same addon**
 after compiling these sources on Windows Workshop Tools. The stylesheet include must
 stay `file://{resources}/styles/custom_game/s2script_lib.css` — an `s2r://` include
-compiles clean and ships unstyled. Do not add a second layout or a third center modal
-(`s2_m2`) — the hub is `s2_dash`, not another `s2_mN`.
+compiles clean and ships unstyled. Do not add a second layout.
+
+**Six center sheets (`s2_m0`–`s2_m5`), and that number belongs to the MARKUP.** `MODALS` in
+`games/cs2/js/components.js` must equal the number of `s2_m*` trees here: a server can only address
+panels the client's layout already contains, so raising `MODALS` alone hands out sheets that paint
+nothing — silently, because Panorama ignores unknown ids. A test pins the two together.
+
+It was two for as long as nothing needed more. Then one plugin wanted three surfaces (a shop, a
+round log, an admin queue) alongside the framework's own menu renderer, and the failure was quiet:
+`modal pool exhausted` in the server log, a shop degrading to the chat menu and a round log to the
+console. Each sheet costs ~51 panel ids and ~35 dialog variables off budgets **shared by every
+plugin driving this layout** — so a seventh is not free; weigh it against the 1024-per-vector cap
+(this layout now interns 432 ids and 259 variables).
+
+The hub is `s2_dash`, and the vote rail, callout, banner and MOTD are each one root — none of them
+is an `s2_mN`, and none should become one.
+
+**Publishing order matters, and it is the opposite of a CSS-only change.** Extra unused trees in
+the layout are harmless (interning is lazy). A runtime expecting six sheets against a two-tree
+layout is not. So publish the layout BEFORE deploying a runtime that raises `MODALS`.
 
 ### Production lib panels (`s2script_lib.xml`)
 
@@ -116,7 +134,7 @@ compiles clean and ships unstyled. Do not add a second layout or a third center 
 |---|---|
 | `s2_t0`–`s2_t3` | toasts |
 | `s2_b0`–`s2_b3` | corner badges |
-| `s2_m0` `s2_m1` | center sheets (menus) |
+| `s2_m0`–`s2_m5` | center sheets (menus); count must match `MODALS` |
 | `s2_vote` | right-side vote rail (starts with `s2-hide`) |
 | `s2_vote_q` / `s2_vote_sub` | question + subtitle |
 | `s2_vote_o0`–`s2_vote_o8` | option buttons; `_t` label, `_c` count |

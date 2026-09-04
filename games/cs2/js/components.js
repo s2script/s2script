@@ -153,7 +153,8 @@
   }
 
   // Vote rail lives on this same lib layout (s2_vote*). voterail.js drives the ids
-  // through hudkit.layout. Not a second CustomHudLayout and not a third center modal.
+  // through hudkit.layout. Not a second CustomHudLayout, and not a pooled center sheet — it is
+  // one dedicated root, which is why it does not spend from the `s2_m*` pool.
   var VOTE_OPTIONS = 9;
   PANELS.push("s2_vote");
   declareText("s2_vote_q");
@@ -184,7 +185,7 @@
   declareButton("s2_motd_ok");
   declareText("s2_motd_ok_t");
 
-  // TopMenu hub. One root (like MOTD / the vote rail), not a third center modal.
+  // TopMenu hub. One dedicated root (like MOTD / the vote rail), not a pooled `s2_m*` sheet.
   var DASH_TABS = 8;
   var DASH_ROWS = 8;
   PANELS.push("s2_dash");
