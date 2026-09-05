@@ -461,9 +461,23 @@ mod tests {
         crate::cookies::dispatch_pending_cached();
         assert_eq!(eval_in_context_string("map-retirement",
             "[departed.isValid(), survivor.isValid(), cached.join(',')].join('|')"), "false|true|1");
+        // Writes became host-owned at admission, for both departed and surviving accounts.
+        // Map retirement only evicts the departed session; it does not create another write.
+        assert_eq!(eval_in_context_string("map-retirement", r#"
+            globalThis.pending = JSON.parse(__s2_cookie_lease(4, 262144));
+            JSON.stringify(pending.map(function(row) {
+                return [row.steamId, row.name, row.value, row.updated];
+            }))
+        "#), r#"[["account-10","choice","value-10",1],["account-1","choice","value-1",1]]"#);
+        crate::ffi::s2script_core_client_end(10, departed);
         assert_eq!(eval_in_context_string("map-retirement",
-            "__s2_cookie_take_retired()"), r#"[["account-10","choice","value-10",1]]"#);
-        // Repeated retirement cannot duplicate a write or remove a new occupant's state.
+            "__s2_cookie_lease(4, 262144)"), "[]", "repeated end cannot duplicate leased writes");
+        assert_eq!(eval_in_context_string("map-retirement", r#"
+            JSON.stringify(pending.map(function(row) {
+                return __s2_cookie_ack(row.leaseId, row.revision, true);
+            }))
+        "#), "[true,true]", "each admitted write remains ACKable after map reconciliation");
+        // Stale retirement cannot duplicate an ACKed write or remove a new occupant's state.
         let replacement = begin(10);
         crate::ffi::s2script_core_client_end(10, departed);
         assert!(matches(10, replacement));
@@ -471,7 +485,10 @@ mod tests {
             __s2_cookie_session(10, __s2_client_generation(10), 'get',
                 JSON.stringify({steamId: 'account-10', name: 'choice'}))
         "#), "null");
-        assert_eq!(eval_in_context_string("map-retirement", "__s2_cookie_take_retired()"), "[]");
+        assert_eq!(eval_in_context_string("map-retirement",
+            "__s2_cookie_lease(4, 262144)"), "[]", "stale end cannot replay ACKed writes");
+        crate::cookies::dispatch_pending_cached();
+        assert_eq!(eval_in_context_string("map-retirement", "cached.join(',')"), "1");
         assert_eq!(eval_in_context_string("map-retirement", r#"
             __s2_cookie_session(1, __s2_client_generation(1), 'get',
                 JSON.stringify({steamId: 'account-1', name: 'choice'}))
