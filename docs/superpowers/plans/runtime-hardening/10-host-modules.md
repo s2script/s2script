@@ -1,6 +1,6 @@
 # Slice 10: Extract host responsibilities without changing behavior
 
-**Status:** Implemented and independently reviewed; all local gates pass. Final whole-stack review, benchmarks, Linux native/shim linking and live soak remain pending.
+**Status:** Implemented and independently reviewed; final whole-stack review, benchmarks, Linux native/shim linking and installed game-symbol checks pass. Final mixed-soak and human acceptance remain pending.
 **Branch:** `refactor/hardening-10-host-modules`
 **Parent / PR base:** `core/hardening-09-loader-worker`
 **Workflow:** [Full workflow and gates](../2026-09-04-runtime-hardening.md)

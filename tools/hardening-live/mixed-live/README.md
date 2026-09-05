@@ -83,7 +83,7 @@ The collector refuses to start if that file is absent. It saves the exact origin
 mode-preserving atomic replacements during the gate, and restores the original content on every
 normal or exceptional exit. Before the first workload edit it verifies the original generation is
 already applied through the fixture's `STATUS config=` value. During normal cleanup it requires that value
-value to return to the original generation and waits for loader retirement before the final hard
+to return to the original generation and waits for loader retirement before the final hard
 deadline. The `finally` path retries the exact-byte restoration if the normal proof does not finish.
 Measured generations use compact JSON in a fixed 17-byte capacity;
 shorter values are padded with trailing JSON whitespace so generations 9, 10, and 57 have identical

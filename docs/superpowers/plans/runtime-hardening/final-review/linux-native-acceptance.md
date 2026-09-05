@@ -1,6 +1,6 @@
 # Final Linux native validation
 
-Source: `ba6c7c19548fdad46d14bb5c2aa342ce94804ae1`. This is the independently reviewed production tree; subsequent commits only record evidence.
+Source: `ba6c7c19548fdad46d14bb5c2aa342ce94804ae1`. This is the independently reviewed production tree; subsequent commits record evidence and preserve the live test harness without changing production code.
 
 The complete `scripts/ci-native.sh` exited zero in an isolated Linux/amd64 Docker container on the Mac. Rust 1.98.0, GCC 10.2.1, CMake 3.28.6; four CPU quota and 7 GiB memory. The builder derives from rust:bullseye and has image ID `sha256:16384f64da341d31dd0946a53ce7c109ee514f42ec8b867744de61a9713bc1cc`. Source and submodules were cloned separately; Linux target/cargo volumes did not overwrite the Mac build.
 
@@ -10,7 +10,7 @@ The complete `scripts/ci-native.sh` exited zero in an isolated Linux/amd64 Docke
 - The full shim compiles and links, including the extracted config translation unit; its tokenizer test passes.
 - All 47 required `s2script_core_*` entry points are defined in the built core library.
 
-The game-library symbol-resolution phase explicitly skipped because this isolated checkout has no CS2 installation. That check, installed-engine execution and the final 60-minute mixed soak still require the designated test environment. Script success is not a claim that the skipped phase or live acceptance passed. The [raw log](final-local-linux-ci-native.log) preserves the skip and complete results.
+The game-library symbol-resolution phase explicitly skipped because this isolated checkout has no CS2 installation. The [raw log](final-local-linux-ci-native.log) preserves that skip. The missing phase subsequently passed on Nebula against the actual installed CS2 libraries and shipping release artifact: all 47 core entry points were defined and the shim's game-library symbols resolved. The [remote symbol log](final-nebula-release-symbols.log) records that separate result.
 
 Initial image setup failed because the Docker credential helper was absent from PATH, then timed out inside the helper. A task-local Docker configuration allowed anonymous retrieval of the public Rust image; the user's Docker configuration was unchanged. No sanitizer or test was disabled to obtain the passing run.
 
@@ -18,7 +18,17 @@ Initial image setup failed because the Docker credential helper was absent from 
 
 The same compiler environment built the optimized core and release-linked shim, then packaged the addon. All 18 base-plugin builds passed; the release contains the 14 enabled base archives. The shim requires at most GLIBC 2.17 and the core at most 2.30, within the documented 2.31 server ceiling. Core SHA-256: `f1d3519dd9deafd24970d14aa5707664e6dc67382c4011179b1bca9610880331`; shim SHA-256: `5a6b58f96421abc9bfe98a91471911577d5ddc02e4b55bb399f6541501c1326d`.
 
-The 24,473,784-byte compressed release archive has 45 files, each re-read and verified against the [release manifest](final-linux-release-manifest.json). It is a prepared test artifact and has **not** been installed on Nebula. The [release build log](final-local-linux-release.log) records compilation and GLIBC checks. Existing test-server configs, data and live fixtures must be preserved during the owned test installation.
+The 24,473,784-byte compressed release archive has 45 files, each re-read and verified against the [release manifest](final-linux-release-manifest.json). It was installed on the isolated `s2script-cs2-hardening` container on Nebula on September 5. Mounted core/shim hashes match the manifest, Metamod loads s2script, and all 18 enabled plugins run (14 base plugins plus four acceptance fixtures). The [release build log](final-local-linux-release.log) records compilation and GLIBC checks.
+
+The installer preserved configs, data, translations, custom gamedata and fixtures. The previous complete addon tree is retained at `/home/ghirakawa/s2script-hardening/.gate/final-ba6c7c1/previous-addon`. The separate production `s2script-hudlab` container was untouched; its start time remained `2026-09-04T23:39:08.651834244Z`. The installed source stays at the full SHA above throughout acceptance.
+
+## Live acceptance in progress
+
+The loader-aware collector has 42 passing deterministic tests plus a bundled fixture protocol check. A five-minute compatibility pilot completed its three measured cycles and all cleanup proofs with no resource or loader errors. Its overall result was FAIL solely because no same-slot reuse occurred in that short run; this is not counted as an accepted soak.
+
+The full 3,600-second run started at `2026-09-05T17:28:45Z`, in `.gate/mixed-soak/mixed-soak-20260905T172845Z`. It requires 57 measured cycles, actual same-slot reuse, stable resource accounting, exact original config restoration and bounded cleanup. Its result remains pending until the final report. Human reconnect/HUD behavior and actual SetTransmit viewer callbacks are separate outstanding checks.
+
+Startup validation reports a pre-existing EndTouch signature failure (35 of 36 descriptors available), also present in six earlier test-server startups. That descriptor fails closed and remains unavailable. The soak has no blanket engine-error allowlist. No live-pass claim includes the unavailable descriptor or unobserved human behavior.
 
 ## Separate inherited tooling advisory
 

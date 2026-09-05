@@ -391,14 +391,15 @@ The final integrated runtime at `ba6c7c19548fdad46d14bb5c2aa342ce94804ae1` passe
 previously passed 584 SDK tests; the final fixes only changed Rust and its pressure script.
 Linux-container static ABI checks also pass on the final integrated source. The final [Linux native gate](runtime-hardening/final-review/linux-native-acceptance.md)
 also passes locally in Docker: 797 core tests, three pressure processes, sanitizer tests,
-full shim linking and its core-entry-point checks. Game-library symbol resolution skipped
-for lack of a CS2 installation in the isolated checkout; installed-engine acceptance remains required.
+full shim linking and its core-entry-point checks. Game-library symbol resolution subsequently
+passed on Nebula against the shipping release and actual installed CS2 libraries.
 
-The owned test server last ran the reviewed slice-6 code. Its bounded pressure and mixed
-component checks passed, but the 300-second mixed pilot was not accepted because it had
-engine navigation errors and insufficient slot-reuse cycles. A corrected fixture later
-proved two actual reuses in 20 attempts with no failures. The final loader-aware 60-minute
-mixed soak is still pending; its collector has 34 passing deterministic tests. Headless
+The owned test server now runs the final reviewed runtime above, with verified mounted
+binary hashes and all 18 plugins active. Its latest 300-second compatibility pilot completed
+three measured cycles and cleanup with no resource or loader errors, but was not accepted
+as a soak because no same-slot reuse occurred. The full loader-aware 60-minute run started
+at 17:28:45 UTC on September 5 and remains in progress; its collector has 42 passing
+deterministic tests plus the bundled fixture protocol check. Headless
 bots do not provide actual CheckTransmit viewer traffic, and human auth/map/visual behavior
 has not been fully exercised. Native/model benchmark results do not establish whole-engine
 throughput or a whole-process RSS bound.
@@ -422,8 +423,9 @@ closes all three whole-stack findings: initial config edits, historical path rev
 and request-header capacity accounting. The consolidated correction remains in slices
 six and nine; extraction preserves it. No actionable review finding remains.
 
-Remaining gates: game-library symbol resolution and installed-engine acceptance, then
-the 60-minute mixed soak. The final release package is built and checksum-verified, including all 14 enabled
-base plugins; it has not been installed on Nebula. SSH to
-Nebula currently needs the configured 1Password agent to sign again; LTS Node is installed
-and its explicit noninteractive PATH has already passed the harness tests there.
+Remaining gates: the completed 60-minute mixed-soak report and human reconnect/HUD/viewer
+acceptance. The final release, including all 14 enabled base plugins, is installed only on
+the isolated hardening server; its previous addon tree is backed up. SSH is authenticated
+through a task-owned connection, and LTS Node 24.20.0 passes the harness tests there.
+The production HUD server is unchanged. A pre-existing EndTouch signature failure remains
+explicitly excluded from available-descriptor claims; see the Linux acceptance record.
