@@ -102,3 +102,44 @@ same-account replacement isolation. Exact in-game signon recovery for late-loade
 not claimed: bootstrap intentionally reports connected until an observed phase hook advances it.
 The controller owns final evidence and descendant restacking after review; this work does not
 restack, push, or mark the slice complete.
+
+## Review round 1
+
+Fix commit: `04913049c9344ef7a716e43c8ce3c7422123302e`. Addresses the five findings in the
+independent review of `3d96aca`:
+
+- Register `CLIENT_CONNECTIONS` with the process singletons after their registration list resets,
+  rather than from the owner-store registration path. The coverage assertion requires the entry;
+  a shutdown/re-init regression proves empty books and a still-monotonic allocator.
+- Replace the partial Player setter facade with an explicit argument plan for every shipped
+  EntityRef method. Scalar values, paths/vectors, strings, keyvalue getters and input actor refs
+  finish access/coercion before the connection check. Shared wrapper functions avoid per-lookup
+  allocation of the complete method inventory; retained reads/actions use their documented stale
+  returns. A new unplanned EntityRef method fails closed with a named error. No generated file
+  changed.
+- Bind HUD cache buckets and retained slot views to their originating Client. Replacement access
+  clears the previous cache/disabled/cursor/view state before using it; disconnect cleanup compares
+  the departing generation and cannot clear a replacement bucket. Retained views fail closed.
+- Make game-package fixtures explicitly seed connected slots. Unseeded construction is invalid,
+  enumeration is empty, and fromSlot returns null. Connect/retire/replace controls never reuse a
+  token. Existing tests now seed only the client population they model.
+- Bind admin-menu sheet/freeze records and RTV voters to Clients. Admin-menu restoration keeps
+  the original pawn and connection; stale voters are removed before threshold decisions. Old
+  disconnect callbacks cannot delete the replacement's state. The plugin regressions run in CI.
+
+Round 1 local gates passed: **673 core tests**, full **`ci-js.sh`** (**582 SDK tests**, 69 UI
+component tests, 3 clientprefs tests, and 2 admin-menu/RTV tests), plugin/example typechecks,
+base-plugin archive builds, core boundary, and `git diff --check`.
+
+Exact logs are retained in `.superpowers/sdd/2026-09-04-runtime-hardening/`:
+`task-3-round1-core.log`, `task-3-round1-ci-js.log`, `task-3-round1-build-plugins.log`, and the
+focused `task-3-round1-*.log` files. Red evidence covers reset leakage, the optimistic fixture,
+HUD same-value suppression, inherited ref operations, and plugin ownership. The final ref test
+was also run against the pre-fix Player source without changing production files: 13 failures
+(inventory plus 12 unsafe inherited paths) and one passing spawn control. The current facade
+passes all 14 tests against the real EntityRef prelude, including the complete method inventory.
+
+The controller reports that the pre-review `3d96aca` Linux native gate and release build passed,
+but those binaries were not installed. **That does not validate the round 1 fix.** Independent
+re-review and final Linux/live checks remain pending on `0491304` and its evidence commit.
+Cookie persistence/admission remains the single Task 5 seam described above.
