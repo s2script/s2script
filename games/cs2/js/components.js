@@ -223,9 +223,22 @@
   };
 
   // ── shared state ────────────────────────────────────────────────────────────────────────────
-  // Pool claims are HOST-GLOBAL, not per-plugin: the intern vectors live on the entity, so two
-  // plugins must not both believe they own modal 0. Keyed on globalThis so a plugin reload does
-  // not silently re-issue a slot another plugin still holds.
+  // Pool claims live HOST-SIDE (`__s2_ui_pool_claim` / `__s2_ui_pool_release`), because nothing in
+  // this file can be global: this prelude is evaluated once PER PLUGIN CONTEXT, so `globalThis`
+  // here is per-plugin. A previous version kept the claim table on `globalThis.__s2ui_pool` under
+  // a comment calling it "HOST-GLOBAL" — it never was. Every plugin's menuhud claimed s2_m0 in
+  // its own private table, two plugins' second sheets both got s2_m1, and both painted the SAME
+  // panels (ui.js finds the one layout entity by targetname, identically from every context).
+  // The host table is keyed by the real calling plugin id (read host-side at claim time — the
+  // `owner` argument below only feeds the fallback), and every claim is ledgered so plugin unload
+  // frees its slots without trusting the plugin's own cleanup code to have run.
+  //
+  // `globalThis.__s2ui_pool` survives for two narrower jobs: the claim FALLBACK when the natives
+  // are absent (node test mounts; a core predating them — per-context claims are still better
+  // than crashing), and the intern ledgers below, which are per-context ON PURPOSE: interning on
+  // the entity is find-or-add and every plugin charges the same fixed s2_* names, so one
+  // context's count of distinct-names-referenced tracks the entity-wide total closely enough to
+  // warn on — no host round-trip per setText needed.
 
   function pool() {
     if (!globalThis.__s2ui_pool) {
@@ -242,12 +255,27 @@
   }
 
   function claim(kind, count, owner) {
+    if (typeof globalThis.__s2_ui_pool_claim === "function") {
+      var got = globalThis.__s2_ui_pool_claim(kind, count);
+      return typeof got === "number" ? got : -1;
+    }
     var p = pool();
     var taken = p[kind];
     for (var i = 0; i < count; i++) {
       if (!taken[i]) { taken[i] = owner; return i; }
     }
     return -1;
+  }
+
+  // Release mirrors claim: host-side when the native exists (owner-checked there — a plugin
+  // cannot free a slot another plugin holds), context-local otherwise.
+  function releaseSlot(kind, idx) {
+    if (typeof globalThis.__s2_ui_pool_release === "function") {
+      globalThis.__s2_ui_pool_release(kind, idx);
+      return;
+    }
+    var taken = pool()[kind];
+    if (taken) taken[idx] = null;
   }
 
   /** Charge a name to one vector's ledger, once, and warn as that vector's ceiling approaches. */
@@ -284,6 +312,8 @@
 
   function makeComponents(hudApi, descriptor) {
     var hud = hudApi.create ? hudApi.create(descriptor || LIB_DESCRIPTOR) : hudApi.hud(descriptor || LIB_DESCRIPTOR);
+    // Only the FALLBACK pool stores this; the host natives read the real calling plugin id
+    // themselves (a JS-supplied tag was the literal "plugin" for every caller — useless).
     var ownerTag = "plugin";
     var liveModals = [];
     var calloutGen = {};
@@ -679,7 +709,7 @@
             hide: function () { selfBadge.hide(slot); }
           };
         },
-        release: function () { pool().badge[idx] = null; }
+        release: function () { releaseSlot("badge", idx); }
       };
       return selfBadge;
     }
@@ -882,7 +912,7 @@
           };
         },
         release: function () {
-          pool().modal[idx] = null;
+          releaseSlot("modal", idx);
           for (var rm = 0; rm < liveModals.length; rm++) {
             if (liveModals[rm] === self) { liveModals.splice(rm, 1); break; }
           }

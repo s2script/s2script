@@ -57,6 +57,7 @@ mod schema_catalog;
 mod sdkhooks;
 mod sdkhooks_transmit;
 mod sqldb;
+mod ui_pool;
 mod usermsg;
 mod v8host;
 mod ws;

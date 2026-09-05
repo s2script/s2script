@@ -4705,6 +4705,9 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_topmenu_add_item", s2_topmenu_add_item);
     set_native(scope, global_obj, "__s2_topmenu_snapshot", s2_topmenu_snapshot);
     set_native(scope, global_obj, "__s2_topmenu_select", s2_topmenu_select);
+    // Host-side HUD pool claims: the pooled panel trees are one shared entity, so who-owns-which-
+    // slot is cross-plugin state — it cannot live in the per-context prelude (see crate::ui_pool).
+    crate::ui_pool::install_natives(scope, global_obj);
     // Ray-trace slice: the sole native over the trace_shape engine op (engine-generic, no CS2 names).
     set_native(scope, global_obj, "__s2_trace", s2_trace);
     // Entity-creation lifecycle slice: createEntity + EntityRef.spawn/teleport/remove natives.
@@ -6697,6 +6700,10 @@ pub(crate) fn register_builtin_stores() {
             TOPMENU_ITEMS.with(|m| m.borrow_mut().clear());
         }),
     );
+
+    // UI_POOL_CLAIMS: free the departing plugin's pooled HUD panel slots — registered by the
+    // feature module, which owns the claim table.
+    crate::ui_pool::register_store();
 }
 
 
