@@ -60,7 +60,8 @@ pub enum Resource {
 ///
 /// `active` is the teardown authority. `by_resource` is a removal index whose vectors preserve
 /// acquisition multiplicity: releasing an indistinguishable duplicate removes its most recent
-/// acquisition. Both structures contain active entries only; completion leaves no tombstone.
+/// acquisition. Both structures contain active entries only; completion leaves no logical
+/// tombstone, though their backing allocations may retain peak concurrent capacity.
 pub struct PluginLedger {
     next_sequence: u64,
     active: std::collections::BTreeMap<u64, Resource>,

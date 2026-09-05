@@ -124,13 +124,16 @@ impl InterfaceRegistry {
         self.ifaces.get(name)
     }
 
-    pub fn remove_by_producer(&mut self, producer_id: &str) -> Vec<String> {
+    /// Remove every interface owned by `producer_id`, returning each name and its subscribers so
+    /// the V8 adapter can drop callback Globals and generation-release consumer ledger entries.
+    pub fn remove_by_producer(&mut self, producer_id: &str) -> Vec<(String, Vec<Subscriber>)> {
         let names: Vec<String> = self.ifaces.iter()
             .filter(|(_, e)| e.producer_id == producer_id)
             .map(|(n, _)| n.clone())
             .collect();
-        for n in &names { self.ifaces.remove(n); }
-        names
+        names.into_iter().filter_map(|name| {
+            self.ifaces.remove(&name).map(|entry| (name, entry.subscribers))
+        }).collect()
     }
 
     /// Replace one plugin's import declarations and return the prior active names.
@@ -312,7 +315,8 @@ mod tests {
         r.publish("@a", "1.0.0", "", "prod", 0, vec![]).expect("test-setup publish must succeed");
         r.publish("@b", "1.0.0", "", "prod", 0, vec![]).expect("test-setup publish must succeed");
         r.publish("@c", "1.0.0", "", "other", 0, vec![]).expect("test-setup publish must succeed");
-        let mut removed = r.remove_by_producer("prod");
+        let mut removed: Vec<String> = r.remove_by_producer("prod")
+            .into_iter().map(|(name, _subscribers)| name).collect();
         removed.sort();
         assert_eq!(removed, vec!["@a".to_string(), "@b".to_string()]);
         assert!(r.lookup("@a").is_none());

@@ -6996,15 +6996,28 @@ fn teardown_ledger_and_dispose(id: &str) {
                     // producer of a name (spec §4.8), so at most one producer can ever hold the
                     // methods being pruned here. (Retires the slice-5 TODO, which asked for a
                     // (producer_id, name) key against a case that can no longer occur.)
-                    IFACES.with(|r| { let _ = r.borrow_mut().remove_by_producer(id); });
+                    let removed = IFACES.with(|r| r.borrow_mut().remove_by_producer(id));
+                    let subscribers: Vec<crate::interfaces::Subscriber> = removed.into_iter()
+                        .flat_map(|(_name, subscribers)| subscribers)
+                        .collect();
+                    IFACE_SUBS.with(|m| {
+                        let mut callbacks = m.borrow_mut();
+                        for subscriber in &subscribers { callbacks.remove(&subscriber.sub_id); }
+                    });
+                    for subscriber in subscribers {
+                        release_resource(
+                            &subscriber.consumer_id,
+                            subscriber.consumer_gen,
+                            &plugin::Resource::EventSub(subscriber.sub_id),
+                        );
+                    }
                     IFACE_METHODS.with(|m| {
                         m.borrow_mut().retain(|(iface, _method), _| iface != &name);
                     });
                 }
                 plugin::Resource::EventSub(sub_id) => {
-                    // Idempotent: iface_off may have already removed this sub from IFACE_SUBS
-                    // without removing the ledger entry, so remove() (a no-op on missing keys) is
-                    // correct — NEVER unwrap/expect/index here (would crash the plugin on that path).
+                    // Defensive/idempotent: producer teardown may already have dropped this callback
+                    // while releasing a surviving consumer's row. Never unwrap/expect/index here.
                     IFACE_SUBS.with(|m| { m.borrow_mut().remove(&sub_id); });
                     // The subscriber row is removed from the producer's list below via
                     // remove_subscribers_by_consumer(id) (belt-and-suspenders for any not yet dropped).
@@ -9843,6 +9856,50 @@ pub(crate) mod frame_tests {
         unload_plugin("cons");
         assert_eq!(IFACES.with(|r| r.borrow().lookup("@x/greeter").unwrap().subscribers.len()), 0);
         assert!(IFACE_SUBS.with(|m| m.borrow().is_empty()));
+        shutdown();
+    }
+
+    #[test]
+    fn producer_reload_releases_surviving_optional_consumer_subscriptions() {
+        let _ = init(dummy_logger());
+        set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new(
+            "@x/events", "^1.0.0", crate::interfaces::Kind::Optional,
+        )]);
+        let publish_decl = || [(
+            "@x/events".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+        )].into_iter().collect();
+        let publish_body = r#"const {publishInterface}=require("@s2script/interfaces");
+            publishInterface("@x/events", {});"#;
+
+        set_plugin_publishes("prod", publish_decl());
+        load_body("prod", publish_body, "{}");
+        load_body("cons", r#"globalThis.__events=require("@x/events");
+            globalThis.__handler=function(){};
+            __events.on("changed", __handler);"#, "{}");
+        assert_eq!(active_resources("cons"), 2, "one import and one event subscription");
+        assert_eq!(IFACE_SUBS.with(|m| m.borrow().len()), 1);
+
+        for _ in 0..2 {
+            unload_plugin("prod");
+            assert_eq!(active_resources("cons"), 1, "producer removal releases the dead subscription");
+            assert!(IFACE_SUBS.with(|m| m.borrow().is_empty()), "producer removal drops callback Globals");
+            eval_in_context("cons", r#"__events.off("changed", __handler);"#)
+                .expect("off after producer removal is harmless");
+            assert_eq!(active_resources("cons"), 1);
+
+            set_plugin_publishes("prod", publish_decl());
+            load_body("prod", publish_body, "{}");
+            eval_in_context("cons", r#"__events.on("changed", __handler);"#)
+                .expect("optional consumer resubscribes after producer reload");
+            assert_eq!(active_resources("cons"), 2);
+            assert_eq!(IFACE_SUBS.with(|m| m.borrow().len()), 1);
+        }
+
+        unload_plugin("cons");
+        assert!(IFACE_SUBS.with(|m| m.borrow().is_empty()));
+        assert_eq!(IFACES.with(|r| r.borrow().lookup("@x/events").unwrap().subscribers.len()), 0);
+        unload_plugin("prod");
         shutdown();
     }
 

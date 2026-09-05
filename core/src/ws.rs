@@ -126,6 +126,7 @@ fn build_request(
     Ok(req)
 }
 
+#[cfg(test)]
 pub fn connect(conn_id: u64, url: String, owner: String, headers: Vec<(String, String)>) {
     connect_owned(conn_id, url, owner, 0, headers);
 }

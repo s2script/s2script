@@ -33,6 +33,7 @@ fn engine() -> &'static Engine {
     ENGINE.get_or_init(|| { let (sig_tx, sig_rx) = channel(); Engine { sig_tx, sig_rx: Mutex::new(sig_rx), conns: Mutex::new(HashMap::new()) } })
 }
 
+#[cfg(test)]
 pub fn connect_tcp(conn_id: u64, host: String, port: u16, owner: String) {
     connect_tcp_owned(conn_id, host, port, owner, 0);
 }
@@ -73,6 +74,7 @@ pub(crate) fn connect_tcp_owned(conn_id: u64, host: String, port: u16, owner: St
     });
 }
 
+#[cfg(test)]
 pub fn bind_udp(conn_id: u64, owner: String) {
     bind_udp_owned(conn_id, owner, 0);
 }
