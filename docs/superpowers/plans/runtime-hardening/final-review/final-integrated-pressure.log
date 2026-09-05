@@ -1,0 +1,237 @@
+warning: unused import: `super::*`
+   --> core/src/admin.rs:196:9
+    |
+196 |     use super::*;
+    |         ^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `LOG` and `logger`
+   --> core/src/cookies.rs:742:87
+    |
+742 |     use crate::v8host::frame_tests::{dummy_logger, eval_in_context_string, load_body, logger,
+    |                                                                                       ^^^^^^
+743 |         read_global_string, read_i32_global_in, LOG};
+    |                                                 ^^^
+
+warning: unused imports: `create_plugin_context` and `eval_in_context`
+   --> core/src/cookies.rs:744:25
+    |
+744 |     use crate::v8host::{create_plugin_context, eval_in_context, init, shutdown, unload_plugin};
+    |                         ^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+
+warning: unused import: `eval_in_context`
+   --> core/src/client.rs:400:48
+    |
+400 |     use crate::v8host::{create_plugin_context, eval_in_context, init, set_engine_ops, shutdown,
+    |                                                ^^^^^^^^^^^^^^^
+
+warning: unused doc comment
+   --> core/src/gamedata_hooks.rs:700:1
+    |
+700 | /// Hooks that have already reported a re-entrant skip. See `note_reentrant_skip`.
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `x` is never read
+   --> core/src/entity.rs:290:9
+    |
+290 |         x.b = 0x7F;
+    |         ^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `enums_path`
+    --> core/src/v8host.rs:3004:13
+     |
+3004 |         let enums_path = if args.length() >= 2 && !args.get(1).is_null_or_undefined() {
+     |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_enums_path`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `read_string_global` is never used
+  --> core/src/v8host/tests.rs:81:8
+   |
+81 |     fn read_string_global(name: &str) -> String {
+   |        ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `reconcile_publishes_rejects_a_name_published_by_a_DIFFERENT_producer` should have a snake case name
+    --> core/src/v8host/tests.rs:2344:8
+     |
+2344 |     fn reconcile_publishes_rejects_a_name_published_by_a_DIFFERENT_producer() {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case: `reconcile_publishes_rejects_a_name_published_by_a_different_producer`
+     |
+     = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: `s2script-core` (lib test) generated 9 warnings (run `cargo fix --lib -p s2script-core --tests` to apply 5 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/s2script_core-2afe5a15cf39991f)
+
+running 1 test
+test v8host::frame_tests::async_tiny_policy_admission_reinit_and_frame_progress ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 799 filtered out; finished in 0.01s
+
+warning: unused import: `super::*`
+   --> core/src/admin.rs:196:9
+    |
+196 |     use super::*;
+    |         ^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `LOG` and `logger`
+   --> core/src/cookies.rs:742:87
+    |
+742 |     use crate::v8host::frame_tests::{dummy_logger, eval_in_context_string, load_body, logger,
+    |                                                                                       ^^^^^^
+743 |         read_global_string, read_i32_global_in, LOG};
+    |                                                 ^^^
+
+warning: unused imports: `create_plugin_context` and `eval_in_context`
+   --> core/src/cookies.rs:744:25
+    |
+744 |     use crate::v8host::{create_plugin_context, eval_in_context, init, shutdown, unload_plugin};
+    |                         ^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+
+warning: unused import: `eval_in_context`
+   --> core/src/client.rs:400:48
+    |
+400 |     use crate::v8host::{create_plugin_context, eval_in_context, init, set_engine_ops, shutdown,
+    |                                                ^^^^^^^^^^^^^^^
+
+warning: unused doc comment
+   --> core/src/gamedata_hooks.rs:700:1
+    |
+700 | /// Hooks that have already reported a re-entrant skip. See `note_reentrant_skip`.
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `x` is never read
+   --> core/src/entity.rs:290:9
+    |
+290 |         x.b = 0x7F;
+    |         ^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `enums_path`
+    --> core/src/v8host.rs:3004:13
+     |
+3004 |         let enums_path = if args.length() >= 2 && !args.get(1).is_null_or_undefined() {
+     |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_enums_path`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `read_string_global` is never used
+  --> core/src/v8host/tests.rs:81:8
+   |
+81 |     fn read_string_global(name: &str) -> String {
+   |        ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `reconcile_publishes_rejects_a_name_published_by_a_DIFFERENT_producer` should have a snake case name
+    --> core/src/v8host/tests.rs:2344:8
+     |
+2344 |     fn reconcile_publishes_rejects_a_name_published_by_a_DIFFERENT_producer() {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case: `reconcile_publishes_rejects_a_name_published_by_a_different_producer`
+     |
+     = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: `s2script-core` (lib test) generated 9 warnings (run `cargo fix --lib -p s2script-core --tests` to apply 5 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/s2script_core-2afe5a15cf39991f)
+
+running 1 test
+test v8host::frame_tests::oversized_completions_progress_with_a_full_poll_round_and_due_timer ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 799 filtered out; finished in 0.07s
+
+warning: unused import: `super::*`
+   --> core/src/admin.rs:196:9
+    |
+196 |     use super::*;
+    |         ^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `LOG` and `logger`
+   --> core/src/cookies.rs:742:87
+    |
+742 |     use crate::v8host::frame_tests::{dummy_logger, eval_in_context_string, load_body, logger,
+    |                                                                                       ^^^^^^
+743 |         read_global_string, read_i32_global_in, LOG};
+    |                                                 ^^^
+
+warning: unused imports: `create_plugin_context` and `eval_in_context`
+   --> core/src/cookies.rs:744:25
+    |
+744 |     use crate::v8host::{create_plugin_context, eval_in_context, init, shutdown, unload_plugin};
+    |                         ^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+
+warning: unused import: `eval_in_context`
+   --> core/src/client.rs:400:48
+    |
+400 |     use crate::v8host::{create_plugin_context, eval_in_context, init, set_engine_ops, shutdown,
+    |                                                ^^^^^^^^^^^^^^^
+
+warning: unused doc comment
+   --> core/src/gamedata_hooks.rs:700:1
+    |
+700 | /// Hooks that have already reported a re-entrant skip. See `note_reentrant_skip`.
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `x` is never read
+   --> core/src/entity.rs:290:9
+    |
+290 |         x.b = 0x7F;
+    |         ^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `enums_path`
+    --> core/src/v8host.rs:3004:13
+     |
+3004 |         let enums_path = if args.length() >= 2 && !args.get(1).is_null_or_undefined() {
+     |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_enums_path`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `read_string_global` is never used
+  --> core/src/v8host/tests.rs:81:8
+   |
+81 |     fn read_string_global(name: &str) -> String {
+   |        ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `reconcile_publishes_rejects_a_name_published_by_a_DIFFERENT_producer` should have a snake case name
+    --> core/src/v8host/tests.rs:2344:8
+     |
+2344 |     fn reconcile_publishes_rejects_a_name_published_by_a_DIFFERENT_producer() {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case: `reconcile_publishes_rejects_a_name_published_by_a_different_producer`
+     |
+     = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: `s2script-core` (lib test) generated 9 warnings (run `cargo fix --lib -p s2script-core --tests` to apply 5 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/s2script_core-2afe5a15cf39991f)
+
+running 1 test
+test v8host::frame_tests::async_request_headers_tiny_policy_capacity_and_named_overload ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 799 filtered out; finished in 0.01s
+

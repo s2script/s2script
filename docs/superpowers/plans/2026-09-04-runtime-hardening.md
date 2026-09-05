@@ -386,9 +386,10 @@ All ten slices are implemented and independently reviewed in the local dependent
 Branch-local records in `runtime-hardening/` contain their specific evidence and limitations.
 Main is preserved; publication and merge are outside this implementation run.
 
-The integrated local runtime passes 791 core tests, both fresh-process pressure cases,
-and the full JavaScript/Docker gate (584 SDK tests). Linux-container static ABI checks
-also pass. The full Nebula native gate most recently passed the integrated slice-8 code
+The final integrated runtime at `ba6c7c19548fdad46d14bb5c2aa342ce94804ae1` passes
+797 core tests and all three fresh-process pressure cases. The full JavaScript/Docker gate
+previously passed 584 SDK tests; the final fixes only changed Rust and its pressure script.
+Linux-container static ABI checks also pass on the final integrated source. The full Nebula native gate most recently passed the integrated slice-8 code
 (736 core tests plus pressure/shim/symbol checks); the newer loader and extraction still
 require full Linux native/shim linking and an installed-engine run.
 
@@ -409,7 +410,19 @@ Independent work ran in isolated worktrees with recorded fixed bases; parent val
 restacking stayed ordered. Escalations were driven by concrete review failures, including
 fresh Astra implementers for the final loader fix rounds.
 
-Remaining gates: final same-workload benchmarks, broad whole-stack review, full Linux
-native/shim build and installed-engine acceptance, then the 60-minute mixed soak. SSH to
+The [final paired benchmarks](../../benchmarks/2026-09-runtime-hardening/README.md)
+preserve source snapshots, five raw baseline/candidate runs, and p50/p95/p99/max results.
+The final fixes leave the measured timer and hook source files byte-identical. Timer idle
+and large cancellation improve; all-due draining and tiny cancellation regress, as explicitly
+reported. Hook results are native models, not end-to-end engine measurements.
+
+The [final independent re-review](runtime-hardening/final-review/final-fix-review.md)
+closes all three whole-stack findings: initial config edits, historical path revisions,
+and request-header capacity accounting. The consolidated correction remains in slices
+six and nine; extraction preserves it. No actionable review finding remains.
+
+Remaining gates: full Linux native/shim build and installed-engine acceptance, then the
+60-minute mixed soak. A separate local Docker compiler environment is being prepared
+to run the final native gate while remote authentication is unavailable. SSH to
 Nebula currently needs the configured 1Password agent to sign again; LTS Node is installed
 and its explicit noninteractive PATH has already passed the harness tests there.

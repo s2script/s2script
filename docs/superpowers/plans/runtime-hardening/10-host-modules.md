@@ -68,3 +68,14 @@ restacking onto the evidence updates produced 2158b5d5b468ac3a6f5a62be91bd87ab22
 The tree difference is only the four parent evidence documents, with no production changes.
 Full Linux Rust/shim linking, installed-engine acceptance and the final 60-minute mixed
 soak remain required. Final benchmarks and whole-stack review are tracked in the shared plan.
+
+## Final integrated correction review
+
+Final production source `ba6c7c19548fdad46d14bb5c2aa342ce94804ae1` incorporates the
+consolidated slice-six and slice-nine corrections. The extraction conflicts were resolved
+with source/test equivalence witnesses, and independent re-review passes with no residual
+actionable finding. Final local core tests pass 797/0 with three intentionally ignored
+pressure cases; each pressure case passes separately. Boundary, ABI, C++ syntax and
+Linux Docker static checks also pass. See [the final report](final-review/final-fix-review.md)
+and [paired benchmarks](../../../benchmarks/2026-09-runtime-hardening/README.md).
+Full Linux compilation/linking and installed-engine/60-minute soak acceptance remain pending.

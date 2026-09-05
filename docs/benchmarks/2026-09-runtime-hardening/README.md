@@ -39,3 +39,5 @@ The clock produces roughly 41-42 ns increments. A zero or one-tick result is res
 - No end-to-end engine throughput, viewer-callback parity, V8 heap or whole-RSS claim follows from these measurements.
 
 Raw results, metadata and source snapshots are in `final-timer-bench-20260905T113817Z/` and `final-hook-model-bench-20260905T113835Z/` beside this report. `final-benchmark-summary.json` retains all five per-run rows. Copied timer harness comments still describe the original baseline; candidate metadata and candidate/async_rt.rs identify the exact measured replacement. The earlier timer extraction attempt at 113729Z failed compilation because it omitted the production examined-counter helper; no measurements from that attempt are used.
+
+Final integrated source `ba6c7c19548fdad46d14bb5c2aa342ce94804ae1` retains byte-identical `core/src/async_rt.rs` and `core/src/sdkhooks.rs` relative to the measured revision. The final header/config/revision corrections do not alter these kernels; no redundant rerun was used to select more favorable timings.

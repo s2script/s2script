@@ -1,0 +1,15 @@
+Full extracted frame_tests content equivalent ignoring blank-only lines: 8410 -> 8409 lines
+F1 production snapshot/reconciliation/notification block byte-identical after extraction
+Byte-identical: core/src/loader.rs c432eb9ecb1d8d5a6991b21c944ff185e52b5f03cdb7790c7f3b15ba556f15c1
+Byte-identical: core/src/loader_worker.rs d088dee55120f9a0c85e787cccca7dc09af6170d670f4d59fded9fcf3c570f60
+Byte-identical: core/src/http.rs b964efa9ea01e6f28fd70421ffed90cbeff981f5d4a6159e87e280f8a9ab0aa9
+Byte-identical: core/src/jobs.rs 48bbf43da4946cda46b3bdb9b9cb27b90327dcc65237363c81004f407dd09444
+Byte-identical: core/src/ffi.rs 09e4a403a11b45d61997445eb5197f482fe775191bd74ac0787a9d2b74022cb4
+Byte-identical: core/src/engine_ops.generated.rs 5a6d769836025922f9933f4373f87103433c79d63da7c304be3a9a186824eb0b
+Byte-identical: shim/include/s2script_core.h 9ea20a8fa602b63bff30599127e424b41f275bd0cf7edecbbb900b1d2401f8ec
+Byte-identical: scripts/test-async-pressure.sh 3a1c1d56ab3208cb695cd687525156aba363e771b2b5f9c185c2b83592e4a1e8
+shutdown byte-identical: bbf888621b4d7438ac9eba6f7138182957d754d3d49320a4e2272f9d9087c5ab
+Recursive native names equal: 241 missing [] added []
+HOST owned only by v8host.rs
+PLUGINS owned only by v8host.rs
+REGISTRY owned only by v8host.rs
