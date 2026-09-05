@@ -611,3 +611,16 @@ function mountHudkit() {
   const goLive = () => globalThis.__s2pkg_game_ctx.ui((thunk) => { if (typeof thunk === "function") thunk(); }, (fn) => fn);
   return { hudkit: globalThis.__s2pkg_cs2.hudkit, hud, calls, clickHandlers, goLive };
 }
+
+
+test("tryOpen treats even an empty callback exception as failure", () => {
+  for (const failure of [new Error(""), ""]) {
+    const { ui, calls } = mount();
+    const modal = ui.modal({ title() { throw failure; } });
+    const result = modal.tryOpen(1);
+    assert.strictEqual(result.ok, false);
+    assert.ok(result.error);
+    assert.strictEqual(modal.isOpen(1), false);
+    assert.ok(!calls.some(call => call.op === "show" && call.opts?.cursor));
+  }
+});

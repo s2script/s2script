@@ -779,33 +779,41 @@
 
       // Footer actions belong to the player's last painted view. Another player's paint
       // must not change the actions behind this player's buttons (including automatic pagers).
-      function paint(slot) {
+      function paint(slot, candidate) {
         if (released) return;
-        var st = open[slot];
+        var st = candidate || open[slot];
         if (!st) return;
+        var error = null;
+        function drive(fn) {
+          return function () {
+            if (!error) error = fn.apply(null, arguments);
+          };
+        }
+        var paintText = drive(setText), paintClass = drive(setClass);
+        var paintShow = drive(show), paintHide = drive(hide);
         var all = rowsFor(slot);
         var pages = Math.max(1, Math.ceil(all.length / pageSize));
         if (st.page >= pages) st.page = pages - 1;
         var page = all.slice(st.page * pageSize, st.page * pageSize + pageSize);
 
-        setText(slot, ids.title, typeof s.title === "function" ? s.title(slot) : (s.title || ""));
+        paintText(slot, ids.title, typeof s.title === "function" ? s.title(slot) : (s.title || ""));
         var sub = typeof s.subtitle === "function" ? s.subtitle(slot) : s.subtitle;
-        setText(slot, ids.sub, sub == null ? (pages > 1 ? (st.page + 1) + "/" + pages : "") : sub);
+        paintText(slot, ids.sub, sub == null ? (pages > 1 ? (st.page + 1) + "/" + pages : "") : sub);
 
         // A sheet with no rows is a confirm dialog, not an empty list — hide the container rather
         // than leaving eight blank rows on screen.
-        if (page.length === 0) hide(slot, ids.list); else show(slot, ids.list);
+        if (page.length === 0) paintHide(slot, ids.list); else paintShow(slot, ids.list);
         for (var i = 0; i < ROWS; i++) {
           var row = page[i];
-          if (!row) { hide(slot, ids.rows[i].id); continue; }
-          show(slot, ids.rows[i].id);
-          setText(slot, ids.rows[i].a, row.a);
-          setText(slot, ids.rows[i].b, row.b);
-          setText(slot, ids.rows[i].c, row.c);
-          setClass(slot, ids.rows[i].id, CLS.selected, i === st.cursor);
+          if (!row) { paintHide(slot, ids.rows[i].id); continue; }
+          paintShow(slot, ids.rows[i].id);
+          paintText(slot, ids.rows[i].a, row.a);
+          paintText(slot, ids.rows[i].b, row.b);
+          paintText(slot, ids.rows[i].c, row.c);
+          paintClass(slot, ids.rows[i].id, CLS.selected, i === st.cursor);
           // Cosmetic only. onPick still fires for a disabled row so the caller can explain why —
           // a row that silently does nothing reads as a broken menu.
-          setClass(slot, ids.rows[i].id, CLS.disabled, !!row.disabled);
+          paintClass(slot, ids.rows[i].id, CLS.disabled, !!row.disabled);
           // Tone is orthogonal to selected/disabled: a row can be the cursor, unaffordable AND
           // bad at once. Every tone is written each paint (like the footer variants) because
           // `setClass` holds no cache — the untaken ones must be cleared or a row keeps the tone
@@ -813,7 +821,7 @@
           var wantTone = LI_TONE[row.tone];
           for (var tk in LI_TONE) {
             if (Object.prototype.hasOwnProperty.call(LI_TONE, tk)) {
-              setClass(slot, ids.rows[i].id, LI_TONE[tk], LI_TONE[tk] === wantTone);
+              paintClass(slot, ids.rows[i].id, LI_TONE[tk], LI_TONE[tk] === wantTone);
             }
           }
         }
@@ -824,24 +832,25 @@
         // list got long enough to page.
         var absCursor = st.page * pageSize + st.cursor;
         var det = typeof s.detail === "function" ? (s.detail(slot, page[st.cursor], absCursor) || []) : [];
-        if (det.length === 0) hide(slot, ids.detailBox); else show(slot, ids.detailBox);
-        for (var d = 0; d < DETAIL; d++) setText(slot, ids.detail[d], det[d] == null ? "" : det[d]);
+        if (det.length === 0) paintHide(slot, ids.detailBox); else paintShow(slot, ids.detailBox);
+        for (var d = 0; d < DETAIL; d++) paintText(slot, ids.detail[d], det[d] == null ? "" : det[d]);
 
         var footerFns = [];
         st.footerFns = footerFns;
         var plan = footerPlan(slot);
         for (var f = 0; f < FOOTERS; f++) {
-          if (!plan[f]) { hide(slot, ids.footers[f].id); footerFns.push(null); continue; }
-          show(slot, ids.footers[f].id);
-          setText(slot, ids.footers[f].text, plan[f].text);
+          if (!plan[f]) { paintHide(slot, ids.footers[f].id); footerFns.push(null); continue; }
+          paintShow(slot, ids.footers[f].id);
+          paintText(slot, ids.footers[f].text, plan[f].text);
           var wantBtn = BTN_VARIANT[plan[f].variant] || BTN_VARIANT.ghost;
           for (var bk in BTN_VARIANT) {
             if (Object.prototype.hasOwnProperty.call(BTN_VARIANT, bk)) {
-              setClass(slot, ids.footers[f].id, BTN_VARIANT[bk], BTN_VARIANT[bk] === wantBtn);
+              paintClass(slot, ids.footers[f].id, BTN_VARIANT[bk], BTN_VARIANT[bk] === wantBtn);
             }
           }
           footerFns.push(plan[f].fn || null);
         }
+        return error;
       }
 
       for (var ri = 0; ri < ROWS; ri++) {
@@ -870,18 +879,34 @@
       }
 
       self = {
-        open: function (slot, opts) {
-          if (released) throw new Error("hudkit: modal has been released");
-          open[slot] = { page: 0, cursor: 0 };
-          for (var wk in SHEET_WIDTH) {
-            if (Object.prototype.hasOwnProperty.call(SHEET_WIDTH, wk) && SHEET_WIDTH[wk] !== "") {
-              setClass(slot, ids.root, SHEET_WIDTH[wk], SHEET_WIDTH[wk] === widthCls);
+        tryOpen: function (slot, opts) {
+          if (released) return { ok: false, error: "hudkit: modal has been released" };
+          var candidate = { page: 0, cursor: 0 };
+          var error = null;
+          try {
+            for (var wk in SHEET_WIDTH) {
+              if (Object.prototype.hasOwnProperty.call(SHEET_WIDTH, wk) && SHEET_WIDTH[wk] !== "" && !error) {
+                error = setClass(slot, ids.root, SHEET_WIDTH[wk], SHEET_WIDTH[wk] === widthCls);
+              }
             }
+            if (!error) error = paint(slot, candidate);
+            if (!error) error = setClass(slot, ids.root, FADE.sheet, false);
+            if (!error) error = show(slot, ids.root, { cursor: !(opts && opts.cursor === false) });
+          } catch (err) {
+            error = (err instanceof Error ? err.message : String(err)) || "modal paint failed";
           }
-          paint(slot);                                        // fill first…
-          setClass(slot, ids.root, FADE.sheet, false);         // …never leave it transparent…
-          show(slot, ids.root, { cursor: !(opts && opts.cursor === false) });
-          return self.forSlot(slot);
+          if (error) {
+            delete open[slot];
+            try { hide(slot, ids.root); } catch (_) { /* Preserve the original failure. */ }
+            return { ok: false, error: String(error) };
+          }
+          open[slot] = candidate;
+          return { ok: true, view: self.forSlot(slot) };
+        },
+        open: function (slot, opts) {
+          var result = self.tryOpen(slot, opts);
+          if (!result.ok) throw new Error("hudkit: modal.open failed: " + result.error);
+          return result.view;
         },
         setCursor: function (slot, on) {
           if (released) return;
@@ -933,6 +958,7 @@
           return {
             slot: slot,
             open: function (opts) { return self.open(slot, opts); },
+            tryOpen: function (opts) { return self.tryOpen(slot, opts); },
             close: function () { self.close(slot); },
             isOpen: function () { return self.isOpen(slot); },
             refresh: function () { self.refresh(slot); },

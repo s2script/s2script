@@ -163,7 +163,16 @@
         }
         sessions[slot] = session;
         var activation = activationOf(session);
-        claim.open(slot, { cursor: activation === "immediate" });
+        var result = claim.tryOpen(slot, { cursor: activation === "immediate" });
+        if (!result.ok) {
+          delete sessions[slot];
+          releaseIfIdle();
+          log("HUD open failed (" + result.error + "); using the chat menu for slot " + slot);
+          fallbackSlots[slot] = true;
+          if (fallback) fallback.open(session);
+          else session.cancel();
+          return;
+        }
         freeze(slot, session);
         if (activation === "tab" && HudInput && typeof HudInput.arm === "function") {
           HudInput.arm(slot, {

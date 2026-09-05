@@ -131,7 +131,7 @@ test("CS2 prelude defers hudkit binding to the plugin's ctx-bound ui base", () =
 });
 
 // Each VM is a real plugin prelude; only the engine and native pool boundary are simulated.
-function pluginWorld() {
+function pluginWorld(options = {}) {
   const vm = require("node:vm");
   const owners = Array(6).fill(null);
   const retired = Array(6).fill(null);
@@ -141,7 +141,10 @@ function pluginWorld() {
   const plugins = [];
   const switches = require("./shared-switch-fixture.js").sharedSwitchFixture(
     (index, id) => entities.find(e => e.index === index && e.id === id),
-    (name, entity, slot, on) => { writes.push({ name, args: [entity, slot, on] }); return null; });
+    (name, entity, slot, on) => {
+      writes.push({ name, args: [entity, slot, on] });
+      return on && options.captureError ? options.captureError : null;
+    });
   function plugin() {
     const owner = plugins.length;
     const lifecycle = { active: [], disconnect: [], map: [] };
@@ -175,10 +178,16 @@ function pluginWorld() {
           entities.push(e); return e;
         },
       },
-      __s2pkg_cs2_calls: { call: (name) => (...args) => writes.push({ owner, name, args }), status: () => "" },
+      __s2pkg_cs2_calls: {
+        call: (name) => options.unresolved === name ? null : (...args) => {
+          writes.push({ owner, name, args });
+          return options.failInvoke === name ? null : undefined;
+        },
+        status: () => options.unresolved ? "signature unresolved" : "available",
+      },
       __s2pkg_server: { Server: { onMapStart: (f) => lifecycle.map.push(f), getCvar: () => "3790153369" } },
       __s2pkg_clients: { Clients: {
-        all: () => [{ signonState: 6 }],
+        all: () => options.notReady ? [] : [{ signonState: 6 }],
         onActive: (f) => lifecycle.active.push(f), onDisconnect: (f) => lifecycle.disconnect.push(f),
       } },
       __s2pkg_menu: { Menu: { registerRenderer(name, renderer) {
@@ -357,4 +366,68 @@ test("turning a modal cursor off releases the root token acquired by open", () =
   const captures = w.writes.filter(v => v.name === "setInputCaptureEnabledForPlayer");
   assert.deepEqual(captures.map(c => c.args[2]), [true, false]);
   assert.equal(modal.isOpen(1), true, "cursor-off keeps the modal painted");
+});
+
+test("modal tryOpen before world readiness fails closed and can retry after an active client", () => {
+  const w = pluginWorld({ notReady: true });
+  const p = w.plugin();
+  const modal = p.base.kit.modal({ title: "Ready?" });
+  const failed = modal.forSlot(2).tryOpen();
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /world not ready/);
+  assert.equal(modal.isOpen(2), false);
+  assert.equal(w.writes.length, 0);
+  assert.throws(() => modal.open(2), /modal.open failed:.*world not ready/);
+  p.lifecycle.active.forEach(fn => fn());
+  const view = modal.open(2);
+  assert.equal(view.slot, 2);
+  assert.equal(view.isOpen(), true);
+  assert.equal(typeof view.close, "function");
+});
+
+test("modal tryOpen exposes an unresolved descriptor and never captures input", () => {
+  const w = pluginWorld({ unresolved: "setDialogVariableStringForPlayer" });
+  const p = w.plugin();
+  const modal = p.base.kit.modal({ title: "Unavailable" });
+  const result = modal.tryOpen(2);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /signature unresolved/);
+  assert.equal(modal.isOpen(2), false);
+  assert.equal(w.writes.filter(c => c.name === "setInputCaptureEnabledForPlayer").length, 0);
+});
+
+test("native invocation rejection does not poison paint caches and retry paints the full title", () => {
+  const options = { failInvoke: "setDialogVariableStringForPlayer" };
+  const w = pluginWorld(options);
+  const p = w.plugin();
+  const modal = p.base.kit.modal({ title: "Retry me" });
+  const result = modal.tryOpen(2);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /engine invocation failed/);
+  assert.equal(modal.isOpen(2), false);
+  assert.equal(w.writes.filter(c => c.name === "setInputCaptureEnabledForPlayer").length, 0);
+  options.failInvoke = null;
+  const before = w.writes.length;
+  const retry = modal.tryOpen(2);
+  assert.equal(retry.ok, true);
+  assert.equal(retry.view.isOpen(), true);
+  assert.ok(w.writes.slice(before).some(c => c.name === "setDialogVariableStringForPlayer" && c.args.includes("Retry me")));
+});
+
+
+test("capture rejection rolls modal open back and retry reacquires instead of retaining a false lease", () => {
+  const options = { captureError: "capture invocation failed" };
+  const w = pluginWorld(options), p = w.plugin();
+  const modal = p.base.kit.modal({ title: "Capture retry" });
+  const failed = modal.tryOpen(2);
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /capture invocation failed/);
+  assert.equal(modal.isOpen(2), false);
+  assert.ok(w.writes.some(c => c.name === "setHasClassForPlayer" &&
+    c.args[2] === "s2_m0" && c.args[3] === "s2-hide" && c.args[4] === 1));
+  options.captureError = null;
+  assert.equal(modal.tryOpen(2).ok, true);
+  modal.close(2);
+  assert.deepEqual(w.writes.filter(c => c.name === "setInputCaptureEnabledForPlayer")
+    .map(c => c.args[2]), [true, true, false]);
 });
