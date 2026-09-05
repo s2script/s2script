@@ -1,18 +1,23 @@
-//! Engine-generic WebSocket client engine. Per connection, a tokio task (on the SHARED http runtime)
-//! connects + select!s read/write and emits WsSignals down a channel the frame drain polls. Holds NO
-//! V8 handles. Registry maps a conn id -> the outgoing command sender + the owning plugin.
-use futures_util::{SinkExt, StreamExt};
+//! Engine-generic WebSocket client engine. One cancellable worker per connection; V8 state stays in the adapter below.
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
+#[derive(Clone, Debug)]
+pub struct WsTerminal {
+    pub error: Option<String>,
+    pub code: u16,
+    pub reason: String,
+}
 pub enum WsSignalKind {
     Connected,
     ConnectFailed(String),
     Message(String),
-    Closed(u16, String),
-    Errored(String),
+    Terminal(WsTerminal),
 }
 pub struct WsSignal {
     pub conn_id: u64,
@@ -20,38 +25,37 @@ pub struct WsSignal {
 }
 enum WsCommand {
     Send(String),
-    /// JS-initiated close (`__s2_ws_close` -> `ws::close`, owner-checked): the task emits its own
-    /// `Closed` WsSignal so `onClose` fires and `poll_signals` records a deferred drop
-    /// (`frame_async_drain` calls `drop_conn` after the microtask checkpoint).
-    Close,
-    /// Ledger-teardown close (`ws::drop_conn`, unconditional — plugin unload / process shutdown):
-    /// closes the socket WITHOUT emitting a signal. The registry entry is already removed
-    /// synchronously by `drop_conn` before this is even sent, and the owning plugin's WS_EVENT_MUX
-    /// subscribers are torn down in the same teardown pass — nothing is left to route a signal to.
-    /// Kept distinct from `Close` so a late-arriving teardown signal can never be misrouted onto an
-    /// unrelated LATER connection that happens to reuse this same numeric conn id.
+}
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Control {
+    Open,
+    CloseRequested,
     Shutdown,
 }
-
-/// How long the WebSocket handshake may take before `connect` rejects.
-///
-/// There is no such thing as "no timeout" here — there is only a timeout the plugin cannot see. A
-/// peer that accepts the TCP connection and then never speaks HTTP leaves `connect_async` parked
-/// forever, so the choice is between a named rejection and a Promise that never settles.
-///
-/// 10s is generous for a handshake (the TCP connect and one HTTP round trip) while still being far
-/// inside any human's patience for "did this work?".
-///
-/// Mutable ONLY so the timeout path itself can be tested in reasonable time — an untested timeout is
-/// a timeout that fires wrong the first time it matters. Never changed in a shipped process.
-static CONNECT_TIMEOUT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(10_000);
-
-fn connect_timeout() -> std::time::Duration {
-    std::time::Duration::from_millis(CONNECT_TIMEOUT_MS.load(std::sync::atomic::Ordering::Relaxed))
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConnPhase {
+    Connecting,
+    Open,
+    Closing,
+    TerminalPending,
 }
-
+#[derive(Clone, Copy)]
+struct SocketDeadlines {
+    connect: Duration,
+    close_grace: Duration,
+}
+impl Default for SocketDeadlines {
+    fn default() -> Self {
+        Self {
+            connect: Duration::from_secs(10),
+            close_grace: Duration::from_secs(1),
+        }
+    }
+}
 struct Conn {
-    cmd_tx: tokio::sync::mpsc::UnboundedSender<WsCommand>,
+    data_tx: tokio::sync::mpsc::UnboundedSender<WsCommand>,
+    control_tx: tokio::sync::watch::Sender<Control>,
+    phase: ConnPhase,
     owner: String,
     owner_generation: u64,
 }
@@ -61,6 +65,19 @@ struct Engine {
     conns: Mutex<HashMap<u64, Conn>>,
 }
 static ENGINE: OnceLock<Engine> = OnceLock::new();
+static ACTIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
+struct WorkerGuard;
+impl WorkerGuard {
+    fn new() -> Self {
+        ACTIVE_WORKERS.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+impl Drop for WorkerGuard {
+    fn drop(&mut self) {
+        ACTIVE_WORKERS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 fn engine() -> &'static Engine {
     ENGINE.get_or_init(|| {
         let (sig_tx, sig_rx) = channel();
@@ -71,14 +88,20 @@ fn engine() -> &'static Engine {
         }
     })
 }
+fn publish_control(tx: &tokio::sync::watch::Sender<Control>, next: Control) {
+    tx.send_if_modified(|v| {
+        if *v < next {
+            *v = next;
+            true
+        } else {
+            false
+        }
+    });
+}
+fn control(rx: &tokio::sync::watch::Receiver<Control>) -> Control {
+    *rx.borrow()
+}
 
-/// Headers the handshake owns. A plugin that sets one of these does not get a
-/// custom connection — it gets a corrupt or spoofed one, so they are refused by
-/// name rather than passed through and left to fail somewhere less obvious.
-///
-/// `Host` is included deliberately: tungstenite derives it from the URL, and
-/// letting a plugin override it is request smuggling against whatever sits in
-/// front of the target.
 const RESERVED_HEADERS: &[&str] = &[
     "host",
     "connection",
@@ -91,188 +114,302 @@ const RESERVED_HEADERS: &[&str] = &[
     "content-length",
     "transfer-encoding",
 ];
-
-/// Build the handshake request, applying caller headers over the derived one.
-///
-/// Returns the rejection reason as `Err` so the caller can surface it through
-/// the same `ConnectFailed` path a bad URL takes — a plugin should not have to
-/// distinguish "your header was refused" from "the socket did not open" by
-/// where the failure arrived.
 fn build_request(
     url: &str,
     headers: &[(String, String)],
 ) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request, String> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::tungstenite::http::header::{HeaderName, HeaderValue};
-
     let mut req = url
         .into_client_request()
         .map_err(|e| format!("invalid websocket url: {e}"))?;
-
     for (name, value) in headers {
         let lower = name.to_ascii_lowercase();
         if RESERVED_HEADERS.contains(&lower.as_str()) {
-            return Err(format!("header '{name}' is reserved by the websocket handshake"));
+            return Err(format!(
+                "header '{name}' is reserved by the websocket handshake"
+            ));
         }
-        let hname = HeaderName::from_bytes(lower.as_bytes())
+        let n = HeaderName::from_bytes(lower.as_bytes())
             .map_err(|_| format!("invalid header name: '{name}'"))?;
-        // Rejects control characters and newlines, which is what stops a value
-        // from injecting additional headers into the request.
-        let hvalue = HeaderValue::from_str(value)
+        let v = HeaderValue::from_str(value)
             .map_err(|_| format!("invalid value for header '{name}'"))?;
-        req.headers_mut().insert(hname, hvalue);
+        req.headers_mut().insert(n, v);
     }
-
     Ok(req)
+}
+
+async fn graceful_ws<S>(
+    write: &mut S,
+    data_rx: &mut tokio::sync::mpsc::UnboundedReceiver<WsCommand>,
+    control_rx: &mut tokio::sync::watch::Receiver<Control>,
+    deadline: tokio::time::Instant,
+) -> Option<Result<(), String>>
+where
+    S: Sink<Message> + Unpin,
+    S::Error: std::fmt::Display,
+{
+    let graceful = tokio::time::timeout_at(deadline, async {
+        while let Ok(WsCommand::Send(t)) = data_rx.try_recv() {
+            write
+                .send(Message::text(t))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        write
+            .send(Message::Close(None))
+            .await
+            .map_err(|e| e.to_string())?;
+        write.close().await.map_err(|e| e.to_string())
+    });
+    tokio::pin!(graceful);
+    tokio::select! { biased;
+        _ = control_rx.changed() => None,
+        result = &mut graceful => Some(match result {
+            Ok(result) => result,
+            Err(_) => Err("graceful close deadline exceeded".to_string()),
+        }),
+    }
+}
+
+async fn run_ws_connected<R, W, E>(
+    conn_id: u64,
+    mut read: R,
+    mut write: W,
+    mut data_rx: tokio::sync::mpsc::UnboundedReceiver<WsCommand>,
+    control_rx: &mut tokio::sync::watch::Receiver<Control>,
+    sig_tx: Sender<WsSignal>,
+    deadlines: SocketDeadlines,
+) -> Option<WsTerminal>
+where
+    R: Stream<Item = Result<Message, E>> + Unpin,
+    W: Sink<Message> + Unpin,
+    E: std::fmt::Display,
+    W::Error: std::fmt::Display,
+{
+    loop {
+        tokio::select! { biased;
+            changed = control_rx.changed() => {
+                if changed.is_err() || control(&control_rx) == Control::Shutdown {
+                    return None;
+                }
+                if control(&control_rx) >= Control::CloseRequested {
+                    let deadline = tokio::time::Instant::now() + deadlines.close_grace;
+                    return graceful_ws(&mut write, &mut data_rx, control_rx, deadline)
+                        .await
+                        .map(|result| match result {
+                            Ok(()) => WsTerminal { error: None, code: 1000, reason: String::new() },
+                            Err(error) => WsTerminal { error: Some(error), code: 1006, reason: "connection error".into() },
+                        });
+                }
+            }
+            incoming = read.next() => match incoming {
+                Some(Ok(Message::Text(text))) => {
+                    let _ = sig_tx.send(WsSignal { conn_id, kind: WsSignalKind::Message(text.to_string()) });
+                }
+                Some(Ok(Message::Close(frame))) => {
+                    let (code, reason) = frame
+                        .map(|frame| (u16::from(frame.code), frame.reason.to_string()))
+                        .unwrap_or((1005, String::new()));
+                    return Some(WsTerminal { error: None, code, reason });
+                }
+                Some(Ok(_)) => {}
+                Some(Err(error)) => return Some(WsTerminal {
+                    error: Some(error.to_string()), code: 1006, reason: "connection error".into()
+                }),
+                None => return Some(WsTerminal {
+                    error: None, code: 1006, reason: "stream ended".into()
+                }),
+            },
+            command = data_rx.recv() => match command {
+                Some(WsCommand::Send(text)) => {
+                    let send = write.send(Message::text(text));
+                    tokio::pin!(send);
+                    tokio::select! { biased;
+                        changed = control_rx.changed() => {
+                            if changed.is_err() || control(&control_rx) == Control::Shutdown {
+                                return None;
+                            }
+                            let deadline = tokio::time::Instant::now() + deadlines.close_grace;
+                            let first = tokio::time::timeout_at(deadline, &mut send);
+                            tokio::pin!(first);
+                            let first = tokio::select! { biased;
+                                _ = control_rx.changed() => return None,
+                                result = &mut first => result,
+                            };
+                            match first {
+                                Ok(Ok(())) => {}
+                                Ok(Err(error)) => return Some(WsTerminal {
+                                    error: Some(error.to_string()), code: 1006, reason: "connection error".into()
+                                }),
+                                Err(_) => return Some(WsTerminal {
+                                    error: Some("graceful close deadline exceeded".into()), code: 1006,
+                                    reason: "connection error".into()
+                                }),
+                            }
+                            drop(send);
+                            return graceful_ws(&mut write, &mut data_rx, control_rx, deadline)
+                                .await
+                                .map(|result| match result {
+                                    Ok(()) => WsTerminal { error: None, code: 1000, reason: String::new() },
+                                    Err(error) => WsTerminal {
+                                        error: Some(error), code: 1006, reason: "connection error".into()
+                                    },
+                                });
+                        }
+                        result = &mut send => if let Err(error) = result {
+                            return Some(WsTerminal {
+                                error: Some(error.to_string()), code: 1006, reason: "connection error".into()
+                            });
+                        }
+                    }
+                }
+                None => return None,
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 pub fn connect(conn_id: u64, url: String, owner: String, headers: Vec<(String, String)>) {
     connect_owned(conn_id, url, owner, 0, headers);
 }
-
-pub(crate) fn connect_owned(conn_id: u64, url: String, owner: String, owner_generation: u64, headers: Vec<(String, String)>) {
+pub(crate) fn connect_owned(
+    conn_id: u64,
+    url: String,
+    owner: String,
+    owner_generation: u64,
+    headers: Vec<(String, String)>,
+) {
+    connect_with_deadlines(
+        conn_id,
+        url,
+        owner,
+        owner_generation,
+        headers,
+        SocketDeadlines::default(),
+    );
+}
+fn connect_with_deadlines(
+    conn_id: u64,
+    url: String,
+    owner: String,
+    owner_generation: u64,
+    headers: Vec<(String, String)>,
+    deadlines: SocketDeadlines,
+) {
     let e = engine();
-    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<WsCommand>();
-    e.conns.lock().unwrap().insert(conn_id, Conn { cmd_tx, owner, owner_generation });
+    let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
+    e.conns.lock().unwrap().insert(
+        conn_id,
+        Conn {
+            data_tx,
+            control_tx,
+            phase: ConnPhase::Connecting,
+            owner,
+            owner_generation,
+        },
+    );
     let sig_tx = e.sig_tx.clone();
     crate::http::spawn(async move {
+        let _guard = WorkerGuard::new();
         let request = match build_request(&url, &headers) {
-            Ok(r) => r,
-            Err(reason) => {
+            Ok(v) => v,
+            Err(e) => {
                 let _ = sig_tx.send(WsSignal {
                     conn_id,
-                    kind: WsSignalKind::ConnectFailed(reason),
+                    kind: WsSignalKind::ConnectFailed(e),
                 });
                 return;
             }
         };
-        // BOUNDED. `connect_async` waits forever if the peer completes the TCP handshake and then
-        // never finishes the WebSocket one — it accepts the socket and goes quiet. Unbounded, that is
-        // not a slow connect, it is a permanent one: the connect Promise NEVER settles (neither
-        // `.then` nor `.catch` runs), `PENDING_JOBS` never decrements so the frame detour stays armed
-        // forever, and the plugin has no way to recover or even observe it.
-        //
-        // This was found the hard way: it is what made the ws tests hang in CI. A test that should
-        // finish in ~40ms burned a 30s poll budget and still reported its result as literally
-        // "pending", which is only reachable if the promise never settled at all.
-        //
-        // A timeout does not paper over the underlying stall — it converts an invisible hang into the
-        // named rejection the plugin already knows how to handle, through the SAME ConnectFailed path
-        // a bad URL takes.
-        let budget = connect_timeout();
-        let stream = match tokio::time::timeout(budget, tokio_tungstenite::connect_async(request)).await {
-            Ok(Ok((s, _resp))) => s,
-            Ok(Err(err)) => {
-                let _ = sig_tx.send(WsSignal {
-                    conn_id,
-                    kind: WsSignalKind::ConnectFailed(err.to_string()),
-                });
-                return;
-            }
-            Err(_elapsed) => {
-                let _ = sig_tx.send(WsSignal {
-                    conn_id,
-                    kind: WsSignalKind::ConnectFailed(format!(
-                        "handshake did not complete within {}ms",
-                        budget.as_millis()
-                    )),
-                });
-                return;
-            }
+        let attempt =
+            tokio::time::timeout(deadlines.connect, tokio_tungstenite::connect_async(request));
+        tokio::pin!(attempt);
+        let stream = tokio::select! {biased;
+         _=control_rx.changed()=>return,
+         r=&mut attempt=>match r { Ok(Ok((s,_)))=>s, Ok(Err(e))=>{let _=sig_tx.send(WsSignal{conn_id,kind:WsSignalKind::ConnectFailed(e.to_string())});return;}, Err(_)=>{let _=sig_tx.send(WsSignal{conn_id,kind:WsSignalKind::ConnectFailed(format!("handshake did not complete within {}ms",deadlines.connect.as_millis()))});return;} }
         };
+        if control(&control_rx) == Control::Shutdown {
+            return;
+        }
         let _ = sig_tx.send(WsSignal {
             conn_id,
             kind: WsSignalKind::Connected,
         });
-        let (mut write, mut read) = stream.split();
-        loop {
-            tokio::select! {
-                incoming = read.next() => match incoming {
-                    Some(Ok(Message::Text(t))) => { let _ = sig_tx.send(WsSignal { conn_id, kind: WsSignalKind::Message(t.to_string()) }); }
-                    Some(Ok(Message::Binary(_))) => { /* binary deferred — ignore */ }
-                    Some(Ok(Message::Close(cf))) => {
-                        let (code, reason) = cf.map(|c| (u16::from(c.code), c.reason.to_string())).unwrap_or((1005, String::new()));
-                        let _ = sig_tx.send(WsSignal { conn_id, kind: WsSignalKind::Closed(code, reason) }); break;
-                    }
-                    Some(Ok(_)) => { /* Ping/Pong handled by tungstenite */ }
-                    Some(Err(err)) => {
-                        // A mid-stream read error is terminal. Emit BOTH signals, browser-parity:
-                        // `onError(err)` fires, then `onClose(1006, ...)` — 1006 = Abnormal Closure
-                        // (no clean close frame). The following Closed is what makes the drain call
-                        // `drop_conn` (the Errored arm alone does not) and prune the conn's mux keys,
-                        // so the error path cleans up exactly like every other terminal path.
-                        let _ = sig_tx.send(WsSignal { conn_id, kind: WsSignalKind::Errored(err.to_string()) });
-                        let _ = sig_tx.send(WsSignal { conn_id, kind: WsSignalKind::Closed(1006, "connection error".into()) });
-                        break;
-                    }
-                    None => { let _ = sig_tx.send(WsSignal { conn_id, kind: WsSignalKind::Closed(1006, "stream ended".into()) }); break; }
-                },
-                cmd = cmd_rx.recv() => match cmd {
-                    Some(WsCommand::Send(t)) => { if write.send(Message::text(t)).await.is_err() { break; } }
-                    Some(WsCommand::Close) => {
-                        // Self-initiated close (JS called ws.close()). We don't block waiting on the
-                        // peer's close-frame acknowledgment (the peer may never send one) — emit our
-                        // own Closed signal (1000 = Normal Closure, per RFC 6455) so the drain's
-                        // Closed routing fires onClose AND ws::drop_conn deregisters this conn_id
-                        // from the registry, exactly like a peer-initiated close already does above.
-                        let _ = write.send(Message::Close(None)).await;
-                        let _ = sig_tx.send(WsSignal { conn_id, kind: WsSignalKind::Closed(1000, String::new()) });
-                        break;
-                    }
-                    Some(WsCommand::Shutdown) | None => {
-                        // Ledger-teardown close (plugin unload / shutdown) or the sender vanished
-                        // unexpectedly: close the socket but emit NO signal. `drop_conn` already
-                        // removed the registry entry synchronously before sending this, and the
-                        // owner's WS_EVENT_MUX subs are torn down in the same pass, so there is
-                        // nothing left to route a signal to (and, unlike `Close`, never risking a
-                        // late signal landing on a future connection that reuses this conn id).
-                        let _ = write.send(Message::Close(None)).await;
-                        break;
-                    }
-                }
-            }
+        let (write, read) = stream.split();
+        let terminal = run_ws_connected(
+            conn_id,
+            read,
+            write,
+            data_rx,
+            &mut control_rx,
+            sig_tx.clone(),
+            deadlines,
+        )
+        .await;
+        if let Some(terminal) = terminal.filter(|_| control(&control_rx) != Control::Shutdown) {
+            let _ = sig_tx.send(WsSignal {
+                conn_id,
+                kind: WsSignalKind::Terminal(terminal),
+            });
         }
     });
 }
 
 pub fn send(conn_id: u64, owner: &str, text: String) -> bool {
-    let e = engine();
-    let map = e.conns.lock().unwrap();
-    match map.get(&conn_id) {
-        Some(c) if c.owner == owner => c.cmd_tx.send(WsCommand::Send(text)).is_ok(),
-        _ => false,
-    }
+    let map = engine().conns.lock().unwrap();
+    matches!(map.get(&conn_id),Some(c) if c.owner==owner&&c.phase==ConnPhase::Open&&c.data_tx.send(WsCommand::Send(text)).is_ok())
 }
 pub fn close(conn_id: u64, owner: &str) -> bool {
-    let e = engine();
-    let map = e.conns.lock().unwrap();
-    match map.get(&conn_id) {
-        // Report the actual send outcome (mirrors `send`): `false` if the task is already gone,
-        // rather than an unconditional `true` that would mislead a future caller.
-        Some(c) if c.owner == owner => c.cmd_tx.send(WsCommand::Close).is_ok(),
-        _ => false,
+    let mut map = engine().conns.lock().unwrap();
+    let Some(c) = map.get_mut(&conn_id) else {
+        return false;
+    };
+    if c.owner != owner || c.phase != ConnPhase::Open {
+        return false;
     }
+    c.phase = ConnPhase::Closing;
+    publish_control(&c.control_tx, Control::CloseRequested);
+    true
 }
-/// Ownership check for `__s2_ws_on` (mirrors the `owner == owner` guard baked into `send`/`close`) —
-/// a subscribe attempt on a conn this plugin doesn't own must no-op, exactly like a send/close would.
 pub fn is_owner(conn_id: u64, owner: &str) -> bool {
-    let e = engine();
-    let map = e.conns.lock().unwrap();
-    matches!(map.get(&conn_id), Some(c) if c.owner == owner)
+    matches!(engine().conns.lock().unwrap().get(&conn_id),Some(c) if c.owner==owner)
 }
-/// Teardown / post-close deregister — closes regardless of owner (the ledger owns the id).
-/// Sends `Shutdown` (not `Close`): this path never emits a `WsSignal::Closed` (see `WsCommand`'s
-/// doc) since there is no live owner left to route a signal to, and doing so would risk a
-/// late-arriving signal misrouting onto a future, unrelated connection that reuses this conn id.
-pub fn drop_conn(conn_id: u64) {
+pub fn shutdown_conn(conn_id: u64) {
     if let Some(c) = engine().conns.lock().unwrap().remove(&conn_id) {
-        let _ = c.cmd_tx.send(WsCommand::Shutdown);
-        crate::v8host::release_resource(&c.owner, c.owner_generation, &crate::plugin::Resource::WsConn(conn_id));
+        publish_control(&c.control_tx, Control::Shutdown);
+        purge_conn(conn_id);
+        crate::v8host::release_resource(
+            &c.owner,
+            c.owner_generation,
+            &crate::plugin::Resource::WsConn(conn_id),
+        );
     }
+}
+pub fn retire_conn(conn_id: u64) {
+    if let Some(c) = engine().conns.lock().unwrap().remove(&conn_id) {
+        crate::v8host::release_resource(
+            &c.owner,
+            c.owner_generation,
+            &crate::plugin::Resource::WsConn(conn_id),
+        );
+    }
+}
+pub fn drop_conn(conn_id: u64) {
+    shutdown_conn(conn_id)
 }
 pub fn try_recv_signal() -> Option<WsSignal> {
     engine().sig_rx.lock().ok()?.try_recv().ok()
+}
+#[cfg(test)]
+pub(crate) fn active_conn_count() -> usize {
+    engine().conns.lock().unwrap().len()
+}
+#[cfg(test)]
+pub(crate) fn active_worker_count() -> usize {
+    ACTIVE_WORKERS.load(Ordering::SeqCst)
 }
 
 // ---------------------------------------------------------------------------
@@ -295,10 +432,19 @@ thread_local! {
 fn queue_event(conn_id: u64, event: &str, s: String, n: i32) {
     WS_EVENT_PENDING.with(|q| q.borrow_mut().push((conn_id, event.to_string(), s, n)));
 }
+fn purge_conn(conn_id: u64) {
+    WS_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != conn_id));
+    WS_EVENT_MUX.with(|m| {
+        let mut m = m.borrow_mut();
+        for ev in ["message", "close", "error"] {
+            m.remove_by_name(&format!("{conn_id}:{ev}"));
+        }
+    });
+}
 
 /// One drain's worth of ws signals. Connect results go back to the host so it can resolve the
-/// connect Promise (needs the Jobs resolver map). Events are queued here. Terminal drops are
-/// returned so the host can `drop_conn` AFTER the microtask checkpoint.
+/// connect Promise (needs the Jobs resolver map). Events are queued here. Only failed connects are
+/// returned for retirement after the microtask checkpoint.
 pub(crate) struct SignalPoll {
     pub connects: Vec<(u64, Result<(), String>)>,
     pub drops: Vec<u64>,
@@ -309,17 +455,71 @@ pub(crate) fn poll_signals() -> SignalPoll {
     let mut connects = Vec::new();
     let mut drops = Vec::new();
     while let Some(sig) = try_recv_signal() {
+        let live = engine().conns.lock().unwrap().contains_key(&sig.conn_id);
+        if !live {
+            continue;
+        }
         match sig.kind {
-            WsSignalKind::Connected => connects.push((sig.conn_id, Ok(()))),
-            WsSignalKind::ConnectFailed(e) => {
-                connects.push((sig.conn_id, Err(e)));
-                drops.push(sig.conn_id);
+            WsSignalKind::Connected => {
+                if let Some(c) = engine().conns.lock().unwrap().get_mut(&sig.conn_id) {
+                    if c.phase == ConnPhase::Connecting {
+                        c.phase = ConnPhase::Open;
+                        connects.push((sig.conn_id, Ok(())));
+                    }
+                }
             }
-            WsSignalKind::Message(t) => queue_event(sig.conn_id, "message", t, 0),
-            WsSignalKind::Errored(e) => queue_event(sig.conn_id, "error", e, 0),
-            WsSignalKind::Closed(code, reason) => {
-                queue_event(sig.conn_id, "close", reason, code as i32);
-                drops.push(sig.conn_id);
+            WsSignalKind::ConnectFailed(e) => {
+                let accepted = engine()
+                    .conns
+                    .lock()
+                    .unwrap()
+                    .get_mut(&sig.conn_id)
+                    .is_some_and(|c| {
+                        if c.phase == ConnPhase::Connecting {
+                            c.phase = ConnPhase::TerminalPending;
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                if accepted {
+                    connects.push((sig.conn_id, Err(e)));
+                    drops.push(sig.conn_id);
+                }
+            }
+            WsSignalKind::Message(t) => {
+                if matches!(
+                    engine()
+                        .conns
+                        .lock()
+                        .unwrap()
+                        .get(&sig.conn_id)
+                        .map(|c| c.phase),
+                    Some(ConnPhase::Open | ConnPhase::Closing)
+                ) {
+                    queue_event(sig.conn_id, "message", t, 0);
+                }
+            }
+            WsSignalKind::Terminal(t) => {
+                let accepted = engine()
+                    .conns
+                    .lock()
+                    .unwrap()
+                    .get_mut(&sig.conn_id)
+                    .is_some_and(|c| {
+                        if matches!(c.phase, ConnPhase::Open | ConnPhase::Closing) {
+                            c.phase = ConnPhase::TerminalPending;
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                if accepted {
+                    if let Some(e) = t.error {
+                        queue_event(sig.conn_id, "error", e, 0);
+                    }
+                    queue_event(sig.conn_id, "close", t.reason, t.code as i32);
+                }
             }
         }
     }
@@ -332,7 +532,9 @@ fn ws_owner(scope: &mut v8::PinScope) -> String {
 
 fn s2_ws_send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 { return; }
+        if args.length() < 2 {
+            return;
+        }
         let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
         let text = args.get(1).to_rust_string_lossy(scope);
         let owner = ws_owner(scope);
@@ -345,9 +547,15 @@ fn s2_ws_send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv
     }));
 }
 
-fn s2_ws_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn s2_ws_close(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 1 { return; }
+        if args.length() < 1 {
+            return;
+        }
         let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
         let owner = ws_owner(scope);
         if !close(id, &owner) {
@@ -361,7 +569,9 @@ fn s2_ws_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _r
 
 fn s2_ws_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 3 { return; }
+        if args.length() < 3 {
+            return;
+        }
         let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
         let event = args.get(1).to_rust_string_lossy(scope);
         let owner = ws_owner(scope);
@@ -382,24 +592,33 @@ fn s2_ws_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: 
 pub(crate) fn dispatch_pending_events() {
     let pending: Vec<(u64, String, String, i32)> =
         WS_EVENT_PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
-    if pending.is_empty() { return; }
+    if pending.is_empty() {
+        return;
+    }
 
     for (conn_id, event, s, n) in pending {
         let key = format!("{conn_id}:{event}");
         let snap = WS_EVENT_MUX.with(|m| m.borrow().snapshot(&key));
         if !snap.is_empty() {
-            let _ = fan_out(&snap, &format!("dispatch_pending_ws_events('{key}')"), Instrument::none(), |tc| {
-                if event == "close" {
-                    let code_val: v8::Local<v8::Value> = v8::Number::new(tc, n as f64).into();
-                    let reason_val: v8::Local<v8::Value> =
-                        v8::String::new(tc, &s).unwrap_or_else(|| v8::String::new(tc, "").unwrap()).into();
-                    Some(vec![code_val, reason_val])
-                } else {
-                    let s_val: v8::Local<v8::Value> =
-                        v8::String::new(tc, &s).unwrap_or_else(|| v8::String::new(tc, "").unwrap()).into();
-                    Some(vec![s_val])
-                }
-            });
+            let _ = fan_out(
+                &snap,
+                &format!("dispatch_pending_ws_events('{key}')"),
+                Instrument::none(),
+                |tc| {
+                    if event == "close" {
+                        let code_val: v8::Local<v8::Value> = v8::Number::new(tc, n as f64).into();
+                        let reason_val: v8::Local<v8::Value> = v8::String::new(tc, &s)
+                            .unwrap_or_else(|| v8::String::new(tc, "").unwrap())
+                            .into();
+                        Some(vec![code_val, reason_val])
+                    } else {
+                        let s_val: v8::Local<v8::Value> = v8::String::new(tc, &s)
+                            .unwrap_or_else(|| v8::String::new(tc, "").unwrap())
+                            .into();
+                        Some(vec![s_val])
+                    }
+                },
+            );
         }
         if event == "close" {
             WS_EVENT_MUX.with(|m| {
@@ -408,6 +627,7 @@ pub(crate) fn dispatch_pending_events() {
                     mux.remove_by_name(&format!("{conn_id}:{ev}"));
                 }
             });
+            retire_conn(conn_id);
         }
     }
 }
@@ -421,8 +641,14 @@ pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
 pub(crate) fn register_store() {
     crate::owner_stores::register(
         "WS_EVENT_MUX",
-        Box::new(|owner| { WS_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
-        Box::new(|ids| { WS_EVENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|owner| {
+            WS_EVENT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner));
+        }),
+        Box::new(|ids| {
+            WS_EVENT_MUX.with(|m| {
+                m.borrow_mut().remove_by_ids(ids);
+            });
+        }),
         Box::new(|| {
             WS_EVENT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
@@ -432,7 +658,8 @@ pub(crate) fn register_store() {
 pub(crate) fn register_singletons() {
     use crate::process_singletons::ResetPhase::AfterIsolateDrop;
     crate::process_singletons::register(
-        "WS_EVENT_PENDING", AfterIsolateDrop,
+        "WS_EVENT_PENDING",
+        AfterIsolateDrop,
         Box::new(|| WS_EVENT_PENDING.with(|q| q.borrow_mut().clear())),
     );
 }
@@ -440,6 +667,88 @@ pub(crate) fn register_singletons() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::task::{Context, Poll};
+
+    struct FailingSink;
+    impl Sink<Message> for FailingSink {
+        type Error = std::io::Error;
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Err(std::io::Error::other("injected ws write failure")))
+        }
+        fn start_send(self: Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    struct PendingSink(Arc<AtomicUsize>);
+    impl Sink<Message> for PendingSink {
+        type Error = std::io::Error;
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Poll::Pending
+        }
+        fn start_send(self: Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+    }
+
+    struct ReadySink;
+    impl Sink<Message> for ReadySink {
+        type Error = std::io::Error;
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn start_send(self: Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
     // Uses a local echo server on the http runtime. Requires http::init() for the shared runtime.
     fn echo_server_port() -> u16 {
         crate::http::init();
@@ -510,6 +819,192 @@ mod tests {
         }
         out
     }
+    fn wait_workers(n: usize) {
+        for _ in 0..200 {
+            if active_worker_count() == n {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("worker count did not reach {n}: {}", active_worker_count());
+    }
+    #[test]
+    fn owner_shutdown_cancels_a_pending_handshake_without_terminal_signal() {
+        let base = active_worker_count();
+        let port = silent_server_port();
+        connect_with_deadlines(
+            7699,
+            format!("ws://127.0.0.1:{port}/"),
+            "cancel".into(),
+            0,
+            Vec::new(),
+            SocketDeadlines {
+                connect: Duration::from_secs(5),
+                close_grace: Duration::from_millis(20),
+            },
+        );
+        wait_workers(base + 1);
+        shutdown_conn(7699);
+        wait_workers(base);
+        assert!(!is_owner(7699, "cancel"));
+        while let Some(s) = try_recv_signal() {
+            assert_ne!(s.conn_id, 7699, "owner shutdown is silent");
+        }
+    }
+    #[test]
+    fn injected_ws_write_failure_returns_one_error_terminal() {
+        crate::http::init();
+        let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
+        let (signal_tx, signal_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        data_tx.send(WsCommand::Send("fail".into())).unwrap();
+        crate::http::spawn(async move {
+            let terminal = run_ws_connected(
+                7710,
+                futures_util::stream::pending::<Result<Message, std::io::Error>>(),
+                FailingSink,
+                data_rx,
+                &mut control_rx,
+                signal_tx,
+                SocketDeadlines::default(),
+            )
+            .await;
+            done_tx.send(terminal).unwrap();
+        });
+        let terminal = done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(terminal.error.as_deref(), Some("injected ws write failure"));
+        assert_eq!(terminal.code, 1006);
+        assert!(
+            signal_rx.try_recv().is_err(),
+            "write failure must not emit a second envelope"
+        );
+    }
+    #[test]
+    fn owner_shutdown_interrupts_an_injected_pending_ws_write() {
+        crate::http::init();
+        let polls = Arc::new(AtomicUsize::new(0));
+        let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
+        let (signal_tx, signal_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        data_tx.send(WsCommand::Send("stall".into())).unwrap();
+        let worker_polls = polls.clone();
+        crate::http::spawn(async move {
+            let terminal = run_ws_connected(
+                7711,
+                futures_util::stream::pending::<Result<Message, std::io::Error>>(),
+                PendingSink(worker_polls),
+                data_rx,
+                &mut control_rx,
+                signal_tx,
+                SocketDeadlines::default(),
+            )
+            .await;
+            done_tx.send(terminal).unwrap();
+        });
+        for _ in 0..200 {
+            if polls.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(polls.load(Ordering::SeqCst) > 0, "writer was never polled");
+        publish_control(&control_tx, Control::Shutdown);
+        assert!(done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .is_none());
+        assert!(signal_rx.try_recv().is_err(), "owner shutdown is silent");
+    }
+    #[test]
+    fn pending_ws_write_obeys_one_grace_deadline() {
+        crate::http::init();
+        let polls = Arc::new(AtomicUsize::new(0));
+        let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
+        let (signal_tx, _) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        data_tx.send(WsCommand::Send("stall".into())).unwrap();
+        let worker_polls = polls.clone();
+        crate::http::spawn(async move {
+            done_tx
+                .send(
+                    run_ws_connected(
+                        7712,
+                        futures_util::stream::pending::<Result<Message, std::io::Error>>(),
+                        PendingSink(worker_polls),
+                        data_rx,
+                        &mut control_rx,
+                        signal_tx,
+                        SocketDeadlines {
+                            connect: Duration::from_secs(10),
+                            close_grace: Duration::from_millis(20),
+                        },
+                    )
+                    .await,
+                )
+                .unwrap();
+        });
+        for _ in 0..200 {
+            if polls.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        publish_control(&control_tx, Control::CloseRequested);
+        let terminal = done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            terminal.error.as_deref(),
+            Some("graceful close deadline exceeded")
+        );
+        assert_eq!(terminal.code, 1006);
+    }
+    #[test]
+    fn simultaneous_peer_and_local_ws_close_produces_one_terminal() {
+        crate::http::init();
+        let (_data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
+        publish_control(&control_tx, Control::CloseRequested);
+        let (signal_tx, signal_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        crate::http::spawn(async move {
+            done_tx
+                .send(
+                    run_ws_connected(
+                        7713,
+                        futures_util::stream::iter(vec![Ok::<_, std::io::Error>(Message::Close(
+                            None,
+                        ))]),
+                        ReadySink,
+                        data_rx,
+                        &mut control_rx,
+                        signal_tx,
+                        SocketDeadlines::default(),
+                    )
+                    .await,
+                )
+                .unwrap();
+        });
+        let terminal = done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            terminal.code, 1000,
+            "biased local close wins the simultaneous race"
+        );
+        assert!(
+            signal_rx.try_recv().is_err(),
+            "the connected loop returns one terminal only"
+        );
+    }
     #[test]
     fn connect_send_echo_close() {
         let port = echo_server_port();
@@ -525,14 +1020,15 @@ mod tests {
                 match s.kind {
                     WsSignalKind::Connected => {
                         got_connected = true;
+                        engine().conns.lock().unwrap().get_mut(&1).unwrap().phase = ConnPhase::Open;
                         send(1, "p", "hi".into());
                     }
                     WsSignalKind::Message(t) => {
                         echo = Some(t);
                         close(1, "p");
                     }
-                    WsSignalKind::Closed(code, reason) => {
-                        closed = Some((code, reason));
+                    WsSignalKind::Terminal(t) => {
+                        closed = Some((t.code, t.reason));
                     }
                     _ => {}
                 }
@@ -548,9 +1044,9 @@ mod tests {
         // the peer never echoes a close frame back (this test's echo_server_port helper just
         // drops the connection on receiving a close, per its `m.is_close() => break`).
         assert_eq!(closed, Some((1000, String::new())));
-        // The Closed signal is what drives ws::drop_conn in the real drain (v8host.rs); here we
-        // call it directly to verify a self-close leaves no leaked registry entry.
-        drop_conn(1);
+        // Callback dispatch drives public retirement in the host; retire directly in this engine
+        // test to verify a self-close leaves no registry entry.
+        retire_conn(1);
         assert!(!is_owner(1, "p"));
     }
     #[test]
@@ -558,7 +1054,9 @@ mod tests {
         crate::http::init();
         connect(2, "ws://127.0.0.1:1/".into(), "p".into(), Vec::new());
         let sigs = drain_for_conn(2, 1);
-        assert!(sigs.iter().any(|s| matches!(s.kind, WsSignalKind::ConnectFailed(_))));
+        assert!(sigs
+            .iter()
+            .any(|s| matches!(s.kind, WsSignalKind::ConnectFailed(_))));
     }
 
     /// `send`/`close`/`is_owner` must agree about who owns a conn registered under the SAME string
@@ -573,10 +1071,30 @@ mod tests {
     fn ownership_is_decided_by_the_string_connect_registered_including_the_empty_one() {
         crate::http::init();
         let port = echo_server_port();
-        connect(920, format!("ws://127.0.0.1:{port}/"), String::new(), Vec::new());
+        connect(
+            920,
+            format!("ws://127.0.0.1:{port}/"),
+            String::new(),
+            Vec::new(),
+        );
+        for _ in 0..200 {
+            if let Some(s) = try_recv_signal() {
+                if s.conn_id == 920 && matches!(s.kind, WsSignalKind::Connected) {
+                    engine().conns.lock().unwrap().get_mut(&920).unwrap().phase = ConnPhase::Open;
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
 
-        assert!(is_owner(920, ""), "the empty owner connect registered must own the conn");
-        assert!(!is_owner(920, "legacy"), "and a DIFFERENT fallback string must not");
+        assert!(
+            is_owner(920, ""),
+            "the empty owner connect registered must own the conn"
+        );
+        assert!(
+            !is_owner(920, "legacy"),
+            "and a DIFFERENT fallback string must not"
+        );
         // The half that used to disagree: whatever `is_owner` says, `send` must say the same, or a
         // socket can be writable and unsubscribable at once.
         assert_eq!(
@@ -598,7 +1116,13 @@ mod tests {
         // Bounded by time, not by an expected count: whether the echo comes back is a race, and
         // waiting for a signal that may never arrive would cost this test the full 5s budget.
         for _ in 0..20 {
-            while try_recv_signal().is_some() {}
+            while let Some(s) = try_recv_signal() {
+                if matches!(s.kind, WsSignalKind::Connected) {
+                    if let Some(c) = engine().conns.lock().unwrap().get_mut(&920) {
+                        c.phase = ConnPhase::Open;
+                    }
+                }
+            }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         drop_conn(920);
@@ -612,11 +1136,18 @@ mod tests {
     /// any host that accepts TCP and stalls would wedge a plugin permanently.
     #[test]
     fn a_silent_peer_times_out_instead_of_hanging_forever() {
-        use std::sync::atomic::Ordering;
         let port = silent_server_port();
-        let prev = CONNECT_TIMEOUT_MS.swap(300, Ordering::Relaxed);
-
-        connect(910, format!("ws://127.0.0.1:{port}/"), "p".into(), Vec::new());
+        connect_with_deadlines(
+            910,
+            format!("ws://127.0.0.1:{port}/"),
+            "p".into(),
+            0,
+            Vec::new(),
+            SocketDeadlines {
+                connect: Duration::from_millis(300),
+                close_grace: Duration::from_millis(100),
+            },
+        );
 
         // Generous relative to the 300ms budget: this asserts the timeout FIRES, not how promptly.
         let mut failed = None;
@@ -631,8 +1162,6 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        CONNECT_TIMEOUT_MS.store(prev, Ordering::Relaxed);
-
         let reason = failed.expect("a silent peer must produce ConnectFailed, not silence");
         assert!(
             reason.contains("did not complete"),
@@ -644,7 +1173,12 @@ mod tests {
     #[test]
     fn send_wrong_owner_denied() {
         let port = echo_server_port();
-        connect(3, format!("ws://127.0.0.1:{port}/"), "pA".into(), Vec::new());
+        connect(
+            3,
+            format!("ws://127.0.0.1:{port}/"),
+            "pA".into(),
+            Vec::new(),
+        );
         // wait for connect
         for _ in 0..200 {
             if try_recv_signal().is_some() {
@@ -677,10 +1211,19 @@ mod tests {
 
     #[test]
     fn build_request_refuses_reserved_headers() {
-        for name in ["Host", "Connection", "Upgrade", "Sec-WebSocket-Key", "sec-websocket-version"] {
+        for name in [
+            "Host",
+            "Connection",
+            "Upgrade",
+            "Sec-WebSocket-Key",
+            "sec-websocket-version",
+        ] {
             let err = build_request("ws://127.0.0.1:1/", &[(name.into(), "x".into())])
                 .expect_err("reserved header must be refused");
-            assert!(err.contains("reserved"), "unexpected reason for {name}: {err}");
+            assert!(
+                err.contains("reserved"),
+                "unexpected reason for {name}: {err}"
+            );
         }
     }
 
@@ -700,7 +1243,10 @@ mod tests {
     fn build_request_refuses_invalid_header_names() {
         let err = build_request("ws://127.0.0.1:1/", &[("bad header".into(), "x".into())])
             .expect_err("invalid name must be refused");
-        assert!(err.contains("invalid header name"), "unexpected reason: {err}");
+        assert!(
+            err.contains("invalid header name"),
+            "unexpected reason: {err}"
+        );
     }
 
     /// A refused header has to arrive as ConnectFailed, the same channel a bad
@@ -721,29 +1267,83 @@ mod tests {
         }));
     }
 
-    /// The tick only polls. Message/Closed are queued here, not handed back as connect results;
-    /// Closed is also a deferred drop so the host can deregister after the checkpoint.
+    /// The tick only polls. Messages and the single terminal envelope are queued for dispatch.
     #[test]
     fn poll_signals_returns_connects_and_queues_events() {
         while try_recv_signal().is_some() {}
         WS_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != 7701));
         let tx = &engine().sig_tx;
-        let _ = tx.send(WsSignal { conn_id: 7701, kind: WsSignalKind::Connected });
-        let _ = tx.send(WsSignal { conn_id: 7701, kind: WsSignalKind::Message("hi".into()) });
-        let _ = tx.send(WsSignal { conn_id: 7701, kind: WsSignalKind::Closed(1000, "bye".into()) });
+        let (data_tx, _data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (control_tx, _) = tokio::sync::watch::channel(Control::Open);
+        engine().conns.lock().unwrap().insert(
+            7701,
+            Conn {
+                data_tx,
+                control_tx,
+                phase: ConnPhase::Connecting,
+                owner: "test".into(),
+                owner_generation: 0,
+            },
+        );
+        let _ = tx.send(WsSignal {
+            conn_id: 7701,
+            kind: WsSignalKind::Connected,
+        });
+        let _ = tx.send(WsSignal {
+            conn_id: 7701,
+            kind: WsSignalKind::Message("hi".into()),
+        });
+        let _ = tx.send(WsSignal {
+            conn_id: 7701,
+            kind: WsSignalKind::Terminal(WsTerminal {
+                error: Some("boom".into()),
+                code: 1006,
+                reason: "bye".into(),
+            }),
+        });
+        let _ = tx.send(WsSignal {
+            conn_id: 7701,
+            kind: WsSignalKind::Terminal(WsTerminal {
+                error: Some("duplicate".into()),
+                code: 1006,
+                reason: "duplicate".into(),
+            }),
+        });
         let p = poll_signals();
         assert_eq!(p.connects, vec![(7701, Ok(()))]);
-        assert_eq!(p.drops, vec![7701]);
+        assert!(
+            p.drops.is_empty(),
+            "public terminal retirement belongs after callback dispatch"
+        );
         let pending = WS_EVENT_PENDING.with(|q| q.borrow().clone());
-        assert!(pending.iter().any(|e| e.0 == 7701 && e.1 == "message" && e.2 == "hi"));
-        assert!(pending.iter().any(|e| e.0 == 7701 && e.1 == "close" && e.2 == "bye" && e.3 == 1000));
+        let ours: Vec<_> = pending.iter().filter(|e| e.0 == 7701).collect();
+        assert_eq!(ours.len(), 3, "duplicate terminal must be discarded");
+        assert_eq!(ours[0].1, "message");
+        assert_eq!((ours[1].1.as_str(), ours[1].2.as_str()), ("error", "boom"));
+        assert_eq!(
+            (ours[2].1.as_str(), ours[2].2.as_str(), ours[2].3),
+            ("close", "bye", 1006)
+        );
         WS_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != 7701));
+        shutdown_conn(7701);
     }
 
     #[test]
     fn poll_signals_failed_connect_is_a_drop_without_an_event() {
         while try_recv_signal().is_some() {}
         WS_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != 7702));
+        let (data_tx, _data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (control_tx, _) = tokio::sync::watch::channel(Control::Open);
+        engine().conns.lock().unwrap().insert(
+            7702,
+            Conn {
+                data_tx,
+                control_tx,
+                phase: ConnPhase::Connecting,
+                owner: "test".into(),
+                owner_generation: 0,
+            },
+        );
         let _ = engine().sig_tx.send(WsSignal {
             conn_id: 7702,
             kind: WsSignalKind::ConnectFailed("nope".into()),
@@ -752,5 +1352,54 @@ mod tests {
         assert_eq!(p.connects, vec![(7702, Err("nope".into()))]);
         assert_eq!(p.drops, vec![7702]);
         assert!(WS_EVENT_PENDING.with(|q| q.borrow().iter().all(|e| e.0 != 7702)));
+    }
+
+    #[test]
+    fn a_thousand_terminal_and_failure_cycles_leave_no_socket_state() {
+        let workers = active_worker_count();
+        for i in 0..1000u64 {
+            let id = 80_000 + i;
+            let (data_tx, _) = tokio::sync::mpsc::unbounded_channel();
+            let (control_tx, _) = tokio::sync::watch::channel(Control::Open);
+            engine().conns.lock().unwrap().insert(
+                id,
+                Conn {
+                    data_tx,
+                    control_tx,
+                    phase: ConnPhase::Connecting,
+                    owner: "stress".into(),
+                    owner_generation: 0,
+                },
+            );
+            if i % 2 == 0 {
+                let _ = engine().sig_tx.send(WsSignal {
+                    conn_id: id,
+                    kind: WsSignalKind::Connected,
+                });
+                let _ = engine().sig_tx.send(WsSignal {
+                    conn_id: id,
+                    kind: WsSignalKind::Terminal(WsTerminal {
+                        error: None,
+                        code: 1000,
+                        reason: String::new(),
+                    }),
+                });
+                let p = poll_signals();
+                assert!(p.drops.is_empty());
+                dispatch_pending_events();
+            } else {
+                let _ = engine().sig_tx.send(WsSignal {
+                    conn_id: id,
+                    kind: WsSignalKind::ConnectFailed("x".into()),
+                });
+                let p = poll_signals();
+                for id in p.drops {
+                    retire_conn(id);
+                }
+            }
+        }
+        assert_eq!(active_conn_count(), 0);
+        assert_eq!(active_worker_count(), workers);
+        assert!(WS_EVENT_PENDING.with(|q| q.borrow().is_empty()));
     }
 }

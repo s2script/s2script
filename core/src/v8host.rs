@@ -6485,7 +6485,7 @@ pub(crate) fn frame_async_drain() {
             resolve_db(host, &entry, c.result);
         }
         // Poll ws/net. The tick only polls: each module matches its own signal kinds, queues
-        // events internally, and hands back connect results + deferred drops.
+        // events internally, and hands back connect results + failed-connect retirements.
         //
         // ORDERING (load-bearing): Connected/ConnectFailed resolve/reject the connect Promise
         // INSIDE this drain (before the microtask checkpoint below, so the plugin's `.then` —
@@ -6527,8 +6527,8 @@ pub(crate) fn frame_async_drain() {
         // this drain has run, so a `.then` that subscribes to the connection it was just handed has
         // already been able to do so. Dropping earlier is what made a server dying right after the
         // handshake look like a connection that simply never spoke.
-        for id in ws.drops { crate::ws::drop_conn(id); }
-        for id in net.drops { crate::net::drop_conn(id); }
+        for id in ws.drops { crate::ws::retire_conn(id); }
+        for id in net.drops { crate::net::retire_conn(id); }
     });
     // HOST + scope released: a just-completed last timer may make the detour undesired, or a
     // continuation may have queued new async keeping it desired.  Reconcile now.
@@ -7034,17 +7034,15 @@ fn teardown_ledger_and_dispose(id: &str) {
                 }
                 plugin::Resource::WsConn(conn_id) => {
                     // A late/never `close()` — teardown closes the ws connection now regardless of
-                    // owner (the ledger owns the id; `drop_conn` mirrors `db::close`'s idempotence —
-                    // an already-removed conn_id is a harmless no-op inside ws::drop_conn). This also
-                    // covers the ConnectFailed case (the drain step already called drop_conn once).
-                    crate::ws::drop_conn(conn_id);
+                    // owner. A missing conn_id is a harmless no-op, including when public retirement
+                    // already removed it after a connect failure or close callback.
+                    crate::ws::shutdown_conn(conn_id);
                 }
                 plugin::Resource::NetConn(conn_id) => {
                     // A late/never `close()` — teardown drops the raw socket now regardless of owner
-                    // (the ledger owns the id; `net::drop_conn` is idempotent — an already-removed
-                    // conn_id is a harmless no-op). Also covers the ConnectFailed/Closed cases (the
-                    // drain step already called drop_conn once).
-                    crate::net::drop_conn(conn_id);
+                    // (the ledger owns the id). A missing conn_id is a harmless no-op, including when
+                    // public retirement already removed it after a connect failure or close callback.
+                    crate::net::shutdown_conn(conn_id);
                 }
                 plugin::Resource::RemoteDbConn(h) => {
                     // Late/never close() — teardown drops the pool now (idempotent; a wrong/absent
@@ -8171,43 +8169,27 @@ pub(crate) mod frame_tests {
         );
         assert_eq!(crate::jobs::pending(), 1, "ws connect job is in-flight before unload");
         assert!(!crate::jobs::resolver_is_empty());
-        let ids = crate::jobs::resolver_ids();
-        assert_eq!(ids.len(), 1, "exactly one in-flight ws connect resolver");
-        let id = ids[0];
+        assert_eq!(
+            crate::jobs::resolver_ids().len(),
+            1,
+            "exactly one in-flight ws connect resolver"
+        );
         // Unload BEFORE the first drain so the handshake cannot settle into a live context.
         unload_plugin("wsul");
         assert!(!PLUGINS.with(|p| p.borrow().contains_key("wsul")), "context disposed");
         assert_eq!(crate::jobs::pending(), 0, "Job teardown decrements once");
         assert!(crate::jobs::resolver_is_empty());
 
-        // Poll the engine until the completing handshake emits Connected/Closed (or
-        // ConnectFailed). Do not drain first — a drain would consume the signal unseen.
-        // This is the echo-server handshake, not the 10s connect timeout.
-        let mut consumed_late = false;
-        for _ in 0..ASYNC_POLL_TICKS {
-            let poll = crate::ws::poll_signals();
-            if !poll.connects.is_empty() || !poll.drops.is_empty() {
-                for (cid, _result) in &poll.connects {
-                    assert_eq!(*cid, id, "late ws signal must be for the unloaded connect");
-                    assert!(
-                        crate::jobs::complete_job(*cid).is_none(),
-                        "late ws complete of a teardown-dropped resolver is a no-op"
-                    );
-                }
-                consumed_late = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+        // Teardown is separately wakeable from data/connect completion: the worker exits promptly
+        // and silently, rather than producing a completion into the unloaded generation.
+        for _ in 0..200 {
+            if crate::ws::active_worker_count() == 0 { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert!(
-            consumed_late,
-            "echo handshake never produced a late Connected/Closed signal (did not wait for the 10s timeout)"
-        );
-        // This test consumed the late poll itself, so drain will not `drop_conn` any
-        // deferred drops from that batch. Unload may also have raced the handshake
-        // insert — drop again so a post-teardown registry entry cannot leak into
-        // later process-global tests. Idempotent if teardown already removed it.
-        crate::ws::drop_conn(id);
+        assert_eq!(crate::ws::active_worker_count(), 0, "cancelled handshake worker must exit");
+        assert_eq!(crate::ws::active_conn_count(), 0, "teardown removes the registry row");
+        let poll = crate::ws::poll_signals();
+        assert!(poll.connects.is_empty() && poll.drops.is_empty(), "owner shutdown is silent");
         frame_async_drain();
         dispatch_pending_ws_events();
         assert_eq!(crate::jobs::pending(), 0, "late ws signal must not decrement again");
@@ -14073,7 +14055,7 @@ pub(crate) mod frame_tests {
     /// A ws connect failure (connection refused) REJECTS the connect Promise (the `.catch` runs)
     /// rather than resolving or panicking — mirrors `fetch_native_bad_host_rejects_the_promise`,
     /// proving `resolve_ws_connect`'s `Err` branch + the drain's `ConnectFailed` routing (incl. the
-    /// `ws::drop_conn` cleanup of the now-dead registry entry).
+    /// `ws::retire_conn` cleanup of the now-dead registry entry).
     #[test]
     fn ws_connect_bad_host_rejects_the_promise() {
         init(dummy_logger()).unwrap();
@@ -14232,7 +14214,7 @@ pub(crate) mod frame_tests {
     /// Regression: a plugin that calls `ws.close()` from inside its OWN `onMessage` handler —
     /// exactly `plugins/ws-demo`'s pattern (log the echo, then close) — must still see `onClose`
     /// fire. A self-initiated close used to be a silent `write.send(Close) + break` with NO
-    /// `WsSignal` emitted, so `onClose` (and the ledger's `ws::drop_conn` registry cleanup, which
+    /// `WsSignal` emitted, so `onClose` (and the ledger's `ws::retire_conn` cleanup, which
     /// is driven off that same `Closed` signal in the drain) never ran.
     /// A connection that dies the instant it is established must still reach the plugin's onClose.
     ///
@@ -14251,9 +14233,14 @@ pub(crate) mod frame_tests {
                 r#"
             var {{ WebSocket }} = require("@s2script/ws");
             globalThis.__out = "pending";
+            globalThis.__trace = [];
             WebSocket.connect("ws://127.0.0.1:{port}/").then(function (ws) {{
-                ws.onClose(function (code, reason) {{ globalThis.__out = "closed:" + code; }});
-            }}).catch(function (e) {{ globalThis.__out = "rejected"; }});
+                globalThis.__trace.push("connected");
+                ws.onClose(function (code, reason) {{
+                    globalThis.__trace.push("closed");
+                    globalThis.__out = globalThis.__trace.join(",") + ":" + code;
+                }});
+            }}).catch(function (e) {{ globalThis.__out = "rejected:" + String(e); }});
         "#,
                 port = port
             ),
@@ -14266,13 +14253,11 @@ pub(crate) mod frame_tests {
             if read_global_string("wsdead", "__out") != "pending" { settled = true; break; }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        // Either outcome is legitimate — the handshake may lose the race and reject — but SILENCE is
-        // not: a resolved connect whose close nobody hears is the bug.
         assert!(settled, "neither onClose nor catch ever ran: the close was delivered to nobody");
         let out = read_global_string("wsdead", "__out");
         assert!(
-            out.starts_with("closed:") || out == "rejected",
-            "expected a close code or a rejection, got {out:?}"
+            out.starts_with("connected,closed:"),
+            "the connect continuation must subscribe before the same-batch close dispatch; got {out:?}"
         );
         shutdown();
     }
@@ -14418,7 +14403,7 @@ pub(crate) mod frame_tests {
 
     /// A TCP connect failure (connection refused — port 1) REJECTS the connect Promise (the `.catch`
     /// runs) rather than resolving or panicking — proves `resolve_net_connect`'s `Err` branch + the
-    /// drain's `ConnectFailed` routing (incl. the `net::drop_conn` cleanup of the dead registry entry).
+    /// drain's `ConnectFailed` routing (incl. `net::retire_conn` cleanup of the dead registry entry).
     /// Mirrors `ws_connect_bad_host_rejects_the_promise`.
     #[test]
     fn net_connect_bad_port_rejects_the_promise() {
