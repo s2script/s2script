@@ -1,6 +1,6 @@
 # Slice 3: Bind Client to a connection lifetime
 
-**Status:** Implemented and locally verified; independent review and final Linux/live acceptance pending.
+**Status:** Complete for automated acceptance; human-client limitations are recorded below.
 **Branch:** `core/hardening-03-client-identity`
 **Parent / PR base:** `core/hardening-02-channels`
 **Workflow:** [Full workflow and gates](../2026-09-04-runtime-hardening.md)
@@ -30,16 +30,16 @@ for clients already present at runtime initialization and engine map-transition 
   recheck at dispatch. Drop stale loads before cache mutation, not only before notification.
 - [x] Inspect generated/manual Player wrappers and retained Client uses; update affected callers
   and classify SDK/host API compatibility together. Do not hand-edit generated files.
-- [ ] Wire the new plugin test into scripts/ci-js.sh. Run core, SDK, plugin typecheck, and live
+- [x] Wire the new plugin test into scripts/ci-js.sh. Run core, SDK, plugin typecheck, and live
   disconnect/reconnect tests; confirm normal connect, disconnect, and map-change behavior.
 
 ## Evidence required before completion
 
 - [x] Record the regression test and its failure on the parent implementation.
 - [x] Record implementation commits and passing focused checks.
-- [ ] Record applicable full-gate and live-server results, with environment limitations stated.
-- [ ] Review the diff against the parent and restack descendants using recorded old tips.
-- [ ] Set status to complete only when this slice's required gates pass.
+- [x] Record applicable full-gate and live-server results, with environment limitations stated.
+- [x] Review the diff against the parent and restack descendants using recorded old tips.
+- [x] Set status to complete only when this slice's required gates pass.
 
 ## Implementation and compatibility
 
@@ -93,15 +93,13 @@ coercion. Tests also cover valid-action controls, stale voice/getter defaults, d
 scope, per-subscriber lifecycle/cookie fences, shared engine string scratch, and pending-kick
 coercion preserving the replacement's record.
 
-## Remaining acceptance
+## Acceptance scope
 
-Independent review, a final Linux native gate/shim build, and live CS2 disconnect/reconnect and
-map-transition checks are pending on this commit. Live evidence must cover actual engine hook
-ordering, late-load occupancy including existing clients, deferred disconnect identity, and
-same-account replacement isolation. Exact in-game signon recovery for late-loaded clients is
-not claimed: bootstrap intentionally reports connected until an observed phase hook advances it.
-The controller owns final evidence and descendant restacking after review; this work does not
-restack, push, or mark the slice complete.
+Automated core/SDK regressions and the isolated live bot gate cover connection identity,
+same-slot replacement, same-SteamID mocked reconnects, stale delayed work, disconnect snapshots,
+existing-client discovery, and engine map reconciliation. Human map continuity, authenticated
+same-account reconnects, and visual chat/console receipt were not available to automate. They are
+not inferred from bot behavior. Bootstrap intentionally reports only an observed phase.
 
 ## Review round 1
 
@@ -187,3 +185,32 @@ state; an occupied previously unknown slot is initialized once, and absent slots
 Logs: `task-3-round3-phase-{red,green}.log` and `task-3-round3-client-core.log` in shared scratch.
 The focused client core tests pass; the prior 674-test core suite remains the unchanged-core
 baseline. Independent re-review and final Linux/live gates remain pending on this follow-up.
+
+## Final automated acceptance (2026-09-05)
+
+- Independent review: all five initial findings and both map-boundary findings closed. Final
+  focused review approved spec and quality at `db2cf0c0d8d45f9911d4473b673203e67a2d3918`.
+- Final core: **674 tests passed**. Full Linux `ci-native.sh` passed at map fix `b66058a`,
+  including shim build, engine symbols, and sanitizer selftests. The final phase-only fix
+  `db2cf0c` passed the C++ reconciliation suite, 19 focused core tests, release shim rebuild,
+  and symbol validation against the installed game. Core production code was unchanged by
+  that last fix. Earlier full JS gate passed 582 SDK tests, 69 UI, 3 clientprefs and 2 plugin
+  ownership tests; subsequent map fixes changed no JS.
+- Installed only on Nebula's isolated `s2script-cs2-hardening`, RCON 27016. Core SHA256:
+  `843b9d2b85eb871bacf1464b9b5448e61a3ad733c0cad9ad7663885658e1b758`;
+  shim SHA256: `0f0c601590168707d7b44e7207f23ffe8478299d50eced60ebd31967ee6fe822`.
+- Repeated 16 controlled bot cycles, then actual same-slot replacement at slot 6/userid 262:
+  stale command/fakeCommand returned false, voice unchanged, replacement remained valid;
+  fresh voice toggled/restored and fakeCommand succeeded. Earlier fresh kick proof and
+  synchronous nonempty disconnect snapshots passed. Bot `command()` can return true for
+  engine acceptance; this does not prove rendered console delivery.
+- `changelevel de_inferno` reproduced the original failure before correction: an absent slot
+  retained a valid handle with userid 65535. With the final fix, map-start logged
+  `live=0 retained=[6:false:-1]`; then the two newly connected bots were the only live clients.
+  All 14 base plugins plus two disposable probes remained running afterward.
+- Descendants were restacked from recorded exact bases after initial review. Final map commits
+  are being carried through the remaining in-progress stack; final integration/soak belongs
+  to the completed stack gate, not this slice's isolated acceptance.
+
+Detailed logs are retained in the controller's plan scratch `client-live/evidence-round1/`
+and `/tmp/s2script-hardening-slice3-round3-*.log`. No production server was modified.
