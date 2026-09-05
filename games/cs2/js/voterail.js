@@ -1,6 +1,4 @@
 // @s2script/cs2 — Vote rail presenter. Drives s2_vote* on s2script_lib.xml (hudkit.layout).
-// Hold hudkit here; read .layout inside functions. An eager hudkit.layout get during
-// run_prelude hits the load-window ui proxy and aborts the rest of the CS2 prelude.
 (function () {
   var cs2 = globalThis.__s2pkg_cs2 || {};
   var hudkit = cs2.hudkit;
@@ -8,33 +6,17 @@
   var Vote = globalThis.__s2pkg_votes && globalThis.__s2pkg_votes.Vote;
   var Clients = globalThis.__s2pkg_clients && globalThis.__s2pkg_clients.Clients;
 
-  if (!hudkit || !Vote || typeof Vote.registerTallyRenderer !== "function") return;
+  if (!hudkit || typeof hudkit.whenLive !== "function" || !Vote || typeof Vote.registerTallyRenderer !== "function") return;
 
   var ROOT = "s2_vote";
   var COUNT_HIDE = "s2-vote-count-hide";
   var PICKED = "s2-vote-picked";
   var tallies = {};
   var waiting = {};
-  var clicksBound = false;
+  var live = null;   // the ctx-bound layout, set by whenLive below; every paint reads it lazily
 
   function layoutOf() {
-    var layout = hudkit.layout;
-    if (!layout || typeof layout.forSlot !== "function" || typeof layout.onClick !== "function") return null;
-    if (!clicksBound) {
-      clicksBound = true;
-      for (var clickIndex = 0; clickIndex < 9; clickIndex++) {
-        (function (index) {
-          layout.onClick("s2_vote_o" + index, function (player) {
-            var slot = player && player.slot;
-            var tally = tallies[slot];
-            if (slot == null || !tally || choiceOf(tally) !== null) return;
-            var cast = globalThis.__s2_vote_cast;
-            if (typeof cast === "function") cast(slot, index);
-          });
-        })(clickIndex);
-      }
-    }
-    return layout;
+    return live;
   }
 
   function viewFor(slot) {
@@ -128,13 +110,40 @@
     clear: hide,
     hide: hide
   };
-  Vote.registerTallyRenderer(renderer);
 
-  if (Clients && typeof Clients.onDisconnect === "function") {
-    Clients.onDisconnect(function (c) {
-      if (c && typeof c.slot === "number" && tallies[c.slot]) hide(c.slot);
-    });
-  }
+  // Bind to the plugin's ctx-bound kit (P0-2). This file used to read `hudkit.layout` lazily
+  // inside every paint, which pulled the layout out of hostKit()'s stand-in-registrar kit —
+  // and bound the nine option clicks lazily at the FIRST paint, at runtime, where a click hook
+  // that was not already installed would try to register through a sealed load window. whenLive
+  // fires inside __s2_make_ctx with the load window open, so both the layout and the click
+  // bindings go through the plugin's ledgered registrar. Registering the tally renderer only
+  // here is deliberate: with no live rail, Vote's own "no tally renderer registered — chat-only"
+  // warning is a better outcome than a registered renderer that silently paints nothing.
+  hudkit.whenLive(function (kit) {
+    var layout = kit && kit.layout;
+    if (!layout || typeof layout.forSlot !== "function" || typeof layout.onClick !== "function") return;
+    live = layout;
 
-  globalThis.__s2pkg_voterail = { layoutOf: layoutOf, renderer: renderer };
+    for (var clickIndex = 0; clickIndex < 9; clickIndex++) {
+      (function (index) {
+        layout.onClick("s2_vote_o" + index, function (player) {
+          var slot = player && player.slot;
+          var tally = tallies[slot];
+          if (slot == null || !tally || choiceOf(tally) !== null) return;
+          var cast = globalThis.__s2_vote_cast;
+          if (typeof cast === "function") cast(slot, index);
+        });
+      })(clickIndex);
+    }
+
+    Vote.registerTallyRenderer(renderer);
+
+    if (Clients && typeof Clients.onDisconnect === "function") {
+      Clients.onDisconnect(function (c) {
+        if (c && typeof c.slot === "number" && tallies[c.slot]) hide(c.slot);
+      });
+    }
+
+    globalThis.__s2pkg_voterail = { layoutOf: layoutOf, renderer: renderer };
+  });
 })();

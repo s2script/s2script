@@ -14,7 +14,7 @@ function fakeElement() {
   };
 }
 
-function mount() {
+function mount(options = {}) {
   const elements = {};
   const clickHandlers = {};
   const calls = [];
@@ -47,12 +47,16 @@ function mount() {
   };
   let created = 0;
 
+  // voterail no longer reads hudkit.layout at all: it waits for the plugin's ctx-bound kit via
+  // hudkit.whenLive (P0-2). The mount collects the waiter and fires it below, standing in for
+  // __s2_make_ctx building the plugin's ui namespace.
+  const liveWaiters = [];
   globalThis.__s2pkg_cs2 = {
     CustomHudLayout: {
       create: () => { created++; return layout; },
     },
     hudkit: {
-      layout,
+      whenLive: (cb) => { liveWaiters.push(cb); },
       descriptor: {
         addons: ["3790153369"],
         resource: "panorama/layout/custom_game/s2script_lib.xml",
@@ -74,7 +78,12 @@ function mount() {
 
   const src = readFileSync(join(__dirname, "voterail.js"), "utf8");
   new Function(src)();
-  return { elements, clickHandlers, calls, armed, disarmed, cast, created, renderer };
+  const goLive = () => { for (const cb of liveWaiters.splice(0)) cb({ layout }); };
+  if (!options.deferLive) goLive();
+  return {
+    elements, clickHandlers, calls, armed, disarmed, cast, created, goLive,
+    get renderer() { return renderer; },
+  };
 }
 
 function tally(choice = null) {
@@ -159,58 +168,24 @@ test("vote rail does not spawn a second layout resource", () => {
     "panorama/layout/custom_game/s2script_lib.xml");
 });
 
-test("registering the rail does not read hudkit.layout at eval", () => {
-  const elements = {};
-  const clickHandlers = {};
-  const calls = [];
-  const element = (id) => elements[id] || (elements[id] = fakeElement());
-  const view = {
-    setText(id, value) { calls.push({ op: "text", id, value }); },
-    setClass(id, name, on) {
-      const classes = element(id).classList;
-      if (on) classes.add(name); else classes.remove(name);
-      calls.push({ op: "class", id, name, on });
-    },
-    show(id) {
-      element(id).classList.remove("s2-hide");
-      calls.push({ op: "show", id });
-    },
-    hide(id) {
-      element(id).classList.add("s2-hide");
-      calls.push({ op: "hide", id });
-    },
-    cursor() {},
-  };
-  const layout = {
-    forSlot: () => view,
-    onClick: (id, handler) => { clickHandlers[id] = handler; },
-  };
-  let sealed = true;
-  let renderer;
-  globalThis.__s2pkg_cs2 = {
-    hudkit: {
-      get layout() {
-        if (sealed) throw new Error("s2script: ui outside the load window");
-        return layout;
-      },
-    },
-  };
-  globalThis.__s2pkg_hudinput = { HudInput: { arm() {}, disarm() {} } };
-  globalThis.__s2pkg_votes = {
-    Vote: { registerTallyRenderer: (value) => { renderer = value; } },
-  };
-  globalThis.__s2pkg_clients = { Clients: { onDisconnect() {} } };
-  const cast = [];
-  globalThis.__s2_vote_cast = (slot, index) => cast.push({ slot, index });
-  delete globalThis.__s2pkg_voterail;
+test("binds clicks and registers the renderer when the kit goes live, not at eval and not at first paint", () => {
+  // Two invariants, both timing. (1) Nothing registers at prelude eval: with no live rail, Vote's
+  // own "no tally renderer registered" warning must stay reachable rather than a registered
+  // renderer that silently paints nothing. (2) Once live, the nine option clicks bind IMMEDIATELY
+  // — whenLive fires inside __s2_make_ctx while the load window is open, which is the only time
+  // layout.onClick can still install the click hook through the plugin's ledgered registrar.
+  // Binding lazily at the first paint (the old shape) would land after the window seals.
+  const mounted = mount({ deferLive: true });
+  assert.equal(mounted.renderer, undefined, "no tally renderer before the ctx-bound kit exists");
+  assert.deepEqual(Object.keys(mounted.clickHandlers), [], "no clicks bound at eval");
 
-  assert.doesNotThrow(() => {
-    new Function(readFileSync(join(__dirname, "voterail.js"), "utf8"))();
-  });
-  assert.ok(renderer, "Vote.registerTallyRenderer must run during prelude");
-  sealed = false;
-  renderer.show(2, tally());
-  assert.equal(elements.s2_vote_o0_c.classList.contains("s2-vote-count-hide"), true);
-  clickHandlers.s2_vote_o1({ slot: 2 });
-  assert.deepEqual(cast, [{ slot: 2, index: 1 }]);
+  mounted.goLive();
+  assert.ok(mounted.renderer, "renderer registers once the kit is live");
+  assert.equal(Object.keys(mounted.clickHandlers).length, 9,
+    "all option clicks bind at go-live, before any paint");
+
+  mounted.renderer.show(2, tally());
+  assert.equal(mounted.elements.s2_vote_o0_c.classList.contains("s2-vote-count-hide"), true);
+  mounted.clickHandlers.s2_vote_o1({ slot: 2 });
+  assert.deepEqual(mounted.cast, [{ slot: 2, index: 1 }]);
 });

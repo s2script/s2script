@@ -21,12 +21,19 @@ function mount(options = {}) {
   };
   const clientHandlers = { disconnect: [], active: [] };
 
+  // menuhud no longer claims at prelude eval: it waits for the plugin's ctx-bound kit via
+  // hudkit.whenLive (P0-2). The mount collects the waiter and fires it below, standing in for
+  // __s2_make_ctx building the plugin's ui namespace.
+  const liveWaiters = [];
+  const kit = {
+    modal: (s) => {
+      spec = s;
+      return options.claimNull ? null : claim;
+    }
+  };
   globalThis.__s2pkg_cs2 = {
     hudkit: {
-      modal: (s) => {
-        spec = s;
-        return options.claimNull ? null : claim;
-      }
+      whenLive: (cb) => { liveWaiters.push(cb); }
     },
     Player: { fromSlot: () => ({ pawn }) }
   };
@@ -50,7 +57,9 @@ function mount(options = {}) {
   };
   delete globalThis.__s2pkg_menuhud;
   new Function(source)();
-  return { calls, registered, arms, disarms, pawn, spec, claim, clientHandlers };
+  const goLive = () => { for (const cb of liveWaiters.splice(0)) cb(kit); };
+  if (!options.deferLive) goLive();
+  return { calls, registered, arms, disarms, pawn, spec: () => spec, claim, clientHandlers, goLive };
 }
 
 function session(options = {}) {
@@ -105,6 +114,17 @@ test("registers the HUD renderer for Center and Chat", () => {
   assert.equal(mounted.registered.chat, globalThis.__s2pkg_menuhud.renderer);
 });
 
+test("registers NOTHING before the ctx-bound kit exists", () => {
+  // The renderer overwrites the core's chat renderer, so it must not register off a kit that
+  // does not exist yet — until whenLive fires, the core chat renderer has to keep standing.
+  const mounted = mount({ deferLive: true });
+  assert.deepEqual(mounted.registered, {});
+  assert.equal(globalThis.__s2pkg_menuhud, undefined);
+  mounted.goLive();
+  assert.equal(mounted.registered.center, globalThis.__s2pkg_menuhud.renderer);
+  assert.equal(mounted.registered.chat, globalThis.__s2pkg_menuhud.renderer);
+});
+
 test("open maps page rows and picks via the item key", () => {
   const mounted = mount();
   const s = session({
@@ -115,9 +135,9 @@ test("open maps page rows and picks via the item key", () => {
     ]
   });
   mounted.registered.center.open(s);
-  const rows = mounted.spec.rows(3);
+  const rows = mounted.spec().rows(3);
   assert.deepEqual(rows.map((r) => r.a), ["First", "Second", "Third"]);
-  mounted.spec.onPick(3, 1, rows[1]);
+  mounted.spec().onPick(3, 1, rows[1]);
   assert.deepEqual(s.selected, [8]);
 });
 
@@ -131,11 +151,11 @@ test("disabled rows stay visible but are not selectable", () => {
     ]
   });
   mounted.registered.center.open(s);
-  const rows = mounted.spec.rows(3);
+  const rows = mounted.spec().rows(3);
   assert.equal(rows[1].disabled, true);
-  mounted.spec.onPick(3, 1, rows[1]);
+  mounted.spec().onPick(3, 1, rows[1]);
   assert.deepEqual(s.selected, []);
-  mounted.spec.onPick(3, 2, rows[2]);
+  mounted.spec().onPick(3, 2, rows[2]);
   assert.deepEqual(s.selected, [12]);
 });
 
@@ -143,7 +163,7 @@ test("pager footer Next calls pickNumber(9)", () => {
   const mounted = mount();
   const s = session({ page: 1, pageCount: 3 });
   mounted.registered.center.open(s);
-  const buttons = mounted.spec.buttons(3);
+  const buttons = mounted.spec().buttons(3);
   assert.deepEqual(buttons.map((b) => b.text), ["Back", "Next", "Close"]);
   buttons[1].onClick(3);
   assert.equal(s.actions.next, 1);
@@ -209,7 +229,7 @@ test("a disconnect clears the session, the cursor grab and the Tab arm", () => {
     "the cursor grab must be released",
   );
   assert.ok(mounted.calls.some((c) => c.method === "forget" && c.slot === 3));
-  assert.deepEqual(mounted.spec.rows(3), [], "the session must be gone");
+  assert.deepEqual(mounted.spec().rows(3), [], "the session must be gone");
 });
 
 test("reconnecting into the same slot is not left frozen or captured", () => {
@@ -219,8 +239,8 @@ test("reconnecting into the same slot is not left frozen or captured", () => {
   mounted.clientHandlers.active[0]({ slot: 3 });
 
   assert.deepEqual(mounted.disarms, [3]);
-  assert.deepEqual(mounted.spec.rows(3), []);
-  assert.deepEqual(mounted.spec.buttons(3), [], "no footer buttons for a slot with no session");
+  assert.deepEqual(mounted.spec().rows(3), []);
+  assert.deepEqual(mounted.spec().buttons(3), [], "no footer buttons for a slot with no session");
 });
 
 test("the departed player's moveType is dropped, never written onto the next occupant", () => {

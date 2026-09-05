@@ -492,8 +492,18 @@ test("forSlot.callout and forSlot.motd bind the same player", () => {
   assert.ok(calls.some((c) => c.op === "show" && c.slot === 7 && c.id === "s2_motd"));
 });
 
-test("hudkit.layout does not go through the load-window ui proxy", () => {
-  const { hudkit, hud } = mountHudkit();
+test("hudkit refuses before the ctx-bound base exists, then resolves against it (P0-2)", () => {
+  const { hudkit, hud, goLive } = mountHudkit();
+  // Before any load ctx exists there is nothing safe to bind to: the old behavior minted a kit
+  // over a stand-in registrar here, which painted but never delivered a click. Refusal (null)
+  // must be the answer, not a half-alive component.
+  assert.equal(hudkit.layout, null);
+  assert.equal(hudkit.modal({ title: "T", rows: [], buttons: [] }), null);
+  // The descriptor is static module data and must stay readable pre-live —
+  // CustomHudLayout.components(hudkit.spec) cannot depend on resolution order.
+  assert.equal(hudkit.spec.resource, "panorama/layout/custom_game/s2script_lib.xml");
+  // Simulate __s2_make_ctx building the plugin's ui namespace: hudkit binds to THAT base.
+  goLive();
   assert.equal(hudkit.layout, hud);
   assert.doesNotThrow(() => hudkit.modal({ title: "T", rows: [], buttons: [] }));
 });
@@ -527,5 +537,8 @@ function mountHudkit() {
   globalThis.__s2pkg_cs2 = { CustomHudLayout: globalThis.__s2_game_ns("ui") };
   const src = readFileSync(join(__dirname, "components.js"), "utf8");
   new Function(src)();
-  return { hudkit: globalThis.__s2pkg_cs2.hudkit, hud, calls, clickHandlers };
+  // The decorated factory's only production caller is __s2_make_ctx; calling it here stands in
+  // for a plugin load creating its ctx-bound ui namespace.
+  const goLive = () => globalThis.__s2pkg_game_ctx.ui((thunk) => { if (typeof thunk === "function") thunk(); }, (fn) => fn);
+  return { hudkit: globalThis.__s2pkg_cs2.hudkit, hud, calls, clickHandlers, goLive };
 }

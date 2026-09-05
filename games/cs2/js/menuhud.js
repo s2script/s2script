@@ -117,110 +117,123 @@
     return buttons;
   }
 
-  if (!hudkit || typeof hudkit.modal !== "function" || !Menu || !MenuStyle) return;
+  if (!hudkit || typeof hudkit.whenLive !== "function" || !Menu || !MenuStyle) return;
 
-  var claim = hudkit.modal({
-    title: function (slot) {
-      var session = sessions[slot];
-      return session && session.menu ? (session.menu.title || "") : "";
-    },
-    rows: itemRows,
-    buttons: footerButtons,
-    pageSize: 8,
-    onPick: function (slot, _index, row) {
-      if (!row || row.disabled || !row.key) return;
-      var session = sessions[slot];
-      if (session && typeof session.pickNumber === "function") session.pickNumber(parseInt(row.key, 10));
-    }
-  });
-
-  if (!claim) {
-    log("hudkit modal claim unavailable; Menu renderer not registered (Chat fallback remains active)");
-    return;
-  }
-
-  function setCursor(slot, on) {
-    if (typeof claim.setCursor === "function") claim.setCursor(slot, on);
-  }
-
-  var renderer = {
-    open: function (session) {
-      var slot = session.slot;
-      sessions[slot] = session;
-      var activation = activationOf(session);
-      claim.open(slot, { cursor: activation === "immediate" });
-      freeze(slot, session);
-      if (activation === "tab" && HudInput && typeof HudInput.arm === "function") {
-        HudInput.arm(slot, {
-          onActivate: function () { setCursor(slot, true); }
-        });
+  // Everything below waits for the plugin's ctx-bound kit (P0-2). This file used to claim its
+  // modal right here, at prelude eval — which forced hostKit() to mint the shared kit over a
+  // stand-in registrar with no load ctx behind it, and every plugin's documented ctx.ui.kit /
+  // hudkit.* then inherited that dead-context instance: panels painted but clicks never arrived.
+  // hudkit.whenLive fires inside __s2_make_ctx, while the load window is still open, so the claim
+  // made here registers its click hook through the plugin's ledgered registrar.
+  //
+  // Registration is inside the callback ON PURPOSE: the core registers its own chat renderer for
+  // MenuStyle.Chat (core/js/prelude.js), and this file OVERWRITES it. If we cannot get a live,
+  // clickable sheet, not registering at all — leaving the core's chat renderer standing — beats
+  // registering a renderer that paints an uninteractive panel.
+  hudkit.whenLive(function (kit) {
+    var claim = kit.modal({
+      title: function (slot) {
+        var session = sessions[slot];
+        return session && session.menu ? (session.menu.title || "") : "";
+      },
+      rows: itemRows,
+      buttons: footerButtons,
+      pageSize: 8,
+      onPick: function (slot, _index, row) {
+        if (!row || row.disabled || !row.key) return;
+        var session = sessions[slot];
+        if (session && typeof session.pickNumber === "function") session.pickNumber(parseInt(row.key, 10));
       }
-    },
-    update: function (session) {
-      sessions[session.slot] = session;
-      if (typeof claim.refresh === "function") claim.refresh(session.slot);
-    },
-    close: function (slot) {
-      if (typeof claim.close === "function") claim.close(slot);
-      unfreeze(slot);
-      if (HudInput && typeof HudInput.disarm === "function") HudInput.disarm(slot);
+    });
+
+    if (!claim) {
+      log("hudkit modal claim unavailable; Menu renderer not registered (the core chat renderer stands)");
+      return;
+    }
+
+    function setCursor(slot, on) {
+      if (typeof claim.setCursor === "function") claim.setCursor(slot, on);
+    }
+
+    var renderer = {
+      open: function (session) {
+        var slot = session.slot;
+        sessions[slot] = session;
+        var activation = activationOf(session);
+        claim.open(slot, { cursor: activation === "immediate" });
+        freeze(slot, session);
+        if (activation === "tab" && HudInput && typeof HudInput.arm === "function") {
+          HudInput.arm(slot, {
+            onActivate: function () { setCursor(slot, true); }
+          });
+        }
+      },
+      update: function (session) {
+        sessions[session.slot] = session;
+        if (typeof claim.refresh === "function") claim.refresh(session.slot);
+      },
+      close: function (slot) {
+        if (typeof claim.close === "function") claim.close(slot);
+        unfreeze(slot);
+        if (HudInput && typeof HudInput.disarm === "function") HudInput.disarm(slot);
+        delete sessions[slot];
+      }
+    };
+
+    /**
+     * Tear a slot's menu down WITHOUT restoring its saved moveType.
+     *
+     * A player who leaves mid-menu never reaches `renderer.close`: a disconnect is not a close, and
+     * the plugin that owns the Menu has no reason to close one for someone who is gone. Everything
+     * this renderer put on the slot then outlives them — the session, the saved moveType, the cursor
+     * grab and the Tab arm — and the next occupant of that slot inherits all of it. In practice that
+     * is the SAME person reconnecting, who arrives frozen, input-captured, and waiting to click a
+     * sheet that nobody drew for them.
+     *
+     * `unfreeze` is deliberately not used: it would write a departed player's moveType onto whoever
+     * holds the slot now. The replacement pawn is fresh and already has the right one, so the saved
+     * value is dropped rather than applied.
+     */
+    function discardSession(slot) {
+      if (typeof slot !== "number" || slot < 0) return;
+      var had = sessions[slot] !== undefined || frozenMoveType[slot] !== undefined;
       delete sessions[slot];
+      delete frozenMoveType[slot];
+      // UNCONDITIONAL — this used to return early when no session was tracked, on the reasoning that
+      // there was nothing to release. That reasoning was wrong in the exact case this function exists
+      // for. The session is deleted by `renderer.close`, but the CURSOR GRAB is per-player state on
+      // the layout entity and is released separately; any path that drops one without the other
+      // leaves a player captured, pointing at a menu no longer drawn — and reconnecting was then a
+      // no-op, because by that point there was no session left to find. Measured on a live server:
+      // the teardown ran and logged NOTHING, because it had already returned above this line.
+      //
+      // Releasing state that is already released is free. Failing to release it is a player who
+      // cannot play. So the teardown no longer asks whether it thinks it has anything to do.
+      if (typeof claim.close === "function") claim.close(slot);
+      setCursor(slot, false);
+      if (HudInput && typeof HudInput.disarm === "function") HudInput.disarm(slot);
+      if (typeof claim.forget === "function") claim.forget(slot);
+      // Only NOISE is conditional: `onActive` fires for every joiner and most never had a menu.
+      if (had) log("cleared a stale menu session on slot " + slot);
     }
-  };
 
-  /**
-   * Tear a slot's menu down WITHOUT restoring its saved moveType.
-   *
-   * A player who leaves mid-menu never reaches `renderer.close`: a disconnect is not a close, and
-   * the plugin that owns the Menu has no reason to close one for someone who is gone. Everything
-   * this renderer put on the slot then outlives them — the session, the saved moveType, the cursor
-   * grab and the Tab arm — and the next occupant of that slot inherits all of it. In practice that
-   * is the SAME person reconnecting, who arrives frozen, input-captured, and waiting to click a
-   * sheet that nobody drew for them.
-   *
-   * `unfreeze` is deliberately not used: it would write a departed player's moveType onto whoever
-   * holds the slot now. The replacement pawn is fresh and already has the right one, so the saved
-   * value is dropped rather than applied.
-   */
-  function discardSession(slot) {
-    if (typeof slot !== "number" || slot < 0) return;
-    var had = sessions[slot] !== undefined || frozenMoveType[slot] !== undefined;
-    delete sessions[slot];
-    delete frozenMoveType[slot];
-    // UNCONDITIONAL — this used to return early when no session was tracked, on the reasoning that
-    // there was nothing to release. That reasoning was wrong in the exact case this function exists
-    // for. The session is deleted by `renderer.close`, but the CURSOR GRAB is per-player state on
-    // the layout entity and is released separately; any path that drops one without the other
-    // leaves a player captured, pointing at a menu no longer drawn — and reconnecting was then a
-    // no-op, because by that point there was no session left to find. Measured on a live server:
-    // the teardown ran and logged NOTHING, because it had already returned above this line.
-    //
-    // Releasing state that is already released is free. Failing to release it is a player who
-    // cannot play. So the teardown no longer asks whether it thinks it has anything to do.
-    if (typeof claim.close === "function") claim.close(slot);
-    setCursor(slot, false);
-    if (HudInput && typeof HudInput.disarm === "function") HudInput.disarm(slot);
-    if (typeof claim.forget === "function") claim.forget(slot);
-    // Only NOISE is conditional: `onActive` fires for every joiner and most never had a menu.
-    if (had) log("cleared a stale menu session on slot " + slot);
-  }
+    Menu.registerRenderer(MenuStyle.Center, renderer);
+    Menu.registerRenderer(MenuStyle.Chat, renderer);
 
-  Menu.registerRenderer(MenuStyle.Center, renderer);
-  Menu.registerRenderer(MenuStyle.Chat, renderer);
-
-  // Both edges, because neither alone is enough. A timeout or a crash does not always deliver the
-  // disconnect, so ACTIVATE is the backstop — the last moment before the new occupant of a slot can
-  // be frozen by state they never created. Both are idempotent.
-  if (Clients) {
-    if (typeof Clients.onDisconnect === "function") {
-      Clients.onDisconnect(function (client) { discardSession(client && client.slot); });
+    // Both edges, because neither alone is enough. A timeout or a crash does not always deliver the
+    // disconnect, so ACTIVATE is the backstop — the last moment before the new occupant of a slot can
+    // be frozen by state they never created. Both are idempotent.
+    if (Clients) {
+      if (typeof Clients.onDisconnect === "function") {
+        Clients.onDisconnect(function (client) { discardSession(client && client.slot); });
+      }
+      if (typeof Clients.onActive === "function") {
+        Clients.onActive(function (client) { discardSession(client && client.slot); });
+      }
     }
-    if (typeof Clients.onActive === "function") {
-      Clients.onActive(function (client) { discardSession(client && client.slot); });
-    }
-  }
 
-  globalThis.__s2pkg_menuhud = {
-    renderer: renderer, rows: itemRows, buttons: footerButtons, discardSession: discardSession
-  };
+    globalThis.__s2pkg_menuhud = {
+      renderer: renderer, rows: itemRows, buttons: footerButtons, discardSession: discardSession
+    };
+  });
 })();

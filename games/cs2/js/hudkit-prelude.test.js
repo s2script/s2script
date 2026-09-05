@@ -31,7 +31,13 @@ test.afterEach(() => {
   delete globalThis.__s2ui_pool;
 });
 
-test("CS2 prelude can claim hudkit and register menu + vote renderers without a load ctx", () => {
+// The concatenation-order integration test for the P0-2 contract: components.js, menuhud.js and
+// voterail.js evaluate at prelude time WITHOUT a load ctx and register NOTHING — no stand-in ui
+// base, no modal claim, no renderer overwriting the core's chat renderer. Everything binds the
+// moment the core builds the plugin's ctx-bound ui namespace (simulated here by calling the
+// decorated factory the way __s2_make_ctx does), while the load window is still open.
+test("CS2 prelude defers hudkit binding to the plugin's ctx-bound ui base", () => {
+  const clickHandlers = {};
   const hud = {
     set() { return null; },
     setClass() { return null; },
@@ -39,7 +45,7 @@ test("CS2 prelude can claim hudkit and register menu + vote renderers without a 
     hide() { return null; },
     cursor() { return null; },
     forget() {},
-    onClick() {},
+    onClick(id, fn) { clickHandlers[id] = fn; },
     forSlot() {
       return {
         setText() {},
@@ -68,22 +74,46 @@ test("CS2 prelude can claim hudkit and register menu + vote renderers without a 
   globalThis.__s2pkg_votes = {
     Vote: { registerTallyRenderer: (renderer) => { voteRenderer = renderer; } },
   };
-  globalThis.__s2pkg_clients = { Clients: { onDisconnect() {} } };
+  globalThis.__s2pkg_clients = { Clients: { onDisconnect() {}, onActive() {} } };
   globalThis.__s2pkg_hudinput = { HudInput: { arm() {}, disarm() {} } };
 
   assert.doesNotThrow(() => evalFile("components.js"));
   assert.doesNotThrow(() => evalFile("menuhud.js"));
   assert.doesNotThrow(() => evalFile("voterail.js"));
 
-  assert.equal(typeof globalThis.__s2pkg_cs2.hudkit.modal, "function");
-  assert.equal(typeof globalThis.__s2pkg_cs2.hudkit.dashboard, "function");
-  assert.equal(globalThis.__s2pkg_cs2.hudkit.layout, hud);
-  assert.ok(registered.center, "Menu HUD renderer must register during prelude");
-  assert.ok(registered.chat, "Chat menus must use the same HUD renderer");
-  assert.ok(voteRenderer, "Vote.registerTallyRenderer must run during prelude");
-  assert.doesNotThrow(() => globalThis.__s2pkg_cs2.hudkit.modal({
-    title: "T",
-    rows: [],
-    buttons: [],
-  }));
+  const hudkit = globalThis.__s2pkg_cs2.hudkit;
+  assert.equal(typeof hudkit.modal, "function");
+  assert.equal(typeof hudkit.dashboard, "function");
+  assert.equal(typeof hudkit.whenLive, "function");
+
+  // Prelude eval bound NOTHING: there is no load ctx yet, so a kit minted here could only sit on
+  // a stand-in registrar (the P0-2 defect — panels that paint but never deliver a click). The
+  // core's chat renderer must still be the registered menu renderer at this point.
+  assert.deepEqual(registered, {}, "menuhud must not overwrite the core chat renderer at prelude eval");
+  assert.equal(voteRenderer, undefined, "voterail must not register a tally renderer at prelude eval");
+  assert.equal(hudkit.layout, null, "no layout before the ctx-bound base exists");
+  assert.equal(hudkit.modal({ title: "T", rows: [], buttons: [] }), null,
+    "a pre-ctx claim is refused, not half-alive");
+  // Static descriptor data stays readable pre-live: the documented
+  // CustomHudLayout.components(hudkit.spec) pattern must not depend on resolution order.
+  assert.equal(hudkit.spec.resource, "panorama/layout/custom_game/s2script_lib.xml");
+
+  // __s2_make_ctx builds the plugin's ui namespace through the decorated factory. That call is
+  // what makes the kit live — and it happens with the load window open, so the buffered thunks
+  // below stand in for ctxReg registrations replayed at arm.
+  const bufferedThunks = [];
+  const base = globalThis.__s2pkg_game_ctx.ui(
+    (thunk) => { bufferedThunks.push(thunk); },
+    (fn) => fn,
+  );
+
+  assert.equal(hudkit.layout, hud, "hudkit resolves to the ctx-bound base's layout");
+  assert.ok(registered.center, "Menu HUD renderer registers once the kit is live");
+  assert.ok(registered.chat, "Chat menus use the same HUD renderer");
+  assert.equal(registered.center, registered.chat);
+  assert.ok(voteRenderer, "Vote tally renderer registers once the kit is live");
+  assert.ok(clickHandlers.s2_vote_o0, "vote option clicks bind at go-live, not at first paint");
+  assert.doesNotThrow(() => hudkit.modal({ title: "T", rows: [], buttons: [] }));
+  // ctx.ui.kit and hudkit.* are ONE instance — the shared modal pool claims stay coherent.
+  assert.equal(base.kit.layout, hudkit.layout);
 });
