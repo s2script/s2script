@@ -772,8 +772,8 @@
         return plan;
       }
 
-      var footerFns = [];   // resolved per paint, read by the click handlers below
-
+      // Footer actions belong to the player's last painted view. Another player's paint
+      // must not change the actions behind this player's buttons (including automatic pagers).
       function paint(slot) {
         if (released) return;
         var st = open[slot];
@@ -822,7 +822,8 @@
         if (det.length === 0) hide(slot, ids.detailBox); else show(slot, ids.detailBox);
         for (var d = 0; d < DETAIL; d++) setText(slot, ids.detail[d], det[d] == null ? "" : det[d]);
 
-        footerFns = [];
+        var footerFns = [];
+        st.footerFns = footerFns;
         var plan = footerPlan(slot);
         for (var f = 0; f < FOOTERS; f++) {
           if (!plan[f]) { hide(slot, ids.footers[f].id); footerFns.push(null); continue; }
@@ -857,7 +858,7 @@
           onClick(ids.footers[fIndex].id, function (player) {
             var slot = slotOf(player);
             if (!open[slot]) return;
-            var fn = footerFns[fIndex];
+            var fn = open[slot].footerFns && open[slot].footerFns[fIndex];
             if (fn) fn(slot, self.forSlot(slot));
           });
         })(fi);

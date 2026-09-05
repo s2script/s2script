@@ -389,6 +389,40 @@ test("buttons may be a per-slot function", () => {
   assert.deepStrictEqual(clicks, [2]);
 });
 
+test("each player dispatches the footer handlers from their own last paint", () => {
+  const { ui, clickHandlers } = mount();
+  const calls = [];
+  const m = ui.modal({ rows: [], buttons: (slot) => slot === 1
+    ? [{ text: "Buy", onClick: () => calls.push("buy") }]
+    : [{ text: "Ban", onClick: () => calls.push("ban") }, { text: "Extra", onClick: () => calls.push("extra") }],
+  });
+  m.open(1); m.open(2);
+  clickHandlers.s2_m0_f0(1);
+  clickHandlers.s2_m0_f0(2);
+  clickHandlers.s2_m0_f1(1); // This button exists only on player 2's sheet.
+  assert.deepStrictEqual(calls, ["buy", "ban"]);
+  m.refresh(1);
+  clickHandlers.s2_m0_f1(2);
+  assert.deepStrictEqual(calls, ["buy", "ban", "extra"]);
+  m.forget(2);
+  clickHandlers.s2_m0_f0(2);
+  m.close(1);
+  clickHandlers.s2_m0_f0(1);
+  assert.deepStrictEqual(calls, ["buy", "ban", "extra"], "closed/forgotten viewers cannot dispatch");
+});
+
+test("automatic pager buttons retain each viewer's own footer positions", () => {
+  const { ui, clickHandlers } = mount();
+  const m = ui.modal({
+    rows: (slot) => Array.from({ length: slot === 1 ? 20 : 1 }, (_, i) => ({ a: String(i) })),
+    buttons: [{ text: "Close", onClick: (_slot, view) => view.close() }],
+  });
+  m.open(1); m.open(2);
+  clickHandlers.s2_m0_f2(1); // Next, absent entirely from player 2's one-page sheet.
+  assert.strictEqual(m.cursor(1), 8);
+  assert.strictEqual(m.cursor(2), 0);
+});
+
 test("callout paints the docked hint without grabbing the cursor", () => {
   const { ui, calls } = mount();
   ui.callout(1, { title: "Zone", message: "Press E", variant: "warn", holdSeconds: 0 });

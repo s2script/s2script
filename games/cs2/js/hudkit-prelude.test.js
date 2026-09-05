@@ -293,3 +293,15 @@ test("a cross-plugin menu transition does not forward the triggering click to th
   w.dispatchClick(1, "s2_m1_r0");
   assert.deepEqual(next.picks, [1]);
 });
+
+test("built-in menus keep Next and Back bound to the player who sees them", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const first = w.session(1), second = w.session(2);
+  const firstView = first.view(), secondView = second.view();
+  first.view = () => ({ ...firstView, page: 0, pageCount: 2 });
+  second.view = () => ({ ...secondView, page: 1, pageCount: 2 });
+  p.renderers.center.open(first); p.renderers.center.open(second);
+  p.click(1, "s2_m0_f0"); p.click(2, "s2_m0_f0");
+  assert.deepEqual(first.picks, [9], "Next must stay Next after another player paints Back");
+  assert.deepEqual(second.picks, [8]);
+});

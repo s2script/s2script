@@ -280,7 +280,12 @@ export interface ModalSpec {
    */
   readonly detail?: (slot: number, row: Row | undefined, cursor: number) => readonly string[];
   // `cursor` is the ABSOLUTE index into the full row list, matching onPick and Modal.cursor().
-  /** Up to 5; Prev/Next claim the trailing two automatically when the list pages. */
+  /**
+   * Up to 5; Prev/Next claim the trailing two automatically when the list pages.
+   *
+   * Text, variants, and handlers may differ for each player. Clicks dispatch through the
+   * handler table from that player's most recent paint; other players' updates do not change it.
+   */
   readonly buttons?: readonly FooterButton[] | ((slot: number) => readonly FooterButton[]);
   readonly pageSize?: number;
   /** Sheet width. Default `md` (560px). */
