@@ -1,72 +1,21 @@
-//! Plugin directory watcher: polls for `.s2sp` archives, reads and validates them
-//! in-memory, and drives `v8host::{load_plugin_js, unload_plugin}`.
+//! Plugin directory watcher: submits `.s2sp` discovery, reads, and archive parsing to a
+//! dedicated worker, then validates and applies owned results on the game thread.
 //!
 //! Engine-generic: no CS2 identifiers appear here.  The plugin `id` and JS source
 //! come entirely from the manifest and archive; core never inspects their content.
 //!
-//! Degrade-never-crash: any read/parse/load error logs a named WARN and continues;
-//! the broken entry is left at its OLD mtime so the next poll re-tries it.
+//! Degrade-never-crash: any read/parse/load error logs a named WARN and continues. Retryable
+//! failures leave their strong path stamp uncommitted; semantic refusals commit it to warn once.
 
-use serde::Deserialize;
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::ffi::{CStr, CString, c_char};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime};
 
-// ---------------------------------------------------------------------------
-// Manifest
-// ---------------------------------------------------------------------------
-
-/// One derived `publishes` entry: the contract's resolved version + the sha256 of the
-/// exact `.d.ts` bytes the implementation typechecked against (design spec §4.2).
-/// The interface NAME is the map key and is deliberately independent of the plugin id.
-#[derive(Debug, Deserialize, Clone)]
-pub struct PublishDecl {
-    pub version: String,
-    #[serde(rename = "typesSha256", default)]
-    pub types_sha256: String,
-}
-
-/// Minimal manifest parsed from `manifest.json` inside a `.s2sp` archive.
-/// Unknown extra fields are ignored (forward-compatible via serde's default).
-#[derive(Debug, Deserialize)]
-pub struct Manifest {
-    pub id: String,
-    /// Carried in the manifest contract; consumed by the crash-reporter breadcrumb's plugin table
-    /// (semver enforcement itself is still deferred).
-    pub version: String,
-    #[serde(rename = "apiVersion")]
-    pub api_version: String,
-    #[serde(rename = "pluginDependencies", default)]
-    pub plugin_dependencies: std::collections::HashMap<String, String>,
-    #[serde(rename = "optionalPluginDependencies", default)]
-    pub optional_plugin_dependencies: std::collections::HashMap<String, String>,
-    /// Interfaces this plugin implements: interface-name → {version, typesSha256}.
-    /// Empty when the plugin publishes nothing. The host injects an interface's version
-    /// from HERE — a plugin may never type a version string (spec §4.3).
-    #[serde(default)]
-    pub publishes: std::collections::HashMap<String, PublishDecl>,
-    /// B1: interface-name → sha256 of the contract bytes this plugin COMPILED against
-    /// (`s2s build` hashes the consumer's `.s2script/types/<iface>/index.d.ts` copy).
-    /// Verified against the producer's published typesSha256 at load (fail-fast) and
-    /// per-call (late-producer backstop). Empty for pre-B1 or copy-less consumers.
-    #[serde(rename = "compiledAgainst", default)]
-    pub compiled_against: std::collections::HashMap<String, String>,
-    #[serde(default)]
-    pub config: std::collections::HashMap<String, crate::config::ConfigEntry>,
-    /// Capabilities this plugin requests (spec §6). Declaration is necessary but NOT sufficient —
-    /// an operator allow-list entry is also required (`permission_allowed`), which is what the
-    /// runtime actually gates on; this field is the auditable record of what the plugin ASKED for
-    /// (`s2s install` surfaces it before an operator installs).
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub permissions: Vec<String>,
-    /// Author-side path to the plugin's gamedata source. Informational only at runtime; the runtime
-    /// consumes the packed `gamedata.json` member (`read_s2sp`'s third element), never this path.
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub gamedata: Option<String>,
-}
+pub use crate::loader_worker::{Manifest, PublishDecl};
+use crate::loader_worker::{ConfigSnapshot, FileStamp, LoaderPolicy, LoaderWorker, PreparedPlugin, Submit, WorkerResult};
 
 // ---------------------------------------------------------------------------
 // Operator permission allow-list (spec §6)
@@ -106,26 +55,11 @@ pub fn load_permissions_from_str(s: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Load the allow-list from `configs/permissions.json` on first use, through the same `config_read`
-/// op every other framework config file goes through. Fail-safe: an absent ops table, a missing file
-/// or malformed JSON leaves the allow-list UNLOADED — default-DENY — and, because nothing is cached
-/// on failure, the next check retries (a file dropped in later takes effect on the next plugin load).
-fn ensure_permissions_loaded() {
-    if PERMISSIONS.read().map(|g| g.is_some()).unwrap_or(false) { return; }
-    let Some(text) = crate::v8host::config_file_content(PERMISSIONS_CONFIG_ID) else { return };
-    if let Err(reason) = load_permissions_from_str(&text) {
-        if !PERMISSIONS_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            crate::v8host::log_warn(&format!(
-                "WARN: {} - ignoring the operator allow-list (every gated capability stays denied)",
-                reason
-            ));
-        }
-    }
-}
-
+/// The periodic loader reads `configs/permissions.json` on its worker. Fail-safe: a missing or
+/// malformed file leaves the allow-list unloaded (or retains the last valid snapshot), so gated
+/// capabilities stay denied until a later worker snapshot parses successfully.
 /// Default-DENY: unloaded or absent allow-list permits nothing.
 pub fn permission_allowed(plugin_id: &str, permission: &str) -> bool {
-    ensure_permissions_loaded();
     PERMISSIONS
         .read()
         .ok()
@@ -180,13 +114,18 @@ fn deps_satisfied(manifest: &Manifest) -> bool {
 /// at load — completing "fails at typecheck AND again at load". Producer-absent deps are not
 /// checked here (lazy hard-dep contract); if such a producer appears later with a different
 /// hash, every call throws `InterfaceTypesMismatch` (interfaces.rs backstop).
-fn verify_compiled_against(manifest: &Manifest) -> Result<(), String> {
+fn verify_compiled_against_batch(
+    manifest: &Manifest,
+    batch_hashes: &HashMap<String, String>,
+) -> Result<(), String> {
     let mut names: Vec<&String> = manifest.compiled_against.keys().collect();
     names.sort(); // deterministic first-error
     for iface in names {
         let built = &manifest.compiled_against[iface];
         if built.is_empty() { continue; }
-        let Some(published) = crate::v8host::iface_published_types_sha256(iface) else { continue };
+        let published = batch_hashes.get(iface).cloned()
+            .or_else(|| crate::v8host::iface_published_types_sha256(iface));
+        let Some(published) = published else { continue };
         if !published.is_empty() && published != *built {
             return Err(format!(
                 "contract drift on '{}': compiled against typesSha256 {}… but the producer publishes {}… — refresh .s2script/types/{}/index.d.ts from the producer and rebuild",
@@ -200,40 +139,24 @@ fn verify_compiled_against(manifest: &Manifest) -> Result<(), String> {
     Ok(())
 }
 
-/// Materialize + start a plugin's load and record it in WATCH_STATE. Shared by the poll file scan,
-/// the reload path, and `start_unblocked_waiters` (the parked-then-unblocked path).
-fn begin_load(manifest: &Manifest, js: &str, gamedata: Option<&str>, path: &Path, mtime: SystemTime) {
-    // B1: typesSha256 fail-fast. Refusal is remembered exactly like an apiVersion refusal:
-    // WATCH_STATE row (path+mtime => warn once) + FAILED state (operator-visible). A rebuilt
-    // file (new mtime) retries.
-    if let Err(reason) = verify_compiled_against(manifest) {
-        crate::v8host::log_warn(&format!("WARN: poll_plugins: refusing {:?}: {}", path, reason));
-        crate::v8host::set_failed(&manifest.id, &reason);
-        WATCH_STATE.with(|ws| {
-            ws.borrow_mut().insert(path.to_path_buf(), WatchedPlugin { mtime, id: manifest.id.clone() });
-        });
-        return;
-    }
+fn stamp_time(stamp: FileStamp) -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_nanos(stamp.modified_ns.min(u64::MAX as u128) as u64)
+}
+
+fn begin_load_prepared(prepared: &PreparedPlugin, cfg: &str, path: &Path) {
+    let manifest = &prepared.manifest;
     crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(manifest));
     crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
-    // Plugin-declared engine calls: register every descriptor from the packed `gamedata.json` BEFORE
-    // the factory runs — the plugin's `Engine.call(name)` executes inside its factory and must see a
-    // resolved (or named-degraded) descriptor. Registration is core-side by design: JS never supplies
-    // a declaration. Absent member = a plugin with no declared calls (the overwhelming majority).
-    if let Some(gd) = gamedata {
+    if let Some(gd) = prepared.gamedata.as_deref() {
         crate::gamedata_calls::register_plugin(&manifest.id, gd);
-        // Declarative inbound hooks, from the SAME tree. Registering patches nothing — install is
-        // lazy, on the first subscribe, which cannot happen before the factory runs. (Order against
-        // the line above is cosmetic: `bypassWith` is validated against this tree's own `calls`
-        // section, not against the call registry, so neither registration depends on the other.)
         crate::gamedata_hooks::register_plugin(&manifest.id, gd);
     }
-    let cfg = crate::v8host::materialize_for_load(&manifest.id, &manifest.config);
-    start_load(manifest, js, &cfg);
+    start_load(manifest, &prepared.js, cfg);
     crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
-    WATCH_STATE.with(|ws| {
-        ws.borrow_mut().insert(path.to_path_buf(), WatchedPlugin { mtime, id: manifest.id.clone() });
-    });
+    WATCH_STATE.with(|w| { w.borrow_mut().insert(path.to_path_buf(), WatchedPlugin {
+        mtime: stamp_time(prepared.stamp), id: manifest.id.clone(),
+    }); });
+    FILE_STAMPS.with(|s| { s.borrow_mut().insert(path.to_path_buf(), prepared.stamp); });
 }
 
 /// Flatten a manifest's two dependency maps into the (name, range, Kind) decls core expects.
@@ -280,64 +203,7 @@ fn imports_from_manifest(m: &Manifest) -> Vec<crate::interfaces::ImportSpec> {
 /// - `manifest.id` claims a RESERVED owner id (see below)
 /// - `plugin.js` is absent or contains invalid UTF-8
 pub fn read_s2sp(bytes: &[u8]) -> Result<(Manifest, String, Option<String>), String> {
-    use std::io::{Cursor, Read};
-
-    let cursor = Cursor::new(bytes);
-    let mut archive = zip::ZipArchive::new(cursor)
-        .map_err(|e| format!("read_s2sp: not a valid zip: {}", e))?;
-
-    // Read and parse manifest.json (borrow released when entry drops).
-    let manifest: Manifest = {
-        let mut entry = archive
-            .by_name("manifest.json")
-            .map_err(|_| "read_s2sp: missing manifest.json in archive".to_string())?;
-        let mut s = String::new();
-        entry
-            .read_to_string(&mut s)
-            .map_err(|e| format!("read_s2sp: failed to read manifest.json: {}", e))?;
-        serde_json::from_str(&s)
-            .map_err(|e| format!("read_s2sp: invalid manifest.json: {}", e))?
-    };
-
-    // A plugin id is an ARBITRARY string out of the archive's own manifest — nothing validates it
-    // against the npm package-name grammar, and nothing has to: it is the key for the plugin's
-    // context, its ledger, its permissions and its declared engine calls. The runtime registers its
-    // own descriptors under RESERVED owner ids (`gamedata_calls::RESERVED_OWNER_PREFIX`), which are
-    // permission-EXEMPT, so a `.s2sp` claiming one would (a) inherit that exemption and (b) delete
-    // the runtime's descriptors on its own unload, `drop_plugin` being keyed by the same id. Refuse
-    // it here, at the single door every load/reload path goes through, rather than anywhere later.
-    if crate::gamedata_calls::is_reserved_owner(&manifest.id) {
-        return Err(format!(
-            "read_s2sp: manifest id {:?} is in the reserved '{}' namespace, which belongs to the \
-             runtime — rename the plugin",
-            manifest.id,
-            crate::gamedata_calls::RESERVED_OWNER_PREFIX
-        ));
-    }
-
-    // Read plugin.js (borrow released when entry drops).
-    let plugin_js: String = {
-        let mut entry = archive
-            .by_name("plugin.js")
-            .map_err(|_| "read_s2sp: missing plugin.js in archive".to_string())?;
-        let mut s = String::new();
-        entry
-            .read_to_string(&mut s)
-            .map_err(|e| format!("read_s2sp: failed to read plugin.js: {}", e))?;
-        s
-    };
-
-    // Optional gamedata.json (spec §7). Mirrors the manifest read, but a MISSING member is Ok(None) —
-    // an unreadable/non-UTF-8 one degrades to None as well rather than failing the whole plugin.
-    let gamedata_json: Option<String> = match archive.by_name("gamedata.json") {
-        Ok(mut entry) => {
-            let mut s = String::new();
-            entry.read_to_string(&mut s).ok().map(|_| s)
-        }
-        Err(_) => None,
-    };
-
-    Ok((manifest, plugin_js, gamedata_json))
+    crate::loader_worker::parse_s2sp(bytes, crate::loader_worker::ParseLimits::default())
 }
 
 // ---------------------------------------------------------------------------
@@ -360,6 +226,10 @@ thread_local! {
     /// successfully loaded or parsed.  Updated after each action set.
     static WATCH_STATE: std::cell::RefCell<HashMap<PathBuf, WatchedPlugin>> =
         std::cell::RefCell::new(HashMap::new());
+    /// Strong path identities paired with WATCH_STATE. They include inode/device/ctime on Unix,
+    /// catching atomic replacement even when a writer preserves length and mtime.
+    static FILE_STAMPS: std::cell::RefCell<HashMap<PathBuf, FileStamp>> =
+        std::cell::RefCell::new(HashMap::new());
     /// Counts how many times `poll_plugins` has been called (throttle counter).
     static DRAIN_COUNT: Cell<u64> = Cell::new(0);
     /// Config-file watcher (Slice 5E.2): maps plugin id → last-seen file content (None = absent).
@@ -371,7 +241,7 @@ thread_local! {
     /// Slice 6.12 (`sm plugins`): pending load/unload/reload requested from a command. Drained at the
     /// start of `poll_plugins` (the frame drain, OUTSIDE any command's isolate borrow) so the loader
     /// never runs re-entrantly. The natives only enqueue.
-    static PENDING_OPS: std::cell::RefCell<Vec<PendingOp>> = std::cell::RefCell::new(Vec::new());
+    static PENDING_OPS: std::cell::RefCell<HashMap<String, PendingOp>> = std::cell::RefCell::new(HashMap::new());
     /// Paths manually unloaded via `sm plugins unload` (path → id). `poll_plugins` must NOT auto-reload
     /// a suppressed file; `sm plugins load` un-suppresses it so the next scan loads it fresh.
     static SUPPRESSED: std::cell::RefCell<HashMap<PathBuf, String>> = std::cell::RefCell::new(HashMap::new());
@@ -390,17 +260,30 @@ pub(crate) fn has_waiting() -> bool {
 /// A parsed load parked pending its hard dependencies (L1 lifecycle v2).
 struct WaitingLoad {
     path: PathBuf,
-    mtime: SystemTime,
     manifest: Manifest,
-    js: String,
-    /// The packed `gamedata.json` text, carried alongside `js` so a parked plugin registers its
-    /// declared engine calls when it finally starts (`read_s2sp`'s third element).
-    gamedata: Option<String>,
+    prepared: PreparedPlugin,
+    config_json: String,
     since_frame: u64,
 }
 
 /// A command-requested plugin lifecycle op (Slice 6.12), keyed by plugin id.
-enum PendingOp { Unload(String), Reload(String), Load(String) }
+#[derive(Clone, Copy)]
+enum PendingOp { Unload, Reload, Load }
+
+fn enqueue_intent(id: &str, op: PendingOp) -> bool {
+    PENDING_OPS.with(|q| {
+        let mut q = q.borrow_mut();
+        let (max_items, max_bytes) = POLICY.with(|p| (p.request_items, p.request_bytes));
+        if !q.contains_key(id) && q.len() >= max_items { return false; }
+        let old_bytes = q.get(id).map_or(0, |_| id.len().saturating_add(32));
+        let used_bytes: usize = q.keys().map(|key| key.len().saturating_add(32)).sum();
+        if used_bytes.saturating_sub(old_bytes).saturating_add(id.len()).saturating_add(32) > max_bytes {
+            return false;
+        }
+        q.insert(id.to_string(), op);
+        true
+    })
+}
 
 /// Every known plugin: `(id, state)` where state is one of
 /// `running | loading | waiting | failed | unloaded` (L1 lifecycle v2). Backs `Plugins.list()` /
@@ -451,15 +334,13 @@ fn path_of_loaded(id: &str) -> Option<PathBuf> {
 /// Enqueue an unload of a currently-loaded plugin. Returns false if no such plugin is loaded.
 pub(crate) fn request_unload(id: &str) -> bool {
     if path_of_loaded(id).is_none() { return false; }
-    PENDING_OPS.with(|q| q.borrow_mut().push(PendingOp::Unload(id.to_string())));
-    true
+    enqueue_intent(id, PendingOp::Unload)
 }
 /// Enqueue a reload of a loaded plugin (or a re-load of a suppressed one). False if the id is unknown.
 pub(crate) fn request_reload(id: &str) -> bool {
     let known = path_of_loaded(id).is_some()
         || SUPPRESSED.with(|s| s.borrow().values().any(|v| v == id));
-    if known { PENDING_OPS.with(|q| q.borrow_mut().push(PendingOp::Reload(id.to_string()))); }
-    known
+    known && enqueue_intent(id, PendingOp::Reload)
 }
 /// L1 lifecycle v2: start any parked loads whose hard-dependency wait window has cleared. Called at
 /// the tail of `v8host::finalize_loading_plugins` (a producer reaching Active may unblock consumers,
@@ -490,386 +371,535 @@ pub(crate) fn start_unblocked_waiters() {
                 id
             ));
         }
-        begin_load(&wl.manifest, &wl.js, wl.gamedata.as_deref(), &wl.path, wl.mtime);
+        begin_load_prepared(&wl.prepared, &wl.config_json, &wl.path);
     }
 }
 
 /// Enqueue a load of a suppressed (previously `sm plugins unload`ed) plugin. False if not suppressed.
 pub(crate) fn request_load(id: &str) -> bool {
     let suppressed = SUPPRESSED.with(|s| s.borrow().values().any(|v| v == id));
-    if suppressed { PENDING_OPS.with(|q| q.borrow_mut().push(PendingOp::Load(id.to_string()))); }
-    suppressed
-}
-
-/// Drain the command-requested plugin ops (called at the top of `poll_plugins`, borrow-free).
-fn drain_pending_ops() {
-    let ops: Vec<PendingOp> = PENDING_OPS.with(|q| q.borrow_mut().drain(..).collect());
-    for op in ops {
-        match op {
-            PendingOp::Unload(id) => {
-                // A parked (WAITING) plugin was never started: drop it from WAITING and do NOT run the
-                // (never-Active) teardown; a loaded one gets the normal unload (L1 lifecycle v2).
-                let was_waiting = WAITING.with(|w| w.borrow_mut().remove(&id).is_some());
-                if let Some(path) = path_of_loaded(&id) {
-                    if !was_waiting { crate::v8host::unload_plugin(&id); }
-                    crate::v8host::clear_pending_handoff(&id);
-                    WATCH_STATE.with(|ws| { ws.borrow_mut().remove(&path); });
-                    SUPPRESSED.with(|s| { s.borrow_mut().insert(path, id.clone()); });  // don't auto-reload
-                    crate::v8host::log_warn(&format!("[plugins] unloaded '{}' (sm plugins unload)", id));
-                } else if was_waiting {
-                    crate::v8host::clear_pending_handoff(&id);
-                    crate::v8host::log_warn(&format!("[plugins] unloaded parked '{}' (sm plugins unload)", id));
-                }
-            }
-            PendingOp::Reload(id) => {
-                // Reload-while-Loading: coalesce into a queued reload rather than tearing down a
-                // half-loaded context (L1 lifecycle v2 §5.3); it fires when the in-flight load settles.
-                if crate::v8host::is_loading(&id) {
-                    crate::v8host::queue_pending_reload(&id);
-                    crate::v8host::log_warn(&format!("[plugins] reload '{}' queued (still loading)", id));
-                    continue;
-                }
-                // Un-suppress if needed, then let the next file scan re-load it fresh (mtime bump not
-                // required — for a loaded plugin we do the reload inline; for a suppressed one, unsuppress).
-                let path = path_of_loaded(&id).or_else(||
-                    SUPPRESSED.with(|s| s.borrow().iter().find(|(_, v)| **v == id).map(|(p, _)| p.clone())));
-                let Some(path) = path else { continue };
-                SUPPRESSED.with(|s| { s.borrow_mut().remove(&path); });
-                match read_file_and_parse(&path) {
-                    Ok((manifest, js, gamedata)) => {
-                        crate::v8host::unload_plugin(&id);   // no-op if not currently loaded
-                        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
-                        begin_load(&manifest, &js, gamedata.as_deref(), &path, mtime);
-                        crate::v8host::log_warn(&format!("[plugins] reloaded '{}' (sm plugins reload)", id));
-                    }
-                    Err(e) => crate::v8host::log_warn(&format!("[plugins] reload '{}' failed: {}", id, e)),
-                }
-            }
-            PendingOp::Load(id) => {
-                // Un-suppress; the next `poll_plugins` file scan sees it as new and Loads it.
-                SUPPRESSED.with(|s| { s.borrow_mut().retain(|_, v| *v != id); });
-                crate::v8host::log_warn(&format!("[plugins] load '{}' (sm plugins load) — will load next scan", id));
-            }
-        }
-    }
+    suppressed && enqueue_intent(id, PendingOp::Load)
 }
 
 /// Number of Post-drain calls between each real directory scan.
 /// At ~64 Hz (CS2 default tick rate), `64` ≈ 1 second between scans.
 const POLL_THROTTLE: u64 = 64;
 
-/// Store the plugins directory path for `poll_plugins`.
-/// Called once by the shim at load time via the `s2script_core_set_plugins_dir` C-ABI.
-pub(crate) fn set_plugins_dir(path: &str) {
-    PLUGINS_DIR.with(|d| *d.borrow_mut() = Some(PathBuf::from(path)));
-    // The watcher runs on the GameFrame Post drain, which only fires while the detour is installed.
-    // With no plugin loaded there is no subscriber, so poke the lazy-detour predicate now (it now
-    // includes `is_watching()`) to install the detour and start the poll loop.
-    crate::v8host::refresh_detour();
-}
-
-/// True once a plugins directory has been set — feeds the lazy-detour predicate so the Post drain
-/// (and thus `poll_plugins`) runs every frame even before the first plugin subscribes anything.
-pub(crate) fn is_watching() -> bool {
-    PLUGINS_DIR.with(|d| d.borrow().is_some())
-}
-
-/// Opt a plugin into config-file change detection (Slice 5E.2).  Idempotent: if the id is already
-/// watched, this is a no-op (the baseline was seeded on the first call, so repeated calls from
-/// multiple `config.onChange` registrations don't reset the baseline and cause spurious fires).
-/// On the first call, seeds the last-seen content with the CURRENT file content so the initial
-/// auto-generated file does NOT trigger a spurious onChange on the very next poll.
-pub(crate) fn watch_config_for(id: &str) {
-    WATCHED_CONFIGS.with(|wc| {
-        let mut map = wc.borrow_mut();
-        if map.contains_key(id) { return; }  // already watched — idempotent
-        // Seed the baseline with the current file content (None if file absent / no ops).
-        let content = crate::v8host::config_file_content(id);
-        map.insert(id.to_string(), content);
-    });
-}
-
 /// Stop watching a plugin's config file (called from `unload_plugin` teardown).
 pub(crate) fn unwatch_config_for(id: &str) {
     WATCHED_CONFIGS.with(|wc| { wc.borrow_mut().remove(id); });
+    CONFIG_SEEDED.with(|s| { s.borrow_mut().remove(id); });
+    CONFIG_PATHS.with(|p| { p.borrow_mut().remove(id); });
 }
 
 // ---------------------------------------------------------------------------
-// poll_plugins
+// Off-thread loader coordinator
 // ---------------------------------------------------------------------------
 
-/// Called from the Post-drain path (throttled to `POLL_THROTTLE` calls apart).
-///
-/// Diffs the current `.s2sp` listing against the last snapshot and drives
-/// `v8host::load_plugin_js` / `v8host::unload_plugin`:
-/// - NEW file    → `load_plugin_js(id, js)`
-/// - CHANGED mtime → `unload_plugin(old_id)` then `load_plugin_js(new_id, js)`
-/// - VANISHED file → `unload_plugin(id)`
-///
-/// Degrade-never-crash: any step that fails logs a named WARN and the loop continues.
-pub(crate) fn poll_plugins() {
-    // Throttle: only act once every POLL_THROTTLE calls.
-    let count = DRAIN_COUNT.with(|c| {
-        let v = c.get();
-        c.set(v.wrapping_add(1));
-        v
+/// Loader apply has its own soft budget. It runs after the general async drain and therefore is
+/// deliberately outside that drain's 2 ms soft budget.
+pub(crate) const CONFIG_PATH_RESOLVER_ABI_V1: u32 = 1;
+pub(crate) type ConfigPathResolver = extern "C" fn(*const c_char) -> *const c_char;
+
+#[derive(Clone)]
+enum ConfigConsumer {
+    Plugin { path: PathBuf, revision: u64 },
+    Watch { id: String },
+    Permissions,
+}
+
+struct PendingConfig { revision: u64, consumers: Vec<ConfigConsumer>, bytes: usize }
+
+struct PreparedLoad {
+    path: PathBuf,
+    old_id: Option<String>,
+    prepared: PreparedPlugin,
+    config: Option<ConfigSnapshot>,
+}
+
+struct ActiveBatch {
+    pending: HashMap<PathBuf, u64>,
+    prepared: HashMap<PathBuf, PreparedLoad>,
+    prepared_bytes: usize,
+}
+
+thread_local! {
+    static WORKER: std::cell::RefCell<Option<LoaderWorker>> = std::cell::RefCell::new(None);
+    static POLICY: LoaderPolicy = LoaderPolicy::default();
+    static SCAN_REVISION: Cell<u64> = const { Cell::new(0) };
+    static SCAN_IN_FLIGHT: Cell<bool> = const { Cell::new(false) };
+    static PATH_REVISIONS: std::cell::RefCell<HashMap<PathBuf, u64>> = std::cell::RefCell::new(HashMap::new());
+    static ACTIVE_BATCH: std::cell::RefCell<Option<ActiveBatch>> = const { std::cell::RefCell::new(None) };
+    static CONFIG_PENDING: std::cell::RefCell<HashMap<PathBuf, PendingConfig>> = std::cell::RefCell::new(HashMap::new());
+    static CONFIG_PATHS: std::cell::RefCell<HashMap<String, PathBuf>> = std::cell::RefCell::new(HashMap::new());
+    static CONFIG_SEEDED: std::cell::RefCell<std::collections::HashSet<String>> = std::cell::RefCell::new(std::collections::HashSet::new());
+    static CONFIG_RESOLVER: Cell<Option<ConfigPathResolver>> = const { Cell::new(None) };
+}
+
+static LIFECYCLE_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+fn current_epoch() -> u64 { LIFECYCLE_EPOCH.load(Ordering::Acquire) }
+
+pub(crate) fn set_config_path_resolver(version: u32, resolver: Option<ConfigPathResolver>) -> bool {
+    if version != CONFIG_PATH_RESOLVER_ABI_V1 { return false; }
+    CONFIG_RESOLVER.with(|r| r.set(resolver));
+    true
+}
+
+fn resolve_config_path(id: &str) -> Result<PathBuf, String> {
+    let resolver = CONFIG_RESOLVER.with(Cell::get).ok_or_else(|| format!(
+        "config('{}'): shim did not register config-path resolver ABI v{}", id, CONFIG_PATH_RESOLVER_ABI_V1
+    ))?;
+    let id_c = CString::new(id).map_err(|_| format!("config({id:?}): id contains NUL"))?;
+    let ptr = resolver(id_c.as_ptr());
+    if ptr.is_null() { return Err(format!("config('{}'): config-path resolver returned null", id)); }
+    let path = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+    if path.is_empty() { return Err(format!("config('{}'): config-path resolver returned an empty path", id)); }
+    Ok(PathBuf::from(path))
+}
+
+pub(crate) fn set_plugins_dir(path: &str) {
+    PLUGINS_DIR.with(|d| *d.borrow_mut() = Some(PathBuf::from(path)));
+    let started = WORKER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_some() { return true; }
+        LIFECYCLE_EPOCH.fetch_add(1, Ordering::AcqRel);
+        match LoaderWorker::start(POLICY.with(Clone::clone)) {
+            Ok(worker) => { *slot = Some(worker); true }
+            Err(reason) => { crate::v8host::log_warn(&format!("WARN: plugin loader disabled: {reason}")); false }
+        }
     });
-    if count % POLL_THROTTLE != 0 {
-        return;
-    }
+    if !started { PLUGINS_DIR.with(|d| { d.borrow_mut().take(); }); }
+    crate::v8host::refresh_detour();
+}
 
-    // Slice 6.12: drain command-requested plugin ops (unload/reload/load) BEFORE the file scan, so the
-    // loader runs them here (borrow-free) rather than re-entrantly inside a command handler.
-    drain_pending_ops();
+pub(crate) fn is_watching() -> bool {
+    PLUGINS_DIR.with(|d| d.borrow().is_some()) && WORKER.with(|w| w.borrow().is_some())
+}
 
-    // Get the configured directory (cheap clone of Option<PathBuf>).
-    let dir = PLUGINS_DIR.with(|d| d.borrow().clone());
-    let Some(dir) = dir else { return };
-
-    // Snapshot the current directory (gracefully empty if the dir doesn't exist yet).
-    let current = collect_s2sp_mtimes(&dir);
-
-    // Compute the action list while briefly borrowing WATCH_STATE; release before any V8 call.
-    let actions = compute_actions(&current);
-
-    // L1 lifecycle v2: parse every Load/Reload up front, then start them in TOPOLOGICAL order so an
-    // interface's producer reaches Active before its hard-dep consumers (a consumer whose producer is
-    // still Loading parks in WAITING). Unloads run first (borrow-free); WATCH_STATE mutations are
-    // applied inline by `begin_load`/the park path.
-    let mut removes: Vec<PathBuf> = Vec::new();
-    let mut parsed: HashMap<String, ParsedLoad> = HashMap::new();
-    let mut order_input: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
-
-    for action in actions {
-        match action {
-            Action::Load { path, mtime } => match read_file_and_parse(&path) {
-                Ok((manifest, js, gamedata)) => {
-                    if !api_version_compatible(&manifest.api_version) {
-                        let reason = format!(
-                            "apiVersion {:?} incompatible with host major {} (rebuild with a matching @s2script/sdk)",
-                            manifest.api_version, HOST_API_VERSION_MAJOR
-                        );
-                        crate::v8host::log_warn(&format!("WARN: poll_plugins: refusing {:?}: {}", path, reason));
-                        crate::v8host::set_failed(&manifest.id, &reason);
-                        // Remember the refusal by path+mtime: with a WATCH_STATE row the next scan
-                        // diffs this file as UNCHANGED (no action, no re-WARN). A rebuilt file has a
-                        // new mtime -> Reload action -> re-evaluated. This is the re-warn-bug fix.
-                        WATCH_STATE.with(|ws| {
-                            ws.borrow_mut().insert(path.clone(), WatchedPlugin { mtime, id: manifest.id.clone() });
-                        });
-                        continue;
-                    }
-                    order_input.push((
-                        manifest.id.clone(),
-                        manifest.plugin_dependencies.keys().cloned().collect(),
-                        manifest.publishes.keys().cloned().collect(),
-                    ));
-                    parsed.insert(manifest.id.clone(), ParsedLoad { path, mtime, manifest, js, gamedata, old_id: None });
+fn drain_command_intents() {
+    let mut ops: Vec<(String, PendingOp)> = PENDING_OPS.with(|q| q.borrow_mut().drain().collect());
+    ops.sort_by(|a, b| a.0.cmp(&b.0));
+    for (id, op) in ops {
+        match op {
+            PendingOp::Unload => {
+                let was_waiting = WAITING.with(|w| w.borrow_mut().remove(&id).is_some());
+                if let Some(path) = path_of_loaded(&id) {
+                    cancel_path_work(&path);
+                    if !was_waiting { crate::v8host::unload_plugin(&id); }
+                    crate::v8host::clear_pending_handoff(&id);
+                    WATCH_STATE.with(|w| { w.borrow_mut().remove(&path); });
+                    FILE_STAMPS.with(|s| { s.borrow_mut().remove(&path); });
+                    SUPPRESSED.with(|s| { s.borrow_mut().insert(path, id.clone()); });
+                    crate::v8host::log_warn(&format!("[plugins] unloaded '{}' (sm plugins unload)", id));
                 }
-                Err(e) => {
-                    crate::v8host::log_warn(&format!("WARN: poll_plugins: failed to load {:?}: {}", path, e));
-                }
-            },
-
-            Action::Reload { path, mtime, old_id } => {
-                // Reload-while-Loading: coalesce into a queued reload instead of tearing down a
-                // half-loaded context (L1 §5.3). Bump the tracked mtime so the poll doesn't re-fire.
-                if crate::v8host::is_loading(&old_id) {
-                    crate::v8host::queue_pending_reload(&old_id);
-                    WATCH_STATE.with(|ws| { if let Some(wp) = ws.borrow_mut().get_mut(&path) { wp.mtime = mtime; } });
+            }
+            PendingOp::Reload => {
+                if crate::v8host::is_loading(&id) {
+                    crate::v8host::queue_pending_reload(&id);
+                    crate::v8host::log_warn(&format!("[plugins] reload '{}' queued (still loading)", id));
                     continue;
                 }
-                match read_file_and_parse(&path) {
-                    Ok((manifest, js, gamedata)) => {
-                        if !api_version_compatible(&manifest.api_version) {
-                            crate::v8host::log_warn(&format!(
-                                "WARN: poll_plugins: refusing reload of {:?}: apiVersion {:?} incompatible with host major {} - keeping the running version",
-                                path, manifest.api_version, HOST_API_VERSION_MAJOR
-                            ));
-                            // Failed-reload doctrine (same as the typecheck gate): the RUNNING version
-                            // stays untouched. Bump the stored mtime so this WARN fires once per
-                            // file version instead of every scan.
-                            WATCH_STATE.with(|ws| {
-                                if let Some(wp) = ws.borrow_mut().get_mut(&path) { wp.mtime = mtime; }
-                            });
-                            continue;
+                let path = path_of_loaded(&id).or_else(|| SUPPRESSED.with(|s| {
+                    s.borrow().iter().find(|(_, v)| **v == id).map(|(p, _)| p.clone())
+                }));
+                if let Some(path) = path {
+                    cancel_path_work(&path);
+                    SUPPRESSED.with(|s| { s.borrow_mut().remove(&path); });
+                    FILE_STAMPS.with(|s| { s.borrow_mut().remove(&path); });
+                }
+            }
+            PendingOp::Load => {
+                let path = SUPPRESSED.with(|s| s.borrow().iter().find(|(_, v)| **v == id).map(|(p, _)| p.clone()));
+                if let Some(path) = path { cancel_path_work(&path); }
+                SUPPRESSED.with(|s| { s.borrow_mut().retain(|_, v| *v != id); });
+            }
+        }
+    }
+}
+
+fn cancel_path_work(path: &Path) {
+    let _ = next_path_revision(path);
+    ACTIVE_BATCH.with(|batch| {
+        if let Some(batch) = batch.borrow_mut().as_mut() {
+            batch.pending.remove(path);
+            if let Some(row) = batch.prepared.remove(path) {
+                batch.prepared_bytes = batch.prepared_bytes.saturating_sub(row.prepared.bytes());
+            }
+        }
+    });
+    finish_batch_if_ready();
+}
+
+fn remove_batch_path(path: &Path) -> Option<PreparedLoad> {
+    ACTIVE_BATCH.with(|batch| {
+        let mut batch = batch.borrow_mut();
+        let batch = batch.as_mut()?;
+        batch.pending.remove(path);
+        let row = batch.prepared.remove(path)?;
+        batch.prepared_bytes = batch.prepared_bytes.saturating_sub(row.prepared.bytes());
+        Some(row)
+    })
+}
+
+pub(crate) fn watch_config_for(id: &str) {
+    if WATCHED_CONFIGS.with(|w| w.borrow().contains_key(id)) { return; }
+    match resolve_config_path(id) {
+        Ok(path) => {
+            WATCHED_CONFIGS.with(|w| { w.borrow_mut().insert(id.to_string(), None); });
+            CONFIG_PATHS.with(|p| { p.borrow_mut().insert(id.to_string(), path.clone()); });
+            let _ = queue_config(path, ConfigConsumer::Watch { id: id.to_string() });
+        }
+        Err(reason) => crate::v8host::log_warn(&format!("WARN: {reason}")),
+    }
+}
+
+fn next_path_revision(path: &Path) -> u64 {
+    PATH_REVISIONS.with(|r| {
+        let mut r = r.borrow_mut();
+        let next = r.get(path).copied().unwrap_or(0).wrapping_add(1);
+        r.insert(path.to_path_buf(), next);
+        next
+    })
+}
+
+fn queue_config(path: PathBuf, consumer: ConfigConsumer) -> bool {
+    fn same_consumer(a: &ConfigConsumer, b: &ConfigConsumer) -> bool {
+        match (a, b) {
+            (ConfigConsumer::Permissions, ConfigConsumer::Permissions) => true,
+            (ConfigConsumer::Watch { id: a }, ConfigConsumer::Watch { id: b }) => a == b,
+            (ConfigConsumer::Plugin { path: a, .. }, ConfigConsumer::Plugin { path: b, .. }) => a == b,
+            _ => false,
+        }
+    }
+    fn consumer_bytes(consumer: &ConfigConsumer) -> usize {
+        match consumer {
+            ConfigConsumer::Permissions => 64,
+            ConfigConsumer::Watch { id } => id.len().saturating_add(64),
+            ConfigConsumer::Plugin { path, .. } => path.as_os_str().to_string_lossy().len().saturating_add(64),
+        }
+    }
+    let new_bytes = consumer_bytes(&consumer);
+    let can_admit_consumer = CONFIG_PENDING.with(|p| {
+        let p = p.borrow();
+        let used_items: usize = p.values().map(|row| row.consumers.len()).sum();
+        let used_bytes: usize = p.values().map(|row| row.bytes).sum();
+        let duplicate_bytes = p.get(&path).and_then(|row| row.consumers.iter()
+            .find(|existing| same_consumer(existing, &consumer))).map_or(0, consumer_bytes);
+        let (max_items, max_bytes) = POLICY.with(|policy| (policy.request_items, policy.request_bytes));
+        (duplicate_bytes > 0 || used_items < max_items)
+            && used_bytes.saturating_sub(duplicate_bytes).saturating_add(new_bytes) <= max_bytes
+    });
+    if !can_admit_consumer {
+        crate::v8host::log_warn(&format!("WARN: loader config consumer {:?} deferred by bounded coalescing table", path));
+        return false;
+    }
+    let revision = CONFIG_PENDING.with(|p| p.borrow().get(&path).map_or(1, |row| row.revision.wrapping_add(1)));
+    let epoch = current_epoch();
+    let submit = WORKER.with(|w| w.borrow().as_ref().map(|w| w.try_read_config(epoch, revision, path.clone())).unwrap_or(Submit::Stopped));
+    if !matches!(submit, Submit::Accepted | Submit::Coalesced) {
+        crate::v8host::log_warn(&format!("WARN: loader config read {:?} deferred by bounded queue ({submit:?})", path));
+        return false;
+    }
+    CONFIG_PENDING.with(|p| {
+        let mut p = p.borrow_mut();
+        let row = p.entry(path).or_insert(PendingConfig { revision, consumers: Vec::new(), bytes: 0 });
+        row.revision = revision;
+        if let Some(index) = row.consumers.iter().position(|existing| same_consumer(existing, &consumer)) {
+            row.bytes = row.bytes.saturating_sub(consumer_bytes(&row.consumers[index]));
+            row.consumers.remove(index);
+        }
+        row.bytes = row.bytes.saturating_add(new_bytes);
+        row.consumers.push(consumer);
+    });
+    true
+}
+
+fn commit_path(path: &Path, stamp: FileStamp, id: &str) {
+    FILE_STAMPS.with(|s| { s.borrow_mut().insert(path.to_path_buf(), stamp); });
+    WATCH_STATE.with(|w| { w.borrow_mut().insert(path.to_path_buf(), WatchedPlugin {
+        mtime: stamp_time(stamp), id: id.to_string(),
+    }); });
+}
+
+fn handle_scan(revision: u64, entries: Result<Vec<(PathBuf, FileStamp)>, String>) {
+    SCAN_IN_FLIGHT.with(|s| s.set(false));
+    if revision != SCAN_REVISION.with(Cell::get) { return; }
+    let entries = match entries {
+        Ok(entries) => entries,
+        Err(reason) => { crate::v8host::log_warn(&format!("WARN: poll_plugins: {reason}; keeping prior state")); return; }
+    };
+    let current: HashMap<PathBuf, FileStamp> = entries.into_iter().collect();
+    FILE_STAMPS.with(|stamps| stamps.borrow_mut().retain(|path, _| current.contains_key(path)));
+    let vanished: Vec<(PathBuf, String)> = WATCH_STATE.with(|w| w.borrow().iter()
+        .filter(|(path, _)| !current.contains_key(*path))
+        .map(|(path, row)| (path.clone(), row.id.clone())).collect());
+    for (path, id) in vanished {
+        let was_waiting = WAITING.with(|w| w.borrow_mut().remove(&id).is_some());
+        if !was_waiting { crate::v8host::unload_plugin(&id); }
+        crate::v8host::clear_pending_handoff(&id);
+        crate::v8host::clear_failed(&id);
+        WATCH_STATE.with(|w| { w.borrow_mut().remove(&path); });
+        FILE_STAMPS.with(|s| { s.borrow_mut().remove(&path); });
+    }
+    let mut batch = ActiveBatch { pending: HashMap::new(), prepared: HashMap::new(), prepared_bytes: 0 };
+    for (path, stamp) in current {
+        if SUPPRESSED.with(|s| s.borrow().contains_key(&path)) { continue; }
+        if FILE_STAMPS.with(|s| s.borrow().get(&path).copied()) == Some(stamp) { continue; }
+        let revision = next_path_revision(&path);
+        let epoch = current_epoch();
+        let submit = WORKER.with(|w| w.borrow().as_ref().map(|w| w.try_prepare(epoch, revision, path.clone())).unwrap_or(Submit::Stopped));
+        if matches!(submit, Submit::Accepted | Submit::Coalesced) {
+            batch.pending.insert(path, revision);
+        } else {
+            crate::v8host::log_warn(&format!("WARN: poll_plugins: {:?} deferred by bounded loader queue ({submit:?})", path));
+        }
+    }
+    if !batch.pending.is_empty() { ACTIVE_BATCH.with(|b| *b.borrow_mut() = Some(batch)); }
+}
+
+fn refuse_prepared(path: &Path, prepared: &PreparedPlugin, reason: &str, old_id: Option<&str>) {
+    crate::v8host::log_warn(&format!("WARN: poll_plugins: refusing {:?}: {}{}", path, reason,
+        if old_id.is_some() { " - keeping the running version" } else { "" }));
+    if old_id.is_none() { crate::v8host::set_failed(&prepared.manifest.id, reason); }
+    commit_path(path, prepared.stamp, old_id.unwrap_or(&prepared.manifest.id));
+}
+
+fn handle_plugin(revision: u64, path: PathBuf, result: Result<PreparedPlugin, String>) {
+    let expected = ACTIVE_BATCH.with(|b| b.borrow().as_ref().and_then(|b| b.pending.get(&path).copied()));
+    if expected != Some(revision) { return; }
+    let old_id = WATCH_STATE.with(|w| w.borrow().get(&path).map(|r| r.id.clone()));
+    let prepared = match result {
+        Ok(prepared) => prepared,
+        Err(reason) => {
+            crate::v8host::log_warn(&format!("WARN: poll_plugins: failed to prepare {:?}: {reason}", path));
+            ACTIVE_BATCH.with(|b| { if let Some(b) = b.borrow_mut().as_mut() { b.pending.remove(&path); } });
+            finish_batch_if_ready();
+            return;
+        }
+    };
+    let validation = if !api_version_compatible(&prepared.manifest.api_version) {
+        Err(format!("apiVersion {:?} incompatible with host major {} (rebuild with a matching @s2script/sdk)", prepared.manifest.api_version, HOST_API_VERSION_MAJOR))
+    } else { Ok(()) };
+    if let Err(reason) = validation {
+        refuse_prepared(&path, &prepared, &reason, old_id.as_deref());
+        ACTIVE_BATCH.with(|b| { if let Some(b) = b.borrow_mut().as_mut() { b.pending.remove(&path); } });
+        finish_batch_if_ready();
+        return;
+    }
+    let weight = prepared.bytes();
+    let capacity = POLICY.with(|p| (p.prepared_items, p.prepared_bytes));
+    let admitted = ACTIVE_BATCH.with(|b| {
+        let mut b = b.borrow_mut(); let b = b.as_mut().unwrap();
+        if b.prepared.len() >= capacity.0 || b.prepared_bytes.saturating_add(weight) > capacity.1 { return false; }
+        b.prepared_bytes += weight;
+        b.prepared.insert(path.clone(), PreparedLoad { path: path.clone(), old_id, prepared, config: None });
+        true
+    });
+    if !admitted {
+        crate::v8host::log_warn(&format!("WARN: poll_plugins: {:?} retryable prepared-budget pressure; baseline unchanged", path));
+        ACTIVE_BATCH.with(|b| { if let Some(b) = b.borrow_mut().as_mut() { b.pending.remove(&path); } });
+        finish_batch_if_ready();
+        return;
+    }
+    let needs_config = ACTIVE_BATCH.with(|b| b.borrow().as_ref().and_then(|b| b.prepared.get(&path))
+        .is_some_and(|p| !p.prepared.manifest.config.is_empty()));
+    if needs_config {
+        let id = ACTIVE_BATCH.with(|b| b.borrow().as_ref().unwrap().prepared[&path].prepared.manifest.id.clone());
+        match resolve_config_path(&id) {
+            Ok(config_path) if queue_config(config_path.clone(), ConfigConsumer::Plugin { path: path.clone(), revision }) => {}
+            Ok(_) => {
+                let _ = remove_batch_path(&path);
+                finish_batch_if_ready();
+            }
+            Err(reason) => {
+                let row = remove_batch_path(&path);
+                if let Some(row) = row { refuse_prepared(&path, &row.prepared, &reason, row.old_id.as_deref()); }
+                finish_batch_if_ready();
+            }
+        }
+    } else {
+        ACTIVE_BATCH.with(|b| { if let Some(b) = b.borrow_mut().as_mut() { b.pending.remove(&path); } });
+        finish_batch_if_ready();
+    }
+}
+
+fn handle_config(path: PathBuf, revision: u64, result: Result<ConfigSnapshot, String>) {
+    let pending = CONFIG_PENDING.with(|p| {
+        if p.borrow().get(&path).is_some_and(|row| row.revision == revision) { p.borrow_mut().remove(&path) } else { None }
+    });
+    let Some(pending) = pending else { return };
+    if let Ok(snapshot) = &result {
+        debug_assert_eq!(snapshot.content.is_some(), snapshot.stamp.is_some());
+    }
+    for consumer in pending.consumers {
+        match consumer {
+            ConfigConsumer::Plugin { path: plugin_path, revision: plugin_revision } => {
+                let valid = ACTIVE_BATCH.with(|b| b.borrow().as_ref().and_then(|b| b.pending.get(&plugin_path).copied())) == Some(plugin_revision);
+                if !valid { continue; }
+                match &result {
+                    Ok(snapshot) => ACTIVE_BATCH.with(|b| {
+                        if let Some(b) = b.borrow_mut().as_mut() {
+                            if let Some(row) = b.prepared.get_mut(&plugin_path) { row.config = Some(snapshot.clone()); }
+                            b.pending.remove(&plugin_path);
                         }
-                        order_input.push((
-                            manifest.id.clone(),
-                            manifest.plugin_dependencies.keys().cloned().collect(),
-                            manifest.publishes.keys().cloned().collect(),
-                        ));
-                        parsed.insert(manifest.id.clone(), ParsedLoad { path, mtime, manifest, js, gamedata, old_id: Some(old_id) });
-                    }
-                    Err(e) => {
-                        crate::v8host::log_warn(&format!("WARN: poll_plugins: failed to reload {:?}: {}", path, e));
-                        // Leave the old entry in WATCH_STATE (old mtime) so the next poll detects this
-                        // as "changed" and retries once the file is valid.
+                    }),
+                    Err(reason) => {
+                        crate::v8host::log_warn(&format!("WARN: poll_plugins: config read for {:?} failed: {reason}; baseline unchanged", plugin_path));
+                        let _ = remove_batch_path(&plugin_path);
                     }
                 }
             }
-
-            Action::Unload { path, id } => {
-                // A parked (never-started) plugin just drops from WAITING; a loaded one gets teardown.
-                let was_waiting = WAITING.with(|w| w.borrow_mut().remove(&id).is_some());
-                if !was_waiting { crate::v8host::unload_plugin(&id); }
-                crate::v8host::clear_pending_handoff(&id);   // Slice 5E.3: a final removal discards any captured handoff
-                crate::v8host::clear_failed(&id);            // B1: a removed refused/failed file is gone, not `failed`
-                removes.push(path);
-            }
+            ConfigConsumer::Watch { id } => if let Ok(snapshot) = &result {
+                if CONFIG_PATHS.with(|paths| paths.borrow().get(&id) != Some(&path)) { continue; }
+                let seeded = CONFIG_SEEDED.with(|s| s.borrow().contains(&id));
+                let old = WATCHED_CONFIGS.with(|w| w.borrow().get(&id).cloned().flatten());
+                WATCHED_CONFIGS.with(|w| { w.borrow_mut().insert(id.clone(), snapshot.content.clone()); });
+                CONFIG_SEEDED.with(|s| { s.borrow_mut().insert(id.clone()); });
+                if seeded && old != snapshot.content { crate::v8host::re_materialize_config_snapshot(&id, snapshot.content.as_deref()); }
+            },
+            ConfigConsumer::Permissions => match &result {
+                Ok(snapshot) => if let Some(content) = snapshot.content.as_deref() {
+                    match load_permissions_from_str(content) {
+                        Ok(()) => PERMISSIONS_WARNED.store(false, std::sync::atomic::Ordering::Relaxed),
+                        Err(reason) if !PERMISSIONS_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) => crate::v8host::log_warn(&format!(
+                            "WARN: {reason} - ignoring the operator allow-list (every gated capability stays denied)")),
+                        Err(_) => {}
+                    }
+                },
+                Err(reason) => crate::v8host::log_warn(&format!("WARN: permissions config read failed: {reason}; keeping prior allow-list")),
+            },
         }
     }
+    finish_batch_if_ready();
+}
 
-    // Start (or park) the parsed batch in dependency order.
-    let frame = crate::v8host::current_frame();
-    for id in topo_order(&order_input) {
-        let Some(pl) = parsed.remove(&id) else { continue };
-        // RELOAD discipline: explicit unload of the old id BEFORE (re)load, so the ledger is authority.
-        if let Some(old_id) = &pl.old_id { crate::v8host::unload_plugin(old_id); }
-
-        if deps_satisfied(&pl.manifest) {
-            begin_load(&pl.manifest, &pl.js, pl.gamedata.as_deref(), &pl.path, pl.mtime);
-        } else {
-            // Park: record in WATCH_STATE (so mtime edits still retrigger) + WAITING (spec §4).
-            WATCH_STATE.with(|ws| {
-                ws.borrow_mut().insert(pl.path.clone(), WatchedPlugin { mtime: pl.mtime, id: pl.manifest.id.clone() });
-            });
-            crate::v8host::log_warn(&format!(
-                "[plugins] '{}' WAITING on unpublished hard dependency (will load when its producer is Active, or after ~30s)",
-                pl.manifest.id
-            ));
-            WAITING.with(|w| {
-                w.borrow_mut().insert(pl.manifest.id.clone(), WaitingLoad {
-                    path: pl.path, mtime: pl.mtime, manifest: pl.manifest, js: pl.js,
-                    gamedata: pl.gamedata, since_frame: frame,
-                });
-            });
+fn finish_batch_if_ready() {
+    if !ACTIVE_BATCH.with(|b| b.borrow().as_ref().is_some_and(|b| b.pending.is_empty())) { return; }
+    let batch = ACTIVE_BATCH.with(|b| b.borrow_mut().take()).unwrap();
+    let mut by_id: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    for row in batch.prepared.values() { by_id.entry(row.prepared.manifest.id.clone()).or_default().push(row.path.clone()); }
+    let mut rejected = std::collections::HashSet::new();
+    for (id, paths) in &by_id {
+        let live_elsewhere = WATCH_STATE.with(|w| w.borrow().iter().any(|(path, row)| row.id == *id && !paths.contains(path)));
+        if paths.len() > 1 || live_elsewhere {
+            crate::v8host::log_warn(&format!("WARN: poll_plugins: duplicate manifest id {:?} at {:?}; keeping the running version", id, paths));
+            rejected.extend(paths.iter().cloned());
         }
     }
-
-    // Apply the deferred WATCH_STATE removals (unloads/vanished).
-    WATCH_STATE.with(|ws| {
-        let mut state = ws.borrow_mut();
-        for path in removes { state.remove(&path); }
-    });
-
-    // Poll config file changes for opted-in plugins (Slice 5E.2).
-    poll_watched_configs();
-}
-
-/// A parsed `.s2sp` awaiting its turn in the topo-ordered load batch (L1 lifecycle v2).
-struct ParsedLoad {
-    path: PathBuf,
-    mtime: SystemTime,
-    manifest: Manifest,
-    js: String,
-    /// The packed `gamedata.json` text (`read_s2sp`'s third element), `None` for an archive without
-    /// one — which is every plugin that declares no engine calls.
-    gamedata: Option<String>,
-    /// `Some(old_id)` when this parse came from a Reload — the old instance is unloaded first.
-    old_id: Option<String>,
-}
-
-/// Check each watched plugin's config file for content changes.  When a change is detected,
-/// update the stored baseline and call `re_materialize_config` to re-inject the updated values
-/// and fire the plugin's `onChange` handlers.
-///
-/// Borrow discipline: WATCHED_CONFIGS is never held across `re_materialize_config` (which enters
-/// V8 and may itself trigger `watch_config_for` → borrow WATCHED_CONFIGS again).  We collect the
-/// changed ids into a Vec, release the borrow, then update + fire each one individually.
-fn poll_watched_configs() {
-    // Phase 1: collect (id, new_content) for every plugin whose content changed.
-    // WATCHED_CONFIGS borrow is held only for this snapshot; released before any V8 call.
-    let changes: Vec<(String, Option<String>)> = WATCHED_CONFIGS.with(|wc| {
-        let map = wc.borrow();
-        map.iter()
-            .filter_map(|(id, last)| {
-                // SAFETY: config_file_content must NOT re-borrow WATCHED_CONFIGS — it is called under
-                // this immutable borrow.  It only touches ENGINE_OPS + the shim config_read op today.
-                let cur = crate::v8host::config_file_content(id);
-                if cur != *last { Some((id.clone(), cur)) } else { None }
-            })
-            .collect()
-    });
-
-    if changes.is_empty() { return; }
-
-    // Phase 2: update the stored baseline and fire re_materialize for each changed plugin.
-    // Each WATCHED_CONFIGS borrow is scoped to just the update; released before re_materialize.
-    for (id, new_content) in &changes {
-        WATCHED_CONFIGS.with(|wc| { wc.borrow_mut().insert(id.clone(), new_content.clone()); });
-        crate::v8host::re_materialize_config(id);
+    let mut batch_hashes = HashMap::new();
+    for row in batch.prepared.values().filter(|row| !rejected.contains(&row.path)) {
+        for (name, publish) in &row.prepared.manifest.publishes {
+            batch_hashes.insert(name.clone(), publish.types_sha256.clone());
+        }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Internals
-// ---------------------------------------------------------------------------
-
-enum Action {
-    Load { path: PathBuf, mtime: SystemTime },
-    Reload { path: PathBuf, mtime: SystemTime, old_id: String },
-    Unload { path: PathBuf, id: String },
-}
-
-/// Collect `path → mtime` for every `*.s2sp` file in `dir`.
-/// Returns an empty map (not an error) if the directory does not yet exist.
-fn collect_s2sp_mtimes(dir: &Path) -> HashMap<PathBuf, SystemTime> {
-    let mut map = HashMap::new();
-    let rd = match std::fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(_) => return map,
-    };
-    for entry_res in rd {
-        let entry = match entry_res {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("s2sp") {
+    let mut drift_rejected = Vec::new();
+    for row in batch.prepared.values().filter(|row| !rejected.contains(&row.path)) {
+        if let Err(reason) = verify_compiled_against_batch(&row.prepared.manifest, &batch_hashes) {
+            refuse_prepared(&row.path, &row.prepared, &reason, row.old_id.as_deref());
+            drift_rejected.push(row.path.clone());
+        }
+    }
+    rejected.extend(drift_rejected);
+    let mut loads: HashMap<String, PreparedLoad> = HashMap::new();
+    let mut order_input = Vec::new();
+    for (_, row) in batch.prepared {
+        if rejected.contains(&row.path) {
+            FILE_STAMPS.with(|s| { s.borrow_mut().insert(row.path.clone(), row.prepared.stamp); });
+            WATCH_STATE.with(|w| {
+                if let Some(existing) = w.borrow_mut().get_mut(&row.path) {
+                    existing.mtime = stamp_time(row.prepared.stamp);
+                }
+            });
             continue;
         }
-        let mtime = match entry.metadata().and_then(|m| m.modified()) {
-            Ok(t) => t,
-            Err(_) => continue,
-        };
-        map.insert(path, mtime);
+        let id = row.prepared.manifest.id.clone();
+        order_input.push((id.clone(), row.prepared.manifest.plugin_dependencies.keys().cloned().collect(), row.prepared.manifest.publishes.keys().cloned().collect()));
+        loads.insert(id, row);
     }
-    map
+    let frame = crate::v8host::current_frame();
+    for id in topo_order(&order_input) {
+        let Some(row) = loads.remove(&id) else { continue };
+        let override_json = row.config.as_ref().and_then(|s| s.content.as_deref());
+        let cfg = crate::v8host::materialize_for_load_snapshot(&id, &row.prepared.manifest.config, override_json);
+        let dependencies_ready = deps_satisfied(&row.prepared.manifest);
+        if let Some(old_id) = &row.old_id { crate::v8host::unload_plugin(old_id); }
+        if dependencies_ready {
+            begin_load_prepared(&row.prepared, &cfg, &row.path);
+        } else {
+            commit_path(&row.path, row.prepared.stamp, &id);
+            let manifest = row.prepared.manifest.clone();
+            WAITING.with(|w| { w.borrow_mut().insert(id.clone(), WaitingLoad {
+                path: row.path, manifest, prepared: row.prepared, config_json: cfg, since_frame: frame,
+            }); });
+        }
+    }
 }
 
-/// Diff `current` against WATCH_STATE to produce the list of actions.
-/// Borrows WATCH_STATE briefly; must not call any V8 function while the borrow is held.
-fn compute_actions(current: &HashMap<PathBuf, SystemTime>) -> Vec<Action> {
-    WATCH_STATE.with(|ws| {
-        let state = ws.borrow();
-        let mut actions = Vec::new();
+fn schedule_periodic() {
+    if SCAN_IN_FLIGHT.with(Cell::get) || ACTIVE_BATCH.with(|b| b.borrow().is_some()) { return; }
+    if let Ok(path) = resolve_config_path(PERMISSIONS_CONFIG_ID) {
+        // Permission state must be resolved before a scan can admit plugins whose
+        // gamedata registration depends on it. Keep this scan uncommitted when
+        // the bounded config queue cannot accept the obligation; the next cadence
+        // retries both operations.
+        if !queue_config(path, ConfigConsumer::Permissions) { return; }
+    }
+    let watched: Vec<(String, PathBuf)> = CONFIG_PATHS.with(|p| p.borrow().iter().map(|(a, b)| (a.clone(), b.clone())).collect());
+    for (id, path) in watched { let _ = queue_config(path, ConfigConsumer::Watch { id }); }
+    let Some(dir) = PLUGINS_DIR.with(|d| d.borrow().clone()) else { return };
+    let revision = SCAN_REVISION.with(|r| { let n = r.get().wrapping_add(1); r.set(n); n });
+    let epoch = current_epoch();
+    let submit = WORKER.with(|w| w.borrow().as_ref().map(|w| w.try_scan(epoch, revision, dir)).unwrap_or(Submit::Stopped));
+    if matches!(submit, Submit::Accepted | Submit::Coalesced) { SCAN_IN_FLIGHT.with(|s| s.set(true)); }
+}
 
-        // New or changed files.
-        for (path, &mtime) in current {
-            // Slice 6.12: a path manually unloaded via `sm plugins unload` is suppressed — do NOT
-            // auto-reload it (until `sm plugins load`/`reload` un-suppresses it).
-            if SUPPRESSED.with(|s| s.borrow().contains_key(path)) { continue; }
-            match state.get(path) {
-                None => actions.push(Action::Load { path: path.clone(), mtime }),
-                Some(wp) if wp.mtime != mtime => actions.push(Action::Reload {
-                    path: path.clone(),
-                    mtime,
-                    old_id: wp.id.clone(),
-                }),
-                _ => {} // unchanged
-            }
+pub(crate) fn poll_plugins() {
+    drain_command_intents();
+    let start = Instant::now();
+    let (max_items, max_bytes, max_time) = POLICY.with(|p| (p.drain_items, p.drain_bytes, Duration::from_micros(p.drain_micros)));
+    let epoch = current_epoch();
+    let mut items = 0usize;
+    let mut bytes = 0usize;
+    loop {
+        if items >= max_items || (items > 0 && (bytes >= max_bytes || start.elapsed() >= max_time)) { break; }
+        let result = WORKER.with(|w| w.borrow().as_ref().and_then(LoaderWorker::try_result));
+        let Some(result) = result else { break };
+        bytes = bytes.saturating_add(result.weight());
+        items += 1;
+        match result {
+            WorkerResult::Scan { epoch: e, revision, entries } if e == epoch => handle_scan(revision, entries),
+            WorkerResult::Plugin { epoch: e, revision, path, prepared } if e == epoch => handle_plugin(revision, path, prepared),
+            WorkerResult::Config { epoch: e, revision, path, snapshot } if e == epoch => handle_config(path, revision, snapshot),
+            _ => {}
         }
+    }
+    let count = DRAIN_COUNT.with(|c| { let n = c.get(); c.set(n.wrapping_add(1)); n });
+    if count % POLL_THROTTLE == 0 { schedule_periodic(); }
+}
 
-        // Vanished files.
-        for (path, wp) in state.iter() {
-            if !current.contains_key(path) {
-                actions.push(Action::Unload { path: path.clone(), id: wp.id.clone() });
-            }
-        }
-
-        actions
-    })
+pub(crate) fn shutdown_worker() {
+    LIFECYCLE_EPOCH.fetch_add(1, Ordering::AcqRel);
+    PLUGINS_DIR.with(|d| { d.borrow_mut().take(); });
+    CONFIG_RESOLVER.with(|r| r.set(None));
+    let worker = WORKER.with(|w| w.borrow_mut().take());
+    if let Some(worker) = worker { worker.shutdown(); }
+    SCAN_IN_FLIGHT.with(|s| s.set(false));
+    ACTIVE_BATCH.with(|b| { b.borrow_mut().take(); });
+    CONFIG_PENDING.with(|p| p.borrow_mut().clear());
+    CONFIG_PATHS.with(|p| p.borrow_mut().clear());
+    CONFIG_SEEDED.with(|s| s.borrow_mut().clear());
+    FILE_STAMPS.with(|s| s.borrow_mut().clear());
+    WATCH_STATE.with(|w| w.borrow_mut().clear());
+    SUPPRESSED.with(|s| s.borrow_mut().clear());
+    PENDING_OPS.with(|p| p.borrow_mut().clear());
+    PATH_REVISIONS.with(|r| r.borrow_mut().clear());
+    WATCHED_CONFIGS.with(|w| w.borrow_mut().clear());
+    WAITING.with(|w| w.borrow_mut().clear());
+    SCAN_REVISION.with(|r| r.set(0));
+    DRAIN_COUNT.with(|c| c.set(0));
+    if let Ok(mut permissions) = PERMISSIONS.write() { *permissions = None; }
+    PERMISSIONS_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Order a load batch so an interface's producer loads before its hard-dep consumers (design spec §4).
@@ -940,13 +970,6 @@ fn topo_order(batch: &[(String, Vec<String>, Vec<String>)]) -> Vec<String> {
     order
 }
 
-/// Read a `.s2sp` file from disk then parse it via `read_s2sp`.
-/// Third element = the optional packed `gamedata.json` text (see `read_s2sp`).
-fn read_file_and_parse(path: &Path) -> Result<(Manifest, String, Option<String>), String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("read failed: {}", e))?;
-    read_s2sp(&bytes)
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -955,6 +978,10 @@ fn read_file_and_parse(path: &Path) -> Result<(Manifest, String, Option<String>)
 mod tests {
     use super::*;
     use std::io::Write;
+
+    extern "C" fn test_config_path(_id: *const c_char) -> *const c_char {
+        b"/tmp/s2script-config.json\0".as_ptr().cast()
+    }
 
     // -------------------------------------------------------------------
     // In-memory test-zip helpers
@@ -1159,6 +1186,28 @@ mod tests {
     }
 
     #[test]
+    fn config_path_resolver_is_versioned_and_copies_the_returned_path() {
+        CONFIG_RESOLVER.with(|r| r.set(None));
+        assert!(!set_config_path_resolver(99, Some(test_config_path)));
+        assert!(resolve_config_path("@demo/a").unwrap_err().contains("ABI v1"));
+        assert!(set_config_path_resolver(CONFIG_PATH_RESOLVER_ABI_V1, Some(test_config_path)));
+        assert_eq!(resolve_config_path("@demo/a").unwrap(), PathBuf::from("/tmp/s2script-config.json"));
+        assert!(set_config_path_resolver(CONFIG_PATH_RESOLVER_ABI_V1, None));
+    }
+
+    #[test]
+    fn compiled_against_prefers_the_prevalidated_in_batch_producer_hash() {
+        let mut consumer: Manifest = serde_json::from_str(
+            r#"{"id":"consumer","version":"1","apiVersion":"2.x","compiledAgainst":{"iface":"new-hash"}}"#,
+        ).unwrap();
+        consumer.plugin_dependencies.insert("iface".into(), "1.x".into());
+        let batch = HashMap::from([("iface".to_string(), "new-hash".to_string())]);
+        assert!(verify_compiled_against_batch(&consumer, &batch).is_ok());
+        let stale = HashMap::from([("iface".to_string(), "old-hash".to_string())]);
+        assert!(verify_compiled_against_batch(&consumer, &stale).unwrap_err().contains("contract drift"));
+    }
+
+    #[test]
     fn load_batch_orders_producers_before_consumers() {
         // c depends (hard) on iface "@x/if" which p publishes; order must put p first regardless of name order.
         let batch = vec![
@@ -1202,10 +1251,12 @@ mod tests {
         );
         let p = dir.join("old.s2sp");
         std::fs::write(&p, &bytes).expect("write s2sp");
-        PLUGINS_DIR.with(|d| *d.borrow_mut() = Some(dir.clone()));
-
-        // At least one real scan regardless of the throttle counter's current phase.
-        for _ in 0..(POLL_THROTTLE as usize + 1) { poll_plugins(); }
+        set_plugins_dir(dir.to_str().unwrap());
+        for _ in 0..10_000 {
+            poll_plugins();
+            if WATCH_STATE.with(|ws| ws.borrow().contains_key(&p)) { break; }
+            std::thread::yield_now();
+        }
 
         assert!(
             WATCH_STATE.with(|ws| ws.borrow().contains_key(&p)),
@@ -1215,14 +1266,14 @@ mod tests {
 
         // Unchanged file ⇒ the diff yields NO action (this IS warn-once, structurally).
         let mtime_before = WATCH_STATE.with(|ws| ws.borrow().get(&p).map(|w| w.mtime));
-        for _ in 0..(POLL_THROTTLE as usize + 1) { poll_plugins(); }
+        for _ in 0..(POLL_THROTTLE as usize + 1) { poll_plugins(); std::thread::yield_now(); }
         let mtime_after = WATCH_STATE.with(|ws| ws.borrow().get(&p).map(|w| w.mtime));
         assert_eq!(mtime_before, mtime_after, "second scan must not re-process the refused file");
 
         // Cleanup so later tests on this (single) test thread see no leftovers.
         WATCH_STATE.with(|ws| { ws.borrow_mut().remove(&p); });
         crate::v8host::clear_failed("@old/one");
-        PLUGINS_DIR.with(|d| *d.borrow_mut() = None);
+        shutdown_worker();
         let _ = std::fs::remove_file(&p);
         let _ = std::fs::remove_dir(&dir);
     }

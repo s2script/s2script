@@ -47,6 +47,7 @@ mod gamedata_hooks;
 mod http;
 mod jobs;
 mod loader;
+mod loader_worker;
 mod multiplexer;
 mod nest;
 mod dispatch;

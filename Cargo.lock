@@ -1671,6 +1671,7 @@ name = "s2script-core"
 version = "0.0.0"
 dependencies = [
  "futures-util",
+ "libc",
  "reqwest",
  "rusqlite",
  "serde",
