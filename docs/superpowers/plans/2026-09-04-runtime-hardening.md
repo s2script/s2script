@@ -389,9 +389,10 @@ Main is preserved; publication and merge are outside this implementation run.
 The final integrated runtime at `ba6c7c19548fdad46d14bb5c2aa342ce94804ae1` passes
 797 core tests and all three fresh-process pressure cases. The full JavaScript/Docker gate
 previously passed 584 SDK tests; the final fixes only changed Rust and its pressure script.
-Linux-container static ABI checks also pass on the final integrated source. The full Nebula native gate most recently passed the integrated slice-8 code
-(736 core tests plus pressure/shim/symbol checks); the newer loader and extraction still
-require full Linux native/shim linking and an installed-engine run.
+Linux-container static ABI checks also pass on the final integrated source. The final [Linux native gate](runtime-hardening/final-review/linux-native-acceptance.md)
+also passes locally in Docker: 797 core tests, three pressure processes, sanitizer tests,
+full shim linking and its core-entry-point checks. Game-library symbol resolution skipped
+for lack of a CS2 installation in the isolated checkout; installed-engine acceptance remains required.
 
 The owned test server last ran the reviewed slice-6 code. Its bounded pressure and mixed
 component checks passed, but the 300-second mixed pilot was not accepted because it had
@@ -421,8 +422,8 @@ closes all three whole-stack findings: initial config edits, historical path rev
 and request-header capacity accounting. The consolidated correction remains in slices
 six and nine; extraction preserves it. No actionable review finding remains.
 
-Remaining gates: full Linux native/shim build and installed-engine acceptance, then the
-60-minute mixed soak. A separate local Docker compiler environment is being prepared
-to run the final native gate while remote authentication is unavailable. SSH to
+Remaining gates: game-library symbol resolution and installed-engine acceptance, then
+the 60-minute mixed soak. The final release artifacts are being built in the same isolated
+Linux Docker environment. SSH to
 Nebula currently needs the configured 1Password agent to sign again; LTS Node is installed
 and its explicit noninteractive PATH has already passed the harness tests there.

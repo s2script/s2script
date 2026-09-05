@@ -79,3 +79,8 @@ pressure cases; each pressure case passes separately. Boundary, ABI, C++ syntax 
 Linux Docker static checks also pass. See [the final report](final-review/final-fix-review.md)
 and [paired benchmarks](../../../benchmarks/2026-09-runtime-hardening/README.md).
 Full Linux compilation/linking and installed-engine/60-minute soak acceptance remain pending.
+
+The subsequent [final Linux native gate](final-review/linux-native-acceptance.md) passes
+797 core tests, three pressure cases, sanitizer checks, full shim linking and core-entry-point
+checks. Game-library resolution explicitly skipped without a CS2 installation; that phase
+and installed-engine/soak acceptance remain pending.
