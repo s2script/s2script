@@ -8,12 +8,9 @@
 //! `jobs_clone_plugin_context`); this module never names `HOST`, `PLUGINS`, or
 //! `REGISTRY`.
 //!
-//! Two begin paths, preserved exactly:
-//! - Immediate [`begin_job`]: fetch, `threadSleep`, WebSocket connect, net
-//!   connect/bind. Ledger + map + pending + detour happen before submission.
-//! - Mint-then-[`commit_job`]: SQLite and remote DB. An immediate reject
-//!   creates no ledger entry, resolver-map entry, pending count, or detour
-//!   flicker.
+//! Production adapters reserve producer-owned quota before copying native inputs and commit a
+//! captured owner/generation only after submission succeeds. The unmetered begin helper exists
+//! solely for deterministic adapter tests. Resolvers retain cancellation, never the producer lease.
 //!
 //! Timers share the id space and the resolver map but do **not** increment
 //! pending jobs. Callback-timer maps and engine adapters stay out of this file.
@@ -33,6 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub(crate) struct ResolverEntry {
     owner: Option<(String, u64)>,
     resolver: v8::Global<v8::PromiseResolver>,
+    cancel: Option<crate::async_limits::CancelHandle>,
 }
 
 /// Monotonic async-id allocator (1-based; 0 is reserved as "none").
@@ -99,6 +97,7 @@ pub(crate) fn insert_timer_resolver(
 ///
 /// Used by fetch, `threadSleep`, WebSocket connect, and net connect/bind —
 /// submission happens after this returns, keyed by `id`.
+#[cfg(test)]
 pub(crate) fn begin_job<'s>(scope: &mut v8::PinScope<'s, '_>) -> (u64, v8::Local<'s, v8::Value>) {
     let resolver = v8::PromiseResolver::new(scope).unwrap();
     let promise = resolver.get_promise(scope);
@@ -110,6 +109,7 @@ pub(crate) fn begin_job<'s>(scope: &mut v8::PinScope<'s, '_>) -> (u64, v8::Local
 /// Commit a previously-minted id after a successful submit. Ledger + map +
 /// pending + detour happen here and nowhere earlier, so an immediate reject
 /// (SQLite / remote DB) creates no flicker.
+#[cfg(test)]
 pub(crate) fn commit_job(
     scope: &mut v8::PinScope,
     id: u64,
@@ -151,7 +151,14 @@ pub(crate) fn release_timer(entry: &ResolverEntry, id: u64) {
 /// Plugin `Resource::Job` teardown. Decrements pending only when a resolver was
 /// actually removed, so a later drain of the same id cannot double-decrement.
 pub(crate) fn drop_if_present(id: u64) -> bool {
-    complete_job(id).is_some()
+    if let Some(entry) = complete_job(id) {
+        if let Some(c) = entry.cancel {
+            c.cancel();
+        }
+        true
+    } else {
+        false
+    }
 }
 
 /// The single owner-generation liveness and resolve-or-drop protocol.
@@ -212,7 +219,12 @@ pub(crate) fn resolve_undefined(
 /// Process-singleton reset: drop every resolver Global. MUST run while the
 /// isolate is still alive. Does **not** reset [`NEXT_ASYNC_ID`].
 pub(crate) fn reset_resolvers() {
-    RESOLVERS.with(|m| m.borrow_mut().clear());
+    let entries = RESOLVERS.with(|m| std::mem::take(&mut *m.borrow_mut()));
+    for (_, e) in entries {
+        if let Some(c) = e.cancel {
+            c.cancel();
+        }
+    }
 }
 
 /// Process-singleton reset: pending-job count back to zero. Does **not** reset
@@ -223,7 +235,14 @@ pub(crate) fn reset_pending() {
 
 fn insert(id: u64, owner: Option<(String, u64)>, resolver: v8::Global<v8::PromiseResolver>) {
     RESOLVERS.with(|m| {
-        m.borrow_mut().insert(id, ResolverEntry { owner, resolver });
+        m.borrow_mut().insert(
+            id,
+            ResolverEntry {
+                owner,
+                resolver,
+                cancel: None,
+            },
+        );
     });
 }
 
@@ -278,4 +297,86 @@ mod tests {
         assert!(complete_job(9_999_998).is_none());
         assert_eq!(pending(), 0);
     }
+}
+
+/// Admission precedes native input copies, ledger insertion and resolver retention.
+pub(crate) fn reserve(
+    scope: &mut v8::PinScope,
+    bytes: usize,
+) -> Result<crate::async_limits::JobLease, crate::async_limits::AdmissionError> {
+    crate::async_limits::domain().job(crate::v8host::jobs_owner_tag(scope), bytes)
+}
+pub(crate) fn check_live(lease: &crate::async_limits::JobLease) -> Result<(), String> {
+    if lease
+        .cancel
+        .owner
+        .as_ref()
+        .is_some_and(|(owner, generation)| !crate::v8host::jobs_owner_is_live(owner, *generation))
+    {
+        lease.cancel.cancel();
+        Err("AsyncCancelled".into())
+    } else {
+        Ok(())
+    }
+}
+pub(crate) fn commit_reserved(
+    scope: &mut v8::PinScope,
+    id: u64,
+    resolver: v8::Local<v8::PromiseResolver>,
+    cancel: crate::async_limits::CancelHandle,
+) {
+    let owner = cancel.owner.clone();
+    if let Some((ref oid, generation)) = owner {
+        crate::v8host::jobs_record_job(oid, generation, id);
+    }
+    insert(id, owner, v8::Global::new(scope.as_ref(), resolver));
+    RESOLVERS.with(|m| {
+        if let Some(e) = m.borrow_mut().get_mut(&id) {
+            e.cancel = Some(cancel);
+        }
+    });
+    PENDING_JOBS.with(|c| c.set(c.get() + 1));
+    crate::v8host::refresh_detour();
+}
+
+pub(crate) fn reject(
+    scope: &mut v8::PinScope,
+    resolver: v8::Local<v8::PromiseResolver>,
+    message: &str,
+) {
+    let msg = v8::String::new(scope, message).unwrap();
+    let ex = v8::Exception::error(scope, msg);
+    if let Ok(obj) = v8::Local::<v8::Object>::try_from(ex) {
+        let name = message.split(':').next().unwrap_or("Error");
+        if matches!(
+            name,
+            "AsyncQueueFull"
+                | "AsyncPayloadTooLarge"
+                | "AsyncCancelled"
+                | "HttpResponseTooLarge"
+                | "DatabaseResultTooLarge"
+        ) {
+            let key = v8::String::new(scope, "name").unwrap();
+            let val = v8::String::new(scope, name).unwrap();
+            obj.create_data_property(scope, key.into(), val.into());
+        }
+    }
+    resolver.reject(scope, ex);
+    crate::v8host::request_microtask_drain();
+}
+
+pub(crate) fn copy_string(
+    scope: &mut v8::PinScope,
+    value: v8::Local<v8::Value>,
+    lease: &mut crate::async_limits::JobLease,
+) -> Result<String, crate::async_limits::AdmissionError> {
+    let s = value
+        .to_string(scope)
+        .ok_or(crate::async_limits::AdmissionError::PayloadTooLarge)?;
+    lease.input_grow(s.utf8_length(scope).saturating_add(32))?;
+    Ok(s.to_rust_string_lossy(scope))
+}
+
+pub(crate) fn has_resolver(id: u64) -> bool {
+    RESOLVERS.with(|m| m.borrow().contains_key(&id))
 }

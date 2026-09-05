@@ -603,8 +603,22 @@ pub fn register_injected_package(name: &str, js: &str) {
 }
 
 /// Total in-flight async work: pending timers + pending jobs.  Reads TIMERS (brief borrow).
+thread_local! { static MICROTASK_DRAIN_NEEDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+pub(crate) fn request_microtask_drain() {
+    MICROTASK_DRAIN_NEEDED.with(|v| v.set(true));
+    refresh_detour();
+}
 fn async_pending() -> usize {
-    TIMERS.with(|t| t.borrow().len()) + crate::jobs::pending()
+    TIMERS.with(|t| t.borrow().len())
+        + DUE_TIMERS.with(|q| q.borrow().len())
+        + crate::jobs::pending()
+        + crate::async_limits::obligations()
+        + usize::from(MICROTASK_DRAIN_NEEDED.with(|v| v.get()))
+        + usize::from(
+            crate::cookies::pending_cached()
+                || crate::ws::pending_events()
+                || crate::net::pending_events(),
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -877,6 +891,14 @@ fn resolver_owner_tag(scope: &mut v8::PinScope) -> Option<(String, u64)> {
     })
 }
 
+thread_local! {
+    static TIMER_LEASES:std::cell::RefCell<std::collections::HashMap<u64,crate::async_limits::Lease>>=std::cell::RefCell::new(std::collections::HashMap::new());
+    static DUE_TIMERS:std::cell::RefCell<std::collections::VecDeque<u64>>=const {std::cell::RefCell::new(std::collections::VecDeque::new())};
+    static POLL_CURSOR:std::cell::Cell<usize>=const {std::cell::Cell::new(0)};
+    static CALLBACK_CURSOR:std::cell::Cell<usize>=const {std::cell::Cell::new(0)};
+    static PARKED_HTTP:std::cell::RefCell<Option<crate::http::FetchCompletion>>=const {std::cell::RefCell::new(None)};
+    static PARKED_DB:std::cell::RefCell<Option<crate::db::DbCompletion>>=const {std::cell::RefCell::new(None)};
+}
 /// Shared helper for the timer natives: create a `PromiseResolver`, stash its `Global` (tagged with
 /// the owning plugin) under a fresh async id in the Jobs map (timers do not increment pending
 /// jobs), push the timer, reconcile the detour, and return the pending promise.
@@ -889,6 +911,17 @@ fn make_timer_promise<'s>(
     let id = crate::jobs::next_id();
     // Tag the resolver with the CALLING plugin's (id, current generation) — the async-liveness guard.
     let owner = resolver_owner_tag(scope);
+    let lease = match crate::async_limits::domain()
+        .timers
+        .acquire(owner.clone(), 1, 0)
+    {
+        Ok(l) => l,
+        Err(e) => {
+            crate::jobs::reject(scope, resolver, &e.to_string());
+            return promise.into();
+        }
+    };
+    TIMER_LEASES.with(|m| m.borrow_mut().insert(id, lease));
     // Ledger this timer against the CALLING plugin (Task 6's teardown authority).  A non-plugin/
     // unknown owner is a safe no-op.  No thread-local borrow held across a JS call.
     if let Some((ref oid, generation)) = owner {
@@ -925,27 +958,63 @@ fn s2_timer_create(
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_double(0.0);
-        if args.length() < 2 { return; }
+        if args.length() < 2 {
+            return;
+        }
         let ms = args.get(0).integer_value(scope).unwrap_or(-1);
-        if ms < 0 { return; }
+        if ms < 0 {
+            return;
+        }
         let ms = ms as u64;
-        let Ok(f) = v8::Local::<v8::Function>::try_from(args.get(1)) else { return };
+        let Ok(f) = v8::Local::<v8::Function>::try_from(args.get(1)) else {
+            return;
+        };
         let repeat = args.get(2).boolean_value(scope);
         // A zero-interval REPEATING timer would re-arm itself every drain forever with no way for
         // the frame to make progress on anything else. Refuse it rather than ship a footgun.
-        if repeat && ms == 0 { return; }
+        if repeat && ms == 0 {
+            return;
+        }
 
         let id = crate::jobs::next_id();
         let owner = resolver_owner_tag(scope);
+        let lease = match crate::async_limits::domain()
+            .timers
+            .acquire(owner.clone(), 1, 0)
+        {
+            Ok(l) => l,
+            Err(e) => {
+                let msg = v8::String::new(scope, &e.to_string()).unwrap();
+                let ex = v8::Exception::error(scope, msg);
+                if let Ok(obj) = v8::Local::<v8::Object>::try_from(ex) {
+                    let key = v8::String::new(scope, "name").unwrap();
+                    let name = v8::String::new(scope, e.name()).unwrap();
+                    obj.create_data_property(scope, key.into(), name.into());
+                }
+                scope.throw_exception(ex);
+                return;
+            }
+        };
+        TIMER_LEASES.with(|m| m.borrow_mut().insert(id, lease));
         if let Some((ref oid, generation)) = owner {
             record_resource(oid, generation, plugin::Resource::Timer(id));
         }
-        TIMER_CBS.with(|m| m.borrow_mut().insert(id, TimerCallback {
-            owner,
-            cb: v8::Global::new(scope.as_ref(), f),
-            interval_ms: if repeat { Some(ms) } else { None },
-        }));
-        TIMERS.with(|t| t.borrow_mut().push(id, TimerKind::Deadline(Instant::now() + Duration::from_millis(ms))));
+        TIMER_CBS.with(|m| {
+            m.borrow_mut().insert(
+                id,
+                TimerCallback {
+                    owner,
+                    cb: v8::Global::new(scope.as_ref(), f),
+                    interval_ms: if repeat { Some(ms) } else { None },
+                },
+            )
+        });
+        TIMERS.with(|t| {
+            t.borrow_mut().push(
+                id,
+                TimerKind::Deadline(Instant::now() + Duration::from_millis(ms)),
+            )
+        });
         refresh_detour();
         rv.set_double(id as f64);
     }));
@@ -963,18 +1032,29 @@ fn s2_timer_kill(
         let id = args.get(0).integer_value(scope).unwrap_or(0) as u64;
         let owner = resolver_owner_tag(scope);
         let released = match &owner {
-            Some((owner, generation)) => release_resource(owner, *generation, &plugin::Resource::Timer(id)),
+            Some((owner, generation)) => {
+                release_resource(owner, *generation, &plugin::Resource::Timer(id))
+            }
             None => true,
         };
-        if !released { rv.set_bool(false); return; }
+        if !released {
+            rv.set_bool(false);
+            return;
+        }
         let had_cb = TIMER_CBS.with(|m| m.borrow_mut().remove(&id)).is_some();
         let had_q = TIMERS.with(|t| t.borrow_mut().remove(id));
+        DUE_TIMERS.with(|q| q.borrow_mut().retain(|n| *n != id));
+        TIMER_LEASES.with(|m| m.borrow_mut().remove(&id));
         // Record ONLY the self-kill case, so this set stays bounded. If the timer was still in
         // TIMER_CBS or the queue we removed it above and the drain will never see it; the only way
         // both are absent for a live id is that the drain is holding it mid-fire — i.e. the
         // callback is killing itself. (An id that never existed also lands here; the drain removes
         // whatever it looks up, and shutdown clears the rest.)
-        if !had_cb && !had_q { TIMER_KILLED.with(|k| { k.borrow_mut().insert(id); }); }
+        if !had_cb && !had_q {
+            TIMER_KILLED.with(|k| {
+                k.borrow_mut().insert(id);
+            });
+        }
         rv.set_bool(owner.is_some() || had_cb || had_q);
     }));
 }
@@ -1031,12 +1111,29 @@ fn s2_thread_sleep(
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ms = args.get(0).integer_value(scope).unwrap_or(0);
         let ms = if ms > 0 { ms as u64 } else { 0 };
-        let (id, promise) = crate::jobs::begin_job(scope);
-        pool().submit(id, Box::new(move || {
-            std::thread::sleep(std::time::Duration::from_millis(ms));
-            Ok(())
-        }));
-        rv.set(promise);
+        let resolver = v8::PromiseResolver::new(scope).unwrap();
+        let promise = resolver.get_promise(scope);
+        let result = crate::jobs::reserve(scope, 0)
+            .map_err(|e| e.to_string())
+            .and_then(|lease| {
+                crate::jobs::check_live(&lease)?;
+                let id = crate::jobs::next_id();
+                let cancel = lease.cancel.clone();
+                pool().try_submit(
+                    id,
+                    Box::new(move || {
+                        std::thread::sleep(Duration::from_millis(ms));
+                        Ok(())
+                    }),
+                    lease,
+                )?;
+                crate::jobs::commit_reserved(scope, id, resolver, cancel);
+                Ok(())
+            });
+        if let Err(e) = result {
+            crate::jobs::reject(scope, resolver, &e);
+        }
+        rv.set(promise.into());
     }));
 }
 
@@ -1056,46 +1153,62 @@ fn s2_thread_sleep(
 /// `crate::ws::connect` (the process-global tokio+tungstenite engine, Task 1) — the calling
 /// (main/game) thread never blocks; the Promise resolves on a LATER `frame_async_drain` via
 /// `resolve_ws_connect`.
-fn s2_ws_connect(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let url = args.get(0).to_rust_string_lossy(scope);
-        // Optional `{ headers }` init, read exactly like s2_fetch's. A header the
-        // handshake owns is refused in ws::build_request, not here — the rejection
-        // has to reach JS through ConnectFailed like every other connect failure,
-        // and this native has no promise to reject with yet.
-        let mut headers: Vec<(String, String)> = Vec::new();
-        if let Ok(opts) = v8::Local::<v8::Object>::try_from(args.get(1)) {
-            if let Some(k) = v8::String::new(scope, "headers") {
-                if let Some(hv) = opts.get(scope, k.into()) {
-                    if let Ok(ho) = v8::Local::<v8::Object>::try_from(hv) {
-                        if let Some(names) = ho.get_own_property_names(scope, Default::default()) {
-                            for i in 0..names.length() {
-                                let Some(key) = names.get_index(scope, i) else { continue };
-                                let Some(val) = ho.get(scope, key) else { continue };
-                                headers.push((
-                                    key.to_rust_string_lossy(scope),
-                                    val.to_rust_string_lossy(scope),
-                                ));
-                            }
-                        }
-                    }
+fn s2_ws_connect(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let resolver = v8::PromiseResolver::new(scope).unwrap();
+    let promise = resolver.get_promise(scope);
+    let result = (|| -> Result<(), String> {
+        let owner = resolver_owner_tag(scope);
+        let owner_string = owner.as_ref().map(|o| o.0.clone()).unwrap_or_default();
+        let mut lease = crate::jobs::reserve(scope, 0).map_err(|e| e.to_string())?;
+        let url =
+            crate::jobs::copy_string(scope, args.get(0), &mut lease).map_err(|e| e.to_string())?;
+        let mut headers = Vec::new();
+        let headers_key = v8::String::new(scope, "headers").unwrap();
+        let obj = v8::Local::<v8::Object>::try_from(args.get(1))
+            .ok()
+            .and_then(|o| o.get(scope, headers_key.into()))
+            .and_then(|v| v8::Local::<v8::Object>::try_from(v).ok());
+        if let Some(obj) = obj {
+            if let Some(names) = obj.get_own_property_names(scope, Default::default()) {
+                for i in 0..names.length() {
+                    let Some(k) = names.get_index(scope, i) else {
+                        continue;
+                    };
+                    let Some(v) = obj.get(scope, k) else { continue };
+                    headers.push((
+                        crate::jobs::copy_string(scope, k, &mut lease)
+                            .map_err(|e| e.to_string())?,
+                        crate::jobs::copy_string(scope, v, &mut lease)
+                            .map_err(|e| e.to_string())?,
+                    ));
                 }
             }
         }
-        let (id, promise) = crate::jobs::begin_job(scope);
-        // The SAME derivation send/close/on use to CHECK this owner — see `ws_owner`.
-        let owner_string = ws_owner(scope);
-        // The Job is already ledgered by begin_job. Also ledger the connection itself (as a
-        // WsConn, so an unclosed connection is closed at teardown) — a non-plugin/unknown
-        // owner is a safe no-op; no borrow held across a JS call.
-        let owner_tag = resolver_owner_tag(scope);
-        if let Some((ref oid, generation)) = owner_tag {
-            record_resource(oid, generation, plugin::Resource::WsConn(id));
+        crate::jobs::check_live(&lease)?;
+        let id = crate::jobs::next_id();
+        let cancel = lease.cancel.clone();
+        crate::ws::connect_owned(
+            id,
+            url,
+            owner_string,
+            owner.as_ref().map_or(0, |o| o.1),
+            headers,
+            lease,
+        )?;
+        crate::jobs::commit_reserved(scope, id, resolver, cancel);
+        if let Some((oid, generation)) = owner {
+            record_resource(&oid, generation, plugin::Resource::WsConn(id));
         }
-        crate::ws::connect_owned(id, url, owner_string,
-            owner_tag.as_ref().map(|(_, generation)| *generation).unwrap_or(0), headers);
-        rv.set(promise);
-    }));
+        Ok(())
+    })();
+    if let Err(e) = result {
+        crate::jobs::reject(scope, resolver, &e);
+    }
+    rv.set(promise.into());
 }
 
 /// Resolve (or drop, on the async-liveness guard) a completed `__s2_ws_connect` job in its OWNING
@@ -1125,24 +1238,6 @@ fn resolve_ws_connect(
     });
 }
 
-/// Native `__s2_ws_send(id, text)`.  Owner-scoped (a no-op for a conn this plugin doesn't own, or an
-/// absent conn); hands off to `crate::ws::send` (a non-blocking unbounded-channel send — never
-/// blocks the calling thread). No return value.
-/// The owner string every ws native uses — connect to REGISTER it, send/close/on to CHECK it.
-///
-/// One function because four copies of `current_plugin(scope).unwrap_or_*()` are four chances to
-/// disagree, and they did: `__s2_ws_on` fell back to `"legacy"` where the others fell back to `""`,
-/// so whenever `current_plugin` could not name a plugin the socket went half-mute — `send` matched
-/// the registered owner and reached the wire, `is_owner` did not and dropped the subscription on the
-/// floor. A test can assert these agree; only a single definition makes disagreeing impossible.
-fn ws_owner(scope: &mut v8::PinScope) -> String {
-    current_plugin(scope).unwrap_or_default()
-}
-
-
-
-
-
 // ---------------------------------------------------------------------------
 // Net (raw TCP + UDP client sockets) Task 2: __s2_net_* natives + Uint8Array
 // marshalling + signal routing + teardown. MIRRORS the WebSocket spine above
@@ -1161,37 +1256,66 @@ fn ws_owner(scope: &mut v8::PinScope) -> String {
 /// AND the net `conn_id`; the connection is ledgered as a `NetConn` so an unclosed socket is dropped
 /// at teardown), except the hand-off is `crate::net::connect_tcp`. The calling (game) thread never
 /// blocks; the Promise resolves on a LATER `frame_async_drain` via `resolve_net_connect`.
-fn s2_net_tcp_connect(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let host = args.get(0).to_rust_string_lossy(scope);
-        let port = args.get(1).number_value(scope).unwrap_or(0.0) as u16;
-        let (id, promise) = crate::jobs::begin_job(scope);
-        let owner_string = current_plugin(scope).unwrap_or_default();
-        let owner_tag = resolver_owner_tag(scope);
-        if let Some((ref oid, generation)) = owner_tag {
-            record_resource(oid, generation, plugin::Resource::NetConn(id));
+fn s2_net_tcp_connect(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let resolver = v8::PromiseResolver::new(scope).unwrap();
+    let promise = resolver.get_promise(scope);
+    let result = (|| -> Result<(), String> {
+        let owner = resolver_owner_tag(scope);
+        let owner_string = owner.as_ref().map(|o| o.0.clone()).unwrap_or_default();
+        let generation = owner.as_ref().map_or(0, |o| o.1);
+        let mut lease = crate::jobs::reserve(scope, 0).map_err(|e| e.to_string())?;
+        let host =
+            crate::jobs::copy_string(scope, args.get(0), &mut lease).map_err(|e| e.to_string())?;
+        let port = args.get(1).integer_value(scope).unwrap_or(0) as u16;
+        crate::jobs::check_live(&lease)?;
+        let id = crate::jobs::next_id();
+        let cancel = lease.cancel.clone();
+        crate::net::connect_tcp_owned(id, host, port, owner_string, generation, lease)?;
+        crate::jobs::commit_reserved(scope, id, resolver, cancel);
+        if let Some((oid, generation)) = owner {
+            record_resource(&oid, generation, plugin::Resource::NetConn(id));
         }
-        crate::net::connect_tcp_owned(id, host, port, owner_string,
-            owner_tag.as_ref().map(|(_, generation)| *generation).unwrap_or(0));
-        rv.set(promise);
-    }));
+        Ok(())
+    })();
+    if let Err(e) = result {
+        crate::jobs::reject(scope, resolver, &e);
+    }
+    rv.set(promise.into());
 }
 
 /// Native `__s2_net_udp_bind() -> Promise<connId>`. Same block as `s2_net_tcp_connect`, hand-off
 /// `crate::net::bind_udp` (a UDP socket bound to an ephemeral local port; the Promise resolves once
 /// the socket is bound, or rejects on a bind failure).
-fn s2_net_udp_bind(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let (id, promise) = crate::jobs::begin_job(scope);
-        let owner_string = current_plugin(scope).unwrap_or_default();
-        let owner_tag = resolver_owner_tag(scope);
-        if let Some((ref oid, generation)) = owner_tag {
-            record_resource(oid, generation, plugin::Resource::NetConn(id));
+fn s2_net_udp_bind(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let resolver = v8::PromiseResolver::new(scope).unwrap();
+    let promise = resolver.get_promise(scope);
+    let result = (|| -> Result<(), String> {
+        let owner = resolver_owner_tag(scope);
+        let owner_string = owner.as_ref().map(|o| o.0.clone()).unwrap_or_default();
+        let generation = owner.as_ref().map_or(0, |o| o.1);
+        let mut lease = crate::jobs::reserve(scope, 0).map_err(|e| e.to_string())?;
+        crate::jobs::check_live(&lease)?;
+        let id = crate::jobs::next_id();
+        let cancel = lease.cancel.clone();
+        crate::net::bind_udp_owned(id, owner_string, generation, lease)?;
+        crate::jobs::commit_reserved(scope, id, resolver, cancel);
+        if let Some((oid, generation)) = owner {
+            record_resource(&oid, generation, plugin::Resource::NetConn(id));
         }
-        crate::net::bind_udp_owned(id, owner_string,
-            owner_tag.as_ref().map(|(_, generation)| *generation).unwrap_or(0));
-        rv.set(promise);
-    }));
+        Ok(())
+    })();
+    if let Err(e) = result {
+        crate::jobs::reject(scope, resolver, &e);
+    }
+    rv.set(promise.into());
 }
 
 /// Resolve (or drop, on the async-liveness guard) a completed `__s2_net_tcp_connect`/`_udp_bind` job
@@ -4580,6 +4704,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_subscribe", s2_subscribe);
     set_native(scope, global_obj, "__s2_unsubscribe", s2_unsubscribe);
     // Async timer primitives (Delay / NextTick / NextFrame / threadSleep).
+    set_native(scope, global_obj, "__s2_async_stats", s2_async_stats);
     set_native(scope, global_obj, "__s2_delay", s2_delay);
     set_native(scope, global_obj, "__s2_timer_create", s2_timer_create);
     set_native(scope, global_obj, "__s2_timer_kill", s2_timer_kill);
@@ -4625,7 +4750,12 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Inter-plugin interface primitives (Slice 4.5).
     set_native(scope, global_obj, "__s2_iface_publish", s2_iface_publish);
     set_native(scope, global_obj, "__s2_iface_dep_kind", s2_iface_dep_kind);
-    set_native(scope, global_obj, "__s2_iface_is_published", s2_iface_is_published);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_iface_is_published",
+        s2_iface_is_published,
+    );
     set_native(scope, global_obj, "__s2_iface_call", s2_iface_call);
     // Event subscription / emission (Slice 4.5 events half).
     set_native(scope, global_obj, "__s2_iface_on", s2_iface_on);
@@ -4636,15 +4766,35 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Engine-identity client-list natives (Slice 5D.2).
     crate::client::install_natives(scope, global_obj);
     // Translations slice: root/language phrase-file read + the client's cl_language cvar.
-    set_native(scope, global_obj, "__s2_translations_read", s2_translations_read);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_translations_read",
+        s2_translations_read,
+    );
     // Event write/fire (Slice 5D.3): pre-subscribe/unsubscribe + setters + create/fire.
     // Config live-reload (Slice 5E.2): register an onChange handler for this plugin's config file.
-    set_native(scope, global_obj, "__s2_config_on_change", s2_config_on_change);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_config_on_change",
+        s2_config_on_change,
+    );
     // Client-lifecycle subscriber (Clients sub-project): register a Clients.on* handler.
     // Map-start subscriber (clientlist-fakeconvar-onmapstart slice): register a Server.onMapStart handler.
-    set_native(scope, global_obj, "__s2_map_start_subscribe", s2_map_start_subscribe);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_map_start_subscribe",
+        s2_map_start_subscribe,
+    );
     // Precache subscriber (Sound slice): register a Sound.onPrecache handler.
-    set_native(scope, global_obj, "__s2_precache_subscribe", s2_precache_subscribe);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_precache_subscribe",
+        s2_precache_subscribe,
+    );
 
     crate::admin::install_natives(scope, global_obj);
     // Slice 6.18: ban cache natives (engine-generic — a SteamID/ban map, like the admin cache).
@@ -4653,66 +4803,201 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     crate::cookies::install_natives(scope, global_obj);
     // Voice-control slice: per-slot voice mute set/get (shim-side flag consulted by the
     // SetClientListening rewrite hook; JS never sits in that hot path).
-    set_native(scope, global_obj, "__s2_voice_set_muted", s2_voice_set_muted);
-    set_native(scope, global_obj, "__s2_voice_get_muted", s2_voice_get_muted);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_voice_set_muted",
+        s2_voice_set_muted,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_voice_get_muted",
+        s2_voice_get_muted,
+    );
     // ban-reason sub-project 2: developer-console print + client IP address.
     crate::sdkhooks::install_natives(scope, global_obj);
-    set_native(scope, global_obj, "__s2_damage_read_float", s2_damage_read_float);
-    set_native(scope, global_obj, "__s2_damage_read_int", s2_damage_read_int);
-    set_native(scope, global_obj, "__s2_damage_write_float", s2_damage_write_float);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_damage_read_float",
+        s2_damage_read_float,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_damage_read_int",
+        s2_damage_read_int,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_damage_write_float",
+        s2_damage_write_float,
+    );
     set_native(scope, global_obj, "__s2_damage_victim", s2_damage_victim);
     set_native(scope, global_obj, "__s2_cvar_get", s2_cvar_get);
     set_native(scope, global_obj, "__s2_cvar_set", s2_cvar_set);
-    set_native(scope, global_obj, "__s2_convar_register", s2_convar_register);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_convar_register",
+        s2_convar_register,
+    );
     // Usercmd primitive Task 2: raw subscribe native (block/read/write natives are Task 3/4).
-    set_native(scope, global_obj, "__s2_usercmd_subscribe", s2_usercmd_subscribe);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_usercmd_subscribe",
+        s2_usercmd_subscribe,
+    );
     // Usercmd primitive Task 3: field read/write + buttons + subtick-clear natives (Task 4 wraps these
     // in the prelude's singleton Cmd accessor object).
     set_native(scope, global_obj, "__s2_usercmd_read", s2_usercmd_read);
     set_native(scope, global_obj, "__s2_usercmd_write", s2_usercmd_write);
-    set_native(scope, global_obj, "__s2_usercmd_read_buttons", s2_usercmd_read_buttons);
-    set_native(scope, global_obj, "__s2_usercmd_write_buttons", s2_usercmd_write_buttons);
-    set_native(scope, global_obj, "__s2_usercmd_clear_subtick", s2_usercmd_clear_subtick);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_usercmd_read_buttons",
+        s2_usercmd_read_buttons,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_usercmd_write_buttons",
+        s2_usercmd_write_buttons,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_usercmd_clear_subtick",
+        s2_usercmd_clear_subtick,
+    );
     set_native(scope, global_obj, "__s2_plugins_list", s2_plugins_list);
     set_native(scope, global_obj, "__s2_plugin_unload", s2_plugin_unload);
     set_native(scope, global_obj, "__s2_plugin_reload", s2_plugin_reload);
     set_native(scope, global_obj, "__s2_plugin_load", s2_plugin_load);
     set_native(scope, global_obj, "__s2_server_command", s2_server_command);
-    set_native(scope, global_obj, "__s2_server_map_valid", s2_server_map_valid);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_server_map_valid",
+        s2_server_map_valid,
+    );
     // reservedslots+basetriggers: server-info natives (max clients / map name / game time).
-    set_native(scope, global_obj, "__s2_server_max_clients", s2_server_max_clients);
-    set_native(scope, global_obj, "__s2_server_map_name", s2_server_map_name);
-    set_native(scope, global_obj, "__s2_server_game_time", s2_server_game_time);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_server_max_clients",
+        s2_server_max_clients,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_server_map_name",
+        s2_server_map_name,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_server_game_time",
+        s2_server_game_time,
+    );
     // Slice 6.2 Task 2: config-bridge natives for the admin module (file load/write).
-    set_native(scope, global_obj, "__s2_config_read_raw", s2_config_read_raw);
-    set_native(scope, global_obj, "__s2_config_write_raw", s2_config_write_raw);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_config_read_raw",
+        s2_config_read_raw,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_config_write_raw",
+        s2_config_write_raw,
+    );
     // Slice nominations Task 1: raw configs-dir file read/write for @s2script/config.
-    set_native(scope, global_obj, "__s2_config_read_file", s2_config_read_file);
-    set_native(scope, global_obj, "__s2_config_write_file", s2_config_write_file);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_config_read_file",
+        s2_config_read_file,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_config_write_file",
+        s2_config_write_file,
+    );
     // Slice DB Task 3: the `__s2_sqlite_*` natives (query/execute now actor-backed, off-thread) for `@s2script/db`.
     set_native(scope, global_obj, "__s2_sqlite_open", s2_sqlite_open);
     set_native(scope, global_obj, "__s2_sqlite_query", s2_sqlite_query);
     set_native(scope, global_obj, "__s2_sqlite_execute", s2_sqlite_execute);
     set_native(scope, global_obj, "__s2_sqlite_close", s2_sqlite_close);
     // Remote SQL driver Task 2: the `__s2_db_remote_*` natives (MySQL/Postgres over sqldb.rs).
-    set_native(scope, global_obj, "__s2_db_remote_connect", s2_db_remote_connect);
-    set_native(scope, global_obj, "__s2_db_remote_query", s2_db_remote_query);
-    set_native(scope, global_obj, "__s2_db_remote_execute", s2_db_remote_execute);
-    set_native(scope, global_obj, "__s2_db_remote_close", s2_db_remote_close);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_db_remote_connect",
+        s2_db_remote_connect,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_db_remote_query",
+        s2_db_remote_query,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_db_remote_execute",
+        s2_db_remote_execute,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_db_remote_close",
+        s2_db_remote_close,
+    );
     // Slice HTTP Task 2: async fetch over the process-global tokio+reqwest engine (core/src/http.rs).
     crate::http::install_natives(scope, global_obj);
     // WebSocket Task 2: client ws over the process-global tokio+tungstenite engine (core/src/ws.rs).
     set_native(scope, global_obj, "__s2_ws_connect", s2_ws_connect);
     crate::ws::install_natives(scope, global_obj);
     // Net Task 2: raw TCP/UDP client sockets over the process-global tokio engine (core/src/net.rs).
-    set_native(scope, global_obj, "__s2_net_tcp_connect", s2_net_tcp_connect);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_net_tcp_connect",
+        s2_net_tcp_connect,
+    );
     set_native(scope, global_obj, "__s2_net_udp_bind", s2_net_udp_bind);
     crate::net::install_natives(scope, global_obj);
     // TopMenu registry (adminmenu framework): owner-tracked categories/items + post-drain select dispatch.
-    set_native(scope, global_obj, "__s2_topmenu_add_category", s2_topmenu_add_category);
-    set_native(scope, global_obj, "__s2_topmenu_add_tab", s2_topmenu_add_tab);
-    set_native(scope, global_obj, "__s2_topmenu_add_item", s2_topmenu_add_item);
-    set_native(scope, global_obj, "__s2_topmenu_snapshot", s2_topmenu_snapshot);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_topmenu_add_category",
+        s2_topmenu_add_category,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_topmenu_add_tab",
+        s2_topmenu_add_tab,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_topmenu_add_item",
+        s2_topmenu_add_item,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_topmenu_snapshot",
+        s2_topmenu_snapshot,
+    );
     set_native(scope, global_obj, "__s2_topmenu_select", s2_topmenu_select);
     // Host-side HUD pool claims: the pooled panel trees are one shared entity, so who-owns-which-
     // slot is cross-plugin state — it cannot live in the per-context prelude (see crate::ui_pool).
@@ -4720,24 +5005,79 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // Ray-trace slice: the sole native over the trace_shape engine op (engine-generic, no CS2 names).
     set_native(scope, global_obj, "__s2_trace", s2_trace);
     // Entity-creation lifecycle slice: createEntity + EntityRef.spawn/teleport/remove natives.
-    set_native(scope, global_obj, "__s2_user_message_create", s2_user_message_create);
-    set_native(scope, global_obj, "__s2_user_message_set_int", s2_user_message_set_int);
-    set_native(scope, global_obj, "__s2_user_message_set_float", s2_user_message_set_float);
-    set_native(scope, global_obj, "__s2_user_message_set_string", s2_user_message_set_string);
-    set_native(scope, global_obj, "__s2_user_message_set_bool", s2_user_message_set_bool);
-    set_native(scope, global_obj, "__s2_user_message_send", s2_user_message_send);
-    set_native(scope, global_obj, "__s2_collision_activate", s2_collision_activate);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_user_message_create",
+        s2_user_message_create,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_user_message_set_int",
+        s2_user_message_set_int,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_user_message_set_float",
+        s2_user_message_set_float,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_user_message_set_string",
+        s2_user_message_set_string,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_user_message_set_bool",
+        s2_user_message_set_bool,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_user_message_send",
+        s2_user_message_send,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_collision_activate",
+        s2_collision_activate,
+    );
     set_native(scope, global_obj, "__s2_sound_emit", s2_sound_emit);
-    set_native(scope, global_obj, "__s2_sound_precache_add", s2_sound_precache_add);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_sound_precache_add",
+        s2_sound_precache_add,
+    );
     // Item slice: the sub-object vcall native + the readHandleVector native (wrapped as an
     // EntityRef prototype method in the prelude, below). A5b retired give/remove-item to
     // gamedata/cs2 `calls` descriptors.
     // Entity-I/O slice: fire inputs (AddEntityIOEvent) + Entity.onOutput subscribe/unsubscribe
     // (FireOutputInternal detour dispatch — installed at shim Load, see dispatch_output).
-    set_native(scope, global_obj, "__s2_output_subscribe", s2_output_subscribe);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_output_subscribe",
+        s2_output_subscribe,
+    );
     set_native(scope, global_obj, "__s2_cvar_on_change", s2_cvar_on_change);
-    set_native(scope, global_obj, "__s2_cvar_off_change", s2_cvar_off_change);
-    set_native(scope, global_obj, "__s2_output_unsubscribe", s2_output_unsubscribe);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_cvar_off_change",
+        s2_cvar_off_change,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_output_unsubscribe",
+        s2_output_unsubscribe,
+    );
     // Entity lifecycle listeners slice: Entity.onCreate/onSpawn/onDelete subscribe/unsubscribe (the
     // IEntityListener is lazily installed shim-side on the first subscribe via entity_listener_install).
     // entity_name slice: EntityRef.name reads CEntityIdentity::m_name (sibling of entity_find_by_class's
@@ -4748,45 +5088,125 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     // checktransmit slice: declarative per-client entity visibility rules (@s2script/transmit).
     set_native(scope, global_obj, "__s2_transmit_set", s2_transmit_set);
     set_native(scope, global_obj, "__s2_transmit_reset", s2_transmit_reset);
-    set_native(scope, global_obj, "__s2_transmit_reset_all", s2_transmit_reset_all);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_transmit_reset_all",
+        s2_transmit_reset_all,
+    );
     set_native(scope, global_obj, "__s2_transmit_stats", s2_transmit_stats);
     // Voice-hearability slice: declarative per-(receiver, sender) rules (@s2script/sdk/voice). The
     // shim evaluates them on the SetClientListening hot path; no JS runs per pair.
-    set_native(scope, global_obj, "__s2_voice_audible_set", s2_voice_audible_set);
-    set_native(scope, global_obj, "__s2_voice_audible_clear", s2_voice_audible_clear);
-    set_native(scope, global_obj, "__s2_voice_reset_all", s2_voice_reset_all);
-    set_native(scope, global_obj, "__s2_voice_audible_stats", s2_voice_audible_stats);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_voice_audible_set",
+        s2_voice_audible_set,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_voice_audible_clear",
+        s2_voice_audible_clear,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_voice_reset_all",
+        s2_voice_reset_all,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_voice_audible_stats",
+        s2_voice_audible_stats,
+    );
     // UserMessage-interception slice: UserMessages.onPre subscribe/unsubscribe + the block-scoped view
     // read natives (route through the usermsg_hook_* ops; the shim's PostEventAbstract hook installs
     // lazily on the first subscribe).
     crate::usermsg::install_natives(scope, global_obj);
     // Plugin-declared engine calls (`@s2script/sdk/unsafe`): ask-by-name only — there is deliberately
     // NO registration native (core registers descriptors itself from the packed gamedata.json).
-    set_native(scope, global_obj, "__s2_engine_call_ready", s2_engine_call_ready);
-    set_native(scope, global_obj, "__s2_engine_call_receiverless", s2_engine_call_receiverless);
-    set_native(scope, global_obj, "__s2_engine_call_status", s2_engine_call_status);
-    set_native(scope, global_obj, "__s2_engine_call_invoke", s2_engine_call_invoke);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_engine_call_ready",
+        s2_engine_call_ready,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_engine_call_receiverless",
+        s2_engine_call_receiverless,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_engine_call_status",
+        s2_engine_call_status,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_engine_call_invoke",
+        s2_engine_call_invoke,
+    );
     crate::shared_entity_switch::install(scope, global_obj);
     // The GAME-PACKAGE-scoped four (A5b): same natives, keyed on core's reserved owner id for the
     // registered game package instead of the calling context's plugin id. The game package's
     // prelude runs in the raw context scope and has no plugin identity of its own, so it cannot use
     // the four above; and an owner id is never taken from JS, so these cannot be aimed elsewhere.
-    set_native(scope, global_obj, "__s2_game_call_ready", s2_game_call_ready);
-    set_native(scope, global_obj, "__s2_game_call_receiverless", s2_game_call_receiverless);
-    set_native(scope, global_obj, "__s2_game_call_status", s2_game_call_status);
-    set_native(scope, global_obj, "__s2_game_call_invoke", s2_game_call_invoke);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_game_call_ready",
+        s2_game_call_ready,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_game_call_receiverless",
+        s2_game_call_receiverless,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_game_call_status",
+        s2_game_call_status,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_game_call_invoke",
+        s2_game_call_invoke,
+    );
     // Declarative inbound hooks: `__s2_hook_on` is the game-package subscribe (owner is the first
     // argument, remapped to the reserved owner id). `__s2_engine_hook_*` is the plugin path —
     // owner is the calling context, never an argument — so `Engine.hook` cannot name another plugin.
     // There is no registration native: core registers hook descriptors itself from the packed
     // gamedata, so JS can never declare a detour, only subscribe to a declared one.
     set_native(scope, global_obj, "__s2_hook_on", s2_hook_on);
-    set_native(scope, global_obj, "__s2_engine_hook_ready", s2_engine_hook_ready);
-    set_native(scope, global_obj, "__s2_engine_hook_status", s2_engine_hook_status);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_engine_hook_ready",
+        s2_engine_hook_ready,
+    );
+    set_native(
+        scope,
+        global_obj,
+        "__s2_engine_hook_status",
+        s2_engine_hook_status,
+    );
     set_native(scope, global_obj, "__s2_engine_hook_on", s2_engine_hook_on);
     set_native(scope, global_obj, "__s2_hook_on_post", s2_hook_on_post);
     set_native(scope, global_obj, "__s2_hook_q_u16", s2_hook_q_u16);
-    set_native(scope, global_obj, "__s2_hook_self_matches", s2_hook_self_matches);
+    set_native(
+        scope,
+        global_obj,
+        "__s2_hook_self_matches",
+        s2_hook_self_matches,
+    );
 }
 
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
@@ -5479,33 +5899,40 @@ fn s2_config_write_file(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
 // error rejects the Promise, never panics/throws synchronously.
 // ---------------------------------------------------------------------------
 
-/// JS array (params) -> `Vec<DbValue>`. `bool` -> `Int(0|1)`; an integral `number` -> `Int`, else
-/// `Real`; `string` -> `Text`; `null`/`undefined` -> `Null`. A non-array `val` (e.g. omitted arg)
-/// yields an empty params vec (degrade, not a crash).
-fn js_params_to_db(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> Vec<crate::db::DbValue> {
+/// Copy SQL and parameters only after reserving their normalized bytes.
+fn bounded_db_input(
+    scope: &mut v8::PinScope,
+    sql: v8::Local<v8::Value>,
+    params: v8::Local<v8::Value>,
+    lease: &mut crate::async_limits::JobLease,
+) -> Result<(String, Vec<crate::db::DbValue>), String> {
     use crate::db::DbValue;
+    let sql = crate::jobs::copy_string(scope, sql, lease).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
-    if let Ok(arr) = v8::Local::<v8::Array>::try_from(val) {
+    if let Ok(arr) = v8::Local::<v8::Array>::try_from(params) {
         for i in 0..arr.length() {
-            let Some(el) = arr.get_index(scope, i) else { out.push(DbValue::Null); continue; };
-            let dv = if el.is_null_or_undefined() {
+            lease.input_grow(32).map_err(|e| e.to_string())?;
+            let v = arr
+                .get_index(scope, i)
+                .unwrap_or_else(|| v8::undefined(scope).into());
+            let v = if v.is_null_or_undefined() {
                 DbValue::Null
-            } else if el.is_boolean() {
-                DbValue::Int(if el.boolean_value(scope) { 1 } else { 0 })
-            } else if el.is_string() {
-                DbValue::Text(el.to_rust_string_lossy(scope))
-            } else if el.is_number() {
-                let n = el.number_value(scope).unwrap_or(0.0);
-                // 2^53 — beyond it a JS number can't represent every integer, so keep it a Real
-                // (64-bit ids are passed as strings per the contract).
-                if n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 { DbValue::Int(n as i64) } else { DbValue::Real(n) }
+            } else if v.is_boolean() {
+                DbValue::Int(i64::from(v.boolean_value(scope)))
+            } else if v.is_number() {
+                let n = v.number_value(scope).unwrap_or(0.0);
+                if n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 {
+                    DbValue::Int(n as i64)
+                } else {
+                    DbValue::Real(n)
+                }
             } else {
-                DbValue::Text(el.to_rust_string_lossy(scope))
+                DbValue::Text(crate::jobs::copy_string(scope, v, lease).map_err(|e| e.to_string())?)
             };
-            out.push(dv);
+            out.push(v);
         }
     }
-    out
+    Ok((sql, out))
 }
 
 /// `DbValue` -> a JS value in `scope`'s current context. `Int`/`Real` -> `Number` (a value beyond
@@ -5537,31 +5964,58 @@ fn db_data_dir() -> Option<String> {
 /// `<data_dir>/<name>.sqlite` and resolves the opaque connection handle; ledgers it against the
 /// CALLING plugin. Rejects on an invalid name, an unavailable data dir (no engine op), or an
 /// open failure.
-fn s2_sqlite_open(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn s2_sqlite_open(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let name = args.get(0).to_rust_string_lossy(scope);
+        let owner_tag = resolver_owner_tag(scope);
         let owner = current_plugin(scope).unwrap_or_default();
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let promise = resolver.get_promise(scope);
-        let result = match db_data_dir() {
-            Some(dir) => crate::db::open(std::path::Path::new(&dir), &name, &owner),
-            None => Err("db not available".to_string()),
-        };
+        let result = (|| -> Result<u64, String> {
+            let lifetime = crate::async_limits::domain()
+                .sqlite
+                .acquire(owner_tag.clone(), 1, 0)
+                .map_err(|e| e.to_string())?;
+            let name = args
+                .get(0)
+                .to_string(scope)
+                .ok_or("invalid database name")?;
+            if name.utf8_length(scope) > 64 {
+                return Err("AsyncPayloadTooLarge".into());
+            }
+            let name = name.to_rust_string_lossy(scope);
+            if owner_tag
+                .as_ref()
+                .is_some_and(|(id, generation)| !owner_is_live(id, *generation))
+            {
+                return Err("AsyncCancelled".into());
+            }
+            let dir = db_data_dir().ok_or("db not available")?;
+            crate::db::open_reserved(
+                std::path::Path::new(&dir),
+                &name,
+                &owner,
+                crate::async_limits::domain(),
+                lifetime,
+            )
+        })();
         match result {
             Ok(handle) => {
                 // Ledger the connection against the CALLING plugin (teardown authority) — a
                 // non-plugin/unknown owner (the shared HOST context) is a safe no-op.
-                if let Some((ref oid, generation)) = resolver_owner_tag(scope) {
+                if let Some((ref oid, generation)) = owner_tag {
                     record_resource(oid, generation, plugin::Resource::DbConn(handle));
                 }
                 resolver.resolve(scope, v8::Number::new(scope, handle as f64).into());
             }
             Err(e) => {
-                let msg = v8::String::new(scope, &e).unwrap();
-                let ex = v8::Exception::error(scope, msg);
-                resolver.reject(scope, ex);
+                crate::jobs::reject(scope, resolver, &e);
             }
         }
+        request_microtask_drain();
         rv.set(promise.into());
     }));
 }
@@ -5569,16 +6023,20 @@ fn s2_sqlite_open(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
 /// Build the JS `Row[]` (array of {col: value}) from a `QueryResult`. Shared by the sync SQLite
 /// path (`s2_sqlite_query`) and the async remote-resolve path (`resolve_db`). Delegates each cell
 /// to `db_value_to_v8` (`Int`/`Real` -> `Number`, `Text` -> `String`, `Null` -> `null`).
-fn query_result_to_js<'s>(scope: &mut v8::PinScope<'s, '_>, q: &crate::db::QueryResult) -> v8::Local<'s, v8::Value> {
+fn query_result_to_js<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    q: &crate::db::QueryResult,
+) -> v8::Local<'s, v8::Value> {
     let arr = v8::Array::new(scope, q.rows.len() as i32);
     for (ri, row) in q.rows.iter().enumerate() {
         let obj = v8::Object::new(scope);
         for (ci, col) in q.columns.iter().enumerate() {
             let key = v8::String::new(scope, col).unwrap();
             let val = db_value_to_v8(scope, &row[ci]);
-            obj.set(scope, key.into(), val);
+            obj.create_data_property(scope, key.into(), val);
         }
-        arr.set_index(scope, ri as u32, obj.into());
+        let index = v8::String::new(scope, &ri.to_string()).unwrap();
+        arr.create_data_property(scope, index.into(), obj.into());
     }
     arr.into()
 }
@@ -5587,59 +6045,67 @@ fn query_result_to_js<'s>(scope: &mut v8::PinScope<'s, '_>, q: &crate::db::Query
 /// on the connection's actor thread (`db::submit_query`); the Promise resolves later via `resolve_db`
 /// with the row array. An invalid handle / closed connection rejects the Promise immediately, with no
 /// RESOLVERS/PENDING_JOBS/ledger entry (no pending job to track). MIRRORS `s2_db_remote_query`.
-fn s2_sqlite_query(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+fn s2_sqlite_query(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let resolver = v8::PromiseResolver::new(scope).unwrap();
+    let promise = resolver.get_promise(scope);
+    let result = (|| -> Result<(), String> {
         let handle = args.get(0).integer_value(scope).unwrap_or(-1) as u64;
-        let sql = args.get(1).to_rust_string_lossy(scope);
-        let params = js_params_to_db(scope, args.get(2));
         let owner = current_plugin(scope).unwrap_or_default();
-
-        let resolver = v8::PromiseResolver::new(scope).unwrap();
-        let promise = resolver.get_promise(scope);
-
+        let mut lease = crate::jobs::reserve(scope, 0).map_err(|e| e.to_string())?;
+        let (sql, params) = bounded_db_input(scope, args.get(1), args.get(2), &mut lease)?;
+        crate::jobs::check_live(&lease)?;
         let id = crate::jobs::next_id();
-        match crate::db::submit_query(id, handle, sql, params, &owner) {
-            Ok(()) => crate::jobs::commit_job(scope, id, resolver),
-            Err(e) => {
-                let msg = v8::String::new(scope, &e).unwrap();
-                let ex = v8::Exception::error(scope, msg);
-                resolver.reject(scope, ex);
-            }
-        }
-        rv.set(promise.into());
-    }));
+        let cancel = lease.cancel.clone();
+        crate::db::submit_query_reserved(id, handle, sql, params, &owner, lease)?;
+        crate::jobs::commit_reserved(scope, id, resolver, cancel);
+        Ok(())
+    })();
+    if let Err(e) = result {
+        crate::jobs::reject(scope, resolver, &e);
+    }
+    rv.set(promise.into());
 }
 
 /// Native `__s2_sqlite_execute(handle, sql, params) -> Promise<{changes, lastInsertId}>`. Same shape
 /// as `s2_sqlite_query` but queues an INSERT/UPDATE/DELETE/DDL (`db::submit_execute`); resolves later
 /// via `resolve_db` with `{changes, lastInsertId}`.
-fn s2_sqlite_execute(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+fn s2_sqlite_execute(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let resolver = v8::PromiseResolver::new(scope).unwrap();
+    let promise = resolver.get_promise(scope);
+    let result = (|| -> Result<(), String> {
         let handle = args.get(0).integer_value(scope).unwrap_or(-1) as u64;
-        let sql = args.get(1).to_rust_string_lossy(scope);
-        let params = js_params_to_db(scope, args.get(2));
         let owner = current_plugin(scope).unwrap_or_default();
-
-        let resolver = v8::PromiseResolver::new(scope).unwrap();
-        let promise = resolver.get_promise(scope);
-
+        let mut lease = crate::jobs::reserve(scope, 0).map_err(|e| e.to_string())?;
+        let (sql, params) = bounded_db_input(scope, args.get(1), args.get(2), &mut lease)?;
+        crate::jobs::check_live(&lease)?;
         let id = crate::jobs::next_id();
-        match crate::db::submit_execute(id, handle, sql, params, &owner) {
-            Ok(()) => crate::jobs::commit_job(scope, id, resolver),
-            Err(e) => {
-                let msg = v8::String::new(scope, &e).unwrap();
-                let ex = v8::Exception::error(scope, msg);
-                resolver.reject(scope, ex);
-            }
-        }
-        rv.set(promise.into());
-    }));
+        let cancel = lease.cancel.clone();
+        crate::db::submit_execute_reserved(id, handle, sql, params, &owner, lease)?;
+        crate::jobs::commit_reserved(scope, id, resolver, cancel);
+        Ok(())
+    })();
+    if let Err(e) = result {
+        crate::jobs::reject(scope, resolver, &e);
+    }
+    rv.set(promise.into());
 }
 
 /// Native `__s2_sqlite_close(handle) -> Promise<void>`. Closes the connection (a harmless no-op
 /// if already closed / never open) and always resolves `undefined` — teardown may later close the
 /// same handle again (idempotent), so `close()` never rejects.
-fn s2_sqlite_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn s2_sqlite_close(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let handle = args.get(0).integer_value(scope).unwrap_or(-1);
         let owner = current_plugin(scope).unwrap_or_default();
@@ -5656,6 +6122,7 @@ fn s2_sqlite_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
         }
         let undef = v8::undefined(scope);
         resolver.resolve(scope, undef.into());
+        request_microtask_drain();
         rv.set(promise.into());
     }));
 }
@@ -5679,15 +6146,48 @@ fn s2_sqlite_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
 /// throws). Ledgers the handle against the CALLING plugin (`RemoteDbConn`) so an unclosed pool is
 /// dropped at teardown. MIRRORS `s2_sqlite_open`'s ledger block (synchronous, not Promise-returning
 /// — `connect` does no I/O, so there's nothing to await).
-fn s2_db_remote_connect(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn s2_db_remote_connect(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let cfg = args.get(0).to_rust_string_lossy(scope);
+        let owner_tag = resolver_owner_tag(scope);
         let owner = current_plugin(scope).unwrap_or_default();
-        match crate::sqldb::connect(&cfg, &owner) {
+        let result = (|| -> Result<u64, String> {
+            let cfg = args
+                .get(0)
+                .to_string(scope)
+                .ok_or("invalid database config")?;
+            let bytes = cfg.utf8_length(scope);
+            if bytes > crate::async_limits::policy().input_item_bytes {
+                return Err("AsyncPayloadTooLarge".into());
+            }
+            // Cover the JSON input, parsed fields and connection-option copies for the pool lifetime.
+            let retained = bytes
+                .checked_mul(4)
+                .and_then(|n| n.checked_add(256))
+                .ok_or("AsyncPayloadTooLarge")?;
+            let lifetime = std::sync::Arc::new(
+                crate::async_limits::domain()
+                    .pools
+                    .acquire(owner_tag.clone(), 1, retained)
+                    .map_err(|e| e.to_string())?,
+            );
+            let cfg = cfg.to_rust_string_lossy(scope);
+            if owner_tag
+                .as_ref()
+                .is_some_and(|(id, generation)| !owner_is_live(id, *generation))
+            {
+                return Err("AsyncCancelled".into());
+            }
+            crate::sqldb::connect_reserved(&cfg, &owner, lifetime)
+        })();
+        match result {
             Ok(handle) => {
                 // Ledger the connection against the CALLING plugin (teardown authority) — a
                 // non-plugin/unknown owner (the shared HOST context) is a safe no-op.
-                if let Some((ref oid, generation)) = resolver_owner_tag(scope) {
+                if let Some((ref oid, generation)) = owner_tag {
                     record_resource(oid, generation, plugin::Resource::RemoteDbConn(handle));
                 }
                 rv.set(v8::Number::new(scope, handle as f64).into());
@@ -5703,32 +6203,30 @@ fn s2_db_remote_connect(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
 /// row array (`query_result_to_js`). An invalid handle rejects the Promise IMMEDIATELY and
 /// synchronously — no `RESOLVERS` entry / `PENDING_JOBS` increment / ledger entry is ever made for
 /// that early-reject path (there is no pending job to track or tear down).
-fn s2_db_remote_query(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+fn s2_db_remote_query(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let resolver = v8::PromiseResolver::new(scope).unwrap();
+    let promise = resolver.get_promise(scope);
+    let result = (|| -> Result<(), String> {
         let handle = args.get(0).integer_value(scope).unwrap_or(-1) as u64;
-        let sql = args.get(1).to_rust_string_lossy(scope);
-        let params = js_params_to_db(scope, args.get(2));
         let owner = current_plugin(scope).unwrap_or_default();
-
-        let resolver = v8::PromiseResolver::new(scope).unwrap();
-        let promise = resolver.get_promise(scope);
-
-        let pool = match crate::sqldb::get_pool(handle, &owner) {
-            Ok(p) => p,
-            Err(e) => {
-                let msg = v8::String::new(scope, &e).unwrap();
-                let ex = v8::Exception::error(scope, msg);
-                resolver.reject(scope, ex);
-                rv.set(promise.into());
-                return;
-            }
-        };
-
+        let mut lease = crate::jobs::reserve(scope, 0).map_err(|e| e.to_string())?;
+        let (sql, params) = bounded_db_input(scope, args.get(1), args.get(2), &mut lease)?;
+        crate::jobs::check_live(&lease)?;
         let id = crate::jobs::next_id();
-        crate::jobs::commit_job(scope, id, resolver);
-        crate::sqldb::spawn_query(id, pool, sql, params);
-        rv.set(promise.into());
-    }));
+        let cancel = lease.cancel.clone();
+        let pool = crate::sqldb::get_pool(handle, &owner)?;
+        crate::sqldb::spawn_query(id, pool, sql, params, lease);
+        crate::jobs::commit_reserved(scope, id, resolver, cancel);
+        Ok(())
+    })();
+    if let Err(e) = result {
+        crate::jobs::reject(scope, resolver, &e);
+    }
+    rv.set(promise.into());
 }
 
 /// Native `__s2_db_remote_execute(handle, sql, params) -> Promise<{changes, lastInsertId}>`. Same
@@ -5736,39 +6234,41 @@ fn s2_db_remote_query(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
 /// the `s2_fetch`-mirrored resolver/ledger/RESOLVERS/PENDING_JOBS/refresh_detour block), but spawns
 /// an INSERT/UPDATE/DELETE/DDL statement (`spawn_execute`); the Promise resolves later via
 /// `resolve_db` with `{changes, lastInsertId}`.
-fn s2_db_remote_execute(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+fn s2_db_remote_execute(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let resolver = v8::PromiseResolver::new(scope).unwrap();
+    let promise = resolver.get_promise(scope);
+    let result = (|| -> Result<(), String> {
         let handle = args.get(0).integer_value(scope).unwrap_or(-1) as u64;
-        let sql = args.get(1).to_rust_string_lossy(scope);
-        let params = js_params_to_db(scope, args.get(2));
         let owner = current_plugin(scope).unwrap_or_default();
-
-        let resolver = v8::PromiseResolver::new(scope).unwrap();
-        let promise = resolver.get_promise(scope);
-
-        let pool = match crate::sqldb::get_pool(handle, &owner) {
-            Ok(p) => p,
-            Err(e) => {
-                let msg = v8::String::new(scope, &e).unwrap();
-                let ex = v8::Exception::error(scope, msg);
-                resolver.reject(scope, ex);
-                rv.set(promise.into());
-                return;
-            }
-        };
-
+        let mut lease = crate::jobs::reserve(scope, 0).map_err(|e| e.to_string())?;
+        let (sql, params) = bounded_db_input(scope, args.get(1), args.get(2), &mut lease)?;
+        crate::jobs::check_live(&lease)?;
         let id = crate::jobs::next_id();
-        crate::jobs::commit_job(scope, id, resolver);
-        crate::sqldb::spawn_execute(id, pool, sql, params);
-        rv.set(promise.into());
-    }));
+        let cancel = lease.cancel.clone();
+        let pool = crate::sqldb::get_pool(handle, &owner)?;
+        crate::sqldb::spawn_execute(id, pool, sql, params, lease);
+        crate::jobs::commit_reserved(scope, id, resolver, cancel);
+        Ok(())
+    })();
+    if let Err(e) = result {
+        crate::jobs::reject(scope, resolver, &e);
+    }
+    rv.set(promise.into());
 }
 
 /// Native `__s2_db_remote_close(handle) -> Promise<void>`. MIRRORS `s2_sqlite_close`: closes the
 /// pool (a harmless no-op if already closed / never open, regardless of the `sqldb::close`
 /// bool-return) and always resolves `undefined` — teardown may later close the same handle again
 /// (idempotent), so `close()` never rejects.
-fn s2_db_remote_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn s2_db_remote_close(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let handle = args.get(0).integer_value(scope).unwrap_or(-1);
         let owner = current_plugin(scope).unwrap_or_default();
@@ -5785,6 +6285,7 @@ fn s2_db_remote_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
         }
         let undef = v8::undefined(scope);
         resolver.resolve(scope, undef.into());
+        request_microtask_drain();
         rv.set(promise.into());
     }));
 }
@@ -5800,8 +6301,11 @@ fn resolve_db(
     entry: &crate::jobs::ResolverEntry,
     result: Result<crate::db::DbOutcome, String>,
 ) {
-    crate::jobs::settle_if_live(&mut host.isolate, &host.context, entry, |scope, resolver| {
-        match result {
+    crate::jobs::settle_if_live(
+        &mut host.isolate,
+        &host.context,
+        entry,
+        |scope, resolver| match result {
             Ok(crate::db::DbOutcome::Query(qr)) => {
                 let v = query_result_to_js(scope, &qr);
                 resolver.resolve(scope, v);
@@ -5812,18 +6316,15 @@ fn resolve_db(
                 let v1 = v8::Number::new(scope, er.changes as f64);
                 let k2 = v8::String::new(scope, "lastInsertId").unwrap();
                 let v2 = v8::Number::new(scope, er.last_insert_id as f64);
-                obj.set(scope, k1.into(), v1.into());
-                obj.set(scope, k2.into(), v2.into());
+                obj.create_data_property(scope, k1.into(), v1.into());
+                obj.create_data_property(scope, k2.into(), v2.into());
                 resolver.resolve(scope, obj.into());
             }
             Err(e) => {
-                let msg = v8::String::new(scope, &e)
-                    .unwrap_or_else(|| v8::String::new(scope, "db error").unwrap());
-                let ex = v8::Exception::error(scope, msg);
-                resolver.reject(scope, ex);
+                crate::jobs::reject(scope, resolver, &e);
             }
-        }
-    });
+        },
+    );
 }
 
 /// The result of STARTING a plugin load (L1 lifecycle v2). The load's TRANSITION (arm → Active, or
@@ -6320,6 +6821,17 @@ pub fn shutdown() {
     });
 
     crate::process_singletons::reset_all(crate::process_singletons::ResetPhase::AfterIsolateDrop);
+    crate::ws::shutdown_all();
+    crate::net::shutdown_all();
+    crate::db::shutdown_all();
+    crate::sqldb::shutdown_all();
+    crate::async_limits::stop_delivery(|| {
+        while pool().try_recv_completed().is_some() {}
+        while crate::http::try_recv_completed().is_some() {}
+        while crate::db::try_recv_completed().is_some() {}
+        while crate::ws::try_recv_signal().is_some() {}
+        while crate::net::try_recv_signal().is_some() {}
+    });
 }
 
 /// A repeating-or-one-shot callback timer. `interval_ms` is `Some` for `Timers.every`, in which
@@ -6382,39 +6894,51 @@ fn resolve_fetch(
     entry: &crate::jobs::ResolverEntry,
     result: Result<crate::http::FetchResponse, String>,
 ) {
-    crate::jobs::settle_if_live(&mut host.isolate, &host.context, entry, |scope, resolver| {
-    match result {
-        Ok(r) => {
-            let obj = v8::Object::new(scope);
-            let status_key = v8::String::new(scope, "status").unwrap();
-            obj.set(scope, status_key.into(), v8::Number::new(scope, r.status as f64).into());
-            let ok_key = v8::String::new(scope, "ok").unwrap();
-            obj.set(scope, ok_key.into(), v8::Boolean::new(scope, (200..300).contains(&r.status)).into());
-            let status_text_key = v8::String::new(scope, "statusText").unwrap();
-            let status_text_val = v8::String::new(scope, &r.status_text)
-                .unwrap_or_else(|| v8::String::new(scope, "").unwrap());
-            obj.set(scope, status_text_key.into(), status_text_val.into());
-            let hobj = v8::Object::new(scope);
-            for (k, v) in &r.headers {
-                let Some(kk) = v8::String::new(scope, k) else { continue };
-                let vv = v8::String::new(scope, v).unwrap_or_else(|| v8::String::new(scope, "").unwrap());
-                hobj.set(scope, kk.into(), vv.into());
+    crate::jobs::settle_if_live(
+        &mut host.isolate,
+        &host.context,
+        entry,
+        |scope, resolver| match result {
+            Ok(r) => {
+                let obj = v8::Object::new(scope);
+                let status_key = v8::String::new(scope, "status").unwrap();
+                obj.create_data_property(
+                    scope,
+                    status_key.into(),
+                    v8::Number::new(scope, r.status as f64).into(),
+                );
+                let ok_key = v8::String::new(scope, "ok").unwrap();
+                obj.create_data_property(
+                    scope,
+                    ok_key.into(),
+                    v8::Boolean::new(scope, (200..300).contains(&r.status)).into(),
+                );
+                let status_text_key = v8::String::new(scope, "statusText").unwrap();
+                let status_text_val = v8::String::new(scope, &r.status_text)
+                    .unwrap_or_else(|| v8::String::new(scope, "").unwrap());
+                obj.create_data_property(scope, status_text_key.into(), status_text_val.into());
+                let hobj = v8::Object::new(scope);
+                for (k, v) in &r.headers {
+                    let Some(kk) = v8::String::new(scope, k) else {
+                        continue;
+                    };
+                    let vv = v8::String::new(scope, v)
+                        .unwrap_or_else(|| v8::String::new(scope, "").unwrap());
+                    hobj.create_data_property(scope, kk.into(), vv.into());
+                }
+                let headers_key = v8::String::new(scope, "headers").unwrap();
+                obj.create_data_property(scope, headers_key.into(), hobj.into());
+                let body_key = v8::String::new(scope, "body").unwrap();
+                let body_val = v8::String::new(scope, &r.body)
+                    .unwrap_or_else(|| v8::String::new(scope, "").unwrap());
+                obj.create_data_property(scope, body_key.into(), body_val.into());
+                resolver.resolve(scope, obj.into());
             }
-            let headers_key = v8::String::new(scope, "headers").unwrap();
-            obj.set(scope, headers_key.into(), hobj.into());
-            let body_key = v8::String::new(scope, "body").unwrap();
-            let body_val = v8::String::new(scope, &r.body)
-                .unwrap_or_else(|| v8::String::new(scope, "").unwrap());
-            obj.set(scope, body_key.into(), body_val.into());
-            resolver.resolve(scope, obj.into());
-        }
-        Err(e) => {
-            let msg = v8::String::new(scope, &e).unwrap_or_else(|| v8::String::new(scope, "fetch error").unwrap());
-            let ex = v8::Exception::error(scope, msg);
-            resolver.reject(scope, ex);
-        }
-    }
-    });
+            Err(e) => {
+                crate::jobs::reject(scope, resolver, &e);
+            }
+        },
+    );
 }
 
 /// Per-frame async drain: resolve every due timer + completed job IN ITS OWNING PLUGIN CONTEXT
@@ -6431,83 +6955,176 @@ fn resolve_fetch(
 /// borrow held across the resolve), advance FRAME_COUNTER (Cell), THEN run the checkpoint on the HOST
 /// context (continuations run in their OWN realms regardless of the checkpoint's entered context).
 /// `refresh_detour` (borrows FRAME + TIMERS) runs only after the scope is dropped.
+fn deliver_timer(host: &mut Host, id: u64) {
+    let lease = TIMER_LEASES.with(|m| m.borrow_mut().remove(&id));
+    // A CALLBACK timer fires its function and, when repeating, re-arms. Take the entry out
+    // while firing so a callback that kills its own timer (or creates one) cannot observe a
+    // half-updated map or double-borrow TIMER_CBS.
+    if let Some(cb) = TIMER_CBS.with(|m| m.borrow_mut().remove(&id)) {
+        // Clear any stale record for this id, fire, then ask whether the callback killed it.
+        TIMER_KILLED.with(|k| {
+            k.borrow_mut().remove(&id);
+        });
+        let owner_live = fire_timer_cb(host, &cb);
+        // Re-arm only if it repeats AND the callback did not kill itself during the fire
+        // AND the owner is still live. Otherwise the entry stays removed and it is done.
+        let self_killed = TIMER_KILLED.with(|k| k.borrow_mut().remove(&id));
+        if let (Some(iv), true, false) = (cb.interval_ms, owner_live, self_killed) {
+            TIMERS.with(|t| {
+                t.borrow_mut().push(
+                    id,
+                    TimerKind::Deadline(Instant::now() + Duration::from_millis(iv)),
+                )
+            });
+            TIMER_CBS.with(|m| m.borrow_mut().insert(id, cb));
+            if let Some(lease) = lease {
+                TIMER_LEASES.with(|m| m.borrow_mut().insert(id, lease));
+            }
+        } else if !self_killed {
+            if let Some((owner, generation)) = &cb.owner {
+                release_resource(owner, *generation, &plugin::Resource::Timer(id));
+            }
+        }
+        return;
+    }
+    // Remove the tagged resolver (RESOLVERS borrow released), then resolve-or-drop it in its
+    // owner's context.  A None entry means the timer was already dropped (e.g. by unload).
+    let Some(entry) = crate::jobs::take_resolver(id) else {
+        return;
+    };
+    crate::jobs::release_timer(&entry, id);
+    resolve_or_drop(host, &entry);
+}
 pub(crate) fn frame_async_drain() {
     crate::shared_entity_switch::retry_pending();
     HOST.with(|h| {
         let mut borrow = h.borrow_mut();
         let Some(host) = borrow.as_mut() else { return };
 
-        // Phase 1: due timers (`take_resolver` — no pending decrement). A
-        // `Frame(t)` timer fires when this `frame >= t`; a `Deadline(d)` fires when `now >= d`.
+        let callbacks = crate::cookies::pending_cached()
+            || crate::ws::pending_events()
+            || crate::net::pending_events();
+        crate::async_limits::begin_frame(callbacks);
         let frame = FRAME_COUNTER.with(|c| c.get());
-        let due = TIMERS.with(|t| t.borrow_mut().due(Instant::now(), frame));
-        for id in due {
-            // A CALLBACK timer fires its function and, when repeating, re-arms. Take the entry out
-            // while firing so a callback that kills its own timer (or creates one) cannot observe a
-            // half-updated map or double-borrow TIMER_CBS.
-            if let Some(cb) = TIMER_CBS.with(|m| m.borrow_mut().remove(&id)) {
-                // Clear any stale record for this id, fire, then ask whether the callback killed it.
-                TIMER_KILLED.with(|k| { k.borrow_mut().remove(&id); });
-                let owner_live = fire_timer_cb(host, &cb);
-                // Re-arm only if it repeats AND the callback did not kill itself during the fire
-                // AND the owner is still live. Otherwise the entry stays removed and it is done.
-                let self_killed = TIMER_KILLED.with(|k| k.borrow_mut().remove(&id));
-                if let (Some(iv), true, false) = (cb.interval_ms, owner_live, self_killed) {
-                    TIMERS.with(|t| t.borrow_mut()
-                        .push(id, TimerKind::Deadline(Instant::now() + Duration::from_millis(iv))));
-                    TIMER_CBS.with(|m| m.borrow_mut().insert(id, cb));
-                } else if !self_killed {
-                    if let Some((owner, generation)) = &cb.owner {
-                        release_resource(owner, *generation, &plugin::Resource::Timer(id));
+        let n = crate::async_limits::policy()
+            .frame_items
+            .saturating_sub(DUE_TIMERS.with(|q| q.borrow().len()));
+        let due = TIMERS.with(|t| t.borrow_mut().due_limited(Instant::now(), frame, n));
+        DUE_TIMERS.with(|q| q.borrow_mut().extend(due));
+        let mut ws_drops = Vec::new();
+        let mut net_drops = Vec::new();
+        let mut empty = 0;
+        while crate::async_limits::can_deliver(0, true) && crate::async_limits::poll_frame() {
+            let source = POLL_CURSOR.with(|v| {
+                let s = v.get();
+                v.set((s + 1) % 6);
+                s
+            });
+            let mut progress = false;
+            match source {
+                0 => {
+                    if let Some(id) = DUE_TIMERS.with(|q| q.borrow_mut().pop_front()) {
+                        crate::async_limits::deliver(0);
+                        deliver_timer(host, id);
+                        progress = true;
                     }
                 }
-                continue;
+                1 => {
+                    if let Some((id, res, _lease)) = pool().try_recv_completed() {
+                        crate::async_limits::deliver(0);
+                        progress = true;
+                        if let Some(entry) = crate::jobs::complete_job(id) {
+                            crate::jobs::settle_if_live(
+                                &mut host.isolate,
+                                &host.context,
+                                &entry,
+                                |scope, resolver| match res {
+                                    Ok(()) => {
+                                        let u = v8::undefined(scope);
+                                        resolver.resolve(scope, u.into());
+                                    }
+                                    Err(e) => crate::jobs::reject(scope, resolver, &e),
+                                },
+                            );
+                        }
+                    }
+                }
+                2 => {
+                    let c = PARKED_HTTP
+                        .with(|v| v.borrow_mut().take())
+                        .or_else(crate::http::try_recv_completed);
+                    if let Some(c) = c {
+                        if crate::async_limits::can_deliver(c.lease.bytes(), true) {
+                            crate::async_limits::deliver(c.lease.bytes());
+                            progress = true;
+                            if let Some(entry) = crate::jobs::complete_job(c.id) {
+                                resolve_fetch(host, &entry, c.result);
+                            }
+                        } else {
+                            PARKED_HTTP.with(|v| *v.borrow_mut() = Some(c));
+                        }
+                    }
+                }
+                3 => {
+                    let c = PARKED_DB
+                        .with(|v| v.borrow_mut().take())
+                        .or_else(crate::db::try_recv_completed);
+                    if let Some(c) = c {
+                        if crate::async_limits::can_deliver(c.lease.bytes(), true) {
+                            crate::async_limits::deliver(c.lease.bytes());
+                            progress = true;
+                            if let Some(entry) = crate::jobs::complete_job(c.id) {
+                                resolve_db(host, &entry, c.result);
+                            }
+                        } else {
+                            PARKED_DB.with(|v| *v.borrow_mut() = Some(c));
+                        }
+                    }
+                }
+                4 => {
+                    if crate::async_limits::can_deliver(
+                        crate::async_limits::policy().failure_bytes,
+                        true,
+                    ) {
+                        let poll = crate::ws::poll_signals_limited(1);
+                        progress = poll.polled > 0;
+                        for (id, result) in poll.connects {
+                            crate::async_limits::deliver(
+                                crate::async_limits::policy().failure_bytes,
+                            );
+                            if let Some(entry) = crate::jobs::complete_job(id) {
+                                resolve_ws_connect(host, &entry, id, result);
+                            }
+                        }
+                        ws_drops.extend(poll.drops);
+                    }
+                }
+                _ => {
+                    if crate::async_limits::can_deliver(
+                        crate::async_limits::policy().failure_bytes,
+                        true,
+                    ) {
+                        let poll = crate::net::poll_signals_limited(1);
+                        progress = poll.polled > 0;
+                        for (id, result) in poll.connects {
+                            crate::async_limits::deliver(
+                                crate::async_limits::policy().failure_bytes,
+                            );
+                            if let Some(entry) = crate::jobs::complete_job(id) {
+                                resolve_net_connect(host, &entry, id, result);
+                            }
+                        }
+                        net_drops.extend(poll.drops);
+                    }
+                }
             }
-            // Remove the tagged resolver (RESOLVERS borrow released), then resolve-or-drop it in its
-            // owner's context.  A None entry means the timer was already dropped (e.g. by unload).
-            let Some(entry) = crate::jobs::take_resolver(id) else { continue };
-            crate::jobs::release_timer(&entry, id);
-            resolve_or_drop(host, &entry);
-        }
-        // Phase 2: threadpool. complete_job decrements pending only if the resolver was present.
-        while let Some((id, _res)) = pool().try_recv_completed() {
-            let Some(entry) = crate::jobs::complete_job(id) else { continue };
-            resolve_or_drop(host, &entry);
-        }
-        // Phase 3: fetch completions (payload-carrying, tokio+reqwest in http.rs).
-        while let Some(c) = crate::http::try_recv_completed() {
-            let Some(entry) = crate::jobs::complete_job(c.id) else { continue };
-            resolve_fetch(host, &entry, c.result);
-        }
-        // Phase 4: SQLite + remote SQL completions (shared db completion channel).
-        while let Some(c) = crate::db::try_recv_completed() {
-            let Some(entry) = crate::jobs::complete_job(c.id) else { continue };
-            resolve_db(host, &entry, c.result);
-        }
-        // Poll ws/net. The tick only polls: each module matches its own signal kinds, queues
-        // events internally, and hands back connect results + failed-connect retirements.
-        //
-        // ORDERING (load-bearing): Connected/ConnectFailed resolve/reject the connect Promise
-        // INSIDE this drain (before the microtask checkpoint below, so the plugin's `.then` —
-        // which subscribes onMessage — runs THIS frame). Events fan out AFTER this drain returns
-        // (`dispatch_pending_*`, HOST free). Deregistering a conn is DEFERRED past the checkpoint.
-        // `Connected` resolves the connect Promise here, but the plugin's `.then` does not run
-        // until the checkpoint. If a terminal signal for the SAME conn is in this batch (a server
-        // that dies right after the handshake sends Connected then Closed(1006)), dropping it here
-        // removes it from `conns` before that continuation runs, so its subscribe fails the
-        // ownership gate and its close event fans out to nobody.
-        // Phase 5: WebSocket connect Promises settle before the checkpoint.
-        let ws = crate::ws::poll_signals();
-        for (id, result) in ws.connects {
-            if let Some(entry) = crate::jobs::complete_job(id) {
-                resolve_ws_connect(host, &entry, id, result);
-            }
-        }
-        // Phase 6: net connect/bind Promises settle before the checkpoint.
-        let net = crate::net::poll_signals();
-        for (id, result) in net.connects {
-            if let Some(entry) = crate::jobs::complete_job(id) {
-                resolve_net_connect(host, &entry, id, result);
+            if progress {
+                empty = 0;
+            } else {
+                empty += 1;
+                if empty >= 6 {
+                    break;
+                }
             }
         }
 
@@ -6521,14 +7138,19 @@ pub(crate) fn frame_async_drain() {
         let hs = &mut hs;
         let ctx_local = v8::Local::new(hs, &host.context);
         let scope = &mut v8::ContextScope::new(hs, ctx_local);
+        MICROTASK_DRAIN_NEEDED.with(|v| v.set(false));
         scope.perform_microtask_checkpoint();
 
         // NOW deregister the conns whose terminal signal arrived above. Every continuation queued by
         // this drain has run, so a `.then` that subscribes to the connection it was just handed has
         // already been able to do so. Dropping earlier is what made a server dying right after the
         // handshake look like a connection that simply never spoke.
-        for id in ws.drops { crate::ws::retire_conn(id); }
-        for id in net.drops { crate::net::retire_conn(id); }
+        for id in ws_drops {
+            crate::ws::retire_conn(id);
+        }
+        for id in net_drops {
+            crate::net::retire_conn(id);
+        }
     });
     // HOST + scope released: a just-completed last timer may make the detour undesired, or a
     // continuation may have queued new async keeping it desired.  Reconcile now.
@@ -6555,6 +7177,54 @@ pub(crate) fn frame_async_drain() {
     // microtask checkpoint above ran any async factory continuations (which settled their LOADING
     // entries), so an async plugin transitions on the same drain its promise resolved.
     finalize_loading_plugins();
+}
+
+/// HOST-free callback phase shares the logical delivery budget, with its own persistent source
+/// cursor including cookies. Alternate busy pre/post turns reserve progress even at one item.
+fn s2_async_stats(
+    scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let mut stats = crate::async_limits::metrics();
+    stats["staged"] = serde_json::json!({"timers":DUE_TIMERS.with(|q|q.borrow().len()),"ws":crate::ws::pending_count(),"net":crate::net::pending_count(),"cookies":crate::cookies::pending_count(),"http":PARKED_HTTP.with(|q|usize::from(q.borrow().is_some())),"db":PARKED_DB.with(|q|usize::from(q.borrow().is_some()))});
+    stats["cache"] = crate::cookies::cache_stats();
+    stats["timerExamined"] = serde_json::json!(crate::async_rt::timer_examined());
+    let json = stats.to_string();
+    if let Some(v) = v8::String::new(scope, &json) {
+        rv.set(v.into());
+    }
+}
+pub(crate) fn dispatch_async_callbacks() {
+    let mut empty = 0;
+    for _ in 0..crate::async_limits::policy().frame_items.saturating_mul(3) {
+        if !crate::async_limits::can_deliver(0, false) {
+            break;
+        }
+        let source = CALLBACK_CURSOR.with(|v| {
+            let s = v.get();
+            v.set((s + 1) % 3);
+            s
+        });
+        let done = match source {
+            0 => crate::cookies::dispatch_one_cached(),
+            1 => crate::ws::dispatch_one(),
+            _ => crate::net::dispatch_one(),
+        };
+        if done {
+            // HOST-free handlers run after this frame's checkpoint. Even a last terminal
+            // callback may enqueue a promise continuation after releasing every socket lease.
+            request_microtask_drain();
+            empty = 0;
+        } else {
+            empty += 1;
+            if empty >= 3 {
+                break;
+            }
+        }
+    }
+    crate::async_limits::finish_frame();
+    refresh_detour();
 }
 
 /// Register every builtin owner-scoped subscription store into the `owner_stores` registry
@@ -6747,43 +7417,92 @@ pub(crate) fn register_builtin_stores() {
 pub(crate) fn register_process_singletons() {
     use crate::process_singletons::ResetPhase::{AfterIsolateDrop, BeforeIsolateDrop};
     crate::process_singletons::reset();
-    fn reg(name: &'static str, phase: crate::process_singletons::ResetPhase, f: impl Fn() + 'static) {
+    fn reg(
+        name: &'static str,
+        phase: crate::process_singletons::ResetPhase,
+        f: impl Fn() + 'static,
+    ) {
         crate::process_singletons::register(name, phase, Box::new(f));
     }
 
     // ---- BeforeIsolateDrop: holds V8 handles, or must be torn down while the isolate lives. ----
 
     // Async state: RESOLVERS holds Globals into the isolate, so the handles must be released here.
-    reg("TIMERS", BeforeIsolateDrop, || TIMERS.with(|t| *t.borrow_mut() = TimerQueue::new()));
+    reg("TIMERS", BeforeIsolateDrop, || {
+        TIMERS.with(|t| *t.borrow_mut() = TimerQueue::new())
+    });
     reg("RESOLVERS", BeforeIsolateDrop, crate::jobs::reset_resolvers);
-    reg("TIMER_CBS", BeforeIsolateDrop, || TIMER_CBS.with(|m| m.borrow_mut().clear()));
-    reg("TIMER_KILLED", BeforeIsolateDrop, || TIMER_KILLED.with(|k| k.borrow_mut().clear()));
+    reg("TIMER_CBS", BeforeIsolateDrop, || {
+        TIMER_CBS.with(|m| m.borrow_mut().clear())
+    });
+    reg("ASYNC_STAGING", BeforeIsolateDrop, || {
+        TIMER_LEASES.with(|m| m.borrow_mut().clear());
+        DUE_TIMERS.with(|q| q.borrow_mut().clear());
+        PARKED_HTTP.with(|v| v.borrow_mut().take());
+        PARKED_DB.with(|v| v.borrow_mut().take());
+        MICROTASK_DRAIN_NEEDED.with(|v| v.set(false));
+    });
+    reg("TIMER_KILLED", BeforeIsolateDrop, || {
+        TIMER_KILLED.with(|k| k.borrow_mut().clear())
+    });
     // PENDING_REJECTS holds only Strings, so drop order vs the isolate is not load-bearing; kept in
     // this phase to preserve the historical position.
-    reg("PENDING_REJECTS", BeforeIsolateDrop, || PENDING_REJECTS.with(|m| m.borrow_mut().clear()));
+    reg("PENDING_REJECTS", BeforeIsolateDrop, || {
+        PENDING_REJECTS.with(|m| m.borrow_mut().clear())
+    });
     // TopMenu categories/seq/pending — the ITEMS map is an owner-scoped store, these are not
     // (categories outlive the registering plugin, SM parity).
-    reg("TOPMENU_CATEGORIES", BeforeIsolateDrop, || TOPMENU_CATEGORIES.with(|c| c.borrow_mut().clear()));
-    reg("TOPMENU_SEQ", BeforeIsolateDrop, || TOPMENU_SEQ.with(|c| c.set(0)));
-    reg("TOPMENU_PENDING", BeforeIsolateDrop, || TOPMENU_PENDING.with(|q| q.borrow_mut().clear()));
+    reg("TOPMENU_CATEGORIES", BeforeIsolateDrop, || {
+        TOPMENU_CATEGORIES.with(|c| c.borrow_mut().clear())
+    });
+    reg("TOPMENU_SEQ", BeforeIsolateDrop, || {
+        TOPMENU_SEQ.with(|c| c.set(0))
+    });
+    reg("TOPMENU_PENDING", BeforeIsolateDrop, || {
+        TOPMENU_PENDING.with(|q| q.borrow_mut().clear())
+    });
     // Inter-plugin method + subscriber Globals.
-    reg("IFACE_METHODS", BeforeIsolateDrop, || IFACE_METHODS.with(|m| m.borrow_mut().clear()));
-    reg("IFACE_SUBS", BeforeIsolateDrop, || IFACE_SUBS.with(|m| m.borrow_mut().clear()));
-    reg("IFACES", BeforeIsolateDrop, || IFACES.with(|r| r.borrow_mut().clear()));
+    reg("IFACE_METHODS", BeforeIsolateDrop, || {
+        IFACE_METHODS.with(|m| m.borrow_mut().clear())
+    });
+    reg("IFACE_SUBS", BeforeIsolateDrop, || {
+        IFACE_SUBS.with(|m| m.borrow_mut().clear())
+    });
+    reg("IFACES", BeforeIsolateDrop, || {
+        IFACES.with(|r| r.borrow_mut().clear())
+    });
     // The publishes registries: per-plugin unload clears these per id, but a plugin that was `set`
     // and never loaded leaves an entry no unload ever walks. This is the teardown backstop.
-    reg("PLUGIN_PUBLISHES", BeforeIsolateDrop, || PLUGIN_PUBLISHES.with(|p| p.borrow_mut().clear()));
-    reg("UNDECLARED_PUBLISHES", BeforeIsolateDrop, || UNDECLARED_PUBLISHES.with(|p| p.borrow_mut().clear()));
-    reg("NEXT_SUB_ID", BeforeIsolateDrop, || NEXT_SUB_ID.with(|c| c.set(1)));
+    reg("PLUGIN_PUBLISHES", BeforeIsolateDrop, || {
+        PLUGIN_PUBLISHES.with(|p| p.borrow_mut().clear())
+    });
+    reg("UNDECLARED_PUBLISHES", BeforeIsolateDrop, || {
+        UNDECLARED_PUBLISHES.with(|p| p.borrow_mut().clear())
+    });
+    reg("NEXT_SUB_ID", BeforeIsolateDrop, || {
+        NEXT_SUB_ID.with(|c| c.set(1))
+    });
     // Per-plugin contexts: each Global<Context> points into the isolate.
-    reg("PLUGINS", BeforeIsolateDrop, || PLUGINS.with(|p| p.borrow_mut().clear()));
-    reg("REGISTRY", BeforeIsolateDrop, || REGISTRY.with(|r| *r.borrow_mut() = plugin::Registry::new()));
-    reg("PENDING_JOBS", BeforeIsolateDrop, crate::jobs::reset_pending);
-    reg("DETOUR_INSTALLED", BeforeIsolateDrop, || DETOUR_INSTALLED.with(|c| c.set(false)));
+    reg("PLUGINS", BeforeIsolateDrop, || {
+        PLUGINS.with(|p| p.borrow_mut().clear())
+    });
+    reg("REGISTRY", BeforeIsolateDrop, || {
+        REGISTRY.with(|r| *r.borrow_mut() = plugin::Registry::new())
+    });
+    reg(
+        "PENDING_JOBS",
+        BeforeIsolateDrop,
+        crate::jobs::reset_pending,
+    );
+    reg("DETOUR_INSTALLED", BeforeIsolateDrop, || {
+        DETOUR_INSTALLED.with(|c| c.set(false))
+    });
 
     // ---- AfterIsolateDrop: pure Rust, no V8 handles. ----
 
-    reg("FRAME_COUNTER", AfterIsolateDrop, || FRAME_COUNTER.with(|c| c.set(0)));
+    reg("FRAME_COUNTER", AfterIsolateDrop, || {
+        FRAME_COUNTER.with(|c| c.set(0))
+    });
     // Pending queues drained by the muxes' post-frame dispatch — sidecars, not subscriber stores.
     crate::client::register_singletons();
     crate::cookies::register_singletons();
@@ -6792,20 +7511,32 @@ pub(crate) fn register_process_singletons() {
     // usermsg name→id resolution caches (the MUX itself is an owner-scoped store). Registered by the
     // feature module — same phase, same position in the order.
     crate::usermsg::register_singletons();
-    reg("PENDING_HANDOFF", AfterIsolateDrop, || PENDING_HANDOFF.with(|h| h.borrow_mut().clear()));
+    reg("PENDING_HANDOFF", AfterIsolateDrop, || {
+        PENDING_HANDOFF.with(|h| h.borrow_mut().clear())
+    });
     // L1 lifecycle-v2 load state.
-    reg("LOADING", AfterIsolateDrop, || LOADING.with(|l| l.borrow_mut().clear()));
-    reg("FAILED_PLUGINS", AfterIsolateDrop, || FAILED_PLUGINS.with(|f| f.borrow_mut().clear()));
-    reg("MANIFEST_VERSIONS", AfterIsolateDrop, || MANIFEST_VERSIONS.with(|m| m.borrow_mut().clear()));
+    reg("LOADING", AfterIsolateDrop, || {
+        LOADING.with(|l| l.borrow_mut().clear())
+    });
+    reg("FAILED_PLUGINS", AfterIsolateDrop, || {
+        FAILED_PLUGINS.with(|f| f.borrow_mut().clear())
+    });
+    reg("MANIFEST_VERSIONS", AfterIsolateDrop, || {
+        MANIFEST_VERSIONS.with(|m| m.borrow_mut().clear())
+    });
     // A `-1` cached before the schema was live must not persist across an init cycle.
-    reg("SCHEMA_OFFSETS", AfterIsolateDrop, || SCHEMA_OFFSETS.with(|c| *c.borrow_mut() = crate::schema::OffsetCache::new()));
+    reg("SCHEMA_OFFSETS", AfterIsolateDrop, || {
+        SCHEMA_OFFSETS.with(|c| *c.borrow_mut() = crate::schema::OffsetCache::new())
+    });
     // Host-global caches — deliberately NOT owner-scoped (see this fn's doc comment). Each feature
     // module registers its OWN slots, which is how the admin gap got closed: seven admin statics
     // existed here and only three were ever registered.
     crate::admin::register_singletons();
     crate::bans::register_singletons();
     crate::events::register_singletons();
-    reg("CRASH_BREADCRUMB", AfterIsolateDrop, || crate::crash::breadcrumb::clear_plugins());
+    reg("CRASH_BREADCRUMB", AfterIsolateDrop, || {
+        crate::crash::breadcrumb::clear_plugins()
+    });
 }
 
 
@@ -6974,13 +7705,21 @@ fn teardown_ledger_and_dispose(id: &str) {
         for res in entry.ledger.teardown_order() {
             match res {
                 plugin::Resource::Timer(tid) => {
-                    TIMERS.with(|t| { t.borrow_mut().remove(tid); });
+                    TIMERS.with(|t| {
+                        t.borrow_mut().remove(tid);
+                    });
+                    DUE_TIMERS.with(|q| q.borrow_mut().retain(|n| *n != tid));
+                    TIMER_LEASES.with(|m| m.borrow_mut().remove(&tid));
                     let _ = crate::jobs::take_resolver(tid);
                     // A repeating callback timer re-arms itself, so failing to drop it here would
                     // leave it firing into a dead context forever — the ledger is the teardown
                     // authority precisely so this does not depend on the plugin's own cleanup.
-                    TIMER_CBS.with(|m| { m.borrow_mut().remove(&tid); });
-                    TIMER_KILLED.with(|k| { k.borrow_mut().remove(&tid); });
+                    TIMER_CBS.with(|m| {
+                        m.borrow_mut().remove(&tid);
+                    });
+                    TIMER_KILLED.with(|k| {
+                        k.borrow_mut().remove(&tid);
+                    });
                 }
                 plugin::Resource::Job(jid) => {
                     // The worker may still run; its late completion is a no-op (resolver gone).  Drop
@@ -7000,12 +7739,15 @@ fn teardown_ledger_and_dispose(id: &str) {
                     // methods being pruned here. (Retires the slice-5 TODO, which asked for a
                     // (producer_id, name) key against a case that can no longer occur.)
                     let removed = IFACES.with(|r| r.borrow_mut().remove_by_producer(id));
-                    let subscribers: Vec<crate::interfaces::Subscriber> = removed.into_iter()
+                    let subscribers: Vec<crate::interfaces::Subscriber> = removed
+                        .into_iter()
                         .flat_map(|(_name, subscribers)| subscribers)
                         .collect();
                     IFACE_SUBS.with(|m| {
                         let mut callbacks = m.borrow_mut();
-                        for subscriber in &subscribers { callbacks.remove(&subscriber.sub_id); }
+                        for subscriber in &subscribers {
+                            callbacks.remove(&subscriber.sub_id);
+                        }
                     });
                     for subscriber in subscribers {
                         release_resource(
@@ -7021,7 +7763,9 @@ fn teardown_ledger_and_dispose(id: &str) {
                 plugin::Resource::EventSub(sub_id) => {
                     // Defensive/idempotent: producer teardown may already have dropped this callback
                     // while releasing a surviving consumer's row. Never unwrap/expect/index here.
-                    IFACE_SUBS.with(|m| { m.borrow_mut().remove(&sub_id); });
+                    IFACE_SUBS.with(|m| {
+                        m.borrow_mut().remove(&sub_id);
+                    });
                     // The subscriber row is removed from the producer's list below via
                     // remove_subscribers_by_consumer(id) (belt-and-suspenders for any not yet dropped).
                 }
@@ -7056,7 +7800,12 @@ fn teardown_ledger_and_dispose(id: &str) {
     // Drop any subscriber rows this plugin (as a consumer) still holds, and its import declarations.
     // Idempotent with the per-resource drops above (remove() is a no-op on missing keys).
     let orphaned = IFACES.with(|r| r.borrow_mut().remove_subscribers_by_consumer(id));
-    IFACE_SUBS.with(|m| { let mut mm = m.borrow_mut(); for (_iface, sid) in orphaned { mm.remove(&sid); } });
+    IFACE_SUBS.with(|m| {
+        let mut mm = m.borrow_mut();
+        for (_iface, sid) in orphaned {
+            mm.remove(&sid);
+        }
+    });
     IFACES.with(|r| r.borrow_mut().clear_imports(id));
     clear_plugin_publishes(id);
     // Plugin-declared engine calls: drop this plugin's descriptor table (spec §12 "Unload" row). On
@@ -8144,17 +8893,30 @@ pub(crate) mod frame_tests {
         assert_eq!(ids.len(), 1, "exactly one in-flight job resolver");
         let id = ids[0];
         unload_plugin("jobul");
-        assert!(!PLUGINS.with(|p| p.borrow().contains_key("jobul")), "context disposed");
-        assert_eq!(crate::jobs::pending(), 0, "teardown decrements pending only once");
-        assert!(crate::jobs::resolver_is_empty(), "resolver removed on Job teardown");
+        assert!(
+            !PLUGINS.with(|p| p.borrow().contains_key("jobul")),
+            "context disposed"
+        );
+        assert_eq!(
+            crate::jobs::pending(),
+            0,
+            "teardown decrements pending only once"
+        );
+        assert!(
+            crate::jobs::resolver_is_empty(),
+            "resolver removed on Job teardown"
+        );
 
         // Guaranteed stale completion for the captured id. Zero-work so it lands immediately;
         // waiting 40ms for the original 1000ms threadSleep cannot prove the late-complete path.
         pool().submit(id, Box::new(|| Ok(())));
         let mut landed = false;
         for _ in 0..ASYNC_POLL_TICKS {
-            if let Some((cid, _)) = pool().try_recv_completed() {
-                assert_eq!(cid, id, "injected completion must carry the unloaded job id");
+            if let Some((cid, _, _lease)) = pool().try_recv_completed() {
+                assert_eq!(
+                    cid, id,
+                    "injected completion must carry the unloaded job id"
+                );
                 landed = true;
                 break;
             }
@@ -8169,7 +8931,11 @@ pub(crate) mod frame_tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         frame_async_drain();
-        assert_eq!(crate::jobs::pending(), 0, "late completion must not decrement again");
+        assert_eq!(
+            crate::jobs::pending(),
+            0,
+            "late completion must not decrement again"
+        );
         assert!(crate::jobs::resolver_is_empty());
         assert!(
             crate::jobs::complete_job(id).is_none(),
@@ -8303,22 +9069,55 @@ pub(crate) mod frame_tests {
         HOOKS.lock().unwrap().clear();
         set_hook_request(Some(record_hook));
         init(dummy_logger()).unwrap();
-        load_body("demo", r#"ctx.server.onGameFrame(function(){globalThis.__n=(globalThis.__n||0)+1;});"#, "{}");
+        load_body(
+            "demo",
+            r#"ctx.server.onGameFrame(function(){globalThis.__n=(globalThis.__n||0)+1;});"#,
+            "{}",
+        );
         dispatch_game_frame_pre_post();
         // The subscribe (the only subscriber) requested the detour INSTALL.
         assert!(
-            HOOKS.lock().unwrap().iter().any(|(n, e)| n == "OnGameFrame" && *e == 1),
+            HOOKS
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(n, e)| n == "OnGameFrame" && *e == 1),
             "the only subscriber must have requested the detour install"
         );
-        assert_eq!(read_i32_global_in("demo", "__n"), 1, "handler ran once before unload");
+        assert_eq!(
+            read_i32_global_in("demo", "__n"),
+            1,
+            "handler ran once before unload"
+        );
 
         unload_plugin("demo");
-        dispatch_game_frame_pre_post();            // demo's handler must NOT run now (context disposed)
-        assert!(!FRAME.with(|f| f.borrow().snapshot(Phase::Pre).iter().any(|(_,_,o,_)| o=="demo")));
-        assert!(!PLUGINS.with(|p| p.borrow().contains_key("demo")), "context disposed");
-        // The ONLY subscriber unloaded → the OnGameFrame detour must be REMOVED (enable=0).
+        dispatch_game_frame_pre_post(); // demo's handler must NOT run now (context disposed)
+        assert!(!FRAME.with(|f| f
+            .borrow()
+            .snapshot(Phase::Pre)
+            .iter()
+            .any(|(_, _, o, _)| o == "demo")));
         assert!(
-            HOOKS.lock().unwrap().iter().any(|(n, e)| n == "OnGameFrame" && *e == 0),
+            !PLUGINS.with(|p| p.borrow().contains_key("demo")),
+            "context disposed"
+        );
+        // Earlier isolate tests may leave an uncancellable worker alive. That process-owned
+        // obligation intentionally survives shutdown and must finish before detour removal.
+        for _ in 0..ASYNC_POLL_TICKS {
+            if async_pending() == 0 {
+                break;
+            }
+            frame_async_drain();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        refresh_detour();
+        // No subscriber or surviving producer remains: the detour is removed.
+        assert!(
+            HOOKS
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(n, e)| n == "OnGameFrame" && *e == 0),
             "unload of the only subscriber must request the detour remove"
         );
         shutdown();
@@ -13487,6 +14286,52 @@ pub(crate) mod frame_tests {
     }
 
     #[test]
+    fn sqlite_materialization_retains_bytes_through_reentrant_then_lookup() {
+        init(dummy_logger()).unwrap();
+        set_engine_ops(Some(db_ops()));
+        let name = unique_db_name("retained_materialization");
+        load_body(
+            "retained",
+            &format!(
+                r#"
+            globalThis.__out = "pending";
+            globalThis.__timer = false;
+            __s2_sqlite_open("{name}").then(function (h) {{
+                Object.defineProperty(Object.prototype, "resultcol", {{configurable:true, set:function () {{ throw Error("column setter"); }}}});
+                Object.defineProperty(Array.prototype, "0", {{configurable:true, set:function () {{ throw Error("index setter"); }}}});
+                Object.defineProperty(Array.prototype, "then", {{configurable:true, get:function () {{
+                    var stats = JSON.parse(__s2_async_stats());
+                    globalThis.__retained = stats.completion.items > 0 && stats.completion.bytes > 0;
+                    __s2_next_frame().then(function () {{ globalThis.__timer = true; }});
+                    return undefined;
+                }}}});
+                __s2_sqlite_query(h, "SELECT 'value' AS resultcol", []).then(function (rows) {{
+                    delete Object.prototype.resultcol;
+                    delete Array.prototype[0];
+                    delete Array.prototype.then;
+                    globalThis.__out = String(globalThis.__retained) + ":" + rows[0].resultcol;
+                    __s2_sqlite_close(h);
+                }}).catch(function(e) {{ globalThis.__out = "ERROR:" + String(e); }});
+            }});
+        "#
+            ),
+            "{}",
+        );
+        for _ in 0..ASYNC_POLL_TICKS {
+            frame_async_drain();
+            if read_global_string("retained", "__out") != "pending"
+                && read_global_string("retained", "__timer") == "true"
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(read_global_string("retained", "__out"), "true:value");
+        assert_eq!(read_global_string("retained", "__timer"), "true");
+        shutdown();
+    }
+
+    #[test]
     fn explicit_sqlite_close_releases_connection_before_unload() {
         let _ = init(dummy_logger());
         set_engine_ops(Some(db_ops()));
@@ -14228,8 +15073,8 @@ pub(crate) mod frame_tests {
             var {{ WebSocket }} = require("@s2script/ws");
             globalThis.__out = "pending";
             WebSocket.connect("ws://127.0.0.1:{port}/").then(function (ws) {{
-                ws.onMessage(function (m) {{ globalThis.__out = m; }});
-                ws.send("hi");
+                ws.onMessage(function (m) {{ ws.close(); globalThis.__out = String(globalThis.__accepted) + ":" + String(ws.send("late")) + ":" + m; }});
+                globalThis.__accepted = ws.send("hi");
             }}).catch(function (e) {{
                 globalThis.__out = "ERROR:" + String(e);
             }});
@@ -14249,7 +15094,7 @@ pub(crate) mod frame_tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(resolved, "ws module message never arrived on a drain");
-        assert_eq!(read_global_string("wsmod", "__out"), "hi");
+        assert_eq!(read_global_string("wsmod", "__out"), "true:false:hi");
         shutdown();
     }
 
@@ -14369,6 +15214,45 @@ pub(crate) mod frame_tests {
         dispatch_pending_net_events();
         assert_eq!(eval_in_context_string("netbatch", "globalThis.__trace.join(',')"), "connect:true,data:true,error:true,close:true");
         assert_eq!(active_resources("netbatch"), 0);
+        shutdown();
+    }
+
+    #[test]
+    fn final_socket_callback_keeps_detour_for_its_promise_continuation() {
+        init(dummy_logger()).unwrap();
+        load_body("lastcallback", "", "{}");
+        let (id, _) = seed_injected_socket_connect("lastcallback", false);
+        eval_in_context(
+            "lastcallback",
+            r#"
+            globalThis.__continued = false;
+            __injected_connect.then(function (id) {
+                __s2_net_on(id, "close", function () {
+                    Promise.resolve().then(function () { globalThis.__continued = true; });
+                });
+            });
+        "#,
+        )
+        .unwrap();
+        crate::net::test_inject_batch(id, b"payload", "terminal");
+        for _ in 0..16 {
+            frame_async_drain();
+            dispatch_async_callbacks();
+            if !crate::net::is_owner(id, "lastcallback") {
+                break;
+            }
+        }
+        assert!(!crate::net::is_owner(id, "lastcallback"));
+        assert_eq!(read_global_string("lastcallback", "__continued"), "false");
+        assert!(
+            MICROTASK_DRAIN_NEEDED.with(|v| v.get()),
+            "last callback leaves a checkpoint obligation"
+        );
+        assert!(DETOUR_INSTALLED.with(|v| v.get()));
+        frame_async_drain();
+        dispatch_async_callbacks();
+        assert_eq!(read_global_string("lastcallback", "__continued"), "true");
+        assert!(!MICROTASK_DRAIN_NEEDED.with(|v| v.get()));
         shutdown();
     }
 
@@ -15327,4 +16211,157 @@ pub(crate) mod frame_tests {
         assert_eq!(out, r#"{"counts":[0,1],"total":1,"winner":1}"#);
         shutdown();
     }
+    /// Run by scripts/test-async-pressure.sh in a fresh process with an explicitly tiny policy.
+    #[test]
+    #[ignore = "requires the isolated tiny S2SCRIPT_ASYNC_LIMITS_JSON policy"]
+    fn async_tiny_policy_admission_reinit_and_frame_progress() {
+        use std::sync::{Arc, Barrier};
+        assert_eq!(crate::async_limits::policy().jobs_global, 2);
+        assert_eq!(crate::async_limits::policy().frame_items, 1);
+        init(dummy_logger()).unwrap();
+        load_body("pressure", "", "{}");
+        let entered = Arc::new(Barrier::new(3));
+        let release = Arc::new(Barrier::new(3));
+        for _ in 0..2 {
+            let entered = entered.clone();
+            let release = release.clone();
+            let ctx = PLUGINS.with(|p| p.borrow().get("pressure").unwrap().context.clone());
+            HOST.with(|h| {
+                let mut host = h.borrow_mut();
+                let host = host.as_mut().unwrap();
+                let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+                let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+                let ctx = v8::Local::new(&mut hs, &ctx);
+                let scope = &mut v8::ContextScope::new(&mut hs, ctx);
+                let lease = crate::jobs::reserve(scope, 128).unwrap();
+                let cancel = lease.cancel.clone();
+                let id = crate::jobs::next_id();
+                let resolver = v8::PromiseResolver::new(scope).unwrap();
+                pool()
+                    .try_submit(
+                        id,
+                        Box::new(move || {
+                            entered.wait();
+                            release.wait();
+                            Ok(())
+                        }),
+                        lease,
+                    )
+                    .unwrap();
+                crate::jobs::commit_reserved(scope, id, resolver, cancel);
+            });
+        }
+        entered.wait();
+        assert_eq!(crate::async_limits::domain().jobs.snapshot().items, 2);
+        let resources = active_resources("pressure");
+        eval_in_context(
+            "pressure",
+            r#"globalThis.__rejected='pending';__s2_thread_sleep(0).catch(e=>__rejected=e.name);"#,
+        )
+        .unwrap();
+        assert_eq!(active_resources("pressure"), resources);
+        assert_eq!(crate::jobs::pending(), 2);
+        frame_async_drain();
+        dispatch_async_callbacks();
+        assert_eq!(
+            read_global_string("pressure", "__rejected"),
+            "AsyncQueueFull"
+        );
+        unload_plugin("pressure");
+        assert_eq!(crate::jobs::pending(), 0);
+        assert!(
+            async_pending() > 0,
+            "producer keeps detour obligation after resolver unload"
+        );
+        shutdown();
+        init(dummy_logger()).unwrap();
+        load_body("replacement", "", "{}");
+        eval_in_context(
+            "replacement",
+            r#"globalThis.__rejected='pending';__s2_thread_sleep(0).catch(e=>__rejected=e.name);"#,
+        )
+        .unwrap();
+        frame_async_drain();
+        dispatch_async_callbacks();
+        assert_eq!(
+            read_global_string("replacement", "__rejected"),
+            "AsyncQueueFull"
+        );
+        assert_eq!(
+            crate::async_limits::domain().jobs.snapshot().bytes,
+            256,
+            "old copied inputs are still charged after reinit"
+        );
+        release.wait();
+        let end = Instant::now() + Duration::from_secs(2);
+        while crate::async_limits::domain().jobs.snapshot().items != 0 {
+            assert!(Instant::now() < end);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            crate::jobs::pending(),
+            0,
+            "late cancelled completions never settle replacement context"
+        );
+        eval_in_context(
+            "replacement",
+            r#"
+            globalThis.__progress=0;__s2_thread_sleep(0).then(()=>__progress++);
+            __s2_delay(100000).catch(()=>{});__s2_delay(100000).catch(()=>{});
+            globalThis.__timerError='pending';__s2_delay(0).catch(e=>__timerError=e.name);
+        "#,
+        )
+        .unwrap();
+        let end = Instant::now() + Duration::from_secs(2);
+        while crate::async_limits::queued_metrics()["worker"] == 0 {
+            assert!(Instant::now() < end);
+            std::thread::yield_now();
+        }
+        for _ in 0..12 {
+            frame_async_drain();
+            dispatch_async_callbacks();
+            assert!(
+                crate::async_limits::metrics()["frame"]["items"]
+                    .as_u64()
+                    .unwrap()
+                    <= 1
+            );
+        }
+        assert_eq!(
+            read_i32_global_in("replacement", "__progress"),
+            1,
+            "far-future timers cannot prevent completion progress"
+        );
+        assert_eq!(
+            read_global_string("replacement", "__timerError"),
+            "AsyncQueueFull"
+        );
+        unload_plugin("replacement");
+        assert_eq!(crate::async_limits::domain().timers.snapshot().items, 0);
+        load_body("cold", "", "{}");
+        let (id, _) = seed_injected_socket_connect("cold", false);
+        eval_in_context("cold",r#"
+            globalThis.__trace=[];__injected_connect.then(id=>{
+                __trace.push('connect');__s2_net_on(id,'data',()=>__trace.push('data'));
+                __s2_net_on(id,'error',()=>__trace.push('error'));__s2_net_on(id,'close',()=>__trace.push('close'));
+            });
+        "#).unwrap();
+        crate::net::test_inject_batch(id, b"cold", "terminal");
+        for _ in 0..24 {
+            crate::cookies::test_queue_notification();
+            frame_async_drain();
+            dispatch_async_callbacks();
+            let stats = crate::async_limits::metrics();
+            assert!(stats["frame"]["items"].as_u64().unwrap() <= 1);
+            assert!(stats["frame"]["polls"].as_u64().unwrap() <= 8);
+        }
+        assert_eq!(
+            eval_in_context_string("cold", "__trace.join(',')"),
+            "connect,data,error,close",
+            "hot cookies cannot starve a cold socket callback"
+        );
+        assert!(!crate::net::is_owner(id, "cold"));
+        shutdown();
+    }
+
 }

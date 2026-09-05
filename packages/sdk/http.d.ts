@@ -1,3 +1,4 @@
+/** Async calls reject with AsyncQueueFull or AsyncPayloadTooLarge before acceptance. Responses exceeding the configured retained UTF-8/header limit reject with HttpResponseTooLarge. */
 /** @s2script/http — async HTTP. NO runtime code (injected as __s2pkg_http). */
 
 /** Options for {@link fetch}. */

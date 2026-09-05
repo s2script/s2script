@@ -10,7 +10,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver, Sender, SyncSender};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -26,7 +26,7 @@ pub struct ExecResult { pub changes: i64, pub last_insert_id: i64 }
 /// A completed off-thread DB job (SQLite actor OR the remote sqlx tasks in sqldb.rs). Both backends
 /// send here; `v8host::frame_async_drain` polls `try_recv_completed()` and resolves via `resolve_db`.
 pub(crate) enum DbOutcome { Query(QueryResult), Exec(ExecResult) }
-pub(crate) struct DbCompletion { pub id: u64, pub result: Result<DbOutcome, String> }
+pub(crate) struct DbCompletion { pub id: u64, pub result: Result<DbOutcome, String>, pub lease: crate::async_limits::JobLease, pub queue:crate::async_limits::QueueTicket }
 
 // Process-global completion channel (mirrors http.rs::ENGINE). Actor threads / tokio tasks send;
 // the frame drain (main thread) polls. Shared by BOTH db.rs (SQLite) and sqldb.rs (MySQL/Postgres).
@@ -36,19 +36,25 @@ fn chan() -> &'static Chan { CHAN.get_or_init(|| { let (tx, rx) = channel(); Cha
 /// A cloned sender for producers (the SQLite actor loop in this module; sqldb.rs's tokio tasks).
 pub(crate) fn completion_tx() -> Sender<DbCompletion> { chan().tx.clone() }
 /// Pop one completion, or None. Called on the main thread by the frame drain.
-pub(crate) fn try_recv_completed() -> Option<DbCompletion> { chan().rx.lock().ok()?.try_recv().ok() }
+pub(crate) fn try_recv_completed() -> Option<DbCompletion> {
+    {
+        let mut c = chan().rx.lock().ok()?.try_recv().ok()?;
+        c.queue.dequeue();
+        Some(c)
+    }
+}
 
 /// A command sent to a connection's actor thread. Owned values only (Send) so nothing borrows across
 /// the thread boundary.
 enum Command {
-    Query { id: u64, sql: String, params: Vec<DbValue> },
-    Execute { id: u64, sql: String, params: Vec<DbValue> },
-    Shutdown,
+    #[cfg(test)] Barrier(std::sync::mpsc::Sender<()>,std::sync::mpsc::Receiver<()>),
+    Query { id: u64, sql: String, params: Vec<DbValue>, lease: crate::async_limits::JobLease },
+    Execute { id: u64, sql: String, params: Vec<DbValue>, lease: crate::async_limits::JobLease },
 }
 
 /// The main-thread handle to a connection's actor. The rusqlite `Connection` lives ON the actor
 /// thread — never on the main thread, never crossing to JS.
-struct ConnHandle { cmd_tx: Sender<Command> }
+struct ConnHandle { cmd_tx: SyncSender<Command> }
 
 thread_local! {
     // handle -> (actor handle, owner plugin id). Owner scopes access (charter: no raw cross-plugin
@@ -71,7 +77,7 @@ impl rusqlite::ToSql for DbValue {
             DbValue::Null => ToSqlOutput::Owned(Value::Null),
             DbValue::Int(i) => ToSqlOutput::Owned(Value::Integer(*i)),
             DbValue::Real(f) => ToSqlOutput::Owned(Value::Real(*f)),
-            DbValue::Text(s) => ToSqlOutput::Owned(Value::Text(s.clone())),
+            DbValue::Text(s) => ToSqlOutput::Borrowed(rusqlite::types::ValueRef::Text(s.as_bytes())),
         })
     }
 }
@@ -80,23 +86,71 @@ impl rusqlite::ToSql for DbValue {
 /// thread, sends a completion back over the shared channel. `catch_unwind` per statement so a panic
 /// in rusqlite becomes an Err completion, never a dead actor. Exits on Shutdown (or when all senders
 /// drop), dropping the Connection (closing the SQLite handle).
-fn actor_loop(conn: Connection, rx: Receiver<Command>) {
+fn actor_loop(conn: Connection, rx: Receiver<Command>, _lifetime: crate::async_limits::Lease) {
     let tx = completion_tx();
     while let Ok(cmd) = rx.recv() {
         match cmd {
-            Command::Query { id, sql, params } => {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_query(&conn, &sql, &params)))
-                    .unwrap_or_else(|_| Err("db query panicked".to_string()))
-                    .map(DbOutcome::Query);
-                let _ = tx.send(DbCompletion { id, result });
+            #[cfg(test)]
+            Command::Barrier(entered, release) => {
+                entered.send(()).unwrap();
+                release.recv().unwrap();
             }
-            Command::Execute { id, sql, params } => {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_execute(&conn, &sql, &params)))
-                    .unwrap_or_else(|_| Err("db execute panicked".to_string()))
-                    .map(DbOutcome::Exec);
-                let _ = tx.send(DbCompletion { id, result });
+            Command::Query {
+                id,
+                sql,
+                params,
+                mut lease,
+            } => {
+                if lease.cancel.cancelled() {
+                    continue;
+                }
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_query(&conn, &sql, &params, &mut lease)
+                }))
+                .unwrap_or_else(|_| Err("db query panicked".to_string()))
+                .map(DbOutcome::Query);
+                let result = result.map_err(crate::async_limits::diagnostic);
+                if result.is_err() {
+                    lease.discard_result();
+                }
+                let _guard = crate::async_limits::delivery_guard(&lease.cancel);
+                if _guard.is_some() {
+                    let _ = tx.send(DbCompletion {
+                        id,
+                        result,
+                        lease,
+                        queue: crate::async_limits::QueueTicket::new(2),
+                    });
+                }
             }
-            Command::Shutdown => break,
+            Command::Execute {
+                id,
+                sql,
+                params,
+                mut lease,
+            } => {
+                if lease.cancel.cancelled() {
+                    continue;
+                }
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_execute(&conn, &sql, &params)
+                }))
+                .unwrap_or_else(|_| Err("db execute panicked".to_string()))
+                .map(DbOutcome::Exec);
+                let result = result.map_err(crate::async_limits::diagnostic);
+                if result.is_err() {
+                    lease.discard_result();
+                }
+                let _guard = crate::async_limits::delivery_guard(&lease.cancel);
+                if _guard.is_some() {
+                    let _ = tx.send(DbCompletion {
+                        id,
+                        result,
+                        lease,
+                        queue: crate::async_limits::QueueTicket::new(2),
+                    });
+                }
+            }
         }
     }
     // conn drops here -> SQLite connection closed.
@@ -104,15 +158,27 @@ fn actor_loop(conn: Connection, rx: Receiver<Command>) {
 
 /// Run a parameterized SELECT on the actor's owned connection (the former `query` body, minus the
 /// registry lookup — ownership is checked on the main thread before the command is sent).
-fn run_query(conn: &Connection, sql: &str, params: &[DbValue]) -> Result<QueryResult, String> {
+fn run_query(
+    conn: &Connection,
+    sql: &str,
+    params: &[DbValue],
+    lease: &mut crate::async_limits::JobLease,
+) -> Result<QueryResult, String> {
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let names = stmt.column_names();
+    let mut size = ResultSizer::new();
+    size.add(
+        names.iter().map(|s| s.len().saturating_add(32)).sum(),
+        lease,
+    )?;
+    let columns: Vec<String> = names.iter().map(|s| s.to_string()).collect();
     let ncol = columns.len();
     let mut out_rows = Vec::new();
     let mut rows = stmt
         .query(rusqlite::params_from_iter(params.iter()))
         .map_err(|e| e.to_string())?;
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        size.row(ncol, &columns, lease)?;
         let mut vals = Vec::with_capacity(ncol);
         for i in 0..ncol {
             use rusqlite::types::ValueRef;
@@ -120,14 +186,25 @@ fn run_query(conn: &Connection, sql: &str, params: &[DbValue]) -> Result<QueryRe
                 ValueRef::Null => DbValue::Null,
                 ValueRef::Integer(n) => DbValue::Int(n),
                 ValueRef::Real(f) => DbValue::Real(f),
-                ValueRef::Text(t) => DbValue::Text(String::from_utf8_lossy(t).into_owned()),
+                ValueRef::Text(t) => {
+                    size.add(crate::async_limits::utf8_lossy_len(t), lease)?;
+                    DbValue::Text(
+                        String::from_utf8_lossy(t)
+                            .into_owned()
+                            .into_boxed_str()
+                            .into_string(),
+                    )
+                }
                 ValueRef::Blob(_) => DbValue::Null, // blobs out of scope
             };
             vals.push(v);
         }
         out_rows.push(vals);
     }
-    Ok(QueryResult { columns, rows: out_rows })
+    Ok(QueryResult {
+        columns,
+        rows: out_rows,
+    })
 }
 
 /// Run an INSERT/UPDATE/DELETE/DDL on the actor's owned connection (the former `execute` body).
@@ -139,6 +216,27 @@ fn run_execute(conn: &Connection, sql: &str, params: &[DbValue]) -> Result<ExecR
 }
 
 pub fn open(data_dir: &Path, name: &str, owner: &str) -> Result<u64, String> {
+    open_in(data_dir, name, owner, crate::async_limits::domain())
+}
+fn open_in(
+    data_dir: &Path,
+    name: &str,
+    owner: &str,
+    domain: &std::sync::Arc<crate::async_limits::Domain>,
+) -> Result<u64, String> {
+    let lifetime = domain
+        .sqlite
+        .acquire(Some((owner.to_owned(), 0)), 1, 0)
+        .map_err(|e| e.to_string())?;
+    open_reserved(data_dir, name, owner, domain, lifetime)
+}
+pub(crate) fn open_reserved(
+    data_dir: &Path,
+    name: &str,
+    owner: &str,
+    domain: &std::sync::Arc<crate::async_limits::Domain>,
+    lifetime: crate::async_limits::Lease,
+) -> Result<u64, String> {
     if !valid_name(name) {
         return Err(format!("invalid database name: {name:?}"));
     }
@@ -151,19 +249,26 @@ pub fn open(data_dir: &Path, name: &str, owner: &str) -> Result<u64, String> {
     // Off-thread writes can now contend when two connections share a file (e.g. nominations +
     // rockthevote both open "mapvote"); a locked write should wait, not error.
     let _ = conn.busy_timeout(Duration::from_millis(5000));
-    let (cmd_tx, rx) = channel::<Command>();
+    let (cmd_tx, rx) = std::sync::mpsc::sync_channel::<Command>(domain.policy.sqlite_queue_items);
     thread::Builder::new()
         .name(format!("s2db-{name}"))
-        .spawn(move || actor_loop(conn, rx))
+        .spawn(move || actor_loop(conn, rx, lifetime))
         .map_err(|e| format!("cannot spawn db thread: {e}"))?;
-    let handle = NEXT.with(|n| { let h = n.get(); n.set(h + 1); h });
-    CONNS.with(|c| c.borrow_mut().insert(handle, (ConnHandle { cmd_tx }, owner.to_string())));
+    let handle = NEXT.with(|n| {
+        let h = n.get();
+        n.set(h + 1);
+        h
+    });
+    CONNS.with(|c| {
+        c.borrow_mut()
+            .insert(handle, (ConnHandle { cmd_tx }, owner.to_string()))
+    });
     Ok(handle)
 }
 
 /// Clone the command sender for a handle the caller owns (a wrong/absent owner is "invalid db handle",
 /// not probeable). Mirrors sqldb::get_pool. Private — callers use `submit_query`/`submit_execute`.
-fn get_sender(handle: u64, owner: &str) -> Result<Sender<Command>, String> {
+fn get_sender(handle: u64, owner: &str) -> Result<SyncSender<Command>, String> {
     CONNS.with(|c| match c.borrow().get(&handle) {
         Some((h, o)) if o == owner => Ok(h.cmd_tx.clone()),
         _ => Err("invalid db handle".to_string()),
@@ -173,16 +278,106 @@ fn get_sender(handle: u64, owner: &str) -> Result<Sender<Command>, String> {
 /// Owner-check + queue a SELECT on the connection's actor thread. Returns immediately (the game thread
 /// does NOT block); the result arrives later as a `DbCompletion` (resolved by the frame drain). Err on
 /// a wrong/absent handle ("invalid db handle") or a dead actor ("db connection closed").
-pub(crate) fn submit_query(id: u64, handle: u64, sql: String, params: Vec<DbValue>, owner: &str) -> Result<(), String> {
-    let sender = get_sender(handle, owner)?;
-    sender.send(Command::Query { id, sql, params }).map_err(|_| "db connection closed".to_string())
+#[cfg(test)]
+pub(crate) fn submit_query(
+    id: u64,
+    handle: u64,
+    sql: String,
+    params: Vec<DbValue>,
+    owner: &str,
+) -> Result<(), String> {
+    let lease = crate::async_limits::domain()
+        .job(Some((owner.into(), 0)), input_bytes(&sql, &params))
+        .map_err(|e| e.to_string())?;
+    submit_query_reserved(id, handle, sql, params, owner, lease)
 }
-
-/// Owner-check + queue an INSERT/UPDATE/DELETE/DDL on the connection's actor thread. Same contract as
-/// `submit_query`.
-pub(crate) fn submit_execute(id: u64, handle: u64, sql: String, params: Vec<DbValue>, owner: &str) -> Result<(), String> {
-    let sender = get_sender(handle, owner)?;
-    sender.send(Command::Execute { id, sql, params }).map_err(|_| "db connection closed".to_string())
+#[cfg(test)]
+pub(crate) fn submit_execute(
+    id: u64,
+    handle: u64,
+    sql: String,
+    params: Vec<DbValue>,
+    owner: &str,
+) -> Result<(), String> {
+    let lease = crate::async_limits::domain()
+        .job(Some((owner.into(), 0)), input_bytes(&sql, &params))
+        .map_err(|e| e.to_string())?;
+    submit_execute_reserved(id, handle, sql, params, owner, lease)
+}
+pub(crate) fn submit_query_reserved(
+    id: u64,
+    handle: u64,
+    sql: String,
+    params: Vec<DbValue>,
+    owner: &str,
+    lease: crate::async_limits::JobLease,
+) -> Result<(), String> {
+    get_sender(handle, owner)?
+        .try_send(Command::Query {
+            id,
+            sql,
+            params,
+            lease,
+        })
+        .map_err(|_| "AsyncQueueFull".into())
+}
+pub(crate) fn submit_execute_reserved(
+    id: u64,
+    handle: u64,
+    sql: String,
+    params: Vec<DbValue>,
+    owner: &str,
+    lease: crate::async_limits::JobLease,
+) -> Result<(), String> {
+    get_sender(handle, owner)?
+        .try_send(Command::Execute {
+            id,
+            sql,
+            params,
+            lease,
+        })
+        .map_err(|_| "AsyncQueueFull".into())
+}
+pub(crate) fn input_bytes(sql: &str, params: &[DbValue]) -> usize {
+    params.iter().fold(sql.len(), |n, v| {
+        n.saturating_add(32).saturating_add(match v {
+            DbValue::Text(s) => s.len(),
+            _ => 0,
+        })
+    })
+}
+/// Shared retained representation accounting for SQLite and remote SQL. Driver wire buffers are outside this application cap.
+pub(crate) struct ResultSizer { rows: usize, bytes: usize }
+impl ResultSizer {
+    pub fn new() -> Self {
+        Self { rows: 0, bytes: 0 }
+    }
+    pub fn add(&mut self, n: usize, lease: &mut crate::async_limits::JobLease) -> Result<(), String> {
+        if n > lease.policy.db_result_bytes.saturating_sub(self.bytes) {
+            return Err("DatabaseResultTooLarge".into());
+        }
+        lease.grow(n).map_err(|e| e.to_string())?;
+        self.bytes += n;
+        Ok(())
+    }
+    pub fn row(
+        &mut self,
+        ncol: usize,
+        columns: &[String],
+        lease: &mut crate::async_limits::JobLease,
+    ) -> Result<(), String> {
+        if self.rows >= lease.policy.db_result_rows {
+            return Err("DatabaseResultTooLarge".into());
+        }
+        let bytes = columns
+            .iter()
+            .fold(32usize.saturating_add(ncol.saturating_mul(32)), |n, s| {
+                n.saturating_add(s.len())
+            });
+        self.add(bytes, lease)?;
+        self.rows += 1;
+        Ok(())
+    }
 }
 
 /// Close a connection the caller owns: remove-if-owned (one borrow), then signal the actor to drain +
@@ -197,13 +392,148 @@ pub fn close(handle: u64, owner: &str) -> bool {
         }
     });
     match removed {
-        Some((h, _)) => { let _ = h.cmd_tx.send(Command::Shutdown); true }
+        Some((h, _)) => {
+            drop(h);
+            true
+        }
         None => false,
     }
 }
 
 #[cfg(test)]
 mod tests {
+    fn pressure_domain(rows: usize, bytes: usize) -> std::sync::Arc<crate::async_limits::Domain> {
+        crate::async_limits::Domain::new(crate::async_limits::AsyncPolicy {
+            jobs_global: 3,
+            jobs_per_owner: 3,
+            input_bytes: 4096,
+            owner_input_bytes: 4096,
+            input_item_bytes: 4096,
+            completion_bytes: 4096,
+            failure_bytes: 64,
+            sqlite_global: 1,
+            sqlite_per_owner: 1,
+            sqlite_queue_items: 2,
+            db_result_rows: rows,
+            db_result_bytes: bytes,
+            ..Default::default()
+        })
+    }
+    #[test]
+    fn sqlite_exact_final_utf8_row_byte_edges_and_recovery() {
+        let conn = Connection::open_in_memory().unwrap();
+        let d = pressure_domain(2, 104);
+        let mut lease = d.job(None, 0).unwrap();
+        let r = run_query(&conn, "SELECT CAST(X'FFFF' AS TEXT) AS x", &[], &mut lease).unwrap();
+        assert!(matches!(&r.rows[0][0],DbValue::Text(s) if s.len()==6));
+        drop(lease);
+        let d = pressure_domain(2, 103);
+        let mut lease = d.job(None, 0).unwrap();
+        assert_eq!(
+            run_query(&conn, "SELECT CAST(X'FFFF' AS TEXT) AS x", &[], &mut lease)
+                .err()
+                .unwrap(),
+            "DatabaseResultTooLarge"
+        );
+        lease.discard_result();
+        assert_eq!(d.results.snapshot().bytes, 64);
+        drop(lease);
+        let d = pressure_domain(2, 1024);
+        let mut lease = d.job(None, 0).unwrap();
+        assert_eq!(
+            run_query(
+                &conn,
+                "SELECT 1 x UNION ALL SELECT 2 UNION ALL SELECT 3",
+                &[],
+                &mut lease
+            )
+            .err()
+            .unwrap(),
+            "DatabaseResultTooLarge"
+        );
+        drop(lease);
+        let mut lease = d.job(None, 0).unwrap();
+        assert_eq!(
+            run_query(&conn, "SELECT 1 x UNION ALL SELECT 2", &[], &mut lease)
+                .unwrap()
+                .rows
+                .len(),
+            2
+        );
+        drop(lease);
+        let mut lease = d.job(None, 0).unwrap();
+        assert_eq!(
+            run_query(
+                &conn,
+                "SELECT CAST(zeroblob(2048) AS TEXT) x",
+                &[],
+                &mut lease
+            )
+            .err()
+            .unwrap(),
+            "DatabaseResultTooLarge"
+        );
+    }
+    #[test]
+    fn full_actor_queue_close_and_reload_keep_old_actor_and_inputs_charged() {
+        crate::async_limits::resume_delivery();
+        let d = pressure_domain(2, 1024);
+        let path = tmp();
+        let h = open_in(&path, "pressure", "owner", &d).unwrap();
+        let (entered, wait) = std::sync::mpsc::channel();
+        let (release, rx) = std::sync::mpsc::channel();
+        get_sender(h, "owner")
+            .unwrap()
+            .try_send(Command::Barrier(entered, rx))
+            .ok()
+            .unwrap();
+        wait.recv().unwrap();
+        let a = crate::jobs::next_id();
+        let b = crate::jobs::next_id();
+        for id in [a, b] {
+            submit_query_reserved(
+                id,
+                h,
+                "SELECT 1 x".into(),
+                vec![],
+                "owner",
+                d.job(None, 64).unwrap(),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            submit_query_reserved(
+                crate::jobs::next_id(),
+                h,
+                "SELECT 1".into(),
+                vec![],
+                "owner",
+                d.job(None, 64).unwrap()
+            )
+            .unwrap_err(),
+            "AsyncQueueFull"
+        );
+        assert_eq!((d.jobs.snapshot().items, d.jobs.snapshot().bytes), (2, 128));
+        assert!(close(h, "owner"));
+        assert_eq!(
+            open_in(&path, "replacement", "replacement", &d)
+                .err()
+                .unwrap(),
+            "AsyncQueueFull"
+        );
+        release.send(()).unwrap();
+        assert!(wait_for(a).is_ok());
+        assert!(wait_for(b).is_ok());
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while d.sqlite.snapshot().items != 0 {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!((d.jobs.snapshot().items, d.jobs.snapshot().bytes), (0, 0));
+        let h = open_in(&path, "replacement", "replacement", &d).unwrap();
+        assert!(close(h, "replacement"));
+    }
+
     use super::*;
     fn tmp() -> std::path::PathBuf {
         thread_local! { static N: std::cell::Cell<u64> = std::cell::Cell::new(0); }
@@ -310,4 +640,8 @@ mod tests {
         assert_eq!(q(6, h2, "SELECT y FROM b", vec![]).rows.len(), 1);
         close(h1, O); close(h2, O);
     }
+}
+
+pub(crate) fn shutdown_all() {
+    CONNS.with(|m| m.borrow_mut().clear());
 }

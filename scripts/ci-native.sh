@@ -65,6 +65,7 @@ cargo build
 
 echo "== cargo test -p s2script-core =="
 cargo test -p s2script-core
+bash scripts/test-async-pressure.sh
 
 # ccache is present in CI via hendrikmuhs/ccache-action; on a dev box it may not be.
 # Only pass the launcher when it actually exists, so cmake does not fail on a missing binary.

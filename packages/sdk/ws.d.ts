@@ -9,7 +9,8 @@ export interface WebSocket {
   /** Register a handler for a transport error; `err` is the error text. */
   onError(handler: (err: string) => void): void;
   /** Send a text frame. */
-  send(data: string): void;
+  /** Returns false if closed, oversized, or the connection/global outbound budget is full. */
+  send(data: string): boolean;
   /** Close the connection. */
   close(): void;
 }

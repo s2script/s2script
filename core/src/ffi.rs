@@ -92,9 +92,7 @@ pub extern "C" fn s2script_core_dispatch_game_frame(
         let out = v8host::dispatch_onframe(phase, simulating != 0, first != 0, last != 0);
         if phase == Phase::Post {
             v8host::frame_async_drain(); // Post: resolve async + microtask checkpoint
-            crate::cookies::dispatch_pending_cached(); // Post, HOST free: fan out queued Cookies.onCached
-            crate::ws::dispatch_pending_events(); // Post, HOST free: fan out queued WebSocket on* events
-            crate::net::dispatch_pending_events(); // Post, HOST free: fan out queued net (TCP/UDP) events
+            v8host::dispatch_async_callbacks(); // HOST-free bounded/fair cookie and socket callbacks
             v8host::dispatch_pending_topmenu_select(); // Post, HOST free: fan out queued TopMenu.select
             crate::loader::poll_plugins(); // Post: scan /plugins for .s2sp changes (throttled)
         }

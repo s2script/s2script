@@ -25,9 +25,11 @@ pub struct FetchResponse {
 pub struct FetchCompletion {
     pub id: u64,
     pub result: Result<FetchResponse, String>,
+    pub lease: crate::async_limits::JobLease,
+    queue:crate::async_limits::QueueTicket,
 }
 
-const MAX_BODY: usize = 10 * 1024 * 1024; // 10 MB cap
+
 
 struct Engine {
     runtime: tokio::runtime::Runtime,
@@ -38,6 +40,7 @@ struct Engine {
 static ENGINE: OnceLock<Engine> = OnceLock::new();
 
 pub fn init() {
+    crate::async_limits::resume_delivery();
     ENGINE.get_or_init(|| {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
@@ -46,22 +49,43 @@ pub fn init() {
             .expect("tokio runtime");
         let client = reqwest::Client::builder().build().expect("reqwest client");
         let (tx, rx) = channel();
-        Engine { runtime, client, tx, rx: Mutex::new(rx) }
+        Engine {
+            runtime,
+            client,
+            tx,
+            rx: Mutex::new(rx),
+        }
     });
 }
 
+#[cfg(test)]
 pub fn fetch(id: u64, req: FetchRequest) {
-    let Some(e) = ENGINE.get() else { return }; // degrade: not initialized
+    fetch_reserved(id, req, crate::async_limits::domain().job(None, 0).unwrap()).unwrap();
+}
+pub(crate) fn fetch_reserved(
+    id: u64,
+    req: FetchRequest,
+    mut lease: crate::async_limits::JobLease,
+) -> Result<(), String> {
+    let Some(e) = ENGINE.get() else {
+        return Err("HTTP not initialized".into());
+    };
     let client = e.client.clone();
     let tx = e.tx.clone();
     e.runtime.spawn(async move {
-        let result = do_fetch(client, req).await;
-        let _ = tx.send(FetchCompletion { id, result });
+        let cancel=lease.cancel.clone();
+        let result=tokio::select! {biased;_=cancel.wait()=>Err("AsyncCancelled".into()),r=do_fetch(client,req,&mut lease)=>r}.map_err(crate::async_limits::diagnostic);
+        if result.is_err() { lease.discard_result(); }
+        let _guard=crate::async_limits::delivery_guard(&lease.cancel);
+        if _guard.is_some() {let _=tx.send(FetchCompletion { id,result,lease,queue:crate::async_limits::QueueTicket::new(1) });}
     });
+    Ok(())
 }
 
 pub fn try_recv_completed() -> Option<FetchCompletion> {
-    ENGINE.get()?.rx.lock().ok()?.try_recv().ok()
+    let mut c = ENGINE.get()?.rx.lock().ok()?.try_recv().ok()?;
+    c.queue.dequeue();
+    Some(c)
 }
 
 /// Spawn a future on the shared tokio runtime (used by ws.rs to reuse the one runtime). No-op if
@@ -81,9 +105,15 @@ pub fn enter() -> Option<tokio::runtime::EnterGuard<'static>> {
     ENGINE.get().map(|e| e.runtime.enter())
 }
 
-async fn do_fetch(client: reqwest::Client, req: FetchRequest) -> Result<FetchResponse, String> {
+async fn do_fetch(
+    client: reqwest::Client,
+    req: FetchRequest,
+    lease: &mut crate::async_limits::JobLease,
+) -> Result<FetchResponse, String> {
     let method = reqwest::Method::from_bytes(req.method.as_bytes()).map_err(|e| e.to_string())?;
-    let mut rb = client.request(method, &req.url).timeout(Duration::from_millis(req.timeout_ms));
+    let mut rb = client
+        .request(method, &req.url)
+        .timeout(Duration::from_millis(req.timeout_ms));
     for (k, v) in &req.headers {
         rb = rb.header(k.as_str(), v.as_str());
     }
@@ -93,28 +123,60 @@ async fn do_fetch(client: reqwest::Client, req: FetchRequest) -> Result<FetchRes
     let mut resp = rb.send().await.map_err(|e| e.to_string())?; // network/timeout → Err
     let status = resp.status().as_u16();
     let status_text = resp.status().canonical_reason().unwrap_or("").to_string();
-    let headers = resp
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+    let mut headers = Vec::new();
+    let mut header_bytes = 0usize;
+    for (k, v) in resp.headers() {
+        let value = v.to_str().unwrap_or("");
+        let n = k
+            .as_str()
+            .len()
+            .saturating_add(value.len())
+            .saturating_add(64);
+        header_bytes = header_bytes.saturating_add(n);
+        if header_bytes > lease.policy.http_body_bytes {
+            return Err("HttpResponseTooLarge".into());
+        }
+        lease.grow(n).map_err(|e| e.to_string())?;
+        headers.push((k.as_str().to_owned(), value.to_owned()));
+    }
     // Fast reject on a declared oversized body...
     if let Some(len) = resp.content_length() {
-        if len as usize > MAX_BODY {
-            return Err("response body too large".into());
+        if len > lease.policy.http_body_bytes as u64 {
+            return Err("HttpResponseTooLarge".into());
         }
     }
     // ...but a chunked / no-Content-Length response can lie, so STREAM the body and abort the moment
     // the accumulated size exceeds MAX_BODY — never buffer an unbounded (hostile) response into memory.
     let mut buf: Vec<u8> = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
-        if buf.len() + chunk.len() > MAX_BODY {
-            return Err("response body too large".into());
+        if buf.len().saturating_add(chunk.len()) > lease.policy.http_body_bytes {
+            return Err("HttpResponseTooLarge".into());
         }
+        lease.grow(chunk.len()).map_err(|e| e.to_string())?;
+        buf.reserve_exact(chunk.len());
         buf.extend_from_slice(&chunk);
     }
-    let body = String::from_utf8_lossy(&buf).into_owned();
-    Ok(FetchResponse { status, status_text, headers, body })
+    let final_bytes = crate::async_limits::utf8_lossy_len(&buf);
+    if final_bytes.saturating_add(header_bytes) > lease.policy.http_body_bytes {
+        return Err("HttpResponseTooLarge".into());
+    }
+    let body = match String::from_utf8(buf) {
+        Ok(body) => body,
+        Err(error) => {
+            // Invalid UTF-8 requires a second buffer: account conversion scratch simultaneously.
+            lease.grow(final_bytes).map_err(|e| e.to_string())?;
+            String::from_utf8_lossy(error.as_bytes())
+                .into_owned()
+                .into_boxed_str()
+                .into_string()
+        }
+    };
+    Ok(FetchResponse {
+        status,
+        status_text,
+        headers,
+        body,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -122,70 +184,89 @@ async fn do_fetch(client: reqwest::Client, req: FetchRequest) -> Result<FetchRes
 // Promise create goes through `jobs::begin_job`; Promise resolve (`resolve_fetch`) stays in v8host.
 // ---------------------------------------------------------------------------
 
-use crate::jobs::begin_job;
 use crate::v8host::set_native;
-
-fn get_str_prop(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>, name: &str) -> Option<String> {
-    let key = v8::String::new(scope, name)?;
-    let val = obj.get(scope, key.into())?;
-    if val.is_null_or_undefined() {
-        return None;
-    }
-    Some(val.to_rust_string_lossy(scope))
-}
-
-/// Native `__s2_fetch(url, options) -> Promise<rawResponse>` where `rawResponse =
-/// {status, ok, statusText, headers, body}`. Immediate `jobs::begin_job` (a `Job` resource)
-/// then hands off to `fetch` so the calling (main/game) thread never blocks on I/O. The Promise
-/// resolves on a LATER `frame_async_drain` via `v8host::resolve_fetch`.
-///
-/// `options` (all optional): `method` (default `"GET"`), `headers` (a plain string→string object),
-/// `body` (a string), `timeoutMs` (default 30000). Degrade-never-crash: the whole body runs under
-/// `catch_unwind`; a malformed/absent `options` degrades to the defaults (never throws
-/// synchronously) — the actual network outcome (incl. a 4xx/5xx, which RESOLVES with `ok:false`,
-/// vs. a network/timeout error, which REJECTS) is decided later by `resolve_fetch`.
-fn s2_fetch(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let url = args.get(0).to_rust_string_lossy(scope);
-        let mut method = "GET".to_string();
-        let mut headers: Vec<(String, String)> = Vec::new();
-        let mut body: Option<String> = None;
-        let mut timeout_ms = 30_000u64;
+fn s2_fetch(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let resolver = v8::PromiseResolver::new(scope).unwrap();
+    let promise = resolver.get_promise(scope);
+    let result = (|| -> Result<(), String> {
+        let mut lease = crate::jobs::reserve(scope, 0).map_err(|e| e.to_string())?;
+        let url =
+            crate::jobs::copy_string(scope, args.get(0), &mut lease).map_err(|e| e.to_string())?;
+        let mut method = "GET".to_owned();
+        let mut body = None;
+        let mut headers = Vec::new();
+        let mut timeout_ms = 30_000;
         if let Ok(opts) = v8::Local::<v8::Object>::try_from(args.get(1)) {
-            if let Some(v) = get_str_prop(scope, opts, "method") {
-                method = v;
-            }
-            if let Some(v) = get_str_prop(scope, opts, "body") {
-                body = Some(v);
-            }
-            if let Some(k) = v8::String::new(scope, "timeoutMs") {
-                if let Some(v) = opts.get(scope, k.into()) {
-                    if v.is_number() {
-                        timeout_ms = v.integer_value(scope).unwrap_or(30_000).max(0) as u64;
-                    }
+            for name in ["method", "body", "timeoutMs", "headers"] {
+                let key = v8::String::new(scope, name).unwrap();
+                let Some(value) = opts.get(scope, key.into()) else {
+                    continue;
+                };
+                if value.is_null_or_undefined() {
+                    continue;
                 }
-            }
-            if let Some(k) = v8::String::new(scope, "headers") {
-                if let Some(hv) = opts.get(scope, k.into()) {
-                    if let Ok(ho) = v8::Local::<v8::Object>::try_from(hv) {
-                        if let Some(names) = ho.get_own_property_names(scope, Default::default()) {
-                            for i in 0..names.length() {
-                                let Some(key) = names.get_index(scope, i) else { continue };
-                                let Some(val) = ho.get(scope, key) else { continue };
-                                headers.push((
-                                    key.to_rust_string_lossy(scope),
-                                    val.to_rust_string_lossy(scope),
-                                ));
+                match name {
+                    "method" => {
+                        method = crate::jobs::copy_string(scope, value, &mut lease)
+                            .map_err(|e| e.to_string())?
+                    }
+                    "body" => {
+                        body = Some(
+                            crate::jobs::copy_string(scope, value, &mut lease)
+                                .map_err(|e| e.to_string())?,
+                        )
+                    }
+                    "timeoutMs" => {
+                        timeout_ms = value.integer_value(scope).unwrap_or(30_000).max(0) as u64
+                    }
+                    _ => {
+                        if let Ok(ho) = v8::Local::<v8::Object>::try_from(value) {
+                            if let Some(names) =
+                                ho.get_own_property_names(scope, Default::default())
+                            {
+                                // Names array is V8-owned; native copies are charged individually before allocation.
+                                for i in 0..names.length() {
+                                    let Some(k) = names.get_index(scope, i) else {
+                                        continue;
+                                    };
+                                    let Some(v) = ho.get(scope, k) else { continue };
+                                    let k = crate::jobs::copy_string(scope, k, &mut lease)
+                                        .map_err(|e| e.to_string())?;
+                                    let v = crate::jobs::copy_string(scope, v, &mut lease)
+                                        .map_err(|e| e.to_string())?;
+                                    headers.push((k, v));
+                                }
                             }
                         }
                     }
                 }
             }
         }
-        let (id, promise) = begin_job(scope);
-        fetch(id, FetchRequest { method, url, headers, body, timeout_ms });
-        rv.set(promise);
-    }));
+        crate::jobs::check_live(&lease)?;
+        let id = crate::jobs::next_id();
+        let cancel = lease.cancel.clone();
+        fetch_reserved(
+            id,
+            FetchRequest {
+                method,
+                url,
+                headers,
+                body,
+                timeout_ms,
+            },
+            lease,
+        )?;
+        crate::jobs::commit_reserved(scope, id, resolver, cancel);
+        Ok(())
+    })();
+    if let Err(e) = result {
+        crate::jobs::reject(scope, resolver, &e);
+    }
+    rv.set(promise.into());
 }
 
 pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) {
@@ -194,6 +275,84 @@ pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
 
 #[cfg(test)]
 mod tests {
+    fn response_bytes(response: Vec<u8>) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut req = [0; 2048];
+            let _ = std::io::Read::read(&mut socket, &mut req);
+            std::io::Write::write_all(&mut socket, &response).unwrap();
+        });
+        port
+    }
+    fn fetch_tiny(response: Vec<u8>, max: usize) -> Result<FetchResponse, String> {
+        let port = response_bytes(response);
+        let d = crate::async_limits::Domain::new(crate::async_limits::AsyncPolicy {
+            http_body_bytes: max,
+            completion_bytes: 4096,
+            failure_bytes: 64,
+            ..Default::default()
+        });
+        let mut lease = d.job(None, 0).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(do_fetch(
+            reqwest::Client::new(),
+            FetchRequest {
+                method: "GET".into(),
+                url: format!("http://127.0.0.1:{port}/"),
+                headers: vec![],
+                body: None,
+                timeout_ms: 1000,
+            },
+            &mut lease,
+        ))
+    }
+    #[test]
+    fn http_final_utf8_exact_boundary_and_declared_or_chunked_overflow() {
+        let mut invalid = b"HTTP/1.0 200 OK\r\n\r\n".to_vec();
+        invalid.extend_from_slice(&[0xff; 3]);
+        assert_eq!(fetch_tiny(invalid.clone(), 9).unwrap().body.len(), 9);
+        assert_eq!(
+            fetch_tiny(invalid, 8).err().unwrap(),
+            "HttpResponseTooLarge"
+        );
+        assert_eq!(
+            fetch_tiny(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 129\r\n\r\n".to_vec(),
+                128
+            )
+            .err()
+            .unwrap(),
+            "HttpResponseTooLarge"
+        );
+        let mut chunked = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n81\r\n".to_vec();
+        chunked.extend_from_slice(&[b'x'; 129]);
+        chunked.extend_from_slice(b"\r\n0\r\n\r\n");
+        assert_eq!(
+            fetch_tiny(chunked, 128).err().unwrap(),
+            "HttpResponseTooLarge"
+        );
+        assert_eq!(
+            fetch_tiny(
+                b"HTTP/1.0 200 OK\r\nVery-Long-Header-Name: value\r\n\r\n".to_vec(),
+                8
+            )
+            .err()
+            .unwrap(),
+            "HttpResponseTooLarge"
+        );
+        assert_eq!(
+            fetch_tiny(b"HTTP/1.0 200 OK\r\n\r\nok".to_vec(), 8)
+                .unwrap()
+                .body,
+            "ok"
+        );
+    }
+
     use super::*;
     use std::io::{Read, Write};
     // A tiny local HTTP/1.1 server on an ephemeral port; returns one canned response then exits.

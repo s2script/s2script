@@ -46,7 +46,7 @@ const sources = shipped
 const readonlyGlobals = (names) =>
   Object.fromEntries([...new Set(names)].sort().map((n) => [n, "readonly"]));
 
-const natives = [...coreSrc.matchAll(/set_native\(scope, global_obj, "([^"]+)"/g)].map((m) => m[1]);
+const natives = [...coreSrc.matchAll(/set_native\(\s*scope\s*,\s*global_obj\s*,\s*"([^"]+)"/g)].map((m) => m[1]);
 const extraFromRust = ["console"];   // v8host.rs — set directly on the global object
 // The globals these files publish and then read back bare later in the concatenated script.
 //

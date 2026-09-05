@@ -2,8 +2,8 @@
 
 /** A connected TCP client socket — a per-plugin handle over a copied byte stream (no live socket crosses to JS). */
 export interface TcpSocket {
-  /** Send bytes; a `string` is sent as its UTF-8 encoding. */
-  send(data: Uint8Array | string): void;
+  /** Send bytes; a `string` is sent as its UTF-8 encoding. Returns false on closed/oversized/full admission. */
+  send(data: Uint8Array | string): boolean;
   /** Register a handler invoked for each inbound chunk of bytes. */
   onData(handler: (bytes: Uint8Array) => void): void;
   /** Register a handler for the peer closing the connection. */
@@ -15,8 +15,8 @@ export interface TcpSocket {
 }
 /** A bound UDP socket — a per-plugin handle for connectionless datagrams. */
 export interface UdpSocket {
-  /** Send a datagram to `host:port`; a `string` is sent as its UTF-8 encoding. */
-  sendTo(host: string, port: number, data: Uint8Array | string): void;
+  /** Send a datagram to `host:port`; a `string` is sent as its UTF-8 encoding. Returns false on closed/oversized/full admission. */
+  sendTo(host: string, port: number, data: Uint8Array | string): boolean;
   /** Register a handler invoked for each inbound datagram; `from` is the sender's address. */
   onMessage(handler: (from: { host: string; port: number }, bytes: Uint8Array) => void): void;
   /** Close the socket. */
