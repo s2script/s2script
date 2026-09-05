@@ -97,7 +97,9 @@ mod tests {
     use super::*;
     use crate::multiplexer::HookResult;
     use crate::v8host::frame_tests::{dummy_logger, eval_in_context_string};
-    use crate::v8host::{create_plugin_context, eval_in_context, init, shutdown};
+    use crate::v8host::{
+        create_plugin_context, eval_in_context, init, load_plugin_js, shutdown, unload_plugin,
+    };
 
     fn seed(index: i32, serial: i32) -> u64 {
         crate::entity_live::reset_for_tests();
@@ -165,9 +167,13 @@ mod tests {
         }
         let id = crate::entity_live::on_created(101, 101);
         assert_eq!(eval_in_context_string("p", &hook_js(101, id, "")), "true");
-        let (entities, examined) = crate::sdkhooks::snapshot_kind_entities_with_work(KIND_SET_TRANSMIT);
+        let (entities, visited) =
+            crate::sdkhooks::snapshot_kind_entities_with_work(KIND_SET_TRANSMIT);
         assert_eq!(entities, vec![(101, 101)]);
-        assert_eq!(examined, 1, "SetTransmit enumeration work must depend on SetTransmit entities only");
+        assert_eq!(
+            visited, 1,
+            "shared enumeration path must visit only the SetTransmit entity, not 100 other kinds"
+        );
         shutdown();
     }
 
@@ -185,15 +191,19 @@ mod tests {
                 globalThis.__a2 = function () {{}};
                 globalThis.__b = function () {{}};
                 __s2_sdkhook(5, {id_a}, "SetTransmit", globalThis.__a1);
-                __s2_sdkhook(5, {id_a}, "SetTransmit", globalThis.__a2);
                 __s2_sdkhook(6, {id_b}, "SetTransmit", globalThis.__b);
+                __s2_sdkhook(5, {id_a}, "SetTransmit", globalThis.__a2);
             "#),
         ).unwrap();
         assert_eq!(snapshot_kind_entities(KIND_SET_TRANSMIT), vec![(5, 1), (6, 2)]);
         assert_eq!(eval_in_context_string(
             "p", &format!(r#"String(__s2_sdkunhook(5, {id_a}, "SetTransmit", globalThis.__a1))"#)
         ), "true");
-        assert_eq!(snapshot_kind_entities(KIND_SET_TRANSMIT), vec![(5, 1), (6, 2)]);
+        assert_eq!(
+            snapshot_kind_entities(KIND_SET_TRANSMIT),
+            vec![(6, 2), (5, 1)],
+            "entity order follows the earliest remaining subscription"
+        );
         assert_eq!(eval_in_context_string(
             "p", &format!(r#"String(__s2_sdkunhook(5, {id_a}, "SetTransmit", globalThis.__a2))"#)
         ), "true");
@@ -202,6 +212,35 @@ mod tests {
         crate::sdkhooks::drop_entity(id_b);
         assert!(snapshot_kind_entities(KIND_SET_TRANSMIT).is_empty());
         assert!(!kind_active(KIND_SET_TRANSMIT));
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_settransmit_owner_removal_reorders_by_earliest_remaining_subscription() {
+        let _ = init(dummy_logger());
+        crate::entity_live::reset_for_tests();
+        let id_a = crate::entity_live::on_created(5, 1);
+        let id_b = crate::entity_live::on_created(6, 2);
+        for owner in ["a-first", "b", "a-last"] {
+            load_plugin_js(owner, "module.exports.OnPluginStart = function () {};", "{}");
+        }
+        assert_eq!(
+            eval_in_context_string("a-first", &hook_js(5, id_a, "")),
+            "true"
+        );
+        assert_eq!(eval_in_context_string("b", &hook_js(6, id_b, "")), "true");
+        assert_eq!(
+            eval_in_context_string("a-last", &hook_js(5, id_a, "")),
+            "true"
+        );
+        assert_eq!(snapshot_kind_entities(KIND_SET_TRANSMIT), vec![(5, 1), (6, 2)]);
+
+        unload_plugin("a-first");
+        assert_eq!(
+            snapshot_kind_entities(KIND_SET_TRANSMIT),
+            vec![(6, 2), (5, 1)],
+            "owner teardown must use the same reorder path as explicit unhook"
+        );
         shutdown();
     }
 

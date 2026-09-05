@@ -68,6 +68,7 @@ struct EntityAddress {
     entity_id: u64,
     entity_index: i32,
     engine_serial: i32,
+    first_sub_id: u64,
 }
 
 struct RemovedEntry {
@@ -111,16 +112,38 @@ impl HookStore {
                 entity_id,
                 entity_index,
                 engine_serial,
+                first_sub_id: sub_id,
             });
         }
     }
 
     fn snapshot(&self, entity_id: u64, kind: &str) -> Vec<(String, u64, v8::Global<v8::Function>)> {
+        self.snapshot_with_visitor(entity_id, kind, || {})
+    }
+
+    fn snapshot_with_visitor(
+        &self,
+        entity_id: u64,
+        kind: &str,
+        mut visited: impl FnMut(),
+    ) -> Vec<(String, u64, v8::Global<v8::Function>)> {
         self.buckets.get(&entity_id).and_then(|kinds| kinds.get(kind)).map(|bucket| {
             bucket.entries.iter().map(|entry| {
+                visited();
                 (entry.owner.clone(), entry.generation, entry.handler.clone())
             }).collect()
         }).unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    fn snapshot_with_visit_count(
+        &self,
+        entity_id: u64,
+        kind: &str,
+    ) -> (Vec<(String, u64, v8::Global<v8::Function>)>, usize) {
+        let mut visited = 0;
+        let snapshot = self.snapshot_with_visitor(entity_id, kind, || visited += 1);
+        (snapshot, visited)
     }
 
     fn find_sub_id(&self, entity_id: u64, kind: &str, mut matches: impl FnMut(&Entry) -> bool) -> Option<u64> {
@@ -130,11 +153,22 @@ impl HookStore {
 
     fn remove_sub(&mut self, sub_id: u64) -> Option<RemovedEntry> {
         let (entity_id, kind) = self.by_sub.remove(&sub_id)?;
-        let (owner, entity_index, engine_serial, bucket_emptied) = {
+        let (owner, entity_index, engine_serial, bucket_emptied, new_first_sub_id) = {
             let bucket = self.buckets.get_mut(&entity_id)?.get_mut(&kind)?;
             let position = bucket.entries.iter().position(|entry| entry.sub_id == sub_id)?;
             let entry = bucket.entries.remove(position);
-            (entry.owner, bucket.entity_index, bucket.engine_serial, bucket.entries.is_empty())
+            let new_first_sub_id = if position == 0 {
+                bucket.entries.first().map(|entry| entry.sub_id)
+            } else {
+                None
+            };
+            (
+                entry.owner,
+                bucket.entity_index,
+                bucket.engine_serial,
+                bucket.entries.is_empty(),
+                new_first_sub_id,
+            )
         };
         Self::remove_reverse_id(&mut self.by_owner, &owner, sub_id);
         Self::remove_reverse_id(&mut self.by_entity, &entity_id, sub_id);
@@ -150,6 +184,15 @@ impl HookStore {
             if let Some(entities) = self.kind_entities.get_mut(&kind) {
                 entities.retain(|address| address.entity_id != entity_id);
                 if entities.is_empty() { self.kind_entities.remove(&kind); }
+            }
+        } else if let Some(first_sub_id) = new_first_sub_id {
+            if let Some(entities) = self.kind_entities.get_mut(&kind) {
+                if let Some(position) = entities.iter().position(|address| address.entity_id == entity_id) {
+                    let mut address = entities.remove(position);
+                    address.first_sub_id = first_sub_id;
+                    let new_position = entities.partition_point(|other| other.first_sub_id < first_sub_id);
+                    entities.insert(new_position, address);
+                }
             }
         }
         Some(RemovedEntry { entity_id, entity_index, engine_serial, kind, bucket_emptied })
@@ -173,9 +216,25 @@ impl HookStore {
         self.kind_counts.get(kind).copied().unwrap_or(0) != 0
     }
     fn kind_entities(&self, kind: &str) -> Vec<(i32, i32)> {
+        self.kind_entities_with_visitor(kind, || {})
+    }
+    fn kind_entities_with_visitor(
+        &self,
+        kind: &str,
+        mut visited: impl FnMut(),
+    ) -> Vec<(i32, i32)> {
         self.kind_entities.get(kind).map(|entities| {
-            entities.iter().map(|address| (address.entity_index, address.engine_serial)).collect()
+            entities.iter().map(|address| {
+                visited();
+                (address.entity_index, address.engine_serial)
+            }).collect()
         }).unwrap_or_default()
+    }
+    #[cfg(test)]
+    fn kind_entities_with_visit_count(&self, kind: &str) -> (Vec<(i32, i32)>, usize) {
+        let mut visited = 0;
+        let entities = self.kind_entities_with_visitor(kind, || visited += 1);
+        (entities, visited)
     }
 
     fn vp_entities_in_registration_order(&self) -> Vec<(i32, i32)> {
@@ -345,9 +404,7 @@ pub(crate) fn snapshot_kind_with_work(
     entity_id: u64,
     kind: &str,
 ) -> (Vec<(String, u64, v8::Global<v8::Function>)>, usize) {
-    let snapshot = snapshot_kind(entity_id, kind);
-    let examined = snapshot.len();
-    (snapshot, examined)
+    HOOKS.with(|hooks| hooks.borrow().snapshot_with_visit_count(entity_id, kind))
 }
 
 pub(crate) fn kind_active(kind: &str) -> bool {
@@ -361,9 +418,7 @@ pub(crate) fn snapshot_kind_entities(kind: &str) -> Vec<(i32, i32)> {
 
 #[cfg(test)]
 pub(crate) fn snapshot_kind_entities_with_work(kind: &str) -> (Vec<(i32, i32)>, usize) {
-    let entities = snapshot_kind_entities(kind);
-    let examined = entities.len();
-    (entities, examined)
+    HOOKS.with(|hooks| hooks.borrow().kind_entities_with_visit_count(kind))
 }
 
 /// Drop every hook on this host id (entity destroy). SH_REMOVE leftover VP hooks via `vp_drop`.
@@ -967,9 +1022,12 @@ mod tests {
         }
         let target_id = crate::entity_live::on_created(101, 101);
         assert_eq!(eval_in_context_string("p", &hook_js(101, target_id, "")), "true");
-        let (snapshot, examined) = snapshot_kind_with_work(target_id, KIND_ON_TAKE_DAMAGE);
+        let (snapshot, visited) = snapshot_kind_with_work(target_id, KIND_ON_TAKE_DAMAGE);
         assert_eq!(snapshot.len(), 1);
-        assert_eq!(examined, 1, "lookup work must depend on addressed subscribers, not 100 unrelated hooks");
+        assert_eq!(
+            visited, 1,
+            "shared lookup path must visit only the addressed subscriber, not 100 unrelated hooks"
+        );
         shutdown();
     }
 
@@ -1031,18 +1089,20 @@ mod tests {
     fn sdkhook_stale_owner_generation_is_disabled() {
         let _ = init(dummy_logger());
         let id = seed(5, 1);
-        set_engine_ops(Some(ops_with_victim()));
+        *DMG_WRITE_REC.lock().unwrap() = None;
+        set_engine_ops(Some(S2EngineOps {
+            damage_write_float: Some(rec_damage_write_float),
+            ..ops_with_victim()
+        }));
         create_plugin_context("p");
-        eval_in_context("p", "globalThis.__old=0;").unwrap();
-        eval_in_context_string("p", &hook_js(5, id, "globalThis.__old++;"));
+        eval_in_context_string("p", &hook_js(5, id, "__s2_damage_write_float(777, 9);"));
 
         create_plugin_context("p"); // same owner, new generation; old row deliberately remains
-        eval_in_context("p", "globalThis.__new=0;").unwrap();
         dispatch_damage();
         assert_eq!(
-            eval_in_context_string("p", "String(globalThis.__new)"),
-            "0",
-            "the stale-generation handler must be skipped before entering the replacement context"
+            *DMG_WRITE_REC.lock().unwrap(),
+            None,
+            "the stale-generation handler must not reach its observable native side effect"
         );
         shutdown();
     }
