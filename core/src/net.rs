@@ -102,6 +102,24 @@ fn control(rx: &tokio::sync::watch::Receiver<Control>) -> Control {
     *rx.borrow()
 }
 
+enum Fair<L, R> {
+    Left(L),
+    Right(R),
+}
+
+async fn fair_pair<A, B>(left: A, right: B) -> Fair<A::Output, B::Output>
+where
+    A: std::future::Future,
+    B: std::future::Future,
+{
+    tokio::pin!(left);
+    tokio::pin!(right);
+    tokio::select! {
+        value = &mut left => Fair::Left(value),
+        value = &mut right => Fair::Right(value),
+    }
+}
+
 async fn await_connect<F, T, E>(
     attempt: F,
     control_rx: &mut tokio::sync::watch::Receiver<Control>,
@@ -159,22 +177,51 @@ where
 
     let mut buf = vec![0; READ_CAP];
     loop {
-        tokio::select! { biased;
-            changed = control_rx.changed() => {
+        enum Ready {
+            Control(Result<(), tokio::sync::watch::error::RecvError>),
+            Read(std::io::Result<usize>),
+            Command(Option<NetCommand>),
+        }
+        let ready = {
+            let io = async {
+                match fair_pair(rd.read(&mut buf), data_rx.recv()).await {
+                    Fair::Left(result) => Ready::Read(result),
+                    Fair::Right(command) => Ready::Command(command),
+                }
+            };
+            tokio::pin!(io);
+            tokio::select! { biased;
+                changed = control_rx.changed() => Ready::Control(changed),
+                ready = &mut io => ready,
+            }
+        };
+        match ready {
+            Ready::Control(changed) => {
                 if changed.is_err() || control(&control_rx) == Control::Shutdown {
                     return None;
                 }
                 let deadline = tokio::time::Instant::now() + deadlines.close_grace;
                 return graceful(&mut wr, &mut data_rx, control_rx, deadline)
                     .await
-                    .map(|result| NetTerminal { error: result.err() });
+                    .map(|result| NetTerminal {
+                        error: result.err(),
+                    });
             }
-            result = rd.read(&mut buf) => match result {
+            Ready::Read(result) => match result {
                 Ok(0) => return Some(NetTerminal { error: None }),
-                Ok(n) => { let _ = sig_tx.send(NetSignal { conn_id: id, kind: NetSignalKind::Data(buf[..n].to_vec()) }); }
-                Err(e) => return Some(NetTerminal { error: Some(e.to_string()) }),
+                Ok(n) => {
+                    let _ = sig_tx.send(NetSignal {
+                        conn_id: id,
+                        kind: NetSignalKind::Data(buf[..n].to_vec()),
+                    });
+                }
+                Err(e) => {
+                    return Some(NetTerminal {
+                        error: Some(e.to_string()),
+                    })
+                }
             },
-            command = data_rx.recv() => match command {
+            Ready::Command(command) => match command {
                 Some(NetCommand::Send(bytes)) => {
                     let write = wr.write_all(&bytes);
                     tokio::pin!(write);
@@ -207,7 +254,7 @@ where
                 }
                 Some(NetCommand::SendTo(..)) => {}
                 None => return None,
-            }
+            },
         }
     }
 }
@@ -255,17 +302,31 @@ fn connect_tcp_with_deadlines(
     generation: u64,
     d: SocketDeadlines,
 ) {
+    spawn_tcp_attempt(
+        id,
+        owner,
+        generation,
+        d,
+        tokio::net::TcpStream::connect((host, port)),
+    );
+}
+
+fn spawn_tcp_attempt<F, S, E>(
+    id: u64,
+    owner: String,
+    generation: u64,
+    d: SocketDeadlines,
+    attempt: F,
+) where
+    F: std::future::Future<Output = Result<S, E>> + Send + 'static,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
     let (rx, mut crx) = insert_conn(id, owner, generation);
     let tx = engine().sig_tx.clone();
     crate::http::spawn(async move {
         let _g = WorkerGuard::new();
-        let stream = match await_connect(
-            tokio::net::TcpStream::connect((host.as_str(), port)),
-            &mut crx,
-            d.connect,
-        )
-        .await
-        {
+        let stream = match await_connect(attempt, &mut crx, d.connect).await {
             Some(Ok(stream)) => stream,
             Some(Err(error)) => {
                 let _ = tx.send(NetSignal {
@@ -283,7 +344,7 @@ fn connect_tcp_with_deadlines(
             conn_id: id,
             kind: NetSignalKind::Connected,
         });
-        let (rd, wr) = stream.into_split();
+        let (rd, wr) = tokio::io::split(stream);
         let terminal = run_tcp_connected(id, rd, wr, rx, &mut crx, tx.clone(), d).await;
         if let Some(terminal) = terminal.filter(|_| control(&crx) != Control::Shutdown) {
             let _ = tx.send(NetSignal {
@@ -317,9 +378,29 @@ fn bind_udp_with_deadlines(id: u64, owner: String, generation: u64, d: SocketDea
         });
         let mut buf = vec![0; READ_CAP];
         let terminal = loop {
-            tokio::select! { biased;
-                changed = crx.changed() => {
-                    if changed.is_err() || control(&crx) == Control::Shutdown { return; }
+            enum Ready {
+                Control(Result<(), tokio::sync::watch::error::RecvError>),
+                Receive(std::io::Result<(usize, std::net::SocketAddr)>),
+                Command(Option<NetCommand>),
+            }
+            let ready = {
+                let io = async {
+                    match fair_pair(sock.recv_from(&mut buf), rx.recv()).await {
+                        Fair::Left(result) => Ready::Receive(result),
+                        Fair::Right(command) => Ready::Command(command),
+                    }
+                };
+                tokio::pin!(io);
+                tokio::select! { biased;
+                    changed = crx.changed() => Ready::Control(changed),
+                    ready = &mut io => ready,
+                }
+            };
+            match ready {
+                Ready::Control(changed) => {
+                    if changed.is_err() || control(&crx) == Control::Shutdown {
+                        return;
+                    }
                     let deadline = tokio::time::Instant::now() + d.close_grace;
                     let drain = tokio::time::timeout_at(deadline, async {
                         while let Ok(NetCommand::SendTo(host, port, bytes)) = rx.try_recv() {
@@ -332,17 +413,31 @@ fn bind_udp_with_deadlines(id: u64, owner: String, generation: u64, d: SocketDea
                         _ = crx.changed() => return,
                         result = &mut drain => result,
                     };
-                    break NetTerminal { error: match result {
-                        Ok(Ok(())) => None,
-                        Ok(Err(error)) => Some(error.to_string()),
-                        Err(_) => Some("graceful close deadline exceeded".into()),
-                    }};
+                    break NetTerminal {
+                        error: match result {
+                            Ok(Ok(())) => None,
+                            Ok(Err(error)) => Some(error.to_string()),
+                            Err(_) => Some("graceful close deadline exceeded".into()),
+                        },
+                    };
                 }
-                result = sock.recv_from(&mut buf) => match result {
-                    Ok((n, from)) => { let _ = tx.send(NetSignal { conn_id: id, kind: NetSignalKind::Datagram { from: from.to_string(), data: buf[..n].to_vec() } }); }
-                    Err(error) => break NetTerminal { error: Some(error.to_string()) },
+                Ready::Receive(result) => match result {
+                    Ok((n, from)) => {
+                        let _ = tx.send(NetSignal {
+                            conn_id: id,
+                            kind: NetSignalKind::Datagram {
+                                from: from.to_string(),
+                                data: buf[..n].to_vec(),
+                            },
+                        });
+                    }
+                    Err(error) => {
+                        break NetTerminal {
+                            error: Some(error.to_string()),
+                        }
+                    }
                 },
-                command = rx.recv() => match command {
+                Ready::Command(command) => match command {
                     Some(NetCommand::SendTo(host, port, bytes)) => {
                         let send = sock.send_to(&bytes, (host.as_str(), port));
                         tokio::pin!(send);
@@ -386,7 +481,7 @@ fn bind_udp_with_deadlines(id: u64, owner: String, generation: u64, d: SocketDea
                     }
                     Some(NetCommand::Send(_)) => {}
                     None => return,
-                }
+                },
             }
         };
         if control(&crx) != Control::Shutdown {
@@ -445,6 +540,73 @@ pub fn drop_conn(id: u64) {
 }
 pub fn try_recv_signal() -> Option<NetSignal> {
     engine().sig_rx.lock().ok()?.try_recv().ok()
+}
+#[cfg(test)]
+pub(crate) fn test_insert_conn(conn_id: u64, owner: String, generation: u64) {
+    let _ = insert_conn(conn_id, owner, generation);
+}
+#[cfg(test)]
+pub(crate) fn test_inject_batch(conn_id: u64, data: &[u8], error: &str) {
+    let tx = &engine().sig_tx;
+    let _ = tx.send(NetSignal {
+        conn_id,
+        kind: NetSignalKind::Connected,
+    });
+    let _ = tx.send(NetSignal {
+        conn_id,
+        kind: NetSignalKind::Data(data.to_vec()),
+    });
+    let terminal = NetTerminal {
+        error: Some(error.into()),
+    };
+    let _ = tx.send(NetSignal {
+        conn_id,
+        kind: NetSignalKind::Terminal(terminal.clone()),
+    });
+    let _ = tx.send(NetSignal {
+        conn_id,
+        kind: NetSignalKind::Terminal(terminal),
+    });
+}
+#[cfg(test)]
+pub(crate) fn test_spawn_terminal_worker(conn_id: u64, owner: String, generation: u64) {
+    let (stream, peer) = tokio::io::duplex(8);
+    drop(peer);
+    spawn_tcp_attempt(
+        conn_id,
+        owner,
+        generation,
+        SocketDeadlines::default(),
+        std::future::ready(Ok::<_, std::io::Error>(stream)),
+    );
+}
+#[cfg(test)]
+pub(crate) fn test_spawn_failed_worker(conn_id: u64, owner: String, generation: u64) {
+    let (stream, peer) = tokio::io::duplex(8);
+    drop(stream);
+    drop(peer);
+    spawn_tcp_attempt(
+        conn_id,
+        owner,
+        generation,
+        SocketDeadlines::default(),
+        std::future::ready(Err::<tokio::io::DuplexStream, _>(std::io::Error::other(
+            "stress connect failure",
+        ))),
+    );
+}
+#[cfg(test)]
+pub(crate) fn test_pending_count() -> usize {
+    NET_EVENT_PENDING.with(|q| q.borrow().len())
+}
+#[cfg(test)]
+pub(crate) fn test_mux_count(conn_id: u64) -> usize {
+    NET_EVENT_MUX.with(|m| {
+        ["data", "message", "error", "close"]
+            .iter()
+            .map(|event| m.borrow().snapshot(&format!("{conn_id}:{event}")).len())
+            .sum()
+    })
 }
 #[cfg(test)]
 pub(crate) fn active_conn_count() -> usize {
@@ -824,6 +986,37 @@ mod tests {
         }
     }
 
+    struct FloodReader(Arc<AtomicUsize>);
+    impl AsyncRead for FloodReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            buf.put_slice(&[b'x']);
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    struct RecordingWriter(Arc<AtomicUsize>);
+    impl AsyncWrite for RecordingWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            self.0.fetch_add(buf.len(), Ordering::SeqCst);
+            Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
     struct FailingWriter;
     impl AsyncWrite for FailingWriter {
         fn poll_write(
@@ -999,6 +1192,78 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(signal_rx.try_recv().is_err(), "owner shutdown is silent");
+    }
+    #[test]
+    fn continuous_tcp_reads_do_not_starve_a_queued_write_or_shutdown() {
+        crate::http::init();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let bytes = Arc::new(AtomicUsize::new(0));
+        let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
+        let (signal_tx, _) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        data_tx
+            .send(NetCommand::Send(b"progress".to_vec()))
+            .unwrap();
+        let worker_reads = reads.clone();
+        let worker_bytes = bytes.clone();
+        crate::http::spawn(async move {
+            done_tx
+                .send(
+                    run_tcp_connected(
+                        8814,
+                        FloodReader(worker_reads),
+                        RecordingWriter(worker_bytes),
+                        data_rx,
+                        &mut control_rx,
+                        signal_tx,
+                        SocketDeadlines::default(),
+                    )
+                    .await,
+                )
+                .unwrap();
+        });
+        for _ in 0..200 {
+            if bytes.load(Ordering::SeqCst) == 8 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            bytes.load(Ordering::SeqCst),
+            8,
+            "ready reads starved the write"
+        );
+        assert!(
+            reads.load(Ordering::SeqCst) > 0,
+            "probe did not keep reads ready"
+        );
+        publish_control(&control_tx, Control::Shutdown);
+        assert!(done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .is_none());
+    }
+    #[test]
+    fn fair_io_primitive_used_by_tcp_and_udp_selects_both_ready_sides() {
+        crate::http::init();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        crate::http::spawn(async move {
+            let mut left = 0;
+            let mut right = 0;
+            for _ in 0..10_000 {
+                match fair_pair(std::future::ready(()), std::future::ready(())).await {
+                    Fair::Left(()) => left += 1,
+                    Fair::Right(()) => right += 1,
+                }
+            }
+            done_tx.send((left, right)).unwrap();
+        });
+        let (left, right) = done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(
+            left > 0 && right > 0,
+            "fair selector starved one side: {left}/{right}"
+        );
     }
     #[test]
     fn pending_tcp_write_obeys_one_grace_deadline() {
@@ -1228,7 +1493,7 @@ mod tests {
         assert!(NET_EVENT_PENDING.with(|q| q.borrow().iter().all(|e| e.0 != 8802)));
     }
     #[test]
-    fn a_thousand_terminal_and_failure_cycles_leave_no_socket_state() {
+    fn a_thousand_adapter_transitions_leave_no_socket_state() {
         let workers = active_worker_count();
         for i in 0..1000u64 {
             let id = 90_000 + i;

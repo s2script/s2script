@@ -102,6 +102,29 @@ fn control(rx: &tokio::sync::watch::Receiver<Control>) -> Control {
     *rx.borrow()
 }
 
+fn insert_conn(
+    conn_id: u64,
+    owner: String,
+    owner_generation: u64,
+) -> (
+    tokio::sync::mpsc::UnboundedReceiver<WsCommand>,
+    tokio::sync::watch::Receiver<Control>,
+) {
+    let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (control_tx, control_rx) = tokio::sync::watch::channel(Control::Open);
+    engine().conns.lock().unwrap().insert(
+        conn_id,
+        Conn {
+            data_tx,
+            control_tx,
+            phase: ConnPhase::Connecting,
+            owner,
+            owner_generation,
+        },
+    );
+    (data_rx, control_rx)
+}
+
 const RESERVED_HEADERS: &[&str] = &[
     "host",
     "connection",
@@ -188,8 +211,26 @@ where
     W::Error: std::fmt::Display,
 {
     loop {
-        tokio::select! { biased;
-            changed = control_rx.changed() => {
+        enum Ready<E> {
+            Control(Result<(), tokio::sync::watch::error::RecvError>),
+            Incoming(Option<Result<Message, E>>),
+            Command(Option<WsCommand>),
+        }
+        let ready = {
+            let io = async {
+                tokio::select! {
+                    incoming = read.next() => Ready::Incoming(incoming),
+                    command = data_rx.recv() => Ready::Command(command),
+                }
+            };
+            tokio::pin!(io);
+            tokio::select! { biased;
+                changed = control_rx.changed() => Ready::Control(changed),
+                ready = &mut io => ready,
+            }
+        };
+        match ready {
+            Ready::Control(changed) => {
                 if changed.is_err() || control(&control_rx) == Control::Shutdown {
                     return None;
                 }
@@ -198,30 +239,53 @@ where
                     return graceful_ws(&mut write, &mut data_rx, control_rx, deadline)
                         .await
                         .map(|result| match result {
-                            Ok(()) => WsTerminal { error: None, code: 1000, reason: String::new() },
-                            Err(error) => WsTerminal { error: Some(error), code: 1006, reason: "connection error".into() },
+                            Ok(()) => WsTerminal {
+                                error: None,
+                                code: 1000,
+                                reason: String::new(),
+                            },
+                            Err(error) => WsTerminal {
+                                error: Some(error),
+                                code: 1006,
+                                reason: "connection error".into(),
+                            },
                         });
                 }
             }
-            incoming = read.next() => match incoming {
+            Ready::Incoming(incoming) => match incoming {
                 Some(Ok(Message::Text(text))) => {
-                    let _ = sig_tx.send(WsSignal { conn_id, kind: WsSignalKind::Message(text.to_string()) });
+                    let _ = sig_tx.send(WsSignal {
+                        conn_id,
+                        kind: WsSignalKind::Message(text.to_string()),
+                    });
                 }
                 Some(Ok(Message::Close(frame))) => {
                     let (code, reason) = frame
                         .map(|frame| (u16::from(frame.code), frame.reason.to_string()))
                         .unwrap_or((1005, String::new()));
-                    return Some(WsTerminal { error: None, code, reason });
+                    return Some(WsTerminal {
+                        error: None,
+                        code,
+                        reason,
+                    });
                 }
                 Some(Ok(_)) => {}
-                Some(Err(error)) => return Some(WsTerminal {
-                    error: Some(error.to_string()), code: 1006, reason: "connection error".into()
-                }),
-                None => return Some(WsTerminal {
-                    error: None, code: 1006, reason: "stream ended".into()
-                }),
+                Some(Err(error)) => {
+                    return Some(WsTerminal {
+                        error: Some(error.to_string()),
+                        code: 1006,
+                        reason: "connection error".into(),
+                    })
+                }
+                None => {
+                    return Some(WsTerminal {
+                        error: None,
+                        code: 1006,
+                        reason: "stream ended".into(),
+                    })
+                }
             },
-            command = data_rx.recv() => match command {
+            Ready::Command(command) => match command {
                 Some(WsCommand::Send(text)) => {
                     let send = write.send(Message::text(text));
                     tokio::pin!(send);
@@ -265,8 +329,51 @@ where
                     }
                 }
                 None => return None,
-            }
+            },
         }
+    }
+}
+
+fn emit_connect_failed(sig_tx: &Sender<WsSignal>, conn_id: u64, error: impl Into<String>) {
+    let _ = sig_tx.send(WsSignal {
+        conn_id,
+        kind: WsSignalKind::ConnectFailed(error.into()),
+    });
+}
+
+async fn finish_connected_worker<R, W, E>(
+    conn_id: u64,
+    read: R,
+    write: W,
+    data_rx: tokio::sync::mpsc::UnboundedReceiver<WsCommand>,
+    control_rx: &mut tokio::sync::watch::Receiver<Control>,
+    sig_tx: &Sender<WsSignal>,
+    deadlines: SocketDeadlines,
+) where
+    R: Stream<Item = Result<Message, E>> + Unpin,
+    W: Sink<Message> + Unpin,
+    E: std::fmt::Display,
+    W::Error: std::fmt::Display,
+{
+    let _ = sig_tx.send(WsSignal {
+        conn_id,
+        kind: WsSignalKind::Connected,
+    });
+    let terminal = run_ws_connected(
+        conn_id,
+        read,
+        write,
+        data_rx,
+        control_rx,
+        sig_tx.clone(),
+        deadlines,
+    )
+    .await;
+    if let Some(terminal) = terminal.filter(|_| control(control_rx) != Control::Shutdown) {
+        let _ = sig_tx.send(WsSignal {
+            conn_id,
+            kind: WsSignalKind::Terminal(terminal),
+        });
     }
 }
 
@@ -298,29 +405,14 @@ fn connect_with_deadlines(
     headers: Vec<(String, String)>,
     deadlines: SocketDeadlines,
 ) {
-    let e = engine();
-    let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
-    e.conns.lock().unwrap().insert(
-        conn_id,
-        Conn {
-            data_tx,
-            control_tx,
-            phase: ConnPhase::Connecting,
-            owner,
-            owner_generation,
-        },
-    );
-    let sig_tx = e.sig_tx.clone();
+    let (data_rx, mut control_rx) = insert_conn(conn_id, owner, owner_generation);
+    let sig_tx = engine().sig_tx.clone();
     crate::http::spawn(async move {
         let _guard = WorkerGuard::new();
         let request = match build_request(&url, &headers) {
             Ok(v) => v,
             Err(e) => {
-                let _ = sig_tx.send(WsSignal {
-                    conn_id,
-                    kind: WsSignalKind::ConnectFailed(e),
-                });
+                emit_connect_failed(&sig_tx, conn_id, e);
                 return;
             }
         };
@@ -329,32 +421,22 @@ fn connect_with_deadlines(
         tokio::pin!(attempt);
         let stream = tokio::select! {biased;
          _=control_rx.changed()=>return,
-         r=&mut attempt=>match r { Ok(Ok((s,_)))=>s, Ok(Err(e))=>{let _=sig_tx.send(WsSignal{conn_id,kind:WsSignalKind::ConnectFailed(e.to_string())});return;}, Err(_)=>{let _=sig_tx.send(WsSignal{conn_id,kind:WsSignalKind::ConnectFailed(format!("handshake did not complete within {}ms",deadlines.connect.as_millis()))});return;} }
+         r=&mut attempt=>match r { Ok(Ok((s,_)))=>s, Ok(Err(e))=>{emit_connect_failed(&sig_tx,conn_id,e.to_string());return;}, Err(_)=>{emit_connect_failed(&sig_tx,conn_id,format!("handshake did not complete within {}ms",deadlines.connect.as_millis()));return;} }
         };
         if control(&control_rx) == Control::Shutdown {
             return;
         }
-        let _ = sig_tx.send(WsSignal {
-            conn_id,
-            kind: WsSignalKind::Connected,
-        });
         let (write, read) = stream.split();
-        let terminal = run_ws_connected(
+        finish_connected_worker(
             conn_id,
             read,
             write,
             data_rx,
             &mut control_rx,
-            sig_tx.clone(),
+            &sig_tx,
             deadlines,
         )
         .await;
-        if let Some(terminal) = terminal.filter(|_| control(&control_rx) != Control::Shutdown) {
-            let _ = sig_tx.send(WsSignal {
-                conn_id,
-                kind: WsSignalKind::Terminal(terminal),
-            });
-        }
     });
 }
 
@@ -402,6 +484,78 @@ pub fn drop_conn(conn_id: u64) {
 }
 pub fn try_recv_signal() -> Option<WsSignal> {
     engine().sig_rx.lock().ok()?.try_recv().ok()
+}
+#[cfg(test)]
+pub(crate) fn test_insert_conn(conn_id: u64, owner: String, generation: u64) {
+    let _ = insert_conn(conn_id, owner, generation);
+}
+#[cfg(test)]
+pub(crate) fn test_inject_batch(conn_id: u64, message: &str, error: &str) {
+    let tx = &engine().sig_tx;
+    let _ = tx.send(WsSignal {
+        conn_id,
+        kind: WsSignalKind::Connected,
+    });
+    let _ = tx.send(WsSignal {
+        conn_id,
+        kind: WsSignalKind::Message(message.into()),
+    });
+    let terminal = WsTerminal {
+        error: Some(error.into()),
+        code: 1006,
+        reason: "connection error".into(),
+    };
+    let _ = tx.send(WsSignal {
+        conn_id,
+        kind: WsSignalKind::Terminal(terminal.clone()),
+    });
+    let _ = tx.send(WsSignal {
+        conn_id,
+        kind: WsSignalKind::Terminal(terminal),
+    });
+}
+#[cfg(test)]
+pub(crate) fn test_spawn_terminal_worker(conn_id: u64, owner: String, generation: u64) {
+    let (data_rx, mut control_rx) = insert_conn(conn_id, owner, generation);
+    let sig_tx = engine().sig_tx.clone();
+    crate::http::spawn(async move {
+        let _guard = WorkerGuard::new();
+        finish_connected_worker(
+            conn_id,
+            futures_util::stream::iter(vec![
+                Ok::<_, std::io::Error>(Message::text("stress")),
+                Err(std::io::Error::other("stress terminal")),
+            ]),
+            futures_util::sink::drain(),
+            data_rx,
+            &mut control_rx,
+            &sig_tx,
+            SocketDeadlines::default(),
+        )
+        .await;
+    });
+}
+#[cfg(test)]
+pub(crate) fn test_spawn_failed_worker(conn_id: u64, owner: String, generation: u64) {
+    let _ = insert_conn(conn_id, owner, generation);
+    let sig_tx = engine().sig_tx.clone();
+    crate::http::spawn(async move {
+        let _guard = WorkerGuard::new();
+        emit_connect_failed(&sig_tx, conn_id, "stress connect failure");
+    });
+}
+#[cfg(test)]
+pub(crate) fn test_pending_count() -> usize {
+    WS_EVENT_PENDING.with(|q| q.borrow().len())
+}
+#[cfg(test)]
+pub(crate) fn test_mux_count(conn_id: u64) -> usize {
+    WS_EVENT_MUX.with(|m| {
+        ["message", "error", "close"]
+            .iter()
+            .map(|event| m.borrow().snapshot(&format!("{conn_id}:{event}")).len())
+            .sum()
+    })
 }
 #[cfg(test)]
 pub(crate) fn active_conn_count() -> usize {
@@ -749,6 +903,44 @@ mod tests {
             Poll::Ready(Ok(()))
         }
     }
+
+    struct FloodStream(Arc<AtomicUsize>);
+    impl Stream for FloodStream {
+        type Item = Result<Message, std::io::Error>;
+        fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Poll::Ready(Some(Ok(Message::text("inbound"))))
+        }
+    }
+
+    struct RecordingSink(Arc<AtomicUsize>);
+    impl Sink<Message> for RecordingSink {
+        type Error = std::io::Error;
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            if let Message::Text(text) = item {
+                self.0.fetch_add(text.len(), Ordering::SeqCst);
+            }
+            Ok(())
+        }
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
     // Uses a local echo server on the http runtime. Requires http::init() for the shared runtime.
     fn echo_server_port() -> u16 {
         crate::http::init();
@@ -919,6 +1111,55 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(signal_rx.try_recv().is_err(), "owner shutdown is silent");
+    }
+    #[test]
+    fn continuous_ws_messages_do_not_starve_a_queued_send_or_shutdown() {
+        crate::http::init();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let bytes = Arc::new(AtomicUsize::new(0));
+        let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
+        let (signal_tx, _) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        data_tx.send(WsCommand::Send("progress".into())).unwrap();
+        let worker_reads = reads.clone();
+        let worker_bytes = bytes.clone();
+        crate::http::spawn(async move {
+            done_tx
+                .send(
+                    run_ws_connected(
+                        7714,
+                        FloodStream(worker_reads),
+                        RecordingSink(worker_bytes),
+                        data_rx,
+                        &mut control_rx,
+                        signal_tx,
+                        SocketDeadlines::default(),
+                    )
+                    .await,
+                )
+                .unwrap();
+        });
+        for _ in 0..200 {
+            if bytes.load(Ordering::SeqCst) == 8 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            bytes.load(Ordering::SeqCst),
+            8,
+            "ready messages starved the send"
+        );
+        assert!(
+            reads.load(Ordering::SeqCst) > 0,
+            "probe did not keep messages ready"
+        );
+        publish_control(&control_tx, Control::Shutdown);
+        assert!(done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .is_none());
     }
     #[test]
     fn pending_ws_write_obeys_one_grace_deadline() {
@@ -1355,7 +1596,7 @@ mod tests {
     }
 
     #[test]
-    fn a_thousand_terminal_and_failure_cycles_leave_no_socket_state() {
+    fn a_thousand_adapter_transitions_leave_no_socket_state() {
         let workers = active_worker_count();
         for i in 0..1000u64 {
             let id = 80_000 + i;
