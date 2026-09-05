@@ -1,0 +1,11 @@
+{
+  "name": "@demo/hud-privacy-probe",
+  "version": "0.0.0",
+  "private": true,
+  "main": "src/plugin.ts",
+  "s2script": {},
+  "dependencies": {
+    "@s2script/sdk": "^0.25.0",
+    "@s2script/cs2": "^0.17.1"
+  }
+}
