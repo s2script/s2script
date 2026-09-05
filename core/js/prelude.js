@@ -396,7 +396,11 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     enumerable: true,
     configurable: true
   });
-  Menu.registerRenderer = function (name, renderer) { __s2_menu_renderers[name] = renderer; };
+  Menu.registerRenderer = function (name, renderer) {
+    var previous = __s2_menu_renderers[name];
+    __s2_menu_renderers[name] = renderer;
+    return previous; // Allows a game presenter to delegate when its surface is unavailable.
+  };
   Menu.prototype.addItem = function (info, display, opts) {
     this.items.push({ info: String(info), display: String(display), disabled: !!(opts && opts.disabled) });
   };

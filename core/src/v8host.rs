@@ -14280,6 +14280,33 @@ pub(crate) mod frame_tests {
     // unit-testable with NO chat/timers/clients dependency.
 
     #[test]
+    fn menu_renderer_can_delegate_to_the_replaced_presenter() {
+        init(dummy_logger()).unwrap();
+        let out = eval_std("menu_delegate", r#"
+            var Menu = globalThis.__s2pkg_menu.Menu;
+            var calls = [];
+            Menu.registerRenderer("delegate", {
+                open: function (s) { calls.push("open:" + s.slot); },
+                update: function () {},
+                close: function (slot) { calls.push("close:" + slot); }
+            });
+            var previous = Menu.registerRenderer("delegate", {
+                open: function (s) { previous.open(s); },
+                update: function (s) { previous.update(s); },
+                close: function (slot) { previous.close(slot); }
+            });
+            var m = new Menu("T");
+            m.style = "delegate";
+            m.addItem("one", "One");
+            m.display(3, 0);
+            m.close(3);
+            JSON.stringify(calls);
+        "#);
+        assert_eq!(out, r#"["open:3","close:3"]"#);
+        shutdown();
+    }
+
+    #[test]
     fn menu_model_pagination_pick_cursor() {
         init(dummy_logger()).unwrap();
         // Pagination: 9 items, exitButton -> page 0 shows items 1..7 as keys "1".."7",

@@ -17,6 +17,7 @@ function mount(options = {}) {
     close: (slot) => calls.push({ method: "close", slot }),
     refresh: (slot) => calls.push({ method: "refresh", slot }),
     setCursor: (slot, on) => calls.push({ method: "setCursor", slot, on }),
+    release: () => calls.push({ method: "release" }),
     forget: (slot) => calls.push({ method: "forget", slot })
   };
   const clientHandlers = { disconnect: [], active: [] };
@@ -26,6 +27,7 @@ function mount(options = {}) {
   // __s2_make_ctx building the plugin's ui namespace.
   const liveWaiters = [];
   const kit = {
+    layout: { cursor: (slot, on) => calls.push({ method: "setCursor", slot, on }) },
     modal: (s) => {
       spec = s;
       return options.claimNull ? null : claim;
@@ -39,7 +41,10 @@ function mount(options = {}) {
   };
   globalThis.__s2pkg_menu = {
     Menu: {
-      registerRenderer: (name, renderer) => { registered[name] = renderer; }
+      registerRenderer: (name, renderer) => {
+        registered[name] = renderer;
+        return name === "chat" ? { open: (s) => calls.push({ method: "chat", slot: s.slot }) } : undefined;
+      }
     },
     MenuStyle: { Chat: "chat", Center: "center" }
   };
@@ -206,10 +211,10 @@ test("immediate activation opens with the cursor and does not arm Tab", () => {
   assert.equal(mounted.arms.length, 0);
 });
 
-test("exhausted modal pool leaves Chat registered as the fallback", () => {
+test("exhausted modal pool delegates an open to the existing chat renderer", () => {
   const mounted = mount({ claimNull: true });
-  assert.deepEqual(mounted.registered, {});
-  assert.equal(globalThis.__s2pkg_menuhud, undefined);
+  mounted.registered.center.open(session());
+  assert.ok(mounted.calls.some((c) => c.method === "chat" && c.slot === 3));
 });
 
 // ── a slot outliving its player ───────────────────────────────────────────────────────────────

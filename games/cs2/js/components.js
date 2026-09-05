@@ -316,6 +316,21 @@
     // themselves (a JS-supplied tag was the literal "plugin" for every caller — useless).
     var ownerTag = "plugin";
     var liveModals = [];
+    var modalRoutes = {};
+    // Install each engine click route once, during kit initialization in the load window.
+    // Claims only replace the current JS destination; a released handle cannot keep listening.
+    for (var mi = 0; mi < MODALS; mi++) {
+      (function (index) {
+        function bind(id) {
+          hud.onClick(id, function (player) {
+            var routes = modalRoutes[index];
+            if (routes && routes[id]) routes[id](player);
+          });
+        }
+        for (var r = 0; r < ROWS; r++) bind(MODAL[index].rows[r].id);
+        for (var f = 0; f < FOOTERS; f++) bind(MODAL[index].footers[f].id);
+      })(mi);
+    }
     var calloutGen = {};
     var bannerGen = {};
     var motdOpen = {};
@@ -721,6 +736,13 @@
       var idx = claim("modal", MODALS, ownerTag);
       if (idx < 0) { log("modal pool exhausted (" + MODALS + " in use) — request ignored"); return null; }
       var ids = MODAL[idx];
+      var released = false;
+      var routes = {};
+      modalRoutes[idx] = routes;
+      // Another plugin may have painted this tree since our last claim. Its writes are absent
+      // from this context's diff cache, so a new owner must repaint even unchanged values.
+      if (typeof hud.invalidatePanelTree === "function") hud.invalidatePanelTree(ids.root);
+      function onClick(id, handler) { routes[id] = handler; }
       var pageSize = Math.min(ROWS, s.pageSize || ROWS);
       var widthCls = SHEET_WIDTH[s.width || "md"];
       var open = {};   // slot -> { page, cursor }
@@ -753,6 +775,7 @@
       var footerFns = [];   // resolved per paint, read by the click handlers below
 
       function paint(slot) {
+        if (released) return;
         var st = open[slot];
         if (!st) return;
         var all = rowsFor(slot);
@@ -817,7 +840,7 @@
 
       for (var ri = 0; ri < ROWS; ri++) {
         (function (rowIndex) {
-          hud.onClick(ids.rows[rowIndex].id, function (player) {
+          onClick(ids.rows[rowIndex].id, function (player) {
             var slot = slotOf(player);
             var st = open[slot];
             if (!st) return;
@@ -831,7 +854,7 @@
       }
       for (var fi = 0; fi < FOOTERS; fi++) {
         (function (fIndex) {
-          hud.onClick(ids.footers[fIndex].id, function (player) {
+          onClick(ids.footers[fIndex].id, function (player) {
             var slot = slotOf(player);
             if (!open[slot]) return;
             var fn = footerFns[fIndex];
@@ -842,6 +865,7 @@
 
       self = {
         open: function (slot, opts) {
+          if (released) throw new Error("hudkit: modal has been released");
           open[slot] = { page: 0, cursor: 0 };
           for (var wk in SHEET_WIDTH) {
             if (Object.prototype.hasOwnProperty.call(SHEET_WIDTH, wk) && SHEET_WIDTH[wk] !== "") {
@@ -854,9 +878,11 @@
           return self.forSlot(slot);
         },
         setCursor: function (slot, on) {
+          if (released) return;
           hud.cursor(slot, !!on);
         },
         close: function (slot) {
+          if (released) return;
           delete open[slot];
           hide(slot, ids.root);
           hud.cursor(slot, false);
@@ -912,6 +938,12 @@
           };
         },
         release: function () {
+          if (released) return;
+          for (var sl in open) {
+            if (Object.prototype.hasOwnProperty.call(open, sl)) self.close(Number(sl));
+          }
+          released = true;
+          delete modalRoutes[idx];
           releaseSlot("modal", idx);
           for (var rm = 0; rm < liveModals.length; rm++) {
             if (liveModals[rm] === self) { liveModals.splice(rm, 1); break; }
