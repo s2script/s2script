@@ -1,6 +1,6 @@
 # Slice 7: Index entity hooks
 
-**Status:** Planned; implementation has not started.
+**Status:** Implemented and independently reviewed; automated correctness and native model scaling checks pass. Actual human-viewer SetTransmit validation remains manual.
 **Branch:** `core/hardening-07-hook-index`
 **Parent / PR base:** `core/hardening-06-async-budgets`
 **Workflow:** [Full workflow and gates](../2026-09-04-runtime-hardening.md)
@@ -34,3 +34,30 @@ and entity membership are updated with the subscription store, not rebuilt per d
 - [ ] Record applicable full-gate and live-server results, with environment limitations stated.
 - [ ] Review the diff against the parent and restack descendants using recorded old tips.
 - [ ] Set status to complete only when this slice's required gates pass.
+
+## Reviewed implementation and evidence
+
+Entity/kind buckets, ordered subscriptions, reverse owner indexes, and active counts replace
+unrelated-hook scans. Dispatch still uses detached snapshots, so callback-time subscription
+changes retain the previous semantics. Entity enumeration uses the first remaining subscriber's
+order; counters measure visited entries rather than merely counting returned results.
+
+Independent review closed entity enumeration ordering and a tautological work-counter issue.
+A real stale-generation native witness fails when its owner guard is bypassed. Registration
+order, unload/removal, callback mutation, and stale identity behavior remain covered.
+
+The native **model** uses the same addressed-subscriber workload at 1, 100, and 1,000 total
+hooks. Recorded median lookup times were approximately 41/42/42 ns versus the baseline's
+42/83/375 ns. These are model data-structure timings, excluding V8, JS, SourceHook, the shim,
+and the engine; they are not end-to-end performance claims. Entity and viewer scaling
+workloads are recorded separately, and final same-workload reruns remain stack-wide.
+
+`tools/s2bench` exposes controlled hook-load, stats, and reset commands. The isolated live
+pilot registered a hook but recorded zero snapshots/callbacks with bots: headless bots do
+not provide real CheckTransmit viewer traffic. No live SetTransmit throughput or parity
+claim is made. A human viewer is still required for that manual gate. The benchmark fixture
+was reset and removed from the owned test server after the pilot.
+
+The combined reviewed hook/timer/async parent passed the full Linux native gate at
+`5e40276651ac26afa569aa35ec931e58424182f1`: 736 core tests, two separate pressure cases,
+shim and symbol checks. Final integrated engine/soak validation remains pending.
