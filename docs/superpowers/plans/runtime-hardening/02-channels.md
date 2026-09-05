@@ -1,7 +1,6 @@
 # Slice 2: Prune subscription indexes
 
-**Status:** Implementation and local verification complete; independent review, Linux/sniper, live
-CS2 validation, and descendant restacking remain pending.
+**Status:** Complete: independent review, local/Linux gates, and 1,000 live reloads passed.
 **Branch:** `core/hardening-02-channels`
 **Parent / PR base:** `core/hardening-01-ledger`
 **Workflow:** [Full workflow and gates](../2026-09-04-runtime-hardening.md)
@@ -31,9 +30,9 @@ descriptor itself has already been removed. Snapshot semantics remain unchanged.
 
 - [x] Record the regression test and its failure on the parent implementation.
 - [x] Record implementation commits and passing focused checks.
-- [ ] Record applicable full-gate and live-server results, with environment limitations stated.
-- [ ] Review the diff against the parent and restack descendants using recorded old tips.
-- [ ] Set status to complete only when this slice's required gates pass.
+- [x] Record applicable full-gate and live-server results, with environment limitations stated.
+- [x] Review the diff against the parent and restack descendants using recorded old tips.
+- [x] Set status to complete only when this slice's required gates pass.
 
 ## Local evidence
 
@@ -49,5 +48,24 @@ the reload filter passed 11/11, and the exact macOS full-core command passed 663
 baseline warnings. `make check-boundary` and `git diff --check` passed. The repository-wide formatter
 check remains red on pre-existing formatting across untouched files; no broad formatting was applied.
 
-Linux/sniper and live CS2 validation are controller-owned and pending. Independent review and
-descendant restacking are also pending, so this slice is not marked complete.
+## Controller verification
+
+- Independent Sol reviewer approved spec compliance and code quality without findings.
+- Full Linux `scripts/ci-native.sh` passed on `7ed7220`, including 663 core tests in 10.48s,
+  shim build/self-tests, and symbol checks against the actual CS2 engine installation.
+- Release build passed in the Bullseye builder with the same 10 baseline warnings. Installed core
+  SHA-256: `dd3d2569b12e396ac14c1d96081cce50ff5b22aabf515f1ead228a26f82f8b79`.
+- Isolated CS2 container `s2script-cs2-hardening`, port 27016: 100 batches of 10 antiflood reloads
+  produced exactly 1,000 acknowledgements and 1,000 `Active` transitions. All 14 base plugins
+  remained running. The captured suffix had no panic, fatal, segmentation-fault, load-error,
+  or save-error matches. This is lifecycle churn validation, not a frame-performance claim.
+- The first custom RCON harness failed: a timeout could discard a partial packet and desynchronize
+  subsequent reads. Its failed run is retained as evidence; the passing run uses the repository's
+  existing complete-packet client under a process timeout. No sanitizer or runtime check was bypassed.
+- Whole-process RSS was captured separately and is not attributed to pure core or V8 allocations;
+  retained-index regression tests supply the exact logical storage assertions.
+- Logs: `/tmp/s2script-hardening-nebula-slice2-ci-native.log` and
+  `/tmp/s2script-hardening-live-batch10-gate.log`. Detailed live artifacts are in the controller's
+  scratch `live-churn/batch-20260905T060929Z/` directory.
+- Descendants were restacked after implementation. This evidence-only update is carried forward
+  with the next reviewed slice; integrated soak and performance comparison remain final-stack gates.
