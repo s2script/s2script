@@ -1,6 +1,6 @@
 # Slice 1: Make the ledger track active resources
 
-**Status:** Implemented and locally verified; independent review and Linux/live gates pending.
+**Status:** Complete: implementation and independent review approved; local, Linux, and live gates passed.
 **Branch:** `core/hardening-01-ledger`
 **Parent / PR base:** `main`
 **Workflow:** [Full workflow and gates](../2026-09-04-runtime-hardening.md)
@@ -35,9 +35,9 @@ resource from the matching owner generation. Unload consumes surviving entries i
 
 - [x] Record the regression test and its failure on the parent implementation.
 - [x] Record implementation commits and passing focused checks.
-- [ ] Record applicable full-gate and live-server results, with environment limitations stated.
-- [ ] Review the diff against the parent and restack descendants using recorded old tips.
-- [ ] Set status to complete only when this slice's required gates pass.
+- [x] Record applicable full-gate and live-server results, with environment limitations stated.
+- [x] Review the diff against the parent and restack descendants using recorded old tips.
+- [x] Set status to complete only when this slice's required gates pass.
 
 ## Local evidence
 
@@ -57,8 +57,33 @@ resource from the matching owner generation. Unload consumes surviving entries i
   retained 100,000 rows and spent 487us snapshotting them. The active-ledger record/release loop's
   five warm-up samples were 7,272/4,794/4,247/3,815/3,750us, retained 0 rows, and snapshot in 0us.
   This scratch measurement excludes V8 and the engine and is not a live-performance claim.
-- Linux/sniper validation and the live CS2 unload/reload gate remain pending. The controller owns
-  these external gates and descendant restacking; this checklist is not marked complete.
+- Controller validation below completes the external gates. Descendants were restacked after the
+  reviewed implementation; this evidence-only update will be carried through at the next checkpoint.
 - Review round 1 regression: producer unload originally left a surviving optional consumer at two
   active rows instead of its one import. Producer removal now returns captured subscriber ownership;
   teardown drops callbacks and generation-releases those rows outside the interface-registry borrow.
+
+## Controller verification
+
+- Astra independent review approved spec compliance and code quality after the producer-unload fix.
+- Linux x86_64 on Nebula: 658 core tests passed in 10.28s; the full `scripts/ci-native.sh` run
+  independently passed all gates and 658 tests in 9.99s. The shim built and all C++ self-tests passed.
+- The unchanged Bullseye GCC 10 sanitizer runtime intermittently failed before `main` with the host's
+  address randomization, including an empty program. Running the disposable test container under
+  `setarch x86_64 -R` passed repeated controls while a deliberate use-after-free still failed correctly.
+  No project sanitizer checks were disabled. Container paths mirror the linked worktree; its Cargo
+  registry is also exposed at the legacy license generator's expected `~/.cargo/registry` path.
+- Release core built in `rust:bullseye`, requires at most GLIBC 2.30. SHA-256:
+  `50aee5010346a4cd0cd14d648c760d37c356fc1c4b2776f9b8730015e513285b`.
+  The installed isolated-server artifact matched that hash. Engine symbol checks passed against the
+  actual CS2 installation for both build and packaged shims.
+- Live isolated container `s2script-cs2-hardening`, port 27016: Metamod loaded s2script, all 14 base
+  plugins were running, clientprefs reload and reservedslots unload/load succeeded, and the synthetic
+  damage self-test remained active. The existing `s2script-hudlab` server was not modified.
+- Baseline JS gate constituent checks passed, including the Docker script gate after exposing the
+  installed Docker binary on PATH. This slice changes no JS, SDK, or plugin source.
+- Logs: `/tmp/s2script-hardening-nebula-ci-native-complete.log`,
+  `/tmp/s2script-hardening-nebula-slice1-engine-symbols.log`,
+  `/tmp/s2script-hardening-nebula-slice1-live.log`, and
+  `/tmp/s2script-hardening-nebula-slice1-reload.log`.
+- The integrated stack soak and performance comparison remain final-stack acceptance gates.

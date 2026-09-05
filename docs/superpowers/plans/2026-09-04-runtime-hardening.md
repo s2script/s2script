@@ -1,6 +1,6 @@
 # Runtime Hardening Implementation Plan
 
-> **For agentic workers:** Use superpowers:executing-plans to implement this workflow task by task. Steps use checkboxes for tracking. Execute sequentially; this document does not request subagents or scheduled execution.
+> **For agentic workers:** The user authorized implementation with subagents and model choices for speed, quality, and cost. Use superpowers:subagent-driven-development in the current session. Execute all slices with independent review; this is not a scheduled automation.
 
 **Goal:** Complete all six correctness/resource fixes and all four performance/organization improvements from the September 4 review.
 
@@ -27,7 +27,7 @@
 
 | Order | Slice | Dependency | Completion evidence | Status |
 | --- | --- | --- | --- | --- |
-| 1 | Active-resource ledger | Baseline | Retained entries return to active count | Planned |
+| 1 | Active-resource ledger | Baseline | Retained entries return to active count; native and live gates pass | Complete |
 | 2 | Subscription cleanup | 1 | Both indexes return to baseline after churn | Planned |
 | 3 | Connection-safe Client | 2 | Reused-slot actions and notifications rejected | Planned |
 | 4 | Socket terminal handling | 1 | Exactly-once cleanup under failure and cancellation | Planned |
@@ -41,6 +41,24 @@
 The sequential order also avoids overlapping edits to v8host.rs. Dependency entries describe
 technical prerequisites. The user explicitly requested a dependent Git stack. Create each branch from its listed parent,
 and rebase descendants whenever an ancestor changes. Merge from the bottom upward.
+
+## Subagent workflow and model choices
+
+Use a fresh implementer for each slice and a separate reviewer after its commit. Run one production
+implementation at a time because the lifetime adapters overlap; parallelize bounded read-only
+investigation, test-environment work, and benchmark preparation. The controller owns integration,
+external gates, and restacking. A review finding returns to the implementer, followed by scoped
+re-review before advancing.
+
+| Work | Default model | Reason |
+| --- | --- | --- |
+| Mechanical inventory, lifecycle maps, baseline harness preparation | GPT-5.6 Luna | Bounded tasks with independently checked output |
+| Focused fixes, ordinary reviews, environment diagnosis | GPT-5.6 Sol | Efficient implementation and verification |
+| Cross-layer lifetime/ABI changes, concurrency design, final audit | GPT-6 Astra | Reserve deeper reasoning for consequential boundaries |
+
+Escalate based on the code's risks or an unresolved finding, rather than using the most expensive
+model for every task. Commit each slice's tests and evidence with its implementation; the final
+review covers the whole stack, including the integrated live soak and measured performance results.
 
 ## Local Git stack
 
