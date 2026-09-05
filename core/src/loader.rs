@@ -730,8 +730,11 @@ fn drain_command_intents() {
     for (id, op) in ops {
         match op {
             PendingOp::Unload => {
-                let waiting = WAITING.with(|w| w.borrow_mut().remove(&id));
-                let waiting_retained_old = waiting.as_ref().is_some_and(|item| item.row.old_id.is_some());
+                // The detached candidate stays charged through onUnload. Pair its locator with
+                // the row so tuple drop order releases the payload before the applying guard.
+                let waiting = WAITING.with(|w| w.borrow_mut().remove(&id))
+                    .map(|item| (item, ApplyingGuard::new()));
+                let waiting_retained_old = waiting.as_ref().is_some_and(|(item, _)| item.row.old_id.is_some());
                 if let Some(path) = path_of_loaded(&id) {
                     cancel_path_work(&path);
                     if waiting.is_none() || waiting_retained_old { crate::v8host::unload_plugin(&id); }
@@ -2075,9 +2078,16 @@ mod tests {
 
     #[test]
     fn unload_of_a_same_id_waiting_reload_unloads_the_retained_old_generation() {
-        crate::v8host::init(crate::v8host::frame_tests::dummy_logger()).unwrap();
-        crate::v8host::frame_tests::load_body("waiting-unload", "", "{}");
-        let ledger = RetainedLedger::new(1, 1024);
+        shutdown_worker();
+        crate::v8host::frame_tests::LOG.lock().unwrap().clear();
+        crate::v8host::init(crate::v8host::frame_tests::logger).unwrap();
+        crate::v8host::frame_tests::load_body("waiting-unload", r#"
+            return { onUnload() {
+                console.log('WAITING_UNLOAD_METRICS:' +
+                    JSON.stringify(JSON.parse(__s2_async_stats()).loader.main));
+            } };
+        "#, "{}");
+        let ledger = RETAINED_LEDGER.with(|ledger| ledger.borrow().clone());
         let manifest: Manifest = serde_json::from_str(
             r#"{"id":"waiting-unload","version":"2","apiVersion":"2.x","pluginDependencies":{"missing":"1.x"}}"#,
         ).unwrap();
@@ -2098,8 +2108,22 @@ mod tests {
         assert!(READY_APPLY.with(|ready| ready.borrow().is_empty()));
         assert_eq!(ledger.usage(), (0, 0));
         assert!(SUPPRESSED.with(|suppressed| suppressed.borrow().contains_key(&path)));
+        let after_unload = metrics();
+        let logs = crate::v8host::frame_tests::LOG.lock().unwrap().clone();
         shutdown_worker();
         crate::v8host::shutdown();
+
+        let raw = logs.iter().find_map(|line| line.split_once("WAITING_UNLOAD_METRICS:")
+            .map(|(_, text)| text)).expect("onUnload emitted loader metrics");
+        let main: serde_json::Value = serde_json::from_str(raw).unwrap();
+        assert_eq!(main["retained"], serde_json::json!({ "items": 1, "bytes": 64 }),
+            "the payload must remain charged throughout onUnload");
+        let located: u64 = ["active", "ready", "waiting", "applying"].iter()
+            .map(|key| main[key].as_u64().unwrap()).sum();
+        assert_eq!(located, 1, "onUnload must locate its retained payload: {main}");
+        assert_eq!(main["applying"], 1);
+        assert_eq!(after_unload["main"]["retained"], serde_json::json!({ "items": 0, "bytes": 0 }));
+        assert_eq!(after_unload["main"]["applying"], 0);
     }
 
     #[test]
