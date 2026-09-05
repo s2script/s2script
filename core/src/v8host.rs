@@ -7237,6 +7237,7 @@ fn s2_async_stats(
     mut rv: v8::ReturnValue,
 ) {
     let mut stats = crate::async_limits::metrics();
+    stats["loader"] = crate::loader::metrics();
     stats["staged"] = serde_json::json!({"timers":DUE_TIMERS.with(|q|q.borrow().len()),"ws":crate::ws::pending_count(),"net":crate::net::pending_count(),"cookies":crate::cookies::pending_count(),"http":PARKED_HTTP.with(|q|usize::from(q.borrow().is_some())),"db":PARKED_DB.with(|q|usize::from(q.borrow().is_some()))});
     stats["cache"] = crate::cookies::cache_stats();
     stats["timerExamined"] = serde_json::json!(crate::async_rt::timer_examined());

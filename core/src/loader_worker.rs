@@ -143,7 +143,7 @@ impl LoaderPolicy {
         {
             return Err("loader policy: all count, byte, and time limits must be nonzero and safely sized".into());
         }
-        if self.request_items == 0 || self.result_items < self.request_items {
+        if self.result_items < self.request_items {
             return Err(
                 "loader policy: result_items must cover every request_items obligation".into(),
             );
@@ -168,9 +168,7 @@ impl LoaderPolicy {
         if self.scan_result_reservation() > self.result_bytes {
             return Err("loader policy: scan result envelope exceeds result_bytes".into());
         }
-        if self
-            .parse
-            .manifest_bytes
+        if self.parse.manifest_bytes
             .saturating_add(self.parse.plugin_js_bytes)
             .saturating_add(self.parse.gamedata_bytes)
             > self.result_bytes
@@ -452,6 +450,111 @@ struct State {
     // content can exist. Controls therefore progress independently of request/result saturation.
     config_watches: HashMap<PathBuf, ConfigWatchState>,
     config_watch_bytes: usize,
+    config_paths: usize,
+    config_bytes: usize,
+    baseline_items: usize,
+    baseline_bytes: usize,
+    proposal_items: usize,
+    proposal_bytes: usize,
+    rejected: WorkerRejections,
+    high_water: WorkerHighWater,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct WorkerRejections {
+    pub request_items: u64,
+    pub request_bytes: u64,
+    pub result_items: u64,
+    pub result_bytes: u64,
+    pub control_items: u64,
+    pub control_bytes: u64,
+    pub config_paths: u64,
+    pub config_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct WorkerHighWater {
+    pub obligations: usize,
+    pub request_bytes: usize,
+    pub result_bytes: usize,
+    pub queued: usize,
+    pub in_flight: usize,
+    pub results: usize,
+    pub control_items: usize,
+    pub control_bytes: usize,
+    pub config_paths: usize,
+    pub config_bytes: usize,
+    pub baseline_items: usize,
+    pub baseline_bytes: usize,
+    pub proposal_items: usize,
+    pub proposal_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct WorkerMetrics {
+    pub obligations_items: usize,
+    pub request_bytes: usize,
+    pub result_bytes: usize,
+    pub queued: usize,
+    pub in_flight: usize,
+    pub results: usize,
+    pub control_items: usize,
+    pub control_bytes: usize,
+    pub controls_pending: usize,
+    pub config_paths: usize,
+    pub config_bytes: usize,
+    pub baseline_items: usize,
+    pub baseline_bytes: usize,
+    pub proposal_items: usize,
+    pub proposal_bytes: usize,
+    pub rejected: WorkerRejections,
+    pub high_water: WorkerHighWater,
+}
+
+impl State {
+    fn queued(&self) -> usize { self.pending.len().saturating_add(self.rerun.len()) }
+
+    fn update_high_water(&mut self) {
+        self.high_water.obligations = self.high_water.obligations.max(self.obligations.len());
+        self.high_water.request_bytes = self.high_water.request_bytes.max(self.request_bytes);
+        self.high_water.result_bytes = self.high_water.result_bytes.max(self.reserved_result_bytes);
+        self.high_water.queued = self.high_water.queued.max(self.queued());
+        self.high_water.in_flight = self.high_water.in_flight.max(self.in_flight.len());
+        self.high_water.results = self.high_water.results.max(self.results.len());
+        self.high_water.control_items = self.high_water.control_items.max(self.config_watches.len());
+        self.high_water.control_bytes = self.high_water.control_bytes.max(self.config_watch_bytes);
+    }
+
+    fn sync_config_metrics(&mut self, config: ConfigMetrics) {
+        self.config_paths = config.config_paths;
+        self.config_bytes = config.config_bytes;
+        self.baseline_items = config.baseline_items;
+        self.baseline_bytes = config.baseline_bytes;
+        self.proposal_items = config.proposal_items;
+        self.proposal_bytes = config.proposal_bytes;
+        self.rejected.config_paths = config.rejected.config_paths;
+        self.rejected.config_bytes = config.rejected.config_bytes;
+        self.high_water.config_paths = config.high_water.config_paths;
+        self.high_water.config_bytes = config.high_water.config_bytes;
+        self.high_water.baseline_items = config.high_water.baseline_items;
+        self.high_water.baseline_bytes = config.high_water.baseline_bytes;
+        self.high_water.proposal_items = config.high_water.proposal_items;
+        self.high_water.proposal_bytes = config.high_water.proposal_bytes;
+    }
+
+    fn metrics(&self) -> WorkerMetrics {
+        WorkerMetrics {
+            obligations_items: self.obligations.len(), request_bytes: self.request_bytes,
+            result_bytes: self.reserved_result_bytes, queued: self.queued(),
+            in_flight: self.in_flight.len(), results: self.results.len(),
+            control_items: self.config_watches.len(), control_bytes: self.config_watch_bytes,
+            controls_pending: self.config_watches.values().filter(|watch| !watch.control.is_empty()).count(),
+            config_paths: self.config_paths, config_bytes: self.config_bytes,
+            baseline_items: self.baseline_items, baseline_bytes: self.baseline_bytes,
+            proposal_items: self.proposal_items, proposal_bytes: self.proposal_bytes,
+            rejected: self.rejected, high_water: self.high_water,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -501,6 +604,14 @@ impl LoaderWorker {
                 reserved_result_bytes: 0,
                 config_watches: HashMap::new(),
                 config_watch_bytes: 0,
+                config_paths: 0,
+                config_bytes: 0,
+                baseline_items: 0,
+                baseline_bytes: 0,
+                proposal_items: 0,
+                proposal_bytes: 0,
+                rejected: WorkerRejections::default(),
+                high_water: WorkerHighWater::default(),
             }),
             work: Condvar::new(),
         });
@@ -555,14 +666,18 @@ impl LoaderWorker {
         let key = request.key();
         let req_weight = request.request_weight();
         let result_weight = request.result_reservation(&self.policy);
-        if req_weight > self.policy.request_bytes || result_weight > self.policy.result_bytes {
-            return Submit::Oversized;
-        }
         let Ok(mut state) = self.shared.state.lock() else {
             return Submit::Stopped;
         };
         if state.stopped {
             return Submit::Stopped;
+        }
+        let request_bytes_rejected = req_weight > self.policy.request_bytes;
+        let result_bytes_rejected = result_weight > self.policy.result_bytes;
+        if request_bytes_rejected || result_bytes_rejected {
+            if request_bytes_rejected { state.rejected.request_bytes = state.rejected.request_bytes.saturating_add(1); }
+            if result_bytes_rejected { state.rejected.result_bytes = state.rejected.result_bytes.saturating_add(1); }
+            return Submit::Oversized;
         }
         let watch = match &request {
             Request::Config { path, watch_generation: Some(generation), .. } => {
@@ -574,14 +689,17 @@ impl LoaderWorker {
         if watch.as_ref().is_some_and(|(path, _)| {
             !state.config_watches.contains_key(path) && watch_weight > self.policy.request_bytes
         }) {
+            state.rejected.control_bytes = state.rejected.control_bytes.saturating_add(1);
             return Submit::Oversized;
         }
-        if watch.as_ref().is_some_and(|(path, _)| {
-            !state.config_watches.contains_key(path)
-                && (state.config_watches.len() >= self.policy.request_items
-                    || state.config_watch_bytes.saturating_add(watch_weight) > self.policy.request_bytes)
-        }) {
-            return Submit::Full;
+        if watch.as_ref().is_some_and(|(path, _)| !state.config_watches.contains_key(path)) {
+            let items_rejected = state.config_watches.len() >= self.policy.request_items;
+            let bytes_rejected = state.config_watch_bytes.saturating_add(watch_weight) > self.policy.request_bytes;
+            if items_rejected || bytes_rejected {
+                if items_rejected { state.rejected.control_items = state.rejected.control_items.saturating_add(1); }
+                if bytes_rejected { state.rejected.control_bytes = state.rejected.control_bytes.saturating_add(1); }
+                return Submit::Full;
+            }
         }
         if state.obligations.contains_key(&key) {
             if let Some((path, generation)) = watch {
@@ -608,14 +726,19 @@ impl LoaderWorker {
                 state.pending.insert(key.clone(), request);
                 state.order.push_back(key);
             }
+            state.update_high_water();
             self.shared.work.notify_one();
             return Submit::Coalesced;
         }
-        if state.obligations.len() >= self.policy.request_items
-            || state.request_bytes.saturating_add(req_weight) > self.policy.request_bytes
-            || state.obligations.len() >= self.policy.result_items
-            || state.reserved_result_bytes.saturating_add(result_weight) > self.policy.result_bytes
-        {
+        let request_items_rejected = state.obligations.len() >= self.policy.request_items;
+        let request_bytes_rejected = state.request_bytes.saturating_add(req_weight) > self.policy.request_bytes;
+        let result_items_rejected = state.obligations.len() >= self.policy.result_items;
+        let result_bytes_rejected = state.reserved_result_bytes.saturating_add(result_weight) > self.policy.result_bytes;
+        if request_items_rejected || request_bytes_rejected || result_items_rejected || result_bytes_rejected {
+            state.rejected.request_items = state.rejected.request_items.saturating_add(u64::from(request_items_rejected));
+            state.rejected.request_bytes = state.rejected.request_bytes.saturating_add(u64::from(request_bytes_rejected));
+            state.rejected.result_items = state.rejected.result_items.saturating_add(u64::from(result_items_rejected));
+            state.rejected.result_bytes = state.rejected.result_bytes.saturating_add(u64::from(result_bytes_rejected));
             return Submit::Full;
         }
         if let Some((path, generation)) = watch {
@@ -632,8 +755,13 @@ impl LoaderWorker {
             .insert(key.clone(), (req_weight, result_weight));
         state.pending.insert(key.clone(), request);
         state.order.push_back(key);
+        state.update_high_water();
         self.shared.work.notify_one();
         Submit::Accepted
+    }
+
+    pub(crate) fn metrics(&self) -> WorkerMetrics {
+        self.shared.state.lock().map(|state| state.metrics()).unwrap_or_default()
     }
 
     pub(crate) fn try_result(&self) -> Option<WorkerResult> {
@@ -664,6 +792,7 @@ impl LoaderWorker {
         }) {
             control.resolution = Some((generation, revision, applied));
         }
+        state.update_high_water();
         drop(state);
         self.shared.work.notify_one();
     }
@@ -681,6 +810,7 @@ impl LoaderWorker {
         control.retire_generation = Some(
             control.retire_generation.map_or(generation, |old| old.max(generation)),
         );
+        state.update_high_water();
         drop(state);
         self.shared.work.notify_one();
     }
@@ -701,6 +831,12 @@ impl LoaderWorker {
             state.reserved_result_bytes = 0;
             state.config_watches.clear();
             state.config_watch_bytes = 0;
+            state.config_paths = 0;
+            state.config_bytes = 0;
+            state.baseline_items = 0;
+            state.baseline_bytes = 0;
+            state.proposal_items = 0;
+            state.proposal_bytes = 0;
         }
         self.shared.work.notify_all();
         if let Ok(mut slot) = self.join.lock() {
@@ -756,6 +892,7 @@ fn worker_loop(shared: Arc<Shared>, policy: LoaderPolicy) {
                             }
                         }
                         state.in_flight.insert(key.clone());
+                        state.update_high_water();
                         break WorkerTurn::Request(key, request);
                     }
                 }
@@ -783,6 +920,8 @@ fn worker_loop(shared: Arc<Shared>, policy: LoaderPolicy) {
                     state.config_watch_bytes = state.config_watches.keys().fold(0usize, |bytes, path| {
                         bytes.saturating_add(config_watch_weight(path))
                     });
+                    state.sync_config_metrics(config_baselines.metrics());
+                    state.update_high_water();
                 }
                 continue;
             }
@@ -793,6 +932,7 @@ fn worker_loop(shared: Arc<Shared>, policy: LoaderPolicy) {
             Err(_) => return,
         };
         state.in_flight.remove(&key);
+        state.sync_config_metrics(config_baselines.metrics());
         if state.stopped {
             return;
         }
@@ -802,7 +942,30 @@ fn worker_loop(shared: Arc<Shared>, policy: LoaderPolicy) {
         } else {
             state.results.push_back((key, result));
         }
+        state.update_high_water();
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ConfigHighWater {
+    config_paths: usize,
+    config_bytes: usize,
+    baseline_items: usize,
+    baseline_bytes: usize,
+    proposal_items: usize,
+    proposal_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ConfigMetrics {
+    config_paths: usize,
+    config_bytes: usize,
+    baseline_items: usize,
+    baseline_bytes: usize,
+    proposal_items: usize,
+    proposal_bytes: usize,
+    rejected: WorkerRejections,
+    high_water: ConfigHighWater,
 }
 
 #[derive(Default)]
@@ -810,6 +973,8 @@ struct ConfigBaselines {
     values: HashMap<PathBuf, ConfigBaseline>,
     proposals: HashMap<PathBuf, ConfigProposal>,
     bytes: usize,
+    rejected: WorkerRejections,
+    high_water: ConfigHighWater,
 }
 
 struct ConfigBaseline {
@@ -835,6 +1000,37 @@ impl ConfigBaselines {
                 .keys()
                 .filter(|path| !self.values.contains_key(*path))
                 .count()
+    }
+
+    fn baseline_bytes(&self) -> usize {
+        self.values.iter().fold(0usize, |bytes, (path, baseline)| {
+            bytes.saturating_add(Self::entry_bytes(path, &baseline.content))
+        })
+    }
+
+    fn proposal_bytes(&self) -> usize {
+        self.proposals.iter().fold(0usize, |bytes, (path, proposal)| {
+            bytes.saturating_add(Self::entry_bytes(path, &proposal.content))
+        })
+    }
+
+    fn metrics(&self) -> ConfigMetrics {
+        ConfigMetrics {
+            config_paths: self.path_count(), config_bytes: self.bytes,
+            baseline_items: self.values.len(), baseline_bytes: self.baseline_bytes(),
+            proposal_items: self.proposals.len(), proposal_bytes: self.proposal_bytes(),
+            rejected: self.rejected, high_water: self.high_water,
+        }
+    }
+
+    fn update_high_water(&mut self) {
+        let metrics = self.metrics();
+        self.high_water.config_paths = self.high_water.config_paths.max(metrics.config_paths);
+        self.high_water.config_bytes = self.high_water.config_bytes.max(metrics.config_bytes);
+        self.high_water.baseline_items = self.high_water.baseline_items.max(metrics.baseline_items);
+        self.high_water.baseline_bytes = self.high_water.baseline_bytes.max(metrics.baseline_bytes);
+        self.high_water.proposal_items = self.high_water.proposal_items.max(metrics.proposal_items);
+        self.high_water.proposal_bytes = self.high_water.proposal_bytes.max(metrics.proposal_bytes);
     }
 
     fn drop_proposal(&mut self, path: &Path) {
@@ -876,6 +1072,12 @@ impl ConfigBaselines {
         if (new_path && self.path_count() >= policy.config_baseline_items)
             || self.bytes.saturating_add(new_bytes) > policy.config_baseline_bytes
         {
+            if new_path && self.path_count() >= policy.config_baseline_items {
+                self.rejected.config_paths = self.rejected.config_paths.saturating_add(1);
+            }
+            if self.bytes.saturating_add(new_bytes) > policy.config_baseline_bytes {
+                self.rejected.config_bytes = self.rejected.config_bytes.saturating_add(1);
+            }
             return WatchDelta::Pressure;
         }
         self.bytes = self.bytes.saturating_add(new_bytes);
@@ -884,6 +1086,7 @@ impl ConfigBaselines {
             revision,
             content: content.clone(),
         });
+        self.update_high_water();
         decision
     }
 
@@ -910,6 +1113,7 @@ impl ConfigBaselines {
             generation: proposal.generation,
             content: proposal.content,
         });
+        self.update_high_water();
     }
 
     fn retire(&mut self, path: &Path, generation: u64) {
@@ -1323,6 +1527,7 @@ mod tests {
         let mut p = LoaderPolicy::default();
         p.config_baseline_bytes = p.config_bytes * 3;
         assert!(p.validate().unwrap_err().contains("config baseline"));
+
     }
 
     #[test]
@@ -1340,6 +1545,28 @@ mod tests {
             next_result(&worker),
             WorkerResult::Plugin { revision: 2, .. }
         ));
+        worker.shutdown();
+    }
+
+    #[test]
+    fn metrics_follow_shared_obligations_and_saturation_without_double_counting() {
+        let worker = LoaderWorker::start(LoaderPolicy {
+            request_items: 1, result_items: 1, ..LoaderPolicy::default()
+        }).unwrap();
+        let first = PathBuf::from("metrics-first.s2sp");
+        assert_eq!(worker.try_prepare(1, 1, first.clone()), Submit::Accepted);
+        assert_eq!(worker.try_prepare(1, 2, first), Submit::Coalesced);
+        assert_eq!(worker.try_prepare(1, 1, PathBuf::from("metrics-second.s2sp")), Submit::Full);
+        let snapshot = worker.metrics();
+        assert_eq!(snapshot.obligations_items, 1);
+        assert!(snapshot.request_bytes > 0 && snapshot.result_bytes > 0);
+        assert_eq!(snapshot.rejected.request_items, 1);
+        assert_eq!(snapshot.rejected.result_items, 1);
+        assert_eq!(snapshot.high_water.obligations, 1);
+        assert!(snapshot.high_water.queued <= snapshot.high_water.obligations);
+        let _ = next_result(&worker);
+        let drained = worker.metrics();
+        assert_eq!((drained.obligations_items, drained.request_bytes, drained.result_bytes), (0, 0, 0));
         worker.shutdown();
     }
 
@@ -1557,6 +1784,9 @@ mod tests {
             }
             other => panic!("unexpected result: {other:?}"),
         }
+        let seed_metrics = worker.metrics();
+        assert_eq!((seed_metrics.control_items, seed_metrics.proposal_items), (1, 1));
+        assert_eq!(seed_metrics.config_bytes, seed_metrics.proposal_bytes);
         worker.resolve_config_watch(path.clone(), 1, 1, true);
         assert_eq!(
             worker.try_read_config(1, 2, path.clone(), Some(1)),
@@ -1571,6 +1801,9 @@ mod tests {
             }
             other => panic!("unexpected result: {other:?}"),
         }
+        let baseline_metrics = worker.metrics();
+        assert_eq!((baseline_metrics.baseline_items, baseline_metrics.proposal_items), (1, 0));
+        assert_eq!(baseline_metrics.config_bytes, baseline_metrics.baseline_bytes);
         std::fs::write(&path, b"beta").unwrap();
         assert_eq!(
             worker.try_read_config(1, 3, path.clone(), Some(1)),
@@ -1585,6 +1818,9 @@ mod tests {
             }
             other => panic!("unexpected result: {other:?}"),
         }
+        let change_metrics = worker.metrics();
+        assert_eq!((change_metrics.baseline_items, change_metrics.proposal_items), (1, 1));
+        assert_eq!(change_metrics.config_bytes, change_metrics.baseline_bytes + change_metrics.proposal_bytes);
 
         worker.shutdown();
         std::fs::remove_file(path).unwrap();
@@ -1646,6 +1882,10 @@ mod tests {
                 ..
             }
         ));
+        let metrics = worker.metrics();
+        assert_eq!(metrics.rejected.config_paths, 1);
+        assert_eq!(metrics.config_paths, 1);
+        assert_eq!(metrics.high_water.config_paths, 1);
         worker.shutdown();
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -2300,5 +2540,27 @@ mod retirement_regressions {
         baselines.retire(&path, 3);
         assert_eq!(baselines.bytes, 0);
         assert_eq!(baselines.path_count(), 0);
+    }
+
+    #[test]
+    fn config_metrics_report_the_shared_cap_and_retained_breakdown() {
+        let first = PathBuf::from("first.json");
+        let second = PathBuf::from("second.json");
+        let content = Some(Arc::<str>::from("alpha"));
+        let mut baselines = ConfigBaselines::default();
+        let policy = LoaderPolicy { config_baseline_items: 1, ..LoaderPolicy::default() };
+        assert_eq!(baselines.compare_and_propose(&first, 1, 1, &content, &policy), WatchDelta::Seed);
+        let proposal = baselines.metrics();
+        assert_eq!((proposal.config_paths, proposal.proposal_items), (1, 1));
+        assert_eq!(proposal.config_bytes, proposal.proposal_bytes);
+        baselines.resolve(&first, 1, 1, true);
+        let committed = baselines.metrics();
+        assert_eq!((committed.baseline_items, committed.proposal_items), (1, 0));
+        assert_eq!(committed.config_bytes, committed.baseline_bytes);
+        assert_eq!(baselines.compare_and_propose(&second, 1, 1, &content, &policy), WatchDelta::Pressure);
+        let pressured = baselines.metrics();
+        assert_eq!(pressured.rejected.config_paths, 1);
+        assert_eq!(pressured.high_water.config_paths, 1);
+        assert_eq!(pressured.high_water.config_bytes, committed.config_bytes);
     }
 }

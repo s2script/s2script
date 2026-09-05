@@ -31,6 +31,31 @@ Byte units below are binary KiB/MiB; the JSON uses integers in bytes.
 | `cookie_versions`, `cookie_bytes`, `cookie_write_bytes` | 4096, 4 MiB, 64 KiB | Existing cookie outbox: retained versions, aggregate bytes, single write |
 | `frame_items`, `frame_bytes`, `frame_poll_items`, `frame_soft_us` | 256, 2 MiB, 256, 2000 | Logical deliveries, delivered bytes, source polls, soft elapsed-time stop |
 
+The plugin/config loader is configured through the nested `loader` object. Its `parse`
+member is nested in turn; both levels accept partial overrides and reject unknown fields.
+For example, `{"loader":{"request_items":64,"parse":{"zip_entries":128}}}` changes
+only those two loader limits.
+
+| Loader fields | Defaults | Scope |
+| --- | --- | --- |
+| `request_items`, `request_bytes` | 128, 32 MiB | Worker obligations, transient request bytes, main config-consumer table, and the independent persistent watch-control partition |
+| `result_items`, `result_bytes` | 128, 64 MiB | Reserved worker result obligations and bytes |
+| `prepared_items`, `prepared_bytes` | 32, 64 MiB | Main-thread retained prepared loads across active batches, READY, and WAITING |
+| `scan_entries`, `scan_candidates` | 4096, 1024 | Examined directory entries and returned `.s2sp` candidates |
+| `path_bytes`, `archive_bytes`, `config_bytes` | 256 KiB, 32 MiB, 1 MiB | Aggregate scanned candidate-path bytes, one archive, and one raw config read used by reservations |
+| `config_baseline_items`, `config_baseline_bytes` | 128, 32 MiB | Union of watched config paths and simultaneous committed/proposed logical path+decoded-content retention |
+| `parse.zip_entries`, `parse.member_name_bytes` | 256, 64 KiB | ZIP entry count and aggregate member-name bytes |
+| `parse.manifest_bytes`, `parse.plugin_js_bytes`, `parse.gamedata_bytes` | 1 MiB, 16 MiB, 8 MiB | Parsed archive member limits |
+| `drain_items`, `drain_bytes`, `drain_micros` | 8, 16 MiB, 1000 | Separate per-Post loader result/application soft budget |
+
+Loader validation requires every field to be nonzero and safely sized, result items to
+cover request obligations, and result bytes to hold the configured scan, decoded config,
+or parsed-plugin payload limits.
+Prepared bytes must hold one maximum parsed plugin plus the worst-case decoded config.
+Config baseline bytes must hold one committed and one proposed maximum lossy-decoded
+config before actual path charges. Any invalid nested relationship invalidates
+the complete environment override, including otherwise valid top-level changes.
+
 These are starting defaults, not measured production bandwidth targets. They retain
 the baseline 10 MiB HTTP ceiling and four-connection SQL pools. The worker queues
 allow bounded bursts over the four-thread Tokio runtime; socket and owner limits
@@ -93,6 +118,35 @@ frame: null | { items, bytes, polls: number }
 timerExamined: number
 lastNs: number
 maxNs: number
+loader:
+  running: boolean
+  worker:
+    obligations: { items, requestBytes, resultBytes: number }
+    queued, inFlight, results: number
+    controls: { items, bytes, pending: number }
+    config: { paths, bytes: number }
+    baselines: { items, bytes: number }
+    proposals: { items, bytes: number }
+  main:
+    pending: { items, bytes: number }
+    active, ready, waiting, applying: number
+    retained: { items, bytes: number }
+  rejected:
+    { requestItems, requestBytes, resultItems, resultBytes,
+      controlItems, controlBytes, configPaths, configBytes,
+      pendingItems, pendingBytes, retainedItems, retainedBytes: number }
+  highWater:
+    { obligations, requestBytes, resultBytes, queued, inFlight, results,
+      controlItems, controlBytes, configPaths, configBytes,
+      baselineItems, baselineBytes, proposalItems, proposalBytes,
+      pendingItems, pendingBytes, retainedItems, retainedBytes: number }
+  limits:
+    { requestItems, requestBytes, resultItems, resultBytes,
+      preparedItems, preparedBytes, scanEntries, scanCandidates,
+      pathBytes, archiveBytes, configBytes, configBaselineItems,
+      configBaselineBytes, drainItems, drainBytes, drainMicros: number,
+      parse: { zipEntries, memberNameBytes, manifestBytes,
+               pluginJsBytes, gamedataBytes: number } }
 ```
 
 Partition gauges cover admitted producers plus queued/staged work, not just unread
@@ -102,6 +156,38 @@ early argument-validation errors are not partition rejections. Duration counters
 cover the async drain through the HOST-free callback phase. Snapshot fields are
 read separately and can change concurrently; they are diagnostic gauges, not one
 transactional process snapshot. Counters persist across isolate reinitialization.
+
+`loader.worker.obligations.items` is the single admitted worker-obligation count.
+Its request and result byte reservations remain charged until main takes the result.
+`queued` (pending requests plus coalesced reruns), `inFlight`, and `results` locate those
+same obligations and are not additional ownership to sum. Each obligation has at most
+one queued row, so `queued` cannot exceed `obligations.items`.
+
+Watch controls are a separate persistent partition capped by loader request items/bytes.
+Their `items` and `bytes` remain nonzero while config paths are watched; `pending` counts
+controls currently carrying Ack, Discard, or Retire work. `worker.config.paths` is the
+union of committed-baseline and proposal paths checked against `configBaselineItems`.
+`worker.config.bytes` is the simultaneous logical charge `baselines.bytes +
+proposals.bytes` checked against `configBaselineBytes`. The individual high-water
+breakdowns are not additive across samples; `highWater.configPaths` and
+`highWater.configBytes` record the shared partition peak.
+
+`main.pending` is the independently bounded config-consumer table, with the effective
+`requestItems`/`requestBytes` caps. `main.retained` is the exact prepared lease ownership
+across `active`, `ready`, `waiting`, and a re-entrant lifecycle `applying` call; those
+four counts only locate the leases. Rejection and high-water counters are monotonic
+saturating values for the current joined loader lifecycle. Loader shutdown joins the
+worker, drops main retained queues, and then resets its gauges and counters. A periodic
+watcher can make an individual sample busy; bounded idle checks should sample until
+obligations, queued/in-flight/results, pending controls, proposals, main pending/active/
+ready/waiting/applying, and main retained gauges are zero. Persistent controls and
+committed baselines remain charged until final unwatch.
+
+Worker and main loader fields are sampled independently without holding a lock across
+engine or V8 callbacks. They are diagnostic readings, not a transactional snapshot and
+not a whole-process RSS measurement. Logical accounting excludes allocator/container/
+thread overhead and the one bounded worker read currently inside a regular-file kernel
+operation. Joined shutdown can wait for that regular-file operation to return.
 
 These limits cover application-owned input/result/event retention, with conservative
 metadata allowances. They do not bound whole-process RSS: allocator overhead,

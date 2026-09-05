@@ -493,7 +493,22 @@ enum ConfigConsumer {
 struct PendingConfig { revision: u64, consumers: Vec<ConfigConsumer>, bytes: usize }
 
 #[derive(Clone, Copy, Default)]
-struct RetainedUsage { items: usize, bytes: usize }
+struct MainMetrics {
+    pending_rejected_items: u64,
+    pending_rejected_bytes: u64,
+    pending_high_water_items: usize,
+    pending_high_water_bytes: usize,
+}
+
+#[derive(Clone, Copy, Default)]
+struct RetainedUsage {
+    items: usize,
+    bytes: usize,
+    rejected_items: u64,
+    rejected_bytes: u64,
+    high_water_items: usize,
+    high_water_bytes: usize,
+}
 
 #[derive(Clone)]
 struct RetainedLedger {
@@ -508,13 +523,24 @@ impl RetainedLedger {
     }
 
     fn try_acquire(&self, bytes: usize) -> Option<RetainedLease> {
-        let usage = self.usage.get();
-        if usage.items >= self.max_items || usage.bytes.saturating_add(bytes) > self.max_bytes {
+        let mut usage = self.usage.get();
+        let items_rejected = usage.items >= self.max_items;
+        let bytes_rejected = usage.bytes.saturating_add(bytes) > self.max_bytes;
+        if items_rejected || bytes_rejected {
+            usage.rejected_items = usage.rejected_items.saturating_add(u64::from(items_rejected));
+            usage.rejected_bytes = usage.rejected_bytes.saturating_add(u64::from(bytes_rejected));
+            self.usage.set(usage);
             return None;
         }
-        self.usage.set(RetainedUsage { items: usage.items + 1, bytes: usage.bytes + bytes });
+        usage.items += 1;
+        usage.bytes += bytes;
+        usage.high_water_items = usage.high_water_items.max(usage.items);
+        usage.high_water_bytes = usage.high_water_bytes.max(usage.bytes);
+        self.usage.set(usage);
         Some(RetainedLease { ledger: self.clone(), bytes })
     }
+
+    fn metrics(&self) -> RetainedUsage { self.usage.get() }
 
     #[cfg(test)]
     fn usage(&self) -> (usize, usize) {
@@ -527,12 +553,15 @@ struct RetainedLease { ledger: RetainedLedger, bytes: usize }
 
 impl RetainedLease {
     fn try_grow(&mut self, bytes: usize) -> bool {
-        let usage = self.ledger.usage.get();
-        if usage.bytes.saturating_add(bytes) > self.ledger.max_bytes { return false; }
-        self.ledger.usage.set(RetainedUsage {
-            items: usage.items,
-            bytes: usage.bytes + bytes,
-        });
+        let mut usage = self.ledger.usage.get();
+        if usage.bytes.saturating_add(bytes) > self.ledger.max_bytes {
+            usage.rejected_bytes = usage.rejected_bytes.saturating_add(1);
+            self.ledger.usage.set(usage);
+            return false;
+        }
+        usage.bytes += bytes;
+        usage.high_water_bytes = usage.high_water_bytes.max(usage.bytes);
+        self.ledger.usage.set(usage);
         self.bytes += bytes;
         true
     }
@@ -544,6 +573,7 @@ impl Drop for RetainedLease {
         self.ledger.usage.set(RetainedUsage {
             items: usage.items.saturating_sub(1),
             bytes: usage.bytes.saturating_sub(self.bytes),
+            ..usage
         });
     }
 }
@@ -610,6 +640,21 @@ struct ActiveBatch {
 
 struct ApplyItem { row: PreparedLoad, allow_unmet_dependencies: bool }
 
+struct ApplyingGuard;
+
+impl ApplyingGuard {
+    fn new() -> Self {
+        APPLYING.with(|count| count.set(count.get().saturating_add(1)));
+        Self
+    }
+}
+
+impl Drop for ApplyingGuard {
+    fn drop(&mut self) {
+        APPLYING.with(|count| count.set(count.get().saturating_sub(1)));
+    }
+}
+
 thread_local! {
     static WORKER: std::cell::RefCell<Option<LoaderWorker>> = std::cell::RefCell::new(None);
     static POLICY: LoaderPolicy = crate::async_limits::policy().loader.clone();
@@ -629,6 +674,8 @@ thread_local! {
         let policy = crate::async_limits::policy().loader.clone();
         std::cell::RefCell::new(RetainedLedger::new(policy.prepared_items, policy.prepared_bytes))
     };
+    static MAIN_METRICS: Cell<MainMetrics> = Cell::new(MainMetrics::default());
+    static APPLYING: Cell<usize> = const { Cell::new(0) };
 }
 
 static LIFECYCLE_EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -663,6 +710,7 @@ pub(crate) fn set_plugins_dir(path: &str) {
         RETAINED_LEDGER.with(|ledger| {
             *ledger.borrow_mut() = RetainedLedger::new(policy.prepared_items, policy.prepared_bytes);
         });
+        MAIN_METRICS.with(|metrics| metrics.set(MainMetrics::default()));
         match LoaderWorker::start(policy) {
             Ok(worker) => { *slot = Some(worker); true }
             Err(reason) => { crate::v8host::log_warn(&format!("WARN: plugin loader disabled: {reason}")); false }
@@ -789,17 +837,24 @@ fn queue_config(path: PathBuf, consumer: ConfigConsumer) -> bool {
         }
     }
     let new_bytes = consumer_bytes(&consumer);
-    let can_admit_consumer = CONFIG_PENDING.with(|p| {
+    let (can_admit_consumer, items_rejected, bytes_rejected) = CONFIG_PENDING.with(|p| {
         let p = p.borrow();
         let used_items: usize = p.values().map(|row| row.consumers.len()).sum();
         let used_bytes: usize = p.values().map(|row| row.bytes).sum();
         let duplicate_bytes = p.get(&path).and_then(|row| row.consumers.iter()
             .find(|existing| same_consumer(existing, &consumer))).map_or(0, consumer_bytes);
         let (max_items, max_bytes) = POLICY.with(|policy| (policy.request_items, policy.request_bytes));
-        (duplicate_bytes > 0 || used_items < max_items)
-            && used_bytes.saturating_sub(duplicate_bytes).saturating_add(new_bytes) <= max_bytes
+        let items_rejected = duplicate_bytes == 0 && used_items >= max_items;
+        let bytes_rejected = used_bytes.saturating_sub(duplicate_bytes).saturating_add(new_bytes) > max_bytes;
+        (!items_rejected && !bytes_rejected, items_rejected, bytes_rejected)
     });
     if !can_admit_consumer {
+        MAIN_METRICS.with(|metrics| {
+            let mut value = metrics.get();
+            value.pending_rejected_items = value.pending_rejected_items.saturating_add(u64::from(items_rejected));
+            value.pending_rejected_bytes = value.pending_rejected_bytes.saturating_add(u64::from(bytes_rejected));
+            metrics.set(value);
+        });
         crate::v8host::log_warn(&format!("WARN: loader config consumer {:?} deferred by bounded coalescing table", path));
         return false;
     }
@@ -839,7 +894,24 @@ fn queue_config(path: PathBuf, consumer: ConfigConsumer) -> bool {
         row.bytes = row.bytes.saturating_add(new_bytes);
         row.consumers.push(consumer);
     });
+    let (pending_items, pending_bytes) = pending_usage();
+    MAIN_METRICS.with(|metrics| {
+        let mut value = metrics.get();
+        value.pending_high_water_items = value.pending_high_water_items.max(pending_items);
+        value.pending_high_water_bytes = value.pending_high_water_bytes.max(pending_bytes);
+        metrics.set(value);
+    });
     true
+}
+
+fn pending_usage() -> (usize, usize) {
+    CONFIG_PENDING.with(|pending| {
+        let pending = pending.borrow();
+        (
+            pending.values().map(|row| row.consumers.len()).sum(),
+            pending.values().map(|row| row.bytes).sum(),
+        )
+    })
 }
 
 fn commit_path(path: &Path, stamp: FileStamp, id: &str) {
@@ -1112,6 +1184,7 @@ fn duplicate_manifest_id(path: &Path, id: &str) -> bool {
 }
 
 fn apply_prepared(item: ApplyItem) {
+    let _applying = ApplyingGuard::new();
     let ApplyItem { row, allow_unmet_dependencies } = item;
     let id = row.prepared.manifest.id.clone();
     if !api_version_compatible(&row.prepared.manifest.api_version) {
@@ -1255,6 +1328,71 @@ pub(crate) fn poll_plugins() {
     if count % POLL_THROTTLE == 0 { schedule_periodic(); }
 }
 
+/// Loader ownership is sampled from the worker and main thread independently. Queue/result state
+/// locates the shared obligation rows; those counts are not additional retained ownership.
+pub(crate) fn metrics() -> serde_json::Value {
+    let worker = WORKER.with(|slot| slot.borrow().as_ref().map(LoaderWorker::metrics).unwrap_or_default());
+    let running = WORKER.with(|slot| slot.borrow().is_some());
+    let (pending_items, pending_bytes) = pending_usage();
+    let active = ACTIVE_BATCH.with(|batch| batch.borrow().as_ref().map_or(0, |batch| batch.prepared.len()));
+    let ready = READY_APPLY.with(|queue| queue.borrow().len());
+    let waiting = WAITING.with(|rows| rows.borrow().len());
+    let applying = APPLYING.with(Cell::get);
+    let retained = RETAINED_LEDGER.with(|ledger| ledger.borrow().metrics());
+    let main = MAIN_METRICS.with(Cell::get);
+    let limits = &crate::async_limits::policy().loader;
+    serde_json::json!({
+        "running": running,
+        "worker": {
+            "obligations": { "items": worker.obligations_items, "requestBytes": worker.request_bytes, "resultBytes": worker.result_bytes },
+            "queued": worker.queued, "inFlight": worker.in_flight, "results": worker.results,
+            "controls": { "items": worker.control_items, "bytes": worker.control_bytes, "pending": worker.controls_pending },
+            "config": { "paths": worker.config_paths, "bytes": worker.config_bytes },
+            "baselines": { "items": worker.baseline_items, "bytes": worker.baseline_bytes },
+            "proposals": { "items": worker.proposal_items, "bytes": worker.proposal_bytes },
+        },
+        "main": {
+            "pending": { "items": pending_items, "bytes": pending_bytes },
+            "active": active, "ready": ready, "waiting": waiting, "applying": applying,
+            "retained": { "items": retained.items, "bytes": retained.bytes },
+        },
+        "rejected": {
+            "requestItems": worker.rejected.request_items, "requestBytes": worker.rejected.request_bytes,
+            "resultItems": worker.rejected.result_items, "resultBytes": worker.rejected.result_bytes,
+            "controlItems": worker.rejected.control_items, "controlBytes": worker.rejected.control_bytes,
+            "configPaths": worker.rejected.config_paths, "configBytes": worker.rejected.config_bytes,
+            "pendingItems": main.pending_rejected_items, "pendingBytes": main.pending_rejected_bytes,
+            "retainedItems": retained.rejected_items, "retainedBytes": retained.rejected_bytes,
+        },
+        "highWater": {
+            "obligations": worker.high_water.obligations, "requestBytes": worker.high_water.request_bytes,
+            "resultBytes": worker.high_water.result_bytes, "queued": worker.high_water.queued,
+            "inFlight": worker.high_water.in_flight, "results": worker.high_water.results,
+            "controlItems": worker.high_water.control_items, "controlBytes": worker.high_water.control_bytes,
+            "configPaths": worker.high_water.config_paths, "configBytes": worker.high_water.config_bytes,
+            "baselineItems": worker.high_water.baseline_items, "baselineBytes": worker.high_water.baseline_bytes,
+            "proposalItems": worker.high_water.proposal_items, "proposalBytes": worker.high_water.proposal_bytes,
+            "pendingItems": main.pending_high_water_items, "pendingBytes": main.pending_high_water_bytes,
+            "retainedItems": retained.high_water_items, "retainedBytes": retained.high_water_bytes,
+        },
+        "limits": {
+            "requestItems": limits.request_items, "requestBytes": limits.request_bytes,
+            "resultItems": limits.result_items, "resultBytes": limits.result_bytes,
+            "preparedItems": limits.prepared_items, "preparedBytes": limits.prepared_bytes,
+            "scanEntries": limits.scan_entries, "scanCandidates": limits.scan_candidates,
+            "pathBytes": limits.path_bytes, "archiveBytes": limits.archive_bytes,
+            "configBytes": limits.config_bytes, "configBaselineItems": limits.config_baseline_items,
+            "configBaselineBytes": limits.config_baseline_bytes,
+            "parse": {
+                "zipEntries": limits.parse.zip_entries, "memberNameBytes": limits.parse.member_name_bytes,
+                "manifestBytes": limits.parse.manifest_bytes, "pluginJsBytes": limits.parse.plugin_js_bytes,
+                "gamedataBytes": limits.parse.gamedata_bytes,
+            },
+            "drainItems": limits.drain_items, "drainBytes": limits.drain_bytes, "drainMicros": limits.drain_micros,
+        },
+    })
+}
+
 pub(crate) fn shutdown_worker() {
     LIFECYCLE_EPOCH.fetch_add(1, Ordering::AcqRel);
     PLUGINS_DIR.with(|d| { d.borrow_mut().take(); });
@@ -1280,6 +1418,12 @@ pub(crate) fn shutdown_worker() {
     DRAIN_COUNT.with(|c| c.set(0));
     if let Ok(mut permissions) = PERMISSIONS.write() { *permissions = None; }
     PERMISSIONS_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+    let policy = &crate::async_limits::policy().loader;
+    RETAINED_LEDGER.with(|ledger| {
+        *ledger.borrow_mut() = RetainedLedger::new(policy.prepared_items, policy.prepared_bytes);
+    });
+    MAIN_METRICS.with(|metrics| metrics.set(MainMetrics::default()));
+    APPLYING.with(|count| count.set(0));
 }
 
 /// Order a load batch so an interface's producer loads before its hard-dep consumers (design spec §4).
@@ -1615,10 +1759,103 @@ mod tests {
         assert!(lease.try_grow(5));
         assert_eq!(ledger.usage(), (1, 12));
         assert!(!lease.try_grow(1));
+        let metrics = ledger.metrics();
+        assert_eq!((metrics.items, metrics.bytes), (1, 12));
+        assert_eq!((metrics.rejected_items, metrics.rejected_bytes), (0, 1));
+        assert_eq!((metrics.high_water_items, metrics.high_water_bytes), (1, 12));
         let moved = Some(lease);
         assert_eq!(ledger.usage(), (1, 12), "moving ownership must retain the charge");
         drop(moved);
         assert_eq!(ledger.usage(), (0, 0), "dropping ownership releases the charge");
+    }
+
+    #[test]
+    fn loader_metrics_schema_reports_charged_ownership_and_resets_after_join() {
+        shutdown_worker();
+        let policy = crate::async_limits::policy().loader.clone();
+        WORKER.with(|slot| *slot.borrow_mut() = Some(LoaderWorker::start(policy.clone()).unwrap()));
+        let submit = WORKER.with(|slot| slot.borrow().as_ref().unwrap()
+            .try_prepare(1, 1, PathBuf::from("metrics-owned.s2sp")));
+        assert_eq!(submit, Submit::Accepted);
+        let retained_lease = RETAINED_LEDGER.with(|ledger| ledger.borrow().try_acquire(73).unwrap());
+        let live = metrics();
+        assert_eq!(live["running"], true);
+        assert_eq!(live["worker"]["obligations"]["items"], 1);
+        assert_eq!(live["main"]["retained"]["items"], 1);
+        assert_eq!(live["main"]["retained"]["bytes"], 73);
+        assert_eq!(live["limits"]["requestItems"], policy.request_items);
+        assert_eq!(live["limits"]["parse"]["zipEntries"], policy.parse.zip_entries);
+        assert!(live["worker"]["config"]["paths"].is_number());
+        assert!(live["rejected"]["configBytes"].is_number());
+        assert!(live["highWater"]["proposalBytes"].is_number());
+        drop(retained_lease);
+        shutdown_worker();
+        let stopped = metrics();
+        assert_eq!(stopped["running"], false);
+        assert_eq!(stopped["worker"]["obligations"]["items"], 0);
+        assert_eq!(stopped["main"]["retained"]["items"], 0);
+        assert_eq!(stopped["highWater"]["retainedItems"], 0);
+    }
+
+    #[test]
+    fn loader_metrics_follow_retained_ownership_across_active_ready_and_waiting() {
+        shutdown_worker();
+        let ledger = RETAINED_LEDGER.with(|ledger| ledger.borrow().clone());
+        let manifest: Manifest = serde_json::from_str(
+            r#"{"id":"metrics-retained","version":"1","apiVersion":"2.x"}"#,
+        ).unwrap();
+        let row = prepared_row(manifest, None, 64, &ledger);
+        ACTIVE_BATCH.with(|batch| *batch.borrow_mut() = Some(ActiveBatch {
+            pending: HashMap::new(), prepared: HashMap::from([(row.path.clone(), row)]),
+        }));
+        let active = metrics();
+        assert_eq!(active["main"]["active"], 1);
+        assert_eq!(active["main"]["retained"]["items"], 1);
+        let row = ACTIVE_BATCH.with(|batch| batch.borrow_mut().take().unwrap()
+            .prepared.into_values().next().unwrap());
+        READY_APPLY.with(|ready| ready.borrow_mut().push_back(ApplyItem { row, allow_unmet_dependencies: false }));
+        let ready = metrics();
+        assert_eq!(ready["main"]["ready"], 1);
+        assert_eq!(ready["main"]["retained"]["items"], 1);
+        let item = READY_APPLY.with(|ready| ready.borrow_mut().pop_front().unwrap());
+        let applying_guard = ApplyingGuard::new();
+        let applying = metrics();
+        assert_eq!(applying["main"]["applying"], 1);
+        assert_eq!(applying["main"]["retained"]["items"], 1);
+        drop(applying_guard);
+        WAITING.with(|waiting| waiting.borrow_mut().insert("metrics-retained".into(), WaitingLoad {
+            row: item.row, since_frame: 0,
+        }));
+        let waiting = metrics();
+        assert_eq!(waiting["main"]["waiting"], 1);
+        assert_eq!(waiting["main"]["retained"]["items"], 1);
+        shutdown_worker();
+        assert_eq!(metrics()["main"]["retained"]["items"], 0);
+    }
+
+    #[test]
+    fn pending_metrics_track_admission_and_dimension_rejections() {
+        shutdown_worker();
+        let policy = crate::async_limits::policy().loader.clone();
+        WORKER.with(|slot| *slot.borrow_mut() = Some(LoaderWorker::start(policy.clone()).unwrap()));
+        assert!(queue_config(PathBuf::from("metrics-pending.json"), ConfigConsumer::Permissions));
+        let admitted = metrics();
+        assert_eq!(admitted["main"]["pending"]["items"], 1);
+        assert_eq!(admitted["highWater"]["pendingItems"], 1);
+        CONFIG_PENDING.with(|pending| {
+            let mut pending = pending.borrow_mut();
+            pending.clear();
+            pending.insert(PathBuf::from("held.json"), PendingConfig {
+                revision: 1,
+                consumers: vec![ConfigConsumer::Permissions; policy.request_items],
+                bytes: policy.request_bytes,
+            });
+        });
+        assert!(!queue_config(PathBuf::from("metrics-rejected.json"), ConfigConsumer::Permissions));
+        let rejected = metrics();
+        assert_eq!(rejected["rejected"]["pendingItems"], 1);
+        assert_eq!(rejected["rejected"]["pendingBytes"], 1);
+        shutdown_worker();
     }
 
     #[test]
