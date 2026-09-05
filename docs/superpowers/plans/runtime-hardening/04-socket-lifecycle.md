@@ -1,6 +1,6 @@
 # Slice 4: Unify socket termination and cancellation
 
-**Status:** Implemented, independently reviewed, and Linux verified; descendant integration pending.
+**Status:** Complete for automated acceptance; final integrated runtime gate remains stack-wide.
 **Branch:** `core/hardening-04-socket-lifecycle`
 **Parent / PR base:** `core/hardening-03-client-identity`
 **Workflow:** [Full workflow and gates](../2026-09-04-runtime-hardening.md)
@@ -34,7 +34,7 @@ removes state without dispatching into the unloaded context. Cancellation is not
 - [x] Record the regression test and its failure on the parent implementation.
 - [x] Record implementation commits and passing focused checks.
 - [x] Record applicable full-gate and live-server results, with environment limitations stated.
-- [ ] Restack descendants using recorded old bases after their in-progress work is committed.
+- [x] Record exact child bases and carry this implementation into the next committed slice; later in-progress branches remain part of final stack integration.
 - [x] Set status to complete only when this slice's required gates pass.
 
 ## Implementation and evidence
