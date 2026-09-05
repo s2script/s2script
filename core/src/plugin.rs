@@ -24,7 +24,7 @@ pub enum Phase {
 // ---------------------------------------------------------------------------
 
 /// A ledgered resource that must be torn down when a plugin unloads.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Resource {
     Hook(u64),
     Timer(u64),
@@ -56,92 +56,96 @@ pub enum Resource {
 // PluginLedger
 // ---------------------------------------------------------------------------
 
-/// Records every resource a plugin acquires, in acquisition order.
-/// `teardown_order()` returns them reversed (last-acquired torn down first).
+/// Records the resources a plugin currently owns, in acquisition order.
+///
+/// `active` is the teardown authority. `by_resource` is a removal index whose vectors preserve
+/// acquisition multiplicity: releasing an indistinguishable duplicate removes its most recent
+/// acquisition. Both structures contain active entries only; completion leaves no tombstone.
 pub struct PluginLedger {
-    /// All resources in acquisition order.
-    order: Vec<Resource>,
-    /// Convenience: hook subscription ids in acquisition order.
-    pub hook_subs: Vec<u64>,
-    /// Convenience: timer ids in acquisition order.
-    pub timers: Vec<u64>,
-    /// Convenience: job ids in acquisition order.
-    pub jobs: Vec<u64>,
-    /// Convenience: published interface names in acquisition order.
-    pub interfaces: Vec<String>,
-    /// Convenience: event subscription ids in acquisition order.
-    pub event_subs: Vec<u64>,
-    /// Convenience: import edges (interface names) in acquisition order.
-    pub imports: Vec<String>,
+    next_sequence: u64,
+    active: std::collections::BTreeMap<u64, Resource>,
+    by_resource: std::collections::HashMap<Resource, Vec<u64>>,
 }
 
 impl PluginLedger {
     pub fn new() -> Self {
         Self {
-            order: Vec::new(),
-            hook_subs: Vec::new(),
-            timers: Vec::new(),
-            jobs: Vec::new(),
-            interfaces: Vec::new(),
-            event_subs: Vec::new(),
-            imports: Vec::new(),
+            next_sequence: 0,
+            active: std::collections::BTreeMap::new(),
+            by_resource: std::collections::HashMap::new(),
         }
     }
 
+    pub fn record(&mut self, resource: Resource) {
+        let sequence = self.next_sequence;
+        self.next_sequence = self.next_sequence.wrapping_add(1);
+        self.active.insert(sequence, resource.clone());
+        self.by_resource.entry(resource).or_default().push(sequence);
+    }
+
+    /// Release one acquisition of `resource`. Duplicate acquisitions are intentionally distinct.
+    pub fn release(&mut self, resource: &Resource) -> bool {
+        let (sequence, empty) = match self.by_resource.get_mut(resource) {
+            Some(sequences) => {
+                let Some(sequence) = sequences.pop() else { return false };
+                (sequence, sequences.is_empty())
+            }
+            None => return false,
+        };
+        if empty { self.by_resource.remove(resource); }
+        self.active.remove(&sequence).is_some()
+    }
+
+    pub fn len(&self) -> usize { self.active.len() }
+
     pub fn record_hook(&mut self, id: u64) {
-        self.order.push(Resource::Hook(id));
-        self.hook_subs.push(id);
+        self.record(Resource::Hook(id));
     }
 
     pub fn record_timer(&mut self, id: u64) {
-        self.order.push(Resource::Timer(id));
-        self.timers.push(id);
+        self.record(Resource::Timer(id));
     }
 
     pub fn record_job(&mut self, id: u64) {
-        self.order.push(Resource::Job(id));
-        self.jobs.push(id);
+        self.record(Resource::Job(id));
     }
 
     pub fn record_interface(&mut self, name: String) {
-        self.order.push(Resource::Interface(name.clone()));
-        self.interfaces.push(name);
+        self.record(Resource::Interface(name));
     }
 
     pub fn record_event_sub(&mut self, id: u64) {
-        self.order.push(Resource::EventSub(id));
-        self.event_subs.push(id);
+        self.record(Resource::EventSub(id));
     }
 
     pub fn record_import(&mut self, name: String) {
-        self.order.push(Resource::Import(name.clone()));
-        self.imports.push(name);
+        self.record(Resource::Import(name));
     }
 
     /// Record an open DB connection handle against this plugin (teardown authority for Task 3).
     pub fn record_db_conn(&mut self, handle: u64) {
-        self.order.push(Resource::DbConn(handle));
+        self.record(Resource::DbConn(handle));
     }
 
     /// Record an open WebSocket connection id against this plugin (teardown authority, ws Task 2).
     pub fn record_ws_conn(&mut self, id: u64) {
-        self.order.push(Resource::WsConn(id));
+        self.record(Resource::WsConn(id));
     }
 
     /// Record an open raw-socket (TCP/UDP) connection id against this plugin (teardown authority,
     /// net Task 2).
     pub fn record_net_conn(&mut self, id: u64) {
-        self.order.push(Resource::NetConn(id));
+        self.record(Resource::NetConn(id));
     }
 
     /// Record an open remote-SQL pool handle against this plugin (teardown authority, remote-db Task 2).
     pub fn record_remote_db_conn(&mut self, handle: u64) {
-        self.order.push(Resource::RemoteDbConn(handle));
+        self.record(Resource::RemoteDbConn(handle));
     }
 
     /// Resources in REVERSE acquisition order — last-acquired torn down first.
     pub fn teardown_order(&self) -> Vec<Resource> {
-        self.order.iter().rev().cloned().collect()
+        self.active.values().rev().cloned().collect()
     }
 }
 
@@ -210,6 +214,25 @@ impl Registry {
         self.table.get_mut(&id.to_string()).map(|(_, m)| m)
     }
 
+    /// Record only against the exact live owner generation that acquired the resource.
+    pub fn record(&mut self, id: &str, generation: u64, resource: Resource) -> bool {
+        let Some((live_generation, ledger)) = self.table.get_mut(&id.to_string()) else { return false };
+        if live_generation != generation { return false; }
+        ledger.record(resource);
+        true
+    }
+
+    /// Release one matching acquisition only when the owner generation is still current.
+    pub fn release(&mut self, id: &str, generation: u64, resource: &Resource) -> bool {
+        let Some((live_generation, ledger)) = self.table.get_mut(&id.to_string()) else { return false };
+        live_generation == generation && ledger.release(resource)
+    }
+
+    pub fn active_resource_count(&self, id: &str, generation: u64) -> Option<usize> {
+        let (live_generation, ledger) = self.table.get(&id.to_string())?;
+        (live_generation == generation).then(|| ledger.len())
+    }
+
     /// All currently registered plugin ids.
     pub fn ids(&self) -> Vec<String> {
         self.table.keys()
@@ -271,7 +294,7 @@ mod tests {
         let g = r.insert("a");
         r.ledger_mut("a").unwrap().record_timer(7);
         let entry = r.remove("a").expect("present");
-        assert_eq!(entry.ledger.timers, vec![7]);
+        assert_eq!(entry.ledger.teardown_order(), vec![Resource::Timer(7)]);
         assert!(!r.is_live("a", g), "removed plugin is not live");
         assert!(r.remove("a").is_none());
     }
@@ -308,13 +331,63 @@ mod tests {
     }
 
     #[test]
-    fn record_iface_resources_populate_convenience_vecs() {
+    fn record_iface_resources_preserve_acquisition_order() {
         let mut l = PluginLedger::new();
         l.record_interface("@x/if".into());
         l.record_event_sub(3);
         l.record_import("@y/dep".into());
-        assert_eq!(l.interfaces, vec!["@x/if".to_string()]);
-        assert_eq!(l.event_subs, vec![3]);
-        assert_eq!(l.imports, vec!["@y/dep".to_string()]);
+        assert_eq!(l.teardown_order(), vec![
+            Resource::Import("@y/dep".to_string()),
+            Resource::EventSub(3),
+            Resource::Interface("@x/if".to_string()),
+        ]);
+    }
+
+    #[test]
+    fn one_hundred_thousand_completed_timers_leave_no_active_resources() {
+        let mut r = Registry::new();
+        let generation = r.insert("timer-owner");
+        for id in 1..=100_000 { assert!(r.record("timer-owner", generation, Resource::Timer(id))); }
+        assert_eq!(r.active_resource_count("timer-owner", generation), Some(100_000));
+        for id in 1..=100_000 { assert!(r.release("timer-owner", generation, &Resource::Timer(id))); }
+        assert_eq!(r.active_resource_count("timer-owner", generation), Some(0));
+        assert!(r.remove("timer-owner").unwrap().ledger.teardown_order().is_empty());
+    }
+
+    #[test]
+    fn one_hundred_thousand_completed_jobs_preserve_only_active_multiplicity() {
+        let mut r = Registry::new();
+        let generation = r.insert("job-owner");
+        for id in 1..=100_000 { assert!(r.record("job-owner", generation, Resource::Job(id))); }
+        assert!(r.record("job-owner", generation, Resource::Job(100_000)));
+        for id in 1..=100_000 { assert!(r.release("job-owner", generation, &Resource::Job(id))); }
+        assert_eq!(r.active_resource_count("job-owner", generation), Some(1));
+        assert_eq!(r.remove("job-owner").unwrap().ledger.teardown_order(), vec![Resource::Job(100_000)]);
+    }
+
+    #[test]
+    fn late_release_after_owner_reload_cannot_touch_new_generation() {
+        let mut r = Registry::new();
+        let old_generation = r.insert("owner");
+        assert!(r.record("owner", old_generation, Resource::Job(7)));
+        let new_generation = r.insert("owner");
+        assert!(r.record("owner", new_generation, Resource::Job(7)));
+        assert!(!r.release("owner", old_generation, &Resource::Job(7)));
+        assert_eq!(r.active_resource_count("owner", new_generation), Some(1));
+        assert!(r.release("owner", new_generation, &Resource::Job(7)));
+        assert_eq!(r.active_resource_count("owner", new_generation), Some(0));
+    }
+
+    #[test]
+    fn explicit_disposal_then_unload_preserves_reverse_order_exactly_once() {
+        let mut r = Registry::new();
+        let generation = r.insert("owner");
+        assert!(r.record("owner", generation, Resource::Hook(1)));
+        assert!(r.record("owner", generation, Resource::Timer(2)));
+        assert!(r.record("owner", generation, Resource::DbConn(3)));
+        assert!(r.release("owner", generation, &Resource::Timer(2)));
+        assert!(!r.release("owner", generation, &Resource::Timer(2)));
+        assert_eq!(r.remove("owner").unwrap().ledger.teardown_order(),
+            vec![Resource::DbConn(3), Resource::Hook(1)]);
     }
 }

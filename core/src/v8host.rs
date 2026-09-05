@@ -620,12 +620,16 @@ pub(crate) fn jobs_owner_tag(scope: &mut v8::PinScope) -> Option<(String, u64)> 
 }
 
 /// Ledger a `Job` against `owner`. A missing ledger (unknown owner) is a no-op.
-pub(crate) fn jobs_record_job(owner: &str, id: u64) {
-    REGISTRY.with(|r| {
-        if let Some(l) = r.borrow_mut().ledger_mut(owner) {
-            l.record_job(id);
-        }
-    });
+pub(crate) fn jobs_record_job(owner: &str, generation: u64, id: u64) {
+    record_resource(owner, generation, plugin::Resource::Job(id));
+}
+
+pub(crate) fn release_resource(owner: &str, generation: u64, resource: &plugin::Resource) -> bool {
+    REGISTRY.with(|r| r.borrow_mut().release(owner, generation, resource))
+}
+
+fn record_resource(owner: &str, generation: u64, resource: plugin::Resource) -> bool {
+    REGISTRY.with(|r| r.borrow_mut().record(owner, generation, resource))
 }
 
 /// Generation-gated liveness. Does not expose `REGISTRY`.
@@ -827,11 +831,9 @@ fn s2_subscribe(
         });
         // Ledger this hook against the owning plugin (Task 6's teardown authority).  A miss (owner
         // not registered) is a safe no-op.  Neither borrow is held across a JS call.
-        REGISTRY.with(|r| {
-            if let Some(l) = r.borrow_mut().ledger_mut(&owner) {
-                l.record_hook(id);
-            }
-        });
+        if let Some(generation) = REGISTRY.with(|r| r.borrow().generation_of(&owner)) {
+            record_resource(&owner, generation, plugin::Resource::Hook(id));
+        }
         refresh_detour();
         rv.set_double(id as f64);
     }));
@@ -848,6 +850,10 @@ fn s2_unsubscribe(
             return;
         }
         let id = args.get(0).integer_value(scope).unwrap_or(0) as multiplexer::SubId;
+        let owner = resolver_owner_tag(scope);
+        if let Some((ref owner, generation)) = owner {
+            if !release_resource(owner, generation, &plugin::Resource::Hook(id)) { return; }
+        }
         // The combined predicate supersedes the DetourChange the multiplexer returns; ignore it.
         let _change = FRAME.with(|f| f.borrow_mut().unsubscribe(id));
         refresh_detour();
@@ -885,12 +891,8 @@ fn make_timer_promise<'s>(
     let owner = resolver_owner_tag(scope);
     // Ledger this timer against the CALLING plugin (Task 6's teardown authority).  A non-plugin/
     // unknown owner is a safe no-op.  No thread-local borrow held across a JS call.
-    if let Some((ref oid, _)) = owner {
-        REGISTRY.with(|r| {
-            if let Some(l) = r.borrow_mut().ledger_mut(oid) {
-                l.record_timer(id);
-            }
-        });
+    if let Some((ref oid, generation)) = owner {
+        record_resource(oid, generation, plugin::Resource::Timer(id));
     }
     crate::jobs::insert_timer_resolver(scope, id, resolver, owner);
     TIMERS.with(|t| t.borrow_mut().push(id, kind));
@@ -935,10 +937,8 @@ fn s2_timer_create(
 
         let id = crate::jobs::next_id();
         let owner = resolver_owner_tag(scope);
-        if let Some((ref oid, _)) = owner {
-            REGISTRY.with(|r| {
-                if let Some(l) = r.borrow_mut().ledger_mut(oid) { l.record_timer(id); }
-            });
+        if let Some((ref oid, generation)) = owner {
+            record_resource(oid, generation, plugin::Resource::Timer(id));
         }
         TIMER_CBS.with(|m| m.borrow_mut().insert(id, TimerCallback {
             owner,
@@ -961,6 +961,12 @@ fn s2_timer_kill(
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let id = args.get(0).integer_value(scope).unwrap_or(0) as u64;
+        let owner = resolver_owner_tag(scope);
+        let released = match &owner {
+            Some((owner, generation)) => release_resource(owner, *generation, &plugin::Resource::Timer(id)),
+            None => true,
+        };
+        if !released { rv.set_bool(false); return; }
         let had_cb = TIMER_CBS.with(|m| m.borrow_mut().remove(&id)).is_some();
         let had_q = TIMERS.with(|t| t.borrow_mut().remove(id));
         // Record ONLY the self-kill case, so this set stays bounded. If the timer was still in
@@ -969,7 +975,7 @@ fn s2_timer_kill(
         // callback is killing itself. (An id that never existed also lands here; the drain removes
         // whatever it looks up, and shutdown clears the rest.)
         if !had_cb && !had_q { TIMER_KILLED.with(|k| { k.borrow_mut().insert(id); }); }
-        rv.set_bool(had_cb || had_q);
+        rv.set_bool(owner.is_some() || had_cb || had_q);
     }));
 }
 
@@ -1082,14 +1088,12 @@ fn s2_ws_connect(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
         // The Job is already ledgered by begin_job. Also ledger the connection itself (as a
         // WsConn, so an unclosed connection is closed at teardown) — a non-plugin/unknown
         // owner is a safe no-op; no borrow held across a JS call.
-        if let Some((ref oid, _)) = resolver_owner_tag(scope) {
-            REGISTRY.with(|r| {
-                if let Some(l) = r.borrow_mut().ledger_mut(oid) {
-                    l.record_ws_conn(id);
-                }
-            });
+        let owner_tag = resolver_owner_tag(scope);
+        if let Some((ref oid, generation)) = owner_tag {
+            record_resource(oid, generation, plugin::Resource::WsConn(id));
         }
-        crate::ws::connect(id, url, owner_string, headers);
+        crate::ws::connect_owned(id, url, owner_string,
+            owner_tag.as_ref().map(|(_, generation)| *generation).unwrap_or(0), headers);
         rv.set(promise);
     }));
 }
@@ -1163,14 +1167,12 @@ fn s2_net_tcp_connect(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
         let port = args.get(1).number_value(scope).unwrap_or(0.0) as u16;
         let (id, promise) = crate::jobs::begin_job(scope);
         let owner_string = current_plugin(scope).unwrap_or_default();
-        if let Some((ref oid, _)) = resolver_owner_tag(scope) {
-            REGISTRY.with(|r| {
-                if let Some(l) = r.borrow_mut().ledger_mut(oid) {
-                    l.record_net_conn(id);
-                }
-            });
+        let owner_tag = resolver_owner_tag(scope);
+        if let Some((ref oid, generation)) = owner_tag {
+            record_resource(oid, generation, plugin::Resource::NetConn(id));
         }
-        crate::net::connect_tcp(id, host, port, owner_string);
+        crate::net::connect_tcp_owned(id, host, port, owner_string,
+            owner_tag.as_ref().map(|(_, generation)| *generation).unwrap_or(0));
         rv.set(promise);
     }));
 }
@@ -1182,14 +1184,12 @@ fn s2_net_udp_bind(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArgument
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let (id, promise) = crate::jobs::begin_job(scope);
         let owner_string = current_plugin(scope).unwrap_or_default();
-        if let Some((ref oid, _)) = resolver_owner_tag(scope) {
-            REGISTRY.with(|r| {
-                if let Some(l) = r.borrow_mut().ledger_mut(oid) {
-                    l.record_net_conn(id);
-                }
-            });
+        let owner_tag = resolver_owner_tag(scope);
+        if let Some((ref oid, generation)) = owner_tag {
+            record_resource(oid, generation, plugin::Resource::NetConn(id));
         }
-        crate::net::bind_udp(id, owner_string);
+        crate::net::bind_udp_owned(id, owner_string,
+            owner_tag.as_ref().map(|(_, generation)| *generation).unwrap_or(0));
         rv.set(promise);
     }));
 }
@@ -1597,7 +1597,12 @@ fn iface_from_json<'s>(scope: &mut v8::PinScope<'s, '_>, json: &str) -> Option<v
 /// `iface_is_published` can categorise `require`. Called by the loader BEFORE `load_plugin_js` runs
 /// the module eval. Cleared in `unload_plugin` (Task 7).
 pub fn set_plugin_imports(id: &str, decls: Vec<crate::interfaces::ImportSpec>) {
-    IFACES.with(|r| r.borrow_mut().set_imports(id, decls));
+    let new_names: Vec<String> = decls.iter().map(|decl| decl.name.clone()).collect();
+    let old_names = IFACES.with(|r| r.borrow_mut().set_imports(id, decls));
+    if let Some(generation) = REGISTRY.with(|r| r.borrow().generation_of(id)) {
+        for name in old_names { release_resource(id, generation, &plugin::Resource::Import(name)); }
+        for name in new_names { record_resource(id, generation, plugin::Resource::Import(name)); }
+    }
 }
 
 thread_local! {
@@ -1931,9 +1936,10 @@ fn s2_iface_publish(
         for (m, g) in captured {
             IFACE_METHODS.with(|mm| { mm.borrow_mut().insert((name.clone(), m), g); });
         }
-        REGISTRY.with(|r| {
-            if let Some(l) = r.borrow_mut().ledger_mut(&owner) { l.record_interface(name.clone()); }
-        });
+        // Same-owner publish is an in-place replacement in InterfaceRegistry, so replace its one
+        // ownership row too. A first publish simply has no prior row to release.
+        release_resource(&owner, generation, &plugin::Resource::Interface(name.clone()));
+        record_resource(&owner, generation, plugin::Resource::Interface(name.clone()));
     }));
 }
 
@@ -2107,7 +2113,7 @@ fn s2_iface_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mu
 
         let g = v8::Global::new(scope.as_ref(), handler);
         IFACE_SUBS.with(|m| { m.borrow_mut().insert(sub_id, g); });
-        REGISTRY.with(|r| { if let Some(l) = r.borrow_mut().ledger_mut(&consumer) { l.record_event_sub(sub_id); } });
+        record_resource(&consumer, generation, plugin::Resource::EventSub(sub_id));
         rv.set_double(sub_id as f64);
     }));
 }
@@ -2122,7 +2128,10 @@ fn s2_iface_off(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, m
         let event = args.get(1).to_rust_string_lossy(scope);
         let Some(consumer) = current_plugin(scope) else { return; };
         let dropped = IFACES.with(|r| r.borrow_mut().remove_subscribers_by_consumer_on(&consumer, &name, &event));
-        IFACE_SUBS.with(|m| { let mut mm = m.borrow_mut(); for id in dropped { mm.remove(&id); } });
+        IFACE_SUBS.with(|m| { let mut mm = m.borrow_mut(); for id in &dropped { mm.remove(id); } });
+        if let Some(generation) = REGISTRY.with(|r| r.borrow().generation_of(&consumer)) {
+            for id in dropped { release_resource(&consumer, generation, &plugin::Resource::EventSub(id)); }
+        }
     }));
 }
 
@@ -5029,6 +5038,8 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
             // scope, hs, hs_storage drop here — the isolate borrow is released.
         };
 
+        let imports = IFACES.with(|r| r.borrow().import_names(id));
+        for name in imports { record_resource(id, generation, plugin::Resource::Import(name)); }
         PLUGINS.with(|p| {
             p.borrow_mut().insert(
                 id.to_string(),
@@ -5538,12 +5549,8 @@ fn s2_sqlite_open(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
             Ok(handle) => {
                 // Ledger the connection against the CALLING plugin (teardown authority) — a
                 // non-plugin/unknown owner (the shared HOST context) is a safe no-op.
-                if let Some((ref oid, _)) = resolver_owner_tag(scope) {
-                    REGISTRY.with(|r| {
-                        if let Some(l) = r.borrow_mut().ledger_mut(oid) {
-                            l.record_db_conn(handle);
-                        }
-                    });
+                if let Some((ref oid, generation)) = resolver_owner_tag(scope) {
+                    record_resource(oid, generation, plugin::Resource::DbConn(handle));
                 }
                 resolver.resolve(scope, v8::Number::new(scope, handle as f64).into());
             }
@@ -5634,10 +5641,16 @@ fn s2_sqlite_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let handle = args.get(0).integer_value(scope).unwrap_or(-1);
         let owner = current_plugin(scope).unwrap_or_default();
+        let generation = REGISTRY.with(|r| r.borrow().generation_of(&owner));
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let promise = resolver.get_promise(scope);
         if handle >= 0 {
-            crate::db::close(handle as u64, &owner);
+            let handle = handle as u64;
+            if crate::db::close(handle, &owner) {
+                if let Some(generation) = generation {
+                    release_resource(&owner, generation, &plugin::Resource::DbConn(handle));
+                }
+            }
         }
         let undef = v8::undefined(scope);
         resolver.resolve(scope, undef.into());
@@ -5672,12 +5685,8 @@ fn s2_db_remote_connect(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
             Ok(handle) => {
                 // Ledger the connection against the CALLING plugin (teardown authority) — a
                 // non-plugin/unknown owner (the shared HOST context) is a safe no-op.
-                if let Some((ref oid, _)) = resolver_owner_tag(scope) {
-                    REGISTRY.with(|r| {
-                        if let Some(l) = r.borrow_mut().ledger_mut(oid) {
-                            l.record_remote_db_conn(handle);
-                        }
-                    });
+                if let Some((ref oid, generation)) = resolver_owner_tag(scope) {
+                    record_resource(oid, generation, plugin::Resource::RemoteDbConn(handle));
                 }
                 rv.set(v8::Number::new(scope, handle as f64).into());
             }
@@ -5761,10 +5770,16 @@ fn s2_db_remote_close(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let handle = args.get(0).integer_value(scope).unwrap_or(-1);
         let owner = current_plugin(scope).unwrap_or_default();
+        let generation = REGISTRY.with(|r| r.borrow().generation_of(&owner));
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let promise = resolver.get_promise(scope);
         if handle >= 0 {
-            crate::sqldb::close(handle as u64, &owner);
+            let handle = handle as u64;
+            if crate::sqldb::close(handle, &owner) {
+                if let Some(generation) = generation {
+                    release_resource(&owner, generation, &plugin::Resource::RemoteDbConn(handle));
+                }
+            }
         }
         let undef = v8::undefined(scope);
         resolver.resolve(scope, undef.into());
@@ -6439,12 +6454,17 @@ pub(crate) fn frame_async_drain() {
                     TIMERS.with(|t| t.borrow_mut()
                         .push(id, TimerKind::Deadline(Instant::now() + Duration::from_millis(iv))));
                     TIMER_CBS.with(|m| m.borrow_mut().insert(id, cb));
+                } else if !self_killed {
+                    if let Some((owner, generation)) = &cb.owner {
+                        release_resource(owner, *generation, &plugin::Resource::Timer(id));
+                    }
                 }
                 continue;
             }
             // Remove the tagged resolver (RESOLVERS borrow released), then resolve-or-drop it in its
             // owner's context.  A None entry means the timer was already dropped (e.g. by unload).
             let Some(entry) = crate::jobs::take_resolver(id) else { continue };
+            crate::jobs::release_timer(&entry, id);
             resolve_or_drop(host, &entry);
         }
         // Phase 2: threadpool. complete_job decrements pending only if the resolver was present.
@@ -7470,6 +7490,14 @@ pub(crate) mod frame_tests {
         frame_async_drain();
     }
 
+    fn active_resources(id: &str) -> usize {
+        REGISTRY.with(|r| {
+            let registry = r.borrow();
+            let generation = registry.generation_of(id).expect("plugin is live");
+            registry.active_resource_count(id, generation).expect("generation is current")
+        })
+    }
+
     // Two per-plugin contexts on the shared isolate each report their OWN id via the
     // `__s2_current_plugin` probe native (identity via `set_slot::<PluginId>` +
     // `get_current_context`), and disposing one removes it from PLUGINS.  The single-context HOST
@@ -7651,7 +7679,9 @@ pub(crate) mod frame_tests {
         frame_async_drain();
         let after_one = read_i32_global_in("p", "__n");
         assert!(after_one >= 1);
+        assert_eq!(active_resources("p"), 1, "a live repeater retains one timer resource");
         assert_eq!(eval_in_context_string("p", "String(__t.kill())"), "true");
+        assert_eq!(active_resources("p"), 0, "kill releases the repeater resource");
         assert_eq!(eval_in_context_string("p", "String(__t.kill())"), "false", "second kill is false, not an error");
         assert_eq!(eval_in_context_string("p", "String(__t.alive)"), "false");
         std::thread::sleep(std::time::Duration::from_millis(30));
@@ -7671,6 +7701,28 @@ pub(crate) mod frame_tests {
             frame_async_drain();
         }
         assert_eq!(read_i32_global_in("p", "__n"), 1, "self-kill must prevent the re-arm");
+        assert_eq!(active_resources("p"), 0, "self-kill releases the timer ledger entry");
+        shutdown();
+    }
+
+    #[test]
+    fn one_shot_timer_completion_releases_its_active_ledger_entry() {
+        init(dummy_logger()).unwrap();
+        eval_std("p", "__s2pkg_timers.after(0, function () {});");
+        assert_eq!(active_resources("p"), 1);
+        frame_async_drain();
+        assert_eq!(active_resources("p"), 0);
+        shutdown();
+    }
+
+    #[test]
+    fn explicit_hook_disposal_releases_before_unload() {
+        init(dummy_logger()).unwrap();
+        eval_std("p", "globalThis.__h = OnGameFrame.subscribe(function () {});");
+        assert_eq!(active_resources("p"), 1);
+        eval_in_context_string("p", "__h.dispose(); 'disposed'");
+        assert_eq!(active_resources("p"), 0);
+        unload_plugin("p");
         shutdown();
     }
 
@@ -7995,6 +8047,22 @@ pub(crate) mod frame_tests {
         assert_eq!(crate::jobs::pending(), 0);
         assert!(crate::jobs::complete_job(id).is_none());
         assert_eq!(crate::jobs::pending(), 0, "double complete must not undercount");
+        shutdown();
+    }
+
+    #[test]
+    fn real_job_completion_releases_its_active_ledger_entry() {
+        init(dummy_logger()).unwrap();
+        while pool().try_recv_completed().is_some() {}
+        eval_std("p", "threadSleep(0).then(function () { globalThis.__done = true; });");
+        assert_eq!(active_resources("p"), 1);
+        for _ in 0..ASYNC_POLL_TICKS {
+            frame_async_drain();
+            if crate::jobs::pending() == 0 { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(crate::jobs::pending(), 0);
+        assert_eq!(active_resources("p"), 0);
         shutdown();
     }
 
@@ -9492,6 +9560,23 @@ pub(crate) mod frame_tests {
     }
 
     #[test]
+    fn republishing_an_interface_keeps_one_active_ledger_entry() {
+        let _ = init(dummy_logger());
+        set_plugin_publishes("prod", [(
+            "@x/hot".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() },
+        )].into_iter().collect());
+        create_plugin_context("prod");
+        eval_in_context("prod", r#"__s2_iface_publish("@x/hot", { a:function(){return 1;} });"#)
+            .expect("first publish");
+        eval_in_context("prod", r#"__s2_iface_publish("@x/hot", { a:function(){return 2;} });"#)
+            .expect("hot republish");
+        assert_eq!(active_resources("prod"), 1);
+        unload_plugin("prod");
+        shutdown();
+    }
+
+    #[test]
     fn publish_interface_of_a_name_owned_by_another_producer_is_refused() {
         let _ = init(dummy_logger());
         let decl = crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() };
@@ -9519,6 +9604,43 @@ pub(crate) mod frame_tests {
         "#);
         let v = IFACES.with(|r| r.borrow().lookup("@x/greeter").map(|e| e.version.clone()));
         assert_eq!(v, Some("1.4.0".to_string()));
+        shutdown();
+    }
+
+    #[test]
+    fn interface_subscription_off_releases_its_active_ledger_entry() {
+        let _ = init(dummy_logger());
+        set_plugin_publishes("prod", [(
+            "@x/events".to_string(),
+            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+        )].into_iter().collect());
+        load_body("prod", r#"
+            const { publishInterface } = require("@s2script/interfaces");
+            publishInterface("@x/events", {});
+        "#, "{}");
+        eval_std("cons", r#"
+            globalThis.__handler = function () {};
+            __s2_iface_on("@x/events", "changed", globalThis.__handler);
+        "#);
+        assert_eq!(active_resources("cons"), 1);
+        eval_in_context_string("cons", "__s2_iface_off('@x/events', 'changed', __handler); 'off'");
+        assert_eq!(active_resources("cons"), 0);
+        unload_plugin("cons");
+        unload_plugin("prod");
+        shutdown();
+    }
+
+    #[test]
+    fn replacing_manifest_imports_releases_old_import_entries() {
+        let _ = init(dummy_logger());
+        set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new(
+            "@x/dep", "^1.0.0", crate::interfaces::Kind::Hard,
+        )]);
+        create_plugin_context("cons");
+        assert_eq!(active_resources("cons"), 1);
+        set_plugin_imports("cons", Vec::new());
+        assert_eq!(active_resources("cons"), 0);
+        unload_plugin("cons");
         shutdown();
     }
 
@@ -13273,6 +13395,37 @@ pub(crate) mod frame_tests {
         shutdown();
     }
 
+    #[test]
+    fn explicit_sqlite_close_releases_connection_before_unload() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(db_ops()));
+        let name = unique_db_name("ledger_close");
+        load_body("dbledger", &format!(r#"
+            globalThis.__state = "pending";
+            __s2_sqlite_open("{name}").then(function (h) {{
+                globalThis.__handle = h;
+                globalThis.__state = "open";
+            }});
+        "#), "{}");
+        for _ in 0..ASYNC_POLL_TICKS {
+            frame_async_drain();
+            if read_global_string("dbledger", "__state") == "open" { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(read_global_string("dbledger", "__state"), "open");
+        assert_eq!(active_resources("dbledger"), 1, "only the open connection remains active");
+        eval_in_context("dbledger", r#"
+            __s2_sqlite_close(globalThis.__handle).then(function () {
+                globalThis.__state = "closed";
+            });
+        "#).unwrap();
+        frame_async_drain();
+        assert_eq!(read_global_string("dbledger", "__state"), "closed");
+        assert_eq!(active_resources("dbledger"), 0);
+        unload_plugin("dbledger");
+        shutdown();
+    }
+
     /// A bad-SQL query rejects the Promise (not a panic/crash) — the `.catch` handler runs and
     /// records the error, proving the actor's `run_query` `Err` path reaches JS as a rejection via
     /// `resolve_db` on a LATER drain (the query itself now runs off-thread on the actor).
@@ -13881,6 +14034,7 @@ pub(crate) mod frame_tests {
         }
         assert!(resolved, "ws connect promise never settled on a drain");
         assert_eq!(read_global_string("wsbad", "__out"), "rejected:true");
+        assert_eq!(active_resources("wsbad"), 0, "failed connect releases job and connection");
         shutdown();
     }
 
@@ -14112,6 +14266,7 @@ pub(crate) mod frame_tests {
             logged.iter().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n")
         );
         assert_eq!(read_global_string("wsclose", "__out"), "closed:1000:");
+        assert_eq!(active_resources("wsclose"), 0, "explicit close releases job and connection");
         shutdown();
     }
 
@@ -14160,6 +14315,7 @@ pub(crate) mod frame_tests {
                     var s = "len=" + bytes.length + ":";
                     for (var i = 0; i < bytes.length; i++) s += bytes[i] + ",";
                     globalThis.__out = s;
+                    __s2_net_close(id);
                 }});
                 __s2_net_send(id, new Uint8Array([104, 105]));
             }}).catch(function (e) {{
@@ -14183,6 +14339,13 @@ pub(crate) mod frame_tests {
         assert!(resolved, "net data event never arrived on a drain");
         // Uint8Array([104,105]) echoed back, handed to the handler as a fresh indexable Uint8Array.
         assert_eq!(read_global_string("netp", "__out"), "len=2:104,105,");
+        for _ in 0..ASYNC_POLL_TICKS {
+            frame_async_drain();
+            dispatch_pending_net_events();
+            if active_resources("netp") == 0 { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(active_resources("netp"), 0, "explicit close releases job and connection");
         shutdown();
     }
 
@@ -14217,6 +14380,7 @@ pub(crate) mod frame_tests {
         }
         assert!(resolved, "net connect promise never settled on a drain");
         assert_eq!(read_global_string("netbad", "__out"), "rejected:true");
+        assert_eq!(active_resources("netbad"), 0, "failed connect releases job and connection");
         shutdown();
     }
 

@@ -53,6 +53,7 @@ fn connect_timeout() -> std::time::Duration {
 struct Conn {
     cmd_tx: tokio::sync::mpsc::UnboundedSender<WsCommand>,
     owner: String,
+    owner_generation: u64,
 }
 struct Engine {
     sig_tx: Sender<WsSignal>,
@@ -126,9 +127,13 @@ fn build_request(
 }
 
 pub fn connect(conn_id: u64, url: String, owner: String, headers: Vec<(String, String)>) {
+    connect_owned(conn_id, url, owner, 0, headers);
+}
+
+pub(crate) fn connect_owned(conn_id: u64, url: String, owner: String, owner_generation: u64, headers: Vec<(String, String)>) {
     let e = engine();
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<WsCommand>();
-    e.conns.lock().unwrap().insert(conn_id, Conn { cmd_tx, owner });
+    e.conns.lock().unwrap().insert(conn_id, Conn { cmd_tx, owner, owner_generation });
     let sig_tx = e.sig_tx.clone();
     crate::http::spawn(async move {
         let request = match build_request(&url, &headers) {
@@ -262,6 +267,7 @@ pub fn is_owner(conn_id: u64, owner: &str) -> bool {
 pub fn drop_conn(conn_id: u64) {
     if let Some(c) = engine().conns.lock().unwrap().remove(&conn_id) {
         let _ = c.cmd_tx.send(WsCommand::Shutdown);
+        crate::v8host::release_resource(&c.owner, c.owner_generation, &crate::plugin::Resource::WsConn(conn_id));
     }
 }
 pub fn try_recv_signal() -> Option<WsSignal> {

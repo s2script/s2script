@@ -57,6 +57,7 @@ struct ImportDecl { range: String, kind: Kind, compiled_types_sha256: Option<Str
 pub struct InterfaceRegistry {
     ifaces: HashMap<String, InterfaceEntry>,
     imports: HashMap<String, HashMap<String, ImportDecl>>, // plugin_id → (iface_name → decl)
+    import_order: HashMap<String, Vec<String>>,
 }
 
 /// Parse the leading semver major from a version or a range operator ("^1.2.3","1.x","~1.0" → 1).
@@ -79,7 +80,7 @@ pub fn version_satisfies(range: &str, version: &str) -> bool {
 
 impl InterfaceRegistry {
     pub fn new() -> Self {
-        Self { ifaces: HashMap::new(), imports: HashMap::new() }
+        Self { ifaces: HashMap::new(), imports: HashMap::new(), import_order: HashMap::new() }
     }
 
     /// Register (or re-register) an interface. Returns Err when a DIFFERENT producer already
@@ -132,17 +133,25 @@ impl InterfaceRegistry {
         names
     }
 
-    pub fn set_imports(&mut self, plugin_id: &str, decls: Vec<ImportSpec>) {
+    /// Replace one plugin's import declarations and return the prior active names.
+    pub fn set_imports(&mut self, plugin_id: &str, decls: Vec<ImportSpec>) -> Vec<String> {
+        let order = decls.iter().map(|decl| decl.name.clone()).collect();
         let map = decls.into_iter()
             .map(|s| (s.name, ImportDecl {
                 range: s.range, kind: s.kind, compiled_types_sha256: s.compiled_types_sha256,
             }))
             .collect();
         self.imports.insert(plugin_id.to_string(), map);
+        self.import_order.insert(plugin_id.to_string(), order).unwrap_or_default()
+    }
+
+    pub fn import_names(&self, plugin_id: &str) -> Vec<String> {
+        self.import_order.get(plugin_id).cloned().unwrap_or_default()
     }
 
     pub fn clear_imports(&mut self, plugin_id: &str) {
         self.imports.remove(plugin_id);
+        self.import_order.remove(plugin_id);
     }
 
     pub fn dep_kind(&self, plugin_id: &str, name: &str) -> Option<Kind> {
@@ -261,6 +270,7 @@ impl InterfaceRegistry {
     pub fn clear(&mut self) {
         self.ifaces.clear();
         self.imports.clear();
+        self.import_order.clear();
     }
 }
 
