@@ -127,11 +127,11 @@ struct PluginInstance {
     /// released before the `Global<Context>`). (Field kept named `exports` to minimize churn.)
     exports: Option<v8::Global<v8::Object>>,
     context: v8::Global<v8::Context>,
-    /// The plugin's REGISTRY-assigned generation (set together with the REGISTRY entry at
-    /// `create_plugin_context`).  Read when a native creates an async resolver so the resolver is
-    /// tagged with `(id, generation)`; `frame_async_drain` later checks `REGISTRY.is_live` against
-    /// this to DROP a continuation whose plugin unloaded or reloaded.
-    generation: u64,
+    // NOTE: no `generation` field. The generation lives ONLY in REGISTRY (`generation_of`) — a
+    // copy here was "kept in lockstep" but readable in the window where the two diverge (prelude
+    // eval runs after REGISTRY registration, before this instance lands in PLUGINS), which is
+    // exactly how prelude-time subscriptions got stamped with the never-live 0 (P0-1). One
+    // authority, no lockstep to maintain.
     /// The plugin's declared config fields (from its manifest).  Stored at load so
     /// `re_materialize_config` can re-run materialization without the manifest.
     /// Starts empty; populated by `store_config_decls` right after `load_plugin_js`.
@@ -537,9 +537,12 @@ pub(crate) fn subscribe_into(
     let func_local = v8::Local::<v8::Function>::try_from(args.get(handler_arg)).ok()?;
     let handler_g = v8::Global::new(scope.as_ref(), func_local);
     let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-    let generation = PLUGINS
-        .with(|p| p.borrow().get(&owner).map(|pi| pi.generation))
-        .unwrap_or(0);
+    // Stamp the generation from REGISTRY (the authority dispatch's `is_live` checks), NOT from
+    // PLUGINS: the plugin is registered in REGISTRY before its preludes run, but its
+    // PluginInstance only lands in PLUGINS after the context is built — so a prelude-time
+    // subscription read through PLUGINS would stamp the never-live sentinel 0 and be silently
+    // dropped by dispatch (the P0-1 defect: prelude subs worked for exactly one plugin).
+    let generation = plugin_generation(&owner);
     let sub_id = next_sub_id();
     let first = store.with(|m| m.borrow_mut().subscribe(key, sub_id, owner, generation, handler_g));
     Some((sub_id, first))
@@ -852,18 +855,18 @@ fn s2_unsubscribe(
 }
 
 /// The CALLING plugin's `(id, current generation)` for tagging an async resolver, or `None` for a
-/// non-plugin context (the shared `HOST` context).  The generation is read from the plugin's
-/// `PluginInstance` — which is set together with its REGISTRY entry at `create_plugin_context`, so it
-/// equals the plugin's current REGISTRY generation.  A later unload (id removed) or reload
-/// (generation advanced) then makes the captured tag fail `REGISTRY.is_live` in `frame_async_drain`,
-/// which DROPS the continuation instead of resolving it into a disposed/replaced context.
+/// non-plugin context (the shared `HOST` context).  The generation is read from `REGISTRY` — the
+/// same books `frame_async_drain` checks — so a tag captured at prelude-eval time (REGISTRY entry
+/// present, `PluginInstance` not yet in PLUGINS) is already the real generation.  A later unload
+/// (id removed) or reload (generation advanced) then makes the captured tag fail
+/// `REGISTRY.is_live` in `frame_async_drain`, which DROPS the continuation instead of resolving it
+/// into a disposed/replaced context.
 ///
-/// Reads the current context id (no borrow) then briefly borrows `PLUGINS` — the caller must hold no
-/// `PLUGINS` borrow across this (none do: every JS-call site clones its context out first).
+/// Reads the current context id (no borrow) then briefly borrows `REGISTRY` — the caller must hold
+/// no `REGISTRY` borrow across this (none do: every JS-call site clones its context out first).
 fn resolver_owner_tag(scope: &mut v8::PinScope) -> Option<(String, u64)> {
     current_plugin(scope).map(|owner| {
-        let generation =
-            PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        let generation = plugin_generation(&owner);
         (owner, generation)
     })
 }
@@ -2669,7 +2672,7 @@ fn s2_topmenu_add_item(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
         };
         let on_select = v8::Global::new(scope.as_ref(), func_local);
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let generation = PLUGINS.with(|p| p.borrow().get(&owner).map(|pi| pi.generation)).unwrap_or(0);
+        let generation = plugin_generation(&owner);
         topmenu_ensure_tab(category.clone(), None);
         // Reuse the existing seq on a re-add (reload) so positions stay stable; else take the next counter.
         let seq = TOPMENU_ITEMS.with(|m| m.borrow().get(&id).map(|it| it.seq))
@@ -4818,10 +4821,17 @@ pub(crate) fn current_plugin(scope: &mut v8::PinScope) -> Option<String> {
         .map(|p| p.0.clone())
 }
 
-/// The REGISTERING plugin's generation, for owner-tracked stores that live outside this module.
-/// `0` when `id` is not a live plugin context (the shared HOST / `"legacy"` path).
+/// The REGISTERING plugin's generation, for every subscribe-time liveness stamp (this module's
+/// `subscribe_into`/`resolver_owner_tag` and the owner-tracked stores outside it).
+///
+/// Read from `REGISTRY`, NOT from `PLUGINS`: REGISTRY is the authority every dispatch-side
+/// `is_live` check consults, and `create_plugin_context` registers the plugin there BEFORE
+/// evaluating its preludes — so a prelude-time subscription already stamps the real generation
+/// (`PLUGINS` only gets its `PluginInstance` after the context is built, which is what used to
+/// stamp prelude subs with 0). `0` when `id` is not a registered plugin (the shared HOST /
+/// `"legacy"` path) — a never-live sentinel the registry can no longer mint for a real plugin.
 pub(crate) fn plugin_generation(id: &str) -> u64 {
-    PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.generation)).unwrap_or(0)
+    REGISTRY.with(|r| r.borrow().generation_of(id)).unwrap_or(0)
 }
 
 /// Isolate-wide promise-reject callback (registered once in `init`). Runs inside V8 while our
@@ -4954,10 +4964,11 @@ fn s2_handoff_take(
     }));
 }
 
-/// Create a fresh per-plugin `v8::Context` on the shared isolate (borrowed from `HOST`), stamp it
-/// with the plugin id via `set_slot::<PluginId>`, install the FULL per-context API (all natives +
-/// `__s2require`) and evaluate the injected engine-generic prelude + any registered game preludes,
-/// store its `PluginInstance` in `PLUGINS`, register the plugin in `REGISTRY`, and return the
+/// Create a fresh per-plugin `v8::Context` on the shared isolate (borrowed from `HOST`): register
+/// the plugin in `REGISTRY` (FIRST — preludes subscribe at eval time and must stamp the real
+/// generation), stamp the context with the plugin id via `set_slot::<PluginId>`, install the FULL
+/// per-context API (all natives + `__s2require`) and evaluate the injected engine-generic prelude
+/// + any registered game preludes, store its `PluginInstance` in `PLUGINS`, and return the
 /// generation.
 ///
 /// Panics only if called before `init` (no isolate yet) — an internal invariant, not an FFI path.
@@ -4967,6 +4978,18 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
         let host = borrow
             .as_mut()
             .expect("create_plugin_context called before init");
+
+        // Register in REGISTRY BEFORE building the context: the preludes evaluated below subscribe
+        // at eval time (the cs2 prelude's HUD click hook, ui.js's onMapStart/onActive/…), and
+        // every subscribe native stamps (owner, generation) via `plugin_generation`. If the
+        // registration happened after the preludes, those stamps would all be the never-live
+        // sentinel 0 and dispatch would silently drop them (the P0-1 defect — they accidentally
+        // fired for whichever plugin happened to hold generation 0). Dispatch cannot interleave
+        // with this synchronous window, and `clone_plugin_context` degrades to None until the
+        // PluginInstance lands in PLUGINS below.
+        let generation = REGISTRY.with(|r| r.borrow_mut().insert(id));
+        // A fresh load clears any prior FAILED reason for this id (spec §5).
+        FAILED_PLUGINS.with(|f| { f.borrow_mut().remove(id); });
 
         // Build the context in a nested block so the HandleScope borrow on the shared isolate is
         // released before we touch PLUGINS.  Mirrors `init`'s scope construction.
@@ -5002,18 +5025,12 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
             // scope, hs, hs_storage drop here — the isolate borrow is released.
         };
 
-        // Register in REGISTRY first so we can stamp the assigned generation onto the PluginInstance
-        // (kept in lockstep — a resolver tags itself with this same generation via resolver_owner_tag).
-        let generation = REGISTRY.with(|r| r.borrow_mut().insert(id));
-        // A fresh load clears any prior FAILED reason for this id (spec §5).
-        FAILED_PLUGINS.with(|f| { f.borrow_mut().remove(id); });
         PLUGINS.with(|p| {
             p.borrow_mut().insert(
                 id.to_string(),
                 PluginInstance {
                     exports: None,
                     context: g_ctx,
-                    generation,
                     config_decls: std::collections::HashMap::new(),
                     phase: crate::plugin::Phase::Loading,
                 },
@@ -8323,8 +8340,8 @@ pub(crate) mod frame_tests {
         assert_eq!(read_string_global_in("demo", "__v"), "v1", "v1 handler ran before reload");
 
         // Capture the v1 generation so we can assert it becomes stale after reload.
-        let old_gen = PLUGINS
-            .with(|p| p.borrow().get("demo").expect("demo loaded").generation);
+        let old_gen = REGISTRY
+            .with(|r| r.borrow().generation_of("demo").expect("demo loaded"));
 
         // RELOAD: call load_body with the same id — the defensive guard fires. v2 writes "v2".
         let v2_js = r#"ctx.server.onGameFrame(function () { globalThis.__v = "v2"; });"#;
@@ -8352,8 +8369,8 @@ pub(crate) mod frame_tests {
         );
 
         // New generation is live.
-        let new_gen = PLUGINS
-            .with(|p| p.borrow().get("demo").expect("demo still loaded").generation);
+        let new_gen = REGISTRY
+            .with(|r| r.borrow().generation_of("demo").expect("demo still loaded"));
         assert_ne!(old_gen, new_gen, "generation must have advanced");
         assert!(
             REGISTRY.with(|r| r.borrow().is_live("demo", new_gen)),
@@ -10518,6 +10535,46 @@ pub(crate) mod frame_tests {
             globalThis.__ok = String(cs2 !== null && cs2.hasEntityRef === true && cs2.noRequire === true);
         "#, "{}");
         assert_eq!(read_global_string("p", "__ok"), "true");
+        shutdown();
+    }
+
+    /// P0-1: a subscription made at PRELUDE-eval time (before the plugin's `PluginInstance` lands
+    /// in PLUGINS) must stamp the plugin's REAL generation and dispatch — for EVERY plugin, not
+    /// just the process's first. The old code stamped such subscriptions with the `unwrap_or(0)`
+    /// fallback, and the registry's first minted generation was ALSO 0, so the first plugin's
+    /// prelude subscriptions accidentally fired while every later plugin's were silently dropped
+    /// (this is why the cs2 prelude's HUD click hook and ui.js's onMapStart worked for exactly one
+    /// plugin on a live server). Synthetic prelude — engine-generic, no CS2 names.
+    #[test]
+    fn prelude_time_subscription_is_live_for_every_plugin_not_only_the_first() {
+        let _ = init(dummy_logger());
+        register_injected_package(
+            "@s2script/cs2",
+            // Subscribe DURING prelude eval — the exact window where the generation stamp used to
+            // read 0 because the PluginInstance is not in PLUGINS yet.
+            r#"__s2_event_subscribe("round_start", function () {
+                   globalThis.__prelude_hits = (globalThis.__prelude_hits || 0) + 1;
+               });
+               globalThis.__s2pkg_cs2 = {};"#,
+        );
+        load_body("first", "", "{}");
+        load_body("second", "", "{}");
+        let _ = crate::events::dispatch_game_event("round_start");
+        assert_eq!(read_i32_global_in("first", "__prelude_hits"), 1,
+            "the first plugin's prelude subscription must dispatch (and exactly once)");
+        assert_eq!(read_i32_global_in("second", "__prelude_hits"), 1,
+            "a prelude subscription from a plugin that is NOT the process's first must dispatch too \
+             — it must never be stamped with the never-live generation 0 and silently dropped");
+        // And reload must still invalidate: the second plugin's reload re-runs the prelude, whose
+        // NEW subscription (new generation) fires while the OLD row is dead — one hit, not two.
+        load_body("second", "", "{}");
+        let _ = crate::events::dispatch_game_event("round_start");
+        assert_eq!(read_i32_global_in("second", "__prelude_hits"), 1,
+            "after a reload only the new instance's prelude subscription is live");
+        // Registered packages survive shutdown (a process-lifetime registry): overwrite the
+        // subscribing prelude with a no-op so it cannot leak a round_start handler into every
+        // later test on this thread.
+        register_injected_package("@s2script/cs2", r#"globalThis.__s2pkg_cs2 = {};"#);
         shutdown();
     }
 

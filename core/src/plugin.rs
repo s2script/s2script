@@ -177,7 +177,13 @@ pub struct Registry {
 
 impl Registry {
     pub fn new() -> Self {
-        Self { table: crate::liveness::LiveTable::new(0) }
+        // first_id 1, same as the entity books: generation 0 is a NEVER-LIVE sentinel. Every
+        // subscribe-time stamp falls back to 0 for an unregistered owner (`unwrap_or(0)`), and
+        // when the registry also minted 0 the process's FIRST plugin aliased that fallback — its
+        // pre-registration subscriptions accidentally fired while every other plugin's were
+        // silently dropped (the P0-1 defect). With 1 as the first real generation, a 0-stamped
+        // row can never match any plugin.
+        Self { table: crate::liveness::LiveTable::new(1) }
     }
 
     /// Insert (or re-insert on reload) a plugin. Returns the assigned generation.
@@ -271,15 +277,21 @@ mod tests {
     }
 
     #[test]
-    fn generations_come_from_one_shared_monotonic_counter_starting_at_zero() {
+    fn generations_come_from_one_shared_monotonic_counter_and_zero_is_never_live() {
         let mut r = Registry::new();
         let a = r.insert("a");
         let b = r.insert("b");
         let a2 = r.insert("a");                  // reload of a
-        assert_eq!(a, 0, "first generation is 0 (async-resolver unwrap_or(0) compat)");
+        assert_eq!(a, 1, "first generation is 1 — 0 is reserved as the never-live sentinel");
         assert!(b > a && a2 > b, "one shared counter across ids: {a} {b} {a2}");
         assert_eq!(r.generation_of("b"), Some(b));
         assert_eq!(r.ids().len(), 2);
+        // The P0-1 invariant: 0 is exactly what every subscribe-time stamp falls back to for an
+        // unregistered owner (`unwrap_or(0)`), so no plugin — not even the process's first — may
+        // ever be live for it. Otherwise a subscription made before registration accidentally
+        // fires for whichever plugin holds generation 0.
+        assert!(!r.is_live("a", 0), "generation 0 must never match a real plugin");
+        assert!(!r.is_live("b", 0), "generation 0 must never match a real plugin");
     }
 
     #[test]
