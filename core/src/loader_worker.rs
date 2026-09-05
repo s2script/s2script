@@ -442,6 +442,8 @@ struct State {
 #[derive(Default)]
 struct ConfigControl {
     resolution: Option<(u64, PathRevision, bool)>,
+    // Generations increase per path. Coalescing retires all ownership through this generation,
+    // including a committed predecessor whose replacement never produced a successful read.
     retire_generation: Option<u64>,
 }
 
@@ -726,7 +728,18 @@ fn worker_loop(shared: Arc<Shared>, policy: LoaderPolicy) {
                     break WorkerTurn::Controls(controls);
                 }
                 if let Some(key) = state.order.pop_front() {
-                    if let Some(request) = state.pending.remove(&key) {
+                    if let Some(mut request) = state.pending.remove(&key) {
+                        // A retirement may run before this queued read. Only the currently
+                        // registered generation may create baseline ownership; still read the
+                        // snapshot for any coalesced plugin/permissions consumers. In-flight reads
+                        // are safe because this single worker processes their retirement afterward.
+                        if let Request::Config { path, watch_generation, .. } = &mut request {
+                            let registered = state.config_watches.get(path)
+                                .and_then(|watch| watch.registered_generation);
+                            if *watch_generation != registered {
+                                *watch_generation = None;
+                            }
+                        }
                         state.in_flight.insert(key.clone());
                         break WorkerTurn::Request(key, request);
                     }
@@ -885,13 +898,13 @@ impl ConfigBaselines {
     }
 
     fn retire(&mut self, path: &Path, generation: u64) {
-        if self.values.get(path).is_some_and(|entry| entry.generation == generation) {
+        if self.values.get(path).is_some_and(|entry| entry.generation <= generation) {
             let old = self.values.remove(path).unwrap();
             self.bytes = self
                 .bytes
                 .saturating_sub(Self::entry_bytes(path, &old.content));
         }
-        if self.proposals.get(path).is_some_and(|entry| entry.generation == generation) {
+        if self.proposals.get(path).is_some_and(|entry| entry.generation <= generation) {
             self.drop_proposal(path);
         }
     }
@@ -2027,5 +2040,250 @@ mod tests {
                 .unwrap_err()
                 .contains("entry limit 1")
         );
+    }
+}
+#[cfg(test)]
+mod retirement_regressions {
+    use super::*;
+    fn result(worker: &LoaderWorker) -> WorkerResult {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(r) = worker.try_result() {
+                return r;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
+    #[test]
+    fn retirement_before_queued_read_must_not_orphan_a_late_seed() {
+        let root =
+            std::env::temp_dir().join(format!("s2-round3-retired-queue-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let blocker = root.join("blocker.json");
+        let first = root.join("first.json");
+        let second = root.join("second.json");
+        for path in [&blocker, &first, &second] {
+            std::fs::write(path, b"alpha").unwrap();
+        }
+        let gate: TestReadGate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        *TEST_READ_GATE.lock().unwrap() = Some(gate.clone());
+        let worker = LoaderWorker::start(LoaderPolicy {
+            config_baseline_items: 1,
+            ..LoaderPolicy::default()
+        })
+        .unwrap();
+        assert_eq!(
+            worker.try_read_config(1, 1, blocker, None),
+            Submit::Accepted
+        );
+        let mut state = gate.0.lock().unwrap();
+        while !state.0 {
+            state = gate.1.wait(state).unwrap();
+        }
+        assert_eq!(
+            worker.try_read_config(1, 1, first.clone(), Some(1)),
+            Submit::Accepted
+        );
+        // Last watcher unloads before the worker has started first.json.
+        worker.retire_config_watch(first.clone(), 1);
+        state.1 = true;
+        gate.1.notify_all();
+        drop(state);
+        let _ = result(&worker); // unrelated blocker
+        let retired_result = result(&worker);
+        // Main rejects the old generation and sends the prescribed consumerless Discard.
+        worker.resolve_config_watch(first.clone(), 1, 1, false);
+        assert!(!worker
+            .shared
+            .state
+            .lock()
+            .unwrap()
+            .config_watches
+            .contains_key(&first));
+        assert_eq!(
+            worker.try_read_config(1, 1, second, Some(2)),
+            Submit::Accepted
+        );
+        let next = result(&worker);
+        worker.shutdown();
+        *TEST_READ_GATE.lock().unwrap() = None;
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(
+            matches!(
+                next,
+                WorkerResult::Config {
+                    snapshot: Ok(ConfigSnapshot {
+                        watch: WatchDelta::Seed,
+                        ..
+                    }),
+                    ..
+                }
+            ),
+            "retired queued request leaked its late proposal: {next:?}"
+        );
+        assert!(matches!(retired_result, WorkerResult::Config {
+            watch_generation: None,
+            snapshot: Ok(ConfigSnapshot { content: Some(ref content), watch: WatchDelta::NotRequested, .. }),
+            ..
+        } if content.as_ref() == "alpha"), "retired reads must still deliver plain snapshots: {retired_result:?}");
+    }
+    #[test]
+    fn coalesced_retirements_must_release_the_older_committed_generation() {
+        let root = std::env::temp_dir().join(format!(
+            "s2-round3-retire-generations-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let blocker = root.join("blocker.json");
+        let first = root.join("first.json");
+        let second = root.join("second.json");
+        for path in [&blocker, &first, &second] {
+            std::fs::write(path, b"alpha").unwrap();
+        }
+        let worker = LoaderWorker::start(LoaderPolicy {
+            config_baseline_items: 1,
+            ..LoaderPolicy::default()
+        })
+        .unwrap();
+        assert_eq!(
+            worker.try_read_config(1, 1, first.clone(), Some(1)),
+            Submit::Accepted
+        );
+        let _ = result(&worker);
+        worker.resolve_config_watch(first.clone(), 1, 1, true);
+        let gate: TestReadGate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        *TEST_READ_GATE.lock().unwrap() = Some(gate.clone());
+        assert_eq!(
+            worker.try_read_config(1, 1, blocker, None),
+            Submit::Accepted
+        );
+        let mut state = gate.0.lock().unwrap();
+        while !state.0 {
+            state = gate.1.wait(state).unwrap();
+        }
+        std::fs::remove_file(&first).unwrap();
+        std::fs::create_dir(&first).unwrap();
+        worker.retire_config_watch(first.clone(), 1);
+        assert_eq!(
+            worker.try_read_config(1, 1, first.clone(), Some(2)),
+            Submit::Accepted
+        );
+        worker.retire_config_watch(first.clone(), 2);
+        state.1 = true;
+        gate.1.notify_all();
+        drop(state);
+        let _ = result(&worker);
+        assert!(matches!(
+            result(&worker),
+            WorkerResult::Config {
+                snapshot: Err(_),
+                ..
+            }
+        ));
+        assert_eq!(
+            worker.try_read_config(1, 1, second, Some(3)),
+            Submit::Accepted
+        );
+        let next = result(&worker);
+        worker.shutdown();
+        *TEST_READ_GATE.lock().unwrap() = None;
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(
+            matches!(
+                next,
+                WorkerResult::Config {
+                    snapshot: Ok(ConfigSnapshot {
+                        watch: WatchDelta::Seed,
+                        ..
+                    }),
+                    ..
+                }
+            ),
+            "coalesced retirement left generation 1 committed: {next:?}"
+        );
+    }
+
+    #[test]
+    fn retirement_fences_preserve_the_newest_queued_and_inflight_successor() {
+        for old_inflight in [false, true] {
+            let root = std::env::temp_dir().join(format!("s2-retire-successor-{}-{old_inflight}", std::process::id()));
+            std::fs::create_dir_all(&root).unwrap();
+            let path = root.join("config.json");
+            let blocker = root.join("blocker.json");
+            std::fs::write(&path, b"alpha").unwrap();
+            std::fs::write(&blocker, b"unrelated").unwrap();
+            let worker = LoaderWorker::start(LoaderPolicy {
+                config_baseline_items: 1, ..LoaderPolicy::default()
+            }).unwrap();
+            let gate: TestReadGate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+            *TEST_READ_GATE.lock().unwrap() = Some(gate.clone());
+            if old_inflight {
+                assert_eq!(worker.try_read_config(1, 1, path.clone(), Some(1)), Submit::Accepted);
+            } else {
+                assert_eq!(worker.try_read_config(1, 1, blocker.clone(), None), Submit::Accepted);
+            }
+            let mut state = gate.0.lock().unwrap();
+            while !state.0 { state = gate.1.wait(state).unwrap(); }
+            if !old_inflight {
+                assert_eq!(worker.try_read_config(1, 1, path.clone(), Some(1)), Submit::Accepted);
+            }
+            worker.retire_config_watch(path.clone(), 1);
+            assert_eq!(worker.try_read_config(1, 2, path.clone(), Some(2)), Submit::Coalesced);
+            worker.retire_config_watch(path.clone(), 2);
+            assert_eq!(worker.try_read_config(1, 3, path.clone(), Some(3)), Submit::Coalesced);
+            state.1 = true;
+            gate.1.notify_all();
+            drop(state);
+            if !old_inflight { let _ = result(&worker); }
+            assert!(matches!(result(&worker), WorkerResult::Config {
+                revision: 3, watch_generation: Some(3),
+                snapshot: Ok(ConfigSnapshot { watch: WatchDelta::Seed, .. }), ..
+            }));
+            worker.resolve_config_watch(path.clone(), 3, 3, true);
+            worker.retire_config_watch(path.clone(), 2);
+            assert_eq!(worker.try_read_config(1, 4, path.clone(), Some(3)), Submit::Accepted);
+            assert!(matches!(result(&worker), WorkerResult::Config {
+                watch_generation: Some(3),
+                snapshot: Ok(ConfigSnapshot { watch: WatchDelta::Unchanged, .. }), ..
+            }));
+            worker.retire_config_watch(path, 3);
+            // A plain read fences the control turn without occupying baseline capacity.
+            assert_eq!(worker.try_read_config(1, 2, blocker, None), Submit::Accepted);
+            let _ = result(&worker);
+            let state = worker.shared.state.lock().unwrap();
+            assert!(state.config_watches.is_empty());
+            assert_eq!(state.config_watch_bytes, 0);
+            drop(state);
+            assert_eq!(worker.try_read_config(1, 1, root.join("new.json"), Some(4)), Submit::Accepted);
+            let next = result(&worker);
+            worker.shutdown();
+            *TEST_READ_GATE.lock().unwrap() = None;
+            std::fs::remove_dir_all(root).unwrap();
+            assert!(matches!(next, WorkerResult::Config {
+                snapshot: Ok(ConfigSnapshot { watch: WatchDelta::Seed, .. }), ..
+            }));
+        }
+    }
+
+    #[test]
+    fn retire_through_releases_predecessor_bytes_and_preserves_newer_proposal() {
+        let path = PathBuf::from("config.json");
+        let content = Some(Arc::<str>::from("alpha"));
+        let mut baselines = ConfigBaselines::default();
+        let policy = LoaderPolicy::default();
+        assert_eq!(baselines.compare_and_propose(&path, 1, 1, &content, &policy), WatchDelta::Seed);
+        baselines.resolve(&path, 1, 1, true);
+        assert_eq!(baselines.compare_and_propose(&path, 3, 1, &content, &policy), WatchDelta::Seed);
+        baselines.retire(&path, 2);
+        assert_eq!(baselines.bytes, ConfigBaselines::entry_bytes(&path, &content));
+        assert!(baselines.values.is_empty());
+        assert_eq!(baselines.proposals[&path].generation, 3);
+        baselines.resolve(&path, 3, 1, true);
+        baselines.retire(&path, 2);
+        assert_eq!(baselines.values[&path].generation, 3);
+        baselines.retire(&path, 3);
+        assert_eq!(baselines.bytes, 0);
+        assert_eq!(baselines.path_count(), 0);
     }
 }

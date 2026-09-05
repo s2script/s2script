@@ -803,15 +803,20 @@ fn queue_config(path: PathBuf, consumer: ConfigConsumer) -> bool {
         crate::v8host::log_warn(&format!("WARN: loader config consumer {:?} deferred by bounded coalescing table", path));
         return false;
     }
-    let mut watch_generation = match &consumer {
-        ConfigConsumer::Watch { generation, .. } => Some(*generation),
+    // Pending consumers can outlive final unwatch. A new load/permissions consumer sharing the
+    // path must not turn that stale delivery intent back into a persistent worker registration.
+    let current_watch_generation = |consumer: &ConfigConsumer| match consumer {
+        ConfigConsumer::Watch { id, generation }
+            if CONFIG_PATHS.with(|paths| paths.borrow().get(id) == Some(&path))
+                && CONFIG_WATCH_GENERATIONS.with(|generations| generations.borrow().get(&path).copied() == Some(*generation)) => Some(*generation),
         _ => None,
     };
+    let mut watch_generation = current_watch_generation(&consumer);
     CONFIG_PENDING.with(|pending| {
         if let Some(row) = pending.borrow().get(&path) {
             for existing in &row.consumers {
-                if let ConfigConsumer::Watch { generation, .. } = existing {
-                    watch_generation = Some(watch_generation.map_or(*generation, |old| old.max(*generation)));
+                if let Some(generation) = current_watch_generation(existing) {
+                    watch_generation = Some(watch_generation.map_or(generation, |old| old.max(generation)));
                 }
             }
         }
@@ -1885,6 +1890,46 @@ mod tests {
         assert!(!WATCH_STATE.with(|watch| watch.borrow().contains_key(&path)));
         shutdown_worker();
         crate::v8host::shutdown();
+    }
+
+    #[test]
+    fn retired_pending_watch_does_not_reregister_for_a_permissions_consumer() {
+        shutdown_worker();
+        let root = std::env::temp_dir().join(format!("s2-loader-retired-pending-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("shared.json");
+        std::fs::write(&path, b"{}").unwrap();
+        let policy = LoaderPolicy { request_items: 1, result_items: 1, ..LoaderPolicy::default() };
+        WORKER.with(|slot| *slot.borrow_mut() = Some(LoaderWorker::start(policy).unwrap()));
+        CONFIG_PATHS.with(|paths| paths.borrow_mut().insert("old".into(), path.clone()));
+        CONFIG_WATCH_GENERATIONS.with(|generations| generations.borrow_mut().insert(path.clone(), 1));
+        assert!(queue_config(path.clone(), ConfigConsumer::Watch { id: "old".into(), generation: 1 }));
+        let next_result = || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Some(result) = WORKER.with(|slot| slot.borrow().as_ref().unwrap().try_result()) {
+                    break result;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+        };
+        // The old watch consumer is still pending when a load sharing this config path arrives.
+        let _undelivered = next_result();
+        unwatch_config_for("old");
+        assert!(queue_config(path.clone(), ConfigConsumer::Permissions));
+        let next = next_result();
+        let WorkerResult::Config { revision, watch_generation, snapshot, .. } = next else {
+            panic!("expected config result");
+        };
+        handle_config(path, revision, watch_generation, snapshot);
+        let admission = WORKER.with(|slot| slot.borrow().as_ref().unwrap()
+            .try_read_config(current_epoch(), 1, root.join("second.json"), Some(2)));
+        shutdown_worker();
+        *PERMISSIONS.write().unwrap() = None;
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(watch_generation, None, "stale pending consumer revived retired watch intent");
+        assert_eq!(admission, Submit::Accepted, "consumerless control reservation leaked capacity");
     }
 
     #[test]
