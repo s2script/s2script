@@ -5762,8 +5762,9 @@ void S2ScriptPlugin::Hook_StartupServer(const GameSessionConfiguration_t&, ISour
         S2ClientReconcile(kMaxClientSlots, CPlayerUserId(-1).Get(),
             [](int slot) { return s_pEngine->GetPlayerUserId(CPlayerSlot(slot)).Get(); },
             [](int slot) {
-                // Occupancy does not prove new-map activation. Lifecycle hooks advance this.
-                s_trackedSignon[slot] = kSignonConnected;
+                // StartupServer may repeat without new lifecycle callbacks. Retain observed
+                // phase; occupancy supplies only a connected floor for previously unknown slots.
+                if (s_trackedSignon[slot] < kSignonConnected) s_trackedSignon[slot] = kSignonConnected;
                 s2script_core_client_ensure(slot);
             },
             [](int slot) {

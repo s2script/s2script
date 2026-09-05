@@ -152,15 +152,16 @@ reported an empty name and unsigned absent user ID 65535. The earlier map-preser
 did not model this divergence between engine occupancy and tracked lifecycle state.
 
 The shim now reconciles all 64 slots in its **POST StartupServer** hook, before map-start JS.
-It reads the typed engine user-ID sentinel directly. Occupied slots keep their generation and
-connection policy; their signon becomes conservatively connected until observed new-map phase
-hooks advance it. Absent slots clear shim signon/mute/hearability state and call the existing
+It reads the typed engine user-ID sentinel directly. Occupied slots keep their generation,
+connection policy, and observed signon phase; only an unknown phase is raised to connected.
+Absent slots clear shim signon/mute/hearability state and call the existing
 generation-checked core end entry, retiring voice rules and cookie sessions. No synthetic disconnect
 event is emitted with an already-lost identity. Deferred map replay does not repeat reconciliation.
 
 Local evidence: the old occupancy-only scan fails the new phantom-token assertion; the corrected
-engine-free C++ test passes absent-slot retirement, user ID 0, stable survivor identity, and phase
-reset. A core test exercises the exact end/ensure entry points and verifies dirty-cookie retirement,
+engine-free C++ test passes absent-slot retirement, user ID 0, and stable survivor identity. Its
+original phase-reset expectation was corrected in the follow-up below. A core test exercises the
+exact end/ensure entry points and verifies dirty-cookie retirement,
 stale cached-event rejection, survivor cookie/voice preservation, and safe late retirement after
 slot reuse. **674 core tests**, **52 focused SDK/Player/HUD tests**, the client-bootstrap and defer
 queue C++ tests, core boundary, and `git diff --check` pass. Exact logs are
@@ -172,3 +173,17 @@ Independent review, Linux shim/native validation and a repeated live map gate re
 this correction. Human clients are unavailable in the live fixture: the non-sentinel survivor test
 proves the reconciliation policy, but the bot trace does **not** prove human engine hook continuity
 through a map transition. Task 5's single persistence seam and durability limits are unchanged.
+
+## Review round 3 — retain observed survivor phase
+
+Review of `b66058a` found that unconditional signon reset could strand an active survivor at
+connected when `StartupServer` repeats without later active callbacks. Immediate kicks require
+signon >= 4, and both transmit paths require full signon. Reconciliation now uses the same
+conditional connected floor as late-load bootstrap, preserving every already-observed phase.
+
+The C++ regression fails against the downgrade and passes after correction. It reconciles twice
+without intervening lifecycle hooks, checking stable full/spawn phases, tokens, mute and hearability
+state; an occupied previously unknown slot is initialized once, and absent slots still retire.
+Logs: `task-3-round3-phase-{red,green}.log` and `task-3-round3-client-core.log` in shared scratch.
+The focused client core tests pass; the prior 674-test core suite remains the unchanged-core
+baseline. Independent re-review and final Linux/live gates remain pending on this follow-up.
