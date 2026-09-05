@@ -1,0 +1,18 @@
+# candidate SDK hook model: indexed entity/kind buckets and maintained kind membership
+# excludes V8, JS callbacks, SourceHook, shim, engine, and process startup
+sdkhook_snapshot,total_hooks=1,matching_hooks=1,observed_visited_bucket_entries=1,samples=10000,p50_ns=41,p95_ns=42,p99_ns=42,max_ns=625
+sdkhook_snapshot,total_hooks=100,matching_hooks=1,observed_visited_bucket_entries=1,samples=10000,p50_ns=41,p95_ns=42,p99_ns=42,max_ns=167
+sdkhook_snapshot,total_hooks=1000,matching_hooks=1,observed_visited_bucket_entries=1,samples=10000,p50_ns=41,p95_ns=42,p99_ns=42,max_ns=167
+sdkhook_entity_snapshot,hooked_entities=1,observed_visited_kind_entities=1,samples=10000,p50_ns=0,p95_ns=42,p99_ns=42,max_ns=167
+sdkhook_entity_snapshot,hooked_entities=100,observed_visited_kind_entities=100,samples=10000,p50_ns=41,p95_ns=42,p99_ns=42,max_ns=875
+sdkhook_entity_snapshot,hooked_entities=1000,observed_visited_kind_entities=1000,samples=10000,p50_ns=167,p95_ns=209,p99_ns=250,max_ns=1083
+sdkhook_modeled_frame_lookup,hooked_entities=1,viewers=1,js_callbacks=0,samples=2000,p50_ns=42,p95_ns=84,p99_ns=84,max_ns=250
+sdkhook_modeled_frame_lookup,hooked_entities=1,viewers=16,js_callbacks=0,samples=2000,p50_ns=709,p95_ns=959,p99_ns=1084,max_ns=3750
+sdkhook_modeled_frame_lookup,hooked_entities=1,viewers=64,js_callbacks=0,samples=2000,p50_ns=2917,p95_ns=3792,p99_ns=4167,max_ns=24792
+sdkhook_modeled_frame_lookup,hooked_entities=100,viewers=1,js_callbacks=0,samples=2000,p50_ns=4708,p95_ns=5167,p99_ns=5334,max_ns=8583
+sdkhook_modeled_frame_lookup,hooked_entities=100,viewers=16,js_callbacks=0,samples=2000,p50_ns=62875,p95_ns=72875,p99_ns=79292,max_ns=98334
+sdkhook_modeled_frame_lookup,hooked_entities=100,viewers=64,js_callbacks=0,samples=2000,p50_ns=241084,p95_ns=281334,p99_ns=294833,max_ns=310833
+sdkhook_modeled_frame_lookup,hooked_entities=1000,viewers=1,js_callbacks=0,samples=2000,p50_ns=42958,p95_ns=48958,p99_ns=56917,max_ns=75625
+sdkhook_modeled_frame_lookup,hooked_entities=1000,viewers=16,js_callbacks=0,samples=2000,p50_ns=641833,p95_ns=691875,p99_ns=716000,max_ns=769584
+sdkhook_modeled_frame_lookup,hooked_entities=1000,viewers=64,js_callbacks=0,samples=2000,p50_ns=2450459,p95_ns=2747041,p99_ns=2953209,max_ns=3163917
+# sink=909
