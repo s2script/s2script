@@ -78,8 +78,10 @@ active/ready/waiting/applying lease locations.
   example typechecks, code generation and Docker tests; the last fix only changes Rust.
 - Cargo checks, boundary/name/invoke-ABI checks, worker engine/V8 isolation, and production
   loader filesystem isolation pass.
-- Engine-order and deferred-sentinel shell checks encounter their existing BSD sed parsing
-  limitation on macOS. Linux native/shim/symbol validation is still required.
+- Engine-order and deferred-sentinel shell checks pass in the Mac's existing linux/amd64
+  Docker image with a read-only repository mount: all 126 engine-op names/order/arities
+  agree, and the shared deferred sentinel is -1000. This avoids the macOS BSD sed
+  parsing limitation. Full Linux native/shim/symbol validation is still required.
 - The loader-aware mixed harness has 34 passing deterministic tests. It checks actual caps,
   stable highwaters/limits, bounded combined idle, exact warm-up byte changes, measured
   retention plateau, and exact config restoration/application. This is **not live proof**.
