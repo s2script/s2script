@@ -22,12 +22,19 @@ use crate::v8host::{current_plugin, log_warn, set_native};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+#[derive(Default)]
+struct PoolSlot {
+    owner: Option<String>,
+    released_in: Option<u64>,
+}
+
 thread_local! {
     /// kind ("modal" / "badge" / future families) → slot index → owning plugin id.
-    /// `None` = free. The vec grows lazily to the capacity the claimer passes: capacity is an
+    /// A slot released inside a dispatch stays unavailable until that outer fan-out returns.
+    /// The vec grows lazily to the capacity the claimer passes: capacity is an
     /// argument, not a constant here, because the slot counts (MODALS/BADGES) are facts about
     /// `s2script_lib.xml` and belong to the game package — the host only arbitrates ownership.
-    static UI_POOL_CLAIMS: RefCell<HashMap<String, Vec<Option<String>>>>
+    static UI_POOL_CLAIMS: RefCell<HashMap<String, Vec<PoolSlot>>>
         = RefCell::new(HashMap::new());
 }
 
@@ -39,11 +46,13 @@ pub(crate) fn claim(kind: &str, capacity: usize, owner: &str) -> i32 {
         let mut pools = p.borrow_mut();
         let pool = pools.entry(kind.to_string()).or_default();
         if pool.len() < capacity {
-            pool.resize(capacity, None);
+            pool.resize_with(capacity, PoolSlot::default);
         }
         for (i, slot) in pool.iter_mut().enumerate().take(capacity) {
-            if slot.is_none() {
-                *slot = Some(owner.to_string());
+            if slot.owner.is_none() && !(slot.released_in.is_some()
+                && slot.released_in == crate::dispatch::current_epoch()) {
+                slot.owner = Some(owner.to_string());
+                slot.released_in = None;
                 return i as i32;
             }
         }
@@ -61,25 +70,15 @@ pub(crate) fn release(kind: &str, index: usize, owner: &str) -> bool {
             log_warn(&format!("WARN: ui_pool release: no '{}' pool exists", kind));
             return false;
         };
-        match pool.get_mut(index) {
-            Some(slot @ Some(_)) if slot.as_deref() == Some(owner) => {
-                *slot = None;
-                true
-            }
-            Some(Some(holder)) => {
-                log_warn(&format!(
-                    "WARN: ui_pool release: '{}' slot {} is held by '{}', not caller '{}' — refused",
-                    kind, index, holder, owner
-                ));
-                false
-            }
-            _ => {
-                log_warn(&format!(
-                    "WARN: ui_pool release: '{}' slot {} is not claimed",
-                    kind, index
-                ));
-                false
-            }
+        let Some(slot) = pool.get_mut(index) else { return false };
+        if slot.owner.as_deref() == Some(owner) {
+            slot.owner = None;
+            slot.released_in = crate::dispatch::current_epoch();
+            true
+        } else {
+            log_warn(&format!("WARN: ui_pool release: '{}' slot {} is not held by '{}' — refused",
+                kind, index, owner));
+            false
         }
     })
 }
@@ -89,8 +88,9 @@ fn remove_owner(owner: &str) {
     UI_POOL_CLAIMS.with(|p| {
         for pool in p.borrow_mut().values_mut() {
             for slot in pool.iter_mut() {
-                if slot.as_deref() == Some(owner) {
-                    *slot = None;
+                if slot.owner.as_deref() == Some(owner) {
+                    slot.owner = None;
+                    slot.released_in = crate::dispatch::current_epoch();
                 }
             }
         }
@@ -215,6 +215,23 @@ mod tests {
         clear_pool();
     }
 
+    #[test]
+    fn nested_dispatch_and_unload_keep_retired_panels_unavailable() {
+        clear_pool();
+        assert_eq!(claim("modal", 2, "a"), 0);
+        {
+            let _outer = crate::dispatch::DispatchScope::enter();
+            {
+                let _nested = crate::dispatch::DispatchScope::enter();
+                remove_owner("a");
+                assert_eq!(claim("modal", 1, "b"), -1);
+            }
+            assert_eq!(claim("modal", 1, "b"), -1, "the outer fan-out is still running");
+        }
+        assert_eq!(claim("modal", 1, "b"), 0);
+        clear_pool();
+    }
+
     // ── in-isolate tests: the natives + the unload ledger ──────────────────────────────────
 
     /// The defect this module fixes, asserted end-to-end: two plugin CONTEXTS claiming through
@@ -249,6 +266,26 @@ mod tests {
             eval_in_context_string("pool_d", r#" String(__s2_ui_pool_claim("badge", 4)) "#), "0",
             "pool_c's badge slot must be free after its unload"
         );
+        shutdown();
+    }
+
+    #[test]
+    fn released_panels_are_not_reassigned_during_the_same_dispatch() {
+        init(dummy_logger()).unwrap();
+        load_body("handoff_a", r#"
+            __s2_ui_pool_claim("modal", 6);
+            __s2_event_subscribe("handoff", function() { __s2_ui_pool_release("modal", 0); });
+        "#, "{}");
+        load_body("handoff_b", r#"
+            __s2_event_subscribe("handoff", function() {
+                globalThis.idx = __s2_ui_pool_claim("modal", 6);
+            });
+        "#, "{}");
+        let _ = crate::events::dispatch_game_event("handoff");
+        assert_eq!(eval_in_context_string("handoff_b", "String(idx)"), "1",
+            "a later subscriber must not reuse the clicked panel during its original fan-out");
+        assert_eq!(eval_in_context_string("handoff_b", "String(__s2_ui_pool_claim('modal', 6))"), "0",
+            "the retired panel is available immediately after the dispatch returns");
         shutdown();
     }
 

@@ -127,6 +127,8 @@ test("CS2 prelude defers hudkit binding to the plugin's ctx-bound ui base", () =
 function pluginWorld() {
   const vm = require("node:vm");
   const owners = Array(6).fill(null);
+  const retired = Array(6).fill(null);
+  let epoch = 0, activeEpoch = null;
   const entities = [];
   const writes = [];
   const plugins = [];
@@ -144,13 +146,15 @@ function pluginWorld() {
     const ctx = vm.createContext({
       console: { log() {} }, __s2pkg_cs2: {},
       __s2_ui_pool_claim(_kind, capacity) {
-        const index = owners.findIndex((v, i) => i < capacity && v === null);
+        const index = owners.findIndex((v, i) => i < capacity && v === null &&
+          (activeEpoch === null || retired[i] !== activeEpoch));
         if (index >= 0) owners[index] = owner;
         return index;
       },
       __s2_ui_pool_release(_kind, index) {
         assert.equal(owners[index], owner);
         owners[index] = null;
+        retired[index] = activeEpoch;
         return true;
       },
       __s2pkg_entity: {
@@ -190,7 +194,13 @@ function pluginWorld() {
       pickNumber: (n) => picks.push(n), cancel() {},
     };
   }
-  return { owners, writes, plugins, plugin, session };
+  function dispatchClick(slot, id) {
+    const previous = activeEpoch;
+    if (activeEpoch === null) activeEpoch = ++epoch;
+    try { for (const p of plugins) p.click(slot, id); }
+    finally { activeEpoch = previous; }
+  }
+  return { owners, writes, plugins, plugin, session, dispatchClick };
 }
 
 test("14 idle plugins reserve no panels and every plugin can open a clickable menu after load", () => {
@@ -265,4 +275,21 @@ test("panel handoff forces repaint when a previous owner reacquires the same tre
   assert.ok(w.writes.slice(before).some((v) => v.owner === 0 &&
     v.name === "setDialogVariableStringForPlayer" && v.args[3] === "s2_m0_title" && v.args[4] === "T"),
   "the first owner's cached title must not suppress restoring it after a handoff");
+});
+
+
+test("a cross-plugin menu transition does not forward the triggering click to the new menu", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin();
+  const first = w.session(1), next = w.session(1);
+  first.pickNumber = (n) => {
+    first.picks.push(n);
+    a.renderers.center.close(1);
+    b.renderers.center.open(next); // Synchronous interface handoff during A's click callback.
+  };
+  a.renderers.center.open(first);
+  w.dispatchClick(1, "s2_m0_r0");
+  assert.deepEqual(first.picks, [1]);
+  assert.deepEqual(next.picks, [], "the new menu needs a fresh user click");
+  w.dispatchClick(1, "s2_m1_r0");
+  assert.deepEqual(next.picks, [1]);
 });
