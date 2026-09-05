@@ -389,95 +389,38 @@ test("buttons may be a per-slot function", () => {
   assert.deepStrictEqual(clicks, [2]);
 });
 
-// The footer click-dispatch table is ONE ARRAY PER MODAL, rebuilt on every paint — so a
-// `buttons(slot)` function that hands different slots different handler sets means the last
-// paint's handlers fire for every player with the sheet open (a live incident: a player's shop
-// footer dispatching an admin's Ban handler). The library cannot fix that without a per-slot
-// table, but in debug mode it must at least SAY it.
-test("debug mode warns when buttons(slot) diverges across two live slots", () => {
-  const { ui } = mount();
-  const logged = [];
-  const origLog = globalThis.console.log;
-  globalThis.__s2_ui_debug = true;
-  try {
-    globalThis.console.log = (msg) => logged.push(String(msg));
-    const buy = { text: "Buy", onClick: () => {} };
-    const ban = { text: "Ban", variant: "bad", onClick: () => {} };
-    const m = ui.modal({
-      title: "Shop",
-      rows: [],
-      buttons: (slot) => (slot === 1 ? [buy, ban] : [buy]),
-    });
-    m.open(1);
-    const diverged = (l) => l.includes("DIFFERENT set");
-    assert.ok(!logged.some(diverged), "a single open slot has nothing to diverge from");
-    m.open(2);
-    assert.ok(logged.some(diverged), "a live cross-slot divergence must be reported");
-    // Once per claimed modal: the condition re-fires on every repaint, and a warning that
-    // scrolls forever is a warning nobody reads.
-    const seen = logged.filter(diverged).length;
-    m.refresh();
-    assert.strictEqual(logged.filter(diverged).length, seen);
-  } finally {
-    globalThis.console.log = origLog;
-    delete globalThis.__s2_ui_debug;
-  }
+test("each player dispatches the footer handlers from their own last paint", () => {
+  const { ui, clickHandlers } = mount();
+  const calls = [];
+  const m = ui.modal({ rows: [], buttons: (slot) => slot === 1
+    ? [{ text: "Buy", onClick: () => calls.push("buy") }]
+    : [{ text: "Ban", onClick: () => calls.push("ban") }, { text: "Extra", onClick: () => calls.push("extra") }],
+  });
+  m.open(1); m.open(2);
+  clickHandlers.s2_m0_f0(1);
+  clickHandlers.s2_m0_f0(2);
+  clickHandlers.s2_m0_f1(1); // This button exists only on player 2's sheet.
+  assert.deepStrictEqual(calls, ["buy", "ban"]);
+  m.refresh(1);
+  clickHandlers.s2_m0_f1(2);
+  assert.deepStrictEqual(calls, ["buy", "ban", "extra"]);
+  m.forget(2);
+  clickHandlers.s2_m0_f0(2);
+  m.close(1);
+  clickHandlers.s2_m0_f0(1);
+  assert.deepStrictEqual(calls, ["buy", "ban", "extra"], "closed/forgotten viewers cannot dispatch");
 });
 
-test("debug mode stays quiet when buttons(slot) varies only text, and when slots do not overlap", () => {
-  const { ui } = mount();
-  const logged = [];
-  const origLog = globalThis.console.log;
-  globalThis.__s2_ui_debug = true;
-  try {
-    globalThis.console.log = (msg) => logged.push(String(msg));
-    // Same handler identities in the same order — per-slot TEXT is fine (it goes through the
-    // per-player natives) and must not trip the tripwire.
-    const onClick = () => {};
-    const m = ui.modal({
-      title: "Shop",
-      rows: [],
-      buttons: (slot) => [{ text: slot === 1 ? "Buy (broke)" : "Buy", onClick }],
-    });
-    m.open(1);
-    m.open(2);
-    assert.ok(!logged.some((l) => l.includes("DIFFERENT set")), "same handlers must not warn");
-    m.close(1);
-    m.close(2);
-    // Divergent sets on slots that are never open TOGETHER are harmless — a closed slot's clicks
-    // can no longer reach the shared table — so sequential single-viewer use stays quiet.
-    const m2 = ui.modal({
-      title: "Admin",
-      rows: [],
-      buttons: (slot) => (slot === 3 ? [{ text: "Ban", onClick: () => {} }] : []),
-    });
-    m2.open(3);
-    m2.close(3);
-    m2.open(4);
-    assert.ok(!logged.some((l) => l.includes("DIFFERENT set")), "no overlap, no hazard, no warning");
-  } finally {
-    globalThis.console.log = origLog;
-    delete globalThis.__s2_ui_debug;
-  }
-});
-
-test("the divergence tripwire is off unless debug mode is armed", () => {
-  const { ui } = mount();
-  const logged = [];
-  const origLog = globalThis.console.log;
-  try {
-    globalThis.console.log = (msg) => logged.push(String(msg));
-    const m = ui.modal({
-      title: "Shop",
-      rows: [],
-      buttons: (slot) => (slot === 1 ? [{ text: "A", onClick: () => {} }] : []),
-    });
-    m.open(1);
-    m.open(2);
-    assert.ok(!logged.some((l) => l.includes("DIFFERENT set")), "the check is a per-paint cost — opt-in only");
-  } finally {
-    globalThis.console.log = origLog;
-  }
+test("automatic pager buttons retain each viewer's own footer positions", () => {
+  const { ui, clickHandlers } = mount();
+  const m = ui.modal({
+    rows: (slot) => Array.from({ length: slot === 1 ? 20 : 1 }, (_, i) => ({ a: String(i) })),
+    buttons: [{ text: "Close", onClick: (_slot, view) => view.close() }],
+  });
+  m.open(1); m.open(2);
+  clickHandlers.s2_m0_f2(1); // Next, absent entirely from player 2's one-page sheet.
+  assert.strictEqual(m.cursor(1), 8);
+  assert.strictEqual(m.cursor(2), 0);
 });
 
 test("callout paints the docked hint without grabbing the cursor", () => {

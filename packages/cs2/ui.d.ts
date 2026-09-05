@@ -283,14 +283,8 @@ export interface ModalSpec {
   /**
    * Up to 5; Prev/Next claim the trailing two automatically when the list pages.
    *
-   * The per-slot function may vary `text` and `variant` freely (those go through per-player
-   * natives), but it MUST return the same `onClick` handlers, in the same order, for every slot.
-   * The click-dispatch table is one array per MODAL, rebuilt on every repaint — so if two players
-   * hold the sheet with different handler sets, the last repaint wins and its handlers fire for
-   * BOTH players' clicks (this once put an admin's Ban handler behind a player's shop button).
-   * To offer genuinely different actions per player, claim a separate modal per button set.
-   * With `globalThis.__s2_ui_debug = true`, the library logs a warning when it sees a live
-   * divergence.
+   * Text, variants, and handlers may differ for each player. Clicks dispatch through the
+   * handler table from that player's most recent paint; other players' updates do not change it.
    */
   readonly buttons?: readonly FooterButton[] | ((slot: number) => readonly FooterButton[]);
   readonly pageSize?: number;
