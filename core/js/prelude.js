@@ -1687,13 +1687,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       return v === null ? cookie.default : v;
     },
     set: function (client, cookie, value) {
-      __s2_cookie_online(client, "set", { name: cookie.name, value: String(value), updated: Math.floor(Date.now() / 1000) });
+      return __s2_cookie_online(client, "set", { name: cookie.name, value: String(value), updated: Math.floor(Date.now() / 1000) }) === true;
     },
     areCached: function (client) { return __s2_cookie_online(client, "cached", {}) === true; },
     getTime: function (client, cookie) { return __s2_cookie_online(client, "time", { name: cookie.name }) || 0; },
     setAuthId: function (steamId, cookie, value) {
-      if (!steamId || steamId === "0") return;   // no-op for bots
-      __s2_cookie_set_authid(String(steamId), cookie.name, String(value), Math.floor(Date.now() / 1000));
+      if (!steamId || steamId === "0") return false;   // rejected for bots
+      return __s2_cookie_set_authid(String(steamId), cookie.name, String(value), Math.floor(Date.now() / 1000));
     },
     onCached: function (h) {
       // Guard: fromSlot is null if the client disconnected in the load->fan-out window, so only fire
