@@ -1,6 +1,6 @@
 # Slice 8: Replace linear timer scheduling
 
-**Status:** Planned; implementation has not started.
+**Status:** Implemented and independently reviewed; local/Linux correctness gates and repeated native benchmarks pass. Final integrated live gate remains pending.
 **Branch:** `core/hardening-08-timer-index`
 **Parent / PR base:** `core/hardening-07-hook-index`
 **Workflow:** [Full workflow and gates](../2026-09-04-runtime-hardening.md)
@@ -33,3 +33,31 @@ from slice 1 remains authoritative; scheduling indexes must not create a second 
 - [ ] Record applicable full-gate and live-server results, with environment limitations stated.
 - [ ] Review the diff against the parent and restack descendants using recorded old tips.
 - [ ] Set status to complete only when this slice's required gates pass.
+
+## Reviewed implementation and evidence
+
+An indexed deadline heap plus frame buckets and reverse locations replaces full timer scans.
+Cancellation physically removes entries; there is no historical cancellation tombstone list.
+Duplicate-ID behavior and global due ordering are preserved, and `due_limited(0)` retains
+all work. The frame budget uses actual eligible entries examined, not returned vector length.
+
+Review found and closed a full-heap rebuild when 65 timers were due beside 100,000 future
+timers (approximately 1.444 ms before the fix versus 45 microseconds after). An independent
+100,000-operation schedule oracle, 13 timer tests and 11 V8 integration tests passed.
+
+The final combined code at `5e40276651ac26afa569aa35ec931e58424182f1` passed 736 core tests,
+both fresh-process pressure cases, and the full Linux native/shim/symbol gate. The async
+and timer integration received a separate independent review.
+
+Five paired native benchmark runs retain the original workload sizes and timing boundaries.
+Large idle queues and heavy cancellation improve, but costs are explicit: 10,000 due timers
+measured approximately 9 to 27 microseconds (slower), and cancellation at size ten increased
+from approximately 42 to 541 ns. Cancellation at 10,000 improved from roughly 20.6 to 2.1 ms.
+Sub-resolution single-call idle measurements reported as zero do **not** mean zero work or
+100% improvement; a separate batched measurement observed roughly 10 ns versus 4.9 microseconds
+at 10,000 idle timers. The eight-sample largest cancellation tails are coarse.
+
+These are native data-structure measurements, excluding V8, callbacks, the engine and RSS.
+Final exact-source timer reruns and integrated live validation remain stack-wide. A separate
+slice-8-only live install was skipped after its Linux gate; the final release will include
+these changes with the later loader and mechanical extraction slices.
