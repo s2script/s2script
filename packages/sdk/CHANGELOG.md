@@ -1,5 +1,11 @@
 # @s2script/cli
 
+## 0.25.1
+
+### Patch Changes
+
+- 03449fb: Clarify hudkit initialization and callback lifetime, update its example to claim panels in OnPluginStart, and type Menu.registerRenderer's previous-renderer return value.
+
 ## 0.25.0
 
 ### Minor Changes
