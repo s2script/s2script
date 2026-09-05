@@ -18,6 +18,7 @@ set(S2_CORE_LIB_DIR "release" CACHE STRING "cargo profile dir the core .so was b
 
 add_library(s2script SHARED
     src/s2script_mm.cpp
+    src/config_ops.cpp
     # Entity lifecycle listeners slice: the isolated IEntityListener TU (mirrors ekv.cpp's isolation
     # discipline — the only new TU that includes entity2/entitysystem.h for the listener interface).
     src/entity_listener.cpp
