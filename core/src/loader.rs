@@ -612,7 +612,7 @@ struct ApplyItem { row: PreparedLoad, allow_unmet_dependencies: bool }
 
 thread_local! {
     static WORKER: std::cell::RefCell<Option<LoaderWorker>> = std::cell::RefCell::new(None);
-    static POLICY: LoaderPolicy = LoaderPolicy::default();
+    static POLICY: LoaderPolicy = crate::async_limits::policy().loader.clone();
     static SCAN_REVISION: Cell<u64> = const { Cell::new(0) };
     static SCAN_IN_FLIGHT: Cell<bool> = const { Cell::new(false) };
     static PATH_REVISIONS: std::cell::RefCell<HashMap<PathBuf, u64>> = std::cell::RefCell::new(HashMap::new());
@@ -626,7 +626,7 @@ thread_local! {
     static PERMISSIONS_SCAN_PENDING: Cell<bool> = const { Cell::new(false) };
     static CONFIG_RESOLVER: Cell<Option<ConfigPathResolver>> = const { Cell::new(None) };
     static RETAINED_LEDGER: std::cell::RefCell<RetainedLedger> = {
-        let policy = LoaderPolicy::default();
+        let policy = crate::async_limits::policy().loader.clone();
         std::cell::RefCell::new(RetainedLedger::new(policy.prepared_items, policy.prepared_bytes))
     };
 }

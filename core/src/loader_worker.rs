@@ -44,7 +44,8 @@ pub struct Manifest {
     pub gamedata: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub(crate) struct ParseLimits {
     pub zip_entries: usize,
     pub member_name_bytes: usize,
@@ -65,7 +66,8 @@ impl Default for ParseLimits {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub(crate) struct LoaderPolicy {
     pub request_items: usize,
     pub request_bytes: usize,
@@ -112,26 +114,39 @@ impl Default for LoaderPolicy {
 
 impl LoaderPolicy {
     pub(crate) fn validate(&self) -> Result<(), String> {
+        let sized_fields = [
+            self.request_items,
+            self.request_bytes,
+            self.result_items,
+            self.result_bytes,
+            self.prepared_items,
+            self.prepared_bytes,
+            self.scan_entries,
+            self.scan_candidates,
+            self.path_bytes,
+            self.archive_bytes,
+            self.config_bytes,
+            self.config_baseline_items,
+            self.config_baseline_bytes,
+            self.parse.zip_entries,
+            self.parse.member_name_bytes,
+            self.parse.manifest_bytes,
+            self.parse.plugin_js_bytes,
+            self.parse.gamedata_bytes,
+            self.drain_items,
+            self.drain_bytes,
+        ];
+        if sized_fields
+            .iter()
+            .any(|value| *value == 0 || *value > isize::MAX as usize / 16)
+            || self.drain_micros == 0
+        {
+            return Err("loader policy: all count, byte, and time limits must be nonzero and safely sized".into());
+        }
         if self.request_items == 0 || self.result_items < self.request_items {
             return Err(
                 "loader policy: result_items must cover every request_items obligation".into(),
             );
-        }
-        if self.request_bytes == 0
-            || self.result_bytes == 0
-            || self.prepared_items == 0
-            || self.prepared_bytes == 0
-            || self.scan_entries == 0
-            || self.scan_candidates == 0
-            || self.path_bytes == 0
-            || self.archive_bytes == 0
-            || self.config_bytes == 0
-            || self.config_baseline_items == 0
-            || self.config_baseline_bytes == 0
-            || self.drain_items == 0
-            || self.drain_bytes == 0
-        {
-            return Err("loader policy: all count and byte limits must be nonzero".into());
         }
         if self.archive_bytes > self.result_bytes {
             return Err(
