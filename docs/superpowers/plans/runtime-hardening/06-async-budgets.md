@@ -1,6 +1,6 @@
 # Slice 6: Bound async admission and frame processing
 
-**Status:** Planned; implementation has not started.
+**Status:** Implemented and independently reviewed; local/Linux gates and bounded live component checks pass. Final integrated 60-minute soak remains pending.
 **Branch:** `core/hardening-06-async-budgets`
 **Parent / PR base:** `plugins/hardening-05-cookie-persistence`
 **Workflow:** [Full workflow and gates](../2026-09-04-runtime-hardening.md)
@@ -43,3 +43,35 @@ ledgering a job. Never block the game thread on a bounded synchronous sender.
 - [ ] Record applicable full-gate and live-server results, with environment limitations stated.
 - [ ] Review the diff against the parent and restack descendants using recorded old tips.
 - [ ] Set status to complete only when this slice's required gates pass.
+
+## Reviewed implementation and evidence
+
+The runtime now uses process-stable count/byte admission and lifetime leases across isolate
+resets, per-owner limits, bounded completion/input/socket/timer partitions, and fair frame
+poll/delivery budgets. Old detached producers retain their reservations until their actual
+payloads and actors drop. SQLite input leases survive input destruction, UTF-8 and row
+capacity growth are charged, and acknowledged offline cookie cache entries are evicted.
+See [operator limits and limitations](../../../ASYNC_LIMITS.md).
+
+Independent review found and closed poll phase-lock starvation, early SQLite input release,
+and undercharged materialized buffer capacity. The final implementation also removes its
+new compiler warnings; existing repository warnings remain. `threadSleep` types now reflect
+the existing Promise return, and socket send acceptance is a boolean in the SDK minor change.
+
+- Reviewed code at `c5f224a261c0a4f8ea5b7bb80a9946a14344e05d`: 723 core tests pass.
+- Both fresh-process pressure cases pass: tiny-policy reinitialization/admission/progress,
+  and oversized completion fairness beside a due timer with a full poll round.
+- Full JavaScript/Docker gate passes. Linux full native gate passes: 723 core tests plus
+  the two separate pressure cases, shim build and symbol checks.
+- Isolated Nebula runtime source c5f224a: a 256-job live pressure workload settles with
+  64 successes, 192 named AsyncQueueFull rejections, and zero unexpected errors.
+- The 300-second mixed pilot completed its workload and returned resource gauges to
+  baseline, but is **not a passing acceptance soak**: it recorded two engine navigation
+  errors and too few bot cycles for slot reuse. A corrected fixture later proved actual
+  slot reuse (20 attempts, two proofs, zero failures); final soak counters start fresh.
+
+Socket lifetime reservations conservatively consume one global job throughout the socket's
+life. Frame limits are soft between indivisible work; they do not guarantee an entire engine
+frame under two milliseconds. Logical application-owned retention is bounded; upstream
+protocol/driver memory, V8 retention, allocator overhead, and whole RSS are not covered.
+The final integrated 60-minute loader-aware mixed soak remains required.
