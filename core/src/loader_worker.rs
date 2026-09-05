@@ -1343,9 +1343,9 @@ fn stable_read(path: &Path, max: usize) -> Result<(Vec<u8>, FileStamp), String> 
 }
 
 #[cfg(test)]
-type TestReadGate = std::sync::Arc<(Mutex<(bool, bool)>, Condvar)>;
+pub(crate) type TestReadGate = std::sync::Arc<(Mutex<(bool, bool)>, Condvar)>;
 #[cfg(test)]
-static TEST_READ_GATE: Mutex<Option<TestReadGate>> = Mutex::new(None);
+pub(crate) static TEST_READ_GATE: Mutex<Option<TestReadGate>> = Mutex::new(None);
 
 fn stable_read_with_hook(
     path: &Path,

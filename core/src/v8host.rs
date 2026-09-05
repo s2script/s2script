@@ -5653,12 +5653,55 @@ pub(crate) fn re_materialize_config(id: &str) {
 /// Re-materialize from an owned worker snapshot. This is the periodic loader path and performs no
 /// config read; explicit raw config APIs and crash reads continue to use `config_file_content`.
 pub(crate) fn re_materialize_config_snapshot(id: &str, override_json: Option<&str>) {
+    apply_config_snapshot(id, override_json, false);
+}
+
+/// The first asynchronous watch read must reconcile with this plugin's applied values.
+/// Suppress only an unchanged initial state (including an auto-generated defaults file).
+pub(crate) fn reconcile_initial_config_snapshot(id: &str, override_json: Option<&str>) {
+    apply_config_snapshot(id, override_json, true);
+}
+
+fn config_values_match(id: &str, values_json: &str) -> bool {
+    HOST.with(|h| -> Option<bool> {
+        let mut host = h.borrow_mut();
+        let host = host.as_mut()?;
+        let context = PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.context.clone()))?;
+        let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+        let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+        let context = v8::Local::new(&mut hs, &context);
+        let scope = &mut v8::ContextScope::new(&mut hs, context);
+        let mut tc_storage = v8::TryCatch::new(scope);
+        let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+        let key = v8::String::new(&mut tc, "__s2pkg_config_values")?;
+        let value = context.global(&mut tc).get(&mut tc, key.into())?;
+        let json = v8::json::stringify(&mut tc, value)?;
+        let proposed = v8::String::new(&mut tc, values_json)?;
+        let proposed = v8::json::parse(&mut tc, proposed)?;
+        let proposed = v8::json::stringify(&mut tc, proposed)?;
+        // Normalize numbers/escapes through the same JSON serializer. Equal values have
+        // equal byte lengths regardless of key order. Reject a plugin-expanded object before
+        // copying it into Rust: temporary native copies stay bounded by the proposed config.
+        if json.utf8_length(&mut tc) != proposed.utf8_length(&mut tc) {
+            return Some(false);
+        }
+        let current: serde_json::Value =
+            serde_json::from_str(&json.to_rust_string_lossy(&tc)).ok()?;
+        let proposed: serde_json::Value =
+            serde_json::from_str(&proposed.to_rust_string_lossy(&tc)).ok()?;
+        Some(current == proposed)
+    })
+    .unwrap_or(false)
+}
+
+fn apply_config_snapshot(id: &str, override_json: Option<&str>, initial: bool) {
     // (1) Get this plugin's stored config decls (empty → nothing to re-materialize, but still fire).
     let decls = PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.config_decls.clone()));
     let Some(decls) = decls else { return };
 
     // (2) Re-materialize (no ops → defaults only; file exists → override merged) → inject.
     let values_json = materialize_for_load_snapshot(id, &decls, override_json);
+    if initial && config_values_match(id, &values_json) { return; }
     let _ = eval_in_context(id, &format!("globalThis.__s2pkg_config_values = {};", values_json));
 
     // (3) Snapshot CONFIG_SUBS for the "config" name, filtered to this plugin's handlers.

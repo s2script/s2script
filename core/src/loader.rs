@@ -660,7 +660,9 @@ thread_local! {
     static POLICY: LoaderPolicy = crate::async_limits::policy().loader.clone();
     static SCAN_REVISION: Cell<u64> = const { Cell::new(0) };
     static SCAN_IN_FLIGHT: Cell<bool> = const { Cell::new(false) };
-    static PATH_REVISIONS: std::cell::RefCell<HashMap<PathBuf, u64>> = std::cell::RefCell::new(HashMap::new());
+    // Expected revisions live only in ACTIVE_BATCH.pending. Never retain old path names
+    // just to mint a distinct revision after cancellation or delete/recreate.
+    static NEXT_PATH_REVISION: Cell<u64> = const { Cell::new(0) };
     static ACTIVE_BATCH: std::cell::RefCell<Option<ActiveBatch>> = const { std::cell::RefCell::new(None) };
     static READY_APPLY: std::cell::RefCell<VecDeque<ApplyItem>> = const { std::cell::RefCell::new(VecDeque::new()) };
     static CONFIG_PENDING: std::cell::RefCell<HashMap<PathBuf, PendingConfig>> = std::cell::RefCell::new(HashMap::new());
@@ -770,7 +772,6 @@ fn drain_command_intents() {
 }
 
 fn cancel_path_work(path: &Path) {
-    let _ = next_path_revision(path);
     ACTIVE_BATCH.with(|batch| {
         if let Some(batch) = batch.borrow_mut().as_mut() {
             batch.pending.remove(path);
@@ -814,11 +815,10 @@ pub(crate) fn watch_config_for(id: &str) {
     }
 }
 
-fn next_path_revision(path: &Path) -> u64 {
-    PATH_REVISIONS.with(|r| {
-        let mut r = r.borrow_mut();
-        let next = r.get(path).copied().unwrap_or(0).wrapping_add(1);
-        r.insert(path.to_path_buf(), next);
+fn next_path_revision() -> u64 {
+    NEXT_PATH_REVISION.with(|revision| {
+        let next = revision.get().checked_add(1).expect("loader revision exhausted");
+        revision.set(next);
         next
     })
 }
@@ -954,7 +954,7 @@ fn handle_scan(revision: u64, entries: Result<Vec<(PathBuf, FileStamp)>, String>
         if FILE_STAMPS.with(|s| s.borrow().get(&path).copied()) == Some(stamp) { continue; }
         WAITING.with(|waiting| waiting.borrow_mut().retain(|_, item| item.row.path != path));
         READY_APPLY.with(|ready| ready.borrow_mut().retain(|item| item.row.path != path));
-        let revision = next_path_revision(&path);
+        let revision = next_path_revision();
         let epoch = current_epoch();
         let submit = WORKER.with(|w| w.borrow().as_ref().map(|w| w.try_prepare(epoch, revision, path.clone())).unwrap_or(Submit::Stopped));
         if matches!(submit, Submit::Accepted | Submit::Coalesced) {
@@ -1097,7 +1097,11 @@ fn handle_config(
                     continue;
                 }
                 let seeded = CONFIG_SEEDED.with(|s| !s.borrow_mut().insert(id.clone()));
-                if seeded && snapshot.watch == WatchDelta::Changed {
+                if !seeded {
+                    // A queued first read (including a shared-path Unchanged result) may
+                    // already differ from this plugin's applied initial values.
+                    crate::v8host::reconcile_initial_config_snapshot(&id, snapshot.content.as_deref());
+                } else if snapshot.watch == WatchDelta::Changed {
                     crate::v8host::re_materialize_config_snapshot(&id, snapshot.content.as_deref());
                 }
             },
@@ -1415,7 +1419,6 @@ pub(crate) fn shutdown_worker() {
     WATCH_STATE.with(|w| w.borrow_mut().clear());
     SUPPRESSED.with(|s| s.borrow_mut().clear());
     PENDING_OPS.with(|p| p.borrow_mut().clear());
-    PATH_REVISIONS.with(|r| r.borrow_mut().clear());
     WAITING.with(|w| w.borrow_mut().clear());
     SCAN_REVISION.with(|r| r.set(0));
     DRAIN_COUNT.with(|c| c.set(0));
@@ -1505,6 +1508,348 @@ fn topo_order(batch: &[(String, Vec<String>, Vec<String>)]) -> Vec<String> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn delayed_coalesced_first_watch_and_joining_watcher_apply_unseen_edit() {
+        first_watch_scenario(true);
+    }
+
+    #[test]
+    fn delayed_first_watch_and_joining_watcher_suppress_unchanged_defaults() {
+        first_watch_scenario(false);
+    }
+
+    fn first_watch_scenario(edit_after_registration: bool) {
+        use crate::v8host::{self, frame_tests::*};
+        use std::sync::{Arc, Condvar, Mutex};
+        extern "C" fn path_resolver(_: *const c_char) -> *const c_char {
+            b"/tmp/s2-final-review-config-seed.json\0".as_ptr().cast()
+        }
+        shutdown_worker();
+        v8host::init(dummy_logger()).unwrap();
+        let path = PathBuf::from("/tmp/s2-final-review-config-seed.json");
+        let blocker = PathBuf::from("/tmp/s2-final-review-config-blocker.json");
+        std::fs::write(&path, br#"{"greeting":"A"}"#).unwrap();
+        std::fs::write(&blocker, b"{}").unwrap();
+        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        *crate::loader_worker::TEST_READ_GATE.lock().unwrap() = Some(gate.clone());
+        WORKER.with(|slot| {
+            *slot.borrow_mut() = Some(LoaderWorker::start(LoaderPolicy::default()).unwrap())
+        });
+        WORKER.with(|slot| {
+            assert_eq!(
+                slot.borrow().as_ref().unwrap().try_read_config(
+                    current_epoch(),
+                    1,
+                    blocker.clone(),
+                    None
+                ),
+                Submit::Accepted
+            )
+        });
+        {
+            let state = gate.0.lock().unwrap();
+            let (state, timeout) = gate
+                .1
+                .wait_timeout_while(state, Duration::from_secs(2), |s| !s.0)
+                .unwrap();
+            assert!(!timeout.timed_out() && state.0);
+        }
+        assert!(set_config_path_resolver(
+            CONFIG_PATH_RESOLVER_ABI_V1,
+            Some(path_resolver)
+        ));
+        let decls = HashMap::from([
+            (
+                "greeting".into(),
+                crate::config::ConfigEntry::Decl(crate::config::ConfigDecl {
+                    r#type: "string".into(),
+                    default: serde_json::json!("A"),
+                    ..Default::default()
+                }),
+            ),
+            (
+                "scale".into(),
+                crate::config::ConfigEntry::Decl(crate::config::ConfigDecl {
+                    r#type: "float".into(),
+                    default: serde_json::json!(1.0),
+                    ..Default::default()
+                }),
+            ),
+            (
+                "escaped".into(),
+                crate::config::ConfigEntry::Decl(crate::config::ConfigDecl {
+                    r#type: "string".into(),
+                    default: serde_json::json!("a\n雪"),
+                    ..Default::default()
+                }),
+            ),
+        ]);
+        let register = |id: &str| {
+            v8host::create_plugin_context(id);
+            v8host::store_config_decls(id, decls.clone());
+            v8host::eval_in_context(
+                id,
+                r#"
+                // Different property order, JSON escapes, and 1 versus materialized 1.0.
+                globalThis.__s2pkg_config_values = {scale:1, greeting:'A', escaped:'a\n\u96ea'};
+                globalThis.seen = [];
+                __s2pkg_config.config.onChange(cfg => seen.push(cfg.greeting));
+            "#,
+            )
+            .unwrap();
+        };
+        register("seed-review");
+        // Both watchers share a path and coalesce while the unrelated read blocks the worker.
+        register("seed-coalesced");
+        assert_eq!(
+            CONFIG_PENDING.with(|p| p.borrow()[&path].consumers.len()),
+            2
+        );
+        assert!(CONFIG_PATHS.with(|paths| paths.borrow().contains_key("seed-review")));
+        // This edit is AFTER the synchronous registration boundary, before its worker read.
+        if edit_after_registration {
+            std::fs::write(&path, br#"{"greeting":"B"}"#).unwrap();
+        } else {
+            // Same applied defaults, now in the auto-generated JSONC representation.
+            std::fs::write(&path, crate::config::generate_default_jsonc(&decls)).unwrap();
+        }
+        {
+            let mut s = gate.0.lock().unwrap();
+            s.1 = true;
+            gate.1.notify_all();
+        }
+        let next = || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Some(r) = WORKER.with(|slot| slot.borrow().as_ref().unwrap().try_result()) {
+                    break r;
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+        };
+        let _ = next(); // blocker
+        let mut deltas = Vec::new();
+        let result = next();
+        if let WorkerResult::Config {
+            path,
+            revision,
+            watch_generation,
+            snapshot,
+            ..
+        } = result
+        {
+            deltas.push(format!("{:?}", snapshot.as_ref().unwrap().watch));
+            handle_config(path, revision, watch_generation, snapshot);
+        } else {
+            panic!("expected config");
+        }
+        // A normal subsequent poll sees the acknowledged baseline as unchanged.
+        let generation = CONFIG_WATCH_GENERATIONS.with(|g| g.borrow()[&path]);
+        assert!(queue_config(
+            path.clone(),
+            ConfigConsumer::Watch {
+                id: "seed-review".into(),
+                generation
+            }
+        ));
+        if let WorkerResult::Config {
+            path,
+            revision,
+            watch_generation,
+            snapshot,
+            ..
+        } = next()
+        {
+            deltas.push(format!("{:?}", snapshot.as_ref().unwrap().watch));
+            handle_config(path, revision, watch_generation, snapshot);
+        } else {
+            panic!("expected config");
+        }
+        register("seed-joined");
+        if let WorkerResult::Config {
+            path,
+            revision,
+            watch_generation,
+            snapshot,
+            ..
+        } = next()
+        {
+            assert_eq!(snapshot.as_ref().unwrap().watch, WatchDelta::Unchanged);
+            deltas.push(format!("{:?}", snapshot.as_ref().unwrap().watch));
+            handle_config(path, revision, watch_generation, snapshot);
+        } else {
+            panic!("expected joined config");
+        }
+        let observed: Vec<_> = ["seed-review", "seed-coalesced", "seed-joined"]
+            .iter()
+            .map(|id| {
+                eval_in_context_string(
+                    id,
+                    "JSON.stringify([__s2pkg_config.config.getString('greeting'), seen])",
+                )
+            })
+            .collect();
+        shutdown_worker();
+        *crate::loader_worker::TEST_READ_GATE.lock().unwrap() = None;
+        v8host::shutdown();
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(blocker).unwrap();
+        let expected = if edit_after_registration {
+            r#"["B",["B"]]"#
+        } else {
+            r#"["A",[]]"#
+        };
+        assert_eq!(observed, vec![expected; 3], "worker deltas: {deltas:?}");
+    }
+
+    #[test]
+    fn removed_plugin_paths_do_not_accumulate_revision_tombstones() {
+        shutdown_worker();
+        let root =
+            std::env::temp_dir().join(format!("s2-final-review-churn-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let policy = LoaderPolicy {
+            request_items: 1,
+            result_items: 1,
+            prepared_items: 1,
+            ..LoaderPolicy::default()
+        };
+        WORKER.with(|slot| *slot.borrow_mut() = Some(LoaderWorker::start(policy.clone()).unwrap()));
+        let mut revisions = Vec::new();
+        for i in 0..64 {
+            let path = root.join(format!("plugin-{i}.s2sp"));
+            std::fs::write(&path, b"not a zip").unwrap();
+            let entries = crate::loader_worker::scan_plugins(&root, &policy).unwrap();
+            assert_eq!(entries.len(), 1);
+            SCAN_REVISION.with(|r| r.set(i * 2 + 1));
+            handle_scan(i * 2 + 1, Ok(entries));
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let result = loop {
+                if let Some(r) = WORKER.with(|slot| slot.borrow().as_ref().unwrap().try_result()) {
+                    break r;
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            };
+            if let WorkerResult::Plugin {
+                revision,
+                path,
+                prepared,
+                ..
+            } = result
+            {
+                assert!(prepared.is_err());
+                revisions.push(revision);
+                handle_plugin(revision, path, prepared);
+            } else {
+                panic!("expected plugin result");
+            }
+            std::fs::remove_file(&path).unwrap();
+            SCAN_REVISION.with(|r| r.set(i * 2 + 2));
+            handle_scan(
+                i * 2 + 2,
+                Ok(crate::loader_worker::scan_plugins(&root, &policy).unwrap()),
+            );
+        }
+        // Inspect coordinator path ownership too: zero payload gauges alone missed the old
+        // revision tombstones. Revisions are now scalar, not an additional path-name table.
+        let historical_paths = WATCH_STATE.with(|s| s.borrow().len())
+            + FILE_STAMPS.with(|s| s.borrow().len())
+            + SUPPRESSED.with(|s| s.borrow().len())
+            + CONFIG_PENDING.with(|s| s.borrow().len())
+            + CONFIG_PATHS.with(|s| s.borrow().len())
+            + CONFIG_WATCH_GENERATIONS.with(|s| s.borrow().len());
+        assert!(ACTIVE_BATCH.with(|s| s.borrow().is_none()));
+        assert!(READY_APPLY.with(|s| s.borrow().is_empty()));
+        assert!(WAITING.with(|s| s.borrow().is_empty()));
+        let live = (
+            WATCH_STATE.with(|s| s.borrow().len()),
+            FILE_STAMPS.with(|s| s.borrow().len()),
+        );
+        let m = metrics();
+        shutdown_worker();
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(live, (0, 0));
+        assert_eq!(m["worker"]["obligations"]["items"], 0);
+        assert!(
+            revisions.windows(2).all(|pair| pair[1] > pair[0]),
+            "revisions must be unique across retired paths: {revisions:?}"
+        );
+        assert_eq!(
+            historical_paths, 0,
+            "historical paths remain while idle: {m}"
+        );
+        assert_eq!(m["main"]["active"], 0);
+        assert_eq!(m["main"]["ready"], 0);
+        assert_eq!(m["main"]["waiting"], 0);
+        assert_eq!(m["main"]["retained"]["items"], 0);
+    }
+
+    #[test]
+    fn cancelled_and_deleted_recreated_paths_reject_late_worker_results() {
+        shutdown_worker();
+        let root = std::env::temp_dir().join(format!("s2-final-recreate-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("plugin.s2sp");
+        let policy = LoaderPolicy::default();
+        WORKER.with(|slot| *slot.borrow_mut() = Some(LoaderWorker::start(policy.clone()).unwrap()));
+        let write_plugin = |version: &str| {
+            let manifest =
+                format!(r#"{{"id":"recreated","version":"{version}","apiVersion":"2.x"}}"#);
+            std::fs::write(&path, make_test_s2sp(&manifest, "module.exports = {};")).unwrap();
+        };
+        let scan = |revision| {
+            SCAN_REVISION.with(|r| r.set(revision));
+            handle_scan(
+                revision,
+                Ok(crate::loader_worker::scan_plugins(&root, &policy).unwrap()),
+            );
+        };
+        let next_plugin = || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Some(WorkerResult::Plugin {
+                    revision, prepared, ..
+                }) = WORKER.with(|slot| slot.borrow().as_ref().unwrap().try_result())
+                {
+                    break (revision, prepared.unwrap());
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+        };
+        write_plugin("1");
+        scan(1);
+        let (old_revision, old_prepared) = next_plugin();
+        cancel_path_work(&path);
+        handle_plugin(old_revision, path.clone(), Ok(old_prepared.clone()));
+        assert!(READY_APPLY.with(|ready| ready.borrow().is_empty()));
+        std::fs::remove_file(&path).unwrap();
+        scan(2);
+        write_plugin("2");
+        scan(3);
+        let (new_revision, new_prepared) = next_plugin();
+        assert!(new_revision > old_revision);
+        // Deliver a valid but cancelled result after the replacement was admitted.
+        handle_plugin(old_revision, path.clone(), Ok(old_prepared));
+        assert_eq!(
+            ACTIVE_BATCH.with(|b| b.borrow().as_ref().unwrap().pending[&path]),
+            new_revision
+        );
+        assert!(READY_APPLY.with(|ready| ready.borrow().is_empty()));
+        handle_plugin(new_revision, path.clone(), Ok(new_prepared));
+        assert!(ACTIVE_BATCH.with(|b| b.borrow().is_none()));
+        READY_APPLY.with(|ready| {
+            let ready = ready.borrow();
+            assert_eq!(ready.len(), 1);
+            assert_eq!(ready[0].row.prepared.manifest.version, "2");
+        });
+        shutdown_worker();
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(metrics()["main"]["retained"]["items"], 0);
+    }
 
     extern "C" fn test_config_path(_id: *const c_char) -> *const c_char {
         b"/tmp/s2script-config.json\0".as_ptr().cast()
