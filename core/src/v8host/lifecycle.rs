@@ -1124,4 +1124,3 @@ pub(crate) fn iface_published_types_sha256(name: &str) -> Option<String> {
 pub(crate) fn clear_pending_handoff(id: &str) {
     PENDING_HANDOFF.with(|h| { h.borrow_mut().remove(id); });
 }
-

@@ -66,7 +66,6 @@ int s2_config_write(const char* id, const char* content) {
     std::error_code ec; std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
     std::ofstream f(path); if (!f) return 0; f << content; return f.good() ? 1 : 0;
 }
-
 // ConfigFilePath: like ConfigPath but the name INCLUDES its extension (no .json append). Reuses the same
 // sanitize (non-[A-Za-z0-9._-] -> '_', which neutralizes '/'); additionally refuses names containing ".."
 // or empty (returns "" -> read/write fail) so there is no traversal.
@@ -103,4 +102,3 @@ int s2_config_write_file(const char* name, const char* content) {
     std::error_code ec; std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
     std::ofstream f(path); if (!f) return 0; f << content; return f.good() ? 1 : 0;
 }
-

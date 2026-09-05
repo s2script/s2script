@@ -285,7 +285,6 @@
         assert!(!PLUGINS.with(|p| p.borrow().contains_key("alpha")));
         shutdown();
     }
-
     // A recording hook-request callback: appends (descriptor, enable) to HOOKS.
     static HOOKS: Mutex<Vec<(String, i32)>> = Mutex::new(Vec::new());
     extern "C" fn record_hook(name: *const c_char, enable: c_int) {

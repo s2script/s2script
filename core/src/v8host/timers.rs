@@ -237,4 +237,3 @@ pub(super) fn s2_thread_sleep(
         rv.set(promise.into());
     }));
 }
-
