@@ -536,7 +536,13 @@ test("unchanged dialog values and classes are not re-sent", () => {
   const afterShow = h.invokes.length;
   p.show("s2_dialog");
   assert.equal(h.invokes.length, afterShow, "identical show must not invoke again");
+  // `forget` is no longer pure bookkeeping: it forces input capture off and paints the departing
+  // slot's panels back to their markup defaults, so that the slot's NEXT occupant does not inherit
+  // a cursor grab or a half-drawn sheet. Those are real engine calls, so an ABSOLUTE count here
+  // would be pinning the old silent-forget behaviour rather than the property under test.
   layout.forget(0);
+  assert.ok(h.invokes.length > afterShow, "forget must reset the slot on the engine, not just in its books");
+  const afterForget = h.invokes.length;
   p.setText("s2_dialog_title", "world");
-  assert.equal(h.invokes.length, afterShow + 1, "forget clears the diff cache");
+  assert.equal(h.invokes.length, afterForget + 1, "forget clears the diff cache, so the same value is sent again");
 });
