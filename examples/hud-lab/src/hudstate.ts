@@ -189,9 +189,13 @@ export function dumpWindow(ref: EntityRef, start: number, length: number): strin
 //
 // The reach is two pointer hops, both of which EntityRef already does in-core:
 //     entity +1944                       -> m_vecPlayerLayoutStates data     (P)
-//     P + slot*416 + 56                  -> that state's m_vecHasClasses     (count @+0, data @+8)
-//     P + slot*416 + 64                  -> the entries array                (Q)
+//     P + slot*STATE_SIZE + 56           -> that state's m_vecHasClasses     (count @+0, data @+8)
+//     P + slot*STATE_SIZE + 64           -> the entries array                (Q)
 //     Q + i*8 + 4                        -> entry i's status
+//
+// STATE_SIZE is 408 (0x198) since build 24957633 — it was 416 (0x1a0) when this comment was first
+// written, and the engine's own `imul rbx,rbx,0x198` is the authority (see offsets.ts). The code
+// below always multiplied by STATE_SIZE, so only this prose had the stale constant baked in.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /** Data pointer of `m_vecPlayerLayoutStates` (count is at +0, elements at +8). */

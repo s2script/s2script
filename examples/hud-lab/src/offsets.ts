@@ -62,7 +62,8 @@ export const LAYOUT = {
    *  An embedded-network-var container, NOT a plain CUtlVector — its internal layout is unverified,
    *  so this plugin READS its leading count for diagnostics and never writes into it. */
   vecPlayerLayoutStates: 1936,
-  /** `CCSCustomHudLayoutState m_globalLayoutState` — embedded BY VALUE (size 416), so state field
+  /** `CCSCustomHudLayoutState m_globalLayoutState` — embedded BY VALUE (sizeof == {@link STATE_SIZE},
+   *  408 since build 24957633 — the dump this was transcribed from said 416), so state field
    *  offsets add directly to this. The only state this plugin writes. */
   globalLayoutState: 2040,
   /** `CNetworkUtlVectorBase<CUtlString> m_vecPanelIds` (size 24). */

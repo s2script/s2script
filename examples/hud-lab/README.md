@@ -74,7 +74,38 @@ are right:
 
 Identity was established structurally: reached from the cs_script thunk at `0xb41cd0`, bounds-checks
 its slot against `m_vecPlayerLayoutStates` (`cmp esi,[rdi+0x790]`), and indexes it as
-`slot*0x1a0 + [rbx+0x798]` — which also confirms offset 1936 and `sizeof(state) == 416`.
+`slot*0x1a0 + [rbx+0x798]` — which also confirms offset 1936 and, **on build 24916958**,
+`sizeof(state) == 416`. Build **24957633 changed the stride to 408 (`0x198`)** — read straight out
+of the engine's own `imul rbx,rbx,0x198` in the same setters — and moved `m_bInputCaptureEnabled`
+from 48 to 52. `src/offsets.ts` (`STATE_SIZE`) and the gamedata's
+`CCSCustomHudLayout_SetInputCaptureEnabledForPlayer` entry carry the current numbers; anywhere you
+still see 416/`0x1a0` it is the pre-update constant.
+
+## Per-slot state is storage, not delivery
+
+`m_vecPlayerLayoutStates` is a `CUtlVectorEmbeddedNetworkVar<CCSCustomHudLayoutState>` — a
+**networked** container of per-slot states on **one entity** (see `src/offsets.ts`). That shape
+decides a property every consumer of the `*ForPlayer` calls needs to know: **"ForPlayer" is
+per-slot STORAGE, not per-recipient DELIVERY.** The engine files your write under slot N's state;
+it does not promise that only slot N's client ever sees it.
+
+Observed on a live server: **a spectator sees the spectated player's panels.** The client renders
+whichever slot it is *viewing*, so anything painted "for" a player is shown to everyone watching
+that player. (That much is observation. Whether the whole vector is networked to *every* client —
+so a modified client could read any slot's state regardless of who it is viewing — is an
+*inference* from the container type, not something we have packet-captured; treat it as likely but
+unproven.) Either way: do not put anything confidential — admin-only controls, private balances,
+per-player secrets — into per-slot state on a shared layout entity.
+
+The escape, when a panel genuinely must be private: **one layout entity per recipient**,
+transmit-filtered with `Transmit.setVisibleTo(entity, [slot])`. The intern caps (panel ids / class
+names / dialog variables) are **per-entity**, so splitting entities *multiplies* the budget instead
+of sharing it. Two things need a live gate before relying on this, and neither has run:
+
+1. whether `custom_hud_layout` respects CheckTransmit stripping at all — HUD entities may be
+   special-cased past the transmit path; and
+2. whether a private entity still renders for its *owner* while that owner is spectating someone
+   else — rendering keys off the viewed slot, so it may not.
 
 ## The HUD that works — `sm_hud_demo`
 
