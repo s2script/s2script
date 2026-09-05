@@ -1105,23 +1105,17 @@
     }
   });
   if (globalThis.__s2pkg_cs2) {
-    function hostKit() {
+    function hostKit(name) {
       if (sharedKit) return sharedKit;
-      if (!liveBase) return null;   // no load ctx yet — refuse rather than mint a dead-context kit
+      if (!liveBase) {
+        throw new Error("s2script: hudkit." + name + " requires plugin context; " +
+          "use it in OnPluginStart or a later callback");
+      }
       return defaultKit(liveBase);
     }
     function kitFn(name) {
       return function (a, b) {
-        var kit = hostKit();
-        if (!kit) {
-          // Loud on purpose: the old stand-in path returned an object that painted and silently
-          // never delivered a click, which cost live-server debugging rounds. A null with a
-          // reason is strictly better than a component that half-works.
-          log("hudkit." + name + "() before this plugin's context exists — returning null " +
-              "(call it from OnPluginStart or later, not module top-level)");
-          return null;
-        }
-        return kit[name](a, b);
+        return hostKit(name)[name](a, b);
       };
     }
     globalThis.__s2pkg_cs2.hudkit = {
@@ -1140,10 +1134,10 @@
       budget: kitFn("budget")
     };
     Object.defineProperty(globalThis.__s2pkg_cs2.hudkit, "layout", {
-      get: function () { var kit = hostKit(); return kit && kit.layout; }
+      get: function () { return hostKit("layout").layout; }
     });
     Object.defineProperty(globalThis.__s2pkg_cs2.hudkit, "hud", {
-      get: function () { var kit = hostKit(); return kit && kit.hud; }
+      get: function () { return hostKit("hud").hud; }
     });
     // The spec/descriptor are static module data (makeComponents always hands back
     // LIB_DESCRIPTOR), so they stay readable before the kit exists — the documented
