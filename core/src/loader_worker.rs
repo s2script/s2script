@@ -145,9 +145,9 @@ impl LoaderPolicy {
                     .into(),
             );
         }
-        if self.config_bytes.saturating_mul(3) > self.config_baseline_bytes {
+        if self.config_bytes.saturating_mul(6) > self.config_baseline_bytes {
             return Err(
-                "loader policy: config baseline cannot retain one worst-case lossy config".into(),
+                "loader policy: config baseline cannot retain one committed and one proposed worst-case lossy config".into(),
             );
         }
         if self.scan_result_reservation() > self.result_bytes {
@@ -271,14 +271,14 @@ impl PreparedPlugin {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ConfigSnapshot {
-    pub content: Option<String>,
+    pub content: Option<Arc<str>>,
     pub stamp: Option<FileStamp>,
     pub watch: WatchDelta,
 }
 
 impl ConfigSnapshot {
     pub(crate) fn bytes(&self) -> usize {
-        self.content.as_ref().map_or(0, String::len)
+        self.content.as_ref().map_or(0, |content| content.len())
     }
 }
 
@@ -308,6 +308,7 @@ pub(crate) enum WorkerResult {
         epoch: Epoch,
         revision: PathRevision,
         path: PathBuf,
+        watch_generation: Option<u64>,
         snapshot: Result<ConfigSnapshot, String>,
     },
 }
@@ -328,7 +329,7 @@ impl WorkerResult {
                         .as_ref()
                         .ok()
                         .and_then(|s| s.content.as_ref())
-                        .map_or(128, String::len)
+                        .map_or(128, |content| content.len())
             }
         }
     }
@@ -350,7 +351,7 @@ enum Request {
         epoch: Epoch,
         revision: PathRevision,
         path: PathBuf,
-        compare_watch: bool,
+        watch_generation: Option<u64>,
     },
 }
 
@@ -369,17 +370,17 @@ impl Request {
                     epoch,
                     revision,
                     path,
-                    compare_watch,
+                    watch_generation,
                 },
                 Self::Config {
-                    compare_watch: older_watch,
+                    watch_generation: older_generation,
                     ..
                 },
             ) => Self::Config {
                 epoch,
                 revision,
                 path,
-                compare_watch: compare_watch || older_watch,
+                watch_generation: watch_generation.max(older_generation),
             },
             (latest, _) => latest,
         }
@@ -432,6 +433,15 @@ struct State {
     obligations: HashMap<WorkKey, (usize, usize)>,
     request_bytes: usize,
     reserved_result_bytes: usize,
+    // Seed/change acknowledgements and known-baseline retirements only. Baseline admission reserves
+    // one coalesced control path, so this progresses independently of request/result saturation.
+    config_controls: HashMap<PathBuf, ConfigControl>,
+}
+
+#[derive(Default)]
+struct ConfigControl {
+    resolution: Option<(u64, PathRevision, bool)>,
+    retire_generation: Option<u64>,
 }
 
 struct Shared {
@@ -459,6 +469,7 @@ impl LoaderWorker {
                 obligations: HashMap::new(),
                 request_bytes: 0,
                 reserved_result_bytes: 0,
+                config_controls: HashMap::new(),
             }),
             work: Condvar::new(),
         });
@@ -499,13 +510,13 @@ impl LoaderWorker {
         epoch: Epoch,
         revision: PathRevision,
         path: PathBuf,
-        compare_watch: bool,
+        watch_generation: Option<u64>,
     ) -> Submit {
         self.try_submit(Request::Config {
             epoch,
             revision,
             path,
-            compare_watch,
+            watch_generation,
         })
     }
 
@@ -571,6 +582,42 @@ impl LoaderWorker {
         Some(result)
     }
 
+    /// Resolve a worker-owned config-baseline proposal after every current main-thread consumer has
+    /// handled the result. `applied=false` discards it without advancing the committed baseline.
+    pub(crate) fn resolve_config_watch(
+        &self,
+        path: PathBuf,
+        generation: u64,
+        revision: PathRevision,
+        applied: bool,
+    ) {
+        let Ok(mut state) = self.shared.state.lock() else { return };
+        if state.stopped { return; }
+        let control = state.config_controls.entry(path).or_default();
+        if control.resolution.is_none_or(|(old_generation, old_revision, _)| {
+            (generation, revision) >= (old_generation, old_revision)
+        }) {
+            control.resolution = Some((generation, revision, applied));
+        }
+        debug_assert!(state.config_controls.len() <= self.policy.config_baseline_items);
+        drop(state);
+        self.shared.work.notify_one();
+    }
+
+    /// Retire the final watcher for this generation. The worker applies retirement, so dropping a
+    /// file-sized baseline never occurs on the game thread. A newer generation is revision-fenced.
+    pub(crate) fn retire_config_watch(&self, path: PathBuf, generation: u64) {
+        let Ok(mut state) = self.shared.state.lock() else { return };
+        if state.stopped { return; }
+        let control = state.config_controls.entry(path).or_default();
+        control.retire_generation = Some(
+            control.retire_generation.map_or(generation, |old| old.max(generation)),
+        );
+        debug_assert!(state.config_controls.len() <= self.policy.config_baseline_items);
+        drop(state);
+        self.shared.work.notify_one();
+    }
+
     pub(crate) fn shutdown(mut self) {
         self.stop_and_join();
     }
@@ -585,6 +632,7 @@ impl LoaderWorker {
             state.obligations.clear();
             state.request_bytes = 0;
             state.reserved_result_bytes = 0;
+            state.config_controls.clear();
         }
         self.shared.work.notify_all();
         if let Ok(mut slot) = self.join.lock() {
@@ -601,10 +649,15 @@ impl Drop for LoaderWorker {
     }
 }
 
+enum WorkerTurn {
+    Controls(Vec<(PathBuf, ConfigControl)>),
+    Request(WorkKey, Request),
+}
+
 fn worker_loop(shared: Arc<Shared>, policy: LoaderPolicy) {
     let mut config_baselines = ConfigBaselines::default();
     loop {
-        let (key, request) = {
+        let turn = {
             let mut state = match shared.state.lock() {
                 Ok(s) => s,
                 Err(_) => return,
@@ -613,16 +666,33 @@ fn worker_loop(shared: Arc<Shared>, policy: LoaderPolicy) {
                 if state.stopped {
                     return;
                 }
+                if !state.config_controls.is_empty() {
+                    break WorkerTurn::Controls(state.config_controls.drain().collect());
+                }
                 if let Some(key) = state.order.pop_front() {
                     if let Some(request) = state.pending.remove(&key) {
                         state.in_flight.insert(key.clone());
-                        break (key, request);
+                        break WorkerTurn::Request(key, request);
                     }
                 }
                 state = match shared.work.wait(state) {
                     Ok(s) => s,
                     Err(_) => return,
                 };
+            }
+        };
+        let (key, request) = match turn {
+            WorkerTurn::Request(key, request) => (key, request),
+            WorkerTurn::Controls(controls) => {
+                for (path, control) in controls {
+                    if let Some((generation, revision, applied)) = control.resolution {
+                        config_baselines.resolve(&path, generation, revision, applied);
+                    }
+                    if let Some(generation) = control.retire_generation {
+                        config_baselines.retire(&path, generation);
+                    }
+                }
+                continue;
             }
         };
         let result = run_request(request, &policy, &mut config_baselines);
@@ -645,41 +715,113 @@ fn worker_loop(shared: Arc<Shared>, policy: LoaderPolicy) {
 
 #[derive(Default)]
 struct ConfigBaselines {
-    values: HashMap<PathBuf, Option<String>>,
+    values: HashMap<PathBuf, ConfigBaseline>,
+    proposals: HashMap<PathBuf, ConfigProposal>,
     bytes: usize,
 }
 
+struct ConfigBaseline {
+    generation: u64,
+    content: Option<Arc<str>>,
+}
+
+struct ConfigProposal {
+    generation: u64,
+    revision: PathRevision,
+    content: Option<Arc<str>>,
+}
+
 impl ConfigBaselines {
-    fn compare_and_update(
+    fn entry_bytes(path: &Path, content: &Option<Arc<str>>) -> usize {
+        path_len(path).saturating_add(content.as_ref().map_or(0, |value| value.len()))
+    }
+
+    fn path_count(&self) -> usize {
+        self.values.len()
+            + self
+                .proposals
+                .keys()
+                .filter(|path| !self.values.contains_key(*path))
+                .count()
+    }
+
+    fn drop_proposal(&mut self, path: &Path) {
+        if let Some(proposal) = self.proposals.remove(path) {
+            self.bytes = self
+                .bytes
+                .saturating_sub(Self::entry_bytes(path, &proposal.content));
+        }
+    }
+
+    fn compare_and_propose(
         &mut self,
         path: &Path,
-        content: &Option<String>,
+        generation: u64,
+        revision: PathRevision,
+        content: &Option<Arc<str>>,
         policy: &LoaderPolicy,
     ) -> WatchDelta {
         let decision = match self.values.get(path) {
+            Some(old) if old.generation != generation => WatchDelta::Seed,
             None => WatchDelta::Seed,
-            Some(old) if old == content => return WatchDelta::Unchanged,
+            Some(old) if old.content == *content => {
+                self.drop_proposal(path);
+                return WatchDelta::Unchanged;
+            }
             Some(_) => WatchDelta::Changed,
         };
-        let old_bytes = self.values.get(path).map_or(0, |old| {
-            path_len(path) + old.as_ref().map_or(0, String::len)
-        });
-        let new_bytes = path_len(path) + content.as_ref().map_or(0, String::len);
-        if (!self.values.contains_key(path) && self.values.len() >= policy.config_baseline_items)
-            || self
-                .bytes
-                .saturating_sub(old_bytes)
-                .saturating_add(new_bytes)
-                > policy.config_baseline_bytes
+        self.drop_proposal(path);
+        let new_path = !self.values.contains_key(path) && !self.proposals.contains_key(path);
+        let new_bytes = Self::entry_bytes(path, content);
+        if (new_path && self.path_count() >= policy.config_baseline_items)
+            || self.bytes.saturating_add(new_bytes) > policy.config_baseline_bytes
         {
             return WatchDelta::Pressure;
         }
+        self.bytes = self.bytes.saturating_add(new_bytes);
+        self.proposals.insert(path.to_path_buf(), ConfigProposal {
+            generation,
+            revision,
+            content: content.clone(),
+        });
+        decision
+    }
+
+    fn resolve(&mut self, path: &Path, generation: u64, revision: PathRevision, applied: bool) {
+        if self.proposals.get(path).is_none_or(|proposal| {
+            proposal.generation != generation || proposal.revision != revision
+        }) {
+            return;
+        }
+        let proposal = self.proposals.remove(path).unwrap();
         self.bytes = self
             .bytes
-            .saturating_sub(old_bytes)
-            .saturating_add(new_bytes);
-        self.values.insert(path.to_path_buf(), content.clone());
-        decision
+            .saturating_sub(Self::entry_bytes(path, &proposal.content));
+        if !applied { return; }
+        if let Some(old) = self.values.remove(path) {
+            self.bytes = self
+                .bytes
+                .saturating_sub(Self::entry_bytes(path, &old.content));
+        }
+        self.bytes = self
+            .bytes
+            .saturating_add(Self::entry_bytes(path, &proposal.content));
+        self.values.insert(path.to_path_buf(), ConfigBaseline {
+            generation: proposal.generation,
+            content: proposal.content,
+        });
+    }
+
+    fn retire(&mut self, path: &Path, generation: u64) {
+        if self.values.get(path).is_some_and(|entry| entry.generation == generation) {
+            let old = self.values.remove(path).unwrap();
+            self.bytes = self
+                .bytes
+                .saturating_sub(Self::entry_bytes(path, &old.content));
+        }
+        if self.proposals.get(path).is_some_and(|entry| entry.generation == generation) {
+            self.drop_proposal(path);
+        }
     }
 }
 
@@ -731,13 +873,13 @@ fn run_request(
             epoch,
             revision,
             path,
-            compare_watch,
+            watch_generation,
         } => {
             let snapshot = match stable_read(&path, policy.config_bytes) {
                 Ok((bytes, stamp)) => {
-                    let content = Some(String::from_utf8_lossy(&bytes).into_owned());
-                    let watch = if compare_watch {
-                        config_baselines.compare_and_update(&path, &content, policy)
+                    let content: Option<Arc<str>> = Some(String::from_utf8_lossy(&bytes).into_owned().into());
+                    let watch = if let Some(generation) = watch_generation {
+                        config_baselines.compare_and_propose(&path, generation, revision, &content, policy)
                     } else {
                         WatchDelta::NotRequested
                     };
@@ -749,8 +891,8 @@ fn run_request(
                 }
                 Err(e) if e.starts_with("missing:") => {
                     let content = None;
-                    let watch = if compare_watch {
-                        config_baselines.compare_and_update(&path, &content, policy)
+                    let watch = if let Some(generation) = watch_generation {
+                        config_baselines.compare_and_propose(&path, generation, revision, &content, policy)
                     } else {
                         WatchDelta::NotRequested
                     };
@@ -766,6 +908,7 @@ fn run_request(
                 epoch,
                 revision,
                 path,
+                watch_generation,
                 snapshot,
             }
         }
@@ -1068,6 +1211,10 @@ mod tests {
         p.prepared_bytes =
             p.parse.manifest_bytes + p.parse.plugin_js_bytes + p.parse.gamedata_bytes;
         assert!(p.validate().unwrap_err().contains("prepared_bytes"));
+
+        let mut p = LoaderPolicy::default();
+        p.config_baseline_bytes = p.config_bytes * 3;
+        assert!(p.validate().unwrap_err().contains("config baseline"));
     }
 
     #[test]
@@ -1096,7 +1243,7 @@ mod tests {
         *TEST_READ_GATE.lock().unwrap() = Some(gate.clone());
         let worker = LoaderWorker::start(LoaderPolicy::default()).unwrap();
         assert_eq!(
-            worker.try_read_config(7, 1, path.clone(), false),
+            worker.try_read_config(7, 1, path.clone(), None),
             Submit::Accepted
         );
 
@@ -1105,11 +1252,11 @@ mod tests {
             state = gate.1.wait(state).unwrap();
         }
         assert_eq!(
-            worker.try_read_config(7, 2, path.clone(), true),
+            worker.try_read_config(7, 2, path.clone(), Some(1)),
             Submit::Coalesced
         );
         assert_eq!(
-            worker.try_read_config(7, 3, path.clone(), false),
+            worker.try_read_config(7, 3, path.clone(), None),
             Submit::Coalesced
         );
         state.1 = true;
@@ -1216,7 +1363,7 @@ mod tests {
         let worker = LoaderWorker::start(LoaderPolicy::default()).unwrap();
         let path = PathBuf::from("definitely-missing-config.json");
         assert_eq!(
-            worker.try_read_config(41, 9, path.clone(), false),
+            worker.try_read_config(41, 9, path.clone(), None),
             Submit::Accepted
         );
         match next_result(&worker) {
@@ -1225,6 +1372,7 @@ mod tests {
                 revision,
                 path: got,
                 snapshot,
+                ..
             } => {
                 assert_eq!((epoch, revision, got), (41, 9, path));
                 assert!(snapshot.unwrap().content.is_none());
@@ -1240,7 +1388,7 @@ mod tests {
         std::fs::write(&path, [b'{', 0xff, b'}']).unwrap();
         let worker = LoaderWorker::start(LoaderPolicy::default()).unwrap();
         assert_eq!(
-            worker.try_read_config(4, 2, path.clone(), false),
+            worker.try_read_config(4, 2, path.clone(), None),
             Submit::Accepted
         );
         match next_result(&worker) {
@@ -1263,12 +1411,12 @@ mod tests {
             epoch: 1,
             revision: 1,
             path: path.clone(),
-            compare_watch: false,
+            watch_generation: None,
         }
         .result_reservation(&policy);
         let worker = LoaderWorker::start(policy).unwrap();
         assert_eq!(
-            worker.try_read_config(1, 1, path.clone(), false),
+            worker.try_read_config(1, 1, path.clone(), None),
             Submit::Accepted
         );
         let result = next_result(&worker);
@@ -1289,7 +1437,7 @@ mod tests {
         let worker = LoaderWorker::start(LoaderPolicy::default()).unwrap();
 
         assert_eq!(
-            worker.try_read_config(1, 1, path.clone(), true),
+            worker.try_read_config(1, 1, path.clone(), Some(1)),
             Submit::Accepted
         );
         match next_result(&worker) {
@@ -1301,8 +1449,9 @@ mod tests {
             }
             other => panic!("unexpected result: {other:?}"),
         }
+        worker.resolve_config_watch(path.clone(), 1, 1, true);
         assert_eq!(
-            worker.try_read_config(1, 2, path.clone(), true),
+            worker.try_read_config(1, 2, path.clone(), Some(1)),
             Submit::Accepted
         );
         match next_result(&worker) {
@@ -1316,7 +1465,7 @@ mod tests {
         }
         std::fs::write(&path, b"beta").unwrap();
         assert_eq!(
-            worker.try_read_config(1, 3, path.clone(), true),
+            worker.try_read_config(1, 3, path.clone(), Some(1)),
             Submit::Accepted
         );
         match next_result(&worker) {
@@ -1334,6 +1483,28 @@ mod tests {
     }
 
     #[test]
+    fn baseline_and_proposal_bytes_stay_charged_until_worker_resolution_or_retirement() {
+        let policy = LoaderPolicy::default();
+        let path = PathBuf::from("config.json");
+        let alpha: Option<Arc<str>> = Some(Arc::from("alpha"));
+        let beta: Option<Arc<str>> = Some(Arc::from("beta"));
+        let alpha_bytes = ConfigBaselines::entry_bytes(&path, &alpha);
+        let beta_bytes = ConfigBaselines::entry_bytes(&path, &beta);
+        let mut baselines = ConfigBaselines::default();
+
+        assert_eq!(baselines.compare_and_propose(&path, 1, 1, &alpha, &policy), WatchDelta::Seed);
+        assert_eq!(baselines.bytes, alpha_bytes);
+        baselines.resolve(&path, 1, 1, true);
+        assert_eq!(baselines.bytes, alpha_bytes);
+        assert_eq!(baselines.compare_and_propose(&path, 1, 2, &beta, &policy), WatchDelta::Changed);
+        assert_eq!(baselines.bytes, alpha_bytes + beta_bytes);
+        baselines.retire(&path, 1);
+        assert_eq!(baselines.bytes, 0);
+        assert!(baselines.values.is_empty());
+        assert!(baselines.proposals.is_empty());
+    }
+
+    #[test]
     fn watched_config_baseline_pressure_is_bounded_and_retryable() {
         let root = std::env::temp_dir().join(format!("s2-loader-watch-cap-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
@@ -1344,7 +1515,7 @@ mod tests {
         let mut policy = LoaderPolicy::default();
         policy.config_baseline_items = 1;
         let worker = LoaderWorker::start(policy).unwrap();
-        assert_eq!(worker.try_read_config(1, 1, first, true), Submit::Accepted);
+        assert_eq!(worker.try_read_config(1, 1, first.clone(), Some(1)), Submit::Accepted);
         assert!(matches!(
             next_result(&worker),
             WorkerResult::Config {
@@ -1355,7 +1526,8 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(worker.try_read_config(1, 2, second, true), Submit::Accepted);
+        worker.resolve_config_watch(first.clone(), 1, 1, true);
+        assert_eq!(worker.try_read_config(1, 2, second, Some(1)), Submit::Accepted);
         assert!(matches!(
             next_result(&worker),
             WorkerResult::Config {
@@ -1366,6 +1538,113 @@ mod tests {
                 ..
             }
         ));
+        worker.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn undelivered_change_survives_a_coalesced_unchanged_reread() {
+        let path = std::env::temp_dir().join(format!("s2-loader-watch-ack-{}", std::process::id()));
+        std::fs::write(&path, b"alpha").unwrap();
+        let worker = LoaderWorker::start(LoaderPolicy::default()).unwrap();
+        assert_eq!(worker.try_read_config(1, 1, path.clone(), Some(1)), Submit::Accepted);
+        assert!(matches!(next_result(&worker), WorkerResult::Config {
+            snapshot: Ok(ConfigSnapshot { watch: WatchDelta::Seed, .. }), ..
+        }));
+        worker.resolve_config_watch(path.clone(), 1, 1, true);
+
+        std::fs::write(&path, b"beta").unwrap();
+        let gate: TestReadGate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        *TEST_READ_GATE.lock().unwrap() = Some(gate.clone());
+        assert_eq!(worker.try_read_config(1, 2, path.clone(), Some(1)), Submit::Accepted);
+        let mut state = gate.0.lock().unwrap();
+        while !state.0 { state = gate.1.wait(state).unwrap(); }
+        assert_eq!(worker.try_read_config(1, 3, path.clone(), Some(1)), Submit::Coalesced);
+        state.1 = true;
+        gate.1.notify_all();
+        drop(state);
+
+        assert!(matches!(next_result(&worker), WorkerResult::Config {
+            revision: 3,
+            snapshot: Ok(ConfigSnapshot { watch: WatchDelta::Changed, .. }),
+            ..
+        }));
+        worker.shutdown();
+        *TEST_READ_GATE.lock().unwrap() = None;
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn final_unwatch_retires_capacity_and_old_retire_cannot_erase_a_new_generation() {
+        let root = std::env::temp_dir().join(format!("s2-loader-watch-retire-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let first = root.join("first.json");
+        let second = root.join("second.json");
+        std::fs::write(&first, b"a").unwrap();
+        std::fs::write(&second, b"b").unwrap();
+        let mut policy = LoaderPolicy::default();
+        policy.config_baseline_items = 1;
+        let worker = LoaderWorker::start(policy).unwrap();
+
+        assert_eq!(worker.try_read_config(1, 1, first.clone(), Some(1)), Submit::Accepted);
+        assert!(matches!(next_result(&worker), WorkerResult::Config {
+            snapshot: Ok(ConfigSnapshot { watch: WatchDelta::Seed, .. }), ..
+        }));
+        worker.resolve_config_watch(first.clone(), 1, 1, true);
+        worker.retire_config_watch(first.clone(), 1);
+        assert_eq!(worker.try_read_config(1, 2, second.clone(), Some(2)), Submit::Accepted);
+        assert!(matches!(next_result(&worker), WorkerResult::Config {
+            snapshot: Ok(ConfigSnapshot { watch: WatchDelta::Seed, .. }), ..
+        }), "retirement must release the only baseline slot");
+        worker.resolve_config_watch(second.clone(), 2, 2, true);
+
+        worker.retire_config_watch(second.clone(), 2);
+        assert_eq!(worker.try_read_config(1, 3, second.clone(), Some(3)), Submit::Accepted);
+        assert!(matches!(next_result(&worker), WorkerResult::Config {
+            snapshot: Ok(ConfigSnapshot { watch: WatchDelta::Seed, .. }), ..
+        }));
+        worker.resolve_config_watch(second.clone(), 3, 3, true);
+        worker.retire_config_watch(second.clone(), 2);
+        assert_eq!(worker.try_read_config(1, 4, second.clone(), Some(3)), Submit::Accepted);
+        assert!(matches!(next_result(&worker), WorkerResult::Config {
+            snapshot: Ok(ConfigSnapshot { watch: WatchDelta::Unchanged, .. }), ..
+        }), "an old-generation retire must not erase the new committed baseline");
+
+        worker.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retirement_control_progresses_while_the_data_result_queue_is_full() {
+        let root = std::env::temp_dir().join(format!("s2-loader-watch-control-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let first = root.join("first.json");
+        let second = root.join("second.json");
+        std::fs::write(&first, b"a").unwrap();
+        std::fs::write(&second, b"b").unwrap();
+        let mut policy = LoaderPolicy::default();
+        policy.request_items = 1;
+        policy.result_items = 1;
+        policy.config_baseline_items = 1;
+        let worker = LoaderWorker::start(policy).unwrap();
+
+        assert_eq!(worker.try_read_config(1, 1, first.clone(), Some(1)), Submit::Accepted);
+        let _ = next_result(&worker);
+        worker.resolve_config_watch(first.clone(), 1, 1, true);
+        assert_eq!(worker.try_prepare(1, 1, root.join("missing.s2sp")), Submit::Accepted);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while worker.shared.state.lock().unwrap().results.is_empty() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+
+        worker.retire_config_watch(first, 1);
+        let _ = next_result(&worker);
+        assert_eq!(worker.try_read_config(1, 2, second, Some(2)), Submit::Accepted);
+        assert!(matches!(next_result(&worker), WorkerResult::Config {
+            snapshot: Ok(ConfigSnapshot { watch: WatchDelta::Seed, .. }), ..
+        }));
+
         worker.shutdown();
         std::fs::remove_dir_all(root).unwrap();
     }
