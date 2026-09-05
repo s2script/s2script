@@ -59,6 +59,7 @@ function mount(options = {}) {
   };
   globalThis.__s2pkg_clients = {
     Clients: {
+      fromSlot: () => null,
       onDisconnect: (fn) => clientHandlers.disconnect.push(fn),
       onActive: (fn) => clientHandlers.active.push(fn)
     }

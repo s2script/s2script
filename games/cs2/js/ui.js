@@ -556,6 +556,7 @@
       reg(viaId(function () {
         clientsApi().onActive(function () { becomeReady(); });
         clientsApi().onDisconnect(function (client) {
+          if (clientsApi().fromSlot(client.slot)) return; // an old deferred disconnect cannot clear a replacement HUD
           for (var res in hudByResource) {
             if (Object.prototype.hasOwnProperty.call(hudByResource, res)) {
               hudByResource[res].forget(client.slot);

@@ -32,44 +32,113 @@ thread_local! {
         = std::cell::RefCell::new(crate::channels::Channels::new());
 }
 
-/// `dispatch_client_event` = **bookkeeping** (unconditional, never replayed) + the JS fan-out.
-///
-/// The split is the deferred-dispatch contract's §6.1 invariant: the breadcrumb player count and the
-/// voice slot-reuse hygiene are NOT idempotent, so a replayed dispatch must run the fan-out ONLY.
-/// The shim queues `replay_client_event`, never this entry.
-pub(crate) fn dispatch_client_event(event: &str, slot: i32) -> Delivery {
-    {
-        let s = crate::crash::breadcrumb::snapshot();
-        match event {
-            "putinserver" => crate::crash::breadcrumb::set_players(s.players + 1),
-            "disconnect" => crate::crash::breadcrumb::set_players(s.players - 1),
-            _ => {}
-        }
-    }
-    // Slot-reuse hygiene for voice hearability, run UNCONDITIONALLY and BEFORE the no-subscriber
-    // early return below — a rule must be dropped whether or not any plugin happens to subscribe to
-    // "disconnect". The shim clears its own copy in Hook_ClientDisconnect; this drops the policy
-    // source of truth so a later recompute (triggered by an unrelated owner) cannot re-push a rule
-    // authored about a player who has left.
-    if event == "disconnect" {
-        voice_clear_slot(slot);
-        crate::shared_entity_switch::clear_slot(slot);
-    }
-    replay_client_event(event, slot)
+// Independent connection books; clearing does not reset the generation allocator.
+thread_local! {
+    static CONNECTIONS: std::cell::RefCell<crate::liveness::LiveTable<i32, ()>> =
+        std::cell::RefCell::new(crate::liveness::LiveTable::new(1));
 }
 
-/// The JS half of `dispatch_client_event`, and NOTHING else — no bookkeeping, so it is safe to run
-/// a frame late. This is what the shim's deferred queue replays.
-///
-/// A deferred `"disconnect"` therefore arrives AFTER the shim has cleared the slot: the handler sees
-/// `Clients.isValid(slot) === false`, and in principle the slot could already be reused. Accepted —
-/// strictly more than today's total drop — and documented in the clients `.d.ts`.
-pub(crate) fn replay_client_event(event: &str, slot: i32) -> Delivery {
-    // Snapshot — releases the CLIENT_MUX borrow before any JS runs (see `fan_out` §1).
+pub(crate) fn generation(slot: i32) -> u64 {
+    CONNECTIONS.with(|b| b.borrow().get(&slot).map_or(0, |(id, _)| id))
+}
+pub(crate) fn matches(slot: i32, token: u64) -> bool {
+    token != 0 && CONNECTIONS.with(|b| b.borrow().is_live(&slot, token))
+}
+pub(crate) fn begin(slot: i32) -> u64 {
+    if !(0..64).contains(&slot) { return 0; }
+    end(slot, generation(slot));
+    CONNECTIONS.with(|b| b.borrow_mut().insert(slot, ()))
+}
+pub(crate) fn ensure(slot: i32) -> u64 {
+    let token = generation(slot);
+    if token != 0 { token } else { begin(slot) }
+}
+pub(crate) fn end(slot: i32, token: u64) {
+    if !matches(slot, token) { return; }
+    CONNECTIONS.with(|b| { b.borrow_mut().remove(&slot); });
+    voice_clear_slot(slot);
+    crate::shared_entity_switch::clear_slot(slot);
+    crate::cookies::retire(slot, token);
+}
+
+#[repr(C)]
+pub struct ClientIdentity {
+    pub user_id: i32,
+    pub signon: i32,
+    pub steam_id: *const std::os::raw::c_char,
+    pub name: *const std::os::raw::c_char,
+    pub address: *const std::os::raw::c_char,
+}
+impl ClientIdentity {
+    pub(crate) fn owned(&self) -> serde_json::Value {
+        fn copy(p: *const std::os::raw::c_char, fallback: &str) -> String {
+            if p.is_null() { fallback.into() } else { unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned() }
+        }
+        serde_json::json!({"userId": self.user_id, "signonState": self.signon,
+            "steamId": copy(self.steam_id, "0"), "name": copy(self.name, ""), "address": copy(self.address, "")})
+    }
+}
+fn snapshot(slot: i32) -> serde_json::Value {
+    let ops = engine_ops();
+    // Engine strings can share scratch storage. Copy each result before the next engine call.
+    fn copy(ptr: *const std::os::raw::c_char, fallback: &str) -> String {
+        if ptr.is_null() { fallback.into() } else { unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned() }
+    }
+    let steam_id = copy(ops.and_then(|o| o.client_steamid).map_or(std::ptr::null(), |f| f(slot)), "0");
+    let name = copy(ops.and_then(|o| o.client_name).map_or(std::ptr::null(), |f| f(slot)), "");
+    let address = copy(ops.and_then(|o| o.client_address).map_or(std::ptr::null(), |f| f(slot)), "");
+    serde_json::json!({"steamId": steam_id, "name": name, "address": address,
+        "userId": ops.and_then(|o| o.client_userid).map_or(-1, |f| f(slot)),
+        "signonState": ops.and_then(|o| o.client_signon).map_or(-1, |f| f(slot))})
+}
+
+/// Legacy immediate delivery can still identify the connection at the call boundary.
+pub(crate) fn dispatch_client_event(event: &str, slot: i32) -> Delivery {
+    let token = match event {
+        "connect" => begin(slot),
+        "putinserver" | "active" | "fullyconnect" => ensure(slot),
+        _ => generation(slot),
+    };
+    let identity = (event == "disconnect").then(|| snapshot(slot));
+    dispatch_client_event_v2(event, slot, token, identity.as_ref())
+}
+pub(crate) fn dispatch_client_event_v2(event: &str, slot: i32, token: u64, identity: Option<&serde_json::Value>) -> Delivery {
+    let s = crate::crash::breadcrumb::snapshot();
+    match event {
+        "putinserver" => crate::crash::breadcrumb::set_players(s.players + 1),
+        "disconnect" => { crate::crash::breadcrumb::set_players(s.players - 1); end(slot, token); }
+        _ => {}
+    }
+    replay_client_event_v2(event, slot, token, identity)
+}
+/// Slot-only replay cannot prove which occupant produced it. Fail closed.
+pub(crate) fn replay_client_event(_event: &str, _slot: i32) -> Delivery {
+    crate::v8host::log_warn("WARN: client lifecycle: dropped legacy slot-only replay (shim/core mismatch)");
+    Delivery::Delivered
+}
+pub(crate) fn replay_client_event_v2(event: &str, slot: i32, token: u64, identity: Option<&serde_json::Value>) -> Delivery {
     let snap = CLIENT_MUX.with(|m| m.borrow().snapshot(event));
     fan_out(&snap, &format!("dispatch_client('{}')", event), Instrument::none(), |tc| {
-        Some(vec![v8::Integer::new(tc, slot).into()])
+        if token == 0 || (event != "disconnect" && !matches(slot, token)) { return None; }
+        let token = v8::String::new(tc, &token.to_string())?;
+        let data = v8::String::new(tc, &identity.map_or("null".into(), |s| s.to_string()))?;
+        Some(vec![v8::Integer::new(tc, slot).into(), token.into(), data.into()])
     })
+}
+
+/// Optional final token preserves raw slot natives, while Client calls are connection-gated.
+pub(crate) fn guarded(scope: &mut v8::PinScope, args: &v8::FunctionCallbackArguments, slot: i32, index: i32) -> bool {
+    args.length() <= index || matches(slot, args.get(index).to_rust_string_lossy(scope).parse().unwrap_or(0))
+}
+fn s2_client_generation(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+    let token = generation(slot).to_string();
+    if let Some(s) = v8::String::new(scope, &token) { rv.set(s.into()); }
+}
+fn s2_client_matches(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+    let token = args.get(1).to_rust_string_lossy(scope).parse().unwrap_or(0);
+    rv.set_bool(matches(slot, token));
 }
 
 /// `__s2_client_subscribe(event, handler)` — subscribe a JS fn to a client-lifecycle event name
@@ -93,6 +162,7 @@ fn s2_client_valid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
         rv.set_bool(false);
         if args.length() < 1 { return; }
         let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        if !guarded(scope, &args, slot, 1) { return; }
         let Some(ops) = engine_ops() else { return };
         let Some(func) = ops.client_valid else { return };
         rv.set_bool(func(slot) != 0);
@@ -105,6 +175,7 @@ fn s2_client_userid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgument
         rv.set_int32(-1);
         if args.length() < 1 { return; }
         let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        if !guarded(scope, &args, slot, 1) { return; }
         let Some(ops) = engine_ops() else { return };
         let Some(func) = ops.client_userid else { return };
         rv.set_int32(func(slot));
@@ -117,6 +188,7 @@ fn s2_client_signon(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgument
         rv.set_int32(-1);
         if args.length() < 1 { return; }
         let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        if !guarded(scope, &args, slot, 1) { return; }
         let Some(ops) = engine_ops() else { return };
         let Some(func) = ops.client_signon else { return };
         rv.set_int32(func(slot));
@@ -141,6 +213,7 @@ fn s2_client_name(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
         rv.set_null();
         if args.length() < 1 { return; }
         let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        if !guarded(scope, &args, slot, 1) { return; }
         let Some(ops) = engine_ops() else { return };
         let Some(func) = ops.client_name else { return };
         let ptr = func(slot);
@@ -157,6 +230,7 @@ fn s2_client_language(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
         rv.set_null();
         if args.length() < 1 { return; }
         let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        if !guarded(scope, &args, slot, 1) { return; }
         let Some(ops) = engine_ops() else { return };
         let Some(func) = ops.client_language else { return };
         let ptr = func(slot);
@@ -173,6 +247,7 @@ fn s2_client_print(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments
         if args.length() < 2 { return; }
         let slot = args.get(0).int32_value(scope).unwrap_or(-1);
         let msg = args.get(1).to_rust_string_lossy(scope);
+        if !guarded(scope, &args, slot, 2) { return; }
         let Some(ops) = engine_ops() else { return };
         let Some(f) = ops.client_print else { return };
         if let Ok(cmsg) = CString::new(msg) { f(slot, cmsg.as_ptr()); }
@@ -184,6 +259,7 @@ fn s2_client_steamid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let slot = args.get(0).int32_value(scope).unwrap_or(-1);
         let s: String = (|| {
+            if !guarded(scope, &args, slot, 1) { return None; }
             let ops = engine_ops()?;
             let f = ops.client_steamid?;
             let ptr = f(slot);
@@ -200,6 +276,7 @@ fn s2_client_kick(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
         if args.length() < 1 { return; }
         let slot = args.get(0).int32_value(scope).unwrap_or(-1);
         let reason = if args.length() >= 2 { args.get(1).to_rust_string_lossy(scope) } else { "Kicked by admin".to_string() };
+        if !guarded(scope, &args, slot, 2) { return; }
         let Some(ops) = engine_ops() else { return };
         let Some(f) = ops.client_kick else { return };
         if let Ok(creason) = CString::new(reason) { f(slot, creason.as_ptr()); }
@@ -213,6 +290,7 @@ fn s2_client_console_print(scope: &mut v8::PinScope, args: v8::FunctionCallbackA
         if args.length() < 2 { return; }
         let slot = args.get(0).int32_value(scope).unwrap_or(-1);
         let msg = args.get(1).to_rust_string_lossy(scope);
+        if !guarded(scope, &args, slot, 2) { return; }
         let Some(ops) = engine_ops() else { return };
         let Some(f) = ops.client_console_print else { return };
         if let Ok(cmsg) = CString::new(msg) { f(slot, cmsg.as_ptr()); }
@@ -224,6 +302,7 @@ fn s2_client_address(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let slot = args.get(0).int32_value(scope).unwrap_or(-1);
         let s: String = (|| {
+            if !guarded(scope, &args, slot, 1) { return None; }
             let ops = engine_ops()?;
             let f = ops.client_address?;
             let ptr = f(slot);
@@ -246,6 +325,7 @@ fn s2_client_command(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
         if !(0..64).contains(&slot) { return; }
         let cmd = args.get(1).to_rust_string_lossy(scope);
         if cmd.is_empty() { return; }
+        if !guarded(scope, &args, slot, 2) { return; }
         let Some(ops) = engine_ops() else { return };
         let Some(f) = ops.client_command else { return };
         let Ok(ccmd) = CString::new(cmd) else { return };
@@ -264,6 +344,7 @@ fn s2_client_fake_command(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         if !(0..64).contains(&slot) { return; }
         let cmd = args.get(1).to_rust_string_lossy(scope);
         if cmd.is_empty() { return; }
+        if !guarded(scope, &args, slot, 2) { return; }
         let Some(ops) = engine_ops() else { return };
         let Some(f) = ops.client_fake_command else { return };
         let Ok(ccmd) = CString::new(cmd) else { return };
@@ -273,6 +354,8 @@ fn s2_client_fake_command(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
 
 /// Publish this feature's natives. Called from `v8host`'s `install_natives`.
 pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) {
+    set_native(scope, global_obj, "__s2_client_generation", s2_client_generation);
+    set_native(scope, global_obj, "__s2_client_matches", s2_client_matches);
     set_native(scope, global_obj, "__s2_client_valid", s2_client_valid);
     set_native(scope, global_obj, "__s2_client_userid", s2_client_userid);
     set_native(scope, global_obj, "__s2_client_signon", s2_client_signon);
@@ -292,6 +375,8 @@ pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
 /// The owner-scoped store: the six lifecycle hooks stay installed for the process lifetime — no
 /// engine-op follow-up on an emptied name.
 pub(crate) fn register_store() {
+    crate::process_singletons::register("CLIENT_CONNECTIONS", crate::process_singletons::ResetPhase::AfterIsolateDrop,
+        Box::new(|| CONNECTIONS.with(|b| b.borrow_mut().clear())));
     crate::owner_stores::register(
         "CLIENT_MUX",
         Box::new(|owner| { CLIENT_MUX.with(|m| { m.borrow_mut().remove_by_owner(owner); }); }),
@@ -313,6 +398,175 @@ mod tests {
     use crate::v8host::{create_plugin_context, eval_in_context, init, set_engine_ops, shutdown,
         unload_plugin, S2EngineOps};
     use std::os::raw::c_char;
+    thread_local! { static EFFECTS: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new()); }
+    extern "C" fn effect(slot: i32, value: *const c_char) {
+        let value = unsafe { std::ffi::CStr::from_ptr(value) }.to_string_lossy().into_owned();
+        EFFECTS.with(|e| e.borrow_mut().push(value.clone()));
+        if value == "replace" { begin(slot); }
+    }
+    extern "C" fn effect_command(slot: i32, value: *const c_char) -> i32 { effect(slot, value); 1 }
+    extern "C" fn effect_voice(_: i32, _: i32) -> i32 { EFFECTS.with(|e| e.borrow_mut().push("voice".into())); 1 }
+    fn effect_ops() -> S2EngineOps {
+        S2EngineOps { client_print: Some(effect), client_console_print: Some(effect), client_kick: Some(effect),
+            client_command: Some(effect_command), client_fake_command: Some(effect_command), voice_set_muted: Some(effect_voice), ..S2EngineOps::none() }
+    }
+    #[test]
+    fn current_connection_actions_and_identity_remain_available() {
+        init(dummy_logger()).unwrap();
+        extern "C" fn name(_: i32) -> *const c_char { c"Current".as_ptr() }
+        extern "C" fn sid(_: i32) -> *const c_char { c"76561198000000001".as_ptr() }
+        extern "C" fn address(_: i32) -> *const c_char { c"1.2.3.4:123".as_ptr() }
+        extern "C" fn userid(_: i32) -> i32 { 42 }
+        extern "C" fn signon(_: i32) -> i32 { 6 }
+        extern "C" fn muted(_: i32) -> i32 { 1 }
+        set_engine_ops(Some(S2EngineOps { client_name: Some(name), client_steamid: Some(sid), client_address: Some(address),
+            client_userid: Some(userid), client_signon: Some(signon), voice_get_muted: Some(muted), ..effect_ops() }));
+        begin(3);
+        create_plugin_context("control");
+        EFFECTS.with(|e| e.borrow_mut().clear());
+        assert_eq!(eval_in_context_string("control", r#"
+            var c = __s2pkg_clients.Clients.fromSlot(3);
+            c.chat('chat'); c.print('console'); c.kick('kick'); c.voiceMuted = true;
+            [c.isValid(), c.name, c.steamId, c.userId, c.signonState, c.ip, c.isBot,
+             c.voiceMuted, c.command('command'), c.fakeCommand('fake')].join('|')
+        "#), "true|Current|76561198000000001|42|6|1.2.3.4|false|true|true|true");
+        assert_eq!(EFFECTS.with(|e| e.borrow().clone()), vec!["chat", "console\n", "kick", "voice", "command", "fake"]);
+        begin(3);
+        assert_eq!(eval_in_context_string("control", "[c.isValid(),c.name,c.steamId,c.userId,c.signonState,c.ip,c.isBot,c.voiceMuted].join('|')"), "false||0|-1|-1||false|false");
+        shutdown();
+    }
+
+    #[test]
+    fn legacy_snapshot_copies_each_engine_string_before_the_next_call() {
+        init(dummy_logger()).unwrap();
+        thread_local! { static SCRATCH: std::cell::RefCell<[u8; 32]> = std::cell::RefCell::new([0; 32]); }
+        fn scratch(value: &str) -> *const c_char {
+            SCRATCH.with(|s| { let mut s = s.borrow_mut(); s.fill(0); s[..value.len()].copy_from_slice(value.as_bytes()); s.as_ptr().cast() })
+        }
+        extern "C" fn sid(_: i32) -> *const c_char { scratch("account-A") }
+        extern "C" fn name(_: i32) -> *const c_char { scratch("name-A") }
+        extern "C" fn address(_: i32) -> *const c_char { scratch("address-A") }
+        set_engine_ops(Some(S2EngineOps { client_steamid: Some(sid), client_name: Some(name), client_address: Some(address), ..S2EngineOps::none() }));
+        let identity = snapshot(3);
+        assert_eq!(identity["steamId"], "account-A");
+        assert_eq!(identity["name"], "name-A");
+        assert_eq!(identity["address"], "address-A");
+        shutdown();
+    }
+    #[test]
+    fn stale_actions_delayed_kick_and_reentrant_coercion_cannot_target_replacement() {
+        init(dummy_logger()).unwrap();
+        set_engine_ops(Some(effect_ops()));
+        begin(3);
+        create_plugin_context("actions");
+        EFFECTS.with(|e| e.borrow_mut().clear());
+        eval_in_context_string("actions", r#"
+            var c = new __s2pkg_clients.Client(3);
+            c.chat({ toString: function () { c.command('replace'); return 'bad-chat'; } });
+            c.kick('bad-kick'); c.print('bad-console'); c.voiceMuted = true;
+            c.command('bad-command'); c.fakeCommand('bad-fake'); c.kickWithReason('bad-delay');
+            'ok'
+        "#);
+        assert_eq!(EFFECTS.with(|e| e.borrow().clone()), vec!["replace"]);
+        // A pending connect-time kick must not be adopted by B's active callback.
+        eval_in_context_string("actions", "var a = new __s2pkg_clients.Client(3); a.kickWithReason('old-pending'); 'ok'");
+        begin(3);
+        let _ = dispatch_client_event("active", 3);
+        assert_eq!(EFFECTS.with(|e| e.borrow().clone()), vec!["replace"]);
+        // Exercise the timer continuation with a real captured connection handle.
+        eval_in_context_string("actions", r#"
+            var ticks = []; __s2pkg_timers.delay = function () { return { then: function (f) { ticks.push(f); } }; };
+            var b = new __s2pkg_clients.Client(3);
+            Object.defineProperty(b, 'signonState', { value: 6 });
+            b.kickWithReason('current', 1); 'ok'
+        "#);
+        begin(3);
+        eval_in_context_string("actions", "ticks[0](); 'ok'");
+        assert_eq!(EFFECTS.with(|e| e.borrow().clone()), vec!["replace", "current", "current\n"]);
+        // Coercion may itself establish B's pending kick. A must not overwrite that record.
+        eval_in_context_string("actions", r#"
+            var pendingA = new __s2pkg_clients.Client(3);
+            pendingA.kickWithReason({ toString: function () {
+                pendingA.command('replace');
+                new __s2pkg_clients.Client(3).kickWithReason('replacement-pending', 1);
+                return 'wrong-pending';
+            } }); 'ok'
+        "#);
+        let _ = dispatch_client_event("active", 3);
+        assert_eq!(EFFECTS.with(|e| e.borrow().clone()), vec!["replace", "current", "current\n", "replace", "replacement-pending", "replacement-pending\n"]);
+        shutdown();
+    }
+    #[test]
+    fn deferred_disconnect_identity_is_scoped_and_cannot_touch_new_occupant() {
+        init(dummy_logger()).unwrap();
+        set_engine_ops(Some(effect_ops()));
+        let a = begin(4);
+        let identity = serde_json::json!({"name":"Departing A", "steamId":"76561198000000001", "userId":12, "signonState":6, "address":"1.2.3.4:123"});
+        end(4, a);
+        let b = begin(4);
+        load_body("snapshot", r#"
+            __s2pkg_clients.Clients.onDisconnect(function(c) {
+                globalThis.saved = c;
+                globalThis.identity = [c.name, c.steamId, c.userId, c.ip, c.isValid()].join('|');
+                c.chat('bad'); c.kick('bad'); c.voiceMuted = true;
+            });
+        "#, "{}");
+        EFFECTS.with(|e| e.borrow_mut().clear());
+        let _ = replay_client_event_v2("disconnect", 4, a, Some(&identity));
+        assert_eq!(eval_in_context_string("snapshot", "identity"), "Departing A|76561198000000001|12|1.2.3.4|false");
+        assert_eq!(eval_in_context_string("snapshot", "[saved.name,saved.steamId,saved.userId,saved.isBot].join('|')"), "|0|-1|false");
+        assert!(EFFECTS.with(|e| e.borrow().is_empty()));
+        assert!(matches(4, b));
+        shutdown();
+    }
+    #[test]
+    fn lifecycle_replay_never_adopts_replacement_and_rechecks_each_subscriber() {
+        init(dummy_logger()).unwrap();
+        set_engine_ops(Some(effect_ops()));
+        let a = begin(2);
+        load_body("events", r#"
+            globalThis.n = 0;
+            __s2pkg_clients.Clients.onActive(function(c) { n++; c.command('replace'); });
+            __s2pkg_clients.Clients.onActive(function() { n += 100; });
+        "#, "{}");
+        let _ = replay_client_event_v2("active", 2, a, None);
+        assert_eq!(eval_in_context_string("events", "String(n)"), "1");
+        let _ = replay_client_event_v2("active", 2, a, None);
+        let _ = replay_client_event("active", 2);
+        assert_eq!(eval_in_context_string("events", "String(n)"), "1");
+        let before = generation(2);
+        crate::ffi::s2script_core_dispatch_map_start(c"de_test".as_ptr());
+        assert_eq!(generation(2), before);
+        let _ = dispatch_client_event("voice", 9);
+        let _ = dispatch_client_event("settingschanged", 9);
+        assert_eq!(generation(9), 0);
+        assert_eq!(ensure(2), before);
+        assert!(begin(2) > before);
+        shutdown();
+    }
+
+    #[test]
+    fn saved_client_cannot_act_on_reused_slot_even_for_same_account() {
+        init(dummy_logger()).unwrap();
+        CLIENT_CMD_CALLS.lock().unwrap().clear();
+        FAKE_CMD_CALLS.lock().unwrap().clear();
+        extern "C" fn valid(_: i32) -> i32 { 1 }
+        extern "C" fn sid(_: i32) -> *const c_char { c"76561198000000001".as_ptr() }
+        set_engine_ops(Some(S2EngineOps { client_valid: Some(valid), client_steamid: Some(sid), ..client_cmd_test_ops() }));
+        let _ = dispatch_client_event("connect", 3);
+        create_plugin_context("reuse");
+        assert_eq!(eval_in_context_string("reuse", "var old = new __s2pkg_clients.Client(3); String(old.command('before'))"), "true");
+        let _ = dispatch_client_event("disconnect", 3);
+        let _ = dispatch_client_event("connect", 3);
+        assert_eq!(eval_in_context_string("reuse", "String(old.isValid())"), "false");
+        assert_eq!(eval_in_context_string("reuse", "String(old.command('wrong') || old.fakeCommand('wrong'))"), "false");
+        assert_eq!(eval_in_context_string("reuse", "old.steamId"), "0");
+        assert_eq!(eval_in_context_string("reuse", "String(new __s2pkg_clients.Client(3).command('after'))"), "true");
+        assert_eq!(CLIENT_CMD_CALLS.lock().unwrap().as_slice(), &[(3, "before".into()), (3, "after".into())]);
+        assert!(FAKE_CMD_CALLS.lock().unwrap().is_empty());
+        shutdown();
+    }
+
     /// Slice 5D.2: the five engine-identity client natives degrade safely with no engine-ops table
     /// (no crash — false/-1/null as documented).
     #[test]
@@ -330,8 +584,8 @@ mod tests {
 
     /// Clients sub-project Task 1: the `@s2script/clients` prelude exposes the `Client` class + the
     /// `Clients` namespace (6 lifecycle `on*` + `fromSlot`/`all`).  With no engine-ops table wired,
-    /// `__s2_client_valid` degrades false → `fromSlot(0)` is null and `all()` is empty; `Client.isBot`
-    /// derives from `steamId === "0"` (the no-ops steamid degrade), so a bare `new Client(0)` is a bot.
+    /// the connection books are empty → `fromSlot(0)` is null and `all()` is empty; an invalid
+    /// `Client` is not treated as a bot just because its stale SteamID defaults to "0".
     #[test]
     fn clients_prelude_exposes_client_and_clients_namespace() {
         let _ = init(dummy_logger());
@@ -349,9 +603,9 @@ mod tests {
         // No engine → an empty slot: fromSlot(0) is null, all() is [].
         assert_eq!(eval_in_context_string("pcl", "String(__s2pkg_clients.Clients.fromSlot(0))"), "null");
         assert_eq!(eval_in_context_string("pcl", "String(__s2pkg_clients.Clients.all().length)"), "0");
-        // A Client is slot-backed; isBot derives from steamId === "0" (no-ops steamid → "0" → bot).
+        // The captured slot remains readable, but a stale connection is not a bot.
         assert_eq!(eval_in_context_string("pcl", "String(new __s2pkg_clients.Client(3).slot)"), "3");
-        assert_eq!(eval_in_context_string("pcl", "String(new __s2pkg_clients.Client(3).isBot)"), "true");
+        assert_eq!(eval_in_context_string("pcl", "String(new __s2pkg_clients.Client(3).isBot)"), "false");
         shutdown();
     }
 
@@ -407,6 +661,7 @@ mod tests {
         FAKE_CMD_CALLS.lock().unwrap().clear();
         CLIENT_CMD_CALLS.lock().unwrap().clear();
         set_engine_ops(Some(client_cmd_test_ops()));
+        begin(5);
         create_plugin_context("fc1");
         let out = eval_in_context_string("fc1",
             r#"var c = new __s2pkg_clients.Client(5); String(c.fakeCommand('sm_ban \"some guy\" 60'))"#);
@@ -440,6 +695,7 @@ mod tests {
         let _ = init(dummy_logger());
         CLIENT_CMD_CALLS.lock().unwrap().clear();
         set_engine_ops(Some(client_cmd_test_ops()));
+        begin(3);
         create_plugin_context("cc1");
         // `new Client(slot)` rather than Clients.fromSlot: the test isolate has no engine client
         // state, so fromSlot resolves to null. Same construction the voice-mute test uses.

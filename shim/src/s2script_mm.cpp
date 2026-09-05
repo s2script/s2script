@@ -66,6 +66,7 @@
 #include "crash_handler.h"  // Crash-reporter slice: S2CrashArm/S2CrashDisarm (Breakpad native fault path)
 #include "engine_calls.h"   // Plugin-gamedata slice: S2_EngineCallResolve/Invoke (the two appended engine ops)
 #include "defer_queue.h"    // deferred-dispatch slice: the engine-free queue/drain policy (ops-injected)
+#include "client_bootstrap.h"
 #include "hook_dispatch.h"  // declarative inbound hooks: the engine-free policy half (ops-injected)
 #include "engine_hooks.h"   // declarative inbound hooks: S2_HookInstall/ArmBypass (the two appended ops)
 #include "sdkhooks_vp.h"    // SDKHooks per-entity VP hooks (Touch family; reads s_gdSdkhooks)
@@ -642,8 +643,9 @@ static bool S2_DeferSelfTestArmed() {
 }
 
 // --- push helpers: the five call sites keep their engine types --------------------------------
-static void S2_DeferClientEvent(const char* name, int slot) {
-    S2Defer_PushScalar(S2_DEFERRED_CLIENT_EVENT, name, nullptr, nullptr, slot);
+static void S2_DispatchClientEvent(const char* name, int slot, uint64_t token, const S2ClientIdentity* identity = nullptr) {
+    if (s2script_core_dispatch_client_event_v2(name, slot, token, identity) == S2_DISPATCH_DEFERRED)
+        S2Defer_PushClient(name, slot, token, identity);
 }
 static void S2_DeferMapStart(const char* map) {
     S2Defer_PushScalar(S2_DEFERRED_MAP_START, map, nullptr, nullptr, 0);
@@ -692,7 +694,10 @@ static int S2Defer_ReplayOp(const S2Deferred& e) {
             return s2script_core_replay_game_event(e.a.c_str());
         }
         case S2_DEFERRED_CLIENT_EVENT:
-            return s2script_core_replay_client_event(e.a.c_str(), e.i);
+            {
+                S2ClientIdentity identity{e.user_id, e.signon, e.steam_id.c_str(), e.client_name.c_str(), e.address.c_str()};
+                return s2script_core_replay_client_event_v2(e.a.c_str(), e.i, e.token, e.has_identity ? &identity : nullptr);
+            }
         case S2_DEFERRED_MAP_START:
             return s2script_core_replay_map_start(e.a.c_str());
         case S2_DEFERRED_ENTITY_EVENT:
@@ -5035,6 +5040,19 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         return true; // degrade, do not fail the load (spec §7)
     }
 
+    // Late-load bootstrap. CPlayerUserId stores ushort; -1 is represented by 65535.
+    // A userid proves occupancy, not exact signon phase: use connected conservatively.
+    if (s_pEngine) {
+        S2ClientBootstrap(kMaxClientSlots, CPlayerUserId(-1).Get(),
+            [](int slot) { return s_pEngine->GetPlayerUserId(CPlayerSlot(slot)).Get(); },
+            [](int slot) {
+                if (s_trackedSignon[slot] < kSignonConnected) s_trackedSignon[slot] = kSignonConnected;
+                s2script_core_client_ensure(slot);
+            });
+    } else {
+        META_CONPRINTF("[s2script] client lifecycle: bootstrap unavailable (engine interface missing)\n");
+    }
+
     // Declarative inbound hooks: hand the engine-free policy TU its ONE outside contact — core's
     // inbound dispatch entry. After core init deliberately: nothing can reach a thunk before then
     // (a hook is only detoured when core calls hook_install, which needs a loaded plugin), and a
@@ -5619,42 +5637,38 @@ void S2ScriptPlugin::Hook_ClientCommand(CPlayerSlot slot, const CCommand& args) 
 void S2ScriptPlugin::Hook_OnClientConnected(CPlayerSlot slot, const char*, uint64, const char*, const char*, bool) {
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonConnected;
-    if (s2script_core_dispatch_client_event("connect", s) == S2_DISPATCH_DEFERRED)
-        S2_DeferClientEvent("connect", s);
+    S2_DispatchClientEvent("connect", s, s2script_core_client_begin(s));
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientPutInServer(CPlayerSlot slot, const char*, int, uint64) {
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonSpawn;
-    if (s2script_core_dispatch_client_event("putinserver", s) == S2_DISPATCH_DEFERRED)
-        S2_DeferClientEvent("putinserver", s);
+    S2_DispatchClientEvent("putinserver", s, s2script_core_client_ensure(s));
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientActive(CPlayerSlot slot, bool, const char*, uint64) {
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonFull;
     MaybeValidateVoiceListening();   // one-shot Get/Set round-trip once two clients are active
-    if (s2script_core_dispatch_client_event("active", s) == S2_DISPATCH_DEFERRED)
-        S2_DeferClientEvent("active", s);
+    S2_DispatchClientEvent("active", s, s2script_core_client_ensure(s));
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientFullyConnect(CPlayerSlot slot) {
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonFull;
-    if (s2script_core_dispatch_client_event("fullyconnect", s) == S2_DISPATCH_DEFERRED)
-        S2_DeferClientEvent("fullyconnect", s);
+    S2_DispatchClientEvent("fullyconnect", s, s2script_core_client_ensure(s));
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnectionReason, const char*, uint64, const char*) {
     int s = slot.Get();
-    // dispatch FIRST — the handler still sees the client valid. A DEFERRED disconnect inverts that:
-    // it is replayed next frame, after the state below has been cleared, so its handler reads
-    // Clients.isValid(slot) == false (and the slot may even have been reused). Accepted, and
-    // documented in the clients .d.ts — it is strictly more than today's total drop.
-    if (s2script_core_dispatch_client_event("disconnect", s) == S2_DISPATCH_DEFERRED)
-        S2_DeferClientEvent("disconnect", s);
-    if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonNone;
+    // Copy every string now: callbacks may re-enter engine code or replace the occupant.
+    const uint64_t token = s2script_core_client_generation(s);
+    auto copy = [](const char* p) { return std::string(p ? p : ""); };
+    std::string steamId = copy(s2_client_steamid(s)), name = copy(s2_client_name(s)), address = copy(s2_client_address(s));
+    S2ClientIdentity identity{s2_client_userid(s), s2_client_signon(s), steamId.c_str(), name.c_str(), address.c_str()};
+    // Clear departing engine policy before fan-out: a synchronous callback can connect B.
     if (s >= 0 && s < kMaxClientSlots) {
+        s_trackedSignon[s] = kSignonNone;
         // slot-reuse hygiene. Hearability state MUST be cleared here alongside the mute: a rule is
         // authored about the player who occupied this slot, and slots are recycled. Leaving
         // s_voiceHasRule set would silence (or grant hearing to) whoever connects into the slot next,
@@ -5665,11 +5679,11 @@ void S2ScriptPlugin::Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnecti
         s_voiceAudible[s] = 0;
         s_voiceHasRule &= ~(1ull << s);
     }
+    S2_DispatchClientEvent("disconnect", s, token, &identity);
     RETURN_META(MRES_IGNORED);
 }
 void S2ScriptPlugin::Hook_ClientSettingsChanged(CPlayerSlot slot) {
-    if (s2script_core_dispatch_client_event("settingschanged", slot.Get()) == S2_DISPATCH_DEFERRED)
-        S2_DeferClientEvent("settingschanged", slot.Get());
+    S2_DispatchClientEvent("settingschanged", slot.Get(), s2script_core_client_generation(slot.Get()));
     RETURN_META(MRES_IGNORED);
 }
 
@@ -5684,8 +5698,7 @@ void S2ScriptPlugin::Hook_ClientVoice(CPlayerSlot slot) {
         time_t now = time(nullptr);
         if (now != s_voiceLastNotify[s]) {
             s_voiceLastNotify[s] = now;
-            if (s2script_core_dispatch_client_event("voice", s) == S2_DISPATCH_DEFERRED)
-                S2_DeferClientEvent("voice", s);
+            S2_DispatchClientEvent("voice", s, s2script_core_client_generation(s));
         }
     }
     RETURN_META(MRES_IGNORED);

@@ -3,11 +3,17 @@
  * Resolved at runtime via globalThis.__s2pkg_clients. Import: import { Client, Clients } from "./clients";
  */
 
-/** A connected client, identified by its 0-based slot (CPlayerSlot). Slot-backed; getters read live. */
+/**
+ * A handle to one connection lifetime. Reusing a slot, even for the same SteamID, never revives it.
+ * Stale handles return "0" for steamId, "" for name/ip, -1 for userId/signonState,
+ * false for booleans; void actions do nothing and command actions return false.
+ * OnClientDisconnect receives a read-only identity snapshot during its synchronous callback;
+ * isValid() is already false. Capture identity before awaiting; afterward stale defaults apply.
+ */
 export declare class Client {
-  /** The client's 0-based engine slot (`CPlayerSlot`) — the handle's stable identity for its connection. */
+  /** The client's 0-based engine slot (`CPlayerSlot`) — not sufficient by itself to identify a connection. */
   readonly slot: number;
-  /** True while a client occupies this slot. */
+  /** True while this exact connection occupies the slot. */
   isValid(): boolean;
   /** Decimal SteamID64; "0" for a bot or an unauthenticated client. */
   readonly steamId: string;
@@ -15,9 +21,9 @@ export declare class Client {
   readonly name: string;
   /** Engine user-id; -1 if none. */
   readonly userId: number;
-  /** Tracked signon state: 0 = none/disconnected, 2 = connected, 5 = spawned, 6 = full (in-game); -1 if the slot is out of range. */
+  /** Tracked signon state: 0 = none/disconnected, 2 = connected, 5 = spawned, 6 = full (in-game); -1 for a stale handle. */
   readonly signonState: number;
-  /** True for a fake client (bot) — derived from steamId === "0". */
+  /** True for a fake client (bot) — false for stale handles. */
   readonly isBot: boolean;
   /** Disconnect this client. */
   kick(reason?: string): void;

@@ -9,6 +9,7 @@ const source = readFileSync(join(__dirname, "hudinput.js"), "utf8");
 function mount() {
   const handlers = [];
   let disconnect = null;
+  const clients = new Map();
   globalThis.__s2pkg_usercmd = {
     UserCmd: {
       onRun(fn) { handlers.push(fn); }
@@ -16,6 +17,7 @@ function mount() {
   };
   globalThis.__s2pkg_clients = {
     Clients: {
+      fromSlot(slot) { return clients.get(slot) || null; },
       onDisconnect(fn) { disconnect = fn; }
     }
   };
@@ -26,6 +28,7 @@ function mount() {
     HudInput: globalThis.__s2pkg_hudinput.HudInput,
     handlers,
     disconnect,
+    clients,
     run(slot, buttons) {
       const cmd = { buttons };
       handlers[0](cmd, { slot });
@@ -115,4 +118,23 @@ test("disconnect disarms that slot", () => {
 test("exports HudInput onto the cs2 package object", () => {
   const mounted = mount();
   assert.equal(globalThis.__s2pkg_cs2.HudInput, mounted.HudInput);
+});
+
+test("a deferred old disconnect preserves the replacement's Tab arm", () => {
+  const mounted = mount();
+  mounted.clients.set(4, { isValid: () => true });
+  mounted.HudInput.arm(4, { onActivate() {} });
+  mounted.disconnect({ slot: 4 });
+  assert.equal(mounted.HudInput.isArmed(4), true);
+});
+
+test("slot reuse drops an old Tab callback before the disconnect replay", () => {
+  const mounted = mount();
+  let live = true, activated = 0;
+  mounted.clients.set(4, { isValid: () => live });
+  mounted.HudInput.arm(4, { onActivate() { activated++; } });
+  live = false;
+  mounted.clients.set(4, { isValid: () => true });
+  assert.equal(mounted.run(4, IN_SCORE).buttons, IN_SCORE);
+  assert.equal(activated, 0);
 });

@@ -5291,6 +5291,7 @@ fn s2_voice_set_muted(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
         if args.length() < 2 { return; }
         let slot = args.get(0).int32_value(scope).unwrap_or(-1);
         let on = if args.get(1).boolean_value(scope) { 1 } else { 0 };
+        if !crate::client::guarded(scope, &args, slot, 2) { return; }
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(f) = ops.voice_set_muted else { return };
         rv.set_bool(f(slot, on) != 0);
@@ -5304,6 +5305,7 @@ fn s2_voice_get_muted(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
         rv.set_int32(-1);
         if args.length() < 1 { return; }
         let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        if !crate::client::guarded(scope, &args, slot, 1) { return; }
         let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
         let Some(f) = ops.voice_get_muted else { return };
         rv.set_int32(f(slot));
@@ -10421,6 +10423,7 @@ pub(crate) mod frame_tests {
             ..mock_event_ops()
         }));
         VOICE_MUTED_CAPTURE.with(|a| *a.borrow_mut() = [0; 64]);
+        crate::client::begin(5);
         create_plugin_context("pvm");
         assert_eq!(eval_in_context_string("pvm",
             "var c = new __s2pkg_clients.Client(5); c.voiceMuted = true; String(c.voiceMuted)"), "true");
@@ -10448,6 +10451,7 @@ pub(crate) mod frame_tests {
     fn voice_client_event_dispatches_to_on_voice() {
         let _ = init(dummy_logger());
         set_engine_ops(None);
+        crate::client::begin(4);
         load_body("pvv", r#"
             __s2pkg_clients.Clients.onVoice(function (c) {
                 globalThis.__v_ran  = (globalThis.__v_ran || 0) + 1;
@@ -12043,6 +12047,7 @@ pub(crate) mod frame_tests {
         let _ = init(dummy_logger());
         FAKE_CMD_CALLS.lock().unwrap().clear();
         set_engine_ops(Some(roundtrip_ops()));
+        crate::client::begin(0);
         load_body("p", r#"
             globalThis.__ran = 0;
             __s2_concommand("s2_target", function () { globalThis.__ran++; }, -1);
@@ -12061,6 +12066,7 @@ pub(crate) mod frame_tests {
         let _ = init(dummy_logger());
         FAKE_CMD_CALLS.lock().unwrap().clear();
         set_engine_ops(Some(roundtrip_ops()));
+        crate::client::begin(0);
         load_body("p", r#"
             globalThis.__ran = 0;
             __s2_concommand("s2_target", function () { globalThis.__ran++; }, -1);
@@ -12332,6 +12338,7 @@ pub(crate) mod frame_tests {
     fn voice_empty_receiver_list_is_a_rule_not_an_absence() {
         // mask 0 WITH a rule = audible to nobody. Distinct from None = engine decides.
         voice_rules_clear_for_test();
+        crate::client::ensure(5);
         voice_set_rule_for_test("@a/one", 5, 0);
         assert_eq!(voice_merged_for_test(5), Some(0));
     }
@@ -12507,6 +12514,7 @@ pub(crate) mod frame_tests {
         VOICE_CLEAR_CALLS.lock().unwrap().clear();
         voice_rules_clear_for_test();
         set_engine_ops(Some(voice_test_ops_full()));
+        crate::client::ensure(5);
         voice_set_rule_for_test("@a/one", 5, 0);
         voice_set_rule_for_test("@b/two", 5, 0b11);
         // No plugin subscribes to "disconnect" here ON PURPOSE: the cleanup must run ahead of the

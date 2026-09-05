@@ -4,8 +4,9 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+#[derive(Clone)]
 struct Entry { value: String, dirty: bool, updated: i64 }
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct ClientCookies { cached: bool, entries: HashMap<String, Entry> }
 
 thread_local! {
@@ -68,6 +69,11 @@ pub fn get_dirty(steamid: &str) -> Vec<(String, String)> {
 /// the plugin to persist directly (an offline SteamID never fires the disconnect flush).
 pub fn set_authid(steamid: &str, name: &str, value: &str, updated: i64) {
     set(steamid, name, value, updated);
+    SESSIONS.with(|s| {
+        for session in s.borrow_mut().values_mut().filter(|s| s.steam_id == steamid) {
+            session.cookies.entries.insert(name.into(), Entry { value: value.into(), dirty: true, updated });
+        }
+    });
     OFFLINE.with(|q| q.borrow_mut().push((steamid.to_string(), name.to_string(), value.to_string(), updated)));
 }
 
@@ -96,8 +102,77 @@ pub fn is_cached(steamid: &str) -> bool {
 pub fn reset() {
     CACHE.with(|c| c.borrow_mut().clear());
     OFFLINE.with(|q| q.borrow_mut().clear());
+    SESSIONS.with(|s| s.borrow_mut().clear());
+    RETIRED.with(|r| r.borrow_mut().clear());
 }
 
+
+// Online caches belong to connections. Offline account writes remain a separate API.
+#[derive(Default)]
+struct Session { steam_id: String, cookies: ClientCookies }
+thread_local! {
+    static SESSIONS: RefCell<HashMap<(i32, u64), Session>> = RefCell::new(HashMap::new());
+    static RETIRED: RefCell<Vec<(String, String, String, i64)>> = RefCell::new(Vec::new());
+}
+pub(crate) fn retire(slot: i32, token: u64) {
+    let session = SESSIONS.with(|s| s.borrow_mut().remove(&(slot, token)));
+    if let Some(session) = session {
+        RETIRED.with(|r| {
+            let mut r = r.borrow_mut();
+            for (name, e) in session.cookies.entries {
+                if e.dirty { r.push((session.steam_id.clone(), name, e.value, e.updated)); }
+            }
+        });
+    }
+}
+fn session_op(slot: i32, token: u64, op: &str, data: serde_json::Value) -> serde_json::Value {
+    use serde_json::{json, Value};
+    if !crate::client::matches(slot, token) { return Value::Null; }
+    let sid = data["steamId"].as_str().unwrap_or("0");
+    if sid == "0" { return Value::Null; }
+    SESSIONS.with(|sessions| {
+        let mut sessions = sessions.borrow_mut();
+        let session = sessions.entry((slot, token)).or_insert_with(|| Session { steam_id: sid.into(), cookies: CACHE.with(|c| c.borrow().get(sid).cloned().unwrap_or_default()) });
+        let cache = &mut session.cookies;
+        let name = data["name"].as_str().unwrap_or("");
+        match op {
+            "get" => cache.entries.get(name).map_or(Value::Null, |e| json!(e.value)),
+            "time" => json!(cache.entries.get(name).map_or(0, |e| e.updated)),
+            "cached" => json!(cache.cached),
+            "set" => {
+                cache.entries.insert(name.into(), Entry { value: data["value"].as_str().unwrap_or("").into(), dirty: true, updated: data["updated"].as_i64().unwrap_or(0) });
+                Value::Null
+            }
+            "load" => {
+                if let Some(rows) = data["rows"].as_array() {
+                    for row in rows {
+                        let name = row["name"].as_str().unwrap_or("");
+                        if cache.entries.get(name).is_some_and(|e| e.dirty) { continue; }
+                        cache.entries.insert(name.into(), Entry { value: row["value"].as_str().unwrap_or("").into(), dirty: false, updated: row["updated"].as_i64().unwrap_or(0) });
+                    }
+                }
+                cache.cached = true;
+                COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().push((slot, token)));
+                json!(true)
+            }
+            _ => Value::Null,
+        }
+    })
+}
+fn s2_cookie_session(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        let token = args.get(1).to_rust_string_lossy(scope).parse().unwrap_or(0);
+        let op = args.get(2).to_rust_string_lossy(scope);
+        let data = serde_json::from_str(&args.get(3).to_rust_string_lossy(scope)).unwrap_or(serde_json::Value::Null);
+        let value = session_op(slot, token, &op, data).to_string();
+        if let Some(s) = v8::String::new(scope, &value) { rv.set(s.into()); }
+    }));
+}
+fn s2_cookie_take_retired(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let rows = RETIRED.with(|r| std::mem::take(&mut *r.borrow_mut()));
+    if let Some(s) = v8::String::new(scope, &serde_json::to_string(&rows).unwrap_or("[]".into())) { rv.set(s.into()); }
+}
 
 // ---------------------------------------------------------------------------
 // The V8 surface: the `__s2_cookie_*` natives over the cache above, the `Cookies.onCached` mux, its
@@ -122,7 +197,7 @@ thread_local! {
     /// Slots queued by `__s2_cookie_dispatch_cached` (called from inside the plugin's `loadCookies`
     /// async continuation, i.e. possibly mid-async-drain) for the NEXT `dispatch_pending_cached()`
     /// post-drain fan-out. Draining + clearing happens with HOST free.
-    static COOKIE_CACHED_PENDING: RefCell<Vec<i32>> = RefCell::new(Vec::new());
+    static COOKIE_CACHED_PENDING: RefCell<Vec<(i32, u64)>> = RefCell::new(Vec::new());
 }
 
 
@@ -262,7 +337,8 @@ fn s2_cookie_on_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
 fn s2_cookie_dispatch_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let slot = args.get(0).int32_value(scope).unwrap_or(-1);
-        COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().push(slot));
+        let token = args.get(1).to_rust_string_lossy(scope).parse().unwrap_or(0);
+        if crate::client::matches(slot, token) { COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().push((slot, token))); }
     }));
 }
 /// Drain `COOKIE_CACHED_PENDING` and fan each queued slot out to the `Cookies.onCached` subscribers.
@@ -277,22 +353,26 @@ fn s2_cookie_dispatch_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbac
 /// output byte-identical too. Keeping the hand-rolled copy would have meant exposing `HOST`,
 /// `PLUGINS` and `REGISTRY` out of `v8host` to move this feature, which is a far worse trade.
 pub(crate) fn dispatch_pending_cached() {
-    let slots: Vec<i32> = COOKIE_CACHED_PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    let slots: Vec<(i32, u64)> = COOKIE_CACHED_PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
     if slots.is_empty() { return; }
 
     // Snapshot once, with the mux borrow released before any JS runs. Fixed key "".
     let snap = COOKIE_CACHED_MUX.with(|m| m.borrow().snapshot(""));
     if snap.is_empty() { return; }
 
-    for slot in slots {
+    for (slot, token) in slots {
         let _ = fan_out(&snap, "dispatch_pending_cookie_cached", Instrument::none(), |tc| {
-            Some(vec![v8::Integer::new(tc, slot).into()])
+            if !crate::client::matches(slot, token) { return None; }
+            let token = v8::String::new(tc, &token.to_string())?;
+            Some(vec![v8::Integer::new(tc, slot).into(), token.into()])
         });
     }
 }
 
 /// Publish this feature's natives. Called from `v8host`'s `install_natives`.
 pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) {
+    set_native(scope, global_obj, "__s2_cookie_session", s2_cookie_session);
+    set_native(scope, global_obj, "__s2_cookie_take_retired", s2_cookie_take_retired);
     set_native(scope, global_obj, "__s2_cookie_get", s2_cookie_get);
     set_native(scope, global_obj, "__s2_cookie_set", s2_cookie_set);
     set_native(scope, global_obj, "__s2_cookie_load", s2_cookie_load);
@@ -329,6 +409,24 @@ pub(crate) fn register_singletons() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn same_account_reconnect_fences_load_and_detaches_dirty_state() {
+        reset();
+        let a = crate::client::begin(4);
+        session_op(4, a, "set", serde_json::json!({"steamId":"same", "name":"color", "value":"red", "updated":7}));
+        crate::client::end(4, a);
+        let b = crate::client::begin(4);
+        session_op(4, b, "set", serde_json::json!({"steamId":"same", "name":"color", "value":"blue", "updated":8}));
+        assert_eq!(session_op(4, a, "load", serde_json::json!({"steamId":"same", "rows":[{"name":"color","value":"stale","updated":1}]})), serde_json::Value::Null);
+        retire(4, a); // delayed A disconnect cannot clear B
+        assert_eq!(session_op(4, b, "get", serde_json::json!({"steamId":"same", "name":"color"})), "blue");
+        assert_eq!(RETIRED.with(|r| r.borrow().clone()), vec![("same".into(), "color".into(), "red".into(), 7)]);
+        // A DB snapshot cannot overwrite a value authored while the query was pending.
+        session_op(4, b, "load", serde_json::json!({"steamId":"same", "rows":[{"name":"color","value":"db-old","updated":2}]}));
+        assert_eq!(session_op(4, b, "get", serde_json::json!({"steamId":"same", "name":"color"})), "blue");
+        crate::client::end(4, b);
+        reset();
+    }
     // NOTE: CACHE is thread-local + tests run serial (RUST_TEST_THREADS=1); use a unique steamid per
     // test so they don't observe each other's entries.
     #[test]
@@ -406,6 +504,46 @@ mod native_tests {
     use crate::v8host::frame_tests::{dummy_logger, eval_in_context_string, load_body, logger,
         read_global_string, read_i32_global_in, LOG};
     use crate::v8host::{create_plugin_context, eval_in_context, init, shutdown, unload_plugin};
+    fn connect_cookie_client(sid: &'static std::ffi::CStr) {
+        thread_local! { static SID: std::cell::Cell<*const std::os::raw::c_char> = std::cell::Cell::new(std::ptr::null()); }
+        extern "C" fn steam_id(_: i32) -> *const std::os::raw::c_char { SID.with(|s| s.get()) }
+        SID.with(|s| s.set(sid.as_ptr()));
+        crate::client::begin(3);
+        crate::v8host::set_engine_ops(Some(crate::v8host::S2EngineOps { client_steamid: Some(steam_id), ..crate::v8host::S2EngineOps::none() }));
+    }
+    #[test]
+    fn queued_cached_event_is_dropped_after_reuse() {
+        init(dummy_logger()).unwrap();
+        let a = crate::client::begin(5);
+        load_body("race", r#"
+            globalThis.n = 0; __s2_cookie_on_cached(function() { n++; });
+        "#, "{}");
+        COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().push((5, a)));
+        crate::client::begin(5);
+        dispatch_pending_cached();
+        assert_eq!(eval_in_context_string("race", "String(n)"), "0");
+        let b = crate::client::generation(5);
+        COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().push((5, b)));
+        dispatch_pending_cached();
+        assert_eq!(eval_in_context_string("race", "String(n)"), "1");
+        shutdown();
+    }
+    #[test]
+    fn cached_fanout_rechecks_connection_after_each_subscriber() {
+        init(dummy_logger()).unwrap();
+        extern "C" fn replace(slot: i32, _: *const std::os::raw::c_char) -> i32 { crate::client::begin(slot); 1 }
+        crate::v8host::set_engine_ops(Some(crate::v8host::S2EngineOps { client_command: Some(replace), ..crate::v8host::S2EngineOps::none() }));
+        let token = crate::client::begin(5);
+        load_body("cached-reentrant", r#"
+            globalThis.n = 0;
+            __s2pkg_cookies.Cookies.onCached(function(c) { n++; c.command('replace'); });
+            __s2pkg_cookies.Cookies.onCached(function() { n += 100; });
+        "#, "{}");
+        COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().push((5, token)));
+        dispatch_pending_cached();
+        assert_eq!(eval_in_context_string("cached-reentrant", "String(n)"), "1");
+        shutdown();
+    }
     /// clientprefs Task 2: `__s2_cookie_*` natives round-trip through `crate::cookies` — a loaded
     /// value is NOT dirty, a set value IS, `get_dirty` returns only the dirty entries, and
     /// `is_cached` reflects `mark_cached`.
@@ -448,10 +586,11 @@ mod native_tests {
     #[test]
     fn clientprefs_module_get_set_default_and_bot_skip() {
         let _ = init(dummy_logger());
+        connect_cookie_client(c"S9");
         load_body("cp", r#"
             var { Cookies } = require("@s2script/cookies");
             var c = Cookies.register("hud", { default: "white" });
-            var real = { steamId: "S9" };
+            var real = new __s2pkg_clients.Client(3);
             var bot  = { steamId: "0" };
             globalThis.__out = Cookies.get(real, c)                 // default (empty cache) -> "white"
                 + "," + (function(){ Cookies.set(real, c, "red"); return Cookies.get(real, c); })()  // "red"
@@ -468,10 +607,11 @@ mod native_tests {
     #[test]
     fn clientprefs_module_empty_string_and_get_time() {
         let _ = init(dummy_logger());
+        connect_cookie_client(c"S10");
         load_body("cp2", r#"
             var { Cookies } = require("@s2script/cookies");
             var c = Cookies.register("nickname", { default: "Anonymous" });
-            var real = { steamId: "S10" };
+            var real = new __s2pkg_clients.Client(3);
             var bot  = { steamId: "0" };
             var beforeSetTime = Cookies.getTime(real, c);      // 0 — never set
             Cookies.set(real, c, "");
@@ -507,11 +647,12 @@ mod native_tests {
     #[test]
     fn clientprefs_module_set_authid_offline_and_bot_skip() {
         let _ = init(dummy_logger());
+        connect_cookie_client(c"S12");
         load_body("cp3", r#"
             var { Cookies } = require("@s2script/cookies");
             var c = Cookies.register("hud", { default: "white" });
             Cookies.setAuthId("S12", c, "blue");
-            var real = { steamId: "S12" };
+            var real = new __s2pkg_clients.Client(3);
             var seenByClient = Cookies.get(real, c);           // "blue" — the offline write is visible
             Cookies.setAuthId("0", c, "x");                    // bot steamid — no-op
             var botRaw = __s2_cookie_get("0", "hud");
@@ -530,12 +671,13 @@ mod native_tests {
     #[test]
     fn cookie_cached_dispatch_fans_out_queued_slots() {
         let _ = init(dummy_logger());
+        crate::client::begin(5);
         load_body("ck4", r#"
             __s2_cookie_on_cached(function (slot) {
                 globalThis.__ck_ran = (globalThis.__ck_ran || 0) + 1;
                 globalThis.__ck_slot = slot;
             });
-            __s2_cookie_dispatch_cached(5);
+            __s2_cookie_dispatch_cached(5, __s2_client_generation(5));
         "#, "{}");
 
         // Enqueuing alone must not have run the handler yet.
@@ -552,7 +694,7 @@ mod native_tests {
         // Teardown: unload removes ck4's subscription; a later enqueue+dispatch is a safe no-op
         // (must not crash even though the context is disposed).
         unload_plugin("ck4");
-        COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().push(9));
+        COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().push((9, 0)));
         dispatch_pending_cached();
         shutdown();
     }

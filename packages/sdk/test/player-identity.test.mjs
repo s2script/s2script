@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import vm from "node:vm";
+import { installClientHost } from "./client-host.mjs";
 import { cs2AddonBundle } from "./cs2-addon.mjs";
 
 function runWith(clientMock, names) {
@@ -26,6 +27,7 @@ function runWith(clientMock, names) {
     ...clientMock,
   };
   ctx.globalThis = ctx;
+  installClientHost(ctx);
   vm.createContext(ctx);
   vm.runInContext(cs2AddonBundle, ctx);
   return ctx.__s2pkg_cs2;
@@ -116,4 +118,44 @@ test("Pawn.setVelocity (offline vm): writes 3 floats + notifyStateChanged", () =
   assert.equal(pawn.ref.writes.length, 3, "three writeFloat32");
   assert.deepEqual(pawn.ref.writes.map((w) => w[1]), [1, 2, 3]);
   assert.equal(pawn.ref.notified.length, 1, "one notifyStateChanged");
+});
+
+test('a retained Player and generated navigation view cannot mutate a reused preallocated controller', () => {
+  const writes = [];
+  function EntityRef(index, id) { this.index = index; this.id = id; }
+  EntityRef.prototype.isValid = function () { return this.id === 7; };
+  EntityRef.prototype.readHandle = () => null;
+  EntityRef.prototype.readInt32Via = function () { return this.id === 7 ? 4 : null; };
+  EntityRef.prototype.writeInt32Via = function (path, offset, value) { const id = this.id; value = Number(value); if (id !== 7) return false; writes.push(value); return true; };
+  EntityRef.prototype.writeInt32 = function (offset, value) { const id = this.id; value = Number(value); if (id !== 7) return false; writes.push(value); return true; };
+  EntityRef.prototype.notifyStateChanged = () => {};
+  const ctx = {
+    __s2require: n => n.endsWith('/entity') ? { EntityRef } : {},
+    __s2_schema_offset: () => 8,
+    __s2_ent_id_for_index: () => 7,
+    __s2_client_userid: () => 42,
+    __s2_client_steamid: () => 'same-account',
+    __s2_client_kick: () => writes.push('kick'),
+  };
+  const host = installClientHost(ctx);
+  vm.createContext(ctx); vm.runInContext(cs2AddonBundle, ctx);
+  const old = ctx.__s2pkg_cs2.Player._fromSlotUnchecked(3);
+  const stats = old.matchStats;
+  stats.kills = 5;
+  old.kick('before');
+  assert.deepEqual(writes, [5, 'kick']);
+  host.replace(3); // entity id stays 7: only the connection lifetime changed
+  stats.kills = 99;
+  old.health = 100;
+  old.kick('wrong');
+  assert.equal(stats.kills, null);
+  assert.equal(old.userId, -1);
+  assert.equal(old.steamId, '0');
+  assert.equal(old.ref.isValid(), false);
+  assert.deepEqual(writes, [5, 'kick']);
+  ctx.__s2pkg_cs2.Player._fromSlotUnchecked(3).matchStats.kills = 6;
+  assert.deepEqual(writes, [5, 'kick', 6]);
+  const replacement = ctx.__s2pkg_cs2.Player._fromSlotUnchecked(3);
+  replacement.matchStats.kills = { valueOf() { host.replace(3); return 77; } };
+  assert.deepEqual(writes, [5, 'kick', 6], 'numeric coercion must finish before capturing the guarded id');
 });

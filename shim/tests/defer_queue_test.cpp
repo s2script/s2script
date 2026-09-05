@@ -315,11 +315,27 @@ static void test_flush_outside_a_drain_frees_everything() {
     CHECK(LogContains("unload") && LogContains("flushed 2"), "and names the occasion and the count");
 }
 
+static void test_client_snapshot_owns_identity_and_exact_generation() {
+    ResetWorld();
+    std::string name = "departing A", steamId = "same-account", address = "1.2.3.4:12";
+    S2ClientIdentity identity{12, 6, steamId.c_str(), name.c_str(), address.c_str()};
+    S2Defer_PushClient("disconnect", 3, UINT64_C(9007199254740993), &identity);
+    name = "replacement B"; steamId.clear(); address.clear();
+    g_onReplay = [](const S2Deferred& e, int) -> int {
+        CHECK(e.token == UINT64_C(9007199254740993), "connection generation is retained without floating-point truncation");
+        CHECK(e.has_identity && e.client_name == "departing A" && e.steam_id == "same-account", "disconnect identity strings are owned copies");
+        CHECK(e.i == 3 && e.user_id == 12 && e.signon == 6 && e.address == "1.2.3.4:12", "disconnect scalar identity survives engine buffer reuse");
+        return 0;
+    };
+    S2Defer_Drain();
+}
+
 int main() {
     // Unbuffered: a regression here ABORTS (a debug-iterator or sanitizer trap), and abort() does
     // not flush iostreams — without this the output stops several checks before the real one.
     std::cout << std::unitbuf;
 
+    test_client_snapshot_owns_identity_and_exact_generation();
     test_replays_in_push_order_and_empties_the_queue();
     test_a_defer_from_inside_a_replay_lands_in_the_next_drain();
     test_overflow_drops_the_newest_and_names_it();

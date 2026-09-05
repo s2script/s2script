@@ -88,7 +88,33 @@
   if (nav) nav.applyNav(Pawn.prototype, "CCSPlayerPawn");   // sceneNode, weaponServices, movementServices, aimPunchServices
 
   // --- Slice 5C.2: the Player (controller) model ---
-  function Player(ref) { this.ref = ref; }                       // ref = the CONTROLLER EntityRef
+  function Player(ref) {
+    var Client = globalThis.__s2pkg_clients.Client;
+    var client = new Client(ref.isValid() ? ref.index - 1 : -1);
+    Object.defineProperty(this, "_client", { value: client });
+    // Preallocated controllers survive reconnect. A gated EntityRef also protects retained
+    // generated schema/nav views, which keep this same root (never edit the generated files).
+    var guarded = Object.create(ref);
+    Object.defineProperty(guarded, "id", { get: function () { return client.isValid() ? ref.id : 0; } });
+    // Generated setters pass values through unchanged. Finish user coercion before the
+    // inherited EntityRef method reads id; valueOf can synchronously disconnect/reconnect.
+    ["writeInt32", "writeFloat32", "writeInt8", "writeInt16", "writeUInt8", "writeUInt16", "writeUInt32"].forEach(function (method) {
+      if (typeof ref[method] !== "function") return;
+      Object.defineProperty(guarded, method, { value: function (offset, value) {
+        return ref[method].call(this, Number(offset), Number(value));
+      } });
+    });
+    ["writeInt32Via", "writeFloat32Via"].forEach(function (method) {
+      if (typeof ref[method] !== "function") return;
+      Object.defineProperty(guarded, method, { value: function (chain, offset, value) {
+        return ref[method].call(this, chain.map(Number), Number(offset), Number(value));
+      } });
+    });
+    if (typeof ref.writeString === "function") Object.defineProperty(guarded, "writeString", { value: function (offset, length, value) {
+      return ref.writeString.call(this, Number(offset), Number(length), String(value));
+    } });
+    Object.defineProperty(this, "ref", { value: guarded, enumerable: true });
+  }                       // ref = the CONTROLLER EntityRef
   if (schema) schema.applyAccessors(Player.prototype, "CCSPlayerController");  // team, score, ping, ...
   // Controller-sourced pointer-chain wrappers (matchStats). Separate call from the pawn's: applyNav
   // keys on the SOURCE class, so a controller target is invisible unless the controller proto asks.
@@ -132,13 +158,13 @@
   // --- Slice 5D.2: engine identity (the connected/pawnless follow promised at Player.fromSlot) ---
   // player.userId — the engine user-id (NOT a schema field); -1 if unassigned/absent.
   Object.defineProperty(Player.prototype, "userId", {
-    get: function () { return __s2_client_userid(this.slot); },
+    get: function () { return this._client.userId; },
     enumerable: true, configurable: true,
   });
   // player.steamId — the client's SteamID64 as a decimal string (engine identity, NOT a schema field);
   // "0" for bots / unauthenticated.
   Object.defineProperty(Player.prototype, "steamId", {
-    get: function () { return __s2_client_steamid(this.slot); },
+    get: function () { return this._client.steamId; },
     enumerable: true, configurable: true,
   });
   // Construct a Player from a slot when the CONTROLLER entity is valid — pawn NOT required
@@ -165,7 +191,7 @@
 
   // player.kick(reason?) — disconnect this player (engine KickClient via the client_kick op).
   Player.prototype.kick = function (reason) {
-    __s2_client_kick(this.slot, String(reason == null ? "Kicked by admin" : reason));
+    this._client.kick(reason == null ? "Kicked by admin" : reason);
   };
 
   // player.setName(name) — overwrite the player's display name (m_iszPlayerName on the controller).

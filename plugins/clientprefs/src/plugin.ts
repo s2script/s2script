@@ -3,42 +3,44 @@
 import { Database } from "@s2script/sdk";
 import type { Client } from "@s2script/sdk";
 
-declare function __s2_cookie_load(steamid: string, name: string, value: string, updated: number): void;
-declare function __s2_cookie_mark_cached(steamid: string): void;
-declare function __s2_cookie_get_dirty(steamid: string): Record<string, string>;
-declare function __s2_cookie_clear(steamid: string): void;
+declare const __s2pkg_clients: { _token(client: Client): string };
+declare function __s2_cookie_session(slot: number, token: string, op: string, data: string): string;
+declare function __s2_cookie_take_retired(): string;
 declare function __s2_cookie_take_offline_writes(): Array<[string, string, string, number]>;
-declare function __s2_cookie_dispatch_cached(slot: number): void;
 
 let db!: Database;
-
-async function loadCookies(client: Client): Promise<void> {
-  if (client.steamId === "0") return;   // skip bots
-  const steamId = client.steamId;
-  try {
-    const rows = await db.query("SELECT name, value, updated FROM cookies WHERE steamid = ?", [steamId]);
-    for (const row of rows) __s2_cookie_load(steamId, String(row.name), String(row.value), Number(row.updated));
-    __s2_cookie_mark_cached(steamId);
-    __s2_cookie_dispatch_cached(client.slot);
-  } catch (e) {
-    console.log("[clientprefs] load ERROR for " + steamId + ": " + String(e));
+// Serialize each account's departing writes before its replacement's SELECT. Queues disappear
+// when drained; host-owned retired rows survive absent/dropped disconnect subscribers.
+const accountWork = new Map<string, Promise<void>>();
+function enqueue(steamId: string, work: () => Promise<void>): Promise<void> {
+  const pending = (accountWork.get(steamId) ?? Promise.resolve()).then(work);
+  accountWork.set(steamId, pending);
+  void pending.finally(() => { if (accountWork.get(steamId) === pending) accountWork.delete(steamId); });
+  return pending;
+}
+function drainRetired(): void {
+  const rows = JSON.parse(__s2_cookie_take_retired()) as Array<[string, string, string, number]>;
+  for (const [steamId, name, value, updated] of rows) {
+    void enqueue(steamId, async () => {
+      try {
+        await db.execute("INSERT OR REPLACE INTO cookies (steamid, name, value, updated) VALUES (?, ?, ?, ?)", [steamId, name, value, updated]);
+      } catch (e) { console.log("[clientprefs] save ERROR for " + steamId + ": " + String(e)); }
+    });
   }
 }
-
-async function saveCookies(client: Client): Promise<void> {
-  if (client.steamId === "0") return;
+async function loadCookies(client: Client): Promise<void> {
+  if (!client.isValid() || client.steamId === "0") return;
   const steamId = client.steamId;
-  const dirty = __s2_cookie_get_dirty(steamId);
-  __s2_cookie_clear(steamId);
-  const now = Math.floor(Date.now() / 1000);
-  try {
-    for (const name of Object.keys(dirty)) {
-      await db.execute("INSERT OR REPLACE INTO cookies (steamid, name, value, updated) VALUES (?, ?, ?, ?)",
-        [steamId, name, dirty[name], now]);
-    }
-  } catch (e) {
-    console.log("[clientprefs] save ERROR for " + steamId + ": " + String(e));
-  }
+  const token = __s2pkg_clients._token(client);
+  drainRetired();
+  return enqueue(steamId, async () => {
+    if (!client.isValid()) return;
+    try {
+      const rows = await db.query("SELECT name, value, updated FROM cookies WHERE steamid = ?", [steamId]);
+      if (!client.isValid()) return;
+      __s2_cookie_session(client.slot, token, "load", JSON.stringify({ steamId, rows: rows.map(row => ({ name: String(row.name), value: String(row.value), updated: Number(row.updated) })) }));
+    } catch (e) { console.log("[clientprefs] load ERROR for " + steamId + ": " + String(e)); }
+  });
 }
 
 function drainOfflineWrites(): void {
@@ -62,10 +64,11 @@ export function OnClientPutInServer(client: Client): void | Promise<void> {
   return loadCookies(client);
 }
 
-export function OnClientDisconnect(client: Client): void | Promise<void> {
-  return saveCookies(client);
+export function OnClientDisconnect(_client: Client): void | Promise<void> {
+  drainRetired();
 }
 
 export function OnGameFrame(): void {
+  drainRetired();
   drainOfflineWrites();
 }

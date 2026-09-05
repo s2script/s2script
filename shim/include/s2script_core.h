@@ -95,6 +95,21 @@ int s2script_core_dispatch_client_event(const char* name, int slot);
  * voice slot-reuse clear already ran, unconditionally, at dispatch time. NOTE a deferred
  * "disconnect" arrives AFTER the shim cleared the slot, so the handler sees the client invalid. */
 int s2script_core_replay_client_event(const char* name, int slot);
+/* Connection lifecycle v2. Strings are borrowed only for the call; core copies before JS.
+ * Disconnect identity is read-only and scoped to the synchronous callback. */
+typedef struct S2ClientIdentity {
+    int user_id;
+    int signon;
+    const char* steam_id;
+    const char* name;
+    const char* address;
+} S2ClientIdentity;
+uint64_t s2script_core_client_begin(int slot);
+uint64_t s2script_core_client_ensure(int slot);
+uint64_t s2script_core_client_generation(int slot);
+void s2script_core_client_end(int slot, uint64_t token);
+int s2script_core_dispatch_client_event_v2(const char* name, int slot, uint64_t token, const S2ClientIdentity* identity);
+int s2script_core_replay_client_event_v2(const char* name, int slot, uint64_t token, const S2ClientIdentity* identity);
 /* Shim -> core: the INetworkServerService::StartupServer POST hook reports a map start with the
  * live map name (clientlist-fakeconvar-onmapstart slice). Notify-only: runs the JS Server.onMapStart
  * subscribers. catch_unwind-wrapped; a null pointer degrades to "" (never panic across the boundary). */
