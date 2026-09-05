@@ -1,6 +1,6 @@
 # Human acceptance runbook
 
-Status: pending. This runbook records the remaining evidence; it does not claim those checks passed.
+Status: pending; the user will join later. The complete automated soak passed. The test server currently runs 19 plugins: the 18 soak plugins plus the temporary viewer fixture. Remote joining is enabled with runtime `sv_lan 0`; existing client-side MAM delivery requests addon `3790153369`. No human assertion has been performed or counted as passing.
 
 Use only the isolated `s2script-cs2-hardening` container at `nebula.gkh.dev:27016`. Finish and archive the mixed soak before changing its workload, configuration or plugin set. The production `s2script-hudlab` instance is outside this procedure.
 
@@ -8,16 +8,16 @@ Use only the isolated `s2script-cs2-hardening` container at `nebula.gkh.dev:2701
 
 Read-only preparation found TCP and UDP 27016 published on the host with Docker forwarding rules, UFW inactive, and successful anonymous Steam login in the owned server's logs. Actual off-host reachability and acceptance still require a client attempt.
 
-The owned MAM config is `.gate/cs2-data/game/csgo/cfg/multiaddonmanager/multiaddonmanager.cfg`. Save its exact original bytes, then configure:
+The owned MAM config is `.gate/cs2-data/game/csgo/cfg/multiaddonmanager/multiaddonmanager.cfg`. **Do not repeat the server-side mount setup below during the human session.** It was attempted after the soak and rolled back after a startup failure and map-reload crash; see [the incident record](mam-startup-incident.md). The currently restored settings are:
 
 ```cfg
-mm_extra_addons "3790153369"
-mm_client_extra_addons ""
+mm_extra_addons ""
+mm_client_extra_addons "3790153369"
 ```
 
-The [MultiAddonManager documentation](https://github.com/Source2ZE/MultiAddonManager/blob/main/README.md) distinguishes the server download/mount field from the client-only field. The latter does not mount the addon server-side, and the runtime's UI startup check reads `mm_extra_addons`.
+The [MultiAddonManager documentation](https://github.com/Source2ZE/MultiAddonManager/blob/main/README.md) distinguishes the server download/mount field from the client-only field. The latter does not mount the addon server-side, and the runtime's UI startup check reads `mm_extra_addons`. Client delivery and HUD rendering therefore require direct observation; the server startup banner alone cannot establish them.
 
-Restart only the owned container. Wait for the workshop download and any automatic map reload, verify the UI addon is mounted, and require all 18 acceptance plugins active. Set `sv_lan 0` for the temporary human test and query its value. Keep this change runtime-only; the container's next boot restores LAN mode. Do not copy credentials from another server. Anonymous direct connection is an attempt, not a proven guarantee; if Steam requires a token, use a fresh token dedicated to this test server.
+Recovery restarted only the owned container, verified all 19 plugins active and both fixture commands available, then set and queried `sv_lan 0` for the temporary human test. Keep this change runtime-only; the container's next boot restores LAN mode. Do not copy credentials from another server. Anonymous direct connection is an attempt, not a proven guarantee; if Steam requires a token, use a fresh token dedicated to this test server.
 
 The user connects through the CS2 developer console:
 

@@ -1,0 +1,25 @@
+RCON connected.
+
+>>> sm plugins list
+[s2script] [SM] Plugins (18):
+[s2script]   1 "@fixture/client-live" (running)
+[s2script]   2 "@fixture/cookie-live" (running)
+[s2script]   3 "@fixture/memory-live" (running)
+[s2script]   4 "@fixture/mixed-live" (running)
+[s2script]   5 "@s2script/adminhelp" (running)
+[s2script]   6 "@s2script/adminmenu" (running)
+[s2script]   7 "@s2script/antiflood" (running)
+[s2script]   8 "@s2script/basebans" (running)
+[s2script]   9 "@s2script/basechat" (running)
+[s2script]   10 "@s2script/basecomm" (running)
+[s2script]   11 "@s2script/basecommands" (running)
+[s2script]   12 "@s2script/basetriggers" (running)
+[s2script]   13 "@s2script/basevotes" (running)
+[s2script]   14 "@s2script/clientprefs" (running)
+[s2script]   15 "@s2script/funcommands" (running)
+[s2script]   16 "@s2script/playercommands" (running)
+[s2script]   17 "@s2script/reservedslots" (running)
+[s2script]   18 "@s2script/zones" (running)
+
+>>> sm_mixed_status
+[s2script] [mixed-live] STATUS cycle=57 state=done pass=false timers=12/12 http=2/2 tcp=2/2 hooks=16/16 db=pass config=0 slotAttempts=48 slotReuses=5 slotFailures=0 slotPending=0

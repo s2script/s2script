@@ -1,0 +1,173 @@
+{
+  "cache": {
+    "accounts": 0,
+    "bytes": 0,
+    "entries": 0
+  },
+  "completion": {
+    "bytes": 0,
+    "items": 0,
+    "rejected": 0
+  },
+  "frame": {
+    "bytes": 0,
+    "items": 0,
+    "polls": 6
+  },
+  "inbound": {
+    "bytes": 0,
+    "items": 0,
+    "rejected": 0
+  },
+  "jobs": {
+    "bytes": 0,
+    "items": 0,
+    "rejected": 384
+  },
+  "lastNs": 147580,
+  "loader": {
+    "highWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "limits": {
+      "archiveBytes": 33554432,
+      "configBaselineBytes": 33554432,
+      "configBaselineItems": 128,
+      "configBytes": 1048576,
+      "drainBytes": 16777216,
+      "drainItems": 8,
+      "drainMicros": 1000,
+      "parse": {
+        "gamedataBytes": 8388608,
+        "manifestBytes": 1048576,
+        "memberNameBytes": 65536,
+        "pluginJsBytes": 16777216,
+        "zipEntries": 256
+      },
+      "pathBytes": 262144,
+      "preparedBytes": 67108864,
+      "preparedItems": 32,
+      "requestBytes": 33554432,
+      "requestItems": 128,
+      "resultBytes": 67108864,
+      "resultItems": 128,
+      "scanCandidates": 1024,
+      "scanEntries": 4096
+    },
+    "main": {
+      "active": 0,
+      "applying": 0,
+      "pending": {
+        "bytes": 0,
+        "items": 0
+      },
+      "ready": 0,
+      "retained": {
+        "bytes": 0,
+        "items": 0
+      },
+      "waiting": 0
+    },
+    "rejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "running": true,
+    "worker": {
+      "baselines": {
+        "bytes": 472,
+        "items": 2
+      },
+      "config": {
+        "bytes": 472,
+        "paths": 2
+      },
+      "controls": {
+        "bytes": 464,
+        "items": 2,
+        "pending": 0
+      },
+      "inFlight": 0,
+      "obligations": {
+        "items": 0,
+        "requestBytes": 0,
+        "resultBytes": 0
+      },
+      "proposals": {
+        "bytes": 0,
+        "items": 0
+      },
+      "queued": 0,
+      "results": 0
+    }
+  },
+  "maxNs": 8446408,
+  "outbound": {
+    "bytes": 0,
+    "items": 0,
+    "rejected": 0
+  },
+  "pools": {
+    "bytes": 0,
+    "items": 0,
+    "rejected": 0
+  },
+  "queued": {
+    "db": 0,
+    "http": 0,
+    "net": 0,
+    "worker": 0,
+    "ws": 0
+  },
+  "sockets": {
+    "bytes": 0,
+    "items": 0,
+    "rejected": 0
+  },
+  "sqlite": {
+    "bytes": 0,
+    "items": 2,
+    "rejected": 0
+  },
+  "staged": {
+    "cookies": 0,
+    "db": 0,
+    "http": 0,
+    "net": 0,
+    "timers": 0,
+    "ws": 0
+  },
+  "timerExamined": 84,
+  "timers": {
+    "bytes": 0,
+    "items": 0,
+    "rejected": 0
+  }
+}

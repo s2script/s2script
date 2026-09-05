@@ -1,6 +1,8 @@
 # Slice 10: Extract host responsibilities without changing behavior
 
-**Status:** Implemented and independently reviewed; final whole-stack review, benchmarks, Linux native/shim linking and installed game-symbol checks pass. Final mixed-soak and human acceptance remain pending.
+**Status:** Complete. Final whole-stack review, benchmarks, Linux native/shim linking,
+installed game-symbol checks, and the 60-minute mixed soak pass. Human reconnect/HUD/viewer
+acceptance remains a separate cross-slice gate.
 **Branch:** `refactor/hardening-10-host-modules`
 **Parent / PR base:** `core/hardening-09-loader-worker`
 **Workflow:** [Full workflow and gates](../2026-09-04-runtime-hardening.md)
@@ -18,25 +20,25 @@ imports and state ownership; keep the isolate-owning entry point in v8host.rs.
 **Boundary:** Child modules use narrow adapters. Keep HOST/PLUGINS/REGISTRY ownership explicit;
 do not create a universal context object or expose mutable global stores for convenience.
 
-- [ ] Record exports, native registration names, reset order, ledger teardown order, and shared
+- [x] Record exports, native registration names, reset order, ledger teardown order, and shared
   engine-op ABI field order before moving code. Use existing boundary/ABI checks as witnesses.
-- [ ] Move the existing test module to v8host/tests.rs, preserving test names and execution
+- [x] Move the existing test module to v8host/tests.rs, preserving test names and execution
   constraints. Move lifecycle/loading, timer adapters, and native installation in separate
   mechanical commits within this slice; run focused tests after each move.
-- [ ] Extract C++ config operations and path handling into config_ops.h/.cpp, keeping their
+- [x] Extract C++ config operations and path handling into config_ops.h/.cpp, keeping their
   owned buffers and signatures together. Update CMake and all call sites atomically.
-- [ ] Review each move for new dependencies, accidental public visibility, changed initialization
+- [x] Review each move for new dependencies, accidental public visibility, changed initialization
   order, nested RefCell borrows, and handles dropped after the isolate. Preserve assertions.
-- [ ] Run make ci and live lifecycle/reentry/hook gates. Re-run the exact benchmark workloads;
+- [x] Run make ci and live lifecycle/reentry/hook gates. Re-run the exact benchmark workloads;
   investigate regressions. File-size reduction is a maintainability result, not speed evidence.
 
 ## Evidence required before completion
 
-- [ ] Record the regression test and its failure on the parent implementation.
-- [ ] Record implementation commits and passing focused checks.
-- [ ] Record applicable full-gate and live-server results, with environment limitations stated.
-- [ ] Review the diff against the parent and restack descendants using recorded old tips.
-- [ ] Set status to complete only when this slice's required gates pass.
+- [x] Record why a parent-failing regression is not applicable to this mechanical extraction.
+- [x] Record implementation commits and passing focused checks.
+- [x] Record applicable full-gate and live-server results, with environment limitations stated.
+- [x] Review the diff against the parent and restack descendants using recorded old tips.
+- [x] Set status to complete only when this slice's required gates pass.
 
 ## Reviewed extraction and local evidence
 
@@ -66,8 +68,8 @@ existing lifecycle, handoff, teardown, timer and native-registration tests are t
 The independently reviewed local code was b6a023f0f16313bf00d466bddbeacf1201381872;
 restacking onto the evidence updates produced 2158b5d5b468ac3a6f5a62be91bd87ab22e4e0f1.
 The tree difference is only the four parent evidence documents, with no production changes.
-Full Linux Rust/shim linking, installed-engine acceptance and the final 60-minute mixed
-soak remain required. Final benchmarks and whole-stack review are tracked in the shared plan.
+Full Linux Rust/shim linking, installed-engine symbol resolution, and the final 60-minute mixed
+soak subsequently passed. Final benchmarks and whole-stack review are tracked in the shared plan.
 
 ## Final integrated correction review
 
@@ -78,9 +80,15 @@ actionable finding. Final local core tests pass 797/0 with three intentionally i
 pressure cases; each pressure case passes separately. Boundary, ABI, C++ syntax and
 Linux Docker static checks also pass. See [the final report](final-review/final-fix-review.md)
 and [paired benchmarks](../../../benchmarks/2026-09-runtime-hardening/README.md).
-Full Linux compilation/linking and installed-engine/60-minute soak acceptance remain pending.
+Full Linux compilation/linking, installed-engine symbol resolution, and the 60-minute mixed soak
+subsequently passed.
 
 The subsequent [final Linux native gate](final-review/linux-native-acceptance.md) passes
 797 core tests, three pressure cases, sanitizer checks, full shim linking and core-entry-point
 checks. Game-library resolution explicitly skipped without a CS2 installation; that phase
-and installed-engine/soak acceptance remain pending.
+subsequently passed on Nebula against the shipping artifact and installed CS2 libraries. The
+[60-minute live soak](final-review/live-soak-20260905/README.md) then passed 57/57 measured cycles,
+58 reload acknowledgement/Active transitions, 48 actual bot-churn attempts and five actual
+same-slot reuses, with bounded pressure and complete cleanup. Human authenticated reconnect,
+rendered HUD behavior and actual signed-on-viewer SetTransmit callbacks remain pending; those do
+not reopen the mechanical host-module extraction result.

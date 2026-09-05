@@ -1,0 +1,149 @@
+{
+  "started_utc": "2026-09-05T17:28:45.985456+00:00",
+  "source": "ba6c7c19548fdad46d14bb5c2aa342ce94804ae1",
+  "duration_seconds": 3600,
+  "warmup_seconds": 180,
+  "cycle_period_seconds": 60,
+  "quiescence_seconds": 10,
+  "cycles_requested": 57,
+  "root": "/home/ghirakawa/s2script-hardening",
+  "container": "s2script-cs2-hardening",
+  "network": "s2script-cs2-hardening_default",
+  "rcon": "127.0.0.1:27016",
+  "reload_plugin": "@s2script/clientprefs",
+  "expected_running_plugins": 18,
+  "peer_stop_reserve_seconds": 10.0,
+  "rss_scope": "whole container process RSS; recorded only, never used as a leak assertion",
+  "complete": true,
+  "errors": [],
+  "error_count": 0,
+  "cycles_completed": 57,
+  "reload_commands": 58,
+  "reload_acks": 58,
+  "active_transitions": 58,
+  "slot_reuses": 5,
+  "slot_pending_cap": 64,
+  "slot_cleanup_complete": true,
+  "final_running_plugins": 18,
+  "config_restore_verified": true,
+  "original_config_applied_at_start": true,
+  "original_config_generation": 0,
+  "loader_final_idle": true,
+  "loader_idle_samples": 61,
+  "loader_original_plateau": {
+    "worker": {
+      "controls": {
+        "items": 2,
+        "bytes": 464
+      },
+      "config": {
+        "bytes": 472,
+        "paths": 2
+      },
+      "baselines": {
+        "bytes": 472,
+        "items": 2
+      }
+    }
+  },
+  "loader_measured_plateau": {
+    "worker": {
+      "controls": {
+        "items": 2,
+        "bytes": 464
+      },
+      "config": {
+        "bytes": 395,
+        "paths": 2
+      },
+      "baselines": {
+        "bytes": 395,
+        "items": 2
+      }
+    }
+  },
+  "loader_limits": {
+    "archiveBytes": 33554432,
+    "configBaselineBytes": 33554432,
+    "configBaselineItems": 128,
+    "configBytes": 1048576,
+    "drainBytes": 16777216,
+    "drainItems": 8,
+    "drainMicros": 1000,
+    "parse": {
+      "gamedataBytes": 8388608,
+      "manifestBytes": 1048576,
+      "memberNameBytes": 65536,
+      "pluginJsBytes": 16777216,
+      "zipEntries": 256
+    },
+    "pathBytes": 262144,
+    "preparedBytes": 67108864,
+    "preparedItems": 32,
+    "requestBytes": 33554432,
+    "requestItems": 128,
+    "resultBytes": 67108864,
+    "resultItems": 128,
+    "scanCandidates": 1024,
+    "scanEntries": 4096
+  },
+  "loader_high_water_seen": {
+    "baselineBytes": 472,
+    "baselineItems": 2,
+    "configBytes": 573,
+    "configPaths": 2,
+    "controlBytes": 464,
+    "controlItems": 2,
+    "inFlight": 1,
+    "obligations": 3,
+    "pendingBytes": 182,
+    "pendingItems": 2,
+    "proposalBytes": 294,
+    "proposalItems": 1,
+    "queued": 3,
+    "requestBytes": 419,
+    "resultBytes": 52433071,
+    "results": 3,
+    "retainedBytes": 23869,
+    "retainedItems": 2
+  },
+  "peer_stop_attempted": true,
+  "peer_stop_succeeded": true,
+  "peer_cleanup_overrun_seconds": 0.0,
+  "elapsed_seconds": 3619.4810853376985,
+  "directory": ".gate/mixed-soak/mixed-soak-20260905T172845Z",
+  "pressure": {
+    "state": "done",
+    "success": 64,
+    "expected": 256,
+    "rejected": 192,
+    "settled": 256,
+    "other": 0
+  },
+  "environment": {
+    "machine": "Linux nebula 6.8.0-117-generic #117-Ubuntu SMP PREEMPT_DYNAMIC Tue May  5 19:26:24 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux",
+    "status_start_file": "status-start.txt",
+    "status_final_file": "plugins-final.txt"
+  },
+  "measurements": {
+    "asyncLastNs": {
+      "count": 57,
+      "min": 108314,
+      "p50": 154975,
+      "p95": 220407,
+      "p99": 235406,
+      "max": 235406
+    },
+    "rssKiB": {
+      "count": 61,
+      "min": 1178216,
+      "p50": 1182576,
+      "p95": 1184884,
+      "p99": 1185556,
+      "max": 1185556
+    },
+    "asyncMaxNsFinal": 8446408,
+    "timerExaminedFinal": 1463
+  },
+  "result": "PASS"
+}
