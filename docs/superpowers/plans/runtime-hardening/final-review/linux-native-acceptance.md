@@ -19,3 +19,9 @@ Initial image setup failed because the Docker credential helper was absent from 
 The same compiler environment built the optimized core and release-linked shim, then packaged the addon. All 18 base-plugin builds passed; the release contains the 14 enabled base archives. The shim requires at most GLIBC 2.17 and the core at most 2.30, within the documented 2.31 server ceiling. Core SHA-256: `f1d3519dd9deafd24970d14aa5707664e6dc67382c4011179b1bca9610880331`; shim SHA-256: `5a6b58f96421abc9bfe98a91471911577d5ddc02e4b55bb399f6541501c1326d`.
 
 The 24,473,784-byte compressed release archive has 45 files, each re-read and verified against the [release manifest](final-linux-release-manifest.json). It is a prepared test artifact and has **not** been installed on Nebula. The [release build log](final-local-linux-release.log) records compilation and GLIBC checks. Existing test-server configs, data and live fixtures must be preserved during the owned test installation.
+
+## Separate inherited tooling advisory
+
+Fresh npm installation reports GHSA-5p4m-2wfm-xmqj in js-yaml. Read-only dependency triage traces the affected 4.3.0 and 3.15.0 copies solely through the root Changesets development dependency; manifests and lockfile are unchanged from main. This is release-metadata YAML tooling, not a dependency packaged in the native addon or ordinary CLI build. A fresh `npm audit --omit=dev --json` reports zero vulnerabilities.
+
+Scope ruling: retain this as a dependency-only follow-up, rather than modifying the reviewed runtime stack's dependency graph. A targeted lockfile refresh to compatible js-yaml 4.3.1 and 3.15.1, followed by npm installation/audits and the JS gate, is the minimal suggested remediation. Malicious checked-in YAML can still consume excessive CPU when a maintainer runs the affected Changesets tooling; the advisory is not dismissed as nonexistent.

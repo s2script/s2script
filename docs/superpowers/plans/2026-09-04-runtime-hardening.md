@@ -35,7 +35,7 @@
 | 6 | Async limits and frame batches | 4, 5 | Saturation stays bounded with fair progress | Implemented/reviewed; final soak pending |
 | 7 | Indexed hook lookup | 2 | Equivalent dispatch, measured scaling improvement | Implemented/reviewed; human viewer gate pending |
 | 8 | Indexed timer scheduling | 1, 6 | Timing parity and measured scaling improvement | Implemented/reviewed; final live gate pending |
-| 9 | Background file preparation | 4, 6 | No periodic reads/parsing on frame thread | Implemented/reviewed; Linux/live gate pending |
+| 9 | Background file preparation | 4, 6 | No periodic reads/parsing on frame thread | Implemented/reviewed; engine/live gate pending |
 | 10 | Host module extraction | 1–9 | Behavior/ABI parity and integrated soak | Implemented/reviewed; final integration gates pending |
 
 The sequential order also avoids overlapping edits to v8host.rs. Dependency entries describe

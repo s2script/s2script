@@ -88,3 +88,11 @@ active/ready/waiting/applying lease locations.
 
 The final 60-minute mixed soak has not run. Worker/main diagnostics are independently
 sampled logical accounting, not a transactional snapshot or a bound on whole-process RSS.
+
+## Final integrated validation update
+
+The final whole-stack corrections reconcile unseen initial config snapshots and replace
+historical revision-path storage with a monotonic scalar. Their focused regressions and
+independent re-review pass. The [final Linux gate](final-review/linux-native-acceptance.md)
+passes 797 core tests, three isolated pressure cases, sanitizer checks and full shim linking.
+Game-library resolution and the loader-aware installed-engine/60-minute soak remain pending.
