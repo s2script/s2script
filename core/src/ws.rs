@@ -867,8 +867,7 @@ fn s2_ws_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: 
     }));
 }
 
-/// Drain queued events after `frame_async_drain` (HOST free). Uses `fan_out` so the isolate
-/// stays in the host. Terminal `close` prunes every subscriber key for that conn.
+// Persistent cursor for HOST-free event delivery; close prunes the connection after fan-out.
 thread_local! {static DELIVERY_CURSOR:std::cell::Cell<u64>=const {std::cell::Cell::new(0)};}
 pub(crate) fn pending_events() -> bool {
     WS_EVENT_PENDING.with(|q| !q.borrow().is_empty())

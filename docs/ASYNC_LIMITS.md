@@ -58,7 +58,10 @@ builders grow reservations without waiting: if growth fails, they discard partia
 output and publish a bounded failure. This avoids builders deadlocking while each
 holds a partial result and waits for the other's bytes.
 
-Polling and delivery use persistent rotating cursors. Moving a socket event to a
+Polling and delivery use persistent rotating cursors. The first polling source rotates
+independently of the number of polls completed and only advances when the pre-callback
+phase actually polls. Thus neither complete polling rounds nor alternate callback-priority
+frames can permanently deny a byte-blocked result its turn in an empty frame. Moving a socket event to a
 staging queue consumes a poll, not a logical delivery. Promise/timer work and the
 HOST-free cookie/socket callbacks share the same frame budget; when callbacks are
 pending, they alternate priority with promise/timer work, including at `frame_items=1`.
@@ -107,9 +110,13 @@ state, TLS/kernel buffers, and V8 objects retained by JS or promise continuation
 outside these partitions. The WS parser separately caps messages/frames, but upstream
 drivers can allocate a row or protocol header before the application sees it. UTF-8
 replacement expansion, HTTP headers, SQL parameter strings and column names are
-charged when materialized into application-owned values.
+charged when materialized into application-owned values. SQL outer-row arrays explicitly
+charge geometric spare capacity before growing; row/column/cell allowances remain
+conservative. Lossy UTF-8 output uses its pre-counted exact capacity, so conversion
+does not introduce an uncharged geometrically grown scratch string.
 
 Run `cargo test -p s2script-core` and `bash scripts/test-async-pressure.sh`. The latter
 starts a fresh test process with tiny limits, barrier-held producers, isolate reload,
-and a one-item frame budget; `scripts/ci-native.sh` runs both. Do not change policy
+and a one-item frame budget, followed by a separate six-poll process checking oversized
+HTTP/DB progress beside a continuously due timer; `scripts/ci-native.sh` runs these gates. Do not change policy
 in place while producers from an earlier configuration remain alive.

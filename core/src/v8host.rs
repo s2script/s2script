@@ -602,7 +602,7 @@ pub fn register_injected_package(name: &str, js: &str) {
     INJECTED_PACKAGES.with(|p| p.borrow_mut().insert(name.to_string(), js.to_string()));
 }
 
-/// Total in-flight async work: pending timers + pending jobs.  Reads TIMERS (brief borrow).
+// Pending work includes producer leases and post-checkpoint callback obligations.
 thread_local! { static MICROTASK_DRAIN_NEEDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 pub(crate) fn request_microtask_drain() {
     MICROTASK_DRAIN_NEEDED.with(|v| v.set(true));
@@ -1292,7 +1292,7 @@ fn s2_net_tcp_connect(
 /// the socket is bound, or rejects on a bind failure).
 fn s2_net_udp_bind(
     scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
+    _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
     let resolver = v8::PromiseResolver::new(scope).unwrap();
@@ -1301,7 +1301,7 @@ fn s2_net_udp_bind(
         let owner = resolver_owner_tag(scope);
         let owner_string = owner.as_ref().map(|o| o.0.clone()).unwrap_or_default();
         let generation = owner.as_ref().map_or(0, |o| o.1);
-        let mut lease = crate::jobs::reserve(scope, 0).map_err(|e| e.to_string())?;
+        let lease = crate::jobs::reserve(scope, 0).map_err(|e| e.to_string())?;
         crate::jobs::check_live(&lease)?;
         let id = crate::jobs::next_id();
         let cancel = lease.cancel.clone();
@@ -5910,8 +5910,12 @@ fn bounded_db_input(
     let sql = crate::jobs::copy_string(scope, sql, lease).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     if let Ok(arr) = v8::Local::<v8::Array>::try_from(params) {
+        let count = arr.length() as usize;
+        lease
+            .input_grow(count.saturating_mul(32))
+            .map_err(|e| e.to_string())?;
+        out.reserve_exact(count);
         for i in 0..arr.length() {
-            lease.input_grow(32).map_err(|e| e.to_string())?;
             let v = arr
                 .get_index(scope, i)
                 .unwrap_or_else(|| v8::undefined(scope).into());
@@ -7014,12 +7018,18 @@ pub(crate) fn frame_async_drain() {
         let mut ws_drops = Vec::new();
         let mut net_drops = Vec::new();
         let mut empty = 0;
+        let mut frame_cursor = None;
         while crate::async_limits::can_deliver(0, true) && crate::async_limits::poll_frame() {
-            let source = POLL_CURSOR.with(|v| {
-                let s = v.get();
-                v.set((s + 1) % 6);
-                s
+            // Rotate the first source independently of the number of polls. Advancing only
+            // when this phase actually polls also avoids locking to alternate callback frames.
+            let source = *frame_cursor.get_or_insert_with(|| {
+                POLL_CURSOR.with(|v| {
+                    let first = v.get();
+                    v.set((first + 1) % 6);
+                    first
+                })
             });
+            frame_cursor = Some((source + 1) % 6);
             let mut progress = false;
             match source {
                 0 => {
@@ -16211,6 +16221,61 @@ pub(crate) mod frame_tests {
         assert_eq!(out, r#"{"counts":[0,1],"total":1,"winner":1}"#);
         shutdown();
     }
+    #[test]
+    #[ignore = "requires the isolated six-poll S2SCRIPT_ASYNC_LIMITS_JSON policy"]
+    fn oversized_completions_progress_with_a_full_poll_round_and_due_timer() {
+        assert_eq!(crate::async_limits::policy().frame_poll_items, 6);
+        assert_eq!(crate::async_limits::policy().frame_items, 2);
+        init(dummy_logger()).unwrap();
+        set_engine_ops(Some(db_ops()));
+        let name = unique_db_name("oversize_round");
+        let port = spawn_local_http_server("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello");
+        load_body(
+            "round",
+            &format!(
+                r#"
+            globalThis.__http = false; globalThis.__db = false; globalThis.__ticks = 0;
+            __s2_sqlite_open("{name}").then(function(h) {{
+                __s2_sqlite_query(h, "SELECT 1 AS x", []).then(function() {{ __db = true; }});
+                __s2_fetch("http://127.0.0.1:{port}/", {{}}).then(function() {{ __http = true; }});
+            }});
+        "#
+            ),
+            "{}",
+        );
+        frame_async_drain();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while crate::async_limits::queued_metrics()["http"] != 1
+            || crate::async_limits::queued_metrics()["db"] != 1
+        {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        eval_in_context(
+            "round",
+            "__s2_timer_create(1, function(){ __ticks++; }, true);",
+        )
+        .unwrap();
+        POLL_CURSOR.with(|v| v.set(0));
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(2));
+            frame_async_drain();
+            dispatch_async_callbacks();
+        }
+        assert_eq!(
+            read_global_string("round", "__http"),
+            "true",
+            "HTTP must obtain an empty frame"
+        );
+        assert_eq!(
+            read_global_string("round", "__db"),
+            "true",
+            "DB must obtain an empty frame"
+        );
+        assert!(eval_in_context_string("round", "String(__ticks > 0)") == "true");
+        shutdown();
+    }
+
     /// Run by scripts/test-async-pressure.sh in a fresh process with an explicitly tiny policy.
     #[test]
     #[ignore = "requires the isolated tiny S2SCRIPT_ASYNC_LIMITS_JSON policy"]

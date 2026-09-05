@@ -409,6 +409,7 @@ async fn run_query(
                     result.columns = row.columns().iter().map(|c| c.name().to_owned()).collect();
                 }
                 size.row(result.columns.len(), &result.columns, lease)?;
+                size.reserve_row_slot(&mut result.rows, lease)?;
                 let vals = decode_row!(&row, size, lease);
                 result.rows.push(vals);
             }

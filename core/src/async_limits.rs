@@ -434,6 +434,18 @@ pub(crate) fn obligations() -> usize {
     let d = domain();
     d.jobs.snapshot().items + d.sockets.snapshot().items + d.inbound.snapshot().items
 }
+/// Owned lossy conversion; callers reserve final bytes before entering this allocation.
+pub(crate) fn utf8_lossy_owned(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(utf8_lossy_len(bytes));
+    for chunk in bytes.utf8_chunks() {
+        output.push_str(chunk.valid());
+        if !chunk.invalid().is_empty() {
+            output.push('\u{fffd}');
+        }
+    }
+    output
+}
+
 pub(crate) fn diagnostic(s: String) -> String {
     diagnostic_limit(s, policy().failure_bytes / 2)
 }
@@ -908,6 +920,22 @@ mod pressure_tests {
         }
         assert_eq!(utf8_lossy_len(&[0xff; 10]), 30);
     }
+    #[test]
+    fn lossy_conversion_peak_fits_the_preallocated_reservation() {
+        let d = Domain::new(AsyncPolicy::default());
+        let raw = vec![0xff; 1 << 20];
+        let mut lease = d.job(None, 0).unwrap();
+        lease.grow(raw.capacity()).unwrap();
+        lease.grow(utf8_lossy_len(&raw)).unwrap();
+        let output = utf8_lossy_owned(&raw);
+        assert_eq!(output.len(), 3 << 20);
+        assert!(
+            raw.capacity() + output.capacity() <= lease.bytes(),
+            "conversion capacity exceeded its reservation"
+        );
+        assert_eq!(output.capacity(), output.len());
+    }
+
     #[test]
     fn oversized_delivery_is_alone_even_when_more_rounds_are_available() {
         let p = AsyncPolicy {

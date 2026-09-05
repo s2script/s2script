@@ -137,6 +137,8 @@ async fn do_fetch(
             return Err("HttpResponseTooLarge".into());
         }
         lease.grow(n).map_err(|e| e.to_string())?;
+        // The per-header charge covers one tuple, not geometric spare tuple capacity.
+        headers.reserve_exact(1);
         headers.push((k.as_str().to_owned(), value.to_owned()));
     }
     // Fast reject on a declared oversized body...
@@ -165,8 +167,7 @@ async fn do_fetch(
         Err(error) => {
             // Invalid UTF-8 requires a second buffer: account conversion scratch simultaneously.
             lease.grow(final_bytes).map_err(|e| e.to_string())?;
-            String::from_utf8_lossy(error.as_bytes())
-                .into_owned()
+            crate::async_limits::utf8_lossy_owned(error.as_bytes())
                 .into_boxed_str()
                 .into_string()
         }

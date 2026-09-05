@@ -82,6 +82,57 @@ impl rusqlite::ToSql for DbValue {
     }
 }
 
+struct ActorInput {
+    sql: String,
+    params: Vec<DbValue>,
+}
+impl ActorInput {
+    fn new(sql: String, params: Vec<DbValue>) -> Self {
+        let input = Self { sql, params };
+        #[cfg(test)]
+        ACTOR_INPUT_BYTES.fetch_add(input.capacity_bytes(), std::sync::atomic::Ordering::SeqCst);
+        input
+    }
+    #[cfg(test)]
+    fn capacity_bytes(&self) -> usize {
+        self.sql.capacity()
+            + self.params.capacity() * std::mem::size_of::<DbValue>()
+            + self
+                .params
+                .iter()
+                .map(|v| match v {
+                    DbValue::Text(s) => s.capacity(),
+                    _ => 0,
+                })
+                .sum::<usize>()
+    }
+}
+#[cfg(test)]
+static ACTOR_INPUT_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+impl Drop for ActorInput {
+    fn drop(&mut self) {
+        ACTOR_INPUT_BYTES.fetch_sub(self.capacity_bytes(), std::sync::atomic::Ordering::SeqCst);
+    }
+}
+#[cfg(test)]
+static PUBLICATION_BARRIER: Mutex<Option<(u64, Sender<()>, Receiver<()>)>> = Mutex::new(None);
+#[cfg(test)]
+fn pause_after_publication(id: u64) {
+    let hook = {
+        let mut hook = PUBLICATION_BARRIER.lock().unwrap();
+        if hook.as_ref().is_some_and(|h| h.0 == id) {
+            hook.take()
+        } else {
+            None
+        }
+    };
+    if let Some((_, entered, release)) = hook {
+        entered.send(()).unwrap();
+        release.recv().unwrap();
+    }
+}
+
 /// The actor loop: owns the Connection, runs each statement in submission (FIFO) order off the game
 /// thread, sends a completion back over the shared channel. `catch_unwind` per statement so a panic
 /// in rusqlite becomes an Err completion, never a dead actor. Exits on Shutdown (or when all senders
@@ -104,8 +155,9 @@ fn actor_loop(conn: Connection, rx: Receiver<Command>, _lifetime: crate::async_l
                 if lease.cancel.cancelled() {
                     continue;
                 }
+                let input = ActorInput::new(sql, params);
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_query(&conn, &sql, &params, &mut lease)
+                    run_query(&conn, &input.sql, &input.params, &mut lease)
                 }))
                 .unwrap_or_else(|_| Err("db query panicked".to_string()))
                 .map(DbOutcome::Query);
@@ -113,6 +165,9 @@ fn actor_loop(conn: Connection, rx: Receiver<Command>, _lifetime: crate::async_l
                 if result.is_err() {
                     lease.discard_result();
                 }
+                // A consumer can drop the envelope immediately after publication. Release
+                // every actor-owned input allocation before transferring its only job lease.
+                drop(input);
                 let _guard = crate::async_limits::delivery_guard(&lease.cancel);
                 if _guard.is_some() {
                     let _ = tx.send(DbCompletion {
@@ -122,6 +177,9 @@ fn actor_loop(conn: Connection, rx: Receiver<Command>, _lifetime: crate::async_l
                         queue: crate::async_limits::QueueTicket::new(2),
                     });
                 }
+                drop(_guard);
+                #[cfg(test)]
+                pause_after_publication(id);
             }
             Command::Execute {
                 id,
@@ -132,8 +190,9 @@ fn actor_loop(conn: Connection, rx: Receiver<Command>, _lifetime: crate::async_l
                 if lease.cancel.cancelled() {
                     continue;
                 }
+                let input = ActorInput::new(sql, params);
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_execute(&conn, &sql, &params)
+                    run_execute(&conn, &input.sql, &input.params)
                 }))
                 .unwrap_or_else(|_| Err("db execute panicked".to_string()))
                 .map(DbOutcome::Exec);
@@ -141,6 +200,9 @@ fn actor_loop(conn: Connection, rx: Receiver<Command>, _lifetime: crate::async_l
                 if result.is_err() {
                     lease.discard_result();
                 }
+                // A consumer can drop the envelope immediately after publication. Release
+                // every actor-owned input allocation before transferring its only job lease.
+                drop(input);
                 let _guard = crate::async_limits::delivery_guard(&lease.cancel);
                 if _guard.is_some() {
                     let _ = tx.send(DbCompletion {
@@ -150,6 +212,9 @@ fn actor_loop(conn: Connection, rx: Receiver<Command>, _lifetime: crate::async_l
                         queue: crate::async_limits::QueueTicket::new(2),
                     });
                 }
+                drop(_guard);
+                #[cfg(test)]
+                pause_after_publication(id);
             }
         }
     }
@@ -179,6 +244,7 @@ fn run_query(
         .map_err(|e| e.to_string())?;
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
         size.row(ncol, &columns, lease)?;
+        size.reserve_row_slot(&mut out_rows, lease)?;
         let mut vals = Vec::with_capacity(ncol);
         for i in 0..ncol {
             use rusqlite::types::ValueRef;
@@ -189,8 +255,7 @@ fn run_query(
                 ValueRef::Text(t) => {
                     size.add(crate::async_limits::utf8_lossy_len(t), lease)?;
                     DbValue::Text(
-                        String::from_utf8_lossy(t)
-                            .into_owned()
+                        crate::async_limits::utf8_lossy_owned(t)
                             .into_boxed_str()
                             .into_string(),
                     )
@@ -360,6 +425,27 @@ impl ResultSizer {
         self.bytes += n;
         Ok(())
     }
+    /// Charge geometric spare capacity before allocating the outer row array.
+    pub fn reserve_row_slot(
+        &mut self,
+        rows: &mut Vec<Vec<DbValue>>,
+        lease: &mut crate::async_limits::JobLease,
+    ) -> Result<(), String> {
+        if rows.len() == rows.capacity() {
+            let capacity = rows
+                .capacity()
+                .saturating_mul(2)
+                .max(1)
+                .min(lease.policy.db_result_rows);
+            let extra = capacity.saturating_sub(rows.capacity());
+            self.add(
+                extra.saturating_mul(std::mem::size_of::<Vec<DbValue>>()),
+                lease,
+            )?;
+            rows.reserve_exact(extra);
+        }
+        Ok(())
+    }
     pub fn row(
         &mut self,
         ncol: usize,
@@ -420,14 +506,90 @@ mod tests {
         })
     }
     #[test]
+    fn sqlite_publication_drops_actual_input_before_consumer_can_release_lease() {
+        crate::async_limits::resume_delivery();
+        for execute in [false, true] {
+            let d = pressure_domain(2, 4096);
+            let id = crate::jobs::next_id();
+            let (entered, wait) = channel();
+            let (release, resume) = channel();
+            *PUBLICATION_BARRIER.lock().unwrap() = Some((id, entered, resume));
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute("CREATE TABLE retained(x)", []).unwrap();
+            let lifetime = d.sqlite.acquire(None, 1, 0).unwrap();
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            let actor = thread::spawn(move || actor_loop(conn, rx, lifetime));
+            let mut sql = String::with_capacity(1024);
+            sql.push_str(if execute {
+                "INSERT INTO retained VALUES (?)"
+            } else {
+                "SELECT ?"
+            });
+            let params = vec![DbValue::Text("x".repeat(2048))];
+            let bytes = sql.capacity() + params.capacity() * std::mem::size_of::<DbValue>() + 2048;
+            let lease = d.job(None, bytes).unwrap();
+            let command = if execute {
+                Command::Execute {
+                    id,
+                    sql,
+                    params,
+                    lease,
+                }
+            } else {
+                Command::Query {
+                    id,
+                    sql,
+                    params,
+                    lease,
+                }
+            };
+            tx.send(command).ok().unwrap();
+            wait.recv_timeout(Duration::from_secs(2)).unwrap();
+            let completion = try_recv_completed().unwrap();
+            assert_eq!(completion.id, id);
+            drop(completion);
+            let retained = ACTOR_INPUT_BYTES.load(std::sync::atomic::Ordering::SeqCst);
+            let charged = d.jobs.snapshot().bytes;
+            // Exercise replacement admission while the old actor is paused after publication.
+            let replacement = d.job(Some(("replacement".into(), 2)), 1024);
+            release.send(()).unwrap();
+            drop(tx);
+            actor.join().unwrap();
+            assert!(retained <= charged, "actor retained {retained} input bytes after consumer released its {charged}-byte charge");
+            assert!(replacement.is_ok());
+        }
+    }
+
+    #[test]
+    fn sqlite_retained_vector_capacity_fits_its_reservation() {
+        let conn = Connection::open_in_memory().unwrap();
+        let d = crate::async_limits::Domain::new(crate::async_limits::AsyncPolicy::default());
+        let mut lease = d.job(None, 0).unwrap();
+        let result = run_query(&conn, "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<8193) SELECT x AS \"\" FROM n", &[], &mut lease).unwrap();
+        let capacity = result.columns.capacity() * std::mem::size_of::<String>()
+            + result.columns.iter().map(|s| s.capacity()).sum::<usize>()
+            + result.rows.capacity() * std::mem::size_of::<Vec<DbValue>>()
+            + result
+                .rows
+                .iter()
+                .map(|r| r.capacity() * std::mem::size_of::<DbValue>())
+                .sum::<usize>();
+        assert!(
+            capacity <= lease.bytes(),
+            "retained vectors {capacity} exceed charged {}",
+            lease.bytes()
+        );
+    }
+
+    #[test]
     fn sqlite_exact_final_utf8_row_byte_edges_and_recovery() {
         let conn = Connection::open_in_memory().unwrap();
-        let d = pressure_domain(2, 104);
+        let d = pressure_domain(2, 128);
         let mut lease = d.job(None, 0).unwrap();
         let r = run_query(&conn, "SELECT CAST(X'FFFF' AS TEXT) AS x", &[], &mut lease).unwrap();
         assert!(matches!(&r.rows[0][0],DbValue::Text(s) if s.len()==6));
         drop(lease);
-        let d = pressure_domain(2, 103);
+        let d = pressure_domain(2, 127);
         let mut lease = d.job(None, 0).unwrap();
         assert_eq!(
             run_query(&conn, "SELECT CAST(X'FFFF' AS TEXT) AS x", &[], &mut lease)
