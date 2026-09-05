@@ -423,7 +423,7 @@ and request-header capacity accounting. The consolidated correction remains in s
 six and nine; extraction preserves it. No actionable review finding remains.
 
 Remaining gates: game-library symbol resolution and installed-engine acceptance, then
-the 60-minute mixed soak. The final release artifacts are being built in the same isolated
-Linux Docker environment. SSH to
+the 60-minute mixed soak. The final release package is built and checksum-verified, including all 14 enabled
+base plugins; it has not been installed on Nebula. SSH to
 Nebula currently needs the configured 1Password agent to sign again; LTS Node is installed
 and its explicit noninteractive PATH has already passed the harness tests there.

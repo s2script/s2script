@@ -1,0 +1,507 @@
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.46
+   Compiling cfg-if v1.0.4
+   Compiling libc v0.2.186
+   Compiling serde_core v1.0.228
+   Compiling serde v1.0.228
+   Compiling stable_deref_trait v1.2.1
+   Compiling version_check v0.9.5
+   Compiling writeable v0.6.3
+   Compiling shlex v2.0.1
+   Compiling syn v2.0.118
+   Compiling zeroize v1.9.0
+   Compiling litemap v0.8.2
+   Compiling find-msvc-tools v0.1.9
+   Compiling cc v1.2.66
+   Compiling libm v0.2.16
+   Compiling generic-array v0.14.7
+   Compiling getrandom v0.2.17
+   Compiling bytes v1.12.0
+   Compiling synstructure v0.13.2
+   Compiling const-oid v0.9.6
+   Compiling serde_derive v1.0.228
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling zerovec-derive v0.11.3
+   Compiling displaydoc v0.2.6
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.3
+   Compiling pin-project-lite v0.2.17
+   Compiling zerocopy v0.8.53
+   Compiling subtle v2.6.1
+   Compiling zerovec v0.11.6
+   Compiling smallvec v1.15.2
+   Compiling zerotrie v0.2.4
+   Compiling potential_utf v0.1.5
+   Compiling tinystr v0.8.3
+   Compiling icu_locale_core v2.2.0
+   Compiling futures-core v0.3.32
+   Compiling utf8_iter v1.0.4
+   Compiling typenum v1.20.1
+   Compiling once_cell v1.21.4
+   Compiling icu_provider v2.2.0
+   Compiling icu_collections v2.2.0
+   Compiling itoa v1.0.18
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling tokio-macros v2.7.0
+   Compiling ring v0.17.14
+   Compiling socket2 v0.6.4
+   Compiling mio v1.2.1
+   Compiling autocfg v1.5.1
+   Compiling num-traits v0.2.19
+   Compiling tokio v1.52.3
+   Compiling digest v0.10.7
+   Compiling rustls-pki-types v1.15.0
+   Compiling futures-sink v0.3.32
+   Compiling icu_properties_data v2.2.0
+   Compiling memchr v2.8.2
+   Compiling icu_normalizer_data v2.2.0
+   Compiling untrusted v0.9.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling futures-io v0.3.32
+   Compiling slab v0.4.12
+   Compiling percent-encoding v2.3.2
+   Compiling rustls v0.23.41
+   Compiling futures-task v0.3.32
+   Compiling futures-util v0.3.32
+   Compiling log v0.4.33
+   Compiling crc32fast v1.5.0
+   Compiling icu_normalizer v2.2.0
+   Compiling icu_properties v2.2.0
+   Compiling rustls-webpki v0.103.13
+   Compiling http v1.4.2
+   Compiling crossbeam-utils v0.8.21
+   Compiling idna_adapter v1.2.2
+   Compiling form_urlencoded v1.2.2
+   Compiling webpki-roots v1.0.8
+   Compiling tracing-core v0.1.36
+   Compiling tracing-attributes v0.1.31
+   Compiling rand_core v0.6.4
+   Compiling base64ct v1.8.3
+   Compiling httparse v1.10.1
+   Compiling glob v0.3.3
+   Compiling parking_lot_core v0.9.12
+   Compiling thiserror v2.0.18
+   Compiling cpufeatures v0.2.17
+   Compiling clang-sys v1.8.1
+   Compiling pem-rfc7468 v0.7.0
+   Compiling tracing v0.1.44
+   Compiling idna v1.1.0
+   Compiling futures-channel v0.3.32
+   Compiling core_maths v0.1.1
+   Compiling thiserror-impl v2.0.18
+   Compiling bitflags v2.13.0
+   Compiling equivalent v1.0.2
+   Compiling prettyplease v0.2.37
+   Compiling scopeguard v1.2.0
+   Compiling icu_locale_data v2.2.0
+   Compiling getrandom v0.3.4
+   Compiling base64 v0.22.1
+   Compiling zmij v1.0.21
+   Compiling lock_api v0.4.14
+   Compiling calendrical_calculations v0.2.4
+   Compiling url v2.5.8
+   Compiling der v0.7.10
+   Compiling rand_chacha v0.3.1
+   Compiling http-body v1.0.1
+   Compiling foldhash v0.1.5
+   Compiling regex-syntax v0.8.11
+   Compiling icu_calendar_data v2.2.0
+   Compiling serde_json v1.0.150
+   Compiling rustix v0.38.44
+   Compiling tinyvec_macros v0.1.1
+   Compiling either v1.16.0
+   Compiling allocator-api2 v0.2.21
+   Compiling minimal-lexical v0.2.1
+   Compiling regex-automata v0.4.14
+   Compiling tinyvec v1.11.0
+   Compiling nom v7.1.3
+   Compiling hashbrown v0.15.5
+   Compiling rand v0.8.7
+   Compiling parking_lot v0.12.5
+   Compiling spki v0.7.3
+   Compiling concurrent-queue v2.5.0
+   Compiling libloading v0.8.9
+   Compiling webpki-roots v0.26.11
+   Compiling num-integer v0.1.46
+   Compiling resb v0.1.2
+   Compiling ahash v0.8.12
+   Compiling spin v0.9.8
+   Compiling crc-catalog v2.5.0
+   Compiling try-lock v0.2.5
+   Compiling hashbrown v0.17.1
+   Compiling bindgen v0.72.1
+   Compiling parking v2.2.1
+   Compiling tower-service v0.3.3
+   Compiling num-bigint-dig v0.8.6
+   Compiling linux-raw-sys v0.4.15
+   Compiling indexmap v2.14.0
+   Compiling event-listener v5.4.1
+   Compiling want v0.3.1
+   Compiling crc v3.4.0
+   Compiling lazy_static v1.5.0
+   Compiling zoneinfo64 v0.3.0
+   Compiling num-iter v0.1.46
+   Compiling rand_core v0.9.5
+   Compiling icu_locale v2.2.0
+   Compiling futures-intrusive v0.5.0
+   Compiling pkcs8 v0.10.2
+   Compiling cexpr v0.6.0
+   Compiling hashlink v0.10.0
+   Compiling regex v1.12.4
+   Compiling unicode-normalization v0.1.25
+   Compiling itertools v0.13.0
+   Compiling crossbeam-queue v0.3.13
+   Compiling sha2 v0.10.9
+   Compiling sha1 v0.10.6
+   Compiling tokio-stream v0.1.18
+   Compiling hmac v0.12.1
+   Compiling strck v1.0.0
+   Compiling atomic-waker v1.1.2
+   Compiling adler2 v2.0.1
+   Compiling rustc-hash v2.1.2
+   Compiling home v0.5.12
+   Compiling byteorder v1.5.0
+   Compiling unicode-bidi v0.3.18
+   Compiling pkg-config v0.3.33
+   Compiling unicode-properties v0.1.4
+   Compiling unicase v2.9.0
+   Compiling shlex v1.3.0
+   Compiling vcpkg v0.2.15
+   Compiling mime_guess v2.0.5
+   Compiling stringprep v0.1.5
+   Compiling which v6.0.3
+   Compiling libsqlite3-sys v0.28.0
+   Compiling miniz_oxide v0.8.9
+   Compiling hyper v1.10.1
+   Compiling diplomat_core v0.15.0
+   Compiling sqlx-core v0.8.6
+   Compiling hkdf v0.12.4
+   Compiling icu_calendar v2.2.1
+   Compiling pkcs1 v0.7.5
+   Compiling rand_chacha v0.9.0
+   Compiling gzip-header v1.1.0
+   Compiling timezone_provider v0.2.4
+   Compiling fslock v0.2.1
+   Compiling tokio-rustls v0.26.4
+   Compiling signature v2.2.0
+   Compiling atoi v2.0.0
+   Compiling md-5 v0.10.6
+   Compiling sync_wrapper v1.0.2
+   Compiling simd-adler32 v0.3.9
+   Compiling ixdtf v0.6.5
+   Compiling dotenvy v0.15.7
+   Compiling getrandom v0.4.3
+   Compiling hex v0.4.3
+   Compiling ipnet v2.12.0
+   Compiling whoami v1.6.1
+   Compiling tower-layer v0.3.3
+   Compiling paste v1.0.15
+   Compiling tower v0.5.3
+   Compiling hyper-util v0.1.20
+   Compiling temporal_rs v0.2.4
+   Compiling rsa v0.9.10
+   Compiling v8 v149.4.0
+   Compiling hashbrown v0.14.5
+   Compiling rand v0.9.4
+   Compiling diplomat v0.15.0
+   Compiling mime v0.3.17
+   Compiling ryu v1.0.23
+   Compiling diplomat-runtime v0.15.1
+   Compiling data-encoding v2.11.0
+   Compiling temporal_capi v0.2.4
+   Compiling serde_urlencoded v0.7.1
+   Compiling tungstenite v0.29.0
+   Compiling sqlx-postgres v0.8.6
+   Compiling hashlink v0.9.1
+   Compiling flate2 v1.1.9
+   Compiling sqlx-mysql v0.8.6
+   Compiling hyper-rustls v0.27.9
+   Compiling tower-http v0.6.11
+   Compiling http-body-util v0.1.3
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling fallible-iterator v0.3.0
+   Compiling s2script-core v0.0.0 (/repo/core)
+   Compiling reqwest v0.12.28
+   Compiling uuid v1.24.0
+   Compiling sqlx v0.8.6
+   Compiling zip v0.6.6
+   Compiling tokio-tungstenite v0.29.0
+   Compiling rusqlite v0.31.0
+warning: unused doc comment
+   --> core/src/gamedata_hooks.rs:700:1
+    |
+700 | /// Hooks that have already reported a re-entrant skip. See `note_reentrant_skip`.
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `enums_path`
+    --> core/src/v8host.rs:3004:13
+     |
+3004 |         let enums_path = if args.length() >= 2 && !args.get(1).is_null_or_undefined() {
+     |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_enums_path`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `bytes` is never used
+   --> core/src/async_limits.rs:608:8
+    |
+607 | pub(crate) trait PayloadSize {
+    |                  ----------- method in this trait
+608 |     fn bytes(&self) -> usize;
+    |        ^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `out_channel` is never used
+   --> core/src/async_limits.rs:628:15
+    |
+628 | pub(crate) fn out_channel<T>() -> (OutSender<T>, OutReceiver<T>) {
+    |               ^^^^^^^^^^^
+
+warning: method `send` is never used
+   --> core/src/async_limits.rs:654:12
+    |
+648 | impl<T: PayloadSize> OutSender<T> {
+    | --------------------------------- method in this implementation
+...
+654 |     pub fn send(&self, value: T) -> Result<(), ()> {
+    |            ^^^^
+
+warning: methods `is_empty` and `due` are never used
+   --> core/src/async_rt.rs:200:12
+    |
+137 | impl TimerQueue {
+    | --------------- methods in this implementation
+...
+200 |     pub fn is_empty(&self) -> bool {
+    |            ^^^^^^^^
+...
+232 |     pub fn due(&mut self, now: std::time::Instant, frame: u64) -> Vec<u64> {
+    |            ^^^
+
+warning: function `dispatch_pending_cached` is never used
+   --> core/src/cookies.rs:568:15
+    |
+568 | pub(crate) fn dispatch_pending_cached() {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `open` is never used
+   --> core/src/db.rs:283:8
+    |
+283 | pub fn open(data_dir: &Path, name: &str, owner: &str) -> Result<u64, String> {
+    |        ^^^^
+
+warning: function `open_in` is never used
+   --> core/src/db.rs:286:4
+    |
+286 | fn open_in(
+    |    ^^^^^^^
+
+warning: function `input_bytes` is never used
+   --> core/src/db.rs:406:15
+    |
+406 | pub(crate) fn input_bytes(sql: &str, params: &[DbValue]) -> usize {
+    |               ^^^^^^^^^^^
+
+warning: function `resolve` is never used
+   --> core/src/entity.rs:185:8
+    |
+185 | pub fn resolve(current_serial: i32, ref_serial: i32) -> bool {
+    |        ^^^^^^^
+
+warning: methods `len` and `is_empty` are never used
+  --> core/src/liveness.rs:55:12
+   |
+19 | impl<K: Eq + Hash, M> LiveTable<K, M> {
+   | ------------------------------------- methods in this implementation
+...
+55 |     pub fn len(&self) -> usize {
+   |            ^^^
+...
+58 |     pub fn is_empty(&self) -> bool {
+   |            ^^^^^^^^
+
+warning: function `len` is never used
+   --> core/src/entity_live.rs:102:8
+    |
+102 | pub fn len() -> usize { LIVE.with(|t| t.borrow().len()) }
+    |        ^^^
+
+warning: function `resolver_is_empty` is never used
+  --> core/src/jobs.rs:79:15
+   |
+79 | pub(crate) fn resolver_is_empty() -> bool {
+   |               ^^^^^^^^^^^^^^^^^
+
+warning: function `read_s2sp` is never used
+   --> core/src/loader.rs:293:8
+    |
+293 | pub fn read_s2sp(bytes: &[u8]) -> Result<(Manifest, String, Option<String>), String> {
+    |        ^^^^^^^^^
+
+warning: fields `permissions` and `gamedata` are never read
+  --> core/src/loader_worker.rs:42:9
+   |
+26 | pub struct Manifest {
+   |            -------- fields in this struct
+...
+42 |     pub permissions: Vec<String>,
+   |         ^^^^^^^^^^^
+43 |     #[serde(default)]
+44 |     pub gamedata: Option<String>,
+   |         ^^^^^^^^
+   |
+   = note: `Manifest` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: function `parse_s2sp` is never used
+    --> core/src/loader_worker.rs:1400:15
+     |
+1400 | pub(crate) fn parse_s2sp(
+     |               ^^^^^^^^^^
+
+warning: field `detour` is never read
+  --> core/src/multiplexer.rs:21:58
+   |
+21 | pub struct DispatchOutcome { pub result: HookResult, pub detour: DetourChange }
+   |            --------------- field in this struct          ^^^^^^
+   |
+   = note: `DispatchOutcome` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `dispatch` is never used
+   --> core/src/multiplexer.rs:147:12
+    |
+ 68 | impl<H: Clone> Descriptor<H> {
+    | ---------------------------- method in this implementation
+...
+147 |     pub fn dispatch(&mut self, phase: Phase, invoke: impl FnMut(&H) -> Result<HookResult, ()>) -> DispatchOutcome {
+    |            ^^^^^^^^
+
+warning: function `send` is never used
+   --> core/src/net.rs:606:8
+    |
+606 | pub fn send(id: u64, owner: &str, b: Vec<u8>) -> bool {
+    |        ^^^^
+
+warning: function `send_to` is never used
+   --> core/src/net.rs:610:8
+    |
+610 | pub fn send_to(id: u64, owner: &str, h: String, p: u16, b: Vec<u8>) -> bool {
+    |        ^^^^^^^
+
+warning: function `drop_conn` is never used
+   --> core/src/net.rs:655:8
+    |
+655 | pub fn drop_conn(id: u64) {
+    |        ^^^^^^^^^
+
+warning: function `poll_signals` is never used
+   --> core/src/net.rs:819:15
+    |
+819 | pub(crate) fn poll_signals() -> SignalPoll {
+    |               ^^^^^^^^^^^^
+
+warning: function `dispatch_pending_events` is never used
+    --> core/src/net.rs:1067:15
+     |
+1067 | pub(crate) fn dispatch_pending_events() {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `none` is never used
+   --> core/src/engine_ops.generated.rs:333:12
+    |
+331 | impl S2EngineOps {
+    | ---------------- associated function in this implementation
+332 |     /// Every field `None`. Test fixtures spread this and override what they wire.
+333 |     pub fn none() -> Self {
+    |            ^^^^
+
+warning: function `re_materialize_config` is never used
+   --> core/src/v8host/lifecycle.rs:303:15
+    |
+303 | pub(crate) fn re_materialize_config(id: &str) {
+    |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `send` is never used
+   --> core/src/ws.rs:521:8
+    |
+521 | pub fn send(conn_id: u64, owner: &str, text: String) -> bool {
+    |        ^^^^
+
+warning: function `drop_conn` is never used
+   --> core/src/ws.rs:563:8
+    |
+563 | pub fn drop_conn(conn_id: u64) {
+    |        ^^^^^^^^^
+
+warning: function `poll_signals` is never used
+   --> core/src/ws.rs:709:15
+    |
+709 | pub(crate) fn poll_signals() -> SignalPoll {
+    |               ^^^^^^^^^^^^
+
+warning: function `dispatch_pending_events` is never used
+   --> core/src/ws.rs:875:15
+    |
+875 | pub(crate) fn dispatch_pending_events() {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `s2script-core` (lib) generated 30 warnings (run `cargo fix --lib -p s2script-core` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 2m 11s
+-- Configuring done (0.1s)
+-- Generating done (0.1s)
+-- Build files have been written to: /repo/build/shim
+[  4%] Built target ccommand_selftest
+[  8%] Built target defer_queue_selftest
+[ 12%] Built target gamedata_selftest
+[ 18%] Built target call_validate_selftest
+[ 24%] Built target hook_dispatch_selftest
+[ 55%] Built target breakpad_client
+[ 62%] Built target detour_reloc_selftest
+[ 66%] Built target crash_selftest
+[ 67%] Linking CXX shared library s2script.so
+[100%] Built target s2script
+core: target/release/libs2script_core.so
+
+packaged: dist/addons
+dist/addons/metamod/s2script.vdf
+dist/addons/s2script/bin/linuxsteamrt64/libs2script_core.so
+dist/addons/s2script/bin/linuxsteamrt64/s2script.so
+dist/addons/s2script/gamedata/core/common.gamedata.jsonc
+dist/addons/s2script/gamedata/core/engine.source2.jsonc
+dist/addons/s2script/gamedata/core/game.cs2.jsonc
+dist/addons/s2script/gamedata/core/master.gamedata.jsonc
+dist/addons/s2script/gamedata/cs2/game.cs2.jsonc
+dist/addons/s2script/gamedata/cs2/master.gamedata.jsonc
+dist/addons/s2script/gamedata/sdkhooks/game.cs2.jsonc
+dist/addons/s2script/gamedata/sdkhooks/master.gamedata.jsonc
+dist/addons/s2script/js/pawn.js
+dist/addons/s2script/translations/adminhelp.phrases.json
+dist/addons/s2script/translations/adminmenu.phrases.json
+dist/addons/s2script/translations/antiflood.phrases.json
+dist/addons/s2script/translations/basebans.phrases.json
+dist/addons/s2script/translations/basechat.phrases.json
+dist/addons/s2script/translations/basecomm.phrases.json
+dist/addons/s2script/translations/basecommands.phrases.json
+dist/addons/s2script/translations/basetriggers.phrases.json
+dist/addons/s2script/translations/basevotes.phrases.json
+dist/addons/s2script/translations/common.phrases.json
+dist/addons/s2script/translations/de/trdemo.phrases.json
+dist/addons/s2script/translations/funcommands.phrases.json
+dist/addons/s2script/translations/funvotes.phrases.json
+dist/addons/s2script/translations/nextmap.phrases.json
+dist/addons/s2script/translations/nominations.phrases.json
+dist/addons/s2script/translations/playercommands.phrases.json
+dist/addons/s2script/translations/reservedslots.phrases.json
+dist/addons/s2script/translations/rockthevote.phrases.json
+dist/addons/s2script/translations/zones.phrases.json
+GLIBC_2.3
+GLIBC_2.14
+GLIBC_2.17
+GLIBC_2.28
+GLIBC_2.29
+GLIBC_2.30
