@@ -6785,6 +6785,7 @@ pub(crate) fn register_process_singletons() {
 
     reg("FRAME_COUNTER", AfterIsolateDrop, || FRAME_COUNTER.with(|c| c.set(0)));
     // Pending queues drained by the muxes' post-frame dispatch — sidecars, not subscriber stores.
+    crate::client::register_singletons();
     crate::cookies::register_singletons();
     crate::ws::register_singletons();
     crate::net::register_singletons();
@@ -9362,6 +9363,7 @@ pub(crate) mod frame_tests {
         use crate::process_singletons::ResetPhase;
         let _ = init(dummy_logger());
         let names = crate::process_singletons::registered_names();
+        assert!(names.contains(&("CLIENT_CONNECTIONS", ResetPhase::AfterIsolateDrop)));
 
         let mut seen = std::collections::HashSet::new();
         let dupes: Vec<&str> = names

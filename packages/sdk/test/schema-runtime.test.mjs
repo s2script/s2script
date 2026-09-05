@@ -12,7 +12,7 @@ test("Player model: fromSlot/all, generated accessors, .pawn + .controller nav (
   EntityRef.prototype.readUInt8 = function () { return 2; };          // e.g. teamNum = 2 (uint8 in generated schema)
   EntityRef.prototype.readFloat32 = function () { return 0.25; };
   EntityRef.prototype.readBool = function () { return false; };
-  EntityRef.prototype.readHandle = function () { return new EntityRef(this.index + 100, 7); }; // a live nav target
+  EntityRef.prototype.readHandle = function () { return new EntityRef(this.index >= 100 ? this.index - 100 : this.index + 100, 7); }; // paired pawn/controller
   const stdEntity = { EntityRef };
   const math = { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
                   QAngle: function (x, y, z) { this.x = x; this.y = y; this.z = z; } };
@@ -23,7 +23,7 @@ test("Player model: fromSlot/all, generated accessors, .pawn + .controller nav (
     __s2_handle_adopt: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
-  installClientHost(ctx);
+  installClientHost(ctx, Array.from({ length: 64 }, (_, slot) => slot));
   vm.createContext(ctx);
   vm.runInContext(cs2AddonBundle, ctx);
   const { Player, Pawn } = ctx.__s2pkg_cs2;

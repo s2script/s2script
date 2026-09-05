@@ -74,6 +74,9 @@ bash scripts/check-antiflood-test.sh
 echo "== clientprefs connection race tests =="
 node --test plugins/clientprefs/src/plugin.test.mjs
 
+echo "== adminmenu and RTV connection cleanup tests =="
+node --test plugins/adminmenu/src/plugin.test.mjs plugins/disabled/rockthevote/src/plugin.test.mjs
+
 echo "== test-release-notes.sh (GitHub generates notes; CI only uploads the zip) =="
 bash scripts/test-release-notes.sh
 

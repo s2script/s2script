@@ -66,9 +66,14 @@ function mount() {
   };
   const activeHandlers = [];
   const disconnectHandlers = [];
+  const clients = new Map();
+  const connect = slot => { const client = { slot, isValid: () => clients.get(slot) === client }; clients.set(slot, client); return client; };
+  for (let slot = 0; slot < 64; slot++) connect(slot);
   globalThis.__s2pkg_clients = {
+    _same: (a, b) => !!a && a === b,
     Clients: {
       all: () => [{ signonState: 6 }],
+      fromSlot: slot => clients.get(slot) || null,
       onActive: (fn) => activeHandlers.push(fn),
       onDisconnect: (fn) => disconnectHandlers.push(fn),
     },
@@ -94,7 +99,8 @@ function mount() {
       mapStartHandlers.forEach((f) => f());
       activeHandlers.forEach((f) => f());
     },
-    disconnect(slot) { disconnectHandlers.forEach((f) => f({ slot })); },
+    disconnect(slot) { const client = clients.get(slot); clients.delete(slot); switches.clearSlot(slot); disconnectHandlers.forEach((f) => f(client)); },
+    connect,
     // Mid-map replacement WITHOUT any lifecycle notification: the entity is killed and an
     // identically-named one appears (as after a plugin elsewhere re-created it). The huds under
     // test are told nothing — they must notice by identity.
@@ -207,7 +213,9 @@ test("forget releases owned capture and resets classes without unconditional dup
 
   // And the slot's next occupant starts clean: everything re-sends.
   const mark2 = m.calls.length;
-  assert.equal(view.show("s2_row_1", { cursor: true }), null);
+  assert.equal(view.show("s2_row_1", { cursor: true }), "stale client");
+  m.connect(3);
+  assert.equal(hud.forSlot(3).show("s2_row_1", { cursor: true }), null);
   const fresh = m.calls.slice(mark2);
   assert.ok(fresh.some((c) => c.name === "setHasClassForPlayer" && c.args[4] === 0),
     "the show repaints (unhides) for the new occupant");

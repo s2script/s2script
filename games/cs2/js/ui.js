@@ -205,6 +205,21 @@
     // yet. The caches describe state that lives ON that one entity instance, so they are only
     // meaningful while that exact entity is the one being driven.
     var boundEntityId = null;
+    var slotClients = {};
+    var boundClient = null;
+
+    function sameClient(a, b) { return globalThis.__s2pkg_clients._same(a, b); }
+    function forgetSlot(slot) {
+      delete disabled[slot]; delete slotViews[slot]; delete slotClients[slot];
+      forgetKeyed(meterClass, slot); forgetKeyed(visiblePanels, slot); forgetKeyed(lastValue, slot);
+    }
+    function currentClient(slot) {
+      if (boundClient && (boundClient.slot !== slot || !boundClient.isValid())) return null;
+      var current = clientsApi().fromSlot(slot);
+      if (!current) return null;
+      if (!sameClient(slotClients[slot], current)) { forgetSlot(slot); slotClients[slot] = current; }
+      return current;
+    }
 
     function cacheKey(slot, kind, a, b) {
       return slotPrefix(slot) + kind + "|" + a + "|" + (b == null ? "" : b);
@@ -258,10 +273,12 @@
     }
 
     function setClass(slot, panelId, className, on) {
+      panelId = String(panelId); className = String(className);
       if (!setHasClassForPlayer) return "unavailable: " + engineStatus("setHasClassForPlayer");
       if (slot < 0) return "needs a player slot";
       var ent = bindEntity(ctxState.ensureEntity(layout));
       if (!ent) return ctxState.notReadyReason();
+      if (!currentClient(slot)) return "stale client";
       var key = cacheKey(slot, "c", panelId, className);
       var s = on ? "1" : "0";
       if (lastValue[key] === s) return null;
@@ -272,6 +289,7 @@
     }
 
     function setDialogVariable(slot, panelId, variableName, value) {
+      panelId = String(panelId); variableName = String(variableName);
       if (!setDialogVariableStringForPlayer) {
         return "unavailable: " + engineStatus("setDialogVariableStringForPlayer");
       }
@@ -279,6 +297,7 @@
       var ent = bindEntity(ctxState.ensureEntity(layout));
       if (!ent) return ctxState.notReadyReason();
       var str = String(value);
+      if (!currentClient(slot)) return "stale client";
       var key = cacheKey(slot, "v", panelId, variableName);
       if (lastValue[key] === str) return null;
       var err = setDialogVariableStringForPlayer(ent, slot, panelId, variableName, str);
@@ -291,6 +310,7 @@
       if (typeof globalThis.__s2_shared_entity_switch !== "function") {
         return "unavailable: shared entity switch host support";
       }
+      if (!currentClient(slot)) return "stale client";
       if (slot < 0) return "needs a player slot";
       var ent = bindEntity(on ? ctxState.ensureEntity(layout) : ctxState.findEntity(layout));
       if (!ent) return on ? ctxState.notReadyReason() : null;
@@ -428,7 +448,12 @@
       h(api.forSlot(slot));
       return true;
     };
-    api.forget = function (slot) {
+    api.forget = function (slot, client) {
+      if (client) {
+        if (!sameClient(slotClients[slot], client)) return;
+        // Deferred disconnect must never repaint or release a replacement occupant's UI.
+        if (clientsApi().fromSlot(slot)) { forgetSlot(slot); return; }
+      }
       // Forget releases only this plugin's leases. The host's unconditional disconnect path
       // clears ALL owners before JS callbacks, even if this plugin never registered a listener.
       // Never disable another plugin's capture during ordinary local cleanup.
@@ -463,10 +488,7 @@
           }
         }
       }
-      delete disabled[slot];
-      forgetKeyed(meterClass, slot);
-      forgetKeyed(visiblePanels, slot);
-      forgetKeyed(lastValue, slot);
+      forgetSlot(slot);
     };
     api.resetEntityCaches = resetEntityCaches;
     api.ensure = function () {
@@ -474,6 +496,7 @@
       return ref ? null : ctxState.notReadyReason();
     };
     api.forSlot = function (slot) {
+      var client = currentClient(slot);
       var view = slotViews[slot];
       if (view) return view;
       view = {
@@ -489,9 +512,26 @@
         setDisabled: function (buttonId, on) { return api.setDisabled(slot, buttonId, on); },
         forget: function () { api.forget(slot); }
       };
+      Object.keys(view).forEach(function (name) {
+        if (typeof view[name] !== "function") return;
+        var call = view[name];
+        view[name] = function () {
+          if (!client || !client.isValid()) return name === "forget" ? undefined : "stale client";
+          var previous = boundClient; boundClient = client;
+          try { return call.apply(view, arguments); } finally { boundClient = previous; }
+        };
+      });
       slotViews[slot] = view;
       return view;
     };
+    // Direct slot APIs adopt the current occupant; retained forSlot views keep their original one.
+    "show hide cursor set setText setClass setMeter setPool setDisabled dispatchClick".split(" ").forEach(function (name) {
+      var call = api[name];
+      api[name] = function (slot) {
+        if (!currentClient(slot)) return name === "dispatchClick" ? false : "stale client";
+        return call.apply(api, arguments);
+      };
+    });
     return api;
   }
 
@@ -556,10 +596,9 @@
       reg(viaId(function () {
         clientsApi().onActive(function () { becomeReady(); });
         clientsApi().onDisconnect(function (client) {
-          if (clientsApi().fromSlot(client.slot)) return; // an old deferred disconnect cannot clear a replacement HUD
           for (var res in hudByResource) {
             if (Object.prototype.hasOwnProperty.call(hudByResource, res)) {
-              hudByResource[res].forget(client.slot);
+              hudByResource[res].forget(client.slot, client);
             }
           }
         });

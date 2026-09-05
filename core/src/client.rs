@@ -375,14 +375,17 @@ pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
 /// The owner-scoped store: the six lifecycle hooks stay installed for the process lifetime — no
 /// engine-op follow-up on an emptied name.
 pub(crate) fn register_store() {
-    crate::process_singletons::register("CLIENT_CONNECTIONS", crate::process_singletons::ResetPhase::AfterIsolateDrop,
-        Box::new(|| CONNECTIONS.with(|b| b.borrow_mut().clear())));
     crate::owner_stores::register(
         "CLIENT_MUX",
         Box::new(|owner| { CLIENT_MUX.with(|m| { m.borrow_mut().remove_by_owner(owner); }); }),
         Box::new(|ids| { CLIENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| { CLIENT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new()); }),
     );
+}
+
+pub(crate) fn register_singletons() {
+    crate::process_singletons::register("CLIENT_CONNECTIONS", crate::process_singletons::ResetPhase::AfterIsolateDrop,
+        Box::new(|| CONNECTIONS.with(|b| b.borrow_mut().clear())));
 }
 
 // Per-feature tests over the SHARED in-isolate harness (`v8host::frame_tests`) — see `crate::usermsg`.
@@ -409,6 +412,17 @@ mod tests {
     fn effect_ops() -> S2EngineOps {
         S2EngineOps { client_print: Some(effect), client_console_print: Some(effect), client_kick: Some(effect),
             client_command: Some(effect_command), client_fake_command: Some(effect_command), voice_set_muted: Some(effect_voice), ..S2EngineOps::none() }
+    }
+    #[test]
+    fn shutdown_clears_connections_without_reusing_generations() {
+        init(dummy_logger()).unwrap();
+        let before = begin(3);
+        shutdown();
+        assert_eq!(generation(3), 0);
+        init(dummy_logger()).unwrap();
+        assert_eq!(generation(3), 0);
+        assert!(begin(3) > before);
+        shutdown();
     }
     #[test]
     fn current_connection_actions_and_identity_remain_available() {

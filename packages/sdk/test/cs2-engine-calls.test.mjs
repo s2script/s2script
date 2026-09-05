@@ -121,7 +121,7 @@ function makeHost({ ready = ALL_CALLS, onInvoke } = {}) {
     console: { log: (m) => logs.push(String(m)) },
   };
   ctx.globalThis = ctx;
-  installClientHost(ctx);
+  const clientHost = installClientHost(ctx);
   vm.createContext(ctx);
   vm.runInContext(cs2AddonBundle, ctx);
 
@@ -138,6 +138,7 @@ function makeHost({ ready = ALL_CALLS, onInvoke } = {}) {
     names: () => invokes.map((i) => i.name),
     /** A dead player on `slot`, with a live controller and a live m_hPlayerPawn. */
     player(slot) {
+      if (!ctx.__s2pkg_clients.Clients.fromSlot(slot)) clientHost.connect(slot);
       const p = pkg.Player._fromSlotUnchecked(slot);
       p.ref.alive = false;
       return p;

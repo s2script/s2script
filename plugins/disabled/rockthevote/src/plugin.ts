@@ -14,6 +14,8 @@ import {
 import type { HookResultValue, VoteResult, Client } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
 
+declare const __s2pkg_clients: { _same(a: Client | undefined, b: Client): boolean };
+
 /** A map option: its stock/BSP name, or a workshop id (mutually informative — see the ballot). */
 interface MapEntry { name: string; workshopId: string | null; }
 
@@ -26,7 +28,10 @@ interface MapEntry { name: string; workshopId: string | null; }
 const DONT_CHANGE = "Don't Change";
 
 // --- module state (persists across a changelevel — see pollMapChange below) ---
-const rtvVoters: Set<number> = new Set();
+const rtvVoters = new Map<number, Client>();
+function pruneVoters(): void {
+  for (const [slot, client] of rtvVoters) if (!client.isValid()) rtvVoters.delete(slot);
+}
 let voteRunning = false;
 let votedThisMap = false;
 let pendingMap: MapEntry | null = null;
@@ -261,6 +266,9 @@ function startVote(force: boolean): boolean {
 }
 
 function requestRtv(slot: number): void {
+  const client = Clients.fromSlot(slot);
+  if (!client) return;
+  pruneVoters();
   if (voteRunning || votedThisMap) {
     Chat.toSlot(slot, Translations.translate(slot, voteRunning ? "Rtv Vote Already Running" : "Rtv Vote Already Happened"));
     return;
@@ -278,7 +286,7 @@ function requestRtv(slot: number): void {
     Chat.toSlot(slot, Translations.translate(slot, "Rtv Already Voted", need));
     return;
   }
-  rtvVoters.add(slot);
+  rtvVoters.set(slot, client);
   if (pc < config.getInt("rtv_min_players")) {
     Chat.toSlot(slot, Translations.translate(slot, "Rtv Not Enough Players"));
     return;
@@ -297,6 +305,7 @@ function requestRtv(slot: number): void {
 // (a disconnect lowers the denominator but the per-player path can't re-trigger — SM re-checks on
 // disconnect; we do it on the settled ~1s tick to avoid racing the disconnect event).
 function pollTick(): void {
+  pruneVoters();
   // BEFORE the 1 Hz throttle: the centre-screen event paints for a single frame, so the live tally
   // has to be re-fired on EVERY frame it should be visible. A no-op (one string compare) whenever
   // no vote is running, which is nearly always.
@@ -394,5 +403,5 @@ export function OnClientSayCommand(slot: number, text: string, _teamonly: boolea
 }
 
 export function OnClientDisconnect(c: Client): void {
-  rtvVoters.delete(c.slot);
+  if (__s2pkg_clients._same(rtvVoters.get(c.slot), c)) rtvVoters.delete(c.slot);
 }

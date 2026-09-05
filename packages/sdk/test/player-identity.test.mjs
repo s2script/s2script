@@ -27,7 +27,8 @@ function runWith(clientMock, names) {
     ...clientMock,
   };
   ctx.globalThis = ctx;
-  installClientHost(ctx);
+  const host = installClientHost(ctx);
+  for (let slot = 0; slot < 64; slot++) if (clientMock.__s2_client_valid?.(slot)) host.connect(slot);
   vm.createContext(ctx);
   vm.runInContext(cs2AddonBundle, ctx);
   return ctx.__s2pkg_cs2;
@@ -138,6 +139,7 @@ test('a retained Player and generated navigation view cannot mutate a reused pre
     __s2_client_kick: () => writes.push('kick'),
   };
   const host = installClientHost(ctx);
+  host.connect(3);
   vm.createContext(ctx); vm.runInContext(cs2AddonBundle, ctx);
   const old = ctx.__s2pkg_cs2.Player._fromSlotUnchecked(3);
   const stats = old.matchStats;
