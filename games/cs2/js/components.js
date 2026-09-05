@@ -86,6 +86,12 @@
 
   function log(msg) { if (globalThis.console) console.log("[s2script/ui] " + msg); }
 
+  // Opt-in diagnostics (`globalThis.__s2_ui_debug = true`, e.g. from a dev plugin or the
+  // hot-reload console). Read per use, not latched, so it can be flipped on a live server while
+  // chasing a misbehaving sheet. Today it arms exactly one check: the per-slot footer-set
+  // divergence warning in modal() below.
+  function uiDebug() { return globalThis.__s2_ui_debug === true; }
+
   function slotOf(player) {
     if (typeof player === "number") return player;
     return player && typeof player.slot === "number" ? player.slot : -1;
@@ -757,11 +763,43 @@
         return Math.max(1, Math.ceil(rowsFor(slot).length / pageSize));
       }
 
+      // Debug-mode divergence detector for the constraint documented on `footerFns` below: the
+      // caller-button handlers the previous paint resolved, and for which slot. Only the CALLER's
+      // buttons are compared — the pager closures footerPlan appends are minted fresh every call
+      // (identity always differs) and dispatch on the CLICK-time slot, so they are safe to share
+      // and would only drown the signal. Warns once per claimed modal: the condition re-fires on
+      // every repaint, and the first line already names the fix.
+      var footerDebugPrev = null;
+      var footerDebugWarned = false;
+      function debugCheckFooters(slot, mine) {
+        if (footerDebugWarned || !uiDebug()) { footerDebugPrev = null; return; }
+        var prev = footerDebugPrev;
+        footerDebugPrev = { slot: slot, fns: [] };
+        for (var i = 0; i < mine.length; i++) footerDebugPrev.fns.push(mine[i].onClick);
+        // Only a LIVE divergence is the hazard: if the earlier slot has closed, its clicks can no
+        // longer reach the shared table, so two sequential single-viewer uses stay quiet.
+        if (!prev || prev.slot === slot || !open[prev.slot]) return;
+        var differs = prev.fns.length !== footerDebugPrev.fns.length;
+        for (var d = 0; !differs && d < prev.fns.length; d++) {
+          if (prev.fns[d] !== footerDebugPrev.fns[d]) differs = true;
+        }
+        if (!differs) return;
+        footerDebugWarned = true;
+        log("modal s2_m" + idx + ": buttons(slot) returned a DIFFERENT set for slot " + slot +
+            " than for slot " + prev.slot + " (" + footerDebugPrev.fns.length + " vs " +
+            prev.fns.length + " handler(s), or differing identities). The footer handler table " +
+            "is one array per MODAL, rebuilt on every paint — the last paint's handlers dispatch " +
+            "for EVERY player with the sheet open, so slot " + prev.slot + "'s clicks would now " +
+            "run slot " + slot + "'s handlers. Return the same handler set for every slot (vary " +
+            "text/variant/rows instead), or claim a separate modal per button set.");
+      }
+
       // Caller buttons first; prev/next take the trailing footer slots, and only when the data
       // actually needs paging — a one-page list shows no pager.
       function footerPlan(slot) {
         var plan = [];
         var mine = typeof s.buttons === "function" ? (s.buttons(slot) || []) : (s.buttons || []);
+        if (typeof s.buttons === "function") debugCheckFooters(slot, mine);
         for (var i = 0; i < mine.length && plan.length < FOOTERS; i++) {
           plan.push({ text: mine[i].text, variant: mine[i].variant || "ghost", fn: mine[i].onClick });
         }
@@ -772,7 +810,16 @@
         return plan;
       }
 
-      var footerFns = [];   // resolved per paint, read by the click handlers below
+      // ONE ARRAY PER MODAL, rebuilt on every paint — deliberately NOT per-slot. Button TEXT and
+      // visibility go through per-player natives, but a click arrives as (panel id, player) and
+      // must resolve to a handler somewhere, and this table is that somewhere. The consequence is
+      // a real contract: a `buttons(slot)` function may vary text and variant per slot, but it
+      // must return the SAME handlers in the same order for every slot, because the LAST paint's
+      // handlers dispatch for every player with the sheet open. This cost a live incident (a
+      // player's shop footer dispatching an admin's Ban handler); debugCheckFooters above is the
+      // tripwire, and the ModalSpec.buttons doc in packages/cs2/ui.d.ts is the author-facing
+      // statement of the rule.
+      var footerFns = [];
 
       function paint(slot) {
         if (released) return;

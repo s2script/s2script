@@ -280,7 +280,18 @@ export interface ModalSpec {
    */
   readonly detail?: (slot: number, row: Row | undefined, cursor: number) => readonly string[];
   // `cursor` is the ABSOLUTE index into the full row list, matching onPick and Modal.cursor().
-  /** Up to 5; Prev/Next claim the trailing two automatically when the list pages. */
+  /**
+   * Up to 5; Prev/Next claim the trailing two automatically when the list pages.
+   *
+   * The per-slot function may vary `text` and `variant` freely (those go through per-player
+   * natives), but it MUST return the same `onClick` handlers, in the same order, for every slot.
+   * The click-dispatch table is one array per MODAL, rebuilt on every repaint — so if two players
+   * hold the sheet with different handler sets, the last repaint wins and its handlers fire for
+   * BOTH players' clicks (this once put an admin's Ban handler behind a player's shop button).
+   * To offer genuinely different actions per player, claim a separate modal per button set.
+   * With `globalThis.__s2_ui_debug = true`, the library logs a warning when it sees a live
+   * divergence.
+   */
   readonly buttons?: readonly FooterButton[] | ((slot: number) => readonly FooterButton[]);
   readonly pageSize?: number;
   /** Sheet width. Default `md` (560px). */

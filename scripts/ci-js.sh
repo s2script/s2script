@@ -62,6 +62,9 @@ bash scripts/check-activity-test.sh
 echo "== check-components-test.sh =="
 bash scripts/check-components-test.sh
 
+echo "== check-modals-markup-sync.sh (MODALS matches the s2_m* trees the layout ships) =="
+bash scripts/check-modals-markup-sync.sh
+
 echo "== check-colors-test.sh (colour-tag expander) =="
 bash scripts/check-colors-test.sh
 
