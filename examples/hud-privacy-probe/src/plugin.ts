@@ -7,8 +7,9 @@ import { Player } from "@s2script/cs2";
 // This deliberately bypasses that library's resource -> one entity cache so we can
 // create independent recipients' entities without proposing a public private-HUD API.
 // No offsets, pointers, signatures, or raw-memory writes are introduced here.
-type ClassCall = (entity: EntityRef, slot: number, panel: string, name: string, status: number) => void;
-type TextCall = (entity: EntityRef, slot: number, panel: string, name: string, text: string) => void;
+// Core returns undefined for a successful void call, null for rejected invocation.
+type ClassCall = (entity: EntityRef, slot: number, panel: string, name: string, status: number) => void | null;
+type TextCall = (entity: EntityRef, slot: number, panel: string, name: string, text: string) => void | null;
 interface Calls {
   call(name: "setHasClassForPlayer"): ClassCall | null;
   call(name: "setDialogVariableStringForPlayer"): TextCall | null;
@@ -18,13 +19,19 @@ const bridge = globalThis as typeof globalThis & { __s2pkg_cs2_calls?: Calls };
 const RESOURCE = "panorama/layout/custom_game/s2script_lib.xml";
 const owned = new Map<string, EntityRef>();
 
-function cleanup(): void {
-  for (const entity of owned.values()) {
+function cleanup(): string[] {
+  const failed: string[] = [];
+  for (const [label, entity] of owned) {
     // Remove before dropping its visibility rule; never deliberately reveal on cleanup.
-    if (entity.isValid()) entity.remove();
+    if (entity.isValid() && !entity.remove()) {
+      failed.push(label);
+      continue;
+    }
+    owned.delete(label);
   }
-  owned.clear();
-  Transmit.resetAll();
+  // Keep failed refs AND their rules available for a later cleanup attempt.
+  if (failed.length === 0) Transmit.resetAll();
+  return failed;
 }
 
 export function OnPluginStart(): void {
@@ -43,8 +50,9 @@ export function OnPluginStart(): void {
       return HookResult.Handled;
     }
     if (op === "clean") {
-      cleanup();
-      cmd.reply("probe entities removed and probe rules reset");
+      const failed = cleanup();
+      cmd.reply(failed.length ? `FAILED to remove ${failed.join(",")}; refs/rules retained, retry clean before unload`
+        : "probe entities removed and probe rules reset");
       return HookResult.Handled;
     }
     const fail = (reason: string) => { cmd.reply(`REFUSED: ${reason}`); return HookResult.Handled; };
@@ -61,7 +69,10 @@ export function OnPluginStart(): void {
       // Start hidden from all. No text has been written. This is not a confidentiality
       // guarantee for a spawn/filter race; cold-join observation is a separate gate.
       if (!Transmit.setVisibleTo(entity, [])) {
-        entity.remove();
+        if (!entity.remove()) {
+          owned.set(label, entity);
+          return fail("transmit unavailable AND entity removal failed; empty entity retained for cleanup");
+        }
         return fail("transmit unavailable; removed entity");
       }
       owned.set(label, entity);
@@ -97,9 +108,12 @@ export function OnPluginStart(): void {
       // A and B use different corners; duplicate resource instances are observable.
       const panel = label === "A" ? "s2_b0" : "s2_b1";
       for (const slot of slots) {
-        setText(entity, slot, `${panel}_title`, `${panel}_title`, `PROBE ${label}`);
-        setText(entity, slot, `${panel}_text`, `${panel}_text`, marker);
-        setClass(entity, slot, panel, "s2-hide", 0);
+        if (setText(entity, slot, `${panel}_title`, `${panel}_title`, `PROBE ${label}`) === null)
+          return fail(`rejected title write: ${label} slot=${slot}; partial paint, discard this observation`);
+        if (setText(entity, slot, `${panel}_text`, `${panel}_text`, marker) === null)
+          return fail(`rejected marker write: ${label} slot=${slot}; partial paint, discard this observation`);
+        if (setClass(entity, slot, panel, "s2-hide", 0) === null)
+          return fail(`rejected reveal write: ${label} slot=${slot}; partial paint, discard this observation`);
       }
       cmd.reply(`wrote ${label} state=${target} marker=${marker}; server write is NOT a client receipt result`);
       return HookResult.Handled;
@@ -108,6 +122,10 @@ export function OnPluginStart(): void {
   });
 }
 
-export function OnPluginEnd(): void { cleanup(); }
+export function OnPluginEnd(): void {
+  const failed = cleanup();
+  // The runtime releases plugin rules after unload; this callback cannot veto it.
+  if (failed.length) console.log(`FAILED final cleanup: ${failed.join(",")}; unload will release rules on remaining entities`);
+}
 // Map teardown invalidates these handles; do not create or touch entities during map start.
 export function OnMapStart(): void { owned.clear(); Transmit.resetAll(); }

@@ -48,6 +48,7 @@ From the repository root, after the normal npm dependency install and SDK build:
 
 ```sh
 node packages/sdk/dist/cli.js build examples/hud-privacy-probe --packages-dir packages
+node --test examples/hud-privacy-probe/test/probe.test.mjs
 ```
 
 The strict typecheck and lint gate produces
@@ -156,7 +157,10 @@ were stripped, not which recipient saw a given layout. On a fully isolated run,
 compare same-duration no-rule / owner-only / nobody deltas, keeping observer
 conditions stable. Zero deltas despite valid baselines may indicate bypass or a
 non-PVS path. Do not treat a successful `setVisibleTo` or server state write as
-client evidence. Schema shape and unit-test mocks cannot answer this experiment.
+client evidence. A rejected native write reports `REFUSED` and stops that paint;
+discard its partial observation and clean/retry. Schema shape and unit-test mocks
+cannot answer the delivery experiment; the local tests cover failure reporting
+and cleanup retention only.
 
 Screen recordings establish **rendering** only. Before stating that spectators
 did not **receive** an entity/state, additionally collect recipient-side entity
@@ -177,6 +181,9 @@ Record results using this template (all cells are pending today):
 
 Run `s2_hudprivacy clean`, confirm the status entity list is empty, and unload
 `@demo/hud-privacy-probe` through the normal isolated-session plugin workflow.
-Unload also removes this probe's entities. Never remove all `custom_hud_layout`
+If removal fails, `clean` reports the labels and retains their refs/rules for a
+retry. Do not unload until the status entity list is empty: final unload attempts
+cleanup but cannot veto the runtime releasing rules if entity removal still fails.
+Never remove all `custom_hud_layout`
 entities: other plugins or the map may own them. Remove only the staged probe
 archive afterward and restore the recorded isolated-session configuration.

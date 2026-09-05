@@ -74,6 +74,9 @@ bash scripts/check-antiflood-test.sh
 echo "== test-release-notes.sh (GitHub generates notes; CI only uploads the zip) =="
 bash scripts/test-release-notes.sh
 
+echo "== HUD privacy probe failure handling (offline only) =="
+node --test examples/hud-privacy-probe/test/probe.test.mjs
+
 echo "== test-gate.sh =="
 bash scripts/test-gate.sh
 
