@@ -491,7 +491,6 @@
       if (!motdOpen[slot]) return;
       delete motdOpen[slot];
       hide(slot, "s2_motd");
-      hud.cursor(slot, false);
       var fn = motdOnClose[slot];
       delete motdOnClose[slot];
       if (fromClick && typeof fn === "function") fn(slot);
@@ -542,7 +541,6 @@
       if (!dashOpen[slot]) return;
       delete dashOpen[slot];
       hide(slot, "s2_dash");
-      hud.cursor(slot, false);
       if (fromClick && dashSpec && typeof dashSpec.onClose === "function") dashSpec.onClose(slot);
     }
 
@@ -887,13 +885,12 @@
         },
         setCursor: function (slot, on) {
           if (released) return;
-          hud.cursor(slot, !!on);
+          return hud._cursorForPanel(slot, ids.root, !!on);
         },
         close: function (slot) {
           if (released) return;
           delete open[slot];
           hide(slot, ids.root);
-          hud.cursor(slot, false);
         },
         isOpen: function (slot) { return !!open[slot]; },
         refresh: function (slot) {

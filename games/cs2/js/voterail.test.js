@@ -42,6 +42,7 @@ function mount(options = {}) {
     cursor(on) { calls.push({ op: "cursor", on }); },
   };
   const layout = {
+    _cursorForPanel(slot, root, on) { assert.equal(root, "s2_vote"); view.cursor(on); },
     forSlot: () => view,
     onClick: (id, handler) => { clickHandlers[id] = handler; },
   };

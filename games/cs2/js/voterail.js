@@ -40,8 +40,8 @@
   }
 
   function cursor(slot, on) {
-    var view = viewFor(slot);
-    if (view && typeof view.cursor === "function") view.cursor(!!on);
+    var layout = layoutOf();
+    if (layout) layout._cursorForPanel(slot, ROOT, !!on);
   }
 
   function armWaiting(slot) {

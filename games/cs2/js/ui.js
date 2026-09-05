@@ -69,7 +69,6 @@
 
   var setHasClassForPlayer = engineCall("setHasClassForPlayer");
   var setDialogVariableStringForPlayer = engineCall("setDialogVariableStringForPlayer");
-  var setInputCaptureEnabledForPlayer = engineCall("setInputCaptureEnabledForPlayer");
 
   function warn(msg) { if (globalThis.console) console.log("[s2script] " + msg); }
 
@@ -191,7 +190,6 @@
     var handlers = {};
     var meterClass = {};
     var visiblePanels = {};
-    var cursorLeases = {};
     var lastValue = {};
     var slotViews = {};
     // Host id of the layout entity every cache above was built against (EntityRef.id — the
@@ -221,10 +219,8 @@
      * entity is being driven, because a fresh entity has every panel at its markup default and no
      * input capture at all. Left stale, the effect is a PARTIAL PAINT: any value unchanged since
      * the previous entity is suppressed and never re-sent, so a sheet draws its rows and not its
-     * buttons — intermittently, depending on what happened to differ. A surviving cursor lease is
-     * worse than cosmetic: releaseCursor would see a non-empty lease set, conclude something
-     * still wants the cursor, and never disable a capture the new entity never had — a player
-     * holding a pointer no click can clear.
+     * buttons — intermittently, depending on what happened to differ. Capture leases live in the
+     * host, keyed by entity identity; its entity lifecycle removes them independently of JS.
      *
      * `handlers` is deliberately NOT cleared: click handlers are registered once per button id at
      * claim time and belong to the plugin, not to the entity. `slotViews` likewise — they are
@@ -234,7 +230,6 @@
       disabled = {};
       meterClass = {};
       visiblePanels = {};
-      cursorLeases = {};
       lastValue = {};
       boundEntityId = null;
     }
@@ -282,33 +277,18 @@
       return null;
     }
 
-    function acquireCursor(slot, panelId) {
-      if (!setInputCaptureEnabledForPlayer) {
-        return "unavailable: " + engineStatus("setInputCaptureEnabledForPlayer");
+    function cursorSwitch(slot, token, on) {
+      if (typeof globalThis.__s2_shared_entity_switch !== "function") {
+        return "unavailable: shared entity switch host support";
       }
-      var ent = bindEntity(ctxState.ensureEntity(layout));
-      if (!ent) return ctxState.notReadyReason();
-      var set = cursorLeases[slot];
-      if (!set) { set = {}; cursorLeases[slot] = set; }
-      var had = Object.keys(set).length > 0;
-      set[panelId] = true;
-      if (!had) setInputCaptureEnabledForPlayer(ent, slot, true);
-      return null;
+      if (slot < 0) return "needs a player slot";
+      var ent = bindEntity(on ? ctxState.ensureEntity(layout) : ctxState.findEntity(layout));
+      if (!ent) return on ? ctxState.notReadyReason() : null;
+      return globalThis.__s2_shared_entity_switch("setInputCaptureEnabledForPlayer",
+        ent.index, ent.id, slot, token, !!on);
     }
-
-    function releaseCursor(slot, panelId) {
-      var set = cursorLeases[slot];
-      if (!set || !set[panelId]) return null;
-      delete set[panelId];
-      if (Object.keys(set).length > 0) return null;
-      if (!setInputCaptureEnabledForPlayer) return null;
-      // bindEntity may reset the caches here (entity replaced under us) — that's fine: we have
-      // already decided to turn capture off, and off is the replacement entity's default state.
-      var ent = bindEntity(ctxState.findEntity(layout));
-      if (!ent || !ent.isValid()) return null;
-      setInputCaptureEnabledForPlayer(ent, slot, false);
-      return null;
-    }
+    function acquireCursor(slot, panelId) { return cursorSwitch(slot, "panel:" + panelId, true); }
+    function releaseCursor(slot, panelId) { return cursorSwitch(slot, "panel:" + panelId, false); }
 
     function trackVisible(slot, panelId, on) {
       var key = slotPrefix(slot) + panelId;
@@ -323,17 +303,29 @@
       var err = setClass(slot, panelId, layout.hideClass, false);
       if (err) return err;
       trackVisible(slot, panelId, true);
-      if (opts.cursor) return acquireCursor(slot, panelId);
+      if (opts.cursor) {
+        err = acquireCursor(slot, panelId);
+        if (err) {
+          setClass(slot, panelId, layout.hideClass, true);
+          trackVisible(slot, panelId, false);
+          return err;
+        }
+      }
       return null;
     };
     api.hide = function (slot, panelId) {
       var err = setClass(slot, panelId, layout.hideClass, true);
-      if (err) return err;
-      trackVisible(slot, panelId, false);
-      return releaseCursor(slot, panelId);
+      if (!err) trackVisible(slot, panelId, false);
+      // Releasing input is independent of painting: close must not strand a cursor if paint fails.
+      var captureErr = releaseCursor(slot, panelId);
+      return err || captureErr;
     };
     api.cursor = function (slot, on) {
-      return on ? acquireCursor(slot, "*") : releaseCursor(slot, "*");
+      return cursorSwitch(slot, "manual:*", !!on);
+    };
+    // Game-presenter seam: changing one root must not touch a manual or another root's lease.
+    api._cursorForPanel = function (slot, panelId, on) {
+      return on ? acquireCursor(slot, panelId) : releaseCursor(slot, panelId);
     };
     api.set = function (slot, id, value) {
       if (isFields(id)) {
@@ -427,20 +419,12 @@
       return true;
     };
     api.forget = function (slot) {
-      // Engine-side teardown FIRST, and unconditionally — never gated on our own books. This is
-      // the disconnect path: menuhud's discardSession (or an earlier forget) may already have
-      // emptied the slot's books, and releaseCursor's lease guard would then conclude there is
-      // nothing to turn off — while m_bInputCaptureEnabled and any painted classes live on the
-      // ENTITY and would greet the slot's NEXT occupant. So this teardown is authoritative in
-      // either callback order: ask the engine to clear capture regardless of the lease set, and
-      // paint every class our books say the slot holds back to markup default. findEntity, not
-      // ensureEntity — never create an entity just to reset a slot on it. bindEntity may itself
-      // reset the books here (entity replaced): then there is nothing tracked left to repaint,
-      // which is correct — a fresh entity is already at its defaults, and the capture-off below
-      // is a harmless no-op on it.
+      // Forget releases only this plugin's leases. The host's unconditional disconnect path
+      // clears ALL owners before JS callbacks, even if this plugin never registered a listener.
+      // Never disable another plugin's capture during ordinary local cleanup.
+      cursorSwitch(slot, null, false);
       var ent = bindEntity(ctxState.findEntity(layout));
       if (ent) {
-        if (setInputCaptureEnabledForPlayer) setInputCaptureEnabledForPlayer(ent, slot, false);
         if (setHasClassForPlayer) {
           var prefix = slotPrefix(slot);
           var key;
@@ -470,7 +454,6 @@
         }
       }
       delete disabled[slot];
-      delete cursorLeases[slot];
       forgetKeyed(meterClass, slot);
       forgetKeyed(visiblePanels, slot);
       forgetKeyed(lastValue, slot);
@@ -550,8 +533,8 @@
         entityByResource = {};
         // The entities died with the map; so did everything the paint caches described. This is
         // a belt over bindEntity's identity gate (which also catches the replacement on its
-        // first resolve): clearing here frees surviving cursor leases immediately instead of at
-        // the next paint.
+        // first resolve): clearing here drops obsolete paint caches immediately. The host resets
+        // capture leases before the map callback runs.
         for (var res in hudByResource) {
           if (Object.prototype.hasOwnProperty.call(hudByResource, res)) {
             hudByResource[res].resetEntityCaches();

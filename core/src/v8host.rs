@@ -4757,6 +4757,7 @@ fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) 
     set_native(scope, global_obj, "__s2_engine_call_receiverless", s2_engine_call_receiverless);
     set_native(scope, global_obj, "__s2_engine_call_status", s2_engine_call_status);
     set_native(scope, global_obj, "__s2_engine_call_invoke", s2_engine_call_invoke);
+    crate::shared_entity_switch::install(scope, global_obj);
     // The GAME-PACKAGE-scoped four (A5b): same natives, keyed on core's reserved owner id for the
     // registered game package instead of the calling context's plugin id. The game package's
     // prelude runs in the raw context scope and has no plugin identity of its own, so it cannot use
@@ -6414,6 +6415,7 @@ fn resolve_fetch(
 /// context (continuations run in their OWN realms regardless of the checkpoint's entered context).
 /// `refresh_detour` (borrows FRAME + TIMERS) runs only after the scope is dropped.
 pub(crate) fn frame_async_drain() {
+    crate::shared_entity_switch::retry_pending();
     HOST.with(|h| {
         let mut borrow = h.borrow_mut();
         let Some(host) = borrow.as_mut() else { return };
@@ -6570,6 +6572,7 @@ pub(crate) fn register_builtin_stores() {
 
     // CLIENT_MUX: registered by the feature module, which owns the mux the callbacks close over.
     crate::client::register_store();
+    crate::shared_entity_switch::register_store();
 
     // MAP_MUX: the StartupServer hook stays installed for the process lifetime — no follow-up.
     crate::owner_stores::register(

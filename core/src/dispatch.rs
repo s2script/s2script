@@ -320,6 +320,20 @@ where
 ///
 /// `dispatch_hook` / `dispatch_hook_post` call this directly so they can inspect `Delivery` (those
 /// pre-hooks cannot be replayed; a `Deferred` is a named skip).
+thread_local! {
+    static DEFER_CALLBACKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// Owner-store engine follow-ups must not re-enter JavaScript while the store registry is borrowed.
+/// Notify events use the usual deferred replay; synchronous pre-hooks follow its normal skip policy.
+pub(crate) fn defer_while<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) { DEFER_CALLBACKS.with(|v| v.set(self.0)); }
+    }
+    let _restore = Restore(DEFER_CALLBACKS.with(|v| v.replace(true)));
+    f()
+}
+
 pub(crate) fn fan_out_inner<F>(
     snap: &[(String, u64, v8::Global<v8::Function>)],
     label: &str,
@@ -335,6 +349,9 @@ where
         // Nobody subscribed → nothing to replay. Reporting `Deferred` here would make the shim
         // `DuplicateEvent` every event on the server with no one listening.
         return (HookResult::Continue, Delivery::Delivered);
+    }
+    if DEFER_CALLBACKS.with(std::cell::Cell::get) {
+        return (HookResult::Continue, Delivery::Deferred);
     }
     // Plugin-originated outbound: a FunctionCallbackInfo is on the stack. Nested CallbackScope
     // does not take HOST (promise_reject_cb). #63 still applies when the stack is empty.

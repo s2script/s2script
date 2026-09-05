@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert";
 import vm from "node:vm";
 import { cs2AddonBundle } from "./cs2-addon.mjs";
+import { sharedSwitchFixture } from "../../../games/cs2/js/shared-switch-fixture.js";
 
 const HUD_CALLS = [
   "setHasClassForPlayer",
@@ -105,6 +106,14 @@ function makeHost({ ready = BASE_CALLS, onInvoke, onHook, entities = [], signon 
     console: { log: (m) => logs.push(String(m)) },
   };
 
+  ctx.__s2_shared_entity_switch = sharedSwitchFixture(
+    (index, id) => entityList.find(e => e.index === index && e.id === id && e.isValid()),
+    (name, entity, slot, on) => {
+      if (!readySet.has(name)) return "unavailable: " + name;
+      const result = ctx.__s2_game_call_invoke(name, entity.index, entity.id, [slot, on]);
+      return result === null ? "unavailable: " + name + " invocation failed" : null;
+    },
+  ).native("test-plugin");
   ctx.__s2pkg_cs2 = {
     Player: {
       all: () => [],

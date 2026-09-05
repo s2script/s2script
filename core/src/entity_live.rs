@@ -20,7 +20,9 @@ thread_local! {
 /// OnEntityCreated: mint a fresh host id (upsert — a same-index create replaces a
 /// stale entry, which is itself an invalidation of any holder of the old id).
 pub fn on_created(index: i32, engine_serial: i32) -> u64 {
-    LIVE.with(|t| t.borrow_mut().insert(index, engine_serial))
+    let id = LIVE.with(|t| t.borrow_mut().insert(index, engine_serial));
+    crate::shared_entity_switch::prune_dead();
+    id
 }
 
 /// OnEntitySpawned: repair-upsert. Present-and-matching keeps the create-minted id
@@ -34,13 +36,14 @@ pub fn on_spawned(index: i32, engine_serial: i32) {
             _ => { t.insert(index, engine_serial); }
         }
     });
+    crate::shared_entity_switch::prune_dead();
 }
 
 /// OnEntityDeleted: remove ONLY when the stored serial matches — a stale delete must
 /// not evict a newer same-index entity. (A wrongly-kept entry still fails closed at
 /// the slot-validation stage.) Returns the evicted host id so SDKHooks can unhook.
 pub fn on_deleted(index: i32, engine_serial: i32) -> Option<u64> {
-    LIVE.with(|t| {
+    let removed = LIVE.with(|t| {
         let mut t = t.borrow_mut();
         let matches = t.get(&index).map_or(false, |(_, s)| *s == engine_serial);
         if matches {
@@ -48,7 +51,9 @@ pub fn on_deleted(index: i32, engine_serial: i32) -> Option<u64> {
         } else {
             None
         }
-    })
+    });
+    crate::shared_entity_switch::prune_dead();
+    removed
 }
 
 pub fn lookup(index: i32) -> Option<(u64, i32)> {
@@ -73,6 +78,7 @@ pub fn engine_serial_for(index: i32, id: u64) -> Option<i32> {
 /// Map transition: clear the whole table (this IS the epoch, implicit) + arm the sweep.
 pub fn clear_for_map_transition() {
     LIVE.with(|t| t.borrow_mut().clear());
+    crate::shared_entity_switch::reset();
     REPAIR_ARMED.with(|c| c.set(true));
 }
 
@@ -97,6 +103,7 @@ pub fn repair_reconcile(live_slots: &[(i32, i32)]) {
             if !seen.contains(&k) { t.remove(&k); }
         }
     });
+    crate::shared_entity_switch::prune_dead();
 }
 
 pub fn len() -> usize { LIVE.with(|t| t.borrow().len()) }
@@ -104,6 +111,7 @@ pub fn len() -> usize { LIVE.with(|t| t.borrow().len()) }
 #[cfg(test)]
 pub fn reset_for_tests() {
     LIVE.with(|t| t.borrow_mut().clear());
+    crate::shared_entity_switch::reset();
     REPAIR_ARMED.with(|c| c.set(false));
 }
 

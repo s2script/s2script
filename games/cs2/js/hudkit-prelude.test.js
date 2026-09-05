@@ -139,6 +139,9 @@ function pluginWorld() {
   const entities = [];
   const writes = [];
   const plugins = [];
+  const switches = require("./shared-switch-fixture.js").sharedSwitchFixture(
+    (index, id) => entities.find(e => e.index === index && e.id === id),
+    (name, entity, slot, on) => { writes.push({ name, args: [entity, slot, on] }); return null; });
   function plugin() {
     const owner = plugins.length;
     const lifecycle = { active: [], disconnect: [], map: [] };
@@ -152,6 +155,7 @@ function pluginWorld() {
     let sealed = false;
     const ctx = vm.createContext({
       console: { log() {} }, __s2pkg_cs2: {},
+      __s2_shared_entity_switch: switches.native(owner),
       __s2_ui_pool_claim(_kind, capacity) {
         const index = owners.findIndex((v, i) => i < capacity && v === null &&
           (activeEpoch === null || retired[i] !== activeEpoch));
@@ -167,7 +171,7 @@ function pluginWorld() {
       __s2pkg_entity: {
         Entity: { findByClass: () => entities },
         createEntity(_cls, kv) {
-          const e = { id: entities.length + 1, name: kv.targetname, isValid: () => true };
+          const e = { index: entities.length + 1, id: entities.length + 1, name: kv.targetname, isValid: () => true };
           entities.push(e); return e;
         },
       },
@@ -329,4 +333,28 @@ test("ambient hudkit remains usable in callbacks after initialization has settle
   assert.ok(kit.modal({ rows: [] }), "a later callback can claim a released slot");
   assert.equal(kit.ensure(), null, "successful HudResult is null");
   assert.equal(typeof kit.budget().cap, "number");
+});
+
+test("two plugin modals and a manual cursor token cannot release each other's capture", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin();
+  const ma = a.base.kit.modal({ rows: [] }), mb = b.base.kit.modal({ rows: [] });
+  ma.open(1); mb.open(1);
+  a.base.kit.layout.cursor(1, true);
+  const captures = () => w.writes.filter(v => v.name === "setInputCaptureEnabledForPlayer");
+  assert.equal(captures().length, 1, "all owners share one first-on engine operation");
+  ma.setCursor(1, false);
+  ma.close(1);
+  mb.close(1);
+  assert.equal(captures().length, 1, "modal close does not release the manual token");
+  a.base.kit.layout.cursor(1, false);
+  assert.deepEqual(captures().map(c => c.args[2]), [true, false]);
+});
+
+test("turning a modal cursor off releases the root token acquired by open", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const modal = p.base.kit.modal({ rows: [] });
+  modal.open(1); modal.setCursor(1, false);
+  const captures = w.writes.filter(v => v.name === "setInputCaptureEnabledForPlayer");
+  assert.deepEqual(captures.map(c => c.args[2]), [true, false]);
+  assert.equal(modal.isOpen(1), true, "cursor-off keeps the modal painted");
 });

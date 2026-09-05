@@ -148,7 +148,6 @@
 
     function setCursor(slot, on) {
       if (claim && typeof claim.setCursor === "function") claim.setCursor(slot, on);
-      else if (!on && kit.layout) kit.layout.cursor(slot, false);
     }
 
     var renderer = {
