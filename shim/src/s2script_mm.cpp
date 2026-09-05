@@ -5633,7 +5633,16 @@ void S2ScriptPlugin::Hook_ClientCommand(CPlayerSlot slot, const CCommand& args) 
 // clientlist-fakeconvar-onmapstart slice: these bodies now ALSO drive the tracked signon array
 // (s_trackedSignon) that s2_client_signon/valid/userid/name read (the offset-free replacement). State
 // is set BEFORE the core dispatch so a handler observes the new signon (connect: valid==true during
-// dispatch); disconnect clears AFTER dispatch so the handler still sees the client as valid.
+// dispatch); disconnect clears before fan-out and delivers an owned departing-identity snapshot.
+static void S2_ClearClientSlotState(int slot) {
+    if (slot < 0 || slot >= kMaxClientSlots) return;
+    s_trackedSignon[slot] = kSignonNone;
+    s_voiceMuted[slot] = 0;
+    s_voiceLastNotify[slot] = 0;
+    s_voiceAudible[slot] = 0;
+    s_voiceHasRule &= ~(1ull << slot);
+}
+
 void S2ScriptPlugin::Hook_OnClientConnected(CPlayerSlot slot, const char*, uint64, const char*, const char*, bool) {
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonConnected;
@@ -5667,18 +5676,7 @@ void S2ScriptPlugin::Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnecti
     std::string steamId = copy(s2_client_steamid(s)), name = copy(s2_client_name(s)), address = copy(s2_client_address(s));
     S2ClientIdentity identity{s2_client_userid(s), s2_client_signon(s), steamId.c_str(), name.c_str(), address.c_str()};
     // Clear departing engine policy before fan-out: a synchronous callback can connect B.
-    if (s >= 0 && s < kMaxClientSlots) {
-        s_trackedSignon[s] = kSignonNone;
-        // slot-reuse hygiene. Hearability state MUST be cleared here alongside the mute: a rule is
-        // authored about the player who occupied this slot, and slots are recycled. Leaving
-        // s_voiceHasRule set would silence (or grant hearing to) whoever connects into the slot next,
-        // with no plugin action and no way for them to discover why. Core drops its matching
-        // VOICE_RULES entry from dispatch_client_event("disconnect").
-        s_voiceMuted[s] = 0;
-        s_voiceLastNotify[s] = 0;
-        s_voiceAudible[s] = 0;
-        s_voiceHasRule &= ~(1ull << s);
-    }
+    S2_ClearClientSlotState(s);
     S2_DispatchClientEvent("disconnect", s, token, &identity);
     RETURN_META(MRES_IGNORED);
 }
@@ -5757,6 +5755,25 @@ void S2ScriptPlugin::Hook_StartupServer(const GameSessionConfiguration_t&, ISour
     // and a queued IGameEvent duplicate must not outlive the map (the same reset the retired
     // s_pendingRespawn/s_pendingTerminate drains did at Unload).
     S2Defer_Flush("map start");
+    // This is the POST StartupServer hook: read the new server's occupancy, not the previous
+    // map's tracked signon. Map teardown can remove clients without a disconnect callback.
+    // Retire only absent slots; actual survivors keep their connection generation and policy.
+    if (s_pEngine) {
+        S2ClientReconcile(kMaxClientSlots, CPlayerUserId(-1).Get(),
+            [](int slot) { return s_pEngine->GetPlayerUserId(CPlayerSlot(slot)).Get(); },
+            [](int slot) {
+                // Occupancy does not prove new-map activation. Lifecycle hooks advance this.
+                s_trackedSignon[slot] = kSignonConnected;
+                s2script_core_client_ensure(slot);
+            },
+            [](int slot) {
+                const uint64_t token = s2script_core_client_generation(slot);
+                S2_ClearClientSlotState(slot);
+                // End performs generation-bound core voice/cookie retirement without inventing
+                // a disconnect event whose departing identity is already unavailable.
+                s2script_core_client_end(slot, token);
+            });
+    }
     INetworkGameServer* gs = S2_GameServer();
     const char* map = gs ? gs->GetMapName() : nullptr;
     META_CONPRINTF("[s2script] map start: %s (maxClients=%d)\n",

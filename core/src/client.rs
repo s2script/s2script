@@ -425,6 +425,62 @@ mod tests {
         shutdown();
     }
     #[test]
+    fn map_reconciliation_end_retires_only_departed_connection_state() {
+        init(dummy_logger()).unwrap();
+        extern "C" fn audible_set(_: i32, _: u64) -> i32 { 1 }
+        extern "C" fn audible_clear(slot: i32) -> i32 {
+            EFFECTS.with(|e| e.borrow_mut().push(format!("clear:{slot}")));
+            1
+        }
+        set_engine_ops(Some(S2EngineOps { voice_audible_set: Some(audible_set),
+            voice_audible_clear: Some(audible_clear), ..S2EngineOps::none() }));
+        let departed = begin(10);
+        let survivor = begin(1);
+        load_body("map-retirement", r#"
+            globalThis.departed = new __s2pkg_clients.Client(10);
+            globalThis.survivor = new __s2pkg_clients.Client(1);
+            globalThis.cached = [];
+            __s2_cookie_on_cached(function(slot) { cached.push(slot); });
+            [10, 1].forEach(function(slot) {
+                __s2_cookie_session(slot, __s2_client_generation(slot), 'set', JSON.stringify({
+                    steamId: 'account-' + slot, name: 'choice', value: 'value-' + slot, updated: 1
+                }));
+                __s2_cookie_dispatch_cached(slot, __s2_client_generation(slot));
+                __s2_voice_audible_set(slot, []);
+            });
+        "#, "{}");
+        EFFECTS.with(|e| e.borrow_mut().clear());
+        // The shim's POST StartupServer scan found slot 10 absent (unsigned userid 65535),
+        // but slot 1 occupied. Exercise the exact core entry points used by that scan.
+        crate::ffi::s2script_core_client_end(10, departed);
+        assert_eq!(crate::ffi::s2script_core_client_ensure(1), survivor);
+        crate::ffi::s2script_core_dispatch_map_start(c"de_test".as_ptr());
+        assert!(!matches(10, departed));
+        assert!(matches(1, survivor));
+        assert_eq!(EFFECTS.with(|e| e.borrow().clone()), vec!["clear:10"]);
+        crate::cookies::dispatch_pending_cached();
+        assert_eq!(eval_in_context_string("map-retirement",
+            "[departed.isValid(), survivor.isValid(), cached.join(',')].join('|')"), "false|true|1");
+        assert_eq!(eval_in_context_string("map-retirement",
+            "__s2_cookie_take_retired()"), r#"[["account-10","choice","value-10",1]]"#);
+        // Repeated retirement cannot duplicate a write or remove a new occupant's state.
+        let replacement = begin(10);
+        crate::ffi::s2script_core_client_end(10, departed);
+        assert!(matches(10, replacement));
+        assert_eq!(eval_in_context_string("map-retirement", r#"
+            __s2_cookie_session(10, __s2_client_generation(10), 'get',
+                JSON.stringify({steamId: 'account-10', name: 'choice'}))
+        "#), "null");
+        assert_eq!(eval_in_context_string("map-retirement", "__s2_cookie_take_retired()"), "[]");
+        assert_eq!(eval_in_context_string("map-retirement", r#"
+            __s2_cookie_session(1, __s2_client_generation(1), 'get',
+                JSON.stringify({steamId: 'account-1', name: 'choice'}))
+        "#), r#""value-1""#);
+        assert_eq!(eval_in_context_string("map-retirement",
+            "[__s2_voice_audible_clear(10), __s2_voice_audible_clear(1)].join('|')"), "false|true");
+        shutdown();
+    }
+    #[test]
     fn current_connection_actions_and_identity_remain_available() {
         init(dummy_logger()).unwrap();
         extern "C" fn name(_: i32) -> *const c_char { c"Current".as_ptr() }

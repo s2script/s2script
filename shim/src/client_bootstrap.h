@@ -4,11 +4,18 @@
 // Engine-free scan policy. The caller supplies the engine's typed absent sentinel
 // (CPlayerUserId(-1).Get(), an unsigned short), never an assumed signed -1.
 // User-id establishes occupancy only; the caller retains authority over signon phase.
+template <typename UserId, typename ReadUserId, typename EnsureConnected, typename RetireAbsent>
+void S2ClientReconcile(int max_slots, UserId absent, ReadUserId read_user_id,
+                       EnsureConnected ensure_connected, RetireAbsent retire_absent) {
+    for (int slot = 0; slot < max_slots; ++slot) {
+        if (read_user_id(slot) == absent) retire_absent(slot);
+        else ensure_connected(slot);
+    }
+}
+
 template <typename UserId, typename ReadUserId, typename EnsureConnected>
 void S2ClientBootstrap(int max_slots, UserId absent, ReadUserId read_user_id, EnsureConnected ensure_connected) {
-    for (int slot = 0; slot < max_slots; ++slot) {
-        if (read_user_id(slot) != absent) ensure_connected(slot);
-    }
+    S2ClientReconcile(max_slots, absent, read_user_id, ensure_connected, [](int) {});
 }
 
 #endif

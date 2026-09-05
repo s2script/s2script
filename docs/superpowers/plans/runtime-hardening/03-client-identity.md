@@ -143,3 +143,32 @@ The controller reports that the pre-review `3d96aca` Linux native gate and relea
 but those binaries were not installed. **That does not validate the round 1 fix.** Independent
 re-review and final Linux/live checks remain pending on `0491304` and its evidence commit.
 Cookie persistence/admission remains the single Task 5 seam described above.
+
+## Live map regression correction
+
+The live bot map gate found that a map can remove a client without delivering a disconnect hook.
+After `changelevel`, slot 10 retained a generation and tracked full signon even though the engine
+reported an empty name and unsigned absent user ID 65535. The earlier map-preservation regression
+did not model this divergence between engine occupancy and tracked lifecycle state.
+
+The shim now reconciles all 64 slots in its **POST StartupServer** hook, before map-start JS.
+It reads the typed engine user-ID sentinel directly. Occupied slots keep their generation and
+connection policy; their signon becomes conservatively connected until observed new-map phase
+hooks advance it. Absent slots clear shim signon/mute/hearability state and call the existing
+generation-checked core end entry, retiring voice rules and cookie sessions. No synthetic disconnect
+event is emitted with an already-lost identity. Deferred map replay does not repeat reconciliation.
+
+Local evidence: the old occupancy-only scan fails the new phantom-token assertion; the corrected
+engine-free C++ test passes absent-slot retirement, user ID 0, stable survivor identity, and phase
+reset. A core test exercises the exact end/ensure entry points and verifies dirty-cookie retirement,
+stale cached-event rejection, survivor cookie/voice preservation, and safe late retirement after
+slot reuse. **674 core tests**, **52 focused SDK/Player/HUD tests**, the client-bootstrap and defer
+queue C++ tests, core boundary, and `git diff --check` pass. Exact logs are
+`task-3-round2-{map-red,map-green,core-targeted,core,sdk,defer,boundary-green}.log` in the scratch
+directory used above. An initial boundary command used a nonexistent script name; the correct
+`check-core-boundary.sh` passed, with both outputs retained.
+
+Independent review, Linux shim/native validation and a repeated live map gate remain required on
+this correction. Human clients are unavailable in the live fixture: the non-sentinel survivor test
+proves the reconciliation policy, but the bot trace does **not** prove human engine hook continuity
+through a map transition. Task 5's single persistence seam and durability limits are unchanged.
