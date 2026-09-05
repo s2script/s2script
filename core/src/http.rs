@@ -186,6 +186,9 @@ async fn do_fetch(
 // ---------------------------------------------------------------------------
 
 use crate::v8host::set_native;
+#[cfg(test)]
+pub(crate) static TEST_REQUEST_HEADER_CAPACITY: Mutex<Option<(usize, usize)>> = Mutex::new(None);
+
 fn s2_fetch(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -239,13 +242,26 @@ fn s2_fetch(
                                         .map_err(|e| e.to_string())?;
                                     let v = crate::jobs::copy_string(scope, v, &mut lease)
                                         .map_err(|e| e.to_string())?;
-                                    headers.push((k, v));
+                                    crate::jobs::push_request_header(&mut headers, k, v);
                                 }
                             }
                         }
                     }
                 }
             }
+        }
+        #[cfg(test)]
+        {
+            let actual = headers.capacity() * std::mem::size_of::<(String, String)>()
+                + headers
+                    .iter()
+                    .map(|(k, v)| k.capacity() + v.capacity())
+                    .sum::<usize>()
+                + url.capacity()
+                + method.capacity()
+                + body.as_ref().map_or(0, String::capacity);
+            *TEST_REQUEST_HEADER_CAPACITY.lock().unwrap() =
+                Some((actual, crate::async_limits::domain().jobs.snapshot().bytes));
         }
         crate::jobs::check_live(&lease)?;
         let id = crate::jobs::next_id();

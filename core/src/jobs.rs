@@ -253,6 +253,20 @@ pub(crate) fn resolver_ids() -> Vec<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn request_header_growth_is_amortized_and_fits_admitted_metadata() {
+        let mut headers = Vec::new();
+        let mut growths = 0;
+        for count in 1..=16385 {
+            let old_capacity = headers.capacity();
+            super::push_request_header(&mut headers, String::new(), String::new());
+            growths += usize::from(headers.capacity() != old_capacity);
+            assert!(headers.capacity() * std::mem::size_of::<(String, String)>() <= count * 64);
+        }
+        eprintln!("{growths} capacity growths for 16385 headers");
+        assert!(growths < 64, "{growths} capacity growths for 16385 headers");
+    }
+
     use super::*;
 
     /// The process-singleton reset clears the map and the pending count. The
@@ -365,6 +379,8 @@ pub(crate) fn reject(
     crate::v8host::request_microtask_drain();
 }
 
+const STRING_METADATA_BYTES: usize = 32;
+
 pub(crate) fn copy_string(
     scope: &mut v8::PinScope,
     value: v8::Local<v8::Value>,
@@ -373,10 +389,27 @@ pub(crate) fn copy_string(
     let s = value
         .to_string(scope)
         .ok_or(crate::async_limits::AdmissionError::PayloadTooLarge)?;
-    lease.input_grow(s.utf8_length(scope).saturating_add(32))?;
+    lease.input_grow(s.utf8_length(scope).saturating_add(STRING_METADATA_BYTES))?;
     Ok(s.to_rust_string_lossy(scope))
 }
 
 pub(crate) fn has_resolver(id: u64) -> bool {
     RESOLVERS.with(|m| m.borrow().contains_key(&id))
+}
+
+/// Append strings already admitted by copy_string, using their metadata allowance for slots.
+pub(crate) fn push_request_header(headers: &mut Vec<(String, String)>, key: String, value: String) {
+    if headers.len() == headers.capacity() {
+        const HEADER_METADATA_BYTES: usize = 2 * STRING_METADATA_BYTES;
+        const SLOT_BYTES: usize = std::mem::size_of::<(String, String)>();
+        const { assert!(SLOT_BYTES <= HEADER_METADATA_BYTES); }
+        // Include the already-admitted pair on the stack. On 64-bit targets this
+        // grows by roughly 4/3, amortizing reallocations without charging twice.
+        let credit = (headers.len() + 1)
+            .checked_mul(HEADER_METADATA_BYTES)
+            .expect("admitted header metadata fits usize");
+        let capacity = credit / SLOT_BYTES;
+        headers.reserve_exact(capacity - headers.len());
+    }
+    headers.push((key, value));
 }

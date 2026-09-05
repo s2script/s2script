@@ -7,3 +7,7 @@ cargo test -p s2script-core v8host::frame_tests::async_tiny_policy_admission_rei
 # A complete polling round must not phase-lock the first logical delivery to timers.
 export S2SCRIPT_ASYNC_LIMITS_JSON='{"frame_items":2,"frame_bytes":128,"frame_poll_items":6}'
 cargo test -p s2script-core v8host::frame_tests::oversized_completions_progress_with_a_full_poll_round_and_due_timer -- --ignored --exact
+
+# Header tuple capacities must fit their existing charge, including at Vec growth boundaries.
+export S2SCRIPT_ASYNC_LIMITS_JSON='{"input_item_bytes":40000}'
+cargo test -p s2script-core v8host::frame_tests::async_request_headers_tiny_policy_capacity_and_named_overload -- --ignored --exact

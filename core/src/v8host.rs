@@ -1153,6 +1153,10 @@ fn s2_thread_sleep(
 /// `crate::ws::connect` (the process-global tokio+tungstenite engine, Task 1) — the calling
 /// (main/game) thread never blocks; the Promise resolves on a LATER `frame_async_drain` via
 /// `resolve_ws_connect`.
+#[cfg(test)]
+static TEST_WS_REQUEST_HEADER_CAPACITY: std::sync::Mutex<Option<(usize, usize)>> =
+    std::sync::Mutex::new(None);
+
 fn s2_ws_connect(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -1179,14 +1183,24 @@ fn s2_ws_connect(
                         continue;
                     };
                     let Some(v) = obj.get(scope, k) else { continue };
-                    headers.push((
-                        crate::jobs::copy_string(scope, k, &mut lease)
-                            .map_err(|e| e.to_string())?,
-                        crate::jobs::copy_string(scope, v, &mut lease)
-                            .map_err(|e| e.to_string())?,
-                    ));
+                    let k = crate::jobs::copy_string(scope, k, &mut lease)
+                        .map_err(|e| e.to_string())?;
+                    let v = crate::jobs::copy_string(scope, v, &mut lease)
+                        .map_err(|e| e.to_string())?;
+                    crate::jobs::push_request_header(&mut headers, k, v);
                 }
             }
+        }
+        #[cfg(test)]
+        {
+            let actual = headers.capacity() * std::mem::size_of::<(String, String)>()
+                + headers
+                    .iter()
+                    .map(|(k, v)| k.capacity() + v.capacity())
+                    .sum::<usize>()
+                + url.capacity();
+            *TEST_WS_REQUEST_HEADER_CAPACITY.lock().unwrap() =
+                Some((actual, crate::async_limits::domain().jobs.snapshot().bytes));
         }
         crate::jobs::check_live(&lease)?;
         let id = crate::jobs::next_id();
@@ -16426,6 +16440,99 @@ pub(crate) mod frame_tests {
             "hot cookies cannot starve a cold socket callback"
         );
         assert!(!crate::net::is_owner(id, "cold"));
+        shutdown();
+    }
+
+
+    #[test]
+    fn async_request_header_capacity_is_covered_by_input_reservation() {
+        let _ = init(dummy_logger());
+        create_plugin_context("headers-review");
+        eval_in_context(
+            "headers-review",
+            r#"
+            var headers = Object.fromEntries(Array.from({length:513},(_,i)=>['h'+i,'']));
+            __s2_fetch('invalid', {headers}).catch(()=>{});
+        "#,
+        )
+        .unwrap();
+        let http = crate::http::TEST_REQUEST_HEADER_CAPACITY
+            .lock()
+            .unwrap()
+            .unwrap();
+        shutdown();
+        // New process-stable jobs may finish asynchronously; wait only for the invalid-URL worker.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while crate::async_limits::domain().jobs.snapshot().items != 0 {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let _ = init(dummy_logger());
+        create_plugin_context("headers-review");
+        eval_in_context(
+            "headers-review",
+            r#"
+            var headers = Object.fromEntries(Array.from({length:513},(_,i)=>['h'+i,'']));
+            __s2_ws_connect('invalid', {headers}).catch(()=>{});
+        "#,
+        )
+        .unwrap();
+        let ws = super::TEST_WS_REQUEST_HEADER_CAPACITY
+            .lock()
+            .unwrap()
+            .unwrap();
+        shutdown();
+        eprintln!("actual native capacity / input charge: HTTP={http:?}, WS={ws:?}");
+        assert!(http.0 <= http.1 && ws.0 <= ws.1,
+            "actual native header Vec/String capacity vs total input charge: HTTP={http:?}, WS={ws:?}");
+        assert_eq!(
+            (http.1, ws.1),
+            (34813, 34813),
+            "tuple slots use the existing string allowance"
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while crate::async_limits::domain().jobs.snapshot().items != 0 {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the isolated 40000-byte S2SCRIPT_ASYNC_LIMITS_JSON policy"]
+    fn async_request_headers_tiny_policy_capacity_and_named_overload() {
+        assert_eq!(crate::async_limits::policy().input_item_bytes, 40000);
+        async_request_header_capacity_is_covered_by_input_reservation();
+        init(dummy_logger()).unwrap();
+        create_plugin_context("headers-overload");
+        *crate::http::TEST_REQUEST_HEADER_CAPACITY.lock().unwrap() = None;
+        *super::TEST_WS_REQUEST_HEADER_CAPACITY.lock().unwrap() = None;
+        eval_in_context(
+            "headers-overload",
+            r#"
+            var headers = Object.fromEntries(Array.from({length:601},(_,i)=>['h'+i,'']));
+            globalThis.errors = [];
+            __s2_fetch('invalid', {headers}).catch(e=>errors.push(e.name));
+            __s2_ws_connect('invalid', {headers}).catch(e=>errors.push(e.name));
+        "#,
+        )
+        .unwrap();
+        frame_async_drain();
+        dispatch_async_callbacks();
+        assert_eq!(
+            eval_in_context_string("headers-overload", "JSON.stringify(errors)"),
+            r#"["AsyncPayloadTooLarge","AsyncPayloadTooLarge"]"#
+        );
+        assert!(crate::http::TEST_REQUEST_HEADER_CAPACITY
+            .lock()
+            .unwrap()
+            .is_none());
+        assert!(super::TEST_WS_REQUEST_HEADER_CAPACITY
+            .lock()
+            .unwrap()
+            .is_none());
+        assert_eq!(crate::jobs::pending(), 0);
+        assert_eq!(crate::async_limits::domain().jobs.snapshot().items, 0);
+        assert_eq!(crate::async_limits::domain().jobs.snapshot().bytes, 0);
         shutdown();
     }
 
