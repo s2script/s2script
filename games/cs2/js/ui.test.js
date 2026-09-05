@@ -21,6 +21,7 @@ test.afterEach(() => {
   delete globalThis.__s2pkg_clients;
   delete globalThis.__s2pkg_game_ctx;
   delete globalThis.__s2_hook_on;
+  delete globalThis.__s2_shared_entity_switch;
 });
 
 // A tiny fake world: entities are {index, id, name, isValid()} like real EntityRefs (id is the
@@ -51,6 +52,10 @@ function mount() {
     call: (name) => (...args) => { calls.push({ name, args }); },
     status: () => "",
   };
+  const switches = require("./shared-switch-fixture.js").sharedSwitchFixture(
+    (index, id) => entities.find(e => e.index === index && e.id === id && e.valid),
+    (name, entity, slot, on) => { calls.push({ name, args: [entity, slot, on] }); return null; });
+  globalThis.__s2_shared_entity_switch = switches.native("test");
   const mapStartHandlers = [];
   globalThis.__s2pkg_server = {
     Server: {
@@ -164,7 +169,7 @@ test("caches are keyed to entity IDENTITY, not to map start: a silent mid-map re
     "capture must be re-enabled on the replacement entity");
 });
 
-test("disconnect teardown is unconditional: capture off and classes back to default, even with empty books", (t) => {
+test("forget releases owned capture and resets classes without unconditional duplicate capture-off", (t) => {
   const m = mount();
   const hud = m.ns.hud();
   const view = hud.forSlot(3);
@@ -192,14 +197,13 @@ test("disconnect teardown is unconditional: capture off and classes back to defa
     && c.args[1] === 3 && c.args[2] === "s2_btn_0" && c.args[3] === "s2-btn-disabled" && c.args[4] === 0),
     "the disabled class is removed for the next occupant");
 
-  // The order-dependence defect itself: with the books already emptied (menuhud's discardSession
-  // or a prior forget got there first), releaseCursor's lease guard would conclude there is
-  // nothing to turn off. The teardown must not be gated on its own books.
+  // Repeated local cleanup has no authority over other owners. The native host disconnect
+  // path is separately responsible for clearing all owners even without JS subscribers.
   const mark = m.calls.length;
   hud.forget(3);
   const again = m.calls.slice(mark).filter((c) =>
     c.name === "setInputCaptureEnabledForPlayer" && c.args[1] === 3 && c.args[2] === false);
-  assert.equal(again.length, 1, "capture-off must be sent even when no lease is on the books");
+  assert.equal(again.length, 0, "no lease means no engine capture-off; other owners may still hold it");
 
   // And the slot's next occupant starts clean: everything re-sends.
   const mark2 = m.calls.length;
@@ -226,4 +230,24 @@ test("setDisabled's book survives the identity reset its own paint triggers", (t
   assert.equal(hud.setDisabled(4, "s2_btn_0", true), null);
   assert.equal(hud.dispatchClick(4, "s2_btn_0"), false,
     "a button painted disabled must not dispatch after an entity replacement");
+});
+
+
+test("missing host capture support is named and show rolls back its visible class", () => {
+  const m = mount(), hud = m.ns.hud();
+  delete globalThis.__s2_shared_entity_switch;
+  assert.match(hud.show(2, "panel", { cursor: true }), /unavailable: shared entity switch/);
+  const paint = m.callsFor("setHasClassForPlayer").filter(c => c.args[2] === "panel");
+  assert.deepEqual(paint.map(c => c.args[4]), [0, 1]);
+  assert.equal(m.callsFor("setInputCaptureEnabledForPlayer").length, 0, "no raw fallback");
+});
+
+test("host acquire errors roll back show and a later retry can succeed", () => {
+  const m = mount(), hud = m.ns.hud();
+  const native = globalThis.__s2_shared_entity_switch;
+  globalThis.__s2_shared_entity_switch = () => "unavailable: test capture failure";
+  assert.match(hud.show(2, "panel", { cursor: true }), /test capture failure/);
+  globalThis.__s2_shared_entity_switch = native;
+  assert.equal(hud.show(2, "panel", { cursor: true }), null);
+  assert.deepEqual(m.callsFor("setInputCaptureEnabledForPlayer").map(c => c.args[2]), [true]);
 });

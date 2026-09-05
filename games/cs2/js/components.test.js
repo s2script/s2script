@@ -19,6 +19,7 @@ function mount() {
     show:     (s, id, opts) => { calls.push({ op: "show", slot: s, id, opts }); return null; },
     hide:     (s, id) => { calls.push({ op: "hide", slot: s, id }); return null; },
     cursor:   () => null,
+    _cursorForPanel: () => null,
     forget:   () => {},
     onClick:  (id, fn) => { clickHandlers[id] = fn; },
   };
@@ -584,6 +585,7 @@ function mountHudkit() {
     show:     (s, id, opts) => { calls.push({ op: "show", slot: s, id, opts }); return null; },
     hide:     (s, id) => { calls.push({ op: "hide", slot: s, id }); return null; },
     cursor:   () => null,
+    _cursorForPanel: () => null,
     forget:   () => {},
     onClick:  (id, fn) => { clickHandlers[id] = fn; },
     forSlot:  () => hud,

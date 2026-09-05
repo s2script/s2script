@@ -53,6 +53,7 @@ pub(crate) fn dispatch_client_event(event: &str, slot: i32) -> Delivery {
     // authored about a player who has left.
     if event == "disconnect" {
         voice_clear_slot(slot);
+        crate::shared_entity_switch::clear_slot(slot);
     }
     replay_client_event(event, slot)
 }
