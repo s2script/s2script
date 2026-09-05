@@ -292,10 +292,16 @@ export interface ModalSpec {
   readonly width?: "sm" | "md" | "lg" | "xl";
 }
 
+/** A failed open leaves the modal closed and can be retried when the HUD is ready. */
+export type ModalOpenResult = { readonly ok: true; readonly view: ModalView }
+  | { readonly ok: false; readonly error: string };
+
 /** Per-player view of a claimed {@link Modal}. */
 export interface ModalView {
   readonly slot: number;
+  /** Throws a descriptive error when the HUD cannot be painted or shown. */
   open(opts?: { cursor?: boolean }): ModalView;
+  tryOpen(opts?: { cursor?: boolean }): ModalOpenResult;
   close(): void;
   isOpen(): boolean;
   refresh(): void;
@@ -306,8 +312,10 @@ export interface ModalView {
 }
 
 export interface Modal {
-  /** Open for `slot` and return the bound view. Default grabs the cursor. */
+  /** Open for `slot` and return the bound view. Default grabs the cursor. Throws on failure. */
   open(slot: number, opts?: { cursor?: boolean }): ModalView;
+  /** Attempt to open; reports paint/show failures without throwing. */
+  tryOpen(slot: number, opts?: { cursor?: boolean }): ModalOpenResult;
   /** Grab or release the mouse without closing the sheet. */
   setCursor(slot: number, on: boolean): void;
   close(slot: number): void;

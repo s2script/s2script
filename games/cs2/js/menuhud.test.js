@@ -13,7 +13,10 @@ function mount(options = {}) {
   const pawn = { moveType: 2 };
   let spec = null;
   const claim = {
-    open: (slot, opts) => calls.push({ method: "open", slot, opts }),
+    tryOpen: (slot, opts) => {
+      calls.push({ method: "open", slot, opts });
+      return options.openError ? { ok: false, error: options.openError } : { ok: true, view: {} };
+    },
     close: (slot) => calls.push({ method: "close", slot }),
     refresh: (slot) => calls.push({ method: "refresh", slot }),
     setCursor: (slot, on) => calls.push({ method: "setCursor", slot, on }),
@@ -268,4 +271,26 @@ test("clearing an untracked slot does not release an unrelated manual cursor lea
     !mounted.calls.some((c) => c.method === "setCursor" && c.slot === 5 && c.on === false),
     "an untracked presenter cannot release a different component's manual token",
   );
+});
+
+
+test("a failed HUD open falls back to chat, releases its unused claim, and does not arm input", () => {
+  const mounted = mount({ openError: "engine invocation failed" });
+  mounted.registered.center.open(session({ activation: "tab" }));
+  assert.ok(mounted.calls.some(c => c.method === "chat" && c.slot === 3));
+  assert.equal(mounted.calls.filter(c => c.method === "release").length, 1);
+  assert.equal(mounted.arms.length, 0);
+});
+
+
+test("a failed second viewer keeps the claim used by the first viewer", () => {
+  const options = {};
+  const mounted = mount(options);
+  mounted.registered.center.open(session({ slot: 3 }));
+  options.openError = "engine invocation failed";
+  mounted.registered.center.open(session({ slot: 4 }));
+  assert.ok(mounted.calls.some(c => c.method === "chat" && c.slot === 4));
+  assert.equal(mounted.calls.filter(c => c.method === "release").length, 0);
+  mounted.registered.center.close(3);
+  assert.equal(mounted.calls.filter(c => c.method === "release").length, 1);
 });

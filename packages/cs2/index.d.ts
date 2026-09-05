@@ -43,6 +43,7 @@ export type {
   LayoutDescriptor,
   LayoutSlot,
   Modal,
+  ModalOpenResult,
   ModalSpec,
   ModalView,
   MotdHandle,

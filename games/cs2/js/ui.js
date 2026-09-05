@@ -60,7 +60,15 @@
 
   function engineCall(name) {
     var pkg = callsApi();
-    return pkg && pkg.call ? pkg.call(name) : null;
+    var call = pkg && pkg.call ? pkg.call(name) : null;
+    if (!call) return null;
+    // These HUD descriptors return void: core returns undefined on success and null on
+    // rejection (including a stale receiver or a shim-side invocation failure).
+    return function () {
+      if (call.apply(null, arguments) !== null) return null;
+      var reason = engineStatus(name);
+      return name + ": " + (reason && reason !== "available" ? reason : "engine invocation failed");
+    };
   }
   function engineStatus(name) {
     var pkg = callsApi();
@@ -257,7 +265,8 @@
       var key = cacheKey(slot, "c", panelId, className);
       var s = on ? "1" : "0";
       if (lastValue[key] === s) return null;
-      setHasClassForPlayer(ent, slot, panelId, className, on ? CLASS_HAS : CLASS_DOES_NOT_HAVE);
+      var err = setHasClassForPlayer(ent, slot, panelId, className, on ? CLASS_HAS : CLASS_DOES_NOT_HAVE);
+      if (err) return err;
       lastValue[key] = s;
       return null;
     }
@@ -272,7 +281,8 @@
       var str = String(value);
       var key = cacheKey(slot, "v", panelId, variableName);
       if (lastValue[key] === str) return null;
-      setDialogVariableStringForPlayer(ent, slot, panelId, variableName, str);
+      var err = setDialogVariableStringForPlayer(ent, slot, panelId, variableName, str);
+      if (err) return err;
       lastValue[key] = str;
       return null;
     }
