@@ -238,12 +238,15 @@ impl TimerQueue {
             .collect();
         self.ready.clear();
 
+        let (deadlines, deadline_examined) = self.take_due_deadlines(now);
         eligible.extend(
-            self.take_due_deadlines(now)
+            deadlines
                 .into_iter()
                 .map(|entry| (entry.sequence, entry.id)),
         );
-        eligible.extend(self.take_due_frames(frame));
+        let (frames, frame_examined) = self.take_due_frames(frame);
+        eligible.extend(frames);
+        record_timer_examined(deadline_examined + frame_examined);
         if !eligible.is_sorted_by_key(|&(sequence, _)| sequence) {
             eligible.sort_unstable_by_key(|&(sequence, _)| sequence);
         }
@@ -274,15 +277,18 @@ impl TimerQueue {
             return Vec::new();
         }
 
-        for entry in self.take_due_deadlines(now) {
+        let (deadlines, deadline_examined) = self.take_due_deadlines(now);
+        for entry in deadlines {
             self.ready.insert(entry.sequence, entry.id);
             self.locations.insert(entry.sequence, EntryLocation::Ready);
         }
 
-        for (sequence, id) in self.take_due_frames(frame) {
+        let (frames, frame_examined) = self.take_due_frames(frame);
+        for (sequence, id) in frames {
             self.ready.insert(sequence, id);
             self.locations.insert(sequence, EntryLocation::Ready);
         }
+        record_timer_examined(deadline_examined + frame_examined);
 
         let mut due = Vec::with_capacity(limit.min(self.ready.len()));
         while due.len() < limit {
@@ -340,29 +346,32 @@ impl TimerQueue {
         }
     }
 
-    fn take_due_deadlines(&mut self, now: std::time::Instant) -> Vec<DeadlineEntry> {
+    fn take_due_deadlines(&mut self, now: std::time::Instant) -> (Vec<DeadlineEntry>, u64) {
         if self
             .deadline_targets
             .last_key_value()
             .is_some_and(|(&target, _)| target <= now)
         {
             self.deadline_targets.clear();
-            return std::mem::take(&mut self.deadline_heap);
+            let examined = self.deadline_heap.len() as u64;
+            return (std::mem::take(&mut self.deadline_heap), examined);
         }
 
         let mut due = Vec::new();
-        while self
-            .deadline_heap
-            .first()
-            .is_some_and(|entry| entry.target <= now)
-        {
+        let mut examined = 0;
+        while let Some(entry) = self.deadline_heap.first() {
+            examined += 1;
+            if entry.target > now {
+                break;
+            }
             due.push(self.remove_deadline_at(0));
         }
-        due
+        (due, examined)
     }
 
-    fn take_due_frames(&mut self, frame: u64) -> Vec<(u64, u64)> {
+    fn take_due_frames(&mut self, frame: u64) -> (Vec<(u64, u64)>, u64) {
         let mut due = Vec::new();
+        let mut examined = 0;
         while self
             .frame_buckets
             .first_key_value()
@@ -372,11 +381,12 @@ impl TimerQueue {
                 .frame_buckets
                 .pop_first()
                 .expect("frame bucket disappeared during due selection");
+            examined += bucket.len() as u64;
             for (sequence, id) in bucket {
                 due.push((sequence, id));
             }
         }
-        due
+        (due, examined)
     }
 
     fn deadline_precedes(a: &DeadlineEntry, b: &DeadlineEntry) -> bool {
@@ -763,6 +773,32 @@ mod tests {
     }
 
     #[test]
+    fn timer_examined_reports_indexed_eligibility_work() {
+        let now = Instant::now();
+        let mut q = TimerQueue::new();
+        for id in 0..2_048 {
+            q.push(id, TimerKind::Deadline(now + Duration::from_secs(3_600)));
+        }
+
+        let before = timer_examined();
+        assert!(q.due_limited(now, 0, 1).is_empty());
+        assert_eq!(timer_examined() - before, 1);
+
+        let before = timer_examined();
+        assert_eq!(
+            q.due_limited(now + Duration::from_secs(3_600), 0, 1),
+            vec![0]
+        );
+        assert_eq!(timer_examined() - before, 2_048);
+
+        let before = timer_examined();
+        assert!(q
+            .due_limited(now + Duration::from_secs(3_600), 0, 0)
+            .is_empty());
+        assert_eq!(timer_examined() - before, 0);
+    }
+
+    #[test]
     fn due_limited_preserves_overdue_work_and_global_insertion_order() {
         let now = Instant::now();
         let mut q = TimerQueue::new();
@@ -859,7 +895,12 @@ mod tests {
     }
 }
 
+// Cumulative timer entries visited while discovering eligibility. Indexed target lookups do not
+// count as entry visits; an all-due heap or eligible frame bucket counts each transferred entry.
 static TIMER_EXAMINED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+fn record_timer_examined(examined: u64) {
+    TIMER_EXAMINED.fetch_add(examined, std::sync::atomic::Ordering::Relaxed);
+}
 pub(crate) fn timer_examined() -> u64 {
     TIMER_EXAMINED.load(std::sync::atomic::Ordering::Relaxed)
 }
