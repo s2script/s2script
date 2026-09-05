@@ -28,15 +28,15 @@
 | Order | Slice | Dependency | Completion evidence | Status |
 | --- | --- | --- | --- | --- |
 | 1 | Active-resource ledger | Baseline | Retained entries return to active count; native and live gates pass | Complete |
-| 2 | Subscription cleanup | 1 | Both indexes return to baseline after churn | Planned |
-| 3 | Connection-safe Client | 2 | Reused-slot actions and notifications rejected | Planned |
-| 4 | Socket terminal handling | 1 | Exactly-once cleanup under failure and cancellation | Planned |
-| 5 | Reliable cookie persistence | 3 | Failure/retry/reconnect tests preserve newest values | Planned |
-| 6 | Async limits and frame batches | 4, 5 | Saturation stays bounded with fair progress | Planned |
-| 7 | Indexed hook lookup | 2 | Equivalent dispatch, measured scaling improvement | Planned |
-| 8 | Indexed timer scheduling | 1, 6 | Timing parity and measured scaling improvement | Planned |
-| 9 | Background file preparation | 4, 6 | No periodic reads/parsing on frame thread | Planned |
-| 10 | Host module extraction | 1–9 | Behavior/ABI parity and integrated soak | Planned |
+| 2 | Subscription cleanup | 1 | Both indexes return to baseline after churn | Complete |
+| 3 | Connection-safe Client | 2 | Reused-slot actions and notifications rejected | Automated acceptance complete; human checks limited |
+| 4 | Socket terminal handling | 1 | Exactly-once cleanup under failure and cancellation | Automated acceptance complete |
+| 5 | Reliable cookie persistence | 3 | Failure/retry/reconnect tests preserve newest values | Automated acceptance complete |
+| 6 | Async limits and frame batches | 4, 5 | Saturation stays bounded with fair progress | Implemented/reviewed; final soak pending |
+| 7 | Indexed hook lookup | 2 | Equivalent dispatch, measured scaling improvement | Implemented/reviewed; human viewer gate pending |
+| 8 | Indexed timer scheduling | 1, 6 | Timing parity and measured scaling improvement | Implemented/reviewed; final live gate pending |
+| 9 | Background file preparation | 4, 6 | No periodic reads/parsing on frame thread | Implemented/reviewed; Linux/live gate pending |
+| 10 | Host module extraction | 1–9 | Behavior/ABI parity and integrated soak | Implemented/reviewed; final integration gates pending |
 
 The sequential order also avoids overlapping edits to v8host.rs. Dependency entries describe
 technical prerequisites. The user explicitly requested a dependent Git stack. Create each branch from its listed parent,
@@ -379,3 +379,37 @@ first incomplete slice using the common slice loop. Preserve completed evidence,
 within that slice, and update its status only after its completion gates pass. Continue in the
 listed order under the user's execution authorization; do not infer permission to merge or
 deploy production from this planning document.
+
+## Integrated execution status (September 5)
+
+All ten slices are implemented and independently reviewed in the local dependent Git stack.
+Branch-local records in `runtime-hardening/` contain their specific evidence and limitations.
+Main is preserved; publication and merge are outside this implementation run.
+
+The integrated local runtime passes 791 core tests, both fresh-process pressure cases,
+and the full JavaScript/Docker gate (584 SDK tests). Linux-container static ABI checks
+also pass. The full Nebula native gate most recently passed the integrated slice-8 code
+(736 core tests plus pressure/shim/symbol checks); the newer loader and extraction still
+require full Linux native/shim linking and an installed-engine run.
+
+The owned test server last ran the reviewed slice-6 code. Its bounded pressure and mixed
+component checks passed, but the 300-second mixed pilot was not accepted because it had
+engine navigation errors and insufficient slot-reuse cycles. A corrected fixture later
+proved two actual reuses in 20 attempts with no failures. The final loader-aware 60-minute
+mixed soak is still pending; its collector has 34 passing deterministic tests. Headless
+bots do not provide actual CheckTransmit viewer traffic, and human auth/map/visual behavior
+has not been fully exercised. Native/model benchmark results do not establish whole-engine
+throughput or a whole-process RSS bound.
+
+Model allocation followed the requested speed/quality/cost workflow: Sol handled normal
+implementation and mechanical extraction; Luna handled bounded preparation/helper work;
+Astra handled concurrency/architecture work, difficult fixes and independent safety review.
+Root owned stack integration, evidence, live-server coordination and reviewer dispatch.
+Independent work ran in isolated worktrees with recorded fixed bases; parent validation and
+restacking stayed ordered. Escalations were driven by concrete review failures, including
+fresh Astra implementers for the final loader fix rounds.
+
+Remaining gates: final same-workload benchmarks, broad whole-stack review, full Linux
+native/shim build and installed-engine acceptance, then the 60-minute mixed soak. SSH to
+Nebula currently needs the configured 1Password agent to sign again; LTS Node is installed
+and its explicit noninteractive PATH has already passed the harness tests there.

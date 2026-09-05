@@ -1,6 +1,6 @@
 # Slice 10: Extract host responsibilities without changing behavior
 
-**Status:** Planned; implementation has not started.
+**Status:** Implemented and independently reviewed; all local gates pass. Final whole-stack review, benchmarks, Linux native/shim linking and live soak remain pending.
 **Branch:** `refactor/hardening-10-host-modules`
 **Parent / PR base:** `core/hardening-09-loader-worker`
 **Workflow:** [Full workflow and gates](../2026-09-04-runtime-hardening.md)
@@ -37,3 +37,34 @@ do not create a universal context object or expose mutable global stores for con
 - [ ] Record applicable full-gate and live-server results, with environment limitations stated.
 - [ ] Review the diff against the parent and restack descendants using recorded old tips.
 - [ ] Set status to complete only when this slice's required gates pass.
+
+## Reviewed extraction and local evidence
+
+Separate commits moved tests, lifecycle/loading, timer adapters, native installation, and
+C++ config operations. v8host.rs retains HOST, PLUGINS, REGISTRY, isolate ownership and
+reset sequencing. It decreased from 16,365 to 6,239 lines; this is an organization result,
+not a speed measurement. Existing module/test names and narrow parent paths are preserved.
+The two native-name lint configurations and deferred-selftest scanner follow the moved code;
+CMake includes the new config translation unit.
+
+Independent review compared normalized source and order and found no semantic changes.
+All 240 registered native names and 49 C exports are preserved. FFI, generated engine-op
+source, shim ABI header and the complete shutdown block are byte-identical. The config
+function bodies are unchanged apart from the linkage required between hidden translation
+units. Parent-failing regression testing is not applicable to this mechanical move;
+existing lifecycle, handoff, teardown, timer and native-registration tests are the witnesses.
+
+- Core: 791 passed, zero failed, two intentionally ignored pressure tests.
+- Both pressure tests pass in their own fresh processes.
+- Full JavaScript/Docker gate passes, including 584 SDK tests and all plugin/example,
+  typecheck, generated-code and native-name gates.
+- Boundary/name/invoke-ABI checks pass. The new C++ translation unit passes a C++17
+  syntax check with Wall/Wextra and no diagnostics.
+- Linux container static checks pass: 126 engine ops with matching names/order/arity,
+  sentinel -1000, and guarded deferred-selftest registration.
+
+The independently reviewed local code was b6a023f0f16313bf00d466bddbeacf1201381872;
+restacking onto the evidence updates produced 2158b5d5b468ac3a6f5a62be91bd87ab22e4e0f1.
+The tree difference is only the four parent evidence documents, with no production changes.
+Full Linux Rust/shim linking, installed-engine acceptance and the final 60-minute mixed
+soak remain required. Final benchmarks and whole-stack review are tracked in the shared plan.
