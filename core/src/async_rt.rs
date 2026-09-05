@@ -266,8 +266,9 @@ impl TimerQueue {
 
     /// Remove at most `limit` eligible timers, preserving insertion order across deadline and
     /// frame timers. Excess eligible work remains queued for a later drain; a zero limit performs
-    /// no selection work. Discovering newly eligible timers is proportional to the number that
-    /// became eligible, independently of the returned-item limit.
+    /// no selection work. Deadline discovery takes an all-due heap at once or performs one indexed
+    /// heap removal per eligible deadline; frame discovery extracts only eligible target buckets.
+    /// The returned-item limit does not bound that selection work.
     pub fn due_limited(&mut self, now: std::time::Instant, frame: u64, limit: usize) -> Vec<u64> {
         if limit == 0 {
             return Vec::new();
@@ -340,8 +341,6 @@ impl TimerQueue {
     }
 
     fn take_due_deadlines(&mut self, now: std::time::Instant) -> Vec<DeadlineEntry> {
-        const INDIVIDUAL_POP_LIMIT: usize = 64;
-
         if self
             .deadline_targets
             .last_key_value()
@@ -352,34 +351,12 @@ impl TimerQueue {
         }
 
         let mut due = Vec::new();
-        while due.len() < INDIVIDUAL_POP_LIMIT
-            && self
-                .deadline_heap
-                .first()
-                .is_some_and(|entry| entry.target <= now)
-        {
-            due.push(self.remove_deadline_at(0));
-        }
-
-        // Once a large due set is established, a linear partition plus heapify avoids paying a
-        // logarithmic indexed removal for every remaining entry. Future-only idle drains never
-        // enter this path.
-        if self
+        while self
             .deadline_heap
             .first()
             .is_some_and(|entry| entry.target <= now)
         {
-            let entries = std::mem::take(&mut self.deadline_heap);
-            self.deadline_targets.clear();
-            for entry in entries {
-                if entry.target <= now {
-                    due.push(entry);
-                } else {
-                    *self.deadline_targets.entry(entry.target).or_default() += 1;
-                    self.deadline_heap.push(entry);
-                }
-            }
-            self.rebuild_deadline_heap();
+            due.push(self.remove_deadline_at(0));
         }
         due
     }
@@ -485,16 +462,6 @@ impl TimerQueue {
             }
         }
         removed
-    }
-
-    fn rebuild_deadline_heap(&mut self) {
-        for (index, entry) in self.deadline_heap.iter().enumerate() {
-            self.locations
-                .insert(entry.sequence, EntryLocation::Deadline(index));
-        }
-        for index in (0..self.deadline_heap.len() / 2).rev() {
-            self.sift_deadline_down(index);
-        }
     }
 }
 
@@ -755,6 +722,44 @@ mod tests {
             old.due(base + Duration::from_secs(1_000), u64::MAX)
         );
         assert!(new.is_empty());
+    }
+
+    #[test]
+    fn sparse_due_batches_across_the_old_bulk_threshold_retain_valid_indexes() {
+        let now = Instant::now();
+        const FUTURE_COUNT: u64 = 2_048;
+
+        for due_count in [64_u64, 65] {
+            let mut q = TimerQueue::new();
+            for id in 0..due_count {
+                q.push(id, TimerKind::Deadline(now));
+            }
+            for offset in 0..FUTURE_COUNT {
+                q.push(
+                    10_000 + offset,
+                    TimerKind::Deadline(now + Duration::from_secs(3_600)),
+                );
+            }
+
+            assert_eq!(q.due_limited(now, 0, 1), vec![0]);
+            assert!(
+                q.remove(due_count - 1),
+                "a retained due timer remains cancellable"
+            );
+            assert!(
+                q.remove(10_000 + FUTURE_COUNT - 1),
+                "a retained future timer remains cancellable"
+            );
+
+            let expected_due: Vec<u64> = (1..due_count - 1).collect();
+            assert_eq!(q.due(now, 0), expected_due);
+            assert_eq!(q.len(), (FUTURE_COUNT - 1) as usize);
+            assert!(q.due(now, 0).is_empty());
+
+            let expected_future: Vec<u64> = (10_000..10_000 + FUTURE_COUNT - 1).collect();
+            assert_eq!(q.due(now + Duration::from_secs(3_600), 0), expected_future);
+            assert!(q.is_empty());
+        }
     }
 
     #[test]
