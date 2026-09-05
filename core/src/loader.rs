@@ -465,12 +465,7 @@ pub(crate) fn unwatch_config_for(id: &str) {
     let Some(path) = path else { return };
     if CONFIG_PATHS.with(|paths| paths.borrow().values().any(|other| *other == path)) { return; }
     let generation = CONFIG_WATCH_GENERATIONS.with(|generations| generations.borrow_mut().remove(&path));
-    let retire = generation.filter(|generation| {
-        CONFIG_WATCH_BASELINES.with(|baselines| {
-            baselines.borrow_mut().remove(&path) == Some(*generation)
-        })
-    });
-    if let Some(generation) = retire {
+    if let Some(generation) = generation {
         WORKER.with(|worker| {
             if let Some(worker) = worker.borrow().as_ref() {
                 worker.retire_config_watch(path, generation);
@@ -626,9 +621,6 @@ thread_local! {
     static CONFIG_PENDING: std::cell::RefCell<HashMap<PathBuf, PendingConfig>> = std::cell::RefCell::new(HashMap::new());
     static CONFIG_PATHS: std::cell::RefCell<HashMap<String, PathBuf>> = std::cell::RefCell::new(HashMap::new());
     static CONFIG_WATCH_GENERATIONS: std::cell::RefCell<HashMap<PathBuf, u64>> = std::cell::RefCell::new(HashMap::new());
-    /// Paths for which the worker owns either a committed baseline or an acknowledgement-bound
-    /// proposal. This contains only generation tokens; file contents remain worker-owned.
-    static CONFIG_WATCH_BASELINES: std::cell::RefCell<HashMap<PathBuf, u64>> = std::cell::RefCell::new(HashMap::new());
     static NEXT_CONFIG_WATCH_GENERATION: Cell<u64> = const { Cell::new(0) };
     static CONFIG_SEEDED: std::cell::RefCell<std::collections::HashSet<String>> = std::cell::RefCell::new(std::collections::HashSet::new());
     static PERMISSIONS_SCAN_PENDING: Cell<bool> = const { Cell::new(false) };
@@ -1048,11 +1040,6 @@ fn handle_config(
     let watch_handled = current_watchers > 0 && result.as_ref().is_ok_and(|snapshot| {
         matches!(snapshot.watch, WatchDelta::Seed | WatchDelta::Changed | WatchDelta::Unchanged)
     });
-    if let Some(generation) = watch_generation.filter(|_| watch_handled) {
-        CONFIG_WATCH_BASELINES.with(|baselines| {
-            baselines.borrow_mut().insert(path.clone(), generation);
-        });
-    }
     if let Some(generation) = watch_generation.filter(|_| has_proposal) {
         WORKER.with(|worker| {
             if let Some(worker) = worker.borrow().as_ref() {
@@ -1275,7 +1262,6 @@ pub(crate) fn shutdown_worker() {
     CONFIG_PENDING.with(|p| p.borrow_mut().clear());
     CONFIG_PATHS.with(|p| p.borrow_mut().clear());
     CONFIG_WATCH_GENERATIONS.with(|generations| generations.borrow_mut().clear());
-    CONFIG_WATCH_BASELINES.with(|baselines| baselines.borrow_mut().clear());
     NEXT_CONFIG_WATCH_GENERATION.with(|next| next.set(0));
     CONFIG_SEEDED.with(|s| s.borrow_mut().clear());
     PERMISSIONS_SCAN_PENDING.with(|pending| pending.set(false));

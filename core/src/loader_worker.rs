@@ -433,15 +433,28 @@ struct State {
     obligations: HashMap<WorkKey, (usize, usize)>,
     request_bytes: usize,
     reserved_result_bytes: usize,
-    // Seed/change acknowledgements and known-baseline retirements only. Baseline admission reserves
-    // one coalesced control path, so this progresses independently of request/result saturation.
-    config_controls: HashMap<PathBuf, ConfigControl>,
+    // Every admitted watched generation reserves its retirement/control row before worker-owned
+    // content can exist. Controls therefore progress independently of request/result saturation.
+    config_watches: HashMap<PathBuf, ConfigWatchState>,
+    config_watch_bytes: usize,
 }
 
 #[derive(Default)]
 struct ConfigControl {
     resolution: Option<(u64, PathRevision, bool)>,
     retire_generation: Option<u64>,
+}
+
+#[derive(Default)]
+struct ConfigWatchState {
+    registered_generation: Option<u64>,
+    control: ConfigControl,
+}
+
+impl ConfigControl {
+    fn is_empty(&self) -> bool {
+        self.resolution.is_none() && self.retire_generation.is_none()
+    }
 }
 
 struct Shared {
@@ -469,7 +482,8 @@ impl LoaderWorker {
                 obligations: HashMap::new(),
                 request_bytes: 0,
                 reserved_result_bytes: 0,
-                config_controls: HashMap::new(),
+                config_watches: HashMap::new(),
+                config_watch_bytes: 0,
             }),
             work: Condvar::new(),
         });
@@ -533,7 +547,33 @@ impl LoaderWorker {
         if state.stopped {
             return Submit::Stopped;
         }
+        let watch = match &request {
+            Request::Config { path, watch_generation: Some(generation), .. } => {
+                Some((path.clone(), *generation))
+            }
+            _ => None,
+        };
+        let watch_weight = watch.as_ref().map_or(0, |(path, _)| config_watch_weight(path));
+        if watch.as_ref().is_some_and(|(path, _)| {
+            !state.config_watches.contains_key(path) && watch_weight > self.policy.request_bytes
+        }) {
+            return Submit::Oversized;
+        }
+        if watch.as_ref().is_some_and(|(path, _)| {
+            !state.config_watches.contains_key(path)
+                && (state.config_watches.len() >= self.policy.request_items
+                    || state.config_watch_bytes.saturating_add(watch_weight) > self.policy.request_bytes)
+        }) {
+            return Submit::Full;
+        }
         if state.obligations.contains_key(&key) {
+            if let Some((path, generation)) = watch {
+                if !state.config_watches.contains_key(&path) {
+                    state.config_watch_bytes = state.config_watch_bytes.saturating_add(watch_weight);
+                }
+                let registered = &mut state.config_watches.entry(path).or_default().registered_generation;
+                *registered = Some(registered.map_or(generation, |old| old.max(generation)));
+            }
             if state.in_flight.contains(&key) {
                 let request = state.rerun.remove(&key).map_or(request.clone(), |older| {
                     request.clone().coalesce_with(older)
@@ -560,6 +600,13 @@ impl LoaderWorker {
             || state.reserved_result_bytes.saturating_add(result_weight) > self.policy.result_bytes
         {
             return Submit::Full;
+        }
+        if let Some((path, generation)) = watch {
+            if !state.config_watches.contains_key(&path) {
+                state.config_watch_bytes = state.config_watch_bytes.saturating_add(watch_weight);
+            }
+            let registered = &mut state.config_watches.entry(path).or_default().registered_generation;
+            *registered = Some(registered.map_or(generation, |old| old.max(generation)));
         }
         state.request_bytes += req_weight;
         state.reserved_result_bytes += result_weight;
@@ -593,13 +640,13 @@ impl LoaderWorker {
     ) {
         let Ok(mut state) = self.shared.state.lock() else { return };
         if state.stopped { return; }
-        let control = state.config_controls.entry(path).or_default();
+        let Some(watch) = state.config_watches.get_mut(&path) else { return };
+        let control = &mut watch.control;
         if control.resolution.is_none_or(|(old_generation, old_revision, _)| {
             (generation, revision) >= (old_generation, old_revision)
         }) {
             control.resolution = Some((generation, revision, applied));
         }
-        debug_assert!(state.config_controls.len() <= self.policy.config_baseline_items);
         drop(state);
         self.shared.work.notify_one();
     }
@@ -609,11 +656,14 @@ impl LoaderWorker {
     pub(crate) fn retire_config_watch(&self, path: PathBuf, generation: u64) {
         let Ok(mut state) = self.shared.state.lock() else { return };
         if state.stopped { return; }
-        let control = state.config_controls.entry(path).or_default();
+        let Some(watch) = state.config_watches.get_mut(&path) else { return };
+        if watch.registered_generation == Some(generation) {
+            watch.registered_generation = None;
+        }
+        let control = &mut watch.control;
         control.retire_generation = Some(
             control.retire_generation.map_or(generation, |old| old.max(generation)),
         );
-        debug_assert!(state.config_controls.len() <= self.policy.config_baseline_items);
         drop(state);
         self.shared.work.notify_one();
     }
@@ -632,7 +682,8 @@ impl LoaderWorker {
             state.obligations.clear();
             state.request_bytes = 0;
             state.reserved_result_bytes = 0;
-            state.config_controls.clear();
+            state.config_watches.clear();
+            state.config_watch_bytes = 0;
         }
         self.shared.work.notify_all();
         if let Ok(mut slot) = self.join.lock() {
@@ -666,8 +717,13 @@ fn worker_loop(shared: Arc<Shared>, policy: LoaderPolicy) {
                 if state.stopped {
                     return;
                 }
-                if !state.config_controls.is_empty() {
-                    break WorkerTurn::Controls(state.config_controls.drain().collect());
+                if state.config_watches.values().any(|watch| !watch.control.is_empty()) {
+                    let controls = state.config_watches.iter_mut().filter_map(|(path, watch)| {
+                        (!watch.control.is_empty()).then(|| {
+                            (path.clone(), std::mem::take(&mut watch.control))
+                        })
+                    }).collect();
+                    break WorkerTurn::Controls(controls);
                 }
                 if let Some(key) = state.order.pop_front() {
                     if let Some(request) = state.pending.remove(&key) {
@@ -691,6 +747,14 @@ fn worker_loop(shared: Arc<Shared>, policy: LoaderPolicy) {
                     if let Some(generation) = control.retire_generation {
                         config_baselines.retire(&path, generation);
                     }
+                }
+                if let Ok(mut state) = shared.state.lock() {
+                    state.config_watches.retain(|_, watch| {
+                        watch.registered_generation.is_some() || !watch.control.is_empty()
+                    });
+                    state.config_watch_bytes = state.config_watches.keys().fold(0usize, |bytes, path| {
+                        bytes.saturating_add(config_watch_weight(path))
+                    });
                 }
                 continue;
             }
@@ -750,6 +814,14 @@ impl ConfigBaselines {
             self.bytes = self
                 .bytes
                 .saturating_sub(Self::entry_bytes(path, &proposal.content));
+        }
+    }
+
+    fn discard_superseded(&mut self, path: &Path, generation: u64, revision: PathRevision) {
+        if self.proposals.get(path).is_some_and(|proposal| {
+            (proposal.generation, proposal.revision) < (generation, revision)
+        }) {
+            self.drop_proposal(path);
         }
     }
 
@@ -875,6 +947,9 @@ fn run_request(
             path,
             watch_generation,
         } => {
+            if let Some(generation) = watch_generation {
+                config_baselines.discard_superseded(&path, generation, revision);
+            }
             let snapshot = match stable_read(&path, policy.config_bytes) {
                 Ok((bytes, stamp)) => {
                     let content: Option<Arc<str>> = Some(String::from_utf8_lossy(&bytes).into_owned().into());
@@ -925,6 +1000,11 @@ fn path_len(path: &Path) -> usize {
     {
         path.as_os_str().to_string_lossy().len()
     }
+}
+
+fn config_watch_weight(path: &Path) -> usize {
+    // Persistent reservation key plus the worker-turn copy used to process a control.
+    path_len(path).saturating_mul(2).saturating_add(64)
 }
 
 pub(crate) fn scan_plugins(
@@ -1575,6 +1655,139 @@ mod tests {
     }
 
     #[test]
+    fn coalesced_seed_replaced_by_error_does_not_leak_its_watch_slot() {
+        let root = std::env::temp_dir().join(format!("s2-loader-watch-orphan-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let first = root.join("first.json");
+        let second = root.join("second.json");
+        std::fs::write(&first, b"alpha").unwrap();
+        std::fs::write(&second, b"beta").unwrap();
+        let mut policy = LoaderPolicy::default();
+        policy.config_baseline_items = 1;
+        let worker = LoaderWorker::start(policy).unwrap();
+
+        assert_eq!(worker.try_read_config(1, 1, first.clone(), Some(1)), Submit::Accepted);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while worker.shared.state.lock().unwrap().results.is_empty() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        std::fs::remove_file(&first).unwrap();
+        std::fs::create_dir(&first).unwrap();
+        assert_eq!(worker.try_read_config(1, 2, first.clone(), Some(1)), Submit::Coalesced);
+        assert!(matches!(next_result(&worker), WorkerResult::Config { snapshot: Err(_), .. }));
+        worker.retire_config_watch(first, 1);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match worker.try_read_config(1, 1, second.clone(), Some(2)) {
+                Submit::Accepted => break,
+                Submit::Full => assert!(std::time::Instant::now() < deadline),
+                other => panic!("unexpected submit after retirement: {other:?}"),
+            }
+            std::thread::yield_now();
+        }
+        let next = next_result(&worker);
+        worker.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(matches!(next, WorkerResult::Config {
+            snapshot: Ok(ConfigSnapshot { watch: WatchDelta::Seed, .. }), ..
+        }), "abandoned seed occupies historical slot: {next:?}");
+    }
+
+    #[test]
+    fn failed_superseding_read_discards_the_older_undelivered_proposal() {
+        let policy = LoaderPolicy::default();
+        let path = PathBuf::from("config.json");
+        let alpha: Option<Arc<str>> = Some(Arc::from("alpha"));
+        let mut baselines = ConfigBaselines::default();
+        assert_eq!(baselines.compare_and_propose(&path, 1, 1, &alpha, &policy), WatchDelta::Seed);
+
+        baselines.discard_superseded(&path, 1, 2);
+        assert_eq!(baselines.bytes, 0);
+        assert!(baselines.proposals.is_empty());
+    }
+
+    #[test]
+    fn watched_generation_reserves_retirement_control_before_delivery_ack() {
+        let root = std::env::temp_dir().join(format!("s2-loader-watch-reserve-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let first = root.join("first.json");
+        let second = root.join("second.json");
+        std::fs::write(&first, b"alpha").unwrap();
+        std::fs::write(&second, b"beta").unwrap();
+        let mut policy = LoaderPolicy::default();
+        policy.request_items = 1;
+        policy.result_items = 1;
+        let worker = LoaderWorker::start(policy).unwrap();
+
+        assert_eq!(worker.try_read_config(1, 1, first.clone(), Some(1)), Submit::Accepted);
+        assert!(matches!(next_result(&worker), WorkerResult::Config {
+            snapshot: Ok(ConfigSnapshot { watch: WatchDelta::Seed, .. }), ..
+        }));
+        assert_eq!(worker.try_read_config(1, 1, second.clone(), Some(2)), Submit::Full);
+
+        worker.retire_config_watch(first, 1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match worker.try_read_config(1, 1, second.clone(), Some(2)) {
+                Submit::Accepted => break,
+                Submit::Full => assert!(std::time::Instant::now() < deadline),
+                other => panic!("unexpected submit after retirement: {other:?}"),
+            }
+            std::thread::yield_now();
+        }
+        assert!(matches!(next_result(&worker), WorkerResult::Config {
+            snapshot: Ok(ConfigSnapshot { watch: WatchDelta::Seed, .. }), ..
+        }));
+
+        worker.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn full_watch_control_partition_does_not_consume_transient_request_progress() {
+        let path = std::env::temp_dir().join(format!("s2-loader-watch-partition-{}", std::process::id()));
+        std::fs::write(&path, b"alpha").unwrap();
+        let mut policy = LoaderPolicy::default();
+        policy.request_items = 1;
+        policy.result_items = 1;
+        let worker = LoaderWorker::start(policy).unwrap();
+
+        assert_eq!(worker.try_read_config(1, 1, path.clone(), Some(1)), Submit::Accepted);
+        assert!(matches!(next_result(&worker), WorkerResult::Config {
+            snapshot: Ok(ConfigSnapshot { watch: WatchDelta::Seed, .. }), ..
+        }));
+        worker.resolve_config_watch(path.clone(), 1, 1, true);
+
+        // The one-slot watch/control partition remains occupied for this long-lived watch, while
+        // its independent one-slot transient partition is free for the next reread.
+        assert_eq!(worker.try_read_config(1, 2, path.clone(), Some(1)), Submit::Accepted);
+        assert!(matches!(next_result(&worker), WorkerResult::Config {
+            snapshot: Ok(ConfigSnapshot { watch: WatchDelta::Unchanged, .. }), ..
+        }));
+
+        worker.shutdown();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn impossible_watch_control_reservation_is_oversized_not_retryable_pressure() {
+        let mut policy = LoaderPolicy::default();
+        policy.request_bytes = 100;
+        let worker = LoaderWorker::start(policy).unwrap();
+        let path = PathBuf::from("x".repeat(30));
+        assert!(Request::Config {
+            epoch: 1,
+            revision: 1,
+            path: path.clone(),
+            watch_generation: Some(1),
+        }.request_weight() <= 100);
+        assert_eq!(worker.try_read_config(1, 1, path, Some(1)), Submit::Oversized);
+        worker.shutdown();
+    }
+
+    #[test]
     fn final_unwatch_retires_capacity_and_old_retire_cannot_erase_a_new_generation() {
         let root = std::env::temp_dir().join(format!("s2-loader-watch-retire-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
@@ -1592,7 +1805,15 @@ mod tests {
         }));
         worker.resolve_config_watch(first.clone(), 1, 1, true);
         worker.retire_config_watch(first.clone(), 1);
-        assert_eq!(worker.try_read_config(1, 2, second.clone(), Some(2)), Submit::Accepted);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match worker.try_read_config(1, 2, second.clone(), Some(2)) {
+                Submit::Accepted => break,
+                Submit::Full => assert!(std::time::Instant::now() < deadline),
+                other => panic!("unexpected submit after retirement: {other:?}"),
+            }
+            std::thread::yield_now();
+        }
         assert!(matches!(next_result(&worker), WorkerResult::Config {
             snapshot: Ok(ConfigSnapshot { watch: WatchDelta::Seed, .. }), ..
         }), "retirement must release the only baseline slot");
@@ -1638,7 +1859,12 @@ mod tests {
             std::thread::yield_now();
         }
 
-        worker.retire_config_watch(first, 1);
+        worker.retire_config_watch(first.clone(), 1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while worker.shared.state.lock().unwrap().config_watches.contains_key(&first) {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
         let _ = next_result(&worker);
         assert_eq!(worker.try_read_config(1, 2, second, Some(2)), Submit::Accepted);
         assert!(matches!(next_result(&worker), WorkerResult::Config {
