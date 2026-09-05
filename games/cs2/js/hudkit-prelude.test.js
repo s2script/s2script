@@ -45,7 +45,10 @@ test("CS2 prelude defers hudkit binding to the plugin's ctx-bound ui base", () =
     hide() { return null; },
     cursor() { return null; },
     forget() {},
-    onClick(id, fn) { clickHandlers[id] = fn; },
+    onClick(id, fn) {
+      assert.equal(clickHandlers[id], undefined, "duplicate click binding: " + id);
+      clickHandlers[id] = fn;
+    },
     forSlot() {
       return {
         setText() {},
@@ -116,4 +119,6 @@ test("CS2 prelude defers hudkit binding to the plugin's ctx-bound ui base", () =
   assert.doesNotThrow(() => hudkit.modal({ title: "T", rows: [], buttons: [] }));
   // ctx.ui.kit and hudkit.* are ONE instance — the shared modal pool claims stay coherent.
   assert.equal(base.kit.layout, hudkit.layout);
+  assert.equal(base.components(hudkit.spec), base.kit, "explicit library descriptor reuses the live kit");
+  assert.equal(base.components({ ...hudkit.spec }), base.kit, "the resource identifies the kit");
 });

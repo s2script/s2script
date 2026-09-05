@@ -1010,9 +1010,16 @@
     ui: function (reg, viaId) {
       var base = prevUi(reg, viaId);
       if (base && (typeof base.hud === "function" || typeof base.create === "function") && !base.components) {
+        var kitsByResource = {};
         function kitOf(descriptor) {
-          if (!descriptor) return defaultKit(base);
-          return makeComponents(base, descriptor);
+          // ui.create already interns layouts by resource; component bindings must share that
+          // identity too, or an explicit copy of hudkit.spec installs every handler twice.
+          if (!descriptor || descriptor.resource === LIB_DESCRIPTOR.resource) return defaultKit(base);
+          var resource = descriptor.resource;
+          if (!Object.prototype.hasOwnProperty.call(kitsByResource, resource)) {
+            kitsByResource[resource] = makeComponents(base, descriptor);
+          }
+          return kitsByResource[resource];
         }
         Object.defineProperty(base, "kit", {
           get: function () { return kitOf(); },
