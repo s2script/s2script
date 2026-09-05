@@ -22,9 +22,13 @@ function mount() {
     forget:   () => {},
     onClick:  (id, fn) => { clickHandlers[id] = fn; },
   };
-  // A fresh global each mount: the pool is deliberately host-global (two plugins must not both
-  // believe they own modal 0), so tests must not inherit each other's claims.
+  // A fresh global each mount. In production claims go through the __s2_ui_pool_* natives (the
+  // prelude runs per plugin context, so only the host can hold a genuinely global table); in
+  // these mounts the natives are absent and claims land in the context-local fallback pool —
+  // which must not leak claims from one test into the next.
   delete globalThis.__s2ui_pool;
+  delete globalThis.__s2_ui_pool_claim;
+  delete globalThis.__s2_ui_pool_release;
   globalThis.__s2pkg_game_ctx = { ui: () => ({ hud: () => hud }) };
   // The REAL shape: promises, no callback. The stub used to take a callback, which is exactly why
   // this suite did not catch the reveal never clearing its fade class.
@@ -126,6 +130,34 @@ test("the modal pool refuses rather than colliding when exhausted", () => {
   }
   // Two plugins must never both believe they own the same pooled panel.
   assert.strictEqual(ui.modal({ title: "over", rows: [] }), null);
+});
+
+test("claims route through the host natives when they exist (the pool is host-side)", () => {
+  const { ui, calls } = mount();
+  // The prelude runs per plugin context, so a context-local table can never arbitrate between
+  // plugins — when the core publishes __s2_ui_pool_claim/release, every claim and release must
+  // go through them and the fallback pool must stay untouched.
+  const claims = [];
+  const releases = [];
+  globalThis.__s2_ui_pool_claim = (kind, cap) => { claims.push([kind, cap]); return 3; };
+  globalThis.__s2_ui_pool_release = (kind, idx) => { releases.push([kind, idx]); return true; };
+  try {
+    const m = ui.modal({ title: "T", rows: [] });
+    m.open(1);
+    m.release();
+    const b = ui.badge({ corner: "tr" });
+    b.release();
+    assert.deepStrictEqual(claims, [["modal", 6], ["badge", 4]]);
+    assert.deepStrictEqual(releases, [["modal", 3], ["badge", 3]]);
+    // The host said 3, so the sheet actually driven must be s2_m3 — the index is the host's
+    // verdict, not a local counter that happens to agree.
+    assert.ok(calls.some((c) => c.op === "set" && c.id === "s2_m3_title"));
+    assert.ok(!globalThis.__s2ui_pool || !globalThis.__s2ui_pool.modal[3],
+      "the fallback pool must not shadow-book a host-side claim");
+  } finally {
+    delete globalThis.__s2_ui_pool_claim;
+    delete globalThis.__s2_ui_pool_release;
+  }
 });
 
 test("the three intern vectors are counted separately, at cap 1024", () => {

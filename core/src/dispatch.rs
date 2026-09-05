@@ -30,6 +30,35 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+thread_local! {
+    // One epoch for an outer fan-out and all nested callbacks. Pool resources released by an
+    // early subscriber cannot be reassigned to a later subscriber of the same input event.
+    static DISPATCH_EPOCH: std::cell::Cell<(u64, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+pub(crate) fn current_epoch() -> Option<u64> {
+    DISPATCH_EPOCH.with(|state| { let (epoch, depth) = state.get(); (depth > 0).then_some(epoch) })
+}
+
+pub(crate) struct DispatchScope;
+impl DispatchScope {
+    pub(crate) fn enter() -> Self {
+        DISPATCH_EPOCH.with(|state| {
+            let (epoch, depth) = state.get();
+            state.set((if depth == 0 { epoch.wrapping_add(1) } else { epoch }, depth + 1));
+        });
+        Self
+    }
+}
+impl Drop for DispatchScope {
+    fn drop(&mut self) {
+        DISPATCH_EPOCH.with(|state| {
+            let (epoch, depth) = state.get();
+            state.set((epoch, depth - 1));
+        });
+    }
+}
+
 /// Crate-private setter used by acquire folding. Returns the previous handler so the
 /// caller can save/restore around a nested dispatch.
 pub(crate) fn set_after_handler(f: Option<fn(HookResult)>) -> Option<fn(HookResult)> {
@@ -301,6 +330,7 @@ pub(crate) fn fan_out_inner<F>(
 where
     F: for<'s> Fn(&mut v8::PinScope<'s, '_>) -> Option<Vec<v8::Local<'s, v8::Value>>>,
 {
+    let _dispatch = DispatchScope::enter();
     if snap.is_empty() {
         // Nobody subscribed → nothing to replay. Reporting `Deferred` here would make the shim
         // `DuplicateEvent` every event on the server with no one listening.

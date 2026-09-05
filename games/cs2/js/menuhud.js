@@ -119,19 +119,12 @@
 
   if (!hudkit || typeof hudkit.whenLive !== "function" || !Menu || !MenuStyle) return;
 
-  // Everything below waits for the plugin's ctx-bound kit (P0-2). This file used to claim its
-  // modal right here, at prelude eval — which forced hostKit() to mint the shared kit over a
-  // stand-in registrar with no load ctx behind it, and every plugin's documented ctx.ui.kit /
-  // hudkit.* then inherited that dead-context instance: panels painted but clicks never arrived.
-  // hudkit.whenLive fires inside __s2_make_ctx, while the load window is still open, so the claim
-  // made here registers its click hook through the plugin's ledgered registrar.
-  //
-  // Registration is inside the callback ON PURPOSE: the core registers its own chat renderer for
-  // MenuStyle.Chat (core/js/prelude.js), and this file OVERWRITES it. If we cannot get a live,
-  // clickable sheet, not registering at all — leaving the core's chat renderer standing — beats
-  // registering a renderer that paints an uninteractive panel.
+  // Register the presenter at go-live, but reserve a panel only while a menu is open.
+  // A plugin that never displays menus must not consume the host's finite panel pool.
   hudkit.whenLive(function (kit) {
-    var claim = kit.modal({
+    var claim = null;
+    var fallbackSlots = {};
+    var spec = {
       title: function (slot) {
         var session = sessions[slot];
         return session && session.menu ? (session.menu.title || "") : "";
@@ -144,20 +137,31 @@
         var session = sessions[slot];
         if (session && typeof session.pickNumber === "function") session.pickNumber(parseInt(row.key, 10));
       }
-    });
+    };
 
-    if (!claim) {
-      log("hudkit modal claim unavailable; Menu renderer not registered (the core chat renderer stands)");
-      return;
+    function releaseIfIdle() {
+      if (claim && Object.keys(sessions).length === 0) {
+        claim.release();
+        claim = null;
+      }
     }
 
     function setCursor(slot, on) {
-      if (typeof claim.setCursor === "function") claim.setCursor(slot, on);
+      if (claim && typeof claim.setCursor === "function") claim.setCursor(slot, on);
+      else if (!on && kit.layout) kit.layout.cursor(slot, false);
     }
 
     var renderer = {
       open: function (session) {
         var slot = session.slot;
+        if (!claim) claim = kit.modal(spec);
+        if (!claim) {
+          log("modal pool busy; using the chat menu for slot " + slot);
+          fallbackSlots[slot] = true;
+          if (fallback) fallback.open(session);
+          else session.cancel();
+          return;
+        }
         sessions[slot] = session;
         var activation = activationOf(session);
         claim.open(slot, { cursor: activation === "immediate" });
@@ -169,14 +173,22 @@
         }
       },
       update: function (session) {
+        if (fallbackSlots[session.slot]) { if (fallback) fallback.update(session); return; }
+        if (!claim || !sessions[session.slot]) return;
         sessions[session.slot] = session;
         if (typeof claim.refresh === "function") claim.refresh(session.slot);
       },
       close: function (slot) {
-        if (typeof claim.close === "function") claim.close(slot);
+        if (fallbackSlots[slot]) {
+          delete fallbackSlots[slot];
+          if (fallback) fallback.close(slot);
+          return;
+        }
+        if (claim && typeof claim.close === "function") claim.close(slot);
         unfreeze(slot);
         if (HudInput && typeof HudInput.disarm === "function") HudInput.disarm(slot);
         delete sessions[slot];
+        releaseIfIdle();
       }
     };
 
@@ -209,16 +221,28 @@
       //
       // Releasing state that is already released is free. Failing to release it is a player who
       // cannot play. So the teardown no longer asks whether it thinks it has anything to do.
-      if (typeof claim.close === "function") claim.close(slot);
+      if (claim && typeof claim.close === "function") claim.close(slot);
       setCursor(slot, false);
       if (HudInput && typeof HudInput.disarm === "function") HudInput.disarm(slot);
-      if (typeof claim.forget === "function") claim.forget(slot);
+      if (claim && typeof claim.forget === "function") claim.forget(slot);
+      if (fallbackSlots[slot]) {
+        delete fallbackSlots[slot];
+        if (fallback) fallback.close(slot);
+      }
+      releaseIfIdle();
       // Only NOISE is conditional: `onActive` fires for every joiner and most never had a menu.
       if (had) log("cleared a stale menu session on slot " + slot);
     }
 
     Menu.registerRenderer(MenuStyle.Center, renderer);
-    Menu.registerRenderer(MenuStyle.Chat, renderer);
+    var fallback = Menu.registerRenderer(MenuStyle.Chat, renderer);
+    var Server = globalThis.__s2pkg_server && globalThis.__s2pkg_server.Server;
+    if (Server && typeof Server.onMapStart === "function") {
+      Server.onMapStart(function () {
+        Object.keys(sessions).forEach(function (slot) { discardSession(Number(slot)); });
+        Object.keys(fallbackSlots).forEach(function (slot) { discardSession(Number(slot)); });
+      });
+    }
 
     // Both edges, because neither alone is enough. A timeout or a crash does not always deliver the
     // disconnect, so ACTIVATE is the backstop — the last moment before the new occupant of a slot can

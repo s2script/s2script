@@ -301,6 +301,15 @@
       return setDialogVariable(slot, panelId, varName, value);
     };
     api.setClass = setClass;
+    // Internal component-pool handoff: clear only this panel tree's diff cache. Other live
+    // components keep their leases and state. Panel ids occupy field 2 in cacheKey().
+    api.invalidatePanelTree = function (root) {
+      for (var key in lastValue) {
+        if (!Object.prototype.hasOwnProperty.call(lastValue, key)) continue;
+        var panel = key.split("|")[2];
+        if (panel === root || panel.indexOf(root + "_") === 0) delete lastValue[key];
+      }
+    };
     api.setMeter = function (slot, meterName, percent) {
       var fillId = layout.meters[meterName];
       if (!fillId) return 'no meter "' + meterName + '" in this layout';
