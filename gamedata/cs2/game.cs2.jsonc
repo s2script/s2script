@@ -313,9 +313,11 @@
     // CCSCustomHudLayout::SetInputCaptureEnabled(int playerSlot /*esi*/, bool enabled /*edx*/)
     //
     // Per-player mouse capture for a layout. Structurally: bounds-check slot against
-    // m_vecPlayerLayoutStates at +0x790, then `imul slot, 0x1a0` (sizeof CCSCustomHudLayoutState ==
-    // 416) and write m_bInputCaptureEnabled on that state. Pattern from cs2-customhud (ModSharp PoC),
-    // re-scanned as a DIRECT entry (the published pattern included a leading cmp/jge prefix).
+    // m_vecPlayerLayoutStates at +0x790, then `imul slot, 0x198` (sizeof CCSCustomHudLayoutState ==
+    // 408 since build 24957633 — the ModSharp-era pattern this started from used the pre-update
+    // stride 0x1a0/416; see the RE-DERIVED note below) and write m_bInputCaptureEnabled on that
+    // state. Pattern from cs2-customhud (ModSharp PoC), re-scanned as a DIRECT entry (the published
+    // pattern included a leading cmp/jge prefix).
     "CCSCustomHudLayout_SetInputCaptureEnabledForPlayer": {
       "linuxsteamrt64": {
         "module": "libserver.so",

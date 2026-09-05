@@ -355,6 +355,13 @@
     // player where it could cost one. Arming the all-player calls is a worthwhile follow-up, gated
     // on confirming they actually paint: Valve's own setup.js uses ForPlayer exclusively and never
     // calls the all-player form once, which is suggestive but not proof.
+    //
+    // CONFIDENTIALITY: "ForPlayer" is per-slot STORAGE, not per-recipient DELIVERY. Observed live:
+    // a spectator sees the spectated player's panels, because the client renders whichever slot it
+    // is VIEWING. (That the full state vector reaches every client is an inference from its
+    // CUtlVectorEmbeddedNetworkVar type, not packet-captured fact.) Nothing painted through here
+    // is private to its slot — see examples/hud-lab/README.md, "Per-slot state is storage, not
+    // delivery", including the one-entity-per-recipient escape and its two un-gated questions.
     function setText(slot, id, value) {
       internPanel(id); internVar(id);
       return hud.set(slot, id, value == null ? "" : String(value));
