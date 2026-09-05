@@ -17,8 +17,9 @@ pub struct LiveTable<K: Eq + Hash, M> {
 }
 
 impl<K: Eq + Hash, M> LiveTable<K, M> {
-    /// `first_id`: plugins use 0 (exact `Registry` behavior today); entities use 1 so
-    /// id 0 is a never-live sentinel on the JS wire.
+    /// `first_id`: both instances use 1, so id 0 is a never-live sentinel — on the JS
+    /// wire for entities, and for plugins as the `unwrap_or(0)` fallback every
+    /// subscribe-time generation stamp uses when the owner is not a registered plugin.
     pub fn new(first_id: u64) -> Self {
         Self { entries: HashMap::new(), next_id: first_id }
     }
@@ -92,7 +93,7 @@ mod tests {
     fn remove_get_mut_keys_len() {
         let mut t: LiveTable<String, i32> = LiveTable::new(0);
         let g0 = t.insert("a".into(), 10);
-        assert_eq!(g0, 0, "plugin-compat: first_id 0 mints 0");
+        assert_eq!(g0, 0, "first_id is honored exactly (no caller uses 0 today — both instances reserve it as a sentinel)");
         t.insert("b".into(), 20);
         assert_eq!(t.len(), 2);
         if let Some((_, m)) = t.get_mut(&"a".to_string()) {
