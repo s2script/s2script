@@ -94,12 +94,19 @@ test("CS2 prelude defers hudkit binding to the plugin's ctx-bound ui base", () =
   // core's chat renderer must still be the registered menu renderer at this point.
   assert.deepEqual(registered, {}, "menuhud must not overwrite the core chat renderer at prelude eval");
   assert.equal(voteRenderer, undefined, "voterail must not register a tally renderer at prelude eval");
-  assert.equal(hudkit.layout, null, "no layout before the ctx-bound base exists");
-  assert.equal(hudkit.modal({ title: "T", rows: [], buttons: [] }), null,
-    "a pre-ctx claim is refused, not half-alive");
+  for (const member of ["modal", "dashboard", "badge", "toast", "callout", "banner",
+    "motd", "forSlot", "hideAll", "forget", "ensure", "budget"]) {
+    assert.throws(() => hudkit[member](),
+      new RegExp("hudkit\\." + member + " requires plugin context.*OnPluginStart"), member);
+  }
+  for (const member of ["layout", "hud"]) {
+    assert.throws(() => hudkit[member],
+      new RegExp("hudkit\\." + member + " requires plugin context.*OnPluginStart"), member);
+  }
   // Static descriptor data stays readable pre-live: the documented
   // CustomHudLayout.components(hudkit.spec) pattern must not depend on resolution order.
   assert.equal(hudkit.spec.resource, "panorama/layout/custom_game/s2script_lib.xml");
+  assert.equal(hudkit.descriptor, hudkit.spec);
 
   // __s2_make_ctx builds the plugin's ui namespace through the decorated factory. That call is
   // what makes the kit live — and it happens with the load window open, so the buffered thunks
@@ -183,7 +190,7 @@ function pluginWorld() {
       return fn();
     }, (fn) => fn);
     sealed = true;
-    const p = { base, renderers, lifecycle, fallbackCalls,
+    const p = { base, hudkit: ctx.__s2pkg_cs2.hudkit, renderers, lifecycle, fallbackCalls,
       click(slot, id) { base.kit.layout.dispatchClick(slot, id); } };
     plugins.push(p); return p;
   }
@@ -304,4 +311,22 @@ test("built-in menus keep Next and Back bound to the player who sees them", () =
   p.click(1, "s2_m0_f0"); p.click(2, "s2_m0_f0");
   assert.deepEqual(first.picks, [9], "Next must stay Next after another player paints Back");
   assert.deepEqual(second.picks, [8]);
+});
+
+
+test("ambient hudkit remains usable in callbacks after initialization has settled", () => {
+  const w = pluginWorld(), p = w.plugin(); // The ctx registrar is sealed before returning.
+  const kit = p.hudkit;
+  assert.equal(kit.layout, p.base.kit.layout);
+  assert.equal(kit.hud, kit.layout);
+  assert.equal(kit.forSlot(1).slot, 1);
+  assert.equal(typeof kit.dashboard({ title: "Dashboard", tabs: [], rows: () => [] }).open, "function");
+  assert.equal(typeof kit.motd(1, { title: "Rules", sections: [] }).close, "function");
+  const modals = Array.from({ length: 6 }, () => kit.modal({ rows: [] }));
+  assert.ok(modals.every(Boolean));
+  assert.equal(kit.modal({ rows: [] }), null, "null denotes actual pool exhaustion");
+  modals[0].release();
+  assert.ok(kit.modal({ rows: [] }), "a later callback can claim a released slot");
+  assert.equal(kit.ensure(), null, "successful HudResult is null");
+  assert.equal(typeof kit.budget().cap, "number");
 });

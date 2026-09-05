@@ -459,6 +459,11 @@ export interface HudKitPlayer {
   forget(): void;
 }
 
+/**
+ * Component handles and operations remain usable in later callbacks after initialization.
+ * The ambient {@link hudkit} requires plugin context for methods and layout/hud getters;
+ * only its static spec/descriptor data is readable at module top-level.
+ */
 export interface HudKit {
   readonly spec: CustomHudSpec;
   /** @deprecated Use {@link HudKit.spec}. */
@@ -511,20 +516,32 @@ export interface HudKit {
 export type Components = HudKit;
 
 /**
- * Shared panel pool over `s2script_lib.xml`. Load-window; throws after settle.
+ * Shared panel pool over `s2script_lib.xml`. Use from `OnPluginStart` or later callbacks.
+ * Methods and layout/hud getters throw before the plugin context exists (module top-level).
+ * Static spec/descriptor data is always readable. Modal/badge claims return null only when
+ * their pool is exhausted.
  * Same object as {@link CustomHudLayoutNs.kit}.
  *
  * @example
  * import { hudkit } from "@s2script/cs2";
- * const menu = hudkit.modal({
- *   title: "Players",
- *   rows: [{ a: "Alice" }, { a: "Bob" }],
- *   buttons: [{ text: "Close", onClick: (_s, v) => v.close() }],
- * });
- * menu?.forSlot(slot).open();
- * hudkit.forSlot(slot).toast({ title: "Saved", message: "loadout written" });
- * hudkit.callout(slot, { message: "Press E for the next corner" });
- * hudkit.banner(slot, { text: "Vote passed — changing map" });
- * hudkit.motd(slot, { title: "Server rules", sections: [{ heading: "Don't cheat", body: "VAC is on." }] });
+ * import { command, HookResult } from "@s2script/sdk";
+ *
+ * export function OnPluginStart(): void {
+ *   const menu = hudkit.modal({
+ *     title: "Players",
+ *     rows: [{ a: "Alice" }, { a: "Bob" }],
+ *     buttons: [{ text: "Close", onClick: (_s, v) => v.close() }],
+ *   });
+ *   command("sm_players", cmd => {
+ *     const slot = cmd.callerSlot;
+ *     if (slot < 0) return HookResult.Handled;
+ *     menu?.forSlot(slot).open();
+ *     hudkit.forSlot(slot).toast({ title: "Saved", message: "loadout written" });
+ *     hudkit.callout(slot, { message: "Press E for the next corner" });
+ *     hudkit.banner(slot, { text: "Vote passed — changing map" });
+ *     hudkit.motd(slot, { title: "Server rules", sections: [{ heading: "Don't cheat", body: "VAC is on." }] });
+ *     return HookResult.Handled;
+ *   });
+ * }
  */
 export declare const hudkit: HudKit;

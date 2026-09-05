@@ -561,10 +561,11 @@ test("forSlot.callout and forSlot.motd bind the same player", () => {
 test("hudkit refuses before the ctx-bound base exists, then resolves against it (P0-2)", () => {
   const { hudkit, hud, goLive } = mountHudkit();
   // Before any load ctx exists there is nothing safe to bind to: the old behavior minted a kit
-  // over a stand-in registrar here, which painted but never delivered a click. Refusal (null)
-  // must be the answer, not a half-alive component.
-  assert.equal(hudkit.layout, null);
-  assert.equal(hudkit.modal({ title: "T", rows: [], buttons: [] }), null);
+  // over a stand-in registrar here, which painted but never delivered a click. Misuse now throws
+  // instead of returning the same null used for pool exhaustion.
+  assert.throws(() => hudkit.layout, /hudkit.layout requires plugin context/);
+  assert.throws(() => hudkit.modal({ title: "T", rows: [], buttons: [] }),
+    /hudkit.modal requires plugin context/);
   // The descriptor is static module data and must stay readable pre-live —
   // CustomHudLayout.components(hudkit.spec) cannot depend on resolution order.
   assert.equal(hudkit.spec.resource, "panorama/layout/custom_game/s2script_lib.xml");

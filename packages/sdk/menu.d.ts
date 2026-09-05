@@ -80,8 +80,12 @@ export declare class Menu {
   display(slot: number, seconds?: number): void;
   /** Close an open menu for `slot` early. */
   close(slot: number): void;
-  /** Register a display backend under a MenuStyle value (used by the CS2 center renderer). */
-  static registerRenderer(name: string, renderer: MenuRenderer): void;
+  /**
+   * Register a display backend under a MenuStyle value (used by the CS2 center renderer).
+   * Returns the previous renderer, or undefined if none was registered, so a replacement can
+   * delegate to the previous backend when its own display is unavailable.
+   */
+  static registerRenderer(name: string, renderer: MenuRenderer): MenuRenderer | undefined;
 }
 
 /** A live display of one menu to one slot, passed to a {@link MenuRenderer}. Owns the page/cursor state and exposes the input verbs a renderer drives. */
