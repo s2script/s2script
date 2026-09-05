@@ -956,21 +956,70 @@
   }
 
   // One kit per V8 context. ctx.ui.kit and hudkit.* must be the same instance so modal pool
-  // claims stay host-global. Do NOT close over __s2_game_ns("ui"): that proxy throws
+  // claims stay consistent. Do NOT close over __s2_game_ns("ui"): that proxy throws
   // "ui outside the load window" during run_prelude, which is before __s2_load_ctx exists.
+  //
+  // The kit binds LAZILY to the ui base the core builds for this plugin's load ctx (the
+  // `gameCtx.ui(ctxReg, viaId)` call in __s2_make_ctx). hostKit() used to build its OWN base
+  // right here at prelude eval, over a stand-in registrar (`function (fn) { fn(); }`), because
+  // menuhud claims its modal before any load ctx exists. That base was a second, parallel ui
+  // instance whose onMapStart / onActive / click-hook registrations ran outside the load-window
+  // ledger — its `ready` flag latched only if a client happened to be active at prelude eval,
+  // its map-start reset never ran, and panels claimed through it PAINTED but never received a
+  // click (measured on a live server; plugins worked around it by re-deriving the kit from
+  // their own ctx via CustomHudLayout.components(hudkit.spec)). The framework should not need
+  // that workaround: everything below waits for the real base instead.
   var sharedKit = null;
+  var liveBase = null;     // the load-ctx ui base — set once __s2_make_ctx invokes the factory below
+  var liveWaiters = [];    // whenLive callbacks queued before the base exists (menuhud, voterail)
+
   function defaultKit(hudApi) {
     if (!sharedKit) sharedKit = makeComponents(hudApi, undefined);
     return sharedKit;
+  }
+
+  // First real base wins (there is exactly one per context in production: a context hosts one
+  // plugin, and __s2_make_ctx builds its game namespaces once per load). Waiters run inside
+  // __s2_make_ctx — the load window is open, so a claim made here registers its click hook
+  // through the plugin's ledgered registrar, not a stand-in.
+  function announceLive(base) {
+    if (liveBase) return;
+    liveBase = base;
+    var waiters = liveWaiters;
+    liveWaiters = [];
+    for (var w = 0; w < waiters.length; w++) {
+      // A throw here would abort __s2_make_ctx and fail the whole plugin load over a broken
+      // renderer registration — degrade to a logged miss instead.
+      try { waiters[w](defaultKit(base)); }
+      catch (e) { log("whenLive callback failed: " + ((e && e.stack) || e)); }
+    }
+  }
+
+  /** Run `cb(kit)` once this plugin's ctx-bound kit exists (immediately if it already does). */
+  function whenLive(cb) {
+    if (typeof cb !== "function") return;
+    if (liveBase) {
+      try { cb(defaultKit(liveBase)); }
+      catch (e) { log("whenLive callback failed: " + ((e && e.stack) || e)); }
+      return;
+    }
+    liveWaiters.push(cb);
   }
 
   globalThis.__s2pkg_game_ctx = Object.assign({}, globalThis.__s2pkg_game_ctx, {
     ui: function (reg, viaId) {
       var base = prevUi(reg, viaId);
       if (base && (typeof base.hud === "function" || typeof base.create === "function") && !base.components) {
+        var kitsByResource = {};
         function kitOf(descriptor) {
-          if (!descriptor) return defaultKit(base);
-          return makeComponents(base, descriptor);
+          // ui.create already interns layouts by resource; component bindings must share that
+          // identity too, or an explicit copy of hudkit.spec installs every handler twice.
+          if (!descriptor || descriptor.resource === LIB_DESCRIPTOR.resource) return defaultKit(base);
+          var resource = descriptor.resource;
+          if (!Object.prototype.hasOwnProperty.call(kitsByResource, resource)) {
+            kitsByResource[resource] = makeComponents(base, descriptor);
+          }
+          return kitsByResource[resource];
         }
         Object.defineProperty(base, "kit", {
           get: function () { return kitOf(); },
@@ -978,6 +1027,9 @@
         });
         base.components = kitOf;
         base.toast = function (slot, spec) { return kitOf().toast(slot, spec); };
+        // This factory's only production caller is __s2_make_ctx, so a base landing here IS the
+        // plugin's load-ctx instance: adopt it as the one the module-level hudkit resolves to.
+        announceLive(base);
       }
       return base;
     }
@@ -985,23 +1037,25 @@
   if (globalThis.__s2pkg_cs2) {
     function hostKit() {
       if (sharedKit) return sharedKit;
-      var gameCtx = globalThis.__s2pkg_game_ctx;
-      if (!gameCtx || typeof gameCtx.ui !== "function") return null;
-      var base = gameCtx.ui(function (fn) {
-        if (typeof fn === "function") fn();
-      }, function (fn) { return fn; });
-      if (!base) return null;
-      if (base.kit) return base.kit;
-      if (typeof base.create === "function" || typeof base.hud === "function") return defaultKit(base);
-      return null;
+      if (!liveBase) return null;   // no load ctx yet — refuse rather than mint a dead-context kit
+      return defaultKit(liveBase);
     }
     function kitFn(name) {
       return function (a, b) {
         var kit = hostKit();
-        return kit ? kit[name](a, b) : null;
+        if (!kit) {
+          // Loud on purpose: the old stand-in path returned an object that painted and silently
+          // never delivered a click, which cost live-server debugging rounds. A null with a
+          // reason is strictly better than a component that half-works.
+          log("hudkit." + name + "() before this plugin's context exists — returning null " +
+              "(call it from OnPluginStart or later, not module top-level)");
+          return null;
+        }
+        return kit[name](a, b);
       };
     }
     globalThis.__s2pkg_cs2.hudkit = {
+      whenLive: whenLive,
       modal: kitFn("modal"),
       dashboard: kitFn("dashboard"),
       badge: kitFn("badge"),
@@ -1021,11 +1075,14 @@
     Object.defineProperty(globalThis.__s2pkg_cs2.hudkit, "hud", {
       get: function () { var kit = hostKit(); return kit && kit.hud; }
     });
+    // The spec/descriptor are static module data (makeComponents always hands back
+    // LIB_DESCRIPTOR), so they stay readable before the kit exists — the documented
+    // CustomHudLayout.components(hudkit.spec) pattern must not depend on resolution order.
     Object.defineProperty(globalThis.__s2pkg_cs2.hudkit, "spec", {
-      get: function () { var kit = hostKit(); return kit && kit.spec; }
+      get: function () { return LIB_DESCRIPTOR; }
     });
     Object.defineProperty(globalThis.__s2pkg_cs2.hudkit, "descriptor", {
-      get: function () { var kit = hostKit(); return kit && kit.descriptor; }
+      get: function () { return LIB_DESCRIPTOR; }
     });
   }
 })();
