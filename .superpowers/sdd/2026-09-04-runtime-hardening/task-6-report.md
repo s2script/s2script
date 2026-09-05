@@ -1,3 +1,76 @@
+# Task 6 review fix round 1
+
+Status: all four scoped review findings addressed; frozen for independent scoped re-review.
+The original candidate report below is retained as history and is superseded by this section.
+
+- Exact fix-round base: `94ef5abc173d1f44b93c42481dfaa76463f83c4f`
+- Exact fix implementation HEAD: `4e8406459abe713ac61b3843b766aa034ca366f1`
+- Original slice base remains `ce544ba62fe2c678b2a702dab0e0a05c30289932`.
+- This following report-only commit changes no verified application source.
+
+## Review findings and fixes
+
+1. **P1, complete polling rounds starving oversized results.** Reproduced in a real isolate:
+   an HTTP and SQLite completion are queued before a continuously due 1 ms repeating timer;
+   `frame_items=2`, `frame_bytes=128`, and `frame_poll_items=6` left the HTTP promise unset
+   after 20 frames. The first polling source now rotates independently of polls completed.
+   Its persistent cursor advances only when the pre-callback phase actually polls, so an
+   alternate callback-priority frame cannot introduce a new parity lock. The unchanged
+   per-frame inner cursor still polls sources in rotating order. Both HTTP and DB now obtain
+   empty frames and settle while the timer also progresses. The test runs in a second fresh
+   process from `scripts/test-async-pressure.sh`; the existing one-item mixed test remains.
+2. **P1, SQLite publication moving a lease ahead of retained input.** A test-only barrier after
+   publication reproduced 1,024 actor-owned SQL bytes with zero job bytes after consumer drain.
+   Both query and execute now group their input in `ActorInput` and explicitly drop it before
+   moving the job lease into the completion. The final barrier regression includes allocated
+   SQL plus a 2 KiB string parameter for both arms, drains the completion while the old actor
+   is paused, attempts replacement-generation admission, and verifies no actual input remains
+   after its charge is released. Instrumentation observes owned String/Vec capacities and is
+   compiled only in tests; no production global input counter was added.
+3. **P2, vector capacity and conversion scratch undercharged.** Reproduced the exact SQLite
+   retained-vector case: 589,872 actual capacity bytes versus 528,480 charged bytes at 8,193
+   rows. Outer row arrays now explicitly reserve geometric spare capacity through the shared
+   SQLite/remote `ResultSizer` before allocation. Per-row metadata remains conservative;
+   the smallest UTF-8 SQL boundary consequently includes the 24-byte outer vector slot
+   (128-byte accepted result / 127-byte rejection). SQL parameter vectors reserve their
+   complete measured element count before copying, and HTTP header tuples avoid uncharged
+   geometric spare slots. The 1 MiB invalid UTF-8 conversion reproduced excess raw/output
+   peak capacity; a shared converter now preallocates the exact final UTF-8 length and appends
+   valid/replacement chunks without geometric growth. Its regression compares simultaneous
+   raw/output capacities with the already-held reservation, including the boundary count.
+   There is no wait while retaining a partial result, and no numerical default changed.
+4. **P3, four introduced warnings.** Converted the two comments stranded on `thread_local!`
+   macros to ordinary comments, restored the unused UDP argument's underscore, and removed
+   its unnecessary `mut`. Final ordinary core compilation emits nine baseline warnings,
+   down from thirteen; the four review-identified warnings are absent.
+
+## Fix-round verification
+
+These final runs follow all implementation/test changes and scoped formatting. No source
+edits followed them before implementation commit `4e8406459abe713ac61b3843b766aa034ca366f1`.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| macOS linker override plus `cargo test -p s2script-core` | 723 passed, 0 failed, 2 intentionally ignored; 8.79 s test phase | `/tmp/s2-task6-r1-final-core.log` |
+| Same linker override plus `bash scripts/test-async-pressure.sh` | Both separately selected fresh-process tests passed | `/tmp/s2-task6-r1-final-pressure.log` |
+| Docker PATH correction plus `bash scripts/ci-js.sh` | Entire gate passed, including final Docker gate | `/tmp/s2-task6-r1-final-js.log` |
+| `git diff --check` | Passed before implementation commit | Local git check |
+
+The linker override and full JS command are identical to those recorded in the original
+report. Focused observed RED logs are `/tmp/s2-task6-r1-fairness-red.log`,
+`/tmp/s2-task6-r1-input-red.log`, and `/tmp/s2-task6-r1-capacity-red.log`; each reproduced
+its stated failure before its corresponding implementation fix. The final ordinary suite
+includes the allocation and producer-publication regressions. Both ignored tests are
+explicitly selected by the pressure script and thus by `ci-native.sh`.
+
+Root reported the previous candidate passed Linux core 720 + pressure 1, full native/shim
+and symbols in `/tmp/s2script-hardening-nebula-slice6-ci-native.log`, and all 18 base archives
+built. That evidence predates this fix commit. Root owns the scoped re-review and any needed
+updated Linux/live validation. The live runtime was still Task 5 at handoff; this report
+makes no live-soak claim. Task 8 `due_limited` API and Task 9 boundaries are unchanged.
+
+---
+
 # Task 6 candidate report
 
 Status: implementation frozen for independent review and integrated Linux/live gates.
