@@ -371,6 +371,31 @@
       forgetKeyed(visiblePanels, slot);
       forgetKeyed(lastValue, slot);
     };
+    /**
+     * Drop EVERY cache that mirrors state living on the layout entity.
+     *
+     * Called when that entity goes away (a map change). All of these exist to suppress redundant
+     * engine calls — `setText`/`setClass` return early when the cached value already matches — and
+     * every one of them is a lie the moment a NEW entity is created, because the new entity has
+     * every panel at its markup default and no input capture at all.
+     *
+     * Left stale, the effect is a PARTIAL PAINT: any value unchanged since the previous map is
+     * suppressed and never re-sent, so a sheet draws its rows and not its buttons, or its title and
+     * not its rows — intermittently, depending on what happened to differ. A surviving cursor lease
+     * is worse than cosmetic: `releaseCursor` sees a non-empty lease set, concludes something still
+     * wants the cursor, and never disables a capture the new entity never had — leaving a player
+     * holding a pointer that no click can clear.
+     *
+     * `handlers` is deliberately NOT cleared: click handlers are registered once per button id at
+     * claim time and belong to the plugin, not to the entity.
+     */
+    api.resetEntityCaches = function () {
+      disabled = {};
+      meterClass = {};
+      visiblePanels = {};
+      cursorLeases = {};
+      lastValue = {};
+    };
     api.ensure = function () {
       var ref = ctxState.createEntity(layout);
       return ref ? null : ctxState.notReadyReason();
@@ -443,6 +468,13 @@
       function resetForMap() {
         ready = false;
         entityByResource = {};
+        // The entity is gone; so is everything that described it. Without this the caches survive
+        // into the next map and silently suppress the writes that would repaint it.
+        for (var res in hudByResource) {
+          if (Object.prototype.hasOwnProperty.call(hudByResource, res)) {
+            hudByResource[res].resetEntityCaches();
+          }
+        }
       }
 
       reg(viaId(function () { serverApi().onMapStart(resetForMap); }));
