@@ -78,6 +78,8 @@ pub(crate) struct LoaderPolicy {
     pub path_bytes: usize,
     pub archive_bytes: usize,
     pub config_bytes: usize,
+    pub config_baseline_items: usize,
+    pub config_baseline_bytes: usize,
     pub parse: ParseLimits,
     pub drain_items: usize,
     pub drain_bytes: usize,
@@ -98,6 +100,8 @@ impl Default for LoaderPolicy {
             path_bytes: 256 << 10,
             archive_bytes: 32 << 20,
             config_bytes: 1 << 20,
+            config_baseline_items: 128,
+            config_baseline_bytes: 32 << 20,
             parse: ParseLimits::default(),
             drain_items: 8,
             drain_bytes: 16 << 20,
@@ -122,6 +126,8 @@ impl LoaderPolicy {
             || self.path_bytes == 0
             || self.archive_bytes == 0
             || self.config_bytes == 0
+            || self.config_baseline_items == 0
+            || self.config_baseline_bytes == 0
             || self.drain_items == 0
             || self.drain_bytes == 0
         {
@@ -133,10 +139,15 @@ impl LoaderPolicy {
                     .into(),
             );
         }
-        if self.config_bytes > self.result_bytes {
+        if self.config_bytes.saturating_mul(3).saturating_add(256) > self.result_bytes {
             return Err(
-                "loader policy: config_bytes exceeds result_bytes; an item could never complete"
+                "loader policy: worst-case lossy config text exceeds result_bytes; an item could never complete"
                     .into(),
+            );
+        }
+        if self.config_bytes.saturating_mul(3) > self.config_baseline_bytes {
+            return Err(
+                "loader policy: config baseline cannot retain one worst-case lossy config".into(),
             );
         }
         if self.scan_result_reservation() > self.result_bytes {
@@ -157,9 +168,11 @@ impl LoaderPolicy {
                 .manifest_bytes
                 .saturating_add(self.parse.plugin_js_bytes)
                 .saturating_add(self.parse.gamedata_bytes)
+                .saturating_add(self.config_bytes.saturating_mul(3))
         {
             return Err(
-                "loader policy: prepared_bytes cannot hold one maximum parsed archive".into(),
+                "loader policy: prepared_bytes cannot hold one maximum parsed archive and decoded config"
+                    .into(),
             );
         }
         Ok(())
@@ -236,12 +249,46 @@ impl PreparedPlugin {
     pub(crate) fn bytes(&self) -> usize {
         self.resident_bytes
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(manifest: Manifest, js: &str, resident_bytes: usize) -> Self {
+        Self {
+            manifest,
+            js: js.to_string(),
+            gamedata: None,
+            stamp: FileStamp {
+                len: resident_bytes as u64,
+                modified_ns: 1,
+                created_ns: 1,
+                device: 1,
+                inode: 1,
+                changed_ns: 1,
+            },
+            resident_bytes,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct ConfigSnapshot {
     pub content: Option<String>,
     pub stamp: Option<FileStamp>,
+    pub watch: WatchDelta,
+}
+
+impl ConfigSnapshot {
+    pub(crate) fn bytes(&self) -> usize {
+        self.content.as_ref().map_or(0, String::len)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WatchDelta {
+    NotRequested,
+    Seed,
+    Unchanged,
+    Changed,
+    Pressure,
 }
 
 #[derive(Clone, Debug)]
@@ -303,6 +350,7 @@ enum Request {
         epoch: Epoch,
         revision: PathRevision,
         path: PathBuf,
+        compare_watch: bool,
     },
 }
 
@@ -314,6 +362,29 @@ enum WorkKey {
 }
 
 impl Request {
+    fn coalesce_with(self, older: Self) -> Self {
+        match (self, older) {
+            (
+                Self::Config {
+                    epoch,
+                    revision,
+                    path,
+                    compare_watch,
+                },
+                Self::Config {
+                    compare_watch: older_watch,
+                    ..
+                },
+            ) => Self::Config {
+                epoch,
+                revision,
+                path,
+                compare_watch: compare_watch || older_watch,
+            },
+            (latest, _) => latest,
+        }
+    }
+
     fn key(&self) -> WorkKey {
         match self {
             Self::Scan { dir, .. } => WorkKey::Scan(dir.clone()),
@@ -336,7 +407,7 @@ impl Request {
                 .saturating_add(p.parse.gamedata_bytes)
                 .saturating_add(2048),
             Self::Config { path, .. } => path_len(path)
-                .saturating_add(p.config_bytes)
+                .saturating_add(p.config_bytes.saturating_mul(3))
                 .saturating_add(256),
         }
     }
@@ -428,11 +499,13 @@ impl LoaderWorker {
         epoch: Epoch,
         revision: PathRevision,
         path: PathBuf,
+        compare_watch: bool,
     ) -> Submit {
         self.try_submit(Request::Config {
             epoch,
             revision,
             path,
+            compare_watch,
         })
     }
 
@@ -450,13 +523,18 @@ impl LoaderWorker {
             return Submit::Stopped;
         }
         if state.obligations.contains_key(&key) {
-            if let Some(old) = state.pending.insert(key.clone(), request.clone()) {
+            if state.in_flight.contains(&key) {
+                let request = state.rerun.remove(&key).map_or(request.clone(), |older| {
+                    request.clone().coalesce_with(older)
+                });
+                state.rerun.insert(key, request);
+            } else if let Some(old) = state.pending.remove(&key) {
+                let request = request.coalesce_with(old.clone());
                 state.request_bytes = state
                     .request_bytes
                     .saturating_sub(old.request_weight())
                     .saturating_add(req_weight);
-            } else if state.in_flight.contains(&key) {
-                state.rerun.insert(key, request);
+                state.pending.insert(key, request);
             } else {
                 state.results.retain(|(k, _)| k != &key);
                 state.pending.insert(key.clone(), request);
@@ -524,6 +602,7 @@ impl Drop for LoaderWorker {
 }
 
 fn worker_loop(shared: Arc<Shared>, policy: LoaderPolicy) {
+    let mut config_baselines = ConfigBaselines::default();
     loop {
         let (key, request) = {
             let mut state = match shared.state.lock() {
@@ -546,7 +625,7 @@ fn worker_loop(shared: Arc<Shared>, policy: LoaderPolicy) {
                 };
             }
         };
-        let result = run_request(request, &policy);
+        let result = run_request(request, &policy, &mut config_baselines);
         let mut state = match shared.state.lock() {
             Ok(s) => s,
             Err(_) => return,
@@ -564,7 +643,51 @@ fn worker_loop(shared: Arc<Shared>, policy: LoaderPolicy) {
     }
 }
 
-fn run_request(request: Request, policy: &LoaderPolicy) -> WorkerResult {
+#[derive(Default)]
+struct ConfigBaselines {
+    values: HashMap<PathBuf, Option<String>>,
+    bytes: usize,
+}
+
+impl ConfigBaselines {
+    fn compare_and_update(
+        &mut self,
+        path: &Path,
+        content: &Option<String>,
+        policy: &LoaderPolicy,
+    ) -> WatchDelta {
+        let decision = match self.values.get(path) {
+            None => WatchDelta::Seed,
+            Some(old) if old == content => return WatchDelta::Unchanged,
+            Some(_) => WatchDelta::Changed,
+        };
+        let old_bytes = self.values.get(path).map_or(0, |old| {
+            path_len(path) + old.as_ref().map_or(0, String::len)
+        });
+        let new_bytes = path_len(path) + content.as_ref().map_or(0, String::len);
+        if (!self.values.contains_key(path) && self.values.len() >= policy.config_baseline_items)
+            || self
+                .bytes
+                .saturating_sub(old_bytes)
+                .saturating_add(new_bytes)
+                > policy.config_baseline_bytes
+        {
+            return WatchDelta::Pressure;
+        }
+        self.bytes = self
+            .bytes
+            .saturating_sub(old_bytes)
+            .saturating_add(new_bytes);
+        self.values.insert(path.to_path_buf(), content.clone());
+        decision
+    }
+}
+
+fn run_request(
+    request: Request,
+    policy: &LoaderPolicy,
+    config_baselines: &mut ConfigBaselines,
+) -> WorkerResult {
     match request {
         Request::Scan {
             epoch,
@@ -608,16 +731,35 @@ fn run_request(request: Request, policy: &LoaderPolicy) -> WorkerResult {
             epoch,
             revision,
             path,
+            compare_watch,
         } => {
             let snapshot = match stable_read(&path, policy.config_bytes) {
-                Ok((bytes, stamp)) => Ok(ConfigSnapshot {
-                    content: Some(String::from_utf8_lossy(&bytes).into_owned()),
-                    stamp: Some(stamp),
-                }),
-                Err(e) if e.starts_with("missing:") => Ok(ConfigSnapshot {
-                    content: None,
-                    stamp: None,
-                }),
+                Ok((bytes, stamp)) => {
+                    let content = Some(String::from_utf8_lossy(&bytes).into_owned());
+                    let watch = if compare_watch {
+                        config_baselines.compare_and_update(&path, &content, policy)
+                    } else {
+                        WatchDelta::NotRequested
+                    };
+                    Ok(ConfigSnapshot {
+                        content,
+                        stamp: Some(stamp),
+                        watch,
+                    })
+                }
+                Err(e) if e.starts_with("missing:") => {
+                    let content = None;
+                    let watch = if compare_watch {
+                        config_baselines.compare_and_update(&path, &content, policy)
+                    } else {
+                        WatchDelta::NotRequested
+                    };
+                    Ok(ConfigSnapshot {
+                        content,
+                        stamp: None,
+                        watch,
+                    })
+                }
                 Err(e) => Err(e),
             };
             WorkerResult::Config {
@@ -729,9 +871,9 @@ fn read_open_file(mut file: File, path: &Path, max: usize) -> Result<(Vec<u8>, F
 }
 
 fn stable_read(path: &Path, max: usize) -> Result<(Vec<u8>, FileStamp), String> {
-    stable_read_with_hook(path, max, |stage| {
+    stable_read_with_hook(path, max, |_stage| {
         #[cfg(test)]
-        if stage == ReadStage::AfterFirstRead {
+        if _stage == ReadStage::AfterFirstRead {
             let gate = TEST_READ_GATE.lock().ok().and_then(|g| g.clone());
             if let Some(gate) = gate {
                 let mut state = gate.0.lock().unwrap();
@@ -921,6 +1063,14 @@ mod tests {
     }
 
     #[test]
+    fn policy_requires_retained_capacity_for_archive_plus_decoded_config() {
+        let mut p = LoaderPolicy::default();
+        p.prepared_bytes =
+            p.parse.manifest_bytes + p.parse.plugin_js_bytes + p.parse.gamedata_bytes;
+        assert!(p.validate().unwrap_err().contains("prepared_bytes"));
+    }
+
+    #[test]
     fn request_queue_coalesces_the_same_path_without_consuming_another_slot() {
         let p = LoaderPolicy {
             request_items: 1,
@@ -936,6 +1086,54 @@ mod tests {
             WorkerResult::Plugin { revision: 2, .. }
         ));
         worker.shutdown();
+    }
+
+    #[test]
+    fn three_revisions_while_the_first_is_in_flight_keep_only_the_latest_rerun() {
+        let path = std::env::temp_dir().join(format!("s2-loader-abc-{}", std::process::id()));
+        std::fs::write(&path, b"{}").unwrap();
+        let gate: TestReadGate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        *TEST_READ_GATE.lock().unwrap() = Some(gate.clone());
+        let worker = LoaderWorker::start(LoaderPolicy::default()).unwrap();
+        assert_eq!(
+            worker.try_read_config(7, 1, path.clone(), false),
+            Submit::Accepted
+        );
+
+        let mut state = gate.0.lock().unwrap();
+        while !state.0 {
+            state = gate.1.wait(state).unwrap();
+        }
+        assert_eq!(
+            worker.try_read_config(7, 2, path.clone(), true),
+            Submit::Coalesced
+        );
+        assert_eq!(
+            worker.try_read_config(7, 3, path.clone(), false),
+            Submit::Coalesced
+        );
+        state.1 = true;
+        gate.1.notify_all();
+        drop(state);
+
+        match next_result(&worker) {
+            WorkerResult::Config {
+                revision,
+                snapshot: Ok(snapshot),
+                ..
+            } => {
+                assert_eq!(revision, 3);
+                assert_eq!(
+                    snapshot.watch,
+                    WatchDelta::Seed,
+                    "coalescing must retain watch intent"
+                );
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+        worker.shutdown();
+        *TEST_READ_GATE.lock().unwrap() = None;
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -1018,7 +1216,7 @@ mod tests {
         let worker = LoaderWorker::start(LoaderPolicy::default()).unwrap();
         let path = PathBuf::from("definitely-missing-config.json");
         assert_eq!(
-            worker.try_read_config(41, 9, path.clone()),
+            worker.try_read_config(41, 9, path.clone(), false),
             Submit::Accepted
         );
         match next_result(&worker) {
@@ -1041,7 +1239,10 @@ mod tests {
         let path = std::env::temp_dir().join(format!("s2-loader-config-{}", std::process::id()));
         std::fs::write(&path, [b'{', 0xff, b'}']).unwrap();
         let worker = LoaderWorker::start(LoaderPolicy::default()).unwrap();
-        assert_eq!(worker.try_read_config(4, 2, path.clone()), Submit::Accepted);
+        assert_eq!(
+            worker.try_read_config(4, 2, path.clone(), false),
+            Submit::Accepted
+        );
         match next_result(&worker) {
             WorkerResult::Config { snapshot, .. } => {
                 assert_eq!(snapshot.unwrap().content.as_deref(), Some("{�}"));
@@ -1050,6 +1251,123 @@ mod tests {
         }
         worker.shutdown();
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn config_result_reservation_covers_worst_case_lossy_utf8_expansion() {
+        let path = std::env::temp_dir().join(format!("s2-loader-lossy-{}", std::process::id()));
+        std::fs::write(&path, vec![0xff; 1024]).unwrap();
+        let mut policy = LoaderPolicy::default();
+        policy.config_bytes = 1024;
+        let reserved = Request::Config {
+            epoch: 1,
+            revision: 1,
+            path: path.clone(),
+            compare_watch: false,
+        }
+        .result_reservation(&policy);
+        let worker = LoaderWorker::start(policy).unwrap();
+        assert_eq!(
+            worker.try_read_config(1, 1, path.clone(), false),
+            Submit::Accepted
+        );
+        let result = next_result(&worker);
+        assert!(
+            result.weight() <= reserved,
+            "{} > {}",
+            result.weight(),
+            reserved
+        );
+        worker.shutdown();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn watched_config_exact_comparison_and_baseline_live_on_the_worker() {
+        let path = std::env::temp_dir().join(format!("s2-loader-watch-{}", std::process::id()));
+        std::fs::write(&path, b"alpha").unwrap();
+        let worker = LoaderWorker::start(LoaderPolicy::default()).unwrap();
+
+        assert_eq!(
+            worker.try_read_config(1, 1, path.clone(), true),
+            Submit::Accepted
+        );
+        match next_result(&worker) {
+            WorkerResult::Config {
+                snapshot: Ok(snapshot),
+                ..
+            } => {
+                assert_eq!(snapshot.watch, WatchDelta::Seed);
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+        assert_eq!(
+            worker.try_read_config(1, 2, path.clone(), true),
+            Submit::Accepted
+        );
+        match next_result(&worker) {
+            WorkerResult::Config {
+                snapshot: Ok(snapshot),
+                ..
+            } => {
+                assert_eq!(snapshot.watch, WatchDelta::Unchanged);
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+        std::fs::write(&path, b"beta").unwrap();
+        assert_eq!(
+            worker.try_read_config(1, 3, path.clone(), true),
+            Submit::Accepted
+        );
+        match next_result(&worker) {
+            WorkerResult::Config {
+                snapshot: Ok(snapshot),
+                ..
+            } => {
+                assert_eq!(snapshot.watch, WatchDelta::Changed);
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+
+        worker.shutdown();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn watched_config_baseline_pressure_is_bounded_and_retryable() {
+        let root = std::env::temp_dir().join(format!("s2-loader-watch-cap-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let first = root.join("first.json");
+        let second = root.join("second.json");
+        std::fs::write(&first, b"a").unwrap();
+        std::fs::write(&second, b"b").unwrap();
+        let mut policy = LoaderPolicy::default();
+        policy.config_baseline_items = 1;
+        let worker = LoaderWorker::start(policy).unwrap();
+        assert_eq!(worker.try_read_config(1, 1, first, true), Submit::Accepted);
+        assert!(matches!(
+            next_result(&worker),
+            WorkerResult::Config {
+                snapshot: Ok(ConfigSnapshot {
+                    watch: WatchDelta::Seed,
+                    ..
+                }),
+                ..
+            }
+        ));
+        assert_eq!(worker.try_read_config(1, 2, second, true), Submit::Accepted);
+        assert!(matches!(
+            next_result(&worker),
+            WorkerResult::Config {
+                snapshot: Ok(ConfigSnapshot {
+                    watch: WatchDelta::Pressure,
+                    ..
+                }),
+                ..
+            }
+        ));
+        worker.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

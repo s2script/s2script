@@ -8,14 +8,15 @@
 //! failures leave their strong path stamp uncommitted; semantic refusals commit it to warn once.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{CStr, CString, c_char};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 pub use crate::loader_worker::{Manifest, PublishDecl};
-use crate::loader_worker::{ConfigSnapshot, FileStamp, LoaderPolicy, LoaderWorker, PreparedPlugin, Submit, WorkerResult};
+use crate::loader_worker::{ConfigSnapshot, FileStamp, LoaderPolicy, LoaderWorker, PreparedPlugin, Submit, WatchDelta, WorkerResult};
 
 // ---------------------------------------------------------------------------
 // Operator permission allow-list (spec §6)
@@ -118,13 +119,23 @@ fn verify_compiled_against_batch(
     manifest: &Manifest,
     batch_hashes: &HashMap<String, String>,
 ) -> Result<(), String> {
+    verify_compiled_against_with(manifest, batch_hashes, |iface| {
+        crate::v8host::iface_published_types_sha256(iface)
+    })
+}
+
+fn verify_compiled_against_with(
+    manifest: &Manifest,
+    batch_hashes: &HashMap<String, String>,
+    live_hash: impl Fn(&str) -> Option<String>,
+) -> Result<(), String> {
     let mut names: Vec<&String> = manifest.compiled_against.keys().collect();
     names.sort(); // deterministic first-error
     for iface in names {
         let built = &manifest.compiled_against[iface];
         if built.is_empty() { continue; }
         let published = batch_hashes.get(iface).cloned()
-            .or_else(|| crate::v8host::iface_published_types_sha256(iface));
+            .or_else(|| live_hash(iface));
         let Some(published) = published else { continue };
         if !published.is_empty() && published != *built {
             return Err(format!(
@@ -137,6 +148,32 @@ fn verify_compiled_against_batch(
         }
     }
     Ok(())
+}
+
+fn resolve_contract_rejections(
+    candidates: &[(PathBuf, &Manifest)],
+    initially_rejected: &std::collections::HashSet<PathBuf>,
+    live_hash: impl Fn(&str) -> Option<String> + Copy,
+) -> HashMap<PathBuf, String> {
+    let mut rejected = HashMap::new();
+    loop {
+        let mut hashes = HashMap::new();
+        for (path, manifest) in candidates {
+            if initially_rejected.contains(path) || rejected.contains_key(path) { continue; }
+            for (name, publish) in &manifest.publishes {
+                hashes.insert(name.clone(), publish.types_sha256.clone());
+            }
+        }
+        let mut changed = false;
+        for (path, manifest) in candidates {
+            if initially_rejected.contains(path) || rejected.contains_key(path) { continue; }
+            if let Err(reason) = verify_compiled_against_with(manifest, &hashes, live_hash) {
+                rejected.insert(path.clone(), reason);
+                changed = true;
+            }
+        }
+        if !changed { return rejected; }
+    }
 }
 
 fn stamp_time(stamp: FileStamp) -> SystemTime {
@@ -232,12 +269,6 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
     /// Counts how many times `poll_plugins` has been called (throttle counter).
     static DRAIN_COUNT: Cell<u64> = Cell::new(0);
-    /// Config-file watcher (Slice 5E.2): maps plugin id → last-seen file content (None = absent).
-    /// Populated via `watch_config_for` (idempotent; seeds baseline on first call so the initial
-    /// auto-generated file does not cause a spurious onChange fire).  Polled each `poll_plugins`
-    /// cycle: when content changes, `re_materialize_config` fires the plugin's onChange handlers.
-    static WATCHED_CONFIGS: std::cell::RefCell<HashMap<String, Option<String>>> =
-        std::cell::RefCell::new(HashMap::new());
     /// Slice 6.12 (`sm plugins`): pending load/unload/reload requested from a command. Drained at the
     /// start of `poll_plugins` (the frame drain, OUTSIDE any command's isolate borrow) so the loader
     /// never runs re-entrantly. The natives only enqueue.
@@ -246,23 +277,22 @@ thread_local! {
     /// a suppressed file; `sm plugins load` un-suppresses it so the next scan loads it fresh.
     static SUPPRESSED: std::cell::RefCell<HashMap<PathBuf, String>> = std::cell::RefCell::new(HashMap::new());
     /// L1 lifecycle v2: plugins parked because a hard dependency was not yet published (id → parsed
-    /// load). Re-checked every frame by `start_unblocked_waiters`: started once every hard-dep
-    /// interface is published, or forced to load anyway after `LOAD_TIMEOUT_FRAMES` (resolved
-    /// decision #3 — an unmet hard dep loads lazily; the proxy throws `InterfaceUnavailable` at call).
+    /// load). Re-checked every frame by `start_unblocked_waiters`: queued for budgeted application
+    /// once every hard-dep interface is published, or after `LOAD_TIMEOUT_FRAMES` (resolved decision
+    /// #3 — an unmet hard dep loads lazily; the proxy throws `InterfaceUnavailable` at call).
     static WAITING: std::cell::RefCell<HashMap<String, WaitingLoad>> = std::cell::RefCell::new(HashMap::new());
 }
 
-/// True if any plugin is parked waiting on a hard-dependency producer.
+/// True if any plugin preparation or lifecycle application remains pending.
 pub(crate) fn has_waiting() -> bool {
     WAITING.with(|w| !w.borrow().is_empty())
+        || ACTIVE_BATCH.with(|b| b.borrow().is_some())
+        || READY_APPLY.with(|q| !q.borrow().is_empty())
 }
 
 /// A parsed load parked pending its hard dependencies (L1 lifecycle v2).
 struct WaitingLoad {
-    path: PathBuf,
-    manifest: Manifest,
-    prepared: PreparedPlugin,
-    config_json: String,
+    row: PreparedLoad,
     since_frame: u64,
 }
 
@@ -342,36 +372,28 @@ pub(crate) fn request_reload(id: &str) -> bool {
         || SUPPRESSED.with(|s| s.borrow().values().any(|v| v == id));
     known && enqueue_intent(id, PendingOp::Reload)
 }
-/// L1 lifecycle v2: start any parked loads whose hard-dependency wait window has cleared. Called at
+/// L1 lifecycle v2: enqueue parked loads whose hard-dependency wait window has cleared. Called at
 /// the tail of `v8host::finalize_loading_plugins` (a producer reaching Active may unblock consumers,
-/// and every frame's drain re-checks the timeout). A parked plugin starts when every hard dep is
-/// published, or is forced to load anyway once past `LOAD_TIMEOUT_FRAMES` (resolved decision #3).
-///
-/// Re-entrancy: each ready plugin is removed from WAITING BEFORE `begin_load`, and `begin_load`'s
-/// synchronous fast-path re-enters `finalize_loading_plugins` → back here; removing first bounds the
-/// recursion by the (finite, shrinking) WAITING set.
+/// and every frame's drain re-checks the timeout). Actual validation and lifecycle work remain in
+/// `poll_plugins`, where they consume the loader's per-frame budget.
 pub(crate) fn start_unblocked_waiters() {
     let frame = crate::v8host::current_frame();
-    let ready: Vec<String> = WAITING.with(|w| {
+    let ready: Vec<(String, bool)> = WAITING.with(|w| {
         w.borrow()
             .iter()
             .filter_map(|(id, wl)| {
-                let unblocked = wl.manifest.plugin_dependencies.keys().all(|n| crate::v8host::iface_published(n));
+                let unblocked = wl.row.prepared.manifest.plugin_dependencies.keys().all(|n| crate::v8host::iface_published(n));
                 let expired = frame.saturating_sub(wl.since_frame) > crate::v8host::LOAD_TIMEOUT_FRAMES;
-                (unblocked || expired).then(|| id.clone())
+                (unblocked || expired).then(|| (id.clone(), expired))
             })
             .collect()
     });
-    for id in ready {
+    for (id, expired) in ready {
         let Some(wl) = WAITING.with(|w| w.borrow_mut().remove(&id)) else { continue };
-        let unblocked = wl.manifest.plugin_dependencies.keys().all(|n| crate::v8host::iface_published(n));
-        if !unblocked {
-            crate::v8host::log_warn(&format!(
-                "WARN: '{}': hard dependency producer not Active after ~30s - loading anyway (calls will throw InterfaceUnavailable until it appears)",
-                id
-            ));
-        }
-        begin_load_prepared(&wl.prepared, &wl.config_json, &wl.path);
+        READY_APPLY.with(|queue| queue.borrow_mut().push_back(ApplyItem {
+            row: wl.row,
+            allow_unmet_dependencies: expired,
+        }));
     }
 }
 
@@ -387,7 +409,6 @@ const POLL_THROTTLE: u64 = 64;
 
 /// Stop watching a plugin's config file (called from `unload_plugin` teardown).
 pub(crate) fn unwatch_config_for(id: &str) {
-    WATCHED_CONFIGS.with(|wc| { wc.borrow_mut().remove(id); });
     CONFIG_SEEDED.with(|s| { s.borrow_mut().remove(id); });
     CONFIG_PATHS.with(|p| { p.borrow_mut().remove(id); });
 }
@@ -410,18 +431,123 @@ enum ConfigConsumer {
 
 struct PendingConfig { revision: u64, consumers: Vec<ConfigConsumer>, bytes: usize }
 
+#[derive(Clone, Copy, Default)]
+struct RetainedUsage { items: usize, bytes: usize }
+
+#[derive(Clone)]
+struct RetainedLedger {
+    usage: Rc<Cell<RetainedUsage>>,
+    max_items: usize,
+    max_bytes: usize,
+}
+
+impl RetainedLedger {
+    fn new(max_items: usize, max_bytes: usize) -> Self {
+        Self { usage: Rc::new(Cell::new(RetainedUsage::default())), max_items, max_bytes }
+    }
+
+    fn try_acquire(&self, bytes: usize) -> Option<RetainedLease> {
+        let usage = self.usage.get();
+        if usage.items >= self.max_items || usage.bytes.saturating_add(bytes) > self.max_bytes {
+            return None;
+        }
+        self.usage.set(RetainedUsage { items: usage.items + 1, bytes: usage.bytes + bytes });
+        Some(RetainedLease { ledger: self.clone(), bytes })
+    }
+
+    #[cfg(test)]
+    fn usage(&self) -> (usize, usize) {
+        let usage = self.usage.get();
+        (usage.items, usage.bytes)
+    }
+}
+
+struct RetainedLease { ledger: RetainedLedger, bytes: usize }
+
+impl RetainedLease {
+    fn try_grow(&mut self, bytes: usize) -> bool {
+        let usage = self.ledger.usage.get();
+        if usage.bytes.saturating_add(bytes) > self.ledger.max_bytes { return false; }
+        self.ledger.usage.set(RetainedUsage {
+            items: usage.items,
+            bytes: usage.bytes + bytes,
+        });
+        self.bytes += bytes;
+        true
+    }
+}
+
+impl Drop for RetainedLease {
+    fn drop(&mut self) {
+        let usage = self.ledger.usage.get();
+        self.ledger.usage.set(RetainedUsage {
+            items: usage.items.saturating_sub(1),
+            bytes: usage.bytes.saturating_sub(self.bytes),
+        });
+    }
+}
+
+struct LoaderDrainBudget {
+    max_items: usize,
+    max_bytes: usize,
+    deadline: Instant,
+    items: usize,
+    bytes: usize,
+}
+
+impl LoaderDrainBudget {
+    fn new(max_items: usize, max_bytes: usize, max_time: Duration) -> Self {
+        Self {
+            max_items,
+            max_bytes,
+            deadline: Instant::now() + max_time,
+            items: 0,
+            bytes: 0,
+        }
+    }
+
+    fn try_admit(&mut self, bytes: usize) -> bool {
+        if self.items >= self.max_items
+            || (self.items > 0
+                && (self.bytes.saturating_add(bytes) > self.max_bytes
+                    || Instant::now() >= self.deadline))
+        {
+            return false;
+        }
+        self.items += 1;
+        self.bytes = self.bytes.saturating_add(bytes);
+        true
+    }
+
+    fn can_poll_unknown(&self) -> bool {
+        self.items < self.max_items
+            && (self.items == 0
+                || (self.bytes < self.max_bytes && Instant::now() < self.deadline))
+    }
+
+    fn charge_polled(&mut self, bytes: usize) {
+        self.items += 1;
+        self.bytes = self.bytes.saturating_add(bytes);
+    }
+
+    #[cfg(test)]
+    fn items(&self) -> usize { self.items }
+}
+
 struct PreparedLoad {
     path: PathBuf,
     old_id: Option<String>,
     prepared: PreparedPlugin,
     config: Option<ConfigSnapshot>,
+    lease: RetainedLease,
 }
 
 struct ActiveBatch {
     pending: HashMap<PathBuf, u64>,
     prepared: HashMap<PathBuf, PreparedLoad>,
-    prepared_bytes: usize,
 }
+
+struct ApplyItem { row: PreparedLoad, allow_unmet_dependencies: bool }
 
 thread_local! {
     static WORKER: std::cell::RefCell<Option<LoaderWorker>> = std::cell::RefCell::new(None);
@@ -430,10 +556,16 @@ thread_local! {
     static SCAN_IN_FLIGHT: Cell<bool> = const { Cell::new(false) };
     static PATH_REVISIONS: std::cell::RefCell<HashMap<PathBuf, u64>> = std::cell::RefCell::new(HashMap::new());
     static ACTIVE_BATCH: std::cell::RefCell<Option<ActiveBatch>> = const { std::cell::RefCell::new(None) };
+    static READY_APPLY: std::cell::RefCell<VecDeque<ApplyItem>> = const { std::cell::RefCell::new(VecDeque::new()) };
     static CONFIG_PENDING: std::cell::RefCell<HashMap<PathBuf, PendingConfig>> = std::cell::RefCell::new(HashMap::new());
     static CONFIG_PATHS: std::cell::RefCell<HashMap<String, PathBuf>> = std::cell::RefCell::new(HashMap::new());
     static CONFIG_SEEDED: std::cell::RefCell<std::collections::HashSet<String>> = std::cell::RefCell::new(std::collections::HashSet::new());
+    static PERMISSIONS_SCAN_PENDING: Cell<bool> = const { Cell::new(false) };
     static CONFIG_RESOLVER: Cell<Option<ConfigPathResolver>> = const { Cell::new(None) };
+    static RETAINED_LEDGER: std::cell::RefCell<RetainedLedger> = {
+        let policy = LoaderPolicy::default();
+        std::cell::RefCell::new(RetainedLedger::new(policy.prepared_items, policy.prepared_bytes))
+    };
 }
 
 static LIFECYCLE_EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -464,7 +596,11 @@ pub(crate) fn set_plugins_dir(path: &str) {
         let mut slot = slot.borrow_mut();
         if slot.is_some() { return true; }
         LIFECYCLE_EPOCH.fetch_add(1, Ordering::AcqRel);
-        match LoaderWorker::start(POLICY.with(Clone::clone)) {
+        let policy = POLICY.with(Clone::clone);
+        RETAINED_LEDGER.with(|ledger| {
+            *ledger.borrow_mut() = RetainedLedger::new(policy.prepared_items, policy.prepared_bytes);
+        });
+        match LoaderWorker::start(policy) {
             Ok(worker) => { *slot = Some(worker); true }
             Err(reason) => { crate::v8host::log_warn(&format!("WARN: plugin loader disabled: {reason}")); false }
         }
@@ -523,11 +659,11 @@ fn cancel_path_work(path: &Path) {
     ACTIVE_BATCH.with(|batch| {
         if let Some(batch) = batch.borrow_mut().as_mut() {
             batch.pending.remove(path);
-            if let Some(row) = batch.prepared.remove(path) {
-                batch.prepared_bytes = batch.prepared_bytes.saturating_sub(row.prepared.bytes());
-            }
+            batch.prepared.remove(path);
         }
     });
+    READY_APPLY.with(|ready| ready.borrow_mut().retain(|item| item.row.path != path));
+    WAITING.with(|waiting| waiting.borrow_mut().retain(|_, item| item.row.path != path));
     finish_batch_if_ready();
 }
 
@@ -536,17 +672,14 @@ fn remove_batch_path(path: &Path) -> Option<PreparedLoad> {
         let mut batch = batch.borrow_mut();
         let batch = batch.as_mut()?;
         batch.pending.remove(path);
-        let row = batch.prepared.remove(path)?;
-        batch.prepared_bytes = batch.prepared_bytes.saturating_sub(row.prepared.bytes());
-        Some(row)
+        batch.prepared.remove(path)
     })
 }
 
 pub(crate) fn watch_config_for(id: &str) {
-    if WATCHED_CONFIGS.with(|w| w.borrow().contains_key(id)) { return; }
+    if CONFIG_PATHS.with(|paths| paths.borrow().contains_key(id)) { return; }
     match resolve_config_path(id) {
         Ok(path) => {
-            WATCHED_CONFIGS.with(|w| { w.borrow_mut().insert(id.to_string(), None); });
             CONFIG_PATHS.with(|p| { p.borrow_mut().insert(id.to_string(), path.clone()); });
             let _ = queue_config(path, ConfigConsumer::Watch { id: id.to_string() });
         }
@@ -594,9 +727,17 @@ fn queue_config(path: PathBuf, consumer: ConfigConsumer) -> bool {
         crate::v8host::log_warn(&format!("WARN: loader config consumer {:?} deferred by bounded coalescing table", path));
         return false;
     }
+    let compare_watch = matches!(consumer, ConfigConsumer::Watch { .. })
+        || CONFIG_PENDING.with(|pending| {
+            pending.borrow().get(&path).is_some_and(|row| {
+                row.consumers
+                    .iter()
+                    .any(|consumer| matches!(consumer, ConfigConsumer::Watch { .. }))
+            })
+        });
     let revision = CONFIG_PENDING.with(|p| p.borrow().get(&path).map_or(1, |row| row.revision.wrapping_add(1)));
     let epoch = current_epoch();
-    let submit = WORKER.with(|w| w.borrow().as_ref().map(|w| w.try_read_config(epoch, revision, path.clone())).unwrap_or(Submit::Stopped));
+    let submit = WORKER.with(|w| w.borrow().as_ref().map(|w| w.try_read_config(epoch, revision, path.clone(), compare_watch)).unwrap_or(Submit::Stopped));
     if !matches!(submit, Submit::Accepted | Submit::Coalesced) {
         crate::v8host::log_warn(&format!("WARN: loader config read {:?} deferred by bounded queue ({submit:?})", path));
         return false;
@@ -635,17 +776,23 @@ fn handle_scan(revision: u64, entries: Result<Vec<(PathBuf, FileStamp)>, String>
         .filter(|(path, _)| !current.contains_key(*path))
         .map(|(path, row)| (path.clone(), row.id.clone())).collect());
     for (path, id) in vanished {
-        let was_waiting = WAITING.with(|w| w.borrow_mut().remove(&id).is_some());
-        if !was_waiting { crate::v8host::unload_plugin(&id); }
+        let waiting_old_was_running = WAITING.with(|w| {
+            let key = w.borrow().iter().find_map(|(key, item)| (item.row.path == path).then(|| key.clone()));
+            key.and_then(|key| w.borrow_mut().remove(&key))
+                .map(|item| item.row.old_id.is_some())
+        });
+        if waiting_old_was_running != Some(false) { crate::v8host::unload_plugin(&id); }
         crate::v8host::clear_pending_handoff(&id);
         crate::v8host::clear_failed(&id);
         WATCH_STATE.with(|w| { w.borrow_mut().remove(&path); });
         FILE_STAMPS.with(|s| { s.borrow_mut().remove(&path); });
     }
-    let mut batch = ActiveBatch { pending: HashMap::new(), prepared: HashMap::new(), prepared_bytes: 0 };
+    let mut batch = ActiveBatch { pending: HashMap::new(), prepared: HashMap::new() };
     for (path, stamp) in current {
         if SUPPRESSED.with(|s| s.borrow().contains_key(&path)) { continue; }
         if FILE_STAMPS.with(|s| s.borrow().get(&path).copied()) == Some(stamp) { continue; }
+        WAITING.with(|waiting| waiting.borrow_mut().retain(|_, item| item.row.path != path));
+        READY_APPLY.with(|ready| ready.borrow_mut().retain(|item| item.row.path != path));
         let revision = next_path_revision(&path);
         let epoch = current_epoch();
         let submit = WORKER.with(|w| w.borrow().as_ref().map(|w| w.try_prepare(epoch, revision, path.clone())).unwrap_or(Submit::Stopped));
@@ -688,20 +835,17 @@ fn handle_plugin(revision: u64, path: PathBuf, result: Result<PreparedPlugin, St
         return;
     }
     let weight = prepared.bytes();
-    let capacity = POLICY.with(|p| (p.prepared_items, p.prepared_bytes));
-    let admitted = ACTIVE_BATCH.with(|b| {
-        let mut b = b.borrow_mut(); let b = b.as_mut().unwrap();
-        if b.prepared.len() >= capacity.0 || b.prepared_bytes.saturating_add(weight) > capacity.1 { return false; }
-        b.prepared_bytes += weight;
-        b.prepared.insert(path.clone(), PreparedLoad { path: path.clone(), old_id, prepared, config: None });
-        true
-    });
-    if !admitted {
-        crate::v8host::log_warn(&format!("WARN: poll_plugins: {:?} retryable prepared-budget pressure; baseline unchanged", path));
+    let lease = RETAINED_LEDGER.with(|ledger| ledger.borrow().try_acquire(weight));
+    let Some(lease) = lease else {
+        crate::v8host::log_warn(&format!("WARN: poll_plugins: {:?} retryable retained-payload pressure; baseline unchanged", path));
         ACTIVE_BATCH.with(|b| { if let Some(b) = b.borrow_mut().as_mut() { b.pending.remove(&path); } });
         finish_batch_if_ready();
         return;
-    }
+    };
+    ACTIVE_BATCH.with(|b| {
+        let mut b = b.borrow_mut(); let b = b.as_mut().unwrap();
+        b.prepared.insert(path.clone(), PreparedLoad { path: path.clone(), old_id, prepared, config: None, lease });
+    });
     let needs_config = ACTIVE_BATCH.with(|b| b.borrow().as_ref().and_then(|b| b.prepared.get(&path))
         .is_some_and(|p| !p.prepared.manifest.config.is_empty()));
     if needs_config {
@@ -732,18 +876,31 @@ fn handle_config(path: PathBuf, revision: u64, result: Result<ConfigSnapshot, St
     if let Ok(snapshot) = &result {
         debug_assert_eq!(snapshot.content.is_some(), snapshot.stamp.is_some());
     }
+    let mut permissions_resolved = false;
     for consumer in pending.consumers {
         match consumer {
             ConfigConsumer::Plugin { path: plugin_path, revision: plugin_revision } => {
                 let valid = ACTIVE_BATCH.with(|b| b.borrow().as_ref().and_then(|b| b.pending.get(&plugin_path).copied())) == Some(plugin_revision);
                 if !valid { continue; }
                 match &result {
-                    Ok(snapshot) => ACTIVE_BATCH.with(|b| {
-                        if let Some(b) = b.borrow_mut().as_mut() {
-                            if let Some(row) = b.prepared.get_mut(&plugin_path) { row.config = Some(snapshot.clone()); }
-                            b.pending.remove(&plugin_path);
+                    Ok(snapshot) => {
+                        let attached = ACTIVE_BATCH.with(|b| {
+                            if let Some(b) = b.borrow_mut().as_mut() {
+                                if let Some(row) = b.prepared.get_mut(&plugin_path) {
+                                    if row.lease.try_grow(snapshot.bytes()) {
+                                        row.config = Some(snapshot.clone());
+                                        b.pending.remove(&plugin_path);
+                                        return true;
+                                    }
+                                }
+                            }
+                            false
+                        });
+                        if !attached {
+                            crate::v8host::log_warn(&format!("WARN: poll_plugins: config for {:?} deferred by retained-payload pressure; baseline unchanged", plugin_path));
+                            let _ = remove_batch_path(&plugin_path);
                         }
-                    }),
+                    }
                     Err(reason) => {
                         crate::v8host::log_warn(&format!("WARN: poll_plugins: config read for {:?} failed: {reason}; baseline unchanged", plugin_path));
                         let _ = remove_batch_path(&plugin_path);
@@ -752,26 +909,36 @@ fn handle_config(path: PathBuf, revision: u64, result: Result<ConfigSnapshot, St
             }
             ConfigConsumer::Watch { id } => if let Ok(snapshot) = &result {
                 if CONFIG_PATHS.with(|paths| paths.borrow().get(&id) != Some(&path)) { continue; }
-                let seeded = CONFIG_SEEDED.with(|s| s.borrow().contains(&id));
-                let old = WATCHED_CONFIGS.with(|w| w.borrow().get(&id).cloned().flatten());
-                WATCHED_CONFIGS.with(|w| { w.borrow_mut().insert(id.clone(), snapshot.content.clone()); });
-                CONFIG_SEEDED.with(|s| { s.borrow_mut().insert(id.clone()); });
-                if seeded && old != snapshot.content { crate::v8host::re_materialize_config_snapshot(&id, snapshot.content.as_deref()); }
+                if snapshot.watch == WatchDelta::Pressure {
+                    crate::v8host::log_warn(&format!("WARN: config watch {:?} deferred by bounded worker baseline; keeping prior values", path));
+                    continue;
+                }
+                let seeded = CONFIG_SEEDED.with(|s| !s.borrow_mut().insert(id.clone()));
+                if seeded && snapshot.watch == WatchDelta::Changed {
+                    crate::v8host::re_materialize_config_snapshot(&id, snapshot.content.as_deref());
+                }
             },
-            ConfigConsumer::Permissions => match &result {
-                Ok(snapshot) => if let Some(content) = snapshot.content.as_deref() {
-                    match load_permissions_from_str(content) {
-                        Ok(()) => PERMISSIONS_WARNED.store(false, std::sync::atomic::Ordering::Relaxed),
-                        Err(reason) if !PERMISSIONS_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) => crate::v8host::log_warn(&format!(
-                            "WARN: {reason} - ignoring the operator allow-list (every gated capability stays denied)")),
-                        Err(_) => {}
-                    }
-                },
-                Err(reason) => crate::v8host::log_warn(&format!("WARN: permissions config read failed: {reason}; keeping prior allow-list")),
-            },
+            ConfigConsumer::Permissions => {
+                permissions_resolved = true;
+                match &result {
+                    Ok(snapshot) => if let Some(content) = snapshot.content.as_deref() {
+                        match load_permissions_from_str(content) {
+                            Ok(()) => PERMISSIONS_WARNED.store(false, std::sync::atomic::Ordering::Relaxed),
+                            Err(reason) if !PERMISSIONS_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) => crate::v8host::log_warn(&format!(
+                                "WARN: {reason} - ignoring the operator allow-list (every gated capability stays denied)")),
+                            Err(_) => {}
+                        }
+                    },
+                    Err(reason) => crate::v8host::log_warn(&format!("WARN: permissions config read failed: {reason}; keeping prior allow-list")),
+                }
+            }
         }
     }
     finish_batch_if_ready();
+    if permissions_resolved {
+        PERMISSIONS_SCAN_PENDING.with(|pending| pending.set(false));
+        schedule_scan();
+    }
 }
 
 fn finish_batch_if_ready() {
@@ -787,20 +954,17 @@ fn finish_batch_if_ready() {
             rejected.extend(paths.iter().cloned());
         }
     }
-    let mut batch_hashes = HashMap::new();
-    for row in batch.prepared.values().filter(|row| !rejected.contains(&row.path)) {
-        for (name, publish) in &row.prepared.manifest.publishes {
-            batch_hashes.insert(name.clone(), publish.types_sha256.clone());
+    let candidates: Vec<(PathBuf, &Manifest)> = batch.prepared.values()
+        .map(|row| (row.path.clone(), &row.prepared.manifest)).collect();
+    let drift_rejected = resolve_contract_rejections(&candidates, &rejected, |name| {
+        crate::v8host::iface_published_types_sha256(name)
+    });
+    for (path, reason) in &drift_rejected {
+        if let Some(row) = batch.prepared.get(path) {
+            refuse_prepared(path, &row.prepared, reason, row.old_id.as_deref());
         }
     }
-    let mut drift_rejected = Vec::new();
-    for row in batch.prepared.values().filter(|row| !rejected.contains(&row.path)) {
-        if let Err(reason) = verify_compiled_against_batch(&row.prepared.manifest, &batch_hashes) {
-            refuse_prepared(&row.path, &row.prepared, &reason, row.old_id.as_deref());
-            drift_rejected.push(row.path.clone());
-        }
-    }
-    rejected.extend(drift_rejected);
+    rejected.extend(drift_rejected.keys().cloned());
     let mut loads: HashMap<String, PreparedLoad> = HashMap::new();
     let mut order_input = Vec::new();
     for (_, row) in batch.prepared {
@@ -817,34 +981,95 @@ fn finish_batch_if_ready() {
         order_input.push((id.clone(), row.prepared.manifest.plugin_dependencies.keys().cloned().collect(), row.prepared.manifest.publishes.keys().cloned().collect()));
         loads.insert(id, row);
     }
-    let frame = crate::v8host::current_frame();
+    let mut ready = VecDeque::new();
     for id in topo_order(&order_input) {
         let Some(row) = loads.remove(&id) else { continue };
-        let override_json = row.config.as_ref().and_then(|s| s.content.as_deref());
-        let cfg = crate::v8host::materialize_for_load_snapshot(&id, &row.prepared.manifest.config, override_json);
-        let dependencies_ready = deps_satisfied(&row.prepared.manifest);
-        if let Some(old_id) = &row.old_id { crate::v8host::unload_plugin(old_id); }
-        if dependencies_ready {
-            begin_load_prepared(&row.prepared, &cfg, &row.path);
-        } else {
-            commit_path(&row.path, row.prepared.stamp, &id);
-            let manifest = row.prepared.manifest.clone();
-            WAITING.with(|w| { w.borrow_mut().insert(id.clone(), WaitingLoad {
-                path: row.path, manifest, prepared: row.prepared, config_json: cfg, since_frame: frame,
-            }); });
+        ready.push_back(ApplyItem { row, allow_unmet_dependencies: false });
+    }
+    READY_APPLY.with(|queue| queue.borrow_mut().extend(ready));
+}
+
+fn duplicate_manifest_id(path: &Path, id: &str) -> bool {
+    WATCH_STATE.with(|watch| watch.borrow().iter().any(|(other, row)| other != path && row.id == id))
+}
+
+fn apply_prepared(item: ApplyItem) {
+    let ApplyItem { row, allow_unmet_dependencies } = item;
+    let id = row.prepared.manifest.id.clone();
+    if !api_version_compatible(&row.prepared.manifest.api_version) {
+        let reason = format!("apiVersion {:?} incompatible with host major {} (rebuild with a matching @s2script/sdk)", row.prepared.manifest.api_version, HOST_API_VERSION_MAJOR);
+        refuse_prepared(&row.path, &row.prepared, &reason, row.old_id.as_deref());
+        return;
+    }
+    if duplicate_manifest_id(&row.path, &id) {
+        crate::v8host::log_warn(&format!("WARN: poll_plugins: duplicate manifest id {:?} at {:?}; keeping the running version", id, row.path));
+        FILE_STAMPS.with(|stamps| { stamps.borrow_mut().insert(row.path.clone(), row.prepared.stamp); });
+        if let Some(old_id) = row.old_id.as_deref() {
+            WATCH_STATE.with(|watch| {
+                if let Some(existing) = watch.borrow_mut().get_mut(&row.path) {
+                    existing.id = old_id.to_string();
+                    existing.mtime = stamp_time(row.prepared.stamp);
+                }
+            });
         }
+        return;
+    }
+    if let Err(reason) = verify_compiled_against_batch(&row.prepared.manifest, &HashMap::new()) {
+        refuse_prepared(&row.path, &row.prepared, &reason, row.old_id.as_deref());
+        return;
+    }
+    let dependencies_ready = deps_satisfied(&row.prepared.manifest);
+    if !dependencies_ready && !allow_unmet_dependencies {
+        let watch_id = row.old_id.as_deref().unwrap_or(&id);
+        commit_path(&row.path, row.prepared.stamp, watch_id);
+        let frame = crate::v8host::current_frame();
+        WAITING.with(|waiting| {
+            waiting.borrow_mut().insert(id, WaitingLoad { row, since_frame: frame });
+        });
+        return;
+    }
+    if !dependencies_ready {
+        crate::v8host::log_warn(&format!(
+            "WARN: '{}': hard dependency producer not Active after ~30s - loading anyway (calls will throw InterfaceUnavailable until it appears)",
+            id
+        ));
+    }
+    if let Some(old_id) = row.old_id.as_deref() {
+        if crate::v8host::is_loading(old_id) {
+            crate::v8host::queue_pending_reload(old_id);
+            commit_path(&row.path, row.prepared.stamp, old_id);
+            crate::v8host::log_warn(&format!("[plugins] reload '{}' queued (still loading)", old_id));
+            return;
+        }
+    }
+    let override_json = row.config.as_ref().and_then(|snapshot| snapshot.content.as_deref());
+    let cfg = crate::v8host::materialize_for_load_snapshot(
+        &id,
+        &row.prepared.manifest.config,
+        override_json,
+    );
+    if let Some(old_id) = row.old_id.as_deref() { crate::v8host::unload_plugin(old_id); }
+    begin_load_prepared(&row.prepared, &cfg, &row.path);
+}
+
+fn drain_ready(budget: &mut LoaderDrainBudget) {
+    loop {
+        let Some(item) = take_ready(budget) else { return };
+        apply_prepared(item);
     }
 }
 
-fn schedule_periodic() {
-    if SCAN_IN_FLIGHT.with(Cell::get) || ACTIVE_BATCH.with(|b| b.borrow().is_some()) { return; }
-    if let Ok(path) = resolve_config_path(PERMISSIONS_CONFIG_ID) {
-        // Permission state must be resolved before a scan can admit plugins whose
-        // gamedata registration depends on it. Keep this scan uncommitted when
-        // the bounded config queue cannot accept the obligation; the next cadence
-        // retries both operations.
-        if !queue_config(path, ConfigConsumer::Permissions) { return; }
-    }
+fn take_ready(budget: &mut LoaderDrainBudget) -> Option<ApplyItem> {
+    let weight = READY_APPLY.with(|queue| queue.borrow().front().map(|item| item.row.lease.bytes))?;
+    if !budget.try_admit(weight) { return None; }
+    READY_APPLY.with(|queue| queue.borrow_mut().pop_front())
+}
+
+fn schedule_scan() {
+    if SCAN_IN_FLIGHT.with(Cell::get)
+        || ACTIVE_BATCH.with(|b| b.borrow().is_some())
+        || READY_APPLY.with(|queue| !queue.borrow().is_empty())
+    { return; }
     let watched: Vec<(String, PathBuf)> = CONFIG_PATHS.with(|p| p.borrow().iter().map(|(a, b)| (a.clone(), b.clone())).collect());
     for (id, path) in watched { let _ = queue_config(path, ConfigConsumer::Watch { id }); }
     let Some(dir) = PLUGINS_DIR.with(|d| d.borrow().clone()) else { return };
@@ -854,19 +1079,32 @@ fn schedule_periodic() {
     if matches!(submit, Submit::Accepted | Submit::Coalesced) { SCAN_IN_FLIGHT.with(|s| s.set(true)); }
 }
 
+fn schedule_periodic() {
+    if SCAN_IN_FLIGHT.with(Cell::get)
+        || ACTIVE_BATCH.with(|b| b.borrow().is_some())
+        || READY_APPLY.with(|queue| !queue.borrow().is_empty())
+        || PERMISSIONS_SCAN_PENDING.with(Cell::get)
+    { return; }
+    if let Ok(path) = resolve_config_path(PERMISSIONS_CONFIG_ID) {
+        // Do not merely enqueue this read ahead of the scan: a coalesced in-flight read can put its
+        // rerun behind a later scan. Admit the scan only after this exact result was applied.
+        if queue_config(path, ConfigConsumer::Permissions) {
+            PERMISSIONS_SCAN_PENDING.with(|pending| pending.set(true));
+        }
+        return;
+    }
+    schedule_scan();
+}
+
 pub(crate) fn poll_plugins() {
     drain_command_intents();
-    let start = Instant::now();
     let (max_items, max_bytes, max_time) = POLICY.with(|p| (p.drain_items, p.drain_bytes, Duration::from_micros(p.drain_micros)));
+    let mut budget = LoaderDrainBudget::new(max_items, max_bytes, max_time);
     let epoch = current_epoch();
-    let mut items = 0usize;
-    let mut bytes = 0usize;
-    loop {
-        if items >= max_items || (items > 0 && (bytes >= max_bytes || start.elapsed() >= max_time)) { break; }
+    while budget.can_poll_unknown() {
         let result = WORKER.with(|w| w.borrow().as_ref().and_then(LoaderWorker::try_result));
         let Some(result) = result else { break };
-        bytes = bytes.saturating_add(result.weight());
-        items += 1;
+        budget.charge_polled(result.weight());
         match result {
             WorkerResult::Scan { epoch: e, revision, entries } if e == epoch => handle_scan(revision, entries),
             WorkerResult::Plugin { epoch: e, revision, path, prepared } if e == epoch => handle_plugin(revision, path, prepared),
@@ -874,6 +1112,7 @@ pub(crate) fn poll_plugins() {
             _ => {}
         }
     }
+    drain_ready(&mut budget);
     let count = DRAIN_COUNT.with(|c| { let n = c.get(); c.set(n.wrapping_add(1)); n });
     if count % POLL_THROTTLE == 0 { schedule_periodic(); }
 }
@@ -886,15 +1125,16 @@ pub(crate) fn shutdown_worker() {
     if let Some(worker) = worker { worker.shutdown(); }
     SCAN_IN_FLIGHT.with(|s| s.set(false));
     ACTIVE_BATCH.with(|b| { b.borrow_mut().take(); });
+    READY_APPLY.with(|queue| queue.borrow_mut().clear());
     CONFIG_PENDING.with(|p| p.borrow_mut().clear());
     CONFIG_PATHS.with(|p| p.borrow_mut().clear());
     CONFIG_SEEDED.with(|s| s.borrow_mut().clear());
+    PERMISSIONS_SCAN_PENDING.with(|pending| pending.set(false));
     FILE_STAMPS.with(|s| s.borrow_mut().clear());
     WATCH_STATE.with(|w| w.borrow_mut().clear());
     SUPPRESSED.with(|s| s.borrow_mut().clear());
     PENDING_OPS.with(|p| p.borrow_mut().clear());
     PATH_REVISIONS.with(|r| r.borrow_mut().clear());
-    WATCHED_CONFIGS.with(|w| w.borrow_mut().clear());
     WAITING.with(|w| w.borrow_mut().clear());
     SCAN_REVISION.with(|r| r.set(0));
     DRAIN_COUNT.with(|c| c.set(0));
@@ -981,6 +1221,26 @@ mod tests {
 
     extern "C" fn test_config_path(_id: *const c_char) -> *const c_char {
         b"/tmp/s2script-config.json\0".as_ptr().cast()
+    }
+
+    fn prepared_row(
+        manifest: Manifest,
+        old_id: Option<&str>,
+        bytes: usize,
+        ledger: &RetainedLedger,
+    ) -> PreparedLoad {
+        let prepared = PreparedPlugin::for_test(
+            manifest,
+            "module.exports.OnPluginStart = function() {};",
+            bytes,
+        );
+        PreparedLoad {
+            path: PathBuf::from(format!("{}.s2sp", prepared.manifest.id)),
+            old_id: old_id.map(str::to_string),
+            prepared,
+            config: None,
+            lease: ledger.try_acquire(bytes).expect("test payload fits"),
+        }
     }
 
     // -------------------------------------------------------------------
@@ -1205,6 +1465,187 @@ mod tests {
         assert!(verify_compiled_against_batch(&consumer, &batch).is_ok());
         let stale = HashMap::from([("iface".to_string(), "old-hash".to_string())]);
         assert!(verify_compiled_against_batch(&consumer, &stale).unwrap_err().contains("contract drift"));
+    }
+
+    #[test]
+    fn retained_payload_lease_stays_charged_across_moves_and_config_growth() {
+        let ledger = RetainedLedger::new(2, 12);
+        let mut lease = ledger.try_acquire(7).expect("first payload fits");
+        assert_eq!(ledger.usage(), (1, 7));
+        assert!(lease.try_grow(5));
+        assert_eq!(ledger.usage(), (1, 12));
+        assert!(!lease.try_grow(1));
+        let moved = Some(lease);
+        assert_eq!(ledger.usage(), (1, 12), "moving ownership must retain the charge");
+        drop(moved);
+        assert_eq!(ledger.usage(), (0, 0), "dropping ownership releases the charge");
+    }
+
+    #[test]
+    fn contract_fixed_point_removes_consumers_of_a_refused_candidate_producer() {
+        let producer: Manifest = serde_json::from_str(
+            r#"{
+                "id":"producer","version":"2","apiVersion":"2.x",
+                "publishes":{"iface":{"version":"2","typesSha256":"new"}},
+                "compiledAgainst":{"gate":"wrong"}
+            }"#,
+        ).unwrap();
+        let consumer: Manifest = serde_json::from_str(
+            r#"{
+                "id":"consumer","version":"2","apiVersion":"2.x",
+                "compiledAgainst":{"iface":"new"}
+            }"#,
+        ).unwrap();
+        let candidates = vec![
+            (PathBuf::from("producer.s2sp"), &producer),
+            (PathBuf::from("consumer.s2sp"), &consumer),
+        ];
+        let rejected = resolve_contract_rejections(&candidates, &std::collections::HashSet::new(), |name| {
+            match name {
+                "gate" => Some("current".to_string()),
+                "iface" => Some("old".to_string()),
+                _ => None,
+            }
+        });
+        assert!(rejected.contains_key(Path::new("producer.s2sp")));
+        assert!(rejected.contains_key(Path::new("consumer.s2sp")));
+    }
+
+    #[test]
+    fn drain_budget_defers_a_second_large_apply_instead_of_draining_the_batch() {
+        let mut budget = LoaderDrainBudget::new(8, 10, Duration::from_secs(1));
+        assert!(budget.try_admit(7));
+        assert!(!budget.try_admit(7));
+        assert_eq!(budget.items(), 1);
+    }
+
+    #[test]
+    fn ready_apply_queue_keeps_the_second_payload_charged_for_a_later_frame() {
+        READY_APPLY.with(|queue| queue.borrow_mut().clear());
+        let ledger = RetainedLedger::new(2, 20);
+        let manifest_a: Manifest = serde_json::from_str(
+            r#"{"id":"a","version":"1","apiVersion":"2.x"}"#,
+        ).unwrap();
+        let manifest_b: Manifest = serde_json::from_str(
+            r#"{"id":"b","version":"1","apiVersion":"2.x"}"#,
+        ).unwrap();
+        READY_APPLY.with(|queue| {
+            queue.borrow_mut().extend([
+                ApplyItem { row: prepared_row(manifest_a, None, 7, &ledger), allow_unmet_dependencies: false },
+                ApplyItem { row: prepared_row(manifest_b, None, 7, &ledger), allow_unmet_dependencies: false },
+            ]);
+        });
+        let mut budget = LoaderDrainBudget::new(8, 10, Duration::from_secs(1));
+        let first = take_ready(&mut budget).expect("first apply is admitted");
+        assert!(take_ready(&mut budget).is_none(), "second apply must remain queued");
+        assert_eq!(READY_APPLY.with(|queue| queue.borrow().len()), 1);
+        assert_eq!(ledger.usage(), (2, 14));
+        drop(first);
+        READY_APPLY.with(|queue| queue.borrow_mut().clear());
+        assert_eq!(ledger.usage(), (0, 0));
+    }
+
+    #[test]
+    fn periodic_apply_queues_reload_instead_of_tearing_down_a_loading_factory() {
+        crate::v8host::init(crate::v8host::frame_tests::dummy_logger()).unwrap();
+        crate::v8host::load_plugin_js(
+            "slow",
+            "module.exports.default={__s2plugin:1,factory:function(){return new Promise(function(){});}};",
+            "{}",
+        );
+        assert!(crate::v8host::is_loading("slow"));
+        let ledger = RetainedLedger::new(1, 1024);
+        let manifest: Manifest = serde_json::from_str(
+            r#"{"id":"slow","version":"2","apiVersion":"2.x"}"#,
+        ).unwrap();
+        apply_prepared(ApplyItem {
+            row: prepared_row(manifest, Some("slow"), 64, &ledger),
+            allow_unmet_dependencies: false,
+        });
+        assert!(crate::v8host::is_loading("slow"), "the original loading generation must remain");
+        assert_eq!(ledger.usage(), (0, 0));
+        crate::v8host::shutdown();
+    }
+
+    #[test]
+    fn waiting_release_revalidates_contract_against_the_now_live_producer() {
+        crate::v8host::init(crate::v8host::frame_tests::dummy_logger()).unwrap();
+        crate::v8host::set_plugin_publishes(
+            "producer",
+            HashMap::from([("iface".to_string(), PublishDecl {
+                version: "1".to_string(),
+                types_sha256: "old".to_string(),
+            })]),
+        );
+        crate::v8host::frame_tests::load_body(
+            "producer",
+            r#"const {publishInterface}=require("@s2script/interfaces"); publishInterface("iface", {});"#,
+            "{}",
+        );
+        assert_eq!(crate::v8host::iface_published_types_sha256("iface").as_deref(), Some("old"));
+
+        let ledger = RetainedLedger::new(1, 1024);
+        let manifest: Manifest = serde_json::from_str(
+            r#"{
+                "id":"consumer","version":"1","apiVersion":"2.x",
+                "pluginDependencies":{"iface":"1.x"},
+                "compiledAgainst":{"iface":"new"}
+            }"#,
+        ).unwrap();
+        WAITING.with(|waiting| {
+            waiting.borrow_mut().insert("consumer".to_string(), WaitingLoad {
+                row: prepared_row(manifest, None, 64, &ledger),
+                since_frame: crate::v8host::current_frame(),
+            });
+        });
+        assert_eq!(ledger.usage(), (1, 64), "WAITING must retain the payload charge");
+        start_unblocked_waiters();
+        let mut budget = LoaderDrainBudget::new(8, 1024, Duration::from_secs(1));
+        drain_ready(&mut budget);
+        assert!(crate::v8host::is_failed("consumer"));
+        assert_eq!(ledger.usage(), (0, 0));
+        crate::v8host::shutdown();
+    }
+
+    #[test]
+    fn invalid_waiting_reload_keeps_the_running_generation() {
+        crate::v8host::init(crate::v8host::frame_tests::dummy_logger()).unwrap();
+        crate::v8host::frame_tests::load_body("old", "", "{}");
+        crate::v8host::set_plugin_publishes(
+            "producer",
+            HashMap::from([("iface".to_string(), PublishDecl {
+                version: "1".to_string(),
+                types_sha256: "old".to_string(),
+            })]),
+        );
+        crate::v8host::frame_tests::load_body(
+            "producer",
+            r#"const {publishInterface}=require("@s2script/interfaces"); publishInterface("iface", {});"#,
+            "{}",
+        );
+
+        let ledger = RetainedLedger::new(1, 1024);
+        let manifest: Manifest = serde_json::from_str(
+            r#"{
+                "id":"replacement","version":"2","apiVersion":"2.x",
+                "pluginDependencies":{"iface":"1.x"},
+                "compiledAgainst":{"iface":"new"}
+            }"#,
+        ).unwrap();
+        WAITING.with(|waiting| {
+            waiting.borrow_mut().insert("replacement".to_string(), WaitingLoad {
+                row: prepared_row(manifest, Some("old"), 64, &ledger),
+                since_frame: crate::v8host::current_frame(),
+            });
+        });
+        start_unblocked_waiters();
+        let mut budget = LoaderDrainBudget::new(8, 1024, Duration::from_secs(1));
+        drain_ready(&mut budget);
+
+        assert_eq!(crate::v8host::plugin_phase("old"), Some(crate::plugin::Phase::Active));
+        assert!(crate::v8host::plugin_phase("replacement").is_none());
+        assert_eq!(ledger.usage(), (0, 0));
+        crate::v8host::shutdown();
     }
 
     #[test]
