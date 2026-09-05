@@ -30,7 +30,7 @@ const natives = [...coreSrc.matchAll(/set_native\(\s*scope\s*,\s*global_obj\s*,\
 
 // 2. Globals core installs by a path other than `set_native` (each needs a citation, so that a
 //    stale entry is findable). `console` is built in Rust and set directly on the global object.
-const extraFromRust = ["console"]; // v8host.rs — `let console_key = v8::String::new(scope, "console")`
+const extraFromRust = ["console"]; // v8host/natives.rs — set directly on the global object
 
 // 3. The module objects this file itself publishes on `globalThis` and then reads back as bare
 //    globals later in the same file. Legitimate at runtime (a `globalThis` property IS a global);

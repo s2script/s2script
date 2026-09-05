@@ -21,21 +21,22 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-RS="core/src/v8host.rs"
+RS_ENV="core/src/v8host.rs"
+RS_REG="core/src/v8host/natives.rs"
 CPP="shim/src/s2script_mm.cpp"
 
 # core:  std::env::var_os("S2_DEFER_SELFTEST").is_some()
-rs_var="$(sed -n 's/.*std::env::var_os(\"\([A-Z0-9_]\+\)\").*/\1/p' "$RS" | sort -u)"
+rs_var="$(sed -n 's/.*std::env::var_os(\"\([A-Z0-9_]\+\)\").*/\1/p' "$RS_ENV" | sort -u)"
 # shim:  static const bool on = (getenv("S2_DEFER_SELFTEST") != nullptr);   (inside S2_DeferSelfTestArmed)
 cpp_var="$(sed -n '/^static bool S2_DeferSelfTestArmed/,/^}/p' "$CPP" \
            | sed -n 's/.*getenv("\([A-Z0-9_]\+\)").*/\1/p')"
 
 if [ -z "$rs_var" ]; then
-  echo "check-defer-selftest-gate: FAIL — no \`std::env::var_os(\"<NAME>\")\` in $RS" >&2
+  echo "check-defer-selftest-gate: FAIL — no \`std::env::var_os(\"<NAME>\")\` in $RS_ENV" >&2
   exit 1
 fi
 if [ "$(printf '%s\n' "$rs_var" | wc -l)" -ne 1 ]; then
-  echo "check-defer-selftest-gate: FAIL — $RS reads more than one env var, so this gate can no" \
+  echo "check-defer-selftest-gate: FAIL — $RS_ENV reads more than one env var, so this gate can no" \
        "longer tell which one arms the selftest:" >&2
   printf '  %s\n' $rs_var >&2
   exit 1
@@ -47,7 +48,7 @@ if [ -z "$cpp_var" ] || [ "$(printf '%s\n' "$cpp_var" | wc -l)" -ne 1 ]; then
 fi
 if [ "$rs_var" != "$cpp_var" ]; then
   echo "check-defer-selftest-gate: FAIL — the selftest's arming variable DRIFTED" >&2
-  echo "  $RS:  $rs_var" >&2
+  echo "  $RS_ENV:  $rs_var" >&2
   echo "  $CPP: $cpp_var" >&2
   echo "  These MUST be identical, or the gate silently proves nothing." >&2
   exit 1
@@ -55,13 +56,13 @@ fi
 
 # The registration must be guarded. Find the one set_native call and require the nearest preceding
 # code line (comments and blanks skipped) to be the arming `if`.
-reg_lines="$(grep -n 'set_native(.*"__s2_defer_selftest"' "$RS" | cut -d: -f1)"
+reg_lines="$(grep -n 'set_native(.*"__s2_defer_selftest"' "$RS_REG" | cut -d: -f1)"
 if [ "$(printf '%s\n' "$reg_lines" | grep -c .)" -ne 1 ]; then
   echo "check-defer-selftest-gate: FAIL — expected exactly ONE set_native of __s2_defer_selftest" \
-       "in $RS (found: $(printf '%s\n' "$reg_lines" | grep -c .))" >&2
+       "in $RS_REG (found: $(printf '%s\n' "$reg_lines" | grep -c .))" >&2
   exit 1
 fi
-guard="$(sed -n "1,$((reg_lines - 1))p" "$RS" \
+guard="$(sed -n "1,$((reg_lines - 1))p" "$RS_REG" \
          | grep -vE '^[[:space:]]*(//.*)?$' | tail -1)"
 case "$guard" in
   *"if defer_selftest_armed() {"*) ;;
