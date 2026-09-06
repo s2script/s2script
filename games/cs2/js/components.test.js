@@ -10,13 +10,13 @@ const { readFileSync } = require("node:fs");
 const { join } = require("node:path");
 
 /** Evaluate components.js against a fresh stub host; returns the library plus the call log. */
-function mount() {
+function mount({ failOp = null, failActivation = false, onSurfaceRelease = null } = {}) {
   const calls = [];
   const clickHandlers = {};
   const frameHandlers = [];
   const surfaceRecords = new Map();
   let nextSurfaceToken = 1;
-  function reserveSurface(binding, key, mode, roots) {
+  function reserveSurface(binding, key, mode, roots, profile) {
     const slot = binding.slot;
     const live = [...surfaceRecords.values()].filter(r => r.key === key && r.slot === slot);
     let lane = roots.findIndex((_root, index) => !live.some(r => r.lane === index));
@@ -26,6 +26,7 @@ function mount() {
     }
     if (lane < 0) return { ok: false, error: { code: "Busy", message: "surface is busy" } };
     const token = `surface-${nextSurfaceToken++}`;
+    calls.push({ op: "surfaceReserve", key, mode, roots: roots.slice(), profile, slot });
     surfaceRecords.set(token, { token, key, slot, lane, root: roots[lane], mode, state: "ready" });
     return { ok: true, value: { token, lane } };
   }
@@ -35,11 +36,13 @@ function mount() {
     surfaceRecords.delete(token);
     calls.push({ op: "surfaceRelease", token, slot: record.slot, id: record.root });
     calls.push({ op: "hide", slot: record.slot, id: record.root, host: true });
+    if (onSurfaceRelease) onSurfaceRelease(record);
     return true;
   }
   const surface = {
     reserve: reserveSurface,
     clearLegacy(binding, key, roots) {
+      calls.push({ op: "surfaceClear", key, roots: roots.slice(), slot: binding.slot });
       const records = [...surfaceRecords.values()].filter(r => r.key === key && r.slot === binding.slot);
       const occupied = new Set(records.map(r => r.lane));
       for (const record of records) if (record.mode === "legacy") releaseSurface(record.token);
@@ -51,7 +54,7 @@ function mount() {
     state(token) { return surfaceRecords.get(token)?.state || "invalid"; },
     activate(_binding, token) {
       const record = surfaceRecords.get(token);
-      if (!record) return false;
+      if (!record || failActivation) return false;
       record.state = "active";
       return true;
     },
@@ -59,15 +62,15 @@ function mount() {
     release: releaseSurface,
   };
   const hud = {
-    set:      (s, id, v) => { calls.push({ op: "set", slot: s, id, value: v }); return null; },
-    setClass: (s, id, cls, on) => { calls.push({ op: "cls", slot: s, id, cls, on }); return null; },
-    show:     (s, id, opts) => { calls.push({ op: "show", slot: s, id, opts }); return null; },
-    hide:     (s, id) => { calls.push({ op: "hide", slot: s, id }); return null; },
+    set:      (s, id, v) => { calls.push({ op: "set", slot: s, id, value: v }); return failOp === "set" ? "engine failed" : null; },
+    setClass: (s, id, cls, on) => { calls.push({ op: "cls", slot: s, id, cls, on }); return failOp === "cls" ? "engine failed" : null; },
+    show:     (s, id, opts) => { calls.push({ op: "show", slot: s, id, opts }); return failOp === "show" ? "engine failed" : null; },
+    hide:     (s, id) => { calls.push({ op: "hide", slot: s, id }); return failOp === "hide" ? "engine failed" : null; },
     cursor:   () => null,
     _cursorForPanel: () => null,
     forget:   () => {},
     onClick:  (id, fn) => { clickHandlers[id] = fn; },
-    _focus: { onFrame: (fn) => frameHandlers.push(fn) },
+    _focus: { onFrame: (fn) => frameHandlers.push(fn), invalidate() {} },
     _surface: surface,
   };
   // A fresh global each mount. In production claims go through the __s2_ui_pool_* natives (the
@@ -174,6 +177,64 @@ test("hideAll atomically clears legacy surfaces while preserving explicit handle
   assert.equal(owned.value.isValid(), true);
   assert.ok(after.some(c => c.op === "hide" && c.id === "s2_callout"));
   assert.ok(!after.some(c => c.op === "hide" && c.id === "s2_banner"));
+  assert.deepEqual(after.filter(c => c.op === "surfaceClear").map(c => c.key), [
+    "cs2:hudkit:owned:toast", "cs2:hudkit:owned:callout", "cs2:hudkit:owned:banner",
+    "cs2:hudkit:owned:motd", "cs2:hudkit:owned:dashboard",
+  ]);
+});
+
+test("component entry points request their exact owned roots and adapter profiles", () => {
+  const { ui, calls } = mount();
+  ui.forSlot(1).tryOwnToast({ holdSeconds: 0 });
+  ui.forSlot(2).tryOwnCallout({ holdSeconds: 0 });
+  ui.forSlot(3).tryOwnBanner({ holdSeconds: 0 });
+  ui.forSlot(4).tryOwnMotd({ title: "M" });
+  ui.tryOwnDashboard({ title: "D", tabs: [{ id: "t", title: "T" }], rows: () => [] })
+    .value.tryOpenResult(5);
+  assert.deepEqual(calls.filter(c => c.op === "surfaceReserve").map(c =>
+    [c.key, c.mode, c.roots, c.profile]), [
+    ["cs2:hudkit:owned:toast", "explicit", ["s2_t0", "s2_t1", "s2_t2", "s2_t3"], "visual"],
+    ["cs2:hudkit:owned:callout", "explicit", ["s2_callout"], "visual"],
+    ["cs2:hudkit:owned:banner", "explicit", ["s2_banner"], "visual"],
+    ["cs2:hudkit:owned:motd", "explicit", ["s2_motd"], "interactive"],
+    ["cs2:hudkit:owned:dashboard", "explicit", ["s2_dash"], "interactive"],
+  ]);
+});
+
+test("owned transient and dashboard source-paint failures release their exact reservations", () => {
+  const factories = [
+    ui => ui.forSlot(1).tryOwnToast({ title: "T", holdSeconds: 0 }),
+    ui => ui.forSlot(1).tryOwnCallout({ message: "C", holdSeconds: 0 }),
+    ui => ui.forSlot(1).tryOwnBanner({ text: "B", holdSeconds: 0 }),
+    ui => ui.forSlot(1).tryOwnMotd({ title: "M" }),
+    ui => ui.tryOwnDashboard({ title: "D", tabs: [{ id: "t", title: "T" }], rows: () => [] })
+      .value.tryOpenResult(1),
+  ];
+  for (const make of factories) {
+    const { ui, surfaceRecords } = mount({ failOp: "set" });
+    const result = make(ui);
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "PaintFailed");
+    assert.equal(surfaceRecords.size, 0);
+  }
+});
+
+test("owned transient and dashboard activation failures release their exact reservations", () => {
+  const factories = [
+    ui => ui.forSlot(1).tryOwnToast({ title: "T", holdSeconds: 0 }),
+    ui => ui.forSlot(1).tryOwnCallout({ message: "C", holdSeconds: 0 }),
+    ui => ui.forSlot(1).tryOwnBanner({ text: "B", holdSeconds: 0 }),
+    ui => ui.forSlot(1).tryOwnMotd({ title: "M" }),
+    ui => ui.tryOwnDashboard({ title: "D", tabs: [{ id: "t", title: "T" }], rows: () => [] })
+      .value.tryOpenResult(1),
+  ];
+  for (const make of factories) {
+    const { ui, surfaceRecords } = mount({ failActivation: true });
+    const result = make(ui);
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "PaintFailed");
+    assert.equal(surfaceRecords.size, 0);
+  }
 });
 
 test("a badge sets exactly one corner class", () => {
@@ -825,6 +886,92 @@ test("dashboard paints plugin tabs and picks an item on the active tab", () => {
   assert.ok(calls.some((c) => c.op === "set" && c.id === "s2_dash_r0_a" && c.value === "Kick"));
   clickHandlers.s2_dash_r0(1);
   assert.deepStrictEqual(picked, [{ slot: 1, tabId: "bans", id: "bb:kick" }]);
+});
+
+test("owned dashboards claim on open, arbitrate independently, and dispose exactly", () => {
+  const { ui, surfaceRecords, calls } = mount();
+  const spec = { title: "Owned", tabs: [{ id: "main", title: "Main" }], rows: () => [] };
+  const first = ui.tryOwnDashboard(spec);
+  const second = ui.tryOwnDashboard(spec);
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.equal(surfaceRecords.size, 0, "construction must not claim a player surface");
+
+  const firstOpen = first.value.tryOpenResult(1);
+  assert.equal(firstOpen.ok, true);
+  assert.equal(second.value.tryOpenResult(1).error.code, "Busy");
+  first.value.dispose();
+  first.value.dispose();
+  assert.equal(firstOpen.value.isValid(), false);
+  assert.equal(first.value.tryOpenResult(1).error.code, "Released");
+
+  const secondOpen = second.value.tryOpenResult(1);
+  assert.equal(secondOpen.ok, true);
+  assert.equal(secondOpen.value.isOpen(), true);
+  second.value.dispose();
+  assert.equal(calls.filter(c => c.op === "surfaceRelease" && c.id === "s2_dash").length, 2);
+});
+
+test("owned dashboard disposal fences same-controller reentrant opens before native effects", () => {
+  let owned, reentrant;
+  const { ui, surfaceRecords } = mount({
+    onSurfaceRelease(record) {
+      if (record.root === "s2_dash" && !reentrant) reentrant = owned.tryOpenResult(1);
+    },
+  });
+  owned = ui.tryOwnDashboard({ title: "Owned", tabs: [{ id: "main", title: "Main" }],
+    rows: () => [] }).value;
+  assert.equal(owned.tryOpenResult(1).ok, true);
+
+  owned.dispose();
+
+  assert.equal(reentrant.error.code, "Released");
+  assert.equal(surfaceRecords.size, 0, "dispose must not strand a reentrant replacement lease");
+});
+
+test("dashboard hideAll and disposal preserve or cancel the matching dirty lifetime", () => {
+  const { ui, frame } = mount();
+  let ownedReads = 0;
+  const owned = ui.tryOwnDashboard({ title: "Owned", tabs: [{ id: "o", title: "O" }],
+    rows: () => { ownedReads++; return []; } }).value;
+  const ownedView = owned.tryOpenResult(1).value;
+  owned.invalidate(1);
+  ui.hideAll(1);
+  assert.equal(ownedView.isOpen(), true, "hideAll must preserve an explicit dashboard");
+  assert.equal(ui._pendingInvalidationCount(), 1, "explicit deferred work remains owned");
+  frame();
+  assert.equal(ownedReads, 2);
+  owned.dispose();
+
+  let legacyReads = 0;
+  const legacy = ui.dashboard({ title: "Legacy", tabs: [{ id: "l", title: "L" }],
+    rows: () => { legacyReads++; return []; } });
+  legacy.open(1);
+  legacy.invalidate(1);
+  assert.equal(ui._pendingInvalidationCount(), 1);
+  ui.hideAll(1);
+  assert.equal(legacy.isOpen(1), false);
+  assert.equal(ui._pendingInvalidationCount(), 0, "legacy retirement cancels its queued repaint");
+  frame();
+  assert.equal(legacyReads, 1);
+});
+
+test("forget retires an owned dashboard state and cancels its queued repaint", () => {
+  const { ui, frame, surfaceRecords } = mount();
+  let reads = 0;
+  const owned = ui.tryOwnDashboard({ title: "Owned", tabs: [{ id: "o", title: "O" }],
+    rows: () => { reads++; return []; } }).value;
+  const view = owned.tryOpenResult(1).value;
+  view.invalidate();
+  assert.equal(ui._pendingInvalidationCount(), 1);
+
+  ui.hud.forget(1);
+
+  assert.equal(view.isOpen(), false);
+  assert.equal(surfaceRecords.size, 0);
+  assert.equal(ui._pendingInvalidationCount(), 0);
+  frame();
+  assert.equal(reads, 1);
 });
 
 test("dashboard row and tab clicks use the submitted snapshots after provider reorder", () => {

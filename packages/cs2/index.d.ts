@@ -31,6 +31,7 @@ export type {
   Dashboard,
   DashboardSpec,
   DashboardView,
+  OwnedDashboard,
   DashRow,
   DashTab,
   FooterButton,

@@ -550,8 +550,8 @@ export interface DashboardView {
 }
 
 /**
- * Tabbed hub over `s2_dash` on `s2script_lib.xml`. One spec at a time (last claim wins).
- * Not a modal-pool slot and not a third `s2_mN` sheet.
+ * Tabbed hub over `s2_dash` on `s2script_lib.xml`. The legacy controller uses one spec at a time
+ * (last configuration wins). Not a modal-pool slot and not a third `s2_mN` sheet.
  */
 export interface Dashboard {
   open(slot: number, opts?: { tab?: string; cursor?: boolean; focus?: UiFocusOptions }): DashboardView;
@@ -566,6 +566,11 @@ export interface Dashboard {
   /** Repaint one player and report the submitted drive result. */
   tryRefresh(slot: number): UiResult<void>;
   forSlot(slot: number): DashboardView;
+}
+
+/** An independently disposable dashboard controller with explicit per-player surface claims. */
+export interface OwnedDashboard extends Dashboard {
+  dispose(): void;
 }
 
 export interface HudKitPlayer {
@@ -607,10 +612,12 @@ export interface HudKit {
   /** Claim a pooled modal and expose pool exhaustion as a structured result. */
   tryModal(spec: ModalSpec): UiResult<Modal>;
   /**
-   * Bind the shared TopMenu dashboard. Last spec wins. Always returns a handle
-   * (the panel is a single root, not a pool).
+   * Bind the legacy shared TopMenu dashboard controller. Last spec wins. Always returns a handle;
+   * each open reserves host occupancy for that player.
    */
   dashboard(spec: DashboardSpec): Dashboard;
+  /** Construct an independent dashboard controller; each player is claimed when opened. */
+  tryOwnDashboard(spec: DashboardSpec): UiResult<OwnedDashboard>;
   /** Claim a pooled corner badge. Null when all are in use. */
   badge(spec?: BadgeSpec): Badge | null;
   /** Claim a pooled corner badge and expose pool exhaustion as a structured result. */
@@ -620,7 +627,7 @@ export interface HudKit {
   banner(slot: number, spec: BannerSpec): HudResult;
   motd(slot: number, spec: MotdSpec): MotdHandle;
   forSlot(slot: number): HudKitPlayer;
-  /** Hide every pooled panel for one player. */
+  /** Clear this context's pooled panels and legacy shared surfaces; explicit claims are preserved. */
   hideAll(slot: number): void;
   forget(slot: number): void;
   /**

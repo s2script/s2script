@@ -89,6 +89,7 @@ test("CS2 prelude defers hudkit binding to the plugin's ctx-bound ui base", () =
   const hudkit = globalThis.__s2pkg_cs2.hudkit;
   assert.equal(typeof hudkit.modal, "function");
   assert.equal(typeof hudkit.dashboard, "function");
+  assert.equal(typeof hudkit.tryOwnDashboard, "function");
   assert.equal(typeof hudkit.whenLive, "function");
 
   // Prelude eval bound NOTHING: there is no load ctx yet, so a kit minted here could only sit on
@@ -96,7 +97,7 @@ test("CS2 prelude defers hudkit binding to the plugin's ctx-bound ui base", () =
   // core's chat renderer must still be the registered menu renderer at this point.
   assert.deepEqual(registered, {}, "menuhud must not overwrite the core chat renderer at prelude eval");
   assert.equal(voteRenderer, undefined, "voterail must not register a tally renderer at prelude eval");
-  for (const member of ["modal", "tryModal", "dashboard", "badge", "tryBadge", "toast", "callout", "banner",
+  for (const member of ["modal", "tryModal", "dashboard", "tryOwnDashboard", "badge", "tryBadge", "toast", "callout", "banner",
     "motd", "forSlot", "hideAll", "forget", "ensure", "budget"]) {
     assert.throws(() => hudkit[member](),
       new RegExp("hudkit\\." + member + " requires plugin context.*OnPluginStart"), member);
@@ -144,6 +145,7 @@ function pluginWorld(options = {}) {
   const focus = new Map();
   const owned = new Map();
   const focusCalls = [];
+  const activationCalls = [];
   let nextFocus = 1;
   let nextOwned = 1;
   function live(r) {
@@ -249,6 +251,7 @@ function pluginWorld(options = {}) {
           const parent = owned.get(r.parentToken);
           if (!parent || parent.state !== "active") return false;
         }
+        activationCalls.push(token);
         r.state = "active"; r.activatedEpoch = activeEpoch; return true;
       },
       __s2_surface_active(token) {
@@ -365,7 +368,8 @@ function pluginWorld(options = {}) {
     finally { activeEpoch = previous; }
   }
   return {
-    owners, writes, plugins, plugin, session, dispatchClick, client: clientFor, focus, focusCalls, owned,
+    owners, writes, plugins, plugin, session, dispatchClick, client: clientFor, focus, focusCalls,
+    activationCalls, owned,
     frame() {
       for (const r of focus.values()) if (r.state === "waiting" && live(r) && winner(r) === r) r.state = "ready";
       for (const p of plugins) p.lifecycle.frame.forEach(fn => fn());
@@ -460,6 +464,45 @@ test("hideAll preserves explicit owned surfaces", () => {
   a.hudkit.hideAll(1);
   assert.equal(owned.isValid(), true);
   assert.equal([...w.owned.values()].some(r => r.mode === "legacy" && r.slot === 1), false);
+});
+
+test("owned dashboards claim per player, fence callbacks, and activate parent before linked focus", () => {
+  const w = pluginWorld();
+  const a = w.plugin(), b = w.plugin();
+  let aReads = 0, aPicks = 0, bReads = 0, bPicks = 0;
+  const specA = { title: "A", tabs: [{ id: "a", title: "A" }],
+    rows: () => { aReads++; return [{ id: "a-row", a: "A" }]; }, onPick: () => aPicks++ };
+  const specB = { title: "B", tabs: [{ id: "b", title: "B" }],
+    rows: () => { bReads++; return [{ id: "b-row", a: "B" }]; }, onPick: () => bPicks++ };
+  const ownedA = a.hudkit.tryOwnDashboard(specA).value;
+  const ownedB = b.hudkit.tryOwnDashboard(specB).value;
+  assert.equal(w.owned.size, 0, "controller construction is not a player claim");
+
+  const openedA = ownedA.tryOpenResult(1, { focus: { mode: "exclusive", priority: 4 } });
+  assert.equal(openedA.ok, true);
+  assert.equal(ownedB.tryOpenResult(1).error.code, "Busy");
+  assert.equal(bReads, 0, "content providers run only after reservation");
+  const parent = [...w.owned.values()][0];
+  const child = [...w.focus.values()][0];
+  assert.deepEqual(parent.adapter, {});
+  assert.equal(child.parentToken, parent.token);
+  assert.deepEqual(child.adapter, {
+    capture: { call: "setInputCaptureEnabledForPlayer", token: "panel:s2_dash" },
+    suspend: { call: "setHasClassForPlayer", args: ["s2_dash", "s2-hide", 1] },
+  });
+  assert.deepEqual(w.activationCalls.slice(-2), [parent.token, child.token]);
+  w.dispatchClick(1, "s2_dash_r0");
+  assert.equal(aPicks, 1); assert.equal(bPicks, 0);
+  a.hudkit.hideAll(1);
+  assert.equal(openedA.value.isOpen(), true);
+
+  ownedA.dispose(); ownedA.dispose();
+  assert.equal(openedA.value.isValid(), false);
+  assert.equal(ownedA.tryOpenResult(1).error.code, "Released");
+  assert.equal(ownedB.tryOpenResult(1).ok, true);
+  w.dispatchClick(1, "s2_dash_r0");
+  assert.equal(aPicks, 1); assert.equal(bPicks, 1);
+  assert.equal(aReads, 1); assert.equal(bReads, 1);
 });
 
 test("14 idle plugins reserve no panels and every plugin can open a clickable menu after load", () => {
@@ -1227,15 +1270,15 @@ test("focus priority validates before replacing or evaluating a presentation", (
   assert.equal(w.focusCalls[0].priority, 0);
   assert.equal(w.focusCalls[0].surface, "cs2:hudkit:exclusive");
 });
-test("dashboard and MOTD join the same focus stack and covered same-root close cannot hide the winner", () => {
+test("legacy dashboard replacement retires its linked child before MOTD focus restoration", () => {
   const w = pluginWorld(), a = w.plugin(), b = w.plugin(); let reads = 0;
   const spec = { title: "Dash", tabs: [{ id: "t", title: "T" }], rows: () => { reads++; return [{ id: "r", a: "R" }]; } };
   const ad = a.hudkit.dashboard(spec), bd = b.hudkit.dashboard(spec);
-  ad.open(1, exclusive(2)); bd.open(1, exclusive(1)); assert.equal(reads, 1);
-  const before = w.writes.length; bd.close(1); assert.equal(w.writes.length, before);
+  ad.open(1, exclusive(2)); bd.open(1, exclusive(1)); assert.equal(reads, 2);
+  const before = w.writes.length; ad.close(1); assert.equal(w.writes.length, before);
   const motd = b.hudkit.motd(1, { title: "Rules", ...exclusive(3) });
   assert.equal(motd.isValid(), true); assert.equal(w.focus.size, 2);
-  motd.close(); w.frame(); assert.equal(reads, 2);
+  motd.close(); w.frame(); assert.equal(reads, 3);
 });
 
 test("focused failures retire exact tokens, disable actions and require explicit retry", () => {
@@ -1322,14 +1365,35 @@ test("native activation fences the outer and nested delivery while raw observers
   assert.equal(bPicks, 0); assert.equal(raw, 4);
   w.dispatchClick(1, "s2_dash_r0"); assert.equal(bPicks, 1); assert.equal(raw, 6);
 });
-test("unloading a covered same-root dashboard preserves the winner and unloading a winner restores later", () => {
+test("unloading retired legacy dashboard contexts cannot alter their replacement", () => {
   const w = pluginWorld(), a = w.plugin(), b = w.plugin(), c = w.plugin();
   const spec = { title: "D", tabs: [{ id: "t", title: "T" }], rows: () => [] };
   const ad = a.hudkit.dashboard(spec), bd = b.hudkit.dashboard(spec), cd = c.hudkit.dashboard(spec);
   ad.open(1, exclusive(0)); bd.open(1, exclusive(1)); cd.open(1, exclusive(-1));
-  const before = w.writes.length; w.unload(c); assert.equal(w.writes.length, before);
-  w.unload(b); assert.equal([...w.focus.values()][0].state, "waiting"); w.frame();
-  assert.equal([...w.focus.values()][0].state, "active");
+  const before = w.writes.length;
+  w.unload(a); w.unload(b);
+  assert.equal(w.writes.length, before);
+  assert.equal(w.focus.size, 1);
+  w.unload(c);
+  assert.equal(w.focus.size, 0);
+});
+test("a replaced dashboard context drops queued work before provider evaluation", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin();
+  let aReads = 0, bReads = 0;
+  const ad = a.hudkit.dashboard({ title: "A", tabs: [{ id: "a", title: "A" }],
+    rows: () => { aReads++; return []; } });
+  const bd = b.hudkit.dashboard({ title: "B", tabs: [{ id: "b", title: "B" }],
+    rows: () => { bReads++; return []; } });
+  ad.open(1, exclusive(0));
+  ad.invalidate(1);
+  assert.equal(a.base.kit._pendingInvalidationCount(), 1);
+  bd.open(1, exclusive(1));
+
+  w.frame();
+
+  assert.equal(aReads, 1, "retired parent tokens must fence deferred providers");
+  assert.equal(bReads, 1);
+  assert.equal(a.base.kit._pendingInvalidationCount(), 0);
 });
 test("a throwing focused reopen releases its candidate even when a prior local state remains", () => {
   const w = pluginWorld(), p = w.plugin(); let fail = false;
@@ -1611,6 +1675,31 @@ test("invalidate is an explicit retry after a deferred focused failure", () => {
   assert.deepEqual(plain(view.lastUpdateResult()), { ok: true });
   assert.equal(p.base.kit._pendingInvalidationCount(), 0);
   assert.equal([...w.focus.values()][0].state, "active");
+});
+
+test("owned dashboard invalidate retries after a failed focused repaint retires both tokens", () => {
+  const options = {}, w = pluginWorld(options), p = w.plugin();
+  let reads = 0;
+  const owned = p.hudkit.tryOwnDashboard({ title: "Owned", tabs: [{ id: "t", title: "T" }],
+    rows: () => { reads++; return [{ id: "r", a: String(reads) }]; } }).value;
+  const view = owned.tryOpenResult(1, exclusive(0)).value;
+
+  options.failInvoke = "setDialogVariableStringForPlayer";
+  view.invalidate();
+  w.frame();
+  assert.equal(view.lastUpdateResult().ok, false);
+  assert.equal(w.owned.size, 0, "failed repaint retires the parent ownership token");
+  assert.equal(w.focus.size, 0, "parent retirement cascades the linked focus token");
+  const afterFailure = reads;
+
+  options.failInvoke = null;
+  view.invalidate();
+  assert.equal(p.base.kit._pendingInvalidationCount(), 1);
+  w.frame();
+  assert.equal(reads, afterFailure + 1);
+  assert.deepEqual(plain(view.lastUpdateResult()), { ok: true });
+  assert.equal(w.owned.size, 1);
+  assert.equal(w.focus.size, 1);
 });
 
 test("last completed update survives close but stale lifetimes cannot read replacement results", () => {

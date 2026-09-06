@@ -577,11 +577,12 @@
       if (disabled[slot] && disabled[slot][buttonId]) return false;
       var h = handlers[buttonId];
       var list = subscribers[buttonId];
-      var snapshot = list ? list.slice() : [];
+      var snapshot = [];
+      if (list) for (var si = 0; si < list.length; si++) snapshot.push(list[si].handler);
       if (!h && snapshot.length === 0) return false;
       var player = api.forSlot(slot);
       if (h) h(player);
-      for (var i = 0; i < snapshot.length; i++) snapshot[i].handler(player);
+      for (var i = 0; i < snapshot.length; i++) snapshot[i](player);
       return true;
     };
     api.forget = function (slot, client) {

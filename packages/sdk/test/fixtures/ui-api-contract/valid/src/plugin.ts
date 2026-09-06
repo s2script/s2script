@@ -4,6 +4,7 @@ import {
   type Dashboard,
   type DashboardSpec,
   type DashboardView,
+  type OwnedDashboard,
   type Modal,
   type ModalOpenResult,
   type ModalSpec,
@@ -59,6 +60,14 @@ export function OnPluginStart(): void {
     void viewRefresh;
   }
   void dashRefresh;
+
+  const ownedDashboard: OwnedDashboard | undefined = consumeResult(hudkit.tryOwnDashboard(dashboardSpec));
+  if (ownedDashboard) {
+    const ownedView = consumeResult(ownedDashboard.tryOpenResult(1));
+    ownedDashboard.invalidate(1);
+    ownedDashboard.dispose();
+    void ownedView;
+  }
 
   if (badge) {
     const badgeView = badge.show(1, { text: "ready" });

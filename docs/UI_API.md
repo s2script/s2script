@@ -64,6 +64,7 @@ The following methods are structured counterparts to existing APIs:
 interface HudLayout {
   status(): UiStatus;
   tryShow(slot: number, panelId: string, opts?: { cursor?: boolean }): UiResult<void>;
+  subscribeClick(buttonId: string, handler: (player: HudPlayer) => void): UiSubscription;
 }
 
 interface HudPlayer {
@@ -103,6 +104,14 @@ interface BadgeView {
 interface HudKit {
   tryModal(spec: ModalSpec): UiResult<Modal>;
   tryBadge(spec?: BadgeSpec): UiResult<Badge>;
+  tryOwnDashboard(spec: DashboardSpec): UiResult<OwnedDashboard>;
+}
+
+interface HudKitPlayer {
+  tryOwnToast(spec: ToastSpec): UiResult<UiSurfaceHandle>;
+  tryOwnBanner(spec: BannerSpec): UiResult<UiSurfaceHandle>;
+  tryOwnCallout(spec: CalloutSpec): UiResult<UiSurfaceHandle>;
+  tryOwnMotd(spec: MotdSpec): UiResult<UiSurfaceHandle>;
 }
 ```
 
@@ -110,6 +119,65 @@ Owner refresh methods require a `slot`, so a mixed bulk refresh cannot hide whic
 player failed. Bound views already identify their player and therefore use
 `tryRefresh()` with no argument. `tryShow` is available on layout/player and badge
 views. `tryOpenResult` is available on modal/dashboard owners and their views.
+
+## Owned shared surfaces
+
+Toast, banner, callout, MOTD, and dashboard roots are shared by every plugin using the shipped
+hudkit layout. Legacy presentation methods reserve host occupancy while they are visible, so an
+explicit claim reports `Busy` instead of overwriting them. An explicit claim never evicts another
+explicit claim.
+
+Transient claims are player-bound and return `UiSurfaceHandle`. Dashboard construction is
+player-independent: `tryOwnDashboard` creates an `OwnedDashboard`, and its `tryOpenResult(slot)`
+claims that player's dashboard root. This allows one controller to serve several players while
+contention remains isolated per connection. Dispose transient handles and owned dashboards when
+their work is done. Disposal is idempotent, and retained views report `Released` after their owner
+is disposed.
+
+```ts
+const banner = hudkit.forSlot(slot).tryOwnBanner({ text: "Match starts soon" });
+if (banner.ok) banner.value.dispose();
+
+const dashboard = hudkit.tryOwnDashboard(spec);
+if (dashboard.ok) {
+  const opened = dashboard.value.tryOpenResult(slot, { focus: { mode: "exclusive" } });
+  if (!opened.ok && opened.error.code === "Busy") {
+    // Another live presentation owns this player's dashboard root.
+  }
+}
+```
+
+Focused MOTD and dashboard claims keep their ownership while covered or waiting. Their physical
+focus lease is linked to the ownership claim, so replacement, disconnect, unload, and disposal
+retire capture and visibility together. Timers and stale disposers carry the exact host token and
+cannot fade or hide a replacement presentation.
+
+`hideAll(slot)` atomically clears legacy and free owned-surface lanes while preserving every
+explicit claim, including claims created by the caller. Dispose explicit handles directly. For
+modal and badge pools, `hideAll` closes only this plugin context's live claims. Generic writes
+through `HudLayout` remain raw operations outside ownership arbitration.
+
+## Disposable click subscriptions
+
+`HudLayout.subscribeClick` adds an independently disposable route and may coexist with the legacy
+single `onClick` handler. Disposal is idempotent. Event delivery snapshots the legacy handler and
+all subscription functions before invoking callbacks, so subscribing or disposing during a click
+changes the next delivery only.
+
+Inline literal `buttons` constrain subscription IDs and catch spelling errors without `as const`:
+
+```ts
+const layout = CustomHudLayout.create({
+  addons: ["1"],
+  resource: "panorama/layout/custom_game/example.xml",
+  buttons: ["accept", "cancel"],
+});
+const subscription = layout.subscribeClick("accept", player => handleAccept(player));
+subscription.dispose();
+```
+
+A dynamic `readonly string[]` keeps the `string` fallback. Legacy `onClick` also remains
+string-typed and retains its duplicate-handler error behavior.
 
 ## Explicit invalidation
 
@@ -256,6 +324,6 @@ MOTD-open method.
 
 Calls without `focus` retain their existing behavior. Raw `CustomHudLayout.onClicked`
 observers still receive events, and raw `HudInput` state/arming remains unchanged. Focus
-is not global click suppression: legacy menus, low-level layouts, manual drives, and
-broad legacy helpers such as `hideAll` remain outside this opt-in arbitration. Cooperating
-plugins must opt in and use their component handles for focused presentation cleanup.
+is not global click suppression: legacy menus, low-level layouts, and manual drives remain
+outside focus arbitration. Owned-surface-aware helpers preserve explicit claims; callers
+dispose their own component handles for focused presentation cleanup.

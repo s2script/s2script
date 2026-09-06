@@ -728,7 +728,7 @@ void modalResult; void dashResult;
 
 test("literal layout buttons constrain disposable subscriptions while dynamic arrays remain open", () => {
   const diagnostics = compileUiContract(`
-import { CustomHudLayout, hudkit, type UiResult, type UiSubscription, type UiSurfaceHandle } from "@s2script/cs2";
+import { CustomHudLayout, hudkit, type OwnedDashboard, type UiResult, type UiSubscription, type UiSurfaceHandle } from "@s2script/cs2";
 const literal = CustomHudLayout.create({
   addons: ["1"], resource: "panorama/layout/custom_game/x.xml", buttons: ["accept", "cancel"]
 });
@@ -741,8 +741,11 @@ const toast: UiResult<UiSurfaceHandle> = player.tryOwnToast({ title: "T" });
 const banner: UiResult<UiSurfaceHandle> = player.tryOwnBanner({ text: "B" });
 const callout: UiResult<UiSurfaceHandle> = player.tryOwnCallout({ message: "C" });
 const motd: UiResult<UiSurfaceHandle> = player.tryOwnMotd({ title: "M" });
+const dashboard: UiResult<OwnedDashboard> = hudkit.tryOwnDashboard({
+  title: "D", tabs: [{ id: "main", title: "Main" }], rows: () => []
+});
 declare function getButtons(): readonly string[];
-void toast; void banner; void callout; void motd;
+void toast; void banner; void callout; void motd; void dashboard;
 `);
   assert.equal(diagnostics.length, 0, ts.formatDiagnostics(diagnostics, {
     getCurrentDirectory: () => repoRoot, getCanonicalFileName: name => name, getNewLine: () => "\n",
