@@ -527,6 +527,8 @@ export function checkInteropCalls(
               );
             if (method === "watchOptional" && !optionalDependencies.has(name))
               report(node, "watchOptional requires an optionalPluginDependencies entry");
+            if (method === "bindForwards" && optionalDependencies.has(name))
+              report(node, "bindForwards requires a pluginDependencies entry");
             if (method === "watchOptional" && node.arguments[1]) {
               const callback = node.arguments[1];
               const type = checker.getTypeAtLocation(implementationExpression(checker, callback));

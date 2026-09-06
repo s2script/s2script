@@ -46,6 +46,44 @@ import { on } from "@demo/counter";
 on("OnCountChanged", event => console.log(event.count));
 ```
 
+Use `.on` for an inline callback: the selected provider contract infers the payload and the
+returned `Subscription` controls that exact registration. Use `bindForwards` when local handler
+names should differ from the provider's forward names, including handlers exported for local
+organization or tests:
+
+```ts
+import { bindForwards } from "@s2script/sdk/plugin";
+
+type RaceResult = { elapsedMs: number };
+type ParkourResult = { checkpoints: number };
+
+export function OnRaceFinished(event: RaceResult): void {
+  console.log(event.elapsedMs);
+}
+export function OnParkourFinished(event: ParkourResult): void {
+  console.log(event.checkpoints);
+}
+
+const racing = bindForwards("@demo/racing", {
+  OnRunFinished: OnRaceFinished,
+});
+const parkour = bindForwards("@demo/parkour", {
+  OnRunFinished: OnParkourFinished,
+});
+
+// Each handle owns only the registrations created by its map.
+racing.dispose();
+parkour.dispose();
+```
+
+Forward keys stay qualified by the provider passed to `bindForwards`, so the identical
+`OnRunFinished` name above has a different payload in each map. Binding is explicit: exported
+functions are never discovered or matched automatically. The whole map registers during the
+normal load window, rolls back if any entry fails, and its subscription is idempotent.
+Optional integrations keep their existing lifecycle shape: declare `watchOptional`, then pass
+named functions to the supplied `service.on(...)` inside its attachment callback. `bindForwards`
+requires a hard `pluginDependencies` entry and does not open the optional attachment window.
+
 The CLI generates `.s2script/interfaces.d.ts` for name-based inference. New scaffolds include this file in `tsconfig.json`; add it to existing projects' `include` list. Refresh it with `s2s build` after changing declarations. Explicit caller-selected generics and authored `InterfaceContracts` augmentations do not authorize protocol 2 builds. Producer method agreement is checked even without an explicit implementation annotation. Each implementation must accept every declared input and return the declared synchronous result; async methods, value-returning implementations of void methods, and narrowed input types are rejected. SDK call authority follows the resolved signature through imports, aliases, and destructuring. If the entry also declares method exports, those declarations must agree with `Contract.methods`.
 
 ## Wire values

@@ -2240,6 +2240,99 @@
         shutdown();
     }
 
+    #[test]
+    fn named_forward_bindings_isolate_same_name_providers_and_dispose_whole_maps() {
+        protocol2_setup();
+        let mut parkour_value = serde_json::to_value(published_contract("@x/counter").unwrap()).unwrap();
+        parkour_value["metadata"]["forwards"]["OnCountChanged"]["payload"]["fields"] =
+            serde_json::json!({"checkpoints":{"schema":{"kind":"number"},"optional":false}});
+        parkour_value["metadata"]["methods"] = serde_json::json!({});
+        let metadata = parkour_value["metadata"].clone();
+        use sha2::{Digest, Sha256};
+        parkour_value["sha256"] = serde_json::Value::String(format!(
+            "{:x}", Sha256::digest(serde_json::to_vec(&metadata).unwrap())
+        ));
+        let parkour_contract: crate::interop::Contract = serde_json::from_value(parkour_value).unwrap();
+        set_plugin_publishes("parkour", [(
+            "@x/parkour".into(),
+            crate::loader::PublishDecl {
+                version: "1.0.0".into(),
+                types_sha256: "p".repeat(64),
+                contract: Some(parkour_contract.clone()),
+            },
+        )].into_iter().collect());
+        create_plugin_context("parkour");
+        eval_in_context("parkour", "__s2_iface_publish('@x/parkour',{})").unwrap();
+
+        set_plugin_imports("cons", vec![
+            crate::interfaces::ImportSpec { name: "@x/counter".into(), range: "^1.0.0".into(), kind: crate::interfaces::Kind::Hard, compiled_types_sha256: Some("a".repeat(64)) },
+            crate::interfaces::ImportSpec { name: "@x/parkour".into(), range: "^1.0.0".into(), kind: crate::interfaces::Kind::Hard, compiled_types_sha256: Some("p".repeat(64)) },
+        ]);
+        set_plugin_interop("cons", [
+            ("@x/counter".into(), published_contract("@x/counter").unwrap()),
+            ("@x/parkour".into(), parkour_contract),
+        ].into_iter().collect());
+        dispose_plugin_context("cons");
+        load_body("cons", r#"
+          globalThis.hits=[];
+          globalThis.counterBinding=__s2pkg_plugin.bindForwards('@x/counter',{OnCountChanged:p=>hits.push('counter:'+p.count)});
+          globalThis.parkourBinding=ctx.bindForwards('@x/parkour',{OnCountChanged:p=>hits.push('parkour:'+p.checkpoints)});
+        "#, "{}");
+        assert_eq!(plugin_phase("cons"), Some(plugin::Phase::Active));
+        assert_eq!(IFACE_SUBS.with(|m| m.borrow().len()), 2);
+        eval_in_context("prod", "__s2_iface_emit('@x/counter','OnCountChanged',{count:7})").unwrap();
+        eval_in_context("parkour", "__s2_iface_emit('@x/parkour','OnCountChanged',{checkpoints:4})").unwrap();
+        assert_eq!(eval_in_context_string("cons", "hits.join(',')"), "counter:7,parkour:4");
+        eval_in_context("cons", "counterBinding.dispose();counterBinding.dispose()").unwrap();
+        eval_in_context("prod", "__s2_iface_emit('@x/counter','OnCountChanged',{count:8})").unwrap();
+        eval_in_context("parkour", "__s2_iface_emit('@x/parkour','OnCountChanged',{checkpoints:5})").unwrap();
+        assert_eq!(eval_in_context_string("cons", "hits.join(',')"), "counter:7,parkour:4,parkour:5");
+        assert_eq!(IFACE_SUBS.with(|m| m.borrow().len()), 1);
+        eval_in_context("cons", "parkourBinding.dispose();parkourBinding.dispose()").unwrap();
+        assert!(IFACE_SUBS.with(|m| m.borrow().is_empty()));
+        shutdown();
+    }
+
+    #[test]
+    fn named_forward_bindings_rollback_partial_arm_and_release_cancelled_callbacks() {
+        protocol2_setup();
+        eval_in_context("prod", r#"
+          globalThis.rollbackDisposals=0;
+          __s2_iface_publish('@x/counter',{getCount:function(){rollbackDisposals++;return 1;}});
+        "#).unwrap();
+        dispose_plugin_context("cons");
+        load_body("cons", r#"
+          const originalDispose=__s2_iface_dispose;
+          __s2_iface_dispose=function(id){__s2_iface_call('@x/counter','getCount',[]);return originalDispose(id)};
+          ctx.bindForwards('@x/counter',{OnCountChanged:()=>{},Another:()=>{}});
+        "#, "{}");
+        assert!(is_failed("cons"));
+        assert_eq!(eval_in_context_string("prod", "String(rollbackDisposals)"), "1");
+        assert!(IFACE_SUBS.with(|m| m.borrow().is_empty()));
+
+        set_plugin_imports("cons", vec![crate::interfaces::ImportSpec {
+            name: "@x/counter".into(), range: "^1.0.0".into(), kind: crate::interfaces::Kind::Hard,
+            compiled_types_sha256: Some("a".repeat(64)),
+        }]);
+        set_plugin_interop("cons", [("@x/counter".into(), published_contract("@x/counter").unwrap())].into_iter().collect());
+        load_body("cons", r#"
+          let cancelled=()=>{}, armed=()=>{};
+          globalThis.cancelledRef=new WeakRef(cancelled);globalThis.armedRef=new WeakRef(armed);
+          globalThis.cancelledBinding=ctx.bindForwards('@x/counter',{OnCountChanged:cancelled});
+          cancelledBinding.dispose();cancelledBinding.dispose();
+          globalThis.armedBinding=ctx.bindForwards('@x/counter',{OnCountChanged:armed});
+          cancelled=null;armed=null;
+        "#, "{}");
+        assert_eq!(IFACE_SUBS.with(|m| m.borrow().len()), 1);
+        eval_in_context("cons", "armedBinding.dispose();armedBinding.dispose()").unwrap();
+        frame_async_drain();
+        eval_in_context("cons", "__s2_v8_gc()").unwrap();
+        assert!(eval_in_context_bool("cons", "cancelledRef.deref()===undefined&&armedRef.deref()===undefined"));
+        assert!(IFACE_SUBS.with(|m| m.borrow().is_empty()));
+        assert!(eval_in_context("cons", "__s2pkg_plugin.bindForwards('@x/counter',{})").is_err());
+        shutdown();
+    }
+
     fn optional_interop_setup() {
         protocol2_setup();
         set_plugin_imports("cons", vec![crate::interfaces::ImportSpec {
@@ -9511,4 +9604,3 @@
         assert_eq!(crate::async_limits::domain().jobs.snapshot().bytes, 0);
         shutdown();
     }
-

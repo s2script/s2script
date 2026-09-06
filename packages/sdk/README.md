@@ -118,5 +118,24 @@ Opt in with `s2script.interfaceProtocol: 2`, export a self-contained `Contract` 
 `use(name)` without caller-selected generics. `s2s build` generates the name association and checks
 wire schemas; `s2s add` obtains only a plugin dependency's types. Include the generated
 `.s2script/interfaces.d.ts` in existing projects' tsconfig files. Protocol 2 needs host API 3.
+
+Inline handlers infer their payload from the provider:
+
+```ts
+use("@demo/racing").on("OnRunFinished", event => console.log(event.elapsedMs));
+```
+
+Use an explicit binding map when a named local export has a different name from the provider
+forward. The returned subscription disposes the whole map:
+
+```ts
+export function OnRaceFinished(event: { elapsedMs: number }): void {
+  console.log(event.elapsedMs);
+}
+const racing = bindForwards("@demo/racing", { OnRunFinished: OnRaceFinished });
+```
+
+`bindForwards` requires a hard plugin dependency. Optional providers continue to attach through
+`watchOptional`, where named local functions can be passed to the supplied `service.on`.
 See [the complete migration guide](https://github.com/s2script/s2script/blob/main/docs/PLUGIN_INTEROP.md)
 for supported types, copying, dispatch, and compatibility limits.
