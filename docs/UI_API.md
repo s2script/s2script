@@ -1,10 +1,8 @@
 # CS2 UI API
 
-This page describes the additive UI reliability APIs planned for `@s2script/cs2`.
+This page describes the additive UI reliability APIs in `@s2script/cs2`.
 The structured methods make failure categories machine-readable while existing methods
-keep their current return values, timing, and throwing behavior. The Task 3 integration
-worker must verify the implementation against this contract before it is considered
-available.
+keep their current return values, timing, and throwing behavior.
 
 ## Structured results
 

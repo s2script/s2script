@@ -1,0 +1,9 @@
+{
+  "name": "@fixture/ui-api-contract-valid",
+  "version": "1.0.0",
+  "main": "src/plugin.ts",
+  "dependencies": {
+    "@s2script/cs2": "^1.0.0"
+  },
+  "private": true
+}

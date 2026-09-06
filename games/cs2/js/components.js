@@ -85,6 +85,13 @@
   var CORNER = { tl: "s2-corner-tl", tr: "s2-corner-tr", bl: "s2-corner-bl", br: "s2-corner-br" };
 
   function log(msg) { if (globalThis.console) console.log("[s2script/ui] " + msg); }
+  function uiOk(value) { return { ok: true, value: value }; }
+  function uiFail(code, message) { return { ok: false, error: { code: code, message: message } }; }
+  function staleResult() { return uiFail("StaleClient", "hudkit: stale client or component"); }
+  function releasedResult(name) { return uiFail("Released", "hudkit: " + name + " has been released"); }
+  function errorMessage(err, fallback) {
+    return (err && typeof err.message === "string" ? err.message : String(err)) || fallback;
+  }
 
   function slotOf(player) {
     if (typeof player === "number") return player;
@@ -354,6 +361,18 @@
         return withBinding(driveBinding, function () { return fn.apply(null, args); });
       };
     }
+    function resultBoundDriver(binding, fn, componentIsValid) {
+      var driveBinding = componentBinding(binding, componentIsValid);
+      return function () {
+        if (!bindingValid(driveBinding)) return staleResult();
+        var args = arguments;
+        var result = withBinding(driveBinding, function () { return fn.apply(null, args); });
+        if (result && result.ok === false) return result;
+        if (!bindingValid(driveBinding)) return staleResult();
+        return result && typeof result.ok === "boolean" ? result :
+          uiFail("PaintFailed", "hudkit: UI drive failed");
+      };
+    }
     function staleOpen(name) { throw new Error("hudkit: " + name + ".open failed: stale client or component"); }
     var liveModals = [];
     var modalRoutes = {};
@@ -377,6 +396,7 @@
     var dashSpec = null;
     var dashOpen = {};
     var dashGeneration = 0;
+    var DASH_SUPERSEDED = {};
     // Slot-level paint authority survives replacement of the per-open state object. A provider
     // may synchronously open/close/rebind, so a generation kept only on that object cannot fence
     // the obsolete caller that still holds it on its stack.
@@ -423,6 +443,39 @@
     // show/hide toggle the hide class, so they touch the class vector too.
     function show(slot, id, opts) { internPanel(id); internClass(CLS.hide); return hud.show(slot, id, opts); }
     function hide(slot, id) { internPanel(id); internClass(CLS.hide); return hud.hide(slot, id); }
+
+    // Structured component paints consume the low-level source result directly. The fallback is
+    // only for a custom/test HudLayout without `_drive`; it assigns a generic source category and
+    // never inspects English text.
+    function structuredCall(name, legacy, args) {
+      if (hud._drive && typeof hud._drive[name] === "function") {
+        return hud._drive[name].apply(hud._drive, args);
+      }
+      var error = legacy.apply(null, args);
+      return error === null || typeof error === "undefined" ? uiOk(undefined) :
+        uiFail("PaintFailed", String(error) || "hudkit: UI drive failed");
+    }
+    function driveSetText(slot, id, value) {
+      internPanel(id); internVar(id);
+      return structuredCall("setText", hud.setText || hud.set,
+        [slot, id, value == null ? "" : String(value)]);
+    }
+    function driveSetClass(slot, id, cls, on) {
+      internPanel(id); internClass(cls);
+      return structuredCall("setClass", hud.setClass, [slot, id, cls, on]);
+    }
+    function driveShow(slot, id, opts) {
+      internPanel(id); internClass(CLS.hide);
+      return structuredCall("show", hud.show, [slot, id, opts]);
+    }
+    function driveHide(slot, id) {
+      internPanel(id); internClass(CLS.hide);
+      return structuredCall("hide", hud.hide, [slot, id]);
+    }
+    function driveReveal(slot, id, fadeCls) {
+      var result = driveSetClass(slot, id, fadeCls, false);
+      return result.ok ? driveShow(slot, id) : result;
+    }
 
     function copyRow(row) {
       if (!row) return null;
@@ -734,30 +787,43 @@
 
     function paintDash(slot) {
       var st = dashOpen[slot];
-      if (!dashStateValid(st) || !dashSpec) return;
+      if (!dashStateValid(st)) return staleResult();
+      if (!dashSpec) return uiFail("InvalidArgument", "hudkit: dashboard is not configured");
       var spec = dashSpec;
       var transaction = {};
       dashPaintTransactions[slot] = transaction;
       st.interactive = false;
-      var candidate = dashCandidate(slot, st, spec);
       function current() {
         return dashPaintTransactions[slot] === transaction && dashOpen[slot] === st && dashSpec === spec &&
           dashStateValid(st);
       }
-      if (!current()) return;
-      if (!candidate) { closeDash(slot, false); return; }
+      var candidate;
+      try { candidate = dashCandidate(slot, st, spec); }
+      catch (err) {
+        return uiFail("InvalidArgument", errorMessage(err, "hudkit: invalid dashboard data"));
+      }
+      if (!current()) return DASH_SUPERSEDED;
+      if (!candidate) {
+        var closeResult = resultBoundDriver(st.binding, driveHide, function () {
+          return dashSpec === spec && dashOpen[slot] === st && dashStateValid(st);
+        })(slot, "s2_dash");
+        if (dashOpen[slot] === st) {
+          delete dashPaintTransactions[slot];
+          delete dashOpen[slot];
+        }
+        return closeResult;
+      }
       var error = null;
       function drive(fn) {
-        var driveBound = boundDriver(st.binding, fn, current);
+        var driveBound = resultBoundDriver(st.binding, fn, current);
         return function () {
           if (error !== null || !current()) return;
           var result = driveBound.apply(null, arguments);
-          if (!current()) return;
-          if (result !== null) error = String(result) || "dashboard paint failed";
+          if (!result.ok) error = result;
         };
       }
-      var paintText = drive(setText), paintClass = drive(setClass);
-      var paintShow = drive(show), paintHide = drive(hide);
+      var paintText = drive(driveSetText), paintClass = drive(driveSetClass);
+      var paintShow = drive(driveShow), paintHide = drive(driveHide);
 
       paintText(slot, "s2_dash_title", candidate.title);
       paintText(slot, "s2_dash_sub", candidate.subtitle == null ? "" : String(candidate.subtitle));
@@ -790,7 +856,8 @@
         paintClass(slot, "s2_dash", FADE.dash, false);
         paintShow(slot, "s2_dash", st.pendingRootOpts);
       }
-      if (error || !current()) return error;
+      if (!current()) return DASH_SUPERSEDED;
+      if (error) return error;
       st.tabId = candidate.tabId;
       st.tabPage = candidate.tabPage;
       st.rowPage = candidate.rowPage;
@@ -802,7 +869,7 @@
       st.paintedOnClose = candidate.onClose;
       delete st.pendingRootOpts;
       st.interactive = true;
-      return null;
+      return uiOk(undefined);
     }
 
     hud.onClick("s2_dash_close", function (player) {
@@ -870,7 +937,15 @@
         dashSpec = nextSpec;
         var firstError = null;
         for (var si = 0; si < slots.length && dashSpec === nextSpec; si++) {
-          try { if (dashOpen[slots[si]]) paintDash(slots[si]); }
+          try {
+            if (dashOpen[slots[si]]) {
+              var result = paintDash(slots[si]);
+              if (result !== DASH_SUPERSEDED && !result.ok &&
+                  result.error.code === "InvalidArgument" && !firstError) {
+                firstError = new Error(result.error.message);
+              }
+            }
+          }
           catch (err) { if (!firstError) firstError = err; }
         }
         if (firstError) throw firstError;
@@ -878,17 +953,49 @@
       }
       dashSpec = nextSpec;
       dashGeneration++;
-      function openDashBound(slot, opts, binding, generation) {
-        if (generation !== dashGeneration || !bindingValid(binding)) return staleOpen("dashboard");
+      function tryOpenDashBound(slot, opts, binding, generation, rollbackOnFailure) {
+        if (generation !== dashGeneration || !bindingValid(binding)) return staleResult();
         var o = opts || {};
         if (dashOpen[slot]) dashOpen[slot].interactive = false;
         delete dashPaintTransactions[slot];
-        dashOpen[slot] = { tabId: o.tab || "", tabPage: 0, rowPage: 0, interactive: false,
+        var candidate = { tabId: o.tab || "", tabPage: 0, rowPage: 0, interactive: false,
           pendingRootOpts: { cursor: o.cursor !== false }, binding: binding,
           componentGeneration: generation };
-        paintDash(slot);
-        if (!bindingValid(binding) || generation !== dashGeneration) return staleOpen("dashboard");
-        return makeDashView(slot, binding, generation);
+        dashOpen[slot] = candidate;
+        var result;
+        try { result = paintDash(slot); }
+        catch (err) {
+          result = uiFail("PaintFailed", errorMessage(err, "hudkit: dashboard paint failed"));
+        }
+        if (result === DASH_SUPERSEDED) {
+          if (generation === dashGeneration && bindingValid(binding) && dashStateValid(dashOpen[slot])) {
+            return uiOk(makeDashView(slot, binding, generation));
+          }
+          if (generation !== dashGeneration || !bindingValid(binding)) return staleResult();
+          return uiFail("PaintFailed", "dashboard open cancelled");
+        }
+        if (!result.ok) {
+          if (rollbackOnFailure !== false && dashOpen[slot] === candidate) {
+            delete dashPaintTransactions[slot];
+            delete dashOpen[slot];
+            try { boundDriver(binding, hide, function () {
+              return generation === dashGeneration;
+            })(slot, "s2_dash"); }
+            catch (_) { /* Preserve the original failure. */ }
+          }
+          return result;
+        }
+        if (generation !== dashGeneration || !bindingValid(binding)) return staleResult();
+        return uiOk(makeDashView(slot, binding, generation));
+      }
+      function openDashBound(slot, opts, binding, generation) {
+        var result = tryOpenDashBound(slot, opts, binding, generation, false);
+        if (!result.ok && result.error.code === "StaleClient") return staleOpen("dashboard");
+        if (!result.ok && result.error.code === "InvalidArgument") {
+          throw new Error(result.error.message);
+        }
+        if (!result.ok) return makeDashView(slot, binding, generation);
+        return result.value;
       }
       function makeDashView(slot, binding, generation) {
         function valid() { return generation === dashGeneration && bindingValid(binding); }
@@ -896,16 +1003,27 @@
           slot: slot,
           isValid: valid,
           open: function (opts) { return openDashBound(slot, opts, binding, generation); },
+          tryOpenResult: function (opts) {
+            if (!valid()) return staleResult();
+            return tryOpenDashBound(slot, opts, binding, generation);
+          },
           close: function () { if (valid()) dashSelf.close(slot); },
           isOpen: function () { return valid() && dashSelf.isOpen(slot); },
           setTab: function (tabId) { if (valid()) dashSelf.setTab(slot, tabId); },
-          refresh: function () { if (valid()) dashSelf.refresh(slot); }
+          refresh: function () { if (valid()) dashSelf.refresh(slot); },
+          tryRefresh: function () {
+            if (!valid()) return staleResult();
+            return dashSelf.tryRefresh(slot);
+          }
         };
       }
       dashSelf = {
         open: function (slot, opts) {
           var binding = currentBinding(slot);
           return openDashBound(slot, opts, binding, dashGeneration);
+        },
+        tryOpenResult: function (slot, opts) {
+          return tryOpenDashBound(slot, opts, captureBinding(slot), dashGeneration);
         },
         close: function (slot) { closeDash(slot, false); },
         isOpen: function (slot) { return dashStateValid(dashOpen[slot]); },
@@ -920,6 +1038,24 @@
           if (slot == null) { for (var k in dashOpen) { if (dashStateValid(dashOpen[k])) paintDash(Number(k)); } }
           else if (dashStateValid(dashOpen[slot])) paintDash(slot);
         },
+        tryRefresh: function (slot) {
+          if (slot == null) return uiFail("InvalidArgument", "needs a player slot");
+          var binding = captureBinding(slot);
+          if (!bindingValid(binding)) return staleResult();
+          var st = dashOpen[slot];
+          if (!dashStateValid(st)) return uiFail("InvalidArgument", "hudkit: dashboard is not open");
+          var result;
+          try { result = paintDash(slot); }
+          catch (err) {
+            return uiFail("PaintFailed", errorMessage(err, "hudkit: dashboard paint failed"));
+          }
+          if (result === DASH_SUPERSEDED) {
+            if (!bindingValid(binding)) return staleResult();
+            return dashStateValid(dashOpen[slot]) ? uiOk(undefined) :
+              uiFail("PaintFailed", "dashboard refresh cancelled");
+          }
+          return result;
+        },
         forSlot: function (slot) {
           return makeDashView(slot, captureBinding(slot), dashGeneration);
         }
@@ -929,35 +1065,49 @@
 
     // ── badges (persistent corner HUD) ────────────────────────────────────────────────────────
 
-    function badge(spec) {
+    function createBadge(spec, onClaim) {
       var s = spec || {};
       var idx = claim("badge", BADGES, ownerTag);
       if (idx < 0) { log("badge pool exhausted (" + BADGES + " in use) — request ignored"); return null; }
+      if (onClaim) onClaim(idx);
       var slotIds = BADGE[idx];
       var cornerCls = CORNER[s.corner] || CORNER.tr;
       var accentCls = BADGE_ACCENT[s.accent] || null;
       var badgeReleased = false;
       var selfBadge;
-      function showBadge(slot, data, binding) {
-        if (badgeReleased || !bindingValid(binding)) return makeBadgeView(slot, binding);
+      function tryShowBadge(slot, data, binding) {
+        if (badgeReleased) return releasedResult("badge");
+        if (!bindingValid(binding)) return staleResult();
         function currentBadge() { return !badgeReleased; }
-        var paintText = boundDriver(binding, setText, currentBadge);
-        var paintClass = boundDriver(binding, setClass, currentBadge);
-        var paintReveal = boundDriver(binding, reveal, currentBadge);
+        var paintText = resultBoundDriver(binding, driveSetText, currentBadge);
+        var paintClass = resultBoundDriver(binding, driveSetClass, currentBadge);
+        var paintReveal = resultBoundDriver(binding, driveReveal, currentBadge);
+        var error = null;
+        function paint(fn) {
+          var args = Array.prototype.slice.call(arguments, 1);
+          if (error) return;
+          var result = fn.apply(null, args);
+          if (!result.ok) error = result;
+        }
         var dd = data || {};
-        paintText(slot, slotIds.title, dd.title || s.title || "");
-        paintText(slot, slotIds.text, dd.text || "");
+        paint(paintText, slot, slotIds.title, dd.title || s.title || "");
+        paint(paintText, slot, slotIds.text, dd.text || "");
         for (var k in CORNER) {
           if (Object.prototype.hasOwnProperty.call(CORNER, k)) {
-            paintClass(slot, slotIds.id, CORNER[k], CORNER[k] === cornerCls);
+            paint(paintClass, slot, slotIds.id, CORNER[k], CORNER[k] === cornerCls);
           }
         }
         for (var ak in BADGE_ACCENT) {
           if (Object.prototype.hasOwnProperty.call(BADGE_ACCENT, ak)) {
-            paintClass(slot, slotIds.id, BADGE_ACCENT[ak], BADGE_ACCENT[ak] === accentCls);
+            paint(paintClass, slot, slotIds.id, BADGE_ACCENT[ak], BADGE_ACCENT[ak] === accentCls);
           }
         }
-        paintReveal(slot, slotIds.id, FADE.badge);
+        paint(paintReveal, slot, slotIds.id, FADE.badge);
+        if (badgeReleased) return releasedResult("badge");
+        return error || uiOk(undefined);
+      }
+      function showBadge(slot, data, binding) {
+        tryShowBadge(slot, data, binding);
         return makeBadgeView(slot, binding);
       }
       function makeBadgeView(slot, binding) {
@@ -966,6 +1116,15 @@
           slot: slot,
           isValid: valid,
           show: function (data) { if (valid()) return showBadge(slot, data, binding); },
+          tryShow: function (data) {
+            if (badgeReleased) return releasedResult("badge");
+            if (!valid()) return staleResult();
+            try { return tryShowBadge(slot, data, binding); }
+            catch (err) {
+              return badgeReleased ? releasedResult("badge") :
+                uiFail("PaintFailed", errorMessage(err, "hudkit: badge paint failed"));
+            }
+          },
           hide: function () { if (valid()) boundDriver(binding, hide, valid)(slot, slotIds.id); }
         };
       }
@@ -985,13 +1144,15 @@
       };
       return selfBadge;
     }
+    function badge(spec) { return createBadge(spec, null); }
 
     // ── modals (title + paged list + detail + footer buttons) ─────────────────────────────────
 
-    function modal(spec) {
+    function createModal(spec, onClaim) {
       var s = spec || {};
       var idx = claim("modal", MODALS, ownerTag);
       if (idx < 0) { log("modal pool exhausted (" + MODALS + " in use) — request ignored"); return null; }
+      if (onClaim) onClaim(idx);
       var ids = MODAL[idx];
       var released = false;
       var routes = {};
@@ -1073,9 +1234,9 @@
       // Footer actions belong to the player's last painted view. Another player's paint
       // must not change the actions behind this player's buttons (including automatic pagers).
       function paint(slot, candidate, rootOpts, request) {
-        if (released) return;
+        if (released) return releasedResult("modal");
         var st = candidate || open[slot];
-        if (!st) return;
+        if (!st) return uiFail("InvalidArgument", "hudkit: modal is not open");
         var expectedState = open[slot];
         if (expectedState) expectedState.interactive = false;
         st.interactive = false;
@@ -1089,20 +1250,23 @@
             paintTransactions[slot] === transaction && open[slot] === expectedState;
         }
         if (!current()) return SUPERSEDED;
-        var snapshot = modalCandidate(slot, st, request);
+        var snapshot;
+        try { snapshot = modalCandidate(slot, st, request); }
+        catch (err) {
+          return uiFail("InvalidArgument", errorMessage(err, "hudkit: invalid modal data"));
+        }
         if (!current()) return SUPERSEDED;
         var error = null;
         function drive(fn) {
-          var driveBound = boundDriver(st.binding, fn, current);
+          var driveBound = resultBoundDriver(st.binding, fn, current);
           return function () {
             if (error !== null || !current()) return;
             var result = driveBound.apply(null, arguments);
-            if (!current()) return;
-            if (result !== null) error = String(result) || "modal paint failed";
+            if (!result.ok) error = result;
           };
         }
-        var paintText = drive(setText), paintClass = drive(setClass);
-        var paintShow = drive(show), paintHide = drive(hide);
+        var paintText = drive(driveSetText), paintClass = drive(driveSetClass);
+        var paintShow = drive(driveShow), paintHide = drive(driveHide);
 
         if (rootOpts) {
           for (var wk in SHEET_WIDTH) {
@@ -1165,8 +1329,8 @@
           paintClass(slot, ids.root, FADE.sheet, false);
           paintShow(slot, ids.root, rootOpts);
         }
-        if (error) return error;
         if (!current()) return SUPERSEDED;
+        if (error) return error;
         st.page = snapshot.pageNumber;
         st.cursor = snapshot.cursor;
         st.paintedRows = snapshot.paintedRows;
@@ -1175,7 +1339,7 @@
         st.footerFns = snapshot.footerFns.slice();
         open[slot] = st;
         st.interactive = true;
-        return null;
+        return uiOk(undefined);
       }
 
       for (var ri = 0; ri < ROWS; ri++) {
@@ -1213,6 +1377,7 @@
           slot: slot,
           isValid: valid,
           open: function (opts) {
+            if (released) throw new Error("hudkit: modal.open failed: modal has been released");
             if (!valid()) return staleOpen("modal");
             var result = tryOpenBound(slot, opts, binding, componentEpoch);
             if (!result.ok) throw new Error("hudkit: modal.open failed: " + result.error);
@@ -1222,9 +1387,19 @@
             if (!valid()) return { ok: false, error: "hudkit: stale client or component" };
             return tryOpenBound(slot, opts, binding, componentEpoch);
           },
+          tryOpenResult: function (opts) {
+            if (released) return releasedResult("modal");
+            if (!valid()) return staleResult();
+            return tryOpenResultBound(slot, opts, binding, componentEpoch);
+          },
           close: function () { if (valid()) self.close(slot); },
           isOpen: function () { return valid() && self.isOpen(slot); },
           refresh: function () { if (valid()) self.refresh(slot); },
+          tryRefresh: function () {
+            if (released) return releasedResult("modal");
+            if (!valid()) return staleResult();
+            return self.tryRefresh(slot);
+          },
           page: function (delta) { if (valid()) self.page(slot, delta); },
           select: function (index) { if (valid()) self.select(slot, index); },
           cursor: function () { return valid() ? self.cursor(slot) : -1; },
@@ -1232,27 +1407,29 @@
         };
       }
 
-      function tryOpenBound(slot, opts, binding, componentEpoch) {
-        if (released) return { ok: false, error: "hudkit: modal has been released" };
-        if (!bindingValid(binding) || componentEpoch !== (modalSlotEpochs[slot] || 0)) {
-          return { ok: false, error: "hudkit: stale client or component" };
-        }
+      function tryOpenResultBound(slot, opts, binding, componentEpoch) {
+        if (released) return releasedResult("modal");
+        if (!bindingValid(binding) || componentEpoch !== (modalSlotEpochs[slot] || 0)) return staleResult();
         var candidate = { page: 0, cursor: 0, interactive: false, binding: binding,
           componentEpoch: componentEpoch };
-        var error = null;
+        var result;
         try {
-          error = paint(slot, candidate, { cursor: !(opts && opts.cursor === false) });
+          result = paint(slot, candidate, { cursor: !(opts && opts.cursor === false) });
         } catch (err) {
-          error = (err instanceof Error ? err.message : String(err)) || "modal paint failed";
+          result = uiFail("PaintFailed", errorMessage(err, "hudkit: modal paint failed"));
         }
-        if (error === SUPERSEDED) {
+        if (result === SUPERSEDED) {
           if (!released && bindingValid(binding) && componentEpoch === (modalSlotEpochs[slot] || 0) &&
               self.isOpen(slot)) {
-            return { ok: true, view: makeModalView(slot, binding, componentEpoch) };
+            return uiOk(makeModalView(slot, binding, componentEpoch));
           }
-          return { ok: false, error: released ? "hudkit: modal has been released" : "modal open cancelled" };
+          if (released) return releasedResult("modal");
+          if (!bindingValid(binding) || componentEpoch !== (modalSlotEpochs[slot] || 0)) return staleResult();
+          return uiFail("PaintFailed", "modal open cancelled");
         }
-        if (error) {
+        if (released) return releasedResult("modal");
+        if (!bindingValid(binding) || componentEpoch !== (modalSlotEpochs[slot] || 0)) return staleResult();
+        if (!result.ok) {
           if (!released && paintTransactions[slot] === candidate.paintTransaction &&
               open[slot] === candidate.paintExpectedState) {
             delete paintTransactions[slot];
@@ -1262,14 +1439,23 @@
             })(slot, ids.root); }
             catch (_) { /* Preserve the original failure. */ }
           }
-          return { ok: false, error: String(error) };
+          return result;
         }
-        return { ok: true, view: makeModalView(slot, binding, componentEpoch) };
+        return uiOk(makeModalView(slot, binding, componentEpoch));
+      }
+
+      function tryOpenBound(slot, opts, binding, componentEpoch) {
+        var result = tryOpenResultBound(slot, opts, binding, componentEpoch);
+        return result.ok ? { ok: true, view: result.value } :
+          { ok: false, error: result.error.message };
       }
 
       self = {
         tryOpen: function (slot, opts) {
           return tryOpenBound(slot, opts, captureBinding(slot), modalSlotEpochs[slot] || 0);
+        },
+        tryOpenResult: function (slot, opts) {
+          return tryOpenResultBound(slot, opts, captureBinding(slot), modalSlotEpochs[slot] || 0);
         },
         open: function (slot, opts) {
           var result = self.tryOpen(slot, opts);
@@ -1297,6 +1483,26 @@
         refresh: function (slot) {
           if (slot == null) { for (var k in open) { if (self.isOpen(Number(k))) paint(Number(k)); } }
           else if (self.isOpen(slot)) paint(slot);
+        },
+        tryRefresh: function (slot) {
+          if (released) return releasedResult("modal");
+          if (slot == null) return uiFail("InvalidArgument", "needs a player slot");
+          var binding = captureBinding(slot);
+          if (!bindingValid(binding)) return staleResult();
+          if (!self.isOpen(slot)) return uiFail("InvalidArgument", "hudkit: modal is not open");
+          var result;
+          try { result = paint(slot); }
+          catch (err) {
+            return released ? releasedResult("modal") :
+              uiFail("PaintFailed", errorMessage(err, "hudkit: modal paint failed"));
+          }
+          if (result === SUPERSEDED) {
+            if (released) return releasedResult("modal");
+            if (!bindingValid(binding)) return staleResult();
+            return self.isOpen(slot) ? uiOk(undefined) :
+              uiFail("PaintFailed", "modal refresh cancelled");
+          }
+          return released ? releasedResult("modal") : result;
         },
         page: function (slot, delta) {
           if (!self.isOpen(slot)) return;
@@ -1343,6 +1549,7 @@
       liveModals.push(self);
       return self;
     }
+    function modal(spec) { return createModal(spec, null); }
 
     function hideAll(slot, retainedBinding) {
       var binding = retainedBinding || currentBinding(slot);
@@ -1391,8 +1598,31 @@
         return hudApi.createLayout(descriptor || LIB_DESCRIPTOR);
       },
       modal: modal,
+      tryModal: function (spec) {
+        var claimedIndex = -1;
+        try {
+          var claimed = createModal(spec, function (idx) { claimedIndex = idx; });
+          return claimed ? uiOk(claimed) : uiFail("PoolExhausted", "hudkit: modal pool exhausted");
+        } catch (err) {
+          if (claimedIndex >= 0) {
+            delete modalRoutes[claimedIndex];
+            releaseSlot("modal", claimedIndex);
+          }
+          return uiFail("InvalidArgument", errorMessage(err, "hudkit: invalid modal specification"));
+        }
+      },
       dashboard: dashboard,
       badge: badge,
+      tryBadge: function (spec) {
+        var claimedIndex = -1;
+        try {
+          var claimed = createBadge(spec, function (idx) { claimedIndex = idx; });
+          return claimed ? uiOk(claimed) : uiFail("PoolExhausted", "hudkit: badge pool exhausted");
+        } catch (err) {
+          if (claimedIndex >= 0) releaseSlot("badge", claimedIndex);
+          return uiFail("InvalidArgument", errorMessage(err, "hudkit: invalid badge specification"));
+        }
+      },
       toast: toast,
       callout: callout,
       banner: banner,
@@ -1512,8 +1742,10 @@
     globalThis.__s2pkg_cs2.hudkit = {
       whenLive: whenLive,
       modal: kitFn("modal"),
+      tryModal: kitFn("tryModal"),
       dashboard: kitFn("dashboard"),
       badge: kitFn("badge"),
+      tryBadge: kitFn("tryBadge"),
       toast: kitFn("toast"),
       callout: kitFn("callout"),
       banner: kitFn("banner"),
