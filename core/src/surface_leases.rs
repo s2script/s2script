@@ -53,15 +53,16 @@ impl Registry {
         l.ready_after = self.frame.saturating_add(1);
         Some(l.clone())
     }
-    fn remove(&mut self, token: u64) -> Option<Lease> {
+    fn remove(&mut self, token: u64) -> Option<(Lease, bool)> {
+        let was_winner = self.winner(&self.leases.get(&token)?.key) == Some(token);
         let removed = self.leases.remove(&token)?;
-        if let Some(next) = self.winner(&removed.key) {
-            // Removing a covered owner must not deactivate the actual winner.
-            if (removed.priority, removed.token) > {
-                let l = &self.leases[&next]; (l.priority, l.token)
-            } { self.suspend(next); }
+        if was_winner {
+            if let Some(next) = self.winner(&removed.key) { self.suspend(next); }
         }
-        Some(removed)
+        // Only the winner owns presentation effects, including a potentially partial paint
+        // before activation. A covered token either never painted or was retired at takeover.
+        // Preserve this fact across removal: its hide action may name the winner's SAME root.
+        Some((removed, was_winner))
     }
 }
 thread_local! {
@@ -94,8 +95,15 @@ fn suspension_plan(game: &str, action: &Suspend) -> Result<crate::gamedata_calls
     let plan = crate::gamedata_calls::plan(game, &action.call)
         .ok_or_else(|| format!("unavailable: {}: {}", action.call, crate::gamedata_calls::status(game, &action.call)))?;
     if plan.receiverless || plan.via.is_some() || plan.ret_code != crate::gamedata_calls::RET_VOID
-        || plan.args.first().map(String::as_str) != Some("int") || plan.args.len() != action.args.len() + 1 {
+        || plan.args.first().map(String::as_str) != Some("int")
+        || plan.args.iter().skip(1).any(|kind| !matches!(kind.as_str(), "int" | "bool" | "string" | "utlstring")) {
         return Err("surface suspension needs entity void(int, scalar/string...) binding without via".into());
+    }
+    Ok(plan)
+}
+fn suspension_args(plan: &crate::gamedata_calls::InvokePlan, action: &Suspend) -> Result<(), Failure> {
+    if plan.args.len() != action.args.len() + 1 {
+        return Err(fail("InvalidArgument", "surface suspension argument count does not match binding"));
     }
     for (kind, arg) in plan.args.iter().skip(1).zip(&action.args) {
         let valid = match kind.as_str() {
@@ -104,9 +112,9 @@ fn suspension_plan(game: &str, action: &Suspend) -> Result<crate::gamedata_calls
             "string" | "utlstring" => arg.as_str().is_some_and(bounded),
             _ => false,
         };
-        if !valid { return Err("surface suspension argument does not match binding".into()); }
+        if !valid { return Err(fail("InvalidArgument", "surface suspension argument does not match binding")); }
     }
-    Ok(plan)
+    Ok(())
 }
 fn validate_adapter(adapter: &Adapter, game: Option<&str>) -> Result<(), Failure> {
     if adapter.capture.is_none() && adapter.suspend.is_none() { return Ok(()); }
@@ -120,7 +128,8 @@ fn validate_adapter(adapter: &Adapter, game: Option<&str>) -> Result<(), Failure
     }
     if let Some(s) = &adapter.suspend {
         if !bounded(&s.call) || s.args.len() > 7 { return Err(fail("InvalidArgument", "invalid suspension binding/arguments")); }
-        suspension_plan(game, s).map_err(|e| fail("Unavailable", e))?;
+        let plan = suspension_plan(game, s).map_err(|e| fail("Unavailable", e))?;
+        suspension_args(&plan, s)?;
     }
     Ok(())
 }
@@ -128,6 +137,7 @@ fn invoke_suspend(l: &Lease, action: &Suspend) -> Result<(), String> {
     let game = l.game.as_deref().ok_or("surface game package unavailable")?;
     if crate::gamedata_calls::game_package_owner().as_deref() != Some(game) { return Err("surface game package changed".into()); }
     let plan = suspension_plan(game, action)?;
+    suspension_args(&plan, action).map_err(|e| e.message)?;
     let serial = crate::entity_live::engine_serial_for(l.key.index, l.key.entity).ok_or("surface entity expired")?;
     let invoke = engine_ops().and_then(|o| o.engine_call_invoke).ok_or("surface engine operation unavailable")?;
     let mut gp = vec![l.key.slot as u64];
@@ -239,15 +249,18 @@ fn release(owner: &str, token: u64) -> bool {
         if !r.leases.get(&token).is_some_and(|l| l.owner == owner) { return None; }
         r.remove(token)
     });
-    let Some(l) = removed else { return false };
-    if let Err(e) = retire_or_queue(l) { crate::v8host::log_warn(&e); }
+    let Some((l, was_winner)) = removed else { return false };
+    if was_winner {
+        if let Err(e) = retire_or_queue(l) { crate::v8host::log_warn(&e); }
+    }
     true
 }
 fn remove_where(mut matches: impl FnMut(&Lease) -> bool) {
     let removed = REGISTRY.with(|r| {
         let mut r = r.borrow_mut();
         let tokens: Vec<_> = r.leases.values().filter(|l| matches(l)).map(|l| l.token).collect();
-        tokens.into_iter().filter_map(|t| r.remove(t)).collect::<Vec<_>>()
+        tokens.into_iter().filter_map(|t| r.remove(t))
+            .filter_map(|(l, was_winner)| was_winner.then_some(l)).collect::<Vec<_>>()
     });
     for l in removed { if let Err(e) = retire_or_queue(l) { crate::v8host::log_warn(&e); } }
 }
@@ -647,7 +660,7 @@ mod tests {
         let key = Key { surface: "focus".into(), index: 10, entity: id, slot: 2, client: crate::client::generation(2) };
         assert_eq!(reserve("surface_a", key.clone(), 0, adapter).unwrap_err().code, "Unavailable");
         let mut bad = presentation(); bad.suspend.as_mut().unwrap().args[2] = "wrong scalar".into();
-        assert_eq!(reserve("surface_a", key, 0, bad).unwrap_err().code, "Unavailable");
+        assert_eq!(reserve("surface_a", key, 0, bad).unwrap_err().code, "InvalidArgument");
         assert!(effects().is_empty());
         assert!(REGISTRY.with(|r| r.borrow().leases.is_empty()));
         done_engine();
@@ -678,6 +691,56 @@ mod tests {
         let b = reserve("surface_b", key, 0, Adapter::default()).unwrap();
         assert_eq!(state("surface_b", b), "ready");
         assert!(activate("surface_b", b));
+        done_engine();
+    }
+
+    #[test]
+    fn covered_shared_root_release_and_unload_never_retire_winners_presentation() {
+        for previously_presented in [false, true] {
+            for unload in [false, true] {
+                let id = setup_engine();
+                // Both adapters name the same physical root and capture token. A covered
+                // reservation either never painted or was already retired during takeover.
+                let a = claim("surface_a", id, 10, presentation());
+                capture("surface_a", id); assert!(activate("surface_a", a));
+                let b = claim("surface_b", id, if previously_presented { 20 } else { 0 }, presentation());
+                let (covered_owner, covered, winner_owner, winner) = if previously_presented {
+                    capture("surface_b", id); assert!(activate("surface_b", b));
+                    ("surface_a", a, "surface_b", b)
+                } else { ("surface_b", b, "surface_a", a) };
+                assert_eq!(state(covered_owner, covered), "covered");
+                let before = effects();
+                if unload { v8host::unload_plugin(covered_owner); }
+                else { assert!(release(covered_owner, covered)); }
+                assert_eq!(effects(), before, "covered cleanup must not hide the shared root");
+                assert!(active(winner_owner, winner));
+                assert!(REGISTRY.with(|r| r.borrow().pending.is_empty()));
+                done_engine();
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_suspension_values_are_invalid_arguments_without_engine_effects() {
+        let id = setup_engine();
+        let key = Key { surface: "focus".into(), index: 10, entity: id, slot: 2, client: crate::client::generation(2) };
+        for (index, value) in [(2, serde_json::json!("wrong scalar")), (2, serde_json::json!(2147483648i64)),
+            (2, serde_json::json!(1.5)), (0, serde_json::json!("")), (0, serde_json::json!("nul\0string")),
+            (0, serde_json::json!("x".repeat(257))), (0, serde_json::json!(true)),
+            (0, serde_json::json!(null)), (2, serde_json::json!({"value": 1}))] {
+            let mut adapter = presentation(); adapter.suspend.as_mut().unwrap().args[index] = value;
+            assert_eq!(reserve("surface_a", key.clone(), 0, adapter).unwrap_err().code, "InvalidArgument");
+        }
+        let mut wrong_count = presentation(); wrong_count.suspend.as_mut().unwrap().args.pop();
+        assert_eq!(reserve("surface_a", key.clone(), 0, wrong_count).unwrap_err().code, "InvalidArgument");
+        let wrong_bool = Adapter { capture: None, suspend: Some(Suspend { call: "toggle".into(), args: vec![1.into()] }) };
+        assert_eq!(reserve("surface_a", key, 0, wrong_bool).unwrap_err().code, "InvalidArgument");
+        assert_eq!(js("surface_a", &format!(r#"
+            __s2_surface_reserve('focus',10,{id},2,0,
+                JSON.stringify({{suspend:{{call:'suspend',args:['root','hidden','wrong']}}}})).error.code
+        "#)), "InvalidArgument");
+        assert!(effects().is_empty());
+        assert!(REGISTRY.with(|r| r.borrow().leases.is_empty()));
         done_engine();
     }
     #[test]
