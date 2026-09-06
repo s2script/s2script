@@ -927,8 +927,10 @@
 
     function closeMotd(slot, fromClick, expected) {
       var state = motdOpen[slot];
+      // Retained handles cannot cancel an attempt belonging to a newer open.
+      if (expected && expected !== state) return;
       if (!fromClick) delete motdOpenAttempts[slot];
-      if (!state || (expected && expected !== state)) return;
+      if (!state) return;
       if (fromClick && (!state.interactive || !bindingValid(state.binding) || !focusAllows(state))) return;
       var onClose = state.onClose;
       delete motdOpen[slot];

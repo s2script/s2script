@@ -573,17 +573,26 @@
     api.setDisabled = function (slot, buttonId, disabledOn) {
       return legacyResult(api._drive.setDisabled(slot, buttonId, disabledOn));
     };
-    api.dispatchClick = function (slot, buttonId) {
-      if (disabled[slot] && disabled[slot][buttonId]) return false;
+    // Capture routes without invoking user code so the hook can freeze every layout first.
+    api._snapshotClick = function (slot, buttonId) {
       var h = handlers[buttonId];
       var list = subscribers[buttonId];
       var snapshot = [];
       if (list) for (var si = 0; si < list.length; si++) snapshot.push(list[si].handler);
-      if (!h && snapshot.length === 0) return false;
-      var player = api.forSlot(slot);
-      if (h) h(player);
-      for (var i = 0; i < snapshot.length; i++) snapshot[i](player);
-      return true;
+      return function () {
+        // Direct slot dispatch adopts the current occupant. Retained views and component
+        // focus handlers keep their own client/focus fences at delivery time.
+        if (!currentClient(slot)) return false;
+        if (disabled[slot] && disabled[slot][buttonId]) return false;
+        if (!h && snapshot.length === 0) return false;
+        var player = api.forSlot(slot);
+        if (h) h(player);
+        for (var i = 0; i < snapshot.length; i++) snapshot[i](player);
+        return true;
+      };
+    };
+    api.dispatchClick = function (slot, buttonId) {
+      return api._snapshotClick(slot, buttonId)();
     };
     api.forget = function (slot, client) {
       if (client) {
@@ -872,14 +881,6 @@
       var occupant = clientsApi().fromSlot(slot);
       return !occupant || sameClient(occupant, client);
     };
-    // Direct slot APIs adopt the current occupant; retained forSlot views keep their original one.
-    // Structured drives already capture and bind that occupant. Click dispatch has no drive result,
-    // so keep its existing boolean stale-client adapter here.
-    var dispatchClick = api.dispatchClick;
-    api.dispatchClick = function (slot) {
-      if (!currentClient(slot)) return false;
-      return dispatchClick.apply(api, arguments);
-    };
     return api;
   }
 
@@ -905,11 +906,13 @@
           var clicker = resolveClicker(view.player);
           var slot = clicker ? clicker.slot : -1;
           if (slot >= 0) {
+            var deliveries = [];
             for (var res in hudByResource) {
               if (Object.prototype.hasOwnProperty.call(hudByResource, res)) {
-                hudByResource[res].dispatchClick(slot, view.buttonId);
+                deliveries.push(hudByResource[res]._snapshotClick(slot, view.buttonId));
               }
             }
+            for (var d = 0; d < deliveries.length; d++) deliveries[d]();
           }
           var rawSnapshot = rawClickHandlers.slice();
           for (var r = 0; r < rawSnapshot.length; r++) {

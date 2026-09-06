@@ -24,6 +24,7 @@ test("the structured UI contract rejects invalid codes and result values", () =>
       { code: 2322, line: 6 },
       { code: 2739, line: 7 },
       { code: 2345, line: 10 },
+      { code: 2345, line: 18 },
     ],
   );
 });

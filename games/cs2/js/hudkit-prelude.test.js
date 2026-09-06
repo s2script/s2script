@@ -1817,3 +1817,84 @@ test("failed initial opens and synchronous refreshes are retained as completed r
   modal.refresh(1);
   assert.deepEqual(plain(view.lastUpdateResult()), { ok: true });
 });
+
+test("subscriptions on another layout wait until next delivery", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const one = p.base.create({ addons: ["1"],
+    resource: "panorama/layout/custom_game/one.xml", buttons: ["shared"] });
+  const two = p.base.create({ addons: ["1"],
+    resource: "panorama/layout/custom_game/two.xml", buttons: ["shared"] });
+  const seen = [];
+  let added = false;
+  one.subscribeClick("shared", () => {
+    seen.push("one");
+    if (!added) {
+      added = true;
+      two.subscribeClick("shared", () => seen.push("late"));
+    }
+  });
+  w.dispatchClick(2, "shared");
+  assert.deepEqual(seen, ["one"]);
+  w.dispatchClick(2, "shared");
+  assert.deepEqual(seen, ["one", "one", "late"]);
+});
+
+test("disposal on another layout affects next delivery only", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const one = p.base.create({ addons: ["1"],
+    resource: "panorama/layout/custom_game/one.xml", buttons: ["shared"] });
+  const two = p.base.create({ addons: ["1"],
+    resource: "panorama/layout/custom_game/two.xml", buttons: ["shared"] });
+  const seen = [];
+  one.subscribeClick("shared", () => { seen.push("one"); second.dispose(); });
+  const second = two.subscribeClick("shared", () => seen.push("two"));
+  w.dispatchClick(2, "shared");
+  assert.deepEqual(seen, ["one", "two"]);
+  w.dispatchClick(2, "shared");
+  assert.deepEqual(seen, ["one", "two", "one"]);
+});
+
+test("layout snapshots preserve legacy conflicts and raw observer delivery", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const one = p.base.create({ addons: ["1"],
+    resource: "panorama/layout/custom_game/one.xml", buttons: ["shared"] });
+  const two = p.base.create({ addons: ["1"],
+    resource: "panorama/layout/custom_game/two.xml", buttons: ["shared"] });
+  const seen = [];
+  one.onClick("shared", () => {
+    seen.push("legacy");
+    p.base.onClicked(view => seen.push("raw:" + view.buttonId));
+  });
+  assert.throws(() => two.onClick("shared", () => {}), /conflicting handler/);
+  two.subscribeClick("shared", () => seen.push("subscriber"));
+  w.dispatchClick(2, "shared");
+  assert.deepEqual(seen, ["legacy", "subscriber", "raw:shared"]);
+});
+
+test("stale MOTD close cannot cancel current open options", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const stale = p.hudkit.motd(2, { title: "old" });
+  stale.close();
+  const opened = p.hudkit.forSlot(2).tryOwnMotd({
+    title: "new", get focus() { stale.close(); return undefined; },
+  });
+  assert.equal(opened.ok, true, JSON.stringify(opened));
+  assert.equal(opened.value.isValid(), true);
+  stale.close();
+  assert.equal(opened.value.isValid(), true);
+  opened.value.dispose();
+});
+
+test("stale owned MOTD dispose cannot cancel current open options", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const stale = p.hudkit.forSlot(2).tryOwnMotd({ title: "old" }).value;
+  stale.dispose();
+  const opened = p.hudkit.forSlot(2).tryOwnMotd({
+    title: "new", get cursor() { stale.dispose(); return true; },
+  });
+  assert.equal(opened.ok, true, JSON.stringify(opened));
+  assert.equal(opened.value.isValid(), true);
+  stale.dispose();
+  assert.equal(opened.value.isValid(), true);
+  opened.value.dispose();
+});

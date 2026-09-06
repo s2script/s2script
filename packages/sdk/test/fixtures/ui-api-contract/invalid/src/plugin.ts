@@ -12,3 +12,7 @@ typedLayout.subscribeClick("saev", () => {});
 void invalidCode;
 void wrongVoid;
 void wrongView;
+
+const legacyTypedLayout = CustomHudLayout.hud({ addons: ["1"],
+  resource: "panorama/layout/custom_game/legacy-typed.xml", buttons: ["save", "close"] });
+legacyTypedLayout.subscribeClick("saev", () => {});

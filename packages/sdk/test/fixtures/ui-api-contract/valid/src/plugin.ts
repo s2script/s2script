@@ -14,6 +14,7 @@ import {
   CustomHudLayout,
   type UiSubscription,
   type UiSurfaceHandle,
+  type CustomHudSpec,
 } from "@s2script/cs2";
 
 declare const modalSpec: ModalSpec;
@@ -27,7 +28,13 @@ function consumeResult<T>(result: UiResult<T>): T | undefined {
   return undefined;
 }
 
+function legacyHud(descriptor?: CustomHudSpec) {
+  return CustomHudLayout.hud(descriptor);
+}
+
 export function OnPluginStart(): void {
+  legacyHud();
+  CustomHudLayout.hud(undefined);
   const layout = CustomHudLayout.create({
     addons: ["1"], resource: "panorama/layout/custom_game/typed.xml", buttons: ["save", "close"],
   });

@@ -221,8 +221,8 @@ export interface CustomHudLayoutNs {
   /**
    * @deprecated Use {@link CustomHudLayoutNs.create}. `hud()` with no argument is {@link CustomHudLayoutNs.probe}.
    */
-  hud(): HudLayout<string>;
   hud<const ButtonId extends string = string>(descriptor: CustomHudSpec<ButtonId>): HudLayout<ButtonId>;
+  hud(descriptor?: CustomHudSpec): HudLayout<string>;
   /**
    * @deprecated Use {@link CustomHudLayoutNs.kit} or {@link hudkit}.
    */
