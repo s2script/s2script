@@ -454,7 +454,6 @@ pub(super) fn register_resets() {
     );
 }
 
-#[cfg(test)]
 pub(super) fn counts() -> (usize, usize, usize, usize, usize) {
     let watches = IFACES.with(|r| r.borrow().watches());
     let pending = watches

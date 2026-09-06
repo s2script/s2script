@@ -2398,10 +2398,14 @@
         assert_eq!(plugin_phase("cons"),Some(plugin::Phase::Active));
         let baseline=owned_interop_ledger_count("cons");
         assert_eq!(interop_lifetime::counts(),(1,1,0,0,0));
+        let diagnostic_baseline = eval_in_context_string("cons", "JSON.stringify(JSON.parse(__s2_async_stats()).interop)");
+        assert!(diagnostic_baseline.contains("\"watches\":1"), "{diagnostic_baseline}");
         for i in 1..=1000 {
             owned_interop_load_provider(decl.clone(),"ctx.publish('@x/counter',{getCount:()=>1});");
             assert_eq!(interop_lifetime::counts(),(1,1,1,2,0),"cycle {i}");
             assert_eq!(owned_interop_ledger_count("cons"),baseline+2);
+            assert_eq!(eval_in_context_string("cons", "String(JSON.parse(__s2_async_stats()).interop.attachments)"), "1");
+            assert_eq!(eval_in_context_string("cons", "String(JSON.parse(__s2_async_stats()).interop.subscriptions)"), "1");
             assert_eq!(IFACE_SUBS.with(|m|m.borrow().len()),1);
             assert_eq!(IFACES.with(|r|r.borrow().lookup("@x/counter").unwrap().subscribers.len()),1);
             eval_in_context("prod","__s2_iface_emit('@x/counter','OnCountChanged',{count:1})").unwrap();
@@ -2410,6 +2414,7 @@
             unload_plugin("prod");
             assert_eq!(interop_lifetime::counts(),(1,1,0,0,0));
             assert_eq!(owned_interop_ledger_count("cons"),baseline);
+            assert_eq!(eval_in_context_string("cons", "JSON.stringify(JSON.parse(__s2_async_stats()).interop)"), diagnostic_baseline);
             assert!(IFACE_SUBS.with(|m|m.borrow().is_empty()));
             assert!(IFACE_METHODS.with(|m|m.borrow().is_empty()));
             assert!(IFACES.with(|r|r.borrow().lookup("@x/counter").is_none()));

@@ -6312,6 +6312,19 @@ fn s2_async_stats(
     stats["loader"] = crate::loader::metrics();
     stats["staged"] = serde_json::json!({"timers":DUE_TIMERS.with(|q|q.borrow().len()),"ws":crate::ws::pending_count(),"net":crate::net::pending_count(),"cookies":crate::cookies::pending_count(),"http":PARKED_HTTP.with(|q|usize::from(q.borrow().is_some())),"db":PARKED_DB.with(|q|usize::from(q.borrow().is_some()))});
     stats["cache"] = crate::cookies::cache_stats();
+    // Private aggregate diagnostics: fixed-size output, no handles or plugin identities.
+    let (watches, callbacks, attachments, disposers, pending) = interop_lifetime::counts();
+    let ledger = REGISTRY.with(|r| {
+        let r = r.borrow();
+        r.ids().iter().filter_map(|id| r.generation_of(id)
+            .and_then(|generation| r.active_resource_count(id, generation))).sum::<usize>()
+    });
+    stats["interop"] = serde_json::json!({
+        "watches": watches, "callbacks": callbacks, "attachments": attachments,
+        "disposers": disposers, "pending": pending,
+        "subscriptions": IFACE_SUBS.with(|m| m.borrow().len()),
+        "methods": IFACE_METHODS.with(|m| m.borrow().len()), "ledger": ledger,
+    });
     stats["timerExamined"] = serde_json::json!(crate::async_rt::timer_examined());
     let json = stats.to_string();
     if let Some(v) = v8::String::new(scope, &json) {
