@@ -539,3 +539,35 @@ test("producer signature accepts a default for an optional contract input", () =
 publish("@demo/counter", {getCount: () => 1, setCount: (count: number = 0) => { console.log(count); }});`
     );
   }));
+for (const alias of [
+  "const {setCount} = methods;",
+  "const {setCount: alias} = methods; const setCount = alias;",
+  "const setCount = methods.setCount;",
+  "const {api: {setCount}} = {api: methods};",
+]) {
+  test(`annotated async producer cannot hide through ${alias}`, () =>
+    check(
+      "producer",
+      (d) =>
+        source(
+          d,
+          `import {publish} from "@s2script/sdk/plugin";
+import type {Contract} from "../api";
+const methods: Contract["methods"] = {getCount: () => 1, setCount: async (n: number) => { console.log(n); }};
+${alias}
+publish("@demo/counter", {getCount: () => 1, setCount});`
+        ),
+      /producer.*result/
+    ));
+}
+test("destructured annotated synchronous producer remains accepted", () =>
+  check("producer", (d) =>
+    source(
+      d,
+      `import {publish} from "@s2script/sdk/plugin";
+import type {Contract} from "../api";
+const methods: Contract["methods"] = {getCount: () => 1, setCount: (n: number) => { console.log(n); }};
+const {setCount} = methods;
+publish("@demo/counter", {getCount: () => 1, setCount});`
+    )
+  ));

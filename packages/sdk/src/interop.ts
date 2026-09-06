@@ -342,28 +342,73 @@ export function extractContract(
  * can otherwise erase an async/value result under TS's callback assignment rules. */
 function implementationExpression(
   checker: ts.TypeChecker,
-  expression: ts.Expression,
+  expression: ts.Node,
   seen = new Set<ts.Node>()
-): ts.Expression {
+): ts.Node {
   if (seen.has(expression)) return expression;
   seen.add(expression);
+  const propertyValue = (
+    receiver: ts.Node,
+    name: string
+  ): ts.Node | undefined => {
+    const object = implementationExpression(checker, receiver, seen);
+    const declaration = checker
+      .getTypeAtLocation(object)
+      .getProperty(name)?.valueDeclaration;
+    return declaration && (declarationValue(declaration) ?? declaration);
+  };
+  const declarationValue = (declaration: ts.Node): ts.Node | undefined => {
+    if (seen.has(declaration)) return undefined;
+    seen.add(declaration);
+    if (
+      (ts.isVariableDeclaration(declaration) ||
+        ts.isPropertyAssignment(declaration)) &&
+      declaration.initializer
+    )
+      return implementationExpression(checker, declaration.initializer, seen);
+    if (ts.isShorthandPropertyAssignment(declaration)) {
+      const value =
+        checker.getShorthandAssignmentValueSymbol(
+          declaration
+        )?.valueDeclaration;
+      return value && declarationValue(value);
+    }
+    if (
+      ts.isBindingElement(declaration) &&
+      ts.isObjectBindingPattern(declaration.parent)
+    ) {
+      // Recover from the source object's initializer, not the binding's annotated void type.
+      // The parent can itself be a BindingElement for nested object destructuring.
+      const object = declarationValue(declaration.parent.parent);
+      const name = declaration.propertyName ?? declaration.name;
+      if (object && (ts.isIdentifier(name) || ts.isStringLiteral(name)))
+        return propertyValue(object, name.text);
+    }
+    return undefined;
+  };
   if (ts.isParenthesizedExpression(expression))
     return implementationExpression(checker, expression.expression, seen);
+  if (ts.isPropertyAccessExpression(expression))
+    return (
+      propertyValue(expression.expression, expression.name.text) ?? expression
+    );
+  if (
+    ts.isElementAccessExpression(expression) &&
+    ts.isStringLiteralLike(expression.argumentExpression)
+  )
+    return (
+      propertyValue(
+        expression.expression,
+        expression.argumentExpression.text
+      ) ?? expression
+    );
   let symbol = checker.getSymbolAtLocation(expression);
   if (symbol && symbol.flags & ts.SymbolFlags.Alias)
     symbol = checker.getAliasedSymbol(symbol);
-  let declaration = symbol?.valueDeclaration;
-  if (declaration && ts.isShorthandPropertyAssignment(declaration))
-    declaration =
-      checker.getShorthandAssignmentValueSymbol(declaration)?.valueDeclaration;
-  if (
-    declaration &&
-    (ts.isVariableDeclaration(declaration) ||
-      ts.isPropertyAssignment(declaration)) &&
-    declaration.initializer
-  )
-    return implementationExpression(checker, declaration.initializer, seen);
-  return expression;
+  return (
+    (symbol?.valueDeclaration && declarationValue(symbol.valueDeclaration)) ??
+    expression
+  );
 }
 
 /** The checker validates call sites against authoritative contracts even if overload fallback,
