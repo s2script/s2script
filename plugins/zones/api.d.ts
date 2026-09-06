@@ -1,22 +1,23 @@
 /**
  * @s2script/zones — the zone system's contract, implemented by the first-party zones plugin.
  *
- * Hard dep (preferred): `import { on, getZones } from "@s2script/zones"` — producer-as-import;
- * the host proxy throws `InterfaceUnavailable` while the plugin is unloaded (probe with a
- * method call and defer subscribing if it throws — the producer may load after the consumer).
- * Optional dep: `tryUse<Zones>("@s2script/zones")` → `Zones | null`.
+ * Protocol 2. Hard dep: `import { on, getZones } from "@s2script/zones"` or inferred `use`.
+ * Optional dep: `watchOptional("@s2script/zones", (zones, scope) => { ... })` attaches after
+ * both plugins become Active. Own subscriptions with `scope.own(zones.on(...))`.
  *
- * Methods = natives; events = forwards (`on` / producer `emit`). Subscriptions are ledgered
- * against the consumer — there is no `off`. NO runtime code.
+ * Methods describe CURRENT state; notifications never replay history. Query getZones() on
+ * attachment for the existing layout. The CLI derives named methods and on() from Contract;
+ * on() returns a disposable, consumer-ledgered Subscription. NO runtime code.
  */
+import type { Notification } from "@s2script/sdk/interfaces";
 export interface Vec3 { x: number; y: number; z: number; }
 export interface Zone { name: string; min: Vec3; max: Vec3; tags: string[]; }
 export interface ZoneEvent {
   /** The zone's name. */
   zone: string;
-  /** The 0-based player slot. */
+  /** The 0-based player slot at emission; never retain it as connection identity. */
   slot: number;
-  /** The player's engine user-id (re-resolve via Player.fromUserId if the slot churns). */
+  /** Re-resolve with Player.fromUserId when responding; null means the connection ended. */
   userId: number;
 }
 /** Payload of the `created` event (also fired per zone on a map's DB load; a re-save re-fires it). */
@@ -37,20 +38,7 @@ export declare function zonesFor(slot: number): string[];
 export declare function getZonesByTag(tag: string): Zone[];
 /** Set/replace a zone's tags (empty array clears). Returns true if the zone exists on the current map. */
 export declare function setZoneTags(name: string, tags: string[]): boolean;
-/**
- * Subscribe to a zone event. Load-window; ledgered (auto-dropped on unload).
- * `enter`/`leave` fire on boundary crossings; `stay` fires each tick while inside.
- */
-export declare function on(event: "enter" | "leave" | "stay", handler: (p: ZoneEvent) => void): void;
-/** `created` fires on createZone/sm_zone_add/the editor save, and per zone loaded on a map's DB load. */
-export declare function on(event: "created", handler: (p: ZoneCreatedEvent) => void): void;
-/** `deleted` fires on deleteZone/sm_zone_delete, and per zone cleared on a map change. */
-export declare function on(event: "deleted", handler: (p: ZoneDeletedEvent) => void): void;
-
-/** The published surface, as one object type. The plugin's impl is declared `: Zones`,
- *  so `s2script build` fails if a method is missing or mistyped (spec §4.6). Events are
- *  not methods on this object — subscribe with `on(...)` (producer-as-import) or
- *  `handle.on(...)` (`tryUse` / `use`). */
+/** Method surface retained for type imports. The CLI also checks the actual producer implementation. */
 export interface Zones {
   createZone(name: string, min: Vec3, max: Vec3): boolean;
   deleteZone(name: string): boolean;
@@ -59,4 +47,20 @@ export interface Zones {
   zonesFor(slot: number): string[];
   getZonesByTag(tag: string): Zone[];
   setZoneTags(name: string, tags: string[]): boolean;
+}
+
+export interface Contract {
+  methods: Zones;
+  forwards: {
+    /** Engine boundary crossing into a zone. */
+    enter: Notification<ZoneEvent>;
+    /** Engine boundary crossing out of a zone; disconnect/map reset do not synthesize leave. */
+    leave: Notification<ZoneEvent>;
+    /** Every eighth game frame while the same connection remains inside. */
+    stay: Notification<ZoneEvent>;
+    /** Create, replace, editor/import save, or per-zone map DB load after publication. */
+    created: Notification<ZoneCreatedEvent>;
+    /** Explicit deletion or each zone cleared on map change. */
+    deleted: Notification<ZoneDeletedEvent>;
+  };
 }

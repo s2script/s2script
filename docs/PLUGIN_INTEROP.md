@@ -41,6 +41,9 @@ const counter = use("@demo/counter");
 counter.on("OnCountChanged", event => console.log(event.count));
 // Direct method imports are also derived from Contract.methods:
 import { getCount } from "@demo/counter";
+// Direct on imports use the same inferred payloads and disposable Subscription:
+import { on } from "@demo/counter";
+on("OnCountChanged", event => console.log(event.count));
 ```
 
 The CLI generates `.s2script/interfaces.d.ts` for name-based inference. New scaffolds include this file in `tsconfig.json`; add it to existing projects' `include` list. Refresh it with `s2s build` after changing declarations. Explicit caller-selected generics and authored `InterfaceContracts` augmentations do not authorize protocol 2 builds. Producer method agreement is checked even without an explicit implementation annotation. Each implementation must accept every declared input and return the declared synchronous result; async methods, value-returning implementations of void methods, and narrowed input types are rejected. SDK call authority follows the resolved signature through imports, aliases, and destructuring. If the entry also declares method exports, those declarations must agree with `Contract.methods`.
@@ -133,3 +136,34 @@ SDK builds now stamp host API `3.x`. Protocol 2 archives carry `interfaceProtoco
 The API 3 host explicitly accepts API 2 protocol 1 archives. Their existing generic types and permissive wire behavior are retained. Protocol 2 requires API 3 and complete valid metadata; an archive cannot evade the requirement by declaring API 2. Old API 2 hosts reject newly built API 3 archives. Library acquisition and `.s2lib` bundling retain their existing workflow.
 
 Protocol 1 interfaces remain available while a producer and its callers migrate together. Rebuild and deploy both ends with protocol 2; a protocol 1 consumer cannot silently bind to a protocol 2 provider without verified metadata. Interface version matching retains the repository's existing major-based range policy in this slice; exact declaration and metadata hashes provide the additional compatibility checks. Named binding helpers are a separate slice.
+
+## Zones migration
+
+`@s2script/zones` version `1.0.0` is the first base plugin using protocol 2. Its
+seven methods and existing `enter`, `leave`, `stay`, `created`, and `deleted`
+notification names and payload fields remain the same. The major contract bump
+requires consumers to migrate atomically: opt into protocol 2, refresh the
+verified declaration, use `^1.0.0`, and remove caller-selected generics. The CLI
+derives named method exports and a typed `on` export returning `Subscription`.
+
+Getters describe current state. `created` reports creates/replacements, operator
+imports/editor saves, and map DB loads after publication; `deleted` reports
+explicit deletions and cleared map zones. Initial startup loads precede
+publication and are never replayed. The cookbook uses `watchOptional`, owns its
+five subscriptions, and calls `getZones()` after subscribing on every attachment.
+This also discovers a replacement provider's current layout after reload.
+
+`enter` and `leave` describe engine boundary crossings. `stay` fires every eighth
+game frame for the same connection that entered. Disconnect/map cleanup does not
+invent leave events. Resolve `Player.fromUserId(event.userId)` when acting on an
+event; a copied slot is not connection identity. Occupancy is cleared on map
+change, and delayed previous-map DB loads cannot create zones in the new map.
+
+Protocol selection applies to the whole plugin. The cookbook's existing optional
+econ/workshop recipes therefore remain protocol 1 in the
+[legacy-contracts companion](../examples/legacy-contracts/README.md); their
+asynchronous community contracts and command behavior are preserved.
+
+Compiled contract/build tests and plugin VM operation/lifecycle tests cover this
+migration. Real CS2 enter/leave and provider reload acceptance remain a separate
+live gate; offline tests do not establish that acceptance.

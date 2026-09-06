@@ -312,6 +312,7 @@ export function typecheckPlugin(
           `import type {Contract} from ${JSON.stringify(
             path
           )};\nexport * from ${JSON.stringify(path)};\n` +
+            'export declare const on: import("@s2script/sdk/interfaces").TypedInterfaceHandle<Contract>["on"];\n' +
             Object.keys(interfaceContracts[name].metadata.methods)
               .map(
                 (method) =>

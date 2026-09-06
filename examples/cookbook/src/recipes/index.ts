@@ -4,7 +4,6 @@ import * as chat from "./chat.ts";
 import * as clients from "./clients.ts";
 import * as config from "./config.ts";
 import * as consoleRecipe from "./console.ts";
-import * as contracts from "./contracts.ts";
 import * as cookies from "./cookies.ts";
 import * as damage from "./damage.ts";
 import * as db from "./db.ts";
@@ -37,7 +36,6 @@ export const RECIPES: readonly Recipe[] = [
   clients,
   config,
   consoleRecipe,
-  contracts,
   cookies,
   damage,
   db,
