@@ -252,10 +252,18 @@ test("setDisabled's book survives the identity reset its own paint triggers", (t
 });
 
 
-test("missing host capture support is named and show rolls back its visible class", () => {
+test("status and cursor-backed tryShow expose missing host capture support", () => {
   const m = mount(), hud = m.ns.hud();
   delete globalThis.__s2_shared_entity_switch;
-  assert.match(hud.show(2, "panel", { cursor: true }), /unavailable: shared entity switch/);
+  assert.deepEqual(hud.status(), {
+    server: "unavailable",
+    clientContent: "unknown",
+    reason: "__s2_shared_entity_switch: unavailable",
+  });
+  assert.deepEqual(hud.tryShow(2, "panel", { cursor: true }), {
+    ok: false,
+    error: { code: "Unavailable", message: "unavailable: shared entity switch host support" },
+  });
   const paint = m.callsFor("setHasClassForPlayer").filter(c => c.args[2] === "panel");
   assert.deepEqual(paint.map(c => c.args[4]), [0, 1]);
   assert.equal(m.callsFor("setInputCaptureEnabledForPlayer").length, 0, "no raw fallback");

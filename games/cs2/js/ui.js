@@ -621,6 +621,10 @@
           reason: "setDialogVariableStringForPlayer: " +
             engineStatus("setDialogVariableStringForPlayer") };
       }
+      if (typeof globalThis.__s2_shared_entity_switch !== "function") {
+        return { server: "unavailable", clientContent: "unknown",
+          reason: "__s2_shared_entity_switch: unavailable" };
+      }
       if (!ctxState.isReady()) {
         return { server: "not-ready", clientContent: "unknown", reason: ctxState.notReadyReason() };
       }
