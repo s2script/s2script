@@ -767,3 +767,36 @@ for (const descriptor of [
     }
   });
 }
+
+test("decision patch union rejects an illegal key present in only one member", () =>
+  check(
+    "consumer",
+    (d) => {
+      decisions(d, "consumer");
+      source(
+        d,
+        readFileSync(
+          join(fixtures, "invalid", "illegal-patch-union-key.ts"),
+          "utf8"
+        )
+      );
+    },
+    /never/,
+    5
+  ));
+test("decision patch union accepts distinct writable fields in every member", () =>
+  check("consumer", (d) => {
+    writeFileSync(
+      join(d, ".s2script/types/@demo/counter/index.d.ts"),
+      `import type {Transform} from "@s2script/sdk/interfaces";
+export interface Contract {methods:{};forwards:{OnFormat:Transform<{identity:string;text:string;suffix?:string},"text"|"suffix">}}`
+    );
+    source(
+      d,
+      `import {use} from "@s2script/sdk/plugin";
+import {HookResult} from "@s2script/sdk/events";
+const service=use("@demo/counter");
+declare const patch: {text:string} | {suffix:string};
+service.on("OnFormat",()=>({result:HookResult.Changed,patch}));`
+    );
+  }));

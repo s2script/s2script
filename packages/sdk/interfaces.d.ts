@@ -85,10 +85,13 @@ export type TypedPublishHandle<C> = {
     payload: ForwardPayload<ContractForwards<C>[K]>
   ): DispatchResponse<ContractForwards<C>[K]>;
 };
+type ExtraPatchKeys<Patch, W> = Patch extends unknown
+  ? Exclude<keyof Patch, W>
+  : never;
 type ExtraResponseKeys<R, W> = R extends unknown
   ?
       | Exclude<keyof R, "result" | "patch">
-      | (R extends { patch?: infer Patch } ? Exclude<keyof Patch, W> : never)
+      | (R extends { patch?: infer Patch } ? ExtraPatchKeys<Patch, W> : never)
   : never;
 type ExactForwardHandler<D, R> = D extends Transform<infer P, infer W>
   ? ExtraResponseKeys<R, W> extends never
