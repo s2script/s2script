@@ -75,6 +75,7 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_iface_on", s2_iface_on);
     set_native(scope, global_obj, "__s2_iface_off", s2_iface_off);
     set_native(scope, global_obj, "__s2_iface_emit", s2_iface_emit);
+    set_native(scope, global_obj, "__s2_iface_dispatch", s2_iface_dispatch);
     // Game-event system (Slice 5D.1): subscribe/unsubscribe + accessor natives.
     crate::events::install_natives(scope, global_obj);
     // Engine-identity client-list natives (Slice 5D.2).

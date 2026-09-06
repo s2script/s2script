@@ -261,3 +261,10 @@ remain supported by the new host. See [migration and wire limits](PLUGIN_INTEROP
 
 Linux unit and repository gate results are recorded in the slice implementation report. Live CS2
 acceptance remains a separate pending infrastructure gate; this entry does not claim a live pass.
+
+
+## 2026-09-06 — Typed plugin interoperability: decision and transformation forwards
+
+Protocol 2 now supports `Hook<P>` and `Transform<P,W>` alongside notifications. Producers get inferred `dispatch` results; consumer handlers return the existing HookResult values, with transforms supplying Changed-only patches to declared writable fields. Canonical metadata includes kind and writable keys. The host validates whole responses, applies copied shallow patches, collapses the maximum result, continues on Handled, and ends delivery on Stop. Failure contributes Continue/no patch; stale consumer responses are discarded, and provider removal aborts the return with InterfaceUnavailable. Registration order, snapshot traversal, and the shared 32-call bound use the existing interop registry.
+
+SDK/native regressions cover type inference, illegal async/results/patches, metadata drift, A/B/C dispatch, copied nested replacements, internal removal, unload generations, and recursion recovery. The full JS gate passed (670 SDK tests); native acceptance and exact logs are recorded in the slice handoff. Live CS2 acceptance remains pending. Disposable subscriptions, optional watches, and named bindings are later slices.

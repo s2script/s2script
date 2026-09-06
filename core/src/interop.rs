@@ -35,6 +35,18 @@ pub struct Method {
 pub struct Forward {
     pub kind: String,
     pub payload: Schema,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_writable"
+    )]
+    pub writable: Option<Vec<String>>,
+}
+// Missing is valid for notifications/hooks; present null must not vanish before hashing.
+fn present_writable<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error> {
+    Vec::<String>::deserialize(deserializer).map(Some)
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -116,6 +128,70 @@ impl Method {
         })
     }
 }
+impl Forward {
+    fn well_formed(&self) -> bool {
+        if !self.payload.well_formed(false, 0) {
+            return false;
+        }
+        match (self.kind.as_str(), &self.writable, &self.payload) {
+            ("notification" | "hook", None, _) => true,
+            ("transform", Some(keys), Schema::Object { fields }) => {
+                keys.iter().all(|k| fields.contains_key(k))
+                    && keys
+                        .windows(2)
+                        .all(|k| k[0].encode_utf16().cmp(k[1].encode_utf16()).is_lt())
+            }
+            _ => false,
+        }
+    }
+    /// Validate the entire response before any patch can be applied. No numeric coercion.
+    pub fn response<'a>(
+        &self,
+        value: &'a Value,
+    ) -> Option<(
+        crate::multiplexer::HookResult,
+        Option<&'a serde_json::Map<String, Value>>,
+    )> {
+        use crate::multiplexer::HookResult;
+        let action = |value: &Value| match value.as_f64()? {
+            0.0 => Some(HookResult::Continue),
+            1.0 => Some(HookResult::Changed),
+            2.0 => Some(HookResult::Handled),
+            3.0 => Some(HookResult::Stop),
+            _ => None,
+        };
+        if self.kind == "hook" {
+            return Some((action(value)?, None));
+        }
+        if self.kind != "transform" {
+            return None;
+        }
+        let object = value.as_object()?;
+        if object.keys().any(|key| key != "result" && key != "patch") {
+            return None;
+        }
+        let result = action(object.get("result")?)?;
+        let patch = if let Some(patch) = object.get("patch") {
+            if result != HookResult::Changed {
+                return None;
+            }
+            let patch = patch.as_object()?;
+            let Schema::Object { fields } = &self.payload else {
+                return None;
+            };
+            let writable = self.writable.as_ref()?;
+            if !patch.iter().all(|(k, v)| {
+                writable.contains(k) && fields.get(k).is_some_and(|f| f.schema.accepts(v))
+            }) {
+                return None;
+            }
+            Some(patch)
+        } else {
+            None
+        };
+        Some((result, patch))
+    }
+}
 impl Contract {
     pub fn validate(&self) -> Result<(), String> {
         let m = &self.metadata;
@@ -124,10 +200,7 @@ impl Contract {
                 v.args.iter().all(|a| a.schema.well_formed(false, 0))
                     && v.result.well_formed(true, 0)
             })
-            || !m
-                .forwards
-                .values()
-                .all(|f| f.kind == "notification" && f.payload.well_formed(false, 0))
+            || !m.forwards.values().all(Forward::well_formed)
         {
             return Err("InterfaceContractError: unsupported metadata".into());
         }
@@ -198,6 +271,59 @@ pub fn validate_manifest(m: &crate::loader_worker::Manifest) -> Result<(), Strin
 
 #[cfg(test)]
 mod canonical_tests {
+    #[test]
+    fn null_writable_cannot_disappear_before_metadata_digest_validation() {
+        let value: serde_json::Value = serde_json::from_str(include_str!(
+            "../../packages/sdk/test/fixtures/interop/decisions.json"
+        ))
+        .unwrap();
+        let mut missing = value.clone();
+        missing["metadata"]["forwards"]["OnFormat"]
+            .as_object_mut()
+            .unwrap()
+            .remove("writable");
+        assert!(
+            serde_json::from_value::<super::Contract>(missing)
+                .unwrap()
+                .validate()
+                .is_err(),
+            "transforms require an explicit writable array"
+        );
+        for forward in ["OnRequest", "OnCountChanged", "OnFormat"] {
+            let mut changed = value.clone();
+            changed["metadata"]["forwards"][forward]["writable"] = serde_json::Value::Null;
+            assert!(
+                serde_json::from_value::<super::Contract>(changed).is_err(),
+                "{forward}: explicitly null writable must not normalize to an absent field"
+            );
+        }
+    }
+    #[test]
+    fn decision_contract_accepts_sdk_digest_and_rejects_mode_or_writable_drift() {
+        let value: serde_json::Value = serde_json::from_str(include_str!(
+            "../../packages/sdk/test/fixtures/interop/decisions.json"
+        ))
+        .unwrap();
+        let contract: super::Contract = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(contract.validate(), Ok(()));
+        let mut changed = value.clone();
+        changed["metadata"]["forwards"]["OnRequest"]["kind"] = "notification".into();
+        let changed: super::Contract = serde_json::from_value(changed).unwrap();
+        assert!(changed.validate().unwrap_err().contains("digest mismatch"));
+        for writable in [
+            serde_json::json!(["identity"]),
+            serde_json::json!(["text", "text"]),
+            serde_json::json!(["absent"]),
+            serde_json::Value::Null,
+        ] {
+            let mut changed = value.clone();
+            changed["metadata"]["forwards"]["OnFormat"]["writable"] = writable;
+            match serde_json::from_value::<super::Contract>(changed) {
+                Ok(changed) => assert!(changed.validate().is_err()),
+                Err(_) => {} // Explicit null is rejected while decoding, before digest validation.
+            }
+        }
+    }
     #[test]
     fn sdk_numeric_and_utf16_canonical_contract_is_accepted() {
         let vector: serde_json::Value = serde_json::from_str(include_str!(

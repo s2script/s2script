@@ -2278,13 +2278,26 @@ fn s2_iface_off(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, m
     }));
 }
 
-/// `__s2_iface_emit(name, event, payload)` — the producer forwards an event to every LIVE consumer
-/// subscribed to (name, event). Payload is structured-copied per consumer. Producer-side: no throw
-/// (a bad payload logs a WARN and skips that dispatch).
+/// Notifications and synchronous decision forwards share authority, copying and snapshot traversal.
 fn s2_iface_emit(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
+    rv: v8::ReturnValue,
+) {
+    s2_iface_forward(scope, args, rv, false);
+}
+fn s2_iface_dispatch(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    rv: v8::ReturnValue,
+) {
+    s2_iface_forward(scope, args, rv, true);
+}
+fn s2_iface_forward(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
+    decision: bool,
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_undefined();
@@ -2297,10 +2310,19 @@ fn s2_iface_emit(
             }
         }
         let contract = published_contract(&name);
-        let producer = IFACES
-            .with(|r| r.borrow().producer_of(&name))
-            .map(|(id, _)| id)
+        let published = IFACES.with(|r| r.borrow().producer_of(&name));
+        let producer = published
+            .as_ref()
+            .map(|(id, _)| id.as_str())
             .unwrap_or_default();
+        if decision && contract.is_none() {
+            throw_named(
+                scope,
+                "InterfaceContractError",
+                "dispatch requires a protocol 2 provider",
+            );
+            return;
+        }
         let _depth = if contract.is_some() {
             let Some(g) = InteropGuard::enter(scope) else {
                 return;
@@ -2326,8 +2348,16 @@ fn s2_iface_emit(
             throw_named(scope, "InterfaceUnknownForward", &event);
             return;
         }
+        if forward.is_some_and(|f| decision == (f.kind == "notification")) {
+            throw_named(
+                scope,
+                "InterfaceForwardKindMismatch",
+                &format!("{}.{}", name, event),
+            );
+            return;
+        }
         // Validate and copy the entire payload before executing any listener.
-        let payload_json = match if let Some(forward) = forward {
+        let mut payload_json = match if let Some(forward) = forward {
             strict_json(scope, args.get(2))
                 .filter(|(_, v)| forward.payload.accepts(v))
                 .map(|(s, _)| s)
@@ -2355,7 +2385,11 @@ fn s2_iface_emit(
         let is_live = |id: &str, gen: u64| REGISTRY.with(|r| r.borrow().is_live(id, gen));
         let sub_ids = IFACES.with(|r| r.borrow().live_subscriber_ids(&name, &event, &is_live));
 
+        let mut collapsed = HookResult::Continue;
         for sub_id in sub_ids {
+            if contract.is_some() && IFACES.with(|r| r.borrow().producer_of(&name)) != published {
+                break;
+            }
             if !IFACES.with(|r| {
                 r.borrow()
                     .live_subscriber_ids(&name, &event, &is_live)
@@ -2394,6 +2428,35 @@ fn s2_iface_emit(
                 if let Some(result) = result {
                     if contract.is_some() && observe_thenable(tc, result) {
                         log_warn(&format!("InterfaceSynchronousContractError: provider {} consumer {} forward {}.{} returned a thenable",producer,consumer,name,event));
+                    } else if decision && !live_interop_context(tc, &consumer) {
+                        log_warn(&format!("InterfaceUnavailable: provider {} consumer {} forward {}.{} returned from a stale generation",producer,consumer,name,event));
+                    } else if decision {
+                        let validated = strict_json(tc, result).and_then(|(_, value)| {
+                            let (action, patch) = forward?.response(&value)?;
+                            let updated = if let Some(patch) = patch {
+                                let mut payload: serde_json::Value =
+                                    serde_json::from_str(&payload_json).ok()?;
+                                payload.as_object_mut()?.extend(patch.clone());
+                                if !forward?.payload.accepts(&payload) {
+                                    return None;
+                                }
+                                Some(serde_json::to_string(&payload).ok()?)
+                            } else {
+                                None
+                            };
+                            Some((action, updated))
+                        });
+                        if let Some((action, updated)) = validated {
+                            if let Some(updated) = updated {
+                                payload_json = updated;
+                            }
+                            collapsed = collapsed.max(action);
+                            if action == HookResult::Stop {
+                                break;
+                            }
+                        } else {
+                            log_warn(&format!("InterfaceInvalidForwardResponse: provider {} consumer {} forward {}.{}",producer,consumer,name,event));
+                        }
                     }
                 } else {
                     let msg = tc
@@ -2407,6 +2470,27 @@ fn s2_iface_emit(
                 }
             }
             // tc, tc_storage, cscope drop here (TryCatch absorbs any pending exception).
+        }
+        if decision {
+            if IFACES.with(|r| r.borrow().producer_of(&name)) != published
+                || !published
+                    .as_ref()
+                    .is_some_and(|(id, g)| REGISTRY.with(|r| r.borrow().is_live(id, *g)))
+            {
+                throw_named(scope, "InterfaceUnavailable", &name);
+                return;
+            }
+            if forward.is_some_and(|f| f.kind == "hook") {
+                rv.set_double(collapsed as u32 as f64);
+            } else {
+                let result_json = format!(
+                    "{{\"result\":{},\"payload\":{}}}",
+                    collapsed as u32, payload_json
+                );
+                if let Some(result) = iface_from_json(scope, &result_json) {
+                    rv.set(result);
+                }
+            }
         }
     }));
 }
