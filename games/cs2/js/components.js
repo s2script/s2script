@@ -393,6 +393,7 @@
     var calloutGen = {};
     var bannerGen = {};
     var motdOpen = {};
+    var motdOpenAttempts = {};
     var dashSpec = null;
     var dashOpen = {};
     var dashGeneration = 0;
@@ -401,6 +402,92 @@
     // may synchronously open/close/rebind, so a generation kept only on that object cannot fence
     // the obsolete caller that still holds it on its stack.
     var dashPaintTransactions = {};
+    var dashOpenAttempts = {};
+    // Only retained reservations are reconciled. Failed tokenless states require an explicit retry.
+    var focusParticipants = [];
+    function focusOptions(opts) {
+      try {
+        var focus = opts ? opts.focus : undefined;
+        if (typeof focus === "undefined") return uiOk(null);
+        if (!focus || focus.mode !== "exclusive") return uiFail("InvalidArgument", "focus mode must be exclusive");
+        var priority = focus.priority;
+        if (typeof priority === "undefined") priority = 0;
+        if (typeof priority !== "number" || !isFinite(priority) || Math.floor(priority) !== priority ||
+            priority < -2147483648 || priority > 2147483647) {
+          return uiFail("InvalidArgument", "focus priority must be a signed int32");
+        }
+        return uiOk(priority);
+      } catch (err) { return uiFail("InvalidArgument", errorMessage(err, "invalid focus options")); }
+    }
+    function clearInteraction(st) {
+      st.interactive = false;
+      st.paintedRows = null; st.paintedTabs = null; st.footerFns = null;
+      st.paintedOnPick = null; st.paintedOnClose = null;
+    }
+    function releaseFocus(st) {
+      if (!st || !st.focusEnabled) return false;
+      clearInteraction(st);
+      // Host retirement bypasses these mirrors. Forget must not later raw-hide a covered root.
+      if (hud._focus) hud._focus.invalidate(st.binding, st.root);
+      var token = st.focusToken;
+      st.focusToken = null;
+      var index = focusParticipants.indexOf(st);
+      if (index >= 0) focusParticipants.splice(index, 1);
+      if (token && hud._focus) hud._focus.release(token);
+      return true;
+    }
+    function focusAllows(st) {
+      return !st.focusEnabled || !!st.focusToken && hud._focus.active(st.focusBinding, st.focusToken);
+    }
+    function focusPaintable(st) {
+      if (!st.focusEnabled) return true;
+      var state = st.focusToken && hud._focus.state(st.focusToken);
+      return state === "ready" || state === "active";
+    }
+    // true means a successful logical open that must wait without evaluating any providers.
+    function prepareFocus(st, current) {
+      if (!st.focusEnabled) return uiOk(false);
+      clearInteraction(st);
+      st.focusBinding = componentBinding(st.binding, current);
+      if (!hud._focus) return uiFail("Unavailable", "surface focus is unavailable");
+      if (!st.focusToken) {
+        var reserved = hud._focus.reserve(st.focusBinding, st.root, st.focusPriority);
+        if (!reserved.ok) return reserved;
+        st.focusToken = reserved.value;
+        focusParticipants.push(st);
+      }
+      var state = hud._focus.state(st.focusToken);
+      if (state === "invalid") { releaseFocus(st); return staleResult(); }
+      if (state === "covered" || state === "waiting") return uiOk(true);
+      if (state === "ready") {
+        hud._focus.invalidate(st.focusBinding, st.root);
+        st.pendingRootOpts = { cursor: st.cursorWanted };
+      }
+      return uiOk(false);
+    }
+    function commitFocus(st) {
+      if (!st.focusEnabled) return true;
+      var state = hud._focus.state(st.focusToken);
+      return state === "active" || state === "ready" && hud._focus.activate(st.focusBinding, st.focusToken);
+    }
+    if (hud._focus) hud._focus.onFrame(function () {
+      var states = focusParticipants.slice();
+      for (var i = 0; i < states.length; i++) {
+        var st = states[i];
+        if (!st.focusToken) continue;
+        if (!st.focusRetained()) { releaseFocus(st); st.focusDiscard(); continue; }
+        var state = hud._focus.state(st.focusToken);
+        if (state === "invalid") { releaseFocus(st); st.focusDiscard(); }
+        else if (state === "covered" || state === "waiting") clearInteraction(st);
+        else if (state === "ready") {
+          try {
+            var result = st.focusRepaint();
+            if (result && result.ok === false) releaseFocus(st);
+          }
+          catch (_) { releaseFocus(st); }
+        }
+      }
+    });
     var origForget = hud.forget;
     hud.forget = function (slot, client) {
       if (client && typeof hud._disconnectOwnsSlot === "function" && !hud._disconnectOwnsSlot(slot, client)) {
@@ -657,7 +744,16 @@
 
     function closeMotd(slot, fromClick, expected) {
       var state = motdOpen[slot];
-      if (!state || (expected && expected !== state) || !bindingValid(state.binding)) return;
+      if (!fromClick) delete motdOpenAttempts[slot];
+      if (!state || (expected && expected !== state)) return;
+      if (fromClick && (!state.interactive || !bindingValid(state.binding) || !focusAllows(state))) return;
+      if (state.focusEnabled) {
+        var onClose = state.onClose;
+        delete motdOpen[slot]; releaseFocus(state);
+        if (fromClick && typeof onClose === "function") onClose(slot);
+        return;
+      }
+      if (!bindingValid(state.binding)) return;
       function currentMotd() { return motdOpen[slot] === state; }
       boundDriver(state.binding, hide, currentMotd)(slot, "s2_motd");
       if (!currentMotd()) return;
@@ -674,16 +770,25 @@
       return { slot: slot, isValid: function () { return false; }, close: function () {} };
     }
 
-    function motd(slot, opts, retainedBinding) {
-      var binding = retainedBinding || currentBinding(slot);
-      if (!bindingValid(binding)) return invalidMotd(slot);
-      var o = opts || {};
-      var state = { binding: binding, onClose: o.onClose || null };
-      motdOpen[slot] = state;
-      function currentMotd() { return motdOpen[slot] === state; }
-      var paintText = boundDriver(binding, setText, currentMotd);
-      var paintShow = boundDriver(binding, show, currentMotd);
-      var paintHide = boundDriver(binding, hide, currentMotd);
+    function paintMotd(slot, state) {
+      var binding = state.binding, o = state.spec;
+      function currentMotd() { return motdOpen[slot] === state && bindingValid(binding); }
+      if (!currentMotd()) return staleResult();
+      var prepared = prepareFocus(state, currentMotd);
+      if (!prepared.ok || prepared.value) return prepared.ok ? uiOk(undefined) : prepared;
+      var error = null;
+      function drive(fn, legacy) {
+        if (!state.focusEnabled) return boundDriver(binding, legacy, currentMotd);
+        return function () {
+          if (error || !currentMotd()) return;
+          if (!focusPaintable(state)) { error = uiFail("PaintFailed", "focus changed during paint"); return; }
+          var result = resultBoundDriver(binding, fn, function () {
+            return currentMotd() && focusPaintable(state);
+          }).apply(null, arguments);
+          if (!result.ok) error = result;
+        };
+      }
+      var paintText = drive(driveSetText, setText), paintShow = drive(driveShow, show), paintHide = drive(driveHide, hide);
       paintText(slot, "s2_motd_title", o.title == null ? "" : String(o.title));
       var sub = o.subtitle == null ? "" : String(o.subtitle);
       paintText(slot, "s2_motd_sub", sub);
@@ -702,7 +807,47 @@
       paintText(slot, "s2_motd_note", note);
       if (!note) paintHide(slot, "s2_motd_note"); else paintShow(slot, "s2_motd_note");
       paintText(slot, "s2_motd_ok_t", o.ok == null ? "OK" : String(o.ok));
-      paintShow(slot, "s2_motd", { cursor: o.cursor !== false });
+      paintShow(slot, "s2_motd", { cursor: state.cursorWanted });
+      if (!currentMotd()) { releaseFocus(state); return staleResult(); }
+      if (error) { releaseFocus(state); return error; }
+      if (!commitFocus(state)) { releaseFocus(state); return uiFail("PaintFailed", "focus activation failed"); }
+      state.interactive = true;
+      return uiOk(undefined);
+    }
+
+    function motd(slot, opts, retainedBinding) {
+      var binding = retainedBinding || currentBinding(slot);
+      if (!bindingValid(binding)) return invalidMotd(slot);
+      var attempt = {}; motdOpenAttempts[slot] = attempt;
+      var validated = focusOptions(opts);
+      if (!validated.ok) { log("[hudkit] " + validated.error.message); return invalidMotd(slot); }
+      if (!bindingValid(binding)) return invalidMotd(slot);
+      var o = opts || {};
+      var state;
+      try {
+        state = { binding: binding, spec: o, onClose: o.onClose || null,
+          focusEnabled: validated.value !== null, focusPriority: validated.value,
+          root: "s2_motd", cursorWanted: o.cursor !== false, interactive: false };
+      } catch (err) {
+        if (validated.value === null) throw err;
+        log(errorMessage(err, "invalid MOTD options")); return invalidMotd(slot);
+      }
+      if (!bindingValid(binding) || motdOpenAttempts[slot] !== attempt) return invalidMotd(slot);
+      releaseFocus(motdOpen[slot]);
+      motdOpen[slot] = state;
+      state.focusRetained = function () { return motdOpen[slot] === state && bindingValid(binding); };
+      state.focusDiscard = function () { if (motdOpen[slot] === state) delete motdOpen[slot]; };
+      state.focusRepaint = function () { return paintMotd(slot, state); };
+      var result;
+      try { result = paintMotd(slot, state); }
+      catch (err) {
+        if (!state.focusEnabled) throw err;
+        result = uiFail("PaintFailed", errorMessage(err, "MOTD paint failed"));
+      }
+      if (state.focusEnabled && !result.ok) {
+        releaseFocus(state); state.focusDiscard(); log("[hudkit] " + result.error.message);
+        return invalidMotd(slot);
+      }
       return {
         slot: slot,
         isValid: function () { return motdOpen[slot] === state && bindingValid(binding); },
@@ -724,12 +869,14 @@
 
     function closeDash(slot, fromClick) {
       var st = dashOpen[slot];
+      delete dashOpenAttempts[slot];
       delete dashPaintTransactions[slot];
       if (!st) return;
       delete dashOpen[slot];
-      if (!dashStateValid(st)) return;
-      boundDriver(st.binding, hide, function () { return dashStateValid(st); })(slot, "s2_dash");
-      if (fromClick && st.interactive && typeof st.paintedOnClose === "function") st.paintedOnClose(slot);
+      if (!dashStateValid(st)) { releaseFocus(st); return; }
+      var onClose = st.interactive && st.paintedOnClose;
+      if (!releaseFocus(st)) boundDriver(st.binding, hide, function () { return dashStateValid(st); })(slot, "s2_dash");
+      if (fromClick && typeof onClose === "function") onClose(slot);
     }
 
     function dashCandidate(slot, st, spec) {
@@ -786,24 +933,37 @@
     }
 
     function paintDash(slot) {
+      var st = dashOpen[slot], result, transaction = {};
+      function ownsFailure() { return st && (dashPaintTransactions[slot] === transaction ||
+        st.focusEnabled && !st.focusRetained()); }
+      try { result = paintDashInner(slot, transaction); }
+      catch (err) { if (ownsFailure()) releaseFocus(st); throw err; }
+      if (ownsFailure() && (result === DASH_SUPERSEDED || !result.ok)) releaseFocus(st);
+      return result;
+    }
+    function paintDashInner(slot, transaction) {
       var st = dashOpen[slot];
       if (!dashStateValid(st)) return staleResult();
       if (!dashSpec) return uiFail("InvalidArgument", "hudkit: dashboard is not configured");
       var spec = dashSpec;
-      var transaction = {};
       dashPaintTransactions[slot] = transaction;
       st.interactive = false;
       function current() {
         return dashPaintTransactions[slot] === transaction && dashOpen[slot] === st && dashSpec === spec &&
           dashStateValid(st);
       }
+      var prepared = prepareFocus(st, current);
+      if (!prepared.ok) return prepared;
+      if (prepared.value) { st.focusBinding = componentBinding(st.binding, st.focusRetained); return uiOk(undefined); }
       var candidate;
       try { candidate = dashCandidate(slot, st, spec); }
       catch (err) {
+        if (!current()) return DASH_SUPERSEDED;
         return uiFail("InvalidArgument", errorMessage(err, "hudkit: invalid dashboard data"));
       }
       if (!current()) return DASH_SUPERSEDED;
       if (!candidate) {
+        if (st.focusEnabled) { closeDash(slot, false); return uiOk(undefined); }
         var closeResult = resultBoundDriver(st.binding, driveHide, function () {
           return dashSpec === spec && dashOpen[slot] === st && dashStateValid(st);
         })(slot, "s2_dash");
@@ -815,9 +975,10 @@
       }
       var error = null;
       function drive(fn) {
-        var driveBound = resultBoundDriver(st.binding, fn, current);
+        var driveBound = resultBoundDriver(st.binding, fn, function () { return current() && focusPaintable(st); });
         return function () {
           if (error !== null || !current()) return;
+          if (!focusPaintable(st)) { error = uiFail("PaintFailed", "focus changed during paint"); return; }
           var result = driveBound.apply(null, arguments);
           if (!result.ok) error = result;
         };
@@ -858,6 +1019,7 @@
       }
       if (!current()) return DASH_SUPERSEDED;
       if (error) return error;
+      if (!commitFocus(st)) { releaseFocus(st); return uiFail("PaintFailed", "focus activation failed"); }
       st.tabId = candidate.tabId;
       st.tabPage = candidate.tabPage;
       st.rowPage = candidate.rowPage;
@@ -868,6 +1030,7 @@
       st.paintedOnPick = candidate.onPick;
       st.paintedOnClose = candidate.onClose;
       delete st.pendingRootOpts;
+      st.focusBinding = componentBinding(st.binding, st.focusRetained);
       st.interactive = true;
       return uiOk(undefined);
     }
@@ -876,6 +1039,7 @@
       var slot = slotOf(player);
       var st = dashOpen[slot];
       if (!dashStateValid(st) || !st.interactive) return;
+      if (!focusAllows(st)) return;
       closeDash(slot, true);
     });
     for (var dti = 0; dti < DASH_TABS; dti++) {
@@ -885,7 +1049,7 @@
           var st = dashOpen[slot];
           if (!dashStateValid(st) || !st.interactive) return;
           var tab = st.paintedTabs && st.paintedTabs[tabIndex];
-          if (!tab) return;
+          if (!tab || !focusAllows(st)) return;
           st.tabId = tab.id;
           st.rowPage = 0;
           paintDash(slot);
@@ -899,7 +1063,7 @@
           var st = dashOpen[slot];
           if (!dashStateValid(st) || !st.interactive) return;
           var record = st.paintedRows && st.paintedRows[rowIndex];
-          if (!record || record.row.disabled) return;
+          if (!record || record.row.disabled || !focusAllows(st)) return;
           if (typeof st.paintedOnPick === "function") {
             st.paintedOnPick(slot, st.paintedTabId, record.row, dashSelf.forSlot(slot));
           }
@@ -910,6 +1074,7 @@
       var slot = slotOf(player);
       var st = dashOpen[slot];
       if (!dashStateValid(st) || !st.interactive) return;
+      if (!focusAllows(st)) return;
       st.rowPage -= 1;
       paintDash(slot);
     });
@@ -917,6 +1082,7 @@
       var slot = slotOf(player);
       var st = dashOpen[slot];
       if (!dashStateValid(st) || !st.interactive) return;
+      if (!focusAllows(st)) return;
       st.rowPage += 1;
       paintDash(slot);
     });
@@ -929,6 +1095,7 @@
         var slots = [];
         for (var key in dashOpen) {
           if (!dashOpen[key]) continue;
+          releaseFocus(dashOpen[key]);
           dashOpen[key].interactive = false;
           dashOpen[key].componentGeneration = dashGeneration;
           delete dashPaintTransactions[key];
@@ -955,12 +1122,26 @@
       dashGeneration++;
       function tryOpenDashBound(slot, opts, binding, generation, rollbackOnFailure) {
         if (generation !== dashGeneration || !bindingValid(binding)) return staleResult();
+        var attempt = {}; dashOpenAttempts[slot] = attempt;
+        var validated = focusOptions(opts);
+        if (!validated.ok) return validated;
+        if (generation !== dashGeneration || !bindingValid(binding)) return staleResult();
         var o = opts || {};
-        if (dashOpen[slot]) dashOpen[slot].interactive = false;
+        var candidate;
+        try {
+          var cursorWanted = o.cursor !== false;
+          candidate = { tabId: o.tab || "", tabPage: 0, rowPage: 0, interactive: false,
+            pendingRootOpts: { cursor: cursorWanted }, binding: binding,
+            componentGeneration: generation, focusEnabled: validated.value !== null,
+            focusPriority: validated.value, root: "s2_dash", cursorWanted: cursorWanted };
+        } catch (err) { return uiFail("InvalidArgument", errorMessage(err, "invalid dashboard options")); }
+        if (generation !== dashGeneration || !bindingValid(binding)) return staleResult();
+        if (dashOpenAttempts[slot] !== attempt) return uiFail("PaintFailed", "dashboard open superseded");
+        if (dashOpen[slot]) { dashOpen[slot].interactive = false; releaseFocus(dashOpen[slot]); }
         delete dashPaintTransactions[slot];
-        var candidate = { tabId: o.tab || "", tabPage: 0, rowPage: 0, interactive: false,
-          pendingRootOpts: { cursor: o.cursor !== false }, binding: binding,
-          componentGeneration: generation };
+        candidate.focusRetained = function () { return dashOpen[slot] === candidate && dashStateValid(candidate); };
+        candidate.focusDiscard = function () { if (dashOpen[slot] === candidate) delete dashOpen[slot]; };
+        candidate.focusRepaint = function () { return paintDash(slot); };
         dashOpen[slot] = candidate;
         var result;
         try { result = paintDash(slot); }
@@ -975,10 +1156,10 @@
           return uiFail("PaintFailed", "dashboard open cancelled");
         }
         if (!result.ok) {
-          if (rollbackOnFailure !== false && dashOpen[slot] === candidate) {
+          if ((rollbackOnFailure !== false || candidate.focusEnabled) && dashOpen[slot] === candidate) {
             delete dashPaintTransactions[slot];
             delete dashOpen[slot];
-            try { boundDriver(binding, hide, function () {
+            try { if (!candidate.focusEnabled) boundDriver(binding, hide, function () {
               return generation === dashGeneration;
             })(slot, "s2_dash"); }
             catch (_) { /* Preserve the original failure. */ }
@@ -1167,6 +1348,7 @@
       // `interactive` is cleared before every attempt, so a partial drive can never dispatch the
       // previous actions over visuals that may already have changed.
       var open = {};
+      var openAttempts = {};
       var paintTransactions = {};
       var modalSlotEpochs = {};
       var SUPERSEDED = {};
@@ -1200,13 +1382,14 @@
         var pages = Math.max(1, Math.ceil(all.length / pageSize));
         var pageNumber = st.page;
         var cursor = st.cursor;
-        if (request && request.pageDelta != null) {
-          pageNumber = ((pageNumber + request.pageDelta) % pages + pages) % pages;
-          cursor = 0;
-        } else if (request && request.selectIndex != null) {
+        if (request && request.selectIndex != null) {
           var selected = Math.max(0, Math.min(request.selectIndex, all.length > 0 ? all.length - 1 : 0));
           pageNumber = Math.floor(selected / pageSize);
           cursor = selected % pageSize;
+        }
+        if (request && request.pageDelta != null) {
+          pageNumber = ((pageNumber + request.pageDelta) % pages + pages) % pages;
+          cursor = 0;
         }
         if (pageNumber >= pages) pageNumber = pages - 1;
         if (pageNumber < 0) pageNumber = 0;
@@ -1234,13 +1417,21 @@
       // Footer actions belong to the player's last painted view. Another player's paint
       // must not change the actions behind this player's buttons (including automatic pagers).
       function paint(slot, candidate, rootOpts, request) {
+        var st = candidate || open[slot], result, transaction = {};
+        function ownsFailure() { return st && (paintTransactions[slot] === transaction ||
+          st.focusEnabled && !st.focusRetained()); }
+        try { result = paintInner(slot, candidate, rootOpts, request, transaction); }
+        catch (err) { if (ownsFailure()) releaseFocus(st); throw err; }
+        if (ownsFailure() && (result === SUPERSEDED || !result.ok)) releaseFocus(st);
+        return result;
+      }
+      function paintInner(slot, candidate, rootOpts, request, transaction) {
         if (released) return releasedResult("modal");
         var st = candidate || open[slot];
         if (!st) return uiFail("InvalidArgument", "hudkit: modal is not open");
         var expectedState = open[slot];
         if (expectedState) expectedState.interactive = false;
         st.interactive = false;
-        var transaction = {};
         paintTransactions[slot] = transaction;
         st.paintTransaction = transaction;
         st.paintExpectedState = expectedState;
@@ -1250,17 +1441,35 @@
             paintTransactions[slot] === transaction && open[slot] === expectedState;
         }
         if (!current()) return SUPERSEDED;
+        if (st.focusEnabled && request) {
+          if (request.selectIndex != null) st.focusRequest = { selectIndex: request.selectIndex };
+          else if (request.pageDelta != null) {
+            if (!st.focusRequest) st.focusRequest = {};
+            st.focusRequest.pageDelta = (st.focusRequest.pageDelta || 0) + request.pageDelta;
+          }
+        }
+        var prepared = prepareFocus(st, current);
+        if (!prepared.ok) return prepared;
+        if (prepared.value) {
+          open[slot] = st;
+          st.focusBinding = componentBinding(st.binding, st.focusRetained);
+          return uiOk(undefined);
+        }
+        rootOpts = st.pendingRootOpts || rootOpts;
+        if (st.focusEnabled) request = st.focusRequest;
         var snapshot;
         try { snapshot = modalCandidate(slot, st, request); }
         catch (err) {
+          if (!current()) return SUPERSEDED;
           return uiFail("InvalidArgument", errorMessage(err, "hudkit: invalid modal data"));
         }
         if (!current()) return SUPERSEDED;
         var error = null;
         function drive(fn) {
-          var driveBound = resultBoundDriver(st.binding, fn, current);
+          var driveBound = resultBoundDriver(st.binding, fn, function () { return current() && focusPaintable(st); });
           return function () {
             if (error !== null || !current()) return;
+            if (!focusPaintable(st)) { error = uiFail("PaintFailed", "focus changed during paint"); return; }
             var result = driveBound.apply(null, arguments);
             if (!result.ok) error = result;
           };
@@ -1331,6 +1540,8 @@
         }
         if (!current()) return SUPERSEDED;
         if (error) return error;
+        if (!commitFocus(st)) { releaseFocus(st); return uiFail("PaintFailed", "focus activation failed"); }
+        delete st.pendingRootOpts; delete st.focusRequest;
         st.page = snapshot.pageNumber;
         st.cursor = snapshot.cursor;
         st.paintedRows = snapshot.paintedRows;
@@ -1338,6 +1549,7 @@
         st.paintedPages = snapshot.pages;
         st.footerFns = snapshot.footerFns.slice();
         open[slot] = st;
+        st.focusBinding = componentBinding(st.binding, st.focusRetained);
         st.interactive = true;
         return uiOk(undefined);
       }
@@ -1350,7 +1562,7 @@
             if (!st || !st.interactive || !bindingValid(st.binding) ||
                 st.componentEpoch !== (modalSlotEpochs[slot] || 0)) return;
             var record = st.paintedRows && st.paintedRows[rowIndex];
-            if (!record) return;
+            if (!record || !focusAllows(st)) return;
             st.cursor = rowIndex;
             if (s.onPick) s.onPick(slot, record.index, record.row, self.forSlot(slot));
             if (open[slot] === st) paint(slot);
@@ -1364,7 +1576,7 @@
             if (!open[slot] || !open[slot].interactive || !bindingValid(open[slot].binding) ||
                 open[slot].componentEpoch !== (modalSlotEpochs[slot] || 0)) return;
             var fn = open[slot].footerFns && open[slot].footerFns[fIndex];
-            if (fn) fn(slot, self.forSlot(slot));
+            if (fn && focusAllows(open[slot])) fn(slot, self.forSlot(slot));
           });
         })(fi);
       }
@@ -1410,11 +1622,27 @@
       function tryOpenResultBound(slot, opts, binding, componentEpoch) {
         if (released) return releasedResult("modal");
         if (!bindingValid(binding) || componentEpoch !== (modalSlotEpochs[slot] || 0)) return staleResult();
+        // Getters in options may open/close synchronously, before a paint transaction exists.
+        var attempt = {}; openAttempts[slot] = attempt;
+        var validated = focusOptions(opts);
+        if (!validated.ok) return validated;
+        var cursorWanted;
+        try { cursorWanted = !(opts && opts.cursor === false); }
+        catch (err) { return uiFail("InvalidArgument", errorMessage(err, "invalid modal options")); }
+        if (released) return releasedResult("modal");
+        if (!bindingValid(binding) || componentEpoch !== (modalSlotEpochs[slot] || 0)) return staleResult();
+        if (openAttempts[slot] !== attempt) return uiFail("PaintFailed", "modal open superseded");
+        if (open[slot]) releaseFocus(open[slot]);
         var candidate = { page: 0, cursor: 0, interactive: false, binding: binding,
-          componentEpoch: componentEpoch };
+          componentEpoch: componentEpoch, focusEnabled: validated.value !== null,
+          focusPriority: validated.value, root: ids.root, cursorWanted: cursorWanted };
+        candidate.focusRetained = function () { return !released && open[slot] === candidate &&
+          bindingValid(binding) && componentEpoch === (modalSlotEpochs[slot] || 0); };
+        candidate.focusDiscard = function () { if (open[slot] === candidate) delete open[slot]; };
+        candidate.focusRepaint = function () { return paint(slot); };
         var result;
         try {
-          result = paint(slot, candidate, { cursor: !(opts && opts.cursor === false) });
+          result = paint(slot, candidate, { cursor: cursorWanted });
         } catch (err) {
           result = uiFail("PaintFailed", errorMessage(err, "hudkit: modal paint failed"));
         }
@@ -1434,7 +1662,7 @@
               open[slot] === candidate.paintExpectedState) {
             delete paintTransactions[slot];
             delete open[slot];
-            try { boundDriver(binding, hide, function () {
+            try { if (!candidate.focusEnabled) boundDriver(binding, hide, function () {
               return !released && componentEpoch === (modalSlotEpochs[slot] || 0);
             })(slot, ids.root); }
             catch (_) { /* Preserve the original failure. */ }
@@ -1464,13 +1692,25 @@
         },
         setCursor: function (slot, on) {
           if (released || !currentBinding(slot)) return;
+          var st = open[slot];
+          if (st && st.focusEnabled) {
+            st.cursorWanted = !!on;
+            if (!focusAllows(st)) return;
+            var result = resultBoundDriver(st.binding, function () {
+              return structuredCall("cursorForPanel", hud._cursorForPanel, [slot, ids.root, !!on]);
+            }, st.focusRetained)();
+            if (!result.ok) releaseFocus(st);
+            return;
+          }
           return hud._cursorForPanel(slot, ids.root, !!on);
         },
         close: function (slot) {
           if (released) return;
           var st = open[slot];
+          delete openAttempts[slot];
           delete paintTransactions[slot];
           delete open[slot];
+          if (releaseFocus(st)) return;
           if (!st || !bindingValid(st.binding) || st.componentEpoch !== (modalSlotEpochs[slot] || 0)) return;
           boundDriver(st.binding, hide, function () {
             return !released && st.componentEpoch === (modalSlotEpochs[slot] || 0);
@@ -1527,6 +1767,8 @@
           return st.page * pageSize + st.cursor;
         },
         forget: function (slot) {
+          delete openAttempts[slot];
+          releaseFocus(open[slot]);
           modalSlotEpochs[slot] = (modalSlotEpochs[slot] || 0) + 1;
           delete paintTransactions[slot]; delete open[slot];
         },

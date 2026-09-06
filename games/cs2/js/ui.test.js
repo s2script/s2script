@@ -379,3 +379,20 @@ test("structured retained views reject stale and coercion-reentrant clients befo
   });
   assert.equal(m.calls.length, beforeDirect, "a slot-first drive stays bound to its entry client");
 });
+
+test("focus invalidation resends one root tree while preserving other roots and slots", () => {
+  const m = mount(), hud = m.ns.probe();
+  for (const slot of [1, 2]) {
+    hud.setText(slot, "root_title", "same"); hud.show(slot, "root");
+    hud.setText(slot, "other_title", "other"); hud.show(slot, "other");
+  }
+  const binding = hud._captureBinding(1);
+  hud._focus.invalidate(binding, "root");
+  const before = m.calls.length;
+  for (const slot of [1, 2]) {
+    hud.setText(slot, "root_title", "same"); hud.show(slot, "root");
+    hud.setText(slot, "other_title", "other"); hud.show(slot, "other");
+  }
+  assert.equal(m.calls.length - before, 2);
+  assert.ok(m.calls.slice(before).every(call => call.args[1] === 1 && /^root/.test(call.args[2])));
+});

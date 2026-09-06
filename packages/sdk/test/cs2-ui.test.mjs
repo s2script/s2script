@@ -682,3 +682,29 @@ void invalid; void wrongVoid; void wrongPlayer;
   }));
   assert.ok(diagnostics.every(diagnostic => diagnostic.code === 2322), "all rejected assignments are type mismatches");
 });
+
+test("exclusive focus is an additive high-level public option", () => {
+  const diagnostics = compileUiContract(`
+import { hudkit, type UiFocusOptions, type Modal, type Dashboard } from "@s2script/cs2";
+declare const modal: Modal; declare const dashboard: Dashboard;
+const focus: UiFocusOptions = { mode: "exclusive", priority: -2147483648 };
+modal.open(1, { focus }); modal.forSlot(1).tryOpenResult({ focus }); modal.tryOpen(1, { focus });
+dashboard.open(1, { focus }); dashboard.forSlot(1).tryOpenResult({ focus });
+hudkit.motd(1, { title: "M", focus });
+`);
+  assert.equal(diagnostics.length, 0, ts.formatDiagnostics(diagnostics, {
+    getCurrentDirectory: () => repoRoot, getCanonicalFileName: name => name, getNewLine: () => "\n",
+  }));
+});
+
+test("focus types reject unsupported modes and misspelled fields", () => {
+  const diagnostics = compileUiContract(`
+import { hudkit, type UiFocusOptions, type Modal, type Dashboard } from "@s2script/cs2";
+declare const m: Modal; declare const d: Dashboard;
+const wrong: UiFocusOptions = { mode: "shared" };
+m.open(1, { focus: { mode: "exclusive", priorty: 1 } });
+d.open(1, { focus: { mode: "steal" } });
+hudkit.motd(1, { title: "M", focus: { mode: "exclusive", priority: "1" } });
+`);
+  assert.equal(diagnostics.length, 4);
+});

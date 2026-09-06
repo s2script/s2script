@@ -71,22 +71,22 @@ interface HudPlayer {
 }
 
 interface Modal {
-  tryOpenResult(slot: number, opts?: { cursor?: boolean }): UiResult<ModalView>;
+  tryOpenResult(slot: number, opts?: { cursor?: boolean; focus?: UiFocusOptions }): UiResult<ModalView>;
   tryRefresh(slot: number): UiResult<void>;
 }
 
 interface ModalView {
-  tryOpenResult(opts?: { cursor?: boolean }): UiResult<ModalView>;
+  tryOpenResult(opts?: { cursor?: boolean; focus?: UiFocusOptions }): UiResult<ModalView>;
   tryRefresh(): UiResult<void>;
 }
 
 interface Dashboard {
-  tryOpenResult(slot: number, opts?: { tab?: string; cursor?: boolean }): UiResult<DashboardView>;
+  tryOpenResult(slot: number, opts?: { tab?: string; cursor?: boolean; focus?: UiFocusOptions }): UiResult<DashboardView>;
   tryRefresh(slot: number): UiResult<void>;
 }
 
 interface DashboardView {
-  tryOpenResult(opts?: { tab?: string; cursor?: boolean }): UiResult<DashboardView>;
+  tryOpenResult(opts?: { tab?: string; cursor?: boolean; focus?: UiFocusOptions }): UiResult<DashboardView>;
   tryRefresh(): UiResult<void>;
 }
 
@@ -175,3 +175,58 @@ reopened component. Forget, release, reconnect, and replacement also invalidate 
 component's retained work. User-managed asynchronous code remains the author's
 responsibility. Treat retained handles as disposable references and check their result
 before continuing an action.
+
+
+## Exclusive component focus
+
+Modal and dashboard opens accept `focus`, and `MotdSpec` accepts the same option:
+
+```ts
+import { hudkit, type UiFocusOptions } from "@s2script/cs2";
+
+const focus: UiFocusOptions = { mode: "exclusive", priority: 10 };
+const modal = hudkit.modal({ title: "Confirm", rows: [] });
+const result = modal?.tryOpenResult(slot, { focus, cursor: true });
+hudkit.motd(slot, { title: "Rules", focus });
+```
+
+All three components participate in one host-owned focus stack per layout entity and
+client connection, including across plugins. Higher priority wins. The latest successful
+reservation wins equal-priority ties. Priority defaults to `0` and must be an integer in
+the inclusive signed-int32 range `-2147483648` through `2147483647`; fractions, nonfinite
+numbers, strings, and out-of-range values fail with `InvalidArgument` before painting.
+Reopening and explicitly replacing a dashboard spec make fresh reservations. Ordinary
+refresh and restoration retain their reservation order.
+
+Reservation happens before providers, engine writes, or capture. A covered open succeeds
+as a logical open and retains desired navigation and cursor state, but does not evaluate
+providers, paint, capture input, or dispatch component actions. Taking focus hides the
+outgoing root and releases that panel's capture before the incoming component paints,
+even when the incoming open requests `cursor: false`. Independent manual capture holders
+remain independent.
+
+Closing, forgetting, releasing, disconnecting, or unloading a winner retires its exact
+reservation. A surviving contender waits for a later host frame, then clears its paint
+cache, evaluates fresh providers, completely repaints, restores its desired capture, and
+activates. Restoration also clears the cache when the component never observed that it
+was covered. Focus does not promise engine z-order control or client rendering
+acknowledgement; `clientContent` remains `"unknown"`.
+
+Component actions check host focus immediately before dispatch. A newly activated
+component cannot consume the input delivery that opened it, including nested delivery.
+A failed initial paint leaves no open focused presentation; a failed refresh or
+restoration disables actions and releases focus. Desired state may remain available for
+an explicit `refresh()`/`tryRefresh()` retry. Failure does not automatically retry each
+frame. Modal `setCursor` remembers changes while covered and applies them only when the
+component owns focus again.
+
+Use modal/dashboard `tryOpenResult` to inspect reservation errors, including `Busy`,
+without parsing text. MOTD retains its existing return shape: a failed focused open logs
+a diagnostic and returns an invalid no-op `MotdHandle`. It does not expose a new structured
+MOTD-open method.
+
+Calls without `focus` retain their existing behavior. Raw `CustomHudLayout.onClicked`
+observers still receive events, and raw `HudInput` state/arming remains unchanged. Focus
+is not global click suppression: legacy menus, low-level layouts, manual drives, and
+broad legacy helpers such as `hideAll` remain outside this opt-in arbitration. Cooperating
+plugins must opt in and use their component handles for focused presentation cleanup.

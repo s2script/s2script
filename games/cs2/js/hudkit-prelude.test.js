@@ -141,6 +141,57 @@ function pluginWorld(options = {}) {
   const entities = [];
   const writes = [];
   const plugins = [];
+  const focus = new Map();
+  const focusCalls = [];
+  let nextFocus = 1;
+  function live(r) {
+    return clientGenerations.get(r.slot) === r.generation && entities.some(e =>
+      e.index === r.index && e.id === r.id && e.isValid());
+  }
+  function group(r) { return [...focus.values()].filter(x => x.key === r.key && live(x)); }
+  function winner(r) { return group(r).sort((a, b) => b.priority - a.priority || b.order - a.order)[0]; }
+  function retire(r) {
+    if (r.adapter.suspend) writes.push({ owner: r.owner, name: r.adapter.suspend.call,
+      args: [entities.find(e => e.id === r.id), r.slot, ...r.adapter.suspend.args], host: true });
+    if (r.adapter.capture) switches.native(r.owner)(r.adapter.capture.call,
+      r.index, r.id, r.slot, r.adapter.capture.token, false);
+  }
+  function releaseFocus(owner, token) {
+    const r = focus.get(token);
+    if (!r || r.owner !== owner) return false;
+    const wasWinner = live(r) && winner(r) === r;
+    focus.delete(token);
+    if (wasWinner) { retire(r); const next = winner(r); if (next) next.state = "waiting"; }
+    return true;
+  }
+  function focusNatives(owner) {
+    function own(token) { const r = focus.get(token); return r && r.owner === owner && live(r) ? r : null; }
+    return {
+      __s2_surface_reserve(surface, index, id, slot, priority, json) {
+        focusCalls.push({ surface, index, id, slot, priority, adapter: JSON.parse(json) });
+        if (options.focusError) return { ok: false, error: { code: options.focusError, message: "native failure" } };
+        const token = "opaque/" + nextFocus++;
+        const r = { token, owner, index, id, slot, priority, order: nextFocus,
+          generation: clientGenerations.get(slot), adapter: JSON.parse(json),
+          key: JSON.stringify([surface, index, id, slot, clientGenerations.get(slot)]), state: "covered" };
+        const prev = winner(r);
+        focus.set(token, r);
+        if (winner(r) === r) { if (prev) { retire(prev); prev.state = "covered"; } r.state = "ready"; }
+        return { ok: true, value: token };
+      },
+      __s2_surface_state(token) { const r = own(token); return r ? r.state : "invalid"; },
+      __s2_surface_activate(token) {
+        const r = own(token);
+        if (!r || r.state !== "ready" || options.activateError) return false;
+        r.state = "active"; r.activatedEpoch = activeEpoch; return true;
+      },
+      __s2_surface_active(token) {
+        const r = own(token);
+        return !!r && r.state === "active" && !(activeEpoch !== null && r.activatedEpoch === activeEpoch);
+      },
+      __s2_surface_release: token => releaseFocus(owner, token),
+    };
+  }
   let nextClientGeneration = 1;
   const clientGenerations = new Map();
   function connect(slot) { clientGenerations.set(slot, nextClientGeneration++); }
@@ -161,7 +212,7 @@ function pluginWorld(options = {}) {
     });
   function plugin() {
     const owner = plugins.length;
-    const lifecycle = { active: [], disconnect: [], map: [] };
+    const lifecycle = { active: [], disconnect: [], map: [], frame: [], click: [] };
     const fallbackCalls = [];
     const pendingTimers = [];
     const fallback = {
@@ -173,6 +224,11 @@ function pluginWorld(options = {}) {
     let sealed = false;
     const ctx = vm.createContext({
       console: { log() {} }, __s2pkg_cs2: {},
+      ...focusNatives(owner),
+      __s2pkg_frame: { OnGameFrame: { subscribe(fn, opts) {
+        assert.equal(sealed, false, "frame registration must happen in the load window");
+        assert.equal(opts.phase, "pre"); lifecycle.frame.push(fn); return { dispose() {} };
+      } } },
       __s2_shared_entity_switch: switches.native(owner),
       __s2_ui_pool_claim(_kind, capacity) {
         const index = owners.findIndex((v, i) => i < capacity && v === null &&
@@ -211,7 +267,7 @@ function pluginWorld(options = {}) {
       __s2pkg_menu: { Menu: { registerRenderer(name, renderer) {
         const prev = renderers[name]; renderers[name] = renderer; return prev;
       } }, MenuStyle: { Chat: "chat", Center: "center" } },
-      __s2_hook_on: () => 1,
+      __s2_hook_on: (_pkg, _name, fn) => { lifecycle.click.push(fn); return 1; },
     });
     for (const file of ["ui.js", "components.js", "menuhud.js"]) {
       vm.runInContext(readFileSync(join(__dirname, file), "utf8"), ctx);
@@ -220,9 +276,11 @@ function pluginWorld(options = {}) {
       assert.equal(sealed, false, "click registration must happen in the load window");
       return fn();
     }, (fn) => fn);
+    const rawListeners = []; base.onClicked(view => rawListeners.forEach(fn => fn(view)));
     sealed = true;
-    const p = { base, hudkit: ctx.__s2pkg_cs2.hudkit, renderers, lifecycle, fallbackCalls, pendingTimers,
-      click(slot, id) { base.kit.layout.dispatchClick(slot, id); },
+    ctx.__s2pkg_cs2.Player = { all: () => [...clientGenerations.keys()].map(slot => ({ slot, ref: { index: slot + 1000, id: clientGenerations.get(slot) } })) };
+    const p = { ctx, base, rawListeners, hudkit: ctx.__s2pkg_cs2.hudkit, renderers, lifecycle, fallbackCalls, pendingTimers,
+      click(slot, id) { for (const fn of lifecycle.click) fn({ player: { index: slot + 1000, id: clientGenerations.get(slot) }, buttonId: id }); },
       runTimer(index = 0) { const fn = pendingTimers.splice(index, 1)[0]; if (fn) fn(); } };
     plugins.push(p); return p;
   }
@@ -240,8 +298,23 @@ function pluginWorld(options = {}) {
     finally { activeEpoch = previous; }
   }
   return {
-    owners, writes, plugins, plugin, session, dispatchClick, client: clientFor,
+    owners, writes, plugins, plugin, session, dispatchClick, client: clientFor, focus, focusCalls,
+    frame() {
+      for (const r of focus.values()) if (r.state === "waiting" && live(r) && winner(r) === r) r.state = "ready";
+      for (const p of plugins) p.lifecycle.frame.forEach(fn => fn());
+    },
+    unload(p) {
+      const owner = plugins.indexOf(p);
+      for (const r of [...focus.values()]) if (r.owner === owner) releaseFocus(owner, r.token);
+      p.lifecycle.frame.length = 0; p.lifecycle.click.length = 0;
+    },
     replace(slot) { connect(slot); switches.clearSlot(slot); },
+    mapChange() {
+      focus.clear(); switches.clear();
+      for (const entity of entities) entity.valid = false;
+      for (const p of plugins) p.lifecycle.map.forEach(fn => fn());
+      for (const p of plugins) p.lifecycle.active.forEach(fn => fn(clientFor(1)));
+    },
     replaceLayoutEntity() {
       const old = entities.find(e => e.isValid());
       if (old) old.valid = false;
@@ -984,4 +1057,259 @@ test("capture rejection rolls modal open back and retry reacquires instead of re
   modal.close(2);
   assert.deepEqual(w.writes.filter(c => c.name === "setInputCaptureEnabledForPlayer")
     .map(c => c.args[2]), [true, true, false]);
+});
+
+const exclusive = priority => ({ focus: { mode: "exclusive", priority } });
+function focusedModal(p, pick, rows = () => [{ id: "one", a: "One" }]) {
+  return p.hudkit.modal({ title: "Focus", rows, onPick: pick });
+}
+test("exclusive focus suspends other plugins before painting and restores after a host frame", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin();
+  let aReads = 0, bReads = 0, aPicks = 0, bPicks = 0;
+  const am = focusedModal(a, () => aPicks++, () => { aReads++; return [{ a: "A" }]; });
+  const bm = focusedModal(b, () => bPicks++, () => { bReads++; return [{ a: "B" }]; });
+  assert.equal(am.tryOpenResult(1, exclusive(2)).ok, true);
+  const before = w.writes.length;
+  assert.equal(bm.tryOpenResult(1, exclusive(1)).ok, true);
+  assert.equal(bReads, 0, "covered opens must not evaluate providers");
+  assert.equal(w.writes.length, before);
+  w.dispatchClick(1, "s2_m1_r0"); assert.equal(bPicks, 0);
+  bm.open(1, { ...exclusive(3), cursor: false });
+  w.dispatchClick(1, "s2_m0_r0"); assert.equal(aPicks, 0);
+  assert.ok(w.writes.some(x => x.host && x.args[2] === "s2_m0"));
+  assert.equal(w.writes.filter(x => x.name === "setInputCaptureEnabledForPlayer").at(-1).args[2], false);
+  bm.close(1);
+  const reads = aReads;
+  w.dispatchClick(1, "s2_m0_r0"); assert.equal(aReads, reads); assert.equal(aPicks, 0);
+  w.frame(); assert.equal(aReads, reads + 1);
+  w.dispatchClick(1, "s2_m0_r0"); assert.equal(aPicks, 1);
+});
+test("focus priority validates before replacing or evaluating a presentation", () => {
+  const w = pluginWorld(), p = w.plugin(); let reads = 0;
+  const m = focusedModal(p, () => {}, () => { reads++; return []; });
+  for (const priority of [NaN, Infinity, -Infinity, 0.5, 2147483648, -2147483649, "1", null]) {
+    const result = m.tryOpenResult(1, exclusive(priority));
+    assert.equal(result.ok, false); assert.equal(result.error.code, "InvalidArgument");
+  }
+  assert.equal(reads, 0); assert.equal(w.focusCalls.length, 0);
+  m.open(1, { focus: { mode: "exclusive" } });
+  assert.equal(w.focusCalls[0].priority, 0);
+  assert.equal(w.focusCalls[0].surface, "cs2:hudkit:exclusive");
+});
+test("dashboard and MOTD join the same focus stack and covered same-root close cannot hide the winner", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin(); let reads = 0;
+  const spec = { title: "Dash", tabs: [{ id: "t", title: "T" }], rows: () => { reads++; return [{ id: "r", a: "R" }]; } };
+  const ad = a.hudkit.dashboard(spec), bd = b.hudkit.dashboard(spec);
+  ad.open(1, exclusive(2)); bd.open(1, exclusive(1)); assert.equal(reads, 1);
+  const before = w.writes.length; bd.close(1); assert.equal(w.writes.length, before);
+  const motd = b.hudkit.motd(1, { title: "Rules", ...exclusive(3) });
+  assert.equal(motd.isValid(), true); assert.equal(w.focus.size, 2);
+  motd.close(); w.frame(); assert.equal(reads, 2);
+});
+
+test("focused failures retire exact tokens, disable actions and require explicit retry", () => {
+  for (const component of ["modal", "dashboard", "motd"]) {
+    const options = {}, w = pluginWorld(options), p = w.plugin(); let picks = 0, reads = 0;
+    const m = component === "modal" ? focusedModal(p, () => picks++, () => { reads++; return [{ a: "Row" }]; }) :
+      component === "dashboard" ? p.hudkit.dashboard({ title: "D", tabs: [{ id: "t", title: "T" }],
+        rows: () => { reads++; return [{ id: "r", a: "Row" }]; }, onPick: () => picks++ }) : null;
+    options.activateError = true;
+    if (m) assert.equal(m.tryOpenResult(1, exclusive(0)).ok, false);
+    else assert.equal(p.hudkit.motd(1, { title: "M", ...exclusive(0) }).isValid(), false);
+    assert.equal(w.focus.size, 0);
+    options.activateError = false;
+    if (!m) continue;
+    m.open(1, exclusive(0)); options.failInvoke = "setDialogVariableStringForPlayer";
+    // Force a noncached text submission on the refresh.
+    p.base.kit.layout._focus.invalidate(p.base.kit.layout._captureBinding(1), component === "modal" ? "s2_m0" : "s2_dash");
+    assert.equal(m.tryRefresh(1).ok, false);
+    assert.equal(w.focus.size, 0);
+    const before = reads; w.frame(); assert.equal(reads, before);
+    w.dispatchClick(1, component === "modal" ? "s2_m0_r0" : "s2_dash_r0"); assert.equal(picks, 0);
+    options.failInvoke = null; assert.equal(m.tryRefresh(1).ok, true); assert.equal(w.focus.size, 1);
+  }
+});
+
+test("restoration clears unchanged cached values even if coverage was never polled", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin();
+  const am = focusedModal(a, () => {}), bm = focusedModal(b, () => {});
+  am.open(1, exclusive(0)); bm.open(1, exclusive(0)); bm.close(1);
+  const before = w.writes.length;
+  w.frame();
+  assert.ok(w.writes.slice(before).some(x => x.name === "setHasClassForPlayer" && x.args[2] === "s2_m0" && x.args[4] === 0));
+  assert.ok(w.writes.slice(before).some(x => x.name === "setDialogVariableStringForPlayer" && x.args.includes("Focus")));
+});
+
+test("covered cursor intent is remembered without acquiring and exact close preserves same-root winner", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin();
+  const am = focusedModal(a, () => {}), bm = focusedModal(b, () => {});
+  am.open(1, exclusive(0)); bm.open(1, exclusive(1));
+  const before = w.writes.length; am.setCursor(1, false); assert.equal(w.writes.length, before);
+  bm.close(1); w.frame();
+  assert.equal(w.writes.filter(x => x.name === "setInputCaptureEnabledForPlayer").at(-1).args[2], false);
+  am.setCursor(1, true);
+  assert.equal(w.writes.filter(x => x.name === "setInputCaptureEnabledForPlayer").at(-1).args[2], true);
+});
+
+test("focus binding blocks a takeover triggered by value coercion before the obsolete engine write", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin();
+  const bm = focusedModal(b, () => {}); let armed = false;
+  const am = a.hudkit.modal({ title: () => armed ? { toString() {
+    armed = false; bm.open(1, exclusive(1)); return "obsolete";
+  } } : "Initial", rows: [] });
+  am.open(1, exclusive(0)); armed = true;
+  assert.equal(am.tryRefresh(1).ok, false);
+  assert.equal(w.writes.some(x => x.args.includes("obsolete")), false);
+});
+
+test("focus failure codes pass through and stale lifetimes do not repaint during frame reconciliation", () => {
+  for (const code of ["InvalidArgument", "StaleClient", "NotReady", "Unavailable", "Released", "Busy", "PoolExhausted"]) {
+    const w = pluginWorld({ focusError: code }), p = w.plugin(); let reads = 0;
+    const m = focusedModal(p, () => {}, () => { reads++; return []; });
+    assert.equal(m.tryOpenResult(1, exclusive(0)).error.code, code); assert.equal(reads, 0);
+  }
+  for (const change of [w => w.replace(1), w => w.replaceLayoutEntity(), w => w.disconnect(1), w => w.mapChange()]) {
+    const w = pluginWorld(), a = w.plugin(), b = w.plugin(); let reads = 0;
+    const am = focusedModal(a, () => {}, () => { reads++; return []; }), bm = focusedModal(b, () => {});
+    const old = am.open(1, exclusive(0)); bm.open(1, exclusive(1)); change(w);
+    const before = w.writes.length; w.frame(); old.refresh(); old.close();
+    assert.equal(reads, 1); assert.equal(w.writes.length, before); assert.equal(old.isValid(), false);
+  }
+});
+
+test("native activation fences the outer and nested delivery while raw observers still observe", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin(); let bPicks = 0, raw = 0;
+  const bd = b.hudkit.dashboard({ title: "B", tabs: [{ id: "t", title: "T" }],
+    rows: () => [{ id: "b", a: "B" }], onPick: () => bPicks++ });
+  let transfer = true;
+  const ad = a.hudkit.dashboard({ title: "A", tabs: [{ id: "t", title: "T" }],
+    rows: () => [{ id: "a", a: "A" }], onPick: () => {
+      if (transfer) { transfer = false; bd.open(1, exclusive(1)); w.dispatchClick(1, "s2_dash_r0"); }
+    } });
+  a.rawListeners.push(() => raw++); b.rawListeners.push(() => raw++);
+  ad.open(1, exclusive(0)); w.dispatchClick(1, "s2_dash_r0");
+  assert.equal(bPicks, 0); assert.equal(raw, 4);
+  w.dispatchClick(1, "s2_dash_r0"); assert.equal(bPicks, 1); assert.equal(raw, 6);
+});
+test("unloading a covered same-root dashboard preserves the winner and unloading a winner restores later", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin(), c = w.plugin();
+  const spec = { title: "D", tabs: [{ id: "t", title: "T" }], rows: () => [] };
+  const ad = a.hudkit.dashboard(spec), bd = b.hudkit.dashboard(spec), cd = c.hudkit.dashboard(spec);
+  ad.open(1, exclusive(0)); bd.open(1, exclusive(1)); cd.open(1, exclusive(-1));
+  const before = w.writes.length; w.unload(c); assert.equal(w.writes.length, before);
+  w.unload(b); assert.equal([...w.focus.values()][0].state, "waiting"); w.frame();
+  assert.equal([...w.focus.values()][0].state, "active");
+});
+test("a throwing focused reopen releases its candidate even when a prior local state remains", () => {
+  const w = pluginWorld(), p = w.plugin(); let fail = false;
+  const m = p.hudkit.modal({ title: () => fail ? { toString() { throw Error("boom"); } } : "T", rows: [] });
+  m.open(1, exclusive(0)); fail = true;
+  assert.equal(m.tryOpenResult(1, exclusive(0)).ok, false);
+  assert.equal(w.focus.size, 0);
+});
+test("a nested successful focus refresh remains authoritative if the outer provider throws", () => {
+  const w = pluginWorld(), p = w.plugin(); let nested = false, picks = 0, m;
+  m = focusedModal(p, () => picks++, () => {
+    if (nested) { nested = false; m.refresh(1); throw Error("obsolete outer"); }
+    return [{ a: "Current" }];
+  });
+  m.open(1, exclusive(0)); nested = true; m.tryRefresh(1);
+  assert.equal(w.focus.size, 1);
+  w.dispatchClick(1, "s2_m0_r0"); assert.equal(picks, 1);
+});
+test("dashboard spec replacement retires and reserves before evaluating the replacement provider", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const spec = { title: "D", tabs: [{ id: "t", title: "T" }], rows: () => [] };
+  const d = p.hudkit.dashboard(spec), old = d.open(1, exclusive(4));
+  const token = [...w.focus.keys()][0];
+  p.hudkit.dashboard({ ...spec, rows: () => {
+    assert.equal(w.focus.has(token), false); assert.equal(w.focus.size, 1); return [];
+  } });
+  assert.equal(old.isValid(), false);
+  assert.notEqual([...w.focus.keys()][0], token);
+});
+
+test("open option getters cannot overwrite a nested focused presentation", () => {
+  for (const kind of ["modal", "dashboard", "motd"]) {
+    const w = pluginWorld(), p = w.plugin();
+    const m = kind === "modal" ? focusedModal(p, () => {}) : kind === "dashboard" ?
+      p.hudkit.dashboard({ title: "D", tabs: [{ id: "t", title: "T" }], rows: () => [] }) : null;
+    const open = options => m ? m.tryOpenResult(1, options) : p.hudkit.motd(1, { title: "M", ...options });
+    let calls = 0;
+    const opts = { focus: { mode: "exclusive", get priority() {
+      calls++; open(exclusive(9)); return 0;
+    } } };
+    open(opts);
+    assert.equal(calls, 1);
+    assert.equal(w.focus.size, 1);
+    assert.equal([...w.focus.values()][0].priority, 9);
+  }
+});
+test("focus descriptor always records exact panel capture and missing host support fails before providers", () => {
+  const w = pluginWorld(), p = w.plugin(); let reads = 0;
+  const m = focusedModal(p, () => {}, () => { reads++; return []; });
+  delete p.ctx.__s2_surface_reserve;
+  assert.equal(m.tryOpenResult(1, exclusive(0)).error.code, "Unavailable"); assert.equal(reads, 0);
+  const w2 = pluginWorld(), p2 = w2.plugin(), m2 = focusedModal(p2, () => {});
+  for (const priority of [-2147483648, 2147483647]) {
+    m2.open(1, { ...exclusive(priority), cursor: false });
+    const call = w2.focusCalls.at(-1);
+    assert.equal(call.priority, priority); assert.equal(call.index, 1); assert.equal(call.id, 1); assert.equal(call.slot, 1);
+    assert.deepEqual(call.adapter, { capture: { call: "setInputCaptureEnabledForPlayer", token: "panel:s2_m0" },
+      suspend: { call: "setHasClassForPlayer", args: ["s2_m0", "s2-hide", 1] } });
+  }
+});
+
+test("failed focused dashboard open is closed even through the legacy adapter", () => {
+  const w = pluginWorld({ focusError: "Busy" }), p = w.plugin();
+  const d = p.hudkit.dashboard({ title: "D", tabs: [{ id: "t", title: "T" }], rows: () => [] });
+  d.open(1, exclusive(0)); assert.equal(d.isOpen(1), false); assert.equal(w.focus.size, 0);
+});
+test("focused MOTD failures use the invalid handle adapter and do not strand a reservation", () => {
+  for (const property of ["cursor", "onClose", "title"]) {
+    const w = pluginWorld(), p = w.plugin();
+    const spec = { title: "M", ...exclusive(0) };
+    Object.defineProperty(spec, property, { get() { throw Error("bad " + property); } });
+    const handle = p.hudkit.motd(1, spec);
+    assert.equal(handle.isValid(), false); assert.equal(w.focus.size, 0);
+  }
+});
+test("focused capture and restoration failures leave no actions or automatic retry", () => {
+  const options = {}, w = pluginWorld(options), a = w.plugin(), b = w.plugin(); let reads = 0, picks = 0;
+  const am = focusedModal(a, () => picks++, () => { reads++; return [{ a: "A" }]; });
+  options.captureError = "capture failed";
+  assert.equal(am.tryOpenResult(1, exclusive(0)).error.code, "PaintFailed"); assert.equal(w.focus.size, 0);
+  options.captureError = null; am.open(1, exclusive(0));
+  const bm = focusedModal(b, () => {}); bm.open(1, exclusive(1)); bm.close(1);
+  options.failInvoke = "setDialogVariableStringForPlayer"; w.frame(); assert.equal(w.focus.size, 0);
+  const before = reads; w.frame(); w.dispatchClick(1, "s2_m0_r0");
+  assert.equal(reads, before); assert.equal(picks, 0);
+});
+
+test("forgetting a formerly active covered dashboard cannot raw-hide the same-root winner", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin();
+  const spec = { title: "D", tabs: [{ id: "t", title: "T" }], rows: () => [{ id: "r", a: "R" }] };
+  a.hudkit.dashboard(spec).open(1, exclusive(0)); b.hudkit.dashboard(spec).open(1, exclusive(1));
+  const before = w.writes.length;
+  a.hudkit.forget(1);
+  assert.equal(w.writes.length, before, "host focus retirement already hid A; raw forget must not hide B");
+  assert.equal([...w.focus.values()][0].state, "active");
+});
+
+test("covered modal navigation accumulates intent without evaluating providers", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin(); let reads = 0;
+  const am = focusedModal(a, () => {}, () => { reads++; return Array.from({ length: 24 }, (_, i) => ({ a: String(i) })); });
+  const bm = focusedModal(b, () => {}); bm.open(1, exclusive(1)); am.open(1, exclusive(0));
+  am.page(1, 1); am.page(1, 1); assert.equal(reads, 0);
+  bm.close(1); w.frame(); assert.equal(am.cursor(1), 16);
+});
+
+test("incomplete native focus support is unavailable before any reservation or provider", () => {
+  for (const name of ["reserve", "state", "activate", "active", "release"]) {
+    const w = pluginWorld(), p = w.plugin(); let reads = 0;
+    const m = focusedModal(p, () => {}, () => { reads++; return []; });
+    delete p.ctx["__s2_surface_" + name];
+    assert.equal(m.tryOpenResult(1, exclusive(0)).error.code, "Unavailable");
+    assert.equal(reads, 0); assert.equal(w.focus.size, 0);
+  }
 });

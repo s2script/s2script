@@ -328,6 +328,13 @@ export interface ModalSpec {
   readonly width?: "sm" | "md" | "lg" | "xl";
 }
 
+/** Opt in to the shared modal/dashboard/MOTD focus stack; this does not control engine z-order. */
+export type UiFocusOptions = {
+  readonly mode: "exclusive";
+  /** Higher wins; latest acquisition wins ties. Default 0. Runtime requires an integer in −2147483648…2147483647. */
+  readonly priority?: number;
+};
+
 /** A failed open leaves the modal closed and can be retried when the HUD is ready. */
 export type ModalOpenResult = { readonly ok: true; readonly view: ModalView }
   | { readonly ok: false; readonly error: string };
@@ -341,10 +348,10 @@ export interface ModalView {
    */
   isValid(): boolean;
   /** Throws a descriptive error when the HUD cannot be painted or shown. */
-  open(opts?: { cursor?: boolean }): ModalView;
-  tryOpen(opts?: { cursor?: boolean }): ModalOpenResult;
+  open(opts?: { cursor?: boolean; focus?: UiFocusOptions }): ModalView;
+  tryOpen(opts?: { cursor?: boolean; focus?: UiFocusOptions }): ModalOpenResult;
   /** Attempt to open with a stable, machine-readable failure category. */
-  tryOpenResult(opts?: { cursor?: boolean }): UiResult<ModalView>;
+  tryOpenResult(opts?: { cursor?: boolean; focus?: UiFocusOptions }): UiResult<ModalView>;
   close(): void;
   isOpen(): boolean;
   refresh(): void;
@@ -358,11 +365,11 @@ export interface ModalView {
 
 export interface Modal {
   /** Open for `slot` and return the bound view. Default grabs the cursor. Throws on failure. */
-  open(slot: number, opts?: { cursor?: boolean }): ModalView;
+  open(slot: number, opts?: { cursor?: boolean; focus?: UiFocusOptions }): ModalView;
   /** Attempt to open; reports paint/show failures without throwing. */
-  tryOpen(slot: number, opts?: { cursor?: boolean }): ModalOpenResult;
+  tryOpen(slot: number, opts?: { cursor?: boolean; focus?: UiFocusOptions }): ModalOpenResult;
   /** Attempt to open with a stable, machine-readable failure category. */
-  tryOpenResult(slot: number, opts?: { cursor?: boolean }): UiResult<ModalView>;
+  tryOpenResult(slot: number, opts?: { cursor?: boolean; focus?: UiFocusOptions }): UiResult<ModalView>;
   /** Grab or release the mouse without closing the sheet. */
   setCursor(slot: number, on: boolean): void;
   close(slot: number): void;
@@ -447,6 +454,7 @@ export interface MotdSection {
  * Stays until OK or {@link MotdHandle.close}.
  */
 export interface MotdSpec {
+  readonly focus?: UiFocusOptions;
   readonly title: string;
   readonly subtitle?: string;
   /** Up to 3 heading/body pairs. Unused slots are hidden. */
@@ -508,9 +516,9 @@ export interface DashboardView {
    * Ordinary close/open cycles keep the same view valid.
    */
   isValid(): boolean;
-  open(opts?: { tab?: string; cursor?: boolean }): DashboardView;
+  open(opts?: { tab?: string; cursor?: boolean; focus?: UiFocusOptions }): DashboardView;
   /** Attempt to open with a stable, machine-readable failure category. */
-  tryOpenResult(opts?: { tab?: string; cursor?: boolean }): UiResult<DashboardView>;
+  tryOpenResult(opts?: { tab?: string; cursor?: boolean; focus?: UiFocusOptions }): UiResult<DashboardView>;
   close(): void;
   isOpen(): boolean;
   setTab(tabId: string): void;
@@ -524,9 +532,9 @@ export interface DashboardView {
  * Not a modal-pool slot and not a third `s2_mN` sheet.
  */
 export interface Dashboard {
-  open(slot: number, opts?: { tab?: string; cursor?: boolean }): DashboardView;
+  open(slot: number, opts?: { tab?: string; cursor?: boolean; focus?: UiFocusOptions }): DashboardView;
   /** Attempt to open with a stable, machine-readable failure category. */
-  tryOpenResult(slot: number, opts?: { tab?: string; cursor?: boolean }): UiResult<DashboardView>;
+  tryOpenResult(slot: number, opts?: { tab?: string; cursor?: boolean; focus?: UiFocusOptions }): UiResult<DashboardView>;
   close(slot: number): void;
   isOpen(slot: number): boolean;
   setTab(slot: number, tabId: string): void;
