@@ -3,8 +3,7 @@
 Status: final local evidence is recorded at source commit
 `102ff64267a74b010a83171477edd7e374425ebe`. The three P2 findings and the P3 evidence-label
 finding are fixed and independently approved in `final-rereview.md`. Tasks 0–6 and the local
-Task 7 evidence gates are complete. Owned-server staging, human acceptance, and publication remain
-pending; the final acceptance PR has not been created.
+Task 7 evidence gates are complete. The draft stack is navigable from the root draft [PR #186](https://github.com/s2script/s2script/pull/186), where code publication is tracked. Live staging and human acceptance remain pending.
 
 ## Evidence boundaries
 
@@ -14,8 +13,9 @@ JavaScript queue and subscription counts are direct runtime observations; pool-o
 owned-surface, and capture counts in that test are host-stub observations. They are not native-host
 evidence or client render acknowledgements.
 
-The final native run is the integrated Linux gate at the exact source commit. It includes 850 core
-tests, three intentionally ignored policy-isolation tests, and the native 1,000-cycle churn proof;
+The final native run is the integrated Linux gate at the exact source commit. Its ordinary 850-test
+run reports three intentionally ignored policy-isolation tests; the native gate also runs each of
+those three tests individually, and all three pass. The run includes the native 1,000-cycle churn proof;
 the focused `surface_leases` fixture previously recorded 34/34. The native run proves host
 ownership and cleanup, not client rendering, click delivery, or spectator privacy.
 
@@ -35,14 +35,14 @@ All final gate logs are in the evidence ledger
 | --- | --- |
 | Full JS gate | exit 0; 213 focused UI tests and 595 SDK tests passed; plugin/example typecheck and lint passed |
 | Full Linux/native gate | exit 0; 850 core tests passed, 0 failed, 3 policy tests intentionally ignored; native churn passed |
-| Sniper build | exit 0 in the Rust bullseye container (`rust:bullseye`, Debian glibc 2.31); `s2script.so` needs GLIBC 2.17 and `libs2script_core.so` GLIBC 2.30 |
+| Sniper build | exit 0 in `s2script-final-linux-builder:local`, derived from `rust:bullseye` (Debian glibc 2.31); `s2script.so` needs GLIBC 2.17 and `libs2script_core.so` GLIBC 2.30 |
 | Release symbols | both release/packaged shim symbol checks passed for 47 symbols; installed-game check skipped because no game install is present |
 | Independent final rereview | approved; all three P2 findings and the P3 label correction fixed |
 
 The final JS command was the repository's `bash scripts/ci-js.sh`; the final native command was
-`bash scripts/ci-native.sh`. The native build context was the documented Linux sniper container,
-and the release artifact was packaged from that build. No full gate is rerun for this documentation
-refresh.
+`bash scripts/ci-native.sh`. The native build context was `s2script-final-linux-builder:local`,
+derived from the documented `rust:bullseye` image; the release artifact was packaged from that
+build. No full gate is rerun for this documentation refresh.
 
 The authoritative artifact ledger is `final-artifact-summary.json`. The archive was built from
 source commit `102ff642` and contains the runtime plus both UI fixtures. Its archive identity is:
@@ -129,6 +129,11 @@ Fixture A commands are `sm_ui_a_open [slot]`, `sm_ui_a_reorder`, `sm_ui_a_refres
 churn, metrics, reload, reconnect, or click command; normal operator and real-client workflows
 are required.
 
+The concrete owned target is `s2script-cs2-hardening` at `nebula.gkh.dev:27016`; production
+`s2script-hudlab` is excluded. The connection command is `connect nebula.gkh.dev:27016`. Before
+any restart, check whether a human is present and coordinate around that presence. Take the rollback
+backup first, then stage only the owned target with the sniper artifact. Do not restart production.
+
 For a human slot `S`, retain the existing runbook boundaries: reorder A and verify the visible
 stable ID on click, repaint and invalidate A, open B and verify covered-A suppression, close B and
 verify A restoration, require `Busy` for the second banner, release capture, reload each fixture,
@@ -141,6 +146,4 @@ low-level layouts remain outside opt-in focus ownership.
 
 Owned `s2script-cs2-hardening` staging with rollback, SSH signing restoration, any coordinated
 restart, and the human render/click/focus/cursor/reconnect/reload/pool-reclaim/spectator checks are
-still pending. The PR stack drafts #196–#201 were published earlier; the final acceptance PR has
-not been created, and no PR number or status is assigned to it. Publication is the final root-owned
-step after this documentation commit. No merge or deployment authorization is added here.
+still pending. Draft-stack navigation and code publication are tracked from [root PR #186](https://github.com/s2script/s2script/pull/186); the artifact/source-build SHA remains `102ff642`, while this documentation refresh has its own commit SHA. Live staging and the human protocol are the remaining acceptance steps. No merge or deployment authorization is added here.

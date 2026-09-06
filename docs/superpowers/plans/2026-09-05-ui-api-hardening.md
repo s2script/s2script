@@ -203,7 +203,8 @@ Toast ownership uses its existing four physical lanes per player, in lowest-free
 - [ ] Stage only to the owned `s2script-cs2-hardening` environment using sniper binaries and a rollback backup. Preserve production and coordinate restarts if a human is connected. Carry forward the separate MAM incident; an addon-loading failure blocks client acceptance rather than counting as an API pass.
 - [ ] With a human: verify A click identity after data reorder, B receives focus, covered A cannot act, closing B restores A, cursor releases after the last owner closes, and two components do not overwrite each other. Exercise disconnect/reconnect into the same slot, plugin reload, and pooled-panel reclaim. Record visible results alongside command counters.
 - [x] Repeat automated open/refresh/release/reload churn for 1,000 cycles and verify owner, subscription, pending-render, and cursor-lease counts return to baseline. Distinguish observed RSS from a proven memory bound.
-- [x] Obtain independent spec and code reviews, fix actionable findings, and run only affected checks again. Publish the authorized continuation as draft PRs with compatibility, validation, and remaining human/protocol limitations. Do not merge without a subsequent user instruction.
+- [x] Obtain independent spec and code reviews, fix actionable findings, and run only affected checks again. Record compatibility, validation, and remaining human/protocol limitations.
+- [ ] Publish the final acceptance documentation/code continuation from the draft stack after live staging requirements are resolved. Do not merge without a subsequent user instruction.
 
 ## Worker handoff template
 
