@@ -168,6 +168,58 @@ test("a reentrant modal refresh cannot replace a newer submitted snapshot", () =
   assert.deepStrictEqual(picked, ["inner"]);
 });
 
+test("a modal provider's nested open remains authoritative", () => {
+  const { ui, calls, clickHandlers } = mount();
+  let phase = "outer";
+  let modal;
+  const picked = [];
+  const rows = () => {
+    if (phase === "outer") {
+      phase = "inner";
+      modal.open(1);
+      return [{ id: "outer", a: "Outer" }];
+    }
+    return [{ id: "inner", a: "Inner" }];
+  };
+  modal = ui.modal({ rows, onPick: (_slot, _index, row) => picked.push(row.id) });
+  modal.open(1);
+  const paints = calls.filter((c) => c.op === "set" && c.id === "s2_m0_r0_a").map((c) => c.value);
+  assert.deepStrictEqual(paints, ["Inner"]);
+  clickHandlers.s2_m0_r0(1);
+  assert.deepStrictEqual(picked, ["inner"]);
+});
+
+test("a modal released by its provider cannot publish or show its initial candidate", () => {
+  const { ui, calls } = mount();
+  let modal;
+  modal = ui.modal({ rows: () => {
+    modal.release();
+    return [{ id: "row", a: "Row" }];
+  } });
+  const result = modal.tryOpen(1);
+  assert.strictEqual(result.ok, false);
+  assert.match(result.error, /released/);
+  assert.strictEqual(modal.isOpen(1), false);
+  assert.ok(!calls.some((c) => c.op === "show" && c.id === "s2_m0"));
+});
+
+test("page() applies its delta after one fresh provider evaluation", () => {
+  const { ui, clickHandlers } = mount();
+  let rows = [{ id: "old", a: "Old" }];
+  let providerCalls = 0;
+  const picked = [];
+  const modal = ui.modal({ rows: () => { providerCalls++; return rows; },
+    onPick: (_slot, index, row) => picked.push([index, row.id]) });
+  modal.open(1);
+  rows = Array.from({ length: 9 }, (_, i) => ({ id: `new-${i}`, a: `New ${i}` }));
+  const before = providerCalls;
+  modal.page(1, 1);
+  assert.strictEqual(providerCalls - before, 1);
+  clickHandlers.s2_m0_r0(1);
+  assert.deepStrictEqual(picked, [[8, "new-8"]]);
+  assert.strictEqual(modal.cursor(1), 8);
+});
+
 test("a disabled row is greyed but still delivers its click", () => {
   const { ui, calls, clickHandlers } = mount();
   const picked = [];
@@ -736,6 +788,92 @@ test("a reentrant dashboard refresh cannot replace a newer submitted snapshot", 
   dash.refresh(1);
   clickHandlers.s2_dash_r0(1);
   assert.deepStrictEqual(picked, ["inner"]);
+});
+
+test("a dashboard provider's nested open owns both the final paint and click", () => {
+  const { ui, calls, clickHandlers } = mount();
+  let phase = "outer";
+  let dash;
+  const picked = [];
+  const rows = () => {
+    if (phase === "outer") {
+      phase = "inner";
+      dash.open(1);
+      return [{ id: "outer", a: "Outer" }];
+    }
+    return [{ id: "inner", a: "Inner" }];
+  };
+  dash = ui.dashboard({ tabs: [{ id: "tab", title: "Tab" }], rows,
+    onPick: (_slot, _tab, row) => picked.push(row.id) });
+  dash.open(1);
+  const paints = calls.filter((c) => c.op === "set" && c.id === "s2_dash_r0_a").map((c) => c.value);
+  assert.deepStrictEqual(paints, ["Inner"]);
+  clickHandlers.s2_dash_r0(1);
+  assert.deepStrictEqual(picked, ["inner"]);
+});
+
+test("a dashboard provider close cancels the initial reveal and cursor capture", () => {
+  const { ui, calls } = mount();
+  let dash;
+  dash = ui.dashboard({ tabs: [{ id: "tab", title: "Tab" }], rows: () => {
+    dash.close(1);
+    return [{ id: "row", a: "Row" }];
+  } });
+  dash.open(1);
+  assert.strictEqual(dash.isOpen(1), false);
+  const roots = calls.filter((c) => c.id === "s2_dash" && (c.op === "hide" || c.op === "show"));
+  assert.deepStrictEqual(roots.map((c) => c.op), ["hide"]);
+});
+
+test("a nested initial dashboard refresh preserves the pending root reveal", () => {
+  const { ui, calls, clickHandlers } = mount();
+  let phase = "outer";
+  let dash;
+  const picked = [];
+  const rows = () => {
+    if (phase === "outer") {
+      phase = "inner";
+      dash.refresh(1);
+      return [{ id: "outer", a: "Outer" }];
+    }
+    return [{ id: "inner", a: "Inner" }];
+  };
+  dash = ui.dashboard({ tabs: [{ id: "tab", title: "Tab" }], rows,
+    onPick: (_slot, _tab, row) => picked.push(row.id) });
+  dash.open(1);
+  assert.strictEqual(dash.isOpen(1), true);
+  assert.strictEqual(calls.filter((c) => c.op === "show" && c.id === "s2_dash").length, 1);
+  clickHandlers.s2_dash_r0(1);
+  assert.deepStrictEqual(picked, ["inner"]);
+});
+
+test("dashboard spec replacement commits callbacks per successful player paint", () => {
+  const { ui, clickHandlers } = mount();
+  const picked = [], closed = [];
+  const dash = ui.dashboard({
+    tabs: [{ id: "a", title: "A" }],
+    rows: () => [{ id: "old", a: "Old" }],
+    onPick: (_slot, _tab, row) => picked.push("A:" + row.id),
+    onClose: (slot) => closed.push("A:" + slot),
+  });
+  dash.open(1); dash.open(2);
+  assert.throws(() => ui.dashboard({
+    tabs: [{ id: "b", title: "B" }],
+    rows: (slot) => {
+      if (slot === 1) throw new Error("provider failed");
+      return [{ id: "new", a: "New" }];
+    },
+    onPick: (_slot, _tab, row) => picked.push("B:" + row.id),
+    onClose: (slot) => closed.push("B:" + slot),
+  }), /provider failed/);
+  clickHandlers.s2_dash_r0(1);
+  clickHandlers.s2_dash_close(1);
+  assert.strictEqual(dash.isOpen(1), true, "a failed snapshot must reject the stale Close click too");
+  clickHandlers.s2_dash_r0(2);
+  clickHandlers.s2_dash_close(2);
+  assert.deepStrictEqual(picked, ["B:new"]);
+  assert.deepStrictEqual(closed, ["B:2"]);
+  dash.close(1);
 });
 
 test("dashboard Close fires onClose; programmatic close does not", () => {
