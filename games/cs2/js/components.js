@@ -315,6 +315,31 @@
     // Only the FALLBACK pool stores this; the host natives read the real calling plugin id
     // themselves (a JS-supplied tag was the literal "plugin" for every caller — useless).
     var ownerTag = "plugin";
+    function captureBinding(slot) {
+      if (typeof hud._captureBinding === "function") return hud._captureBinding(slot);
+      return { slot: slot, client: null, view: null, fallback: true };
+    }
+    function bindingValid(binding) {
+      if (!binding) return false;
+      if (binding.fallback) return true;
+      return typeof hud._bindingIsValid === "function" && hud._bindingIsValid(binding);
+    }
+    function currentBinding(slot) {
+      var binding = captureBinding(slot);
+      return bindingValid(binding) ? binding : null;
+    }
+    function withBinding(binding, fn) {
+      if (binding && binding.fallback) return fn();
+      if (typeof hud._withBinding === "function") return hud._withBinding(binding, fn);
+      return "stale client";
+    }
+    function boundDriver(binding, fn) {
+      return function () {
+        var args = arguments;
+        return withBinding(binding, function () { return fn.apply(null, args); });
+      };
+    }
+    function staleOpen(name) { throw new Error("hudkit: " + name + ".open failed: stale client or component"); }
     var liveModals = [];
     var modalRoutes = {};
     // Install each engine click route once, during kit initialization in the load window.
@@ -334,19 +359,25 @@
     var calloutGen = {};
     var bannerGen = {};
     var motdOpen = {};
-    var motdOnClose = {};
     var dashSpec = null;
     var dashOpen = {};
+    var dashGeneration = 0;
     // Slot-level paint authority survives replacement of the per-open state object. A provider
     // may synchronously open/close/rebind, so a generation kept only on that object cannot fence
     // the obsolete caller that still holds it on its stack.
     var dashPaintTransactions = {};
     var origForget = hud.forget;
-    hud.forget = function (slot) {
+    hud.forget = function (slot, client) {
+      if (client && typeof hud._disconnectOwnsSlot === "function" && !hud._disconnectOwnsSlot(slot, client)) {
+        origForget(slot, client);
+        return;
+      }
       for (var li = 0; li < liveModals.length; li++) liveModals[li].forget(slot);
       closeMotd(slot, false);
       closeDash(slot, false);
-      origForget(slot);
+      calloutGen[slot] = (calloutGen[slot] || 0) + 1;
+      bannerGen[slot] = (bannerGen[slot] || 0) + 1;
+      origForget(slot, client);
     };
 
     // `set` spends from two vectors: the panel id and the dialog variable name. In this library
@@ -446,7 +477,11 @@
     var toastNext = 0;
     for (var ti = 0; ti < TOASTS; ti++) toastGen.push(0);
 
-    function toast(slot, opts) {
+    function toast(slot, opts, retainedBinding) {
+      var binding = retainedBinding || currentBinding(slot);
+      if (!bindingValid(binding)) return "stale client";
+      var paintText = boundDriver(binding, setText), paintClass = boundDriver(binding, setClass);
+      var paintReveal = boundDriver(binding, reveal), paintHide = boundDriver(binding, hide);
       var o = opts || {};
       var i = toastNext % TOASTS;
       toastNext++;
@@ -456,24 +491,24 @@
       toastGen[i]++;
       var gen = toastGen[i];
 
-      setText(slot, t.title, o.title || "");
-      setText(slot, t.msg, o.message || "");
+      paintText(slot, t.title, o.title || "");
+      paintText(slot, t.msg, o.message || "");
       var want = TOAST_VARIANT[o.variant] || null;
       for (var vk in TOAST_VARIANT) {
         if (Object.prototype.hasOwnProperty.call(TOAST_VARIANT, vk)) {
-          setClass(slot, t.id, TOAST_VARIANT[vk], TOAST_VARIANT[vk] === want);
+          paintClass(slot, t.id, TOAST_VARIANT[vk], TOAST_VARIANT[vk] === want);
         }
       }
-      reveal(slot, t.id, FADE.toast);
+      paintReveal(slot, t.id, FADE.toast);
 
       var hold = o.holdSeconds == null ? 6 : o.holdSeconds;
       if (hold <= 0) return null;
       afterSeconds(hold, function () {
-        if (toastGen[i] !== gen) return;
-        setClass(slot, t.id, FADE.toast, true);
+        if (toastGen[i] !== gen || !bindingValid(binding)) return;
+        paintClass(slot, t.id, FADE.toast, true);
         afterSeconds(0.3, function () {
-          if (toastGen[i] !== gen) return;
-          hide(slot, t.id);
+          if (toastGen[i] !== gen || !bindingValid(binding)) return;
+          paintHide(slot, t.id);
         });
       });
       return null;
@@ -481,31 +516,36 @@
 
     // ── callout (hint: bottom-center, no cursor) ─────────────────────────────────────────────
 
-    function callout(slot, opts) {
+    function callout(slot, opts, retainedBinding) {
+      var binding = retainedBinding || currentBinding(slot);
+      if (!bindingValid(binding)) return "stale client";
+      var paintText = boundDriver(binding, setText), paintClass = boundDriver(binding, setClass);
+      var paintShow = boundDriver(binding, show), paintHide = boundDriver(binding, hide);
+      var paintReveal = boundDriver(binding, reveal);
       var o = opts || {};
       calloutGen[slot] = (calloutGen[slot] || 0) + 1;
       var gen = calloutGen[slot];
       var title = o.title || "";
       var message = o.message || "";
-      setText(slot, "s2_callout_title", title);
-      setText(slot, "s2_callout_msg", message);
-      if (!title) hide(slot, "s2_callout_title"); else show(slot, "s2_callout_title");
-      if (!message) hide(slot, "s2_callout_msg"); else show(slot, "s2_callout_msg");
+      paintText(slot, "s2_callout_title", title);
+      paintText(slot, "s2_callout_msg", message);
+      if (!title) paintHide(slot, "s2_callout_title"); else paintShow(slot, "s2_callout_title");
+      if (!message) paintHide(slot, "s2_callout_msg"); else paintShow(slot, "s2_callout_msg");
       var want = CALLOUT_VARIANT[o.variant] || null;
       for (var vk in CALLOUT_VARIANT) {
         if (Object.prototype.hasOwnProperty.call(CALLOUT_VARIANT, vk)) {
-          setClass(slot, "s2_callout", CALLOUT_VARIANT[vk], CALLOUT_VARIANT[vk] === want);
+          paintClass(slot, "s2_callout", CALLOUT_VARIANT[vk], CALLOUT_VARIANT[vk] === want);
         }
       }
-      reveal(slot, "s2_callout", FADE.callout);
+      paintReveal(slot, "s2_callout", FADE.callout);
       var hold = o.holdSeconds == null ? 4 : o.holdSeconds;
       if (hold <= 0) return null;
       afterSeconds(hold, function () {
-        if (calloutGen[slot] !== gen) return;
-        setClass(slot, "s2_callout", FADE.callout, true);
+        if (calloutGen[slot] !== gen || !bindingValid(binding)) return;
+        paintClass(slot, "s2_callout", FADE.callout, true);
         afterSeconds(0.25, function () {
-          if (calloutGen[slot] !== gen) return;
-          hide(slot, "s2_callout");
+          if (calloutGen[slot] !== gen || !bindingValid(binding)) return;
+          paintHide(slot, "s2_callout");
         });
       });
       return null;
@@ -513,20 +553,24 @@
 
     // ── banner (center-top, one at a time, no cursor) ────────────────────────────────────────
 
-    function banner(slot, opts) {
+    function banner(slot, opts, retainedBinding) {
+      var binding = retainedBinding || currentBinding(slot);
+      if (!bindingValid(binding)) return "stale client";
+      var paintText = boundDriver(binding, setText), paintClass = boundDriver(binding, setClass);
+      var paintReveal = boundDriver(binding, reveal), paintHide = boundDriver(binding, hide);
       var o = opts || {};
       bannerGen[slot] = (bannerGen[slot] || 0) + 1;
       var gen = bannerGen[slot];
-      setText(slot, "s2_banner_text", o.text == null ? "" : String(o.text));
-      reveal(slot, "s2_banner", FADE.banner);
+      paintText(slot, "s2_banner_text", o.text == null ? "" : String(o.text));
+      paintReveal(slot, "s2_banner", FADE.banner);
       var hold = o.holdSeconds == null ? 5 : o.holdSeconds;
       if (hold <= 0) return null;
       afterSeconds(hold, function () {
-        if (bannerGen[slot] !== gen) return;
-        setClass(slot, "s2_banner", FADE.banner, true);
+        if (bannerGen[slot] !== gen || !bindingValid(binding)) return;
+        paintClass(slot, "s2_banner", FADE.banner, true);
         afterSeconds(0.25, function () {
-          if (bannerGen[slot] !== gen) return;
-          hide(slot, "s2_banner");
+          if (bannerGen[slot] !== gen || !bindingValid(binding)) return;
+          paintHide(slot, "s2_banner");
         });
       });
       return null;
@@ -534,45 +578,54 @@
 
     // ── MOTD (scrim + OK). Not a third center sheet. ─────────────────────────────────────────
 
-    function closeMotd(slot, fromClick) {
-      if (!motdOpen[slot]) return;
+    function closeMotd(slot, fromClick, expected) {
+      var state = motdOpen[slot];
+      if (!state || (expected && expected !== state) || !bindingValid(state.binding)) return;
       delete motdOpen[slot];
-      hide(slot, "s2_motd");
-      var fn = motdOnClose[slot];
-      delete motdOnClose[slot];
-      if (fromClick && typeof fn === "function") fn(slot);
+      boundDriver(state.binding, hide)(slot, "s2_motd");
+      if (fromClick && typeof state.onClose === "function") state.onClose(slot);
     }
 
     hud.onClick("s2_motd_ok", function (player) {
-      closeMotd(slotOf(player), true);
+      var slot = slotOf(player);
+      closeMotd(slot, true, motdOpen[slot]);
     });
 
-    function motd(slot, opts) {
+    function invalidMotd(slot) {
+      return { slot: slot, isValid: function () { return false; }, close: function () {} };
+    }
+
+    function motd(slot, opts, retainedBinding) {
+      var binding = retainedBinding || currentBinding(slot);
+      if (!bindingValid(binding)) return invalidMotd(slot);
+      var paintText = boundDriver(binding, setText), paintShow = boundDriver(binding, show);
+      var paintHide = boundDriver(binding, hide);
       var o = opts || {};
-      motdOpen[slot] = true;
-      motdOnClose[slot] = o.onClose || null;
-      setText(slot, "s2_motd_title", o.title == null ? "" : String(o.title));
+      var state = { binding: binding, onClose: o.onClose || null };
+      motdOpen[slot] = state;
+      paintText(slot, "s2_motd_title", o.title == null ? "" : String(o.title));
       var sub = o.subtitle == null ? "" : String(o.subtitle);
-      setText(slot, "s2_motd_sub", sub);
-      if (!sub) hide(slot, "s2_motd_sub"); else show(slot, "s2_motd_sub");
+      paintText(slot, "s2_motd_sub", sub);
+      if (!sub) paintHide(slot, "s2_motd_sub"); else paintShow(slot, "s2_motd_sub");
       var sections = Array.isArray(o.sections) ? o.sections : [];
       for (var i = 0; i < MOTD_SECTIONS; i++) {
         var sec = sections[i] || {};
         var heading = sec.heading == null ? "" : String(sec.heading);
         var body = sec.body == null ? "" : String(sec.body);
-        setText(slot, MOTD_SECTION[i].h, heading);
-        setText(slot, MOTD_SECTION[i].p, body);
-        if (!heading) hide(slot, MOTD_SECTION[i].h); else show(slot, MOTD_SECTION[i].h);
-        if (!body) hide(slot, MOTD_SECTION[i].p); else show(slot, MOTD_SECTION[i].p);
+        paintText(slot, MOTD_SECTION[i].h, heading);
+        paintText(slot, MOTD_SECTION[i].p, body);
+        if (!heading) paintHide(slot, MOTD_SECTION[i].h); else paintShow(slot, MOTD_SECTION[i].h);
+        if (!body) paintHide(slot, MOTD_SECTION[i].p); else paintShow(slot, MOTD_SECTION[i].p);
       }
       var note = o.note == null ? "" : String(o.note);
-      setText(slot, "s2_motd_note", note);
-      if (!note) hide(slot, "s2_motd_note"); else show(slot, "s2_motd_note");
-      setText(slot, "s2_motd_ok_t", o.ok == null ? "OK" : String(o.ok));
-      show(slot, "s2_motd", { cursor: o.cursor !== false });
+      paintText(slot, "s2_motd_note", note);
+      if (!note) paintHide(slot, "s2_motd_note"); else paintShow(slot, "s2_motd_note");
+      paintText(slot, "s2_motd_ok_t", o.ok == null ? "OK" : String(o.ok));
+      paintShow(slot, "s2_motd", { cursor: o.cursor !== false });
       return {
         slot: slot,
-        close: function () { closeMotd(slot, false); }
+        isValid: function () { return motdOpen[slot] === state && bindingValid(binding); },
+        close: function () { closeMotd(slot, false, state); }
       };
     }
 
@@ -584,12 +637,17 @@
       return got || [];
     }
 
+    function dashStateValid(state) {
+      return !!state && state.componentGeneration === dashGeneration && bindingValid(state.binding);
+    }
+
     function closeDash(slot, fromClick) {
       var st = dashOpen[slot];
       delete dashPaintTransactions[slot];
       if (!st) return;
       delete dashOpen[slot];
-      hide(slot, "s2_dash");
+      if (!dashStateValid(st)) return;
+      boundDriver(st.binding, hide)(slot, "s2_dash");
       if (fromClick && st.interactive && typeof st.paintedOnClose === "function") st.paintedOnClose(slot);
     }
 
@@ -648,14 +706,15 @@
 
     function paintDash(slot) {
       var st = dashOpen[slot];
-      if (!st || !dashSpec) return;
+      if (!dashStateValid(st) || !dashSpec) return;
       var spec = dashSpec;
       var transaction = {};
       dashPaintTransactions[slot] = transaction;
       st.interactive = false;
       var candidate = dashCandidate(slot, st, spec);
       function current() {
-        return dashPaintTransactions[slot] === transaction && dashOpen[slot] === st && dashSpec === spec;
+        return dashPaintTransactions[slot] === transaction && dashOpen[slot] === st && dashSpec === spec &&
+          dashStateValid(st);
       }
       if (!current()) return;
       if (!candidate) { closeDash(slot, false); return; }
@@ -663,7 +722,7 @@
       function drive(fn) {
         return function () {
           if (error !== null || !current()) return;
-          var result = fn.apply(null, arguments);
+          var result = boundDriver(st.binding, fn).apply(null, arguments);
           if (result !== null) error = String(result) || "dashboard paint failed";
         };
       }
@@ -719,7 +778,7 @@
     hud.onClick("s2_dash_close", function (player) {
       var slot = slotOf(player);
       var st = dashOpen[slot];
-      if (!st || !st.interactive) return;
+      if (!dashStateValid(st) || !st.interactive) return;
       closeDash(slot, true);
     });
     for (var dti = 0; dti < DASH_TABS; dti++) {
@@ -727,7 +786,7 @@
         hud.onClick(DASH_TAB[tabIndex].id, function (player) {
           var slot = slotOf(player);
           var st = dashOpen[slot];
-          if (!st || !st.interactive) return;
+          if (!dashStateValid(st) || !st.interactive) return;
           var tab = st.paintedTabs && st.paintedTabs[tabIndex];
           if (!tab) return;
           st.tabId = tab.id;
@@ -741,7 +800,7 @@
         hud.onClick(DASH_ROW[rowIndex].id, function (player) {
           var slot = slotOf(player);
           var st = dashOpen[slot];
-          if (!st || !st.interactive) return;
+          if (!dashStateValid(st) || !st.interactive) return;
           var record = st.paintedRows && st.paintedRows[rowIndex];
           if (!record || record.row.disabled) return;
           if (typeof st.paintedOnPick === "function") {
@@ -753,14 +812,14 @@
     hud.onClick("s2_dash_prev", function (player) {
       var slot = slotOf(player);
       var st = dashOpen[slot];
-      if (!st || !st.interactive) return;
+      if (!dashStateValid(st) || !st.interactive) return;
       st.rowPage -= 1;
       paintDash(slot);
     });
     hud.onClick("s2_dash_next", function (player) {
       var slot = slotOf(player);
       var st = dashOpen[slot];
-      if (!st || !st.interactive) return;
+      if (!dashStateValid(st) || !st.interactive) return;
       st.rowPage += 1;
       paintDash(slot);
     });
@@ -769,10 +828,12 @@
     function dashboard(spec) {
       var nextSpec = spec || {};
       if (dashSelf) {
+        dashGeneration++;
         var slots = [];
         for (var key in dashOpen) {
           if (!dashOpen[key]) continue;
           dashOpen[key].interactive = false;
+          dashOpen[key].componentGeneration = dashGeneration;
           delete dashPaintTransactions[key];
           slots.push(Number(key));
         }
@@ -786,38 +847,51 @@
         return dashSelf;
       }
       dashSpec = nextSpec;
+      dashGeneration++;
+      function openDashBound(slot, opts, binding, generation) {
+        if (generation !== dashGeneration || !bindingValid(binding)) return staleOpen("dashboard");
+        var o = opts || {};
+        if (dashOpen[slot]) dashOpen[slot].interactive = false;
+        delete dashPaintTransactions[slot];
+        dashOpen[slot] = { tabId: o.tab || "", tabPage: 0, rowPage: 0, interactive: false,
+          pendingRootOpts: { cursor: o.cursor !== false }, binding: binding,
+          componentGeneration: generation };
+        paintDash(slot);
+        if (!bindingValid(binding) || generation !== dashGeneration) return staleOpen("dashboard");
+        return makeDashView(slot, binding, generation);
+      }
+      function makeDashView(slot, binding, generation) {
+        function valid() { return generation === dashGeneration && bindingValid(binding); }
+        return {
+          slot: slot,
+          isValid: valid,
+          open: function (opts) { return openDashBound(slot, opts, binding, generation); },
+          close: function () { if (valid()) dashSelf.close(slot); },
+          isOpen: function () { return valid() && dashSelf.isOpen(slot); },
+          setTab: function (tabId) { if (valid()) dashSelf.setTab(slot, tabId); },
+          refresh: function () { if (valid()) dashSelf.refresh(slot); }
+        };
+      }
       dashSelf = {
         open: function (slot, opts) {
-          var o = opts || {};
-          if (dashOpen[slot]) dashOpen[slot].interactive = false;
-          delete dashPaintTransactions[slot];
-          dashOpen[slot] = { tabId: o.tab || "", tabPage: 0, rowPage: 0, interactive: false,
-            pendingRootOpts: { cursor: o.cursor !== false } };
-          paintDash(slot);
-          return dashSelf.forSlot(slot);
+          var binding = currentBinding(slot);
+          return openDashBound(slot, opts, binding, dashGeneration);
         },
         close: function (slot) { closeDash(slot, false); },
-        isOpen: function (slot) { return !!dashOpen[slot]; },
+        isOpen: function (slot) { return dashStateValid(dashOpen[slot]); },
         setTab: function (slot, tabId) {
           var st = dashOpen[slot];
-          if (!st) return;
+          if (!dashStateValid(st)) return;
           st.tabId = tabId;
           st.rowPage = 0;
           paintDash(slot);
         },
         refresh: function (slot) {
-          if (slot == null) { for (var k in dashOpen) { if (dashOpen[k]) paintDash(Number(k)); } }
-          else if (dashOpen[slot]) paintDash(slot);
+          if (slot == null) { for (var k in dashOpen) { if (dashStateValid(dashOpen[k])) paintDash(Number(k)); } }
+          else if (dashStateValid(dashOpen[slot])) paintDash(slot);
         },
         forSlot: function (slot) {
-          return {
-            slot: slot,
-            open: function (opts) { return dashSelf.open(slot, opts); },
-            close: function () { dashSelf.close(slot); },
-            isOpen: function () { return dashSelf.isOpen(slot); },
-            setTab: function (tabId) { dashSelf.setTab(slot, tabId); },
-            refresh: function () { dashSelf.refresh(slot); }
-          };
+          return makeDashView(slot, captureBinding(slot), dashGeneration);
         }
       };
       return dashSelf;
@@ -832,34 +906,50 @@
       var slotIds = BADGE[idx];
       var cornerCls = CORNER[s.corner] || CORNER.tr;
       var accentCls = BADGE_ACCENT[s.accent] || null;
+      var badgeReleased = false;
       var selfBadge;
+      function showBadge(slot, data, binding) {
+        if (badgeReleased || !bindingValid(binding)) return makeBadgeView(slot, binding);
+        var paintText = boundDriver(binding, setText), paintClass = boundDriver(binding, setClass);
+        var paintReveal = boundDriver(binding, reveal);
+        var dd = data || {};
+        paintText(slot, slotIds.title, dd.title || s.title || "");
+        paintText(slot, slotIds.text, dd.text || "");
+        for (var k in CORNER) {
+          if (Object.prototype.hasOwnProperty.call(CORNER, k)) {
+            paintClass(slot, slotIds.id, CORNER[k], CORNER[k] === cornerCls);
+          }
+        }
+        for (var ak in BADGE_ACCENT) {
+          if (Object.prototype.hasOwnProperty.call(BADGE_ACCENT, ak)) {
+            paintClass(slot, slotIds.id, BADGE_ACCENT[ak], BADGE_ACCENT[ak] === accentCls);
+          }
+        }
+        paintReveal(slot, slotIds.id, FADE.badge);
+        return makeBadgeView(slot, binding);
+      }
+      function makeBadgeView(slot, binding) {
+        function valid() { return !badgeReleased && bindingValid(binding); }
+        return {
+          slot: slot,
+          isValid: valid,
+          show: function (data) { if (valid()) return showBadge(slot, data, binding); },
+          hide: function () { if (valid()) boundDriver(binding, hide)(slot, slotIds.id); }
+        };
+      }
       selfBadge = {
         show: function (slot, data) {
-          var dd = data || {};
-          setText(slot, slotIds.title, dd.title || s.title || "");
-          setText(slot, slotIds.text, dd.text || "");
-          for (var k in CORNER) {
-            if (Object.prototype.hasOwnProperty.call(CORNER, k)) {
-              setClass(slot, slotIds.id, CORNER[k], CORNER[k] === cornerCls);
-            }
-          }
-          for (var ak in BADGE_ACCENT) {
-            if (Object.prototype.hasOwnProperty.call(BADGE_ACCENT, ak)) {
-              setClass(slot, slotIds.id, BADGE_ACCENT[ak], BADGE_ACCENT[ak] === accentCls);
-            }
-          }
-          reveal(slot, slotIds.id, FADE.badge);
-          return selfBadge.forSlot(slot);
+          return showBadge(slot, data, currentBinding(slot));
         },
-        hide: function (slot) { hide(slot, slotIds.id); },
+        hide: function (slot) { if (!badgeReleased && currentBinding(slot)) hide(slot, slotIds.id); },
         forSlot: function (slot) {
-          return {
-            slot: slot,
-            show: function (data) { return selfBadge.show(slot, data); },
-            hide: function () { selfBadge.hide(slot); }
-          };
+          return makeBadgeView(slot, captureBinding(slot));
         },
-        release: function () { releaseSlot("badge", idx); }
+        release: function () {
+          if (badgeReleased) return;
+          badgeReleased = true;
+          releaseSlot("badge", idx);
+        }
       };
       return selfBadge;
     }
@@ -885,6 +975,7 @@
       // previous actions over visuals that may already have changed.
       var open = {};
       var paintTransactions = {};
+      var modalSlotEpochs = {};
       var SUPERSEDED = {};
       var self;
 
@@ -961,7 +1052,9 @@
         st.paintTransaction = transaction;
         st.paintExpectedState = expectedState;
         function current() {
-          return !released && paintTransactions[slot] === transaction && open[slot] === expectedState;
+          return !released && bindingValid(st.binding) &&
+            st.componentEpoch === (modalSlotEpochs[slot] || 0) &&
+            paintTransactions[slot] === transaction && open[slot] === expectedState;
         }
         var snapshot = modalCandidate(slot, st, request);
         if (!current()) return SUPERSEDED;
@@ -969,7 +1062,7 @@
         function drive(fn) {
           return function () {
             if (error !== null || !current()) return;
-            var result = fn.apply(null, arguments);
+            var result = boundDriver(st.binding, fn).apply(null, arguments);
             if (result !== null) error = String(result) || "modal paint failed";
           };
         }
@@ -1055,7 +1148,8 @@
           onClick(ids.rows[rowIndex].id, function (player) {
             var slot = slotOf(player);
             var st = open[slot];
-            if (!st || !st.interactive) return;
+            if (!st || !st.interactive || !bindingValid(st.binding) ||
+                st.componentEpoch !== (modalSlotEpochs[slot] || 0)) return;
             var record = st.paintedRows && st.paintedRows[rowIndex];
             if (!record) return;
             st.cursor = rowIndex;
@@ -1068,37 +1162,75 @@
         (function (fIndex) {
           onClick(ids.footers[fIndex].id, function (player) {
             var slot = slotOf(player);
-            if (!open[slot] || !open[slot].interactive) return;
+            if (!open[slot] || !open[slot].interactive || !bindingValid(open[slot].binding) ||
+                open[slot].componentEpoch !== (modalSlotEpochs[slot] || 0)) return;
             var fn = open[slot].footerFns && open[slot].footerFns[fIndex];
             if (fn) fn(slot, self.forSlot(slot));
           });
         })(fi);
       }
 
+      function makeModalView(slot, binding, componentEpoch) {
+        function valid() {
+          return !released && bindingValid(binding) && componentEpoch === (modalSlotEpochs[slot] || 0);
+        }
+        return {
+          slot: slot,
+          isValid: valid,
+          open: function (opts) {
+            if (!valid()) return staleOpen("modal");
+            var result = tryOpenBound(slot, opts, binding, componentEpoch);
+            if (!result.ok) throw new Error("hudkit: modal.open failed: " + result.error);
+            return result.view;
+          },
+          tryOpen: function (opts) {
+            if (!valid()) return { ok: false, error: "hudkit: stale client or component" };
+            return tryOpenBound(slot, opts, binding, componentEpoch);
+          },
+          close: function () { if (valid()) self.close(slot); },
+          isOpen: function () { return valid() && self.isOpen(slot); },
+          refresh: function () { if (valid()) self.refresh(slot); },
+          page: function (delta) { if (valid()) self.page(slot, delta); },
+          select: function (index) { if (valid()) self.select(slot, index); },
+          cursor: function () { return valid() ? self.cursor(slot) : -1; },
+          forget: function () { if (valid()) self.forget(slot); }
+        };
+      }
+
+      function tryOpenBound(slot, opts, binding, componentEpoch) {
+        if (released) return { ok: false, error: "hudkit: modal has been released" };
+        if (!bindingValid(binding) || componentEpoch !== (modalSlotEpochs[slot] || 0)) {
+          return { ok: false, error: "hudkit: stale client or component" };
+        }
+        var candidate = { page: 0, cursor: 0, interactive: false, binding: binding,
+          componentEpoch: componentEpoch };
+        var error = null;
+        try {
+          error = paint(slot, candidate, { cursor: !(opts && opts.cursor === false) });
+        } catch (err) {
+          error = (err instanceof Error ? err.message : String(err)) || "modal paint failed";
+        }
+        if (error === SUPERSEDED) {
+          if (!released && self.isOpen(slot)) return { ok: true,
+            view: makeModalView(slot, open[slot].binding, open[slot].componentEpoch) };
+          return { ok: false, error: released ? "hudkit: modal has been released" : "modal open cancelled" };
+        }
+        if (error) {
+          if (!released && paintTransactions[slot] === candidate.paintTransaction &&
+              open[slot] === candidate.paintExpectedState) {
+            delete paintTransactions[slot];
+            delete open[slot];
+            try { boundDriver(binding, hide)(slot, ids.root); }
+            catch (_) { /* Preserve the original failure. */ }
+          }
+          return { ok: false, error: String(error) };
+        }
+        return { ok: true, view: makeModalView(slot, binding, componentEpoch) };
+      }
+
       self = {
         tryOpen: function (slot, opts) {
-          if (released) return { ok: false, error: "hudkit: modal has been released" };
-          var candidate = { page: 0, cursor: 0, interactive: false };
-          var error = null;
-          try {
-            error = paint(slot, candidate, { cursor: !(opts && opts.cursor === false) });
-          } catch (err) {
-            error = (err instanceof Error ? err.message : String(err)) || "modal paint failed";
-          }
-          if (error === SUPERSEDED) {
-            if (!released && open[slot]) return { ok: true, view: self.forSlot(slot) };
-            return { ok: false, error: released ? "hudkit: modal has been released" : "modal open cancelled" };
-          }
-          if (error) {
-            if (!released && paintTransactions[slot] === candidate.paintTransaction &&
-                open[slot] === candidate.paintExpectedState) {
-              delete paintTransactions[slot];
-              delete open[slot];
-              try { hide(slot, ids.root); } catch (_) { /* Preserve the original failure. */ }
-            }
-            return { ok: false, error: String(error) };
-          }
-          return { ok: true, view: self.forSlot(slot) };
+          return tryOpenBound(slot, opts, captureBinding(slot), modalSlotEpochs[slot] || 0);
         },
         open: function (slot, opts) {
           var result = self.tryOpen(slot, opts);
@@ -1106,23 +1238,27 @@
           return result.view;
         },
         setCursor: function (slot, on) {
-          if (released) return;
+          if (released || !currentBinding(slot)) return;
           return hud._cursorForPanel(slot, ids.root, !!on);
         },
         close: function (slot) {
           if (released) return;
+          var st = open[slot];
           delete paintTransactions[slot];
           delete open[slot];
-          hide(slot, ids.root);
+          if (!st || !bindingValid(st.binding) || st.componentEpoch !== (modalSlotEpochs[slot] || 0)) return;
+          boundDriver(st.binding, hide)(slot, ids.root);
         },
-        isOpen: function (slot) { return !!open[slot]; },
+        isOpen: function (slot) {
+          var st = open[slot];
+          return !!st && bindingValid(st.binding) && st.componentEpoch === (modalSlotEpochs[slot] || 0);
+        },
         refresh: function (slot) {
-          if (slot == null) { for (var k in open) { if (open[k]) paint(Number(k)); } }
-          else if (open[slot]) paint(slot);
+          if (slot == null) { for (var k in open) { if (self.isOpen(Number(k))) paint(Number(k)); } }
+          else if (self.isOpen(slot)) paint(slot);
         },
         page: function (slot, delta) {
-          var st = open[slot];
-          if (!st) return;
+          if (!self.isOpen(slot)) return;
           paint(slot, null, null, { pageDelta: delta });
         },
         /**
@@ -1134,30 +1270,21 @@
          * that only shows up once a list is long enough to page.
          */
         select: function (slot, index) {
-          var st = open[slot];
-          if (!st) return;
+          if (!self.isOpen(slot)) return;
           paint(slot, null, null, { selectIndex: index });
         },
         /** ABSOLUTE index of the highlighted row — the same space `onPick` reports in. */
         cursor: function (slot) {
           var st = open[slot];
-          if (!st) return -1;
+          if (!self.isOpen(slot)) return -1;
           return st.page * pageSize + st.cursor;
         },
-        forget: function (slot) { delete paintTransactions[slot]; delete open[slot]; },
+        forget: function (slot) {
+          modalSlotEpochs[slot] = (modalSlotEpochs[slot] || 0) + 1;
+          delete paintTransactions[slot]; delete open[slot];
+        },
         forSlot: function (slot) {
-          return {
-            slot: slot,
-            open: function (opts) { return self.open(slot, opts); },
-            tryOpen: function (opts) { return self.tryOpen(slot, opts); },
-            close: function () { self.close(slot); },
-            isOpen: function () { return self.isOpen(slot); },
-            refresh: function () { self.refresh(slot); },
-            page: function (delta) { self.page(slot, delta); },
-            select: function (index) { self.select(slot, index); },
-            cursor: function () { return self.cursor(slot); },
-            forget: function () { self.forget(slot); }
-          };
+          return makeModalView(slot, captureBinding(slot), modalSlotEpochs[slot] || 0);
         },
         release: function () {
           if (released) return;
@@ -1176,20 +1303,37 @@
       return self;
     }
 
-    function hideAll(slot) {
+    function hideAll(slot, retainedBinding) {
+      var binding = retainedBinding || currentBinding(slot);
+      if (!bindingValid(binding)) return;
+      var paintHide = boundDriver(binding, hide);
       calloutGen[slot] = (calloutGen[slot] || 0) + 1;
       bannerGen[slot] = (bannerGen[slot] || 0) + 1;
-      hide(slot, "s2_callout");
-      hide(slot, "s2_banner");
+      paintHide(slot, "s2_callout");
+      paintHide(slot, "s2_banner");
       closeMotd(slot, false);
       closeDash(slot, false);
-      for (var m2 = 0; m2 < MODALS; m2++) hide(slot, MODAL[m2].root);
-      for (var t2 = 0; t2 < TOASTS; t2++) hide(slot, TOAST[t2].id);
-      for (var b2 = 0; b2 < BADGES; b2++) hide(slot, BADGE[b2].id);
-      hud.cursor(slot, false);
+      for (var m2 = 0; m2 < MODALS; m2++) paintHide(slot, MODAL[m2].root);
+      for (var t2 = 0; t2 < TOASTS; t2++) paintHide(slot, TOAST[t2].id);
+      for (var b2 = 0; b2 < BADGES; b2++) paintHide(slot, BADGE[b2].id);
+      withBinding(binding, function () { return hud.cursor(slot, false); });
     }
 
     function forgetSlot(slot) { hud.forget(slot); }
+
+    function makeKitPlayer(slot, binding) {
+      function valid() { return bindingValid(binding); }
+      return {
+        slot: slot,
+        isValid: valid,
+        toast: function (spec) { return valid() ? toast(slot, spec, binding) : "stale client"; },
+        callout: function (spec) { return valid() ? callout(slot, spec, binding) : "stale client"; },
+        banner: function (spec) { return valid() ? banner(slot, spec, binding) : "stale client"; },
+        motd: function (spec) { return valid() ? motd(slot, spec, binding) : invalidMotd(slot); },
+        hideAll: function () { if (valid()) hideAll(slot, binding); },
+        forget: function () { if (valid()) hud.forget(slot, binding.client); }
+      };
+    }
 
     return {
       spec: LIB_DESCRIPTOR,
@@ -1215,15 +1359,7 @@
       hideAll: hideAll,
       forget: forgetSlot,
       forSlot: function (slot) {
-        return {
-          slot: slot,
-          toast: function (spec) { return toast(slot, spec); },
-          callout: function (spec) { return callout(slot, spec); },
-          banner: function (spec) { return banner(slot, spec); },
-          motd: function (spec) { return motd(slot, spec); },
-          hideAll: function () { hideAll(slot); },
-          forget: function () { forgetSlot(slot); }
-        };
+        return makeKitPlayer(slot, captureBinding(slot));
       },
       budget: function () {
         var p = pool();

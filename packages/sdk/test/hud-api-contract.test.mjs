@@ -14,7 +14,10 @@ test("published hudkit example and previous-renderer delegation typecheck", () =
     .filter(line => line !== " */").map(line => line.replace(/^ \* ?/, "")).join("\n");
   const source = example + `
 import { Menu, type MenuRenderer } from "@s2script/sdk/menu";
-import type { Dashboard, HudKitPlayer, MotdHandle } from "@s2script/cs2";
+import type { BadgeView, Dashboard, HudKitPlayer, HudPlayer, ModalView, MotdHandle } from "@s2script/cs2";
+declare const hudPlayer: HudPlayer;
+declare const modalView: ModalView;
+declare const badgeView: BadgeView;
 declare const renderer: MenuRenderer;
 const previous = Menu.registerRenderer("center", renderer);
 const expected: MenuRenderer | undefined = previous;
@@ -31,6 +34,9 @@ export function OnMapStart(): void {
   const player: HudKitPlayer = hudkit.forSlot(1);
   const dashboard: Dashboard = hudkit.dashboard({ title: "Dashboard", tabs: [], rows: () => [] });
   const motd: MotdHandle = player.motd({ title: "Rules" });
+  const valid: boolean[] = [hudPlayer.isValid(), modalView.isValid(), badgeView.isValid(),
+    player.isValid(), dashboard.forSlot(1).isValid(), motd.isValid()];
+  void valid;
   dashboard.close(1);
   motd.close();
 }

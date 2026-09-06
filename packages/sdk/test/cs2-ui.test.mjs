@@ -573,13 +573,16 @@ test("HUD cache, cursor, disabled state and retained views belong to the connect
   const layout = ui.probe();
   const a = h.ctx.__s2pkg_clients.Clients.fromSlot(0);
   const old = layout.forSlot(0);
+  assert.equal(old.isValid(), true);
   let clicks = 0;
   layout.onClick('s2_btn_0', () => clicks++);
   old.setText('s2_dialog_title', 'same');
   old.cursor(true);
   old.setDisabled('s2_btn_0', true);
   h.clientHost.replace(0);
+  assert.equal(old.isValid(), false, "the retained HUD view exposes its stale client lifetime");
   const fresh = layout.forSlot(0);
+  assert.equal(fresh.isValid(), true);
   h.invokes.length = 0;
   fresh.setText('s2_dialog_title', 'same');
   assert.equal(h.invokes.filter(i => i.name === 'setDialogVariableStringForPlayer').length, 1);
@@ -598,4 +601,21 @@ test("HUD cache, cursor, disabled state and retained views belong to the connect
   fresh.cursor(false);
   assert.equal(h.invokes.at(-1).args[1], false, 'B retains its own cursor lease');
   assert.notEqual(old, fresh);
+});
+
+test("retained HUD views expose connection validity while fresh slot lookups adopt later cache epochs", () => {
+  const h = makeHost();
+  const ui = h.armPlugin(); h.ctx.__s2_ctx_arm(); h.fireActive(0);
+  const layout = ui.probe();
+  const forgotten = layout.forSlot(0);
+  assert.equal(forgotten.isValid(), true);
+  forgotten.forget();
+  assert.equal(forgotten.isValid(), true, "low-level validity follows the client lifetime");
+  assert.notEqual(layout.forSlot(0), forgotten, "forget still starts a fresh cache epoch");
+
+  const replaced = layout.forSlot(0);
+  h.created.at(-1).live = false;
+  layout.ensure();
+  assert.equal(replaced.isValid(), true, "low-level views can drive a replacement layout for the same client");
+  assert.equal(layout.forSlot(0).isValid(), true);
 });
