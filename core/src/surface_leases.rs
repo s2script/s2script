@@ -8,6 +8,11 @@
 //! must invalidate their local paint caches after suspension; these calls bypass those caches.
 //! Game descriptors have exactly the existing __s2_game_call_invoke permission boundary: the
 //! host chooses the first-party game owner, and plugin-private descriptors cannot be selected.
+//!
+//! Owned reservations take an array of 1..64 game-supplied lane adapters and return a token
+//! plus zero-based lane. Explicit claims choose the lowest free lane; legacy writes choose
+//! the lowest free lane or replace the oldest legacy token when full. Pending retirement
+//! occupies its lane. Different capacities or focus/owned policies cannot share a group.
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -15,7 +20,15 @@ use serde::Deserialize;
 use crate::v8host::{current_plugin, engine_ops, set_native};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct Key { surface: String, index: i32, entity: u64, slot: i32, client: u64 }
+struct Key { surface: String, index: i32, entity: u64, slot: i32, client: u64, lane: usize }
+impl Key {
+    fn same_group(&self, other: &Self) -> bool {
+        self.surface == other.surface && self.index == other.index && self.entity == other.entity
+            && self.slot == other.slot && self.client == other.client
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Policy { Focus, Explicit, Legacy }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Capture { call: String, token: String }
@@ -31,7 +44,7 @@ struct Adapter {
 #[derive(Clone, Debug)]
 struct Lease {
     token: u64, owner: String, generation: u64, key: Key, priority: i32,
-    game: Option<String>, adapter: Adapter,
+    game: Option<String>, adapter: Adapter, policy: Policy, capacity: usize,
     activated: bool, activated_in: Option<u64>, ready_after: u64,
 }
 #[derive(Default)]
@@ -193,32 +206,63 @@ fn retire_or_queue(l: Lease) -> Result<(), String> {
 }
 
 fn reserve(owner: &str, key: Key, priority: i32, adapter: Adapter) -> Result<u64, Failure> {
+    reserve_policy(owner, key, priority, Policy::Focus, vec![adapter]).map(|(token, _)| token)
+}
+fn reserve_policy(owner: &str, mut key: Key, priority: i32, policy: Policy, adapters: Vec<Adapter>) -> Result<(u64, usize), Failure> {
     let _transition = Transition::enter()?;
+    let capacity = adapters.len();
+    if capacity == 0 || capacity > 64 { return Err(fail("InvalidArgument", "surface capacity must be between 1 and 64")); }
     if !crate::client::matches(key.slot, key.client) { return Err(fail("StaleClient", "surface client expired")); }
     if crate::entity_live::engine_serial_for(key.index, key.entity).is_none() { return Err(fail("NotReady", "surface entity unavailable")); }
     let game = crate::gamedata_calls::game_package_owner();
-    validate_adapter(&adapter, game.as_deref())?;
+    for adapter in &adapters { validate_adapter(adapter, game.as_deref())?; }
     let generation = crate::v8host::plugin_generation(owner);
     if !crate::v8host::owner_is_live(owner, generation) { return Err(fail("Released", "surface owner expired")); }
-    let old = REGISTRY.with(|r| {
+    // Choose the physical lane under the same transition/registry guard as occupancy checks.
+    // Pending cleanup occupies its lane, including when its originating owner has unloaded.
+    let (lane, old) = REGISTRY.with(|r| {
         let r = r.borrow();
         if r.leases.values().filter(|l| l.owner == owner).count() >= 1024 || r.leases.len() + r.pending.len() >= 16384 {
             return Err(fail("PoolExhausted", "surface lease limit reached"));
         }
-        if r.pending.iter().any(|l| l.key == key) { return Err(fail("Busy", "surface retirement pending")); }
-        Ok(r.winner(&key).filter(|t| r.leases[t].priority <= priority))
+        let group: Vec<_> = r.leases.values().chain(r.pending.iter()).filter(|l| l.key.same_group(&key)).collect();
+        if group.iter().any(|l| l.capacity != capacity || (l.policy == Policy::Focus) != (policy == Policy::Focus)) {
+            return Err(fail("Busy", "surface occupancy policy or capacity differs"));
+        }
+        if policy == Policy::Focus {
+            if r.pending.iter().any(|l| l.key == key) { return Err(fail("Busy", "surface retirement pending")); }
+            return Ok((0, r.winner(&key).filter(|t| r.leases[t].priority <= priority)));
+        }
+        if let Some(lane) = (0..capacity).find(|lane| group.iter().all(|l| l.key.lane != *lane)) {
+            return Ok((lane, None));
+        }
+        if policy == Policy::Legacy {
+            // Only legacy presentations may be replaced, never referenced or revived by a
+            // different owner. Their old tokens are removed before retirement starts.
+            if let Some(old) = r.leases.values().filter(|l| l.key.same_group(&key) && l.policy == Policy::Legacy
+                && !r.pending.iter().any(|p| p.key == l.key)).min_by_key(|l| l.token) {
+                return Ok((old.key.lane, Some(old.token)));
+            }
+        }
+        Err(fail("Busy", "surface lanes occupied"))
     })?;
+    key.lane = lane;
     if let Some(old) = old {
-        let outgoing = REGISTRY.with(|r| r.borrow_mut().suspend(old)).unwrap();
+        let outgoing = REGISTRY.with(|r| {
+            let mut r = r.borrow_mut();
+            if policy == Policy::Focus { r.suspend(old).unwrap() }
+            else { r.remove(old).unwrap().0 }
+        });
         retire_or_queue(outgoing).map_err(|e| fail("Unavailable", e))?;
     }
     let token = NEXT_TOKEN.with(|n| { let t = n.get(); n.set(t.checked_add(1).expect("surface token space exhausted")); t });
-    let l = Lease { token, owner: owner.into(), generation, key, priority, game, adapter,
+    let adapter = adapters.into_iter().nth(lane).unwrap();
+    let l = Lease { token, owner: owner.into(), generation, key, priority, game, adapter, policy, capacity,
         activated: false, activated_in: None, ready_after: 0 };
     // Engine calls may synchronously retire the client/entity or unload the caller.
     if !live(&l) { return Err(fail("Released", "surface lifetime changed during reservation")); }
     REGISTRY.with(|r| { r.borrow_mut().leases.insert(token, l); });
-    Ok(token)
+    Ok((token, lane))
 }
 fn state(owner: &str, token: u64) -> &'static str {
     REGISTRY.with(|r| {
@@ -293,30 +337,53 @@ fn token(scope: &mut v8::PinScope, args: &v8::FunctionCallbackArguments) -> u64 
     if !args.get(0).is_string() { return 0; }
     args.get(0).to_rust_string_lossy(scope).strip_prefix("surface:").and_then(|s| s.parse().ok()).unwrap_or(0)
 }
-fn native_reserve(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn native_reserve(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, rv: v8::ReturnValue) {
+    native_reservation(scope, args, rv, false);
+}
+fn native_reserve_owned(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, rv: v8::ReturnValue) {
+    native_reservation(scope, args, rv, true);
+}
+fn native_reservation(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue, owned: bool) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let owner = current_plugin(scope).ok_or_else(|| fail("Released", "missing plugin context"))?;
         if matches!(crate::v8host::plugin_phase(&owner), Some(crate::plugin::Phase::Unloading | crate::plugin::Phase::Failed)) {
             return Err(fail("Released", "surface owner is unloading"));
         }
         if !args.get(0).is_string() || !args.get(1).is_int32() || !args.get(2).is_number()
-            || !args.get(3).is_int32() || !args.get(4).is_int32() || !args.get(5).is_string() {
+            || !args.get(3).is_int32() || !(if owned { args.get(4).is_string() } else { args.get(4).is_int32() }) || !args.get(5).is_string() {
             return Err(fail("InvalidArgument", "invalid surface reservation arguments"));
         }
         let surface = args.get(0).to_rust_string_lossy(scope);
         let entity = args.get(2).number_value(scope).unwrap_or(0.0);
         let data = args.get(5).to_rust_string_lossy(scope);
-        if !bounded(&surface) || data.len() > 4096 || entity < 1.0 || entity > 9007199254740991.0 || entity.fract() != 0.0 {
+        if !bounded(&surface) || data.len() > (if owned { 64 * 4096 } else { 4096 }) || entity < 1.0 || entity > 9007199254740991.0 || entity.fract() != 0.0 {
             return Err(fail("InvalidArgument", "invalid surface name/entity/adapter data"));
         }
-        let adapter: Adapter = serde_json::from_str(&data).map_err(|_| fail("InvalidArgument", "invalid surface adapter data"))?;
+        let (policy, adapters) = if owned {
+            let policy = match args.get(4).to_rust_string_lossy(scope).as_str() {
+                "explicit" => Policy::Explicit, "legacy" => Policy::Legacy,
+                _ => return Err(fail("InvalidArgument", "invalid surface ownership mode")),
+            };
+            let values: Vec<serde_json::Value> = serde_json::from_str(&data).map_err(|_| fail("InvalidArgument", "invalid surface lane adapters"))?;
+            if values.is_empty() || values.len() > 64 || values.iter().any(|v| v.to_string().len() > 4096) {
+                return Err(fail("InvalidArgument", "invalid surface lane adapters size"));
+            }
+            let adapters = values.into_iter().map(|v| serde_json::from_value(v)
+                .map_err(|_| fail("InvalidArgument", "invalid surface adapter data"))).collect::<Result<Vec<Adapter>, _>>()?;
+            (policy, adapters)
+        } else {
+            let adapter: Adapter = serde_json::from_str(&data).map_err(|_| fail("InvalidArgument", "invalid surface adapter data"))?;
+            (Policy::Focus, vec![adapter])
+        };
         let slot = args.get(3).int32_value(scope).unwrap_or(-1);
         let key = Key { surface, index: args.get(1).int32_value(scope).unwrap_or(-1), entity: entity as u64,
-            slot, client: crate::client::generation(slot) };
-        reserve(&owner, key, args.get(4).int32_value(scope).unwrap_or(0), adapter)
+            slot, client: crate::client::generation(slot), lane: 0 };
+        if owned { reserve_policy(&owner, key, 0, policy, adapters) }
+        else { reserve(&owner, key, args.get(4).int32_value(scope).unwrap_or(0), adapters.into_iter().next().unwrap()).map(|t| (t, 0)) }
     })).unwrap_or_else(|_| Err(fail("Unavailable", "surface reservation internal failure")));
     let value = match result {
-        Ok(t) => serde_json::json!({"ok":true,"value":format!("surface:{t}")}),
+        Ok((t, lane)) => if owned { serde_json::json!({"ok":true,"value":{"token":format!("surface:{t}"),"lane":lane}}) }
+            else { serde_json::json!({"ok":true,"value":format!("surface:{t}")}) },
         Err(e) => serde_json::json!({"ok":false,"error":{"code":e.code,"message":e.message}}),
     };
     if let Some(s) = v8::String::new(scope, &value.to_string()) {
@@ -344,6 +411,7 @@ bool_native!(native_active, active);
 bool_native!(native_release, release);
 pub(crate) fn install(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     set_native(scope, global, "__s2_surface_reserve", native_reserve);
+    set_native(scope, global, "__s2_surface_reserve_owned", native_reserve_owned);
     set_native(scope, global, "__s2_surface_activate", native_activate);
     set_native(scope, global, "__s2_surface_active", native_active);
     set_native(scope, global, "__s2_surface_state", native_state);
@@ -362,11 +430,80 @@ mod tests {
     }
     fn claim(owner: &str, id: u64, priority: i32, adapter: Adapter) -> u64 {
         reserve(owner, Key { surface: "focus".into(), index: 10, entity: id,
-            slot: 2, client: crate::client::generation(2) }, priority, adapter).unwrap()
+            slot: 2, client: crate::client::generation(2), lane: 0 }, priority, adapter).unwrap()
     }
     fn js(owner: &str, source: &str) -> String { eval_in_context_string(owner, source) }
     fn query(owner: &str, op: &str, t: u64) -> String {
         js(owner, &format!("String(__s2_surface_{op}('surface:{t}'))"))
+    }
+
+    fn owned(owner: &str, id: u64, slot: i32, mode: &str, capacity: usize) -> serde_json::Value {
+        serde_json::from_str(&js(owner, &format!(
+            "JSON.stringify(__s2_surface_reserve_owned('shared',10,{id},{slot},'{mode}',JSON.stringify(Array({capacity}).fill({{}}))))"
+        ))).unwrap()
+    }
+    fn owned_token(value: &serde_json::Value) -> u64 {
+        value["value"]["token"].as_str().unwrap().strip_prefix("surface:").unwrap().parse().unwrap()
+    }
+    #[test]
+    fn owned_two_context_busy_unload_stale_release_and_client_isolation() {
+        let id = setup();
+        let a = owned("surface_a", id, 2, "explicit", 1);
+        assert_eq!(a["ok"], true);
+        let token_a = owned_token(&a);
+        assert!(activate("surface_a", token_a));
+        assert_eq!(owned("surface_b", id, 2, "explicit", 1)["error"]["code"], "Busy");
+        assert_eq!(owned("surface_b", id, 2, "legacy", 1)["error"]["code"], "Busy");
+        for op in ["activate", "active", "release"] { assert_eq!(query("surface_b", op, token_a), "false"); }
+        crate::client::begin(3);
+        assert_eq!(owned("surface_b", id, 3, "explicit", 1)["ok"], true);
+        v8host::unload_plugin("surface_a");
+        let b = owned("surface_b", id, 2, "explicit", 1);
+        assert_eq!(b["ok"], true);
+        assert!(activate("surface_b", owned_token(&b)));
+        v8host::create_plugin_context("surface_a");
+        assert_eq!(query("surface_a", "release", token_a), "false");
+        assert!(active("surface_b", owned_token(&b)));
+        v8host::shutdown();
+    }
+    #[test]
+    fn owned_four_lanes_choose_lowest_free_and_legacy_replacement_retires_token() {
+        let id = setup();
+        let first = owned("surface_a", id, 2, "legacy", 4);
+        assert_eq!(first["value"]["lane"], 0);
+        let second = owned("surface_b", id, 2, "explicit", 4);
+        assert_eq!(second["value"]["lane"], 1);
+        let third = owned("surface_b", id, 2, "legacy", 4);
+        assert_eq!(third["value"]["lane"], 2);
+        let fourth = owned("surface_a", id, 2, "explicit", 4);
+        assert_eq!(fourth["value"]["lane"], 3);
+        assert_eq!(owned("surface_a", id, 2, "explicit", 4)["error"]["code"], "Busy");
+        let replacement = owned("surface_b", id, 2, "legacy", 4);
+        assert_eq!(replacement["value"]["lane"], 0);
+        assert_eq!(state("surface_a", owned_token(&first)), "invalid");
+        assert!(!release("surface_a", owned_token(&first)));
+        assert!(activate("surface_b", owned_token(&replacement)));
+        assert!(release("surface_b", owned_token(&second)));
+        assert_eq!(owned("surface_a", id, 2, "explicit", 4)["value"]["lane"], 1);
+        assert!(active("surface_b", owned_token(&replacement)));
+        v8host::shutdown();
+    }
+    #[test]
+    fn owned_legacy_singleton_occupancy_and_capacity_policy_cannot_be_bypassed() {
+        let id = setup();
+        let a = owned("surface_a", id, 2, "legacy", 1);
+        assert!(activate("surface_a", owned_token(&a)));
+        assert_eq!(owned("surface_b", id, 2, "explicit", 1)["error"]["code"], "Busy");
+        assert_eq!(owned("surface_b", id, 2, "explicit", 4)["error"]["code"], "Busy");
+        assert_eq!(js("surface_b", &format!("__s2_surface_reserve('shared',10,{id},2,999,'{{}}').error.code")), "Busy");
+        let b = owned("surface_b", id, 2, "legacy", 1);
+        assert_eq!(b["ok"], true);
+        assert!(!release("surface_a", owned_token(&a)));
+        assert_eq!(query("surface_a", "state", owned_token(&b)), "invalid");
+        assert!(activate("surface_b", owned_token(&b)));
+        v8host::unload_plugin("surface_a");
+        assert!(active("surface_b", owned_token(&b)));
+        v8host::shutdown();
     }
 
     #[test]
@@ -400,8 +537,8 @@ mod tests {
     fn pure_registry_covered_removal_preserves_active_winner_and_keys_are_independent() {
         fn lease(token: u64, priority: i32) -> Lease {
             Lease { token, priority, owner: "a".into(), generation: 1,
-                key: Key { surface: "generic".into(), index: 1, entity: 1, slot: 2, client: 1 },
-                game: None, adapter: Adapter::default(), activated: true, activated_in: None, ready_after: 0 }
+                key: Key { surface: "generic".into(), index: 1, entity: 1, slot: 2, client: 1, lane: 0 },
+                game: None, adapter: Adapter::default(), policy: Policy::Focus, capacity: 1, activated: true, activated_in: None, ready_after: 0 }
         }
         let mut r = Registry::default();
         r.leases.insert(1, lease(1, 20)); r.leases.insert(2, lease(2, 0));
@@ -505,6 +642,7 @@ mod tests {
         static EFFECTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
         static FAIL_HIDE: Cell<bool> = const { Cell::new(false) };
         static FAIL_OFF: Cell<bool> = const { Cell::new(false) };
+        static REENTER_OWNED: Cell<u64> = const { Cell::new(0) };
         static REENTER: Cell<bool> = const { Cell::new(false) };
         static END_CLIENT: Cell<bool> = const { Cell::new(false) };
     }
@@ -528,11 +666,20 @@ mod tests {
             if REENTER.with(|v| v.replace(false)) {
                 let id = crate::entity_live::lookup(10).unwrap().0;
                 let r = reserve("surface_b", Key { surface: "focus".into(), index: 10,
-                    entity: id, slot: 2, client: crate::client::generation(2) }, 20, Adapter::default());
+                    entity: id, slot: 2, client: crate::client::generation(2), lane: 0 }, 20, Adapter::default());
                 assert_eq!(r.unwrap_err().code, "Busy");
                 let a = REGISTRY.with(|r| r.borrow().leases.values().find(|l| l.owner == "surface_a").unwrap().token);
                 assert!(!release("surface_a", a));
                 assert!(!active("surface_a", a));
+            }
+            let retired = REENTER_OWNED.with(|v| v.replace(0));
+            if retired != 0 {
+                let id = crate::entity_live::lookup(10).unwrap().0;
+                assert_eq!(reserve_owned("surface_b", id, Policy::Explicit, vec![Adapter::default()]).unwrap_err().code, "Busy");
+                assert!(!release("surface_a", retired));
+                assert!(!activate("surface_a", retired));
+                assert!(!active("surface_a", retired));
+                assert_eq!(state("surface_a", retired), "invalid");
             }
             if END_CLIENT.with(|v| v.replace(false)) { crate::client::end(2, crate::client::generation(2)); }
             if FAIL_HIDE.with(Cell::get) { return 0; }
@@ -543,7 +690,7 @@ mod tests {
         let id = setup();
         EFFECTS.with(|e| e.borrow_mut().clear());
         FAIL_HIDE.with(|v| v.set(false)); FAIL_OFF.with(|v| v.set(false));
-        REENTER.with(|v| v.set(false)); END_CLIENT.with(|v| v.set(false));
+        REENTER.with(|v| v.set(false)); REENTER_OWNED.with(|v| v.set(0)); END_CLIENT.with(|v| v.set(false));
         v8host::set_engine_ops(Some(crate::v8host::S2EngineOps {
             engine_call_resolve: Some(resolve), engine_call_invoke: Some(invoke),
             ..crate::v8host::frame_tests::mock_event_ops()
@@ -565,6 +712,84 @@ mod tests {
     }
     fn effects() -> Vec<String> { EFFECTS.with(|e| e.borrow().clone()) }
     fn done_engine() { v8host::set_engine_ops(None); v8host::shutdown(); }
+
+    fn reserve_owned(owner: &str, id: u64, policy: Policy, adapters: Vec<Adapter>) -> Result<(u64, usize), Failure> {
+        reserve_policy(owner, Key { surface: "shared".into(), index: 10, entity: id,
+            slot: 2, client: crate::client::generation(2), lane: 0 }, 0, policy, adapters)
+    }
+
+    #[test]
+    fn owned_failed_legacy_retirement_blocks_only_its_lane_and_releases_capture() {
+        for fail_off in [false, true] {
+            let id = setup_engine();
+            let (a, lane) = reserve_owned("surface_a", id, Policy::Legacy, vec![presentation(), Adapter::default()]).unwrap();
+            assert_eq!(lane, 0); capture("surface_a", id); assert!(activate("surface_a", a));
+            let (occupied, _) = reserve_owned("surface_b", id, Policy::Explicit, vec![Adapter::default(); 2]).unwrap();
+            FAIL_HIDE.with(|v| v.set(!fail_off)); FAIL_OFF.with(|v| v.set(fail_off));
+            REENTER_OWNED.with(|v| v.set(a));
+            assert_eq!(reserve_owned("surface_b", id, Policy::Legacy, vec![Adapter::default(); 2]).unwrap_err().code, "Unavailable");
+            assert_eq!(state("surface_a", a), "invalid");
+            assert_eq!(effects(), ["capture:true", "hide:root", "capture:false"]);
+            assert_eq!(reserve_owned("surface_b", id, Policy::Explicit, vec![Adapter::default(); 2]).unwrap_err().code, "Busy");
+            assert!(release("surface_b", occupied));
+            let (other, lane) = reserve_owned("surface_b", id, Policy::Explicit, vec![Adapter::default(); 2]).unwrap();
+            assert_eq!(lane, 1); assert!(activate("surface_b", other));
+            advance_frame();
+            assert_eq!(REGISTRY.with(|r| r.borrow().pending.len()), 1);
+            assert!(active("surface_b", other));
+            FAIL_HIDE.with(|v| v.set(false)); FAIL_OFF.with(|v| v.set(false));
+            advance_frame();
+            assert!(REGISTRY.with(|r| r.borrow().pending.is_empty()));
+            let (replacement, lane) = reserve_owned("surface_b", id, Policy::Explicit, vec![Adapter::default(); 2]).unwrap();
+            assert_eq!(lane, 0); assert!(activate("surface_b", replacement));
+            let before = effects();
+            assert!(!release("surface_a", a)); v8host::unload_plugin("surface_a");
+            assert_eq!(effects(), before);
+            assert!(active("surface_b", replacement)); assert!(active("surface_b", other));
+            done_engine();
+        }
+    }
+
+    #[test]
+    fn owned_selected_lane_descriptor_cleanup_and_lifetime_change_are_authoritative() {
+        let id = setup_engine();
+        let mut second = presentation(); second.capture = None;
+        second.suspend.as_mut().unwrap().args[0] = "lane-one".into();
+        let adapters = vec![presentation(), second];
+        let (a, lane) = reserve_owned("surface_a", id, Policy::Explicit, adapters.clone()).unwrap();
+        assert_eq!(lane, 0);
+        let (b, lane) = reserve_owned("surface_b", id, Policy::Legacy, adapters.clone()).unwrap();
+        assert_eq!(lane, 1);
+        assert!(effects().is_empty(), "free-lane reservation has no engine effects");
+        assert!(activate("surface_a", a)); assert!(activate("surface_b", b));
+        assert!(release("surface_b", b));
+        assert_eq!(effects(), ["hide:lane-one"]);
+        assert!(active("surface_a", a));
+        let (b, _) = reserve_owned("surface_b", id, Policy::Legacy, adapters.clone()).unwrap();
+        assert!(activate("surface_b", b));
+        END_CLIENT.with(|v| v.set(true));
+        assert_eq!(reserve_owned("surface_a", id, Policy::Legacy, adapters).unwrap_err().code, "Released");
+        assert_eq!(state("surface_a", a), "invalid"); assert_eq!(state("surface_b", b), "invalid");
+        assert!(REGISTRY.with(|r| r.borrow().leases.is_empty() && r.borrow().pending.is_empty()));
+        done_engine();
+    }
+
+    #[test]
+    fn owned_native_mode_and_lane_descriptors_are_bounded_before_allocation_or_effects() {
+        let id = setup_engine();
+        for (mode, data) in [("bogus", "'[]'"), ("explicit", "'{}'"), ("explicit", "'[]'"),
+            ("legacy", "JSON.stringify(Array(65).fill({}))"), ("explicit", r#"'[{"unknown":true}]'"#),
+            ("explicit", "JSON.stringify([{capture:{call:'toggle',token:'x'.repeat(4096)}}])"),
+            ("explicit", "JSON.stringify([{suspend:{call:'suspend',args:['root','hidden','bad']}}])"),
+            ("explicit", "' '.repeat(262145)")] {
+            assert_eq!(js("surface_a", &format!(
+                "__s2_surface_reserve_owned('shared',10,{id},2,'{mode}',{data}).error.code")), "InvalidArgument");
+        }
+        assert!(effects().is_empty()); assert!(REGISTRY.with(|r| r.borrow().leases.is_empty()));
+        assert_eq!(owned("surface_a", id, 2, "explicit", 64)["ok"], true);
+        assert_eq!(owned("surface_b", id, 2, "legacy", 64)["value"]["lane"], 1);
+        done_engine();
+    }
 
     #[test]
     fn cursor_false_transfer_hides_and_releases_recorded_capture_before_ready() {
@@ -595,7 +820,7 @@ mod tests {
             let a = claim("surface_a", id, 0, presentation()); capture("surface_a", id); activate("surface_a", a);
             if fail_hide { FAIL_HIDE.with(|v| v.set(true)); } else { FAIL_OFF.with(|v| v.set(true)); }
             let result = reserve("surface_b", Key { surface: "focus".into(), index: 10,
-                entity: id, slot: 2, client: crate::client::generation(2) }, 0, Adapter::default());
+                entity: id, slot: 2, client: crate::client::generation(2), lane: 0 }, 0, Adapter::default());
             assert_eq!(result.unwrap_err().code, "Unavailable");
             assert_eq!(effects(), ["capture:true", "hide:root", "capture:false"]);
             assert_eq!(state("surface_a", a), "waiting");
@@ -628,7 +853,7 @@ mod tests {
         let a = claim("surface_a", id, 0, presentation()); capture("surface_a", id); activate("surface_a", a);
         END_CLIENT.with(|v| v.set(true));
         let result = reserve("surface_b", Key { surface: "focus".into(), index: 10,
-            entity: id, slot: 2, client: crate::client::generation(2) }, 0, Adapter::default());
+            entity: id, slot: 2, client: crate::client::generation(2), lane: 0 }, 0, Adapter::default());
         assert_eq!(result.unwrap_err().code, "Released");
         assert!(REGISTRY.with(|r| r.borrow().leases.is_empty() && r.borrow().pending.is_empty()));
         assert!(!active("surface_a", a));
@@ -657,7 +882,7 @@ mod tests {
                 "args":["int","utlstring","utlstring","int"],"returns":"void"}}}"#);
         assert!(crate::gamedata_calls::plan("surface_a", "privateAction").is_some());
         let mut adapter = presentation(); adapter.suspend.as_mut().unwrap().call = "privateAction".into();
-        let key = Key { surface: "focus".into(), index: 10, entity: id, slot: 2, client: crate::client::generation(2) };
+        let key = Key { surface: "focus".into(), index: 10, entity: id, slot: 2, client: crate::client::generation(2), lane: 0 };
         assert_eq!(reserve("surface_a", key.clone(), 0, adapter).unwrap_err().code, "Unavailable");
         let mut bad = presentation(); bad.suspend.as_mut().unwrap().args[2] = "wrong scalar".into();
         assert_eq!(reserve("surface_a", key, 0, bad).unwrap_err().code, "InvalidArgument");
@@ -685,7 +910,7 @@ mod tests {
         FAIL_HIDE.with(|v| v.set(true));
         assert!(release("surface_a", a));
         assert!(!release("surface_a", a));
-        let key = Key { surface: "focus".into(), index: 10, entity: id, slot: 2, client: crate::client::generation(2) };
+        let key = Key { surface: "focus".into(), index: 10, entity: id, slot: 2, client: crate::client::generation(2), lane: 0 };
         assert_eq!(reserve("surface_b", key.clone(), 0, Adapter::default()).unwrap_err().code, "Busy");
         FAIL_HIDE.with(|v| v.set(false)); advance_frame();
         let b = reserve("surface_b", key, 0, Adapter::default()).unwrap();
@@ -723,7 +948,7 @@ mod tests {
     #[test]
     fn malformed_suspension_values_are_invalid_arguments_without_engine_effects() {
         let id = setup_engine();
-        let key = Key { surface: "focus".into(), index: 10, entity: id, slot: 2, client: crate::client::generation(2) };
+        let key = Key { surface: "focus".into(), index: 10, entity: id, slot: 2, client: crate::client::generation(2), lane: 0 };
         for (index, value) in [(2, serde_json::json!("wrong scalar")), (2, serde_json::json!(2147483648i64)),
             (2, serde_json::json!(1.5)), (0, serde_json::json!("")), (0, serde_json::json!("nul\0string")),
             (0, serde_json::json!("x".repeat(257))), (0, serde_json::json!(true)),
@@ -756,7 +981,7 @@ mod tests {
             "the descriptor is supported by the generic ABI, but not the surface suspension shape");
         let adapter = Adapter { capture: None, suspend: Some(Suspend {
             call: "oversized".into(), args: vec![0.into(); 7] }) };
-        let key = Key { surface: "focus".into(), index: 10, entity: id, slot: 2, client: crate::client::generation(2) };
+        let key = Key { surface: "focus".into(), index: 10, entity: id, slot: 2, client: crate::client::generation(2), lane: 0 };
         assert_eq!(reserve("surface_a", key, 0, adapter).unwrap_err().code, "Unavailable");
         assert!(effects().is_empty());
         assert!(REGISTRY.with(|r| r.borrow().leases.is_empty()));
