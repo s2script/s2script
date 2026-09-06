@@ -1702,6 +1702,81 @@ test("owned dashboard invalidate retries after a failed focused repaint retires 
   assert.equal(w.focus.size, 1);
 });
 
+for (const recovery of [
+  { mode: "legacy", deferred: false },
+  { mode: "explicit", deferred: true },
+]) test(`nonfocused ${recovery.mode} dashboard ${recovery.deferred ? "invalidate" : "refresh"} retry reveals and recaptures its root`, () => {
+  const options = {}, w = pluginWorld(options), p = w.plugin();
+  let title = "A", reads = 0;
+  const spec = { title: () => title, tabs: [{ id: "t", title: "T" }],
+    rows: () => { reads++; return [{ id: "r", a: String(reads) }]; } };
+  const dashboard = recovery.mode === "legacy" ? p.hudkit.dashboard(spec) :
+    p.hudkit.tryOwnDashboard(spec).value;
+  const view = dashboard.tryOpenResult(1).value;
+  title = "B";
+  options.failInvoke = "setDialogVariableStringForPlayer";
+  assert.equal(view.tryRefresh().error.code, "PaintFailed");
+  options.failInvoke = null;
+  const beforeWrites = w.writes.length;
+
+  if (recovery.deferred) { view.invalidate(); w.frame(); }
+  else assert.equal(view.tryRefresh().ok, true);
+
+  const retryWrites = w.writes.slice(beforeWrites);
+  assert.ok(retryWrites.some(call => call.name === "setHasClassForPlayer" &&
+    call.args[2] === "s2_dash" && call.args[3] === "s2-hide" && call.args[4] === 0),
+  "the replacement parent must reveal the retired dashboard root");
+  assert.ok(retryWrites.some(call => call.name === "setInputCaptureEnabledForPlayer" &&
+    call.args[2] === true), "the requested cursor must be reacquired");
+  assert.deepEqual(plain(view.lastUpdateResult()), { ok: true });
+  assert.equal(view.isOpen(), true);
+});
+
+for (const focused of [false, true]) test(`hideAll retires a tokenless failed legacy ${focused ? "focused" : "nonfocused"} dashboard`, () => {
+  const options = {}, w = pluginWorld(options), p = w.plugin();
+  let reads = 0;
+  const dashboard = p.hudkit.dashboard({ title: "Legacy", tabs: [{ id: "t", title: "T" }],
+    rows: () => { reads++; return [{ id: "r", a: String(reads) }]; } });
+  const view = dashboard.tryOpenResult(1, focused ? exclusive(0) : undefined).value;
+  options.failInvoke = "setDialogVariableStringForPlayer";
+  assert.equal(view.tryRefresh().error.code, "PaintFailed");
+  options.failInvoke = null;
+  view.invalidate();
+  assert.equal(p.base.kit._pendingInvalidationCount(), 1);
+
+  p.hudkit.hideAll(1);
+
+  assert.equal(view.isOpen(), false);
+  assert.equal(p.base.kit._pendingInvalidationCount(), 0);
+  const beforeReads = reads, beforeWrites = w.writes.length;
+  w.frame();
+  view.invalidate();
+  w.frame();
+  assert.equal(reads, beforeReads, "a cleared legacy view cannot evaluate its provider again");
+  assert.equal(w.writes.length, beforeWrites, "a cleared legacy view cannot repaint or reopen");
+});
+
+test("hideAll preserves a tokenless explicit dashboard retry and its dirty work", () => {
+  const options = {}, w = pluginWorld(options), p = w.plugin();
+  let reads = 0;
+  const dashboard = p.hudkit.tryOwnDashboard({ title: "Explicit", tabs: [{ id: "t", title: "T" }],
+    rows: () => { reads++; return [{ id: "r", a: String(reads) }]; } }).value;
+  const view = dashboard.tryOpenResult(1).value;
+  options.failInvoke = "setDialogVariableStringForPlayer";
+  assert.equal(view.tryRefresh().error.code, "PaintFailed");
+  options.failInvoke = null;
+  view.invalidate();
+
+  p.hudkit.hideAll(1);
+
+  assert.equal(view.isOpen(), true);
+  assert.equal(p.base.kit._pendingInvalidationCount(), 1);
+  w.frame();
+  assert.equal(reads, 3);
+  assert.deepEqual(plain(view.lastUpdateResult()), { ok: true });
+  assert.equal(view.isOpen(), true);
+});
+
 test("last completed update survives close but stale lifetimes cannot read replacement results", () => {
   const w = pluginWorld(), p = w.plugin();
   const modal = p.hudkit.modal({ rows: [] });

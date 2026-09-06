@@ -1221,6 +1221,10 @@
       st.live = true;
       surfaceSlot(dashboardSurfaceState, st.slot)[0] = st;
       if (hud._surface.invalidate) hud._surface.invalidate(st.binding, st.root);
+      // Reacquiring after a failed paint starts from a physically retired root. Submit the full
+      // root presentation again even when focus is disabled; descendants alone cannot reveal it
+      // or restore the requested cursor lease.
+      st.pendingRootOpts = { cursor: st.cursorWanted };
       if (!st.focusEnabled) return uiOk(undefined);
       st.focusBinding = componentBinding(st.binding, st.focusRetained);
       if (!hud._focus || typeof hud._focus.reserveLinked !== "function") {
@@ -2315,9 +2319,20 @@
       }
       if (hud._surface) {
         var dashClear = hud._surface.clearLegacy(binding, OWNED_DASHBOARD, ["s2_dash"], "interactive");
+        var clearedLegacyDashboard = function (st) {
+          return st && st.mode === "legacy" &&
+            (dashClear.ok || !st.live || !st.token || hud._surface.state(st.token) === "invalid");
+        };
+        // A failed repaint keeps a logical retryable state after its parent token is retired and
+        // removed from dashboardSurfaceState. Clear that controller state too so a queued or later
+        // invalidate cannot reopen a legacy dashboard after hideAll. Explicit controllers remain
+        // untouched, including tokenless failed states with pending dirty work.
+        var logicalDashState = legacyDashboard && legacyDashboard.open[slot];
+        if (clearedLegacyDashboard(logicalDashState)) {
+          closeDashboard(legacyDashboard, slot, false, logicalDashState);
+        }
         var dashState = surfaceSlot(dashboardSurfaceState, slot)[0];
-        if (dashState && dashState.mode === "legacy" &&
-            (dashClear.ok || hud._surface.state(dashState.token) === "invalid")) {
+        if (clearedLegacyDashboard(dashState)) {
           abandonReplacedDashboard(dashState);
         }
         if (!dashClear.ok) log("hideAll " + OWNED_DASHBOARD + " failed: " +
