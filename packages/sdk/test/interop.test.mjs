@@ -885,3 +885,49 @@ test("optional attachment rejects annotated async callback aliases", () =>
 const attach: () => void = async () => {}; const alias = attach;
 watchOptional("@demo/counter",alias);`);
   }, /synchronous attachment/));
+
+for (const [label, extra] of [
+  ['function', 'export declare function ghost(): string;'],
+  ['constant', 'export declare const MAGIC: number;'],
+  ['enum', 'export declare enum Magic { One = 1 }'],
+  ['aliased function', 'declare function hidden(): string; export { hidden as ghost };'],
+  ['aliased constant', 'declare const hidden: number; export { hidden as MAGIC };'],
+  ['aliased enum', 'declare enum Hidden { One = 1 } export { Hidden as Magic };'],
+]) test(`protocol 2 rejects unsupported ${label} in producer and copied consumer contracts`, async () => {
+  for (const kind of ['producer', 'consumer']) {
+    const dir = copy(kind);
+    try {
+      const path = join(dir, kind === 'producer' ? 'api.d.ts' : '.s2script/types/@demo/counter/index.d.ts');
+      writeFileSync(path, readFileSync(path, 'utf8') + '\n' + extra);
+      const result = typecheckPlugin(dir, {packagesDir: packages});
+      assert.equal(result.ok, false);
+      assert.match(JSON.stringify(result.diagnostics), /unsupported value export/);
+      await assert.rejects(buildPlugin(dir, packages), /unsupported value export/);
+    } finally { rmSync(dir, {recursive: true, force: true}); }
+  }
+});
+test('protocol 2 retains type-only exports and agreeing direct method declarations', async () => {
+  for (const kind of ['producer', 'consumer']) {
+    const dir = copy(kind);
+    try {
+      const path = join(dir, kind === 'producer' ? 'api.d.ts' : '.s2script/types/@demo/counter/index.d.ts');
+      writeFileSync(path, readFileSync(path, 'utf8') + `
+export interface Count { count: number }
+export type CountAlias = Count;
+type LocalCount = Count; export type {LocalCount};
+declare function count(): number; export {count as getCount};
+export declare function setCount(n: number): void;
+declare const hidden: number; export type {hidden};
+`);
+      if (kind === 'consumer') source(dir, `import {getCount, setCount, on} from '@demo/counter';
+import type {Count, CountAlias, LocalCount, hidden} from '@demo/counter';
+export function OnPluginStart(): void {
+ const a: Count = {count: getCount()}; const b: CountAlias = a; const c: LocalCount = b;
+ const n: typeof hidden = c.count; setCount(n);
+ const sub = on('OnCountChanged', e => console.log(e.count)); sub.dispose();
+}`);
+      assert.equal(typecheckPlugin(dir, {packagesDir: packages}).ok, true);
+      await buildPlugin(dir, packages);
+    } finally { rmSync(dir, {recursive: true, force: true}); }
+  }
+});

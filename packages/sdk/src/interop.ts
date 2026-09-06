@@ -370,6 +370,19 @@ export function extractContract(
       forwards[p.name] = { kind, payload, writable };
     } else forwards[p.name] = { kind, payload };
   }
+  // Contract artifacts supply types, never runtime helpers. The generated provider module
+  // implements only Contract.methods and on; resolve aliases so they cannot hide values.
+  for (const exported of checker.getExportsOfModule(module!)) {
+    const typeOnly = exported.declarations?.every(
+      (d) => ts.isExportSpecifier(d) &&
+        (d.isTypeOnly || (ts.isExportDeclaration(d.parent.parent) && d.parent.parent.isTypeOnly))
+    );
+    const target = exported.flags & ts.SymbolFlags.Alias
+      ? checker.getAliasedSymbol(exported)
+      : exported;
+    if (!typeOnly && target.flags & ts.SymbolFlags.Value && !Object.hasOwn(methods, exported.name))
+      fail(exported.declarations?.[0] ?? sf, `unsupported value export ${exported.name}; only Contract.methods may export runtime values`);
+  }
   const metadata: ContractMetadata = { version: 1, methods, forwards };
   return {
     metadata,

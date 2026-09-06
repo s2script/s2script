@@ -91,6 +91,14 @@ fn data_property<'s>(
     }
     descriptor.get(scope, value_key.into())
 }
+// Rust/JSON metadata represents Unicode scalar values. Reject malformed UTF-16 instead
+// of replacing lone surrogates; the same conversion governs values and property names.
+fn strict_string(scope: &v8::Isolate, value: v8::Local<v8::Value>) -> Option<String> {
+    let value = v8::Local::<v8::String>::try_from(value).ok()?;
+    let mut units = vec![0; value.length()];
+    value.write_v2(scope, 0, &mut units, v8::WriteFlags::empty());
+    String::from_utf16(&units).ok()
+}
 /// No JSON.stringify, toJSON, getters, proxy traps, silent omissions, or numeric coercion.
 fn copy_value(
     scope: &mut v8::PinScope,
@@ -112,7 +120,7 @@ fn copy_value(
         return serde_json::Number::from_f64(n).map(Value::Number);
     }
     if value.is_string() {
-        return Some(Value::String(value.to_rust_string_lossy(scope)));
+        return strict_string(scope, value).map(Value::String);
     }
     if !value.is_object() || value.is_function() || value.is_proxy() {
         return None;
@@ -136,7 +144,7 @@ fn copy_value(
         for i in 0..keys.length() {
             let key = keys.get_index(scope, i)?;
             if !key.is_string()
-                || !matches!(key.to_rust_string_lossy(scope).as_str(), "index" | "id")
+                || !matches!(strict_string(scope, key)?.as_str(), "index" | "id")
             {
                 return None;
             }
@@ -181,7 +189,7 @@ fn copy_value(
         if !key.is_string() {
             return None;
         }
-        let key = key.to_rust_string_lossy(scope);
+        let key = strict_string(scope, key)?;
         if value.is_array() && key == "length" {
             continue;
         }

@@ -19,7 +19,12 @@ export function checkProbe(value) {
 export function checkChurn(value) {
   assert.equal(value.state, 'done'); assert.equal(value.error, '');
   for (const key of ['cycles', 'deliveries', 'staleBlocked']) assert.equal(value[key], 1000, key);
-  assert.ok(Object.keys(value.baseline).length > 0);
+  for (const snapshot of [value.baseline, value.final]) {
+    for (const key of ['watches', 'callbacks', 'attachments', 'disposers', 'pending', 'subscriptions', 'methods', 'ledger']) {
+      assert.ok(Number.isSafeInteger(snapshot?.[key]) && snapshot[key] >= 0, key);
+    }
+    assert.equal(snapshot.pending, 0);
+  }
   assert.deepEqual(value.final, value.baseline);
 }
 export function checkServices(value) {
