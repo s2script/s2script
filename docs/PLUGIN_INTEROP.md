@@ -173,7 +173,7 @@ SDK builds now stamp host API `3.x`. Protocol 2 archives carry `interfaceProtoco
 
 The API 3 host explicitly accepts API 2 protocol 1 archives. Their existing generic types and permissive wire behavior are retained. Protocol 2 requires API 3 and complete valid metadata; an archive cannot evade the requirement by declaring API 2. Old API 2 hosts reject newly built API 3 archives. Library acquisition and `.s2lib` bundling retain their existing workflow.
 
-Protocol 1 interfaces remain available while a producer and its callers migrate together. Rebuild and deploy both ends with protocol 2; a protocol 1 consumer cannot silently bind to a protocol 2 provider without verified metadata. Interface version matching retains the repository's existing major-based range policy in this slice; exact declaration and metadata hashes provide the additional compatibility checks. Named binding helpers are a separate slice.
+Protocol 1 interfaces remain available while a producer and its callers migrate together. Rebuild and deploy both ends with protocol 2; a protocol 1 consumer cannot silently bind to a protocol 2 provider without verified metadata. Interface version matching retains the repository's existing major-based range policy in this slice; exact declaration and metadata hashes provide the additional compatibility checks. Explicit named binding maps are supported as described above.
 
 ## Zones migration
 
@@ -283,3 +283,13 @@ only for true; removal likewise exposes no disk acknowledgement.
 The interop-observer example owns all three subscriptions in watchOptional's scope,
 so it can attach again after a compatible BaseBans provider reload using only the
 copied contract. It observes requests and returns Continue; it never bans a player.
+
+
+## Integrated acceptance
+
+The [four-plugin acceptance workspace](../tools/interop-acceptance/README.md) exercises two
+same-name interfaces, inline and named handlers, malformed values, recursion recovery,
+consumer disposal, map guards and 1,000 actual optional-provider reload cycles. It includes
+compact deterministic JSON replies and a strict evidence validator. Private host aggregate
+diagnostics compare active and absent resource baselines; there is no public SDK diagnostic API.
+Live results require the exact frozen artifacts and separately recorded client checks.

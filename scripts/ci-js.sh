@@ -92,6 +92,9 @@ bash scripts/test-release-notes.sh
 echo "== HUD privacy probe failure handling (offline only) =="
 node --test examples/hud-privacy-probe/test/probe.test.mjs
 
+echo "== test-interop.sh (offline acceptance fixtures and contract builds) =="
+bash scripts/test-interop.sh js
+
 echo "== test-gate.sh =="
 bash scripts/test-gate.sh
 

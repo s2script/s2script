@@ -10,6 +10,18 @@
 
 **Spec:** [2026-09-06-plugin-interop-design.md](../specs/2026-09-06-plugin-interop-design.md). Read both documents and CLAUDE.md before any implementation.
 
+## Execution status (September 6, 2026)
+
+Slices 01–07 are implemented and independently reviewed in the stacked branches; the named
+binding tip is PR #211 (`aeb9ba0`). Their original task checklists below remain the implementation
+specification, including separate live gates. Slice 08 adds the integrated fixture workspace,
+evidence validators, CI integration and current architecture/CLI documentation. Local JS and
+Linux native gates have passed; the native gate needed a rerun for an inherited networking test
+timing failure reproduced unchanged on the parent commit. Clean Linux npm-ci verification,
+frozen-artifact sniper packaging, live CS2 execution, final independent review and publication
+are coordinator-owned pending gates. Authenticated human voice/kick/menu/reconnect acceptance
+remains pending. This status does not mark the full stack accepted or merged.
+
 ## Global Constraints
 
 - Preserve `s2s add`'s types-only plugin dependency workflow.
@@ -206,7 +218,7 @@ export function OnParkourFinished(e: ParkourResult): void { console.log(e.checkp
 
 **Files:** new `tools/interop-acceptance/` plugin fixtures and README; new `scripts/test-interop.sh`; integrate appropriate checks into `scripts/ci-js.sh` and `scripts/ci-native.sh`; update `docs/ARCHITECTURE.md`, `docs/PROGRESS.md`, SDK README and example index.
 
-- [ ] Build a producer plus two consumers with same-named forwards across two interfaces, notification/hook/transform probes, optional-provider restart and explicit binding aliases. Expose a server command producing a deterministic JSON summary of counts, actions and final payloads; include expected values in the fixture README.
+- [x] Build two independently reloadable providers plus two consumers with same-named forwards across two interfaces, notification/hook/transform probes, optional-provider restart and explicit binding aliases. Expose server commands producing deterministic JSON summaries with expected values in the fixture README.
 - [ ] Test registry add/build with no producer archive in the consumer tree. Test stale/missing contracts and old-host protocol refusal. Verify protocol-1 archives still load under documented compatibility.
 - [ ] On Linux, run `npm ci`, SDK tests, `bash scripts/ci-js.sh`, `bash scripts/ci-native.sh`. Build deployable native artifacts via `scripts/build-sniper.sh`, package with `scripts/package-addon.sh`, and use the authorized test-server workflow in docs/BUILDING.md. Never deploy host-built binaries to CS2.
 - [ ] Run notification isolation, hook collapse, transform copyback, 1,000 attachment cycles, consumer/provider unload, map change, malformed value and recursion-limit scenarios on CS2. Record binary/build identity, branch SHA, commands, output, and resource baselines. Assert no duplicate callbacks, stale player actions or surviving subscription growth.
@@ -220,6 +232,6 @@ export function OnParkourFinished(e: ParkourResult): void { console.log(e.checkp
 - [x] Runtime metadata explicitly generated; erased types are not treated as runtime validation.
 - [x] Notification, decision, transformation, provider lifecycle, service adoption and named binding tasks assigned.
 - [x] Broad global-name discovery and new mapchooser implementation excluded explicitly.
-- [ ] Slices 01–08 implemented, reviewed and accepted (future work).
+- [ ] Slices 01–08 implemented, reviewed and accepted (integrated live and human gates remain pending).
 
-This document is the handoff to subagent execution. The current task publishes the plan/spec only; it does not start those implementation slices.
+The execution status above supersedes the original planning-only handoff. The coordinator records final frozen-artifact acceptance separately; unchecked live gates remain outstanding.

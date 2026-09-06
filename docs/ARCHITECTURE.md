@@ -534,35 +534,46 @@ Both feed the same `<name>.cfg`; only `convar.register` touches the engine. Defa
 
 SourceMod split inter-plugin comms into natives (others call me) and forwards (I broadcast), both stringly-typed and runtime-discovered. s2script collapses both into **one thing: a plugin publishes a typed, versioned interface object.** Methods = "natives"; events on it = "forwards." Same machinery, type-safe, semver-governed.
 
-**Producer:**
-```ts
-export interface AdminAPI {
-  getImmunity(player: PlayerRef): number;
-  banPlayer(player: PlayerRef, minutes: number, reason: string): Promise<void>;
-  onPunishment: Event<{ target: PlayerRef; admin: PlayerRef; kind: PunishKind }>;
-}
-export const api: AdminAPI = { /* ... */ };
-```
-`package.json`: `"s2script": { "publishes": "AdminAPI" }`. On publish, the registry stores `plugin.d.ts` as the **published contract**.
+Protocol 2 is the current opt-in authoring path. A producer declares `types: "api.d.ts"`,
+`s2script.publishes: "self"`, and `s2script.interfaceProtocol: 2`. Its self-contained
+`Contract` has `methods` and `forwards`, whose members use SDK `Notification`, `Hook`,
+or `Transform` helpers. `publish(name, implementation)` checks method agreement;
+`use(name)` derives the consumer proxy from the verified declaration. `s2s add` downloads
+metadata and types only, never the producer archive. Workspace sibling declarations take
+precedence. Generated runtime schemas and canonical metadata hashes provide host validation;
+erased TypeScript types alone provide no runtime authority.
 
-**Consumer:**
-```ts
-import type { AdminAPI } from "@edge/admin-core";
-const admin = host.require<AdminAPI>("@edge/admin-core"); // resolved proxy
-admin.onPunishment.on(e => { /* forward */ });
-await admin.banPlayer(player, 60, "cheating");            // native
-```
+Forward identity is `(interface name, forward name)`. One live provider owns an interface.
+Method arguments/results and notification payloads cross by validated copy. The wire algebra
+supports finite primitives, finite records, arrays, literals, discriminated unions, optional
+fields and SDK EntityRef; methods may return void. Recursive/domain-imported types, async
+methods, arbitrary objects, functions, BigInt, any and unknown are rejected. EntityRef retains
+host liveness checks. Notification listeners receive separate copies. Hooks collapse the
+existing HookResult values; transforms apply only validated writable-field patches and return
+a copied final payload. Throwing/invalid/thenable handlers fail open as Continue. Dispatch is
+synchronous, snapshot-ordered, free of registry borrows during JS, and bounded to 32 active
+interop crossings. Security-sensitive producers must account for the fail-open policy.
 
-- **Hard dep:** `s2script.pluginDependencies`. Host topo-sorts so the producer loads first; consumer can't load without a compatible version (fail-fast). `host.require` never returns null.
-- **Optional dep:** `s2script.optionalPluginDependencies`. `host.optional<AdminAPI>(...)` returns **`AdminAPI | null`** — the type forces a null-check, and re-checks after `await` (the proxy can go null if the producer unloads).
+Hard dependencies use `s2script.pluginDependencies`; absent/stale providers throw
+`InterfaceUnavailable`. `tryUse` returns a one-time optional proxy or null, never a variable
+that automatically changes to null. `watchOptional` declares a synchronous attachment callback
+under `optionalPluginDependencies`, reattaching once per compatible provider generation.
+Each attachment owns its subscriptions and local disposers; an expired service throws even
+after a replacement provider appears. Registration is legal during normal load or that
+specific attachment callback. Teardown invalidates resources before reverse-order custom
+cleanup; the ledger remains the cleanup authority. Full unload uses reverse-dependency order.
 
-**Use-after-free hazard → proxies, not raw objects:** if A unloads while B holds its interface, B calls a dead plugin — the entity-staleness bug across the plugin boundary. So **the host hands B a host-owned proxy** that is handle-backed and ledgered (`importedInterfaces`) and **invalidated on A's unload** — a dead hard-dep proxy throws `DependencyUnloadedError`; an optional one flips to `null`.
+`on` returns an idempotent Subscription. `bindForwards(name, { OnSignal: LocalHandler })`
+registers an explicit hard-dependency map, rolls back partial registration on failure, and
+returns one handle for the whole map. Exported local functions are never scanned automatically.
+See [PLUGIN_INTEROP.md](PLUGIN_INTEROP.md) for complete examples, lifecycle/error semantics,
+BaseComm/BaseBans service contracts, migration and wire restrictions.
 
-**Entity refs on the wire:** interface args and event payloads carrying entities use the **same handle-backed `EntityRef`/`T | null` type as §2.6** — never a raw pointer. A `PlayerRef` B receives from A obeys identical staleness rules; producer and consumer agree on what a `PlayerRef` is because it's the one shared ref type (defined in core/std, the typed game wrappers in cs2).
-
-**Unload resolution (reverse-dependency order):** unloading A with live hard-dependents **cascades or is refused** with a named reason. Default = refuse-unless-cascade-confirmed. Optional dependents aren't a barrier (proxies flip to null). The ledger's `exportedInterface` tracks consumers so resolution is exact.
-
-**Versioning (Principle 4):** the published interface is the versioned artifact; a breaking change is a major bump; consumers' `^2.1.0` refuses the incompatible producer at install/load. `apiVersion` governs host compat; plugin semver governs consumer compat. Both checked at the typecheck gate and again at load.
+New SDK archives target host API 3. API 3 explicitly accepts API-2/protocol-1 archives with
+their legacy behavior; protocol 2 requires complete verified metadata and cannot evade the
+host requirement by declaring API 2. Migrate producer and consumers together. The
+[acceptance fixtures](../tools/interop-acceptance/README.md) document offline gates and exact
+live probes; authenticated client acceptance remains a separate recorded gate.
 
 ### 2.10 The registry & developer platform (`s2script.com`)
 

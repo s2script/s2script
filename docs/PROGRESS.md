@@ -334,3 +334,32 @@ The same callback-triggered reply issue was found in BaseComm's shared command
 wrapper: it now validates the copied caller userId/SteamID against the slot before
 final translation/reply. A regression covers absence, changed userId with the same
 SteamID, and changed SteamID with the same userId; policy behavior is unchanged.
+
+
+## Typed plugin interop: integrated acceptance fixtures (September 6, 2026)
+
+The opt-in `tools/interop-acceptance` workspace builds four protocol-2 archives: numeric/text
+providers with same-named forwards, a hard consumer using named aliases, and an optional
+controller. Server commands report copied notification isolation, HookResult collapse, writable
+transform copyback, malformed value refusal, recursion-limit recovery and service API results.
+The controller drives 1,000 actual deferred provider unload/load cycles with attachment and
+delivery counts, expired-proxy checks, transition timeouts and stable resource snapshots. Map
+capture checks copied map/userId guards without performing player actions. The fixtures include
+strict JSON evidence validators and a sequence for whole-binding disposal and consumer teardown.
+
+The existing private async diagnostic now adds fixed-shape aggregate interop resource counts.
+Its native churn regression verifies active counts and return to baseline. Offline fixture tests
+exercise the deferred state machine, duplicate/resource/timeout failures, producer and named
+handler behavior, service cleanup and evidence validation. `ci-js.sh` builds the acceptance
+workspace and runs these checks; `ci-native.sh`'s core suite includes native churn and archive
+compatibility. Existing SDK tests retain metadata/types-only acquisition without producer source
+or binary, missing/stale contract refusal and protocol/API compatibility coverage.
+
+The local JS gate and full Linux native gate passed. The first native run hit the inherited
+`net_same_batch_connect_data_error_close_keeps_subscription_checkpoint` timing failure,
+reproduced on unchanged parent `aeb9ba0`; an unmodified full rerun passed 893 core tests with
+3 ignored, the separate stress cases and shim checks. Clean Linux npm-ci, frozen-artifact sniper
+packaging and live execution are pending the coordinator's acceptance record. These fixture and
+offline results do not establish live CS2 acceptance. Authenticated voice, command/menu, ban/kick,
+reconnect and stale connection effects remain separate human checks. No production deployment
+or merge is claimed.

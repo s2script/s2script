@@ -1,0 +1,15 @@
+{
+  "name": "@interop/acceptance",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "plugins/*"
+  ],
+  "s2script": {
+    "workspace": {
+      "plugins": [
+        "plugins/*"
+      ]
+    }
+  }
+}

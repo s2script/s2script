@@ -63,6 +63,8 @@ bash scripts/check-licenses-generated.sh
 echo "== cargo build =="
 cargo build
 
+# Includes the integrated interop diagnostic/churn and protocol/API compatibility tests.
+# scripts/test-interop.sh native runs that focused subset when iterating on acceptance.
 echo "== cargo test -p s2script-core =="
 cargo test -p s2script-core
 bash scripts/test-async-pressure.sh

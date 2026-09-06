@@ -111,7 +111,7 @@ reference. Source and issues: [GitHub](https://github.com/s2script/s2script).
 
 MIT OR Apache-2.0
 
-### Typed plugin notifications
+### Typed plugin interfaces
 
 Opt in with `s2script.interfaceProtocol: 2`, export a self-contained `Contract` with `methods` and
 `forwards: { EventName: Notification<Payload> }`, then use `publish(name, implementation)` and
@@ -139,3 +139,19 @@ const racing = bindForwards("@demo/racing", { OnRunFinished: OnRaceFinished });
 `watchOptional`, where named local functions can be passed to the supplied `service.on`.
 See [the complete migration guide](https://github.com/s2script/s2script/blob/main/docs/PLUGIN_INTEROP.md)
 for supported types, copying, dispatch, and compatibility limits.
+
+
+Use `Hook<Payload>` for synchronous decisions and `Transform<Payload, WritableKeys>` for
+validated shallow patches. Producers call `dispatch`; notifications use `emit`. All crossings
+copy supported wire values. Listeners must return synchronously, and invalid/throwing listeners
+contribute Continue. Nested crossings stop at 32 active calls. Retained optional services throw
+`InterfaceUnavailable` after detach; reacquire through `watchOptional` on each provider generation
+and own resources in its scope. `tryUse` is a one-time lookup.
+
+For an existing consumer, declare the provider under `s2script.pluginDependencies` or
+`optionalPluginDependencies`, run `s2s add <provider>`, include `.s2script/interfaces.d.ts`, and
+rebuild with `s2s build`. Acquisition needs only the verified declaration. Rebuild and deploy the
+producer and consumers together for protocol 2; API 3 hosts still accept legacy API-2/protocol-1
+archives, while old API-2 hosts reject new API-3 builds. See the
+[acceptance workspace](https://github.com/s2script/s2script/tree/main/tools/interop-acceptance)
+for executable examples and the separate live verification sequence.
