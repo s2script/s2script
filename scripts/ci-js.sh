@@ -80,6 +80,9 @@ node --test plugins/adminmenu/src/plugin.test.mjs plugins/disabled/rockthevote/s
 echo "== zones operation and consumer attachment tests =="
 node --test plugins/zones/src/plugin.test.mjs
 
+echo "== basecomm service operation tests =="
+node --test plugins/basecomm/src/plugin.test.mjs
+
 echo "== test-release-notes.sh (GitHub generates notes; CI only uploads the zip) =="
 bash scripts/test-release-notes.sh
 

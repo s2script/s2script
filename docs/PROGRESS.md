@@ -287,3 +287,23 @@ Compiled producer/import/consumer tests replace the old signature regex checks a
 contract byte verification. Eleven VM operation/lifecycle tests run through `scripts/ci-js.sh`;
 the complete JS gate passes with 687 SDK tests. Zones, cookbook, and the legacy companion build.
 Real CS2 boundary crossings and provider reload acceptance remain pending coordinator execution.
+
+## Typed plugin interop: BaseComm public service (September 6, 2026)
+
+BaseComm now publishes a protocol 2 contract at version 1.0.0 with SteamID-keyed mute/gag
+queries and setters plus transition notifications. One canonical operation per property serves
+public methods, commands, silence/unsilence, and the existing gag menu. Setters validate canonical
+nonzero decimal u64 identities, accept offline policy, report the state current at return, and
+emit only after a real transition. Mute writes both live engine properties before notification;
+reconnect restores both. Target wrappers snapshot all SteamIDs before callbacks and report only
+operations whose requested policy remains current.
+
+The optional interop observer owns subscriptions per attachment and queries connected identities
+after subscribing. Its verified declaration is an exact copied types-only dependency, and the
+standalone build test contains neither provider source nor archive. Compiler tests cover inferred
+methods, named imports and notifications, invalid calls, metadata, contract hashes, and producer /
+consumer manifests. VM tests cover API/command/menu convergence, offline and invalid identities,
+idempotence, reentrant engine/order behavior, multi-target silence identity safety, translated
+counts, chat suppression, and both reconnect properties. Live authenticated mute/gag, command/menu,
+and provider reload acceptance remains pending coordinator execution; bots expose SteamID `0` and
+cannot establish that gate.
