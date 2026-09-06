@@ -66,12 +66,10 @@ The following methods are structured counterparts to existing APIs:
 interface HudLayout {
   status(): UiStatus;
   tryShow(slot: number, panelId: string, opts?: { cursor?: boolean }): UiResult<void>;
-  tryRefresh(slot: number): UiResult<void>;
 }
 
 interface HudPlayer {
   tryShow(panelId: string, opts?: { cursor?: boolean }): UiResult<void>;
-  tryRefresh(): UiResult<void>;
 }
 
 interface Modal {
@@ -123,11 +121,13 @@ Existing APIs remain valid and retain their established conventions:
 - `open()` keeps its synchronous return and throwing behavior on failure.
 - Legacy `refresh()` remains synchronous and keeps its existing bulk-owner or bound-view
   shape. Use `tryRefresh()` when the caller needs a structured result.
-- Legacy `show()` keeps its `HudResult` return. Use `tryShow()` for code that branches
-  on a stable error code.
-- Existing disabled-row behavior is unchanged: `disabled` is cosmetic and `onPick`
-  still fires. Authors decide whether an unavailable action should be explained or
-  rejected by their domain logic.
+- Low-level layout/player `show()` keeps its `HudResult` return. `Badge.show()` keeps
+  returning a `BadgeView`, and `BadgeView.show()` remains void. Use `tryShow()` where
+  the corresponding structured result is available and the caller needs a stable
+  error code.
+- Modal disabled rows remain cosmetic: `onPick` still fires, so authors decide whether
+  an unavailable action should be explained or rejected by their domain logic.
+  Dashboard disabled rows retain their existing disabled-action rejection behavior.
 
 The additive APIs are intended for incremental migration. A plugin can continue using
 legacy calls while adopting structured factories and operation results at boundaries
@@ -170,9 +170,10 @@ methods, while legacy void methods keep their no-op compatibility behavior and l
 throwing opens keep their failure behavior. Slot-first owner methods deliberately adopt
 the current occupant.
 
-Delayed callbacks associated with an old view (including timers and frame work) are
-invalidated when the component is forgotten, released, reconnected, or replaced. This
-prevents a previous session's close/fade or repaint from changing a reopened component
-or writing to a replacement client. Treat retained handles as disposable references and
-check their result before continuing an action.
-
+An ordinary close/reopen of the same component for the same client remains reusable.
+Presentation epochs invalidate framework-owned timers and frame jobs from an earlier
+presentation, preventing an old close/fade or repaint callback from changing the
+reopened component. Forget, release, reconnect, and replacement also invalidate the
+component's retained work. User-managed asynchronous code remains the author's
+responsibility. Treat retained handles as disposable references and check their result
+before continuing an action.
