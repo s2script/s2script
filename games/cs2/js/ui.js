@@ -719,6 +719,22 @@
         boundBinding = previousBinding;
       }
     };
+    function invalidateBoundRoot(slot, root) {
+      root = String(root);
+      var prefix = slotPrefix(slot);
+      function under(id) { return id === root || id.indexOf(root + "_") === 0; }
+      for (var key in lastValue) {
+        if (key.indexOf(prefix) === 0 && under(key.slice(prefix.length).split("|")[1])) delete lastValue[key];
+      }
+      for (var panel in visiblePanels) {
+        if (panel.indexOf(prefix) === 0 && under(panel.slice(prefix.length))) delete visiblePanels[panel];
+      }
+      for (var meter in meterClass) {
+        if (meter.indexOf(prefix) === 0 && under(meter.slice(prefix.length))) delete meterClass[meter];
+      }
+      var dis = disabled[slot];
+      if (dis) for (var id in dis) { if (under(id)) delete dis[id]; }
+    }
     // Private game adapter. Opaque tokens and retirement remain owned by the native ledger.
     api._focus = {
       reserve: function (binding, root, priority) {
@@ -784,19 +800,7 @@
       },
       invalidate: function (binding, root) {
         if (!bindingIsValid(binding)) return;
-        var prefix = slotPrefix(binding.slot);
-        function under(id) { return id === root || id.indexOf(root + "_") === 0; }
-        for (var key in lastValue) {
-          if (key.indexOf(prefix) === 0 && under(key.slice(prefix.length).split("|")[1])) delete lastValue[key];
-        }
-        for (var panel in visiblePanels) {
-          if (panel.indexOf(prefix) === 0 && under(panel.slice(prefix.length))) delete visiblePanels[panel];
-        }
-        for (var meter in meterClass) {
-          if (meter.indexOf(prefix) === 0 && under(meter.slice(prefix.length))) delete meterClass[meter];
-        }
-        var dis = disabled[binding.slot];
-        if (dis) for (var id in dis) { if (under(id)) delete dis[id]; }
+        invalidateBoundRoot(binding.slot, root);
       },
       onFrame: ctxState.onFocusFrame
     };
@@ -850,6 +854,9 @@
         if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
         var result = globalThis.__s2_surface_clear_legacy(key, ent.index, ent.id, binding.slot,
           JSON.stringify(adapters));
+        // The host may have hidden free or legacy lanes before returning a partial failure. Those
+        // writes bypass this context's mirrors, so none of the supplied roots remains authoritative.
+        for (var i = 0; i < roots.length; i++) invalidateBoundRoot(binding.slot, roots[i]);
         if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
         return result.ok ? uiOk(undefined) : result;
       },

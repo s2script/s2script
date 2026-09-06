@@ -199,6 +199,29 @@ test("surface bridge forwards exact binding, owned lane, adapters, and linked fo
   assert.deepEqual(JSON.parse(calls[2][5]), JSON.parse(calls[0][6]));
 });
 
+test("atomic legacy clear invalidates supplied roots after success and partial failure", () => {
+  const m = mount(), hud = m.ns.probe();
+  const binding = hud._captureBinding(7);
+  globalThis.__s2_surface_clear_legacy = () => ({ ok: true });
+
+  assert.equal(hud.show(7, "s2_banner"), null);
+  assert.deepEqual(hud._surface.clearLegacy(binding, "cs2:hudkit:owned:banner",
+    ["s2_banner"], "visual"), { ok: true, value: undefined });
+  assert.equal(hud.show(7, "s2_banner"), null);
+
+  globalThis.__s2_surface_clear_legacy = () => ({
+    ok: false,
+    error: { code: "Unavailable", message: "one legacy lane could not be cleared" },
+  });
+  assert.equal(hud._surface.clearLegacy(binding, "cs2:hudkit:owned:banner",
+    ["s2_banner"], "visual").error.code, "Unavailable");
+  assert.equal(hud.show(7, "s2_banner"), null);
+
+  assert.equal(m.callsFor("setHasClassForPlayer").filter(call =>
+    call.args[1] === 7 && call.args[2] === "s2_banner" && call.args[4] === 0).length, 3,
+  "each host clear makes an identical raw show observable again");
+});
+
 test("surface bridge rejects missing support and releases a reservation after binding retirement", () => {
   const m = mount(), hud = m.ns.probe();
   const binding = hud._captureBinding(4);

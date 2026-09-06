@@ -185,6 +185,19 @@ test("a badge sets exactly one corner class", () => {
   assert.ok(classSet(calls, "s2-hudbadge-bad"));
 });
 
+test("a badge shown through tryShow remains tracked for owner hide and hideAll", () => {
+  const { ui, calls } = mount();
+  const badge = ui.badge({ title: "Tracked" });
+  const view = badge.forSlot(1);
+  assert.equal(view.tryShow({ text: "owner hide" }).ok, true);
+  badge.hide(1);
+  assert.equal(calls.filter(c => c.op === "hide" && c.id === "s2_b0").length, 1);
+
+  assert.equal(view.tryShow({ text: "hide all" }).ok, true);
+  ui.hideAll(1);
+  assert.equal(calls.filter(c => c.op === "hide" && c.id === "s2_b0").length, 2);
+});
+
 test("row clicks report an absolute index, not a page-relative one", () => {
   const { ui, clickHandlers } = mount();
   const picked = [];

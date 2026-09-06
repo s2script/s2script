@@ -1566,7 +1566,11 @@
           tryShow: function (data) {
             if (badgeReleased) return releasedResult("badge");
             if (!valid()) return staleResult();
-            try { return tryShowBadge(slot, data, binding); }
+            try {
+              var result = tryShowBadge(slot, data, binding);
+              if (result.ok) shownBindings[slot] = binding;
+              return result;
+            }
             catch (err) {
               return badgeReleased ? releasedResult("badge") :
                 uiFail("PaintFailed", errorMessage(err, "hudkit: badge paint failed"));
