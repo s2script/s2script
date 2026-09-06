@@ -119,20 +119,31 @@ Opt in with `s2script.interfaceProtocol: 2`, export a self-contained `Contract` 
 wire schemas; `s2s add` obtains only a plugin dependency's types. Include the generated
 `.s2script/interfaces.d.ts` in existing projects' tsconfig files. Protocol 2 needs host API 3.
 
+CJS module evaluation runs before the host opens its load window. Register publications,
+subscriptions, binding maps and optional watches inside `OnPluginStart`. Exported handler
+functions and imports can remain at module top level.
+
 Inline handlers infer their payload from the provider:
 
 ```ts
-use("@demo/racing").on("OnRunFinished", event => console.log(event.elapsedMs));
+import { use } from "@s2script/sdk/plugin";
+export function OnPluginStart(): void {
+  use("@demo/racing").on("OnRunFinished", event => console.log(event.elapsedMs));
+}
 ```
 
 Use an explicit binding map when a named local export has a different name from the provider
 forward. The returned subscription disposes the whole map:
 
 ```ts
+import { bindForwards, command } from "@s2script/sdk";
 export function OnRaceFinished(event: { elapsedMs: number }): void {
   console.log(event.elapsedMs);
 }
-const racing = bindForwards("@demo/racing", { OnRunFinished: OnRaceFinished });
+export function OnPluginStart(): void {
+  const racing = bindForwards("@demo/racing", { OnRunFinished: OnRaceFinished });
+  command.server("sm_disable_racing", () => racing.dispose());
+}
 ```
 
 `bindForwards` requires a hard plugin dependency. Optional providers continue to attach through

@@ -7,17 +7,17 @@ export function OnNumericSignal(event: { value: number; mode: string }): void {
 export function OnTextSignal(event: { text: string; mode: string }): void {
   textHits++; event.text = "mutated";
 }
-const numeric = bindForwards("@interop/numeric", {
-  OnSignal: OnNumericSignal,
-  OnRequest: event => event.mode === "stop" ? HookResult.Stop : HookResult.Changed,
-  OnFormat: event => ({ result: HookResult.Changed, patch: { value: event.value + 1 } }),
-});
-const text = bindForwards("@interop/text", {
-  OnSignal: OnTextSignal,
-  OnRequest: event => event.mode === "stop" ? HookResult.Stop : HookResult.Changed,
-  OnFormat: event => ({ result: HookResult.Changed, patch: { text: event.text + "!" } }),
-});
 export function OnPluginStart(): void {
+  const numeric = bindForwards("@interop/numeric", {
+    OnSignal: OnNumericSignal,
+    OnRequest: event => event.mode === "stop" ? HookResult.Stop : HookResult.Changed,
+    OnFormat: event => ({ result: HookResult.Changed, patch: { value: event.value + 1 } }),
+  });
+  const text = bindForwards("@interop/text", {
+    OnSignal: OnTextSignal,
+    OnRequest: event => event.mode === "stop" ? HookResult.Stop : HookResult.Changed,
+    OnFormat: event => ({ result: HookResult.Changed, patch: { text: event.text + "!" } }),
+  });
   command.server("s2_interop_named", cmd => cmd.reply(JSON.stringify({ numericHits, textHits })));
   command.server("s2_interop_dispose", cmd => { numeric.dispose(); text.dispose(); cmd.reply("disposed"); });
 }

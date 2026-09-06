@@ -25,26 +25,36 @@ export interface Contract {
 // Producer: registrations belong to the normal plugin load window.
 import { publish } from "@s2script/sdk/plugin";
 let count = 0;
-const counter = publish("@demo/counter", {
-  getCount: () => count,
-  setCount(next: number) {
-    count = next;
-    counter.emit("OnCountChanged", { count });
-  },
-});
+export function OnPluginStart(): void {
+  const counter = publish("@demo/counter", {
+    getCount: () => count,
+    setCount(next: number): void {
+      count = next;
+      counter.emit("OnCountChanged", { count });
+    },
+  });
+}
 ```
 
 ```ts
 // Consumer: package s2script.pluginDependencies includes "@demo/counter": "^1.0.0".
 import { use } from "@s2script/sdk/plugin";
-const counter = use("@demo/counter");
-counter.on("OnCountChanged", event => console.log(event.count));
 // Direct method imports are also derived from Contract.methods:
 import { getCount } from "@demo/counter";
 // Direct on imports use the same inferred payloads and disposable Subscription:
 import { on } from "@demo/counter";
-on("OnCountChanged", event => console.log(event.count));
+export function OnPluginStart(): void {
+  const counter = use("@demo/counter");
+  counter.on("OnCountChanged", event => console.log(event.count));
+  on("OnCountChanged", event => console.log(event.count));
+  console.log(getCount());
+}
 ```
+
+CJS module evaluation runs before the registration window. Put `publish`, `on`,
+`bindForwards`, `watchOptional`, and command registration in `OnPluginStart`, not
+at module top level. Imported declarations and exported handler definitions can stay
+top-level. The host opens the separate optional attachment window described below.
 
 Use `.on` for an inline callback: the selected provider contract infers the payload and the
 returned `Subscription` controls that exact registration. Use `bindForwards` when local handler
@@ -52,7 +62,7 @@ names should differ from the provider's forward names, including handlers export
 organization or tests:
 
 ```ts
-import { bindForwards } from "@s2script/sdk/plugin";
+import { bindForwards, command } from "@s2script/sdk";
 
 type RaceResult = { elapsedMs: number };
 type ParkourResult = { checkpoints: number };
@@ -64,16 +74,20 @@ export function OnParkourFinished(event: ParkourResult): void {
   console.log(event.checkpoints);
 }
 
-const racing = bindForwards("@demo/racing", {
-  OnRunFinished: OnRaceFinished,
-});
-const parkour = bindForwards("@demo/parkour", {
-  OnRunFinished: OnParkourFinished,
-});
+export function OnPluginStart(): void {
+  const racing = bindForwards("@demo/racing", {
+    OnRunFinished: OnRaceFinished,
+  });
+  const parkour = bindForwards("@demo/parkour", {
+    OnRunFinished: OnParkourFinished,
+  });
 
-// Each handle owns only the registrations created by its map.
-racing.dispose();
-parkour.dispose();
+  // This example command disables both integrations later.
+  command.server("sm_disable_integrations", () => {
+    racing.dispose();
+    parkour.dispose();
+  });
+}
 ```
 
 Forward keys stay qualified by the provider passed to `bindForwards`, so the identical
@@ -121,14 +135,20 @@ export interface Contract {
 // Consumer, during the load window:
 import { use } from "@s2script/sdk/plugin";
 import { HookResult } from "@s2script/sdk/events";
-const service = use("@demo/formatter");
-service.on("OnRequest", event =>
-  event.identity === "blocked" ? HookResult.Handled : HookResult.Continue);
-service.on("OnFormat", event => ({
-  result: HookResult.Changed,
-  patch: { text: event.text.trim() },
-}));
+export function OnPluginStart(): void {
+  const service = use("@demo/formatter");
+  service.on("OnRequest", event =>
+    event.identity === "blocked" ? HookResult.Handled : HookResult.Continue);
+  service.on("OnFormat", event => ({
+    result: HookResult.Changed,
+    patch: { text: event.text.trim() },
+  }));
+}
+```
 
+The producer can dispatch later from its registered command or method callback:
+
+```ts
 // Producer, using its publish handle:
 const decision = formatter.dispatch("OnRequest", { identity: "guest" });
 const formatted = formatter.dispatch("OnFormat", { identity: "guest", text: " hello " });
@@ -153,12 +173,14 @@ Declare an optional provider under `s2script.optionalPluginDependencies`, acquir
 
 ```ts
 import { watchOptional } from "@s2script/sdk/plugin";
-const watch = watchOptional("@demo/counter", (counter, scope) => {
-  scope.own(counter.on("OnCountChanged", event => console.log(event.count)));
-  // Any local disposable can belong to this attachment.
-  scope.own({ dispose() { console.log("counter attachment ended"); } });
-});
-// Calling watch.dispose() later removes the watch and its current attachment.
+export function OnPluginStart(): void {
+  const watch = watchOptional("@demo/counter", (counter, scope) => {
+    scope.own(counter.on("OnCountChanged", event => console.log(event.count)));
+    // Any local disposable can belong to this attachment.
+    scope.own({ dispose() { console.log("counter attachment ended"); } });
+  });
+  // Calling watch.dispose() from a later callback removes the watch and attachment.
+}
 ```
 
 The host calls `attach` at a lifecycle boundary after both plugins become Active, once per compatible provider identity and generation. Publication never recursively invokes an attachment. A watch remains pending while the provider is absent. Version, declaration hash, and canonical wire metadata must all agree. An incompatible provider logs a diagnostic and does not attach; a later compatible generation can attach normally. `tryUse` remains a one-time optional lookup and does not track availability.

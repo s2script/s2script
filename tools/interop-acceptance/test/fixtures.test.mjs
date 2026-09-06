@@ -6,17 +6,29 @@ import {resolve} from 'node:path';
 
 async function evaluate(name, sdk, globals = {}) {
   const out = await build({entryPoints: [resolve(`tools/interop-acceptance/plugins/${name}/src/plugin.ts`)], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['@s2script/*']});
+  let loading = false;
+  const loadOnly = (name, fn) => (...args) => {
+    if (!loading) throw Error(`s2script: ${name}() outside the load window`);
+    return fn(...args);
+  };
+  const scopedSDK = {...sdk};
+  for (const name of ['publish', 'bindForwards']) {
+    if (sdk[name]) scopedSDK[name] = loadOnly(name, sdk[name]);
+  }
+  if (sdk.command) scopedSDK.command = {...sdk.command, server: loadOnly('command.server', sdk.command.server)};
   const module = {exports: {}};
-  const context = vm.createContext({module, exports: module.exports, require: () => sdk, console, ...globals});
+  const context = vm.createContext({module, exports: module.exports, require: () => scopedSDK, console, ...globals});
+  // CJS evaluation precedes the real host's registration window.
   vm.runInContext(out.outputFiles[0].text, context);
-  context.module.exports.OnPluginStart?.();
+  loading = true;
+  try { context.module.exports.OnPluginStart?.(); }
+  finally { loading = false; }
   return context;
 }
-test('both providers preserve original inputs, select qualified forward names and reject malformed emit probes', async () => {
-  for (const [name, identity, input, expected] of [
+for (const [name, identity, input, expected] of [
     ['numeric', '@interop/numeric', {value: 1, mode: 'normal'}, {value: 12, mode: 'normal'}],
     ['text', '@interop/text', {text: 'seed', mode: 'normal'}, {text: 'seed!!', mode: 'normal'}],
-  ]) {
+  ]) test(`${name} registers only in OnPluginStart and preserves inputs and qualified forwards`, async () => {
     let methods; const emitted = [];
     await evaluate(name, {publish(id, implementation) {
       assert.equal(id, identity); methods = implementation;
@@ -29,7 +41,6 @@ test('both providers preserve original inputs, select qualified forward names an
     assert.deepEqual(JSON.parse(report.original), input);
     assert.equal(emitted[0].event, 'OnSignal');
     assert.equal(methods.malformed(), 3);
-  }
 });
 test('named bindings retain separate payloads and dispose both whole maps idempotently', async () => {
   const bindings = new Map(); const commands = new Map(); let disposed = 0;
@@ -67,4 +78,14 @@ test('controller service probe restores policy and bans even when a provider thr
     if (throwing) assert.match(reply.error, /provider failure/);
     else {assert.equal(reply.cleaned,true); assert.deepEqual(reply.events,{mute:2,gag:2,request:1,recorded:1,removed:1});}
   }
+});
+
+test('registration mocks close publish, binding and command authorization after OnPluginStart', async () => {
+  const context = await evaluate('numeric', {
+    publish: () => ({}), bindForwards() {}, command: {server() {}},
+  });
+  const sdk = context.require();
+  assert.throws(() => sdk.publish(), /publish\(\) outside the load window/);
+  assert.throws(() => sdk.bindForwards(), /bindForwards\(\) outside the load window/);
+  assert.throws(() => sdk.command.server(), /command.server\(\) outside the load window/);
 });
