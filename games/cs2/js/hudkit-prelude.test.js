@@ -370,6 +370,16 @@ function pluginWorld(options = {}) {
   return {
     owners, writes, plugins, plugin, session, dispatchClick, client: clientFor, focus, focusCalls,
     activationCalls, owned,
+    hostStubStats() {
+      const capture = switches.stats();
+      return {
+        poolClaims: owners.filter(owner => owner !== null).length,
+        focusLeases: focus.size,
+        ownedLeases: owned.size,
+        captureRoutes: capture.routes,
+        captureHolders: capture.holders,
+      };
+    },
     frame() {
       for (const r of focus.values()) if (r.state === "waiting" && live(r) && winner(r) === r) r.state = "ready";
       for (const p of plugins) p.lifecycle.frame.forEach(fn => fn());
@@ -1897,4 +1907,138 @@ test("stale owned MOTD dispose cannot cancel current open options", () => {
   stale.dispose();
   assert.equal(opened.value.isValid(), true);
   opened.value.dispose();
+});
+
+test("1000 VM reload cycles drain real component work and disposable click routes", () => {
+  const w = pluginWorld();
+  let p = w.plugin();
+  let providerCalls = 0;
+  let modalActions = 0;
+  let subscriptionActions = 0;
+
+  for (let cycle = 0; cycle < 1000; cycle++) {
+    const layout = p.base.kit.layout;
+    assert.deepEqual(plain(layout._subscriptionStats()), { routes: 0, subscribers: 0 });
+    assert.equal(p.base.kit._pendingInvalidationCount(), 0);
+
+    const modalResult = p.hudkit.tryModal({
+      title: "VM churn " + cycle,
+      rows: () => {
+        providerCalls++;
+        return [{ id: "stable", a: "cycle " + cycle }];
+      },
+      onPick: () => modalActions++,
+    });
+    assert.equal(modalResult.ok, true);
+    const modal = modalResult.value;
+    const view = modal.open(1, exclusive(cycle % 3));
+    view.refresh();
+    view.invalidate();
+    w.frame();
+    view.invalidate();
+    assert.equal(p.base.kit._pendingInvalidationCount(), 1);
+
+    const subscription = layout.subscribeClick("s2_m0_r0", () => subscriptionActions++);
+    assert.deepEqual(plain(layout._subscriptionStats()), { routes: 1, subscribers: 1 });
+    const bannerResult = p.hudkit.forSlot(1).tryOwnBanner({
+      text: "owned " + cycle,
+      holdSeconds: 0,
+    });
+    assert.equal(bannerResult.ok, true);
+    const banner = bannerResult.value;
+    w.dispatchClick(1, "s2_m0_r0");
+
+    assert.deepEqual(w.hostStubStats(), {
+      poolClaims: 1,
+      focusLeases: 1,
+      ownedLeases: 1,
+      captureRoutes: 1,
+      captureHolders: 1,
+    }, "host-stub ownership and capture are observed separately from JS storage");
+
+    subscription.dispose();
+    banner.dispose();
+    assert.deepEqual(plain(layout._subscriptionStats()), { routes: 0, subscribers: 0 });
+    assert.deepEqual(w.hostStubStats(), {
+      poolClaims: 1,
+      focusLeases: 1,
+      ownedLeases: 0,
+      captureRoutes: 1,
+      captureHolders: 1,
+    }, "active banner and subscription disposal leave only the modal resources");
+
+    w.replace(1);
+    const writesBeforeStale = w.writes.length;
+    const providersBeforeStale = providerCalls;
+    const modalActionsBeforeStale = modalActions;
+    view.refresh();
+    view.invalidate();
+    view.close();
+    w.dispatchClick(1, "s2_m0_r0");
+    assert.equal(view.isValid(), false);
+    assert.equal(w.writes.length, writesBeforeStale,
+      "a stale retained view must make no engine writes");
+    assert.equal(providerCalls, providersBeforeStale,
+      "a stale retained view must not evaluate its provider");
+    assert.equal(modalActions, modalActionsBeforeStale,
+      "a stale retained view must not deliver an action");
+
+    subscription.dispose();
+    banner.dispose();
+    modal.release();
+    assert.deepEqual(plain(layout._subscriptionStats()), { routes: 0, subscribers: 0 });
+    assert.equal(p.base.kit._pendingInvalidationCount(), 0);
+    assert.equal(w.focus.size, 0);
+    assert.equal(w.owned.size, 0);
+    assert.equal(w.owners.filter(owner => owner !== null).length, 0);
+    assert.deepEqual(w.hostStubStats(), {
+      poolClaims: 0,
+      focusLeases: 0,
+      ownedLeases: 0,
+      captureRoutes: 0,
+      captureHolders: 0,
+    });
+
+    const writesBeforeUnload = w.writes.length;
+    const providersBeforeUnload = providerCalls;
+    const modalActionsBeforeUnload = modalActions;
+    const subscriptionActionsBeforeUnload = subscriptionActions;
+    w.unload(p);
+    p = w.plugin();
+
+    view.refresh();
+    view.invalidate();
+    view.close();
+    banner.dispose();
+    subscription.dispose();
+    w.dispatchClick(1, "s2_m0_r0");
+    w.frame();
+    assert.equal(w.writes.length, writesBeforeUnload,
+      "stale handles and routes must make no engine writes after unload");
+    assert.equal(providerCalls, providersBeforeUnload,
+      "stale handles must not evaluate their provider after unload");
+    assert.equal(modalActions, modalActionsBeforeUnload,
+      "stale routes must not deliver modal actions after unload");
+    assert.equal(subscriptionActions, subscriptionActionsBeforeUnload,
+      "disposed routes must not deliver subscription actions after unload");
+    assert.deepEqual(plain(p.base.kit.layout._subscriptionStats()), { routes: 0, subscribers: 0 });
+    assert.equal(p.base.kit._pendingInvalidationCount(), 0);
+  }
+
+  assert.equal(providerCalls, 4000);
+  assert.equal(modalActions, 1000);
+  assert.equal(subscriptionActions, 1000);
+  for (const plugin of w.plugins) {
+    assert.deepEqual(plain(plugin.base.kit.layout._subscriptionStats()),
+      { routes: 0, subscribers: 0 }, "every retained VM context must be back at route baseline");
+    assert.equal(plugin.base.kit._pendingInvalidationCount(), 0,
+      "every retained VM context must be back at dirty-queue baseline");
+  }
+  assert.deepEqual(w.hostStubStats(), {
+    poolClaims: 0,
+    focusLeases: 0,
+    ownedLeases: 0,
+    captureRoutes: 0,
+    captureHolders: 0,
+  });
 });

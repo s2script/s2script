@@ -256,12 +256,16 @@ test("click hook is installed in the load window and subscriptions dispatch from
   const second = hud.subscribeClick("go", () => { seen.push("second"); second.dispose(); });
   hud.onClick("go", () => seen.push("legacy"));
 
+  assert.deepEqual(hud._subscriptionStats(), { routes: 1, subscribers: 2 });
   hud.dispatchClick(3, "go");
   assert.deepEqual(seen, ["legacy", "first", "second"]);
+  assert.deepEqual(hud._subscriptionStats(), { routes: 1, subscribers: 1 },
+    "disposed entries leave retained storage even though the current event used a frozen snapshot");
   first.dispose(); second.dispose();
   hud.dispatchClick(3, "go");
   assert.deepEqual(seen, ["legacy", "first", "second", "legacy", "late"]);
   late.dispose(); late.dispose();
+  assert.deepEqual(hud._subscriptionStats(), { routes: 0, subscribers: 0 });
   assert.throws(() => hud.onClick("go", () => {}), /conflicting handler/);
 });
 
@@ -428,6 +432,8 @@ test("structured drives classify unavailable bindings and missing entities at th
     ok: false,
     error: { code: "Unavailable", message: "unavailable: degraded: missing test binding" },
   });
+  assert.equal(unavailable.show(2, "panel"), "unavailable: degraded: missing test binding",
+    "the legacy adapter must preserve the direct missing-binding error string");
 
   const m = mount();
   const hud = m.ns.hud();
