@@ -491,6 +491,95 @@ test("a component operation cannot adopt a replacement created during argument c
   assert.equal(w.writes.length, before);
 });
 
+test("a released badge cannot resume painting after its pool slot is reclaimed during coercion", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin();
+  const owner = a.base.kit.badge();
+  const retained = owner.show(1, { text: "A" });
+  let boundary = -1;
+  retained.show({
+    title: { toString() {
+      owner.release();
+      b.base.kit.badge().show(1, { title: "B", text: "B" });
+      boundary = w.writes.length;
+      return "STALE";
+    } },
+    text: "STALE BODY"
+  });
+  assert.notEqual(boundary, -1);
+  assert.equal(retained.isValid(), false);
+  assert.deepEqual(w.writes.slice(boundary), []);
+});
+
+test("an entity replacement during coercion fences the retained component before its first write", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const retained = p.base.kit.badge().show(1, { text: "A" });
+  let boundary = -1;
+  retained.show({ title: { toString() {
+    w.replaceLayoutEntity();
+    boundary = w.writes.length;
+    return "STALE ENTITY";
+  } } });
+  assert.notEqual(boundary, -1);
+  assert.equal(retained.isValid(), false);
+  assert.deepEqual(w.writes.slice(boundary), []);
+});
+
+test("a superseded retained modal open cannot return a replacement-client view", () => {
+  const w = pluginWorld(), p = w.plugin();
+  let trigger = false;
+  let modal;
+  modal = p.base.kit.modal({ rows() {
+    if (trigger) {
+      trigger = false;
+      w.replace(1);
+      modal.open(1);
+    }
+    return [{ a: "row" }];
+  } });
+  const retained = modal.open(1);
+  trigger = true;
+  const result = retained.tryOpen();
+  const beforeClose = w.writes.length;
+  if (result.ok) result.view.close();
+  assert.deepEqual({ ok: result.ok, closeWrites: w.writes.length - beforeClose },
+    { ok: false, closeWrites: 0 });
+  assert.equal(retained.isValid(), false);
+  assert.equal(modal.isOpen(1), true, "the replacement presentation remains open");
+});
+
+test("a same-client modal opened during coercion remains the authoritative presentation", () => {
+  const w = pluginWorld(), p = w.plugin();
+  let trigger = false;
+  let modal;
+  const label = { toString() {
+    if (trigger) {
+      trigger = false;
+      modal.open(1);
+    }
+    return "row";
+  } };
+  modal = p.base.kit.modal({ rows: () => [{ a: label }] });
+  const retained = modal.open(1);
+  trigger = true;
+  const result = retained.tryOpen();
+  assert.equal(result.ok, true);
+  assert.equal(result.ok && result.view.isValid(), true);
+  assert.equal(modal.isOpen(1), true);
+});
+
+test("a modal click does not evaluate providers after its client is replaced", () => {
+  const w = pluginWorld(), p = w.plugin();
+  let calls = 0;
+  const modal = p.base.kit.modal({
+    rows() { calls++; return [{ a: "row" }]; },
+    onPick() { w.replace(1); }
+  });
+  modal.open(1);
+  const before = calls;
+  p.click(1, "s2_m0_r0");
+  assert.equal(calls - before, 0);
+});
+
 
 test("panel handoff forces repaint when a previous owner reacquires the same tree", () => {
   const w = pluginWorld(), a = w.plugin(), b = w.plugin();

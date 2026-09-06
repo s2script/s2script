@@ -210,16 +210,21 @@
     var boundEntityId = null;
     var slotClients = {};
     var boundClient = null;
+    var boundBinding = null;
 
     function sameClient(a, b) { return globalThis.__s2pkg_clients._same(a, b); }
     function bumpSlot(slot) { slotEpochs[slot] = (slotEpochs[slot] || 0) + 1; }
     function forgetSlot(slot, invalidateView) {
       componentSlotEpochs[slot] = (componentSlotEpochs[slot] || 0) + 1;
       if (invalidateView) bumpSlot(slot);
-      delete disabled[slot]; delete slotViews[slot]; delete slotClients[slot];
+      delete disabled[slot]; delete slotViews[slot];
+      if (invalidateView) delete slotClients[slot];
       forgetKeyed(meterClass, slot); forgetKeyed(visiblePanels, slot); forgetKeyed(lastValue, slot);
     }
     function currentClient(slot) {
+      if (boundBinding) {
+        return boundBinding.slot === slot && bindingIsValid(boundBinding) ? boundBinding.client : null;
+      }
       if (boundClient && (boundClient.slot !== slot || !boundClient.isValid())) return null;
       var current = clientsApi().fromSlot(slot);
       if (!current) return null;
@@ -279,6 +284,19 @@
       return ent;
     }
 
+    function bindingIsValid(binding) {
+      if (!binding || (typeof binding._componentIsValid === "function" && !binding._componentIsValid())) {
+        return false;
+      }
+      var ent = ctxState.findEntity(layout);
+      if (boundEntityId !== null && ent && boundEntityId !== ent.id) resetEntityCaches();
+      return !!binding.client && binding.client.isValid() &&
+        sameClient(binding.client, clientsApi().fromSlot(binding.slot)) &&
+        !!binding.view && binding.view.isValid() &&
+        binding.slotEpoch === (componentSlotEpochs[binding.slot] || 0) &&
+        binding.entityEpoch === entityEpoch;
+    }
+
     function setClass(slot, panelId, className, on) {
       panelId = String(panelId); className = String(className);
       if (!setHasClassForPlayer) return "unavailable: " + engineStatus("setHasClassForPlayer");
@@ -291,6 +309,7 @@
       if (lastValue[key] === s) return null;
       var err = setHasClassForPlayer(ent, slot, panelId, className, on ? CLASS_HAS : CLASS_DOES_NOT_HAVE);
       if (err) return err;
+      if (!currentClient(slot)) return "stale client";
       lastValue[key] = s;
       return null;
     }
@@ -309,6 +328,7 @@
       if (lastValue[key] === str) return null;
       var err = setDialogVariableStringForPlayer(ent, slot, panelId, variableName, str);
       if (err) return err;
+      if (!currentClient(slot)) return "stale client";
       lastValue[key] = str;
       return null;
     }
@@ -317,12 +337,14 @@
       if (typeof globalThis.__s2_shared_entity_switch !== "function") {
         return "unavailable: shared entity switch host support";
       }
-      if (!currentClient(slot)) return "stale client";
       if (slot < 0) return "needs a player slot";
       var ent = bindEntity(on ? ctxState.ensureEntity(layout) : ctxState.findEntity(layout));
       if (!ent) return on ? ctxState.notReadyReason() : null;
-      return globalThis.__s2_shared_entity_switch("setInputCaptureEnabledForPlayer",
+      if (!currentClient(slot)) return "stale client";
+      var result = globalThis.__s2_shared_entity_switch("setInputCaptureEnabledForPlayer",
         ent.index, ent.id, slot, token, !!on);
+      if (result) return result;
+      return currentClient(slot) ? null : "stale client";
     }
     function acquireCursor(slot, panelId) { return cursorSwitch(slot, "panel:" + panelId, true); }
     function releaseCursor(slot, panelId) { return cursorSwitch(slot, "panel:" + panelId, false); }
@@ -443,6 +465,7 @@
       // Still recorded even when the paint fails (world not ready): dispatchClick suppression is
       // plugin logic and must not depend on the visual having landed.
       var err = setClass(slot, buttonId, "s2-btn-disabled", disabledOn);
+      if (boundBinding && !bindingIsValid(boundBinding)) return err || "stale client";
       var set = disabled[slot];
       if (!set) { set = {}; disabled[slot] = set; }
       if (disabledOn) set[buttonId] = true; else delete set[buttonId];
@@ -540,25 +563,28 @@
       slotViews[slot] = view;
       return view;
     };
-    // Internal component seam. The binding carries the host-minted Client handle as well as the
-    // low-level view epoch, so component.js never has to recreate identity from slot or SteamID.
+    // Internal component seam. The binding carries the host-minted Client handle and low-level
+    // view epochs, so component.js never has to recreate identity from slot or SteamID. A derived
+    // binding may add `_componentIsValid`; `_withBinding` keeps that whole fence active through
+    // primitive coercion/native calls and revalidates before publishing primitive cache state.
     api._captureBinding = function (slot) {
       var view = api.forSlot(slot);
       return { slot: slot, client: currentClient(slot), view: view,
         slotEpoch: componentSlotEpochs[slot] || 0, entityEpoch: entityEpoch };
     };
-    api._bindingIsValid = function (binding) {
-      var ent = ctxState.findEntity(layout);
-      if (boundEntityId !== null && ent && boundEntityId !== ent.id) resetEntityCaches();
-      return !!binding && !!binding.client && sameClient(binding.client, clientsApi().fromSlot(binding.slot)) &&
-        !!binding.view && binding.view.isValid() &&
-        binding.slotEpoch === (componentSlotEpochs[binding.slot] || 0) && binding.entityEpoch === entityEpoch;
-    };
+    api._bindingIsValid = bindingIsValid;
     api._withBinding = function (binding, fn) {
-      if (!api._bindingIsValid(binding)) return "stale client";
-      var previous = boundClient;
+      if (!bindingIsValid(binding)) return "stale client";
+      var previous = boundClient, previousBinding = boundBinding;
       boundClient = binding.client;
-      try { return fn(); } finally { boundClient = previous; }
+      boundBinding = binding;
+      try {
+        var result = fn();
+        return bindingIsValid(binding) ? result : "stale client";
+      } finally {
+        boundClient = previous;
+        boundBinding = previousBinding;
+      }
     };
     api._disconnectOwnsSlot = function (slot, client) {
       if (!client || !sameClient(slotClients[slot], client)) return false;

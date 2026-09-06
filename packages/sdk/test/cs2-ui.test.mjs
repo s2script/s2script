@@ -611,7 +611,9 @@ test("retained HUD views expose connection validity while fresh slot lookups ado
   assert.equal(forgotten.isValid(), true);
   forgotten.forget();
   assert.equal(forgotten.isValid(), true, "low-level validity follows the client lifetime");
-  assert.notEqual(layout.forSlot(0), forgotten, "forget still starts a fresh cache epoch");
+  assert.notEqual(layout.forSlot(0), forgotten, "forget still returns a fresh cache wrapper");
+  assert.equal(forgotten.isValid(), true, "a fresh same-client lookup does not invent a reconnect");
+  assert.equal(forgotten.setText("s2_dialog_title", "still connected"), null);
 
   const replaced = layout.forSlot(0);
   h.created.at(-1).live = false;

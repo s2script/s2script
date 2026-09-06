@@ -321,22 +321,37 @@
     }
     function bindingValid(binding) {
       if (!binding) return false;
-      if (binding.fallback) return true;
+      if (binding.fallback) {
+        return typeof binding._componentIsValid !== "function" || binding._componentIsValid();
+      }
       return typeof hud._bindingIsValid === "function" && hud._bindingIsValid(binding);
+    }
+    function componentBinding(binding, componentIsValid) {
+      if (!binding || typeof componentIsValid !== "function") return binding;
+      var derived = {};
+      for (var key in binding) {
+        if (Object.prototype.hasOwnProperty.call(binding, key)) derived[key] = binding[key];
+      }
+      var inherited = binding._componentIsValid;
+      derived._componentIsValid = function () {
+        return (typeof inherited !== "function" || inherited()) && componentIsValid();
+      };
+      return derived;
     }
     function currentBinding(slot) {
       var binding = captureBinding(slot);
       return bindingValid(binding) ? binding : null;
     }
     function withBinding(binding, fn) {
-      if (binding && binding.fallback) return fn();
+      if (binding && binding.fallback) return bindingValid(binding) ? fn() : "stale client";
       if (typeof hud._withBinding === "function") return hud._withBinding(binding, fn);
       return "stale client";
     }
-    function boundDriver(binding, fn) {
+    function boundDriver(binding, fn, componentIsValid) {
+      var driveBinding = componentBinding(binding, componentIsValid);
       return function () {
         var args = arguments;
-        return withBinding(binding, function () { return fn.apply(null, args); });
+        return withBinding(driveBinding, function () { return fn.apply(null, args); });
       };
     }
     function staleOpen(name) { throw new Error("hudkit: " + name + ".open failed: stale client or component"); }
@@ -480,8 +495,6 @@
     function toast(slot, opts, retainedBinding) {
       var binding = retainedBinding || currentBinding(slot);
       if (!bindingValid(binding)) return "stale client";
-      var paintText = boundDriver(binding, setText), paintClass = boundDriver(binding, setClass);
-      var paintReveal = boundDriver(binding, reveal), paintHide = boundDriver(binding, hide);
       var o = opts || {};
       var i = toastNext % TOASTS;
       toastNext++;
@@ -490,6 +503,11 @@
       // timer must not yank the newer one off screen.
       toastGen[i]++;
       var gen = toastGen[i];
+      function currentToast() { return toastGen[i] === gen; }
+      var paintText = boundDriver(binding, setText, currentToast);
+      var paintClass = boundDriver(binding, setClass, currentToast);
+      var paintReveal = boundDriver(binding, reveal, currentToast);
+      var paintHide = boundDriver(binding, hide, currentToast);
 
       paintText(slot, t.title, o.title || "");
       paintText(slot, t.msg, o.message || "");
@@ -519,12 +537,15 @@
     function callout(slot, opts, retainedBinding) {
       var binding = retainedBinding || currentBinding(slot);
       if (!bindingValid(binding)) return "stale client";
-      var paintText = boundDriver(binding, setText), paintClass = boundDriver(binding, setClass);
-      var paintShow = boundDriver(binding, show), paintHide = boundDriver(binding, hide);
-      var paintReveal = boundDriver(binding, reveal);
       var o = opts || {};
       calloutGen[slot] = (calloutGen[slot] || 0) + 1;
       var gen = calloutGen[slot];
+      function currentCallout() { return calloutGen[slot] === gen; }
+      var paintText = boundDriver(binding, setText, currentCallout);
+      var paintClass = boundDriver(binding, setClass, currentCallout);
+      var paintShow = boundDriver(binding, show, currentCallout);
+      var paintHide = boundDriver(binding, hide, currentCallout);
+      var paintReveal = boundDriver(binding, reveal, currentCallout);
       var title = o.title || "";
       var message = o.message || "";
       paintText(slot, "s2_callout_title", title);
@@ -556,11 +577,14 @@
     function banner(slot, opts, retainedBinding) {
       var binding = retainedBinding || currentBinding(slot);
       if (!bindingValid(binding)) return "stale client";
-      var paintText = boundDriver(binding, setText), paintClass = boundDriver(binding, setClass);
-      var paintReveal = boundDriver(binding, reveal), paintHide = boundDriver(binding, hide);
       var o = opts || {};
       bannerGen[slot] = (bannerGen[slot] || 0) + 1;
       var gen = bannerGen[slot];
+      function currentBanner() { return bannerGen[slot] === gen; }
+      var paintText = boundDriver(binding, setText, currentBanner);
+      var paintClass = boundDriver(binding, setClass, currentBanner);
+      var paintReveal = boundDriver(binding, reveal, currentBanner);
+      var paintHide = boundDriver(binding, hide, currentBanner);
       paintText(slot, "s2_banner_text", o.text == null ? "" : String(o.text));
       paintReveal(slot, "s2_banner", FADE.banner);
       var hold = o.holdSeconds == null ? 5 : o.holdSeconds;
@@ -581,8 +605,10 @@
     function closeMotd(slot, fromClick, expected) {
       var state = motdOpen[slot];
       if (!state || (expected && expected !== state) || !bindingValid(state.binding)) return;
+      function currentMotd() { return motdOpen[slot] === state; }
+      boundDriver(state.binding, hide, currentMotd)(slot, "s2_motd");
+      if (!currentMotd()) return;
       delete motdOpen[slot];
-      boundDriver(state.binding, hide)(slot, "s2_motd");
       if (fromClick && typeof state.onClose === "function") state.onClose(slot);
     }
 
@@ -598,11 +624,13 @@
     function motd(slot, opts, retainedBinding) {
       var binding = retainedBinding || currentBinding(slot);
       if (!bindingValid(binding)) return invalidMotd(slot);
-      var paintText = boundDriver(binding, setText), paintShow = boundDriver(binding, show);
-      var paintHide = boundDriver(binding, hide);
       var o = opts || {};
       var state = { binding: binding, onClose: o.onClose || null };
       motdOpen[slot] = state;
+      function currentMotd() { return motdOpen[slot] === state; }
+      var paintText = boundDriver(binding, setText, currentMotd);
+      var paintShow = boundDriver(binding, show, currentMotd);
+      var paintHide = boundDriver(binding, hide, currentMotd);
       paintText(slot, "s2_motd_title", o.title == null ? "" : String(o.title));
       var sub = o.subtitle == null ? "" : String(o.subtitle);
       paintText(slot, "s2_motd_sub", sub);
@@ -647,7 +675,7 @@
       if (!st) return;
       delete dashOpen[slot];
       if (!dashStateValid(st)) return;
-      boundDriver(st.binding, hide)(slot, "s2_dash");
+      boundDriver(st.binding, hide, function () { return dashStateValid(st); })(slot, "s2_dash");
       if (fromClick && st.interactive && typeof st.paintedOnClose === "function") st.paintedOnClose(slot);
     }
 
@@ -720,9 +748,11 @@
       if (!candidate) { closeDash(slot, false); return; }
       var error = null;
       function drive(fn) {
+        var driveBound = boundDriver(st.binding, fn, current);
         return function () {
           if (error !== null || !current()) return;
-          var result = boundDriver(st.binding, fn).apply(null, arguments);
+          var result = driveBound.apply(null, arguments);
+          if (!current()) return;
           if (result !== null) error = String(result) || "dashboard paint failed";
         };
       }
@@ -910,8 +940,10 @@
       var selfBadge;
       function showBadge(slot, data, binding) {
         if (badgeReleased || !bindingValid(binding)) return makeBadgeView(slot, binding);
-        var paintText = boundDriver(binding, setText), paintClass = boundDriver(binding, setClass);
-        var paintReveal = boundDriver(binding, reveal);
+        function currentBadge() { return !badgeReleased; }
+        var paintText = boundDriver(binding, setText, currentBadge);
+        var paintClass = boundDriver(binding, setClass, currentBadge);
+        var paintReveal = boundDriver(binding, reveal, currentBadge);
         var dd = data || {};
         paintText(slot, slotIds.title, dd.title || s.title || "");
         paintText(slot, slotIds.text, dd.text || "");
@@ -934,7 +966,7 @@
           slot: slot,
           isValid: valid,
           show: function (data) { if (valid()) return showBadge(slot, data, binding); },
-          hide: function () { if (valid()) boundDriver(binding, hide)(slot, slotIds.id); }
+          hide: function () { if (valid()) boundDriver(binding, hide, valid)(slot, slotIds.id); }
         };
       }
       selfBadge = {
@@ -1056,13 +1088,16 @@
             st.componentEpoch === (modalSlotEpochs[slot] || 0) &&
             paintTransactions[slot] === transaction && open[slot] === expectedState;
         }
+        if (!current()) return SUPERSEDED;
         var snapshot = modalCandidate(slot, st, request);
         if (!current()) return SUPERSEDED;
         var error = null;
         function drive(fn) {
+          var driveBound = boundDriver(st.binding, fn, current);
           return function () {
             if (error !== null || !current()) return;
-            var result = boundDriver(st.binding, fn).apply(null, arguments);
+            var result = driveBound.apply(null, arguments);
+            if (!current()) return;
             if (result !== null) error = String(result) || "modal paint failed";
           };
         }
@@ -1211,8 +1246,10 @@
           error = (err instanceof Error ? err.message : String(err)) || "modal paint failed";
         }
         if (error === SUPERSEDED) {
-          if (!released && self.isOpen(slot)) return { ok: true,
-            view: makeModalView(slot, open[slot].binding, open[slot].componentEpoch) };
+          if (!released && bindingValid(binding) && componentEpoch === (modalSlotEpochs[slot] || 0) &&
+              self.isOpen(slot)) {
+            return { ok: true, view: makeModalView(slot, binding, componentEpoch) };
+          }
           return { ok: false, error: released ? "hudkit: modal has been released" : "modal open cancelled" };
         }
         if (error) {
@@ -1220,7 +1257,9 @@
               open[slot] === candidate.paintExpectedState) {
             delete paintTransactions[slot];
             delete open[slot];
-            try { boundDriver(binding, hide)(slot, ids.root); }
+            try { boundDriver(binding, hide, function () {
+              return !released && componentEpoch === (modalSlotEpochs[slot] || 0);
+            })(slot, ids.root); }
             catch (_) { /* Preserve the original failure. */ }
           }
           return { ok: false, error: String(error) };
@@ -1247,7 +1286,9 @@
           delete paintTransactions[slot];
           delete open[slot];
           if (!st || !bindingValid(st.binding) || st.componentEpoch !== (modalSlotEpochs[slot] || 0)) return;
-          boundDriver(st.binding, hide)(slot, ids.root);
+          boundDriver(st.binding, hide, function () {
+            return !released && st.componentEpoch === (modalSlotEpochs[slot] || 0);
+          })(slot, ids.root);
         },
         isOpen: function (slot) {
           var st = open[slot];
