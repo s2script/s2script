@@ -245,6 +245,12 @@ export type Variant = "primary" | "good" | "warn" | "bad" | "ghost";
 
 /** One list row. Three columns: `a` is primary and flexes, `b` and `c` are right-aligned. */
 export interface Row {
+  /**
+   * Stable domain identity for this row. Supplied IDs must be unique within the row collection.
+   * The library snapshots it with the submitted row; revalidate current permissions, client or
+   * entity identity, and item availability by this ID immediately before acting.
+   */
+  readonly id?: string;
   readonly a: string;
   readonly b?: string;
   readonly c?: string;
@@ -273,6 +279,14 @@ export interface ModalSpec {
   readonly subtitle?: string | ((slot: number) => string);
   /** Full list; the library pages it. Called per repaint, so it may read live state. */
   readonly rows: readonly Row[] | ((slot: number) => readonly Row[]);
+  /**
+   * Receives the row and absolute index from the last completely submitted page. The source may
+   * have changed since then: use `row.id` to revalidate the current domain object instead of
+   * indexing a newly fetched collection with `index`.
+   *
+   * Engine submission is not client acknowledgement. Click delivery currently has no render
+   * revision, so a delayed click after the same panel is repainted cannot be distinguished.
+   */
   readonly onPick?: (slot: number, index: number, row: Row, view: ModalView) => void;
   /**
    * Up to 4 detail lines for the selected row. The LAST line renders in a clamped, fixed-height
@@ -411,12 +425,14 @@ export interface MotdHandle {
 
 /** One dashboard tab. `id` is the grouping key (TopMenu tab / category id). */
 export interface DashTab {
+  /** Must be unique within the submitted tab collection. */
   readonly id: string;
   readonly title: string;
 }
 
 /** One option on the active dashboard tab. */
 export interface DashRow {
+  /** Must be unique within the active tab's submitted row collection. */
   readonly id: string;
   readonly a: string;
   readonly b?: string;
@@ -430,6 +446,12 @@ export interface DashboardSpec {
   /** Full tab list; hidden tabs are omitted by the caller. */
   readonly tabs: readonly DashTab[] | ((slot: number) => readonly DashTab[]);
   readonly rows: (slot: number, tabId: string) => readonly DashRow[];
+  /**
+   * Receives the tab ID and copied row from the last completely submitted page. Revalidate the
+   * current domain object, permissions, and client/entity identity by `row.id` before acting.
+   * The engine click payload has no client render revision, so it cannot identify a delayed click
+   * from an older repaint of the same panel.
+   */
   readonly onPick?: (slot: number, tabId: string, row: DashRow, view: DashboardView) => void;
   /** Fired when the player clicks Close. Not fired on programmatic {@link Dashboard.close}. */
   readonly onClose?: (slot: number) => void;

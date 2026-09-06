@@ -374,6 +374,49 @@
     function show(slot, id, opts) { internPanel(id); internClass(CLS.hide); return hud.show(slot, id, opts); }
     function hide(slot, id) { internPanel(id); internClass(CLS.hide); return hud.hide(slot, id); }
 
+    function copyRow(row) {
+      if (!row) return null;
+      var copy = {};
+      for (var key in row) {
+        if (Object.prototype.hasOwnProperty.call(row, key)) copy[key] = row[key];
+      }
+      copy.a = row.a;
+      if ("id" in row) copy.id = row.id;
+      if ("b" in row) copy.b = row.b;
+      if ("c" in row) copy.c = row.c;
+      if ("disabled" in row) copy.disabled = row.disabled;
+      if ("tone" in row) copy.tone = row.tone;
+      return copy;
+    }
+
+    function copyDashRow(row) {
+      if (!row) return null;
+      var copy = {};
+      for (var key in row) {
+        if (Object.prototype.hasOwnProperty.call(row, key)) copy[key] = row[key];
+      }
+      copy.id = row.id;
+      copy.a = row.a;
+      if ("b" in row) copy.b = row.b;
+      if ("disabled" in row) copy.disabled = row.disabled;
+      return copy;
+    }
+
+    function copyDashTab(tab) { return { id: tab.id, title: tab.title }; }
+
+    function rejectDuplicateIds(values, kind, optional) {
+      var seen = Object.create(null);
+      for (var i = 0; i < values.length; i++) {
+        var value = values[i];
+        if (!value) continue;
+        var id = value.id;
+        if (optional && typeof id === "undefined") continue;
+        var key = "$" + String(id);
+        if (seen[key]) throw new Error("hudkit: duplicate " + kind + " id '" + String(id) + "'");
+        seen[key] = true;
+      }
+    }
+
     // ── two-phase reveal ──────────────────────────────────────────────────────────────────────
     // `visibility: collapse` cannot be transitioned, so a fade needs: drop the collapse, let a
     // frame land, then clear the fade class. Plugin authors never see this.
@@ -544,60 +587,119 @@
       if (fromClick && dashSpec && typeof dashSpec.onClose === "function") dashSpec.onClose(slot);
     }
 
-    function paintDash(slot) {
-      var st = dashOpen[slot];
-      if (!st || !dashSpec) return;
-      var tabs = dashTabs(slot);
-      if (tabs.length === 0) { closeDash(slot, false); return; }
-      var found = false;
-      for (var ti = 0; ti < tabs.length; ti++) {
-        if (tabs[ti] && tabs[ti].id === st.tabId) { found = true; break; }
-      }
-      if (!found) { st.tabId = tabs[0].id; st.rowPage = 0; }
+    function dashCandidate(slot, st) {
+      var rawTabs = dashTabs(slot);
+      var tabs = [];
+      for (var ti = 0; ti < rawTabs.length; ti++) tabs.push(copyDashTab(rawTabs[ti]));
+      rejectDuplicateIds(tabs, "tab", false);
+      if (tabs.length === 0) return null;
 
-      setText(slot, "s2_dash_title", typeof dashSpec.title === "function" ? dashSpec.title(slot) : (dashSpec.title || ""));
-      var sub = typeof dashSpec.subtitle === "function" ? dashSpec.subtitle(slot, st.tabId) : dashSpec.subtitle;
-      setText(slot, "s2_dash_sub", sub == null ? "" : String(sub));
-      setText(slot, "s2_dash_close_t", dashSpec.closeText || "Close");
+      var tabId = st.tabId;
+      var found = false;
+      for (var fi = 0; fi < tabs.length; fi++) {
+        if (tabs[fi].id === tabId) { found = true; break; }
+      }
+      var rowPage = st.rowPage;
+      if (!found) { tabId = tabs[0].id; rowPage = 0; }
 
       var tabPages = Math.max(1, Math.ceil(tabs.length / DASH_TABS));
-      if (st.tabPage >= tabPages) st.tabPage = tabPages - 1;
-      if (st.tabPage < 0) st.tabPage = 0;
-      var tabSlice = tabs.slice(st.tabPage * DASH_TABS, st.tabPage * DASH_TABS + DASH_TABS);
-      for (var t = 0; t < DASH_TABS; t++) {
-        var tab = tabSlice[t];
-        if (!tab) { hide(slot, DASH_TAB[t].id); continue; }
-        show(slot, DASH_TAB[t].id);
-        setText(slot, DASH_TAB[t].text, tab.title || tab.id);
-        setClass(slot, DASH_TAB[t].id, "s2-tab-active", tab.id === st.tabId);
-      }
+      var tabPage = st.tabPage;
+      if (tabPage >= tabPages) tabPage = tabPages - 1;
+      if (tabPage < 0) tabPage = 0;
+      var tabSlice = tabs.slice(tabPage * DASH_TABS, tabPage * DASH_TABS + DASH_TABS);
 
-      var rows = typeof dashSpec.rows === "function" ? (dashSpec.rows(slot, st.tabId) || []) : [];
+      var rawRows = typeof dashSpec.rows === "function" ? (dashSpec.rows(slot, tabId) || []) : [];
+      var rows = [];
+      for (var ri = 0; ri < rawRows.length; ri++) rows.push(copyDashRow(rawRows[ri]));
+      rejectDuplicateIds(rows, "row", false);
       var rowPages = Math.max(1, Math.ceil(rows.length / DASH_ROWS));
-      if (st.rowPage >= rowPages) st.rowPage = rowPages - 1;
-      if (st.rowPage < 0) st.rowPage = 0;
-      var rowSlice = rows.slice(st.rowPage * DASH_ROWS, st.rowPage * DASH_ROWS + DASH_ROWS);
-      for (var r = 0; r < DASH_ROWS; r++) {
-        var row = rowSlice[r];
-        if (!row) { hide(slot, DASH_ROW[r].id); continue; }
-        show(slot, DASH_ROW[r].id);
-        setText(slot, DASH_ROW[r].a, row.a == null ? "" : String(row.a));
-        setText(slot, DASH_ROW[r].b, row.b == null ? "" : String(row.b));
-        setClass(slot, DASH_ROW[r].id, "s2-toggle-disabled", !!row.disabled);
-        setClass(slot, DASH_ROW[r].id, "s2-toggle-active", false);
+      if (rowPage >= rowPages) rowPage = rowPages - 1;
+      if (rowPage < 0) rowPage = 0;
+      var paintedOffset = rowPage * DASH_ROWS;
+      var rowSlice = rows.slice(paintedOffset, paintedOffset + DASH_ROWS);
+      var paintedRows = [];
+      for (var pi = 0; pi < rowSlice.length; pi++) {
+        paintedRows.push(rowSlice[pi] ?
+          { id: rowSlice[pi].id, index: paintedOffset + pi, row: rowSlice[pi] } : null);
       }
 
       var tabTitle = "";
       for (var tt = 0; tt < tabs.length; tt++) {
-        if (tabs[tt].id === st.tabId) { tabTitle = tabs[tt].title || tabs[tt].id; break; }
+        if (tabs[tt].id === tabId) { tabTitle = tabs[tt].title || tabs[tt].id; break; }
       }
       var status = tabTitle;
-      if (rowPages > 1) status += "  ·  " + (st.rowPage + 1) + "/" + rowPages;
-      setText(slot, "s2_dash_status", status);
-      setText(slot, "s2_dash_prev_t", "‹ Prev");
-      setText(slot, "s2_dash_next_t", "Next ›");
-      if (rowPages > 1) { show(slot, "s2_dash_prev"); show(slot, "s2_dash_next"); }
-      else { hide(slot, "s2_dash_prev"); hide(slot, "s2_dash_next"); }
+      if (rowPages > 1) status += "  ·  " + (rowPage + 1) + "/" + rowPages;
+      return {
+        tabId: tabId, tabPage: tabPage, rowPage: rowPage,
+        tabs: tabSlice, rows: rowSlice, paintedTabs: tabSlice.slice(),
+        paintedRows: paintedRows, paintedOffset: paintedOffset, paintedTabId: tabId,
+        title: typeof dashSpec.title === "function" ? dashSpec.title(slot) : (dashSpec.title || ""),
+        subtitle: typeof dashSpec.subtitle === "function" ? dashSpec.subtitle(slot, tabId) : dashSpec.subtitle,
+        closeText: dashSpec.closeText || "Close", status: status, rowPages: rowPages
+      };
+    }
+
+    function paintDash(slot, rootOpts) {
+      var st = dashOpen[slot];
+      if (!st || !dashSpec) return;
+      st.paintGeneration = (st.paintGeneration || 0) + 1;
+      var generation = st.paintGeneration;
+      st.interactive = false;
+      var candidate = dashCandidate(slot, st);
+      if (st.paintGeneration !== generation) return;
+      if (!candidate) { closeDash(slot, false); return; }
+      var error = null;
+      function drive(fn) {
+        return function () {
+          if (error !== null || st.paintGeneration !== generation) return;
+          var result = fn.apply(null, arguments);
+          if (result !== null) error = String(result) || "dashboard paint failed";
+        };
+      }
+      var paintText = drive(setText), paintClass = drive(setClass);
+      var paintShow = drive(show), paintHide = drive(hide);
+
+      paintText(slot, "s2_dash_title", candidate.title);
+      paintText(slot, "s2_dash_sub", candidate.subtitle == null ? "" : String(candidate.subtitle));
+      paintText(slot, "s2_dash_close_t", candidate.closeText);
+
+      for (var t = 0; t < DASH_TABS; t++) {
+        var tab = candidate.tabs[t];
+        if (!tab) { paintHide(slot, DASH_TAB[t].id); continue; }
+        paintShow(slot, DASH_TAB[t].id);
+        paintText(slot, DASH_TAB[t].text, tab.title || tab.id);
+        paintClass(slot, DASH_TAB[t].id, "s2-tab-active", tab.id === candidate.tabId);
+      }
+
+      for (var r = 0; r < DASH_ROWS; r++) {
+        var row = candidate.rows[r];
+        if (!row) { paintHide(slot, DASH_ROW[r].id); continue; }
+        paintShow(slot, DASH_ROW[r].id);
+        paintText(slot, DASH_ROW[r].a, row.a == null ? "" : String(row.a));
+        paintText(slot, DASH_ROW[r].b, row.b == null ? "" : String(row.b));
+        paintClass(slot, DASH_ROW[r].id, "s2-toggle-disabled", !!row.disabled);
+        paintClass(slot, DASH_ROW[r].id, "s2-toggle-active", false);
+      }
+
+      paintText(slot, "s2_dash_status", candidate.status);
+      paintText(slot, "s2_dash_prev_t", "‹ Prev");
+      paintText(slot, "s2_dash_next_t", "Next ›");
+      if (candidate.rowPages > 1) { paintShow(slot, "s2_dash_prev"); paintShow(slot, "s2_dash_next"); }
+      else { paintHide(slot, "s2_dash_prev"); paintHide(slot, "s2_dash_next"); }
+      if (rootOpts) {
+        paintClass(slot, "s2_dash", FADE.dash, false);
+        paintShow(slot, "s2_dash", rootOpts);
+      }
+      if (error || st.paintGeneration !== generation) return error;
+      st.tabId = candidate.tabId;
+      st.tabPage = candidate.tabPage;
+      st.rowPage = candidate.rowPage;
+      st.paintedTabs = candidate.paintedTabs;
+      st.paintedRows = candidate.paintedRows;
+      st.paintedOffset = candidate.paintedOffset;
+      st.paintedTabId = candidate.paintedTabId;
+      st.interactive = true;
+      return null;
     }
 
     hud.onClick("s2_dash_close", function (player) {
@@ -608,9 +710,8 @@
         hud.onClick(DASH_TAB[tabIndex].id, function (player) {
           var slot = slotOf(player);
           var st = dashOpen[slot];
-          if (!st) return;
-          var tabs = dashTabs(slot);
-          var tab = tabs[st.tabPage * DASH_TABS + tabIndex];
+          if (!st || !st.interactive) return;
+          var tab = st.paintedTabs && st.paintedTabs[tabIndex];
           if (!tab) return;
           st.tabId = tab.id;
           st.rowPage = 0;
@@ -623,12 +724,11 @@
         hud.onClick(DASH_ROW[rowIndex].id, function (player) {
           var slot = slotOf(player);
           var st = dashOpen[slot];
-          if (!st || !dashSpec) return;
-          var rows = typeof dashSpec.rows === "function" ? (dashSpec.rows(slot, st.tabId) || []) : [];
-          var row = rows[st.rowPage * DASH_ROWS + rowIndex];
-          if (!row || row.disabled) return;
+          if (!st || !st.interactive || !dashSpec) return;
+          var record = st.paintedRows && st.paintedRows[rowIndex];
+          if (!record || record.row.disabled) return;
           if (typeof dashSpec.onPick === "function") {
-            dashSpec.onPick(slot, st.tabId, row, dashSelf.forSlot(slot));
+            dashSpec.onPick(slot, st.paintedTabId, record.row, dashSelf.forSlot(slot));
           }
         });
       })(dri);
@@ -636,14 +736,14 @@
     hud.onClick("s2_dash_prev", function (player) {
       var slot = slotOf(player);
       var st = dashOpen[slot];
-      if (!st) return;
+      if (!st || !st.interactive) return;
       st.rowPage -= 1;
       paintDash(slot);
     });
     hud.onClick("s2_dash_next", function (player) {
       var slot = slotOf(player);
       var st = dashOpen[slot];
-      if (!st) return;
+      if (!st || !st.interactive) return;
       st.rowPage += 1;
       paintDash(slot);
     });
@@ -658,12 +758,8 @@
       dashSelf = {
         open: function (slot, opts) {
           var o = opts || {};
-          var tabs = dashTabs(slot);
-          var tabId = o.tab || (tabs[0] && tabs[0].id) || "";
-          dashOpen[slot] = { tabId: tabId, tabPage: 0, rowPage: 0 };
-          paintDash(slot);
-          setClass(slot, "s2_dash", FADE.dash, false);
-          show(slot, "s2_dash", { cursor: o.cursor !== false });
+          dashOpen[slot] = { tabId: o.tab || "", tabPage: 0, rowPage: 0, interactive: false };
+          paintDash(slot, { cursor: o.cursor !== false });
           return dashSelf.forSlot(slot);
         },
         close: function (slot) { closeDash(slot, false); },
@@ -750,7 +846,10 @@
       function onClick(id, handler) { routes[id] = handler; }
       var pageSize = Math.min(ROWS, s.pageSize || ROWS);
       var widthCls = SHEET_WIDTH[s.width || "md"];
-      var open = {};   // slot -> { page, cursor }
+      // Each slot retains navigation state plus only the last completely submitted action table.
+      // `interactive` is cleared before every attempt, so a partial drive can never dispatch the
+      // previous actions over visuals that may already have changed.
+      var open = {};
       var self;
 
       function rowsFor(slot) {
@@ -758,23 +857,55 @@
         return got || [];
       }
 
-      function pageCount(slot) {
-        return Math.max(1, Math.ceil(rowsFor(slot).length / pageSize));
-      }
-
       // Caller buttons first; prev/next take the trailing footer slots, and only when the data
       // actually needs paging — a one-page list shows no pager.
-      function footerPlan(slot) {
+      function footerPlan(slot, pages) {
         var plan = [];
         var mine = typeof s.buttons === "function" ? (s.buttons(slot) || []) : (s.buttons || []);
         for (var i = 0; i < mine.length && plan.length < FOOTERS; i++) {
           plan.push({ text: mine[i].text, variant: mine[i].variant || "ghost", fn: mine[i].onClick });
         }
-        if (pageCount(slot) > 1 && plan.length + 2 <= FOOTERS) {
+        if (pages > 1 && plan.length + 2 <= FOOTERS) {
           plan.push({ text: "‹ Prev", variant: "ghost", fn: function (sl) { self.page(sl, -1); } });
           plan.push({ text: "Next ›", variant: "ghost", fn: function (sl) { self.page(sl, 1); } });
         }
         return plan;
+      }
+
+      function modalCandidate(slot, st) {
+        var raw = rowsFor(slot);
+        var all = [];
+        for (var ai = 0; ai < raw.length; ai++) all.push(copyRow(raw[ai]));
+        rejectDuplicateIds(all, "row", true);
+        var pages = Math.max(1, Math.ceil(all.length / pageSize));
+        var pageNumber = st.page;
+        var cursor = st.cursor;
+        if (st.selectIndex != null) {
+          var selected = Math.max(0, Math.min(st.selectIndex, all.length > 0 ? all.length - 1 : 0));
+          pageNumber = Math.floor(selected / pageSize);
+          cursor = selected % pageSize;
+        }
+        if (pageNumber >= pages) pageNumber = pages - 1;
+        if (pageNumber < 0) pageNumber = 0;
+        var paintedOffset = pageNumber * pageSize;
+        var page = all.slice(paintedOffset, paintedOffset + pageSize);
+        var paintedRows = [];
+        for (var pi = 0; pi < page.length; pi++) {
+          paintedRows.push(page[pi] ?
+            { id: page[pi].id, index: paintedOffset + pi, row: page[pi] } : null);
+        }
+        var absCursor = paintedOffset + cursor;
+        var detail = typeof s.detail === "function" ? (s.detail(slot, page[cursor], absCursor) || []) : [];
+        var plan = footerPlan(slot, pages);
+        var footerFns = [];
+        for (var fi = 0; fi < plan.length; fi++) footerFns.push(plan[fi].fn || null);
+        return {
+          pageNumber: pageNumber, cursor: cursor, pages: pages, page: page,
+          paintedRows: paintedRows, paintedOffset: paintedOffset,
+          title: typeof s.title === "function" ? s.title(slot) : (s.title || ""),
+          subtitle: typeof s.subtitle === "function" ? s.subtitle(slot) : s.subtitle,
+          detail: detail, footerPlan: plan, footerFns: footerFns
+        };
       }
 
       // Footer actions belong to the player's last painted view. Another player's paint
@@ -783,34 +914,37 @@
         if (released) return;
         var st = candidate || open[slot];
         if (!st) return;
+        st.paintGeneration = (st.paintGeneration || 0) + 1;
+        var generation = st.paintGeneration;
+        st.interactive = false;
+        var snapshot = modalCandidate(slot, st);
+        if (st.paintGeneration !== generation) return;
         var error = null;
         function drive(fn) {
           return function () {
-            if (!error) error = fn.apply(null, arguments);
+            if (error !== null || st.paintGeneration !== generation) return;
+            var result = fn.apply(null, arguments);
+            if (result !== null) error = String(result) || "modal paint failed";
           };
         }
         var paintText = drive(setText), paintClass = drive(setClass);
         var paintShow = drive(show), paintHide = drive(hide);
-        var all = rowsFor(slot);
-        var pages = Math.max(1, Math.ceil(all.length / pageSize));
-        if (st.page >= pages) st.page = pages - 1;
-        var page = all.slice(st.page * pageSize, st.page * pageSize + pageSize);
 
-        paintText(slot, ids.title, typeof s.title === "function" ? s.title(slot) : (s.title || ""));
-        var sub = typeof s.subtitle === "function" ? s.subtitle(slot) : s.subtitle;
-        paintText(slot, ids.sub, sub == null ? (pages > 1 ? (st.page + 1) + "/" + pages : "") : sub);
+        paintText(slot, ids.title, snapshot.title);
+        paintText(slot, ids.sub, snapshot.subtitle == null ?
+          (snapshot.pages > 1 ? (snapshot.pageNumber + 1) + "/" + snapshot.pages : "") : snapshot.subtitle);
 
         // A sheet with no rows is a confirm dialog, not an empty list — hide the container rather
         // than leaving eight blank rows on screen.
-        if (page.length === 0) paintHide(slot, ids.list); else paintShow(slot, ids.list);
+        if (snapshot.page.length === 0) paintHide(slot, ids.list); else paintShow(slot, ids.list);
         for (var i = 0; i < ROWS; i++) {
-          var row = page[i];
+          var row = snapshot.page[i];
           if (!row) { paintHide(slot, ids.rows[i].id); continue; }
           paintShow(slot, ids.rows[i].id);
           paintText(slot, ids.rows[i].a, row.a);
           paintText(slot, ids.rows[i].b, row.b);
           paintText(slot, ids.rows[i].c, row.c);
-          paintClass(slot, ids.rows[i].id, CLS.selected, i === st.cursor);
+          paintClass(slot, ids.rows[i].id, CLS.selected, i === snapshot.cursor);
           // Cosmetic only. onPick still fires for a disabled row so the caller can explain why —
           // a row that silently does nothing reads as a broken menu.
           paintClass(slot, ids.rows[i].id, CLS.disabled, !!row.disabled);
@@ -830,27 +964,31 @@
         // it; handing over a page-relative one described the wrong row on every page but the
         // first, while the `row` argument beside it was correct — so it looked right until a
         // list got long enough to page.
-        var absCursor = st.page * pageSize + st.cursor;
-        var det = typeof s.detail === "function" ? (s.detail(slot, page[st.cursor], absCursor) || []) : [];
-        if (det.length === 0) paintHide(slot, ids.detailBox); else paintShow(slot, ids.detailBox);
-        for (var d = 0; d < DETAIL; d++) paintText(slot, ids.detail[d], det[d] == null ? "" : det[d]);
+        if (snapshot.detail.length === 0) paintHide(slot, ids.detailBox); else paintShow(slot, ids.detailBox);
+        for (var d = 0; d < DETAIL; d++) paintText(slot, ids.detail[d],
+          snapshot.detail[d] == null ? "" : snapshot.detail[d]);
 
-        var footerFns = [];
-        st.footerFns = footerFns;
-        var plan = footerPlan(slot);
         for (var f = 0; f < FOOTERS; f++) {
-          if (!plan[f]) { paintHide(slot, ids.footers[f].id); footerFns.push(null); continue; }
+          if (!snapshot.footerPlan[f]) { paintHide(slot, ids.footers[f].id); continue; }
           paintShow(slot, ids.footers[f].id);
-          paintText(slot, ids.footers[f].text, plan[f].text);
-          var wantBtn = BTN_VARIANT[plan[f].variant] || BTN_VARIANT.ghost;
+          paintText(slot, ids.footers[f].text, snapshot.footerPlan[f].text);
+          var wantBtn = BTN_VARIANT[snapshot.footerPlan[f].variant] || BTN_VARIANT.ghost;
           for (var bk in BTN_VARIANT) {
             if (Object.prototype.hasOwnProperty.call(BTN_VARIANT, bk)) {
               paintClass(slot, ids.footers[f].id, BTN_VARIANT[bk], BTN_VARIANT[bk] === wantBtn);
             }
           }
-          footerFns.push(plan[f].fn || null);
         }
-        return error;
+        if (error || st.paintGeneration !== generation) return error;
+        st.page = snapshot.pageNumber;
+        st.cursor = snapshot.cursor;
+        delete st.selectIndex;
+        st.paintedRows = snapshot.paintedRows;
+        st.paintedOffset = snapshot.paintedOffset;
+        st.paintedPages = snapshot.pages;
+        st.footerFns = snapshot.footerFns.slice();
+        st.interactive = true;
+        return null;
       }
 
       for (var ri = 0; ri < ROWS; ri++) {
@@ -858,12 +996,12 @@
           onClick(ids.rows[rowIndex].id, function (player) {
             var slot = slotOf(player);
             var st = open[slot];
-            if (!st) return;
+            if (!st || !st.interactive) return;
+            var record = st.paintedRows && st.paintedRows[rowIndex];
+            if (!record) return;
             st.cursor = rowIndex;
-            var all = rowsFor(slot);
-            var row = all[st.page * pageSize + rowIndex];
-            if (row && s.onPick) s.onPick(slot, st.page * pageSize + rowIndex, row, self.forSlot(slot));
-            paint(slot);
+            if (s.onPick) s.onPick(slot, record.index, record.row, self.forSlot(slot));
+            if (open[slot] === st) paint(slot);
           });
         })(ri);
       }
@@ -871,7 +1009,7 @@
         (function (fIndex) {
           onClick(ids.footers[fIndex].id, function (player) {
             var slot = slotOf(player);
-            if (!open[slot]) return;
+            if (!open[slot] || !open[slot].interactive) return;
             var fn = open[slot].footerFns && open[slot].footerFns[fIndex];
             if (fn) fn(slot, self.forSlot(slot));
           });
@@ -881,7 +1019,7 @@
       self = {
         tryOpen: function (slot, opts) {
           if (released) return { ok: false, error: "hudkit: modal has been released" };
-          var candidate = { page: 0, cursor: 0 };
+          var candidate = { page: 0, cursor: 0, interactive: false };
           var error = null;
           try {
             for (var wk in SHEET_WIDTH) {
@@ -925,7 +1063,7 @@
         page: function (slot, delta) {
           var st = open[slot];
           if (!st) return;
-          var pages = pageCount(slot);
+          var pages = st.paintedPages || 1;
           st.page = ((st.page + delta) % pages + pages) % pages;
           st.cursor = 0;
           paint(slot);
@@ -941,10 +1079,7 @@
         select: function (slot, index) {
           var st = open[slot];
           if (!st) return;
-          var total = rowsFor(slot).length;
-          var i = Math.max(0, Math.min(index, total > 0 ? total - 1 : 0));
-          st.page = Math.floor(i / pageSize);
-          st.cursor = i % pageSize;
+          st.selectIndex = index;
           paint(slot);
         },
         /** ABSOLUTE index of the highlighted row — the same space `onPick` reports in. */
