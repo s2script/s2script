@@ -35,6 +35,10 @@ pub enum Resource {
     /// A consumer's event-subscription id. Teardown removes it from the producer's subscriber
     /// list + drops the handler Global.
     EventSub(u64),
+    /// Optional availability callback + its registry row, independent of a provider entry.
+    InterfaceWatch(u64),
+    /// One provider-generation attachment, including partial owned disposables.
+    InterfaceAttachment(u64),
     /// A consumer→producer import edge (interface name). Teardown drops the edge (no Global).
     Import(String),
     /// An open DB connection handle (opaque, from `db::open`). Teardown closes it even if the

@@ -363,7 +363,8 @@ export function typecheckPlugin(
             ownNames,
             generatedPath,
             absDir,
-            new Set(allDeclaredDeps)
+            new Set(allDeclaredDeps),
+            new Set(Object.keys(s2.optionalPluginDependencies ?? {}))
           )
         : []),
     ];

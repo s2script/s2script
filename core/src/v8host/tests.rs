@@ -2218,6 +2218,281 @@
         .unwrap();
     }
 
+    #[test]
+    fn owned_interop_subscription_disposes_only_its_id_before_and_during_dispatch() {
+        protocol2_setup();
+        dispose_plugin_context("cons"); // setup created raw contexts; loader must start fresh
+        load_body("cons", r#"
+          globalThis.hits=0;
+          const service=ctx.use('@x/counter');
+          const handler=()=>{hits++; first.dispose(); second.dispose();};
+          globalThis.first=service.on('OnCountChanged',handler);
+          globalThis.second=service.on('OnCountChanged',handler);
+          const cancelled=service.on('OnCountChanged',()=>{hits+=100});
+          cancelled.dispose(); cancelled.dispose();
+        "#, "{}");
+        assert_eq!(plugin_phase("cons"), Some(plugin::Phase::Active), "{:?}", FAILED_PLUGINS.with(|f| f.borrow().get("cons").cloned()));
+        assert_eq!(IFACE_SUBS.with(|m| m.borrow().len()), 2);
+        eval_in_context("prod", "__s2_iface_emit('@x/counter','OnCountChanged',{count:1})").unwrap();
+        assert_eq!(eval_in_context_string("cons", "String(hits)"), "1");
+        assert!(IFACE_SUBS.with(|m| m.borrow().is_empty()));
+        eval_in_context("cons", "first.dispose();second.dispose();").unwrap();
+        shutdown();
+    }
+
+    fn optional_interop_setup() {
+        protocol2_setup();
+        set_plugin_imports("cons", vec![crate::interfaces::ImportSpec {
+            name: "@x/counter".into(), range: "^1.0.0".into(),
+            kind: crate::interfaces::Kind::Optional,
+            compiled_types_sha256: Some("a".repeat(64)),
+        }]);
+    }
+
+    #[test]
+    fn owned_interop_watch_waits_for_both_active_and_rolls_back_partial_attachment() {
+        optional_interop_setup();
+        dispose_plugin_context("cons"); // setup created raw contexts; loader must start fresh
+        load_body("cons", r#"
+          globalThis.attached=0; globalThis.cleaned=0;
+          globalThis.watch=ctx.watchOptional('@x/counter',(service,scope)=>{
+            attached++; scope.own({dispose(){cleaned++}});
+            service.on('OnCountChanged',()=>{});
+            throw Error('partial attach');
+          });
+        "#, "{}");
+        assert_eq!(plugin_phase("cons"), Some(plugin::Phase::Active), "{:?}", FAILED_PLUGINS.with(|f| f.borrow().get("cons").cloned()));
+        assert_eq!(eval_in_context_string("cons", "String(attached)"), "0");
+        dispose_plugin_context("prod");
+        load_body("prod", "ctx.publish('@x/counter',{getCount:()=>1});", "{}");
+        assert_eq!(eval_in_context_string("cons", "String(attached)+':'+cleaned"), "1:1");
+        assert!(IFACE_SUBS.with(|m| m.borrow().is_empty()));
+        finalize_loading_plugins();
+        assert_eq!(eval_in_context_string("cons", "String(attached)"), "1");
+        eval_in_context("cons", "watch.dispose();watch.dispose();").unwrap();
+        shutdown();
+    }
+
+    fn owned_interop_load_provider(decl: crate::loader::PublishDecl, body: &str) {
+        set_plugin_publishes("prod", [("@x/counter".into(),decl)].into_iter().collect());
+        load_body("prod", body, "{}");
+        assert_eq!(plugin_phase("prod"), Some(plugin::Phase::Active), "{:?}", FAILED_PLUGINS.with(|f| f.borrow().get("prod").cloned()));
+    }
+    fn owned_interop_ledger_count(id: &str) -> usize {
+        REGISTRY.with(|r| { let r=r.borrow();r.active_resource_count(id,r.generation_of(id).unwrap()).unwrap() })
+    }
+
+    #[test]
+    fn owned_interop_watch_churn_1000_cycles_has_one_delivery_and_returns_all_counts_to_baseline() {
+        optional_interop_setup();
+        let decl=PLUGIN_PUBLISHES.with(|p|p.borrow()["prod"]["@x/counter"].clone());
+        unload_plugin("prod"); // consumer-before-provider with a verified but absent optional dep
+        dispose_plugin_context("cons");
+        load_body("cons",r#"
+          globalThis.hits=0;globalThis.attached=0;globalThis.cleaned=0;globalThis.staleBlocked=0;
+          globalThis.watch=ctx.watchOptional('@x/counter',(service,scope)=>{
+            attached++;
+            if (globalThis.saved) {
+              try { saved.on('OnCountChanged',()=>{}); } catch(e) { staleBlocked++; }
+              try { saved.getCount(); } catch(e) { staleBlocked++; }
+              try { savedScope.own({dispose(){}}); } catch(e) { staleBlocked++; }
+            }
+            scope.own(service.on('OnCountChanged',()=>hits++));
+            scope.own({dispose(){cleaned++;}});
+            globalThis.saved=service;globalThis.savedScope=scope;
+          });
+        "#,"{}");
+        assert_eq!(plugin_phase("cons"),Some(plugin::Phase::Active));
+        let baseline=owned_interop_ledger_count("cons");
+        assert_eq!(interop_lifetime::counts(),(1,1,0,0,0));
+        for i in 1..=1000 {
+            owned_interop_load_provider(decl.clone(),"ctx.publish('@x/counter',{getCount:()=>1});");
+            assert_eq!(interop_lifetime::counts(),(1,1,1,2,0),"cycle {i}");
+            assert_eq!(owned_interop_ledger_count("cons"),baseline+2);
+            assert_eq!(IFACE_SUBS.with(|m|m.borrow().len()),1);
+            assert_eq!(IFACES.with(|r|r.borrow().lookup("@x/counter").unwrap().subscribers.len()),1);
+            eval_in_context("prod","__s2_iface_emit('@x/counter','OnCountChanged',{count:1})").unwrap();
+            assert_eq!(eval_in_context_string("cons","String(hits)+':'+attached"),format!("{i}:{i}"));
+            assert_eq!(eval_in_context_string("cons","String(staleBlocked)"), ((i-1)*3).to_string());
+            unload_plugin("prod");
+            assert_eq!(interop_lifetime::counts(),(1,1,0,0,0));
+            assert_eq!(owned_interop_ledger_count("cons"),baseline);
+            assert!(IFACE_SUBS.with(|m|m.borrow().is_empty()));
+            assert!(IFACE_METHODS.with(|m|m.borrow().is_empty()));
+            assert!(IFACES.with(|r|r.borrow().lookup("@x/counter").is_none()));
+            assert_eq!(eval_in_context_string("cons","String(cleaned)"),i.to_string());
+            assert!(eval_in_context("cons","saved.getCount()").is_err());
+        }
+        eval_in_context("cons","watch.dispose();watch.dispose()").unwrap();
+        assert_eq!(interop_lifetime::counts(),(0,0,0,0,0));
+        assert_eq!(owned_interop_ledger_count("cons"),baseline-1);
+        shutdown();
+    }
+
+    #[test]
+    fn owned_interop_watch_provider_first_consumer_unload_and_disposer_reentry() {
+        optional_interop_setup();
+        dispose_plugin_context("prod");
+        load_body("prod","ctx.publish('@x/counter',{getCount:()=>1});","{}");
+        dispose_plugin_context("cons");
+        load_body("cons",r#"
+          globalThis.cleaned=0;globalThis.hits=0;
+          globalThis.watch=ctx.watchOptional('@x/counter',(service,scope)=>{
+            service.on('OnCountChanged',()=>{hits++;watch.dispose();});
+            scope.own({dispose(){cleaned++;watch.dispose();}});
+            scope.own({dispose(){cleaned++;throw Error('cleanup');}});
+            scope.own({dispose(){cleaned++;}});
+          });
+        "#,"{}");
+        assert_eq!(interop_lifetime::counts(),(1,1,1,3,0));
+        eval_in_context("prod","__s2_iface_emit('@x/counter','OnCountChanged',{count:1})").unwrap();
+        assert_eq!(eval_in_context_string("cons","String(hits)+':'+cleaned"),"1:3");
+        assert_eq!(interop_lifetime::counts(),(0,0,0,0,0));
+        // A second consumer watch is torn down by the ledger even when user cleanup is absent.
+        unload_plugin("cons");
+        set_plugin_imports("cons",vec![crate::interfaces::ImportSpec{name:"@x/counter".into(),range:"*".into(),kind:crate::interfaces::Kind::Optional,compiled_types_sha256:Some("a".repeat(64))}]);
+        set_plugin_interop("cons",[("@x/counter".into(),published_contract("@x/counter").unwrap())].into_iter().collect());
+        load_body("cons","ctx.watchOptional('@x/counter',(service,scope)=>{scope.own(service.on('OnCountChanged',()=>{}));});","{}");
+        assert_eq!(interop_lifetime::counts(),(1,1,1,1,0));
+        unload_plugin("cons");
+        assert_eq!(interop_lifetime::counts(),(0,0,0,0,0));
+        assert!(IFACE_SUBS.with(|m|m.borrow().is_empty()));
+        assert!(IFACES.with(|r|r.borrow().lookup("@x/counter").unwrap().subscribers.is_empty()));
+        shutdown();
+    }
+
+    #[test]
+    fn owned_interop_attachment_authority_does_not_escape_into_late_nested_or_thenable_calls() {
+        optional_interop_setup();
+        dispose_plugin_context("cons");
+        load_body("cons",r#"
+          globalThis.nestedBlocked=false;globalThis.rawBlocked=false;globalThis.thenBlocked=false;
+          ctx.watchOptional('@x/counter',(service,scope)=>{
+            globalThis.saved=service;globalThis.savedScope=scope;
+            service.on('OnCountChanged',()=>{
+              try{service.on('OnCountChanged',()=>{});}catch(e){nestedBlocked=e.message.includes('InterfaceRegistrationClosed');}
+            });
+            try{__s2_iface_on('@x/counter','OnCountChanged',()=>{});}catch(e){rawBlocked=e.message.includes('InterfaceRegistrationClosed');}
+            service.getCount();
+            return {then(resolve){
+              try{service.on('OnCountChanged',()=>{});}catch(e){thenBlocked=e.message.includes('InterfaceRegistrationClosed');}
+              resolve();
+            }};
+          });
+        "#,"{}");
+        dispose_plugin_context("prod");
+        load_body("prod","const service=ctx.publish('@x/counter',{getCount:()=>{service.emit('OnCountChanged',{count:1});return 1;}});","{}");
+        assert!(eval_in_context_bool("cons","nestedBlocked&&rawBlocked&&thenBlocked"));
+        assert_eq!(interop_lifetime::counts(),(1,1,0,0,0));
+        assert!(IFACE_SUBS.with(|m|m.borrow().is_empty()));
+        assert!(eval_in_context("cons","saved.on('OnCountChanged',()=>{})").is_err());
+        assert!(eval_in_context("cons","savedScope.own({dispose(){}})").is_err());
+        assert!(eval_in_context("cons","__s2pkg_plugin.watchOptional('@x/counter',()=>{})").is_err());
+        assert!(eval_in_context("cons","__s2_iface_watch('@x/counter',()=>{})").is_err());
+        shutdown();
+    }
+
+    #[test]
+    fn owned_interop_incompatible_and_duplicate_providers_never_attach_or_retry_same_generation() {
+        optional_interop_setup();
+        let mut decl=PLUGIN_PUBLISHES.with(|p|p.borrow()["prod"]["@x/counter"].clone());
+        unload_plugin("prod");
+        dispose_plugin_context("cons");
+        load_body("cons","globalThis.attached=0;ctx.watchOptional('@x/counter',()=>{attached++;});","{}");
+        decl.version="2.0.0".into();
+        owned_interop_load_provider(decl.clone(),"ctx.publish('@x/counter',{getCount:()=>1});");
+        assert_eq!(eval_in_context_string("cons","String(attached)"),"0");
+        finalize_loading_plugins();
+        assert_eq!(interop_lifetime::counts(),(1,1,0,0,0));
+        unload_plugin("prod");
+        decl.version="1.0.0".into();
+        owned_interop_load_provider(decl.clone(),"ctx.publish('@x/counter',{getCount:()=>1});");
+        assert_eq!(eval_in_context_string("cons","String(attached)"),"1");
+        set_plugin_publishes("duplicate",[("@x/counter".into(),decl)].into_iter().collect());
+        load_body("duplicate","ctx.publish('@x/counter',{getCount:()=>2});","{}");
+        assert!(is_failed("duplicate"));
+        assert_eq!(eval_in_context_string("cons","String(attached)"),"1");
+        assert_eq!(IFACES.with(|r|r.borrow().producer_of("@x/counter").unwrap().0),"prod");
+        shutdown();
+    }
+
+    #[test]
+    fn owned_interop_attachment_tokens_cannot_enroll_legacy_or_other_consumers_subscriptions() {
+        optional_interop_setup();
+        set_plugin_publishes("legacy",[("@x/legacy".into(),crate::loader::PublishDecl{version:"1.0.0".into(),types_sha256:String::new(),contract:None})].into_iter().collect());
+        eval_setup("legacy","__s2_iface_publish('@x/legacy',{});");
+        assert!(eval_in_context("cons","__s2_iface_on('@x/legacy','event',()=>{},999)").is_err());
+        assert!(IFACE_SUBS.with(|m|m.borrow().is_empty()));
+        shutdown();
+    }
+
+    #[test]
+    fn owned_interop_foreign_disposal_cannot_unlink_another_attachments_subscription_index() {
+        optional_interop_setup();
+        dispose_plugin_context("prod");
+        load_body("prod","ctx.publish('@x/counter',{getCount:()=>1});","{}");
+        dispose_plugin_context("cons");
+        load_body("cons","globalThis.watch=ctx.watchOptional('@x/counter',service=>{service.on('OnCountChanged',()=>{});});","{}");
+        let id=IFACES.with(|r|r.borrow().lookup("@x/counter").unwrap().subscribers[0].sub_id);
+        eval_in_context("cons2",&format!("__s2_iface_dispose({id})")).unwrap();
+        assert_eq!(IFACE_SUBS.with(|m|m.borrow().len()),1);
+        eval_in_context("cons","watch.dispose()").unwrap();
+        assert!(IFACE_SUBS.with(|m|m.borrow().is_empty()),"foreign dispose must not lose the owning attachment's index");
+        shutdown();
+    }
+
+    #[test]
+    fn owned_interop_async_attachment_rolls_back_before_await_and_cannot_register_after_await() {
+        optional_interop_setup();
+        dispose_plugin_context("cons");
+        load_body("cons",r#"
+          globalThis.cleaned=0;globalThis.blocked=false;
+          ctx.watchOptional('@x/counter',async(service,scope)=>{
+            scope.own({dispose(){cleaned++;}});
+            service.on('OnCountChanged',()=>{});
+            await Promise.resolve();
+            try { service.on('OnCountChanged',()=>{}); } catch(e) { blocked=true; }
+            throw Error('observed rejection');
+          });
+        "#,"{}");
+        dispose_plugin_context("prod");
+        load_body("prod","ctx.publish('@x/counter',{getCount:()=>1});","{}");
+        assert_eq!(eval_in_context_string("cons","String(cleaned)"),"1");
+        assert!(IFACE_SUBS.with(|m|m.borrow().is_empty()));
+        frame_async_drain();
+        assert!(eval_in_context_bool("cons","blocked"));
+        assert_eq!(interop_lifetime::counts(),(1,1,0,0,0));
+        shutdown();
+    }
+
+    #[test]
+    fn owned_interop_retained_disposed_watch_does_not_pin_its_callback() {
+        optional_interop_setup();
+        dispose_plugin_context("cons");
+        load_body("cons",r#"
+          let callback=()=>{};
+          globalThis.unownedRef=new WeakRef(()=>{});
+          globalThis.callbackRef=new WeakRef(callback);
+          globalThis.retainedWatch=ctx.watchOptional('@x/counter',callback);
+          let listener=()=>{};
+          globalThis.listenerRef=new WeakRef(listener);
+          globalThis.retainedSub=ctx.tryUse('@x/counter').on('OnCountChanged',listener);
+          let cancelled=()=>{};
+          globalThis.cancelledRef=new WeakRef(cancelled);
+          globalThis.cancelledWatch=ctx.watchOptional('@x/counter',cancelled);
+          cancelledWatch.dispose();
+          callback=null;listener=null;cancelled=null;
+        "#,"{}");
+        eval_in_context("cons","retainedWatch.dispose();retainedSub.dispose()").unwrap();
+        frame_async_drain();
+        eval_in_context("cons","__s2_v8_gc()").unwrap();
+        assert!(eval_in_context_bool("cons","unownedRef.deref()===undefined"),"GC control must collect an unowned function");
+        assert!(eval_in_context_bool("cons","listenerRef.deref()===undefined&&cancelledRef.deref()===undefined"),"disposed listener and pre-arm cancelled watch must release callbacks");
+        assert!(eval_in_context_bool("cons","callbackRef.deref()===undefined"),"disposed handle must not retain attach callback through its registration thunk");
+        assert_eq!(interop_lifetime::counts(),(0,0,0,0,0));
+        shutdown();
+    }
+
     fn protocol2_decisions_setup() {
         protocol2_setup();
         let mut value = serde_json::to_value(published_contract("@x/counter").unwrap()).unwrap();

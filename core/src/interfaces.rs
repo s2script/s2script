@@ -54,7 +54,19 @@ impl ImportSpec {
 
 struct ImportDecl { range: String, kind: Kind, compiled_types_sha256: Option<String> }
 
+/// Availability interest survives the absence of its provider. An attempt (including an
+/// incompatible or failed one) is consumed once per provider identity and generation.
+#[derive(Debug, Clone)]
+pub struct AvailabilityWatch {
+    pub id: u64,
+    pub name: String,
+    pub consumer_id: String,
+    pub consumer_gen: u64,
+    pub attempted: Option<(String, u64)>,
+}
+
 pub struct InterfaceRegistry {
+    watches: std::collections::BTreeMap<u64, AvailabilityWatch>,
     ifaces: HashMap<String, InterfaceEntry>,
     imports: HashMap<String, HashMap<String, ImportDecl>>, // plugin_id → (iface_name → decl)
     import_order: HashMap<String, Vec<String>>,
@@ -80,7 +92,7 @@ pub fn version_satisfies(range: &str, version: &str) -> bool {
 
 impl InterfaceRegistry {
     pub fn new() -> Self {
-        Self { ifaces: HashMap::new(), imports: HashMap::new(), import_order: HashMap::new() }
+        Self { watches: Default::default(), ifaces: HashMap::new(), imports: HashMap::new(), import_order: HashMap::new() }
     }
 
     /// Register (or re-register) an interface. Returns Err when a DIFFERENT producer already
@@ -202,6 +214,36 @@ impl InterfaceRegistry {
             .map_or(false, |h| !h.is_empty() && *h == entry.types_sha256)
     }
 
+    pub fn add_watch(&mut self, watch: AvailabilityWatch) -> bool {
+        if self.dep_kind(&watch.consumer_id, &watch.name) != Some(Kind::Optional) {
+            return false;
+        }
+        self.watches.insert(watch.id, watch);
+        true
+    }
+
+    pub fn watches(&self) -> Vec<AvailabilityWatch> { self.watches.values().cloned().collect() }
+
+    pub fn watch(&self, id: u64) -> Option<&AvailabilityWatch> { self.watches.get(&id) }
+
+    pub fn remove_watch(&mut self, id: u64) -> Option<AvailabilityWatch> { self.watches.remove(&id) }
+
+    pub fn attempt_watch(&mut self, id: u64, provider: (String, u64)) {
+        if let Some(watch) = self.watches.get_mut(&id) { watch.attempted = Some(provider); }
+    }
+
+    /// Identity-based removal leaves a sibling subscription to the same event intact.
+    pub fn remove_subscriber(&mut self, id: u64, consumer: &str, generation: u64) -> bool {
+        for entry in self.ifaces.values_mut() {
+            if let Some(index) = entry.subscribers.iter().position(|s|
+                s.sub_id == id && s.consumer_id == consumer && s.consumer_gen == generation) {
+                entry.subscribers.remove(index);
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn add_subscriber(&mut self, name: &str, sub: Subscriber) -> bool {
         match self.ifaces.get_mut(name) {
             Some(e) => { e.subscribers.push(sub); true }
@@ -282,6 +324,7 @@ impl InterfaceRegistry {
     }
 
     pub fn clear(&mut self) {
+        self.watches.clear();
         self.ifaces.clear();
         self.imports.clear();
         self.import_order.clear();
@@ -295,6 +338,37 @@ impl Default for InterfaceRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watches_are_optional_only_and_survive_provider_removal() {
+        let mut r = InterfaceRegistry::new();
+        r.set_imports("consumer", vec![ImportSpec::new("@x/if", "^1.0.0", Kind::Optional)]);
+        let watch = AvailabilityWatch { id: 40, name: "@x/if".into(), consumer_id: "consumer".into(), consumer_gen: 3, attempted: None };
+        assert!(r.add_watch(watch.clone()));
+        r.publish("@x/if", "1.0.0", "", "provider", 4, vec![]).unwrap();
+        r.attempt_watch(40, ("provider".into(), 4));
+        r.remove_by_producer("provider");
+        assert_eq!(r.watches().len(), 1);
+        assert_eq!(r.watch(40).unwrap().attempted, Some(("provider".into(), 4)));
+        r.publish("@x/if", "1.0.0", "", "provider", 5, vec![]).unwrap();
+        assert_ne!(r.watch(40).unwrap().attempted, r.producer_of("@x/if"));
+        assert!(r.remove_watch(40).is_some());
+        assert!(r.remove_watch(40).is_none());
+        r.set_imports("consumer", vec![ImportSpec::new("@x/if", "*", Kind::Hard)]);
+        assert!(!r.add_watch(watch));
+    }
+
+    #[test]
+    fn subscriber_disposal_requires_exact_id_owner_and_generation() {
+        let mut r = InterfaceRegistry::new();
+        r.publish("@x/if", "1.0.0", "", "provider", 4, vec![]).unwrap();
+        for id in [7, 8] { r.add_subscriber("@x/if", Subscriber { sub_id: id, consumer_id: "consumer".into(), consumer_gen: 3, event: "event".into() }); }
+        assert!(!r.remove_subscriber(7, "other", 3));
+        assert!(!r.remove_subscriber(7, "consumer", 2));
+        assert!(r.remove_subscriber(7, "consumer", 3));
+        assert!(!r.remove_subscriber(7, "consumer", 3));
+        assert_eq!(r.live_subscriber_ids("@x/if", "event", &|_, _| true), vec![8]);
+    }
 
     fn reg() -> InterfaceRegistry { InterfaceRegistry::new() }
 

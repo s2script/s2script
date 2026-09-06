@@ -1964,9 +1964,19 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         dispatch: function (ev, payload) { return __s2_iface_dispatch(name, ev, payload); },
       };
     };
+    // Cancellation may precede arming; a cancelled buffered registration never reaches the host.
+    function ownedRegistration(register, remove) {
+      var id = 0, disposed = false;
+      ctxReg(function () {
+        if (!disposed) { try { id = register(); } finally { register = null; } }
+      });
+      return { dispose: function () { if (disposed) return; disposed = true; register = null; if (id) remove(id); } };
+    }
     function handleFor(name) {
       return new Proxy({}, { get: function (_t, prop) {
-        if (prop === "on") return function (ev, h) { ctxReg(function () { __s2_iface_on(name, ev, h); }); };
+        if (prop === "on") return function (ev, h) {
+          return ownedRegistration(function () { return __s2_iface_on(name, ev, h); }, __s2_iface_dispose);
+        };
         if (typeof prop !== "string") return undefined;
         return function () { return __s2_iface_call(name, prop, Array.prototype.slice.call(arguments)); };
       }});
@@ -1982,6 +1992,32 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       var kind = __s2_iface_dep_kind(name);
       if (kind !== "optional") throw new Error("s2script: ctx.tryUse('" + name + "') requires an optionalPluginDependencies entry (declared: " + kind + ")");
       return __s2_iface_is_published(name) ? handleFor(name) : null;
+    };
+    ctx.watchOptional = function (name, attach) {
+      if (typeof attach !== "function") throw new Error("s2script: attach must be a function");
+      if (__s2_iface_dep_kind(name) !== "optional") throw new Error("s2script: watchOptional requires optionalPluginDependencies");
+      return ownedRegistration(function () {
+        return __s2_iface_watch(name, function (token) {
+          var scope = { own: function (resource) {
+            if (!resource || typeof resource.dispose !== "function") throw new Error("s2script: owned resource requires dispose()");
+            var dispose = resource.dispose;
+            __s2_iface_attachment_own(token, function () { dispose.call(resource); });
+            return resource;
+          }};
+          var service = new Proxy({}, { get: function (_target, prop) {
+            if (prop === "on") return function (event, handler) {
+              var id = __s2_iface_on(name, event, handler, token);
+              return { dispose: function () { if (id) { __s2_iface_dispose(id); id = 0; } } };
+            };
+            if (typeof prop !== "string") return undefined;
+            return function () {
+              __s2_iface_attachment_live(token);
+              return __s2_iface_call(name, prop, Array.prototype.slice.call(arguments));
+            };
+          }});
+          return attach(service, scope);
+        });
+      }, __s2_iface_watch_dispose);
     };
     ctx.createScope = function () {
       if (sealed) throw new Error("s2script: createScope outside the load window");
@@ -2097,6 +2133,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   function publish(name, impl) { return __s2_load_ctx_or_throw("publish()").publish(name, impl); }
   function use(name) { return __s2_load_ctx_or_throw("use()").use(name); }
   function tryUse(name) { return __s2_load_ctx_or_throw("tryUse()").tryUse(name); }
+  function watchOptional(name, attach) { return __s2_load_ctx_or_throw("watchOptional()").watchOptional(name, attach); }
   function createScope() { return __s2_load_ctx_or_throw("createScope()").createScope(); }
   var topmenu = {
     addCategory: function (n) { __s2_load_ctx_or_throw("topmenu.addCategory()").topmenu.addCategory(n); },
@@ -2115,6 +2152,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_plugin.publish = publish;
   globalThis.__s2pkg_plugin.use = use;
   globalThis.__s2pkg_plugin.tryUse = tryUse;
+  globalThis.__s2pkg_plugin.watchOptional = watchOptional;
   globalThis.__s2pkg_plugin.createScope = createScope;
   globalThis.__s2pkg_plugin.topmenu = topmenu;
   globalThis.__s2pkg_plugin.translations = translations;

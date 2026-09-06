@@ -3,6 +3,8 @@ import type {
   ContractMethods,
   TypedPublishHandle,
   TypedInterfaceHandle,
+  Subscription,
+  AttachmentScope,
 } from "./interfaces";
 /**
  * @s2script/sdk/plugin — load-window authoring (`hook`, `publish`, `translations`, `Scope`)
@@ -180,7 +182,7 @@ export interface CtxTopMenu {
 /** A producer-backed inter-plugin interface: its methods, plus forward subscriptions. */
 export type InterfaceHandle<T extends object> = T & {
   /** Subscribe to a producer forward. Load-window only (buffered, armed at Active) — like every registration. */
-  on(event: string, handler: (payload: any) => void): void;
+  on(event: string, handler: (payload: any) => void): Subscription;
 };
 
 /**
@@ -253,6 +255,11 @@ export interface PluginContext {
   tryUse<T extends object>(
     name: keyof InterfaceContracts extends never ? string : never
   ): InterfaceHandle<T> | null;
+  /** Observe a declared optional provider, after both plugins are Active. */
+  watchOptional<N extends keyof InterfaceContracts>(
+    name: N,
+    attach: (service: TypedInterfaceHandle<InterfaceContracts[N]>, scope: AttachmentScope) => void
+  ): Subscription;
   /** Allocate a disposable subscription scope (load-window only — the capability originates at load). */
   createScope(): Scope;
 }
@@ -369,3 +376,14 @@ export declare const topmenu: CtxTopMenu;
  * the same way they collect `ctx.translations.load(...)`.
  */
 export declare const translations: CtxTranslations;
+
+/**
+ * Declare an optional-provider watch during load. Requires optionalPluginDependencies.
+ * Attachment runs synchronously after both plugins are Active, once per compatible
+ * provider generation. Failed attachments roll back; reappearance creates a fresh scope.
+ * Only the supplied service permits forward registration during the attachment callback.
+ */
+export declare function watchOptional<N extends keyof InterfaceContracts>(
+  name: N,
+  attach: (service: TypedInterfaceHandle<InterfaceContracts[N]>, scope: AttachmentScope) => void
+): Subscription;

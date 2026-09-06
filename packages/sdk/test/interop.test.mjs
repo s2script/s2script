@@ -800,3 +800,45 @@ declare const patch: {text:string} | {suffix:string};
 service.on("OnFormat",()=>({result:HookResult.Changed,patch}));`
     );
   }));
+
+function optionalDependency(dir) {
+  const path=join(dir,"package.json");
+  const pkg=JSON.parse(readFileSync(path,"utf8"));
+  pkg.s2script.optionalPluginDependencies=pkg.s2script.pluginDependencies;
+  delete pkg.s2script.pluginDependencies;
+  writeFileSync(path,JSON.stringify(pkg));
+}
+test("owned subscriptions and optional attachments infer contract and resource ownership",()=>{
+  check("consumer",d=>{
+    optionalDependency(d);
+    source(d,`import {watchOptional,tryUse} from "@s2script/sdk/plugin";
+import type {Subscription} from "@s2script/sdk/interfaces";
+const watch:Subscription=watchOptional("@demo/counter",(service,scope)=>{
+  const resource=scope.own({dispose(){},label:"owned"});console.log(resource.label);
+  scope.own(service.on("OnCountChanged",event=>console.log(event.count)));
+});
+tryUse("@demo/counter")?.on("OnCountChanged",()=>{}).dispose();
+watch.dispose();`);
+  });
+});
+
+for(const [label,body] of [
+  ["hard dependency",`import {watchOptional} from "@s2script/sdk/plugin";watchOptional("@demo/counter",()=>{});`],
+  ["hard dependency alias",`import * as sdk from "@s2script/sdk/plugin";const {watchOptional:watch}=sdk;watch("@demo/counter",()=>{});`],
+]) test(`optional attachment rejects ${label}`,()=>check("consumer",d=>source(d,body),/optionalPluginDependencies/));
+for (const callback of [
+  'async () => {}',
+  '() => ({ then(resolve: () => void) { resolve(); } })',
+  '() => Math.random() ? Promise.resolve() : undefined',
+]) test(`optional attachment rejects thenable callback ${callback}`, () =>
+  check("consumer", d => {
+    optionalDependency(d);
+    source(d,`import {watchOptional} from "@s2script/sdk/plugin";watchOptional("@demo/counter",${callback});`);
+  }, /synchronous attachment/));
+test("optional attachment rejects annotated async callback aliases", () =>
+  check("consumer", d => {
+    optionalDependency(d);
+    source(d,`import {watchOptional} from "@s2script/sdk/plugin";
+const attach: () => void = async () => {}; const alias = attach;
+watchOptional("@demo/counter",alias);`);
+  }, /synchronous attachment/));
