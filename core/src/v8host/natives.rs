@@ -466,6 +466,7 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
         s2_engine_call_invoke,
     );
     crate::shared_entity_switch::install(scope, global_obj);
+    crate::surface_leases::install(scope, global_obj);
     // The GAME-PACKAGE-scoped four (A5b): same natives, keyed on core's reserved owner id for the
     // registered game package instead of the calling context's plugin id. The game package's
     // prelude runs in the raw context scope and has no plugin identity of its own, so it cannot use

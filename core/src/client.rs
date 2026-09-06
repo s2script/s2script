@@ -57,6 +57,7 @@ pub(crate) fn end(slot: i32, token: u64) {
     if !matches(slot, token) { return; }
     CONNECTIONS.with(|b| { b.borrow_mut().remove(&slot); });
     voice_clear_slot(slot);
+    crate::surface_leases::clear_client(slot, token);
     crate::shared_entity_switch::clear_slot(slot);
     crate::cookies::retire(slot, token);
 }

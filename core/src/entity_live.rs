@@ -21,6 +21,7 @@ thread_local! {
 /// stale entry, which is itself an invalidation of any holder of the old id).
 pub fn on_created(index: i32, engine_serial: i32) -> u64 {
     let id = LIVE.with(|t| t.borrow_mut().insert(index, engine_serial));
+    crate::surface_leases::prune_dead();
     crate::shared_entity_switch::prune_dead();
     id
 }
@@ -36,6 +37,7 @@ pub fn on_spawned(index: i32, engine_serial: i32) {
             _ => { t.insert(index, engine_serial); }
         }
     });
+    crate::surface_leases::prune_dead();
     crate::shared_entity_switch::prune_dead();
 }
 
@@ -52,6 +54,7 @@ pub fn on_deleted(index: i32, engine_serial: i32) -> Option<u64> {
             None
         }
     });
+    crate::surface_leases::prune_dead();
     crate::shared_entity_switch::prune_dead();
     removed
 }
@@ -78,6 +81,7 @@ pub fn engine_serial_for(index: i32, id: u64) -> Option<i32> {
 /// Map transition: clear the whole table (this IS the epoch, implicit) + arm the sweep.
 pub fn clear_for_map_transition() {
     LIVE.with(|t| t.borrow_mut().clear());
+    crate::surface_leases::reset();
     crate::shared_entity_switch::reset();
     REPAIR_ARMED.with(|c| c.set(true));
 }
@@ -103,6 +107,7 @@ pub fn repair_reconcile(live_slots: &[(i32, i32)]) {
             if !seen.contains(&k) { t.remove(&k); }
         }
     });
+    crate::surface_leases::prune_dead();
     crate::shared_entity_switch::prune_dead();
 }
 
@@ -111,6 +116,7 @@ pub fn len() -> usize { LIVE.with(|t| t.borrow().len()) }
 #[cfg(test)]
 pub fn reset_for_tests() {
     LIVE.with(|t| t.borrow_mut().clear());
+    crate::surface_leases::reset();
     crate::shared_entity_switch::reset();
     REPAIR_ARMED.with(|c| c.set(false));
 }
