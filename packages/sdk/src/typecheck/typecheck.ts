@@ -164,7 +164,7 @@ export function typecheckPlugin(
   // Empty for a non-workspace plugin, so every existing build is bit-identical (§11).
   const { siblings } = resolveSiblingContracts(absDir, allDeclaredDeps);
 
-  const contractPaths: Record<string, string[]> = {};
+  const contractPaths: Record<string, string[]> = Object.create(null);
   for (const d of allDeclaredDeps) {
     const sibling = siblings.get(d);
     if (sibling !== undefined) {
@@ -208,7 +208,7 @@ export function typecheckPlugin(
   if (protocol2 && pkg.types)
     for (const name of ownNames)
       authoritativePaths[name] = resolve(absDir, pkg.types);
-  const interfaceContracts: Record<string, WireContract> = {};
+  const interfaceContracts: Record<string, WireContract> = Object.create(null);
   if (protocol2) {
     try {
       for (const dep of allDeclaredDeps)

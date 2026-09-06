@@ -353,7 +353,7 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   }
   if (s2.interfaceProtocol === 2) {
     manifest.interfaceProtocol = 2;
-    const imports: Record<string, unknown> = {};
+    const imports: Record<string, unknown> = Object.create(null);
     for (const [name, contract] of Object.entries(tc.interfaceContracts ?? {})) {
       if (derivedPublishes[name]) Object.assign(derivedPublishes[name], { contract });
       if (declaredDeps.has(name)) imports[name] = contract;
@@ -373,7 +373,7 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   // is made anywhere. That is what makes the loader's drift check pass for structural reasons
   // rather than by luck: the producer hashes that same path for its own `publishes` block, so the
   // two sha256s are equal by construction. Everything else keeps the verified-copy path exactly.
-  const compiledAgainst: Record<string, string> = {};
+  const compiledAgainst: Record<string, string> = Object.create(null);
   for (const dep of [
     ...Object.keys(pluginDependencies),
     ...Object.keys(optionalPluginDependencies),

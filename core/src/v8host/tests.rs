@@ -2455,8 +2455,7 @@
         shutdown();
     }
 
-    #[test]
-    fn protocol2_entity_refs_keep_the_existing_copy_and_revival_encoding() {
+    fn protocol2_ref_setup() {
         protocol2_setup();
         let mut contract = published_contract("@x/counter").unwrap();
         contract
@@ -2498,6 +2497,11 @@
             r#"__s2_iface_publish("@x/counter",{getCount:function(){return 1;}})"#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn protocol2_entity_refs_keep_the_existing_copy_and_revival_encoding() {
+        protocol2_ref_setup();
         eval_in_context(
             "cons",
             r#"__s2_iface_on("@x/counter","OnCountChanged",function(p){p.index=99;})"#,
@@ -2513,6 +2517,77 @@
         shutdown();
     }
 
+    #[test]
+    fn protocol2_entity_refs_reject_coercion_extras_and_spoofed_constructor() {
+        protocol2_ref_setup();
+        eval_in_context("cons", r#"globalThis.received=0; __s2_iface_on("@x/counter","OnCountChanged",function(){received++;});"#).unwrap();
+        eval_in_context("prod", "globalThis.coerced=0;").unwrap();
+        assert_eq!(
+            eval_in_context_string(
+                "prod",
+                "JSON.stringify(Reflect.ownKeys(new __s2pkg_entity.EntityRef(7,17)))"
+            ),
+            r#"["index","id"]"#
+        );
+        for mutation in [
+            "ref.index='7'",
+            "ref.id='17'",
+            "ref.index={valueOf(){coerced++;return 7}}",
+            "ref.id={valueOf(){coerced++;return 17}}",
+            "ref.extra=function(){}",
+            "ref.extra=undefined",
+            "ref.extra=Symbol('x')",
+            "ref[Symbol('extra')]=1",
+            "Object.defineProperty(ref,'hidden',{value:1})",
+            "ref=new (class EntityRef {constructor(){this.index=7;this.id=17}})()",
+        ] {
+            let source = format!(
+                r#"(()=>{{let ref=new __s2pkg_entity.EntityRef(7,17);{mutation};__s2_iface_emit("@x/counter","OnCountChanged",ref);}})()"#
+            );
+            assert!(
+                eval_in_context("prod", &source).is_err(),
+                "accepted {mutation}"
+            );
+            assert_eq!(
+                eval_in_context_string("prod", "String(coerced)"),
+                "0",
+                "coerced {mutation}"
+            );
+            assert_eq!(
+                eval_in_context_string("cons", "String(received)"),
+                "0",
+                "delivered {mutation}"
+            );
+        }
+        shutdown();
+    }
+
+    #[test]
+    fn protocol2_stale_consumer_call_and_off_cannot_touch_replacement() {
+        protocol2_setup();
+        let old = PLUGINS.with(|p| p.borrow().get("cons").unwrap().context.clone());
+        let generation = create_plugin_context("cons");
+        eval_in_context("cons", r#"globalThis.received=0;__s2_iface_on("@x/counter","OnCountChanged",function(){received++});"#).unwrap();
+        let fresh = PLUGINS
+            .with(|p| std::mem::replace(&mut p.borrow_mut().get_mut("cons").unwrap().context, old));
+        let before = REGISTRY.with(|r| r.borrow().active_resource_count("cons", generation));
+        let call = eval_in_context("cons", r#"__s2_iface_call("@x/counter","getCount",[])"#);
+        let off = eval_in_context("cons", r#"__s2_iface_off("@x/counter","OnCountChanged")"#);
+        PLUGINS.with(|p| p.borrow_mut().get_mut("cons").unwrap().context = fresh);
+        assert!(call.is_err());
+        assert!(off.is_err());
+        assert_eq!(
+            REGISTRY.with(|r| r.borrow().active_resource_count("cons", generation)),
+            before
+        );
+        eval_in_context(
+            "prod",
+            r#"__s2_iface_emit("@x/counter","OnCountChanged",{count:1})"#,
+        )
+        .unwrap();
+        assert_eq!(eval_in_context_string("cons", "String(received)"), "1");
+        shutdown();
+    }
     #[test]
     fn protocol2_snapshot_skips_disposed_rows_and_defers_new_rows_during_reentrant_calls() {
         protocol2_setup();

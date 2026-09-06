@@ -23,38 +23,24 @@ export interface PublishScan {
   importNames: string[];
 }
 
-/** True when `type`'s symbol (or alias) is the SDK PluginContext. */
-function isPluginContext(type: ts.Type): boolean {
-  const sym = type.getSymbol() ?? type.aliasSymbol;
-  return sym?.getName() === "PluginContext";
-}
-
-/** True when `node` (an identifier) aliases a symbol declared in packages/sdk/plugin.d.ts. */
+/** Resolve SDK authority from the selected signature, independent of local alias syntax. */
 export function pluginApiName(
   checker: ts.TypeChecker,
-  node: ts.Node,
-  depth = 0
+  call: ts.CallExpression
 ): string | undefined {
-  if (depth > 16) return undefined;
-  let sym = checker.getSymbolAtLocation(node);
-  if (sym === undefined) return undefined;
-  if (sym.flags & ts.SymbolFlags.Alias) {
-    const aliased = checker.getAliasedSymbol(sym);
-    if (aliased !== undefined) sym = aliased;
-  }
-  for (const d of sym.declarations ?? []) {
-    const f = d.getSourceFile().fileName.replace(/\\/g, "/");
-    if (f.endsWith("/sdk/plugin.d.ts")) return sym.name;
-    if (ts.isVariableDeclaration(d) && d.initializer)
-      return pluginApiName(
-        checker,
-        ts.isPropertyAccessExpression(d.initializer)
-          ? d.initializer.name
-          : d.initializer,
-        depth + 1
-      );
-  }
-  return undefined;
+  const declaration = checker.getResolvedSignature(call)?.getDeclaration();
+  if (
+    !declaration ||
+    !declaration
+      .getSourceFile()
+      .fileName.replace(/\\/g, "/")
+      .endsWith("/sdk/plugin.d.ts")
+  )
+    return undefined;
+  const name = declaration.name;
+  return name && (ts.isIdentifier(name) || ts.isStringLiteral(name))
+    ? name.text
+    : undefined;
 }
 
 function recordPublishOrUse(
@@ -108,38 +94,18 @@ export function scanPluginProgram(
       }
 
       if (ts.isCallExpression(node)) {
-        if (ts.isPropertyAccessExpression(node.expression)) {
-          const method = node.expression.name.text;
-          if (
-            method === "publish" ||
-            method === "use" ||
-            method === "tryUse" ||
-            method === "watchOptional" ||
-            method === "bindForwards"
-          ) {
-            const recv = checker.getTypeAtLocation(node.expression.expression);
-            if (
-              isPluginContext(recv) ||
-              pluginApiName(checker, node.expression.name) === method
-            ) {
-              recordPublishOrUse(out, method, node.arguments[0], sf, node);
-            }
-          }
-        } else if (ts.isIdentifier(node.expression)) {
-          const name = pluginApiName(checker, node.expression);
-          if (
-            name &&
-            [
-              "publish",
-              "use",
-              "tryUse",
-              "watchOptional",
-              "bindForwards",
-            ].includes(name)
-          ) {
-            recordPublishOrUse(out, name, node.arguments[0], sf, node);
-          }
-        }
+        const name = pluginApiName(checker, node);
+        if (
+          name &&
+          [
+            "publish",
+            "use",
+            "tryUse",
+            "watchOptional",
+            "bindForwards",
+          ].includes(name)
+        )
+          recordPublishOrUse(out, name, node.arguments[0], sf, node);
       }
       ts.forEachChild(node, visit);
     };

@@ -2266,6 +2266,10 @@ fn s2_iface_off(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, m
         let name = args.get(0).to_rust_string_lossy(scope);
         let event = args.get(1).to_rust_string_lossy(scope);
         let Some(consumer) = current_plugin(scope) else { return; };
+        if !live_interop_context(scope, &consumer) {
+            throw_named(scope, "InterfaceUnavailable", &consumer);
+            return;
+        }
         let dropped = IFACES.with(|r| r.borrow_mut().remove_subscribers_by_consumer_on(&consumer, &name, &event));
         IFACE_SUBS.with(|m| { let mut mm = m.borrow_mut(); for id in &dropped { mm.remove(id); } });
         if let Some(generation) = REGISTRY.with(|r| r.borrow().generation_of(&consumer)) {

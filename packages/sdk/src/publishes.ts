@@ -41,7 +41,7 @@ export function expandPublishes(
   if (typeof authored !== "object") {
     throw new Error(`publishes must be "self" or an object (got ${typeof authored})`);
   }
-  const out: Record<string, string> = {};
+  const out: Record<string, string> = Object.create(null);
   for (const [iface, range] of Object.entries(authored)) {
     if (typeof range !== "string") {
       throw new Error(`publishes[${JSON.stringify(iface)}] must be a version range string`);
@@ -107,7 +107,7 @@ export function derivePublishes(
     }
   }
   const typesSha256 = hashContract(typesPath);
-  const out: Record<string, PublishDecl> = {};
+  const out: Record<string, PublishDecl> = Object.create(null);
   for (const name of names) {
     out[name] = { version: expanded[name].trim(), typesSha256 };
   }

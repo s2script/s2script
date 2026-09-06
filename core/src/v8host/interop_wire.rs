@@ -23,6 +23,27 @@ pub(super) fn live_interop_context(scope: &mut v8::PinScope, id: &str) -> bool {
         .get_slot::<InteropGeneration>()
         .map_or(false, |g| REGISTRY.with(|r| r.borrow().is_live(id, g.0)))
 }
+// Store the original SDK prototype in a V8-private property on its own context global.
+// JS cannot replace this identity, and it adds no Rust Global root / teardown registry.
+pub(super) fn capture_entity_ref_prototype(scope: &mut v8::PinScope) {
+    let global = scope.get_current_context().global(scope);
+    let package = data_property(scope, global, "__s2pkg_entity").unwrap();
+    let package = v8::Local::<v8::Object>::try_from(package).unwrap();
+    let constructor = data_property(scope, package, "EntityRef").unwrap();
+    let constructor = v8::Local::<v8::Object>::try_from(constructor).unwrap();
+    let prototype = data_property(scope, constructor, "prototype").unwrap();
+    let name = v8::String::new(scope, "s2script.interop.EntityRef.prototype").unwrap();
+    let key = v8::Private::for_api(scope, Some(name));
+    assert_eq!(global.set_private(scope, key, prototype), Some(true));
+}
+fn is_entity_ref(scope: &mut v8::PinScope, prototype: v8::Local<v8::Value>) -> bool {
+    let global = scope.get_current_context().global(scope);
+    let name = v8::String::new(scope, "s2script.interop.EntityRef.prototype").unwrap();
+    let key = v8::Private::for_api(scope, Some(name));
+    global
+        .get_private(scope, key)
+        .is_some_and(|original| original.is_object() && original.strict_equals(prototype))
+}
 pub(super) fn published_contract(name: &str) -> Option<crate::interop::Contract> {
     let (owner, _) = IFACES.with(|r| r.borrow().producer_of(name))?;
     PLUGIN_PUBLISHES.with(|p| p.borrow().get(&owner)?.get(name)?.contract.clone())
@@ -96,11 +117,40 @@ fn copy_value(
         return None;
     }
     let obj = v8::Local::<v8::Object>::try_from(value).ok()?;
-    if obj.get_constructor_name().to_rust_string_lossy(scope) == "EntityRef" {
-        let index = data_property(scope, obj, "index")?.number_value(scope)?;
-        let id = data_property(scope, obj, "id")?.number_value(scope)?;
+    let proto = obj.get_prototype(scope)?;
+    if is_entity_ref(scope, proto) {
+        // The shipped SDK ref has only index/id own data properties. Include non-enumerable
+        // and symbol keys: silently dropping extra values would weaken the strict boundary.
+        let keys = obj.get_own_property_names(
+            scope,
+            v8::GetPropertyNamesArgs {
+                property_filter: v8::PropertyFilter::ALL_PROPERTIES,
+                key_conversion: v8::KeyConversionMode::ConvertToString,
+                ..Default::default()
+            },
+        )?;
+        if keys.length() != 2 {
+            return None;
+        }
+        for i in 0..keys.length() {
+            let key = keys.get_index(scope, i)?;
+            if !key.is_string()
+                || !matches!(key.to_rust_string_lossy(scope).as_str(), "index" | "id")
+            {
+                return None;
+            }
+        }
+        let index = data_property(scope, obj, "index")?;
+        let id = data_property(scope, obj, "id")?;
+        if !index.is_number() || !id.is_number() {
+            return None;
+        }
+        let index = index.number_value(scope)?;
+        let id = id.number_value(scope)?;
         if index < 0.0
+            || index > i32::MAX as f64
             || id < 0.0
+            || id > 9_007_199_254_740_991.0
             || index.fract() != 0.0
             || id.fract() != 0.0
             || !index.is_finite()
@@ -110,7 +160,6 @@ fn copy_value(
         }
         return Some(serde_json::json!({"__s2ref":[index as u64,id as u64]}));
     }
-    let proto = obj.get_prototype(scope)?;
     if !value.is_array() && !proto.is_null() {
         let plain = v8::Object::new(scope);
         if !proto.strict_equals(plain.get_prototype(scope)?) {

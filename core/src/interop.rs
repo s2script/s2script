@@ -131,9 +131,8 @@ impl Contract {
         {
             return Err("InterfaceContractError: unsupported metadata".into());
         }
-        // serde_json::Map has sorted keys (preserve_order is disabled); canonicalize every level.
-        let value = serde_json::to_value(m).map_err(|e| e.to_string())?;
-        let bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
+        // RFC 8785 JCS matches the SDK: ECMAScript numbers and UTF-16 code-unit key order.
+        let bytes = serde_json_canonicalizer::to_vec(m).map_err(|e| e.to_string())?;
         if format!("{:x}", Sha256::digest(bytes)) != self.sha256 {
             return Err("InterfaceContractError: metadata digest mismatch".into());
         }
@@ -195,4 +194,21 @@ pub fn validate_manifest(m: &crate::loader_worker::Manifest) -> Result<(), Strin
         return Err("InterfaceContractError: metadata for undeclared dependency".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod canonical_tests {
+    #[test]
+    fn sdk_numeric_and_utf16_canonical_contract_is_accepted() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../packages/sdk/test/fixtures/interop/canonical.json"
+        ))
+        .unwrap();
+        let contract: super::Contract = serde_json::from_value(vector["contract"].clone()).unwrap();
+        assert_eq!(contract.validate(), Ok(()));
+        assert_eq!(
+            serde_json_canonicalizer::to_string(&contract.metadata).unwrap(),
+            vector["canonical"].as_str().unwrap()
+        );
+    }
 }

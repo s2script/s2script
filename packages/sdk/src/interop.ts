@@ -17,19 +17,34 @@ export interface WireContract {
   metadata: ContractMetadata;
   sha256: string;
 }
+/** RFC 8785 JCS: ECMAScript finite numbers/escaping and UTF-16 code-unit key order. */
 export function canonical(value: unknown): string {
+  if (typeof value === "string") {
+    // JSON.stringify would escape lone surrogates, but JCS requires rejecting them.
+    if (
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(
+        value
+      )
+    )
+      throw new Error(
+        "canonical metadata requires well-formed Unicode strings"
+      );
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" && !Number.isFinite(value))
+    throw new Error("canonical metadata requires finite numbers");
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value !== null && typeof value === "object")
     return `{${Object.keys(value)
       .sort()
       .map(
         (k) =>
-          `${JSON.stringify(k)}:${canonical(
-            (value as Record<string, unknown>)[k]
-          )}`
+          `${canonical(k)}:${canonical((value as Record<string, unknown>)[k])}`
       )
       .join(",")}}`;
-  return JSON.stringify(value);
+  if (value === null || typeof value === "boolean" || typeof value === "number")
+    return JSON.stringify(value);
+  throw new Error("canonical metadata requires JSON values");
 }
 export function extractContract(
   path: string,
@@ -201,7 +216,7 @@ export function extractContract(
           "arbitrary class instances and imported domain types are unsupported"
         );
       const fields: Record<string, { schema: WireSchema; optional: boolean }> =
-        {};
+        Object.create(null);
       for (const p of type
         .getProperties()
         .sort((a, b) => a.name.localeCompare(b.name))) {
@@ -233,7 +248,7 @@ export function extractContract(
       stack.delete(type);
     }
   };
-  const methods: ContractMetadata["methods"] = {};
+  const methods: ContractMetadata["methods"] = Object.create(null);
   for (const p of prop(contract, "methods", sf).getProperties()) {
     const node = p.valueDeclaration ?? sf,
       type = checker.getTypeOfSymbolAtLocation(p, node),
@@ -294,7 +309,7 @@ export function extractContract(
       result: schema(checker.getReturnTypeOfSignature(sig), node, true),
     };
   }
-  const forwards: ContractMetadata["forwards"] = {};
+  const forwards: ContractMetadata["forwards"] = Object.create(null);
   for (const p of prop(contract, "forwards", sf).getProperties()) {
     const node = p.valueDeclaration ?? sf,
       type = checker.getTypeOfSymbolAtLocation(p, node);
@@ -316,13 +331,39 @@ export function extractContract(
       payload: schema(checker.getTypeOfSymbolAtLocation(brand!, node), node),
     };
   }
-  const metadata = JSON.parse(
-    canonical({ version: 1, methods, forwards })
-  ) as ContractMetadata;
+  const metadata: ContractMetadata = { version: 1, methods, forwards };
   return {
     metadata,
     sha256: createHash("sha256").update(canonical(metadata)).digest("hex"),
   };
+}
+
+/** Inspect locally available initializers as well as their annotations: a void annotation
+ * can otherwise erase an async/value result under TS's callback assignment rules. */
+function implementationExpression(
+  checker: ts.TypeChecker,
+  expression: ts.Expression,
+  seen = new Set<ts.Node>()
+): ts.Expression {
+  if (seen.has(expression)) return expression;
+  seen.add(expression);
+  if (ts.isParenthesizedExpression(expression))
+    return implementationExpression(checker, expression.expression, seen);
+  let symbol = checker.getSymbolAtLocation(expression);
+  if (symbol && symbol.flags & ts.SymbolFlags.Alias)
+    symbol = checker.getAliasedSymbol(symbol);
+  let declaration = symbol?.valueDeclaration;
+  if (declaration && ts.isShorthandPropertyAssignment(declaration))
+    declaration =
+      checker.getShorthandAssignmentValueSymbol(declaration)?.valueDeclaration;
+  if (
+    declaration &&
+    (ts.isVariableDeclaration(declaration) ||
+      ts.isPropertyAssignment(declaration)) &&
+    declaration.initializer
+  )
+    return implementationExpression(checker, declaration.initializer, seen);
+  return expression;
 }
 
 /** The checker validates call sites against authoritative contracts even if overload fallback,
@@ -374,10 +415,7 @@ export function checkInteropCalls(
         ts.isCallExpression(node) &&
         sf.fileName.startsWith(pluginDir + "/")
       ) {
-        const expr = ts.isPropertyAccessExpression(node.expression)
-          ? node.expression.name
-          : node.expression;
-        const method = pluginApiName(checker, expr);
+        const method = pluginApiName(checker, node);
         if (
           [
             "publish",
@@ -413,6 +451,11 @@ export function checkInteropCalls(
               );
               const impl = node.arguments[1];
               const actual = impl && checker.getTypeAtLocation(impl);
+              const implementationType =
+                impl &&
+                checker.getTypeAtLocation(
+                  implementationExpression(checker, impl)
+                );
               if (
                 !actual ||
                 actual.flags & ts.TypeFlags.Any ||
@@ -439,16 +482,119 @@ export function checkInteropCalls(
                   }
                 }
               }
-              if (actual)
-                for (const p of actual.getProperties())
-                  for (const sig of checker
-                    .getTypeOfSymbolAtLocation(p, impl)
-                    .getCallSignatures())
+              if (actual) {
+                for (const expectedMethod of expected.getProperties()) {
+                  const implementation = implementationType?.getProperty(
+                    expectedMethod.name
+                  );
+                  if (!implementation) continue; // Missing methods are diagnosed above.
+                  const required = checker
+                    .getTypeOfSymbolAtLocation(expectedMethod, impl)
+                    .getCallSignatures()[0];
+                  const declaration = implementation.valueDeclaration;
+                  const value =
+                    declaration && ts.isPropertyAssignment(declaration)
+                      ? declaration.initializer
+                      : declaration &&
+                        ts.isShorthandPropertyAssignment(declaration)
+                      ? declaration.name
+                      : undefined;
+                  const methodType = value
+                    ? checker.getTypeAtLocation(
+                        implementationExpression(checker, value)
+                      )
+                    : checker.getTypeOfSymbolAtLocation(implementation, impl);
+                  const signatures = methodType.getCallSignatures();
+                  if (
+                    !required ||
+                    signatures.length !== 1 ||
+                    signatures[0].typeParameters?.length
+                  ) {
+                    report(
+                      impl,
+                      `producer method ${expectedMethod.name} signature must be a single non-generic function`
+                    );
+                    continue;
+                  }
+                  const provided = signatures[0];
+                  const result = checker.getReturnTypeOfSignature(provided);
+                  const expectedResult =
+                    checker.getReturnTypeOfSignature(required);
+                  // Ordinary TS callback assignability discards results for void and makes
+                  // method parameters bivariant. Neither concession describes this wire boundary.
+                  const resultMatches =
+                    expectedResult.flags & ts.TypeFlags.Void
+                      ? !!(
+                          result.flags &
+                          (ts.TypeFlags.Void |
+                            ts.TypeFlags.Undefined |
+                            ts.TypeFlags.Never)
+                        )
+                      : checker.isTypeAssignableTo(result, expectedResult);
+                  if (result.flags & ts.TypeFlags.Any || !resultMatches)
+                    report(
+                      impl,
+                      `producer method ${expectedMethod.name} result must agree with its synchronous Contract signature`
+                    );
+                  for (const [i, parameter] of provided.parameters.entries()) {
+                    const declaration = parameter.valueDeclaration;
                     if (
-                      checker.getReturnTypeOfSignature(sig).flags &
-                      ts.TypeFlags.Any
-                    )
-                      report(impl, "producer method result cannot be any");
+                      declaration &&
+                      ts.isParameter(declaration) &&
+                      declaration.dotDotDotToken
+                    ) {
+                      report(
+                        impl,
+                        `producer method ${expectedMethod.name} signature cannot use rest parameters`
+                      );
+                      continue;
+                    }
+                    const input = checker.getTypeOfSymbolAtLocation(
+                      parameter,
+                      impl
+                    );
+                    const contractParameter = required.parameters[i];
+                    if (!contractParameter) {
+                      if (
+                        !(parameter.flags & ts.SymbolFlags.Optional) &&
+                        !(
+                          declaration &&
+                          ts.isParameter(declaration) &&
+                          (declaration.questionToken || declaration.initializer)
+                        )
+                      )
+                        report(
+                          impl,
+                          `producer method ${expectedMethod.name} requires an undeclared input`
+                        );
+                    } else {
+                      const requiredInput = checker.getTypeOfSymbolAtLocation(
+                        contractParameter,
+                        impl
+                      );
+                      const variants = requiredInput.isUnion()
+                        ? requiredInput.types
+                        : [requiredInput];
+                      const hasDefault =
+                        declaration &&
+                        ts.isParameter(declaration) &&
+                        declaration.initializer;
+                      if (
+                        !variants.every(
+                          (type) =>
+                            (hasDefault &&
+                              !!(type.flags & ts.TypeFlags.Undefined)) ||
+                            checker.isTypeAssignableTo(type, input)
+                        )
+                      )
+                        report(
+                          impl,
+                          `producer method ${expectedMethod.name} input ${parameter.name} is narrower than its Contract signature`
+                        );
+                    }
+                  }
+                }
+              }
             } else if (!dependencies.has(name))
               report(node, `undeclared dependency ${name}`);
           }

@@ -1,0 +1,62 @@
+{
+  "contract": {
+    "metadata": {
+      "forwards": {
+        "OnVector": {
+          "kind": "notification",
+          "payload": {
+            "fields": {
+              "fraction": {
+                "optional": false,
+                "schema": {
+                  "kind": "literal",
+                  "value": 1.2345678901234567
+                }
+              },
+              "large": {
+                "optional": false,
+                "schema": {
+                  "kind": "literal",
+                  "value": 1e+21
+                }
+              },
+              "negativeZero": {
+                "optional": false,
+                "schema": {
+                  "kind": "literal",
+                  "value": 0
+                }
+              },
+              "small": {
+                "optional": false,
+                "schema": {
+                  "kind": "literal",
+                  "value": 1e-7
+                }
+              },
+              "😀": {
+                "optional": false,
+                "schema": {
+                  "kind": "literal",
+                  "value": 0.000001
+                }
+              },
+              "": {
+                "optional": false,
+                "schema": {
+                  "kind": "literal",
+                  "value": 100000000000000000000
+                }
+              }
+            },
+            "kind": "object"
+          }
+        }
+      },
+      "methods": {},
+      "version": 1
+    },
+    "sha256": "f2cb41c88ad545b63176fa6982d7a985c9b3e49a2da6a2c4774c1e0db3fddb2a"
+  },
+  "canonical": "{\"forwards\":{\"OnVector\":{\"kind\":\"notification\",\"payload\":{\"fields\":{\"fraction\":{\"optional\":false,\"schema\":{\"kind\":\"literal\",\"value\":1.2345678901234567}},\"large\":{\"optional\":false,\"schema\":{\"kind\":\"literal\",\"value\":1e+21}},\"negativeZero\":{\"optional\":false,\"schema\":{\"kind\":\"literal\",\"value\":0}},\"small\":{\"optional\":false,\"schema\":{\"kind\":\"literal\",\"value\":1e-7}},\"😀\":{\"optional\":false,\"schema\":{\"kind\":\"literal\",\"value\":0.000001}},\"\":{\"optional\":false,\"schema\":{\"kind\":\"literal\",\"value\":100000000000000000000}}},\"kind\":\"object\"}}},\"methods\":{},\"version\":1}"
+}

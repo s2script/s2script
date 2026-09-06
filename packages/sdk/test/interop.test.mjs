@@ -20,7 +20,7 @@ function copy(kind) {
   cpSync(join(fixtures, kind), dir, { recursive: true });
   return dir;
 }
-function check(kind, mutate, match) {
+function check(kind, mutate, match, diagnosticLine) {
   const dir = copy(kind);
   try {
     if (mutate) mutate(dir);
@@ -30,7 +30,9 @@ function check(kind, mutate, match) {
       assert.ok(
         result.diagnostics.some(
           (d) =>
-            d.file.endsWith("plugin.ts") && d.line > 0 && match.test(d.message)
+            d.file === join(dir, "src/plugin.ts") &&
+            (diagnosticLine ? d.line === diagnosticLine : d.line > 0) &&
+            match.test(d.message)
         ),
         JSON.stringify(result.diagnostics)
       );
@@ -120,7 +122,8 @@ for (const [name, statement, pattern] of [
           'import { publish } from "@s2script/sdk/plugin"; const impl={getCount:()=>1,setCount:(n:number)=>{console.log(n);}}; ' +
             statement
         ),
-      pattern
+      pattern,
+      1
     ));
 test("protocol 2 missing verified copy never falls back to any", () =>
   check(
@@ -270,7 +273,8 @@ for (const [file, kind, pattern] of [
           d,
           readFileSync(join(fixtures, "invalid", file + ".ts"), "utf8")
         ),
-      pattern
+      pattern,
+      2
     ));
 test("protocol 2 sibling contract wins over an incompatible copied contract", async () => {
   const root = mkdtempSync(join(tmpdir(), "s2-interop-workspace-"));
@@ -397,3 +401,141 @@ test("protocol 2 rejects a forged association imported from outside the plugin d
     rmSync(outside, { force: true });
   }
 });
+
+for (const expression of [
+  'const { use: acquire } = Plugin; acquire<any>("@demo/counter");',
+  'const acquire = Plugin["use"]; acquire<any>("@demo/counter");',
+  'const { api: { use: acquire } } = { api: Plugin }; acquire<any>("@demo/counter");',
+]) {
+  test(`resolved SDK authority rejects indirect explicit generics: ${expression}`, async () => {
+    const dir = copy("consumer");
+    try {
+      source(
+        dir,
+        `import * as Plugin from "@s2script/sdk/plugin"; ${expression}`
+      );
+      await assert.rejects(
+        buildPlugin(dir, packages),
+        /explicit generic arguments are forbidden/
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+test("destructured second publication cannot bypass producer agreement", async () => {
+  const dir = copy("producer");
+  try {
+    source(
+      dir,
+      `import * as Plugin from "@s2script/sdk/plugin";
+Plugin.publish("@demo/counter", {getCount: () => 1, setCount: (n: number) => { console.log(n); }});
+const {publish: provide} = Plugin;
+provide<any>("@demo/counter", {getCount: () => "bad", setCount: (n: number) => { console.log(n); }});`
+    );
+    await assert.rejects(
+      buildPlugin(dir, packages),
+      /explicit generic|producer implementation/
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+for (const implementation of [
+  "async (n: number) => { console.log(n); }",
+  "(n: number) => n",
+  "(n: 1) => { console.log(n); }",
+]) {
+  test(`producer signature rejects ${implementation}`, () =>
+    check(
+      "producer",
+      (d) =>
+        source(
+          d,
+          `import {publish} from "@s2script/sdk/plugin"; publish("@demo/counter", {getCount: () => 1, setCount: ${implementation}});`
+        ),
+      /producer.*signature|producer.*result|producer.*input/
+    ));
+}
+test("authored prototype names survive metadata for fields, methods and forwards", async () => {
+  const { extractContract } = await import("../src/interop.ts");
+  const dir = copy("producer");
+  try {
+    const path = join(dir, "contract.d.ts");
+    writeFileSync(
+      path,
+      `import type {Notification} from "@s2script/sdk/interfaces";
+export interface Contract { methods: { __proto__(): number }; forwards: { __proto__: Notification<{__proto__: number}> } }`
+    );
+    const result = extractContract(path, packages);
+    const m = result.metadata;
+    assert.equal(Object.getPrototypeOf(m.methods), null);
+    assert.equal(Object.getPrototypeOf(m.forwards), null);
+    assert.equal(
+      Object.getPrototypeOf(m.forwards.__proto__.payload.fields),
+      null
+    );
+    assert.equal(Object.hasOwn(m.methods, "__proto__"), true);
+    assert.equal(Object.hasOwn(m.forwards, "__proto__"), true);
+    assert.equal(
+      Object.hasOwn(m.forwards.__proto__.payload.fields, "__proto__"),
+      true
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+test("RFC 8785 canonical vectors agree with the shared host fixture", async () => {
+  const { extractContract, canonical } = await import("../src/interop.ts");
+  const fixture = JSON.parse(
+    readFileSync(join(fixtures, "canonical.json"), "utf8")
+  );
+  const contract = extractContract(join(fixtures, "canonical.d.ts"), packages);
+  assert.deepEqual(JSON.parse(JSON.stringify(contract)), fixture.contract);
+  assert.equal(canonical(contract.metadata), fixture.canonical);
+  assert.ok(
+    fixture.canonical.indexOf("😀") < fixture.canonical.indexOf("\uE000")
+  );
+});
+test("canonical metadata rejects non-finite numbers and lone surrogates", async () => {
+  const { canonical } = await import("../src/interop.ts");
+  for (const value of [
+    Infinity,
+    -Infinity,
+    NaN,
+    "\uD800",
+    "\uDFFF",
+    { "\uD800": 1 },
+  ])
+    assert.throws(() => canonical(value), /canonical metadata requires/);
+  assert.equal(canonical({ pair: "😀", zero: -0 }), '{"pair":"😀","zero":0}');
+});
+test("a void annotation cannot hide an async producer implementation", () =>
+  check(
+    "producer",
+    (d) =>
+      source(
+        d,
+        `import {publish} from "@s2script/sdk/plugin";
+import type {Contract} from "../api";
+const methods: Contract["methods"] = { getCount: () => 1, setCount: async (n: number) => { console.log(n); } };
+publish("@demo/counter", methods);`
+      ),
+    /producer.*result/
+  ));
+test("producer signature accepts a default for an optional contract input", () =>
+  check("producer", (d) => {
+    const path = join(d, "api.d.ts");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "setCount(count: number)",
+        "setCount(count?: number)"
+      )
+    );
+    source(
+      d,
+      `import {publish} from "@s2script/sdk/plugin";
+publish("@demo/counter", {getCount: () => 1, setCount: (count: number = 0) => { console.log(count); }});`
+    );
+  }));
