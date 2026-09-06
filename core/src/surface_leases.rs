@@ -95,7 +95,7 @@ fn suspension_plan(game: &str, action: &Suspend) -> Result<crate::gamedata_calls
     let plan = crate::gamedata_calls::plan(game, &action.call)
         .ok_or_else(|| format!("unavailable: {}: {}", action.call, crate::gamedata_calls::status(game, &action.call)))?;
     if plan.receiverless || plan.via.is_some() || plan.ret_code != crate::gamedata_calls::RET_VOID
-        || plan.args.first().map(String::as_str) != Some("int")
+        || plan.args.first().map(String::as_str) != Some("int") || plan.args.len() > 8
         || plan.args.iter().skip(1).any(|kind| !matches!(kind.as_str(), "int" | "bool" | "string" | "utlstring")) {
         return Err("surface suspension needs entity void(int, scalar/string...) binding without via".into());
     }
@@ -739,6 +739,25 @@ mod tests {
             __s2_surface_reserve('focus',10,{id},2,0,
                 JSON.stringify({{suspend:{{call:'suspend',args:['root','hidden','wrong']}}}})).error.code
         "#)), "InvalidArgument");
+        assert!(effects().is_empty());
+        assert!(REGISTRY.with(|r| r.borrow().leases.is_empty()));
+        done_engine();
+    }
+
+    #[test]
+    fn oversized_suspension_descriptor_is_unavailable_before_caller_count_validation() {
+        let id = setup_engine();
+        crate::gamedata_calls::register_game_package("@test/game", r#"{
+            "signatures":{"Action":{"linuxsteamrt64":{"module":"server","pattern":"55 48","resolve":"direct"}}},
+            "calls":{"oversized":{"receiver":{"kind":"entity"},"target":{"kind":"signature","name":"Action"},
+                "args":["int","int","int","int","int","int","int","int","int"],"returns":"void"}}}"#);
+        let game = crate::gamedata_calls::game_package_owner().unwrap();
+        assert_eq!(crate::gamedata_calls::plan(&game, "oversized").unwrap().args.len(), 9,
+            "the descriptor is supported by the generic ABI, but not the surface suspension shape");
+        let adapter = Adapter { capture: None, suspend: Some(Suspend {
+            call: "oversized".into(), args: vec![0.into(); 7] }) };
+        let key = Key { surface: "focus".into(), index: 10, entity: id, slot: 2, client: crate::client::generation(2) };
+        assert_eq!(reserve("surface_a", key, 0, adapter).unwrap_err().code, "Unavailable");
         assert!(effects().is_empty());
         assert!(REGISTRY.with(|r| r.borrow().leases.is_empty()));
         done_engine();
