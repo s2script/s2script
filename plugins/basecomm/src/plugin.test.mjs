@@ -30,7 +30,8 @@ function fixture() {
       targetCalls.push({ pattern, callerSlot, filterImmunity });
       return targets;
     },
-    fromSlot: slot => players.get(slot) ?? null,
+    // Mirrors CS2: connection occupancy and pawn availability are independent.
+    fromSlot: slot => players.get(slot)?.hasPawn ? players.get(slot) : null,
     allConnected: () => [...players.values()],
   };
   const Clients = {
@@ -87,6 +88,7 @@ function fixture() {
   const addPlayer = (steamId, slot) => {
     const client = { slot, steamId, voiceMuted: false };
     const player = {
+      hasPawn: true,
       slot,
       steamId,
       userId: 100 + slot,
@@ -263,4 +265,15 @@ test("command callbacks cannot reply to a disconnected or replaced actor after p
     assert.deepEqual(f.replies, [], "raw command reply must not reach a replacement actor");
     assert.deepEqual(f.translated, [], "no post-callback translation through the old actor slot");
   }
+});
+
+for (const timing of ["before-command", "during-callback"]) test(`BaseComm replies to its same pawnless actor ${timing}`, () => {
+  const f = fixture(); const target = f.addPlayer(VALID_A, 1); const actor = f.addPlayer(VALID_B, 2);
+  f.setTargets([target]);
+  if (timing === "before-command") actor.hasPawn = false;
+  f.on("OnClientGagChanged", () => { actor.hasPawn = false; });
+  f.call("sm_gag", "#101", 2);
+  assert.equal(f.service.isGagged(VALID_A), true);
+  assert.deepEqual(f.replies, ["Gagged Player:1"]);
+  assert.deepEqual(f.translated.at(-1), [2, "Gagged Player", 1]);
 });

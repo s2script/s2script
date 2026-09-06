@@ -53,7 +53,8 @@ function fixture({ storeMode = "normal" } = {}) {
   };
   const Player = {
     allConnected: () => [...players.values()],
-    fromSlot: slot => players.get(slot) ?? null,
+    // Mirrors CS2: connection occupancy and pawn availability are independent.
+    fromSlot: slot => players.get(slot)?.hasPawn ? players.get(slot) : null,
     fromUserId(uid) { resolves.push(uid); return [...players.values()].find(p => p.userId === uid) ?? null; },
     target(pattern, slot, immunity) { targetCalls.push([pattern, slot, immunity]); return targets; },
   };
@@ -67,7 +68,7 @@ function fixture({ storeMode = "normal" } = {}) {
   api.OnPluginStart();
   function addPlayer(sid = A, slot = 1, userId = 101) {
     const client = { slot, steamId: sid, isBot: sid === "0", chat: text => replies.push([text]), kickWithReason: text => { order.push("kick"); kicks.push([sid, slot, text]); } };
-    const p = { steamId: sid, slot, userId, playerName: `name-${sid}`, client, kick: client.kickWithReason };
+    const p = { hasPawn: true, steamId: sid, slot, userId, playerName: `name-${sid}`, client, kick: client.kickWithReason };
     players.set(slot, p); return p;
   }
   return { errors, api, service, commands, items, players, cache, events, order, replies, translations, kicks, targetCalls, resolves, on, addPlayer,
@@ -255,4 +256,34 @@ test("request callbacks may advance wall time; cache expiry must match this add 
   f.on("OnBanRequested", () => { f.setNow(1_800_000_100_000); });
   assert.equal(f.service.ban(request()).recorded, true);
   assert.equal(f.events[0][1].until, 1_800_000_400);
+});
+
+for (const timing of ["before-command", "during-callback"]) {
+  for (const name of ["sm_ban", "sm_addban", "sm_unban"]) test(`${name} preserves actor identity and replies when pawnless ${timing}`, () => {
+    const f = fixture(); const target = f.addPlayer(); const actor = f.addPlayer(B, 2, 102); f.setTargets([target]);
+    if (timing === "before-command") actor.hasPawn = false;
+    if (name === "sm_unban") f.cache.set(A, { until: 0, reason: "old" });
+    f.on(name === "sm_unban" ? "OnBanRemoved" : "OnBanRequested", () => { actor.hasPawn = false; });
+    f.call(name, name === "sm_ban" ? ["#101", "5"] : name === "sm_addban" ? [A, "5"] : [A], 2);
+    assert.equal(f.replies.at(-1)?.[0], name === "sm_ban" ? "Ban Success" : name === "sm_addban" ? "Addban Success" : "Unban Success");
+    assert.equal(f.events.length, 1);
+    if (name !== "sm_unban") assert.equal(f.events[0][1].request.actorSteamId, B, "pawnless authenticated actor is never downgraded to 0 or console");
+    assert.equal(f.kicks.length, name === "sm_ban" ? 1 : 0);
+    assert.deepEqual(f.errors, []);
+  });
+}
+
+for (const timing of ["before-menu", "before-duration", "during-hook"]) test(`Ban menu preserves pawnless admin ownership ${timing}`, () => {
+  const f = fixture(); f.setPicked(f.addPlayer()); const actor = f.addPlayer(B, 2, 102);
+  if (timing === "before-menu") actor.hasPawn = false;
+  f.items.get("basebans:ban").onSelect(2);
+  assert.ok(f.getMenu(), "connected pawnless admins can open the duration menu");
+  if (timing === "before-duration") actor.hasPawn = false;
+  let observed;
+  f.on("OnBanRequested", request => { observed = request; actor.hasPawn = false; return 2; });
+  f.getMenu().select({ info: "5" });
+  assert.equal(observed?.actorSteamId, B);
+  assert.equal(f.replies.at(-1)?.[0], "Ban Intercepted:", "pawn loss is not a disconnected or replaced actor");
+  assert.deepEqual(f.order, ["OnBanRequested"]);
+  assert.deepEqual(f.errors, []);
 });
