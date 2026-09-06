@@ -1,0 +1,4 @@
+node_modules/
+dist/
+*.s2sp
+.DS_Store

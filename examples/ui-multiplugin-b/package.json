@@ -1,0 +1,13 @@
+{
+  "name": "@demo/ui-multiplugin-b",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/plugin.ts",
+  "scripts": {
+    "build": "s2s build ."
+  },
+  "dependencies": {
+    "@s2script/sdk": "^0.25.1",
+    "@s2script/cs2": "^0.17.2"
+  }
+}
