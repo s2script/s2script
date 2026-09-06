@@ -187,10 +187,11 @@
     return null;
   }
 
-  function makeHud(desc, ctxState, onFirstClickHandler) {
+  function makeHud(desc, ctxState) {
     var layout = desc;
     var disabled = {};
     var handlers = {};
+    var subscribers = {};
     var meterClass = {};
     var visiblePanels = {};
     var lastValue = {};
@@ -552,7 +553,22 @@
       }
       ctxState.buttonHandlers[buttonId] = handler;
       handlers[buttonId] = handler;
-      onFirstClickHandler();
+    };
+    api.subscribeClick = function (buttonId, handler) {
+      var id = String(buttonId);
+      var list = subscribers[id];
+      if (!list) { list = []; subscribers[id] = list; }
+      var entry = { handler: handler, live: true };
+      list.push(entry);
+      return { dispose: function () {
+        if (!entry.live) return;
+        entry.live = false;
+        var current = subscribers[id];
+        if (!current) return;
+        var index = current.indexOf(entry);
+        if (index >= 0) current.splice(index, 1);
+        if (current.length === 0) delete subscribers[id];
+      } };
     };
     api.setDisabled = function (slot, buttonId, disabledOn) {
       return legacyResult(api._drive.setDisabled(slot, buttonId, disabledOn));
@@ -560,8 +576,12 @@
     api.dispatchClick = function (slot, buttonId) {
       if (disabled[slot] && disabled[slot][buttonId]) return false;
       var h = handlers[buttonId];
-      if (!h) return false;
-      h(api.forSlot(slot));
+      var list = subscribers[buttonId];
+      var snapshot = list ? list.slice() : [];
+      if (!h && snapshot.length === 0) return false;
+      var player = api.forSlot(slot);
+      if (h) h(player);
+      for (var i = 0; i < snapshot.length; i++) snapshot[i].handler(player);
       return true;
     };
     api.forget = function (slot, client) {
@@ -724,6 +744,29 @@
         }
         return result;
       },
+      reserveLinked: function (binding, root, priority, parentToken) {
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        if (typeof globalThis.__s2_surface_reserve_linked !== "function" ||
+            typeof globalThis.__s2_surface_state !== "function" ||
+            typeof globalThis.__s2_surface_activate !== "function" ||
+            typeof globalThis.__s2_surface_active !== "function" ||
+            typeof globalThis.__s2_surface_release !== "function") {
+          return uiFail("Unavailable", "surface focus is unavailable");
+        }
+        var ent = bindEntity(ctxState.ensureEntity(layout));
+        if (!ent) return uiFail("NotReady", ctxState.notReadyReason());
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        var result = globalThis.__s2_surface_reserve_linked("cs2:hudkit:exclusive", ent.index, ent.id,
+          binding.slot, priority, JSON.stringify({
+            capture: { call: "setInputCaptureEnabledForPlayer", token: "panel:" + root },
+            suspend: { call: "setHasClassForPlayer", args: [root, layout.hideClass, CLASS_HAS] }
+          }), parentToken);
+        if (!bindingIsValid(binding)) {
+          if (result.ok) api._focus.release(result.value);
+          return uiFail("StaleClient", "stale client or component");
+        }
+        return result;
+      },
       state: function (token) {
         return typeof globalThis.__s2_surface_state === "function" ?
           globalThis.__s2_surface_state(token) : "invalid";
@@ -757,6 +800,65 @@
       },
       onFrame: ctxState.onFocusFrame
     };
+    function surfaceAdapters(roots, profile) {
+      var adapters = [];
+      for (var i = 0; i < roots.length; i++) {
+        var root = String(roots[i]);
+        if (profile === "occupancy") { adapters.push({}); continue; }
+        var adapter = {
+          suspend: { call: "setHasClassForPlayer", args: [root, layout.hideClass, CLASS_HAS] }
+        };
+        if (profile === "interactive") {
+          adapter.capture = { call: "setInputCaptureEnabledForPlayer", token: "panel:" + root };
+        }
+        adapters.push(adapter);
+      }
+      return adapters;
+    }
+    api._surface = {
+      reserve: function (binding, key, mode, roots, profile) {
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        if (typeof globalThis.__s2_surface_reserve_owned !== "function" ||
+            typeof globalThis.__s2_surface_state !== "function" ||
+            typeof globalThis.__s2_surface_activate !== "function" ||
+            typeof globalThis.__s2_surface_active !== "function" ||
+            typeof globalThis.__s2_surface_release !== "function") {
+          return uiFail("Unavailable", "surface ownership is unavailable");
+        }
+        var ent = bindEntity(ctxState.ensureEntity(layout));
+        if (!ent) return uiFail("NotReady", ctxState.notReadyReason());
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        var adapters = surfaceAdapters(roots, profile);
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        var result = globalThis.__s2_surface_reserve_owned(key, ent.index, ent.id, binding.slot,
+          mode, JSON.stringify(adapters));
+        if (!bindingIsValid(binding)) {
+          if (result.ok) api._surface.release(result.value.token);
+          return uiFail("StaleClient", "stale client or component");
+        }
+        return result;
+      },
+      clearLegacy: function (binding, key, roots, profile) {
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        if (typeof globalThis.__s2_surface_clear_legacy !== "function") {
+          return uiFail("Unavailable", "surface ownership is unavailable");
+        }
+        var ent = bindEntity(ctxState.ensureEntity(layout));
+        if (!ent) return uiFail("NotReady", ctxState.notReadyReason());
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        var adapters = surfaceAdapters(roots, profile);
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        var result = globalThis.__s2_surface_clear_legacy(key, ent.index, ent.id, binding.slot,
+          JSON.stringify(adapters));
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        return result.ok ? uiOk(undefined) : result;
+      },
+      state: api._focus.state,
+      activate: api._focus.activate,
+      active: api._focus.active,
+      release: api._focus.release,
+      invalidate: api._focus.invalidate
+    };
     api._disconnectOwnsSlot = function (slot, client) {
       if (!client || !sameClient(slotClients[slot], client)) return false;
       var occupant = clientsApi().fromSlot(slot);
@@ -781,7 +883,6 @@
       var hudByResource = {};
       var buttonHandlers = {};
       var rawClickHandlers = [];
-      var clickHookInstalled = false;
       var mamBannerShown = false;
       var focusReconcilers = [];
       reg(viaId(function () {
@@ -790,6 +891,24 @@
           var pending = focusReconcilers.slice();
           for (var i = 0; i < pending.length; i++) pending[i]();
         }, { phase: "pre" });
+      }));
+      reg(viaId(function () {
+        return __s2_hook_on("@s2script/cs2", "onCustomHudClicked", function (view) {
+          var clicker = resolveClicker(view.player);
+          var slot = clicker ? clicker.slot : -1;
+          if (slot >= 0) {
+            for (var res in hudByResource) {
+              if (Object.prototype.hasOwnProperty.call(hudByResource, res)) {
+                hudByResource[res].dispatchClick(slot, view.buttonId);
+              }
+            }
+          }
+          var rawSnapshot = rawClickHandlers.slice();
+          for (var r = 0; r < rawSnapshot.length; r++) {
+            rawSnapshot[r]({ player: view.player, buttonId: view.buttonId, slot: slot });
+          }
+          return 0;
+        });
       }));
 
       function notReadyReason() {
@@ -918,40 +1037,17 @@
         }
       }
 
-      function installClickHook() {
-        if (clickHookInstalled) return;
-        clickHookInstalled = true;
-        reg(viaId(function () {
-          return __s2_hook_on("@s2script/cs2", "onCustomHudClicked", function (view) {
-            var clicker = resolveClicker(view.player);
-            var slot = clicker ? clicker.slot : -1;
-            if (slot >= 0) {
-              for (var res in hudByResource) {
-                if (Object.prototype.hasOwnProperty.call(hudByResource, res)) {
-                  hudByResource[res].dispatchClick(slot, view.buttonId);
-                }
-              }
-            }
-            for (var r = 0; r < rawClickHandlers.length; r++) {
-              rawClickHandlers[r]({ player: view.player, buttonId: view.buttonId, slot: slot });
-            }
-            return 0;
-          });
-        }));
-      }
-
       function getLayout(desc) {
         maybePrintMamBanner(desc);
         remember(desc);
         if (!hudByResource[desc.resource]) {
-          hudByResource[desc.resource] = makeHud(desc, ctxState(), installClickHook);
+          hudByResource[desc.resource] = makeHud(desc, ctxState());
         }
         if (ready) ctxState().createEntity(desc);
         return hudByResource[desc.resource];
       }
 
       function onClicked(handler) {
-        installClickHook();
         rawClickHandlers.push(handler);
       }
 

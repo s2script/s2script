@@ -14,6 +14,50 @@ function mount() {
   const calls = [];
   const clickHandlers = {};
   const frameHandlers = [];
+  const surfaceRecords = new Map();
+  let nextSurfaceToken = 1;
+  function reserveSurface(binding, key, mode, roots) {
+    const slot = binding.slot;
+    const live = [...surfaceRecords.values()].filter(r => r.key === key && r.slot === slot);
+    let lane = roots.findIndex((_root, index) => !live.some(r => r.lane === index));
+    if (lane < 0 && mode === "legacy") {
+      const oldest = live.find(r => r.mode === "legacy");
+      if (oldest) { releaseSurface(oldest.token); lane = oldest.lane; }
+    }
+    if (lane < 0) return { ok: false, error: { code: "Busy", message: "surface is busy" } };
+    const token = `surface-${nextSurfaceToken++}`;
+    surfaceRecords.set(token, { token, key, slot, lane, root: roots[lane], mode, state: "ready" });
+    return { ok: true, value: { token, lane } };
+  }
+  function releaseSurface(token) {
+    const record = surfaceRecords.get(token);
+    if (!record) return false;
+    surfaceRecords.delete(token);
+    calls.push({ op: "surfaceRelease", token, slot: record.slot, id: record.root });
+    calls.push({ op: "hide", slot: record.slot, id: record.root, host: true });
+    return true;
+  }
+  const surface = {
+    reserve: reserveSurface,
+    clearLegacy(binding, key, roots) {
+      const records = [...surfaceRecords.values()].filter(r => r.key === key && r.slot === binding.slot);
+      const occupied = new Set(records.map(r => r.lane));
+      for (const record of records) if (record.mode === "legacy") releaseSurface(record.token);
+      roots.forEach((root, lane) => {
+        if (!occupied.has(lane)) calls.push({ op: "hide", slot: binding.slot, id: root, host: true });
+      });
+      return { ok: true, value: undefined };
+    },
+    state(token) { return surfaceRecords.get(token)?.state || "invalid"; },
+    activate(_binding, token) {
+      const record = surfaceRecords.get(token);
+      if (!record) return false;
+      record.state = "active";
+      return true;
+    },
+    active(_binding, token) { return surfaceRecords.get(token)?.state === "active"; },
+    release: releaseSurface,
+  };
   const hud = {
     set:      (s, id, v) => { calls.push({ op: "set", slot: s, id, value: v }); return null; },
     setClass: (s, id, cls, on) => { calls.push({ op: "cls", slot: s, id, cls, on }); return null; },
@@ -24,6 +68,7 @@ function mount() {
     forget:   () => {},
     onClick:  (id, fn) => { clickHandlers[id] = fn; },
     _focus: { onFrame: (fn) => frameHandlers.push(fn) },
+    _surface: surface,
   };
   // A fresh global each mount. In production claims go through the __s2_ui_pool_* natives (the
   // prelude runs per plugin context, so only the host can hold a genuinely global table); in
@@ -45,7 +90,7 @@ function mount() {
   const src = readFileSync(join(__dirname, "components.js"), "utf8");
   new Function(src)();
   return { ui: globalThis.__s2pkg_game_ctx.ui({}, "test").components(), calls, clickHandlers, pending,
-    frame: () => frameHandlers.slice().forEach((fn) => fn()) };
+    surfaceRecords, frame: () => frameHandlers.slice().forEach((fn) => fn()) };
 }
 
 const classSet = (calls, cls) => calls.some((c) => c.op === "cls" && c.cls === cls && c.on === true);
@@ -83,6 +128,52 @@ test("each component family uses its own fade class", () => {
   // A shared "out" class would transition translatex on a sheet, which does not declare it —
   // the panel would pop instead of fading.
   assert.ok(!calls.some((c) => c.op === "cls" && c.cls === "s2-sheet-out"));
+});
+
+test("owned toasts use four lowest-free lanes per player and exact disposal", () => {
+  const { ui, calls } = mount();
+  const player = ui.forSlot(1);
+  const handles = [];
+  for (let i = 0; i < 4; i++) {
+    const result = player.tryOwnToast({ title: String(i), holdSeconds: 0 });
+    assert.equal(result.ok, true);
+    handles.push(result.value);
+  }
+  assert.equal(player.tryOwnToast({ title: "full", holdSeconds: 0 }).error.code, "Busy");
+  assert.deepEqual(calls.filter(c => c.op === "show" && /^s2_t/.test(c.id)).map(c => c.id),
+    ["s2_t0", "s2_t1", "s2_t2", "s2_t3"]);
+  handles[1].dispose();
+  const reused = player.tryOwnToast({ title: "hole", holdSeconds: 0 });
+  assert.equal(reused.ok, true);
+  assert.equal(calls.filter(c => c.op === "show" && /^s2_t/.test(c.id)).at(-1).id, "s2_t1");
+  assert.equal(ui.forSlot(2).tryOwnToast({ title: "other", holdSeconds: 0 }).ok, true);
+  assert.equal(calls.filter(c => c.op === "show" && c.slot === 2).at(-1).id, "s2_t0");
+  handles[1].dispose();
+  assert.equal(reused.value.isValid(), true, "a stale disposer cannot retire the replacement");
+});
+
+test("legacy occupancy blocks explicit singleton claims and legacy cannot replace explicit", () => {
+  const { ui } = mount();
+  assert.equal(ui.banner(1, { text: "legacy", holdSeconds: 0 }), null);
+  assert.equal(ui.forSlot(1).tryOwnBanner({ text: "explicit", holdSeconds: 0 }).error.code, "Busy");
+  ui.hideAll(1);
+  const owned = ui.forSlot(1).tryOwnBanner({ text: "explicit", holdSeconds: 0 });
+  assert.equal(owned.ok, true);
+  assert.match(ui.banner(1, { text: "legacy", holdSeconds: 0 }), /busy/i);
+  assert.equal(owned.value.isValid(), true);
+});
+
+test("hideAll atomically clears legacy surfaces while preserving explicit handles", () => {
+  const { ui, calls } = mount();
+  const owned = ui.forSlot(1).tryOwnBanner({ text: "owned", holdSeconds: 0 });
+  assert.equal(owned.ok, true);
+  ui.callout(1, { message: "legacy", holdSeconds: 0 });
+  const before = calls.length;
+  ui.hideAll(1);
+  const after = calls.slice(before);
+  assert.equal(owned.value.isValid(), true);
+  assert.ok(after.some(c => c.op === "hide" && c.id === "s2_callout"));
+  assert.ok(!after.some(c => c.op === "hide" && c.id === "s2_banner"));
 });
 
 test("a badge sets exactly one corner class", () => {
@@ -667,6 +758,17 @@ test("motd handle.close does not fire onClose", () => {
   const handle = ui.motd(1, { title: "Hi", onClose: (slot) => closed.push(slot) });
   handle.close();
   assert.deepStrictEqual(closed, []);
+});
+
+test("owned MOTD disposes by exact parent lease and remains valid while active", () => {
+  const { ui, calls } = mount();
+  const result = ui.forSlot(1).tryOwnMotd({ title: "Owned" });
+  assert.equal(result.ok, true);
+  assert.equal(result.value.isValid(), true);
+  result.value.dispose();
+  result.value.dispose();
+  assert.equal(result.value.isValid(), false);
+  assert.equal(calls.filter(c => c.op === "surfaceRelease" && c.id === "s2_motd").length, 1);
 });
 
 test("hideAll drops callout, banner, motd, and dashboard for that player", () => {

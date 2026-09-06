@@ -451,10 +451,11 @@ test("button id collision throws", () => {
   assert.throws(() => hud.onClick("s2_btn_0", () => {}), /conflicting handler/);
 });
 
-test("one lazy click subscription per plugin context", () => {
+test("one click hook is installed in the plugin load window before routes are added", () => {
   const h = makeHost();
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
+  assert.equal(h.hooks.filter((x) => x.name === "onCustomHudClicked").length, 1);
   ui.createLayout();
   const hud = ui.hud();
   hud.onClick("s2_btn_0", () => {});
@@ -723,4 +724,39 @@ void modalResult; void dashResult;
   assert.equal(diagnostics.length, 0, ts.formatDiagnostics(diagnostics, {
     getCurrentDirectory: () => repoRoot, getCanonicalFileName: name => name, getNewLine: () => "\n",
   }));
+});
+
+test("literal layout buttons constrain disposable subscriptions while dynamic arrays remain open", () => {
+  const diagnostics = compileUiContract(`
+import { CustomHudLayout, hudkit, type UiResult, type UiSubscription, type UiSurfaceHandle } from "@s2script/cs2";
+const literal = CustomHudLayout.create({
+  addons: ["1"], resource: "panorama/layout/custom_game/x.xml", buttons: ["accept", "cancel"]
+});
+const sub: UiSubscription = literal.subscribeClick("accept", () => {}); sub.dispose();
+const dynamicButtons: readonly string[] = getButtons();
+CustomHudLayout.create({ addons: ["1"], resource: "panorama/layout/custom_game/y.xml", buttons: dynamicButtons })
+  .subscribeClick("runtime-id", () => {});
+const player = hudkit.forSlot(1);
+const toast: UiResult<UiSurfaceHandle> = player.tryOwnToast({ title: "T" });
+const banner: UiResult<UiSurfaceHandle> = player.tryOwnBanner({ text: "B" });
+const callout: UiResult<UiSurfaceHandle> = player.tryOwnCallout({ message: "C" });
+const motd: UiResult<UiSurfaceHandle> = player.tryOwnMotd({ title: "M" });
+declare function getButtons(): readonly string[];
+void toast; void banner; void callout; void motd;
+`);
+  assert.equal(diagnostics.length, 0, ts.formatDiagnostics(diagnostics, {
+    getCurrentDirectory: () => repoRoot, getCanonicalFileName: name => name, getNewLine: () => "\n",
+  }));
+});
+
+test("literal layout subscriptions reject undeclared button ids", () => {
+  const diagnostics = compileUiContract(`
+import { CustomHudLayout } from "@s2script/cs2";
+const layout = CustomHudLayout.create({
+  addons: ["1"], resource: "panorama/layout/custom_game/x.xml", buttons: ["accept", "cancel"]
+});
+layout.subscribeClick("accpet", () => {});
+`);
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].code, 2345);
 });

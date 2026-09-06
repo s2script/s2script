@@ -142,8 +142,10 @@ function pluginWorld(options = {}) {
   const writes = [];
   const plugins = [];
   const focus = new Map();
+  const owned = new Map();
   const focusCalls = [];
   let nextFocus = 1;
+  let nextOwned = 1;
   function live(r) {
     return clientGenerations.get(r.slot) === r.generation && entities.some(e =>
       e.index === r.index && e.id === r.id && e.isValid());
@@ -161,35 +163,99 @@ function pluginWorld(options = {}) {
     if (!r || r.owner !== owner) return false;
     const wasWinner = live(r) && winner(r) === r;
     focus.delete(token);
+    if (r.parentToken) {
+      const parent = owned.get(r.parentToken);
+      if (parent && parent.childToken === token) parent.childToken = null;
+    }
     if (wasWinner) { retire(r); const next = winner(r); if (next) next.state = "waiting"; }
     return true;
   }
+  function releaseOwned(owner, token) {
+    const r = owned.get(token);
+    if (!r || r.owner !== owner) return false;
+    if (!live(r)) {
+      if (r.childToken) focus.delete(r.childToken);
+      owned.delete(token);
+      return false;
+    }
+    if (r.childToken) releaseFocus(owner, r.childToken);
+    owned.delete(token);
+    retire(r);
+    return true;
+  }
   function focusNatives(owner) {
-    function own(token) { const r = focus.get(token); return r && r.owner === owner && live(r) ? r : null; }
+    function own(token) {
+      const r = focus.get(token) || owned.get(token);
+      return r && r.owner === owner && live(r) ? r : null;
+    }
+    function reserveFocus(surface, index, id, slot, priority, json, parentToken) {
+      if (parentToken) {
+        const parent = owned.get(parentToken);
+        if (!parent || parent.owner !== owner || !live(parent)) {
+          return { ok: false, error: { code: "Released", message: "parent released" } };
+        }
+        if (parent.childToken) return { ok: false, error: { code: "Busy", message: "parent already linked" } };
+      }
+      focusCalls.push({ surface, index, id, slot, priority, adapter: JSON.parse(json), parentToken });
+      if (options.focusError) return { ok: false, error: { code: options.focusError, message: "native failure" } };
+      const token = "opaque/" + nextFocus++;
+      const r = { token, owner, index, id, slot, priority, order: nextFocus,
+        generation: clientGenerations.get(slot), adapter: JSON.parse(json), parentToken,
+        key: JSON.stringify([surface, index, id, slot, clientGenerations.get(slot)]), state: "covered" };
+      const prev = winner(r);
+      focus.set(token, r);
+      if (parentToken) owned.get(parentToken).childToken = token;
+      if (winner(r) === r) { if (prev) { retire(prev); prev.state = "covered"; } r.state = "ready"; }
+      return { ok: true, value: token };
+    }
     return {
       __s2_surface_reserve(surface, index, id, slot, priority, json) {
-        focusCalls.push({ surface, index, id, slot, priority, adapter: JSON.parse(json) });
-        if (options.focusError) return { ok: false, error: { code: options.focusError, message: "native failure" } };
-        const token = "opaque/" + nextFocus++;
-        const r = { token, owner, index, id, slot, priority, order: nextFocus,
-          generation: clientGenerations.get(slot), adapter: JSON.parse(json),
-          key: JSON.stringify([surface, index, id, slot, clientGenerations.get(slot)]), state: "covered" };
-        const prev = winner(r);
-        focus.set(token, r);
-        if (winner(r) === r) { if (prev) { retire(prev); prev.state = "covered"; } r.state = "ready"; }
-        return { ok: true, value: token };
+        return reserveFocus(surface, index, id, slot, priority, json, null);
+      },
+      __s2_surface_reserve_linked(surface, index, id, slot, priority, json, parentToken) {
+        return reserveFocus(surface, index, id, slot, priority, json, parentToken);
+      },
+      __s2_surface_reserve_owned(surface, index, id, slot, mode, json) {
+        const adapters = JSON.parse(json);
+        const key = JSON.stringify([surface, index, id, slot, clientGenerations.get(slot)]);
+        const records = [...owned.values()].filter(r => r.key === key && live(r));
+        let lane = adapters.findIndex((_adapter, i) => !records.some(r => r.lane === i));
+        if (lane < 0 && mode === "legacy") {
+          const previous = records.filter(r => r.mode === "legacy").sort((a, b) => a.order - b.order)[0];
+          if (previous) { lane = previous.lane; releaseOwned(previous.owner, previous.token); }
+        }
+        if (lane < 0) return { ok: false, error: { code: "Busy", message: "surface busy" } };
+        const token = "owned/" + nextOwned++;
+        owned.set(token, { token, owner, index, id, slot, mode, lane, adapter: adapters[lane], key,
+          generation: clientGenerations.get(slot), state: "ready", order: nextOwned, childToken: null });
+        return { ok: true, value: { token, lane } };
+      },
+      __s2_surface_clear_legacy(surface, index, id, slot, json) {
+        const adapters = JSON.parse(json);
+        const key = JSON.stringify([surface, index, id, slot, clientGenerations.get(slot)]);
+        const records = [...owned.values()].filter(r => r.key === key && live(r));
+        const occupied = new Set(records.map(r => r.lane));
+        for (const r of records) if (r.mode === "legacy") releaseOwned(r.owner, r.token);
+        adapters.forEach((adapter, lane) => {
+          if (!occupied.has(lane)) retire({ owner, index, id, slot, adapter });
+        });
+        return { ok: true };
       },
       __s2_surface_state(token) { const r = own(token); return r ? r.state : "invalid"; },
       __s2_surface_activate(token) {
         const r = own(token);
         if (!r || r.state !== "ready" || options.activateError) return false;
+        if (r.parentToken) {
+          const parent = owned.get(r.parentToken);
+          if (!parent || parent.state !== "active") return false;
+        }
         r.state = "active"; r.activatedEpoch = activeEpoch; return true;
       },
       __s2_surface_active(token) {
         const r = own(token);
         return !!r && r.state === "active" && !(activeEpoch !== null && r.activatedEpoch === activeEpoch);
       },
-      __s2_surface_release: token => releaseFocus(owner, token),
+      __s2_surface_release: token => focus.has(token) ? releaseFocus(owner, token) : releaseOwned(owner, token),
     };
   }
   let nextClientGeneration = 1;
@@ -299,7 +365,7 @@ function pluginWorld(options = {}) {
     finally { activeEpoch = previous; }
   }
   return {
-    owners, writes, plugins, plugin, session, dispatchClick, client: clientFor, focus, focusCalls,
+    owners, writes, plugins, plugin, session, dispatchClick, client: clientFor, focus, focusCalls, owned,
     frame() {
       for (const r of focus.values()) if (r.state === "waiting" && live(r) && winner(r) === r) r.state = "ready";
       for (const p of plugins) p.lifecycle.frame.forEach(fn => fn());
@@ -307,11 +373,12 @@ function pluginWorld(options = {}) {
     unload(p) {
       const owner = plugins.indexOf(p);
       for (const r of [...focus.values()]) if (r.owner === owner) releaseFocus(owner, r.token);
+      for (const r of [...owned.values()]) if (r.owner === owner) releaseOwned(owner, r.token);
       p.lifecycle.frame.length = 0; p.lifecycle.click.length = 0;
     },
     replace(slot) { connect(slot); switches.clearSlot(slot); },
     mapChange() {
-      focus.clear(); switches.clear();
+      focus.clear(); owned.clear(); switches.clear();
       for (const entity of entities) entity.valid = false;
       for (const p of plugins) p.lifecycle.map.forEach(fn => fn());
       for (const p of plugins) p.lifecycle.active.forEach(fn => fn(clientFor(1)));
@@ -331,6 +398,69 @@ function pluginWorld(options = {}) {
     },
   };
 }
+
+test("legacy and explicit singleton ownership arbitrate across plugin contexts", () => {
+  const w = pluginWorld();
+  const a = w.plugin(), b = w.plugin();
+  assert.equal(a.hudkit.banner(1, { text: "legacy", holdSeconds: 0 }), null);
+  assert.equal(b.hudkit.forSlot(1).tryOwnBanner({ text: "blocked", holdSeconds: 0 }).error.code, "Busy");
+  a.hudkit.hideAll(1);
+  const owned = b.hudkit.forSlot(1).tryOwnBanner({ text: "owned", holdSeconds: 0 });
+  assert.equal(owned.ok, true);
+  assert.match(a.hudkit.banner(1, { text: "blocked legacy", holdSeconds: 0 }), /busy/i);
+  assert.equal(owned.value.isValid(), true);
+  owned.value.dispose(); owned.value.dispose();
+  assert.equal(a.hudkit.banner(1, { text: "after release", holdSeconds: 0 }), null);
+});
+
+test("toast ownership has four per-client lanes, reuses holes, and isolates players", () => {
+  const w = pluginWorld();
+  const a = w.plugin(), b = w.plugin();
+  const handles = [];
+  for (let i = 0; i < 4; i++) handles.push(a.hudkit.forSlot(1)
+    .tryOwnToast({ title: String(i), holdSeconds: 0 }).value);
+  assert.equal(b.hudkit.forSlot(1).tryOwnToast({ title: "full", holdSeconds: 0 }).error.code, "Busy");
+  assert.equal(b.hudkit.forSlot(2).tryOwnToast({ title: "other", holdSeconds: 0 }).ok, true);
+  handles[1].dispose();
+  const reused = b.hudkit.forSlot(1).tryOwnToast({ title: "hole", holdSeconds: 0 });
+  assert.equal(reused.ok, true);
+  assert.equal([...w.owned.values()].filter(r => r.slot === 1).some(r => r.lane === 1 && r.owner === 1), true);
+});
+
+test("stale transient timers and disposers cannot retire a replacement owner", () => {
+  const w = pluginWorld();
+  const a = w.plugin(), b = w.plugin();
+  const first = a.hudkit.forSlot(1).tryOwnCallout({ message: "old", holdSeconds: 1 }).value;
+  first.dispose();
+  const replacement = b.hudkit.forSlot(1).tryOwnCallout({ message: "new", holdSeconds: 0 }).value;
+  first.dispose();
+  a.runTimer();
+  assert.equal(replacement.isValid(), true);
+  w.unload(b);
+  assert.equal(a.hudkit.forSlot(1).tryOwnCallout({ message: "reclaimed", holdSeconds: 0 }).ok, true);
+});
+
+test("focused legacy MOTD replacement cascades its linked child before repaint", () => {
+  const w = pluginWorld();
+  const a = w.plugin(), b = w.plugin();
+  const first = a.hudkit.motd(1, { title: "first", focus: { mode: "exclusive" } });
+  assert.equal(first.isValid(), true);
+  const second = a.hudkit.motd(1, { title: "second", focus: { mode: "exclusive" } });
+  assert.equal(first.isValid(), false);
+  assert.equal(second.isValid(), true);
+  assert.equal(w.focus.size, 1);
+  assert.equal(b.hudkit.forSlot(1).tryOwnMotd({ title: "blocked" }).error.code, "Busy");
+});
+
+test("hideAll preserves explicit owned surfaces", () => {
+  const w = pluginWorld();
+  const a = w.plugin();
+  const owned = a.hudkit.forSlot(1).tryOwnBanner({ text: "owned", holdSeconds: 0 }).value;
+  a.hudkit.callout(1, { message: "legacy", holdSeconds: 0 });
+  a.hudkit.hideAll(1);
+  assert.equal(owned.isValid(), true);
+  assert.equal([...w.owned.values()].some(r => r.mode === "legacy" && r.slot === 1), false);
+});
 
 test("14 idle plugins reserve no panels and every plugin can open a clickable menu after load", () => {
   const w = pluginWorld();

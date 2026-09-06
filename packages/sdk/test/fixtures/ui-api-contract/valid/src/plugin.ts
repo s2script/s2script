@@ -10,6 +10,9 @@ import {
   type ModalView,
   type UiErrorCode,
   type UiResult,
+  CustomHudLayout,
+  type UiSubscription,
+  type UiSurfaceHandle,
 } from "@s2script/cs2";
 
 declare const modalSpec: ModalSpec;
@@ -24,6 +27,13 @@ function consumeResult<T>(result: UiResult<T>): T | undefined {
 }
 
 export function OnPluginStart(): void {
+  const layout = CustomHudLayout.create({
+    addons: ["1"], resource: "panorama/layout/custom_game/typed.xml", buttons: ["save", "close"],
+  });
+  const subscription: UiSubscription = layout.subscribeClick("save", () => {});
+  subscription.dispose();
+  const surface: UiResult<UiSurfaceHandle> = hudkit.forSlot(1).tryOwnBanner({ text: "ready" });
+  void surface;
   const modal: Modal | undefined = consumeResult(hudkit.tryModal(modalSpec));
   const badge: Badge | undefined = consumeResult(hudkit.tryBadge({ corner: "tr" }));
 
@@ -64,4 +74,3 @@ export function OnPluginStart(): void {
     void legacyOpen;
   }
 }
-

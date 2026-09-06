@@ -25,6 +25,15 @@ export type UiResult<T> = { readonly ok: true; readonly value: T } |
     readonly message: string;
   } };
 
+/** A route registration that can be removed without affecting other handlers. */
+export interface UiSubscription { dispose(): void; }
+
+/** An explicit claim on one shared hudkit presentation. */
+export interface UiSurfaceHandle {
+  isValid(): boolean;
+  dispose(): void;
+}
+
 export type UiStatus = {
   readonly server: "ready" | "not-ready" | "unavailable";
   /** Server-side state cannot prove that the client's workshop content rendered. */
@@ -45,7 +54,7 @@ export interface LayoutSlot {
  * `text`/`buttons`/`meters` are empty. {@link HudLayout.set} always uses id == dialog variable
  * name; {@link HudLayout.setText} uses `text` when a panel's variable differs.
  */
-export interface CustomHudSpec {
+export interface CustomHudSpec<ButtonId extends string = string> {
   /** Decimal workshop addon ids clients must mount (via MultiAddonManager). */
   readonly addons: readonly string[];
   /** Source `.xml` path under `panorama/layout/custom_game/`. */
@@ -55,7 +64,7 @@ export interface CustomHudSpec {
   /** panelId -> dialog variable name for {@link HudLayout.setText}. Default: none. */
   readonly text?: Readonly<Record<string, string>>;
   /** Button ids delivered by {@link HudLayout.onClick} / {@link CustomHudLayoutNs.onClicked}. */
-  readonly buttons?: readonly string[];
+  readonly buttons?: readonly ButtonId[];
   /** Meter name -> fill panel id (width driven via s2-w0..s2-w10 classes). */
   readonly meters?: Readonly<Record<string, string>>;
   /** Named pools of fixed slots (e.g. list rows). Each slot carries its own var list. */
@@ -66,10 +75,10 @@ export interface CustomHudSpec {
  * @deprecated Use {@link CustomHudSpec}. Same shape; `hideClass`/`text`/`buttons`/`meters` were
  * required on this older name and are optional on {@link CustomHudSpec}.
  */
-export type LayoutDescriptor = CustomHudSpec & {
+export type LayoutDescriptor<ButtonId extends string = string> = CustomHudSpec<ButtonId> & {
   readonly hideClass: string;
   readonly text: Readonly<Record<string, string>>;
-  readonly buttons: readonly string[];
+  readonly buttons: readonly ButtonId[];
   readonly meters: Readonly<Record<string, string>>;
 };
 
@@ -147,10 +156,10 @@ export interface HudPlayer {
  * p.set({ title: "Hello", ok_label: "OK" });
  * p.show("dialog", { cursor: true });
  */
-export interface HudLayout {
-  readonly spec: CustomHudSpec;
+export interface HudLayout<ButtonId extends string = string> {
+  readonly spec: CustomHudSpec<ButtonId>;
   /** @deprecated Use {@link HudLayout.spec}. */
-  readonly layout: CustomHudSpec;
+  readonly layout: CustomHudSpec<ButtonId>;
   /** Per-player view of this layout (cached per slot). */
   forSlot(slot: number): HudPlayer;
   /**
@@ -178,6 +187,8 @@ export interface HudLayout {
    * The handler receives the clicking player's {@link HudPlayer}.
    */
   onClick(buttonId: string, handler: (player: HudPlayer) => void): void;
+  /** Add a disposable route constrained to literal button ids declared by this layout. */
+  subscribeClick(buttonId: ButtonId, handler: (player: HudPlayer) => void): UiSubscription;
   setDisabled(slot: number, buttonId: string, disabled: boolean): HudResult;
   forget(slot: number): void;
 }
@@ -188,7 +199,7 @@ export interface CustomHudLayoutNs {
    * Bind (and spawn, once a client is active) a `custom_hud_layout` for `spec`.
    * Same layout resource is reused if you call this twice.
    */
-  create(spec: CustomHudSpec): HudLayout;
+  create<const ButtonId extends string = string>(spec: CustomHudSpec<ButtonId>): HudLayout<ButtonId>;
   /**
    * The shipped probe layout. Renders literal "S2SCRIPT PROBE OK" and is not driveable.
    * Use it to confirm the workshop addon is mounted.
@@ -210,7 +221,8 @@ export interface CustomHudLayoutNs {
   /**
    * @deprecated Use {@link CustomHudLayoutNs.create}. `hud()` with no argument is {@link CustomHudLayoutNs.probe}.
    */
-  hud(descriptor?: CustomHudSpec): HudLayout;
+  hud(): HudLayout<string>;
+  hud<const ButtonId extends string = string>(descriptor: CustomHudSpec<ButtonId>): HudLayout<ButtonId>;
   /**
    * @deprecated Use {@link CustomHudLayoutNs.kit} or {@link hudkit}.
    */
@@ -561,9 +573,13 @@ export interface HudKitPlayer {
   /** Whether this retained player view still belongs to the current client/component lifetime. */
   isValid(): boolean;
   toast(spec: ToastSpec): HudResult;
+  tryOwnToast(spec: ToastSpec): UiResult<UiSurfaceHandle>;
   callout(spec: CalloutSpec): HudResult;
+  tryOwnCallout(spec: CalloutSpec): UiResult<UiSurfaceHandle>;
   banner(spec: BannerSpec): HudResult;
+  tryOwnBanner(spec: BannerSpec): UiResult<UiSurfaceHandle>;
   motd(spec: MotdSpec): MotdHandle;
+  tryOwnMotd(spec: MotdSpec): UiResult<UiSurfaceHandle>;
   hideAll(): void;
   forget(): void;
 }
