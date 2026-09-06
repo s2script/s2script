@@ -139,6 +139,10 @@ pub(crate) fn reset() {
     invalidate_pending();
     LEASES.with(|l| l.borrow_mut().clear());
 }
+#[cfg(test)]
+pub(crate) fn holder_count() -> usize {
+    LEASES.with(|l| l.borrow().values().map(HashSet::len).sum())
+}
 pub(crate) fn prune_dead() {
     invalidate_pending();
     LEASES.with(|l| l.borrow_mut().retain(|k, _| live(k)));
