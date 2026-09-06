@@ -2168,13 +2168,403 @@
         shutdown();
     }
 
+    fn protocol2_setup() {
+        let _ = init(dummy_logger());
+        let metadata = serde_json::json!({"version":1,"methods":{"getCount":{"args":[],"result":{"kind":"number"}}},"forwards":{"OnCountChanged":{"kind":"notification","payload":{"kind":"object","fields":{"count":{"schema":{"kind":"number"},"optional":false}}}}}});
+        use sha2::{Digest, Sha256};
+        let sha256 = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&metadata).unwrap())
+        );
+        let contract: crate::interop::Contract =
+            serde_json::from_value(serde_json::json!({"metadata":metadata,"sha256":sha256}))
+                .unwrap();
+        set_plugin_publishes(
+            "prod",
+            [(
+                "@x/counter".into(),
+                crate::loader::PublishDecl {
+                    version: "1.0.0".into(),
+                    types_sha256: "a".repeat(64),
+                    contract: Some(contract.clone()),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+        create_plugin_context("prod");
+        for consumer in ["cons", "cons2"] {
+            set_plugin_imports(
+                consumer,
+                vec![crate::interfaces::ImportSpec {
+                    name: "@x/counter".into(),
+                    range: "^1.0.0".into(),
+                    kind: crate::interfaces::Kind::Hard,
+                    compiled_types_sha256: Some("a".repeat(64)),
+                }],
+            );
+            set_plugin_interop(
+                consumer,
+                [("@x/counter".into(), contract.clone())]
+                    .into_iter()
+                    .collect(),
+            );
+            create_plugin_context(consumer);
+        }
+        eval_in_context(
+            "prod",
+            r#"__s2_iface_publish("@x/counter",{getCount:function(){return 1;}})"#,
+        )
+        .unwrap();
+    }
+    #[test]
+    fn protocol2_notifications_validate_before_any_listener_and_enforce_identity() {
+        protocol2_setup();
+        eval_in_context("cons",r#"globalThis.received=0; __s2_iface_on("@x/counter","OnCountChanged",function(p){received++;p.count=9;});"#).unwrap();
+        eval_in_context("cons2",r#"globalThis.count=0; __s2_iface_on("@x/counter","OnCountChanged",function(p){count=p.count;});"#).unwrap();
+        assert!(eval_in_context(
+            "prod",
+            r#"__s2_iface_emit("@x/counter","OnCountChanged",{count:"bad"})"#
+        )
+        .is_err());
+        assert_eq!(eval_in_context_string("cons", "String(received)"), "0");
+        assert!(eval_in_context(
+            "cons",
+            r#"__s2_iface_emit("@x/counter","OnCountChanged",{count:1})"#
+        )
+        .is_err());
+        assert!(
+            eval_in_context("cons", r#"__s2_iface_on("@x/counter","typo",function(){})"#).is_err()
+        );
+        eval_in_context(
+            "prod",
+            r#"__s2_iface_emit("@x/counter","OnCountChanged",{count:1})"#,
+        )
+        .unwrap();
+        assert_eq!(eval_in_context_string("cons2", "String(count)"), "1");
+        shutdown();
+    }
+
+    #[test]
+    fn protocol2_rejects_unsupported_values_without_getters_or_partial_delivery() {
+        protocol2_setup();
+        eval_in_context("cons",r#"globalThis.received=0;__s2_iface_on("@x/counter","OnCountChanged",function(){received++})"#).unwrap();
+        for payload in [
+            "{count:NaN}",
+            "{count:Infinity}",
+            "{count:undefined}",
+            "{count:1n}",
+            "{count:Symbol()}",
+            "{count:1,extra:undefined}",
+            "{count:1,extra:function(){}}",
+            "Object.assign(new Date(),{count:1})",
+            "({get count(){globalThis.getterRan=true;return 1;}})",
+            "{count:1,[Symbol()]:2}",
+            "new Proxy({count:1},{})",
+        ] {
+            assert!(
+                eval_in_context(
+                    "prod",
+                    &format!("__s2_iface_emit('@x/counter','OnCountChanged',{})", payload)
+                )
+                .is_err(),
+                "{payload}"
+            );
+        }
+        assert_eq!(eval_in_context_string("cons", "String(received)"), "0");
+        assert_eq!(
+            eval_in_context_string("prod", "String(globalThis.getterRan)"),
+            "undefined"
+        );
+        shutdown();
+    }
+    #[test]
+    fn protocol2_subscriptions_require_declared_dependency_and_matching_hash() {
+        protocol2_setup();
+        create_plugin_context("rogue");
+        assert!(eval_in_context(
+            "rogue",
+            r#"__s2_iface_on("@x/counter","OnCountChanged",function(){})"#
+        )
+        .is_err());
+        set_plugin_imports(
+            "cons",
+            vec![crate::interfaces::ImportSpec {
+                name: "@x/counter".into(),
+                range: "^1.0.0".into(),
+                kind: crate::interfaces::Kind::Hard,
+                compiled_types_sha256: Some("b".repeat(64)),
+            }],
+        );
+        assert!(eval_in_context(
+            "cons",
+            r#"__s2_iface_on("@x/counter","OnCountChanged",function(){})"#
+        )
+        .is_err());
+        shutdown();
+    }
+    #[test]
+    fn protocol2_listener_errors_and_thenables_do_not_interrupt_later_notifications() {
+        protocol2_setup();
+        eval_in_context("cons",r#"__s2_iface_on("@x/counter","OnCountChanged",function(){throw Error('listener failure')}); __s2_iface_on("@x/counter","OnCountChanged",async function(){throw Error('async failure')});"#).unwrap();
+        eval_in_context("cons2",r#"globalThis.received=0;__s2_iface_on("@x/counter","OnCountChanged",function(){received++})"#).unwrap();
+        for _ in 0..2 {
+            eval_in_context(
+                "prod",
+                r#"__s2_iface_emit("@x/counter","OnCountChanged",{count:1})"#,
+            )
+            .unwrap();
+        }
+        assert_eq!(eval_in_context_string("cons2", "String(received)"), "2");
+        assert!(
+            PENDING_REJECTS.with(|r| r.borrow().is_empty()),
+            "thenable rejection must be observed"
+        );
+        shutdown();
+    }
+    #[test]
+    fn protocol2_method_results_are_validated_and_recursion_recovers() {
+        protocol2_setup();
+        for result in ["'wrong'", "undefined", "NaN", "Promise.resolve(1)"] {
+            eval_in_context(
+                "prod",
+                &format!(
+                    "__s2_iface_publish('@x/counter',{{getCount:function(){{return {};}}}})",
+                    result
+                ),
+            )
+            .unwrap();
+            assert!(
+                eval_in_context("cons", r#"__s2_iface_call("@x/counter","getCount",[])"#).is_err()
+            );
+        }
+        let contract = published_contract("@x/counter").unwrap();
+        set_plugin_imports(
+            "prod",
+            vec![crate::interfaces::ImportSpec {
+                name: "@x/counter".into(),
+                range: "^1.0.0".into(),
+                kind: crate::interfaces::Kind::Hard,
+                compiled_types_sha256: Some("a".repeat(64)),
+            }],
+        );
+        set_plugin_interop(
+            "prod",
+            [("@x/counter".into(), contract)].into_iter().collect(),
+        );
+        eval_in_context("prod",r#"globalThis.left=31;__s2_iface_publish("@x/counter",{getCount:function(){return left-->0?__s2_iface_call("@x/counter","getCount",[]):7;}});"#).unwrap();
+        assert_eq!(
+            eval_in_context_string(
+                "cons",
+                r#"String(__s2_iface_call("@x/counter","getCount",[]))"#
+            ),
+            "7"
+        );
+        eval_in_context("prod", "left=32").unwrap();
+        assert!(
+            eval_in_context("cons", r#"__s2_iface_call("@x/counter","getCount",[])"#)
+                .unwrap_err()
+                .contains("InterfaceRecursionLimit")
+        );
+        eval_in_context("prod", "left=0").unwrap();
+        assert_eq!(
+            eval_in_context_string(
+                "cons",
+                r#"String(__s2_iface_call("@x/counter","getCount",[]))"#
+            ),
+            "7"
+        );
+        shutdown();
+    }
+    #[test]
+    fn protocol2_stale_context_cannot_emit_or_subscribe() {
+        protocol2_setup();
+        REGISTRY.with(|r| r.borrow_mut().insert("prod"));
+        assert!(eval_in_context(
+            "prod",
+            r#"__s2_iface_emit("@x/counter","OnCountChanged",{count:1})"#
+        )
+        .is_err());
+        REGISTRY.with(|r| r.borrow_mut().insert("cons"));
+        assert!(eval_in_context(
+            "cons",
+            r#"__s2_iface_on("@x/counter","OnCountChanged",function(){})"#
+        )
+        .is_err());
+        shutdown();
+    }
+
+    #[test]
+    fn protocol2_nested_values_methods_and_interface_names_are_isolated() {
+        protocol2_setup();
+        let manifest: crate::loader_worker::Manifest = serde_json::from_str(include_str!(
+            "../../../packages/sdk/test/fixtures/interop/manifest.json"
+        ))
+        .unwrap();
+        let decl = manifest.publishes["@demo/counter"].clone();
+        set_plugin_publishes(
+            "second",
+            [("@demo/counter".into(), decl.clone())]
+                .into_iter()
+                .collect(),
+        );
+        create_plugin_context("second");
+        set_plugin_imports(
+            "cons2",
+            vec![crate::interfaces::ImportSpec {
+                name: "@demo/counter".into(),
+                range: "^1.0.0".into(),
+                kind: crate::interfaces::Kind::Hard,
+                compiled_types_sha256: Some(decl.types_sha256),
+            }],
+        );
+        set_plugin_interop(
+            "cons2",
+            [("@demo/counter".into(), decl.contract.unwrap())]
+                .into_iter()
+                .collect(),
+        );
+        eval_in_context("second",r#"globalThis.count=0;__s2_iface_publish("@demo/counter",{getCount:function(){return count;},setCount:function(n){count=n;}})"#).unwrap();
+        eval_in_context("cons",r#"globalThis.received=0;__s2_iface_on("@x/counter","OnCountChanged",function(){received++})"#).unwrap();
+        eval_in_context("cons2",r#"globalThis.received=0;__s2_iface_on("@demo/counter","OnCountChanged",function(){received++})"#).unwrap();
+        assert!(eval_in_context(
+            "second",
+            r#"__s2_iface_emit("@demo/counter","OnCountChanged",{count:1,detail:{label:3}})"#
+        )
+        .is_err());
+        assert_eq!(eval_in_context_string("cons2", "String(received)"), "0");
+        assert!(eval_in_context(
+            "cons2",
+            r#"__s2_iface_call("@demo/counter","setCount",["wrong"])"#
+        )
+        .is_err());
+        assert_eq!(eval_in_context_string("second", "String(count)"), "0");
+        eval_in_context(
+            "cons2",
+            r#"__s2_iface_call("@demo/counter","setCount",[2])"#,
+        )
+        .unwrap();
+        assert_eq!(eval_in_context_string("second", "String(count)"), "2");
+        eval_in_context(
+            "second",
+            r#"__s2_iface_emit("@demo/counter","OnCountChanged",{count:1,detail:{label:"ok"}})"#,
+        )
+        .unwrap();
+        assert_eq!(eval_in_context_string("cons", "String(received)"), "0");
+        assert_eq!(eval_in_context_string("cons2", "String(received)"), "1");
+        shutdown();
+    }
+
+    #[test]
+    fn protocol2_entity_refs_keep_the_existing_copy_and_revival_encoding() {
+        protocol2_setup();
+        let mut contract = published_contract("@x/counter").unwrap();
+        contract
+            .metadata
+            .forwards
+            .get_mut("OnCountChanged")
+            .unwrap()
+            .payload = crate::interop::Schema::EntityRef;
+        use sha2::{Digest, Sha256};
+        contract.sha256 = format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&serde_json::to_value(&contract.metadata).unwrap()).unwrap()
+            )
+        );
+        set_plugin_publishes(
+            "prod",
+            [(
+                "@x/counter".into(),
+                crate::loader::PublishDecl {
+                    version: "1.0.0".into(),
+                    types_sha256: "a".repeat(64),
+                    contract: Some(contract.clone()),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+        for consumer in ["cons", "cons2"] {
+            set_plugin_interop(
+                consumer,
+                [("@x/counter".into(), contract.clone())]
+                    .into_iter()
+                    .collect(),
+            );
+        }
+        eval_in_context(
+            "prod",
+            r#"__s2_iface_publish("@x/counter",{getCount:function(){return 1;}})"#,
+        )
+        .unwrap();
+        eval_in_context(
+            "cons",
+            r#"__s2_iface_on("@x/counter","OnCountChanged",function(p){p.index=99;})"#,
+        )
+        .unwrap();
+        eval_in_context("cons2",r#"globalThis.result='';__s2_iface_on("@x/counter","OnCountChanged",function(p){result=String(p instanceof __s2pkg_entity.EntityRef)+':'+p.index+':'+p.id;})"#).unwrap();
+        eval_in_context(
+            "prod",
+            r#"__s2_iface_emit("@x/counter","OnCountChanged",new __s2pkg_entity.EntityRef(7,17))"#,
+        )
+        .unwrap();
+        assert_eq!(eval_in_context_string("cons2", "result"), "true:7:17");
+        shutdown();
+    }
+
+    #[test]
+    fn protocol2_snapshot_skips_disposed_rows_and_defers_new_rows_during_reentrant_calls() {
+        protocol2_setup();
+        eval_in_context(
+            "cons",
+            r#"globalThis.result=0;
+          __s2_iface_on("@x/counter","OnCountChanged",function(){
+            result=__s2_iface_call("@x/counter","getCount",[]);
+            __s2_iface_off("@x/counter","OnCountChanged");
+            __s2_iface_on("@x/counter","OnCountChanged",function(){result+=10;});
+          });
+          __s2_iface_on("@x/counter","OnCountChanged",function(){result=999;});"#,
+        )
+        .unwrap();
+        eval_in_context(
+            "prod",
+            r#"__s2_iface_emit("@x/counter","OnCountChanged",{count:1})"#,
+        )
+        .unwrap();
+        assert_eq!(eval_in_context_string("cons", "String(result)"), "1");
+        eval_in_context(
+            "prod",
+            r#"__s2_iface_emit("@x/counter","OnCountChanged",{count:1})"#,
+        )
+        .unwrap();
+        assert_eq!(eval_in_context_string("cons", "String(result)"), "11");
+        shutdown();
+    }
+
+    #[test]
+    fn protocol2_stale_provider_is_unavailable_to_fresh_consumers() {
+        protocol2_setup();
+        REGISTRY.with(|r| r.borrow_mut().insert("prod"));
+        assert!(!eval_in_context_bool(
+            "cons",
+            r#"__s2_iface_is_published("@x/counter")"#
+        ));
+        assert!(eval_in_context(
+            "cons",
+            r#"__s2_iface_on("@x/counter","OnCountChanged",function(){})"#
+        )
+        .is_err());
+        shutdown();
+    }
+
     #[test]
     fn iface_publish_records_methods_and_dep_kind() {
         let _ = init(dummy_logger());
         set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/greeter", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/greeter".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
         create_plugin_context("prod");
         create_plugin_context("cons");
@@ -2200,7 +2590,7 @@
         // The manifest declares the contract; the plugin never types a version.
         set_plugin_publishes("prod", [(
             "@x/greeter".to_string(),
-            crate::loader::PublishDecl { version: "2.5.0".into(), types_sha256: "abc".into() },
+            crate::loader::PublishDecl { contract: None, version: "2.5.0".into(), types_sha256: "abc".into() },
         )].into_iter().collect());
         create_plugin_context("prod");
         eval_in_context("prod", r#"__s2_iface_publish("@x/greeter",{ greet:function(){return "hi";} });"#)
@@ -2233,7 +2623,7 @@
         let _ = init(dummy_logger());
         set_plugin_publishes("prod", [(
             "@x/greeter".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "h".into() },
         )].into_iter().collect());
         eval_setup("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
@@ -2249,7 +2639,7 @@
         // The typo case: manifest says @x/greeter, the code publishes @x/greetr.
         set_plugin_publishes("prod", [(
             "@x/greeter".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "h".into() },
         )].into_iter().collect());
         eval_setup("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
@@ -2302,7 +2692,7 @@
         // A fixed reload must not inherit the previous attempt's failure.
         set_plugin_publishes("retry", [(
             "@x/oops".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "h".into() },
         )].into_iter().collect());
         eval_setup("retry", r#"
             const { publishInterface } = require("@s2script/interfaces");
@@ -2320,7 +2710,7 @@
         // declared. Both thread_locals must be non-empty going into shutdown.
         set_plugin_publishes("prod", [(
             "@x/greeter".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "h".into() },
         )].into_iter().collect());
         set_plugin_publishes("forgetful", std::collections::HashMap::new());
         eval_setup("forgetful", r#"
@@ -2343,7 +2733,7 @@
     #[test]
     fn reconcile_publishes_rejects_a_name_published_by_a_DIFFERENT_producer() {
         let _ = init(dummy_logger());
-        let decl = crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() };
+        let decl = crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "h".into() };
         set_plugin_publishes("first", [("@x/dup".to_string(), decl.clone())].into_iter().collect());
         set_plugin_publishes("second", [("@x/dup".to_string(), decl)].into_iter().collect());
         eval_setup("first", r#"
@@ -2367,7 +2757,7 @@
         let _ = init(dummy_logger());
         set_plugin_publishes("prod", [(
             "@x/hot".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "h".into() },
         )].into_iter().collect());
         create_plugin_context("prod");
         eval_in_context("prod", r#"__s2_iface_publish("@x/hot", { a:function(){return 1;} });"#)
@@ -2382,7 +2772,7 @@
     #[test]
     fn publish_interface_of_a_name_owned_by_another_producer_is_refused() {
         let _ = init(dummy_logger());
-        let decl = crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "h".into() };
+        let decl = crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "h".into() };
         set_plugin_publishes("first", [("@x/dup".to_string(), decl.clone())].into_iter().collect());
         set_plugin_publishes("second", [("@x/dup".to_string(), decl)].into_iter().collect());
         create_plugin_context("first");
@@ -2399,7 +2789,7 @@
         let _ = init(dummy_logger());
         set_plugin_publishes("prod", [(
             "@x/greeter".to_string(),
-            crate::loader::PublishDecl { version: "1.4.0".into(), types_sha256: "abc".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.4.0".into(), types_sha256: "abc".into() },
         )].into_iter().collect());
         eval_setup("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
@@ -2415,7 +2805,7 @@
         let _ = init(dummy_logger());
         set_plugin_publishes("prod", [(
             "@x/events".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
         load_body("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
@@ -2478,7 +2868,7 @@
         set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/greeter", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/greeter".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
         // Producer publishes via the plugin path so the prelude publishInterface is exercised.
         load_body("prod", r#"
@@ -2519,7 +2909,7 @@
         // (not a crash, not a mislabeled InterfaceValueNotSerializable).
         set_plugin_publishes("prodBoom", [(
             "@x/boom".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
         load_body("prodBoom", r#"
             const { publishInterface } = require("@s2script/interfaces");
@@ -2537,7 +2927,7 @@
         // Producer method returns undefined (void) → consumer receives undefined, NOT a throw.
         set_plugin_publishes("prodVoid", [(
             "@x/void".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
         load_body("prodVoid", r#"
             const { publishInterface } = require("@s2script/interfaces");
@@ -2561,7 +2951,7 @@
         set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/greeter", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/greeter".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
         load_body("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
@@ -2586,7 +2976,7 @@
         set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/greeter", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/greeter".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
         load_body("prod", r#"const {publishInterface}=require("@s2script/interfaces");
             publishInterface("@x/greeter",{greet:function(){return "ok";}});"#, "{}");
@@ -2610,7 +3000,7 @@
         let _ = init(dummy_logger());
         set_plugin_publishes("tm_prod", [(
             "@x/tm".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "aaa111".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "aaa111".into() },
         )].into_iter().collect());
         load_body("tm_prod",
             r#"const {publishInterface}=require("@s2script/interfaces");
@@ -2637,7 +3027,7 @@
         set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/greeter", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/greeter".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
         load_body("prod", r#"const {publishInterface}=require("@s2script/interfaces");
             globalThis.__h=publishInterface("@x/greeter",{greet:function(){return "";}});"#, "{}");
@@ -2657,7 +3047,7 @@
         )]);
         let publish_decl = || [(
             "@x/events".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect();
         let publish_body = r#"const {publishInterface}=require("@s2script/interfaces");
             publishInterface("@x/events", {});"#;
@@ -2701,7 +3091,7 @@
         set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/greeter", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/greeter".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
         load_body("prod", r#"const {publishInterface}=require("@s2script/interfaces");
             publishInterface("@x/greeter",{greet:function(){return "still-here";}});"#, "{}");
@@ -3593,7 +3983,7 @@
         set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/ent", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/ent".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
         // Producer returns an EntityRef from a method.
         load_body("prod", r#"
@@ -3624,7 +4014,7 @@
         set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/ent", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/ent".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
         load_body("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");
@@ -3651,7 +4041,7 @@
         set_plugin_imports("cons", vec![crate::interfaces::ImportSpec::new("@x/data", "^1.0.0", crate::interfaces::Kind::Hard)]);
         set_plugin_publishes("prod", [(
             "@x/data".to_string(),
-            crate::loader::PublishDecl { version: "1.0.0".into(), types_sha256: "test".into() },
+            crate::loader::PublishDecl { contract: None, version: "1.0.0".into(), types_sha256: "test".into() },
         )].into_iter().collect());
         load_body("prod", r#"
             const { publishInterface } = require("@s2script/interfaces");

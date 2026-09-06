@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 
 mod lifecycle;
 mod natives;
+mod interop_wire;
+use interop_wire::*;
 mod timers;
 
 pub use lifecycle::unload_all;
@@ -134,6 +136,9 @@ struct JsHandler {
 /// checkpoint).  The `Rc<PluginId>` is dropped when the context is GC'd (i.e. when its
 /// `Global<Context>` is dropped from `PLUGINS` and the isolate reclaims it).
 struct PluginId(String);
+/// Immutable context-origin token. REGISTRY remains the liveness authority;
+/// protocol 2 compares this token to its current generation before every crossing.
+struct InteropGeneration(u64);
 
 /// A loaded plugin instance: its per-plugin `v8::Context` plus the captured `module.exports`
 /// object (present once `load_plugin_js` has run the CJS bundle).  Field order is load-bearing
@@ -1550,9 +1555,22 @@ pub fn set_plugin_publishes(
     PLUGIN_PUBLISHES.with(|p| { p.borrow_mut().insert(plugin_id.to_string(), publishes); });
 }
 
+thread_local! {
+    static PLUGIN_INTEROP: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashMap<String,crate::interop::Contract>>> = Default::default();
+}
+pub fn set_plugin_interop(
+    id: &str,
+    contracts: std::collections::HashMap<String, crate::interop::Contract>,
+) {
+    PLUGIN_INTEROP.with(|m| {
+        m.borrow_mut().insert(id.into(), contracts);
+    });
+}
+
 /// Drop a plugin's publishes map (teardown).
 pub fn clear_plugin_publishes(plugin_id: &str) {
     PLUGIN_PUBLISHES.with(|p| { p.borrow_mut().remove(plugin_id); });
+    PLUGIN_INTEROP.with(|p| { p.borrow_mut().remove(plugin_id); });
     UNDECLARED_PUBLISHES.with(|p| { p.borrow_mut().remove(plugin_id); });
 }
 
@@ -1799,10 +1817,15 @@ fn s2_iface_publish(
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_undefined();
-        if args.length() < 2 { return; }
+        if args.length() < 2 {
+            return;
+        }
         let name = args.get(0).to_rust_string_lossy(scope);
         let Ok(impl_obj) = v8::Local::<v8::Object>::try_from(args.get(1)) else {
-            log_warn(&format!("WARN: iface_publish('{}'): impl is not an object", name));
+            log_warn(&format!(
+                "WARN: iface_publish('{}'): impl is not an object",
+                name
+            ));
             return;
         };
         let Some(owner) = current_plugin(scope) else {
@@ -1811,9 +1834,9 @@ fn s2_iface_publish(
         };
 
         // The manifest is the sole source of the version. An undeclared name never registers.
-        let Some(decl) = PLUGIN_PUBLISHES.with(|p| {
-            p.borrow().get(&owner).and_then(|m| m.get(&name)).cloned()
-        }) else {
+        let Some(decl) =
+            PLUGIN_PUBLISHES.with(|p| p.borrow().get(&owner).and_then(|m| m.get(&name)).cloned())
+        else {
             log_warn(&format!(
                 "WARN: iface_publish('{}'): plugin '{}' did not declare this interface in its \
                  manifest `publishes` — refusing",
@@ -1823,20 +1846,29 @@ fn s2_iface_publish(
             // check cannot see this case: a plugin that declares nothing has nothing to reconcile,
             // so without this it would run on with its interface silently unpublished.
             UNDECLARED_PUBLISHES.with(|p| {
-                p.borrow_mut().entry(owner.clone()).or_default().push(name.clone());
+                p.borrow_mut()
+                    .entry(owner.clone())
+                    .or_default()
+                    .push(name.clone());
             });
             return;
         };
 
-        let generation = REGISTRY.with(|r| r.borrow().generation_of(&owner)).unwrap_or(0);
+        let generation = REGISTRY
+            .with(|r| r.borrow().generation_of(&owner))
+            .unwrap_or(0);
 
         // Enumerate own function properties → method names + capture Globals.
         let mut method_names: Vec<String> = Vec::new();
         let mut captured: Vec<(String, v8::Global<v8::Function>)> = Vec::new();
         if let Some(prop_names) = impl_obj.get_own_property_names(scope, Default::default()) {
             for i in 0..prop_names.length() {
-                let Some(key) = prop_names.get_index(scope, i) else { continue };
-                let Some(val) = impl_obj.get(scope, key) else { continue };
+                let Some(key) = prop_names.get_index(scope, i) else {
+                    continue;
+                };
+                let Some(val) = impl_obj.get(scope, key) else {
+                    continue;
+                };
                 if let Ok(f) = v8::Local::<v8::Function>::try_from(val) {
                     let m = key.to_rust_string_lossy(scope);
                     method_names.push(m.clone());
@@ -1845,22 +1877,59 @@ fn s2_iface_publish(
             }
         }
 
+        if let Some(contract) = &decl.contract {
+            if !live_interop_context(scope, &owner) {
+                throw_named(scope, "InterfaceUnavailable", &owner);
+                return;
+            }
+            if contract.validate().is_err()
+                || method_names.len() != contract.metadata.methods.len()
+                || method_names
+                    .iter()
+                    .any(|m| !contract.metadata.methods.contains_key(m))
+            {
+                throw_named(
+                    scope,
+                    "InterfaceContractError",
+                    &format!("{} implementation methods disagree with metadata", name),
+                );
+                return;
+            }
+        }
+
         // Register FIRST: a REJECTED publish must not leave method Globals behind (a rejected
         // second producer's functions would otherwise shadow the incumbent's in IFACE_METHODS,
         // which is keyed by name).
         if let Err(e) = IFACES.with(|r| {
-            r.borrow_mut().publish(&name, &decl.version, &decl.types_sha256, &owner, generation, method_names)
+            r.borrow_mut().publish(
+                &name,
+                &decl.version,
+                &decl.types_sha256,
+                &owner,
+                generation,
+                method_names,
+            )
         }) {
             log_warn(&format!("WARN: iface_publish('{}'): {}", name, e));
             return;
         }
         for (m, g) in captured {
-            IFACE_METHODS.with(|mm| { mm.borrow_mut().insert((name.clone(), m), g); });
+            IFACE_METHODS.with(|mm| {
+                mm.borrow_mut().insert((name.clone(), m), g);
+            });
         }
         // Same-owner publish is an in-place replacement in InterfaceRegistry, so replace its one
         // ownership row too. A first publish simply has no prior row to release.
-        release_resource(&owner, generation, &plugin::Resource::Interface(name.clone()));
-        record_resource(&owner, generation, plugin::Resource::Interface(name.clone()));
+        release_resource(
+            &owner,
+            generation,
+            &plugin::Resource::Interface(name.clone()),
+        );
+        record_resource(
+            &owner,
+            generation,
+            plugin::Resource::Interface(name.clone()),
+        );
     }));
 }
 
@@ -1891,7 +1960,10 @@ fn s2_iface_is_published(
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let name = args.get(0).to_rust_string_lossy(scope);
-        let avail = current_plugin(scope).map_or(false, |id| IFACES.with(|r| r.borrow().is_available(&id, &name)));
+        let avail = current_plugin(scope).map_or(false, |id| {
+            IFACES.with(|r| r.borrow().is_available(&id, &name))
+                && checked_contract(&id, &name).is_ok()
+        });
         rv.set_bool(avail);
     }));
 }
@@ -1904,7 +1976,11 @@ fn s2_iface_is_published(
 /// A throwing producer method surfaces as `InterfaceCallError`; an `undefined`/void return resolves
 /// to `undefined` in the consumer (not an error — only a genuinely non-serializable value throws
 /// `InterfaceValueNotSerializable`).
-fn s2_iface_call(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn s2_iface_call(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_undefined();
         let name = args.get(0).to_rust_string_lossy(scope);
@@ -1917,16 +1993,71 @@ fn s2_iface_call(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
         // Decide what to do from the pure registry.
         let target = IFACES.with(|r| r.borrow().call_target(&consumer, &name, &method));
         match target {
-            crate::interfaces::CallTarget::Unavailable => { throw_named(scope, "InterfaceUnavailable", &name); return; }
-            crate::interfaces::CallTarget::VersionMismatch => { throw_named(scope, "InterfaceVersionMismatch", &name); return; }
-            crate::interfaces::CallTarget::TypesMismatch => { throw_named(scope, "InterfaceTypesMismatch", &name); return; }
+            crate::interfaces::CallTarget::Unavailable => {
+                throw_named(scope, "InterfaceUnavailable", &name);
+                return;
+            }
+            crate::interfaces::CallTarget::VersionMismatch => {
+                throw_named(scope, "InterfaceVersionMismatch", &name);
+                return;
+            }
+            crate::interfaces::CallTarget::TypesMismatch => {
+                throw_named(scope, "InterfaceTypesMismatch", &name);
+                return;
+            }
             crate::interfaces::CallTarget::Ok => {}
         }
 
+        let contract = match checked_contract(&consumer, &name) {
+            Ok(c) => c,
+            Err(e) => {
+                throw_named(scope, e, &name);
+                return;
+            }
+        };
+        let _depth = if contract.is_some() {
+            let Some(g) = InteropGuard::enter(scope) else {
+                return;
+            };
+            Some(g)
+        } else {
+            None
+        };
+        if contract.is_some() && !live_interop_context(scope, &consumer) {
+            throw_named(scope, "InterfaceUnavailable", &consumer);
+            return;
+        }
+        let method_schema = contract
+            .as_ref()
+            .and_then(|c| c.metadata.methods.get(&method))
+            .cloned();
+        if contract.is_some() && method_schema.is_none() {
+            throw_named(scope, "InterfaceUnknownMethod", &method);
+            return;
+        }
+        if let Some((producer, generation)) = IFACES.with(|r| r.borrow().producer_of(&name)) {
+            if !REGISTRY.with(|r| r.borrow().is_live(&producer, generation)) {
+                throw_named(scope, "InterfaceUnavailable", &name);
+                return;
+            }
+        }
         // Marshal args (the 3rd arg, an array) OUT of the consumer context to a JSON String.
-        let args_json = match iface_to_json(scope, args.get(2)) {
+        let args_json = match if let Some(schema) = &method_schema {
+            strict_json(scope, args.get(2))
+                .filter(|(_, v)| schema.accepts_args(v))
+                .map(|(s, _)| s)
+        } else {
+            iface_to_json(scope, args.get(2))
+        } {
             Some(s) => s,
-            None => { throw_named(scope, "InterfaceValueNotSerializable", &format!("{}.{} args", name, method)); return; }
+            None => {
+                throw_named(
+                    scope,
+                    "InterfaceValueNotSerializable",
+                    &format!("{}.{} args", name, method),
+                );
+                return;
+            }
         };
 
         // Producer context + method Global — extract into owned locals so no IFACES/IFACE_METHODS/PLUGINS
@@ -1934,12 +2065,20 @@ fn s2_iface_call(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
         let Some((producer_id, _gen)) = IFACES.with(|r| r.borrow().producer_of(&name)) else {
             // _gen unused: re-resolve-by-name each call always targets the current producer; a generation guard
             // on method_g's origin is a future hardening (publish updates IFACES+IFACE_METHODS atomically today).
-            throw_named(scope, "InterfaceUnavailable", &name); return;
+            throw_named(scope, "InterfaceUnavailable", &name);
+            return;
         };
-        let method_g = IFACE_METHODS.with(|m| m.borrow().get(&(name.clone(), method.clone())).cloned());
-        let Some(method_g) = method_g else { throw_named(scope, "InterfaceUnavailable", &name); return; };
-        let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(&producer_id).map(|pi| pi.context.clone())) else {
-            throw_named(scope, "InterfaceUnavailable", &name); return;
+        let method_g =
+            IFACE_METHODS.with(|m| m.borrow().get(&(name.clone(), method.clone())).cloned());
+        let Some(method_g) = method_g else {
+            throw_named(scope, "InterfaceUnavailable", &name);
+            return;
+        };
+        let Some(g_ctx) =
+            PLUGINS.with(|p| p.borrow().get(&producer_id).map(|pi| pi.context.clone()))
+        else {
+            throw_named(scope, "InterfaceUnavailable", &name);
+            return;
         };
 
         // Producer-side outcome, extracted as context-free Rust values BEFORE cscope drops.
@@ -1968,7 +2107,9 @@ fn s2_iface_call(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
                 let args_val = iface_from_json(tc, &args_json)?;
                 let arr = v8::Local::<v8::Array>::try_from(args_val).ok()?;
                 let mut argv: Vec<v8::Local<v8::Value>> = Vec::with_capacity(arr.length() as usize);
-                for i in 0..arr.length() { argv.push(arr.get_index(tc, i)?); }
+                for i in 0..arr.length() {
+                    argv.push(arr.get_index(tc, i)?);
+                }
                 Some(argv)
             })();
 
@@ -1980,13 +2121,31 @@ fn s2_iface_call(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
                     match f.call(tc, recv, &argv) {
                         None => {
                             // Producer method threw — capture its message (absorbed when tc drops).
-                            let msg = tc.exception()
+                            let msg = tc
+                                .exception()
                                 .map(|e| e.to_rust_string_lossy(&*tc))
                                 .unwrap_or_else(|| "producer method threw".into());
                             Outcome::Threw(msg)
                         }
                         Some(ret) => {
-                            if ret.is_undefined() {
+                            if let Some(schema) = &method_schema {
+                                if observe_thenable(tc, ret) {
+                                    Outcome::NotSerializable
+                                } else if ret.is_undefined() {
+                                    if matches!(schema.result, crate::interop::Schema::Void) {
+                                        Outcome::Void
+                                    } else {
+                                        Outcome::NotSerializable
+                                    }
+                                } else {
+                                    match strict_json(tc, ret)
+                                        .filter(|(_, v)| schema.result.accepts(v))
+                                    {
+                                        Some((json, _)) => Outcome::Ok(json),
+                                        None => Outcome::NotSerializable,
+                                    }
+                                }
+                            } else if ret.is_undefined() {
                                 Outcome::Void
                             } else {
                                 match iface_to_json(tc, ret) {
@@ -2004,11 +2163,23 @@ fn s2_iface_call(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
         match outcome {
             Outcome::Ok(json) => match iface_from_json(scope, &json) {
                 Some(v) => rv.set(v),
-                None => throw_named(scope, "InterfaceValueNotSerializable", &format!("{}.{} return", name, method)),
+                None => throw_named(
+                    scope,
+                    "InterfaceValueNotSerializable",
+                    &format!("{}.{} return", name, method),
+                ),
             },
             Outcome::Void => rv.set_undefined(),
-            Outcome::NotSerializable => throw_named(scope, "InterfaceValueNotSerializable", &format!("{}.{} return", name, method)),
-            Outcome::Threw(msg) => throw_named(scope, "InterfaceCallError", &format!("{}.{}: {}", name, method, msg)),
+            Outcome::NotSerializable => throw_named(
+                scope,
+                "InterfaceValueNotSerializable",
+                &format!("{}.{} return", name, method),
+            ),
+            Outcome::Threw(msg) => throw_named(
+                scope,
+                "InterfaceCallError",
+                &format!("{}.{}: {}", name, method, msg),
+            ),
             Outcome::Internal => throw_named(scope, "InterfaceUnavailable", &name),
         }
     }));
@@ -2017,23 +2188,70 @@ fn s2_iface_call(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
 /// `__s2_iface_on(name, event, handler) -> subId` — the consumer subscribes to a producer event.
 /// Stores the handler Global keyed by a fresh sub_id; records the Subscriber in the registry (tagged
 /// with the consumer's (id, generation)); ledgers `EventSub(subId)` on the consumer.
-fn s2_iface_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn s2_iface_on(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_double(0.0);
         let name = args.get(0).to_rust_string_lossy(scope);
         let event = args.get(1).to_rust_string_lossy(scope);
-        let Ok(handler) = v8::Local::<v8::Function>::try_from(args.get(2)) else { return; };
-        let Some(consumer) = current_plugin(scope) else { return; };
-        let generation = REGISTRY.with(|r| r.borrow().generation_of(&consumer)).unwrap_or(0);
-        let sub_id = NEXT_SUB_ID.with(|c| { let v = c.get(); c.set(v + 1); v });
+        let Ok(handler) = v8::Local::<v8::Function>::try_from(args.get(2)) else {
+            return;
+        };
+        let Some(consumer) = current_plugin(scope) else {
+            return;
+        };
+        let contract = match checked_contract(&consumer, &name) {
+            Ok(c) => c,
+            Err(e) => {
+                throw_named(scope, e, &name);
+                return;
+            }
+        };
+        if let Some(contract) = contract {
+            if !live_interop_context(scope, &consumer) {
+                throw_named(scope, "InterfaceUnavailable", &consumer);
+                return;
+            }
+            if !IFACES.with(|r| r.borrow().is_available(&consumer, &name)) {
+                throw_named(scope, "InterfaceUnavailable", &name);
+                return;
+            }
+            if !contract.metadata.forwards.contains_key(&event) {
+                throw_named(scope, "InterfaceUnknownForward", &event);
+                return;
+            }
+        }
+        let generation = REGISTRY
+            .with(|r| r.borrow().generation_of(&consumer))
+            .unwrap_or(0);
+        let sub_id = NEXT_SUB_ID.with(|c| {
+            let v = c.get();
+            c.set(v + 1);
+            v
+        });
 
-        let ok = IFACES.with(|r| r.borrow_mut().add_subscriber(&name, crate::interfaces::Subscriber {
-            sub_id, consumer_id: consumer.clone(), consumer_gen: generation, event,
-        }));
-        if !ok { return; } // interface not published → no-op (degrade)
+        let ok = IFACES.with(|r| {
+            r.borrow_mut().add_subscriber(
+                &name,
+                crate::interfaces::Subscriber {
+                    sub_id,
+                    consumer_id: consumer.clone(),
+                    consumer_gen: generation,
+                    event,
+                },
+            )
+        });
+        if !ok {
+            return;
+        } // interface not published → no-op (degrade)
 
         let g = v8::Global::new(scope.as_ref(), handler);
-        IFACE_SUBS.with(|m| { m.borrow_mut().insert(sub_id, g); });
+        IFACE_SUBS.with(|m| {
+            m.borrow_mut().insert(sub_id, g);
+        });
         record_resource(&consumer, generation, plugin::Resource::EventSub(sub_id));
         rv.set_double(sub_id as f64);
     }));
@@ -2059,16 +2277,73 @@ fn s2_iface_off(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, m
 /// `__s2_iface_emit(name, event, payload)` — the producer forwards an event to every LIVE consumer
 /// subscribed to (name, event). Payload is structured-copied per consumer. Producer-side: no throw
 /// (a bad payload logs a WARN and skips that dispatch).
-fn s2_iface_emit(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+fn s2_iface_emit(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_undefined();
         let name = args.get(0).to_rust_string_lossy(scope);
         let event = args.get(1).to_rust_string_lossy(scope);
-        // Stringify the payload once, in the producer context (the neutral carrier).
-        let payload_json = match iface_to_json(scope, args.get(2)) {
+        if let Some(owner) = current_plugin(scope) {
+            if !live_interop_context(scope, &owner) {
+                throw_named(scope, "InterfaceUnavailable", &owner);
+                return;
+            }
+        }
+        let contract = published_contract(&name);
+        let producer = IFACES
+            .with(|r| r.borrow().producer_of(&name))
+            .map(|(id, _)| id)
+            .unwrap_or_default();
+        let _depth = if contract.is_some() {
+            let Some(g) = InteropGuard::enter(scope) else {
+                return;
+            };
+            Some(g)
+        } else {
+            None
+        };
+        if contract.is_some() {
+            let owner = current_plugin(scope);
+            let published = IFACES.with(|r| r.borrow().producer_of(&name));
+            if !published.as_ref().map_or(false, |(id, g)| {
+                Some(id) == owner.as_ref() && REGISTRY.with(|r| r.borrow().is_live(id, *g))
+            }) {
+                throw_named(scope, "InterfaceProviderMismatch", &name);
+                return;
+            }
+        }
+        let forward = contract
+            .as_ref()
+            .and_then(|c| c.metadata.forwards.get(&event));
+        if contract.is_some() && forward.is_none() {
+            throw_named(scope, "InterfaceUnknownForward", &event);
+            return;
+        }
+        // Validate and copy the entire payload before executing any listener.
+        let payload_json = match if let Some(forward) = forward {
+            strict_json(scope, args.get(2))
+                .filter(|(_, v)| forward.payload.accepts(v))
+                .map(|(s, _)| s)
+        } else {
+            iface_to_json(scope, args.get(2))
+        } {
             Some(s) => s,
             None => {
-                log_warn(&format!("WARN: iface_emit('{}','{}'): payload not serializable", name, event));
+                if contract.is_some() {
+                    throw_named(
+                        scope,
+                        "InterfaceValueNotSerializable",
+                        &format!("{}.{} payload", name, event),
+                    );
+                    return;
+                }
+                log_warn(&format!(
+                    "WARN: iface_emit('{}','{}'): payload not serializable",
+                    name, event
+                ));
                 return;
             }
         };
@@ -2077,12 +2352,30 @@ fn s2_iface_emit(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
         let sub_ids = IFACES.with(|r| r.borrow().live_subscriber_ids(&name, &event, &is_live));
 
         for sub_id in sub_ids {
+            if !IFACES.with(|r| {
+                r.borrow()
+                    .live_subscriber_ids(&name, &event, &is_live)
+                    .contains(&sub_id)
+            }) {
+                continue;
+            }
             // Collect all info (brief borrows; all released before the ContextScope).
             let handler_g = IFACE_SUBS.with(|m| m.borrow().get(&sub_id).cloned());
-            let Some(handler_g) = handler_g else { continue; };
+            let Some(handler_g) = handler_g else {
+                continue;
+            };
             let consumer = IFACES.with(|r| r.borrow().consumer_of_sub(&name, sub_id));
-            let Some(consumer) = consumer else { continue; };
-            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(&consumer).map(|pi| pi.context.clone())) else { continue; };
+            let Some(consumer) = consumer else {
+                continue;
+            };
+            if contract.is_some() && checked_contract(&consumer, &name).is_err() {
+                continue;
+            }
+            let Some(g_ctx) =
+                PLUGINS.with(|p| p.borrow().get(&consumer).map(|pi| pi.context.clone()))
+            else {
+                continue;
+            };
 
             // Enter the consumer's context and call the handler with a fresh copy of the payload.
             let ctx_local = v8::Local::new(scope, &g_ctx);
@@ -2093,11 +2386,20 @@ fn s2_iface_emit(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
             if let Some(payload) = iface_from_json(tc, &payload_json) {
                 let f = v8::Local::new(tc, &handler_g);
                 let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
-                if f.call(tc, recv, &[payload]).is_none() {
-                    let msg = tc.exception()
+                let result = f.call(tc, recv, &[payload]);
+                if let Some(result) = result {
+                    if contract.is_some() && observe_thenable(tc, result) {
+                        log_warn(&format!("InterfaceSynchronousContractError: provider {} consumer {} forward {}.{} returned a thenable",producer,consumer,name,event));
+                    }
+                } else {
+                    let msg = tc
+                        .exception()
                         .map(|e| e.to_rust_string_lossy(&*tc))
                         .unwrap_or_else(|| "handler threw".into());
-                    log_warn(&format!("WARN: iface_emit('{}','{}') handler: {}", name, event, msg));
+                    log_warn(&format!(
+                        "WARN: iface_emit('{}','{}') provider '{}' consumer '{}': {}",
+                        name, event, producer, consumer, msg
+                    ));
                 }
             }
             // tc, tc_storage, cscope drop here (TryCatch absorbs any pending exception).
@@ -6196,6 +6498,9 @@ pub(crate) fn register_process_singletons() {
     });
     // The publishes registries: per-plugin unload clears these per id, but a plugin that was `set`
     // and never loaded leaves an entry no unload ever walks. This is the teardown backstop.
+    reg("PLUGIN_INTEROP", BeforeIsolateDrop, || {
+        PLUGIN_INTEROP.with(|p| p.borrow_mut().clear())
+    });
     reg("PLUGIN_PUBLISHES", BeforeIsolateDrop, || {
         PLUGIN_PUBLISHES.with(|p| p.borrow_mut().clear())
     });

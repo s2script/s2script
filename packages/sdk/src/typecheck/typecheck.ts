@@ -1,6 +1,20 @@
 import ts from "typescript";
-import { existsSync, readdirSync, readFileSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
-import { join, resolve } from "node:path";
+import {
+  extractContract,
+  checkInteropCalls,
+  type WireContract,
+} from "../interop.ts";
+import { expandPublishes, hashContract } from "../publishes.ts";
+import {
+  mkdirSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+  mkdtempSync,
+} from "node:fs";
+import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { resolvePackagesDir } from "../packages-resolve.ts";
 import { sharedProgramOptions } from "../tsconfig-shared.ts";
@@ -8,8 +22,20 @@ import { localContractPath } from "../contracts.ts";
 import { resolveSiblingContracts } from "../workspace/siblings.ts";
 import { resolveLibraries } from "../libraries.ts";
 
-export interface TypecheckDiag { file: string; line: number; col: number; code: number; message: string; }
-export interface TypecheckResult { ok: boolean; diagnostics: TypecheckDiag[]; program?: ts.Program; }
+export interface TypecheckDiag {
+  file: string;
+  line: number;
+  col: number;
+  code: number;
+  message: string;
+}
+export interface TypecheckResult {
+  ok: boolean;
+  diagnostics: TypecheckDiag[];
+  program?: ts.Program;
+  interfaceContracts?: Record<string, WireContract>;
+  contractPaths?: Record<string, string>;
+}
 
 /** Every `.d.ts` the plugin ships under `src/` (non-recursive: matches the scaffold's layout).
  *  These are the plugin's own ambient declarations and belong in its typecheck. */
@@ -46,7 +72,13 @@ function generatedDeclarationFiles(pluginDir: string): string[] {
  * `@s2script/cs2` as a (dev)dependency, matching the same declared-dependency signal `s2script`
  * itself uses to decide whether a plugin is a CS2 plugin; a no-op for a purely engine-generic
  * plugin, and a no-op today for any future `@s2script/<game>` that ships no such file yet. */
-function gamePackageDeclarationFiles(pkg: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> }, packagesDir: string): string[] {
+function gamePackageDeclarationFiles(
+  pkg: {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  },
+  packagesDir: string
+): string[] {
   const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
   if (!("@s2script/cs2" in deps)) return [];
   const hooks = join(packagesDir, "cs2", "hooks.generated.d.ts");
@@ -60,7 +92,8 @@ function declaredModules(dtsFiles: string[]): Set<string> {
   const out = new Set<string>();
   for (const f of dtsFiles) {
     const body = readFileSync(f, "utf8");
-    for (const m of body.matchAll(/declare\s+module\s+["']([^"']+)["']/g)) out.add(m[1]);
+    for (const m of body.matchAll(/declare\s+module\s+["']([^"']+)["']/g))
+      out.add(m[1]);
   }
   return out;
 }
@@ -73,7 +106,10 @@ function declaredModules(dtsFiles: string[]): Set<string> {
  *
  *  `packagesDir` may be omitted — resolved via monorepo packages/, env, or the plugin's
  *  node_modules/@s2script (see packages-resolve.ts). */
-export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string }): TypecheckResult {
+export function typecheckPlugin(
+  pluginDir: string,
+  opts?: { packagesDir?: string }
+): TypecheckResult {
   const absDir = resolve(pluginDir);
   const packagesDir = opts?.packagesDir
     ? resolve(opts.packagesDir)
@@ -81,7 +117,10 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
   const pkg = JSON.parse(readFileSync(join(absDir, "package.json"), "utf8"));
   const s2 = pkg.s2script ?? {};
   const entryRel = s2.main ?? pkg.main;
-  if (!entryRel) throw new Error(`typecheckPlugin: no entry point in ${join(absDir, "package.json")}`);
+  if (!entryRel)
+    throw new Error(
+      `typecheckPlugin: no entry point in ${join(absDir, "package.json")}`
+    );
   const entry = resolve(absDir, entryRel);
   // A dep gets an ambient `declare module "<dep>";` (any) stub UNLESS it is always-resolved.
   //
@@ -99,7 +138,10 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
   // `.s2script/types/<iface>/index.d.ts` (see examples/cookbook's zones recipe for the pattern;
   // design spec 2026-07-15 §4.6, plan 2, landed as B1).
   const isAlwaysResolved = (d: string): boolean =>
-    d === "@s2script/sdk" || d.startsWith("@s2script/sdk/") || d === "@s2script/cs2" || d.startsWith("@s2script/cs2/");
+    d === "@s2script/sdk" ||
+    d.startsWith("@s2script/sdk/") ||
+    d === "@s2script/cs2" ||
+    d.startsWith("@s2script/cs2/");
 
   // A plugin's OWN .d.ts files are part of its typecheck. They carry ambient declarations for
   // interfaces it consumes (see examples/*-consumer). Before this they were compiled only by the
@@ -155,6 +197,58 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
   // Vendored libraries resolve to REAL types by exact `paths` entry, same as contracts.
   // A declared-but-missing one is caught earlier by assertLibrariesResolved (build.ts) —
   // it is deliberately NOT stubbed to `any` here.
+  const protocol2 = s2.interfaceProtocol === 2;
+  const authoritativePaths: Record<string, string> = Object.fromEntries(
+    Object.entries(contractPaths).map(([name, paths]) => [name, paths[0]])
+  );
+  const ownNames = new Set(
+    Object.keys(expandPublishes(s2.publishes, pkg.name, pkg.version))
+  );
+  if (protocol2 && pkg.types && ownNames.size === 0) ownNames.add(pkg.name);
+  if (protocol2 && pkg.types)
+    for (const name of ownNames)
+      authoritativePaths[name] = resolve(absDir, pkg.types);
+  const interfaceContracts: Record<string, WireContract> = {};
+  if (protocol2) {
+    try {
+      for (const dep of allDeclaredDeps)
+        if (!authoritativePaths[dep])
+          throw new Error(
+            `InterfaceContractError: ${dep} has no verified contract copy; run s2s add`
+          );
+      for (const [name, path] of Object.entries(authoritativePaths)) {
+        interfaceContracts[name] = extractContract(path, packagesDir);
+        if (!siblings.has(name) && !ownNames.has(name)) {
+          const receipt = join(dirname(path), "package.json");
+          if (existsSync(receipt)) {
+            const published = JSON.parse(readFileSync(receipt, "utf8")).s2script
+              ?.publishes?.[name];
+            if (
+              !published ||
+              published.typesSha256 !== hashContract(path) ||
+              published.contract?.sha256 !== interfaceContracts[name].sha256
+            )
+              throw new Error(
+                `InterfaceContractError: ${name} verified copy hash drift; run s2s add`
+              );
+          }
+        }
+      }
+    } catch (e) {
+      return {
+        ok: false,
+        diagnostics: [
+          {
+            file: entry,
+            line: 1,
+            col: 1,
+            code: 92001,
+            message: (e as Error).message,
+          },
+        ],
+      };
+    }
+  }
   const libraryPaths = resolveLibraries(absDir, s2.libraries ?? {}).paths;
   const libraryNames = new Set(Object.keys(s2.libraries ?? {}));
 
@@ -169,7 +263,7 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
       !locallyDeclared.has(d) &&
       contractPaths[d] === undefined &&
       !siblings.has(d) &&
-      !libraryNames.has(d),
+      !libraryNames.has(d)
   );
 
   const options: ts.CompilerOptions = {
@@ -197,14 +291,64 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
 
   // Globals live at the consolidated path (the legacy packages/globals/ dir is deleted).
   const rootNames = [
-    entry, join(packagesDir, "sdk", "globals.d.ts"), ...localDts, ...generatedDeclarationFiles(absDir),
+    entry,
+    join(packagesDir, "sdk", "globals.d.ts"),
+    ...localDts,
+    ...generatedDeclarationFiles(absDir),
     ...gamePackageDeclarationFiles(pkg, packagesDir),
   ];
   const tmp = mkdtempSync(join(tmpdir(), "s2tc-"));
   try {
-    if (deps.length) {
+    const generatedPath = join(absDir, ".s2script", "interfaces.d.ts");
+    rmSync(generatedPath, { force: true });
+    if (protocol2) {
+      mkdirSync(join(absDir, ".s2script"), { recursive: true });
+      let moduleId = 0;
+      for (const name of allDeclaredDeps) {
+        const path = authoritativePaths[name],
+          wrapper = join(tmp, `contract-${moduleId++}.d.ts`);
+        writeFileSync(
+          wrapper,
+          `import type {Contract} from ${JSON.stringify(
+            path
+          )};\nexport * from ${JSON.stringify(path)};\n` +
+            Object.keys(interfaceContracts[name].metadata.methods)
+              .map(
+                (method) =>
+                  `export declare const ${method}: Contract["methods"][${JSON.stringify(
+                    method
+                  )}];`
+              )
+              .join("\n")
+        );
+        options.paths![name] = [wrapper];
+      }
+      writeFileSync(
+        generatedPath,
+        'import "@s2script/sdk/interfaces";\n' +
+          Object.entries(authoritativePaths)
+            .map(
+              ([name, path], i) =>
+                `import type { Contract as C${i} } from ${JSON.stringify(
+                  path
+                )};`
+            )
+            .join("\n") +
+          '\ndeclare module "@s2script/sdk/interfaces" { interface InterfaceContracts {\n' +
+          Object.keys(authoritativePaths)
+            .map((name, i) => `${JSON.stringify(name)}: C${i};`)
+            .join("\n") +
+          "\n} }\n"
+      );
+      rootNames.push(generatedPath);
+    }
+    if (deps.length && !protocol2) {
       const stub = join(tmp, "ambient.d.ts");
-      writeFileSync(stub, deps.map((d) => `declare module ${JSON.stringify(d)};`).join("\n") + "\n");
+      writeFileSync(
+        stub,
+        deps.map((d) => `declare module ${JSON.stringify(d)};`).join("\n") +
+          "\n"
+      );
       rootNames.push(stub);
     }
     const program = ts.createProgram(rootNames, options);
@@ -212,21 +356,49 @@ export function typecheckPlugin(pluginDir: string, opts?: { packagesDir?: string
       ...program.getSyntacticDiagnostics(),
       ...program.getSemanticDiagnostics(),
       ...program.getGlobalDiagnostics(),
+      ...(protocol2
+        ? checkInteropCalls(
+            program,
+            authoritativePaths,
+            ownNames,
+            generatedPath,
+            absDir,
+            new Set(allDeclaredDeps)
+          )
+        : []),
     ];
     const out: TypecheckDiag[] = diags.map((d) => {
-      let file = "?", line = 0, col = 0;
+      let file = "?",
+        line = 0,
+        col = 0;
       if (d.file && d.start !== undefined) {
         const lc = d.file.getLineAndCharacterOfPosition(d.start);
-        file = d.file.fileName; line = lc.line + 1; col = lc.character + 1;
+        file = d.file.fileName;
+        line = lc.line + 1;
+        col = lc.character + 1;
       }
-      return { file, line, col, code: d.code, message: ts.flattenDiagnosticMessageText(d.messageText, "\n") };
+      return {
+        file,
+        line,
+        col,
+        code: d.code,
+        message: ts.flattenDiagnosticMessageText(d.messageText, "\n"),
+      };
     });
-    return { ok: out.length === 0, diagnostics: out, program };
+    return {
+      ok: out.length === 0,
+      diagnostics: out,
+      program,
+      interfaceContracts,
+      contractPaths: authoritativePaths,
+    };
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 }
 
 export function formatDiagnostics(diags: TypecheckDiag[]): string {
-  return diags.map((d) => `  ${d.file}:${d.line}:${d.col} — TS${d.code}: ${d.message}`).join("\n");
+  return diags
+    .map((d) => `  ${d.file}:${d.line}:${d.col} — TS${d.code}: ${d.message}`)
+    .join("\n");
 }

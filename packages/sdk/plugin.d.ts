@@ -1,3 +1,9 @@
+import type {
+  InterfaceContracts,
+  ContractMethods,
+  TypedPublishHandle,
+  TypedInterfaceHandle,
+} from "./interfaces";
 /**
  * @s2script/sdk/plugin — load-window authoring (`hook`, `publish`, `translations`, `Scope`)
  * and the internal load-scoped {@link PluginContext} types. NO runtime code: the engine injects
@@ -52,20 +58,44 @@ export interface CtxClients {
   /** A client's persisted cookies finished loading and are now readable. */
   onCookiesCached(handler: (client: Client) => void): void;
   /** A client sent chat: return a {@link HookResultValue} to suppress it. @param teamonly - team-channel say. */
-  onSay(handler: (slot: number, text: string, teamonly: boolean) => HookResultValue | void): void;
+  onSay(
+    handler: (
+      slot: number,
+      text: string,
+      teamonly: boolean
+    ) => HookResultValue | void
+  ): void;
   /** Per-tick usercmd hook (SM `OnPlayerRunCmd`): read/modify {@link UserCmdView}; return `Handled` to block the tick. */
-  onRunCmd(handler: (cmd: UserCmdView, info: { slot: number }) => HookResultValue | void): void;
+  onRunCmd(
+    handler: (
+      cmd: UserCmdView,
+      info: { slot: number }
+    ) => HookResultValue | void
+  ): void;
 }
 /** Entity lifecycle / I/O subscriptions on this plugin's load-scope ({@link PluginContext.entities}). */
 export interface CtxEntities {
   /** An entity of `className` was created (not yet spawned). @param className - match, or `"*"` for all. */
-  onCreate(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
+  onCreate(
+    className: string,
+    handler: (entity: EntityRef | null, className: string) => void
+  ): void;
   /** An entity of `className` spawned (post-`DispatchSpawn`). */
-  onSpawn(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
+  onSpawn(
+    className: string,
+    handler: (entity: EntityRef | null, className: string) => void
+  ): void;
   /** An entity of `className` is being deleted; the ref goes stale right after. */
-  onDelete(className: string, handler: (entity: EntityRef | null, className: string) => void): void;
+  onDelete(
+    className: string,
+    handler: (entity: EntityRef | null, className: string) => void
+  ): void;
   /** Hook a named entity output (`FireOutputInternal`); return a {@link HookResultValue} to suppress it. */
-  onOutput(classname: string, output: string, handler: (ev: OutputEvent) => HookResultValue | void): void;
+  onOutput(
+    classname: string,
+    output: string,
+    handler: (ev: OutputEvent) => HookResultValue | void
+  ): void;
 }
 /** Per-frame + map/precache hooks on this plugin's load-scope ({@link PluginContext.server}). */
 export interface CtxServer {
@@ -79,7 +109,10 @@ export interface CtxServer {
    */
   onGameFrame(
     fn: () => void,
-    opts?: { priority?: "high" | "normal" | "low" | "monitor"; phase?: "pre" | "post" },
+    opts?: {
+      priority?: "high" | "normal" | "low" | "monitor";
+      phase?: "pre" | "post";
+    }
   ): void;
   /** A new map became live; `mapName` is the BSP name. */
   onMapStart(handler: (mapName: string) => void): void;
@@ -103,7 +136,7 @@ export interface CtxCommands {
    */
   onClientCommand(
     name: string,
-    handler: (slot: number, argString: string) => HookResultValue | void,
+    handler: (slot: number, argString: string) => HookResultValue | void
   ): void;
 }
 /**
@@ -198,11 +231,28 @@ export interface PluginContext {
   /** TopMenu (adminmenu) contribution ({@link CtxTopMenu}). */
   readonly topmenu: CtxTopMenu;
   /** Publish this plugin's manifest-declared interface. Buffered; goes live at Active. */
-  publish<T extends object>(name: string, impl: T): PublishHandle;
+  publish<N extends keyof InterfaceContracts>(
+    name: N,
+    impl: ContractMethods<InterfaceContracts[N]>
+  ): TypedPublishHandle<InterfaceContracts[N]>;
+  publish<T extends object>(
+    name: keyof InterfaceContracts extends never ? string : never,
+    impl: T
+  ): PublishHandle;
   /** Resolve a HARD dep (must be in `pluginDependencies`). Immediate — the proxy is callable during OnPluginStart. */
-  use<T extends object>(name: string): InterfaceHandle<T>;
+  use<N extends keyof InterfaceContracts>(
+    name: N
+  ): TypedInterfaceHandle<InterfaceContracts[N]>;
+  use<T extends object>(
+    name: keyof InterfaceContracts extends never ? string : never
+  ): InterfaceHandle<T>;
   /** Resolve an OPTIONAL dep (must be in `optionalPluginDependencies`); null while unpublished. */
-  tryUse<T extends object>(name: string): InterfaceHandle<T> | null;
+  tryUse<N extends keyof InterfaceContracts>(
+    name: N
+  ): TypedInterfaceHandle<InterfaceContracts[N]> | null;
+  tryUse<T extends object>(
+    name: keyof InterfaceContracts extends never ? string : never
+  ): InterfaceHandle<T> | null;
   /** Allocate a disposable subscription scope (load-window only — the capability originates at load). */
   createScope(): Scope;
 }
@@ -254,7 +304,7 @@ export declare const hook: {
 export declare function onOutput(
   classname: string,
   output: string,
-  handler: (ev: OutputEvent) => HookResultValue | void,
+  handler: (ev: OutputEvent) => HookResultValue | void
 ): void;
 
 /**
@@ -277,18 +327,35 @@ export declare function createScope(): Scope;
  * Publish this plugin's manifest-declared interface. Load-window only (buffered, armed at Active).
  * Same contract as {@link PluginContext.publish}.
  */
-export declare function publish<T extends object>(name: string, impl: T): PublishHandle;
+export declare function publish<N extends keyof InterfaceContracts>(
+  name: N,
+  impl: ContractMethods<InterfaceContracts[N]>
+): TypedPublishHandle<InterfaceContracts[N]>;
+export declare function publish<T extends object>(
+  name: keyof InterfaceContracts extends never ? string : never,
+  impl: T
+): PublishHandle;
 /**
  * Resolve a HARD dep (must be in `pluginDependencies`). Load-window only.
  * Same contract as {@link PluginContext.use}. Prefer `import { greet } from "@demo/greeter"` for
  * the producer-as-import form; `use()` remains the explicit load-window form and the optional-dep path.
  */
-export declare function use<T extends object>(name: string): InterfaceHandle<T>;
+export declare function use<N extends keyof InterfaceContracts>(
+  name: N
+): TypedInterfaceHandle<InterfaceContracts[N]>;
+export declare function use<T extends object>(
+  name: keyof InterfaceContracts extends never ? string : never
+): InterfaceHandle<T>;
 /**
  * Resolve an OPTIONAL dep (must be in `optionalPluginDependencies`); null while unpublished.
  * Load-window only. Same contract as {@link PluginContext.tryUse}.
  */
-export declare function tryUse<T extends object>(name: string): InterfaceHandle<T> | null;
+export declare function tryUse<N extends keyof InterfaceContracts>(
+  name: N
+): TypedInterfaceHandle<InterfaceContracts[N]> | null;
+export declare function tryUse<T extends object>(
+  name: keyof InterfaceContracts extends never ? string : never
+): InterfaceHandle<T> | null;
 
 /**
  * Load-window TopMenu contribution. Same contract as {@link PluginContext.topmenu}.

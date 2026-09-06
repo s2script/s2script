@@ -110,6 +110,7 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
 
             // Stamp the plugin identity (no scope needed — Rust-typed slot).
             let _ = ctx_local.set_slot(std::rc::Rc::new(PluginId(id.to_string())));
+            let _ = ctx_local.set_slot(std::rc::Rc::new(InteropGeneration(generation)));
 
             let scope = &mut v8::ContextScope::new(hs, ctx_local);
 

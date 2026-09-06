@@ -269,7 +269,7 @@ function tsconfigJson(): string {
         // `never` — every Engine.call() shows as an error while `s2s build` passes, because the build
         // adds the file to its own program (typecheck.ts) but tsconfig never did. Harmless when the
         // plugin ships no gamedata: the path simply matches nothing.
-        include: ["src", ".s2script/gamedata.d.ts", "node_modules/@s2script/sdk/globals.d.ts"],
+        include: ["src", ".s2script/gamedata.d.ts", ".s2script/interfaces.d.ts", "node_modules/@s2script/sdk/globals.d.ts"],
       },
       null,
       2,
@@ -288,7 +288,7 @@ function workspaceTsconfigJson(targetPath: string, workspaceRoot: string): strin
     JSON.stringify(
       {
         extends: rel.startsWith(".") ? rel : `./${rel}`,
-        include: ["src", ".s2script/gamedata.d.ts", "node_modules/@s2script/sdk/globals.d.ts"],
+        include: ["src", ".s2script/gamedata.d.ts", ".s2script/interfaces.d.ts", "node_modules/@s2script/sdk/globals.d.ts"],
       },
       null,
       2,

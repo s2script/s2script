@@ -17,13 +17,23 @@ pub(crate) type PathRevision = u64;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct PublishDecl {
+    #[serde(default)]
+    pub contract: Option<crate::interop::Contract>,
     pub version: String,
     #[serde(rename = "typesSha256", default)]
     pub types_sha256: String,
 }
 
+fn legacy_interface_protocol() -> u32 {
+    1
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Manifest {
+    #[serde(rename = "interfaceProtocol", default = "legacy_interface_protocol")]
+    pub interface_protocol: u32,
+    #[serde(rename = "interfaceContracts", default)]
+    pub interface_contracts: HashMap<String, crate::interop::Contract>,
     pub id: String,
     pub version: String,
     #[serde(rename = "apiVersion")]
@@ -1435,6 +1445,7 @@ fn parse_s2sp_parts(
     let manifest_bytes = manifest_json.len();
     let manifest: Manifest = serde_json::from_str(&manifest_json)
         .map_err(|e| format!("read_s2sp: invalid manifest.json: {e}"))?;
+    crate::interop::validate_manifest(&manifest)?;
     if crate::gamedata_calls::is_reserved_owner(&manifest.id) {
         return Err(format!(
             "read_s2sp: manifest id {:?} is in the reserved '{}' namespace, which belongs to the runtime — rename the plugin",
@@ -1616,6 +1627,60 @@ mod tests {
         worker.shutdown();
         *TEST_READ_GATE.lock().unwrap() = None;
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn protocol2_archive_requires_new_host_and_complete_metadata() {
+        for manifest in [
+            r#"{"id":"@demo/a","version":"1.0.0","apiVersion":"2.x","interfaceProtocol":2}"#,
+            r#"{"id":"@demo/a","version":"1.0.0","apiVersion":"3.x","interfaceProtocol":2,"publishes":{"@demo/a":{"version":"1.0.0","typesSha256":"abc"}}}"#,
+        ] {
+            assert!(
+                parse_s2sp(&archive(manifest, b""), ParseLimits::default()).is_err(),
+                "must reject {manifest}"
+            );
+        }
+    }
+
+    #[test]
+    fn protocol2_sdk_metadata_digest_and_archive_shape_are_verified() {
+        let fixture = include_str!("../../packages/sdk/test/fixtures/interop/manifest.json");
+        assert!(parse_s2sp(&archive(fixture, b""), ParseLimits::default()).is_ok());
+        for mutation in [
+            "digest",
+            "missing",
+            "version",
+            "shape",
+            "typesHash",
+            "protocol",
+            "import",
+        ] {
+            let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            let decl = &mut value["publishes"]["@demo/counter"];
+            match mutation {
+                "digest" => decl["contract"]["sha256"] = serde_json::json!("0".repeat(64)),
+                "missing" => {
+                    decl.as_object_mut().unwrap().remove("contract");
+                }
+                "version" => decl["contract"]["metadata"]["version"] = serde_json::json!(99),
+                "shape" => {
+                    decl["contract"]["metadata"]["forwards"]["OnCountChanged"]["payload"]["extra"] =
+                        serde_json::json!(true)
+                }
+                "typesHash" => decl["typesSha256"] = serde_json::json!("bad"),
+                "protocol" => value["interfaceProtocol"] = serde_json::json!(1),
+                "import" => {
+                    value["pluginDependencies"] = serde_json::json!({"@x/missing":"^1.0.0"})
+                }
+                _ => unreachable!(),
+            }
+            let err =
+                parse_s2sp(&archive(&value.to_string(), b""), ParseLimits::default()).unwrap_err();
+            assert!(
+                err.contains("InterfaceContractError") || err.contains("invalid manifest"),
+                "{mutation}: {err}"
+            );
+        }
     }
 
     #[test]

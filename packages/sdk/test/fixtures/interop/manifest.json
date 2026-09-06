@@ -1,0 +1,72 @@
+{
+  "id": "@demo/counter",
+  "version": "1.0.0",
+  "apiVersion": "3.x",
+  "pluginDependencies": {},
+  "optionalPluginDependencies": {},
+  "publishes": {
+    "@demo/counter": {
+      "version": "1.0.0",
+      "typesSha256": "22da520c729cdd98caff38e70f7b47efb953f837dc1f703bf525848acdb8ff06",
+      "contract": {
+        "metadata": {
+          "forwards": {
+            "OnCountChanged": {
+              "kind": "notification",
+              "payload": {
+                "fields": {
+                  "count": {
+                    "optional": false,
+                    "schema": {
+                      "kind": "number"
+                    }
+                  },
+                  "detail": {
+                    "optional": true,
+                    "schema": {
+                      "fields": {
+                        "label": {
+                          "optional": false,
+                          "schema": {
+                            "kind": "string"
+                          }
+                        }
+                      },
+                      "kind": "object"
+                    }
+                  }
+                },
+                "kind": "object"
+              }
+            }
+          },
+          "methods": {
+            "getCount": {
+              "args": [],
+              "result": {
+                "kind": "number"
+              }
+            },
+            "setCount": {
+              "args": [
+                {
+                  "optional": false,
+                  "schema": {
+                    "kind": "number"
+                  }
+                }
+              ],
+              "result": {
+                "kind": "void"
+              }
+            }
+          },
+          "version": 1
+        },
+        "sha256": "ef9dcc049320acf57b91bb8f4971af46a607daeff906de3c1650ce0e15b90a15"
+      }
+    }
+  },
+  "interfaceProtocol": 2,
+  "interfaceContracts": {}
+}

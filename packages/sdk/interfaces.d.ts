@@ -18,3 +18,29 @@ export interface PublishHandle {
    */
   emit(event: string, payload: unknown): void;
 }
+
+/** Type-only protocol 2 descriptor. Payloads must belong to the supported wire algebra. */
+export interface Notification<P> {
+  readonly __notificationPayload: P;
+}
+/** CLI-generated association; an authored augmentation cannot authorize a build. */
+export interface InterfaceContracts {}
+export type ContractMethods<C> = C extends { methods: infer M extends object }
+  ? M
+  : never;
+export type ContractForwards<C> = C extends { forwards: infer F } ? F : never;
+export type NotificationPayload<D> = D extends Notification<infer P>
+  ? P
+  : never;
+export type TypedPublishHandle<C> = {
+  emit<K extends keyof ContractForwards<C> & string>(
+    event: K,
+    payload: NotificationPayload<ContractForwards<C>[K]>
+  ): void;
+};
+export type TypedInterfaceHandle<C> = ContractMethods<C> & {
+  on<K extends keyof ContractForwards<C> & string>(
+    event: K,
+    handler: (payload: NotificationPayload<ContractForwards<C>[K]>) => void
+  ): void;
+};

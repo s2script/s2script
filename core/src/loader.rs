@@ -68,10 +68,9 @@ pub fn permission_allowed(plugin_id: &str, permission: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The major apiVersion this host speaks.  A plugin whose declared apiVersion major differs is
-/// refused at load (degrade-never-crash: WARN + skip) — spec §5.  Bumping the host's breaking
-/// contract bumps this constant.
-pub(crate) const HOST_API_VERSION_MAJOR: u32 = 2;
+/// The current host API major. Archive loading also supports the explicit API 2 legacy path;
+/// other majors are refused (WARN + skip). Breaking host changes bump this constant.
+pub(crate) const HOST_API_VERSION_MAJOR: u32 = 3;
 
 /// Parse the leading integer (semver major) from a plugin's declared apiVersion string.
 /// Tolerates a leading range operator: "1.x", "1.0.0", "^1.2.3", "~1.0" all → Some(1).
@@ -82,9 +81,10 @@ fn parse_api_major(api_version: &str) -> Option<u32> {
     digits.parse::<u32>().ok()
 }
 
-/// True if a plugin declaring `api_version` is compatible with this host (same major) — spec §5.
+/// API 3 supports current archives and the explicit API 2 legacy path.
+/// Protocol 2 metadata separately requires API 3 at archive parsing; API 2 cannot bypass it.
 fn api_version_compatible(api_version: &str) -> bool {
-    matches!(parse_api_major(api_version), Some(m) if m == HOST_API_VERSION_MAJOR)
+    matches!(parse_api_major(api_version), Some(m) if m == 2 || m == HOST_API_VERSION_MAJOR)
 }
 
 /// Start a plugin's load (L1 lifecycle v2). Records the manifest version (for the `Active`
@@ -235,6 +235,7 @@ fn begin_load_prepared(prepared: &PreparedPlugin, cfg: &str, path: &Path) {
     let manifest = &prepared.manifest;
     crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(manifest));
     crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
+    crate::v8host::set_plugin_interop(&manifest.id, manifest.interface_contracts.clone());
     if let Some(gd) = prepared.gamedata.as_deref() {
         crate::gamedata_calls::register_plugin(&manifest.id, gd);
         crate::gamedata_hooks::register_plugin(&manifest.id, gd);
@@ -1980,6 +1981,8 @@ mod tests {
 
     #[test]
     fn api_version_compatible_accepts_matching_major() {
+        assert!(api_version_compatible("3.x"));
+        assert!(api_version_compatible("3.0.0"));
         assert!(api_version_compatible("2.x"));
         assert!(api_version_compatible("2.0.0"));
         assert!(api_version_compatible("^2.1.0"));
@@ -2346,6 +2349,7 @@ mod tests {
         crate::v8host::set_plugin_publishes(
             "producer",
             HashMap::from([("iface".to_string(), PublishDecl {
+                contract: None,
                 version: "1".to_string(),
                 types_sha256: "old".to_string(),
             })]),
@@ -2387,6 +2391,7 @@ mod tests {
         crate::v8host::set_plugin_publishes(
             "producer",
             HashMap::from([("iface".to_string(), PublishDecl {
+                contract: None,
                 version: "1".to_string(),
                 types_sha256: "old".to_string(),
             })]),

@@ -38,6 +38,7 @@ interface PluginPackageJson {
   types?: string;
   s2script?: {
     apiVersion?: string;
+    interfaceProtocol?: number;
     main?: string;
     /** Absent means "plugin" — see `packageKind` (libraries.ts). Read here only so `packageKind(pkg)`
      *  below satisfies its own parameter type; DeployablePkgJson (registry/deploy.ts) declares the
@@ -349,6 +350,15 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   // publishes.ts owns the grammar; the block was derived + validated up front (fail fast).
   if (Object.keys(derivedPublishes).length > 0) {
     manifest.publishes = derivedPublishes;
+  }
+  if (s2.interfaceProtocol === 2) {
+    manifest.interfaceProtocol = 2;
+    const imports: Record<string, unknown> = {};
+    for (const [name, contract] of Object.entries(tc.interfaceContracts ?? {})) {
+      if (derivedPublishes[name]) Object.assign(derivedPublishes[name], { contract });
+      if (declaredDeps.has(name)) imports[name] = contract;
+    }
+    manifest.interfaceContracts = imports;
   }
   if (config !== undefined) manifest.config = config;
   // Declared capabilities travel with the package so `s2s install` can surface them and the loader
