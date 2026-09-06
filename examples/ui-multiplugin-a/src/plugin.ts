@@ -30,7 +30,7 @@ interface LastClick {
   readonly sourceChangedAtIndex: boolean;
   readonly currentDomainFound: boolean;
   readonly sourceRevision: number;
-  readonly lastSuccessfulSyncPaintRevision: number | null;
+  readonly lastSuccessfulSyncOperationRevision: number | null;
 }
 
 const domain = new Map<string, DomainRecord>([
@@ -48,7 +48,8 @@ let badgeClaimError: UiErrorCode | null = null;
 const modalViews = new Map<number, ModalView>();
 const badgeViews = new Map<number, BadgeView>();
 const banners = new Map<number, UiSurfaceHandle>();
-const successfulSyncPaintRevision = new Map<number, number>();
+// Successful synchronous open/refresh operations may be covered and perform no paint.
+const successfulSyncOperationRevision = new Map<number, number>();
 const lastProvidedRevision = new Map<number, number>();
 let clicks = 0;
 let revalidatedClicks = 0;
@@ -108,7 +109,7 @@ function claimPools(): void {
           sourceChangedAtIndex: stableId !== currentSourceIdAtIndex,
           currentDomainFound: current !== null,
           sourceRevision,
-          lastSuccessfulSyncPaintRevision: successfulSyncPaintRevision.get(slot) ?? null,
+          lastSuccessfulSyncOperationRevision: successfulSyncOperationRevision.get(slot) ?? null,
         };
         console.log(`${TAG} click ${JSON.stringify({ accepted, ...lastClick })}`);
       },
@@ -229,9 +230,9 @@ function status(slot: number | null) {
       calls: providerCalls,
       invalidationRequests,
       lastProvidedRevision: slot === null ? null : lastProvidedRevision.get(slot) ?? null,
-      lastSuccessfulSyncPaintRevision: slot === null
+      lastSuccessfulSyncOperationRevision: slot === null
         ? null
-        : successfulSyncPaintRevision.get(slot) ?? null,
+        : successfulSyncOperationRevision.get(slot) ?? null,
     },
     clicks: { total: clicks, revalidated: revalidatedClicks, rejected: rejectedClicks, last: lastClick },
     owners: ownerCounters,
@@ -273,7 +274,7 @@ export function OnPluginStart(): void {
     const open = modal.tryOpenResult(slot, { cursor: true, focus: FOCUS });
     if (open.ok) {
       modalViews.set(slot, open.value);
-      successfulSyncPaintRevision.set(slot, sourceRevision);
+      successfulSyncOperationRevision.set(slot, sourceRevision);
     }
     const badgeView = badge.forSlot(slot);
     const badgeShow = badgeView.tryShow({ title: "PLUGIN A", text: `source ${sourceRevision}` });
@@ -318,7 +319,7 @@ export function OnPluginStart(): void {
       return HookResult.Handled;
     }
     const result = modal.tryRefresh(slot);
-    if (result.ok) successfulSyncPaintRevision.set(slot, sourceRevision);
+    if (result.ok) successfulSyncOperationRevision.set(slot, sourceRevision);
     cmd.reply(`${TAG} ${JSON.stringify({
       action: "refresh",
       slot,
@@ -407,7 +408,7 @@ export function OnPluginStart(): void {
 
 export function OnClientDisconnect(client: Client): void {
   closeSlot(client.slot);
-  successfulSyncPaintRevision.delete(client.slot);
+  successfulSyncOperationRevision.delete(client.slot);
   lastProvidedRevision.delete(client.slot);
 }
 

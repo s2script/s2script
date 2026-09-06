@@ -17,7 +17,7 @@ Commands accept an optional zero-based slot and otherwise use the in-game caller
 | --- | --- |
 | `sm_ui_a_open [slot]` | Open A's exclusive modal, show its pooled badge, and acquire its owned banner. |
 | `sm_ui_a_reorder` | Rotate and mutate the backing domain records without provider evaluation or repaint. |
-| `sm_ui_a_refresh [slot]` | Repaint synchronously with `tryRefresh`. |
+| `sm_ui_a_refresh [slot]` | Request a synchronous refresh with `tryRefresh`; covered success may not paint. |
 | `sm_ui_a_invalidate [slot]` | Queue a coalesced repaint; the reply reports the immediate provider-call delta. |
 | `sm_ui_a_banner_busy [slot]` | Attempt a second owned banner while A's first handle is live; expect `Busy`. |
 | `sm_ui_a_close [slot]` | Close A's modal, hide its badge, and dispose its banner handle. |
@@ -28,6 +28,12 @@ After `sm_ui_a_open`, run `sm_ui_a_reorder` without refreshing and click the fir
 visible row. `sm_ui_a_status` reports the painted stable ID, the now-different source
 ID at that absolute index, and the current domain record found by stable ID. This is
 domain revalidation evidence; it does not authorize a stale domain action.
+
+`provider.lastSuccessfulSyncOperationRevision` and the same field in the last-click record
+track the source revision at the last successful synchronous open/refresh operation. A covered
+success may not evaluate the provider or paint: this revision can advance while
+`provider.lastProvidedRevision` and `provider.calls` stay unchanged. Neither field establishes
+client rendering or acknowledgement.
 
 The commands and counters provide server-side evidence only. A human still must prove
 rendering, click delivery, focus coverage/restoration, cursor release, reconnect into

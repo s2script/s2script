@@ -59,11 +59,12 @@ examples/ui-multiplugin-a/dist/_demo_ui-multiplugin-a.s2sp
 examples/ui-multiplugin-b/dist/_demo_ui-multiplugin-b.s2sp
 ```
 
-Artifact metadata from the fresh fixture build:
+Artifact metadata: A rebuilt after the final-review operation-label correction; B rehashed
+unchanged from the preceding fixture build:
 
 | Artifact | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `_demo_ui-multiplugin-a.s2sp` | 3,775 | `05e257338bac0ce66ed580da8ec8116adb39c7cbb40c09781adca5db48ab228f` |
+| `_demo_ui-multiplugin-a.s2sp` | 3,780 | `437578a7f06ab4049cf53af059b2a0a802c218e06da0441f2666b11dd4f6c978` |
 | `_demo_ui-multiplugin-b.s2sp` | 2,395 | `32813730b14a32517be62fe3795e6215379ab0e841d5737365e0608d22a7cbbb` |
 
 The repository's existing `examples/*/` wildcard registers both fixtures with
@@ -131,12 +132,17 @@ Fixture A (`@demo/ui-multiplugin-a`, focus priority 10):
 | --- | --- |
 | `sm_ui_a_open [slot]` | Opens the keyed modal, shows the pooled badge, and acquires the owned banner. |
 | `sm_ui_a_reorder` | Rotates and mutates source records without provider evaluation or repaint. |
-| `sm_ui_a_refresh [slot]` | Repaints synchronously through `tryRefresh`. |
+| `sm_ui_a_refresh [slot]` | Requests a synchronous refresh through `tryRefresh`; covered success may not paint. |
 | `sm_ui_a_invalidate [slot]` | Queues a coalesced repaint and reports the immediate provider-call delta. |
 | `sm_ui_a_banner_busy [slot]` | Attempts a second owned banner; the live primary handle should make this `Busy`. |
 | `sm_ui_a_close [slot]` | Closes the modal, hides the badge, and disposes the banner handle for the slot. |
 | `sm_ui_a_release` | Closes all views, disposes all banners, and releases modal and badge pool claims. |
 | `sm_ui_a_status [slot]` | Prints source/provider/click/claim/view/handle state as JSON. |
+
+Fixture A's `provider.lastSuccessfulSyncOperationRevision` and matching last-click field record
+successful synchronous open/refresh operations. Covered success may not evaluate a provider or
+paint, so this field may advance while `provider.lastProvidedRevision` and `provider.calls` stay
+unchanged. These counters do not establish submission or client acknowledgement.
 
 Fixture B (`@demo/ui-multiplugin-b`, focus priority 20):
 
