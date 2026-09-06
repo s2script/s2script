@@ -27,5 +27,7 @@
   "Unban Success": "{green}[SM]{default} Unbanned {1}.",
   "Usage Addban": "{green}[SM]{default} Usage: sm_addban <steamid64> <minutes> [reason]",
   "Usage Ban": "{green}[SM]{default} Usage: sm_ban <#userid|name> <minutes> [reason]",
-  "Usage Unban": "{green}[SM]{default} Usage: sm_unban <steamid64>"
+  "Usage Unban": "{green}[SM]{default} Usage: sm_unban <steamid64>",
+  "Ban Intercepted": "[SM] Ban request intercepted; no ban recorded.",
+  "Ban Record Failed": "[SM] Ban could not be verified in the cache; no kick performed."
 }

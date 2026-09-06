@@ -1,30 +1,12 @@
-// @s2script/basebans — SourceMod basebans: sm_ban / sm_unban / sm_addban.
-//
-//  - BAN (sm_ban): resolves a live target by SM target string, validates SteamID (rejects bots/unauth
-//    whose steamId === "0"), writes the ban to the host-global store (persisted to bans.json), and kicks
-//    the player from the server. NO_MULTI: banning is destructive — @all / name-ambiguous matches are
-//    refused; the caller must use #<userid> or a unique name.
-//  - UNBAN (sm_unban): removes a ban by SteamID64. No live player needed — offline bans supported.
-//  - ADDBAN (sm_addban): offline ban by SteamID64 without a live player (e.g. from logs or a roster).
-//
-//  Connect enforcement (sub-project 3): a banned SteamID64 is NOT instant-rejected at connect anymore —
-//  the shim admits every client, and this plugin enforces the ban in JS via OnClientConnected, showing the
-//  reason (chat + console) then kicking (Client.kickWithReason). sm_ban still kicks the ONLINE player
-//  immediately; OnClientConnected is the RECONNECT enforcement + is where a 3rd party would query
-//  their own ban store instead of ours.
-
-import { command, topmenu, translations, ADMFLAG, Bans, Clients, Menu, MenuStyle, Translations, HookResult } from "@s2script/sdk";
+// Shared BaseBans service. Bans.add is void and cache-first; see api.d.ts for
+// observable outcomes and trusted caller / advisory hook semantics.
+import { command, topmenu, translations, ADMFLAG, Bans, Clients, Menu, MenuStyle, Translations, HookResult, publish } from "@s2script/sdk";
 import type { Client } from "@s2script/sdk";
 import { Player, pickPlayer } from "@s2script/cs2";
+import type { TypedPublishHandle } from "@s2script/sdk/interfaces";
+import type { Contract, BanRequest, BanResult, UnbanRequest } from "../api";
 
-// Canonical (untranslated) placeholder for "the adminmenu Ban flow banned with no free-text reason"
-// — that flow has a duration sub-menu, never a text box, so it always supplies this exact literal.
-// It is what gets PERSISTED (Bans.add stores reasons canonically/untranslated, same as an admin's
-// typed sm_ban/sm_addban reason — see the "stored canonically" comment at the Bans.add call below),
-// and banMessage resolves it back to the "Ban Reason By Admin" phrase at DISPLAY time. That round
-// trip is what makes the immediate kick and a later reconnect enforcement (which only ever has the
-// STORED reason to work with) show the same translated text instead of a stray hard-coded English
-// literal reaching a player who reconnects after the admin's session (and language) is long gone.
+// Store this canonical sentinel; translate it for immediate and reconnect display.
 const BAN_REASON_BY_ADMIN = "Banned by admin";
 
 // The message a banned player sees (chat + console) — shared by the immediate sm_ban path and the
@@ -43,151 +25,181 @@ function banMessage(slot: number, reason: string, until: number): string {
   return Translations.translate(slot, "Ban Message", reasonText, expiry);
 }
 
+interface Identity { steamId: string; userId: number; name: string }
+function snapshot(p: Player): Identity {
+  return { steamId: p.steamId, userId: p.userId, name: p.playerName ?? "" };
+}
+function resolve(identity: Identity): Player | null {
+  const current = Player.fromUserId(identity.userId);
+  return current && current.steamId === identity.steamId ? current : null;
+}
+function validSteamId(value: string): boolean {
+  return typeof value === "string" && /^[1-9][0-9]*$/.test(value) &&
+    (value.length < 20 || (value.length === 20 && value <= "18446744073709551615"));
+}
+function validMinutes(minutes: number): boolean {
+  const seconds = minutes * 60;
+  return Number.isSafeInteger(minutes) && minutes >= 0 && Number.isSafeInteger(seconds) &&
+    Number.isSafeInteger(Math.floor(Date.now() / 1000) + seconds);
+}
+function validRequest(request: BanRequest): boolean {
+  return !!request && validSteamId(request.steamId) && validMinutes(request.minutes) &&
+    typeof request.reason === "string" &&
+    (request.source === "command" || request.source === "menu" || request.source === "plugin") &&
+    (request.actorSteamId === null || validSteamId(request.actorSteamId));
+}
+
+let service: TypedPublishHandle<Contract>;
+// undefined selects a live API target; null deliberately means record-only (sm_addban).
+function recordBan(input: BanRequest, target?: Identity | null): BanResult {
+  if (!validRequest(input)) return { recorded: false, result: HookResult.Continue };
+  const request: BanRequest = { steamId: input.steamId, minutes: input.minutes, reason: input.reason,
+    source: input.source, actorSteamId: input.actorSteamId };
+  if (target === undefined) {
+    const live = Player.allConnected().find(p => p.steamId === request.steamId);
+    target = live ? snapshot(live) : null;
+  }
+  const result = service.dispatch("OnBanRequested", request);
+  if (result >= HookResult.Handled) return { recorded: false, result };
+  // A disconnected snapshot must not acquire a later connection, even to the same SteamID.
+  if (target && !resolve(target)) target = null;
+  // Wall time may advance during callbacks; validate expiry again before touching the store.
+  if (!validMinutes(request.minutes)) return { recorded: false, result };
+  const before = Math.floor(Date.now() / 1000);
+  Bans.add(request.steamId, request.minutes, request.reason);
+  const after = Math.floor(Date.now() / 1000);
+  const record = Bans.get(request.steamId);
+  const seconds = request.minutes * 60;
+  if (!record || record.reason !== request.reason || !Number.isSafeInteger(record.until) ||
+      (request.minutes === 0 ? record.until !== 0 :
+        record.until < before + seconds || record.until > after + seconds)) {
+    return { recorded: false, result };
+  }
+  service.emit("OnBanRecorded", { request, until: record.until });
+  const current = target ? resolve(target) : null;
+  if (current) {
+    const slot = current.slot;
+    const client = Clients.fromSlot(slot);
+    if (client) client.kickWithReason(banMessage(slot, request.reason, record.until));
+    else current.kick(Translations.translate(slot, "Kick Ban Reason Fallback",
+      request.reason || Translations.translate(slot, "Ban Reason Default")));
+  }
+  return { recorded: true, result };
+}
+function ban(request: BanRequest): BanResult { return recordBan(request); }
+function unban(request: UnbanRequest): boolean {
+  if (!request || !validSteamId(request.steamId)) return false;
+  const steamId = request.steamId;
+  const removed = Bans.remove(steamId);
+  if (removed) service.emit("OnBanRemoved", { steamId });
+  return removed;
+}
+function commandActor(slot: number): Identity | null {
+  const actor = slot < 0 ? null : Player.fromSlot(slot);
+  return actor ? snapshot(actor) : null;
+}
+function canReply(slot: number, actor: Identity | null): boolean {
+  // Command.replyT captures a raw slot; guard it after arbitrary interop callbacks.
+  return slot < 0 || (actor !== null && resolve(actor) !== null);
+}
+function failurePhrase(result: BanResult): "Ban Intercepted" | "Ban Record Failed" {
+  return result.result >= HookResult.Handled ? "Ban Intercepted" : "Ban Record Failed";
+}
+
 export function OnPluginStart(): void {
   translations.load("basebans", "common");
+  service = publish("@s2script/basebans", { ban, unban });
 
-  // sm_ban <target> <minutes> [reason] — ADMFLAG.BAN
-  // Resolves the target live, validates the SteamID, adds the ban, and kicks the player.
-  // NO_MULTI: banning is destructive — a single target only.
-  command.admin("sm_ban", ADMFLAG.BAN, (cmd) => {
-    const target = cmd.arg(0);
-    if (!target) {
-      cmd.replyT("Usage Ban");
-      return HookResult.Handled;
+  command.admin("sm_ban", ADMFLAG.BAN, cmd => {
+    const target = cmd.arg(0), minutes = Number(cmd.arg(1)), reason = cmd.argsFrom(2);
+    if (!target || !/^\d+$/.test(cmd.arg(1)) || !validMinutes(minutes)) {
+      cmd.replyT("Usage Ban"); return HookResult.Handled;
     }
-    if (!/^\d+$/.test(cmd.arg(1))) {
-      // A missing OR non-numeric minutes arg must NOT silently become a permanent ban
-      // (argInt falls back to 0 = permanent for NaN). Require explicit digits; "0" = permanent.
-      cmd.replyT("Usage Ban");
-      return HookResult.Handled;
-    }
-    const minutes = cmd.argInt(1);
-    const reason = cmd.argsFrom(2);
-
     const targets = Player.target(target, cmd.callerSlot, true);
-    if (targets.length === 0) {
-      cmd.replyT("No matching players");
-      return HookResult.Handled;
+    if (targets.length === 0) { cmd.replyT("No matching players"); return HookResult.Handled; }
+    if (targets.length > 1) { cmd.replyT("Ban Ambiguous Target", target); return HookResult.Handled; }
+    const identity = snapshot(targets[0]);
+    if (!validSteamId(identity.steamId)) {
+      cmd.replyT("Cannot Ban No Steamid", identity.name); return HookResult.Handled;
     }
-    // NO_MULTI: banning is destructive — single target only, do NOT allow @all or ambiguous names.
-    if (targets.length > 1) {
-      cmd.replyT("Ban Ambiguous Target", target);
-      return HookResult.Handled;
-    }
-
-    const p = targets[0];
-    const sid = p.steamId;
-    if (!sid || sid === "0") {
-      cmd.replyT("Cannot Ban No Steamid", p.playerName ?? "");
-      return HookResult.Handled;
-    }
-
-    Bans.add(sid, minutes, reason);
-    // Show the reason (chat + console, repeated) then kick — the player is online/in-game, so
-    // kickWithReason delivers immediately. (A plain kick would disconnect them with no reason shown.)
-    const b = Bans.get(sid);
-    const c = Clients.fromSlot(p.slot);
-    if (c) c.kickWithReason(banMessage(p.slot, reason, b ? b.until : 0));
-    else p.kick(Translations.translate(p.slot, "Kick Ban Reason Fallback", reason || Translations.translate(p.slot, "Ban Reason Default")));   // fallback: no Client for the slot
-
-    const durText = minutes > 0
+    const actor = commandActor(cmd.callerSlot);
+    const request: BanRequest = { steamId: identity.steamId, minutes, reason, source: "command", actorSteamId: cmd.callerSlot < 0 ? null : actor?.steamId ?? "0" };
+    // Resolve translated success arguments while the command's actor identity is still current.
+    const duration = minutes > 0
       ? Translations.translate(cmd.callerSlot, minutes === 1 ? "Ban Duration Minute" : "Ban Duration Minutes", minutes)
       : Translations.translate(cmd.callerSlot, "Ban Duration Permanently");
-    const reasonText = reason ? Translations.translate(cmd.callerSlot, "Ban Reason Suffix", reason) : "";
-    cmd.replyT("Ban Success", p.playerName ?? "", durText, reasonText);
+    const suffix = reason ? Translations.translate(cmd.callerSlot, "Ban Reason Suffix", reason) : "";
+    const outcome = recordBan(request, identity);
+    if (!canReply(cmd.callerSlot, actor)) return HookResult.Handled;
+    if (outcome.recorded) cmd.replyT("Ban Success", identity.name, duration, suffix);
+    else cmd.replyT(failurePhrase(outcome));
     return HookResult.Handled;
   });
 
-  // sm_unban <steamid> — ADMFLAG.UNBAN
-  // Removes a ban by SteamID64. No live player required — offline bans supported.
-  command.admin("sm_unban", ADMFLAG.UNBAN, (cmd) => {
-    const sid = cmd.arg(0);
-    if (!/^\d+$/.test(sid)) {
-      cmd.replyT("Usage Unban");
-      return HookResult.Handled;
-    }
-    const was = Bans.remove(sid);
-    cmd.replyT(was ? "Unban Success" : "Unban Not Banned", sid);
+  command.admin("sm_unban", ADMFLAG.UNBAN, cmd => {
+    const steamId = cmd.arg(0);
+    if (!validSteamId(steamId)) { cmd.replyT("Usage Unban"); return HookResult.Handled; }
+    const actor = commandActor(cmd.callerSlot);
+    const removed = unban({ steamId });
+    if (canReply(cmd.callerSlot, actor)) cmd.replyT(removed ? "Unban Success" : "Unban Not Banned", steamId);
     return HookResult.Handled;
   });
 
-  // sm_addban <steamid> <minutes> [reason] — ADMFLAG.BAN
-  // Adds an offline ban by SteamID64 without a live player (e.g. from logs or a server roster).
-  command.admin("sm_addban", ADMFLAG.BAN, (cmd) => {
-    const sid = cmd.arg(0);
-    if (!/^\d+$/.test(sid)) {
-      cmd.replyT("Usage Addban");
-      return HookResult.Handled;
+  command.admin("sm_addban", ADMFLAG.BAN, cmd => {
+    const steamId = cmd.arg(0), minutes = Number(cmd.arg(1)), reason = cmd.argsFrom(2);
+    if (!validSteamId(steamId) || !/^\d+$/.test(cmd.arg(1)) || !validMinutes(minutes)) {
+      cmd.replyT("Usage Addban"); return HookResult.Handled;
     }
-    if (!/^\d+$/.test(cmd.arg(1))) {
-      // Missing or non-numeric minutes → usage, not a silent permanent ban (see sm_ban).
-      cmd.replyT("Usage Addban");
-      return HookResult.Handled;
-    }
-    const minutes = cmd.argInt(1);
-    const reason = cmd.argsFrom(2);
-
-    Bans.add(sid, minutes, reason);
-
-    const durText = minutes > 0
-      ? Translations.translate(cmd.callerSlot, "Addban Duration Minutes", minutes)
+    const actor = commandActor(cmd.callerSlot);
+    const request: BanRequest = { steamId, minutes, reason, source: "command", actorSteamId: cmd.callerSlot < 0 ? null : actor?.steamId ?? "0" };
+    const duration = minutes > 0 ? Translations.translate(cmd.callerSlot, "Addban Duration Minutes", minutes)
       : Translations.translate(cmd.callerSlot, "Addban Duration Permanent");
-    const reasonText = reason ? Translations.translate(cmd.callerSlot, "Addban Reason Suffix", reason) : "";
-    cmd.replyT("Addban Success", sid, durText, reasonText);
+    const suffix = reason ? Translations.translate(cmd.callerSlot, "Addban Reason Suffix", reason) : "";
+    const outcome = recordBan(request, null);
+    if (!canReply(cmd.callerSlot, actor)) return HookResult.Handled;
+    if (outcome.recorded) cmd.replyT("Addban Success", steamId, duration, suffix);
+    else cmd.replyT(failurePhrase(outcome));
     return HookResult.Handled;
   });
 
-  // adminmenu — Kick + Ban proof items, same ADMFLAG as their text commands, via pickPlayer.
-  // `name` is a static field set once here, before any admin has opened the menu, so — same as
-  // basecommands' "Change Map Item" — it can only resolve at the server default language (-1), not
-  // per-viewer.
   topmenu.addTab({ id: "basebans", title: "Bans" });
   topmenu.addItem("basebans", { id: "basebans:kick", name: Translations.translate(-1, "Kick Item"), flags: ADMFLAG.KICK,
     onSelect: adminSlot => pickPlayer(adminSlot, t => t.kick(Translations.translate(t.slot, "Kick By Admin"))) });
   topmenu.addItem("basebans", { id: "basebans:ban", name: Translations.translate(-1, "Ban Item"), flags: ADMFLAG.BAN,
-    onSelect: adminSlot => pickPlayer(adminSlot, t => {
-      const sid = t.steamId, uid = t.userId, name = t.playerName || "player";
-      if (!sid || sid === "0") {   // bot / unauthenticated — never ban (sm_ban parity: a "0" entry is shared)
-        const admin = Clients.fromSlot(adminSlot);
-        // Client.chat is a raw pass-through (no colour funnel) — see "Cannot Ban Bot" in phrases.ts.
-        if (admin) admin.chat(Translations.translate(adminSlot, "Cannot Ban Bot", name));
-        return;
-      }
-      // The Menu is displayed to exactly one slot (adminSlot below), so — unlike a broadcast — it's
-      // safe to resolve its text to THAT admin's language up front rather than per-recipient.
-      const dm = new Menu(Translations.translate(adminSlot, "Ban Menu Title", name));
-      dm.style = MenuStyle.Center;
-      dm.freezePlayer = true;   // keep the admin frozen through the duration HUD sheet
-      const mins = [0, 5, 30, 60];   // 0 = permanent
-      for (const m of mins) {
-        dm.addItem(String(m), m === 0
-          ? Translations.translate(adminSlot, "Ban Menu Permanent")
-          : Translations.translate(adminSlot, "Ban Menu Minutes", m));
-      }
-      dm.onSelect(e => {
-        const minutes = parseInt(e.info, 10);
-        // Stored canonically (untranslated) — same as a custom reason typed to sm_ban/sm_addban —
-        // via the BAN_REASON_BY_ADMIN sentinel, which banMessage resolves back to a phrase at
-        // display time (see the constant's comment above).
-        Bans.add(sid, minutes, BAN_REASON_BY_ADMIN);
-        const b = Bans.get(sid);
-        // Re-resolve by userId at kick time: the target may have left (and the slot been reused) between
-        // the player pick and the duration pick — only kick if the SAME player is still connected.
-        const cur = Player.fromUserId(uid);
-        if (cur && cur.steamId === sid) {
-          const c = Clients.fromSlot(cur.slot);
-          if (c) c.kickWithReason(banMessage(cur.slot, BAN_REASON_BY_ADMIN, b ? b.until : 0));
-          else cur.kick(Translations.translate(cur.slot, "Ban Reason By Admin"));
+    onSelect: adminSlot => {
+      const actor = Player.fromSlot(adminSlot);
+      if (!actor) return;
+      const adminIdentity = snapshot(actor);
+      if (!validSteamId(adminIdentity.steamId)) return;
+      pickPlayer(adminSlot, target => {
+        const identity = snapshot(target);
+        const admin = resolve(adminIdentity);
+        if (!admin) return;
+        const slot = admin.slot;
+        if (!validSteamId(identity.steamId)) {
+          Clients.fromSlot(slot)?.chat(Translations.translate(slot, "Cannot Ban Bot", identity.name)); return;
         }
-        // else: they left / the slot was reused — the persisted ban + reconnect enforcement handles it.
+        const menu = new Menu(Translations.translate(slot, "Ban Menu Title", identity.name));
+        menu.style = MenuStyle.Center; menu.freezePlayer = true;
+        for (const minutes of [0, 5, 30, 60]) menu.addItem(String(minutes), minutes === 0
+          ? Translations.translate(slot, "Ban Menu Permanent") : Translations.translate(slot, "Ban Menu Minutes", minutes));
+        menu.onSelect(event => {
+          if (!resolve(adminIdentity)) return;
+          const minutes = Number(event.info);
+          if (![0, 5, 30, 60].includes(minutes)) return;
+          const outcome = recordBan({ steamId: identity.steamId, minutes, reason: BAN_REASON_BY_ADMIN,
+            source: "menu", actorSteamId: adminIdentity.steamId }, identity);
+          // Re-resolve the admin too: a listener can disconnect or replace either participant.
+          const currentAdmin = resolve(adminIdentity);
+          if (!outcome.recorded && currentAdmin) Clients.fromSlot(currentAdmin.slot)?.chat(
+            Translations.translate(currentAdmin.slot, failurePhrase(outcome)));
+        });
+        menu.display(slot, 30);
       });
-      dm.display(adminSlot, 30);
-    }) });
+    } });
 }
 
-// Connect-time enforcement: admit -> show reason (chat + console) -> kick. Runs for every connecting
-// client; a banned SteamID64 gets kickWithReason (delivered once they're in-game, then kicked ~5s later).
-// A 3rd-party ban system would export its OWN OnClientConnected, querying its store instead of Bans.
+// Reconnect enforcement is a separate query/kick path; it never records or notifies.
 export function OnClientConnected(c: Client): void {
   if (c.isBot) return;                                   // bots have steamId "0" — never banned
   const b = Bans.get(c.steamId);

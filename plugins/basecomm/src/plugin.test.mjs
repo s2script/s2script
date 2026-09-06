@@ -19,6 +19,7 @@ function fixture() {
   const listeners = new Map();
   const events = [];
   const replies = [];
+  const translated = [];
   const targetCalls = [];
   let service;
   let targets = [];
@@ -50,7 +51,7 @@ function fixture() {
     HookResult: { Continue: 0, Handled: 2 },
     Clients,
     Translations: {
-      translate: (_slot, key, ...args) => `${key}:${args.join(",")}`,
+      translate: (slot, key, ...args) => { translated.push([slot, key, ...args]); return `${key}:${args.join(",")}`; },
     },
     publish(name, implementation) {
       assert.equal(name, "@s2script/basecomm");
@@ -118,6 +119,7 @@ function fixture() {
     players,
     events,
     replies,
+    translated,
     targetCalls,
     addPlayer,
     call,
@@ -242,4 +244,23 @@ test("gagged chat suppression reads canonical policy state", () => {
   assert.equal(f.api.OnClientSayCommand(4, "hello", false), 0);
   f.service.setGagged(VALID_A, true);
   assert.equal(f.api.OnClientSayCommand(4, "hello", false), 2);
+});
+
+test("command callbacks cannot reply to a disconnected or replaced actor after policy notifications", () => {
+  for (const replacement of ["absent", "same-steam-new-user", "same-user-new-steam"]) {
+    const f = fixture();
+    const target = f.addPlayer(VALID_A, 1);
+    const actor = f.addPlayer(VALID_B, 2);
+    f.setTargets([target]);
+    f.on("OnClientGagChanged", () => {
+      f.players.delete(2);
+      if (replacement === "same-steam-new-user") f.addPlayer(VALID_B, 2).userId = actor.userId + 1;
+      if (replacement === "same-user-new-steam") f.addPlayer("76561198000000003", 2);
+      f.translated.length = 0;
+    });
+    f.call("sm_gag", "#101", 2);
+    assert.equal(f.service.isGagged(VALID_A), true, "policy still changes");
+    assert.deepEqual(f.replies, [], "raw command reply must not reach a replacement actor");
+    assert.deepEqual(f.translated, [], "no post-callback translation through the old actor slot");
+  }
 });

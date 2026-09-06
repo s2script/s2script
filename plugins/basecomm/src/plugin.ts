@@ -93,10 +93,18 @@ function forTargets(
   if (!pat) { reply(Translations.translate(callerSlot, usageKey)); return; }
   const targets = Player.target(pat, callerSlot, filterImmunity);
   if (targets.length === 0) { reply(Translations.translate(callerSlot, "No matching players")); return; }
+  // Both command reply and translation use a slot. Snapshot its owner before notifications.
+  const actor = callerSlot < 0 ? null : Player.fromSlot(callerSlot);
+  const actorIdentity = actor ? { userId: actor.userId, steamId: actor.steamId } : null;
   // Copy every target identity before the first policy notification invokes arbitrary consumers.
   const steamIds = targets.map((player) => player.steamId);
   let accepted = 0;
   for (const steamId of steamIds) if (act(steamId)) accepted++;
+  if (callerSlot >= 0) {
+    const current = Player.fromSlot(callerSlot);
+    if (!actorIdentity || !current || current.userId !== actorIdentity.userId ||
+        current.steamId !== actorIdentity.steamId) return;
+  }
   reply(Translations.translate(callerSlot, accepted === 1 ? singularKey : pluralKey, accepted));
 }
 
