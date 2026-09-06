@@ -1,9 +1,10 @@
 # UI API hardening acceptance evidence
 
-Status: local Task 7 acceptance preparation restacked onto Task 6 dashboard checkpoint
-`b9986daa6c4ed7a8efc9a2fbe3a5e680b8da73e7`, which remains under independent review. The evidence
-below was collected at code/test checkpoint `1641daceeba0159daca2732222208b372542f98f`; the root
-integrator still owns the final whole-stack gates and live protocol.
+Status: local Task 7 acceptance preparation restacked onto Task 6 review fix
+`d9e1d4a748acb06c6f206dce1636718e7407752d`, which remains under independent review. The focused
+UI evidence below was collected at branch head `3d050a2c392bc5907bbd9b6b1fb02d746b7dd89f` and its
+Task 7 code/test parent `21c44e9fa51b3dcbeaf769df93cc9388dcd6469e`; the root integrator still owns the final
+whole-stack gates and live protocol.
 
 ## Evidence boundaries
 
@@ -15,7 +16,7 @@ test are host-stub observations. They are not native-host evidence or client ren
 acknowledgements.
 
 Native ownership/capture churn is separate preparation from commit
-`e6cb17485f1ad42aaaf40e3796da5565bee4543d`. Its real host fixture previously passed the focused
+`fca95967ffa9099fd5224b382852f41102b3de4a`. Its real host fixture previously passed the focused
 1,000-cycle test (1/1) and the complete `surface_leases::tests` module (34/34). Those native tests
 were not rerun in this worktree, as requested. The final integrated native gate remains pending.
 
@@ -40,11 +41,17 @@ bash scripts/check-core-js-lint.sh
 bash scripts/check-plugins-typecheck.sh
 ```
 
-Each command exited 0 on this worktree. The focused churn command passed 1/1;
-`scripts/check-components-test.sh` passed 203/203 across the component, input, menu, vote,
-prelude, and low-level UI suites. The SDK UI contract suite passed 38/38, the core/game JavaScript
+At `3d050a2c392bc5907bbd9b6b1fb02d746b7dd89f`, `scripts/check-components-test.sh` exited 0 and
+passed 208/208 across the component, input, menu, vote, prelude, and low-level UI suites. This
+includes the five regressions added by `d9e1d4a748acb06c6f206dce1636718e7407752d` and the Task 7
+1,000-cycle VM churn.
+
+The other commands above are the exact successful runbook retained from the preceding restack
+checkpoint, before the narrow `components.js` and prelude-regression-only Task 6 review fix. The
+focused churn command passed 1/1, the SDK UI contract suite passed 38/38, the core/game JavaScript
 lint gate passed, and `scripts/check-plugins-typecheck.sh` passed every plugin and example,
-including both fixtures.
+including both fixtures. They were not repeated for this documentation refresh; the root-owned
+final gates remain pending.
 The two fixture builds emitted:
 
 ```text
@@ -61,8 +68,9 @@ Artifact metadata from the fresh fixture build:
 
 The repository's existing `examples/*/` wildcard registers both fixtures with
 `scripts/check-plugins-typecheck.sh`; no additional gate list or workspace-lock entry is needed.
-The pre-restack 177/193 provisional result has been superseded: Task 6's final dashboard source and
-fixture corrections are present here, and the complete gate now passes 203/203.
+The pre-restack 177/193 provisional result and the first post-restack 203/203 result have been
+superseded: Task 6's reviewed dashboard cleanup is present here, and the focused UI gate now
+passes 208/208.
 
 ## Automated 1,000-cycle VM churn
 
@@ -164,8 +172,9 @@ For a human slot `S`, the pending live sequence is:
 
 ## Pending final evidence
 
-The post-restack Task 7 checkpoint still needs the root-owned full JS and Linux/native gates, sniper artifact
-build and hashes, independent final review, owned-server deployment with rollback, and the human
-protocol above. The separate MultiAddonManager startup/map crash remains an independent incident;
-failure to load the fixtures blocks live acceptance and does not count as a UI API pass or failure.
+The post-restack Task 7 checkpoint still needs the root-owned full JS and Linux/native gates,
+sniper artifact build and hashes, independent final review, owned-server deployment with rollback,
+and the human protocol above. Task 6's review fix is under its scoped Astra rereview and root full
+gates. The separate MultiAddonManager startup/map crash remains an independent incident; failure
+to load the fixtures blocks live acceptance and does not count as a UI API pass or failure.
 Publication and PR navigation remain root-owned, and no merge is authorized by this document.
