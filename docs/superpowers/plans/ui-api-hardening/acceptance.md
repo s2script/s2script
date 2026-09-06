@@ -42,7 +42,8 @@ All final gate logs are in the evidence ledger
 The final JS command was the repository's `bash scripts/ci-js.sh`; the final native command was
 `bash scripts/ci-native.sh`. The native build context was `s2script-final-linux-builder:local`,
 derived from the documented `rust:bullseye` image; the release artifact was packaged from that
-build. No full gate is rerun for this documentation refresh.
+build. Publication-head gate results are recorded in the final acceptance PR; documentation-only
+changes do not require rebuilding the source-identical release artifact.
 
 The authoritative artifact ledger is `final-artifact-summary.json`. The archive was built from
 source commit `102ff642` and contains the runtime plus both UI fixtures. Its archive identity is:

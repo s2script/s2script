@@ -204,7 +204,7 @@ Toast ownership uses its existing four physical lanes per player, in lowest-free
 - [ ] With a human: verify A click identity after data reorder, B receives focus, covered A cannot act, closing B restores A, cursor releases after the last owner closes, and two components do not overwrite each other. Exercise disconnect/reconnect into the same slot, plugin reload, and pooled-panel reclaim. Record visible results alongside command counters.
 - [x] Repeat automated open/refresh/release/reload churn for 1,000 cycles and verify owner, subscription, pending-render, and cursor-lease counts return to baseline. Distinguish observed RSS from a proven memory bound.
 - [x] Obtain independent spec and code reviews, fix actionable findings, and run only affected checks again. Record compatibility, validation, and remaining human/protocol limitations.
-- [ ] Publish the final acceptance documentation/code continuation from the draft stack after live staging requirements are resolved. Do not merge without a subsequent user instruction.
+- [x] Prepare the final acceptance documentation/code continuation for the authorized draft stack publication. Track publication at [root PR #186](https://github.com/s2script/s2script/pull/186); live staging and human acceptance remain separate pending gates. Do not merge without a subsequent user instruction.
 
 ## Worker handoff template
 
