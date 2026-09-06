@@ -16,6 +16,22 @@ import type { EntityRef } from "@s2script/sdk/entity";
 /** Result of a drive call: null on success, or a human-readable reason it did not happen. */
 export type HudResult = string | null;
 
+export type UiErrorCode = "NotReady" | "StaleClient" | "Released" |
+  "Unavailable" | "PoolExhausted" | "Busy" | "InvalidArgument" | "PaintFailed";
+
+export type UiResult<T> = { readonly ok: true; readonly value: T } |
+  { readonly ok: false; readonly error: {
+    readonly code: UiErrorCode;
+    readonly message: string;
+  } };
+
+export type UiStatus = {
+  readonly server: "ready" | "not-ready" | "unavailable";
+  /** Server-side state cannot prove that the client's workshop content rendered. */
+  readonly clientContent: "unknown";
+  readonly reason: string | null;
+};
+
 /** One pre-declared row/slot in a pooled collection. */
 export interface LayoutSlot {
   readonly id: string;
@@ -95,6 +111,7 @@ export interface HudPlayer {
   /** Whether this retained view still belongs to the current client connection. */
   isValid(): boolean;
   show(panelId: string, opts?: { cursor?: boolean }): HudResult;
+  tryShow(panelId: string, opts?: { cursor?: boolean }): UiResult<void>;
   hide(panelId: string): HudResult;
   cursor(on: boolean): HudResult;
   /** Set text where panel id equals the dialog variable name. Also accepts a field map. */
@@ -141,7 +158,10 @@ export interface HudLayout {
    * {@link CustomHudLayout.create}: after a client is `SIGNON_ACTIVE`. Idempotent.
    */
   ensure(): HudResult;
+  /** Server-side drive readiness. Client workshop/render acknowledgement is not observable. */
+  status(): UiStatus;
   show(slot: number, panelId: string, opts?: { cursor?: boolean }): HudResult;
+  tryShow(slot: number, panelId: string, opts?: { cursor?: boolean }): UiResult<void>;
   hide(slot: number, panelId: string): HudResult;
   cursor(slot: number, on: boolean): HudResult;
   set(slot: number, id: string, value: string | number): HudResult;

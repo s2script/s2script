@@ -17,6 +17,10 @@
   var CLASS_HAS = 1;
   var SIGNON_ACTIVE = 6;
 
+  function uiOk(value) { return { ok: true, value: value }; }
+  function uiFail(code, message) { return { ok: false, error: { code: code, message: message } }; }
+  function legacyResult(result) { return result.ok ? null : result.error.message; }
+
   var DEFAULT_DESCRIPTOR = {
     addons: ["3790153369"],
     resource: "panorama/layout/custom_game/s2script_hud.xml",
@@ -65,9 +69,10 @@
     // These HUD descriptors return void: core returns undefined on success and null on
     // rejection (including a stale receiver or a shim-side invocation failure).
     return function () {
-      if (call.apply(null, arguments) !== null) return null;
+      if (call.apply(null, arguments) !== null) return uiOk(undefined);
       var reason = engineStatus(name);
-      return name + ": " + (reason && reason !== "available" ? reason : "engine invocation failed");
+      return uiFail("PaintFailed",
+        name + ": " + (reason && reason !== "available" ? reason : "engine invocation failed"));
     };
   }
   function engineStatus(name) {
@@ -101,16 +106,6 @@
 
   function isFields(x) {
     return x !== null && typeof x === "object" && !Array.isArray(x);
-  }
-
-  function applyFields(fields, fn) {
-    var first = null;
-    for (var k in fields) {
-      if (!Object.prototype.hasOwnProperty.call(fields, k)) continue;
-      var err = fn(k, fields[k]);
-      if (err && !first) first = err;
-    }
-    return first;
   }
 
   function slotPrefix(slot) { return "#" + slot + "|"; }
@@ -302,57 +297,64 @@
         binding.entityEpoch === entityEpoch;
     }
 
-    function setClass(slot, panelId, className, on) {
+    function driveSetClass(slot, panelId, className, on) {
       panelId = String(panelId); className = String(className);
-      if (!setHasClassForPlayer) return "unavailable: " + engineStatus("setHasClassForPlayer");
-      if (slot < 0) return "needs a player slot";
+      if (!setHasClassForPlayer) {
+        return uiFail("Unavailable", "unavailable: " + engineStatus("setHasClassForPlayer"));
+      }
+      if (slot < 0) return uiFail("InvalidArgument", "needs a player slot");
       var ent = bindEntity(ctxState.ensureEntity(layout));
-      if (!ent) return ctxState.notReadyReason();
-      if (!currentClient(slot)) return "stale client";
+      if (!ent) return uiFail("NotReady", ctxState.notReadyReason());
+      if (!currentClient(slot)) return uiFail("StaleClient", "stale client");
       var key = cacheKey(slot, "c", panelId, className);
       var s = on ? "1" : "0";
-      if (lastValue[key] === s) return null;
-      var err = setHasClassForPlayer(ent, slot, panelId, className, on ? CLASS_HAS : CLASS_DOES_NOT_HAVE);
-      if (err) return err;
-      if (!currentClient(slot)) return "stale client";
+      if (lastValue[key] === s) return uiOk(undefined);
+      var result = setHasClassForPlayer(ent, slot, panelId, className,
+        on ? CLASS_HAS : CLASS_DOES_NOT_HAVE);
+      if (!result.ok) return result;
+      if (!currentClient(slot)) return uiFail("StaleClient", "stale client");
       lastValue[key] = s;
-      return null;
+      return uiOk(undefined);
     }
 
-    function setDialogVariable(slot, panelId, variableName, value) {
+    function driveSetDialogVariable(slot, panelId, variableName, value) {
       panelId = String(panelId); variableName = String(variableName);
       if (!setDialogVariableStringForPlayer) {
-        return "unavailable: " + engineStatus("setDialogVariableStringForPlayer");
+        return uiFail("Unavailable", "unavailable: " + engineStatus("setDialogVariableStringForPlayer"));
       }
-      if (slot < 0) return "needs a player slot";
+      if (slot < 0) return uiFail("InvalidArgument", "needs a player slot");
       var ent = bindEntity(ctxState.ensureEntity(layout));
-      if (!ent) return ctxState.notReadyReason();
+      if (!ent) return uiFail("NotReady", ctxState.notReadyReason());
       var str = String(value);
-      if (!currentClient(slot)) return "stale client";
+      if (!currentClient(slot)) return uiFail("StaleClient", "stale client");
       var key = cacheKey(slot, "v", panelId, variableName);
-      if (lastValue[key] === str) return null;
-      var err = setDialogVariableStringForPlayer(ent, slot, panelId, variableName, str);
-      if (err) return err;
-      if (!currentClient(slot)) return "stale client";
+      if (lastValue[key] === str) return uiOk(undefined);
+      var result = setDialogVariableStringForPlayer(ent, slot, panelId, variableName, str);
+      if (!result.ok) return result;
+      if (!currentClient(slot)) return uiFail("StaleClient", "stale client");
       lastValue[key] = str;
-      return null;
+      return uiOk(undefined);
     }
 
-    function cursorSwitch(slot, token, on) {
+    function driveCursorSwitch(slot, token, on) {
       if (typeof globalThis.__s2_shared_entity_switch !== "function") {
-        return "unavailable: shared entity switch host support";
+        return uiFail("Unavailable", "unavailable: shared entity switch host support");
       }
-      if (slot < 0) return "needs a player slot";
+      if (slot < 0) return uiFail("InvalidArgument", "needs a player slot");
       var ent = bindEntity(on ? ctxState.ensureEntity(layout) : ctxState.findEntity(layout));
-      if (!ent) return on ? ctxState.notReadyReason() : null;
-      if (!currentClient(slot)) return "stale client";
-      var result = globalThis.__s2_shared_entity_switch("setInputCaptureEnabledForPlayer",
+      if (!ent) return on ? uiFail("NotReady", ctxState.notReadyReason()) : uiOk(undefined);
+      if (!currentClient(slot)) return uiFail("StaleClient", "stale client");
+      var err = globalThis.__s2_shared_entity_switch("setInputCaptureEnabledForPlayer",
         ent.index, ent.id, slot, token, !!on);
-      if (result) return result;
-      return currentClient(slot) ? null : "stale client";
+      if (err) return uiFail("PaintFailed", err);
+      return currentClient(slot) ? uiOk(undefined) : uiFail("StaleClient", "stale client");
     }
-    function acquireCursor(slot, panelId) { return cursorSwitch(slot, "panel:" + panelId, true); }
-    function releaseCursor(slot, panelId) { return cursorSwitch(slot, "panel:" + panelId, false); }
+    function driveAcquireCursor(slot, panelId) {
+      return driveCursorSwitch(slot, "panel:" + panelId, true);
+    }
+    function driveReleaseCursor(slot, panelId) {
+      return driveCursorSwitch(slot, "panel:" + panelId, false);
+    }
 
     function trackVisible(slot, panelId, on) {
       var key = slotPrefix(slot) + panelId;
@@ -360,51 +362,171 @@
       else delete visiblePanels[key];
     }
 
-    var api = { spec: layout, layout: layout };
-
-    api.show = function (slot, panelId, opts) {
+    function driveShow(slot, panelId, opts) {
       opts = opts || {};
-      var err = setClass(slot, panelId, layout.hideClass, false);
-      if (err) return err;
+      var result = driveSetClass(slot, panelId, layout.hideClass, false);
+      if (!result.ok) return result;
       trackVisible(slot, panelId, true);
       if (opts.cursor) {
-        err = acquireCursor(slot, panelId);
-        if (err) {
-          setClass(slot, panelId, layout.hideClass, true);
+        result = driveAcquireCursor(slot, panelId);
+        if (!result.ok) {
+          driveSetClass(slot, panelId, layout.hideClass, true);
           trackVisible(slot, panelId, false);
-          return err;
+          return result;
         }
       }
-      return null;
-    };
-    api.hide = function (slot, panelId) {
-      var err = setClass(slot, panelId, layout.hideClass, true);
-      if (!err) trackVisible(slot, panelId, false);
+      return uiOk(undefined);
+    }
+
+    function driveHide(slot, panelId) {
+      var result = driveSetClass(slot, panelId, layout.hideClass, true);
+      if (result.ok) trackVisible(slot, panelId, false);
       // Releasing input is independent of painting: close must not strand a cursor if paint fails.
-      var captureErr = releaseCursor(slot, panelId);
-      return err || captureErr;
+      var captureResult = driveReleaseCursor(slot, panelId);
+      return result.ok ? captureResult : result;
+    }
+
+    function driveSet(slot, id, value) {
+      if (isFields(id)) {
+        var first = null;
+        for (var key in id) {
+          if (!Object.prototype.hasOwnProperty.call(id, key)) continue;
+          var fieldResult = driveSetDialogVariable(slot, key, key, id[key]);
+          if (!fieldResult.ok && !first) first = fieldResult;
+        }
+        return first || uiOk(undefined);
+      }
+      return driveSetDialogVariable(slot, id, id, value);
+    }
+
+    function driveSetText(slot, panelId, value) {
+      if (isFields(panelId)) {
+        var first = null;
+        for (var key in panelId) {
+          if (!Object.prototype.hasOwnProperty.call(panelId, key)) continue;
+          var fieldResult = driveSetText(slot, key, panelId[key]);
+          if (!fieldResult.ok && !first) first = fieldResult;
+        }
+        return first || uiOk(undefined);
+      }
+      var varName = layout.text[panelId] || panelId;
+      return driveSetDialogVariable(slot, panelId, varName, value);
+    }
+
+    function driveSetMeter(slot, meterName, percent) {
+      var fillId = layout.meters[meterName];
+      if (!fillId) return uiFail("InvalidArgument", 'no meter "' + meterName + '" in this layout');
+      var next = meterClassFor(percent);
+      var key = slotPrefix(slot) + fillId;
+      var prev = meterClass[key];
+      if (prev && prev !== next) {
+        var clearResult = driveSetClass(slot, fillId, prev, false);
+        if (!clearResult.ok) return clearResult;
+      }
+      var result = driveSetClass(slot, fillId, next, true);
+      if (result.ok) meterClass[key] = next;
+      return result;
+    }
+
+    function driveSetPool(slot, poolName, entries) {
+      var pool = layout.slots && layout.slots[poolName];
+      if (!pool) return uiFail("InvalidArgument", 'no pool "' + poolName + '" in this layout');
+      if (entries.length > pool.length) {
+        return uiFail("InvalidArgument", 'pool "' + poolName + '" holds ' + pool.length +
+          ' slot(s); ' + entries.length + " given — paginate instead");
+      }
+      for (var i = 0; i < pool.length; i++) {
+        var slotDef = pool[i];
+        var row = entries[i];
+        if (!row) {
+          var hideResult = driveSetClass(slot, slotDef.id, layout.hideClass, true);
+          if (!hideResult.ok) return hideResult;
+          continue;
+        }
+        var showResult = driveSetClass(slot, slotDef.id, layout.hideClass, false);
+        if (!showResult.ok) return showResult;
+        for (var f = 0; f < slotDef.vars.length && f < row.length; f++) {
+          var varResult = driveSetDialogVariable(slot, slotDef.id, slotDef.vars[f], row[f]);
+          if (!varResult.ok) return varResult;
+        }
+      }
+      return uiOk(undefined);
+    }
+
+    function driveSetDisabled(slot, buttonId, disabledOn) {
+      // Paint before recording: driveSetClass's entity resolve can detect a replacement entity and
+      // reset the books, and a book entry written first would be swallowed by that very reset.
+      // Still recorded even when the paint fails (world not ready): dispatchClick suppression is
+      // plugin logic and must not depend on the visual having landed.
+      var result = driveSetClass(slot, buttonId, "s2-btn-disabled", disabledOn);
+      if (boundBinding && !bindingIsValid(boundBinding)) {
+        return result.ok ? uiFail("StaleClient", "stale client") : result;
+      }
+      var set = disabled[slot];
+      if (!set) { set = {}; disabled[slot] = set; }
+      if (disabledOn) set[buttonId] = true; else delete set[buttonId];
+      return result;
+    }
+
+    var api = { spec: layout, layout: layout };
+
+    var rawDrive = {
+      show: driveShow,
+      hide: driveHide,
+      cursor: function (slot, on) { return driveCursorSwitch(slot, "manual:*", !!on); },
+      cursorForPanel: function (slot, panelId, on) {
+        return on ? driveAcquireCursor(slot, panelId) : driveReleaseCursor(slot, panelId);
+      },
+      set: driveSet,
+      setText: driveSetText,
+      setClass: driveSetClass,
+      setMeter: driveSetMeter,
+      setPool: driveSetPool,
+      setDisabled: driveSetDisabled,
+      ensure: function () {
+        var ref = bindEntity(ctxState.createEntity(layout));
+        return ref ? uiOk(undefined) : uiFail("NotReady", ctxState.notReadyReason());
+      }
+    };
+
+    // Private structured seam for game-package components. Every call captures the actual client
+    // generation, then the raw operation re-checks it after argument coercion and reentrancy.
+    api._drive = {};
+    "show hide cursor cursorForPanel set setText setClass setMeter setPool setDisabled".split(" ")
+      .forEach(function (name) {
+        api._drive[name] = function (slot) {
+          var actualClient = currentClient(slot);
+          if (!actualClient) return uiFail("StaleClient", "stale client");
+          var previous = boundClient; boundClient = actualClient;
+          try { return rawDrive[name].apply(rawDrive, arguments); }
+          finally { boundClient = previous; }
+        };
+      });
+    api._drive.ensure = rawDrive.ensure;
+
+    api.show = function (slot, panelId, opts) {
+      return legacyResult(api._drive.show(slot, panelId, opts));
+    };
+    api.tryShow = function (slot, panelId, opts) { return api._drive.show(slot, panelId, opts); };
+    api.hide = function (slot, panelId) {
+      return legacyResult(api._drive.hide(slot, panelId));
     };
     api.cursor = function (slot, on) {
-      return cursorSwitch(slot, "manual:*", !!on);
+      return legacyResult(api._drive.cursor(slot, on));
     };
     // Game-presenter seam: changing one root must not touch a manual or another root's lease.
     api._cursorForPanel = function (slot, panelId, on) {
-      return on ? acquireCursor(slot, panelId) : releaseCursor(slot, panelId);
+      return legacyResult(api._drive.cursorForPanel(slot, panelId, on));
     };
     api.set = function (slot, id, value) {
-      if (isFields(id)) {
-        return applyFields(id, function (k, v) { return setDialogVariable(slot, k, k, v); });
-      }
-      return setDialogVariable(slot, id, id, value);
+      return legacyResult(api._drive.set(slot, id, value));
     };
     api.setText = function (slot, panelId, value) {
-      if (isFields(panelId)) {
-        return applyFields(panelId, function (k, v) { return api.setText(slot, k, v); });
-      }
-      var varName = layout.text[panelId] || panelId;
-      return setDialogVariable(slot, panelId, varName, value);
+      return legacyResult(api._drive.setText(slot, panelId, value));
     };
-    api.setClass = setClass;
+    api.setClass = function (slot, panelId, className, on) {
+      return legacyResult(api._drive.setClass(slot, panelId, className, on));
+    };
     // Internal component-pool handoff: clear only this panel tree's diff cache. Other live
     // components keep their leases and state. Panel ids occupy field 2 in cacheKey().
     api.invalidatePanelTree = function (root) {
@@ -415,46 +537,14 @@
       }
     };
     api.setMeter = function (slot, meterName, percent) {
-      var fillId = layout.meters[meterName];
-      if (!fillId) return 'no meter "' + meterName + '" in this layout';
-      var next = meterClassFor(percent);
-      var key = slotPrefix(slot) + fillId;
-      var prev = meterClass[key];
-      if (prev && prev !== next) {
-        var err = setClass(slot, fillId, prev, false);
-        if (err) return err;
-      }
-      var applied = setClass(slot, fillId, next, true);
-      if (!applied) meterClass[key] = next;
-      return applied;
+      return legacyResult(api._drive.setMeter(slot, meterName, percent));
     };
     api.capacity = function (poolName) {
       var pool = layout.slots && layout.slots[poolName];
       return pool ? pool.length : 0;
     };
     api.setPool = function (slot, poolName, entries) {
-      var pool = layout.slots && layout.slots[poolName];
-      if (!pool) return 'no pool "' + poolName + '" in this layout';
-      if (entries.length > pool.length) {
-        return 'pool "' + poolName + '" holds ' + pool.length + ' slot(s); ' + entries.length +
-          " given — paginate instead";
-      }
-      for (var i = 0; i < pool.length; i++) {
-        var slotDef = pool[i];
-        var row = entries[i];
-        if (!row) {
-          var hideErr = setClass(slot, slotDef.id, layout.hideClass, true);
-          if (hideErr) return hideErr;
-          continue;
-        }
-        var showErr = setClass(slot, slotDef.id, layout.hideClass, false);
-        if (showErr) return showErr;
-        for (var f = 0; f < slotDef.vars.length && f < row.length; f++) {
-          var varErr = setDialogVariable(slot, slotDef.id, slotDef.vars[f], row[f]);
-          if (varErr) return varErr;
-        }
-      }
-      return null;
+      return legacyResult(api._drive.setPool(slot, poolName, entries));
     };
     api.onClick = function (buttonId, handler) {
       if (ctxState.buttonHandlers[buttonId]) {
@@ -465,16 +555,7 @@
       onFirstClickHandler();
     };
     api.setDisabled = function (slot, buttonId, disabledOn) {
-      // Paint before recording: setClass's entity resolve can detect a replacement entity and
-      // reset the books, and a book entry written first would be swallowed by that very reset.
-      // Still recorded even when the paint fails (world not ready): dispatchClick suppression is
-      // plugin logic and must not depend on the visual having landed.
-      var err = setClass(slot, buttonId, "s2-btn-disabled", disabledOn);
-      if (boundBinding && !bindingIsValid(boundBinding)) return err || "stale client";
-      var set = disabled[slot];
-      if (!set) { set = {}; disabled[slot] = set; }
-      if (disabledOn) set[buttonId] = true; else delete set[buttonId];
-      return err;
+      return legacyResult(api._drive.setDisabled(slot, buttonId, disabledOn));
     };
     api.dispatchClick = function (slot, buttonId) {
       if (disabled[slot] && disabled[slot][buttonId]) return false;
@@ -493,7 +574,7 @@
       // Forget releases only this plugin's leases. The host's unconditional disconnect path
       // clears ALL owners before JS callbacks, even if this plugin never registered a listener.
       // Never disable another plugin's capture during ordinary local cleanup.
-      cursorSwitch(slot, null, false);
+      driveCursorSwitch(slot, null, false);
       var ent = bindEntity(ctxState.findEntity(layout));
       if (ent) {
         if (setHasClassForPlayer) {
@@ -528,8 +609,26 @@
     };
     api.resetEntityCaches = resetEntityCaches;
     api.ensure = function () {
-      var ref = bindEntity(ctxState.createEntity(layout));
-      return ref ? null : ctxState.notReadyReason();
+      return legacyResult(api._drive.ensure());
+    };
+    api.status = function () {
+      if (!setHasClassForPlayer) {
+        return { server: "unavailable", clientContent: "unknown",
+          reason: "setHasClassForPlayer: " + engineStatus("setHasClassForPlayer") };
+      }
+      if (!setDialogVariableStringForPlayer) {
+        return { server: "unavailable", clientContent: "unknown",
+          reason: "setDialogVariableStringForPlayer: " +
+            engineStatus("setDialogVariableStringForPlayer") };
+      }
+      if (!ctxState.isReady()) {
+        return { server: "not-ready", clientContent: "unknown", reason: ctxState.notReadyReason() };
+      }
+      var ent = bindEntity(ctxState.findEntity(layout));
+      if (!ent) {
+        return { server: "not-ready", clientContent: "unknown", reason: ctxState.notReadyReason() };
+      }
+      return { server: "ready", clientContent: "unknown", reason: null };
     };
     api.forSlot = function (slot) {
       var client = resolveCurrentClient(slot);
@@ -546,6 +645,7 @@
         slot: slot,
         isValid: isValid,
         show: function (panelId, opts) { return api.show(slot, panelId, opts); },
+        tryShow: function (panelId, opts) { return api.tryShow(slot, panelId, opts); },
         hide: function (panelId) { return api.hide(slot, panelId); },
         cursor: function (on) { return api.cursor(slot, on); },
         set: function (id, value) { return api.set(slot, id, value); },
@@ -560,7 +660,11 @@
         if (name === "isValid" || typeof view[name] !== "function") return;
         var call = view[name];
         view[name] = function () {
-          if (!isValid()) return name === "forget" ? undefined : "stale client";
+          if (!isValid()) {
+            if (name === "forget") return undefined;
+            if (name === "tryShow") return uiFail("StaleClient", "stale client");
+            return "stale client";
+          }
           var previous = boundClient; boundClient = client;
           try { return call.apply(view, arguments); } finally { boundClient = previous; }
         };
@@ -597,13 +701,13 @@
       return !occupant || sameClient(occupant, client);
     };
     // Direct slot APIs adopt the current occupant; retained forSlot views keep their original one.
-    "show hide cursor set setText setClass setMeter setPool setDisabled dispatchClick".split(" ").forEach(function (name) {
-      var call = api[name];
-      api[name] = function (slot) {
-        if (!currentClient(slot)) return name === "dispatchClick" ? false : "stale client";
-        return call.apply(api, arguments);
-      };
-    });
+    // Structured drives already capture and bind that occupant. Click dispatch has no drive result,
+    // so keep its existing boolean stale-client adapter here.
+    var dispatchClick = api.dispatchClick;
+    api.dispatchClick = function (slot) {
+      if (!currentClient(slot)) return false;
+      return dispatchClick.apply(api, arguments);
+    };
     return api;
   }
 
@@ -681,6 +785,7 @@
         return {
           buttonHandlers: buttonHandlers,
           notReadyReason: notReadyReason,
+          isReady: function () { return ready; },
           findEntity: function (desc) {
             var tn = targetNameForResource(desc.resource);
             var found = entityApi().Entity.findByClass(HUD_CLASS);

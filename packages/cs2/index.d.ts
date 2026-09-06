@@ -52,6 +52,9 @@ export type {
   OnCustomHudClickedView,
   Row,
   ToastSpec,
+  UiErrorCode,
+  UiResult,
+  UiStatus,
   Variant,
 } from "./ui";
 export { CustomHudLayout, DEFAULT_HUD_DESCRIPTOR, hudkit, PROBE_LAYOUT, ui } from "./ui";
