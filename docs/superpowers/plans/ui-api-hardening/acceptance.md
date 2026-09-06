@@ -1,8 +1,9 @@
 # UI API hardening acceptance evidence
 
-Status: local Task 7 preparation on provisional base
-`e8b6061d730b3b6f6431cd7882bfcb87ee3b2a86`. The root integrator will restack this checkpoint
-onto the final Task 6 dashboard work before running the full gates and any live protocol.
+Status: local Task 7 acceptance preparation restacked onto Task 6 dashboard checkpoint
+`b9986daa6c4ed7a8efc9a2fbe3a5e680b8da73e7`, which remains under independent review. The evidence
+below was collected at code/test checkpoint `1641daceeba0159daca2732222208b372542f98f`; the root
+integrator still owns the final whole-stack gates and live protocol.
 
 ## Evidence boundaries
 
@@ -14,7 +15,7 @@ test are host-stub observations. They are not native-host evidence or client ren
 acknowledgements.
 
 Native ownership/capture churn is separate preparation from commit
-`e8b6061d730b3b6f6431cd7882bfcb87ee3b2a86`. Its real host fixture previously passed the focused
+`e6cb17485f1ad42aaaf40e3796da5565bee4543d`. Its real host fixture previously passed the focused
 1,000-cycle test (1/1) and the complete `surface_leases::tests` module (34/34). Those native tests
 were not rerun in this worktree, as requested. The final integrated native gate remains pending.
 
@@ -33,17 +34,17 @@ npm ci
 node packages/sdk/dist/cli.js build examples/ui-multiplugin-a --packages-dir packages
 node packages/sdk/dist/cli.js build examples/ui-multiplugin-b --packages-dir packages
 node --test --test-name-pattern='1000 VM reload cycles' games/cs2/js/hudkit-prelude.test.js
-node --test --test-name-pattern='structured drives classify unavailable' games/cs2/js/ui.test.js
-node --test games/cs2/js/ui.test.js games/cs2/js/hudkit-prelude.test.js
+bash scripts/check-components-test.sh
 node --test packages/sdk/test/cs2-ui.test.mjs
 bash scripts/check-core-js-lint.sh
 bash scripts/check-plugins-typecheck.sh
 ```
 
-Each command exited 0 on this worktree. The focused churn command passed 1/1; the combined
-`ui.test.js` and `hudkit-prelude.test.js` run passed 91/91. The SDK UI contract suite passed 38/38,
-the core/game JavaScript lint gate passed, and `scripts/check-plugins-typecheck.sh` passed every
-plugin and example, including both fixtures.
+Each command exited 0 on this worktree. The focused churn command passed 1/1;
+`scripts/check-components-test.sh` passed 203/203 across the component, input, menu, vote,
+prelude, and low-level UI suites. The SDK UI contract suite passed 38/38, the core/game JavaScript
+lint gate passed, and `scripts/check-plugins-typecheck.sh` passed every plugin and example,
+including both fixtures.
 The two fixture builds emitted:
 
 ```text
@@ -55,16 +56,13 @@ Artifact metadata from the fresh fixture build:
 
 | Artifact | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `_demo_ui-multiplugin-a.s2sp` | 3,775 | `470a35dde1c4fb1af12c43b8bf54f45c38155b155fa78d1b6efb0304cfc560c7` |
-| `_demo_ui-multiplugin-b.s2sp` | 2,395 | `2123de2f42f16a2eaad44b4afbf7ce23f56be5e4d05b1cfca802183af6b7e92e` |
+| `_demo_ui-multiplugin-a.s2sp` | 3,775 | `05e257338bac0ce66ed580da8ec8116adb39c7cbb40c09781adca5db48ab228f` |
+| `_demo_ui-multiplugin-b.s2sp` | 2,395 | `32813730b14a32517be62fe3795e6215379ab0e841d5737365e0608d22a7cbbb` |
 
 The repository's existing `examples/*/` wildcard registers both fixtures with
 `scripts/check-plugins-typecheck.sh`; no additional gate list or workspace-lock entry is needed.
-At this provisional base, `bash scripts/check-components-test.sh` exited 1 with 177/193 passing.
-Most failures are the known standalone fixture gap `hud._focus.invalidate is not a function`; the
-remaining dashboard reentrancy/spec failures are owned by the still-developing Task 6 dashboard
-phase. Task 7 does not modify that runtime or duplicate its fixes. After restacking onto final Task
-6, the root integrator must rerun this gate and replace this provisional result with exact evidence.
+The pre-restack 177/193 provisional result has been superseded: Task 6's final dashboard source and
+fixture corrections are present here, and the complete gate now passes 203/203.
 
 ## Automated 1,000-cycle VM churn
 
@@ -166,7 +164,7 @@ For a human slot `S`, the pending live sequence is:
 
 ## Pending final evidence
 
-The final integrated SHA still needs the root-owned full JS and Linux/native gates, sniper artifact
+The post-restack Task 7 checkpoint still needs the root-owned full JS and Linux/native gates, sniper artifact
 build and hashes, independent final review, owned-server deployment with rollback, and the human
 protocol above. The separate MultiAddonManager startup/map crash remains an independent incident;
 failure to load the fixtures blocks live acceptance and does not count as a UI API pass or failure.
