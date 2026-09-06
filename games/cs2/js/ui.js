@@ -221,15 +221,20 @@
       if (invalidateView) delete slotClients[slot];
       forgetKeyed(meterClass, slot); forgetKeyed(visiblePanels, slot); forgetKeyed(lastValue, slot);
     }
+    // Fresh slot-first bindings adopt the actual occupant, even when captured reentrantly
+    // from a retired component's drive. Only primitive writes inherit that ambient fence.
+    function resolveCurrentClient(slot) {
+      var current = clientsApi().fromSlot(slot);
+      if (!current) return null;
+      if (!sameClient(slotClients[slot], current)) { forgetSlot(slot, true); slotClients[slot] = current; }
+      return current;
+    }
     function currentClient(slot) {
       if (boundBinding) {
         return boundBinding.slot === slot && bindingIsValid(boundBinding) ? boundBinding.client : null;
       }
       if (boundClient && (boundClient.slot !== slot || !boundClient.isValid())) return null;
-      var current = clientsApi().fromSlot(slot);
-      if (!current) return null;
-      if (!sameClient(slotClients[slot], current)) { forgetSlot(slot, true); slotClients[slot] = current; }
-      return current;
+      return resolveCurrentClient(slot);
     }
 
     function cacheKey(slot, kind, a, b) {
@@ -527,7 +532,7 @@
       return ref ? null : ctxState.notReadyReason();
     };
     api.forSlot = function (slot) {
-      var client = currentClient(slot);
+      var client = resolveCurrentClient(slot);
       var view = slotViews[slot];
       if (view && view.isValid()) return view;
       var capturedSlotEpoch = slotEpochs[slot] || 0;
@@ -569,7 +574,7 @@
     // primitive coercion/native calls and revalidates before publishing primitive cache state.
     api._captureBinding = function (slot) {
       var view = api.forSlot(slot);
-      return { slot: slot, client: currentClient(slot), view: view,
+      return { slot: slot, client: resolveCurrentClient(slot), view: view,
         slotEpoch: componentSlotEpochs[slot] || 0, entityEpoch: entityEpoch };
     };
     api._bindingIsValid = bindingIsValid;

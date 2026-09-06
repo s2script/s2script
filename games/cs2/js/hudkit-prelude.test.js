@@ -510,6 +510,29 @@ test("a released badge cannot resume painting after its pool slot is reclaimed d
   assert.deepEqual(w.writes.slice(boundary), []);
 });
 
+test("a fresh same-plugin badge binds independently of the released badge coercing its title", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const owner = p.base.kit.badge();
+  const retained = owner.show(1, { text: "A" });
+  let replacement, beforeReplacement = -1, afterReplacement = -1;
+  retained.show({
+    title: { toString() {
+      owner.release();
+      beforeReplacement = w.writes.length;
+      replacement = p.base.kit.badge().show(1, { title: "B", text: "B" });
+      afterReplacement = w.writes.length;
+      return "STALE";
+    } },
+    text: "STALE BODY"
+  });
+  assert.notEqual(afterReplacement, -1);
+  assert.equal(retained.isValid(), false);
+  assert.equal(replacement.isValid(), true);
+  assert.ok(w.writes.slice(beforeReplacement, afterReplacement).some(write =>
+    write.name === "setDialogVariableStringForPlayer" && write.args[4] === "B"));
+  assert.deepEqual(w.writes.slice(afterReplacement), [], "the old badge cannot resume painting");
+});
+
 test("an entity replacement during coercion fences the retained component before its first write", () => {
   const w = pluginWorld(), p = w.plugin();
   const retained = p.base.kit.badge().show(1, { text: "A" });
