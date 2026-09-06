@@ -73,21 +73,27 @@ interface HudPlayer {
 interface Modal {
   tryOpenResult(slot: number, opts?: { cursor?: boolean; focus?: UiFocusOptions }): UiResult<ModalView>;
   tryRefresh(slot: number): UiResult<void>;
+  invalidate(slot?: number): void;
 }
 
 interface ModalView {
   tryOpenResult(opts?: { cursor?: boolean; focus?: UiFocusOptions }): UiResult<ModalView>;
   tryRefresh(): UiResult<void>;
+  invalidate(): void;
+  lastUpdateResult(): UiResult<void> | null;
 }
 
 interface Dashboard {
   tryOpenResult(slot: number, opts?: { tab?: string; cursor?: boolean; focus?: UiFocusOptions }): UiResult<DashboardView>;
   tryRefresh(slot: number): UiResult<void>;
+  invalidate(slot?: number): void;
 }
 
 interface DashboardView {
   tryOpenResult(opts?: { tab?: string; cursor?: boolean; focus?: UiFocusOptions }): UiResult<DashboardView>;
   tryRefresh(): UiResult<void>;
+  invalidate(): void;
+  lastUpdateResult(): UiResult<void> | null;
 }
 
 interface BadgeView {
@@ -104,6 +110,29 @@ Owner refresh methods require a `slot`, so a mixed bulk refresh cannot hide whic
 player failed. Bound views already identify their player and therefore use
 `tryRefresh()` with no argument. `tryShow` is available on layout/player and badge
 views. `tryOpenResult` is available on modal/dashboard owners and their views.
+
+## Explicit invalidation
+
+Modal and dashboard `invalidate()` requests a repaint on the next server frame. Owner calls may
+name one slot or omit it to invalidate every open view. Repeated invalidations of the same live
+component/client pair coalesce into one repaint. Existing `refresh()` remains synchronous: a
+successful synchronous repaint also fulfills invalidation intent that was already pending when it
+started. An invalidation raised from inside a provider is newer intent and runs on the following
+frame rather than recursing into the active repaint.
+
+Each repaint evaluates its row provider once. Paging, selection, details, footer placement, and the
+submitted click snapshot all derive from that same candidate. Covered exclusive-focus views retain
+dirty intent without evaluating providers or accepting input. When focus becomes ready, restoration
+and a pending invalidation share one successful repaint.
+
+`lastUpdateResult()` returns the last completed initial open, synchronous repaint, or deferred
+repaint for that live bound view. It is `null` before the first completed update, and scheduling an
+invalidation does not erase the previous result. A deferred failure disables interaction, records
+the source `UiResult`, logs once on entry into failure, and does not retry automatically; a later
+successful explicit update rearms that diagnostic. Ordinary close/reopen preserves the view's
+component/client lifetime and result history. After release, forget, reconnect, or layout-entity
+replacement the retained view is stale and `lastUpdateResult()` returns `null`; a replacement view
+has an independent history.
 
 `HudKit.tryModal` and `HudKit.tryBadge` expose pool exhaustion as `PoolExhausted`.
 The legacy `modal()` and `badge()` factories retain eager claim timing and return
