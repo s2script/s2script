@@ -1,5 +1,23 @@
 # @s2script/cli
 
+## 0.26.0
+
+### Minor Changes
+
+- b6d7d6a: Cookies.set and Cookies.setAuthId now return boolean admission results. False leaves the cache unchanged when identity is invalid or the bounded persistence outbox cannot reserve capacity. True means host ownership until database acknowledgement, including plugin reload and same-process core reinit; process exit is not crash durable. Callers should handle false. Structural mocks must return boolean instead of void.
+- e6580da: Expose WebSocket.send, TcpSocket.send, and UdpSocket.sendTo acceptance as boolean returns. False means closed/oversized/full admission and no accepted send. Correct threadSleep's declaration to its existing Promise<void> runtime result, replacing obsolete fiber documentation. Document named async and timer overload errors and finite query/HTTP result limits. Existing callers may continue ignoring returns; structural mocks that returned void must return the new value. Host apiVersion 2 remains compatible.
+- ed2454f: Return disposable forward subscriptions and add typed watchOptional attachments for declared optional providers. Attachment scopes own local disposables, register synchronously after both plugins are Active, and clean up on failure, disposal, and provider or consumer unload. Reject undeclared optional watches and statically visible async attachment callbacks while preserving the types-only dependency workflow.
+- f6b1c38: Add protocol 2 Hook and Transform descriptors with inferred synchronous dispatch results, writable-field metadata, and strict result and patch validation. Hooks collapse HookResult values; transforms apply copied shallow patches only for Changed. Listener failures contribute Continue, Handled continues delivery, and Stop ends dispatch.
+- b919653: Add provider-qualified `bindForwards(name, handlers)` maps with exact inferred payload and synchronous decision types, atomic registration rollback, and whole-map disposal.
+- 5fab922: Add opt-in protocol 2 contracts for synchronous plugin methods and typed notifications. The CLI derives wire schemas and verified interface-name associations, checks producer implementations, and includes canonical contract digests in archives. Protocol 2 requires host API 3; the new host also accepts existing API 2 protocol 1 archives.
+
+### Patch Changes
+
+- af04ab1: Bind Client and Player handles to a host connection lifetime so saved handles cannot target a replacement in the same slot. Disconnect callbacks expose a synchronous read-only identity snapshot; stale getters and actions return safe defaults. Cookie loads and notifications now remain tied to their original connection.
+- 0c026e4: Support the existing HookResultValue type in verified interop contracts and document Bans cache/persistence outcomes. Publish the BaseBans typed operation/hook service with copied observer types, validated shared command/menu/API routing and identity-safe kicks.
+- 7d5d877: Verify the major-versioned BaseComm protocol 2 service contract through the SDK compiler, including inferred methods and notification subscriptions from a copied types-only dependency. Add the optional observer build as an end-to-end proof that consumers do not require provider source or binaries.
+- ff3ff5b: Derive typed, disposable producer-as-import `on` subscriptions from verified protocol 2 contracts. Migrate the zones provider and cookbook to the major-versioned zones 1.0.0 contract, including current-layout queries on attachment and connection-safe occupancy; retain legacy econ/workshop examples in a protocol 1 companion.
+
 ## 0.25.1
 
 ### Patch Changes
