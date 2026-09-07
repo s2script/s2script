@@ -570,6 +570,18 @@
         if (current.length === 0) delete subscribers[id];
       } };
     };
+    // Test/acceptance seam: observe the actual retained subscription storage. This intentionally
+    // stays out of the public TypeScript contract; acceptance must not infer cleanup from callbacks.
+    api._subscriptionStats = function () {
+      var routes = 0;
+      var count = 0;
+      for (var id in subscribers) {
+        if (!Object.prototype.hasOwnProperty.call(subscribers, id)) continue;
+        routes++;
+        count += subscribers[id].length;
+      }
+      return { routes: routes, subscribers: count };
+    };
     api.setDisabled = function (slot, buttonId, disabledOn) {
       return legacyResult(api._drive.setDisabled(slot, buttonId, disabledOn));
     };

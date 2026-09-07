@@ -1346,6 +1346,147 @@ mod tests {
         assert!(REGISTRY.with(|r| r.borrow().leases.is_empty()));
         done_engine();
     }
+
+    #[test]
+    fn native_ui_ownership_capture_reload_churn_1000_cycles() {
+        let mut id = setup_engine();
+        let mut serial = 123;
+
+        for cycle in 0..1000 {
+            EFFECTS.with(|e| e.borrow_mut().clear());
+            let generation_a = v8host::plugin_generation("surface_a");
+
+            // A linked active presentation is protected from an explicit claim, but a
+            // legacy handoff retires the whole tree before transferring its lane.
+            let parent_a = owned_token(&owned("surface_a", id, 2, "legacy", 1));
+            let child_a = focus_token(&linked_js("surface_a", id, parent_a, 0));
+            assert!(activate("surface_a", parent_a));
+            capture("surface_a", id);
+            assert!(activate("surface_a", child_a));
+            assert_eq!(crate::shared_entity_switch::holder_count(), 1);
+            assert!(REGISTRY.with(|r| {
+                let r = r.borrow();
+                r.pending.is_empty() && r.leases.len() == 2 && r.leases.values().all(|l|
+                    l.owner == "surface_a" && l.generation == generation_a && l.key.entity == id)
+            }), "cycle {cycle}: A owns the active linked tree");
+            assert_eq!(owned("surface_b", id, 2, "explicit", 1)["error"]["code"], "Busy");
+
+            let transferred = owned_token(&owned("surface_b", id, 2, "legacy", 1));
+            assert_eq!(effects(), ["capture:true", "hide:root", "capture:false"]);
+            assert_eq!(crate::shared_entity_switch::holder_count(), 0);
+            assert!(REGISTRY.with(|r| {
+                let r = r.borrow();
+                r.pending.is_empty() && r.leases.len() == 1 && r.leases.values().all(|l|
+                    l.owner == "surface_b" && l.token == transferred && l.key.entity == id)
+            }), "cycle {cycle}: legacy transfer publishes only B");
+            let before = effects();
+            assert!(!release("surface_a", child_a));
+            assert!(!release("surface_a", parent_a));
+            assert_eq!(effects(), before, "cycle {cycle}: stale transfer tokens have no effects");
+            assert!(release("surface_b", transferred));
+
+            // Releasing a linked tree while its child is covered cannot retire the
+            // replacement focus presentation or its shared capture holder.
+            let parent_a = owned_token(&owned("surface_a", id, 2, "explicit", 1));
+            let child_a = focus_token(&linked_js("surface_a", id, parent_a, 0));
+            assert!(activate("surface_a", parent_a));
+            capture("surface_a", id);
+            assert!(activate("surface_a", child_a));
+            let winner_b = claim("surface_b", id, 10, presentation());
+            capture("surface_b", id);
+            assert!(activate("surface_b", winner_b));
+            assert_eq!(state("surface_a", child_a), "covered");
+            assert_eq!(crate::shared_entity_switch::holder_count(), 1);
+            let before = effects();
+            assert!(release("surface_a", parent_a));
+            assert_eq!(effects(), before, "cycle {cycle}: covered child release preserves B");
+            assert!(active("surface_b", winner_b));
+            assert_eq!(crate::shared_entity_switch::holder_count(), 1);
+            assert!(!release("surface_a", child_a));
+            assert_eq!(effects(), before, "cycle {cycle}: covered stale child has no effects");
+            assert!(release("surface_b", winner_b));
+
+            // Host unload owns cleanup even when no JS disposer runs. A fresh context
+            // cannot use the old generation's tokens against B's replacement tree.
+            let unloaded_parent = owned_token(&owned("surface_a", id, 2, "explicit", 1));
+            let unloaded_child = focus_token(&linked_js("surface_a", id, unloaded_parent, 0));
+            assert!(activate("surface_a", unloaded_parent));
+            capture("surface_a", id);
+            assert!(activate("surface_a", unloaded_child));
+            v8host::unload_plugin("surface_a");
+            assert_eq!(crate::shared_entity_switch::holder_count(), 0);
+            assert!(REGISTRY.with(|r| {
+                let r = r.borrow(); r.leases.is_empty() && r.pending.is_empty()
+            }), "cycle {cycle}: unload returns both native registries to baseline");
+
+            let replacement_parent = owned_token(&owned("surface_b", id, 2, "explicit", 1));
+            let replacement_child = focus_token(&linked_js("surface_b", id, replacement_parent, 0));
+            assert!(activate("surface_b", replacement_parent));
+            capture("surface_b", id);
+            assert!(activate("surface_b", replacement_child));
+            v8host::create_plugin_context("surface_a");
+            assert!(v8host::plugin_generation("surface_a") > generation_a);
+            let before = effects();
+            assert_eq!(query("surface_a", "release", unloaded_child), "false");
+            assert_eq!(query("surface_a", "release", unloaded_parent), "false");
+            assert_eq!(effects(), before, "cycle {cycle}: reloaded A cannot retire B's replacement");
+            assert!(active("surface_b", replacement_child));
+            assert_eq!(crate::shared_entity_switch::holder_count(), 1);
+
+            if cycle % 50 == 0 {
+                let departed = crate::client::generation(2);
+                crate::client::end(2, departed);
+                let replacement_generation = crate::client::begin(2);
+                assert_ne!(replacement_generation, departed);
+                assert_eq!(crate::shared_entity_switch::holder_count(), 0);
+                assert!(REGISTRY.with(|r| {
+                    let r = r.borrow(); r.leases.is_empty() && r.pending.is_empty()
+                }));
+                let fresh_parent = owned_token(&owned("surface_a", id, 2, "explicit", 1));
+                let fresh_child = focus_token(&linked_js("surface_a", id, fresh_parent, 0));
+                assert!(activate("surface_a", fresh_parent));
+                capture("surface_a", id);
+                assert!(activate("surface_a", fresh_child));
+                let before = effects();
+                crate::client::end(2, departed);
+                assert_eq!(effects(), before, "cycle {cycle}: stale client retirement preserves replacement");
+                assert!(active("surface_a", fresh_child));
+                assert_eq!(crate::shared_entity_switch::holder_count(), 1);
+                assert!(release("surface_a", fresh_parent));
+            } else if cycle % 50 == 25 {
+                serial += 1;
+                let old_id = id;
+                id = crate::entity_live::on_created(10, serial);
+                assert_ne!(id, old_id);
+                assert_eq!(crate::shared_entity_switch::holder_count(), 0);
+                assert!(REGISTRY.with(|r| {
+                    let r = r.borrow(); r.leases.is_empty() && r.pending.is_empty()
+                }));
+                let fresh_parent = owned_token(&owned("surface_a", id, 2, "explicit", 1));
+                let fresh_child = focus_token(&linked_js("surface_a", id, fresh_parent, 0));
+                assert!(activate("surface_a", fresh_parent));
+                capture("surface_a", id);
+                assert!(activate("surface_a", fresh_child));
+                let before = effects();
+                crate::entity_live::on_deleted(10, serial - 1);
+                assert_eq!(effects(), before, "cycle {cycle}: stale entity retirement preserves replacement");
+                assert!(active("surface_a", fresh_child));
+                assert_eq!(crate::shared_entity_switch::holder_count(), 1);
+                assert!(release("surface_a", fresh_parent));
+            } else {
+                assert!(release("surface_b", replacement_parent));
+            }
+
+            assert!(REGISTRY.with(|r| {
+                let r = r.borrow(); r.leases.is_empty() && r.pending.is_empty()
+            }), "cycle {cycle}: owner and pending registry returned to baseline");
+            assert_eq!(crate::shared_entity_switch::holder_count(), 0,
+                "cycle {cycle}: shared capture holders returned to baseline");
+        }
+
+        done_engine();
+    }
+
     #[test]
     fn native_reservation_is_noninteractive_until_explicit_activation() {
         v8host::init(dummy_logger()).unwrap();

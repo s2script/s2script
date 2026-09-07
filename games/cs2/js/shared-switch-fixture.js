@@ -21,7 +21,11 @@ exports.sharedSwitchFixture = function (find, invoke) {
       return null;
     };
   }
-  return { native, clearSlot(slot) {
+  return { native, stats() {
+    let holders = 0;
+    for (const route of leases.values()) holders += route.size;
+    return { routes: leases.size, holders };
+  }, clearSlot(slot) {
     for (const key of leases.keys()) {
       const [name, index, id, heldSlot] = JSON.parse(key);
       if (heldSlot !== slot) continue;
