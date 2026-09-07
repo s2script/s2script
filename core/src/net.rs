@@ -26,17 +26,22 @@ enum NetCommand {
     Shutdown,                                     // teardown -> NO signal (mirrors ws)
 }
 
-struct Conn { cmd_tx: tokio::sync::mpsc::UnboundedSender<NetCommand>, owner: String }
+struct Conn { cmd_tx: tokio::sync::mpsc::UnboundedSender<NetCommand>, owner: String, owner_generation: u64 }
 struct Engine { sig_tx: Sender<NetSignal>, sig_rx: Mutex<Receiver<NetSignal>>, conns: Mutex<HashMap<u64, Conn>> }
 static ENGINE: OnceLock<Engine> = OnceLock::new();
 fn engine() -> &'static Engine {
     ENGINE.get_or_init(|| { let (sig_tx, sig_rx) = channel(); Engine { sig_tx, sig_rx: Mutex::new(sig_rx), conns: Mutex::new(HashMap::new()) } })
 }
 
+#[cfg(test)]
 pub fn connect_tcp(conn_id: u64, host: String, port: u16, owner: String) {
+    connect_tcp_owned(conn_id, host, port, owner, 0);
+}
+
+pub(crate) fn connect_tcp_owned(conn_id: u64, host: String, port: u16, owner: String, owner_generation: u64) {
     let e = engine();
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<NetCommand>();
-    e.conns.lock().unwrap().insert(conn_id, Conn { cmd_tx, owner });
+    e.conns.lock().unwrap().insert(conn_id, Conn { cmd_tx, owner, owner_generation });
     let sig_tx = e.sig_tx.clone();
     crate::http::spawn(async move {
         let stream = match tokio::net::TcpStream::connect((host.as_str(), port)).await {
@@ -69,10 +74,15 @@ pub fn connect_tcp(conn_id: u64, host: String, port: u16, owner: String) {
     });
 }
 
+#[cfg(test)]
 pub fn bind_udp(conn_id: u64, owner: String) {
+    bind_udp_owned(conn_id, owner, 0);
+}
+
+pub(crate) fn bind_udp_owned(conn_id: u64, owner: String, owner_generation: u64) {
     let e = engine();
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<NetCommand>();
-    e.conns.lock().unwrap().insert(conn_id, Conn { cmd_tx, owner });
+    e.conns.lock().unwrap().insert(conn_id, Conn { cmd_tx, owner, owner_generation });
     let sig_tx = e.sig_tx.clone();
     crate::http::spawn(async move {
         let sock = match tokio::net::UdpSocket::bind("0.0.0.0:0").await {
@@ -116,7 +126,10 @@ pub fn is_owner(conn_id: u64, owner: &str) -> bool {
     matches!(engine().conns.lock().unwrap().get(&conn_id), Some(c) if c.owner == owner)
 }
 pub fn drop_conn(conn_id: u64) {
-    if let Some(c) = engine().conns.lock().unwrap().remove(&conn_id) { let _ = c.cmd_tx.send(NetCommand::Shutdown); }
+    if let Some(c) = engine().conns.lock().unwrap().remove(&conn_id) {
+        let _ = c.cmd_tx.send(NetCommand::Shutdown);
+        crate::v8host::release_resource(&c.owner, c.owner_generation, &crate::plugin::Resource::NetConn(conn_id));
+    }
 }
 pub fn try_recv_signal() -> Option<NetSignal> { engine().sig_rx.lock().ok()?.try_recv().ok() }
 

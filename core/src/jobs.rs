@@ -116,8 +116,8 @@ pub(crate) fn commit_job(
     resolver: v8::Local<v8::PromiseResolver>,
 ) {
     let owner = crate::v8host::jobs_owner_tag(scope);
-    if let Some((ref oid, _)) = owner {
-        crate::v8host::jobs_record_job(oid, id);
+    if let Some((ref oid, generation)) = owner {
+        crate::v8host::jobs_record_job(oid, generation, id);
     }
     insert(id, owner, v8::Global::new(scope.as_ref(), resolver));
     PENDING_JOBS.with(|c| c.set(c.get() + 1));
@@ -135,7 +135,17 @@ pub(crate) fn take_resolver(id: u64) -> Option<ResolverEntry> {
 pub(crate) fn complete_job(id: u64) -> Option<ResolverEntry> {
     let entry = take_resolver(id)?;
     PENDING_JOBS.with(|c| c.set(c.get().saturating_sub(1)));
+    if let Some((owner, generation)) = &entry.owner {
+        crate::v8host::release_resource(owner, *generation, &crate::plugin::Resource::Job(id));
+    }
     Some(entry)
+}
+
+/// Release a completed timer using the resolver's captured owner generation.
+pub(crate) fn release_timer(entry: &ResolverEntry, id: u64) {
+    if let Some((owner, generation)) = &entry.owner {
+        crate::v8host::release_resource(owner, *generation, &crate::plugin::Resource::Timer(id));
+    }
 }
 
 /// Plugin `Resource::Job` teardown. Decrements pending only when a resolver was

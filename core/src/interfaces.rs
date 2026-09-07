@@ -57,6 +57,7 @@ struct ImportDecl { range: String, kind: Kind, compiled_types_sha256: Option<Str
 pub struct InterfaceRegistry {
     ifaces: HashMap<String, InterfaceEntry>,
     imports: HashMap<String, HashMap<String, ImportDecl>>, // plugin_id → (iface_name → decl)
+    import_order: HashMap<String, Vec<String>>,
 }
 
 /// Parse the leading semver major from a version or a range operator ("^1.2.3","1.x","~1.0" → 1).
@@ -79,7 +80,7 @@ pub fn version_satisfies(range: &str, version: &str) -> bool {
 
 impl InterfaceRegistry {
     pub fn new() -> Self {
-        Self { ifaces: HashMap::new(), imports: HashMap::new() }
+        Self { ifaces: HashMap::new(), imports: HashMap::new(), import_order: HashMap::new() }
     }
 
     /// Register (or re-register) an interface. Returns Err when a DIFFERENT producer already
@@ -123,26 +124,37 @@ impl InterfaceRegistry {
         self.ifaces.get(name)
     }
 
-    pub fn remove_by_producer(&mut self, producer_id: &str) -> Vec<String> {
+    /// Remove every interface owned by `producer_id`, returning each name and its subscribers so
+    /// the V8 adapter can drop callback Globals and generation-release consumer ledger entries.
+    pub fn remove_by_producer(&mut self, producer_id: &str) -> Vec<(String, Vec<Subscriber>)> {
         let names: Vec<String> = self.ifaces.iter()
             .filter(|(_, e)| e.producer_id == producer_id)
             .map(|(n, _)| n.clone())
             .collect();
-        for n in &names { self.ifaces.remove(n); }
-        names
+        names.into_iter().filter_map(|name| {
+            self.ifaces.remove(&name).map(|entry| (name, entry.subscribers))
+        }).collect()
     }
 
-    pub fn set_imports(&mut self, plugin_id: &str, decls: Vec<ImportSpec>) {
+    /// Replace one plugin's import declarations and return the prior active names.
+    pub fn set_imports(&mut self, plugin_id: &str, decls: Vec<ImportSpec>) -> Vec<String> {
+        let order = decls.iter().map(|decl| decl.name.clone()).collect();
         let map = decls.into_iter()
             .map(|s| (s.name, ImportDecl {
                 range: s.range, kind: s.kind, compiled_types_sha256: s.compiled_types_sha256,
             }))
             .collect();
         self.imports.insert(plugin_id.to_string(), map);
+        self.import_order.insert(plugin_id.to_string(), order).unwrap_or_default()
+    }
+
+    pub fn import_names(&self, plugin_id: &str) -> Vec<String> {
+        self.import_order.get(plugin_id).cloned().unwrap_or_default()
     }
 
     pub fn clear_imports(&mut self, plugin_id: &str) {
         self.imports.remove(plugin_id);
+        self.import_order.remove(plugin_id);
     }
 
     pub fn dep_kind(&self, plugin_id: &str, name: &str) -> Option<Kind> {
@@ -261,6 +273,7 @@ impl InterfaceRegistry {
     pub fn clear(&mut self) {
         self.ifaces.clear();
         self.imports.clear();
+        self.import_order.clear();
     }
 }
 
@@ -302,7 +315,8 @@ mod tests {
         r.publish("@a", "1.0.0", "", "prod", 0, vec![]).expect("test-setup publish must succeed");
         r.publish("@b", "1.0.0", "", "prod", 0, vec![]).expect("test-setup publish must succeed");
         r.publish("@c", "1.0.0", "", "other", 0, vec![]).expect("test-setup publish must succeed");
-        let mut removed = r.remove_by_producer("prod");
+        let mut removed: Vec<String> = r.remove_by_producer("prod")
+            .into_iter().map(|(name, _subscribers)| name).collect();
         removed.sort();
         assert_eq!(removed, vec!["@a".to_string(), "@b".to_string()]);
         assert!(r.lookup("@a").is_none());
