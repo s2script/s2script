@@ -1,5 +1,33 @@
 # @s2script/cs2
 
+## 0.18.0
+
+### Minor Changes
+
+- 32c9ec4: Add next-frame coalesced `invalidate()` updates and per-view `lastUpdateResult()` for modal and dashboard components while preserving synchronous `refresh()` behavior.
+- acf49ad: Add opt-in exclusive focus to modal/dashboard opens and MOTD specs. A host-owned priority stack arbitrates participating plugins, retires exact panel capture, and restores covered components after a later frame and successful repaint. Preserve legacy opens and raw click observers; expose the additive UiFocusOptions type.
+- 4c99e52: Add structured UI results and server-side readiness reporting. HudKit modal, dashboard, and
+  badge operations now expose stable failure codes while the existing nullable, throwing, string,
+  and void APIs keep their published behavior.
+- a850f6a: Add explicit owned hudkit surfaces, independently disposable dashboard controllers, and typed disposable custom-HUD click subscriptions. Legacy presentations now reserve shared host occupancy, and `hideAll` atomically clears legacy lanes while preserving explicit claims.
+
+### Patch Changes
+
+- af04ab1: Bind Client and Player handles to a host connection lifetime so saved handles cannot target a replacement in the same slot. Disconnect callbacks expose a synchronous read-only identity snapshot; stale getters and actions return safe defaults. Cookie loads and notifications now remain tied to their original connection.
+- 5c51fbb: Bind retained HUD component views and delayed component callbacks to the current client and component lifetime. Add `isValid()` to retained HUD, modal, dashboard, badge, MOTD, and hudkit player views so reconnects, releases, and layout replacement are observable without targeting a new occupant.
+- dfc6178: Bind modal and dashboard clicks to copied rows, tabs, and footer actions from the last complete paint. Add optional stable modal row IDs and reject duplicate supplied IDs so handlers can safely revalidate current domain state.
+- Updated dependencies [af04ab1]
+- Updated dependencies [b6d7d6a]
+- Updated dependencies [e6580da]
+- Updated dependencies [ed2454f]
+- Updated dependencies [0c026e4]
+- Updated dependencies [7d5d877]
+- Updated dependencies [f6b1c38]
+- Updated dependencies [b919653]
+- Updated dependencies [5fab922]
+- Updated dependencies [ff3ff5b]
+  - @s2script/sdk@0.26.0
+
 ## 0.17.2
 
 ### Patch Changes
