@@ -456,7 +456,8 @@ export function checkInteropCalls(
   publishes: Set<string>,
   generatedPath: string,
   pluginDir: string,
-  dependencies: Set<string>
+  dependencies: Set<string>,
+  optionalDependencies: Set<string>
 ): ts.Diagnostic[] {
   const checker = program.getTypeChecker(),
     out: ts.Diagnostic[] = [];
@@ -522,6 +523,18 @@ export function checkInteropCalls(
                 node,
                 "protocol 2 infers Contract from the interface name; explicit generic arguments are forbidden"
               );
+            if (method === "watchOptional" && !optionalDependencies.has(name))
+              report(node, "watchOptional requires an optionalPluginDependencies entry");
+            if (method === "watchOptional" && node.arguments[1]) {
+              const callback = node.arguments[1];
+              const type = checker.getTypeAtLocation(implementationExpression(checker, callback));
+              const asynchronous = (type: ts.Type): boolean =>
+                type.isUnion() ? type.types.some(asynchronous) :
+                !!(type.flags & ts.TypeFlags.Any) || !!type.getProperty("then");
+              if (type.flags & ts.TypeFlags.Any || type.getCallSignatures().some(signature =>
+                asynchronous(checker.getReturnTypeOfSignature(signature))))
+                report(callback, "watchOptional requires a synchronous attachment callback; thenables are forbidden");
+            }
             if (method === "publish") {
               if (!publishes.has(name))
                 report(node, `provider is not authorized to publish ${name}`);

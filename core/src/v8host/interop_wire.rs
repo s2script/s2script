@@ -1,6 +1,7 @@
 //! Strict protocol 2 crossings. Snapshot owned metadata before entering JavaScript.
 use super::*;
 thread_local! { static DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
+pub(super) fn at_interop_boundary() -> bool { DEPTH.with(|d| d.get() == 0) }
 pub(super) struct InteropGuard;
 impl InteropGuard {
     pub(super) fn enter(scope: &mut v8::PinScope) -> Option<Self> {

@@ -798,6 +798,7 @@ fn capture_state_and_run_onunload(id: &str) {
 /// and `unload_partial` (never-Active). `REGISTRY.remove` yields the entry (also making `is_live` false
 /// for any lingering resolver of this generation).
 fn teardown_ledger_and_dispose(id: &str) {
+    interop_lifetime::teardown_plugin(id);
     // (c) Ledger reverse-walk: the teardown authority.  REGISTRY.remove yields the entry (also makes
     // is_live false for any lingering resolver of this generation).
     if let Some(entry) = REGISTRY.with(|r| r.borrow_mut().remove(id)) {
@@ -868,6 +869,8 @@ fn teardown_ledger_and_dispose(id: &str) {
                     // The subscriber row is removed from the producer's list below via
                     // remove_subscribers_by_consumer(id) (belt-and-suspenders for any not yet dropped).
                 }
+                // Retired before REGISTRY.remove while the owning generation/context was live.
+                plugin::Resource::InterfaceWatch(_) | plugin::Resource::InterfaceAttachment(_) => {}
                 plugin::Resource::Import(_name) => { /* edge only; no Global to drop */ }
                 plugin::Resource::DbConn(h) => {
                     // A late/never `close()` — teardown closes the connection now, passing the
@@ -1006,6 +1009,7 @@ pub(crate) fn finalize_loading_plugins() {
     }
 
     crate::loader::start_unblocked_waiters(); // T4 provides the real body; a no-op stub until then.
+    interop_lifetime::drain_attachments();
     fire_all_plugins_loaded_if_quiet();
 }
 

@@ -72,6 +72,11 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     );
     set_native(scope, global_obj, "__s2_iface_call", s2_iface_call);
     // Event subscription / emission (Slice 4.5 events half).
+    set_native(scope, global_obj, "__s2_iface_dispose", interop_lifetime::s2_iface_dispose);
+    set_native(scope, global_obj, "__s2_iface_watch", interop_lifetime::s2_iface_watch);
+    set_native(scope, global_obj, "__s2_iface_watch_dispose", interop_lifetime::s2_iface_watch_dispose);
+    set_native(scope, global_obj, "__s2_iface_attachment_live", interop_lifetime::s2_iface_attachment_live);
+    set_native(scope, global_obj, "__s2_iface_attachment_own", interop_lifetime::s2_iface_attachment_own);
     set_native(scope, global_obj, "__s2_iface_on", s2_iface_on);
     set_native(scope, global_obj, "__s2_iface_off", s2_iface_off);
     set_native(scope, global_obj, "__s2_iface_emit", s2_iface_emit);

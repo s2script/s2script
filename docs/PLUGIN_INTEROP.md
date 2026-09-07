@@ -98,9 +98,33 @@ Transforms return `{ result, patch? }`. A patch is allowed only with Changed and
 
 Handlers must finish synchronously. A throwing listener, invalid result, invalid patch, or thenable contributes Continue and no patch, with a log naming the provider, consumer, and forward. Promise rejections are observed. A response from a consumer whose generation expired during its callback is discarded. Later listeners still run. This is a fail-open policy: security-sensitive producers must account for it explicitly. Earlier listeners' effects are not rolled back.
 
-Ordering is monotonic registration order within one registration history, not a priority promise across server restarts. Dispatch snapshots IDs, skips removed or stale entries, and does not hold registry borrows while invoking listeners. Nested calls share the 32-call interop bound. Provider removal during a listener stops delivery and throws `InterfaceUnavailable` at the return boundary; already-run effects remain. The public `on` return type remains void in this slice, and registrations still belong to the normal load window.
+Ordering is monotonic registration order within one registration history, not a priority promise across server restarts. Dispatch snapshots IDs, skips removed or stale entries, and does not hold registry borrows while invoking listeners. Nested calls share the 32-call interop bound. Provider removal during a listener stops delivery and throws `InterfaceUnavailable` at the return boundary; already-run effects remain. `on` returns a consumer-owned `Subscription`; ignoring the return remains valid. Registrations belong to the normal load window or the synchronous optional-provider attachment described below.
 
 Forward kind and, for transforms, sorted writable keys are part of canonical metadata and its compatibility digest. Changing either requires compatible producer and consumer contracts even if their payload fields stay identical.
+
+## Ownership and optional providers
+
+Every `on` returns an idempotent `Subscription` with `dispose(): void`. Disposal removes that exact registration, even when the same handler is subscribed twice. Disposing before the buffered registration arms cancels it. Disposing during dispatch makes the remaining snapshot skip the removed entry. The host also ledgers subscriptions to the consumer and removes them automatically when either participant unloads.
+
+Declare an optional provider under `s2script.optionalPluginDependencies`, acquire its contract using the existing types-only `s2s add` workflow, and register a watch during the normal load window:
+
+```ts
+import { watchOptional } from "@s2script/sdk/plugin";
+const watch = watchOptional("@demo/counter", (counter, scope) => {
+  scope.own(counter.on("OnCountChanged", event => console.log(event.count)));
+  // Any local disposable can belong to this attachment.
+  scope.own({ dispose() { console.log("counter attachment ended"); } });
+});
+// Calling watch.dispose() later removes the watch and its current attachment.
+```
+
+The host calls `attach` at a lifecycle boundary after both plugins become Active, once per compatible provider identity and generation. Publication never recursively invokes an attachment. A watch remains pending while the provider is absent. Version, declaration hash, and canonical wire metadata must all agree. An incompatible provider logs a diagnostic and does not attach; a later compatible generation can attach normally. `tryUse` remains a one-time optional lookup and does not track availability.
+
+The supplied service permits `on` registration only during this synchronous attachment callback. The host checks its attachment token, consumer origin, provider generation, and crossing depth. Saved handles and scopes cannot reopen registration after the callback, during a nested interop callback, or during a later attachment. Normal load APIs stay closed. Methods on a retained service throw `InterfaceUnavailable` once its attachment ends, including after the provider reloads.
+
+`scope.own<T extends { dispose(): void }>(resource: T): T` returns its input and retains its disposer for this attachment. Forward subscriptions created through the supplied service are automatically attachment-owned, including when `scope.own` is omitted. If attachment throws or returns a thenable, all partial subscriptions and owned disposables are retired; other watches continue. The SDK rejects statically visible async/thenable attachment callbacks, and the host observes thenables without extending registration authorization. Failed attempts retry only for a new compatible provider generation.
+
+Provider removal disposes the attachment locally; host teardown never calls provider methods to unsubscribe. Consumer removal disposes its watches and attachments before dropping the context. Watch disposal also releases its availability callback and registry row. Teardown invalidates the attachment and subscriptions before running custom disposers in reverse ownership order; a throwing or reentrant disposer cannot prevent the remaining cleanup. Keep disposers synchronous and local. Hard dependencies preserve the existing reverse-dependency unload order.
 
 ## Archive and migration contract
 
@@ -108,4 +132,4 @@ SDK builds now stamp host API `3.x`. Protocol 2 archives carry `interfaceProtoco
 
 The API 3 host explicitly accepts API 2 protocol 1 archives. Their existing generic types and permissive wire behavior are retained. Protocol 2 requires API 3 and complete valid metadata; an archive cannot evade the requirement by declaring API 2. Old API 2 hosts reject newly built API 3 archives. Library acquisition and `.s2lib` bundling retain their existing workflow.
 
-Protocol 1 interfaces remain available while a producer and its callers migrate together. Rebuild and deploy both ends with protocol 2; a protocol 1 consumer cannot silently bind to a protocol 2 provider without verified metadata. Interface version matching retains the repository's existing major-based range policy in this slice; exact declaration and metadata hashes provide the additional compatibility checks. Optional watches, disposable subscriptions, and named binding helpers are separate slices.
+Protocol 1 interfaces remain available while a producer and its callers migrate together. Rebuild and deploy both ends with protocol 2; a protocol 1 consumer cannot silently bind to a protocol 2 provider without verified metadata. Interface version matching retains the repository's existing major-based range policy in this slice; exact declaration and metadata hashes provide the additional compatibility checks. Named binding helpers are a separate slice.

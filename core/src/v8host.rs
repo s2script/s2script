@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 mod lifecycle;
 mod natives;
 mod interop_wire;
+mod interop_lifetime;
 use interop_wire::*;
 mod timers;
 
@@ -2203,6 +2204,11 @@ fn s2_iface_on(
         let Some(consumer) = current_plugin(scope) else {
             return;
         };
+        let token = args.get(3).integer_value(scope).unwrap_or(0) as u64;
+        if token != 0 && !interop_lifetime::subscription_authorized(scope, &name, token) {
+            throw_named(scope, "InterfaceRegistrationClosed", "expired or unrelated attachment");
+            return;
+        }
         let contract = match checked_contract(&consumer, &name) {
             Ok(c) => c,
             Err(e) => {
@@ -2213,6 +2219,10 @@ fn s2_iface_on(
         if let Some(contract) = contract {
             if !live_interop_context(scope, &consumer) {
                 throw_named(scope, "InterfaceUnavailable", &consumer);
+                return;
+            }
+            if !interop_lifetime::subscription_authorized(scope, &name, token) {
+                throw_named(scope, "InterfaceRegistrationClosed", "on requires load or its synchronous attachment");
                 return;
             }
             if !IFACES.with(|r| r.borrow().is_available(&consumer, &name)) {
@@ -2253,6 +2263,7 @@ fn s2_iface_on(
             m.borrow_mut().insert(sub_id, g);
         });
         record_resource(&consumer, generation, plugin::Resource::EventSub(sub_id));
+        interop_lifetime::track_subscription(token, sub_id);
         rv.set_double(sub_id as f64);
     }));
 }
@@ -6574,6 +6585,7 @@ pub(crate) fn register_process_singletons() {
     reg("TOPMENU_PENDING", BeforeIsolateDrop, || {
         TOPMENU_PENDING.with(|q| q.borrow_mut().clear())
     });
+    interop_lifetime::register_resets();
     // Inter-plugin method + subscriber Globals.
     reg("IFACE_METHODS", BeforeIsolateDrop, || {
         IFACE_METHODS.with(|m| m.borrow_mut().clear())

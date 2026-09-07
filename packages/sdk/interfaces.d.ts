@@ -107,5 +107,12 @@ export type TypedInterfaceHandle<C> = ContractMethods<C> & {
   >(
     event: K,
     handler: H & ExactForwardHandler<ContractForwards<C>[K], ReturnType<H>>
-  ): void;
+  ): Subscription;
 };
+
+/** A consumer-owned registration. Repeated disposal is a no-op. */
+export interface Subscription { dispose(): void; }
+/** Resources owned by one synchronous optional-provider attachment. */
+export interface AttachmentScope {
+  own<T extends { dispose(): void }>(resource: T): T;
+}
