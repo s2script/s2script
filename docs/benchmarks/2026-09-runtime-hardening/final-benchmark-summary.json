@@ -1,0 +1,1742 @@
+{
+  "timer": {
+    "directory": "/private/tmp/s2script-runtime-hardening/.superpowers/sdd/2026-09-04-runtime-hardening/final-timer-bench-20260905T113817Z",
+    "metadata": {
+      "source": "/Users/ghirakawa/projects/s2script",
+      "revision": "043861085902c43c6f53b63b3212e8a563e3382d",
+      "utc": "20260905T113817Z",
+      "host": "macOS-26.5.1-arm64-arm-64bit",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "pairs": 5,
+      "source_sha256": "e0887664acb9391cf12065be9a87e50e07618ed03e08599378137ae9055065ac",
+      "kernel_sha256": "537bd6c5a72b4dfaf715a6bff31ad09114b3c7b3bb57239eae62a45c259b1761",
+      "scope": "Exact TimerKind/TimerQueue plus production examined-counter source; pool and tests excluded. Existing unlimited due native workload. No V8, JS, engine, RSS or throughput claim."
+    },
+    "comparisons": [
+      {
+        "workload": "timer_idle:0",
+        "samples_per_run": 2000,
+        "baseline_runs": [
+          {
+            "run": 1,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          },
+          {
+            "run": 2,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          },
+          {
+            "run": 3,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          },
+          {
+            "run": 4,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          },
+          {
+            "run": 5,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          }
+        ],
+        "candidate_runs": [
+          {
+            "run": 1,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 42,
+            "p95_ns": 84,
+            "p99_ns": 84,
+            "max_ns": 208
+          },
+          {
+            "run": 2,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          },
+          {
+            "run": 3,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          },
+          {
+            "run": 4,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 84
+          },
+          {
+            "run": 5,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 167
+          }
+        ],
+        "baseline_median": {
+          "p50_ns": 0,
+          "p95_ns": 42,
+          "p99_ns": 42,
+          "max_ns": 42
+        },
+        "candidate_median": {
+          "p50_ns": 41,
+          "p95_ns": 42,
+          "p99_ns": 42,
+          "max_ns": 84
+        },
+        "p50_change_percent": null
+      },
+      {
+        "workload": "timer_due:0",
+        "samples_per_run": 2000,
+        "baseline_runs": [
+          {
+            "run": 1,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 167
+          },
+          {
+            "run": 2,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 83
+          },
+          {
+            "run": 3,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          },
+          {
+            "run": 4,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 83
+          },
+          {
+            "run": 5,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 125
+          }
+        ],
+        "candidate_runs": [
+          {
+            "run": 1,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 42,
+            "p95_ns": 83,
+            "p99_ns": 84,
+            "max_ns": 292
+          },
+          {
+            "run": 2,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 84
+          },
+          {
+            "run": 3,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 83
+          },
+          {
+            "run": 4,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 84
+          },
+          {
+            "run": 5,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 167
+          }
+        ],
+        "baseline_median": {
+          "p50_ns": 0,
+          "p95_ns": 42,
+          "p99_ns": 42,
+          "max_ns": 83
+        },
+        "candidate_median": {
+          "p50_ns": 41,
+          "p95_ns": 42,
+          "p99_ns": 42,
+          "max_ns": 84
+        },
+        "p50_change_percent": null
+      },
+      {
+        "workload": "timer_cancelheavy:0",
+        "samples_per_run": 2000,
+        "baseline_runs": [
+          {
+            "run": 1,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 83
+          },
+          {
+            "run": 2,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 83
+          },
+          {
+            "run": 3,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          },
+          {
+            "run": 4,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          },
+          {
+            "run": 5,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          }
+        ],
+        "candidate_runs": [
+          {
+            "run": 1,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          },
+          {
+            "run": 2,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          },
+          {
+            "run": 3,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          },
+          {
+            "run": 4,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 83
+          },
+          {
+            "run": 5,
+            "n": 0,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          }
+        ],
+        "baseline_median": {
+          "p50_ns": 0,
+          "p95_ns": 42,
+          "p99_ns": 42,
+          "max_ns": 42
+        },
+        "candidate_median": {
+          "p50_ns": 0,
+          "p95_ns": 42,
+          "p99_ns": 42,
+          "max_ns": 42
+        },
+        "p50_change_percent": null
+      },
+      {
+        "workload": "timer_idle:10",
+        "samples_per_run": 2000,
+        "baseline_runs": [
+          {
+            "run": 1,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 125
+          },
+          {
+            "run": 2,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 83
+          },
+          {
+            "run": 3,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 83
+          },
+          {
+            "run": 4,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 83
+          },
+          {
+            "run": 5,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          }
+        ],
+        "candidate_runs": [
+          {
+            "run": 1,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 42,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 208
+          },
+          {
+            "run": 2,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 83
+          },
+          {
+            "run": 3,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          },
+          {
+            "run": 4,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          },
+          {
+            "run": 5,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          }
+        ],
+        "baseline_median": {
+          "p50_ns": 0,
+          "p95_ns": 42,
+          "p99_ns": 42,
+          "max_ns": 83
+        },
+        "candidate_median": {
+          "p50_ns": 41,
+          "p95_ns": 42,
+          "p99_ns": 42,
+          "max_ns": 42
+        },
+        "p50_change_percent": null
+      },
+      {
+        "workload": "timer_due:10",
+        "samples_per_run": 2000,
+        "baseline_runs": [
+          {
+            "run": 1,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 167,
+            "p95_ns": 209,
+            "p99_ns": 250,
+            "max_ns": 1583
+          },
+          {
+            "run": 2,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 125,
+            "p95_ns": 125,
+            "p99_ns": 167,
+            "max_ns": 1250
+          },
+          {
+            "run": 3,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 83,
+            "p95_ns": 84,
+            "p99_ns": 125,
+            "max_ns": 833
+          },
+          {
+            "run": 4,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 83,
+            "p95_ns": 125,
+            "p99_ns": 125,
+            "max_ns": 792
+          },
+          {
+            "run": 5,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 83,
+            "p95_ns": 125,
+            "p99_ns": 125,
+            "max_ns": 3917
+          }
+        ],
+        "candidate_runs": [
+          {
+            "run": 1,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 167,
+            "p95_ns": 209,
+            "p99_ns": 250,
+            "max_ns": 1333
+          },
+          {
+            "run": 2,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 83,
+            "p95_ns": 125,
+            "p99_ns": 125,
+            "max_ns": 917
+          },
+          {
+            "run": 3,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 84,
+            "p95_ns": 125,
+            "p99_ns": 125,
+            "max_ns": 708
+          },
+          {
+            "run": 4,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 84,
+            "p95_ns": 125,
+            "p99_ns": 167,
+            "max_ns": 1167
+          },
+          {
+            "run": 5,
+            "n": 10,
+            "samples": 2000,
+            "p50_ns": 84,
+            "p95_ns": 125,
+            "p99_ns": 167,
+            "max_ns": 875
+          }
+        ],
+        "baseline_median": {
+          "p50_ns": 83,
+          "p95_ns": 125,
+          "p99_ns": 125,
+          "max_ns": 1250
+        },
+        "candidate_median": {
+          "p50_ns": 84,
+          "p95_ns": 125,
+          "p99_ns": 167,
+          "max_ns": 917
+        },
+        "p50_change_percent": 1.2048192771084265
+      },
+      {
+        "workload": "timer_cancelheavy:10",
+        "samples_per_run": 1000,
+        "baseline_runs": [
+          {
+            "run": 1,
+            "n": 10,
+            "samples": 1000,
+            "p50_ns": 83,
+            "p95_ns": 84,
+            "p99_ns": 84,
+            "max_ns": 167
+          },
+          {
+            "run": 2,
+            "n": 10,
+            "samples": 1000,
+            "p50_ns": 42,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 125
+          },
+          {
+            "run": 3,
+            "n": 10,
+            "samples": 1000,
+            "p50_ns": 42,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 125
+          },
+          {
+            "run": 4,
+            "n": 10,
+            "samples": 1000,
+            "p50_ns": 42,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 208
+          },
+          {
+            "run": 5,
+            "n": 10,
+            "samples": 1000,
+            "p50_ns": 42,
+            "p95_ns": 42,
+            "p99_ns": 83,
+            "max_ns": 167
+          }
+        ],
+        "candidate_runs": [
+          {
+            "run": 1,
+            "n": 10,
+            "samples": 1000,
+            "p50_ns": 1041,
+            "p95_ns": 1250,
+            "p99_ns": 1375,
+            "max_ns": 2042
+          },
+          {
+            "run": 2,
+            "n": 10,
+            "samples": 1000,
+            "p50_ns": 500,
+            "p95_ns": 584,
+            "p99_ns": 708,
+            "max_ns": 1250
+          },
+          {
+            "run": 3,
+            "n": 10,
+            "samples": 1000,
+            "p50_ns": 500,
+            "p95_ns": 625,
+            "p99_ns": 750,
+            "max_ns": 1042
+          },
+          {
+            "run": 4,
+            "n": 10,
+            "samples": 1000,
+            "p50_ns": 500,
+            "p95_ns": 584,
+            "p99_ns": 750,
+            "max_ns": 1166
+          },
+          {
+            "run": 5,
+            "n": 10,
+            "samples": 1000,
+            "p50_ns": 500,
+            "p95_ns": 625,
+            "p99_ns": 750,
+            "max_ns": 1291
+          }
+        ],
+        "baseline_median": {
+          "p50_ns": 42,
+          "p95_ns": 42,
+          "p99_ns": 42,
+          "max_ns": 167
+        },
+        "candidate_median": {
+          "p50_ns": 500,
+          "p95_ns": 625,
+          "p99_ns": 750,
+          "max_ns": 1250
+        },
+        "p50_change_percent": 1090.4761904761906
+      },
+      {
+        "workload": "timer_idle:1000",
+        "samples_per_run": 2000,
+        "baseline_runs": [
+          {
+            "run": 1,
+            "n": 1000,
+            "samples": 2000,
+            "p50_ns": 875,
+            "p95_ns": 917,
+            "p99_ns": 1000,
+            "max_ns": 1083
+          },
+          {
+            "run": 2,
+            "n": 1000,
+            "samples": 2000,
+            "p50_ns": 541,
+            "p95_ns": 583,
+            "p99_ns": 750,
+            "max_ns": 875
+          },
+          {
+            "run": 3,
+            "n": 1000,
+            "samples": 2000,
+            "p50_ns": 458,
+            "p95_ns": 459,
+            "p99_ns": 459,
+            "max_ns": 625
+          },
+          {
+            "run": 4,
+            "n": 1000,
+            "samples": 2000,
+            "p50_ns": 333,
+            "p95_ns": 375,
+            "p99_ns": 375,
+            "max_ns": 500
+          },
+          {
+            "run": 5,
+            "n": 1000,
+            "samples": 2000,
+            "p50_ns": 458,
+            "p95_ns": 459,
+            "p99_ns": 459,
+            "max_ns": 584
+          }
+        ],
+        "candidate_runs": [
+          {
+            "run": 1,
+            "n": 1000,
+            "samples": 2000,
+            "p50_ns": 42,
+            "p95_ns": 42,
+            "p99_ns": 83,
+            "max_ns": 84
+          },
+          {
+            "run": 2,
+            "n": 1000,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 167
+          },
+          {
+            "run": 3,
+            "n": 1000,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 83
+          },
+          {
+            "run": 4,
+            "n": 1000,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          },
+          {
+            "run": 5,
+            "n": 1000,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          }
+        ],
+        "baseline_median": {
+          "p50_ns": 458,
+          "p95_ns": 459,
+          "p99_ns": 459,
+          "max_ns": 625
+        },
+        "candidate_median": {
+          "p50_ns": 41,
+          "p95_ns": 42,
+          "p99_ns": 42,
+          "max_ns": 83
+        },
+        "p50_change_percent": -91.0480349344978
+      },
+      {
+        "workload": "timer_due:1000",
+        "samples_per_run": 500,
+        "baseline_runs": [
+          {
+            "run": 1,
+            "n": 1000,
+            "samples": 500,
+            "p50_ns": 1708,
+            "p95_ns": 1875,
+            "p99_ns": 2375,
+            "max_ns": 5750
+          },
+          {
+            "run": 2,
+            "n": 1000,
+            "samples": 500,
+            "p50_ns": 1209,
+            "p95_ns": 1292,
+            "p99_ns": 2125,
+            "max_ns": 6708
+          },
+          {
+            "run": 3,
+            "n": 1000,
+            "samples": 500,
+            "p50_ns": 875,
+            "p95_ns": 958,
+            "p99_ns": 1167,
+            "max_ns": 2917
+          },
+          {
+            "run": 4,
+            "n": 1000,
+            "samples": 500,
+            "p50_ns": 1000,
+            "p95_ns": 1042,
+            "p99_ns": 1167,
+            "max_ns": 2583
+          },
+          {
+            "run": 5,
+            "n": 1000,
+            "samples": 500,
+            "p50_ns": 875,
+            "p95_ns": 959,
+            "p99_ns": 1167,
+            "max_ns": 2834
+          }
+        ],
+        "candidate_runs": [
+          {
+            "run": 1,
+            "n": 1000,
+            "samples": 500,
+            "p50_ns": 4292,
+            "p95_ns": 5083,
+            "p99_ns": 5625,
+            "max_ns": 6292
+          },
+          {
+            "run": 2,
+            "n": 1000,
+            "samples": 500,
+            "p50_ns": 2792,
+            "p95_ns": 2917,
+            "p99_ns": 3666,
+            "max_ns": 4417
+          },
+          {
+            "run": 3,
+            "n": 1000,
+            "samples": 500,
+            "p50_ns": 2875,
+            "p95_ns": 3000,
+            "p99_ns": 3334,
+            "max_ns": 9750
+          },
+          {
+            "run": 4,
+            "n": 1000,
+            "samples": 500,
+            "p50_ns": 2833,
+            "p95_ns": 3000,
+            "p99_ns": 3250,
+            "max_ns": 3708
+          },
+          {
+            "run": 5,
+            "n": 1000,
+            "samples": 500,
+            "p50_ns": 2875,
+            "p95_ns": 3000,
+            "p99_ns": 3209,
+            "max_ns": 4583
+          }
+        ],
+        "baseline_median": {
+          "p50_ns": 1000,
+          "p95_ns": 1042,
+          "p99_ns": 1167,
+          "max_ns": 2917
+        },
+        "candidate_median": {
+          "p50_ns": 2875,
+          "p95_ns": 3000,
+          "p99_ns": 3334,
+          "max_ns": 4583
+        },
+        "p50_change_percent": 187.5
+      },
+      {
+        "workload": "timer_cancelheavy:1000",
+        "samples_per_run": 100,
+        "baseline_runs": [
+          {
+            "run": 1,
+            "n": 1000,
+            "samples": 100,
+            "p50_ns": 294458,
+            "p95_ns": 352875,
+            "p99_ns": 373125,
+            "max_ns": 373125
+          },
+          {
+            "run": 2,
+            "n": 1000,
+            "samples": 100,
+            "p50_ns": 209458,
+            "p95_ns": 220917,
+            "p99_ns": 222334,
+            "max_ns": 222334
+          },
+          {
+            "run": 3,
+            "n": 1000,
+            "samples": 100,
+            "p50_ns": 181625,
+            "p95_ns": 189250,
+            "p99_ns": 200417,
+            "max_ns": 200417
+          },
+          {
+            "run": 4,
+            "n": 1000,
+            "samples": 100,
+            "p50_ns": 180666,
+            "p95_ns": 190500,
+            "p99_ns": 199708,
+            "max_ns": 199708
+          },
+          {
+            "run": 5,
+            "n": 1000,
+            "samples": 100,
+            "p50_ns": 180583,
+            "p95_ns": 188208,
+            "p99_ns": 206000,
+            "max_ns": 206000
+          }
+        ],
+        "candidate_runs": [
+          {
+            "run": 1,
+            "n": 1000,
+            "samples": 100,
+            "p50_ns": 156792,
+            "p95_ns": 177458,
+            "p99_ns": 187333,
+            "max_ns": 187333
+          },
+          {
+            "run": 2,
+            "n": 1000,
+            "samples": 100,
+            "p50_ns": 129334,
+            "p95_ns": 141750,
+            "p99_ns": 145459,
+            "max_ns": 145459
+          },
+          {
+            "run": 3,
+            "n": 1000,
+            "samples": 100,
+            "p50_ns": 131917,
+            "p95_ns": 140042,
+            "p99_ns": 160709,
+            "max_ns": 160709
+          },
+          {
+            "run": 4,
+            "n": 1000,
+            "samples": 100,
+            "p50_ns": 131834,
+            "p95_ns": 143708,
+            "p99_ns": 164500,
+            "max_ns": 164500
+          },
+          {
+            "run": 5,
+            "n": 1000,
+            "samples": 100,
+            "p50_ns": 133250,
+            "p95_ns": 146125,
+            "p99_ns": 154833,
+            "max_ns": 154833
+          }
+        ],
+        "baseline_median": {
+          "p50_ns": 181625,
+          "p95_ns": 190500,
+          "p99_ns": 206000,
+          "max_ns": 206000
+        },
+        "candidate_median": {
+          "p50_ns": 131917,
+          "p95_ns": 143708,
+          "p99_ns": 160709,
+          "max_ns": 160709
+        },
+        "p50_change_percent": -27.368479008947013
+      },
+      {
+        "workload": "timer_idle:10000",
+        "samples_per_run": 2000,
+        "baseline_runs": [
+          {
+            "run": 1,
+            "n": 10000,
+            "samples": 2000,
+            "p50_ns": 5833,
+            "p95_ns": 6000,
+            "p99_ns": 7250,
+            "max_ns": 8208
+          },
+          {
+            "run": 2,
+            "n": 10000,
+            "samples": 2000,
+            "p50_ns": 4875,
+            "p95_ns": 5250,
+            "p99_ns": 5833,
+            "max_ns": 10500
+          },
+          {
+            "run": 3,
+            "n": 10000,
+            "samples": 2000,
+            "p50_ns": 4375,
+            "p95_ns": 4459,
+            "p99_ns": 5792,
+            "max_ns": 21625
+          },
+          {
+            "run": 4,
+            "n": 10000,
+            "samples": 2000,
+            "p50_ns": 4417,
+            "p95_ns": 4709,
+            "p99_ns": 5916,
+            "max_ns": 22875
+          },
+          {
+            "run": 5,
+            "n": 10000,
+            "samples": 2000,
+            "p50_ns": 4375,
+            "p95_ns": 4459,
+            "p99_ns": 4583,
+            "max_ns": 22333
+          }
+        ],
+        "candidate_runs": [
+          {
+            "run": 1,
+            "n": 10000,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          },
+          {
+            "run": 2,
+            "n": 10000,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          },
+          {
+            "run": 3,
+            "n": 10000,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 84
+          },
+          {
+            "run": 4,
+            "n": 10000,
+            "samples": 2000,
+            "p50_ns": 0,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 83
+          },
+          {
+            "run": 5,
+            "n": 10000,
+            "samples": 2000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 42
+          }
+        ],
+        "baseline_median": {
+          "p50_ns": 4417,
+          "p95_ns": 4709,
+          "p99_ns": 5833,
+          "max_ns": 21625
+        },
+        "candidate_median": {
+          "p50_ns": 41,
+          "p95_ns": 42,
+          "p99_ns": 42,
+          "max_ns": 42
+        },
+        "p50_change_percent": -99.07176816844012
+      },
+      {
+        "workload": "timer_due:10000",
+        "samples_per_run": 200,
+        "baseline_runs": [
+          {
+            "run": 1,
+            "n": 10000,
+            "samples": 200,
+            "p50_ns": 10834,
+            "p95_ns": 14583,
+            "p99_ns": 17667,
+            "max_ns": 17834
+          },
+          {
+            "run": 2,
+            "n": 10000,
+            "samples": 200,
+            "p50_ns": 8416,
+            "p95_ns": 11792,
+            "p99_ns": 12166,
+            "max_ns": 18500
+          },
+          {
+            "run": 3,
+            "n": 10000,
+            "samples": 200,
+            "p50_ns": 8084,
+            "p95_ns": 10584,
+            "p99_ns": 10875,
+            "max_ns": 14458
+          },
+          {
+            "run": 4,
+            "n": 10000,
+            "samples": 200,
+            "p50_ns": 8333,
+            "p95_ns": 10916,
+            "p99_ns": 13583,
+            "max_ns": 20041
+          },
+          {
+            "run": 5,
+            "n": 10000,
+            "samples": 200,
+            "p50_ns": 8334,
+            "p95_ns": 11208,
+            "p99_ns": 14333,
+            "max_ns": 17833
+          }
+        ],
+        "candidate_runs": [
+          {
+            "run": 1,
+            "n": 10000,
+            "samples": 200,
+            "p50_ns": 25500,
+            "p95_ns": 29000,
+            "p99_ns": 29375,
+            "max_ns": 48416
+          },
+          {
+            "run": 2,
+            "n": 10000,
+            "samples": 200,
+            "p50_ns": 25125,
+            "p95_ns": 25500,
+            "p99_ns": 31250,
+            "max_ns": 34167
+          },
+          {
+            "run": 3,
+            "n": 10000,
+            "samples": 200,
+            "p50_ns": 25125,
+            "p95_ns": 25417,
+            "p99_ns": 26334,
+            "max_ns": 48750
+          },
+          {
+            "run": 4,
+            "n": 10000,
+            "samples": 200,
+            "p50_ns": 25208,
+            "p95_ns": 25708,
+            "p99_ns": 32458,
+            "max_ns": 46417
+          },
+          {
+            "run": 5,
+            "n": 10000,
+            "samples": 200,
+            "p50_ns": 25208,
+            "p95_ns": 25583,
+            "p99_ns": 25834,
+            "max_ns": 33917
+          }
+        ],
+        "baseline_median": {
+          "p50_ns": 8334,
+          "p95_ns": 11208,
+          "p99_ns": 13583,
+          "max_ns": 17834
+        },
+        "candidate_median": {
+          "p50_ns": 25208,
+          "p95_ns": 25583,
+          "p99_ns": 29375,
+          "max_ns": 46417
+        },
+        "p50_change_percent": 202.47180225581954
+      },
+      {
+        "workload": "timer_cancelheavy:10000",
+        "samples_per_run": 8,
+        "baseline_runs": [
+          {
+            "run": 1,
+            "n": 10000,
+            "samples": 8,
+            "p50_ns": 19205917,
+            "p95_ns": 22499083,
+            "p99_ns": 22499083,
+            "max_ns": 22499083
+          },
+          {
+            "run": 2,
+            "n": 10000,
+            "samples": 8,
+            "p50_ns": 19501916,
+            "p95_ns": 20476542,
+            "p99_ns": 20476542,
+            "max_ns": 20476542
+          },
+          {
+            "run": 3,
+            "n": 10000,
+            "samples": 8,
+            "p50_ns": 19034250,
+            "p95_ns": 19043666,
+            "p99_ns": 19043666,
+            "max_ns": 19043666
+          },
+          {
+            "run": 4,
+            "n": 10000,
+            "samples": 8,
+            "p50_ns": 19053250,
+            "p95_ns": 19106250,
+            "p99_ns": 19106250,
+            "max_ns": 19106250
+          },
+          {
+            "run": 5,
+            "n": 10000,
+            "samples": 8,
+            "p50_ns": 19043292,
+            "p95_ns": 19322208,
+            "p99_ns": 19322208,
+            "max_ns": 19322208
+          }
+        ],
+        "candidate_runs": [
+          {
+            "run": 1,
+            "n": 10000,
+            "samples": 8,
+            "p50_ns": 1926625,
+            "p95_ns": 1945125,
+            "p99_ns": 1945125,
+            "max_ns": 1945125
+          },
+          {
+            "run": 2,
+            "n": 10000,
+            "samples": 8,
+            "p50_ns": 1909083,
+            "p95_ns": 1944834,
+            "p99_ns": 1944834,
+            "max_ns": 1944834
+          },
+          {
+            "run": 3,
+            "n": 10000,
+            "samples": 8,
+            "p50_ns": 1889542,
+            "p95_ns": 1972250,
+            "p99_ns": 1972250,
+            "max_ns": 1972250
+          },
+          {
+            "run": 4,
+            "n": 10000,
+            "samples": 8,
+            "p50_ns": 1890834,
+            "p95_ns": 1925792,
+            "p99_ns": 1925792,
+            "max_ns": 1925792
+          },
+          {
+            "run": 5,
+            "n": 10000,
+            "samples": 8,
+            "p50_ns": 1910334,
+            "p95_ns": 1951042,
+            "p99_ns": 1951042,
+            "max_ns": 1951042
+          }
+        ],
+        "baseline_median": {
+          "p50_ns": 19053250,
+          "p95_ns": 19322208,
+          "p99_ns": 19322208,
+          "max_ns": 19322208
+        },
+        "candidate_median": {
+          "p50_ns": 1909083,
+          "p95_ns": 1945125,
+          "p99_ns": 1945125,
+          "max_ns": 1945125
+        },
+        "p50_change_percent": -89.9802763308097
+      }
+    ]
+  },
+  "hook_model": {
+    "directory": "/private/tmp/s2script-runtime-hardening/.superpowers/sdd/2026-09-04-runtime-hardening/final-hook-model-bench-20260905T113835Z",
+    "metadata": {
+      "revision": "043861085902c43c6f53b63b3212e8a563e3382d",
+      "utc": "20260905T113835Z",
+      "host": "macOS-26.5.1-arm64-arm-64bit",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "pairs": 5,
+      "production_source_sha256": "27543eacbf33cb58b717d0d0f278b4971ee024fd67a725a6c61e3948f1e97bd9",
+      "scope": "Existing reviewed native hook MODEL, not exact production source. Excludes V8, JS, engine, RSS and throughput. Candidate entity/viewer rows without baseline counterparts are standalone model scaling only."
+    },
+    "comparisons": [
+      {
+        "workload": "sdkhook_snapshot:1",
+        "samples_per_run": 10000,
+        "baseline_runs": [
+          {
+            "run": 1,
+            "total_hooks": 1,
+            "matching_hooks": 1,
+            "samples": 10000,
+            "p50_ns": 42,
+            "p95_ns": 84,
+            "p99_ns": 84,
+            "max_ns": 1541
+          },
+          {
+            "run": 2,
+            "total_hooks": 1,
+            "matching_hooks": 1,
+            "samples": 10000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 709
+          },
+          {
+            "run": 3,
+            "total_hooks": 1,
+            "matching_hooks": 1,
+            "samples": 10000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 667
+          },
+          {
+            "run": 4,
+            "total_hooks": 1,
+            "matching_hooks": 1,
+            "samples": 10000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 875
+          },
+          {
+            "run": 5,
+            "total_hooks": 1,
+            "matching_hooks": 1,
+            "samples": 10000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 875
+          }
+        ],
+        "candidate_runs": [
+          {
+            "run": 1,
+            "total_hooks": 1,
+            "matching_hooks": 1,
+            "observed_visited_bucket_entries": 1,
+            "samples": 10000,
+            "p50_ns": 83,
+            "p95_ns": 84,
+            "p99_ns": 125,
+            "max_ns": 3083
+          },
+          {
+            "run": 2,
+            "total_hooks": 1,
+            "matching_hooks": 1,
+            "observed_visited_bucket_entries": 1,
+            "samples": 10000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 625
+          },
+          {
+            "run": 3,
+            "total_hooks": 1,
+            "matching_hooks": 1,
+            "observed_visited_bucket_entries": 1,
+            "samples": 10000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 1500
+          },
+          {
+            "run": 4,
+            "total_hooks": 1,
+            "matching_hooks": 1,
+            "observed_visited_bucket_entries": 1,
+            "samples": 10000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 1667
+          },
+          {
+            "run": 5,
+            "total_hooks": 1,
+            "matching_hooks": 1,
+            "observed_visited_bucket_entries": 1,
+            "samples": 10000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 750
+          }
+        ],
+        "baseline_median": {
+          "p50_ns": 41,
+          "p95_ns": 42,
+          "p99_ns": 42,
+          "max_ns": 875
+        },
+        "candidate_median": {
+          "p50_ns": 41,
+          "p95_ns": 42,
+          "p99_ns": 42,
+          "max_ns": 1500
+        },
+        "p50_change_percent": 0.0
+      },
+      {
+        "workload": "sdkhook_snapshot:100",
+        "samples_per_run": 10000,
+        "baseline_runs": [
+          {
+            "run": 1,
+            "total_hooks": 100,
+            "matching_hooks": 1,
+            "samples": 10000,
+            "p50_ns": 84,
+            "p95_ns": 125,
+            "p99_ns": 125,
+            "max_ns": 417
+          },
+          {
+            "run": 2,
+            "total_hooks": 100,
+            "matching_hooks": 1,
+            "samples": 10000,
+            "p50_ns": 42,
+            "p95_ns": 83,
+            "p99_ns": 84,
+            "max_ns": 167
+          },
+          {
+            "run": 3,
+            "total_hooks": 100,
+            "matching_hooks": 1,
+            "samples": 10000,
+            "p50_ns": 42,
+            "p95_ns": 42,
+            "p99_ns": 84,
+            "max_ns": 167
+          },
+          {
+            "run": 4,
+            "total_hooks": 100,
+            "matching_hooks": 1,
+            "samples": 10000,
+            "p50_ns": 42,
+            "p95_ns": 83,
+            "p99_ns": 84,
+            "max_ns": 250
+          },
+          {
+            "run": 5,
+            "total_hooks": 100,
+            "matching_hooks": 1,
+            "samples": 10000,
+            "p50_ns": 42,
+            "p95_ns": 84,
+            "p99_ns": 84,
+            "max_ns": 292
+          }
+        ],
+        "candidate_runs": [
+          {
+            "run": 1,
+            "total_hooks": 100,
+            "matching_hooks": 1,
+            "observed_visited_bucket_entries": 1,
+            "samples": 10000,
+            "p50_ns": 83,
+            "p95_ns": 84,
+            "p99_ns": 84,
+            "max_ns": 917
+          },
+          {
+            "run": 2,
+            "total_hooks": 100,
+            "matching_hooks": 1,
+            "observed_visited_bucket_entries": 1,
+            "samples": 10000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 167
+          },
+          {
+            "run": 3,
+            "total_hooks": 100,
+            "matching_hooks": 1,
+            "observed_visited_bucket_entries": 1,
+            "samples": 10000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 167
+          },
+          {
+            "run": 4,
+            "total_hooks": 100,
+            "matching_hooks": 1,
+            "observed_visited_bucket_entries": 1,
+            "samples": 10000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 167
+          },
+          {
+            "run": 5,
+            "total_hooks": 100,
+            "matching_hooks": 1,
+            "observed_visited_bucket_entries": 1,
+            "samples": 10000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 250
+          }
+        ],
+        "baseline_median": {
+          "p50_ns": 42,
+          "p95_ns": 83,
+          "p99_ns": 84,
+          "max_ns": 250
+        },
+        "candidate_median": {
+          "p50_ns": 41,
+          "p95_ns": 42,
+          "p99_ns": 42,
+          "max_ns": 167
+        },
+        "p50_change_percent": -2.3809523809523836
+      },
+      {
+        "workload": "sdkhook_snapshot:1000",
+        "samples_per_run": 10000,
+        "baseline_runs": [
+          {
+            "run": 1,
+            "total_hooks": 1000,
+            "matching_hooks": 1,
+            "samples": 10000,
+            "p50_ns": 542,
+            "p95_ns": 625,
+            "p99_ns": 667,
+            "max_ns": 4334
+          },
+          {
+            "run": 2,
+            "total_hooks": 1000,
+            "matching_hooks": 1,
+            "samples": 10000,
+            "p50_ns": 292,
+            "p95_ns": 292,
+            "p99_ns": 375,
+            "max_ns": 6958
+          },
+          {
+            "run": 3,
+            "total_hooks": 1000,
+            "matching_hooks": 1,
+            "samples": 10000,
+            "p50_ns": 250,
+            "p95_ns": 292,
+            "p99_ns": 292,
+            "max_ns": 7292
+          },
+          {
+            "run": 4,
+            "total_hooks": 1000,
+            "matching_hooks": 1,
+            "samples": 10000,
+            "p50_ns": 250,
+            "p95_ns": 292,
+            "p99_ns": 334,
+            "max_ns": 500
+          },
+          {
+            "run": 5,
+            "total_hooks": 1000,
+            "matching_hooks": 1,
+            "samples": 10000,
+            "p50_ns": 333,
+            "p95_ns": 334,
+            "p99_ns": 375,
+            "max_ns": 8584
+          }
+        ],
+        "candidate_runs": [
+          {
+            "run": 1,
+            "total_hooks": 1000,
+            "matching_hooks": 1,
+            "observed_visited_bucket_entries": 1,
+            "samples": 10000,
+            "p50_ns": 42,
+            "p95_ns": 84,
+            "p99_ns": 84,
+            "max_ns": 2041
+          },
+          {
+            "run": 2,
+            "total_hooks": 1000,
+            "matching_hooks": 1,
+            "observed_visited_bucket_entries": 1,
+            "samples": 10000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 167
+          },
+          {
+            "run": 3,
+            "total_hooks": 1000,
+            "matching_hooks": 1,
+            "observed_visited_bucket_entries": 1,
+            "samples": 10000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 208
+          },
+          {
+            "run": 4,
+            "total_hooks": 1000,
+            "matching_hooks": 1,
+            "observed_visited_bucket_entries": 1,
+            "samples": 10000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 167
+          },
+          {
+            "run": 5,
+            "total_hooks": 1000,
+            "matching_hooks": 1,
+            "observed_visited_bucket_entries": 1,
+            "samples": 10000,
+            "p50_ns": 41,
+            "p95_ns": 42,
+            "p99_ns": 42,
+            "max_ns": 250
+          }
+        ],
+        "baseline_median": {
+          "p50_ns": 292,
+          "p95_ns": 292,
+          "p99_ns": 375,
+          "max_ns": 6958
+        },
+        "candidate_median": {
+          "p50_ns": 41,
+          "p95_ns": 42,
+          "p99_ns": 42,
+          "max_ns": 208
+        },
+        "p50_change_percent": -85.95890410958904
+      }
+    ]
+  }
+}

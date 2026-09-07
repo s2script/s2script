@@ -47,7 +47,7 @@ const readonlyGlobals = (names) =>
   Object.fromEntries([...new Set(names)].sort().map((n) => [n, "readonly"]));
 
 const natives = [...coreSrc.matchAll(/set_native\(\s*scope\s*,\s*global_obj\s*,\s*"([^"]+)"/g)].map((m) => m[1]);
-const extraFromRust = ["console"];   // v8host.rs — set directly on the global object
+const extraFromRust = ["console"];   // v8host/natives.rs — set directly on the global object
 // The globals these files publish and then read back bare later in the concatenated script.
 //
 // CONSTRAINED TO THE PACKAGE'S OWN NAMESPACE, deliberately. An unconstrained `(\w+)` capture runs

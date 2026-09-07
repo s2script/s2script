@@ -1,0 +1,5 @@
+check-engine-ops-generated: OK — 126 ops, three generated files match
+check-engine-ops-order: OK — 126 S2EngineOps fields, same names in the same order in core and the shim
+check-engine-ops-order: OK — all 126 S2EngineOps field signature(s) agree on arity
+check-deferred-sentinel: OK — S2_DISPATCH_DEFERRED = -1000 in both core and the shim header
+check-defer-selftest-gate: OK — armed by $S2_DEFER_SELFTEST in both core and the shim; the native is registration-gated

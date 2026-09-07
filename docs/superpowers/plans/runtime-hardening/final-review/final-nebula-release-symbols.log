@@ -1,0 +1,2 @@
+check-shim-symbols: ok — dist/addons/s2script/bin/linuxsteamrt64/s2script.so's 47 s2script_core_* entry point(s) all defined in dist/addons/s2script/bin/linuxsteamrt64/libs2script_core.so
+check-shim-symbols: ok — dist/addons/s2script/bin/linuxsteamrt64/s2script.so

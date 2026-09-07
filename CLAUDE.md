@@ -118,6 +118,13 @@ third_party/ Vendored hl2sdk + Metamod:Source + Breakpad submodules (pinned, pat
 
 ## Current state
 
+**Runtime hardening (September 5):** ten dependent local slices are implemented and reviewed;
+797 core tests, the Linux native gate and the 60-minute mixed live soak pass. Human
+reconnect/HUD/viewer checks remain pending. A separate server-side MAM addon setup caused a
+startup/map-reload failure; the owned test server was restored to its working configuration.
+See the [workflow and acceptance status](docs/superpowers/plans/2026-09-04-runtime-hardening.md)
+and [operator limits](docs/ASYNC_LIMITS.md). No production deployment or merge has occurred.
+
 Slices 0 → the async-network category are complete and each proven on a live CS2 server. **What's built (capability inventory):**
 
 - **Boot & lifecycle** — V8-in-CS2 via Metamod; context-per-plugin; ledger teardown; hot-reload with `OnPluginEnd`/`OnPluginState`/`previous()` handoff; `tsc` typecheck gate at build/reload; config materialization + `config.onChange` live-reload. Authoring artifact is `export function OnPluginStart` (plus named publics); `plugin((ctx) => …)` is not a public API.

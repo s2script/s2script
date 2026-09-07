@@ -1,0 +1,4904 @@
+[
+  {
+    "cycle": 1,
+    "status": {
+      "cycle": "1",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 1,
+      "slotAttempts": 2,
+      "slotReuses": 0,
+      "slotFailures": 0,
+      "slotPending": 2
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 166655,
+    "maxNs": 8446408,
+    "timerExamined": 126,
+    "rssKiB": 1184136
+  },
+  {
+    "cycle": 2,
+    "status": {
+      "cycle": "2",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 2,
+      "slotAttempts": 3,
+      "slotReuses": 0,
+      "slotFailures": 0,
+      "slotPending": 3
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 154975,
+    "maxNs": 8446408,
+    "timerExamined": 147,
+    "rssKiB": 1183600
+  },
+  {
+    "cycle": 3,
+    "status": {
+      "cycle": "3",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 3,
+      "slotAttempts": 4,
+      "slotReuses": 0,
+      "slotFailures": 0,
+      "slotPending": 4
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 114276,
+    "maxNs": 8446408,
+    "timerExamined": 168,
+    "rssKiB": 1184124
+  },
+  {
+    "cycle": 4,
+    "status": {
+      "cycle": "4",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 4,
+      "slotAttempts": 5,
+      "slotReuses": 0,
+      "slotFailures": 0,
+      "slotPending": 5
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 137788,
+    "maxNs": 8446408,
+    "timerExamined": 189,
+    "rssKiB": 1181300
+  },
+  {
+    "cycle": 5,
+    "status": {
+      "cycle": "5",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 5,
+      "slotAttempts": 6,
+      "slotReuses": 0,
+      "slotFailures": 0,
+      "slotPending": 6
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 182967,
+    "maxNs": 8446408,
+    "timerExamined": 210,
+    "rssKiB": 1181504
+  },
+  {
+    "cycle": 6,
+    "status": {
+      "cycle": "6",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 6,
+      "slotAttempts": 7,
+      "slotReuses": 0,
+      "slotFailures": 0,
+      "slotPending": 7
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 156925,
+    "maxNs": 8446408,
+    "timerExamined": 231,
+    "rssKiB": 1179908
+  },
+  {
+    "cycle": 7,
+    "status": {
+      "cycle": "7",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 7,
+      "slotAttempts": 8,
+      "slotReuses": 0,
+      "slotFailures": 0,
+      "slotPending": 8
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 205490,
+    "maxNs": 8446408,
+    "timerExamined": 252,
+    "rssKiB": 1180552
+  },
+  {
+    "cycle": 8,
+    "status": {
+      "cycle": "8",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 8,
+      "slotAttempts": 9,
+      "slotReuses": 1,
+      "slotFailures": 0,
+      "slotPending": 0
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 142498,
+    "maxNs": 8446408,
+    "timerExamined": 298,
+    "rssKiB": 1181360
+  },
+  {
+    "cycle": 9,
+    "status": {
+      "cycle": "9",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 9,
+      "slotAttempts": 10,
+      "slotReuses": 1,
+      "slotFailures": 0,
+      "slotPending": 1
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 220407,
+    "maxNs": 8446408,
+    "timerExamined": 319,
+    "rssKiB": 1181288
+  },
+  {
+    "cycle": 10,
+    "status": {
+      "cycle": "10",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 10,
+      "slotAttempts": 11,
+      "slotReuses": 1,
+      "slotFailures": 0,
+      "slotPending": 2
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 128381,
+    "maxNs": 8446408,
+    "timerExamined": 340,
+    "rssKiB": 1182144
+  },
+  {
+    "cycle": 11,
+    "status": {
+      "cycle": "11",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 11,
+      "slotAttempts": 12,
+      "slotReuses": 1,
+      "slotFailures": 0,
+      "slotPending": 3
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 142527,
+    "maxNs": 8446408,
+    "timerExamined": 361,
+    "rssKiB": 1180304
+  },
+  {
+    "cycle": 12,
+    "status": {
+      "cycle": "12",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 12,
+      "slotAttempts": 13,
+      "slotReuses": 1,
+      "slotFailures": 0,
+      "slotPending": 4
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 160921,
+    "maxNs": 8446408,
+    "timerExamined": 382,
+    "rssKiB": 1181436
+  },
+  {
+    "cycle": 13,
+    "status": {
+      "cycle": "13",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 13,
+      "slotAttempts": 14,
+      "slotReuses": 1,
+      "slotFailures": 0,
+      "slotPending": 5
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 144934,
+    "maxNs": 8446408,
+    "timerExamined": 403,
+    "rssKiB": 1182116
+  },
+  {
+    "cycle": 14,
+    "status": {
+      "cycle": "14",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 14,
+      "slotAttempts": 15,
+      "slotReuses": 1,
+      "slotFailures": 0,
+      "slotPending": 6
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 138514,
+    "maxNs": 8446408,
+    "timerExamined": 424,
+    "rssKiB": 1180472
+  },
+  {
+    "cycle": 15,
+    "status": {
+      "cycle": "15",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 15,
+      "slotAttempts": 16,
+      "slotReuses": 1,
+      "slotFailures": 0,
+      "slotPending": 7
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 144938,
+    "maxNs": 8446408,
+    "timerExamined": 445,
+    "rssKiB": 1181248
+  },
+  {
+    "cycle": 16,
+    "status": {
+      "cycle": "16",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 16,
+      "slotAttempts": 17,
+      "slotReuses": 2,
+      "slotFailures": 0,
+      "slotPending": 0
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 169700,
+    "maxNs": 8446408,
+    "timerExamined": 491,
+    "rssKiB": 1181076
+  },
+  {
+    "cycle": 17,
+    "status": {
+      "cycle": "17",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 17,
+      "slotAttempts": 18,
+      "slotReuses": 2,
+      "slotFailures": 0,
+      "slotPending": 1
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 133149,
+    "maxNs": 8446408,
+    "timerExamined": 512,
+    "rssKiB": 1182104
+  },
+  {
+    "cycle": 18,
+    "status": {
+      "cycle": "18",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 18,
+      "slotAttempts": 19,
+      "slotReuses": 2,
+      "slotFailures": 0,
+      "slotPending": 2
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 198020,
+    "maxNs": 8446408,
+    "timerExamined": 533,
+    "rssKiB": 1183336
+  },
+  {
+    "cycle": 19,
+    "status": {
+      "cycle": "19",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 19,
+      "slotAttempts": 20,
+      "slotReuses": 2,
+      "slotFailures": 0,
+      "slotPending": 3
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 172133,
+    "maxNs": 8446408,
+    "timerExamined": 554,
+    "rssKiB": 1182464
+  },
+  {
+    "cycle": 20,
+    "status": {
+      "cycle": "20",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 20,
+      "slotAttempts": 21,
+      "slotReuses": 2,
+      "slotFailures": 0,
+      "slotPending": 4
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 155233,
+    "maxNs": 8446408,
+    "timerExamined": 575,
+    "rssKiB": 1182644
+  },
+  {
+    "cycle": 21,
+    "status": {
+      "cycle": "21",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 21,
+      "slotAttempts": 22,
+      "slotReuses": 2,
+      "slotFailures": 0,
+      "slotPending": 5
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 168573,
+    "maxNs": 8446408,
+    "timerExamined": 596,
+    "rssKiB": 1182348
+  },
+  {
+    "cycle": 22,
+    "status": {
+      "cycle": "22",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 22,
+      "slotAttempts": 23,
+      "slotReuses": 2,
+      "slotFailures": 0,
+      "slotPending": 6
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 173093,
+    "maxNs": 8446408,
+    "timerExamined": 617,
+    "rssKiB": 1183888
+  },
+  {
+    "cycle": 23,
+    "status": {
+      "cycle": "23",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 23,
+      "slotAttempts": 24,
+      "slotReuses": 3,
+      "slotFailures": 0,
+      "slotPending": 0
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 224402,
+    "maxNs": 8446408,
+    "timerExamined": 663,
+    "rssKiB": 1185556
+  },
+  {
+    "cycle": 24,
+    "status": {
+      "cycle": "24",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 24,
+      "slotAttempts": 25,
+      "slotReuses": 3,
+      "slotFailures": 0,
+      "slotPending": 1
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 108314,
+    "maxNs": 8446408,
+    "timerExamined": 684,
+    "rssKiB": 1184620
+  },
+  {
+    "cycle": 25,
+    "status": {
+      "cycle": "25",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 25,
+      "slotAttempts": 26,
+      "slotReuses": 3,
+      "slotFailures": 0,
+      "slotPending": 2
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 173579,
+    "maxNs": 8446408,
+    "timerExamined": 705,
+    "rssKiB": 1181048
+  },
+  {
+    "cycle": 26,
+    "status": {
+      "cycle": "26",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 26,
+      "slotAttempts": 27,
+      "slotReuses": 3,
+      "slotFailures": 0,
+      "slotPending": 3
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 145058,
+    "maxNs": 8446408,
+    "timerExamined": 726,
+    "rssKiB": 1182652
+  },
+  {
+    "cycle": 27,
+    "status": {
+      "cycle": "27",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 27,
+      "slotAttempts": 28,
+      "slotReuses": 3,
+      "slotFailures": 0,
+      "slotPending": 4
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 153856,
+    "maxNs": 8446408,
+    "timerExamined": 747,
+    "rssKiB": 1183344
+  },
+  {
+    "cycle": 28,
+    "status": {
+      "cycle": "28",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 28,
+      "slotAttempts": 29,
+      "slotReuses": 3,
+      "slotFailures": 0,
+      "slotPending": 5
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 192622,
+    "maxNs": 8446408,
+    "timerExamined": 768,
+    "rssKiB": 1181352
+  },
+  {
+    "cycle": 29,
+    "status": {
+      "cycle": "29",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 29,
+      "slotAttempts": 30,
+      "slotReuses": 3,
+      "slotFailures": 0,
+      "slotPending": 6
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 152586,
+    "maxNs": 8446408,
+    "timerExamined": 789,
+    "rssKiB": 1182796
+  },
+  {
+    "cycle": 30,
+    "status": {
+      "cycle": "30",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 30,
+      "slotAttempts": 31,
+      "slotReuses": 4,
+      "slotFailures": 0,
+      "slotPending": 0
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 135536,
+    "maxNs": 8446408,
+    "timerExamined": 835,
+    "rssKiB": 1184468
+  },
+  {
+    "cycle": 31,
+    "status": {
+      "cycle": "31",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 31,
+      "slotAttempts": 32,
+      "slotReuses": 4,
+      "slotFailures": 0,
+      "slotPending": 1
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 149508,
+    "maxNs": 8446408,
+    "timerExamined": 856,
+    "rssKiB": 1184212
+  },
+  {
+    "cycle": 32,
+    "status": {
+      "cycle": "32",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 32,
+      "slotAttempts": 33,
+      "slotReuses": 4,
+      "slotFailures": 0,
+      "slotPending": 2
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 154015,
+    "maxNs": 8446408,
+    "timerExamined": 877,
+    "rssKiB": 1182196
+  },
+  {
+    "cycle": 33,
+    "status": {
+      "cycle": "33",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 33,
+      "slotAttempts": 34,
+      "slotReuses": 4,
+      "slotFailures": 0,
+      "slotPending": 3
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 137190,
+    "maxNs": 8446408,
+    "timerExamined": 898,
+    "rssKiB": 1182272
+  },
+  {
+    "cycle": 34,
+    "status": {
+      "cycle": "34",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 34,
+      "slotAttempts": 35,
+      "slotReuses": 4,
+      "slotFailures": 0,
+      "slotPending": 4
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 235406,
+    "maxNs": 8446408,
+    "timerExamined": 919,
+    "rssKiB": 1182384
+  },
+  {
+    "cycle": 35,
+    "status": {
+      "cycle": "35",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 35,
+      "slotAttempts": 36,
+      "slotReuses": 4,
+      "slotFailures": 0,
+      "slotPending": 5
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 189301,
+    "maxNs": 8446408,
+    "timerExamined": 940,
+    "rssKiB": 1182576
+  },
+  {
+    "cycle": 36,
+    "status": {
+      "cycle": "36",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 36,
+      "slotAttempts": 37,
+      "slotReuses": 4,
+      "slotFailures": 0,
+      "slotPending": 6
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 156835,
+    "maxNs": 8446408,
+    "timerExamined": 961,
+    "rssKiB": 1182568
+  },
+  {
+    "cycle": 37,
+    "status": {
+      "cycle": "37",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 37,
+      "slotAttempts": 38,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 0
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 186108,
+    "maxNs": 8446408,
+    "timerExamined": 1007,
+    "rssKiB": 1183188
+  },
+  {
+    "cycle": 38,
+    "status": {
+      "cycle": "38",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 38,
+      "slotAttempts": 39,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 1
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 171093,
+    "maxNs": 8446408,
+    "timerExamined": 1028,
+    "rssKiB": 1184860
+  },
+  {
+    "cycle": 39,
+    "status": {
+      "cycle": "39",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 39,
+      "slotAttempts": 40,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 2
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 195277,
+    "maxNs": 8446408,
+    "timerExamined": 1049,
+    "rssKiB": 1184576
+  },
+  {
+    "cycle": 40,
+    "status": {
+      "cycle": "40",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 40,
+      "slotAttempts": 41,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 3
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 131627,
+    "maxNs": 8446408,
+    "timerExamined": 1070,
+    "rssKiB": 1182168
+  },
+  {
+    "cycle": 41,
+    "status": {
+      "cycle": "41",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 41,
+      "slotAttempts": 42,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 4
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 147152,
+    "maxNs": 8446408,
+    "timerExamined": 1091,
+    "rssKiB": 1182580
+  },
+  {
+    "cycle": 42,
+    "status": {
+      "cycle": "42",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 42,
+      "slotAttempts": 43,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 5
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 155635,
+    "maxNs": 8446408,
+    "timerExamined": 1112,
+    "rssKiB": 1182460
+  },
+  {
+    "cycle": 43,
+    "status": {
+      "cycle": "43",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 43,
+      "slotAttempts": 44,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 6
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 163023,
+    "maxNs": 8446408,
+    "timerExamined": 1133,
+    "rssKiB": 1182676
+  },
+  {
+    "cycle": 44,
+    "status": {
+      "cycle": "44",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 44,
+      "slotAttempts": 45,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 7
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 138722,
+    "maxNs": 8446408,
+    "timerExamined": 1154,
+    "rssKiB": 1183200
+  },
+  {
+    "cycle": 45,
+    "status": {
+      "cycle": "45",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 45,
+      "slotAttempts": 46,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 8
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 120888,
+    "maxNs": 8446408,
+    "timerExamined": 1175,
+    "rssKiB": 1183448
+  },
+  {
+    "cycle": 46,
+    "status": {
+      "cycle": "46",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 46,
+      "slotAttempts": 47,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 9
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 127291,
+    "maxNs": 8446408,
+    "timerExamined": 1214,
+    "rssKiB": 1184884
+  },
+  {
+    "cycle": 47,
+    "status": {
+      "cycle": "47",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 47,
+      "slotAttempts": 48,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 10
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 143275,
+    "maxNs": 8446408,
+    "timerExamined": 1253,
+    "rssKiB": 1185396
+  },
+  {
+    "cycle": 48,
+    "status": {
+      "cycle": "48",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 48,
+      "slotAttempts": 48,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 10
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 217946,
+    "maxNs": 8446408,
+    "timerExamined": 1274,
+    "rssKiB": 1183568
+  },
+  {
+    "cycle": 49,
+    "status": {
+      "cycle": "49",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 49,
+      "slotAttempts": 48,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 10
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 195448,
+    "maxNs": 8446408,
+    "timerExamined": 1295,
+    "rssKiB": 1182796
+  },
+  {
+    "cycle": 50,
+    "status": {
+      "cycle": "50",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 50,
+      "slotAttempts": 48,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 10
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 142634,
+    "maxNs": 8446408,
+    "timerExamined": 1316,
+    "rssKiB": 1183204
+  },
+  {
+    "cycle": 51,
+    "status": {
+      "cycle": "51",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 51,
+      "slotAttempts": 48,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 10
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 196906,
+    "maxNs": 8446408,
+    "timerExamined": 1337,
+    "rssKiB": 1182832
+  },
+  {
+    "cycle": 52,
+    "status": {
+      "cycle": "52",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 52,
+      "slotAttempts": 48,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 10
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 151553,
+    "maxNs": 8446408,
+    "timerExamined": 1358,
+    "rssKiB": 1183636
+  },
+  {
+    "cycle": 53,
+    "status": {
+      "cycle": "53",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 53,
+      "slotAttempts": 48,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 10
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 155496,
+    "maxNs": 8446408,
+    "timerExamined": 1379,
+    "rssKiB": 1185384
+  },
+  {
+    "cycle": 54,
+    "status": {
+      "cycle": "54",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 54,
+      "slotAttempts": 48,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 10
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 130842,
+    "maxNs": 8446408,
+    "timerExamined": 1400,
+    "rssKiB": 1184560
+  },
+  {
+    "cycle": 55,
+    "status": {
+      "cycle": "55",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 55,
+      "slotAttempts": 48,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 10
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 160760,
+    "maxNs": 8446408,
+    "timerExamined": 1421,
+    "rssKiB": 1181796
+  },
+  {
+    "cycle": 56,
+    "status": {
+      "cycle": "56",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 56,
+      "slotAttempts": 48,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 10
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 138753,
+    "maxNs": 8446408,
+    "timerExamined": 1442,
+    "rssKiB": 1182752
+  },
+  {
+    "cycle": 57,
+    "status": {
+      "cycle": "57",
+      "state": "done",
+      "pass": "true",
+      "timers": "12/12",
+      "http": "2/2",
+      "tcp": "2/2",
+      "hooks": "16/16",
+      "db": "pass",
+      "config": 57,
+      "slotAttempts": 48,
+      "slotReuses": 5,
+      "slotFailures": 0,
+      "slotPending": 10
+    },
+    "gauge_errors": [],
+    "rejection_errors": [],
+    "loader_plateau_errors": [],
+    "loader_rejection_errors": [],
+    "rejected": {
+      "jobs": 384,
+      "completion": 0,
+      "sockets": 0,
+      "sqlite": 0,
+      "pools": 0,
+      "inbound": 0,
+      "outbound": 0,
+      "timers": 0
+    },
+    "loaderRejected": {
+      "configBytes": 0,
+      "configPaths": 0,
+      "controlBytes": 0,
+      "controlItems": 0,
+      "pendingBytes": 0,
+      "pendingItems": 0,
+      "requestBytes": 0,
+      "requestItems": 0,
+      "resultBytes": 72,
+      "resultItems": 0,
+      "retainedBytes": 0,
+      "retainedItems": 0
+    },
+    "loaderHighWater": {
+      "baselineBytes": 472,
+      "baselineItems": 2,
+      "configBytes": 573,
+      "configPaths": 2,
+      "controlBytes": 464,
+      "controlItems": 2,
+      "inFlight": 1,
+      "obligations": 3,
+      "pendingBytes": 182,
+      "pendingItems": 2,
+      "proposalBytes": 294,
+      "proposalItems": 1,
+      "queued": 3,
+      "requestBytes": 419,
+      "resultBytes": 52433071,
+      "results": 3,
+      "retainedBytes": 23869,
+      "retainedItems": 2
+    },
+    "loaderPlateau": {
+      "worker": {
+        "controls": {
+          "items": 2,
+          "bytes": 464
+        },
+        "config": {
+          "bytes": 395,
+          "paths": 2
+        },
+        "baselines": {
+          "bytes": 395,
+          "items": 2
+        }
+      }
+    },
+    "lastNs": 152858,
+    "maxNs": 8446408,
+    "timerExamined": 1463,
+    "rssKiB": 1181824
+  }
+]

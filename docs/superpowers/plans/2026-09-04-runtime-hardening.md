@@ -28,15 +28,15 @@
 | Order | Slice | Dependency | Completion evidence | Status |
 | --- | --- | --- | --- | --- |
 | 1 | Active-resource ledger | Baseline | Retained entries return to active count; native and live gates pass | Complete |
-| 2 | Subscription cleanup | 1 | Both indexes return to baseline after churn | Planned |
-| 3 | Connection-safe Client | 2 | Reused-slot actions and notifications rejected | Planned |
-| 4 | Socket terminal handling | 1 | Exactly-once cleanup under failure and cancellation | Planned |
-| 5 | Reliable cookie persistence | 3 | Failure/retry/reconnect tests preserve newest values | Planned |
-| 6 | Async limits and frame batches | 4, 5 | Saturation stays bounded with fair progress | Planned |
-| 7 | Indexed hook lookup | 2 | Equivalent dispatch, measured scaling improvement | Planned |
-| 8 | Indexed timer scheduling | 1, 6 | Timing parity and measured scaling improvement | Planned |
-| 9 | Background file preparation | 4, 6 | No periodic reads/parsing on frame thread | Planned |
-| 10 | Host module extraction | 1–9 | Behavior/ABI parity and integrated soak | Planned |
+| 2 | Subscription cleanup | 1 | Both indexes return to baseline after churn | Complete |
+| 3 | Connection-safe Client | 2 | Reused-slot actions and notifications rejected | Automated acceptance complete; human checks limited |
+| 4 | Socket terminal handling | 1 | Exactly-once cleanup under failure and cancellation | Complete |
+| 5 | Reliable cookie persistence | 3 | Failure/retry/reconnect tests preserve newest values | Complete |
+| 6 | Async limits and frame batches | 4, 5 | Saturation stays bounded with fair progress | Complete |
+| 7 | Indexed hook lookup | 2 | Equivalent dispatch, measured scaling improvement | Implemented/reviewed; human viewer gate pending |
+| 8 | Indexed timer scheduling | 1, 6 | Timing parity and measured scaling improvement | Complete |
+| 9 | Background file preparation | 4, 6 | No periodic reads/parsing on frame thread | Complete |
+| 10 | Host module extraction | 1–9 | Behavior/ABI parity and integrated soak | Complete |
 
 The sequential order also avoids overlapping edits to v8host.rs. Dependency entries describe
 technical prerequisites. The user explicitly requested a dependent Git stack. Create each branch from its listed parent,
@@ -359,17 +359,17 @@ docker run --rm -v "$PWD:/repo" -w /repo -v s2script-cargo:/usr/local/cargo/regi
 bash scripts/build-base-plugins.sh
 ```
 
-- [ ] Package/install the resulting artifacts into the designated test server, then restart
+- [x] Package/install the resulting artifacts into the designated test server, then restart
   its cs2 service using the repository runbook. Preserve existing server data and config.
-- [ ] Run a 60-minute mixed-workload soak: client reconnects/slot reuse, plugin reloads, timer
+- [x] Run a 60-minute mixed-workload soak: client reconnects/slot reuse, plugin reloads, timer
   churn, hook churn, slow peers, database lock/recovery, and config edits. Repeat bounded bursts
   after warm-up and allow quiescence between them.
-- [ ] Assert no wrong-client action, lost accepted cookie update under transient failure,
+- [x] Assert no wrong-client action, lost accepted cookie update under transient failure,
   stranded connection/promise, stale-owner callback, or resource/index growth per completed
   cycle. Compare counts first; allocator RSS retention alone is not proof of a leak.
-- [ ] Publish before/after measurements with commit, machine, map, player count, workload,
+- [x] Publish before/after measurements with commit, machine, map, player count, workload,
   repetitions, and p50/p95/p99/max results. Keep unsupported speed claims out of release notes.
-- [ ] Update docs/PROGRESS.md and operator/API documentation for any new limits, overload
+- [x] Update docs/PROGRESS.md and operator/API documentation for any new limits, overload
   behavior, lifecycle semantics, and migration requirements.
 
 ## Resume instruction
@@ -379,3 +379,62 @@ first incomplete slice using the common slice loop. Preserve completed evidence,
 within that slice, and update its status only after its completion gates pass. Continue in the
 listed order under the user's execution authorization; do not infer permission to merge or
 deploy production from this planning document.
+
+## Integrated execution status (September 5)
+
+All ten slices are implemented and independently reviewed in the local dependent Git stack.
+Branch-local records in `runtime-hardening/` contain their specific evidence and limitations.
+Main is preserved; publication and merge are outside this implementation run.
+
+The final integrated runtime at `ba6c7c19548fdad46d14bb5c2aa342ce94804ae1` passes
+797 core tests and all three fresh-process pressure cases. The full JavaScript/Docker gate
+previously passed 584 SDK tests; the final fixes only changed Rust and its pressure script.
+Linux-container static ABI checks also pass on the final integrated source. The final [Linux native gate](runtime-hardening/final-review/linux-native-acceptance.md)
+also passes locally in Docker: 797 core tests, three pressure processes, sanitizer tests,
+full shim linking and its core-entry-point checks. Game-library symbol resolution subsequently
+passed on Nebula against the shipping release and actual installed CS2 libraries.
+
+The owned test server now runs the final reviewed runtime above, with verified mounted
+binary hashes; all 18 soak plugins remained active at its conclusion. The full loader-aware 3,600-second soak passed all
+57 measured cycles and cleanup checks. It recorded 58/58 reload acknowledgements and Active
+transitions, 48 actual bot-churn attempts, and five actual same-slot reuses. The last ten cycles
+had no eligible bot, so their bot-churn attempts were skipped without receiving proof credit. The other workload components still ran and passed. Pressure
+settled all 256 requests: 64 succeeded, 192 received the named capacity rejection, and no other
+outcome occurred. The ten retained test handles were cleaned, the original 94-byte JSONC config
+was restored byte-for-byte, and the loader returned from its 395-byte measured plateau to the
+472-byte original-config plateau. See the [retained soak evidence](runtime-hardening/final-review/live-soak-20260905/README.md).
+
+The reported `lastNs` distribution contains one sampled async-drain value per measured cycle;
+it is not an engine frame-time percentile. RSS is a whole-container observation and is not an
+asserted memory bound. Headless bots do not provide actual CheckTransmit viewer traffic, and
+human authenticated reconnect and HUD/console behavior remain pending. Native/model benchmark
+results do not establish whole-engine throughput.
+
+Model allocation followed the requested speed/quality/cost workflow: Sol handled normal
+implementation and mechanical extraction; Luna handled bounded preparation/helper work;
+Astra handled concurrency/architecture work, difficult fixes and independent safety review.
+Root owned stack integration, evidence, live-server coordination and reviewer dispatch.
+Independent work ran in isolated worktrees with recorded fixed bases; parent validation and
+restacking stayed ordered. Escalations were driven by concrete review failures, including
+fresh Astra implementers for the final loader fix rounds.
+
+The [final paired benchmarks](../../benchmarks/2026-09-runtime-hardening/README.md)
+preserve source snapshots, five raw baseline/candidate runs, and p50/p95/p99/max results.
+The final fixes leave the measured timer and hook source files byte-identical. Timer idle
+and large cancellation improve; all-due draining and tiny cancellation regress, as explicitly
+reported. Hook results are native models, not end-to-end engine measurements.
+
+The [final independent re-review](runtime-hardening/final-review/final-fix-review.md)
+closes all three whole-stack findings: initial config edits, historical path revisions,
+and request-header capacity accounting. The consolidated correction remains in slices
+six and nine; extraction preserves it. No actionable review finding remains.
+
+Remaining gates are human reconnect/HUD/viewer acceptance and investigation of the separate
+[server-side addon startup/map-reload incident](runtime-hardening/final-review/mam-startup-incident.md).
+The recovered test server now has the 18 soak plugins plus the temporary viewer fixture active.
+The final release, including all
+14 enabled base plugins, is installed only on
+the isolated hardening server; its previous addon tree is backed up. SSH is authenticated
+through a task-owned connection, and LTS Node 24.20.0 passes the harness tests there.
+The production HUD server is unchanged. A pre-existing EndTouch signature failure remains
+explicitly excluded from available-descriptor claims; see the Linux acceptance record.

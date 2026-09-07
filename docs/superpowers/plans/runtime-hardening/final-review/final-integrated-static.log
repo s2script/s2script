@@ -1,0 +1,8 @@
+core name gates OK: no CS2 identifier and no games/ embed in core/
+core boundary OK: s2script-core depends on no games/* crate
+PASS: name-leak gate catches CS2 identifiers and passes when clean
+PASS: include_str!/games/ gate catches embedded game files and passes when clean
+check-invoke-abi: ok (ok: lifetime=10 flags=4)
+  linting core/js/ (globals derived from core/src/*.rs)
+  linting games/cs2/js/ (same derivation, the CS2 game-package prelude)
+PASS: core/js + games/cs2/js lint clean

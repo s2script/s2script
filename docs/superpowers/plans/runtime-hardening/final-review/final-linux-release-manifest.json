@@ -1,0 +1,191 @@
+{
+  "source": "ba6c7c19548fdad46d14bb5c2aa342ce94804ae1",
+  "enabledBasePlugins": 14,
+  "files": {
+    "addons/metamod/s2script.vdf": {
+      "bytes": 95,
+      "sha256": "425e435c708e11a216bc40d55d8d1ad1277abe163409363da643f9978b44861d"
+    },
+    "addons/s2script/bin/linuxsteamrt64/libs2script_core.so": {
+      "bytes": 75740112,
+      "sha256": "f1d3519dd9deafd24970d14aa5707664e6dc67382c4011179b1bca9610880331"
+    },
+    "addons/s2script/bin/linuxsteamrt64/s2script.so": {
+      "bytes": 3364960,
+      "sha256": "5a6b58f96421abc9bfe98a91471911577d5ddc02e4b55bb399f6541501c1326d"
+    },
+    "addons/s2script/gamedata/core/common.gamedata.jsonc": {
+      "bytes": 966,
+      "sha256": "73bff3839305cf5f97d7cfd01cacbcdc62e42a5e79187538d2ab39b0ab642e16"
+    },
+    "addons/s2script/gamedata/core/engine.source2.jsonc": {
+      "bytes": 1237,
+      "sha256": "1ee4a031dddb692b4da86315d5ca354a2ca6923ce29879881ce0b5dabba2c72e"
+    },
+    "addons/s2script/gamedata/core/game.cs2.jsonc": {
+      "bytes": 35275,
+      "sha256": "dfcae29dc128be5215abd7737641b20bc50133e84cc1d3aa11ca2ac616d19d72"
+    },
+    "addons/s2script/gamedata/core/master.gamedata.jsonc": {
+      "bytes": 1484,
+      "sha256": "b952a8355b6800473442c9622448d8261017b71536031201cb8802d05f9ac105"
+    },
+    "addons/s2script/gamedata/cs2/game.cs2.jsonc": {
+      "bytes": 40100,
+      "sha256": "1dcaf37f3928ca68f5addcb60bdd4405c506c6b974f3d808fe68b00885631ab6"
+    },
+    "addons/s2script/gamedata/cs2/master.gamedata.jsonc": {
+      "bytes": 958,
+      "sha256": "21672dcd045322778a553d7a9c30c060050b67f93dd5115a36d55d8f76389957"
+    },
+    "addons/s2script/gamedata/sdkhooks/game.cs2.jsonc": {
+      "bytes": 5229,
+      "sha256": "1e9277aadf6c5b0a5cd454851f85f86741ba763051db184b7a9c1092fccc3916"
+    },
+    "addons/s2script/gamedata/sdkhooks/master.gamedata.jsonc": {
+      "bytes": 910,
+      "sha256": "d0cbbea2fac6e10edf14814d19f33830471c70246e7d3f917ba38526a68a9ad5"
+    },
+    "addons/s2script/js/pawn.js": {
+      "bytes": 1026594,
+      "sha256": "9edcfa342e639d6d2bdc91cd22c7ef7134dc9524a9d4c4e2293c2e1cfc07e108"
+    },
+    "addons/s2script/plugins/_s2script_adminhelp.s2sp": {
+      "bytes": 1314,
+      "sha256": "93ee5fd9035f951b0a8b6cebc22a4d33d4af1683bc70ceaf53a08481f511a38d"
+    },
+    "addons/s2script/plugins/_s2script_adminmenu.s2sp": {
+      "bytes": 2088,
+      "sha256": "af65241e3282d016367bfec045737196ae2d239ae833b4e32d929a9f0071237b"
+    },
+    "addons/s2script/plugins/_s2script_antiflood.s2sp": {
+      "bytes": 1470,
+      "sha256": "87b94e6b056c4bf1ecf93bff5171808230bb79b3f8d8889f0c483ac97d1fa3ed"
+    },
+    "addons/s2script/plugins/_s2script_basebans.s2sp": {
+      "bytes": 2214,
+      "sha256": "996fdd95529652631f2759d866b5f88a3762f44bdcaaa66322455166f44bdcf7"
+    },
+    "addons/s2script/plugins/_s2script_basechat.s2sp": {
+      "bytes": 1719,
+      "sha256": "92da30ccf5c613dd9dae66d8101ccee0458875d2429fea5848a36e779ac22d18"
+    },
+    "addons/s2script/plugins/_s2script_basecomm.s2sp": {
+      "bytes": 1675,
+      "sha256": "e10cbe56a5660a46385832cbd99757962ec35bc6eaa7d9a1d03523945c70850a"
+    },
+    "addons/s2script/plugins/_s2script_basecommands.s2sp": {
+      "bytes": 2901,
+      "sha256": "e388d8a2ec49c67795b1504f835e633bf36b7dd2790aa0131372bdd30ae79edc"
+    },
+    "addons/s2script/plugins/_s2script_basetriggers.s2sp": {
+      "bytes": 1333,
+      "sha256": "b688232596e3d32cb1734cfce7e1d3f13ff08a19cb4d1a3758a12bbbd9bebb54"
+    },
+    "addons/s2script/plugins/_s2script_basevotes.s2sp": {
+      "bytes": 1866,
+      "sha256": "51e29b9dd6768f36408b1628d7b4fe5cecc0d3d97ecc3a598a76ad0335b6e6d0"
+    },
+    "addons/s2script/plugins/_s2script_clientprefs.s2sp": {
+      "bytes": 2068,
+      "sha256": "ac090a389fca3d1987ea4d84eb8b1560fe94848b26fb1529f0145df06b5ec9a7"
+    },
+    "addons/s2script/plugins/_s2script_funcommands.s2sp": {
+      "bytes": 1519,
+      "sha256": "9d814c1709304a1f61f0c0e162d2a6ef3cc06fce6d3d27e2e000778a858ef1ba"
+    },
+    "addons/s2script/plugins/_s2script_playercommands.s2sp": {
+      "bytes": 1656,
+      "sha256": "612908d409c088bcb29cf3944b137e9ea87d47957d1efd94a605a9486039ab28"
+    },
+    "addons/s2script/plugins/_s2script_reservedslots.s2sp": {
+      "bytes": 1154,
+      "sha256": "a12f598a386e3dbcbfa6ad6dfa07bc149343f8d8729401b32da22574ef12ab1c"
+    },
+    "addons/s2script/plugins/_s2script_zones.s2sp": {
+      "bytes": 7347,
+      "sha256": "4558a0917af53893ba014db0bcfdc8af57533396bbe6074b69589668cfc10006"
+    },
+    "addons/s2script/translations/adminhelp.phrases.json": {
+      "bytes": 313,
+      "sha256": "6134615b214aab8931a2c1c1669eadcb52e47297b53677e00de32d59d9663f0b"
+    },
+    "addons/s2script/translations/adminmenu.phrases.json": {
+      "bytes": 430,
+      "sha256": "0a90ea4e3accd7dd0ab6703a9d0145eb9535ae946328b7469374101d88a62d76"
+    },
+    "addons/s2script/translations/antiflood.phrases.json": {
+      "bytes": 95,
+      "sha256": "f8106eae8b562407247f6c0e680db7077de2cc732cface6ce593b89e4e4efcd4"
+    },
+    "addons/s2script/translations/basebans.phrases.json": {
+      "bytes": 1513,
+      "sha256": "71a799f679122a6645ace28ff792ed20e81c7be77d2c46fd8b78cad45eb18391"
+    },
+    "addons/s2script/translations/basechat.phrases.json": {
+      "bytes": 424,
+      "sha256": "4fc2beb461df99c693aff11c1adf99da4200c9acc33f1e0bd328831db7cd8306"
+    },
+    "addons/s2script/translations/basecomm.phrases.json": {
+      "bytes": 1090,
+      "sha256": "12f7b4adee23bd2e793c55e205835f881c3f708649d0574b07c3b451062efa70"
+    },
+    "addons/s2script/translations/basecommands.phrases.json": {
+      "bytes": 2644,
+      "sha256": "68c3616125501efbd4693e293bd3199f63ba1c7f8bbd5ff82218456c0f013287"
+    },
+    "addons/s2script/translations/basetriggers.phrases.json": {
+      "bytes": 242,
+      "sha256": "934f7da7437b9059df905adb6f0ebefc70bf5d7141d4bcc013345aa58e3bf655"
+    },
+    "addons/s2script/translations/basevotes.phrases.json": {
+      "bytes": 494,
+      "sha256": "065693893357882c9a06f79d241c8a8725a24bb39b7e4cd42f85cd86681104d3"
+    },
+    "addons/s2script/translations/common.phrases.json": {
+      "bytes": 499,
+      "sha256": "41e5e901543c8d1eef96c14770a2e8d85d65ae82b324ccb9b090ef90a4aeb7b4"
+    },
+    "addons/s2script/translations/de/trdemo.phrases.json": {
+      "bytes": 62,
+      "sha256": "19040764e2d178812ae69a9abc3037a73a68194ff49e4a280238f8313e718a1c"
+    },
+    "addons/s2script/translations/funcommands.phrases.json": {
+      "bytes": 1094,
+      "sha256": "9df09753d34823dd60e598ee98e10353d67fdd752c9f361470d3a6872fd0cb67"
+    },
+    "addons/s2script/translations/funvotes.phrases.json": {
+      "bytes": 692,
+      "sha256": "394ae186f24b3723e94760a42503b71faaba182984b5bcaad76367776d607dae"
+    },
+    "addons/s2script/translations/nextmap.phrases.json": {
+      "bytes": 237,
+      "sha256": "961cd4ace7bb8eabd64733ebdfac58ec702663fd1b7461a29b02101e6d3799d2"
+    },
+    "addons/s2script/translations/nominations.phrases.json": {
+      "bytes": 1065,
+      "sha256": "5fd67e0f25dcdbfc67f5174360df9f0f4dab32bc71af5174cba676a348293504"
+    },
+    "addons/s2script/translations/playercommands.phrases.json": {
+      "bytes": 836,
+      "sha256": "a4c3626fb97b615bed1489c46dc80d750468f1d9eef3dc68ac0e48db4b42a99f"
+    },
+    "addons/s2script/translations/reservedslots.phrases.json": {
+      "bytes": 135,
+      "sha256": "c15d2ebc53c066e7662fdc0a4b47573e97b73516496894128a5af66440b93cac"
+    },
+    "addons/s2script/translations/rockthevote.phrases.json": {
+      "bytes": 1455,
+      "sha256": "b03896b0b804a7395adf7e7c6e664c54ec67404efe651d3e8f795d8c5071bff7"
+    },
+    "addons/s2script/translations/zones.phrases.json": {
+      "bytes": 2895,
+      "sha256": "6be5b3f9c99f96ef5bb080c7e4299c96dfb15e16879fc62533be83964ee3bd52"
+    }
+  },
+  "glibcMaximum": {
+    "shim": "2.17",
+    "core": "2.30"
+  },
+  "liveInstalled": false
+}

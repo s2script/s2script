@@ -1,0 +1,18 @@
+# sdk hook baseline: ordered Vec<Entry>, one addressed match at end
+# timer baseline: TimerQueue Vec<(u64, TimerKind)> with retain-based due/remove
+sdkhook_snapshot,total_hooks=1,matching_hooks=1,samples=10000,p50_ns=41,p95_ns=42,p99_ns=42,max_ns=875
+sdkhook_snapshot,total_hooks=100,matching_hooks=1,samples=10000,p50_ns=42,p95_ns=84,p99_ns=84,max_ns=292
+sdkhook_snapshot,total_hooks=1000,matching_hooks=1,samples=10000,p50_ns=333,p95_ns=334,p99_ns=375,max_ns=8584
+timer_idle,n=0,samples=2000,p50_ns=0,p95_ns=42,p99_ns=42,max_ns=167
+timer_due,n=0,samples=2000,p50_ns=0,p95_ns=42,p99_ns=42,max_ns=84
+timer_cancelheavy,n=0,samples=2000,p50_ns=0,p95_ns=42,p99_ns=42,max_ns=42
+timer_idle,n=10,samples=2000,p50_ns=0,p95_ns=42,p99_ns=42,max_ns=83
+timer_due,n=10,samples=2000,p50_ns=83,p95_ns=125,p99_ns=125,max_ns=834
+timer_cancelheavy,n=10,samples=1000,p50_ns=42,p95_ns=42,p99_ns=42,max_ns=125
+timer_idle,n=1000,samples=2000,p50_ns=500,p95_ns=542,p99_ns=625,max_ns=792
+timer_due,n=1000,samples=500,p50_ns=959,p95_ns=1166,p99_ns=1750,max_ns=3458
+timer_cancelheavy,n=1000,samples=100,p50_ns=202958,p95_ns=212291,p99_ns=220084,max_ns=220084
+timer_idle,n=10000,samples=2000,p50_ns=4542,p95_ns=4625,p99_ns=4667,max_ns=11084
+timer_due,n=10000,samples=200,p50_ns=8417,p95_ns=11584,p99_ns=16792,max_ns=28208
+timer_cancelheavy,n=10000,samples=8,p50_ns=19151292,p95_ns=20741709,p99_ns=20741709,max_ns=20741709
+# sink=0

@@ -1,0 +1,17 @@
+{
+  "started_utc": "2026-09-05T17:28:45.985456+00:00",
+  "source": "ba6c7c19548fdad46d14bb5c2aa342ce94804ae1",
+  "duration_seconds": 3600,
+  "warmup_seconds": 180,
+  "cycle_period_seconds": 60,
+  "quiescence_seconds": 10,
+  "cycles_requested": 57,
+  "root": "/home/ghirakawa/s2script-hardening",
+  "container": "s2script-cs2-hardening",
+  "network": "s2script-cs2-hardening_default",
+  "rcon": "127.0.0.1:27016",
+  "reload_plugin": "@s2script/clientprefs",
+  "expected_running_plugins": 18,
+  "peer_stop_reserve_seconds": 10.0,
+  "rss_scope": "whole container process RSS; recorded only, never used as a leak assertion"
+}
