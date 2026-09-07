@@ -88,7 +88,8 @@ test("observer contract is an exact byte-copy of the major-versioned provider", 
   assert.deepEqual(readFileSync(producer), readFileSync(observerCopy));
   const basecomm = JSON.parse(readFileSync(join(root, "plugins/basecomm/package.json")));
   const consumerPackage = JSON.parse(readFileSync(join(observer, "package.json")));
-  assert.equal(basecomm.version, "1.0.0");
+  assert.equal(basecomm.version, "0.0.0");
+  assert.equal(basecomm.s2script.publishes["@s2script/basecomm"], "1.0.0");
   assert.equal(basecomm.s2script.interfaceProtocol, 2);
   assert.equal(consumerPackage.s2script.optionalPluginDependencies["@s2script/basecomm"], "^1.0.0");
   assert.equal(consumerPackage.s2script.interfaceProtocol, 2);

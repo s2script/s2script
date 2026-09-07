@@ -28,6 +28,7 @@ jobs:
           docker run --rm \
             -v "$PWD:/repo" \
             -w /repo \
+            -e VERSION="$GITHUB_REF_NAME" \
             -v s2script-cargo:/usr/local/cargo/registry \
             rust:bullseye \
             bash /repo/scripts/build-sniper.sh

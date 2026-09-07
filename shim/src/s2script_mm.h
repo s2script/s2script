@@ -139,7 +139,7 @@ public:
     const char* GetDescription() override { return "TypeScript plugin runtime for Source 2"; }
     const char* GetURL() override         { return "https://s2script.com"; }
     const char* GetLicense() override     { return "TBD"; }
-    const char* GetVersion() override     { return "0.0.0-slice1"; }
+    const char* GetVersion() override     { return S2SCRIPT_VERSION; }
     const char* GetDate() override        { return __DATE__; }
     const char* GetLogTag() override      { return "S2SCRIPT"; }
 };

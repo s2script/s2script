@@ -15,6 +15,8 @@ else
   echo "== npm ci SKIPPED (local run — use 'CI=1 make ci-js' to run the lockfile guard) =="
 fi
 
+node --test scripts/framework-version.test.mjs scripts/check-plugin-versions.test.mjs
+
 # Codegen freshness. Globbed so a future check-*-generated.sh starts running here with no
 # edit. check-licenses-generated.sh is excluded: it needs a Rust toolchain and a populated
 # cargo registry, so it lives in ci-native.sh.

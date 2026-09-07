@@ -113,3 +113,26 @@ Two things worth knowing before you fork:
 - **The release zip carries its notices.** `licenses/licenses.txt` is generated from the
   real linked sources (`./scripts/gen-licenses.sh`) and gated for freshness
   (`./scripts/check-licenses-generated.sh`), so it can't quietly go stale on a treadmill bump.
+
+### Framework and bundled plugin versions
+
+The Metamod framework version, packaged `addons/s2script/VERSION`, and all bundled
+base plugins (including `plugins/disabled/`) share one build version. Tagged builds
+use the release tag without `v`. Untagged builds use the nearest release plus a
+development suffix, such as `0.5.12-dev.135.g450382b002e9`. A repository without
+release tags uses `0.0.0-dev.<commit-count>.g<commit>`. Fetch tags for release-based
+development versions. Source archives without Git history require `VERSION`.
+
+Set the same `VERSION=1.2.3` environment variable for native configuration,
+`bash scripts/build-base-plugins.sh`, and `bash scripts/package-release.sh` to
+override automatic resolution. Reconfigure/rebuild the shim when changing versions;
+packaging checks its recorded version and every bundled `.s2sp` manifest before
+creating the release ZIP. A stale artifact fails packaging and must be rebuilt.
+
+Checked-in base-plugin package versions are `0.0.0` placeholders. Published interface
+contract versions are explicit and remain stable when build versions are stamped.
+
+The base-plugin build uses the CLI's existing stamp operation, which updates local
+plugin `package.json` versions and compatible sibling dependency ranges. These build
+stamps need not be committed. npm SDK packages, third-party plugins, and explicitly
+versioned published interfaces retain their own versions.
