@@ -50,7 +50,7 @@ The CLI generates `.s2script/interfaces.d.ts` for name-based inference. New scaf
 
 ## Wire values
 
-The supported algebra is null, boolean, finite number, string, literal enums, arrays, finite object records with optional fields, discriminated object unions, and the SDK's existing `EntityRef`. Method results may also be void. All domain types must be declared in the entry file. Only SDK `Notification`, `Hook`, `Transform`, and `EntityRef` imports are supported; external domain imports, re-exports, reference directives, unbounded dictionaries, recursive types, arbitrary classes, functions, BigInt, Promise, any, and unknown are rejected. This validates the documented wire algebra, not arbitrary TypeScript.
+The supported algebra is null, boolean, finite number, string, literal enums, arrays, finite object records with optional fields, discriminated object unions, and the SDK's existing `EntityRef`. Method results may also be void. All domain types must be declared in the entry file. Only SDK `Notification`, `Hook`, `Transform`, `HookResultValue`, and `EntityRef` imports are supported; external domain imports, re-exports, reference directives, unbounded dictionaries, recursive types, arbitrary classes, functions, BigInt, Promise, any, and unknown are rejected. This validates the documented wire algebra, not arbitrary TypeScript.
 
 Values cross by copy. Every field is checked before any producer method or notification listener receives the value; method results are checked before returning to the consumer. Unknown fields, present-but-undefined fields, nonfinite numbers, sparse arrays, symbols, proxies, accessors, and `toJSON` coercions do not pass the strict copy path. Omit an optional field or argument instead of passing undefined. `__s2ref` is reserved for the existing entity-reference wire envelope, which retains the host's reference/liveness checks. Carry persistent player identity as copied identifiers and a map generation; a bare retained client slot is not a stable identity.
 
@@ -196,3 +196,52 @@ after subscribing on each provider generation. Its checked-in declaration is the
 types-only copy used by `s2s add`; building the consumer does not require BaseComm source or a
 provider archive. Live mute/gag, authenticated command/menu behavior, and provider reload remain
 separate CS2 acceptance gates; the offline VM and compiler tests do not establish them.
+
+## BaseBans service
+
+`@s2script/basebans` version 1 publishes the self-contained protocol-2 contract in
+`plugins/basebans/api.d.ts`. Use `ban(request)` and `unban({ steamId })` from a typed
+handle or direct imports. `BanResult.result` uses the existing SDK `HookResultValue`
+union (importable in contracts from `@s2script/sdk/events` or the SDK barrel).
+
+Ban requests carry `{ steamId, minutes, reason, source, actorSteamId }`. SteamIDs
+(including non-null actors) must be canonical nonzero decimal u64 strings. Minutes
+must be nonnegative safe integers with safe seconds/expiry arithmetic; zero is
+permanent. Reason must be a string (empty is valid); source is `command`, `menu`,
+or `plugin`. Invalid domain inputs return `{ recorded: false, result: Continue }`
+before hooks, store access or effects. Invalid unban identities return false.
+Protocol-2 wire-invalid values can be rejected by the host before entering the method.
+
+`OnBanRequested` is an advisory synchronous Hook. Handled and Stop suppress the
+default record and kick, returning recorded false; Changed applies no patch.
+Exceptions/invalid listener results contribute Continue under the host's fail-open
+policy. This is not an authorization or transactional enforcement boundary. Plugin
+callers are trusted; source and actorSteamId are caller-supplied context, not proof
+of permission. Command/menu wrappers keep their permission, targeting and immunity
+checks; the server console supplies a null actor.
+
+Continue/Changed calls update Bans, then verify immediate cache readback: exact
+reason and an expiry consistent with validated minutes and the call's before/after
+wall-clock seconds (zero for permanent). Only verified results emit OnBanRecorded
+`{ request, until }`. This describes cache visibility at that point, not disk
+acknowledgement, proof of a fresh write, or a promise about state after reentrant
+listeners. Bans.add returns void and attempts persistence after cache mutation.
+Write failure may leave recorded true and lose the record on process restart;
+an identical prior cache value also cannot prove a fresh write. Missing/mismatched
+readback returns false without notification or kick. Notifications are transitions
+through operations, not deduplicated history: repeated verified ban calls notify.
+
+Public ban snapshots a matching connected SteamID/userId before callbacks; sm_ban
+and the menu pass their copied target identity through the same operation.
+Identity is re-resolved after the request hook and after OnBanRecorded; only that
+same connection can be kicked. Display names and actor context are copied before
+callbacks. Command/menu feedback also revalidates the actor because command reply
+helpers retain a slot. A later connection is handled by separate reconnect enforcement, which
+never emits OnBanRecorded. sm_addban uses the same recording path but remains
+record-only even when the SteamID is connected. Intercepted/failed UI requests never
+report success. `unban` returns the cache-key removal boolean and emits OnBanRemoved
+only for true; removal likewise exposes no disk acknowledgement.
+
+The interop-observer example owns all three subscriptions in watchOptional's scope,
+so it can attach again after a compatible BaseBans provider reload using only the
+copied contract. It observes requests and returns Continue; it never bans a player.

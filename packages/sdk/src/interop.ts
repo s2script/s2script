@@ -61,7 +61,7 @@ export function extractContract(
     ...sharedProgramOptions(ts),
     skipLibCheck: false,
     baseUrl: packagesDir,
-    paths: { "@s2script/sdk/*": ["sdk/*.d.ts"] },
+    paths: { "@s2script/sdk": ["sdk/index.d.ts"], "@s2script/sdk/*": ["sdk/*.d.ts"] },
   });
   const checker = program.getTypeChecker();
   const sf = program.getSourceFile(path)!;
@@ -82,6 +82,8 @@ export function extractContract(
       const allowed =
         module === "@s2script/sdk/interfaces"
           ? ["Notification", "Hook", "Transform"]
+          : module === "@s2script/sdk/events" || module === "@s2script/sdk"
+          ? ["HookResultValue"]
           : module === "@s2script/sdk/entity"
           ? ["EntityRef"]
           : [];
@@ -95,7 +97,7 @@ export function extractContract(
       )
         fail(
           node,
-          "contracts must be self-contained; only SDK Notification, Hook, Transform and EntityRef imports are supported"
+          "contracts must be self-contained; only SDK Notification, Hook, Transform, HookResultValue and EntityRef imports are supported"
         );
     }
     if (

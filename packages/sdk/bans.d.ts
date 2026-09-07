@@ -38,9 +38,12 @@ export interface BanEntry {
  * if (b && (b.until === 0 || b.until > Date.now() / 1000)) c.kickWithReason(b.reason);
  */
 export declare const Bans: {
-  /** Add (or overwrite) a ban and persist it to bans.json. `minutes <= 0` = permanent. */
+  /** Add/overwrite the host cache, then attempt to rewrite bans.json. Returns void;
+   * persistence failure is not acknowledged and does not roll back the cache.
+   * An immediate get() confirms cache visibility only, not a fresh or durable write.
+   * `minutes <= 0` = permanent. */
   add(steamId: string, minutes: number, reason?: string): void;
-  /** Remove a ban and persist. Returns whether the SteamID64 was banned. */
+  /** Remove from cache and attempt persistence. Returns whether a cache key existed, not disk acknowledgement. */
   remove(steamId: string): boolean;
   /** Get a ban by SteamID64, or null if not banned. */
   get(steamId: string): BanInfo | null;

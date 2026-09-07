@@ -161,6 +161,44 @@ mod tests {
         shutdown();
     }
 
+    /// Bans.add acknowledges only cache visibility; a missing engine write op exposes no status.
+    #[test]
+    fn bans_add_void_cache_readback_and_remove_without_persistence() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        crate::v8host::set_engine_ops(None);
+        create_plugin_context("p");
+        eval_in_context("p", "globalThis.Bans = __s2pkg_bans.Bans; Date.now = () => 1800000000000;").unwrap();
+        assert_eq!(eval_in_context_string("p", "String(Bans.add('111', 0, 'permanent'))"), "undefined");
+        assert_eq!(eval_in_context_string("p", "JSON.stringify(Bans.get('111'))"), r#"{"reason":"permanent","until":0}"#);
+        assert_eq!(eval_in_context_string("p", "String(Bans.add('111', 5, 'replacement'))"), "undefined");
+        assert_eq!(eval_in_context_string("p", "JSON.stringify(Bans.get('111'))"), r#"{"reason":"replacement","until":1800000300}"#);
+        assert_eq!(eval_in_context_string("p", "String(Bans.remove('111'))"), "true");
+        assert_eq!(eval_in_context_string("p", "String(Bans.remove('111'))"), "false");
+        assert_eq!(eval_in_context_string("p", "String(Bans.get('111'))"), "null");
+        shutdown();
+    }
+
+    extern "C" fn failing_config_write(_id: *const std::ffi::c_char, _content: *const std::ffi::c_char) -> std::ffi::c_int { -1 }
+
+    /// A real failing config bridge does not undo the native cache update or produce a JS success flag.
+    #[test]
+    fn bans_cache_survives_config_write_failure_without_acknowledgement() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        crate::v8host::set_engine_ops(Some(crate::v8host::S2EngineOps {
+            config_write: Some(failing_config_write), ..Default::default()
+        }));
+        create_plugin_context("p");
+        assert_eq!(eval_in_context_string("p", "String(__s2_config_write_raw('bans', '{}'))"), "-1");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_bans.Bans.add('111', 0, 'visible'))"), "undefined");
+        assert_eq!(eval_in_context_string("p", "JSON.stringify(__s2pkg_bans.Bans.get('111'))"), r#"{"reason":"visible","until":0}"#);
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_bans.Bans.remove('111'))"), "true");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_bans.Bans.remove('111'))"), "false");
+        crate::v8host::set_engine_ops(None);
+        shutdown();
+    }
+
     /// Slice 6.18 Task 1: `ban_check` — banned iff present AND (`until == 0` perm OR `until > now`).
     /// An expired entry and an absent SteamID both read as not-banned.
     #[test]

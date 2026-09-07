@@ -307,3 +307,30 @@ idempotence, reentrant engine/order behavior, multi-target silence identity safe
 counts, chat suppression, and both reconnect properties. Live authenticated mute/gag, command/menu,
 and provider reload acceptance remains pending coordinator execution; bots expose SteamID `0` and
 cannot establish that gate.
+
+## Typed plugin interop: BaseBans shared operations (September 6, 2026)
+
+BaseBans publishes a version 1 protocol-2 contract for ban/unban, the advisory
+OnBanRequested Hook, and OnBanRecorded/OnBanRemoved cache notifications. Command,
+menu and public requests use one validated operation; sm_addban remains record-only.
+The service snapshots target and actor identities, re-resolves live targets at both
+callback boundaries, and guards command/menu replies against replaced actors.
+OnBanRecorded follows verified immediate cache readback and precedes the kick.
+Bans.add remains void: persistence failure is not acknowledged and does not undo
+the cache mutation, and an identical prior cache record cannot prove a fresh write.
+
+The SDK allows its existing HookResultValue union in self-contained contracts;
+unsupported domain imports remain rejected. The observer copies the exact provider
+contract, owns optional subscriptions, and builds standalone without provider source
+or archive. Sixteen contract/compiler tests and 24 plugin VM tests cover shared
+routing, validation, HookResult behavior, cache failure, actor/target slot reuse,
+menu ownership, offline requests, reconnect and readback expiry. Two new native
+characterization tests exercise absent/failing config-write bridges without changing
+native behavior. The JS gate passes (711 SDK tests), and the Linux native gate
+passes (891 passed, 3 ignored). Real CS2 command/menu/API/offline/reconnect and
+provider reload acceptance remain pending coordinator execution.
+
+The same callback-triggered reply issue was found in BaseComm's shared command
+wrapper: it now validates the copied caller userId/SteamID against the slot before
+final translation/reply. A regression covers absence, changed userId with the same
+SteamID, and changed SteamID with the same userId; policy behavior is unchanged.
