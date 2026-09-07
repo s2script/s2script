@@ -2840,6 +2840,14 @@ static std::string ConfigPath(const char* id) {
     return "addons/s2script/configs/" + safe_id + ".json";
 }
 
+// Narrow loader ABI: transient storage is main-thread-only and core copies it immediately.
+static std::string s_configPathResolverBuf;
+static const char* s2_config_path_resolve(const char* id) {
+    if (!id) return nullptr;
+    s_configPathResolverBuf = ConfigPath(id);
+    return s_configPathResolverBuf.c_str();
+}
+
 // ---------------------------------------------------------------------------
 // Config ops (Slice 5E.2): read/auto-write the admin override file.
 // ---------------------------------------------------------------------------
@@ -5196,6 +5204,14 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         META_CONPRINTF("[s2script] @s2script/cs2 gamedata registered (%zu declared call(s), "
                        "%zu declared hook(s), %zu byte(s))\n",
                        s_gdGame.calls.size(), s_gdGame.hooks.size(), gdJson.size());
+    }
+
+    // Register the versioned path-only resolver before starting the loader. This deliberately does
+    // not extend S2EngineOps, whose copied layout has no size/version contract.
+    if (!s2script_core_set_config_path_resolver(S2_CONFIG_PATH_RESOLVER_ABI_V1,
+                                                &s2_config_path_resolve)) {
+        META_CONPRINTF("[s2script] WARN: core rejected config-path resolver ABI v%u; config-dependent plugins will be refused\n",
+                       S2_CONFIG_PATH_RESOLVER_ABI_V1);
     }
 
     // Set the plugins directory so the per-frame .s2sp watcher knows where to look.

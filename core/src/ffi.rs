@@ -840,6 +840,17 @@ pub extern "C" fn s2script_core_set_plugins_dir(path: *const c_char) {
     });
 }
 
+/// Register the shim's main-thread-only config path resolver without extending the unversioned
+/// `S2EngineOps` table. The callback's returned C string is copied before worker submission.
+#[no_mangle]
+pub extern "C" fn s2script_core_set_config_path_resolver(
+    abi_version: u32,
+    resolver: Option<crate::loader::ConfigPathResolver>,
+) -> c_int {
+    catch_unwind(|| crate::loader::set_config_path_resolver(abi_version, resolver) as c_int)
+        .unwrap_or(0)
+}
+
 /// Crash reporter: the breadcrumb POD base pointer. The shim's Breakpad callback reads
 /// `s2script_core_crash_breadcrumb_size()` raw bytes from here with a single write() —
 /// no JSON, no allocation (signal-safe by construction). The pointer targets static

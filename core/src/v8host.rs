@@ -5565,6 +5565,7 @@ pub(crate) fn eval_in_context(id: &str, src: &str) -> Result<(), String> {
 /// Materialize a plugin's config (defaults ⊕ the override file read via the `config_read` op;
 /// auto-generate the file via `config_write` if absent) and return the values JSON to inject.
 /// Degrade: no ops → defaults only, no auto-write, still returns the defaults JSON.
+#[allow(dead_code)] // synchronous compatibility adapter; periodic loader calls the snapshot form
 pub(crate) fn materialize_for_load(id: &str, decls: &std::collections::HashMap<String, crate::config::ConfigEntry>) -> String {
     if decls.is_empty() { return "{}".to_string(); }
     let ops = ENGINE_OPS.with(|o| o.get());
@@ -5575,8 +5576,22 @@ pub(crate) fn materialize_for_load(id: &str, decls: &std::collections::HashMap<S
         let ptr = f(cid.as_ptr()); if ptr.is_null() { return None; }
         Some(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
     })();
+    materialize_for_load_snapshot(id, decls, override_json.as_deref())
+}
+
+/// Materialize a loader-supplied config snapshot. Filesystem I/O has already completed on the
+/// dedicated loader worker; only the existing main-thread merge, diagnostics, and optional default
+/// write remain here.
+pub(crate) fn materialize_for_load_snapshot(
+    id: &str,
+    decls: &std::collections::HashMap<String, crate::config::ConfigEntry>,
+    override_json: Option<&str>,
+) -> String {
+    if decls.is_empty() { return "{}".to_string(); }
+    let ops = ENGINE_OPS.with(|o| o.get());
+    let cid = std::ffi::CString::new(id).ok();
     let was_absent = override_json.is_none();
-    let mat = crate::config::materialize_config(decls, override_json.as_deref());
+    let mat = crate::config::materialize_config(decls, override_json);
     for w in &mat.warnings { log_warn(&format!("config('{}'): {}", id, w)); }
     if was_absent {  // auto-generate the default file
         if let (Some(ops), Some(cid)) = (ops, cid.as_ref()) {
@@ -5602,7 +5617,8 @@ pub(crate) fn store_config_decls(id: &str, decls: std::collections::HashMap<Stri
 
 /// Read the current content of the plugin's config override file via the `config_read` op.
 /// Returns `None` if no ops table is wired, the op is absent, or the file doesn't exist yet.
-/// Used by the loader's change-detection loop (content compare, no mtime op needed).
+/// Periodic loader reads use owned worker snapshots; this remains the synchronous adapter for
+/// explicit raw config APIs, crash reads, and writes that need the engine path policy.
 pub(crate) fn config_file_content(id: &str) -> Option<String> {
     let ops = ENGINE_OPS.with(|o| o.get())?;
     let f = ops.config_read?;
@@ -5622,20 +5638,70 @@ pub(crate) fn read_engine_config(id: &str) -> Option<String> {
 /// declared defaults, re-inject `globalThis.__s2pkg_config_values`, and fire every `onChange`
 /// handler registered by that plugin (via CONFIG_SUBS) with the updated config object as the arg.
 ///
-/// Called from `crate::loader::poll_watched_configs` when the stored content differs from the
-/// current file content.  Uses the same per-plugin context entry discipline as `dispatch_game_event`.
+/// The periodic loader calls the snapshot form below when worker-supplied content changes. This
+/// synchronous adapter remains for explicit callers and uses the same context discipline.
 ///
 /// PRECONDITION: call only with `HOST` UNBORROWED (the loader poll runs on the post-`frame_async_drain`
 /// path where HOST is free).  Step (2) re-injects via `eval_in_context` (which `borrow_mut`s HOST) and
 /// the fire loop then `try_borrow_mut`s — so a caller that invoked this mid-borrow would PANIC at step
 /// (2) rather than degrade.  Do not add a call-site that holds the HOST borrow.
 pub(crate) fn re_materialize_config(id: &str) {
+    let content = config_file_content(id);
+    re_materialize_config_snapshot(id, content.as_deref());
+}
+
+/// Re-materialize from an owned worker snapshot. This is the periodic loader path and performs no
+/// config read; explicit raw config APIs and crash reads continue to use `config_file_content`.
+pub(crate) fn re_materialize_config_snapshot(id: &str, override_json: Option<&str>) {
+    apply_config_snapshot(id, override_json, false);
+}
+
+/// The first asynchronous watch read must reconcile with this plugin's applied values.
+/// Suppress only an unchanged initial state (including an auto-generated defaults file).
+pub(crate) fn reconcile_initial_config_snapshot(id: &str, override_json: Option<&str>) {
+    apply_config_snapshot(id, override_json, true);
+}
+
+fn config_values_match(id: &str, values_json: &str) -> bool {
+    HOST.with(|h| -> Option<bool> {
+        let mut host = h.borrow_mut();
+        let host = host.as_mut()?;
+        let context = PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.context.clone()))?;
+        let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+        let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+        let context = v8::Local::new(&mut hs, &context);
+        let scope = &mut v8::ContextScope::new(&mut hs, context);
+        let mut tc_storage = v8::TryCatch::new(scope);
+        let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+        let key = v8::String::new(&mut tc, "__s2pkg_config_values")?;
+        let value = context.global(&mut tc).get(&mut tc, key.into())?;
+        let json = v8::json::stringify(&mut tc, value)?;
+        let proposed = v8::String::new(&mut tc, values_json)?;
+        let proposed = v8::json::parse(&mut tc, proposed)?;
+        let proposed = v8::json::stringify(&mut tc, proposed)?;
+        // Normalize numbers/escapes through the same JSON serializer. Equal values have
+        // equal byte lengths regardless of key order. Reject a plugin-expanded object before
+        // copying it into Rust: temporary native copies stay bounded by the proposed config.
+        if json.utf8_length(&mut tc) != proposed.utf8_length(&mut tc) {
+            return Some(false);
+        }
+        let current: serde_json::Value =
+            serde_json::from_str(&json.to_rust_string_lossy(&tc)).ok()?;
+        let proposed: serde_json::Value =
+            serde_json::from_str(&proposed.to_rust_string_lossy(&tc)).ok()?;
+        Some(current == proposed)
+    })
+    .unwrap_or(false)
+}
+
+fn apply_config_snapshot(id: &str, override_json: Option<&str>, initial: bool) {
     // (1) Get this plugin's stored config decls (empty → nothing to re-materialize, but still fire).
     let decls = PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.config_decls.clone()));
     let Some(decls) = decls else { return };
 
     // (2) Re-materialize (no ops → defaults only; file exists → override merged) → inject.
-    let values_json = materialize_for_load(id, &decls);
+    let values_json = materialize_for_load_snapshot(id, &decls, override_json);
+    if initial && config_values_match(id, &values_json) { return; }
     let _ = eval_in_context(id, &format!("globalThis.__s2pkg_config_values = {};", values_json));
 
     // (3) Snapshot CONFIG_SUBS for the "config" name, filtered to this plugin's handlers.
@@ -6817,6 +6883,9 @@ pub(crate) fn dispatch_onframe(
 }
 
 pub fn shutdown() {
+    // Invalidate and join the dedicated loader before any plugin/V8 state or this library can be
+    // torn down. The worker owns no V8 or engine callback pointers.
+    crate::loader::shutdown_worker();
     // Run per-plugin teardown (onUnload + ledger) in reverse-dependency order BEFORE any bulk clears,
     // so each plugin's onUnload fires while the isolate + other plugins are still alive.
     // The bulk clears below are the final backstop for anything not already cleaned up by unload_all.
@@ -7211,6 +7280,7 @@ fn s2_async_stats(
     mut rv: v8::ReturnValue,
 ) {
     let mut stats = crate::async_limits::metrics();
+    stats["loader"] = crate::loader::metrics();
     stats["staged"] = serde_json::json!({"timers":DUE_TIMERS.with(|q|q.borrow().len()),"ws":crate::ws::pending_count(),"net":crate::net::pending_count(),"cookies":crate::cookies::pending_count(),"http":PARKED_HTTP.with(|q|usize::from(q.borrow().is_some())),"db":PARKED_DB.with(|q|usize::from(q.borrow().is_some()))});
     stats["cache"] = crate::cookies::cache_stats();
     stats["timerExamined"] = serde_json::json!(crate::async_rt::timer_examined());

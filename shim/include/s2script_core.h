@@ -242,6 +242,13 @@ void s2script_core_register_package_gamedata(const char* name, const char* gamed
  * load time with the resolved addons/s2script/plugins/ path (dladdr-derived).
  * path must be null-terminated UTF-8.  A null pointer degrades to a no-op. */
 void s2script_core_set_plugins_dir(const char* path);
+/* Versioned, narrow path-only adapter used by the loader worker. The callback is invoked on the
+ * game thread only; core copies the returned string before submitting owned work. Passing null
+ * clears the resolver. Returns 1 for a supported ABI, 0 for an unsupported version. */
+typedef const char* (*s2_config_path_resolver_fn)(const char* id);
+#define S2_CONFIG_PATH_RESOLVER_ABI_V1 1u
+int s2script_core_set_config_path_resolver(uint32_t abi_version,
+                                           s2_config_path_resolver_fn resolver);
 
 /* Crash reporter: the breadcrumb POD base pointer + byte size. The shim's crash callback
  * dumps exactly this many raw bytes with a single write() (signal-safe; no field access). */

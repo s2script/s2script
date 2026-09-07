@@ -164,6 +164,7 @@ pub(crate) struct AsyncPolicy {
     pub frame_bytes: usize,
     pub frame_poll_items: usize,
     pub frame_soft_us: u64,
+    pub loader: crate::loader_worker::LoaderPolicy,
 }
 impl Default for AsyncPolicy {
     fn default() -> Self {
@@ -200,6 +201,7 @@ impl Default for AsyncPolicy {
             frame_bytes: 2 << 20,
             frame_poll_items: 256,
             frame_soft_us: 2000,
+            loader: crate::loader_worker::LoaderPolicy::default(),
         }
     }
 }
@@ -256,16 +258,28 @@ impl AsyncPolicy {
                 .checked_mul(self.failure_bytes)
                 .is_some_and(|n| n <= self.completion_bytes)
             && self.socket_out_bytes <= self.outbound_bytes
+            && self.loader.validate().is_ok()
     }
 }
 static POLICY: OnceLock<AsyncPolicy> = OnceLock::new();
+fn parse_policy_json(json: &str) -> Result<AsyncPolicy, ()> {
+    serde_json::from_str::<AsyncPolicy>(json)
+        .ok()
+        .filter(AsyncPolicy::validate)
+        .ok_or(())
+}
+
+fn policy_json_or_default(json: &str) -> AsyncPolicy {
+    parse_policy_json(json).unwrap_or_default()
+}
+
 pub(crate) fn policy() -> &'static AsyncPolicy {
     POLICY.get_or_init(|| match std::env::var("S2SCRIPT_ASYNC_LIMITS_JSON") {
-        Ok(json) => match serde_json::from_str::<AsyncPolicy>(&json) {
-            Ok(p) if p.validate() => p,
-            _ => {
+        Ok(json) => match parse_policy_json(&json) {
+            Ok(p) => p,
+            Err(()) => {
                 eprintln!("s2script: invalid S2SCRIPT_ASYNC_LIMITS_JSON; using complete defaults");
-                AsyncPolicy::default()
+                policy_json_or_default("{}")
             }
         },
         _ => AsyncPolicy::default(),
@@ -986,5 +1000,40 @@ mod pressure_tests {
         p = AsyncPolicy::default();
         p.frame_items = 0;
         assert!(!p.validate());
+    }
+
+    #[test]
+    fn loader_policy_defaults_and_partial_nested_overrides_are_central() {
+        let defaults = AsyncPolicy::default();
+        assert_eq!(defaults.loader.request_items, 128);
+        assert_eq!(defaults.loader.parse.zip_entries, 256);
+
+        let parsed = parse_policy_json(
+            r#"{"loader":{"request_items":64,"parse":{"zip_entries":32}}}"#,
+        )
+        .expect("a partial nested loader override is valid");
+        assert_eq!(parsed.loader.request_items, 64);
+        assert_eq!(parsed.loader.result_items, 128);
+        assert_eq!(parsed.loader.parse.zip_entries, 32);
+        assert_eq!(parsed.loader.parse.plugin_js_bytes, 16 << 20);
+        assert_eq!(parsed.frame_items, defaults.frame_items);
+    }
+
+    #[test]
+    fn invalid_loader_policy_is_a_complete_default_fallback() {
+        let defaults = AsyncPolicy::default();
+        for json in [
+            r#"{"loader":{"unknown":1},"frame_items":7}"#,
+            r#"{"loader":{"parse":{"unknown":1}},"frame_items":7}"#,
+            r#"{"loader":{"request_items":0},"frame_items":7}"#,
+            r#"{"loader":{"result_items":1},"frame_items":7}"#,
+            r#"{"loader":{"config_bytes":1048576,"config_baseline_bytes":6291455},"frame_items":7}"#,
+            r#"{"loader":{"request_bytes":18446744073709551615},"frame_items":7}"#,
+        ] {
+            let parsed = policy_json_or_default(json);
+            assert_eq!(parsed.frame_items, defaults.frame_items, "{json}");
+            assert_eq!(parsed.loader.request_items, defaults.loader.request_items, "{json}");
+            assert_eq!(parsed.loader.request_bytes, defaults.loader.request_bytes, "{json}");
+        }
     }
 }
