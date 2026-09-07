@@ -24,7 +24,7 @@ export function OnPluginStart(): void {
         });
         ws.onClose((code, reason) => console.log(`[cookbook] ws closed code=${code} reason=${reason}`));
         ws.onError((e) => console.log(`[cookbook] ws error=${e}`));
-        ws.send("hello-from-s2script");
+        if (!ws.send("hello-from-s2script")) { console.log("[cookbook] WebSocket send was not accepted"); ws.close(); }
         cmd.reply("connected + sent — watch the log for the echo");
       })
       .catch((e: unknown) => cmd.reply(`connect failed: ${String(e)}`));

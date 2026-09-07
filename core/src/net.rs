@@ -1,7 +1,9 @@
 //! Engine-generic cancellable raw TCP + UDP socket engine. V8 routing stays in the adapter below.
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::Receiver;
+use crate::async_limits::{signal_channel as channel, SocketSender as Sender};
+use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -21,6 +23,8 @@ pub enum NetSignalKind {
 pub struct NetSignal {
     pub conn_id: u64,
     pub kind: NetSignalKind,
+    retention: Option<Arc<crate::async_limits::Retention>>,
+    queue:Option<crate::async_limits::QueueTicket>,
 }
 enum NetCommand {
     Send(Vec<u8>),
@@ -53,7 +57,8 @@ impl Default for SocketDeadlines {
     }
 }
 struct Conn {
-    data_tx: tokio::sync::mpsc::UnboundedSender<NetCommand>,
+    resources: Option<Arc<crate::async_limits::SocketResources>>,
+    data_tx: crate::async_limits::OutSender<NetCommand>,
     control_tx: tokio::sync::watch::Sender<Control>,
     phase: ConnPhase,
     owner: String,
@@ -144,7 +149,7 @@ async fn run_tcp_connected<R, W>(
     id: u64,
     mut rd: R,
     mut wr: W,
-    mut data_rx: tokio::sync::mpsc::UnboundedReceiver<NetCommand>,
+    mut data_rx: crate::async_limits::OutReceiver<NetCommand>,
     control_rx: &mut tokio::sync::watch::Receiver<Control>,
     sig_tx: Sender<NetSignal>,
     deadlines: SocketDeadlines,
@@ -155,7 +160,7 @@ where
 {
     async fn graceful<W: AsyncWrite + Unpin>(
         wr: &mut W,
-        data_rx: &mut tokio::sync::mpsc::UnboundedReceiver<NetCommand>,
+        data_rx: &mut crate::async_limits::OutReceiver<NetCommand>,
         control_rx: &mut tokio::sync::watch::Receiver<Control>,
         deadline: tokio::time::Instant,
     ) -> Option<Result<(), String>> {
@@ -182,7 +187,10 @@ where
             Read(std::io::Result<usize>),
             Command(Option<NetCommand>),
         }
-        let ready = {
+        let ready = if control(control_rx) >= Control::CloseRequested {
+            let _ = control_rx.borrow_and_update();
+            Ready::Control(Ok(()))
+        } else {
             let io = async {
                 match fair_pair(rd.read(&mut buf), data_rx.recv()).await {
                     Fair::Left(result) => Ready::Read(result),
@@ -210,10 +218,19 @@ where
             Ready::Read(result) => match result {
                 Ok(0) => return Some(NetTerminal { error: None }),
                 Ok(n) => {
-                    let _ = sig_tx.send(NetSignal {
-                        conn_id: id,
-                        kind: NetSignalKind::Data(buf[..n].to_vec()),
-                    });
+                    let permit = tokio::select! { biased;
+                        _=control_rx.changed()=>{if control(control_rx)==Control::Shutdown {return None;}continue;},
+                        p=sig_tx.inbound(n.saturating_add(64))=>match p {Ok(p)=>p,Err(e)=>return Some(NetTerminal {error:Some(e.to_string())})},
+                    };
+                    let _ = sig_tx.send_reserved(
+                        NetSignal {
+                            retention: None,
+                            queue: None,
+                            conn_id: id,
+                            kind: NetSignalKind::Data(buf[..n].to_vec()),
+                        },
+                        Some(permit),
+                    );
                 }
                 Err(e) => {
                     return Some(NetTerminal {
@@ -258,19 +275,37 @@ where
         }
     }
 }
+#[cfg(test)]
 fn insert_conn(
     id: u64,
     owner: String,
     generation: u64,
 ) -> (
-    tokio::sync::mpsc::UnboundedReceiver<NetCommand>,
+    crate::async_limits::OutReceiver<NetCommand>,
     tokio::sync::watch::Receiver<Control>,
 ) {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let job = crate::async_limits::domain()
+        .job(Some((owner.clone(), generation)), 0)
+        .unwrap();
+    let resources =
+        crate::async_limits::SocketResources::new(Some((owner.clone(), generation)), job).unwrap();
+    insert_conn_reserved(id, owner, generation, resources)
+}
+fn insert_conn_reserved(
+    id: u64,
+    owner: String,
+    generation: u64,
+    resources: Arc<crate::async_limits::SocketResources>,
+) -> (
+    crate::async_limits::OutReceiver<NetCommand>,
+    tokio::sync::watch::Receiver<Control>,
+) {
+    let (tx, rx) = crate::async_limits::out_channel_in(&resources.domain);
     let (ctx, crx) = tokio::sync::watch::channel(Control::Open);
     engine().conns.lock().unwrap().insert(
         id,
         Conn {
+            resources: Some(resources),
             data_tx: tx,
             control_tx: ctx,
             phase: ConnPhase::Connecting,
@@ -282,9 +317,19 @@ fn insert_conn(
 }
 #[cfg(test)]
 pub fn connect_tcp(id: u64, host: String, port: u16, owner: String) {
-    connect_tcp_owned(id, host, port, owner, 0)
+    let lease = crate::async_limits::domain()
+        .job(Some((owner.clone(), 0)), 0)
+        .unwrap();
+    connect_tcp_owned(id, host, port, owner, 0, lease).unwrap()
 }
-pub(crate) fn connect_tcp_owned(id: u64, host: String, port: u16, owner: String, generation: u64) {
+pub(crate) fn connect_tcp_owned(
+    id: u64,
+    host: String,
+    port: u16,
+    owner: String,
+    generation: u64,
+    lease: crate::async_limits::JobLease,
+) -> Result<(), String> {
     connect_tcp_with_deadlines(
         id,
         host,
@@ -292,6 +337,7 @@ pub(crate) fn connect_tcp_owned(id: u64, host: String, port: u16, owner: String,
         owner,
         generation,
         SocketDeadlines::default(),
+        lease,
     )
 }
 fn connect_tcp_with_deadlines(
@@ -301,16 +347,19 @@ fn connect_tcp_with_deadlines(
     owner: String,
     generation: u64,
     d: SocketDeadlines,
-) {
-    spawn_tcp_attempt(
+    lease: crate::async_limits::JobLease,
+) -> Result<(), String> {
+    spawn_tcp_reserved(
         id,
         owner,
         generation,
         d,
         tokio::net::TcpStream::connect((host, port)),
-    );
+        lease,
+    )
 }
 
+#[cfg(test)]
 fn spawn_tcp_attempt<F, S, E>(
     id: u64,
     owner: String,
@@ -322,14 +371,37 @@ fn spawn_tcp_attempt<F, S, E>(
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     E: std::fmt::Display + Send + 'static,
 {
-    let (rx, mut crx) = insert_conn(id, owner, generation);
-    let tx = engine().sig_tx.clone();
+    let lease = crate::async_limits::domain()
+        .job(Some((owner.clone(), generation)), 0)
+        .unwrap();
+    spawn_tcp_reserved(id, owner, generation, d, attempt, lease).unwrap();
+}
+fn spawn_tcp_reserved<F, S, E>(
+    id: u64,
+    owner: String,
+    generation: u64,
+    d: SocketDeadlines,
+    attempt: F,
+    lease: crate::async_limits::JobLease,
+) -> Result<(), String>
+where
+    F: std::future::Future<Output = Result<S, E>> + Send + 'static,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    let resources =
+        crate::async_limits::SocketResources::new(Some((owner.clone(), generation)), lease)
+            .map_err(|e| e.to_string())?;
+    let (rx, mut crx) = insert_conn_reserved(id, owner, generation, resources.clone());
+    let tx = engine().sig_tx.owned(resources);
     crate::http::spawn(async move {
         let _g = WorkerGuard::new();
         let stream = match await_connect(attempt, &mut crx, d.connect).await {
             Some(Ok(stream)) => stream,
             Some(Err(error)) => {
                 let _ = tx.send(NetSignal {
+                    retention: None,
+                    queue: None,
                     conn_id: id,
                     kind: NetSignalKind::ConnectFailed(error),
                 });
@@ -341,6 +413,8 @@ fn spawn_tcp_attempt<F, S, E>(
             return;
         }
         let _ = tx.send(NetSignal {
+            retention: None,
+            queue: None,
             conn_id: id,
             kind: NetSignalKind::Connected,
         });
@@ -348,31 +422,53 @@ fn spawn_tcp_attempt<F, S, E>(
         let terminal = run_tcp_connected(id, rd, wr, rx, &mut crx, tx.clone(), d).await;
         if let Some(terminal) = terminal.filter(|_| control(&crx) != Control::Shutdown) {
             let _ = tx.send(NetSignal {
+                retention: None,
+                queue: None,
                 conn_id: id,
                 kind: NetSignalKind::Terminal(terminal),
             });
         }
-    })
+    });
+    Ok(())
 }
 #[cfg(test)]
 pub fn bind_udp(id: u64, owner: String) {
-    bind_udp_owned(id, owner, 0)
+    let lease = crate::async_limits::domain()
+        .job(Some((owner.clone(), 0)), 0)
+        .unwrap();
+    bind_udp_owned(id, owner, 0, lease).unwrap()
 }
-pub(crate) fn bind_udp_owned(id: u64, owner: String, generation: u64) {
-    bind_udp_with_deadlines(id, owner, generation, SocketDeadlines::default())
+pub(crate) fn bind_udp_owned(
+    id: u64,
+    owner: String,
+    generation: u64,
+    lease: crate::async_limits::JobLease,
+) -> Result<(), String> {
+    bind_udp_with_deadlines(id, owner, generation, SocketDeadlines::default(), lease)
 }
-fn bind_udp_with_deadlines(id: u64, owner: String, generation: u64, d: SocketDeadlines) {
-    let (mut rx, mut crx) = insert_conn(id, owner, generation);
-    let tx = engine().sig_tx.clone();
+fn bind_udp_with_deadlines(
+    id: u64,
+    owner: String,
+    generation: u64,
+    d: SocketDeadlines,
+    lease: crate::async_limits::JobLease,
+) -> Result<(), String> {
+    let resources =
+        crate::async_limits::SocketResources::new(Some((owner.clone(), generation)), lease)
+            .map_err(|e| e.to_string())?;
+    let (mut rx, mut crx) = insert_conn_reserved(id, owner, generation, resources.clone());
+    let tx = engine().sig_tx.owned(resources);
     crate::http::spawn(async move {
         let _g = WorkerGuard::new();
         let bind = tokio::net::UdpSocket::bind("0.0.0.0:0");
         tokio::pin!(bind);
-        let sock = tokio::select! {biased;_=crx.changed()=>return,r=&mut bind=>match r{Ok(s)=>s,Err(e)=>{let _=tx.send(NetSignal{conn_id:id,kind:NetSignalKind::ConnectFailed(e.to_string())});return}}};
+        let sock = tokio::select! {biased;_=crx.changed()=>return,r=&mut bind=>match r{Ok(s)=>s,Err(e)=>{let _=tx.send(NetSignal { retention: None, queue:None,conn_id:id,kind:NetSignalKind::ConnectFailed(e.to_string())});return}}};
         if control(&crx) == Control::Shutdown {
             return;
         }
         let _ = tx.send(NetSignal {
+            retention: None,
+            queue: None,
             conn_id: id,
             kind: NetSignalKind::Bound,
         });
@@ -383,7 +479,10 @@ fn bind_udp_with_deadlines(id: u64, owner: String, generation: u64, d: SocketDea
                 Receive(std::io::Result<(usize, std::net::SocketAddr)>),
                 Command(Option<NetCommand>),
             }
-            let ready = {
+            let ready = if control(&crx) >= Control::CloseRequested {
+                let _ = crx.borrow_and_update();
+                Ready::Control(Ok(()))
+            } else {
                 let io = async {
                     match fair_pair(sock.recv_from(&mut buf), rx.recv()).await {
                         Fair::Left(result) => Ready::Receive(result),
@@ -423,13 +522,22 @@ fn bind_udp_with_deadlines(id: u64, owner: String, generation: u64, d: SocketDea
                 }
                 Ready::Receive(result) => match result {
                     Ok((n, from)) => {
-                        let _ = tx.send(NetSignal {
-                            conn_id: id,
-                            kind: NetSignalKind::Datagram {
-                                from: from.to_string(),
-                                data: buf[..n].to_vec(),
+                        let permit = tokio::select! { biased;
+                            _=crx.changed()=> {if control(&crx)==Control::Shutdown {return;}continue;},
+                            p=tx.inbound(n.saturating_add(128))=>match p {Ok(p)=>p,Err(e)=>break NetTerminal {error:Some(e.to_string())}},
+                        };
+                        let _ = tx.send_reserved(
+                            NetSignal {
+                                retention: None,
+                                queue: None,
+                                conn_id: id,
+                                kind: NetSignalKind::Datagram {
+                                    from: from.to_string(),
+                                    data: buf[..n].to_vec(),
+                                },
                             },
-                        });
+                            Some(permit),
+                        );
                     }
                     Err(error) => {
                         break NetTerminal {
@@ -486,17 +594,23 @@ fn bind_udp_with_deadlines(id: u64, owner: String, generation: u64, d: SocketDea
         };
         if control(&crx) != Control::Shutdown {
             let _ = tx.send(NetSignal {
+                retention: None,
+                queue: None,
                 conn_id: id,
                 kind: NetSignalKind::Terminal(terminal),
             });
         }
-    })
+    });
+    Ok(())
 }
 pub fn send(id: u64, owner: &str, b: Vec<u8>) -> bool {
     let map = engine().conns.lock().unwrap();
     matches!(map.get(&id),Some(c)if c.owner==owner&&c.phase==ConnPhase::Open&&c.data_tx.send(NetCommand::Send(b)).is_ok())
 }
 pub fn send_to(id: u64, owner: &str, h: String, p: u16, b: Vec<u8>) -> bool {
+    if b.len() > 65507 {
+        return false;
+    }
     let map = engine().conns.lock().unwrap();
     matches!(map.get(&id),Some(c)if c.owner==owner&&c.phase==ConnPhase::Open&&c.data_tx.send(NetCommand::SendTo(h,p,b)).is_ok())
 }
@@ -517,6 +631,9 @@ pub fn is_owner(id: u64, owner: &str) -> bool {
 }
 pub fn shutdown_conn(id: u64) {
     if let Some(c) = engine().conns.lock().unwrap().remove(&id) {
+        if let Some(r) = &c.resources {
+            r.job.cancel.cancel();
+        }
         publish_control(&c.control_tx, Control::Shutdown);
         purge_conn(id);
         crate::v8host::release_resource(
@@ -539,7 +656,9 @@ pub fn drop_conn(id: u64) {
     shutdown_conn(id)
 }
 pub fn try_recv_signal() -> Option<NetSignal> {
-    engine().sig_rx.lock().ok()?.try_recv().ok()
+    let mut s = engine().sig_rx.lock().ok()?.try_recv().ok()?;
+    s.queue.take();
+    Some(s)
 }
 #[cfg(test)]
 pub(crate) fn test_insert_conn(conn_id: u64, owner: String, generation: u64) {
@@ -549,10 +668,14 @@ pub(crate) fn test_insert_conn(conn_id: u64, owner: String, generation: u64) {
 pub(crate) fn test_inject_batch(conn_id: u64, data: &[u8], error: &str) {
     let tx = &engine().sig_tx;
     let _ = tx.send(NetSignal {
+        retention: None,
+        queue: None,
         conn_id,
         kind: NetSignalKind::Connected,
     });
     let _ = tx.send(NetSignal {
+        retention: None,
+        queue: None,
         conn_id,
         kind: NetSignalKind::Data(data.to_vec()),
     });
@@ -560,10 +683,14 @@ pub(crate) fn test_inject_batch(conn_id: u64, data: &[u8], error: &str) {
         error: Some(error.into()),
     };
     let _ = tx.send(NetSignal {
+        retention: None,
+        queue: None,
         conn_id,
         kind: NetSignalKind::Terminal(terminal.clone()),
     });
     let _ = tx.send(NetSignal {
+        retention: None,
+        queue: None,
         conn_id,
         kind: NetSignalKind::Terminal(terminal),
     });
@@ -645,24 +772,38 @@ fn purge_conn(conn_id: u64) {
 thread_local! {
     static NET_EVENT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::channels::Channels::new());
-    static NET_EVENT_PENDING: std::cell::RefCell<Vec<(u64, PendingNetEvent)>>
+    static NET_EVENT_PENDING: std::cell::RefCell<Vec<(u64, PendingNetEvent, Option<Arc<crate::async_limits::Retention>>)>>
         = std::cell::RefCell::new(Vec::new());
 }
 
-fn queue_data(conn_id: u64, b: Vec<u8>) {
-    NET_EVENT_PENDING.with(|q| q.borrow_mut().push((conn_id, PendingNetEvent::Data(b))));
-}
-fn queue_datagram(conn_id: u64, from: String, data: Vec<u8>) {
+fn queue_data(conn_id: u64, b: Vec<u8>, retention: Option<Arc<crate::async_limits::Retention>>) {
     NET_EVENT_PENDING.with(|q| {
         q.borrow_mut()
-            .push((conn_id, PendingNetEvent::Datagram { from, data }))
+            .push((conn_id, PendingNetEvent::Data(b), retention))
     });
 }
-fn queue_error(conn_id: u64, e: String) {
-    NET_EVENT_PENDING.with(|q| q.borrow_mut().push((conn_id, PendingNetEvent::Errored(e))));
+fn queue_datagram(
+    conn_id: u64,
+    from: String,
+    data: Vec<u8>,
+    retention: Option<Arc<crate::async_limits::Retention>>,
+) {
+    NET_EVENT_PENDING.with(|q| {
+        q.borrow_mut()
+            .push((conn_id, PendingNetEvent::Datagram { from, data }, retention))
+    });
 }
-fn queue_close(conn_id: u64) {
-    NET_EVENT_PENDING.with(|q| q.borrow_mut().push((conn_id, PendingNetEvent::Closed)));
+fn queue_error(conn_id: u64, e: String, retention: Option<Arc<crate::async_limits::Retention>>) {
+    NET_EVENT_PENDING.with(|q| {
+        q.borrow_mut()
+            .push((conn_id, PendingNetEvent::Errored(e), retention))
+    });
+}
+fn queue_close(conn_id: u64, retention: Option<Arc<crate::async_limits::Retention>>) {
+    NET_EVENT_PENDING.with(|q| {
+        q.borrow_mut()
+            .push((conn_id, PendingNetEvent::Closed, retention))
+    });
 }
 
 /// One drain's worth of net signals. Connect/bind results go back to the host so it can resolve
@@ -670,14 +811,21 @@ fn queue_close(conn_id: u64) {
 /// returned for retirement after the microtask checkpoint.
 pub(crate) struct SignalPoll {
     pub connects: Vec<(u64, Result<(), String>)>,
+    pub polled: usize,
     pub drops: Vec<u64>,
 }
 
 /// Drain the engine channel. The tick only polls — it does not match Data/Datagram/Errored/Closed.
 pub(crate) fn poll_signals() -> SignalPoll {
+    poll_signals_limited(crate::async_limits::policy().frame_poll_items)
+}
+pub(crate) fn poll_signals_limited(limit: usize) -> SignalPoll {
     let mut connects = Vec::new();
+    let mut polled = 0;
     let mut drops = Vec::new();
-    while let Some(sig) = try_recv_signal() {
+    for _ in 0..limit {
+        let Some(sig) = try_recv_signal() else { break };
+        polled += 1;
         if !engine().conns.lock().unwrap().contains_key(&sig.conn_id) {
             continue;
         }
@@ -719,7 +867,7 @@ pub(crate) fn poll_signals() -> SignalPoll {
                         .map(|c| c.phase),
                     Some(ConnPhase::Open | ConnPhase::Closing)
                 ) {
-                    queue_data(sig.conn_id, b);
+                    queue_data(sig.conn_id, b, sig.retention);
                 }
             }
             NetSignalKind::Datagram { from, data } => {
@@ -732,7 +880,7 @@ pub(crate) fn poll_signals() -> SignalPoll {
                         .map(|c| c.phase),
                     Some(ConnPhase::Open | ConnPhase::Closing)
                 ) {
-                    queue_datagram(sig.conn_id, from, data);
+                    queue_datagram(sig.conn_id, from, data, sig.retention);
                 }
             }
             NetSignalKind::Terminal(t) => {
@@ -751,14 +899,18 @@ pub(crate) fn poll_signals() -> SignalPoll {
                     });
                 if accepted {
                     if let Some(e) = t.error {
-                        queue_error(sig.conn_id, e);
+                        queue_error(sig.conn_id, e, sig.retention.clone());
                     }
-                    queue_close(sig.conn_id);
+                    queue_close(sig.conn_id, sig.retention);
                 }
             }
         }
     }
-    SignalPoll { connects, drops }
+    SignalPoll {
+        connects,
+        drops,
+        polled,
+    }
 }
 
 fn net_owner(scope: &mut v8::PinScope) -> String {
@@ -802,38 +954,75 @@ fn bytes_to_uint8array<'s>(
     }
 }
 
+fn js_bytes_len(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> usize {
+    if let Ok(s) = v8::Local::<v8::String>::try_from(val) {
+        s.utf8_length(scope)
+    } else {
+        v8::Local::<v8::ArrayBufferView>::try_from(val)
+            .map(|v| v.byte_length())
+            .unwrap_or(0)
+    }
+}
 fn s2_net_send(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
+    mut rv: v8::ReturnValue,
 ) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 {
-            return;
-        }
-        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let bytes = js_bytes_arg(scope, args.get(1));
-        let owner = net_owner(scope);
-        send(id, &owner, bytes);
-    }));
+    rv.set_bool(false);
+    let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+    let owner = net_owner(scope);
+    let sender = engine()
+        .conns
+        .lock()
+        .unwrap()
+        .get(&id)
+        .filter(|c| c.owner == owner && c.phase == ConnPhase::Open)
+        .map(|c| c.data_tx.clone());
+    let Some(sender) = sender else { return };
+    let Ok(r) = sender.reserve(js_bytes_len(scope, args.get(1)).saturating_add(64)) else {
+        return;
+    };
+    let bytes = js_bytes_arg(scope, args.get(1));
+    rv.set_bool(sender.send_reserved(NetCommand::Send(bytes), r).is_ok());
 }
-
 fn s2_net_send_to(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
+    mut rv: v8::ReturnValue,
 ) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 4 {
-            return;
-        }
-        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let dhost = args.get(1).to_rust_string_lossy(scope);
-        let port = args.get(2).number_value(scope).unwrap_or(0.0) as u16;
-        let bytes = js_bytes_arg(scope, args.get(3));
-        let owner = net_owner(scope);
-        send_to(id, &owner, dhost, port, bytes);
-    }));
+    rv.set_bool(false);
+    let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+    let owner = net_owner(scope);
+    let Some(host) = args.get(1).to_string(scope) else {
+        return;
+    };
+    let port = args.get(2).number_value(scope).unwrap_or(0.0) as u16;
+    let bytes = js_bytes_len(scope, args.get(3));
+    if bytes > 65507 {
+        return;
+    }
+    let sender = engine()
+        .conns
+        .lock()
+        .unwrap()
+        .get(&id)
+        .filter(|c| c.owner == owner && c.phase == ConnPhase::Open)
+        .map(|c| c.data_tx.clone());
+    let Some(sender) = sender else { return };
+    let Ok(r) = sender.reserve(
+        bytes
+            .saturating_add(host.utf8_length(scope))
+            .saturating_add(64),
+    ) else {
+        return;
+    };
+    let host = host.to_rust_string_lossy(scope);
+    let bytes = js_bytes_arg(scope, args.get(3));
+    rv.set_bool(
+        sender
+            .send_reserved(NetCommand::SendTo(host, port, bytes), r)
+            .is_ok(),
+    );
 }
 
 fn s2_net_close(
@@ -871,67 +1060,102 @@ fn s2_net_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv:
     }));
 }
 
+thread_local! {static DELIVERY_CURSOR:std::cell::Cell<u64>=const {std::cell::Cell::new(0)};}
+pub(crate) fn pending_events() -> bool {
+    NET_EVENT_PENDING.with(|q| !q.borrow().is_empty())
+}
 pub(crate) fn dispatch_pending_events() {
-    let pending: Vec<(u64, PendingNetEvent)> =
-        NET_EVENT_PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
-    if pending.is_empty() {
-        return;
+    for _ in 0..crate::async_limits::policy().frame_items {
+        if !dispatch_one() {
+            break;
+        }
     }
-
-    for (conn_id, ev) in pending {
-        let event: &str = match &ev {
-            PendingNetEvent::Data(_) => "data",
-            PendingNetEvent::Datagram { .. } => "message",
-            PendingNetEvent::Closed => "close",
-            PendingNetEvent::Errored(_) => "error",
+}
+pub(crate) fn dispatch_one() -> bool {
+    let last = DELIVERY_CURSOR.with(|v| v.get());
+    // Pick a connection fairly, then its oldest event. Blocked connect settlements are skipped.
+    let ready = NET_EVENT_PENDING.with(|q| {
+        let q = q.borrow();
+        let ids = q
+            .iter()
+            .filter(|e| !crate::jobs::has_resolver(e.0))
+            .map(|e| e.0);
+        let id = ids
+            .clone()
+            .filter(|id| *id > last)
+            .min()
+            .or_else(|| ids.min())?;
+        let i = q.iter().position(|e| e.0 == id)?;
+        let bytes = match &q[i].1 {
+            PendingNetEvent::Data(b) => b.len() + 64,
+            PendingNetEvent::Datagram { from, data } => from.len() + data.len() + 64,
+            PendingNetEvent::Errored(e) => e.len() + 64,
+            PendingNetEvent::Closed => 64,
         };
-        let key = format!("{conn_id}:{event}");
-        let snap = NET_EVENT_MUX.with(|m| m.borrow().snapshot(&key));
-        if !snap.is_empty() {
-            let _ = fan_out(
-                &snap,
-                &format!("dispatch_pending_net_events('{key}')"),
-                Instrument::none(),
-                |tc| match &ev {
-                    PendingNetEvent::Data(b) => Some(vec![bytes_to_uint8array(tc, b)]),
-                    PendingNetEvent::Datagram { from, data } => {
-                        let (fhost, fport): (&str, u16) = match from.rsplit_once(':') {
-                            Some((h, p)) => (h, p.parse::<u16>().unwrap_or(0)),
-                            None => (from.as_str(), 0),
-                        };
-                        let from_obj = v8::Object::new(tc);
-                        if let Some(k) = v8::String::new(tc, "host") {
-                            let v: v8::Local<v8::Value> = v8::String::new(tc, fhost)
-                                .unwrap_or_else(|| v8::String::new(tc, "").unwrap())
-                                .into();
-                            from_obj.set(tc, k.into(), v);
-                        }
-                        if let Some(k) = v8::String::new(tc, "port") {
-                            let v: v8::Local<v8::Value> = v8::Number::new(tc, fport as f64).into();
-                            from_obj.set(tc, k.into(), v);
-                        }
-                        Some(vec![from_obj.into(), bytes_to_uint8array(tc, data)])
-                    }
-                    PendingNetEvent::Errored(e) => {
-                        let s_val: v8::Local<v8::Value> = v8::String::new(tc, e)
+        Some((i, bytes))
+    });
+    let Some((i, bytes)) = ready else {
+        return false;
+    };
+    if !crate::async_limits::can_deliver(bytes, false) {
+        return false;
+    }
+    let (conn_id, ev, _retention) = NET_EVENT_PENDING.with(|q| q.borrow_mut().remove(i));
+    DELIVERY_CURSOR.with(|v| v.set(conn_id));
+    crate::async_limits::deliver(bytes);
+    let event: &str = match &ev {
+        PendingNetEvent::Data(_) => "data",
+        PendingNetEvent::Datagram { .. } => "message",
+        PendingNetEvent::Closed => "close",
+        PendingNetEvent::Errored(_) => "error",
+    };
+    let key = format!("{conn_id}:{event}");
+    let snap = NET_EVENT_MUX.with(|m| m.borrow().snapshot(&key));
+    if !snap.is_empty() {
+        let _ = fan_out(
+            &snap,
+            &format!("dispatch_pending_net_events('{key}')"),
+            Instrument::none(),
+            |tc| match &ev {
+                PendingNetEvent::Data(b) => Some(vec![bytes_to_uint8array(tc, b)]),
+                PendingNetEvent::Datagram { from, data } => {
+                    let (fhost, fport): (&str, u16) = match from.rsplit_once(':') {
+                        Some((h, p)) => (h, p.parse::<u16>().unwrap_or(0)),
+                        None => (from.as_str(), 0),
+                    };
+                    let from_obj = v8::Object::new(tc);
+                    if let Some(k) = v8::String::new(tc, "host") {
+                        let v: v8::Local<v8::Value> = v8::String::new(tc, fhost)
                             .unwrap_or_else(|| v8::String::new(tc, "").unwrap())
                             .into();
-                        Some(vec![s_val])
+                        from_obj.set(tc, k.into(), v);
                     }
-                    PendingNetEvent::Closed => Some(vec![]),
-                },
-            );
-        }
-        if matches!(ev, PendingNetEvent::Closed) {
-            NET_EVENT_MUX.with(|m| {
-                let mut mux = m.borrow_mut();
-                for evn in ["data", "message", "error", "close"] {
-                    mux.remove_by_name(&format!("{conn_id}:{evn}"));
+                    if let Some(k) = v8::String::new(tc, "port") {
+                        let v: v8::Local<v8::Value> = v8::Number::new(tc, fport as f64).into();
+                        from_obj.set(tc, k.into(), v);
+                    }
+                    Some(vec![from_obj.into(), bytes_to_uint8array(tc, data)])
                 }
-            });
-            retire_conn(conn_id);
-        }
+                PendingNetEvent::Errored(e) => {
+                    let s_val: v8::Local<v8::Value> = v8::String::new(tc, e)
+                        .unwrap_or_else(|| v8::String::new(tc, "").unwrap())
+                        .into();
+                    Some(vec![s_val])
+                }
+                PendingNetEvent::Closed => Some(vec![]),
+            },
+        );
     }
+    if matches!(ev, PendingNetEvent::Closed) {
+        NET_EVENT_MUX.with(|m| {
+            let mut mux = m.borrow_mut();
+            for evn in ["data", "message", "error", "close"] {
+                mux.remove_by_name(&format!("{conn_id}:{evn}"));
+            }
+        });
+        retire_conn(conn_id);
+    }
+    true
 }
 
 pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) {
@@ -1128,9 +1352,9 @@ mod tests {
     #[test]
     fn injected_tcp_write_failure_returns_one_error_terminal() {
         crate::http::init();
-        let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (data_tx, data_rx) = crate::async_limits::out_channel();
         let (_control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
-        let (signal_tx, signal_rx) = std::sync::mpsc::channel();
+        let (signal_tx, signal_rx) = channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         data_tx.send(NetCommand::Send(b"fail".to_vec())).unwrap();
         crate::http::spawn(async move {
@@ -1160,9 +1384,9 @@ mod tests {
     fn owner_shutdown_interrupts_an_injected_pending_tcp_write() {
         crate::http::init();
         let polls = Arc::new(AtomicUsize::new(0));
-        let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (data_tx, data_rx) = crate::async_limits::out_channel();
         let (control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
-        let (signal_tx, signal_rx) = std::sync::mpsc::channel();
+        let (signal_tx, signal_rx) = channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         data_tx.send(NetCommand::Send(b"stall".to_vec())).unwrap();
         let worker_polls = polls.clone();
@@ -1198,9 +1422,9 @@ mod tests {
         crate::http::init();
         let reads = Arc::new(AtomicUsize::new(0));
         let bytes = Arc::new(AtomicUsize::new(0));
-        let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (data_tx, data_rx) = crate::async_limits::out_channel();
         let (control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
-        let (signal_tx, _) = std::sync::mpsc::channel();
+        let (signal_tx, _) = channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         data_tx
             .send(NetCommand::Send(b"progress".to_vec()))
@@ -1269,9 +1493,9 @@ mod tests {
     fn pending_tcp_write_obeys_one_grace_deadline() {
         crate::http::init();
         let polls = Arc::new(AtomicUsize::new(0));
-        let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (data_tx, data_rx) = crate::async_limits::out_channel();
         let (control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
-        let (signal_tx, _) = std::sync::mpsc::channel();
+        let (signal_tx, _) = channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         data_tx.send(NetCommand::Send(b"stall".to_vec())).unwrap();
         let worker_polls = polls.clone();
@@ -1313,10 +1537,10 @@ mod tests {
     #[test]
     fn simultaneous_peer_and_local_tcp_close_produces_one_terminal() {
         crate::http::init();
-        let (_data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_data_tx, data_rx) = crate::async_limits::out_channel();
         let (control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
         publish_control(&control_tx, Control::CloseRequested);
-        let (signal_tx, signal_rx) = std::sync::mpsc::channel();
+        let (signal_tx, signal_rx) = channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         crate::http::spawn(async move {
             done_tx
@@ -1407,11 +1631,12 @@ mod tests {
         while try_recv_signal().is_some() {}
         NET_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != 8801));
         let tx = &engine().sig_tx;
-        let (data_tx, _data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (data_tx, _data_rx) = crate::async_limits::out_channel();
         let (control_tx, _) = tokio::sync::watch::channel(Control::Open);
         engine().conns.lock().unwrap().insert(
             8801,
             Conn {
+                resources: None,
                 data_tx,
                 control_tx,
                 phase: ConnPhase::Connecting,
@@ -1420,20 +1645,28 @@ mod tests {
             },
         );
         let _ = tx.send(NetSignal {
+            retention: None,
+            queue: None,
             conn_id: 8801,
             kind: NetSignalKind::Connected,
         });
         let _ = tx.send(NetSignal {
+            retention: None,
+            queue: None,
             conn_id: 8801,
             kind: NetSignalKind::Data(b"hi".to_vec()),
         });
         let _ = tx.send(NetSignal {
+            retention: None,
+            queue: None,
             conn_id: 8801,
             kind: NetSignalKind::Terminal(NetTerminal {
                 error: Some("boom".into()),
             }),
         });
         let _ = tx.send(NetSignal {
+            retention: None,
+            queue: None,
             conn_id: 8801,
             kind: NetSignalKind::Terminal(NetTerminal {
                 error: Some("duplicate".into()),
@@ -1450,7 +1683,7 @@ mod tests {
             q.borrow()
                 .iter()
                 .filter(|e| e.0 == 8801)
-                .map(|(_, event)| match event {
+                .map(|(_, event, _)| match event {
                     PendingNetEvent::Data(_) => "data",
                     PendingNetEvent::Errored(_) => "error",
                     PendingNetEvent::Closed => "close",
@@ -1471,11 +1704,12 @@ mod tests {
     fn poll_signals_failed_connect_is_a_drop_without_an_event() {
         while try_recv_signal().is_some() {}
         NET_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != 8802));
-        let (data_tx, _data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (data_tx, _data_rx) = crate::async_limits::out_channel();
         let (control_tx, _) = tokio::sync::watch::channel(Control::Open);
         engine().conns.lock().unwrap().insert(
             8802,
             Conn {
+                resources: None,
                 data_tx,
                 control_tx,
                 phase: ConnPhase::Connecting,
@@ -1484,6 +1718,8 @@ mod tests {
             },
         );
         let _ = engine().sig_tx.send(NetSignal {
+            retention: None,
+            queue: None,
             conn_id: 8802,
             kind: NetSignalKind::ConnectFailed("nope".into()),
         });
@@ -1497,11 +1733,12 @@ mod tests {
         let workers = active_worker_count();
         for i in 0..1000u64 {
             let id = 90_000 + i;
-            let (data_tx, _) = tokio::sync::mpsc::unbounded_channel();
+            let (data_tx, _) = crate::async_limits::out_channel();
             let (control_tx, _) = tokio::sync::watch::channel(Control::Open);
             engine().conns.lock().unwrap().insert(
                 id,
                 Conn {
+                    resources: None,
                     data_tx,
                     control_tx,
                     phase: ConnPhase::Connecting,
@@ -1511,10 +1748,14 @@ mod tests {
             );
             if i % 2 == 0 {
                 let _ = engine().sig_tx.send(NetSignal {
+                    retention: None,
+                    queue: None,
                     conn_id: id,
                     kind: NetSignalKind::Connected,
                 });
                 let _ = engine().sig_tx.send(NetSignal {
+                    retention: None,
+                    queue: None,
                     conn_id: id,
                     kind: NetSignalKind::Terminal(NetTerminal { error: None }),
                 });
@@ -1523,6 +1764,8 @@ mod tests {
                 dispatch_pending_events();
             } else {
                 let _ = engine().sig_tx.send(NetSignal {
+                    retention: None,
+                    queue: None,
                     conn_id: id,
                     kind: NetSignalKind::ConnectFailed("x".into()),
                 });
@@ -1535,5 +1778,43 @@ mod tests {
         assert_eq!(active_conn_count(), 0);
         assert_eq!(active_worker_count(), workers);
         assert!(NET_EVENT_PENDING.with(|q| q.borrow().is_empty()));
+    }
+}
+
+impl crate::async_limits::PayloadSize for NetCommand { fn bytes(&self)->usize { match self { Self::Send(b)=>b.len().saturating_add(64),Self::SendTo(h,_,b)=>h.len().saturating_add(b.len()).saturating_add(64) } } }
+impl crate::async_limits::Signal for NetSignal {
+    fn data_bytes(&self) -> Option<usize> {
+        match &self.kind {
+            NetSignalKind::Data(b) => Some(b.len().saturating_add(64)),
+            NetSignalKind::Datagram { from, data } => {
+                Some(from.len().saturating_add(data.len()).saturating_add(64))
+            }
+            _ => None,
+        }
+    }
+    fn retain(&mut self, r: Arc<crate::async_limits::Retention>) {
+        self.retention = Some(r);
+        self.queue = Some(crate::async_limits::QueueTicket::new(4));
+    }
+    fn bound_diagnostics(&mut self,cap:usize) { match &mut self.kind {
+        NetSignalKind::ConnectFailed(s)=>*s=crate::async_limits::diagnostic_limit(std::mem::take(s),cap),
+        NetSignalKind::Terminal(t)=>t.error=t.error.take().map(|s|crate::async_limits::diagnostic_limit(s,cap)),_=>{}
+    } }
+}
+
+pub(crate) fn pending_count() -> usize {
+    NET_EVENT_PENDING.with(|q| q.borrow().len())
+}
+
+pub(crate) fn shutdown_all() {
+    let ids = engine()
+        .conns
+        .lock()
+        .unwrap()
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
+    for id in ids {
+        shutdown_conn(id);
     }
 }

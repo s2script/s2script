@@ -1724,7 +1724,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
             onMessage: function (h) { __s2_ws_on(id, "message", function (m) { h(m); }); },
             onClose:   function (h) { __s2_ws_on(id, "close", function (code, reason) { h(code, reason); }); },
             onError:   function (h) { __s2_ws_on(id, "error", function (e) { h(e); }); },
-            send:      function (data) { __s2_ws_send(id, String(data)); },
+            send:      function (data) { return __s2_ws_send(id, String(data)); },
             close:     function () { __s2_ws_close(id); },
           };
         });
@@ -1740,7 +1740,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
             onData:  function (h) { __s2_net_on(id, "data", function (b) { h(b); }); },
             onClose: function (h) { __s2_net_on(id, "close", function () { h(); }); },
             onError: function (h) { __s2_net_on(id, "error", function (e) { h(e); }); },
-            send:    function (data) { __s2_net_send(id, data); },
+            send:    function (data) { return __s2_net_send(id, data); },
             close:   function () { __s2_net_close(id); },
           };
         });
@@ -1749,7 +1749,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         return __s2_net_udp_bind().then(function (id) {
           return {
             onMessage: function (h) { __s2_net_on(id, "message", function (from, b) { h(from, b); }); },
-            sendTo:    function (host, port, data) { __s2_net_send_to(id, String(host), port | 0, data); },
+            sendTo:    function (host, port, data) { return __s2_net_send_to(id, String(host), port | 0, data); },
             close:     function () { __s2_net_close(id); },
           };
         });

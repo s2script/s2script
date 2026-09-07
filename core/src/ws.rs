@@ -2,7 +2,9 @@
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::Receiver;
+use crate::async_limits::{signal_channel as channel, SocketSender as Sender};
+use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
@@ -22,6 +24,8 @@ pub enum WsSignalKind {
 pub struct WsSignal {
     pub conn_id: u64,
     pub kind: WsSignalKind,
+    retention: Option<Arc<crate::async_limits::Retention>>,
+    queue:Option<crate::async_limits::QueueTicket>,
 }
 enum WsCommand {
     Send(String),
@@ -53,7 +57,8 @@ impl Default for SocketDeadlines {
     }
 }
 struct Conn {
-    data_tx: tokio::sync::mpsc::UnboundedSender<WsCommand>,
+    resources: Option<Arc<crate::async_limits::SocketResources>>,
+    data_tx: crate::async_limits::OutSender<WsCommand>,
     control_tx: tokio::sync::watch::Sender<Control>,
     phase: ConnPhase,
     owner: String,
@@ -102,19 +107,37 @@ fn control(rx: &tokio::sync::watch::Receiver<Control>) -> Control {
     *rx.borrow()
 }
 
+#[cfg(test)]
 fn insert_conn(
+    id: u64,
+    owner: String,
+    generation: u64,
+) -> (
+    crate::async_limits::OutReceiver<WsCommand>,
+    tokio::sync::watch::Receiver<Control>,
+) {
+    let job = crate::async_limits::domain()
+        .job(Some((owner.clone(), generation)), 0)
+        .unwrap();
+    let resources =
+        crate::async_limits::SocketResources::new(Some((owner.clone(), generation)), job).unwrap();
+    insert_conn_reserved(id, owner, generation, resources)
+}
+fn insert_conn_reserved(
     conn_id: u64,
     owner: String,
     owner_generation: u64,
+    resources: Arc<crate::async_limits::SocketResources>,
 ) -> (
-    tokio::sync::mpsc::UnboundedReceiver<WsCommand>,
+    crate::async_limits::OutReceiver<WsCommand>,
     tokio::sync::watch::Receiver<Control>,
 ) {
-    let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (data_tx, data_rx) = crate::async_limits::out_channel_in(&resources.domain);
     let (control_tx, control_rx) = tokio::sync::watch::channel(Control::Open);
     engine().conns.lock().unwrap().insert(
         conn_id,
         Conn {
+            resources: Some(resources),
             data_tx,
             control_tx,
             phase: ConnPhase::Connecting,
@@ -164,7 +187,7 @@ fn build_request(
 
 async fn graceful_ws<S>(
     write: &mut S,
-    data_rx: &mut tokio::sync::mpsc::UnboundedReceiver<WsCommand>,
+    data_rx: &mut crate::async_limits::OutReceiver<WsCommand>,
     control_rx: &mut tokio::sync::watch::Receiver<Control>,
     deadline: tokio::time::Instant,
 ) -> Option<Result<(), String>>
@@ -199,7 +222,7 @@ async fn run_ws_connected<R, W, E>(
     conn_id: u64,
     mut read: R,
     mut write: W,
-    mut data_rx: tokio::sync::mpsc::UnboundedReceiver<WsCommand>,
+    mut data_rx: crate::async_limits::OutReceiver<WsCommand>,
     control_rx: &mut tokio::sync::watch::Receiver<Control>,
     sig_tx: Sender<WsSignal>,
     deadlines: SocketDeadlines,
@@ -216,7 +239,10 @@ where
             Incoming(Option<Result<Message, E>>),
             Command(Option<WsCommand>),
         }
-        let ready = {
+        let ready = if control(control_rx) >= Control::CloseRequested {
+            let _ = control_rx.borrow_and_update();
+            Ready::Control(Ok(()))
+        } else {
             let io = async {
                 tokio::select! {
                     incoming = read.next() => Ready::Incoming(incoming),
@@ -254,10 +280,19 @@ where
             }
             Ready::Incoming(incoming) => match incoming {
                 Some(Ok(Message::Text(text))) => {
-                    let _ = sig_tx.send(WsSignal {
-                        conn_id,
-                        kind: WsSignalKind::Message(text.to_string()),
-                    });
+                    let permit = tokio::select! { biased;
+                        _=control_rx.changed()=>{if control(control_rx)==Control::Shutdown {return None;}continue;},
+                        p=sig_tx.inbound(text.len().saturating_add(64))=>match p { Ok(p)=>p,Err(e)=>return Some(WsTerminal { error:Some(e.to_string()),code:1009,reason:"message too large".into() }) },
+                    };
+                    let _ = sig_tx.send_reserved(
+                        WsSignal {
+                            retention: None,
+                            queue: None,
+                            conn_id,
+                            kind: WsSignalKind::Message(text.to_string()),
+                        },
+                        Some(permit),
+                    );
                 }
                 Some(Ok(Message::Close(frame))) => {
                     let (code, reason) = frame
@@ -336,6 +371,8 @@ where
 
 fn emit_connect_failed(sig_tx: &Sender<WsSignal>, conn_id: u64, error: impl Into<String>) {
     let _ = sig_tx.send(WsSignal {
+        retention: None,
+        queue: None,
         conn_id,
         kind: WsSignalKind::ConnectFailed(error.into()),
     });
@@ -345,7 +382,7 @@ async fn finish_connected_worker<R, W, E>(
     conn_id: u64,
     read: R,
     write: W,
-    data_rx: tokio::sync::mpsc::UnboundedReceiver<WsCommand>,
+    data_rx: crate::async_limits::OutReceiver<WsCommand>,
     control_rx: &mut tokio::sync::watch::Receiver<Control>,
     sig_tx: &Sender<WsSignal>,
     deadlines: SocketDeadlines,
@@ -356,6 +393,8 @@ async fn finish_connected_worker<R, W, E>(
     W::Error: std::fmt::Display,
 {
     let _ = sig_tx.send(WsSignal {
+        retention: None,
+        queue: None,
         conn_id,
         kind: WsSignalKind::Connected,
     });
@@ -371,6 +410,8 @@ async fn finish_connected_worker<R, W, E>(
     .await;
     if let Some(terminal) = terminal.filter(|_| control(control_rx) != Control::Shutdown) {
         let _ = sig_tx.send(WsSignal {
+            retention: None,
+            queue: None,
             conn_id,
             kind: WsSignalKind::Terminal(terminal),
         });
@@ -379,7 +420,10 @@ async fn finish_connected_worker<R, W, E>(
 
 #[cfg(test)]
 pub fn connect(conn_id: u64, url: String, owner: String, headers: Vec<(String, String)>) {
-    connect_owned(conn_id, url, owner, 0, headers);
+    let lease = crate::async_limits::domain()
+        .job(Some((owner.clone(), 0)), 0)
+        .unwrap();
+    connect_owned(conn_id, url, owner, 0, headers, lease).unwrap();
 }
 pub(crate) fn connect_owned(
     conn_id: u64,
@@ -387,26 +431,47 @@ pub(crate) fn connect_owned(
     owner: String,
     owner_generation: u64,
     headers: Vec<(String, String)>,
-) {
-    connect_with_deadlines(
+    lease: crate::async_limits::JobLease,
+) -> Result<(), String> {
+    connect_reserved(
         conn_id,
         url,
         owner,
         owner_generation,
         headers,
         SocketDeadlines::default(),
-    );
+        lease,
+    )
 }
+#[cfg(test)]
 fn connect_with_deadlines(
+    id: u64,
+    url: String,
+    owner: String,
+    generation: u64,
+    headers: Vec<(String, String)>,
+    d: SocketDeadlines,
+) {
+    let lease = crate::async_limits::domain()
+        .job(Some((owner.clone(), generation)), 0)
+        .unwrap();
+    connect_reserved(id, url, owner, generation, headers, d, lease).unwrap();
+}
+fn connect_reserved(
     conn_id: u64,
     url: String,
     owner: String,
     owner_generation: u64,
     headers: Vec<(String, String)>,
     deadlines: SocketDeadlines,
-) {
-    let (data_rx, mut control_rx) = insert_conn(conn_id, owner, owner_generation);
-    let sig_tx = engine().sig_tx.clone();
+    lease: crate::async_limits::JobLease,
+) -> Result<(), String> {
+    let resources =
+        crate::async_limits::SocketResources::new(Some((owner.clone(), owner_generation)), lease)
+            .map_err(|e| e.to_string())?;
+    let (data_rx, mut control_rx) =
+        insert_conn_reserved(conn_id, owner, owner_generation, resources.clone());
+    let sig_tx = engine().sig_tx.owned(resources);
     crate::http::spawn(async move {
         let _guard = WorkerGuard::new();
         let request = match build_request(&url, &headers) {
@@ -416,8 +481,20 @@ fn connect_with_deadlines(
                 return;
             }
         };
-        let attempt =
-            tokio::time::timeout(deadlines.connect, tokio_tungstenite::connect_async(request));
+        let attempt = tokio::time::timeout(
+            deadlines.connect,
+            tokio_tungstenite::connect_async_with_config(
+                request,
+                Some({
+                    let mut c =
+                        tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default();
+                    c.max_message_size = Some(crate::async_limits::policy().socket_out_bytes);
+                    c.max_frame_size = Some(crate::async_limits::policy().socket_out_bytes);
+                    c
+                }),
+                false,
+            ),
+        );
         tokio::pin!(attempt);
         let stream = tokio::select! {biased;
          _=control_rx.changed()=>return,
@@ -438,6 +515,7 @@ fn connect_with_deadlines(
         )
         .await;
     });
+    Ok(())
 }
 
 pub fn send(conn_id: u64, owner: &str, text: String) -> bool {
@@ -461,6 +539,9 @@ pub fn is_owner(conn_id: u64, owner: &str) -> bool {
 }
 pub fn shutdown_conn(conn_id: u64) {
     if let Some(c) = engine().conns.lock().unwrap().remove(&conn_id) {
+        if let Some(r) = &c.resources {
+            r.job.cancel.cancel();
+        }
         publish_control(&c.control_tx, Control::Shutdown);
         purge_conn(conn_id);
         crate::v8host::release_resource(
@@ -483,7 +564,9 @@ pub fn drop_conn(conn_id: u64) {
     shutdown_conn(conn_id)
 }
 pub fn try_recv_signal() -> Option<WsSignal> {
-    engine().sig_rx.lock().ok()?.try_recv().ok()
+    let mut s = engine().sig_rx.lock().ok()?.try_recv().ok()?;
+    s.queue.take();
+    Some(s)
 }
 #[cfg(test)]
 pub(crate) fn test_insert_conn(conn_id: u64, owner: String, generation: u64) {
@@ -493,10 +576,14 @@ pub(crate) fn test_insert_conn(conn_id: u64, owner: String, generation: u64) {
 pub(crate) fn test_inject_batch(conn_id: u64, message: &str, error: &str) {
     let tx = &engine().sig_tx;
     let _ = tx.send(WsSignal {
+        retention: None,
+        queue: None,
         conn_id,
         kind: WsSignalKind::Connected,
     });
     let _ = tx.send(WsSignal {
+        retention: None,
+        queue: None,
         conn_id,
         kind: WsSignalKind::Message(message.into()),
     });
@@ -506,10 +593,14 @@ pub(crate) fn test_inject_batch(conn_id: u64, message: &str, error: &str) {
         reason: "connection error".into(),
     };
     let _ = tx.send(WsSignal {
+        retention: None,
+        queue: None,
         conn_id,
         kind: WsSignalKind::Terminal(terminal.clone()),
     });
     let _ = tx.send(WsSignal {
+        retention: None,
+        queue: None,
         conn_id,
         kind: WsSignalKind::Terminal(terminal),
     });
@@ -578,13 +669,22 @@ use crate::v8host::{current_plugin, log_warn, set_native, subscribe_into};
 thread_local! {
     static WS_EVENT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::channels::Channels::new());
-    static WS_EVENT_PENDING: std::cell::RefCell<Vec<(u64, String, String, i32)>>
+    static WS_EVENT_PENDING: std::cell::RefCell<Vec<(u64, String, String, i32, Option<Arc<crate::async_limits::Retention>>)>>
         = std::cell::RefCell::new(Vec::new());
 }
 
 /// Queue a post-drain fan-out. Called from `poll_signals` while HOST is borrowed.
-fn queue_event(conn_id: u64, event: &str, s: String, n: i32) {
-    WS_EVENT_PENDING.with(|q| q.borrow_mut().push((conn_id, event.to_string(), s, n)));
+fn queue_event(
+    conn_id: u64,
+    event: &str,
+    s: String,
+    n: i32,
+    retention: Option<Arc<crate::async_limits::Retention>>,
+) {
+    WS_EVENT_PENDING.with(|q| {
+        q.borrow_mut()
+            .push((conn_id, event.to_string(), s, n, retention))
+    });
 }
 fn purge_conn(conn_id: u64) {
     WS_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != conn_id));
@@ -601,14 +701,21 @@ fn purge_conn(conn_id: u64) {
 /// returned for retirement after the microtask checkpoint.
 pub(crate) struct SignalPoll {
     pub connects: Vec<(u64, Result<(), String>)>,
+    pub polled: usize,
     pub drops: Vec<u64>,
 }
 
 /// Drain the engine channel. The tick only polls — it does not match Message/Errored/Closed.
 pub(crate) fn poll_signals() -> SignalPoll {
+    poll_signals_limited(crate::async_limits::policy().frame_poll_items)
+}
+pub(crate) fn poll_signals_limited(limit: usize) -> SignalPoll {
     let mut connects = Vec::new();
+    let mut polled = 0;
     let mut drops = Vec::new();
-    while let Some(sig) = try_recv_signal() {
+    for _ in 0..limit {
+        let Some(sig) = try_recv_signal() else { break };
+        polled += 1;
         let live = engine().conns.lock().unwrap().contains_key(&sig.conn_id);
         if !live {
             continue;
@@ -651,7 +758,7 @@ pub(crate) fn poll_signals() -> SignalPoll {
                         .map(|c| c.phase),
                     Some(ConnPhase::Open | ConnPhase::Closing)
                 ) {
-                    queue_event(sig.conn_id, "message", t, 0);
+                    queue_event(sig.conn_id, "message", t, 0, sig.retention);
                 }
             }
             WsSignalKind::Terminal(t) => {
@@ -670,35 +777,54 @@ pub(crate) fn poll_signals() -> SignalPoll {
                     });
                 if accepted {
                     if let Some(e) = t.error {
-                        queue_event(sig.conn_id, "error", e, 0);
+                        queue_event(sig.conn_id, "error", e, 0, sig.retention.clone());
                     }
-                    queue_event(sig.conn_id, "close", t.reason, t.code as i32);
+                    queue_event(sig.conn_id, "close", t.reason, t.code as i32, sig.retention);
                 }
             }
         }
     }
-    SignalPoll { connects, drops }
+    SignalPoll {
+        connects,
+        drops,
+        polled,
+    }
 }
 
 fn ws_owner(scope: &mut v8::PinScope) -> String {
     current_plugin(scope).unwrap_or_default()
 }
 
-fn s2_ws_send(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 {
-            return;
-        }
-        let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
-        let text = args.get(1).to_rust_string_lossy(scope);
-        let owner = ws_owner(scope);
-        if !send(id, &owner, text) {
-            log_warn(&format!(
-                "WARN: __s2_ws_send: '{owner}' does not own ws conn {id} (or it is already closed) \
-                 — the message was NOT sent"
-            ));
-        }
-    }));
+fn s2_ws_send(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    rv.set_bool(false);
+    let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+    let Some(text) = args.get(1).to_string(scope) else {
+        return;
+    };
+    let owner = ws_owner(scope);
+    let sender = engine()
+        .conns
+        .lock()
+        .unwrap()
+        .get(&id)
+        .filter(|c| c.owner == owner && c.phase == ConnPhase::Open)
+        .map(|c| c.data_tx.clone());
+    let Some(sender) = sender else { return };
+    let Ok(reservation) = sender.reserve(text.utf8_length(scope).saturating_add(64)) else {
+        return;
+    };
+    rv.set_bool(
+        sender
+            .send_reserved(
+                WsCommand::Send(text.to_rust_string_lossy(scope)),
+                reservation,
+            )
+            .is_ok(),
+    );
 }
 
 fn s2_ws_close(
@@ -741,49 +867,78 @@ fn s2_ws_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: 
     }));
 }
 
-/// Drain queued events after `frame_async_drain` (HOST free). Uses `fan_out` so the isolate
-/// stays in the host. Terminal `close` prunes every subscriber key for that conn.
+// Persistent cursor for HOST-free event delivery; close prunes the connection after fan-out.
+thread_local! {static DELIVERY_CURSOR:std::cell::Cell<u64>=const {std::cell::Cell::new(0)};}
+pub(crate) fn pending_events() -> bool {
+    WS_EVENT_PENDING.with(|q| !q.borrow().is_empty())
+}
 pub(crate) fn dispatch_pending_events() {
-    let pending: Vec<(u64, String, String, i32)> =
-        WS_EVENT_PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
-    if pending.is_empty() {
-        return;
-    }
-
-    for (conn_id, event, s, n) in pending {
-        let key = format!("{conn_id}:{event}");
-        let snap = WS_EVENT_MUX.with(|m| m.borrow().snapshot(&key));
-        if !snap.is_empty() {
-            let _ = fan_out(
-                &snap,
-                &format!("dispatch_pending_ws_events('{key}')"),
-                Instrument::none(),
-                |tc| {
-                    if event == "close" {
-                        let code_val: v8::Local<v8::Value> = v8::Number::new(tc, n as f64).into();
-                        let reason_val: v8::Local<v8::Value> = v8::String::new(tc, &s)
-                            .unwrap_or_else(|| v8::String::new(tc, "").unwrap())
-                            .into();
-                        Some(vec![code_val, reason_val])
-                    } else {
-                        let s_val: v8::Local<v8::Value> = v8::String::new(tc, &s)
-                            .unwrap_or_else(|| v8::String::new(tc, "").unwrap())
-                            .into();
-                        Some(vec![s_val])
-                    }
-                },
-            );
+    for _ in 0..crate::async_limits::policy().frame_items {
+        if !dispatch_one() {
+            break;
         }
-        if event == "close" {
-            WS_EVENT_MUX.with(|m| {
-                let mut mux = m.borrow_mut();
-                for ev in ["message", "close", "error"] {
-                    mux.remove_by_name(&format!("{conn_id}:{ev}"));
+    }
+}
+pub(crate) fn dispatch_one() -> bool {
+    let last = DELIVERY_CURSOR.with(|v| v.get());
+    // Pick a connection fairly, then its oldest event. Blocked connect settlements are skipped.
+    let ready = WS_EVENT_PENDING.with(|q| {
+        let q = q.borrow();
+        let ids = q
+            .iter()
+            .filter(|e| !crate::jobs::has_resolver(e.0))
+            .map(|e| e.0);
+        let id = ids
+            .clone()
+            .filter(|id| *id > last)
+            .min()
+            .or_else(|| ids.min())?;
+        let i = q.iter().position(|e| e.0 == id)?;
+        let bytes = q[i].2.len().saturating_add(64);
+        Some((i, bytes))
+    });
+    let Some((i, bytes)) = ready else {
+        return false;
+    };
+    if !crate::async_limits::can_deliver(bytes, false) {
+        return false;
+    }
+    let (conn_id, event, s, n, _retention) = WS_EVENT_PENDING.with(|q| q.borrow_mut().remove(i));
+    DELIVERY_CURSOR.with(|v| v.set(conn_id));
+    crate::async_limits::deliver(bytes);
+    let key = format!("{conn_id}:{event}");
+    let snap = WS_EVENT_MUX.with(|m| m.borrow().snapshot(&key));
+    if !snap.is_empty() {
+        let _ = fan_out(
+            &snap,
+            &format!("dispatch_pending_ws_events('{key}')"),
+            Instrument::none(),
+            |tc| {
+                if event == "close" {
+                    let code_val: v8::Local<v8::Value> = v8::Number::new(tc, n as f64).into();
+                    let reason_val: v8::Local<v8::Value> = v8::String::new(tc, &s)
+                        .unwrap_or_else(|| v8::String::new(tc, "").unwrap())
+                        .into();
+                    Some(vec![code_val, reason_val])
+                } else {
+                    let s_val: v8::Local<v8::Value> = v8::String::new(tc, &s)
+                        .unwrap_or_else(|| v8::String::new(tc, "").unwrap())
+                        .into();
+                    Some(vec![s_val])
                 }
-            });
-            retire_conn(conn_id);
-        }
+            },
+        );
     }
+    if event == "close" {
+        WS_EVENT_MUX.with(|m| {
+            let mut mux = m.borrow_mut();
+            for ev in ["message", "close", "error"] {
+                mux.remove_by_name(&format!("{conn_id}:{ev}"));
+            }
+        });
+        retire_conn(conn_id);
+    }
+    true
 }
 
 pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) {
@@ -820,6 +975,135 @@ pub(crate) fn register_singletons() {
 
 #[cfg(test)]
 mod tests {
+    fn tiny_socket_domain() -> Arc<crate::async_limits::Domain> {
+        crate::async_limits::Domain::new(crate::async_limits::AsyncPolicy {
+            jobs_global: 2,
+            jobs_per_owner: 2,
+            completion_bytes: 4096,
+            failure_bytes: 64,
+            sockets_global: 2,
+            sockets_per_owner: 2,
+            socket_out_items: 2,
+            socket_out_bytes: 140,
+            outbound_bytes: 140,
+            inbound_items: 2,
+            inbound_bytes: 140,
+            ..Default::default()
+        })
+    }
+    #[test]
+    fn lifetime_limit_and_reserved_terminals_survive_every_data_slot_filling() {
+        crate::async_limits::resume_delivery();
+        let d = tiny_socket_domain();
+        let (base, rx) = channel();
+        let mut senders = Vec::new();
+        for id in 0..2 {
+            let r = crate::async_limits::SocketResources::new(None, d.job(None, 0).unwrap()).unwrap();
+            let sender = base.owned(r);
+            sender
+                .send(WsSignal {
+                    retention: None,
+                    queue: None,
+                    conn_id: id,
+                    kind: WsSignalKind::Connected,
+                })
+                .unwrap();
+            sender
+                .send(WsSignal {
+                    retention: None,
+                    queue: None,
+                    conn_id: id,
+                    kind: WsSignalKind::Message("123456".into()),
+                })
+                .unwrap();
+            senders.push(sender);
+        }
+        assert_eq!(d.sockets.snapshot().items, 2);
+        assert!(d.sockets.acquire(None, 1, 0).is_err());
+        assert_eq!(d.inbound.snapshot().bytes, 140);
+        assert!(senders[0]
+            .send(WsSignal {
+                retention: None,
+                queue: None,
+                conn_id: 0,
+                kind: WsSignalKind::Message("x".into())
+            })
+            .is_err());
+        for (id, sender) in senders.iter().enumerate() {
+            sender
+                .send(WsSignal {
+                    retention: None,
+                    queue: None,
+                    conn_id: id as u64,
+                    kind: WsSignalKind::Terminal(WsTerminal {
+                        error: Some("failed".into()),
+                        code: 1006,
+                        reason: "closed".into(),
+                    }),
+                })
+                .unwrap();
+        }
+        drop(senders);
+        assert_eq!(
+            d.sockets.snapshot().items,
+            2,
+            "queued controls retain producer lifetime leases"
+        );
+        let mut terminals = 0;
+        let mut held = Vec::new();
+        while let Ok(signal) = rx.try_recv() {
+            if matches!(signal.kind, WsSignalKind::Terminal(_)) {
+                terminals += 1;
+            }
+            held.push(signal);
+        }
+        assert_eq!(terminals, 2);
+        assert_eq!(d.inbound.snapshot().bytes, 140, "staging is still charged");
+        drop(held);
+        assert_eq!(
+            (
+                d.jobs.snapshot().items,
+                d.sockets.snapshot().items,
+                d.inbound.snapshot().bytes
+            ),
+            (0, 0, 0)
+        );
+    }
+    #[test]
+    fn tiny_outbound_capacity_stays_charged_through_write_and_close_drains_fifo() {
+        let d = tiny_socket_domain();
+        let (tx, mut rx) = crate::async_limits::out_channel_in(&d);
+        tx.send(WsCommand::Send("123456".into())).unwrap();
+        tx.send(WsCommand::Send("abcdef".into())).unwrap();
+        assert!(tx.send(WsCommand::Send("x".into())).is_err());
+        assert_eq!(d.outbound.snapshot().bytes, 140);
+        let (_ctrl, mut ctrl) = tokio::sync::watch::channel(Control::Open);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let first = rx.try_recv().unwrap();
+        assert_eq!(
+            d.outbound.snapshot().bytes,
+            140,
+            "selected outbound retains accounting until its write ends"
+        );
+        drop(first);
+        let bytes = Arc::new(AtomicUsize::new(0));
+        let mut sink = RecordingSink(bytes.clone());
+        assert!(runtime
+            .block_on(graceful_ws(
+                &mut sink,
+                &mut rx,
+                &mut ctrl,
+                tokio::time::Instant::now() + Duration::from_secs(1)
+            ))
+            .unwrap()
+            .is_ok());
+        assert_eq!(bytes.load(Ordering::SeqCst), 6);
+        assert_eq!(d.outbound.snapshot().bytes, 0);
+    }
+
     use super::*;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -1046,9 +1330,9 @@ mod tests {
     #[test]
     fn injected_ws_write_failure_returns_one_error_terminal() {
         crate::http::init();
-        let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (data_tx, data_rx) = crate::async_limits::out_channel();
         let (_control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
-        let (signal_tx, signal_rx) = std::sync::mpsc::channel();
+        let (signal_tx, signal_rx) = channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         data_tx.send(WsCommand::Send("fail".into())).unwrap();
         crate::http::spawn(async move {
@@ -1079,9 +1363,9 @@ mod tests {
     fn owner_shutdown_interrupts_an_injected_pending_ws_write() {
         crate::http::init();
         let polls = Arc::new(AtomicUsize::new(0));
-        let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (data_tx, data_rx) = crate::async_limits::out_channel();
         let (control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
-        let (signal_tx, signal_rx) = std::sync::mpsc::channel();
+        let (signal_tx, signal_rx) = channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         data_tx.send(WsCommand::Send("stall".into())).unwrap();
         let worker_polls = polls.clone();
@@ -1117,9 +1401,9 @@ mod tests {
         crate::http::init();
         let reads = Arc::new(AtomicUsize::new(0));
         let bytes = Arc::new(AtomicUsize::new(0));
-        let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (data_tx, data_rx) = crate::async_limits::out_channel();
         let (control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
-        let (signal_tx, _) = std::sync::mpsc::channel();
+        let (signal_tx, _) = channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         data_tx.send(WsCommand::Send("progress".into())).unwrap();
         let worker_reads = reads.clone();
@@ -1165,9 +1449,9 @@ mod tests {
     fn pending_ws_write_obeys_one_grace_deadline() {
         crate::http::init();
         let polls = Arc::new(AtomicUsize::new(0));
-        let (data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (data_tx, data_rx) = crate::async_limits::out_channel();
         let (control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
-        let (signal_tx, _) = std::sync::mpsc::channel();
+        let (signal_tx, _) = channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         data_tx.send(WsCommand::Send("stall".into())).unwrap();
         let worker_polls = polls.clone();
@@ -1210,19 +1494,17 @@ mod tests {
     #[test]
     fn simultaneous_peer_and_local_ws_close_produces_one_terminal() {
         crate::http::init();
-        let (_data_tx, data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_data_tx, data_rx) = crate::async_limits::out_channel();
         let (control_tx, mut control_rx) = tokio::sync::watch::channel(Control::Open);
         publish_control(&control_tx, Control::CloseRequested);
-        let (signal_tx, signal_rx) = std::sync::mpsc::channel();
+        let (signal_tx, signal_rx) = channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         crate::http::spawn(async move {
             done_tx
                 .send(
                     run_ws_connected(
                         7713,
-                        futures_util::stream::iter(vec![Ok::<_, std::io::Error>(Message::Close(
-                            None,
-                        ))]),
+                        futures_util::stream::iter(vec![Ok::<_, std::io::Error>(Message::Close(None))]),
                         ReadySink,
                         data_rx,
                         &mut control_rx,
@@ -1514,11 +1796,12 @@ mod tests {
         while try_recv_signal().is_some() {}
         WS_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != 7701));
         let tx = &engine().sig_tx;
-        let (data_tx, _data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (data_tx, _data_rx) = crate::async_limits::out_channel();
         let (control_tx, _) = tokio::sync::watch::channel(Control::Open);
         engine().conns.lock().unwrap().insert(
             7701,
             Conn {
+                resources: None,
                 data_tx,
                 control_tx,
                 phase: ConnPhase::Connecting,
@@ -1527,14 +1810,20 @@ mod tests {
             },
         );
         let _ = tx.send(WsSignal {
+            retention: None,
+            queue: None,
             conn_id: 7701,
             kind: WsSignalKind::Connected,
         });
         let _ = tx.send(WsSignal {
+            retention: None,
+            queue: None,
             conn_id: 7701,
             kind: WsSignalKind::Message("hi".into()),
         });
         let _ = tx.send(WsSignal {
+            retention: None,
+            queue: None,
             conn_id: 7701,
             kind: WsSignalKind::Terminal(WsTerminal {
                 error: Some("boom".into()),
@@ -1543,6 +1832,8 @@ mod tests {
             }),
         });
         let _ = tx.send(WsSignal {
+            retention: None,
+            queue: None,
             conn_id: 7701,
             kind: WsSignalKind::Terminal(WsTerminal {
                 error: Some("duplicate".into()),
@@ -1573,11 +1864,12 @@ mod tests {
     fn poll_signals_failed_connect_is_a_drop_without_an_event() {
         while try_recv_signal().is_some() {}
         WS_EVENT_PENDING.with(|q| q.borrow_mut().retain(|e| e.0 != 7702));
-        let (data_tx, _data_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (data_tx, _data_rx) = crate::async_limits::out_channel();
         let (control_tx, _) = tokio::sync::watch::channel(Control::Open);
         engine().conns.lock().unwrap().insert(
             7702,
             Conn {
+                resources: None,
                 data_tx,
                 control_tx,
                 phase: ConnPhase::Connecting,
@@ -1586,6 +1878,8 @@ mod tests {
             },
         );
         let _ = engine().sig_tx.send(WsSignal {
+            retention: None,
+            queue: None,
             conn_id: 7702,
             kind: WsSignalKind::ConnectFailed("nope".into()),
         });
@@ -1600,11 +1894,12 @@ mod tests {
         let workers = active_worker_count();
         for i in 0..1000u64 {
             let id = 80_000 + i;
-            let (data_tx, _) = tokio::sync::mpsc::unbounded_channel();
+            let (data_tx, _) = crate::async_limits::out_channel();
             let (control_tx, _) = tokio::sync::watch::channel(Control::Open);
             engine().conns.lock().unwrap().insert(
                 id,
                 Conn {
+                    resources: None,
                     data_tx,
                     control_tx,
                     phase: ConnPhase::Connecting,
@@ -1614,10 +1909,14 @@ mod tests {
             );
             if i % 2 == 0 {
                 let _ = engine().sig_tx.send(WsSignal {
+                    retention: None,
+                    queue: None,
                     conn_id: id,
                     kind: WsSignalKind::Connected,
                 });
                 let _ = engine().sig_tx.send(WsSignal {
+                    retention: None,
+                    queue: None,
                     conn_id: id,
                     kind: WsSignalKind::Terminal(WsTerminal {
                         error: None,
@@ -1630,6 +1929,8 @@ mod tests {
                 dispatch_pending_events();
             } else {
                 let _ = engine().sig_tx.send(WsSignal {
+                    retention: None,
+                    queue: None,
                     conn_id: id,
                     kind: WsSignalKind::ConnectFailed("x".into()),
                 });
@@ -1642,5 +1943,40 @@ mod tests {
         assert_eq!(active_conn_count(), 0);
         assert_eq!(active_worker_count(), workers);
         assert!(WS_EVENT_PENDING.with(|q| q.borrow().is_empty()));
+    }
+}
+
+impl crate::async_limits::PayloadSize for WsCommand { fn bytes(&self)->usize { match self { Self::Send(s)=>s.len().saturating_add(64) } } }
+impl crate::async_limits::Signal for WsSignal {
+    fn data_bytes(&self) -> Option<usize> {
+        match &self.kind {
+            WsSignalKind::Message(s) => Some(s.len().saturating_add(64)),
+            _ => None,
+        }
+    }
+    fn retain(&mut self, r: Arc<crate::async_limits::Retention>) {
+        self.retention = Some(r);
+        self.queue = Some(crate::async_limits::QueueTicket::new(3));
+    }
+    fn bound_diagnostics(&mut self,cap:usize) { match &mut self.kind {
+        WsSignalKind::ConnectFailed(s)=>*s=crate::async_limits::diagnostic_limit(std::mem::take(s),cap),
+        WsSignalKind::Terminal(t)=> { t.reason=crate::async_limits::diagnostic_limit(std::mem::take(&mut t.reason),cap); t.error=t.error.take().map(|s|crate::async_limits::diagnostic_limit(s,cap)); },_=>{}
+    } }
+}
+
+pub(crate) fn pending_count() -> usize {
+    WS_EVENT_PENDING.with(|q| q.borrow().len())
+}
+
+pub(crate) fn shutdown_all() {
+    let ids = engine()
+        .conns
+        .lock()
+        .unwrap()
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
+    for id in ids {
+        shutdown_conn(id);
     }
 }

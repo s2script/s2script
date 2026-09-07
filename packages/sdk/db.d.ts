@@ -1,3 +1,4 @@
+/** Async queries/execute reject with AsyncQueueFull or AsyncPayloadTooLarge before acceptance. Queries exceeding the configured row or retained-byte limit reject with DatabaseResultTooLarge. */
 /** @s2script/db — engine-generic async SQLite database. NO runtime code (injected as __s2pkg_db). */
 
 /** A value bindable as a SQL parameter or returned in a {@link Row}. */

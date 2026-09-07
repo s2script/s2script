@@ -33,7 +33,7 @@ export function OnPluginStart(): void {
         s.close();
       });
       s.onError((e) => console.log(`[cookbook] net TCP error: ${e}`));
-      s.send("GET / HTTP/1.0\r\nHost: example.com\r\n\r\n");
+      if (!s.send("GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")) { console.log("[cookbook] TCP send was not accepted"); s.close(); }
     } catch (e) { console.log(`[cookbook] net TCP connect failed: ${e}`); }
   }
 
@@ -47,7 +47,7 @@ export function OnPluginStart(): void {
           // S2C_CHALLENGE — resend with the 4-byte challenge
           const q = new Uint8Array(A2S_INFO.length + 4);
           q.set(A2S_INFO, 0); q.set(b.slice(5, 9), A2S_INFO.length);
-          u.sendTo("127.0.0.1", 27015, q);
+          if (!u.sendTo("127.0.0.1", 27015, q)) { console.log("[cookbook] UDP challenge send was not accepted"); u.close(); }
         } else if (header === 0x49) {
           // A2S_INFO reply — name is the null-terminated string after byte 6
           let i = 6, name = "";
@@ -56,7 +56,7 @@ export function OnPluginStart(): void {
           u.close();
         }
       });
-      u.sendTo("127.0.0.1", 27015, A2S_INFO);
+      if (!u.sendTo("127.0.0.1", 27015, A2S_INFO)) { console.log("[cookbook] UDP send was not accepted"); u.close(); }
     } catch (e) { console.log(`[cookbook] net UDP failed: ${e}`); }
   }
 

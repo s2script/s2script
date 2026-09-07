@@ -113,46 +113,82 @@ pub(crate) fn retire(slot: i32, token: u64) {
 
 fn session_op(slot: i32, token: u64, op: &str, data: serde_json::Value) -> serde_json::Value {
     use serde_json::{json, Value};
-    if !crate::client::matches(slot, token) { return Value::Null; }
+    if !crate::client::matches(slot, token) {
+        return Value::Null;
+    }
     let sid = data["steamId"].as_str().unwrap_or("0");
-    if sid.is_empty() || sid == "0" { return Value::Null; }
+    if sid.is_empty() || sid == "0" {
+        return Value::Null;
+    }
     // Admission precedes even creation of a session; rejection cannot change cache state.
     if op == "set" {
         let name = data["name"].as_str().unwrap_or("");
         let value = data["value"].as_str().unwrap_or("");
         let updated = data["updated"].as_i64().unwrap_or(0);
-        if !outbox().accept(sid, name, value, updated) { return json!(false); }
+        if !outbox().accept(sid, name, value, updated) {
+            return json!(false);
+        }
         // A prior offline write may seed a later connection from CACHE. Refresh that existing
         // snapshot without retaining a second account cache for every online-only connection.
         CACHE.with(|c| {
-            if let Some(e) = c.borrow_mut().get_mut(sid).and_then(|cc| cc.entries.get_mut(name)) {
-                *e = Entry { value: value.into(), dirty: true, updated };
+            if let Some(e) = c
+                .borrow_mut()
+                .get_mut(sid)
+                .and_then(|cc| cc.entries.get_mut(name))
+            {
+                *e = Entry {
+                    value: value.into(),
+                    dirty: true,
+                    updated,
+                };
             }
         });
     }
     SESSIONS.with(|sessions| {
         let mut sessions = sessions.borrow_mut();
-        let session = sessions.entry((slot, token)).or_insert_with(|| Session { steam_id: sid.into(), cookies: CACHE.with(|c| c.borrow().get(sid).cloned().unwrap_or_default()) });
+        let session = sessions.entry((slot, token)).or_insert_with(|| Session {
+            steam_id: sid.into(),
+            cookies: CACHE.with(|c| c.borrow().get(sid).cloned().unwrap_or_default()),
+        });
         let cache = &mut session.cookies;
         let name = data["name"].as_str().unwrap_or("");
         match op {
-            "get" => cache.entries.get(name).map_or(Value::Null, |e| json!(e.value)),
+            "get" => cache
+                .entries
+                .get(name)
+                .map_or(Value::Null, |e| json!(e.value)),
             "time" => json!(cache.entries.get(name).map_or(0, |e| e.updated)),
             "cached" => json!(cache.cached),
             "set" => {
-                cache.entries.insert(name.into(), Entry { value: data["value"].as_str().unwrap_or("").into(), dirty: true, updated: data["updated"].as_i64().unwrap_or(0) });
+                cache.entries.insert(
+                    name.into(),
+                    Entry {
+                        value: data["value"].as_str().unwrap_or("").into(),
+                        dirty: true,
+                        updated: data["updated"].as_i64().unwrap_or(0),
+                    },
+                );
                 json!(true)
             }
             "load" => {
                 if let Some(rows) = data["rows"].as_array() {
                     for row in rows {
                         let name = row["name"].as_str().unwrap_or("");
-                        if cache.entries.get(name).is_some_and(|e| e.dirty) { continue; }
-                        cache.entries.insert(name.into(), Entry { value: row["value"].as_str().unwrap_or("").into(), dirty: false, updated: row["updated"].as_i64().unwrap_or(0) });
+                        if cache.entries.get(name).is_some_and(|e| e.dirty) {
+                            continue;
+                        }
+                        cache.entries.insert(
+                            name.into(),
+                            Entry {
+                                value: row["value"].as_str().unwrap_or("").into(),
+                                dirty: false,
+                                updated: row["updated"].as_i64().unwrap_or(0),
+                            },
+                        );
                     }
                 }
                 cache.cached = true;
-                COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().push((slot, token)));
+                queue_cached(slot, token);
                 json!(true)
             }
             _ => Value::Null,
@@ -182,7 +218,17 @@ pub(crate) struct OutboxPolicy {
     pub batch_items: usize, pub batch_bytes: usize, pub concurrent: usize,
 }
 impl Default for OutboxPolicy {
-    fn default() -> Self { Self { versions: 4096, bytes: 4*1024*1024, write_bytes: 64*1024, batch_items: 4, batch_bytes: 256*1024, concurrent: 4 } }
+    fn default() -> Self {
+        let p = crate::async_limits::policy();
+        Self {
+            versions: p.cookie_versions,
+            bytes: p.cookie_bytes,
+            write_bytes: p.cookie_write_bytes,
+            batch_items: 4,
+            batch_bytes: 256 * 1024,
+            concurrent: 4,
+        }
+    }
 }
 #[derive(Clone)]
 struct Payload { steam_id: String, name: String, value: String, updated: i64, revision: i64, covers_from: i64 }
@@ -252,17 +298,48 @@ impl Outbox {
         result
     }
     fn ack(&mut self, owner: &WriterOwner, id: u64, revision: i64, success: bool, now: u64) -> bool {
-        let key = self.entries.iter().find(|(_,p)| p.attempt.as_ref().is_some_and(|a| a.id == id && &a.owner == owner && a.payload.revision == revision)).map(|(k,_)| k.clone());
-        let Some(key) = key else { self.stale_acks = self.stale_acks.saturating_add(1); return false; };
+        let key = self
+            .entries
+            .iter()
+            .find(|(_, p)| {
+                p.attempt
+                    .as_ref()
+                    .is_some_and(|a| a.id == id && &a.owner == owner && a.payload.revision == revision)
+            })
+            .map(|(k, _)| k.clone());
+        let Some(key) = key else {
+            self.stale_acks = self.stale_acks.saturating_add(1);
+            return false;
+        };
         let p = self.entries.get_mut(&key).unwrap();
         let a = p.attempt.take().unwrap();
-        if success { p.failures = 0; p.next_attempt = 0; }
-        else {
+        if success {
+            p.failures = 0;
+            p.next_attempt = 0;
+        } else {
             Self::restore(p, a.payload);
             p.next_attempt = now.saturating_add((100u64 << p.failures.min(6)).min(5000));
-            p.failures = p.failures.saturating_add(1); self.retries = self.retries.saturating_add(1);
+            p.failures = p.failures.saturating_add(1);
+            self.retries = self.retries.saturating_add(1);
         }
-        if p.ready.is_none() { self.entries.remove(&key); self.order.retain(|k| k != &key); }
+        if p.ready.is_none() {
+            self.entries.remove(&key);
+            self.order.retain(|k| k != &key);
+        }
+        if success && !self.entries.contains_key(&key) {
+            // Evict this acknowledged key even if another key for the account is still pending:
+            // retaining whole-account history behind one slow key would grow without limit.
+            // Active connection snapshots are separate; a newer same-key obligation prevents eviction.
+            CACHE.with(|c| {
+                let mut c = c.borrow_mut();
+                if let Some(cc) = c.get_mut(&key.0) {
+                    cc.entries.remove(&key.1);
+                    if cc.entries.is_empty() {
+                        c.remove(&key.0);
+                    }
+                }
+            });
+        }
         true
     }
     fn restore(p: &mut Pending, payload: Arc<Payload>) {
@@ -451,11 +528,17 @@ fn s2_cookie_on_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
 /// `dispatch_pending_cookie_cached()` fan-out (clientprefs Task 4). No HOST access here (safe to call
 /// from inside the plugin's own async `loadCookies` continuation, which may run mid-async-drain); the
 /// actual `onCached` handler invocation happens later, once HOST is free.
-fn s2_cookie_dispatch_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn s2_cookie_dispatch_cached(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let slot = args.get(0).int32_value(scope).unwrap_or(-1);
         let token = args.get(1).to_rust_string_lossy(scope).parse().unwrap_or(0);
-        if crate::client::matches(slot, token) { COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().push((slot, token))); }
+        if crate::client::matches(slot, token) {
+            queue_cached(slot, token);
+        }
     }));
 }
 /// Drain `COOKIE_CACHED_PENDING` and fan each queued slot out to the `Cookies.onCached` subscribers.
@@ -469,22 +552,50 @@ fn s2_cookie_dispatch_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbac
 /// WARN as `"WARN: {label}: handler '{owner}': {msg}"` — so passing the same label keeps the log
 /// output byte-identical too. Keeping the hand-rolled copy would have meant exposing `HOST`,
 /// `PLUGINS` and `REGISTRY` out of `v8host` to move this feature, which is a far worse trade.
+fn queue_cached(slot: i32, token: u64) {
+    COOKIE_CACHED_PENDING.with(|q| {
+        let mut q = q.borrow_mut();
+        q.retain(|(s, t)| crate::client::matches(*s, *t));
+        if !q.contains(&(slot, token)) {
+            q.push((slot, token));
+        }
+    });
+    crate::v8host::refresh_detour();
+}
+pub(crate) fn pending_cached() -> bool {
+    COOKIE_CACHED_PENDING.with(|q| !q.borrow().is_empty())
+}
 pub(crate) fn dispatch_pending_cached() {
-    let slots: Vec<(i32, u64)> = COOKIE_CACHED_PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
-    if slots.is_empty() { return; }
-
-    // Snapshot once, with the mux borrow released before any JS runs. Fixed key "".
-    let snap = COOKIE_CACHED_MUX.with(|m| m.borrow().snapshot(""));
-    if snap.is_empty() { return; }
-
-    for (slot, token) in slots {
-        let _ = fan_out(&snap, "dispatch_pending_cookie_cached", Instrument::none(), |tc| {
-            if !crate::client::matches(slot, token) { return None; }
-            let token = v8::String::new(tc, &token.to_string())?;
-            Some(vec![v8::Integer::new(tc, slot).into(), token.into()])
-        });
+    for _ in 0..crate::async_limits::policy().frame_items {
+        if !dispatch_one_cached() {
+            break;
+        }
     }
 }
+pub(crate) fn dispatch_one_cached() -> bool {
+    if !pending_cached() || !crate::async_limits::can_deliver(32, false) {
+        return false;
+    }
+    let (slot, token) = COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().remove(0));
+    crate::async_limits::deliver(32);
+    let snap = COOKIE_CACHED_MUX.with(|m| m.borrow().snapshot(""));
+    if !snap.is_empty() {
+        let _ = fan_out(
+            &snap,
+            "dispatch_pending_cookie_cached",
+            Instrument::none(),
+            |tc| {
+                if !crate::client::matches(slot, token) {
+                    return None;
+                }
+                let token = v8::String::new(tc, &token.to_string())?;
+                Some(vec![v8::Integer::new(tc, slot).into(), token.into()])
+            },
+        );
+    }
+    true
+}
+
 
 /// Publish this feature's natives. Called from `v8host`'s `install_natives`.
 pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) {
@@ -961,4 +1072,51 @@ mod outbox_tests {
         q.lease_id=u64::MAX; assert!(q.lease(("p".into(),1),4,4096,0).is_empty());
         assert_eq!(q.revision,i64::MAX); assert_eq!(q.usage().0,1);
     }
+    #[test]
+    fn acknowledged_offline_account_history_plateaus_without_losing_newer_pending() {
+        let baseline = cache_stats()["accounts"].as_u64().unwrap();
+        let mut q = box_with(2, 1024);
+        let owner = ("writer".into(), 1);
+        for n in 0..1000 {
+            let sid = format!("task6-account-{n}");
+            assert!(q.accept(&sid, "k", "v", 1));
+            cache_set(&sid, "k", "v", 1);
+            let a = q.lease(owner.clone(), 1, 1024, 0).pop().unwrap();
+            assert!(q.ack(&owner, a.id, a.payload.revision, true, 0));
+            assert_eq!(cache_stats()["accounts"].as_u64().unwrap(), baseline);
+            assert_eq!(q.usage(), (0, 0));
+        }
+        assert!(q.accept("task6-newer", "k", "old", 1));
+        cache_set("task6-newer", "k", "old", 1);
+        let a = q.lease(owner.clone(), 1, 1024, 0).pop().unwrap();
+        assert!(q.accept("task6-newer", "k", "new", 1));
+        cache_set("task6-newer", "k", "new", 1);
+        assert!(q.ack(&owner, a.id, a.payload.revision, true, 0));
+        assert_eq!(get("task6-newer", "k").as_deref(), Some("new"));
+        let a = q.lease(owner.clone(), 1, 1024, 0).pop().unwrap();
+        assert!(q.ack(&owner, a.id, a.payload.revision, true, 0));
+        assert_eq!(get("task6-newer", "k"), None);
+    }
+
 }
+
+pub(crate) fn pending_count() -> usize {
+    COOKIE_CACHED_PENDING.with(|q| q.borrow().len())
+}
+pub(crate) fn cache_stats() -> serde_json::Value {
+    CACHE.with(|c| {
+        let c = c.borrow();
+        let mut entries = 0;
+        let mut bytes = 0usize;
+        for (sid, cc) in c.iter() {
+            bytes += sid.len() + 64;
+            for (name, e) in &cc.entries {
+                entries += 1;
+                bytes += name.len() + e.value.len() + 64;
+            }
+        }
+        serde_json::json!({"accounts":c.len(),"entries":entries,"bytes":bytes})
+    })
+}
+
+#[cfg(test)] pub(crate) fn test_queue_notification() {COOKIE_CACHED_PENDING.with(|q|{let mut q=q.borrow_mut();if q.is_empty(){q.push((-1,0));}});}
