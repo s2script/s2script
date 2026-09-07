@@ -189,7 +189,11 @@ The supplied service permits `on` registration only during this synchronous atta
 
 `scope.own<T extends { dispose(): void }>(resource: T): T` returns its input and retains its disposer for this attachment. Forward subscriptions created through the supplied service are automatically attachment-owned, including when `scope.own` is omitted. If attachment throws or returns a thenable, all partial subscriptions and owned disposables are retired; other watches continue. The SDK rejects statically visible async/thenable attachment callbacks, and the host observes thenables without extending registration authorization. Failed attempts retry only for a new compatible provider generation.
 
-Provider removal disposes the attachment locally; host teardown never calls provider methods to unsubscribe. Consumer removal disposes its watches and attachments before dropping the context. Watch disposal also releases its availability callback and registry row. Teardown invalidates the attachment and subscriptions before running custom disposers in reverse ownership order; a throwing or reentrant disposer cannot prevent the remaining cleanup. Keep disposers synchronous and local. Hard dependencies preserve the existing reverse-dependency unload order.
+Provider removal disposes the attachment locally; host teardown never calls provider methods to unsubscribe. Consumer removal disposes its watches and attachments before dropping the context. Watch disposal also releases its availability callback and registry row. Teardown invalidates the attachment and subscriptions before running custom disposers in reverse ownership order; a throwing or reentrant disposer cannot prevent the remaining cleanup. Keep disposers synchronous and local. Hard dependencies preserve the existing reverse-dependency order when unloading a set.
+Manually unloading one provider leaves hard consumers running and removes bindings to that
+provider; bindings to other providers remain. After manually restarting the provider, reload
+the hard consumer to register those forward bindings again. Use `watchOptional` for automatic
+reattachment across provider generations.
 
 ## Archive and migration contract
 

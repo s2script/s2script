@@ -86,6 +86,12 @@ transition has a 600-frame timeout. A map change aborts a running churn. There a
 1,001 unloads (one initial baseline unload) and 1,000 loads. No synchronous loop
 performs 1,000 reloads, and no saved scope is reused to register callbacks.
 
+Manual provider-only unload removes that provider's subscriptions but leaves hard consumers
+running, including their bindings to other providers. After manually restarting a provider,
+reload each hard consumer to register its lost bindings again. `watchOptional` reattaches its
+subscriptions automatically. Reverse-dependency teardown order applies to unloading a set
+(such as full unload); it does not imply an automatic dependent cascade for one manual unload.
+
 ## Expected evidence
 
 For a normal probe with both consumers active:
@@ -127,9 +133,13 @@ authenticated identity. Do not change or replace a real player's ban to run a te
 
 ## Acceptance status and limits
 
+The [durable acceptance record](../../docs/superpowers/plans/2026-09-06-plugin-interop-acceptance.md)
+records reviewed source and applied artifact hashes, collected results, pending gates and
+[coordinator decisions](../../docs/superpowers/plans/2026-09-06-plugin-interop-acceptance.md#coordinator-decisions-and-costs).
+
 Fixture implementation and offline checks do not establish live acceptance.
-The final coordinator record must attach exact frozen-artifact results for the
-sequence above. Authenticated mute/audio delivery, gag chat suppression, command
+The linked coordinator record contains the exact frozen-artifact results for the
+completed sequence above and retains separate outstanding checks. Authenticated mute/audio delivery, gag chat suppression, command
 permission/immunity behavior, visual menus, authenticated ban/kick and reconnect,
 and stale connection replacement effects require a human client and remain pending
 until separately observed. Existing service VM tests cover command/menu/API

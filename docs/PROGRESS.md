@@ -363,3 +363,46 @@ packaging and live execution are pending the coordinator's acceptance record. Th
 offline results do not establish live CS2 acceptance. Authenticated voice, command/menu, ban/kick,
 reconnect and stale connection effects remain separate human checks. No production deployment
 or merge is claimed.
+
+
+## Typed plugin interop: reviewed integration and completed live fixture gates (September 6, 2026)
+
+Slices 01–07 are implemented and independently reviewed in draft PRs #205–#211; final
+acceptance is draft PR #212. The [durable acceptance record](superpowers/plans/2026-09-06-plugin-interop-acceptance.md)
+tracks source/artifact identity, completed and pending live checks, and all coordinator
+rulings with their costs. It supersedes the pending infrastructure status in earlier entries.
+
+Final review repairs at `3e6701b` close direct-import subscription ownership, unsupported
+contract value exports, return-boundary participant liveness, malformed UTF-16 copying,
+and incomplete churn evidence validation. Scoped rereview found all findings addressed.
+Clean Linux npm-ci/full JS passes with 726 SDK and 12 acceptance tests; the Linux native gate
+passes 902 core tests with 3 existing ignored, three separate stress cases and shim checks.
+The deployable sniper build requires GLIBC 2.30 for core and 2.17 for shim.
+
+The reviewed runtime and three service archives were applied only to the owned hardening
+server after a fresh zero-human check, preserving operator data/configuration and unrelated
+plugins. Actual startup exposed fixture publication during CJS evaluation before the load
+window. The fixture-only correction `b8a06f4` registers publication and named bindings inside
+`OnPluginStart`, enforces that phase in tests and corrects public examples. Scoped review,
+14 focused Linux acceptance tests and four archive builds pass; no native changes were needed.
+Both full GitHub JS/native workflows subsequently passed at `b8a06f4`.
+
+All 25 test-server plugins ran after the corrected fixture hot-load. The live dispatch
+validator passes notification isolation, HookResult collapse/Stop, transform copyback,
+six malformed-value rejections and recursion recovery. Offline service API and server-console
+ban/unban checks pass with exact cache/notification evidence and cleanup. Named-consumer unload
+removes six subscriptions and nine ledger resources. The provider run completed 1,000 actual
+cycles with 1,000 single deliveries, 1,000 stale-proxy refusals, no error and exact eight-counter
+resource baseline equality. Restoration and whole-map disposal pass; the second disposal changes
+no resources. Manual provider-only unload leaves the hard consumer active; optional watches
+reattach on provider reload, and explicit consumer reload restores hard bindings. The map/userId
+guard blocks both captured previous-map bot actions without executing them, and post-map dispatch
+passes. The independent diagnostic reader confirms controller unload removes every watch,
+callback, attachment and disposer, reducing subscriptions 17→6 and ledger resources 66→41;
+reload restores the exact eight-counter baseline. Final dispatch and service probes pass with
+cleanup confirmed. All 25 plugins run on the restored `de_inferno` map with zero humans and two
+bots, and final remote hashes match all ten runtime/package/fixture artifacts.
+Authenticated voice, command/menu, ban/kick/reconnect and actual stale connection effects remain
+human checks. Real zones boundary/reload evidence is also separate. This closes the automated
+and bot/offline fixture gates, not those remaining human/zone checks; no production deployment
+or merge is claimed.

@@ -12,15 +12,25 @@
 
 ## Execution status (September 6, 2026)
 
-Slices 01–07 are implemented and independently reviewed in the stacked branches; the named
-binding tip is PR #211 (`aeb9ba0`). Their original task checklists below remain the implementation
-specification, including separate live gates. Slice 08 adds the integrated fixture workspace,
-evidence validators, CI integration and current architecture/CLI documentation. Local JS and
-Linux native gates have passed; the native gate needed a rerun for an inherited networking test
-timing failure reproduced unchanged on the parent commit. Clean Linux npm-ci verification,
-frozen-artifact sniper packaging, live CS2 execution, final independent review and publication
-are coordinator-owned pending gates. Authenticated human voice/kick/menu/reconnect acceptance
-remains pending. This status does not mark the full stack accepted or merged.
+Slices 01–07 are implemented, independently reviewed and published as stacked draft PRs
+#205–#211. Checked items below record implementation and review completion. The separate
+live checks originally combined with those items are consolidated in the
+[acceptance record](2026-09-06-plugin-interop-acceptance.md), whose
+[decision appendix](2026-09-06-plugin-interop-acceptance.md#coordinator-decisions-and-costs)
+also preserves the coordinator's rulings and their costs.
+
+Slice 08 is draft PR #212. Final whole-stack findings are fixed and re-reviewed at `3e6701b`;
+clean Linux npm-ci/JS, the full Linux native gate and the deployable sniper build pass.
+An actual live startup failure in fixture registration was fixed and scoped-reviewed at
+`b8a06f4`; its 14-test/four-build Linux gate and subsequent live dispatch probe pass without
+native changes. The reviewed runtime/services are on the owned test server. Service API,
+offline ban commands, dispatch, named-consumer unload, 1,000 provider cycles, restoration,
+whole-map disposal, provider-only restart, map guards and controller teardown/restoration pass
+live. Final identity confirms all 25 plugins running on restored `de_inferno` with zero humans
+and two bots; applied artifact hashes match. Human and real zones engine checks remain pending.
+Both complete GitHub CI workflows also pass at `b8a06f4`.
+The acceptance record keeps remaining live and human checks pending. No merge or production
+deployment is claimed.
 
 ## Global Constraints
 
@@ -74,7 +84,7 @@ Each task requires implementation review against the spec and a separate code-qu
 
 **Produces:** protocol-2 metadata, inferred interface handles, validated synchronous methods and notifications, compatible protocol-1 path.
 
-The following is the author-visible target (type helper implementation must preserve payload inference without exposing any):
+The following illustrates the compiler contract (type helpers preserve payload inference without exposing any). These compiler fragments are not complete entrypoints: actual publication and subscription calls belong inside `OnPluginStart`, as shown in the public guide.
 
 ```ts
 // Producer api.d.ts; imported types must belong to the supported wire algebra.
@@ -92,7 +102,7 @@ const producer = publish("@demo/counter", { getCount: () => 1 });
 producer.emit("OnCountChanged", { count: 1 });
 ```
 
-- [ ] Add valid and invalid fixture pairs in `test/fixtures/interop/`: misspelled name, missing field, wrong field type, wrong provider name, missing producer method, wrong method result, missing verified copy, mismatched sibling contract. Compile negative fixtures separately and assert diagnostic location/message, not just a nonzero exit. Example compile assertions:
+- [x] Add valid and invalid fixture pairs in `test/fixtures/interop/`: misspelled name, missing field, wrong field type, wrong provider name, missing producer method, wrong method result, missing verified copy, mismatched sibling contract. Compile negative fixtures separately and assert diagnostic location/message, not just a nonzero exit. Example compile assertions:
 
 ```ts
 const counter = use("@demo/counter");
@@ -103,13 +113,13 @@ counter.on("OnCountChangd", () => {});
 publish("@demo/counter", { getCount: () => 1 }).emit("OnCountChanged", { count: "1" });
 ```
 
-- [ ] Run `cd packages/sdk && npm test`; verify fixtures fail for the missing protocol support before implementation.
-- [ ] Implement type extraction with the TypeScript checker, not regexes. Generate a dependency-keyed InterfaceContracts augmentation from authoritative resolved contracts. Reject unresolved/unsupported wire types and generic-name mismatch. Require self-contained authored domain declarations; permit only supported SDK helper/ref imports governed by API and metadata versions. Reject an imported domain helper fixture even if its entry-file bytes are unchanged. Extend publish-scan for watchOptional/bindForwards and imported aliases; extend publish-gate from presence checks to implementation agreement. Preserve workspace sibling precedence and hash exactly the resolved declaration artifact. Ensure producer methods are checked even if the author omits an annotation.
-- [ ] Emit canonical metadata version 1 with deterministic key ordering, SHA-256 digest, method schemas, notification payload schemas, and interfaceProtocol 2. Trace manifest schema consumers and update archive/load validation atomically; bump the minimum host API version using the next valid repository version. Older archives remain accepted under protocol 1. Protocol 2 rejects missing metadata/digests; add malformed archive tests.
-- [ ] Add runtime notification tests using a producer and two consumers. Test same event name under two interfaces, undeclared and wrong-hash subscription rejection, serializable payload copying, consumer exceptions, provider impersonation, stale generations, unknown events, invalid nested fields, nonfinite numbers, unsupported JSON values, thenable listeners, recursive dispatch depth 32/33 and reentrant calls. Assert no later listener receives a malformed payload and exceptions do not stop valid subsequent notifications.
-- [ ] Implement protocol-2 method/notification validation in the current registry/native paths. Enforce declared dependency, version/hash, and forward membership at subscription; enforce invoking producer identity/generation at emission. Route direct native calls through these checks as well as SDK calls. Check schema before JS side effects; validate method results before returning. Preserve existing EntityRef revival, liveness and ledger invariants. Avoid claiming arbitrary TypeScript types can be validated.
-- [ ] Test types-only acquisition with a fake registry that records requested URLs: `s2s add` must request metadata/types only and never a plugin archive. Build a consumer with no producer binary/source present; test publish/download round trip, self-contained declaration enforcement and stale hash refusal. Retain library `.s2lib` behavior unchanged.
-- [ ] Run SDK suite and native tests (`cargo test -p s2script-core` on supported Linux), then `bash scripts/ci-js.sh` and `bash scripts/ci-native.sh`. Add SDK changeset and docs explaining migration. Commit/publish one atomic slice, with actual gate results.
+- [x] Run `cd packages/sdk && npm test`; verify fixtures fail for the missing protocol support before implementation.
+- [x] Implement type extraction with the TypeScript checker, not regexes. Generate a dependency-keyed InterfaceContracts augmentation from authoritative resolved contracts. Reject unresolved/unsupported wire types and generic-name mismatch. Require self-contained authored domain declarations; permit only supported SDK helper/ref imports governed by API and metadata versions. Reject an imported domain helper fixture even if its entry-file bytes are unchanged. Extend publish-scan for watchOptional/bindForwards and imported aliases; extend publish-gate from presence checks to implementation agreement. Preserve workspace sibling precedence and hash exactly the resolved declaration artifact. Ensure producer methods are checked even if the author omits an annotation.
+- [x] Emit canonical metadata version 1 with deterministic key ordering, SHA-256 digest, method schemas, notification payload schemas, and interfaceProtocol 2. Trace manifest schema consumers and update archive/load validation atomically; bump the minimum host API version using the next valid repository version. Older archives remain accepted under protocol 1. Protocol 2 rejects missing metadata/digests; add malformed archive tests.
+- [x] Add runtime notification tests using a producer and two consumers. Test same event name under two interfaces, undeclared and wrong-hash subscription rejection, serializable payload copying, consumer exceptions, provider impersonation, stale generations, unknown events, invalid nested fields, nonfinite numbers, unsupported JSON values, thenable listeners, recursive dispatch depth 32/33 and reentrant calls. Assert no later listener receives a malformed payload and exceptions do not stop valid subsequent notifications.
+- [x] Implement protocol-2 method/notification validation in the current registry/native paths. Enforce declared dependency, version/hash, and forward membership at subscription; enforce invoking producer identity/generation at emission. Route direct native calls through these checks as well as SDK calls. Check schema before JS side effects; validate method results before returning. Preserve existing EntityRef revival, liveness and ledger invariants. Avoid claiming arbitrary TypeScript types can be validated.
+- [x] Test types-only acquisition with a fake registry that records requested URLs: `s2s add` must request metadata/types only and never a plugin archive. Build a consumer with no producer binary/source present; test publish/download round trip, self-contained declaration enforcement and stale hash refusal. Retain library `.s2lib` behavior unchanged.
+- [x] Run SDK suite and native tests (`cargo test -p s2script-core` on supported Linux), then `bash scripts/ci-js.sh` and `bash scripts/ci-native.sh`. Add SDK changeset and docs explaining migration. Commit/publish one atomic slice, with actual gate results.
 
 ## Task 2 / slice 02: Decision and transformation forwards
 
@@ -129,11 +139,11 @@ const change = { result: HookResult.Changed, patch: { text: "updated" } };
 // dispatch(OnFormat, ...) -> { result: HookResult; payload: { identity: string; text: string } }
 ```
 
-- [ ] Add compile fixtures for illegal result/patch keys and async hook handlers. Add runtime cases for Continue/Changed/Handled/Stop, invalid numeric actions, exceptions, rejected Promises and no listeners.
-- [ ] Implement monotonic registration sequence and snapshot traversal. Reuse HookResult values/collapse conventions from core/src/multiplexer.rs and core/src/channels.rs; do not introduce competing action enums or expose monitor/priority behavior in this slice. Write the core algorithm as: validate input; snapshot IDs; for each live ID invoke with fresh copied payload; validate response; conditionally apply patch; collapse maximum result; break on Stop; return result and final payload. Release all RefCell borrows before each callback.
-- [ ] Prove with listeners A/B/C that B sees A's accepted text patch, identity cannot change, a rejected patch applies nothing, Handled still reaches C and Stop does not. Test internal registry removal during dispatch, nested calls, and provider unload during a listener. Public Subscription.dispose and late scoped-registration tests belong to slice 03; do not introduce an unsealed registration path for these tests.
-- [ ] Extend canonical metadata to include kind/writable keys, with a hash mismatch test where payload fields stay identical but kind changes. Runtime listener failures use the exact policy in the spec.
-- [ ] Run SDK/native suites and both CI scripts. Document sync-only semantics and ordering limits, add changeset, review and commit the whole slice.
+- [x] Add compile fixtures for illegal result/patch keys and async hook handlers. Add runtime cases for Continue/Changed/Handled/Stop, invalid numeric actions, exceptions, rejected Promises and no listeners.
+- [x] Implement monotonic registration sequence and snapshot traversal. Reuse HookResult values/collapse conventions from core/src/multiplexer.rs and core/src/channels.rs; do not introduce competing action enums or expose monitor/priority behavior in this slice. Write the core algorithm as: validate input; snapshot IDs; for each live ID invoke with fresh copied payload; validate response; conditionally apply patch; collapse maximum result; break on Stop; return result and final payload. Release all RefCell borrows before each callback.
+- [x] Prove with listeners A/B/C that B sees A's accepted text patch, identity cannot change, a rejected patch applies nothing, Handled still reaches C and Stop does not. Test internal registry removal during dispatch, nested calls, and provider unload during a listener. Public Subscription.dispose and late scoped-registration tests belong to slice 03; do not introduce an unsealed registration path for these tests.
+- [x] Extend canonical metadata to include kind/writable keys, with a hash mismatch test where payload fields stay identical but kind changes. Runtime listener failures use the exact policy in the spec.
+- [x] Run SDK/native suites and both CI scripts. Document sync-only semantics and ordering limits, add changeset, review and commit the whole slice.
 
 ## Task 3 / slice 03: Owned subscriptions and optional provider attachments
 
@@ -145,11 +155,11 @@ watchOptional("@demo/counter", (counter, scope) => {
 });
 ```
 
-- [ ] Write registry/V8 tests for consumer-before-provider, provider-before-consumer, provider removal/reload, consumer unload, incompatible provider, duplicate publication, attachment exception, disposal during dispatch and repeated disposal.
-- [ ] Implement availability watch bookkeeping independent of published entries; provider removal must not lose pending watchers. Queue attachment after Active at a safe lifecycle boundary. Explicitly ledger V8 callbacks and indexes so disposing a watch releases both. Dispose by subscription ID, not the legacy off(name,event,handler) bulk removal. Preserve before-isolate-drop clearing and generation-tagged release in core/src/v8host/lifecycle.rs and Resource entries in core/src/plugin.rs.
-- [ ] Allow registrations during a host-authorized attachment scope, not arbitrary runtime registration. Teardown attachment locally without calling unavailable provider methods. Failed attachment clears every partial resource; retry only on a new compatible generation.
-- [ ] Add a churn test with 1,000 provider attach/detach cycles. Assert registry rows, V8 callback maps, pending attachments and ledger counts return to baseline; exactly one notification per active attachment. Preserve hard-dependency reverse-unload behavior.
-- [ ] Run SDK/native tests and gates; document ownership and optional declaration requirements; review and commit.
+- [x] Write registry/V8 tests for consumer-before-provider, provider-before-consumer, provider removal/reload, consumer unload, incompatible provider, duplicate publication, attachment exception, disposal during dispatch and repeated disposal.
+- [x] Implement availability watch bookkeeping independent of published entries; provider removal must not lose pending watchers. Queue attachment after Active at a safe lifecycle boundary. Explicitly ledger V8 callbacks and indexes so disposing a watch releases both. Dispose by subscription ID, not the legacy off(name,event,handler) bulk removal. Preserve before-isolate-drop clearing and generation-tagged release in core/src/v8host/lifecycle.rs and Resource entries in core/src/plugin.rs.
+- [x] Allow registrations during a host-authorized attachment scope, not arbitrary runtime registration. Teardown attachment locally without calling unavailable provider methods. Failed attachment clears every partial resource; retry only on a new compatible generation.
+- [x] Add a churn test with 1,000 provider attach/detach cycles. Assert registry rows, V8 callback maps, pending attachments and ledger counts return to baseline; exactly one notification per active attachment. Preserve hard-dependency reverse-unload behavior.
+- [x] Run SDK/native tests and gates; document ownership and optional declaration requirements; review and commit.
 
 ## Task 4 / slice 04: Zones as the first real typed provider
 
@@ -157,10 +167,10 @@ watchOptional("@demo/counter", (counter, scope) => {
 
 **Produces:** protocol-2 zones methods and typed existing enter/leave/stay/created/deleted notifications. Keep names and meanings; bump published contract version according to repository policy.
 
-- [ ] Replace regex-only signature expectations with consumer compilation covering each payload. Preserve byte-copy verification and sibling precedence tests.
-- [ ] Declare Contract and migrate producer handle to inferred publication. Generate/check producer-as-import declarations so existing import style stays useful. Update every in-repo caller in this same slice; locate them with `rg '@s2script/zones' examples plugins packages`.
-- [ ] Test created/deleted notifications through actual operation paths, existing-zone queries after late attachment, and disconnect/map-change identity handling. Getters describe current state; notifications are not historical replay.
-- [ ] Build zones and examples, run SDK suite and JS gate, then validate real enter/leave and reload on CS2. Record pending live evidence if unavailable; review/commit without claiming acceptance.
+- [x] Replace regex-only signature expectations with consumer compilation covering each payload. Preserve byte-copy verification and sibling precedence tests.
+- [x] Declare Contract and migrate producer handle to inferred publication. Generate/check producer-as-import declarations so existing import style stays useful. Update every in-repo caller in this same slice; locate them with `rg '@s2script/zones' examples plugins packages`.
+- [x] Test created/deleted notifications through actual operation paths, existing-zone queries after late attachment, and disconnect/map-change identity handling. Getters describe current state; notifications are not historical replay.
+- [x] Build zones and examples, run SDK suite and JS gate, and review/commit the migration. Record real CS2 enter/leave and reload as separate pending acceptance evidence.
 
 ## Task 5 / slice 05: Basecomm public service
 
@@ -168,10 +178,10 @@ watchOptional("@demo/counter", (counter, scope) => {
 
 **Produces:** `isMuted(steamId): boolean`, `isGagged(steamId): boolean`, `setMuted(steamId, state): boolean`, `setGagged(steamId,state): boolean`; notifications `OnClientMuteChanged` and `OnClientGagChanged` with `{ steamId: string; state: boolean }`. State is the basecomm policy state, not a claim of audio delivery. Existing command permissions remain enforced by commands; document that service callers are trusted plugins.
 
-- [ ] Write integration tests for command/menu/API convergence and no notification for unchanged state. Verify silence changes both properties through the same setters.
-- [ ] Publish protocol-2 contract and route all mutation paths through one implementation per property, preserving existing engine updates and reconnect behavior. Emit only after the policy state changes.
-- [ ] Add observer example using optional attachment, initial state query and subsequent notifications. Verify it builds using only copied types without basecomm source or binary in its project.
-- [ ] Run SDK tests, plugin typecheck/build gate and live mute/gag/API/reload checks. Document limitations and version contract, review/commit.
+- [x] Write integration tests for command/menu/API convergence and no notification for unchanged state. Verify silence changes both properties through the same setters.
+- [x] Publish protocol-2 contract and route all mutation paths through one implementation per property, preserving existing engine updates and reconnect behavior. Emit only after the policy state changes.
+- [x] Add observer example using optional attachment, initial state query and subsequent notifications. Verify it builds using only copied types without basecomm source or binary in its project.
+- [x] Run SDK tests and the plugin typecheck/build gate; document limitations and the version contract, review/commit. Track live mute/gag/API/reload checks in the separate acceptance record.
 
 ## Task 6 / slice 06: Basebans public operations and hooks
 
@@ -191,11 +201,11 @@ interface BanResult { recorded: boolean; result: HookResult }
 interface BanRecord { request: BanRequest; until: number }
 ```
 
-- [ ] Write tests for validation, hook Continue/Handled/Stop, actual Bans failure behavior, console actor, offline ban, command/menu/API routing, unban no-op and a player disconnecting/reusing its slot during callbacks.
-- [ ] Validate request first. Dispatch request hook; Handled/Stop suppress the default record and kick, returning recorded false. Otherwise update Bans, verify the documented store result, emit OnBanRecorded once and perform the existing kick policy after re-resolving player identity. Changed alone has no patch effect. Never treat request interception as successful recording.
-- [ ] Preserve command target/immunity/permission checks outside the shared operation and document trusted API callers. Route sm_ban, sm_addban and menu through the operation. Keep reconnect enforcement separate; it must not emit a new-ban event.
-- [ ] Explain that OnBanRecorded describes the store's actual observable guarantee, not durable disk acknowledgement unless the native API proves it. Add a fixture store failure case matching actual behavior; do not invent success flags around a void native.
-- [ ] Run SDK/JS gates and live command/menu/API/offline/reconnect checks, review/commit with contract and example updates.
+- [x] Write tests for validation, hook Continue/Handled/Stop, actual Bans failure behavior, console actor, offline ban, command/menu/API routing, unban no-op and a player disconnecting/reusing its slot during callbacks.
+- [x] Validate request first. Dispatch request hook; Handled/Stop suppress the default record and kick, returning recorded false. Otherwise update Bans, verify the documented store result, emit OnBanRecorded once and perform the existing kick policy after re-resolving player identity. Changed alone has no patch effect. Never treat request interception as successful recording.
+- [x] Preserve command target/immunity/permission checks outside the shared operation and document trusted API callers. Route sm_ban, sm_addban and menu through the operation. Keep reconnect enforcement separate; it must not emit a new-ban event.
+- [x] Explain that OnBanRecorded describes the store's actual observable guarantee, not durable disk acknowledgement unless the native API proves it. Add a fixture store failure case matching actual behavior; do not invent success flags around a void native.
+- [x] Run SDK/JS gates and review/commit contract and example updates. Track live command/menu/API/offline/reconnect checks in the separate acceptance record.
 
 ## Task 7 / slice 07: Explicit named-handler bindings
 
@@ -210,20 +220,20 @@ export function OnRaceFinished(e: RaceResult): void { console.log(e.elapsedMs); 
 export function OnParkourFinished(e: ParkourResult): void { console.log(e.checkpoints); }
 ```
 
-- [ ] Add two-provider fixtures with identical forward names and different payloads. Assert swapped handlers, unknown keys and async decision handlers fail compilation. Test whole-map disposal and provider isolation at runtime.
-- [ ] Implement binding through the existing on machinery under the normal load window. If any binding fails, dispose all registrations created by this call before throwing. No new global callback registry or broad export scan.
-- [ ] Update example/readme showing .on for inferred inline callbacks and binding aliases for named exports. Build/test/gate, review/commit.
+- [x] Add two-provider fixtures with identical forward names and different payloads. Assert swapped handlers, unknown keys and async decision handlers fail compilation. Test whole-map disposal and provider isolation at runtime.
+- [x] Implement binding through the existing on machinery under the normal load window. If any binding fails, dispose all registrations created by this call before throwing. No new global callback registry or broad export scan.
+- [x] Update example/readme showing .on for inferred inline callbacks and binding aliases for named exports. Build/test/gate, review/commit.
 
 ## Task 8 / slice 08: Integrated acceptance and documentation
 
 **Files:** new `tools/interop-acceptance/` plugin fixtures and README; new `scripts/test-interop.sh`; integrate appropriate checks into `scripts/ci-js.sh` and `scripts/ci-native.sh`; update `docs/ARCHITECTURE.md`, `docs/PROGRESS.md`, SDK README and example index.
 
 - [x] Build two independently reloadable providers plus two consumers with same-named forwards across two interfaces, notification/hook/transform probes, optional-provider restart and explicit binding aliases. Expose server commands producing deterministic JSON summaries with expected values in the fixture README.
-- [ ] Test registry add/build with no producer archive in the consumer tree. Test stale/missing contracts and old-host protocol refusal. Verify protocol-1 archives still load under documented compatibility.
-- [ ] On Linux, run `npm ci`, SDK tests, `bash scripts/ci-js.sh`, `bash scripts/ci-native.sh`. Build deployable native artifacts via `scripts/build-sniper.sh`, package with `scripts/package-addon.sh`, and use the authorized test-server workflow in docs/BUILDING.md. Never deploy host-built binaries to CS2.
-- [ ] Run notification isolation, hook collapse, transform copyback, 1,000 attachment cycles, consumer/provider unload, map change, malformed value and recursion-limit scenarios on CS2. Record binary/build identity, branch SHA, commands, output, and resource baselines. Assert no duplicate callbacks, stale player actions or surviving subscription growth.
-- [ ] Check basecomm and basebans through commands, menus and inter-plugin calls; record any human-only checks separately. Extend existing CI scripts rather than creating divergent workflows.
-- [ ] Update architecture and CLI docs with supported wire types, lifecycle/error semantics, migration, named-binding examples and types-only workflow. Run `git diff --check`, review final stack and publish the final acceptance PR with honest outstanding gates.
+- [x] Test registry add/build with no producer archive in the consumer tree and stale/missing contract refusal. Verify API/protocol compatibility through archive/runtime tests and the old protocol-1 live smoke. An actual old API-2 server run is not claimed.
+- [x] On Linux, run `npm ci`, SDK tests, `bash scripts/ci-js.sh`, `bash scripts/ci-native.sh` at reviewed runtime source `3e6701b`; validate fixture-only `b8a06f4` with its focused Linux gate. Build deployable artifacts with `scripts/build-sniper.sh`, package with `scripts/package-addon.sh`, and apply through the authorized test-server workflow. No host-built binaries were deployed.
+- [x] Run notification isolation, hook collapse, transform copyback, 1,000 actual provider cycles, consumer/provider unload, map guard, malformed-value and recursion-limit probes on CS2. Record binary/source identity, exact outputs and resource baselines. Verify no duplicate cycle deliveries or surviving interop resources. The map probe blocks copied stale actions without executing them; real stale connection effects remain a human check.
+- [x] Check BaseComm/BaseBans inter-plugin policy/cache calls and server-console ban/unban operations; preserve exact cleanup evidence. Record authenticated command/menu/client behavior as pending human checks. Extend existing CI scripts rather than creating divergent workflows.
+- [x] Update architecture and CLI docs with supported wire types, lifecycle/error semantics, migration, startup registration, named bindings and types-only workflow. Review the final stack and publish draft acceptance PR #212 with explicit outstanding gates; commit the durable acceptance record after link/diff checks.
 
 ## Planning self-review / execution status
 
