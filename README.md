@@ -129,6 +129,9 @@ override automatic resolution. Reconfigure/rebuild the shim when changing versio
 packaging checks its recorded version and every bundled `.s2sp` manifest before
 creating the release ZIP. A stale artifact fails packaging and must be rebuilt.
 
+Checked-in base-plugin package versions are `0.0.0` placeholders. Published interface
+contract versions are explicit and remain stable when build versions are stamped.
+
 The base-plugin build uses the CLI's existing stamp operation, which updates local
 plugin `package.json` versions and compatible sibling dependency ranges. These build
 stamps need not be committed. npm SDK packages, third-party plugins, and explicitly

@@ -97,7 +97,8 @@ test("cookbook zones contract is an exact byte-copy of the major-versioned produ
   assert.deepEqual(readFileSync(producer), readFileSync(cookbookCopy));
   const zones = JSON.parse(readFileSync(join(root, "plugins/zones/package.json")));
   const cookbook = JSON.parse(readFileSync(join(root, "examples/cookbook/package.json")));
-  assert.equal(zones.version, "1.0.0");
+  assert.equal(zones.version, "0.0.0");
+  assert.equal(zones.s2script.publishes["@s2script/zones"], "1.0.0");
   assert.equal(zones.s2script.interfaceProtocol, 2);
   assert.equal(cookbook.s2script.optionalPluginDependencies["@s2script/zones"], "^1.0.0");
   assert.equal(cookbook.s2script.interfaceProtocol, 2);

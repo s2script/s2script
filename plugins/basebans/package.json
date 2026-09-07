@@ -1,6 +1,6 @@
 {
   "name": "@s2script/basebans",
-  "version": "1.0.0",
+  "version": "0.0.0",
   "private": true,
   "main": "src/plugin.ts",
   "types": "api.d.ts",
@@ -9,7 +9,9 @@
     "@s2script/cs2": "*"
   },
   "s2script": {
-    "publishes": "self",
+    "publishes": {
+      "@s2script/basebans": "1.0.0"
+    },
     "interfaceProtocol": 2
   }
 }
