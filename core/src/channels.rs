@@ -28,8 +28,11 @@ use std::collections::HashMap;
 
 pub struct Channels<H: Clone> {
     by_name: HashMap<String, Descriptor<(u64, H)>>,
-    /// Caller-allocated subscription id → the channel it lives on and its `Descriptor` id.
-    ids: HashMap<u64, (String, SubId)>,
+    /// Caller-allocated subscription id → the channel it lives on, its `Descriptor` id, and owner.
+    ///
+    /// The owner is repeated here so owner teardown can prune only the reverse mappings for the
+    /// subscriptions it removed. Channel liveness alone is insufficient when another owner remains.
+    ids: HashMap<u64, (String, SubId, String)>,
 }
 
 impl<H: Clone> Channels<H> {
@@ -41,13 +44,14 @@ impl<H: Clone> Channels<H> {
     /// engine-op follow-up (`event_subscribe`, installing a detour, …). Same contract as
     /// `EventMux::subscribe`.
     pub fn subscribe(&mut self, name: &str, id: u64, owner: String, generation: u64, handler: H) -> bool {
+        let indexed_owner = owner.clone();
         let desc = self
             .by_name
             .entry(name.to_string())
             .or_insert_with(|| Descriptor::new(name));
         let first = desc.enabled_count() == 0;
         let (sub_id, _) = desc.subscribe(Priority::Normal, Phase::Pre, owner, (generation, handler));
-        self.ids.insert(id, (name.to_string(), sub_id));
+        self.ids.insert(id, (name.to_string(), sub_id, indexed_owner));
         first
     }
 
@@ -75,9 +79,10 @@ impl<H: Clone> Channels<H> {
                 emptied.push(name.clone());
             }
         }
-        self.ids.retain(|_, (name, _)| {
-            self.by_name.get(name).map(|d| d.enabled_count() > 0).unwrap_or(false)
-        });
+        self.ids.retain(|_, (_, _, indexed_owner)| indexed_owner != owner);
+        for name in &emptied {
+            self.by_name.remove(name);
+        }
         emptied
     }
 
@@ -86,12 +91,15 @@ impl<H: Clone> Channels<H> {
     pub fn remove_by_ids(&mut self, ids: &[u64]) -> Vec<String> {
         let mut emptied = Vec::new();
         for id in ids {
-            let Some((name, sub_id)) = self.ids.remove(id) else { continue };
-            let Some(desc) = self.by_name.get_mut(&name) else { continue };
-            let before = desc.enabled_count();
-            desc.unsubscribe(sub_id);
-            if before > 0 && desc.enabled_count() == 0 {
+            let Some((name, sub_id, _owner)) = self.ids.remove(id) else { continue };
+            let became_empty = self.by_name.get_mut(&name).is_some_and(|desc| {
+                let before = desc.enabled_count();
+                desc.unsubscribe(sub_id);
+                before > 0 && desc.enabled_count() == 0
+            });
+            if became_empty {
                 emptied.push(name.clone());
+                self.by_name.remove(&name);
             }
         }
         emptied
@@ -103,14 +111,17 @@ impl<H: Clone> Channels<H> {
         let before = desc.enabled_count();
         desc.remove_by_owner(owner);
         let now_empty = before > 0 && desc.enabled_count() == 0;
-        self.ids.retain(|_, (n, _)| n != name || !now_empty);
+        self.ids.retain(|_, (n, _, indexed_owner)| n != name || indexed_owner != owner);
+        if now_empty {
+            self.by_name.remove(name);
+        }
         now_empty
     }
 
     /// Drop a whole channel.
     pub fn remove_by_name(&mut self, name: &str) {
         self.by_name.remove(name);
-        self.ids.retain(|_, (n, _)| n != name);
+        self.ids.retain(|_, (n, _, _)| n != name);
     }
 
     /// True iff no channel has any subscriber — used by the "is the last hook gone?" detour
@@ -210,5 +221,85 @@ mod tests {
         assert!(c.remove_by_owner_on("a", "p1"), "'a' emptied");
         assert!(c.snapshot("a").is_empty());
         assert_eq!(c.snapshot("b").len(), 1, "'b' untouched");
+    }
+
+    #[test]
+    fn shared_channel_owner_churn_retains_only_the_live_reverse_mapping() {
+        let mut c = ch();
+        c.subscribe("shared", 1, "a".into(), 1, "a");
+
+        for cycle in 0..1_000 {
+            let id = cycle + 2;
+            assert!(!c.subscribe("shared", id, "b".into(), 1, "b"));
+            assert!(c.remove_by_owner("b").is_empty(), "owner a keeps the channel live");
+        }
+
+        assert_eq!(c.snapshot("shared"), vec![("a".to_string(), 1, "a")]);
+        assert_eq!(c.ids.len(), 1, "disposed owner ids must not accumulate behind owner a");
+        assert_eq!(c.by_name.len(), 1, "the live shared descriptor remains");
+    }
+
+    #[test]
+    fn unique_channel_churn_releases_reverse_mappings_and_empty_descriptors() {
+        let mut c = ch();
+
+        for cycle in 0..1_000 {
+            let name = format!("unique-{cycle}");
+            c.subscribe(&name, cycle + 1, "b".into(), 1, "b");
+            assert_eq!(c.remove_by_owner("b"), vec![name]);
+        }
+
+        assert!(c.is_empty());
+        assert_eq!(c.ids.len(), 0, "disposed subscriptions leave no reverse mappings");
+        assert_eq!(c.by_name.len(), 0, "empty descriptors must not accumulate across churn");
+    }
+
+    #[test]
+    fn remove_by_owner_on_prunes_only_that_owners_reverse_mappings() {
+        let mut c = ch();
+        c.subscribe("shared", 1, "a".into(), 1, "a");
+        c.subscribe("shared", 2, "b".into(), 1, "b");
+
+        assert!(!c.remove_by_owner_on("shared", "b"), "owner a keeps the channel live");
+
+        assert_eq!(c.snapshot("shared"), vec![("a".to_string(), 1, "a")]);
+        assert_eq!(c.ids.len(), 1, "only owner a's live reverse mapping remains");
+        assert!(c.ids.contains_key(&1));
+    }
+
+    #[test]
+    fn duplicate_and_unknown_id_disposal_is_idempotent_and_prunes_the_descriptor() {
+        let mut c = ch();
+        c.subscribe("a", 1, "p1".into(), 1, "h1");
+
+        assert!(c.remove_by_ids(&[999]).is_empty());
+        assert_eq!(c.remove_by_ids(&[1, 1, 999]), vec!["a".to_string()]);
+        assert!(c.remove_by_ids(&[1, 999]).is_empty());
+        assert_eq!(c.ids.len(), 0);
+        assert_eq!(c.by_name.len(), 0, "the emptied descriptor is removed after notification");
+    }
+
+    #[test]
+    fn dispatch_snapshot_survives_subscription_changes_and_future_snapshots_reflect_them() {
+        let mut c = ch();
+        c.subscribe("a", 1, "p1".into(), 1, "h1");
+        c.subscribe("a", 2, "p2".into(), 1, "h2");
+
+        let dispatch_snapshot = c.snapshot("a");
+        assert!(c.remove_by_ids(&[1]).is_empty());
+        c.subscribe("a", 3, "p3".into(), 1, "h3");
+
+        assert_eq!(
+            dispatch_snapshot,
+            vec![("p1".to_string(), 1, "h1"), ("p2".to_string(), 1, "h2")],
+            "the active dispatch owns its cloned snapshot",
+        );
+        assert_eq!(
+            c.snapshot("a"),
+            vec![("p2".to_string(), 1, "h2"), ("p3".to_string(), 1, "h3")],
+            "the next dispatch sees the mutations",
+        );
+        assert_eq!(c.remove_by_ids(&[2, 3]), vec!["a".to_string()]);
+        assert_eq!(c.by_name.len(), 0);
     }
 }
