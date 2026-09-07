@@ -1000,13 +1000,19 @@
           notReadyReason: notReadyReason,
           isReady: function () { return ready; },
           findEntity: function (desc) {
+            // A host-validated handle is sufficient while this layout lives. Binding checks
+            // run for every paint primitive; enumerating the world here multiplies that cost.
+            var cached = entityByResource[desc.resource];
+            if (cached && cached.isValid()) return cached;
             var tn = targetNameForResource(desc.resource);
             var found = entityApi().Entity.findByClass(HUD_CLASS);
             for (var i = 0; i < found.length; i++) {
-              if (found[i].name === tn && found[i].isValid()) return found[i];
+              if (found[i].name === tn && found[i].isValid()) {
+                entityByResource[desc.resource] = found[i];
+                return found[i];
+              }
             }
-            var cached = entityByResource[desc.resource];
-            return cached && cached.isValid() ? cached : null;
+            return null;
           },
           /** Resolve the layout entity for a drive. Creation happens in createEntity, not here. */
           ensureEntity: function (desc) {
