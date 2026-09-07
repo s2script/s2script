@@ -11,27 +11,255 @@ use crate::v8host::{
     owner_is_live, plugin_generation, set_native, with_host_isolate,
 };
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::ffi::CString;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::os::raw::c_int;
 
 const KIND_ON_TAKE_DAMAGE: &str = "OnTakeDamage";
 const KIND_ON_TAKE_DAMAGE_POST: &str = "OnTakeDamagePost";
 pub(crate) const KIND_SET_TRANSMIT: &str = "SetTransmit";
 
+/// Entity ids and hook kinds are host-controlled keys. A compact deterministic hasher avoids the
+/// per-lookup SipHash cost on this frame-hot table without accepting attacker-controlled input.
+struct HookHasher(u64);
+
+impl Default for HookHasher {
+    fn default() -> Self { Self(0xcbf29ce484222325) }
+}
+
+impl Hasher for HookHasher {
+    fn finish(&self) -> u64 { self.0 }
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(0x100000001b3);
+        }
+    }
+    fn write_u64(&mut self, value: u64) {
+        let mut mixed = value;
+        mixed ^= mixed >> 30;
+        mixed = mixed.wrapping_mul(0xbf58476d1ce4e5b9);
+        mixed ^= mixed >> 27;
+        mixed = mixed.wrapping_mul(0x94d049bb133111eb);
+        mixed ^= mixed >> 31;
+        self.0 ^= mixed;
+        self.0 = self.0.wrapping_mul(0x100000001b3);
+    }
+}
+
+type HookMap<K, V> = HashMap<K, V, BuildHasherDefault<HookHasher>>;
+
 struct Entry {
     owner: String,
     generation: u64,
-    entity_id: u64,
-    entity_index: i32,
-    engine_serial: i32,
-    kind: String,
     handler: v8::Global<v8::Function>,
     sub_id: u64,
 }
 
+struct Bucket {
+    entity_index: i32,
+    engine_serial: i32,
+    entries: Vec<Entry>,
+}
+
+#[derive(Clone, Copy)]
+struct EntityAddress {
+    entity_id: u64,
+    entity_index: i32,
+    engine_serial: i32,
+    first_sub_id: u64,
+}
+
+struct RemovedEntry {
+    entity_id: u64,
+    entity_index: i32,
+    engine_serial: i32,
+    kind: String,
+    bucket_emptied: bool,
+}
+
+#[derive(Default)]
+struct HookStore {
+    buckets: HookMap<u64, HookMap<String, Bucket>>,
+    by_sub: HashMap<u64, (u64, String)>,
+    by_owner: HashMap<String, Vec<u64>>,
+    by_entity: HashMap<u64, Vec<u64>>,
+    kind_counts: HookMap<String, usize>,
+    kind_entities: HookMap<String, Vec<EntityAddress>>,
+}
+
+impl HookStore {
+    fn has(&self, entity_id: u64, kind: &str) -> bool {
+        self.buckets.get(&entity_id).and_then(|kinds| kinds.get(kind)).is_some()
+    }
+
+    fn insert(&mut self, entity_id: u64, entity_index: i32, engine_serial: i32, kind: String, entry: Entry) {
+        let first_for_entity_kind = !self.has(entity_id, &kind);
+        let sub_id = entry.sub_id;
+        let owner = entry.owner.clone();
+        self.buckets.entry(entity_id).or_default().entry(kind.clone()).or_insert_with(|| Bucket {
+            entity_index,
+            engine_serial,
+            entries: Vec::new(),
+        }).entries.push(entry);
+        self.by_sub.insert(sub_id, (entity_id, kind.clone()));
+        self.by_owner.entry(owner).or_default().push(sub_id);
+        self.by_entity.entry(entity_id).or_default().push(sub_id);
+        *self.kind_counts.entry(kind.clone()).or_default() += 1;
+        if first_for_entity_kind {
+            self.kind_entities.entry(kind).or_default().push(EntityAddress {
+                entity_id,
+                entity_index,
+                engine_serial,
+                first_sub_id: sub_id,
+            });
+        }
+    }
+
+    fn snapshot(&self, entity_id: u64, kind: &str) -> Vec<(String, u64, v8::Global<v8::Function>)> {
+        self.snapshot_with_visitor(entity_id, kind, || {})
+    }
+
+    fn snapshot_with_visitor(
+        &self,
+        entity_id: u64,
+        kind: &str,
+        mut visited: impl FnMut(),
+    ) -> Vec<(String, u64, v8::Global<v8::Function>)> {
+        self.buckets.get(&entity_id).and_then(|kinds| kinds.get(kind)).map(|bucket| {
+            bucket.entries.iter().map(|entry| {
+                visited();
+                (entry.owner.clone(), entry.generation, entry.handler.clone())
+            }).collect()
+        }).unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    fn snapshot_with_visit_count(
+        &self,
+        entity_id: u64,
+        kind: &str,
+    ) -> (Vec<(String, u64, v8::Global<v8::Function>)>, usize) {
+        let mut visited = 0;
+        let snapshot = self.snapshot_with_visitor(entity_id, kind, || visited += 1);
+        (snapshot, visited)
+    }
+
+    fn find_sub_id(&self, entity_id: u64, kind: &str, mut matches: impl FnMut(&Entry) -> bool) -> Option<u64> {
+        self.buckets.get(&entity_id)?.get(kind)?.entries.iter()
+            .find(|entry| matches(entry)).map(|entry| entry.sub_id)
+    }
+
+    fn remove_sub(&mut self, sub_id: u64) -> Option<RemovedEntry> {
+        let (entity_id, kind) = self.by_sub.remove(&sub_id)?;
+        let (owner, entity_index, engine_serial, bucket_emptied, new_first_sub_id) = {
+            let bucket = self.buckets.get_mut(&entity_id)?.get_mut(&kind)?;
+            let position = bucket.entries.iter().position(|entry| entry.sub_id == sub_id)?;
+            let entry = bucket.entries.remove(position);
+            let new_first_sub_id = if position == 0 {
+                bucket.entries.first().map(|entry| entry.sub_id)
+            } else {
+                None
+            };
+            (
+                entry.owner,
+                bucket.entity_index,
+                bucket.engine_serial,
+                bucket.entries.is_empty(),
+                new_first_sub_id,
+            )
+        };
+        Self::remove_reverse_id(&mut self.by_owner, &owner, sub_id);
+        Self::remove_reverse_id(&mut self.by_entity, &entity_id, sub_id);
+        if let Some(count) = self.kind_counts.get_mut(&kind) {
+            *count -= 1;
+            if *count == 0 { self.kind_counts.remove(&kind); }
+        }
+        if bucket_emptied {
+            if let Some(kinds) = self.buckets.get_mut(&entity_id) {
+                kinds.remove(&kind);
+                if kinds.is_empty() { self.buckets.remove(&entity_id); }
+            }
+            if let Some(entities) = self.kind_entities.get_mut(&kind) {
+                entities.retain(|address| address.entity_id != entity_id);
+                if entities.is_empty() { self.kind_entities.remove(&kind); }
+            }
+        } else if let Some(first_sub_id) = new_first_sub_id {
+            if let Some(entities) = self.kind_entities.get_mut(&kind) {
+                if let Some(position) = entities.iter().position(|address| address.entity_id == entity_id) {
+                    let mut address = entities.remove(position);
+                    address.first_sub_id = first_sub_id;
+                    let new_position = entities.partition_point(|other| other.first_sub_id < first_sub_id);
+                    entities.insert(new_position, address);
+                }
+            }
+        }
+        Some(RemovedEntry { entity_id, entity_index, engine_serial, kind, bucket_emptied })
+    }
+
+    fn remove_reverse_id<K: std::hash::Hash + Eq>(index: &mut HashMap<K, Vec<u64>>, key: &K, sub_id: u64) {
+        let remove_key = if let Some(ids) = index.get_mut(key) {
+            if let Some(position) = ids.iter().position(|id| *id == sub_id) { ids.remove(position); }
+            ids.is_empty()
+        } else { false };
+        if remove_key { index.remove(key); }
+    }
+
+    fn owner_subscriptions(&self, owner: &str) -> Vec<u64> {
+        self.by_owner.get(owner).cloned().unwrap_or_default()
+    }
+    fn entity_subscriptions(&self, entity_id: u64) -> Vec<u64> {
+        self.by_entity.get(&entity_id).cloned().unwrap_or_default()
+    }
+    fn kind_active(&self, kind: &str) -> bool {
+        self.kind_counts.get(kind).copied().unwrap_or(0) != 0
+    }
+    fn kind_entities(&self, kind: &str) -> Vec<(i32, i32)> {
+        self.kind_entities_with_visitor(kind, || {})
+    }
+    fn kind_entities_with_visitor(
+        &self,
+        kind: &str,
+        mut visited: impl FnMut(),
+    ) -> Vec<(i32, i32)> {
+        self.kind_entities.get(kind).map(|entities| {
+            entities.iter().map(|address| {
+                visited();
+                (address.entity_index, address.engine_serial)
+            }).collect()
+        }).unwrap_or_default()
+    }
+    #[cfg(test)]
+    fn kind_entities_with_visit_count(&self, kind: &str) -> (Vec<(i32, i32)>, usize) {
+        let mut visited = 0;
+        let entities = self.kind_entities_with_visitor(kind, || visited += 1);
+        (entities, visited)
+    }
+
+    fn vp_entities_in_registration_order(&self) -> Vec<(i32, i32)> {
+        let mut first_sub_by_entity: HashMap<u64, (u64, i32, i32)> = HashMap::new();
+        for (&entity_id, kinds) in &self.buckets {
+            for (kind, bucket) in kinds {
+                if vp_kind(kind).is_none() { continue; }
+                if let Some(first) = bucket.entries.first() {
+                    let candidate = (first.sub_id, bucket.entity_index, bucket.engine_serial);
+                    first_sub_by_entity.entry(entity_id).and_modify(|current| {
+                        if candidate.0 < current.0 { *current = candidate; }
+                    }).or_insert(candidate);
+                }
+            }
+        }
+        let mut ordered: Vec<_> = first_sub_by_entity.into_values().collect();
+        ordered.sort_unstable_by_key(|entry| entry.0);
+        ordered.into_iter().map(|(_, index, serial)| (index, serial)).collect()
+    }
+
+    fn clear(&mut self) { *self = Self::default(); }
+}
+
 thread_local! {
-    static HOOKS: RefCell<Vec<Entry>> = const { RefCell::new(Vec::new()) };
+    static HOOKS: RefCell<HookStore> = RefCell::new(HookStore::default());
 }
 
 #[cfg(test)]
@@ -125,7 +353,7 @@ fn vp_drop(index: i32, serial: i32) {
 }
 
 fn still_has(entity_id: u64, kind: &str) -> bool {
-    HOOKS.with(|h| h.borrow().iter().any(|e| e.entity_id == entity_id && e.kind == kind))
+    HOOKS.with(|hooks| hooks.borrow().has(entity_id, kind))
 }
 
 fn unhook_vp_if_last(index: i32, serial: i32, entity_id: u64, kind: &str) {
@@ -168,98 +396,81 @@ fn snapshot_damage_kind(kind: &str) -> Vec<(String, u64, v8::Global<v8::Function
 }
 
 pub(crate) fn snapshot_kind(entity_id: u64, kind: &str) -> Vec<(String, u64, v8::Global<v8::Function>)> {
-    HOOKS.with(|h| {
-        h.borrow()
-            .iter()
-            .filter(|e| e.entity_id == entity_id && e.kind == kind)
-            .map(|e| (e.owner.clone(), e.generation, e.handler.clone()))
-            .collect()
-    })
+    HOOKS.with(|hooks| hooks.borrow().snapshot(entity_id, kind))
+}
+
+#[cfg(test)]
+pub(crate) fn snapshot_kind_with_work(
+    entity_id: u64,
+    kind: &str,
+) -> (Vec<(String, u64, v8::Global<v8::Function>)>, usize) {
+    HOOKS.with(|hooks| hooks.borrow().snapshot_with_visit_count(entity_id, kind))
 }
 
 pub(crate) fn kind_active(kind: &str) -> bool {
-    HOOKS.with(|h| h.borrow().iter().any(|e| e.kind == kind))
+    HOOKS.with(|hooks| hooks.borrow().kind_active(kind))
 }
 
 /// Unique `(index, engine_serial)` pairs for `kind`, subscribe order.
 pub(crate) fn snapshot_kind_entities(kind: &str) -> Vec<(i32, i32)> {
-    HOOKS.with(|h| {
-        let mut seen = HashSet::new();
-        h.borrow()
-            .iter()
-            .filter(|e| e.kind == kind)
-            .filter_map(|e| {
-                seen.insert((e.entity_index, e.engine_serial))
-                    .then_some((e.entity_index, e.engine_serial))
-            })
-            .collect()
-    })
+    HOOKS.with(|hooks| hooks.borrow().kind_entities(kind))
+}
+
+#[cfg(test)]
+pub(crate) fn snapshot_kind_entities_with_work(kind: &str) -> (Vec<(i32, i32)>, usize) {
+    HOOKS.with(|hooks| hooks.borrow().kind_entities_with_visit_count(kind))
 }
 
 /// Drop every hook on this host id (entity destroy). SH_REMOVE leftover VP hooks via `vp_drop`.
 pub(crate) fn drop_entity(id: u64) {
-    let coords = HOOKS.with(|h| {
-        h.borrow().iter().find(|e| e.entity_id == id).map(|e| (e.entity_index, e.engine_serial))
+    let ids = HOOKS.with(|hooks| hooks.borrow().entity_subscriptions(id));
+    let coords = ids.first().and_then(|sub_id| HOOKS.with(|hooks| {
+        let hooks = hooks.borrow();
+        let (entity_id, kind) = hooks.by_sub.get(sub_id)?;
+        let bucket = hooks.buckets.get(entity_id)?.get(kind)?;
+        Some((bucket.entity_index, bucket.engine_serial))
+    }));
+    HOOKS.with(|hooks| {
+        let mut hooks = hooks.borrow_mut();
+        for sub_id in ids { let _ = hooks.remove_sub(sub_id); }
     });
-    if let Some((index, serial)) = coords {
-        vp_drop(index, serial);
-    }
-    HOOKS.with(|h| h.borrow_mut().retain(|e| e.entity_id != id));
+    if let Some((index, serial)) = coords { vp_drop(index, serial); }
 }
 
 /// Map transition: unhook every VP then clear. Engine is still up (unlike process shutdown).
 pub(crate) fn drop_all() {
-    let pairs: Vec<(i32, i32)> = HOOKS.with(|h| {
-        let mut seen = HashSet::new();
-        h.borrow()
-            .iter()
-            .filter_map(|e| {
-                if vp_kind(&e.kind).is_some() {
-                    seen.insert((e.entity_index, e.engine_serial)).then_some((e.entity_index, e.engine_serial))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    });
+    let pairs = HOOKS.with(|hooks| hooks.borrow().vp_entities_in_registration_order());
     for (index, serial) in pairs {
         vp_drop(index, serial);
     }
-    HOOKS.with(|h| h.borrow_mut().clear());
+    HOOKS.with(|hooks| hooks.borrow_mut().clear());
+}
+
+fn remove_subscriptions(ids: &[u64]) {
+    let removed = HOOKS.with(|hooks| {
+        let mut hooks = hooks.borrow_mut();
+        ids.iter().filter_map(|sub_id| hooks.remove_sub(*sub_id)).collect::<Vec<_>>()
+    });
+    for entry in removed {
+        if entry.bucket_emptied {
+            unhook_vp_if_last(entry.entity_index, entry.engine_serial, entry.entity_id, &entry.kind);
+        }
+    }
 }
 
 pub(crate) fn register_stores() {
     crate::owner_stores::register(
         "SDKHOOKS",
         Box::new(|owner| {
-            let going: Vec<(i32, i32, u64, String)> = HOOKS.with(|h| {
-                h.borrow()
-                    .iter()
-                    .filter(|e| e.owner == owner)
-                    .map(|e| (e.entity_index, e.engine_serial, e.entity_id, e.kind.clone()))
-                    .collect()
-            });
-            HOOKS.with(|h| h.borrow_mut().retain(|e| e.owner != owner));
-            for (index, serial, id, kind) in going {
-                unhook_vp_if_last(index, serial, id, &kind);
-            }
+            let ids = HOOKS.with(|hooks| hooks.borrow().owner_subscriptions(owner));
+            remove_subscriptions(&ids);
         }),
         Box::new(|ids| {
-            let going: Vec<(i32, i32, u64, String)> = HOOKS.with(|h| {
-                h.borrow()
-                    .iter()
-                    .filter(|e| ids.contains(&e.sub_id))
-                    .map(|e| (e.entity_index, e.engine_serial, e.entity_id, e.kind.clone()))
-                    .collect()
-            });
-            HOOKS.with(|h| h.borrow_mut().retain(|e| !ids.contains(&e.sub_id)));
-            for (index, serial, id, kind) in going {
-                unhook_vp_if_last(index, serial, id, &kind);
-            }
+            remove_subscriptions(ids);
         }),
         Box::new(|| {
             // Process teardown: contents only — no engine-op follow-up (owner_stores contract).
-            HOOKS.with(|h| h.borrow_mut().clear());
+            HOOKS.with(|hooks| hooks.borrow_mut().clear());
         }),
     );
 }
@@ -298,17 +509,10 @@ fn s2_sdkhook(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut
         let generation = plugin_generation(&owner);
         let sub_id = next_sub_id();
         let handler = v8::Global::new(scope.as_ref(), func);
-        HOOKS.with(|h| {
-            h.borrow_mut().push(Entry {
-                owner,
-                generation,
-                entity_id: id,
-                entity_index: index,
-                engine_serial: serial,
-                kind,
-                handler,
-                sub_id,
-            });
+        HOOKS.with(|hooks| {
+            hooks.borrow_mut().insert(
+                id, index, serial, kind, Entry { owner, generation, handler, sub_id },
+            );
         });
         rv.set_bool(true);
     }));
@@ -327,26 +531,15 @@ fn s2_sdkunhook(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, m
             return;
         };
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        let removed = HOOKS.with(|h| {
-            let mut v = h.borrow_mut();
-            if let Some(i) = v.iter().position(|e| {
-                e.owner == owner
-                    && e.entity_id == id
-                    && e.kind == kind
-                    && {
-                        let local = v8::Local::new(scope, &e.handler);
-                        local.strict_equals(func.into())
-                    }
-            }) {
-                let coords = (v[i].entity_index, v[i].engine_serial, v[i].entity_id, v[i].kind.clone());
-                v.remove(i);
-                Some(coords)
-            } else {
-                None
-            }
+        let sub_id = HOOKS.with(|hooks| {
+            hooks.borrow().find_sub_id(id, &kind, |entry| {
+                if entry.owner != owner { return false; }
+                let local = v8::Local::new(scope, &entry.handler);
+                local.strict_equals(func.into())
+            })
         });
-        if let Some((index, serial, eid, k)) = removed {
-            unhook_vp_if_last(index, serial, eid, &k);
+        if let Some(sub_id) = sub_id {
+            remove_subscriptions(&[sub_id]);
             rv.set_bool(true);
         }
     }));
@@ -819,6 +1012,102 @@ mod tests {
     }
 
     #[test]
+    fn sdkhook_snapshot_lookup_work_depends_on_addressed_subscribers() {
+        let _ = init(dummy_logger());
+        crate::entity_live::reset_for_tests();
+        create_plugin_context("p");
+        for index in 1..=100 {
+            let id = crate::entity_live::on_created(index, index);
+            assert_eq!(eval_in_context_string("p", &hook_js(index, id, "")), "true");
+        }
+        let target_id = crate::entity_live::on_created(101, 101);
+        assert_eq!(eval_in_context_string("p", &hook_js(101, target_id, "")), "true");
+        let (snapshot, visited) = snapshot_kind_with_work(target_id, KIND_ON_TAKE_DAMAGE);
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(
+            visited, 1,
+            "shared lookup path must visit only the addressed subscriber, not 100 unrelated hooks"
+        );
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_dispatch_uses_detached_registration_snapshot() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        set_engine_ops(Some(ops_with_victim()));
+        create_plugin_context("p");
+        eval_in_context(
+            "p",
+            &format!(r#"
+                globalThis.__calls = [];
+                globalThis.__added = false;
+                globalThis.__late = function () {{ globalThis.__calls.push("late"); }};
+                globalThis.__second = function () {{ globalThis.__calls.push("second"); }};
+                globalThis.__first = function () {{
+                    globalThis.__calls.push("first");
+                    __s2_sdkunhook(5, {id}, "OnTakeDamage", globalThis.__second);
+                    if (!globalThis.__added) {{
+                        globalThis.__added = true;
+                        __s2_sdkhook(5, {id}, "OnTakeDamage", globalThis.__late);
+                    }}
+                }};
+                __s2_sdkhook(5, {id}, "OnTakeDamage", globalThis.__first);
+                __s2_sdkhook(5, {id}, "OnTakeDamage", globalThis.__second);
+            "#),
+        ).unwrap();
+        dispatch_damage();
+        assert_eq!(
+            eval_in_context_string("p", "globalThis.__calls.join(',')"),
+            "first,second",
+            "unsubscribe must not mutate the current snapshot and subscribe waits for next dispatch"
+        );
+        eval_in_context("p", "globalThis.__calls = [];").unwrap();
+        dispatch_damage();
+        assert_eq!(eval_in_context_string("p", "globalThis.__calls.join(',')"), "first,late");
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_slot_reuse_does_not_dispatch_removed_identity() {
+        let _ = init(dummy_logger());
+        let old_id = seed(5, 1);
+        set_engine_ops(Some(ops_with_victim()));
+        create_plugin_context("p");
+        eval_in_context("p", "globalThis.__n=0;").unwrap();
+        eval_in_context_string("p", &hook_js(5, old_id, "globalThis.__n++;"));
+        drop_entity(old_id);
+        let new_id = crate::entity_live::on_created(5, 2);
+        assert_ne!(old_id, new_id);
+        FAKE_VICTIM.with(|c| c.set(packed_handle(5, 2)));
+        dispatch_damage();
+        assert_eq!(eval_in_context_string("p", "String(globalThis.__n)"), "0");
+        shutdown();
+    }
+
+    #[test]
+    fn sdkhook_stale_owner_generation_is_disabled() {
+        let _ = init(dummy_logger());
+        let id = seed(5, 1);
+        *DMG_WRITE_REC.lock().unwrap() = None;
+        set_engine_ops(Some(S2EngineOps {
+            damage_write_float: Some(rec_damage_write_float),
+            ..ops_with_victim()
+        }));
+        create_plugin_context("p");
+        eval_in_context_string("p", &hook_js(5, id, "__s2_damage_write_float(777, 9);"));
+
+        create_plugin_context("p"); // same owner, new generation; old row deliberately remains
+        dispatch_damage();
+        assert_eq!(
+            *DMG_WRITE_REC.lock().unwrap(),
+            None,
+            "the stale-generation handler must not reach its observable native side effect"
+        );
+        shutdown();
+    }
+
+    #[test]
     fn sdkhook_no_victim_runs_nobody() {
         let _ = init(dummy_logger());
         let id = seed(5, 1);
@@ -955,6 +1244,8 @@ mod tests {
         );
         eval_in_context_string("u", &format!(r#"String(__s2_sdkhook(5, {id}, "OnTakeDamage", globalThis.__cb))"#));
         unload_plugin("u");
+        assert!(snapshot_kind(id, KIND_ON_TAKE_DAMAGE).is_empty());
+        assert!(!kind_active(KIND_ON_TAKE_DAMAGE));
         // Context is gone; dispatch must not panic. Victim still set.
         dispatch_damage();
         shutdown();

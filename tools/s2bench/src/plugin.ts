@@ -10,6 +10,8 @@ import { Server } from "@s2script/sdk/server";
 import { Events } from "@s2script/sdk/events";
 import { UserMessage } from "@s2script/sdk/usermessages";
 import { command } from "@s2script/sdk/commands";
+import { HookResult, SDKHook, SDKHookType, SDKUnhook } from "@s2script/sdk";
+import { Transmit } from "@s2script/sdk/transmit";
 
 // Internal natives (dev instrumentation) — declared ambiently, probed with typeof at runtime.
 declare const __s2_schema_offset: ((cls: string, field: string) => number | null) | undefined;
@@ -19,11 +21,37 @@ declare const __s2_hrtime_ns: (() => number) | undefined;
 
 const ENT = 1024;      // entity batch size, matching the profiler
 const SAMPLE = 4000;   // per-call sample count for min/avg/max (each timed individually)
+const HOOK_SCALES = [1, 100, 1000] as const;
 
 const FALLBACK = { m_messageText: 2628, m_bEnabled: 3268, m_flFontSize: 3276, m_Color: 3300 };
 
 let running = false;
 let sink = 0;
+let liveHookEntities: EntityRef[] = [];
+let liveHookCallbacks = 0;
+
+function resetLiveHookWorkload(): number {
+  const count = liveHookEntities.length;
+  for (const entity of liveHookEntities) {
+    SDKUnhook(entity, SDKHookType.SetTransmit, liveSetTransmitHook);
+    entity.remove();
+  }
+  liveHookEntities = [];
+  liveHookCallbacks = 0;
+  return count;
+}
+
+function liveSetTransmitHook(): typeof HookResult.Continue {
+  liveHookCallbacks++;
+  return HookResult.Continue;
+}
+
+function transmitStatsLine(label: string): string {
+  const stats = Transmit.stats();
+  return `[S2BENCH] ${label} hooks=${liveHookEntities.length} callbacks=${liveHookCallbacks}` +
+    ` snapshots=${stats.snapshots}` +
+    ` entries=${stats.entries} bitsCleared=${stats.bitsCleared} nsLast=${stats.nsLast} nsMax=${stats.nsMax}`;
+}
 
 function offOf(cls: string, field: string, fallback: number): number {
   if (typeof __s2_schema_offset !== "undefined" && __s2_schema_offset) {
@@ -124,6 +152,32 @@ function runBench(reply: (m: string) => void): void {
   });
   timeBatch("Virtual Calls (teleport 1024)", ents.length, () => { for (let i = 0; i < ents.length; i++) ents[i].teleport([0, i * 10, 0]); });
 
+  // Registration/index-maintenance cost under growing unrelated hook populations. This does not
+  // dispatch damage and therefore does not include JS callback, SourceHook, or engine frame cost;
+  // the standalone native Task 7 harness measures detached lookup work separately.
+  const hook = () => {};
+  for (const requested of HOOK_SCALES) {
+    const total = Math.min(requested, ents.length);
+    if (total !== requested) {
+      console.log(`[S2BENCH] SDKHook index maintenance | skipped requested=${requested} available=${ents.length}`);
+      continue;
+    }
+    const hooked = ents.slice(0, total);
+    for (let i = 0; i < hooked.length; i++) SDKHook(hooked[i], SDKHookType.OnTakeDamage, hook);
+    const addressed = hooked[hooked.length - 1];
+    timeEach(
+      `SDKHook unhook+rehook (total=${total}, addressed=1)`,
+      SAMPLE,
+      () => {
+        if (!SDKUnhook(addressed, SDKHookType.OnTakeDamage, hook)) throw new Error("SDKUnhook failed");
+        if (!SDKHook(addressed, SDKHookType.OnTakeDamage, hook)) throw new Error("SDKHook failed");
+      },
+      baseline,
+      "registration/index maintenance only; excludes dispatch and JS callback",
+    );
+    for (let i = 0; i < hooked.length; i++) SDKUnhook(hooked[i], SDKHookType.OnTakeDamage, hook);
+  }
+
   // --- Per-call ops (direct, min/avg/max, baseline-subtracted) ---
   timeEach("Get Game Rules (framework get())", SAMPLE, () => { const g = GameRules.get(); if (g) sink += (g.totalRoundsPlayed ?? 0); }, baseline, "get() is now internally cached");
   timeEach("findByClass('cs_gamerules') raw scan", SAMPLE, () => { sink += Entity.findByClass("cs_gamerules").length; }, baseline, "the un-cached scan get() used to do");
@@ -140,5 +194,38 @@ function runBench(reply: (m: string) => void): void {
 
 export function OnPluginStart(): void {
   command("sm_s2bench", (cmd) => { runBench((m) => cmd.reply(m)); });
+  command.server("sm_s2bench_hookload", (cmd) => {
+    const requested = cmd.argInt(0, 1);
+    if (![1, 100, 1000].includes(requested)) {
+      cmd.reply("[s2bench] usage: sm_s2bench_hookload <1|100|1000>");
+      return HookResult.Handled;
+    }
+    resetLiveHookWorkload();
+    for (let i = 0; i < requested; i++) {
+      const entity = createEntity("point_worldtext");
+      if (!entity) break;
+      entity.spawn();
+      if (!SDKHook(entity, SDKHookType.SetTransmit, liveSetTransmitHook)) {
+        entity.remove();
+        break;
+      }
+      liveHookEntities.push(entity);
+    }
+    cmd.reply(transmitStatsLine(`hookload requested=${requested}`));
+    return HookResult.Handled;
+  });
+  command.server("sm_s2bench_hookstats", (cmd) => {
+    cmd.reply(transmitStatsLine("hookstats"));
+    return HookResult.Handled;
+  });
+  command.server("sm_s2bench_hookreset", (cmd) => {
+    const removed = resetLiveHookWorkload();
+    cmd.reply(transmitStatsLine(`hookreset removed=${removed}`));
+    return HookResult.Handled;
+  });
   console.log("[s2bench] onLoad — run `sm_s2bench` (direct per-op timing)");
+}
+
+export function OnPluginEnd(): void {
+  resetLiveHookWorkload();
 }
