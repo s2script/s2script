@@ -1,0 +1,80 @@
+{
+  "metadata": {
+    "version": 1,
+    "methods": {
+      "getCount": {
+        "args": [],
+        "result": {
+          "kind": "number"
+        }
+      },
+      "setCount": {
+        "args": [
+          {
+            "schema": {
+              "kind": "number"
+            },
+            "optional": false
+          }
+        ],
+        "result": {
+          "kind": "void"
+        }
+      }
+    },
+    "forwards": {
+      "OnCountChanged": {
+        "kind": "notification",
+        "payload": {
+          "kind": "object",
+          "fields": {
+            "count": {
+              "schema": {
+                "kind": "number"
+              },
+              "optional": false
+            }
+          }
+        }
+      },
+      "OnRequest": {
+        "kind": "hook",
+        "payload": {
+          "kind": "object",
+          "fields": {
+            "identity": {
+              "schema": {
+                "kind": "string"
+              },
+              "optional": false
+            }
+          }
+        }
+      },
+      "OnFormat": {
+        "kind": "transform",
+        "payload": {
+          "kind": "object",
+          "fields": {
+            "identity": {
+              "schema": {
+                "kind": "string"
+              },
+              "optional": false
+            },
+            "text": {
+              "schema": {
+                "kind": "string"
+              },
+              "optional": false
+            }
+          }
+        },
+        "writable": [
+          "text"
+        ]
+      }
+    }
+  },
+  "sha256": "209fc40eca81c777ae1420f909c8f3bebd7efc9bf92793a2eac8d9b9dc610745"
+}

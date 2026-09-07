@@ -60,7 +60,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   const interfaces = {
     publishInterface: function (name, impl) {
       __s2_iface_publish(name, impl);
-      return { emit: function (ev, payload) { return __s2_iface_emit(name, ev, payload); } };
+      return {
+        emit: function (ev, payload) { return __s2_iface_emit(name, ev, payload); },
+        dispatch: function (ev, payload) { return __s2_iface_dispatch(name, ev, payload); },
+      };
     },
   };
   // --- Slice 5A/5B.2: serial-gated EntityRef (wraps the __s2_ent_ref_* natives; no raw pointer crosses JS) ---
@@ -1956,7 +1959,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     };
     ctx.publish = function (name, impl) {
       ctxReg(function () { __s2_iface_publish(name, impl); });
-      return { emit: function (ev, payload) { return __s2_iface_emit(name, ev, payload); } };
+      return {
+        emit: function (ev, payload) { return __s2_iface_emit(name, ev, payload); },
+        dispatch: function (ev, payload) { return __s2_iface_dispatch(name, ev, payload); },
+      };
     };
     function handleFor(name) {
       return new Proxy({}, { get: function (_t, prop) {

@@ -1,4 +1,4 @@
-# Typed plugin notifications (protocol 2)
+# Typed plugin forwards (protocol 2)
 
 Set `s2script.interfaceProtocol` to `2` in both producer and consumer packages. A producer publishes one declaration entry, selected by its package `types` field. Consumers declare `s2script.pluginDependencies` or `optionalPluginDependencies` and obtain that entry through `s2s add`. Plugin acquisition downloads registry metadata and the types artifact; it does not download the producer binary. Workspace consumers instead use the sibling producer's declaration directly, even when an older downloaded copy exists.
 
@@ -47,7 +47,7 @@ The CLI generates `.s2script/interfaces.d.ts` for name-based inference. New scaf
 
 ## Wire values
 
-The supported algebra is null, boolean, finite number, string, literal enums, arrays, finite object records with optional fields, discriminated object unions, and the SDK's existing `EntityRef`. Method results may also be void. All domain types must be declared in the entry file. Only SDK `Notification` and `EntityRef` imports are supported; external domain imports, re-exports, reference directives, unbounded dictionaries, recursive types, arbitrary classes, functions, BigInt, Promise, any, and unknown are rejected. This validates the documented wire algebra, not arbitrary TypeScript.
+The supported algebra is null, boolean, finite number, string, literal enums, arrays, finite object records with optional fields, discriminated object unions, and the SDK's existing `EntityRef`. Method results may also be void. All domain types must be declared in the entry file. Only SDK `Notification`, `Hook`, `Transform`, and `EntityRef` imports are supported; external domain imports, re-exports, reference directives, unbounded dictionaries, recursive types, arbitrary classes, functions, BigInt, Promise, any, and unknown are rejected. This validates the documented wire algebra, not arbitrary TypeScript.
 
 Values cross by copy. Every field is checked before any producer method or notification listener receives the value; method results are checked before returning to the consumer. Unknown fields, present-but-undefined fields, nonfinite numbers, sparse arrays, symbols, proxies, accessors, and `toJSON` coercions do not pass the strict copy path. Omit an optional field or argument instead of passing undefined. `__s2ref` is reserved for the existing entity-reference wire envelope, which retains the host's reference/liveness checks. Carry persistent player identity as copied identifiers and a map generation; a bare retained client slot is not a stable identity.
 
@@ -59,10 +59,53 @@ Notification identity is the interface name plus forward name. Subscription veri
 
 Listeners run in registration order using a snapshot. Removed or stale listeners are skipped; listeners added during a dispatch start on the next dispatch. Every listener gets a fresh copy. Exceptions are logged with provider, consumer, and forward and do not prevent later listeners or later notifications. Thenable returns are observed and logged as synchronous-contract errors. Nested method/notification crossings share a limit of 32 active calls; call 33 throws `InterfaceRecursionLimit`, and the counter unwinds after an error.
 
+## Synchronous hooks and transforms
+
+A hook asks listeners for a decision. A transform lets them return a shallow patch to declared writable fields. Both reuse `HookResult` from `@s2script/sdk/events` (`Continue = 0`, `Changed = 1`, `Handled = 2`, `Stop = 3`).
+
+```ts
+import type { Hook, Transform } from "@s2script/sdk/interfaces";
+export interface Contract {
+  methods: {};
+  forwards: {
+    OnRequest: Hook<{ identity: string }>;
+    OnFormat: Transform<{ identity: string; text: string }, "text">;
+  };
+}
+```
+
+```ts
+// Consumer, during the load window:
+import { use } from "@s2script/sdk/plugin";
+import { HookResult } from "@s2script/sdk/events";
+const service = use("@demo/formatter");
+service.on("OnRequest", event =>
+  event.identity === "blocked" ? HookResult.Handled : HookResult.Continue);
+service.on("OnFormat", event => ({
+  result: HookResult.Changed,
+  patch: { text: event.text.trim() },
+}));
+
+// Producer, using its publish handle:
+const decision = formatter.dispatch("OnRequest", { identity: "guest" });
+const formatted = formatter.dispatch("OnFormat", { identity: "guest", text: " hello " });
+// formatted: { result: HookResultValue; payload: { identity: string; text: string } }
+```
+
+`emit` accepts notification names. `dispatch` accepts hook and transform names. Hooks return the highest listener result, defaulting to Continue. Changed alone does not mutate anything. Handled still runs later listeners; Stop ends the snapshot immediately.
+
+Transforms return `{ result, patch? }`. A patch is allowed only with Changed and may contain only the contract's writable keys. The host validates the entire response and all patch fields before applying anything. Optional fields can be omitted; `undefined` does not remove a field. Patches replace whole field values, with no deep merge. Each listener receives a fresh copy of the updated payload, and the producer receives a fresh `{ result, payload }` copy. An empty listener set returns Continue and a copy of the original payload.
+
+Handlers must finish synchronously. A throwing listener, invalid result, invalid patch, or thenable contributes Continue and no patch, with a log naming the provider, consumer, and forward. Promise rejections are observed. A response from a consumer whose generation expired during its callback is discarded. Later listeners still run. This is a fail-open policy: security-sensitive producers must account for it explicitly. Earlier listeners' effects are not rolled back.
+
+Ordering is monotonic registration order within one registration history, not a priority promise across server restarts. Dispatch snapshots IDs, skips removed or stale entries, and does not hold registry borrows while invoking listeners. Nested calls share the 32-call interop bound. Provider removal during a listener stops delivery and throws `InterfaceUnavailable` at the return boundary; already-run effects remain. The public `on` return type remains void in this slice, and registrations still belong to the normal load window.
+
+Forward kind and, for transforms, sorted writable keys are part of canonical metadata and its compatibility digest. Changing either requires compatible producer and consumer contracts even if their payload fields stay identical.
+
 ## Archive and migration contract
 
 SDK builds now stamp host API `3.x`. Protocol 2 archives carry `interfaceProtocol: 2`, a `contract` containing metadata format version 1 and its SHA-256 digest in each `publishes` entry, plus dependency-keyed `interfaceContracts`. `typesSha256` and `compiledAgainst` hash the exact resolved declaration bytes. Canonical metadata sorts object keys recursively and preserves array order. Downloaded copies carrying a receipt are rechecked against that receipt before building.
 
 The API 3 host explicitly accepts API 2 protocol 1 archives. Their existing generic types and permissive wire behavior are retained. Protocol 2 requires API 3 and complete valid metadata; an archive cannot evade the requirement by declaring API 2. Old API 2 hosts reject newly built API 3 archives. Library acquisition and `.s2lib` bundling retain their existing workflow.
 
-Protocol 1 interfaces remain available while a producer and its callers migrate together. Rebuild and deploy both ends with protocol 2; a protocol 1 consumer cannot silently bind to a protocol 2 provider without verified metadata. Interface version matching retains the repository's existing major-based range policy in this slice; exact declaration and metadata hashes provide the additional compatibility checks. Optional watches, hooks, transforms, and named binding helpers are separate slices.
+Protocol 1 interfaces remain available while a producer and its callers migrate together. Rebuild and deploy both ends with protocol 2; a protocol 1 consumer cannot silently bind to a protocol 2 provider without verified metadata. Interface version matching retains the repository's existing major-based range policy in this slice; exact declaration and metadata hashes provide the additional compatibility checks. Optional watches, disposable subscriptions, and named binding helpers are separate slices.

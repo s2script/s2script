@@ -2217,6 +2217,303 @@
         )
         .unwrap();
     }
+
+    fn protocol2_decisions_setup() {
+        protocol2_setup();
+        let mut value = serde_json::to_value(published_contract("@x/counter").unwrap()).unwrap();
+        let payload = serde_json::json!({"kind":"object","fields":{
+            "identity":{"schema":{"kind":"string"},"optional":false},
+            "text":{"schema":{"kind":"string"},"optional":false}}});
+        value["metadata"]["forwards"]["OnRequest"] =
+            serde_json::json!({"kind":"hook","payload":payload});
+        value["metadata"]["forwards"]["OnFormat"] =
+            serde_json::json!({"kind":"transform","payload":payload,"writable":["text"]});
+        use sha2::{Digest, Sha256};
+        value["sha256"] = format!(
+            "{:x}",
+            Sha256::digest(serde_json_canonicalizer::to_vec(&value["metadata"]).unwrap())
+        )
+        .into();
+        let contract: crate::interop::Contract = serde_json::from_value(value).unwrap();
+        assert_eq!(contract.validate(), Ok(()));
+        PLUGIN_PUBLISHES.with(|p| {
+            p.borrow_mut()
+                .get_mut("prod")
+                .unwrap()
+                .get_mut("@x/counter")
+                .unwrap()
+                .contract = Some(contract.clone())
+        });
+        for consumer in ["cons", "cons2"] {
+            set_plugin_interop(
+                consumer,
+                [("@x/counter".into(), contract.clone())]
+                    .into_iter()
+                    .collect(),
+            );
+        }
+    }
+
+    // Test-only internal registry teardown; this creates no late public registration path.
+    fn protocol2_install_teardown_probe() {
+        let g_ctx = PLUGINS.with(|p| p.borrow().get("cons").unwrap().context.clone());
+        HOST.with(|h| {
+            let mut borrow = h.borrow_mut();
+            let host = borrow.as_mut().unwrap();
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let ctx = v8::Local::new(&hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(&mut hs, ctx);
+            fn teardown(
+                scope: &mut v8::PinScope,
+                args: v8::FunctionCallbackArguments,
+                _: v8::ReturnValue,
+            ) {
+                if args.get(0).is_number() {
+                    REGISTRY.with(|r| {
+                        r.borrow_mut().remove("cons");
+                    });
+                } else if args.get(0).boolean_value(scope) {
+                    REGISTRY.with(|r| {
+                        r.borrow_mut().remove("prod");
+                    });
+                    IFACES.with(|r| {
+                        r.borrow_mut().remove_by_producer("prod");
+                    });
+                } else {
+                    let dropped =
+                        IFACES.with(|r| r.borrow_mut().remove_subscribers_by_consumer("cons2"));
+                    IFACE_SUBS.with(|r| {
+                        let mut r = r.borrow_mut();
+                        for (_, id) in dropped {
+                            r.remove(&id);
+                        }
+                    });
+                }
+            }
+            let global = ctx.global(scope);
+            set_native(scope, global, "__test_interop_teardown", teardown);
+        });
+    }
+    #[test]
+    fn protocol2_decisions_internal_removal_skips_snapshot_and_nested_calls_work() {
+        protocol2_decisions_setup();
+        protocol2_install_teardown_probe();
+        eval_in_context("cons",r#"globalThis.nested=0;
+          __s2_iface_on('@x/counter','OnRequest',()=>{nested=__s2_iface_call('@x/counter','getCount',[]);__test_interop_teardown(false);return 1;});"#).unwrap();
+        eval_in_context("cons2",r#"globalThis.called=false;__s2_iface_on('@x/counter','OnRequest',()=>{called=true;return 3;});"#).unwrap();
+        assert_eq!(eval_in_context_string("prod","String(__s2_iface_dispatch('@x/counter','OnRequest',{identity:'a',text:'before'}))"),"1");
+        assert_eq!(eval_in_context_string("cons", "String(nested)"), "1");
+        assert!(!eval_in_context_bool("cons2", "called"));
+        shutdown();
+    }
+    #[test]
+    fn protocol2_decisions_provider_removal_during_listener_throws_and_stops() {
+        protocol2_decisions_setup();
+        protocol2_install_teardown_probe();
+        eval_in_context("cons",r#"__s2_iface_on('@x/counter','OnFormat',()=>{__test_interop_teardown(true);return {result:1,patch:{text:'changed'}}});"#).unwrap();
+        eval_in_context("cons2",r#"globalThis.called=false;__s2_iface_on('@x/counter','OnFormat',()=>{called=true;return {result:3};});"#).unwrap();
+        assert!(eval_in_context_bool(
+            "prod",
+            r#"(()=>{try{__s2_iface_dispatch('@x/counter','OnFormat',{identity:'a',text:'before'});return false}catch(e){return e.message.includes('InterfaceUnavailable')}})()"#
+        ));
+        assert!(!eval_in_context_bool("cons2", "called"));
+        shutdown();
+    }
+    #[test]
+    fn protocol2_decisions_transform_stop_preserves_earlier_patch() {
+        protocol2_decisions_setup();
+        eval_in_context("cons",r#"globalThis.called=false;
+          __s2_iface_on('@x/counter','OnFormat',()=>({result:1,patch:{text:'changed'}}));
+          __s2_iface_on('@x/counter','OnFormat',()=>({result:3}));
+          __s2_iface_on('@x/counter','OnFormat',()=>{called=true;return {result:1,patch:{text:'wrong'}}});"#).unwrap();
+        assert!(eval_in_context_bool(
+            "prod",
+            r#"(()=>{const r=__s2_iface_dispatch('@x/counter','OnFormat',{identity:'a',text:'before'});return r.result===3&&r.payload.text==='changed'})()"#
+        ));
+        assert!(!eval_in_context_bool("cons", "called"));
+        shutdown();
+    }
+
+    #[test]
+    fn protocol2_decisions_nested_recursion_limit_unwinds() {
+        protocol2_decisions_setup();
+        eval_in_context("prod",r#"__s2_iface_publish('@x/counter',{getCount:()=>__s2_iface_dispatch('@x/counter','OnRequest',{identity:'a',text:'before'})});"#).unwrap();
+        eval_in_context("cons",r#"globalThis.limit=false;globalThis.recurse=true;
+          __s2_iface_on('@x/counter','OnRequest',()=>{if(!recurse)return 1;try{return __s2_iface_call('@x/counter','getCount',[])}catch(e){limit=e.message.includes('InterfaceRecursionLimit');return 0}});"#).unwrap();
+        assert_eq!(eval_in_context_string("prod","String(__s2_iface_dispatch('@x/counter','OnRequest',{identity:'a',text:'before'}))"),"0");
+        assert!(eval_in_context_bool("cons", "limit"));
+        eval_in_context("cons", "recurse=false").unwrap();
+        assert_eq!(eval_in_context_string("prod","String(__s2_iface_dispatch('@x/counter','OnRequest',{identity:'a',text:'before'}))"),"1");
+        shutdown();
+    }
+
+    #[test]
+    fn protocol2_decisions_stale_listener_response_cannot_patch_or_stop() {
+        protocol2_decisions_setup();
+        protocol2_install_teardown_probe();
+        eval_in_context("cons",r#"__s2_iface_on('@x/counter','OnFormat',()=>{__test_interop_teardown(2);return {result:1,patch:{text:'stale'}}});"#).unwrap();
+        eval_in_context("cons2",r#"globalThis.seen='';__s2_iface_on('@x/counter','OnFormat',p=>{seen=p.text;return {result:2};});"#).unwrap();
+        assert!(eval_in_context_bool(
+            "prod",
+            r#"(()=>{const r=__s2_iface_dispatch('@x/counter','OnFormat',{identity:'a',text:'before'});return r.result===2&&r.payload.text==='before'})()"#
+        ));
+        assert_eq!(eval_in_context_string("cons2", "seen"), "before");
+        shutdown();
+    }
+
+    #[test]
+    fn protocol2_decisions_nested_patch_is_copied_and_replaces_whole_field() {
+        protocol2_decisions_setup();
+        let mut value = serde_json::to_value(published_contract("@x/counter").unwrap()).unwrap();
+        value["metadata"]["forwards"]["OnFormat"]["payload"]["fields"]["detail"] = serde_json::json!({"optional":true,"schema":{"kind":"object","fields":{
+            "label":{"optional":false,"schema":{"kind":"string"}},"other":{"optional":true,"schema":{"kind":"string"}}}}});
+        value["metadata"]["forwards"]["OnFormat"]["writable"] =
+            serde_json::json!(["detail", "text"]);
+        use sha2::{Digest, Sha256};
+        value["sha256"] = format!(
+            "{:x}",
+            Sha256::digest(serde_json_canonicalizer::to_vec(&value["metadata"]).unwrap())
+        )
+        .into();
+        let contract: crate::interop::Contract = serde_json::from_value(value).unwrap();
+        assert_eq!(contract.validate(), Ok(()));
+        PLUGIN_PUBLISHES.with(|p| {
+            p.borrow_mut()
+                .get_mut("prod")
+                .unwrap()
+                .get_mut("@x/counter")
+                .unwrap()
+                .contract = Some(contract.clone())
+        });
+        set_plugin_interop(
+            "cons",
+            [("@x/counter".into(), contract)].into_iter().collect(),
+        );
+        eval_in_context("cons",r#"globalThis.patch={detail:{label:'accepted'}};
+          __s2_iface_on('@x/counter','OnFormat',()=>({result:1,patch}));
+          __s2_iface_on('@x/counter','OnFormat',p=>{patch.detail.label='source mutation';p.detail.label='listener mutation';return {result:0}});"#).unwrap();
+        assert!(eval_in_context_bool(
+            "prod",
+            r#"(()=>{const input={identity:'a',text:'before',detail:{label:'before',other:'remove'}};const r=__s2_iface_dispatch('@x/counter','OnFormat',input);return r.result===1&&r.payload.detail.label==='accepted'&&!('other' in r.payload.detail)&&input.detail.label==='before'&&input.detail.other==='remove'})()"#
+        ));
+        shutdown();
+    }
+    #[test]
+    fn protocol2_decisions_empty_results_and_modes() {
+        protocol2_decisions_setup();
+        assert_eq!(
+            eval_in_context_string(
+                "prod",
+                r#"String(__s2_iface_dispatch('@x/counter','OnRequest',{identity:'a',text:'before'}))"#
+            ),
+            "0"
+        );
+        assert!(eval_in_context_bool(
+            "prod",
+            r#"(()=>{const r=__s2_iface_dispatch('@x/counter','OnFormat',{identity:'a',text:'before'});return r.result===0 && r.payload.text==='before' && r.payload.identity==='a';})()"#
+        ));
+        for expr in [
+            "__s2_iface_emit('@x/counter','OnRequest',{identity:'a',text:'before'})",
+            "__s2_iface_dispatch('@x/counter','OnCountChanged',{count:1})",
+            "__s2_iface_dispatch('@x/counter','missing',{})",
+            "__s2_iface_dispatch('@x/counter','OnRequest',{identity:'a',text:4})",
+        ] {
+            assert!(eval_in_context("prod", expr).is_err(), "{expr}");
+        }
+        assert!(eval_in_context(
+            "cons",
+            "__s2_iface_dispatch('@x/counter','OnRequest',{identity:'a',text:'before'})"
+        )
+        .is_err());
+        shutdown();
+    }
+    #[test]
+    fn protocol2_decisions_collapse_max_handled_continues_stop_breaks() {
+        protocol2_decisions_setup();
+        eval_in_context("cons",r#"globalThis.actions=[0,1,2];globalThis.seen=[];globalThis.copied=true;
+          for(let i=0;i<3;i++) __s2_iface_on('@x/counter','OnRequest',p=>{seen.push(i);copied=copied&&p.text==='before';p.text='mutated';return actions[i];});"#).unwrap();
+        for (actions, result, seen) in [
+            ("[0,0,0]", "0", "0,1,2"),
+            ("[1,0,0]", "1", "0,1,2"),
+            ("[2,1,0]", "2", "0,1,2"),
+            ("[0,3,2]", "3", "0,1"),
+        ] {
+            eval_in_context("cons", &format!("actions={actions};seen=[];")).unwrap();
+            assert_eq!(eval_in_context_string("prod", "String(__s2_iface_dispatch('@x/counter','OnRequest',{identity:'a',text:'before'}))"),result);
+            assert_eq!(eval_in_context_string("cons", "seen.join(',')"), seen);
+            assert!(eval_in_context_bool("cons", "copied"));
+        }
+        shutdown();
+    }
+    #[test]
+    fn protocol2_decisions_transform_copies_and_validates_whole_response() {
+        protocol2_decisions_setup();
+        eval_in_context("cons",r#"globalThis.patch={text:'accepted'};globalThis.seen=[];
+         __s2_iface_on('@x/counter','OnFormat',p=>{p.identity='mutated';return {result:1,patch};});
+         __s2_iface_on('@x/counter','OnFormat',p=>{seen.push(p.identity+':'+p.text);patch.text='later';return {result:1,patch:{text:'rejected',identity:'forged'}};});
+         __s2_iface_on('@x/counter','OnFormat',p=>{seen.push(p.identity+':'+p.text);return {result:2};});
+         __s2_iface_on('@x/counter','OnFormat',p=>{seen.push(p.identity+':'+p.text);return {result:0};});"#).unwrap();
+        assert!(eval_in_context_bool(
+            "prod",
+            r#"(()=>{const input={identity:'a',text:'before'};const r=__s2_iface_dispatch('@x/counter','OnFormat',input);return r.result===2 && r.payload.text==='accepted' && r.payload.identity==='a' && input.text==='before';})()"#
+        ));
+        assert_eq!(
+            eval_in_context_string("cons", "seen.join(',')"),
+            "a:accepted,a:accepted,a:accepted"
+        );
+        shutdown();
+    }
+    #[test]
+    fn protocol2_decisions_invalid_responses_contribute_continue_and_no_patch() {
+        protocol2_decisions_setup();
+        eval_in_context(
+            "cons",
+            r#"globalThis.reply=()=>0;
+         __s2_iface_on('@x/counter','OnRequest',p=>reply());
+         __s2_iface_on('@x/counter','OnFormat',p=>reply());"#,
+        )
+        .unwrap();
+        eval_in_context("cons2",r#"globalThis.after=0;__s2_iface_on('@x/counter','OnRequest',()=>{after++;return 0;});__s2_iface_on('@x/counter','OnFormat',()=>{after++;return {result:0};});"#).unwrap();
+        let mut attempts = 0;
+        for reply in [
+            "()=>-1",
+            "()=>4",
+            "()=>1.5",
+            "()=>NaN",
+            "()=>Infinity",
+            "()=>'3'",
+            "()=>undefined",
+            "()=>{throw Error('failure')}",
+            "async()=>{throw Error('rejection')}",
+            "()=>({then(_ok,fail){fail(Error('rejection'))}})",
+        ] {
+            attempts += 1;
+            eval_in_context("cons", &format!("reply={reply}")).unwrap();
+            assert_eq!(eval_in_context_string("prod", "String(__s2_iface_dispatch('@x/counter','OnRequest',{identity:'a',text:'before'}))"),"0","{reply}");
+        }
+        for reply in [
+            "()=>({result:4})",
+            "()=>({result:1,extra:1})",
+            "()=>({result:2,patch:{text:'invalid'}})",
+            "()=>({result:1,patch:{text:4}})",
+            "()=>({result:1,patch:{text:'x',identity:'forged'}})",
+            "()=>({result:1,patch:{text:undefined}})",
+            "()=>({result:1,patch:{get text(){throw Error('getter')}}})",
+            "async()=>{throw Error('rejection')}",
+            "()=>{throw Error('failure')}",
+        ] {
+            attempts += 1;
+            eval_in_context("cons", &format!("reply={reply}")).unwrap();
+            assert!(eval_in_context_bool("prod", "(()=>{const r=__s2_iface_dispatch('@x/counter','OnFormat',{identity:'a',text:'before'});return r.result===0&&r.payload.text==='before'&&r.payload.identity==='a'})()"),"{reply}");
+        }
+        assert_eq!(
+            eval_in_context_string("cons2", "String(after)"),
+            attempts.to_string()
+        );
+        assert!(PENDING_REJECTS.with(|r| r.borrow().is_empty()));
+        shutdown();
+    }
     #[test]
     fn protocol2_notifications_validate_before_any_listener_and_enforce_identity() {
         protocol2_setup();

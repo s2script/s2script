@@ -571,3 +571,232 @@ const {setCount} = methods;
 publish("@demo/counter", {getCount: () => 1, setCount});`
     )
   ));
+
+const decisionContract = readFileSync(join(fixtures, "decisions.d.ts"), "utf8");
+function decisions(dir, kind) {
+  writeFileSync(
+    join(
+      dir,
+      kind === "producer"
+        ? "api.d.ts"
+        : ".s2script/types/@demo/counter/index.d.ts"
+    ),
+    decisionContract
+  );
+}
+test("decision forwards infer synchronous handlers and mode-specific producer results", () => {
+  check("producer", (d) => {
+    decisions(d, "producer");
+    source(
+      d,
+      `import {publish} from "@s2script/sdk/plugin";
+import {HookResult, type HookResultValue} from "@s2script/sdk/events";
+const service=publish("@demo/counter",{getCount:()=>1,setCount:(n:number)=>{console.log(n)}});
+const decision:HookResultValue=service.dispatch("OnRequest",{identity:"a"});
+const formatted:{result:HookResultValue;payload:{identity:string;text:string}}=service.dispatch("OnFormat",{identity:"a",text:"before"});
+console.log(decision,formatted,HookResult.Continue);`
+    );
+  });
+  check("consumer", (d) => {
+    decisions(d, "consumer");
+    source(
+      d,
+      `import {use} from "@s2script/sdk/plugin";
+import {HookResult} from "@s2script/sdk/events";
+const service=use("@demo/counter");
+service.on("OnRequest",p=>{console.log(p.identity);return HookResult.Handled;});
+service.on("OnFormat",p=>({result:HookResult.Changed,patch:{text:p.text+"!"}}));`
+    );
+  });
+});
+for (const [name, kind, statement, pattern] of [
+  [
+    "async transform",
+    "consumer",
+    'service.on("OnFormat",async()=>({result:HookResult.Changed,patch:{text:"x"}}));',
+    /Promise/,
+  ],
+  [
+    "async hook",
+    "consumer",
+    'service.on("OnRequest",async()=>HookResult.Stop);',
+    /Promise/,
+  ],
+  [
+    "invalid hook result",
+    "consumer",
+    'service.on("OnRequest",()=>4);',
+    /4|HookResult/,
+  ],
+  [
+    "readonly patch",
+    "consumer",
+    'service.on("OnFormat",()=>({result:HookResult.Changed,patch:{identity:"b"}}));',
+    /identity|patch/,
+  ],
+  [
+    "extra patch key",
+    "consumer",
+    'service.on("OnFormat",()=>({result:HookResult.Changed,patch:{text:"b",identity:"b"}}));',
+    /never|identity|patch/,
+  ],
+  [
+    "extra result key",
+    "consumer",
+    'service.on("OnFormat",()=>({result:HookResult.Changed,extra:1}));',
+    /never|extra|assignable/,
+  ],
+  [
+    "wrong patch value",
+    "consumer",
+    'service.on("OnFormat",()=>({result:HookResult.Changed,patch:{text:1}}));',
+    /string/,
+  ],
+  [
+    "patch without Changed",
+    "consumer",
+    'service.on("OnFormat",()=>({result:HookResult.Handled,patch:{text:"b"}}));',
+    /patch|result|assignable/,
+  ],
+  [
+    "emit hook",
+    "producer",
+    'service.emit("OnRequest",{identity:"a"});',
+    /OnRequest/,
+  ],
+  [
+    "union dispatch assumed transform",
+    "producer",
+    'const event:"OnRequest"|"OnFormat"=Math.random()>0.5?"OnRequest":"OnFormat";console.log(service.dispatch(event,{identity:"a",text:"b"}).payload);',
+    /payload/,
+  ],
+  [
+    "dispatch notification",
+    "producer",
+    'service.dispatch("OnCountChanged",{count:1});',
+    /OnCountChanged/,
+  ],
+])
+  test(`decision forwards reject ${name}`, () =>
+    check(
+      kind,
+      (d) => {
+        decisions(d, kind);
+        source(
+          d,
+          `import {publish,use} from "@s2script/sdk/plugin";import {HookResult} from "@s2script/sdk/events";
+const service=${
+            kind === "producer"
+              ? 'publish("@demo/counter",{getCount:()=>1,setCount:(n:number)=>{console.log(n)}})'
+              : 'use("@demo/counter")'
+          };${statement}`
+        );
+      },
+      pattern
+    ));
+test("decision metadata includes kind and sorted writable keys in its digest", async () => {
+  const { extractContract } = await import("../src/interop.ts");
+  const dir = copy("producer");
+  try {
+    decisions(dir, "producer");
+    const path = join(dir, "api.d.ts");
+    const first = extractContract(path, packages);
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(first)),
+      JSON.parse(readFileSync(join(fixtures, "decisions.json"), "utf8"))
+    );
+    assert.equal(first.metadata.forwards.OnRequest.kind, "hook");
+    assert.deepEqual(first.metadata.forwards.OnFormat.writable, ["text"]);
+    writeFileSync(
+      path,
+      decisionContract.replace(/OnRequest:\s*Hook</, "OnRequest:Notification<")
+    );
+    const changed = extractContract(path, packages);
+    assert.deepEqual(
+      first.metadata.forwards.OnRequest.payload,
+      changed.metadata.forwards.OnRequest.payload
+    );
+    assert.notEqual(first.sha256, changed.sha256);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+for (const [name, pattern] of [
+  ["async-hook", /Promise/],
+  ["illegal-hook-result", /4|HookResult/],
+  ["illegal-patch-key", /never|patch/],
+  ["illegal-response-key", /never|extra/],
+]) {
+  test(`separately compiled decision fixture: ${name}`, () =>
+    check(
+      "consumer",
+      (d) => {
+        decisions(d, "consumer");
+        source(
+          d,
+          readFileSync(join(fixtures, "invalid", name + ".ts"), "utf8")
+        );
+      },
+      pattern,
+      4
+    ));
+}
+for (const descriptor of [
+  'Transform<{text:string},"missing">',
+  "Transform<string,never>",
+  "Transform<string[],never>",
+  "Hook<any>",
+  "{readonly __hookPayload: string}",
+]) {
+  test(`decision metadata rejects unsupported descriptor ${descriptor}`, async () => {
+    const { extractContract } = await import("../src/interop.ts");
+    const dir = copy("producer");
+    try {
+      const path = join(dir, "api.d.ts");
+      writeFileSync(
+        path,
+        `import type {Hook,Transform} from "@s2script/sdk/interfaces"; export interface Contract {methods:{};forwards:{OnRequest:${descriptor}}}`
+      );
+      assert.throws(
+        () => extractContract(path, packages),
+        /constraint|finite object|unsupported|SDK/
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("decision patch union rejects an illegal key present in only one member", () =>
+  check(
+    "consumer",
+    (d) => {
+      decisions(d, "consumer");
+      source(
+        d,
+        readFileSync(
+          join(fixtures, "invalid", "illegal-patch-union-key.ts"),
+          "utf8"
+        )
+      );
+    },
+    /never/,
+    5
+  ));
+test("decision patch union accepts distinct writable fields in every member", () =>
+  check("consumer", (d) => {
+    writeFileSync(
+      join(d, ".s2script/types/@demo/counter/index.d.ts"),
+      `import type {Transform} from "@s2script/sdk/interfaces";
+export interface Contract {methods:{};forwards:{OnFormat:Transform<{identity:string;text:string;suffix?:string},"text"|"suffix">}}`
+    );
+    source(
+      d,
+      `import {use} from "@s2script/sdk/plugin";
+import {HookResult} from "@s2script/sdk/events";
+const service=use("@demo/counter");
+declare const patch: {text:string} | {suffix:string};
+service.on("OnFormat",()=>({result:HookResult.Changed,patch}));`
+    );
+  }));

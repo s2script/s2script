@@ -11,7 +11,14 @@ export interface ContractMetadata {
     string,
     { args: { schema: WireSchema; optional: boolean }[]; result: WireSchema }
   >;
-  forwards: Record<string, { kind: "notification"; payload: WireSchema }>;
+  forwards: Record<
+    string,
+    {
+      kind: "notification" | "hook" | "transform";
+      payload: WireSchema;
+      writable?: string[];
+    }
+  >;
 }
 export interface WireContract {
   metadata: ContractMetadata;
@@ -74,7 +81,7 @@ export function extractContract(
       const bindings = node.importClause?.namedBindings;
       const allowed =
         module === "@s2script/sdk/interfaces"
-          ? ["Notification"]
+          ? ["Notification", "Hook", "Transform"]
           : module === "@s2script/sdk/entity"
           ? ["EntityRef"]
           : [];
@@ -88,7 +95,7 @@ export function extractContract(
       )
         fail(
           node,
-          "contracts must be self-contained; only SDK Notification and EntityRef imports are supported"
+          "contracts must be self-contained; only SDK Notification, Hook, Transform and EntityRef imports are supported"
         );
     }
     if (
@@ -313,23 +320,53 @@ export function extractContract(
   for (const p of prop(contract, "forwards", sf).getProperties()) {
     const node = p.valueDeclaration ?? sf,
       type = checker.getTypeOfSymbolAtLocation(p, node);
-    const brand = type.getProperty("__notificationPayload");
+    const descriptors = [
+      ["notification", "__notificationPayload"],
+      ["hook", "__hookPayload"],
+      ["transform", "__transformPayload"],
+    ] as const;
+    const descriptor = descriptors.filter(([, key]) => type.getProperty(key));
+    if (descriptor.length !== 1)
+      fail(
+        node,
+        "only SDK Notification<P>, Hook<P> and Transform<P,W> forwards are supported"
+      );
+    const [kind, key] = descriptor[0];
+    const brand = type.getProperty(key)!;
     if (
-      !brand ||
       !brand.declarations?.some(
         (d) =>
           d.getSourceFile().fileName ===
           resolve(packagesDir, "sdk/interfaces.d.ts")
       )
     )
-      fail(
-        node,
-        "only SDK Notification<P> forwards are supported by this protocol slice"
-      );
-    forwards[p.name] = {
-      kind: "notification",
-      payload: schema(checker.getTypeOfSymbolAtLocation(brand!, node), node),
-    };
+      fail(node, "forward descriptors must come from the SDK");
+    const payload = schema(
+      checker.getTypeOfSymbolAtLocation(brand, node),
+      node
+    );
+    if (kind === "transform") {
+      if (payload.kind !== "object")
+        fail(node, "Transform requires a finite object payload");
+      const writableType = prop(type, "__transformWritable", node);
+      const keys =
+        writableType.flags & ts.TypeFlags.Never
+          ? []
+          : writableType.isUnion()
+          ? writableType.types
+          : [writableType];
+      const writable = keys
+        .map((t) => {
+          if (!(t.flags & ts.TypeFlags.StringLiteral))
+            fail(node, "Transform writable keys must be string field names");
+          const key = (t as ts.StringLiteralType).value;
+          if (!Object.hasOwn(payload.fields as object, key))
+            fail(node, "Transform writable key is absent from payload");
+          return key;
+        })
+        .sort();
+      forwards[p.name] = { kind, payload, writable };
+    } else forwards[p.name] = { kind, payload };
   }
   const metadata: ContractMetadata = { version: 1, methods, forwards };
   return {
