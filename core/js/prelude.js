@@ -36,7 +36,14 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   function makeIfaceProxy(name) {
     return new Proxy({}, {
       get: function (_t, prop) {
-        if (prop === "on")  return function (ev, h) { return __s2_iface_on(name, ev, h); };
+        if (prop === "on") return function (ev, h) {
+          if (!__s2_iface_verified_import(name)) return __s2_iface_on(name, ev, h);
+          // Direct imports share the typed handle's load buffering and exact-ID disposal.
+          var ctx = __s2_load_ctx_or_throw("interface.on()");
+          var service = __s2_iface_dep_kind(name) === "hard" ? ctx.use(name) : ctx.tryUse(name);
+          if (!service) throw new Error("InterfaceUnavailable: " + name);
+          return service.on(ev, h);
+        };
         if (prop === "off") return function (ev, h) { return __s2_iface_off(name, ev, h); };
         if (typeof prop !== "string") return undefined;
         return function () {

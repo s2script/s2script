@@ -1953,6 +1953,20 @@ fn s2_iface_dep_kind(
     }));
 }
 
+/// Select the declared protocol without depending on provider availability during load buffering.
+fn s2_iface_verified_import(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let name = args.get(0).to_rust_string_lossy(scope);
+        rv.set_bool(current_plugin(scope).is_some_and(|id| {
+            PLUGIN_INTEROP.with(|p| p.borrow().get(&id).is_some_and(|m| m.contains_key(&name)))
+        }));
+    }));
+}
+
 /// `__s2_iface_is_published(name) -> bool` — published AND version-compatible for the current plugin.
 fn s2_iface_is_published(
     scope: &mut v8::PinScope,
@@ -2063,9 +2077,7 @@ fn s2_iface_call(
 
         // Producer context + method Global — extract into owned locals so no IFACES/IFACE_METHODS/PLUGINS
         // borrow is held across the V8 context-switch or the method call (borrow discipline).
-        let Some((producer_id, _gen)) = IFACES.with(|r| r.borrow().producer_of(&name)) else {
-            // _gen unused: re-resolve-by-name each call always targets the current producer; a generation guard
-            // on method_g's origin is a future hardening (publish updates IFACES+IFACE_METHODS atomically today).
+        let Some((producer_id, producer_generation)) = IFACES.with(|r| r.borrow().producer_of(&name)) else {
             throw_named(scope, "InterfaceUnavailable", &name);
             return;
         };
@@ -2160,6 +2172,17 @@ fn s2_iface_call(
             }
         };
 
+        // Reentrant notifications/thenables may retire either participant. The context slot
+        // retains the caller's original generation, even if its registry ID was replaced.
+        if contract.is_some()
+            && (!live_interop_context(scope, &consumer)
+                || !REGISTRY.with(|r| r.borrow().is_live(&producer_id, producer_generation))
+                || IFACES.with(|r| r.borrow().producer_of(&name))
+                    != Some((producer_id, producer_generation)))
+        {
+            throw_named(scope, "InterfaceUnavailable", &name);
+            return;
+        }
         // Back in the consumer context: map the outcome to a return value or a single named throw.
         match outcome {
             Outcome::Ok(json) => match iface_from_json(scope, &json) {
@@ -6312,6 +6335,19 @@ fn s2_async_stats(
     stats["loader"] = crate::loader::metrics();
     stats["staged"] = serde_json::json!({"timers":DUE_TIMERS.with(|q|q.borrow().len()),"ws":crate::ws::pending_count(),"net":crate::net::pending_count(),"cookies":crate::cookies::pending_count(),"http":PARKED_HTTP.with(|q|usize::from(q.borrow().is_some())),"db":PARKED_DB.with(|q|usize::from(q.borrow().is_some()))});
     stats["cache"] = crate::cookies::cache_stats();
+    // Private aggregate diagnostics: fixed-size output, no handles or plugin identities.
+    let (watches, callbacks, attachments, disposers, pending) = interop_lifetime::counts();
+    let ledger = REGISTRY.with(|r| {
+        let r = r.borrow();
+        r.ids().iter().filter_map(|id| r.generation_of(id)
+            .and_then(|generation| r.active_resource_count(id, generation))).sum::<usize>()
+    });
+    stats["interop"] = serde_json::json!({
+        "watches": watches, "callbacks": callbacks, "attachments": attachments,
+        "disposers": disposers, "pending": pending,
+        "subscriptions": IFACE_SUBS.with(|m| m.borrow().len()),
+        "methods": IFACE_METHODS.with(|m| m.borrow().len()), "ledger": ledger,
+    });
     stats["timerExamined"] = serde_json::json!(crate::async_rt::timer_examined());
     let json = stats.to_string();
     if let Some(v) = v8::String::new(scope, &json) {

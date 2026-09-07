@@ -25,26 +25,36 @@ export interface Contract {
 // Producer: registrations belong to the normal plugin load window.
 import { publish } from "@s2script/sdk/plugin";
 let count = 0;
-const counter = publish("@demo/counter", {
-  getCount: () => count,
-  setCount(next: number) {
-    count = next;
-    counter.emit("OnCountChanged", { count });
-  },
-});
+export function OnPluginStart(): void {
+  const counter = publish("@demo/counter", {
+    getCount: () => count,
+    setCount(next: number): void {
+      count = next;
+      counter.emit("OnCountChanged", { count });
+    },
+  });
+}
 ```
 
 ```ts
 // Consumer: package s2script.pluginDependencies includes "@demo/counter": "^1.0.0".
 import { use } from "@s2script/sdk/plugin";
-const counter = use("@demo/counter");
-counter.on("OnCountChanged", event => console.log(event.count));
 // Direct method imports are also derived from Contract.methods:
 import { getCount } from "@demo/counter";
 // Direct on imports use the same inferred payloads and disposable Subscription:
 import { on } from "@demo/counter";
-on("OnCountChanged", event => console.log(event.count));
+export function OnPluginStart(): void {
+  const counter = use("@demo/counter");
+  counter.on("OnCountChanged", event => console.log(event.count));
+  on("OnCountChanged", event => console.log(event.count));
+  console.log(getCount());
+}
 ```
+
+CJS module evaluation runs before the registration window. Put `publish`, `on`,
+`bindForwards`, `watchOptional`, and command registration in `OnPluginStart`, not
+at module top level. Imported declarations and exported handler definitions can stay
+top-level. The host opens the separate optional attachment window described below.
 
 Use `.on` for an inline callback: the selected provider contract infers the payload and the
 returned `Subscription` controls that exact registration. Use `bindForwards` when local handler
@@ -52,7 +62,7 @@ names should differ from the provider's forward names, including handlers export
 organization or tests:
 
 ```ts
-import { bindForwards } from "@s2script/sdk/plugin";
+import { bindForwards, command } from "@s2script/sdk";
 
 type RaceResult = { elapsedMs: number };
 type ParkourResult = { checkpoints: number };
@@ -64,16 +74,20 @@ export function OnParkourFinished(event: ParkourResult): void {
   console.log(event.checkpoints);
 }
 
-const racing = bindForwards("@demo/racing", {
-  OnRunFinished: OnRaceFinished,
-});
-const parkour = bindForwards("@demo/parkour", {
-  OnRunFinished: OnParkourFinished,
-});
+export function OnPluginStart(): void {
+  const racing = bindForwards("@demo/racing", {
+    OnRunFinished: OnRaceFinished,
+  });
+  const parkour = bindForwards("@demo/parkour", {
+    OnRunFinished: OnParkourFinished,
+  });
 
-// Each handle owns only the registrations created by its map.
-racing.dispose();
-parkour.dispose();
+  // This example command disables both integrations later.
+  command.server("sm_disable_integrations", () => {
+    racing.dispose();
+    parkour.dispose();
+  });
+}
 ```
 
 Forward keys stay qualified by the provider passed to `bindForwards`, so the identical
@@ -90,7 +104,9 @@ The CLI generates `.s2script/interfaces.d.ts` for name-based inference. New scaf
 
 The supported algebra is null, boolean, finite number, string, literal enums, arrays, finite object records with optional fields, discriminated object unions, and the SDK's existing `EntityRef`. Method results may also be void. All domain types must be declared in the entry file. Only SDK `Notification`, `Hook`, `Transform`, `HookResultValue`, and `EntityRef` imports are supported; external domain imports, re-exports, reference directives, unbounded dictionaries, recursive types, arbitrary classes, functions, BigInt, Promise, any, and unknown are rejected. This validates the documented wire algebra, not arbitrary TypeScript.
 
-Values cross by copy. Every field is checked before any producer method or notification listener receives the value; method results are checked before returning to the consumer. Unknown fields, present-but-undefined fields, nonfinite numbers, sparse arrays, symbols, proxies, accessors, and `toJSON` coercions do not pass the strict copy path. Omit an optional field or argument instead of passing undefined. `__s2ref` is reserved for the existing entity-reference wire envelope, which retains the host's reference/liveness checks. Carry persistent player identity as copied identifiers and a map generation; a bare retained client slot is not a stable identity.
+Contract value exports must agree with `Contract.methods`; extra functions, constants, enums, and aliases to runtime values are rejected. Type aliases, interfaces, and explicit type-only exports remain supported.
+
+Values cross by copy. Unpaired UTF-16 surrogates in strings or property names are rejected before delivery; valid BMP and non-BMP text is preserved. Every field is checked before any producer method or notification listener receives the value; method results are checked before returning to the consumer. Both original participant generations and the interface owner must still be live at that return boundary, including for void results. Unknown fields, present-but-undefined fields, nonfinite numbers, sparse arrays, symbols, proxies, accessors, and `toJSON` coercions do not pass the strict copy path. Omit an optional field or argument instead of passing undefined. `__s2ref` is reserved for the existing entity-reference wire envelope, which retains the host's reference/liveness checks. Carry persistent player identity as copied identifiers and a map generation; a bare retained client slot is not a stable identity.
 
 Metadata hashes use RFC 8785 JSON Canonicalization Scheme (JCS): ECMAScript finite-number serialization and string escaping, with object keys sorted by UTF-16 code units. Lone-surrogate strings are rejected. The SDK and host share regression vectors covering decimal/exponent transitions and BMP/non-BMP key ordering. Authored names, including `__proto__`, are preserved as own dictionary entries.
 
@@ -119,14 +135,20 @@ export interface Contract {
 // Consumer, during the load window:
 import { use } from "@s2script/sdk/plugin";
 import { HookResult } from "@s2script/sdk/events";
-const service = use("@demo/formatter");
-service.on("OnRequest", event =>
-  event.identity === "blocked" ? HookResult.Handled : HookResult.Continue);
-service.on("OnFormat", event => ({
-  result: HookResult.Changed,
-  patch: { text: event.text.trim() },
-}));
+export function OnPluginStart(): void {
+  const service = use("@demo/formatter");
+  service.on("OnRequest", event =>
+    event.identity === "blocked" ? HookResult.Handled : HookResult.Continue);
+  service.on("OnFormat", event => ({
+    result: HookResult.Changed,
+    patch: { text: event.text.trim() },
+  }));
+}
+```
 
+The producer can dispatch later from its registered command or method callback:
+
+```ts
 // Producer, using its publish handle:
 const decision = formatter.dispatch("OnRequest", { identity: "guest" });
 const formatted = formatter.dispatch("OnFormat", { identity: "guest", text: " hello " });
@@ -145,18 +167,20 @@ Forward kind and, for transforms, sorted writable keys are part of canonical met
 
 ## Ownership and optional providers
 
-Every `on` returns an idempotent `Subscription` with `dispose(): void`. Disposal removes that exact registration, even when the same handler is subscribed twice. Disposing before the buffered registration arms cancels it. Disposing during dispatch makes the remaining snapshot skip the removed entry. The host also ledgers subscriptions to the consumer and removes them automatically when either participant unloads.
+Every protocol-2 `on`, including a direct producer import, returns an idempotent `Subscription` with `dispose(): void`. Disposal removes that exact registration, even when the same handler is subscribed twice. Disposing before the buffered registration arms cancels it. Disposing during dispatch makes the remaining snapshot skip the removed entry. The host also ledgers subscriptions to the consumer and removes them automatically when either participant unloads.
 
 Declare an optional provider under `s2script.optionalPluginDependencies`, acquire its contract using the existing types-only `s2s add` workflow, and register a watch during the normal load window:
 
 ```ts
 import { watchOptional } from "@s2script/sdk/plugin";
-const watch = watchOptional("@demo/counter", (counter, scope) => {
-  scope.own(counter.on("OnCountChanged", event => console.log(event.count)));
-  // Any local disposable can belong to this attachment.
-  scope.own({ dispose() { console.log("counter attachment ended"); } });
-});
-// Calling watch.dispose() later removes the watch and its current attachment.
+export function OnPluginStart(): void {
+  const watch = watchOptional("@demo/counter", (counter, scope) => {
+    scope.own(counter.on("OnCountChanged", event => console.log(event.count)));
+    // Any local disposable can belong to this attachment.
+    scope.own({ dispose() { console.log("counter attachment ended"); } });
+  });
+  // Calling watch.dispose() from a later callback removes the watch and attachment.
+}
 ```
 
 The host calls `attach` at a lifecycle boundary after both plugins become Active, once per compatible provider identity and generation. Publication never recursively invokes an attachment. A watch remains pending while the provider is absent. Version, declaration hash, and canonical wire metadata must all agree. An incompatible provider logs a diagnostic and does not attach; a later compatible generation can attach normally. `tryUse` remains a one-time optional lookup and does not track availability.
@@ -165,7 +189,11 @@ The supplied service permits `on` registration only during this synchronous atta
 
 `scope.own<T extends { dispose(): void }>(resource: T): T` returns its input and retains its disposer for this attachment. Forward subscriptions created through the supplied service are automatically attachment-owned, including when `scope.own` is omitted. If attachment throws or returns a thenable, all partial subscriptions and owned disposables are retired; other watches continue. The SDK rejects statically visible async/thenable attachment callbacks, and the host observes thenables without extending registration authorization. Failed attempts retry only for a new compatible provider generation.
 
-Provider removal disposes the attachment locally; host teardown never calls provider methods to unsubscribe. Consumer removal disposes its watches and attachments before dropping the context. Watch disposal also releases its availability callback and registry row. Teardown invalidates the attachment and subscriptions before running custom disposers in reverse ownership order; a throwing or reentrant disposer cannot prevent the remaining cleanup. Keep disposers synchronous and local. Hard dependencies preserve the existing reverse-dependency unload order.
+Provider removal disposes the attachment locally; host teardown never calls provider methods to unsubscribe. Consumer removal disposes its watches and attachments before dropping the context. Watch disposal also releases its availability callback and registry row. Teardown invalidates the attachment and subscriptions before running custom disposers in reverse ownership order; a throwing or reentrant disposer cannot prevent the remaining cleanup. Keep disposers synchronous and local. Hard dependencies preserve the existing reverse-dependency order when unloading a set.
+Manually unloading one provider leaves hard consumers running and removes bindings to that
+provider; bindings to other providers remain. After manually restarting the provider, reload
+the hard consumer to register those forward bindings again. Use `watchOptional` for automatic
+reattachment across provider generations.
 
 ## Archive and migration contract
 
@@ -173,7 +201,7 @@ SDK builds now stamp host API `3.x`. Protocol 2 archives carry `interfaceProtoco
 
 The API 3 host explicitly accepts API 2 protocol 1 archives. Their existing generic types and permissive wire behavior are retained. Protocol 2 requires API 3 and complete valid metadata; an archive cannot evade the requirement by declaring API 2. Old API 2 hosts reject newly built API 3 archives. Library acquisition and `.s2lib` bundling retain their existing workflow.
 
-Protocol 1 interfaces remain available while a producer and its callers migrate together. Rebuild and deploy both ends with protocol 2; a protocol 1 consumer cannot silently bind to a protocol 2 provider without verified metadata. Interface version matching retains the repository's existing major-based range policy in this slice; exact declaration and metadata hashes provide the additional compatibility checks. Named binding helpers are a separate slice.
+Protocol 1 interfaces remain available while a producer and its callers migrate together. Rebuild and deploy both ends with protocol 2; a protocol 1 consumer cannot silently bind to a protocol 2 provider without verified metadata. Interface version matching retains the repository's existing major-based range policy in this slice; exact declaration and metadata hashes provide the additional compatibility checks. Explicit named binding maps are supported as described above.
 
 ## Zones migration
 
@@ -283,3 +311,13 @@ only for true; removal likewise exposes no disk acknowledgement.
 The interop-observer example owns all three subscriptions in watchOptional's scope,
 so it can attach again after a compatible BaseBans provider reload using only the
 copied contract. It observes requests and returns Continue; it never bans a player.
+
+
+## Integrated acceptance
+
+The [four-plugin acceptance workspace](../tools/interop-acceptance/README.md) exercises two
+same-name interfaces, inline and named handlers, malformed values, recursion recovery,
+consumer disposal, map guards and 1,000 actual optional-provider reload cycles. It includes
+compact deterministic JSON replies and a strict evidence validator. Private host aggregate
+diagnostics compare active and absent resource baselines; there is no public SDK diagnostic API.
+Live results require the exact frozen artifacts and separately recorded client checks.

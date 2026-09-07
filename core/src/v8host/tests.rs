@@ -2398,10 +2398,14 @@
         assert_eq!(plugin_phase("cons"),Some(plugin::Phase::Active));
         let baseline=owned_interop_ledger_count("cons");
         assert_eq!(interop_lifetime::counts(),(1,1,0,0,0));
+        let diagnostic_baseline = eval_in_context_string("cons", "JSON.stringify(JSON.parse(__s2_async_stats()).interop)");
+        assert!(diagnostic_baseline.contains("\"watches\":1"), "{diagnostic_baseline}");
         for i in 1..=1000 {
             owned_interop_load_provider(decl.clone(),"ctx.publish('@x/counter',{getCount:()=>1});");
             assert_eq!(interop_lifetime::counts(),(1,1,1,2,0),"cycle {i}");
             assert_eq!(owned_interop_ledger_count("cons"),baseline+2);
+            assert_eq!(eval_in_context_string("cons", "String(JSON.parse(__s2_async_stats()).interop.attachments)"), "1");
+            assert_eq!(eval_in_context_string("cons", "String(JSON.parse(__s2_async_stats()).interop.subscriptions)"), "1");
             assert_eq!(IFACE_SUBS.with(|m|m.borrow().len()),1);
             assert_eq!(IFACES.with(|r|r.borrow().lookup("@x/counter").unwrap().subscribers.len()),1);
             eval_in_context("prod","__s2_iface_emit('@x/counter','OnCountChanged',{count:1})").unwrap();
@@ -2410,6 +2414,7 @@
             unload_plugin("prod");
             assert_eq!(interop_lifetime::counts(),(1,1,0,0,0));
             assert_eq!(owned_interop_ledger_count("cons"),baseline);
+            assert_eq!(eval_in_context_string("cons", "JSON.stringify(JSON.parse(__s2_async_stats()).interop)"), diagnostic_baseline);
             assert!(IFACE_SUBS.with(|m|m.borrow().is_empty()));
             assert!(IFACE_METHODS.with(|m|m.borrow().is_empty()));
             assert!(IFACES.with(|r|r.borrow().lookup("@x/counter").is_none()));
@@ -2622,6 +2627,168 @@
         }
     }
 
+    #[test]
+    fn final_review_method_return_rechecks_removed_consumer() {
+        final_review_method_liveness("2", false);
+        final_review_method_liveness("2", true);
+    }
+    #[test]
+    fn final_review_method_return_rechecks_removed_provider() {
+        final_review_method_liveness("true", false);
+        final_review_method_liveness("true", true);
+    }
+    #[test]
+    fn final_review_method_return_rechecks_replaced_generations_and_live_control() {
+        for action in ["'cons'", "'prod'", "'owner'", "null"] {
+            for void in [false, true] {
+                final_review_method_liveness(action, void);
+            }
+        }
+    }
+    fn final_review_method_liveness(action: &str, void: bool) {
+        protocol2_setup();
+        if void {
+            let mut contract = published_contract("@x/counter").unwrap();
+            contract.metadata.methods.get_mut("getCount").unwrap().result = crate::interop::Schema::Void;
+            final_review_install_contract(contract);
+        }
+        protocol2_install_teardown_probe();
+        eval_in_context("prod", &format!(r#"__s2_iface_publish('@x/counter',{{getCount:()=>{{__s2_iface_emit('@x/counter','OnCountChanged',{{count:1}});return {}}}}});"#, if void { "undefined" } else { "1" })).unwrap();
+        eval_in_context("cons", &format!(r#"globalThis.hits=0;__s2_iface_on('@x/counter','OnCountChanged',()=>{{hits++;if({action}!==null)__test_interop_teardown({action});}});"#)).unwrap();
+        let outcome = eval_in_context_string("cons", r#"(()=>{try{return 'returned:'+__s2_iface_call('@x/counter','getCount',[])}catch(e){return e.message}})()"#);
+        println!("method return action={action} void={void}: {outcome}");
+        assert_eq!(eval_in_context_string("cons", "String(hits)"), "1");
+        if action == "null" {
+            assert_eq!(outcome, if void { "returned:undefined" } else { "returned:1" });
+        } else {
+            assert!(outcome.contains("InterfaceUnavailable"), "expired method return: {outcome}");
+        }
+        shutdown();
+    }
+    fn final_review_install_contract(mut contract: crate::interop::Contract) {
+        use sha2::{Digest, Sha256};
+        contract.sha256 = format!("{:x}", Sha256::digest(serde_json_canonicalizer::to_vec(&contract.metadata).unwrap()));
+        assert_eq!(contract.validate(), Ok(()));
+        PLUGIN_PUBLISHES.with(|p| p.borrow_mut().get_mut("prod").unwrap().get_mut("@x/counter").unwrap().contract = Some(contract.clone()));
+        for consumer in ["cons", "cons2"] {
+            set_plugin_interop(consumer, [("@x/counter".into(), contract.clone())].into_iter().collect());
+        }
+    }
+    #[test]
+    fn final_review_string_values_do_not_silently_change() {
+        protocol2_decisions_setup();
+        eval_in_context("cons",r#"globalThis.seen=[];__s2_iface_on('@x/counter','OnFormat',p=>{seen.push(p.text);return {result:0}});"#).unwrap();
+        for value in [r#"'\ud800'"#, r#"'\udfff'"#, r#"'x\ud800y'"#, r#"'\udc00\ud800'"#] {
+            let outcome=eval_in_context_string("prod", &format!(r#"(()=>{{try{{__s2_iface_dispatch('@x/counter','OnFormat',{{identity:'a',text:{value}}});return 'accepted'}}catch(e){{return e.message}}}})()"#));
+            println!("malformed UTF-16 {value}: {outcome}");
+            assert!(outcome.contains("InterfaceValueNotSerializable"), "{outcome}");
+        }
+        assert_eq!(eval_in_context_string("cons", "String(seen.length)"), "0");
+        assert!(eval_in_context_bool("prod", r#"(()=>{const text='\u0000é漢\ud83d\ude00\ufffd';const out=__s2_iface_dispatch('@x/counter','OnFormat',{identity:'a',text});return out.payload.text===text})()"#));
+        assert!(eval_in_context_bool("cons", r#"seen.length===1&&seen[0]==='\u0000é漢\ud83d\ude00\ufffd'"#));
+        shutdown();
+    }
+    #[test]
+    fn final_review_unicode_property_names_and_method_values_are_strict() {
+        protocol2_setup();
+        let mut value = serde_json::to_value(published_contract("@x/counter").unwrap()).unwrap();
+        let shape = serde_json::json!({"kind":"object","fields":{
+            "é漢😀":{"schema":{"kind":"string"},"optional":false},
+            "�":{"schema":{"kind":"string"},"optional":true}
+        }});
+        value["metadata"]["methods"]["getCount"] = serde_json::json!({"args":[{"schema":shape,"optional":false}],"result":shape});
+        final_review_install_contract(serde_json::from_value(value).unwrap());
+        eval_in_context("prod", r#"globalThis.calls=0;__s2_iface_publish('@x/counter',{getCount:p=>{calls++;return p}});"#).unwrap();
+        assert!(eval_in_context_bool("cons", r#"(()=>{const p={'é漢😀':'\u0000é漢😀�','�':'ok'};const q=__s2_iface_call('@x/counter','getCount',[p]);return q!==p&&JSON.stringify(q)===JSON.stringify(p)})()"#));
+        for payload in [r#"{'é漢😀':'ok','\ud800':'bad','�':'ok'}"#, r#"{'é漢😀':'\ud800'}"#, r#"{'é漢😀':'ok','\udfff':'bad'}"#] {
+            assert!(eval_in_context_bool("cons", &format!(r#"(()=>{{try{{__s2_iface_call('@x/counter','getCount',[{payload}]);return false}}catch(e){{return e.message.includes('InterfaceValueNotSerializable')}}}})()"#)));
+        }
+        assert_eq!(eval_in_context_string("prod", "String(calls)"), "1", "malformed keys/values must never enter the method");
+        for payload in [r#"{'é漢😀':'\ud800'}"#, r#"{'é漢😀':'ok','\ud800':'bad','�':'ok'}"#] {
+            eval_in_context("prod", &format!(r#"__s2_iface_publish('@x/counter',{{getCount:()=>({payload})}});"#)).unwrap();
+            assert!(eval_in_context_bool("cons", r#"(()=>{try{__s2_iface_call('@x/counter','getCount',[{'é漢😀':'ok'}]);return false}catch(e){return e.message.includes('InterfaceValueNotSerializable')}})()"#));
+        }
+        shutdown();
+    }
+    #[test]
+    fn final_review_producer_import_on_returns_subscription() {
+        protocol2_setup();
+        dispose_plugin_context("cons");
+        load_body("cons",r#"const counter=__s2_require('@x/counter');globalThis.sub=counter.on('OnCountChanged',()=>{});"#,"{}");
+        let outcome=eval_in_context_string("cons",r#"(()=>{try{sub.dispose();sub.dispose();return 'disposed'}catch(e){return 'typeof='+typeof sub+'; '+e.message}})()"#);
+        println!("direct import on outcome: {outcome}");
+        assert_eq!(outcome,"disposed","generated Subscription declaration must match producer-as-import runtime");
+        assert!(IFACE_SUBS.with(|m|m.borrow().is_empty()));
+        shutdown();
+    }
+    #[test]
+    fn final_review_direct_import_buffers_cancels_and_disposes_exact_ids() {
+        for optional in [false, true] {
+            if optional { optional_interop_setup(); } else { protocol2_setup(); }
+            eval_in_context("prod", r#"__s2_iface_publish('@x/counter',{getCount:()=>{__s2_iface_emit('@x/counter','OnCountChanged',{count:1});return 1}});"#).unwrap();
+            dispose_plugin_context("cons");
+            // Actual CJS producer import, with registration in the public OnPluginStart entry.
+            load_plugin_js("cons", r#"
+              const {on,getCount}=__s2_require('@x/counter');globalThis.hits=0;globalThis.savedOn=on;
+              module.exports.OnPluginStart=function(){
+                let cancelled=()=>{hits+=1000};globalThis.cancelledRef=new WeakRef(cancelled);
+                globalThis.cancelledSub=on('OnCountChanged',cancelled);cancelledSub.dispose();cancelledSub.dispose();cancelled=null;
+                let shared=()=>{hits++};globalThis.sharedRef=new WeakRef(shared);
+                globalThis.first=on('OnCountChanged',shared);globalThis.second=on('OnCountChanged',shared);shared=null;
+                getCount();globalThis.bufferedHits=hits;
+              };
+            "#, "{}");
+            assert_eq!(plugin_phase("cons"), Some(plugin::Phase::Active));
+            assert_eq!(eval_in_context_string("cons", "String(bufferedHits)"), "0");
+            assert_eq!(IFACE_SUBS.with(|m| m.borrow().len()), 2);
+            eval_in_context("prod", "__s2_iface_emit('@x/counter','OnCountChanged',{count:1})").unwrap();
+            assert_eq!(eval_in_context_string("cons", "String(hits)"), "2");
+            eval_in_context("cons", "first.dispose();first.dispose()").unwrap();
+            assert_eq!(IFACE_SUBS.with(|m| m.borrow().len()), 1);
+            eval_in_context("prod", "__s2_iface_emit('@x/counter','OnCountChanged',{count:1})").unwrap();
+            assert_eq!(eval_in_context_string("cons", "String(hits)"), "3");
+            assert!(eval_in_context("cons", "savedOn('OnCountChanged',()=>{})").is_err());
+            eval_in_context("cons", "second.dispose();second.dispose()").unwrap();
+            frame_async_drain();
+            eval_in_context("cons", "__s2_v8_gc()").unwrap();
+            assert!(eval_in_context_bool("cons", "cancelledRef.deref()===undefined&&sharedRef.deref()===undefined"));
+            assert!(IFACE_SUBS.with(|m| m.borrow().is_empty()));
+            shutdown();
+        }
+    }
+
+    #[test]
+    fn final_review_direct_import_disposal_skips_dispatch_snapshot() {
+        protocol2_setup();
+        dispose_plugin_context("cons");
+        load_body("cons", r#"
+          const {on}=__s2_require('@x/counter');globalThis.hits=0;
+          globalThis.first=on('OnCountChanged',()=>{hits++;second.dispose()});
+          globalThis.second=on('OnCountChanged',()=>{hits+=100});
+        "#, "{}");
+        eval_in_context("prod", "__s2_iface_emit('@x/counter','OnCountChanged',{count:1})").unwrap();
+        assert_eq!(eval_in_context_string("cons", "String(hits)"), "1");
+        assert_eq!(IFACE_SUBS.with(|m| m.borrow().len()), 1);
+        eval_in_context("cons", "first.dispose()").unwrap();
+        assert!(IFACE_SUBS.with(|m| m.borrow().is_empty()));
+        shutdown();
+    }
+    #[test]
+    fn final_review_protocol1_direct_import_and_return_behavior_is_preserved() {
+        for action in ["2", "true"] {
+            protocol2_setup();
+            PLUGIN_PUBLISHES.with(|p| p.borrow_mut().get_mut("prod").unwrap().get_mut("@x/counter").unwrap().contract = None);
+            set_plugin_interop("cons", Default::default());
+            protocol2_install_teardown_probe();
+            eval_in_context("prod", r#"__s2_iface_publish('@x/counter',{getCount:p=>p});"#).unwrap();
+            assert!(eval_in_context_bool("cons", r#"__s2_require('@x/counter').getCount('\ud800')==='\ud800'"#));
+            eval_in_context("prod", r#"__s2_iface_publish('@x/counter',{getCount:()=>{__s2_iface_emit('@x/counter','OnCountChanged',{count:1});return 1}});"#).unwrap();
+            assert!(eval_in_context_bool("cons", &format!(r#"typeof __s2_require('@x/counter').on('OnCountChanged',()=>__test_interop_teardown({action}))==='number'"#)));
+            assert_eq!(eval_in_context_string("cons", "String(__s2_require('@x/counter').getCount())"), "1");
+            shutdown();
+        }
+    }
+
     // Test-only internal registry teardown; this creates no late public registration path.
     fn protocol2_install_teardown_probe() {
         let g_ctx = PLUGINS.with(|p| p.borrow().get("cons").unwrap().context.clone());
@@ -2637,7 +2804,19 @@
                 args: v8::FunctionCallbackArguments,
                 _: v8::ReturnValue,
             ) {
-                if args.get(0).is_number() {
+                if args.get(0).is_string() {
+                    let id = args.get(0).to_rust_string_lossy(scope);
+                    if id == "owner" {
+                        let generation = REGISTRY.with(|r| r.borrow().generation_of("cons2")).unwrap();
+                        IFACES.with(|r| {
+                            let mut r = r.borrow_mut();
+                            r.remove_by_producer("prod");
+                            r.publish("@x/counter", "1.0.0", &"a".repeat(64), "cons2", generation, vec!["getCount".into()]).unwrap();
+                        });
+                    } else {
+                        REGISTRY.with(|r| { r.borrow_mut().insert(id); });
+                    }
+                } else if args.get(0).is_number() {
                     REGISTRY.with(|r| {
                         r.borrow_mut().remove("cons");
                     });

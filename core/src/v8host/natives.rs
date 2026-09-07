@@ -64,6 +64,7 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     // Inter-plugin interface primitives (Slice 4.5).
     set_native(scope, global_obj, "__s2_iface_publish", s2_iface_publish);
     set_native(scope, global_obj, "__s2_iface_dep_kind", s2_iface_dep_kind);
+    set_native(scope, global_obj, "__s2_iface_verified_import", s2_iface_verified_import);
     set_native(
         scope,
         global_obj,
