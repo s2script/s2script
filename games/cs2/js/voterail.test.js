@@ -22,6 +22,8 @@ function mount(options = {}) {
   const disarmed = [];
   const cast = [];
   let renderer;
+  let disconnect;
+  const clients = new Map();
 
   const element = (id) => elements[id] || (elements[id] = fakeElement());
   const view = {
@@ -73,7 +75,7 @@ function mount(options = {}) {
   globalThis.__s2pkg_votes = {
     Vote: { registerTallyRenderer: (value) => { renderer = value; } },
   };
-  globalThis.__s2pkg_clients = { Clients: { onDisconnect() {} } };
+  globalThis.__s2pkg_clients = { Clients: { onDisconnect(fn) { disconnect = fn; }, fromSlot: slot => clients.get(slot) || null } };
   globalThis.__s2_vote_cast = (slot, index) => cast.push({ slot, index });
   delete globalThis.__s2pkg_voterail;
 
@@ -82,10 +84,19 @@ function mount(options = {}) {
   const goLive = () => { for (const cb of liveWaiters.splice(0)) cb({ layout }); };
   if (!options.deferLive) goLive();
   return {
-    elements, clickHandlers, calls, armed, disarmed, cast, created, goLive,
+    elements, clickHandlers, calls, armed, disarmed, cast, created, goLive, disconnect, clients,
     get renderer() { return renderer; },
   };
 }
+
+test("a deferred old disconnect preserves the replacement vote rail", () => {
+  const mounted = mount();
+  mounted.clients.set(2, { isValid: () => true });
+  mounted.renderer.show(2, tally());
+  mounted.disconnect({ slot: 2 });
+  assert.equal(mounted.elements.s2_vote.classList.contains("s2-hide"), false);
+  assert.equal(mounted.disarmed.length, 0);
+});
 
 function tally(choice = null) {
   return {

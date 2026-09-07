@@ -21,6 +21,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import vm from "node:vm";
+import { installClientHost } from "./client-host.mjs";
 import { cs2AddonBundle } from "./cs2-addon.mjs";
 
 /** Every descriptor gamedata/cs2/game.cs2.jsonc declares — the default "all eight resolved" host. */
@@ -120,6 +121,7 @@ function makeHost({ ready = ALL_CALLS, onInvoke } = {}) {
     console: { log: (m) => logs.push(String(m)) },
   };
   ctx.globalThis = ctx;
+  const clientHost = installClientHost(ctx);
   vm.createContext(ctx);
   vm.runInContext(cs2AddonBundle, ctx);
 
@@ -136,6 +138,7 @@ function makeHost({ ready = ALL_CALLS, onInvoke } = {}) {
     names: () => invokes.map((i) => i.name),
     /** A dead player on `slot`, with a live controller and a live m_hPlayerPawn. */
     player(slot) {
+      if (!ctx.__s2pkg_clients.Clients.fromSlot(slot)) clientHost.connect(slot);
       const p = pkg.Player._fromSlotUnchecked(slot);
       p.ref.alive = false;
       return p;

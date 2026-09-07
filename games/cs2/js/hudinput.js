@@ -9,8 +9,8 @@
 
   function state(slot) {
     var s = states[slot];
-    if (!s) {
-      s = { armed: false, active: false, held: false, swallowHold: false, onActivate: null };
+    if (!s || (s.client && !s.client.isValid())) {
+      s = { client: Clients && Clients.fromSlot(slot), armed: false, active: false, held: false, swallowHold: false, onActivate: null };
       states[slot] = s;
     }
     return s;
@@ -72,7 +72,7 @@
 
   if (Clients && typeof Clients.onDisconnect === "function") {
     Clients.onDisconnect(function (c) {
-      if (c && typeof c.slot === "number") HudInput.disarm(c.slot);
+      if (c && typeof c.slot === "number" && !Clients.fromSlot(c.slot)) delete states[c.slot];
     });
   }
 

@@ -17,6 +17,8 @@
 #define S2SCRIPT_DEFER_QUEUE_H
 
 #include <cstddef>
+#include <cstdint>
+#include "s2script_core.h"
 #include <string>
 
 // One variant per deferrable core entry. Adding a deferrable dispatch means adding a variant —
@@ -37,6 +39,10 @@ struct S2Deferred {
     std::string    b;   // entity_event: className | cvar_change: newValue                             (else empty)
     std::string    c;   // cvar_change: oldValue                                                       (else empty)
     int            i = 0;          // client_event: slot | entity_event: packed CEntityHandle          (else 0)
+    uint64_t token = 0;
+    bool has_identity = false;
+    int user_id = -1, signon = -1;
+    std::string steam_id, client_name, address;
     void*          dup = nullptr;  // game_event ONLY: the shim-minted IGameEvent duplicate, opaque here.
                                    // Owned by whoever holds the entry — the queue, or the drain once it
                                    // has moved the entry onto its own stack. Freed exactly once, via
@@ -70,6 +76,7 @@ int S2Defer_Max();
 // call-scoped) and the one payload-carrying variant (capacity is checked BEFORE the duplication,
 // so an overflow can never leak an event).
 void S2Defer_PushScalar(S2DeferredKind kind, const char* a, const char* b, const char* c, int i);
+void S2Defer_PushClient(const char* name, int slot, uint64_t token, const S2ClientIdentity* identity);
 void S2Defer_PushGameEvent(const char* name, void* ev);
 
 // Replay everything queued since the last drain. Called at the TOP of Hook_GameFramePre, where the

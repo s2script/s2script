@@ -98,6 +98,26 @@ void S2Defer_PushScalar(S2DeferredKind kind, const char* a, const char* b, const
     s_queue.push_back(std::move(e));
 }
 
+void S2Defer_PushClient(const char* name, int slot, uint64_t token, const S2ClientIdentity* identity) {
+    if (static_cast<int>(s_queue.size()) >= kDeferredQueueMax) {
+        Logf("[s2script] deferred-dispatch: queue full (%d) — dropped client_event '%s' (newest)\n", kDeferredQueueMax, name ? name : "");
+        return;
+    }
+    S2Deferred e;
+    e.kind = S2_DEFERRED_CLIENT_EVENT;
+    e.a = name ? name : "";
+    e.i = slot;
+    e.token = token;
+    if (identity) {
+        e.has_identity = true;
+        e.user_id = identity->user_id; e.signon = identity->signon;
+        e.steam_id = identity->steam_id ? identity->steam_id : "0";
+        e.client_name = identity->name ? identity->name : "";
+        e.address = identity->address ? identity->address : "";
+    }
+    s_queue.push_back(std::move(e));
+}
+
 // game_event is the ONE variant with a payload. Its handlers must read the REAL field values, and
 // the engine's IGameEvent is valid only across the original call — so the queue takes its own copy.
 // Capacity is checked BEFORE the duplication, so an overflow can never leak an event. Both failure

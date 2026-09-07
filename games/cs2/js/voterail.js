@@ -140,7 +140,7 @@
 
     if (Clients && typeof Clients.onDisconnect === "function") {
       Clients.onDisconnect(function (c) {
-        if (c && typeof c.slot === "number" && tallies[c.slot]) hide(c.slot);
+        if (c && typeof c.slot === "number" && !Clients.fromSlot(c.slot) && tallies[c.slot]) hide(c.slot);
       });
     }
 

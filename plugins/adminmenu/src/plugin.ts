@@ -1,10 +1,12 @@
 import {
   command, topmenu, translations, TopMenu, Admin, ADMFLAG, Translations,
-  HookResult,
+  HookResult, Clients,
 } from "@s2script/sdk";
 import type { Client, PhraseKey, TopMenuSheet } from "@s2script/sdk";
 import { hudkit, Player } from "@s2script/cs2";
-import type { Dashboard, DashRow, DashTab } from "@s2script/cs2";
+import type { Dashboard, DashRow, DashTab, Pawn } from "@s2script/cs2";
+
+declare const __s2pkg_clients: { _same(a: Client | undefined, b: Client): boolean };
 
 function itemOnSheet(item: { sheets?: TopMenuSheet[] }, sheet: TopMenuSheet): boolean {
   const sheets = item.sheets && item.sheets.length > 0 ? item.sheets : ["admin"];
@@ -37,24 +39,23 @@ function visibleTabs(slot: number, flags: number, sheet: TopMenuSheet): DashTab[
     .map(id => ({ id, title: tabTitle(slot, { id, title: titles.get(id) ?? id }) }));
 }
 
-const sheetOf = new Map<number, TopMenuSheet>();
-const frozenMoveType = new Map<number, number>();
+const sheetOf = new Map<number, { client: Client; sheet: TopMenuSheet }>();
+const frozenMoveType = new Map<number, { client: Client; pawn: Pawn; moveType: number }>();
 const MOVETYPE_NONE = 0;
 
-function freeze(slot: number): void {
-  if (frozenMoveType.has(slot)) return;
+function freeze(slot: number, client: Client): void {
+  if (frozenMoveType.get(slot)?.client.isValid()) return;
+  frozenMoveType.delete(slot);
   const pawn = Player.fromSlot(slot)?.pawn;
   if (!pawn || pawn.moveType === null || pawn.moveType === MOVETYPE_NONE) return;
-  frozenMoveType.set(slot, pawn.moveType);
+  frozenMoveType.set(slot, { client, pawn, moveType: pawn.moveType });
   pawn.moveType = MOVETYPE_NONE;
 }
 
 function unfreeze(slot: number): void {
   const prev = frozenMoveType.get(slot);
   frozenMoveType.delete(slot);
-  if (prev === undefined) return;
-  const pawn = Player.fromSlot(slot)?.pawn;
-  if (pawn) pawn.moveType = prev;
+  if (prev?.client.isValid()) prev.pawn.moveType = prev.moveType;
 }
 
 function flagsOf(slot: number): number {
@@ -66,8 +67,10 @@ let hub: Dashboard | null = null;
 function showSheet(slot: number, sheet: TopMenuSheet): boolean {
   if (visibleTabs(slot, flagsOf(slot), sheet).length === 0) return false;
   if (!hub) return false;
-  sheetOf.set(slot, sheet);
-  freeze(slot);
+  const client = Clients.fromSlot(slot);
+  if (!client) return false;
+  sheetOf.set(slot, { client, sheet });
+  freeze(slot, client);
   hub.open(slot);
   return true;
 }
@@ -82,11 +85,11 @@ export function OnPluginStart(): void {
   topmenu.addCategory("Voting Commands");
 
   hub = hudkit.dashboard({
-    title: (slot) => Translations.translate(slot, sheetOf.get(slot) === "menu" ? "Menu Title" : "Admin Menu Title"),
+    title: (slot) => Translations.translate(slot, sheetOf.get(slot)?.sheet === "menu" ? "Menu Title" : "Admin Menu Title"),
     closeText: "Close",
-    tabs: (slot) => visibleTabs(slot, flagsOf(slot), sheetOf.get(slot) ?? "admin"),
+    tabs: (slot) => visibleTabs(slot, flagsOf(slot), sheetOf.get(slot)?.sheet ?? "admin"),
     rows: (slot, tabId): DashRow[] => {
-      const sheet = sheetOf.get(slot) ?? "admin";
+      const sheet = sheetOf.get(slot)?.sheet ?? "admin";
       return itemsFor(tabId, flagsOf(slot), sheet).map(it => ({ id: it.id, a: it.name }));
     },
     onPick: (slot, _tabId, row, view) => {
@@ -119,13 +122,14 @@ export function OnPluginStart(): void {
 }
 
 export function OnClientDisconnect(client: Client): void {
-  frozenMoveType.delete(client.slot);
-  sheetOf.delete(client.slot);
-  hub?.close(client.slot);
+  if (__s2pkg_clients._same(frozenMoveType.get(client.slot)?.client, client)) frozenMoveType.delete(client.slot);
+  if (__s2pkg_clients._same(sheetOf.get(client.slot)?.client, client)) {
+    sheetOf.delete(client.slot);
+    if (!Clients.fromSlot(client.slot)) hub?.close(client.slot);
+  }
 }
 
 export function OnClientActive(client: Client): void {
-  frozenMoveType.delete(client.slot);
-  sheetOf.delete(client.slot);
-  hub?.close(client.slot);
+  if (!__s2pkg_clients._same(frozenMoveType.get(client.slot)?.client, client)) frozenMoveType.delete(client.slot);
+  if (!__s2pkg_clients._same(sheetOf.get(client.slot)?.client, client)) sheetOf.delete(client.slot);
 }

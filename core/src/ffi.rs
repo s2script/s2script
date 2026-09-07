@@ -174,6 +174,42 @@ pub extern "C" fn s2script_core_replay_client_event(name: *const c_char, slot: c
     .unwrap_or(0)
 }
 
+/// Connection lifecycle ABI v2: independent of the unversioned engine-ops table.
+#[no_mangle]
+pub extern "C" fn s2script_core_client_begin(slot: c_int) -> u64 {
+    catch_unwind(|| crate::client::begin(slot)).unwrap_or(0)
+}
+#[no_mangle]
+pub extern "C" fn s2script_core_client_ensure(slot: c_int) -> u64 {
+    catch_unwind(|| crate::client::ensure(slot)).unwrap_or(0)
+}
+#[no_mangle]
+pub extern "C" fn s2script_core_client_generation(slot: c_int) -> u64 {
+    catch_unwind(|| crate::client::generation(slot)).unwrap_or(0)
+}
+#[no_mangle]
+pub extern "C" fn s2script_core_client_end(slot: c_int, token: u64) {
+    let _ = catch_unwind(|| crate::client::end(slot, token));
+}
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_client_event_v2(name: *const c_char, slot: c_int, token: u64, identity: *const crate::client::ClientIdentity) -> c_int {
+    catch_unwind(|| {
+        if name.is_null() { return 0; }
+        let Ok(name) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
+        let identity = unsafe { identity.as_ref() }.map(|s| s.owned());
+        deferral_code(crate::client::dispatch_client_event_v2(name, slot, token, identity.as_ref()))
+    }).unwrap_or(0)
+}
+#[no_mangle]
+pub extern "C" fn s2script_core_replay_client_event_v2(name: *const c_char, slot: c_int, token: u64, identity: *const crate::client::ClientIdentity) -> c_int {
+    catch_unwind(|| {
+        if name.is_null() { return 0; }
+        let Ok(name) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
+        let identity = unsafe { identity.as_ref() }.map(|s| s.owned());
+        deferral_code(crate::client::replay_client_event_v2(name, slot, token, identity.as_ref()))
+    }).unwrap_or(0)
+}
+
 /// Shim → core: the INetworkServerService::StartupServer POST hook reports a map start with the
 /// live map name. Notify-only: dispatches to the `Server.onMapStart` JS subscribers.
 /// `catch_unwind`-wrapped; a null pointer degrades to "" (never panic across the FFI boundary).

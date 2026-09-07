@@ -88,7 +88,68 @@
   if (nav) nav.applyNav(Pawn.prototype, "CCSPlayerPawn");   // sceneNode, weaponServices, movementServices, aimPunchServices
 
   // --- Slice 5C.2: the Player (controller) model ---
-  function Player(ref) { this.ref = ref; }                       // ref = the CONTROLLER EntityRef
+  // Every public EntityRef operation needs an argument plan: inherited methods may read id
+  // before converting values or reading arrays/refs. Normalize those inputs completely, then
+  // check the connection, then call the ordinary entity API with inert primitive arguments.
+  var playerRefArgs = {};
+  function refNumbers(args) { return Array.prototype.map.call(args, Number); }
+  function refPath(path) { return Array.prototype.map.call(path || [], Number); }
+  function refVector(value) { return value ? [Number(value[0]), Number(value[1]), Number(value[2])] : null; }
+  function refIdentity(value) { return value ? { index: Number(value.index), id: Number(value.id) } : null; }
+  function refPlan(names, normalize) { names.split(" ").forEach(function (name) { playerRefArgs[name] = normalize; }); }
+  refPlan("isValid identityFlags remove activateCollision", function () { return []; });
+  refPlan("readInt32 readFloat32 readBool readInt8 readInt16 readUInt8 readUInt16 readUInt32 readUInt64 readInt64 readFloat64 readHandle readString readFloats writeInt32 writeFloat32 writeInt8 writeInt16 writeUInt8 writeUInt16 writeUInt32 notifyStateChanged clearIdentityFlags setGravityScale setModelScale", refNumbers);
+  refPlan("writeBool", function (a) { return [Number(a[0]), !!a[1]]; });
+  refPlan("writeString", function (a) { return [Number(a[0]), Number(a[1]), String(a[2])]; });
+  refPlan("readInt32Via readInt8Via readInt16Via readUInt8Via readUInt16Via readUInt32Via readFloat32Via readBoolVia readUInt64Via readInt64Via readHandleVia", function (a) { return [refPath(a[0]), Number(a[1])]; });
+  refPlan("writeInt32Via writeFloat32Via readFloatsChain", function (a) { return [refPath(a[0]), Number(a[1]), Number(a[2])]; });
+  refPlan("writeBoolVia", function (a) { return [refPath(a[0]), Number(a[1]), !!a[2]]; });
+  refPlan("readHandleVector", function (a) { return [refPath(a[0]), Number(a[1]), a[2] == null ? 64 : Number(a[2])]; });
+  refPlan("setModel stopSound", function (a) { return [String(a[0])]; });
+  refPlan("setBodyGroupByName", function (a) { return [String(a[0]), Number(a[1])]; });
+  refPlan("teleport", function (a) { return [refVector(a[0]), refVector(a[1]), refVector(a[2])]; });
+  refPlan("applyAbsVelocityImpulse", function (a) { return [refVector(a[0])]; });
+  refPlan("acceptInput", function (a) { return [String(a[0]), a[1] == null ? "" : String(a[1]), refIdentity(a[2]), refIdentity(a[3]), Number(a[4] || 0)]; });
+  refPlan("spawn", function (a) {
+    var kv = a[0];
+    if (kv == null || typeof kv !== "object") return [kv];
+    var copy = Object.create(null);
+    Object.keys(kv).forEach(function (key) { copy[key] = kv[key]; });
+    return [copy]; // spawn rejects non-primitive values; never coerces them
+  });
+  function staleRefResult(method) {
+    if (method === "notifyStateChanged") return undefined;
+    if (method === "readHandleVector") return [];
+    return method.indexOf("read") === 0 || method === "identityFlags" || method === "clearIdentityFlags" ? null : false;
+  }
+  var playerRefClients = new WeakMap();
+  var playerRefMethods = {};
+  Object.getOwnPropertyNames(EntityRef.prototype).forEach(function (method) {
+    var desc = Object.getOwnPropertyDescriptor(EntityRef.prototype, method);
+    if (method === "constructor" || typeof desc.value !== "function") return;
+    var call = desc.value, normalize = playerRefArgs[method];
+    playerRefMethods[method] = { value: function () {
+      // Shared method closures avoid allocating the full method inventory on every lookup.
+      var client = playerRefClients.get(this);
+      if (!normalize) throw new Error("Player.ref: unsupported EntityRef method " + method);
+      if (!client || !client.isValid()) return staleRefResult(method);
+      var args = normalize(arguments);
+      if (!client.isValid()) return staleRefResult(method);
+      return call.apply(this, args);
+    } };
+  });
+  function Player(ref) {
+    var Client = globalThis.__s2pkg_clients.Client;
+    var client = new Client(ref.isValid() ? ref.index - 1 : -1);
+    Object.defineProperty(this, "_client", { value: client });
+    // Preallocated controllers survive reconnect. Generated schema/nav views retain this root.
+    var guarded = Object.create(ref);
+    playerRefClients.set(guarded, client);
+    Object.defineProperty(guarded, "index", { value: ref.index, enumerable: true });
+    Object.defineProperty(guarded, "id", { get: function () { return client.isValid() ? ref.id : 0; } });
+    Object.defineProperties(guarded, playerRefMethods);
+    Object.defineProperty(this, "ref", { value: guarded, enumerable: true });
+  }
   if (schema) schema.applyAccessors(Player.prototype, "CCSPlayerController");  // team, score, ping, ...
   // Controller-sourced pointer-chain wrappers (matchStats). Separate call from the pawn's: applyNav
   // keys on the SOURCE class, so a controller target is invisible unless the controller proto asks.
@@ -132,13 +193,13 @@
   // --- Slice 5D.2: engine identity (the connected/pawnless follow promised at Player.fromSlot) ---
   // player.userId — the engine user-id (NOT a schema field); -1 if unassigned/absent.
   Object.defineProperty(Player.prototype, "userId", {
-    get: function () { return __s2_client_userid(this.slot); },
+    get: function () { return this._client.userId; },
     enumerable: true, configurable: true,
   });
   // player.steamId — the client's SteamID64 as a decimal string (engine identity, NOT a schema field);
   // "0" for bots / unauthenticated.
   Object.defineProperty(Player.prototype, "steamId", {
-    get: function () { return __s2_client_steamid(this.slot); },
+    get: function () { return this._client.steamId; },
     enumerable: true, configurable: true,
   });
   // Construct a Player from a slot when the CONTROLLER entity is valid — pawn NOT required
@@ -165,7 +226,7 @@
 
   // player.kick(reason?) — disconnect this player (engine KickClient via the client_kick op).
   Player.prototype.kick = function (reason) {
-    __s2_client_kick(this.slot, String(reason == null ? "Kicked by admin" : reason));
+    this._client.kick(reason == null ? "Kicked by admin" : reason);
   };
 
   // player.setName(name) — overwrite the player's display name (m_iszPlayerName on the controller).

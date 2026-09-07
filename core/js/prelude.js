@@ -427,7 +427,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
 
   // A live display of one menu to one slot. Owns page/cursor state.
   function MenuSession(menu, slot, renderer, seconds) {
-    this.menu = menu; this.slot = slot; this.renderer = renderer; this.seconds = seconds;
+    this.menu = menu; this.slot = slot; this.client = new Client(slot); this.renderer = renderer; this.seconds = seconds;
     this.page = 0; this.cursor = 0; this._ended = false;
     this._selectable = [];   // indices (into menu.items) that are selectable on the CURRENT page
   }
@@ -481,15 +481,20 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       if (!self._ended) self._end(MenuCancelReason.Timeout);
     });
   };
-  MenuSession.prototype._repaint = function () { if (!this._ended) this.renderer.update(this); };
+  MenuSession.prototype._repaint = function () { if (!this._ended && !__s2_client_replaced(this.client)) this.renderer.update(this); };
   MenuSession.prototype._end = function (reason) {
     if (this._ended) return; this._ended = true;
+    if (__s2_client_replaced(this.client)) {
+      if (__s2_menu_activeBySlot[this.slot] === this) delete __s2_menu_activeBySlot[this.slot];
+      return;
+    }
     if (__s2_menu_activeBySlot[this.slot] === this) delete __s2_menu_activeBySlot[this.slot];
     this.renderer.close(this.slot);
     if (this.menu._onCancel && (reason === MenuCancelReason.Timeout || reason === MenuCancelReason.Disconnect || reason === MenuCancelReason.NewMenu || reason === MenuCancelReason.Exit))
       { try { this.menu._onCancel({ slot: this.slot, reason: reason }); } catch (e) { globalThis.console && console.log("[menu] onCancel threw: " + e); } }
   };
   MenuSession.prototype._select = function (itemIndex) {
+    if (__s2_client_replaced(this.client)) return;
     var it = this.menu.items[itemIndex];
     if (!it || it.disabled) return;
     // mark ended BEFORE the callback so a re-display inside onSelect isn't clobbered
@@ -1412,38 +1417,53 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // One-shot file load (first plugin to import @s2script/bans triggers this).
   if (!__s2_ban_mark_loaded()) { __s2_ban_load(); }
   globalThis.__s2pkg_bans = { Bans: __s2_bans };   // named export `Bans`
-  // --- Clients sub-project: @s2script/clients (engine-generic slot-backed Client + lifecycle events).
-  //     Client wraps only EXISTING client_* natives (no new engine primitive); Clients.on* subscribe via
-  //     __s2_client_subscribe and construct a Client from the dispatched slot. Identity = slot (a client's
-  //     slot is stable for its connection; a reused slot is a fresh onConnect). ---
-  function Client(slot) { this.slot = slot | 0; }
-  Client.prototype.isValid = function () { return __s2_client_valid(this.slot); };
-  Object.defineProperty(Client.prototype, "steamId",     { get: function () { return __s2_client_steamid(this.slot); } });
-  Object.defineProperty(Client.prototype, "name",        { get: function () { var n = __s2_client_name(this.slot); return n == null ? "" : n; } });
-  Object.defineProperty(Client.prototype, "userId",      { get: function () { return __s2_client_userid(this.slot); } });
-  Object.defineProperty(Client.prototype, "signonState", { get: function () { return __s2_client_signon(this.slot); } });
-  Object.defineProperty(Client.prototype, "isBot",       { get: function () { return __s2_client_steamid(this.slot) === "0"; } });
-  Client.prototype.kick = function (reason)  { __s2_client_kick(this.slot, reason == null ? "" : String(reason)); };
-  Client.prototype.chat = function (message) { __s2_client_print(this.slot, String(message)); };
-  Client.prototype.print = function (msg) { __s2_client_console_print(this.slot, String(msg) + "\n"); };
-  // Client command execution (SourceMod ClientCommand parity): ask the CLIENT to run it. The
-  // server-side FakeClientCommand variant is NOT here — see the spec: it needs a CCommand, whose
-  // ctor and Tokenize are not exported by any shipped engine binary.
-  Client.prototype.command = function (cmd) { return __s2_client_command(this.slot, String(cmd)); };
-  Client.prototype.fakeCommand = function (cmd) { return __s2_client_fake_command(this.slot, String(cmd)); };
-  Object.defineProperty(Client.prototype, "ip", { get: function () {
-    var a = __s2_client_address(this.slot); if (!a) return ""; var i = a.indexOf(":"); return i < 0 ? a : a.slice(0, i);
+  // A Client captures a host connection generation; disconnect identity is callback-scoped.
+  var __s2_client_tokens = new WeakMap();
+  var __s2_client_snapshots = new WeakMap();
+  function Client(slot) {
+    Object.defineProperty(this, "slot", { value: slot | 0, enumerable: true });
+    __s2_client_tokens.set(this, __s2_client_generation(this.slot));
+  }
+  function __s2_client_token(c) { return __s2_client_tokens.get(c) || "0"; }
+  function __s2_client_event_handle(slot, token) {
+    var c = new Client(slot); __s2_client_tokens.set(c, token); return c;
+  }
+  function __s2_client_replaced(c) { var token = __s2_client_generation(c.slot); return token !== "0" && token !== __s2_client_token(c); }
+  function __s2_same_client(a, b) { return !!a && !!b && a.slot === b.slot && __s2_client_token(a) === __s2_client_token(b); }
+  Client.prototype.isValid = function () { return __s2_client_matches(this.slot, __s2_client_token(this)); };
+  Object.defineProperty(Client.prototype, "steamId", { get: function () {
+    var s = __s2_client_snapshots.get(this); return s ? s.steamId : __s2_client_steamid(this.slot, __s2_client_token(this));
   } });
-  // Voice-control slice: server-side voice mute (this client's OUTGOING voice silenced for every
-  // receiver — the shim's SetClientListening rewrite). Framework state: cleared on disconnect. When
-  // the voice descriptor is degraded the setter is an inert no-op (shim logs the named reason) and
-  // reads stay false (get_muted -1/0 both map to false).
+  Object.defineProperty(Client.prototype, "name", { get: function () {
+    var s = __s2_client_snapshots.get(this); return s ? s.name : (__s2_client_name(this.slot, __s2_client_token(this)) || "");
+  } });
+  Object.defineProperty(Client.prototype, "userId", { get: function () {
+    var s = __s2_client_snapshots.get(this); return s ? s.userId : __s2_client_userid(this.slot, __s2_client_token(this));
+  } });
+  Object.defineProperty(Client.prototype, "signonState", { get: function () {
+    var s = __s2_client_snapshots.get(this); return s ? s.signonState : __s2_client_signon(this.slot, __s2_client_token(this));
+  } });
+  Object.defineProperty(Client.prototype, "isBot", { get: function () { return (this.isValid() || __s2_client_snapshots.has(this)) && this.steamId === "0"; } });
+  Client.prototype.kick = function (reason) { __s2_client_kick(this.slot, reason == null ? "" : String(reason), __s2_client_token(this)); };
+  Client.prototype.chat = function (message) { __s2_client_print(this.slot, String(message), __s2_client_token(this)); };
+  Client.prototype.print = function (message) { __s2_client_console_print(this.slot, String(message) + "\n", __s2_client_token(this)); };
+  Client.prototype.command = function (cmd) { return __s2_client_command(this.slot, String(cmd), __s2_client_token(this)); };
+  Client.prototype.fakeCommand = function (cmd) { return __s2_client_fake_command(this.slot, String(cmd), __s2_client_token(this)); };
+  Object.defineProperty(Client.prototype, "ip", { get: function () {
+    var s = __s2_client_snapshots.get(this);
+    var a = s ? s.address : __s2_client_address(this.slot, __s2_client_token(this));
+    if (!a) return ""; var i = a.indexOf(":"); return i < 0 ? a : a.slice(0, i);
+  } });
   Object.defineProperty(Client.prototype, "voiceMuted", {
-    get: function () { return __s2_voice_get_muted(this.slot) === 1; },
-    set: function (on) { __s2_voice_set_muted(this.slot, !!on); }
+    get: function () { return __s2_voice_get_muted(this.slot, __s2_client_token(this)) === 1; },
+    set: function (on) { __s2_voice_set_muted(this.slot, !!on, __s2_client_token(this)); }
   });
   var __s2_MAX_CLIENTS = 64;
-  function __s2_client_on(event, h) { return __s2_client_subscribe(event, function (slot) { return h(new Client(slot)); }); }
+  function __s2_client_on(event, h) { return __s2_client_subscribe(event, function (slot, token, json) {
+    var c = __s2_client_event_handle(slot, token), snapshot = JSON.parse(json);
+    if (snapshot) __s2_client_snapshots.set(c, snapshot);
+    try { return h(c); } finally { __s2_client_snapshots.delete(c); }
+  }); }
   var __s2_clients = {
     onConnect:         function (h) { return __s2_client_on("connect", h); },
     onPutInServer:     function (h) { return __s2_client_on("putinserver", h); },
@@ -1454,42 +1474,43 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     // Fires while a client transmits voice (throttled shim-side to <=1 dispatch/slot/second; the FIRST
     // packet of a transmission always fires). Never fires for bots.
     onVoice:           function (h) { return __s2_client_on("voice", h); },
-    fromSlot: function (slot) { slot = slot | 0; return __s2_client_valid(slot) ? new Client(slot) : null; },
-    all: function () { var out = []; for (var s = 0; s < __s2_MAX_CLIENTS; s++) { if (__s2_client_valid(s)) out.push(new Client(s)); } return out; }
+    fromSlot: function (slot) { slot = slot | 0; return __s2_client_matches(slot, __s2_client_generation(slot)) ? new Client(slot) : null; },
+    all: function () { var out = []; for (var s = 0; s < __s2_MAX_CLIENTS; s++) { if (__s2_client_matches(s, __s2_client_generation(s))) out.push(new Client(s)); } return out; }
   };
   var __s2_pendingKicks = {};
   var __s2_kickWired = false;
   // Deliver the reason to the client REPEATEDLY (chat + console, once per second) so they see it even if
   // they were mid-load, then kick on the final tick. Re-resolves the client each tick — stops if they left.
-  function __s2_deliverAndKick(slot, reason, remaining) {
-    var c = __s2_clients.fromSlot(slot);
-    if (!c) return;                                          // already gone → nothing to do
+  function __s2_deliverAndKick(c, reason, remaining) {
+    if (!c.isValid()) return;                                          // already gone → nothing to do
     if (remaining <= 0) { c.kick(reason); return; }          // time's up → kick
     c.chat(reason); c.print(reason);                         // show in chat AND console, each second
-    globalThis.__s2pkg_timers.delay(1000).then(function () { __s2_deliverAndKick(slot, reason, remaining - 1); });
+    globalThis.__s2pkg_timers.delay(1000).then(function () { __s2_deliverAndKick(c, reason, remaining - 1); });
   }
-  function __s2_deliverPending(slot) {
-    var p = __s2_pendingKicks[slot]; if (!p) return;
-    delete __s2_pendingKicks[slot];
-    __s2_deliverAndKick(slot, p.reason, Math.max(1, Math.round(p.delay)));
+  function __s2_deliverPending(c) {
+    var p = __s2_pendingKicks[c.slot]; if (!p || !__s2_same_client(p.client, c)) return;
+    delete __s2_pendingKicks[c.slot];
+    __s2_deliverAndKick(p.client, p.reason, Math.max(1, Math.round(p.delay)));
   }
   function __s2_wireKick() {
     if (__s2_kickWired) return; __s2_kickWired = true;
-    __s2_client_on("active", function (c) { __s2_deliverPending(c.slot); });          // reconnect path: deliver once in-game
-    __s2_client_on("disconnect", function (c) { delete __s2_pendingKicks[c.slot]; }); // left before active → drop
+    __s2_client_on("active", function (c) { __s2_deliverPending(c); });          // reconnect path: deliver once in-game
+    __s2_client_on("disconnect", function (c) { var p = __s2_pendingKicks[c.slot]; if (p && __s2_same_client(p.client, c)) delete __s2_pendingKicks[c.slot]; }); // left before active → drop
   }
   // Show a reason in chat + console (repeated once per second) then kick after ~delaySeconds. Works on an
   // ALREADY-in-game client (e.g. sm_ban — delivered immediately) AND from onConnect (deferred until the
   // client is in-game so they can actually see it). signonState >= 4 = past the connection handshake / in
   // the server (a still-connecting client is at CONNECTED=2), so it can receive messages now.
   Client.prototype.kickWithReason = function (reason, delaySeconds) {
+    if (!this.isValid()) return;
     __s2_wireKick();
     var r = String(reason);
     var d = Math.max(1, Math.round(delaySeconds == null ? 5 : delaySeconds));
-    if (this.signonState >= 4) { __s2_deliverAndKick(this.slot, r, d); }          // in-game now → deliver immediately
-    else { __s2_pendingKicks[this.slot] = { reason: r, delay: d }; }              // still connecting → deliver at onActive
+    if (!this.isValid()) return; // coercion can re-enter and install a replacement's pending kick
+    if (this.signonState >= 4) { __s2_deliverAndKick(this, r, d); }          // in-game now → deliver immediately
+    else { __s2_pendingKicks[this.slot] = { client: this, reason: r, delay: d }; }              // still connecting → deliver at onActive
   };
-  globalThis.__s2pkg_clients = { Client: Client, Clients: __s2_clients };   // named exports Client + Clients
+  globalThis.__s2pkg_clients = { Client: Client, Clients: __s2_clients, _token: __s2_client_token, _same: __s2_same_client };   // named exports Client + Clients
   // --- @s2script/sound — engine-generic sound (Sound slice). A soundevent NAME, a recipient slot
   //     set, and a precache resource path are Source2-generic; CS2 soundevent names live in the
   //     game layer (games/cs2/js/pawn.js `Sounds`), never here.
@@ -1569,7 +1590,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // Disconnect: close any open menu for a leaving slot.
   globalThis.__s2pkg_clients.Clients.onDisconnect(function (client) {
     var s = __s2_menu_activeBySlot[client.slot];
-    if (s) s._end(MenuCancelReason.Disconnect);
+    if (s && __s2_same_client(s.client, client)) s._end(MenuCancelReason.Disconnect);
   });
   // --- @s2script/db — Database.open/query/execute/close over the built-in drivers. Both SQLite
   //     (__s2_sqlite_*, a per-connection actor thread) and mysql/postgres (__s2_db_remote_*, the
@@ -1648,6 +1669,11 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_db = { Database: __s2_Database };
   // --- @s2script/cookies: SM-parity cookies over the __s2_cookie_* host-global cache ---
   var __s2_cookie_defs = {};   // per-context registry: name -> Cookie (idempotent register)
+  function __s2_cookie_online(client, op, data) {
+    if (!client || !__s2_client_matches(client.slot, __s2_client_token(client))) return null;
+    data.steamId = client.steamId;
+    return JSON.parse(__s2_cookie_session(client.slot, __s2_client_token(client), op, JSON.stringify(data)));
+  }
   var __s2_Cookies = {
     register: function (name, opts) {
       if (__s2_cookie_defs[name]) return __s2_cookie_defs[name];
@@ -1657,20 +1683,14 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       return cookie;
     },
     get: function (client, cookie) {
-      if (!client || client.steamId === "0") return cookie.default;      // bots have no cookies
-      var v = __s2_cookie_get(client.steamId, cookie.name);
-      return v === undefined ? cookie.default : v;   // a stored "" is a hit, not a miss
+      var v = __s2_cookie_online(client, "get", { name: cookie.name });
+      return v === null ? cookie.default : v;
     },
     set: function (client, cookie, value) {
-      if (!client || client.steamId === "0") return;                     // no-op for bots
-      __s2_cookie_set(client.steamId, cookie.name, String(value), Math.floor(Date.now() / 1000));
+      __s2_cookie_online(client, "set", { name: cookie.name, value: String(value), updated: Math.floor(Date.now() / 1000) });
     },
-    areCached: function (client) {
-      return !!client && client.steamId !== "0" && __s2_cookie_is_cached(client.steamId);
-    },
-    getTime: function (client, cookie) {
-      return (!client || client.steamId === "0") ? 0 : __s2_cookie_get_time(client.steamId, cookie.name);
-    },
+    areCached: function (client) { return __s2_cookie_online(client, "cached", {}) === true; },
+    getTime: function (client, cookie) { return __s2_cookie_online(client, "time", { name: cookie.name }) || 0; },
     setAuthId: function (steamId, cookie, value) {
       if (!steamId || steamId === "0") return;   // no-op for bots
       __s2_cookie_set_authid(String(steamId), cookie.name, String(value), Math.floor(Date.now() / 1000));
@@ -1679,7 +1699,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       // Guard: fromSlot is null if the client disconnected in the load->fan-out window, so only fire
       // for a still-connected Client (the .d.ts promises a non-null Client). A departed client's
       // "cookies cached" notification is moot.
-      return __s2_cookie_on_cached(function (slot) { var c = globalThis.__s2pkg_clients.Clients.fromSlot(slot); if (c) h(c); });
+      return __s2_cookie_on_cached(function (slot, token) { var c = __s2_client_event_handle(slot, token); if (c.isValid()) h(c); });
     },
   };
   globalThis.__s2pkg_cookies = { Cookies: __s2_Cookies, CookieAccess: { Public: 0, Protected: 1, Private: 2 } };
@@ -1782,6 +1802,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     index = index | 0;
     if (index < 0 || index >= st.options.length) return false;
     st.votes.set(slot, index);
+    st.voters.set(slot, new Client(slot));
     __s2_vote_showTally(st);
     return true;
   }
@@ -1803,7 +1824,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   function __s2_vote_ensureSubs() {
     if (__s2_vote_subInstalled) return; __s2_vote_subInstalled = true;
     __s2_chat_on_message(function (slot, text) { return __s2_vote_castFromChat(slot, text); });
-    globalThis.__s2pkg_clients.Clients.onDisconnect(function (c) { var st = __s2_vote_state; if (st) st.votes.delete(c.slot); });
+    globalThis.__s2pkg_clients.Clients.onDisconnect(function (c) { var st = __s2_vote_state; if (st && __s2_same_client(st.voters.get(c.slot), c)) { st.votes.delete(c.slot); st.voters.delete(c.slot); } });
   }
   function __s2_vote_tick(st) {
     if (__s2_vote_state !== st) return;                            // ended/cancelled
@@ -1837,7 +1858,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       if (!config || !config.question || !config.options || config.options.length < 2) return false;
       __s2_vote_ensureSubs();
       var dur = Math.max(1, (config.duration | 0) || 20);   // clamp: a negative config would end on the first tick
-      var st = { question: String(config.question), options: config.options.map(String), votes: new Map(),
+      var st = { question: String(config.question), options: config.options.map(String), votes: new Map(), voters: new Map(),
                  showLiveTally: !!config.showLiveTally, secondsLeft: dur,
                  onEnd: (typeof config.onEnd === "function") ? config.onEnd : function () {} };
       __s2_vote_state = st;

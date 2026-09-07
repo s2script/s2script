@@ -33,6 +33,9 @@ bash scripts/check-engine-ops-order.sh
 echo "== test-defer-queue.sh (the deferred-dispatch drain, flush-inside-replay included) =="
 bash scripts/test-defer-queue.sh
 
+echo "== test-client-bootstrap.sh (unsigned userid sentinel and late-load occupancy) =="
+bash scripts/test-client-bootstrap.sh
+
 echo "== test-hook-dispatch.sh (hook shape vocabulary, bypass latch, collapse) =="
 bash scripts/test-hook-dispatch.sh
 

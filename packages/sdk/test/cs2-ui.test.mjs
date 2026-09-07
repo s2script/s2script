@@ -6,6 +6,7 @@ import assert from "node:assert";
 import vm from "node:vm";
 import { cs2AddonBundle } from "./cs2-addon.mjs";
 import { sharedSwitchFixture } from "../../../games/cs2/js/shared-switch-fixture.js";
+import { installClientHost } from "./client-host.mjs";
 
 const HUD_CALLS = [
   "setHasClassForPlayer",
@@ -106,20 +107,28 @@ function makeHost({ ready = BASE_CALLS, onInvoke, onHook, entities = [], signon 
     console: { log: (m) => logs.push(String(m)) },
   };
 
-  ctx.__s2_shared_entity_switch = sharedSwitchFixture(
+  const switches = sharedSwitchFixture(
     (index, id) => entityList.find(e => e.index === index && e.id === id && e.isValid()),
     (name, entity, slot, on) => {
       if (!readySet.has(name)) return "unavailable: " + name;
       const result = ctx.__s2_game_call_invoke(name, entity.index, entity.id, [slot, on]);
       return result === null ? "unavailable: " + name + " invocation failed" : null;
     },
-  ).native("test-plugin");
+  );
+  ctx.__s2_shared_entity_switch = switches.native("test-plugin");
   ctx.__s2pkg_cs2 = {
     Player: {
       all: () => [],
     },
   };
   ctx.globalThis = ctx;
+  const clientHost = installClientHost(ctx, [0, 1]);
+  const replaceClient = clientHost.replace;
+  clientHost.replace = slot => { switches.clearSlot(slot); replaceClient(slot); };
+  Object.assign(ctx.__s2pkg_clients.Clients, {
+    onActive: h => activeHandlers.push(h), onDisconnect: h => disconnectHandlers.push(h),
+  });
+  Object.defineProperty(ctx.__s2pkg_clients.Client.prototype, 'signonState', { get: () => signon });
   vm.createContext(ctx);
   vm.runInContext(cs2AddonBundle, ctx);
 
@@ -146,7 +155,8 @@ function makeHost({ ready = BASE_CALLS, onInvoke, onHook, entities = [], signon 
   }
 
   return {
-    ctx, invokes, hooks, logs, created, armPlugin, fireActive, fireMapStart, fireClick, EntityRef,
+    ctx, invokes, hooks, logs, created, armPlugin, fireActive, fireMapStart, fireClick, EntityRef, clientHost,
+    fireDisconnect: client => disconnectHandlers.forEach(h => h(client)),
   };
 }
 
@@ -387,6 +397,7 @@ test("disabled button blocks dispatchClick", () => {
 
 test("click handler receives a HudPlayer bound to the clicker slot", () => {
   const h = makeHost();
+  h.clientHost.connect(2);
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
   h.fireActive(0);
@@ -554,4 +565,37 @@ test("unchanged dialog values and classes are not re-sent", () => {
   const afterForget = h.invokes.length;
   p.setText("s2_dialog_title", "world");
   assert.equal(h.invokes.length, afterForget + 1, "forget clears the diff cache, so the same value is sent again");
+});
+
+test("HUD cache, cursor, disabled state and retained views belong to the connection", () => {
+  const h = makeHost();
+  const ui = h.armPlugin(); h.ctx.__s2_ctx_arm(); h.fireActive(0);
+  const layout = ui.probe();
+  const a = h.ctx.__s2pkg_clients.Clients.fromSlot(0);
+  const old = layout.forSlot(0);
+  let clicks = 0;
+  layout.onClick('s2_btn_0', () => clicks++);
+  old.setText('s2_dialog_title', 'same');
+  old.cursor(true);
+  old.setDisabled('s2_btn_0', true);
+  h.clientHost.replace(0);
+  const fresh = layout.forSlot(0);
+  h.invokes.length = 0;
+  fresh.setText('s2_dialog_title', 'same');
+  assert.equal(h.invokes.filter(i => i.name === 'setDialogVariableStringForPlayer').length, 1);
+  fresh.cursor(true);
+  assert.equal(h.invokes.filter(i => i.name === 'setInputCaptureEnabledForPlayer').length, 1);
+  assert.equal(layout.dispatchClick(0, 's2_btn_0'), true);
+  assert.equal(clicks, 1, 'B must not inherit A disabled state');
+  fresh.setDisabled('s2_btn_0', true);
+  const n = h.invokes.length;
+  h.fireDisconnect(a);
+  old.setText('s2_dialog_title', 'wrong'); old.cursor(false); old.forget();
+  assert.equal(h.invokes.length, n, 'retained A view and disconnect must not target B');
+  fresh.setText('s2_dialog_title', 'same');
+  assert.equal(h.invokes.length, n, 'A disconnect must not clear B diff cache');
+  assert.equal(layout.dispatchClick(0, 's2_btn_0'), false, 'B disabled state survives');
+  fresh.cursor(false);
+  assert.equal(h.invokes.at(-1).args[1], false, 'B retains its own cursor lease');
+  assert.notEqual(old, fresh);
 });

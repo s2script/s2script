@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import vm from "node:vm";
+import { installClientHost } from "./client-host.mjs";
 import { cs2AddonBundle } from "./cs2-addon.mjs";
 
 test("Player model: fromSlot/all, generated accessors, .pawn + .controller nav (offline vm)", () => {
@@ -11,7 +12,7 @@ test("Player model: fromSlot/all, generated accessors, .pawn + .controller nav (
   EntityRef.prototype.readUInt8 = function () { return 2; };          // e.g. teamNum = 2 (uint8 in generated schema)
   EntityRef.prototype.readFloat32 = function () { return 0.25; };
   EntityRef.prototype.readBool = function () { return false; };
-  EntityRef.prototype.readHandle = function () { return new EntityRef(this.index + 100, 7); }; // a live nav target
+  EntityRef.prototype.readHandle = function () { return new EntityRef(this.index >= 100 ? this.index - 100 : this.index + 100, 7); }; // paired pawn/controller
   const stdEntity = { EntityRef };
   const math = { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
                   QAngle: function (x, y, z) { this.x = x; this.y = y; this.z = z; } };
@@ -22,6 +23,7 @@ test("Player model: fromSlot/all, generated accessors, .pawn + .controller nav (
     __s2_handle_adopt: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
+  installClientHost(ctx, Array.from({ length: 64 }, (_, slot) => slot));
   vm.createContext(ctx);
   vm.runInContext(cs2AddonBundle, ctx);
   const { Player, Pawn } = ctx.__s2pkg_cs2;
@@ -55,6 +57,7 @@ test("Player.fromSlot degrades to null when the controller is invalid (offline v
     __s2_schema_offset: () => 8, __s2_ent_id_for_index: (i) => i, __s2_handle_adopt: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
+  installClientHost(ctx);
   vm.createContext(ctx);
   vm.runInContext(cs2AddonBundle, ctx);
   const { Player } = ctx.__s2pkg_cs2;
@@ -79,6 +82,7 @@ test("schema.generated.js + pawn.js compose: Pawn.prototype has generated access
     __s2_handle_adopt: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
+  installClientHost(ctx);
   vm.createContext(ctx);
   vm.runInContext(cs2AddonBundle, ctx);   // the full shipped bundle (schema → … → pawn)
   const Pawn = ctx.__s2pkg_cs2.Pawn;
@@ -103,6 +107,7 @@ test("Player.fromSlot excludes a valid controller with no pawn (occupancy filter
     __s2_schema_offset: () => 8, __s2_ent_id_for_index: (i) => i, __s2_handle_adopt: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
+  installClientHost(ctx);
   vm.createContext(ctx);
   vm.runInContext(cs2AddonBundle, ctx);
   const { Player } = ctx.__s2pkg_cs2;
@@ -128,6 +133,7 @@ test("pawn.origin / pawn.angles: pointer-chain accessors read a value, degrade t
     __s2_ent_id_for_index: (i) => i, __s2_handle_adopt: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
+  installClientHost(ctx);
   vm.createContext(ctx);
   vm.runInContext(cs2AddonBundle, ctx);   // addon order comes from package-addon.sh (schema, nav, …, pawn)
   const { Pawn } = ctx.__s2pkg_cs2;
@@ -156,6 +162,7 @@ test("generated Vector/QAngle accessor: reads a value object, degrades to null (
     __s2_schema_offset: () => 8, __s2_ent_id_for_index: (i) => i, __s2_handle_adopt: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
+  installClientHost(ctx);
   vm.createContext(ctx);
   vm.runInContext(cs2AddonBundle, ctx);
   const { Pawn } = ctx.__s2pkg_cs2;
@@ -197,6 +204,7 @@ test("nav.generated.js + pawn.js compose: sceneNode/weaponServices wrappers, nul
     __s2_handle_adopt: (h) => [h & 0x7fff, 0],
   };
   ctx.globalThis = ctx;
+  installClientHost(ctx);
   vm.createContext(ctx);
   vm.runInContext(cs2AddonBundle, ctx);
   const { Pawn } = ctx.__s2pkg_cs2;
@@ -227,6 +235,7 @@ test("nav.generated.js + pawn.js compose: sceneNode/weaponServices wrappers, nul
     __s2_handle_adopt: (h) => [h & 0x7fff, 0],
   };
   ctx2.globalThis = ctx2;
+  installClientHost(ctx2);
   vm.createContext(ctx2);
   vm.runInContext(cs2AddonBundle, ctx2);
   const { Pawn: Pawn2 } = ctx2.__s2pkg_cs2;

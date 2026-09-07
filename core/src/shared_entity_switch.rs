@@ -184,7 +184,7 @@ mod tests {
         let (slot, on) = unsafe { (*gp as i32, *gp.add(1) != 0) };
         CALLS.with(|c| c.borrow_mut().push((index, serial, slot, on)));
         if REENTER.with(|r| r.replace(false)) {
-            DELIVERY.with(|d| d.set(Some(crate::client::replay_client_event("settingschanged", slot))));
+            DELIVERY.with(|d| d.set(Some(crate::client::replay_client_event_v2("settingschanged", slot, crate::client::generation(slot), None))));
         }
         if FAIL.with(Cell::get) { 0 } else { 1 }
     }
@@ -200,6 +200,7 @@ mod tests {
           "calls":{"toggle":{"receiver":{"kind":"entity"},"target":{"kind":"signature","name":"Switch"},
           "args":["int","bool"],"returns":"void"}}}"#);
         assert_eq!(crate::gamedata_calls::status("game-package:@test/game", "toggle"), "available");
+        crate::client::begin(2);
         for owner in ["switch_a", "switch_b"] { v8host::create_plugin_context(owner); }
         crate::entity_live::on_created(10, 123)
     }
@@ -295,9 +296,14 @@ mod tests {
     #[test]
     fn disconnect_without_js_subscribers_clears_every_owner_before_slot_reuse() {
         let id = setup(); run("switch_a", id, Some("a"), true); run("switch_b", id, Some("b"), true);
+        let departed = crate::client::generation(2);
         let _ = crate::client::dispatch_client_event("disconnect", 2);
         assert_eq!(calls(), [true, false]);
+        let replacement = crate::client::begin(2);
         assert_eq!(run("switch_a", id, Some("fresh"), true), "null");
+        crate::client::end(2, departed);
+        assert!(crate::client::matches(2, replacement));
+        assert_eq!(calls(), [true, false, true], "stale retirement cannot disable replacement capture");
         run("switch_b", id, Some("b"), false);
         assert_eq!(calls(), [true, false, true], "departed owner cannot clear the new occupant's lease");
         done();
@@ -335,7 +341,7 @@ mod tests {
         v8host::unload_plugin("switch_a");
         assert_eq!(DELIVERY.with(Cell::get), Some(crate::dispatch::Delivery::Deferred));
         // The shim would replay only after the owner sweep; replay uses current subscriber books.
-        let _ = crate::client::replay_client_event("settingschanged", 2);
+        let _ = crate::client::replay_client_event_v2("settingschanged", 2, crate::client::generation(2), None);
         assert_eq!(eval_in_context_string("switch_b", "JSON.stringify(globalThis.result)"), "null");
         assert_eq!(calls(), [true, false, true]); done();
     }

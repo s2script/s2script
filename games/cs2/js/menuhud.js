@@ -257,7 +257,7 @@
     // be frozen by state they never created. Both are idempotent.
     if (Clients) {
       if (typeof Clients.onDisconnect === "function") {
-        Clients.onDisconnect(function (client) { discardSession(client && client.slot); });
+        Clients.onDisconnect(function (client) { if (client && !Clients.fromSlot(client.slot)) discardSession(client.slot); });
       }
       if (typeof Clients.onActive === "function") {
         Clients.onActive(function (client) { discardSession(client && client.slot); });

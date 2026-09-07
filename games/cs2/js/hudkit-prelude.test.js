@@ -139,6 +139,7 @@ function pluginWorld(options = {}) {
   const entities = [];
   const writes = [];
   const plugins = [];
+  const clients = new Map(Array.from({ length: 64 }, (_, slot) => [slot, { slot, isValid: () => clients.has(slot) }]));
   const switches = require("./shared-switch-fixture.js").sharedSwitchFixture(
     (index, id) => entities.find(e => e.index === index && e.id === id),
     (name, entity, slot, on) => {
@@ -186,7 +187,8 @@ function pluginWorld(options = {}) {
         status: () => options.unresolved ? "signature unresolved" : "available",
       },
       __s2pkg_server: { Server: { onMapStart: (f) => lifecycle.map.push(f), getCvar: () => "3790153369" } },
-      __s2pkg_clients: { Clients: {
+      __s2pkg_clients: { _same: (a, b) => !!a && a === b, Clients: {
+        fromSlot: slot => clients.get(slot) || null,
         all: () => options.notReady ? [] : [{ signonState: 6 }],
         onActive: (f) => lifecycle.active.push(f), onDisconnect: (f) => lifecycle.disconnect.push(f),
       } },
@@ -220,7 +222,7 @@ function pluginWorld(options = {}) {
     try { for (const p of plugins) p.click(slot, id); }
     finally { activeEpoch = previous; }
   }
-  return { owners, writes, plugins, plugin, session, dispatchClick };
+  return { owners, writes, plugins, plugin, session, dispatchClick, disconnect(slot) { const client = clients.get(slot); clients.delete(slot); switches.clearSlot(slot); for (const p of plugins) p.lifecycle.disconnect.forEach(fn => fn(client)); } };
 }
 
 test("14 idle plugins reserve no panels and every plugin can open a clickable menu after load", () => {
@@ -259,7 +261,7 @@ test("menu claims live until the final viewer closes and recover from actual exh
 test("disconnect and map transition release idle menu claims", () => {
   const w = pluginWorld(), p = w.plugin();
   p.renderers.center.open(w.session(1));
-  p.lifecycle.disconnect.forEach((fn) => fn({ slot: 1 }));
+  w.disconnect(1);
   assert.ok(w.owners.every((v) => v === null));
   p.renderers.center.open(w.session(2));
   p.lifecycle.map.forEach((fn) => fn());
