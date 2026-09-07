@@ -4,12 +4,17 @@ import {
   type Dashboard,
   type DashboardSpec,
   type DashboardView,
+  type OwnedDashboard,
   type Modal,
   type ModalOpenResult,
   type ModalSpec,
   type ModalView,
   type UiErrorCode,
   type UiResult,
+  CustomHudLayout,
+  type UiSubscription,
+  type UiSurfaceHandle,
+  type CustomHudSpec,
 } from "@s2script/cs2";
 
 declare const modalSpec: ModalSpec;
@@ -23,7 +28,20 @@ function consumeResult<T>(result: UiResult<T>): T | undefined {
   return undefined;
 }
 
+function legacyHud(descriptor?: CustomHudSpec) {
+  return CustomHudLayout.hud(descriptor);
+}
+
 export function OnPluginStart(): void {
+  legacyHud();
+  CustomHudLayout.hud(undefined);
+  const layout = CustomHudLayout.create({
+    addons: ["1"], resource: "panorama/layout/custom_game/typed.xml", buttons: ["save", "close"],
+  });
+  const subscription: UiSubscription = layout.subscribeClick("save", () => {});
+  subscription.dispose();
+  const surface: UiResult<UiSurfaceHandle> = hudkit.forSlot(1).tryOwnBanner({ text: "ready" });
+  void surface;
   const modal: Modal | undefined = consumeResult(hudkit.tryModal(modalSpec));
   const badge: Badge | undefined = consumeResult(hudkit.tryBadge({ corner: "tr" }));
 
@@ -50,6 +68,14 @@ export function OnPluginStart(): void {
   }
   void dashRefresh;
 
+  const ownedDashboard: OwnedDashboard | undefined = consumeResult(hudkit.tryOwnDashboard(dashboardSpec));
+  if (ownedDashboard) {
+    const ownedView = consumeResult(ownedDashboard.tryOpenResult(1));
+    ownedDashboard.invalidate(1);
+    ownedDashboard.dispose();
+    void ownedView;
+  }
+
   if (badge) {
     const badgeView = badge.show(1, { text: "ready" });
     const shown: void | undefined = consumeResult(badgeView.tryShow({ text: "still ready" }));
@@ -64,4 +90,3 @@ export function OnPluginStart(): void {
     void legacyOpen;
   }
 }
-

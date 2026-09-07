@@ -22,6 +22,13 @@ test.afterEach(() => {
   delete globalThis.__s2pkg_game_ctx;
   delete globalThis.__s2_hook_on;
   delete globalThis.__s2_shared_entity_switch;
+  delete globalThis.__s2_surface_reserve_owned;
+  delete globalThis.__s2_surface_reserve_linked;
+  delete globalThis.__s2_surface_clear_legacy;
+  delete globalThis.__s2_surface_state;
+  delete globalThis.__s2_surface_activate;
+  delete globalThis.__s2_surface_active;
+  delete globalThis.__s2_surface_release;
 });
 
 // A tiny fake world: entities are {index, id, name, isValid()} like real EntityRefs (id is the
@@ -33,6 +40,7 @@ function mount({ active = true, missingCalls = [] } = {}) {
   const missing = new Set(missingCalls);
   const engineFailures = new Set();
   let captureFailure = null;
+  let clickHook = null;
   let nextId = 1;
 
   function create(targetname) {
@@ -87,7 +95,7 @@ function mount({ active = true, missingCalls = [] } = {}) {
       onDisconnect: (fn) => disconnectHandlers.push(fn),
     },
   };
-  globalThis.__s2_hook_on = () => 0;
+  globalThis.__s2_hook_on = (_pkg, _event, fn) => { clickHook = fn; return 0; };
 
   evalFile("ui.js");
   // reg executes immediately: the map-start / client subscriptions are live, and the fake active
@@ -112,6 +120,11 @@ function mount({ active = true, missingCalls = [] } = {}) {
     connect,
     failEngine(name, on = true) { if (on) engineFailures.add(name); else engineFailures.delete(name); },
     failCapture(message) { captureFailure = message; },
+    click(slot, buttonId) {
+      const client = clients.get(slot);
+      return clickHook({ player: client ? { index: slot + 100, id: slot + 200 } : null, buttonId });
+    },
+    hook() { return clickHook; },
     // Mid-map replacement WITHOUT any lifecycle notification: the entity is killed and an
     // identically-named one appears (as after a plugin elsewhere re-created it). The huds under
     // test are told nothing — they must notice by identity.
@@ -140,6 +153,116 @@ test("a map change drops the value caches so the new entity gets a full repaint"
   assert.equal(sets.length, 2,
     "the unchanged value MUST be re-sent after a map change — the new entity is at markup default");
   assert.notEqual(sets[1].args[0].id, firstEntity.id, "and it must go to the NEW entity");
+});
+
+test("surface bridge forwards exact binding, owned lane, adapters, and linked focus", () => {
+  const m = mount(), hud = m.ns.probe();
+  const binding = hud._captureBinding(7);
+  const calls = [];
+  globalThis.__s2_surface_reserve_owned = (...args) => {
+    calls.push(["reserve", ...args]);
+    return { ok: true, value: { token: "opaque-parent", lane: 2 } };
+  };
+  globalThis.__s2_surface_reserve_linked = (...args) => {
+    calls.push(["linked", ...args]);
+    return { ok: true, value: "opaque-child" };
+  };
+  globalThis.__s2_surface_clear_legacy = (...args) => {
+    calls.push(["clear", ...args]);
+    return { ok: true };
+  };
+  globalThis.__s2_surface_state = () => "ready";
+  globalThis.__s2_surface_activate = () => true;
+  globalThis.__s2_surface_active = () => true;
+  globalThis.__s2_surface_release = () => true;
+
+  assert.deepEqual(hud._surface.reserve(binding, "cs2:hudkit:owned:toast", "explicit",
+    ["s2_t0", "s2_t1", "s2_t2", "s2_t3"], "visual"),
+  { ok: true, value: { token: "opaque-parent", lane: 2 } });
+  assert.deepEqual(hud._focus.reserveLinked(binding, "s2_motd", 9, "opaque-parent"),
+    { ok: true, value: "opaque-child" });
+  assert.deepEqual(hud._surface.clearLegacy(binding, "cs2:hudkit:owned:toast",
+    ["s2_t0", "s2_t1", "s2_t2", "s2_t3"], "visual"),
+  { ok: true, value: undefined });
+
+  const ent = m.liveEntity();
+  assert.deepEqual(calls[0].slice(1, 6), ["cs2:hudkit:owned:toast", ent.index, ent.id, 7, "explicit"]);
+  assert.deepEqual(JSON.parse(calls[0][6]), ["s2_t0", "s2_t1", "s2_t2", "s2_t3"].map(root => ({
+    suspend: { call: "setHasClassForPlayer", args: [root, "s2-hidden", 1] },
+  })));
+  assert.deepEqual(calls[1].slice(1, 6), ["cs2:hudkit:exclusive", ent.index, ent.id, 7, 9]);
+  assert.deepEqual(JSON.parse(calls[1][6]), {
+    capture: { call: "setInputCaptureEnabledForPlayer", token: "panel:s2_motd" },
+    suspend: { call: "setHasClassForPlayer", args: ["s2_motd", "s2-hidden", 1] },
+  });
+  assert.equal(calls[1][7], "opaque-parent");
+  assert.deepEqual(JSON.parse(calls[2][5]), JSON.parse(calls[0][6]));
+});
+
+test("atomic legacy clear invalidates supplied roots after success and partial failure", () => {
+  const m = mount(), hud = m.ns.probe();
+  const binding = hud._captureBinding(7);
+  globalThis.__s2_surface_clear_legacy = () => ({ ok: true });
+
+  assert.equal(hud.show(7, "s2_banner"), null);
+  assert.deepEqual(hud._surface.clearLegacy(binding, "cs2:hudkit:owned:banner",
+    ["s2_banner"], "visual"), { ok: true, value: undefined });
+  assert.equal(hud.show(7, "s2_banner"), null);
+
+  globalThis.__s2_surface_clear_legacy = () => ({
+    ok: false,
+    error: { code: "Unavailable", message: "one legacy lane could not be cleared" },
+  });
+  assert.equal(hud._surface.clearLegacy(binding, "cs2:hudkit:owned:banner",
+    ["s2_banner"], "visual").error.code, "Unavailable");
+  assert.equal(hud.show(7, "s2_banner"), null);
+
+  assert.equal(m.callsFor("setHasClassForPlayer").filter(call =>
+    call.args[1] === 7 && call.args[2] === "s2_banner" && call.args[4] === 0).length, 3,
+  "each host clear makes an identical raw show observable again");
+});
+
+test("surface bridge rejects missing support and releases a reservation after binding retirement", () => {
+  const m = mount(), hud = m.ns.probe();
+  const binding = hud._captureBinding(4);
+  assert.equal(hud._surface.reserve(binding, "key", "explicit", ["root"], "visual").error.code,
+    "Unavailable");
+
+  const released = [];
+  globalThis.__s2_surface_reserve_owned = () => {
+    m.disconnect(4); m.connect(4);
+    return { ok: true, value: { token: "stale-token", lane: 0 } };
+  };
+  globalThis.__s2_surface_state = () => "ready";
+  globalThis.__s2_surface_activate = () => true;
+  globalThis.__s2_surface_active = () => true;
+  globalThis.__s2_surface_release = token => { released.push(token); return true; };
+  assert.equal(hud._surface.reserve(binding, "key", "explicit", ["root"], "visual").error.code,
+    "StaleClient");
+  assert.deepEqual(released, ["stale-token"]);
+});
+
+test("click hook is installed in the load window and subscriptions dispatch from stable snapshots", () => {
+  const m = mount();
+  assert.equal(typeof m.hook(), "function", "hook exists before layouts or routes are created");
+  const hud = m.ns.create({ addons: ["1"], resource: "panorama/layout/custom_game/layout.xml", buttons: ["go"] });
+  const seen = [];
+  let late;
+  const first = hud.subscribeClick("go", () => {
+    seen.push("first");
+    first.dispose();
+    late = hud.subscribeClick("go", () => seen.push("late"));
+  });
+  const second = hud.subscribeClick("go", () => { seen.push("second"); second.dispose(); });
+  hud.onClick("go", () => seen.push("legacy"));
+
+  hud.dispatchClick(3, "go");
+  assert.deepEqual(seen, ["legacy", "first", "second"]);
+  first.dispose(); second.dispose();
+  hud.dispatchClick(3, "go");
+  assert.deepEqual(seen, ["legacy", "first", "second", "legacy", "late"]);
+  late.dispose(); late.dispose();
+  assert.throws(() => hud.onClick("go", () => {}), /conflicting handler/);
 });
 
 test("a cursor lease does not survive the entity it captured on", (t) => {

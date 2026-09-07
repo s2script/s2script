@@ -375,6 +375,7 @@
     }
     function staleOpen(name) { throw new Error("hudkit: " + name + ".open failed: stale client or component"); }
     var liveModals = [];
+    var liveBadges = [];
     var modalRoutes = {};
     // Install each engine click route once, during kit initialization in the load window.
     // Claims only replace the current JS destination; a released handle cannot keep listening.
@@ -390,20 +391,16 @@
         for (var f = 0; f < FOOTERS; f++) bind(MODAL[index].footers[f].id);
       })(mi);
     }
-    var calloutGen = {};
-    var bannerGen = {};
+    var toastState = {};
+    var calloutState = {};
+    var bannerState = {};
+    var motdSurfaceState = {};
     var motdOpen = {};
     var motdOpenAttempts = {};
-    var dashSpec = null;
-    var dashOpen = {};
-    var dashGeneration = 0;
+    var dashboardSurfaceState = {};
+    var dashboardControllers = [];
+    var legacyDashboard = null;
     var DASH_SUPERSEDED = {};
-    // Slot-level paint authority survives replacement of the per-open state object. A provider
-    // may synchronously open/close/rebind, so a generation kept only on that object cannot fence
-    // the obsolete caller that still holds it on its stack.
-    var dashPaintTransactions = {};
-    var dashOpenAttempts = {};
-    var dashUpdateRecords = {};
     // Only retained reservations are reconciled. Failed tokenless states require an explicit retry.
     var focusParticipants = [];
     // Explicit invalidations share the one load-window frame subscription installed by ui.js.
@@ -537,7 +534,7 @@
       st.paintedOnPick = null; st.paintedOnClose = null;
     }
     function releaseFocus(st) {
-      if (!st || !st.focusEnabled) return false;
+      if (!st) return false;
       clearInteraction(st);
       // Host retirement bypasses these mirrors. Forget must not later raw-hide a covered root.
       if (hud._focus) hud._focus.invalidate(st.binding, st.root);
@@ -545,13 +542,23 @@
       st.focusToken = null;
       var index = focusParticipants.indexOf(st);
       if (index >= 0) focusParticipants.splice(index, 1);
+      if (st.surfaceMap) {
+        retireSurface(st.surfaceMap, st, true);
+        return true;
+      }
+      if (!st.focusEnabled) return false;
       if (token && hud._focus) hud._focus.release(token);
       return true;
     }
     function focusAllows(st) {
+      if (st.surfaceMap && !surfaceActive(st.surfaceMap, st)) return false;
       return !st.focusEnabled || !!st.focusToken && hud._focus.active(st.focusBinding, st.focusToken);
     }
     function focusPaintable(st) {
+      if (st.surfaceMap) {
+        var parentState = hud._surface.state(st.token);
+        if (!surfaceCurrent(st.surfaceMap, st) || parentState !== "ready" && parentState !== "active") return false;
+      }
       if (!st.focusEnabled) return true;
       var state = st.focusToken && hud._focus.state(st.focusToken);
       return state === "ready" || state === "active";
@@ -583,6 +590,7 @@
       return uiOk(false);
     }
     function commitFocus(st) {
+      if (st.surfaceMap && !activateSurface(st.surfaceMap, st)) return false;
       if (!st.focusEnabled) return true;
       var state = hud._focus.state(st.focusToken);
       return state === "active" || state === "ready" && hud._focus.activate(st.focusBinding, st.focusToken);
@@ -625,9 +633,12 @@
       }
       for (var li = 0; li < liveModals.length; li++) liveModals[li].forget(slot);
       closeMotd(slot, false);
-      closeDash(slot, false);
-      calloutGen[slot] = (calloutGen[slot] || 0) + 1;
-      bannerGen[slot] = (bannerGen[slot] || 0) + 1;
+      for (var di = 0; di < dashboardControllers.length; di++) {
+        closeDashboard(dashboardControllers[di], slot, false);
+      }
+      retireSurfaceSlot(toastState, slot, true);
+      retireSurfaceSlot(calloutState, slot, true);
+      retireSurfaceSlot(bannerState, slot, true);
       origForget(slot, client);
     };
 
@@ -648,16 +659,7 @@
     // CUtlVectorEmbeddedNetworkVar type, not packet-captured fact.) Nothing painted through here
     // is private to its slot — see examples/hud-lab/README.md, "Per-slot state is storage, not
     // delivery", including the one-entity-per-recipient escape and its two un-gated questions.
-    function setText(slot, id, value) {
-      internPanel(id); internVar(id);
-      return hud.set(slot, id, value == null ? "" : String(value));
-    }
-    function setClass(slot, id, cls, on) {
-      internPanel(id); internClass(cls);
-      return hud.setClass(slot, id, cls, on);
-    }
     // show/hide toggle the hide class, so they touch the class vector too.
-    function show(slot, id, opts) { internPanel(id); internClass(CLS.hide); return hud.show(slot, id, opts); }
     function hide(slot, id) { internPanel(id); internClass(CLS.hide); return hud.hide(slot, id); }
 
     // Structured component paints consume the low-level source result directly. The fallback is
@@ -750,144 +752,190 @@
     //
     // A panel that appears instantly is a fine trade for one that cannot silently vanish. The
     // fade class is cleared FIRST, so a panel left transparent by an older build recovers.
-    function reveal(slot, id, fadeCls) {
-      setClass(slot, id, fadeCls, false);
-      show(slot, id);
-    }
-
     // ── toasts ────────────────────────────────────────────────────────────────────────────────
 
-    var toastGen = [];
-    var toastNext = 0;
-    for (var ti = 0; ti < TOASTS; ti++) toastGen.push(0);
+    var OWNED_TOAST = "cs2:hudkit:owned:toast";
+    var OWNED_CALLOUT = "cs2:hudkit:owned:callout";
+    var OWNED_BANNER = "cs2:hudkit:owned:banner";
+    var OWNED_MOTD = "cs2:hudkit:owned:motd";
+    var OWNED_DASHBOARD = "cs2:hudkit:owned:dashboard";
+    var TOAST_ROOTS = TOAST.map(function (item) { return item.id; });
 
-    function toast(slot, opts, retainedBinding) {
-      var binding = retainedBinding || currentBinding(slot);
-      if (!bindingValid(binding)) return "stale client";
-      var o = opts || {};
-      var i = toastNext % TOASTS;
-      toastNext++;
-      var t = TOAST[i];
-      // A generation stamp per slot: if this toast is replaced before its hold expires, the older
-      // timer must not yank the newer one off screen.
-      toastGen[i]++;
-      var gen = toastGen[i];
-      function currentToast() { return toastGen[i] === gen; }
-      var paintText = boundDriver(binding, setText, currentToast);
-      var paintClass = boundDriver(binding, setClass, currentToast);
-      var paintReveal = boundDriver(binding, reveal, currentToast);
-      var paintHide = boundDriver(binding, hide, currentToast);
-
-      paintText(slot, t.title, o.title || "");
-      paintText(slot, t.msg, o.message || "");
-      var want = TOAST_VARIANT[o.variant] || null;
-      for (var vk in TOAST_VARIANT) {
-        if (Object.prototype.hasOwnProperty.call(TOAST_VARIANT, vk)) {
-          paintClass(slot, t.id, TOAST_VARIANT[vk], TOAST_VARIANT[vk] === want);
+    function surfaceSlot(map, slot) {
+      var records = map[slot];
+      if (!records) { records = []; map[slot] = records; }
+      return records;
+    }
+    function surfaceCurrent(map, st) {
+      return !!st && st.live && bindingValid(st.binding) &&
+        surfaceSlot(map, st.slot)[st.lane] === st && hud._surface.state(st.token) !== "invalid";
+    }
+    function surfaceActive(map, st) {
+      return surfaceCurrent(map, st) && hud._surface.active(st.binding, st.token);
+    }
+    function retireSurface(map, st, releaseHost) {
+      if (!st || !st.live) return;
+      st.live = false;
+      var records = surfaceSlot(map, st.slot);
+      if (records[st.lane] === st) delete records[st.lane];
+      if (hud._surface && hud._surface.invalidate) hud._surface.invalidate(st.binding, st.root);
+      if (releaseHost && st.token && hud._surface) hud._surface.release(st.token);
+    }
+    function retireSurfaceSlot(map, slot, releaseHost, mode) {
+      var records = surfaceSlot(map, slot).slice();
+      for (var i = 0; i < records.length; i++) {
+        if (records[i] && (typeof mode === "undefined" || records[i].mode === mode)) {
+          retireSurface(map, records[i], releaseHost);
         }
       }
-      paintReveal(slot, t.id, FADE.toast);
-
-      var hold = o.holdSeconds == null ? 6 : o.holdSeconds;
-      if (hold <= 0) return null;
+    }
+    function beginSurface(map, binding, key, mode, roots, profile) {
+      if (!bindingValid(binding)) return staleResult();
+      if (!hud._surface) return uiFail("Unavailable", "surface ownership is unavailable");
+      var reserved = hud._surface.reserve(binding, key, mode, roots, profile);
+      if (!reserved.ok) return reserved;
+      var lane = reserved.value.lane;
+      if (lane < 0 || lane >= roots.length) {
+        hud._surface.release(reserved.value.token);
+        return uiFail("Unavailable", "surface ownership returned an invalid lane");
+      }
+      var records = surfaceSlot(map, binding.slot);
+      var previous = records[lane];
+      if (previous) retireSurface(map, previous, false);
+      var st = { binding: binding, slot: binding.slot, token: reserved.value.token, lane: lane,
+        root: roots[lane], mode: mode, live: true };
+      records[lane] = st;
+      if (hud._surface.invalidate) hud._surface.invalidate(binding, st.root);
+      return uiOk(st);
+    }
+    function activateSurface(map, st) {
+      if (!surfaceCurrent(map, st)) return false;
+      var state = hud._surface.state(st.token);
+      return state === "active" || state === "ready" && hud._surface.activate(st.binding, st.token);
+    }
+    function surfaceHandle(map, st) {
+      return {
+        isValid: function () { return surfaceCurrent(map, st); },
+        dispose: function () { retireSurface(map, st, true); }
+      };
+    }
+    function paintSurface(map, st, steps) {
+      function current() {
+        if (!surfaceCurrent(map, st)) return false;
+        var state = hud._surface.state(st.token);
+        return state === "ready" || state === "active";
+      }
+      for (var i = 0; i < steps.length; i++) {
+        var step = steps[i];
+        var result = resultBoundDriver(st.binding, step.fn, current).apply(null, step.args);
+        if (!result.ok) return result;
+      }
+      return activateSurface(map, st) ? uiOk(surfaceHandle(map, st)) :
+        uiFail("PaintFailed", "surface activation failed");
+    }
+    function scheduleSurface(map, st, hold, fadeClass, fadeSeconds) {
+      if (hold <= 0) return;
       afterSeconds(hold, function () {
-        if (toastGen[i] !== gen || !bindingValid(binding)) return;
-        paintClass(slot, t.id, FADE.toast, true);
-        afterSeconds(0.3, function () {
-          if (toastGen[i] !== gen || !bindingValid(binding)) return;
-          paintHide(slot, t.id);
+        if (!surfaceActive(map, st)) return;
+        resultBoundDriver(st.binding, driveSetClass, function () { return surfaceActive(map, st); })
+          (st.slot, st.root, fadeClass, true);
+        afterSeconds(fadeSeconds, function () {
+          if (!surfaceActive(map, st)) return;
+          retireSurface(map, st, true);
         });
       });
-      return null;
+    }
+    function finishSurface(map, begun, steps, hold, fadeClass, fadeSeconds) {
+      var st = begun.value;
+      var result;
+      try { result = paintSurface(map, st, steps); }
+      catch (err) { result = uiFail("PaintFailed", errorMessage(err, "surface paint failed")); }
+      if (!result.ok) { retireSurface(map, st, true); return result; }
+      scheduleSurface(map, st, hold, fadeClass, fadeSeconds);
+      return result;
+    }
+
+    function tryToast(slot, opts, retainedBinding, mode) {
+      var binding = retainedBinding || currentBinding(slot);
+      var begun = beginSurface(toastState, binding, OWNED_TOAST, mode, TOAST_ROOTS, "visual");
+      if (!begun.ok) return begun;
+      var st = begun.value, o = opts || {}, t = TOAST[st.lane], steps = [];
+      try {
+        steps.push({ fn: driveSetText, args: [slot, t.title, o.title || ""] });
+        steps.push({ fn: driveSetText, args: [slot, t.msg, o.message || ""] });
+        var want = TOAST_VARIANT[o.variant] || null;
+        for (var vk in TOAST_VARIANT) if (Object.prototype.hasOwnProperty.call(TOAST_VARIANT, vk)) {
+          steps.push({ fn: driveSetClass, args: [slot, t.id, TOAST_VARIANT[vk], TOAST_VARIANT[vk] === want] });
+        }
+        steps.push({ fn: driveReveal, args: [slot, t.id, FADE.toast] });
+        return finishSurface(toastState, begun, steps, o.holdSeconds == null ? 6 : o.holdSeconds,
+          FADE.toast, 0.3);
+      } catch (err) { retireSurface(toastState, st, true); return uiFail("PaintFailed", errorMessage(err, "toast paint failed")); }
+    }
+    function toast(slot, opts, retainedBinding) {
+      var result = tryToast(slot, opts, retainedBinding, "legacy");
+      return result.ok ? null : result.error.message;
     }
 
     // ── callout (hint: bottom-center, no cursor) ─────────────────────────────────────────────
 
-    function callout(slot, opts, retainedBinding) {
+    function tryCallout(slot, opts, retainedBinding, mode) {
       var binding = retainedBinding || currentBinding(slot);
-      if (!bindingValid(binding)) return "stale client";
-      var o = opts || {};
-      calloutGen[slot] = (calloutGen[slot] || 0) + 1;
-      var gen = calloutGen[slot];
-      function currentCallout() { return calloutGen[slot] === gen; }
-      var paintText = boundDriver(binding, setText, currentCallout);
-      var paintClass = boundDriver(binding, setClass, currentCallout);
-      var paintShow = boundDriver(binding, show, currentCallout);
-      var paintHide = boundDriver(binding, hide, currentCallout);
-      var paintReveal = boundDriver(binding, reveal, currentCallout);
-      var title = o.title || "";
-      var message = o.message || "";
-      paintText(slot, "s2_callout_title", title);
-      paintText(slot, "s2_callout_msg", message);
-      if (!title) paintHide(slot, "s2_callout_title"); else paintShow(slot, "s2_callout_title");
-      if (!message) paintHide(slot, "s2_callout_msg"); else paintShow(slot, "s2_callout_msg");
-      var want = CALLOUT_VARIANT[o.variant] || null;
-      for (var vk in CALLOUT_VARIANT) {
-        if (Object.prototype.hasOwnProperty.call(CALLOUT_VARIANT, vk)) {
-          paintClass(slot, "s2_callout", CALLOUT_VARIANT[vk], CALLOUT_VARIANT[vk] === want);
+      var begun = beginSurface(calloutState, binding, OWNED_CALLOUT, mode, ["s2_callout"], "visual");
+      if (!begun.ok) return begun;
+      var st = begun.value, o = opts || {}, steps = [];
+      try {
+        var title = o.title || "", message = o.message || "";
+        steps.push({ fn: driveSetText, args: [slot, "s2_callout_title", title] });
+        steps.push({ fn: driveSetText, args: [slot, "s2_callout_msg", message] });
+        steps.push({ fn: title ? driveShow : driveHide, args: [slot, "s2_callout_title"] });
+        steps.push({ fn: message ? driveShow : driveHide, args: [slot, "s2_callout_msg"] });
+        var want = CALLOUT_VARIANT[o.variant] || null;
+        for (var vk in CALLOUT_VARIANT) if (Object.prototype.hasOwnProperty.call(CALLOUT_VARIANT, vk)) {
+          steps.push({ fn: driveSetClass, args: [slot, st.root, CALLOUT_VARIANT[vk], CALLOUT_VARIANT[vk] === want] });
         }
-      }
-      paintReveal(slot, "s2_callout", FADE.callout);
-      var hold = o.holdSeconds == null ? 4 : o.holdSeconds;
-      if (hold <= 0) return null;
-      afterSeconds(hold, function () {
-        if (calloutGen[slot] !== gen || !bindingValid(binding)) return;
-        paintClass(slot, "s2_callout", FADE.callout, true);
-        afterSeconds(0.25, function () {
-          if (calloutGen[slot] !== gen || !bindingValid(binding)) return;
-          paintHide(slot, "s2_callout");
-        });
-      });
-      return null;
+        steps.push({ fn: driveReveal, args: [slot, st.root, FADE.callout] });
+        return finishSurface(calloutState, begun, steps, o.holdSeconds == null ? 4 : o.holdSeconds,
+          FADE.callout, 0.25);
+      } catch (err) { retireSurface(calloutState, st, true); return uiFail("PaintFailed", errorMessage(err, "callout paint failed")); }
+    }
+    function callout(slot, opts, retainedBinding) {
+      var result = tryCallout(slot, opts, retainedBinding, "legacy");
+      return result.ok ? null : result.error.message;
     }
 
     // ── banner (center-top, one at a time, no cursor) ────────────────────────────────────────
 
-    function banner(slot, opts, retainedBinding) {
+    function tryBanner(slot, opts, retainedBinding, mode) {
       var binding = retainedBinding || currentBinding(slot);
-      if (!bindingValid(binding)) return "stale client";
-      var o = opts || {};
-      bannerGen[slot] = (bannerGen[slot] || 0) + 1;
-      var gen = bannerGen[slot];
-      function currentBanner() { return bannerGen[slot] === gen; }
-      var paintText = boundDriver(binding, setText, currentBanner);
-      var paintClass = boundDriver(binding, setClass, currentBanner);
-      var paintReveal = boundDriver(binding, reveal, currentBanner);
-      var paintHide = boundDriver(binding, hide, currentBanner);
-      paintText(slot, "s2_banner_text", o.text == null ? "" : String(o.text));
-      paintReveal(slot, "s2_banner", FADE.banner);
-      var hold = o.holdSeconds == null ? 5 : o.holdSeconds;
-      if (hold <= 0) return null;
-      afterSeconds(hold, function () {
-        if (bannerGen[slot] !== gen || !bindingValid(binding)) return;
-        paintClass(slot, "s2_banner", FADE.banner, true);
-        afterSeconds(0.25, function () {
-          if (bannerGen[slot] !== gen || !bindingValid(binding)) return;
-          paintHide(slot, "s2_banner");
-        });
-      });
-      return null;
+      var begun = beginSurface(bannerState, binding, OWNED_BANNER, mode, ["s2_banner"], "visual");
+      if (!begun.ok) return begun;
+      var st = begun.value, o = opts || {}, steps = [];
+      try {
+        steps.push({ fn: driveSetText, args: [slot, "s2_banner_text", o.text == null ? "" : String(o.text)] });
+        steps.push({ fn: driveReveal, args: [slot, st.root, FADE.banner] });
+        return finishSurface(bannerState, begun, steps, o.holdSeconds == null ? 5 : o.holdSeconds,
+          FADE.banner, 0.25);
+      } catch (err) { retireSurface(bannerState, st, true); return uiFail("PaintFailed", errorMessage(err, "banner paint failed")); }
+    }
+    function banner(slot, opts, retainedBinding) {
+      var result = tryBanner(slot, opts, retainedBinding, "legacy");
+      return result.ok ? null : result.error.message;
     }
 
     // ── MOTD (scrim + OK). Not a third center sheet. ─────────────────────────────────────────
 
     function closeMotd(slot, fromClick, expected) {
       var state = motdOpen[slot];
+      // Retained handles cannot cancel an attempt belonging to a newer open.
+      if (expected && expected !== state) return;
       if (!fromClick) delete motdOpenAttempts[slot];
-      if (!state || (expected && expected !== state)) return;
+      if (!state) return;
       if (fromClick && (!state.interactive || !bindingValid(state.binding) || !focusAllows(state))) return;
-      if (state.focusEnabled) {
-        var onClose = state.onClose;
-        delete motdOpen[slot]; releaseFocus(state);
-        if (fromClick && typeof onClose === "function") onClose(slot);
-        return;
-      }
-      if (!bindingValid(state.binding)) return;
-      function currentMotd() { return motdOpen[slot] === state; }
-      boundDriver(state.binding, hide, currentMotd)(slot, "s2_motd");
-      if (!currentMotd()) return;
+      var onClose = state.onClose;
       delete motdOpen[slot];
-      if (fromClick && typeof state.onClose === "function") state.onClose(slot);
+      releaseFocus(state);
+      if (fromClick && typeof onClose === "function") onClose(slot);
     }
 
     hud.onClick("s2_motd_ok", function (player) {
@@ -901,13 +949,14 @@
 
     function paintMotd(slot, state) {
       var binding = state.binding, o = state.spec;
-      function currentMotd() { return motdOpen[slot] === state && bindingValid(binding); }
+      function currentMotd() {
+        return motdOpen[slot] === state && bindingValid(binding) && surfaceCurrent(motdSurfaceState, state);
+      }
       if (!currentMotd()) return staleResult();
       var prepared = prepareFocus(state, currentMotd);
       if (!prepared.ok || prepared.value) return prepared.ok ? uiOk(undefined) : prepared;
       var error = null;
-      function drive(fn, legacy) {
-        if (!state.focusEnabled) return boundDriver(binding, legacy, currentMotd);
+      function drive(fn) {
         return function () {
           if (error || !currentMotd()) return;
           if (!focusPaintable(state)) { error = uiFail("PaintFailed", "focus changed during paint"); return; }
@@ -917,7 +966,7 @@
           if (!result.ok) error = result;
         };
       }
-      var paintText = drive(driveSetText, setText), paintShow = drive(driveShow, show), paintHide = drive(driveHide, hide);
+      var paintText = drive(driveSetText), paintShow = drive(driveShow), paintHide = drive(driveHide);
       paintText(slot, "s2_motd_title", o.title == null ? "" : String(o.title));
       var sub = o.subtitle == null ? "" : String(o.subtitle);
       paintText(slot, "s2_motd_sub", sub);
@@ -944,47 +993,78 @@
       return uiOk(undefined);
     }
 
-    function motd(slot, opts, retainedBinding) {
+    function tryMotd(slot, opts, retainedBinding, mode) {
       var binding = retainedBinding || currentBinding(slot);
-      if (!bindingValid(binding)) return invalidMotd(slot);
+      if (!bindingValid(binding)) return staleResult();
       var attempt = {}; motdOpenAttempts[slot] = attempt;
       var validated = focusOptions(opts);
-      if (!validated.ok) { log("[hudkit] " + validated.error.message); return invalidMotd(slot); }
-      if (!bindingValid(binding)) return invalidMotd(slot);
+      if (!validated.ok) return validated;
+      if (!bindingValid(binding) || motdOpenAttempts[slot] !== attempt) return staleResult();
+      var begun = beginSurface(motdSurfaceState, binding, OWNED_MOTD, mode, ["s2_motd"],
+        validated.value === null ? "interactive" : "occupancy");
+      if (!begun.ok) return begun;
       var o = opts || {};
-      var state;
+      var state = begun.value;
       try {
-        state = { binding: binding, spec: o, onClose: o.onClose || null,
-          focusEnabled: validated.value !== null, focusPriority: validated.value,
-          root: "s2_motd", cursorWanted: o.cursor !== false, interactive: false };
+        state.spec = o; state.onClose = o.onClose || null;
+        state.focusEnabled = validated.value !== null; state.focusPriority = validated.value;
+        state.cursorWanted = o.cursor !== false; state.interactive = false;
+        state.surfaceMap = motdSurfaceState;
       } catch (err) {
-        if (validated.value === null) throw err;
-        log(errorMessage(err, "invalid MOTD options")); return invalidMotd(slot);
+        retireSurface(motdSurfaceState, state, true);
+        return uiFail("InvalidArgument", errorMessage(err, "invalid MOTD options"));
       }
-      if (!bindingValid(binding) || motdOpenAttempts[slot] !== attempt) return invalidMotd(slot);
-      releaseFocus(motdOpen[slot]);
+      if (!bindingValid(binding) || motdOpenAttempts[slot] !== attempt) {
+        retireSurface(motdSurfaceState, state, true); return staleResult();
+      }
+      var previous = motdOpen[slot];
+      if (previous && previous !== state) {
+        clearInteraction(previous);
+        previous.live = false;
+        previous.focusToken = null;
+        var oldIndex = focusParticipants.indexOf(previous);
+        if (oldIndex >= 0) focusParticipants.splice(oldIndex, 1);
+      }
       motdOpen[slot] = state;
       state.focusRetained = function () { return motdOpen[slot] === state && bindingValid(binding); };
       state.focusDiscard = function () { if (motdOpen[slot] === state) delete motdOpen[slot]; };
       state.focusRepaint = function () { return paintMotd(slot, state); };
+      if (state.focusEnabled) {
+        state.focusBinding = componentBinding(binding, function () {
+          return motdOpen[slot] === state && surfaceCurrent(motdSurfaceState, state);
+        });
+        if (!hud._focus || typeof hud._focus.reserveLinked !== "function") {
+          releaseFocus(state); state.focusDiscard();
+          return uiFail("Unavailable", "surface focus is unavailable");
+        }
+        var linked = hud._focus.reserveLinked(state.focusBinding, state.root, state.focusPriority, state.token);
+        if (!linked.ok) { releaseFocus(state); state.focusDiscard(); return linked; }
+        state.focusToken = linked.value;
+        focusParticipants.push(state);
+      }
       var result;
       try { result = paintMotd(slot, state); }
       catch (err) {
-        if (!state.focusEnabled) throw err;
         result = uiFail("PaintFailed", errorMessage(err, "MOTD paint failed"));
       }
-      if (state.focusEnabled && !result.ok) {
-        releaseFocus(state); state.focusDiscard(); log("[hudkit] " + result.error.message);
-        return invalidMotd(slot);
+      if (!result.ok) {
+        releaseFocus(state); state.focusDiscard();
+        return result;
       }
-      return {
+      return uiOk({
         slot: slot,
-        isValid: function () { return motdOpen[slot] === state && bindingValid(binding); },
-        close: function () { closeMotd(slot, false, state); }
-      };
+        isValid: function () { return motdOpen[slot] === state && surfaceCurrent(motdSurfaceState, state); },
+        close: function () { closeMotd(slot, false, state); },
+        dispose: function () { closeMotd(slot, false, state); }
+      });
+    }
+    function motd(slot, opts, retainedBinding) {
+      var result = tryMotd(slot, opts, retainedBinding, "legacy");
+      if (!result.ok) { log("[hudkit] " + result.error.message); return invalidMotd(slot); }
+      return result.value;
     }
 
-    // ── dashboard (tabbed TopMenu hub). One spec, one root. Not a modal pool slot. ───────────
+    // ── dashboard (tabbed TopMenu hub). One physical root, independently owned controllers. ──
 
     function dashTabs(slot, spec) {
       if (!spec) return [];
@@ -992,35 +1072,58 @@
       return got || [];
     }
 
-    function dashStateValid(state) {
-      return !!state && state.componentGeneration === dashGeneration && bindingValid(state.binding);
+    function dashStateValid(st) {
+      var controller = st && st.controller;
+      return !!controller && !controller.released && st.componentGeneration === controller.generation &&
+        bindingValid(st.binding) && controller.open[st.slot] === st;
     }
 
-    function dashUpdateRecord(slot, binding, generation) {
-      var record = dashUpdateRecords[slot];
+    function dashOwnedCurrent(st) {
+      return dashStateValid(st) && surfaceCurrent(dashboardSurfaceState, st);
+    }
+
+    function dashUpdateRecord(controller, slot, binding, generation) {
+      var record = controller.updateRecords[slot];
       if (record && record.componentGeneration === generation && record.live()) return record;
       record = newUpdateRecord("dashboard", function () {
-        return generation === dashGeneration && bindingValid(binding);
+        return !controller.released && generation === controller.generation && bindingValid(binding);
       });
       record.componentGeneration = generation;
-      dashUpdateRecords[slot] = record;
+      controller.updateRecords[slot] = record;
       return record;
     }
 
-    function closeDash(slot, fromClick) {
-      var st = dashOpen[slot];
-      cancelDirtyState(st);
-      delete dashOpenAttempts[slot];
-      delete dashPaintTransactions[slot];
+    function abandonReplacedDashboard(st) {
       if (!st) return;
-      delete dashOpen[slot];
-      if (!dashStateValid(st)) { releaseFocus(st); return; }
+      var controller = st.controller;
+      cancelDirtyState(st);
+      clearInteraction(st);
+      var focusIndex = focusParticipants.indexOf(st);
+      if (focusIndex >= 0) focusParticipants.splice(focusIndex, 1);
+      st.focusToken = null;
+      if (controller) {
+        if (controller.open[st.slot] === st) delete controller.open[st.slot];
+        delete controller.paintTransactions[st.slot];
+      }
+      retireSurface(dashboardSurfaceState, st, false);
+    }
+
+    function closeDashboard(controller, slot, fromClick, expected) {
+      if (!controller) return;
+      var st = controller.open[slot];
+      if (expected && st !== expected) return;
+      cancelDirtyState(st);
+      delete controller.openAttempts[slot];
+      delete controller.paintTransactions[slot];
+      if (!st) return;
+      delete controller.open[slot];
       var onClose = st.interactive && st.paintedOnClose;
-      if (!releaseFocus(st)) boundDriver(st.binding, hide, function () { return dashStateValid(st); })(slot, "s2_dash");
+      releaseFocus(st);
       if (fromClick && typeof onClose === "function") onClose(slot);
     }
 
-    function dashCandidate(slot, st, spec) {
+    function dashCandidate(controller, slot, st) {
+      var spec = controller.spec;
       var rawTabs = dashTabs(slot, spec);
       var tabs = [];
       for (var ti = 0; ti < rawTabs.length; ti++) tabs.push(copyDashTab(rawTabs[ti]));
@@ -1073,62 +1176,120 @@
       };
     }
 
-    function paintDash(slot) {
-      var st = dashOpen[slot], result, transaction = {};
+    function paintDashboard(controller, slot) {
+      var st = controller.open[slot], result, transaction = {};
       var updateAttempt = beginUpdate(st && st.updateRecord);
-      function ownsFailure() { return st && (dashPaintTransactions[slot] === transaction ||
+      function ownsFailure() { return st && (controller.paintTransactions[slot] === transaction ||
         st.focusEnabled && !st.focusRetained()); }
-      try { result = paintDashInner(slot, transaction); }
+      try { result = paintDashboardInner(controller, slot, transaction); }
       catch (err) {
         completeUpdate(st && st.updateRecord, updateAttempt,
           uiFail("PaintFailed", errorMessage(err, "hudkit: dashboard paint failed")));
-        if (ownsFailure()) releaseFocus(st);
+        if (ownsFailure()) {
+          if (st && st.controller.open[slot] === st) st.retryableFailure = true;
+          releaseFocus(st);
+        }
         throw err;
       }
       if (result !== DASH_SUPERSEDED) completeUpdate(st && st.updateRecord, updateAttempt, result);
-      if (ownsFailure() && (result === DASH_SUPERSEDED || !result.ok)) releaseFocus(st);
+      if (ownsFailure() && (result === DASH_SUPERSEDED || !result.ok)) {
+        if (result !== DASH_SUPERSEDED && st && st.controller.open[slot] === st) {
+          st.retryableFailure = true;
+        }
+        releaseFocus(st);
+      }
       return result;
     }
-    function paintDashInner(slot, transaction) {
-      var st = dashOpen[slot];
+
+    function ensureDashboardOwnership(st) {
       if (!dashStateValid(st)) return staleResult();
-      if (!dashSpec) return uiFail("InvalidArgument", "hudkit: dashboard is not configured");
-      var spec = dashSpec;
-      dashPaintTransactions[slot] = transaction;
+      if (dashOwnedCurrent(st)) return uiOk(undefined);
+      if (!st.opening && !st.retryableFailure) return uiFail("Released", "dashboard surface released");
+      if (!hud._surface || typeof hud._surface.reserve !== "function") {
+        return uiFail("Unavailable", "surface ownership is unavailable");
+      }
+      var controller = st.controller;
+      var previous = surfaceSlot(dashboardSurfaceState, st.slot)[0];
+      var reserved = hud._surface.reserve(st.binding, OWNED_DASHBOARD, controller.mode, ["s2_dash"],
+        st.focusEnabled ? "occupancy" : "interactive");
+      if (!reserved.ok) return reserved;
+      if (reserved.value.lane !== 0) {
+        hud._surface.release(reserved.value.token);
+        return uiFail("Unavailable", "surface ownership returned an invalid lane");
+      }
+      if (previous && previous !== st) abandonReplacedDashboard(previous);
+      st.token = reserved.value.token;
+      st.lane = 0;
+      st.live = true;
+      surfaceSlot(dashboardSurfaceState, st.slot)[0] = st;
+      if (hud._surface.invalidate) hud._surface.invalidate(st.binding, st.root);
+      // Reacquiring after a failed paint starts from a physically retired root. Submit the full
+      // root presentation again even when focus is disabled; descendants alone cannot reveal it
+      // or restore the requested cursor lease.
+      st.pendingRootOpts = { cursor: st.cursorWanted };
+      if (!st.focusEnabled) return uiOk(undefined);
+      st.focusBinding = componentBinding(st.binding, st.focusRetained);
+      if (!hud._focus || typeof hud._focus.reserveLinked !== "function") {
+        releaseFocus(st);
+        return uiFail("Unavailable", "surface focus is unavailable");
+      }
+      var linked = hud._focus.reserveLinked(st.focusBinding, st.root, st.focusPriority, st.token);
+      if (!linked.ok) { releaseFocus(st); return linked; }
+      st.focusToken = linked.value;
+      focusParticipants.push(st);
+      return uiOk(undefined);
+    }
+
+    function dashboardInvalidationPaintable(st) {
+      if (dashStateValid(st) && st.retryableFailure) return true;
+      if (!dashOwnedCurrent(st)) return false;
+      var parentState = hud._surface.state(st.token);
+      return (parentState === "ready" || parentState === "active") && invalidationPaintable(st);
+    }
+
+    function paintDashboardInner(controller, slot, transaction) {
+      var st = controller.open[slot];
+      if (!dashStateValid(st)) return staleResult();
+      var owned = ensureDashboardOwnership(st);
+      if (!owned.ok) return owned;
+      var parentState = hud._surface.state(st.token);
+      if (parentState !== "ready" && parentState !== "active") {
+        return uiFail("Busy", "dashboard surface is not paintable");
+      }
+      var spec = controller.spec;
+      controller.paintTransactions[slot] = transaction;
       st.interactive = false;
       function current() {
-        return dashPaintTransactions[slot] === transaction && dashOpen[slot] === st && dashSpec === spec &&
-          dashStateValid(st);
+        return controller.paintTransactions[slot] === transaction && controller.open[slot] === st &&
+          controller.spec === spec && dashOwnedCurrent(st);
       }
       var prepared = prepareFocus(st, current);
       if (!prepared.ok) return prepared;
-      if (prepared.value) { st.focusBinding = componentBinding(st.binding, st.focusRetained); return uiOk(undefined); }
+      if (prepared.value) {
+        st.focusBinding = componentBinding(st.binding, st.focusRetained);
+        return uiOk(undefined);
+      }
       var candidate;
-      try { candidate = dashCandidate(slot, st, spec); }
+      try { candidate = dashCandidate(controller, slot, st); }
       catch (err) {
         if (!current()) return DASH_SUPERSEDED;
         return uiFail("InvalidArgument", errorMessage(err, "hudkit: invalid dashboard data"));
       }
       if (!current()) return DASH_SUPERSEDED;
       if (!candidate) {
-        if (st.focusEnabled) { closeDash(slot, false); return uiOk(undefined); }
-        var closeResult = resultBoundDriver(st.binding, driveHide, function () {
-          return dashSpec === spec && dashOpen[slot] === st && dashStateValid(st);
-        })(slot, "s2_dash");
-        if (dashOpen[slot] === st) {
-          delete dashPaintTransactions[slot];
-          delete dashOpen[slot];
-        }
-        return closeResult;
+        closeDashboard(controller, slot, false, st);
+        return uiOk(undefined);
       }
       var error = null;
       function drive(fn) {
-        var driveBound = resultBoundDriver(st.binding, fn, function () { return current() && focusPaintable(st); });
+        var driveBound = resultBoundDriver(st.binding, fn, function () {
+          return current() && focusPaintable(st);
+        });
         return function () {
           if (error !== null || !current()) return;
           if (!focusPaintable(st)) { error = uiFail("PaintFailed", "focus changed during paint"); return; }
-          var result = driveBound.apply(null, arguments);
-          if (!result.ok) error = result;
+          var driveResult = driveBound.apply(null, arguments);
+          if (!driveResult.ok) error = driveResult;
         };
       }
       var paintText = drive(driveSetText), paintClass = drive(driveSetClass);
@@ -1167,7 +1328,7 @@
       }
       if (!current()) return DASH_SUPERSEDED;
       if (error) return error;
-      if (!commitFocus(st)) { releaseFocus(st); return uiFail("PaintFailed", "focus activation failed"); }
+      if (!commitFocus(st)) return uiFail("PaintFailed", "focus activation failed");
       st.tabId = candidate.tabId;
       st.tabPage = candidate.tabPage;
       st.rowPage = candidate.rowPage;
@@ -1180,252 +1341,334 @@
       delete st.pendingRootOpts;
       st.focusBinding = componentBinding(st.binding, st.focusRetained);
       st.interactive = true;
+      delete st.opening;
+      delete st.retryableFailure;
       return uiOk(undefined);
     }
 
-    hud.onClick("s2_dash_close", function (player) {
-      var slot = slotOf(player);
-      var st = dashOpen[slot];
-      if (!dashStateValid(st) || !st.interactive) return;
-      if (!focusAllows(st)) return;
-      closeDash(slot, true);
-    });
-    for (var dti = 0; dti < DASH_TABS; dti++) {
-      (function (tabIndex) {
-        hud.onClick(DASH_TAB[tabIndex].id, function (player) {
-          var slot = slotOf(player);
-          var st = dashOpen[slot];
-          if (!dashStateValid(st) || !st.interactive) return;
-          var tab = st.paintedTabs && st.paintedTabs[tabIndex];
-          if (!tab || !focusAllows(st)) return;
-          st.tabId = tab.id;
-          st.rowPage = 0;
-          paintDash(slot);
-        });
-      })(dti);
+    function tryOpenDashboardBound(controller, slot, opts, binding, generation, rollbackOnFailure) {
+      var updateRecord = dashUpdateRecord(controller, slot, binding, generation);
+      var updateAttempt = beginUpdate(updateRecord);
+      var result = tryOpenDashboardBoundInner(controller, slot, opts, binding, generation,
+        updateRecord, rollbackOnFailure);
+      completeUpdate(updateRecord, updateAttempt, result);
+      return result;
     }
-    for (var dri = 0; dri < DASH_ROWS; dri++) {
-      (function (rowIndex) {
-        hud.onClick(DASH_ROW[rowIndex].id, function (player) {
-          var slot = slotOf(player);
-          var st = dashOpen[slot];
-          if (!dashStateValid(st) || !st.interactive) return;
-          var record = st.paintedRows && st.paintedRows[rowIndex];
-          if (!record || record.row.disabled || !focusAllows(st)) return;
-          if (typeof st.paintedOnPick === "function") {
-            st.paintedOnPick(slot, st.paintedTabId, record.row, dashSelf.forSlot(slot));
-          }
-        });
-      })(dri);
-    }
-    hud.onClick("s2_dash_prev", function (player) {
-      var slot = slotOf(player);
-      var st = dashOpen[slot];
-      if (!dashStateValid(st) || !st.interactive) return;
-      if (!focusAllows(st)) return;
-      st.rowPage -= 1;
-      paintDash(slot);
-    });
-    hud.onClick("s2_dash_next", function (player) {
-      var slot = slotOf(player);
-      var st = dashOpen[slot];
-      if (!dashStateValid(st) || !st.interactive) return;
-      if (!focusAllows(st)) return;
-      st.rowPage += 1;
-      paintDash(slot);
-    });
 
-    var dashSelf;
-    function dashboard(spec) {
-      var nextSpec = spec || {};
-      if (dashSelf) {
-        dashGeneration++;
-        var slots = [];
-        for (var key in dashOpen) {
-          if (!dashOpen[key]) continue;
-          cancelDirtyState(dashOpen[key]);
-          releaseFocus(dashOpen[key]);
-          dashOpen[key].interactive = false;
-          dashOpen[key].componentGeneration = dashGeneration;
-          dashOpen[key].updateRecord = dashUpdateRecord(Number(key), dashOpen[key].binding, dashGeneration);
-          delete dashPaintTransactions[key];
-          slots.push(Number(key));
-        }
-        dashSpec = nextSpec;
-        var firstError = null;
-        for (var si = 0; si < slots.length && dashSpec === nextSpec; si++) {
-          try {
-            if (dashOpen[slots[si]]) {
-              var result = paintDash(slots[si]);
-              if (result !== DASH_SUPERSEDED && !result.ok &&
-                  result.error.code === "InvalidArgument" && !firstError) {
-                firstError = new Error(result.error.message);
-              }
-            }
-          }
-          catch (err) { if (!firstError) firstError = err; }
-        }
-        if (firstError) throw firstError;
-        return dashSelf;
+    function tryOpenDashboardBoundInner(controller, slot, opts, binding, generation, updateRecord,
+      rollbackOnFailure) {
+      if (controller.released) return releasedResult("dashboard");
+      if (generation !== controller.generation || !bindingValid(binding)) return staleResult();
+      var attempt = {};
+      controller.openAttempts[slot] = attempt;
+      var validated = focusOptions(opts);
+      if (!validated.ok) return validated;
+      if (generation !== controller.generation || !bindingValid(binding)) return staleResult();
+      var o = opts || {};
+      var cursorWanted, tabId;
+      try { cursorWanted = o.cursor !== false; tabId = o.tab || ""; }
+      catch (err) { return uiFail("InvalidArgument", errorMessage(err, "invalid dashboard options")); }
+      if (generation !== controller.generation || !bindingValid(binding)) return staleResult();
+      if (controller.openAttempts[slot] !== attempt) return uiFail("PaintFailed", "dashboard open superseded");
+
+      // An explicit controller may reopen its own live claim. Retire that exact token first; a
+      // different controller remains protected by the host's explicit/legacy arbitration.
+      if (controller.open[slot]) closeDashboard(controller, slot, false, controller.open[slot]);
+      if (controller.openAttempts[slot] && controller.openAttempts[slot] !== attempt) {
+        return uiFail("PaintFailed", "dashboard open superseded");
       }
-      dashSpec = nextSpec;
-      dashGeneration++;
-      function tryOpenDashBound(slot, opts, binding, generation, rollbackOnFailure) {
-        var updateRecord = dashUpdateRecord(slot, binding, generation);
-        var updateAttempt = beginUpdate(updateRecord);
-        var result = tryOpenDashBoundInner(slot, opts, binding, generation, rollbackOnFailure, updateRecord);
-        completeUpdate(updateRecord, updateAttempt, result);
+      controller.openAttempts[slot] = attempt;
+      var state = { controller: controller, binding: binding, slot: slot, lane: 0, token: null,
+        root: "s2_dash", mode: controller.mode, live: false, opening: true };
+      state.componentGeneration = generation;
+      state.tabId = tabId;
+      state.tabPage = 0;
+      state.rowPage = 0;
+      state.interactive = false;
+      state.pendingRootOpts = { cursor: cursorWanted };
+      state.focusEnabled = validated.value !== null;
+      state.focusPriority = validated.value;
+      state.root = "s2_dash";
+      state.cursorWanted = cursorWanted;
+      state.updateRecord = updateRecord;
+      state.surfaceMap = dashboardSurfaceState;
+      state.focusRetained = function () { return dashOwnedCurrent(state); };
+      state.focusDiscard = function () {
+        if (controller.open[slot] === state) delete controller.open[slot];
+      };
+      state.focusRepaint = function () { return paintDashboard(controller, slot); };
+      controller.open[slot] = state;
+      var result;
+      try { result = paintDashboard(controller, slot); }
+      catch (err) { result = uiFail("PaintFailed", errorMessage(err, "hudkit: dashboard paint failed")); }
+      if (result === DASH_SUPERSEDED) {
+        if (generation === controller.generation && bindingValid(binding) &&
+            dashStateValid(controller.open[slot])) {
+          return uiOk(makeDashView(controller, slot, binding, generation));
+        }
+        if (generation !== controller.generation || !bindingValid(binding)) return staleResult();
+        return uiFail("PaintFailed", "dashboard open cancelled");
+      }
+      if (!result.ok) {
+        delete state.opening;
+        if ((rollbackOnFailure !== false || state.focusEnabled) && controller.open[slot] === state) {
+          closeDashboard(controller, slot, false, state);
+        } else if (controller.open[slot] !== state) releaseFocus(state);
         return result;
       }
-      function tryOpenDashBoundInner(slot, opts, binding, generation, rollbackOnFailure, updateRecord) {
-        if (generation !== dashGeneration || !bindingValid(binding)) return staleResult();
-        var attempt = {}; dashOpenAttempts[slot] = attempt;
-        var validated = focusOptions(opts);
-        if (!validated.ok) return validated;
-        if (generation !== dashGeneration || !bindingValid(binding)) return staleResult();
-        var o = opts || {};
-        var candidate;
-        try {
-          var cursorWanted = o.cursor !== false;
-          candidate = { tabId: o.tab || "", tabPage: 0, rowPage: 0, interactive: false,
-            pendingRootOpts: { cursor: cursorWanted }, binding: binding,
-            componentGeneration: generation, focusEnabled: validated.value !== null,
-            focusPriority: validated.value, root: "s2_dash", cursorWanted: cursorWanted,
-            updateRecord: updateRecord };
-        } catch (err) { return uiFail("InvalidArgument", errorMessage(err, "invalid dashboard options")); }
-        if (generation !== dashGeneration || !bindingValid(binding)) return staleResult();
-        if (dashOpenAttempts[slot] !== attempt) return uiFail("PaintFailed", "dashboard open superseded");
-        if (dashOpen[slot]) {
-          cancelDirtyState(dashOpen[slot]);
-          dashOpen[slot].interactive = false;
-          releaseFocus(dashOpen[slot]);
-        }
-        delete dashPaintTransactions[slot];
-        candidate.focusRetained = function () { return dashOpen[slot] === candidate && dashStateValid(candidate); };
-        candidate.focusDiscard = function () { if (dashOpen[slot] === candidate) delete dashOpen[slot]; };
-        candidate.focusRepaint = function () { return paintDash(slot); };
-        dashOpen[slot] = candidate;
-        var result;
-        try { result = paintDash(slot); }
-        catch (err) {
-          result = uiFail("PaintFailed", errorMessage(err, "hudkit: dashboard paint failed"));
-        }
-        if (result === DASH_SUPERSEDED) {
-          if (generation === dashGeneration && bindingValid(binding) && dashStateValid(dashOpen[slot])) {
-            return uiOk(makeDashView(slot, binding, generation));
-          }
-          if (generation !== dashGeneration || !bindingValid(binding)) return staleResult();
-          return uiFail("PaintFailed", "dashboard open cancelled");
-        }
-        if (!result.ok) {
-          if ((rollbackOnFailure !== false || candidate.focusEnabled) && dashOpen[slot] === candidate) {
-            delete dashPaintTransactions[slot];
-            delete dashOpen[slot];
-            try { if (!candidate.focusEnabled) boundDriver(binding, hide, function () {
-              return generation === dashGeneration;
-            })(slot, "s2_dash"); }
-            catch (_) { /* Preserve the original failure. */ }
-          }
-          return result;
-        }
-        if (generation !== dashGeneration || !bindingValid(binding)) return staleResult();
-        return uiOk(makeDashView(slot, binding, generation));
+      if (generation !== controller.generation || !bindingValid(binding)) return staleResult();
+      return uiOk(makeDashView(controller, slot, binding, generation));
+    }
+
+    function openDashboardBound(controller, slot, opts, binding, generation) {
+      var result = tryOpenDashboardBound(controller, slot, opts, binding, generation, false);
+      if (!result.ok && result.error.code === "StaleClient") return staleOpen("dashboard");
+      if (!result.ok && result.error.code === "Released") {
+        throw new Error("hudkit: dashboard.open failed: released");
       }
-      function openDashBound(slot, opts, binding, generation) {
-        var result = tryOpenDashBound(slot, opts, binding, generation, false);
-        if (!result.ok && result.error.code === "StaleClient") return staleOpen("dashboard");
-        if (!result.ok && result.error.code === "InvalidArgument") {
-          throw new Error(result.error.message);
+      if (!result.ok && result.error.code === "InvalidArgument") throw new Error(result.error.message);
+      if (!result.ok) return makeDashView(controller, slot, binding, generation);
+      return result.value;
+    }
+
+    function makeDashView(controller, slot, binding, generation) {
+      var updateRecord = dashUpdateRecord(controller, slot, binding, generation);
+      function valid() {
+        return !controller.released && generation === controller.generation && bindingValid(binding);
+      }
+      return {
+        slot: slot,
+        isValid: valid,
+        open: function (opts) {
+          return openDashboardBound(controller, slot, opts, binding, generation);
+        },
+        tryOpenResult: function (opts) {
+          if (controller.released) return releasedResult("dashboard");
+          if (!valid()) return staleResult();
+          return tryOpenDashboardBound(controller, slot, opts, binding, generation);
+        },
+        close: function () { if (valid()) closeDashboard(controller, slot, false); },
+        isOpen: function () {
+          var st = controller.open[slot];
+          return valid() && dashStateValid(st) && (dashOwnedCurrent(st) || !!st.retryableFailure);
+        },
+        setTab: function (tab) { if (valid()) controller.self.setTab(slot, tab); },
+        refresh: function () { if (valid()) controller.self.refresh(slot); },
+        invalidate: function () { if (valid()) controller.self.invalidate(slot); },
+        lastUpdateResult: function () { return valid() ? updateRecord.result : null; },
+        tryRefresh: function () {
+          if (controller.released) return releasedResult("dashboard");
+          if (!valid()) return staleResult();
+          return controller.self.tryRefresh(slot);
         }
-        if (!result.ok) return makeDashView(slot, binding, generation);
-        return result.value;
-      }
-      function makeDashView(slot, binding, generation) {
-        var updateRecord = dashUpdateRecord(slot, binding, generation);
-        function valid() { return generation === dashGeneration && bindingValid(binding); }
-        return {
-          slot: slot,
-          isValid: valid,
-          open: function (opts) { return openDashBound(slot, opts, binding, generation); },
-          tryOpenResult: function (opts) {
-            if (!valid()) return staleResult();
-            return tryOpenDashBound(slot, opts, binding, generation);
-          },
-          close: function () { if (valid()) dashSelf.close(slot); },
-          isOpen: function () { return valid() && dashSelf.isOpen(slot); },
-          setTab: function (tabId) { if (valid()) dashSelf.setTab(slot, tabId); },
-          refresh: function () { if (valid()) dashSelf.refresh(slot); },
-          invalidate: function () { if (valid()) dashSelf.invalidate(slot); },
-          lastUpdateResult: function () { return valid() ? updateRecord.result : null; },
-          tryRefresh: function () {
-            if (!valid()) return staleResult();
-            return dashSelf.tryRefresh(slot);
-          }
-        };
-      }
-      dashSelf = {
+      };
+    }
+
+    function createDashboardController(spec, mode, disposable) {
+      var controller = { spec: spec || {}, mode: mode, generation: 1, released: false,
+        open: {}, paintTransactions: {}, openAttempts: {}, updateRecords: {}, self: null };
+      var self = {
         open: function (slot, opts) {
-          var binding = currentBinding(slot);
-          return openDashBound(slot, opts, binding, dashGeneration);
+          if (controller.released) throw new Error("hudkit: dashboard.open failed: released");
+          return openDashboardBound(controller, slot, opts, currentBinding(slot), controller.generation);
         },
         tryOpenResult: function (slot, opts) {
-          return tryOpenDashBound(slot, opts, captureBinding(slot), dashGeneration);
+          if (controller.released) return releasedResult("dashboard");
+          return tryOpenDashboardBound(controller, slot, opts, captureBinding(slot), controller.generation);
         },
-        close: function (slot) { closeDash(slot, false); },
-        isOpen: function (slot) { return dashStateValid(dashOpen[slot]); },
-        setTab: function (slot, tabId) {
-          var st = dashOpen[slot];
-          if (!dashStateValid(st)) return;
-          st.tabId = tabId;
+        close: function (slot) { if (!controller.released) closeDashboard(controller, slot, false); },
+        isOpen: function (slot) {
+          var st = controller.open[slot];
+          return !controller.released && dashStateValid(st) &&
+            (dashOwnedCurrent(st) || !!st.retryableFailure);
+        },
+        setTab: function (slot, tab) {
+          var st = controller.open[slot];
+          if (!dashStateValid(st) || !dashOwnedCurrent(st) && !st.retryableFailure) return;
+          st.tabId = tab;
           st.rowPage = 0;
-          paintDash(slot);
+          paintDashboard(controller, slot);
         },
         refresh: function (slot) {
-          if (slot == null) { for (var k in dashOpen) { if (dashStateValid(dashOpen[k])) paintDash(Number(k)); } }
-          else if (dashStateValid(dashOpen[slot])) paintDash(slot);
+          if (controller.released) return;
+          if (slot == null) {
+            for (var key in controller.open) {
+              var state = controller.open[key];
+              if (dashStateValid(state) && (dashOwnedCurrent(state) || state.retryableFailure)) {
+                paintDashboard(controller, Number(key));
+              }
+            }
+          } else {
+            var state = controller.open[slot];
+            if (dashStateValid(state) && (dashOwnedCurrent(state) || state.retryableFailure)) {
+              paintDashboard(controller, slot);
+            }
+          }
         },
         invalidate: function (slot) {
+          if (controller.released) return;
           function invalidateOne(sl) {
-            var st = dashOpen[sl];
+            var st = controller.open[sl];
             if (!dashStateValid(st)) return;
-            queueDirty(st, function () { return paintDash(sl); }, function (expected) {
-              return dashOpen[sl] === expected && dashStateValid(expected);
-            }, invalidationPaintable);
+            queueDirty(st, function () { return paintDashboard(controller, sl); }, function (expected) {
+              return controller.open[sl] === expected &&
+                (dashOwnedCurrent(expected) || !!expected.retryableFailure);
+            }, dashboardInvalidationPaintable);
           }
           if (slot == null) {
-            for (var k in dashOpen) if (Object.prototype.hasOwnProperty.call(dashOpen, k)) invalidateOne(Number(k));
+            for (var key in controller.open) {
+              if (Object.prototype.hasOwnProperty.call(controller.open, key)) invalidateOne(Number(key));
+            }
           } else invalidateOne(slot);
         },
         tryRefresh: function (slot) {
+          if (controller.released) return releasedResult("dashboard");
           if (slot == null) return uiFail("InvalidArgument", "needs a player slot");
           var binding = captureBinding(slot);
           if (!bindingValid(binding)) return staleResult();
-          var st = dashOpen[slot];
-          if (!dashStateValid(st)) {
-            var updateRecord = dashUpdateRecord(slot, binding, dashGeneration);
+          var st = controller.open[slot];
+          if (!dashStateValid(st) || !dashOwnedCurrent(st) && !st.retryableFailure) {
+            var updateRecord = dashUpdateRecord(controller, slot, binding, controller.generation);
             var unopenedAttempt = beginUpdate(updateRecord);
             var unopened = uiFail("InvalidArgument", "hudkit: dashboard is not open");
             completeUpdate(updateRecord, unopenedAttempt, unopened);
             return unopened;
           }
           var result;
-          try { result = paintDash(slot); }
-          catch (err) {
-            return uiFail("PaintFailed", errorMessage(err, "hudkit: dashboard paint failed"));
-          }
+          try { result = paintDashboard(controller, slot); }
+          catch (err) { return uiFail("PaintFailed", errorMessage(err, "hudkit: dashboard paint failed")); }
           if (result === DASH_SUPERSEDED) {
             if (!bindingValid(binding)) return staleResult();
-            return dashStateValid(dashOpen[slot]) ? uiOk(undefined) :
+            return dashStateValid(controller.open[slot]) ? uiOk(undefined) :
               uiFail("PaintFailed", "dashboard refresh cancelled");
           }
           return result;
         },
         forSlot: function (slot) {
-          return makeDashView(slot, captureBinding(slot), dashGeneration);
+          return makeDashView(controller, slot, captureBinding(slot), controller.generation);
         }
       };
-      return dashSelf;
+      if (disposable) self.dispose = function () {
+        if (controller.released) return;
+        var slots = [];
+        for (var key in controller.open) {
+          if (Object.prototype.hasOwnProperty.call(controller.open, key)) slots.push(Number(key));
+        }
+        // Fence public reentry before release/hide/capture effects. Cleanup below intentionally
+        // operates on the snapshotted states even though their controller is now released.
+        controller.released = true;
+        controller.generation++;
+        var index = dashboardControllers.indexOf(controller);
+        if (index >= 0) dashboardControllers.splice(index, 1);
+        for (var i = 0; i < slots.length; i++) closeDashboard(controller, slots[i], false);
+        for (var recordKey in controller.updateRecords) {
+          if (Object.prototype.hasOwnProperty.call(controller.updateRecords, recordKey)) {
+            removeDirty(controller.updateRecords[recordKey]);
+          }
+        }
+      };
+      controller.self = self;
+      dashboardControllers.push(controller);
+      return controller;
     }
+
+    function reconfigureLegacyDashboard(controller, spec) {
+      var nextSpec = spec || {};
+      var states = [];
+      for (var key in controller.open) {
+        if (!Object.prototype.hasOwnProperty.call(controller.open, key)) continue;
+        var st = controller.open[key];
+        if (!st) continue;
+        states.push({ slot: Number(key), binding: st.binding, tab: st.tabId,
+          cursor: st.cursorWanted, focusEnabled: st.focusEnabled, priority: st.focusPriority });
+      }
+      for (var recordKey in controller.updateRecords) {
+        if (Object.prototype.hasOwnProperty.call(controller.updateRecords, recordKey)) {
+          removeDirty(controller.updateRecords[recordKey]);
+        }
+      }
+      for (var i = 0; i < states.length; i++) closeDashboard(controller, states[i].slot, false);
+      controller.generation++;
+      controller.updateRecords = {};
+      controller.spec = nextSpec;
+      var firstError = null;
+      for (var si = 0; si < states.length && controller.spec === nextSpec; si++) {
+        var prior = states[si];
+        var options = { tab: prior.tab, cursor: prior.cursor };
+        if (prior.focusEnabled) options.focus = { mode: "exclusive", priority: prior.priority };
+        var result;
+        try {
+          result = tryOpenDashboardBound(controller, prior.slot, options, prior.binding,
+            controller.generation, false);
+        } catch (err) { if (!firstError) firstError = err; continue; }
+        if (!result.ok && result.error.code === "InvalidArgument" && !firstError) {
+          firstError = new Error(result.error.message);
+        }
+      }
+      if (firstError) throw firstError;
+      return controller.self;
+    }
+
+    function dashboard(spec) {
+      if (!legacyDashboard) legacyDashboard = createDashboardController(spec, "legacy", false);
+      else return reconfigureLegacyDashboard(legacyDashboard, spec);
+      return legacyDashboard.self;
+    }
+
+    function tryOwnDashboard(spec) {
+      try { return uiOk(createDashboardController(spec, "explicit", true).self); }
+      catch (err) {
+        return uiFail("InvalidArgument", errorMessage(err, "hudkit: invalid dashboard specification"));
+      }
+    }
+
+    function activeDashboardState(slot) {
+      var st = surfaceSlot(dashboardSurfaceState, slot)[0];
+      return dashStateValid(st) && st.interactive && focusAllows(st) ? st : null;
+    }
+
+    hud.onClick("s2_dash_close", function (player) {
+      var slot = slotOf(player), st = activeDashboardState(slot);
+      if (st) closeDashboard(st.controller, slot, true, st);
+    });
+    for (var dti = 0; dti < DASH_TABS; dti++) {
+      (function (tabIndex) {
+        hud.onClick(DASH_TAB[tabIndex].id, function (player) {
+          var slot = slotOf(player), st = activeDashboardState(slot);
+          if (!st) return;
+          var tab = st.paintedTabs && st.paintedTabs[tabIndex];
+          if (!tab) return;
+          st.tabId = tab.id;
+          st.rowPage = 0;
+          paintDashboard(st.controller, slot);
+        });
+      })(dti);
+    }
+    for (var dri = 0; dri < DASH_ROWS; dri++) {
+      (function (rowIndex) {
+        hud.onClick(DASH_ROW[rowIndex].id, function (player) {
+          var slot = slotOf(player), st = activeDashboardState(slot);
+          if (!st) return;
+          var record = st.paintedRows && st.paintedRows[rowIndex];
+          var onPick = st.paintedOnPick;
+          var controller = st.controller;
+          if (!record || record.row.disabled || typeof onPick !== "function") return;
+          onPick(slot, st.paintedTabId, record.row, controller.self.forSlot(slot));
+        });
+      })(dri);
+    }
+    hud.onClick("s2_dash_prev", function (player) {
+      var slot = slotOf(player), st = activeDashboardState(slot);
+      if (!st) return;
+      st.rowPage -= 1;
+      paintDashboard(st.controller, slot);
+    });
+    hud.onClick("s2_dash_next", function (player) {
+      var slot = slotOf(player), st = activeDashboardState(slot);
+      if (!st) return;
+      st.rowPage += 1;
+      paintDashboard(st.controller, slot);
+    });
 
     // ── badges (persistent corner HUD) ────────────────────────────────────────────────────────
 
@@ -1438,6 +1681,7 @@
       var cornerCls = CORNER[s.corner] || CORNER.tr;
       var accentCls = BADGE_ACCENT[s.accent] || null;
       var badgeReleased = false;
+      var shownBindings = {};
       var selfBadge;
       function tryShowBadge(slot, data, binding) {
         if (badgeReleased) return releasedResult("badge");
@@ -1471,7 +1715,8 @@
         return error || uiOk(undefined);
       }
       function showBadge(slot, data, binding) {
-        tryShowBadge(slot, data, binding);
+        var result = tryShowBadge(slot, data, binding);
+        if (result.ok) shownBindings[slot] = binding;
         return makeBadgeView(slot, binding);
       }
       function makeBadgeView(slot, binding) {
@@ -1483,29 +1728,44 @@
           tryShow: function (data) {
             if (badgeReleased) return releasedResult("badge");
             if (!valid()) return staleResult();
-            try { return tryShowBadge(slot, data, binding); }
+            try {
+              var result = tryShowBadge(slot, data, binding);
+              if (result.ok) shownBindings[slot] = binding;
+              return result;
+            }
             catch (err) {
               return badgeReleased ? releasedResult("badge") :
                 uiFail("PaintFailed", errorMessage(err, "hudkit: badge paint failed"));
             }
           },
-          hide: function () { if (valid()) boundDriver(binding, hide, valid)(slot, slotIds.id); }
+          hide: function () {
+            if (valid()) boundDriver(binding, hide, valid)(slot, slotIds.id);
+            if (shownBindings[slot] === binding) delete shownBindings[slot];
+          }
         };
       }
       selfBadge = {
         show: function (slot, data) {
           return showBadge(slot, data, currentBinding(slot));
         },
-        hide: function (slot) { if (!badgeReleased && currentBinding(slot)) hide(slot, slotIds.id); },
+        hide: function (slot) {
+          var binding = shownBindings[slot];
+          if (!badgeReleased && bindingValid(binding)) boundDriver(binding, hide)(slot, slotIds.id);
+          delete shownBindings[slot];
+        },
         forSlot: function (slot) {
           return makeBadgeView(slot, captureBinding(slot));
         },
         release: function () {
           if (badgeReleased) return;
           badgeReleased = true;
+          shownBindings = {};
           releaseSlot("badge", idx);
+          var liveIndex = liveBadges.indexOf(selfBadge);
+          if (liveIndex >= 0) liveBadges.splice(liveIndex, 1);
         }
       };
+      liveBadges.push(selfBadge);
       return selfBadge;
     }
     function badge(spec) { return createBadge(spec, null); }
@@ -2033,17 +2293,55 @@
     function hideAll(slot, retainedBinding) {
       var binding = retainedBinding || currentBinding(slot);
       if (!bindingValid(binding)) return;
-      var paintHide = boundDriver(binding, hide);
-      calloutGen[slot] = (calloutGen[slot] || 0) + 1;
-      bannerGen[slot] = (bannerGen[slot] || 0) + 1;
-      paintHide(slot, "s2_callout");
-      paintHide(slot, "s2_banner");
-      closeMotd(slot, false);
-      closeDash(slot, false);
-      for (var m2 = 0; m2 < MODALS; m2++) paintHide(slot, MODAL[m2].root);
-      for (var t2 = 0; t2 < TOASTS; t2++) paintHide(slot, TOAST[t2].id);
-      for (var b2 = 0; b2 < BADGES; b2++) paintHide(slot, BADGE[b2].id);
-      withBinding(binding, function () { return hud.cursor(slot, false); });
+      function clearLegacy(map, key, roots, profile) {
+        if (!hud._surface) return;
+        var result = hud._surface.clearLegacy(binding, key, roots, profile);
+        var records = surfaceSlot(map, slot).slice();
+        for (var i = 0; i < records.length; i++) {
+          var record = records[i];
+          if (record && record.mode === "legacy" &&
+              (result.ok || hud._surface.state(record.token) === "invalid")) {
+            retireSurface(map, record, false);
+          }
+        }
+        if (!result.ok) log("hideAll " + key + " failed: " + result.error.code + ": " + result.error.message);
+      }
+      clearLegacy(toastState, OWNED_TOAST, TOAST_ROOTS, "visual");
+      clearLegacy(calloutState, OWNED_CALLOUT, ["s2_callout"], "visual");
+      clearLegacy(bannerState, OWNED_BANNER, ["s2_banner"], "visual");
+      if (hud._surface) {
+        var motdClear = hud._surface.clearLegacy(binding, OWNED_MOTD, ["s2_motd"], "interactive");
+        var motdState = motdOpen[slot];
+        if (motdState && motdState.mode === "legacy" &&
+            (motdClear.ok || hud._surface.state(motdState.token) === "invalid")) {
+          delete motdOpen[slot]; releaseFocus(motdState);
+        }
+        if (!motdClear.ok) log("hideAll " + OWNED_MOTD + " failed: " +
+          motdClear.error.code + ": " + motdClear.error.message);
+      }
+      if (hud._surface) {
+        var dashClear = hud._surface.clearLegacy(binding, OWNED_DASHBOARD, ["s2_dash"], "interactive");
+        var clearedLegacyDashboard = function (st) {
+          return st && st.mode === "legacy" &&
+            (dashClear.ok || !st.live || !st.token || hud._surface.state(st.token) === "invalid");
+        };
+        // A failed repaint keeps a logical retryable state after its parent token is retired and
+        // removed from dashboardSurfaceState. Clear that controller state too so a queued or later
+        // invalidate cannot reopen a legacy dashboard after hideAll. Explicit controllers remain
+        // untouched, including tokenless failed states with pending dirty work.
+        var logicalDashState = legacyDashboard && legacyDashboard.open[slot];
+        if (clearedLegacyDashboard(logicalDashState)) {
+          closeDashboard(legacyDashboard, slot, false, logicalDashState);
+        }
+        var dashState = surfaceSlot(dashboardSurfaceState, slot)[0];
+        if (clearedLegacyDashboard(dashState)) {
+          abandonReplacedDashboard(dashState);
+        }
+        if (!dashClear.ok) log("hideAll " + OWNED_DASHBOARD + " failed: " +
+          dashClear.error.code + ": " + dashClear.error.message);
+      }
+      for (var m2 = 0; m2 < liveModals.length; m2++) liveModals[m2].close(slot);
+      for (var b2 = 0; b2 < liveBadges.length; b2++) liveBadges[b2].hide(slot);
     }
 
     function forgetSlot(slot) { hud.forget(slot); }
@@ -2054,9 +2352,13 @@
         slot: slot,
         isValid: valid,
         toast: function (spec) { return valid() ? toast(slot, spec, binding) : "stale client"; },
+        tryOwnToast: function (spec) { return valid() ? tryToast(slot, spec, binding, "explicit") : staleResult(); },
         callout: function (spec) { return valid() ? callout(slot, spec, binding) : "stale client"; },
+        tryOwnCallout: function (spec) { return valid() ? tryCallout(slot, spec, binding, "explicit") : staleResult(); },
         banner: function (spec) { return valid() ? banner(slot, spec, binding) : "stale client"; },
+        tryOwnBanner: function (spec) { return valid() ? tryBanner(slot, spec, binding, "explicit") : staleResult(); },
         motd: function (spec) { return valid() ? motd(slot, spec, binding) : invalidMotd(slot); },
+        tryOwnMotd: function (spec) { return valid() ? tryMotd(slot, spec, binding, "explicit") : staleResult(); },
         hideAll: function () { if (valid()) hideAll(slot, binding); },
         forget: function () { if (valid()) hud.forget(slot, binding.client); }
       };
@@ -2091,6 +2393,7 @@
         }
       },
       dashboard: dashboard,
+      tryOwnDashboard: tryOwnDashboard,
       badge: badge,
       tryBadge: function (spec) {
         var claimedIndex = -1;
@@ -2225,6 +2528,7 @@
       modal: kitFn("modal"),
       tryModal: kitFn("tryModal"),
       dashboard: kitFn("dashboard"),
+      tryOwnDashboard: kitFn("tryOwnDashboard"),
       badge: kitFn("badge"),
       tryBadge: kitFn("tryBadge"),
       toast: kitFn("toast"),

@@ -31,6 +31,7 @@ export type {
   Dashboard,
   DashboardSpec,
   DashboardView,
+  OwnedDashboard,
   DashRow,
   DashTab,
   FooterButton,
@@ -56,6 +57,8 @@ export type {
   UiResult,
   UiStatus,
   UiFocusOptions,
+  UiSubscription,
+  UiSurfaceHandle,
   Variant,
 } from "./ui";
 export { CustomHudLayout, DEFAULT_HUD_DESCRIPTOR, hudkit, PROBE_LAYOUT, ui } from "./ui";

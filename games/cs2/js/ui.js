@@ -187,10 +187,11 @@
     return null;
   }
 
-  function makeHud(desc, ctxState, onFirstClickHandler) {
+  function makeHud(desc, ctxState) {
     var layout = desc;
     var disabled = {};
     var handlers = {};
+    var subscribers = {};
     var meterClass = {};
     var visiblePanels = {};
     var lastValue = {};
@@ -552,17 +553,46 @@
       }
       ctxState.buttonHandlers[buttonId] = handler;
       handlers[buttonId] = handler;
-      onFirstClickHandler();
+    };
+    api.subscribeClick = function (buttonId, handler) {
+      var id = String(buttonId);
+      var list = subscribers[id];
+      if (!list) { list = []; subscribers[id] = list; }
+      var entry = { handler: handler, live: true };
+      list.push(entry);
+      return { dispose: function () {
+        if (!entry.live) return;
+        entry.live = false;
+        var current = subscribers[id];
+        if (!current) return;
+        var index = current.indexOf(entry);
+        if (index >= 0) current.splice(index, 1);
+        if (current.length === 0) delete subscribers[id];
+      } };
     };
     api.setDisabled = function (slot, buttonId, disabledOn) {
       return legacyResult(api._drive.setDisabled(slot, buttonId, disabledOn));
     };
-    api.dispatchClick = function (slot, buttonId) {
-      if (disabled[slot] && disabled[slot][buttonId]) return false;
+    // Capture routes without invoking user code so the hook can freeze every layout first.
+    api._snapshotClick = function (slot, buttonId) {
       var h = handlers[buttonId];
-      if (!h) return false;
-      h(api.forSlot(slot));
-      return true;
+      var list = subscribers[buttonId];
+      var snapshot = [];
+      if (list) for (var si = 0; si < list.length; si++) snapshot.push(list[si].handler);
+      return function () {
+        // Direct slot dispatch adopts the current occupant. Retained views and component
+        // focus handlers keep their own client/focus fences at delivery time.
+        if (!currentClient(slot)) return false;
+        if (disabled[slot] && disabled[slot][buttonId]) return false;
+        if (!h && snapshot.length === 0) return false;
+        var player = api.forSlot(slot);
+        if (h) h(player);
+        for (var i = 0; i < snapshot.length; i++) snapshot[i](player);
+        return true;
+      };
+    };
+    api.dispatchClick = function (slot, buttonId) {
+      return api._snapshotClick(slot, buttonId)();
     };
     api.forget = function (slot, client) {
       if (client) {
@@ -699,6 +729,22 @@
         boundBinding = previousBinding;
       }
     };
+    function invalidateBoundRoot(slot, root) {
+      root = String(root);
+      var prefix = slotPrefix(slot);
+      function under(id) { return id === root || id.indexOf(root + "_") === 0; }
+      for (var key in lastValue) {
+        if (key.indexOf(prefix) === 0 && under(key.slice(prefix.length).split("|")[1])) delete lastValue[key];
+      }
+      for (var panel in visiblePanels) {
+        if (panel.indexOf(prefix) === 0 && under(panel.slice(prefix.length))) delete visiblePanels[panel];
+      }
+      for (var meter in meterClass) {
+        if (meter.indexOf(prefix) === 0 && under(meter.slice(prefix.length))) delete meterClass[meter];
+      }
+      var dis = disabled[slot];
+      if (dis) for (var id in dis) { if (under(id)) delete dis[id]; }
+    }
     // Private game adapter. Opaque tokens and retirement remain owned by the native ledger.
     api._focus = {
       reserve: function (binding, root, priority) {
@@ -724,6 +770,29 @@
         }
         return result;
       },
+      reserveLinked: function (binding, root, priority, parentToken) {
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        if (typeof globalThis.__s2_surface_reserve_linked !== "function" ||
+            typeof globalThis.__s2_surface_state !== "function" ||
+            typeof globalThis.__s2_surface_activate !== "function" ||
+            typeof globalThis.__s2_surface_active !== "function" ||
+            typeof globalThis.__s2_surface_release !== "function") {
+          return uiFail("Unavailable", "surface focus is unavailable");
+        }
+        var ent = bindEntity(ctxState.ensureEntity(layout));
+        if (!ent) return uiFail("NotReady", ctxState.notReadyReason());
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        var result = globalThis.__s2_surface_reserve_linked("cs2:hudkit:exclusive", ent.index, ent.id,
+          binding.slot, priority, JSON.stringify({
+            capture: { call: "setInputCaptureEnabledForPlayer", token: "panel:" + root },
+            suspend: { call: "setHasClassForPlayer", args: [root, layout.hideClass, CLASS_HAS] }
+          }), parentToken);
+        if (!bindingIsValid(binding)) {
+          if (result.ok) api._focus.release(result.value);
+          return uiFail("StaleClient", "stale client or component");
+        }
+        return result;
+      },
       state: function (token) {
         return typeof globalThis.__s2_surface_state === "function" ?
           globalThis.__s2_surface_state(token) : "invalid";
@@ -741,34 +810,76 @@
       },
       invalidate: function (binding, root) {
         if (!bindingIsValid(binding)) return;
-        var prefix = slotPrefix(binding.slot);
-        function under(id) { return id === root || id.indexOf(root + "_") === 0; }
-        for (var key in lastValue) {
-          if (key.indexOf(prefix) === 0 && under(key.slice(prefix.length).split("|")[1])) delete lastValue[key];
-        }
-        for (var panel in visiblePanels) {
-          if (panel.indexOf(prefix) === 0 && under(panel.slice(prefix.length))) delete visiblePanels[panel];
-        }
-        for (var meter in meterClass) {
-          if (meter.indexOf(prefix) === 0 && under(meter.slice(prefix.length))) delete meterClass[meter];
-        }
-        var dis = disabled[binding.slot];
-        if (dis) for (var id in dis) { if (under(id)) delete dis[id]; }
+        invalidateBoundRoot(binding.slot, root);
       },
       onFrame: ctxState.onFocusFrame
+    };
+    function surfaceAdapters(roots, profile) {
+      var adapters = [];
+      for (var i = 0; i < roots.length; i++) {
+        var root = String(roots[i]);
+        if (profile === "occupancy") { adapters.push({}); continue; }
+        var adapter = {
+          suspend: { call: "setHasClassForPlayer", args: [root, layout.hideClass, CLASS_HAS] }
+        };
+        if (profile === "interactive") {
+          adapter.capture = { call: "setInputCaptureEnabledForPlayer", token: "panel:" + root };
+        }
+        adapters.push(adapter);
+      }
+      return adapters;
+    }
+    api._surface = {
+      reserve: function (binding, key, mode, roots, profile) {
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        if (typeof globalThis.__s2_surface_reserve_owned !== "function" ||
+            typeof globalThis.__s2_surface_state !== "function" ||
+            typeof globalThis.__s2_surface_activate !== "function" ||
+            typeof globalThis.__s2_surface_active !== "function" ||
+            typeof globalThis.__s2_surface_release !== "function") {
+          return uiFail("Unavailable", "surface ownership is unavailable");
+        }
+        var ent = bindEntity(ctxState.ensureEntity(layout));
+        if (!ent) return uiFail("NotReady", ctxState.notReadyReason());
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        var adapters = surfaceAdapters(roots, profile);
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        var result = globalThis.__s2_surface_reserve_owned(key, ent.index, ent.id, binding.slot,
+          mode, JSON.stringify(adapters));
+        if (!bindingIsValid(binding)) {
+          if (result.ok) api._surface.release(result.value.token);
+          return uiFail("StaleClient", "stale client or component");
+        }
+        return result;
+      },
+      clearLegacy: function (binding, key, roots, profile) {
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        if (typeof globalThis.__s2_surface_clear_legacy !== "function") {
+          return uiFail("Unavailable", "surface ownership is unavailable");
+        }
+        var ent = bindEntity(ctxState.ensureEntity(layout));
+        if (!ent) return uiFail("NotReady", ctxState.notReadyReason());
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        var adapters = surfaceAdapters(roots, profile);
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        var result = globalThis.__s2_surface_clear_legacy(key, ent.index, ent.id, binding.slot,
+          JSON.stringify(adapters));
+        // The host may have hidden free or legacy lanes before returning a partial failure. Those
+        // writes bypass this context's mirrors, so none of the supplied roots remains authoritative.
+        for (var i = 0; i < roots.length; i++) invalidateBoundRoot(binding.slot, roots[i]);
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        return result.ok ? uiOk(undefined) : result;
+      },
+      state: api._focus.state,
+      activate: api._focus.activate,
+      active: api._focus.active,
+      release: api._focus.release,
+      invalidate: api._focus.invalidate
     };
     api._disconnectOwnsSlot = function (slot, client) {
       if (!client || !sameClient(slotClients[slot], client)) return false;
       var occupant = clientsApi().fromSlot(slot);
       return !occupant || sameClient(occupant, client);
-    };
-    // Direct slot APIs adopt the current occupant; retained forSlot views keep their original one.
-    // Structured drives already capture and bind that occupant. Click dispatch has no drive result,
-    // so keep its existing boolean stale-client adapter here.
-    var dispatchClick = api.dispatchClick;
-    api.dispatchClick = function (slot) {
-      if (!currentClient(slot)) return false;
-      return dispatchClick.apply(api, arguments);
     };
     return api;
   }
@@ -781,7 +892,6 @@
       var hudByResource = {};
       var buttonHandlers = {};
       var rawClickHandlers = [];
-      var clickHookInstalled = false;
       var mamBannerShown = false;
       var focusReconcilers = [];
       reg(viaId(function () {
@@ -790,6 +900,26 @@
           var pending = focusReconcilers.slice();
           for (var i = 0; i < pending.length; i++) pending[i]();
         }, { phase: "pre" });
+      }));
+      reg(viaId(function () {
+        return __s2_hook_on("@s2script/cs2", "onCustomHudClicked", function (view) {
+          var clicker = resolveClicker(view.player);
+          var slot = clicker ? clicker.slot : -1;
+          if (slot >= 0) {
+            var deliveries = [];
+            for (var res in hudByResource) {
+              if (Object.prototype.hasOwnProperty.call(hudByResource, res)) {
+                deliveries.push(hudByResource[res]._snapshotClick(slot, view.buttonId));
+              }
+            }
+            for (var d = 0; d < deliveries.length; d++) deliveries[d]();
+          }
+          var rawSnapshot = rawClickHandlers.slice();
+          for (var r = 0; r < rawSnapshot.length; r++) {
+            rawSnapshot[r]({ player: view.player, buttonId: view.buttonId, slot: slot });
+          }
+          return 0;
+        });
       }));
 
       function notReadyReason() {
@@ -918,40 +1048,17 @@
         }
       }
 
-      function installClickHook() {
-        if (clickHookInstalled) return;
-        clickHookInstalled = true;
-        reg(viaId(function () {
-          return __s2_hook_on("@s2script/cs2", "onCustomHudClicked", function (view) {
-            var clicker = resolveClicker(view.player);
-            var slot = clicker ? clicker.slot : -1;
-            if (slot >= 0) {
-              for (var res in hudByResource) {
-                if (Object.prototype.hasOwnProperty.call(hudByResource, res)) {
-                  hudByResource[res].dispatchClick(slot, view.buttonId);
-                }
-              }
-            }
-            for (var r = 0; r < rawClickHandlers.length; r++) {
-              rawClickHandlers[r]({ player: view.player, buttonId: view.buttonId, slot: slot });
-            }
-            return 0;
-          });
-        }));
-      }
-
       function getLayout(desc) {
         maybePrintMamBanner(desc);
         remember(desc);
         if (!hudByResource[desc.resource]) {
-          hudByResource[desc.resource] = makeHud(desc, ctxState(), installClickHook);
+          hudByResource[desc.resource] = makeHud(desc, ctxState());
         }
         if (ready) ctxState().createEntity(desc);
         return hudByResource[desc.resource];
       }
 
       function onClicked(handler) {
-        installClickHook();
         rawClickHandlers.push(handler);
       }
 
