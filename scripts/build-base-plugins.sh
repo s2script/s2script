@@ -7,21 +7,10 @@
 #   VERSION=0.1.2 scripts/build-base-plugins.sh   # stamp plugin package.json
 #                                                 # versions to match a release tag
 #
-# When VERSION (or $1) is set — typically the GitHub Release tag without a
-# leading v — every plugins/*/package.json (and plugins/disabled/*/) is rewritten
-# to that version BEFORE build so the .s2sp manifest matches the runtime zip.
-# npm @s2script/* packages are independent (Changesets); plugins track the tag.
-#
-# THIS IS NOW A THIN SHIM over `s2s build --stamp-version` (design spec
-# 2026-07-27 §9.3). The repo root carries `s2script.workspace`, so the CLI owns
-# discovery, dependency ordering, the preflight gates, version stamping and the
-# collect-all summary; the loop that used to live here was the workaround that
-# justified building the capability into the CLI in the first place.
-#
-# The file is KEPT rather than deleted deliberately: .github/workflows/release.yml
-# and scripts/package-release.sh both shell to it, and the auto-publishing release
-# path is the part least worth churning. Its contract is unchanged — same env var,
-# same exit codes, same "PASS: built N base plugin(s)" line, same .s2sp listing.
+# Every bundled plugin tracks scripts/framework-version.sh, including dev builds.
+# Explicit VERSION (or $1) overrides Git-derived release/development versions.
+# The CLI stamps package versions and sibling dependency ranges before building.
+# npm SDK packages and third-party plugins retain independent versions.
 #
 # Requires Node. Builds the local CLI first, then typechecks+bundles each plugin.
 # Emits: plugins/<name>/dist/*.s2sp
@@ -44,17 +33,9 @@ fi
 
 CLI="node packages/sdk/dist/cli.js"
 
-# Optional: stamp plugin versions to match a release tag (plugins track the zip).
-# `--stamp-version` rewrites sibling ranges alongside the versions, which the old
-# in-script `node -e` stamp never did — stamping every plugin to one version would
-# otherwise trip the §5.2 range gate on any consumer declaring an older producer.
-TAG_VERSION="${VERSION:-${1:-}}"
-TAG_VERSION="${TAG_VERSION#v}"
-STAMP=()
-if [ -n "$TAG_VERSION" ]; then
-    echo "=== stamp plugin versions → $TAG_VERSION ==="
-    STAMP=(--stamp-version "$TAG_VERSION")
-fi
+TAG_VERSION="$(bash scripts/framework-version.sh "${1:-${VERSION:-}}")"
+echo "=== stamp plugin versions → $TAG_VERSION ==="
+STAMP=(--stamp-version "$TAG_VERSION")
 
 # Workspace mode prints one artifact path per built plugin on stdout (progress,
 # the stamp report and every failure go to stderr), so counting stdout lines

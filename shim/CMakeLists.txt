@@ -1,6 +1,17 @@
 cmake_minimum_required(VERSION 3.20)
 project(s2script_shim C CXX)
 
+# Resolve once at configure time; the sidecar records the version actually compiled.
+execute_process(COMMAND bash scripts/framework-version.sh
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+    OUTPUT_VARIABLE S2_FRAMEWORK_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE S2_VERSION_RESULT)
+if(NOT S2_VERSION_RESULT EQUAL 0)
+    message(FATAL_ERROR "Cannot resolve framework version; set VERSION for source archives")
+endif()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/VERSION" "${S2_FRAMEWORK_VERSION}\n")
+add_compile_definitions(S2SCRIPT_VERSION="${S2_FRAMEWORK_VERSION}")
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)

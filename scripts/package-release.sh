@@ -6,8 +6,7 @@
 # Usage:
 #   scripts/package-release.sh [VERSION]
 #
-# VERSION defaults to: strip leading 'v' from GITHUB_REF_NAME, else
-# `git describe --tags --exact-match`, else `git describe --tags --always`.
+# VERSION uses scripts/framework-version.sh, shared with native and plugin builds.
 #
 # Emits: dist/s2script-cs2-linux-<VERSION>.zip  (root = addons/…)
 set -euo pipefail
@@ -30,29 +29,9 @@ if [ ! -f "$DIST_ADDONS/metamod/s2script.vdf" ]; then
     exit 1
 fi
 
-resolve_version() {
-    if [ -n "${1:-}" ]; then
-        echo "${1#v}"
-        return
-    fi
-    if [ -n "${GITHUB_REF_NAME:-}" ]; then
-        echo "${GITHUB_REF_NAME#v}"
-        return
-    fi
-    if ver=$(git describe --tags --exact-match 2>/dev/null); then
-        echo "${ver#v}"
-        return
-    fi
-    if ver=$(git describe --tags --always 2>/dev/null); then
-        echo "${ver#v}"
-        return
-    fi
-    echo "0.0.0-dev"
-}
-
-VERSION="$(resolve_version "${1:-}")"
-if [ -z "$VERSION" ]; then
-    echo "ERROR: empty VERSION" >&2
+VERSION="$(bash scripts/framework-version.sh "${1:-${VERSION:-}}")"
+if [ ! -f "$DIST_ADDONS/s2script/VERSION" ] || [ "$(cat "$DIST_ADDONS/s2script/VERSION")" != "$VERSION" ]; then
+    echo "ERROR: packaged framework version does not match $VERSION — rebuild the shim and package-addon with the same VERSION" >&2
     exit 1
 fi
 
@@ -182,6 +161,7 @@ shopt -s nullglob
 config_s2sp=("$STAGE"/addons/s2script/plugins/*.s2sp "$STAGE"/addons/s2script/plugins/disabled/*.s2sp)
 shopt -u nullglob
 if [ "${#config_s2sp[@]}" -gt 0 ]; then
+    node scripts/check-plugin-versions.mjs "$VERSION" "${config_s2sp[@]}"
     node "$CLI_JS" config gen "${config_s2sp[@]}" --out "$CONFIGS_DIR"
 fi
 

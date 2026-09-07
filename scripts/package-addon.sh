@@ -16,6 +16,7 @@ if [ ! -f build/shim/s2script.so ]; then
     echo "ERROR: build/shim/s2script.so not found — run: make shim" >&2
     exit 1
 fi
+cp build/shim/VERSION "$DIST/s2script/VERSION"
 cp build/shim/s2script.so "$DIST/s2script/bin/linuxsteamrt64/s2script.so"
 
 # --- V8 core cdylib (required; checks release first, falls back to debug) ---
