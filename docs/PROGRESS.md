@@ -272,3 +272,18 @@ SDK/native regressions cover type inference, illegal async/results/patches, meta
 ## Typed plugin interop: owned subscriptions and optional attachments (September 6, 2026)
 
 Protocol 2 consumers now receive idempotent `Subscription.dispose()` handles, with identity-based removal and cancellation before load-time arming. `watchOptional` requires a declared optional dependency and a verified contract; independent availability rows survive provider removal and schedule attachment after both plugins are Active. Per-generation attachment capabilities authorize synchronous subscriptions without reopening the plugin load window. Attachment scopes own local disposables, roll back partial registrations on failure/thenable returns, and retire all resources on watch, provider, or consumer removal. SDK call checking covers declaration authority and async callback aliases. Runtime coverage includes 1,000 provider cycles with registry, callback-map, pending-attempt, and ledger counts returning to baseline. Local gates are recorded in the Task 3 execution report; live acceptance is coordinated separately and is not claimed by this entry.
+
+## Typed plugin interop: zones provider adoption (September 6, 2026)
+
+Zones now publishes the protocol 2 `Contract` at version 1.0.0 with its seven existing methods
+and five existing notifications. The SDK generates typed direct `on` imports alongside methods.
+The cookbook owns subscriptions through optional attachments and queries the current layout on
+each attachment; notifications do not replay history. Occupancy belongs to the entering userId,
+disconnect cleanup cannot remove a replacement connection, and delayed map DB reads cannot
+publish into a later map generation. The cookbook's legacy econ/workshop recipe remains unchanged
+in a separate protocol 1 companion because its asynchronous contracts cannot opt into protocol 2.
+
+Compiled producer/import/consumer tests replace the old signature regex checks and retain exact
+contract byte verification. Eleven VM operation/lifecycle tests run through `scripts/ci-js.sh`;
+the complete JS gate passes with 687 SDK tests. Zones, cookbook, and the legacy companion build.
+Real CS2 boundary crossings and provider reload acceptance remain pending coordinator execution.

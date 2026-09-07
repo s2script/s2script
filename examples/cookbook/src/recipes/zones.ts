@@ -1,63 +1,56 @@
-import { tryUse } from "@s2script/sdk";
-import type { Zones, ZoneEvent, ZoneCreatedEvent, ZoneDeletedEvent } from "@s2script/zones";
+import { watchOptional } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
 
 /**
- * Consuming another PLUGIN's interface (not an SDK module). @s2script/zones is
- * published by plugins/zones.
+ * Consuming a protocol-2 PLUGIN interface. Enable interfaceProtocol: 2 and obtain
+ * the verified declaration with s2s add @s2script/zones. Move its generated entry
+ * from pluginDependencies into optionalPluginDependencies in package.json.
+ * The CLI downloads types only; the operator installs the provider archive
+ * separately. In this repository the checked-in
+ * .s2script/types/@s2script/zones/index.d.ts is a byte-copy of plugins/zones/api.d.ts.
  *
- * Hard-dep consumers prefer producer-as-import:
- *   import { on, getZones } from "@s2script/zones";
- * Cookbook declares it under optionalPluginDependencies so the demo still
- * loads when the zones plugin isn't present — `tryUse()` returns null then.
- * A hard dep (`use()` / the import form) would refuse to load the whole plugin
- * instead.
- *
- * Types come from the verified contract copy at
- * .s2script/types/@s2script/zones/index.d.ts — a byte-copy of the producer's
- * api.d.ts that s2s build hashes into manifest.compiledAgainst, so a drifted
- * contract is refused at load rather than marshalled across. Refresh with:
- *   cp plugins/zones/api.d.ts examples/cookbook/.s2script/types/@s2script/zones/index.d.ts
+ * A hard dependency can instead import { on, getZones } from "@s2script/zones".
+ * Optional watches attach after both plugins are Active and attach again after a
+ * compatible reload. Register synchronously through the supplied service and own
+ * subscriptions with the attachment scope; methods on retired services throw.
  */
 export const name = "zones";
 export const describe = "react to zone enter/leave/stay/created/deleted from the zones plugin (optional dep)";
 
 export function OnPluginStart(): void {
-  const zones = tryUse<Zones>("@s2script/zones");
-  if (!zones) {
-    console.log("[cookbook] zones recipe idle — @s2script/zones is not loaded");
-    return;
-  }
-  zones.on("enter", (p: ZoneEvent) => {
-    const name = Player.fromSlot(p.slot)?.playerName ?? `slot ${p.slot}`;
-    console.log(`[cookbook] ENTER ${p.zone}: ${name}`);
-  });
-  zones.on("leave", (p: ZoneEvent) => {
-    const name = Player.fromSlot(p.slot)?.playerName ?? `slot ${p.slot}`;
-    console.log(`[cookbook] LEAVE ${p.zone}: ${name}`);
-  });
-  // `stay` fires every tick a player is inside a zone — cheap continuous work
-  // like this heal-over-time on a zone named "heal" belongs here, not in a
-  // command. Capped at 100 and logged only every 20hp to avoid a log line
-  // per tick per player.
-  zones.on("stay", (p: ZoneEvent) => {
-    if (p.zone !== "heal") return;
-    const pawn = Player.fromSlot(p.slot)?.pawn;
-    if (pawn && pawn.health != null && pawn.health < 100) {
-      const nh = Math.min(100, pawn.health + 1);
-      pawn.health = nh;
-      if (nh % 20 === 0 || nh === 100) {
-        console.log(`[cookbook] healed slot ${p.slot} -> ${nh}`);
+  watchOptional("@s2script/zones", (zones, scope) => {
+    scope.own(zones.on("enter", (p) => {
+      const name = Player.fromUserId(p.userId)?.playerName ?? `userId ${p.userId}`;
+      console.log(`[cookbook] ENTER ${p.zone}: ${name}`);
+    }));
+    scope.own(zones.on("leave", (p) => {
+      const name = Player.fromUserId(p.userId)?.playerName ?? `userId ${p.userId}`;
+      console.log(`[cookbook] LEAVE ${p.zone}: ${name}`);
+    }));
+    // Every eighth game frame while inside: resolve the connection for each event.
+    // Never heal a replacement player just because it reused the copied slot.
+    scope.own(zones.on("stay", (p) => {
+      if (p.zone !== "heal") return;
+      const player = Player.fromUserId(p.userId);
+      const pawn = player?.pawn;
+      if (pawn && pawn.health != null && pawn.health < 100) {
+        const nh = Math.min(100, pawn.health + 1);
+        pawn.health = nh;
+        if (nh % 20 === 0 || nh === 100) {
+          console.log(`[cookbook] healed userId ${p.userId} -> ${nh}`);
+        }
       }
+    }));
+    scope.own(zones.on("created", (p) => {
+      console.log(`[cookbook] CREATED ${p.zone} tags=[${p.tags.join(",")}]`);
+    }));
+    scope.own(zones.on("deleted", (p) => {
+      console.log(`[cookbook] DELETED ${p.zone}`);
+    }));
+    // Notifications are changes, not history. Query the current layout after
+    // subscribing on EVERY attachment, including a compatible provider reload.
+    for (const zone of zones.getZones()) {
+      console.log(`[cookbook] EXISTING ${zone.name} tags=[${zone.tags.join(",")}]`);
     }
-  });
-  // `created`/`deleted` fire when zones are added or removed at runtime —
-  // via createZone/deleteZone, the sm_zone_* commands, or the editor — so a
-  // consumer can react to the zone layout changing without polling getZones().
-  zones.on("created", (p: ZoneCreatedEvent) => {
-    console.log(`[cookbook] CREATED ${p.zone} tags=[${p.tags.join(",")}]`);
-  });
-  zones.on("deleted", (p: ZoneDeletedEvent) => {
-    console.log(`[cookbook] DELETED ${p.zone}`);
   });
 }

@@ -61,12 +61,13 @@ its own.
 
 ## Examples
 
-Ten worked examples under [`examples/`](examples/), smallest first:
+Worked examples under [`examples/`](examples/), smallest first:
 
 | Example | What it teaches |
 |---|---|
 | [`hello-plugin`](examples/hello-plugin) | The smallest complete plugin — a command, an event, and surviving a hot reload. **Start here.** |
 | [`cookbook`](examples/cookbook) | One file per API under `src/recipes/` — HTTP, websockets, sockets, DB, cookies, menus, sounds, traces, usermessages, and more. Copy a recipe into your own plugin. |
+| [`legacy-contracts`](examples/legacy-contracts) | The cookbook's protocol 1 econ/workshop consumers, including asynchronous community methods: `sm_econ`, `sm_workshop`. |
 | [`entity-playground`](examples/entity-playground) | Creating, configuring, and watching entities: keyvalue-configured spawns, entity I/O, lifecycle listeners, beams. |
 | [`engine-call-demo`](examples/engine-call-demo) | Declaring and calling an engine function the framework doesn't already wrap — plugin-owned gamedata, `permissions`, and a descriptor that's *supposed* to fail, caught by name instead of misbehaving silently. |
 | [`greeter-plugin`](examples/greeter-plugin) + [`greeter-consumer`](examples/greeter-consumer) | Two plugins talking over a typed, versioned interface — including an `EntityRef` that stays live across the boundary. |

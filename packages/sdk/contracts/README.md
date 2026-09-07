@@ -1,5 +1,9 @@
 # Standard interface contracts
 
+The [legacy-contracts example](../../../examples/legacy-contracts/README.md)
+demonstrates these protocol 1 community interfaces, including asynchronous
+workshop methods. It is a separate companion to the protocol 2 cookbook.
+
 These are **type-only contracts for inter-plugin interfaces** — not SDK capability modules.
 
 The framework deliberately ships **no implementation** for anything in here. Each contract describes

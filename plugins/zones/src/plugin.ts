@@ -10,16 +10,17 @@
 // poll remains only to emit `stay` for currently-inside players (no position tests — just re-emitting the
 // engine-maintained inside-set).
 import { command, onOutput, translations, publish, createScope, ADMFLAG, Database, Server, config, Vector, Chat, Translations, HookResult } from "@s2script/sdk";
-import type { PublishHandle } from "@s2script/sdk";
+import type { Client, TypedPublishHandle } from "@s2script/sdk";
 import { Player, Pawn, TriggerZone, TriggerZoneHandle, Beam, BeamHandle } from "@s2script/cs2";
-import type { Zones } from "../api";
+import type { Contract } from "../api";
 
 interface Vec3 { x: number; y: number; z: number; }
-interface Zone { name: string; min: Vec3; max: Vec3; tags: string[]; inside: Set<number>; trigger: TriggerZoneHandle | null; }
+interface Zone { name: string; min: Vec3; max: Vec3; tags: string[]; inside: Map<number, number>; trigger: TriggerZoneHandle | null; }
 
 let currentMap = "";
+let mapGeneration = 0;
 const zones = new Map<string, Zone>();
-let iface: PublishHandle | null = null;
+let iface: TypedPublishHandle<Contract> | null = null;
 let db!: Database;
 let frame = 0;
 
@@ -144,19 +145,22 @@ function zoneByTriggerIndex(idx: number): Zone | null {
 function playerByPawnIndex(idx: number): { slot: number; userId: number } | null {
   for (const p of Player.all()) {
     const pw = p.pawn;
-    if (pw && pw.ref.index === idx) return { slot: p.slot, userId: p.userId };
+    if (pw && pw.ref.index === idx && p.userId >= 0) return { slot: p.slot, userId: p.userId };
   }
   return null;
 }
 
 async function loadMap(map: string): Promise<void> {
+  const generation = ++mapGeneration;
   clearAllBeams();
   clearAllEdits();   // a new map's coordinates invalidate any in-progress corner marking
   clearAllTriggers();
   currentMap = map;
-  for (const name of zones.keys()) emitDeleted(name);   // map change: the old map's zones are cleared
+  const deleted = [...zones.keys()];
   zones.clear();
+  for (const name of deleted) emitDeleted(name);   // getters now describe the cleared map
   const rows = await db.query("SELECT name, minX, minY, minZ, maxX, maxY, maxZ, tags FROM zones WHERE map = ?", [map]);
+  if (generation !== mapGeneration) return;   // a delayed previous-map query cannot publish into this map
   for (const r of rows) {
     const name = String(r.name);
     zones.set(name, {
@@ -164,7 +168,7 @@ async function loadMap(map: string): Promise<void> {
       min: { x: Number(r.minX), y: Number(r.minY), z: Number(r.minZ) },
       max: { x: Number(r.maxX), y: Number(r.maxY), z: Number(r.maxZ) },
       tags: parseTags(r.tags),
-      inside: new Set<number>(),
+      inside: new Map<number, number>(),
       trigger: null,
     });
     pendingTriggers.add(name);   // build on the next frame (entity system live)
@@ -176,7 +180,7 @@ async function loadMap(map: string): Promise<void> {
 async function upsertZone(name: string, box: { min: Vec3; max: Vec3 }, tags?: string[]): Promise<void> {
   const prev = zones.get(name);
   const t = tags !== undefined ? tags : (prev ? prev.tags : []);
-  zones.set(name, { name, min: box.min, max: box.max, tags: t, inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
+  zones.set(name, { name, min: box.min, max: box.max, tags: t, inside: prev ? prev.inside : new Map<number, number>(), trigger: prev ? prev.trigger : null });
   pendingTriggers.add(name);   // (re)build the trigger on the next frame
   emitCreated(zones.get(name)!);
   await db.execute(
@@ -194,14 +198,21 @@ function dropZone(name: string): void {
   db.execute("DELETE FROM zones WHERE map = ? AND name = ?", [currentMap, name]).catch(() => {});
 }
 
-const zonesImpl: Zones = {
+// A slot can be reused before a missing touch-end is delivered. Membership belongs to
+// the connection that entered; never reinterpret it using whoever occupies the slot now.
+function isInside(z: Zone, slot: number): boolean {
+  const userId = z.inside.get(slot);
+  return userId !== undefined && Player.fromUserId(userId)?.slot === slot;
+}
+
+const zonesImpl = {
   createZone(name: string, min: Vec3, max: Vec3): boolean {
     const nm = sanitizeName(name);
     if (!nm || !min || !max) return false;
     const box = normBox(min, max);
     if (box.min.x === box.max.x || box.min.y === box.max.y || box.min.z === box.max.z) return false;
     const prev = zones.get(nm);
-    zones.set(nm, { name: nm, min: box.min, max: box.max, tags: prev ? prev.tags : [], inside: prev ? prev.inside : new Set<number>(), trigger: prev ? prev.trigger : null });
+    zones.set(nm, { name: nm, min: box.min, max: box.max, tags: prev ? prev.tags : [], inside: prev ? prev.inside : new Map<number, number>(), trigger: prev ? prev.trigger : null });
     pendingTriggers.add(nm);
     upsertZone(nm, box).catch(() => {});   // durability, async (registry already updated)
     return true;
@@ -217,11 +228,11 @@ const zonesImpl: Zones = {
   },
   isInZone(slot: number, name: string): boolean {
     const z = zones.get(sanitizeName(name));
-    return !!z && z.inside.has(slot);
+    return !!z && isInside(z, slot);
   },
   zonesFor(slot: number): string[] {
     const out: string[] = [];
-    for (const z of zones.values()) if (z.inside.has(slot)) out.push(z.name);
+    for (const z of zones.values()) if (isInside(z, slot)) out.push(z.name);
     return out;
   },
   getZonesByTag(tag: string): { name: string; min: Vec3; max: Vec3; tags: string[] }[] {
@@ -299,7 +310,7 @@ export async function OnPluginStart(): Promise<void> {
 
   await loadMap(Server.mapName);
 
-  iface = publish<Zones>("@s2script/zones", zonesImpl);
+  iface = publish("@s2script/zones", zonesImpl);
 
   // ENTER/LEAVE come from the engine's own touch outputs on OUR trigger entities. onOutput fires for
   // ALL trigger_multiple (incl. map triggers), so we filter to our zone triggers by the firing entity.
@@ -308,8 +319,8 @@ export async function OnPluginStart(): Promise<void> {
     const z = zoneByTriggerIndex(ev.caller.index);
     if (!z) return;
     const who = playerByPawnIndex(ev.activator.index);
-    if (!who || z.inside.has(who.slot)) return;
-    z.inside.add(who.slot);
+    if (!who || z.inside.get(who.slot) === who.userId) return;
+    z.inside.set(who.slot, who.userId);
     iface.emit("enter", { zone: z.name, slot: who.slot, userId: who.userId });
   });
   onOutput("trigger_multiple", "OnEndTouch", (ev) => {
@@ -317,7 +328,7 @@ export async function OnPluginStart(): Promise<void> {
     const z = zoneByTriggerIndex(ev.caller.index);
     if (!z) return;
     const who = playerByPawnIndex(ev.activator.index);
-    if (!who || !z.inside.has(who.slot)) return;
+    if (!who || z.inside.get(who.slot) !== who.userId) return;
     z.inside.delete(who.slot);
     iface.emit("leave", { zone: z.name, slot: who.slot, userId: who.userId });
   });
@@ -484,6 +495,12 @@ export function OnMapStart(map: string): void {
   loadMap(map).catch((e) => console.log(`[zones] loadMap error: ${e}`));
 }
 
+export function OnClientDisconnect(client: Client): void {
+  // The synchronous disconnect callback carries the retiring connection's identity snapshot.
+  for (const z of zones.values())
+    if (z.inside.get(client.slot) === client.userId) z.inside.delete(client.slot);
+}
+
 // Per-frame: (1) build any queued triggers now that the entity system is live; (2) a light STAY re-emit
 // for players the engine reports as currently inside (no position tests — just the engine-maintained set).
 export function OnGameFrame(): void {
@@ -499,11 +516,11 @@ export function OnGameFrame(): void {
   let any = false;
   for (const z of zones.values()) if (z.inside.size > 0) { any = true; break; }
   if (!any) return;
-  const uid = new Map<number, number>();
-  for (const p of Player.all()) uid.set(p.slot, p.userId);
   for (const z of zones.values())
-    for (const slot of z.inside)
-      iface.emit("stay", { zone: z.name, slot, userId: uid.get(slot) ?? -1 });
+    for (const [slot, userId] of z.inside) {
+      if (!isInside(z, slot)) { z.inside.delete(slot); continue; }
+      iface.emit("stay", { zone: z.name, slot, userId });
+    }
 }
 
 // Hot-reload cleanup: remove our runtime trigger entities so a reload doesn't orphan/duplicate them
