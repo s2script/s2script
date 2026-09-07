@@ -699,6 +699,64 @@
         boundBinding = previousBinding;
       }
     };
+    // Private game adapter. Opaque tokens and retirement remain owned by the native ledger.
+    api._focus = {
+      reserve: function (binding, root, priority) {
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        if (typeof globalThis.__s2_surface_reserve !== "function" ||
+            typeof globalThis.__s2_surface_state !== "function" ||
+            typeof globalThis.__s2_surface_activate !== "function" ||
+            typeof globalThis.__s2_surface_active !== "function" ||
+            typeof globalThis.__s2_surface_release !== "function") {
+          return uiFail("Unavailable", "surface focus is unavailable");
+        }
+        var ent = bindEntity(ctxState.ensureEntity(layout));
+        if (!ent) return uiFail("NotReady", ctxState.notReadyReason());
+        if (!bindingIsValid(binding)) return uiFail("StaleClient", "stale client or component");
+        var result = globalThis.__s2_surface_reserve("cs2:hudkit:exclusive", ent.index, ent.id,
+          binding.slot, priority, JSON.stringify({
+            capture: { call: "setInputCaptureEnabledForPlayer", token: "panel:" + root },
+            suspend: { call: "setHasClassForPlayer", args: [root, layout.hideClass, CLASS_HAS] }
+          }));
+        if (!bindingIsValid(binding)) {
+          if (result.ok) api._focus.release(result.value);
+          return uiFail("StaleClient", "stale client or component");
+        }
+        return result;
+      },
+      state: function (token) {
+        return typeof globalThis.__s2_surface_state === "function" ?
+          globalThis.__s2_surface_state(token) : "invalid";
+      },
+      activate: function (binding, token) {
+        return bindingIsValid(binding) && typeof globalThis.__s2_surface_activate === "function" &&
+          globalThis.__s2_surface_activate(token) && bindingIsValid(binding);
+      },
+      active: function (binding, token) {
+        return bindingIsValid(binding) && typeof globalThis.__s2_surface_active === "function" &&
+          globalThis.__s2_surface_active(token) && bindingIsValid(binding);
+      },
+      release: function (token) {
+        return typeof globalThis.__s2_surface_release === "function" && globalThis.__s2_surface_release(token);
+      },
+      invalidate: function (binding, root) {
+        if (!bindingIsValid(binding)) return;
+        var prefix = slotPrefix(binding.slot);
+        function under(id) { return id === root || id.indexOf(root + "_") === 0; }
+        for (var key in lastValue) {
+          if (key.indexOf(prefix) === 0 && under(key.slice(prefix.length).split("|")[1])) delete lastValue[key];
+        }
+        for (var panel in visiblePanels) {
+          if (panel.indexOf(prefix) === 0 && under(panel.slice(prefix.length))) delete visiblePanels[panel];
+        }
+        for (var meter in meterClass) {
+          if (meter.indexOf(prefix) === 0 && under(meter.slice(prefix.length))) delete meterClass[meter];
+        }
+        var dis = disabled[binding.slot];
+        if (dis) for (var id in dis) { if (under(id)) delete dis[id]; }
+      },
+      onFrame: ctxState.onFocusFrame
+    };
     api._disconnectOwnsSlot = function (slot, client) {
       if (!client || !sameClient(slotClients[slot], client)) return false;
       var occupant = clientsApi().fromSlot(slot);
@@ -725,6 +783,14 @@
       var rawClickHandlers = [];
       var clickHookInstalled = false;
       var mamBannerShown = false;
+      var focusReconcilers = [];
+      reg(viaId(function () {
+        var frame = globalThis.__s2pkg_frame;
+        if (frame) return frame.OnGameFrame.subscribe(function () {
+          var pending = focusReconcilers.slice();
+          for (var i = 0; i < pending.length; i++) pending[i]();
+        }, { phase: "pre" });
+      }));
 
       function notReadyReason() {
         return ready
@@ -788,6 +854,7 @@
       function ctxState() {
         return {
           buttonHandlers: buttonHandlers,
+          onFocusFrame: function (fn) { focusReconcilers.push(fn); },
           notReadyReason: notReadyReason,
           isReady: function () { return ready; },
           findEntity: function (desc) {

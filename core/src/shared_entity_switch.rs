@@ -126,6 +126,15 @@ fn remove_where(mut matches: impl FnMut(&Key, &(String, String)) -> bool) {
 }
 pub(crate) fn clear_slot(slot: i32) { remove_where(|key, _| key.slot == slot); }
 fn remove_owner(owner: &str) { remove_where(|_, (who, _)| who == owner); }
+
+/// The surface arbiter retires precisely the game adapter's recorded capture holder, never
+/// every holder belonging to the plugin (manual capture and unrelated panels must survive).
+pub(crate) fn release_recorded(owner: &str, game: &str, call: &str, index: i32,
+    id: u64, slot: i32, token: &str) -> Result<(), String> {
+    let key = Key { game: game.into(), call: call.into(), index, id, slot };
+    change(owner, key, Some(token.into()), false,
+        |key, on| crate::dispatch::defer_while(|| invoke(key, on)))
+}
 pub(crate) fn reset() {
     invalidate_pending();
     LEASES.with(|l| l.borrow_mut().clear());

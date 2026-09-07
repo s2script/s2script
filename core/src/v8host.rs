@@ -5710,6 +5710,7 @@ fn deliver_timer(host: &mut Host, id: u64) {
     resolve_or_drop(host, &entry);
 }
 pub(crate) fn frame_async_drain() {
+    crate::surface_leases::advance_frame();
     crate::shared_entity_switch::retry_pending();
     HOST.with(|h| {
         let mut borrow = h.borrow_mut();
@@ -5985,6 +5986,7 @@ pub(crate) fn register_builtin_stores() {
 
     // CLIENT_MUX: registered by the feature module, which owns the mux the callbacks close over.
     crate::client::register_store();
+    crate::surface_leases::register_store();
     crate::shared_entity_switch::register_store();
 
     // MAP_MUX: the StartupServer hook stays installed for the process lifetime — no follow-up.

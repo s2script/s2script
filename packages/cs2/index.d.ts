@@ -55,6 +55,7 @@ export type {
   UiErrorCode,
   UiResult,
   UiStatus,
+  UiFocusOptions,
   Variant,
 } from "./ui";
 export { CustomHudLayout, DEFAULT_HUD_DESCRIPTOR, hudkit, PROBE_LAYOUT, ui } from "./ui";
