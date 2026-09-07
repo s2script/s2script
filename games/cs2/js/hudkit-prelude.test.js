@@ -416,6 +416,52 @@ test("native invocation rejection does not poison paint caches and retry paints 
   assert.ok(w.writes.slice(before).some(c => c.name === "setDialogVariableStringForPlayer" && c.args.includes("Retry me")));
 });
 
+test("a failed modal repaint disables rows and footers until a complete repaint succeeds", () => {
+  const options = {};
+  const w = pluginWorld(options), p = w.plugin();
+  let title = "Old", row = { id: "old", a: "Old" }, footer = "old";
+  const picked = [];
+  const modal = p.base.kit.modal({
+    title: () => title,
+    rows: () => [row],
+    buttons: () => [{ text: "Act", onClick: () => picked.push(footer) }],
+    onPick: (_slot, _index, value) => picked.push(value.id),
+  });
+  modal.open(2);
+  title = "New"; row = { id: "new", a: "New" }; footer = "new";
+  options.failInvoke = "setDialogVariableStringForPlayer";
+  modal.refresh(2);
+  options.failInvoke = null;
+  p.click(2, "s2_m0_r0"); p.click(2, "s2_m0_f0");
+  assert.deepEqual(picked, [], "a partially changed sheet must not retain clickable old actions");
+  modal.refresh(2);
+  p.click(2, "s2_m0_r0"); p.click(2, "s2_m0_f0");
+  assert.deepEqual(picked, ["new", "new"]);
+});
+
+test("a failed dashboard repaint disables dispatch until a complete repaint succeeds", () => {
+  const options = {};
+  const w = pluginWorld(options), p = w.plugin();
+  let title = "Old", row = { id: "old", a: "Old" };
+  const picked = [];
+  const dash = p.base.kit.dashboard({
+    title: () => title,
+    tabs: [{ id: "tab", title: "Tab" }],
+    rows: () => [row],
+    onPick: (_slot, tabId, value) => picked.push([tabId, value.id]),
+  });
+  dash.open(2);
+  title = "New"; row = { id: "new", a: "New" };
+  options.failInvoke = "setDialogVariableStringForPlayer";
+  dash.refresh(2);
+  options.failInvoke = null;
+  p.click(2, "s2_dash_r0");
+  assert.deepEqual(picked, []);
+  dash.refresh(2);
+  p.click(2, "s2_dash_r0");
+  assert.deepEqual(picked, [["tab", "new"]]);
+});
+
 
 test("capture rejection rolls modal open back and retry reacquires instead of retaining a false lease", () => {
   const options = { captureError: "capture invocation failed" };

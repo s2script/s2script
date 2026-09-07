@@ -84,6 +84,142 @@ test("row clicks report an absolute index, not a page-relative one", () => {
   assert.deepStrictEqual(picked, [2, 8], "page 2 row 0 is item 8");
 });
 
+test("a row click uses the submitted row after provider reorder", () => {
+  const { ui, clickHandlers } = mount();
+  let rows = [{ id: "a", a: "A" }, { id: "b", a: "B" }];
+  const picked = [];
+  ui.modal({ title: "Pick", rows: () => rows,
+    onPick: (_slot, _index, row) => picked.push(row.id) }).open(1);
+  rows = [rows[1], rows[0]];
+  clickHandlers["s2_m0_r0"](1);
+  assert.deepStrictEqual(picked, ["a"]);
+});
+
+test("modal row snapshots copy declared fields before in-place mutation", () => {
+  const { ui, clickHandlers } = mount();
+  const row = { id: "original", a: "A", b: "B", c: "C", disabled: true, tone: "warn" };
+  const picked = [];
+  ui.modal({ rows: [row], onPick: (_slot, index, value) => picked.push({ index, value }) }).open(1);
+  Object.assign(row, { id: "mutated", a: "X", b: "Y", c: "Z", disabled: false, tone: "bad" });
+  clickHandlers.s2_m0_r0(1);
+  assert.deepStrictEqual(picked, [{ index: 0, value: {
+    id: "original", a: "A", b: "B", c: "C", disabled: true, tone: "warn",
+  } }]);
+  assert.notStrictEqual(picked[0].value, row);
+});
+
+test("modal snapshots keep absolute rows separate for two players on different pages", () => {
+  const { ui, clickHandlers } = mount();
+  let rowsBySlot = {
+    1: Array.from({ length: 10 }, (_, i) => ({ id: `one-${i}`, a: `One ${i}` })),
+    2: [{ id: "two-0", a: "Two" }],
+  };
+  const picked = [];
+  const modal = ui.modal({ rows: (slot) => rowsBySlot[slot],
+    onPick: (slot, index, row) => picked.push([slot, index, row.id]) });
+  modal.open(1); modal.page(1, 1); modal.open(2);
+  rowsBySlot = { 1: [...rowsBySlot[1]].reverse(), 2: [{ id: "replacement", a: "Replacement" }] };
+  clickHandlers.s2_m0_r0(1);
+  clickHandlers.s2_m0_r0(2);
+  assert.deepStrictEqual(picked, [[1, 8, "one-8"], [2, 0, "two-0"]]);
+});
+
+test("modal rejects duplicate supplied row ids", () => {
+  const { ui } = mount();
+  const result = ui.modal({ rows: [
+    { id: "same", a: "First" }, { id: "same", a: "Second" },
+  ] }).tryOpen(1);
+  assert.strictEqual(result.ok, false);
+  assert.match(result.error, /duplicate row id.*same/i);
+});
+
+test("hidden and out-of-range modal row buttons do not dispatch", () => {
+  const { ui, clickHandlers } = mount();
+  const picked = [];
+  const modal = ui.modal({ rows: [null, { id: "only", a: "Only" }],
+    onPick: (_slot, _index, row) => picked.push(row.id) });
+  modal.open(1);
+  clickHandlers.s2_m0_r0(1);
+  clickHandlers.s2_m0_r7(1);
+  assert.deepStrictEqual(picked, []);
+  assert.strictEqual(modal.cursor(1), 0);
+  clickHandlers.s2_m0_r1(1);
+  assert.deepStrictEqual(picked, ["only"]);
+});
+
+test("a reentrant modal refresh cannot replace a newer submitted snapshot", () => {
+  const { ui, clickHandlers } = mount();
+  let phase = "initial";
+  let modal;
+  const picked = [];
+  const rows = () => {
+    if (phase === "outer") {
+      phase = "inner";
+      modal.refresh(1);
+      return [{ id: "outer", a: "Outer" }];
+    }
+    return [{ id: phase, a: phase }];
+  };
+  modal = ui.modal({ rows, onPick: (_slot, _index, row) => picked.push(row.id) });
+  modal.open(1);
+  phase = "outer";
+  modal.refresh(1);
+  clickHandlers.s2_m0_r0(1);
+  assert.deepStrictEqual(picked, ["inner"]);
+});
+
+test("a modal provider's nested open remains authoritative", () => {
+  const { ui, calls, clickHandlers } = mount();
+  let phase = "outer";
+  let modal;
+  const picked = [];
+  const rows = () => {
+    if (phase === "outer") {
+      phase = "inner";
+      modal.open(1);
+      return [{ id: "outer", a: "Outer" }];
+    }
+    return [{ id: "inner", a: "Inner" }];
+  };
+  modal = ui.modal({ rows, onPick: (_slot, _index, row) => picked.push(row.id) });
+  modal.open(1);
+  const paints = calls.filter((c) => c.op === "set" && c.id === "s2_m0_r0_a").map((c) => c.value);
+  assert.deepStrictEqual(paints, ["Inner"]);
+  clickHandlers.s2_m0_r0(1);
+  assert.deepStrictEqual(picked, ["inner"]);
+});
+
+test("a modal released by its provider cannot publish or show its initial candidate", () => {
+  const { ui, calls } = mount();
+  let modal;
+  modal = ui.modal({ rows: () => {
+    modal.release();
+    return [{ id: "row", a: "Row" }];
+  } });
+  const result = modal.tryOpen(1);
+  assert.strictEqual(result.ok, false);
+  assert.match(result.error, /released/);
+  assert.strictEqual(modal.isOpen(1), false);
+  assert.ok(!calls.some((c) => c.op === "show" && c.id === "s2_m0"));
+});
+
+test("page() applies its delta after one fresh provider evaluation", () => {
+  const { ui, clickHandlers } = mount();
+  let rows = [{ id: "old", a: "Old" }];
+  let providerCalls = 0;
+  const picked = [];
+  const modal = ui.modal({ rows: () => { providerCalls++; return rows; },
+    onPick: (_slot, index, row) => picked.push([index, row.id]) });
+  modal.open(1);
+  rows = Array.from({ length: 9 }, (_, i) => ({ id: `new-${i}`, a: `New ${i}` }));
+  const before = providerCalls;
+  modal.page(1, 1);
+  assert.strictEqual(providerCalls - before, 1);
+  clickHandlers.s2_m0_r0(1);
+  assert.deepStrictEqual(picked, [[8, "new-8"]]);
+  assert.strictEqual(modal.cursor(1), 8);
+});
+
 test("a disabled row is greyed but still delivers its click", () => {
   const { ui, calls, clickHandlers } = mount();
   const picked = [];
@@ -231,12 +367,24 @@ test("cursor() is an absolute index, not a page-relative one", () => {
 });
 
 test("select() takes an absolute index and pages to it", () => {
-  const { ui } = mount();
+  const { ui, calls } = mount();
   const rows = Array.from({ length: 20 }, (_, i) => ({ a: `i${i}` }));
   const m = ui.modal({ title: "T", rows: () => rows });
   m.open(1);
+  const before = calls.length;
   m.select(1, 13);
   assert.strictEqual(m.cursor(1), 13);
+  assert.ok(calls.slice(before).some((c) => c.op === "cls" && c.id === "s2_m0_r5" &&
+    c.cls === "s2-li-selected" && c.on === true));
+});
+
+test("select() still clamps an out-of-range absolute index to the final row", () => {
+  const { ui } = mount();
+  const rows = Array.from({ length: 10 }, (_, i) => ({ a: `i${i}` }));
+  const m = ui.modal({ title: "T", rows });
+  m.open(1);
+  m.select(1, 999);
+  assert.strictEqual(m.cursor(1), 9);
 });
 
 test("detail() receives the absolute index too", () => {
@@ -412,6 +560,16 @@ test("each player dispatches the footer handlers from their own last paint", () 
   assert.deepStrictEqual(calls, ["buy", "ban", "extra"], "closed/forgotten viewers cannot dispatch");
 });
 
+test("footer clicks keep the copied action table after the provider array mutates", () => {
+  const { ui, clickHandlers } = mount();
+  const calls = [];
+  const buttons = [{ text: "Act", onClick: () => calls.push("submitted") }];
+  ui.modal({ rows: [], buttons: () => buttons }).open(1);
+  buttons[0] = { text: "Changed", onClick: () => calls.push("mutated") };
+  clickHandlers.s2_m0_f0(1);
+  assert.deepStrictEqual(calls, ["submitted"]);
+});
+
 test("automatic pager buttons retain each viewer's own footer positions", () => {
   const { ui, clickHandlers } = mount();
   const m = ui.modal({
@@ -530,6 +688,192 @@ test("dashboard paints plugin tabs and picks an item on the active tab", () => {
   assert.ok(calls.some((c) => c.op === "set" && c.id === "s2_dash_r0_a" && c.value === "Kick"));
   clickHandlers.s2_dash_r0(1);
   assert.deepStrictEqual(picked, [{ slot: 1, tabId: "bans", id: "bb:kick" }]);
+});
+
+test("dashboard row and tab clicks use the submitted snapshots after provider reorder", () => {
+  const { ui, clickHandlers } = mount();
+  let tabs = [{ id: "a", title: "A" }, { id: "b", title: "B" }];
+  let rows = {
+    a: [{ id: "a-1", a: "A one" }, { id: "a-2", a: "A two" }],
+    b: [{ id: "b-1", a: "B one" }],
+  };
+  const picked = [];
+  const dash = ui.dashboard({ tabs: () => tabs, rows: (_slot, tabId) => rows[tabId],
+    onPick: (_slot, tabId, row) => picked.push([tabId, row.id]) });
+  dash.open(1);
+  rows.a = [rows.a[1], rows.a[0]];
+  clickHandlers.s2_dash_r0(1);
+  tabs = [tabs[1], tabs[0]];
+  clickHandlers.s2_dash_t1(1);
+  clickHandlers.s2_dash_r0(1);
+  assert.deepStrictEqual(picked, [["a", "a-1"], ["b", "b-1"]]);
+});
+
+test("dashboard row snapshots copy declared fields before in-place mutation", () => {
+  const { ui, clickHandlers } = mount();
+  const row = { id: "original", a: "A", b: "B", disabled: false };
+  const picked = [];
+  ui.dashboard({ tabs: [{ id: "tab", title: "Tab" }], rows: () => [row],
+    onPick: (_slot, tabId, value) => picked.push({ tabId, value }) }).open(1);
+  Object.assign(row, { id: "mutated", a: "X", b: "Y", disabled: true });
+  clickHandlers.s2_dash_r0(1);
+  assert.deepStrictEqual(picked, [{ tabId: "tab", value: {
+    id: "original", a: "A", b: "B", disabled: false,
+  } }]);
+  assert.notStrictEqual(picked[0].value, row);
+});
+
+test("dashboard snapshots keep rows separate for two players on different pages", () => {
+  const { ui, clickHandlers } = mount();
+  let rowsBySlot = {
+    1: Array.from({ length: 10 }, (_, i) => ({ id: `one-${i}`, a: `One ${i}` })),
+    2: [{ id: "two-0", a: "Two" }],
+  };
+  const picked = [];
+  const dash = ui.dashboard({ tabs: [{ id: "tab", title: "Tab" }],
+    rows: (slot) => rowsBySlot[slot],
+    onPick: (slot, _tab, row) => picked.push([slot, row.id]) });
+  dash.open(1); clickHandlers.s2_dash_next(1); dash.open(2);
+  rowsBySlot = { 1: [...rowsBySlot[1]].reverse(), 2: [{ id: "replacement", a: "Replacement" }] };
+  clickHandlers.s2_dash_r0(1);
+  clickHandlers.s2_dash_r0(2);
+  assert.deepStrictEqual(picked, [[1, "one-8"], [2, "two-0"]]);
+});
+
+test("dashboard rejects duplicate tab and row ids", () => {
+  const { ui } = mount();
+  const duplicateTabs = ui.dashboard({
+    tabs: [{ id: "same", title: "First" }, { id: "same", title: "Second" }], rows: () => [],
+  });
+  assert.throws(() => duplicateTabs.open(1), /duplicate tab id.*same/i);
+  duplicateTabs.close(1);
+
+  const duplicateRows = ui.dashboard({
+    tabs: [{ id: "tab", title: "Tab" }],
+    rows: () => [{ id: "same", a: "First" }, { id: "same", a: "Second" }],
+  });
+  assert.throws(() => duplicateRows.open(1), /duplicate row id.*same/i);
+});
+
+test("hidden, out-of-range, and disabled dashboard rows do not dispatch", () => {
+  const { ui, clickHandlers } = mount();
+  const picked = [];
+  ui.dashboard({ tabs: [{ id: "tab", title: "Tab" }], rows: () => [
+    null, { id: "disabled", a: "Disabled", disabled: true }, { id: "enabled", a: "Enabled" },
+  ], onPick: (_slot, _tab, row) => picked.push(row.id) }).open(1);
+  clickHandlers.s2_dash_r0(1);
+  clickHandlers.s2_dash_r1(1);
+  clickHandlers.s2_dash_r7(1);
+  clickHandlers.s2_dash_r2(1);
+  assert.deepStrictEqual(picked, ["enabled"]);
+});
+
+test("a reentrant dashboard refresh cannot replace a newer submitted snapshot", () => {
+  const { ui, clickHandlers } = mount();
+  let phase = "initial";
+  let dash;
+  const picked = [];
+  const rows = () => {
+    if (phase === "outer") {
+      phase = "inner";
+      dash.refresh(1);
+      return [{ id: "outer", a: "Outer" }];
+    }
+    return [{ id: phase, a: phase }];
+  };
+  dash = ui.dashboard({ tabs: [{ id: "tab", title: "Tab" }], rows,
+    onPick: (_slot, _tab, row) => picked.push(row.id) });
+  dash.open(1);
+  phase = "outer";
+  dash.refresh(1);
+  clickHandlers.s2_dash_r0(1);
+  assert.deepStrictEqual(picked, ["inner"]);
+});
+
+test("a dashboard provider's nested open owns both the final paint and click", () => {
+  const { ui, calls, clickHandlers } = mount();
+  let phase = "outer";
+  let dash;
+  const picked = [];
+  const rows = () => {
+    if (phase === "outer") {
+      phase = "inner";
+      dash.open(1);
+      return [{ id: "outer", a: "Outer" }];
+    }
+    return [{ id: "inner", a: "Inner" }];
+  };
+  dash = ui.dashboard({ tabs: [{ id: "tab", title: "Tab" }], rows,
+    onPick: (_slot, _tab, row) => picked.push(row.id) });
+  dash.open(1);
+  const paints = calls.filter((c) => c.op === "set" && c.id === "s2_dash_r0_a").map((c) => c.value);
+  assert.deepStrictEqual(paints, ["Inner"]);
+  clickHandlers.s2_dash_r0(1);
+  assert.deepStrictEqual(picked, ["inner"]);
+});
+
+test("a dashboard provider close cancels the initial reveal and cursor capture", () => {
+  const { ui, calls } = mount();
+  let dash;
+  dash = ui.dashboard({ tabs: [{ id: "tab", title: "Tab" }], rows: () => {
+    dash.close(1);
+    return [{ id: "row", a: "Row" }];
+  } });
+  dash.open(1);
+  assert.strictEqual(dash.isOpen(1), false);
+  const roots = calls.filter((c) => c.id === "s2_dash" && (c.op === "hide" || c.op === "show"));
+  assert.deepStrictEqual(roots.map((c) => c.op), ["hide"]);
+});
+
+test("a nested initial dashboard refresh preserves the pending root reveal", () => {
+  const { ui, calls, clickHandlers } = mount();
+  let phase = "outer";
+  let dash;
+  const picked = [];
+  const rows = () => {
+    if (phase === "outer") {
+      phase = "inner";
+      dash.refresh(1);
+      return [{ id: "outer", a: "Outer" }];
+    }
+    return [{ id: "inner", a: "Inner" }];
+  };
+  dash = ui.dashboard({ tabs: [{ id: "tab", title: "Tab" }], rows,
+    onPick: (_slot, _tab, row) => picked.push(row.id) });
+  dash.open(1);
+  assert.strictEqual(dash.isOpen(1), true);
+  assert.strictEqual(calls.filter((c) => c.op === "show" && c.id === "s2_dash").length, 1);
+  clickHandlers.s2_dash_r0(1);
+  assert.deepStrictEqual(picked, ["inner"]);
+});
+
+test("dashboard spec replacement commits callbacks per successful player paint", () => {
+  const { ui, clickHandlers } = mount();
+  const picked = [], closed = [];
+  const dash = ui.dashboard({
+    tabs: [{ id: "a", title: "A" }],
+    rows: () => [{ id: "old", a: "Old" }],
+    onPick: (_slot, _tab, row) => picked.push("A:" + row.id),
+    onClose: (slot) => closed.push("A:" + slot),
+  });
+  dash.open(1); dash.open(2);
+  assert.throws(() => ui.dashboard({
+    tabs: [{ id: "b", title: "B" }],
+    rows: (slot) => {
+      if (slot === 1) throw new Error("provider failed");
+      return [{ id: "new", a: "New" }];
+    },
+    onPick: (_slot, _tab, row) => picked.push("B:" + row.id),
+    onClose: (slot) => closed.push("B:" + slot),
+  }), /provider failed/);
+  clickHandlers.s2_dash_r0(1);
+  clickHandlers.s2_dash_close(1);
+  assert.strictEqual(dash.isOpen(1), true, "a failed snapshot must reject the stale Close click too");
+  clickHandlers.s2_dash_r0(2);
+  clickHandlers.s2_dash_close(2);
+  assert.deepStrictEqual(picked, ["B:new"]);
+  assert.deepStrictEqual(closed, ["B:2"]);
+  dash.close(1);
 });
 
 test("dashboard Close fires onClose; programmatic close does not", () => {
