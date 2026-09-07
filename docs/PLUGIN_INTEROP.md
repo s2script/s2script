@@ -167,3 +167,32 @@ asynchronous community contracts and command behavior are preserved.
 Compiled contract/build tests and plugin VM operation/lifecycle tests cover this
 migration. Real CS2 enter/leave and provider reload acceptance remain a separate
 live gate; offline tests do not establish that acceptance.
+
+## BaseComm service
+
+`@s2script/basecomm` version `1.0.0` publishes mute and gag policy through protocol 2.
+Its methods are `isMuted`, `isGagged`, `setMuted`, and `setGagged`; its notifications
+are `OnClientMuteChanged` and `OnClientGagChanged`, each carrying a copied
+`{ steamId: string; state: boolean }` payload.
+
+SteamIDs at the service boundary must be canonical, nonzero decimal unsigned 64-bit
+values. Queries return false for invalid identities. A setter returns false for an invalid
+identity or nonboolean state. Otherwise its return describes whether current policy equals
+the requested state when the call returns, including an unchanged request. Reentrant
+notification listeners may make an outer setter return false by selecting a different final
+state. Notifications fire only for actual policy transitions, after policy and current live
+engine state have changed, so listener queries see the emitted state.
+
+Policy is SteamID-keyed and can be set while a player is offline. Reconnect reapplies both
+the real `Client.voiceMuted` flag and the scoreboard communication-abuse flag. The mute
+result describes BaseComm policy; if the host voice descriptor is degraded, it does not claim
+that audio delivery changed. Command and menu paths share the same operations while retaining
+their admin permissions, immunity filters, target handling, and translated replies. Direct
+service callers are trusted plugins and bypass those command-layer checks.
+
+The [interop observer example](../examples/interop-observer/README.md) declares BaseComm as
+optional, owns its subscriptions inside the synchronous attachment, and queries current state
+after subscribing on each provider generation. Its checked-in declaration is the verified
+types-only copy used by `s2s add`; building the consumer does not require BaseComm source or a
+provider archive. Live mute/gag, authenticated command/menu behavior, and provider reload remain
+separate CS2 acceptance gates; the offline VM and compiler tests do not establish them.
