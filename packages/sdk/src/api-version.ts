@@ -9,7 +9,7 @@
  * MUST equal core/src/loader.rs `HOST_API_VERSION_MAJOR` — test/api-version.test.mjs fails
  * the suite when they drift. Bump BOTH in the same commit.
  */
-export const HOST_API_VERSION_MAJOR = 2;
+export const HOST_API_VERSION_MAJOR = 3;
 
-/** Exactly what `s2s build` writes into manifest.apiVersion ("2.x": major-pinned, minor-open). */
+/** Exactly what `s2s build` writes into manifest.apiVersion ("3.x": major-pinned, minor-open). */
 export const STAMPED_API_VERSION = `${HOST_API_VERSION_MAJOR}.x`;

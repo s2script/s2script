@@ -23,25 +23,24 @@ export interface PublishScan {
   importNames: string[];
 }
 
-/** True when `type`'s symbol (or alias) is the SDK PluginContext. */
-function isPluginContext(type: ts.Type): boolean {
-  const sym = type.getSymbol() ?? type.aliasSymbol;
-  return sym?.getName() === "PluginContext";
-}
-
-/** True when `node` (an identifier) aliases a symbol declared in packages/sdk/plugin.d.ts. */
-function isFromPluginDts(checker: ts.TypeChecker, node: ts.Node): boolean {
-  let sym = checker.getSymbolAtLocation(node);
-  if (sym === undefined) return false;
-  if (sym.flags & ts.SymbolFlags.Alias) {
-    const aliased = checker.getAliasedSymbol(sym);
-    if (aliased !== undefined) sym = aliased;
-  }
-  for (const d of sym.declarations ?? []) {
-    const f = d.getSourceFile().fileName.replace(/\\/g, "/");
-    if (f.endsWith("/plugin.d.ts")) return true;
-  }
-  return false;
+/** Resolve SDK authority from the selected signature, independent of local alias syntax. */
+export function pluginApiName(
+  checker: ts.TypeChecker,
+  call: ts.CallExpression
+): string | undefined {
+  const declaration = checker.getResolvedSignature(call)?.getDeclaration();
+  if (
+    !declaration ||
+    !declaration
+      .getSourceFile()
+      .fileName.replace(/\\/g, "/")
+      .endsWith("/sdk/plugin.d.ts")
+  )
+    return undefined;
+  const name = declaration.name;
+  return name && (ts.isIdentifier(name) || ts.isStringLiteral(name))
+    ? name.text
+    : undefined;
 }
 
 function recordPublishOrUse(
@@ -49,7 +48,7 @@ function recordPublishOrUse(
   method: string,
   arg0: ts.Expression | undefined,
   sf: ts.SourceFile,
-  node: ts.Node,
+  node: ts.Node
 ): void {
   if (method === "publish") {
     if (arg0 !== undefined && ts.isStringLiteralLike(arg0)) {
@@ -68,9 +67,17 @@ function recordImportSpecifier(out: PublishScan, spec: string): void {
   out.importNames.push(spec);
 }
 
-export function scanPluginProgram(program: ts.Program, pluginDir: string): PublishScan {
+export function scanPluginProgram(
+  program: ts.Program,
+  pluginDir: string
+): PublishScan {
   const checker = program.getTypeChecker();
-  const out: PublishScan = { publishNames: [], dynamicPublishSites: [], useNames: [], importNames: [] };
+  const out: PublishScan = {
+    publishNames: [],
+    dynamicPublishSites: [],
+    useNames: [],
+    importNames: [],
+  };
   const dirPrefix = pluginDir.replace(/\\/g, "/").replace(/\/+$/, "") + "/";
 
   for (const sf of program.getSourceFiles()) {
@@ -87,20 +94,18 @@ export function scanPluginProgram(program: ts.Program, pluginDir: string): Publi
       }
 
       if (ts.isCallExpression(node)) {
-        if (ts.isPropertyAccessExpression(node.expression)) {
-          const method = node.expression.name.text;
-          if (method === "publish" || method === "use" || method === "tryUse") {
-            const recv = checker.getTypeAtLocation(node.expression.expression);
-            if (isPluginContext(recv)) {
-              recordPublishOrUse(out, method, node.arguments[0], sf, node);
-            }
-          }
-        } else if (ts.isIdentifier(node.expression)) {
-          const name = node.expression.text;
-          if ((name === "publish" || name === "use" || name === "tryUse") && isFromPluginDts(checker, node.expression)) {
-            recordPublishOrUse(out, name, node.arguments[0], sf, node);
-          }
-        }
+        const name = pluginApiName(checker, node);
+        if (
+          name &&
+          [
+            "publish",
+            "use",
+            "tryUse",
+            "watchOptional",
+            "bindForwards",
+          ].includes(name)
+        )
+          recordPublishOrUse(out, name, node.arguments[0], sf, node);
       }
       ts.forEachChild(node, visit);
     };

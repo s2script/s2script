@@ -168,7 +168,7 @@ test("createPlugin(workspaceRoot) writes a tsconfig.json extending the root's ts
   const result = await createPlugin({ path: "shop", workspaceRoot: root, yes: true, noInstall: true });
   const tsconfig = JSON.parse(readFileSync(join(result.dir, "tsconfig.json"), "utf8"));
   assert.equal(tsconfig.extends, "../../tsconfig.base.json");
-  assert.deepEqual(tsconfig.include, ["src", ".s2script/gamedata.d.ts", "node_modules/@s2script/sdk/globals.d.ts"]);
+  assert.deepEqual(tsconfig.include, ["src", ".s2script/gamedata.d.ts", ".s2script/interfaces.d.ts", "node_modules/@s2script/sdk/globals.d.ts"]);
   rmSync(root, { recursive: true, force: true });
 });
 

@@ -38,6 +38,7 @@ interface PluginPackageJson {
   types?: string;
   s2script?: {
     apiVersion?: string;
+    interfaceProtocol?: number;
     main?: string;
     /** Absent means "plugin" — see `packageKind` (libraries.ts). Read here only so `packageKind(pkg)`
      *  below satisfies its own parameter type; DeployablePkgJson (registry/deploy.ts) declares the
@@ -350,6 +351,15 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   if (Object.keys(derivedPublishes).length > 0) {
     manifest.publishes = derivedPublishes;
   }
+  if (s2.interfaceProtocol === 2) {
+    manifest.interfaceProtocol = 2;
+    const imports: Record<string, unknown> = Object.create(null);
+    for (const [name, contract] of Object.entries(tc.interfaceContracts ?? {})) {
+      if (derivedPublishes[name]) Object.assign(derivedPublishes[name], { contract });
+      if (declaredDeps.has(name)) imports[name] = contract;
+    }
+    manifest.interfaceContracts = imports;
+  }
   if (config !== undefined) manifest.config = config;
   // Declared capabilities travel with the package so `s2s install` can surface them and the loader
   // can gate the gamedata calls against the operator allow-list (default-deny).
@@ -363,7 +373,7 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
   // is made anywhere. That is what makes the loader's drift check pass for structural reasons
   // rather than by luck: the producer hashes that same path for its own `publishes` block, so the
   // two sha256s are equal by construction. Everything else keeps the verified-copy path exactly.
-  const compiledAgainst: Record<string, string> = {};
+  const compiledAgainst: Record<string, string> = Object.create(null);
   for (const dep of [
     ...Object.keys(pluginDependencies),
     ...Object.keys(optionalPluginDependencies),

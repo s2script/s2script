@@ -248,3 +248,16 @@ Operator overload behavior, configuration and metrics are documented in [ASYNC_L
 ## UI API hardening acceptance evidence — September 5, 2026
 
 The final UI stack is documented at source commit `102ff64267a74b010a83171477edd7e374425ebe` in [the acceptance record](superpowers/plans/ui-api-hardening/acceptance.md). Tasks 0–6 and local Task 7 fixtures, focused churn, full JS/native gates, sniper artifact packaging, symbol checks, and independent rereview are recorded. The final archive includes runtime binaries and both UI fixtures; its authoritative hashes and size are in the acceptance ledger. Task 5 benchmark results remain historical evidence for the exact Task 5 runtime and are not Task 6/7 benchmark results. Owned-server staging, SSH signing restoration, rollback, human rendering/input/focus/reconnect/reload/pool-reclaim/spectator checks, and the final acceptance PR remain pending root-owned steps. The separate MAM startup/map incident remains independent.
+
+## Typed plugin interoperability — slice 01 (September 6, 2026)
+
+Opt-in protocol 2 adds checker-derived `Contract` methods and `Notification<P>` forwards,
+name-inferred handles, authoritative implementation checks, types-only acquisition and exact-byte
+hash verification. Canonical metadata version 1 travels in API 3 archives and is checked by the
+native loader and every method/notification crossing. Native copying rejects unsupported values
+before delivery, preserves EntityRef revival, checks ownership/generations and dependencies,
+continues after listener errors, and bounds reentrant crossings at 32. API 2 protocol 1 archives
+remain supported by the new host. See [migration and wire limits](PLUGIN_INTEROP.md).
+
+Linux unit and repository gate results are recorded in the slice implementation report. Live CS2
+acceptance remains a separate pending infrastructure gate; this entry does not claim a live pass.

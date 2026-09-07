@@ -110,3 +110,13 @@ reference. Source and issues: [GitHub](https://github.com/s2script/s2script).
 ## License
 
 MIT OR Apache-2.0
+
+### Typed plugin notifications
+
+Opt in with `s2script.interfaceProtocol: 2`, export a self-contained `Contract` with `methods` and
+`forwards: { EventName: Notification<Payload> }`, then use `publish(name, implementation)` and
+`use(name)` without caller-selected generics. `s2s build` generates the name association and checks
+wire schemas; `s2s add` obtains only a plugin dependency's types. Include the generated
+`.s2script/interfaces.d.ts` in existing projects' tsconfig files. Protocol 2 needs host API 3.
+See [the complete migration guide](https://github.com/s2script/s2script/blob/main/docs/PLUGIN_INTEROP.md)
+for supported types, copying, dispatch, and compatibility limits.

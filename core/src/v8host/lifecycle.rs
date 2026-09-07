@@ -110,6 +110,7 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
 
             // Stamp the plugin identity (no scope needed — Rust-typed slot).
             let _ = ctx_local.set_slot(std::rc::Rc::new(PluginId(id.to_string())));
+            let _ = ctx_local.set_slot(std::rc::Rc::new(InteropGeneration(generation)));
 
             let scope = &mut v8::ContextScope::new(hs, ctx_local);
 
@@ -122,6 +123,7 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
             // admin/db loaders read them to write the operator's file on first boot.
             run_prelude(scope, "config-templates", &config_templates_prelude());
             run_prelude(scope, "engine-prelude", INJECTED_STD_PRELUDE);
+            capture_entity_ref_prototype(scope);
             // @s2script/cs2: provided externally at runtime via register_injected_package
             // (the shim calls s2script_core_register_package at load — see ffi.rs).
             // If not registered, __s2pkg_cs2 stays undefined and require("@s2script/cs2") → null.

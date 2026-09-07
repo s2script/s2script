@@ -1,0 +1,1 @@
+{"name":"@demo/consumer","version":"1.0.0","main":"src/plugin.ts","s2script":{"interfaceProtocol":2,"pluginDependencies":{"@demo/counter":"^1.0.0"}}}

@@ -191,6 +191,17 @@ impl InterfaceRegistry {
         CallTarget::Ok
     }
 
+    pub fn verified_import(&self, consumer: &str, name: &str) -> bool {
+        let Some(entry) = self.ifaces.get(name) else {
+            return false;
+        };
+        self.imports
+            .get(consumer)
+            .and_then(|m| m.get(name))
+            .and_then(|d| d.compiled_types_sha256.as_ref())
+            .map_or(false, |h| !h.is_empty() && *h == entry.types_sha256)
+    }
+
     pub fn add_subscriber(&mut self, name: &str, sub: Subscriber) -> bool {
         match self.ifaces.get_mut(name) {
             Some(e) => { e.subscribers.push(sub); true }

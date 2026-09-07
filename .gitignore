@@ -31,3 +31,6 @@ release-notes.md
 # Derived phrase-key declarations (scripts/sync-phrase-types.mjs) — types only, never phrase text.
 plugins/*/src/phrases.generated.d.ts
 plugins/disabled/*/src/phrases.generated.d.ts
+
+# Generated protocol 2 name associations contain local declaration paths.
+**/.s2script/interfaces.d.ts
