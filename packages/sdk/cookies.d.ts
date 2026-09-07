@@ -41,15 +41,16 @@ export declare const Cookies: {
   register(name: string, opts?: CookieOptions): Cookie;
   /** Cache value for this client (a stored "" is a real value), else the cookie's default. Default for bots. */
   get(client: Client, cookie: Cookie): string;
-  /** Write the cache + mark dirty (flushed to the DB on disconnect). No-op for bots. */
-  set(client: Client, cookie: Cookie, value: string): void;
+  /** Accept a cache change into the bounded host persistence outbox. Returns false for invalid/stale/bot
+   * clients or exhausted capacity, without changing the cache. True remains host-owned until DB ACK;
+   * it is not a durability acknowledgement. Check false and report, shed, or retry the change. */
+  set(client: Client, cookie: Cookie, value: string): boolean;
   /** Has this client's cookies finished loading from the DB? */
   areCached(client: Client): boolean;
   /** Unix timestamp of the cookie's last write (set or DB load), or 0 if never set. 0 for bots. */
   getTime(client: Client, cookie: Cookie): number;
-  /** Write a cookie for a SteamID64 that may not be connected right now (`SetAuthIdCookie` parity):
-   * updates the cache immediately (an online client sees it right away) and queues the write for the
-   * clientprefs plugin to persist directly next frame — an offline SteamID never fires the disconnect
-   * flush. No-op for "0" (bot/unset). */
-  setAuthId(steamId: string, cookie: Cookie, value: string): void;
+  /** Accept an online or offline SteamID cookie change under the same bounded admission contract as set.
+   * False leaves both cache and outbox unchanged (including empty/"0" identity). Accepted writes
+   * survive clientprefs reload and same-process core reinit, but not process exit or library destruction. */
+  setAuthId(steamId: string, cookie: Cookie, value: string): boolean;
 };

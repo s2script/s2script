@@ -11,10 +11,7 @@ struct ClientCookies { cached: bool, entries: HashMap<String, Entry> }
 
 thread_local! {
     static CACHE: RefCell<HashMap<String, ClientCookies>> = RefCell::new(HashMap::new());
-    /// Offline writes (`setAuthId`) queued for the plugin to drain into the DB each frame —
-    /// (steamid, name, value, updated). Distinct from the dirty-flag disconnect flush: an offline
-    /// SteamID may never connect, so it needs its own persistence path.
-    static OFFLINE: RefCell<Vec<(String, String, String, i64)>> = RefCell::new(Vec::new());
+
 }
 
 /// Cache value, or `None` if the client/name is absent (a true miss — distinct from a stored `""`).
@@ -24,8 +21,12 @@ pub fn get(steamid: &str, name: &str) -> Option<String> {
         .map(|e| e.value.clone()))
 }
 
-/// Write via the API — marks the entry dirty (flushed on disconnect).
-pub fn set(steamid: &str, name: &str, value: &str, updated: i64) {
+/// Reserve persistence ownership before changing the account cache.
+pub fn set(steamid: &str, name: &str, value: &str, updated: i64) -> bool {
+    if !outbox().accept(steamid, name, value, updated) { return false; }
+    cache_set(steamid, name, value, updated); true
+}
+fn cache_set(steamid: &str, name: &str, value: &str, updated: i64) {
     CACHE.with(|c| {
         let mut m = c.borrow_mut();
         let cc = m.entry(steamid.to_string()).or_default();
@@ -50,7 +51,7 @@ pub fn get_time(steamid: &str, name: &str) -> i64 {
         .unwrap_or(0))
 }
 
-/// The dirty (name, value) pairs for a client — the disconnect flush set.
+/// Dirty cache entries (inspection only; persistence belongs exclusively to the outbox).
 pub fn get_dirty(steamid: &str) -> Vec<(String, String)> {
     CACHE.with(|c| {
         let m = c.borrow();
@@ -65,24 +66,18 @@ pub fn get_dirty(steamid: &str) -> Vec<(String, String)> {
 }
 
 /// Write a cookie for a SteamID that may not currently be connected (`SetAuthIdCookie` parity) —
-/// updates the cache (so an online client's value is immediately correct) AND queues the write for
-/// the plugin to persist directly (an offline SteamID never fires the disconnect flush).
-pub fn set_authid(steamid: &str, name: &str, value: &str, updated: i64) {
-    set(steamid, name, value, updated);
+/// reserves the same outbox as online writes, then updates matching live session caches.
+pub fn set_authid(steamid: &str, name: &str, value: &str, updated: i64) -> bool {
+    if !set(steamid, name, value, updated) { return false; }
     SESSIONS.with(|s| {
         for session in s.borrow_mut().values_mut().filter(|s| s.steam_id == steamid) {
             session.cookies.entries.insert(name.into(), Entry { value: value.into(), dirty: true, updated });
         }
     });
-    OFFLINE.with(|q| q.borrow_mut().push((steamid.to_string(), name.to_string(), value.to_string(), updated)));
+    true
 }
 
-/// Drain + clear the queued offline writes (called once per frame by the clientprefs plugin).
-pub fn take_offline_writes() -> Vec<(String, String, String, i64)> {
-    OFFLINE.with(|q| std::mem::take(&mut *q.borrow_mut()))
-}
-
-/// Drop a client's entries (on disconnect, after the flush captures the dirty set).
+/// Drop account cache entries without altering persistence ownership.
 pub fn clear(steamid: &str) {
     CACHE.with(|c| { c.borrow_mut().remove(steamid); });
 }
@@ -98,12 +93,11 @@ pub fn is_cached(steamid: &str) -> bool {
 
 /// Drop ALL clients' cookies. Called from `shutdown()` on a core re-init (a same-thread
 /// `shutdown()`→`init()` cycle, e.g. a Metamod reload) so stale entries + stale `cached` flags
-/// don't survive — mirrors the admin/ban caches, which reset the same way.
+/// don't survive. Accepted outbox payloads, accounting and IDs survive; only leases are reclaimed.
 pub fn reset() {
     CACHE.with(|c| c.borrow_mut().clear());
-    OFFLINE.with(|q| q.borrow_mut().clear());
     SESSIONS.with(|s| s.borrow_mut().clear());
-    RETIRED.with(|r| r.borrow_mut().clear());
+    outbox().reclaim(None);
 }
 
 
@@ -112,24 +106,30 @@ pub fn reset() {
 struct Session { steam_id: String, cookies: ClientCookies }
 thread_local! {
     static SESSIONS: RefCell<HashMap<(i32, u64), Session>> = RefCell::new(HashMap::new());
-    static RETIRED: RefCell<Vec<(String, String, String, i64)>> = RefCell::new(Vec::new());
 }
 pub(crate) fn retire(slot: i32, token: u64) {
-    let session = SESSIONS.with(|s| s.borrow_mut().remove(&(slot, token)));
-    if let Some(session) = session {
-        RETIRED.with(|r| {
-            let mut r = r.borrow_mut();
-            for (name, e) in session.cookies.entries {
-                if e.dirty { r.push((session.steam_id.clone(), name, e.value, e.updated)); }
-            }
-        });
-    }
+    SESSIONS.with(|s| { s.borrow_mut().remove(&(slot, token)); });
 }
+
 fn session_op(slot: i32, token: u64, op: &str, data: serde_json::Value) -> serde_json::Value {
     use serde_json::{json, Value};
     if !crate::client::matches(slot, token) { return Value::Null; }
     let sid = data["steamId"].as_str().unwrap_or("0");
-    if sid == "0" { return Value::Null; }
+    if sid.is_empty() || sid == "0" { return Value::Null; }
+    // Admission precedes even creation of a session; rejection cannot change cache state.
+    if op == "set" {
+        let name = data["name"].as_str().unwrap_or("");
+        let value = data["value"].as_str().unwrap_or("");
+        let updated = data["updated"].as_i64().unwrap_or(0);
+        if !outbox().accept(sid, name, value, updated) { return json!(false); }
+        // A prior offline write may seed a later connection from CACHE. Refresh that existing
+        // snapshot without retaining a second account cache for every online-only connection.
+        CACHE.with(|c| {
+            if let Some(e) = c.borrow_mut().get_mut(sid).and_then(|cc| cc.entries.get_mut(name)) {
+                *e = Entry { value: value.into(), dirty: true, updated };
+            }
+        });
+    }
     SESSIONS.with(|sessions| {
         let mut sessions = sessions.borrow_mut();
         let session = sessions.entry((slot, token)).or_insert_with(|| Session { steam_id: sid.into(), cookies: CACHE.with(|c| c.borrow().get(sid).cloned().unwrap_or_default()) });
@@ -141,7 +141,7 @@ fn session_op(slot: i32, token: u64, op: &str, data: serde_json::Value) -> serde
             "cached" => json!(cache.cached),
             "set" => {
                 cache.entries.insert(name.into(), Entry { value: data["value"].as_str().unwrap_or("").into(), dirty: true, updated: data["updated"].as_i64().unwrap_or(0) });
-                Value::Null
+                json!(true)
             }
             "load" => {
                 if let Some(rows) = data["rows"].as_array() {
@@ -169,9 +169,117 @@ fn s2_cookie_session(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
         if let Some(s) = v8::String::new(scope, &value) { rv.set(s.into()); }
     }));
 }
-fn s2_cookie_take_retired(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let rows = RETIRED.with(|r| std::mem::take(&mut *r.borrow_mut()));
-    if let Some(s) = v8::String::new(scope, &serde_json::to_string(&rows).unwrap_or("[]".into())) { rv.set(s.into()); }
+// One bounded persistence owner for online, retired and offline changes. Payloads survive
+// same-process shutdown/init. Nothing here contains V8 handles or engine pointers.
+use std::collections::{HashSet, VecDeque};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
+type CookieKey = (String, String);
+type WriterOwner = (String, u64);
+#[derive(Clone)]
+pub(crate) struct OutboxPolicy {
+    pub versions: usize, pub bytes: usize, pub write_bytes: usize,
+    pub batch_items: usize, pub batch_bytes: usize, pub concurrent: usize,
+}
+impl Default for OutboxPolicy {
+    fn default() -> Self { Self { versions: 4096, bytes: 4*1024*1024, write_bytes: 64*1024, batch_items: 4, batch_bytes: 256*1024, concurrent: 4 } }
+}
+#[derive(Clone)]
+struct Payload { steam_id: String, name: String, value: String, updated: i64, revision: i64, covers_from: i64 }
+impl Payload { fn bytes(&self) -> usize { 128 + self.steam_id.len() + self.name.len() + self.value.len() } }
+#[derive(Clone)]
+struct Attempt { id: u64, owner: WriterOwner, payload: Arc<Payload> }
+#[derive(Default)]
+struct Pending { ready: Option<Arc<Payload>>, attempt: Option<Attempt>, failures: u32, next_attempt: u64 }
+struct Outbox {
+    entries: HashMap<CookieKey, Pending>, order: VecDeque<CookieKey>, policy: OutboxPolicy,
+    revision: i64, lease_id: u64, epoch: String, clock: Instant,
+    accepted: u64, coalesced: u64, rejected: u64, retries: u64, stale_acks: u64,
+}
+impl Default for Outbox {
+    fn default() -> Self { Self { entries: HashMap::new(), order: VecDeque::new(), policy: OutboxPolicy::default(), revision: 0, lease_id: 0,
+        epoch: format!("{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()), clock: Instant::now(), accepted: 0, coalesced: 0, rejected: 0, retries: 0, stale_acks: 0 } }
+}
+static OUTBOX: OnceLock<Mutex<Outbox>> = OnceLock::new();
+fn outbox() -> std::sync::MutexGuard<'static, Outbox> { OUTBOX.get_or_init(|| Mutex::new(Outbox::default())).lock().unwrap_or_else(|e| e.into_inner()) }
+impl Outbox {
+    fn now(&self) -> u64 { self.clock.elapsed().as_millis().min(u64::MAX as u128) as u64 }
+    fn usage(&self) -> (usize, usize) {
+        self.entries.values().fold((0,0), |(mut n,mut b), p| { for v in p.ready.iter().chain(p.attempt.iter().map(|a| &a.payload)) { n+=1; b+=v.bytes(); } (n,b) })
+    }
+    fn accept(&mut self, sid: &str, name: &str, value: &str, updated: i64) -> bool {
+        let key = (sid.to_owned(), name.to_owned());
+        let old = self.entries.get(&key).and_then(|p| p.ready.as_ref());
+        let charge = 128usize.saturating_add(sid.len()).saturating_add(name.len()).saturating_add(value.len());
+        let (n,b) = self.usage();
+        if sid.is_empty() || sid == "0" || charge > self.policy.write_bytes || n + usize::from(old.is_none()) > self.policy.versions
+            || b.saturating_sub(old.map_or(0, |v| v.bytes())).saturating_add(charge) > self.policy.bytes || self.revision == i64::MAX {
+            self.rejected = self.rejected.saturating_add(1); return false;
+        }
+        self.revision += 1;
+        let covers_from = old.map_or(self.revision, |v| v.covers_from);
+        if old.is_some() { self.coalesced = self.coalesced.saturating_add(1); }
+        if !self.entries.contains_key(&key) { self.order.push_back(key.clone()); }
+        self.entries.entry(key).or_default().ready = Some(Arc::new(Payload { steam_id: sid.into(), name: name.into(), value: value.into(), updated, revision: self.revision, covers_from }));
+        self.accepted = self.accepted.saturating_add(1); true
+    }
+    fn fence(&self, _sid: &str) -> i64 { self.revision }
+    fn done(&self, sid: &str, fence: i64) -> bool {
+        self.entries.iter().filter(|((s,_),_)| s == sid).all(|(_,p)| p.ready.iter().chain(p.attempt.iter().map(|a| &a.payload)).all(|v| v.covers_from > fence))
+    }
+    fn lease(&mut self, owner: WriterOwner, max_items: usize, max_bytes: usize, now: u64) -> Vec<Attempt> {
+        let mut busy: HashSet<String> = self.entries.iter().filter(|(_,p)| p.attempt.is_some()).map(|((sid,_),_)| sid.clone()).collect();
+        let limit = max_items.min(self.policy.batch_items).min(self.policy.concurrent.saturating_sub(busy.len()));
+        let mut oldest: HashMap<String, i64> = HashMap::new();
+        for ((sid,_), p) in &self.entries { for v in p.ready.iter().chain(p.attempt.iter().map(|a| &a.payload)) { oldest.entry(sid.clone()).and_modify(|r| *r = (*r).min(v.covers_from)).or_insert(v.covers_from); } }
+        let mut bytes = 0; let mut result = Vec::new();
+        for _ in 0..self.order.len() {
+            let key = self.order.pop_front().unwrap();
+            let p = self.entries.get_mut(&key).unwrap();
+            if result.len() < limit && !busy.contains(&key.0) && p.next_attempt <= now && p.attempt.is_none() {
+                if let Some(payload) = p.ready.as_ref() {
+                    if oldest.get(&key.0) == Some(&payload.covers_from) && bytes + payload.bytes() <= max_bytes.min(self.policy.batch_bytes) && self.lease_id < u64::MAX {
+                        self.lease_id += 1; bytes += payload.bytes();
+                        let a = Attempt { id: self.lease_id, owner: owner.clone(), payload: p.ready.take().unwrap() };
+                        p.attempt = Some(a.clone()); busy.insert(key.0.clone()); result.push(a);
+                    }
+                }
+            }
+            self.order.push_back(key);
+        }
+        // Move admitted keys behind skipped keys so continuously-written accounts cannot starve others.
+        for a in &result { let key = (a.payload.steam_id.clone(), a.payload.name.clone()); self.order.retain(|k| k != &key); self.order.push_back(key); }
+        result
+    }
+    fn ack(&mut self, owner: &WriterOwner, id: u64, revision: i64, success: bool, now: u64) -> bool {
+        let key = self.entries.iter().find(|(_,p)| p.attempt.as_ref().is_some_and(|a| a.id == id && &a.owner == owner && a.payload.revision == revision)).map(|(k,_)| k.clone());
+        let Some(key) = key else { self.stale_acks = self.stale_acks.saturating_add(1); return false; };
+        let p = self.entries.get_mut(&key).unwrap();
+        let a = p.attempt.take().unwrap();
+        if success { p.failures = 0; p.next_attempt = 0; }
+        else {
+            Self::restore(p, a.payload);
+            p.next_attempt = now.saturating_add((100u64 << p.failures.min(6)).min(5000));
+            p.failures = p.failures.saturating_add(1); self.retries = self.retries.saturating_add(1);
+        }
+        if p.ready.is_none() { self.entries.remove(&key); self.order.retain(|k| k != &key); }
+        true
+    }
+    fn restore(p: &mut Pending, payload: Arc<Payload>) {
+        if let Some(v) = p.ready.as_mut() { Arc::make_mut(v).covers_from = v.covers_from.min(payload.covers_from); }
+        else { p.ready = Some(payload); }
+    }
+    fn reclaim(&mut self, owner: Option<&str>) {
+        for p in self.entries.values_mut() {
+            if p.attempt.as_ref().is_some_and(|a| owner.is_none_or(|o| a.owner.0 == o)) {
+                let a = p.attempt.take().unwrap(); Self::restore(p, a.payload); p.next_attempt = 0;
+            }
+        }
+    }
+    fn stats(&self) -> serde_json::Value {
+        let (versions,bytes) = self.usage(); let leased = self.entries.values().filter(|p| p.attempt.is_some()).count();
+        serde_json::json!({"ready":versions-leased,"leased":leased,"bytes":bytes,"accepted":self.accepted,"coalesced":self.coalesced,"rejected":self.rejected,"retries":self.retries,"staleAcks":self.stale_acks})
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -215,13 +323,13 @@ fn s2_cookie_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
 }
 
 /// `__s2_cookie_set(steamid, name, value, updated)` — write via the API; marks the entry dirty.
-fn s2_cookie_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn s2_cookie_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let sid = args.get(0).to_rust_string_lossy(scope);
         let name = args.get(1).to_rust_string_lossy(scope);
         let val = args.get(2).to_rust_string_lossy(scope);
         let updated = args.get(3).integer_value(scope).unwrap_or(0);
-        crate::cookies::set(&sid, &name, &val, updated);
+        rv.set(v8::Boolean::new(scope, crate::cookies::set(&sid, &name, &val, updated)).into());
     }));
 }
 
@@ -287,38 +395,47 @@ fn s2_cookie_is_cached(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
 
 /// `__s2_cookie_set_authid(steamid, name, value, updated)` — `SetAuthIdCookie` parity: write for a
 /// SteamID that may not currently be connected (cache write + queue for offline persistence).
-fn s2_cookie_set_authid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn s2_cookie_set_authid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let sid = args.get(0).to_rust_string_lossy(scope);
         let name = args.get(1).to_rust_string_lossy(scope);
         let val = args.get(2).to_rust_string_lossy(scope);
         let updated = args.get(3).integer_value(scope).unwrap_or(0);
-        crate::cookies::set_authid(&sid, &name, &val, updated);
+        rv.set(v8::Boolean::new(scope, crate::cookies::set_authid(&sid, &name, &val, updated)).into());
     }));
 }
 
-/// `__s2_cookie_take_offline_writes() -> Array<[steamid, name, value, updated]>` — drain + clear the
-/// queued offline writes for the plugin to persist directly (an offline SteamID never fires the
-/// disconnect flush).
-fn s2_cookie_take_offline_writes(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let writes = crate::cookies::take_offline_writes();
-        let out = v8::Array::new(scope, writes.len() as i32);
-        for (i, (sid, name, val, updated)) in writes.iter().enumerate() {
-            let row = v8::Array::new(scope, 4);
-            let sid_s = v8::String::new(scope, sid).unwrap_or_else(|| v8::String::new(scope, "").unwrap());
-            let name_s = v8::String::new(scope, name).unwrap_or_else(|| v8::String::new(scope, "").unwrap());
-            let val_s = v8::String::new(scope, val).unwrap_or_else(|| v8::String::new(scope, "").unwrap());
-            let updated_n = v8::Number::new(scope, *updated as f64);
-            row.set_index(scope, 0, sid_s.into());
-            row.set_index(scope, 1, name_s.into());
-            row.set_index(scope, 2, val_s.into());
-            row.set_index(scope, 3, updated_n.into());
-            out.set_index(scope, i as u32, row.into());
-        }
-        rv.set(out.into());
-    }));
+fn s2_cookie_lease(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let Some(owner) = crate::v8host::jobs_owner_tag(scope) else { return; };
+    let items = args.get(0).uint32_value(scope).unwrap_or(0) as usize;
+    let bytes = args.get(1).uint32_value(scope).unwrap_or(0) as usize;
+    let mut q = outbox(); let now = q.now();
+    let rows: Vec<_> = q.lease(owner, items, bytes, now).iter().map(|a| serde_json::json!({
+        "leaseId":a.id.to_string(), "revision":a.payload.revision.to_string(), "writerEpoch":q.epoch,
+        "steamId":a.payload.steam_id,"name":a.payload.name,"value":a.payload.value,"updated":a.payload.updated
+    })).collect();
+    if let Some(s) = v8::String::new(scope, &serde_json::to_string(&rows).unwrap()) { rv.set(s.into()); }
 }
+fn s2_cookie_ack(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let Some(owner) = crate::v8host::jobs_owner_tag(scope) else { return; };
+    let id = args.get(0).to_rust_string_lossy(scope).parse().unwrap_or(0);
+    let rev = args.get(1).to_rust_string_lossy(scope).parse().unwrap_or(0);
+    let success = args.get(2).is_true(); let mut q = outbox(); let now = q.now();
+    rv.set(v8::Boolean::new(scope, q.ack(&owner, id, rev, success, now)).into());
+}
+fn s2_cookie_account_fence(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let sid = args.get(0).to_rust_string_lossy(scope);
+    if let Some(s) = v8::String::new(scope, &outbox().fence(&sid).to_string()) { rv.set(s.into()); }
+}
+fn s2_cookie_fence_done(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let sid = args.get(0).to_rust_string_lossy(scope);
+    let fence = args.get(1).to_rust_string_lossy(scope).parse().unwrap_or(i64::MAX);
+    rv.set(v8::Boolean::new(scope, outbox().done(&sid, fence)).into());
+}
+fn s2_cookie_outbox_stats(scope: &mut v8::PinScope, _: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    if let Some(s) = v8::String::new(scope, &outbox().stats().to_string()) { rv.set(s.into()); }
+}
+
 /// Owner-tracked (mirrors `__s2_client_subscribe`); fixed mux key "" (cookies-cached has no name
 /// dimension, like `Chat.onMessage`). The handler receives the raw `slot` at dispatch; the
 /// `@s2script/cookies` prelude wraps it into a `Client` via `Clients.fromSlot`.
@@ -371,8 +488,12 @@ pub(crate) fn dispatch_pending_cached() {
 
 /// Publish this feature's natives. Called from `v8host`'s `install_natives`.
 pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) {
+    set_native(scope, global_obj, "__s2_cookie_lease", s2_cookie_lease);
+    set_native(scope, global_obj, "__s2_cookie_ack", s2_cookie_ack);
+    set_native(scope, global_obj, "__s2_cookie_account_fence", s2_cookie_account_fence);
+    set_native(scope, global_obj, "__s2_cookie_fence_done", s2_cookie_fence_done);
+    set_native(scope, global_obj, "__s2_cookie_outbox_stats", s2_cookie_outbox_stats);
     set_native(scope, global_obj, "__s2_cookie_session", s2_cookie_session);
-    set_native(scope, global_obj, "__s2_cookie_take_retired", s2_cookie_take_retired);
     set_native(scope, global_obj, "__s2_cookie_get", s2_cookie_get);
     set_native(scope, global_obj, "__s2_cookie_set", s2_cookie_set);
     set_native(scope, global_obj, "__s2_cookie_load", s2_cookie_load);
@@ -382,7 +503,6 @@ pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_cookie_mark_cached", s2_cookie_mark_cached);
     set_native(scope, global_obj, "__s2_cookie_is_cached", s2_cookie_is_cached);
     set_native(scope, global_obj, "__s2_cookie_set_authid", s2_cookie_set_authid);
-    set_native(scope, global_obj, "__s2_cookie_take_offline_writes", s2_cookie_take_offline_writes);
     set_native(scope, global_obj, "__s2_cookie_on_cached", s2_cookie_on_cached);
     set_native(scope, global_obj, "__s2_cookie_dispatch_cached", s2_cookie_dispatch_cached);
 }
@@ -391,7 +511,7 @@ pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
 pub(crate) fn register_store() {
     crate::owner_stores::register(
         "COOKIE_CACHED_MUX",
-        Box::new(|owner| { COOKIE_CACHED_MUX.with(|m| { m.borrow_mut().remove_by_owner(owner); }); }),
+        Box::new(|owner| { outbox().reclaim(Some(owner)); COOKIE_CACHED_MUX.with(|m| { m.borrow_mut().remove_by_owner(owner); }); }),
         Box::new(|ids| { COOKIE_CACHED_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| { COOKIE_CACHED_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new()); }),
     );
@@ -410,6 +530,23 @@ pub(crate) fn register_singletons() {
 mod tests {
     use super::*;
     #[test]
+    fn online_change_supersedes_offline_cache_when_same_account_reconnects() {
+        reset(); assert!(set_authid("reconnect", "k", "offline-old", 1));
+        let a=crate::client::begin(4);
+        session_op(4,a,"set",serde_json::json!({"steamId":"reconnect","name":"k","value":"online-new"}));
+        crate::client::end(4,a); let b=crate::client::begin(4);
+        session_op(4,b,"load",serde_json::json!({"steamId":"reconnect","rows":[{"name":"k","value":"online-new"}]}));
+        assert_eq!(session_op(4,b,"get",serde_json::json!({"steamId":"reconnect","name":"k"})),"online-new");
+        crate::client::end(4,b); reset();
+    }
+    #[test]
+    fn online_set_reports_admission() {
+        reset();
+        let token = crate::client::begin(4);
+        assert_eq!(session_op(4, token, "set", serde_json::json!({"steamId":"admission", "name":"k", "value":"v"})), serde_json::json!(true));
+        crate::client::end(4, token);
+    }
+    #[test]
     fn same_account_reconnect_fences_load_and_detaches_dirty_state() {
         reset();
         let a = crate::client::begin(4);
@@ -420,7 +557,7 @@ mod tests {
         assert_eq!(session_op(4, a, "load", serde_json::json!({"steamId":"same", "rows":[{"name":"color","value":"stale","updated":1}]})), serde_json::Value::Null);
         retire(4, a); // delayed A disconnect cannot clear B
         assert_eq!(session_op(4, b, "get", serde_json::json!({"steamId":"same", "name":"color"})), "blue");
-        assert_eq!(RETIRED.with(|r| r.borrow().clone()), vec![("same".into(), "color".into(), "red".into(), 7)]);
+        { let q = outbox(); assert!(!q.done("same", q.revision)); }
         // A DB snapshot cannot overwrite a value authored while the query was pending.
         session_op(4, b, "load", serde_json::json!({"steamId":"same", "rows":[{"name":"color","value":"db-old","updated":2}]}));
         assert_eq!(session_op(4, b, "get", serde_json::json!({"steamId":"same", "name":"color"})), "blue");
@@ -483,17 +620,7 @@ mod tests {
         load("A7", "k2", "v2", 1_600_000_000);
         assert_eq!(get_time("A7", "k2"), 1_600_000_000);
     }
-    /// Task 3: `set_authid` writes the cache (an online client immediately sees the value) AND
-    /// queues the write for offline persistence; `take_offline_writes` drains + clears (a second
-    /// take is empty).
-    #[test]
-    fn set_authid_writes_cache_and_queues_offline_write() {
-        set_authid("A8", "k", "v", 1_234_567_890);
-        assert_eq!(get("A8", "k"), Some("v".to_string()));   // cache write visible immediately
-        let writes = take_offline_writes();
-        assert_eq!(writes, vec![("A8".to_string(), "k".to_string(), "v".to_string(), 1_234_567_890)]);
-        assert!(take_offline_writes().is_empty(), "a second take drains nothing new");
-    }
+
 }
 
 // The V8-surface tests, over the SHARED in-isolate harness (`v8host::frame_tests`). Kept separate
@@ -504,6 +631,57 @@ mod native_tests {
     use crate::v8host::frame_tests::{dummy_logger, eval_in_context_string, load_body, logger,
         read_global_string, read_i32_global_in, LOG};
     use crate::v8host::{create_plugin_context, eval_in_context, init, shutdown, unload_plugin};
+    #[test]
+    fn admission_rejection_preserves_online_offline_cache_and_disconnect() {
+        init(dummy_logger()).unwrap();
+        connect_cookie_client(c"pressure");
+        load_body("pressure-writer", r#"
+            var {Cookies}=require('@s2script/cookies'); var c=Cookies.register('k');
+            var client=new __s2pkg_clients.Client(3);
+            globalThis.accepted=Cookies.set(client,c,'old');
+            globalThis.probe=()=>JSON.stringify([accepted,Cookies.set(client,c,'new'),Cookies.setAuthId('pressure',c,'offline'),Cookies.get(client,c),Cookies.set({steamId:'0'},c,'bot')]);
+        "#, "{}");
+        let old_policy=outbox().policy.clone(); outbox().policy.write_bytes=1;
+        let result=eval_in_context_string("pressure-writer", "probe()");
+        outbox().policy=old_policy;
+        assert_eq!(result, "[true,false,false,\"old\",false]");
+        let token=crate::client::generation(3); crate::client::end(3,token);
+        { let q=outbox(); assert!(!q.done("pressure",q.revision)); }
+        assert!(!SESSIONS.with(|s| s.borrow().contains_key(&(3,token))));
+        shutdown();
+    }
+    #[test]
+    fn owner_reload_and_core_reinit_keep_epoch_payloads_and_reject_late_sql_actor() {
+        // Isolate this scenario's queue, without resetting its process-stable allocators/epoch.
+        { let mut q=outbox(); q.entries.clear(); q.order.clear(); }
+        init(dummy_logger()).unwrap();
+        load_body("writer", r#"
+            __s2_cookie_set_authid('reload-account','k','old',1);
+            globalThis.old=JSON.parse(__s2_cookie_lease(4,262144))[0];
+        "#, "{}");
+        let old: serde_json::Value=serde_json::from_str(&eval_in_context_string("writer","JSON.stringify(old)")).unwrap();
+        let sql=include_str!("../../plugins/clientprefs/src/plugin.ts").split("const UPSERT = \"").nth(1).unwrap().split('"').next().unwrap().to_owned();
+        let path=std::env::temp_dir().join(format!("s2-cookie-reload-{}-{}.sqlite",std::process::id(),old["leaseId"].as_str().unwrap()));
+        let db=rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE cookies(steamid TEXT,name TEXT,value TEXT,updated INTEGER,writer_epoch TEXT,revision INTEGER,PRIMARY KEY(steamid,name))").unwrap();
+        let (release,wait)=std::sync::mpsc::channel();
+        let worker_path=path.clone(); let worker_sql=sql.clone(); let worker_old=old.clone();
+        let worker=std::thread::spawn(move || { let conn=rusqlite::Connection::open(worker_path).unwrap(); wait.recv().unwrap();
+            conn.execute(&worker_sql,rusqlite::params!["reload-account","k","old",1,worker_old["writerEpoch"].as_str().unwrap(),worker_old["revision"].as_str().unwrap()]).unwrap(); });
+        assert!(set_authid("reload-account","k","new",1));
+        unload_plugin("writer");
+        shutdown(); init(dummy_logger()).unwrap();
+        load_body("writer", "globalThis.current=JSON.parse(__s2_cookie_lease(4,262144))[0];", "{}");
+        let current:serde_json::Value=serde_json::from_str(&eval_in_context_string("writer","JSON.stringify(current)")).unwrap();
+        assert_eq!(current["value"],"new"); assert_eq!(current["writerEpoch"],old["writerEpoch"]);
+        assert!(current["revision"].as_str().unwrap().parse::<i64>().unwrap()>old["revision"].as_str().unwrap().parse::<i64>().unwrap());
+        db.execute(&sql,rusqlite::params!["reload-account","k","new",1,current["writerEpoch"].as_str().unwrap(),current["revision"].as_str().unwrap()]).unwrap();
+        release.send(()).unwrap(); worker.join().unwrap();
+        assert_eq!(db.query_row("SELECT value FROM cookies",[],|r| r.get::<_,String>(0)).unwrap(),"new");
+        assert_eq!(eval_in_context_string("writer",&format!("String(__s2_cookie_ack('{}','{}',true))",old["leaseId"].as_str().unwrap(),old["revision"].as_str().unwrap())),"false");
+        assert_eq!(eval_in_context_string("writer","String(__s2_cookie_ack(current.leaseId,current.revision,true))"),"true");
+        assert_eq!(outbox().usage(),(0,0)); shutdown(); drop(db); std::fs::remove_file(path).unwrap();
+    }
     fn connect_cookie_client(sid: &'static std::ffi::CStr) {
         thread_local! { static SID: std::cell::Cell<*const std::os::raw::c_char> = std::cell::Cell::new(std::ptr::null()); }
         extern "C" fn steam_id(_: i32) -> *const std::os::raw::c_char { SID.with(|s| s.get()) }
@@ -624,23 +802,6 @@ mod native_tests {
         shutdown();
     }
 
-    /// clientprefs Task 3: `__s2_cookie_set_authid` writes the cache (a subsequent `__s2_cookie_get`
-    /// sees it immediately) AND queues the write, drained via `__s2_cookie_take_offline_writes` as a
-    /// `[steamid,name,value,updated]` row; a second take is empty.
-    #[test]
-    fn cookie_set_authid_native_writes_cache_and_queues_offline_write() {
-        let _ = init(dummy_logger());
-        load_body("ck3", r#"
-            __s2_cookie_set_authid("S11", "k", "v", 999);
-            var cached = __s2_cookie_get("S11", "k");
-            var writes = __s2_cookie_take_offline_writes();
-            var again = __s2_cookie_take_offline_writes();
-            globalThis.__out = cached + "," + writes.length + "," + writes[0].join("|") + "," + again.length;
-        "#, "{}");
-        assert_eq!(read_global_string("ck3", "__out"), "v,1,S11|k|v|999,0");
-        shutdown();
-    }
-
     /// clientprefs Task 3 (module layer): `Cookies.setAuthId` writes for a SteamID not passed as a
     /// `Client` at all (offline parity) — a subsequent `Cookies.get` on that steamid sees the value,
     /// and it is a no-op for "0" (bot/unset).
@@ -697,5 +858,107 @@ mod native_tests {
         COOKIE_CACHED_PENDING.with(|q| q.borrow_mut().push((9, 0)));
         dispatch_pending_cached();
         shutdown();
+    }
+}
+#[cfg(test)]
+mod outbox_tests {
+    use super::*;
+    fn box_with(versions: usize, bytes: usize) -> Outbox {
+        Outbox { policy: OutboxPolicy { versions, bytes, write_bytes: bytes, ..Default::default() }, ..Default::default() }
+    }
+    #[test]
+    fn pressure_coalescing_fence_and_immutable_attempt() {
+        let mut q = box_with(2, 1024);
+        assert!(q.accept("A", "k", "one", 1));
+        let fence = q.fence("A");
+        assert!(q.accept("A", "k", "two", 1));
+        assert!(!q.done("A", fence));
+        let a = q.lease(("p".into(), 1), 4, 1024, 0).pop().unwrap();
+        assert!(q.accept("A", "k", "three", 1));
+        assert!(q.accept("A", "k", "four", 1));
+        assert!(!q.accept("B", "k", "full", 1));
+        assert_eq!(a.payload.value, "two");
+        assert!(q.ack(&a.owner, a.id, a.payload.revision, false, 0));
+        assert!(!q.done("A", fence));
+        assert!(q.lease(a.owner.clone(), 4, 1024, 99).is_empty());
+        let b = q.lease(a.owner.clone(), 4, 1024, 100).pop().unwrap();
+        assert_eq!(b.payload.value, "four");
+        assert!(!q.ack(&a.owner, a.id, a.payload.revision, true, 100));
+        assert!(q.ack(&b.owner, b.id, b.payload.revision, true, 100));
+        assert!(q.done("A", fence));
+        assert_eq!(q.usage(), (0, 0));
+    }
+    #[test]
+    fn exact_bytes_retry_cap_fifo_and_reclaim() {
+        let mut q = box_with(8, 128 + 1 + 1 + 2);
+        assert!(q.accept("A", "k", "é", 0));
+        assert!(!q.accept("A", "k", "éx", 0));
+        let first = q.lease(("old".into(), 1), 4, 1024, 0).pop().unwrap();
+        q.reclaim(Some("old"));
+        let mut now = 0;
+        for delay in [100,200,400,800,1600,3200,5000,5000] {
+            let a = q.lease(("new".into(), 2), 4, 1024, now).pop().unwrap();
+            assert!(!q.ack(&first.owner, first.id, first.payload.revision, true, now));
+            assert!(q.ack(&a.owner, a.id, a.payload.revision, false, now));
+            assert!(q.lease(a.owner.clone(), 4, 1024, now+delay-1).is_empty());
+            now += delay;
+        }
+        let a = q.lease(("new".into(), 2), 4, 1024, now).pop().unwrap();
+        assert!(q.ack(&a.owner, a.id, a.payload.revision, true, now));
+        q.policy.bytes = 4096;
+        for (sid,name) in [("A","1"),("A","2"),("B","1"),("C","1"),("D","1"),("E","1")] { assert!(q.accept(sid,name,"v",0)); }
+        let batch = q.lease(("p".into(), 3), 99, 99999, now);
+        assert_eq!(batch.len(), 4);
+        assert_eq!(batch.iter().map(|a| a.payload.steam_id.as_str()).collect::<Vec<_>>(), ["A","B","C","D"]);
+        assert!(q.lease(("p".into(), 3), 4, 99999, now).is_empty());
+    }
+    #[test]
+    fn success_of_old_attempt_never_acknowledges_new_ready_value() {
+        let mut q = box_with(2, 4096);
+        assert!(q.accept("A","k","old",7));
+        let old = q.lease(("p".into(),1),4,4096,0).pop().unwrap();
+        assert!(q.accept("A","k","middle",7)); assert!(q.accept("A","k","new",7));
+        let fence = q.fence("A");
+        assert!(!q.ack(&("other".into(),1),old.id,old.payload.revision,true,0));
+        assert!(!q.ack(&old.owner,old.id,old.payload.revision+1,true,0));
+        assert!(q.ack(&old.owner,old.id,old.payload.revision,true,0));
+        assert!(!q.done("A",fence));
+        let new = q.lease(old.owner.clone(),4,4096,0).pop().unwrap();
+        assert_eq!(new.payload.value,"new"); assert!(new.payload.revision > old.payload.revision);
+        assert!(q.ack(&new.owner,new.id,new.payload.revision,true,0));
+        assert!(q.done("A",fence));
+    }
+    #[test]
+    fn saturated_accounts_progress_fairly_and_bytes_are_exact() {
+        let mut q = box_with(100, 65536);
+        for n in 0..20 { assert!(q.accept(&format!("{n:02}"),"k","v",0)); }
+        let (count,bytes) = q.usage(); assert_eq!(count,20); assert_eq!(bytes,20*(128+2+1+1));
+        assert!(q.accept("00","k","longer",0)); assert_eq!(q.usage(),(20,bytes+5));
+        let mut seen = HashSet::new();
+        for _ in 0..5 {
+            let batch = q.lease(("p".into(),1),99,65536,0); assert_eq!(batch.len(),4);
+            for a in batch { seen.insert(a.payload.steam_id.clone()); assert!(q.ack(&a.owner,a.id,a.payload.revision,true,0)); }
+            assert!(q.accept("00","k","again",0));
+        }
+        assert_eq!(seen.len(),20);
+    }
+    #[test]
+    fn account_fifo_blocks_later_keys_while_earliest_retries() {
+        let mut q = box_with(8,4096);
+        assert!(q.accept("A","1","first",0)); assert!(q.accept("A","2","second",0));
+        let a=q.lease(("p".into(),1),4,4096,0).pop().unwrap();
+        assert!(q.ack(&a.owner,a.id,a.payload.revision,false,0));
+        assert!(q.lease(a.owner.clone(),4,4096,99).is_empty());
+        let a=q.lease(a.owner,4,4096,100).pop().unwrap(); assert_eq!(a.payload.name,"1");
+        assert!(q.ack(&a.owner,a.id,a.payload.revision,true,100));
+        let b=q.lease(a.owner,4,4096,100).pop().unwrap(); assert_eq!(b.payload.name,"2");
+    }
+    #[test]
+    fn allocator_exhaustion_rejects_without_wrap() {
+        let mut q=box_with(2,1024); q.revision=i64::MAX;
+        assert!(!q.accept("A","k","v",0)); assert_eq!(q.usage(),(0,0));
+        q.revision=i64::MAX-1; assert!(q.accept("A","k","v",0));
+        q.lease_id=u64::MAX; assert!(q.lease(("p".into(),1),4,4096,0).is_empty());
+        assert_eq!(q.revision,i64::MAX); assert_eq!(q.usage().0,1);
     }
 }
