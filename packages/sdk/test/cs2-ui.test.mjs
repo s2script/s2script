@@ -708,3 +708,19 @@ hudkit.motd(1, { title: "M", focus: { mode: "exclusive", priority: "1" } });
 `);
   assert.equal(diagnostics.length, 4);
 });
+
+test("component invalidation and last-update results are additive public APIs", () => {
+  const diagnostics = compileUiContract(`
+import type { Modal, ModalView, Dashboard, DashboardView, UiResult } from "@s2script/cs2";
+declare const modal: Modal; declare const modalView: ModalView;
+declare const dashboard: Dashboard; declare const dashboardView: DashboardView;
+modal.invalidate(); modal.invalidate(1); modalView.invalidate();
+dashboard.invalidate(); dashboard.invalidate(1); dashboardView.invalidate();
+const modalResult: UiResult<void> | null = modalView.lastUpdateResult();
+const dashResult: UiResult<void> | null = dashboardView.lastUpdateResult();
+void modalResult; void dashResult;
+`);
+  assert.equal(diagnostics.length, 0, ts.formatDiagnostics(diagnostics, {
+    getCurrentDirectory: () => repoRoot, getCanonicalFileName: name => name, getNewLine: () => "\n",
+  }));
+});

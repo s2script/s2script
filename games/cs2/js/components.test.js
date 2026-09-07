@@ -13,6 +13,7 @@ const { join } = require("node:path");
 function mount() {
   const calls = [];
   const clickHandlers = {};
+  const frameHandlers = [];
   const hud = {
     set:      (s, id, v) => { calls.push({ op: "set", slot: s, id, value: v }); return null; },
     setClass: (s, id, cls, on) => { calls.push({ op: "cls", slot: s, id, cls, on }); return null; },
@@ -22,6 +23,7 @@ function mount() {
     _cursorForPanel: () => null,
     forget:   () => {},
     onClick:  (id, fn) => { clickHandlers[id] = fn; },
+    _focus: { onFrame: (fn) => frameHandlers.push(fn) },
   };
   // A fresh global each mount. In production claims go through the __s2_ui_pool_* natives (the
   // prelude runs per plugin context, so only the host can hold a genuinely global table); in
@@ -42,10 +44,30 @@ function mount() {
 
   const src = readFileSync(join(__dirname, "components.js"), "utf8");
   new Function(src)();
-  return { ui: globalThis.__s2pkg_game_ctx.ui({}, "test").components(), calls, clickHandlers, pending };
+  return { ui: globalThis.__s2pkg_game_ctx.ui({}, "test").components(), calls, clickHandlers, pending,
+    frame: () => frameHandlers.slice().forEach((fn) => fn()) };
 }
 
 const classSet = (calls, cls) => calls.some((c) => c.op === "cls" && c.cls === cls && c.on === true);
+
+test("explicit modal invalidation coalesces while legacy refresh remains synchronous", () => {
+  const { ui, calls, frame } = mount();
+  let reads = 0;
+  const modal = ui.modal({ title: "T", rows: () => { reads++; return [{ a: String(reads) }]; } });
+  const view = modal.open(1);
+  assert.deepStrictEqual(view.lastUpdateResult(), { ok: true, value: undefined });
+  for (let i = 0; i < 100; i++) modal.invalidate(1);
+  assert.strictEqual(reads, 1);
+  assert.strictEqual(ui._pendingInvalidationCount(), 1);
+  frame();
+  assert.strictEqual(reads, 2);
+  assert.strictEqual(ui._pendingInvalidationCount(), 0);
+
+  const before = calls.length;
+  modal.refresh(1);
+  assert.strictEqual(reads, 3);
+  assert.ok(calls.length > before, "refresh must finish its repaint before returning");
+});
 
 test("a footer button's variant reaches a class (it was accepted and dropped)", () => {
   const { ui, calls } = mount();

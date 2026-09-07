@@ -221,9 +221,10 @@ function pluginWorld(options = {}) {
       close(slot) { fallbackCalls.push(["close", slot]); },
     };
     const renderers = { chat: fallback };
+    const logs = [];
     let sealed = false;
     const ctx = vm.createContext({
-      console: { log() {} }, __s2pkg_cs2: {},
+      console: { log(message) { logs.push(String(message)); } }, __s2pkg_cs2: {},
       ...focusNatives(owner),
       __s2pkg_frame: { OnGameFrame: { subscribe(fn, opts) {
         assert.equal(sealed, false, "frame registration must happen in the load window");
@@ -279,7 +280,7 @@ function pluginWorld(options = {}) {
     const rawListeners = []; base.onClicked(view => rawListeners.forEach(fn => fn(view)));
     sealed = true;
     ctx.__s2pkg_cs2.Player = { all: () => [...clientGenerations.keys()].map(slot => ({ slot, ref: { index: slot + 1000, id: clientGenerations.get(slot) } })) };
-    const p = { ctx, base, rawListeners, hudkit: ctx.__s2pkg_cs2.hudkit, renderers, lifecycle, fallbackCalls, pendingTimers,
+    const p = { ctx, base, rawListeners, hudkit: ctx.__s2pkg_cs2.hudkit, renderers, lifecycle, fallbackCalls, pendingTimers, logs,
       click(slot, id) { for (const fn of lifecycle.click) fn({ player: { index: slot + 1000, id: clientGenerations.get(slot) }, buttonId: id }); },
       runTimer(index = 0) { const fn = pendingTimers.splice(index, 1)[0]; if (fn) fn(); } };
     plugins.push(p); return p;
@@ -1312,4 +1313,213 @@ test("incomplete native focus support is unavailable before any reservation or p
     assert.equal(m.tryOpenResult(1, exclusive(0)).error.code, "Unavailable");
     assert.equal(reads, 0); assert.equal(w.focus.size, 0);
   }
+});
+
+test("100 explicit invalidations coalesce to one next-frame provider evaluation", () => {
+  const w = pluginWorld(), p = w.plugin();
+  let modalReads = 0, dashReads = 0;
+  const modal = p.hudkit.modal({ rows: () => { modalReads++; return [{ id: "m", a: String(modalReads) }]; } });
+  const dash = p.hudkit.dashboard({ title: "D", tabs: [{ id: "t", title: "T" }],
+    rows: () => { dashReads++; return [{ id: "d", a: String(dashReads) }]; } });
+  const modalView = modal.open(1), dashView = dash.open(2);
+  assert.deepEqual(plain(modalView.lastUpdateResult()), { ok: true });
+  assert.deepEqual(plain(dashView.lastUpdateResult()), { ok: true });
+  for (let i = 0; i < 100; i++) { modal.invalidate(1); dashView.invalidate(); }
+  assert.deepEqual(plain(modalView.lastUpdateResult()), { ok: true },
+    "pending invalidation retains the previous completion");
+  assert.deepEqual([modalReads, dashReads, p.base.kit._pendingInvalidationCount()], [1, 1, 2]);
+  w.frame();
+  assert.deepEqual([modalReads, dashReads, p.base.kit._pendingInvalidationCount()], [2, 2, 0]);
+});
+
+test("invalidation during a provider runs on the following frame", () => {
+  const w = pluginWorld(), p = w.plugin();
+  let reads = 0, reenter = false, view;
+  const modal = p.hudkit.modal({ rows: () => {
+    reads++;
+    if (reenter) { reenter = false; view.invalidate(); }
+    return [{ id: "m", a: String(reads) }];
+  } });
+  view = modal.open(1);
+  reenter = true;
+  view.invalidate();
+  w.frame();
+  assert.equal(reads, 2);
+  assert.equal(p.base.kit._pendingInvalidationCount(), 1);
+  w.frame();
+  assert.equal(reads, 3);
+  assert.equal(p.base.kit._pendingInvalidationCount(), 0);
+});
+
+test("a nested synchronous repaint during a drain does not abort later dirty views", () => {
+  const w = pluginWorld(), p = w.plugin();
+  let nested = false, firstReads = 0, secondReads = 0, first;
+  first = p.hudkit.modal({ rows: () => {
+    firstReads++;
+    if (nested) { nested = false; first.refresh(1); }
+    return [{ id: "first", a: "First" }];
+  } });
+  const second = p.hudkit.modal({ rows: () => { secondReads++; return [{ id: "second", a: "Second" }]; } });
+  const firstView = first.open(1); second.open(2);
+  nested = true; first.invalidate(1); second.invalidate(2);
+  assert.doesNotThrow(() => w.frame());
+  assert.deepEqual([firstReads, secondReads], [3, 2]);
+  assert.deepEqual(plain(firstView.lastUpdateResult()), { ok: true });
+  assert.equal(p.base.kit._pendingInvalidationCount(), 0);
+});
+
+test("a throwing deferred provider records failure without starving another dirty view", () => {
+  const w = pluginWorld(), p = w.plugin();
+  let fail = false, goodReads = 0, picks = 0;
+  const bad = p.hudkit.modal({ rows: () => {
+    if (fail) throw new Error("deferred provider failed");
+    return [{ id: "bad", a: "Bad" }];
+  }, onPick: () => picks++ });
+  const good = p.hudkit.modal({ rows: () => { goodReads++; return [{ id: "good", a: String(goodReads) }]; } });
+  const badView = bad.open(1); good.open(2);
+  fail = true; bad.invalidate(1); good.invalidate(2);
+  w.frame();
+  assert.deepEqual(plain(badView.lastUpdateResult()), {
+    ok: false, error: { code: "InvalidArgument", message: "deferred provider failed" },
+  });
+  assert.equal(goodReads, 2);
+  assert.equal(p.base.kit._pendingInvalidationCount(), 0);
+  p.click(1, "s2_m0_r0");
+  assert.equal(picks, 0, "failed deferred repaint must disable interaction");
+  assert.equal(p.logs.filter(line => line.includes("deferred provider failed")).length, 1);
+  w.frame();
+  assert.equal(p.logs.filter(line => line.includes("deferred provider failed")).length, 1,
+    "failure does not automatically retry");
+
+  bad.invalidate(1); w.frame();
+  assert.equal(p.logs.filter(line => line.includes("deferred provider failed")).length, 1,
+    "repeated failure is not diagnosed again before success");
+  fail = false; bad.invalidate(1); w.frame();
+  assert.deepEqual(plain(badView.lastUpdateResult()), { ok: true });
+  fail = true; bad.invalidate(1); w.frame();
+  assert.equal(p.logs.filter(line => line.includes("deferred provider failed")).length, 2,
+    "success rearms the transition diagnostic");
+});
+
+test("close, forget, release, reconnect and entity replacement discard dirty work", () => {
+  for (const cleanup of ["close", "forget", "release", "reconnect", "entity"]) {
+    const w = pluginWorld(), p = w.plugin(); let reads = 0;
+    const modal = p.hudkit.modal({ rows: () => { reads++; return [{ a: "row" }]; } });
+    modal.open(1); modal.invalidate(1);
+    if (cleanup === "close") modal.close(1);
+    else if (cleanup === "forget") modal.forget(1);
+    else if (cleanup === "release") modal.release();
+    else if (cleanup === "reconnect") w.replace(1);
+    else w.replaceLayoutEntity();
+    const before = w.writes.length;
+    w.frame();
+    assert.equal(w.writes.length, before, cleanup + " must cause zero deferred writes");
+    assert.equal(reads, 1, cleanup + " must cause zero deferred provider reads");
+    assert.equal(p.base.kit._pendingInvalidationCount(), 0, cleanup + " must empty the queue");
+  }
+});
+
+test("focus restoration fulfills an already-pending invalidation with one repaint", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin(); let reads = 0;
+  const am = focusedModal(a, () => {}, () => { reads++; return [{ id: "a", a: String(reads) }]; });
+  const bm = focusedModal(b, () => {});
+  const view = am.open(1, exclusive(0));
+  bm.open(1, exclusive(1));
+  view.invalidate();
+  w.frame();
+  assert.equal(reads, 1, "covered focus cannot repaint");
+  assert.equal(a.base.kit._pendingInvalidationCount(), 1);
+  bm.close(1); w.frame();
+  assert.equal(reads, 2, "ready restoration and dirty intent share one repaint");
+  assert.equal(a.base.kit._pendingInvalidationCount(), 0);
+});
+
+test("invalidation raised during focus restoration waits for the following frame", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin();
+  let reads = 0, invalidateDuringRestore = false, view;
+  const am = focusedModal(a, () => {}, () => {
+    reads++;
+    if (invalidateDuringRestore) { invalidateDuringRestore = false; view.invalidate(); }
+    return [{ id: "a", a: String(reads) }];
+  });
+  const bm = focusedModal(b, () => {});
+  view = am.open(1, exclusive(0));
+  bm.open(1, exclusive(1));
+  view.invalidate();
+  bm.close(1);
+  invalidateDuringRestore = true;
+  w.frame();
+  assert.equal(reads, 2, "restoration must not drain its reentrant invalidation in the same frame");
+  assert.equal(a.base.kit._pendingInvalidationCount(), 1);
+  w.frame();
+  assert.equal(reads, 3);
+  assert.equal(a.base.kit._pendingInvalidationCount(), 0);
+});
+
+test("a failed focus restoration consumes pending intent and does not retry", () => {
+  const options = {}, w = pluginWorld(options), a = w.plugin(), b = w.plugin(); let reads = 0;
+  const am = focusedModal(a, () => {}, () => { reads++; return [{ id: "a", a: "A" }]; });
+  const bm = focusedModal(b, () => {});
+  const view = am.open(1, exclusive(0)); bm.open(1, exclusive(1)); view.invalidate();
+  bm.close(1); options.failInvoke = "setDialogVariableStringForPlayer"; w.frame();
+  assert.equal(view.lastUpdateResult().ok, false);
+  assert.equal(a.base.kit._pendingInvalidationCount(), 0);
+  const afterFailure = reads;
+  options.failInvoke = null; w.frame();
+  assert.equal(reads, afterFailure, "restoration failure must not automatically retry");
+});
+
+test("invalidate is an explicit retry after a deferred focused failure", () => {
+  const options = {}, w = pluginWorld(options), p = w.plugin(); let reads = 0, label = "A";
+  const modal = focusedModal(p, () => {}, () => { reads++; return [{ id: "a", a: label }]; });
+  const view = modal.open(1, exclusive(0));
+  label = "B"; options.failInvoke = "setDialogVariableStringForPlayer"; view.invalidate(); w.frame();
+  assert.equal(view.lastUpdateResult().ok, false);
+  const afterFailure = reads;
+  options.failInvoke = null; view.invalidate(); w.frame();
+  assert.equal(reads, afterFailure + 1);
+  assert.deepEqual(plain(view.lastUpdateResult()), { ok: true });
+  assert.equal(p.base.kit._pendingInvalidationCount(), 0);
+  assert.equal([...w.focus.values()][0].state, "active");
+});
+
+test("last completed update survives close but stale lifetimes cannot read replacement results", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const modal = p.hudkit.modal({ rows: [] });
+  const beforeOpen = modal.forSlot(1);
+  assert.equal(beforeOpen.lastUpdateResult(), null);
+  modal.open(1);
+  assert.deepEqual(plain(beforeOpen.lastUpdateResult()), { ok: true });
+  modal.close(1);
+  assert.deepEqual(plain(beforeOpen.lastUpdateResult()), { ok: true });
+  w.replace(1);
+  assert.equal(beforeOpen.lastUpdateResult(), null);
+  const replacement = modal.open(1);
+  assert.deepEqual(plain(replacement.lastUpdateResult()), { ok: true });
+  assert.equal(beforeOpen.lastUpdateResult(), null);
+});
+
+test("failed initial opens and synchronous refreshes are retained as completed results", () => {
+  const options = { failInvoke: "setDialogVariableStringForPlayer" };
+  const w = pluginWorld(options), p = w.plugin();
+  const modal = p.hudkit.modal({ title: "M", rows: [] });
+  const beforeOpen = modal.forSlot(1);
+  const failedOpen = modal.tryOpenResult(1);
+  assert.equal(failedOpen.error.code, "PaintFailed");
+  assert.deepEqual(plain(beforeOpen.lastUpdateResult()), plain(failedOpen));
+
+  options.failInvoke = null;
+  const view = modal.open(1);
+  options.failInvoke = "setDialogVariableStringForPlayer";
+  const badTitle = { toString() { throw new Error("sync title failed"); } };
+  const dashboard = p.hudkit.dashboard({ title: () => badTitle,
+    tabs: [{ id: "t", title: "T" }], rows: () => [] });
+  const dashBeforeOpen = dashboard.forSlot(2);
+  const dashFailure = dashboard.tryOpenResult(2);
+  assert.equal(dashFailure.error.code, "PaintFailed");
+  assert.deepEqual(plain(dashBeforeOpen.lastUpdateResult()), plain(dashFailure));
+
+  options.failInvoke = null;
+  modal.refresh(1);
+  assert.deepEqual(plain(view.lastUpdateResult()), { ok: true });
 });

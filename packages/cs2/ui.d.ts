@@ -355,6 +355,10 @@ export interface ModalView {
   close(): void;
   isOpen(): boolean;
   refresh(): void;
+  /** Schedule one repaint for the next server frame; repeated calls coalesce. */
+  invalidate(): void;
+  /** Last completed open or repaint for this live view; pending invalidation leaves it unchanged. */
+  lastUpdateResult(): UiResult<void> | null;
   /** Repaint this bound player's modal and report the submitted drive result. */
   tryRefresh(): UiResult<void>;
   page(delta: number): void;
@@ -376,6 +380,8 @@ export interface Modal {
   isOpen(slot: number): boolean;
   /** Repaint from live data. Omit `slot` to repaint every player who has it open. */
   refresh(slot?: number): void;
+  /** Schedule open views for one repaint on the next server frame. */
+  invalidate(slot?: number): void;
   /** Repaint one player and report the submitted drive result. */
   tryRefresh(slot: number): UiResult<void>;
   page(slot: number, delta: number): void;
@@ -523,6 +529,10 @@ export interface DashboardView {
   isOpen(): boolean;
   setTab(tabId: string): void;
   refresh(): void;
+  /** Schedule one repaint for the next server frame; repeated calls coalesce. */
+  invalidate(): void;
+  /** Last completed open or repaint for this live view; pending invalidation leaves it unchanged. */
+  lastUpdateResult(): UiResult<void> | null;
   /** Repaint this bound player's dashboard and report the submitted drive result. */
   tryRefresh(): UiResult<void>;
 }
@@ -539,6 +549,8 @@ export interface Dashboard {
   isOpen(slot: number): boolean;
   setTab(slot: number, tabId: string): void;
   refresh(slot?: number): void;
+  /** Schedule open views for one repaint on the next server frame. */
+  invalidate(slot?: number): void;
   /** Repaint one player and report the submitted drive result. */
   tryRefresh(slot: number): UiResult<void>;
   forSlot(slot: number): DashboardView;

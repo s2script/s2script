@@ -403,8 +403,120 @@
     // the obsolete caller that still holds it on its stack.
     var dashPaintTransactions = {};
     var dashOpenAttempts = {};
+    var dashUpdateRecords = {};
     // Only retained reservations are reconciled. Failed tokenless states require an explicit retry.
     var focusParticipants = [];
+    // Explicit invalidations share the one load-window frame subscription installed by ui.js.
+    // A record belongs to one component/client lifetime, and can appear in this queue at most once.
+    var dirtyUpdates = [];
+    function newUpdateRecord(kind, live) {
+      return { kind: kind, live: live, result: null, operation: 0, invalidation: 0,
+        queued: false, state: null, repaint: null, retained: null, paintable: null,
+        failureLogged: false };
+    }
+    function removeDirty(record) {
+      if (!record || !record.queued) return;
+      record.queued = false;
+      for (var i = dirtyUpdates.length - 1; i >= 0; i--) {
+        if (dirtyUpdates[i] === record) dirtyUpdates.splice(i, 1);
+      }
+    }
+    function cancelDirtyState(st) {
+      var record = st && st.updateRecord;
+      if (!record || record.state !== st) return;
+      removeDirty(record);
+      record.state = null;
+    }
+    function queueDirty(st, repaint, retained, paintable) {
+      var record = st && st.updateRecord;
+      if (!record || !record.live() || !retained(st)) return;
+      record.invalidation++;
+      record.state = st;
+      record.repaint = repaint;
+      record.retained = retained;
+      record.paintable = paintable;
+      if (!record.queued) { record.queued = true; dirtyUpdates.push(record); }
+    }
+    function ensureDirtyQueued(record) {
+      record.queued = true;
+      if (dirtyUpdates.indexOf(record) < 0) dirtyUpdates.push(record);
+    }
+    function beginUpdate(record) {
+      if (!record) return null;
+      return { operation: ++record.operation, invalidation: record.invalidation };
+    }
+    function completeUpdate(record, attempt, result) {
+      if (!record || !attempt || record.operation !== attempt.operation || !record.live() ||
+          !result || typeof result.ok !== "boolean") return;
+      record.result = result;
+      if (result.ok) {
+        record.failureLogged = false;
+        // A successful repaint consumes only intent that existed before it started. An invalidate
+        // raised by a provider increments the version and remains queued for the following frame.
+        if (record.invalidation === attempt.invalidation) removeDirty(record);
+      }
+    }
+    function deferredFailure(record, state, result) {
+      if (!record || record.state && record.state !== state || !record.live() ||
+          !result || result.ok !== false || !result.error || record.failureLogged) return;
+      record.failureLogged = true;
+      log("[hudkit] deferred " + record.kind + " update failed: " + result.error.message);
+    }
+    function settleDeferredState(st, priorInvalidation, result) {
+      var record = st && st.updateRecord;
+      deferredFailure(record, st, result);
+      if (record && record.invalidation === priorInvalidation && record.queued) {
+        removeDirty(record);
+        record.state = null;
+      }
+    }
+    function takeDirtyUpdates() {
+      var records = dirtyUpdates.slice();
+      dirtyUpdates = [];
+      var pending = [];
+      for (var i = 0; i < records.length; i++) {
+        pending.push({ record: records[i], operation: records[i].operation,
+          invalidation: records[i].invalidation });
+      }
+      return pending;
+    }
+    function drainDirtyUpdates(pending) {
+      for (var i = 0; i < pending.length; i++) {
+        var entry = pending[i];
+        var record = entry.record;
+        var st = record.state;
+        if (!st || !record.live() || !record.retained(st)) {
+          record.queued = false; record.state = null; continue;
+        }
+        // The frame snapshot is taken before focus restoration. A completed restoration fulfills
+        // old intent; any invalidate raised by its provider stays in the live queue for next frame.
+        if (record.operation !== entry.operation) {
+          if (record.invalidation > entry.invalidation) ensureDirtyQueued(record);
+          else { record.queued = false; record.state = null; }
+          continue;
+        }
+        // Another provider may invalidate this record during the same frame. Coalesce its old and
+        // new intent on the next frame rather than evaluating it after that provider returns.
+        if (record.invalidation > entry.invalidation) { ensureDirtyQueued(record); continue; }
+        if (!record.paintable(st)) {
+          ensureDirtyQueued(record);
+          continue;
+        }
+        record.queued = false;
+        var result;
+        var operationBefore = record.operation;
+        try { result = record.repaint(st); }
+        catch (err) { result = uiFail("PaintFailed", errorMessage(err, "hudkit: deferred repaint failed")); }
+        // A superseded outer paint has no UiResult of its own. Its nested authoritative update has
+        // already completed on this same lifetime record, so observe that result for diagnostics.
+        if ((!result || typeof result.ok !== "boolean") && record.operation !== operationBefore &&
+            record.result && typeof record.result.ok === "boolean") result = record.result;
+        if (record.state === st && record.live() && record.retained(st)) {
+          deferredFailure(record, st, result);
+          if (!record.queued) record.state = null;
+        }
+      }
+    }
     function focusOptions(opts) {
       try {
         var focus = opts ? opts.focus : undefined;
@@ -444,6 +556,11 @@
       var state = st.focusToken && hud._focus.state(st.focusToken);
       return state === "ready" || state === "active";
     }
+    function invalidationPaintable(st) {
+      // A tokenless failed focused state is dormant until an explicit update. invalidate() is one
+      // such update and must be allowed to enter prepareFocus() to reserve again.
+      return !st.focusEnabled || !st.focusToken || focusPaintable(st);
+    }
     // true means a successful logical open that must wait without evaluating any providers.
     function prepareFocus(st, current) {
       if (!st.focusEnabled) return uiOk(false);
@@ -470,7 +587,10 @@
       var state = hud._focus.state(st.focusToken);
       return state === "active" || state === "ready" && hud._focus.activate(st.focusBinding, st.focusToken);
     }
-    if (hud._focus) hud._focus.onFrame(function () {
+    if (hud._focus && typeof hud._focus.onFrame === "function") hud._focus.onFrame(function () {
+      // Snapshot before any provider can run. Invalidations raised during focus restoration or
+      // ordinary deferred paint therefore belong to the following frame.
+      var pendingDirty = takeDirtyUpdates();
       var states = focusParticipants.slice();
       for (var i = 0; i < states.length; i++) {
         var st = states[i];
@@ -480,13 +600,22 @@
         if (state === "invalid") { releaseFocus(st); st.focusDiscard(); }
         else if (state === "covered" || state === "waiting") clearInteraction(st);
         else if (state === "ready") {
+          var priorInvalidation = st.updateRecord && st.updateRecord.invalidation;
           try {
             var result = st.focusRepaint();
-            if (result && result.ok === false) releaseFocus(st);
+            if (result && result.ok === false) {
+              settleDeferredState(st, priorInvalidation, result);
+              releaseFocus(st);
+            }
           }
-          catch (_) { releaseFocus(st); }
+          catch (err) {
+            settleDeferredState(st, priorInvalidation,
+              uiFail("PaintFailed", errorMessage(err, "hudkit: deferred focus repaint failed")));
+            releaseFocus(st);
+          }
         }
       }
+      drainDirtyUpdates(pendingDirty);
     });
     var origForget = hud.forget;
     hud.forget = function (slot, client) {
@@ -867,8 +996,20 @@
       return !!state && state.componentGeneration === dashGeneration && bindingValid(state.binding);
     }
 
+    function dashUpdateRecord(slot, binding, generation) {
+      var record = dashUpdateRecords[slot];
+      if (record && record.componentGeneration === generation && record.live()) return record;
+      record = newUpdateRecord("dashboard", function () {
+        return generation === dashGeneration && bindingValid(binding);
+      });
+      record.componentGeneration = generation;
+      dashUpdateRecords[slot] = record;
+      return record;
+    }
+
     function closeDash(slot, fromClick) {
       var st = dashOpen[slot];
+      cancelDirtyState(st);
       delete dashOpenAttempts[slot];
       delete dashPaintTransactions[slot];
       if (!st) return;
@@ -934,10 +1075,17 @@
 
     function paintDash(slot) {
       var st = dashOpen[slot], result, transaction = {};
+      var updateAttempt = beginUpdate(st && st.updateRecord);
       function ownsFailure() { return st && (dashPaintTransactions[slot] === transaction ||
         st.focusEnabled && !st.focusRetained()); }
       try { result = paintDashInner(slot, transaction); }
-      catch (err) { if (ownsFailure()) releaseFocus(st); throw err; }
+      catch (err) {
+        completeUpdate(st && st.updateRecord, updateAttempt,
+          uiFail("PaintFailed", errorMessage(err, "hudkit: dashboard paint failed")));
+        if (ownsFailure()) releaseFocus(st);
+        throw err;
+      }
+      if (result !== DASH_SUPERSEDED) completeUpdate(st && st.updateRecord, updateAttempt, result);
       if (ownsFailure() && (result === DASH_SUPERSEDED || !result.ok)) releaseFocus(st);
       return result;
     }
@@ -1095,9 +1243,11 @@
         var slots = [];
         for (var key in dashOpen) {
           if (!dashOpen[key]) continue;
+          cancelDirtyState(dashOpen[key]);
           releaseFocus(dashOpen[key]);
           dashOpen[key].interactive = false;
           dashOpen[key].componentGeneration = dashGeneration;
+          dashOpen[key].updateRecord = dashUpdateRecord(Number(key), dashOpen[key].binding, dashGeneration);
           delete dashPaintTransactions[key];
           slots.push(Number(key));
         }
@@ -1121,6 +1271,13 @@
       dashSpec = nextSpec;
       dashGeneration++;
       function tryOpenDashBound(slot, opts, binding, generation, rollbackOnFailure) {
+        var updateRecord = dashUpdateRecord(slot, binding, generation);
+        var updateAttempt = beginUpdate(updateRecord);
+        var result = tryOpenDashBoundInner(slot, opts, binding, generation, rollbackOnFailure, updateRecord);
+        completeUpdate(updateRecord, updateAttempt, result);
+        return result;
+      }
+      function tryOpenDashBoundInner(slot, opts, binding, generation, rollbackOnFailure, updateRecord) {
         if (generation !== dashGeneration || !bindingValid(binding)) return staleResult();
         var attempt = {}; dashOpenAttempts[slot] = attempt;
         var validated = focusOptions(opts);
@@ -1133,11 +1290,16 @@
           candidate = { tabId: o.tab || "", tabPage: 0, rowPage: 0, interactive: false,
             pendingRootOpts: { cursor: cursorWanted }, binding: binding,
             componentGeneration: generation, focusEnabled: validated.value !== null,
-            focusPriority: validated.value, root: "s2_dash", cursorWanted: cursorWanted };
+            focusPriority: validated.value, root: "s2_dash", cursorWanted: cursorWanted,
+            updateRecord: updateRecord };
         } catch (err) { return uiFail("InvalidArgument", errorMessage(err, "invalid dashboard options")); }
         if (generation !== dashGeneration || !bindingValid(binding)) return staleResult();
         if (dashOpenAttempts[slot] !== attempt) return uiFail("PaintFailed", "dashboard open superseded");
-        if (dashOpen[slot]) { dashOpen[slot].interactive = false; releaseFocus(dashOpen[slot]); }
+        if (dashOpen[slot]) {
+          cancelDirtyState(dashOpen[slot]);
+          dashOpen[slot].interactive = false;
+          releaseFocus(dashOpen[slot]);
+        }
         delete dashPaintTransactions[slot];
         candidate.focusRetained = function () { return dashOpen[slot] === candidate && dashStateValid(candidate); };
         candidate.focusDiscard = function () { if (dashOpen[slot] === candidate) delete dashOpen[slot]; };
@@ -1179,6 +1341,7 @@
         return result.value;
       }
       function makeDashView(slot, binding, generation) {
+        var updateRecord = dashUpdateRecord(slot, binding, generation);
         function valid() { return generation === dashGeneration && bindingValid(binding); }
         return {
           slot: slot,
@@ -1192,6 +1355,8 @@
           isOpen: function () { return valid() && dashSelf.isOpen(slot); },
           setTab: function (tabId) { if (valid()) dashSelf.setTab(slot, tabId); },
           refresh: function () { if (valid()) dashSelf.refresh(slot); },
+          invalidate: function () { if (valid()) dashSelf.invalidate(slot); },
+          lastUpdateResult: function () { return valid() ? updateRecord.result : null; },
           tryRefresh: function () {
             if (!valid()) return staleResult();
             return dashSelf.tryRefresh(slot);
@@ -1219,12 +1384,30 @@
           if (slot == null) { for (var k in dashOpen) { if (dashStateValid(dashOpen[k])) paintDash(Number(k)); } }
           else if (dashStateValid(dashOpen[slot])) paintDash(slot);
         },
+        invalidate: function (slot) {
+          function invalidateOne(sl) {
+            var st = dashOpen[sl];
+            if (!dashStateValid(st)) return;
+            queueDirty(st, function () { return paintDash(sl); }, function (expected) {
+              return dashOpen[sl] === expected && dashStateValid(expected);
+            }, invalidationPaintable);
+          }
+          if (slot == null) {
+            for (var k in dashOpen) if (Object.prototype.hasOwnProperty.call(dashOpen, k)) invalidateOne(Number(k));
+          } else invalidateOne(slot);
+        },
         tryRefresh: function (slot) {
           if (slot == null) return uiFail("InvalidArgument", "needs a player slot");
           var binding = captureBinding(slot);
           if (!bindingValid(binding)) return staleResult();
           var st = dashOpen[slot];
-          if (!dashStateValid(st)) return uiFail("InvalidArgument", "hudkit: dashboard is not open");
+          if (!dashStateValid(st)) {
+            var updateRecord = dashUpdateRecord(slot, binding, dashGeneration);
+            var unopenedAttempt = beginUpdate(updateRecord);
+            var unopened = uiFail("InvalidArgument", "hudkit: dashboard is not open");
+            completeUpdate(updateRecord, unopenedAttempt, unopened);
+            return unopened;
+          }
           var result;
           try { result = paintDash(slot); }
           catch (err) {
@@ -1351,8 +1534,20 @@
       var openAttempts = {};
       var paintTransactions = {};
       var modalSlotEpochs = {};
+      var modalUpdateRecords = {};
       var SUPERSEDED = {};
       var self;
+
+      function modalUpdateRecord(slot, binding, componentEpoch) {
+        var record = modalUpdateRecords[slot];
+        if (record && record.componentEpoch === componentEpoch && record.live()) return record;
+        record = newUpdateRecord("modal", function () {
+          return !released && componentEpoch === (modalSlotEpochs[slot] || 0) && bindingValid(binding);
+        });
+        record.componentEpoch = componentEpoch;
+        modalUpdateRecords[slot] = record;
+        return record;
+      }
 
       function rowsFor(slot) {
         var got = typeof s.rows === "function" ? s.rows(slot) : (s.rows || []);
@@ -1418,10 +1613,17 @@
       // must not change the actions behind this player's buttons (including automatic pagers).
       function paint(slot, candidate, rootOpts, request) {
         var st = candidate || open[slot], result, transaction = {};
+        var updateAttempt = beginUpdate(st && st.updateRecord);
         function ownsFailure() { return st && (paintTransactions[slot] === transaction ||
           st.focusEnabled && !st.focusRetained()); }
         try { result = paintInner(slot, candidate, rootOpts, request, transaction); }
-        catch (err) { if (ownsFailure()) releaseFocus(st); throw err; }
+        catch (err) {
+          completeUpdate(st && st.updateRecord, updateAttempt,
+            uiFail("PaintFailed", errorMessage(err, "hudkit: modal paint failed")));
+          if (ownsFailure()) releaseFocus(st);
+          throw err;
+        }
+        if (result !== SUPERSEDED) completeUpdate(st && st.updateRecord, updateAttempt, result);
         if (ownsFailure() && (result === SUPERSEDED || !result.ok)) releaseFocus(st);
         return result;
       }
@@ -1582,6 +1784,7 @@
       }
 
       function makeModalView(slot, binding, componentEpoch) {
+        var updateRecord = modalUpdateRecord(slot, binding, componentEpoch);
         function valid() {
           return !released && bindingValid(binding) && componentEpoch === (modalSlotEpochs[slot] || 0);
         }
@@ -1607,6 +1810,8 @@
           close: function () { if (valid()) self.close(slot); },
           isOpen: function () { return valid() && self.isOpen(slot); },
           refresh: function () { if (valid()) self.refresh(slot); },
+          invalidate: function () { if (valid()) self.invalidate(slot); },
+          lastUpdateResult: function () { return valid() ? updateRecord.result : null; },
           tryRefresh: function () {
             if (released) return releasedResult("modal");
             if (!valid()) return staleResult();
@@ -1620,6 +1825,14 @@
       }
 
       function tryOpenResultBound(slot, opts, binding, componentEpoch) {
+        var updateRecord = modalUpdateRecord(slot, binding, componentEpoch);
+        var updateAttempt = beginUpdate(updateRecord);
+        var result = tryOpenResultBoundInner(slot, opts, binding, componentEpoch, updateRecord);
+        completeUpdate(updateRecord, updateAttempt, result);
+        return result;
+      }
+
+      function tryOpenResultBoundInner(slot, opts, binding, componentEpoch, updateRecord) {
         if (released) return releasedResult("modal");
         if (!bindingValid(binding) || componentEpoch !== (modalSlotEpochs[slot] || 0)) return staleResult();
         // Getters in options may open/close synchronously, before a paint transaction exists.
@@ -1632,10 +1845,11 @@
         if (released) return releasedResult("modal");
         if (!bindingValid(binding) || componentEpoch !== (modalSlotEpochs[slot] || 0)) return staleResult();
         if (openAttempts[slot] !== attempt) return uiFail("PaintFailed", "modal open superseded");
-        if (open[slot]) releaseFocus(open[slot]);
+        if (open[slot]) { cancelDirtyState(open[slot]); releaseFocus(open[slot]); }
         var candidate = { page: 0, cursor: 0, interactive: false, binding: binding,
           componentEpoch: componentEpoch, focusEnabled: validated.value !== null,
-          focusPriority: validated.value, root: ids.root, cursorWanted: cursorWanted };
+          focusPriority: validated.value, root: ids.root, cursorWanted: cursorWanted,
+          updateRecord: updateRecord };
         candidate.focusRetained = function () { return !released && open[slot] === candidate &&
           bindingValid(binding) && componentEpoch === (modalSlotEpochs[slot] || 0); };
         candidate.focusDiscard = function () { if (open[slot] === candidate) delete open[slot]; };
@@ -1707,6 +1921,7 @@
         close: function (slot) {
           if (released) return;
           var st = open[slot];
+          cancelDirtyState(st);
           delete openAttempts[slot];
           delete paintTransactions[slot];
           delete open[slot];
@@ -1724,12 +1939,30 @@
           if (slot == null) { for (var k in open) { if (self.isOpen(Number(k))) paint(Number(k)); } }
           else if (self.isOpen(slot)) paint(slot);
         },
+        invalidate: function (slot) {
+          function invalidateOne(sl) {
+            var st = open[sl];
+            if (!st || !self.isOpen(sl)) return;
+            queueDirty(st, function () { return paint(sl); }, function (expected) {
+              return open[sl] === expected && self.isOpen(sl);
+            }, invalidationPaintable);
+          }
+          if (slot == null) {
+            for (var k in open) if (Object.prototype.hasOwnProperty.call(open, k)) invalidateOne(Number(k));
+          } else invalidateOne(slot);
+        },
         tryRefresh: function (slot) {
           if (released) return releasedResult("modal");
           if (slot == null) return uiFail("InvalidArgument", "needs a player slot");
           var binding = captureBinding(slot);
           if (!bindingValid(binding)) return staleResult();
-          if (!self.isOpen(slot)) return uiFail("InvalidArgument", "hudkit: modal is not open");
+          if (!self.isOpen(slot)) {
+            var updateRecord = modalUpdateRecord(slot, binding, modalSlotEpochs[slot] || 0);
+            var unopenedAttempt = beginUpdate(updateRecord);
+            var unopened = uiFail("InvalidArgument", "hudkit: modal is not open");
+            completeUpdate(updateRecord, unopenedAttempt, unopened);
+            return unopened;
+          }
           var result;
           try { result = paint(slot); }
           catch (err) {
@@ -1768,6 +2001,7 @@
         },
         forget: function (slot) {
           delete openAttempts[slot];
+          cancelDirtyState(open[slot]);
           releaseFocus(open[slot]);
           modalSlotEpochs[slot] = (modalSlotEpochs[slot] || 0) + 1;
           delete paintTransactions[slot]; delete open[slot];
@@ -1781,6 +2015,9 @@
             if (Object.prototype.hasOwnProperty.call(open, sl)) self.close(Number(sl));
           }
           released = true;
+          for (var ur in modalUpdateRecords) {
+            if (Object.prototype.hasOwnProperty.call(modalUpdateRecords, ur)) removeDirty(modalUpdateRecords[ur]);
+          }
           delete modalRoutes[idx];
           releaseSlot("modal", idx);
           for (var rm = 0; rm < liveModals.length; rm++) {
@@ -1874,6 +2111,8 @@
       forSlot: function (slot) {
         return makeKitPlayer(slot, captureBinding(slot));
       },
+      // Test/benchmark seam: this is the actual dirty-record queue, not an inferred counter.
+      _pendingInvalidationCount: function () { return dirtyUpdates.length; },
       budget: function () {
         var p = pool();
         return {
