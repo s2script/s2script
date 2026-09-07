@@ -16,6 +16,22 @@ import type { EntityRef } from "@s2script/sdk/entity";
 /** Result of a drive call: null on success, or a human-readable reason it did not happen. */
 export type HudResult = string | null;
 
+export type UiErrorCode = "NotReady" | "StaleClient" | "Released" |
+  "Unavailable" | "PoolExhausted" | "Busy" | "InvalidArgument" | "PaintFailed";
+
+export type UiResult<T> = { readonly ok: true; readonly value: T } |
+  { readonly ok: false; readonly error: {
+    readonly code: UiErrorCode;
+    readonly message: string;
+  } };
+
+export type UiStatus = {
+  readonly server: "ready" | "not-ready" | "unavailable";
+  /** Server-side state cannot prove that the client's workshop content rendered. */
+  readonly clientContent: "unknown";
+  readonly reason: string | null;
+};
+
 /** One pre-declared row/slot in a pooled collection. */
 export interface LayoutSlot {
   readonly id: string;
@@ -95,6 +111,7 @@ export interface HudPlayer {
   /** Whether this retained view still belongs to the current client connection. */
   isValid(): boolean;
   show(panelId: string, opts?: { cursor?: boolean }): HudResult;
+  tryShow(panelId: string, opts?: { cursor?: boolean }): UiResult<void>;
   hide(panelId: string): HudResult;
   cursor(on: boolean): HudResult;
   /** Set text where panel id equals the dialog variable name. Also accepts a field map. */
@@ -141,7 +158,10 @@ export interface HudLayout {
    * {@link CustomHudLayout.create}: after a client is `SIGNON_ACTIVE`. Idempotent.
    */
   ensure(): HudResult;
+  /** Server-side drive readiness. Client workshop/render acknowledgement is not observable. */
+  status(): UiStatus;
   show(slot: number, panelId: string, opts?: { cursor?: boolean }): HudResult;
+  tryShow(slot: number, panelId: string, opts?: { cursor?: boolean }): UiResult<void>;
   hide(slot: number, panelId: string): HudResult;
   cursor(slot: number, on: boolean): HudResult;
   set(slot: number, id: string, value: string | number): HudResult;
@@ -323,9 +343,13 @@ export interface ModalView {
   /** Throws a descriptive error when the HUD cannot be painted or shown. */
   open(opts?: { cursor?: boolean }): ModalView;
   tryOpen(opts?: { cursor?: boolean }): ModalOpenResult;
+  /** Attempt to open with a stable, machine-readable failure category. */
+  tryOpenResult(opts?: { cursor?: boolean }): UiResult<ModalView>;
   close(): void;
   isOpen(): boolean;
   refresh(): void;
+  /** Repaint this bound player's modal and report the submitted drive result. */
+  tryRefresh(): UiResult<void>;
   page(delta: number): void;
   select(index: number): void;
   cursor(): number;
@@ -337,12 +361,16 @@ export interface Modal {
   open(slot: number, opts?: { cursor?: boolean }): ModalView;
   /** Attempt to open; reports paint/show failures without throwing. */
   tryOpen(slot: number, opts?: { cursor?: boolean }): ModalOpenResult;
+  /** Attempt to open with a stable, machine-readable failure category. */
+  tryOpenResult(slot: number, opts?: { cursor?: boolean }): UiResult<ModalView>;
   /** Grab or release the mouse without closing the sheet. */
   setCursor(slot: number, on: boolean): void;
   close(slot: number): void;
   isOpen(slot: number): boolean;
   /** Repaint from live data. Omit `slot` to repaint every player who has it open. */
   refresh(slot?: number): void;
+  /** Repaint one player and report the submitted drive result. */
+  tryRefresh(slot: number): UiResult<void>;
   page(slot: number, delta: number): void;
   /** Select by ABSOLUTE index into the full row list; pages to it if needed. */
   select(slot: number, index: number): void;
@@ -372,6 +400,8 @@ export interface BadgeView {
    */
   isValid(): boolean;
   show(data?: { title?: string; text?: string }): void;
+  /** Repaint this badge and report the submitted drive result. */
+  tryShow(data?: { title?: string; text?: string }): UiResult<void>;
   hide(): void;
 }
 
@@ -479,10 +509,14 @@ export interface DashboardView {
    */
   isValid(): boolean;
   open(opts?: { tab?: string; cursor?: boolean }): DashboardView;
+  /** Attempt to open with a stable, machine-readable failure category. */
+  tryOpenResult(opts?: { tab?: string; cursor?: boolean }): UiResult<DashboardView>;
   close(): void;
   isOpen(): boolean;
   setTab(tabId: string): void;
   refresh(): void;
+  /** Repaint this bound player's dashboard and report the submitted drive result. */
+  tryRefresh(): UiResult<void>;
 }
 
 /**
@@ -491,10 +525,14 @@ export interface DashboardView {
  */
 export interface Dashboard {
   open(slot: number, opts?: { tab?: string; cursor?: boolean }): DashboardView;
+  /** Attempt to open with a stable, machine-readable failure category. */
+  tryOpenResult(slot: number, opts?: { tab?: string; cursor?: boolean }): UiResult<DashboardView>;
   close(slot: number): void;
   isOpen(slot: number): boolean;
   setTab(slot: number, tabId: string): void;
   refresh(slot?: number): void;
+  /** Repaint one player and report the submitted drive result. */
+  tryRefresh(slot: number): UiResult<void>;
   forSlot(slot: number): DashboardView;
 }
 
@@ -530,6 +568,8 @@ export interface HudKit {
   readonly hud: HudLayout;
   /** Claim a pooled modal. Null when all are in use. */
   modal(spec: ModalSpec): Modal | null;
+  /** Claim a pooled modal and expose pool exhaustion as a structured result. */
+  tryModal(spec: ModalSpec): UiResult<Modal>;
   /**
    * Bind the shared TopMenu dashboard. Last spec wins. Always returns a handle
    * (the panel is a single root, not a pool).
@@ -537,6 +577,8 @@ export interface HudKit {
   dashboard(spec: DashboardSpec): Dashboard;
   /** Claim a pooled corner badge. Null when all are in use. */
   badge(spec?: BadgeSpec): Badge | null;
+  /** Claim a pooled corner badge and expose pool exhaustion as a structured result. */
+  tryBadge(spec?: BadgeSpec): UiResult<Badge>;
   toast(slot: number, spec: ToastSpec): HudResult;
   callout(slot: number, spec: CalloutSpec): HudResult;
   banner(slot: number, spec: BannerSpec): HudResult;

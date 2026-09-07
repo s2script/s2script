@@ -17,6 +17,8 @@ function evalFile(name) {
   new Function(src)();
 }
 
+function plain(value) { return JSON.parse(JSON.stringify(value)); }
+
 test.afterEach(() => {
   delete globalThis.__s2_game_ns;
   delete globalThis.__s2pkg_cs2;
@@ -94,7 +96,7 @@ test("CS2 prelude defers hudkit binding to the plugin's ctx-bound ui base", () =
   // core's chat renderer must still be the registered menu renderer at this point.
   assert.deepEqual(registered, {}, "menuhud must not overwrite the core chat renderer at prelude eval");
   assert.equal(voteRenderer, undefined, "voterail must not register a tally renderer at prelude eval");
-  for (const member of ["modal", "dashboard", "badge", "toast", "callout", "banner",
+  for (const member of ["modal", "tryModal", "dashboard", "badge", "tryBadge", "toast", "callout", "banner",
     "motd", "forSlot", "hideAll", "forget", "ensure", "budget"]) {
     assert.throws(() => hudkit[member](),
       new RegExp("hudkit\\." + member + " requires plugin context.*OnPluginStart"), member);
@@ -663,6 +665,191 @@ test("ambient hudkit remains usable in callbacks after initialization has settle
   assert.ok(kit.modal({ rows: [] }), "a later callback can claim a released slot");
   assert.equal(kit.ensure(), null, "successful HudResult is null");
   assert.equal(typeof kit.budget().cap, "number");
+});
+
+test("structured modal and badge factories report pool exhaustion and recover after release", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const badModalSpec = {};
+  Object.defineProperty(badModalSpec, "pageSize", { get() { throw new Error("bad modal spec"); } });
+  assert.deepEqual(plain(p.hudkit.tryModal(badModalSpec)), {
+    ok: false, error: { code: "InvalidArgument", message: "bad modal spec" },
+  });
+  assert.ok(w.owners.every(owner => owner === null), "failed structured construction releases its modal claim");
+  const modals = Array.from({ length: 6 }, () => p.hudkit.tryModal({ rows: [] }));
+  assert.ok(modals.every(result => result.ok));
+  assert.deepEqual(plain(p.hudkit.tryModal({ rows: [] })), {
+    ok: false,
+    error: { code: "PoolExhausted", message: "hudkit: modal pool exhausted" },
+  });
+  modals[0].value.release();
+  const recoveredModal = p.hudkit.tryModal({ rows: [] });
+  assert.equal(recoveredModal.ok, true);
+  for (const result of modals.slice(1)) result.value.release();
+  recoveredModal.value.release();
+
+  const badBadgeSpec = {};
+  Object.defineProperty(badBadgeSpec, "corner", { get() { throw new Error("bad badge spec"); } });
+  assert.deepEqual(plain(p.hudkit.tryBadge(badBadgeSpec)), {
+    ok: false, error: { code: "InvalidArgument", message: "bad badge spec" },
+  });
+  assert.ok(w.owners.every(owner => owner === null), "failed structured construction releases its badge claim");
+  const badges = Array.from({ length: 4 }, () => p.hudkit.tryBadge());
+  assert.ok(badges.every(result => result.ok));
+  assert.deepEqual(plain(p.hudkit.tryBadge()), {
+    ok: false,
+    error: { code: "PoolExhausted", message: "hudkit: badge pool exhausted" },
+  });
+  badges[0].value.release();
+  assert.equal(p.hudkit.tryBadge().ok, true);
+});
+
+test("structured component operations distinguish stale and released lifetimes", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const modal = p.hudkit.tryModal({ rows: [] }).value;
+  const modalView = modal.tryOpenResult(1).value;
+  const dashboard = p.hudkit.dashboard({ title: "Dash", tabs: [], rows: () => [] });
+  const dashView = dashboard.tryOpenResult(1).value;
+  const badge = p.hudkit.tryBadge().value;
+  const badgeView = badge.show(1, { text: "before" });
+
+  w.replace(1);
+  const beforeStale = w.writes.length;
+  assert.deepEqual(plain(modalView.tryOpenResult()), {
+    ok: false, error: { code: "StaleClient", message: "hudkit: stale client or component" },
+  });
+  assert.deepEqual(plain(modalView.tryRefresh()), {
+    ok: false, error: { code: "StaleClient", message: "hudkit: stale client or component" },
+  });
+  assert.deepEqual(plain(dashView.tryOpenResult()), {
+    ok: false, error: { code: "StaleClient", message: "hudkit: stale client or component" },
+  });
+  assert.deepEqual(plain(dashView.tryRefresh()), {
+    ok: false, error: { code: "StaleClient", message: "hudkit: stale client or component" },
+  });
+  assert.deepEqual(plain(badgeView.tryShow({ text: "wrong" })), {
+    ok: false, error: { code: "StaleClient", message: "hudkit: stale client or component" },
+  });
+  assert.equal(w.writes.length, beforeStale);
+
+  const currentModalView = modal.tryOpenResult(1).value;
+  const currentBadgeView = badge.show(1, { text: "current" });
+  modal.release();
+  badge.release();
+  const beforeReleased = w.writes.length;
+  assert.deepEqual(plain(currentModalView.tryOpenResult()), {
+    ok: false, error: { code: "Released", message: "hudkit: modal has been released" },
+  });
+  assert.deepEqual(plain(currentModalView.tryRefresh()), {
+    ok: false, error: { code: "Released", message: "hudkit: modal has been released" },
+  });
+  assert.deepEqual(plain(currentBadgeView.tryShow({ text: "wrong" })), {
+    ok: false, error: { code: "Released", message: "hudkit: badge has been released" },
+  });
+  assert.equal(w.writes.length, beforeReleased);
+});
+
+test("structured opens classify missing clients, unavailable bindings, and partial paint failures", () => {
+  const pendingWorld = pluginWorld({ notReady: true }), pendingPlugin = pendingWorld.plugin();
+  const pendingModal = pendingPlugin.hudkit.tryModal({ title: "Pending" }).value;
+  assert.equal(pendingModal.tryOpenResult(2).error.code, "NotReady");
+  pendingModal.release();
+
+  const missingClientWorld = pluginWorld(), missingClientPlugin = missingClientWorld.plugin();
+  missingClientWorld.disconnect(7);
+  const missingClientModal = missingClientPlugin.hudkit.tryModal({ rows: [] }).value;
+  assert.deepEqual(plain(missingClientModal.tryOpenResult(7)), {
+    ok: false, error: { code: "StaleClient", message: "hudkit: stale client or component" },
+  });
+
+  const unavailableWorld = pluginWorld({ unresolved: "setDialogVariableStringForPlayer" });
+  const unavailablePlugin = unavailableWorld.plugin();
+  const unavailableModal = unavailablePlugin.hudkit.tryModal({ title: "Unavailable" }).value;
+  assert.deepEqual(plain(unavailableModal.tryOpenResult(2)), {
+    ok: false,
+    error: {
+      code: "Unavailable",
+      message: "unavailable: signature unresolved",
+    },
+  });
+  assert.equal(unavailableWorld.writes.some(call =>
+    call.name === "setInputCaptureEnabledForPlayer" && call.args[2] === true), false);
+  unavailableModal.release();
+  assert.ok(unavailableWorld.owners.every(owner => owner === null));
+
+  const options = {};
+  const partialWorld = pluginWorld(options), partialPlugin = partialWorld.plugin();
+  const partialModal = partialPlugin.hudkit.tryModal({ title: "Partial", rows: [{ a: "Row" }] }).value;
+  options.failInvoke = "setDialogVariableStringForPlayer";
+  assert.deepEqual(plain(partialModal.tryOpenResult(2)), {
+    ok: false,
+    error: {
+      code: "PaintFailed",
+      message: "setDialogVariableStringForPlayer: engine invocation failed",
+    },
+  });
+  assert.equal(partialModal.isOpen(2), false);
+  assert.equal(partialWorld.writes.some(call =>
+    call.name === "setInputCaptureEnabledForPlayer" && call.args[2] === true), false);
+  partialModal.release();
+  assert.ok(partialWorld.owners.every(owner => owner === null));
+
+  const dashOptions = { failInvoke: "setDialogVariableStringForPlayer" };
+  const dashWorld = pluginWorld(dashOptions), dashPlugin = dashWorld.plugin();
+  const dashboard = dashPlugin.hudkit.dashboard({ title: "Partial dashboard",
+    tabs: [{ id: "main", title: "Main" }], rows: () => [] });
+  assert.equal(dashboard.tryOpenResult(2).error.code, "PaintFailed");
+  assert.equal(dashboard.isOpen(2), false);
+  assert.equal(dashWorld.writes.some(call =>
+    call.name === "setInputCaptureEnabledForPlayer" && call.args[2] === true), false);
+
+  const badgeWorld = pluginWorld(), badgePlugin = badgeWorld.plugin();
+  const badge = badgePlugin.hudkit.tryBadge().value;
+  const badgeView = badge.show(2, { text: "Before" });
+  badgeWorld.writes.length = 0;
+  const badText = { toString() { throw new Error("badge conversion failed"); } };
+  assert.deepEqual(plain(badgeView.tryShow({ text: badText })), {
+    ok: false, error: { code: "PaintFailed", message: "badge conversion failed" },
+  });
+  assert.equal(badgeWorld.writes.length, 0);
+});
+
+test("structured refresh requires an open presentation", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const modal = p.hudkit.tryModal({ rows: [] }).value;
+  const dashboard = p.hudkit.dashboard({ title: "Dash", tabs: [], rows: () => [] });
+  assert.equal(modal.tryRefresh().error.code, "InvalidArgument");
+  assert.equal(dashboard.tryRefresh().error.code, "InvalidArgument");
+  assert.equal(modal.tryRefresh(2).error.code, "InvalidArgument");
+  assert.equal(dashboard.tryRefresh(2).error.code, "InvalidArgument");
+});
+
+test("structured modal and dashboard refresh report partial paint and disable actions until retry", () => {
+  const options = {};
+  const w = pluginWorld(options), p = w.plugin();
+  const picked = [];
+  let modalTitle = "Modal one", dashTitle = "Dash one";
+  const modal = p.hudkit.tryModal({ title: () => modalTitle, rows: [{ id: "modal", a: "Modal" }],
+    onPick: () => picked.push("modal") }).value;
+  const dashboard = p.hudkit.dashboard({ title: () => dashTitle, tabs: [{ id: "tab", title: "Tab" }],
+    rows: () => [{ id: "dash", a: "Dash" }], onPick: () => picked.push("dash") });
+  const modalView = modal.tryOpenResult(2).value;
+  const dashView = dashboard.tryOpenResult(2).value;
+
+  modalTitle = "Modal two"; dashTitle = "Dash two";
+  options.failInvoke = "setDialogVariableStringForPlayer";
+  assert.equal(modal.tryRefresh(2).error.code, "PaintFailed");
+  assert.equal(modalView.tryRefresh().error.code, "PaintFailed");
+  assert.equal(dashboard.tryRefresh(2).error.code, "PaintFailed");
+  assert.equal(dashView.tryRefresh().error.code, "PaintFailed");
+  options.failInvoke = null;
+  p.click(2, "s2_m0_r0");
+  p.click(2, "s2_dash_r0");
+  assert.deepEqual(picked, []);
+  assert.deepEqual(plain(modal.tryRefresh(2)), { ok: true });
+  assert.deepEqual(plain(dashboard.tryRefresh(2)), { ok: true });
+  p.click(2, "s2_m0_r0");
+  p.click(2, "s2_dash_r0");
+  assert.deepEqual(picked, ["modal", "dash"]);
 });
 
 test("two plugin modals and a manual cursor token cannot release each other's capture", () => {

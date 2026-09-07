@@ -27,9 +27,12 @@ test.afterEach(() => {
 // A tiny fake world: entities are {index, id, name, isValid()} like real EntityRefs (id is the
 // host-minted identity the implementation must key its caches on), and every engine call is
 // recorded verbatim so a test can distinguish "suppressed by cache" from "sent".
-function mount() {
+function mount({ active = true, missingCalls = [] } = {}) {
   const calls = [];
   const entities = [];
+  const missing = new Set(missingCalls);
+  const engineFailures = new Set();
+  let captureFailure = null;
   let nextId = 1;
 
   function create(targetname) {
@@ -49,12 +52,18 @@ function mount() {
     createEntity: (_cls, kv) => create(kv.targetname),
   };
   globalThis.__s2pkg_cs2_calls = {
-    call: (name) => (...args) => { calls.push({ name, args }); },
-    status: () => "",
+    call: (name) => missing.has(name) ? null : (...args) => {
+      calls.push({ name, args });
+      return engineFailures.has(name) ? null : undefined;
+    },
+    status: (name) => missing.has(name) ? "degraded: missing test binding" : "available",
   };
   const switches = require("./shared-switch-fixture.js").sharedSwitchFixture(
     (index, id) => entities.find(e => e.index === index && e.id === id && e.valid),
-    (name, entity, slot, on) => { calls.push({ name, args: [entity, slot, on] }); return null; });
+    (name, entity, slot, on) => {
+      calls.push({ name, args: [entity, slot, on] });
+      return captureFailure;
+    });
   globalThis.__s2_shared_entity_switch = switches.native("test");
   const mapStartHandlers = [];
   globalThis.__s2pkg_server = {
@@ -72,7 +81,7 @@ function mount() {
   globalThis.__s2pkg_clients = {
     _same: (a, b) => !!a && a === b,
     Clients: {
-      all: () => [{ signonState: 6 }],
+      all: () => active ? [{ signonState: 6 }] : [],
       fromSlot: slot => clients.get(slot) || null,
       onActive: (fn) => activeHandlers.push(fn),
       onDisconnect: (fn) => disconnectHandlers.push(fn),
@@ -101,6 +110,8 @@ function mount() {
     },
     disconnect(slot) { const client = clients.get(slot); clients.delete(slot); switches.clearSlot(slot); disconnectHandlers.forEach((f) => f(client)); },
     connect,
+    failEngine(name, on = true) { if (on) engineFailures.add(name); else engineFailures.delete(name); },
+    failCapture(message) { captureFailure = message; },
     // Mid-map replacement WITHOUT any lifecycle notification: the entity is killed and an
     // identically-named one appears (as after a plugin elsewhere re-created it). The huds under
     // test are told nothing — they must notice by identity.
@@ -241,10 +252,18 @@ test("setDisabled's book survives the identity reset its own paint triggers", (t
 });
 
 
-test("missing host capture support is named and show rolls back its visible class", () => {
+test("status and cursor-backed tryShow expose missing host capture support", () => {
   const m = mount(), hud = m.ns.hud();
   delete globalThis.__s2_shared_entity_switch;
-  assert.match(hud.show(2, "panel", { cursor: true }), /unavailable: shared entity switch/);
+  assert.deepEqual(hud.status(), {
+    server: "unavailable",
+    clientContent: "unknown",
+    reason: "__s2_shared_entity_switch: unavailable",
+  });
+  assert.deepEqual(hud.tryShow(2, "panel", { cursor: true }), {
+    ok: false,
+    error: { code: "Unavailable", message: "unavailable: shared entity switch host support" },
+  });
   const paint = m.callsFor("setHasClassForPlayer").filter(c => c.args[2] === "panel");
   assert.deepEqual(paint.map(c => c.args[4]), [0, 1]);
   assert.equal(m.callsFor("setInputCaptureEnabledForPlayer").length, 0, "no raw fallback");
@@ -258,4 +277,105 @@ test("host acquire errors roll back show and a later retry can succeed", () => {
   globalThis.__s2_shared_entity_switch = native;
   assert.equal(hud.show(2, "panel", { cursor: true }), null);
   assert.deepEqual(m.callsFor("setInputCaptureEnabledForPlayer").map(c => c.args[2]), [true]);
+});
+
+test("tryShow reports server readiness without claiming client content acknowledgement", () => {
+  const pending = mount({ active: false }).ns.hud();
+  assert.deepEqual(pending.status(), {
+    server: "not-ready",
+    clientContent: "unknown",
+    reason: "world not ready — wait for an active client before driving HUDs",
+  });
+
+  const m = mount();
+  const hud = m.ns.hud();
+  assert.deepEqual(hud.status(), { server: "ready", clientContent: "unknown", reason: null });
+  assert.deepEqual(hud.tryShow(2, "panel"), { ok: true, value: undefined });
+  assert.deepEqual(hud.forSlot(2).tryShow("other"), { ok: true, value: undefined });
+});
+
+test("structured drives classify unavailable bindings and missing entities at the source", () => {
+  const unavailable = mount({ missingCalls: ["setHasClassForPlayer"] }).ns.hud();
+  assert.deepEqual(unavailable.status(), {
+    server: "unavailable",
+    clientContent: "unknown",
+    reason: "setHasClassForPlayer: degraded: missing test binding",
+  });
+  assert.deepEqual(unavailable.tryShow(2, "panel"), {
+    ok: false,
+    error: { code: "Unavailable", message: "unavailable: degraded: missing test binding" },
+  });
+
+  const m = mount();
+  const hud = m.ns.hud();
+  m.killLive();
+  assert.deepEqual(hud.tryShow(2, "panel"), {
+    ok: false,
+    error: {
+      code: "NotReady",
+      message: "custom_hud_layout entity unavailable (stale or create failed)",
+    },
+  });
+});
+
+test("structured paint and capture failures roll back visibility and release capture", () => {
+  const m = mount();
+  const hud = m.ns.hud();
+
+  m.failCapture("unavailable: injected capture failure");
+  assert.deepEqual(hud.tryShow(2, "panel", { cursor: true }), {
+    ok: false,
+    error: { code: "PaintFailed", message: "unavailable: injected capture failure" },
+  });
+  assert.deepEqual(
+    m.callsFor("setHasClassForPlayer").filter(c => c.args[2] === "panel").map(c => c.args[4]),
+    [0, 1],
+  );
+
+  m.failCapture(null);
+  assert.deepEqual(hud.tryShow(2, "panel", { cursor: true }), { ok: true, value: undefined });
+  m.failEngine("setHasClassForPlayer");
+  assert.deepEqual(hud._drive.hide(2, "panel"), {
+    ok: false,
+    error: {
+      code: "PaintFailed",
+      message: "setHasClassForPlayer: engine invocation failed",
+    },
+  });
+  assert.equal(
+    m.callsFor("setInputCaptureEnabledForPlayer").filter(c => c.args[2] === false).length,
+    1,
+    "hide releases capture even when its class paint fails",
+  );
+});
+
+test("structured retained views reject stale and coercion-reentrant clients before engine writes", () => {
+  const m = mount();
+  const hud = m.ns.hud();
+  const retained = hud.forSlot(3);
+  m.disconnect(3);
+  m.connect(3);
+  const beforeStale = m.calls.length;
+  assert.deepEqual(retained.tryShow("panel"), {
+    ok: false,
+    error: { code: "StaleClient", message: "stale client" },
+  });
+  assert.equal(m.calls.length, beforeStale);
+
+  const fresh = hud.forSlot(4);
+  const panel = { toString() { m.disconnect(4); m.connect(4); return "panel"; } };
+  const beforeReentrant = m.calls.length;
+  assert.deepEqual(fresh.tryShow(panel), {
+    ok: false,
+    error: { code: "StaleClient", message: "stale client" },
+  });
+  assert.equal(m.calls.length, beforeReentrant, "coercion must not write to the replacement client");
+
+  const directPanel = { toString() { m.disconnect(5); m.connect(5); return "panel"; } };
+  const beforeDirect = m.calls.length;
+  assert.deepEqual(hud.tryShow(5, directPanel), {
+    ok: false,
+    error: { code: "StaleClient", message: "stale client" },
+  });
+  assert.equal(m.calls.length, beforeDirect, "a slot-first drive stays bound to its entry client");
 });

@@ -4,9 +4,31 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import vm from "node:vm";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { cs2AddonBundle } from "./cs2-addon.mjs";
 import { sharedSwitchFixture } from "../../../games/cs2/js/shared-switch-fixture.js";
 import { installClientHost } from "./client-host.mjs";
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../../..");
+
+function compileUiContract(source) {
+  const filename = join(repoRoot, "ui-result-contract.ts");
+  const configFile = ts.readConfigFile(join(repoRoot, "tsconfig.base.json"), ts.sys.readFile);
+  const config = ts.parseJsonConfigFileContent(configFile.config, ts.sys, repoRoot);
+  const host = ts.createCompilerHost(config.options);
+  const getSourceFile = host.getSourceFile.bind(host);
+  host.getSourceFile = (name, languageVersion, ...args) => name === filename
+    ? ts.createSourceFile(name, source, languageVersion, true)
+    : getSourceFile(name, languageVersion, ...args);
+  const program = ts.createProgram(
+    [filename, join(repoRoot, "packages/sdk/globals.d.ts")],
+    config.options,
+    host,
+  );
+  return ts.getPreEmitDiagnostics(program);
+}
 
 const HUD_CALLS = [
   "setHasClassForPlayer",
@@ -620,4 +642,43 @@ test("retained HUD views expose connection validity while fresh slot lookups ado
   layout.ensure();
   assert.equal(replaced.isValid(), true, "low-level views can drive a replacement layout for the same client");
   assert.equal(layout.forSlot(0).isValid(), true);
+});
+
+test("UiResult and low-level tryShow expose a discriminated public contract", () => {
+  const diagnostics = compileUiContract(`
+import { CustomHudLayout, type HudPlayer, type UiErrorCode, type UiResult, type UiStatus } from "@s2script/cs2";
+declare const player: HudPlayer;
+const layout = CustomHudLayout.probe();
+const direct: UiResult<void> = layout.tryShow(1, "panel", { cursor: true });
+const bound: UiResult<void> = player.tryShow("panel");
+const status: UiStatus = layout.status();
+if (direct.ok) {
+  const value: void = direct.value;
+} else {
+  const code: UiErrorCode = direct.error.code;
+  const message: string = direct.error.message;
+}
+void bound; void status;
+`);
+  assert.equal(diagnostics.length, 0, ts.formatDiagnostics(diagnostics, {
+    getCurrentDirectory: () => repoRoot,
+    getCanonicalFileName: name => name,
+    getNewLine: () => "\n",
+  }));
+});
+
+test("UiResult rejects invalid codes and value types", () => {
+  const diagnostics = compileUiContract(`
+import type { HudPlayer, UiErrorCode, UiResult } from "@s2script/cs2";
+const invalid: UiErrorCode = "NoSuchUiError";
+const wrongVoid: UiResult<void> = { ok: true, value: 1 };
+const wrongPlayer: UiResult<HudPlayer> = { ok: true, value: undefined };
+void invalid; void wrongVoid; void wrongPlayer;
+`);
+  assert.ok(diagnostics.length >= 3, ts.formatDiagnostics(diagnostics, {
+    getCurrentDirectory: () => repoRoot,
+    getCanonicalFileName: name => name,
+    getNewLine: () => "\n",
+  }));
+  assert.ok(diagnostics.every(diagnostic => diagnostic.code === 2322), "all rejected assignments are type mismatches");
 });
