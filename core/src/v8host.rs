@@ -6485,7 +6485,7 @@ pub(crate) fn frame_async_drain() {
             resolve_db(host, &entry, c.result);
         }
         // Poll ws/net. The tick only polls: each module matches its own signal kinds, queues
-        // events internally, and hands back connect results + deferred drops.
+        // events internally, and hands back connect results + failed-connect retirements.
         //
         // ORDERING (load-bearing): Connected/ConnectFailed resolve/reject the connect Promise
         // INSIDE this drain (before the microtask checkpoint below, so the plugin's `.then` —
@@ -6527,8 +6527,8 @@ pub(crate) fn frame_async_drain() {
         // this drain has run, so a `.then` that subscribes to the connection it was just handed has
         // already been able to do so. Dropping earlier is what made a server dying right after the
         // handshake look like a connection that simply never spoke.
-        for id in ws.drops { crate::ws::drop_conn(id); }
-        for id in net.drops { crate::net::drop_conn(id); }
+        for id in ws.drops { crate::ws::retire_conn(id); }
+        for id in net.drops { crate::net::retire_conn(id); }
     });
     // HOST + scope released: a just-completed last timer may make the detour undesired, or a
     // continuation may have queued new async keeping it desired.  Reconcile now.
@@ -7034,17 +7034,15 @@ fn teardown_ledger_and_dispose(id: &str) {
                 }
                 plugin::Resource::WsConn(conn_id) => {
                     // A late/never `close()` — teardown closes the ws connection now regardless of
-                    // owner (the ledger owns the id; `drop_conn` mirrors `db::close`'s idempotence —
-                    // an already-removed conn_id is a harmless no-op inside ws::drop_conn). This also
-                    // covers the ConnectFailed case (the drain step already called drop_conn once).
-                    crate::ws::drop_conn(conn_id);
+                    // owner. A missing conn_id is a harmless no-op, including when public retirement
+                    // already removed it after a connect failure or close callback.
+                    crate::ws::shutdown_conn(conn_id);
                 }
                 plugin::Resource::NetConn(conn_id) => {
                     // A late/never `close()` — teardown drops the raw socket now regardless of owner
-                    // (the ledger owns the id; `net::drop_conn` is idempotent — an already-removed
-                    // conn_id is a harmless no-op). Also covers the ConnectFailed/Closed cases (the
-                    // drain step already called drop_conn once).
-                    crate::net::drop_conn(conn_id);
+                    // (the ledger owns the id). A missing conn_id is a harmless no-op, including when
+                    // public retirement already removed it after a connect failure or close callback.
+                    crate::net::shutdown_conn(conn_id);
                 }
                 plugin::Resource::RemoteDbConn(h) => {
                     // Late/never close() — teardown drops the pool now (idempotent; a wrong/absent
@@ -7512,6 +7510,48 @@ pub(crate) mod frame_tests {
             let generation = registry.generation_of(id).expect("plugin is live");
             registry.active_resource_count(id, generation).expect("generation is current")
         })
+    }
+
+    fn seed_injected_socket_connect(owner: &str, ws_socket: bool) -> (u64, u64) {
+        let generation = REGISTRY.with(|r| r.borrow().generation_of(owner).expect("plugin live"));
+        let g_ctx = PLUGINS.with(|p| p.borrow().get(owner).unwrap().context.clone());
+        let id = HOST.with(|h| {
+            let mut borrow = h.borrow_mut();
+            let host = borrow.as_mut().unwrap();
+            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+            let hs = &mut hs;
+            let ctx = v8::Local::new(hs, &g_ctx);
+            let scope = &mut v8::ContextScope::new(hs, ctx);
+            let (id, promise) = crate::jobs::begin_job(scope);
+            let key = v8::String::new(scope, "__injected_connect").unwrap();
+            ctx.global(scope).set(scope, key.into(), promise.into());
+
+            fn owned(
+                scope: &mut v8::PinScope,
+                args: v8::FunctionCallbackArguments,
+                mut rv: v8::ReturnValue,
+            ) {
+                let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+                let owner = current_plugin(scope).unwrap_or_default();
+                let ws_socket = args.get(1).boolean_value(scope);
+                rv.set(v8::Boolean::new(
+                    scope,
+                    if ws_socket { crate::ws::is_owner(id, &owner) } else { crate::net::is_owner(id, &owner) },
+                ).into());
+            }
+            let global = ctx.global(scope);
+            set_native(scope, global, "__test_socket_owned", owned);
+            id
+        });
+        let resource = if ws_socket { plugin::Resource::WsConn(id) } else { plugin::Resource::NetConn(id) };
+        assert!(record_resource(owner, generation, resource));
+        if ws_socket {
+            crate::ws::test_insert_conn(id, owner.into(), generation);
+        } else {
+            crate::net::test_insert_conn(id, owner.into(), generation);
+        }
+        (id, generation)
     }
 
     // Two per-plugin contexts on the shared isolate each report their OWN id via the
@@ -8171,43 +8211,27 @@ pub(crate) mod frame_tests {
         );
         assert_eq!(crate::jobs::pending(), 1, "ws connect job is in-flight before unload");
         assert!(!crate::jobs::resolver_is_empty());
-        let ids = crate::jobs::resolver_ids();
-        assert_eq!(ids.len(), 1, "exactly one in-flight ws connect resolver");
-        let id = ids[0];
+        assert_eq!(
+            crate::jobs::resolver_ids().len(),
+            1,
+            "exactly one in-flight ws connect resolver"
+        );
         // Unload BEFORE the first drain so the handshake cannot settle into a live context.
         unload_plugin("wsul");
         assert!(!PLUGINS.with(|p| p.borrow().contains_key("wsul")), "context disposed");
         assert_eq!(crate::jobs::pending(), 0, "Job teardown decrements once");
         assert!(crate::jobs::resolver_is_empty());
 
-        // Poll the engine until the completing handshake emits Connected/Closed (or
-        // ConnectFailed). Do not drain first — a drain would consume the signal unseen.
-        // This is the echo-server handshake, not the 10s connect timeout.
-        let mut consumed_late = false;
-        for _ in 0..ASYNC_POLL_TICKS {
-            let poll = crate::ws::poll_signals();
-            if !poll.connects.is_empty() || !poll.drops.is_empty() {
-                for (cid, _result) in &poll.connects {
-                    assert_eq!(*cid, id, "late ws signal must be for the unloaded connect");
-                    assert!(
-                        crate::jobs::complete_job(*cid).is_none(),
-                        "late ws complete of a teardown-dropped resolver is a no-op"
-                    );
-                }
-                consumed_late = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+        // Teardown is separately wakeable from data/connect completion: the worker exits promptly
+        // and silently, rather than producing a completion into the unloaded generation.
+        for _ in 0..200 {
+            if crate::ws::active_worker_count() == 0 { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert!(
-            consumed_late,
-            "echo handshake never produced a late Connected/Closed signal (did not wait for the 10s timeout)"
-        );
-        // This test consumed the late poll itself, so drain will not `drop_conn` any
-        // deferred drops from that batch. Unload may also have raced the handshake
-        // insert — drop again so a post-teardown registry entry cannot leak into
-        // later process-global tests. Idempotent if teardown already removed it.
-        crate::ws::drop_conn(id);
+        assert_eq!(crate::ws::active_worker_count(), 0, "cancelled handshake worker must exit");
+        assert_eq!(crate::ws::active_conn_count(), 0, "teardown removes the registry row");
+        let poll = crate::ws::poll_signals();
+        assert!(poll.connects.is_empty() && poll.drops.is_empty(), "owner shutdown is silent");
         frame_async_drain();
         dispatch_pending_ws_events();
         assert_eq!(crate::jobs::pending(), 0, "late ws signal must not decrement again");
@@ -14073,7 +14097,7 @@ pub(crate) mod frame_tests {
     /// A ws connect failure (connection refused) REJECTS the connect Promise (the `.catch` runs)
     /// rather than resolving or panicking — mirrors `fetch_native_bad_host_rejects_the_promise`,
     /// proving `resolve_ws_connect`'s `Err` branch + the drain's `ConnectFailed` routing (incl. the
-    /// `ws::drop_conn` cleanup of the now-dead registry entry).
+    /// `ws::retire_conn` cleanup of the now-dead registry entry).
     #[test]
     fn ws_connect_bad_host_rejects_the_promise() {
         init(dummy_logger()).unwrap();
@@ -14232,7 +14256,7 @@ pub(crate) mod frame_tests {
     /// Regression: a plugin that calls `ws.close()` from inside its OWN `onMessage` handler —
     /// exactly `plugins/ws-demo`'s pattern (log the echo, then close) — must still see `onClose`
     /// fire. A self-initiated close used to be a silent `write.send(Close) + break` with NO
-    /// `WsSignal` emitted, so `onClose` (and the ledger's `ws::drop_conn` registry cleanup, which
+    /// `WsSignal` emitted, so `onClose` (and the ledger's `ws::retire_conn` cleanup, which
     /// is driven off that same `Closed` signal in the drain) never ran.
     /// A connection that dies the instant it is established must still reach the plugin's onClose.
     ///
@@ -14251,9 +14275,14 @@ pub(crate) mod frame_tests {
                 r#"
             var {{ WebSocket }} = require("@s2script/ws");
             globalThis.__out = "pending";
+            globalThis.__trace = [];
             WebSocket.connect("ws://127.0.0.1:{port}/").then(function (ws) {{
-                ws.onClose(function (code, reason) {{ globalThis.__out = "closed:" + code; }});
-            }}).catch(function (e) {{ globalThis.__out = "rejected"; }});
+                globalThis.__trace.push("connected");
+                ws.onClose(function (code, reason) {{
+                    globalThis.__trace.push("closed");
+                    globalThis.__out = globalThis.__trace.join(",") + ":" + code;
+                }});
+            }}).catch(function (e) {{ globalThis.__out = "rejected:" + String(e); }});
         "#,
                 port = port
             ),
@@ -14266,14 +14295,190 @@ pub(crate) mod frame_tests {
             if read_global_string("wsdead", "__out") != "pending" { settled = true; break; }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        // Either outcome is legitimate — the handshake may lose the race and reject — but SILENCE is
-        // not: a resolved connect whose close nobody hears is the bug.
         assert!(settled, "neither onClose nor catch ever ran: the close was delivered to nobody");
         let out = read_global_string("wsdead", "__out");
         assert!(
-            out.starts_with("closed:") || out == "rejected",
-            "expected a close code or a rejection, got {out:?}"
+            out.starts_with("connected,closed:"),
+            "the connect continuation must subscribe before the same-batch close dispatch; got {out:?}"
         );
+        shutdown();
+    }
+
+    #[test]
+    fn ws_same_batch_connect_message_error_close_keeps_subscription_checkpoint() {
+        init(dummy_logger()).unwrap();
+        load_body("wsbatch", "", "{}");
+        let (id, _) = seed_injected_socket_connect("wsbatch", true);
+        eval_in_context("wsbatch", r#"
+            globalThis.__trace = [];
+            globalThis.__injected_connect.then(function (id) {
+                globalThis.__trace.push("connect:" + __test_socket_owned(id, true));
+                __s2_ws_on(id, "message", function () { globalThis.__trace.push("message:" + __test_socket_owned(id, true)); });
+                __s2_ws_on(id, "error", function () { globalThis.__trace.push("error:" + __test_socket_owned(id, true)); });
+                __s2_ws_on(id, "close", function () { globalThis.__trace.push("close:" + __test_socket_owned(id, true)); });
+            });
+        "#).unwrap();
+        crate::ws::test_inject_batch(id, "payload", "boom");
+        assert!(crate::ws::is_owner(id, "wsbatch"));
+
+        frame_async_drain();
+        assert_eq!(eval_in_context_string("wsbatch", "globalThis.__trace.join(',')"), "connect:true");
+        assert!(crate::ws::is_owner(id, "wsbatch"), "terminal-pending row survives the checkpoint");
+        dispatch_pending_ws_events();
+        assert_eq!(eval_in_context_string("wsbatch", "globalThis.__trace.join(',')"), "connect:true,message:true,error:true,close:true");
+        assert!(!crate::ws::is_owner(id, "wsbatch"));
+        assert_eq!(crate::ws::test_mux_count(id), 0);
+        assert_eq!(active_resources("wsbatch"), 0);
+
+        crate::ws::test_inject_batch(id, "late", "late");
+        frame_async_drain();
+        dispatch_pending_ws_events();
+        assert_eq!(eval_in_context_string("wsbatch", "globalThis.__trace.join(',')"), "connect:true,message:true,error:true,close:true");
+        assert_eq!(active_resources("wsbatch"), 0);
+        shutdown();
+    }
+
+    #[test]
+    fn net_same_batch_connect_data_error_close_keeps_subscription_checkpoint() {
+        init(dummy_logger()).unwrap();
+        load_body("netbatch", "", "{}");
+        let (id, _) = seed_injected_socket_connect("netbatch", false);
+        eval_in_context("netbatch", r#"
+            globalThis.__trace = [];
+            globalThis.__injected_connect.then(function (id) {
+                globalThis.__trace.push("connect:" + __test_socket_owned(id, false));
+                __s2_net_on(id, "data", function () { globalThis.__trace.push("data:" + __test_socket_owned(id, false)); });
+                __s2_net_on(id, "error", function () { globalThis.__trace.push("error:" + __test_socket_owned(id, false)); });
+                __s2_net_on(id, "close", function () { globalThis.__trace.push("close:" + __test_socket_owned(id, false)); });
+            });
+        "#).unwrap();
+        crate::net::test_inject_batch(id, b"payload", "boom");
+        assert!(crate::net::is_owner(id, "netbatch"));
+
+        frame_async_drain();
+        assert_eq!(eval_in_context_string("netbatch", "globalThis.__trace.join(',')"), "connect:true");
+        assert!(crate::net::is_owner(id, "netbatch"), "terminal-pending row survives the checkpoint");
+        dispatch_pending_net_events();
+        assert_eq!(eval_in_context_string("netbatch", "globalThis.__trace.join(',')"), "connect:true,data:true,error:true,close:true");
+        assert!(!crate::net::is_owner(id, "netbatch"));
+        assert_eq!(crate::net::test_mux_count(id), 0);
+        assert_eq!(active_resources("netbatch"), 0);
+
+        crate::net::test_inject_batch(id, b"late", "late");
+        frame_async_drain();
+        dispatch_pending_net_events();
+        assert_eq!(eval_in_context_string("netbatch", "globalThis.__trace.join(',')"), "connect:true,data:true,error:true,close:true");
+        assert_eq!(active_resources("netbatch"), 0);
+        shutdown();
+    }
+
+    #[test]
+    fn ws_thousand_production_workers_plateau_every_lifecycle_store() {
+        init(dummy_logger()).unwrap();
+        load_body("wsstress", "", "{}");
+        let generation = REGISTRY.with(|r| r.borrow().generation_of("wsstress").unwrap());
+        let worker_baseline = crate::ws::active_worker_count();
+        let conn_baseline = crate::ws::active_conn_count();
+        let pending_baseline = crate::ws::test_pending_count();
+        let ledger_baseline = active_resources("wsstress");
+        for cycle in 0..1000u64 {
+            let id = 600_000 + cycle;
+            let resource = plugin::Resource::WsConn(id);
+            assert!(record_resource("wsstress", generation, resource.clone()));
+            assert!(!release_resource("wsstress", generation + 1, &resource), "stale generation released cycle {cycle}");
+            if cycle % 2 == 0 {
+                crate::ws::test_spawn_terminal_worker(id, "wsstress".into(), generation);
+                eval_in_context("wsstress", &format!("__s2_ws_on({id}, 'close', function () {{}});" )).unwrap();
+                assert_eq!(crate::ws::test_mux_count(id), 1);
+                for _ in 0..200 {
+                    let _ = crate::ws::poll_signals();
+                    if crate::ws::test_pending_count() >= 3 { break; }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                assert!(crate::ws::test_pending_count() >= 3, "worker terminal missing at cycle {cycle}");
+                dispatch_pending_ws_events();
+            } else {
+                crate::ws::test_spawn_failed_worker(id, "wsstress".into(), generation);
+                let mut retired = false;
+                for _ in 0..200 {
+                    let poll = crate::ws::poll_signals();
+                    if poll.drops.contains(&id) {
+                        crate::ws::retire_conn(id);
+                        retired = true;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                assert!(retired, "worker connect failure missing at cycle {cycle}");
+            }
+            crate::ws::retire_conn(id);
+            crate::ws::shutdown_conn(id);
+            for _ in 0..200 {
+                if crate::ws::active_worker_count() == worker_baseline { break; }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert_eq!(crate::ws::active_worker_count(), worker_baseline);
+            assert_eq!(crate::ws::active_conn_count(), conn_baseline);
+            assert_eq!(crate::ws::test_pending_count(), pending_baseline);
+            assert_eq!(crate::ws::test_mux_count(id), 0);
+            assert_eq!(active_resources("wsstress"), ledger_baseline);
+        }
+        assert!(crate::ws::try_recv_signal().is_none());
+        shutdown();
+    }
+
+    #[test]
+    fn net_thousand_production_workers_plateau_every_lifecycle_store() {
+        init(dummy_logger()).unwrap();
+        load_body("netstress", "", "{}");
+        let generation = REGISTRY.with(|r| r.borrow().generation_of("netstress").unwrap());
+        let worker_baseline = crate::net::active_worker_count();
+        let conn_baseline = crate::net::active_conn_count();
+        let pending_baseline = crate::net::test_pending_count();
+        let ledger_baseline = active_resources("netstress");
+        for cycle in 0..1000u64 {
+            let id = 700_000 + cycle;
+            let resource = plugin::Resource::NetConn(id);
+            assert!(record_resource("netstress", generation, resource.clone()));
+            assert!(!release_resource("netstress", generation + 1, &resource), "stale generation released cycle {cycle}");
+            if cycle % 2 == 0 {
+                crate::net::test_spawn_terminal_worker(id, "netstress".into(), generation);
+                eval_in_context("netstress", &format!("__s2_net_on({id}, 'close', function () {{}});" )).unwrap();
+                assert_eq!(crate::net::test_mux_count(id), 1);
+                for _ in 0..200 {
+                    let _ = crate::net::poll_signals();
+                    if crate::net::test_pending_count() >= 1 { break; }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                assert!(crate::net::test_pending_count() >= 1, "worker terminal missing at cycle {cycle}");
+                dispatch_pending_net_events();
+            } else {
+                crate::net::test_spawn_failed_worker(id, "netstress".into(), generation);
+                let mut retired = false;
+                for _ in 0..200 {
+                    let poll = crate::net::poll_signals();
+                    if poll.drops.contains(&id) {
+                        crate::net::retire_conn(id);
+                        retired = true;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                assert!(retired, "worker connect failure missing at cycle {cycle}");
+            }
+            crate::net::retire_conn(id);
+            crate::net::shutdown_conn(id);
+            for _ in 0..200 {
+                if crate::net::active_worker_count() == worker_baseline { break; }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert_eq!(crate::net::active_worker_count(), worker_baseline);
+            assert_eq!(crate::net::active_conn_count(), conn_baseline);
+            assert_eq!(crate::net::test_pending_count(), pending_baseline);
+            assert_eq!(crate::net::test_mux_count(id), 0);
+            assert_eq!(active_resources("netstress"), ledger_baseline);
+        }
+        assert!(crate::net::try_recv_signal().is_none());
         shutdown();
     }
 
@@ -14418,7 +14623,7 @@ pub(crate) mod frame_tests {
 
     /// A TCP connect failure (connection refused — port 1) REJECTS the connect Promise (the `.catch`
     /// runs) rather than resolving or panicking — proves `resolve_net_connect`'s `Err` branch + the
-    /// drain's `ConnectFailed` routing (incl. the `net::drop_conn` cleanup of the dead registry entry).
+    /// drain's `ConnectFailed` routing (incl. `net::retire_conn` cleanup of the dead registry entry).
     /// Mirrors `ws_connect_bad_host_rejects_the_promise`.
     #[test]
     fn net_connect_bad_port_rejects_the_promise() {
