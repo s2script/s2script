@@ -5,6 +5,8 @@ import type {
   TypedInterfaceHandle,
   Subscription,
   AttachmentScope,
+  ForwardHandlers,
+  ExactForwardHandlers,
 } from "./interfaces";
 /**
  * @s2script/sdk/plugin — load-window authoring (`hook`, `publish`, `translations`, `Scope`)
@@ -260,6 +262,14 @@ export interface PluginContext {
     name: N,
     attach: (service: TypedInterfaceHandle<InterfaceContracts[N]>, scope: AttachmentScope) => void
   ): Subscription;
+  /** Bind a provider-qualified map of forward names to local handlers. */
+  bindForwards<
+    N extends keyof InterfaceContracts,
+    H extends ForwardHandlers<InterfaceContracts[N]>
+  >(
+    name: N,
+    handlers: ExactForwardHandlers<InterfaceContracts[N], H>
+  ): Subscription;
   /** Allocate a disposable subscription scope (load-window only — the capability originates at load). */
   createScope(): Scope;
 }
@@ -386,4 +396,16 @@ export declare const translations: CtxTranslations;
 export declare function watchOptional<N extends keyof InterfaceContracts>(
   name: N,
   attach: (service: TypedInterfaceHandle<InterfaceContracts[N]>, scope: AttachmentScope) => void
+): Subscription;
+
+/**
+ * Bind provider forward names to local functions during the normal load window.
+ * The returned subscription disposes every registration created by this call.
+ */
+export declare function bindForwards<
+  N extends keyof InterfaceContracts,
+  H extends ForwardHandlers<InterfaceContracts[N]>
+>(
+  name: N,
+  handlers: ExactForwardHandlers<InterfaceContracts[N], H>
 ): Subscription;

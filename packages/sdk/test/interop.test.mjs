@@ -48,6 +48,49 @@ test("protocol 2 infers verified producer and consumer contracts", () => {
   check("producer");
   check("consumer");
 });
+test("named bindings retain provider identity for same-name forwards", () =>
+  check("named-bindings"));
+test("named bindings reject swapped same-name provider handlers", () =>
+  check("named-bindings", (d) => {
+    source(d, `import {bindForwards} from "@s2script/sdk/plugin";
+const racing=(event:{elapsedMs:number})=>console.log(event.elapsedMs);
+const parkour=(event:{checkpoints:number})=>console.log(event.checkpoints);
+bindForwards("@demo/racing",{OnRunFinished:parkour});
+bindForwards("@demo/parkour",{OnRunFinished:racing});`);
+  }, /elapsedMs|checkpoints/));
+test("named bindings infer each provider's exact callback payload", () =>
+  check("named-bindings", (d) => {
+    source(d, `import {bindForwards} from "@s2script/sdk/plugin";
+bindForwards("@demo/racing",{OnRunFinished:event=>{const wrong:string=event.elapsedMs;console.log(wrong)}});`);
+  }, /number.*string/));
+test("named bindings reject unknown forward keys", () =>
+  check("named-bindings", (d) => {
+    source(d, `import {bindForwards} from "@s2script/sdk/plugin";
+bindForwards("@demo/racing",{OnRunFinished:event=>console.log(event.elapsedMs),OnRunFinishedd:()=>{}});`);
+  }, /never/));
+for (const [label, body] of [
+  ["direct call", `import {bindForwards} from "@s2script/sdk/plugin";bindForwards("@demo/racing",{});`],
+  ["aliased call", `import * as sdk from "@s2script/sdk/plugin";const {bindForwards:bind}=sdk;bind("@demo/racing",{});`],
+]) test(`named bindings reject optional dependency ${label}`, () =>
+  check("named-bindings", (d) => {
+    optionalDependency(d);
+    source(d, body);
+  }, /pluginDependencies/));
+test("named bindings reject async decision handlers", () =>
+  check("consumer", (d) => {
+    decisions(d, "consumer");
+    source(d, `import {bindForwards} from "@s2script/sdk/plugin";
+import {HookResult} from "@s2script/sdk/events";
+bindForwards("@demo/counter",{OnRequest:async event=>event.identity?HookResult.Handled:HookResult.Continue});`);
+  }, /Promise|HookResult/));
+test("named bindings retain exact transform patch keys across unions", () =>
+  check("consumer", (d) => {
+    decisions(d, "consumer");
+    source(d, `import {bindForwards} from "@s2script/sdk/plugin";
+import {HookResult} from "@s2script/sdk/events";
+declare const patch:{text:string}|{identity:string};
+bindForwards("@demo/counter",{OnFormat:()=>({result:HookResult.Changed,patch})});`);
+  }, /never|identity/));
 test("protocol 2 rejects misspelled notification at its call site", () =>
   check(
     "consumer",

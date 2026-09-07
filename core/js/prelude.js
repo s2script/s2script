@@ -2019,6 +2019,50 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         });
       }, __s2_iface_watch_dispose);
     };
+    ctx.bindForwards = function (name, handlers) {
+      if (sealed) throw new Error("s2script: ctx.bindForwards outside the load window");
+      var kind = __s2_iface_dep_kind(name);
+      if (kind !== "hard") throw new Error("s2script: ctx.bindForwards('" + name + "') requires a pluginDependencies entry (declared: " + kind + ")");
+      if (!handlers || typeof handlers !== "object") throw new Error("s2script: bindForwards handlers must be an object");
+      var keys = Object.keys(handlers), entries = [];
+      for (var i = 0; i < keys.length; i++) {
+        var handler = handlers[keys[i]];
+        if (typeof handler !== "function") throw new Error("s2script: bindForwards handler '" + keys[i] + "' must be a function");
+        entries.push([keys[i], handler]);
+      }
+      handlers = null; keys = null; handler = null;
+      var subscribe = __s2_iface_on, remove = __s2_iface_dispose;
+      var ids = [], disposed = false;
+      function disposeIds() {
+        var pendingIds = ids; ids = [];
+        var firstError = null;
+        for (var i = 0; i < pendingIds.length; i++) {
+          try { remove(pendingIds[i]); } catch (e) { if (!firstError) firstError = e; }
+        }
+        if (firstError) throw firstError;
+      }
+      ctxReg(function () {
+        if (disposed) return;
+        try {
+          for (var i = 0; i < entries.length; i++) {
+            var id = subscribe(name, entries[i][0], entries[i][1]);
+            if (id) ids.push(id);
+          }
+        } catch (e) {
+          try { disposeIds(); } catch (_rollbackError) {}
+          throw e;
+        } finally {
+          entries = null; subscribe = null;
+        }
+      });
+      return { dispose: function () {
+        if (disposed) return;
+        disposed = true;
+        entries = null; subscribe = null;
+        disposeIds();
+        remove = null;
+      }};
+    };
     ctx.createScope = function () {
       if (sealed) throw new Error("s2script: createScope outside the load window");
       var ids = [], disposers = [], disposed = false;
@@ -2134,6 +2178,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   function use(name) { return __s2_load_ctx_or_throw("use()").use(name); }
   function tryUse(name) { return __s2_load_ctx_or_throw("tryUse()").tryUse(name); }
   function watchOptional(name, attach) { return __s2_load_ctx_or_throw("watchOptional()").watchOptional(name, attach); }
+  function bindForwards(name, handlers) { return __s2_load_ctx_or_throw("bindForwards()").bindForwards(name, handlers); }
   function createScope() { return __s2_load_ctx_or_throw("createScope()").createScope(); }
   var topmenu = {
     addCategory: function (n) { __s2_load_ctx_or_throw("topmenu.addCategory()").topmenu.addCategory(n); },
@@ -2153,6 +2198,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_plugin.use = use;
   globalThis.__s2pkg_plugin.tryUse = tryUse;
   globalThis.__s2pkg_plugin.watchOptional = watchOptional;
+  globalThis.__s2pkg_plugin.bindForwards = bindForwards;
   globalThis.__s2pkg_plugin.createScope = createScope;
   globalThis.__s2pkg_plugin.topmenu = topmenu;
   globalThis.__s2pkg_plugin.translations = translations;

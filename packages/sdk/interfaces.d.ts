@@ -98,6 +98,28 @@ type ExactForwardHandler<D, R> = D extends Transform<infer P, infer W>
     ? unknown
     : never
   : unknown;
+/** Provider forward names mapped to handlers with their exact payload and result types. */
+export type ForwardHandlers<C> = {
+  [K in keyof ContractForwards<C>]?: (
+    payload: ForwardPayload<ContractForwards<C>[K]>
+  ) => ForwardResponse<ContractForwards<C>[K]>;
+};
+/** Rejects keys and transform response fields outside the selected provider contract. */
+export type ExactForwardHandlers<
+  C,
+  H extends ForwardHandlers<C>
+> = H & {
+  [K in keyof H]: K extends keyof ContractForwards<C>
+    ? NonNullable<H[K]> extends (...args: never[]) => unknown
+      ? ExactForwardHandler<
+          ContractForwards<C>[K],
+          ReturnType<Extract<H[K], (...args: never[]) => unknown>>
+        >
+      : never
+    : never;
+} & {
+  [K in Exclude<keyof H, keyof ContractForwards<C>>]: never;
+};
 export type TypedInterfaceHandle<C> = ContractMethods<C> & {
   on<
     K extends keyof ContractForwards<C> & string,

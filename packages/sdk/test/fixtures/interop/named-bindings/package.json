@@ -1,0 +1,1 @@
+{"name":"@demo/named-bindings","version":"1.0.0","main":"src/plugin.ts","s2script":{"interfaceProtocol":2,"pluginDependencies":{"@demo/racing":"^1.0.0","@demo/parkour":"^1.0.0"}}}
