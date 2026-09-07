@@ -525,3 +525,23 @@ test("focus invalidation resends one root tree while preserving other roots and 
   assert.equal(m.calls.length - before, 2);
   assert.ok(m.calls.slice(before).every(call => call.args[1] === 1 && /^root/.test(call.args[2])));
 });
+
+
+test("binding validation reuses a live layout without repeated world scans", () => {
+  const m = mount();
+  const hud = m.ns.hud();
+  hud.setText(0, "title", "same");
+  const binding = hud._captureBinding(0);
+  const originalFind = globalThis.__s2pkg_entity.Entity.findByClass;
+  let scans = 0;
+  globalThis.__s2pkg_entity.Entity.findByClass = (...args) => { scans++; return originalFind(...args); };
+  for (let i = 0; i < 100; i++) assert.equal(hud._bindingIsValid(binding), true);
+  assert.equal(scans, 0, "live handle validation must not enumerate the world");
+  const replacement = m.replaceLiveSilently();
+  assert.equal(hud._bindingIsValid(binding), false, "replacement expires component binding");
+  assert.equal(scans, 1, "dead handle must rediscover the layout");
+  hud.setText(0, "title", "same");
+  assert.equal(m.callsFor("setDialogVariableStringForPlayer").at(-1).args[0], replacement);
+  assert.equal(m.callsFor("setDialogVariableStringForPlayer").length, 2, "replacement receives unchanged text");
+  assert.equal(scans, 1, "rediscovered entity is cached");
+});
