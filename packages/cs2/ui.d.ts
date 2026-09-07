@@ -92,6 +92,8 @@ export type OnCustomHudClickedView = CustomHudClickedView;
 export interface HudPlayer {
   /** 0-based player slot this view drives. */
   readonly slot: number;
+  /** Whether this retained view still belongs to the current client connection. */
+  isValid(): boolean;
   show(panelId: string, opts?: { cursor?: boolean }): HudResult;
   hide(panelId: string): HudResult;
   cursor(on: boolean): HudResult;
@@ -313,6 +315,11 @@ export type ModalOpenResult = { readonly ok: true; readonly view: ModalView }
 /** Per-player view of a claimed {@link Modal}. */
 export interface ModalView {
   readonly slot: number;
+  /**
+   * False after client replacement, component release/forget, or layout replacement. Ordinary
+   * close/open cycles keep the same view valid.
+   */
+  isValid(): boolean;
   /** Throws a descriptive error when the HUD cannot be painted or shown. */
   open(opts?: { cursor?: boolean }): ModalView;
   tryOpen(opts?: { cursor?: boolean }): ModalOpenResult;
@@ -359,6 +366,11 @@ export interface BadgeSpec {
 /** Per-player view of a claimed {@link Badge}. */
 export interface BadgeView {
   readonly slot: number;
+  /**
+   * False after client replacement, badge release/forget, or layout replacement. Ordinary
+   * hide/show cycles keep the same view valid.
+   */
+  isValid(): boolean;
   show(data?: { title?: string; text?: string }): void;
   hide(): void;
 }
@@ -420,6 +432,8 @@ export interface MotdSpec {
 
 export interface MotdHandle {
   readonly slot: number;
+  /** False after close/replacement or when its client/component lifetime ends. */
+  isValid(): boolean;
   close(): void;
 }
 
@@ -459,6 +473,11 @@ export interface DashboardSpec {
 
 export interface DashboardView {
   readonly slot: number;
+  /**
+   * False after client replacement, dashboard spec replacement/forget, or layout replacement.
+   * Ordinary close/open cycles keep the same view valid.
+   */
+  isValid(): boolean;
   open(opts?: { tab?: string; cursor?: boolean }): DashboardView;
   close(): void;
   isOpen(): boolean;
@@ -481,6 +500,8 @@ export interface Dashboard {
 
 export interface HudKitPlayer {
   readonly slot: number;
+  /** Whether this retained player view still belongs to the current client/component lifetime. */
+  isValid(): boolean;
   toast(spec: ToastSpec): HudResult;
   callout(spec: CalloutSpec): HudResult;
   banner(spec: BannerSpec): HudResult;

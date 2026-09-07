@@ -200,6 +200,9 @@
     var visiblePanels = {};
     var lastValue = {};
     var slotViews = {};
+    var slotEpochs = {};
+    var componentSlotEpochs = {};
+    var entityEpoch = 0;
     // Host id of the layout entity every cache above was built against (EntityRef.id — the
     // host-minted identity, the same one the entity system gates liveness on). null = not bound
     // yet. The caches describe state that lives ON that one entity instance, so they are only
@@ -207,18 +210,31 @@
     var boundEntityId = null;
     var slotClients = {};
     var boundClient = null;
+    var boundBinding = null;
 
     function sameClient(a, b) { return globalThis.__s2pkg_clients._same(a, b); }
-    function forgetSlot(slot) {
-      delete disabled[slot]; delete slotViews[slot]; delete slotClients[slot];
+    function bumpSlot(slot) { slotEpochs[slot] = (slotEpochs[slot] || 0) + 1; }
+    function forgetSlot(slot, invalidateView) {
+      componentSlotEpochs[slot] = (componentSlotEpochs[slot] || 0) + 1;
+      if (invalidateView) bumpSlot(slot);
+      delete disabled[slot]; delete slotViews[slot];
+      if (invalidateView) delete slotClients[slot];
       forgetKeyed(meterClass, slot); forgetKeyed(visiblePanels, slot); forgetKeyed(lastValue, slot);
     }
-    function currentClient(slot) {
-      if (boundClient && (boundClient.slot !== slot || !boundClient.isValid())) return null;
+    // Fresh slot-first bindings adopt the actual occupant, even when captured reentrantly
+    // from a retired component's drive. Only primitive writes inherit that ambient fence.
+    function resolveCurrentClient(slot) {
       var current = clientsApi().fromSlot(slot);
       if (!current) return null;
-      if (!sameClient(slotClients[slot], current)) { forgetSlot(slot); slotClients[slot] = current; }
+      if (!sameClient(slotClients[slot], current)) { forgetSlot(slot, true); slotClients[slot] = current; }
       return current;
+    }
+    function currentClient(slot) {
+      if (boundBinding) {
+        return boundBinding.slot === slot && bindingIsValid(boundBinding) ? boundBinding.client : null;
+      }
+      if (boundClient && (boundClient.slot !== slot || !boundClient.isValid())) return null;
+      return resolveCurrentClient(slot);
     }
 
     function cacheKey(slot, kind, a, b) {
@@ -246,10 +262,11 @@
      * host, keyed by entity identity; its entity lifecycle removes them independently of JS.
      *
      * `handlers` is deliberately NOT cleared: click handlers are registered once per button id at
-     * claim time and belong to the plugin, not to the entity. `slotViews` likewise — they are
-     * stateless bound wrappers.
+     * claim time and belong to the plugin. Low-level `slotViews` remain reusable for the same
+     * client, while component bindings carry `entityEpoch` and expire here.
      */
     function resetEntityCaches() {
+      entityEpoch++;
       disabled = {};
       meterClass = {};
       visiblePanels = {};
@@ -272,6 +289,19 @@
       return ent;
     }
 
+    function bindingIsValid(binding) {
+      if (!binding || (typeof binding._componentIsValid === "function" && !binding._componentIsValid())) {
+        return false;
+      }
+      var ent = ctxState.findEntity(layout);
+      if (boundEntityId !== null && ent && boundEntityId !== ent.id) resetEntityCaches();
+      return !!binding.client && binding.client.isValid() &&
+        sameClient(binding.client, clientsApi().fromSlot(binding.slot)) &&
+        !!binding.view && binding.view.isValid() &&
+        binding.slotEpoch === (componentSlotEpochs[binding.slot] || 0) &&
+        binding.entityEpoch === entityEpoch;
+    }
+
     function setClass(slot, panelId, className, on) {
       panelId = String(panelId); className = String(className);
       if (!setHasClassForPlayer) return "unavailable: " + engineStatus("setHasClassForPlayer");
@@ -284,6 +314,7 @@
       if (lastValue[key] === s) return null;
       var err = setHasClassForPlayer(ent, slot, panelId, className, on ? CLASS_HAS : CLASS_DOES_NOT_HAVE);
       if (err) return err;
+      if (!currentClient(slot)) return "stale client";
       lastValue[key] = s;
       return null;
     }
@@ -302,6 +333,7 @@
       if (lastValue[key] === str) return null;
       var err = setDialogVariableStringForPlayer(ent, slot, panelId, variableName, str);
       if (err) return err;
+      if (!currentClient(slot)) return "stale client";
       lastValue[key] = str;
       return null;
     }
@@ -310,12 +342,14 @@
       if (typeof globalThis.__s2_shared_entity_switch !== "function") {
         return "unavailable: shared entity switch host support";
       }
-      if (!currentClient(slot)) return "stale client";
       if (slot < 0) return "needs a player slot";
       var ent = bindEntity(on ? ctxState.ensureEntity(layout) : ctxState.findEntity(layout));
       if (!ent) return on ? ctxState.notReadyReason() : null;
-      return globalThis.__s2_shared_entity_switch("setInputCaptureEnabledForPlayer",
+      if (!currentClient(slot)) return "stale client";
+      var result = globalThis.__s2_shared_entity_switch("setInputCaptureEnabledForPlayer",
         ent.index, ent.id, slot, token, !!on);
+      if (result) return result;
+      return currentClient(slot) ? null : "stale client";
     }
     function acquireCursor(slot, panelId) { return cursorSwitch(slot, "panel:" + panelId, true); }
     function releaseCursor(slot, panelId) { return cursorSwitch(slot, "panel:" + panelId, false); }
@@ -436,6 +470,7 @@
       // Still recorded even when the paint fails (world not ready): dispatchClick suppression is
       // plugin logic and must not depend on the visual having landed.
       var err = setClass(slot, buttonId, "s2-btn-disabled", disabledOn);
+      if (boundBinding && !bindingIsValid(boundBinding)) return err || "stale client";
       var set = disabled[slot];
       if (!set) { set = {}; disabled[slot] = set; }
       if (disabledOn) set[buttonId] = true; else delete set[buttonId];
@@ -452,7 +487,8 @@
       if (client) {
         if (!sameClient(slotClients[slot], client)) return;
         // Deferred disconnect must never repaint or release a replacement occupant's UI.
-        if (clientsApi().fromSlot(slot)) { forgetSlot(slot); return; }
+        var occupant = clientsApi().fromSlot(slot);
+        if (occupant && !sameClient(occupant, client)) { forgetSlot(slot, true); return; }
       }
       // Forget releases only this plugin's leases. The host's unconditional disconnect path
       // clears ALL owners before JS callbacks, even if this plugin never registered a listener.
@@ -488,7 +524,7 @@
           }
         }
       }
-      forgetSlot(slot);
+      forgetSlot(slot, false);
     };
     api.resetEntityCaches = resetEntityCaches;
     api.ensure = function () {
@@ -496,11 +532,19 @@
       return ref ? null : ctxState.notReadyReason();
     };
     api.forSlot = function (slot) {
-      var client = currentClient(slot);
+      var client = resolveCurrentClient(slot);
       var view = slotViews[slot];
-      if (view) return view;
+      if (view && view.isValid()) return view;
+      var capturedSlotEpoch = slotEpochs[slot] || 0;
+      function isValid() {
+        if (!client || !client.isValid()) return false;
+        var occupant = clientsApi().fromSlot(slot);
+        if (!sameClient(client, occupant)) return false;
+        return capturedSlotEpoch === (slotEpochs[slot] || 0);
+      }
       view = {
         slot: slot,
+        isValid: isValid,
         show: function (panelId, opts) { return api.show(slot, panelId, opts); },
         hide: function (panelId) { return api.hide(slot, panelId); },
         cursor: function (on) { return api.cursor(slot, on); },
@@ -510,19 +554,47 @@
         setMeter: function (meterName, percent) { return api.setMeter(slot, meterName, percent); },
         setPool: function (poolName, entries) { return api.setPool(slot, poolName, entries); },
         setDisabled: function (buttonId, on) { return api.setDisabled(slot, buttonId, on); },
-        forget: function () { api.forget(slot); }
+        forget: function () { api.forget(slot, client); }
       };
       Object.keys(view).forEach(function (name) {
-        if (typeof view[name] !== "function") return;
+        if (name === "isValid" || typeof view[name] !== "function") return;
         var call = view[name];
         view[name] = function () {
-          if (!client || !client.isValid()) return name === "forget" ? undefined : "stale client";
+          if (!isValid()) return name === "forget" ? undefined : "stale client";
           var previous = boundClient; boundClient = client;
           try { return call.apply(view, arguments); } finally { boundClient = previous; }
         };
       });
       slotViews[slot] = view;
       return view;
+    };
+    // Internal component seam. The binding carries the host-minted Client handle and low-level
+    // view epochs, so component.js never has to recreate identity from slot or SteamID. A derived
+    // binding may add `_componentIsValid`; `_withBinding` keeps that whole fence active through
+    // primitive coercion/native calls and revalidates before publishing primitive cache state.
+    api._captureBinding = function (slot) {
+      var view = api.forSlot(slot);
+      return { slot: slot, client: resolveCurrentClient(slot), view: view,
+        slotEpoch: componentSlotEpochs[slot] || 0, entityEpoch: entityEpoch };
+    };
+    api._bindingIsValid = bindingIsValid;
+    api._withBinding = function (binding, fn) {
+      if (!bindingIsValid(binding)) return "stale client";
+      var previous = boundClient, previousBinding = boundBinding;
+      boundClient = binding.client;
+      boundBinding = binding;
+      try {
+        var result = fn();
+        return bindingIsValid(binding) ? result : "stale client";
+      } finally {
+        boundClient = previous;
+        boundBinding = previousBinding;
+      }
+    };
+    api._disconnectOwnsSlot = function (slot, client) {
+      if (!client || !sameClient(slotClients[slot], client)) return false;
+      var occupant = clientsApi().fromSlot(slot);
+      return !occupant || sameClient(occupant, client);
     };
     // Direct slot APIs adopt the current occupant; retained forSlot views keep their original one.
     "show hide cursor set setText setClass setMeter setPool setDisabled dispatchClick".split(" ").forEach(function (name) {

@@ -139,7 +139,18 @@ function pluginWorld(options = {}) {
   const entities = [];
   const writes = [];
   const plugins = [];
-  const clients = new Map(Array.from({ length: 64 }, (_, slot) => [slot, { slot, isValid: () => clients.has(slot) }]));
+  let nextClientGeneration = 1;
+  const clientGenerations = new Map();
+  function connect(slot) { clientGenerations.set(slot, nextClientGeneration++); }
+  for (let slot = 0; slot < 64; slot++) connect(slot);
+  function clientFor(slot) {
+    const generation = clientGenerations.get(slot);
+    if (!generation) return null;
+    return {
+      slot, generation, steamId: "76561198000000000",
+      isValid: () => clientGenerations.get(slot) === generation,
+    };
+  }
   const switches = require("./shared-switch-fixture.js").sharedSwitchFixture(
     (index, id) => entities.find(e => e.index === index && e.id === id),
     (name, entity, slot, on) => {
@@ -150,6 +161,7 @@ function pluginWorld(options = {}) {
     const owner = plugins.length;
     const lifecycle = { active: [], disconnect: [], map: [] };
     const fallbackCalls = [];
+    const pendingTimers = [];
     const fallback = {
       open(s) { fallbackCalls.push(["open", s.slot]); },
       update(s) { fallbackCalls.push(["update", s.slot]); },
@@ -175,7 +187,8 @@ function pluginWorld(options = {}) {
       __s2pkg_entity: {
         Entity: { findByClass: () => entities },
         createEntity(_cls, kv) {
-          const e = { index: entities.length + 1, id: entities.length + 1, name: kv.targetname, isValid: () => true };
+          const e = { index: entities.length + 1, id: entities.length + 1, name: kv.targetname,
+            valid: true, isValid() { return this.valid; } };
           entities.push(e); return e;
         },
       },
@@ -187,11 +200,12 @@ function pluginWorld(options = {}) {
         status: () => options.unresolved ? "signature unresolved" : "available",
       },
       __s2pkg_server: { Server: { onMapStart: (f) => lifecycle.map.push(f), getCvar: () => "3790153369" } },
-      __s2pkg_clients: { _same: (a, b) => !!a && a === b, Clients: {
-        fromSlot: slot => clients.get(slot) || null,
+      __s2pkg_clients: { _same: (a, b) => !!a && !!b && a.slot === b.slot && a.generation === b.generation, Clients: {
+        fromSlot: clientFor,
         all: () => options.notReady ? [] : [{ signonState: 6 }],
         onActive: (f) => lifecycle.active.push(f), onDisconnect: (f) => lifecycle.disconnect.push(f),
       } },
+      __s2pkg_timers: { after: (_ms, fn) => pendingTimers.push(fn) },
       __s2pkg_menu: { Menu: { registerRenderer(name, renderer) {
         const prev = renderers[name]; renderers[name] = renderer; return prev;
       } }, MenuStyle: { Chat: "chat", Center: "center" } },
@@ -205,8 +219,9 @@ function pluginWorld(options = {}) {
       return fn();
     }, (fn) => fn);
     sealed = true;
-    const p = { base, hudkit: ctx.__s2pkg_cs2.hudkit, renderers, lifecycle, fallbackCalls,
-      click(slot, id) { base.kit.layout.dispatchClick(slot, id); } };
+    const p = { base, hudkit: ctx.__s2pkg_cs2.hudkit, renderers, lifecycle, fallbackCalls, pendingTimers,
+      click(slot, id) { base.kit.layout.dispatchClick(slot, id); },
+      runTimer(index = 0) { const fn = pendingTimers.splice(index, 1)[0]; if (fn) fn(); } };
     plugins.push(p); return p;
   }
   function session(slot) {
@@ -222,7 +237,23 @@ function pluginWorld(options = {}) {
     try { for (const p of plugins) p.click(slot, id); }
     finally { activeEpoch = previous; }
   }
-  return { owners, writes, plugins, plugin, session, dispatchClick, disconnect(slot) { const client = clients.get(slot); clients.delete(slot); switches.clearSlot(slot); for (const p of plugins) p.lifecycle.disconnect.forEach(fn => fn(client)); } };
+  return {
+    owners, writes, plugins, plugin, session, dispatchClick, client: clientFor,
+    replace(slot) { connect(slot); switches.clearSlot(slot); },
+    replaceLayoutEntity() {
+      const old = entities.find(e => e.isValid());
+      if (old) old.valid = false;
+      const e = { index: entities.length + 1, id: entities.length + 1,
+        name: old && old.name, valid: true, isValid() { return this.valid; } };
+      entities.push(e);
+      return e;
+    },
+    disconnect(slot) {
+      const client = clientFor(slot);
+      clientGenerations.delete(slot); switches.clearSlot(slot);
+      for (const p of plugins) p.lifecycle.disconnect.forEach(fn => fn(client));
+    },
+  };
 }
 
 test("14 idle plugins reserve no panels and every plugin can open a clickable menu after load", () => {
@@ -282,6 +313,294 @@ test("released modal handles cannot steal a reused panel or dispatch stale click
   assert.throws(() => old.open(1), /released/);
   p.click(1, "s2_m0_r0");
   assert.equal(oldPicks, 0); assert.equal(newPicks, 1);
+});
+
+test("retained hudkit views reject a same-slot same-Steam replacement client", () => {
+  const w = pluginWorld(), p = w.plugin();
+  let modalPicks = 0, dashPicks = 0, motdCloses = 0;
+  const modal = p.base.kit.modal({ rows: [{ id: "modal", a: "Modal" }], onPick: () => modalPicks++ });
+  const dashboard = p.base.kit.dashboard({ title: "Dash", tabs: [{ id: "tab", title: "Tab" }],
+    rows: () => [{ id: "dash", a: "Dash" }], onPick: () => dashPicks++ });
+  const badge = p.base.kit.badge({ title: "Badge" });
+  const oldModal = modal.open(1);
+  const oldDashboard = dashboard.open(1);
+  const oldBadge = badge.show(1, { text: "old" });
+  const oldMotd = p.base.kit.motd(1, { title: "Rules", onClose: () => motdCloses++ });
+  const oldKit = p.base.kit.forSlot(1);
+  const oldClient = w.client(1);
+  assert.equal(oldClient.steamId, "76561198000000000");
+  for (const view of [oldModal, oldDashboard, oldBadge, oldMotd, oldKit]) assert.equal(view.isValid(), true);
+
+  w.replace(1);
+  assert.equal(w.client(1).steamId, oldClient.steamId, "Steam identity deliberately stays the same");
+  assert.notEqual(w.client(1).generation, oldClient.generation);
+  for (const view of [oldModal, oldDashboard, oldBadge, oldMotd, oldKit]) assert.equal(view.isValid(), false);
+
+  w.writes.length = 0;
+  oldModal.close(); oldModal.refresh(); oldModal.page(1); oldModal.select(0); oldModal.forget();
+  assert.equal(oldModal.isOpen(), false); assert.equal(oldModal.cursor(), -1);
+  assert.equal(oldModal.tryOpen().ok, false);
+  assert.throws(() => oldModal.open(), /stale/i);
+  oldDashboard.close(); oldDashboard.setTab("tab"); oldDashboard.refresh();
+  assert.equal(oldDashboard.isOpen(), false);
+  assert.throws(() => oldDashboard.open(), /stale/i);
+  oldBadge.show({ text: "wrong" }); oldBadge.hide(); oldMotd.close();
+  oldKit.toast({ title: "wrong" }); oldKit.callout({ message: "wrong" }); oldKit.banner({ text: "wrong" });
+  oldKit.motd({ title: "wrong" }); oldKit.hideAll(); oldKit.forget();
+  p.click(1, "s2_m0_r0"); p.click(1, "s2_dash_r0"); p.click(1, "s2_motd_ok");
+  assert.equal(w.writes.length, 0, "no stale operation may touch the replacement client");
+  assert.deepEqual([modalPicks, dashPicks, motdCloses], [0, 0, 0],
+    "stale dispatch returns before any domain callback");
+
+  assert.equal(modal.open(1).isValid(), true, "slot-first APIs adopt the current occupant");
+  assert.equal(dashboard.open(1).isValid(), true);
+  assert.equal(badge.show(1, { text: "fresh" }).isValid(), true);
+  assert.equal(p.base.kit.motd(1, { title: "fresh" }).isValid(), true);
+  assert.equal(p.base.kit.forSlot(1).isValid(), true);
+});
+
+test("component views remain reusable across ordinary close and reopen for the same client", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const modal = p.base.kit.modal({ rows: [{ a: "row" }] });
+  const oldModal = modal.open(1); modal.close(1); const newModal = modal.open(1);
+  const dashboard = p.base.kit.dashboard({ title: "Dash", tabs: [{ id: "t", title: "T" }], rows: () => [] });
+  const oldDashboard = dashboard.open(1); dashboard.close(1); const newDashboard = dashboard.open(1);
+  const badge = p.base.kit.badge();
+  const oldBadge = badge.show(1, { text: "one" }); badge.hide(1); const newBadge = badge.show(1, { text: "two" });
+  const oldMotd = p.base.kit.motd(1, { title: "one" });
+  const newMotd = p.base.kit.motd(1, { title: "two" });
+  assert.equal(oldModal.isValid(), true); assert.equal(oldDashboard.isValid(), true);
+  assert.equal(oldBadge.isValid(), true); assert.equal(oldMotd.isValid(), false);
+  oldModal.close(); oldModal.open();
+  oldDashboard.close(); oldDashboard.open();
+  oldBadge.hide(); oldBadge.show({ text: "three" });
+  const beforeStaleMotd = w.writes.length;
+  oldMotd.close();
+  assert.equal(w.writes.length, beforeStaleMotd, "an old one-shot MOTD close cannot close its replacement");
+  for (const view of [newModal, newDashboard, newBadge, newMotd]) assert.equal(view.isValid(), true);
+});
+
+test("delayed fade callbacks are fenced by client and component lifetimes", () => {
+  const w = pluginWorld(), p = w.plugin();
+  p.base.kit.banner(1, { text: "old", holdSeconds: 1 });
+  p.runTimer(); // The old hold adds the fade and schedules its final hide.
+  p.base.kit.banner(1, { text: "new", holdSeconds: 0 });
+  const beforeReopenHide = w.writes.length;
+  p.runTimer();
+  assert.equal(w.writes.length, beforeReopenHide, "old final hide cannot touch a reopened banner");
+
+  p.base.kit.callout(1, { message: "departing", holdSeconds: 1 });
+  w.replace(1);
+  const beforeReplacementFade = w.writes.length;
+  p.runTimer();
+  assert.equal(w.writes.length, beforeReplacementFade, "old hold cannot fade a replacement client's callout");
+  p.base.kit.callout(1, { message: "replacement", holdSeconds: 0 });
+});
+
+test("released badge views cannot hide a pool slot reclaimed by another plugin", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin();
+  const claimed = a.base.kit.badge();
+  const stale = claimed.show(1, { text: "A" });
+  claimed.release();
+  const replacement = b.base.kit.badge();
+  replacement.show(1, { text: "B" });
+  const before = w.writes.length;
+  stale.hide(); stale.show({ text: "wrong" });
+  assert.equal(w.writes.length, before);
+  assert.equal(stale.isValid(), false);
+});
+
+test("forget and silent layout replacement invalidate retained component views", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const modal = p.base.kit.modal({ rows: [{ a: "row" }] });
+  const dashboard = p.base.kit.dashboard({ title: "Dash", tabs: [{ id: "t", title: "T" }], rows: () => [] });
+  const badge = p.base.kit.badge();
+  const forgotten = [modal.open(1), dashboard.open(1), badge.show(1), p.base.kit.motd(1, { title: "M" }),
+    p.base.kit.forSlot(1)];
+  p.base.kit.forget(1);
+  for (const view of forgotten) assert.equal(view.isValid(), false);
+  const afterForget = w.writes.length;
+  forgotten[0].refresh(); forgotten[1].refresh(); forgotten[2].show({ text: "wrong" }); forgotten[3].close();
+  forgotten[4].hideAll();
+  assert.equal(w.writes.length, afterForget);
+
+  const replaced = [modal.open(1), dashboard.open(1), badge.show(1), p.base.kit.motd(1, { title: "M2" }),
+    p.base.kit.forSlot(1)];
+  w.replaceLayoutEntity();
+  for (const view of replaced) assert.equal(view.isValid(), false);
+  const afterReplace = w.writes.length;
+  replaced[0].refresh(); replaced[1].refresh(); replaced[2].hide(); replaced[3].close(); replaced[4].hideAll();
+  assert.equal(w.writes.length, afterReplace, "stale component views cannot drive a replacement entity");
+  assert.equal(modal.open(1).isValid(), true, "a slot-first open adopts the replacement layout lifetime");
+});
+
+test("dashboard spec replacement invalidates retained dashboard views", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const dashboard = p.base.kit.dashboard({ title: "one", tabs: [{ id: "a", title: "A" }], rows: () => [] });
+  const stale = dashboard.open(1);
+  p.base.kit.dashboard({ title: "two", tabs: [{ id: "b", title: "B" }], rows: () => [] });
+  assert.equal(stale.isValid(), false);
+  const before = w.writes.length;
+  stale.close(); stale.refresh(); stale.setTab("a");
+  assert.throws(() => stale.open(), /stale/i);
+  assert.equal(w.writes.length, before);
+  assert.equal(dashboard.forSlot(1).isValid(), true);
+});
+
+test("released modal views cannot act on a pool slot reclaimed by another plugin", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin();
+  const owner = a.base.kit.modal({ rows: [{ a: "A" }] });
+  const stale = owner.open(1);
+  owner.release();
+  const replacement = b.base.kit.modal({ rows: [{ a: "B" }] });
+  replacement.open(1);
+  const before = w.writes.length;
+  stale.close(); stale.refresh(); stale.page(1); stale.select(0); stale.forget();
+  assert.equal(stale.tryOpen().ok, false);
+  assert.throws(() => stale.open(), /stale|released/i);
+  assert.equal(w.writes.length, before);
+});
+
+test("old plugin timers cannot alter a surface after cleanup and reload", () => {
+  const w = pluginWorld(), oldPlugin = w.plugin();
+  oldPlugin.base.kit.banner(1, { text: "old", holdSeconds: 1 });
+  oldPlugin.base.kit.forget(1);
+  const replacement = w.plugin();
+  replacement.base.kit.banner(1, { text: "new", holdSeconds: 0 });
+  const before = w.writes.length;
+  oldPlugin.runTimer();
+  assert.equal(w.writes.length, before);
+});
+
+test("a component operation cannot adopt a replacement created during argument coercion", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const text = { toString() { w.replace(1); return "replacement must not see this"; } };
+  const before = w.writes.length;
+  p.base.kit.banner(1, { text, holdSeconds: 0 });
+  assert.equal(w.writes.length, before);
+
+  const dashboard = p.base.kit.dashboard({
+    title: "Dashboard",
+    tabs: [{ id: "one", title: "One" }],
+    rows: () => []
+  });
+  const retained = dashboard.forSlot(1);
+  const opts = { get tab() { w.replace(1); return "one"; } };
+  assert.throws(() => retained.open(opts), /stale/i);
+  assert.equal(retained.isValid(), false);
+  assert.equal(w.writes.length, before);
+});
+
+test("a released badge cannot resume painting after its pool slot is reclaimed during coercion", () => {
+  const w = pluginWorld(), a = w.plugin(), b = w.plugin();
+  const owner = a.base.kit.badge();
+  const retained = owner.show(1, { text: "A" });
+  let boundary = -1;
+  retained.show({
+    title: { toString() {
+      owner.release();
+      b.base.kit.badge().show(1, { title: "B", text: "B" });
+      boundary = w.writes.length;
+      return "STALE";
+    } },
+    text: "STALE BODY"
+  });
+  assert.notEqual(boundary, -1);
+  assert.equal(retained.isValid(), false);
+  assert.deepEqual(w.writes.slice(boundary), []);
+});
+
+test("a fresh same-plugin badge binds independently of the released badge coercing its title", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const owner = p.base.kit.badge();
+  const retained = owner.show(1, { text: "A" });
+  let replacement, beforeReplacement = -1, afterReplacement = -1;
+  retained.show({
+    title: { toString() {
+      owner.release();
+      beforeReplacement = w.writes.length;
+      replacement = p.base.kit.badge().show(1, { title: "B", text: "B" });
+      afterReplacement = w.writes.length;
+      return "STALE";
+    } },
+    text: "STALE BODY"
+  });
+  assert.notEqual(afterReplacement, -1);
+  assert.equal(retained.isValid(), false);
+  assert.equal(replacement.isValid(), true);
+  assert.ok(w.writes.slice(beforeReplacement, afterReplacement).some(write =>
+    write.name === "setDialogVariableStringForPlayer" && write.args[4] === "B"));
+  assert.deepEqual(w.writes.slice(afterReplacement), [], "the old badge cannot resume painting");
+});
+
+test("an entity replacement during coercion fences the retained component before its first write", () => {
+  const w = pluginWorld(), p = w.plugin();
+  const retained = p.base.kit.badge().show(1, { text: "A" });
+  let boundary = -1;
+  retained.show({ title: { toString() {
+    w.replaceLayoutEntity();
+    boundary = w.writes.length;
+    return "STALE ENTITY";
+  } } });
+  assert.notEqual(boundary, -1);
+  assert.equal(retained.isValid(), false);
+  assert.deepEqual(w.writes.slice(boundary), []);
+});
+
+test("a superseded retained modal open cannot return a replacement-client view", () => {
+  const w = pluginWorld(), p = w.plugin();
+  let trigger = false;
+  let modal;
+  modal = p.base.kit.modal({ rows() {
+    if (trigger) {
+      trigger = false;
+      w.replace(1);
+      modal.open(1);
+    }
+    return [{ a: "row" }];
+  } });
+  const retained = modal.open(1);
+  trigger = true;
+  const result = retained.tryOpen();
+  const beforeClose = w.writes.length;
+  if (result.ok) result.view.close();
+  assert.deepEqual({ ok: result.ok, closeWrites: w.writes.length - beforeClose },
+    { ok: false, closeWrites: 0 });
+  assert.equal(retained.isValid(), false);
+  assert.equal(modal.isOpen(1), true, "the replacement presentation remains open");
+});
+
+test("a same-client modal opened during coercion remains the authoritative presentation", () => {
+  const w = pluginWorld(), p = w.plugin();
+  let trigger = false;
+  let modal;
+  const label = { toString() {
+    if (trigger) {
+      trigger = false;
+      modal.open(1);
+    }
+    return "row";
+  } };
+  modal = p.base.kit.modal({ rows: () => [{ a: label }] });
+  const retained = modal.open(1);
+  trigger = true;
+  const result = retained.tryOpen();
+  assert.equal(result.ok, true);
+  assert.equal(result.ok && result.view.isValid(), true);
+  assert.equal(modal.isOpen(1), true);
+});
+
+test("a modal click does not evaluate providers after its client is replaced", () => {
+  const w = pluginWorld(), p = w.plugin();
+  let calls = 0;
+  const modal = p.base.kit.modal({
+    rows() { calls++; return [{ a: "row" }]; },
+    onPick() { w.replace(1); }
+  });
+  modal.open(1);
+  const before = calls;
+  p.click(1, "s2_m0_r0");
+  assert.equal(calls - before, 0);
 });
 
 
