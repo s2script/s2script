@@ -296,6 +296,49 @@ bool Run(const char* validateJson, const ModuleView& mv, const char* module, con
 }
 
 // ---------------------------------------------------------------------------
+const void* ResolveValidatedCall(const char* pattern, const char* validateJson,
+    const ModuleView& mv, const char* module, const Ops& ops, char* reasonOut, int reasonCap) {
+    if (reasonOut && reasonCap > 0) reasonOut[0] = '\0';
+    json v;
+    if (!ParseValidate(validateJson, &v) || !v.contains("string-xref")) {
+        Fail(reasonOut, reasonCap, "validated-call requires validate.string-xref on the call site");
+        return nullptr;
+    }
+    const auto pat = s2sig::ParsePattern(pattern ? pattern : "");
+    if (pat.empty() || !mv.text || mv.textSize < 5) {
+        Fail(reasonOut, reasonCap, "validated-call has no valid pattern/text");
+        return nullptr;
+    }
+    int64_t winner = -1;
+    char rejection[256] = "pattern did not match";
+    for (std::size_t cursor = 0; cursor < mv.textSize;) {
+        const int64_t relative = s2sig::FindPattern(mv.text + cursor, mv.textSize - cursor, pat);
+        if (relative < 0) break;
+        const std::size_t at = cursor + static_cast<std::size_t>(relative);
+        cursor = at + 1;
+        if (!Run(validateJson, mv, module, mv.text + at, ops, rejection, sizeof(rejection))) continue;
+        if (winner >= 0) {
+            Fail(reasonOut, reasonCap, "validated-call is ambiguous (>1 validated call site)");
+            return nullptr;
+        }
+        winner = static_cast<int64_t>(at);
+    }
+    if (winner < 0) {
+        Fail(reasonOut, reasonCap, "validated-call: no validated call site (%s)", rejection);
+        return nullptr;
+    }
+    if (mv.text[winner] != 0xe8) {
+        Fail(reasonOut, reasonCap, "validated-call site is not E8 rel32");
+        return nullptr;
+    }
+    const int64_t target = s2sig::ResolveLeaDisp(mv.text, mv.textSize, winner, 1, 5);
+    if (target < 0 || static_cast<uint64_t>(target) >= mv.textSize) {
+        Fail(reasonOut, reasonCap, "validated-call target outside module text");
+        return nullptr;
+    }
+    return mv.text + target;
+}
+
 // arg-width. See call_validate.h for why this is NOT in kVocabulary and why only narrowing fails.
 // ---------------------------------------------------------------------------
 namespace {

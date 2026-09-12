@@ -16,7 +16,8 @@ function harness() {
     Clients: { all: () => [{ isBot: false, signonState: 6 }],
       fromSlot: () => ({ isBot: false, signonState: 6 }) },
     command: { server: (_name, fn) => { handler = fn; } },
-    createEntity: () => {
+    createEntity: (_className, keyvalues) => {
+      state.keyvalues = keyvalues;
       entity = { index: 99, id: 7, isValid: () => entity.live,
         live: true, remove: () => { if (state.removeWorks) entity.live = false; return state.removeWorks; } };
       return entity;
@@ -55,6 +56,19 @@ test("rejected void HUD call stops painting and does not report marker written",
   assert.equal(h.state.writes, 1);
   h.state.reject = null;
   assert.match(h.run("paint A 0 RETRY"), /^wrote/);
+});
+
+test("observation mode is explicit at spawn and rejects invalid values", () => {
+  const h = harness();
+  assert.match(h.run("create A"), /^created/);
+  assert.equal(h.state.keyvalues.observable, "0");
+  h.run("clean");
+  assert.match(h.run("create B 1"), /^created/);
+  assert.equal(h.state.keyvalues.observable, "1");
+  h.run("clean");
+  assert.match(h.run("create A false"), /REFUSED: observable/);
+  assert.match(h.run("create A 0"), /^created/);
+  assert.equal(h.state.keyvalues.observable, "0");
 });
 
 test("failed cleanup preserves the live entity and recipient rule for retry", () => {

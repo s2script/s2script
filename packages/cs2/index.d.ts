@@ -84,6 +84,9 @@ export { Weapon } from "./weapon";
 // referenced an unbound `Weapon` → TS2304, swallowed by the gate's skipLibCheck into `any`. Bind it
 // locally too (the SceneNode pattern on line 14) so activeWeapon/weapons/giveNamedItem stay typed.
 import type { Weapon } from "./weapon";
+export { CustomPlayerCamera, CustomCameraMode } from "./camera";
+export type { CameraFollowConfig, CustomCameraModeValue } from "./camera";
+import type { CustomPlayerCamera } from "./camera";
 
 /**
  * A CS2 player pawn (the in-world body): the generated CCSPlayerPawn schema fields + the liveness-gated ref.
@@ -116,6 +119,8 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   readonly aimPunchServices: AimPunchServices | null;
   /** Best-effort velocity write (m_vecAbsVelocity); returns false if stale/unresolved. */
   setVelocity(x: number, y: number, z: number): boolean;
+  /** Acquire the pawn-owned camera, creating it on demand. Null if stale or bindings unavailable. */
+  getCustomCamera(): CustomPlayerCamera | null;
   /** The pawn's MoveType_t (uint8; null on a stale ref). Setting writes both m_MoveType and
    *  m_nActualMoveType + notifies. Values (MoveType_t): NONE=0, WALK=2, NOCLIP=7. */
   moveType: number | null;

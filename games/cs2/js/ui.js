@@ -91,8 +91,9 @@
     return "s2-w" + stepped;
   }
 
-  function targetNameForResource(resource) {
-    return "s2_ui_" + String(resource).replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_|_$/g, "");
+  function targetNameForResource(resource, observable) {
+    return "s2_ui_" + String(resource).replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_|_$/g, "") +
+      (observable ? "_observable" : "");
   }
 
   function rejectVxml(resource) {
@@ -128,6 +129,9 @@
     }
     var vxmlErr = rejectVxml(desc.resource);
     if (vxmlErr) fail(vxmlErr);
+    if (desc.observable !== undefined && typeof desc.observable !== "boolean") {
+      fail("spec.observable must be a boolean");
+    }
     var buttons = Array.isArray(desc.buttons) ? desc.buttons : [];
     var seenBtn = {};
     for (var b = 0; b < buttons.length; b++) {
@@ -152,6 +156,7 @@
     return {
       addons: desc.addons,
       resource: desc.resource,
+      observable: desc.observable === true,
       hideClass: desc.hideClass || "s2-hide",
       text: desc.text || {},
       buttons: buttons,
@@ -941,6 +946,10 @@
       }
 
       function remember(desc) {
+        var previous = registered[desc.resource];
+        if (previous && previous.observable !== desc.observable) {
+          fail("observable policy conflict for " + desc.resource + "; use a separate resource for a different policy");
+        }
         registered[desc.resource] = desc;
       }
 
@@ -1004,7 +1013,7 @@
             // run for every paint primitive; enumerating the world here multiplies that cost.
             var cached = entityByResource[desc.resource];
             if (cached && cached.isValid()) return cached;
-            var tn = targetNameForResource(desc.resource);
+            var tn = targetNameForResource(desc.resource, desc.observable);
             var found = entityApi().Entity.findByClass(HUD_CLASS);
             for (var i = 0; i < found.length; i++) {
               if (found[i].name === tn && found[i].isValid()) {
@@ -1036,9 +1045,10 @@
             var vxmlErr = rejectVxml(desc.resource);
             if (vxmlErr) return null;
             var ref = entityApi().createEntity(HUD_CLASS, {
-              targetname: targetNameForResource(desc.resource),
+              targetname: targetNameForResource(desc.resource, desc.observable),
               origin: "0 0 0",
-              layout: desc.resource
+              layout: desc.resource,
+              observable: desc.observable ? "1" : "0"
             });
             if (!ref || !ref.isValid()) return null;
             entityByResource[desc.resource] = ref;

@@ -223,6 +223,7 @@
   var LIB_DESCRIPTOR = {
     addons: ["3790153369"],
     resource: "panorama/layout/custom_game/s2script_lib.xml",
+    observable: false,
     hideClass: CLS.hide,
     text: TEXT,
     buttons: BUTTONS,
@@ -653,12 +654,10 @@
     // on confirming they actually paint: Valve's own setup.js uses ForPlayer exclusively and never
     // calls the all-player form once, which is suggestive but not proof.
     //
-    // CONFIDENTIALITY: "ForPlayer" is per-slot STORAGE, not per-recipient DELIVERY. Observed live:
-    // a spectator sees the spectated player's panels, because the client renders whichever slot it
-    // is VIEWING. (That the full state vector reaches every client is an inference from its
-    // CUtlVectorEmbeddedNetworkVar type, not packet-captured fact.) Nothing painted through here
-    // is private to its slot — see examples/hud-lab/README.md, "Per-slot state is storage, not
-    // delivery", including the one-entity-per-recipient escape and its two un-gated questions.
+    // Since the September 9, 2026 update, observable=false (our default) keeps the
+    // viewer's own UI while spectating. observable=true follows the watched player's UI.
+    // This is a client rendering policy, not per-recipient network confidentiality.
+    // Keep authorization in click handlers and do not send secrets through HUD state.
     // show/hide toggle the hide class, so they touch the class vector too.
     function hide(slot, id) { internPanel(id); internClass(CLS.hide); return hud.hide(slot, id); }
 
@@ -2489,8 +2488,13 @@
         function kitOf(descriptor) {
           // ui.create already interns layouts by resource; component bindings must share that
           // identity too, or an explicit copy of hudkit.spec installs every handler twice.
-          if (!descriptor || descriptor.resource === LIB_DESCRIPTOR.resource) return defaultKit(base);
+          if (!descriptor || descriptor.resource === LIB_DESCRIPTOR.resource) {
+            var kit = defaultKit(base);
+            if (descriptor && base.create) base.create(descriptor);
+            return kit;
+          }
           var resource = descriptor.resource;
+          if (base.create) base.create(descriptor);
           if (!Object.prototype.hasOwnProperty.call(kitsByResource, resource)) {
             kitsByResource[resource] = makeComponents(base, descriptor);
           }

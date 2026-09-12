@@ -1,12 +1,10 @@
 /**
- * A HUD that actually works today.
+ * Legacy centre-screen HTML fallback.
  *
- * The update's `custom_hud_layout` is not usable from a plugin: its layout asset does not load on a
- * stock map (panelIds/classNames read 0), and the two setters that would drive classes and text take
- * `CUtlString` arguments s2script's engine-call ABI cannot express — see the long note in
- * gamedata/hud-lab.gamedata.jsonc, and the server crash that proved it.
+ * This predates the working CustomHudLayout/hudkit integration. Workshop asset loading
+ * and CUtlString bindings are now supported; use those APIs for native custom HUDs.
  *
- * So this renders on the surface CS2 already gives a server: the centre-screen HTML panel, driven by
+ * This renders on the centre-screen HTML panel, driven by
  * the `show_survival_respawn_status` game event. That is the same mechanism `MenuStyle.Center`
  * already uses (games/cs2/js/pawn.js), so it is proven on this build — it is what SourceMod's
  * `PrintToCenterHtml` does, and it supports real markup: `<font>` with `color` and the CS2 size

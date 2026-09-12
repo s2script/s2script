@@ -629,7 +629,40 @@ static void test_arg_width_decoder_reports_redefinitions_and_stores() {
       CHECK(u.length == 0, "a truncated instruction decodes to length 0 and stops the walk"); }
 }
 
+static void test_validated_call() {
+    std::vector<uint8_t> bytes(256, 0x90);
+    std::memcpy(bytes.data(), "ScopeNew", 9);
+    std::memcpy(bytes.data() + 16, "ScopeOld", 9);
+    auto site = [&](int at, int str, int target) {
+        bytes[at] = 0xe8;
+        int32_t disp = target - (at + 5);
+        std::memcpy(bytes.data() + at + 1, &disp, 4);
+        bytes[at + 5] = 0x48; bytes[at + 6] = 0x8d; bytes[at + 7] = 0x35;
+        disp = str - (at + 12);
+        std::memcpy(bytes.data() + at + 8, &disp, 4);
+    };
+    site(64, 0, 180); site(96, 16, 190);
+    s2validate::ModuleView mv{bytes.data() + 32, 224, bytes.data(), bytes.data() + bytes.size()};
+    const char* pattern = "E8 ? ? ? ? 48 8D 35 ? ? ? ?";
+    const char* validation = R"({"string-xref":{"at":5,"dispOff":3,"instrLen":7,"expect":"ScopeNew"}})";
+    char reason[256] = {};
+    auto resolve = [&]() { return s2validate::ResolveValidatedCall(pattern, validation, mv, "fixture", {}, reason, sizeof(reason)); };
+    CHECK(resolve() == bytes.data() + 180, "validated call distinguishes byte-identical candidates by name");
+    site(96, 0, 190);
+    CHECK(resolve() == nullptr, "two semantically matching call sites are rejected");
+    site(96, 16, 190); site(64, 0, 0);
+    CHECK(resolve() == nullptr, "validated call rejects a target outside text");
+    site(64, 16, 180);
+    CHECK(resolve() == nullptr, "no matching semantic anchor is rejected");
+    CHECK(s2validate::ResolveValidatedCall(pattern, "{}", mv, "fixture", {}, reason, sizeof(reason)) == nullptr,
+          "validated call requires a semantic validator");
+    site(64, 0, 180); bytes[64] = 0x90;
+    CHECK(s2validate::ResolveValidatedCall("90 ? ? ? ? 48 8D 35 ? ? ? ?", validation, mv, "fixture", {}, reason, sizeof(reason)) == nullptr,
+          "validated call refuses a non-call opcode");
+}
+
 int main() {
+    test_validated_call();
     std::cout << std::unitbuf;
     BuildImage();
 

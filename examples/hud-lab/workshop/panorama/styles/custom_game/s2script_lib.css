@@ -15,6 +15,21 @@
 	visibility: collapse;
 }
 
+/* CS2 supplies these classes on an ancestor. Custom layouts now draw above the
+   base HUD, so passive overlays yield to its buy menu and scoreboard. Interactive
+   sheets remain visible: CSS alone cannot release their server-owned cursor. */
+.HUD_BUYMENU_VISIBLE .s2-toast-stack,
+.HUD_SCOREBOARD_VISIBLE .s2-toast-stack,
+.HUD_BUYMENU_VISIBLE .s2-hudbadge,
+.HUD_SCOREBOARD_VISIBLE .s2-hudbadge,
+.HUD_BUYMENU_VISIBLE .s2-banner,
+.HUD_SCOREBOARD_VISIBLE .s2-banner,
+.HUD_BUYMENU_VISIBLE .s2-callout,
+.HUD_SCOREBOARD_VISIBLE .s2-callout
+{
+	visibility: collapse;
+}
+
 .s2-fade
 {
 	opacity: 0;
@@ -2870,4 +2885,3 @@
 	color: #16202b;
 	font-weight: bold;
 }
-

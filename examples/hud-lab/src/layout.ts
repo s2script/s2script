@@ -79,7 +79,7 @@ export interface CreateResult {
  * Passing an empty `layout` skips the keyvalue entirely, which still exercises spawn + the state
  * writes and is the safer first thing to run on a stock map.
  */
-export function create(layout: string): CreateResult {
+export function create(layout: string, observable = false): CreateResult {
   const keyvalues: Record<string, string> = {
     targetname: OWNED_TARGETNAME,
     // `origin` MATTERS, despite this being a HUD manager with nothing to draw in the world. A
@@ -88,6 +88,7 @@ export function create(layout: string): CreateResult {
     // this plugin had: server-side state identical to a map-authored layout (byte-diffed), and
     // nothing on screen. The working reference implementations both set it; we did not.
     origin: "0 0 0",
+    observable: observable ? "1" : "0",
   };
   if (layout) keyvalues.layout = layout;
 

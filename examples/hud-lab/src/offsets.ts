@@ -1,94 +1,36 @@
-/**
- * The CCSCustomHudLayout / CCSCustomHudLayoutState memory map, in one place.
- *
- * PROVENANCE — read this before trusting a number below.
- * ------------------------------------------------------
- * These offsets were transcribed from a schema dump of the CS2 build that introduced
- * `custom_hud_layout`. They are NOT self-resolved by this repo's own tooling:
- * `games/cs2/gamedata/schema-catalog.json` still predates the update and contains no
- * `CCSCustomHudLayout` entry, so `tools/schema-dump` (itself a plugin — it needs a RUNNING server)
- * has not confirmed them.
- *
- * TWO OF THEM ARE NOW CONFIRMED against build 24916958's libserver.so by disassembly, as a side
- * effect of resolving the Tier-B signatures in gamedata/hud-lab.gamedata.jsonc:
- *
- *   1936  m_vecPlayerLayoutStates  — `CCSCustomHudLayout::SetHasClassForPlayer` (va 0x1312b30)
- *                                    opens with `cmp esi,[rdi+0x790]`, bounds-checking its player
- *                                    slot against this vector's count. 0x790 == 1936.
- *   2040  m_globalLayoutState      — the global setter variants reach their state with
- *                                    `lea rdi,[reg+0x7f8]`. 0x7f8 == 2040.
- *   2480  m_vecClassNames          — interned via `mov ebx,[r12+0x9b0]` / `mov [r12+0x9b0],eax`
- *                                    in the class-setting path. 0x9b0 == 2480.
- *
- * The rest — notably the STATE-relative offsets and the two remaining name-table vectors — are
- * still unconfirmed borrowed constants.
- *
- * That makes every constant here a BORROWED CONSTANT, which `docs/re-strategy.md` forbids relying
- * on unvalidated. The mitigation is `probeLayout()` below: a cheap load-time plausibility gate that
- * every write path in this plugin consults first. It cannot prove the offsets are right — only that
- * they are not obviously wrong — so treat a green probe as "safe to try", never as "verified".
- *
- * THE FIX, once the treadmill has run against the new build:
- *   1. `tools/schema-dump` against the updated libserver.so
- *   2. confirm these numbers, then add CCSCustomHudLayout to games/cs2/codegen-classes.json
- *   3. delete this file and use generated accessors instead
- *
- * A field-offset change must never require a code change — that is exactly why this file exists as
- * data and nothing below it hardcodes a number.
- */
+/** Live-schema HUD field offsets. Missing fields stop this diagnostic plugin before writes. */
+declare const __s2_schema_offset: (className: string, field: string) => number;
 
-/** Total `sizeof(CCSCustomHudLayout)` per the dump. Used as the probe's bounds check. */
-export const LAYOUT_SIZE = 2768;
-/** `sizeof(CCSCustomHudLayoutState)`.
- *
- * CHANGED IN BUILD 24957633: 416 -> 408. Read straight out of the engine's own arithmetic
- * (`imul rbx,rbx,0x198` in SetInputCaptureEnabled and both ForPlayer setters), not from a dump.
- * `m_bInputCaptureEnabled` moved 48 -> 52 in the same update. This is precisely the failure mode
- * offsets.ts warns about: the numbers here are borrowed constants and an update moved them. */
-export const STATE_SIZE = 408;   // 0x198 — was 416 (0x1a0) before build 24957633
+function field(className: string, name: string): number {
+  const value = __s2_schema_offset(className, name);
+  if (!Number.isInteger(value) || value < 0) throw new Error(`HUD schema unavailable: ${className}.${name}`);
+  return value;
+}
 
-/**
- * Field offsets on the CCSCustomHudLayout ENTITY itself.
- *
- * `CBaseEntity` is CCSCustomHudLayout's only declared base at offset 0, so these are absolute
- * offsets from the entity pointer — no base adjustment.
- */
 export const LAYOUT = {
-  /** `CUtlSymbolLarge m_strLayout` — an 8-byte POINTER to the layout name, not inline chars.
-   *  There is no `readStringVia` on EntityRef, so this plugin reads the pointer VALUE only:
-   *  non-zero means a layout name is set, zero means none. The text is not reachable from JS. */
-  strLayout: 1928,
-  /** `CUtlVectorEmbeddedNetworkVar<CCSCustomHudLayoutState> m_vecPlayerLayoutStates` (size 104).
-   *  An embedded-network-var container, NOT a plain CUtlVector — its internal layout is unverified,
-   *  so this plugin READS its leading count for diagnostics and never writes into it. */
-  vecPlayerLayoutStates: 1936,
-  /** `CCSCustomHudLayoutState m_globalLayoutState` — embedded BY VALUE (sizeof == {@link STATE_SIZE},
-   *  408 since build 24957633 — the dump this was transcribed from said 416), so state field
-   *  offsets add directly to this. The only state this plugin writes. */
-  globalLayoutState: 2040,
-  /** `CNetworkUtlVectorBase<CUtlString> m_vecPanelIds` (size 24). */
-  vecPanelIds: 2456,
-  /** `CNetworkUtlVectorBase<CUtlString> m_vecClassNames` (size 24). */
-  vecClassNames: 2480,
-  /** `CNetworkUtlVectorBase<CUtlString> m_vecDialogVariableNames` (size 24). */
-  vecDialogVariableNames: 2504,
+  strLayout: field("CCSCustomHudLayout", "m_strLayout"),
+  vecPlayerLayoutStates: field("CCSCustomHudLayout", "m_vecPlayerLayoutStates"),
+  globalLayoutState: field("CCSCustomHudLayout", "m_globalLayoutState"),
+  vecPanelIds: field("CCSCustomHudLayout", "m_vecPanelIds"),
+  vecClassNames: field("CCSCustomHudLayout", "m_vecClassNames"),
+  vecDialogVariableNames: field("CCSCustomHudLayout", "m_vecDialogVariableNames"),
 } as const;
 
-/**
- * Field offsets WITHIN a CCSCustomHudLayoutState. Add to a state's own base — for the global state
- * that is `LAYOUT.globalLayoutState`; see {@link globalStateField}.
- */
 export const STATE = {
-  /** `bool m_bInputCaptureEnabled` — the one directly writable scalar in the whole HUD surface. */
-  inputCaptureEnabled: 52,   // 0x34 — was 48 before build 24957633
-  /** `CNetworkUtlVectorBase<HUDPanelHasClass_t> m_vecHasClasses` (size 24). Read-only here:
-   *  growing a networked CUtlVector needs the engine's own setter (see the gamedata's Tier-B calls). */
-  vecHasClasses: 56,
-  /** `CNetworkUtlVectorBase<HUDPanelDialogVariableString_t> m_vecDialogVariableStrings` (size 24). */
-  vecDialogVariableStrings: 152,
-  /** `CPlayerSlot m_playerSlot` — which player this state belongs to (-1 on the global state). */
-  playerSlot: 408,
+  inputCaptureEnabled: field("CCSCustomHudLayoutState", "m_bInputCaptureEnabled"),
+  vecHasClasses: field("CCSCustomHudLayoutState", "m_vecHasClasses"),
+  vecDialogVariableStrings: field("CCSCustomHudLayoutState", "m_vecDialogVariableStrings"),
+  playerSlot: field("CCSCustomHudLayoutState", "m_playerSlot"),
 } as const;
+
+/** The global state immediately precedes panel IDs; this span is its array stride.
+ * Verified against the engine's per-player setters on build 2000908 (408 bytes). */
+export const STATE_SIZE = LAYOUT.vecPanelIds - LAYOUT.globalLayoutState;
+if (STATE_SIZE <= STATE.playerSlot || STATE_SIZE <= STATE.vecDialogVariableStrings + 24) {
+  throw new Error("HUD schema has an invalid embedded-state span");
+}
+/** Readable diagnostic span through the last known vector, not the entity's total allocation. */
+export const LAYOUT_SIZE = LAYOUT.vecDialogVariableNames + 24;
 
 /** Absolute entity offset of a field inside the embedded GLOBAL layout state. */
 export function globalStateField(stateOffset: number): number {

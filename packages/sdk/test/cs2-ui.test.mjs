@@ -187,6 +187,61 @@ test("bundle includes ui.js", () => {
   assert.match(cs2AddonBundle, /ctx\.ui/);
 });
 
+for (const observable of [undefined, false, true]) {
+  test(`HUD observable=${observable} survives deferred spawn and map replacement`, () => {
+    const h = makeHost({ signon: 0 });
+    const ui = h.armPlugin();
+    const hud = ui.create({ addons: ["3790153369"], resource: "panorama/layout/custom_game/observe.xml", observable });
+    assert.equal(hud.spec.observable, observable === true);
+    assert.equal(h.created.length, 0);
+    h.ctx.__s2_ctx_arm();
+    h.fireActive(0);
+    assert.equal(h.created[0].kv.observable, observable === true ? "1" : "0");
+    h.created[0].live = false;
+    h.fireMapStart();
+    h.fireActive(0);
+    assert.equal(h.created[1].kv.observable, observable === true ? "1" : "0");
+  });
+}
+
+test("HUD rejects non-boolean observation policy and conflicting reuse", () => {
+  const h = makeHost();
+  const ui = h.armPlugin();
+  const spec = { addons: ["3790153369"], resource: "panorama/layout/custom_game/observe.xml" };
+  for (const observable of ["false", 0, 1, null]) {
+    assert.throws(() => ui.create({ ...spec, observable }), /observable.*boolean/);
+  }
+  const hud = ui.create(spec);
+  assert.equal(ui.create({ ...spec, observable: false }), hud);
+  assert.throws(() => ui.create({ ...spec, observable: true }), /observable.*conflict/);
+  assert.throws(() => ui.createLayout({ ...spec, observable: true }), /observable.*conflict/);
+});
+
+test("separate plugin contexts cannot adopt a layout with the opposite observation policy", () => {
+  const h = makeHost();
+  const spec = { addons: ["3790153369"], resource: "panorama/layout/custom_game/observe.xml" };
+  const first = h.armPlugin();
+  first.create(spec);
+  h.ctx.__s2_ctx_arm();
+  h.fireActive(0);
+  const second = h.armPlugin();
+  second.create({ ...spec, observable: true });
+  h.ctx.__s2_ctx_arm();
+  h.fireActive(0);
+  assert.equal(h.created.length, 2);
+  assert.notEqual(h.created[0].name, h.created[1].name);
+  assert.equal(h.created[0].kv.observable, "0");
+  assert.equal(h.created[1].kv.observable, "1");
+});
+
+test("hudkit does not silently discard a conflicting observation policy", () => {
+  const h = makeHost();
+  const ui = h.armPlugin();
+  const spec = ui.kit.descriptor;
+  assert.equal(spec.observable, false);
+  assert.throws(() => ui.components({ ...spec, observable: true }), /observable.*conflict/);
+});
+
 test("setHasClassForPlayer arg order and enum status int", () => {
   const h = makeHost();
   const ui = h.armPlugin();
