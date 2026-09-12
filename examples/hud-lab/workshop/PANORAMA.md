@@ -1,5 +1,12 @@
 # Writing layouts for `custom_hud_layout`
 
+Since September 9, 2026, the engine supplies `HUD_BUYMENU_VISIBLE` and
+`HUD_SCOREBOARD_VISIBLE` on an ancestor panel. Use descendant selectors, such as
+`.HUD_SCOREBOARD_VISIBLE .my-overlay`. Custom layouts draw above the base HUD;
+`z-index` only orders custom content. Do not hide a cursor-capturing sheet with CSS
+alone: CSS cannot release its server-side input lease.
+See [migration and live checks](../../../../docs/CS2-UI-UPDATE.md).
+
 Reference for anyone authoring a HUD addon. Everything here is from Valve's own files or extracted
 from `libpanorama.so` — not inferred.
 

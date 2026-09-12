@@ -21,10 +21,10 @@ const RESERVED_CALL_NAMES = new Set(["constructor", "prototype", "__proto__"]);
 
 /**
  * The resolver steps the shim actually dispatches on (`engine_calls.cpp` — `direct` is the default,
- * then `ctor-body-xref` and `lea-disp`). Closed here so a typo like "drect" is a BUILD error naming
+ * then `ctor-body-xref`, `lea-disp`, and `validated-call`). Closed here so a typo like "drect" is a BUILD error naming
  * the valid set, rather than a descriptor that resolves to nothing at load and degrades silently.
  */
-const RESOLVE_KINDS = ["direct", "ctor-body-xref", "lea-disp"] as const;
+const RESOLVE_KINDS = ["direct", "ctor-body-xref", "lea-disp", "validated-call"] as const;
 
 /**
  * Permissions the runtime understands. Closed for the same reason as RESOLVE_KINDS.

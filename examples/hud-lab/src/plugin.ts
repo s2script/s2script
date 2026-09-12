@@ -13,25 +13,23 @@
  *
  * `sm_hud_status` prints all three. Start there.
  *
- * SAFETY. Every offset this plugin writes through is transcribed from a schema dump that this repo's
- * own tooling has not confirmed (games/cs2/gamedata/schema-catalog.json predates the update). Writes
- * are gated on `probeLayout` and read back afterwards; see src/offsets.ts for the full caveat and
- * the steps to retire it.
+ * HUD field offsets resolve from the live schema. Native setters are signature-validated;
+ * raw diagnostic writes additionally require probeLayout() and are read back afterwards.
  *
  * COMMANDS
  *   sm_hud_status                              tier A/B/C report + live layout readout
  *   sm_hud_probe [start] [len]                 raw byte window, to verify offsets against a dump
- *   sm_hud_create [layout]                     create + spawn a custom_hud_layout
+ *   sm_hud_create [layout] [observable:0|1]    create + spawn a custom_hud_layout
  *   sm_hud_list                                every custom_hud_layout in the world
  *   sm_hud_remove                              remove the ones this plugin created
  *   sm_hud_capture <0|1>                       SetInputCaptureEnabled (tier A, raw write)
  *   sm_hud_class <panel> <class> <0|1|-1> [t]  SetHasClass / …ForPlayer (tier B)
  *   sm_hud_var <panel> <var> <value> [target]  SetDialogVariableString / …ForPlayer (tier B)
  *   sm_hud_visible <target> <0|1>              SetHUDVisibility entity input
- *   sm_cam_create                              create a cs_player_camera at the caller
- *   sm_cam_enable <0|1>                        probe the camera's Enable/Disable inputs
- *   sm_cam_angles <0|1>                        probe SetIsControllingAngles
- *   sm_cam_remove                              remove the cameras this plugin created
+ *   sm_cam_create                              acquire and position the caller's camera
+ *   sm_cam_mode <0|1|2|3>                      select native camera mode
+ *   sm_cam_follow [distance]                   follow the caller with clipping
+ *   sm_cam_info                                show camera, owner and mode
  *   sm_bomb_watch <0|1>                        log the four new plant/defuse callbacks
  *   sm_bomb_info                               C4 field readout
  *   sm_bomb_abort                              probe C4.AbortPlant as an entity input
@@ -41,13 +39,12 @@
  */
 import { ADMFLAG, config, Chat, hook, command, HookResult } from "@s2script/sdk";
 import type { CommandInvocation, Client } from "@s2script/sdk";
-import { Player, Pawn, CustomHudLayout } from "@s2script/cs2";
+import { Player, Pawn, CustomHudLayout, CustomCameraMode } from "@s2script/cs2";
 import type { HudLayout } from "@s2script/cs2";
 import { LIVE_HUD, LIVE_PANELS } from "./livehud";
 import { LiveDemo } from "./livedemo";
 
 import * as layout from "./layout";
-import * as camera from "./camera";
 import * as bomb from "./bomb";
 import * as movement from "./movement";
 import * as menus from "./menus";
@@ -117,7 +114,7 @@ export function OnPluginStart(): void {
       if (!info.probe.ok) cmd.reply(`        PROBE FAILED: ${info.probe.reasons.join("; ")}`);
     }
     if (all.length === 0) cmd.reply("  (none — run sm_hud_create, or load a map that ships one)");
-    cmd.reply(`  cs_player_camera entities in world: ${camera.findAll().length}`);
+    cmd.reply("  Camera: pawn-owned CustomPlayerCamera (sm_cam_info / sm_cam_mode / sm_cam_follow)");
     cmd.reply(`  bomb watch: ${bomb.isWatching() ? "ON" : "off"} (${bomb.WATCHED_EVENTS.length} events subscribed)`);
 
     cmd.reply(`  demo HUD viewers: ${hud.count}`);
@@ -191,8 +188,13 @@ export function OnPluginStart(): void {
 
   // ── Layout entity lifecycle ─────────────────────────────────────────────────────────────────
   command.admin("sm_hud_create", ADMFLAG.ROOT, (cmd) => {
-    const name = cmd.argCount > 0 ? cmd.argsFrom(0) : config.getString("layout");
-    const result = layout.create(name);
+    const name = cmd.argCount > 0 ? cmd.arg(0) : config.getString("layout");
+    const observable = cmd.arg(1) || "0";
+    if (observable !== "0" && observable !== "1") {
+      cmd.reply(`${TAG} observable must be 0 or 1`);
+      return HookResult.Handled;
+    }
+    const result = layout.create(name, observable === "1");
     if (result.error) { cmd.reply(`${TAG} ${result.error}`); return HookResult.Handled; }
     const info = readLayoutInfo(result.ref!);
     cmd.reply(`${TAG} created entity #${info.index} with keyvalues ${JSON.stringify(result.keyvalues)}`);
@@ -283,43 +285,67 @@ export function OnPluginStart(): void {
     return HookResult.Handled;
   });
 
-  // ── Camera ──────────────────────────────────────────────────────────────────────────────────
+  // ── Camera: native pawn-owned API, never a guessed entity-I/O input ────────────────────────
+  function callerCamera(cmd: CommandInvocation) {
+    const pawn = requireCallerPawn(cmd);
+    if (!pawn) return null;
+    const camera = pawn.getCustomCamera();
+    if (!camera) cmd.reply(`${TAG} CustomPlayerCamera unavailable — check the updated shim/gamedata`);
+    return camera;
+  }
   command.admin("sm_cam_create", ADMFLAG.ROOT, (cmd) => {
-    const pawn = requireCallerPawn(cmd);
-    if (!pawn) return HookResult.Handled;
-    const origin = pawn.origin;
-    const angles = pawn.angles;
-    if (!origin || !angles) { cmd.reply(`${TAG} cannot read caller transform`); return HookResult.Handled; }
-    const result = camera.create([origin.x, origin.y, origin.z + EYE_HEIGHT], [angles.x, angles.y, angles.z]);
-    cmd.reply(result.error ? `${TAG} ${result.error}` : `${TAG} created cs_player_camera #${result.ref?.index}`);
+    const camera = callerCamera(cmd);
+    const pawn = camera?.getPlayer();
+    const origin = pawn?.origin;
+    const angles = pawn?.angles;
+    if (camera && origin && angles) {
+      const ok = camera.ref.teleport([origin.x, origin.y, origin.z + EYE_HEIGHT], [angles.x, angles.y, angles.z]);
+      cmd.reply(`${TAG} CustomPlayerCamera #${camera.ref.index} positioned=${ok}; mode=${camera.getMode()}`);
+    }
     return HookResult.Handled;
   });
-
-  command.admin("sm_cam_enable", ADMFLAG.ROOT, (cmd) => {
-    const pawn = requireCallerPawn(cmd);
-    if (!pawn) return HookResult.Handled;
-    const cam = camera.findAll()[0];
-    if (!cam) { cmd.reply(`${TAG} no cs_player_camera — run sm_cam_create first`); return HookResult.Handled; }
-    const on = cmd.arg(0) === "1";
-    const queued = camera.setEnabled(cam, on, pawn.ref);
-    cmd.reply(`${TAG} ${on ? "Enable" : "Disable"} queued=${queued} — an unknown input queues then drops silently, so judge by your view, not this line`);
+  command.admin("sm_cam_info", ADMFLAG.ROOT, (cmd) => {
+    const camera = callerCamera(cmd);
+    if (camera) cmd.reply(`${TAG} camera=${camera.ref.index} pawn=${camera.getPlayer()?.ref.index} mode=${camera.getMode()}`);
     return HookResult.Handled;
   });
-
-  command.admin("sm_cam_angles", ADMFLAG.ROOT, (cmd) => {
-    const pawn = requireCallerPawn(cmd);
-    if (!pawn) return HookResult.Handled;
-    const cam = camera.findAll()[0];
-    if (!cam) { cmd.reply(`${TAG} no cs_player_camera — run sm_cam_create first`); return HookResult.Handled; }
-    const queued = camera.setControllingAngles(cam, cmd.arg(0) === "1", pawn.ref);
-    cmd.reply(`${TAG} ${camera.PROBED_INPUTS.controlAngles} queued=${queued} (probe — input name is a guess)`);
+  command.admin("sm_cam_mode", ADMFLAG.ROOT, (cmd) => {
+    const arg = cmd.arg(0);
+    if (!/^[0-3]$/.test(arg)) { cmd.reply(`${TAG} mode: 0=disabled 1=controlled 2=position 3=follow`); return HookResult.Handled; }
+    const mode = Number(arg) as 0 | 1 | 2 | 3;
+    const camera = callerCamera(cmd);
+    if (camera) cmd.reply(`${TAG} setMode=${camera.setMode(mode)}; mode=${camera.getMode()}`);
     return HookResult.Handled;
   });
-
-  command.admin("sm_cam_remove", ADMFLAG.ROOT, (cmd) => {
-    cmd.reply(`${TAG} removed ${camera.removeOwned()} plugin-created camera(s)`);
+  command.admin("sm_cam_follow", ADMFLAG.ROOT, (cmd) => {
+    const distance = cmd.argCount ? Number(cmd.arg(0)) : 120;
+    if (!Number.isFinite(distance) || distance < 0 || distance > 1000) {
+      cmd.reply(`${TAG} distance must be 0..1000`); return HookResult.Handled;
+    }
+    const camera = callerCamera(cmd);
+    const pawn = camera?.getPlayer();
+    if (camera && pawn) {
+      const configured = camera.setFollowConfig({ followEntity: pawn.ref, followEyes: true,
+        cameraOffset: { x: -distance, y: 0, z: 0 }, clipCameraOffset: true, cameraOffsetReturnStrength: 1 });
+      const enabled = configured && camera.setMode(CustomCameraMode.FOLLOW_POSITION);
+      cmd.reply(`${TAG} follow configured=${configured} enabled=${enabled}`);
+    }
     return HookResult.Handled;
   });
+  // Compatibility commands now use modes. They never delete the engine-owned entity.
+  for (const name of ["sm_cam_enable", "sm_cam_angles", "sm_cam_remove"]) {
+    command.admin(name, ADMFLAG.ROOT, (cmd) => {
+      if (name !== "sm_cam_remove" && !/^[01]$/.test(cmd.arg(0))) {
+        cmd.reply(`${TAG} argument must be 0 or 1`); return HookResult.Handled;
+      }
+      const camera = callerCamera(cmd);
+      const mode = name === "sm_cam_remove" ? CustomCameraMode.DISABLED : name === "sm_cam_enable"
+        ? (cmd.arg(0) === "1" ? CustomCameraMode.CONTROLLED : CustomCameraMode.DISABLED)
+        : (cmd.arg(0) === "1" ? CustomCameraMode.CONTROLLED : CustomCameraMode.CONTROLLED_POSITION);
+      if (camera) cmd.reply(`${TAG} legacy alias: setMode=${camera.setMode(mode)}; mode=${camera.getMode()}`);
+      return HookResult.Handled;
+    });
+  }
 
   // ── Bomb ────────────────────────────────────────────────────────────────────────────────────
   command.admin("sm_bomb_watch", ADMFLAG.GENERIC, (cmd) => {

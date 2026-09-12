@@ -58,12 +58,14 @@ export function OnPluginStart(): void {
     const fail = (reason: string) => { cmd.reply(`REFUSED: ${reason}`); return HookResult.Handled; };
     if (!/^[AB]$/.test(label)) return fail("label must be A or B");
     if (op === "create") {
+      const observable = cmd.arg(2) || "0";
+      if (observable !== "0" && observable !== "1") return fail("observable: 0 | 1 (default 0)");
       if (owned.get(label)?.isValid()) return fail("label already exists; clean before recreating");
       if (!Clients.all().some((c) => !c.isBot && c.signonState === 6)) return fail("requires an active human client");
       if (!bridge.__s2pkg_cs2_calls?.call("setHasClassForPlayer") ||
           !bridge.__s2pkg_cs2_calls.call("setDialogVariableStringForPlayer")) return fail("HUD calls unavailable");
       const entity = createEntity("custom_hud_layout", {
-        targetname: `s2_privacy_probe_${label}`, layout: RESOURCE, origin: "0 0 0",
+        targetname: `s2_privacy_probe_${label}`, layout: RESOURCE, origin: "0 0 0", observable,
       });
       if (!entity) return fail("createEntity failed");
       // Start hidden from all. No text has been written. This is not a confidentiality
@@ -76,7 +78,7 @@ export function OnPluginStart(): void {
         return fail("transmit unavailable; removed entity");
       }
       owned.set(label, entity);
-      cmd.reply(`created ${label}: index=${entity.index} id=${entity.id}; audience=none`);
+      cmd.reply(`created ${label}: index=${entity.index} id=${entity.id}; observable=${observable}; audience=none`);
       return HookResult.Handled;
     }
     const entity = owned.get(label);

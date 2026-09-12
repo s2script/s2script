@@ -32,7 +32,7 @@ function plausibleCount(n: number | null): boolean {
 }
 
 /**
- * Cheap sanity gate for the borrowed offsets in `offsets.ts`.
+ * Additional sanity gate for the live-schema offsets in `offsets.ts`.
  *
  * It cannot prove the offsets are correct — only that the bytes at them are not obviously garbage.
  * A green probe means "safe to try a write", never "verified". The checks are deliberately weak in
@@ -44,10 +44,9 @@ export function probeLayout(ref: EntityRef): ProbeResult {
 
   if (!ref.isValid()) return { ok: false, reasons: ["entity ref is stale"] };
 
-  // The last byte of the struct must be readable, or the entity is smaller than the dump claims
-  // and every offset in offsets.ts is describing some other class.
+  // The last byte of the known diagnostic span must be readable.
   if (ref.readUInt8(LAYOUT_SIZE - 1) === null) {
-    reasons.push(`cannot read entity+${LAYOUT_SIZE - 1} (entity smaller than the dumped ${LAYOUT_SIZE} bytes?)`);
+    reasons.push(`cannot read entity+${LAYOUT_SIZE - 1} (known field span is ${LAYOUT_SIZE} bytes)`);
   }
 
   // The global state's bool must at least be readable.
@@ -188,7 +187,7 @@ export function dumpWindow(ref: EntityRef, start: number, length: number): strin
 // HasClass(1) shows/hides that panel for that player, and that is a raw write.
 //
 // The reach is two pointer hops, both of which EntityRef already does in-core:
-//     entity +1944                       -> m_vecPlayerLayoutStates data     (P)
+//     entity + LAYOUT.vecPlayerLayoutStates + VEC.elements -> states data (P)
 //     P + slot*STATE_SIZE + 56           -> that state's m_vecHasClasses     (count @+0, data @+8)
 //     P + slot*STATE_SIZE + 64           -> the entries array                (Q)
 //     Q + i*8 + 4                        -> entry i's status
@@ -282,7 +281,7 @@ export function setPlayerClassStatus(
  * Per-player `m_bInputCaptureEnabled` — the mouse-cursor switch.
  *
  * The GLOBAL state's copy (entity+2088, what `setInputCaptureEnabled` writes) is not what gates a
- * given player's cursor: each per-player state carries its own flag at `state+48`, and that is the
+ * given player's cursor: each per-player state carries its own flag at `state+STATE.inputCaptureEnabled`, and that is the
  * one the client reads when deciding whether to capture the mouse for this layout. A panel toggled
  * visible with input capture still false renders but cannot be clicked — which is exactly the
  * "the panel came up but Dismiss did nothing" symptom.

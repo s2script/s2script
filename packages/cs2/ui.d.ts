@@ -59,6 +59,13 @@ export interface CustomHudSpec<ButtonId extends string = string> {
   readonly addons: readonly string[];
   /** Source `.xml` path under `panorama/layout/custom_game/`. */
   readonly resource: string;
+  /**
+   * Show the spectated player's version of this layout to observers. Default false.
+   * Requires CS2's September 9, 2026 update. This controls rendering, not network
+   * confidentiality or permission to click. Fixed at creation; reusing a resource
+   * with a conflicting value in the same plugin throws.
+   */
+  readonly observable?: boolean;
   /** Class that hides a panel when applied. Default `"s2-hide"`. */
   readonly hideClass?: string;
   /** panelId -> dialog variable name for {@link HudLayout.setText}. Default: none. */

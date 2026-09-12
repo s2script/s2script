@@ -1,5 +1,12 @@
 # Spectator delivery experiment (test-only)
 
+September 9 update: `s2_hudprivacy create A [0|1]` selects `observable` at spawn
+(default 0). Repeat the spectator checks with both values, cleaning between runs.
+Use audience `all` first to isolate client observation from transmit filtering.
+`observable=0` controls rendering, not network confidentiality. Historical expected
+spectator behavior below must be evaluated against the selected mode.
+See [updated-engine acceptance](../../docs/CS2-UI-UPDATE.md).
+
 **Prepared, not run. No delivery or confidentiality result has been measured.**
 This plugin is an opt-in experiment, excluded from shipped base plugins. It creates
 at most two independent `custom_hud_layout` entities using the existing published

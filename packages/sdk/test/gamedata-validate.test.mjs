@@ -143,7 +143,7 @@ test("an unknown resolve step is rejected", () => {
 });
 
 test("every resolve step the shim dispatches on is accepted", () => {
-  for (const r of ["direct", "ctor-body-xref", "lea-disp"]) {
+  for (const r of ["direct", "ctor-body-xref", "lea-disp", "validated-call"]) {
     const gd = structuredClone(sigCall);
     gd.signatures.Foo.linuxsteamrt64.resolve = r;
     assert.deepEqual(validatePluginGamedata(gd, { permissions: PERMS }), [], `expected ${r} to be accepted`);

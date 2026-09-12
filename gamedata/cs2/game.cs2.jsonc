@@ -59,6 +59,43 @@
     "CCSPlayer_ItemServices_DropActivePlayerWeapon": { "linuxsteamrt64": 24 }
   },
   "signatures": {
+    // Camera bindings: self-resolved on build 2000908; see docs/CS2-UI-UPDATE.md.
+    "CCSPlayerPawn_GetCustomCamera": {
+        "linuxsteamrt64": {
+            "module": "libserver.so",
+            "pattern": "E8 ? ? ? ? 48 89 C3 48 85 C0 0F 84 ? ? ? ? 48 8D 15 ? ? ? ? 48 89 C7 31 C9 48 8D 35 ? ? ? ? 4D 8B 24 24 ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? 48 8D 0D ? ? ? ?",
+            "resolve": "validated-call",
+            "validate": {
+                "string-xref": {
+                    "at": 127,
+                    "dispOff": 3,
+                    "instrLen": 7,
+                    "expect": "GetCustomCamera"
+                }
+            }
+        }
+    },
+    "CCSCustomPlayerCamera_SetMode": {
+        "linuxsteamrt64": {
+            "module": "libserver.so",
+            "pattern": "55 48 89 E5 41 55 41 54 41 89 F4 53 48 89 FB 48 83 EC ? 40 38 B7 ? ? ? ? 0F 85 ? ? ? ? 8B 8B ? ? ? ? 83 F9 FF 0F 84 ? ? ? ?",
+            "resolve": "direct",
+            "validate": {
+                "prologue": "55 48 89 E5 41 55 41 54 41 89 F4 53"
+            }
+        }
+    },
+    "CCSCustomPlayerCamera_SetFollowConfig": {
+        "linuxsteamrt64": {
+            "module": "libserver.so",
+            "pattern": "55 48 89 E5 41 57 41 89 D7 41 56 49 89 FE 48 81 C7 ? ? ? ? 41 55 49 89 F5 41 54 49 89 CC 53 4C 89 C3 48 83 EC ? 44 89 4D ? F3 0F 11 45 ?",
+            "resolve": "direct",
+            "validate": {
+                "prologue": "55 48 89 E5 41 57 41 89 D7 41 56 49"
+            }
+        }
+    },
+
     // CBasePlayerPawn::CommitSuicide(bool bExplode, bool bForce) — the lethal-kill entry the failed
     // Slice-6.8 sm_slay branch (a085d5a) reached by the ModSharp vtable INDEX 400. That index is DEAD
     // WRONG on our pinned build (index 400 is a m_flDeathTime float getter) — CommitSuicide is vtable
@@ -278,69 +315,35 @@
       }
     },
 
-    // ─── CCSCustomHudLayout HUD setters (2026-08-25 custom_hud_layout slice) ───────────────────
-    //
-    // CCSCustomHudLayout::SetHasClassForPlayer(int playerSlot /*esi*/, CUtlString panelId /*rdx*/,
-    //     CUtlString className /*rcx*/, int status /*r8d*/)
-    //
-    // Self-resolved against build 24916958's libserver.so (see examples/hud-lab for the full RE
-    // story). The callee bounds-checks slot against m_vecPlayerLayoutStates at +0x790 and diverges
-    // from its near-twin SetDialogVariableStringForPlayer at +0x43 (`45 89 C6` = mov r14d,r8d).
-    // Args 2–3 are CUtlString*, NOT const char* — the `utlstring` arg kind is load-bearing.
+    // HUD setters re-resolved on build 2000908 through Valve's named script wrappers.
+    // See docs/CS2-UI-UPDATE.md for call sites, ABI and live verification.
+    // observable shifted m_vecPlayerLayoutStates by 8 bytes. Mask field displacements
+    // and state stride; never use the previous build's layout as part of a signature.
+    // Class/dialog strings are CUtlString* (utlstring), not const char*.
     "CCSCustomHudLayout_SetHasClassForPlayer": {
       "linuxsteamrt64": {
         "module": "libserver.so",
-        "pattern": "55 48 89 E5 41 56 41 55 41 54 41 89 F4 53 48 83 EC ? 3B B7 90 07 00 00 7C 16 48 83 C4 10 5B 41 5C 41 5D 41 5E 5D C3 66 0F 1F 84 00 00 00 00 00 48 89 D6 31 D2 48 89 FB 66 89 55 DC 48 8D 55 DC 49 89 CD 45 89 C6",
+        "pattern": "55 48 89 E5 41 56 41 55 41 54 41 89 F4 53 48 83 EC ? 3B B7 ? ? ? ? 7C 16 48 83 C4 10 5B 41 5C 41 5D 41 5E 5D C3 66 0F 1F 84 00 00 00 00 00 48 89 D6 31 D2 48 89 FB 66 89 55 DC 48 8D 55 DC 49 89 CD 45 89 C6",
         "resolve": "direct",
         "validate": { "prologue": "55 48 89 E5 41 56 41 55 41 54 41 89 F4 53" }
       }
     },
 
-    // CCSCustomHudLayout::SetDialogVariableStringForPlayer(int playerSlot /*esi*/,
-    //     CUtlString panelId /*rdx*/, CUtlString variableName /*rcx*/, CUtlString value /*r8*/)
-    //
-    // Near-twin of SetHasClassForPlayer; diverges at +0x43 with `4D 89 C6` (mov r14,r8) — a pointer
-    // 4th arg (the value string), not an int status enum.
     "CCSCustomHudLayout_SetDialogVariableStringForPlayer": {
       "linuxsteamrt64": {
         "module": "libserver.so",
-        "pattern": "55 48 89 E5 41 56 41 55 41 54 41 89 F4 53 48 83 EC ? 3B B7 90 07 00 00 7C 16 48 83 C4 10 5B 41 5C 41 5D 41 5E 5D C3 66 0F 1F 84 00 00 00 00 00 48 89 D6 31 D2 48 89 FB 66 89 55 DC 48 8D 55 DC 49 89 CD 4D 89 C6",
+        "pattern": "55 48 89 E5 41 56 41 55 41 54 41 89 F4 53 48 83 EC ? 3B B7 ? ? ? ? 7C 16 48 83 C4 10 5B 41 5C 41 5D 41 5E 5D C3 66 0F 1F 84 00 00 00 00 00 48 89 D6 31 D2 48 89 FB 66 89 55 DC 48 8D 55 DC 49 89 CD 4D 89 C6",
         "resolve": "direct",
         "validate": { "prologue": "55 48 89 E5 41 56 41 55 41 54 41 89 F4 53" }
       }
     },
 
-    // CCSCustomHudLayout::SetInputCaptureEnabled(int playerSlot /*esi*/, bool enabled /*edx*/)
-    //
-    // Per-player mouse capture for a layout. Structurally: bounds-check slot against
-    // m_vecPlayerLayoutStates at +0x790, then `imul slot, 0x198` (sizeof CCSCustomHudLayoutState ==
-    // 408 since build 24957633 — the ModSharp-era pattern this started from used the pre-update
-    // stride 0x1a0/416; see the RE-DERIVED note below) and write m_bInputCaptureEnabled on that
-    // state. Pattern from cs2-customhud (ModSharp PoC), re-scanned as a DIRECT entry (the published
-    // pattern included a leading cmp/jge prefix).
     "CCSCustomHudLayout_SetInputCaptureEnabledForPlayer": {
       "linuxsteamrt64": {
         "module": "libserver.so",
-        // RE-DERIVED for build 24957633. The previous pattern assumed a standard prologue and never
-        // matched: this function puts the SLOT BOUNDS CHECK *BEFORE* `push rbp`, so it does not
-        // start with 55 48 89 E5 at all —
-        //     3B B7 90 07 00 00   cmp esi,[rdi+0x790]   ; slot vs m_vecPlayerLayoutStates count
-        //     0F 8D ....          jge <return>
-        //     55 48 89 E5         push rbp; mov rbp,rsp
-        //     41 89 D4            mov r12d,edx          ; the bool
-        //     48 69 DB 98 01 00 00 imul rbx,rbx,0x198   ; sizeof(CCSCustomHudLayoutState) == 408
-        //     48 03 9F 98 07 00 00 add rbx,[rdi+0x798]  ; states data pointer
-        //     3A 53 34            cmp dl,[rbx+0x34]     ; m_bInputCaptureEnabled at +52
-        //
-        // NOTE THE TWO SCHEMA CHANGES this build carries, both visible above and both confirmed
-        // against the sibling setters: the state stride moved 416 -> 408 (0x1a0 -> 0x198) and
-        // m_bInputCaptureEnabled moved 48 -> 52. Any raw-offset code using the old values now writes
-        // to the wrong field — which is exactly why this is an engine CALL and not a memory poke.
-        //
-        // Whole-body pattern through the field access; validated UNIQUE (one whole-file match).
-        "pattern": "3B B7 90 07 00 00 0F 8D ? ? ? ? 55 48 89 E5 41 55 41 54 41 89 D4 53 48 63 DE 48 69 DB 98 01 00 00 48 83 EC ? 48 03 9F 98 07 00 00 3A 53 34",
+        "pattern": "3B B7 ? ? ? ? 0F 8D ? ? ? ? 55 48 89 E5 41 55 41 54 41 89 D4 53 48 63 DE 48 69 DB ? ? ? ? 48 83 EC ? 48 03 9F ? ? ? ? 3A 53 ?",
         "resolve": "direct",
-        "validate": { "prologue": "3B B7 90 07 00 00 0F 8D" }
+        "validate": { "prologue": "3B B7 ? ? ? ? 0F 8D" }
       }
     },
 
@@ -375,6 +378,60 @@
   // over recording fakes. Editing a descriptor here without editing its wrapper there is how a
   // precondition gets lost; both gates run in `make ci`.
   "calls": {
+    "getCustomCamera": {
+        "receiver": {
+            "kind": "entity"
+        },
+        "target": {
+            "kind": "signature",
+            "name": "CCSPlayerPawn_GetCustomCamera"
+        },
+        "args": [],
+        "returns": "entity"
+    },
+    "setCustomCameraMode": {
+        "receiver": {
+            "kind": "entity"
+        },
+        "target": {
+            "kind": "signature",
+            "name": "CCSCustomPlayerCamera_SetMode"
+        },
+        "args": [
+            "int"
+        ],
+        "argNames": [
+            "mode"
+        ],
+        "returns": "void"
+    },
+    "setCustomCameraFollowConfig": {
+        "receiver": {
+            "kind": "entity"
+        },
+        "target": {
+            "kind": "signature",
+            "name": "CCSCustomPlayerCamera_SetFollowConfig"
+        },
+        "args": [
+            "entity",
+            "bool",
+            "vector",
+            "vector",
+            "bool",
+            "float"
+        ],
+        "argNames": [
+            "followEntity",
+            "followEyes",
+            "followOffset",
+            "cameraOffset",
+            "clipCameraOffset",
+            "cameraOffsetReturnStrength"
+        ],
+        "returns": "void"
+    },
+
     // pawn.slay(). bExplode/bForce are NOT caller-supplied: pawn.js always passes (false, true),
     // and `bForce = true` is load-bearing — the body is an m_fNextSuicideTime rate limiter with a
     // `test bForce; je ret`, so passing false makes slay() a silent no-op inside the cooldown.

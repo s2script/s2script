@@ -371,32 +371,40 @@ int S2_EngineCallResolve(const char* kind, const char* module, const char* patte
     if (!mt.text) return Fail(reasonOut, reasonCap, "target module is not loaded");
 
     void* fn = nullptr;
+    const bool validatedCall = resolve && std::strcmp(resolve, "validated-call") == 0;
 
     if (std::strcmp(kind, "signature") == 0) {
         if (!pattern || !pattern[0]) return Fail(reasonOut, reasonCap, "signature has no pattern");
-        std::vector<int> pat = s2sig::ParsePattern(pattern);
-        if (pat.empty()) return Fail(reasonOut, reasonCap, "malformed signature pattern");
-        // Rule 2: uniqueness, not just presence — an ambiguous pattern is as unusable as a missing one.
-        int matches = s2sig::CountPattern(mt.text, mt.size, pat, 2);
-        if (matches == 0) return Fail(reasonOut, reasonCap, "signature did not match this build");
-        if (matches > 1)  return Fail(reasonOut, reasonCap, "signature is ambiguous (>1 match — tighten it)");
-        int64_t matchOff  = s2sig::FindPattern(mt.text, mt.size, pat);
-        int64_t targetOff = matchOff;                       // "direct": the match IS the target
-        const char* res = (resolve && resolve[0]) ? resolve : "direct";
-        if (std::strcmp(res, "ctor-body-xref") == 0) {
-            targetOff = s2sig::ResolveCtorXref(mt.text, mt.size, matchOff);
-        } else if (std::strcmp(res, "lea-disp") == 0) {
-            targetOff = s2sig::ResolveLeaDisp(mt.text, mt.size, matchOff, /*dispOff=*/3, /*instrLen=*/7);
-        } else if (std::strcmp(res, "direct") != 0) {
-            return Fail(reasonOut, reasonCap, "unknown resolve strategy");
+        if (validatedCall) {
+            fn = const_cast<void*>(s2validate::ResolveValidatedCall(pattern, validateJson,
+                ViewOf(mt), mod, ValidatorOps(), reasonOut, reasonCap));
+            if (!fn) return -1;
+        } else {
+            std::vector<int> pat = s2sig::ParsePattern(pattern);
+            if (pat.empty()) return Fail(reasonOut, reasonCap, "malformed signature pattern");
+            // Rule 2: uniqueness, not just presence — an ambiguous pattern is as unusable as a missing one.
+            int matches = s2sig::CountPattern(mt.text, mt.size, pat, 2);
+            if (matches == 0) return Fail(reasonOut, reasonCap, "signature did not match this build");
+            if (matches > 1)  return Fail(reasonOut, reasonCap, "signature is ambiguous (>1 match — tighten it)");
+            int64_t matchOff  = s2sig::FindPattern(mt.text, mt.size, pat);
+            int64_t targetOff = matchOff;                       // "direct": the match IS the target
+            const char* res = (resolve && resolve[0]) ? resolve : "direct";
+            if (std::strcmp(res, "ctor-body-xref") == 0) {
+                targetOff = s2sig::ResolveCtorXref(mt.text, mt.size, matchOff);
+            } else if (std::strcmp(res, "lea-disp") == 0) {
+                targetOff = s2sig::ResolveLeaDisp(mt.text, mt.size, matchOff, /*dispOff=*/3, /*instrLen=*/7);
+            } else if (std::strcmp(res, "direct") != 0) {
+                return Fail(reasonOut, reasonCap, "unknown resolve strategy");
+            }
+            if (targetOff == s2sig::kFail) return Fail(reasonOut, reasonCap, "resolve step failed (xref/lea)");
+            // uintptr arithmetic: a lea/xref target can legitimately compute to a NEGATIVE offset
+            // (.rodata precedes .text in the mapping), which InModuleText then rejects.
+            fn = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(mt.text) +
+                                         static_cast<uintptr_t>(targetOff));
+            if (!InModuleText(mt, fn)) return Fail(reasonOut, reasonCap, "resolved address outside the module's .text");
         }
-        if (targetOff == s2sig::kFail) return Fail(reasonOut, reasonCap, "resolve step failed (xref/lea)");
-        // uintptr arithmetic: a lea/xref target can legitimately compute to a NEGATIVE offset
-        // (.rodata precedes .text in the mapping), which InModuleText then rejects.
-        fn = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(mt.text) +
-                                     static_cast<uintptr_t>(targetOff));
-        if (!InModuleText(mt, fn)) return Fail(reasonOut, reasonCap, "resolved address outside the module's .text");
     } else if (std::strcmp(kind, "vtable") == 0) {
+        if (validatedCall) return Fail(reasonOut, reasonCap, "validated-call requires a signature target");
         if (!className || !className[0]) return Fail(reasonOut, reasonCap, "vtable target has no class");
         // A `prologue` is MANDATORY for a vtable target — a rule about which validator must be
         // PRESENT, separate from how validators are evaluated below. The SDK fails the BUILD on a
@@ -418,7 +426,9 @@ int S2_EngineCallResolve(const char* kind, const char* module, const char* patte
     // module. One shared, kind-agnostic pass over the descriptor's whole `validate` object — the
     // vocabulary is CLOSED, so an unknown key fails HERE by name rather than being silently ignored,
     // which is the one way a mistyped gate could vanish without a trace.
-    if (!s2validate::Run(validateJson, ViewOf(mt), mod, fn, ValidatorOps(), reasonOut, reasonCap))
+    // validated-call already checked the caller's semantic anchor before following E8.
+    // Its validate offsets deliberately describe that call site, not the callee.
+    if (!validatedCall && !s2validate::Run(validateJson, ViewOf(mt), mod, fn, ValidatorOps(), reasonOut, reasonCap))
         return -1;
 
     // Idempotent: the same resolved address always yields the same id, so a plugin reload (or two

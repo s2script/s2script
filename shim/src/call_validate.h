@@ -76,6 +76,13 @@ bool DeclaresPrologue(const char* validateJson);
 bool Run(const char* validateJson, const ModuleView& mv, const char* module, const void* fn,
          const Ops& ops, char* reasonOut, int reasonCap);
 
+// Resolve an E8 rel32 call through its validated call SITE. Used when target bodies
+// are byte-identical but callers reference different semantic names. Requires a
+// string-xref validator, exactly one validated pattern match, and an in-text target.
+// For this strategy validate offsets are relative to the call instruction, not its target.
+const void* ResolveValidatedCall(const char* pattern, const char* validateJson,
+    const ModuleView& mv, const char* module, const Ops& ops, char* reasonOut, int reasonCap);
+
 // ---------------------------------------------------------------------------
 // ARG-WIDTH — is a declared inbound-hook SHAPE consistent with the callee's machine code?
 //

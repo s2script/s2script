@@ -25,7 +25,7 @@ No RE, no codegen, no new core capability.
 | Patch-note API | Reached via |
 |---|---|
 | `CustomHudLayout.SetInputCaptureEnabled` / `IsInputCaptureEnabled` | `m_bInputCaptureEnabled` is a plain bool embedded at a fixed offset — `writeBool` + `notifyStateChanged` |
-| `custom_hud_layout` / `cs_player_camera` entities | `createEntity(className, keyvalues)` |
+| `custom_hud_layout` entity / pawn-owned camera | `CustomHudLayout.create` / `Pawn.getCustomCamera` |
 | `SetHUDVisibility` | entity-IO `acceptInput` — a Valve datadesc input on `CBasePlayerPawn` |
 | `Instance.OnBombPlantStart` / `OnBombPlantAbort` / `OnBombDefuseStart` / `OnBombDefuseAbort` | `bomb_beginplant` / `bomb_abortplant` / `bomb_begindefuse` / `bomb_abortdefuse` — already in the 272-event catalog |
 | `Entity.GetMoveType` / `SetMoveType`, `CSMoveType` | `Pawn.moveType` + the generated `MoveType_t` |
@@ -89,27 +89,25 @@ decides a property every consumer of the `*ForPlayer` calls needs to know: **"Fo
 per-slot STORAGE, not per-recipient DELIVERY.** The engine files your write under slot N's state;
 it does not promise that only slot N's client ever sees it.
 
-Observed on a live server: **a spectator sees the spectated player's panels.** The client renders
-whichever slot it is *viewing*, so anything painted "for" a player is shown to everyone watching
-that player. (That much is observation. Whether the whole vector is networked to *every* client —
-so a modified client could read any slot's state regardless of who it is viewing — is an
-*inference* from the container type, not something we have packet-captured; treat it as likely but
-unproven.) Either way: do not put anything confidential — admin-only controls, private balances,
-per-player secrets — into per-slot state on a shared layout entity.
+Before September 9, 2026, live testing showed spectators rendering the watched player's
+panels. The updated engine adds the `observable` spawn keyvalue: false (the engine and
+s2script default) keeps the viewer's own UI; true opts into the spectated player's UI.
+`CustomHudLayout.create({ ..., observable: true })` opts in for a dedicated layout.
+The shared hudkit stays non-observable so menus follow their owner. A plugin cannot
+reuse one resource with conflicting observation policies.
 
-The escape, when a panel genuinely must be private: **one layout entity per recipient**,
-transmit-filtered with `Transmit.setVisibleTo(entity, [slot])`. The intern caps (panel ids / class
-names / dialog variables) are **per-entity**, so splitting entities *multiplies* the budget instead
-of sharing it. Two things need a live gate before relying on this, and neither has run:
+This fixes the normal spectator presentation problem without a per-recipient entity
+workaround. It does **not** establish per-recipient network confidentiality; authorize
+clicks independently and never send secrets through HUD state. Transmit filtering is
+still a separate mechanism with a separate live gate.
 
-1. whether `custom_hud_layout` respects CheckTransmit stripping at all — HUD entities may be
-   special-cased past the transmit path; and
-2. whether a private entity still renders for its *owner* while that owner is spectating someone
-   else — rendering keys off the viewed slot, so it may not.
+The update also fixes stale layout state on spectator target changes. Keep our
+entity-replacement and connection-lifetime caches: those protect server-side state,
+not the client spectator bugs. See [the update acceptance checklist](../../docs/CS2-UI-UPDATE.md).
 
 ## The HUD that works — `sm_hud_demo`
 
-Since `custom_hud_layout` is unusable from a plugin, `src/demohud.ts` renders on the surface CS2
+The early fallback `src/demohud.ts` renders on the surface CS2
 already gives a server: the **centre-screen HTML panel**, via the `show_survival_respawn_status`
 event. That's the same mechanism `MenuStyle.Center` already uses, so it's proven on this build, and
 it's what SourceMod's `PrintToCenterHtml` does.
@@ -161,23 +159,17 @@ panelIds=0 classNames=0 dialogVars=0    -> no layout asset loaded (expected on a
 panelIds>0                              -> a layout loaded and registered panels
 ```
 
-## Offsets are borrowed, and gated
+## HUD offsets come from the live schema
 
-Three offsets (1936 `m_vecPlayerLayoutStates`, 2040 `m_globalLayoutState`, 2480 `m_vecClassNames`)
-are now **confirmed by disassembly** of build 24916958 — see `src/offsets.ts`. The rest of
-`src/offsets.ts` is still transcribed from a schema dump this repo's own tooling has not confirmed —
-`games/cs2/gamedata/schema-catalog.json` predates the update and has no `CCSCustomHudLayout` entry,
-so `tools/schema-dump` could not check it. `docs/re-strategy.md` forbids relying on an unvalidated
-borrowed constant, so every write path calls `probeLayout()` first (bounds, plausible vector counts,
-a canonical-looking `m_strLayout` pointer, a sane player slot) and reads back after writing. A green
-probe means "safe to try", never "verified".
+`src/offsets.ts` resolves layout/state fields from the running engine. Missing fields stop
+plugin initialization before any diagnostic write. The September 9 update moved the
+player-state vector and global state; the live dump also confirms `m_playerSlot` is at
+state +48, rather than the old borrowed +408. State stride is derived from the embedded
+state's span and verified against the native setter arithmetic (408 bytes on build 2000908).
 
-`sm_hud_probe` dumps a raw byte window for eyeballing against a fresh dump — that is the treadmill
-tool, and it is how you catch an offset shift before it becomes a bad write on a live server.
-
-**To retire this file:** run `tools/schema-dump` against the updated `libserver.so`, confirm the
-numbers, add `CCSCustomHudLayout` to `games/cs2/codegen-classes.json`, and delete `offsets.ts` in
-favour of generated accessors.
+`probeLayout()` adds plausibility checks before raw writes, followed by readback.
+`sm_hud_probe` remains a raw byte-window diagnostic. The native HUD setters use signatures
+re-resolved through Valve's named script wrappers; see [migration notes](../../docs/CS2-UI-UPDATE.md).
 
 ## Commands
 
@@ -186,17 +178,17 @@ Everything is admin-gated. Writes are `ROOT`; reads are `GENERIC`.
 ```
 sm_hud_status                              tier A/B/C report + live layout readout
 sm_hud_probe [start] [len]                 raw byte window, to verify offsets against a dump
-sm_hud_create [layout]                     create + spawn a custom_hud_layout
+sm_hud_create [layout] [observable:0|1]    create + spawn a custom_hud_layout
 sm_hud_list                                every custom_hud_layout in the world
 sm_hud_remove                              remove the ones this plugin created
 sm_hud_capture <0|1>                       SetInputCaptureEnabled (tier A, raw write)
 sm_hud_class <panel> <class> <0|1|-1> [t]  SetHasClass / …ForPlayer (tier B)
 sm_hud_var <panel> <var> <value> [target]  SetDialogVariableString / …ForPlayer (tier B)
 sm_hud_visible <target> <0|1>              SetHUDVisibility entity input
-sm_cam_create                              create a cs_player_camera at the caller
-sm_cam_enable <0|1>                        probe the camera's Enable/Disable inputs
-sm_cam_angles <0|1>                        probe SetIsControllingAngles
-sm_cam_remove                              remove the cameras this plugin created
+sm_cam_create                              acquire and position the caller's camera
+sm_cam_mode <0|1|2|3>                      select native camera mode
+sm_cam_follow [distance]                   follow the caller with clipping
+sm_cam_info                                show camera, owner and mode
 sm_bomb_watch <0|1>                        log the four new plant/defuse callbacks
 sm_bomb_info                               C4 field readout
 sm_bomb_abort                              probe C4.AbortPlant as an entity input
@@ -207,10 +199,14 @@ sm_buymenu [chat|center]                   categorised buy menu
 
 ### What "queued" means
 
-The camera and `AbortPlant` commands report `queued=true/false`. That is `acceptInput`'s return —
+The legacy `AbortPlant` command reports `queued=true/false`. That is `acceptInput`'s return —
 whether the I/O event was **queued**, not whether the target has that input. An unknown input name
 is accepted, queued, and dropped later, silently. Those commands are probes: the input names are
 guesses at Source convention, and only an observable in-game effect counts as evidence.
+
+Camera commands now use verified native calls. The legacy `sm_cam_enable`,
+`sm_cam_angles`, and `sm_cam_remove` aliases set modes; remove disables the pawn-owned
+camera instead of deleting it. Use `sm_cam_mode 0` to return to the normal view.
 
 ## Build and install
 
@@ -229,7 +225,7 @@ reason instead of the signature one, and `sm_hud_status` says so.
 ```
 sm_hud_status          # what is reachable on this build
 sm_hud_create          # does a layout asset load on a stock map?
-sm_hud_probe           # do the borrowed offsets look right?
+sm_hud_probe           # inspect the live-schema field window
 sm_hud_capture 1       # the one HUD write that works with no signature
 sm_bomb_watch 1        # then plant/abort a bomb
 sm_hud_menu center     # what menus look like today, for comparison
