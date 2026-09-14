@@ -15,6 +15,12 @@
 # tested pin (PLAPI 18) or a verified PLAPI 18 mmsdrop, staged then swapped only
 # while CS2 is stopped. A failed/stale download never loops and never destroys the
 # previous tree. `docker/s2script.vdf` is restored after every successful swap.
+#
+# If mmsdrop cannot be verified as PLAPI 18 (still 17, stripped, download fail),
+# this script does NOT re-fetch latest and does NOT AMBuild third_party/metamod-source.
+# Operators / Task 6 MUST supply a prebuilt PLAPI 18 tree via S2_METAMOD_PINNED_TREE
+# or docker/metamod-pin/ (the pinned submodule at S2_METAMOD_PIN, already built).
+# Without that tree, refresh fails closed and the previous installation is preserved.
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
@@ -122,11 +128,11 @@ s2_metamod_tree_is_verified() {
   return 0
 }
 
-# A staged tree is PLAPI 18 iff we can prove it before swapping:
+# A staged *mmsdrop* is PLAPI 18 iff we can prove it before swapping:
 #   * identity sidecar already names this pin + PLAPI + matching sha, or
 #   * heuristic pass (GetDetourInterface present).
 # Unknown/stripped drops are NOT verified — fall back to the pin rather than
-# looping mmsdrop.
+# looping mmsdrop. Pin-origin trees use s2_metamod_stage_is_pin_ok instead.
 s2_metamod_stage_is_plapi18() {
   local stage="$1"
   local so identity
@@ -147,6 +153,20 @@ s2_metamod_stage_is_plapi18() {
     fi
   fi
   [ "$(s2_metamod_heuristic "$so")" = "pass" ]
+}
+
+# Operator/T6 pin origin is trusted when the .so exists and the heuristic is not
+# fail (pass or unknown/stripped). Identity is written after a successful swap.
+# A SourceHook / pre-18 pin is still rejected.
+s2_metamod_stage_is_pin_ok() {
+  local stage="$1"
+  local so
+  so="$(s2_metamod_so "$stage")"
+  [ -f "$so" ] || return 1
+  case "$(s2_metamod_heuristic "$so")" in
+    fail) return 1 ;;
+  esac
+  return 0
 }
 
 s2_find_extracted_metamod_root() {
@@ -272,9 +292,13 @@ s2_stage_mmsdrop() {
   return 0
 }
 
-# Pinned submodule build. We do not AMBuild Metamod inside the default cloud
-# install (heavy, sniper/AMBuild-specific). Operators/tests supply a prebuilt
-# tree via S2_METAMOD_PINNED_TREE or docker/metamod-pin/.
+# Pinned PLAPI 18 fallback. This is a prebuilt tree, not an in-script AMBuild of
+# third_party/metamod-source (that needs the sniper/AMBuild environment and is out
+# of this package). When mmsdrop is unverifiable, operators / Task 6 must plant
+# the already-built pin (S2_METAMOD_PIN, PLAPI 18) at one of:
+#   * S2_METAMOD_PINNED_TREE  — absolute/relative path to a metamod tree
+#   * docker/metamod-pin/    — repo-relative, same layout as docker/metamod/
+# Do not re-fetch mmsdrop latest from this path.
 s2_stage_pinned_tree() {
   local stage="$1"
   local pin_src="${S2_METAMOD_PINNED_TREE:-}"
@@ -282,7 +306,7 @@ s2_stage_pinned_tree() {
     pin_src="$S2_SCRIPT_REPO/docker/metamod-pin"
   fi
   if [ -z "$pin_src" ] || [ ! -f "$(s2_metamod_so "$pin_src")" ]; then
-    echo "    no prebuilt pin tree (set S2_METAMOD_PINNED_TREE or docker/metamod-pin/)" >&2
+    echo "    no prebuilt pin tree — if mmsdrop is unverifiable, set S2_METAMOD_PINNED_TREE or plant docker/metamod-pin/ (PLAPI ${S2_METAMOD_PLAPI} at pin ${S2_METAMOD_PIN})" >&2
     return 1
   fi
   echo "    staging pinned Metamod from $pin_src"
@@ -335,17 +359,17 @@ s2_ensure_metamod() {
 
   if [ -z "$source" ]; then
     if s2_stage_pinned_tree "$stage"; then
-      if s2_metamod_stage_is_plapi18 "$stage"; then
+      if s2_metamod_stage_is_pin_ok "$stage"; then
         source="pin"
         artifact="pin:${S2_METAMOD_PIN}"
       else
-        echo "    pinned tree is not a verified PLAPI ${S2_METAMOD_PLAPI} artifact" >&2
+        echo "    pinned tree heuristic=fail (pre-18 / SourceHook) — not installing" >&2
         rm -rf "$stage"
         echo "    previous installation preserved at $dest" >&2
         return 1
       fi
     else
-      echo "    no verified PLAPI ${S2_METAMOD_PLAPI} source available" >&2
+      echo "    no verified PLAPI ${S2_METAMOD_PLAPI} source available (mmsdrop unverifiable and no S2_METAMOD_PINNED_TREE / docker/metamod-pin/)" >&2
       rm -rf "$stage"
       echo "    previous installation preserved at $dest" >&2
       return 1
@@ -410,7 +434,7 @@ live_gate() {
   bash scripts/build-base-plugins.sh >/dev/null
   cp plugins/*/dist/*.s2sp dist/addons/s2script/plugins/ 2>/dev/null || true
 
-  s2_ensure_metamod "$S2_SCRIPT_REPO/docker/metamod"
+  s2_ensure_metamod "$S2_SCRIPT_REPO/docker/metamod" || return 1
 
   echo "==> [install] live CS2 gate ready (run start.sh to boot the server)"
 }

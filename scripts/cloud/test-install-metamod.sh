@@ -292,6 +292,31 @@ assert_contains "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" "SourceHook version"
 curl_calls="$(grep -c . "$CURL_LOG" || true)"
 assert_eq "$curl_calls" "2" "stale drop without pin did not re-download"
 
+echo "== fixture: stripped pin tree, no sidecar, stale drop → swap source=pin"
+STRIPPED_PIN="$WORKDIR/pin-stripped"
+make_tree "$STRIPPED_PIN" stripped18
+# Operator pin: stripped .so, no identity sidecar. Heuristic is unknown, not fail.
+assert_absent "$STRIPPED_PIN/.s2script-metamod-identity" "stripped pin has no sidecar"
+DEST="$WORKDIR/case-stripped-pin/metamod"
+make_tree "$DEST" pre18
+echo "stale-dest" >"$DEST/KEEP_ME"
+: >"$CURL_LOG"
+S2_FAKE_LATEST="mmsource-2.0.0-git26c03fa-linux.tar.gz"
+S2_FAKE_TARBALL="$PRE18_TAR"
+export S2_METAMOD_PINNED_TREE="$STRIPPED_PIN"
+if run_ensure "$DEST"; then
+  assert_exit 0 0 "stripped pin fallback exits 0"
+else
+  assert_exit "$?" 0 "stripped pin fallback exits 0"
+fi
+unset S2_METAMOD_PINNED_TREE
+assert_contains "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" "stripped-metamod-bytes-no-symbols" "stripped pin .so installed"
+assert_contains "$DEST/.s2script-metamod-identity" "source=pin" "stripped pin identity source=pin"
+assert_contains "$DEST/.s2script-metamod-identity" "plapi=18" "stripped pin identity records plapi=18"
+assert_file "$DEST.prev/KEEP_ME" "stripped pin path preserved previous tree"
+curl_calls="$(grep -c . "$CURL_LOG" || true)"
+assert_eq "$curl_calls" "2" "stripped pin path fetched drop once (no loop)"
+
 echo "== fixture: CS2 running refuses replace and preserves dest"
 DEST="$WORKDIR/case-running/metamod"
 make_tree "$DEST" pre18
@@ -308,6 +333,36 @@ unset S2_METAMOD_CS2_RUNNING
 assert_exit "$run_rc" 1 "running CS2 refresh exits 1"
 assert_contains "$DEST/KEEP_ME" "live-tree" "running CS2 left dest in place"
 assert_contains "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" "SourceHook version" "running CS2 did not swap the .so"
+
+echo "== contract: live_gate propagates s2_ensure_metamod failure"
+if grep -E 's2_ensure_metamod .+ \|\| return 1' "$INSTALL" >/dev/null; then
+  ok "live_gate uses s2_ensure_metamod … || return 1"
+else
+  bad "live_gate does not propagate s2_ensure_metamod failure"
+fi
+
+# Source the installer (does not run main) and lock pin-origin accept/reject.
+# shellcheck disable=SC1090
+source "$INSTALL"
+PIN_OK_DIR="$WORKDIR/pin-ok-unit"
+make_tree "$PIN_OK_DIR" stripped18
+if s2_metamod_stage_is_pin_ok "$PIN_OK_DIR"; then
+  ok "s2_metamod_stage_is_pin_ok accepts stripped pin (heuristic unknown)"
+else
+  bad "s2_metamod_stage_is_pin_ok rejected stripped pin"
+fi
+if s2_metamod_stage_is_plapi18 "$PIN_OK_DIR"; then
+  bad "drop verifier must still reject stripped tree without sidecar"
+else
+  ok "drop verifier still rejects stripped tree without sidecar"
+fi
+FAIL_PIN="$WORKDIR/pin-fail-unit"
+make_tree "$FAIL_PIN" pre18
+if s2_metamod_stage_is_pin_ok "$FAIL_PIN"; then
+  bad "s2_metamod_stage_is_pin_ok must reject SourceHook/pre-18 pin"
+else
+  ok "s2_metamod_stage_is_pin_ok rejects SourceHook/pre-18 pin"
+fi
 
 echo
 if [ "$fail" -ne 0 ]; then
