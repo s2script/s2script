@@ -39,6 +39,9 @@ bash scripts/test-client-bootstrap.sh
 echo "== test-hook-dispatch.sh (hook shape vocabulary, bypass latch, collapse) =="
 bash scripts/test-hook-dispatch.sh
 
+echo "== test-khook-binding.sh (checked KHook receipts, Observe/BeginRemove) =="
+bash scripts/test-khook-binding.sh
+
 echo "== test-detour-reloc.sh (prologue relocation, tier selection, named refusals) =="
 bash scripts/test-detour-reloc.sh
 

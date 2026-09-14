@@ -1,12 +1,14 @@
 #pragma once
 #include <ISmmPlugin.h>
+#include "khook_map.h"
 
 // ISource2Server is forward-declared here; full definition (eiface.h) is
-// included only in s2script_mm.cpp where the SourceHook machinery lives.
+// included only in s2script_mm.cpp where the KHook machinery lives.
 class ISource2Server;
 // IGameEvent is forward-declared here; full definition (igameevents.h) is
-// included only in s2script_mm.cpp where the SourceHook machinery lives.
+// included only in s2script_mm.cpp where the KHook machinery lives.
 class IGameEvent;
+class IGameEventManager2;
 // Forward-declared for the ClientCommand hook (Slice 6.11c); full definitions
 // (eiface.h / convar.h / playerslot.h) live in s2script_mm.cpp.
 class ISource2GameClients;
@@ -15,8 +17,10 @@ class CPlayerSlot;
 // Forward-declared for the DispatchConCommand listener hook (the AddCommandListener seam); full
 // definitions (convar.h) live in s2script_mm.cpp. `ConCommandRef` is passed BY VALUE, so the
 // declaration below is enough here only because the definition is in scope at the point of use.
+class ICvar;
 class ConCommandRef;
 class CCommandContext;
+class IVEngineServer2;
 // Forward-declared for the ClientDisconnect lifecycle hook (@s2script/clients). This header is parsed
 // before eiface.h pulls the full definition, so an opaque enum decl with the SDK's fixed underlying type
 // (`: int`, per network_connection.pb.h) is required; it is compatible with the later full definition.
@@ -48,6 +52,7 @@ template <int NUM_BITS> class CBitVec;
 // convention used by the client-lifecycle hooks); NetChannelBufType_t's underlying type is int8
 // (== signed char, platform.h:273), stated so this forward decl matches the later full definition.
 struct CSplitScreenSlot;
+class IGameEventSystem;
 class INetworkMessageInternal;
 class CNetMessage;
 enum NetChannelBufType_t : signed char;
@@ -57,62 +62,38 @@ public:
     bool Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) override;
     bool Unload(char* error, size_t maxlen) override;
 
-    // SourceHook handlers — installed lazily by s2_request_hook("OnGameFrame",1).
-    // Pre-phase (false) dispatches phase 0; post-phase (true) dispatches phase 1.
-    void Hook_GameFramePre(bool simulating, bool first, bool last);
-    void Hook_GameFramePost(bool simulating, bool first, bool last);
-
-    // FireEvent Pre hook (Slice 5D.3) — installed lazily by s2_request_hook("GameEvent",1).
-    bool Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDontBroadcast);
-
-    // ClientCommand hook (Slice 6.11c) — the engine callback when a client types a command at the console.
-    // This is how CS2 frameworks (CSSharp/ModSharp) implement player CONSOLE commands: a clean
-    // (slot, CCommand) — no low-level detour. Installed in Load() once ISource2GameClients is acquired.
-    void Hook_ClientCommand(CPlayerSlot slot, const CCommand& args);
-    void Hook_DispatchConCommand(ConCommandRef cmd, const CCommandContext& ctx, const CCommand& args);
-
-    // Client lifecycle notify-hooks (@s2script/clients sub-project) — six post-hooks on the same
-    // m_gameClients interface. Each forwards to s2script_core_dispatch_client_event and never alters flow.
-    // (Ban enforcement no longer rejects at ClientConnect — sub-project 3 moved it to the JS onConnect
-    // event [basebans], which shows the reason then kicks; the old ClientConnect reject hook was removed.)
-    // `uint64` params are declared `unsigned long long` (== uint64 on Linux) because META_NO_HL2SDK keeps
-    // HL2SDK basetypes out of this header.
-    void Hook_OnClientConnected(CPlayerSlot slot, const char* name, unsigned long long xuid,
-                                const char* netid, const char* addr, bool fake);
-    void Hook_ClientPutInServer(CPlayerSlot slot, const char* name, int type, unsigned long long xuid);
-    void Hook_ClientActive(CPlayerSlot slot, bool bLoadGame, const char* name, unsigned long long xuid);
-    void Hook_ClientFullyConnect(CPlayerSlot slot);
-    void Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnectionReason reason, const char* name,
-                               unsigned long long xuid, const char* netid);
-    void Hook_ClientSettingsChanged(CPlayerSlot slot);
-
-    // Voice-control slice: throttled voice-packet notify (dispatches client event "voice") + the
-    // listen-matrix rewrite that enforces the per-slot mute (shim-resident flag array, zero FFI).
-    void Hook_ClientVoice(CPlayerSlot slot);
-    bool Hook_SetClientListening(CPlayerSlot receiver, CPlayerSlot sender, bool bListen);
-
-    // Map-start hook (clientlist-fakeconvar-onmapstart slice) — POST hook on
-    // INetworkServerService::StartupServer (the CSSharp OnMapStart mechanism). Reads the live map
-    // name off the (typed) game server and forwards to s2script_core_dispatch_map_start.
-    void Hook_StartupServer(const GameSessionConfiguration_t& config, ISource2WorldSession* session,
-                            const char* unk);
-
-    // CheckTransmit POST hook (checktransmit slice) — per-client entity visibility filtering.
-    // Applies the core-pushed rule table to each client's transmit bitvec; notify-only for the
-    // engine (MRES_IGNORED) — the mutation is in-place on the info structs. `unsigned short`
-    // == the SDK's uint16 (the META_NO_HL2SDK header convention, like the uint64 params above).
-    void Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nInfoCount,
-                            CBitVec<16384>& unionTransmitEdicts, CBitVec<16384>& unionTransmitEdicts2,
-                            const Entity2Networkable_t** pNetworkables,
-                            const unsigned short* pEntityIndices, int nEntityIndices);
-
-    // UserMessage-interception PRE hook (usermsg-hook slice) on IGameEventSystem::PostEventAbstract —
-    // bitmap-gated (m_MessageId); MRES_IGNORED on a non-subscribed message before any reflection, or
-    // MRES_SUPERCEDE when the collapsed JS HookResult is >= Handled. `unsigned long long` == the SDK's
-    // uint64 (the META_NO_HL2SDK convention, like the lifecycle hooks above).
-    void Hook_PostEvent(CSplitScreenSlot nSlot, bool bLocalOnly, int nClientCount,
-                        const unsigned long long* clients, INetworkMessageInternal* pEvent,
-                        const CNetMessage* pData, unsigned long nSize, NetChannelBufType_t bufType);
+    // KHook handlers — installed lazily by s2_request_hook("OnGameFrame",1).
+    // Pre-phase dispatches phase 0; post-phase dispatches phase 1. Every Virtual
+    // callback takes the interface pointer first.
+    KHook::Return<void> Hook_GameFramePre(ISource2Server* server, bool simulating, bool first, bool last);
+    KHook::Return<void> Hook_GameFramePost(ISource2Server*, bool simulating, bool first, bool last);
+    KHook::Return<bool> Hook_FireEventPre(IGameEventManager2*, IGameEvent* ev, bool bDontBroadcast);
+    KHook::Return<void> Hook_ClientCommand(ISource2GameClients*, CPlayerSlot slot, const CCommand& args);
+    KHook::Return<void> Hook_DispatchConCommand(ICvar*, ConCommandRef cmd, const CCommandContext& ctx,
+                                                const CCommand& args);
+    KHook::Return<void> Hook_OnClientConnected(ISource2GameClients*, CPlayerSlot slot, const char* name,
+                                               unsigned long long xuid, const char* netid, const char* addr, bool fake);
+    KHook::Return<void> Hook_ClientPutInServer(ISource2GameClients*, CPlayerSlot slot, const char* name,
+                                               int type, unsigned long long xuid);
+    KHook::Return<void> Hook_ClientActive(ISource2GameClients*, CPlayerSlot slot, bool bLoadGame,
+                                          const char* name, unsigned long long xuid);
+    KHook::Return<void> Hook_ClientFullyConnect(ISource2GameClients*, CPlayerSlot slot);
+    KHook::Return<void> Hook_ClientDisconnect(ISource2GameClients*, CPlayerSlot slot,
+                                              ENetworkDisconnectionReason reason, const char* name,
+                                              unsigned long long xuid, const char* netid);
+    KHook::Return<void> Hook_ClientSettingsChanged(ISource2GameClients*, CPlayerSlot slot);
+    KHook::Return<void> Hook_ClientVoice(ISource2GameClients*, CPlayerSlot slot);
+    KHook::Return<bool> Hook_SetClientListening(IVEngineServer2*, CPlayerSlot receiver,
+                                                CPlayerSlot sender, bool bListen);
+    KHook::Return<void> Hook_StartupServer(INetworkServerService*, const GameSessionConfiguration_t& config,
+                                           ISource2WorldSession* session, const char* unk);
+    KHook::Return<void> Hook_CheckTransmit(ISource2GameEntities*, CCheckTransmitInfo** ppInfoList, int nInfoCount,
+                                           CBitVec<16384>& unionTransmitEdicts, CBitVec<16384>& unionTransmitEdicts2,
+                                           const Entity2Networkable_t** pNetworkables,
+                                           const unsigned short* pEntityIndices, int nEntityIndices);
+    KHook::Return<void> Hook_PostEvent(IGameEventSystem*, CSplitScreenSlot nSlot, bool bLocalOnly, int nClientCount,
+                                       const unsigned long long* clients, INetworkMessageInternal* pEvent,
+                                       const CNetMessage* pData, unsigned long nSize, NetChannelBufType_t bufType);
 
     // (Sound slice precache: NO member hook — OnPrecacheResource is intercepted by a class-vtable slot
     // swap (s2vtable::GetVTableByName + s2detour-free WriteVtableSlot) whose handler + installer are
