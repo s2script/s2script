@@ -7,7 +7,8 @@ Native Metamod plugin used by suite A (and later B/C) of the KHook migration liv
 It is a second KHook consumer against the same Metamod pin. It hooks **controlled
 native functions and dummy virtuals with valid objects** (no sentinel/dummy engine
 pointers). After `PLUGIN_SAVEVARS` it may also `Add` engine virtuals (`GameFrame`,
-`ClientCommand`, `OnClientConnected`) so those capsules are shared with `s2script`.
+`ClientCommand`, `OnClientConnected`, `IGameEventManager2::FireEvent` on the real
+manager) so those capsules are shared with `s2script`.
 
 ## Build (sniper / SteamRT)
 
@@ -50,9 +51,12 @@ s2_khook_probe run A
 
 Prints **one JSON object per suite A case** (`case`, `expected`, `actual`, `result`
 =`pass`|`fail`|`pending`). Controlled-function cases can pass on a loaded probe
-without extra clients. Voice, recipient-mask, CheckTransmit filtering, live
-SDKHooks, map/teardown, and command-suppression cases stay `pending` until the JS
-fixture (`examples/khook-acceptance`) and real clients produce evidence.
+without extra clients. `fire_event_no_suppression` fires `player_activate` once with
+Continue and counts PRE vs original (JS Handled uses `player_changename`).
+`frame_client_command_hooks` stays pending until live frames, a client connect, and
+two `khook_probe_ping` ClientCommands (Ignore then Supercede). Voice, recipient-mask,
+CheckTransmit, live SDKHooks, and map/teardown stay `pending` until humans / live
+SDKHook dispatch. `s2_khook_accept report` is read-only; use `teardown` to unhook.
 
 ## JS fixture
 
@@ -70,9 +74,14 @@ It is an example fixture, not a base plugin, and is not in the runtime zip.
 ## Drive
 
 ```bash
-python3 scripts/rcon.py "s2_khook_probe run A"
 python3 scripts/rcon.py "s2_khook_accept prepare"
-python3 scripts/rcon.py "s2_khook_accept report"
+python3 scripts/rcon.py "khook_probe_ping"   # twice: continuation then suppression
+python3 scripts/rcon.py "khook_probe_ping"
+python3 scripts/rcon.py "s2_khook_probe run A"
+python3 scripts/rcon.py "s2_khook_accept report"   # read-only
 bash scripts/test-khook-live.sh A
 bash scripts/test-khook-live.sh --self-test   # host parser; no CS2
 ```
+
+RCON `khook_probe_ping` may only hit `DispatchConCommand`. Native `ClientCommand`
+suppression/continuation still needs a real (or bot) client issuing the command.

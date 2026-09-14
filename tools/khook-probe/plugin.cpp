@@ -6,16 +6,21 @@
 // case, expected, actual, result (pass|fail|pending).
 #include <ISmmPlugin.h>
 #include "khook_map.h"
+#include "sigscan.h"
 
 #include <eiface.h>
 #include <icvar.h>
 #include <convar.h>
 #include <playerslot.h>
+#include <igameevents.h>
 
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
 #include <strings.h>
 #include <string>
+#include <vector>
+#include <link.h>
 
 PLUGIN_GLOBALVARS();
 
@@ -225,12 +230,107 @@ static KHook::Return<int> DummyPostPhase(Dummy* self, int x) {
 static int g_game_frames = 0;
 static int g_client_cmds = 0;
 static int g_clients_connected = 0;
+static int g_ping_seen = 0;
+static int g_ping_continue = 0;
+static int g_ping_suppress = 0;
+static int g_fe_pre = 0;
+static int g_fe_orig = 0;
+static int g_fe_dontbroadcast_true = 0;
 static bool g_frame_hooked = false;
 static bool g_client_hooked = false;
 static bool g_connected_hooked = false;
+static bool g_fe_hooked = false;
 static S2HookState g_frame_receipt = S2HookState::Failed;
 static S2HookState g_fn_new_receipt = S2HookState::Failed;
 static S2HookState g_fn_share_receipt = S2HookState::Failed;
+
+#ifndef INTERFACEVERSION_GAMEEVENTSMANAGER2
+#define INTERFACEVERSION_GAMEEVENTSMANAGER2 "GAMEEVENTSMANAGER002"
+#endif
+
+// Dedicated no-suppression sample. JS onPre Handled uses a different event.
+static const char* kFireEventNoSuppressName = "player_activate";
+static const char* kPingCmd = "khook_probe_ping";
+
+struct ModText {
+    const uint8_t* text;
+    size_t size;
+};
+
+static ModText ProbeFindModuleText(const char* soname) {
+    struct Ctx {
+        const char* name;
+        ModText out;
+    } ctx{soname, {nullptr, 0}};
+    dl_iterate_phdr(
+        [](struct dl_phdr_info* info, size_t, void* data) -> int {
+            auto* c = static_cast<Ctx*>(data);
+            if (!info->dlpi_name || !std::strstr(info->dlpi_name, c->name)) {
+                return 0;
+            }
+            for (int i = 0; i < info->dlpi_phnum; i++) {
+                const ElfW(Phdr)& ph = info->dlpi_phdr[i];
+                if (ph.p_type == PT_LOAD && (ph.p_flags & PF_X) && ph.p_filesz > c->out.size) {
+                    c->out.text = reinterpret_cast<const uint8_t*>(info->dlpi_addr + ph.p_vaddr);
+                    c->out.size = ph.p_filesz;
+                }
+            }
+            return 0;
+        },
+        &ctx);
+    return ctx.out;
+}
+
+// Same gamedata fact as s2script (`GameEventManager` ctor-body-xref). Real instance, not a sentinel.
+static IGameEventManager2* AcquireGameEventManagerFromServerText() {
+    static const char kPat[] = "55 48 8D 05 ? ? ? ? BA 40 00 00 00 31 F6 48 89 E5 41 56 41 55";
+    const std::vector<int> pat = s2sig::ParsePattern(kPat);
+    if (pat.empty()) {
+        return nullptr;
+    }
+    const ModText mt = ProbeFindModuleText("libserver.so");
+    if (!mt.text || mt.size == 0) {
+        return nullptr;
+    }
+    const int64_t matchOff = s2sig::FindPattern(mt.text, mt.size, pat);
+    if (matchOff < 0) {
+        return nullptr;
+    }
+    const int64_t targetOff = s2sig::ResolveCtorXref(mt.text, mt.size, matchOff);
+    if (targetOff == s2sig::kFail) {
+        return nullptr;
+    }
+    return reinterpret_cast<IGameEventManager2*>(const_cast<uint8_t*>(mt.text) + targetOff);
+}
+
+static IGameEventManager2* AcquireGameEventManager(CreateInterfaceFn engineFactory,
+                                                   CreateInterfaceFn serverFactory) {
+    int ret = 0;
+    if (engineFactory) {
+        auto* p = reinterpret_cast<IGameEventManager2*>(
+            engineFactory(INTERFACEVERSION_GAMEEVENTSMANAGER2, &ret));
+        if (p) {
+            return p;
+        }
+    }
+    ret = 0;
+    if (serverFactory) {
+        auto* p = reinterpret_cast<IGameEventManager2*>(
+            serverFactory(INTERFACEVERSION_GAMEEVENTSMANAGER2, &ret));
+        if (p) {
+            return p;
+        }
+    }
+    return AcquireGameEventManagerFromServerText();
+}
+
+static bool EventNameIs(IGameEvent* ev, const char* want) {
+    if (!ev || !want) {
+        return false;
+    }
+    const char* n = ev->GetName();
+    return n && std::strcmp(n, want) == 0;
+}
 
 class ProbePlugin : public ISmmPlugin {
 public:
@@ -239,7 +339,8 @@ public:
           clientCommand(&ISource2GameClients::ClientCommand, this,
                         &ProbePlugin::Hook_ClientCommand, nullptr),
           onConnected(&ISource2GameClients::OnClientConnected, this,
-                      &ProbePlugin::Hook_OnClientConnected, nullptr) {}
+                      &ProbePlugin::Hook_OnClientConnected, nullptr),
+          fireEvent(&IGameEventManager2::FireEvent, this, &ProbePlugin::Hook_FireEventPre, nullptr) {}
 
     bool Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) override;
     bool Unload(char* error, size_t maxlen) override;
@@ -250,6 +351,8 @@ public:
     KHook::Return<void> Hook_OnClientConnected(ISource2GameClients* clients, CPlayerSlot slot,
                                                const char* name, uint64 xuid, const char* netid,
                                                const char* addr, bool fake);
+    KHook::Return<bool> Hook_FireEventPre(IGameEventManager2* mgr, IGameEvent* ev,
+                                           bool bDontBroadcast);
 
     const char* GetAuthor() override { return "s2script"; }
     const char* GetName() override { return "s2_khook_probe"; }
@@ -267,9 +370,11 @@ public:
     S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, const char*, uint64, const char*,
                      const char*, bool>
         onConnected;
+    S2CheckedVirtual<IGameEventManager2, bool, IGameEvent*, bool> fireEvent;
 
     ISource2Server* server = nullptr;
     ISource2GameClients* gameclients = nullptr;
+    IGameEventManager2* events = nullptr;
     ICvar* icvar = nullptr;
     ConCommandRef cmdRef{};
 };
@@ -321,12 +426,38 @@ KHook::Return<void> ProbePlugin::Hook_GameFrame(ISource2Server* s, bool, bool, b
 }
 
 KHook::Return<void> ProbePlugin::Hook_ClientCommand(ISource2GameClients* c, CPlayerSlot,
-                                                    const CCommand&) {
+                                                    const CCommand& args) {
     auto obs = clientCommand.Observe(c);
-    if (obs) {
-        g_client_cmds++;
+    if (!obs) {
+        return S2_Ignore();
+    }
+    g_client_cmds++;
+    const char* a0 = args.Arg(0);
+    if (a0 && strcasecmp(a0, kPingCmd) == 0) {
+        g_ping_seen++;
+        if (g_ping_continue == 0) {
+            g_ping_continue++;
+            return S2_Ignore();
+        }
+        g_ping_suppress++;
+        return S2_Supersede();
     }
     return S2_Ignore();
+}
+
+KHook::Return<bool> ProbePlugin::Hook_FireEventPre(IGameEventManager2* mgr, IGameEvent* ev,
+                                                    bool bDontBroadcast) {
+    auto obs = fireEvent.Observe(mgr);
+    if (!obs) {
+        return S2_Ignore(true);
+    }
+    if (EventNameIs(ev, kFireEventNoSuppressName)) {
+        g_fe_pre++;
+        if (bDontBroadcast) {
+            g_fe_dontbroadcast_true++;
+        }
+    }
+    return S2_Ignore(true);
 }
 
 KHook::Return<void> ProbePlugin::Hook_OnClientConnected(ISource2GameClients* c, CPlayerSlot,
@@ -359,6 +490,9 @@ static void InstallControlledHooks() {
     virtPost.Add(&g_dummyPhase);
 }
 
+static bool PreBothAB() { return g_pre_ab_a == 1 && g_pre_ab_b == 1; }
+static bool PreBothBA() { return g_pre_ba_a == 1 && g_pre_ba_b == 1; }
+
 static void RunPeerActions(const char*& result, std::string& actual) {
     // Order A then B on TargetAB.
     g_pre_ab_a = g_pre_ab_b = g_orig_ab = 0;
@@ -367,6 +501,9 @@ static void RunPeerActions(const char*& result, std::string& actual) {
     g_ret_a = 0;
     g_ret_b = 42;
     const int r1 = TargetAB(1);
+    const int pre_ab_io_a = g_pre_ab_a;
+    const int pre_ab_io_b = g_pre_ab_b;
+    const bool ab_io = PreBothAB() && r1 == 42;
 
     g_pre_ab_a = g_pre_ab_b = g_orig_ab = 0;
     g_act_a = KHook::Action::Override;
@@ -375,7 +512,9 @@ static void RunPeerActions(const char*& result, std::string& actual) {
     g_ret_b = 99;
     const int r2 = TargetAB(1);
     const int orig_tie = g_orig_ab;
-    const int pre_tie = g_pre_ab_a + g_pre_ab_b;
+    const int pre_ab_oo_a = g_pre_ab_a;
+    const int pre_ab_oo_b = g_pre_ab_b;
+    const bool ab_oo = PreBothAB() && r2 == 7 && orig_tie == 1;
 
     g_pre_ab_a = g_pre_ab_b = g_orig_ab = 0;
     g_act_a = KHook::Action::Override;
@@ -384,6 +523,9 @@ static void RunPeerActions(const char*& result, std::string& actual) {
     g_ret_b = 99;
     const int r3 = TargetAB(1);
     const int orig_sup = g_orig_ab;
+    const int pre_ab_os_a = g_pre_ab_a;
+    const int pre_ab_os_b = g_pre_ab_b;
+    const bool ab_os = PreBothAB() && r3 == 99 && orig_sup == 0;
 
     // Order B then A on TargetBA (B registered first).
     g_pre_ba_a = g_pre_ba_b = g_orig_ba = 0;
@@ -392,6 +534,9 @@ static void RunPeerActions(const char*& result, std::string& actual) {
     g_ret_a = 0;
     g_ret_b = 42;
     const int r4 = TargetBA(1);
+    const int pre_ba_io_a = g_pre_ba_a;
+    const int pre_ba_io_b = g_pre_ba_b;
+    const bool ba_io = PreBothBA() && r4 == 42;
 
     g_pre_ba_a = g_pre_ba_b = g_orig_ba = 0;
     g_act_a = KHook::Action::Override;
@@ -399,16 +544,34 @@ static void RunPeerActions(const char*& result, std::string& actual) {
     g_ret_a = 7;
     g_ret_b = 99;
     const int r5 = TargetBA(1);  // B first: first Override is 99
+    const int pre_ba_oo_a = g_pre_ba_a;
+    const int pre_ba_oo_b = g_pre_ba_b;
+    const bool ba_oo = PreBothBA() && r5 == 99;
 
-    const bool all_pre = pre_tie == 2 && g_pre_ab_a + g_pre_ab_b >= 0;
-    (void)all_pre;
-    const bool ok = r1 == 42 && r2 == 7 && orig_tie == 1 && pre_tie == 2 && r3 == 99 &&
-                    orig_sup == 0 && r4 == 42 && r5 == 99;
-    actual = "AB Ignore/Override=" + std::to_string(r1) + " AB Override/Override first=" +
-             std::to_string(r2) + " orig=" + std::to_string(orig_tie) + " pres=" +
-             std::to_string(pre_tie) + " AB Override/Supersede=" + std::to_string(r3) +
-             " orig=" + std::to_string(orig_sup) + " BA Override wins=" + std::to_string(r4) +
-             " BA first-Override tie=" + std::to_string(r5);
+    g_pre_ba_a = g_pre_ba_b = g_orig_ba = 0;
+    g_act_a = KHook::Action::Override;
+    g_act_b = KHook::Action::Supersede;
+    g_ret_a = 7;
+    g_ret_b = 99;
+    const int r6 = TargetBA(1);
+    const int orig_ba_sup = g_orig_ba;
+    const int pre_ba_os_a = g_pre_ba_a;
+    const int pre_ba_os_b = g_pre_ba_b;
+    const bool ba_os = PreBothBA() && r6 == 99 && orig_ba_sup == 0;
+
+    const bool ok = ab_io && ab_oo && ab_os && ba_io && ba_oo && ba_os;
+    actual = "AB Ignore/Override=" + std::to_string(r1) + " pre=" + std::to_string(pre_ab_io_a) +
+             "/" + std::to_string(pre_ab_io_b) + " AB Override/Override first=" + std::to_string(r2) +
+             " orig=" + std::to_string(orig_tie) + " pre=" + std::to_string(pre_ab_oo_a) + "/" +
+             std::to_string(pre_ab_oo_b) + " AB Override/Supersede=" + std::to_string(r3) +
+             " orig=" + std::to_string(orig_sup) + " pre=" + std::to_string(pre_ab_os_a) + "/" +
+             std::to_string(pre_ab_os_b) + " BA Override wins=" + std::to_string(r4) +
+             " pre=" + std::to_string(pre_ba_io_a) + "/" + std::to_string(pre_ba_io_b) +
+             " BA first-Override tie=" + std::to_string(r5) + " pre=" +
+             std::to_string(pre_ba_oo_a) + "/" + std::to_string(pre_ba_oo_b) +
+             " BA Override/Supersede=" + std::to_string(r6) + " orig=" +
+             std::to_string(orig_ba_sup) + " pre=" + std::to_string(pre_ba_os_a) + "/" +
+             std::to_string(pre_ba_os_b);
     result = ok ? "pass" : "fail";
 }
 
@@ -472,28 +635,59 @@ static void RunSuiteA() {
              " orig=" + std::to_string(g_orig_once) + " ret=" + std::to_string(once),
          once_ok ? "pass" : "fail");
 
+    const bool native_cc_ok = g_frame_hooked && g_client_hooked;
     const bool frame_ok = g_game_frames > 0;
     const bool client_ok = g_clients_connected > 0;
-    const bool cmd_ok = g_client_cmds > 0;
-    std::string fc_act = "frames=" + std::to_string(g_game_frames) +
+    const bool ping_ok = g_ping_continue >= 1 && g_ping_suppress >= 1;
+    std::string fc_act = std::string("nativeAdd=") + (native_cc_ok ? "ok" : "fail") +
+                         " frames=" + std::to_string(g_game_frames) +
                          " clients=" + std::to_string(g_clients_connected) +
-                         " clientcmds=" + std::to_string(g_client_cmds);
+                         " clientcmds=" + std::to_string(g_client_cmds) +
+                         " pingSeen=" + std::to_string(g_ping_seen) +
+                         " pingContinue=" + std::to_string(g_ping_continue) +
+                         " pingSuppress=" + std::to_string(g_ping_suppress);
     const char* fc_res = "pending";
-    if (frame_ok && client_ok && cmd_ok) {
+    if (!native_cc_ok) {
+        fc_act += " (engine GameFrame/ClientCommand Add not accepted)";
+    } else if (frame_ok && client_ok && ping_ok) {
         fc_res = "pass";
-    } else if (!g_frame_hooked && !g_client_hooked) {
-        fc_act += " (engine hooks not installed)";
     } else {
-        fc_act += " (need live frame + client connect + client command; JS fixture records command suppression)";
+        fc_act += " (need live frame + client connect + two khook_probe_ping: Ignore then Supercede)";
     }
     Emit("frame_client_command_hooks",
          "GameFrame counters increment; client lifecycle delivery; command suppression/continuation",
          fc_act, fc_res);
 
+    std::string fe_act;
+    const char* fe_res = "pending";
+    if (!g_fe_hooked || !g_plugin.events) {
+        fe_act = "nativeAdd=fail; FireEvent not installed on a real IGameEventManager2";
+    } else {
+        g_fe_pre = g_fe_orig = g_fe_dontbroadcast_true = 0;
+        IGameEvent* ev = g_plugin.events->CreateEvent(kFireEventNoSuppressName, true);
+        if (!ev) {
+            fe_act = "nativeAdd=ok CreateEvent(" + std::string(kFireEventNoSuppressName) +
+                     ")=null; descriptors may not be loaded yet";
+        } else {
+            const bool fired = g_plugin.events->FireEvent(ev, false);
+            g_fe_orig = g_fe_pre > 0 && g_fe_dontbroadcast_true == 0 ? 1 : 0;
+            fe_act = "nativeAdd=ok fired=" + std::to_string(fired ? 1 : 0) +
+                     " pre=" + std::to_string(g_fe_pre) +
+                     " orig=" + std::to_string(g_fe_orig) +
+                     " dontBroadcastTrue=" + std::to_string(g_fe_dontbroadcast_true);
+            if (g_fe_pre >= 1 && g_fe_orig == 1 && g_fe_dontbroadcast_true == 0) {
+                fe_res = "pass";
+            } else if (g_fe_pre == 0) {
+                fe_res = "fail";
+                fe_act += " (PRE did not observe the fired event)";
+            } else {
+                fe_res = "fail";
+                fe_act += " (original/broadcast mismatch; JS onPre Handled must not share this event)";
+            }
+        }
+    }
     Emit("fire_event_no_suppression",
-         "original FireEvent exactly once, normal broadcast",
-         "not observed by this command; JS s2_khook_accept prepare/report + engine event required",
-         "pending");
+         "original FireEvent exactly once, normal broadcast", fe_act, fe_res);
     Emit("fire_event_handled_recipient_mask",
          "original once with expected broadcast flag; intended recipients only",
          "needs real clients / JS Events.setRecipients; first-fire log is not sufficient",
@@ -581,7 +775,7 @@ bool ProbePlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, b
     ConCommandCreation_t setup;
     setup.m_pszName = g_cmdNameStore.c_str();
     setup.m_pszHelpString = "KHook suite probe: s2_khook_probe run A";
-    setup.m_nFlags = FCVAR_NONE;
+    setup.m_nFlags = FCVAR_RELEASE;
     setup.m_CBInfo = ConCommandCallbackInfo_t(&ProbeCommand);
     cmdRef = icvar->RegisterConCommand(setup);
     if (!cmdRef.IsValidRef()) {
@@ -615,6 +809,16 @@ bool ProbePlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, b
         g_connected_hooked = nrec.Accepted();
     }
 
+    events = AcquireGameEventManager(engineFactory, serverFactory);
+    if (events) {
+        const S2HookReceipt frec = fireEvent.Add(events);
+        g_fe_hooked = frec.Accepted();
+        META_CONPRINTF("[khook-probe] FireEvent Add state=%s id=%u mgr=%p\n", StateName(frec.state),
+                       static_cast<unsigned>(frec.id), static_cast<void*>(events));
+    } else {
+        META_CONPRINTF("[khook-probe] FireEvent manager not acquired (no sentinel)\n");
+    }
+
     META_CONPRINTF("[khook-probe] loaded (test plugin, not for production release)\n");
     return true;
 }
@@ -628,6 +832,10 @@ bool ProbePlugin::Unload(char* error, size_t maxlen) {
     if (gameclients) {
         clientCommand.Remove(gameclients);
         onConnected.Remove(gameclients);
+    }
+    if (events) {
+        fireEvent.Remove(events);
+        events = nullptr;
     }
     virtA.Remove(&g_dummyA);
     virtB.Remove(&g_dummyB);

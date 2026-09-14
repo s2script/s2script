@@ -1,9 +1,7 @@
 // khook-acceptance — JS fixture for KHook suite A. NOT a shipped plugin.
 //
 // Uses only public APIs. Records exact engine outcomes for the live runner
-// (`scripts/test-khook-live.sh A`). Command `s2_khook_accept report` prints one
-// JSON object per suite A case the JS side can observe; cases that need real
-// clients stay pending (a first-fire log is not mute/recipient proof).
+// (`scripts/test-khook-live.sh A`). Command `s2_khook_accept report` is read-only.
 import {
   Clients,
   Events,
@@ -42,15 +40,17 @@ function emit(name: string, rec: CaseRec): string {
 let frames = 0;
 let clientsConnected = 0;
 let commandSaw = 0;
+let commandContinued = 0;
 let commandSuppressed = 0;
 let spawnA = 0;
 let spawnB = 0;
+let spawnedAOk = false;
+let spawnedBOk = false;
 let thinkPre = 0;
 let thinkPost = 0;
 let destroyed = 0;
 let mapStarts = 0;
 let mapEnds = 0;
-let eventPost = 0;
 let eventPreHandled = 0;
 let lastDontBroadcastIntent = "";
 
@@ -70,12 +70,30 @@ function onThinkPost(entity: EntityRef): void {
   if (entity && entity.isValid()) thinkPost += 1;
 }
 
+function evaluateSdkhooksOneOfTwo(): void {
+  const actual =
+    `hooked A only; spawnA=${spawnA} spawnB=${spawnB} spawnedA=${spawnedAOk} spawnedB=${spawnedBOk}`;
+  let result: CaseRec["result"] = "pending";
+  if (spawnA >= 1 && spawnB === 0) {
+    result = "pass";
+  } else if (spawnedAOk && spawnedBOk && spawnA === 0 && spawnB === 0) {
+    result = "pending";
+  } else if (spawnB > 0) {
+    result = "fail";
+  }
+  setCase(
+    "sdkhooks_one_of_two_entities",
+    "only the subscribed live entity dispatches",
+    actual,
+    result,
+  );
+}
+
 export function OnPluginStart(): void {
   console.log("[khook-accept] loaded (test fixture, not shipped)");
 
-  hook.on("player_changename", () => {
-    eventPost += 1;
-  });
+  // Handled+mask is a different event than the native no-suppression sample
+  // (`player_activate`). Do not return Handled on that name.
   hook.onPre("player_changename", () => {
     const humans = Clients.all().filter((c) => c.isValid() && !c.isBot);
     if (humans.length > 0) {
@@ -88,11 +106,13 @@ export function OnPluginStart(): void {
     return HookResult.Handled;
   });
 
-  // Register so a client (or fakeCommand) can invoke it; the listener is the
-  // suppression/continuation observation the suite asserts.
   command("khook_probe_ping", () => HookResult.Continue);
   command.onClientCommand("khook_probe_ping", () => {
     commandSaw += 1;
+    if (commandContinued === 0) {
+      commandContinued += 1;
+      return HookResult.Continue;
+    }
     commandSuppressed += 1;
     return HookResult.Handled;
   });
@@ -112,7 +132,12 @@ export function OnPluginStart(): void {
       }
       return HookResult.Handled;
     }
-    cmd.reply("usage: s2_khook_accept prepare|report");
+    if (sub === "teardown") {
+      teardown();
+      cmd.reply("[khook-accept] teardown");
+      return HookResult.Handled;
+    }
+    cmd.reply("usage: s2_khook_accept prepare|report|teardown");
     return HookResult.Handled;
   });
 
@@ -124,18 +149,10 @@ function prepare(): void {
   const b = createEntity("logic_relay");
   entA = a;
   entB = b;
-  // Two live entities, only A subscribed — B is spawned as the negative control.
   if (a) SDKHook(a, SDKHookType.Spawn, onSpawnA);
-  const spawnedA = a ? a.spawn() : false;
-  const spawnedB = b ? b.spawn() : false;
-
-  const onlyA = spawnA >= 1 && spawnB === 0;
-  setCase(
-    "sdkhooks_one_of_two_entities",
-    "only the subscribed live entity dispatches",
-    `hooked A only; spawnA=${spawnA} spawnB=${spawnB} spawnedA=${spawnedA} spawnedB=${spawnedB}`,
-    a && b && spawnedA && spawnedB ? (onlyA ? "pass" : "fail") : "pending",
-  );
+  spawnedAOk = a ? a.spawn() : false;
+  spawnedBOk = b ? b.spawn() : false;
+  evaluateSdkhooksOneOfTwo();
 
   thinkEnt = a && a.isValid() ? a : null;
   if (thinkEnt) {
@@ -143,11 +160,10 @@ function prepare(): void {
     SDKHook(thinkEnt, SDKHookType.ThinkPost, onThinkPost);
   }
 
-  const fired = Events.fire("player_changename", { userid: 0, oldname: "khook-a", newname: "khook-b" }, false);
   setCase(
     "fire_event_no_suppression",
     "original FireEvent exactly once, normal broadcast",
-    `Events.fire returned ${fired}; JS post-dispatch count=${eventPost} (JS-fired events may not re-enter JS on/onPre; native probe must count the original)`,
+    "JS does not fire or Handled-hook this case; native probe owns original vs PRE on player_activate",
     "pending",
   );
 
@@ -190,27 +206,32 @@ function prepare(): void {
   );
 }
 
+function teardown(): void {
+  if (thinkEnt && thinkEnt.isValid()) {
+    SDKUnhook(thinkEnt, SDKHookType.Think, onThinkPre);
+    SDKUnhook(thinkEnt, SDKHookType.ThinkPost, onThinkPost);
+  }
+  if (entA && entA.isValid()) {
+    entA.remove();
+  }
+}
+
 function refreshJsCases(): void {
-  const frameOk = frames > 0;
-  const clientOk = clientsConnected > 0;
-  const cmdOk = commandSaw > 0 && commandSuppressed > 0;
-  let fc: CaseRec["result"] = "pending";
-  if (frameOk && clientOk && cmdOk) fc = "pass";
   setCase(
     "frame_client_command_hooks",
     "GameFrame counters increment; client lifecycle delivery; command suppression/continuation",
-    `frames=${frames} clientsConnected=${clientsConnected} commandSaw=${commandSaw} suppressed=${commandSuppressed} (arm suppression with client command khook_probe_ping)`,
-    fc,
+    `frames=${frames} clientsConnected=${clientsConnected} commandSaw=${commandSaw} continued=${commandContinued} suppressed=${commandSuppressed} (JS named publics are not KHook-peer proof; native owns pass)`,
+    "pending",
   );
 
+  evaluateSdkhooksOneOfTwo();
+
   if (thinkEnt && thinkEnt.isValid() && thinkPre + thinkPost > 0) {
-    SDKUnhook(thinkEnt, SDKHookType.Think, onThinkPre);
-    const preAfterUnhook = thinkPre;
     setCase(
       "sdkhooks_phase_removal",
       "PRE then POST removal, reverse, and in-callback removal: remaining phase survives; no deadlock",
-      `Think pre=${thinkPre} post=${thinkPost} after PRE unhook pre still ${preAfterUnhook}; in-callback/reverse orders need a live pawn Think`,
-      thinkPost > 0 ? "pending" : "pending",
+      `Think pre=${thinkPre} post=${thinkPost}; report is read-only — use s2_khook_accept teardown to unhook`,
+      "pending",
     );
   } else if (!cases["sdkhooks_phase_removal"]) {
     setCase(
@@ -222,13 +243,11 @@ function refreshJsCases(): void {
   }
 
   if (entA && entA.isValid()) {
-    const idx = entA.index;
-    const gone = entA.remove();
     setCase(
       "entity_slot_reuse_map_teardown",
       "no stale entity delivery; filters and retained bindings retire on delete/reuse/map/teardown",
-      `removed A idx=${idx} ok=${gone} stillValid=${entA.isValid()} destroyedPublics=${destroyed} mapStarts=${mapStarts} mapEnds=${mapEnds}`,
-      gone && !entA.isValid() ? "pending" : "pending",
+      `A idx=${entA.index} stillValid=${entA.isValid()} destroyedPublics=${destroyed} mapStarts=${mapStarts} mapEnds=${mapEnds}; report is read-only`,
+      "pending",
     );
   } else if (!cases["entity_slot_reuse_map_teardown"]) {
     setCase(

@@ -32,7 +32,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-add_library(s2_khook_probe SHARED plugin.cpp)
+add_library(s2_khook_probe SHARED
+    plugin.cpp
+    "${S2_SOURCE_DIR}/shim/src/sigscan.cpp"
+)
 
 target_include_directories(s2_khook_probe PRIVATE
     "${S2_SOURCE_DIR}/shim/src"
@@ -46,6 +49,7 @@ target_include_directories(s2_khook_probe PRIVATE
     "${HL2SDK}/public/mathlib"
     "${HL2SDK}/public/appframework"
     "${HL2SDK}/game/shared"
+    "${HL2SDK}/thirdparty/protobuf-3.21.8/src"
 )
 
 # Same SteamRT / Valve ABI conventions as shim/CMakeLists.txt.
