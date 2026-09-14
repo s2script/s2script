@@ -235,6 +235,9 @@ static int g_ping_continue = 0;
 static int g_ping_suppress = 0;
 static int g_fe_pre = 0;
 static int g_fe_orig = 0;
+static int g_fe_post = 0;
+static int g_fe_skipped = 0;
+static int g_fe_listener = 0;
 static int g_fe_dontbroadcast_true = 0;
 static bool g_frame_hooked = false;
 static bool g_client_hooked = false;
@@ -332,6 +335,28 @@ static bool EventNameIs(IGameEvent* ev, const char* want) {
     return n && std::strcmp(n, want) == 0;
 }
 
+// Independent original-once observer: engine delivery, not PRE inference.
+struct ProbeFireEventListener : public IGameEventListener2 {
+    void FireGameEvent(IGameEvent* ev) override {
+        if (EventNameIs(ev, kFireEventNoSuppressName)) {
+            g_fe_listener++;
+        }
+    }
+};
+static ProbeFireEventListener g_fe_listener_obj;
+static bool g_fe_listening = false;
+
+static void FeResetOrigCounters() {
+    g_fe_pre = g_fe_orig = g_fe_post = g_fe_skipped = g_fe_listener = g_fe_dontbroadcast_true = 0;
+}
+
+static void FeStopListening(IGameEventManager2* mgr) {
+    if (g_fe_listening && mgr) {
+        mgr->RemoveListener(&g_fe_listener_obj);
+        g_fe_listening = false;
+    }
+}
+
 class ProbePlugin : public ISmmPlugin {
 public:
     ProbePlugin()
@@ -340,7 +365,8 @@ public:
                         &ProbePlugin::Hook_ClientCommand, nullptr),
           onConnected(&ISource2GameClients::OnClientConnected, this,
                       &ProbePlugin::Hook_OnClientConnected, nullptr),
-          fireEvent(&IGameEventManager2::FireEvent, this, &ProbePlugin::Hook_FireEventPre, nullptr) {}
+          fireEvent(&IGameEventManager2::FireEvent, this, &ProbePlugin::Hook_FireEventPre,
+                    &ProbePlugin::Hook_FireEventPost) {}
 
     bool Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) override;
     bool Unload(char* error, size_t maxlen) override;
@@ -353,6 +379,8 @@ public:
                                                const char* addr, bool fake);
     KHook::Return<bool> Hook_FireEventPre(IGameEventManager2* mgr, IGameEvent* ev,
                                            bool bDontBroadcast);
+    KHook::Return<bool> Hook_FireEventPost(IGameEventManager2* mgr, IGameEvent* ev,
+                                            bool bDontBroadcast);
 
     const char* GetAuthor() override { return "s2script"; }
     const char* GetName() override { return "s2_khook_probe"; }
@@ -455,6 +483,25 @@ KHook::Return<bool> ProbePlugin::Hook_FireEventPre(IGameEventManager2* mgr, IGam
         g_fe_pre++;
         if (bDontBroadcast) {
             g_fe_dontbroadcast_true++;
+        }
+    }
+    return S2_Ignore(true);
+}
+
+KHook::Return<bool> ProbePlugin::Hook_FireEventPost(IGameEventManager2* mgr, IGameEvent* ev,
+                                                     bool bDontBroadcast) {
+    (void)bDontBroadcast;
+    auto obs = fireEvent.Observe(mgr);
+    if (!obs) {
+        return S2_Ignore(true);
+    }
+    if (EventNameIs(ev, kFireEventNoSuppressName)) {
+        g_fe_post++;
+        // POST-only: original ran iff KHook did not skip it. Never derive from PRE.
+        if (KHook::WasOriginalFunctionSkipped()) {
+            g_fe_skipped++;
+        } else {
+            g_fe_orig++;
         }
     }
     return S2_Ignore(true);
@@ -663,23 +710,38 @@ static void RunSuiteA() {
     if (!g_fe_hooked || !g_plugin.events) {
         fe_act = "nativeAdd=fail; FireEvent not installed on a real IGameEventManager2";
     } else {
-        g_fe_pre = g_fe_orig = g_fe_dontbroadcast_true = 0;
+        FeResetOrigCounters();
+        FeStopListening(g_plugin.events);
+        const bool listened =
+            g_plugin.events->AddListener(&g_fe_listener_obj, kFireEventNoSuppressName, true);
+        g_fe_listening = listened;
         IGameEvent* ev = g_plugin.events->CreateEvent(kFireEventNoSuppressName, true);
         if (!ev) {
+            FeStopListening(g_plugin.events);
             fe_act = "nativeAdd=ok CreateEvent(" + std::string(kFireEventNoSuppressName) +
                      ")=null; descriptors may not be loaded yet";
         } else {
             const bool fired = g_plugin.events->FireEvent(ev, false);
-            g_fe_orig = g_fe_pre > 0 && g_fe_dontbroadcast_true == 0 ? 1 : 0;
+            FeStopListening(g_plugin.events);
             fe_act = "nativeAdd=ok fired=" + std::to_string(fired ? 1 : 0) +
+                     " listenerAdd=" + std::to_string(listened ? 1 : 0) +
                      " pre=" + std::to_string(g_fe_pre) +
                      " orig=" + std::to_string(g_fe_orig) +
+                     " post=" + std::to_string(g_fe_post) +
+                     " skipped=" + std::to_string(g_fe_skipped) +
+                     " listener=" + std::to_string(g_fe_listener) +
                      " dontBroadcastTrue=" + std::to_string(g_fe_dontbroadcast_true);
-            if (g_fe_pre >= 1 && g_fe_orig == 1 && g_fe_dontbroadcast_true == 0) {
+            // orig is POST !WasOriginalFunctionSkipped(); listener is engine delivery.
+            // Both must be exactly 1: skipped original or SH_CALL+original double must fail.
+            if (g_fe_pre >= 1 && g_fe_orig == 1 && g_fe_listener == 1 &&
+                g_fe_dontbroadcast_true == 0) {
                 fe_res = "pass";
             } else if (g_fe_pre == 0) {
                 fe_res = "fail";
                 fe_act += " (PRE did not observe the fired event)";
+            } else if (g_fe_orig != 1 || g_fe_listener != 1) {
+                fe_res = "fail";
+                fe_act += " (original must run exactly once: POST skip-state and listener)";
             } else {
                 fe_res = "fail";
                 fe_act += " (original/broadcast mismatch; JS onPre Handled must not share this event)";
@@ -834,6 +896,7 @@ bool ProbePlugin::Unload(char* error, size_t maxlen) {
         onConnected.Remove(gameclients);
     }
     if (events) {
+        FeStopListening(events);
         fireEvent.Remove(events);
         events = nullptr;
     }

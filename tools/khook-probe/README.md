@@ -52,7 +52,11 @@ s2_khook_probe run A
 Prints **one JSON object per suite A case** (`case`, `expected`, `actual`, `result`
 =`pass`|`fail`|`pending`). Controlled-function cases can pass on a loaded probe
 without extra clients. `fire_event_no_suppression` fires `player_activate` once with
-Continue and counts PRE vs original (JS Handled uses `player_changename`).
+Continue. Original-once is counted independently of PRE: POST
+`KHook::WasOriginalFunctionSkipped()` (ran iff not skipped) and a server-side
+`IGameEventListener2`. Pass requires PRE observed, orig==1, listener==1, and
+incoming `bDontBroadcast==false`. A skipped or double original fails. JS Handled
+uses `player_changename`.
 `frame_client_command_hooks` stays pending until live frames, a client connect, and
 two `khook_probe_ping` ClientCommands (Ignore then Supercede). Voice, recipient-mask,
 CheckTransmit, live SDKHooks, and map/teardown stay `pending` until humans / live
