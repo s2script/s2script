@@ -3,9 +3,9 @@
 // See docs/superpowers/specs/2026-08-30-sdkhooks-virtuals-design.md.
 struct GameConfig;
 
-// Resolve Touch-family signatures, derive vtable slots, SH_MANUALHOOK_RECONFIGURE.
+// Resolve Touch-family signatures, derive vtable slots, Virtual::Configure(slot).
 void S2SdkhooksVpLoad(const GameConfig& gd);
-// SH_REMOVE leftover per-entity hooks before the core isolate dies.
+// Drop leftover per-entity this-filters before the core isolate dies. Bindings stay live.
 void S2SdkhooksVpUnload();
 
 // Boot-banner helper defined in s2script_mm.cpp (increments the gamedata OK/FAIL counters).

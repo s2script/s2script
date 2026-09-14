@@ -6,6 +6,9 @@
 //
 // Public FFI conventions (unchanged; not exercised here): SDKHooks VP add uses
 // nonzero success; declarative S2_HookInstall uses 0 success / -1 failure.
+// T5 phase/filter: Add only the first {entity,kind} row; Remove only when the last
+// phase is gone. These fixtures prove the binding contract (shared id, this-filter,
+// both unsubscribe orders, in-callback Remove). T8 owns real-KHook delivery.
 #include "khook_map.h"
 
 #include <cstdint>
@@ -251,13 +254,25 @@ static void test_pre_post_share_one_virtual_id() {
     KHook::__exported__khook = &fake;
 
     Dummy obj;
+    Dummy other;
     S2CheckedVirtual<Dummy, void> virt(0u, &DummyPre, &DummyPost);
     auto pre = virt.Add(&obj);
     CHECK(fake.setup_virtual_calls == 1, "PRE+POST share one SetupVirtualHook");
     auto post = virt.Add(&obj);
     CHECK(post.id == pre.id, "PRE/POST re-add reuses the same KHook id");
     CHECK(fake.setup_virtual_calls == 1, "re-add does not install a second physical hook");
-    CHECK(virt.HasThisFilter(&obj), "removing PRE (T5 leaves POST live) retains the this-filter");
+    CHECK(virt.HasThisFilter(&obj), "second phase reuses the accepted this-filter");
+    CHECK(!virt.HasThisFilter(&other), "one-entity Add does not install a this-filter for a peer");
+    {
+        auto miss = virt.Observe(&other);
+        CHECK(!miss, "one-entity-only: unmatched this returns an empty Observe guard");
+        auto hit = virt.Observe(&obj);
+        CHECK(static_cast<bool>(hit), "matched entity Observe arms a live guard");
+    }
+
+    // T5 FFI: Remove only when the last {entity,kind} phase is gone. Binding Remove always
+    // drops the this-filter, so PRE-unsubscribe while POST is live must NOT call it.
+    CHECK(virt.HasThisFilter(&obj), "PRE unsubscribe while POST live must not call Remove");
     virt.Remove(&obj);
     CHECK(!virt.HasThisFilter(&obj), "last phase drops the this-filter immediately");
     CHECK(virt.Snapshot().id == pre.id, "physical id is retained after last-phase filter drop");
@@ -265,6 +280,28 @@ static void test_pre_post_share_one_virtual_id() {
           "filter drop is not physical removal");
     CHECK(fake.removals.empty(), "phase/filter drop does not call RemoveHook");
 
+}
+
+static void test_both_unsubscribe_orders_keep_filter_until_last_remove() {
+    FakeKHook fake;
+    KHook::__exported__khook = &fake;
+
+    Dummy pre_first;
+    S2CheckedVirtual<Dummy, void> a(0u, &DummyPre, &DummyPost);
+    CHECK(a.Add(&pre_first).Accepted(), "first entity+kind Add is accepted");
+    CHECK(a.Add(&pre_first).Accepted(), "second phase reuses the accepted registration");
+    CHECK(a.HasThisFilter(&pre_first), "PRE-then-POST keeps the this-filter until last Remove");
+    a.Remove(&pre_first);
+    CHECK(!a.HasThisFilter(&pre_first), "PRE-then-POST last Remove drops the this-filter");
+
+    Dummy post_first;
+    S2CheckedVirtual<Dummy, void> both(0u, &DummyPre, &DummyPost);
+    CHECK(both.Add(&post_first).Accepted(), "POST-then-PRE first Add is accepted");
+    CHECK(both.Add(&post_first).id == both.Snapshot().id, "POST-then-PRE reuses the same id");
+    CHECK(both.HasThisFilter(&post_first), "POST unsubscribe while PRE live must not call Remove");
+    both.Remove(&post_first);
+    CHECK(!both.HasThisFilter(&post_first), "POST-then-PRE last Remove drops the this-filter");
+    CHECK(fake.removals.empty(), "neither unsubscribe order physically RemoveHooks");
 }
 
 static void test_unsubscribe_in_callback_drops_filter_without_destroying() {
@@ -431,6 +468,7 @@ int main() {
     test_valid_id_is_pending_until_observe();
     test_first_matching_callback_becomes_active_once();
     test_pre_post_share_one_virtual_id();
+    test_both_unsubscribe_orders_keep_filter_until_last_remove();
     test_unsubscribe_in_callback_drops_filter_without_destroying();
     test_delayed_completion_keeps_context();
     test_idempotent_add_one_completion_per_id();
