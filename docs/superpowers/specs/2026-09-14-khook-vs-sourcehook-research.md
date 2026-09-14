@@ -1,6 +1,6 @@
 # KHook vs SourceHook — research note (Metamod PR #223)
 
-**Date:** 2026-09-14  
+**Date:** 2026-09-14; corrected after implementation-source review the same day
 **Primary source:** [alliedmodders/metamod-source PR #223](https://github.com/alliedmodders/metamod-source/pull/223)  
 **s2script baseline:** vendored Metamod at `third_party/metamod-source` commit `26c03fa` (pre–PR-223, still ships SourceHook).  
 **Post-merge Metamod inspected at:** `master` commit `7e24ce9e7a03` (“Improve khook plugin unload”), clone `/tmp/metamod-khook`.
@@ -38,7 +38,7 @@ Sources: [`third_party/khook/include/khook.hpp`](https://github.com/Kenzzer/KHoo
 - **Ignore** — no effect on call/return.  
 - **Override** — call original, replace return with callback value (PRE only for skip-original).  
 - **Supersede** — skip original (PRE); on POST, original already ran ([README L31–32](https://github.com/Kenzzer/KHook/blob/master/README.md)).  
-First callback with `Override`/`Supersede` wins; no conflict resolution ([README L34–35](https://github.com/Kenzzer/KHook/blob/master/README.md)).
+At pin `1e200e4`, the implementation accepts strictly higher actions: Ignore < Override < Supersede. The first return wins a tie, but a later Supersede replaces an earlier Override ([SaveReturnValue](https://github.com/Kenzzer/KHook/blob/1e200e4cc8e0badcb7cf941525268d6977f6a4e6/src/detour.cpp#L365)). The README's first-wins wording is incomplete.
 
 ### Low-level C API (`KHOOK_API`)
 
@@ -171,7 +171,7 @@ Hookmangen generates x86/x86_64 thunks ([`sourcehook_hookmangen*.cpp`](/workspac
 - **Linux vs Windows calling convention** in JIT register save ([`detour.cpp` L31–39](https://github.com/Kenzzer/KHook/blob/master/src/detour.cpp)).
 - **GetVtableIndex** on Linux uses Itanium MFP layout ([`khook.hpp` L2145–2155](https://github.com/Kenzzer/KHook/blob/master/include/khook.hpp)); Windows uses stub disassembly ([`khook.hpp` L2088–2131](https://github.com/Kenzzer/KHook/blob/master/include/khook.hpp)).
 - **Vtable hook** makes slot RX-only after patch except during write ([`detour.hpp` L98–101](https://github.com/Kenzzer/KHook/blob/master/src/detour.hpp)).
-- **Async hook add/remove** default in template classes (`async=true` in `SetupHook`) — risk of deadlock if misused ([`khook.hpp` L232–233, L685](https://github.com/Kenzzer/KHook/blob/master/include/khook.hpp)); PR commit history fixes deadlocks (below).
+- **Registration/removal timing:** typed helpers pass async=true; an existing capsule may queue callback insertion. A valid id is acceptance, not observed delivery. Removal can also defer; retain callback/context ownership until completion. Header comments do not precisely describe all implementation paths; verify the pinned implementation.
 - **Apple / ARM:** KHook README lists no ARM; CS2 server is x86_64 only.
 
 ---
@@ -411,9 +411,9 @@ Vendored `ISmmPlugin.h` L514–516 sets `g_SHPtr` via `ismm->MetaFactory(MMIFACE
 
 ### `HookResult` (JS) is not `KHook::Action`
 
-`core` collapses JS handlers with `Continue < Changed < Handled < Stop` (`multiplexer.rs`). Shim today maps `>= Handled` → `MRES_SUPERCEDE` and everything else → `MRES_IGNORED`. `Changed` is in-place mutation (events, damage info), not `MRES_OVERRIDE`. Keep that mapping: `Handled|Stop` → `Supersede`, else `Ignore`, plus the two special cases above (Recall / CallOriginal).
+`core` collapses JS handlers with `Continue < Changed < Handled < Stop`. That is not a universal backend action mapping. Pointed-to events/damage info mutate in place and can Ignore; declarative by-value args must be forwarded with Recall. CanAcquire Changed is a return vote, folded with the engine decision, and can require a POST Override. Preserve Handled's implicit InvalidItem denial, bypass behavior, and the HUD-click notification ordering as well as the FireEvent/voice special cases above.
 
-KHook’s own merge is **first `Override`/`Supersede` wins** ([KHook README](https://github.com/Kenzzer/KHook/blob/master/README.md)). That is *across Metamod plugins*, not among our JS subscribers. We still max-collapse our own chain, then emit one Action.
+KHook's process merge accepts a strictly higher action and retains the first equal-priority return. Our JS multiplexer still collapses its own subscribers. A peer may skip the engine or win a return decision; JS POST sees the current effective result at its callback, and later peer POST callbacks can still change the eventual return.
 
 ### `Virtual::Remove` does not unpatch
 
@@ -421,7 +421,7 @@ KHook’s own merge is **first `Override`/`Supersede` wins** ([KHook README](htt
 
 ### `Function`/`Virtual` helpers add hooks with `async=true`
 
-Both `_Configure` / `_Setup` pass `async=true` “for safety” (`khook.hpp` L687, L1985). Do not `Add`/`Configure` a hook from *inside that same hook* (deadlock). Lazy `s2_request_hook` from a JS subscribe is safe if it is not the hook being installed. `refresh_detour` from inside `OnGameFrame` when the GameFrame hook is already installed is a no-op.
+Both `_Configure` / `_Setup` pass `async=true`. At the pinned implementation a new capsule can insert immediately, but an existing capsule queues insertion. The helpers return void; neither that return nor `Virtual::IsActive()` proves delivery. The revised plan wraps the typed helpers with checked registration receipts, passive first-fire state and retained teardown ownership. Callback-safe filter removal is different from blocking physical destruction. No install-time engine call with dummy pointers is safe evidence.
 
 ### `KHook::Virtual` is VP-cost, not SourceHook `Hook_Normal`
 
@@ -453,7 +453,7 @@ Rule: `Add(p)` on the first phase for that entity+kind; `Remove(p)` only when **
 
 | Site | Today | KHook |
 |------|-------|-------|
-| `DispatchTraceAttack` | PRE dispatch, call orig, POST dispatch; sentinel `this==0xD2A7E57` returns 0 without orig | PRE: sentinel → `Supersede(0)`; else set info + OnTakeDamage + `Ignore`. POST: OnTakeDamagePost + clear. Install-time self-test still calls the patched address. |
+| `DispatchTraceAttack` | PRE, original, POST; nested save/restore of info + victim; legacy exclusive sentinel probe | Shared checked Function; PRE/POST each scope both pointers; remove sentinel/dummy engine invocation; prove controlled native diversion and valid live damage separately. |
 | `HostSay` | `suppress` skips orig | `Supersede` vs `Ignore` |
 | `FireOutputInternal` | `result>=2` skips orig | `Supersede` vs `Ignore` |
 | `ProcessUsercmds` | **always** calls orig; `Handled` mutates the cmd in place | **always `Ignore`** — never `Supersede` |
@@ -471,3 +471,37 @@ s2script already cites Metamod issue [#215](https://github.com/alliedmodders/met
 - [Metamod post-merge `ISmmPlugin.h`](https://github.com/alliedmodders/metamod-source/blob/master/core/ISmmPlugin.h)
 - [Metamod s2 sample (`Virtual` ctor + `Add` after `PLUGIN_SAVEVARS`)](https://github.com/alliedmodders/metamod-source/blob/master/samples/s2_sample_mm/src/plugin.cpp)
 - s2script vendored SourceHook: `third_party/metamod-source/core/sourcehook/sourcehook.h` (pin `26c03fa`)
+
+## Corrections required by the execution plan
+
+The original review found integration gaps beyond replacing API names:
+
+- **Original bytes:** existing named, declarative and SDKHooks resolvers count/scan live
+  module text, and validators decode it. Another KHook consumer may already have
+  patched those bytes. The plan adds a verified original module view for lookup,
+  uniqueness and decoding while preserving logical/live addresses and live
+  range/liveness checks. LookupSignature alone is not a complete validator input.
+- **Invocation lifetime:** synchronous Recall runs the remainder of the chain
+  before returning; a scoped per-id invocation record can therefore keep ArgView
+  and bypass/vote state alive through POST. Keep pointers to stable stack records,
+  restore outer views, and do not treat Recall's returned decision as the final
+  engine value.
+- **CanAcquire:** retain the local vote, engine fold and implicit deny. Submit a
+  necessary local Override with ManualReturn before reading GetCurrentReturn for
+  JS POST. Do not claim Override when no vote changes the engine result.
+- **Physical removal:** a KHook id differs from an s2script descriptor id.
+  RemoveHook(..., true) does not permit immediate destruction of callback context.
+- **PR atomicity:** the generated Metamod SHA changes with the pin. The native
+  license-freshness gate requires regeneration in PR A; operator prerequisites and
+  durable live-host refresh also accompany A.
+- **Acceptance:** source compilation, grep hits and core synthetic liveness are
+  not proofs of engine semantics. Exact native/JS fixture matrices are mandatory;
+  required unavailable human-client checks stay pending.
+- **Damage architecture:** typed damage dispatch is a transitional semantic
+  adapter, not a distinct hooking mechanism. The KHook cutover shares installation
+  and lifetime now; a later descriptor/borrowed-view slice removes the dedicated
+  dispatch path. Ammo properties use schema accessors; ammo event interception
+  should use that same shared hook substrate, not a new private installer.
+
+See the revised design §§5.4–5.7 and implementation T1/T2/T8–T13. These
+corrections do not claim that the migration or its acceptance has run.

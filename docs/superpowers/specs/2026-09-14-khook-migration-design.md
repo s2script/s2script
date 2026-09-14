@@ -1,7 +1,8 @@
 # KHook migration — design spec
 
-**Status:** Draft for review — planning companion is `docs/superpowers/plans/2026-09-14-khook-migration.md`.
+**Status:** Revised after source review (2026-09-14); implementation and live acceptance remain pending — planning companion is `docs/superpowers/plans/2026-09-14-khook-migration.md`.
 **Audience:** shim / core / operator-docs maintainers.
+**Execution:** The [implementation plan](../plans/2026-09-14-khook-migration.md#dynamic-subagent-execution-contract) defines dependency barriers, file ownership, worker handoffs and evidence for the user's dynamic subagent workflow. Worker packages may be scheduled independently within those barriers; the three PR slices remain atomic.
 **Primary sources:** [Metamod PR #223](https://github.com/alliedmodders/metamod-source/pull/223) (merged 2026-09-08); [Kenzzer/KHook](https://github.com/Kenzzer/KHook) at pin `1e200e4`; inventory in `docs/superpowers/specs/2026-09-14-khook-vs-sourcehook-research.md`.
 **Builds on:** `docs/ARCHITECTURE.md` §1 (issue #215 / one detour per engine function); `docs/re-strategy.md`; declarative inbound hooks (`docs/superpowers/specs/2026-08-02-declarative-inbound-hooks-design.md`).
 
@@ -69,9 +70,9 @@ Invent `s2::Hook` that talks SourceHook on PLAPI 17 and KHook on PLAPI 18, or sh
 
 | PR | Delivers | Loads on post-223 Metamod? |
 |----|----------|----------------------------|
-| **A** | Pin Metamod + every SourceHook site → KHook `Virtual` | Yes. `s2detour` still private. |
+| **A** | Pin Metamod + checked KHook virtual hooks + generated licenses + operator compatibility floor + durable live-host refresh | Yes. `s2detour` still private. |
 | **B** | `s2detour` sites → KHook `Function`/`Member`; keep `s2detour` only as a test-only relocator or delete it | Yes. Unification. |
-| **C** | Precache decision, docs (`ARCHITECTURE`, `INSTALL`, licenses pin), operator Metamod refresh runbook | Yes. Cleanup. |
+| **C** | Precache decision and broader architecture/build documentation | Yes. Cleanup; A already carries its installation prerequisites. |
 
 PR A is not optional and is not split: once the submodule moves, `SH_*` does not compile.
 
@@ -101,16 +102,25 @@ PR A is not optional and is not split: once the submodule moves, `SH_*` does not
 
 **Two composition layers, not one:**
 
-1. **Process:** KHook. First `Override`/`Supersede` among Metamod plugins wins the return value; all PRE callbacks still run. We cannot assume we own the trampoline.
+1. **Process:** KHook. At pin `1e200e4`, `SaveReturnValue` accepts a **strictly higher** action: `Ignore < Override < Supersede`. The first return wins a tie, but a later `Supersede` replaces an earlier `Override`. All PRE callbacks still run. POST callbacks can affect the eventual return too; our POST observes the current effective result at its place in that chain, not a result frozen against later peer callbacks. See [the pinned implementation](https://github.com/Kenzzer/KHook/blob/1e200e4cc8e0badcb7cf941525268d6977f6a4e6/src/detour.cpp#L365), which is more precise than the README's first-wins shorthand.
 2. **Runtime:** s2script multiplexer. Unchanged `HookResult` contract among TypeScript plugins.
 
 `ARCHITECTURE.md` §1 must be rewritten to say this. The product is still “plugins compose instead of compete” — the *detour* is now Metamod’s, the *JS contract* is ours.
+
+**Damage is a semantic adapter, not separate hook infrastructure.** Damage needs
+borrowed typed arguments, writable PRE/read-only POST and victim-liveness checks.
+Installation, registration state and teardown use the same infrastructure as all
+other hooks. This cutover preserves the existing dedicated dispatch/view adapter;
+a subsequent descriptor/borrowed-view slice should remove that duplication.
+Game-specific field mappings belong in the game package/gamedata. Ammo reads and
+writes use schema accessors; an intercepted ammo-consumption event uses the shared
+hook system with a typed view, not another private installer.
 
 **What does not move:**
 
 - JS API, `HookResult`, ledger, entity books, gamedata ownership, `s2s` CLI.
 - `IEntityListener` (not a detour).
-- Schema / sigscan / RTTI validators. They still run *before* we ask KHook to patch.
+- Schema / sigscan / RTTI validation requirements. They still run *before* patching; PR B changes their byte source to a verified original module image so an existing KHook patch does not hide a signature or defeat prologue validation (§5.7).
 - Core Rust tests. They never called SourceHook.
 
 ---
@@ -128,7 +138,7 @@ PR A is not optional and is not split: once the submodule moves, `SH_*` does not
 | `RETURN_META_VALUE_NEWPARAMS(MRES_IGNORED, v, mfp, (args))` | `KHook::Recall(mfp, {Ignore, v}, this, args…)` then `return { Ignore, v }` | Voice `SetClientListening` only, today |
 | `SH_CALL(ptr, mfp)(args)` | `KHook::CallOriginal(mfp, ptr, args)` or `member.CallOriginal(ptr, args)` | FireEvent re-fire |
 
-Do **not** map JS `HookResult.Changed` to `KHook::Action::Override`. Changed means in-place mutation of a pointed-to object (`IGameEvent`, `CTakeDamageInfo`). The original still runs.
+Do not use a universal `Changed` mapping. For pointed-to objects (`IGameEvent`, `CTakeDamageInfo`), edits are already in-place and `Ignore` is correct. For by-value declarative arguments, `Recall` must forward the edited values. For `CanAcquire`, `Changed` is a return-value vote that must be folded with the engine result; a POST `Override` may be required. Preserve the implicit `InvalidItem` denial for `Handled` without a vote (§5.4).
 
 `MRES_HANDLED` is unused in our shim. Do not invent a use.
 
@@ -140,7 +150,7 @@ Pattern (matches Metamod `samples/s2_sample_mm/src/plugin.cpp`): construct with 
 
 ```cpp
 struct InterfaceHooks {
-    KHook::Virtual<ISource2Server, void, bool, bool, bool> gameFrame;
+    S2CheckedVirtual<ISource2Server, void, bool, bool, bool> gameFrame;
     InterfaceHooks()
       : gameFrame(&ISource2Server::GameFrame, &g_S2ScriptPlugin,
                   &S2ScriptPlugin::Hook_GameFramePre,
@@ -149,7 +159,7 @@ struct InterfaceHooks {
 static InterfaceHooks g_hk;   // after PLUGIN_EXPOSE — same-TU init order
 ```
 
-`GameFrame` is **one** `Virtual` with both PRE and POST, then **one** `Add(m_server)`. Today that is two `SH_ADD_HOOK`s.
+`GameFrame` is **one** checked virtual hook with both PRE and POST, then **one** registration. Today that is two `SH_ADD_HOOK`s. `S2CheckedVirtual` is the shim-owned checked binding specified in §5.6; it uses KHook's typed callbacks and exposes the registration receipt. A bare `Virtual::Add` returns void and is insufficient for a success flag.
 
 Handler signatures gain the interface pointer as the first argument:
 
@@ -172,7 +182,7 @@ Today: `SH_DECL_MANUALHOOK` with zeros, then `SH_MANUALHOOK_RECONFIGURE(name, sl
 After: one `KHook::Virtual<CEntityInstance, …>` per kind, constructed at file scope with the existing free-function PRE/POST (`Virtual(fnCallback, fnCallback)` — index still `INVALID` until configure):
 
 ```cpp
-KHook::Virtual<CEntityInstance, void, CEntityInstance*> g_hkStartTouch(&Hook_StartTouch, &Hook_StartTouchPost);
+S2CheckedVirtual<CEntityInstance, void, CEntityInstance*> g_hkStartTouch(&Hook_StartTouch, &Hook_StartTouchPost);
 // in S2SdkhooksVpLoad, after the RTTI+sig slot walk — BEFORE any vp_add:
 g_hkStartTouch.Configure(slot);
 ```
@@ -183,45 +193,153 @@ Do **not** expect `Remove` to restore the original vtable slot. The trampoline s
 
 Cost model change (accepted): this is VP-cost. Every Think on every pawn of that class enters the JIT when any pawn is hooked. Do not rebuild SourceHook’s per-instance vtable clone.
 
-### 5.4 Inline detours → `KHook::Function` (PR B)
+### 5.4 Inline detours and invocation state (PR B)
 
-Named sites have concrete C signatures already. Use **typed** `KHook::Function<Ret, Args…>` — not `Function<void>`, not raw `SetupHook` as the first attempt. Default-construct (callbacks only), then `Configure(addr)` after `PLUGIN_SAVEVARS` + validators. A ctor that takes an address calls `SetupHook` immediately.
+Use typed KHook callbacks and the checked binding from §5.6. Construct callback
+objects without an address; register after `PLUGIN_SAVEVARS` and validation.
+The KHook callback still returns `Return<T>`; the existing detour thunk itself
+is not a valid KHook callback.
 
-```cpp
-static KHook::Function<int64_t, void*, void*, void*, void*> g_hkDTA(&Hook_DTA_Pre, &Hook_DTA_Post);
-// Load, after SAVEVARS + ResolveSigValidated:
-g_hkDTA.Configure(dtaAddr);
-```
+**Declarative hooks:** preserve all five `S2HookShape` signatures, with one
+binding per hook id (maximum 64). `S2_HookInstall` keeps its existing ABI:
+**0 for accepted registration, -1 with a named reason for failure**. This is
+different from the SDKHooks VP add ABI (nonzero success). Accepted registration
+is recorded as Pending until our first real callback, not as proven delivery.
 
-`Function` does not expose the hook id. After `Configure`, if `__exported__khook` was null or the live self-test does not print, treat it as a named degrade (`WARN: DispatchTraceAttack detour install failed`) and **do not** invoke the patched address with the sentinel `this` (that call would enter the real function).
+Each declarative PRE creates an invocation record containing its `ArgView`,
+bypass flag, and (for CanAcquire) plugin vote/result. A scoped guard pushes it on
+a per-id thread-local stack and restores the enclosing active view on exit.
+PRE invokes **synchronous `KHook::Recall`** with the edited arguments and the
+local Ignore/Supersede decision. The remainder of the chain, including POST,
+finishes before Recall returns, so the view stays alive. Keep opaque arguments
+at their declared 64-bit width. POST uses that same record; do not retain a
+pointer to a returned PRE frame. A bypassed invocation skips both our PRE and
+POST dispatch while the engine and peer hooks retain their normal behavior.
 
-Handlers **stop calling `g_orig*`**. Return `Ignore` and let KHook invoke original, or `Supersede` to skip.
+For `this_i64_i32_i64` (CanAcquire):
 
-| Site | Signature | Action |
-|------|-----------|--------|
-| DTA | `int64_t(void*, void*, void*, void*)` | PRE: sentinel `0xD2A7E57` → `Supersede(0)`; else arm info + OnTakeDamage + `Ignore`. POST: OnTakeDamagePost + clear. Self-test still calls the patched address **after** `Configure`. |
-| HostSay | `void(void*, void*, bool, int, const char*)` | `Supersede` if chat suppress, else `Ignore` |
-| FireOutputInternal | `void(CEntityIOOutput*, CEntityInstance*, CEntityInstance*, const CVariant*, float, void*, char*)` | `Supersede` if `result>=2`, else `Ignore` |
-| ProcessUsercmds | `int(void*, void*, int, bool, float)` | **always `Ignore`** — `Handled` mutates the cmd; the engine must still process it |
+- Preserve the separate `voted` bit. Continue supplies no vote; Changed supplies
+  a vote and still calls the engine; Handled/Stop skips the engine and uses
+  `InvalidItem` (1) when no result was written.
+- In POST, query `WasOriginalFunctionSkipped()` before reading the original
+  return. If it ran, combine the saved plugin vote with the engine result using
+  the existing `S2Hook_MostRestrictiveAcquire`.
+- Only when a saved vote changes the original result, submit local `Override`
+  with `KHook::ManualReturn` **before** querying
+  `GetCurrentReturn<int32_t>()` and dispatching our read-only POST. Merely
+  returning Override at the end would publish a stale value to JS POST.
+- Preserve KHook peer precedence: an existing higher/equal-priority peer result
+  may win. POST exposes the current effective value and actual skipped state
+  at our callback; subsequent peer POST callbacks can still change the return.
+- Retain the existing HUD-click shape's copied text, controller receiver,
+  suppression and notification ordering. Its existing `S2Hook_DispatchPost`
+  occurs before the engine original; do not move it solely because KHook has a
+  phase named POST. Notify once from PRE before Recall and leave the KHook POST
+  callback for that shape without JS dispatch.
 
-`S2_HookInstall` keeps its public ABI. Internally one `KHook::Function` per `S2HookShape` (or per hook id), typed to that shape. Spike `this_void` (`onRespawn`) on the live server first. The thunk vocabulary **stays**; the compiled thunk becomes the PRE/POST **callback body**, not the SafetyHook destination. Bypass latch stays in the callback. KHook does not know about outbound `calls`.
+**Named hooks:**
 
-Fallback if a typed `Function` cannot compose a shape (live spike fails): `KHook::SetupHook` with that helper’s `make_return` / `make_call_original`. Do not pass today’s thunk as `pre` — PRE must be a KHook callback that returns `Return<T>`.
+| Site | Signature | Required behavior |
+|------|-----------|-------------------|
+| DTA | `int64_t(void*, void*, void*, void*)` | PRE and POST each save/restore both damage-info and victim pointers around their own dispatch. PRE returns Ignore; POST returns Ignore. Never call the engine with sentinel/dummy pointers. |
+| HostSay | `void(void*, void*, bool, int, const char*)` | Supersede when chat suppresses, otherwise Ignore. |
+| FireOutputInternal | `void(CEntityIOOutput*, CEntityInstance*, CEntityInstance*, const CVariant*, float, void*, char*)` | Supersede for result >= 2, otherwise Ignore. |
+| ProcessUsercmds | `int(void*, void*, int, bool, float)` | Always Ignore after any in-place command neutralization; engine processing must run. |
+
+DTA's old install-time sentinel is safe only under exclusive trampoline
+ownership and is **removed** in PR B. Pending/failed registration can reach the
+real function, and even a ready registration does not prevent peer PRE
+callbacks from seeing the sentinel. Prove diversion with a controlled native
+function fixture and prove live damage with a valid engine invocation.
+The periodic core synthetic damage self-test is separate liveness evidence;
+it does not prove the engine detour.
 
 ### 5.5 Precache (PR C)
 
-`OnPrecacheResource` starts with a RIP-relative store; `s2detour` refused it. Do **not** `Function::Configure` that address. Preferred: `KHook::Virtual` + `Configure(index)` + `AddGlobal` on a one-word holder whose first pointer is the RTTI vtable (`CGameRulesGameSystem`). That rewrites the **slot**. PRE always `Ignore` so the game’s own precache still runs. Fallback if live-gate fails: keep `WriteVtableSlot`, logged as a named leftover.
+Prefer a checked `Virtual` binding on the RTTI vtable plus validated index.
+Use `AddGlobal` with a temporary one-word vtable holder for registration; retain
+the vtable value, never the temporary holder pointer. Construct an equivalent
+holder when removing the global filter. PRE saves/restores the manifest around
+dispatch and returns Ignore.
+
+Use first-fire evidence on a real map precache cycle. Pending is not failure.
+If reverting to `WriteVtableSlot`, first remove/drain the KHook registration and
+verify no other KHook owner holds that slot; never overwrite another consumer's
+trampoline. Otherwise degrade precache by name and leave the slot alone.
+The private fallback is a documented coexistence limitation.
+
+### 5.6 Registration receipts, readiness and teardown (PR A foundation)
+
+Add `shim/src/khook_binding.h`, containing `S2CheckedFunction<Ret, Args...>`
+and `S2CheckedVirtual<Class, Ret, Args...>`. They are thin checked bindings over
+the pinned typed KHook helpers, not an alternate detour engine or public API.
+Inherit constructors and inspect the protected associated-id/maps under their
+existing locks; isolate this pin-specific access in this header.
+
+Registration returns a receipt with the actual `KHook::HookID_t`, a named
+failure reason, and state `Failed | Pending | Active | Removing | Removed`.
+`INVALID_HOOK` is Failed. A valid id is Pending; mark Active only when our
+matching callback is observed. Hook-state updates shared with KHook's removal
+worker must be synchronized. Neither a non-null interface, `IsActive()` (which
+only inspects filters), nor a missing log proves physical installation.
+
+At this pin the typed helpers request `async=true`: an existing capsule can
+queue insertion. The documentation's warning and the implementation differ;
+read the implementation and test both new-capsule and shared-capsule paths.
+Do not block the game thread polling for first fire. If a capability requires
+validated first-fire state (such as transmit filtering), keep it unavailable
+until validation passes. Preserve accepted registration bookkeeping so it can
+later become Active without losing subscribers. Lazy subscribe success means
+accepted registration; immediate delivery before first-fire activation is not
+promised. Test and document this native-backend activation window.
+
+Keep JS unsubscribe/filter removal immediate and safe inside callbacks; removing
+a this-filter does not physically unpatch. Do not synchronously destroy a hook
+object from its callback. Physical removal must retain the typed binding,
+callback context and any pending invocation state until KHook's removal
+completion; never `RemoveHook(id, true)` followed by immediate context deletion.
+Drain retained registrations before destroying runtime resources or unloading
+the library. Reject/defer Unload invoked on an active callback stack while
+preserving runtime ownership; do not wait for that stack from inside itself. A KHook id and a declarative s2script id are different namespaces.
+
+### 5.7 Original-byte resolution and validation (PR B prerequisite)
+
+Update `ResolveSigValidated`, `S2_EngineCallResolve` and `S2SdkhooksVpLoad`, including
+validated-call, relative-address and RTTI/vtable-equivalence checks. Build a
+bounded read-only original module image from the ELF backing the live mapping,
+verified against its identity/build id. Preserve the live load bias and
+PT_LOAD address correspondence. Decode bytes by module-relative offset and
+translate results back into live addresses; never execute or expose a pointer
+into the copied image.
+
+Pattern matching **and uniqueness counting**, instruction decoding, arg-width,
+xref and prologue checks read that verified original image. Live executable
+range, entity and vtable liveness checks still inspect the live process. For a
+patched virtual slot, obtain its original target through KHook before comparing
+it with the validated target. Do not validate the trampoline as if it were the
+engine prologue.
+
+`KHook::LookupSignature` demonstrates original-byte-aware lookup, but a
+first-match API alone does not preserve our uniqueness and validator contracts.
+Do not mix original-byte lookup with patched-byte uniqueness counting or silently
+fall back to unverified on-disk bytes. If the backing image cannot be verified,
+fail that descriptor with a named reason.
+
+A native peer fixture must hook a target before and after s2script, exercise
+both load orders, and assert one original call, delivery to both consumers,
+argument/return precedence, clean unload, and unchanged duplicate-signature
+rejection.
 
 ---
 
 ## 6. Hard constraints
 
-1. **Hard cutover.** New `s2script.so` does not load on Metamod < PLAPI 18. Old `s2script.so` does not load on Metamod ≥ the PR #223 merge. Operator docs and the release zip must say “Metamod 2.0 **after 2026-09-08**” (or the first `mmsdrop` build that advertises it).
-2. **Pin Metamod to a commit, not `master` floating.** Recommended floor: `7e24ce9e7a03` (PR #223 + unload fix + khook bumps). Re-verify `third_party/khook` SHA is `1e200e4cc8e0` (or newer if we bump again).
+1. **Hard cutover.** New `s2script.so` does not load on Metamod < PLAPI 18. Old `s2script.so` does not load on Metamod ≥ the PR #223 merge. PR A's operator docs and release metadata must name verified PLAPI 18 plus the tested pin/drop; a build date alone does not prove compatibility. Upgrade or roll back the runtime and Metamod as a pair.
+2. **Pin Metamod to a commit, not `master` floating.** Recommended floor: `7e24ce9e7a03` (PR #223 + unload fix + khook bumps). Re-verify `third_party/khook` SHA is `1e200e4cc8e0`. A new pin requires rechecking the helper internals and repeating compatibility fixtures.
 3. **C++17** already. Include `${MMS}/third_party/khook/include`. Remove `${MMS}/core/sourcehook`. Do not link `libkhook` or SafetyHook into `s2script.so`.
 4. **`PLUGIN_SAVEVARS()` is the first line of `Load`.** No `Add`/`Configure` before it. No KHook use from the `S2ScriptPlugin` constructor except storing MFPs.
-5. **Never `Add`/`Configure` a hook from inside that same hook** (`async=true` deadlock). Lazy install from JS subscribe is fine when the hook is not on the stack.
-6. **Validators stay in front of the patch.** `s2detour`’s named refusals (unmapped, short branch, arg-width) move to the pre-`Configure` path. A KHook `INVALID_HOOK` is an additional named reason, not a silent skip.
+5. **Do not perform blocking physical hook destruction inside callbacks.** Keep callback-safe filter changes separate from retained, completion-aware physical teardown (§5.6). Test registration while a shared capsule is active; no readiness polling on the game thread.
+6. **Validators stay in front of the patch and use verified original bytes.** Preserve bounded reads, uniqueness, executable-range and arg-width rejection. SafetyHook owns relocation decisions; do not retain obsolete s2detour-only refusal rules as requirements on its decoder. A KHook `INVALID_HOOK` is an additional named reason.
 7. **Degrade per descriptor.** A broken GameFrame hook does not take down ClientCommand.
 8. **Do not change JS.** No new `HookResult` members. No plugin-facing KHook types.
 9. **Linux x86_64 only.** KHook’s Windows JIT is out of scope.
@@ -246,26 +364,26 @@ Fallback if a typed `Function` cannot compose a shape (live spike fails): `KHook
 
 **PR A (SourceHook cutover)**
 
-- `make ci-native` (or at least shim + `cargo test -p s2script-core`) green after the pin.
+- Full `make ci` green on PR A alone, including committed regenerated licenses. No reduced shim-only substitute for required CI.
 - Sniper build loads: `meta list` shows `s2script`, PLAPI 18, no `SourceHook` in `meta version`.
 - Boot banner still names every gamedata row.
-- Live: `OnGameFrame` increments; a client lifecycle event fires (bot connect); `sm_slap` / chat path still works if those plugins are loaded; `CheckTransmit` first-fire validation still prints; voice first-fire still prints; FireEvent `Handled` still hides the kill-feed path (the `CallOriginal` + `Supersede` pair).
-- SDKHooks: `SDKHook(entity, Touch, …)` still fans out only for that entity (isolate tests unchanged; live: one hooked prop).
+- Execute T8's fixture matrix: exact original/callback counts, command handling, FireEvent suppression and recipient filtering, voice Recall and CheckTransmit validation/filtering. A first-fire log alone is insufficient.
+- SDKHooks: entity-specific delivery, both phase-removal orders, in-callback unsubscribe, deletion/index reuse, peer-patched virtual slots and map change. Required unavailable human-client evidence remains pending.
 
 **PR B (inline unification)**
 
-- Damage self-test (`S2_DAMAGE_SELFTEST=1`) still fires.
+- Valid live damage fires PRE/POST for the correct victim; controlled native nested-damage fixture restores both pointers. Synthetic core self-test alone is insufficient.
 - Chat `HostSay` still reaches `Chat.onMessage`.
 - `onOutput` still fires.
 - `UserCmd.onRun` still lazy-installs.
-- A declarative `hooks` row still installs; a failed prologue / arg-width still degrades **by name** before `Configure`.
+- Every declarative shape passes mutation, bypass, opaque-width, result and lifetime tests in Task 9. CanAcquire Changed-deny vs engine-Allow and plugin-Allow vs engine-deny both deny; POST observes current effective result/skipped.
 - `s2detour::Install` has **zero** production call sites (tests may keep the relocator).
 
 **PR C**
 
 - Precache still runs (sound slice / `OnMapStart` path).
-- `docs/INSTALL.md`, `docs/ARCHITECTURE.md` §1, `docs/BUILDING.md`, `licenses/licenses.txt` pin, `scripts/gen-licenses.sh` Metamod rev label updated.
-- `scripts/cloud/install.sh` force-refreshes Metamod when the on-disk binary is pre-KHook (or always re-pulls `mmsource-latest-linux` when `S2_REFRESH_METAMOD=1`).
+- Architecture/precache documentation finalized. The minimum INSTALL/BUILDING floor, generated licenses and Metamod rev label already land in A.
+- Re-run A's durable Metamod refresh/install path and document any precache coexistence limitation.
 
 ---
 
@@ -273,10 +391,10 @@ Fallback if a typed `Function` cannot compose a shape (live spike fails): `KHook
 
 | Risk | Why it is real | Mitigation |
 |------|----------------|------------|
-| First-wins Action vs our max-collapse | Another MM plugin can Supersede before us and skip the original even if our JS said Continue | Accept. Log once if `WasOriginalFunctionSkipped()` in POST when we returned Ignore. Do not fight. |
+| Peer action precedence | Higher action replaces lower; first wins ties; later peer POST may change return | Test mixed priorities and document the point-in-chain POST observation. |
 | VP-cost Think/Touch | One hooked pawn detours the class | Accepted. Measure on live gate; do not rebuild per-instance vtables. |
 | SafetyHook relocates a prologue we would have refused | Different decoder | Keep arg-width + executable-range + uniqueness checks **before** `Configure`. Live-gate every current `s2detour` site. |
-| `async=true` deadlock | Documented in KHook commits | Never install from inside the hooked function. |
+| Accepted but pending registration | Shared-capsule insertion can queue at this pin | Receipt + passive first-fire state; safe valid-object tests; no sentinel or busy wait. |
 | `mmsdrop` latest is still 1403 on day A merges | Drop channel lags `master` | Pin a locally-built Metamod from the submodule for the live gate until drop catches up. `scripts/cloud/install.sh` must be able to use the submodule build. |
 | Incomplete interface types under `META_NO_HL2SDK` | `GetVtableIndex` needs a real virtual MFP | Keep hook member types in the `.cpp` (complete `eiface.h`) or a new `shim/src/khooks.cpp` that includes the SDK headers. `s2script_mm.h` only forward-declares. |
 | GameSessionConfiguration_t / CheckTransmit / PostEventAbstract ABI | We already special-cased SourceHook `sizeof` | Re-prove each signature on the live server. KHook `_copy_stack_size` copies conservatively; still verify `unsigned long` vs `uint64` on PostEventAbstract. |
@@ -290,19 +408,29 @@ Fallback if a typed `Function` cannot compose a shape (live spike fails): `KHook
 | `shim/src/s2script_mm.h` | `ISmmPlugin` + handler decls returning `KHook::Return<T>` + `KHook::Virtual<…>` members (types must be complete — prefer moving members to `khooks.cpp` if the header cannot see `eiface.h`) |
 | `shim/src/s2script_mm.cpp` | `Load`/`Unload` `Add`/`Remove`; handler bodies |
 | `shim/src/sdkhooks_vp.cpp` | Per-kind `Virtual` + `Configure(slot)` + `Add`/`Remove` |
-| `shim/src/engine_hooks.cpp` | `S2_HookInstall` → KHook `Function` (PR B) |
+| `shim/src/engine_hooks.cpp` | Checked per-id Function binding, Recall invocation scope, CanAcquire fold (PR B) |
+| `shim/src/khook_binding.h` | Checked typed bindings, receipts and teardown ownership (PR A) |
+| `shim/src/original_module.h`, `original_module.cpp` | Verified original module bytes + live-address translation (PR B) |
 | `shim/src/detour.cpp` | Production call sites gone after B; relocator tests may remain |
 | `shim/CMakeLists.txt` | include khook; drop sourcehook |
 | `third_party/metamod-source` | submodule bump |
 | `docs/ARCHITECTURE.md`, `INSTALL.md`, `BUILDING.md` | thesis + operator floor |
 | `scripts/cloud/install.sh`, `scripts/gen-licenses.sh` | Metamod refresh + pin label |
-| `core/**` | Comments only, unless an FFI string mentions SourceHook |
+| `core/**` | Public contracts unchanged; comments/diagnostics only unless a tested adapter integration requires more |
 
 ---
 
 ## Spec self-review
 
-- **Placeholders:** none. Pins, mappings, and PR boundaries are explicit.
-- **Consistency:** B is the destination; A is the load-blocking increment; C is docs/leftovers. Action mapping matches the research note’s s2script-specific section.
-- **Scope:** one migration. Not a new hook API. Not a multiplexer rewrite.
-- **Ambiguity:** Precache has a preferred path and a named leftover. `s2detour` production sites are zero after B. Interface hooks use the official sample ctor (not `AddContext`). Declarative hooks use typed `Function` per `S2HookShape`. Usercmd never `Supersede`s.
+- All eight review findings have explicit plan tasks: receipts/safe probes (T2/T10),
+  mutable arguments and CanAcquire (T9), damage scope (T10), original bytes (T9),
+  atomic licenses/install prerequisites (T1/T7), executable acceptance (T2/T8–T12),
+  and process action precedence (T2/T13).
+- Interface and SDKHooks use checked typed Virtual bindings. Declarative hooks
+  use one checked typed Function per id, with synchronous Recall keeping the
+  per-invocation view alive. Usercmd always returns Ignore.
+- Unit/native fixture evidence, live engine evidence and missing human-client
+  checks are recorded separately. Compilation or an rg match is never a
+  behavioral acceptance result. Any unavailable required gate remains pending.
+- This is a revised execution design, not a claim that the migration, the
+  checked adapter or live engine behavior has already been implemented/proven.
