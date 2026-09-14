@@ -12,6 +12,8 @@
 
 **Revision:** 2026-09-14 source-review corrections. These are implementation requirements; no migration or live-gate completion is claimed by this documentation change.
 
+**PR A review amendment:** The cutover at `57a329b7` requires the [PR A remediation plan](2026-09-14-khook-pr-a-remediation.md) and its [spec](../specs/2026-09-14-khook-pr-a-remediation-design.md). Those documents supersede T2–T8's assumptions about pinned-host provider lifetime, artifact verification and acceptance completeness. The corrected host needs the reviewed patch/build identity in addition to PLAPI 18. PR B remains blocked until the amended PR A gate passes.
+
 ## Global Constraints
 
 - Spec: `docs/superpowers/specs/2026-09-14-khook-migration-design.md`
