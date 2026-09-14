@@ -11,9 +11,11 @@
 // both unsubscribe orders, in-callback Remove). T8 owns real-KHook delivery.
 #include "khook_map.h"
 
+#include <atomic>
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -108,6 +110,7 @@ struct Dummy {
 
 static KHook::Return<void> FnPre() { return {KHook::Action::Ignore}; }
 static void FnTarget() {}
+static void FnTargetB() {}
 
 static KHook::Return<void> DummyPre(Dummy* self) {
     (void)self;
@@ -460,6 +463,176 @@ static void test_drain_true_can_leave_retirement_pending() {
     CHECK(S2Hook_RetirementPending() == 0, "pending drops only after Removed");
 }
 
+static void test_global_active_count_and_cross_thread_drain() {
+    FakeKHook fake;
+    KHook::__exported__khook = &fake;
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+
+    S2CheckedFunction<void> fn(&FnPre, nullptr);
+    (void)fn.Configure(reinterpret_cast<void*>(&FnTarget));
+    CHECK(S2Hook_ActiveCount() == 0, "no Observe means zero global active count");
+    {
+        auto obs = fn.Observe();
+        CHECK(S2Hook_ActiveCount() >= 1, "Observe increments the global active-callback count");
+        CHECK(!S2Hook_NoActiveDispatch(), "same-thread Observe is an active dispatch");
+        std::atomic<bool> other_thread_drain{true};
+        std::thread t([&] {
+            other_thread_drain.store(S2Hook_DrainRetirement(), std::memory_order_relaxed);
+        });
+        t.join();
+        CHECK(!other_thread_drain.load(std::memory_order_relaxed),
+              "TLS depth alone is not a cross-thread drain");
+    }
+    CHECK(S2Hook_ActiveCount() == 0, "LeaveObserve drops the global active count");
+    CHECK(S2Hook_DrainRetirement(), "drain is allowed after the Observe guard unwinds");
+
+    {
+        S2HookDispatchGuard g;
+        CHECK(static_cast<bool>(g), "direct dispatch guard arms while Running");
+        CHECK(S2Hook_ActiveCount() >= 1, "DispatchGuard holds a global active count");
+        std::atomic<bool> other{true};
+        std::thread t([&] { other.store(S2Hook_DrainRetirement(), std::memory_order_relaxed); });
+        t.join();
+        CHECK(!other.load(std::memory_order_relaxed),
+              "ConCommand-style dispatch is visible to a cross-thread drain");
+    }
+    CHECK(S2Hook_NoActiveDispatch(), "DispatchGuard destructor releases the hold");
+}
+
+static void test_callback_guard_rejects_dispatch_and_registration() {
+    FakeKHook fake;
+    KHook::__exported__khook = &fake;
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+
+    S2CheckedFunction<void> fn(&FnPre, nullptr);
+    auto rec = fn.Configure(reinterpret_cast<void*>(&FnTarget));
+    CHECK(rec.Accepted(), "Configure is accepted while Running");
+    Dummy obj;
+    S2CheckedVirtual<Dummy, void> virt(0u, &DummyPre, nullptr);
+    CHECK(virt.Add(&obj).Accepted(), "Virtual Add is accepted while Running");
+
+    S2Hook_SetLifecycle(S2HookLifecycle::Retiring);
+    {
+        auto obs = fn.Observe();
+        CHECK(static_cast<bool>(obs), "Observe still arms an owned id during retirement");
+        CHECK(!S2Hook_EnterDispatch(obs),
+              "call sites must honor a false EnterDispatch; constructing Observe is not enough");
+        CHECK(!S2Hook_MayDispatch(), "JS dispatch is rejected while retiring");
+    }
+    {
+        S2HookDispatchGuard g;
+        CHECK(!g, "direct dispatch guard refuses to arm while retiring");
+    }
+
+    auto again = fn.Configure(reinterpret_cast<void*>(&FnTarget));
+    CHECK(again.state == S2HookState::Failed, "Function Configure is rejected while retiring");
+    CHECK(!again.reason.empty(), "rejected Configure while retiring has a named reason");
+    CHECK(fn.Snapshot().id == rec.id, "rejected retiring Configure does not drop the owned id");
+
+    Dummy extra;
+    auto vadd = virt.Add(&extra);
+    CHECK(vadd.state == S2HookState::Failed, "Virtual Add is rejected while retiring");
+    CHECK(!vadd.reason.empty(), "rejected Add while retiring has a named reason");
+    CHECK(fake.setup_hook_calls == 1, "retiring Configure does not SetupHook again");
+
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+}
+
+static void test_same_address_configure_is_idempotent() {
+    FakeKHook fake;
+    KHook::__exported__khook = &fake;
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+
+    S2CheckedFunction<void> fn(&FnPre, nullptr);
+    auto r1 = fn.Configure(reinterpret_cast<void*>(&FnTarget));
+    auto r2 = fn.Configure(reinterpret_cast<void*>(&FnTarget));
+    CHECK(r1.Accepted() && r2.Accepted(), "same Function address yields an accepted receipt");
+    CHECK(r1.id == r2.id, "same Function address keeps the existing id");
+    CHECK(fake.setup_hook_calls == 1, "same-address Configure does not SetupHook again");
+    CHECK(fn.Snapshot().id == r1.id, "snapshot stays on the existing accepted receipt");
+    {
+        auto obs = fn.Observe();
+        auto r3 = fn.Configure(reinterpret_cast<void*>(&FnTarget));
+        CHECK(r3.id == r1.id, "same-address Configure while Active is still the existing receipt");
+        CHECK(fake.setup_hook_calls == 1, "Active same-address Configure does not SetupHook");
+    }
+}
+
+static void test_different_address_configure_rejected_old_id_still_retires() {
+    FakeKHook fake;
+    KHook::__exported__khook = &fake;
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+
+    S2CheckedFunction<void> fn(&FnPre, nullptr);
+    auto r1 = fn.Configure(reinterpret_cast<void*>(&FnTarget));
+    CHECK(r1.Accepted(), "first Function address is accepted");
+    const auto removals_before = fake.removals.size();
+    auto bad = fn.Configure(reinterpret_cast<void*>(&FnTargetB));
+    CHECK(bad.state == S2HookState::Failed, "different Function address while owned is Failed");
+    CHECK(!bad.Accepted(), "retarget receipt is not Accepted");
+    CHECK(!bad.reason.empty(), "retarget failure is named");
+    CHECK(fn.Snapshot().id == r1.id, "owned id is unchanged after rejected retarget");
+    CHECK(fn.Snapshot().state == S2HookState::Pending || fn.Snapshot().state == S2HookState::Active,
+          "rejected retarget does not mark the old binding Failed");
+    CHECK(fake.setup_hook_calls == 1, "rejected retarget does not SetupHook a second address");
+    CHECK(fake.removals.size() == removals_before,
+          "rejected retarget does not silently RemoveHook the owned id");
+
+    fn.BeginRemove();
+    CHECK(fn.Snapshot().state == S2HookState::Removing, "old binding still enters Removing");
+    CHECK(fake.removals.size() == removals_before + 1, "BeginRemove retires the original id once");
+    fake.FireLastCompletion();
+    CHECK(S2Hook_DrainRetirement(), "drain after rejected-retarget retirement");
+    CHECK(fn.Snapshot().state == S2HookState::Removed, "old binding reaches Removed");
+    CHECK(S2Hook_RetirementPending() == 0, "ownership is not stuck on a silently removed id");
+
+    auto rnew = fn.Configure(reinterpret_cast<void*>(&FnTargetB));
+    CHECK(rnew.Accepted(), "a completed old binding may be replaced by a new address");
+    CHECK(rnew.id != r1.id, "replacement uses a new KHook id");
+}
+
+static void test_last_subscriber_removed_still_physically_retired() {
+    FakeKHook fake;
+    KHook::__exported__khook = &fake;
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+
+    Dummy obj;
+    S2CheckedVirtual<Dummy, void> virt(0u, &DummyPre, &DummyPost);
+    auto rec = virt.Add(&obj);
+    CHECK(rec.Accepted(), "kind-level Virtual accepted a subscriber");
+    virt.Remove(&obj);
+    CHECK(!virt.HasThisFilter(&obj), "last subscriber already removed the this-filter");
+    CHECK(virt.Snapshot().id == rec.id, "physical id is still owned after last-subscriber Remove");
+    CHECK(fake.removals.empty(), "filter drop is not physical removal");
+    virt.BeginRemove();
+    CHECK(fake.removals.size() == 1, "empty subscriber rows still BeginRemove the kind-level object");
+    CHECK(virt.Snapshot().state == S2HookState::Removing, "kind-level object is Removing");
+    virt.BeginRemove();
+    CHECK(fake.removals.size() == 1, "repeated BeginRemove on an empty-row object is idempotent");
+    fake.FireLastCompletion();
+    CHECK(S2Hook_DrainRetirement(), "drain after empty-row physical retirement");
+    CHECK(S2Hook_RetirementPending() == 0, "empty-row retirement completes");
+    CHECK(virt.Snapshot().state == S2HookState::Removed, "kind-level object reaches Removed");
+}
+
+static void test_deferred_completion_retry_shape() {
+    FakeKHook fake;
+    KHook::__exported__khook = &fake;
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+
+    S2CheckedFunction<void> fn(&FnPre, nullptr);
+    (void)fn.Configure(reinterpret_cast<void*>(&FnTarget));
+    fn.BeginRemove();
+    CHECK(S2Hook_DrainRetirement(), "first retry drain is allowed off the callback stack");
+    CHECK(S2Hook_RetirementPending() == 1, "first retry still sees pending completion");
+    auto late = fn.Configure(reinterpret_cast<void*>(&FnTargetB));
+    CHECK(late.state == S2HookState::Failed, "Configure while Removing is a named failure");
+    CHECK(fn.Snapshot().state == S2HookState::Removing, "failed Configure leaves Removing intact");
+    fake.FireLastCompletion();
+    CHECK(S2Hook_DrainRetirement(), "external retry drain after late completion");
+    CHECK(S2Hook_RetirementPending() == 0, "retry sees no pending retirement after completion");
+}
+
 }  // namespace
 
 int main() {
@@ -474,6 +647,12 @@ int main() {
     test_idempotent_add_one_completion_per_id();
     test_discarded_observe_does_not_leak_invocation();
     test_drain_true_can_leave_retirement_pending();
+    test_global_active_count_and_cross_thread_drain();
+    test_callback_guard_rejects_dispatch_and_registration();
+    test_same_address_configure_is_idempotent();
+    test_different_address_configure_rejected_old_id_still_retires();
+    test_last_subscriber_removed_still_physically_retired();
+    test_deferred_completion_retry_shape();
 
     if (g_fail) {
         std::cerr << g_fail << " check(s) failed\n";

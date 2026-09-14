@@ -5933,6 +5933,13 @@ pub(crate) fn dispatch_onframe(
     }
 }
 
+/// True only when HOST is not borrowed and no dispatch is in progress.
+pub fn can_shutdown() -> bool {
+    let host_free = HOST.with(|h| h.try_borrow().is_ok());
+    let dispatch_free = crate::dispatch::current_epoch().is_none();
+    host_free && dispatch_free
+}
+
 pub fn shutdown() {
     // Invalidate and join the dedicated loader before any plugin/V8 state or this library can be
     // torn down. The worker owns no V8 or engine callback pointers.

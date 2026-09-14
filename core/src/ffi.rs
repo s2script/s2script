@@ -106,6 +106,14 @@ pub extern "C" fn s2script_core_shutdown() {
     let _ = catch_unwind(|| v8host::shutdown());
 }
 
+/// Read-only: 1 iff the core isolate is safe to shut down. Backed by actual
+/// host-borrow / dispatch-in-progress state. A swallowed shutdown panic is not
+/// success and must not be inferred from a quiet log.
+#[no_mangle]
+pub extern "C" fn s2script_core_can_shutdown() -> c_int {
+    catch_unwind(|| if v8host::can_shutdown() { 1 } else { 0 }).unwrap_or(0)
+}
+
 /// Shim → core: called by the shim's `IGameEventListener2` when an event fires (the shim has already
 /// stashed the live `IGameEvent*` for the accessor engine-ops). Dispatches to the name's JS subscribers.
 ///
@@ -928,6 +936,22 @@ mod tests {
         // And the mapping the C ABI actually ships.
         assert_eq!(deferral_code(Delivery::Deferred), S2_DISPATCH_DEFERRED);
         assert_eq!(deferral_code(Delivery::Delivered), 0);
+    }
+
+    #[test]
+    fn can_shutdown_is_zero_while_host_is_borrowed_then_one_after_return() {
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
+        assert_eq!(s2script_core_can_shutdown(), 1, "idle after init is safe to shut down");
+        let during = crate::v8host::frame_tests::with_host_borrowed(|| s2script_core_can_shutdown());
+        assert_eq!(during, 0, "borrowed HOST is not safe to shut down");
+        assert_eq!(s2script_core_can_shutdown(), 1, "safe again after the borrow returns");
+        let during_dispatch = {
+            let _scope = crate::dispatch::DispatchScope::enter();
+            s2script_core_can_shutdown()
+        };
+        assert_eq!(during_dispatch, 0, "dispatch-in-progress is not safe to shut down");
+        assert_eq!(s2script_core_can_shutdown(), 1, "safe again after dispatch returns");
+        s2script_core_shutdown();
     }
 
     #[test]

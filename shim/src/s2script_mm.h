@@ -60,6 +60,8 @@ enum NetChannelBufType_t : signed char;
 class S2ScriptPlugin : public ISmmPlugin {
 public:
     bool Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) override;
+    // False with a named retry message while dispatch is active or checked-hook
+    // retirement is pending. A later `meta unload` finishes cleanup once.
     bool Unload(char* error, size_t maxlen) override;
 
     // KHook handlers — installed lazily by s2_request_hook("OnGameFrame",1).
