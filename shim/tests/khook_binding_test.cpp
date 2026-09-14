@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 static int g_fail = 0;
@@ -216,27 +217,32 @@ static void test_first_matching_callback_becomes_active_once() {
 
     S2CheckedFunction<void> fn(&FnPre, nullptr);
     auto rec = fn.Configure(reinterpret_cast<void*>(&FnTarget));
-    fn.Observe();
-    CHECK(fn.Snapshot().id == rec.id, "Observe keeps the same KHook id");
-    CHECK(fn.Snapshot().state == S2HookState::Active, "first matching Function callback is Active");
-    fn.Observe();
-    CHECK(fn.Snapshot().state == S2HookState::Active, "Observe is Active once, not a new id");
-    fn.EndObserve();
-    fn.EndObserve();
+    {
+        auto obs = fn.Observe();
+        CHECK(static_cast<bool>(obs), "Function Observe arms a live guard");
+        CHECK(fn.Snapshot().id == rec.id, "Observe keeps the same KHook id");
+        CHECK(fn.Snapshot().state == S2HookState::Active, "first matching Function callback is Active");
+        auto obs2 = fn.Observe();
+        CHECK(fn.Snapshot().state == S2HookState::Active, "Observe is Active once, not a new id");
+        CHECK(!S2Hook_DrainRetirement(), "nested live guards are an active callback stack");
+    }
 
     Dummy obj;
     Dummy other;
     S2CheckedVirtual<Dummy, void> virt(0u, &DummyPre, nullptr);
     auto vrec = virt.Add(&obj);
-    virt.Observe(&other);
-    CHECK(virt.Snapshot().state == S2HookState::Pending, "unmatched this pointer does not activate");
-    virt.Observe(&obj);
-    CHECK(virt.Snapshot().id == vrec.id, "matching Observe keeps the same id");
-    CHECK(virt.Snapshot().state == S2HookState::Active, "first matching Virtual callback is Active");
-    virt.Observe(&obj);
-    CHECK(virt.Snapshot().state == S2HookState::Active, "Virtual Observe is Active once");
-    virt.EndObserve();
-    virt.EndObserve();
+    {
+        auto miss = virt.Observe(&other);
+        CHECK(!miss, "unmatched this pointer returns an empty guard");
+        CHECK(virt.Snapshot().state == S2HookState::Pending, "unmatched this pointer does not activate");
+        CHECK(S2Hook_DrainRetirement(), "empty unmatched guard does not hold the callback stack");
+        auto obs = virt.Observe(&obj);
+        CHECK(virt.Snapshot().id == vrec.id, "matching Observe keeps the same id");
+        CHECK(virt.Snapshot().state == S2HookState::Active, "first matching Virtual callback is Active");
+        auto obs2 = virt.Observe(&obj);
+        CHECK(virt.Snapshot().state == S2HookState::Active, "Virtual Observe is Active once");
+        CHECK(!S2Hook_DrainRetirement(), "live Virtual guards are an active callback stack");
+    }
 
 }
 
@@ -268,15 +274,16 @@ static void test_unsubscribe_in_callback_drops_filter_without_destroying() {
     Dummy obj;
     S2CheckedVirtual<Dummy, void> virt(0u, &DummyPre, nullptr);
     auto rec = virt.Add(&obj);
-    virt.Observe(&obj);
-    virt.Remove(&obj);
-    CHECK(!virt.HasThisFilter(&obj), "unsubscribe in callback drops the this-filter immediately");
-    CHECK(virt.Snapshot().state != S2HookState::Removed, "unsubscribe is not synchronous destruction");
-    CHECK(virt.Snapshot().id == rec.id, "binding still owns the physical id after filter drop");
-    CHECK(fake.removals.empty(), "in-callback unsubscribe does not call RemoveHook");
-    CHECK(!S2Hook_DrainRetirement(), "Unload/drain on an active callback stack is rejected");
-    virt.EndObserve();
-    CHECK(S2Hook_DrainRetirement(), "drain is allowed once the callback stack unwinds");
+    {
+        auto obs = virt.Observe(&obj);
+        virt.Remove(&obj);
+        CHECK(!virt.HasThisFilter(&obj), "unsubscribe in callback drops the this-filter immediately");
+        CHECK(virt.Snapshot().state != S2HookState::Removed, "unsubscribe is not synchronous destruction");
+        CHECK(virt.Snapshot().id == rec.id, "binding still owns the physical id after filter drop");
+        CHECK(fake.removals.empty(), "in-callback unsubscribe does not call RemoveHook");
+        CHECK(!S2Hook_DrainRetirement(), "Unload/drain on an active callback stack is rejected");
+    }
+    CHECK(S2Hook_DrainRetirement(), "drain is allowed once the Observe guard unwinds");
 
 }
 
@@ -288,25 +295,25 @@ static void test_delayed_completion_keeps_context() {
     auto* fn = new WatchFn(&FnPre, nullptr);
     fn->died = &died;
     auto rec = fn->Configure(reinterpret_cast<void*>(&FnTarget));
-    fn->Observe();
-    fn->BeginRemove();
-    CHECK(fn->Snapshot().state == S2HookState::Removing, "BeginRemove marks Removing");
-    CHECK(fake.removals.size() == 1, "BeginRemove schedules one RemoveHook");
-    CHECK(fake.removals[0].id == rec.id, "RemoveHook uses the actual KHook id");
-    CHECK(fake.removals[0].async == true, "physical removal is async");
-    CHECK(fake.removals[0].fn != nullptr, "BeginRemove passes a completion callback");
-    CHECK(S2Hook_RetirementPending() == 1, "retirement queue retains the binding");
-    CHECK(!died, "binding is not destroyed when RemoveHook is scheduled");
+    {
+        auto obs = fn->Observe();
+        fn->BeginRemove();
+        CHECK(fn->Snapshot().state == S2HookState::Removing, "BeginRemove marks Removing");
+        CHECK(fake.removals.size() == 1, "BeginRemove schedules one RemoveHook");
+        CHECK(fake.removals[0].id == rec.id, "RemoveHook uses the actual KHook id");
+        CHECK(fake.removals[0].async == true, "physical removal is async");
+        CHECK(fake.removals[0].fn != nullptr, "BeginRemove passes a completion callback");
+        CHECK(S2Hook_RetirementPending() == 1, "retirement queue retains the binding");
+        CHECK(!died, "binding is not destroyed when RemoveHook is scheduled");
 
-    fake.FireLastCompletion();
-    CHECK(!died, "completion worker does not free the binding");
-    CHECK(fn->Snapshot().state == S2HookState::Removing,
-          "completion with an outstanding invocation stays Removing");
-    CHECK(!S2Hook_DrainRetirement(), "drain/unload on the callback stack is deferred");
-
-    fn->EndObserve();
+        fake.FireLastCompletion();
+        CHECK(!died, "completion worker does not free the binding");
+        CHECK(fn->Snapshot().state == S2HookState::Removing,
+              "completion with an outstanding invocation stays Removing");
+        CHECK(!S2Hook_DrainRetirement(), "drain/unload on the callback stack is deferred");
+    }
     CHECK(fn->Snapshot().state == S2HookState::Removed,
-          "Removed only after completion and invocation release");
+          "Removed only after completion and Observe guard release");
     CHECK(S2Hook_DrainRetirement(), "drain outside the callback stack succeeds");
     CHECK(S2Hook_RetirementPending() == 0, "drain drops completed retirement entries");
     CHECK(!died, "caller still owns the binding after drain");
@@ -348,7 +355,7 @@ static void test_idempotent_add_one_completion_per_id() {
     glob.BeginRemove();
     CHECK(fake.removals.size() == 2, "Function/Virtual ids are retired independently");
     fake.FireLastCompletion();
-    glob.EndObserve();
+    CHECK(S2Hook_DrainRetirement(), "drain drops completed global-filter retirement");
 
     S2CheckedFunction<void> fn(&FnPre, nullptr);
     auto f1 = fn.Configure(reinterpret_cast<void*>(&FnTarget));
@@ -358,7 +365,62 @@ static void test_idempotent_add_one_completion_per_id() {
     fn.BeginRemove();
     fn.BeginRemove();
     CHECK(fake.removals.size() == 3, "one Function id produces one RemoveHook");
+    fake.FireLastCompletion();
+    CHECK(S2Hook_DrainRetirement(), "drain after Function completion");
+    CHECK(S2Hook_RetirementPending() == 0, "idempotent path leaves no pending retirement");
 
+}
+
+static void test_discarded_observe_does_not_leak_invocation() {
+    FakeKHook fake;
+    KHook::__exported__khook = &fake;
+
+    S2CheckedFunction<void> fn(&FnPre, nullptr);
+    auto rec = fn.Configure(reinterpret_cast<void*>(&FnTarget));
+    (void)rec;
+    // Intentionally discard: destructor still LeaveObserves. This is the
+    // documented footgun (not a handler), not a leaked invocation hold.
+    static_cast<void>(fn.Observe());
+    CHECK(fn.Snapshot().state == S2HookState::Active, "discarded Observe still marks Active once");
+    CHECK(S2Hook_DrainRetirement(), "discarded Observe does not leak callback-stack depth");
+
+    Dummy obj;
+    S2CheckedVirtual<Dummy, void> virt(0u, &DummyPre, nullptr);
+    (void)virt.Add(&obj);
+    static_cast<void>(virt.Observe(&obj));
+    CHECK(virt.Snapshot().state == S2HookState::Active, "discarded Virtual Observe still marks Active");
+    CHECK(S2Hook_DrainRetirement(), "discarded Virtual Observe does not leak invocation");
+
+    {
+        auto obs = fn.Observe();
+        auto moved = std::move(obs);
+        CHECK(!obs, "moved-from Observe guard is disarmed");
+        CHECK(static_cast<bool>(moved), "move transfers the invocation hold");
+        CHECK(!S2Hook_DrainRetirement(), "moved-to guard still holds the callback stack");
+        fn.BeginRemove();
+        CHECK(S2Hook_RetirementPending() == 1, "BeginRemove sees the live guard's invocation");
+        CHECK(!S2Hook_DrainRetirement(), "Drain still sees invocations while the guard is live");
+    }
+    CHECK(S2Hook_DrainRetirement(), "guard destructor releases the invocation hold");
+    CHECK(S2Hook_RetirementPending() == 1, "pending remains until completion after the guard dies");
+    fake.FireLastCompletion();
+    CHECK(S2Hook_DrainRetirement(), "drain after discarded-then-guarded Observe completion");
+    CHECK(S2Hook_RetirementPending() == 0, "completion clears retirement after guard release");
+}
+
+static void test_drain_true_can_leave_retirement_pending() {
+    FakeKHook fake;
+    KHook::__exported__khook = &fake;
+
+    S2CheckedFunction<void> fn(&FnPre, nullptr);
+    (void)fn.Configure(reinterpret_cast<void*>(&FnTarget));
+    fn.BeginRemove();
+    CHECK(S2Hook_DrainRetirement(), "DrainRetirement true means not on a callback stack");
+    CHECK(S2Hook_RetirementPending() == 1,
+          "DrainRetirement true can still leave RetirementPending while completion is delayed");
+    fake.FireLastCompletion();
+    CHECK(S2Hook_DrainRetirement(), "drain after delayed completion");
+    CHECK(S2Hook_RetirementPending() == 0, "pending drops only after Removed");
 }
 
 }  // namespace
@@ -372,6 +434,8 @@ int main() {
     test_unsubscribe_in_callback_drops_filter_without_destroying();
     test_delayed_completion_keeps_context();
     test_idempotent_add_one_completion_per_id();
+    test_discarded_observe_does_not_leak_invocation();
+    test_drain_true_can_leave_retirement_pending();
 
     if (g_fail) {
         std::cerr << g_fail << " check(s) failed\n";

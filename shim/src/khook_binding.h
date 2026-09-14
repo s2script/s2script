@@ -7,6 +7,20 @@
 //
 // Public FFI conventions (unchanged): SDKHooks VP add uses nonzero success;
 // declarative S2_HookInstall uses 0 success / -1 failure.
+//
+// Observe: the only public leave path is the returned S2HookObserve guard.
+// Keep it alive for the callback (`auto obs = binding.Observe(...)`). A
+// discarded temporary is not the handler pattern; the destructor still
+// EndObserves, so it does not leak an invocation hold.
+//
+// Retirement retains S2HookBindingState (shared_ptr bookkeeping), not the
+// typed S2CheckedFunction / S2CheckedVirtual object. ~Function / ~Virtual
+// still call RemoveHook synchronously. Callers must keep the checked binding
+// alive until Snapshot().state == Removed.
+//
+// S2Hook_DrainRetirement() true means "not on a callback stack", not "queue
+// empty". Unload also requires S2Hook_RetirementPending() == 0. Do not
+// busy-wait completions on the game thread.
 
 #include <khook.hpp>
 
@@ -62,18 +76,18 @@ struct RetirementEntry {
 inline std::mutex g_retire_mu;
 inline std::vector<RetirementEntry> g_retire;
 
-inline void NoteObserve(const std::shared_ptr<S2HookBindingState>& state, KHook::HookID_t id) {
+inline bool NoteObserve(const std::shared_ptr<S2HookBindingState>& state, KHook::HookID_t id) {
     if (!state || id == KHook::INVALID_HOOK) {
-        return;
+        return false;
     }
     {
         std::lock_guard<std::mutex> lock(state->mu);
         auto it = state->owned.find(id);
         if (it == state->owned.end()) {
-            return;
+            return false;
         }
         if (it->second.state == S2HookState::Failed || it->second.state == S2HookState::Removed) {
-            return;
+            return false;
         }
         it->second.invocations++;
         if (it->second.state == S2HookState::Pending) {
@@ -85,6 +99,35 @@ inline void NoteObserve(const std::shared_ptr<S2HookBindingState>& state, KHook:
     }
     g_callback_depth++;
     g_observe_stack.push_back({state.get(), id});
+    return true;
+}
+
+inline void LeaveObserve() {
+    if (g_observe_stack.empty()) {
+        return;
+    }
+    ObserveFrame frame = g_observe_stack.back();
+    g_observe_stack.pop_back();
+    if (g_callback_depth > 0) {
+        g_callback_depth--;
+    }
+    if (!frame.state) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(frame.state->mu);
+    auto it = frame.state->owned.find(frame.id);
+    if (it == frame.state->owned.end()) {
+        return;
+    }
+    if (it->second.invocations > 0) {
+        it->second.invocations--;
+    }
+    if (it->second.complete && it->second.invocations == 0) {
+        it->second.state = S2HookState::Removed;
+        if (frame.state->last_id == frame.id) {
+            frame.state->last_state = S2HookState::Removed;
+        }
+    }
 }
 
 inline void OnRemoved(KHook::HookID_t id, void* context) {
@@ -108,6 +151,49 @@ inline void OnRemoved(KHook::HookID_t id, void* context) {
 
 }  // namespace s2hook_detail
 
+// Move-only RAII hold for one Observe entry. Destructor calls LeaveObserve
+// once. Nested guards are LIFO, matching the TLS observe stack.
+class [[nodiscard]] S2HookObserve {
+public:
+    S2HookObserve() noexcept = default;
+    explicit S2HookObserve(bool armed) noexcept : armed_(armed) {}
+
+    S2HookObserve(S2HookObserve&& other) noexcept : armed_(other.armed_) {
+        other.armed_ = false;
+    }
+    S2HookObserve& operator=(S2HookObserve&& other) noexcept {
+        if (this != &other) {
+            reset();
+            armed_ = other.armed_;
+            other.armed_ = false;
+        }
+        return *this;
+    }
+
+    ~S2HookObserve() { reset(); }
+
+    S2HookObserve(const S2HookObserve&) = delete;
+    S2HookObserve& operator=(const S2HookObserve&) = delete;
+
+    explicit operator bool() const noexcept { return armed_; }
+
+    void reset() noexcept {
+        if (!armed_) {
+            return;
+        }
+        armed_ = false;
+        s2hook_detail::LeaveObserve();
+    }
+
+private:
+    bool armed_ = false;
+};
+
+// true = this thread is not on a hook callback stack (safe to walk the
+// retirement queue). It does NOT mean the queue is empty: delayed
+// completions leave Removing entries. Unload must require
+// DrainRetirement() && RetirementPending() == 0 and must not busy-wait
+// those completions on the game thread. false = reject/defer Unload.
 inline bool S2Hook_DrainRetirement() {
     if (s2hook_detail::g_callback_depth > 0) {
         return false;
@@ -148,36 +234,6 @@ public:
     S2HookReceipt Snapshot() const {
         std::lock_guard<std::mutex> lock(state_->mu);
         return {state_->last_id, state_->last_state, state_->reason};
-    }
-
-    void EndObserve() {
-        // Pairs with Observe: drop the invocation hold and TLS callback-stack
-        // depth. Do not wait here; DrainRetirement runs outside the callback.
-        if (s2hook_detail::g_observe_stack.empty()) {
-            return;
-        }
-        s2hook_detail::ObserveFrame frame = s2hook_detail::g_observe_stack.back();
-        s2hook_detail::g_observe_stack.pop_back();
-        if (s2hook_detail::g_callback_depth > 0) {
-            s2hook_detail::g_callback_depth--;
-        }
-        if (!frame.state) {
-            return;
-        }
-        std::lock_guard<std::mutex> lock(frame.state->mu);
-        auto it = frame.state->owned.find(frame.id);
-        if (it == frame.state->owned.end()) {
-            return;
-        }
-        if (it->second.invocations > 0) {
-            it->second.invocations--;
-        }
-        if (it->second.complete && it->second.invocations == 0) {
-            it->second.state = S2HookState::Removed;
-            if (frame.state->last_id == frame.id) {
-                frame.state->last_state = S2HookState::Removed;
-            }
-        }
     }
 
     void BeginRemove() {
@@ -238,7 +294,9 @@ protected:
         return {state_->last_id, state_->last_state, state_->reason};
     }
 
-    void ObserveOwned(KHook::HookID_t id) { s2hook_detail::NoteObserve(state_, id); }
+    [[nodiscard]] S2HookObserve ObserveOwned(KHook::HookID_t id) {
+        return S2HookObserve{s2hook_detail::NoteObserve(state_, id)};
+    }
 };
 
 template <typename Ret, typename... Args>
@@ -271,13 +329,14 @@ public:
         return Configure(reinterpret_cast<const void*>(function));
     }
 
-    void Observe() {
+    // Keep the returned guard alive for the callback body.
+    [[nodiscard]] S2HookObserve Observe() {
         KHook::HookID_t id = KHook::INVALID_HOOK;
         {
             std::lock_guard<std::mutex> lock(this->state_->mu);
             id = this->state_->last_id;
         }
-        this->ObserveOwned(id);
+        return this->ObserveOwned(id);
     }
 };
 
@@ -381,9 +440,11 @@ public:
         return this->_hooked_global.find(vt) != this->_hooked_global.end();
     }
 
-    void Observe(Class* self) {
+    // Keep the returned guard alive for the callback body. Unmatched this
+    // pointers return an empty guard and stay Pending.
+    [[nodiscard]] S2HookObserve Observe(Class* self) {
         if (self == nullptr) {
-            return;
+            return S2HookObserve{};
         }
         bool match = false;
         {
@@ -396,9 +457,9 @@ public:
             }
         }
         if (!match) {
-            return;
+            return S2HookObserve{};
         }
-        this->ObserveOwned(LookupId(self));
+        return this->ObserveOwned(LookupId(self));
     }
 
 private:
