@@ -7,7 +7,11 @@ Linux x86-64 only. Windows is not supported yet.
 ## Prerequisites
 
 1. A Counter-Strike 2 dedicated server.
-2. **[Metamod:Source 2.0](https://www.sourcemm.net/)** installed under `game/csgo/addons/metamod/` (same as any other Metamod plugin).
+2. **[Metamod:Source](https://www.sourcemm.net/) plugin API (PLAPI) 18** installed under `game/csgo/addons/metamod/` (same as any other Metamod plugin).
+
+   This runtime is a hard cutover onto the post–[PR #223](https://github.com/alliedmodders/metamod-source/pull/223) host. Use the tested pin `7e24ce9e7a03` (vendored in `third_party/metamod-source`) or an explicitly verified PLAPI 18 drop. A Metamod **build date alone is not enough**.
+
+   Upgrade or roll back **s2script and Metamod together**. A pre-18 s2script binary cannot load on a PLAPI 18 host, and a PLAPI 18 s2script binary cannot load on an older host. The same floor applies to every other Metamod plugin on the server: a pre-18 plugin will not load on the new host.
 
 ## Install the runtime
 

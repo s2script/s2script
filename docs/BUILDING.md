@@ -138,6 +138,12 @@ the V8 prebuilt on every run.
 
 **This is the canonical build for anything that touches a real server.**
 
+The resulting `s2script.so` requires **Metamod plugin API 18** (KHook). Pair it with the tested
+pin `7e24ce9e7a03` (the vendored `third_party/metamod-source` submodule) or an explicitly verified
+PLAPI 18 drop; a build date is not a compatibility proof. Upgrade or roll back s2script and
+Metamod together — a pre-18 plugin cannot load on the new host, including other operators'
+Metamod plugins on the same server.
+
 ---
 
 ## Building plugins
@@ -162,8 +168,10 @@ automated** — a human drives it and records the result.
 
 ### One-time setup
 
-Install Metamod:Source 2.0 into `docker/metamod/`. Download the CS2-compatible build from
-<https://www.sourcemm.net/downloads.php?branch=dev> and copy its `csgo/addons/metamod/` contents:
+Install Metamod:Source **PLAPI 18** into `docker/metamod/`. Use the tested pin `7e24ce9e7a03`
+or an explicitly verified PLAPI 18 drop (a download dated after PR #223 is not sufficient by
+itself — confirm plugin interface 18). Copy a verified CS2-compatible tree's
+`csgo/addons/metamod/` contents:
 
 ```bash
 tar xzf metamod_*.tar.gz
