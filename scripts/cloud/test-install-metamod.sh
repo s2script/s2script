@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Fixture tests for scripts/cloud/install.sh Metamod refresh (T7 Steps 1–2).
+# Fixture tests for scripts/cloud/install.sh Metamod refresh + verify-metamod-artifact.py.
 # Never touches the live host docker/metamod/ or compose/RCON.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 INSTALL="$ROOT/scripts/cloud/install.sh"
+VERIFY="$ROOT/scripts/verify-metamod-artifact.py"
 fail=0
 ran=0
 ok()   { echo "  ok   $1"; ran=$((ran + 1)); }
@@ -35,6 +36,151 @@ assert_exit() {
   if [ "$got" = "$want" ]; then ok "$msg"; else bad "$msg (exit $got want $want)"; fi
 }
 
+assert_reason() {
+  local log="$1" reason="$2" msg="$3"
+  if grep -aE -q "(^|[^A-Za-z0-9_])${reason}([^A-Za-z0-9_]|$)" "$log"; then
+    ok "$msg"
+  else
+    bad "$msg (missing named reason '$reason' in $(tr '\n' ' ' <"$log"))"
+  fi
+}
+
+EXPECTED_MMS="7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33"
+EXPECTED_KHOOK="1e200e4cc8e0badcb7cf941525268d6977f6a4e6"
+EXPECTED_PATCHSET="$(python3 - "$ROOT/patches/metamod-source" <<'PY'
+import hashlib, pathlib, sys
+patch_dir = pathlib.Path(sys.argv[1])
+digest = hashlib.sha256()
+seen = set()
+for raw in (patch_dir / "series").read_text(encoding="utf-8").splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        continue
+    if line in seen:
+        raise SystemExit(f"duplicate {line}")
+    seen.add(line)
+    rel = pathlib.Path(line)
+    if rel.is_absolute() or ".." in rel.parts:
+        raise SystemExit(f"escape {line}")
+    full = patch_dir / line
+    digest.update(line.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(full.read_bytes())
+    digest.update(b"\0")
+print(digest.hexdigest())
+PY
+)"
+
+tree_digest() {
+  local d="$1"
+  python3 - "$d" <<'PY'
+import hashlib, os, sys
+root = sys.argv[1]
+h = hashlib.sha256()
+for dirpath, dirnames, filenames in os.walk(root):
+    dirnames.sort()
+    for name in sorted(filenames):
+        path = os.path.join(dirpath, name)
+        rel = os.path.relpath(path, root).replace(os.sep, "/")
+        h.update(rel.encode("utf-8"))
+        h.update(b"\0")
+        with open(path, "rb") as fh:
+            h.update(fh.read())
+        h.update(b"\0")
+print(h.hexdigest())
+PY
+}
+
+# Synthetic ELF64 LE x86_64 ET_DYN. Not a Metamod binary; verifier tests use it as a
+# format fixture. Transaction tests that inject verification must not treat stub
+# files as proof of a real host binary.
+write_elf() {
+  python3 - "$1" "${2:-x64}" "${3:-}" <<'PY'
+import pathlib, struct, sys
+path = pathlib.Path(sys.argv[1])
+kind = sys.argv[2]
+extra = sys.argv[3].encode("utf-8") if len(sys.argv) > 3 else b""
+path.parent.mkdir(parents=True, exist_ok=True)
+
+def pack(machine=62, elfclass=2, data=1, etype=3, extra=b""):
+    e_phoff = 64
+    ident = bytes([0x7F, 0x45, 0x4C, 0x46, elfclass, data, 1, 0] + [0] * 8)
+    hdr = ident + struct.pack(
+        "<HHIQQQIHHHHHH",
+        etype, machine, 1, 0, e_phoff, 0, 0, 64, 56, 1, 64, 0, 0,
+    )
+    ph = struct.pack("<IIQQQQQQ", 1, 5, 0, 0, 0, 0x1000, 0x1000, 0x1000)
+    return hdr + ph + extra
+
+if kind == "x64":
+    blob = pack(extra=extra or b"elf-x64-fixture")
+elif kind == "aarch64":
+    blob = pack(machine=183, extra=b"elf-arm")
+elif kind == "elf32":
+    blob = pack(elfclass=1, machine=3, extra=b"elf32")
+elif kind == "be":
+    blob = pack(data=2, extra=b"elf-be")
+elif kind == "exec":
+    blob = pack(etype=2, extra=b"elf-exec")
+elif kind == "truncated":
+    blob = pack()[:16]
+elif kind == "header-trunc":
+    blob = pack()[:40]
+elif kind == "glibc_new":
+    blob = pack(extra=b"GLIBC_2.34\0")
+else:
+    raise SystemExit(f"unknown elf kind {kind}")
+path.write_bytes(blob)
+PY
+}
+
+write_manifest() {
+  local tree="$1" out="$2"
+  python3 - "$tree" "$out" "$EXPECTED_MMS" "$EXPECTED_KHOOK" "$EXPECTED_PATCHSET" <<'PY'
+import hashlib, json, os, sys
+tree, out, mms, khook, patch = sys.argv[1:]
+required = [
+    "bin/linuxsteamrt64/metamod.2.cs2.so",
+    "bin/linuxsteamrt64/libserver.so",
+]
+optional = ["metaplugins.ini", "README.txt"]
+items = []
+for rel in required + optional:
+    path = os.path.join(tree, rel)
+    if not os.path.isfile(path):
+        if rel in required:
+            continue
+        continue
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        h.update(fh.read())
+    items.append({"path": rel, "sha256": h.hexdigest()})
+doc = {
+    "schema": 1,
+    "plapi": 18,
+    "metamod_commit": mms,
+    "khook_commit": khook,
+    "patchset_sha256": patch,
+    "target": "linux-x86_64",
+    "glibc_max": "2.31",
+    "artifacts": items,
+}
+os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+with open(out, "w", encoding="utf-8") as fh:
+    json.dump(doc, fh, indent=2)
+    fh.write("\n")
+PY
+}
+
+make_valid_tree() {
+  local dest="$1"
+  rm -rf "$dest"
+  mkdir -p "$dest/bin/linuxsteamrt64"
+  write_elf "$dest/bin/linuxsteamrt64/metamod.2.cs2.so" x64 "metamod-fixture"
+  write_elf "$dest/bin/linuxsteamrt64/libserver.so" x64 "libserver-fixture"
+  printf 'metaplugins\n' >"$dest/metaplugins.ini"
+}
+
 make_so() {
   local path="$1" kind="$2"
   mkdir -p "$(dirname "$path")"
@@ -46,8 +192,10 @@ make_so() {
       printf 'Metamod:Source pin 7e24ce9e7a03 PLAPI 18\nGetDetourInterface\nKHook\n' >"$path"
       ;;
     stripped18)
-      # No symbol names — identity sidecar is the skip gate.
       printf 'stripped-metamod-bytes-no-symbols\n' >"$path"
+      ;;
+    zero)
+      : >"$path"
       ;;
     *)
       echo "unknown so kind $kind" >&2
@@ -65,75 +213,14 @@ make_tree() {
   echo "operator-marker" >"$dest/KEEP_ME"
 }
 
-write_identity() {
-  local dest="$1" source="$2" artifact="$3"
-  local so="$dest/bin/linuxsteamrt64/metamod.2.cs2.so"
-  local sha
-  sha="$(sha256sum "$so" | awk '{print $1}')"
-  cat >"$dest/.s2script-metamod-identity" <<EOF
-pin=7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33
-plapi=18
-source=${source}
-artifact=${artifact}
-sha256=${sha}
-EOF
-}
-
-make_tarball() {
-  local tarpath="$1" kind="$2"
-  local work
-  work="$(mktemp -d)"
-  mkdir -p "$work/addons/metamod/bin/linuxsteamrt64"
-  make_so "$work/addons/metamod/bin/linuxsteamrt64/metamod.2.cs2.so" "$kind"
-  echo "drop-$kind" >"$work/addons/metamod/README.txt"
-  tar -C "$work" -czf "$tarpath" addons
-  rm -rf "$work"
-}
-
-# curl stub: last http(s) arg is the URL; honours -o FILE.
-# S2_FAKE_LATEST / S2_FAKE_TARBALL / S2_CURL_FAIL control behaviour.
 write_curl_stub() {
   local path="$1"
   cat >"$path" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "${S2_CURL_FAIL:-}" = "1" ]; then
-  echo "curl stub: forced failure" >&2
-  exit 1
-fi
-url=""
-out=""
-prev=""
-for arg in "$@"; do
-  if [ "$prev" = "-o" ]; then
-    out="$arg"
-  fi
-  case "$arg" in
-    http://*|https://*) url="$arg" ;;
-  esac
-  prev="$arg"
-done
-if [ -z "$url" ]; then
-  echo "curl stub: no URL" >&2
-  exit 1
-fi
-if [[ "$url" == *mmsource-latest-linux ]]; then
-  if [ "${S2_CURL_FAIL_LATEST:-}" = "1" ]; then
-    exit 1
-  fi
-  printf '%s\n' "${S2_FAKE_LATEST:?S2_FAKE_LATEST unset}"
-  echo curl-latest >>"${S2_CURL_LOG:?}"
-  exit 0
-fi
-echo curl-tarball >>"${S2_CURL_LOG:?}"
-if [ "${S2_CURL_FAIL_TARBALL:-}" = "1" ]; then
-  exit 1
-fi
-if [ -z "$out" ]; then
-  echo "curl stub: tarball fetch missing -o" >&2
-  exit 1
-fi
-cp "${S2_FAKE_TARBALL:?S2_FAKE_TARBALL unset}" "$out"
+echo curl-called >>"${S2_CURL_LOG:?}"
+echo "curl stub: mmsdrop must not be selected" >&2
+exit 1
 STUB
   chmod +x "$path"
 }
@@ -145,13 +232,33 @@ run_ensure() {
   S2_METAMOD_CS2_RUNNING="${S2_METAMOD_CS2_RUNNING:-0}" \
   S2_METAMOD_CURL="$STUB_CURL" \
   S2_METAMOD_PINNED_TREE="${S2_METAMOD_PINNED_TREE:-}" \
+  S2_METAMOD_BUILD_MANIFEST="${S2_METAMOD_BUILD_MANIFEST:-}" \
+  S2_METAMOD_VERIFY="${S2_METAMOD_VERIFY:-}" \
+  S2_METAMOD_INJECT_FAIL="${S2_METAMOD_INJECT_FAIL:-}" \
   S2_CURL_LOG="$CURL_LOG" \
-  S2_FAKE_LATEST="${S2_FAKE_LATEST:-}" \
-  S2_FAKE_TARBALL="${S2_FAKE_TARBALL:-}" \
-  S2_CURL_FAIL="${S2_CURL_FAIL:-}" \
-  S2_CURL_FAIL_LATEST="${S2_CURL_FAIL_LATEST:-}" \
-  S2_CURL_FAIL_TARBALL="${S2_CURL_FAIL_TARBALL:-}" \
     bash "$INSTALL" --metamod-only
+}
+
+run_verify() {
+  python3 "$VERIFY" --tree "$1" --manifest "$2"
+}
+
+expect_verify_fail() {
+  local tree="$1" manifest="$2" reason="$3" msg="$4"
+  local out err rc
+  out="$(mktemp)"
+  err="$(mktemp)"
+  set +e
+  run_verify "$tree" "$manifest" >"$out" 2>"$err"
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    bad "$msg (verifier exited 0)"
+  else
+    assert_exit "$rc" "$rc" "$msg (nonzero exit $rc)"
+    assert_reason "$err" "$reason" "$msg named reason $reason"
+  fi
+  rm -f "$out" "$err"
 }
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/s2-t7-metamod.XXXXXX")"
@@ -161,169 +268,356 @@ CURL_LOG="$WORKDIR/curl.log"
 : >"$CURL_LOG"
 write_curl_stub "$STUB_CURL"
 
-PLAPI18_TAR="$WORKDIR/mmsource-2.0.0-git7e24ce9-linux.tar.gz"
-PRE18_TAR="$WORKDIR/mmsource-2.0.0-git26c03fa-linux.tar.gz"
-make_tarball "$PLAPI18_TAR" plapi18
-make_tarball "$PRE18_TAR" pre18
+PINNED="$WORKDIR/valid-pin"
+make_valid_tree "$PINNED"
+MANIFEST="$WORKDIR/valid-manifest.json"
+write_manifest "$PINNED" "$MANIFEST"
 
-PIN_TREE="$WORKDIR/pin-tree"
-make_tree "$PIN_TREE" plapi18
-# Pin tree is a verified PLAPI 18 artifact (heuristic pass); identity is written after swap.
-
-echo "== fixture: pre-18 tree is replaced by a verified PLAPI 18 drop"
-DEST="$WORKDIR/case-pre18/metamod"
-make_tree "$DEST" pre18
-echo "pre18-original" >"$DEST/KEEP_ME"
-: >"$CURL_LOG"
-S2_FAKE_LATEST="mmsource-2.0.0-git7e24ce9-linux.tar.gz"
-S2_FAKE_TARBALL="$PLAPI18_TAR"
-unset S2_METAMOD_PINNED_TREE || true
-if run_ensure "$DEST"; then
-  assert_exit 0 0 "pre-18 refresh exits 0"
-else
-  assert_exit "$?" 0 "pre-18 refresh exits 0"
-fi
-assert_contains "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" "GetDetourInterface" "pre-18 dest now has GetDetourInterface"
-assert_file "$DEST/.s2script-metamod-identity" "pre-18 dest wrote identity sidecar"
-assert_contains "$DEST/.s2script-metamod-identity" "plapi=18" "identity records plapi=18"
-assert_contains "$DEST/.s2script-metamod-identity" "pin=7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33" "identity records tested pin"
-assert_contains "$DEST/.s2script-metamod-identity" "source=drop" "identity source=drop"
-assert_file "$DEST/s2script.vdf" "s2script.vdf kept after drop swap"
-assert_file "$DEST.prev/KEEP_ME" "pre-18 previous tree preserved as dest.prev"
-assert_contains "$DEST.prev/bin/linuxsteamrt64/metamod.2.cs2.so" "SourceHook version" "preserved tree is the pre-18 binary"
-assert_absent "$DEST/KEEP_ME" "operator marker from pre-18 tree is not in the new dest (lives in .prev)"
-curl_calls="$(grep -c . "$CURL_LOG" || true)"
-assert_eq "$curl_calls" "2" "pre-18 path fetched latest pointer + one tarball (no loop)"
-
-echo "== fixture: current/verified tree is left alone (no download)"
-DEST="$WORKDIR/case-current/metamod"
-make_tree "$DEST" stripped18
-write_identity "$DEST" pin "pin:7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33"
-echo "verified-marker" >"$DEST/KEEP_ME"
-: >"$CURL_LOG"
-S2_FAKE_LATEST="should-not-be-fetched.tar.gz"
-S2_FAKE_TARBALL="$PLAPI18_TAR"
-before_sha="$(sha256sum "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" | awk '{print $1}')"
-if run_ensure "$DEST"; then
-  assert_exit 0 0 "verified skip exits 0"
-else
-  assert_exit "$?" 0 "verified skip exits 0"
-fi
-after_sha="$(sha256sum "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" | awk '{print $1}')"
-assert_eq "$after_sha" "$before_sha" "verified .so bytes unchanged"
-assert_contains "$DEST/KEEP_ME" "verified-marker" "verified tree not replaced"
-assert_absent "$DEST.prev" "verified skip does not snapshot a .prev"
-curl_calls="$(grep -c . "$CURL_LOG" || true)"
-assert_eq "$curl_calls" "0" "verified skip does not call curl"
-assert_file "$DEST/s2script.vdf" "verified skip keeps s2script.vdf"
-
-echo "== fixture: absent tree is installed from a verified drop"
-DEST="$WORKDIR/case-absent/metamod"
-rm -rf "$DEST" "$DEST.prev"
-: >"$CURL_LOG"
-S2_FAKE_LATEST="mmsource-2.0.0-git7e24ce9-linux.tar.gz"
-S2_FAKE_TARBALL="$PLAPI18_TAR"
-if run_ensure "$DEST"; then
-  assert_exit 0 0 "absent install exits 0"
-else
-  assert_exit "$?" 0 "absent install exits 0"
-fi
-assert_file "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" "absent dest received metamod.2.cs2.so"
-assert_contains "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" "GetDetourInterface" "absent dest is PLAPI 18 heuristic-pass"
-assert_file "$DEST/.s2script-metamod-identity" "absent dest wrote identity"
-assert_file "$DEST/s2script.vdf" "absent dest restored docker/s2script.vdf from the repo"
-assert_contains "$DEST/s2script.vdf" "s2script" "restored VDF names s2script"
-
-echo "== fixture: failed download preserves the previous installation"
-DEST="$WORKDIR/case-fail/metamod"
-make_tree "$DEST" pre18
-echo "must-survive" >"$DEST/KEEP_ME"
-: >"$CURL_LOG"
-S2_FAKE_LATEST="mmsource-2.0.0-git7e24ce9-linux.tar.gz"
-S2_FAKE_TARBALL="$PLAPI18_TAR"
-S2_CURL_FAIL=1
-unset S2_METAMOD_PINNED_TREE || true
+# ---------------------------------------------------------------------------
+# Verifier tests (real ELF fixtures). These do not go through install.sh.
+# ---------------------------------------------------------------------------
+echo "== verifier: expected corrected-build identity is accepted"
 set +e
-run_ensure "$DEST"
-fail_rc=$?
+run_verify "$PINNED" "$MANIFEST" >"$WORKDIR/v-ok.out" 2>"$WORKDIR/v-ok.err"
+v_rc=$?
 set -e
-unset S2_CURL_FAIL
-assert_exit "$fail_rc" 1 "failed download exits 1"
-assert_contains "$DEST/KEEP_ME" "must-survive" "failed download left KEEP_ME in place"
-assert_contains "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" "SourceHook version" "failed download left the pre-18 .so"
-assert_absent "$DEST/.s2script-metamod-identity" "failed download did not write a verified identity"
-assert_file "$DEST/s2script.vdf" "failed download kept s2script.vdf"
-
-echo "== fixture: stale (pre-18) drop is not retried; pin fallback succeeds"
-DEST="$WORKDIR/case-stale/metamod"
-make_tree "$DEST" pre18
-echo "old-drop" >"$DEST/KEEP_ME"
-: >"$CURL_LOG"
-S2_FAKE_LATEST="mmsource-2.0.0-git26c03fa-linux.tar.gz"
-S2_FAKE_TARBALL="$PRE18_TAR"
-export S2_METAMOD_PINNED_TREE="$PIN_TREE"
-if run_ensure "$DEST"; then
-  assert_exit 0 0 "stale drop + pin fallback exits 0"
+assert_exit "$v_rc" 0 "valid tree + independent manifest exits 0"
+if [ -s "$WORKDIR/v-ok.err" ] && grep -qiE 'error:' "$WORKDIR/v-ok.err"; then
+  bad "valid verify wrote an error: $(cat "$WORKDIR/v-ok.err")"
 else
-  assert_exit "$?" 0 "stale drop + pin fallback exits 0"
+  ok "valid verify has no error: line"
 fi
-unset S2_METAMOD_PINNED_TREE
-assert_contains "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" "GetDetourInterface" "stale drop replaced via pin tree"
-assert_contains "$DEST/.s2script-metamod-identity" "source=pin" "identity source=pin after fallback"
-assert_file "$DEST.prev/KEEP_ME" "stale-drop path preserved previous tree"
-curl_calls="$(grep -c . "$CURL_LOG" || true)"
-assert_eq "$curl_calls" "2" "stale drop fetched latest+tarball once (no loop)"
 
-echo "== fixture: stale drop with no pin preserves previous"
-DEST="$WORKDIR/case-stale-nopin/metamod"
+echo "== verifier: missing / empty / malformed / stale / wrong manifest"
+expect_verify_fail "$PINNED" "$WORKDIR/no-such-manifest.json" "missing_manifest" "missing manifest"
+: >"$WORKDIR/empty.json"
+expect_verify_fail "$PINNED" "$WORKDIR/empty.json" "empty_manifest" "empty manifest"
+printf '{not json\n' >"$WORKDIR/bad.json"
+expect_verify_fail "$PINNED" "$WORKDIR/bad.json" "malformed_manifest" "malformed manifest"
+python3 - "$MANIFEST" "$WORKDIR/stale-patch.json" <<'PY'
+import json, sys
+from pathlib import Path
+doc = json.loads(Path(sys.argv[1]).read_text())
+doc["patchset_sha256"] = "0" * 64
+Path(sys.argv[2]).write_text(json.dumps(doc) + "\n")
+PY
+expect_verify_fail "$PINNED" "$WORKDIR/stale-patch.json" "unexpected_patchset_sha256" "stale/wrong patch digest"
+python3 - "$MANIFEST" "$WORKDIR/wrong-mms.json" <<'PY'
+import json, sys
+from pathlib import Path
+doc = json.loads(Path(sys.argv[1]).read_text())
+doc["metamod_commit"] = "deadbeef" + "0" * 32
+Path(sys.argv[2]).write_text(json.dumps(doc) + "\n")
+PY
+expect_verify_fail "$PINNED" "$WORKDIR/wrong-mms.json" "unexpected_metamod_commit" "wrong Metamod commit"
+python3 - "$MANIFEST" "$WORKDIR/wrong-khook.json" <<'PY'
+import json, sys
+from pathlib import Path
+doc = json.loads(Path(sys.argv[1]).read_text())
+doc["khook_commit"] = "cafebabe" + "0" * 32
+Path(sys.argv[2]).write_text(json.dumps(doc) + "\n")
+PY
+expect_verify_fail "$PINNED" "$WORKDIR/wrong-khook.json" "unexpected_khook_commit" "wrong KHook commit"
+python3 - "$MANIFEST" "$WORKDIR/wrong-plapi.json" <<'PY'
+import json, sys
+from pathlib import Path
+doc = json.loads(Path(sys.argv[1]).read_text())
+doc["plapi"] = 17
+Path(sys.argv[2]).write_text(json.dumps(doc) + "\n")
+PY
+expect_verify_fail "$PINNED" "$WORKDIR/wrong-plapi.json" "unexpected_plapi" "wrong PLAPI"
+python3 - "$MANIFEST" "$WORKDIR/modified-hash.json" <<'PY'
+import json, sys
+from pathlib import Path
+doc = json.loads(Path(sys.argv[1]).read_text())
+doc["artifacts"][0]["sha256"] = "ab" * 32
+Path(sys.argv[2]).write_text(json.dumps(doc) + "\n")
+PY
+expect_verify_fail "$PINNED" "$WORKDIR/modified-hash.json" "hash_mismatch" "modified artifact hash"
+
+echo "== verifier: zero-byte, GetDetourInterface text, truncated, wrong arch, incomplete"
+ZERO="$WORKDIR/v-zero"
+make_valid_tree "$ZERO"
+: >"$ZERO/bin/linuxsteamrt64/metamod.2.cs2.so"
+write_manifest "$ZERO" "$WORKDIR/v-zero.json"
+expect_verify_fail "$ZERO" "$WORKDIR/v-zero.json" "empty_artifact" "zero-byte .so"
+
+TEXT="$WORKDIR/v-text"
+make_valid_tree "$TEXT"
+printf 'GetDetourInterface\nKHook pin text\n' >"$TEXT/bin/linuxsteamrt64/metamod.2.cs2.so"
+write_manifest "$TEXT" "$WORKDIR/v-text.json"
+expect_verify_fail "$TEXT" "$WORKDIR/v-text.json" "not_elf" "text file containing GetDetourInterface"
+
+TRUNC="$WORKDIR/v-trunc"
+make_valid_tree "$TRUNC"
+write_elf "$TRUNC/bin/linuxsteamrt64/metamod.2.cs2.so" truncated
+write_manifest "$TRUNC" "$WORKDIR/v-trunc.json"
+expect_verify_fail "$TRUNC" "$WORKDIR/v-trunc.json" "truncated_elf" "truncated ELF"
+
+ARM="$WORKDIR/v-arm"
+make_valid_tree "$ARM"
+write_elf "$ARM/bin/linuxsteamrt64/metamod.2.cs2.so" aarch64
+write_manifest "$ARM" "$WORKDIR/v-arm.json"
+expect_verify_fail "$ARM" "$WORKDIR/v-arm.json" "wrong_architecture" "wrong architecture ELF"
+
+INCOMPLETE="$WORKDIR/v-incomplete"
+make_valid_tree "$INCOMPLETE"
+rm -f "$INCOMPLETE/bin/linuxsteamrt64/libserver.so"
+write_manifest "$INCOMPLETE" "$WORKDIR/v-incomplete.json"
+expect_verify_fail "$INCOMPLETE" "$WORKDIR/v-incomplete.json" "required_loader_missing" "incomplete loader tree"
+
+ESCAPE="$WORKDIR/v-escape.json"
+python3 - "$MANIFEST" "$ESCAPE" <<'PY'
+import json, sys
+from pathlib import Path
+doc = json.loads(Path(sys.argv[1]).read_text())
+doc["artifacts"].append({"path": "../outside.so", "sha256": "aa" * 32})
+Path(sys.argv[2]).write_text(json.dumps(doc) + "\n")
+PY
+expect_verify_fail "$PINNED" "$ESCAPE" "path_escape" "artifact path escapes the tree"
+
+WRONG_SRC="$WORKDIR/v-wrong-src"
+make_valid_tree "$WRONG_SRC"
+# Real host-linked ELF (not the pinned Metamod). Independent manifest still names
+# the expected pin but hashes a different binary.
+printf 'void foo(void){puts("x");}\n' >"$WORKDIR/tiny.c"
+gcc -shared -fPIC -o "$WRONG_SRC/bin/linuxsteamrt64/metamod.2.cs2.so" -x c "$WORKDIR/tiny.c" -include stdio.h
+write_manifest "$PINNED" "$WORKDIR/v-wrong-src.json"
+# Force the manifest hashes to the valid-pin files while the tree is gcc's ELF.
+expect_verify_fail "$WRONG_SRC" "$WORKDIR/v-wrong-src.json" "hash_mismatch" "real wrong-source ELF"
+
+GLIBC="$WORKDIR/v-glibc"
+make_valid_tree "$GLIBC"
+write_elf "$GLIBC/bin/linuxsteamrt64/metamod.2.cs2.so" glibc_new
+write_manifest "$GLIBC" "$WORKDIR/v-glibc.json"
+expect_verify_fail "$GLIBC" "$WORKDIR/v-glibc.json" "glibc_too_new" "GLIBC requirement above 2.31"
+
+echo "== verifier: never invents a manifest from the candidate"
+if grep -nE 'dump\(|json.dump|write_text|open\([^,]+,\s*[\"'\'']w' "$VERIFY" >/dev/null 2>&1; then
+  # Allowed to read; writing a generated build manifest is forbidden.
+  if grep -nE 'json\.dump|write_text\(' "$VERIFY" >/dev/null 2>&1; then
+    bad "verifier appears to write/invent a manifest"
+  else
+    ok "verifier does not json.dump a generated manifest"
+  fi
+else
+  ok "verifier does not write a generated manifest"
+fi
+
+# ---------------------------------------------------------------------------
+# Installer transaction tests. Stub trees use explicit injected verification
+# and must not be claimed as binary validation.
+# ---------------------------------------------------------------------------
+echo "== transaction: F3 zero-byte pin is rejected; dest unchanged"
+DEST="$WORKDIR/case-zero/metamod"
 make_tree "$DEST" pre18
-echo "still-here" >"$DEST/KEEP_ME"
+echo "must-keep-zero" >"$DEST/KEEP_ME"
+before="$(tree_digest "$DEST")"
+ZERO_PIN="$WORKDIR/zero-pin"
+rm -rf "$ZERO_PIN"
+mkdir -p "$ZERO_PIN/bin/linuxsteamrt64"
+: >"$ZERO_PIN/bin/linuxsteamrt64/metamod.2.cs2.so"
+write_elf "$ZERO_PIN/bin/linuxsteamrt64/libserver.so" x64 "libserver-zero-tree"
+write_manifest "$ZERO_PIN" "$WORKDIR/zero-pin.json"
 : >"$CURL_LOG"
-S2_FAKE_LATEST="mmsource-2.0.0-git26c03fa-linux.tar.gz"
-S2_FAKE_TARBALL="$PRE18_TAR"
-unset S2_METAMOD_PINNED_TREE || true
+export S2_METAMOD_PINNED_TREE="$ZERO_PIN"
+export S2_METAMOD_BUILD_MANIFEST="$WORKDIR/zero-pin.json"
+unset S2_METAMOD_VERIFY || true
+unset S2_METAMOD_INJECT_FAIL || true
 set +e
-run_ensure "$DEST"
-stale_rc=$?
+run_ensure "$DEST" >"$WORKDIR/zero-install.out" 2>"$WORKDIR/zero-install.err"
+zero_rc=$?
 set -e
-assert_exit "$stale_rc" 1 "stale drop without pin exits 1"
-assert_contains "$DEST/KEEP_ME" "still-here" "stale drop without pin preserved dest"
-assert_contains "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" "SourceHook version" "stale drop without pin left pre-18 .so"
+assert_exit "$zero_rc" 1 "zero-byte candidate exits 1"
+assert_eq "$(tree_digest "$DEST")" "$before" "zero-byte rejection leaves dest byte-for-byte"
+assert_contains "$DEST/KEEP_ME" "must-keep-zero" "zero-byte rejection kept KEEP_ME"
+assert_contains "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" "SourceHook version" "zero-byte rejection left the previous .so"
+assert_absent "$DEST/.s2script-metamod-identity" "zero-byte rejection did not write a verified identity"
+assert_reason "$WORKDIR/zero-install.err" "empty_artifact" "zero-byte install reports empty_artifact"
 curl_calls="$(grep -c . "$CURL_LOG" || true)"
-assert_eq "$curl_calls" "2" "stale drop without pin did not re-download"
+assert_eq "$curl_calls" "0" "zero-byte path does not select mmsdrop"
 
-echo "== fixture: stripped pin tree, no sidecar, stale drop → swap source=pin"
-STRIPPED_PIN="$WORKDIR/pin-stripped"
-make_tree "$STRIPPED_PIN" stripped18
-# Operator pin: stripped .so, no identity sidecar. Heuristic is unknown, not fail.
-assert_absent "$STRIPPED_PIN/.s2script-metamod-identity" "stripped pin has no sidecar"
-DEST="$WORKDIR/case-stripped-pin/metamod"
+echo "== transaction: GetDetourInterface text is rejected; dest unchanged"
+DEST="$WORKDIR/case-text/metamod"
 make_tree "$DEST" pre18
-echo "stale-dest" >"$DEST/KEEP_ME"
-: >"$CURL_LOG"
-S2_FAKE_LATEST="mmsource-2.0.0-git26c03fa-linux.tar.gz"
-S2_FAKE_TARBALL="$PRE18_TAR"
-export S2_METAMOD_PINNED_TREE="$STRIPPED_PIN"
-if run_ensure "$DEST"; then
-  assert_exit 0 0 "stripped pin fallback exits 0"
-else
-  assert_exit "$?" 0 "stripped pin fallback exits 0"
-fi
-unset S2_METAMOD_PINNED_TREE
-assert_contains "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" "stripped-metamod-bytes-no-symbols" "stripped pin .so installed"
-assert_contains "$DEST/.s2script-metamod-identity" "source=pin" "stripped pin identity source=pin"
-assert_contains "$DEST/.s2script-metamod-identity" "plapi=18" "stripped pin identity records plapi=18"
-assert_file "$DEST.prev/KEEP_ME" "stripped pin path preserved previous tree"
-curl_calls="$(grep -c . "$CURL_LOG" || true)"
-assert_eq "$curl_calls" "2" "stripped pin path fetched drop once (no loop)"
+echo "text-keep" >"$DEST/KEEP_ME"
+before="$(tree_digest "$DEST")"
+TEXT_PIN="$WORKDIR/text-pin"
+make_valid_tree "$TEXT_PIN"
+printf 'GetDetourInterface\n' >"$TEXT_PIN/bin/linuxsteamrt64/metamod.2.cs2.so"
+write_manifest "$TEXT_PIN" "$WORKDIR/text-pin.json"
+export S2_METAMOD_PINNED_TREE="$TEXT_PIN"
+export S2_METAMOD_BUILD_MANIFEST="$WORKDIR/text-pin.json"
+set +e
+run_ensure "$DEST" >"$WORKDIR/text-install.out" 2>"$WORKDIR/text-install.err"
+text_rc=$?
+set -e
+assert_exit "$text_rc" 1 "GetDetourInterface text candidate exits 1"
+assert_eq "$(tree_digest "$DEST")" "$before" "text candidate rejection leaves dest byte-for-byte"
+assert_contains "$DEST/KEEP_ME" "text-keep" "text rejection kept KEEP_ME"
 
-echo "== fixture: CS2 running refuses replace and preserves dest"
+echo "== transaction: pin without independent manifest is refused"
+DEST="$WORKDIR/case-nomanifest/metamod"
+make_tree "$DEST" pre18
+echo "nomanifest-keep" >"$DEST/KEEP_ME"
+before="$(tree_digest "$DEST")"
+export S2_METAMOD_PINNED_TREE="$PINNED"
+unset S2_METAMOD_BUILD_MANIFEST || true
+set +e
+run_ensure "$DEST" >"$WORKDIR/noman.out" 2>"$WORKDIR/noman.err"
+nm_rc=$?
+set -e
+assert_exit "$nm_rc" 1 "pinned tree without manifest exits 1"
+assert_eq "$(tree_digest "$DEST")" "$before" "missing-manifest rejection leaves dest byte-for-byte"
+assert_reason "$WORKDIR/noman.err" "missing_manifest" "missing independent manifest is named"
+
+echo "== transaction: verified ELF install, identity vs build-manifest distinction, repeat skip"
+DEST="$WORKDIR/case-install/metamod"
+make_tree "$DEST" pre18
+echo "old-keep" >"$DEST/KEEP_ME"
+export S2_METAMOD_PINNED_TREE="$PINNED"
+export S2_METAMOD_BUILD_MANIFEST="$MANIFEST"
+unset S2_METAMOD_VERIFY || true
+: >"$CURL_LOG"
+if run_ensure "$DEST" >"$WORKDIR/install.out" 2>"$WORKDIR/install.err"; then
+  assert_exit 0 0 "verified ELF install exits 0"
+else
+  assert_exit "$?" 0 "verified ELF install exits 0"
+fi
+assert_file "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" "install wrote metamod.2.cs2.so"
+assert_file "$DEST/bin/linuxsteamrt64/libserver.so" "install wrote required libserver.so"
+assert_file "$DEST/.s2script-metamod-identity" "install wrote installation receipt"
+assert_file "$DEST/.s2script-metamod-build.json" "install copied the independent build manifest"
+assert_file "$DEST/s2script.vdf" "s2script.vdf present after swap"
+assert_file "$DEST.prev/KEEP_ME" "previous tree preserved as dest.prev"
+assert_contains "$DEST.prev/KEEP_ME" "old-keep" "preserved previous operator marker"
+# Receipt is not the build manifest.
+if grep -q '"patchset_sha256"' "$DEST/.s2script-metamod-identity"; then
+  # patchset may be recorded as a receipt field; the JSON schema object must not be the receipt.
+  if python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$DEST/.s2script-metamod-identity" 2>/dev/null; then
+    bad "installation receipt must not be the JSON build manifest"
+  else
+    ok "installation receipt is not the JSON build manifest"
+  fi
+else
+  ok "installation receipt is not the JSON build manifest"
+fi
+python3 - "$DEST/.s2script-metamod-build.json" "$MANIFEST" <<'PY'
+import json, sys
+from pathlib import Path
+a = json.loads(Path(sys.argv[1]).read_text())
+b = json.loads(Path(sys.argv[2]).read_text())
+raise SystemExit(0 if a == b else 1)
+PY
+assert_exit "$?" 0 "copied build manifest matches the independent input"
+assert_contains "$DEST/.s2script-metamod-identity" "plapi=18" "receipt records plapi=18"
+assert_contains "$DEST/.s2script-metamod-identity" "pin=$EXPECTED_MMS" "receipt records tested pin"
+curl_calls="$(grep -c . "$CURL_LOG" || true)"
+assert_eq "$curl_calls" "0" "verified install does not select mmsdrop"
+
+echo "== transaction: repeat install skips and leaves dest unchanged"
+before="$(tree_digest "$DEST")"
+: >"$CURL_LOG"
+if run_ensure "$DEST" >"$WORKDIR/skip.out" 2>"$WORKDIR/skip.err"; then
+  assert_exit 0 0 "repeat verified install exits 0"
+else
+  assert_exit "$?" 0 "repeat verified install exits 0"
+fi
+assert_eq "$(tree_digest "$DEST")" "$before" "skip path leaves dest byte-for-byte"
+assert_absent "$DEST.prev.prev" "skip does not stack another prev generation beyond dest.prev from first swap"
+if grep -qi 'skip' "$WORKDIR/skip.out" "$WORKDIR/skip.err"; then
+  ok "skip path reports a skip"
+else
+  bad "skip path did not report skip"
+fi
+curl_calls="$(grep -c . "$CURL_LOG" || true)"
+assert_eq "$curl_calls" "0" "skip path does not call curl"
+# Skip rechecks artifacts, not only the sidecar: corrupt .so must not skip.
+echo "== transaction: skip rechecks artifact bytes, not only sidecar"
+cp -a "$DEST/.s2script-metamod-identity" "$WORKDIR/saved-identity"
+printf '\x00' >>"$DEST/bin/linuxsteamrt64/metamod.2.cs2.so"
+set +e
+run_ensure "$DEST" >"$WORKDIR/skip-corrupt.out" 2>"$WORKDIR/skip-corrupt.err"
+# Source is still the good PINNED tree, so this should refresh rather than skip,
+# OR fail closed if CS2... CS2 is not running. Should replace from good source.
+corrupt_rc=$?
+set -e
+assert_exit "$corrupt_rc" 0 "corrupt dest is refreshed from the independent source"
+python3 - "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" "$PINNED/bin/linuxsteamrt64/metamod.2.cs2.so" <<'PY'
+import hashlib, sys
+from pathlib import Path
+def h(p):
+    return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+raise SystemExit(0 if h(sys.argv[1]) == h(sys.argv[2]) else 1)
+PY
+assert_exit "$?" 0 "refreshed dest .so matches the independent source bytes"
+
+echo "== transaction: injected verification (stub files; not a binary proof)"
+STUB_PIN="$WORKDIR/stub-pin"
+make_tree "$STUB_PIN" stripped18
+mkdir -p "$STUB_PIN/bin/linuxsteamrt64"
+printf 'stub-loader\n' >"$STUB_PIN/bin/linuxsteamrt64/libserver.so"
+write_manifest "$STUB_PIN" "$WORKDIR/stub-pin.json"
+DEST="$WORKDIR/case-inject-pass/metamod"
+make_tree "$DEST" pre18
+echo "inject-old" >"$DEST/KEEP_ME"
+export S2_METAMOD_PINNED_TREE="$STUB_PIN"
+export S2_METAMOD_BUILD_MANIFEST="$WORKDIR/stub-pin.json"
+export S2_METAMOD_VERIFY="inject-pass"
+if run_ensure "$DEST"; then
+  assert_exit 0 0 "inject-pass transaction exits 0 (not a binary proof)"
+else
+  assert_exit "$?" 0 "inject-pass transaction exits 0 (not a binary proof)"
+fi
+assert_file "$DEST/.s2script-metamod-identity" "inject-pass wrote receipt after success"
+assert_file "$DEST/.s2script-metamod-build.json" "inject-pass copied independent manifest after success"
+assert_file "$DEST.prev/KEEP_ME" "inject-pass preserved previous tree"
+assert_contains "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" "stripped-metamod-bytes-no-symbols" "inject-pass installed stub bytes (transaction only)"
+
+echo "== transaction: inject-fail verification preserves dest"
+DEST="$WORKDIR/case-inject-fail/metamod"
+make_tree "$DEST" pre18
+echo "inj-fail-keep" >"$DEST/KEEP_ME"
+before="$(tree_digest "$DEST")"
+export S2_METAMOD_VERIFY="inject-fail"
+set +e
+run_ensure "$DEST" >"$WORKDIR/inj-fail.out" 2>"$WORKDIR/inj-fail.err"
+inj_rc=$?
+set -e
+assert_exit "$inj_rc" 1 "inject-fail verification exits 1"
+assert_eq "$(tree_digest "$DEST")" "$before" "inject-fail leaves dest byte-for-byte"
+assert_contains "$DEST/KEEP_ME" "inj-fail-keep" "inject-fail kept KEEP_ME"
+unset S2_METAMOD_VERIFY || true
+
+echo "== transaction: injected rename/receipt/VDF failures (stub + inject-pass)"
+export S2_METAMOD_VERIFY="inject-pass"
+for point in receipt-write vdf-write before-rename-dest after-rename-dest before-rename-stage after-rename-stage; do
+  DEST="$WORKDIR/case-inj-$point/metamod"
+  make_tree "$DEST" pre18
+  echo "keep-$point" >"$DEST/KEEP_ME"
+  before="$(tree_digest "$DEST")"
+  export S2_METAMOD_INJECT_FAIL="$point"
+  set +e
+  run_ensure "$DEST" >"$WORKDIR/inj-$point.out" 2>"$WORKDIR/inj-$point.err"
+  rc=$?
+  set -e
+  assert_exit "$rc" 1 "inject $point exits 1"
+  assert_eq "$(tree_digest "$DEST")" "$before" "inject $point leaves dest byte-for-byte"
+  assert_contains "$DEST/KEEP_ME" "keep-$point" "inject $point kept previous KEEP_ME"
+  assert_file "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" "inject $point left a usable previous .so"
+  assert_absent "$DEST.staging" "inject $point did not leave a staging tree as dest"
+done
+unset S2_METAMOD_INJECT_FAIL || true
+unset S2_METAMOD_VERIFY || true
+
+echo "== transaction: CS2 running refuses replace and preserves dest"
 DEST="$WORKDIR/case-running/metamod"
 make_tree "$DEST" pre18
 echo "live-tree" >"$DEST/KEEP_ME"
-: >"$CURL_LOG"
-S2_FAKE_LATEST="mmsource-2.0.0-git7e24ce9-linux.tar.gz"
-S2_FAKE_TARBALL="$PLAPI18_TAR"
+before="$(tree_digest "$DEST")"
+export S2_METAMOD_PINNED_TREE="$PINNED"
+export S2_METAMOD_BUILD_MANIFEST="$MANIFEST"
+unset S2_METAMOD_VERIFY || true
 S2_METAMOD_CS2_RUNNING=1
 set +e
 run_ensure "$DEST"
@@ -331,8 +625,28 @@ run_rc=$?
 set -e
 unset S2_METAMOD_CS2_RUNNING
 assert_exit "$run_rc" 1 "running CS2 refresh exits 1"
+assert_eq "$(tree_digest "$DEST")" "$before" "running CS2 left dest byte-for-byte"
 assert_contains "$DEST/KEEP_ME" "live-tree" "running CS2 left dest in place"
 assert_contains "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" "SourceHook version" "running CS2 did not swap the .so"
+
+echo "== transaction: no source preserves previous (drop disabled)"
+DEST="$WORKDIR/case-nosource/metamod"
+make_tree "$DEST" pre18
+echo "still-here" >"$DEST/KEEP_ME"
+before="$(tree_digest "$DEST")"
+: >"$CURL_LOG"
+unset S2_METAMOD_PINNED_TREE || true
+unset S2_METAMOD_BUILD_MANIFEST || true
+unset S2_METAMOD_VERIFY || true
+set +e
+run_ensure "$DEST" >"$WORKDIR/nosrc.out" 2>"$WORKDIR/nosrc.err"
+stale_rc=$?
+set -e
+assert_exit "$stale_rc" 1 "no verified source exits 1"
+assert_eq "$(tree_digest "$DEST")" "$before" "no-source path preserved dest byte-for-byte"
+assert_contains "$DEST/KEEP_ME" "still-here" "no-source preserved dest"
+curl_calls="$(grep -c . "$CURL_LOG" || true)"
+assert_eq "$curl_calls" "0" "latest-drop selection is disabled (curl not called)"
 
 echo "== contract: live_gate propagates s2_ensure_metamod failure"
 if grep -E 's2_ensure_metamod .+ \|\| return 1' "$INSTALL" >/dev/null; then
@@ -340,28 +654,40 @@ if grep -E 's2_ensure_metamod .+ \|\| return 1' "$INSTALL" >/dev/null; then
 else
   bad "live_gate does not propagate s2_ensure_metamod failure"
 fi
+if grep -q 'GetDetourInterface' "$INSTALL"; then
+  bad "installer still contains GetDetourInterface heuristic"
+else
+  ok "installer has no GetDetourInterface heuristic"
+fi
+if grep -q 's2_metamod_stage_is_pin_ok' "$INSTALL"; then
+  bad "s2_metamod_stage_is_pin_ok heuristic still present"
+else
+  ok "s2_metamod_stage_is_pin_ok heuristic removed"
+fi
+if awk '/^s2_ensure_metamod\(/,/^}/ {print}' "$INSTALL" | grep -q 's2_stage_mmsdrop'; then
+  bad "s2_ensure_metamod still selects mmsdrop"
+else
+  ok "s2_ensure_metamod does not select mmsdrop"
+fi
 
-# Source the installer (does not run main) and lock pin-origin accept/reject.
+# Source the installer (does not run main) and lock verify/reject helpers.
 # shellcheck disable=SC1090
 source "$INSTALL"
-PIN_OK_DIR="$WORKDIR/pin-ok-unit"
-make_tree "$PIN_OK_DIR" stripped18
-if s2_metamod_stage_is_pin_ok "$PIN_OK_DIR"; then
-  ok "s2_metamod_stage_is_pin_ok accepts stripped pin (heuristic unknown)"
+ZERO_UNIT="$WORKDIR/pin-zero-unit"
+rm -rf "$ZERO_UNIT"
+mkdir -p "$ZERO_UNIT/bin/linuxsteamrt64"
+: >"$ZERO_UNIT/bin/linuxsteamrt64/metamod.2.cs2.so"
+write_elf "$ZERO_UNIT/bin/linuxsteamrt64/libserver.so" x64 "z"
+write_manifest "$ZERO_UNIT" "$WORKDIR/pin-zero-unit.json"
+if s2_metamod_verify "$ZERO_UNIT" "$WORKDIR/pin-zero-unit.json"; then
+  bad "s2_metamod_verify must reject zero-byte tree"
 else
-  bad "s2_metamod_stage_is_pin_ok rejected stripped pin"
+  ok "s2_metamod_verify rejects zero-byte tree"
 fi
-if s2_metamod_stage_is_plapi18 "$PIN_OK_DIR"; then
-  bad "drop verifier must still reject stripped tree without sidecar"
+if s2_metamod_verify "$PINNED" "$MANIFEST"; then
+  ok "s2_metamod_verify accepts the independent valid fixture"
 else
-  ok "drop verifier still rejects stripped tree without sidecar"
-fi
-FAIL_PIN="$WORKDIR/pin-fail-unit"
-make_tree "$FAIL_PIN" pre18
-if s2_metamod_stage_is_pin_ok "$FAIL_PIN"; then
-  bad "s2_metamod_stage_is_pin_ok must reject SourceHook/pre-18 pin"
-else
-  ok "s2_metamod_stage_is_pin_ok rejects SourceHook/pre-18 pin"
+  bad "s2_metamod_verify rejected the independent valid fixture"
 fi
 
 echo
