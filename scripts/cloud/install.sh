@@ -10,17 +10,15 @@
 # game download is NOT here — that is runtime data brought up by start.sh and kept on
 # disk (persisted by the environment snapshot), so `install` stays terminating.
 #
-# Metamod: a present metamod.2.cs2.so is not enough. Snapshots commonly still carry
-# pre-PR-223 (PLAPI 17 / SourceHook) drops. Refresh is identity-gated against the
-# tested pin (PLAPI 18) or a verified PLAPI 18 mmsdrop, staged then swapped only
-# while CS2 is stopped. A failed/stale download never loops and never destroys the
-# previous tree. `docker/s2script.vdf` is restored after every successful swap.
-#
-# If mmsdrop cannot be verified as PLAPI 18 (still 17, stripped, download fail),
-# this script does NOT re-fetch latest and does NOT AMBuild third_party/metamod-source.
-# Operators / Task 6 MUST supply a prebuilt PLAPI 18 tree via S2_METAMOD_PINNED_TREE
-# or docker/metamod-pin/ (the pinned submodule at S2_METAMOD_PIN, already built).
-# Without that tree, refresh fails closed and the previous installation is preserved.
+# Metamod: a present metamod.2.cs2.so is not enough. Refresh is gated by
+# scripts/verify-metamod-artifact.py against an independently supplied build
+# manifest (never invented from the candidate). The default source is the
+# corrected pinned build at build/metamod-pinned/{tree,metamod-build.json}.
+# S2_METAMOD_PINNED_TREE still requires S2_METAMOD_BUILD_MANIFEST. Automatic
+# latest-drop selection is disabled. Stage on the destination filesystem, write
+# the receipt into the staged tree, then rename; a failed swap rolls back to
+# the complete previous tree. `docker/s2script.vdf` is restored after every
+# successful swap. Marker strings and pin-origin directory names are not trust.
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
@@ -33,23 +31,28 @@ S2_SCRIPT_REPO="${S2_SCRIPT_REPO:-$(cd "$_S2_CLOUD_DIR/../.." && pwd)}"
 # Tested Metamod pin (vendored gitlink) + plugin API floor.
 S2_METAMOD_PIN="${S2_METAMOD_PIN:-7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33}"
 S2_METAMOD_PLAPI="${S2_METAMOD_PLAPI:-18}"
-S2_MMSDROP_BASE="${S2_MMSDROP_BASE:-https://mms.alliedmods.net/mmsdrop/2.0}"
 S2_METAMOD_IDENTITY_NAME=".s2script-metamod-identity"
+S2_METAMOD_BUILD_COPY_NAME=".s2script-metamod-build.json"
 S2_METAMOD_SO_REL="bin/linuxsteamrt64/metamod.2.cs2.so"
+S2_METAMOD_VERIFY_PY="$S2_SCRIPT_REPO/scripts/verify-metamod-artifact.py"
+S2_METAMOD_DEFAULT_TREE="$S2_SCRIPT_REPO/build/metamod-pinned/tree"
+S2_METAMOD_DEFAULT_MANIFEST="$S2_SCRIPT_REPO/build/metamod-pinned/metamod-build.json"
 
 s2_metamod_so() { echo "$1/$S2_METAMOD_SO_REL"; }
 s2_metamod_identity() { echo "$1/$S2_METAMOD_IDENTITY_NAME"; }
+s2_metamod_build_copy() { echo "$1/$S2_METAMOD_BUILD_COPY_NAME"; }
 
 s2_sha256() {
   sha256sum "$1" | awk '{print $1}'
 }
 
-s2_curl() {
-  if [ -n "${S2_METAMOD_CURL:-}" ]; then
-    "$S2_METAMOD_CURL" "$@"
-  else
-    curl --retry 3 --retry-delay 5 "$@"
+s2_inject_fail() {
+  local point="$1"
+  if [ "${S2_METAMOD_INJECT_FAIL:-}" = "$point" ]; then
+    echo "    injected failure at $point" >&2
+    return 0
   fi
+  return 1
 }
 
 # CS2 bind-mounts docker/metamod/. Replacing that tree while the container is
@@ -63,141 +66,167 @@ s2_cs2_is_running() {
   [ "$(docker inspect -f '{{.State.Running}}' s2script-cs2 2>/dev/null || true)" = "true" ]
 }
 
-# strings | GetDetourInterface is a heuristic only — stripped binaries can omit
-# the symbol name. fail = definitely pre-18; pass = likely PLAPI 18; unknown =
-# cannot decide from the bytes (do not treat as verified).
-s2_metamod_heuristic() {
-  local so="$1"
-  if [ ! -f "$so" ]; then
-    echo missing
-    return
-  fi
-  if grep -aF -q "GetDetourInterface" "$so"; then
-    echo pass
-    return
-  fi
-  if grep -aF -q "SourceHook version" "$so"; then
-    echo fail
-    return
-  fi
-  echo unknown
-}
-
 s2_identity_get() {
   local file="$1" key="$2"
   [ -f "$file" ] || return 1
   awk -F= -v k="$key" '$1==k {print $2; found=1; exit} END{exit found?0:1}' "$file"
 }
 
-s2_write_identity() {
-  local dest="$1" source="$2" artifact="$3"
-  local so identity sha
-  so="$(s2_metamod_so "$dest")"
-  identity="$(s2_metamod_identity "$dest")"
-  sha="$(s2_sha256 "$so")"
-  cat >"$identity" <<EOF
-# Written by scripts/cloud/install.sh after a verified Metamod install.
-# Authoritative later check is the loaded host: meta version → plugin interface ${S2_METAMOD_PLAPI}.
-pin=${S2_METAMOD_PIN}
-plapi=${S2_METAMOD_PLAPI}
-source=${source}
-artifact=${artifact}
-sha256=${sha}
-EOF
-}
-
-# Installed tree matches the selected pin / a previously verified PLAPI 18 drop.
-# Identity + sha256 of the live .so is the skip gate. A SourceHook heuristic
-# fail still forces refresh even if a sidecar claims PLAPI 18.
-s2_metamod_tree_is_verified() {
-  local dest="$1"
-  local so identity sha pin plapi recorded
-  so="$(s2_metamod_so "$dest")"
-  identity="$(s2_metamod_identity "$dest")"
-  [ -f "$so" ] && [ -f "$identity" ] || return 1
-  pin="$(s2_identity_get "$identity" pin || true)"
-  plapi="$(s2_identity_get "$identity" plapi || true)"
-  recorded="$(s2_identity_get "$identity" sha256 || true)"
-  sha="$(s2_sha256 "$so")"
-  [ "$pin" = "$S2_METAMOD_PIN" ] || return 1
-  [ "$plapi" = "$S2_METAMOD_PLAPI" ] || return 1
-  [ -n "$recorded" ] && [ "$recorded" = "$sha" ] || return 1
-  case "$(s2_metamod_heuristic "$so")" in
-    fail) return 1 ;;
+# Independent verifier. Never invents a manifest from the candidate.
+# S2_METAMOD_VERIFY=inject-pass|inject-fail is a transaction-test hook only.
+s2_metamod_verify() {
+  local tree="$1" manifest="$2"
+  case "${S2_METAMOD_VERIFY:-}" in
+    inject-pass)
+      echo "    verification injected: pass (transaction test; not a binary proof)"
+      return 0
+      ;;
+    inject-fail)
+      echo "error: injected_verification_failure: S2_METAMOD_VERIFY=inject-fail" >&2
+      return 1
+      ;;
   esac
-  return 0
-}
-
-# A staged *mmsdrop* is PLAPI 18 iff we can prove it before swapping:
-#   * identity sidecar already names this pin + PLAPI + matching sha, or
-#   * heuristic pass (GetDetourInterface present).
-# Unknown/stripped drops are NOT verified — fall back to the pin rather than
-# looping mmsdrop. Pin-origin trees use s2_metamod_stage_is_pin_ok instead.
-s2_metamod_stage_is_plapi18() {
-  local stage="$1"
-  local so identity
-  so="$(s2_metamod_so "$stage")"
-  [ -f "$so" ] || return 1
-  identity="$(s2_metamod_identity "$stage")"
-  if [ -f "$identity" ]; then
-    local pin plapi recorded sha
-    pin="$(s2_identity_get "$identity" pin || true)"
-    plapi="$(s2_identity_get "$identity" plapi || true)"
-    recorded="$(s2_identity_get "$identity" sha256 || true)"
-    sha="$(s2_sha256 "$so")"
-    if [ "$pin" = "$S2_METAMOD_PIN" ] && [ "$plapi" = "$S2_METAMOD_PLAPI" ] && [ "$recorded" = "$sha" ]; then
-      case "$(s2_metamod_heuristic "$so")" in
-        fail) return 1 ;;
-        *) return 0 ;;
-      esac
-    fi
+  if [ -z "$manifest" ] || [ ! -f "$manifest" ]; then
+    echo "error: missing_manifest: independent build manifest is required (never invented from the candidate)" >&2
+    return 1
   fi
-  [ "$(s2_metamod_heuristic "$so")" = "pass" ]
+  if [ ! -d "$tree" ]; then
+    echo "error: missing_tree: $tree" >&2
+    return 1
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "error: python3_unavailable: python3 is required to verify Metamod artifacts" >&2
+    return 1
+  fi
+  if [ ! -f "$S2_METAMOD_VERIFY_PY" ]; then
+    echo "error: missing_verifier: $S2_METAMOD_VERIFY_PY" >&2
+    return 1
+  fi
+  python3 "$S2_METAMOD_VERIFY_PY" --tree "$tree" --manifest "$manifest"
 }
 
-# Operator/T6 pin origin is trusted when the .so exists and the heuristic is not
-# fail (pass or unknown/stripped). Identity is written after a successful swap.
-# A SourceHook / pre-18 pin is still rejected.
-s2_metamod_stage_is_pin_ok() {
-  local stage="$1"
-  local so
-  so="$(s2_metamod_so "$stage")"
-  [ -f "$so" ] || return 1
-  case "$(s2_metamod_heuristic "$so")" in
-    fail) return 1 ;;
-  esac
-  return 0
-}
+s2_metamod_resolve_source() {
+  S2_MM_SRC_TREE=""
+  S2_MM_SRC_MANIFEST=""
+  S2_MM_SRC_KIND=""
 
-s2_find_extracted_metamod_root() {
-  local extract="$1"
-  if [ -f "$(s2_metamod_so "$extract")" ]; then
-    echo "$extract"
+  if [ -n "${S2_METAMOD_PINNED_TREE:-}" ]; then
+    S2_MM_SRC_TREE="$S2_METAMOD_PINNED_TREE"
+    if [ -z "${S2_METAMOD_BUILD_MANIFEST:-}" ]; then
+      echo "error: missing_manifest: S2_METAMOD_PINNED_TREE requires S2_METAMOD_BUILD_MANIFEST (independent build manifest; never invented from the candidate)" >&2
+      return 1
+    fi
+    S2_MM_SRC_MANIFEST="$S2_METAMOD_BUILD_MANIFEST"
+    if [ ! -f "$S2_MM_SRC_MANIFEST" ]; then
+      echo "error: missing_manifest: $S2_MM_SRC_MANIFEST does not exist" >&2
+      return 1
+    fi
+    if [ ! -d "$S2_MM_SRC_TREE" ]; then
+      echo "error: missing_tree: $S2_MM_SRC_TREE" >&2
+      return 1
+    fi
+    S2_MM_SRC_KIND="pin"
     return 0
   fi
-  if [ -f "$(s2_metamod_so "$extract/addons/metamod")" ]; then
-    echo "$extract/addons/metamod"
+
+  local manifest="${S2_METAMOD_BUILD_MANIFEST:-$S2_METAMOD_DEFAULT_MANIFEST}"
+  local tree="$S2_METAMOD_DEFAULT_TREE"
+  if [ -d "$tree" ] && [ -f "$manifest" ]; then
+    S2_MM_SRC_TREE="$tree"
+    S2_MM_SRC_MANIFEST="$manifest"
+    S2_MM_SRC_KIND="pinned-build"
+    return 0
+  fi
+
+  echo "error: missing_source: no corrected pinned build at $S2_METAMOD_DEFAULT_TREE + $S2_METAMOD_DEFAULT_MANIFEST and no S2_METAMOD_PINNED_TREE + S2_METAMOD_BUILD_MANIFEST" >&2
+  return 1
+}
+
+s2_metamod_skip_manifest() {
+  local dest="$1"
+  if [ -n "${S2_METAMOD_BUILD_MANIFEST:-}" ] && [ -f "$S2_METAMOD_BUILD_MANIFEST" ]; then
+    echo "$S2_METAMOD_BUILD_MANIFEST"
+    return 0
+  fi
+  if [ -f "$S2_METAMOD_DEFAULT_MANIFEST" ]; then
+    echo "$S2_METAMOD_DEFAULT_MANIFEST"
+    return 0
+  fi
+  local copied
+  copied="$(s2_metamod_build_copy "$dest")"
+  if [ -f "$copied" ]; then
+    echo "$copied"
     return 0
   fi
   return 1
 }
 
+# Skip only after a previous successful install (copied build manifest present)
+# and a real re-check of artifact bytes. Injected verification is for candidate
+# trees in transaction tests; it must not mark an unverified dest as skipped.
+s2_metamod_tree_is_verified() {
+  local dest="$1"
+  local so manifest
+  so="$(s2_metamod_so "$dest")"
+  [ -f "$so" ] || return 1
+  [ -f "$(s2_metamod_build_copy "$dest")" ] || return 1
+  manifest="$(s2_metamod_skip_manifest "$dest")" || return 1
+  python3 "$S2_METAMOD_VERIFY_PY" --tree "$dest" --manifest "$manifest"
+}
+
+s2_write_identity() {
+  local dest="$1" source="$2" artifact="$3" manifest="$4"
+  local so identity sha patch msha
+  so="$(s2_metamod_so "$dest")"
+  identity="$(s2_metamod_identity "$dest")"
+  [ -f "$so" ] || return 1
+  [ -f "$manifest" ] || return 1
+  sha="$(s2_sha256 "$so")" || return 1
+  msha="$(s2_sha256 "$manifest")" || return 1
+  patch="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("patchset_sha256",""))' "$manifest")" || return 1
+  if ! cat >"$identity" <<EOF
+# Installation receipt written by scripts/cloud/install.sh after a verified swap.
+# This is not the build manifest. The independent build manifest is copied beside it.
+pin=${S2_METAMOD_PIN}
+plapi=${S2_METAMOD_PLAPI}
+source=${source}
+artifact=${artifact}
+sha256=${sha}
+patchset_sha256=${patch}
+manifest_sha256=${msha}
+EOF
+  then
+    return 1
+  fi
+  [ -s "$identity" ] || return 1
+}
+
 s2_copy_tree() {
   local src="$1" dest="$2"
-  rm -rf "$dest"
-  mkdir -p "$dest"
-  # Trailing /. copies contents even when dest already exists.
-  cp -a "$src"/. "$dest"/
+  rm -rf "$dest" || return 1
+  mkdir -p "$dest" || return 1
+  cp -a "$src"/. "$dest"/ || return 1
+}
+
+s2_preflight_tree() {
+  local src="$1" dest_parent="$2"
+  [ -d "$src" ] || return 1
+  mkdir -p "$dest_parent" || return 1
+  [ -w "$dest_parent" ] || return 1
+  local f
+  while IFS= read -r -d '' f; do
+    [ -r "$f" ] || return 1
+  done < <(find "$src" -type f -print0)
 }
 
 s2_preserve_s2script_vdf() {
   local dest="$1" backup="$2"
   if [ -f "$dest/s2script.vdf" ]; then
-    cp -a "$dest/s2script.vdf" "$backup"
+    cp -a "$dest/s2script.vdf" "$backup" || return 1
     return 0
   fi
   if [ -f "$S2_SCRIPT_REPO/docker/s2script.vdf" ]; then
-    cp -a "$S2_SCRIPT_REPO/docker/s2script.vdf" "$backup"
+    cp -a "$S2_SCRIPT_REPO/docker/s2script.vdf" "$backup" || return 1
     return 0
   fi
   return 1
@@ -205,184 +234,196 @@ s2_preserve_s2script_vdf() {
 
 s2_restore_s2script_vdf() {
   local dest="$1" backup="$2"
-  mkdir -p "$dest"
+  mkdir -p "$dest" || return 1
   if [ -f "$backup" ] && [ -s "$backup" ]; then
-    cp -a "$backup" "$dest/s2script.vdf"
+    cp -a "$backup" "$dest/s2script.vdf" || return 1
   fi
   if [ -f "$S2_SCRIPT_REPO/docker/s2script.vdf" ]; then
-    cp -a "$S2_SCRIPT_REPO/docker/s2script.vdf" "$dest/s2script.vdf"
+    cp -a "$S2_SCRIPT_REPO/docker/s2script.vdf" "$dest/s2script.vdf" || return 1
   fi
 }
 
-# Atomic-ish swap: dest → dest.prev (one generation), stage → dest, restore VDF.
-# On any failure after dest has moved, restore dest from dest.prev.
+s2_rollback_to_prev() {
+  local dest="$1" prev="$2" stage="$3"
+  if [ -e "$dest" ] && [ -e "$prev" ]; then
+    if ! rm -rf "$dest"; then
+      echo "    ERROR: rollback failed removing incomplete dest $dest" >&2
+      rm -rf "$stage" || true
+      return 1
+    fi
+  fi
+  if [ -e "$prev" ] && [ ! -e "$dest" ]; then
+    if ! mv "$prev" "$dest"; then
+      echo "    ERROR: rollback failed restoring $prev -> $dest" >&2
+      rm -rf "$stage" || true
+      return 1
+    fi
+  fi
+  rm -rf "$stage" || true
+  return 0
+}
+
+# dest → dest.prev (one generation), complete staged tree → dest.
+# Receipt and VDF are already inside stage. On any failure after dest has moved,
+# restore dest from dest.prev. Never return success with a partial tree.
 s2_replace_metamod_tree() {
   local dest="$1" stage="$2"
   local prev="${S2_METAMOD_PREV:-${dest}.prev}"
-  local vdf_backup
-  vdf_backup="$(mktemp)"
 
   if s2_cs2_is_running; then
     echo "    CS2 container is running — refusing to replace $dest (stop it first; do not --force-recreate)" >&2
-    rm -f "$vdf_backup"
+    rm -rf "$stage"
     return 1
   fi
 
-  s2_preserve_s2script_vdf "$dest" "$vdf_backup" || true
+  mkdir -p "$(dirname "$dest")" || { rm -rf "$stage"; return 1; }
+  rm -rf "$prev" || { rm -rf "$stage"; return 1; }
 
-  mkdir -p "$(dirname "$dest")"
-  rm -rf "$prev"
-  if [ -e "$dest" ]; then
-    mv "$dest" "$prev"
+  if s2_inject_fail before-rename-dest; then
+    rm -rf "$stage"
+    return 1
   fi
+
+  if [ -e "$dest" ]; then
+    if ! mv "$dest" "$prev"; then
+      echo "    ERROR: failed to move $dest -> $prev" >&2
+      rm -rf "$stage"
+      return 1
+    fi
+  fi
+
+  if s2_inject_fail after-rename-dest; then
+    s2_rollback_to_prev "$dest" "$prev" "$stage" || true
+    return 1
+  fi
+
+  if s2_inject_fail before-rename-stage; then
+    s2_rollback_to_prev "$dest" "$prev" "$stage" || true
+    return 1
+  fi
+
   if ! mv "$stage" "$dest"; then
     echo "    ERROR: failed to move staged Metamod into $dest — restoring previous tree" >&2
-    if [ -e "$prev" ]; then
-      mv "$prev" "$dest"
-    fi
-    rm -f "$vdf_backup"
+    s2_rollback_to_prev "$dest" "$prev" "$stage" || true
     return 1
   fi
-  s2_restore_s2script_vdf "$dest" "$vdf_backup"
-  rm -f "$vdf_backup"
+
+  if s2_inject_fail after-rename-stage; then
+    s2_rollback_to_prev "$dest" "$prev" "" || true
+    return 1
+  fi
+
   echo "    previous tree preserved at $prev"
-  return 0
-}
-
-# One mmsdrop attempt. Never called in a loop. Returns 0 with $1 populated as a
-# staged metamod root; non-zero on download/extract/layout failure.
-s2_stage_mmsdrop() {
-  local stage="$1"
-  local work tarball latest root
-  work="$(mktemp -d)"
-  tarball="$work/mms.tar.gz"
-
-  echo "    fetching $S2_MMSDROP_BASE/mmsource-latest-linux"
-  if ! latest="$(s2_curl -fsSL "$S2_MMSDROP_BASE/mmsource-latest-linux")"; then
-    echo "    mmsdrop latest pointer failed" >&2
-    rm -rf "$work"
-    return 1
-  fi
-  latest="${latest//$'\r'/}"
-  latest="${latest//$'\n'/}"
-  if [ -z "$latest" ]; then
-    echo "    mmsdrop latest pointer was empty" >&2
-    rm -rf "$work"
-    return 1
-  fi
-  echo "    downloading $S2_MMSDROP_BASE/${latest}"
-  if ! s2_curl -fsSL "$S2_MMSDROP_BASE/${latest}" -o "$tarball"; then
-    echo "    mmsdrop tarball download failed" >&2
-    rm -rf "$work"
-    return 1
-  fi
-  if ! tar xzf "$tarball" -C "$work"; then
-    echo "    mmsdrop tarball was not a valid archive" >&2
-    rm -rf "$work"
-    return 1
-  fi
-  if ! root="$(s2_find_extracted_metamod_root "$work")"; then
-    echo "    mmsdrop tarball missing $S2_METAMOD_SO_REL" >&2
-    rm -rf "$work"
-    return 1
-  fi
-  s2_copy_tree "$root" "$stage"
-  printf '%s\n' "$latest" >"$stage/.s2script-drop-artifact"
-  rm -rf "$work"
-  return 0
-}
-
-# Pinned PLAPI 18 fallback. This is a prebuilt tree, not an in-script AMBuild of
-# third_party/metamod-source (that needs the sniper/AMBuild environment and is out
-# of this package). When mmsdrop is unverifiable, operators / Task 6 must plant
-# the already-built pin (S2_METAMOD_PIN, PLAPI 18) at one of:
-#   * S2_METAMOD_PINNED_TREE  — absolute/relative path to a metamod tree
-#   * docker/metamod-pin/    — repo-relative, same layout as docker/metamod/
-# Do not re-fetch mmsdrop latest from this path.
-s2_stage_pinned_tree() {
-  local stage="$1"
-  local pin_src="${S2_METAMOD_PINNED_TREE:-}"
-  if [ -z "$pin_src" ] && [ -f "$(s2_metamod_so "$S2_SCRIPT_REPO/docker/metamod-pin")" ]; then
-    pin_src="$S2_SCRIPT_REPO/docker/metamod-pin"
-  fi
-  if [ -z "$pin_src" ] || [ ! -f "$(s2_metamod_so "$pin_src")" ]; then
-    echo "    no prebuilt pin tree — if mmsdrop is unverifiable, set S2_METAMOD_PINNED_TREE or plant docker/metamod-pin/ (PLAPI ${S2_METAMOD_PLAPI} at pin ${S2_METAMOD_PIN})" >&2
-    return 1
-  fi
-  echo "    staging pinned Metamod from $pin_src"
-  s2_copy_tree "$pin_src" "$stage"
   return 0
 }
 
 s2_ensure_metamod() {
   local dest="${1:-$S2_SCRIPT_REPO/docker/metamod}"
-  local so stage artifact source
+  local so dest_parent stage vdf_backup source artifact
   so="$(s2_metamod_so "$dest")"
 
   echo "==> [install] Metamod:Source (CS2) — pin ${S2_METAMOD_PIN:0:12} / PLAPI ${S2_METAMOD_PLAPI}"
 
   if s2_metamod_tree_is_verified "$dest"; then
-    echo "    verified pin/PLAPI ${S2_METAMOD_PLAPI} identity matches $(s2_sha256 "$so") — skipping"
-    # Keep the VDF even on the skip path (package-addon.sh also copies it).
+    echo "    verified artifact matches independent build manifest — skipping"
     if [ ! -f "$dest/s2script.vdf" ] && [ -f "$S2_SCRIPT_REPO/docker/s2script.vdf" ]; then
-      cp -a "$S2_SCRIPT_REPO/docker/s2script.vdf" "$dest/s2script.vdf"
+      cp -a "$S2_SCRIPT_REPO/docker/s2script.vdf" "$dest/s2script.vdf" || return 1
     fi
     return 0
   fi
 
   if [ -f "$so" ]; then
-    echo "    installed tree is not the verified pin/PLAPI ${S2_METAMOD_PLAPI} identity (heuristic=$(s2_metamod_heuristic "$so")) — refreshing"
+    echo "    installed tree is not a verified corrected-host artifact — refreshing"
   else
     echo "    $S2_METAMOD_SO_REL missing — installing"
   fi
 
-  stage="$(mktemp -d)"
-  artifact=""
-  source=""
-
-  # Exactly one drop attempt. An unverified latest must not be re-fetched.
-  if s2_stage_mmsdrop "$stage"; then
-    if s2_metamod_stage_is_plapi18 "$stage"; then
-      source="drop"
-      artifact="$(cat "$stage/.s2script-drop-artifact" 2>/dev/null || echo unknown-drop)"
-      rm -f "$stage/.s2script-drop-artifact"
-    else
-      echo "    staged mmsdrop is not a verified PLAPI ${S2_METAMOD_PLAPI} tree — not retrying the drop" >&2
-      rm -rf "$stage"
-      stage="$(mktemp -d)"
-    fi
-  else
-    echo "    mmsdrop unavailable — not retrying the drop" >&2
-    rm -rf "$stage"
-    stage="$(mktemp -d)"
-  fi
-
-  if [ -z "$source" ]; then
-    if s2_stage_pinned_tree "$stage"; then
-      if s2_metamod_stage_is_pin_ok "$stage"; then
-        source="pin"
-        artifact="pin:${S2_METAMOD_PIN}"
-      else
-        echo "    pinned tree heuristic=fail (pre-18 / SourceHook) — not installing" >&2
-        rm -rf "$stage"
-        echo "    previous installation preserved at $dest" >&2
-        return 1
-      fi
-    else
-      echo "    no verified PLAPI ${S2_METAMOD_PLAPI} source available (mmsdrop unverifiable and no S2_METAMOD_PINNED_TREE / docker/metamod-pin/)" >&2
-      rm -rf "$stage"
-      echo "    previous installation preserved at $dest" >&2
-      return 1
-    fi
-  fi
-
-  if ! s2_replace_metamod_tree "$dest" "$stage"; then
-    rm -rf "$stage"
+  if ! s2_metamod_resolve_source; then
     echo "    previous installation preserved at $dest" >&2
     return 1
   fi
 
-  s2_write_identity "$dest" "$source" "$artifact"
+  if ! s2_metamod_verify "$S2_MM_SRC_TREE" "$S2_MM_SRC_MANIFEST"; then
+    echo "    candidate failed independent verification — previous installation preserved at $dest" >&2
+    return 1
+  fi
+
+  if s2_cs2_is_running; then
+    echo "    CS2 container is running — refusing to replace $dest (stop it first; do not --force-recreate)" >&2
+    echo "    previous installation preserved at $dest" >&2
+    return 1
+  fi
+
+  dest_parent="$(dirname "$dest")"
+  if ! s2_preflight_tree "$S2_MM_SRC_TREE" "$dest_parent"; then
+    echo "    preflight failed for $S2_MM_SRC_TREE -> $dest_parent" >&2
+    echo "    previous installation preserved at $dest" >&2
+    return 1
+  fi
+
+  stage="${dest}.staging"
+  rm -rf "$stage"
+  if ! s2_copy_tree "$S2_MM_SRC_TREE" "$stage"; then
+    echo "    ERROR: failed to copy candidate onto the destination filesystem" >&2
+    rm -rf "$stage"
+    echo "    previous installation preserved at $dest" >&2
+    return 1
+  fi
+  rm -f "$(s2_metamod_identity "$stage")" "$(s2_metamod_build_copy "$stage")"
+
+  if ! s2_metamod_verify "$stage" "$S2_MM_SRC_MANIFEST"; then
+    echo "    staged copy failed independent verification — previous installation preserved at $dest" >&2
+    rm -rf "$stage"
+    return 1
+  fi
+
+  source="$S2_MM_SRC_KIND"
+  artifact="manifest:$(s2_sha256 "$S2_MM_SRC_MANIFEST")"
+
+  vdf_backup="$(mktemp)"
+  s2_preserve_s2script_vdf "$dest" "$vdf_backup" || true
+
+  if s2_inject_fail receipt-write; then
+    rm -rf "$stage"
+    rm -f "$vdf_backup"
+    echo "    previous installation preserved at $dest" >&2
+    return 1
+  fi
+  if ! s2_write_identity "$stage" "$source" "$artifact" "$S2_MM_SRC_MANIFEST"; then
+    echo "    ERROR: failed to write installation receipt into the staged tree" >&2
+    rm -rf "$stage"
+    rm -f "$vdf_backup"
+    echo "    previous installation preserved at $dest" >&2
+    return 1
+  fi
+  if ! cp -a "$S2_MM_SRC_MANIFEST" "$(s2_metamod_build_copy "$stage")"; then
+    echo "    ERROR: failed to copy independent build manifest into the staged tree" >&2
+    rm -rf "$stage"
+    rm -f "$vdf_backup"
+    echo "    previous installation preserved at $dest" >&2
+    return 1
+  fi
+
+  if s2_inject_fail vdf-write; then
+    rm -rf "$stage"
+    rm -f "$vdf_backup"
+    echo "    previous installation preserved at $dest" >&2
+    return 1
+  fi
+  if ! s2_restore_s2script_vdf "$stage" "$vdf_backup"; then
+    echo "    ERROR: failed to write s2script.vdf into the staged tree" >&2
+    rm -rf "$stage"
+    rm -f "$vdf_backup"
+    echo "    previous installation preserved at $dest" >&2
+    return 1
+  fi
+  rm -f "$vdf_backup"
+
+  if ! s2_replace_metamod_tree "$dest" "$stage"; then
+    echo "    previous installation preserved at $dest" >&2
+    return 1
+  fi
+
   echo "    installed $source ($artifact) sha256=$(s2_identity_get "$(s2_metamod_identity "$dest")" sha256)"
   return 0
 }
