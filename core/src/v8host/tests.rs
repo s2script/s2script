@@ -2068,6 +2068,22 @@
         shutdown();
     }
 
+    #[test]
+    fn can_shutdown_tracks_host_borrow_then_is_safe_after_return() {
+        let _ = init(dummy_logger());
+        assert!(can_shutdown(), "idle isolate is safe to shut down");
+        let during = with_host_borrowed(|| can_shutdown());
+        assert!(!during, "HOST.try_borrow fails while dispatch holds the isolate");
+        assert!(can_shutdown(), "safe again after the borrow returns");
+        let during_dispatch = {
+            let _scope = crate::dispatch::DispatchScope::enter();
+            can_shutdown()
+        };
+        assert!(!during_dispatch, "dispatch-in-progress is not idle");
+        assert!(can_shutdown(), "safe again after dispatch returns");
+        shutdown();
+    }
+
     /// `shutdown()` must tear every registered owner-scoped store down by SWEEPING the registry, not
     /// by a hand-written line per store. The cascade this replaces had to be extended by hand for
     /// every new capability slice, and silently kept stale state on the ones where that was

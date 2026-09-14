@@ -24,6 +24,7 @@
 
 #include <khook.hpp>
 
+#include <atomic>
 #include <cstddef>
 #include <memory>
 #include <mutex>
@@ -32,6 +33,7 @@
 #include <vector>
 
 enum class S2HookState { Failed, Pending, Active, Removing, Removed };
+enum class S2HookLifecycle { Running, Retiring, Ready };
 
 struct S2HookReceipt {
     KHook::HookID_t id = KHook::INVALID_HOOK;
@@ -67,6 +69,8 @@ struct ObserveFrame {
 
 inline thread_local int g_callback_depth = 0;
 inline thread_local std::vector<ObserveFrame> g_observe_stack;
+inline std::atomic<int> g_active_callbacks{0};
+inline std::atomic<S2HookLifecycle> g_lifecycle{S2HookLifecycle::Running};
 
 struct RetirementEntry {
     std::shared_ptr<S2HookBindingState> state;
@@ -98,6 +102,7 @@ inline bool NoteObserve(const std::shared_ptr<S2HookBindingState>& state, KHook:
         }
     }
     g_callback_depth++;
+    s2hook_detail::g_active_callbacks.fetch_add(1, std::memory_order_acq_rel);
     g_observe_stack.push_back({state.get(), id});
     return true;
 }
@@ -110,6 +115,9 @@ inline void LeaveObserve() {
     g_observe_stack.pop_back();
     if (g_callback_depth > 0) {
         g_callback_depth--;
+    }
+    if (s2hook_detail::g_active_callbacks.load(std::memory_order_acquire) > 0) {
+        s2hook_detail::g_active_callbacks.fetch_sub(1, std::memory_order_acq_rel);
     }
     if (!frame.state) {
         return;
@@ -189,13 +197,91 @@ private:
     bool armed_ = false;
 };
 
+inline void S2Hook_SetLifecycle(S2HookLifecycle state) {
+    s2hook_detail::g_lifecycle.store(state, std::memory_order_release);
+}
+
+inline S2HookLifecycle S2Hook_Lifecycle() {
+    return s2hook_detail::g_lifecycle.load(std::memory_order_acquire);
+}
+
+inline bool S2Hook_MayDispatch() {
+    return S2Hook_Lifecycle() == S2HookLifecycle::Running;
+}
+
+inline bool S2Hook_AcceptingRegistrations() {
+    return S2Hook_Lifecycle() == S2HookLifecycle::Running;
+}
+
+inline int S2Hook_ActiveCount() {
+    return s2hook_detail::g_active_callbacks.load(std::memory_order_acquire);
+}
+
+inline bool S2Hook_NoActiveDispatch() {
+    if (s2hook_detail::g_callback_depth > 0) {
+        return false;
+    }
+    return S2Hook_ActiveCount() == 0;
+}
+
+inline bool S2Hook_EnterDispatch(const S2HookObserve& obs) {
+    return static_cast<bool>(obs) && S2Hook_MayDispatch();
+}
+
+// Direct core-dispatch entries (ConCommand trampoline, event listener) that
+// are not a checked KHook Observe still hold an active-dispatch count.
+class [[nodiscard]] S2HookDispatchGuard {
+public:
+    S2HookDispatchGuard() {
+        if (!S2Hook_MayDispatch()) {
+            return;
+        }
+        s2hook_detail::g_active_callbacks.fetch_add(1, std::memory_order_acq_rel);
+        armed_ = true;
+    }
+    ~S2HookDispatchGuard() { reset(); }
+
+    S2HookDispatchGuard(S2HookDispatchGuard&& other) noexcept : armed_(other.armed_) {
+        other.armed_ = false;
+    }
+    S2HookDispatchGuard& operator=(S2HookDispatchGuard&& other) noexcept {
+        if (this != &other) {
+            reset();
+            armed_ = other.armed_;
+            other.armed_ = false;
+        }
+        return *this;
+    }
+
+    S2HookDispatchGuard(const S2HookDispatchGuard&) = delete;
+    S2HookDispatchGuard& operator=(const S2HookDispatchGuard&) = delete;
+
+    explicit operator bool() const noexcept { return armed_; }
+
+    void reset() noexcept {
+        if (!armed_) {
+            return;
+        }
+        armed_ = false;
+        s2hook_detail::g_active_callbacks.fetch_sub(1, std::memory_order_acq_rel);
+    }
+
+private:
+    bool armed_ = false;
+};
+
 // true = this thread is not on a hook callback stack (safe to walk the
 // retirement queue). It does NOT mean the queue is empty: delayed
 // completions leave Removing entries. Unload must require
 // DrainRetirement() && RetirementPending() == 0 and must not busy-wait
 // those completions on the game thread. false = reject/defer Unload.
+// TLS depth alone is not a cross-thread drain: also require a zero global
+// active-callback count.
 inline bool S2Hook_DrainRetirement() {
     if (s2hook_detail::g_callback_depth > 0) {
+        return false;
+    }
+    if (s2hook_detail::g_active_callbacks.load(std::memory_order_acquire) > 0) {
         return false;
     }
     std::lock_guard<std::mutex> lock(s2hook_detail::g_retire_mu);
@@ -309,6 +395,30 @@ public:
         if (address == nullptr) {
             return this->Fail("null function address");
         }
+        if (!S2Hook_AcceptingRegistrations()) {
+            return this->Fail("plugin retiring");
+        }
+        const void* hooked = this->_hooked_addr;
+        {
+            std::lock_guard<std::mutex> lock(this->state_->mu);
+            for (const auto& pair : this->state_->owned) {
+                const auto& rec = pair.second;
+                if (rec.id == KHook::INVALID_HOOK) {
+                    continue;
+                }
+                if (rec.state == S2HookState::Failed || rec.state == S2HookState::Removed) {
+                    continue;
+                }
+                if (hooked == address) {
+                    this->state_->last_id = rec.id;
+                    this->state_->last_state = rec.state;
+                    this->state_->reason.clear();
+                    return {rec.id, rec.state, std::string{}};
+                }
+                this->state_->reason = "function already bound to a different address";
+                return {KHook::INVALID_HOOK, S2HookState::Failed, this->state_->reason};
+            }
+        }
         Base::Configure(address);
         KHook::HookID_t id = KHook::INVALID_HOOK;
         {
@@ -374,6 +484,9 @@ public:
     }
 
     S2HookReceipt Add(Class* obj) {
+        if (!S2Hook_AcceptingRegistrations()) {
+            return this->Fail("plugin retiring");
+        }
         if (obj == nullptr) {
             return this->Fail("null object");
         }
@@ -397,6 +510,9 @@ public:
     }
 
     S2HookReceipt AddGlobal(Class* holder) {
+        if (!S2Hook_AcceptingRegistrations()) {
+            return this->Fail("plugin retiring");
+        }
         if (holder == nullptr) {
             return this->Fail("null object");
         }

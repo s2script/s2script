@@ -5,7 +5,9 @@ struct GameConfig;
 
 // Resolve Touch-family signatures, derive vtable slots, Virtual::Configure(slot).
 void S2SdkhooksVpLoad(const GameConfig& gd);
-// Drop leftover per-entity this-filters before the core isolate dies. Bindings stay live.
+// Drop leftover per-entity this-filters and BeginRemove all fourteen kind-level
+// bindings, including objects with no remaining subscriber rows. Repeated calls
+// are idempotent. Bindings stay live until Removed.
 void S2SdkhooksVpUnload();
 
 // Boot-banner helper defined in s2script_mm.cpp (increments the gamedata OK/FAIL counters).

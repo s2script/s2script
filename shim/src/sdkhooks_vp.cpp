@@ -287,110 +287,110 @@ static bool OtherPhaseLive(void* p, Kind kind, int post) {
 
 static KHook::Return<void> Hook_StartTouch(CEntityInstance* thisPtr, CEntityInstance* pOther) {
     auto obs = g_hkStartTouch.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     return S2_FromHookResult(DispatchTouch(kStartTouch, 0, thisPtr, pOther));
 }
 static KHook::Return<void> Hook_StartTouchPost(CEntityInstance* thisPtr, CEntityInstance* pOther) {
     auto obs = g_hkStartTouch.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     DispatchTouch("StartTouchPost", 1, thisPtr, pOther);
     return S2_Ignore();
 }
 static KHook::Return<void> Hook_Touch(CEntityInstance* thisPtr, CEntityInstance* pOther) {
     auto obs = g_hkTouch.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     return S2_FromHookResult(DispatchTouch(kTouch, 0, thisPtr, pOther));
 }
 static KHook::Return<void> Hook_TouchPost(CEntityInstance* thisPtr, CEntityInstance* pOther) {
     auto obs = g_hkTouch.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     DispatchTouch("TouchPost", 1, thisPtr, pOther);
     return S2_Ignore();
 }
 static KHook::Return<void> Hook_EndTouch(CEntityInstance* thisPtr, CEntityInstance* pOther) {
     auto obs = g_hkEndTouch.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     return S2_FromHookResult(DispatchTouch(kEndTouch, 0, thisPtr, pOther));
 }
 static KHook::Return<void> Hook_EndTouchPost(CEntityInstance* thisPtr, CEntityInstance* pOther) {
     auto obs = g_hkEndTouch.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     DispatchTouch("EndTouchPost", 1, thisPtr, pOther);
     return S2_Ignore();
 }
 static KHook::Return<void> Hook_Blocked(CEntityInstance* thisPtr, CEntityInstance* pOther) {
     auto obs = g_hkBlocked.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     return S2_FromHookResult(DispatchTouch(kBlocked, 0, thisPtr, pOther));
 }
 static KHook::Return<void> Hook_BlockedPost(CEntityInstance* thisPtr, CEntityInstance* pOther) {
     auto obs = g_hkBlocked.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     DispatchTouch("BlockedPost", 1, thisPtr, pOther);
     return S2_Ignore();
 }
 
 static KHook::Return<void> Hook_Spawn(CEntityInstance* thisPtr) {
     auto obs = g_hkSpawn.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     return S2_FromHookResult(DispatchThis(kSpawn, 0, thisPtr));
 }
 static KHook::Return<void> Hook_SpawnPost(CEntityInstance* thisPtr) {
     auto obs = g_hkSpawn.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     DispatchThis("SpawnPost", 1, thisPtr);
     return S2_Ignore();
 }
 static KHook::Return<void> Hook_Think(CEntityInstance* thisPtr) {
     auto obs = g_hkThink.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     return S2_FromHookResult(DispatchThis(kThink, 0, thisPtr));
 }
 static KHook::Return<void> Hook_ThinkPost(CEntityInstance* thisPtr) {
     auto obs = g_hkThink.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     DispatchThis("ThinkPost", 1, thisPtr);
     return S2_Ignore();
 }
 static KHook::Return<void> Hook_PreThink(CEntityInstance* thisPtr) {
     auto obs = g_hkPreThink.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     DispatchThis(kPreThink, 0, thisPtr);
     return S2_Ignore();
 }
 static KHook::Return<void> Hook_PreThinkPost(CEntityInstance* thisPtr) {
     auto obs = g_hkPreThink.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     DispatchThis("PreThinkPost", 1, thisPtr);
     return S2_Ignore();
 }
 static KHook::Return<void> Hook_PostThink(CEntityInstance* thisPtr) {
     auto obs = g_hkPostThink.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     DispatchThis(kPostThink, 0, thisPtr);
     return S2_Ignore();
 }
 static KHook::Return<void> Hook_PostThinkPost(CEntityInstance* thisPtr) {
     auto obs = g_hkPostThink.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     DispatchThis("PostThinkPost", 1, thisPtr);
     return S2_Ignore();
 }
 static KHook::Return<void> Hook_VPhysicsUpdate(CEntityInstance* thisPtr) {
     auto obs = g_hkVPhysicsUpdate.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     DispatchThis(kVPhysicsUpdate, 0, thisPtr);
     return S2_Ignore();
 }
 static KHook::Return<void> Hook_VPhysicsUpdatePost(CEntityInstance* thisPtr) {
     auto obs = g_hkVPhysicsUpdate.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     DispatchThis("VPhysicsUpdatePost", 1, thisPtr);
     return S2_Ignore();
 }
 static KHook::Return<void> Hook_GroundEntChangedPost(CEntityInstance* thisPtr) {
     auto obs = g_hkGroundEntChanged.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     DispatchThis(kGroundEntChangedPost, 1, thisPtr);
     return S2_Ignore();
 }
@@ -398,13 +398,13 @@ static KHook::Return<void> Hook_GroundEntChangedPost(CEntityInstance* thisPtr) {
 static KHook::Return<void> Hook_Use(CEntityInstance* thisPtr, CEntityInstance* act,
                                       CEntityInstance* caller, int useType, float value) {
     auto obs = g_hkUse.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     return S2_FromHookResult(DispatchUse(kUse, 0, thisPtr, act, caller, useType, value));
 }
 static KHook::Return<void> Hook_UsePost(CEntityInstance* thisPtr, CEntityInstance* act,
                                           CEntityInstance* caller, int useType, float value) {
     auto obs = g_hkUse.Observe(thisPtr);
-    if (!obs) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     DispatchUse("UsePost", 1, thisPtr, act, caller, useType, value);
     return S2_Ignore();
 }
@@ -414,7 +414,7 @@ static KHook::Return<int> Hook_GetMaxHealth(CEntityInstance* thisPtr) {
     int maxH = 0;
     if (!thisPtr) return S2_Ignore(maxH);
     maxH = g_hkGetMaxHealth.CallOriginal(thisPtr);
-    if (!obs) return S2_Ignore(maxH);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore(maxH);
     CEntityHandle h = thisPtr->GetRefEHandle();
     int hr = s2script_core_dispatch_sdkhook_getmaxhealth(
         h.GetEntryIndex(), h.GetSerialNumber(), &maxH);
@@ -428,7 +428,7 @@ static KHook::Return<bool> Hook_ShouldCollide(CEntityInstance* thisPtr, int coll
     bool orig = true;
     if (!thisPtr) return S2_Ignore(orig);
     orig = g_hkShouldCollide.CallOriginal(thisPtr, collisionGroup, contentsMask);
-    if (!obs) return S2_Ignore(orig);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore(orig);
     CEntityHandle h = thisPtr->GetRefEHandle();
     int r = s2script_core_dispatch_sdkhook_shouldcollide(
         h.GetEntryIndex(), h.GetSerialNumber(), collisionGroup, contentsMask, orig ? 1 : 0);
@@ -440,7 +440,7 @@ static KHook::Return<bool> Hook_CanBeAutobalanced(CEntityInstance* thisPtr) {
     bool orig = true;
     if (!thisPtr) return S2_Ignore(orig);
     orig = g_hkCanBeAutobalanced.CallOriginal(thisPtr);
-    if (!obs) return S2_Ignore(orig);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore(orig);
     CEntityHandle h = thisPtr->GetRefEHandle();
     int r = s2script_core_dispatch_sdkhook_canbeautobalanced(
         h.GetEntryIndex(), h.GetSerialNumber(), orig ? 1 : 0);
@@ -573,10 +573,26 @@ void S2SdkhooksVpUnload() {
             VpRemoveThis(kind, hooked);
         }
     }
+    // Retire all fourteen kind-level objects even when subscriber rows are empty.
+    g_hkStartTouch.BeginRemove();
+    g_hkTouch.BeginRemove();
+    g_hkEndTouch.BeginRemove();
+    g_hkBlocked.BeginRemove();
+    g_hkSpawn.BeginRemove();
+    g_hkThink.BeginRemove();
+    g_hkPreThink.BeginRemove();
+    g_hkPostThink.BeginRemove();
+    g_hkUse.BeginRemove();
+    g_hkGetMaxHealth.BeginRemove();
+    g_hkShouldCollide.BeginRemove();
+    g_hkVPhysicsUpdate.BeginRemove();
+    g_hkGroundEntChanged.BeginRemove();
+    g_hkCanBeAutobalanced.BeginRemove();
     ClearSlots();
 }
 
 extern "C" int s2_sdkhook_vp_add(int index, int serial, const char* type, int post) {
+    if (!S2Hook_AcceptingRegistrations()) return 0;
     Kind kind;
     if (!ParseKind(type, &kind)) return 0;
     if (s_slot[static_cast<int>(kind)] < 0) return 0;

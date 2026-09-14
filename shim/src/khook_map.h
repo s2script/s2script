@@ -3,8 +3,10 @@
 #include "khook_binding.h"
 // Action helpers for KHook handlers. Observe/BeginRemove/Drain live on the
 // checked bindings: keep `auto obs = binding.Observe(...)` alive for the
-// callback; DrainRetirement() true means not on a callback stack (Unload also
-// requires RetirementPending()==0). Retirement retains S2HookBindingState,
+// callback and honor `S2Hook_EnterDispatch(obs)` before JS (constructing
+// Observe is not enough). DrainRetirement() true means not on a callback
+// stack (Unload also requires RetirementPending()==0). Direct core-dispatch
+// entries use S2HookDispatchGuard. Retirement retains S2HookBindingState,
 // not the typed S2Checked* object — keep that object until Removed.
 
 inline KHook::Return<void> S2_Ignore() { return { KHook::Action::Ignore }; }

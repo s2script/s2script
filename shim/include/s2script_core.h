@@ -32,6 +32,10 @@ int  s2script_core_init(s2_log_fn logger, s2_hook_request_fn request_hook, const
 int  s2script_core_eval(const char* utf8_js);
 int  s2script_core_dispatch_game_frame(int phase, int simulating, int first, int last); /* phase 0=Pre,1=Post; returns collapsed HookResult */
 void s2script_core_shutdown(void);
+/* Read-only internal query: 1 only when actual core state is safe to shut down
+ * (HOST not borrowed and no dispatch in progress), 0 otherwise. A panic swallowed
+ * inside s2script_core_shutdown is not success. */
+int  s2script_core_can_shutdown(void);
 /* Shim -> core: called by the ConCommand trampoline when a registered command fires.
  * name = Arg(0) (command name), slot = CPlayerSlot::Get() (-1 for server console),
  * args = ArgS() (everything after the command name). */
