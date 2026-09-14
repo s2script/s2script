@@ -1533,7 +1533,7 @@ static int s2_user_message_send(const int* slots, int slotCount) {
 // UserMessage-interception slice. Doctrine: the ONE borrowed layout fact is
 // NetMessageInfo_t::m_MessageId (inetworkserializer.h:53 — never exercised by the send path);
 // validated fail-closed at subscribe (round-trip below) and on an observe-only first fire.
-// Hot path: a bitmap test on the id, MRES_IGNORED on miss before ANY reflection.
+// Hot path: a bitmap test on the id, S2_Ignore on miss before ANY reflection.
 // Block-scoped view statics are SEPARATE from the send builder's s_umInfo/s_umData/s_umMsg above,
 // so a handler that builds+sends a NEW user message mid-hook cannot retarget the intercepted view.
 // ---------------------------------------------------------------------------
@@ -5336,7 +5336,8 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
 static bool   s_legacyFilterActive = false;
 static uint64_t s_legacyAllowMask  = 0;
 
-void S2ScriptPlugin::Hook_GameFramePre(bool simulating, bool first, bool last) {
+KHook::Return<void> S2ScriptPlugin::Hook_GameFramePre(ISource2Server* server, bool simulating, bool first, bool last) {
+    auto obs = g_hk.gameFrame.Observe(server);
     // The frame counter first, so every line printed from here on — including the drain's — names
     // the frame it is actually on, and "deferred at frame N, replayed at frame N+1" is readable
     // straight off the log. A counter bump touches no JS, no engine and no core, so it does not
@@ -5372,19 +5373,22 @@ void S2ScriptPlugin::Hook_GameFramePre(bool simulating, bool first, bool last) {
     }
     s2script_core_dispatch_game_frame(0, static_cast<int>(simulating),
                                       static_cast<int>(first), static_cast<int>(last));
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
 
-void S2ScriptPlugin::Hook_GameFramePost(bool simulating, bool first, bool last) {
+KHook::Return<void> S2ScriptPlugin::Hook_GameFramePost(ISource2Server* server, bool simulating, bool first, bool last) {
+    auto obs = g_hk.gameFrame.Observe(server);
     s2script_core_dispatch_game_frame(1, static_cast<int>(simulating),
                                       static_cast<int>(first), static_cast<int>(last));
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
 
 // FireEvent Pre hook: run pre-subscribers (they may getX/setX + return a HookResult); if they collapse
-// to "suppress broadcast", re-call the original with bDontBroadcast=true and SUPERCEDE.
-bool S2ScriptPlugin::Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDontBroadcast) {
-    if (!ev) RETURN_META_VALUE(MRES_IGNORED, true);
+// to "suppress broadcast", re-call the original with a rewritten bDontBroadcast and S2_Supersede.
+KHook::Return<bool> S2ScriptPlugin::Hook_FireEventPre(IGameEventManager2* mgr, IGameEvent* ev,
+                                                     [[maybe_unused]] bool bDontBroadcast) {
+    auto obs = g_hk.fireEvent.Observe(mgr);
+    if (!ev) return S2_Ignore(true);
     IGameEvent* prev = s_currentEvent;
     s_currentEvent = ev;                                       // mutable during the pre-dispatch
     int suppress = s2script_core_dispatch_game_event_pre(ev->GetName());
@@ -5411,7 +5415,7 @@ bool S2ScriptPlugin::Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDo
         // all-or-nothing behaviour, which is what `Handled` has always meant for events nobody scoped.
         s_legacyFilterActive = haveMask;
         s_legacyAllowMask = allow;
-        bool ret = SH_CALL(s_pGameEventManager, &IGameEventManager2::FireEvent)(ev, haveMask ? false : true);
+        bool ret = KHook::CallOriginal(&IGameEventManager2::FireEvent, mgr, ev, haveMask ? false : true);
         s_legacyFilterActive = false;
         s_legacyAllowMask = 0;
         // The flag is deliberately LEFT ARMED here and cleared at end of frame instead.
@@ -5421,23 +5425,24 @@ bool S2ScriptPlugin::Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDo
         // messages are batched and flushed later in the frame — so by the time the post arrived the flag
         // had already been cleared. Hook_GameFramePost clears it, which bounds the window to the frame
         // that suppressed the event without depending on when the engine chooses to flush.
-        RETURN_META_VALUE(MRES_SUPERCEDE, ret);                // we fired it ourselves with broadcast off
+        return S2_Supersede(ret);                // we fired it ourselves with broadcast off
     }
-    RETURN_META_VALUE(MRES_IGNORED, true);                     // original runs; any set* mods already applied
+    return S2_Ignore(true);                     // original runs; any set* mods already applied
 }
 
 // UserMessage-interception choke point (usermsg-hook slice): every outbound event/message posts through
 // here. Order: recursion guard -> degraded guard -> observe-only FIRST-FIRE validation (never suppresses)
-// -> bitmap gate on m_MessageId (one virtual + one bit test; MRES_IGNORED on miss BEFORE any reflection/
+// -> bitmap gate on m_MessageId (one virtual + one bit test; S2_Ignore on miss BEFORE any reflection/
 // strcmp/FFI/alloc/logging) -> name-keyed core dispatch with block-scoped statics -> collapsed HookResult
-// >= Handled(2) => MRES_SUPERCEDE (the message is dropped for every recipient AND any server-side local
+// >= Handled(2) => S2_FromHookResult Supersede (the message is dropped for every recipient AND any server-side local
 // listener — the live gate watches for server-side fallout; fallback = recall-with-modified-mask).
-void S2ScriptPlugin::Hook_PostEvent(CSplitScreenSlot nSlot, bool bLocalOnly, int nClientCount,
-                                    const uint64* clients, INetworkMessageInternal* pEvent,
+KHook::Return<void> S2ScriptPlugin::Hook_PostEvent(IGameEventSystem* eventSystem, CSplitScreenSlot nSlot, bool bLocalOnly, int nClientCount,
+                                    const unsigned long long* clients, INetworkMessageInternal* pEvent,
                                     const CNetMessage* pData, unsigned long nSize,
                                     NetChannelBufType_t bufType) {
+    auto obs = g_hk.postEvent.Observe(eventSystem);
     (void)nSlot; (void)bLocalOnly; (void)nSize; (void)bufType;
-    if (s_inUserMsgDispatch) RETURN_META(MRES_IGNORED);   // recursion guard (a mid-hook send re-enters here)
+    if (s_inUserMsgDispatch) return S2_Ignore();   // recursion guard (a mid-hook send re-enters here)
     // Cheap gate FIRST: one virtual (GetNetMessageInfo) + one bitmap bit test on m_MessageId. A non-subscribed
     // message costs exactly this before ANY reflection/strcmp/FFI/alloc/logging. Doctrine note on the ONE
     // borrowed layout fact (NetMessageInfo_t::m_MessageId): it is RANGE-CHECKED fail-closed at subscribe and
@@ -5486,14 +5491,14 @@ void S2ScriptPlugin::Hook_PostEvent(CSplitScreenSlot nSlot, bool bLocalOnly, int
                     META_CONPRINTF("[s2script] event hidden from mask %llx (allow %llx)\n",
                                    (unsigned long long)who, (unsigned long long)s_legacyAllowMask);
                 }
-                RETURN_META(MRES_SUPERCEDE);
+                return S2_Supersede();
             }
         }
     }
-    if (!mi || !s2_usermsg_bit((int)mi->m_MessageId)) RETURN_META(MRES_IGNORED);
+    if (!mi || !s2_usermsg_bit((int)mi->m_MessageId)) return S2_Ignore();
     google::protobuf::Message* pb = pData
         ? reinterpret_cast<google::protobuf::Message*>(const_cast<CNetMessage*>(pData)->AsProto()) : nullptr;
-    if (!pb) RETURN_META(MRES_IGNORED);
+    if (!pb) return S2_Ignore();
     const char* nm = pEvent->GetUnscopedName();
     // Observe-only first-fire, gated on the first SUBSCRIBED message that reaches here (deterministic — a
     // message a plugin actually asked for, NOT the arbitrary first engine post, which could be bodyless and
@@ -5505,19 +5510,18 @@ void S2ScriptPlugin::Hook_PostEvent(CSplitScreenSlot nSlot, bool bLocalOnly, int
         if (!pb->GetDescriptor() || !pb->GetReflection() || !nm || !*nm) {
             META_CONPRINTF("[s2script] USERMSG VALIDATION: subscribed message id=%d lacks readable protobuf "
                            "reflection — this fire skipped (send path unaffected)\n", (int)mi->m_MessageId);
-            RETURN_META(MRES_IGNORED);
+            return S2_Ignore();
         }
         META_CONPRINTF("[s2script] USERMSG intercept validated (first subscribed fire: id=%d name=%s)\n",
                        (int)mi->m_MessageId, nm);
-        RETURN_META(MRES_IGNORED);   // observe-only: the hook goes live on the NEXT subscribed fire
+        return S2_Ignore();   // observe-only: the hook goes live on the NEXT subscribed fire
     }
     s_hookMsg = pb; s_hookClients = clients; s_hookClientCount = nClientCount;
     s_inUserMsgDispatch = true;
     int result = s2script_core_dispatch_usermsg(nm, (int)mi->m_MessageId);
     s_inUserMsgDispatch = false;
     s_hookMsg = nullptr; s_hookClients = nullptr; s_hookClientCount = 0;   // block-scope ends here
-    if (result >= 2 /* HookResult.Handled */) RETURN_META(MRES_SUPERCEDE);
-    RETURN_META(MRES_IGNORED);
+    return S2_FromHookResult(result);
 }
 
 // Slice 6.11c: a player typed a command at the console. Dispatch the matching registered s2script command
@@ -5529,34 +5533,39 @@ void S2ScriptPlugin::Hook_PostEvent(CSplitScreenSlot nSlot, bool bLocalOnly, int
 //
 // Listeners only: this deliberately does NOT run s2script's own registered commands, which already
 // dispatch through their ConCommand trampoline — routing them here too would fire every handler
-// twice. Observe-by-default, matching SourceMod: SUPERCEDE only when a listener asks, because
+// twice. Observe-by-default, matching SourceMod: S2_Supersede only when a listener asks, because
 // superseding a command like `player_ping` by default would stop the ping marker being placed.
-void S2ScriptPlugin::Hook_DispatchConCommand(ConCommandRef cmd, const CCommandContext& ctx,
+KHook::Return<void> S2ScriptPlugin::Hook_DispatchConCommand(ICvar* cvar, ConCommandRef cmd, const CCommandContext& ctx,
                                              const CCommand& args) {
+    auto obs = g_hk.dispatchConCommand.Observe(cvar);
     (void)cmd;
     const char* name = args.Arg(0);
-    if (!name || !name[0]) RETURN_META(MRES_IGNORED);
+    if (!name || !name[0]) return S2_Ignore();
     const char* argStr = args.ArgS();
+    // FFI is 1 iff listeners collapsed to Handled/Stop (bool, not a HookResult int).
+    // S2_FromHookResult(1) would Ignore; keep truthy → Supersede.
     if (s2script_core_dispatch_command_listeners(ctx.GetPlayerSlot().Get(), name,
                                                  argStr ? argStr : "")) {
-        RETURN_META(MRES_SUPERCEDE);
+        return S2_Supersede();
     }
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
 
-void S2ScriptPlugin::Hook_ClientCommand(CPlayerSlot slot, const CCommand& args) {
+KHook::Return<void> S2ScriptPlugin::Hook_ClientCommand(ISource2GameClients* clients, CPlayerSlot slot, const CCommand& args) {
+    auto obs = g_hk.clientCommand.Observe(clients);
     const char* name = args.Arg(0);
-    if (!name || !name[0]) RETURN_META(MRES_IGNORED);
+    if (!name || !name[0]) return S2_Ignore();
     const char* argStr = args.ArgS();
+    // FFI is 1 iff a registered command matched (bool, not a HookResult int).
     if (s2script_core_dispatch_client_command(slot.Get(), name, argStr ? argStr : "")) {
         META_CONPRINTF("[s2script] console command '%s' by slot=%d\n", name, slot.Get());
-        RETURN_META(MRES_SUPERCEDE);   // ours → engine won't also handle it (no "Unknown command" server-side)
+        return S2_Supersede();   // ours → engine won't also handle it (no "Unknown command" server-side)
     }
-    RETURN_META(MRES_IGNORED);         // not ours → the engine handles it normally
+    return S2_Ignore();         // not ours → the engine handles it normally
 }
 
 // Client lifecycle notify-hooks (@s2script/clients sub-project). Each forwards the player slot to the
-// Task-1 dispatch (runs the JS Clients.on(name) subscribers) and RETURN_META(MRES_IGNORED) — notify-only,
+// Task-1 dispatch (runs the JS Clients.on(name) subscribers) and returns S2_Ignore() — notify-only,
 // never alters flow. The `uint64` param types match eiface.h / the Virtual args (== the header's `unsigned long
 // long` on Linux). Post-hooks (added `false`).
 //
@@ -5573,32 +5582,37 @@ static void S2_ClearClientSlotState(int slot) {
     s_voiceHasRule &= ~(1ull << slot);
 }
 
-void S2ScriptPlugin::Hook_OnClientConnected(CPlayerSlot slot, const char*, uint64, const char*, const char*, bool) {
+KHook::Return<void> S2ScriptPlugin::Hook_OnClientConnected(ISource2GameClients* clients, CPlayerSlot slot, const char*, unsigned long long, const char*, const char*, bool) {
+    auto obs = g_hk.onClientConnected.Observe(clients);
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonConnected;
     S2_DispatchClientEvent("connect", s, s2script_core_client_begin(s));
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
-void S2ScriptPlugin::Hook_ClientPutInServer(CPlayerSlot slot, const char*, int, uint64) {
+KHook::Return<void> S2ScriptPlugin::Hook_ClientPutInServer(ISource2GameClients* clients, CPlayerSlot slot, const char*, int, unsigned long long) {
+    auto obs = g_hk.clientPutInServer.Observe(clients);
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonSpawn;
     S2_DispatchClientEvent("putinserver", s, s2script_core_client_ensure(s));
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
-void S2ScriptPlugin::Hook_ClientActive(CPlayerSlot slot, bool, const char*, uint64) {
+KHook::Return<void> S2ScriptPlugin::Hook_ClientActive(ISource2GameClients* clients, CPlayerSlot slot, bool, const char*, unsigned long long) {
+    auto obs = g_hk.clientActive.Observe(clients);
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonFull;
     MaybeValidateVoiceListening();   // one-shot Get/Set round-trip once two clients are active
     S2_DispatchClientEvent("active", s, s2script_core_client_ensure(s));
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
-void S2ScriptPlugin::Hook_ClientFullyConnect(CPlayerSlot slot) {
+KHook::Return<void> S2ScriptPlugin::Hook_ClientFullyConnect(ISource2GameClients* clients, CPlayerSlot slot) {
+    auto obs = g_hk.clientFullyConnect.Observe(clients);
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonFull;
     S2_DispatchClientEvent("fullyconnect", s, s2script_core_client_ensure(s));
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
-void S2ScriptPlugin::Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnectionReason, const char*, uint64, const char*) {
+KHook::Return<void> S2ScriptPlugin::Hook_ClientDisconnect(ISource2GameClients* clients, CPlayerSlot slot, ENetworkDisconnectionReason, const char*, unsigned long long, const char*) {
+    auto obs = g_hk.clientDisconnect.Observe(clients);
     int s = slot.Get();
     // Copy every string now: callbacks may re-enter engine code or replace the occupant.
     const uint64_t token = s2script_core_client_generation(s);
@@ -5608,19 +5622,21 @@ void S2ScriptPlugin::Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnecti
     // Clear departing engine policy before fan-out: a synchronous callback can connect B.
     S2_ClearClientSlotState(s);
     S2_DispatchClientEvent("disconnect", s, token, &identity);
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
-void S2ScriptPlugin::Hook_ClientSettingsChanged(CPlayerSlot slot) {
+KHook::Return<void> S2ScriptPlugin::Hook_ClientSettingsChanged(ISource2GameClients* clients, CPlayerSlot slot) {
+    auto obs = g_hk.clientSettingsChanged.Observe(clients);
     S2_DispatchClientEvent("settingschanged", slot.Get(), s2script_core_client_generation(slot.Get()));
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
 
 // Voice-control: ClientVoice fires per RECEIVED voice packet (tens/sec while a client talks — never
 // for bots). Throttle per-slot to <=1 core dispatch per wall-clock second; the first packet of a
 // transmission always dispatches, so a lazy mute-on-talk (the TTT PlayerMuter pattern) lands
-// immediately. Notify-only (POST, MRES_IGNORED); the core side is the existing try_borrow_mut-guarded
+// immediately. Notify-only (POST, S2_Ignore); the core side is the existing try_borrow_mut-guarded
 // dispatch_client_event under the name "voice".
-void S2ScriptPlugin::Hook_ClientVoice(CPlayerSlot slot) {
+KHook::Return<void> S2ScriptPlugin::Hook_ClientVoice(ISource2GameClients* clients, CPlayerSlot slot) {
+    auto obs = g_hk.clientVoice.Observe(clients);
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) {
         time_t now = time(nullptr);
@@ -5629,16 +5645,17 @@ void S2ScriptPlugin::Hook_ClientVoice(CPlayerSlot slot) {
             S2_DispatchClientEvent("voice", s, s2script_core_client_generation(s));
         }
     }
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
 
 // Voice-control: the enforcement hook (CSSharp voice_manager.cpp:60-63 shape). PRE hook; when the
-// SENDER is muted and the game is about to store listen=true, swap the param to false with
-// MRES_IGNORED + NEWPARAMS — the engine's own implementation still runs and stores our value. HOT
+// SENDER is muted and the game is about to store listen=true, Recall with listen=false and
+// S2_Ignore — the engine's own implementation still runs and stores our value. HOT
 // PATH: plain array reads only. First fire performs the arg-sanity half of the doctrine validation
 // (out-of-range slots = vtable drift -> named degrade, rewrite disabled) and logs once — that log
 // line is also the live evidence for the engine's refresh cadence.
-bool S2ScriptPlugin::Hook_SetClientListening(CPlayerSlot receiver, CPlayerSlot sender, bool bListen) {
+KHook::Return<bool> S2ScriptPlugin::Hook_SetClientListening(IVEngineServer2* engine, CPlayerSlot receiver, CPlayerSlot sender, bool bListen) {
+    auto obs = g_hk.setClientListening.Observe(engine);
     int r = receiver.Get(), s = sender.Get();
     if (!s_voiceListenSeen) {
         s_voiceListenSeen = true;
@@ -5669,17 +5686,20 @@ bool S2ScriptPlugin::Hook_SetClientListening(CPlayerSlot receiver, CPlayerSlot s
             }
         }
         if (deny) {
-            RETURN_META_VALUE_NEWPARAMS(MRES_IGNORED, bListen, &IVEngineServer2::SetClientListening,
-                                        (receiver, sender, false));
+            KHook::Recall(&IVEngineServer2::SetClientListening,
+                          KHook::Return<bool>{ KHook::Action::Ignore, bListen },
+                          engine, receiver, sender, false);
+            return S2_Ignore(bListen);
         }
     }
-    RETURN_META_VALUE(MRES_IGNORED, bListen);
+    return S2_Ignore(bListen);
 }
 
 // POST StartupServer = the map is starting up on a live, named game server (CSSharp reads the map
 // name in its POST hook the same way). Also doubles as the client-list slice's boot sanity line —
 // a garbage GetIGameServer()/GetMapName()/GetMaxClients() vtable read would be visible here.
-void S2ScriptPlugin::Hook_StartupServer(const GameSessionConfiguration_t&, ISource2WorldSession*, const char*) {
+KHook::Return<void> S2ScriptPlugin::Hook_StartupServer(INetworkServerService* nss, const GameSessionConfiguration_t&, ISource2WorldSession*, const char*) {
+    auto obs = g_hk.startupServer.Observe(nss);
     // deferred-dispatch: drop anything still queued from the OLD map, BEFORE the map_start dispatch
     // below (which is itself deferrable). Queued entries reference a world that no longer exists,
     // and a queued IGameEvent duplicate must not outlive the map (the same reset the retired
@@ -5717,7 +5737,7 @@ void S2ScriptPlugin::Hook_StartupServer(const GameSessionConfiguration_t&, ISour
     if (s2script_core_dispatch_map_start(map ? map : "") == S2_DISPATCH_DEFERRED)
         S2_DeferMapStart(map ? map : "");
     EnsureEntityListenerRegistered();   // re-assert the IEntityListener each map (idempotent Find-guard)
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
 
 // First-fire layout validation (re-strategy Rule 2 for call-context-only facts). Decides the
@@ -5775,11 +5795,12 @@ static int TransmitValidateLayout(CCheckTransmitInfo** ppInfoList, int nInfoCoun
     return 0;                               // nothing readable yet -> retry
 }
 
-void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nInfoCount,
+KHook::Return<void> S2ScriptPlugin::Hook_CheckTransmit(ISource2GameEntities* entities, CCheckTransmitInfo** ppInfoList, int nInfoCount,
                                         CBitVec<16384>&, CBitVec<16384>&,
-                                        const Entity2Networkable_t**, const uint16*, int) {
+                                        const Entity2Networkable_t**, const unsigned short*, int) {
+    auto obs = g_hk.checkTransmit.Observe(entities);
     s_transmitSnapshots++;
-    if (!ppInfoList || nInfoCount <= 0) RETURN_META(MRES_IGNORED);
+    if (!ppInfoList || nInfoCount <= 0) return S2_Ignore();
     if (s_transmitLayoutState == 0) {               // fail-closed gate: observe-only until validated
         // No tracked clients -> no witness data possible: stay pending WITHOUT burning the attempt
         // budget (a late-loaded shim whose lifecycle hooks missed the connects would otherwise
@@ -5787,7 +5808,7 @@ void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nIn
         bool anyTracked = false;
         for (int i = 0; i < kMaxClientSlots; i++)
             if (s_trackedSignon[i] != kSignonNone) { anyTracked = true; break; }
-        if (!anyTracked) RETURN_META(MRES_IGNORED);
+        if (!anyTracked) return S2_Ignore();
         int r = TransmitValidateLayout(ppInfoList, nInfoCount);
         if (r == 1 || r == 2) {
             s_transmitLayoutState = 1;
@@ -5806,11 +5827,11 @@ void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nIn
                            "docs/re-strategy.md); transmit filtering DISABLED\n",
                            (r == -1) ? "MISMATCH" : "UNDECIDABLE", s_ctiClientOff);
         }
-        RETURN_META(MRES_IGNORED);                  // never mutate on the validating snapshot
+        return S2_Ignore();                  // never mutate on the validating snapshot
     }
-    if (s_transmitLayoutState != 1) RETURN_META(MRES_IGNORED);
+    if (s_transmitLayoutState != 1) return S2_Ignore();
     const int setTransmitActive = s2script_core_sdkhook_settransmit_active();
-    if (s_transmitTable.empty() && !setTransmitActive) RETURN_META(MRES_IGNORED);
+    if (s_transmitTable.empty() && !setTransmitActive) return S2_Ignore();
 
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -5877,7 +5898,7 @@ void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nIn
                 + (uint64_t)t1.tv_nsec - (uint64_t)t0.tv_nsec;
     s_transmitNsLast = ns;
     if (ns > s_transmitNsMax) s_transmitNsMax = ns;
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
 
 // (Sound slice precache: the hook handler + installer are FREE functions — Detour_OnPrecacheResource /
