@@ -145,6 +145,17 @@ A controller checkout SHA cannot stand in for binary identity. Missing identity 
 pending; supplied malformed or mismatched identity fails. Freeze the initial map
 identity while recording later map transitions separately.
 
+Generate test bundle provenance only while freshly building all four artifacts
+from an unchanged clean source revision. The active JS fixture must report an
+embedded build revision/token that matches its archive's bundle record; copying a
+probe cvar or hashing an arbitrary installed archive does not establish this.
+Native runtime witnesses must identify actual mapped module device/inode values,
+including Metamod's loader and game module, and reject replaced or ambiguous
+files. The generator compares installed files and both runtime witnesses before
+and after hashing, retains captured evidence, and emits the existing unsigned
+operator receipt only after successful validation. This tooling is specific to
+the acceptance fixtures and requires no production SDK/core or upstream changes.
+
 ## Acceptance evidence
 
 Keep the twelve existing case names. Replace the `native_unload_reload` subcheck

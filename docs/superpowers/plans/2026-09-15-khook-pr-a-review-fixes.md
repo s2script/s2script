@@ -101,8 +101,20 @@ lifecycle alongside them. There is no dependency patch implementation package.
   two inert patch-directory path filters: removing those optional entries requires
   workflow-write authorization unavailable to this session. They do not apply patches
   or change which retained tests run.
-- [ ] Keep actual installed artifact receipt generation executable; reject wrong
+- [x] Keep actual installed artifact receipt generation executable; reject wrong
   binaries and stale runs. Keep real-client capture and restore paths documented.
+  The following packages are implemented, independently reviewed and integrated
+  in the PR A worktree through `6a7cc3a`. Repeat Linux validation on the published
+  head; actual receipt generation still requires the live server:
+
+  | Package | Owner and reasoning | Owned files | Evidence |
+  | --- | --- | --- | --- |
+  | R1 test bundle and JS identity | Sol, medium | new build wrapper/tests; fixture identity module, runtime command and VM tests | fresh build provenance, dirty/failing build rejection, stamped and unstamped fixture runtime |
+  | R2 receipt generator | Sol, high | new Python generator and tests | installed hash/manifest checks, stable native/JS witnesses, stale/malformed input rejection, atomic evidence publication |
+  | R3 mapped native modules | Astra, high | probe runtime response, helper and focused tests | actual mapped device/inode compared with installed files; missing, replaced and ambiguous modules stay pending |
+
+  These are test-only changes. Root owns README/protocol/CI joins. No production
+  loader, SDK, core or dependency modification is required for this tooling.
 - [ ] Run focused gates once integrated, then applicable full JS/native gates and
   Linux/sniper builds. Linux/live absence remains pending, not a passing local test.
 - [ ] Update docs-only PR #220 without introducing code files, and PR #221 without
@@ -116,6 +128,35 @@ lifecycle alongside them. There is no dependency patch implementation package.
   rerun affected checks before re-review.
 - [ ] Map F1–F5 to actual commits/tests and remaining live observations. No false
   final-pass claim from parser success, mock counters or a build-only result.
+
+## Runtime identity contract for R1–R3
+
+The bundle wrapper rebuilds shim, core, probe and fixture from one clean, unchanged
+source revision and stages the resulting files under an ignored addons tree. It
+must not assign the checkout revision to arbitrary preexisting binaries. Generate
+the fixture revision and unique build token in a staged source copy; an ordinary
+unstamped fixture remains buildable but reports pending identity.
+
+The test bundle manifest uses schema 1, kind `khook-runtime-build`, source revision,
+s2script commit, fixture revision/token and exact relative paths/hashes for those
+four artifacts. The existing schema 2 Metamod manifest remains separate.
+
+The native `runtime` response becomes schema 2. It identifies the actual mapped
+probe, shim, core, Metamod and Metamod loader, including canonical paths and mapped
+device/inode values checked against the current files. Distinguish the Metamod
+loader from the engine's identically named `libserver.so` by addon layout. A
+missing, replaced, deleted or ambiguous module cannot report ready. The independent
+JS runtime response reports its embedded fixture revision/token and generation;
+mutable probe cvars cannot supply the active script's build identity.
+
+The generator runs in the server's filesystem namespace. Sample both runtime
+responses before and after verification; require stable process, generations,
+revisions, map, server build and module identities. Verify installed Metamod using
+the production verifier, match loaded host modules, compare all four installed
+artifacts with the build manifest, and compare the active fixture token/revision.
+Validate an existing pending run before side effects. Publish captured evidence
+and the existing unsigned operator receipt only after all checks succeed; never
+overwrite existing evidence. Offline tests do not establish live server identity.
 
 ## Current evidence
 
@@ -135,6 +176,11 @@ its available checks, then stopped at the Docker-only final gate because Docker
 is unavailable locally. Linux/native CI is tracked separately in the execution
 ledger.
 
+Both Linux JS and native CI passed for `29d9176`, including 904 Rust tests, the
+unmodified Metamod/KHook reference build and server-runtime shim/core/probe ELF
+checks. The reference host uses Clang; consumer builds retain GCC. Repeat the
+applicable gates after integrating R1–R3. This build result is not live CS2 proof.
+
 The actual official Metamod `2.0.0.1467` Linux archive matches GitHub's published
 asset checksum; its tag resolves to the pinned upstream source. Production release
 preparation and separate artifact verification pass using real GNU readelf 2.43.
@@ -149,6 +195,11 @@ It also confirmed two current control-flow gaps: an ordinary rejected native unl
 can begin retirement and disrupt gameplay, and forced host shutdown offers no retry
 for pending cleanup. These require plugin-side resolution; an actual shutdown crash
 has not been demonstrated. Native library unmapping remains outside acceptance.
-Actual installed-runtime receipt generation and remaining live/client observations
-also remain integration work. Keep PR #221 draft and PR B blocked. None of these
+Runtime identity tooling now passes 11 builder tests, 23 actual JS fixture tests,
+18 generator tests and 58 controller tests. The native mapped-module helper and
+actual command formatter pass local sanitizer tests; Linux loaded-DSO tests and
+the full bundle wrapper are included in CI. Independent review resolved unsafe
+symlink cleanup, runtime command mismatch and malformed pending-witness handling.
+Generating the actual installed-runtime receipt and remaining live/client observations
+still require the test server. Keep PR #221 draft and PR B blocked. None of these
 remaining tasks justify reintroducing a host patch or native hot-reload requirement.
