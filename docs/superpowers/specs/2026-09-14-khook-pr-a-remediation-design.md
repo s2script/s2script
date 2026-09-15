@@ -146,7 +146,9 @@ The explicit host-provided `g_pMemAlloc` exception still needs real process load
 Controlled native calls must remain observable under optimization: a direct call
 to a target defined in the same translation unit can let the compiler disregard
 runtime detour effects. Verdict evidence must expose every checked count and
-return value as valid JSON. Independent Function observers must not overwrite
+return value as valid JSON. Equal-action tests must record actual callback execution
+order and apply the pinned first-executed-return rule; registration order alone
+does not identify the winning callback. Independent Function observers must not overwrite
 signature bytes before the plugin under test resolves its descriptors.
 The probe must use public level-lifecycle notifications to invalidate world-owned
 entity references and prohibit entity lookup/removal after level shutdown.
