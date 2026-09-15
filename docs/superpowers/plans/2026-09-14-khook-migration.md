@@ -12,7 +12,7 @@
 
 **Revision:** 2026-09-14 source-review corrections. These are implementation requirements; no migration or live-gate completion is claimed by this documentation change.
 
-**PR A review amendment:** Use the [current remediation plan](2026-09-15-khook-pr-a-review-fixes.md) and [spec](../specs/2026-09-14-khook-pr-a-remediation-design.md). The user requires stock Metamod and only `.s2sp` hot reload inside resident s2script. No upstream patch or native shim hot-reload gate is required. The amended stock-host lifetime, artifact and acceptance requirements supersede T2–T8 where they conflict. PR B remains blocked until PR A passes.
+**PR A review amendment:** Use the [current remediation plan](2026-09-15-khook-pr-a-review-fixes.md) and [spec](../specs/2026-09-14-khook-pr-a-remediation-design.md). The user requires stock Metamod and only `.s2sp` hot reload inside resident s2script. No upstream patch or native shim hot-reload gate is required. The amended stock-host lifetime, artifact and acceptance requirements apply throughout this plan, including later PR B/C cleanup. PR B remains blocked until PR A passes.
 
 ## Global Constraints
 
@@ -23,7 +23,7 @@
 - Do not link `libkhook` or SafetyHook into `s2script.so`
 - JS API / `HookResult` / multiplexer unchanged
 - In-place object edits use Ignore; by-value declarative edits use Recall; CanAcquire retains its vote/engine fold and may submit a POST Override. Usercmd always uses Ignore after neutralization. FireEvent retains its explicit original call and Supersede.
-- Across KHook consumers: Ignore < Override < Supersede; the first return wins a tie. A later higher-priority action replaces the earlier result.
+- Across KHook consumers: Ignore < Override < Supersede; the first executed callback's return wins a tie. Registration order does not establish execution order. A later higher-priority action replaces the earlier result.
 - Validate before registration; PR B uses verified original bytes for lookup, uniqueness and instruction checks, with live address/range checks retained. INVALID_HOOK is Failed, accepted registration is Pending until observed.
 - No sentinel/dummy engine-pointer probes. Do not synchronously destroy bindings inside their callbacks or free context before physical removal completes. No game-thread polling for first fire.
 - Linux x86_64 only; sniper build for anything that must load
@@ -107,7 +107,7 @@ Do not dispatch dependent edits against another worker's uncommitted files.
 | T8 | T2 contract for fixture authoring; T6–T7 and integrated fixtures for acceptance | Suite A, full CI and real-client evidence on the final PR A revision |
 | T9 | PR A acceptance complete | Verified original-byte provider and all resolver callers; typed declarative invocations; host tests and suite B declarative cases |
 | T10 | T9 Step 1 integrated and its shared binding/retirement interfaces fixed | Named inline adapters and suite B named-hook cases |
-| T11 | T9–T10 integrated | Retired production detours, safe unload; full CI and suites A/B on final PR B revision |
+| T11 | T9–T10 integrated | Retired production detours, safe process shutdown; full CI and suites A/B on final PR B revision |
 | T12 | PR B acceptance complete | Precache decision and suite C evidence, including peer ownership |
 | T13 | T12 decision and evidence; documentation may be drafted earlier on settled contracts | Accurate operator/architecture docs, license freshness and final PR C gates |
 
@@ -982,7 +982,7 @@ sniper environment where required. The runner must assert:
 | Case | Required result |
 |------|-----------------|
 | New-capsule and shared-capsule registration | Failed/Pending/Active receipts accurate; wait for actual valid fixture delivery, not a sentinel |
-| Peer Ignore / Override / Supersede, both registration orders | Higher action wins; equal action retains first return; all PRE callbacks run |
+| Peer Ignore / Override / Supersede, both registration orders | Higher action wins; equal action retains the first executed callback's return; record actual order; all PRE callbacks run |
 | One normal fixture invocation | Exactly one engine-original call and expected PRE/POST counts |
 | Frame/client/command hooks | Actual counter increments, client lifecycle delivery and command suppression/continuation |
 | FireEvent no suppression | Original exactly once, normal broadcast |
@@ -990,7 +990,7 @@ sniper environment where required. The runner must assert:
 | Voice Recall | Denied listen bit reaches original as false; original once; unmuted case unchanged |
 | SDKHooks two entities, only one subscribed | Only selected live entity dispatches |
 | SDKHooks PRE then POST removal, reverse removal, removal inside callback | Remaining phase survives; no deadlock or stale callback |
-| Entity deletion/reused slot, map change and plugin teardown | No stale entity delivery; filters and retained bindings retire correctly |
+| Entity deletion/reused slot, map change and `.s2sp` teardown | No stale entity delivery; owner rows/filters are removed and shared native bindings remain resident |
 | CheckTransmit | First-fire layout validation and intended recipient filtering verified |
 
 Use real clients to observe recipient and voice behavior where required.
@@ -1241,7 +1241,7 @@ Extend suite B with these assertions:
 | Bypass hit / outbound early return | Hit bypasses our dispatch; next genuine invocation delivered |
 | HUD click allowed/handled | Receiver/text preserved; completion once before original; suppression preserved |
 | Peer loaded first/second | Both resolve; one original invocation; correct precedence |
-| Delayed removal/unload | Context retained until removal and invocation completion |
+| Delayed callback retirement / `.s2sp` unload | Callback context retained until removal and invocation completion; shared native bindings remain resident |
 
 ```bash
 bash scripts/test-khook-live.sh B
@@ -1380,15 +1380,15 @@ git commit -m "feat(shim): migrate named inline adapters to checked KHook bindin
 ### Task 11: PR B — retire production `s2detour`
 
 **Files:**
-- Modify: `shim/src/s2script_mm.cpp` (`s2detour::RemoveAll()` in `Unload`)
+- Modify: `shim/src/s2script_mm.cpp` (`s2detour::RemoveAll()` in the process-shutdown cleanup established by PR A)
 - Modify: `shim/CMakeLists.txt` only if `detour.cpp` is no longer linked into `s2script` (keep it for `detour_reloc_test`)
 
 **Interfaces:**
 - Produces: checked binding retirement, completion-aware removal and `S2_HookResetAll` without freed callback contexts.
 
-- [ ] **Step 1: Unload**
+- [ ] **Step 1: Process shutdown**
 
-Remove `s2detour::RemoveAll()` once T9–T10 own every inline patch. Stop new registrations/dispatch, begin retirement, and drain completions outside callbacks before freeing runtime resources. Reject/defer unload when invoked from an active callback stack; preserve all runtime/context ownership until it can safely complete. Metamod's async unloader protects dlclose but does not make early-freed shim contexts safe. Test resident/failed-unload and reload paths. Assert zero production `s2detour::Install` sites.
+Remove `s2detour::RemoveAll()` once T9–T10 own every inline intercept. Extend PR A's validated process-shutdown boundary to retire the new checked bindings before freeing their callback contexts. Preserve ordinary native-unload refusal without mutation and keep shared native hooks resident across `.s2sp` reload. Stock Metamod forces plugin removal during shutdown and does not retry a pending `Unload` response; no host-managed retry or native library unmapping may be assumed. Never synchronously remove the capsule currently executing. Test real script reload and clean process shutdown on stock Metamod, and assert zero production `s2detour::Install` sites.
 
 - [ ] **Step 2: Host + sniper + core tests**
 
@@ -1482,7 +1482,7 @@ Replace the sentence that says frameworks “each ship their own detour engine�
 - Metamod/KHook owns the one process-wide trampoline (PR #223 / issue #215).
 - s2script owns the JS `HookResult` contract among `.s2sp` plugins.
 - The shim is a KHook consumer, not a second detour library.
-- Higher action wins; first return wins ties. Peer POST can change the eventual return.
+- Higher action wins; the first executed callback's return wins ties. Peer POST can change the eventual return.
 - Typed damage dispatch is a transitional adapter using shared installation/lifetime; a descriptor/borrowed-view follow-up removes the remaining dedicated path. Future ammo events do not get private installers.
 
 - [ ] **Step 2: `INSTALL.md` / `BUILDING.md`**

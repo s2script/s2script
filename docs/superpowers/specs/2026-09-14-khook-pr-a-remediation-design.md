@@ -75,6 +75,14 @@ alone do not prove the required CS2 order. A staged cleanup using an earlier eng
 shutdown phase is a candidate to validate, not an approved implementation shortcut.
 Do not add speculative shutdown hooks or claim an untested ordering is guaranteed.
 Capture ordering and quiescence on a live server before selecting that path.
+
+Install server-config lifecycle hooks only after Metamod's loader initialization
+has completed. Installing them during `Load` or `AllPluginsLoaded` changes the
+vtable page's protection before the stock loader's pending `Disconnect` write.
+The test probe uses its first game frame for this registration. Record thread
+identity as well as phase order: core state is thread-local, so shutdown must run
+on the thread that attempted core initialization, including a failed initialization
+that may already have installed partial core state.
 Record the actual CS2 child-process outcome as well as the container status. The
 Nebula `e6b89d9` run reached `Source2Shutdown` after RCON `quit`, then the child
 segfaulted while its wrapper returned zero. A zero wrapper exit is therefore not
