@@ -491,14 +491,28 @@ struct ProbeFireEventListener : public IGameEventListener2 {
     void FireGameEvent(IGameEvent* ev) override { s2khook::ObserveFireEventListener(ev); }
 };
 static ProbeFireEventListener g_fe_listener_obj;
-static bool g_fe_listening = false;
 
-static void FeStopListening(IGameEventManager2* mgr) {
-    if (g_fe_listening && mgr) {
-        mgr->RemoveListener(&g_fe_listener_obj);
-        g_fe_listening = false;
+class ScopedFireEventListener {
+public:
+    ScopedFireEventListener(IGameEventManager2* manager, const char* event_name)
+        : manager_(manager), listening_(manager && manager->AddListener(&g_fe_listener_obj, event_name, true)) {}
+    ~ScopedFireEventListener() { Stop(); }
+
+    ScopedFireEventListener(const ScopedFireEventListener&) = delete;
+    ScopedFireEventListener& operator=(const ScopedFireEventListener&) = delete;
+
+    bool Listening() const { return listening_; }
+    void Stop() {
+        if (listening_) {
+            manager_->RemoveListener(&g_fe_listener_obj);
+            listening_ = false;
+        }
     }
-}
+
+private:
+    IGameEventManager2* manager_;
+    bool listening_;
+};
 
 class ProbePlugin : public ISmmPlugin, public IMetamodListener {
 public:
@@ -1405,13 +1419,13 @@ static void R6FireMaskEvent() {
     }
     ev->SetString("oldname", "s2khook-old");
     ev->SetString("newname", "s2khook-new");
-    g_plugin.events->AddListener(&g_fe_listener_obj, kMaskEventName, true);
+    ScopedFireEventListener listener(g_plugin.events, kMaskEventName);
     {
         s2khook::FireEventInvocationScope scope(g_run_id.c_str(), "fire_event_handled_recipient_mask", ev);
         (void)g_plugin.events->FireEvent(ev, false);
         g_fe_mask_obs = scope.Copy();
     }
-    g_plugin.events->RemoveListener(&g_fe_listener_obj);
+    listener.Stop();
     if (g_fe_mask_obs.automatic_skip_count >= 1 && g_fe_mask_obs.listener_count >= 1) {
         g_mask_call_orig_super = true;
     }
@@ -2376,13 +2390,11 @@ static void CollectControlledAndEvents() {
         PushRec("fire_event_no_suppression", "native_broadcast_unsuppressed", "native", "fail",
                 "{\"dont_broadcast\":false}", "{\"hooked\":false}", "FireEvent not installed");
     } else {
-        FeStopListening(g_plugin.events);
-        const bool listened =
-            g_plugin.events->AddListener(&g_fe_listener_obj, kFireEventNoSuppressName, true);
-        g_fe_listening = listened;
+        ScopedFireEventListener listener(g_plugin.events, kFireEventNoSuppressName);
+        const bool listened = listener.Listening();
         IGameEvent* ev = g_plugin.events->CreateEvent(kFireEventNoSuppressName, true);
         if (!ev) {
-            FeStopListening(g_plugin.events);
+            listener.Stop();
             PushPending("fire_event_no_suppression", "native_invocation_scope", "native",
                         "{\"pre\":1,\"post\":1}", "CreateEvent returned null; descriptors may not be loaded");
             PushPending("fire_event_no_suppression", "native_original_once", "native",
@@ -2398,7 +2410,7 @@ static void CollectControlledAndEvents() {
                 (void)g_plugin.events->FireEvent(ev, false);
                 g_fe_obs = scope.Copy();
             }
-            FeStopListening(g_plugin.events);
+            listener.Stop();
             const std::string scope_exp = "{\"pre\":1,\"post\":1,\"nested_foreign\":0}";
             const std::string scope_act = std::string("{\"pre\":") + std::to_string(g_fe_obs.pre_count) +
                                             ",\"post\":" + std::to_string(g_fe_obs.post_count) +
@@ -2567,6 +2579,10 @@ static void ProbeCommand(const CCommandContext& ctx, const CCommand& cmd) {
         if (!a2 || !a2[0] || (!digest.empty() && !ValidDigest(digest))) {
             META_CONPRINTF("usage: s2_khook_probe prepare <run_id> [artifact_sha256]\n"); return;
         }
+        if (!g_level_lifetime.MayTouchWorld()) {
+            META_CONPRINTF("[khook-probe] prepare pending: level inactive\n");
+            return;
+        }
         PrepareRun(a2);
         if (!digest.empty()) BindArtifact(digest);
         META_CONPRINTF("{\"khook_probe\":\"prepared\",\"run_id\":\"%s\",\"source_revision\":\"%s\"}\n",
@@ -2581,6 +2597,10 @@ static void ProbeCommand(const CCommandContext& ctx, const CCommand& cmd) {
         g_emit_run = a2;
         if (!RunMatches(a2)) {
             PrintRecs(InvalidOwned(a2));
+            return;
+        }
+        if (!g_level_lifetime.MayTouchWorld()) {
+            META_CONPRINTF("[khook-probe] collect pending: level inactive\n");
             return;
         }
         CollectRun();
@@ -2727,11 +2747,6 @@ static void BeginProbeRetirement() {
         g_plugin.dispatchConCommand.Remove(g_plugin.icvar);
     }
     if (g_plugin.events) {
-        if (g_level_lifetime.MayTouchWorld()) {
-            FeStopListening(g_plugin.events);
-        } else {
-            g_fe_listening = false;
-        }
         g_plugin.fireEvent.Remove(g_plugin.events);
     }
     virtA.Remove(&g_dummyA);
@@ -2776,7 +2791,7 @@ bool ProbePlugin::Unload(char* error, size_t maxlen) {
         }
         return false;
     }
-    if (g_level_lifetime.MayTouchWorld() && icvar && cmdRef.IsValidRef()) {
+    if (icvar && cmdRef.IsValidRef()) {
         icvar->UnregisterConCommandCallbacks(cmdRef);
     }
     cmdRef = ConCommandRef{};
