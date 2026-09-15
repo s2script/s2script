@@ -5365,10 +5365,15 @@ static void S2InstallLifecycleHooks() {
     // Load/AllPluginsLoaded are too early: KHook restores this shared vtable page RX while the
     // stock loader still has a pending Disconnect-slot write. First accepted GameFrame proves
     // that loader initialization and its write have completed.
+    using ServerConfigLifecycleMfp = void (ISource2ServerConfig::*)();
     g_preShutdownHookInstalled = S2KHookAdd(g_hk.serverConfigPreShutdown,
-        g_S2ScriptPlugin.m_serverConfig, &ISource2ServerConfig::PreShutdown, "PreShutdown terminal marker");
+        g_S2ScriptPlugin.m_serverConfig,
+        static_cast<ServerConfigLifecycleMfp>(&ISource2ServerConfig::PreShutdown),
+        "PreShutdown terminal marker");
     g_shutdownHookInstalled = S2KHookAdd(g_hk.serverConfigShutdown,
-        g_S2ScriptPlugin.m_serverConfig, &ISource2ServerConfig::Shutdown, "Shutdown terminal marker");
+        g_S2ScriptPlugin.m_serverConfig,
+        static_cast<ServerConfigLifecycleMfp>(&ISource2ServerConfig::Shutdown),
+        "Shutdown terminal marker");
     META_CONPRINTF("[s2script] terminal lifecycle hooks pre=%d shutdown=%d owner_tid=%ld install_tid=%ld\n",
                    g_preShutdownHookInstalled ? 1 : 0, g_shutdownHookInstalled ? 1 : 0,
                    g_coreOwnerTid, S2Tid());
