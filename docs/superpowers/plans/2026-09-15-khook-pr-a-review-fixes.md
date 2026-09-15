@@ -362,3 +362,23 @@ the corrected peer fixture, then select the production cleanup boundary from the
 result. A separate worker reviews synchronization and resource lifetime before
 integration. Diagnostic work uses saved artifacts, ordinary logs and public API
 observations; no host patch, debugger attachment or native hot reload is required.
+
+The peer correction and initial public-lifecycle trace were published in
+`9ae2d69`; both CI jobs and the full Nebula build passed. Neither subsequent
+startup attempt reached acceptance. The first test tree omitted required package
+data; the corrected tree verified all three master gamedata files, JavaScript,
+the isolated fixture, the four artifact hashes and stock host, then also crashed
+before RCON readiness. Both saved dumps identify the same stock-loader write:
+`libserver.so+0x17958`, `mov %rdx,0x8(%rax)`, with fault address exactly equal to
+the logged server-config vtable plus eight bytes (`Disconnect`, slot 1).
+No lifecycle PRE/POST callback fired. This is separate from the prior shutdown
+failure.
+
+Pinned source explains the startup interference: KHook virtual setup restores
+the vtable page to RX, while the loader writes its `Disconnect` entry after
+original server initialization and `AllPluginsLoaded`, without changing that
+page's protection again. Move only the new probe lifecycle registrations to the
+first accepted game frame; preserve their off-stack synchronous removal. Add
+load/current thread IDs to the trace. Do not change upstream code or page
+protection. The original server and all 25 plugin states were restored and
+verified. Repeat the corrected trace before selecting the production S3 boundary.
