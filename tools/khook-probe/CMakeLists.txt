@@ -32,12 +32,23 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+execute_process(
+    COMMAND git -C "${S2_SOURCE_DIR}" rev-parse HEAD
+    OUTPUT_VARIABLE S2_KHOOK_SOURCE_REVISION
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT S2_KHOOK_SOURCE_REVISION)
+    set(S2_KHOOK_SOURCE_REVISION "unknown")
+endif()
+
 add_library(s2_khook_probe SHARED
     plugin.cpp
     "${S2_SOURCE_DIR}/shim/src/sigscan.cpp"
 )
 
 target_include_directories(s2_khook_probe PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
     "${S2_SOURCE_DIR}/shim/src"
     "${S2_SOURCE_DIR}/shim/src/sdk_stubs"
     "${MMS}/core"
@@ -66,6 +77,7 @@ target_compile_definitions(s2_khook_probe PRIVATE
     strnicmp=strncasecmp
     _stricmp=strcasecmp
     _vsnprintf=vsnprintf
+    S2_KHOOK_SOURCE_REVISION="${S2_KHOOK_SOURCE_REVISION}"
 )
 
 target_compile_options(s2_khook_probe PRIVATE
