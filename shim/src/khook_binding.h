@@ -116,9 +116,7 @@ inline void LeaveObserve() {
     if (g_callback_depth > 0) {
         g_callback_depth--;
     }
-    if (s2hook_detail::g_active_callbacks.load(std::memory_order_acquire) > 0) {
-        s2hook_detail::g_active_callbacks.fetch_sub(1, std::memory_order_acq_rel);
-    }
+    s2hook_detail::g_active_callbacks.fetch_sub(1, std::memory_order_acq_rel);
     if (!frame.state) {
         return;
     }
@@ -233,10 +231,13 @@ inline bool S2Hook_EnterDispatch(const S2HookObserve& obs) {
 class [[nodiscard]] S2HookDispatchGuard {
 public:
     S2HookDispatchGuard() {
+        // Count the entry before the JS decision (Observe order) so Unload
+        // cannot finish in the window after MayDispatch and before fetch_add.
+        s2hook_detail::g_active_callbacks.fetch_add(1, std::memory_order_acq_rel);
         if (!S2Hook_MayDispatch()) {
+            s2hook_detail::g_active_callbacks.fetch_sub(1, std::memory_order_acq_rel);
             return;
         }
-        s2hook_detail::g_active_callbacks.fetch_add(1, std::memory_order_acq_rel);
         armed_ = true;
     }
     ~S2HookDispatchGuard() { reset(); }
@@ -269,6 +270,25 @@ public:
 private:
     bool armed_ = false;
 };
+
+// Wrap core inbound-hook dispatch so Retiring skips JS and Unload sees the hold.
+// Continue (0) if the guard refuses or `fn` is null (weak core export missing).
+inline int S2Hook_GuardedDispatchHook(int (*fn)(int, void*), int hookId, void* argView) {
+    S2HookDispatchGuard guard;
+    if (!guard || !fn) {
+        return 0;
+    }
+    return fn(hookId, argView);
+}
+
+inline int S2Hook_GuardedDispatchHookPost(int (*fn)(int, void*, int), int hookId, void* argView,
+                                         int skipped) {
+    S2HookDispatchGuard guard;
+    if (!guard || !fn) {
+        return 0;
+    }
+    return fn(hookId, argView, skipped);
+}
 
 // true = this thread is not on a hook callback stack (safe to walk the
 // retirement queue). It does NOT mean the queue is empty: delayed

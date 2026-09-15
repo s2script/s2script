@@ -5027,13 +5027,18 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // failed init returns above, leaving dispatch unset so any stale detour degrades to Continue.
     {
         S2HookOps hookOps{};
-        hookOps.dispatch = &s2script_core_dispatch_hook;   // weak: null if this core predates the entry
-        hookOps.dispatch_post = &s2script_core_dispatch_hook_post;
+        hookOps.dispatch = [](int hookId, void* argView) -> int {
+            return S2Hook_GuardedDispatchHook(s2script_core_dispatch_hook, hookId, argView);
+        };
+        hookOps.dispatch_post = [](int hookId, void* argView, int skipped) -> int {
+            return S2Hook_GuardedDispatchHookPost(s2script_core_dispatch_hook_post, hookId, argView,
+                                                  skipped);
+        };
         S2Hook_SetOps(hookOps);
-        if (!hookOps.dispatch)
+        if (!s2script_core_dispatch_hook)
             META_CONPRINTF("[s2script] WARN: core exports no inbound-hook dispatch entry — "
                            "declarative inbound hooks are OFF (shim/core version mismatch)\n");
-        if (!hookOps.dispatch_post)
+        if (!s2script_core_dispatch_hook_post)
             META_CONPRINTF("[s2script] WARN: core exports no inbound-hook POST dispatch entry — "
                            "onCanAcquirePost will not fire (shim/core version mismatch)\n");
     }
@@ -5370,12 +5375,11 @@ static uint64_t s_legacyAllowMask  = 0;
 
 KHook::Return<void> S2ScriptPlugin::Hook_GameFramePre(ISource2Server* server, bool simulating, bool first, bool last) {
     auto obs = g_hk.gameFrame.Observe(server);
-    ++s_frameNo;
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     // The frame counter first, so every line printed from here on — including the drain's — names
     // the frame it is actually on, and "deferred at frame N, replayed at frame N+1" is readable
     // straight off the log. A counter bump touches no JS, no engine and no core, so it does not
-    // weaken the drain's position below.
+    // weaken the drain's position below. Incremented once per PRE that reaches this path.
     ++s_frameNo;
     // deferred-dispatch: the FIRST statement in this hook that reaches core, before ANYTHING here
     // enters JS — the damage self-test below is the next thing that does, so the isolate is
