@@ -193,8 +193,10 @@ Independent review of `30f0cbe` confirmed script subscription removal changes on
 routing references/filters and the runtime replacement test is Metamod agnostic.
 It also confirmed two current control-flow gaps: an ordinary rejected native unload
 can begin retirement and disrupt gameplay, and forced host shutdown offers no retry
-for pending cleanup. These require plugin-side resolution; an actual shutdown crash
-has not been demonstrated. Native library unmapping remains outside acceptance.
+for pending cleanup. These require plugin-side resolution. That source audit did
+not demonstrate a crash; the subsequent live observations below now include an
+engine-requested shutdown crash with component attribution still unresolved.
+Native library unmapping remains outside acceptance.
 Runtime identity tooling now passes 12 builder tests, 23 actual JS fixture tests,
 18 generator tests and 58 controller tests. The native mapped-module helper and
 actual command formatter pass local sanitizer tests. Native CI for `4a972b5` also
@@ -205,5 +207,64 @@ while preserving rejection of real tracked and untracked source changes. The ful
 bundle wrapper remains part of native CI. Independent review resolved unsafe
 symlink cleanup, runtime command mismatch and malformed pending-witness handling.
 Generating the actual installed-runtime receipt and remaining live/client observations
-still require the test server. Keep PR #221 draft and PR B blocked. None of these
+still require a working probe on the test server. Keep PR #221 draft and PR B blocked. None of these
 remaining tasks justify reintroducing a host patch or native hot-reload requirement.
+
+## Nebula execution — September 15
+
+The Sol/medium remote operator used only `s2script-cs2-hardening` on host port 27016.
+The separate `s2script-hudlab` instance and its mounts were excluded. A fresh
+self-contained clone at `e6b89d9` passed the full runtime bundle build. Before
+replacement, RCON showed zero humans and two bots. The verified preinstall backup
+contains 116 files at
+`/home/ghirakawa/s2script-khook-backups/e6b89d9-preinstall-20260915T174030Z`.
+Its checksum-manifest SHA-256 is
+`1ade9b6a6631de1e9023d993db3309f01705a36eee0d38121cf5b30566a8dca7`.
+The old runtime's Docker-stop timeout/exit 137 is a separate baseline observation.
+
+The official stock Metamod archive and installed tree verified successfully. The
+four fresh runtime artifacts matched their manifest; shim and stamped JS loaded.
+These measurements isolated the acceptance JS fixture; the previous 29 archives
+(25 active plugins), configs and data were preserved. The probe failed to load
+with unresolved `_Z20MurmurHash2LowerCasePKcj`, preventing a runtime receipt and
+the live suite. A second Sol/medium worker fixed the missing existing SDK support
+source and added an actual probe relocation gate in `7ffbeb6`. Both JS CI
+`35004051680` and native CI `35004051696` passed on that head, including a fresh
+bundle build. The corrected probe has not yet been deployed on Nebula.
+Nebula subsequently rebuilt the full `7ffbeb6` bundle successfully from a clean
+checkout. All four hashes were recomputed, and the relocation check reports only
+the permitted host-provided allocator symbol.
+
+Two `e6b89d9` CS2 child-process SIGSEGVs were captured with the probe absent. The
+first followed an explicit `meta retry` of the failed probe (the retained transcript
+brackets the crash but lacks individual command timestamps). The second followed
+a real RCON `quit`, reached
+`Source2Shutdown` at 17:51:43.802976 UTC and segfaulted about 312 ms later. The
+wrapper reported exit zero with no OOM and no restart policy. Complete logs,
+minidumps and sidecars are retained under the operator's
+`.gate/remote-khook-pr221/` evidence directory; their copied hashes were verified.
+Cross-checking the saved AMD64 contexts maps both faulting instructions to
+`ld-linux-x86-64.so.2 + 0x15961`. The exact matching loader binary (build ID
+`1b3277a419c3fa42b199e5a170ea215b32689793`) reads offset `0x31f` through a null
+argument there. Breakpad stack scans identify stock Metamod `Unloader::Check`,
+`CPlugin::~CPlugin` and `_Unload`, followed by `Retry` in the first capture and
+`UnloadAll` in the second. These scanned return addresses symbolize against the
+exact preserved host binary; they are not a complete CFI-unwound stack.
+An independent source audit confirms both failed-record deletion paths can pass
+the failed probe's null library handle to `dlclose`. Together these observations
+strongly support failed-probe cleanup as the cause. They do not establish a fault
+in s2script's hook-retirement coordinator. The plugin-side loader correction is
+the next live test; no upstream change is part of this remediation.
+
+After a temporary SSH signing interruption, the operator verified all backup
+checksums and restored the original addon and Metamod trees. The test server is
+running again on port 27016 with zero humans, two bots and the original 25-plugin
+state (23 running and two UI fixtures unloaded). Failed runtime trees are retained
+separately. The corrected full bundle was built in the isolated clone while
+the original server remained running. The next bounded run uses the corrected
+bundle and captures runtime identity before automated checks, with the disposable
+debugger available to capture any new fault. Preserve the crash artifacts and repeat actual
+loading, both plugin orders and shutdown. A separately labelled focused `.s2sp`
+reload diagnostic may run without clients, but it cannot complete the full staged
+acceptance or replace missing human observations. No live suite or reload pass has
+been claimed from this attempt.

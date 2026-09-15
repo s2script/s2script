@@ -75,6 +75,13 @@ alone do not prove the required CS2 order. A staged cleanup using an earlier eng
 shutdown phase is a candidate to validate, not an approved implementation shortcut.
 Do not add speculative shutdown hooks or claim an untested ordering is guaranteed.
 Capture ordering and quiescence on a live server before selecting that path.
+Record the actual CS2 child-process outcome as well as the container status. The
+Nebula `e6b89d9` run reached `Source2Shutdown` after RCON `quit`, then the child
+segfaulted while its wrapper returned zero. A zero wrapper exit is therefore not
+shutdown acceptance. Its saved registers, matching loader disassembly, scanned
+host frames and source audit support null-handle cleanup of the failed probe
+record. The probe had not loaded. This is separate from the source-level
+hook-retirement gaps; diagnose any further fault before choosing a lifecycle change.
 
 Retain typed helpers and callback contexts until physical removal is complete.
 Finalize helper bookkeeping while the provider lives. Completed Virtual reverse
@@ -132,6 +139,10 @@ escapes and unsafe links. Require valid x86_64 shared ELF objects, complete load
 layout, appropriate GLIBC requirements and matching file hashes. Empty, malformed,
 truncated or arbitrary files fail. Manifest creation belongs to verified preparation
 or successful build, not the installer accepting whatever candidate it sees.
+The probe build must also reject unexpected unresolved relocations. Its SDK
+support definitions must be linked into the probe itself; the live `e6b89d9` load
+exposed a missing `MurmurHash2LowerCase` definition despite successful ELF checks.
+The explicit host-provided `g_pMemAlloc` exception still needs real process loading.
 
 Preserve running-server refusal, destination-byte verification before skipping,
 staging before replacement and rollback on failure. Failed builds invalidate stale
