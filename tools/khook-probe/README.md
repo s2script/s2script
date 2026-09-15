@@ -274,7 +274,9 @@ exist.
 ```text
 # persist happens at prepare (cvars + probe statics). Then:
 python3 scripts/rcon.py "changelevel de_dust2"   # same run_id
-# probe keeps invoking Touch via live EntByIndex (not a pre-map pointer). Then collect.
+# one post-map Touch attempt via EntByIndex, only if the occupant is still
+# trigger_push (or vt[slot] is the resolved Touch). Wrong-class occupants are
+# not invoked. If no live trigger remains, *_map_teardown_clears stays pending.
 # JS unload/reload with probe still loaded (R2 pending/retry):
 python3 scripts/rcon.py "s2script_reload @example/khook-acceptance"
 # probe invokes the new entity A once. Collect requires that delivery, not mere SDKHook
@@ -283,8 +285,8 @@ python3 scripts/rcon.py "s2script_reload @example/khook-acceptance"
 
 Slot reuse is bounded (64 attempts). If the slot is not reused with a new serial,
 that subcheck stays **pending** — not a false pass. A cached pre-map counter reused
-after map teardown is a **fail**. Zero post-map callbacks with no EntByIndex invoke
-is **pending** (that is "we stopped touching"), not a pass.
+after map teardown is a **fail**. Zero post-map callbacks with no trigger_push
+EntByIndex invoke is **pending** (wrong-class occupant is not an invoke), not a pass.
 
 ### 10. `voice_recall` (R6 native+JS+human)
 
@@ -337,7 +339,8 @@ Collect twice if the first collect only saw the subset (JS then switches mask mo
 - Registration failure: neither A nor B delivered → both JS filter subchecks fail.
 - Stale post-map record: pre-map count copied after changelevel →
   `native_map_teardown_clears` fail.
-- Map ended but no post-map EntByIndex invoke → `*_map_teardown_clears` pending.
+- Map ended but no remaining `trigger_push` to invoke via EntByIndex →
+  `*_map_teardown_clears` pending.
 - Reload registered SDKHook but it did not deliver once →
   `js_fresh_subscription_after_reload` pending.
 - Repeat prepare leaked counters (A=2) → `native_spawn_a_ok` fail.

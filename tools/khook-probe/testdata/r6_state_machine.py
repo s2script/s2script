@@ -165,8 +165,8 @@ def stale_post_map_record(
         return (
             "pending",
             {"cleared": True},
-            "need post-map Touch invoke via live EntByIndex after changelevel; "
-            "zero callbacks without an invoke is not a pass",
+            "need post-map Touch invoke via live EntByIndex of a remaining trigger_push "
+            "(not whatever now occupies the saved index); if no live trigger remains, pending",
         )
     if pre_map_count > 0 and post_map_count == pre_map_count:
         return (
@@ -227,6 +227,18 @@ def filter_invokes_for_frames(frames: int) -> int:
     return 1 if frames >= 1 else 0
 
 
+def post_map_invoke_allowed(classname: str, vtable_is_touch: bool) -> bool:
+    """Do not call CTriggerPush::Touch on a non-trigger occupant of a reused index."""
+    return classname == "trigger_push" or vtable_is_touch
+
+
+def post_map_invokes_for_frames(frames: int, map_ended_at: int = 0) -> int:
+    """One post-map attempt, not one Touch per remaining GameFrame."""
+    if frames <= map_ended_at:
+        return 0
+    return 1
+
+
 def missing_actor_human_row() -> dict:
     return {
         "result": "pass",
@@ -269,8 +281,8 @@ def pending_reason(kind: str) -> str:
         ),
         "map_change": "need operator changelevel while this run stays prepared; then collect again",
         "map_invoke": (
-            "need post-map Touch invoke via live EntByIndex after changelevel; "
-            "zero callbacks without an invoke is not a pass"
+            "need post-map Touch invoke via live EntByIndex of a remaining trigger_push "
+            "(not whatever now occupies the saved index); if no live trigger remains, pending"
         ),
         "slot_reuse": "slot reuse not achieved within bounded attempts; not a false pass",
         "reload_delivery": "fresh SDKHook registered; need one Touch delivery on the new subscription",
@@ -335,6 +347,14 @@ def selftest() -> List[str]:
     st, _, _ = stale_post_map_record(4, True, 0, True)
     if st != "pass":
         errors.append("post-map invoke silent is pass")
+    if post_map_invoke_allowed("worldspawn", False) or post_map_invoke_allowed("player", False):
+        errors.append("must not Touch world/pawn occupants after changelevel")
+    if not post_map_invoke_allowed("trigger_push", False):
+        errors.append("remaining trigger_push must be invokable")
+    if not post_map_invoke_allowed("", True):
+        errors.append("vtable-matched Touch is an allowed gate")
+    if post_map_invokes_for_frames(48, map_ended_at=5) != 1:
+        errors.append("post-map Touch must run once, not every GameFrame")
 
     js_sub = js_phase_expected("subscribe_pre_post")
     if "original" in js_sub or js_sub != {"pre": 1, "post": 1}:
