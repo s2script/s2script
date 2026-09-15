@@ -45,6 +45,24 @@ export PATH="/opt/cmake-3.28.6-linux-x86_64/bin:$PATH"
 echo '== optimized acceptance probe build =='
 cmake -S tools/khook-probe -B build/khook-probe -DCMAKE_BUILD_TYPE=Release
 cmake --build build/khook-probe -j2
+
+# A shared object may link successfully while still carrying a relocation that no library in its
+# load environment provides. Force the dynamic loader to resolve the probe now: Metamod otherwise
+# reports the first missing symbol only when an operator tries to load the plugin. g_pMemAlloc is
+# the one intentional exception; the CS2 host exports and installs Valve's allocator at runtime.
+if ! probe_relocations=$(ldd -r build/khook-probe/s2_khook_probe.so 2>&1); then
+  echo 'KHook probe relocation check could not inspect the built shared object:' >&2
+  printf '%s\n' "$probe_relocations" >&2
+  exit 1
+fi
+unexpected_probe_symbols=$(printf '%s\n' "$probe_relocations" |
+  sed -n 's/^undefined symbol: \([^[:space:]]*\).*/\1/p' |
+  grep -Fxv 'g_pMemAlloc' || true)
+if [[ -n "$unexpected_probe_symbols" ]]; then
+  echo 'KHook probe has unresolved load-time symbols:' >&2
+  printf '%s\n' "$unexpected_probe_symbols" | sed 's/^/  /' >&2
+  exit 1
+fi
 python3 - <<'PY'
 import importlib.util
 from pathlib import Path

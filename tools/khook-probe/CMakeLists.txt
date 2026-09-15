@@ -45,6 +45,8 @@ endif()
 add_library(s2_khook_probe SHARED
     plugin.cpp
     "${S2_SOURCE_DIR}/shim/src/sigscan.cpp"
+    # CKV3MemberName in plugin.cpp requires the same SDK support definitions as the production shim.
+    "${S2_SOURCE_DIR}/shim/src/tier1_shims.cpp"
     "${S2_SOURCE_DIR}/shim/src/vtable.cpp"
 )
 
