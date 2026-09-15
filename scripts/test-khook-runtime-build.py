@@ -181,6 +181,57 @@ class RuntimeBuildTests(unittest.TestCase):
                     native_builder=lambda repo: write_native(repo), fixture_builder=write_fixture,
                 )
 
+    def test_native_output_parents_cannot_escape_through_symlinks(self):
+        cases = (
+            ("build/shim", "s2script.so"),
+            ("build/khook-probe", "s2_khook_probe.so"),
+            ("target/release", "libs2script_core.so"),
+            ("target", "release/libs2script_core.so"),
+        )
+        for parent_rel, artifact_rel in cases:
+            with self.subTest(parent=parent_rel), tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as outside_td:
+                root = Path(td)
+                init_repo(root)
+                outside = Path(outside_td)
+                sentinel = outside / artifact_rel
+                sentinel.parent.mkdir(parents=True, exist_ok=True)
+                sentinel.write_bytes(b"external-sentinel")
+                unsafe = root / parent_rel
+                unsafe.parent.mkdir(parents=True, exist_ok=True)
+                unsafe.symlink_to(outside, target_is_directory=True)
+                called = []
+
+                with self.assertRaisesRegex(builder.BuildError, "unsafe native output"):
+                    builder.build_runtime(
+                        root, root / "build/khook-runtime", fixture_token=TOKEN,
+                        native_builder=lambda _repo: called.append(True),
+                        fixture_builder=write_fixture,
+                    )
+
+                self.assertEqual(called, [])
+                self.assertEqual(sentinel.read_bytes(), b"external-sentinel")
+
+    def test_all_native_paths_are_validated_before_any_stale_output_is_removed(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as outside_td:
+            root = Path(td)
+            init_repo(root)
+            earlier = root / ARTIFACT_SOURCES["shim"]
+            earlier.parent.mkdir(parents=True)
+            earlier.write_bytes(b"keep-until-validation-completes")
+            outside = Path(outside_td)
+            (outside / "libs2script_core.so").write_bytes(b"external-core")
+            (root / "target").mkdir()
+            (root / "target/release").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(builder.BuildError, "unsafe native output"):
+                builder.build_runtime(
+                    root, root / "build/khook-runtime", fixture_token=TOKEN,
+                    native_builder=lambda repo: write_native(repo), fixture_builder=write_fixture,
+                )
+
+            self.assertEqual(earlier.read_bytes(), b"keep-until-validation-completes")
+            self.assertEqual((outside / "libs2script_core.so").read_bytes(), b"external-core")
+
     def test_missing_fresh_artifact_cannot_reuse_a_stale_binary(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

@@ -1,6 +1,6 @@
 // khook-acceptance — JS fixture for KHook suite A. NOT a shipped plugin.
 //
-// Uses only public APIs. Protocol: s2_khook_accept prepare|collect|report|teardown <run_id>.
+// Uses only public APIs. Protocol: s2_khook_accept runtime, or prepare|collect|report|teardown <run_id>.
 // `report` is read-only. Competing command() registration for the probe token is forbidden;
 // only command.onClientCommand observes it. The probe observes the real engine fallback original.
 //
@@ -1075,6 +1075,17 @@ export function OnPluginStart(): void {
 
   command.server("s2_khook_accept", (cmd) => {
     const sub = (cmd.arg(0) || "").toLowerCase();
+    if (sub === "runtime") {
+      cmd.reply(JSON.stringify({
+        schema: 1,
+        kind: "khook-fixture-runtime",
+        result: fixtureIdentityReady() ? "ready" : "pending",
+        fixture_revision: KHOOK_FIXTURE_REVISION,
+        fixture_token: KHOOK_FIXTURE_TOKEN,
+        generation: Number.isInteger(instance) && instance > 0 ? instance : 1,
+      }));
+      return HookResult.Handled;
+    }
     const id = cmd.arg(1) || "";
     const digest = cmd.arg(2) || "";
     if (sub === "bind") {
@@ -1207,21 +1218,10 @@ export function OnPluginStart(): void {
       cmd.reply("[khook-accept] " + sub);
       return HookResult.Handled;
     }
-    cmd.reply("usage: s2_khook_accept prepare|bind|collect|report|restore|teardown|reload-arm|resume <run_id> [artifact_sha256]");
+    cmd.reply("usage: s2_khook_accept runtime|prepare|bind|collect|report|restore|teardown|reload-arm|resume <run_id> [artifact_sha256]");
     return HookResult.Handled;
   });
 
-  command.server("s2_khook_runtime", (cmd) => {
-    cmd.reply(JSON.stringify({
-      schema: 1,
-      kind: "khook-fixture-runtime",
-      result: fixtureIdentityReady() ? "ready" : "pending",
-      fixture_revision: KHOOK_FIXTURE_REVISION,
-      fixture_token: KHOOK_FIXTURE_TOKEN,
-      generation: Number.isInteger(instance) && instance > 0 ? instance : 1,
-    }));
-    return HookResult.Handled;
-  });
 }
 
 export function OnGameFrame(): void {

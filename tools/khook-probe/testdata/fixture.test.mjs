@@ -86,7 +86,10 @@ function host({ humans = 3, cvars = new Map(), previous,
   };
   const runtime = () => {
     const replies = [];
-    handlers.get('s2_khook_runtime')({ arg: () => '', reply: value => replies.push(JSON.parse(value)) });
+    handlers.get('s2_khook_accept')({
+      arg: i => ['runtime', '', ''][i] ?? '',
+      reply: value => { if (value.startsWith('{')) replies.push(JSON.parse(value)); },
+    });
     assert.equal(replies.length, 1);
     return replies[0];
   };
@@ -100,10 +103,12 @@ test('fixture parses without an in-memory source repair', () => {
 
 test('runtime identity command reports the embedded build witness', () => {
   const h = host();
+  const before = [...h.cvars.entries()];
   assert.deepEqual(h.runtime(), {
     schema: 1, kind: 'khook-fixture-runtime', result: 'ready',
     fixture_revision: REVISION, fixture_token: 'c'.repeat(64), generation: 1,
   });
+  assert.deepEqual([...h.cvars.entries()], before);
 });
 
 test('ordinary unstamped fixture reports pending identity', () => {

@@ -122,6 +122,24 @@ def _require_ignored_output(root: Path) -> None:
         raise BuildError("runtime-build output is not ignored by git: build/khook-runtime")
 
 
+def _validate_native_outputs(root: Path) -> None:
+    for name, rel in NATIVE_SOURCES.items():
+        parent = root
+        for part in rel.parent.parts:
+            parent /= part
+            if parent.is_symlink():
+                raise BuildError(f"unsafe native output parent for {name} is a symlink: {parent}")
+            if parent.exists() and not parent.is_dir():
+                raise BuildError(f"unsafe native output parent for {name} is not a directory: {parent}")
+        try:
+            parent.resolve().relative_to(root)
+        except ValueError as exc:
+            raise BuildError(f"unsafe native output parent for {name} escapes the repository: {parent}") from exc
+        artifact = root / rel
+        if artifact.is_symlink():
+            raise BuildError(f"unsafe native output for {name} is a symlink: {artifact}")
+
+
 def _copy_tracked_fixture(root: Path, fixture_stage: Path) -> None:
     prefix = "examples/khook-acceptance/"
     files = _git(root, "ls-files", "--", prefix).splitlines()
@@ -168,6 +186,9 @@ def build_runtime(
         _check_prerequisites(root)
     _require_ignored_output(root)
     revision = _require_clean_source(root)
+    # Validate the complete set before unlinking the first path. A later unsafe
+    # parent must not cause partial cleanup or follow a link outside the checkout.
+    _validate_native_outputs(root)
 
     # A successful receipt can only name files produced during this invocation.
     shutil.rmtree(output_root, ignore_errors=True)
