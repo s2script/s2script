@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -74,6 +75,15 @@ def write_fixture(_root: Path, fixture_stage: Path) -> None:
 
 
 class RuntimeBuildTests(unittest.TestCase):
+    def test_cli_does_not_expose_a_reusable_fixture_token(self):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts/build-khook-runtime.py"), "--help"],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertNotIn("fixture-token", result.stdout)
+
     def test_builds_one_fresh_bundle_and_exact_manifest(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

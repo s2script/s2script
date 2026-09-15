@@ -224,16 +224,10 @@ def build_runtime(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--fixture-token",
-        help="explicit 64-hex token for reproducible tests; omitted builds use a random token",
-    )
-    args = parser.parse_args(argv)
+    parser.parse_args(argv)
     root = Path(__file__).resolve().parents[1]
     try:
-        manifest = build_runtime(
-            root, root / "build/khook-runtime", fixture_token=args.fixture_token
-        )
+        manifest = build_runtime(root, root / "build/khook-runtime")
     except (BuildError, subprocess.CalledProcessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
