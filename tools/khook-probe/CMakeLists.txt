@@ -45,6 +45,7 @@ endif()
 add_library(s2_khook_probe SHARED
     plugin.cpp
     "${S2_SOURCE_DIR}/shim/src/sigscan.cpp"
+    "${S2_SOURCE_DIR}/shim/src/vtable.cpp"
 )
 
 target_include_directories(s2_khook_probe PRIVATE
@@ -59,6 +60,9 @@ target_include_directories(s2_khook_probe PRIVATE
     "${HL2SDK}/public/tier1"
     "${HL2SDK}/public/mathlib"
     "${HL2SDK}/public/appframework"
+    "${HL2SDK}/public/entity2"
+    "${HL2SDK}/public/engine"
+    "${HL2SDK}/public/vscript"
     "${HL2SDK}/game/shared"
     "${HL2SDK}/thirdparty/protobuf-3.21.8/src"
 )
