@@ -231,15 +231,11 @@ R6_NATIVE_JS_EXPECTED = {
     ("sdkhooks_phase_removal", "native_phase_remove_post"): r6.PHASE_EXPECTED["remove_post"],
     ("sdkhooks_phase_removal", "native_phase_self_unsubscribe"): r6.PHASE_EXPECTED["self_unsubscribe"],
     ("sdkhooks_phase_removal", "native_phase_final_unsubscribe"): r6.PHASE_EXPECTED["final_unsubscribe"],
-    ("sdkhooks_phase_removal", "js_phase_subscribe_pre_post"): r6.PHASE_EXPECTED["subscribe_pre_post"],
-    ("sdkhooks_phase_removal", "js_phase_remove_pre"): r6.PHASE_EXPECTED["remove_pre"],
-    ("sdkhooks_phase_removal", "js_phase_remove_post"): r6.PHASE_EXPECTED["remove_post"],
-    ("sdkhooks_phase_removal", "js_phase_self_unsubscribe"): {
-        "first_pre": 1,
-        "second_pre": 0,
-        "second_post": 1,
-    },
-    ("sdkhooks_phase_removal", "js_phase_final_unsubscribe"): r6.PHASE_EXPECTED["final_unsubscribe"],
+    ("sdkhooks_phase_removal", "js_phase_subscribe_pre_post"): r6.js_phase_expected("subscribe_pre_post"),
+    ("sdkhooks_phase_removal", "js_phase_remove_pre"): r6.js_phase_expected("remove_pre"),
+    ("sdkhooks_phase_removal", "js_phase_remove_post"): r6.js_phase_expected("remove_post"),
+    ("sdkhooks_phase_removal", "js_phase_self_unsubscribe"): r6.js_phase_expected("self_unsubscribe"),
+    ("sdkhooks_phase_removal", "js_phase_final_unsubscribe"): r6.js_phase_expected("final_unsubscribe"),
     ("entity_slot_reuse_map_teardown", "native_identity_persisted"): {"persisted": True, "index": 5, "serial": 3},
     ("entity_slot_reuse_map_teardown", "native_slot_reuse_no_stale"): {"stale": False, "reused": True},
     ("entity_slot_reuse_map_teardown", "native_map_teardown_clears"): {"cleared": True},
@@ -247,7 +243,7 @@ R6_NATIVE_JS_EXPECTED = {
     ("entity_slot_reuse_map_teardown", "js_identity_persisted"): {"persisted": True, "index": 5, "id": 11},
     ("entity_slot_reuse_map_teardown", "js_slot_reuse_no_stale"): {"stale": False, "reused": True},
     ("entity_slot_reuse_map_teardown", "js_map_teardown_clears"): {"cleared": True},
-    ("entity_slot_reuse_map_teardown", "js_fresh_subscription_after_reload"): {"fresh": True},
+    ("entity_slot_reuse_map_teardown", "js_fresh_subscription_after_reload"): {"fresh": True, "count": 1},
     ("voice_recall", "native_voice_listen_bits"): {"allowed": True, "denied": False},
     ("voice_recall", "native_voice_original_once"): {"orig": 1},
     ("voice_recall", "js_voice_policy_applied"): {"applied": True, "allowed_slot": 1, "denied_slot": 2},
@@ -396,6 +392,40 @@ def write_r6_host_fixtures(out_dir: Path, rev: str) -> None:
     )
     write_jsonl(out_dir / "r6-missing-actor.jsonl", rows)
 
+    # Map ended but no post-map EntByIndex invoke — pending, not pass (we stopped touching).
+    ident_ni = {"run_id": "khook-a-r6-map-no-invoke", "source_revision": rev}
+    rows = r6_base(ident_ni, r6_result="pass")
+    overlay(
+        rows,
+        ("native", "entity_slot_reuse_map_teardown", "native_map_teardown_clears"),
+        result="pending",
+        expected={"cleared": True},
+        actual={},
+        evidence=r6.pending_reason("map_invoke"),
+    )
+    overlay(
+        rows,
+        ("js", "entity_slot_reuse_map_teardown", "js_map_teardown_clears"),
+        result="pending",
+        expected={"cleared": True},
+        actual={},
+        evidence=r6.pending_reason("map_invoke"),
+    )
+    write_jsonl(out_dir / "r6-map-no-invoke.jsonl", rows)
+
+    # Reload registered a hook but it has not delivered once.
+    ident_rd = {"run_id": "khook-a-r6-reload-no-delivery", "source_revision": rev}
+    rows = r6_base(ident_rd, r6_result="pass")
+    overlay(
+        rows,
+        ("js", "entity_slot_reuse_map_teardown", "js_fresh_subscription_after_reload"),
+        result="pending",
+        expected={"fresh": True, "count": 1},
+        actual={},
+        evidence=r6.pending_reason("reload_delivery"),
+    )
+    write_jsonl(out_dir / "r6-reload-no-delivery.jsonl", rows)
+
     # Human pending schema/example (never prefilled pass).
     ident_human = {"run_id": "khook-a-r6-human-pending", "source_revision": rev}
     write_jsonl(out_dir / "r6-human-pending.jsonl", r6_base(ident_human, r6_result="pass"))
@@ -410,6 +440,8 @@ def judge_r6_host_fixtures(out_dir: Path) -> bool:
         ("r6-stale-post-map.jsonl", 1),
         ("r6-cleanup-reprepare.jsonl", 1),
         ("r6-missing-actor.jsonl", 1),
+        ("r6-map-no-invoke.jsonl", 2),
+        ("r6-reload-no-delivery.jsonl", 2),
     ]
     ok = True
     for name, want in checks:

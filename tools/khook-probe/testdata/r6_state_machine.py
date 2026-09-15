@@ -144,13 +144,29 @@ def reuse_verdict(
     return ("pass", {"stale": False, "reused": True}, "old subscription silent on new serial")
 
 
-def stale_post_map_record(pre_map_count: int, post_map: bool, post_map_count: int) -> Tuple[str, dict, str]:
-    """A cached pre-map counter cannot satisfy a post-map assertion."""
+def stale_post_map_record(
+    pre_map_count: int,
+    post_map: bool,
+    post_map_count: int,
+    post_map_invoke_attempted: bool = False,
+) -> Tuple[str, dict, str]:
+    """A cached pre-map counter cannot satisfy a post-map assertion.
+
+    Zero post-map callbacks without a live EntByIndex invoke after changelevel
+    is pending, not pass (that is "we stopped touching").
+    """
     if not post_map:
         return (
             "pending",
             {"cleared": True},
             "need operator changelevel while this run stays prepared; then collect again",
+        )
+    if not post_map_invoke_attempted:
+        return (
+            "pending",
+            {"cleared": True},
+            "need post-map Touch invoke via live EntByIndex after changelevel; "
+            "zero callbacks without an invoke is not a pass",
         )
     if pre_map_count > 0 and post_map_count == pre_map_count:
         return (
@@ -161,6 +177,54 @@ def stale_post_map_record(pre_map_count: int, post_map: bool, post_map_count: in
     if post_map_count == 0:
         return ("pass", {"cleared": True}, "post-map callbacks cleared")
     return ("fail", {"cleared": True}, "post-map callback still firing on old identity")
+
+
+def js_phase_expected(action: str) -> dict:
+    """JS may snapshot PRE/POST only. Native owns original. Do not fabricate original:1."""
+    if action == "self_unsubscribe":
+        return {"first_pre": 1, "second_pre": 0, "second_post": 1}
+    native = dict(PHASE_EXPECTED[action])
+    return {k: v for k, v in native.items() if not k.startswith("original")}
+
+
+def fresh_reload_verdict(reloaded: bool, hooked: bool, deliveries: int) -> Tuple[str, dict, str]:
+    """A new subscription must deliver once. Registration alone is not a pass."""
+    exp = {"fresh": True, "count": 1}
+    if not reloaded:
+        return (
+            "pending",
+            exp,
+            "need s2script unload/reload with the probe peer still loaded (R2 pending/retry); then collect",
+        )
+    if hooked and deliveries == 1:
+        return ("pass", exp, "fresh SDKHook delivered once after reload")
+    if hooked and deliveries == 0:
+        return (
+            "pending",
+            exp,
+            "fresh SDKHook registered; need one Touch delivery on the new subscription",
+        )
+    return ("fail", exp, "fresh subscription missing or did not deliver once")
+
+
+def layout_verdict(has_tx_ent: bool, first_fire_on_tx_ent: bool, client_int_ok: bool) -> Tuple[str, dict, str]:
+    """Layout is the first CheckTransmit fire that inspects the case entity bitvec."""
+    exp = {"layout_ok": True}
+    if not has_tx_ent or not first_fire_on_tx_ent:
+        return (
+            "pending",
+            exp,
+            "need a networked visible entity in both clients' PVS (not logic_relay); "
+            "layout is first fire of that entity, not any CheckTransmit int32 @576",
+        )
+    if client_int_ok:
+        return ("pass", exp, "first-fire layout on transmit entity")
+    return ("fail", exp, "CheckTransmitInfo client int @576 out of range on transmit-entity fire")
+
+
+def filter_invokes_for_frames(frames: int) -> int:
+    """Filter A and B are invoked once, not once per GameFrame."""
+    return 1 if frames >= 1 else 0
 
 
 def missing_actor_human_row() -> dict:
@@ -204,7 +268,12 @@ def pending_reason(kind: str) -> str:
             "(R2 pending/retry); missing restoration must stay visible"
         ),
         "map_change": "need operator changelevel while this run stays prepared; then collect again",
+        "map_invoke": (
+            "need post-map Touch invoke via live EntByIndex after changelevel; "
+            "zero callbacks without an invoke is not a pass"
+        ),
         "slot_reuse": "slot reuse not achieved within bounded attempts; not a false pass",
+        "reload_delivery": "fresh SDKHook registered; need one Touch delivery on the new subscription",
     }[kind]
 
 
@@ -229,6 +298,11 @@ def selftest() -> List[str]:
     v = filter_verdict(True, True, 1, 0)
     if v["js_hook_a_delivered"][0] != "pass" or v["js_hook_b_filtered"][0] != "pass":
         errors.append("happy-path filter")
+    v = filter_verdict(True, True, 48, 0)
+    if v["js_hook_a_delivered"][0] != "fail":
+        errors.append("48-frame hammer must not pass A=1")
+    if filter_invokes_for_frames(48) != 1:
+        errors.append("filter must be invoked once, not per GameFrame")
     v = filter_verdict(True, True, 1, 1)
     if v["js_hook_b_filtered"][0] != "fail":
         errors.append("B delivered must fail filter")
@@ -249,12 +323,38 @@ def selftest() -> List[str]:
     if st != "pass":
         errors.append("reuse happy path")
 
-    st, _, _ = stale_post_map_record(4, True, 4)
+    st, _, _ = stale_post_map_record(4, True, 4, True)
     if st != "fail":
         errors.append("stale post-map counter must fail")
     st, _, _ = stale_post_map_record(4, False, 0)
     if st != "pending":
         errors.append("no map change must pending")
+    st, _, _ = stale_post_map_record(4, True, 0, False)
+    if st != "pending":
+        errors.append("zero post-map without invoke must pending, not pass")
+    st, _, _ = stale_post_map_record(4, True, 0, True)
+    if st != "pass":
+        errors.append("post-map invoke silent is pass")
+
+    js_sub = js_phase_expected("subscribe_pre_post")
+    if "original" in js_sub or js_sub != {"pre": 1, "post": 1}:
+        errors.append("JS phase must not fabricate original")
+    if "original" in js_phase_expected("final_unsubscribe"):
+        errors.append("JS final must not include original")
+
+    st, _, _ = fresh_reload_verdict(True, True, 0)
+    if st != "pending":
+        errors.append("reload registration without delivery must pending")
+    st, _, _ = fresh_reload_verdict(True, True, 1)
+    if st != "pass":
+        errors.append("reload delivery once is pass")
+
+    st, _, _ = layout_verdict(False, False, True)
+    if st != "pending":
+        errors.append("layout without transmit entity must pending")
+    st, _, _ = layout_verdict(True, True, True)
+    if st != "pass":
+        errors.append("layout on transmit-entity first fire")
 
     if cleanup_reprepare_leaked(1, 2):
         errors.append("leaked reprepare must not look clean")
