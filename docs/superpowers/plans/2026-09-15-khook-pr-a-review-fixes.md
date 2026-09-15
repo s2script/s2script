@@ -54,8 +54,9 @@ lifecycle alongside them. There is no dependency patch implementation package.
 - [ ] Arm a real before/reload/after sequence with resident shim and probe. The
   probe retains a native target; old JS generation installs test PRE/POST callbacks
   and owns a marker. After actual `.s2sp` reload, require new generation PRE=1,
-  POST=1, original=1, old callbacks=0 and old marker gone. Use ledger cleanup rather
-  than manually unsubscribing the dedicated test in OnPluginEnd.
+  POST=1, original=1, old callbacks=0 and old marker gone. Leave dedicated test
+  subscriptions to ledger cleanup. The marker is a game-world entity explicitly
+  removed in OnPluginEnd; it proves that cleanup path, not entity-ledger disposal.
 - [ ] Resume only JS run binding after reload. Do not replay completed initial
   filter/phase observations or replace persisted terminal evidence.
 - [ ] Add actual fixture negative tests for duplicate/stale/missing callbacks,
@@ -112,13 +113,30 @@ lifecycle alongside them. There is no dependency patch implementation package.
 
 ## Current evidence
 
-Earlier local fixes passed checked-binding/shutdown sanitizer tests, actual command
-handler tests, fixture tests, controller tests and parser fixtures. Full local JS
-gate reached the Docker-only final gate and stopped because Docker is unavailable.
-Those are baseline results, not verification of this new stock-host revision.
+Stock delivery and script-reload/evidence packages are implemented and independently
+reviewed. Integrated delivery commits: `5148f4c`, `9150473`, `29a6d81`, `50256f4`.
+Integrated fixture/controller commits: `8dea9a4`, `4111321`. No findings remain from
+those scoped reviews. The obsolete patched-host lifetime harness and dependency
+patch directory/application path have been removed.
 
-Read-only source audit confirms script hot reload can retain the native shim and
-provider. Native library release findings do not justify a private host for this
-scope. A safe stock-host shutdown boundary remains unverified on live CS2. New
-package commits, review results and exact test logs are tracked in the execution
-ledger until integration.
+Fresh integrated validation passed 16 source/manifest/archive tests, 135 installer
+checks, 58 controller tests and the shared shell judge self-test. Checked binding,
+coordinator and actual command/native driver sanitizer harnesses also pass; these
+are unit/engine-boundary tests and do not establish terminal shutdown safety.
+The fixture worker and independent reviewer verified the 21-test JS fixture suite,
+plugin build and retained-marker negative. The full integrated JS script passed
+its available checks, then stopped at the Docker-only final gate because Docker
+is unavailable locally. Linux/native CI is tracked separately in the execution
+ledger.
+
+The actual official Metamod `2.0.0.1467` Linux archive matches GitHub's published
+asset checksum; its tag resolves to the pinned upstream source. Production release
+preparation and separate artifact verification pass using real GNU readelf 2.43.
+This is real artifact inspection on macOS, not Linux execution or live CS2 proof.
+
+S3 remains incomplete: stock process-shutdown ordering, quiescence and engine
+resource availability need live validation before selecting the smallest plugin
+cleanup implementation. No native shutdown code has been falsely declared fixed.
+Actual installed-runtime receipt generation and remaining live/client observations
+also remain integration work. Keep PR #221 draft and PR B blocked. None of these
+remaining tasks justify reintroducing a host patch or native hot-reload requirement.
