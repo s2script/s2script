@@ -32,6 +32,11 @@ int  s2script_core_init(s2_log_fn logger, s2_hook_request_fn request_hook, const
 int  s2script_core_eval(const char* utf8_js);
 int  s2script_core_dispatch_game_frame(int phase, int simulating, int first, int last); /* phase 0=Pre,1=Post; returns collapsed HookResult */
 void s2script_core_shutdown(void);
+/* Process-terminal shutdown, called on the same thread that attempted core init:
+ * return -2 without mutation if core dispatch is busy; otherwise revoke copied
+ * engine callbacks before onUnload, then return 0 on completion or -99 if
+ * teardown panicked. */
+int s2script_core_terminal_shutdown(void);
 /* Read-only internal query: 1 only when actual core state is safe to shut down
  * (HOST not borrowed and no dispatch in progress), 0 otherwise. A panic swallowed
  * inside s2script_core_shutdown is not success. */

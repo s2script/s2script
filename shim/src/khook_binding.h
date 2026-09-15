@@ -25,6 +25,7 @@
 #include <khook.hpp>
 
 #include <atomic>
+#include <array>
 #include <cstddef>
 #include <memory>
 #include <mutex>
@@ -53,6 +54,7 @@ struct S2HookBindingState {
         int invocations = 0;
         bool remove_scheduled = false;
         bool complete = false;
+        const void* capsule = nullptr;
     };
     std::unordered_map<KHook::HookID_t, Owned> owned;
     KHook::HookID_t last_id = KHook::INVALID_HOOK;
@@ -65,6 +67,7 @@ namespace s2hook_detail {
 struct ObserveFrame {
     S2HookBindingState* state = nullptr;
     KHook::HookID_t id = KHook::INVALID_HOOK;
+    const void* capsule = nullptr;
 };
 
 inline thread_local int g_callback_depth = 0;
@@ -103,7 +106,13 @@ inline bool NoteObserve(const std::shared_ptr<S2HookBindingState>& state, KHook:
     }
     g_callback_depth++;
     s2hook_detail::g_active_callbacks.fetch_add(1, std::memory_order_acq_rel);
-    g_observe_stack.push_back({state.get(), id});
+    const void* capsule = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(state->mu);
+        auto it = state->owned.find(id);
+        if (it != state->owned.end()) capsule = it->second.capsule;
+    }
+    g_observe_stack.push_back({state.get(), id, capsule});
     return true;
 }
 
@@ -156,6 +165,24 @@ inline void OnRemoved(KHook::HookID_t id, void* context) {
 }
 
 }  // namespace s2hook_detail
+
+struct S2HookTerminalPermit {
+    bool IsValid() const { return valid_ && capsule_ != nullptr; }
+    const void* Capsule() const { return capsule_; }
+private:
+    const void* capsule_ = nullptr;
+    bool valid_ = false;
+    S2HookTerminalPermit(const void* capsule, bool valid) : capsule_(capsule), valid_(valid) {}
+    S2HookTerminalPermit() = default;
+    friend S2HookTerminalPermit S2Hook_CurrentTerminalPermit();
+};
+
+inline S2HookTerminalPermit S2Hook_CurrentTerminalPermit() {
+    if (s2hook_detail::g_observe_stack.size() != 1 ||
+        s2hook_detail::g_active_callbacks.load(std::memory_order_acquire) != 1) return {};
+    const void* capsule = s2hook_detail::g_observe_stack.back().capsule;
+    return capsule ? S2HookTerminalPermit(capsule, true) : S2HookTerminalPermit{};
+}
 
 // Move-only RAII hold for one Observe entry. Destructor calls LeaveObserve
 // once. Nested guards are LIFO, matching the TLS observe stack.
@@ -342,10 +369,38 @@ public:
         return {state_->last_id, state_->last_state, state_->reason};
     }
 
+    bool RemovalComplete() const {
+        std::lock_guard<std::mutex> lock(state_->mu);
+        for (const auto& pair : state_->owned) {
+            if (pair.second.id != KHook::INVALID_HOOK && pair.second.state != S2HookState::Removed)
+                return false;
+        }
+        return true;
+    }
+
+    bool CanBeginRemove(bool async = true, const S2HookTerminalPermit* permit = nullptr) const {
+        const bool terminal = !async && permit && permit->IsValid() &&
+            s2hook_detail::g_observe_stack.size() == 1 &&
+            s2hook_detail::g_active_callbacks.load(std::memory_order_acquire) == 1 &&
+            s2hook_detail::g_observe_stack.back().capsule == permit->Capsule();
+        if (!async && !terminal && !S2Hook_NoActiveDispatch()) return false;
+        std::lock_guard<std::mutex> lock(state_->mu);
+        for (const auto& pair : state_->owned) {
+            const auto& rec = pair.second;
+            if (rec.state == S2HookState::Removed || rec.id == KHook::INVALID_HOOK) continue;
+            if (!async && rec.remove_scheduled) return false;
+            if (terminal && rec.capsule == permit->Capsule()) return false;
+        }
+        return true;
+    }
+
     // Synchronous removal is reserved for a proven off-callback terminal boundary. It must be
     // the first removal request for this binding; an async retirement cannot be upgraded later.
-    bool BeginRemove(bool async = true) {
-        if (!async && !S2Hook_NoActiveDispatch()) {
+    bool BeginRemove(bool async = true, const S2HookTerminalPermit* permit = nullptr) {
+        const bool terminal = !async && permit && permit->IsValid() &&
+            s2hook_detail::g_observe_stack.size() == 1 && S2Hook_ActiveCount() == 1 &&
+            s2hook_detail::g_observe_stack.back().capsule == permit->Capsule();
+        if (!async && !terminal && !S2Hook_NoActiveDispatch()) {
             return false;
         }
         std::vector<KHook::HookID_t> to_remove;
@@ -354,6 +409,8 @@ public:
             if (!async) {
                 for (const auto& pair : state_->owned) {
                     const auto& rec = pair.second;
+                    if (rec.state == S2HookState::Removed || rec.id == KHook::INVALID_HOOK) continue;
+                    if (terminal && rec.capsule == permit->Capsule()) return false;
                     if (rec.remove_scheduled && rec.state != S2HookState::Removed) {
                         return false;
                     }
@@ -395,13 +452,14 @@ protected:
         return {KHook::INVALID_HOOK, S2HookState::Failed, std::string(why)};
     }
 
-    S2HookReceipt Accept(KHook::HookID_t id) {
+    S2HookReceipt Accept(KHook::HookID_t id, const void* capsule) {
         std::lock_guard<std::mutex> lock(state_->mu);
         auto it = state_->owned.find(id);
         if (it == state_->owned.end()) {
             S2HookBindingState::Owned rec;
             rec.id = id;
             rec.state = S2HookState::Pending;
+            rec.capsule = capsule;
             state_->owned.emplace(id, rec);
             state_->last_id = id;
             state_->last_state = S2HookState::Pending;
@@ -418,6 +476,33 @@ protected:
         return S2HookObserve{s2hook_detail::NoteObserve(state_, id)};
     }
 };
+
+template <std::size_t N>
+inline bool S2HookInventoryCanRemoveSync(
+    const std::array<S2CheckedBindingOps*, N>& bindings, const S2HookTerminalPermit& permit) {
+    for (const auto* binding : bindings)
+        if (!binding || !binding->CanBeginRemove(false, &permit)) return false;
+    return true;
+}
+
+template <std::size_t N>
+inline bool S2HookInventoryBeginRemoveSync(
+    const std::array<S2CheckedBindingOps*, N>& bindings, const S2HookTerminalPermit& permit) {
+    if (!S2HookInventoryCanRemoveSync(bindings, permit)) return false;
+    for (auto* binding : bindings)
+        if (!binding || !binding->BeginRemove(false, &permit)) return false;
+    for (const auto* binding : bindings)
+        if (!binding->RemovalComplete()) return false;
+    return true;
+}
+
+template <std::size_t N>
+inline bool S2HookInventoryRemovalComplete(
+    const std::array<S2CheckedBindingOps*, N>& bindings) {
+    for (const auto* binding : bindings)
+        if (!binding || !binding->RemovalComplete()) return false;
+    return true;
+}
 
 template <typename Ret, typename... Args>
 class S2CheckedFunction : public KHook::Function<Ret, Args...>, public S2CheckedBindingOps {
@@ -462,7 +547,7 @@ public:
         if (id == KHook::INVALID_HOOK) {
             return this->Fail("SetupHook returned INVALID_HOOK");
         }
-        return this->Accept(id);
+        return this->Accept(id, address);
     }
 
     S2HookReceipt Configure(void* address) {
@@ -565,7 +650,8 @@ public:
             }
             return this->Fail("SetupVirtualHook returned INVALID_HOOK");
         }
-        return this->Accept(id);
+        void** vtable = *reinterpret_cast<void***>(obj);
+        return this->Accept(id, vtable + this->_vtbl_index);
     }
 
     S2HookReceipt AddGlobal(Class* holder) {
@@ -595,7 +681,7 @@ public:
             }
             return this->Fail("SetupVirtualHook returned INVALID_HOOK");
         }
-        return this->Accept(id);
+        return this->Accept(id, vt + this->_vtbl_index);
     }
 
     bool HasThisFilter(Class* obj) {

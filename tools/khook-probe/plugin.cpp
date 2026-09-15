@@ -5,6 +5,7 @@
 // s2script. Protocol: s2_khook_probe prepare|collect|report <run_id>.
 #include <ISmmPlugin.h>
 #include "khook_map.h"
+#include "khook_shutdown.h"
 #include "sigscan.h"
 #include "acceptance_observer.h"
 #include "controlled_evidence.h"
@@ -118,7 +119,8 @@ static void CollectR6();
 static void PushR6Pending();
 static bool R6ResolveEngine(CreateInterfaceFn engineFactory, CreateInterfaceFn serverFactory);
 static void R6InstallEngineHooks();
-static void R6BeginRetirement();
+static const std::array<S2CheckedBindingOps*, 25>& ProbeNormalBindings();
+static bool ProbeRetireAndFinish(const S2HookTerminalPermit& permit);
 
 struct StoredRec {
     std::string cse;
@@ -142,6 +144,7 @@ static std::atomic<bool> g_lifecycle_trace_install_attempted{false};
 static bool g_lifecycle_preshutdown_installed = false;
 static bool g_lifecycle_shutdown_installed = false;
 static long g_load_tid = -1;
+static S2TerminalCoordinator g_probe_terminal;
 static std::string g_probe_generation;
 static std::vector<StoredRec> g_stored;
 static std::string g_emit_run;
@@ -1233,6 +1236,17 @@ KHook::Return<void> ProbePlugin::Hook_ServerConfigPreShutdownPre(ISource2ServerC
     if (observation) {
         g_preshutdown_inflight.fetch_add(1, std::memory_order_relaxed);
         PrintLifecycleTrace("serverconfig_preshutdown_enter");
+        const bool complete = g_probe_terminal.PreShutdownPre(CurrentTid(), {
+            [] { return g_lifecycle_preshutdown_installed &&
+                        g_lifecycle_shutdown_installed && g_plugin.serverconfig; },
+            [] {
+                g_probe_retiring = true;
+                const auto permit = S2Hook_CurrentTerminalPermit();
+                return ProbeRetireAndFinish(permit);
+            },
+        });
+        PrintLifecycleTrace(complete ? "probe_terminal_cleanup_complete" :
+                                       "probe_terminal_cleanup_FAILED");
     }
     return S2_Ignore();
 }
@@ -1240,8 +1254,9 @@ KHook::Return<void> ProbePlugin::Hook_ServerConfigPreShutdownPre(ISource2ServerC
 KHook::Return<void> ProbePlugin::Hook_ServerConfigPreShutdownPost(ISource2ServerConfig* config) {
     auto observation = serverConfigPreShutdown.Observe(config);
     if (observation) {
-        PrintLifecycleTrace("serverconfig_preshutdown_exit",
-                            KHook::WasOriginalFunctionSkipped() ? 1 : 0);
+        const bool skipped = KHook::WasOriginalFunctionSkipped();
+        PrintLifecycleTrace("serverconfig_preshutdown_exit", skipped ? 1 : 0);
+        g_probe_terminal.PreShutdownPost(CurrentTid(), skipped);
         g_preshutdown_inflight.fetch_sub(1, std::memory_order_relaxed);
     }
     return S2_Ignore();
@@ -1252,6 +1267,7 @@ KHook::Return<void> ProbePlugin::Hook_ServerConfigShutdownPre(ISource2ServerConf
     if (observation) {
         g_shutdown_inflight.fetch_add(1, std::memory_order_relaxed);
         PrintLifecycleTrace("serverconfig_shutdown_enter");
+        g_probe_terminal.ShutdownPre(CurrentTid());
     }
     return S2_Ignore();
 }
@@ -1259,7 +1275,9 @@ KHook::Return<void> ProbePlugin::Hook_ServerConfigShutdownPre(ISource2ServerConf
 KHook::Return<void> ProbePlugin::Hook_ServerConfigShutdownPost(ISource2ServerConfig* config) {
     auto observation = serverConfigShutdown.Observe(config);
     if (observation) {
-        PrintLifecycleTrace("serverconfig_shutdown_exit", KHook::WasOriginalFunctionSkipped() ? 1 : 0);
+        const bool skipped = KHook::WasOriginalFunctionSkipped();
+        PrintLifecycleTrace("serverconfig_shutdown_exit", skipped ? 1 : 0);
+        g_probe_terminal.ShutdownPost(CurrentTid(), skipped);
         g_shutdown_inflight.fetch_sub(1, std::memory_order_relaxed);
     }
     return S2_Ignore();
@@ -2075,27 +2093,6 @@ static void R6InstallEngineHooks() {
     }
 }
 
-static void R6BeginRetirement() {
-    R6CleanupOwned();
-    if (g_engine2) {
-        g_hkListen.Remove(g_engine2);
-    }
-    if (g_game_ents) {
-        g_hkTransmit.Remove(g_game_ents);
-    }
-    if (g_event_sys) {
-        g_hkPostEvent.Remove(g_event_sys);
-    }
-    g_hkTouchPre.BeginRemove();
-    g_hkTouchPost.BeginRemove();
-    g_hkListen.BeginRemove();
-    g_hkTransmit.BeginRemove();
-    g_hkPostEvent.BeginRemove();
-    g_touch_original.BeginRemove();
-    g_voice_original.BeginRemove();
-    g_command_original.BeginRemove();
-}
-
 static void CollectR6() {
     if (g_spawn_a_ok) {
         PushRec("sdkhooks_one_of_two_entities", "native_spawn_a_ok", "native", "pass", "{\"spawned\":true}",
@@ -2790,6 +2787,9 @@ bool ProbePlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, b
     (void)late;
     PLUGIN_SAVEVARS();
     g_load_tid = CurrentTid();
+    g_probe_terminal.Reset(g_load_tid);
+    g_probe_retiring = false;
+    g_lifecycle_trace_retired = false;
     ismm->AddListener(this, this);
     timespec loaded{};
     clock_gettime(CLOCK_MONOTONIC, &loaded);
@@ -2874,8 +2874,34 @@ bool ProbePlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, b
     return true;
 }
 
-static void BeginProbeRetirement() {
-    R6BeginRetirement();
+static const std::array<S2CheckedBindingOps*, 25>& ProbeNormalBindings() {
+    static const std::array<S2CheckedBindingOps*, 25> bindings = {
+        &fnNew, &fnShareA, &fnShareB, &fnAB_A, &fnAB_B, &fnBA_A, &fnBA_B, &fnOnce,
+        &virtA, &virtB, &virtPre, &virtPost,
+        &g_hkTouchPre, &g_hkTouchPost, &g_hkListen, &g_hkTransmit, &g_hkPostEvent,
+        &g_touch_original, &g_voice_original, &g_command_original,
+        &g_plugin.gameFrame, &g_plugin.clientCommand, &g_plugin.dispatchConCommand,
+        &g_plugin.onConnected, &g_plugin.fireEvent,
+    };
+    return bindings;
+}
+
+static bool ProbeRetireAndFinish(const S2HookTerminalPermit& permit) {
+    const auto& bindings = ProbeNormalBindings();
+    if (!permit.IsValid() || !S2HookInventoryCanRemoveSync(bindings, permit)) return false;
+
+    // The world has already been invalidated at the public PreShutdown boundary.
+    // This helper retains the existing generation checks and only forgets stale
+    // world metadata when those checks refuse engine access.
+    R6CleanupOwned();
+    if (g_plugin.icvar && g_plugin.cmdRef.IsValidRef()) {
+        g_plugin.icvar->UnregisterConCommandCallbacks(g_plugin.cmdRef);
+    }
+    g_plugin.cmdRef = ConCommandRef{};
+
+    if (g_engine2) g_hkListen.Remove(g_engine2);
+    if (g_game_ents) g_hkTransmit.Remove(g_game_ents);
+    if (g_event_sys) g_hkPostEvent.Remove(g_event_sys);
     if (g_plugin.server) {
         g_plugin.gameFrame.Remove(g_plugin.server);
     }
@@ -2893,85 +2919,45 @@ static void BeginProbeRetirement() {
     virtB.Remove(&g_dummyB);
     virtPre.Remove(&g_dummyPhase);
     virtPost.Remove(&g_dummyPhase);
-    virtA.BeginRemove();
-    virtB.BeginRemove();
-    virtPre.BeginRemove();
-    virtPost.BeginRemove();
-    g_plugin.gameFrame.BeginRemove();
-    g_plugin.clientCommand.BeginRemove();
-    g_plugin.dispatchConCommand.BeginRemove();
-    g_plugin.onConnected.BeginRemove();
-    g_plugin.fireEvent.BeginRemove();
-    fnNew.BeginRemove();
-    fnShareA.BeginRemove();
-    fnShareB.BeginRemove();
-    fnAB_A.BeginRemove();
-    fnAB_B.BeginRemove();
-    fnBA_A.BeginRemove();
-    fnBA_B.BeginRemove();
-    fnOnce.BeginRemove();
+
+    return S2HookInventoryBeginRemoveSync(bindings, permit) &&
+           S2HookInventoryRemovalComplete(bindings);
 }
 
 bool ProbePlugin::Unload(char* error, size_t maxlen) {
     PrintLifecycleTrace("probe_unload_enter");
-    if (!S2Hook_NoActiveDispatch()) {
-        PrintLifecycleTrace("probe_unload_rejected_active_dispatch");
-        if (error && maxlen) {
-            std::snprintf(error, maxlen, "%s",
-                          "khook-probe unload rejected: dispatch is active; retry meta unload");
-        }
-        return false;
-    }
-    if (g_preshutdown_inflight.load(std::memory_order_acquire) != 0 ||
-        g_shutdown_inflight.load(std::memory_order_acquire) != 0) {
-        PrintLifecycleTrace("probe_unload_rejected_lifecycle_span");
-        if (error && maxlen) {
-            std::snprintf(error, maxlen, "%s",
-                          "khook-probe unload rejected: lifecycle callback span is active");
-        }
-        return false;
-    }
-    if (!g_lifecycle_trace_retired) {
-        if (serverconfig && g_lifecycle_preshutdown_installed) {
+    const bool complete = g_probe_terminal.Unload(CurrentTid(), [this] {
+        if (!S2Hook_NoActiveDispatch() ||
+            g_preshutdown_inflight.load(std::memory_order_acquire) != 0 ||
+            g_shutdown_inflight.load(std::memory_order_acquire) != 0 ||
+            !S2HookInventoryRemovalComplete(ProbeNormalBindings())) return false;
+        if (!g_lifecycle_preshutdown_installed || !g_lifecycle_shutdown_installed) return false;
+        if (!serverConfigPreShutdown.CanBeginRemove(false) ||
+            !serverConfigShutdown.CanBeginRemove(false)) return false;
+        if (serverconfig) {
             serverConfigPreShutdown.Remove(serverconfig);
-        }
-        if (serverconfig && g_lifecycle_shutdown_installed) {
             serverConfigShutdown.Remove(serverconfig);
         }
-        const bool preshutdown_removed = !g_lifecycle_preshutdown_installed ||
-                                         serverConfigPreShutdown.BeginRemove(false);
-        const bool shutdown_removed = !g_lifecycle_shutdown_installed ||
-                                      serverConfigShutdown.BeginRemove(false);
-        if (!preshutdown_removed || !shutdown_removed) {
-            PrintLifecycleTrace("probe_unload_rejected_lifecycle_remove");
-            if (error && maxlen) {
-                std::snprintf(error, maxlen, "%s",
-                              "khook-probe unload rejected: lifecycle trace removal incomplete");
-            }
-            return false;
+        const bool removed = serverConfigPreShutdown.BeginRemove(false) &&
+            serverConfigShutdown.BeginRemove(false) &&
+            serverConfigPreShutdown.RemovalComplete() &&
+            serverConfigShutdown.RemovalComplete();
+        if (removed) {
+            g_lifecycle_preshutdown_installed = false;
+            g_lifecycle_shutdown_installed = false;
+            g_lifecycle_trace_retired = true;
+            PrintLifecycleTrace("probe_unload_lifecycle_removed");
         }
-        g_lifecycle_preshutdown_installed = false;
-        g_lifecycle_shutdown_installed = false;
-        g_lifecycle_trace_retired = true;
-        PrintLifecycleTrace("probe_unload_lifecycle_removed");
-    }
-    if (!g_probe_retiring) {
-        g_probe_retiring = true;
-        BeginProbeRetirement();
-        PrintLifecycleTrace("probe_unload_retirement_started");
-    }
-    if (!S2Hook_DrainRetirement() || S2Hook_RetirementPending() != 0) {
-        PrintLifecycleTrace("probe_unload_pending");
+        return removed;
+    });
+    if (!complete) {
+        PrintLifecycleTrace("probe_unload_rejected_terminal_phase");
         if (error && maxlen) {
             std::snprintf(error, maxlen, "%s",
-                          "khook-probe unload pending: hook retirement in progress; retry meta unload");
+                          "khook-probe unload rejected: process-terminal cleanup incomplete");
         }
         return false;
     }
-    if (icvar && cmdRef.IsValidRef()) {
-        icvar->UnregisterConCommandCallbacks(cmdRef);
-    }
-    cmdRef = ConCommandRef{};
     events = nullptr;
     serverconfig = nullptr;
     PrintLifecycleTrace("probe_unload_complete");

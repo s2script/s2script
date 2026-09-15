@@ -41,6 +41,7 @@ public:
     int find_original_calls = 0;
     int find_original_virtual_calls = 0;
     bool invoke_typed_removal = false;
+    bool complete_sync = true;
     void* current_context = nullptr;
     struct TypedRemoval { void* context; void* helper; };
     std::unordered_map<KHook::HookID_t, TypedRemoval> typed_removals;
@@ -79,7 +80,7 @@ public:
                     void (*hook_removal_fn)(KHook::HookID_t, void*) = nullptr,
                     void* context = nullptr) override {
         removals.push_back({id, async, hook_removal_fn, context});
-        if (!async) {
+        if (!async && complete_sync) {
             Complete(removals.back());
         }
     }
@@ -90,6 +91,7 @@ public:
         }
         Complete(removals.back());
     }
+    void FireCompletion(std::size_t index) { Complete(removals.at(index)); }
 
 private:
     void Complete(const Removal& r) {
@@ -136,6 +138,8 @@ struct Dummy {
 static KHook::Return<void> FnPre() { return {KHook::Action::Ignore}; }
 static void FnTarget() {}
 static void FnTargetB() {}
+static void FnTargetC() {}
+template <int N> static void InventoryTarget() { (void)N; }
 
 static KHook::Return<void> DummyPre(Dummy* self) {
     (void)self;
@@ -803,6 +807,140 @@ static void test_synchronous_remove_completes_without_retirement_queue() {
           "completed synchronous removal leaves no live id for the base destructor");
 }
 
+static void test_terminal_permit_excludes_current_capsule() {
+    FakeKHook fake;
+    fake.invoke_typed_removal = true;
+    KHook::__exported__khook = &fake;
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+    Dummy obj;
+    S2CheckedVirtual<Dummy, void> marker(0u, &DummyPre, nullptr);
+    S2CheckedVirtual<Dummy, void> alias(0u, &DummyPre, nullptr);
+    S2CheckedVirtual<Dummy, void> other(1u, &DummyPre, nullptr);
+    marker.Add(&obj); alias.Add(&obj); other.Add(&obj);
+    {
+        auto observation = marker.Observe(&obj);
+        {
+            S2HookDispatchGuard concurrent_direct;
+            CHECK(!S2Hook_CurrentTerminalPermit().IsValid(),
+                  "direct dispatch beside the marker blocks a terminal permit");
+        }
+        S2Hook_SetLifecycle(S2HookLifecycle::Retiring);
+        const auto permit = S2Hook_CurrentTerminalPermit();
+        CHECK(permit.IsValid(), "sole observed terminal marker yields a permit");
+        CHECK(!alias.CanBeginRemove(false, &permit),
+              "terminal preflight rejects a separate wrapper on the current capsule");
+        CHECK(other.CanBeginRemove(false, &permit),
+              "terminal preflight permits a distinct vtable slot");
+        const auto before = fake.removals.size();
+        CHECK(!alias.BeginRemove(false, &permit),
+              "same-capsule terminal removal is rejected");
+        CHECK(fake.removals.size() == before,
+              "same-capsule rejection performs no provider removal");
+        other.Remove(&obj);
+        CHECK(other.BeginRemove(false, &permit),
+              "distinct-capsule terminal removal completes under the marker");
+    }
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+}
+
+static void test_inventory_requires_provider_completion() {
+    FakeKHook fake;
+    fake.invoke_typed_removal = true;
+    fake.complete_sync = false;
+    KHook::__exported__khook = &fake;
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+    S2CheckedFunction<void> marker(&FnPre, nullptr);
+    S2CheckedFunction<void> first(&FnPre, nullptr);
+    S2CheckedFunction<void> second(&FnPre, nullptr);
+    marker.Configure(reinterpret_cast<void*>(&FnTarget));
+    first.Configure(reinterpret_cast<void*>(&FnTargetB));
+    second.Configure(reinterpret_cast<void*>(&FnTargetC));
+    const std::array<S2CheckedBindingOps*, 2> inventory{{&first, &second}};
+    {
+        auto observation = marker.Observe();
+        S2Hook_SetLifecycle(S2HookLifecycle::Retiring);
+        const auto permit = S2Hook_CurrentTerminalPermit();
+        CHECK(S2HookInventoryCanRemoveSync(inventory, permit),
+              "injected inventory preflights every distinct capsule");
+        CHECK(!S2HookInventoryBeginRemoveSync(inventory, permit),
+              "withheld synchronous completion rejects inventory success");
+        CHECK(fake.removals.size() == 2,
+              "injected inventory attempted every preflighted binding");
+        CHECK(!S2HookInventoryRemovalComplete(inventory),
+              "inventory remains incomplete until provider callbacks arrive");
+        fake.FireCompletion(0);
+        fake.FireCompletion(1);
+        CHECK(S2HookInventoryRemovalComplete(inventory),
+              "all provider callbacks complete the injected inventory");
+    }
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+}
+
+static void test_inventory_preflight_prevents_partial_mutation() {
+    FakeKHook fake;
+    KHook::__exported__khook = &fake;
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+    S2CheckedFunction<void> marker(&FnPre, nullptr);
+    S2CheckedFunction<void> eligible(&FnPre, nullptr);
+    S2CheckedFunction<void> same_capsule(&FnPre, nullptr);
+    marker.Configure(reinterpret_cast<void*>(&FnTarget));
+    eligible.Configure(reinterpret_cast<void*>(&FnTargetB));
+    same_capsule.Configure(reinterpret_cast<void*>(&FnTarget));
+    const std::array<S2CheckedBindingOps*, 2> inventory{{&eligible, &same_capsule}};
+    {
+        auto observation = marker.Observe();
+        S2Hook_SetLifecycle(S2HookLifecycle::Retiring);
+        const auto permit = S2Hook_CurrentTerminalPermit();
+        CHECK(!S2HookInventoryBeginRemoveSync(inventory, permit),
+              "late ineligible inventory binding rejects the whole mutation");
+        CHECK(fake.removals.empty(),
+              "inventory performs zero backend removals when preflight fails late");
+        CHECK(eligible.Snapshot().state == S2HookState::Pending,
+              "eligible prefix remains owned after inventory preflight failure");
+    }
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+}
+
+static void test_fourteen_binding_inventory_visits_every_kind() {
+    FakeKHook fake;
+    fake.invoke_typed_removal = true;
+    KHook::__exported__khook = &fake;
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+    S2CheckedFunction<void> marker(&FnPre, nullptr);
+    marker.Configure(reinterpret_cast<void*>(&FnTarget));
+    std::array<std::unique_ptr<S2CheckedFunction<void>>, 14> owned;
+    const std::array<void*, 14> targets{{
+        reinterpret_cast<void*>(&InventoryTarget<0>), reinterpret_cast<void*>(&InventoryTarget<1>),
+        reinterpret_cast<void*>(&InventoryTarget<2>), reinterpret_cast<void*>(&InventoryTarget<3>),
+        reinterpret_cast<void*>(&InventoryTarget<4>), reinterpret_cast<void*>(&InventoryTarget<5>),
+        reinterpret_cast<void*>(&InventoryTarget<6>), reinterpret_cast<void*>(&InventoryTarget<7>),
+        reinterpret_cast<void*>(&InventoryTarget<8>), reinterpret_cast<void*>(&InventoryTarget<9>),
+        reinterpret_cast<void*>(&InventoryTarget<10>), reinterpret_cast<void*>(&InventoryTarget<11>),
+        reinterpret_cast<void*>(&InventoryTarget<12>), reinterpret_cast<void*>(&InventoryTarget<13>),
+    }};
+    std::array<S2CheckedBindingOps*, 14> inventory{};
+    for (std::size_t i = 0; i < owned.size(); ++i) {
+        owned[i] = std::make_unique<S2CheckedFunction<void>>(&FnPre, nullptr);
+        owned[i]->Configure(targets[i]);
+        inventory[i] = owned[i].get();
+    }
+    {
+        auto observation = marker.Observe();
+        S2Hook_SetLifecycle(S2HookLifecycle::Retiring);
+        const auto permit = S2Hook_CurrentTerminalPermit();
+        CHECK(S2HookInventoryCanRemoveSync(inventory, permit),
+              "fourteen-kind inventory preflights as one owned set");
+        const auto before = fake.removals.size();
+        CHECK(S2HookInventoryBeginRemoveSync(inventory, permit),
+              "fourteen-kind inventory retires with provider completion");
+        CHECK(fake.removals.size() - before == 14,
+              "fourteen-kind inventory visits every binding exactly once");
+        CHECK(S2HookInventoryRemovalComplete(inventory),
+              "fourteen-kind inventory verifies every completion");
+    }
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+}
+
 }  // namespace
 
 int main() {
@@ -828,6 +966,10 @@ int main() {
     test_completed_virtual_destruction_does_not_remove_again();
     test_virtual_destruction_keeps_live_id_cleanup();
     test_synchronous_remove_completes_without_retirement_queue();
+    test_terminal_permit_excludes_current_capsule();
+    test_inventory_requires_provider_completion();
+    test_inventory_preflight_prevents_partial_mutation();
+    test_fourteen_binding_inventory_visits_every_kind();
 
     if (g_fail) {
         std::cerr << g_fail << " check(s) failed\n";

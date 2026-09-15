@@ -55,18 +55,22 @@ struct CSplitScreenSlot;
 class IGameEventSystem;
 class INetworkMessageInternal;
 class CNetMessage;
+class ISource2ServerConfig;
 enum NetChannelBufType_t : signed char;
 
 class S2ScriptPlugin : public ISmmPlugin {
 public:
     bool Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) override;
-    // False with a named retry message while dispatch is active or checked-hook
-    // retirement is pending. A later `meta unload` finishes cleanup once.
+    // Ordinary native unload is unsupported. Process shutdown succeeds only
+    // after the public server-config lifecycle has completed staged cleanup.
     bool Unload(char* error, size_t maxlen) override;
+    KHook::Return<void> Hook_ServerConfigPreShutdownPre(ISource2ServerConfig*);
+    KHook::Return<void> Hook_ServerConfigPreShutdownPost(ISource2ServerConfig*);
+    KHook::Return<void> Hook_ServerConfigShutdownPre(ISource2ServerConfig*);
+    KHook::Return<void> Hook_ServerConfigShutdownPost(ISource2ServerConfig*);
 
-    // KHook handlers — installed lazily by s2_request_hook("OnGameFrame",1).
-    // Pre-phase dispatches phase 0; post-phase dispatches phase 1. Every Virtual
-    // callback takes the interface pointer first.
+    // GameFrame is installed eagerly as the post-loader lifecycle bootstrap;
+    // core dispatch remains gated on a successful core init plus subscription.
     KHook::Return<void> Hook_GameFramePre(ISource2Server* server, bool simulating, bool first, bool last);
     KHook::Return<void> Hook_GameFramePost(ISource2Server*, bool simulating, bool first, bool last);
     KHook::Return<bool> Hook_FireEventPre(IGameEventManager2*, IGameEvent* ev, bool bDontBroadcast);
@@ -105,10 +109,13 @@ public:
 
     // Server interface pointer acquired in Load(); used by s2_request_hook.
     ISource2Server* m_server = nullptr;
+    ISource2ServerConfig* m_serverConfig = nullptr;
     ISource2GameClients* m_gameClients = nullptr;
     ISource2GameEntities* m_gameEntities = nullptr;
     bool m_checkTransmitHookInstalled = false;     // checktransmit: the CheckTransmit POST hook
     bool m_frameHookInstalled  = false;
+    bool m_frameDispatchRequested = false;
+    bool m_coreDispatchReady = false;
     bool m_eventHookInstalled  = false;
     bool m_clientCmdHookInstalled = false;
     bool m_clientLifecycleHooksInstalled = false;  // @s2script/clients: the six notify lifecycle hooks

@@ -1,90 +1,98 @@
 #pragma once
 
-// Running/Retiring/Ready decision state for checked-hook unload. This is not
-// another hook registry: S2ShutdownCoordinator consumes injected actions and
-// returns Busy, Pending or Complete. Production Unload supplies real actions;
-// the host test supplies counted/delayed actions to the same type.
-//
-// Call begin/finish at most once and never call finish after a failed
-// readiness check.
+// Staged process-terminal shutdown. Ordinary native unload is deliberately
+// non-destructive: the only transition out of Running starts in the public
+// ISource2ServerConfig::PreShutdown callback on the core owner thread.
 
 #include "khook_binding.h"
 
 #include <functional>
 
-enum class S2ShutdownState { Running, Retiring, Ready };
-enum class S2UnloadAttempt { Busy, Pending, Complete };
-
-struct S2ShutdownActions {
-    std::function<bool()> can_shutdown;
-    std::function<void()> begin_retirement;
-    std::function<bool()> retirement_complete;
-    std::function<void()> finish_cleanup;
+enum class S2TerminalPhase {
+    Running,
+    PreCleaned,
+    PreReturned,
+    ShutdownEntered,
+    ShutdownReturned,
+    Complete,
+    Failed,
 };
 
-inline const char* S2UnloadAttemptMessage(S2UnloadAttempt attempt) {
-    switch (attempt) {
-    case S2UnloadAttempt::Busy:
-        return "s2script unload rejected: dispatch is active; retry meta unload";
-    case S2UnloadAttempt::Pending:
-        return "s2script unload pending: hook retirement in progress; retry meta unload";
-    case S2UnloadAttempt::Complete:
-        return "";
-    }
-    return "s2script unload rejected; retry meta unload";
-}
+struct S2TerminalPreActions {
+    std::function<bool()> can_begin;
+    std::function<bool()> retire_and_finish;
+};
 
-class S2ShutdownCoordinator {
+class S2TerminalCoordinator {
 public:
-    void Reset() {
-        state_ = S2ShutdownState::Running;
-        begun_ = false;
-        finished_ = false;
+    void Reset(long owner_tid) {
+        phase_ = S2TerminalPhase::Running;
+        owner_tid_ = owner_tid;
         S2Hook_SetLifecycle(S2HookLifecycle::Running);
     }
 
-    void SetActions(S2ShutdownActions actions) { actions_ = std::move(actions); }
+    S2TerminalPhase Phase() const { return phase_; }
+    long OwnerTid() const { return owner_tid_; }
 
-    S2ShutdownState State() const { return state_; }
+    bool PreShutdownPre(long current_tid, S2TerminalPreActions actions) {
+        if (phase_ != S2TerminalPhase::Running || current_tid != owner_tid_ ||
+            (actions.can_begin && !actions.can_begin())) {
+            phase_ = S2TerminalPhase::Failed;
+            return false;
+        }
+        S2Hook_SetLifecycle(S2HookLifecycle::Retiring);
+        if (!actions.retire_and_finish || !actions.retire_and_finish()) {
+            phase_ = S2TerminalPhase::Failed;
+            return false;
+        }
+        phase_ = S2TerminalPhase::PreCleaned;
+        return true;
+    }
 
-    S2UnloadAttempt Unload() {
-        if (finished_ || state_ == S2ShutdownState::Ready) {
-            return S2UnloadAttempt::Complete;
+    bool PreShutdownPost(long current_tid, bool original_skipped) {
+        if (phase_ != S2TerminalPhase::PreCleaned || current_tid != owner_tid_ || original_skipped) {
+            phase_ = S2TerminalPhase::Failed;
+            return false;
         }
-        const bool can = !actions_.can_shutdown || actions_.can_shutdown();
-        if (!can) {
-            return begun_ ? S2UnloadAttempt::Pending : S2UnloadAttempt::Busy;
+        phase_ = S2TerminalPhase::PreReturned;
+        return true;
+    }
+
+    bool ShutdownPre(long current_tid) {
+        if (phase_ != S2TerminalPhase::PreReturned || current_tid != owner_tid_) {
+            phase_ = S2TerminalPhase::Failed;
+            return false;
         }
-        if (!begun_) {
-            begun_ = true;
-            state_ = S2ShutdownState::Retiring;
-            S2Hook_SetLifecycle(S2HookLifecycle::Retiring);
-            if (actions_.begin_retirement) {
-                actions_.begin_retirement();
-            }
+        phase_ = S2TerminalPhase::ShutdownEntered;
+        return true;
+    }
+
+    bool ShutdownPost(long current_tid, bool original_skipped) {
+        if (phase_ != S2TerminalPhase::ShutdownEntered || current_tid != owner_tid_ || original_skipped) {
+            phase_ = S2TerminalPhase::Failed;
+            return false;
         }
-        const bool complete = !actions_.retirement_complete || actions_.retirement_complete();
-        if (!complete) {
-            return S2UnloadAttempt::Pending;
+        phase_ = S2TerminalPhase::ShutdownReturned;
+        return true;
+    }
+
+    bool Unload(long current_tid, const std::function<bool()>& remove_lifecycle_markers) {
+        if (phase_ == S2TerminalPhase::Complete) return true;
+        if (phase_ != S2TerminalPhase::ShutdownReturned) return false;
+        if (current_tid != owner_tid_) {
+            phase_ = S2TerminalPhase::Failed;
+            return false;
         }
-        const bool still = !actions_.can_shutdown || actions_.can_shutdown();
-        if (!still) {
-            return S2UnloadAttempt::Pending;
+        if (!remove_lifecycle_markers || !remove_lifecycle_markers()) {
+            phase_ = S2TerminalPhase::Failed;
+            return false;
         }
-        if (!finished_) {
-            finished_ = true;
-            if (actions_.finish_cleanup) {
-                actions_.finish_cleanup();
-            }
-            state_ = S2ShutdownState::Ready;
-            S2Hook_SetLifecycle(S2HookLifecycle::Ready);
-        }
-        return S2UnloadAttempt::Complete;
+        phase_ = S2TerminalPhase::Complete;
+        S2Hook_SetLifecycle(S2HookLifecycle::Ready);
+        return true;
     }
 
 private:
-    S2ShutdownState state_ = S2ShutdownState::Running;
-    S2ShutdownActions actions_{};
-    bool begun_ = false;
-    bool finished_ = false;
+    S2TerminalPhase phase_ = S2TerminalPhase::Running;
+    long owner_tid_ = -1;
 };

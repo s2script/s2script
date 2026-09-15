@@ -59,6 +59,7 @@
 #include <sys/stat.h>   // stat/mkdir — crash-reporter slice: gamedata mtime + the crash-spool dir
 #include <errno.h>      // errno/EEXIST — crash-reporter slice: CrashSpoolDir's mkdir race tolerance
 #include <unistd.h>     // sysconf(_SC_PAGESIZE) — the mprotect page span
+#include <sys/syscall.h>
 #include "sigscan.h"
 #include "detour.h"   // Slice 6.6: the self-contained inline detour (damage hook)
 #include "vtable.h"   // Ray-trace slice: RTTI vtable-by-name resolution
@@ -104,6 +105,8 @@ class GameSessionConfiguration_t {};
 // GameFrame is one object with PRE+POST; others PRE-only or POST-only via nullptr. uint64 aliases
 // match eiface.h so the MFP type is exact.
 struct InterfaceHooks {
+    S2CheckedVirtual<ISource2ServerConfig, void> serverConfigPreShutdown;
+    S2CheckedVirtual<ISource2ServerConfig, void> serverConfigShutdown;
     S2CheckedVirtual<ISource2Server, void, bool, bool, bool> gameFrame;
     S2CheckedVirtual<IGameEventManager2, bool, IGameEvent*, bool> fireEvent;
     S2CheckedVirtual<IGameEventSystem, void, CSplitScreenSlot, bool, int, const uint64*,
@@ -123,7 +126,13 @@ struct InterfaceHooks {
     S2CheckedVirtual<INetworkServerService, void, const GameSessionConfiguration_t&, ISource2WorldSession*, const char*> startupServer;
 
     InterfaceHooks()
-      : gameFrame(&ISource2Server::GameFrame, &g_S2ScriptPlugin,
+      : serverConfigPreShutdown(&ISource2ServerConfig::PreShutdown, &g_S2ScriptPlugin,
+                  &S2ScriptPlugin::Hook_ServerConfigPreShutdownPre,
+                  &S2ScriptPlugin::Hook_ServerConfigPreShutdownPost),
+        serverConfigShutdown(&ISource2ServerConfig::Shutdown, &g_S2ScriptPlugin,
+                  &S2ScriptPlugin::Hook_ServerConfigShutdownPre,
+                  &S2ScriptPlugin::Hook_ServerConfigShutdownPost),
+        gameFrame(&ISource2Server::GameFrame, &g_S2ScriptPlugin,
                   &S2ScriptPlugin::Hook_GameFramePre, &S2ScriptPlugin::Hook_GameFramePost),
         fireEvent(&IGameEventManager2::FireEvent, &g_S2ScriptPlugin,
                   &S2ScriptPlugin::Hook_FireEventPre, nullptr),
@@ -156,13 +165,33 @@ struct InterfaceHooks {
 };
 static InterfaceHooks g_hk;
 
-static S2ShutdownCoordinator g_unloadCoord;
+#define S2_FOR_EACH_NORMAL_HOOK(X) \
+    X(gameFrame) X(fireEvent) X(postEvent) X(clientCommand) X(dispatchConCommand) \
+    X(onClientConnected) X(clientPutInServer) X(clientActive) X(clientFullyConnect) \
+    X(clientDisconnect) X(clientSettingsChanged) X(clientVoice) X(checkTransmit) \
+    X(setClientListening) X(startupServer)
+
+static std::array<S2CheckedBindingOps*, 15> S2NormalHookInventory() {
+#define S2_BINDING_ADDRESS(name) &g_hk.name,
+    return {{S2_FOR_EACH_NORMAL_HOOK(S2_BINDING_ADDRESS)}};
+#undef S2_BINDING_ADDRESS
+}
+
+static bool g_lifecycleInstallAttempted = false;
+static bool g_preShutdownHookInstalled = false;
+static bool g_shutdownHookInstalled = false;
+static long g_coreOwnerTid = -1;
+static long S2Tid() { return static_cast<long>(::syscall(SYS_gettid)); }
+static void S2InstallLifecycleHooks();
+
+static S2TerminalCoordinator g_terminalCoord;
 static bool g_unloadFinished = false;
+static bool g_unloadSucceeded = false;
 static void S2Shutdown_ResetLoad();
-static bool S2_CanShutdownAction();
-static void S2_BeginCheckedRetirement();
-static bool S2_RetirementCompleteAction();
-static void S2_FinishUnloadCleanup();
+static bool S2_NormalHooksCanRemoveSync(const S2HookTerminalPermit&);
+static bool S2_BeginCheckedRetirement(const S2HookTerminalPermit&);
+static bool S2_NormalHooksRemovalComplete();
+static bool S2_FinishUnloadCleanup();
 
 namespace {
 
@@ -2930,13 +2959,7 @@ static const char* s2_db_data_dir(void) {
 // ---------------------------------------------------------------------------
 static void s2_request_hook(const char* descriptor, int enable) {
     if (strcmp(descriptor, "OnGameFrame") == 0) {
-        if (enable && !g_S2ScriptPlugin.m_frameHookInstalled && g_S2ScriptPlugin.m_server) {
-            g_S2ScriptPlugin.m_frameHookInstalled = S2KHookAdd(g_hk.gameFrame, g_S2ScriptPlugin.m_server,
-                &ISource2Server::GameFrame, "GameFrame");
-        } else if (!enable && g_S2ScriptPlugin.m_frameHookInstalled) {
-            g_hk.gameFrame.Remove(g_S2ScriptPlugin.m_server);
-            g_S2ScriptPlugin.m_frameHookInstalled = false;
-        }
+        g_S2ScriptPlugin.m_frameDispatchRequested = enable != 0;
         return;
     }
     if (strcmp(descriptor, "GameEvent") == 0) {
@@ -4137,6 +4160,11 @@ static void Hook_FireOutputInternal(CEntityIOOutput* pThis, CEntityInstance* act
 bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) {
     PLUGIN_SAVEVARS();  // sets KHook::__exported__khook from ismm->GetDetourInterface — required by Virtual::Add
     S2Shutdown_ResetLoad();
+    g_lifecycleInstallAttempted = false;
+    g_preShutdownHookInstalled = false;
+    g_shutdownHookInstalled = false;
+    m_frameDispatchRequested = false;
+    m_coreDispatchReady = false;
     S2KHookLogInterfaceVtables();
     s_gdOk = 0; s_gdFail = 0;   // reset the gamedata validation report for this Load
 
@@ -4243,6 +4271,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
 
         // Acquire and store ISource2Server* — needed for the SourceHook detour.
         {
+            int configRet = 0;
+            m_serverConfig = serverFactory ? reinterpret_cast<ISource2ServerConfig*>(
+                serverFactory(INTERFACEVERSION_SERVERCONFIG, &configRet)) : nullptr;
             auto it = versions.find("Source2Server");
             const char* verStr = (it != versions.end()) ? it->second.c_str()
                                                         : INTERFACEVERSION_SERVERGAMEDLL;
@@ -4252,6 +4283,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 : nullptr;
             if (m_server && ret == 0) {
                 META_CONPRINTF("[s2script] interface OK: Source2Server (%s)\n", verStr);
+                // This always-on filter is also the post-loader bootstrap for terminal lifecycle
+                // hooks. Core frame dispatch remains independently subscription-gated.
+                m_frameHookInstalled = S2KHookAdd(g_hk.gameFrame, m_server,
+                    &ISource2Server::GameFrame, "GameFrame lifecycle bootstrap");
             } else {
                 META_CONPRINTF("[s2script] WARN: interface MISSING: Source2Server (%s)\n", verStr);
             }
@@ -5001,12 +5036,15 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     S2EngineOps ops = {};
 #include "s2script_engine_ops_fill.generated.inc"
 
-    // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
-    // to lazily install the SourceHook detour once a script subscribes.
+    // Pass both callbacks + the engine-ops table. The request gates core frame dispatch; the
+    // physical GameFrame hook remains installed as the post-loader lifecycle bootstrap.
+    g_coreOwnerTid = S2Tid();
+    g_terminalCoord.Reset(g_coreOwnerTid);
     if (s2script_core_init(&s2_logger, &s2_request_hook, &ops) != 0) {
         META_CONPRINTF("[s2script] ERROR: V8 core init failed (plugin stays loaded for diagnosis)\n");
         return true; // degrade, do not fail the load (spec §7)
     }
+    m_coreDispatchReady = true;
 
     // Late-load bootstrap. CPlayerUserId stores ushort; -1 is represented by 65535.
     // A userid proves occupancy, not exact signon phase: use connected conservatively.
@@ -5188,15 +5226,16 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
 }
 
 static void S2Shutdown_ResetLoad() {
-    g_unloadCoord.Reset();
     g_unloadFinished = false;
+    g_unloadSucceeded = false;
 }
 
-static bool S2_CanShutdownAction() {
-    return s2script_core_can_shutdown() != 0 && S2Hook_NoActiveDispatch();
+static bool S2_NormalHooksCanRemoveSync(const S2HookTerminalPermit& p) {
+    return S2HookInventoryCanRemoveSync(S2NormalHookInventory(), p) &&
+        S2SdkhooksVpCanUnloadSync(p);
 }
 
-static void S2_BeginCheckedRetirement() {
+static bool S2_BeginCheckedRetirement(const S2HookTerminalPermit& permit) {
     S2ScriptPlugin& p = g_S2ScriptPlugin;
     // Stop this-filters first so new JS dispatch cannot start, then BeginRemove
     // every owned interface and SDKHooks object (including empty kind-level maps).
@@ -5250,40 +5289,28 @@ static void S2_BeginCheckedRetirement() {
         p.m_startupServerHookInstalled = false;
     }
 
-    g_hk.gameFrame.BeginRemove();
-    g_hk.fireEvent.BeginRemove();
-    g_hk.postEvent.BeginRemove();
-    g_hk.clientCommand.BeginRemove();
-    g_hk.dispatchConCommand.BeginRemove();
-    g_hk.onClientConnected.BeginRemove();
-    g_hk.clientPutInServer.BeginRemove();
-    g_hk.clientActive.BeginRemove();
-    g_hk.clientFullyConnect.BeginRemove();
-    g_hk.clientDisconnect.BeginRemove();
-    g_hk.clientSettingsChanged.BeginRemove();
-    g_hk.clientVoice.BeginRemove();
-    g_hk.checkTransmit.BeginRemove();
-    g_hk.setClientListening.BeginRemove();
-    g_hk.startupServer.BeginRemove();
-    S2SdkhooksVpUnload();
+    return S2HookInventoryBeginRemoveSync(S2NormalHookInventory(), permit) &&
+        S2SdkhooksVpUnloadSync(permit);
 }
 
-static bool S2_RetirementCompleteAction() {
-    return S2Hook_DrainRetirement() && S2Hook_RetirementPending() == 0;
+static bool S2_NormalHooksRemovalComplete() {
+    return S2HookInventoryRemovalComplete(S2NormalHookInventory()) &&
+        S2SdkhooksVpRemovalComplete();
 }
 
-static void S2_FinishUnloadCleanup() {
+static bool S2_FinishUnloadCleanup() {
     if (g_unloadFinished) {
-        return;
+        return g_unloadSucceeded;
     }
     g_unloadFinished = true;
+    bool ok = true;
 
     if (s_pCvar && s_cvarChangeCbInstalled) {
         s_pCvar->RemoveGlobalChangeCallback(&s2_cvar_change_cb);
         s_cvarChangeCbInstalled = false;
     }
 
-    META_CONPRINTF("[s2script] Unload(): shutting down V8 core\n");
+    META_CONPRINTF("[s2script] PreShutdown: shutting down V8 core\n");
 
     S2Defer_Flush("unload");
     s_userMsgFirstFireDone = false;
@@ -5294,21 +5321,16 @@ static void S2_FinishUnloadCleanup() {
         if (!WriteVtableSlot(s_pGameRulesVtable, s_precacheVtblIdx, reinterpret_cast<void*>(s_origOnPrecacheResource))) {
             META_CONPRINTF("[s2script] WARN: precache — vtable slot restore write FAILED; slot still points at the "
                            "detour being unloaded (next precache may crash)\n");
+            ok = false;
         }
         s_precacheHookInstalled = false;
         s_pGameRulesVtable = nullptr;
         s_origOnPrecacheResource = nullptr;
     }
 
-    if (s_wantEntityListener && s_pRemoveListenerEntity) {
-        CGameEntitySystem* es = GetEntitySystem();
-        if (es) s_pRemoveListenerEntity(es, S2_GetEntityListener());
-    } else if (s_wantEntityListener && s_pAddListenerEntity && !s_pRemoveListenerEntity) {
-        META_CONPRINTF("[s2script] WARN: entity listener registered but RemoveListenerEntity is "
-                       "unresolved on this build -- a DANGLING listener remains; do NOT hot-unload "
-                       "s2script until the RemoveListenerEntity signature is regenerated (regenerate "
-                       "gamedata for this CS2 build).\n");
-    }
+    // Live evidence places PreShutdown after the game world/entity system was destroyed.
+    // Its listener storage died with that world; never reacquire/dereference it here.
+    s_wantEntityListener = false;
 
     s2detour::RemoveAll();
     S2_HookResetAll();
@@ -5326,27 +5348,97 @@ static void S2_FinishUnloadCleanup() {
     }
     s_concommandRefs.clear();
 
+    const int coreShutdown = s2script_core_terminal_shutdown();
+    if (coreShutdown != 0) {
+        META_CONPRINTF("[s2script] ERROR: terminal core shutdown failed (%d)\n", coreShutdown);
+        ok = false;
+    }
     S2CrashDisarm();
-    s2script_core_shutdown();
+    g_unloadSucceeded = ok;
+    return ok;
 }
 
-// ---------------------------------------------------------------------------
-// Unload
-// ---------------------------------------------------------------------------
-bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
-    g_unloadCoord.SetActions({
-        S2_CanShutdownAction,
-        S2_BeginCheckedRetirement,
-        S2_RetirementCompleteAction,
-        S2_FinishUnloadCleanup,
+static void S2InstallLifecycleHooks() {
+    if (g_lifecycleInstallAttempted) return;
+    g_lifecycleInstallAttempted = true;
+    if (!g_S2ScriptPlugin.m_serverConfig) return;
+    // Load/AllPluginsLoaded are too early: KHook restores this shared vtable page RX while the
+    // stock loader still has a pending Disconnect-slot write. First accepted GameFrame proves
+    // that loader initialization and its write have completed.
+    g_preShutdownHookInstalled = S2KHookAdd(g_hk.serverConfigPreShutdown,
+        g_S2ScriptPlugin.m_serverConfig, &ISource2ServerConfig::PreShutdown, "PreShutdown terminal marker");
+    g_shutdownHookInstalled = S2KHookAdd(g_hk.serverConfigShutdown,
+        g_S2ScriptPlugin.m_serverConfig, &ISource2ServerConfig::Shutdown, "Shutdown terminal marker");
+    META_CONPRINTF("[s2script] terminal lifecycle hooks pre=%d shutdown=%d owner_tid=%ld install_tid=%ld\n",
+                   g_preShutdownHookInstalled ? 1 : 0, g_shutdownHookInstalled ? 1 : 0,
+                   g_coreOwnerTid, S2Tid());
+}
+
+KHook::Return<void> S2ScriptPlugin::Hook_ServerConfigPreShutdownPre(ISource2ServerConfig* config) {
+    auto obs = g_hk.serverConfigPreShutdown.Observe(config);
+    if (!obs) return S2_Ignore();
+    const bool complete = g_terminalCoord.PreShutdownPre(S2Tid(), {
+        [] { return s2script_core_can_shutdown() != 0; },
+        [] {
+            const auto permit = S2Hook_CurrentTerminalPermit();
+            return permit.IsValid() && S2_NormalHooksCanRemoveSync(permit) &&
+                S2_BeginCheckedRetirement(permit) && S2_NormalHooksRemovalComplete() &&
+                S2_FinishUnloadCleanup();
+        },
     });
-    const S2UnloadAttempt attempt = g_unloadCoord.Unload();
-    if (attempt != S2UnloadAttempt::Complete) {
-        const char* msg = S2UnloadAttemptMessage(attempt);
-        if (error && maxlen > 0) {
-            std::snprintf(error, maxlen, "%s", msg);
+    META_CONPRINTF("[s2script] terminal PreShutdown cleanup %s owner_tid=%ld current_tid=%ld\n",
+                   complete ? "complete" : "FAILED", g_coreOwnerTid, S2Tid());
+    return S2_Ignore();
+}
+
+KHook::Return<void> S2ScriptPlugin::Hook_ServerConfigPreShutdownPost(ISource2ServerConfig* config) {
+    auto obs = g_hk.serverConfigPreShutdown.Observe(config);
+    if (obs) g_terminalCoord.PreShutdownPost(S2Tid(), KHook::WasOriginalFunctionSkipped());
+    return S2_Ignore();
+}
+
+KHook::Return<void> S2ScriptPlugin::Hook_ServerConfigShutdownPre(ISource2ServerConfig* config) {
+    auto obs = g_hk.serverConfigShutdown.Observe(config);
+    if (!obs) return S2_Ignore();
+    g_terminalCoord.ShutdownPre(S2Tid());
+    return S2_Ignore();
+}
+
+KHook::Return<void> S2ScriptPlugin::Hook_ServerConfigShutdownPost(ISource2ServerConfig* config) {
+    auto obs = g_hk.serverConfigShutdown.Observe(config);
+    if (obs) g_terminalCoord.ShutdownPost(S2Tid(), KHook::WasOriginalFunctionSkipped());
+    return S2_Ignore();
+}
+
+// Ordinary native unload is unsupported and deliberately performs no mutation.
+bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
+    const S2TerminalPhase before = g_terminalCoord.Phase();
+    const bool complete = g_terminalCoord.Unload(S2Tid(), [this] {
+        if (!S2Hook_NoActiveDispatch()) return false;
+        if ((g_preShutdownHookInstalled && !g_hk.serverConfigPreShutdown.CanBeginRemove(false)) ||
+            (g_shutdownHookInstalled && !g_hk.serverConfigShutdown.CanBeginRemove(false))) return false;
+        if (g_preShutdownHookInstalled) g_hk.serverConfigPreShutdown.Remove(m_serverConfig);
+        if (g_shutdownHookInstalled) g_hk.serverConfigShutdown.Remove(m_serverConfig);
+        const bool pre_begun = !g_preShutdownHookInstalled ||
+            g_hk.serverConfigPreShutdown.BeginRemove(false);
+        const bool shutdown_begun = !g_shutdownHookInstalled ||
+            g_hk.serverConfigShutdown.BeginRemove(false);
+        const bool removed = pre_begun && shutdown_begun &&
+            g_hk.serverConfigPreShutdown.RemovalComplete() &&
+            g_hk.serverConfigShutdown.RemovalComplete();
+        if (removed) {
+            g_preShutdownHookInstalled = false;
+            g_shutdownHookInstalled = false;
         }
-        META_CONPRINTF("[s2script] Unload(): %s\n", msg);
+        return removed;
+    });
+    if (!complete) {
+        const char* msg = before == S2TerminalPhase::Running
+            ? "s2script native unload unsupported while server is running"
+            : "s2script terminal unload incomplete or failed";
+        if (error && maxlen) std::snprintf(error, maxlen, "%s", msg);
+        META_CONPRINTF("[s2script] Unload(): %s (phase=%d)\n", msg,
+                       static_cast<int>(g_terminalCoord.Phase()));
         return false;
     }
     return true;
@@ -5375,6 +5467,8 @@ static uint64_t s_legacyAllowMask  = 0;
 
 KHook::Return<void> S2ScriptPlugin::Hook_GameFramePre(ISource2Server* server, bool simulating, bool first, bool last) {
     auto obs = g_hk.gameFrame.Observe(server);
+    if (obs) S2InstallLifecycleHooks();
+    if (!m_coreDispatchReady || !m_frameDispatchRequested) return S2_Ignore();
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     // The frame counter first, so every line printed from here on — including the drain's — names
     // the frame it is actually on, and "deferred at frame N, replayed at frame N+1" is readable
@@ -5416,6 +5510,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_GameFramePre(ISource2Server* server, bo
 
 KHook::Return<void> S2ScriptPlugin::Hook_GameFramePost(ISource2Server* server, bool simulating, bool first, bool last) {
     auto obs = g_hk.gameFrame.Observe(server);
+    if (!m_coreDispatchReady || !m_frameDispatchRequested) return S2_Ignore();
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     s2script_core_dispatch_game_frame(1, static_cast<int>(simulating),
                                       static_cast<int>(first), static_cast<int>(last));

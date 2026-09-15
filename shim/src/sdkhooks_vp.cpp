@@ -99,6 +99,15 @@ S2CheckedVirtual<CEntityInstance, void> g_hkVPhysicsUpdate(
 S2CheckedVirtual<CEntityInstance, void> g_hkGroundEntChanged(nullptr, &Hook_GroundEntChangedPost);
 S2CheckedVirtual<CEntityInstance, bool> g_hkCanBeAutobalanced(&Hook_CanBeAutobalanced, nullptr);
 
+std::array<S2CheckedBindingOps*, 14> SdkhookBindingInventory() {
+    return {{
+        &g_hkStartTouch, &g_hkTouch, &g_hkEndTouch, &g_hkBlocked,
+        &g_hkSpawn, &g_hkThink, &g_hkPreThink, &g_hkPostThink,
+        &g_hkUse, &g_hkGetMaxHealth, &g_hkShouldCollide, &g_hkVPhysicsUpdate,
+        &g_hkGroundEntChanged, &g_hkCanBeAutobalanced,
+    }};
+}
+
 constexpr int kMaxVtableSlots = 512;
 
 struct ModText {
@@ -563,32 +572,26 @@ void S2SdkhooksVpLoad(const GameConfig& gd) {
     }
 }
 
-void S2SdkhooksVpUnload() {
+bool S2SdkhooksVpCanUnloadSync(const S2HookTerminalPermit& p) {
+    return S2HookInventoryCanRemoveSync(SdkhookBindingInventory(), p);
+}
+
+bool S2SdkhooksVpUnloadSync(const S2HookTerminalPermit& p) {
+    if (!S2SdkhooksVpCanUnloadSync(p)) return false;
     while (!g_installed.empty()) {
         auto it = g_installed.begin();
         void* hooked = it->first.ptr;
         Kind kind = it->first.kind;
         g_installed.erase(it);
-        if (!KindLive(hooked, kind)) {
-            VpRemoveThis(kind, hooked);
-        }
+        if (!KindLive(hooked, kind)) VpRemoveThis(kind, hooked);
     }
-    // Retire all fourteen kind-level objects even when subscriber rows are empty.
-    g_hkStartTouch.BeginRemove();
-    g_hkTouch.BeginRemove();
-    g_hkEndTouch.BeginRemove();
-    g_hkBlocked.BeginRemove();
-    g_hkSpawn.BeginRemove();
-    g_hkThink.BeginRemove();
-    g_hkPreThink.BeginRemove();
-    g_hkPostThink.BeginRemove();
-    g_hkUse.BeginRemove();
-    g_hkGetMaxHealth.BeginRemove();
-    g_hkShouldCollide.BeginRemove();
-    g_hkVPhysicsUpdate.BeginRemove();
-    g_hkGroundEntChanged.BeginRemove();
-    g_hkCanBeAutobalanced.BeginRemove();
+    const bool ok = S2HookInventoryBeginRemoveSync(SdkhookBindingInventory(), p);
     ClearSlots();
+    return ok && S2SdkhooksVpRemovalComplete();
+}
+
+bool S2SdkhooksVpRemovalComplete() {
+    return S2HookInventoryRemovalComplete(SdkhookBindingInventory());
 }
 
 extern "C" int s2_sdkhook_vp_add(int index, int serial, const char* type, int post) {
