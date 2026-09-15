@@ -326,3 +326,39 @@ mistook a stopped inferior for an exited one; update the diagnostic script to
 capture all fatal signals and explicitly distinguish stopped from exited before
 the next live attempt. The original preinstall shutdown was clean and does not
 establish shutdown safety for the corrected bundle.
+
+The allocator correction was published in `f9fc704`. Both CI jobs, the full Nebula
+bundle and the exact compiled allocator-call check passed. The live probe-first
+run produced receipt `ff99e7fd263cf3707a6a1e18493a582695f14132149c25f1d617655e37383cc9`
+for run `khook-a-502b5571fa8f486bb5677bed3ba2f8ef`. Prepare/collect remained alive:
+six cases passed, five were pending for clients/map/reload, and one failed.
+Only the peer Override/Override expected returns differed: AB observed 99 versus
+expected 7, and BA observed 7 versus expected 99. Independent pinned-source review
+confirmed that the fixture had assumed registration order. The wrappers install
+both generated thunks; the insertion code places each new uniform wrapper before
+the prior one, and strictly higher actions preserve the first executed equal vote.
+Correct the expectation and record callback execution order explicitly; retain all
+count/original and mixed-priority assertions. Do not change production precedence.
+
+Ordinary RCON quit then reached probe level invalidation and the production shim's
+pending-retirement response, followed by network shutdown and a real child
+SIGSEGV. Docker returned zero again. The original server and all 25 plugin states
+are restored. Preserve the 51 initially verified evidence files under
+`.gate/remote-khook-pr221/live-f9fc704-peer-order-failure-20260915T1949/` and the
+later offline analysis alongside them. No reload or reverse-order run followed
+the failure. The saved dump identifies an invalid-pointer read in the exact
+`libtier0.so` at offset `0x2ea670`; the recovered frame-pointer chain reaches the
+engine and server executable, with no shim/probe/core frame. All relevant modules
+remain mapped. It does not identify the residual resource responsible. Logs and
+stock source do establish that s2script's final cleanup was skipped: forced
+Metamod removal does not retry a pending `Unload` response.
+
+The next bounded S3 task is an observation-only probe trace of the public
+`ISource2ServerConfig` / `IAppSystem` `PreShutdown` and `Shutdown` PRE/POST phases,
+followed by the plugin's `Unload`. Acquire the named public interface and derive
+slots from SDK member pointers. Preserve the original call and retain trace-hook
+objects until their stacks have returned. Run the trace on the owned server with
+the corrected peer fixture, then select the production cleanup boundary from the
+result. A separate worker reviews synchronization and resource lifetime before
+integration. Diagnostic work uses saved artifacts, ordinary logs and public API
+observations; no host patch, debugger attachment or native hot reload is required.
