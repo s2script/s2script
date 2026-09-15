@@ -143,6 +143,18 @@ The probe build must also reject unexpected unresolved relocations. Its SDK
 support definitions must be linked into the probe itself; the live `e6b89d9` load
 exposed a missing `MurmurHash2LowerCase` definition despite successful ELF checks.
 The explicit host-provided `g_pMemAlloc` exception still needs real process loading.
+Controlled native calls must remain observable under optimization: a direct call
+to a target defined in the same translation unit can let the compiler disregard
+runtime detour effects. Verdict evidence must expose every checked count and
+return value as valid JSON. Independent Function observers must not overwrite
+signature bytes before the plugin under test resolves its descriptors.
+The probe must use public level-lifecycle notifications to invalidate world-owned
+entity references and prohibit entity lookup/removal after level shutdown.
+Track ownership separately for targets created after a map change. World lifetime
+must not gate cleanup of the engine-lifetime command registry; stock Metamod still
+uses that registry during plugin removal. Keep the controlled game-event listener
+scoped to its synchronous invocation, with cleanup on every exit.
+This test-fixture rule does not establish a terminal cleanup boundary for the shim.
 
 Preserve running-server refusal, destination-byte verification before skipping,
 staging before replacement and rollback on failure. Failed builds invalidate stale
