@@ -51,6 +51,9 @@ python3 scripts/test-khook-command.py
 echo "== native_fixture_test.py (production acceptance driver) =="
 python3 tools/khook-probe/testdata/native_fixture_test.py
 
+echo "== controlled_evidence_test.py (strict native verdict evidence) =="
+python3 tools/khook-probe/testdata/controlled_evidence_test.py
+
 echo "== test-khook-observer.sh (consumed FireEvent observer + suite A fixtures) =="
 bash scripts/test-khook-observer.sh
 

@@ -7,6 +7,7 @@
 #include "khook_map.h"
 #include "sigscan.h"
 #include "acceptance_observer.h"
+#include "controlled_evidence.h"
 #include "runtime_witness.h"
 
 #include <eiface.h>
@@ -499,7 +500,7 @@ static void FeStopListening(IGameEventManager2* mgr) {
     }
 }
 
-class ProbePlugin : public ISmmPlugin {
+class ProbePlugin : public ISmmPlugin, public IMetamodListener {
 public:
     ProbePlugin()
         : gameFrame(&ISource2Server::GameFrame, this, &ProbePlugin::Hook_GameFrame, nullptr),
@@ -514,6 +515,8 @@ public:
 
     bool Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) override;
     bool Unload(char* error, size_t maxlen) override;
+    void OnLevelInit(char const*, char const*, char const*, char const*, bool, bool) override;
+    void OnLevelShutdown() override;
 
     KHook::Return<void> Hook_GameFrame(ISource2Server* server, bool simulating, bool first, bool last);
     KHook::Return<void> Hook_ClientCommand(ISource2GameClients* clients, CPlayerSlot slot,
@@ -591,6 +594,11 @@ static S2CheckedFunction<int, int> fnAB_B(&PreAB_B, nullptr);
 static S2CheckedFunction<int, int> fnBA_A(&PreBA_A, nullptr);
 static S2CheckedFunction<int, int> fnBA_B(&PreBA_B, nullptr);
 static S2CheckedFunction<int, int> fnOnce(&PreOnce, &PostOnce);
+static s2khook::IntTarget volatile g_call_target_new = &TargetNew;
+static s2khook::IntTarget volatile g_call_target_share = &TargetShare;
+static s2khook::IntTarget volatile g_call_target_ab = &TargetAB;
+static s2khook::IntTarget volatile g_call_target_ba = &TargetBA;
+static s2khook::IntTarget volatile g_call_target_once = &TargetOnce;
 static S2CheckedVirtual<Dummy, int, int> virtA(&Dummy::Go, &DummyPreA, nullptr);
 static S2CheckedVirtual<Dummy, int, int> virtB(&Dummy::Go, &DummyPreB, nullptr);
 static S2CheckedVirtual<Dummy, int, int> virtPre(&Dummy::Go, &DummyPrePhase, nullptr);
@@ -734,65 +742,56 @@ static void InstallControlledHooks() {
     virtPost.Add(&g_dummyPhase);
 }
 
-static bool PreBothAB() { return g_pre_ab_a == 1 && g_pre_ab_b == 1; }
-static bool PreBothBA() { return g_pre_ba_a == 1 && g_pre_ba_b == 1; }
-
-static void RunPeerActions(bool& ok, std::string& actual) {
+static s2khook::PeerActionsObservation RunPeerActions() {
+    s2khook::PeerActionsObservation observed{};
     g_pre_ab_a = g_pre_ab_b = g_orig_ab = 0;
     g_act_a = KHook::Action::Ignore;
     g_act_b = KHook::Action::Override;
     g_ret_a = 0;
     g_ret_b = 42;
-    const int r1 = TargetAB(1);
-    const bool ab_io = PreBothAB() && r1 == 42;
+    const int r1 = s2khook::InvokeOpaque(g_call_target_ab, 1);
+    observed.ab_io = {g_pre_ab_a, g_pre_ab_b, g_orig_ab, r1};
 
     g_pre_ab_a = g_pre_ab_b = g_orig_ab = 0;
     g_act_a = KHook::Action::Override;
     g_act_b = KHook::Action::Override;
     g_ret_a = 7;
     g_ret_b = 99;
-    const int r2 = TargetAB(1);
-    const int orig_tie = g_orig_ab;
-    const bool ab_oo = PreBothAB() && r2 == 7 && orig_tie == 1;
+    const int r2 = s2khook::InvokeOpaque(g_call_target_ab, 1);
+    observed.ab_oo = {g_pre_ab_a, g_pre_ab_b, g_orig_ab, r2};
 
     g_pre_ab_a = g_pre_ab_b = g_orig_ab = 0;
     g_act_a = KHook::Action::Override;
     g_act_b = KHook::Action::Supersede;
     g_ret_a = 7;
     g_ret_b = 99;
-    const int r3 = TargetAB(1);
-    const int orig_sup = g_orig_ab;
-    const bool ab_os = PreBothAB() && r3 == 99 && orig_sup == 0;
+    const int r3 = s2khook::InvokeOpaque(g_call_target_ab, 1);
+    observed.ab_os = {g_pre_ab_a, g_pre_ab_b, g_orig_ab, r3};
 
     g_pre_ba_a = g_pre_ba_b = g_orig_ba = 0;
     g_act_a = KHook::Action::Ignore;
     g_act_b = KHook::Action::Override;
     g_ret_a = 0;
     g_ret_b = 42;
-    const int r4 = TargetBA(1);
-    const bool ba_io = PreBothBA() && r4 == 42;
+    const int r4 = s2khook::InvokeOpaque(g_call_target_ba, 1);
+    observed.ba_io = {g_pre_ba_a, g_pre_ba_b, g_orig_ba, r4};
 
     g_pre_ba_a = g_pre_ba_b = g_orig_ba = 0;
     g_act_a = KHook::Action::Override;
     g_act_b = KHook::Action::Override;
     g_ret_a = 7;
     g_ret_b = 99;
-    const int r5 = TargetBA(1);
-    const bool ba_oo = PreBothBA() && r5 == 99;
+    const int r5 = s2khook::InvokeOpaque(g_call_target_ba, 1);
+    observed.ba_oo = {g_pre_ba_a, g_pre_ba_b, g_orig_ba, r5};
 
     g_pre_ba_a = g_pre_ba_b = g_orig_ba = 0;
     g_act_a = KHook::Action::Override;
     g_act_b = KHook::Action::Supersede;
     g_ret_a = 7;
     g_ret_b = 99;
-    const int r6 = TargetBA(1);
-    const int orig_ba_sup = g_orig_ba;
-    const bool ba_os = PreBothBA() && r6 == 99 && orig_ba_sup == 0;
-
-    ok = ab_io && ab_oo && ab_os && ba_io && ba_oo && ba_os;
-    actual = "{\"ab_io\":" + JsonBool(ab_io) + ",\"ab_oo\":" + JsonBool(ab_oo) + ",\"ab_os\":" +
-             JsonBool(ab_os) + ",\"ba_io\":" + JsonBool(ba_io) + ",\"ba_oo\":" + JsonBool(ba_oo) +
-             ",\"ba_os\":" + JsonBool(ba_os) + "}";
+    const int r6 = s2khook::InvokeOpaque(g_call_target_ba, 1);
+    observed.ba_os = {g_pre_ba_a, g_pre_ba_b, g_orig_ba, r6};
+    return observed;
 }
 
 static bool JsAcceptPresent() {
@@ -1117,6 +1116,8 @@ static s2khook::FireEventObservation g_fe_mask_obs;
 static bool g_listen_hooked = false;
 static bool g_transmit_hooked = false;
 static bool g_postevent_hooked = false;
+static s2khook::LevelLifetime g_level_lifetime;
+static std::uint64_t g_owned_level_generation = 0;
 
 struct PhaseSnap {
     int pre = 0;
@@ -1174,23 +1175,28 @@ static void R6RemoveTouch(CEntityInstance* ent, bool pre, bool post) {
 }
 
 static void R6CleanupOwned() {
+    const bool may_touch_world = g_level_lifetime.MayTouchOwnedWorld(g_owned_level_generation);
     // The reload target can outlive the final map stage, so resolve its identity
     // again rather than trusting a pointer if an operator changes maps afterward.
-    int serial = -1;
-    auto* target = EntByIndex(g_script_reload.target_index);
-    if (g_util_remove && EntIndexSerial(target, nullptr, &serial) && serial == g_script_reload.target_serial)
-        g_util_remove(target);
+    if (may_touch_world) {
+        int serial = -1;
+        auto* target = EntByIndex(g_script_reload.target_index);
+        if (g_util_remove && EntIndexSerial(target, nullptr, &serial) && serial == g_script_reload.target_serial)
+            g_util_remove(target);
+    }
     g_script_reload_target = nullptr;
     g_script_reload = {};
-    R6RemoveTouch(g_nat_a, true, true);
-    R6RemoveTouch(g_nat_b, true, true);
-    R6RemoveTouch(g_nat_phase, true, true);
-    R6RemoveTouch(g_nat_reuse, true, true);
-    R6RemoveTouch(g_nat_reuse_new, true, true);
+    if (may_touch_world) {
+        R6RemoveTouch(g_nat_a, true, true);
+        R6RemoveTouch(g_nat_b, true, true);
+        R6RemoveTouch(g_nat_phase, true, true);
+        R6RemoveTouch(g_nat_reuse, true, true);
+        R6RemoveTouch(g_nat_reuse_new, true, true);
+    }
     g_filter_a_added = false;
     g_phase_pre_added = false;
     g_phase_post_added = false;
-    if (g_util_remove) {
+    if (may_touch_world && g_util_remove) {
         if (g_nat_a) {
             g_util_remove(g_nat_a);
         }
@@ -1208,6 +1214,7 @@ static void R6CleanupOwned() {
         }
     }
     g_nat_a = g_nat_b = g_nat_phase = g_nat_reuse = g_nat_reuse_new = g_touch_other = nullptr;
+    g_owned_level_generation = 0;
 }
 
 static void R6ResetCounters() {
@@ -1418,6 +1425,23 @@ static void R6InvalidatePreMapPointers() {
     g_nat_reuse_new = nullptr;
     g_touch_other = nullptr;
     g_map_ptrs_invalidated = true;
+}
+
+void ProbePlugin::OnLevelInit(char const*, char const*, char const*, char const*, bool, bool) {
+    g_level_lifetime.OnLevelInit();
+}
+
+void ProbePlugin::OnLevelShutdown() {
+    g_level_lifetime.OnLevelShutdown();
+    // KHook::Virtual::Remove only erases the receiver address from its routing set; it does not
+    // dereference the world-owned object. Forget these routes before discarding the raw pointers.
+    R6RemoveTouch(g_nat_a, true, true);
+    R6RemoveTouch(g_nat_b, true, true);
+    R6RemoveTouch(g_nat_phase, true, true);
+    R6RemoveTouch(g_nat_reuse, true, true);
+    R6RemoveTouch(g_nat_reuse_new, true, true);
+    R6InvalidatePreMapPointers();
+    META_CONPRINTF("[khook-probe] level shutdown: invalidated test entity pointers\n");
 }
 
 static bool R6EntityIsTriggerPush(CEntityInstance* ent) {
@@ -1876,7 +1900,6 @@ static void* OriginalVirtualAddress(Interface* object, Member member, const char
 }
 
 static void R6InstallEngineHooks() {
-    if (g_touch_fn) g_touch_original.Configure(g_touch_fn);
     if (void* address = OriginalVirtualAddress(g_engine2, &IVEngineServer2::SetClientListening, "libengine2.so"))
         g_voice_original.Configure(address);
     if (void* address = OriginalVirtualAddress(g_plugin.gameclients, &ISource2GameClients::ClientCommand, "libserver.so"))
@@ -2268,7 +2291,7 @@ static void CollectControlledAndEvents() {
     }
 
     g_pre_new = g_orig_new = 0;
-    const int nret = TargetNew(3);
+    const int nret = s2khook::InvokeOpaque(g_call_target_new, 3);
     const S2HookReceipt after_new = fnNew.Snapshot();
     const bool new_ok = after_new.state == S2HookState::Active && g_pre_new == 1 && g_orig_new == 1 && nret == 4;
     if (new_ok) {
@@ -2285,7 +2308,7 @@ static void CollectControlledAndEvents() {
     }
 
     g_pre_share_a = g_pre_share_b = g_orig_share = 0;
-    (void)TargetShare(1);
+    (void)s2khook::InvokeOpaque(g_call_target_share, 1);
     const S2HookReceipt sa = fnShareA.Snapshot();
     const S2HookReceipt sb = fnShareB.Snapshot();
     const bool share_fn = sa.state == S2HookState::Active && sb.state == S2HookState::Active &&
@@ -2313,22 +2336,20 @@ static void CollectControlledAndEvents() {
                 "{\"observed\":true}", "{\"observed\":false}", "GameFrame Add not accepted");
     }
 
-    bool peer_ok = false;
-    std::string peer_act;
-    RunPeerActions(peer_ok, peer_act);
+    const s2khook::PeerActionsObservation peers = RunPeerActions();
+    const bool peer_ok = peers.Passed();
     PushRec("peer_actions_both_orders", "native_peer_actions_both_orders", "native",
             peer_ok ? "pass" : "fail",
-            "{\"ab_io\":true,\"ab_oo\":true,\"ab_os\":true,\"ba_io\":true,\"ba_oo\":true,\"ba_os\":true}",
-            peer_act, peer_ok ? "both registration orders" : "peer action matrix failed");
+            s2khook::PeerActionsObservation::ExpectedJson(), peers.Json(),
+            peer_ok ? "both registration orders" : "peer action matrix failed");
 
     g_pre_once = g_post_once = g_orig_once = 0;
-    const int once = TargetOnce(10);
-    const bool once_ok = g_pre_once == 1 && g_post_once == 1 && g_orig_once == 1 && once == 15;
+    const int once = s2khook::InvokeOpaque(g_call_target_once, 10);
+    const s2khook::OnceObservation once_observed{g_pre_once, g_post_once, g_orig_once, once};
+    const bool once_ok = once_observed.Passed();
     PushRec("one_normal_invocation", "native_one_pre_post_orig", "native", once_ok ? "pass" : "fail",
-            "{\"pre\":1,\"post\":1,\"orig\":1}",
-            std::string("{\"pre\":") + std::to_string(g_pre_once) + ",\"post\":" +
-                std::to_string(g_post_once) + ",\"orig\":" + std::to_string(g_orig_once) + "}",
-            once_ok ? "one PRE+POST+orig" : "count mismatch");
+            s2khook::OnceObservation::ExpectedJson(), once_observed.Json(),
+            once_ok ? "one PRE+POST+orig with expected return" : "count or return mismatch");
 
     virtB.Remove(&g_dummyB);
     g_dummy_pre_a = g_dummy_pre_b = 0;
@@ -2479,7 +2500,11 @@ static void PrepareRun(const char* run_id) {
     g_source_revision = S2_KHOOK_SOURCE_REVISION;
     ResetLiveCounters();
     g_stored.clear();
+    // Defer the physical Function hook until every plugin has completed its load-time signature
+    // scans. Installing it in ProbePlugin::Load rewrites Touch's prologue before s2script sees it.
+    if (g_touch_fn) g_touch_original.Configure(g_touch_fn);
     R6PrepareEntities();
+    g_owned_level_generation = g_level_lifetime.Generation();
 }
 
 static void PrintRuntime() {
@@ -2580,10 +2605,10 @@ static void ProbeCommand(const CCommandContext& ctx, const CCommand& cmd) {
             PushPending("shared_capsule_registration", "native_gameframe_shared", "native",
                         "{\"observed\":true}", "report before collect");
             PushPending("peer_actions_both_orders", "native_peer_actions_both_orders", "native",
-                        "{\"ab_io\":true,\"ab_oo\":true,\"ab_os\":true,\"ba_io\":true,\"ba_oo\":true,\"ba_os\":true}",
+                        s2khook::PeerActionsObservation::ExpectedJson(),
                         "report before collect");
             PushPending("one_normal_invocation", "native_one_pre_post_orig", "native",
-                        "{\"pre\":1,\"post\":1,\"orig\":1}", "report before collect");
+                        s2khook::OnceObservation::ExpectedJson(), "report before collect");
             PushPending("fire_event_no_suppression", "native_invocation_scope", "native",
                         "{\"pre\":1,\"post\":1,\"nested_foreign\":0}", "report before collect");
             PushPending("fire_event_no_suppression", "native_original_once", "native",
@@ -2604,6 +2629,7 @@ static void ProbeCommand(const CCommandContext& ctx, const CCommand& cmd) {
 bool ProbePlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) {
     (void)late;
     PLUGIN_SAVEVARS();
+    ismm->AddListener(this, this);
     timespec loaded{};
     clock_gettime(CLOCK_MONOTONIC, &loaded);
     g_probe_generation = std::to_string(static_cast<long>(::getpid())) + ":" +
