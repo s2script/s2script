@@ -194,8 +194,9 @@ routing references/filters and the runtime replacement test is Metamod agnostic.
 It also confirmed two current control-flow gaps: an ordinary rejected native unload
 can begin retirement and disrupt gameplay, and forced host shutdown offers no retry
 for pending cleanup. These require plugin-side resolution. That source audit did
-not demonstrate a crash; the subsequent live observations below now include an
-engine-requested shutdown crash with component attribution still unresolved.
+not demonstrate a crash. The subsequent observations below distinguish failed
+probe-record loader cleanup from a later probe-owned entity cleanup crash; neither
+discharges the separate production lifecycle gaps.
 Native library unmapping remains outside acceptance.
 Runtime identity tooling now passes 12 builder tests, 23 actual JS fixture tests,
 18 generator tests and 58 controller tests. The native mapped-module helper and
@@ -206,8 +207,9 @@ classified as source changes; the reviewed correction ignores those cache direct
 while preserving rejection of real tracked and untracked source changes. The full
 bundle wrapper remains part of native CI. Independent review resolved unsafe
 symlink cleanup, runtime command mismatch and malformed pending-witness handling.
-Generating the actual installed-runtime receipt and remaining live/client observations
-still require a working probe on the test server. Keep PR #221 draft and PR B blocked. None of these
+The corrected probe produced an installed-runtime receipt on Nebula; the failed
+suite and remaining live/client observations are recorded below. Keep PR #221 draft
+and PR B blocked. None of these
 remaining tasks justify reintroducing a host patch or native hot-reload requirement.
 
 ## Nebula execution — September 15
@@ -268,3 +270,34 @@ loading, both plugin orders and shutdown. A separately labelled focused `.s2sp`
 reload diagnostic may run without clients, but it cannot complete the full staged
 acceptance or replace missing human observations. No live suite or reload pass has
 been claimed from this attempt.
+
+The corrected `7ffbeb6` probe-first run subsequently loaded both native plugins
+and produced a genuine installed-runtime receipt. The run ID is
+`khook-a-f32514a556fd4b56a6841d8e37e350ac`; the receipt SHA-256 is
+`6c26255d20f9e9e07cd161753f2e94e51db76d47d20456ef804ce38c5efbba06`.
+The first collect failed: the controller reported three passing cases, six pending
+and two failing, with the peer-action case additionally missing because its records
+contained invalid JSON. Exact optimized probe disassembly shows direct controlled
+target calls let compiler interprocedural assumptions precompute false verdicts.
+The matching displayed invocation counts therefore did not make that test valid.
+The probe also installed its independent Touch Function observer before the shim
+scanned the Touch signature; startup logged probe resolution followed by shim
+signature failure, and the script's SDKHook registration failed.
+
+Stopping this run exposed a distinct shutdown crash: the probe's `R6CleanupOwned`
+called `UTIL_Remove` after world teardown. The saved fault is in game `libserver`,
+with scanned callers through `ProbePlugin::Unload`; it is not the earlier failed
+probe-record cleanup. Docker again reported exit zero. GDB had been detached
+before quit, so its earlier SIGINT capture is not the crash capture. Preserve the
+minidump, raw run, startup/shutdown logs and receipt under
+`.gate/remote-khook-pr221/live-7ff-probe-first-failure-20260915T1846/`.
+The original server and all 25 plugin states are restored and verified.
+
+A Sol/medium implementer now owns the probe corrections: opaque runtime calls
+with complete numeric verdict evidence, delayed independent Touch observation,
+and public level-lifecycle tracking that forbids world access after shutdown.
+The Sol/medium remote operator independently checked the optimized binary and
+preserved the crash evidence. Review the fixes, rebuild the complete stamped
+bundle, then repeat probe-first, script reload, actual shutdown and reverse order.
+Human observations, script reload and reverse-order acceptance remain incomplete;
+the production shim's separate S3 obligations are not discharged by a probe fix.
