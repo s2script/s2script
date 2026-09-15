@@ -79,13 +79,20 @@ public:
                     void (*hook_removal_fn)(KHook::HookID_t, void*) = nullptr,
                     void* context = nullptr) override {
         removals.push_back({id, async, hook_removal_fn, context});
+        if (!async) {
+            Complete(removals.back());
+        }
     }
 
     void FireLastCompletion() {
         if (removals.empty()) {
             return;
         }
-        const Removal r = removals.back();
+        Complete(removals.back());
+    }
+
+private:
+    void Complete(const Removal& r) {
         const auto helper = typed_removals.find(r.id);
         if (helper != typed_removals.end()) {
             const auto details = helper->second;
@@ -98,6 +105,8 @@ public:
             r.fn(r.id, r.ctx);
         }
     }
+
+public:
 
     void* GetContextPtr() override { return current_context; }
     void* GetOriginalFunction() override { return nullptr; }
@@ -713,6 +722,10 @@ static void test_deferred_completion_retry_shape() {
     fn.BeginRemove();
     CHECK(S2Hook_DrainRetirement(), "first retry drain is allowed off the callback stack");
     CHECK(S2Hook_RetirementPending() == 1, "first retry still sees pending completion");
+    const auto removals_before_sync_upgrade = fake.removals.size();
+    CHECK(!fn.BeginRemove(false), "pending async removal cannot be upgraded to synchronous");
+    CHECK(fake.removals.size() == removals_before_sync_upgrade,
+          "rejected sync upgrade does not duplicate the provider removal");
     auto late = fn.Configure(reinterpret_cast<void*>(&FnTargetB));
     CHECK(late.state == S2HookState::Failed, "Configure while Removing is a named failure");
     CHECK(fn.Snapshot().state == S2HookState::Removing, "failed Configure leaves Removing intact");
@@ -758,6 +771,38 @@ static void test_virtual_destruction_keeps_live_id_cleanup() {
           "live Virtual ID retains the base helper's synchronous destructor cleanup");
 }
 
+static void test_synchronous_remove_completes_without_retirement_queue() {
+    FakeKHook fake;
+    fake.invoke_typed_removal = true;
+    KHook::__exported__khook = &fake;
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+    Dummy obj;
+    {
+        S2CheckedVirtual<Dummy, void> virt(0u, &DummyPre, &DummyPost);
+        const auto rec = virt.Add(&obj);
+        {
+            auto observation = virt.Observe(&obj);
+            CHECK(!virt.BeginRemove(false),
+                  "synchronous BeginRemove rejects an active callback stack");
+            CHECK(fake.removals.empty(),
+                  "rejected synchronous BeginRemove does not mutate provider state");
+        }
+        virt.Remove(&obj);
+        CHECK(virt.BeginRemove(false),
+              "synchronous BeginRemove is accepted after the callback unwinds");
+        CHECK(fake.removals.size() == 1 && fake.removals[0].id == rec.id,
+              "synchronous BeginRemove removes the checked physical id once");
+        CHECK(!fake.removals[0].async,
+              "synchronous BeginRemove requests an off-stack provider removal");
+        CHECK(virt.Snapshot().state == S2HookState::Removed,
+              "synchronous provider completion marks the checked binding Removed");
+        CHECK(S2Hook_RetirementPending() == 0,
+              "synchronous BeginRemove creates no delayed retirement entry");
+    }
+    CHECK(fake.removals.size() == 1,
+          "completed synchronous removal leaves no live id for the base destructor");
+}
+
 }  // namespace
 
 int main() {
@@ -782,6 +827,7 @@ int main() {
     test_deferred_completion_retry_shape();
     test_completed_virtual_destruction_does_not_remove_again();
     test_virtual_destruction_keeps_live_id_cleanup();
+    test_synchronous_remove_completes_without_retirement_queue();
 
     if (g_fail) {
         std::cerr << g_fail << " check(s) failed\n";

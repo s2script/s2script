@@ -31,6 +31,7 @@
 #include <vector>
 #include <map>
 #include <array>
+#include <atomic>
 #include <link.h>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -133,6 +134,7 @@ static std::map<std::string, StoredRec> g_terminals;
 static bool g_run_bound = false;
 static bool g_collected = false;
 static bool g_probe_retiring = false;
+static bool g_lifecycle_trace_retired = false;
 static std::string g_probe_generation;
 static std::vector<StoredRec> g_stored;
 static std::string g_emit_run;
@@ -523,7 +525,13 @@ private:
 class ProbePlugin : public ISmmPlugin, public IMetamodListener {
 public:
     ProbePlugin()
-        : gameFrame(&ISource2Server::GameFrame, this, &ProbePlugin::Hook_GameFrame, nullptr),
+        : serverConfigPreShutdown(&ISource2ServerConfig::PreShutdown, this,
+                                  &ProbePlugin::Hook_ServerConfigPreShutdownPre,
+                                  &ProbePlugin::Hook_ServerConfigPreShutdownPost),
+          serverConfigShutdown(&ISource2ServerConfig::Shutdown, this,
+                               &ProbePlugin::Hook_ServerConfigShutdownPre,
+                               &ProbePlugin::Hook_ServerConfigShutdownPost),
+          gameFrame(&ISource2Server::GameFrame, this, &ProbePlugin::Hook_GameFrame, nullptr),
           clientCommand(&ISource2GameClients::ClientCommand, this, &ProbePlugin::Hook_ClientCommand,
                         &ProbePlugin::Hook_ClientCommandPost),
           dispatchConCommand(&ICvar::DispatchConCommand, this, &ProbePlugin::Hook_DispatchConCommand,
@@ -538,6 +546,10 @@ public:
     void OnLevelInit(char const*, char const*, char const*, char const*, bool, bool) override;
     void OnLevelShutdown() override;
 
+    KHook::Return<void> Hook_ServerConfigPreShutdownPre(ISource2ServerConfig* config);
+    KHook::Return<void> Hook_ServerConfigPreShutdownPost(ISource2ServerConfig* config);
+    KHook::Return<void> Hook_ServerConfigShutdownPre(ISource2ServerConfig* config);
+    KHook::Return<void> Hook_ServerConfigShutdownPost(ISource2ServerConfig* config);
     KHook::Return<void> Hook_GameFrame(ISource2Server* server, bool simulating, bool first, bool last);
     KHook::Return<void> Hook_ClientCommand(ISource2GameClients* clients, CPlayerSlot slot,
                                            const CCommand& args);
@@ -564,6 +576,8 @@ public:
     const char* GetDate() override { return __DATE__; }
     const char* GetLogTag() override { return "KHOOKPROBE"; }
 
+    S2CheckedVirtual<ISource2ServerConfig, void> serverConfigPreShutdown;
+    S2CheckedVirtual<ISource2ServerConfig, void> serverConfigShutdown;
     S2CheckedVirtual<ISource2Server, void, bool, bool, bool> gameFrame;
     S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, const CCommand&> clientCommand;
     S2CheckedVirtual<ICvar, void, ConCommandRef, const CCommandContext&, const CCommand&> dispatchConCommand;
@@ -572,6 +586,7 @@ public:
         onConnected;
     S2CheckedVirtual<IGameEventManager2, bool, IGameEvent*, bool> fireEvent;
 
+    ISource2ServerConfig* serverconfig = nullptr;
     ISource2Server* server = nullptr;
     ISource2GameClients* gameclients = nullptr;
     IGameEventManager2* events = nullptr;
@@ -1134,6 +1149,59 @@ static bool g_listen_hooked = false;
 static bool g_transmit_hooked = false;
 static bool g_postevent_hooked = false;
 static s2khook::LevelLifetime g_level_lifetime;
+static std::atomic<std::uint64_t> g_lifecycle_sequence{0};
+static std::atomic<unsigned> g_preshutdown_inflight{0};
+static std::atomic<unsigned> g_shutdown_inflight{0};
+
+static void PrintLifecycleTrace(const char* event, int original_skipped = -1) {
+    const std::uint64_t sequence = g_lifecycle_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+    META_CONPRINTF(
+        "[khook-probe] lifecycle event=%s sequence=%llu level_active=%d level_generation=%llu "
+        "retiring=%d active_dispatch=%d retirement_pending=%zu preshutdown_inflight=%u "
+        "shutdown_inflight=%u original_skipped=%d\n",
+        event, static_cast<unsigned long long>(sequence), g_level_lifetime.MayTouchWorld() ? 1 : 0,
+        static_cast<unsigned long long>(g_level_lifetime.Generation()), g_probe_retiring ? 1 : 0,
+        S2Hook_NoActiveDispatch() ? 0 : 1, S2Hook_RetirementPending(),
+        g_preshutdown_inflight.load(std::memory_order_relaxed),
+        g_shutdown_inflight.load(std::memory_order_relaxed), original_skipped);
+}
+
+KHook::Return<void> ProbePlugin::Hook_ServerConfigPreShutdownPre(ISource2ServerConfig* config) {
+    auto observation = serverConfigPreShutdown.Observe(config);
+    if (observation) {
+        g_preshutdown_inflight.fetch_add(1, std::memory_order_relaxed);
+        PrintLifecycleTrace("serverconfig_preshutdown_enter");
+    }
+    return S2_Ignore();
+}
+
+KHook::Return<void> ProbePlugin::Hook_ServerConfigPreShutdownPost(ISource2ServerConfig* config) {
+    auto observation = serverConfigPreShutdown.Observe(config);
+    if (observation) {
+        PrintLifecycleTrace("serverconfig_preshutdown_exit",
+                            KHook::WasOriginalFunctionSkipped() ? 1 : 0);
+        g_preshutdown_inflight.fetch_sub(1, std::memory_order_relaxed);
+    }
+    return S2_Ignore();
+}
+
+KHook::Return<void> ProbePlugin::Hook_ServerConfigShutdownPre(ISource2ServerConfig* config) {
+    auto observation = serverConfigShutdown.Observe(config);
+    if (observation) {
+        g_shutdown_inflight.fetch_add(1, std::memory_order_relaxed);
+        PrintLifecycleTrace("serverconfig_shutdown_enter");
+    }
+    return S2_Ignore();
+}
+
+KHook::Return<void> ProbePlugin::Hook_ServerConfigShutdownPost(ISource2ServerConfig* config) {
+    auto observation = serverConfigShutdown.Observe(config);
+    if (observation) {
+        PrintLifecycleTrace("serverconfig_shutdown_exit", KHook::WasOriginalFunctionSkipped() ? 1 : 0);
+        g_shutdown_inflight.fetch_sub(1, std::memory_order_relaxed);
+    }
+    return S2_Ignore();
+}
 static std::uint64_t g_owned_level_generation = 0;
 static std::uint64_t g_script_reload_level_generation = 0;
 
@@ -2689,6 +2757,10 @@ bool ProbePlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, b
     }
 
     ret = 0;
+    serverconfig = serverFactory ? reinterpret_cast<ISource2ServerConfig*>(
+                                       serverFactory(INTERFACEVERSION_SERVERCONFIG, &ret))
+                                 : nullptr;
+    ret = 0;
     server = serverFactory
                  ? reinterpret_cast<ISource2Server*>(serverFactory(INTERFACEVERSION_SERVERGAMEDLL, &ret))
                  : nullptr;
@@ -2700,6 +2772,29 @@ bool ProbePlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, b
     InstallControlledHooks();
     R6ResolveEngine(engineFactory, serverFactory);
     R6InstallEngineHooks();
+
+    if (serverconfig) {
+        const std::int32_t preshutdown_slot = KHook::GetVtableIndex(&ISource2ServerConfig::PreShutdown);
+        const std::int32_t shutdown_slot = KHook::GetVtableIndex(&ISource2ServerConfig::Shutdown);
+        void** vtable = *reinterpret_cast<void***>(serverconfig);
+        void* preshutdown_target = preshutdown_slot >= 0 ? vtable[preshutdown_slot] : nullptr;
+        void* shutdown_target = shutdown_slot >= 0 ? vtable[shutdown_slot] : nullptr;
+        META_CONPRINTF(
+            "[khook-probe] lifecycle interface=%p vtable=%p preshutdown_slot=%d preshutdown_target=%p "
+            "shutdown_slot=%d shutdown_target=%p distinct_targets=%d\n",
+            static_cast<void*>(serverconfig), static_cast<void*>(vtable), preshutdown_slot,
+            preshutdown_target, shutdown_slot, shutdown_target,
+            preshutdown_target && shutdown_target && preshutdown_target != shutdown_target ? 1 : 0);
+        const S2HookReceipt pre_rec = serverConfigPreShutdown.Add(serverconfig);
+        const S2HookReceipt shutdown_rec = serverConfigShutdown.Add(serverconfig);
+        META_CONPRINTF(
+            "[khook-probe] lifecycle hooks preshutdown_state=%s preshutdown_id=%u "
+            "shutdown_state=%s shutdown_id=%u\n",
+            StateName(pre_rec.state), static_cast<unsigned>(pre_rec.id), StateName(shutdown_rec.state),
+            static_cast<unsigned>(shutdown_rec.id));
+    } else {
+        META_CONPRINTF("[khook-probe] lifecycle interface Source2ServerConfig001 unavailable\n");
+    }
 
     if (server) {
         const S2HookReceipt rec = gameFrame.Add(server);
@@ -2776,18 +2871,48 @@ static void BeginProbeRetirement() {
 }
 
 bool ProbePlugin::Unload(char* error, size_t maxlen) {
+    PrintLifecycleTrace("probe_unload_enter");
     if (!S2Hook_NoActiveDispatch()) {
+        PrintLifecycleTrace("probe_unload_rejected_active_dispatch");
         if (error && maxlen) {
             std::snprintf(error, maxlen, "%s",
                           "khook-probe unload rejected: dispatch is active; retry meta unload");
         }
         return false;
     }
+    if (g_preshutdown_inflight.load(std::memory_order_acquire) != 0 ||
+        g_shutdown_inflight.load(std::memory_order_acquire) != 0) {
+        PrintLifecycleTrace("probe_unload_rejected_lifecycle_span");
+        if (error && maxlen) {
+            std::snprintf(error, maxlen, "%s",
+                          "khook-probe unload rejected: lifecycle callback span is active");
+        }
+        return false;
+    }
+    if (!g_lifecycle_trace_retired) {
+        if (serverconfig) {
+            serverConfigPreShutdown.Remove(serverconfig);
+            serverConfigShutdown.Remove(serverconfig);
+        }
+        if (!serverConfigPreShutdown.BeginRemove(false) ||
+            !serverConfigShutdown.BeginRemove(false)) {
+            PrintLifecycleTrace("probe_unload_rejected_lifecycle_remove");
+            if (error && maxlen) {
+                std::snprintf(error, maxlen, "%s",
+                              "khook-probe unload rejected: lifecycle trace removal incomplete");
+            }
+            return false;
+        }
+        g_lifecycle_trace_retired = true;
+        PrintLifecycleTrace("probe_unload_lifecycle_removed");
+    }
     if (!g_probe_retiring) {
         g_probe_retiring = true;
         BeginProbeRetirement();
+        PrintLifecycleTrace("probe_unload_retirement_started");
     }
     if (!S2Hook_DrainRetirement() || S2Hook_RetirementPending() != 0) {
+        PrintLifecycleTrace("probe_unload_pending");
         if (error && maxlen) {
             std::snprintf(error, maxlen, "%s",
                           "khook-probe unload pending: hook retirement in progress; retry meta unload");
@@ -2799,5 +2924,7 @@ bool ProbePlugin::Unload(char* error, size_t maxlen) {
     }
     cmdRef = ConCommandRef{};
     events = nullptr;
+    serverconfig = nullptr;
+    PrintLifecycleTrace("probe_unload_complete");
     return true;
 }

@@ -342,10 +342,23 @@ public:
         return {state_->last_id, state_->last_state, state_->reason};
     }
 
-    void BeginRemove() {
+    // Synchronous removal is reserved for a proven off-callback terminal boundary. It must be
+    // the first removal request for this binding; an async retirement cannot be upgraded later.
+    bool BeginRemove(bool async = true) {
+        if (!async && !S2Hook_NoActiveDispatch()) {
+            return false;
+        }
         std::vector<KHook::HookID_t> to_remove;
         {
             std::lock_guard<std::mutex> lock(state_->mu);
+            if (!async) {
+                for (const auto& pair : state_->owned) {
+                    const auto& rec = pair.second;
+                    if (rec.remove_scheduled && rec.state != S2HookState::Removed) {
+                        return false;
+                    }
+                }
+            }
             for (auto& pair : state_->owned) {
                 auto& rec = pair.second;
                 if (rec.remove_scheduled || rec.id == KHook::INVALID_HOOK) {
@@ -360,12 +373,13 @@ public:
             }
         }
         for (KHook::HookID_t id : to_remove) {
-            {
+            if (async) {
                 std::lock_guard<std::mutex> lock(s2hook_detail::g_retire_mu);
                 s2hook_detail::g_retire.push_back({state_, id});
             }
-            ::KHook::RemoveHook(id, true, &s2hook_detail::OnRemoved, state_.get());
+            ::KHook::RemoveHook(id, async, &s2hook_detail::OnRemoved, state_.get());
         }
+        return true;
     }
 
 protected:
