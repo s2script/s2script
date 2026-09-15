@@ -21,12 +21,29 @@ the automatic original; engine delivery is the listener count.
 
 ## Build (sniper / SteamRT)
 
-From the repo root, after the SDK/shim toolchain is available:
+Build the acceptance bundle from a clean committed checkout with initialized
+submodules, Docker and the repository's Node/SDK toolchain. Stop the development
+server first if it mounts this checkout's `dist/`: the native build repackages that
+directory.
 
 ```bash
-cmake -S tools/khook-probe -B build/khook-probe -DS2_SOURCE_DIR="$PWD" -DCMAKE_BUILD_TYPE=Release
-cmake --build build/khook-probe -j
+npm install
+npm run build -w @s2script/sdk
+python3 scripts/build-khook-runtime.py
 ```
+
+The wrapper freshly builds the stock reference host, shim, core and probe in the
+server-runtime container, then builds the JS fixture with the normal SDK. It
+generates the fixture revision and unique token only in an ignored source copy.
+`build/khook-runtime/addons/` contains the four acceptance artifacts;
+`build/khook-runtime/khook-runtime-build.json` records their relative paths, hashes
+and source identity. A failed build invalidates the previous success manifest.
+An ordinary unstamped fixture build remains useful for development but cannot
+satisfy runtime identity. Do not edit source while the bundle is building.
+
+For a probe-only compile check inside the server-runtime toolchain, use
+`cmake -S tools/khook-probe -B build/khook-probe -DCMAKE_BUILD_TYPE=Release`
+and `cmake --build build/khook-probe -j`. This does not generate a bundle receipt.
 
 Requires `third_party/metamod-source` at the KHook pin (nested `third_party/khook`)
 and `third_party/hl2sdk`. Reuses the shim’s include paths and
@@ -48,6 +65,9 @@ bash scripts/test-khook-observer.sh
 node --test tools/khook-probe/testdata/fixture.test.mjs
 python3 tools/khook-probe/testdata/native_fixture_test.py
 python3 tools/khook-probe/testdata/script_reload_test.py
+python3 scripts/test-khook-runtime-build.py
+python3 scripts/test-khook-runtime-witness.py
+python3 scripts/test-khook-runtime-identity.py
 ```
 
 ASan must catch `legacy_post_uaf` (POST `EventNameIs` after the original deletes
@@ -58,12 +78,12 @@ frozen registry by `tools/khook-probe/testdata/gen_from_file.py`. These are synt
 
 ## Install on the live CS2 gate
 
-Copy the staged `.so` next to `s2script.so` and the VDF into the Metamod plugins
-directory (same tree as `s2script.vdf`):
+With the server stopped, copy the complete acceptance bundle into the packaged
+addon and the VDF into the Metamod plugins directory:
 
 ```bash
-cp build/khook-probe/stage/addons/s2script/bin/linuxsteamrt64/s2_khook_probe.so \
-   dist/addons/s2script/bin/linuxsteamrt64/
+cp -R build/khook-runtime/addons/s2script/. dist/addons/s2script/
+cp build/khook-runtime/khook-runtime-build.json dist/addons/s2script/
 cp build/khook-probe/stage/addons/metamod/s2_khook_probe.vdf \
    docker/metamod/
 ```
@@ -88,6 +108,7 @@ s2_khook_probe reload-arm <run_id>
 s2_khook_accept reload-arm <run_id>
 s2_khook_accept resume <run_id> <artifact_sha256>
 s2_khook_probe runtime
+s2_khook_accept runtime
 ```
 
 Run IDs must be 1–64 ASCII letters/digits, underscores or hyphens, beginning with
@@ -112,11 +133,61 @@ or resume is required. A lost native process requires a fresh run. JS presence
 uses `s2_khook_accept_live` (generation while loaded, zero in OnPluginEnd), not the
 existence of a persistent cvar.
 
-`runtime` emits a separate read-only `kind:"khook-runtime"` object with the compiled
-source revision, process ID, monotonic load-generation token, actual engine map
-and build, and canonical loaded paths in `modules:{probe,shim,core}`. Missing or
-ambiguous modules have null paths and result `pending`; all witnesses available
-produces `ready`. It does not manufacture file hashes or an installation receipt.
+The native `runtime` response uses schema 2 and kind `khook-runtime`. It reports
+the compiled source revision, process ID, load-generation token, engine map/build,
+and five module roles: `probe`, `shim`, `core`, `metamod`, `metamod_loader`. Each
+ready module contains a canonical `path`, hexadecimal `device` (`major:minor`,
+without padding), and decimal-string `inode`. These identities come from actual
+mapped ELF segments and must match the current files. Missing, deleted, replaced
+or ambiguous modules are null and keep the response pending. Metamod's loader
+must have the standard `addons/metamod/bin/linuxsteamrt64` load layout; the
+engine's other `libserver.so` cannot satisfy it.
+
+The JS `runtime` response uses schema 1 and kind `khook-fixture-runtime`. It
+reports the embedded `fixture_revision`, `fixture_token` and current `generation`.
+An unstamped build reports pending. Both commands are read-only and need no run
+binding. Neither command alone creates an installation receipt.
+
+## Generate the installed-runtime receipt
+
+Run the generator where the server's reported absolute paths are directly
+readable, with Python and GNU readelf available. For Docker this means inside
+the server filesystem namespace. The required scripts are
+`khook_runtime_identity.py`, `khook_acceptance.py`, `rcon.py` and
+`verify-metamod-artifact.py`; preserve their common `scripts/` directory when
+copying them into a test container. Do not rewrite container paths to checkout
+paths or use the controller's Git HEAD as installed identity.
+
+For the repository's Docker addon, use the following paths inside the container.
+Replace the expected revision with the clean commit intended for this test build:
+
+```bash
+python3 scripts/khook_runtime_identity.py \
+  --addons-root /home/steam/cs2-dedicated/game/csgo/addons \
+  --build-manifest /home/steam/cs2-dedicated/game/csgo/addons/s2script/khook-runtime-build.json \
+  --host-manifest /home/steam/cs2-dedicated/game/csgo/addons/metamod/.s2script-metamod-build.json \
+  --expected-source-revision <expected-40-hex-commit> \
+  --server 127.0.0.1:27015 --port 27015 \
+  --evidence /tmp/khook-run/captures/runtime-identity.txt \
+  --output /tmp/khook-run/runtime-identity.json
+```
+
+The installed host manifest comes from verified stock installation. The generator
+checks it with the production artifact verifier, joins it to the loaded host
+modules, compares all four bundle hashes and the active JS token/revision, and
+requires stable native and JS witnesses around hashing. Exit 0 publishes the
+captured evidence followed by the unsigned operator receipt; exit 2 means runtime
+evidence is unavailable/pending; exit 1 means invalid input or a mismatch. Existing
+output files are never overwritten.
+
+Copy both resulting files out of the container for the controller/capture archive,
+preserving their bytes. For a fresh run, use the receipt with
+`bash scripts/test-khook-live.sh A --prepare --run-dir <new-run-dir> --identity <receipt>`.
+If a pending run already exists, give the generator `--run-dir <existing-run-dir>`
+where its `run.json` is accessible; it adopts that run ID and checks its endpoint
+and revision. Then use `--collect` with the receipt. An already bound run cannot
+be assigned a replacement receipt. No success receipt or build test substitutes
+for the live case observations below.
 
 ## Command route (F5)
 

@@ -63,6 +63,15 @@ python3 scripts/test-metamod-build.py
 echo "== test-khook-acceptance.py (suite A judge/registry) =="
 python3 scripts/test-khook-acceptance.py
 
+echo "== test-khook-runtime-witness.py (mapped native module identity) =="
+python3 scripts/test-khook-runtime-witness.py
+
+echo "== test-khook-runtime-build.py (fresh source-bound acceptance bundle) =="
+python3 scripts/test-khook-runtime-build.py
+
+echo "== test-khook-runtime-identity.py (installed runtime receipt) =="
+python3 scripts/test-khook-runtime-identity.py
+
 echo "== test-khook-live.sh --self-test (shared judge via --from-file) =="
 bash scripts/test-khook-live.sh --self-test
 
@@ -131,7 +140,13 @@ cmake --build build/shim --target ccommand_selftest -j >/dev/null
 echo "== check-shim-symbols.sh (core entry points defined; no unresolvable engine symbols) =="
 bash scripts/check-shim-symbols.sh
 
-echo "== test-khook-sniper-build.sh (unmodified reference host and consumers) =="
-bash scripts/test-khook-sniper-build.sh
+# The acceptance bundle includes a freshly built .s2sp with its own identity.
+# Like ci-js, only CI refreshes node_modules; local runs use the installed SDK.
+if [ -n "${CI:-}" ]; then
+  echo "== npm ci (acceptance fixture build tools) =="
+  npm ci
+fi
+echo "== build-khook-runtime.py (stock host, native consumers and stamped fixture) =="
+python3 scripts/build-khook-runtime.py
 
 echo "ci-native: all native gates passed"
