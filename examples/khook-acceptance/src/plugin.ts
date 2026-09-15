@@ -174,6 +174,47 @@ function pushInvalid(requested: string): void {
   pushR6Pending();
 }
 
+function pushOwnedPendingUncollected(): void {
+  stored = [];
+  pending(
+    "frame_client_command_hooks",
+    "js_gameframe_delivery",
+    { observed: true },
+    "report before collect",
+  );
+  pending(
+    "frame_client_command_hooks",
+    "js_client_connected",
+    { observed: true },
+    "report before collect",
+  );
+  pending(
+    "frame_client_command_hooks",
+    "js_client_identity_join",
+    { slot: 0, steamId: "", run_id: runId },
+    "report before collect",
+  );
+  pending(
+    "frame_client_command_hooks",
+    "js_command_continue_delivery",
+    { js: 1 },
+    "report before collect",
+  );
+  pending(
+    "frame_client_command_hooks",
+    "js_command_handled_delivery",
+    { js: 1 },
+    "report before collect",
+  );
+  pending(
+    "fire_event_no_suppression",
+    "js_no_handled_on_unsuppressed_event",
+    { handled: 0 },
+    "report before collect",
+  );
+  pushR6Pending();
+}
+
 function collectJs(): void {
   stored = [];
   if (frames > 0) {
@@ -334,7 +375,7 @@ export function OnPluginStart(): void {
         return HookResult.Handled;
       }
       if (!collected) {
-        collectJs();
+        pushOwnedPendingUncollected();
       }
       for (const rec of stored) cmd.reply(emit(rec));
       return HookResult.Handled;

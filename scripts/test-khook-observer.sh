@@ -77,5 +77,6 @@ judge_file "$FIX_DIR/r6-pending.jsonl" 2
 judge_file "$FIX_DIR/negative-missing-js.jsonl" 1
 judge_file "$FIX_DIR/negative-flipped.jsonl" 1
 judge_file "$FIX_DIR/negative-omitted-plugin.jsonl" 1
+judge_file "$FIX_DIR/partial-continue.jsonl" 2
 
 echo "PASS: test-khook-observer.sh"
