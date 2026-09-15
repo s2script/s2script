@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
 
 namespace s2khook {
@@ -11,6 +13,20 @@ using IntTarget = int (*)(int);
 // runtime, which same-TU optimization cannot see; a direct call lets IPA discard hook side effects.
 inline int InvokeOpaque(IntTarget volatile& target, int argument) {
     return target(argument);
+}
+
+template <typename Allocate, typename Release>
+bool ReplaceOwnedCString(void* pointer_storage, const std::string& value,
+                         Allocate allocate, Release release) {
+    if (!pointer_storage) return false;
+    char* replacement = allocate(value.size() + 1);
+    if (!replacement) return false;
+    std::memcpy(replacement, value.c_str(), value.size() + 1);
+    char* previous = nullptr;
+    std::memcpy(&previous, pointer_storage, sizeof(previous));
+    std::memcpy(pointer_storage, &replacement, sizeof(replacement));
+    if (previous) release(previous);
+    return true;
 }
 
 class LevelLifetime {

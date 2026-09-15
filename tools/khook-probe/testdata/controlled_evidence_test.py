@@ -16,12 +16,37 @@ program = r'''
 
 static int plus_one(int value) { return value + 1; }
 static int override_42(int) { return 42; }
+static char allocator_storage[2][64];
+static int allocation_count = 0;
+static int release_count = 0;
+static char* released_pointer = nullptr;
+
+static char* fixture_allocate(std::size_t size) {
+    assert(size <= sizeof(allocator_storage[0]));
+    return allocator_storage[allocation_count++];
+}
+static void fixture_release(char* pointer) {
+    ++release_count;
+    released_pointer = pointer;
+}
 
 int main() {
     s2khook::IntTarget volatile target = &plus_one;
     assert(s2khook::InvokeOpaque(target, 10) == 11);
     target = &override_42;
     assert(s2khook::InvokeOpaque(target, 10) == 42);
+
+    char* owned = fixture_allocate(4);
+    std::memcpy(owned, "old", 4);
+    char* original = owned;
+    assert(s2khook::ReplaceOwnedCString(&owned, "new-value", fixture_allocate, fixture_release));
+    assert(std::string(owned) == "new-value");
+    assert(release_count == 1 && released_pointer == original);
+    const auto allocation_before_failure = allocation_count;
+    auto fail_allocate = [](std::size_t) -> char* { return nullptr; };
+    assert(!s2khook::ReplaceOwnedCString(&owned, "ignored", fail_allocate, fixture_release));
+    assert(std::string(owned) == "new-value");
+    assert(allocation_count == allocation_before_failure && release_count == 1);
 
     s2khook::LevelLifetime level;
     assert(!level.MayTouchWorld());

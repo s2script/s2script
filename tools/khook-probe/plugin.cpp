@@ -969,13 +969,10 @@ static bool ProbeSetCvarString(const char* name, const std::string& value) {
     if (!data || data->GetType() != EConVarType_String) return false;
     const size_t off = sizeof(ConVarData) - sizeof(CVValue_t) * MAX_SPLITSCREEN_CLIENTS;
     auto* slot = reinterpret_cast<CVValue_t*>(reinterpret_cast<char*>(data) + off);
-    char* replacement = ::strdup(value.c_str());
-    if (!replacement) return false;
-    char* old = nullptr;
-    std::memcpy(&old, &slot->m_StringValue, sizeof(old));
-    std::memcpy(&slot->m_StringValue, &replacement, sizeof(replacement));
-    std::free(old);
-    return true;
+    return s2khook::ReplaceOwnedCString(
+        &slot->m_StringValue, value,
+        [](std::size_t size) { return static_cast<char*>(MemAlloc_Alloc(size)); },
+        [](char* pointer) { MemAlloc_Free(pointer); });
 }
 
 static CEntityInstance* EntByIndex(int idx) {
