@@ -18,6 +18,7 @@
 #include <networksystem/netmessage.h>            // CNetMessage::AsProto (Slice 6.1c)
 #include <google/protobuf/message.h>             // Message/Reflection (Slice 6.1c SayText2 reflection)
 #include <google/protobuf/descriptor.h>          // Descriptor::FindFieldByName (Slice 6.1c)
+#include <tier0/memalloc.h>                      // engine-owned CUtlString storage
 
 // SchemaSystem: ISchemaSystem + the type-scope / class-info / field-data layout used by the
 // schema-offset engine-op (recon Q1/Q2; include paths mirror shim/CMakeLists.txt).
@@ -2226,7 +2227,8 @@ static int s2_cvar_set(const char* name, const char* value) {
         auto* slot = reinterpret_cast<S2UtlPtr*>(&curr->m_StringValue);
         char* oldp = slot->p;
         const size_t n = strlen(value);
-        char* neu_s = static_cast<char*>(malloc(n + 1));
+        // CVValue_t owns this CUtlString storage, so allocate and release it through tier0.
+        char* neu_s = static_cast<char*>(MemAlloc_Alloc(n + 1));
         if (!neu_s) return 0;
         memcpy(neu_s, value, n + 1);
         slot->p = neu_s;
@@ -2234,7 +2236,7 @@ static int s2_cvar_set(const char* name, const char* value) {
         S2CvarAbs abs(ref, data);
         s_pCvar->CallChangeCallback(ref, CSplitScreenSlot(0), curr, curr);
         s_pCvar->CallGlobalChangeCallbacks(&abs, CSplitScreenSlot(0), value, oldBuf);
-        if (oldp) free(oldp);
+        if (oldp) MemAlloc_Free(oldp);
         return 1;
     }
 
