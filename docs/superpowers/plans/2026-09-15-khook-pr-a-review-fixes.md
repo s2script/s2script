@@ -4,9 +4,10 @@
 managed inside resident s2script. Native shim hot reload is not required.
 **Spec:** [Current remediation design](../specs/2026-09-14-khook-pr-a-remediation-design.md).
 **Decision:** [Stock-host scope](../specs/2026-09-15-khook-stock-host-decision.md).
-**Published implementation:** PR #221 commit `b33ff2f` contains the stock delivery,
-script-reload tooling and live-validated controlled probe corrections. Production
-shutdown remediation remains in progress. Start work from the current PR head.
+**Latest live-tested implementation:** PR #221 commit `229b762` includes staged
+terminal cleanup and passes both CI gates. Its live controlled run passed seven cases, with
+five pending and none failed, but normal process shutdown still segfaulted after
+cleanup. S3 remains incomplete. Start work from the current PR head.
 S1 and S2 are complete; do not redispatch them. The original local worker baseline
 `fccea2b` is execution history, not a required checkout for a new agent.
 
@@ -79,8 +80,8 @@ lifecycle alongside them. There is no dependency patch implementation package.
 - [x] Trace stock engine shutdown order and thread identity on a live server.
   `b33ff2f` records both public phase originals returning before final Unload, all
   on the probe load thread, TID 88. World teardown precedes PreShutdown; Source2 and
-  logging shutdown follow it. Resource-safe cleanup still needs implementation
-  and a fresh live run. Callback-only active counts cannot prove that an intercepted
+  logging shutdown follow it. Staged cleanup is implemented; the `229b762`
+  live run still crashed after cleanup, so shutdown acceptance remains failed. Callback-only active counts cannot prove that an intercepted
   original is off-stack. No synchronous self-removal or busy waiting.
 - [x] Keep ordinary native unload during gameplay nondestructive and unsupported;
   it must not begin whole-shim retirement. Choose the smallest plugin-side shutdown
@@ -134,8 +135,9 @@ lifecycle alongside them. There is no dependency patch implementation package.
 
   These are test-only changes. Root owns README/protocol/CI joins. No production
   loader, SDK, core or dependency modification is required for this tooling.
-- [ ] Run focused gates once integrated, then applicable full JS/native gates and
-  Linux/sniper builds. Linux/live absence remains pending, not a passing local test.
+- [x] Run focused gates once integrated, then applicable full JS/native gates and
+  Linux/sniper builds. Both CI gates and the full Nebula bundle passed `229b762`.
+  This does not override its failed live shutdown result.
 - [ ] Update docs-only PR #220 without introducing code files, and PR #221 without
   overwriting new remote work. Check CI for the pushed head. Report incomplete S3
   or human/live acceptance explicitly; keep draft status.
@@ -450,3 +452,53 @@ results do not establish Linux or live shutdown success. Full shim/probe compila
 loaded-ELF checks and the observer script still need Linux validation; macOS lacks
 the required CMake/SDK environment and GNU `timeout`. Rebuild the exact integrated
 head and repeat the owned-server gate before marking S3 or PR A accepted.
+
+
+### Current terminal-cleanup validation: `229b762`
+
+The inherited lifecycle-member type correction compiled in both native CI and the
+fresh full Nebula bundle. [Native CI](https://github.com/s2script/s2script/actions/runs/35029956095)
+and [JS CI](https://github.com/s2script/s2script/actions/runs/35029956146) passed.
+The exact bundle loaded on official stock Metamod 1467 with probe first, with a
+genuine receipt for run `khook-a-cd31ea793e704794b7ab65ec115c45a3`: SHA-256
+`26e9697a7e21ee19d71f86314c8a8b725d69e77e83bc8e1401f90cbb85802c22`.
+Controlled collection recorded **7 PASS, 5 PENDING, 0 FAIL**. Pending cases include
+four client-dependent groups and the map/slot-reuse/script-reload group.
+
+Normal quit still **failed**. The probe and production shim both reported completed
+PreShutdown cleanup; the probe reported zero pending retirement, both original
+phase calls returned, and its final Unload removed both lifecycle markers and
+completed. The CS2 child then segfaulted. Production final Unload was not observed
+in the logs; do not infer its success or claim the exact fault occurred inside it.
+No new minidump was produced. The original server's preceding ordinary quit was
+clean. Neither the old pending-retirement explanation nor a guessed residual
+resource establishes the cause of this new failure.
+
+All 51 saved files verified under
+`.gate/remote-khook-pr221/live-229b762-shutdown-20260915/`; inventory SHA-256
+`353d466878006a152a02f2bfc176abd584ed57900b9abef57b0db3b0e1a883ce`.
+The original trees and all 25 plugin states were restored byte-for-byte, with
+0 humans and 2 bots. Production was untouched.
+
+Saved-artifact inspection identified a concrete production allocator mismatch:
+`s2_cvar_set` in the exact shim calls libc `malloc@plt` for replacement string-CVar
+storage and `free@plt` for the old engine-owned pointer. These calls resolve to
+GLIBC imports, independently of the shim's `g_pMemAlloc` relocation. The genuine
+fixture prepare writes its run and artifact strings through this path. The probe
+already uses the engine allocator for equivalent writes. This proves an ownership
+bug, but absent a fresh dump it does not by itself attribute the late crash.
+The six-file inspection is saved under
+`.gate/remote-khook-pr221/analysis-229b-cvar-allocator/`; inventory SHA-256
+`48ecf07de9d101446bd69b0c23899d82941316688db168559d9491e3376d3431`.
+
+The reviewed correction is `24d2190`: explicit engine allocation/free in the
+production string setter, preserving allocation-failure behavior and the old
+string's lifetime through callbacks. A Sol/medium worker implemented it; an
+independent Sol/medium artifact inspector and the coordinator reviewed it. Binding
+and shutdown sanitizer suites passed. Do not broaden this change into callback
+semantics, async runtime shutdown or host changes. Next, rebuild all four
+artifacts, confirm the compiled setter uses the engine allocator, and repeat the
+owned-server shutdown gate. Use a separate diagnostic run for any component
+isolation; never merge it into acceptance evidence. Keep normal script reload,
+both native load orders and human observations pending. No upstream patches or
+native hot-unload requirements are part of this correction.

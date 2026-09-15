@@ -127,7 +127,12 @@ IDs must not trigger redundant backend calls at static destruction. Preserve
 cleanup for live IDs. Do not use receipt publication as proof that the receipt
 callback has returned. No native library release requirement justifies an upstream
 patch in this scope. Unsupported busy/forced paths must remain explicit; idle
-process shutdown still needs actual acceptance evidence.
+process shutdown still needs actual acceptance evidence. The `229b762` live run
+completed both PreShutdown cleanups and the probe's final marker removal with zero
+pending retirement, but the child still segfaulted afterward. Production final
+Unload was not observed and no new dump was produced. Preserve that failure and
+its causal limits; do not treat successful cleanup logs or passing CI as a clean
+process exit. The dynamic plan records the exact receipt and saved evidence.
 
 ## Review corrections to preserve
 
