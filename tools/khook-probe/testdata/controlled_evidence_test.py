@@ -26,17 +26,23 @@ int main() {
     s2khook::LevelLifetime level;
     assert(!level.MayTouchWorld());
     assert(level.Generation() == 0);
+    assert(level.ClaimCurrentWorld() == 0);
     level.OnLevelInit();
     assert(level.MayTouchWorld());
     assert(level.Generation() == 1);
-    assert(level.MayTouchOwnedWorld(1));
+    const auto prepared_generation = level.ClaimCurrentWorld();
+    assert(prepared_generation == 1);
+    assert(level.MayTouchOwnedWorld(prepared_generation));
     level.OnLevelShutdown();
     level.OnLevelShutdown();
     assert(!level.MayTouchWorld());
+    assert(level.ClaimCurrentWorld() == 0);
     level.OnLevelInit();
     assert(level.Generation() == 2);
-    assert(!level.MayTouchOwnedWorld(1));
-    assert(level.MayTouchOwnedWorld(2));
+    const auto reload_target_generation = level.ClaimCurrentWorld();
+    assert(reload_target_generation == 2);
+    assert(!level.MayTouchOwnedWorld(prepared_generation));
+    assert(level.MayTouchOwnedWorld(reload_target_generation));
 
     s2khook::PeerActionsObservation peers{
         {1, 1, 1, 42}, {1, 1, 1, 7}, {1, 1, 0, 99},

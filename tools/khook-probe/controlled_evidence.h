@@ -26,6 +26,7 @@ public:
     bool MayTouchOwnedWorld(std::uint64_t owned_generation) const {
         return active_ && owned_generation != 0 && owned_generation == generation_;
     }
+    std::uint64_t ClaimCurrentWorld() const { return active_ ? generation_ : 0; }
     std::uint64_t Generation() const { return generation_; }
 
 private:

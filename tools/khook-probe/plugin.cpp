@@ -1118,6 +1118,7 @@ static bool g_transmit_hooked = false;
 static bool g_postevent_hooked = false;
 static s2khook::LevelLifetime g_level_lifetime;
 static std::uint64_t g_owned_level_generation = 0;
+static std::uint64_t g_script_reload_level_generation = 0;
 
 struct PhaseSnap {
     int pre = 0;
@@ -1176,9 +1177,11 @@ static void R6RemoveTouch(CEntityInstance* ent, bool pre, bool post) {
 
 static void R6CleanupOwned() {
     const bool may_touch_world = g_level_lifetime.MayTouchOwnedWorld(g_owned_level_generation);
+    const bool may_touch_reload_target =
+        g_level_lifetime.MayTouchOwnedWorld(g_script_reload_level_generation);
     // The reload target can outlive the final map stage, so resolve its identity
     // again rather than trusting a pointer if an operator changes maps afterward.
-    if (may_touch_world) {
+    if (may_touch_reload_target) {
         int serial = -1;
         auto* target = EntByIndex(g_script_reload.target_index);
         if (g_util_remove && EntIndexSerial(target, nullptr, &serial) && serial == g_script_reload.target_serial)
@@ -1186,6 +1189,7 @@ static void R6CleanupOwned() {
     }
     g_script_reload_target = nullptr;
     g_script_reload = {};
+    g_script_reload_level_generation = 0;
     if (may_touch_world) {
         R6RemoveTouch(g_nat_a, true, true);
         R6RemoveTouch(g_nat_b, true, true);
@@ -1551,6 +1555,7 @@ static void R6DriveReuseOnce() {
 }
 
 static bool R6ArmScriptReload() {
+    if (!g_level_lifetime.MayTouchWorld()) return false;
     if (g_script_reload.armed) return true;
     if (!g_run_bound || g_artifact_identity.empty() || !JsAcceptPresent() ||
         ProbeCvarStr("s2_khook_accept_run") != g_run_id ||
@@ -1560,8 +1565,10 @@ static bool R6ArmScriptReload() {
     if (!EntIndexSerial(g_script_reload_target, &g_script_reload.target_index, &g_script_reload.target_serial)) {
         if (g_util_remove) g_util_remove(g_script_reload_target);
         g_script_reload_target = nullptr;
+        g_script_reload_level_generation = 0;
         return false;
     }
+    g_script_reload_level_generation = g_level_lifetime.ClaimCurrentWorld();
     g_script_reload.old_generation = ProbeCvarInt("s2_khook_accept_live", 0);
     g_script_reload.armed = true;
     ProbeSetCvarInt("s2_khook_accept_reload_target", g_script_reload.target_index);
@@ -1630,7 +1637,7 @@ static void CollectScriptReload() {
 }
 
 static void R6GameFrame() {
-    if (!g_run_bound) {
+    if (!g_run_bound || !g_level_lifetime.MayTouchWorld()) {
         return;
     }
     g_r6_frames++;
@@ -2504,7 +2511,7 @@ static void PrepareRun(const char* run_id) {
     // scans. Installing it in ProbePlugin::Load rewrites Touch's prologue before s2script sees it.
     if (g_touch_fn) g_touch_original.Configure(g_touch_fn);
     R6PrepareEntities();
-    g_owned_level_generation = g_level_lifetime.Generation();
+    g_owned_level_generation = g_level_lifetime.ClaimCurrentWorld();
 }
 
 static void PrintRuntime() {
@@ -2720,7 +2727,11 @@ static void BeginProbeRetirement() {
         g_plugin.dispatchConCommand.Remove(g_plugin.icvar);
     }
     if (g_plugin.events) {
-        FeStopListening(g_plugin.events);
+        if (g_level_lifetime.MayTouchWorld()) {
+            FeStopListening(g_plugin.events);
+        } else {
+            g_fe_listening = false;
+        }
         g_plugin.fireEvent.Remove(g_plugin.events);
     }
     virtA.Remove(&g_dummyA);
@@ -2765,9 +2776,10 @@ bool ProbePlugin::Unload(char* error, size_t maxlen) {
         }
         return false;
     }
-    if (icvar && cmdRef.IsValidRef()) {
+    if (g_level_lifetime.MayTouchWorld() && icvar && cmdRef.IsValidRef()) {
         icvar->UnregisterConCommandCallbacks(cmdRef);
     }
+    cmdRef = ConCommandRef{};
     events = nullptr;
     return true;
 }
