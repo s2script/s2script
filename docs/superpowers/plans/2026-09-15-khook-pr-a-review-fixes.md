@@ -4,9 +4,10 @@
 managed inside resident s2script. Native shim hot reload is not required.
 **Spec:** [Current remediation design](../specs/2026-09-14-khook-pr-a-remediation-design.md).
 **Decision:** [Stock-host scope](../specs/2026-09-15-khook-stock-host-decision.md).
-**Implementation baseline for this revision:** integration commit `fccea2b`.
-The local baseline includes superseded host patch work; remove it, do not assume it
-is required. Earlier independent fixes are preserved and reviewed.
+**Published implementation:** PR #221 commit `71d7464` contains the reviewed stock
+delivery and script-reload changes. Start remaining work from the current PR head.
+S1 and S2 are complete; do not redispatch them. The original local worker baseline
+`fccea2b` is execution history, not a required checkout for a new agent.
 
 ## Execution rules
 
@@ -34,37 +35,37 @@ lifecycle alongside them. There is no dependency patch implementation package.
 
 ## S1 — stock delivery
 
-- [ ] Delete the dependency patch series and application path. Prepare exact
+- [x] Delete the dependency patch series and application path. Prepare exact
   unmodified source for optional CI builds without changing vendored checkouts.
-- [ ] Replace patch-dependent manifest schema with schema 2 stock provenance.
+- [x] Replace patch-dependent manifest schema with schema 2 stock provenance.
   Support official releases with expected archive checksum and safe extraction;
   optional source builds record exact checked source SHAs. Keep actual file hashes,
   required loader layout, ELF architecture and GLIBC validation.
-- [ ] Preserve transactional installation, running-server refusal, verification of
+- [x] Preserve transactional installation, running-server refusal, verification of
   existing destination bytes, rollback and invalidation of stale build receipts.
-- [ ] Update operator docs and deterministic notices. No mandatory private host.
-- [ ] Run source-preparation, artifact/archive and installer regressions, including
+- [x] Update operator docs and deterministic notices. No mandatory private host.
+- [x] Run source-preparation, artifact/archive and installer regressions, including
   malformed/empty binaries, escapes, stale receipts and failure before replacement.
   Report missing platform tools honestly. Commit for independent scoped review.
 
 ## S2 — `.s2sp` lifecycle and trustworthy evidence
 
-- [ ] Keep twelve cases; replace misleading `native_unload_reload` subcheck with
+- [x] Keep twelve cases; replace misleading `native_unload_reload` subcheck with
   `script_hot_reload` under `entity_slot_reuse_map_teardown`.
-- [ ] Arm a real before/reload/after sequence with resident shim and probe. The
+- [x] Arm a real before/reload/after sequence with resident shim and probe. The
   probe retains a native target; old JS generation installs test PRE/POST callbacks
   and owns a marker. After actual `.s2sp` reload, require new generation PRE=1,
   POST=1, original=1, old callbacks=0 and old marker gone. Leave dedicated test
   subscriptions to ledger cleanup. The marker is a game-world entity explicitly
   removed in OnPluginEnd; it proves that cleanup path, not entity-ledger disposal.
-- [ ] Resume only JS run binding after reload. Do not replay completed initial
+- [x] Resume only JS run binding after reload. Do not replay completed initial
   filter/phase observations or replace persisted terminal evidence.
-- [ ] Add actual fixture negative tests for duplicate/stale/missing callbacks,
+- [x] Add actual fixture negative tests for duplicate/stale/missing callbacks,
   missing original, unchanged generation and leaked old resources. Update native,
   JS, parser fixtures and README as one contract.
-- [ ] Fix controller validation before pending shortcuts and before side effects:
+- [x] Fix controller validation before pending shortcuts and before side effects:
   malformed supplied identity always fails; run IDs are bounded command-safe tokens.
-- [ ] Retain independent command/original, phase removal, event consumption,
+- [x] Retain independent command/original, phase removal, event consumption,
   human-observation and immutable-history corrections. Run controller, real fixture,
   observer, typecheck/build and parser positive-count regressions; commit for review.
 
@@ -114,9 +115,9 @@ lifecycle alongside them. There is no dependency patch implementation package.
 ## Current evidence
 
 Stock delivery and script-reload/evidence packages are implemented and independently
-reviewed. Integrated delivery commits: `5148f4c`, `9150473`, `29a6d81`, `50256f4`.
-Integrated fixture/controller commits: `8dea9a4`, `4111321`. No findings remain from
-those scoped reviews. The obsolete patched-host lifetime harness and dependency
+reviewed, published together in `71d7464`. Individual worker commits and test logs
+remain recorded in the local execution ledger. No findings remain from those
+scoped reviews. The obsolete patched-host lifetime harness and dependency
 patch directory/application path have been removed.
 
 Fresh integrated validation passed 16 source/manifest/archive tests, 135 installer
