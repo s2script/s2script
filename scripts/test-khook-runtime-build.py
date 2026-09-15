@@ -47,7 +47,7 @@ def init_repo(path: Path) -> str:
         'export const KHOOK_FIXTURE_REVISION = "unknown";\n'
         'export const KHOOK_FIXTURE_TOKEN = "unknown";\n'
     )
-    (path / ".gitignore").write_text("/build\n/target\n")
+    (path / ".gitignore").write_text((ROOT / ".gitignore").read_text())
     run("git", "init", "-q", cwd=path)
     run("git", "config", "user.email", "test@example.invalid", cwd=path)
     run("git", "config", "user.name", "Runtime Builder Test", cwd=path)
@@ -123,6 +123,25 @@ class RuntimeBuildTests(unittest.TestCase):
             embedded = (output / "fixture-src/src/build_identity.ts").read_text()
             self.assertIn(revision, embedded)
             self.assertIn(TOKEN, embedded)
+
+    def test_generated_compiler_and_python_caches_do_not_dirty_source(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_repo(root)
+            ccache = root / ".ccache/0/a/compiler-result"
+            pycache = root / "tools/khook-probe/testdata/__pycache__/state.cpython-312.pyc"
+            ccache.parent.mkdir(parents=True)
+            pycache.parent.mkdir(parents=True)
+            ccache.write_bytes(b"compiler cache")
+            pycache.write_bytes(b"python bytecode")
+
+            manifest = builder.build_runtime(
+                root, root / "build/khook-runtime", fixture_token=TOKEN,
+                native_builder=lambda repo: write_native(repo),
+                fixture_builder=write_fixture,
+            )
+
+            self.assertTrue(manifest.is_file())
 
     def test_dirty_tracked_or_untracked_source_is_rejected_before_build(self):
         for dirty in ("tracked", "untracked"):
