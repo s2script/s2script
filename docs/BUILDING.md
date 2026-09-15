@@ -17,7 +17,7 @@ If you only want to *run* s2script on a server, you do not need this file — gr
 
 ```
 core/         Rust engine core (cdylib, embeds V8). Engine-generic — never imports games/*.
-shim/         C++ Metamod plugin. Owns every Source 2 touchpoint: sigscan, SourceHooks,
+shim/         C++ Metamod plugin. Owns every Source 2 touchpoint: sigscan, KHook,
               detours, protobuf reflection, vtable RTTI.
 games/cs2/    CS2 game-package prelude (generated schema + nav accessors).
 packages/     npm-published: @s2script/sdk (types + the `s2s` CLI), @s2script/cs2, eslint-plugin.
@@ -138,6 +138,14 @@ the V8 prebuilt on every run.
 
 **This is the canonical build for anything that touches a real server.**
 
+The resulting `s2script.so` requires **stock Metamod plugin API 18 support** (KHook).
+No dependency patch or private host build is required. Use a compatible official release;
+check every other native plugin's PLAPI compatibility when updating the server. The vendored
+Metamod/KHook pins are unchanged upstream source used for development and reproducible tests.
+See [installation](INSTALL.md#prerequisites) for the official-archive option and its explicit
+checksum/API confirmation. `.s2sp` plugins reload inside resident s2script; update native
+libraries by stopping and restarting the server.
+
 ---
 
 ## Building plugins
@@ -162,14 +170,42 @@ automated** — a human drives it and records the result.
 
 ### One-time setup
 
-Install Metamod:Source 2.0 into `docker/metamod/`. Download the CS2-compatible build from
-<https://www.sourcemm.net/downloads.php?branch=dev> and copy its `csgo/addons/metamod/` contents:
+Install a compatible **stock official Metamod release** into `docker/metamod/` using the
+[archive and installer instructions](INSTALL.md#prerequisites). This does not require building
+Metamod locally. The installer records schema 2 provenance and artifact hashes, rejects stale
+or malformed artifacts, and retains a full previous tree for rollback.
+
+For reproducible development tests, an optional build copies the pinned upstream sources
+without modifying them. It derives PLAPI from checked headers and emits an
+`unmodified-source` manifest after successful binary validation:
 
 ```bash
-tar xzf metamod_*.tar.gz
-cp -r package/csgo/addons/metamod/* docker/metamod/
-# docker/metamod/ should now hold metamod.vdf, bin/, …
+# Requires AMBuild 2.2+, hl2sdk, Steam Runtime 3 / Debian bullseye.
+docker run --rm -v "$PWD:/repo" -w /repo \
+  -v s2script-cargo:/usr/local/cargo/registry \
+  rust:bullseye bash -lc 'export S2_SNIPER_ENV=1; bash /repo/scripts/build-metamod-pinned.sh'
+python3 scripts/verify-metamod-artifact.py \
+  --tree build/metamod-pinned/tree \
+  --manifest build/metamod-pinned/metamod-build.json
+# Optional use of that source build in the local development server:
+sudo docker compose -f docker/docker-compose.yml stop cs2
+S2_METAMOD_TREE="$PWD/build/metamod-pinned/tree" \
+S2_METAMOD_BUILD_MANIFEST="$PWD/build/metamod-pinned/metamod-build.json" \
+  bash scripts/cloud/install.sh --metamod-only
+sudo docker compose -f docker/docker-compose.yml start cs2
 ```
+
+The source copy disables AMBuild auto-versioning and records the checked upstream commits;
+it never applies a patch or creates fabricated source history. `--prepare-only` tests source
+preparation without a compiler and leaves no success manifest. A failed rebuild also removes
+the previous success manifest so old output cannot satisfy a new build attempt.
+
+`bash scripts/test-khook-sniper-build.sh` builds the unmodified reference host, shim/core and
+optimized probe in the compatibility environment and validates their ELF/GLIBC requirements.
+These builds do not establish live `.s2sp` reload, process shutdown or human-assisted acceptance.
+The disposable build container uses Debian's signed snapshot from
+`20260831T235959Z` for bullseye and bullseye-security to keep package indexes
+and downloads consistent during their move out of the live mirrors.
 
 ### Run it
 

@@ -171,7 +171,7 @@ changes that. These are the notices s2script owes to others.
 
 Pinned at generation time:""")
 o.append("    hl2sdk            %s   (branch cs2)" % rev("third_party/hl2sdk"))
-o.append("    metamod-source    %s   (2.0.0.1403)" % rev("third_party/metamod-source"))
+o.append("    metamod-source    %s   (PLAPI 18/KHook; unmodified upstream source)" % rev("third_party/metamod-source"))
 o.append("    breakpad          %s" % rev("third_party/breakpad"))
 o.append("    rust crates       %d   (from Cargo.lock)" % len(inventory))
 o.append("\nCONTENTS")

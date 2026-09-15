@@ -185,9 +185,10 @@ bool ValidateStringXref(const json& v, const ModuleView& mv, const void* fn, cha
 // The generalization of the bespoke gate the respawn slice needed: that signature has no unique log
 // string to xref, and uniqueness alone was proven insufficient.
 //
-// The walk terminates at the first slot value outside the module's .text — the next sub-vtable's
-// offset-to-top header — and that termination is FAIL-CLOSED: a walk truncated before it reaches
-// `fn` FAILS the gate, it never passes wrongly.
+// The walk resolves each slot through Ops.original_virtual (KHook::FindOriginalVirtual) BEFORE
+// the executable-range and equality checks, so a peer's JIT trampoline does not look like the
+// sub-vtable header. Unhooked slots are identity (vt[i]). Termination is still FAIL-CLOSED at
+// the first original target outside .text.
 //
 // The slot INDEX is deliberately not asserted. Asserting it would reintroduce exactly the borrowed-
 // index failure class this validator exists to defeat.
@@ -214,7 +215,9 @@ bool ValidateVtableMember(const json& v, const ModuleView& mv, const char* modul
     if (!vt) return Fail(out, cap, "class RTTI vtable '%s' not found on this build", cls.c_str());
 
     for (int i = 0; i < kMaxVtableSlots; i++) {
-        const void* p = vt[i];
+        // Resolve the original virtual target BEFORE executable-range/equality checks so a
+        // peer's JIT trampoline (outside .text) does not terminate the walk. Unhooked: identity.
+        const void* p = ops.original_virtual ? ops.original_virtual(vt, i) : vt[i];
         if (!InText(mv, p)) break;   // sub-vtable offset-to-top header = end of the fn slots
         if (p == fn) return true;
     }

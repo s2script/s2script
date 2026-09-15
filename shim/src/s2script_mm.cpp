@@ -3,6 +3,7 @@
 // ahead of ${HL2SDK}/public, so the search succeeds without running protoc.
 #include "s2script_mm.h"
 #include "s2script_core.h"
+#include "khook_shutdown.h"
 #include "gamedata.h"
 
 // Pull in ISource2Server (and the typedef IServerGameDLL = ISource2Server)
@@ -17,6 +18,7 @@
 #include <networksystem/netmessage.h>            // CNetMessage::AsProto (Slice 6.1c)
 #include <google/protobuf/message.h>             // Message/Reflection (Slice 6.1c SayText2 reflection)
 #include <google/protobuf/descriptor.h>          // Descriptor::FindFieldByName (Slice 6.1c)
+#include <tier0/memalloc.h>                      // engine-owned CUtlString storage
 
 // SchemaSystem: ISchemaSystem + the type-scope / class-info / field-data layout used by the
 // schema-offset engine-op (recon Q1/Q2; include paths mirror shim/CMakeLists.txt).
@@ -58,6 +60,7 @@
 #include <sys/stat.h>   // stat/mkdir — crash-reporter slice: gamedata mtime + the crash-spool dir
 #include <errno.h>      // errno/EEXIST — crash-reporter slice: CrashSpoolDir's mkdir race tolerance
 #include <unistd.h>     // sysconf(_SC_PAGESIZE) — the mprotect page span
+#include <sys/syscall.h>
 #include "sigscan.h"
 #include "detour.h"   // Slice 6.6: the self-contained inline detour (damage hook)
 #include "vtable.h"   // Ray-trace slice: RTTI vtable-by-name resolution
@@ -87,92 +90,153 @@
 #include <unordered_set>
 #include <vector>
 
-// SourceHook hook declaration: 3 void-return parameters (bool, bool, bool).
-// ISource2Server is confirmed at eiface.h:384; GameFrame at eiface.h:407.
-// IServerGameDLL (used in the s2_sample_mm reference) is a typedef to the same class.
-SH_DECL_HOOK3_void(ISource2Server, GameFrame, SH_NOATTRIB, 0, bool, bool, bool);
-
-// FireEvent(IGameEvent*, bool bDontBroadcast) -> bool (Slice 5D.3). Pre hook only.
-SH_DECL_HOOK2(IGameEventManager2, FireEvent, SH_NOATTRIB, 0, bool, IGameEvent*, bool);
-
-// ISource2GameClients::ClientCommand(CPlayerSlot, const CCommand&) -> void (Slice 6.11c). Pre hook: the
-// engine's "client typed a command at the console" callback (eiface.h:594). The CSSharp/ModSharp mechanism
-// for player CONSOLE commands — a clean (slot, CCommand), no low-level detour.
-SH_DECL_HOOK2_void(ISource2GameClients, ClientCommand, SH_NOATTRIB, 0, CPlayerSlot, const CCommand&);
-
-// ICvar::DispatchConCommand(ConCommandRef, const CCommandContext&, const CCommand&) -> void.
-// Pre hook: the ConCommand-listener seam (SourceMod AddCommandListener / CounterStrikeSharp
-// ConCommandManager parity).
-//
-// NOT the same seam as ClientCommand above, and the difference is the whole point: the game DLL's
-// ClientCommand is the FALLBACK for names the engine does not recognise, so it sees `sm_forcertv`
-// but never `player_ping`, `jointeam`, `drop` or `buy` — those are real ConCommands and dispatch
-// through the cvar system straight to their own callback. Every ConCommand dispatch passes through
-// here, which is why one hook covers all of them.
-SH_DECL_HOOK3_void(ICvar, DispatchConCommand, SH_NOATTRIB, 0, ConCommandRef, const CCommandContext&, const CCommand&);
-
-// (The Slice-6.18 ClientConnect reject SourceHook was removed in sub-project 3: ban enforcement moved to
-// the JS onConnect event [basebans], which admits the client then shows the reason + kicks. The core
-// s2script_core_ban_check export is retained as an available synchronous primitive but is no longer called.)
-
-// Client lifecycle notify-hooks (@s2script/clients sub-project) — six post-hooks on the same
-// m_gameClients interface. Signatures verbatim from eiface.h (:567/:578/:582/:584/:587/:599);
-// each forwards to s2script_core_dispatch_client_event and RETURN_META(MRES_IGNORED) (never alters flow).
-// `uint64` here matches the shim's Valve typedef; the Hook_* decls in the header use `unsigned long long`
-// (== uint64 on Linux) because META_NO_HL2SDK keeps HL2SDK basetypes out of the header.
-SH_DECL_HOOK6_void(ISource2GameClients, OnClientConnected, SH_NOATTRIB, 0, CPlayerSlot, const char*, uint64, const char*, const char*, bool);      // :567
-SH_DECL_HOOK4_void(ISource2GameClients, ClientPutInServer, SH_NOATTRIB, 0, CPlayerSlot, const char*, int, uint64);                                 // :578
-SH_DECL_HOOK4_void(ISource2GameClients, ClientActive, SH_NOATTRIB, 0, CPlayerSlot, bool, const char*, uint64);                                     // :582
-SH_DECL_HOOK1_void(ISource2GameClients, ClientFullyConnect, SH_NOATTRIB, 0, CPlayerSlot);                                                          // :584
-SH_DECL_HOOK5_void(ISource2GameClients, ClientDisconnect, SH_NOATTRIB, 0, CPlayerSlot, ENetworkDisconnectionReason, const char*, uint64, const char*); // :587
-SH_DECL_HOOK1_void(ISource2GameClients, ClientSettingsChanged, SH_NOATTRIB, 0, CPlayerSlot);                                                       // :599
-
-// Voice-control slice. ClientVoice (eiface.h:619 "TERROR: A player sent a voice packet") = the 7th
-// sibling notify hook on m_gameClients — fires PER VOICE PACKET, throttled in the handler before the
-// core dispatch. SetClientListening (eiface.h:330) = the CSSharp/Swiftly voice-mute mechanism: a PRE
-// hook on s_pEngine that rewrites bListen->false for a muted sender. CAUTION: it sits in a
-// HAND-PATCHED eiface.h region ('#if 0 Don't really match the binary' + unk301/302) — behaviorally
-// validated at runtime (first-fire sanity + a Get/Set round-trip), named-degrade on mismatch.
-SH_DECL_HOOK1_void(ISource2GameClients, ClientVoice, SH_NOATTRIB, 0, CPlayerSlot);                       // :619
-SH_DECL_HOOK3(IVEngineServer2, SetClientListening, SH_NOATTRIB, 0, bool, CPlayerSlot, CPlayerSlot, bool); // :330
-
-// GameSessionConfiguration_t is only FORWARD-DECLARED across the whole pinned SDK (iserver.h:43,
-// eiface.h:88, iloopmode.h:107, igamesystem.h:43; the one body at iloopmode.h:109 is commented out),
-// and the SH_DECL_HOOK3_void macro below applies __SH_GPI(tt) = { sizeof(tt), ... } (sourcehook.h:1081)
-// to EVERY param type — so `sizeof(const GameSessionConfiguration_t&)` (the size of the referent)
-// requires a COMPLETE type or the shim will not compile at the sniper step. An empty stub definition
-// (following the forward decls) makes it complete and is ABI-safe: StartupServer takes it ONLY by
-// const-reference, SourceHook passes a ByRef param as a pointer (PassInfo.size is not used to copy the
-// referent), and our Hook_StartupServer body never names or dereferences it — no GameSessionConfiguration_t
-// is ever constructed, sized-into, or copied in this TU, so there is no interaction with the engine's real
-// type. (CCommand-by-ref at :81 compiles only because convar.h makes CCommand complete; this is the first
-// hook to pass a forward-declared class by reference.)
-class GameSessionConfiguration_t {};
-
-// INetworkServerService::StartupServer (clientlist-fakeconvar-onmapstart slice) — the CSSharp OnMapStart
-// mechanism (mm_plugin.cpp:82), verbatim. POST hook only. Signature confirmed against OUR iserver.h:221.
-SH_DECL_HOOK3_void(INetworkServerService, StartupServer, SH_NOATTRIB, 0, const GameSessionConfiguration_t&, ISource2WorldSession*, const char*);
-
-// ISource2GameEntities::CheckTransmit (checktransmit slice) — per-client entity visibility. POST
-// hook: the game has filled each client's transmit bitvec; we clear bits per the core-pushed rule
-// table. Signature verbatim from OUR eiface.h:500 (7 args; the two CBitVec<16384>& are complete
-// via bitvec.h, which eiface.h includes; Entity2Networkable_t stays an incomplete pointee — fine,
-// SourceHook only sizeof's the pointer). SwiftlyS2 hooks this with the identical declared
-// signature (their entrypoint.cpp:74) — corroboration; the vtable index comes from OUR pinned
-// hl2sdk at compile time, exactly like the seven ISource2GameClients hooks.
-SH_DECL_HOOK7_void(ISource2GameEntities, CheckTransmit, SH_NOATTRIB, 0, CCheckTransmitInfo**, int,
-                   CBitVec<16384>&, CBitVec<16384>&, const Entity2Networkable_t**, const uint16*, int);
-
-// UserMessage-interception slice. The 8-arg PostEventAbstract overload — the EXACT method our send
-// path calls live (s2_client_print :961 / s2_user_message_send :1066), so the vendored-header vtable
-// slot is transitively proven against our binary. Param 7 is `unsigned long` exactly (ABI). SourceHook
-// disambiguates from the 6-arg IRecipientFilter overload by the parameter type list — no numeric index.
-SH_DECL_HOOK8_void(IGameEventSystem, PostEventAbstract, SH_NOATTRIB, 0,
-    CSplitScreenSlot, bool, int, const uint64*,
-    INetworkMessageInternal*, const CNetMessage*, unsigned long, NetChannelBufType_t);
-
 S2ScriptPlugin g_S2ScriptPlugin;
 PLUGIN_EXPOSE(S2ScriptPlugin, g_S2ScriptPlugin);
+
+// GameSessionConfiguration_t is only FORWARD-DECLARED across the whole pinned SDK (iserver.h:43,
+// eiface.h:88, iloopmode.h:107, igamesystem.h:43; the one body at iloopmode.h:109 is commented out).
+// KHook::Virtual names the type in the StartupServer MFP, so this TU needs a COMPLETE type. An empty
+// stub (following the forward decls) is ABI-safe: StartupServer takes it ONLY by const-reference,
+// and Hook_StartupServer never names or dereferences it — no GameSessionConfiguration_t is ever
+// constructed, sized-into, or copied here, so there is no interaction with the engine's real type.
+class GameSessionConfiguration_t {};
+
+// Interface Virtuals: official context ctor (MFP + &g_S2ScriptPlugin + member callbacks). Constructed
+// after PLUGIN_EXPOSE so same-TU init order sees g_S2ScriptPlugin. Add only after PLUGIN_SAVEVARS.
+// GameFrame is one object with PRE+POST; others PRE-only or POST-only via nullptr. uint64 aliases
+// match eiface.h so the MFP type is exact.
+struct InterfaceHooks {
+    S2CheckedVirtual<ISource2ServerConfig, void> serverConfigPreShutdown;
+    S2CheckedVirtual<ISource2ServerConfig, void> serverConfigShutdown;
+    S2CheckedVirtual<ISource2Server, void, bool, bool, bool> gameFrame;
+    S2CheckedVirtual<IGameEventManager2, bool, IGameEvent*, bool> fireEvent;
+    S2CheckedVirtual<IGameEventSystem, void, CSplitScreenSlot, bool, int, const uint64*,
+                   INetworkMessageInternal*, const CNetMessage*, unsigned long, NetChannelBufType_t> postEvent;
+    S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, const CCommand&> clientCommand;
+    S2CheckedVirtual<ICvar, void, ConCommandRef, const CCommandContext&, const CCommand&> dispatchConCommand;
+    S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, const char*, uint64, const char*, const char*, bool> onClientConnected;
+    S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, const char*, int, uint64> clientPutInServer;
+    S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, bool, const char*, uint64> clientActive;
+    S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot> clientFullyConnect;
+    S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot, ENetworkDisconnectionReason, const char*, uint64, const char*> clientDisconnect;
+    S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot> clientSettingsChanged;
+    S2CheckedVirtual<ISource2GameClients, void, CPlayerSlot> clientVoice;
+    S2CheckedVirtual<ISource2GameEntities, void, CCheckTransmitInfo**, int, CBitVec<16384>&, CBitVec<16384>&,
+                   const Entity2Networkable_t**, const unsigned short*, int> checkTransmit;
+    S2CheckedVirtual<IVEngineServer2, bool, CPlayerSlot, CPlayerSlot, bool> setClientListening;
+    S2CheckedVirtual<INetworkServerService, void, const GameSessionConfiguration_t&, ISource2WorldSession*, const char*> startupServer;
+
+    InterfaceHooks()
+      : serverConfigPreShutdown(&ISource2ServerConfig::PreShutdown, &g_S2ScriptPlugin,
+                  &S2ScriptPlugin::Hook_ServerConfigPreShutdownPre,
+                  &S2ScriptPlugin::Hook_ServerConfigPreShutdownPost),
+        serverConfigShutdown(&ISource2ServerConfig::Shutdown, &g_S2ScriptPlugin,
+                  &S2ScriptPlugin::Hook_ServerConfigShutdownPre,
+                  &S2ScriptPlugin::Hook_ServerConfigShutdownPost),
+        gameFrame(&ISource2Server::GameFrame, &g_S2ScriptPlugin,
+                  &S2ScriptPlugin::Hook_GameFramePre, &S2ScriptPlugin::Hook_GameFramePost),
+        fireEvent(&IGameEventManager2::FireEvent, &g_S2ScriptPlugin,
+                  &S2ScriptPlugin::Hook_FireEventPre, nullptr),
+        postEvent(&IGameEventSystem::PostEventAbstract, &g_S2ScriptPlugin,
+                  &S2ScriptPlugin::Hook_PostEvent, nullptr),
+        clientCommand(&ISource2GameClients::ClientCommand, &g_S2ScriptPlugin,
+                      &S2ScriptPlugin::Hook_ClientCommand, nullptr),
+        dispatchConCommand(&ICvar::DispatchConCommand, &g_S2ScriptPlugin,
+                           &S2ScriptPlugin::Hook_DispatchConCommand, nullptr),
+        onClientConnected(&ISource2GameClients::OnClientConnected, &g_S2ScriptPlugin,
+                          &S2ScriptPlugin::Hook_OnClientConnected, nullptr),
+        clientPutInServer(&ISource2GameClients::ClientPutInServer, &g_S2ScriptPlugin,
+                          &S2ScriptPlugin::Hook_ClientPutInServer, nullptr),
+        clientActive(&ISource2GameClients::ClientActive, &g_S2ScriptPlugin,
+                     &S2ScriptPlugin::Hook_ClientActive, nullptr),
+        clientFullyConnect(&ISource2GameClients::ClientFullyConnect, &g_S2ScriptPlugin,
+                           &S2ScriptPlugin::Hook_ClientFullyConnect, nullptr),
+        clientDisconnect(&ISource2GameClients::ClientDisconnect, &g_S2ScriptPlugin,
+                         &S2ScriptPlugin::Hook_ClientDisconnect, nullptr),
+        clientSettingsChanged(&ISource2GameClients::ClientSettingsChanged, &g_S2ScriptPlugin,
+                              &S2ScriptPlugin::Hook_ClientSettingsChanged, nullptr),
+        clientVoice(&ISource2GameClients::ClientVoice, &g_S2ScriptPlugin,
+                    nullptr, &S2ScriptPlugin::Hook_ClientVoice),
+        checkTransmit(&ISource2GameEntities::CheckTransmit, &g_S2ScriptPlugin,
+                      nullptr, &S2ScriptPlugin::Hook_CheckTransmit),
+        setClientListening(&IVEngineServer2::SetClientListening, &g_S2ScriptPlugin,
+                           &S2ScriptPlugin::Hook_SetClientListening, nullptr),
+        startupServer(&INetworkServerService::StartupServer, &g_S2ScriptPlugin,
+                      nullptr, &S2ScriptPlugin::Hook_StartupServer) {}
+};
+static InterfaceHooks g_hk;
+
+#define S2_FOR_EACH_NORMAL_HOOK(X) \
+    X(gameFrame) X(fireEvent) X(postEvent) X(clientCommand) X(dispatchConCommand) \
+    X(onClientConnected) X(clientPutInServer) X(clientActive) X(clientFullyConnect) \
+    X(clientDisconnect) X(clientSettingsChanged) X(clientVoice) X(checkTransmit) \
+    X(setClientListening) X(startupServer)
+
+static std::array<S2CheckedBindingOps*, 15> S2NormalHookInventory() {
+#define S2_BINDING_ADDRESS(name) &g_hk.name,
+    return {{S2_FOR_EACH_NORMAL_HOOK(S2_BINDING_ADDRESS)}};
+#undef S2_BINDING_ADDRESS
+}
+
+static bool g_lifecycleInstallAttempted = false;
+static bool g_preShutdownHookInstalled = false;
+static bool g_shutdownHookInstalled = false;
+static long g_coreOwnerTid = -1;
+static long S2Tid() { return static_cast<long>(::syscall(SYS_gettid)); }
+static void S2InstallLifecycleHooks();
+
+static S2TerminalCoordinator g_terminalCoord;
+static bool g_unloadFinished = false;
+static bool g_unloadSucceeded = false;
+static void S2Shutdown_ResetLoad();
+static bool S2_NormalHooksCanRemoveSync(const S2HookTerminalPermit&);
+static bool S2_BeginCheckedRetirement(const S2HookTerminalPermit&);
+static bool S2_NormalHooksRemovalComplete();
+static bool S2_FinishUnloadCleanup();
+
+namespace {
+
+using PostEvent8Mfp = void (IGameEventSystem::*)(CSplitScreenSlot, bool, int, const uint64*,
+    INetworkMessageInternal*, const CNetMessage*, unsigned long, NetChannelBufType_t);
+
+template <typename Mfp>
+bool S2KHookVtableOk(Mfp mfp, const char* name) {
+    if (KHook::GetVtableIndex(mfp) == -1) {
+        META_CONPRINTF("[s2script] KHOOK FAIL: %s GetVtableIndex=-1\n", name);
+        return false;
+    }
+    return true;
+}
+
+template <typename Iface, typename Ret, typename... Args>
+bool S2KHookAdd(S2CheckedVirtual<Iface, Ret, Args...>& hook, Iface* obj,
+                Ret (Iface::*mfp)(Args...), [[maybe_unused]] const char* name) {
+    // Named GetVtableIndex=-1 is printed in Load; skip Add here so the installed flag stays false.
+    if (KHook::GetVtableIndex(mfp) == -1 || obj == nullptr) {
+        return false;
+    }
+    return hook.Add(obj).Accepted();
+}
+
+void S2KHookLogInterfaceVtables() {
+    S2KHookVtableOk(&ISource2Server::GameFrame, "GameFrame");
+    S2KHookVtableOk(&IGameEventManager2::FireEvent, "FireEvent");
+    S2KHookVtableOk(static_cast<PostEvent8Mfp>(&IGameEventSystem::PostEventAbstract), "PostEventAbstract");
+    S2KHookVtableOk(&ISource2GameClients::ClientCommand, "ClientCommand");
+    S2KHookVtableOk(&ICvar::DispatchConCommand, "DispatchConCommand");
+    S2KHookVtableOk(&ISource2GameClients::OnClientConnected, "OnClientConnected");
+    S2KHookVtableOk(&ISource2GameClients::ClientPutInServer, "ClientPutInServer");
+    S2KHookVtableOk(&ISource2GameClients::ClientActive, "ClientActive");
+    S2KHookVtableOk(&ISource2GameClients::ClientFullyConnect, "ClientFullyConnect");
+    S2KHookVtableOk(&ISource2GameClients::ClientDisconnect, "ClientDisconnect");
+    S2KHookVtableOk(&ISource2GameClients::ClientSettingsChanged, "ClientSettingsChanged");
+    S2KHookVtableOk(&ISource2GameClients::ClientVoice, "ClientVoice");
+    S2KHookVtableOk(&ISource2GameEntities::CheckTransmit, "CheckTransmit");
+    S2KHookVtableOk(&IVEngineServer2::SetClientListening, "SetClientListening");
+    S2KHookVtableOk(&INetworkServerService::StartupServer, "StartupServer");
+}
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Logging callback (Rust core -> Metamod console)
@@ -758,6 +822,10 @@ static int64_t Detour_DispatchTraceAttack(void* thisptr, void* a2, void* a3, voi
         return (p && reinterpret_cast<uintptr_t>(p) > 0x10000) ? *reinterpret_cast<float*>(reinterpret_cast<char*>(p) + 68) : -1.0f;
     };
     META_CONPRINTF("[s2script] DTA fired: this=%p a2.dmg=%.1f a3.dmg=%.1f\n", thisptr, rd(a2), rd(a3));
+    S2HookDispatchGuard guard;
+    if (!guard) {
+        return g_origDTA ? g_origDTA(thisptr, a2, a3, a4) : 0;
+    }
     void* prevInfo = s_currentDamageInfo;
     void* prevVictim = s_currentDamageVictim;
     s_currentDamageInfo = a2;                     // block-scoped: valid only across this dispatch
@@ -779,6 +847,8 @@ class S2ScriptEventListener : public IGameEventListener2 {
 public:
     void FireGameEvent(IGameEvent* ev) override {
         if (!ev) return;
+        S2HookDispatchGuard guard;
+        if (!guard) return;
         // Save previous (re-entrancy: if dispatch triggers another FireGameEvent, the inner
         // call will see its own event in s_currentEvent; we restore ours on return).
         IGameEvent* prev = s_currentEvent;
@@ -1179,6 +1249,8 @@ static int s2_event_fire_to_client(int slot) {
 // name at Arg(0); ArgS() is everything after it.  Reads the name, slot, and args, then
 // calls back into the Rust core via C-ABI so the registered JS function is invoked.
 static void s2_concommand_trampoline(const CCommandContext& ctx, const CCommand& cmd) {
+    S2HookDispatchGuard guard;
+    if (!guard) return;
     const char* name = cmd.Arg(0);   // command name is always arg 0 in Source 2
     int slot         = ctx.GetPlayerSlot().Get();  // -1 for server-console invocations
     const char* args = cmd.ArgS();   // everything after the command name
@@ -1508,13 +1580,13 @@ static int s2_user_message_send(const int* slots, int slotCount) {
 // UserMessage-interception slice. Doctrine: the ONE borrowed layout fact is
 // NetMessageInfo_t::m_MessageId (inetworkserializer.h:53 — never exercised by the send path);
 // validated fail-closed at subscribe (round-trip below) and on an observe-only first fire.
-// Hot path: a bitmap test on the id, MRES_IGNORED on miss before ANY reflection.
+// Hot path: a bitmap test on the id, S2_Ignore on miss before ANY reflection.
 // Block-scoped view statics are SEPARATE from the send builder's s_umInfo/s_umData/s_umMsg above,
 // so a handler that builds+sends a NEW user message mid-hook cannot retarget the intercepted view.
 // ---------------------------------------------------------------------------
 static constexpr int kUserMsgMaxId = 2048;
 static uint64_t s_userMsgSubBits[kUserMsgMaxId / 64] = {0};
-static bool     s_userMsgHookInstalled = false;   // lazy SH_ADD_HOOK on first-ever sub
+static bool     s_userMsgHookInstalled = false;   // lazy PostEventAbstract Add on first-ever sub
 static bool     s_userMsgFirstFireDone = false;   // observe-only validation ran on the first subscribed fire
 static bool     s_inUserMsgDispatch = false;      // recursion guard (a mid-hook send re-enters PostEventAbstract)
 static google::protobuf::Message* s_hookMsg = nullptr;      // current intercepted message (block-scoped)
@@ -1553,7 +1625,7 @@ static const google::protobuf::Message* s2_usermsg_walk(const google::protobuf::
 // Subscribe-time validation (spec §2.1): resolve via the live-proven SayText2 path, then require a
 // non-null NetMessageInfo, an id in [0,2048), and the requested name a substring of the canonical
 // unscoped name. Any failure -> named USERMSG reason logged + return -1 (onPre throws plugin-side).
-// On the first-ever OK sub, lazily SH_ADD_HOOK PostEventAbstract on the already-held s_pGameEventSystem.
+// On the first-ever OK sub, lazily Add PostEventAbstract on the already-held s_pGameEventSystem.
 static int s2_usermsg_hook_sub(const char* name, char* canonicalOut, int canonicalLen) {
     if (!name || !s_pNetworkMessages || !s_pGameEventSystem) return -1;
     INetworkMessageInternal* info = s_pNetworkMessages->FindNetworkMessagePartial(name);
@@ -1570,10 +1642,10 @@ static int s2_usermsg_hook_sub(const char* name, char* canonicalOut, int canonic
         return -1;
     }
     if (canonicalOut && canonicalLen > 0) snprintf(canonicalOut, (size_t)canonicalLen, "%s", canonical);
-    if (!s_userMsgHookInstalled) {   // lazy install, idempotent (m_eventHookInstalled pattern; PRE = false)
-        SH_ADD_HOOK(IGameEventSystem, PostEventAbstract, s_pGameEventSystem,
-                    SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_PostEvent), false);
-        s_userMsgHookInstalled = true;
+    if (!s_userMsgHookInstalled) {   // lazy install, idempotent (m_eventHookInstalled pattern; PRE callback)
+        s_userMsgHookInstalled = S2KHookAdd(g_hk.postEvent, s_pGameEventSystem,
+            static_cast<PostEvent8Mfp>(&IGameEventSystem::PostEventAbstract), "PostEventAbstract");
+        if (!s_userMsgHookInstalled) return -1;
         META_CONPRINTF("[s2script] usermsg: PostEventAbstract hook installed (lazy, first subscribe)\n");
     }
     s_userMsgSubBits[id >> 6] |= (1ull << (id & 63));
@@ -1907,6 +1979,8 @@ static int s2_client_fake_command(int slot, const char* cmd) {
 // so this needs no tier1 symbol (see tier1_shims.cpp for why that matters).
 static void s2_cvar_change_cb(ConVarRefAbstract* ref, CSplitScreenSlot /*slot*/,
                               const char* newValue, const char* oldValue, void* /*unk*/) {
+    S2HookDispatchGuard guard;
+    if (!guard) return;
     if (!ref) return;
     const char* name = ref->GetName();
     if (!name || !name[0]) return;
@@ -2153,7 +2227,8 @@ static int s2_cvar_set(const char* name, const char* value) {
         auto* slot = reinterpret_cast<S2UtlPtr*>(&curr->m_StringValue);
         char* oldp = slot->p;
         const size_t n = strlen(value);
-        char* neu_s = static_cast<char*>(malloc(n + 1));
+        // CVValue_t owns this CUtlString storage, so allocate and release it through tier0.
+        char* neu_s = static_cast<char*>(MemAlloc_Alloc(n + 1));
         if (!neu_s) return 0;
         memcpy(neu_s, value, n + 1);
         slot->p = neu_s;
@@ -2161,7 +2236,7 @@ static int s2_cvar_set(const char* name, const char* value) {
         S2CvarAbs abs(ref, data);
         s_pCvar->CallChangeCallback(ref, CSplitScreenSlot(0), curr, curr);
         s_pCvar->CallGlobalChangeCallbacks(&abs, CSplitScreenSlot(0), value, oldBuf);
-        if (oldp) free(oldp);
+        if (oldp) MemAlloc_Free(oldp);
         return 1;
     }
 
@@ -2441,8 +2516,9 @@ static int DeriveUsercmdSlot(void* thisptr) {
 // (possibly modified/neutralized) cmds, never skipped, since a usercmd is data the engine must still
 // process (unlike a suppressed event/output, there is no "the original call" to skip here).
 static int Detour_ProcessUsercmds(void* thisptr, void* cmds, int numcmds, bool paused, float margin) {
+    S2HookDispatchGuard guard;
     int slot = DeriveUsercmdSlot(thisptr);
-    if (cmds && numcmds > 0) {
+    if (guard && cmds && numcmds > 0) {
         for (int i = 0; i < numcmds; i++) {
             s_currentUserCmd = reinterpret_cast<google::protobuf::Message*>(
                 reinterpret_cast<char*>(cmds) + static_cast<size_t>(i) * S2_USERCMD_STRIDE + 0x10);
@@ -2531,7 +2607,8 @@ static void Detour_HostSay(void* pController, void* pCmd, bool teamonly, int a4,
         msg = reinterpret_cast<const CCommand*>(pCmd)->Arg(1);   // the raw chat message, unquoted
     }
     int suppress = 0;
-    if (slot >= 0 && msg && msg[0]) {
+    S2HookDispatchGuard guard;
+    if (guard && slot >= 0 && msg && msg[0]) {
         suppress = s2script_core_dispatch_chat(slot, msg, teamonly ? 1 : 0); // trigger/dispatch + raw subs + suppress?
     }
     // suppress (a matched silent `/` trigger) -> skip the original so the message is NOT broadcast.
@@ -2879,34 +2956,20 @@ static const char* s2_db_data_dir(void) {
 
 // ---------------------------------------------------------------------------
 // Hook-request callback: invoked by the Rust core to install/remove the
-// SourceHook detour.  Called while the core holds an internal borrow —
-// MUST NOT call back into the core (no eval/dispatch/shutdown).
+// GameFrame / FireEvent Virtual this-filters. Called while the core holds an
+// internal borrow — MUST NOT call back into the core (no eval/dispatch/shutdown).
 // ---------------------------------------------------------------------------
 static void s2_request_hook(const char* descriptor, int enable) {
     if (strcmp(descriptor, "OnGameFrame") == 0) {
-        if (enable && !g_S2ScriptPlugin.m_frameHookInstalled && g_S2ScriptPlugin.m_server) {
-            SH_ADD_HOOK(ISource2Server, GameFrame, g_S2ScriptPlugin.m_server,
-                        SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_GameFramePre),  false);
-            SH_ADD_HOOK(ISource2Server, GameFrame, g_S2ScriptPlugin.m_server,
-                        SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_GameFramePost), true);
-            g_S2ScriptPlugin.m_frameHookInstalled = true;
-        } else if (!enable && g_S2ScriptPlugin.m_frameHookInstalled) {
-            SH_REMOVE_HOOK(ISource2Server, GameFrame, g_S2ScriptPlugin.m_server,
-                           SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_GameFramePre),  false);
-            SH_REMOVE_HOOK(ISource2Server, GameFrame, g_S2ScriptPlugin.m_server,
-                           SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_GameFramePost), true);
-            g_S2ScriptPlugin.m_frameHookInstalled = false;
-        }
+        g_S2ScriptPlugin.m_frameDispatchRequested = enable != 0;
         return;
     }
     if (strcmp(descriptor, "GameEvent") == 0) {
         if (enable && !g_S2ScriptPlugin.m_eventHookInstalled && s_pGameEventManager) {
-            SH_ADD_HOOK(IGameEventManager2, FireEvent, s_pGameEventManager,
-                        SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_FireEventPre), false);
-            g_S2ScriptPlugin.m_eventHookInstalled = true;
+            g_S2ScriptPlugin.m_eventHookInstalled = S2KHookAdd(g_hk.fireEvent, s_pGameEventManager,
+                &IGameEventManager2::FireEvent, "FireEvent");
         } else if (!enable && g_S2ScriptPlugin.m_eventHookInstalled) {
-            SH_REMOVE_HOOK(IGameEventManager2, FireEvent, s_pGameEventManager,
-                           SH_MEMBER(&g_S2ScriptPlugin, &S2ScriptPlugin::Hook_FireEventPre), false);
+            g_hk.fireEvent.Remove(s_pGameEventManager);
             g_S2ScriptPlugin.m_eventHookInstalled = false;
         }
         return;
@@ -3625,6 +3688,8 @@ public:
     DECLARE_GAME_SYSTEM();
 
     GS_EVENT(BuildGameSessionManifest) {
+        S2HookDispatchGuard guard;
+        if (!guard) return;
         s_sessionManifest = msg->m_pResourceManifest;
         s2script_core_dispatch_precache();
         s_sessionManifest = nullptr;
@@ -3692,9 +3757,12 @@ static int s2_sound_precache_add(const char* path) {
 // dispatch to the Sound.onPrecache subscribers, clear, then CHAIN to the original slot (so the game's
 // own resource precache still runs). A free function — this is a vtable-slot swap, not a member hook.
 static void Detour_OnPrecacheResource(void* thisptr, void* pManifest) {
-    s_currentPrecacheManifest = pManifest;
-    s2script_core_dispatch_precache();
-    s_currentPrecacheManifest = nullptr;
+    S2HookDispatchGuard guard;
+    if (guard) {
+        s_currentPrecacheManifest = pManifest;
+        s2script_core_dispatch_precache();
+        s_currentPrecacheManifest = nullptr;
+    }
     if (s_origOnPrecacheResource) s_origOnPrecacheResource(thisptr, pManifest);
 }
 
@@ -4074,7 +4142,8 @@ static FireOutputInternalFn s_origFireOutputInternal = nullptr;
 static void Hook_FireOutputInternal(CEntityIOOutput* pThis, CEntityInstance* act, CEntityInstance* caller,
                                     const CVariant* value, float delay, void* u1, char* u2) {
     int result = 0;   // Continue
-    if (pThis && pThis->m_pDesc && pThis->m_pDesc->m_pName) {
+    S2HookDispatchGuard guard;
+    if (guard && pThis && pThis->m_pDesc && pThis->m_pDesc->m_pName) {
         const char* outputName = pThis->m_pDesc->m_pName;
         const char* cls = caller ? caller->GetClassname() : "";
         int actH    = act    ? act->GetRefEHandle().ToInt()    : -1;
@@ -4091,7 +4160,14 @@ static void Hook_FireOutputInternal(CEntityIOOutput* pThis, CEntityInstance* act
 // Load
 // ---------------------------------------------------------------------------
 bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) {
-    PLUGIN_SAVEVARS();  // sets g_SHPtr = ismm->GetSHPtr() — required by SH_ADD_HOOK
+    PLUGIN_SAVEVARS();  // sets KHook::__exported__khook from ismm->GetDetourInterface — required by Virtual::Add
+    S2Shutdown_ResetLoad();
+    g_lifecycleInstallAttempted = false;
+    g_preShutdownHookInstalled = false;
+    g_shutdownHookInstalled = false;
+    m_frameDispatchRequested = false;
+    m_coreDispatchReady = false;
+    S2KHookLogInterfaceVtables();
     s_gdOk = 0; s_gdFail = 0;   // reset the gamedata validation report for this Load
 
     // deferred-dispatch: hand the engine-free queue its engine ops before anything can push to it.
@@ -4197,6 +4273,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
 
         // Acquire and store ISource2Server* — needed for the SourceHook detour.
         {
+            int configRet = 0;
+            m_serverConfig = serverFactory ? reinterpret_cast<ISource2ServerConfig*>(
+                serverFactory(INTERFACEVERSION_SERVERCONFIG, &configRet)) : nullptr;
             auto it = versions.find("Source2Server");
             const char* verStr = (it != versions.end()) ? it->second.c_str()
                                                         : INTERFACEVERSION_SERVERGAMEDLL;
@@ -4206,6 +4285,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 : nullptr;
             if (m_server && ret == 0) {
                 META_CONPRINTF("[s2script] interface OK: Source2Server (%s)\n", verStr);
+                // This always-on filter is also the post-loader bootstrap for terminal lifecycle
+                // hooks. Core frame dispatch remains independently subscription-gated.
+                m_frameHookInstalled = S2KHookAdd(g_hk.gameFrame, m_server,
+                    &ISource2Server::GameFrame, "GameFrame lifecycle bootstrap");
             } else {
                 META_CONPRINTF("[s2script] WARN: interface MISSING: Source2Server (%s)\n", verStr);
             }
@@ -4222,30 +4305,36 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 ? reinterpret_cast<ISource2GameClients*>(serverFactory(verStr, &ret)) : nullptr;
             if (m_gameClients && ret == 0) {
                 META_CONPRINTF("[s2script] interface OK: Source2GameClients (%s)\n", verStr);
-                SH_ADD_HOOK(ISource2GameClients, ClientCommand, m_gameClients,
-                            SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientCommand), false);
-                m_clientCmdHookInstalled = true;
-                META_CONPRINTF("[s2script] ClientCommand hook installed (player console commands)\n");
+                m_clientCmdHookInstalled = S2KHookAdd(g_hk.clientCommand, m_gameClients,
+                    &ISource2GameClients::ClientCommand, "ClientCommand");
+                if (m_clientCmdHookInstalled) {
+                    META_CONPRINTF("[s2script] ClientCommand hook installed (player console commands)\n");
+                }
                 // @s2script/clients: six notify lifecycle hooks -> s2script_core_dispatch_client_event.
-                SH_ADD_HOOK(ISource2GameClients, OnClientConnected, m_gameClients,
-                            SH_MEMBER(this, &S2ScriptPlugin::Hook_OnClientConnected), false);
-                SH_ADD_HOOK(ISource2GameClients, ClientPutInServer, m_gameClients,
-                            SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientPutInServer), false);
-                SH_ADD_HOOK(ISource2GameClients, ClientActive, m_gameClients,
-                            SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientActive), false);
-                SH_ADD_HOOK(ISource2GameClients, ClientFullyConnect, m_gameClients,
-                            SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientFullyConnect), false);
-                SH_ADD_HOOK(ISource2GameClients, ClientDisconnect, m_gameClients,
-                            SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientDisconnect), false);
-                SH_ADD_HOOK(ISource2GameClients, ClientSettingsChanged, m_gameClients,
-                            SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientSettingsChanged), false);
-                m_clientLifecycleHooksInstalled = true;
-                META_CONPRINTF("[s2script] client lifecycle hooks installed (6 notify)\n");
-                // Voice-control slice: the 7th sibling — throttled voice-packet notify.
-                SH_ADD_HOOK(ISource2GameClients, ClientVoice, m_gameClients,
-                            SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientVoice), true);   // POST, like CSSharp
-                s_voiceNotifyHookInstalled = true;
-                META_CONPRINTF("[s2script] voice: ClientVoice hook installed (throttled notify)\n");
+                const bool lifeConnected = S2KHookAdd(g_hk.onClientConnected, m_gameClients,
+                    &ISource2GameClients::OnClientConnected, "OnClientConnected");
+                const bool lifePutIn = S2KHookAdd(g_hk.clientPutInServer, m_gameClients,
+                    &ISource2GameClients::ClientPutInServer, "ClientPutInServer");
+                const bool lifeActive = S2KHookAdd(g_hk.clientActive, m_gameClients,
+                    &ISource2GameClients::ClientActive, "ClientActive");
+                const bool lifeFully = S2KHookAdd(g_hk.clientFullyConnect, m_gameClients,
+                    &ISource2GameClients::ClientFullyConnect, "ClientFullyConnect");
+                const bool lifeDisconnect = S2KHookAdd(g_hk.clientDisconnect, m_gameClients,
+                    &ISource2GameClients::ClientDisconnect, "ClientDisconnect");
+                const bool lifeSettings = S2KHookAdd(g_hk.clientSettingsChanged, m_gameClients,
+                    &ISource2GameClients::ClientSettingsChanged, "ClientSettingsChanged");
+                // OR so Unload still drops this-filters if a named fail skipped some Adds.
+                m_clientLifecycleHooksInstalled =
+                    lifeConnected || lifePutIn || lifeActive || lifeFully || lifeDisconnect || lifeSettings;
+                if (lifeConnected && lifePutIn && lifeActive && lifeFully && lifeDisconnect && lifeSettings) {
+                    META_CONPRINTF("[s2script] client lifecycle hooks installed (6 notify)\n");
+                }
+                // Voice-control slice: the 7th sibling — throttled voice-packet notify. POST callback.
+                s_voiceNotifyHookInstalled = S2KHookAdd(g_hk.clientVoice, m_gameClients,
+                    &ISource2GameClients::ClientVoice, "ClientVoice");
+                if (s_voiceNotifyHookInstalled) {
+                    META_CONPRINTF("[s2script] voice: ClientVoice hook installed (throttled notify)\n");
+                }
             } else {
                 m_gameClients = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: Source2GameClients (%s) — console commands off\n", verStr);
@@ -4275,11 +4364,12 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             s_transmitNsLast = 0; s_transmitNsMax = 0;
             if (m_gameEntities && ret == 0 && s_ctiClientOff >= 0 && m_clientLifecycleHooksInstalled) {
                 META_CONPRINTF("[s2script] interface OK: Source2GameEntities (%s)\n", verStr);
-                SH_ADD_HOOK(ISource2GameEntities, CheckTransmit, m_gameEntities,
-                            SH_MEMBER(this, &S2ScriptPlugin::Hook_CheckTransmit), true);
-                m_checkTransmitHookInstalled = true;
-                META_CONPRINTF("[s2script] CheckTransmit hook installed (entity visibility; "
-                               "layout validates on first fire)\n");
+                m_checkTransmitHookInstalled = S2KHookAdd(g_hk.checkTransmit, m_gameEntities,
+                    &ISource2GameEntities::CheckTransmit, "CheckTransmit");
+                if (m_checkTransmitHookInstalled) {
+                    META_CONPRINTF("[s2script] CheckTransmit hook installed (entity visibility; "
+                                   "layout validates on first fire)\n");
+                }
             } else if (!m_gameEntities || ret != 0) {
                 m_gameEntities = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: Source2GameEntities (%s) — "
@@ -4316,10 +4406,11 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 // The ConCommand-listener seam (see Hook_DispatchConCommand). Unconditional, like
                 // the change callback above: the core decides per-name whether anyone is listening,
                 // so there is no per-subscribe engine work.
-                SH_ADD_HOOK(ICvar, DispatchConCommand, s_pCvar,
-                            SH_MEMBER(this, &S2ScriptPlugin::Hook_DispatchConCommand), false);
-                s_conCmdDispatchHookInstalled = true;
-                META_CONPRINTF("[s2script] DispatchConCommand hook installed (command listeners)\n");
+                s_conCmdDispatchHookInstalled = S2KHookAdd(g_hk.dispatchConCommand, s_pCvar,
+                    &ICvar::DispatchConCommand, "DispatchConCommand");
+                if (s_conCmdDispatchHookInstalled) {
+                    META_CONPRINTF("[s2script] DispatchConCommand hook installed (command listeners)\n");
+                }
             } else {
                 s_pCvar = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: EngineCvar (%s) — ConCommand registration degrades\n", verStr);
@@ -4338,10 +4429,11 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 // Voice-control slice: the mute-enforcement rewrite hook. Enforcement stays gated on
                 // the runtime validation (first-fire sanity here, Get/Set round-trip at 2nd
                 // ClientActive) because the eiface vtable region is hand-patched.
-                SH_ADD_HOOK(IVEngineServer2, SetClientListening, s_pEngine,
-                            SH_MEMBER(this, &S2ScriptPlugin::Hook_SetClientListening), false);  // PRE
-                s_voiceListenHookInstalled = true;
-                META_CONPRINTF("[s2script] voice: SetClientListening hook installed (mute enforcement)\n");
+                s_voiceListenHookInstalled = S2KHookAdd(g_hk.setClientListening, s_pEngine,
+                    &IVEngineServer2::SetClientListening, "SetClientListening");
+                if (s_voiceListenHookInstalled) {
+                    META_CONPRINTF("[s2script] voice: SetClientListening hook installed (mute enforcement)\n");
+                }
             } else {
                 s_pEngine = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: EngineToServer (%s) — client_print degrades\n", verStr);
@@ -4389,10 +4481,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 META_CONPRINTF("[s2script] interface OK: NetworkServerService (%s)\n", verStr);
                 // OnMapStart (clientlist-fakeconvar-onmapstart slice): POST hook StartupServer on the
                 // just-acquired NetworkServerService — the CSSharp OnMapStart mechanism.
-                SH_ADD_HOOK(INetworkServerService, StartupServer,
-                            static_cast<INetworkServerService*>(s_pNetworkServerService),
-                            SH_MEMBER(this, &S2ScriptPlugin::Hook_StartupServer), true);   // POST
-                m_startupServerHookInstalled = true;
+                m_startupServerHookInstalled = S2KHookAdd(g_hk.startupServer,
+                    static_cast<INetworkServerService*>(s_pNetworkServerService),
+                    &INetworkServerService::StartupServer, "StartupServer");
             } else {
                 s_pNetworkServerService = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: NetworkServerService (%s) — identity natives degrade\n", verStr);
@@ -4947,12 +5038,15 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     S2EngineOps ops = {};
 #include "s2script_engine_ops_fill.generated.inc"
 
-    // Pass both callbacks + the engine-ops table; the core calls s2_request_hook("OnGameFrame", 1)
-    // to lazily install the SourceHook detour once a script subscribes.
+    // Pass both callbacks + the engine-ops table. The request gates core frame dispatch; the
+    // physical GameFrame hook remains installed as the post-loader lifecycle bootstrap.
+    g_coreOwnerTid = S2Tid();
+    g_terminalCoord.Reset(g_coreOwnerTid);
     if (s2script_core_init(&s2_logger, &s2_request_hook, &ops) != 0) {
         META_CONPRINTF("[s2script] ERROR: V8 core init failed (plugin stays loaded for diagnosis)\n");
         return true; // degrade, do not fail the load (spec §7)
     }
+    m_coreDispatchReady = true;
 
     // Late-load bootstrap. CPlayerUserId stores ushort; -1 is represented by 65535.
     // A userid proves occupancy, not exact signon phase: use connected conservatively.
@@ -4973,13 +5067,18 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // failed init returns above, leaving dispatch unset so any stale detour degrades to Continue.
     {
         S2HookOps hookOps{};
-        hookOps.dispatch = &s2script_core_dispatch_hook;   // weak: null if this core predates the entry
-        hookOps.dispatch_post = &s2script_core_dispatch_hook_post;
+        hookOps.dispatch = [](int hookId, void* argView) -> int {
+            return S2Hook_GuardedDispatchHook(s2script_core_dispatch_hook, hookId, argView);
+        };
+        hookOps.dispatch_post = [](int hookId, void* argView, int skipped) -> int {
+            return S2Hook_GuardedDispatchHookPost(s2script_core_dispatch_hook_post, hookId, argView,
+                                                  skipped);
+        };
         S2Hook_SetOps(hookOps);
-        if (!hookOps.dispatch)
+        if (!s2script_core_dispatch_hook)
             META_CONPRINTF("[s2script] WARN: core exports no inbound-hook dispatch entry — "
                            "declarative inbound hooks are OFF (shim/core version mismatch)\n");
-        if (!hookOps.dispatch_post)
+        if (!s2script_core_dispatch_hook_post)
             META_CONPRINTF("[s2script] WARN: core exports no inbound-hook POST dispatch entry — "
                            "onCanAcquirePost will not fire (shim/core version mismatch)\n");
     }
@@ -5128,172 +5227,122 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Unload
-// ---------------------------------------------------------------------------
-bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
-    // Remove the global cvar change callback FIRST: leaving it installed points the engine at a
-    // function inside a .so that is about to be unloaded — a use-after-free on the next cvar write.
+static void S2Shutdown_ResetLoad() {
+    g_unloadFinished = false;
+    g_unloadSucceeded = false;
+}
+
+static bool S2_NormalHooksCanRemoveSync(const S2HookTerminalPermit& p) {
+    return S2HookInventoryCanRemoveSync(S2NormalHookInventory(), p) &&
+        S2SdkhooksVpCanUnloadSync(p);
+}
+
+static bool S2_BeginCheckedRetirement(const S2HookTerminalPermit& permit) {
+    S2ScriptPlugin& p = g_S2ScriptPlugin;
+    // Stop this-filters first so new JS dispatch cannot start, then BeginRemove
+    // every owned interface and SDKHooks object (including empty kind-level maps).
+    if (s_pCvar && s_conCmdDispatchHookInstalled) {
+        g_hk.dispatchConCommand.Remove(s_pCvar);
+        s_conCmdDispatchHookInstalled = false;
+    }
+    if (p.m_frameHookInstalled && p.m_server) {
+        g_hk.gameFrame.Remove(p.m_server);
+        p.m_frameHookInstalled = false;
+    }
+    // GameFrame is the drain; once its this-filter is gone, queued engine
+    // duplicates cannot replay. Flush here so a pending Unload retry does not
+    // leak IGameEvent copies. Finish still flushes as a backstop.
+    S2Defer_Flush("unload");
+    if (p.m_eventHookInstalled && s_pGameEventManager) {
+        g_hk.fireEvent.Remove(s_pGameEventManager);
+        p.m_eventHookInstalled = false;
+    }
+    if (s_userMsgHookInstalled && s_pGameEventSystem) {
+        g_hk.postEvent.Remove(s_pGameEventSystem);
+        s_userMsgHookInstalled = false;
+    }
+    if (p.m_clientCmdHookInstalled && p.m_gameClients) {
+        g_hk.clientCommand.Remove(p.m_gameClients);
+        p.m_clientCmdHookInstalled = false;
+    }
+    if (p.m_clientLifecycleHooksInstalled && p.m_gameClients) {
+        g_hk.onClientConnected.Remove(p.m_gameClients);
+        g_hk.clientPutInServer.Remove(p.m_gameClients);
+        g_hk.clientActive.Remove(p.m_gameClients);
+        g_hk.clientFullyConnect.Remove(p.m_gameClients);
+        g_hk.clientDisconnect.Remove(p.m_gameClients);
+        g_hk.clientSettingsChanged.Remove(p.m_gameClients);
+        p.m_clientLifecycleHooksInstalled = false;
+    }
+    if (p.m_checkTransmitHookInstalled && p.m_gameEntities) {
+        g_hk.checkTransmit.Remove(p.m_gameEntities);
+        p.m_checkTransmitHookInstalled = false;
+    }
+    if (s_voiceNotifyHookInstalled && p.m_gameClients) {
+        g_hk.clientVoice.Remove(p.m_gameClients);
+        s_voiceNotifyHookInstalled = false;
+    }
+    if (s_voiceListenHookInstalled && s_pEngine) {
+        g_hk.setClientListening.Remove(s_pEngine);
+        s_voiceListenHookInstalled = false;
+    }
+    if (p.m_startupServerHookInstalled && s_pNetworkServerService) {
+        g_hk.startupServer.Remove(static_cast<INetworkServerService*>(s_pNetworkServerService));
+        p.m_startupServerHookInstalled = false;
+    }
+
+    return S2HookInventoryBeginRemoveSync(S2NormalHookInventory(), permit) &&
+        S2SdkhooksVpUnloadSync(permit);
+}
+
+static bool S2_NormalHooksRemovalComplete() {
+    return S2HookInventoryRemovalComplete(S2NormalHookInventory()) &&
+        S2SdkhooksVpRemovalComplete();
+}
+
+static bool S2_FinishUnloadCleanup() {
+    if (g_unloadFinished) {
+        return g_unloadSucceeded;
+    }
+    g_unloadFinished = true;
+    bool ok = true;
+
     if (s_pCvar && s_cvarChangeCbInstalled) {
         s_pCvar->RemoveGlobalChangeCallback(&s2_cvar_change_cb);
         s_cvarChangeCbInstalled = false;
     }
-    // Same reasoning for the listener hook: an installed SourceHook trampoline into an unloaded .so
-    // is a use-after-free on the next ConCommand dispatch, which is EVERY console command.
-    if (s_pCvar && s_conCmdDispatchHookInstalled) {
-        SH_REMOVE_HOOK(ICvar, DispatchConCommand, s_pCvar,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_DispatchConCommand), false);
-        s_conCmdDispatchHookInstalled = false;
-    }
-    // Per-entity SDKHook VP hooks dispatch into core — remove them before the isolate dies.
-    S2SdkhooksVpUnload();
 
-    META_CONPRINTF("[s2script] Unload(): shutting down V8 core\n");
+    META_CONPRINTF("[s2script] PreShutdown: shutting down V8 core\n");
 
-    // deferred-dispatch: free every queued IGameEvent duplicate and drop the queue. The frame hook
-    // that drains it is removed below, so anything left here would never be replayed and its
-    // duplicates would leak engine memory (the ledger-is-teardown-authority rule).
     S2Defer_Flush("unload");
-
-    // Remove hooks before shutdown so no in-flight dispatch can reach a
-    // freed core.  SH_REMOVE_HOOK is a no-op if the hook was never added.
-    if (m_frameHookInstalled && m_server) {
-        SH_REMOVE_HOOK(ISource2Server, GameFrame, m_server,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_GameFramePre),  false);
-        SH_REMOVE_HOOK(ISource2Server, GameFrame, m_server,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_GameFramePost), true);
-        m_frameHookInstalled = false;
-    }
-
-    // Remove the FireEvent pre-hook (Slice 5D.3) before tearing down the event listener.
-    if (m_eventHookInstalled && s_pGameEventManager) {
-        SH_REMOVE_HOOK(IGameEventManager2, FireEvent, s_pGameEventManager,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_FireEventPre), false);
-        m_eventHookInstalled = false;
-    }
-
-    // Remove the lazy PostEventAbstract pre-hook (usermsg-hook slice — ledger/teardown authority).
-    if (s_userMsgHookInstalled && s_pGameEventSystem) {
-        SH_REMOVE_HOOK(IGameEventSystem, PostEventAbstract, s_pGameEventSystem,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_PostEvent), false);
-        s_userMsgHookInstalled = false;
-        s_userMsgFirstFireDone = false;                       // a later re-arm re-observes + re-validates
-        for (auto& w : s_userMsgSubBits) w = 0;               // clear the subscribed-id bitmap
-    }
-
-    // Remove the ClientCommand hook (Slice 6.11c).
-    if (m_clientCmdHookInstalled && m_gameClients) {
-        SH_REMOVE_HOOK(ISource2GameClients, ClientCommand, m_gameClients,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientCommand), false);
-        m_clientCmdHookInstalled = false;
-    }
-
-    // Remove the six client lifecycle notify-hooks (@s2script/clients).
-    if (m_clientLifecycleHooksInstalled && m_gameClients) {
-        SH_REMOVE_HOOK(ISource2GameClients, OnClientConnected, m_gameClients,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_OnClientConnected), false);
-        SH_REMOVE_HOOK(ISource2GameClients, ClientPutInServer, m_gameClients,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientPutInServer), false);
-        SH_REMOVE_HOOK(ISource2GameClients, ClientActive, m_gameClients,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientActive), false);
-        SH_REMOVE_HOOK(ISource2GameClients, ClientFullyConnect, m_gameClients,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientFullyConnect), false);
-        SH_REMOVE_HOOK(ISource2GameClients, ClientDisconnect, m_gameClients,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientDisconnect), false);
-        SH_REMOVE_HOOK(ISource2GameClients, ClientSettingsChanged, m_gameClients,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientSettingsChanged), false);
-        m_clientLifecycleHooksInstalled = false;
-    }
-
-    // Remove the CheckTransmit POST hook (checktransmit slice) + drop the rule table.
-    if (m_checkTransmitHookInstalled && m_gameEntities) {
-        SH_REMOVE_HOOK(ISource2GameEntities, CheckTransmit, m_gameEntities,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_CheckTransmit), true);
-        m_checkTransmitHookInstalled = false;
-    }
+    s_userMsgFirstFireDone = false;
+    for (auto& w : s_userMsgSubBits) w = 0;
     s_transmitTable.clear();
 
-    // Voice-control slice: remove both voice hooks. Any forced-false listen values already stored in
-    // the engine are restored by the game's own next voice refresh (engine-paced; see live-gate note).
-    if (s_voiceNotifyHookInstalled && m_gameClients) {
-        SH_REMOVE_HOOK(ISource2GameClients, ClientVoice, m_gameClients,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_ClientVoice), true);
-        s_voiceNotifyHookInstalled = false;
-    }
-    if (s_voiceListenHookInstalled && s_pEngine) {
-        SH_REMOVE_HOOK(IVEngineServer2, SetClientListening, s_pEngine,
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_SetClientListening), false);
-        s_voiceListenHookInstalled = false;
-    }
-
-    // Remove the StartupServer map-start POST hook (clientlist-fakeconvar-onmapstart slice).
-    if (m_startupServerHookInstalled && s_pNetworkServerService) {
-        SH_REMOVE_HOOK(INetworkServerService, StartupServer,
-                       static_cast<INetworkServerService*>(s_pNetworkServerService),
-                       SH_MEMBER(this, &S2ScriptPlugin::Hook_StartupServer), true);
-        m_startupServerHookInstalled = false;
-    }
-
-    // Restore the OnPrecacheResource class-vtable slot (Sound slice — precache vtable hook): write the
-    // saved original back before core teardown so the game's own precache path is intact if the shim is
-    // reloaded. Guarded on the install flag + the saved vtable/original so a never-installed (or
-    // failed-install) hook no-ops cleanly.
     if (s_precacheHookInstalled && s_pGameRulesVtable && s_origOnPrecacheResource && s_precacheVtblIdx >= 0) {
-        // WARN loudly if the restore write fails: a failed restore leaves vtable[idx] pointing at our
-        // Detour_OnPrecacheResource, which is about to be unmapped -> the next precache would jump into
-        // freed memory and crash. Nothing we can do to recover here, but the log names the hazard.
         if (!WriteVtableSlot(s_pGameRulesVtable, s_precacheVtblIdx, reinterpret_cast<void*>(s_origOnPrecacheResource))) {
             META_CONPRINTF("[s2script] WARN: precache — vtable slot restore write FAILED; slot still points at the "
                            "detour being unloaded (next precache may crash)\n");
+            ok = false;
         }
         s_precacheHookInstalled = false;
         s_pGameRulesVtable = nullptr;
         s_origOnPrecacheResource = nullptr;
     }
 
-    // Entity lifecycle listeners slice: unregister the IEntityListener so a dangling vtable call can't
-    // happen if s2script is unloaded while the entity system lives. Best-effort (unresolved sig -> skip).
-    if (s_wantEntityListener && s_pRemoveListenerEntity) {
-        CGameEntitySystem* es = GetEntitySystem();
-        if (es) s_pRemoveListenerEntity(es, S2_GetEntityListener());
-    } else if (s_wantEntityListener && s_pAddListenerEntity && !s_pRemoveListenerEntity) {
-        // We registered the listener (AddListenerEntity resolved) but CANNOT unregister it
-        // (RemoveListenerEntity signature is unresolved/stale on this build). The listener object is
-        // about to be freed with the .so, so the next engine-driven entity create/spawn/delete would
-        // call a dangling vtable -> SIGSEGV. We cannot safely remove it, so at least tell the operator
-        // loudly (the boot GAMEDATA VALIDATION gate also flags the stale RemoveListenerEntity sig).
-        META_CONPRINTF("[s2script] WARN: entity listener registered but RemoveListenerEntity is "
-                       "unresolved on this build -- a DANGLING listener remains; do NOT hot-unload "
-                       "s2script until the RemoveListenerEntity signature is regenerated (regenerate "
-                       "gamedata for this CS2 build).\n");
-    }
+    // Live evidence places PreShutdown after the game world/entity system was destroyed.
+    // Its listener storage died with that world; never reacquire/dereference it here.
+    s_wantEntityListener = false;
 
-    // Slice 6.6: restore the DispatchTraceAttack prologue (removes the damage detour) before core teardown.
-    // s2detour tracks every installed patch in one process-global list (shim/src/detour.cpp), so this
-    // ALSO restores the ProcessUsercmds detour (usercmd primitive) if it was ever lazily installed —
-    // no usercmd-specific teardown code is needed here.
     s2detour::RemoveAll();
-    // ...INCLUDING every declarative inbound hook. RemoveAll() restores their prologues but knows
-    // nothing about engine_hooks.cpp's slot table, so the two MUST be called together: a slot left
-    // `used` would make a later install take the idempotent "already installed" path and return
-    // success without re-patching (every hook silently dead), with `orig` pointing at an munmap'd
-    // trampoline. Metamod dlclose's us right after this today, which hides the coupling rather than
-    // removing it.
     S2_HookResetAll();
 
-    // Unregister the game-event listener before core shutdown (Slice 5D.1).
-    // RemoveListener is an all-names call per the SDK — one call removes the listener
-    // from every subscribed event.  Degrade-never-crash: null manager → skip.
     if (s_pGameEventManager) {
         s_pGameEventManager->RemoveListener(&s_eventListener);
         s_pGameEventManager = nullptr;
     }
     s_subscribedNames.clear();
 
-    // Unregister our ConCommands before core shutdown (Slice 6.1). Metamod dlclose's s2script.so,
-    // unmapping s2_concommand_trampoline — but the engine's ICvar still holds m_CBInfo pointing at it,
-    // so invoking a ghost command post-unload would call into freed .text (UAF/crash). Parity with the
-    // event-listener RemoveListener above. Degrade-never-crash: null ICvar → skip.
     if (s_pCvar) {
         for (auto& kv : s_concommandRefs) {
             if (kv.second.IsValidRef()) s_pCvar->UnregisterConCommandCallbacks(kv.second);
@@ -5301,9 +5350,104 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
     }
     s_concommandRefs.clear();
 
-    S2CrashDisarm();   // restore previous signal handlers before the core is torn down
+    const int coreShutdown = s2script_core_terminal_shutdown();
+    if (coreShutdown != 0) {
+        META_CONPRINTF("[s2script] ERROR: terminal core shutdown failed (%d)\n", coreShutdown);
+        ok = false;
+    }
+    S2CrashDisarm();
+    g_unloadSucceeded = ok;
+    return ok;
+}
 
-    s2script_core_shutdown();
+static void S2InstallLifecycleHooks() {
+    if (g_lifecycleInstallAttempted) return;
+    g_lifecycleInstallAttempted = true;
+    if (!g_S2ScriptPlugin.m_serverConfig) return;
+    // Load/AllPluginsLoaded are too early: KHook restores this shared vtable page RX while the
+    // stock loader still has a pending Disconnect-slot write. First accepted GameFrame proves
+    // that loader initialization and its write have completed.
+    using ServerConfigLifecycleMfp = void (ISource2ServerConfig::*)();
+    g_preShutdownHookInstalled = S2KHookAdd(g_hk.serverConfigPreShutdown,
+        g_S2ScriptPlugin.m_serverConfig,
+        static_cast<ServerConfigLifecycleMfp>(&ISource2ServerConfig::PreShutdown),
+        "PreShutdown terminal marker");
+    g_shutdownHookInstalled = S2KHookAdd(g_hk.serverConfigShutdown,
+        g_S2ScriptPlugin.m_serverConfig,
+        static_cast<ServerConfigLifecycleMfp>(&ISource2ServerConfig::Shutdown),
+        "Shutdown terminal marker");
+    META_CONPRINTF("[s2script] terminal lifecycle hooks pre=%d shutdown=%d owner_tid=%ld install_tid=%ld\n",
+                   g_preShutdownHookInstalled ? 1 : 0, g_shutdownHookInstalled ? 1 : 0,
+                   g_coreOwnerTid, S2Tid());
+}
+
+KHook::Return<void> S2ScriptPlugin::Hook_ServerConfigPreShutdownPre(ISource2ServerConfig* config) {
+    auto obs = g_hk.serverConfigPreShutdown.Observe(config);
+    if (!obs) return S2_Ignore();
+    const bool complete = g_terminalCoord.PreShutdownPre(S2Tid(), {
+        [] { return s2script_core_can_shutdown() != 0; },
+        [] {
+            const auto permit = S2Hook_CurrentTerminalPermit();
+            return permit.IsValid() && S2_NormalHooksCanRemoveSync(permit) &&
+                S2_BeginCheckedRetirement(permit) && S2_NormalHooksRemovalComplete() &&
+                S2_FinishUnloadCleanup();
+        },
+    });
+    META_CONPRINTF("[s2script] terminal PreShutdown cleanup %s owner_tid=%ld current_tid=%ld\n",
+                   complete ? "complete" : "FAILED", g_coreOwnerTid, S2Tid());
+    return S2_Ignore();
+}
+
+KHook::Return<void> S2ScriptPlugin::Hook_ServerConfigPreShutdownPost(ISource2ServerConfig* config) {
+    auto obs = g_hk.serverConfigPreShutdown.Observe(config);
+    if (obs) g_terminalCoord.PreShutdownPost(S2Tid(), KHook::WasOriginalFunctionSkipped());
+    return S2_Ignore();
+}
+
+KHook::Return<void> S2ScriptPlugin::Hook_ServerConfigShutdownPre(ISource2ServerConfig* config) {
+    auto obs = g_hk.serverConfigShutdown.Observe(config);
+    if (!obs) return S2_Ignore();
+    g_terminalCoord.ShutdownPre(S2Tid());
+    return S2_Ignore();
+}
+
+KHook::Return<void> S2ScriptPlugin::Hook_ServerConfigShutdownPost(ISource2ServerConfig* config) {
+    auto obs = g_hk.serverConfigShutdown.Observe(config);
+    if (obs) g_terminalCoord.ShutdownPost(S2Tid(), KHook::WasOriginalFunctionSkipped());
+    return S2_Ignore();
+}
+
+// Ordinary native unload is unsupported and deliberately performs no mutation.
+bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
+    const S2TerminalPhase before = g_terminalCoord.Phase();
+    const bool complete = g_terminalCoord.Unload(S2Tid(), [this] {
+        if (!S2Hook_NoActiveDispatch()) return false;
+        if ((g_preShutdownHookInstalled && !g_hk.serverConfigPreShutdown.CanBeginRemove(false)) ||
+            (g_shutdownHookInstalled && !g_hk.serverConfigShutdown.CanBeginRemove(false))) return false;
+        if (g_preShutdownHookInstalled) g_hk.serverConfigPreShutdown.Remove(m_serverConfig);
+        if (g_shutdownHookInstalled) g_hk.serverConfigShutdown.Remove(m_serverConfig);
+        const bool pre_begun = !g_preShutdownHookInstalled ||
+            g_hk.serverConfigPreShutdown.BeginRemove(false);
+        const bool shutdown_begun = !g_shutdownHookInstalled ||
+            g_hk.serverConfigShutdown.BeginRemove(false);
+        const bool removed = pre_begun && shutdown_begun &&
+            g_hk.serverConfigPreShutdown.RemovalComplete() &&
+            g_hk.serverConfigShutdown.RemovalComplete();
+        if (removed) {
+            g_preShutdownHookInstalled = false;
+            g_shutdownHookInstalled = false;
+        }
+        return removed;
+    });
+    if (!complete) {
+        const char* msg = before == S2TerminalPhase::Running
+            ? "s2script native unload unsupported while server is running"
+            : "s2script terminal unload incomplete or failed";
+        if (error && maxlen) std::snprintf(error, maxlen, "%s", msg);
+        META_CONPRINTF("[s2script] Unload(): %s (phase=%d)\n", msg,
+                       static_cast<int>(g_terminalCoord.Phase()));
+        return false;
+    }
     return true;
 }
 
@@ -5328,11 +5472,15 @@ bool S2ScriptPlugin::Unload(char* error, size_t maxlen) {
 static bool   s_legacyFilterActive = false;
 static uint64_t s_legacyAllowMask  = 0;
 
-void S2ScriptPlugin::Hook_GameFramePre(bool simulating, bool first, bool last) {
+KHook::Return<void> S2ScriptPlugin::Hook_GameFramePre(ISource2Server* server, bool simulating, bool first, bool last) {
+    auto obs = g_hk.gameFrame.Observe(server);
+    if (obs) S2InstallLifecycleHooks();
+    if (!m_coreDispatchReady || !m_frameDispatchRequested) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     // The frame counter first, so every line printed from here on — including the drain's — names
     // the frame it is actually on, and "deferred at frame N, replayed at frame N+1" is readable
     // straight off the log. A counter bump touches no JS, no engine and no core, so it does not
-    // weaken the drain's position below.
+    // weaken the drain's position below. Incremented once per PRE that reaches this path.
     ++s_frameNo;
     // deferred-dispatch: the FIRST statement in this hook that reaches core, before ANYTHING here
     // enters JS — the damage self-test below is the next thing that does, so the isolate is
@@ -5364,19 +5512,25 @@ void S2ScriptPlugin::Hook_GameFramePre(bool simulating, bool first, bool last) {
     }
     s2script_core_dispatch_game_frame(0, static_cast<int>(simulating),
                                       static_cast<int>(first), static_cast<int>(last));
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
 
-void S2ScriptPlugin::Hook_GameFramePost(bool simulating, bool first, bool last) {
+KHook::Return<void> S2ScriptPlugin::Hook_GameFramePost(ISource2Server* server, bool simulating, bool first, bool last) {
+    auto obs = g_hk.gameFrame.Observe(server);
+    if (!m_coreDispatchReady || !m_frameDispatchRequested) return S2_Ignore();
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     s2script_core_dispatch_game_frame(1, static_cast<int>(simulating),
                                       static_cast<int>(first), static_cast<int>(last));
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
 
 // FireEvent Pre hook: run pre-subscribers (they may getX/setX + return a HookResult); if they collapse
-// to "suppress broadcast", re-call the original with bDontBroadcast=true and SUPERCEDE.
-bool S2ScriptPlugin::Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDontBroadcast) {
-    if (!ev) RETURN_META_VALUE(MRES_IGNORED, true);
+// to "suppress broadcast", re-call the original with a rewritten bDontBroadcast and S2_Supersede.
+KHook::Return<bool> S2ScriptPlugin::Hook_FireEventPre(IGameEventManager2* mgr, IGameEvent* ev,
+                                                     [[maybe_unused]] bool bDontBroadcast) {
+    auto obs = g_hk.fireEvent.Observe(mgr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore(true);
+    if (!ev) return S2_Ignore(true);
     IGameEvent* prev = s_currentEvent;
     s_currentEvent = ev;                                       // mutable during the pre-dispatch
     int suppress = s2script_core_dispatch_game_event_pre(ev->GetName());
@@ -5403,7 +5557,7 @@ bool S2ScriptPlugin::Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDo
         // all-or-nothing behaviour, which is what `Handled` has always meant for events nobody scoped.
         s_legacyFilterActive = haveMask;
         s_legacyAllowMask = allow;
-        bool ret = SH_CALL(s_pGameEventManager, &IGameEventManager2::FireEvent)(ev, haveMask ? false : true);
+        bool ret = KHook::CallOriginal(&IGameEventManager2::FireEvent, mgr, ev, haveMask ? false : true);
         s_legacyFilterActive = false;
         s_legacyAllowMask = 0;
         // The flag is deliberately LEFT ARMED here and cleared at end of frame instead.
@@ -5413,23 +5567,25 @@ bool S2ScriptPlugin::Hook_FireEventPre(IGameEvent* ev, [[maybe_unused]] bool bDo
         // messages are batched and flushed later in the frame — so by the time the post arrived the flag
         // had already been cleared. Hook_GameFramePost clears it, which bounds the window to the frame
         // that suppressed the event without depending on when the engine chooses to flush.
-        RETURN_META_VALUE(MRES_SUPERCEDE, ret);                // we fired it ourselves with broadcast off
+        return S2_Supersede(ret);                // we fired it ourselves with broadcast off
     }
-    RETURN_META_VALUE(MRES_IGNORED, true);                     // original runs; any set* mods already applied
+    return S2_Ignore(true);                     // original runs; any set* mods already applied
 }
 
 // UserMessage-interception choke point (usermsg-hook slice): every outbound event/message posts through
 // here. Order: recursion guard -> degraded guard -> observe-only FIRST-FIRE validation (never suppresses)
-// -> bitmap gate on m_MessageId (one virtual + one bit test; MRES_IGNORED on miss BEFORE any reflection/
+// -> bitmap gate on m_MessageId (one virtual + one bit test; S2_Ignore on miss BEFORE any reflection/
 // strcmp/FFI/alloc/logging) -> name-keyed core dispatch with block-scoped statics -> collapsed HookResult
-// >= Handled(2) => MRES_SUPERCEDE (the message is dropped for every recipient AND any server-side local
+// >= Handled(2) => S2_FromHookResult Supersede (the message is dropped for every recipient AND any server-side local
 // listener — the live gate watches for server-side fallout; fallback = recall-with-modified-mask).
-void S2ScriptPlugin::Hook_PostEvent(CSplitScreenSlot nSlot, bool bLocalOnly, int nClientCount,
-                                    const uint64* clients, INetworkMessageInternal* pEvent,
+KHook::Return<void> S2ScriptPlugin::Hook_PostEvent(IGameEventSystem* eventSystem, CSplitScreenSlot nSlot, bool bLocalOnly, int nClientCount,
+                                    const unsigned long long* clients, INetworkMessageInternal* pEvent,
                                     const CNetMessage* pData, unsigned long nSize,
                                     NetChannelBufType_t bufType) {
+    auto obs = g_hk.postEvent.Observe(eventSystem);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     (void)nSlot; (void)bLocalOnly; (void)nSize; (void)bufType;
-    if (s_inUserMsgDispatch) RETURN_META(MRES_IGNORED);   // recursion guard (a mid-hook send re-enters here)
+    if (s_inUserMsgDispatch) return S2_Ignore();   // recursion guard (a mid-hook send re-enters here)
     // Cheap gate FIRST: one virtual (GetNetMessageInfo) + one bitmap bit test on m_MessageId. A non-subscribed
     // message costs exactly this before ANY reflection/strcmp/FFI/alloc/logging. Doctrine note on the ONE
     // borrowed layout fact (NetMessageInfo_t::m_MessageId): it is RANGE-CHECKED fail-closed at subscribe and
@@ -5478,14 +5634,14 @@ void S2ScriptPlugin::Hook_PostEvent(CSplitScreenSlot nSlot, bool bLocalOnly, int
                     META_CONPRINTF("[s2script] event hidden from mask %llx (allow %llx)\n",
                                    (unsigned long long)who, (unsigned long long)s_legacyAllowMask);
                 }
-                RETURN_META(MRES_SUPERCEDE);
+                return S2_Supersede();
             }
         }
     }
-    if (!mi || !s2_usermsg_bit((int)mi->m_MessageId)) RETURN_META(MRES_IGNORED);
+    if (!mi || !s2_usermsg_bit((int)mi->m_MessageId)) return S2_Ignore();
     google::protobuf::Message* pb = pData
         ? reinterpret_cast<google::protobuf::Message*>(const_cast<CNetMessage*>(pData)->AsProto()) : nullptr;
-    if (!pb) RETURN_META(MRES_IGNORED);
+    if (!pb) return S2_Ignore();
     const char* nm = pEvent->GetUnscopedName();
     // Observe-only first-fire, gated on the first SUBSCRIBED message that reaches here (deterministic — a
     // message a plugin actually asked for, NOT the arbitrary first engine post, which could be bodyless and
@@ -5497,19 +5653,18 @@ void S2ScriptPlugin::Hook_PostEvent(CSplitScreenSlot nSlot, bool bLocalOnly, int
         if (!pb->GetDescriptor() || !pb->GetReflection() || !nm || !*nm) {
             META_CONPRINTF("[s2script] USERMSG VALIDATION: subscribed message id=%d lacks readable protobuf "
                            "reflection — this fire skipped (send path unaffected)\n", (int)mi->m_MessageId);
-            RETURN_META(MRES_IGNORED);
+            return S2_Ignore();
         }
         META_CONPRINTF("[s2script] USERMSG intercept validated (first subscribed fire: id=%d name=%s)\n",
                        (int)mi->m_MessageId, nm);
-        RETURN_META(MRES_IGNORED);   // observe-only: the hook goes live on the NEXT subscribed fire
+        return S2_Ignore();   // observe-only: the hook goes live on the NEXT subscribed fire
     }
     s_hookMsg = pb; s_hookClients = clients; s_hookClientCount = nClientCount;
     s_inUserMsgDispatch = true;
     int result = s2script_core_dispatch_usermsg(nm, (int)mi->m_MessageId);
     s_inUserMsgDispatch = false;
     s_hookMsg = nullptr; s_hookClients = nullptr; s_hookClientCount = 0;   // block-scope ends here
-    if (result >= 2 /* HookResult.Handled */) RETURN_META(MRES_SUPERCEDE);
-    RETURN_META(MRES_IGNORED);
+    return S2_FromHookResult(result);
 }
 
 // Slice 6.11c: a player typed a command at the console. Dispatch the matching registered s2script command
@@ -5521,35 +5676,48 @@ void S2ScriptPlugin::Hook_PostEvent(CSplitScreenSlot nSlot, bool bLocalOnly, int
 //
 // Listeners only: this deliberately does NOT run s2script's own registered commands, which already
 // dispatch through their ConCommand trampoline — routing them here too would fire every handler
-// twice. Observe-by-default, matching SourceMod: SUPERCEDE only when a listener asks, because
+// twice. Observe-by-default, matching SourceMod: S2_Supersede only when a listener asks, because
 // superseding a command like `player_ping` by default would stop the ping marker being placed.
-void S2ScriptPlugin::Hook_DispatchConCommand(ConCommandRef cmd, const CCommandContext& ctx,
+KHook::Return<void> S2ScriptPlugin::Hook_DispatchConCommand(ICvar* cvar, ConCommandRef cmd, const CCommandContext& ctx,
                                              const CCommand& args) {
+    auto obs = g_hk.dispatchConCommand.Observe(cvar);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     (void)cmd;
     const char* name = args.Arg(0);
-    if (!name || !name[0]) RETURN_META(MRES_IGNORED);
+    if (!name || !name[0]) return S2_Ignore();
     const char* argStr = args.ArgS();
+    // FFI is 1 iff listeners collapsed to Handled/Stop (bool, not a HookResult int).
+    // S2_FromHookResult(1) would Ignore; keep truthy → Supersede.
     if (s2script_core_dispatch_command_listeners(ctx.GetPlayerSlot().Get(), name,
                                                  argStr ? argStr : "")) {
-        RETURN_META(MRES_SUPERCEDE);
+        return S2_Supersede();
     }
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
 
-void S2ScriptPlugin::Hook_ClientCommand(CPlayerSlot slot, const CCommand& args) {
+KHook::Return<void> S2ScriptPlugin::Hook_ClientCommand(ISource2GameClients* clients, CPlayerSlot slot, const CCommand& args) {
+    auto obs = g_hk.clientCommand.Observe(clients);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     const char* name = args.Arg(0);
-    if (!name || !name[0]) RETURN_META(MRES_IGNORED);
+    if (!name || !name[0]) return S2_Ignore();
     const char* argStr = args.ArgS();
+    // Unregistered client commands arrive here instead of DispatchConCommand.
+    // Deliver the same public listeners at this engine boundary, once, before
+    // running a matching owned command or allowing the engine's fallback.
+    if (s2script_core_dispatch_command_listeners(slot.Get(), name, argStr ? argStr : "")) {
+        return S2_Supersede();
+    }
+    // FFI is 1 iff a registered command matched (bool, not a HookResult int).
     if (s2script_core_dispatch_client_command(slot.Get(), name, argStr ? argStr : "")) {
         META_CONPRINTF("[s2script] console command '%s' by slot=%d\n", name, slot.Get());
-        RETURN_META(MRES_SUPERCEDE);   // ours → engine won't also handle it (no "Unknown command" server-side)
+        return S2_Supersede();   // ours → engine won't also handle it (no "Unknown command" server-side)
     }
-    RETURN_META(MRES_IGNORED);         // not ours → the engine handles it normally
+    return S2_Ignore();         // not ours → the engine handles it normally
 }
 
 // Client lifecycle notify-hooks (@s2script/clients sub-project). Each forwards the player slot to the
-// Task-1 dispatch (runs the JS Clients.on(name) subscribers) and RETURN_META(MRES_IGNORED) — notify-only,
-// never alters flow. The `uint64` param types match the SH_DECL_HOOK above (== the header's `unsigned long
+// Task-1 dispatch (runs the JS Clients.on(name) subscribers) and returns S2_Ignore() — notify-only,
+// never alters flow. The `uint64` param types match eiface.h / the Virtual args (== the header's `unsigned long
 // long` on Linux). Post-hooks (added `false`).
 //
 // clientlist-fakeconvar-onmapstart slice: these bodies now ALSO drive the tracked signon array
@@ -5565,32 +5733,42 @@ static void S2_ClearClientSlotState(int slot) {
     s_voiceHasRule &= ~(1ull << slot);
 }
 
-void S2ScriptPlugin::Hook_OnClientConnected(CPlayerSlot slot, const char*, uint64, const char*, const char*, bool) {
+KHook::Return<void> S2ScriptPlugin::Hook_OnClientConnected(ISource2GameClients* clients, CPlayerSlot slot, const char*, unsigned long long, const char*, const char*, bool) {
+    auto obs = g_hk.onClientConnected.Observe(clients);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonConnected;
     S2_DispatchClientEvent("connect", s, s2script_core_client_begin(s));
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
-void S2ScriptPlugin::Hook_ClientPutInServer(CPlayerSlot slot, const char*, int, uint64) {
+KHook::Return<void> S2ScriptPlugin::Hook_ClientPutInServer(ISource2GameClients* clients, CPlayerSlot slot, const char*, int, unsigned long long) {
+    auto obs = g_hk.clientPutInServer.Observe(clients);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonSpawn;
     S2_DispatchClientEvent("putinserver", s, s2script_core_client_ensure(s));
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
-void S2ScriptPlugin::Hook_ClientActive(CPlayerSlot slot, bool, const char*, uint64) {
+KHook::Return<void> S2ScriptPlugin::Hook_ClientActive(ISource2GameClients* clients, CPlayerSlot slot, bool, const char*, unsigned long long) {
+    auto obs = g_hk.clientActive.Observe(clients);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonFull;
     MaybeValidateVoiceListening();   // one-shot Get/Set round-trip once two clients are active
     S2_DispatchClientEvent("active", s, s2script_core_client_ensure(s));
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
-void S2ScriptPlugin::Hook_ClientFullyConnect(CPlayerSlot slot) {
+KHook::Return<void> S2ScriptPlugin::Hook_ClientFullyConnect(ISource2GameClients* clients, CPlayerSlot slot) {
+    auto obs = g_hk.clientFullyConnect.Observe(clients);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonFull;
     S2_DispatchClientEvent("fullyconnect", s, s2script_core_client_ensure(s));
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
-void S2ScriptPlugin::Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnectionReason, const char*, uint64, const char*) {
+KHook::Return<void> S2ScriptPlugin::Hook_ClientDisconnect(ISource2GameClients* clients, CPlayerSlot slot, ENetworkDisconnectionReason, const char*, unsigned long long, const char*) {
+    auto obs = g_hk.clientDisconnect.Observe(clients);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     int s = slot.Get();
     // Copy every string now: callbacks may re-enter engine code or replace the occupant.
     const uint64_t token = s2script_core_client_generation(s);
@@ -5600,19 +5778,23 @@ void S2ScriptPlugin::Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnecti
     // Clear departing engine policy before fan-out: a synchronous callback can connect B.
     S2_ClearClientSlotState(s);
     S2_DispatchClientEvent("disconnect", s, token, &identity);
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
-void S2ScriptPlugin::Hook_ClientSettingsChanged(CPlayerSlot slot) {
+KHook::Return<void> S2ScriptPlugin::Hook_ClientSettingsChanged(ISource2GameClients* clients, CPlayerSlot slot) {
+    auto obs = g_hk.clientSettingsChanged.Observe(clients);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     S2_DispatchClientEvent("settingschanged", slot.Get(), s2script_core_client_generation(slot.Get()));
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
 
 // Voice-control: ClientVoice fires per RECEIVED voice packet (tens/sec while a client talks — never
 // for bots). Throttle per-slot to <=1 core dispatch per wall-clock second; the first packet of a
 // transmission always dispatches, so a lazy mute-on-talk (the TTT PlayerMuter pattern) lands
-// immediately. Notify-only (POST, MRES_IGNORED); the core side is the existing try_borrow_mut-guarded
+// immediately. Notify-only (POST, S2_Ignore); the core side is the existing try_borrow_mut-guarded
 // dispatch_client_event under the name "voice".
-void S2ScriptPlugin::Hook_ClientVoice(CPlayerSlot slot) {
+KHook::Return<void> S2ScriptPlugin::Hook_ClientVoice(ISource2GameClients* clients, CPlayerSlot slot) {
+    auto obs = g_hk.clientVoice.Observe(clients);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) {
         time_t now = time(nullptr);
@@ -5621,16 +5803,18 @@ void S2ScriptPlugin::Hook_ClientVoice(CPlayerSlot slot) {
             S2_DispatchClientEvent("voice", s, s2script_core_client_generation(s));
         }
     }
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
 
 // Voice-control: the enforcement hook (CSSharp voice_manager.cpp:60-63 shape). PRE hook; when the
-// SENDER is muted and the game is about to store listen=true, swap the param to false with
-// MRES_IGNORED + NEWPARAMS — the engine's own implementation still runs and stores our value. HOT
+// SENDER is muted and the game is about to store listen=true, Recall with listen=false and
+// S2_Ignore — the engine's own implementation still runs and stores our value. HOT
 // PATH: plain array reads only. First fire performs the arg-sanity half of the doctrine validation
 // (out-of-range slots = vtable drift -> named degrade, rewrite disabled) and logs once — that log
 // line is also the live evidence for the engine's refresh cadence.
-bool S2ScriptPlugin::Hook_SetClientListening(CPlayerSlot receiver, CPlayerSlot sender, bool bListen) {
+KHook::Return<bool> S2ScriptPlugin::Hook_SetClientListening(IVEngineServer2* engine, CPlayerSlot receiver, CPlayerSlot sender, bool bListen) {
+    auto obs = g_hk.setClientListening.Observe(engine);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore(bListen);
     int r = receiver.Get(), s = sender.Get();
     if (!s_voiceListenSeen) {
         s_voiceListenSeen = true;
@@ -5661,17 +5845,21 @@ bool S2ScriptPlugin::Hook_SetClientListening(CPlayerSlot receiver, CPlayerSlot s
             }
         }
         if (deny) {
-            RETURN_META_VALUE_NEWPARAMS(MRES_IGNORED, bListen, &IVEngineServer2::SetClientListening,
-                                        (receiver, sender, false));
+            KHook::Recall(&IVEngineServer2::SetClientListening,
+                          KHook::Return<bool>{ KHook::Action::Ignore, bListen },
+                          engine, receiver, sender, false);
+            return S2_Ignore(bListen);
         }
     }
-    RETURN_META_VALUE(MRES_IGNORED, bListen);
+    return S2_Ignore(bListen);
 }
 
 // POST StartupServer = the map is starting up on a live, named game server (CSSharp reads the map
 // name in its POST hook the same way). Also doubles as the client-list slice's boot sanity line —
 // a garbage GetIGameServer()/GetMapName()/GetMaxClients() vtable read would be visible here.
-void S2ScriptPlugin::Hook_StartupServer(const GameSessionConfiguration_t&, ISource2WorldSession*, const char*) {
+KHook::Return<void> S2ScriptPlugin::Hook_StartupServer(INetworkServerService* nss, const GameSessionConfiguration_t&, ISource2WorldSession*, const char*) {
+    auto obs = g_hk.startupServer.Observe(nss);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     // deferred-dispatch: drop anything still queued from the OLD map, BEFORE the map_start dispatch
     // below (which is itself deferrable). Queued entries reference a world that no longer exists,
     // and a queued IGameEvent duplicate must not outlive the map (the same reset the retired
@@ -5709,7 +5897,7 @@ void S2ScriptPlugin::Hook_StartupServer(const GameSessionConfiguration_t&, ISour
     if (s2script_core_dispatch_map_start(map ? map : "") == S2_DISPATCH_DEFERRED)
         S2_DeferMapStart(map ? map : "");
     EnsureEntityListenerRegistered();   // re-assert the IEntityListener each map (idempotent Find-guard)
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
 
 // First-fire layout validation (re-strategy Rule 2 for call-context-only facts). Decides the
@@ -5767,11 +5955,13 @@ static int TransmitValidateLayout(CCheckTransmitInfo** ppInfoList, int nInfoCoun
     return 0;                               // nothing readable yet -> retry
 }
 
-void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nInfoCount,
+KHook::Return<void> S2ScriptPlugin::Hook_CheckTransmit(ISource2GameEntities* entities, CCheckTransmitInfo** ppInfoList, int nInfoCount,
                                         CBitVec<16384>&, CBitVec<16384>&,
-                                        const Entity2Networkable_t**, const uint16*, int) {
+                                        const Entity2Networkable_t**, const unsigned short*, int) {
+    auto obs = g_hk.checkTransmit.Observe(entities);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     s_transmitSnapshots++;
-    if (!ppInfoList || nInfoCount <= 0) RETURN_META(MRES_IGNORED);
+    if (!ppInfoList || nInfoCount <= 0) return S2_Ignore();
     if (s_transmitLayoutState == 0) {               // fail-closed gate: observe-only until validated
         // No tracked clients -> no witness data possible: stay pending WITHOUT burning the attempt
         // budget (a late-loaded shim whose lifecycle hooks missed the connects would otherwise
@@ -5779,7 +5969,7 @@ void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nIn
         bool anyTracked = false;
         for (int i = 0; i < kMaxClientSlots; i++)
             if (s_trackedSignon[i] != kSignonNone) { anyTracked = true; break; }
-        if (!anyTracked) RETURN_META(MRES_IGNORED);
+        if (!anyTracked) return S2_Ignore();
         int r = TransmitValidateLayout(ppInfoList, nInfoCount);
         if (r == 1 || r == 2) {
             s_transmitLayoutState = 1;
@@ -5798,11 +5988,11 @@ void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nIn
                            "docs/re-strategy.md); transmit filtering DISABLED\n",
                            (r == -1) ? "MISMATCH" : "UNDECIDABLE", s_ctiClientOff);
         }
-        RETURN_META(MRES_IGNORED);                  // never mutate on the validating snapshot
+        return S2_Ignore();                  // never mutate on the validating snapshot
     }
-    if (s_transmitLayoutState != 1) RETURN_META(MRES_IGNORED);
+    if (s_transmitLayoutState != 1) return S2_Ignore();
     const int setTransmitActive = s2script_core_sdkhook_settransmit_active();
-    if (s_transmitTable.empty() && !setTransmitActive) RETURN_META(MRES_IGNORED);
+    if (s_transmitTable.empty() && !setTransmitActive) return S2_Ignore();
 
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -5869,7 +6059,7 @@ void S2ScriptPlugin::Hook_CheckTransmit(CCheckTransmitInfo** ppInfoList, int nIn
                 + (uint64_t)t1.tv_nsec - (uint64_t)t0.tv_nsec;
     s_transmitNsLast = ns;
     if (ns > s_transmitNsMax) s_transmitNsMax = ns;
-    RETURN_META(MRES_IGNORED);
+    return S2_Ignore();
 }
 
 // (Sound slice precache: the hook handler + installer are FREE functions — Detour_OnPrecacheResource /

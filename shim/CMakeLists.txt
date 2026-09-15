@@ -192,7 +192,7 @@ target_include_directories(s2script PRIVATE
     # our stub network_connection.pb.h before hitting the missing generated file.
     ${CMAKE_SOURCE_DIR}/src/sdk_stubs
     ${MMS}/core
-    ${MMS}/core/sourcehook
+    ${MMS}/third_party/khook/include
     ${AMTL}
     ${HL2SDK}/public
     ${HL2SDK}/public/tier0

@@ -39,6 +39,45 @@ bash scripts/test-client-bootstrap.sh
 echo "== test-hook-dispatch.sh (hook shape vocabulary, bypass latch, collapse) =="
 bash scripts/test-hook-dispatch.sh
 
+echo "== test-khook-binding.sh (checked KHook receipts, Observe/BeginRemove) =="
+bash scripts/test-khook-binding.sh
+
+echo "== test-khook-shutdown.sh (Unload Busy/Pending/Complete) =="
+bash scripts/test-khook-shutdown.sh
+
+echo "== test-khook-command.py (production ClientCommand and registered dispatch) =="
+python3 scripts/test-khook-command.py
+
+echo "== native_fixture_test.py (production acceptance driver) =="
+python3 tools/khook-probe/testdata/native_fixture_test.py
+
+echo "== controlled_evidence_test.py (strict native verdict evidence) =="
+python3 tools/khook-probe/testdata/controlled_evidence_test.py
+
+echo "== test-khook-observer.sh (consumed FireEvent observer + suite A fixtures) =="
+bash scripts/test-khook-observer.sh
+
+echo "== test-install-metamod.sh (artifact verifier + install transaction) =="
+bash scripts/cloud/test-install-metamod.sh
+
+echo "== test-metamod-build.py (unmodified source preparation + stale receipt invalidation) =="
+python3 scripts/test-metamod-build.py
+
+echo "== test-khook-acceptance.py (suite A judge/registry) =="
+python3 scripts/test-khook-acceptance.py
+
+echo "== test-khook-runtime-witness.py (mapped native module identity) =="
+python3 scripts/test-khook-runtime-witness.py
+
+echo "== test-khook-runtime-build.py (fresh source-bound acceptance bundle) =="
+python3 scripts/test-khook-runtime-build.py
+
+echo "== test-khook-runtime-identity.py (installed runtime receipt) =="
+python3 scripts/test-khook-runtime-identity.py
+
+echo "== test-khook-live.sh --self-test (shared judge via --from-file) =="
+bash scripts/test-khook-live.sh --self-test
+
 echo "== test-detour-reloc.sh (prologue relocation, tier selection, named refusals) =="
 bash scripts/test-detour-reloc.sh
 
@@ -103,5 +142,14 @@ cmake --build build/shim --target ccommand_selftest -j >/dev/null
 
 echo "== check-shim-symbols.sh (core entry points defined; no unresolvable engine symbols) =="
 bash scripts/check-shim-symbols.sh
+
+# The acceptance bundle includes a freshly built .s2sp with its own identity.
+# Like ci-js, only CI refreshes node_modules; local runs use the installed SDK.
+if [ -n "${CI:-}" ]; then
+  echo "== npm ci (acceptance fixture build tools) =="
+  npm ci
+fi
+echo "== build-khook-runtime.py (stock host, native consumers and stamped fixture) =="
+python3 scripts/build-khook-runtime.py
 
 echo "ci-native: all native gates passed"
