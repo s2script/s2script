@@ -301,3 +301,28 @@ preserved the crash evidence. Review the fixes, rebuild the complete stamped
 bundle, then repeat probe-first, script reload, actual shutdown and reverse order.
 Human observations, script reload and reverse-order acceptance remain incomplete;
 the production shim's separate S3 obligations are not discharged by a probe fix.
+
+The reviewed probe corrections were published with this plan in `c1f746a`.
+Both CI jobs and the fresh Nebula bundle build passed. Actual probe-first loading
+and runtime identity passed again, for run
+`khook-a-e038254599644254b5181f68215cba4f`; receipt SHA-256 is
+`88d6ceea46a42a74facd2ba9a7f43f5001a1d72327cf04565251c3fb00083756`.
+The optimized probe now has all nine indirect controlled target calls.
+
+Preparation then aborted immediately after the JS prepare command with
+`double free or corruption (out)`. The saved stack contains probe return addresses
+`+0xc262` and `+0x1f358`; exact disassembly identifies `ProbeSetCvarString` returning
+from libc `free`, called from the phase acknowledgment in `Hook_GameFrame`.
+That function allocates through `g_pMemAlloc` but frees the old engine-owned string
+through libc. Earlier scanned hook-callback addresses are not sufficient to blame
+KHook. The Sol/medium implementer owns a narrow allocator-consistency correction
+and a regression using an allocator whose returned storage is not libc-owned.
+
+The original server and all 25 plugin states are restored. Preserve this failed
+run under `.gate/remote-khook-pr221/live-c1f746a-prepare-abort-20260915T1931/`.
+Root verified all 62 copied evidence hashes. No collect, script reload, reverse
+order or corrected shutdown was reached. GDB stopped on SIGABRT but its script
+mistook a stopped inferior for an exited one; update the diagnostic script to
+capture all fatal signals and explicitly distinguish stopped from exited before
+the next live attempt. The original preinstall shutdown was clean and does not
+establish shutdown safety for the corrected bundle.
