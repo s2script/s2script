@@ -25,14 +25,14 @@ Acquire::Retries "3";
 APT::Update::Error-Mode "any";
 APT_CONFIG
 apt-get update -qq
-apt-get install -y -qq build-essential binutils curl git python3 python3-pip >/dev/null
+apt-get install -y -qq build-essential binutils clang curl git python3 python3-pip >/dev/null
 git config --global --add safe.directory '*'
 # AMBuild is a build tool, pinned independently from the runtime source gitlinks.
 python3 -m pip install --disable-pip-version-check --quiet \
   'git+https://github.com/alliedmodders/ambuild.git@01212cb57c96561f664b6dfb2ee10e66de6f81e4'
 
 echo '== optional pinned stock Metamod AMBuild (sniper) =='
-bash scripts/build-metamod-pinned.sh || {
+CC=clang CXX=clang++ bash scripts/build-metamod-pinned.sh || {
   tail -100 build/metamod-pinned/build.log
   exit 1
 }
