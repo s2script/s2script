@@ -195,10 +195,14 @@ It also confirmed two current control-flow gaps: an ordinary rejected native unl
 can begin retirement and disrupt gameplay, and forced host shutdown offers no retry
 for pending cleanup. These require plugin-side resolution; an actual shutdown crash
 has not been demonstrated. Native library unmapping remains outside acceptance.
-Runtime identity tooling now passes 11 builder tests, 23 actual JS fixture tests,
+Runtime identity tooling now passes 12 builder tests, 23 actual JS fixture tests,
 18 generator tests and 58 controller tests. The native mapped-module helper and
-actual command formatter pass local sanitizer tests; Linux loaded-DSO tests and
-the full bundle wrapper are included in CI. Independent review resolved unsafe
+actual command formatter pass local sanitizer tests. Native CI for `4a972b5` also
+passed the actual Linux loaded-DSO replacement, deletion, ambiguity, loader-layout
+and symlink cases. That run later exposed generated compiler/Python caches being
+classified as source changes; the reviewed correction ignores those cache directories
+while preserving rejection of real tracked and untracked source changes. The full
+bundle wrapper remains part of native CI. Independent review resolved unsafe
 symlink cleanup, runtime command mismatch and malformed pending-witness handling.
 Generating the actual installed-runtime receipt and remaining live/client observations
 still require the test server. Keep PR #221 draft and PR B blocked. None of these
