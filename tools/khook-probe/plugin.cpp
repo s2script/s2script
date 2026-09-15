@@ -18,7 +18,6 @@
 #include <cstdint>
 #include <cstring>
 #include <strings.h>
-#include <map>
 #include <string>
 #include <vector>
 #include <link.h>
@@ -37,6 +36,7 @@ PLUGIN_GLOBALVARS();
 
 static const char* kCmdName = "s2_khook_probe";
 static const char* kTokenCmd = "s2_khook_probe_token";
+static const char* kCcEntryCmd = "s2khook_cc_entry";
 static const char* kContinueToken = "s2khook-continue";
 static const char* kHandledToken = "s2khook-handled";
 static const char* kCtrlMissingToken = "s2khook-ctrl-missing";
@@ -107,8 +107,9 @@ static std::vector<StoredRec> g_stored;
 static std::string g_emit_run;
 static std::string g_command_route = "unobserved";
 static std::string g_command_route_note =
-    "registered ConCommand original is DispatchConCommand; ClientCommand is required "
-    "real-client entry. DispatchConCommand-only (including RCON) is not ClientCommand evidence.";
+    "continue/handled original is DispatchConCommand + probe callback on s2_khook_probe_token; "
+    "ClientCommand evidence is the unrecognized name s2khook_cc_entry. Never label "
+    "DispatchConCommand-only as ClientCommand evidence. RCON is a control operation.";
 
 static std::string RecordLine(const StoredRec& r) {
     return std::string("{\"schema\":1,\"suite\":\"A\",\"run_id\":\"") + JsonEscape(g_emit_run.c_str()) +
@@ -255,21 +256,25 @@ static KHook::Return<int> PreShareB(int x) {
 static KHook::Return<int> PreAB_A(int x) {
     auto obs = pAB_A ? pAB_A->Observe() : S2HookObserve{};
     (void)obs;
+    g_pre_ab_a++;
     return ActionRet(g_act_a, g_ret_a);
 }
 static KHook::Return<int> PreAB_B(int x) {
     auto obs = pAB_B ? pAB_B->Observe() : S2HookObserve{};
     (void)obs;
+    g_pre_ab_b++;
     return ActionRet(g_act_b, g_ret_b);
 }
 static KHook::Return<int> PreBA_A(int x) {
     auto obs = pBA_A ? pBA_A->Observe() : S2HookObserve{};
     (void)obs;
+    g_pre_ba_a++;
     return ActionRet(g_act_a, g_ret_a);
 }
 static KHook::Return<int> PreBA_B(int x) {
     auto obs = pBA_B ? pBA_B->Observe() : S2HookObserve{};
     (void)obs;
+    g_pre_ba_b++;
     return ActionRet(g_act_b, g_ret_b);
 }
 static KHook::Return<int> PreOnce(int x) {
@@ -333,14 +338,13 @@ static S2HookState g_frame_receipt = S2HookState::Failed;
 static S2HookState g_fn_new_receipt = S2HookState::Failed;
 static S2HookState g_fn_share_receipt = S2HookState::Failed;
 
-static int g_cc_cont_pre = 0, g_cc_cont_post = 0, g_cc_cont_skip = 0;
-static int g_cc_hand_pre = 0, g_cc_hand_post = 0, g_cc_hand_skip = 0;
+static int g_cc_entry_pre = 0, g_cc_entry_post = 0;
 static int g_dc_cont_pre = 0, g_dc_cont_post = 0, g_dc_cont_skip = 0;
 static int g_dc_hand_pre = 0, g_dc_hand_post = 0, g_dc_hand_skip = 0;
 static int g_engine_continue = 0, g_engine_handled = 0;
-static int g_cc_ctrl_missing_pre = 0, g_dc_ctrl_missing_pre = 0, g_engine_ctrl_missing = 0;
-static int g_cc_flip_c_pre = 0, g_dc_flip_c_pre = 0, g_dc_flip_c_skip = 0, g_engine_flip_c = 0;
-static int g_cc_flip_h_pre = 0, g_dc_flip_h_pre = 0, g_dc_flip_h_skip = 0, g_engine_flip_h = 0;
+static int g_dc_ctrl_missing_pre = 0, g_engine_ctrl_missing = 0;
+static int g_dc_flip_c_pre = 0, g_dc_flip_c_skip = 0, g_engine_flip_c = 0;
+static int g_dc_flip_h_pre = 0, g_dc_flip_h_skip = 0, g_engine_flip_h = 0;
 static int g_last_slot = -1;
 static uint64 g_last_xuid = 0;
 static int g_slot_gen[64];
@@ -353,16 +357,16 @@ static bool CmdNamed(const CCommand& args, const char* name) {
 }
 
 static bool CmdToken(const CCommand& args, const char* token) {
-    if (!token) {
+    if (!token || !CmdNamed(args, kTokenCmd)) {
         return false;
     }
-    if (CmdNamed(args, kTokenCmd)) {
-        const char* a1 = args.Arg(1);
-        return a1 && std::strcmp(a1, token) == 0;
-    }
-    const char* a0 = args.Arg(0);
-    return a0 && std::strcmp(a0, token) == 0;
+    const char* a1 = args.Arg(1);
+    return a1 && std::strcmp(a1, token) == 0;
 }
+
+static bool CmdCcEntry(const CCommand& args) { return CmdNamed(args, kCcEntryCmd); }
+
+static bool RealClientSlot(const CCommandContext& ctx) { return ctx.GetPlayerSlot().Get() >= 0; }
 
 struct ModText {
     const uint8_t* text;
@@ -591,16 +595,8 @@ KHook::Return<void> ProbePlugin::Hook_ClientCommand(ISource2GameClients* c, CPla
     if (!obs) {
         return S2_Ignore();
     }
-    if (CmdToken(args, kContinueToken)) {
-        g_cc_cont_pre++;
-    } else if (CmdToken(args, kHandledToken)) {
-        g_cc_hand_pre++;
-    } else if (CmdToken(args, kCtrlMissingToken)) {
-        g_cc_ctrl_missing_pre++;
-    } else if (CmdToken(args, kCtrlFlipContinueToken)) {
-        g_cc_flip_c_pre++;
-    } else if (CmdToken(args, kCtrlFlipHandledToken)) {
-        g_cc_flip_h_pre++;
+    if (CmdCcEntry(args)) {
+        g_cc_entry_pre++;
     }
     return S2_Ignore();
 }
@@ -611,31 +607,28 @@ KHook::Return<void> ProbePlugin::Hook_ClientCommandPost(ISource2GameClients* c, 
     if (!obs) {
         return S2_Ignore();
     }
-    const bool skipped = KHook::WasOriginalFunctionSkipped();
-    if (CmdToken(args, kContinueToken)) {
-        g_cc_cont_post++;
-        if (skipped) {
-            g_cc_cont_skip++;
-        }
-    } else if (CmdToken(args, kHandledToken)) {
-        g_cc_hand_post++;
-        if (skipped) {
-            g_cc_hand_skip++;
-        }
+    if (CmdCcEntry(args)) {
+        g_cc_entry_post++;
     }
     return S2_Ignore();
 }
 
 KHook::Return<void> ProbePlugin::Hook_DispatchConCommand(ICvar* cvar, ConCommandRef,
-                                                       const CCommandContext&, const CCommand& args) {
+                                                       const CCommandContext& ctx,
+                                                       const CCommand& args) {
     auto obs = dispatchConCommand.Observe(cvar);
     if (!obs) {
         return S2_Ignore();
     }
+    const bool real_client = RealClientSlot(ctx);
     if (CmdToken(args, kContinueToken)) {
-        g_dc_cont_pre++;
+        if (real_client) {
+            g_dc_cont_pre++;
+        }
     } else if (CmdToken(args, kHandledToken)) {
-        g_dc_hand_pre++;
+        if (real_client) {
+            g_dc_hand_pre++;
+        }
     } else if (CmdToken(args, kCtrlMissingToken)) {
         g_dc_ctrl_missing_pre++;
     } else if (CmdToken(args, kCtrlFlipContinueToken)) {
@@ -647,22 +640,27 @@ KHook::Return<void> ProbePlugin::Hook_DispatchConCommand(ICvar* cvar, ConCommand
 }
 
 KHook::Return<void> ProbePlugin::Hook_DispatchConCommandPost(ICvar* cvar, ConCommandRef,
-                                                            const CCommandContext&,
+                                                            const CCommandContext& ctx,
                                                             const CCommand& args) {
     auto obs = dispatchConCommand.Observe(cvar);
     if (!obs) {
         return S2_Ignore();
     }
     const bool skipped = KHook::WasOriginalFunctionSkipped();
+    const bool real_client = RealClientSlot(ctx);
     if (CmdToken(args, kContinueToken)) {
-        g_dc_cont_post++;
-        if (skipped) {
-            g_dc_cont_skip++;
+        if (real_client) {
+            g_dc_cont_post++;
+            if (skipped) {
+                g_dc_cont_skip++;
+            }
         }
     } else if (CmdToken(args, kHandledToken)) {
-        g_dc_hand_post++;
-        if (skipped) {
-            g_dc_hand_skip++;
+        if (real_client) {
+            g_dc_hand_post++;
+            if (skipped) {
+                g_dc_hand_skip++;
+            }
         }
     } else if (CmdToken(args, kCtrlFlipContinueToken)) {
         if (skipped) {
@@ -721,11 +719,15 @@ static void ProbeTokenCommand(const CCommandContext& ctx, const CCommand& cmd) {
     if (!guard) {
         return;
     }
-    (void)ctx;
+    const bool real_client = RealClientSlot(ctx);
     if (CmdToken(cmd, kContinueToken)) {
-        g_engine_continue++;
+        if (real_client) {
+            g_engine_continue++;
+        }
     } else if (CmdToken(cmd, kHandledToken)) {
-        g_engine_handled++;
+        if (real_client) {
+            g_engine_handled++;
+        }
     } else if (CmdToken(cmd, kCtrlMissingToken)) {
         g_engine_ctrl_missing++;
     } else if (CmdToken(cmd, kCtrlFlipContinueToken)) {
@@ -825,14 +827,13 @@ static bool JsAcceptPresent() {
 }
 
 static void ResetLiveCounters() {
-    g_cc_cont_pre = g_cc_cont_post = g_cc_cont_skip = 0;
-    g_cc_hand_pre = g_cc_hand_post = g_cc_hand_skip = 0;
+    g_cc_entry_pre = g_cc_entry_post = 0;
     g_dc_cont_pre = g_dc_cont_post = g_dc_cont_skip = 0;
     g_dc_hand_pre = g_dc_hand_post = g_dc_hand_skip = 0;
     g_engine_continue = g_engine_handled = 0;
-    g_cc_ctrl_missing_pre = g_dc_ctrl_missing_pre = g_engine_ctrl_missing = 0;
-    g_cc_flip_c_pre = g_dc_flip_c_pre = g_dc_flip_c_skip = g_engine_flip_c = 0;
-    g_cc_flip_h_pre = g_dc_flip_h_pre = g_dc_flip_h_skip = g_engine_flip_h = 0;
+    g_dc_ctrl_missing_pre = g_engine_ctrl_missing = 0;
+    g_dc_flip_c_pre = g_dc_flip_c_skip = g_engine_flip_c = 0;
+    g_dc_flip_h_pre = g_dc_flip_h_skip = g_engine_flip_h = 0;
     g_game_frames = 0;
     g_clients_connected = 0;
     g_last_slot = -1;
@@ -922,86 +923,95 @@ static void PushInvalidOwned(const char* requested) {
 }
 
 static void ObserveCommandRoute() {
-    if (g_cc_cont_pre > 0 || g_cc_hand_pre > 0) {
+    if (g_cc_entry_pre > 0) {
         if (g_dc_cont_pre > 0 || g_dc_hand_pre > 0) {
-            g_command_route = "ClientCommand+DispatchConCommand";
+            g_command_route = "ClientCommand-entry+DispatchConCommand-original";
         } else {
-            g_command_route = "ClientCommand";
+            g_command_route = "ClientCommand-entry";
         }
     } else if (g_dc_cont_pre > 0 || g_dc_hand_pre > 0) {
-        g_command_route = "DispatchConCommand-only";
+        g_command_route = "DispatchConCommand-original";
     } else {
         g_command_route = "unobserved";
     }
 }
 
+static bool ContinueOriginalOk() {
+    return g_dc_cont_pre >= 1 && g_dc_cont_post >= 1 && g_engine_continue >= 1 && g_dc_cont_skip == 0;
+}
+
+static bool ContinueObserved() {
+    return g_dc_cont_pre > 0 || g_dc_cont_post > 0 || g_engine_continue > 0 || g_dc_cont_skip > 0;
+}
+
+static bool HandledOriginalOk() {
+    return g_dc_hand_pre >= 1 && g_dc_hand_post >= 1 && g_engine_handled == 0 && g_dc_hand_skip >= 1;
+}
+
+static bool HandledObserved() {
+    return g_dc_hand_pre > 0 || g_dc_hand_post > 0 || g_engine_handled > 0 || g_dc_hand_skip > 0;
+}
+
 static void PushCommandSubchecks() {
     ObserveCommandRoute();
-    const bool cc_ok = g_cc_cont_pre >= 1 && g_cc_cont_post >= 1 && g_cc_hand_pre >= 1 &&
-                       g_cc_hand_post >= 1;
-    const bool cont_ok = cc_ok && g_dc_cont_pre >= 1 && g_dc_cont_post >= 1 && g_engine_continue >= 1 &&
-                          g_dc_cont_skip == 0;
-    const bool hand_ok = cc_ok && g_dc_hand_pre >= 1 && g_dc_hand_post >= 1 && g_engine_handled == 0 &&
-                          g_dc_hand_skip >= 1;
 
-    const std::string cont_exp =
-        "{\"native_pre\":1,\"native_post\":1,\"engine\":1,\"skipped\":false,\"clientcommand_entry\":true}";
-    const std::string hand_exp =
-        "{\"native_pre\":1,\"native_post\":1,\"engine\":0,\"skipped\":true,\"clientcommand_entry\":true}";
+    const std::string cont_exp = "{\"native_pre\":1,\"native_post\":1,\"engine\":1,\"skipped\":false}";
+    const std::string hand_exp = "{\"native_pre\":1,\"native_post\":1,\"engine\":0,\"skipped\":true}";
     const std::string cont_act =
         std::string("{\"native_pre\":") + std::to_string(g_dc_cont_pre) + ",\"native_post\":" +
         std::to_string(g_dc_cont_post) + ",\"engine\":" + std::to_string(g_engine_continue) +
-        ",\"skipped\":" + JsonBool(g_dc_cont_skip > 0) + ",\"clientcommand_entry\":" + JsonBool(g_cc_cont_pre >= 1) +
-        ",\"route\":\"" + g_command_route + "\"}";
+        ",\"skipped\":" + JsonBool(g_dc_cont_skip > 0) + ",\"route\":\"" + g_command_route +
+        "\",\"clientcommand_entry\":" + JsonBool(g_cc_entry_pre >= 1 && g_cc_entry_post >= 1) + "}";
     const std::string hand_act =
         std::string("{\"native_pre\":") + std::to_string(g_dc_hand_pre) + ",\"native_post\":" +
         std::to_string(g_dc_hand_post) + ",\"engine\":" + std::to_string(g_engine_handled) +
-        ",\"skipped\":" + JsonBool(g_dc_hand_skip > 0) + ",\"clientcommand_entry\":" + JsonBool(g_cc_hand_pre >= 1) +
-        ",\"route\":\"" + g_command_route + "\"}";
+        ",\"skipped\":" + JsonBool(g_dc_hand_skip > 0) + ",\"route\":\"" + g_command_route +
+        "\",\"clientcommand_entry\":" + JsonBool(g_cc_entry_pre >= 1 && g_cc_entry_post >= 1) + "}";
 
-    if (cont_ok) {
+    if (ContinueOriginalOk()) {
         PushRec("frame_client_command_hooks", "native_command_continue_original", "native", "pass",
-                cont_exp, cont_exp, "continue token: ClientCommand entry + DispatchConCommand original");
-    } else if (g_command_route == "unobserved" || g_command_route == "DispatchConCommand-only") {
+                cont_exp, cont_exp,
+                "continue token: DispatchConCommand original + probe callback (real client slot)");
+    } else if (!ContinueObserved()) {
         PushRec("frame_client_command_hooks", "native_command_continue_original", "native", "pending",
                 cont_exp, cont_act,
-                "need a real client to issue s2_khook_probe_token s2khook-continue through ClientCommand");
+                "need a real client to issue s2_khook_probe_token s2khook-continue (RCON is control-only)");
     } else {
-        PushRec("frame_client_command_hooks", "native_command_continue_original", "native", "fail", cont_exp,
-                cont_act, g_command_route_note.c_str());
+        PushRec("frame_client_command_hooks", "native_command_continue_original", "native", "fail",
+                cont_exp, cont_act, g_command_route_note.c_str());
     }
 
-    if (hand_ok) {
+    if (HandledOriginalOk()) {
         PushRec("frame_client_command_hooks", "native_command_handled_skipped", "native", "pass", hand_exp,
-                hand_exp, "handled token: ClientCommand entry + skipped DispatchConCommand original");
-    } else if (g_command_route == "unobserved" || g_command_route == "DispatchConCommand-only") {
+                hand_exp, "handled token: DispatchConCommand skipped, probe callback zero");
+    } else if (!HandledObserved()) {
         PushRec("frame_client_command_hooks", "native_command_handled_skipped", "native", "pending",
                 hand_exp, hand_act,
-                "need a real client to issue s2_khook_probe_token s2khook-handled through ClientCommand");
+                "need a real client to issue s2_khook_probe_token s2khook-handled (RCON is control-only)");
     } else {
         PushRec("frame_client_command_hooks", "native_command_handled_skipped", "native", "fail", hand_exp,
                 hand_act, g_command_route_note.c_str());
     }
 
     const std::string miss_exp = "{\"detected\":true,\"engine\":1,\"js_hook\":false}";
-    if (g_dc_ctrl_missing_pre >= 1 && g_engine_ctrl_missing >= 1 && g_cc_ctrl_missing_pre >= 1) {
+    if (g_dc_ctrl_missing_pre >= 1 && g_engine_ctrl_missing >= 1) {
         PushRec("frame_client_command_hooks", "native_control_missing_js_hook", "native", "pass", miss_exp,
                 miss_exp, "control token reached engine without a JS hook");
     } else {
         PushPending("frame_client_command_hooks", "native_control_missing_js_hook", "native", miss_exp,
-                    "need real client to issue s2khook-ctrl-missing with JS hook disabled");
+                    "need s2_khook_probe_token s2khook-ctrl-missing with JS hook disabled (RCON allowed)");
     }
 
     const std::string flip_exp =
         "{\"continue_engine\":0,\"handled_engine\":1,\"continue_skipped\":true,\"handled_skipped\":false}";
-    const bool flip_ok = g_cc_flip_c_pre >= 1 && g_cc_flip_h_pre >= 1 && g_engine_flip_c == 0 &&
+    const bool flip_ok = g_dc_flip_c_pre >= 1 && g_dc_flip_h_pre >= 1 && g_engine_flip_c == 0 &&
                           g_engine_flip_h >= 1 && g_dc_flip_c_skip >= 1 && g_dc_flip_h_skip == 0;
     if (flip_ok) {
         PushRec("frame_client_command_hooks", "native_control_flipped_decision", "native", "pass", flip_exp,
                 flip_exp, "flipped Continue was suppressed and Handled was not");
     } else {
         PushPending("frame_client_command_hooks", "native_control_flipped_decision", "native", flip_exp,
-                    "need real client to issue flip tokens with JS Continue/Handled reversed");
+                    "need flip tokens with JS Continue/Handled reversed (RCON allowed)");
     }
 
     const std::string omit_exp = "{\"js_plugin\":false}";
@@ -1415,6 +1425,10 @@ static void BeginProbeRetirement() {
     virtB.Remove(&g_dummyB);
     virtPre.Remove(&g_dummyPhase);
     virtPost.Remove(&g_dummyPhase);
+    virtA.BeginRemove();
+    virtB.BeginRemove();
+    virtPre.BeginRemove();
+    virtPost.BeginRemove();
     g_plugin.gameFrame.BeginRemove();
     g_plugin.clientCommand.BeginRemove();
     g_plugin.dispatchConCommand.BeginRemove();

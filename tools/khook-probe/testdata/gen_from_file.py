@@ -149,16 +149,16 @@ def main() -> int:
         flipped,
         ("native", "frame_client_command_hooks", "native_command_continue_original"),
         result="fail",
-        expected={"native_pre": 1, "native_post": 1, "engine": 1, "skipped": False, "clientcommand_entry": True},
-        actual={"native_pre": 1, "native_post": 1, "engine": 0, "skipped": True, "clientcommand_entry": True},
+        expected={"native_pre": 1, "native_post": 1, "engine": 1, "skipped": False},
+        actual={"native_pre": 1, "native_post": 1, "engine": 0, "skipped": True},
         evidence="r5 from-file fixture: Continue was suppressed",
     )
     overlay(
         flipped,
         ("native", "frame_client_command_hooks", "native_command_handled_skipped"),
         result="fail",
-        expected={"native_pre": 1, "native_post": 1, "engine": 0, "skipped": True, "clientcommand_entry": True},
-        actual={"native_pre": 1, "native_post": 1, "engine": 1, "skipped": False, "clientcommand_entry": True},
+        expected={"native_pre": 1, "native_post": 1, "engine": 0, "skipped": True},
+        actual={"native_pre": 1, "native_post": 1, "engine": 1, "skipped": False},
         evidence="r5 from-file fixture: Handled was not skipped",
     )
     overlay(
@@ -187,6 +187,26 @@ def main() -> int:
         evidence="r5 from-file fixture: omitted plugin detected",
     )
     write_jsonl(out_dir / "negative-omitted-plugin.jsonl", omitted)
+
+    ident_partial = {"run_id": "khook-a-r5-partial-continue", "source_revision": rev}
+    partial = r5_pass_r6_pending(ident_partial)
+    overlay(
+        partial,
+        ("native", "frame_client_command_hooks", "native_command_handled_skipped"),
+        result="pending",
+        expected={"native_pre": 1, "native_post": 1, "engine": 0, "skipped": True},
+        actual={},
+        evidence="",
+    )
+    overlay(
+        partial,
+        ("js", "frame_client_command_hooks", "js_command_handled_delivery"),
+        result="pending",
+        expected={"js": 1},
+        actual={},
+        evidence="",
+    )
+    write_jsonl(out_dir / "partial-continue.jsonl", partial)
     return 0
 
 

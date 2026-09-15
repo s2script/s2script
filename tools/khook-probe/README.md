@@ -85,48 +85,56 @@ Records are schema=1 JSON objects (`run_id`, `source_revision`, `case`,
 
 ## Command route (F5)
 
-Chosen command: **`s2_khook_probe_token`** with tokens:
+Two independent names — do **not** require both on the same registered ConCommand.
 
-| token | JS `onClientCommand` | expected |
+### 1. Continue / handled original: `s2_khook_probe_token`
+
+The probe registers this ConCommand. Its engine callback is the original-delivery
+counter. The probe's `ClientCommand` and `DispatchConCommand` hooks return
+**Ignore**. JS must **not** `command("s2_khook_probe_token")` — only
+`command.onClientCommand`.
+
+| token | JS `onClientCommand` | expected original |
 | --- | --- | --- |
 | `s2khook-continue` | Continue | js=1, native_pre=1, native_post=1, engine=1, skipped=false |
 | `s2khook-handled` | Handled | js=1, native_pre=1, native_post=1, engine=0, skipped=true |
 
-The probe registers that ConCommand; its engine callback is the original-delivery
-counter. The probe's `ClientCommand` and `DispatchConCommand` hooks return
-**Ignore** (they must not Supersede on s2script's behalf). JS must **not**
-`command("s2_khook_probe_token")` — only `command.onClientCommand`.
+Registered ConCommands skip `ISource2GameClients::ClientCommand` and go through
+`ICvar::DispatchConCommand` (`shim/src/s2script_mm.cpp`: `player_ping` /
+`jointeam` / `drop` never see ClientCommand). The **validated original
+boundary** is therefore `ICvar::DispatchConCommand` PRE+POST plus the probe
+callback. A real client slot is required (`CCommandContext` slot >= 0). RCON
+is a control operation and does not count toward continue/handled original.
 
-**Verified from engine comments (live ClientCommand traversal is still pending):**
-s2script's `DispatchConCommand` hook is the `onClientCommand` seam because
-**registered ConCommands (including `player_ping` / `jointeam` / `drop`) do not
-go through `ISource2GameClients::ClientCommand`**, which is a fallback for
-unrecognised names. RCON and `fakeCommand` are DispatchConCommand-only.
+Continue and handled are judged **independently**. Issuing only continue
+leaves handled **pending**, not fail.
 
-Therefore the **validated original boundary** for this ConCommand is
-`ICvar::DispatchConCommand`, observed with a test-only KHook PRE+POST on that
-virtual. `WasOriginalFunctionSkipped` on that POST is the continue/handled
-signal. **DispatchConCommand-only counters are not ClientCommand evidence.**
+### 2. ClientCommand entry: `s2khook_cc_entry`
 
-Pass for `native_command_continue_original` / `native_command_handled_skipped`
-requires **both**:
+This name is **not** registered as a ConCommand. A real client typing it is
+the ClientCommand-validated unrecognized command. Probe ClientCommand PRE/POST
+count it as `clientcommand_entry`. **DispatchConCommand-only counters are never
+labeled ClientCommand evidence.**
 
-1. real-client `ClientCommand` PRE/POST for that token (`clientcommand_entry=true`)
-2. DispatchConCommand original counts matching the table above
+```text
+# real client (not RCON):
+s2khook_cc_entry
+s2_khook_probe_token s2khook-continue
+s2_khook_probe_token s2khook-handled
+```
 
-If only DispatchConCommand fired (RCON, or ConCommand bypass with no
-ClientCommand), those subchecks stay **pending** with the missing condition:
-a connected client must type `s2_khook_probe_token s2khook-continue` then
-`s2_khook_probe_token s2khook-handled`. Do not use probe votes to manufacture
-that outcome.
-
-Control tokens (cannot satisfy the real continue/handled subchecks):
+Control tokens (RCON allowed; cannot satisfy continue/handled original):
 
 - `s2khook-ctrl-missing` — JS hook ignores; engine still runs
 - `s2khook-ctrl-flip-continue` — JS Handled (Continue suppressed)
 - `s2khook-ctrl-flip-handled` — JS Continue (Handled unsuppressed)
 
 Omitted acceptance plugin: native looks for ConVar `s2_khook_accept_run`.
+Omitted-plugin pass and JS delivery pass cannot both be true in one snapshot
+(plugin present → omitted pending; plugin absent → JS delivery fail/missing).
+R7 must run the omitted-plugin collect, then reset and load the plugin before
+the real continue/handled collect. Do not last-write-wins a control pass over
+the real run.
 
 ## JS fixture
 
@@ -146,6 +154,7 @@ It is an example fixture, not a base plugin, and is not in the runtime zip.
 ```bash
 python3 scripts/rcon.py "s2_khook_probe prepare <run_id>"
 python3 scripts/rcon.py "s2_khook_accept prepare <run_id>"
+# real client (not RCON): s2khook_cc_entry
 # real client (not RCON): s2_khook_probe_token s2khook-continue
 # real client (not RCON): s2_khook_probe_token s2khook-handled
 python3 scripts/rcon.py "s2_khook_probe collect <run_id>"
@@ -156,12 +165,16 @@ bash scripts/test-khook-live.sh A --prepare --run-dir build/khook-acceptance/run
 bash scripts/test-khook-live.sh --self-test
 ```
 
-RCON of `s2_khook_probe_token` is a control operation, not ClientCommand evidence.
+RCON of `s2_khook_probe_token` is a control operation, not continue/handled original
+and not ClientCommand evidence. Type `s2khook_cc_entry` from a connected client
+for ClientCommand evidence.
 
 ## Unload
 
 Probe `Unload` follows the checked-binding lifetime rules: refuse while a
-callback (including the token ConCommand trampoline) is active; `BeginRemove`
-once; retry until `S2Hook_DrainRetirement() && RetirementPending()==0`. Binding
-objects stay alive until Removed. Do not `S2Hook_SetLifecycle` from the probe
-(that flag is process-global and would retire s2script).
+callback (including the token ConCommand trampoline) is active; instance
+`Remove` then `BeginRemove` on engine virtuals, dummy Virtuals
+(`virtA`/`virtB`/`virtPre`/`virtPost`), and `fn*` once; retry until
+`S2Hook_DrainRetirement() && RetirementPending()==0`. Binding objects stay
+alive until Removed. Do not `S2Hook_SetLifecycle` from the probe (that flag
+is process-global and would retire s2script).
