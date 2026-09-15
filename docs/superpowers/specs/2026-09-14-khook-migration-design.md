@@ -1,5 +1,7 @@
 # KHook migration — design spec
 
+> **Lifecycle clarification:** Use [stock Metamod with resident s2script](2026-09-15-khook-stock-host-decision.md). Only `.s2sp` hot reload is required; the native shim updates on server restart. The [current remediation spec](2026-09-14-khook-pr-a-remediation-design.md) supersedes conflicting native hot-reload or private-host assumptions. Safe process shutdown remains required.
+
 **Status:** Revised after source review (2026-09-14); implementation and live acceptance remain pending — planning companion is `docs/superpowers/plans/2026-09-14-khook-migration.md`.
 **Audience:** shim / core / operator-docs maintainers.
 **Execution:** The [implementation plan](../plans/2026-09-14-khook-migration.md#dynamic-subagent-execution-contract) defines dependency barriers, file ownership, worker handoffs and evidence for the user's dynamic subagent workflow. Worker packages may be scheduled independently within those barriers; the three PR slices remain atomic.
