@@ -154,6 +154,9 @@ Track ownership separately for targets created after a map change. World lifetim
 must not gate cleanup of the engine-lifetime command registry; stock Metamod still
 uses that registry during plugin removal. Keep the controlled game-event listener
 scoped to its synchronous invocation, with cleanup on every exit.
+Probe-owned updates to engine ConVar strings must pair allocation and release
+through the engine allocator. C++ namespace qualification can bypass the SDK's
+allocator routing; verify the compiled call sites as well as source behavior.
 This test-fixture rule does not establish a terminal cleanup boundary for the shim.
 
 Preserve running-server refusal, destination-byte verification before skipping,
