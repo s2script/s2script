@@ -70,11 +70,41 @@ still alive. Only then may synchronous physical cleanup be appropriate. A callba
 counter returning to zero does not account for an original executing between PRE
 and POST. Never synchronously remove a hook whose original is on the same stack.
 
-The SDK exposes `ISource2ServerConfig::PreShutdown/Shutdown`, but source headers
-alone do not prove the required CS2 order. A staged cleanup using an earlier engine
-shutdown phase is a candidate to validate, not an approved implementation shortcut.
-Do not add speculative shutdown hooks or claim an untested ordering is guaranteed.
-Capture ordering and quiescence on a live server before selecting that path.
+The `b33ff2f` Nebula trace establishes the following order on the tested CS2 build:
+world/level teardown, public `ISource2ServerConfig::PreShutdown` PRE/POST,
+`Source2Shutdown` and logging shutdown, public `Shutdown` PRE/POST, then Metamod
+plugin `Unload`. Both originals ran, and every observed phase used the probe load
+thread (TID 88). Production must also record and check its own core initialization
+thread. This supports the following plugin-side implementation, subject to independent
+review and new live acceptance; it does not establish resource validity on every build:
+
+- Run terminal cleanup in `PreShutdown` PRE, before its original. Ordinary `Unload`
+  must refuse without changing routing, lifecycle state, queues or core resources.
+- At the terminal boundary, first validate the core owner thread and actual core
+  idle state without changing lifecycle state. Then stop new JS dispatch before
+  validating the sole active lifecycle observation and preflighting every normal
+  binding. Drop filters only after preflight. Synchronously retire
+  all 15 interface bindings and 14 SDKHooks kinds, excluding both lifecycle markers.
+  Reject aliases of the active capsule; virtual capsule identity is vtable plus slot,
+  not the function address stored in that slot. Never upgrade queued async removal.
+- Treat world resources as unavailable: the trace places game rules/world destruction
+  before `PreShutdown`. Do not read the entity-system service or unregister through
+  a potentially stale world pointer there. Finish remaining app-system cleanup before
+  `Source2Shutdown`. Disable the core's copied engine callbacks before plugin
+  `onUnload` executes, so terminal callbacks cannot access the destroyed world.
+  Preserve normal `.s2sp` reload behavior and clean partial core initialization too.
+- Retain both lifecycle markers through their originals and POST callbacks. Shutdown
+  records phase progression without removing hooks. Preflight and remove both markers
+  off-stack from the final `Unload`, the boundary already exercised by the probe;
+  no engine/core cleanup belongs in that late callback. Report failed cleanup
+  explicitly rather than treating a
+  swallowed panic or pending retirement as success.
+- The acceptance probe must use equivalent staged terminal retirement for its own
+  normal hooks. A probe with pending forced-unload contexts cannot prove shim safety.
+
+No-frame shutdown remains an explicit coverage limitation of first-frame registration.
+Exercise degraded core initialization with the actual resident-load behavior; do not
+silently skip cleanup merely because initialization returned failure.
 
 Install server-config lifecycle hooks only after Metamod's loader initialization
 has completed. Installing them during `Load` or `AllPluginsLoaded` changes the

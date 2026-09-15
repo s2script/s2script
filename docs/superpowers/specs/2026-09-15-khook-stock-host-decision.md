@@ -78,5 +78,6 @@ or subscription must not retire the native host or disturb another plugin.
 The [current remediation spec](2026-09-14-khook-pr-a-remediation-design.md) and
 [dynamic plan](../plans/2026-09-15-khook-pr-a-review-fixes.md) now incorporate this
 confirmed requirement. Earlier host-patch and native-reload prescriptions are
-historical and must not be dispatched. The dynamic plan records the separate,
-still-unverified stock-host shutdown prerequisite.
+historical and must not be dispatched. The dynamic plan records the observed
+stock-host shutdown order and the remaining implementation and live validation
+of safe terminal cleanup.
