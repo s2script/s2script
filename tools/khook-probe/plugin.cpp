@@ -861,6 +861,7 @@ static CreateEntityByNameFn g_create_ent = nullptr;
 static DispatchSpawnFn g_dispatch_spawn = nullptr;
 static UtilRemoveFn g_util_remove = nullptr;
 static int g_touch_slot = -1;
+static void* g_touch_fn = nullptr;
 static bool g_touch_resolved = false;
 static void* g_game_resource = nullptr;
 static IVEngineServer2* g_engine2 = nullptr;
@@ -1084,6 +1085,7 @@ static int g_js_stage3_invokes = 0;
 static bool g_reuse_invoked = false;
 static bool g_js_reuse_invoked = false;
 static bool g_post_map_invoke_attempted = false;
+static bool g_post_map_attempt_done = false;
 static bool g_fresh_reload_invoked = false;
 static bool g_map_ptrs_invalidated = false;
 static bool g_tx_first_fire_on_ent = false;
@@ -1156,8 +1158,8 @@ static const char* kNeedUnload =
 static const char* kNeedMap =
     "need operator changelevel while this run stays prepared; then collect again";
 static const char* kNeedMapInvoke =
-    "need post-map Touch invoke via live EntByIndex after changelevel; "
-    "zero callbacks without an invoke is not a pass";
+    "need post-map Touch invoke via live EntByIndex of a remaining trigger_push "
+    "(not whatever now occupies the saved index); if no live trigger remains, pending";
 static const char* kNeedReuse =
     "slot reuse not achieved within bounded attempts; not a false pass";
 
@@ -1219,6 +1221,7 @@ static void R6ResetCounters() {
     g_reuse_invoked = false;
     g_js_reuse_invoked = false;
     g_post_map_invoke_attempted = false;
+    g_post_map_attempt_done = false;
     g_fresh_reload_invoked = false;
     g_map_ptrs_invalidated = false;
     g_tx_first_fire_on_ent = false;
@@ -1240,6 +1243,9 @@ static void R6ResetCounters() {
     g_tx_layout_ok = false;
     g_tx_a_set = g_tx_b_set = g_tx_a_clear = g_tx_b_clear = 0;
     ProbeSetCvarInt("s2_khook_accept_post_map_invoke", 0);
+    ProbeSetCvarInt("s2_khook_accept_tx_ent", -1);
+    ProbeSetCvarInt("s2_khook_accept_tx_a", -1);
+    ProbeSetCvarInt("s2_khook_accept_tx_b", -1);
     g_mask_subset_posts = g_mask_excluded_posts = g_mask_all_suppressed = false;
     g_mask_call_orig_super = false;
     g_mask_seen = 0;
@@ -1478,32 +1484,51 @@ static void R6InvalidatePreMapPointers() {
     g_map_ptrs_invalidated = true;
 }
 
-static void R6InvokeLiveIndex(int idx) {
+static bool R6EntityIsTriggerPush(CEntityInstance* ent) {
+    if (!ent) {
+        return false;
+    }
+    const char* dn = ent->GetClassname();
+    if (dn && std::strcmp(dn, "trigger_push") == 0) {
+        return true;
+    }
+    if (g_touch_slot < 0 || !g_touch_fn) {
+        return false;
+    }
+    void** vt = *reinterpret_cast<void***>(ent);
+    return vt && vt[g_touch_slot] == g_touch_fn;
+}
+
+static bool R6InvokeLiveIndex(int idx) {
     if (idx < 0) {
-        return;
+        return false;
     }
     CEntityInstance* live = EntByIndex(idx);
-    if (!live) {
-        return;
+    if (!R6EntityIsTriggerPush(live)) {
+        return false;
     }
-    g_post_map_invoke_attempted = true;
-    ProbeSetCvarInt("s2_khook_accept_post_map_invoke", 1);
     R6InvokeTouch(live);
+    return true;
 }
 
 static void R6InvokePostMap() {
+    if (g_post_map_attempt_done) {
+        return;
+    }
+    g_post_map_attempt_done = true;
     R6InvalidatePreMapPointers();
-    R6InvokeLiveIndex(g_idx_a);
-    R6InvokeLiveIndex(g_idx_b);
-    R6InvokeLiveIndex(g_idx_phase);
-    R6InvokeLiveIndex(g_old_index);
-    R6InvokeLiveIndex(g_idx_reuse);
-    R6InvokeLiveIndex(g_idx_reuse_new);
-    R6InvokeLiveIndex(ProbeCvarInt("s2_khook_accept_ent_a", -1));
-    R6InvokeLiveIndex(ProbeCvarInt("s2_khook_accept_ent_b", -1));
-    R6InvokeLiveIndex(ProbeCvarInt("s2_khook_accept_phase_ent", -1));
-    R6InvokeLiveIndex(ProbeCvarInt("s2_khook_accept_reuse_ent", -1));
-    R6InvokeLiveIndex(ProbeCvarInt("s2_khook_accept_reuse_new", -1));
+    const bool any = R6InvokeLiveIndex(g_idx_a) || R6InvokeLiveIndex(g_idx_b) ||
+                     R6InvokeLiveIndex(g_idx_phase) || R6InvokeLiveIndex(g_old_index) ||
+                     R6InvokeLiveIndex(g_idx_reuse) || R6InvokeLiveIndex(g_idx_reuse_new) ||
+                     R6InvokeLiveIndex(ProbeCvarInt("s2_khook_accept_ent_a", -1)) ||
+                     R6InvokeLiveIndex(ProbeCvarInt("s2_khook_accept_ent_b", -1)) ||
+                     R6InvokeLiveIndex(ProbeCvarInt("s2_khook_accept_phase_ent", -1)) ||
+                     R6InvokeLiveIndex(ProbeCvarInt("s2_khook_accept_reuse_ent", -1)) ||
+                     R6InvokeLiveIndex(ProbeCvarInt("s2_khook_accept_reuse_new", -1));
+    if (any) {
+        g_post_map_invoke_attempted = true;
+        ProbeSetCvarInt("s2_khook_accept_post_map_invoke", 1);
+    }
 }
 
 static void R6DriveNativePhase() {
@@ -1808,6 +1833,7 @@ static bool R6ResolveEngine(CreateInterfaceFn engineFactory, CreateInterfaceFn s
             }
             if (orig == touch) {
                 g_touch_slot = i;
+                g_touch_fn = orig;
                 g_hkTouchPre.Configure(i);
                 g_hkTouchPost.Configure(i);
                 g_touch_resolved = true;

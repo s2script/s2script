@@ -721,8 +721,8 @@ function pushReuseMapReload(): void {
       "entity_slot_reuse_map_teardown",
       "js_map_teardown_clears",
       clrExp,
-      "need post-map Touch invoke via live EntByIndex after changelevel; " +
-        "zero callbacks without an invoke is not a pass",
+      "need post-map Touch invoke via live EntByIndex of a remaining trigger_push "
+        "(not whatever now occupies the saved index); if no live trigger remains, pending",
     );
   } else if (preMapCallbacks > 0 && postMapCallbacks === preMapCallbacks) {
     push(
@@ -1006,6 +1006,9 @@ function resetR6Counters(): void {
   maskMode = "off";
   r6Frames = 0;
   clientActions = [];
+  setCvar("s2_khook_accept_tx_ent", "-1");
+  setCvar("s2_khook_accept_tx_a", "-1");
+  setCvar("s2_khook_accept_tx_b", "-1");
 }
 
 function prepareR6(): void {
