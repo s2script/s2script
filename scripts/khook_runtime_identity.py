@@ -123,6 +123,8 @@ def _validate_build_manifest(doc: Any) -> dict:
 
 
 def _extract_witness(text: str, kind: str) -> dict:
+    if not isinstance(text, str):
+        raise IdentityError(f"{kind} witness response must be text")
     found = []
     for number, line in enumerate(text.splitlines(), 1):
         if "{" not in line:
@@ -145,24 +147,33 @@ def _validate_native_witness(doc: Any) -> dict:
         raise IdentityError("native runtime witness has wrong fields")
     if type(doc["schema"]) is not int or doc["schema"] != 2 or doc["kind"] != "khook-runtime":
         raise IdentityError("native runtime witness has wrong schema or kind")
-    if doc["result"] == "pending":
-        raise IdentityPending("native runtime witness is pending")
-    if doc["result"] != "ready":
+    result = doc["result"]
+    if result not in ("ready", "pending"):
         raise IdentityError("native runtime witness has invalid result")
-    _require_hex(doc["source_revision"], HEX40, "native source_revision")
+    revision = doc["source_revision"]
+    if not isinstance(revision, str) or not (
+        HEX40.fullmatch(revision) or (result == "pending" and revision == "unknown")
+    ):
+        raise IdentityError("native source_revision is malformed")
     if type(doc["process_id"]) is not int or doc["process_id"] <= 0:
         raise IdentityError("native process_id must be a positive integer")
     if not isinstance(doc["probe_generation"], str) or not doc["probe_generation"]:
         raise IdentityError("native probe_generation is missing")
-    if isinstance(doc["server_build"], bool) or not isinstance(doc["server_build"], (str, int)) or not str(doc["server_build"]):
-        raise IdentityError("native server_build is missing")
-    if not isinstance(doc["map"], str) or not doc["map"]:
-        raise IdentityError("native map is missing")
+    if type(doc["server_build"]) is not int or doc["server_build"] < 0:
+        raise IdentityError("native server_build must be a nonnegative integer")
+    if result == "ready" and doc["server_build"] == 0:
+        raise IdentityError("ready native server_build must be positive")
+    if not isinstance(doc["map"], str):
+        raise IdentityError("native map must be a string")
+    if result == "ready" and not doc["map"]:
+        raise IdentityError("ready native map is missing")
     modules = doc["modules"]
     if not isinstance(modules, dict) or set(modules) != set(MODULE_ROLES):
         raise IdentityError("native modules must be exactly probe/shim/core/metamod/metamod_loader")
     for role in MODULE_ROLES:
         row = modules[role]
+        if row is None and result == "pending":
+            continue
         if not isinstance(row, dict) or set(row) != {"path", "device", "inode"}:
             raise IdentityError(f"native {role} module is missing or ambiguous")
         path = row["path"]
@@ -172,6 +183,8 @@ def _validate_native_witness(doc: Any) -> dict:
             raise IdentityError(f"native {role} device is malformed")
         if not isinstance(row["inode"], str) or INODE.fullmatch(row["inode"]) is None:
             raise IdentityError(f"native {role} inode is malformed")
+    if result == "pending":
+        raise IdentityPending("native runtime witness is pending")
     return doc
 
 
@@ -181,26 +194,51 @@ def _validate_fixture_witness(doc: Any) -> dict:
         raise IdentityError("fixture runtime witness has wrong fields")
     if type(doc["schema"]) is not int or doc["schema"] != 1 or doc["kind"] != "khook-fixture-runtime":
         raise IdentityError("fixture runtime witness has wrong schema or kind")
-    if doc["result"] == "pending":
-        raise IdentityPending("fixture runtime witness is pending")
-    if doc["result"] != "ready":
+    result = doc["result"]
+    if result not in ("ready", "pending"):
         raise IdentityError("fixture runtime witness has invalid result")
-    _require_hex(doc["fixture_revision"], HEX40, "fixture revision")
-    _require_hex(doc["fixture_token"], HEX64, "fixture token")
+    revision = doc["fixture_revision"]
+    token = doc["fixture_token"]
+    if not isinstance(revision, str) or not (
+        HEX40.fullmatch(revision) or (result == "pending" and revision == "unknown")
+    ):
+        raise IdentityError("fixture revision is malformed")
+    if not isinstance(token, str) or not (
+        HEX64.fullmatch(token) or (result == "pending" and token == "unknown")
+    ):
+        raise IdentityError("fixture token is malformed")
     if type(doc["generation"]) is not int or doc["generation"] <= 0:
         raise IdentityError("fixture generation must be a positive integer")
+    if result == "pending":
+        raise IdentityPending("fixture runtime witness is pending")
     return doc
 
 
 def _sample_runtime(send: Callable[[str], str]) -> tuple[dict, dict]:
-    try:
-        native_text = send("s2_khook_probe runtime")
-        fixture_text = send("s2_khook_accept runtime")
-    except Exception as error:
-        raise IdentityPending(f"runtime witness unavailable: {error}") from error
-    native = _validate_native_witness(_extract_witness(native_text, "khook-runtime"))
-    fixture = _validate_fixture_witness(_extract_witness(fixture_text, "khook-fixture-runtime"))
-    return native, fixture
+    requests = (
+        ("native", "s2_khook_probe runtime", "khook-runtime", _validate_native_witness),
+        ("fixture", "s2_khook_accept runtime", "khook-fixture-runtime", _validate_fixture_witness),
+    )
+    ready = {}
+    invalid = []
+    pending = []
+    for label, command, kind, validate in requests:
+        try:
+            text = send(command)
+        except Exception as error:
+            pending.append(f"{label} runtime witness unavailable: {error}")
+            continue
+        try:
+            ready[label] = validate(_extract_witness(text, kind))
+        except IdentityPending as error:
+            pending.append(str(error))
+        except IdentityError as error:
+            invalid.append(str(error))
+    if invalid:
+        raise IdentityError("; ".join(invalid))
+    if pending:
+        raise IdentityPending("; ".join(pending))
+    return ready["native"], ready["fixture"]
 
 
 def _device(value: int) -> str:

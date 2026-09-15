@@ -232,6 +232,86 @@ class RuntimeIdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(kri.IdentityError, "native runtime witness is pending"):
                 kri.generate_identity(**tree.args(rcon_send=tree.sender()))
 
+    def test_pending_native_payload_is_structurally_validated_before_classification(self):
+        with tempfile.TemporaryDirectory() as td:
+            tree = RuntimeTree(Path(td))
+            base = copy.deepcopy(tree.native)
+            base.update(result="pending", source_revision="unknown", server_build=0, map="")
+            base["modules"]["core"] = None
+            malformed = (
+                ("modules", lambda value: value.update(modules="corrupt")),
+                ("process", lambda value: value.update(process_id=-1)),
+                ("generation", lambda value: value.update(probe_generation=3)),
+                ("revision", lambda value: value.update(source_revision=3)),
+                ("map", lambda value: value.update(map=3)),
+            )
+            for name, mutate in malformed:
+                native = copy.deepcopy(base)
+                mutate(native)
+                responses = iter((native, tree.fixture))
+                with self.subTest(name=name), self.assertRaises(kri.IdentityError) as caught:
+                    kri._sample_runtime(lambda _command: json.dumps(next(responses)))
+                self.assertNotIsInstance(caught.exception, kri.IdentityPending)
+            responses = iter((base, tree.fixture))
+            with self.assertRaises(kri.IdentityPending):
+                kri._sample_runtime(lambda _command: json.dumps(next(responses)))
+
+    def test_pending_fixture_payload_is_structurally_validated_before_classification(self):
+        with tempfile.TemporaryDirectory() as td:
+            tree = RuntimeTree(Path(td))
+            base = dict(tree.fixture, result="pending", fixture_revision="unknown", fixture_token="unknown")
+            for field, value in (("fixture_revision", 3), ("fixture_token", 3), ("generation", 0)):
+                fixture = dict(base, **{field: value})
+                responses = iter((tree.native, fixture))
+                with self.subTest(field=field), self.assertRaises(kri.IdentityError) as caught:
+                    kri._sample_runtime(lambda _command: json.dumps(next(responses)))
+                self.assertNotIsInstance(caught.exception, kri.IdentityPending)
+            responses = iter((tree.native, base))
+            with self.assertRaises(kri.IdentityPending):
+                kri._sample_runtime(lambda _command: json.dumps(next(responses)))
+
+    def test_invalid_peer_wins_over_pending_or_unavailable_witness(self):
+        with tempfile.TemporaryDirectory() as td:
+            tree = RuntimeTree(Path(td))
+            pending_native = copy.deepcopy(tree.native)
+            pending_native.update(result="pending", source_revision="unknown", server_build=0, map="")
+            pending_native["modules"]["core"] = None
+            invalid_native = copy.deepcopy(pending_native)
+            invalid_native["process_id"] = -1
+            invalid_fixture = dict(
+                tree.fixture, result="pending", fixture_revision="unknown",
+                fixture_token="unknown", generation=0,
+            )
+            for name, sequence in (
+                ("pending-first-invalid-second", (pending_native, invalid_fixture)),
+                ("invalid-first-pending-second", (invalid_native, dict(tree.fixture, result="pending", fixture_revision="unknown", fixture_token="unknown"))),
+                ("invalid-first-unavailable-second", (invalid_native, RuntimeError("socket closed"))),
+                ("unavailable-first-invalid-second", (RuntimeError("socket closed"), invalid_fixture)),
+            ):
+                values = iter(sequence)
+
+                def send(_command: str) -> str:
+                    value = next(values)
+                    if isinstance(value, Exception):
+                        raise value
+                    return json.dumps(value)
+
+                with self.subTest(name=name), self.assertRaises(kri.IdentityError) as caught:
+                    kri._sample_runtime(send)
+                self.assertNotIsInstance(caught.exception, kri.IdentityPending)
+
+    def test_malformed_pending_witness_publishes_no_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            tree = RuntimeTree(Path(td))
+            invalid = copy.deepcopy(tree.native)
+            invalid.update(result="pending", process_id=-1)
+            tree.native = invalid
+            with self.assertRaises(kri.IdentityError) as caught:
+                kri.generate_and_publish(**tree.args(rcon_send=tree.sender()))
+            self.assertNotIsInstance(caught.exception, kri.IdentityPending)
+            self.assertFalse(tree.output.exists())
+            self.assertFalse(tree.evidence.exists())
+
     def test_rejects_loaded_module_inode_that_differs_from_installed_file(self):
         with tempfile.TemporaryDirectory() as td:
             tree = RuntimeTree(Path(td))
