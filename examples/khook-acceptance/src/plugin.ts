@@ -32,7 +32,6 @@ const CTRL_MISSING = "s2khook-ctrl-missing";
 const CTRL_FLIP_CONTINUE = "s2khook-ctrl-flip-continue";
 const CTRL_FLIP_HANDLED = "s2khook-ctrl-flip-handled";
 const MASK_EVENT = "player_changename";
-const PHASE_MAX_FRAMES = 48;
 const REUSE_MAX_ATTEMPTS = 64;
 
 type Result = "pass" | "fail" | "pending";
@@ -59,6 +58,8 @@ interface PersistState {
   mapName: string;
   unloaded: boolean;
   instance: number;
+  deliveredA: number;
+  deliveredB: number;
 }
 
 let runId = "";
@@ -117,7 +118,7 @@ let mapEnded = false;
 let preMapCallbacks = 0;
 let postMapCallbacks = 0;
 let sawReload = false;
-let freshAfterReload = false;
+let freshDeliveries = 0;
 let voiceApplied = false;
 let voiceSpeaker = -1;
 let voiceAllowed = -1;
@@ -234,6 +235,12 @@ function onFilterTouch(entity: EntityRef, _other: EntityRef | null): void {
     postMapCallbacks += 1;
     return;
   }
+  if (sawReload) {
+    if (entA && entity.index === entA.index && entity.id === entA.id) {
+      freshDeliveries += 1;
+    }
+    return;
+  }
   preMapCallbacks += 1;
   if (entA && entity.index === entA.index && entity.id === entA.id) deliveredA += 1;
   if (entB && entity.index === entB.index && entity.id === entB.id) deliveredB += 1;
@@ -285,6 +292,10 @@ function snapPhase(name: string): void {
   phasePost = 0;
 }
 
+function writePhaseStage(): void {
+  setCvar("s2_khook_accept_phase_stage", String(phaseStage));
+}
+
 function advancePhase(): void {
   if (!phaseEnt || !phaseEnt.isValid()) return;
   if (phaseStage === 0) {
@@ -294,6 +305,7 @@ function advancePhase(): void {
       preHooked = false;
       phaseStage = 1;
     }
+    writePhaseStage();
     return;
   }
   if (phaseStage === 1) {
@@ -308,6 +320,7 @@ function advancePhase(): void {
       }
       phaseStage = 2;
     }
+    writePhaseStage();
     return;
   }
   if (phaseStage === 2) {
@@ -321,6 +334,7 @@ function advancePhase(): void {
       firstInvokePost = 0;
       phaseStage = 3;
     }
+    writePhaseStage();
     return;
   }
   if (phaseStage === 3) {
@@ -330,6 +344,7 @@ function advancePhase(): void {
       phasePre = 0;
       phasePost = 0;
       selfUnsubArmed = false;
+      writePhaseStage();
       return;
     }
     if (firstInvokePre >= 1 && phasePre === 0 && phasePost >= 1) {
@@ -351,6 +366,7 @@ function advancePhase(): void {
       phaseStage4At = r6Frames;
       phaseStage = 4;
     }
+    writePhaseStage();
     return;
   }
   if (phaseStage === 4) {
@@ -358,6 +374,7 @@ function advancePhase(): void {
       snapPhase("final_unsubscribe");
       phaseStage = 5;
     }
+    writePhaseStage();
   }
 }
 
@@ -384,6 +401,7 @@ function spawnPair(): void {
   } else {
     phaseStage = -1;
   }
+  writePhaseStage();
   setCvar("s2_khook_accept_ent_a", spawnA && entA ? String(entA.index) : "-1");
   setCvar("s2_khook_accept_ent_b", spawnB && entB ? String(entB.index) : "-1");
   setCvar("s2_khook_accept_phase_ent", phaseEnt && phaseEnt.isValid() ? String(phaseEnt.index) : "-1");
@@ -476,6 +494,8 @@ function applyTransmit(): void {
   transmitPolicy = Transmit.setVisibleTo(transmitEnt, [slotA]);
   SDKHook(transmitEnt, SDKHookType.SetTransmit, onSetTransmit);
   setCvar("s2_khook_accept_tx_ent", String(transmitEnt.index));
+  setCvar("s2_khook_accept_tx_a", String(slotA));
+  setCvar("s2_khook_accept_tx_b", String(humans[1].slot));
   clientActions.push(
     "check_transmit actors client-a=" +
       slotA +
@@ -595,11 +615,11 @@ function pushFilter(): void {
 }
 
 function pushPhase(): void {
-  const subExp = { pre: 1, post: 1, original: 1 };
-  const rmPre = { pre: 0, post: 1, original: 1 };
-  const rmPost = { pre: 1, post: 0, original: 1 };
+  const subExp = { pre: 1, post: 1 };
+  const rmPre = { pre: 0, post: 1 };
+  const rmPost = { pre: 1, post: 0 };
   const selfExp = { first_pre: 1, second_pre: 0, second_post: 1 };
-  const finExp = { pre: 0, post: 0, original: 1 };
+  const finExp = { pre: 0, post: 0 };
   const adapter =
     "need live engine: Touch invoke through the actual SDKHooks adapter (CTriggerPush::Touch PRE+POST); " +
     "Dummy Virtuals are supporting evidence only";
@@ -638,7 +658,7 @@ function pushPhase(): void {
   }
   const fin = phaseSnaps.final_unsubscribe;
   if (phaseStage >= 5 && fin && fin.pre === 0 && fin.post === 0) {
-    push("sdkhooks_phase_removal", "js_phase_final_unsubscribe", "pass", finExp, finExp, "both phases removed; original still runs");
+    push("sdkhooks_phase_removal", "js_phase_final_unsubscribe", "pass", finExp, finExp, "both phases removed");
   } else {
     pending("sdkhooks_phase_removal", "js_phase_final_unsubscribe", finExp, adapter);
   }
@@ -688,12 +708,21 @@ function pushReuseMapReload(): void {
     );
   }
   const clrExp = { cleared: true };
+  const postMapInvoked = Server.getCvar("s2_khook_accept_post_map_invoke") === "1";
   if (!mapEnded) {
     pending(
       "entity_slot_reuse_map_teardown",
       "js_map_teardown_clears",
       clrExp,
       "need operator changelevel while this run stays prepared; then collect again",
+    );
+  } else if (!postMapInvoked) {
+    pending(
+      "entity_slot_reuse_map_teardown",
+      "js_map_teardown_clears",
+      clrExp,
+      "need post-map Touch invoke via live EntByIndex after changelevel; " +
+        "zero callbacks without an invoke is not a pass",
     );
   } else if (preMapCallbacks > 0 && postMapCallbacks === preMapCallbacks) {
     push(
@@ -705,7 +734,7 @@ function pushReuseMapReload(): void {
       "stale post-map record: pre-map counter reused after map teardown",
     );
   } else if (postMapCallbacks === 0) {
-    push("entity_slot_reuse_map_teardown", "js_map_teardown_clears", "pass", clrExp, clrExp, "post-map callbacks cleared");
+    push("entity_slot_reuse_map_teardown", "js_map_teardown_clears", "pass", clrExp, clrExp, "post-map callbacks cleared after EntByIndex invoke");
   } else {
     push(
       "entity_slot_reuse_map_teardown",
@@ -716,22 +745,38 @@ function pushReuseMapReload(): void {
       "post-map callback still firing on old identity",
     );
   }
-  const freshExp = { fresh: true };
-  if (freshAfterReload) {
+  const freshExp = { fresh: true, count: 1 };
+  if (!sawReload) {
+    pending(
+      "entity_slot_reuse_map_teardown",
+      "js_fresh_subscription_after_reload",
+      freshExp,
+      "need s2script unload/reload with the probe peer still loaded (R2 pending/retry); then collect",
+    );
+  } else if (filterHooked && freshDeliveries === 1) {
     push(
       "entity_slot_reuse_map_teardown",
       "js_fresh_subscription_after_reload",
       "pass",
       freshExp,
       freshExp,
-      "fresh SDKHook after JS reload; peer probe stayed loaded",
+      "fresh SDKHook delivered once after reload",
     );
-  } else {
+  } else if (filterHooked && freshDeliveries === 0) {
     pending(
       "entity_slot_reuse_map_teardown",
       "js_fresh_subscription_after_reload",
       freshExp,
-      "need s2script unload/reload with the probe peer still loaded (R2 pending/retry); then collect",
+      "fresh SDKHook registered; need one Touch delivery on the new subscription",
+    );
+  } else {
+    push(
+      "entity_slot_reuse_map_teardown",
+      "js_fresh_subscription_after_reload",
+      "fail",
+      freshExp,
+      { fresh: filterHooked, count: freshDeliveries },
+      "fresh subscription missing or did not deliver once",
     );
   }
 }
@@ -839,15 +884,15 @@ function pushOwnedPendingUncollected(): void {
   pending("voice_recall", "js_voice_policy_applied", { applied: true }, "report before collect");
   pending("sdkhooks_one_of_two_entities", "js_hook_a_delivered", { count: 1 }, "report before collect");
   pending("sdkhooks_one_of_two_entities", "js_hook_b_filtered", { count: 0 }, "report before collect");
-  pending("sdkhooks_phase_removal", "js_phase_subscribe_pre_post", { pre: 1, post: 1, original: 1 }, "report before collect");
-  pending("sdkhooks_phase_removal", "js_phase_remove_pre", { pre: 0, post: 1, original: 1 }, "report before collect");
-  pending("sdkhooks_phase_removal", "js_phase_remove_post", { pre: 1, post: 0, original: 1 }, "report before collect");
-  pending("sdkhooks_phase_removal", "js_phase_self_unsubscribe", { first_pre: 1, second_pre: 0 }, "report before collect");
-  pending("sdkhooks_phase_removal", "js_phase_final_unsubscribe", { pre: 0, post: 0, original: 1 }, "report before collect");
+  pending("sdkhooks_phase_removal", "js_phase_subscribe_pre_post", { pre: 1, post: 1 }, "report before collect");
+  pending("sdkhooks_phase_removal", "js_phase_remove_pre", { pre: 0, post: 1 }, "report before collect");
+  pending("sdkhooks_phase_removal", "js_phase_remove_post", { pre: 1, post: 0 }, "report before collect");
+  pending("sdkhooks_phase_removal", "js_phase_self_unsubscribe", { first_pre: 1, second_pre: 0, second_post: 1 }, "report before collect");
+  pending("sdkhooks_phase_removal", "js_phase_final_unsubscribe", { pre: 0, post: 0 }, "report before collect");
   pending("entity_slot_reuse_map_teardown", "js_identity_persisted", { persisted: true }, "report before collect");
   pending("entity_slot_reuse_map_teardown", "js_slot_reuse_no_stale", { stale: false }, "report before collect");
   pending("entity_slot_reuse_map_teardown", "js_map_teardown_clears", { cleared: true }, "report before collect");
-  pending("entity_slot_reuse_map_teardown", "js_fresh_subscription_after_reload", { fresh: true }, "report before collect");
+  pending("entity_slot_reuse_map_teardown", "js_fresh_subscription_after_reload", { fresh: true, count: 1 }, "report before collect");
   pending("check_transmit", "js_visibility_policy", { a: true, b: false }, "report before collect");
 }
 
@@ -949,6 +994,7 @@ function resetR6Counters(): void {
   mapEnded = false;
   preMapCallbacks = 0;
   postMapCallbacks = 0;
+  freshDeliveries = 0;
   voiceApplied = false;
   voiceSpeaker = -1;
   voiceAllowed = -1;
@@ -971,6 +1017,7 @@ function prepareR6(): void {
   applyMaskSubset();
   persistOutsidePlugin();
   setCvar("s2_khook_accept_unloaded", "0");
+  setCvar("s2_khook_accept_post_map_invoke", "0");
   for (const line of clientActions) {
     console.log("[khook-accept] NEED_CLIENTS: " + line);
   }
@@ -985,6 +1032,8 @@ export function OnPluginStart(): void {
     identityId = prev.oldId;
     mapAtPrepare = prev.mapName;
     identityPersisted = prev.oldIndex >= 0;
+    deliveredA = Number(prev.deliveredA) || 0;
+    deliveredB = Number(prev.deliveredB) || 0;
   }
   console.log("[khook-accept] loaded (test fixture, not shipped) instance=" + instance + " reload=" + sawReload);
   Server.registerCvar("s2_khook_accept_run", { type: "string", default: "", help: "khook-accept bound run_id" });
@@ -997,6 +1046,10 @@ export function OnPluginStart(): void {
   Server.registerCvar("s2_khook_accept_ent_b", { type: "int", default: -1, help: "entity B index" });
   Server.registerCvar("s2_khook_accept_phase_ent", { type: "int", default: -1, help: "phase entity index" });
   Server.registerCvar("s2_khook_accept_tx_ent", { type: "int", default: -1, help: "transmit entity index" });
+  Server.registerCvar("s2_khook_accept_tx_a", { type: "int", default: -1, help: "transmit allowed client slot" });
+  Server.registerCvar("s2_khook_accept_tx_b", { type: "int", default: -1, help: "transmit denied client slot" });
+  Server.registerCvar("s2_khook_accept_phase_stage", { type: "int", default: -1, help: "JS phase machine stage" });
+  Server.registerCvar("s2_khook_accept_post_map_invoke", { type: "int", default: 0, help: "1 after post-map EntByIndex Touch" });
   Server.registerCvar("s2_khook_accept_mask_a", { type: "int", default: -1, help: "subset recipient slot" });
   Server.registerCvar("s2_khook_accept_mask_b", { type: "int", default: -1, help: "excluded recipient slot" });
   Server.registerCvar("s2_khook_accept_mask_mode", { type: "string", default: "off", help: "subset|all|off" });
@@ -1013,7 +1066,6 @@ export function OnPluginStart(): void {
       runId = rid;
       runBound = true;
       spawnPair();
-      freshAfterReload = filterHooked;
       persistOutsidePlugin();
     }
   }
@@ -1079,7 +1131,8 @@ export function OnPluginStart(): void {
       lastSlot = -1;
       lastUserId = -1;
       lastSteamId = "";
-      freshAfterReload = false;
+      sawReload = false;
+      freshDeliveries = 0;
       Server.setCvar("s2_khook_accept_run", id);
       prepareR6();
       setCvar("s2_khook_accept_mask_mode", maskMode);
@@ -1150,9 +1203,7 @@ export function OnGameFrame(): void {
   frames += 1;
   if (!runBound) return;
   r6Frames += 1;
-  if (r6Frames <= PHASE_MAX_FRAMES) {
-    advancePhase();
-  }
+  advancePhase();
 }
 
 export function OnClientConnected(c: Client): void {
@@ -1186,6 +1237,8 @@ export function OnPluginState(): PersistState {
     mapName: mapAtPrepare,
     unloaded: true,
     instance,
+    deliveredA,
+    deliveredB,
   };
 }
 

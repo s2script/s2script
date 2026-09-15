@@ -850,7 +850,7 @@ static const char kMaskEventName[] = "player_changename";
 static const int kGameEntitySystemOff = 80;
 static const int kCtiClientOff = 576;
 static const int kReuseMaxAttempts = 64;
-static const int kPhaseMaxFrames = 48;
+static const int kPhaseMaxInvokes = 8;
 
 using CreateEntityByNameFn = CEntityInstance* (*)(const char* className, int forceEdictIndex);
 using DispatchSpawnFn = void (*)(CEntityInstance* self, void* pEntityKeyValues);
@@ -955,6 +955,35 @@ static std::string ProbeCvarStr(const char* name) {
     return "";
 }
 
+static bool ProbeSetCvarInt(const char* name, int value) {
+    if (!g_plugin.icvar || !name) {
+        return false;
+    }
+    ConVarRef ref = g_plugin.icvar->FindConVar(name, false);
+    if (!ref.IsValidRef()) {
+        return false;
+    }
+    ConVarData* data = g_plugin.icvar->GetConVarData(ref);
+    if (!data) {
+        return false;
+    }
+    const size_t voff = sizeof(ConVarData) - sizeof(CVValue_t) * MAX_SPLITSCREEN_CLIENTS;
+    CVValue_t* v = reinterpret_cast<CVValue_t*>(reinterpret_cast<char*>(data) + voff);
+    if (data->GetType() == EConVarType_Int32) {
+        v->m_i32Value = value;
+        return true;
+    }
+    if (data->GetType() == EConVarType_Int16) {
+        v->m_i16Value = static_cast<int16_t>(value);
+        return true;
+    }
+    if (data->GetType() == EConVarType_Bool) {
+        v->m_bValue = value != 0;
+        return true;
+    }
+    return false;
+}
+
 static CEntityInstance* EntByIndex(int idx) {
     if (!g_game_resource || idx < 0 || idx >= MAX_TOTAL_ENTITIES) {
         return nullptr;
@@ -1042,6 +1071,22 @@ static int g_second_pre = 0;
 static int g_second_post = 0;
 static int g_second_orig = 0;
 static int g_r6_frames = 0;
+static int g_idx_a = -1;
+static int g_idx_b = -1;
+static int g_idx_phase = -1;
+static int g_idx_reuse = -1;
+static int g_idx_reuse_new = -1;
+static bool g_filter_invoked = false;
+static bool g_js_filter_invoked = false;
+static bool g_native_phase_driven = false;
+static int g_js_phase_invoked_for_stage = -1;
+static int g_js_stage3_invokes = 0;
+static bool g_reuse_invoked = false;
+static bool g_js_reuse_invoked = false;
+static bool g_post_map_invoke_attempted = false;
+static bool g_fresh_reload_invoked = false;
+static bool g_map_ptrs_invalidated = false;
+static bool g_tx_first_fire_on_ent = false;
 static int g_old_index = -1;
 static int g_old_serial = -1;
 static bool g_identity_persisted = false;
@@ -1060,7 +1105,6 @@ static int g_voice_orig = 0;
 static int g_voice_allowed_true = 0;
 static int g_voice_denied_false = 0;
 static bool g_tx_layout_ok = false;
-static bool g_tx_layout_seen = false;
 static int g_tx_a_set = 0;
 static int g_tx_b_set = 0;
 static int g_tx_a_clear = 0;
@@ -1111,6 +1155,9 @@ static const char* kNeedUnload =
     "missing restoration must stay visible";
 static const char* kNeedMap =
     "need operator changelevel while this run stays prepared; then collect again";
+static const char* kNeedMapInvoke =
+    "need post-map Touch invoke via live EntByIndex after changelevel; "
+    "zero callbacks without an invoke is not a pass";
 static const char* kNeedReuse =
     "slot reuse not achieved within bounded attempts; not a false pass";
 
@@ -1163,6 +1210,18 @@ static void R6ResetCounters() {
     g_first_pre = g_first_post = g_first_orig = 0;
     g_second_pre = g_second_post = g_second_orig = 0;
     g_r6_frames = 0;
+    g_idx_a = g_idx_b = g_idx_phase = g_idx_reuse = g_idx_reuse_new = -1;
+    g_filter_invoked = false;
+    g_js_filter_invoked = false;
+    g_native_phase_driven = false;
+    g_js_phase_invoked_for_stage = -1;
+    g_js_stage3_invokes = 0;
+    g_reuse_invoked = false;
+    g_js_reuse_invoked = false;
+    g_post_map_invoke_attempted = false;
+    g_fresh_reload_invoked = false;
+    g_map_ptrs_invalidated = false;
+    g_tx_first_fire_on_ent = false;
     g_old_index = g_old_serial = -1;
     g_identity_persisted = false;
     g_reuse_attempts = 0;
@@ -1179,8 +1238,8 @@ static void R6ResetCounters() {
     g_voice_allowed_true = 0;
     g_voice_denied_false = 0;
     g_tx_layout_ok = false;
-    g_tx_layout_seen = false;
     g_tx_a_set = g_tx_b_set = g_tx_a_clear = g_tx_b_clear = 0;
+    ProbeSetCvarInt("s2_khook_accept_post_map_invoke", 0);
     g_mask_subset_posts = g_mask_excluded_posts = g_mask_all_suppressed = false;
     g_mask_call_orig_super = false;
     g_mask_seen = 0;
@@ -1261,6 +1320,7 @@ static void R6TryReuse() {
         }
         if (idx == g_old_index && ser != g_old_serial) {
             g_nat_reuse_new = n;
+            g_idx_reuse_new = idx;
             g_reuse_new_serial = ser;
             g_reuse_done = true;
             return;
@@ -1293,9 +1353,16 @@ static void R6PrepareEntities() {
         g_identity_persisted = true;
         R6AddTouch(g_nat_reuse, true, false);
     }
+    EntIndexSerial(g_nat_a, &g_idx_a, nullptr);
+    EntIndexSerial(g_nat_b, &g_idx_b, nullptr);
+    EntIndexSerial(g_nat_phase, &g_idx_phase, nullptr);
+    EntIndexSerial(g_nat_reuse, &g_idx_reuse, nullptr);
     g_js_present_at_prepare = JsAcceptPresent();
     g_js_instance_at_prepare = ProbeCvarInt("s2_khook_accept_instance", 0);
     R6TryReuse();
+    if (g_nat_reuse_new) {
+        EntIndexSerial(g_nat_reuse_new, &g_idx_reuse_new, nullptr);
+    }
     META_CONPRINTF("[khook-probe] NEED_CLIENTS: voice_recall needs 3 clients (speaker/allowed/denied) "
                    "then unmute. check_transmit needs 2 clients in PVS of point_worldtext. "
                    "fire_event_handled_recipient_mask needs 2 clients for subset then all-suppressed.\n");
@@ -1398,6 +1465,146 @@ static void R6FireMaskEvent() {
     }
 }
 
+static void R6InvalidatePreMapPointers() {
+    if (g_map_ptrs_invalidated) {
+        return;
+    }
+    g_nat_a = nullptr;
+    g_nat_b = nullptr;
+    g_nat_phase = nullptr;
+    g_nat_reuse = nullptr;
+    g_nat_reuse_new = nullptr;
+    g_touch_other = nullptr;
+    g_map_ptrs_invalidated = true;
+}
+
+static void R6InvokeLiveIndex(int idx) {
+    if (idx < 0) {
+        return;
+    }
+    CEntityInstance* live = EntByIndex(idx);
+    if (!live) {
+        return;
+    }
+    g_post_map_invoke_attempted = true;
+    ProbeSetCvarInt("s2_khook_accept_post_map_invoke", 1);
+    R6InvokeTouch(live);
+}
+
+static void R6InvokePostMap() {
+    R6InvalidatePreMapPointers();
+    R6InvokeLiveIndex(g_idx_a);
+    R6InvokeLiveIndex(g_idx_b);
+    R6InvokeLiveIndex(g_idx_phase);
+    R6InvokeLiveIndex(g_old_index);
+    R6InvokeLiveIndex(g_idx_reuse);
+    R6InvokeLiveIndex(g_idx_reuse_new);
+    R6InvokeLiveIndex(ProbeCvarInt("s2_khook_accept_ent_a", -1));
+    R6InvokeLiveIndex(ProbeCvarInt("s2_khook_accept_ent_b", -1));
+    R6InvokeLiveIndex(ProbeCvarInt("s2_khook_accept_phase_ent", -1));
+    R6InvokeLiveIndex(ProbeCvarInt("s2_khook_accept_reuse_ent", -1));
+    R6InvokeLiveIndex(ProbeCvarInt("s2_khook_accept_reuse_new", -1));
+}
+
+static void R6DriveNativePhase() {
+    if (g_native_phase_driven || !g_nat_phase || g_phase_stage < 0) {
+        return;
+    }
+    int n = 0;
+    while (g_phase_stage >= 0 && g_phase_stage <= 4 && n < kPhaseMaxInvokes) {
+        const int before = g_phase_stage;
+        R6InvokeTouch(g_nat_phase);
+        n++;
+        R6AdvancePhase();
+        if (g_phase_stage == 3 && g_first_pre >= 1 && !g_have_self) {
+            R6InvokeTouch(g_nat_phase);
+            n++;
+            R6AdvancePhase();
+        }
+        if (g_phase_stage == before) {
+            break;
+        }
+    }
+    g_native_phase_driven = true;
+}
+
+static void R6DriveJsFilterOnce() {
+    if (g_js_filter_invoked) {
+        return;
+    }
+    const int js_a = ProbeCvarInt("s2_khook_accept_ent_a", -1);
+    const int js_b = ProbeCvarInt("s2_khook_accept_ent_b", -1);
+    CEntityInstance* ja = js_a >= 0 ? EntByIndex(js_a) : nullptr;
+    CEntityInstance* jb = js_b >= 0 ? EntByIndex(js_b) : nullptr;
+    if (!ja || !jb) {
+        return;
+    }
+    if (!(g_filter_invoked && ja == g_nat_a)) {
+        R6InvokeTouch(ja);
+    }
+    if (!(g_filter_invoked && jb == g_nat_b)) {
+        R6InvokeTouch(jb);
+    }
+    g_js_filter_invoked = true;
+}
+
+static void R6DriveJsPhase() {
+    const int js_p = ProbeCvarInt("s2_khook_accept_phase_ent", -1);
+    CEntityInstance* jp = js_p >= 0 ? EntByIndex(js_p) : nullptr;
+    if (!jp) {
+        return;
+    }
+    const int js_stage = ProbeCvarInt("s2_khook_accept_phase_stage", -1);
+    if (js_stage < 0 || js_stage > 3) {
+        return;
+    }
+    if (js_stage == 3) {
+        if (g_js_stage3_invokes >= 2) {
+            return;
+        }
+        R6InvokeTouch(jp);
+        g_js_stage3_invokes++;
+        return;
+    }
+    if (g_js_phase_invoked_for_stage == js_stage) {
+        return;
+    }
+    R6InvokeTouch(jp);
+    g_js_phase_invoked_for_stage = js_stage;
+}
+
+static void R6DriveReuseOnce() {
+    if (!g_reuse_invoked && g_nat_reuse_new) {
+        R6InvokeTouch(g_nat_reuse_new);
+        g_reuse_invoked = true;
+    }
+    if (g_js_reuse_invoked) {
+        return;
+    }
+    const int js_new = ProbeCvarInt("s2_khook_accept_reuse_new", -1);
+    CEntityInstance* jn = js_new >= 0 ? EntByIndex(js_new) : nullptr;
+    if (!jn) {
+        return;
+    }
+    if (jn != g_nat_reuse_new) {
+        R6InvokeTouch(jn);
+    }
+    g_js_reuse_invoked = true;
+}
+
+static void R6DriveFreshReloadOnce() {
+    if (!g_js_reappeared || g_fresh_reload_invoked) {
+        return;
+    }
+    const int js_a = ProbeCvarInt("s2_khook_accept_ent_a", -1);
+    CEntityInstance* ja = js_a >= 0 ? EntByIndex(js_a) : nullptr;
+    if (!ja) {
+        return;
+    }
+    R6InvokeTouch(ja);
+    g_fresh_reload_invoked = true;
+}
+
 static void R6GameFrame() {
     if (!g_run_bound) {
         return;
@@ -1415,40 +1622,19 @@ static void R6GameFrame() {
             g_js_reappeared = true;
         }
     }
-    if (g_r6_frames <= kPhaseMaxFrames) {
-        if (g_nat_a) {
+    if (g_map_ended) {
+        R6InvokePostMap();
+    } else {
+        if (!g_filter_invoked && g_nat_a && g_nat_b) {
             R6InvokeTouch(g_nat_a);
-        }
-        if (g_nat_b) {
             R6InvokeTouch(g_nat_b);
+            g_filter_invoked = true;
         }
-        if (g_nat_phase) {
-            R6InvokeTouch(g_nat_phase);
-        }
-        const int js_a = ProbeCvarInt("s2_khook_accept_ent_a", -1);
-        const int js_b = ProbeCvarInt("s2_khook_accept_ent_b", -1);
-        const int js_p = ProbeCvarInt("s2_khook_accept_phase_ent", -1);
-        CEntityInstance* ja = js_a >= 0 ? EntByIndex(js_a) : nullptr;
-        CEntityInstance* jb = js_b >= 0 ? EntByIndex(js_b) : nullptr;
-        CEntityInstance* jp = js_p >= 0 ? EntByIndex(js_p) : nullptr;
-        if (ja && ja != g_nat_a) {
-            R6InvokeTouch(ja);
-        }
-        if (jb && jb != g_nat_b && jb != ja) {
-            R6InvokeTouch(jb);
-        }
-        if (jp && jp != g_nat_phase && jp != ja) {
-            R6InvokeTouch(jp);
-        }
-        if (g_nat_reuse_new) {
-            R6InvokeTouch(g_nat_reuse_new);
-        }
-        const int js_new = ProbeCvarInt("s2_khook_accept_reuse_new", -1);
-        CEntityInstance* jn = js_new >= 0 ? EntByIndex(js_new) : nullptr;
-        if (jn && jn != g_nat_reuse_new) {
-            R6InvokeTouch(jn);
-        }
-        R6AdvancePhase();
+        R6DriveJsFilterOnce();
+        R6DriveNativePhase();
+        R6DriveJsPhase();
+        R6DriveReuseOnce();
+        R6DriveFreshReloadOnce();
     }
     const std::string mode = ProbeCvarStr("s2_khook_accept_mask_mode");
     if (g_mask_fire_stage == 0 && mode == "subset") {
@@ -1530,8 +1716,11 @@ KHook::Return<void> Hook_R6CheckTransmit(ISource2GameEntities* ents, CCheckTrans
         return S2_Ignore();
     }
     const int tx = ProbeCvarInt("s2_khook_accept_tx_ent", -1);
-    const int slot_a = ProbeCvarInt("s2_khook_accept_mask_a", -1);
-    const int slot_b = ProbeCvarInt("s2_khook_accept_mask_b", -1);
+    if (tx < 0 || tx >= 16384) {
+        return S2_Ignore();
+    }
+    const int slot_a = ProbeCvarInt("s2_khook_accept_tx_a", -1);
+    const int slot_b = ProbeCvarInt("s2_khook_accept_tx_b", -1);
     for (int i = 0; i < nInfo; i++) {
         uint8_t* raw = reinterpret_cast<uint8_t*>(infos[i]);
         if (!raw) {
@@ -1542,25 +1731,18 @@ KHook::Return<void> Hook_R6CheckTransmit(ISource2GameEntities* ents, CCheckTrans
             continue;
         }
         const int v = *reinterpret_cast<const int32_t*>(raw + kCtiClientOff);
-        if (v >= 0 && v <= 128) {
-            g_tx_layout_seen = true;
-            g_tx_layout_ok = true;
-        } else {
-            g_tx_layout_seen = true;
-            g_tx_layout_ok = false;
-        }
-        if (tx < 0 || tx >= 16384) {
-            continue;
+        if (!g_tx_first_fire_on_ent) {
+            g_tx_first_fire_on_ent = true;
+            g_tx_layout_ok = (v >= 0 && v <= 128);
         }
         const bool bit = bv->IsBitSet(tx);
-        int slot = v;
-        if (slot == slot_a) {
+        if (slot_a >= 0 && v == slot_a) {
             if (bit) {
                 g_tx_a_set++;
             } else {
                 g_tx_a_clear++;
             }
-        } else if (slot == slot_b) {
+        } else if (slot_b >= 0 && v == slot_b) {
             if (bit) {
                 g_tx_b_set++;
             } else {
@@ -1771,6 +1953,9 @@ static void CollectR6() {
     const std::string clr_exp = "{\"cleared\":true}";
     if (!g_map_ended) {
         PushPending("entity_slot_reuse_map_teardown", "native_map_teardown_clears", "native", clr_exp, kNeedMap);
+    } else if (!g_post_map_invoke_attempted) {
+        PushPending("entity_slot_reuse_map_teardown", "native_map_teardown_clears", "native", clr_exp,
+                    kNeedMapInvoke);
     } else if (g_pre_map_touch > 0 && g_post_map_touch == g_pre_map_touch) {
         PushRec("entity_slot_reuse_map_teardown", "native_map_teardown_clears", "native", "fail", clr_exp,
                 std::string("{\"cleared\":false,\"pre_map_count\":") + std::to_string(g_pre_map_touch) +
@@ -1778,7 +1963,7 @@ static void CollectR6() {
                 "stale post-map record: pre-map counter reused after map teardown");
     } else if (g_post_map_touch == 0) {
         PushRec("entity_slot_reuse_map_teardown", "native_map_teardown_clears", "native", "pass", clr_exp, clr_exp,
-                "post-map callbacks cleared");
+                "post-map callbacks cleared after EntByIndex invoke");
     } else {
         PushRec("entity_slot_reuse_map_teardown", "native_map_teardown_clears", "native", "fail", clr_exp,
                 std::string("{\"cleared\":false,\"post_map_count\":") + std::to_string(g_post_map_touch) + "}",
@@ -1807,9 +1992,12 @@ static void CollectR6() {
     }
 
     const std::string lay_exp = "{\"layout_ok\":true}";
-    if (g_tx_layout_ok) {
+    if (g_tx_first_fire_on_ent && g_tx_layout_ok) {
         PushRec("check_transmit", "native_first_fire_layout", "native", "pass", lay_exp, lay_exp,
-                "CheckTransmitInfo client int @576 in range with transmit bitvec");
+                "first CheckTransmit fire of the transmit entity; client int @576 in range");
+    } else if (g_tx_first_fire_on_ent && !g_tx_layout_ok) {
+        PushRec("check_transmit", "native_first_fire_layout", "native", "fail", lay_exp, "{\"layout_ok\":false}",
+                "CheckTransmitInfo client int @576 out of range on transmit-entity first fire");
     } else {
         PushPending("check_transmit", "native_first_fire_layout", "native", lay_exp, kNeedPvs);
     }
