@@ -4,8 +4,9 @@
 managed inside resident s2script. Native shim hot reload is not required.
 **Spec:** [Current remediation design](../specs/2026-09-14-khook-pr-a-remediation-design.md).
 **Decision:** [Stock-host scope](../specs/2026-09-15-khook-stock-host-decision.md).
-**Published implementation:** PR #221 commit `71d7464` contains the reviewed stock
-delivery and script-reload changes. Start remaining work from the current PR head.
+**Published implementation:** PR #221 commit `b33ff2f` contains the stock delivery,
+script-reload tooling and live-validated controlled probe corrections. Production
+shutdown remediation remains in progress. Start work from the current PR head.
 S1 and S2 are complete; do not redispatch them. The original local worker baseline
 `fccea2b` is execution history, not a required checkout for a new agent.
 
@@ -26,7 +27,7 @@ PR A scope, pending/failed distinctions and all other migration acceptance. Keep
 | --- | --- | --- | --- |
 | S1 stock delivery | delivery worker | patch directory removal; host build/verifier/archive preparation; cloud installer/tests; sniper build helper; notices; BUILDING/INSTALL | confirmed schema 2 contract |
 | S2 script reload and evidence | fixture/controller worker | native/JS acceptance fixtures, controller/tests, probe README/testdata, runner | confirmed reload proof; host manifest digest stays opaque |
-| S3 native lifecycle | coordinator + scoped reviewer | shim lifecycle/bindings and focused tests only after shutdown boundary validation | real engine ordering evidence before choosing shutdown implementation |
+| S3 native lifecycle | Sol/medium implementer + independent Sol/medium reviewer; coordinator integrates | shim lifecycle/bindings, narrow terminal core FFI, probe terminal cleanup and focused tests | `b33ff2f` live phase/thread evidence; current remediation spec |
 | S4 integration/docs | coordinator | remediation and parent docs; CI wiring; cross-package joins | S1/S2 reviewed commits; S3 evidence |
 | S5 final review | independent reviewer | read-only final diff, baseline failures and validation evidence | S4 |
 
@@ -75,11 +76,13 @@ lifecycle alongside them. There is no dependency patch implementation package.
   shared native hooks/provider remain resident and peers are unaffected.
 - [x] Remove tests and requirements solely for modified-host native unmapping.
   Preserve real checked-binding ownership tests and completed-helper cleanup.
-- [ ] Validate stock engine shutdown order and resource availability on a live
-  server. Trace an earlier public shutdown phase, callback/original return and
-  Metamod Disconnect. The current callback-only active count cannot prove that no
-  hooked original is on the stack. No synchronous self-removal or busy waiting.
-- [ ] Keep ordinary native unload during gameplay nondestructive and unsupported;
+- [x] Trace stock engine shutdown order and thread identity on a live server.
+  `b33ff2f` records both public phase originals returning before final Unload, all
+  on the probe load thread, TID 88. World teardown precedes PreShutdown; Source2 and
+  logging shutdown follow it. Resource-safe cleanup still needs implementation
+  and a fresh live run. Callback-only active counts cannot prove that an intercepted
+  original is off-stack. No synchronous self-removal or busy waiting.
+- [x] Keep ordinary native unload during gameplay nondestructive and unsupported;
   it must not begin whole-shim retirement. Choose the smallest plugin-side shutdown
   implementation supported by the ordering evidence, retaining callback contexts
   and the provider through all physical
@@ -87,6 +90,22 @@ lifecycle alongside them. There is no dependency patch implementation package.
   existing core-init failure path stays loaded for diagnosis. Do not invent a
   false-return load path merely to satisfy a checklist. Do not replace missing engine
   evidence with a guessed phase hook, private-host patch or a refusal-only claim.
+- [x] Implement PreShutdown PRE cleanup under exact owner-thread/current-capsule
+  checks. Preflight the complete 15-interface/14-SDKHooks inventory, then retire
+  normal hooks synchronously while retaining both lifecycle markers through their
+  original/POST callbacks. Shutdown only records progression; final Unload preflights
+  and removes both markers off-stack. Apply the same sequence to the probe's 25
+  normal hooks.
+- [x] Handle the already-destroyed world without entity-service dereferences.
+  Add a checked terminal core entry that disables copied engine callbacks before
+  plugin onUnload, cleans partial initialization and reports failure. Preserve
+  ordinary shutdown ABI and `.s2sp` reload behavior. Register lifecycle markers
+  after loader initialization even when core initialization is degraded; document
+  the remaining no-frame limitation.
+- [x] Test ordinary unload with zero mutations; phase order, idempotence and actual
+  cleanup result; same-capsule aliases versus distinct slots; nested/direct/other-thread
+  activity; async-to-sync refusal; complete inventories; terminal onUnload with
+  engine callbacks disabled and normal script unload behavior retained.
 - [ ] Add meaningful production-path regression tests for the selected lifecycle
   and repeat real process shutdown. If the server is unavailable, record the exact
   unmet prerequisite and leave this package incomplete.
@@ -325,7 +344,10 @@ order or corrected shutdown was reached. GDB stopped on SIGABRT but its script
 mistook a stopped inferior for an exited one; update the diagnostic script to
 capture all fatal signals and explicitly distinguish stopped from exited before
 the next live attempt. The original preinstall shutdown was clean and does not
-establish shutdown safety for the corrected bundle.
+establish shutdown safety for the corrected bundle. This debugger-driver proposal
+is historical: subsequent diagnostics use ordinary logs, public callbacks and
+offline saved artifacts. Do not rerun debugger attachment or synthetic fault
+programs as part of the current workflow.
 
 The allocator correction was published in `f9fc704`. Both CI jobs, the full Nebula
 bundle and the exact compiled allocator-call check passed. The live probe-first
@@ -381,4 +403,50 @@ page's protection again. Move only the new probe lifecycle registrations to the
 first accepted game frame; preserve their off-stack synchronous removal. Add
 load/current thread IDs to the trace. Do not change upstream code or page
 protection. The original server and all 25 plugin states were restored and
-verified. Repeat the corrected trace before selecting the production S3 boundary.
+verified. The corrected trace below supplies the production S3 boundary evidence.
+
+The delayed registration was published in `b33ff2f`. Both CI jobs and the fresh
+four-artifact Nebula build passed. The correctly packaged probe-first instance
+started successfully and produced a genuine installed-runtime receipt for run
+`khook-a-0f2a8ac6093942ec8ef67613f583c970`. Prepare/collect reached seven PASS,
+five PENDING and zero FAIL. Receipt SHA-256 is
+`75d3826745b2768a16f313a2e99cfa6f0e9799fd81ebedbecac35f48132f0afb`.
+Peer rows now directly record PRE order AB=21 and
+BA=12 for all three vote combinations, with all counts and returns matching.
+Pending client/map/reload stages were not bypassed; no script reload or reverse
+native order was attempted in this bounded diagnostic run.
+
+Normal RCON quit records PreShutdown PRE/POST (sequence 1/2), Source2/logging
+shutdown, Shutdown PRE/POST (3/4), probe Unload (5), successful off-stack lifecycle
+hook removal (6), then 25 pending normal probe hooks (7/8) and production s2script's
+pending retirement. Every public phase reports original-not-skipped and load/current
+thread 88. World/level state is already inactive at all four phase callbacks.
+The later child PID 88 segfaulted while the Docker wrapper again reported exit zero.
+The new dump is preserved; this trace does not identify the exact residual resource
+behind the engine fault. It does show that both current native cleanup paths remain
+incomplete when stock forced removal continues.
+
+The complete 44-file evidence inventory is verified under
+`.gate/remote-khook-pr221/live-b33ff2f-lifecycle-trace-20260915/`; inventory SHA-256
+`0789bc9934951845d3c22b809549a1d8260150f3ac516df69425b3961683c5d4`.
+The original Metamod/s2script trees were restored byte-for-byte; the owned server
+is healthy with 0 humans, 2 bots and the original 25 plugin states. Production was
+untouched. S3 implementation now follows the staged PreShutdown contract above,
+with independent review before a fresh bundle and live shutdown/reload testing.
+
+The reviewed S3 candidate is `bd37b0dc8e48ab8b7ba6a922489a7838489d9df8`.
+Sol/medium workers split native integration from the core/coordinator/probe changes;
+the coordinator independently reviewed the latter, and the second worker reviewed
+native integration. No blockers remain in that source review. The implementation
+keeps both lifecycle markers through Shutdown POST and removes them together at
+final Unload, avoiding unnecessary marker removal inside another callback.
+
+Checked-binding and coordinator ASan/UBSan suites passed. Four terminal-core tests
+and one ordinary-shutdown behavior test passed, including real early-init failure,
+busy refusal without revocation, onUnload execution with terminal engine access
+disabled, and preserved ordinary behavior. Runtime-build (12), acceptance (58),
+runtime-identity (18), command and fixture/evidence checks also passed. These local
+results do not establish Linux or live shutdown success. Full shim/probe compilation,
+loaded-ELF checks and the observer script still need Linux validation; macOS lacks
+the required CMake/SDK environment and GNU `timeout`. Rebuild the exact integrated
+head and repeat the owned-server gate before marking S3 or PR A accepted.
