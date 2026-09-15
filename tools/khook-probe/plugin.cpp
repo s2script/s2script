@@ -35,6 +35,9 @@
 #include <link.h>
 #include <dlfcn.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
 #include <limits.h>
 #include <ctime>
 #include <iserver.h>
@@ -135,12 +138,24 @@ static bool g_run_bound = false;
 static bool g_collected = false;
 static bool g_probe_retiring = false;
 static bool g_lifecycle_trace_retired = false;
+static std::atomic<bool> g_lifecycle_trace_install_attempted{false};
+static bool g_lifecycle_preshutdown_installed = false;
+static bool g_lifecycle_shutdown_installed = false;
+static long g_load_tid = -1;
 static std::string g_probe_generation;
 static std::vector<StoredRec> g_stored;
 static std::string g_emit_run;
 static std::string g_command_route_note =
     "real-client ClientCommand virtual PRE/POST plus independent Function original; "
     "default unregistered fixture name reaches engine unknown-command handling";
+
+static long CurrentTid() {
+#if defined(__linux__)
+    return static_cast<long>(::syscall(SYS_gettid));
+#else
+    return -1;
+#endif
+}
 
 static bool ValidDigest(const std::string& digest) {
     if (digest.size() != 64) return false;
@@ -545,6 +560,7 @@ public:
     bool Unload(char* error, size_t maxlen) override;
     void OnLevelInit(char const*, char const*, char const*, char const*, bool, bool) override;
     void OnLevelShutdown() override;
+    void InstallLifecycleTraceOnce();
 
     KHook::Return<void> Hook_ServerConfigPreShutdownPre(ISource2ServerConfig* config);
     KHook::Return<void> Hook_ServerConfigPreShutdownPost(ISource2ServerConfig* config);
@@ -660,6 +676,10 @@ static WireObservePtrs g_wireObserve;
 KHook::Return<void> ProbePlugin::Hook_GameFrame(ISource2Server* s, bool, bool, bool) {
     auto obs = gameFrame.Observe(s);
     if (obs) {
+        // Load and AllPluginsLoaded still run before the stock loader writes the
+        // ServerConfig Disconnect slot. KHook restores this shared vtable page
+        // read-only, so wait for the first frame before touching its other slots.
+        InstallLifecycleTraceOnce();
         g_game_frames++;
         R6GameFrame();
     }
@@ -1158,12 +1178,54 @@ static void PrintLifecycleTrace(const char* event, int original_skipped = -1) {
     META_CONPRINTF(
         "[khook-probe] lifecycle event=%s sequence=%llu level_active=%d level_generation=%llu "
         "retiring=%d active_dispatch=%d retirement_pending=%zu preshutdown_inflight=%u "
-        "shutdown_inflight=%u original_skipped=%d\n",
+        "shutdown_inflight=%u load_tid=%ld current_tid=%ld original_skipped=%d\n",
         event, static_cast<unsigned long long>(sequence), g_level_lifetime.MayTouchWorld() ? 1 : 0,
         static_cast<unsigned long long>(g_level_lifetime.Generation()), g_probe_retiring ? 1 : 0,
         S2Hook_NoActiveDispatch() ? 0 : 1, S2Hook_RetirementPending(),
         g_preshutdown_inflight.load(std::memory_order_relaxed),
-        g_shutdown_inflight.load(std::memory_order_relaxed), original_skipped);
+        g_shutdown_inflight.load(std::memory_order_relaxed), g_load_tid, CurrentTid(),
+        original_skipped);
+}
+
+void ProbePlugin::InstallLifecycleTraceOnce() {
+    bool expected = false;
+    if (!g_lifecycle_trace_install_attempted.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel)) {
+        return;
+    }
+    if (!serverconfig) {
+        META_CONPRINTF(
+            "[khook-probe] lifecycle install unavailable interface=Source2ServerConfig001 "
+            "load_tid=%ld current_tid=%ld\n",
+            g_load_tid, CurrentTid());
+        return;
+    }
+
+    const std::int32_t preshutdown_slot =
+        KHook::GetVtableIndex(&ISource2ServerConfig::PreShutdown);
+    const std::int32_t shutdown_slot = KHook::GetVtableIndex(&ISource2ServerConfig::Shutdown);
+    void** vtable = *reinterpret_cast<void***>(serverconfig);
+    void* preshutdown_target =
+        vtable && preshutdown_slot >= 0 ? vtable[preshutdown_slot] : nullptr;
+    void* shutdown_target = vtable && shutdown_slot >= 0 ? vtable[shutdown_slot] : nullptr;
+    META_CONPRINTF(
+        "[khook-probe] lifecycle install interface=%p vtable=%p preshutdown_slot=%d "
+        "preshutdown_target=%p shutdown_slot=%d shutdown_target=%p distinct_targets=%d "
+        "load_tid=%ld current_tid=%ld\n",
+        static_cast<void*>(serverconfig), static_cast<void*>(vtable), preshutdown_slot,
+        preshutdown_target, shutdown_slot, shutdown_target,
+        preshutdown_target && shutdown_target && preshutdown_target != shutdown_target ? 1 : 0,
+        g_load_tid, CurrentTid());
+
+    const S2HookReceipt pre_rec = serverConfigPreShutdown.Add(serverconfig);
+    const S2HookReceipt shutdown_rec = serverConfigShutdown.Add(serverconfig);
+    g_lifecycle_preshutdown_installed = pre_rec.Accepted();
+    g_lifecycle_shutdown_installed = shutdown_rec.Accepted();
+    META_CONPRINTF(
+        "[khook-probe] lifecycle hooks preshutdown_state=%s preshutdown_id=%u "
+        "shutdown_state=%s shutdown_id=%u load_tid=%ld current_tid=%ld\n",
+        StateName(pre_rec.state), static_cast<unsigned>(pre_rec.id), StateName(shutdown_rec.state),
+        static_cast<unsigned>(shutdown_rec.id), g_load_tid, CurrentTid());
 }
 
 KHook::Return<void> ProbePlugin::Hook_ServerConfigPreShutdownPre(ISource2ServerConfig* config) {
@@ -2727,6 +2789,7 @@ static void ProbeCommand(const CCommandContext& ctx, const CCommand& cmd) {
 bool ProbePlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) {
     (void)late;
     PLUGIN_SAVEVARS();
+    g_load_tid = CurrentTid();
     ismm->AddListener(this, this);
     timespec loaded{};
     clock_gettime(CLOCK_MONOTONIC, &loaded);
@@ -2760,6 +2823,8 @@ bool ProbePlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, b
     serverconfig = serverFactory ? reinterpret_cast<ISource2ServerConfig*>(
                                        serverFactory(INTERFACEVERSION_SERVERCONFIG, &ret))
                                  : nullptr;
+    META_CONPRINTF("[khook-probe] lifecycle acquired interface=%p load_tid=%ld current_tid=%ld\n",
+                   static_cast<void*>(serverconfig), g_load_tid, CurrentTid());
     ret = 0;
     server = serverFactory
                  ? reinterpret_cast<ISource2Server*>(serverFactory(INTERFACEVERSION_SERVERGAMEDLL, &ret))
@@ -2772,29 +2837,6 @@ bool ProbePlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, b
     InstallControlledHooks();
     R6ResolveEngine(engineFactory, serverFactory);
     R6InstallEngineHooks();
-
-    if (serverconfig) {
-        const std::int32_t preshutdown_slot = KHook::GetVtableIndex(&ISource2ServerConfig::PreShutdown);
-        const std::int32_t shutdown_slot = KHook::GetVtableIndex(&ISource2ServerConfig::Shutdown);
-        void** vtable = *reinterpret_cast<void***>(serverconfig);
-        void* preshutdown_target = preshutdown_slot >= 0 ? vtable[preshutdown_slot] : nullptr;
-        void* shutdown_target = shutdown_slot >= 0 ? vtable[shutdown_slot] : nullptr;
-        META_CONPRINTF(
-            "[khook-probe] lifecycle interface=%p vtable=%p preshutdown_slot=%d preshutdown_target=%p "
-            "shutdown_slot=%d shutdown_target=%p distinct_targets=%d\n",
-            static_cast<void*>(serverconfig), static_cast<void*>(vtable), preshutdown_slot,
-            preshutdown_target, shutdown_slot, shutdown_target,
-            preshutdown_target && shutdown_target && preshutdown_target != shutdown_target ? 1 : 0);
-        const S2HookReceipt pre_rec = serverConfigPreShutdown.Add(serverconfig);
-        const S2HookReceipt shutdown_rec = serverConfigShutdown.Add(serverconfig);
-        META_CONPRINTF(
-            "[khook-probe] lifecycle hooks preshutdown_state=%s preshutdown_id=%u "
-            "shutdown_state=%s shutdown_id=%u\n",
-            StateName(pre_rec.state), static_cast<unsigned>(pre_rec.id), StateName(shutdown_rec.state),
-            static_cast<unsigned>(shutdown_rec.id));
-    } else {
-        META_CONPRINTF("[khook-probe] lifecycle interface Source2ServerConfig001 unavailable\n");
-    }
 
     if (server) {
         const S2HookReceipt rec = gameFrame.Add(server);
@@ -2890,12 +2932,17 @@ bool ProbePlugin::Unload(char* error, size_t maxlen) {
         return false;
     }
     if (!g_lifecycle_trace_retired) {
-        if (serverconfig) {
+        if (serverconfig && g_lifecycle_preshutdown_installed) {
             serverConfigPreShutdown.Remove(serverconfig);
+        }
+        if (serverconfig && g_lifecycle_shutdown_installed) {
             serverConfigShutdown.Remove(serverconfig);
         }
-        if (!serverConfigPreShutdown.BeginRemove(false) ||
-            !serverConfigShutdown.BeginRemove(false)) {
+        const bool preshutdown_removed = !g_lifecycle_preshutdown_installed ||
+                                         serverConfigPreShutdown.BeginRemove(false);
+        const bool shutdown_removed = !g_lifecycle_shutdown_installed ||
+                                      serverConfigShutdown.BeginRemove(false);
+        if (!preshutdown_removed || !shutdown_removed) {
             PrintLifecycleTrace("probe_unload_rejected_lifecycle_remove");
             if (error && maxlen) {
                 std::snprintf(error, maxlen, "%s",
@@ -2903,6 +2950,8 @@ bool ProbePlugin::Unload(char* error, size_t maxlen) {
             }
             return false;
         }
+        g_lifecycle_preshutdown_installed = false;
+        g_lifecycle_shutdown_installed = false;
         g_lifecycle_trace_retired = true;
         PrintLifecycleTrace("probe_unload_lifecycle_removed");
     }
