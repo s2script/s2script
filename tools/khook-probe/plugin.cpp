@@ -7,6 +7,7 @@
 #include "khook_map.h"
 #include "sigscan.h"
 #include "acceptance_observer.h"
+#include "runtime_witness.h"
 
 #include <eiface.h>
 #include <icvar.h>
@@ -2482,35 +2483,22 @@ static void PrepareRun(const char* run_id) {
 }
 
 static void PrintRuntime() {
-    struct Modules { std::map<std::string, std::vector<std::string>> found; } modules;
-    dl_iterate_phdr([](dl_phdr_info* info, size_t, void* opaque) -> int {
-        auto* out = static_cast<Modules*>(opaque);
-        if (!info->dlpi_name || !info->dlpi_name[0]) return 0;
-        const char* slash = std::strrchr(info->dlpi_name, '/');
-        const std::string base = slash ? slash + 1 : info->dlpi_name;
-        std::string key;
-        if (base == "s2_khook_probe.so") key = "probe";
-        else if (base == "s2script.so") key = "shim";
-        else if (base == "libs2script_core.so") key = "core";
-        if (key.empty()) return 0;
-        char resolved[PATH_MAX];
-        if (::realpath(info->dlpi_name, resolved)) out->found[key].push_back(resolved);
-        return 0;
-    }, &modules);
+    const auto modules = s2khook::runtime::CollectModules();
     const int build = g_engine2 ? g_engine2->GetBuildVersion() : 0;
     INetworkGameServer* game = g_network_server ? g_network_server->GetIGameServer() : nullptr;
     const char* map = game ? game->GetMapName() : nullptr;
     bool ready = build > 0 && map && map[0];
     std::string paths = "{";
-    for (const char* key : {"probe", "shim", "core"}) {
+    for (const char* key : s2khook::runtime::kRoles) {
         if (paths.size() > 1) paths += ",";
         paths += "\"" + std::string(key) + "\":";
-        const auto& found = modules.found[key];
-        if (found.size() != 1) { paths += "null"; ready = false; }
-        else paths += "\"" + JsonEscape(found.front().c_str()) + "\"";
+        const auto found = s2khook::runtime::UniqueModule(modules, key);
+        if (!found) { paths += "null"; ready = false; }
+        else paths += "{\"path\":\"" + JsonEscape(found->path.c_str()) +
+            "\",\"device\":\"" + found->Device() + "\",\"inode\":\"" + found->Inode() + "\"}";
     }
     paths += "}";
-    META_CONPRINTF("{\"schema\":1,\"kind\":\"khook-runtime\",\"result\":\"%s\","
+    META_CONPRINTF("{\"schema\":2,\"kind\":\"khook-runtime\",\"result\":\"%s\","
                    "\"source_revision\":\"%s\",\"process_id\":%ld,\"probe_generation\":\"%s\","
                    "\"server_build\":%d,\"map\":\"%s\",\"modules\":%s}\n",
                    ready ? "ready" : "pending", S2_KHOOK_SOURCE_REVISION, static_cast<long>(::getpid()),
