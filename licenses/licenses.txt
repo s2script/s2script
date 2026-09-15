@@ -15,7 +15,7 @@ changes that. These are the notices s2script owes to others.
 
 Pinned at generation time:
     hl2sdk            5f891c902623   (branch cs2)
-    metamod-source    7e24ce9e7a03   (PLAPI 18/KHook; plus patches/metamod-source/ — not an unchanged upstream artifact)
+    metamod-source    7e24ce9e7a03   (PLAPI 18/KHook; unmodified upstream source)
     breakpad          9aebd3d8ef5a
     rust crates       296   (from Cargo.lock)
 
@@ -96,8 +96,6 @@ freely, subject to the following restrictions:
 
 The zLib/libpng license has been approved by the "Open Source Initiative"
 organization.
-
-The Metamod:Source tree this project builds against is pin 7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33 plus the tracked series in patches/metamod-source/. That is an altered source version (zlib/libpng clause 2). It is not an unchanged upstream artifact. KHook remains nested at 1e200e4cc8e0badcb7cf941525268d6977f6a4e6.
 
 ==============================================================================
  3. Google Breakpad

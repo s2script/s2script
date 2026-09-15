@@ -5599,6 +5599,12 @@ KHook::Return<void> S2ScriptPlugin::Hook_ClientCommand(ISource2GameClients* clie
     const char* name = args.Arg(0);
     if (!name || !name[0]) return S2_Ignore();
     const char* argStr = args.ArgS();
+    // Unregistered client commands arrive here instead of DispatchConCommand.
+    // Deliver the same public listeners at this engine boundary, once, before
+    // running a matching owned command or allowing the engine's fallback.
+    if (s2script_core_dispatch_command_listeners(slot.Get(), name, argStr ? argStr : "")) {
+        return S2_Supersede();
+    }
     // FFI is 1 iff a registered command matched (bool, not a HookResult int).
     if (s2script_core_dispatch_client_command(slot.Get(), name, argStr ? argStr : "")) {
         META_CONPRINTF("[s2script] console command '%s' by slot=%d\n", name, slot.Get());

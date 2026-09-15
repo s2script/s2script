@@ -2,6 +2,8 @@
 """Judge regressions for scripts/khook_acceptance.py (stdlib unittest)."""
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import os
 import subprocess
@@ -18,8 +20,43 @@ LIVE_SH = ROOT / "scripts" / "test-khook-live.sh"
 
 IDENTITY = {
     "run_id": "khook-a-test-0001",
-    "source_revision": "d66d7bd45721b3be2a44da358f33b6cef1b5d594",
+    "source_revision": ka.current_source_revision(),
 }
+
+
+def receipt_digest(value):
+    payload = {key: item for key, item in value.items() if key != "artifact_identity"}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def runtime_receipt(run_id=None):
+    artifacts = {
+        name: {"path": "/installed/" + name, "sha256": digit * 64}
+        for name, digit in (("shim", "1"), ("core", "2"), ("probe", "3"), ("fixture", "4"))
+    }
+    build = {name: artifacts[name]["sha256"] for name in ("core", "shim")}
+    receipt = {
+        "schema": 1,
+        "kind": "khook-runtime-identity",
+        "run_id": run_id or IDENTITY["run_id"],
+        "source_revision": IDENTITY["source_revision"],
+        "s2script_commit": IDENTITY["source_revision"],
+        "s2script_build_hash": receipt_digest(build),
+        "host_manifest_digest": "5" * 64,
+        "fixture_revision": IDENTITY["source_revision"],
+        "server": "127.0.0.1:27015",
+        "server_build": "12345-test-fixture",
+        "initial_map": "de_dust2",
+        "verified_at": "2026-09-15T00:00:00Z",
+        "evidence_path": "captures/operator-runtime-verification.txt",
+        "evidence_sha256": "6" * 64,
+        "artifacts": artifacts,
+    }
+    receipt["artifact_identity"] = receipt_digest(receipt)
+    return receipt
+
+
+IDENTITY["runtime_identity"] = runtime_receipt()
 
 
 def _req(case: str):
@@ -45,6 +82,7 @@ def make_record(case, subcheck, producer, result="pass", **overrides):
         "suite": "A",
         "run_id": IDENTITY["run_id"],
         "source_revision": IDENTITY["source_revision"],
+        "artifact_identity": IDENTITY["runtime_identity"]["artifact_identity"],
         "case": case,
         "subcheck": subcheck,
         "producer": producer,
@@ -95,6 +133,7 @@ def write_run(tmp: Path, recs, identity=None):
     identity = dict(identity or IDENTITY)
     identity.setdefault("schema", ka.SCHEMA)
     identity.setdefault("suite", "A")
+    identity.setdefault("identity_bound", bool(identity.get("runtime_identity")))
     tmp.mkdir(parents=True, exist_ok=True)
     (tmp / "run.json").write_text(json.dumps(identity, indent=2) + "\n")
     (tmp / "records.jsonl").write_text(jsonl(recs))
@@ -167,6 +206,33 @@ class RegistryTests(unittest.TestCase):
         ):
             self.assertGreaterEqual(len(_req(case)), 2)
 
+    def test_reload_registry_requires_script_evidence_and_rejects_native_hot_unload(self):
+        names = {(s.producer, s.subcheck) for s in _req("entity_slot_reuse_map_teardown")}
+        self.assertIn(("native", "script_hot_reload"), names)
+        self.assertNotIn(("native", "native_unload_reload"), names)
+        old = make_record("entity_slot_reuse_map_teardown", "native_unload_reload", "native")
+        self.assertEqual(judge(all_records() + [old]).exit_code, 1)
+
+    def test_script_reload_requires_both_observed_producers(self):
+        names = {"script_hot_reload", "js_fresh_subscription_after_reload"}
+        rows = all_records()
+        complete = [copy.deepcopy(r) for r in rows if r["subcheck"] in names]
+        for r in rows:
+            if r["subcheck"] in names:
+                r.update(result="pending", actual={}, evidence="await actual script reload")
+        self.assertEqual(judge(rows).exit_code, 2)
+        self.assertEqual(judge(rows + complete[:1]).exit_code, 2)
+        self.assertEqual(judge(rows + complete).exit_code, 0)
+        self.assertEqual(judge(rows + complete + rows).exit_code, 0)
+
+    def test_script_reload_command_builders_keep_one_safe_run_argument(self):
+        self.assertEqual(ka.probe_cmd("reload-arm", "run_1"), "s2_khook_probe reload-arm run_1")
+        self.assertEqual(ka.accept_cmd("reload-arm", "run_1"), "s2_khook_accept reload-arm run_1")
+        self.assertEqual(ka.accept_cmd("resume", "run_1", "a" * 64), "s2_khook_accept resume run_1 " + "a" * 64)
+        for command in (ka.probe_cmd, ka.accept_cmd):
+            with self.assertRaises(ValueError):
+                command("reload-arm", "run unsafe")
+
     def test_human_schema_example_is_pending_and_matches_constant(self):
         example = ka.EXAMPLE_HUMAN_OBSERVATIONS
         self.assertEqual(example["schema"], ka.SCHEMA)
@@ -220,13 +286,13 @@ class JudgeTests(unittest.TestCase):
 
     def test_duplicate_native_js_human_subcheck(self):
         recs = all_records("pass")
-        recs.append(make_record("one_normal_invocation", "native_one_pre_post_orig", "native"))
+        recs.append(make_record("one_normal_invocation", "native_one_pre_post_orig", "native", result="fail"))
         r = judge(recs)
         self.assertEqual(r.exit_code, 1, r.messages)
         self.assertTrue(any("duplicate" in m.lower() for m in r.messages))
 
         recs = all_records("pass")
-        recs.append(make_record("voice_recall", "human_voice_allowed_hears", "human"))
+        recs.append(make_record("voice_recall", "human_voice_allowed_hears", "human", result="fail"))
         r = judge(recs)
         self.assertEqual(r.exit_code, 1, r.messages)
         self.assertTrue(any("duplicate" in m.lower() for m in r.messages))
@@ -237,6 +303,7 @@ class JudgeTests(unittest.TestCase):
                 "sdkhooks_one_of_two_entities",
                 "js_hook_a_delivered",
                 "js",
+                result="fail",
             )
         )
         r = judge(recs)
@@ -337,7 +404,8 @@ class JudgeTests(unittest.TestCase):
         r = judge(auto)
         self.assertEqual(r.exit_code, 2, r.messages)
         self.assertEqual(r.status, "pending")
-        human = ka.EXAMPLE_HUMAN_OBSERVATIONS
+        human = copy.deepcopy(ka.EXAMPLE_HUMAN_OBSERVATIONS)
+        human["source_revision"] = IDENTITY["source_revision"]
         # Example is pending and must not pass on its own.
         r2 = judge(auto, observations=human)
         self.assertEqual(r2.exit_code, 2)
@@ -345,6 +413,7 @@ class JudgeTests(unittest.TestCase):
             "schema": ka.SCHEMA,
             "run_id": IDENTITY["run_id"],
             "source_revision": IDENTITY["source_revision"],
+            "artifact_identity": IDENTITY["runtime_identity"]["artifact_identity"],
             "observations": [],
         }
         for sc in ka.required_subchecks():
@@ -426,10 +495,7 @@ class JudgeTests(unittest.TestCase):
         self.assertEqual(r.case_status["voice_recall"], "fail")
 
     def test_from_file_and_live_use_same_parser_judge(self):
-        identity = {
-            "run_id": IDENTITY["run_id"],
-            "source_revision": ka.current_source_revision(),
-        }
+        identity = copy.deepcopy(IDENTITY)
         recs = all_records("pass")
         for rec in recs:
             rec["source_revision"] = identity["source_revision"]
@@ -447,18 +513,17 @@ class JudgeTests(unittest.TestCase):
         self.assertIs(ka.live_parse, ka.parse_records)
         self.assertIs(ka.live_judge, ka.judge_records)
 
-        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as fh:
-            fh.write(text)
-            path = fh.name
-        try:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "records.jsonl"
+            path.write_text(text)
+            receipt_path = Path(td) / "identity.json"
+            receipt_path.write_text(json.dumps(identity["runtime_identity"]))
             proc = subprocess.run(
-                ["bash", str(LIVE_SH), "A", "--from-file", path],
+                ["bash", str(LIVE_SH), "A", "--from-file", str(path), "--identity", str(receipt_path)],
                 cwd=str(ROOT),
                 capture_output=True,
                 text=True,
             )
-        finally:
-            os.unlink(path)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
 
@@ -554,6 +619,30 @@ class OrchestrationTests(unittest.TestCase):
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_run_ids_are_bounded_command_tokens_before_side_effects(self):
+        for bad in ("../escape", "a/b", "two words", "semi;quit", "line\nquit", "x" * 65, "", 123):
+            with self.subTest(run_id=bad), tempfile.TemporaryDirectory() as td:
+                run = Path(td) / "not-created"
+                commands = []
+                result = ka.prepare_run(run, identity_fields={"run_id": bad},
+                                        rcon_send=lambda cmd: commands.append(cmd) or "")
+                self.assertEqual(result.exit_code, 1, result.messages)
+                self.assertIn("run_id", " ".join(result.messages))
+                self.assertFalse(run.exists())
+                self.assertEqual(commands, [])
+                for builder in (ka.probe_cmd, ka.accept_cmd):
+                    with self.assertRaises(ValueError):
+                        builder("collect", bad)
+
+    def test_collect_rejects_unsafe_stored_run_before_rcon(self):
+        with tempfile.TemporaryDirectory() as td:
+            run = write_run(Path(td), [], identity={"run_id": "../escape", "source_revision": IDENTITY["source_revision"]})
+            commands = []
+            result = ka.collect_run(run, rcon_send=lambda cmd: commands.append(cmd) or "")
+            self.assertEqual(result.exit_code, 1)
+            self.assertIn("run_id", " ".join(result.messages))
+            self.assertEqual(commands, [])
+
     def test_command_protocol_strings(self):
         rid = "khook-a-test-0001"
         self.assertEqual(ka.probe_cmd("prepare", rid), "s2_khook_probe prepare khook-a-test-0001")
@@ -563,6 +652,290 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(ka.accept_cmd("collect", rid), "s2_khook_accept collect khook-a-test-0001")
         self.assertEqual(ka.accept_cmd("report", rid), "s2_khook_accept report khook-a-test-0001")
         self.assertEqual(ka.accept_cmd("teardown", rid), "s2_khook_accept teardown khook-a-test-0001")
+
+
+class HistoryRegressionTests(unittest.TestCase):
+    def collect_output(self, run_dir, output):
+        return ka.collect_run(
+            run_dir,
+            rcon_send=lambda command: output if "probe collect" in command else "",
+            interval_s=0,
+            max_attempts=1,
+        )
+
+    def test_persisted_failure_cannot_be_replaced_by_later_pass(self):
+        failed = all_records()
+        failed[0].update(result="fail", actual={"ok": False})
+        with tempfile.TemporaryDirectory() as td:
+            run = write_run(Path(td), failed)
+            self.assertEqual(ka.judge_run_dir(run).exit_code, 1)
+            result = self.collect_output(run, jsonl(all_records()))
+            self.assertEqual(result.exit_code, 1, result.messages)
+            self.assertEqual(ka.judge_run_dir(run).exit_code, 1)
+
+    def test_duplicate_failure_then_pass_has_same_live_and_offline_verdict(self):
+        failed = dict(all_records()[0], result="fail", actual={"ok": False})
+        output = jsonl([failed] + all_records())
+        offline = ka.judge_text(output, identity=IDENTITY)
+        with tempfile.TemporaryDirectory() as td:
+            run = write_run(Path(td), [])
+            live = self.collect_output(run, output)
+            self.assertEqual(offline.exit_code, 1)
+            self.assertEqual(live.exit_code, offline.exit_code, live.messages)
+            self.assertEqual(ka.judge_run_dir(run).exit_code, 1)
+
+    def test_malformed_input_remains_invalid_after_later_valid_collect(self):
+        bad_output = "{broken JSON\n" + jsonl(all_records())
+        with tempfile.TemporaryDirectory() as td:
+            run = write_run(Path(td), [])
+            first = self.collect_output(run, bad_output)
+            self.assertEqual(first.exit_code, 1, first.messages)
+            second = self.collect_output(run, jsonl(all_records()))
+            self.assertEqual(second.exit_code, 1, second.messages)
+            stored = ka.judge_run_dir(run)
+            self.assertTrue(any("malformed" in message for message in stored.messages))
+            offline = ka.judge_text((run / "records.jsonl").read_text(), identity=IDENTITY)
+            self.assertEqual(offline.exit_code, stored.exit_code)
+
+    def test_repeated_commands_keep_every_raw_capture(self):
+        with tempfile.TemporaryDirectory() as td:
+            run = write_run(Path(td), all_records())
+            self.collect_output(run, "first response\n")
+            original = {path: path.read_bytes() for path in (run / "raw").iterdir()}
+            self.collect_output(run, "second response\n")
+            captures = list((run / "raw").iterdir())
+            self.assertEqual(len(captures), 8)
+            for path, contents in original.items():
+                self.assertEqual(path.read_bytes(), contents)
+            self.assertTrue(any(path.read_text() == "first response\n" for path in captures))
+            self.assertTrue(any(path.read_text() == "second response\n" for path in captures))
+
+    def test_identical_report_replays_are_idempotent(self):
+        result = judge(all_records() + all_records())
+        self.assertEqual(result.exit_code, 0, result.messages)
+
+    def test_pending_progresses_to_observed_without_losing_pass_on_later_pending(self):
+        history = all_records("pending") + all_records() + all_records("pending")
+        result = judge(history)
+        self.assertEqual(result.exit_code, 0, result.messages)
+        with tempfile.TemporaryDirectory() as td:
+            run = write_run(Path(td), all_records("pending"))
+            self.assertEqual(self.collect_output(run, jsonl(all_records())).exit_code, 0)
+            self.assertEqual(self.collect_output(run, jsonl(all_records("pending"))).exit_code, 0)
+
+    def test_different_terminal_observations_are_contradictory(self):
+        recs = all_records()
+        recs.append(dict(recs[0], expected={"count": 2}, actual={"count": 2}))
+        result = judge(recs)
+        self.assertEqual(result.exit_code, 1, result.messages)
+
+    def test_duplicate_json_status_keys_cannot_hide_failure(self):
+        record = json.dumps(all_records()[0]).replace('"result": "pass"', '"result": "fail", "result": "pass"')
+        output = record + "\n" + jsonl(all_records()[1:])
+        result = ka.judge_text(output, identity=IDENTITY)
+        self.assertEqual(result.exit_code, 1, result.messages)
+        with tempfile.TemporaryDirectory() as td:
+            run = write_run(Path(td), [])
+            self.assertEqual(self.collect_output(run, output).exit_code, 1)
+
+    def test_malformed_schema_types_are_invalid(self):
+        records = all_records()
+        records[0]["schema"] = True
+        result = judge(records)
+        self.assertEqual(result.exit_code, 1, result.messages)
+
+
+class HumanValidationRegressionTests(unittest.TestCase):
+    def human_file(self):
+        return {
+            "schema": 1,
+            **IDENTITY,
+            "artifact_identity": IDENTITY["runtime_identity"]["artifact_identity"],
+            "observations": [rec for rec in all_records() if rec["producer"] == "human"],
+        }
+
+    def test_missing_and_null_human_outcomes_are_invalid(self):
+        auto = all_records(producers=("native", "js"))
+        for value in (None, {}, [], ""):
+            with self.subTest(value=value):
+                human = self.human_file()
+                human["observations"][0].update(expected=value, actual=value)
+                result = judge(auto, observations=human)
+                self.assertEqual(result.exit_code, 1, result.messages)
+        human = self.human_file()
+        for name in ("expected", "actual"):
+            human["observations"][0].pop(name)
+        self.assertEqual(judge(auto, observations=human).exit_code, 1)
+
+    def test_human_normalization_preserves_contradictory_status(self):
+        human = self.human_file()
+        human["observations"][0]["pass"] = False
+        result = judge(all_records(producers=("native", "js")), observations=human)
+        self.assertEqual(result.exit_code, 1, result.messages)
+        self.assertTrue(any("contradict" in message for message in result.messages))
+
+
+class ArtifactIdentityRegressionTests(unittest.TestCase):
+    def test_cli_judge_validates_supplied_identity_without_raw_records(self):
+        for reason in ("rcon_unreachable", "incomplete_records"):
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as td:
+                run = write_run(Path(td) / "run", [], identity=IDENTITY)
+                meta = json.loads((run / "run.json").read_text())
+                meta["reason"] = reason
+                (run / "run.json").write_text(json.dumps(meta))
+                (run / "records.jsonl").unlink()
+                receipt_path = Path(td) / "bad-identity.json"
+                receipt_path.write_text("{malformed")
+                proc = subprocess.run([sys.executable, str(ROOT / "scripts/khook_acceptance.py"),
+                    "A", "--judge", "--run-dir", str(run), "--identity", str(receipt_path)],
+                    capture_output=True, text=True)
+                self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+                self.assertIn("malformed runtime identity", proc.stdout)
+
+    def test_collect_can_bind_existing_pending_run_without_preparing_again(self):
+        receipt = runtime_receipt()
+        unbound = {key: value for key, value in IDENTITY.items() if key != "runtime_identity"}
+        pending = all_records("pending")
+        for record in pending:
+            record.pop("artifact_identity")
+        with tempfile.TemporaryDirectory() as td:
+            run = write_run(Path(td), pending, identity=unbound)
+            commands = []
+
+            def send(command):
+                commands.append(command)
+                return jsonl(all_records()) if "probe collect" in command else ""
+
+            result = ka.collect_run(run, identity_receipt=receipt, rcon_send=send, max_attempts=1)
+            self.assertEqual(result.exit_code, 0, result.messages)
+            self.assertFalse(any("prepare" in command for command in commands))
+            self.assertEqual(sum(" bind " in command for command in commands), 2)
+            self.assertTrue(all(command.endswith(receipt["artifact_identity"]) for command in commands if " bind " in command))
+            commands.clear()
+            replay = ka.collect_run(run, identity_receipt=receipt, rcon_send=send, max_attempts=1)
+            self.assertEqual(replay.exit_code, 0, replay.messages)
+            self.assertFalse(any(" bind " in command for command in commands))
+            self.assertEqual(json.loads((run / "run.json").read_text())["run_id"], IDENTITY["run_id"])
+
+    def test_changed_artifact_receipt_remains_invalid_after_retry(self):
+        changed = runtime_receipt()
+        changed["artifacts"]["probe"]["sha256"] = "9" * 64
+        changed["artifact_identity"] = receipt_digest(changed)
+        with tempfile.TemporaryDirectory() as td:
+            run = write_run(Path(td), all_records())
+            before = (run / "run.json").read_bytes()
+            commands = []
+            rejected = ka.collect_run(run, identity_receipt=changed, rcon_send=lambda command: commands.append(command) or "")
+            self.assertEqual(rejected.exit_code, 1, rejected.messages)
+            self.assertEqual(commands, [])
+            self.assertEqual((run / "run.json").read_bytes(), before)
+            retry = ka.collect_run(run, identity_receipt=runtime_receipt(), rcon_send=lambda command: jsonl(all_records()), max_attempts=1)
+            self.assertEqual(retry.exit_code, 1, retry.messages)
+            offline = ka.judge_from_file(run / "records.jsonl", identity_receipt=runtime_receipt())
+            self.assertEqual(offline.exit_code, 1)
+
+    def test_source_revision_mismatch_has_same_offline_and_run_verdict(self):
+        identity = copy.deepcopy(IDENTITY)
+        identity["source_revision"] = "0" * 40
+        receipt = identity["runtime_identity"]
+        for field in ("source_revision", "s2script_commit", "fixture_revision"):
+            receipt[field] = "0" * 40
+        receipt["artifact_identity"] = receipt_digest(receipt)
+        records = all_records()
+        for record in records:
+            record["source_revision"] = "0" * 40
+            record["artifact_identity"] = receipt["artifact_identity"]
+        with tempfile.TemporaryDirectory() as td:
+            run = write_run(Path(td), records, identity=identity)
+            live = ka.judge_run_dir(run)
+            offline = ka.judge_from_file(run / "records.jsonl", identity_receipt=receipt)
+            self.assertEqual(live.exit_code, 1, live.messages)
+            self.assertEqual(offline.exit_code, 1, offline.messages)
+
+    def test_prepare_adopts_operator_receipt_and_sends_its_binding(self):
+        receipt = runtime_receipt()
+        with tempfile.TemporaryDirectory() as td:
+            commands = []
+            ka.prepare_run(
+                Path(td),
+                identity_fields={"runtime_identity": receipt},
+                rcon_send=lambda command: commands.append(command) or "prepared",
+            )
+            meta = json.loads((Path(td) / "run.json").read_text())
+            self.assertEqual(meta["run_id"], receipt["run_id"])
+            self.assertEqual(meta.get("runtime_identity"), receipt)
+            self.assertEqual(meta["s2script_build_hash"], receipt["s2script_build_hash"])
+            self.assertTrue(all(command.endswith(receipt["artifact_identity"]) for command in commands))
+
+    def test_cli_can_supply_identity_for_offline_and_readonly_judge(self):
+        with tempfile.TemporaryDirectory() as td:
+            run = write_run(Path(td) / "run", all_records(), identity={
+                "run_id": IDENTITY["run_id"], "source_revision": IDENTITY["source_revision"],
+            })
+            receipt_path = Path(td) / "identity.json"
+            receipt_path.write_text(json.dumps(runtime_receipt()))
+            before = (run / "run.json").read_bytes()
+            for mode in (["--judge", "--run-dir", str(run)], ["--from-file", str(run / "records.jsonl")]):
+                proc = subprocess.run(
+                    [sys.executable, str(ROOT / "scripts/khook_acceptance.py"), "A", *mode,
+                     "--identity", str(receipt_path)], capture_output=True, text=True,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertEqual((run / "run.json").read_bytes(), before)
+
+    def test_prepare_existing_directory_does_not_reset_run(self):
+        with tempfile.TemporaryDirectory() as td:
+            run = write_run(Path(td), all_records())
+            before = (run / "run.json").read_bytes()
+            commands = []
+            result = ka.prepare_run(run, rcon_send=lambda command: commands.append(command) or "")
+            self.assertEqual(result.exit_code, 1, result.messages)
+            self.assertEqual((run / "run.json").read_bytes(), before)
+            self.assertEqual(commands, [])
+
+    def test_complete_records_without_installed_identity_stay_pending(self):
+        identity = {key: value for key, value in IDENTITY.items() if key != "runtime_identity"}
+        result = judge(all_records(), identity=identity)
+        self.assertEqual(result.exit_code, 2, result.messages)
+        self.assertTrue(any("identity" in message for message in result.messages))
+
+    def test_missing_record_binding_stays_pending(self):
+        records = all_records()
+        records[0].pop("artifact_identity")
+        result = judge(records)
+        self.assertEqual(result.exit_code, 2, result.messages)
+
+    def test_wrong_record_artifact_is_invalid(self):
+        records = all_records()
+        records[0]["artifact_identity"] = "9" * 64
+        result = judge(records)
+        self.assertEqual(result.exit_code, 1, result.messages)
+
+    def test_missing_binary_hashes_and_wrong_build_receipt_are_invalid(self):
+        for mutate in (
+            lambda value: value["artifacts"].pop("core"),
+            lambda value: value.update(s2script_build_hash="9" * 64),
+            lambda value: value.update(run_id="another-run"),
+            lambda value: value.update(source_revision="0" * 40),
+        ):
+            identity = copy.deepcopy(IDENTITY)
+            receipt = identity["runtime_identity"]
+            mutate(receipt)
+            receipt["artifact_identity"] = receipt_digest(receipt)
+            result = judge(all_records(), identity=identity)
+            self.assertEqual(result.exit_code, 1, result.messages)
+
+    def test_changed_receipt_bytes_do_not_match_digest(self):
+        identity = copy.deepcopy(IDENTITY)
+        identity["runtime_identity"]["artifacts"]["probe"]["sha256"] = "9" * 64
+        result = judge(all_records(), identity=identity)
+        self.assertEqual(result.exit_code, 1, result.messages)
+
+    def test_human_observations_must_bind_same_artifact(self):
+        human = HumanValidationRegressionTests().human_file()
+        human["artifact_identity"] = "9" * 64
+        result = judge(all_records(producers=("native", "js")), observations=human)
+        self.assertEqual(result.exit_code, 1, result.messages)
 
 
 if __name__ == "__main__":

@@ -27,7 +27,14 @@
 #include <strings.h>
 #include <string>
 #include <vector>
+#include <map>
+#include <array>
 #include <link.h>
+#include <dlfcn.h>
+#include <unistd.h>
+#include <limits.h>
+#include <ctime>
+#include <iserver.h>
 
 PLUGIN_GLOBALVARS();
 
@@ -42,8 +49,7 @@ PLUGIN_GLOBALVARS();
 #endif
 
 static const char* kCmdName = "s2_khook_probe";
-static const char* kTokenCmd = "s2_khook_probe_token";
-static const char* kCcEntryCmd = "s2khook_cc_entry";
+static const char* kTokenCmd = "s2khook_cc_entry";
 static const char* kContinueToken = "s2khook-continue";
 static const char* kHandledToken = "s2khook-handled";
 static const char* kCtrlMissingToken = "s2khook-ctrl-missing";
@@ -98,6 +104,9 @@ static std::string JsonBool(bool v) { return v ? "true" : "false"; }
 static void PushPending(const char* cse, const char* sub, const char* producer, const std::string& expected,
                         const char* why);
 static void R6GameFrame();
+static int ProbeCvarInt(const char* name, int fallback);
+static std::string ProbeCvarStr(const char* name);
+static bool ProbeSetCvarString(const char* name, const std::string& value);
 static void R6PrepareEntities();
 static void CollectR6();
 static void PushR6Pending();
@@ -117,23 +126,36 @@ struct StoredRec {
 
 static std::string g_run_id;
 static std::string g_source_revision = S2_KHOOK_SOURCE_REVISION;
+static std::string g_artifact_identity;
+static std::map<std::string, StoredRec> g_terminals;
 static bool g_run_bound = false;
 static bool g_collected = false;
 static bool g_probe_retiring = false;
+static std::string g_probe_generation;
 static std::vector<StoredRec> g_stored;
 static std::string g_emit_run;
-static std::string g_command_route = "unobserved";
 static std::string g_command_route_note =
-    "continue/handled original is DispatchConCommand + probe callback on s2_khook_probe_token; "
-    "ClientCommand evidence is the unrecognized name s2khook_cc_entry. Never label "
-    "DispatchConCommand-only as ClientCommand evidence. RCON is a control operation.";
+    "real-client ClientCommand virtual PRE/POST plus independent Function original; "
+    "default unregistered fixture name reaches engine unknown-command handling";
+
+static bool ValidDigest(const std::string& digest) {
+    if (digest.size() != 64) return false;
+    for (char c : digest) if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    return true;
+}
+static bool BindArtifact(const std::string& digest) {
+    if (!ValidDigest(digest) || (!g_artifact_identity.empty() && g_artifact_identity != digest)) return false;
+    g_artifact_identity = digest;
+    return true;
+}
 
 static std::string RecordLine(const StoredRec& r) {
     return std::string("{\"schema\":1,\"suite\":\"A\",\"run_id\":\"") + JsonEscape(g_emit_run.c_str()) +
-           "\",\"source_revision\":\"" + JsonEscape(g_source_revision.c_str()) + "\",\"case\":\"" +
+           "\",\"source_revision\":\"" + JsonEscape(g_source_revision.c_str()) + "\",\"artifact_identity\":\"" +
+           g_artifact_identity + "\",\"case\":\"" +
            JsonEscape(r.cse.c_str()) + "\",\"subcheck\":\"" + JsonEscape(r.sub.c_str()) +
            "\",\"producer\":\"" + JsonEscape(r.producer.c_str()) + "\",\"result\":\"" +
-           JsonEscape(r.result.c_str()) + "\",\"expected\":" + r.expected + ",\"actual\":" + r.actual +
+           JsonEscape((g_artifact_identity.empty() && r.result == "pass") ? "pending" : r.result.c_str()) + "\",\"expected\":" + r.expected + ",\"actual\":" + r.actual +
            ",\"evidence\":\"" + JsonEscape(r.evidence.c_str()) + "\"}";
 }
 
@@ -355,13 +377,12 @@ static S2HookState g_frame_receipt = S2HookState::Failed;
 static S2HookState g_fn_new_receipt = S2HookState::Failed;
 static S2HookState g_fn_share_receipt = S2HookState::Failed;
 
-static int g_cc_entry_pre = 0, g_cc_entry_post = 0;
-static int g_dc_cont_pre = 0, g_dc_cont_post = 0, g_dc_cont_skip = 0;
-static int g_dc_hand_pre = 0, g_dc_hand_post = 0, g_dc_hand_skip = 0;
+static int g_cc_cont_pre = 0, g_cc_cont_post = 0, g_cc_cont_skip = 0;
+static int g_cc_hand_pre = 0, g_cc_hand_post = 0, g_cc_hand_skip = 0;
 static int g_engine_continue = 0, g_engine_handled = 0;
-static int g_dc_ctrl_missing_pre = 0, g_engine_ctrl_missing = 0;
-static int g_dc_flip_c_pre = 0, g_dc_flip_c_skip = 0, g_engine_flip_c = 0;
-static int g_dc_flip_h_pre = 0, g_dc_flip_h_skip = 0, g_engine_flip_h = 0;
+static int g_cc_ctrl_missing_pre = 0, g_engine_ctrl_missing = 0;
+static int g_cc_flip_c_pre = 0, g_cc_flip_c_skip = 0, g_engine_flip_c = 0;
+static int g_cc_flip_h_pre = 0, g_cc_flip_h_skip = 0, g_engine_flip_h = 0;
 static int g_last_slot = -1;
 static uint64 g_last_xuid = 0;
 static int g_slot_gen[64];
@@ -374,16 +395,16 @@ static bool CmdNamed(const CCommand& args, const char* name) {
 }
 
 static bool CmdToken(const CCommand& args, const char* token) {
-    if (!token || !CmdNamed(args, kTokenCmd)) {
-        return false;
-    }
-    const char* a1 = args.Arg(1);
-    return a1 && std::strcmp(a1, token) == 0;
+    const std::string configured = ProbeCvarStr("s2_khook_accept_command");
+    const char* name = configured.empty() ? kTokenCmd : configured.c_str();
+    return g_run_bound && token && CmdNamed(args, name) && args.Arg(1) && args.Arg(2) &&
+           g_run_id == args.Arg(1) && std::strcmp(args.Arg(2), token) == 0;
 }
-
-static bool CmdCcEntry(const CCommand& args) { return CmdNamed(args, kCcEntryCmd); }
-
-static bool RealClientSlot(const CCommandContext& ctx) { return ctx.GetPlayerSlot().Get() >= 0; }
+static bool RealClientSlot(CPlayerSlot slot) {
+    const int s = slot.Get();
+    return s >= 0 && s < 64 && g_slot_xuid[s] != 0;
+}
+static bool RealClientSlot(const CCommandContext& ctx) { return RealClientSlot(ctx.GetPlayerSlot()); }
 
 struct ModText {
     const uint8_t* text;
@@ -532,14 +553,12 @@ public:
     IGameEventManager2* events = nullptr;
     ICvar* icvar = nullptr;
     ConCommandRef cmdRef{};
-    ConCommandRef tokenRef{};
 };
 
 static ProbePlugin g_plugin;
 PLUGIN_EXPOSE(ProbePlugin, g_plugin);
 
 static std::string g_cmdNameStore = kCmdName;
-static std::string g_tokenNameStore = kTokenCmd;
 static std::string g_revCvarName = "s2_khook_source_revision";
 static std::string g_revCvarHelp = "khook-probe baked source revision (not a live pass)";
 static std::string g_revCvarDefault = S2_KHOOK_SOURCE_REVISION;
@@ -603,88 +622,40 @@ KHook::Return<void> ProbePlugin::Hook_GameFrame(ISource2Server* s, bool, bool, b
     return S2_Ignore();
 }
 
-KHook::Return<void> ProbePlugin::Hook_ClientCommand(ISource2GameClients* c, CPlayerSlot,
+KHook::Return<void> ProbePlugin::Hook_ClientCommand(ISource2GameClients* c, CPlayerSlot slot,
                                                     const CCommand& args) {
     auto obs = clientCommand.Observe(c);
-    if (!obs) {
-        return S2_Ignore();
-    }
-    if (CmdCcEntry(args)) {
-        g_cc_entry_pre++;
-    }
+    if (!obs || !RealClientSlot(slot)) return S2_Ignore();
+    if (CmdToken(args, kContinueToken)) ++g_cc_cont_pre;
+    else if (CmdToken(args, kHandledToken)) ++g_cc_hand_pre;
+    else if (CmdToken(args, kCtrlMissingToken)) ++g_cc_ctrl_missing_pre;
+    else if (CmdToken(args, kCtrlFlipContinueToken)) ++g_cc_flip_c_pre;
+    else if (CmdToken(args, kCtrlFlipHandledToken)) ++g_cc_flip_h_pre;
     return S2_Ignore();
 }
 
-KHook::Return<void> ProbePlugin::Hook_ClientCommandPost(ISource2GameClients* c, CPlayerSlot,
+KHook::Return<void> ProbePlugin::Hook_ClientCommandPost(ISource2GameClients* c, CPlayerSlot slot,
                                                        const CCommand& args) {
     auto obs = clientCommand.Observe(c);
-    if (!obs) {
-        return S2_Ignore();
-    }
-    if (CmdCcEntry(args)) {
-        g_cc_entry_post++;
-    }
-    return S2_Ignore();
-}
-
-KHook::Return<void> ProbePlugin::Hook_DispatchConCommand(ICvar* cvar, ConCommandRef,
-                                                       const CCommandContext& ctx,
-                                                       const CCommand& args) {
-    auto obs = dispatchConCommand.Observe(cvar);
-    if (!obs) {
-        return S2_Ignore();
-    }
-    const bool real_client = RealClientSlot(ctx);
-    if (CmdToken(args, kContinueToken)) {
-        if (real_client) {
-            g_dc_cont_pre++;
-        }
-    } else if (CmdToken(args, kHandledToken)) {
-        if (real_client) {
-            g_dc_hand_pre++;
-        }
-    } else if (CmdToken(args, kCtrlMissingToken)) {
-        g_dc_ctrl_missing_pre++;
-    } else if (CmdToken(args, kCtrlFlipContinueToken)) {
-        g_dc_flip_c_pre++;
-    } else if (CmdToken(args, kCtrlFlipHandledToken)) {
-        g_dc_flip_h_pre++;
-    }
-    return S2_Ignore();
-}
-
-KHook::Return<void> ProbePlugin::Hook_DispatchConCommandPost(ICvar* cvar, ConCommandRef,
-                                                            const CCommandContext& ctx,
-                                                            const CCommand& args) {
-    auto obs = dispatchConCommand.Observe(cvar);
-    if (!obs) {
-        return S2_Ignore();
-    }
+    if (!obs || !RealClientSlot(slot)) return S2_Ignore();
     const bool skipped = KHook::WasOriginalFunctionSkipped();
-    const bool real_client = RealClientSlot(ctx);
-    if (CmdToken(args, kContinueToken)) {
-        if (real_client) {
-            g_dc_cont_post++;
-            if (skipped) {
-                g_dc_cont_skip++;
-            }
-        }
-    } else if (CmdToken(args, kHandledToken)) {
-        if (real_client) {
-            g_dc_hand_post++;
-            if (skipped) {
-                g_dc_hand_skip++;
-            }
-        }
-    } else if (CmdToken(args, kCtrlFlipContinueToken)) {
-        if (skipped) {
-            g_dc_flip_c_skip++;
-        }
-    } else if (CmdToken(args, kCtrlFlipHandledToken)) {
-        if (skipped) {
-            g_dc_flip_h_skip++;
-        }
-    }
+    if (CmdToken(args, kContinueToken)) { ++g_cc_cont_post; if (skipped) ++g_cc_cont_skip; }
+    else if (CmdToken(args, kHandledToken)) { ++g_cc_hand_post; if (skipped) ++g_cc_hand_skip; }
+    else if (CmdToken(args, kCtrlFlipContinueToken) && skipped) ++g_cc_flip_c_skip;
+    else if (CmdToken(args, kCtrlFlipHandledToken) && skipped) ++g_cc_flip_h_skip;
+    return S2_Ignore();
+}
+
+// DispatchConCommand remains a separate shared consumer. It supplies no
+// ClientCommand evidence; the acceptance token is deliberately not registered.
+KHook::Return<void> ProbePlugin::Hook_DispatchConCommand(ICvar* cvar, ConCommandRef,
+                                                       const CCommandContext&, const CCommand&) {
+    auto obs = dispatchConCommand.Observe(cvar);
+    return S2_Ignore();
+}
+KHook::Return<void> ProbePlugin::Hook_DispatchConCommandPost(ICvar* cvar, ConCommandRef,
+                                                            const CCommandContext&, const CCommand&) {
+    auto obs = dispatchConCommand.Observe(cvar);
     return S2_Ignore();
 }
 
@@ -713,9 +684,9 @@ KHook::Return<bool> ProbePlugin::Hook_FireEventPost(IGameEventManager2* mgr, IGa
 
 KHook::Return<void> ProbePlugin::Hook_OnClientConnected(ISource2GameClients* c, CPlayerSlot slot,
                                                         const char*, uint64 xuid, const char*,
-                                                        const char*, bool) {
+                                                        const char*, bool fake) {
     auto obs = onConnected.Observe(c);
-    if (obs) {
+    if (obs && !fake && xuid != 0) {
         g_clients_connected++;
         const int s = slot.Get();
         if (s >= 0 && s < 64) {
@@ -728,27 +699,18 @@ KHook::Return<void> ProbePlugin::Hook_OnClientConnected(ISource2GameClients* c, 
     return S2_Ignore();
 }
 
-static void ProbeTokenCommand(const CCommandContext& ctx, const CCommand& cmd) {
-    S2HookDispatchGuard guard;
-    if (!guard) {
-        return;
-    }
-    const bool real_client = RealClientSlot(ctx);
-    if (CmdToken(cmd, kContinueToken)) {
-        if (real_client) {
-            g_engine_continue++;
-        }
-    } else if (CmdToken(cmd, kHandledToken)) {
-        if (real_client) {
-            g_engine_handled++;
-        }
-    } else if (CmdToken(cmd, kCtrlMissingToken)) {
-        g_engine_ctrl_missing++;
-    } else if (CmdToken(cmd, kCtrlFlipContinueToken)) {
-        g_engine_flip_c++;
-    } else if (CmdToken(cmd, kCtrlFlipHandledToken)) {
-        g_engine_flip_h++;
-    }
+static KHook::Return<void> CommandOriginalPost(ISource2GameClients*, CPlayerSlot, const CCommand&);
+static S2CheckedFunction<void, ISource2GameClients*, CPlayerSlot, const CCommand&>
+    g_command_original(nullptr, &CommandOriginalPost);
+static KHook::Return<void> CommandOriginalPost(ISource2GameClients*, CPlayerSlot slot, const CCommand& cmd) {
+    auto obs = g_command_original.Observe();
+    if (!obs || !RealClientSlot(slot) || KHook::WasOriginalFunctionSkipped()) return S2_Ignore();
+    if (CmdToken(cmd, kContinueToken)) ++g_engine_continue;
+    else if (CmdToken(cmd, kHandledToken)) ++g_engine_handled;
+    else if (CmdToken(cmd, kCtrlMissingToken)) ++g_engine_ctrl_missing;
+    else if (CmdToken(cmd, kCtrlFlipContinueToken)) ++g_engine_flip_c;
+    else if (CmdToken(cmd, kCtrlFlipHandledToken)) ++g_engine_flip_h;
+    return S2_Ignore();
 }
 
 static void InstallControlledHooks() {
@@ -836,8 +798,7 @@ static bool JsAcceptPresent() {
     if (!g_plugin.icvar) {
         return false;
     }
-    ConVarRef ref = g_plugin.icvar->FindConVar(kAcceptRunCvar, false);
-    return ref.IsValidRef();
+    return ProbeCvarInt("s2_khook_accept_live", 0) > 0;
 }
 
 // --- R6: SDKHooks entity/phase/reuse/map/voice/transmit/mask (not Dummy substitutes) ---
@@ -865,6 +826,7 @@ static void* g_touch_fn = nullptr;
 static bool g_touch_resolved = false;
 static void* g_game_resource = nullptr;
 static IVEngineServer2* g_engine2 = nullptr;
+static INetworkServerService* g_network_server = nullptr;
 static ISource2GameEntities* g_game_ents = nullptr;
 static IGameEventSystem* g_event_sys = nullptr;
 
@@ -896,7 +858,7 @@ static bool ProbeInServerText(const void* fn) {
     return p >= mt.text && p < mt.text + mt.size;
 }
 
-static int ProbeCvarInt(const char* name, int fallback = -1) {
+static int ProbeCvarInt(const char* name, int fallback) {
     if (!g_plugin.icvar || !name) {
         return fallback;
     }
@@ -985,6 +947,23 @@ static bool ProbeSetCvarInt(const char* name, int value) {
     return false;
 }
 
+static bool ProbeSetCvarString(const char* name, const std::string& value) {
+    if (!g_plugin.icvar) return false;
+    const ConVarRef ref = g_plugin.icvar->FindConVar(name, false);
+    if (!ref.IsValidRef()) return false;
+    ConVarData* data = g_plugin.icvar->GetConVarData(ref);
+    if (!data || data->GetType() != EConVarType_String) return false;
+    const size_t off = sizeof(ConVarData) - sizeof(CVValue_t) * MAX_SPLITSCREEN_CLIENTS;
+    auto* slot = reinterpret_cast<CVValue_t*>(reinterpret_cast<char*>(data) + off);
+    char* replacement = ::strdup(value.c_str());
+    if (!replacement) return false;
+    char* old = nullptr;
+    std::memcpy(&old, &slot->m_StringValue, sizeof(old));
+    std::memcpy(&slot->m_StringValue, &replacement, sizeof(replacement));
+    std::free(old);
+    return true;
+}
+
 static CEntityInstance* EntByIndex(int idx) {
     if (!g_game_resource || idx < 0 || idx >= MAX_TOTAL_ENTITIES) {
         return nullptr;
@@ -1024,8 +1003,12 @@ static bool EntIndexSerial(CEntityInstance* ent, int* index, int* serial) {
 
 static KHook::Return<void> Hook_R6TouchPre(CEntityInstance* self, CEntityInstance* other);
 static KHook::Return<void> Hook_R6TouchPost(CEntityInstance* self, CEntityInstance* other);
-static KHook::Return<bool> Hook_R6SetClientListening(IVEngineServer2* engine, CPlayerSlot receiver,
-                                                     CPlayerSlot sender, bool listen);
+static KHook::Return<bool> Hook_R6SetClientListening(IVEngineServer2*, CPlayerSlot, CPlayerSlot, bool);
+static KHook::Return<bool> Hook_R6SetClientListeningPost(IVEngineServer2*, CPlayerSlot, CPlayerSlot, bool);
+static KHook::Return<bool> VoiceOriginalPre(IVEngineServer2*, CPlayerSlot, CPlayerSlot, bool);
+static KHook::Return<bool> VoiceOriginalPost(IVEngineServer2*, CPlayerSlot, CPlayerSlot, bool);
+static KHook::Return<void> TouchOriginalPre(CEntityInstance*, CEntityInstance*);
+static KHook::Return<void> TouchOriginalPost(CEntityInstance*, CEntityInstance*);
 static KHook::Return<void> Hook_R6CheckTransmit(ISource2GameEntities* ents, CCheckTransmitInfo** infos,
                                                 int nInfo, CBitVec<16384>&, CBitVec<16384>&,
                                                 const Entity2Networkable_t**, const uint16*, int);
@@ -1037,7 +1020,23 @@ static KHook::Return<void> Hook_R6PostEvent(IGameEventSystem* sys, CSplitScreenS
 static S2CheckedVirtual<CEntityInstance, void, CEntityInstance*> g_hkTouchPre(&Hook_R6TouchPre, nullptr);
 static S2CheckedVirtual<CEntityInstance, void, CEntityInstance*> g_hkTouchPost(nullptr, &Hook_R6TouchPost);
 static S2CheckedVirtual<IVEngineServer2, bool, CPlayerSlot, CPlayerSlot, bool> g_hkListen(
-    &IVEngineServer2::SetClientListening, &Hook_R6SetClientListening, nullptr);
+    &IVEngineServer2::SetClientListening, &Hook_R6SetClientListening, &Hook_R6SetClientListeningPost);
+static S2CheckedFunction<bool, IVEngineServer2*, CPlayerSlot, CPlayerSlot, bool>
+    g_voice_original(&VoiceOriginalPre, &VoiceOriginalPost);
+static S2CheckedFunction<void, CEntityInstance*, CEntityInstance*>
+    g_touch_original(&TouchOriginalPre, &TouchOriginalPost);
+static CEntityInstance* g_touch_witness_target = nullptr;
+static s2khook::OriginalObservation* g_touch_witness = nullptr;
+struct VoiceCall {
+    int receiver;
+    int sender;
+    std::string phase;
+    s2khook::VoiceObservation observation;
+};
+static std::vector<VoiceCall> g_voice_calls;
+static std::map<std::string, s2khook::VoiceObservation> g_voice_observed;
+static std::array<s2khook::OriginalObservation, 6> g_js_phase_original;
+static std::array<bool, 6> g_js_phase_observed{};
 static S2CheckedVirtual<ISource2GameEntities, void, CCheckTransmitInfo**, int, CBitVec<16384>&, CBitVec<16384>&,
                         const Entity2Networkable_t**, const uint16*, int>
     g_hkTransmit(&ISource2GameEntities::CheckTransmit, nullptr, &Hook_R6CheckTransmit);
@@ -1086,7 +1085,6 @@ static bool g_reuse_invoked = false;
 static bool g_js_reuse_invoked = false;
 static bool g_post_map_invoke_attempted = false;
 static bool g_post_map_attempt_done = false;
-static bool g_fresh_reload_invoked = false;
 static bool g_map_ptrs_invalidated = false;
 static bool g_tx_first_fire_on_ent = false;
 static int g_old_index = -1;
@@ -1099,10 +1097,6 @@ static int g_stale_deliveries = 0;
 static int g_pre_map_touch = 0;
 static int g_post_map_touch = 0;
 static bool g_map_ended = false;
-static bool g_saw_js_unloaded = false;
-static int g_js_instance_at_prepare = 0;
-static bool g_js_reappeared = false;
-static bool g_js_present_at_prepare = false;
 static int g_voice_orig = 0;
 static int g_voice_allowed_true = 0;
 static int g_voice_denied_false = 0;
@@ -1152,9 +1146,6 @@ static const char* kNeedPvs =
 static const char* kNeedMask =
     "need at least two real clients; send an observable event to a strict subset, then suppress "
     "for all. Sending to every human is not a mask test";
-static const char* kNeedUnload =
-    "need s2script/probe native unload/reload with the peer still loaded (R2 pending/retry); "
-    "missing restoration must stay visible";
 static const char* kNeedMap =
     "need operator changelevel while this run stays prepared; then collect again";
 static const char* kNeedMapInvoke =
@@ -1162,6 +1153,12 @@ static const char* kNeedMapInvoke =
     "(not whatever now occupies the saved index); if no live trigger remains, pending";
 static const char* kNeedReuse =
     "slot reuse not achieved within bounded attempts; not a false pass";
+
+static s2khook::ScriptReloadObservation g_script_reload;
+static CEntityInstance* g_script_reload_target = nullptr;
+static const char* kScriptReloadExpected =
+    "{\"before_pre\":1,\"before_post\":1,\"before_original\":1,\"old_callbacks\":0,"
+    "\"new_pre\":1,\"new_post\":1,\"new_original\":1,\"generation_changed\":true,\"old_resource_removed\":true}";
 
 static void R6RemoveTouch(CEntityInstance* ent, bool pre, bool post) {
     if (!ent) {
@@ -1176,6 +1173,14 @@ static void R6RemoveTouch(CEntityInstance* ent, bool pre, bool post) {
 }
 
 static void R6CleanupOwned() {
+    // The reload target can outlive the final map stage, so resolve its identity
+    // again rather than trusting a pointer if an operator changes maps afterward.
+    int serial = -1;
+    auto* target = EntByIndex(g_script_reload.target_index);
+    if (g_util_remove && EntIndexSerial(target, nullptr, &serial) && serial == g_script_reload.target_serial)
+        g_util_remove(target);
+    g_script_reload_target = nullptr;
+    g_script_reload = {};
     R6RemoveTouch(g_nat_a, true, true);
     R6RemoveTouch(g_nat_b, true, true);
     R6RemoveTouch(g_nat_phase, true, true);
@@ -1222,7 +1227,6 @@ static void R6ResetCounters() {
     g_js_reuse_invoked = false;
     g_post_map_invoke_attempted = false;
     g_post_map_attempt_done = false;
-    g_fresh_reload_invoked = false;
     g_map_ptrs_invalidated = false;
     g_tx_first_fire_on_ent = false;
     g_old_index = g_old_serial = -1;
@@ -1233,11 +1237,11 @@ static void R6ResetCounters() {
     g_stale_deliveries = 0;
     g_pre_map_touch = g_post_map_touch = 0;
     g_map_ended = false;
-    g_saw_js_unloaded = false;
-    g_js_reappeared = false;
-    g_js_instance_at_prepare = 0;
-    g_js_present_at_prepare = false;
     g_voice_orig = 0;
+    g_voice_calls.clear();
+    g_voice_observed.clear();
+    g_js_phase_original = {};
+    g_js_phase_observed.fill(false);
     g_voice_allowed_true = 0;
     g_voice_denied_false = 0;
     g_tx_layout_ok = false;
@@ -1284,25 +1288,31 @@ static bool R6AddTouch(CEntityInstance* ent, bool pre, bool post) {
     return ok;
 }
 
-static void R6InvokeTouch(CEntityInstance* self) {
-    if (!self || g_touch_slot < 0) {
-        return;
-    }
+static s2khook::OriginalObservation R6InvokeTouch(CEntityInstance* self) {
+    s2khook::OriginalObservation result;
+    if (!self || g_touch_slot < 0) return result;
     void** vt = *reinterpret_cast<void***>(self);
-    if (!vt) {
-        return;
-    }
+    if (!vt || !vt[g_touch_slot]) return result;
+    CEntityInstance* old_target = g_touch_witness_target;
+    auto* old_witness = g_touch_witness;
+    g_touch_witness_target = self;
+    g_touch_witness = &result;
     auto fn = reinterpret_cast<TouchFn>(vt[g_touch_slot]);
-    if (!fn) {
-        return;
-    }
-    CEntityInstance* other = g_touch_other ? g_touch_other : self;
-    fn(self, other);
-    // Original runs unless a PRE Supercedes. The probe always Ignore, so the vtable
-    // call is the original witness even after POST (or both phases) are removed.
-    if (self == g_nat_phase) {
-        g_phase_orig++;
-    }
+    fn(self, g_touch_other ? g_touch_other : self);
+    g_touch_witness_target = old_target;
+    g_touch_witness = old_witness;
+    return result;
+}
+static KHook::Return<void> TouchOriginalPre(CEntityInstance* self, CEntityInstance*) {
+    auto obs = g_touch_original.Observe();
+    if (obs && self == g_touch_witness_target && g_touch_witness) g_touch_witness->Pre();
+    return S2_Ignore();
+}
+static KHook::Return<void> TouchOriginalPost(CEntityInstance* self, CEntityInstance*) {
+    auto obs = g_touch_original.Observe();
+    if (obs && self == g_touch_witness_target && g_touch_witness)
+        g_touch_witness->Post(KHook::WasOriginalFunctionSkipped());
+    return S2_Ignore();
 }
 
 static void R6TryReuse() {
@@ -1363,8 +1373,6 @@ static void R6PrepareEntities() {
     EntIndexSerial(g_nat_b, &g_idx_b, nullptr);
     EntIndexSerial(g_nat_phase, &g_idx_phase, nullptr);
     EntIndexSerial(g_nat_reuse, &g_idx_reuse, nullptr);
-    g_js_present_at_prepare = JsAcceptPresent();
-    g_js_instance_at_prepare = ProbeCvarInt("s2_khook_accept_instance", 0);
     R6TryReuse();
     if (g_nat_reuse_new) {
         EntIndexSerial(g_nat_reuse_new, &g_idx_reuse_new, nullptr);
@@ -1374,80 +1382,6 @@ static void R6PrepareEntities() {
                    "fire_event_handled_recipient_mask needs 2 clients for subset then all-suppressed.\n");
 }
 
-static void R6Snap(PhaseSnap* s) {
-    s->pre = g_phase_pre;
-    s->post = g_phase_post;
-    s->orig = g_phase_orig;
-    g_phase_pre = g_phase_post = g_phase_orig = 0;
-}
-
-static void R6AdvancePhase() {
-    if (g_phase_stage < 0 || !g_nat_phase) {
-        return;
-    }
-    if (g_phase_stage == 0) {
-        if (g_phase_pre >= 1 && g_phase_post >= 1 && g_phase_orig >= 1) {
-            R6Snap(&g_snap_sub);
-            g_have_sub = true;
-            g_hkTouchPre.Remove(g_nat_phase);
-            g_phase_pre_added = false;
-            g_phase_stage = 1;
-        }
-        return;
-    }
-    if (g_phase_stage == 1) {
-        if (g_phase_pre == 0 && g_phase_post >= 1 && g_phase_orig >= 1) {
-            R6Snap(&g_snap_rm_pre);
-            g_have_rm_pre = true;
-            g_phase_pre_added = R6AddTouch(g_nat_phase, true, false);
-            g_hkTouchPost.Remove(g_nat_phase);
-            g_phase_post_added = false;
-            g_phase_stage = 2;
-        }
-        return;
-    }
-    if (g_phase_stage == 2) {
-        if (g_phase_pre >= 1 && g_phase_post == 0 && g_phase_orig >= 1) {
-            R6Snap(&g_snap_rm_post);
-            g_have_rm_post = true;
-            g_phase_post_added = R6AddTouch(g_nat_phase, false, true);
-            g_self_unsub_armed = true;
-            g_first_pre = g_first_post = g_first_orig = 0;
-            g_second_pre = g_second_post = g_second_orig = 0;
-            g_phase_stage = 3;
-        }
-        return;
-    }
-    if (g_phase_stage == 3) {
-        if (g_first_pre == 0 && g_phase_pre >= 1) {
-            g_first_pre = g_phase_pre;
-            g_first_post = g_phase_post;
-            g_first_orig = g_phase_orig;
-            g_phase_pre = g_phase_post = g_phase_orig = 0;
-            g_self_unsub_armed = false;
-            return;
-        }
-        if (g_first_pre >= 1 && g_phase_pre == 0 && g_phase_post >= 1) {
-            g_second_pre = g_phase_pre;
-            g_second_post = g_phase_post;
-            g_second_orig = g_phase_orig;
-            g_have_self = true;
-            g_hkTouchPre.Remove(g_nat_phase);
-            g_hkTouchPost.Remove(g_nat_phase);
-            g_phase_pre_added = g_phase_post_added = false;
-            g_phase_pre = g_phase_post = g_phase_orig = 0;
-            g_phase_stage = 4;
-        }
-        return;
-    }
-    if (g_phase_stage == 4) {
-        if (g_phase_pre == 0 && g_phase_post == 0 && g_phase_orig >= 1) {
-            R6Snap(&g_snap_final);
-            g_have_final = true;
-            g_phase_stage = 5;
-        }
-    }
-}
 
 static void R6FireMaskEvent() {
     if (!g_plugin.events) {
@@ -1472,6 +1406,7 @@ static void R6FireMaskEvent() {
 }
 
 static void R6InvalidatePreMapPointers() {
+    g_script_reload_target = nullptr;
     if (g_map_ptrs_invalidated) {
         return;
     }
@@ -1531,29 +1466,9 @@ static void R6InvokePostMap() {
     }
 }
 
-static void R6DriveNativePhase() {
-    if (g_native_phase_driven || !g_nat_phase || g_phase_stage < 0) {
-        return;
-    }
-    int n = 0;
-    while (g_phase_stage >= 0 && g_phase_stage <= 4 && n < kPhaseMaxInvokes) {
-        const int before = g_phase_stage;
-        R6InvokeTouch(g_nat_phase);
-        n++;
-        R6AdvancePhase();
-        if (g_phase_stage == 3 && g_first_pre >= 1 && !g_have_self) {
-            R6InvokeTouch(g_nat_phase);
-            n++;
-            R6AdvancePhase();
-        }
-        if (g_phase_stage == before) {
-            break;
-        }
-    }
-    g_native_phase_driven = true;
-}
 
 static void R6DriveJsFilterOnce() {
+    if (!JsAcceptPresent() || ProbeCvarStr("s2_khook_accept_run") != g_run_id) return;
     if (g_js_filter_invoked) {
         return;
     }
@@ -1574,28 +1489,21 @@ static void R6DriveJsFilterOnce() {
 }
 
 static void R6DriveJsPhase() {
-    const int js_p = ProbeCvarInt("s2_khook_accept_phase_ent", -1);
-    CEntityInstance* jp = js_p >= 0 ? EntByIndex(js_p) : nullptr;
-    if (!jp) {
-        return;
+    if (!JsAcceptPresent() || ProbeCvarStr("s2_khook_accept_run") != g_run_id) return;
+    const int index = ProbeCvarInt("s2_khook_accept_phase_ent", -1);
+    const int stage = ProbeCvarInt("s2_khook_accept_phase_stage", -1);
+    if (stage < 0 || stage > 5 || g_js_phase_observed[stage]) return;
+    CEntityInstance* entity = EntByIndex(index);
+    if (!R6EntityIsTriggerPush(entity)) return;
+    const auto observed = R6InvokeTouch(entity);
+    g_js_phase_original[stage] = observed;
+    g_js_phase_observed[stage] = true;
+    const std::string ack = "{\"run_id\":\"" + JsonEscape(g_run_id.c_str()) +
+        "\",\"entity_index\":" + std::to_string(index) + ",\"stage\":" + std::to_string(stage) +
+        ",\"original\":" + std::to_string(observed.original) + "}";
+    if (!ProbeSetCvarString("s2_khook_accept_phase_ack", ack)) {
+        g_js_phase_observed[stage] = false;
     }
-    const int js_stage = ProbeCvarInt("s2_khook_accept_phase_stage", -1);
-    if (js_stage < 0 || js_stage > 3) {
-        return;
-    }
-    if (js_stage == 3) {
-        if (g_js_stage3_invokes >= 2) {
-            return;
-        }
-        R6InvokeTouch(jp);
-        g_js_stage3_invokes++;
-        return;
-    }
-    if (g_js_phase_invoked_for_stage == js_stage) {
-        return;
-    }
-    R6InvokeTouch(jp);
-    g_js_phase_invoked_for_stage = js_stage;
 }
 
 static void R6DriveReuseOnce() {
@@ -1603,7 +1511,7 @@ static void R6DriveReuseOnce() {
         R6InvokeTouch(g_nat_reuse_new);
         g_reuse_invoked = true;
     }
-    if (g_js_reuse_invoked) {
+    if (g_js_reuse_invoked || !JsAcceptPresent() || ProbeCvarStr("s2_khook_accept_run") != g_run_id) {
         return;
     }
     const int js_new = ProbeCvarInt("s2_khook_accept_reuse_new", -1);
@@ -1617,17 +1525,83 @@ static void R6DriveReuseOnce() {
     g_js_reuse_invoked = true;
 }
 
-static void R6DriveFreshReloadOnce() {
-    if (!g_js_reappeared || g_fresh_reload_invoked) {
+static bool R6ArmScriptReload() {
+    if (g_script_reload.armed) return true;
+    if (!g_run_bound || g_artifact_identity.empty() || !JsAcceptPresent() ||
+        ProbeCvarStr("s2_khook_accept_run") != g_run_id ||
+        ProbeCvarStr("s2_khook_accept_artifact") != g_artifact_identity) return false;
+    if (!g_script_reload_target) g_script_reload_target = R6SpawnPush();
+    if (!g_script_reload_target) return false;
+    if (!EntIndexSerial(g_script_reload_target, &g_script_reload.target_index, &g_script_reload.target_serial)) {
+        if (g_util_remove) g_util_remove(g_script_reload_target);
+        g_script_reload_target = nullptr;
+        return false;
+    }
+    g_script_reload.old_generation = ProbeCvarInt("s2_khook_accept_live", 0);
+    g_script_reload.armed = true;
+    ProbeSetCvarInt("s2_khook_accept_reload_target", g_script_reload.target_index);
+    ProbeSetCvarInt("s2_khook_accept_reload_ready", 0);
+    ProbeSetCvarString("s2_khook_accept_reload_ack", "");
+    return true;
+}
+
+static void R6DriveScriptReload() {
+    auto& value = g_script_reload;
+    if (!value.armed || value.after_seen || !JsAcceptPresent() ||
+        ProbeCvarStr("s2_khook_accept_run") != g_run_id ||
+        ProbeCvarStr("s2_khook_accept_artifact") != g_artifact_identity) return;
+    const int generation = ProbeCvarInt("s2_khook_accept_live", 0);
+    if (ProbeCvarInt("s2_khook_accept_reload_ready", 0) != generation) return;
+    const bool after = value.before_seen;
+    if (after) {
+        if (ProbeCvarInt("s2_khook_accept_reload_unloaded", 0) != value.old_generation) return;
+        // Entity removal may be deferred until the frame ends. Give the outgoing
+        // owner's deletion two frames, then observe once (a persistent marker fails).
+        if (++value.settle_frames < 3) return;
+        value.generation = generation;
+    } else {
+        if (generation != value.old_generation) return;
+        value.marker_index = ProbeCvarInt("s2_khook_accept_reload_marker", -1);
+        if (!EntIndexSerial(EntByIndex(value.marker_index), nullptr, &value.marker_serial)) return;
+    }
+    auto& invocation = after ? value.after : value.before;
+    auto* target = EntByIndex(value.target_index);
+    int serial = -1;
+    if (EntIndexSerial(target, nullptr, &serial) && serial == value.target_serial && R6EntityIsTriggerPush(target)) {
+        ProbeSetCvarString("s2_khook_accept_reload_trace", "");
+        ProbeSetCvarString("s2_khook_accept_reload_active", g_run_id);
+        invocation.original = R6InvokeTouch(target);
+        ProbeSetCvarString("s2_khook_accept_reload_active", "");
+        invocation.ReadTrace(ProbeCvarStr("s2_khook_accept_reload_trace"), generation);
+    }
+    if (after) {
+        int marker_serial = -1;
+        value.old_resource_removed = !EntIndexSerial(EntByIndex(value.marker_index), nullptr, &marker_serial) || marker_serial != value.marker_serial;
+        value.after_seen = true;
+    } else value.before_seen = true;
+    ProbeSetCvarString("s2_khook_accept_reload_ack", "{\"run_id\":\"" + JsonEscape(g_run_id.c_str()) +
+        "\",\"artifact_identity\":\"" + g_artifact_identity + "\",\"target_index\":" + std::to_string(value.target_index) +
+        ",\"generation\":" + std::to_string(generation) + ",\"stage\":\"" + (after ? "after" : "before") +
+        "\",\"original\":" + std::to_string(invocation.original.original) + "}");
+}
+
+static void CollectScriptReload() {
+    const auto& value = g_script_reload;
+    if (!value.before_seen || (!value.after_seen && value.before.Exact())) {
+        PushPending("entity_slot_reuse_map_teardown", "script_hot_reload", "native", kScriptReloadExpected,
+                    "reload-arm both fixtures, observe before-ack, reload only .s2sp and resume JS; native shim/probe remain loaded");
         return;
     }
-    const int js_a = ProbeCvarInt("s2_khook_accept_ent_a", -1);
-    CEntityInstance* ja = js_a >= 0 ? EntByIndex(js_a) : nullptr;
-    if (!ja) {
-        return;
-    }
-    R6InvokeTouch(ja);
-    g_fresh_reload_invoked = true;
+    const std::string actual = "{\"before_pre\":" + std::to_string(value.before.pre) + ",\"before_post\":" + std::to_string(value.before.post) +
+        ",\"before_original\":" + std::to_string(value.before.original.original) + ",\"old_callbacks\":" + std::to_string(value.before.stale + value.after.stale) +
+        ",\"new_pre\":" + std::to_string(value.after.pre) + ",\"new_post\":" + std::to_string(value.after.post) +
+        ",\"new_original\":" + std::to_string(value.after.original.original) + ",\"generation_changed\":" + JsonBool(value.generation > value.old_generation) +
+        ",\"old_resource_removed\":" + JsonBool(value.old_resource_removed) + "}";
+    const std::string evidence = "resident target=" + std::to_string(value.target_index) + ":" + std::to_string(value.target_serial) +
+        " generations=" + std::to_string(value.old_generation) + "->" + std::to_string(value.generation) +
+        " removed marker=" + std::to_string(value.marker_index) + ":" + std::to_string(value.marker_serial);
+    PushRec("entity_slot_reuse_map_teardown", "script_hot_reload", "native", value.Passed() ? "pass" : "fail",
+            kScriptReloadExpected, actual, evidence.c_str());
 }
 
 static void R6GameFrame() {
@@ -1638,15 +1612,6 @@ static void R6GameFrame() {
     if (ProbeCvarInt("s2_khook_accept_map_ended", 0) == 1) {
         g_map_ended = true;
     }
-    if (ProbeCvarInt("s2_khook_accept_unloaded", 0) == 1) {
-        g_saw_js_unloaded = true;
-    }
-    if (g_saw_js_unloaded && JsAcceptPresent()) {
-        const int inst = ProbeCvarInt("s2_khook_accept_instance", 0);
-        if (inst > g_js_instance_at_prepare) {
-            g_js_reappeared = true;
-        }
-    }
     if (g_map_ended) {
         R6InvokePostMap();
     } else {
@@ -1656,11 +1621,10 @@ static void R6GameFrame() {
             g_filter_invoked = true;
         }
         R6DriveJsFilterOnce();
-        R6DriveNativePhase();
         R6DriveJsPhase();
         R6DriveReuseOnce();
-        R6DriveFreshReloadOnce();
     }
+    R6DriveScriptReload();
     const std::string mode = ProbeCvarStr("s2_khook_accept_mask_mode");
     if (g_mask_fire_stage == 0 && mode == "subset") {
         R6FireMaskEvent();
@@ -1712,20 +1676,53 @@ KHook::Return<void> Hook_R6TouchPost(CEntityInstance* self, CEntityInstance*) {
 KHook::Return<bool> Hook_R6SetClientListening(IVEngineServer2* engine, CPlayerSlot receiver,
                                               CPlayerSlot sender, bool listen) {
     auto obs = g_hkListen.Observe(engine);
-    if (!obs) {
-        return S2_Ignore(listen);
+    if (!obs || !g_run_bound) return S2_Ignore(listen);
+    VoiceCall call{receiver.Get(), sender.Get(), ProbeCvarStr("s2_khook_accept_voice_phase"), {}};
+    call.observation.Begin(listen);
+    g_voice_calls.push_back(call);
+    return S2_Ignore(listen);
+}
+static VoiceCall* VoiceCurrent(CPlayerSlot receiver, CPlayerSlot sender) {
+    if (g_voice_calls.empty()) return nullptr;
+    auto& c = g_voice_calls.back();
+    return c.receiver == receiver.Get() && c.sender == sender.Get() ? &c : nullptr;
+}
+static KHook::Return<bool> VoiceOriginalPre(IVEngineServer2*, CPlayerSlot receiver, CPlayerSlot sender, bool listen) {
+    auto obs = g_voice_original.Observe();
+    if (obs) if (auto* call = VoiceCurrent(receiver, sender)) call->observation.original.Pre();
+    return S2_Ignore(listen);
+}
+static KHook::Return<bool> VoiceOriginalPost(IVEngineServer2* engine, CPlayerSlot receiver, CPlayerSlot sender, bool listen) {
+    auto obs = g_voice_original.Observe();
+    if (obs) if (auto* call = VoiceCurrent(receiver, sender)) {
+        // Engine Get uses owner=sender/bit=receiver; Set takes receiver,sender.
+        const bool stored = engine->GetClientListening(sender, receiver);
+        call->observation.OriginalPost(KHook::WasOriginalFunctionSkipped(), listen, stored);
     }
-    g_voice_orig++;
-    const int r = receiver.Get();
-    const int s = sender.Get();
+    return S2_Ignore(listen);
+}
+KHook::Return<bool> Hook_R6SetClientListeningPost(IVEngineServer2* engine, CPlayerSlot receiver,
+                                                  CPlayerSlot sender, bool listen) {
+    auto obs = g_hkListen.Observe(engine);
+    if (!obs) return S2_Ignore(listen);
+    auto* current = VoiceCurrent(receiver, sender);
+    if (!current) return S2_Ignore(listen);
+    VoiceCall call = *current; g_voice_calls.pop_back(); call.observation.End();
     const int speaker = ProbeCvarInt("s2_khook_accept_voice_speaker", -1);
     const int allowed = ProbeCvarInt("s2_khook_accept_voice_allowed", -1);
     const int denied = ProbeCvarInt("s2_khook_accept_voice_denied", -1);
-    if (s == speaker && r == allowed && listen) {
-        g_voice_allowed_true++;
-    }
-    if (s == speaker && r == denied && !listen) {
-        g_voice_denied_false++;
+    if (call.sender != speaker || !RealClientSlot(sender) || !RealClientSlot(receiver)) return S2_Ignore(listen);
+    std::string key;
+    if (call.phase == "policy" && call.receiver == allowed) key = "allowed";
+    if (call.phase == "policy" && call.receiver == denied) key = "denied";
+    if (call.phase == "restored" && call.receiver == denied) key = "restored";
+    if (!key.empty()) {
+        const bool expected = key != "denied";
+        auto previous = g_voice_observed.find(key);
+        // Latch the first sample and any later violation; ordinary periodic
+        // refreshes cannot inflate an exact-one invocation into a false count.
+        if (previous == g_voice_observed.end() || (previous->second.Exact(expected) && !call.observation.Exact(expected)))
+            g_voice_observed[key] = call.observation;
     }
     return S2_Ignore(listen);
 }
@@ -1848,6 +1845,8 @@ static bool R6ResolveEngine(CreateInterfaceFn engineFactory, CreateInterfaceFn s
         ret = 0;
         g_game_resource = engineFactory("GameResourceServiceServerV001", &ret);
         ret = 0;
+        g_network_server = reinterpret_cast<INetworkServerService*>(engineFactory("NetworkServerService_001", &ret));
+        ret = 0;
         g_event_sys = reinterpret_cast<IGameEventSystem*>(engineFactory(GAMEEVENTSYSTEM_INTERFACE_VERSION, &ret));
     }
     ret = 0;
@@ -1864,7 +1863,23 @@ static bool R6ResolveEngine(CreateInterfaceFn engineFactory, CreateInterfaceFn s
     return g_touch_resolved;
 }
 
+template <typename Interface, typename Member>
+static void* OriginalVirtualAddress(Interface* object, Member member, const char* module) {
+    if (!object) return nullptr;
+    const int slot = KHook::GetVtableIndex(member);
+    if (slot < 0) return nullptr;
+    void* address = KHook::FindOriginalVirtual(*reinterpret_cast<void***>(object), slot);
+    const ModText text = ProbeFindModuleText(module);
+    const auto* p = static_cast<const uint8_t*>(address);
+    return text.text && p >= text.text && p < text.text + text.size ? address : nullptr;
+}
+
 static void R6InstallEngineHooks() {
+    if (g_touch_fn) g_touch_original.Configure(g_touch_fn);
+    if (void* address = OriginalVirtualAddress(g_engine2, &IVEngineServer2::SetClientListening, "libengine2.so"))
+        g_voice_original.Configure(address);
+    if (void* address = OriginalVirtualAddress(g_plugin.gameclients, &ISource2GameClients::ClientCommand, "libserver.so"))
+        g_command_original.Configure(address);
     if (g_engine2) {
         const S2HookReceipt rec = g_hkListen.Add(g_engine2);
         g_listen_hooked = rec.Accepted();
@@ -1898,6 +1913,9 @@ static void R6BeginRetirement() {
     g_hkListen.BeginRemove();
     g_hkTransmit.BeginRemove();
     g_hkPostEvent.BeginRemove();
+    g_touch_original.BeginRemove();
+    g_voice_original.BeginRemove();
+    g_command_original.BeginRemove();
 }
 
 static void CollectR6() {
@@ -1916,44 +1934,24 @@ static void CollectR6() {
                     kNeedCreate);
     }
 
-    const std::string sub_exp = "{\"pre\":1,\"post\":1,\"original\":1}";
-    const std::string rmpre_exp = "{\"pre\":0,\"post\":1,\"original\":1}";
-    const std::string rmpost_exp = "{\"pre\":1,\"post\":0,\"original\":1}";
-    const std::string self_exp =
-        "{\"first_pre\":1,\"first_post\":1,\"second_pre\":0,\"second_post\":1,\"original_first\":1,"
-        "\"original_second\":1}";
-    const std::string fin_exp = "{\"pre\":0,\"post\":0,\"original\":1}";
-    if (g_have_sub && g_snap_sub.pre >= 1 && g_snap_sub.post >= 1 && g_snap_sub.orig >= 1) {
-        PushRec("sdkhooks_phase_removal", "native_phase_subscribe_pre_post", "native", "pass", sub_exp, sub_exp,
-                "PRE+POST+original after subscribe on CTriggerPush::Touch");
-    } else {
-        PushPending("sdkhooks_phase_removal", "native_phase_subscribe_pre_post", "native", sub_exp, kNeedAdapter);
+    const char* names[] = {"native_phase_subscribe_pre_post", "native_phase_remove_pre", "native_phase_remove_post", "", "", "native_phase_final_unsubscribe"};
+    for (int stage : {0, 1, 2, 5}) {
+        if (!g_js_phase_observed[stage]) {
+            PushPending("sdkhooks_phase_removal", names[stage], "native", "{\"original\":1}", "await matching JS entity Touch stage");
+        } else {
+            const auto& value = g_js_phase_original[stage];
+            const std::string actual = "{\"original\":" + std::to_string(value.original) + "}";
+            PushRec("sdkhooks_phase_removal", names[stage], "native", value.Once() ? "pass" : "fail",
+                    "{\"original\":1}", actual, "independent Function original on the matching SDKHooks entity invocation");
+        }
     }
-    if (g_have_rm_pre && g_snap_rm_pre.pre == 0 && g_snap_rm_pre.post >= 1 && g_snap_rm_pre.orig >= 1) {
-        PushRec("sdkhooks_phase_removal", "native_phase_remove_pre", "native", "pass", rmpre_exp, rmpre_exp,
-                "PRE removed, POST+original survive");
-    } else {
-        PushPending("sdkhooks_phase_removal", "native_phase_remove_pre", "native", rmpre_exp, kNeedAdapter);
-    }
-    if (g_have_rm_post && g_snap_rm_post.pre >= 1 && g_snap_rm_post.post == 0 && g_snap_rm_post.orig >= 1) {
-        PushRec("sdkhooks_phase_removal", "native_phase_remove_post", "native", "pass", rmpost_exp, rmpost_exp,
-                "POST removed, PRE+original survive");
-    } else {
-        PushPending("sdkhooks_phase_removal", "native_phase_remove_post", "native", rmpost_exp, kNeedAdapter);
-    }
-    if (g_have_self && g_first_pre >= 1 && g_second_pre == 0 && g_second_post >= 1 && g_first_orig >= 1 &&
-        g_second_orig >= 1) {
-        PushRec("sdkhooks_phase_removal", "native_phase_self_unsubscribe", "native", "pass", self_exp, self_exp,
-                "PRE self-unsub; second invoke POST+original only");
-    } else {
-        PushPending("sdkhooks_phase_removal", "native_phase_self_unsubscribe", "native", self_exp, kNeedAdapter);
-    }
-    if (g_have_final && g_snap_final.pre == 0 && g_snap_final.post == 0 && g_snap_final.orig >= 1) {
-        PushRec("sdkhooks_phase_removal", "native_phase_final_unsubscribe", "native", "pass", fin_exp, fin_exp,
-                "both phases removed; original still runs");
-    } else {
-        PushPending("sdkhooks_phase_removal", "native_phase_final_unsubscribe", "native", fin_exp, kNeedAdapter);
-    }
+    const std::string self_exp = "{\"original_first\":1,\"original_second\":1}";
+    if (g_js_phase_observed[3] && g_js_phase_observed[4]) {
+        const auto& first = g_js_phase_original[3]; const auto& second = g_js_phase_original[4];
+        const std::string actual = "{\"original_first\":" + std::to_string(first.original) + ",\"original_second\":" + std::to_string(second.original) + "}";
+        PushRec("sdkhooks_phase_removal", "native_phase_self_unsubscribe", "native",
+                first.Once() && second.Once() ? "pass" : "fail", self_exp, actual, "two real original Function observations on JS self-unsubscribe entity");
+    } else PushPending("sdkhooks_phase_removal", "native_phase_self_unsubscribe", "native", self_exp, "await both self-unsubscribe invocations");
 
     if (g_identity_persisted && g_old_index >= 0) {
         const std::string exp = std::string("{\"persisted\":true,\"index\":") + std::to_string(g_old_index) +
@@ -1995,26 +1993,23 @@ static void CollectR6() {
                 std::string("{\"cleared\":false,\"post_map_count\":") + std::to_string(g_post_map_touch) + "}",
                 "post-map callback still firing on old identity");
     }
-    const std::string ul_exp = "{\"reloaded\":true,\"peer_loaded\":true}";
-    if (g_js_reappeared && g_saw_js_unloaded) {
-        PushRec("entity_slot_reuse_map_teardown", "native_unload_reload", "native", "pass", ul_exp, ul_exp,
-                "JS plugin reappeared after unload; probe peer stayed loaded");
-    } else {
-        PushPending("entity_slot_reuse_map_teardown", "native_unload_reload", "native", ul_exp, kNeedUnload);
-    }
+    CollectScriptReload();
 
-    const std::string voice_bits = "{\"allowed\":true,\"denied\":false}";
-    if (g_voice_allowed_true >= 1 && g_voice_denied_false >= 1) {
-        PushRec("voice_recall", "native_voice_listen_bits", "native", "pass", voice_bits, voice_bits,
-                "SetClientListening effective bits after JS Voice.setAudibleTo");
+    const std::string voice_bits = "{\"allowed\":true,\"denied\":false,\"restored\":true}";
+    const bool voice_complete = g_voice_observed.count("allowed") && g_voice_observed.count("denied") && g_voice_observed.count("restored");
+    if (voice_complete) {
+        const auto& a = g_voice_observed.at("allowed"); const auto& d = g_voice_observed.at("denied"); const auto& r = g_voice_observed.at("restored");
+        const bool bits = a.Exact(true) && d.Exact(false) && r.Exact(true);
+        const std::string actual = "{\"allowed\":" + JsonBool(a.stored) + ",\"denied\":" + JsonBool(d.stored) + ",\"restored\":" + JsonBool(r.stored) + "}";
+        PushRec("voice_recall", "native_voice_listen_bits", "native", bits ? "pass" : "fail", voice_bits, actual,
+                "effective Function arguments and GetClientListening after policy/restore");
+        const std::string expected = "{\"allowed\":1,\"denied\":1,\"restored\":1}";
+        const std::string counts = "{\"allowed\":" + std::to_string(a.original.original) + ",\"denied\":" + std::to_string(d.original.original) + ",\"restored\":" + std::to_string(r.original.original) + "}";
+        PushRec("voice_recall", "native_voice_original_once", "native", a.original.Once() && d.original.Once() && r.original.Once() ? "pass" : "fail",
+                expected, counts, "one Function original per matching voice request, both virtual load orders");
     } else {
         PushPending("voice_recall", "native_voice_listen_bits", "native", voice_bits, kNeedThree);
-    }
-    if (g_voice_orig >= 1) {
-        PushRec("voice_recall", "native_voice_original_once", "native", "pass", "{\"orig\":1}", "{\"orig\":1}",
-                "SetClientListening original ran");
-    } else {
-        PushPending("voice_recall", "native_voice_original_once", "native", "{\"orig\":1}", kNeedThree);
+        PushPending("voice_recall", "native_voice_original_once", "native", "{\"allowed\":1,\"denied\":1,\"restored\":1}", kNeedThree);
     }
 
     const std::string lay_exp = "{\"layout_ok\":true}";
@@ -2036,7 +2031,8 @@ static void CollectR6() {
     }
 
     const std::string ho_exp = "{\"orig\":1,\"automatic_skipped\":true,\"listener\":1}";
-    const bool handled_ok = g_fe_mask_obs.listener_count >= 1 && g_fe_mask_obs.automatic_skip_count >= 1 &&
+    const bool handled_ok = g_fe_mask_obs.listener_count == 1 && g_fe_mask_obs.pre_count == 1 &&
+                            g_fe_mask_obs.post_count == 1 && g_fe_mask_obs.automatic_skip_count == 1 &&
                             g_mask_call_orig_super;
     if (handled_ok) {
         PushRec("fire_event_handled_recipient_mask", "native_handled_original_once", "native", "pass", ho_exp,
@@ -2067,13 +2063,12 @@ static void CollectR6() {
 
 
 static void ResetLiveCounters() {
-    g_cc_entry_pre = g_cc_entry_post = 0;
-    g_dc_cont_pre = g_dc_cont_post = g_dc_cont_skip = 0;
-    g_dc_hand_pre = g_dc_hand_post = g_dc_hand_skip = 0;
+    g_cc_cont_pre = g_cc_cont_post = g_cc_cont_skip = 0;
+    g_cc_hand_pre = g_cc_hand_post = g_cc_hand_skip = 0;
     g_engine_continue = g_engine_handled = 0;
-    g_dc_ctrl_missing_pre = g_engine_ctrl_missing = 0;
-    g_dc_flip_c_pre = g_dc_flip_c_skip = g_engine_flip_c = 0;
-    g_dc_flip_h_pre = g_dc_flip_h_skip = g_engine_flip_h = 0;
+    g_cc_ctrl_missing_pre = g_engine_ctrl_missing = 0;
+    g_cc_flip_c_pre = g_cc_flip_c_skip = g_engine_flip_c = 0;
+    g_cc_flip_h_pre = g_cc_flip_h_skip = g_engine_flip_h = 0;
     g_game_frames = 0;
     g_clients_connected = 0;
     g_last_slot = -1;
@@ -2083,7 +2078,6 @@ static void ResetLiveCounters() {
     g_fe_obs = s2khook::FireEventObservation{};
     g_fe_dontbroadcast_true = 0;
     g_collected = false;
-    g_command_route = "unobserved";
 }
 
 static void PushPending(const char* cse, const char* sub, const char* producer, const std::string& expected,
@@ -2106,25 +2100,24 @@ static void PushR6Pending() {
     PushPending("sdkhooks_one_of_two_entities", "native_spawn_b_ok", "native", "{\"spawned\":true}",
                 "report before collect");
     PushPending("sdkhooks_phase_removal", "native_phase_subscribe_pre_post", "native",
-                "{\"pre\":1,\"post\":1,\"original\":1}", "report before collect");
+                "{\"original\":1}", "report before collect");
     PushPending("sdkhooks_phase_removal", "native_phase_remove_pre", "native",
-                "{\"pre\":0,\"post\":1,\"original\":1}", "report before collect");
+                "{\"original\":1}", "report before collect");
     PushPending("sdkhooks_phase_removal", "native_phase_remove_post", "native",
-                "{\"pre\":1,\"post\":0,\"original\":1}", "report before collect");
+                "{\"original\":1}", "report before collect");
     PushPending("sdkhooks_phase_removal", "native_phase_self_unsubscribe", "native",
-                "{\"first_pre\":1,\"first_post\":1,\"second_pre\":0,\"second_post\":1,\"original_first\":1,"
-                "\"original_second\":1}",
+                "{\"original_first\":1,\"original_second\":1}",
                 "report before collect");
     PushPending("sdkhooks_phase_removal", "native_phase_final_unsubscribe", "native",
-                "{\"pre\":0,\"post\":0,\"original\":1}", "report before collect");
+                "{\"original\":1}", "report before collect");
     PushPending("entity_slot_reuse_map_teardown", "native_identity_persisted", "native", "{\"persisted\":true}",
                 "report before collect");
     PushPending("entity_slot_reuse_map_teardown", "native_slot_reuse_no_stale", "native",
                 "{\"stale\":false,\"reused\":true}", "report before collect");
     PushPending("entity_slot_reuse_map_teardown", "native_map_teardown_clears", "native", "{\"cleared\":true}",
                 "report before collect");
-    PushPending("entity_slot_reuse_map_teardown", "native_unload_reload", "native",
-                "{\"reloaded\":true,\"peer_loaded\":true}", "report before collect");
+    PushPending("entity_slot_reuse_map_teardown", "script_hot_reload", "native",
+                kScriptReloadExpected, "report before collect");
     PushPending("check_transmit", "native_first_fire_layout", "native", "{\"layout_ok\":true}",
                 "report before collect");
     PushPending("check_transmit", "native_per_recipient_filter", "native", "{\"a\":true,\"b\":false}",
@@ -2171,7 +2164,7 @@ static void PushInvalidOwned(const char* requested) {
         {"entity_slot_reuse_map_teardown", "native_identity_persisted"},
         {"entity_slot_reuse_map_teardown", "native_slot_reuse_no_stale"},
         {"entity_slot_reuse_map_teardown", "native_map_teardown_clears"},
-        {"entity_slot_reuse_map_teardown", "native_unload_reload"},
+        {"entity_slot_reuse_map_teardown", "script_hot_reload"},
         {"check_transmit", "native_first_fire_layout"},
         {"check_transmit", "native_per_recipient_filter"},
     };
@@ -2180,60 +2173,37 @@ static void PushInvalidOwned(const char* requested) {
     }
 }
 
-static void ObserveCommandRoute() {
-    if (g_cc_entry_pre > 0) {
-        if (g_dc_cont_pre > 0 || g_dc_hand_pre > 0) {
-            g_command_route = "ClientCommand-entry+DispatchConCommand-original";
-        } else {
-            g_command_route = "ClientCommand-entry";
-        }
-    } else if (g_dc_cont_pre > 0 || g_dc_hand_pre > 0) {
-        g_command_route = "DispatchConCommand-original";
-    } else {
-        g_command_route = "unobserved";
-    }
-}
-
 static bool ContinueOriginalOk() {
-    return g_dc_cont_pre >= 1 && g_dc_cont_post >= 1 && g_engine_continue >= 1 && g_dc_cont_skip == 0;
+    return g_cc_cont_pre == 1 && g_cc_cont_post == 1 && g_engine_continue == 1 && g_cc_cont_skip == 0;
 }
 
 static bool ContinueObserved() {
-    return g_dc_cont_pre > 0 || g_dc_cont_post > 0 || g_engine_continue > 0 || g_dc_cont_skip > 0;
+    return g_cc_cont_pre > 0 || g_cc_cont_post > 0 || g_engine_continue > 0 || g_cc_cont_skip > 0;
 }
 
 static bool HandledOriginalOk() {
-    return g_dc_hand_pre >= 1 && g_dc_hand_post >= 1 && g_engine_handled == 0 && g_dc_hand_skip >= 1;
+    return g_cc_hand_pre == 1 && g_cc_hand_post == 1 && g_engine_handled == 0 && g_cc_hand_skip == 1;
 }
 
 static bool HandledObserved() {
-    return g_dc_hand_pre > 0 || g_dc_hand_post > 0 || g_engine_handled > 0 || g_dc_hand_skip > 0;
+    return g_cc_hand_pre > 0 || g_cc_hand_post > 0 || g_engine_handled > 0 || g_cc_hand_skip > 0;
 }
 
 static void PushCommandSubchecks() {
-    ObserveCommandRoute();
-
     const std::string cont_exp = "{\"native_pre\":1,\"native_post\":1,\"engine\":1,\"skipped\":false}";
     const std::string hand_exp = "{\"native_pre\":1,\"native_post\":1,\"engine\":0,\"skipped\":true}";
-    const std::string cont_act =
-        std::string("{\"native_pre\":") + std::to_string(g_dc_cont_pre) + ",\"native_post\":" +
-        std::to_string(g_dc_cont_post) + ",\"engine\":" + std::to_string(g_engine_continue) +
-        ",\"skipped\":" + JsonBool(g_dc_cont_skip > 0) + ",\"route\":\"" + g_command_route +
-        "\",\"clientcommand_entry\":" + JsonBool(g_cc_entry_pre >= 1 && g_cc_entry_post >= 1) + "}";
-    const std::string hand_act =
-        std::string("{\"native_pre\":") + std::to_string(g_dc_hand_pre) + ",\"native_post\":" +
-        std::to_string(g_dc_hand_post) + ",\"engine\":" + std::to_string(g_engine_handled) +
-        ",\"skipped\":" + JsonBool(g_dc_hand_skip > 0) + ",\"route\":\"" + g_command_route +
-        "\",\"clientcommand_entry\":" + JsonBool(g_cc_entry_pre >= 1 && g_cc_entry_post >= 1) + "}";
+    const std::string cont_act = "{\"native_pre\":" + std::to_string(g_cc_cont_pre) + ",\"native_post\":" +
+        std::to_string(g_cc_cont_post) + ",\"engine\":" + std::to_string(g_engine_continue) + ",\"skipped\":" + JsonBool(g_cc_cont_skip > 0) + "}";
+    const std::string hand_act = "{\"native_pre\":" + std::to_string(g_cc_hand_pre) + ",\"native_post\":" +
+        std::to_string(g_cc_hand_post) + ",\"engine\":" + std::to_string(g_engine_handled) + ",\"skipped\":" + JsonBool(g_cc_hand_skip > 0) + "}";
 
     if (ContinueOriginalOk()) {
         PushRec("frame_client_command_hooks", "native_command_continue_original", "native", "pass",
-                cont_exp, cont_exp,
-                "continue token: DispatchConCommand original + probe callback (real client slot)");
+                cont_exp, cont_act, g_command_route_note.c_str());
     } else if (!ContinueObserved()) {
         PushRec("frame_client_command_hooks", "native_command_continue_original", "native", "pending",
                 cont_exp, cont_act,
-                "need a real client to issue s2_khook_probe_token s2khook-continue (RCON is control-only)");
+                "need a real client to issue s2khook_cc_entry RUN_ID s2khook-continue (RCON is control-only)");
     } else {
         PushRec("frame_client_command_hooks", "native_command_continue_original", "native", "fail",
                 cont_exp, cont_act, g_command_route_note.c_str());
@@ -2241,41 +2211,41 @@ static void PushCommandSubchecks() {
 
     if (HandledOriginalOk()) {
         PushRec("frame_client_command_hooks", "native_command_handled_skipped", "native", "pass", hand_exp,
-                hand_exp, "handled token: DispatchConCommand skipped, probe callback zero");
+                hand_act, g_command_route_note.c_str());
     } else if (!HandledObserved()) {
         PushRec("frame_client_command_hooks", "native_command_handled_skipped", "native", "pending",
                 hand_exp, hand_act,
-                "need a real client to issue s2_khook_probe_token s2khook-handled (RCON is control-only)");
+                "need a real client to issue s2khook_cc_entry RUN_ID s2khook-handled (RCON is control-only)");
     } else {
         PushRec("frame_client_command_hooks", "native_command_handled_skipped", "native", "fail", hand_exp,
                 hand_act, g_command_route_note.c_str());
     }
 
     const std::string miss_exp = "{\"detected\":true,\"engine\":1,\"js_hook\":false}";
-    if (g_dc_ctrl_missing_pre >= 1 && g_engine_ctrl_missing >= 1) {
+    if (g_cc_ctrl_missing_pre == 1 && g_engine_ctrl_missing == 1) {
         PushRec("frame_client_command_hooks", "native_control_missing_js_hook", "native", "pass", miss_exp,
                 miss_exp, "control token reached engine without a JS hook");
     } else {
         PushPending("frame_client_command_hooks", "native_control_missing_js_hook", "native", miss_exp,
-                    "need s2_khook_probe_token s2khook-ctrl-missing with JS hook disabled (RCON allowed)");
+                    "need s2khook_cc_entry RUN_ID s2khook-ctrl-missing with JS hook disabled (real connected client only)");
     }
 
     const std::string flip_exp =
         "{\"continue_engine\":0,\"handled_engine\":1,\"continue_skipped\":true,\"handled_skipped\":false}";
-    const bool flip_ok = g_dc_flip_c_pre >= 1 && g_dc_flip_h_pre >= 1 && g_engine_flip_c == 0 &&
-                          g_engine_flip_h >= 1 && g_dc_flip_c_skip >= 1 && g_dc_flip_h_skip == 0;
+    const bool flip_ok = g_cc_flip_c_pre == 1 && g_cc_flip_h_pre == 1 && g_engine_flip_c == 0 &&
+                          g_engine_flip_h == 1 && g_cc_flip_c_skip == 1 && g_cc_flip_h_skip == 0;
     if (flip_ok) {
         PushRec("frame_client_command_hooks", "native_control_flipped_decision", "native", "pass", flip_exp,
                 flip_exp, "flipped Continue was suppressed and Handled was not");
     } else {
         PushPending("frame_client_command_hooks", "native_control_flipped_decision", "native", flip_exp,
-                    "need flip tokens with JS Continue/Handled reversed (RCON allowed)");
+                    "need flip tokens with JS Continue/Handled reversed (real connected client only)");
     }
 
     const std::string omit_exp = "{\"js_plugin\":false}";
     if (!JsAcceptPresent()) {
         PushRec("frame_client_command_hooks", "native_control_omitted_acceptance_plugin", "native", "pass",
-                omit_exp, omit_exp, "s2_khook_accept_run cvar absent");
+                omit_exp, omit_exp, "JS live generation is zero after actual OnPluginEnd");
     } else {
         PushPending("frame_client_command_hooks", "native_control_omitted_acceptance_plugin", "native",
                     omit_exp, "acceptance plugin is loaded; omitted-plugin control not run this collect");
@@ -2489,16 +2459,62 @@ static void CollectRun() {
     CollectControlledAndEvents();
     CollectLiveFrameClient();
     CollectR6();
+    for (auto& rec : g_stored) {
+        const std::string key = rec.cse + ":" + rec.sub;
+        auto prior = g_terminals.find(key);
+        if (rec.result == "fail" && (prior == g_terminals.end() || prior->second.result != "fail")) g_terminals[key] = rec;
+        else if (rec.result == "pass" && prior == g_terminals.end()) g_terminals[key] = rec;
+        prior = g_terminals.find(key);
+        if (prior != g_terminals.end()) rec = prior->second;
+    }
     g_collected = true;
 }
 
 static void PrepareRun(const char* run_id) {
+    g_terminals.clear();
+    g_artifact_identity.clear();
     g_run_id = run_id ? run_id : "";
     g_run_bound = !g_run_id.empty();
     g_source_revision = S2_KHOOK_SOURCE_REVISION;
     ResetLiveCounters();
     g_stored.clear();
     R6PrepareEntities();
+}
+
+static void PrintRuntime() {
+    struct Modules { std::map<std::string, std::vector<std::string>> found; } modules;
+    dl_iterate_phdr([](dl_phdr_info* info, size_t, void* opaque) -> int {
+        auto* out = static_cast<Modules*>(opaque);
+        if (!info->dlpi_name || !info->dlpi_name[0]) return 0;
+        const char* slash = std::strrchr(info->dlpi_name, '/');
+        const std::string base = slash ? slash + 1 : info->dlpi_name;
+        std::string key;
+        if (base == "s2_khook_probe.so") key = "probe";
+        else if (base == "s2script.so") key = "shim";
+        else if (base == "libs2script_core.so") key = "core";
+        if (key.empty()) return 0;
+        char resolved[PATH_MAX];
+        if (::realpath(info->dlpi_name, resolved)) out->found[key].push_back(resolved);
+        return 0;
+    }, &modules);
+    const int build = g_engine2 ? g_engine2->GetBuildVersion() : 0;
+    INetworkGameServer* game = g_network_server ? g_network_server->GetIGameServer() : nullptr;
+    const char* map = game ? game->GetMapName() : nullptr;
+    bool ready = build > 0 && map && map[0];
+    std::string paths = "{";
+    for (const char* key : {"probe", "shim", "core"}) {
+        if (paths.size() > 1) paths += ",";
+        paths += "\"" + std::string(key) + "\":";
+        const auto& found = modules.found[key];
+        if (found.size() != 1) { paths += "null"; ready = false; }
+        else paths += "\"" + JsonEscape(found.front().c_str()) + "\"";
+    }
+    paths += "}";
+    META_CONPRINTF("{\"schema\":1,\"kind\":\"khook-runtime\",\"result\":\"%s\","
+                   "\"source_revision\":\"%s\",\"process_id\":%ld,\"probe_generation\":\"%s\","
+                   "\"server_build\":%d,\"map\":\"%s\",\"modules\":%s}\n",
+                   ready ? "ready" : "pending", S2_KHOOK_SOURCE_REVISION, static_cast<long>(::getpid()),
+                   g_probe_generation.c_str(), build, JsonEscape(map ? map : "").c_str(), paths.c_str());
 }
 
 static bool RunMatches(const char* run_id) {
@@ -2509,12 +2525,30 @@ static void ProbeCommand(const CCommandContext& ctx, const CCommand& cmd) {
     (void)ctx;
     const char* a1 = cmd.Arg(1);
     const char* a2 = cmd.Arg(2);
+    if (a1 && strcasecmp(a1, "runtime") == 0) { PrintRuntime(); return; }
+    const std::string digest = cmd.Arg(3) ? cmd.Arg(3) : "";
+    if (a1 && strcasecmp(a1, "bind") == 0) {
+        if (!RunMatches(a2) || !BindArtifact(digest)) META_CONPRINTF("[khook-probe] invalid binding\n");
+        else META_CONPRINTF("[khook-probe] bound artifact=%s\n", g_artifact_identity.c_str());
+        return;
+    }
+    if (a1 && strcasecmp(a1, "reload-arm") == 0) {
+        if (!RunMatches(a2) || !R6ArmScriptReload()) META_CONPRINTF("[khook-probe] reload-arm pending: bound JS/native run and target required\n");
+        else META_CONPRINTF("[khook-probe] script reload target=%d; arm JS and wait for before-ack\n", g_script_reload.target_index);
+        return;
+    }
+    if (a1 && strcasecmp(a1, "resume") == 0) {
+        // A resident peer needs no reconstruction. A lost native run requires a
+        // fresh prepare after server restart, not a replay of completed JS stages.
+        if (!RunMatches(a2) || !BindArtifact(digest)) META_CONPRINTF("[khook-probe] cannot resume a missing native run; start a fresh run after server restart\n");
+        return;
+    }
     if (a1 && strcasecmp(a1, "prepare") == 0) {
-        if (!a2 || !a2[0]) {
-            META_CONPRINTF("usage: s2_khook_probe prepare <run_id>\n");
-            return;
+        if (!a2 || !a2[0] || (!digest.empty() && !ValidDigest(digest))) {
+            META_CONPRINTF("usage: s2_khook_probe prepare <run_id> [artifact_sha256]\n"); return;
         }
         PrepareRun(a2);
+        if (!digest.empty()) BindArtifact(digest);
         META_CONPRINTF("{\"khook_probe\":\"prepared\",\"run_id\":\"%s\",\"source_revision\":\"%s\"}\n",
                        JsonEscape(g_run_id.c_str()).c_str(), JsonEscape(g_source_revision.c_str()).c_str());
         return;
@@ -2582,6 +2616,10 @@ static void ProbeCommand(const CCommandContext& ctx, const CCommand& cmd) {
 bool ProbePlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late) {
     (void)late;
     PLUGIN_SAVEVARS();
+    timespec loaded{};
+    clock_gettime(CLOCK_MONOTONIC, &loaded);
+    g_probe_generation = std::to_string(static_cast<long>(::getpid())) + ":" +
+        std::to_string(loaded.tv_sec) + ":" + std::to_string(loaded.tv_nsec);
 
     CreateInterfaceFn engineFactory = ismm->GetEngineFactory(false);
     CreateInterfaceFn serverFactory = ismm->GetServerFactory(false);
@@ -2604,18 +2642,6 @@ bool ProbePlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, b
     cmdRef = icvar->RegisterConCommand(setup);
     if (!cmdRef.IsValidRef()) {
         META_CONPRINTF("[khook-probe] WARN: RegisterConCommand(%s) returned invalid ref\n", kCmdName);
-    }
-
-    ConCommandCreation_t token_setup;
-    token_setup.m_pszName = g_tokenNameStore.c_str();
-    token_setup.m_pszHelpString = "Probe-owned engine original for suite A command tokens";
-    token_setup.m_nFlags = FCVAR_RELEASE;
-    token_setup.m_CBInfo = ConCommandCallbackInfo_t(&ProbeTokenCommand);
-    tokenRef = icvar->RegisterConCommand(token_setup);
-    if (!tokenRef.IsValidRef()) {
-        META_CONPRINTF("[khook-probe] WARN: RegisterConCommand(%s) returned invalid ref\n", kTokenCmd);
-    } else {
-        META_CONPRINTF("[khook-probe] ConCommand '%s' registered (engine original witness)\n", kTokenCmd);
     }
 
     ret = 0;
@@ -2648,7 +2674,7 @@ bool ProbePlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, b
         RegisterRevisionCvar(icvar);
         const S2HookReceipt drec = dispatchConCommand.Add(icvar);
         g_dispatch_hooked = drec.Accepted();
-        META_CONPRINTF("[khook-probe] DispatchConCommand Add state=%s (original-boundary witness)\n",
+        META_CONPRINTF("[khook-probe] DispatchConCommand Add state=%s (route observation only)\n",
                        StateName(drec.state));
     }
 
@@ -2727,9 +2753,6 @@ bool ProbePlugin::Unload(char* error, size_t maxlen) {
     }
     if (icvar && cmdRef.IsValidRef()) {
         icvar->UnregisterConCommandCallbacks(cmdRef);
-    }
-    if (icvar && tokenRef.IsValidRef()) {
-        icvar->UnregisterConCommandCallbacks(tokenRef);
     }
     events = nullptr;
     return true;

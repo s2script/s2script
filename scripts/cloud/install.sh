@@ -12,10 +12,10 @@
 #
 # Metamod: a present metamod.2.cs2.so is not enough. Refresh is gated by
 # scripts/verify-metamod-artifact.py against an independently supplied build
-# manifest (never invented from the candidate). The default source is the
-# corrected pinned build at build/metamod-pinned/{tree,metamod-build.json}.
-# S2_METAMOD_PINNED_TREE still requires S2_METAMOD_BUILD_MANIFEST. Automatic
-# latest-drop selection is disabled. Stage on the destination filesystem, write
+# manifest. Operators can select an official stock archive with an expected
+# checksum and confirmed PLAPI, or supply a tree and independent manifest.
+# An unmodified pinned source build is an optional test input. Automatic
+# moving-latest selection is disabled. Stage on the destination filesystem, write
 # the receipt into the staged tree, then rename; a failed swap rolls back to
 # the complete previous tree. `docker/s2script.vdf` is restored after every
 # successful swap. Marker strings and pin-origin directory names are not trust.
@@ -28,15 +28,15 @@ set -euo pipefail
 _S2_CLOUD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 S2_SCRIPT_REPO="${S2_SCRIPT_REPO:-$(cd "$_S2_CLOUD_DIR/../.." && pwd)}"
 
-# Tested Metamod pin (vendored gitlink) + plugin API floor.
-S2_METAMOD_PIN="${S2_METAMOD_PIN:-7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33}"
-S2_METAMOD_PLAPI="${S2_METAMOD_PLAPI:-18}"
+# Stock Metamod supports the plugin API required by this shim.
 S2_METAMOD_IDENTITY_NAME=".s2script-metamod-identity"
 S2_METAMOD_BUILD_COPY_NAME=".s2script-metamod-build.json"
 S2_METAMOD_SO_REL="bin/linuxsteamrt64/metamod.2.cs2.so"
 S2_METAMOD_VERIFY_PY="$S2_SCRIPT_REPO/scripts/verify-metamod-artifact.py"
-S2_METAMOD_DEFAULT_TREE="$S2_SCRIPT_REPO/build/metamod-pinned/tree"
-S2_METAMOD_DEFAULT_MANIFEST="$S2_SCRIPT_REPO/build/metamod-pinned/metamod-build.json"
+# Official release 2.0.0.1467 targets the checked upstream pin 7e24ce9e7a03.
+# Its source declares PLAPI 18; GitHub publishes this asset checksum (not a signature).
+S2_METAMOD_STOCK_RELEASE_URL="https://github.com/alliedmodders/metamod-source/releases/download/2.0.0.1467/mmsource-2.0.0-git1467-linux.tar.gz"
+S2_METAMOD_STOCK_RELEASE_SHA256="f3dd81999e93ef86d45ed8f0f451c93806ad7fba1514dafd5f2623c61ca637a2"
 
 s2_metamod_so() { echo "$1/$S2_METAMOD_SO_REL"; }
 s2_metamod_identity() { echo "$1/$S2_METAMOD_IDENTITY_NAME"; }
@@ -110,10 +110,10 @@ s2_metamod_resolve_source() {
   S2_MM_SRC_MANIFEST=""
   S2_MM_SRC_KIND=""
 
-  if [ -n "${S2_METAMOD_PINNED_TREE:-}" ]; then
-    S2_MM_SRC_TREE="$S2_METAMOD_PINNED_TREE"
+  if [ -n "${S2_METAMOD_TREE:-}" ]; then
+    S2_MM_SRC_TREE="$S2_METAMOD_TREE"
     if [ -z "${S2_METAMOD_BUILD_MANIFEST:-}" ]; then
-      echo "error: missing_manifest: S2_METAMOD_PINNED_TREE requires S2_METAMOD_BUILD_MANIFEST (independent build manifest; never invented from the candidate)" >&2
+      echo "error: missing_manifest: S2_METAMOD_TREE requires S2_METAMOD_BUILD_MANIFEST (independent artifact manifest)" >&2
       return 1
     fi
     S2_MM_SRC_MANIFEST="$S2_METAMOD_BUILD_MANIFEST"
@@ -125,36 +125,76 @@ s2_metamod_resolve_source() {
       echo "error: missing_tree: $S2_MM_SRC_TREE" >&2
       return 1
     fi
-    S2_MM_SRC_KIND="pin"
+    S2_MM_SRC_KIND="supplied-tree"
     return 0
   fi
 
-  local manifest="${S2_METAMOD_BUILD_MANIFEST:-$S2_METAMOD_DEFAULT_MANIFEST}"
-  local tree="$S2_METAMOD_DEFAULT_TREE"
-  if [ -d "$tree" ] && [ -f "$manifest" ]; then
-    S2_MM_SRC_TREE="$tree"
-    S2_MM_SRC_MANIFEST="$manifest"
-    S2_MM_SRC_KIND="pinned-build"
-    return 0
+  if [ -n "${S2_METAMOD_BUILD_MANIFEST:-}" ]; then
+    echo "error: missing_tree: S2_METAMOD_BUILD_MANIFEST needs S2_METAMOD_TREE for a fresh install" >&2
+    return 1
   fi
+  local cache archive release_url release_sha release_plapi
+  if [ -n "${S2_METAMOD_RELEASE_URL:-}${S2_METAMOD_RELEASE_ARCHIVE:-}${S2_METAMOD_RELEASE_SHA256:-}${S2_METAMOD_RELEASE_PLAPI:-}" ]; then
+    release_url="${S2_METAMOD_RELEASE_URL:-}"
+    release_sha="${S2_METAMOD_RELEASE_SHA256:-}"
+    release_plapi="${S2_METAMOD_RELEASE_PLAPI:-}"
+  else
+    release_url="$S2_METAMOD_STOCK_RELEASE_URL"
+    release_sha="$S2_METAMOD_STOCK_RELEASE_SHA256"
+    release_plapi=18  # checked source of this exact immutable release, never an arbitrary override
+  fi
+  cache="$S2_SCRIPT_REPO/build/metamod-release"
+  mkdir -p "$cache" || return 1
+  rm -f "$cache/metamod-build.json"
+  if [ -z "$release_url" ] || [ -z "$release_sha" ] || [ "$release_plapi" != "18" ]; then
+    echo "error: missing_release_identity: supply official RELEASE_URL, expected RELEASE_SHA256, and operator-confirmed RELEASE_PLAPI=18" >&2
+    return 1
+  fi
+  # Validate origin before any network request. The checksum is independent
+  # operator input; it is not claimed to be an upstream signature.
+  python3 - "$S2_METAMOD_VERIFY_PY" "$release_url" <<'PY' || return 1
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("metamod_verifier", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.official_release_url(sys.argv[2])
+PY
+  archive="${S2_METAMOD_RELEASE_ARCHIVE:-$cache/release.tar.gz}"
+  if [ -z "${S2_METAMOD_RELEASE_ARCHIVE:-}" ]; then
+    "${S2_METAMOD_CURL:-curl}" --fail --location --proto '=https' --proto-redir '=https' \
+      "$release_url" --output "$archive.tmp" || { rm -f "$archive.tmp"; return 1; }
+    mv "$archive.tmp" "$archive" || return 1
+  fi
+  python3 "$S2_METAMOD_VERIFY_PY" --prepare-release "$archive" \
+    --release-url "$release_url" --archive-sha256 "$release_sha" \
+    --release-plapi "$release_plapi" --tree "$cache/tree" \
+    --manifest "$cache/metamod-build.json" || return 1
+  S2_MM_SRC_TREE="$cache/tree"
+  S2_MM_SRC_MANIFEST="$cache/metamod-build.json"
+  S2_MM_SRC_KIND="official-release"
+  return 0
 
-  echo "error: missing_source: no corrected pinned build at $S2_METAMOD_DEFAULT_TREE + $S2_METAMOD_DEFAULT_MANIFEST and no S2_METAMOD_PINNED_TREE + S2_METAMOD_BUILD_MANIFEST" >&2
-  return 1
 }
 
 s2_metamod_skip_manifest() {
   local dest="$1"
-  if [ -n "${S2_METAMOD_BUILD_MANIFEST:-}" ] && [ -f "$S2_METAMOD_BUILD_MANIFEST" ]; then
+  if [ -n "${S2_METAMOD_BUILD_MANIFEST:-}" ]; then
+    [ -f "$S2_METAMOD_BUILD_MANIFEST" ] || return 1
     echo "$S2_METAMOD_BUILD_MANIFEST"
     return 0
   fi
-  if [ -f "$S2_METAMOD_DEFAULT_MANIFEST" ]; then
-    echo "$S2_METAMOD_DEFAULT_MANIFEST"
-    return 0
-  fi
+  [ -z "${S2_METAMOD_TREE:-}" ] || return 1
   local copied
   copied="$(s2_metamod_build_copy "$dest")"
   if [ -f "$copied" ]; then
+    if [ -n "${S2_METAMOD_RELEASE_URL:-}${S2_METAMOD_RELEASE_ARCHIVE:-}${S2_METAMOD_RELEASE_SHA256:-}${S2_METAMOD_RELEASE_PLAPI:-}" ]; then
+      python3 - "$copied" "${S2_METAMOD_RELEASE_URL:-}" "${S2_METAMOD_RELEASE_SHA256:-}" "${S2_METAMOD_RELEASE_PLAPI:-}" <<'PY' || return 1
+import json, sys
+doc = json.load(open(sys.argv[1]))
+expected = {"kind": "official-release", "url": sys.argv[2], "archive_sha256": sys.argv[3]}
+raise SystemExit(0 if doc.get("provenance") == expected and sys.argv[4] == "18" else 1)
+PY
+    fi
     echo "$copied"
     return 0
   fi
@@ -176,23 +216,23 @@ s2_metamod_tree_is_verified() {
 
 s2_write_identity() {
   local dest="$1" source="$2" artifact="$3" manifest="$4"
-  local so identity sha patch msha
+  local so identity sha provenance plapi msha
   so="$(s2_metamod_so "$dest")"
   identity="$(s2_metamod_identity "$dest")"
   [ -f "$so" ] || return 1
   [ -f "$manifest" ] || return 1
   sha="$(s2_sha256 "$so")" || return 1
   msha="$(s2_sha256 "$manifest")" || return 1
-  patch="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("patchset_sha256",""))' "$manifest")" || return 1
+  provenance="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["provenance"]["kind"])' "$manifest")" || return 1
+  plapi="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plapi"])' "$manifest")" || return 1
   if ! cat >"$identity" <<EOF
 # Installation receipt written by scripts/cloud/install.sh after a verified swap.
 # This is not the build manifest. The independent build manifest is copied beside it.
-pin=${S2_METAMOD_PIN}
-plapi=${S2_METAMOD_PLAPI}
+provenance=${provenance}
+plapi=${plapi}
 source=${source}
 artifact=${artifact}
 sha256=${sha}
-patchset_sha256=${patch}
 manifest_sha256=${msha}
 EOF
   then
@@ -322,7 +362,7 @@ s2_ensure_metamod() {
   local so dest_parent stage vdf_backup source artifact
   so="$(s2_metamod_so "$dest")"
 
-  echo "==> [install] Metamod:Source (CS2) — pin ${S2_METAMOD_PIN:0:12} / PLAPI ${S2_METAMOD_PLAPI}"
+  echo "==> [install] stock Metamod:Source (CS2), required PLAPI 18"
 
   if s2_metamod_tree_is_verified "$dest"; then
     echo "    verified artifact matches independent build manifest — skipping"
@@ -333,7 +373,7 @@ s2_ensure_metamod() {
   fi
 
   if [ -f "$so" ]; then
-    echo "    installed tree is not a verified corrected-host artifact — refreshing"
+    echo "    installed tree does not match a verified stock artifact manifest — refreshing"
   else
     echo "    $S2_METAMOD_SO_REL missing — installing"
   fi

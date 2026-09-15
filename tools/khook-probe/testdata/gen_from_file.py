@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Generate schema=1 --from-file fixtures for the frozen R4 judge.
+"""Generate synthetic schema=1 parser fixtures and test-only runtime receipts.
 
-These are host fixtures, never live evidence. source_revision is stamped to
-git HEAD so --from-file (which uses current_source_revision()) can judge them.
+No installed files or server are measured. These inputs test the judge only;
+they are never live acceptance evidence. source_revision is stamped to git HEAD
+so --from-file (which uses current_source_revision()) can judge them.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -91,8 +93,42 @@ def overlay(rows: list, key, **fields) -> None:
     raise KeyError(key)
 
 
+def synthetic_receipt(identity: dict) -> dict:
+    """A labeled test double of the receipt boundary; never a runtime claim."""
+    artifacts = {
+        name: {
+            "path": "/synthetic-khook-parser-fixture/not-installed/" + name,
+            "sha256": hashlib.sha256(("synthetic-parser-fixture:" + name).encode()).hexdigest(),
+        }
+        for name in ("shim", "core", "probe", "fixture")
+    }
+    receipt = {
+        "schema": ka.SCHEMA,
+        "kind": "khook-runtime-identity",
+        "test_fixture": "SYNTHETIC parser input; no installed artifacts or live server were verified",
+        "run_id": identity["run_id"],
+        "source_revision": identity["source_revision"],
+        "s2script_commit": identity["source_revision"],
+        "fixture_revision": identity["source_revision"],
+        "s2script_build_hash": ka.runtime_identity_digest({name: artifacts[name]["sha256"] for name in ("core", "shim")}),
+        "host_manifest_digest": hashlib.sha256(b"synthetic-parser-manifest").hexdigest(),
+        "server": "synthetic-parser.invalid:0",
+        "server_build": "synthetic-parser-fixture",
+        "initial_map": "synthetic-parser-map",
+        "verified_at": "2026-09-15T00:00:00Z",
+        "evidence_path": "synthetic-parser-fixture/no-live-capture.txt",
+        "evidence_sha256": hashlib.sha256(b"synthetic-parser-no-live-capture").hexdigest(),
+        "artifacts": artifacts,
+    }
+    receipt["artifact_identity"] = ka.runtime_identity_digest(receipt)
+    return receipt
+
+
 def write_jsonl(path: Path, rows: list) -> None:
-    path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+    receipt = synthetic_receipt(rows[0])
+    bound = [dict(row, artifact_identity=receipt["artifact_identity"]) for row in rows]
+    path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in bound))
+    path.with_suffix(".identity.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
 
 
 def main() -> int:
@@ -102,6 +138,7 @@ def main() -> int:
     rev = sys.argv[1]
     out_dir = Path(sys.argv[2])
     out_dir.mkdir(parents=True, exist_ok=True)
+    print("Synthetic parser fixtures only: no live server or installed artifacts were verified.")
 
     ident_pending = {"run_id": "khook-a-r5-pending", "source_revision": rev}
     ident_missing = {"run_id": "khook-a-r5-missing-js", "source_revision": rev}
@@ -216,7 +253,7 @@ def main() -> int:
         return 1
 
     write_r6_host_fixtures(out_dir, rev)
-    if not judge_r6_host_fixtures(out_dir):
+    if not judge_host_fixtures(out_dir):
         return 1
     return 0
 
@@ -226,11 +263,11 @@ R6_NATIVE_JS_EXPECTED = {
     ("sdkhooks_one_of_two_entities", "native_spawn_b_ok"): {"spawned": True},
     ("sdkhooks_one_of_two_entities", "js_hook_a_delivered"): {"count": 1},
     ("sdkhooks_one_of_two_entities", "js_hook_b_filtered"): {"count": 0},
-    ("sdkhooks_phase_removal", "native_phase_subscribe_pre_post"): r6.PHASE_EXPECTED["subscribe_pre_post"],
-    ("sdkhooks_phase_removal", "native_phase_remove_pre"): r6.PHASE_EXPECTED["remove_pre"],
-    ("sdkhooks_phase_removal", "native_phase_remove_post"): r6.PHASE_EXPECTED["remove_post"],
-    ("sdkhooks_phase_removal", "native_phase_self_unsubscribe"): r6.PHASE_EXPECTED["self_unsubscribe"],
-    ("sdkhooks_phase_removal", "native_phase_final_unsubscribe"): r6.PHASE_EXPECTED["final_unsubscribe"],
+    ("sdkhooks_phase_removal", "native_phase_subscribe_pre_post"): {"original": 1},
+    ("sdkhooks_phase_removal", "native_phase_remove_pre"): {"original": 1},
+    ("sdkhooks_phase_removal", "native_phase_remove_post"): {"original": 1},
+    ("sdkhooks_phase_removal", "native_phase_self_unsubscribe"): {"original_first": 1, "original_second": 1},
+    ("sdkhooks_phase_removal", "native_phase_final_unsubscribe"): {"original": 1},
     ("sdkhooks_phase_removal", "js_phase_subscribe_pre_post"): r6.js_phase_expected("subscribe_pre_post"),
     ("sdkhooks_phase_removal", "js_phase_remove_pre"): r6.js_phase_expected("remove_pre"),
     ("sdkhooks_phase_removal", "js_phase_remove_post"): r6.js_phase_expected("remove_post"),
@@ -239,13 +276,13 @@ R6_NATIVE_JS_EXPECTED = {
     ("entity_slot_reuse_map_teardown", "native_identity_persisted"): {"persisted": True, "index": 5, "serial": 3},
     ("entity_slot_reuse_map_teardown", "native_slot_reuse_no_stale"): {"stale": False, "reused": True},
     ("entity_slot_reuse_map_teardown", "native_map_teardown_clears"): {"cleared": True},
-    ("entity_slot_reuse_map_teardown", "native_unload_reload"): {"reloaded": True, "peer_loaded": True},
+    ("entity_slot_reuse_map_teardown", "script_hot_reload"): {"before_pre": 1, "before_post": 1, "before_original": 1, "old_callbacks": 0, "new_pre": 1, "new_post": 1, "new_original": 1, "generation_changed": True, "old_resource_removed": True},
     ("entity_slot_reuse_map_teardown", "js_identity_persisted"): {"persisted": True, "index": 5, "id": 11},
     ("entity_slot_reuse_map_teardown", "js_slot_reuse_no_stale"): {"stale": False, "reused": True},
     ("entity_slot_reuse_map_teardown", "js_map_teardown_clears"): {"cleared": True},
-    ("entity_slot_reuse_map_teardown", "js_fresh_subscription_after_reload"): {"fresh": True, "count": 1},
-    ("voice_recall", "native_voice_listen_bits"): {"allowed": True, "denied": False},
-    ("voice_recall", "native_voice_original_once"): {"orig": 1},
+    ("entity_slot_reuse_map_teardown", "js_fresh_subscription_after_reload"): {"fresh": True, "pre": 1, "post": 1, "original": 1},
+    ("voice_recall", "native_voice_listen_bits"): {"allowed": True, "denied": False, "restored": True},
+    ("voice_recall", "native_voice_original_once"): {"allowed": 1, "denied": 1, "restored": 1},
     ("voice_recall", "js_voice_policy_applied"): {"applied": True, "allowed_slot": 1, "denied_slot": 2},
     ("check_transmit", "native_first_fire_layout"): {"layout_ok": True},
     ("check_transmit", "native_per_recipient_filter"): {"a": True, "b": False},
@@ -420,7 +457,7 @@ def write_r6_host_fixtures(out_dir: Path, rev: str) -> None:
         rows,
         ("js", "entity_slot_reuse_map_teardown", "js_fresh_subscription_after_reload"),
         result="pending",
-        expected={"fresh": True, "count": 1},
+        expected={"fresh": True, "pre": 1, "post": 1, "original": 1},
         actual={},
         evidence=r6.pending_reason("reload_delivery"),
     )
@@ -431,30 +468,37 @@ def write_r6_host_fixtures(out_dir: Path, rev: str) -> None:
     write_jsonl(out_dir / "r6-human-pending.jsonl", r6_base(ident_human, r6_result="pass"))
 
 
-def judge_r6_host_fixtures(out_dir: Path) -> bool:
+def judge_host_fixtures(out_dir: Path) -> bool:
     checks = [
-        ("r6-phase-transitions.jsonl", 2),
-        ("r6-human-pending.jsonl", 2),
-        ("r6-slot-reuse-pending.jsonl", 2),
-        ("r6-negative-filter.jsonl", 1),
-        ("r6-stale-post-map.jsonl", 1),
-        ("r6-cleanup-reprepare.jsonl", 1),
-        ("r6-missing-actor.jsonl", 1),
-        ("r6-map-no-invoke.jsonl", 2),
-        ("r6-reload-no-delivery.jsonl", 2),
+        ("r6-pending.jsonl", 2, 5),
+        ("negative-missing-js.jsonl", 1, 5),
+        ("negative-flipped.jsonl", 1, 5),
+        ("negative-omitted-plugin.jsonl", 1, 5),
+        ("partial-continue.jsonl", 2, 5),
+        ("r6-phase-transitions.jsonl", 2, 9),
+        ("r6-human-pending.jsonl", 2, 9),
+        ("r6-slot-reuse-pending.jsonl", 2, 8),
+        ("r6-negative-filter.jsonl", 1, 8),
+        ("r6-stale-post-map.jsonl", 1, 8),
+        ("r6-cleanup-reprepare.jsonl", 1, 8),
+        ("r6-missing-actor.jsonl", 1, 9),
+        ("r6-map-no-invoke.jsonl", 2, 8),
+        ("r6-reload-no-delivery.jsonl", 2, 8),
     ]
     ok = True
-    for name, want in checks:
+    for name, want, want_pass in checks:
         path = out_dir / name
-        result = ka.judge_from_file(path, suite="A")
-        if result.exit_code != want:
+        result = ka.judge_from_file(path, suite="A", identity_receipt=path.with_suffix(".identity.json"))
+        passed = sum(status == "pass" for status in result.case_status.values())
+        if result.exit_code != want or passed != want_pass:
             print(
-                f"error: {name} expected exit {want}, got {result.exit_code}: {result.messages}",
+                f"error: {name} expected exit {want}, pass={want_pass}; "
+                f"got exit {result.exit_code}, pass={passed}: {result.messages}",
                 file=sys.stderr,
             )
             ok = False
         else:
-            print(f"ok:   r6 host fixture {name} exit {result.exit_code}")
+            print(f"ok:   synthetic host fixture {name} exit {result.exit_code}, pass={passed}")
     return ok
 
 

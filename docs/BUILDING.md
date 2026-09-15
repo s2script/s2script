@@ -138,14 +138,13 @@ the V8 prebuilt on every run.
 
 **This is the canonical build for anything that touches a real server.**
 
-The resulting `s2script.so` requires **Metamod plugin API 18** (KHook) on the **corrected** host:
-pin `7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33` (nested KHook `1e200e4cc8e0badcb7cf941525268d6977f6a4e6`)
-plus `patches/metamod-source/` (digest `patchset_sha256`). PLAPI 18 or a `GetDetourInterface` string
-alone is not enough. Build it with `scripts/build-metamod-pinned.sh` inside the sniper environment,
-then `python3 scripts/verify-metamod-artifact.py --tree build/metamod-pinned/tree --manifest
-build/metamod-pinned/metamod-build.json`. Upgrade or roll back s2script and Metamod together —
-a pre-18 plugin cannot load on the new host, including other operators' Metamod plugins on the
-same server.
+The resulting `s2script.so` requires **stock Metamod plugin API 18 support** (KHook).
+No dependency patch or private host build is required. Use a compatible official release;
+check every other native plugin's PLAPI compatibility when updating the server. The vendored
+Metamod/KHook pins are unchanged upstream source used for development and reproducible tests.
+See [installation](INSTALL.md#prerequisites) for the official-archive option and its explicit
+checksum/API confirmation. `.s2sp` plugins reload inside resident s2script; update native
+libraries by stopping and restarting the server.
 
 ---
 
@@ -171,9 +170,14 @@ automated** — a human drives it and records the result.
 
 ### One-time setup
 
-Install the **corrected** Metamod:Source host into `docker/metamod/`. That is pin
-`7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33` plus `patches/metamod-source/`, not an arbitrary
-PLAPI 18 mmsdrop. A download dated after PR #223 is not sufficient.
+Install a compatible **stock official Metamod release** into `docker/metamod/` using the
+[archive and installer instructions](INSTALL.md#prerequisites). This does not require building
+Metamod locally. The installer records schema 2 provenance and artifact hashes, rejects stale
+or malformed artifacts, and retains a full previous tree for rollback.
+
+For reproducible development tests, an optional build copies the pinned upstream sources
+without modifying them. It derives PLAPI from checked headers and emits an
+`unmodified-source` manifest after successful binary validation:
 
 ```bash
 # Requires AMBuild 2.2+, hl2sdk, Steam Runtime 3 / Debian bullseye.
@@ -183,24 +187,25 @@ docker run --rm -v "$PWD:/repo" -w /repo \
 python3 scripts/verify-metamod-artifact.py \
   --tree build/metamod-pinned/tree \
   --manifest build/metamod-pinned/metamod-build.json
+# Optional use of that source build in the local development server:
 sudo docker compose -f docker/docker-compose.yml stop cs2
-bash scripts/cloud/install.sh --metamod-only   # refuses a running CS2; rollback = docker/metamod.prev
-sudo docker compose -f docker/docker-compose.yml start cs2   # restart, never --force-recreate
+S2_METAMOD_TREE="$PWD/build/metamod-pinned/tree" \
+S2_METAMOD_BUILD_MANIFEST="$PWD/build/metamod-pinned/metamod-build.json" \
+  bash scripts/cloud/install.sh --metamod-only
+sudo docker compose -f docker/docker-compose.yml start cs2
 ```
 
-`docker/metamod/` should then hold `metamod.vdf`, `bin/`, the copied build manifest, and the
-installation receipt. `S2_METAMOD_PINNED_TREE` still needs `S2_METAMOD_BUILD_MANIFEST`.
+The source copy disables AMBuild auto-versioning and records the checked upstream commits;
+it never applies a patch or creates fabricated source history. `--prepare-only` tests source
+preparation without a compiler and leaves no success manifest. A failed rebuild also removes
+the previous success manifest so old output cannot satisfy a new build attempt.
 
-The source builder creates an isolated Git repository before applying the tracked
-patches, and disables AMBuild auto-versioning there. The verified manifest records
-the upstream source and patch identity. `--prepare-only` prepares patched source
-without claiming a successful binary build. Starting a rebuild invalidates any
-previous success manifest.
-
-`bash scripts/test-khook-sniper-build.sh` runs the corrected host, shim/core and
-optimized acceptance-probe builds in a Linux x86_64 bullseye container and checks
-their ELF/GLIBC requirements. It is part of `scripts/ci-native.sh` and requires
-Docker; passing engine-free tests alone does not replace this build gate.
+`bash scripts/test-khook-sniper-build.sh` builds the unmodified reference host, shim/core and
+optimized probe in the compatibility environment and validates their ELF/GLIBC requirements.
+These builds do not establish live `.s2sp` reload, process shutdown or human-assisted acceptance.
+The disposable build container uses Debian's signed snapshot from
+`20260831T235959Z` for bullseye and bullseye-security to keep package indexes
+and downloads consistent during their move out of the live mirrors.
 
 ### Run it
 

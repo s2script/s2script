@@ -42,11 +42,14 @@ bash scripts/test-hook-dispatch.sh
 echo "== test-khook-binding.sh (checked KHook receipts, Observe/BeginRemove) =="
 bash scripts/test-khook-binding.sh
 
-echo "== test-khook-host-lifetime.sh (patched Metamod provider/unloader) =="
-bash scripts/test-khook-host-lifetime.sh
-
 echo "== test-khook-shutdown.sh (Unload Busy/Pending/Complete) =="
 bash scripts/test-khook-shutdown.sh
+
+echo "== test-khook-command.py (production ClientCommand and registered dispatch) =="
+python3 scripts/test-khook-command.py
+
+echo "== native_fixture_test.py (production acceptance driver) =="
+python3 tools/khook-probe/testdata/native_fixture_test.py
 
 echo "== test-khook-observer.sh (consumed FireEvent observer + suite A fixtures) =="
 bash scripts/test-khook-observer.sh
@@ -54,7 +57,7 @@ bash scripts/test-khook-observer.sh
 echo "== test-install-metamod.sh (artifact verifier + install transaction) =="
 bash scripts/cloud/test-install-metamod.sh
 
-echo "== test-metamod-build.py (isolated patch application + stale receipt invalidation) =="
+echo "== test-metamod-build.py (unmodified source preparation + stale receipt invalidation) =="
 python3 scripts/test-metamod-build.py
 
 echo "== test-khook-acceptance.py (suite A judge/registry) =="
@@ -128,7 +131,7 @@ cmake --build build/shim --target ccommand_selftest -j >/dev/null
 echo "== check-shim-symbols.sh (core entry points defined; no unresolvable engine symbols) =="
 bash scripts/check-shim-symbols.sh
 
-echo "== test-khook-sniper-build.sh (actual corrected host and consumers) =="
+echo "== test-khook-sniper-build.sh (unmodified reference host and consumers) =="
 bash scripts/test-khook-sniper-build.sh
 
 echo "ci-native: all native gates passed"

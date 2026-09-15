@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Host transition spec for R6 stateful SDKHooks / human-assisted cases.
 
-This is the TDD oracle: exact counts after each phase action, filter
-negatives, stale post-map records, missing actors, and cleanup/reprepare.
+These are legacy synthetic parser inputs, not an executable engine fixture.
+Behavioral regressions execute plugin.ts and plugin.cpp in fixture.test.mjs and
+native_fixture_test.py; the shared native original observer has a C++ test.
 Live probe/JS must emit these expected objects. Human rows stay pending
 unless a real --observations file supplies them — never invent a pass.
 """
@@ -182,29 +183,9 @@ def stale_post_map_record(
 def js_phase_expected(action: str) -> dict:
     """JS may snapshot PRE/POST only. Native owns original. Do not fabricate original:1."""
     if action == "self_unsubscribe":
-        return {"first_pre": 1, "second_pre": 0, "second_post": 1}
+        return {"first_pre": 1, "first_post": 1, "second_pre": 0, "second_post": 1}
     native = dict(PHASE_EXPECTED[action])
     return {k: v for k, v in native.items() if not k.startswith("original")}
-
-
-def fresh_reload_verdict(reloaded: bool, hooked: bool, deliveries: int) -> Tuple[str, dict, str]:
-    """A new subscription must deliver once. Registration alone is not a pass."""
-    exp = {"fresh": True, "count": 1}
-    if not reloaded:
-        return (
-            "pending",
-            exp,
-            "need s2script unload/reload with the probe peer still loaded (R2 pending/retry); then collect",
-        )
-    if hooked and deliveries == 1:
-        return ("pass", exp, "fresh SDKHook delivered once after reload")
-    if hooked and deliveries == 0:
-        return (
-            "pending",
-            exp,
-            "fresh SDKHook registered; need one Touch delivery on the new subscription",
-        )
-    return ("fail", exp, "fresh subscription missing or did not deliver once")
 
 
 def layout_verdict(has_tx_ent: bool, first_fire_on_tx_ent: bool, client_int_ok: bool) -> Tuple[str, dict, str]:
@@ -275,9 +256,9 @@ def pending_reason(kind: str) -> str:
             "need at least two real clients; send an observable event to a strict subset, "
             "then suppress for all. Sending to every human is not a mask test"
         ),
-        "unload_reload": (
-            "need s2script/probe native unload/reload with the peer still loaded "
-            "(R2 pending/retry); missing restoration must stay visible"
+        "script_hot_reload": (
+            "need .s2sp reload while native s2script/probe stay loaded "
+            "and matching before/after callback/resource observations"
         ),
         "map_change": "need operator changelevel while this run stays prepared; then collect again",
         "map_invoke": (
@@ -361,13 +342,6 @@ def selftest() -> List[str]:
         errors.append("JS phase must not fabricate original")
     if "original" in js_phase_expected("final_unsubscribe"):
         errors.append("JS final must not include original")
-
-    st, _, _ = fresh_reload_verdict(True, True, 0)
-    if st != "pending":
-        errors.append("reload registration without delivery must pending")
-    st, _, _ = fresh_reload_verdict(True, True, 1)
-    if st != "pass":
-        errors.append("reload delivery once is pass")
 
     st, _, _ = layout_verdict(False, False, True)
     if st != "pending":

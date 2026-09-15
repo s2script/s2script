@@ -40,6 +40,10 @@ public:
     int setup_virtual_calls = 0;
     int find_original_calls = 0;
     int find_original_virtual_calls = 0;
+    bool invoke_typed_removal = false;
+    void* current_context = nullptr;
+    struct TypedRemoval { void* context; void* helper; };
+    std::unordered_map<KHook::HookID_t, TypedRemoval> typed_removals;
 
     struct Removal {
         KHook::HookID_t id = KHook::INVALID_HOOK;
@@ -49,22 +53,26 @@ public:
     };
     std::vector<Removal> removals;
 
-    KHook::HookID_t SetupHook(void*, void*, void*, void*, void*, void*, void*, unsigned int,
+    KHook::HookID_t SetupHook(void*, void* context, void* helper, void*, void*, void*, void*, unsigned int,
                              bool = false) override {
         ++setup_hook_calls;
         if (fail_setup) {
             return KHook::INVALID_HOOK;
         }
-        return next_id++;
+        const auto id = next_id++;
+        if (invoke_typed_removal) typed_removals.emplace(id, TypedRemoval{context, helper});
+        return id;
     }
 
-    KHook::HookID_t SetupVirtualHook(void**, int, void*, void*, void*, void*, void*, void*,
+    KHook::HookID_t SetupVirtualHook(void**, int, void* context, void* helper, void*, void*, void*, void*,
                                     unsigned int, bool = false) override {
         ++setup_virtual_calls;
         if (fail_setup) {
             return KHook::INVALID_HOOK;
         }
-        return next_id++;
+        const auto id = next_id++;
+        if (invoke_typed_removal) typed_removals.emplace(id, TypedRemoval{context, helper});
+        return id;
     }
 
     void RemoveHook(KHook::HookID_t id, bool async = false,
@@ -77,13 +85,21 @@ public:
         if (removals.empty()) {
             return;
         }
-        const Removal& r = removals.back();
+        const Removal r = removals.back();
+        const auto helper = typed_removals.find(r.id);
+        if (helper != typed_removals.end()) {
+            const auto details = helper->second;
+            typed_removals.erase(helper);
+            current_context = details.context;
+            reinterpret_cast<void (*)(KHook::HookID_t)>(details.helper)(r.id);
+            current_context = nullptr;
+        }
         if (r.fn) {
             r.fn(r.id, r.ctx);
         }
     }
 
-    void* GetContextPtr() override { return nullptr; }
+    void* GetContextPtr() override { return current_context; }
     void* GetOriginalFunction() override { return nullptr; }
     void* GetOriginalValuePtr() override { return nullptr; }
     void* GetOverrideValuePtr() override { return nullptr; }
@@ -705,6 +721,43 @@ static void test_deferred_completion_retry_shape() {
     CHECK(S2Hook_RetirementPending() == 0, "retry sees no pending retirement after completion");
 }
 
+// Removing completed-ID cleanup would make base ~Virtual call the provider
+// again for every historical ID, despite physical removal already finishing.
+static void test_completed_virtual_destruction_does_not_remove_again() {
+    FakeKHook fake;
+    fake.invoke_typed_removal = true;
+    KHook::__exported__khook = &fake;
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+    Dummy obj;
+    {
+        S2CheckedVirtual<Dummy, void> virt(0u, &DummyPre, nullptr);
+        (void)virt.Add(&obj);
+        virt.Remove(&obj);
+        virt.BeginRemove();
+        fake.FireLastCompletion();
+        CHECK(virt.Snapshot().state == S2HookState::Removed,
+              "actual Virtual removal helper and checked receipt finished");
+        CHECK(S2Hook_DrainRetirement() && S2Hook_RetirementPending() == 0,
+              "completed Virtual with empty filters has drained");
+    }
+    CHECK(fake.removals.size() == 1,
+          "completed Virtual destruction makes no second provider removal");
+}
+
+static void test_virtual_destruction_keeps_live_id_cleanup() {
+    FakeKHook fake;
+    KHook::__exported__khook = &fake;
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+    Dummy obj;
+    KHook::HookID_t id;
+    {
+        S2CheckedVirtual<Dummy, void> virt(0u, &DummyPre, nullptr);
+        id = virt.Add(&obj).id;
+    }
+    CHECK(fake.removals.size() == 1 && fake.removals[0].id == id && !fake.removals[0].async,
+          "live Virtual ID retains the base helper's synchronous destructor cleanup");
+}
+
 }  // namespace
 
 int main() {
@@ -727,6 +780,8 @@ int main() {
     test_different_address_configure_rejected_old_id_still_retires();
     test_last_subscriber_removed_still_physically_retired();
     test_deferred_completion_retry_shape();
+    test_completed_virtual_destruction_does_not_remove_again();
+    test_virtual_destruction_keeps_live_id_cleanup();
 
     if (g_fail) {
         std::cerr << g_fail << " check(s) failed\n";

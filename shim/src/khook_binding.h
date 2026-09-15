@@ -480,6 +480,31 @@ public:
     using Base::ClearHooks;
     using Base::CallOriginal;
 
+    ~S2CheckedVirtual() override {
+        // The pinned Virtual helper erases its address->id entry on physical
+        // removal but retains id->address for its destructor. Discard only
+        // completed IDs so base destruction cannot re-remove historical hooks.
+        // Live IDs retain the base helper's normal cleanup. As with BeginRemove,
+        // callers must retain this object until all pending removals complete.
+        std::vector<KHook::HookID_t> completed;
+        {
+            std::lock_guard<std::mutex> lock(this->state_->mu);
+            for (const auto& pair : this->state_->owned) {
+                if (pair.second.state == S2HookState::Removed) completed.push_back(pair.first);
+            }
+        }
+        std::lock_guard<std::mutex> lock(this->_hooks_stored);
+        for (const auto id : completed) {
+            const auto old = this->_hook_ids_addr.find(id);
+            if (old == this->_hook_ids_addr.end()) continue;
+            const auto current = this->_addr_hook_ids.find(old->second);
+            if (current != this->_addr_hook_ids.end() && current->second == id) {
+                this->_addr_hook_ids.erase(current);
+            }
+            this->_hook_ids_addr.erase(old);
+        }
+    }
+
     void Configure(std::int32_t index) {
         if (index < 0) {
             return;

@@ -47,29 +47,6 @@ assert_reason() {
 
 EXPECTED_MMS="7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33"
 EXPECTED_KHOOK="1e200e4cc8e0badcb7cf941525268d6977f6a4e6"
-EXPECTED_PATCHSET="$(python3 - "$ROOT/patches/metamod-source" <<'PY'
-import hashlib, pathlib, sys
-patch_dir = pathlib.Path(sys.argv[1])
-digest = hashlib.sha256()
-seen = set()
-for raw in (patch_dir / "series").read_text(encoding="utf-8").splitlines():
-    line = raw.strip()
-    if not line or line.startswith("#"):
-        continue
-    if line in seen:
-        raise SystemExit(f"duplicate {line}")
-    seen.add(line)
-    rel = pathlib.Path(line)
-    if rel.is_absolute() or ".." in rel.parts:
-        raise SystemExit(f"escape {line}")
-    full = patch_dir / line
-    digest.update(line.encode("utf-8"))
-    digest.update(b"\0")
-    digest.update(full.read_bytes())
-    digest.update(b"\0")
-print(digest.hexdigest())
-PY
-)"
 
 tree_digest() {
   local d="$1"
@@ -136,9 +113,9 @@ PY
 
 write_manifest() {
   local tree="$1" out="$2"
-  python3 - "$tree" "$out" "$EXPECTED_MMS" "$EXPECTED_KHOOK" "$EXPECTED_PATCHSET" <<'PY'
+  python3 - "$tree" "$out" "$EXPECTED_MMS" "$EXPECTED_KHOOK" <<'PY'
 import hashlib, json, os, sys
-tree, out, mms, khook, patch = sys.argv[1:]
+tree, out, mms, khook = sys.argv[1:]
 required = [
     "bin/linuxsteamrt64/metamod.2.cs2.so",
     "bin/linuxsteamrt64/libserver.so",
@@ -156,11 +133,9 @@ for rel in required + optional:
         h.update(fh.read())
     items.append({"path": rel, "sha256": h.hexdigest()})
 doc = {
-    "schema": 1,
+    "schema": 2,
     "plapi": 18,
-    "metamod_commit": mms,
-    "khook_commit": khook,
-    "patchset_sha256": patch,
+    "provenance": {"kind": "unmodified-source", "metamod_commit": mms, "khook_commit": khook},
     "target": "linux-x86_64",
     "glibc_max": "2.31",
     "artifacts": items,
@@ -218,8 +193,8 @@ write_curl_stub() {
   cat >"$path" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-echo curl-called >>"${S2_CURL_LOG:?}"
-echo "curl stub: mmsdrop must not be selected" >&2
+printf 'curl-called %s\n' "$*" >>"${S2_CURL_LOG:?}"
+echo "curl stub: network is disabled in transaction tests" >&2
 exit 1
 STUB
   chmod +x "$path"
@@ -231,7 +206,7 @@ run_ensure() {
   S2_METAMOD_DEST="$dest" \
   S2_METAMOD_CS2_RUNNING="${S2_METAMOD_CS2_RUNNING:-0}" \
   S2_METAMOD_CURL="$STUB_CURL" \
-  S2_METAMOD_PINNED_TREE="${S2_METAMOD_PINNED_TREE:-}" \
+  S2_METAMOD_TREE="${S2_METAMOD_TREE:-}" \
   S2_METAMOD_BUILD_MANIFEST="${S2_METAMOD_BUILD_MANIFEST:-}" \
   S2_METAMOD_VERIFY="${S2_METAMOD_VERIFY:-}" \
   S2_METAMOD_INJECT_FAIL="${S2_METAMOD_INJECT_FAIL:-}" \
@@ -276,7 +251,7 @@ write_manifest "$PINNED" "$MANIFEST"
 # ---------------------------------------------------------------------------
 # Verifier tests (real ELF fixtures). These do not go through install.sh.
 # ---------------------------------------------------------------------------
-echo "== verifier: expected corrected-build identity is accepted"
+echo "== verifier: stock source-build identity is accepted"
 set +e
 run_verify "$PINNED" "$MANIFEST" >"$WORKDIR/v-ok.out" 2>"$WORKDIR/v-ok.err"
 v_rc=$?
@@ -301,12 +276,12 @@ doc = json.loads(Path(sys.argv[1]).read_text())
 doc["patchset_sha256"] = "0" * 64
 Path(sys.argv[2]).write_text(json.dumps(doc) + "\n")
 PY
-expect_verify_fail "$PINNED" "$WORKDIR/stale-patch.json" "unexpected_patchset_sha256" "stale/wrong patch digest"
+expect_verify_fail "$PINNED" "$WORKDIR/stale-patch.json" "malformed_manifest" "obsolete patched manifest"
 python3 - "$MANIFEST" "$WORKDIR/wrong-mms.json" <<'PY'
 import json, sys
 from pathlib import Path
 doc = json.loads(Path(sys.argv[1]).read_text())
-doc["metamod_commit"] = "deadbeef" + "0" * 32
+doc["provenance"]["metamod_commit"] = "deadbeef" + "0" * 32
 Path(sys.argv[2]).write_text(json.dumps(doc) + "\n")
 PY
 expect_verify_fail "$PINNED" "$WORKDIR/wrong-mms.json" "unexpected_metamod_commit" "wrong Metamod commit"
@@ -314,7 +289,7 @@ python3 - "$MANIFEST" "$WORKDIR/wrong-khook.json" <<'PY'
 import json, sys
 from pathlib import Path
 doc = json.loads(Path(sys.argv[1]).read_text())
-doc["khook_commit"] = "cafebabe" + "0" * 32
+doc["provenance"]["khook_commit"] = "cafebabe" + "0" * 32
 Path(sys.argv[2]).write_text(json.dumps(doc) + "\n")
 PY
 expect_verify_fail "$PINNED" "$WORKDIR/wrong-khook.json" "unexpected_khook_commit" "wrong KHook commit"
@@ -392,17 +367,24 @@ write_elf "$GLIBC/bin/linuxsteamrt64/metamod.2.cs2.so" glibc_new
 write_manifest "$GLIBC" "$WORKDIR/v-glibc.json"
 expect_verify_fail "$GLIBC" "$WORKDIR/v-glibc.json" "glibc_too_new" "GLIBC requirement above 2.31"
 
-echo "== verifier: never invents a manifest from the candidate"
-if grep -nE 'dump\(|json.dump|write_text|open\([^,]+,\s*[\"'\'']w' "$VERIFY" >/dev/null 2>&1; then
-  # Allowed to read; writing a generated build manifest is forbidden.
-  if grep -nE 'json\.dump|write_text\(' "$VERIFY" >/dev/null 2>&1; then
-    bad "verifier appears to write/invent a manifest"
-  else
-    ok "verifier does not json.dump a generated manifest"
-  fi
+echo "== verifier: ordinary verification cannot invent or modify evidence"
+verify_tree_before="$(tree_digest "$PINNED")"
+verify_manifest_before="$(sha256sum "$MANIFEST" | awk '{print $1}')"
+if run_verify "$PINNED" "$MANIFEST"; then
+  ok "ordinary verification accepts the independent manifest"
 else
-  ok "verifier does not write a generated manifest"
+  bad "ordinary verification rejected the independent manifest"
 fi
+assert_eq "$(tree_digest "$PINNED")" "$verify_tree_before" "ordinary verification leaves candidate tree unchanged"
+assert_eq "$(sha256sum "$MANIFEST" | awk '{print $1}')" "$verify_manifest_before" "ordinary verification leaves input manifest unchanged"
+missing_verify_manifest="$WORKDIR/never-created-by-verify.json"
+if run_verify "$PINNED" "$missing_verify_manifest" >"$WORKDIR/readonly.out" 2>"$WORKDIR/readonly.err"; then
+  bad "ordinary verification must require an existing independent manifest"
+else
+  assert_reason "$WORKDIR/readonly.err" "missing_manifest" "ordinary verification refuses missing identity"
+fi
+assert_absent "$missing_verify_manifest" "ordinary verification never creates a missing manifest"
+assert_eq "$(tree_digest "$PINNED")" "$verify_tree_before" "missing-manifest refusal leaves candidate bytes unchanged"
 
 # ---------------------------------------------------------------------------
 # Installer transaction tests. Stub trees use explicit injected verification
@@ -420,7 +402,7 @@ mkdir -p "$ZERO_PIN/bin/linuxsteamrt64"
 write_elf "$ZERO_PIN/bin/linuxsteamrt64/libserver.so" x64 "libserver-zero-tree"
 write_manifest "$ZERO_PIN" "$WORKDIR/zero-pin.json"
 : >"$CURL_LOG"
-export S2_METAMOD_PINNED_TREE="$ZERO_PIN"
+export S2_METAMOD_TREE="$ZERO_PIN"
 export S2_METAMOD_BUILD_MANIFEST="$WORKDIR/zero-pin.json"
 unset S2_METAMOD_VERIFY || true
 unset S2_METAMOD_INJECT_FAIL || true
@@ -446,7 +428,7 @@ TEXT_PIN="$WORKDIR/text-pin"
 make_valid_tree "$TEXT_PIN"
 printf 'GetDetourInterface\n' >"$TEXT_PIN/bin/linuxsteamrt64/metamod.2.cs2.so"
 write_manifest "$TEXT_PIN" "$WORKDIR/text-pin.json"
-export S2_METAMOD_PINNED_TREE="$TEXT_PIN"
+export S2_METAMOD_TREE="$TEXT_PIN"
 export S2_METAMOD_BUILD_MANIFEST="$WORKDIR/text-pin.json"
 set +e
 run_ensure "$DEST" >"$WORKDIR/text-install.out" 2>"$WORKDIR/text-install.err"
@@ -461,7 +443,7 @@ DEST="$WORKDIR/case-nomanifest/metamod"
 make_tree "$DEST" pre18
 echo "nomanifest-keep" >"$DEST/KEEP_ME"
 before="$(tree_digest "$DEST")"
-export S2_METAMOD_PINNED_TREE="$PINNED"
+export S2_METAMOD_TREE="$PINNED"
 unset S2_METAMOD_BUILD_MANIFEST || true
 set +e
 run_ensure "$DEST" >"$WORKDIR/noman.out" 2>"$WORKDIR/noman.err"
@@ -475,7 +457,7 @@ echo "== transaction: verified ELF install, identity vs build-manifest distincti
 DEST="$WORKDIR/case-install/metamod"
 make_tree "$DEST" pre18
 echo "old-keep" >"$DEST/KEEP_ME"
-export S2_METAMOD_PINNED_TREE="$PINNED"
+export S2_METAMOD_TREE="$PINNED"
 export S2_METAMOD_BUILD_MANIFEST="$MANIFEST"
 unset S2_METAMOD_VERIFY || true
 : >"$CURL_LOG"
@@ -491,14 +473,9 @@ assert_file "$DEST/.s2script-metamod-build.json" "install copied the independent
 assert_file "$DEST/s2script.vdf" "s2script.vdf present after swap"
 assert_file "$DEST.prev/KEEP_ME" "previous tree preserved as dest.prev"
 assert_contains "$DEST.prev/KEEP_ME" "old-keep" "preserved previous operator marker"
-# Receipt is not the build manifest.
-if grep -q '"patchset_sha256"' "$DEST/.s2script-metamod-identity"; then
-  # patchset may be recorded as a receipt field; the JSON schema object must not be the receipt.
-  if python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$DEST/.s2script-metamod-identity" 2>/dev/null; then
-    bad "installation receipt must not be the JSON build manifest"
-  else
-    ok "installation receipt is not the JSON build manifest"
-  fi
+# Receipt is separate from the source/release artifact manifest.
+if python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$DEST/.s2script-metamod-identity" 2>/dev/null; then
+  bad "installation receipt must not be the JSON build manifest"
 else
   ok "installation receipt is not the JSON build manifest"
 fi
@@ -511,7 +488,7 @@ raise SystemExit(0 if a == b else 1)
 PY
 assert_exit "$?" 0 "copied build manifest matches the independent input"
 assert_contains "$DEST/.s2script-metamod-identity" "plapi=18" "receipt records plapi=18"
-assert_contains "$DEST/.s2script-metamod-identity" "pin=$EXPECTED_MMS" "receipt records tested pin"
+assert_contains "$DEST/.s2script-metamod-identity" "provenance=unmodified-source" "receipt records unmodified-source provenance"
 curl_calls="$(grep -c . "$CURL_LOG" || true)"
 assert_eq "$curl_calls" "0" "verified install does not select mmsdrop"
 
@@ -561,7 +538,7 @@ write_manifest "$STUB_PIN" "$WORKDIR/stub-pin.json"
 DEST="$WORKDIR/case-inject-pass/metamod"
 make_tree "$DEST" pre18
 echo "inject-old" >"$DEST/KEEP_ME"
-export S2_METAMOD_PINNED_TREE="$STUB_PIN"
+export S2_METAMOD_TREE="$STUB_PIN"
 export S2_METAMOD_BUILD_MANIFEST="$WORKDIR/stub-pin.json"
 export S2_METAMOD_VERIFY="inject-pass"
 if run_ensure "$DEST"; then
@@ -615,7 +592,7 @@ DEST="$WORKDIR/case-running/metamod"
 make_tree "$DEST" pre18
 echo "live-tree" >"$DEST/KEEP_ME"
 before="$(tree_digest "$DEST")"
-export S2_METAMOD_PINNED_TREE="$PINNED"
+export S2_METAMOD_TREE="$PINNED"
 export S2_METAMOD_BUILD_MANIFEST="$MANIFEST"
 unset S2_METAMOD_VERIFY || true
 S2_METAMOD_CS2_RUNNING=1
@@ -629,24 +606,68 @@ assert_eq "$(tree_digest "$DEST")" "$before" "running CS2 left dest byte-for-byt
 assert_contains "$DEST/KEEP_ME" "live-tree" "running CS2 left dest in place"
 assert_contains "$DEST/bin/linuxsteamrt64/metamod.2.cs2.so" "SourceHook version" "running CS2 did not swap the .so"
 
-echo "== transaction: no source preserves previous (drop disabled)"
+echo "== transaction: pinned official download failure preserves previous"
 DEST="$WORKDIR/case-nosource/metamod"
 make_tree "$DEST" pre18
 echo "still-here" >"$DEST/KEEP_ME"
 before="$(tree_digest "$DEST")"
 : >"$CURL_LOG"
-unset S2_METAMOD_PINNED_TREE || true
+unset S2_METAMOD_TREE || true
 unset S2_METAMOD_BUILD_MANIFEST || true
 unset S2_METAMOD_VERIFY || true
 set +e
 run_ensure "$DEST" >"$WORKDIR/nosrc.out" 2>"$WORKDIR/nosrc.err"
 stale_rc=$?
 set -e
-assert_exit "$stale_rc" 1 "no verified source exits 1"
+assert_exit "$stale_rc" 1 "failed default official download exits 1"
 assert_eq "$(tree_digest "$DEST")" "$before" "no-source path preserved dest byte-for-byte"
 assert_contains "$DEST/KEEP_ME" "still-here" "no-source preserved dest"
 curl_calls="$(grep -c . "$CURL_LOG" || true)"
-assert_eq "$curl_calls" "0" "latest-drop selection is disabled (curl not called)"
+assert_eq "$curl_calls" "1" "fresh setup selects the immutable official default"
+assert_contains "$CURL_LOG" "https://github.com/alliedmodders/metamod-source/releases/download/2.0.0.1467/mmsource-2.0.0-git1467-linux.tar.gz" "default uses exact official asset, never moving latest"
+
+echo "== transaction: stock official archive needs no private build manifest"
+RELEASE_ROOT="$WORKDIR/release-root"
+mkdir -p "$RELEASE_ROOT/addons"
+cp -a "$PINNED" "$RELEASE_ROOT/addons/metamod"
+RELEASE_ARCHIVE="$WORKDIR/official-fixture-linux.tar.gz"
+tar -czf "$RELEASE_ARCHIVE" -C "$RELEASE_ROOT" addons
+export S2_METAMOD_RELEASE_ARCHIVE="$RELEASE_ARCHIVE"
+export S2_METAMOD_RELEASE_URL="https://github.com/alliedmodders/metamod-source/releases/download/test/mmsource-fixture-linux.tar.gz"
+export S2_METAMOD_RELEASE_SHA256="$(sha256sum "$RELEASE_ARCHIVE" | awk '{print $1}')"
+export S2_METAMOD_RELEASE_PLAPI=18
+DEST="$WORKDIR/case-official/metamod"
+make_tree "$DEST" pre18
+echo "stock-previous" >"$DEST/KEEP_ME"
+if run_ensure "$DEST" >"$WORKDIR/official.out" 2>"$WORKDIR/official.err"; then
+  ok "verified stock archive installs without a private source build"
+else
+  bad "stock archive install failed: $(cat "$WORKDIR/official.err")"
+fi
+assert_file "$DEST.prev/KEEP_ME" "official stock install preserves prior tree"
+assert_contains "$DEST/.s2script-metamod-identity" "provenance=official-release" "receipt records official provenance"
+before="$(tree_digest "$DEST")"
+if run_ensure "$DEST" >"$WORKDIR/official-repeat.out" 2>"$WORKDIR/official-repeat.err"; then
+  ok "repeat stock archive selection verifies and skips"
+else
+  bad "repeat stock archive selection failed"
+fi
+assert_eq "$(tree_digest "$DEST")" "$before" "repeat official install leaves bytes unchanged"
+export S2_METAMOD_RELEASE_SHA256="$(printf '%064d' 0)"
+if run_ensure "$DEST" >"$WORKDIR/official-bad.out" 2>"$WORKDIR/official-bad.err"; then
+  bad "changed expected archive hash must invalidate the previous selection"
+else
+  assert_reason "$WORKDIR/official-bad.err" "archive_hash_mismatch" "wrong stock archive checksum rejected"
+fi
+assert_eq "$(tree_digest "$DEST")" "$before" "wrong archive checksum preserves installed stock host"
+unset S2_METAMOD_RELEASE_PLAPI
+if run_ensure "$DEST" >"$WORKDIR/official-api.out" 2>"$WORKDIR/official-api.err"; then
+  bad "unconfirmed stock release PLAPI must not install"
+else
+  assert_reason "$WORKDIR/official-api.err" "missing_release_identity" "official PLAPI is never inferred from archive checksum"
+fi
+assert_eq "$(tree_digest "$DEST")" "$before" "missing PLAPI confirmation preserves stock host"
+unset S2_METAMOD_RELEASE_ARCHIVE S2_METAMOD_RELEASE_URL S2_METAMOD_RELEASE_SHA256
 
 echo "== contract: live_gate propagates s2_ensure_metamod failure"
 if grep -E 's2_ensure_metamod .+ \|\| return 1' "$INSTALL" >/dev/null; then

@@ -2,7 +2,7 @@
 //
 // Uses only public APIs. Protocol: s2_khook_accept prepare|collect|report|teardown <run_id>.
 // `report` is read-only. Competing command() registration for the probe token is forbidden;
-// only command.onClientCommand observes it. The probe owns the engine ConCommand.
+// only command.onClientCommand observes it. The probe observes the real engine fallback original.
 //
 // R6: SDKHooks entity/phase/reuse/map/reload plus voice/transmit/recipient collection.
 // Human rows stay pending. Never invent a human pass.
@@ -25,7 +25,7 @@ import {
 import type { Client, EntityRef, HookResultValue } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
 
-const TOKEN_CMD = "s2_khook_probe_token";
+const DEFAULT_TOKEN_CMD = "s2khook_cc_entry";
 const CONTINUE_TOKEN = "s2khook-continue";
 const HANDLED_TOKEN = "s2khook-handled";
 const CTRL_MISSING = "s2khook-ctrl-missing";
@@ -60,10 +60,17 @@ interface PersistState {
   instance: number;
   deliveredA: number;
   deliveredB: number;
+  artifactIdentity: string;
+  sourceRevision: string;
+  records: Rec[];
 }
 
 let runId = "";
 let runBound = false;
+let artifactIdentity = "";
+let frozenRevision = "unknown";
+let tokenCommand = DEFAULT_TOKEN_CMD;
+const terminal = new Map<string, Rec>();
 let collected = false;
 let stored: Rec[] = [];
 let hookEnabled = true;
@@ -101,9 +108,6 @@ let preHooked = false;
 let postHooked = false;
 let selfUnsubArmed = false;
 let phaseSnaps: Record<string, PhaseSnap> = {};
-let firstInvokePre = 0;
-let firstInvokePost = 0;
-let phaseStage4At = -1;
 let reuseHooked = false;
 
 let identityIndex = -1;
@@ -118,7 +122,10 @@ let mapEnded = false;
 let preMapCallbacks = 0;
 let postMapCallbacks = 0;
 let sawReload = false;
-let freshDeliveries = 0;
+let handoff: PersistState | undefined;
+let reloadTarget: EntityRef | null = null;
+let reloadPre = 0;
+let reloadPost = 0;
 let voiceApplied = false;
 let voiceSpeaker = -1;
 let voiceAllowed = -1;
@@ -129,13 +136,13 @@ let maskAllSeen = false;
 let handledSetRecipients = false;
 let clientActions: string[] = [];
 
-function sourceRevision(): string {
-  const v = Server.getCvar("s2_khook_source_revision");
-  return v && v.length > 0 ? v : "unknown";
-}
+function sourceRevision(): string { return frozenRevision; }
 
-function tokenOf(argString: string): string {
-  return (argString || "").trim().split(/\s+/)[0] || "";
+function bindArtifact(value: string): boolean {
+  if (!/^[a-f0-9]{64}$/.test(value) || (artifactIdentity && artifactIdentity !== value)) return false;
+  artifactIdentity = value;
+  setCvar("s2_khook_accept_artifact", value);
+  return true;
 }
 
 function emit(rec: Rec): string {
@@ -144,10 +151,11 @@ function emit(rec: Rec): string {
     suite: "A",
     run_id: runId || "",
     source_revision: sourceRevision(),
+    artifact_identity: artifactIdentity,
     case: rec.case,
     subcheck: rec.subcheck,
     producer: "js",
-    result: rec.result,
+    result: !artifactIdentity && rec.result === "pass" ? "pending" : rec.result,
     expected: rec.expected,
     actual: rec.actual,
     evidence: rec.evidence,
@@ -162,15 +170,11 @@ function push(
   actual: Record<string, unknown>,
   evidence: string,
 ): void {
-  stored.push({
-    case: cse,
-    subcheck: sub,
-    producer: "js",
-    result,
-    expected,
-    actual,
-    evidence,
-  });
+  const key = cse + ":" + sub;
+  const rec: Rec = { case: cse, subcheck: sub, producer: "js", result, expected, actual, evidence };
+  const prior = terminal.get(key);
+  if (result === "fail" || (!prior && result === "pass")) terminal.set(key, rec);
+  stored.push(terminal.get(key) || rec);
 }
 
 function pending(cse: string, sub: string, expected: Record<string, unknown>, why: string): void {
@@ -235,12 +239,6 @@ function onFilterTouch(entity: EntityRef, _other: EntityRef | null): void {
     postMapCallbacks += 1;
     return;
   }
-  if (sawReload) {
-    if (entA && entity.index === entA.index && entity.id === entA.id) {
-      freshDeliveries += 1;
-    }
-    return;
-  }
   preMapCallbacks += 1;
   if (entA && entity.index === entA.index && entity.id === entA.id) deliveredA += 1;
   if (entB && entity.index === entB.index && entity.id === entB.id) deliveredB += 1;
@@ -297,85 +295,31 @@ function writePhaseStage(): void {
 }
 
 function advancePhase(): void {
-  if (!phaseEnt || !phaseEnt.isValid()) return;
+  if (!phaseEnt || !phaseEnt.isValid() || phaseStage < 0 || phaseStage > 5) return;
+  let ack: { run_id: string; entity_index: number; stage: number; original: number };
+  try { ack = JSON.parse(Server.getCvar("s2_khook_accept_phase_ack")); } catch { return; }
+  if (ack.run_id !== runId || ack.entity_index !== phaseEnt.index || ack.stage !== phaseStage) return;
+  // A native acknowledgement is published only after the real virtual invocation
+  // returned. Zero callbacks after an acknowledged call is evidence, not waiting.
+  const names = ["subscribe_pre_post", "remove_pre", "remove_post", "self_unsubscribe", "self_unsubscribe_second", "final_unsubscribe"];
+  snapPhase(names[phaseStage]);
   if (phaseStage === 0) {
-    if (phasePre >= 1 && phasePost >= 1) {
-      snapPhase("subscribe_pre_post");
-      SDKUnhook(phaseEnt, SDKHookType.Touch, onPhasePre);
-      preHooked = false;
-      phaseStage = 1;
-    }
-    writePhaseStage();
-    return;
+    SDKUnhook(phaseEnt, SDKHookType.Touch, onPhasePre); preHooked = false;
+  } else if (phaseStage === 1) {
+    preHooked = SDKHook(phaseEnt, SDKHookType.Touch, onPhasePre);
+    SDKUnhook(phaseEnt, SDKHookType.TouchPost, onPhasePost); postHooked = false;
+  } else if (phaseStage === 2) {
+    postHooked = SDKHook(phaseEnt, SDKHookType.TouchPost, onPhasePost);
+    selfUnsubArmed = true;
+  } else if (phaseStage === 3) {
+    selfUnsubArmed = false;
+  } else if (phaseStage === 4) {
+    if (preHooked) SDKUnhook(phaseEnt, SDKHookType.Touch, onPhasePre);
+    if (postHooked) SDKUnhook(phaseEnt, SDKHookType.TouchPost, onPhasePost);
+    preHooked = postHooked = false;
   }
-  if (phaseStage === 1) {
-    if (phasePre === 0 && phasePost >= 1) {
-      snapPhase("remove_pre");
-      if (!preHooked) {
-        preHooked = SDKHook(phaseEnt, SDKHookType.Touch, onPhasePre);
-      }
-      if (postHooked) {
-        SDKUnhook(phaseEnt, SDKHookType.TouchPost, onPhasePost);
-        postHooked = false;
-      }
-      phaseStage = 2;
-    }
-    writePhaseStage();
-    return;
-  }
-  if (phaseStage === 2) {
-    if (phasePre >= 1 && phasePost === 0) {
-      snapPhase("remove_post");
-      if (!postHooked) {
-        postHooked = SDKHook(phaseEnt, SDKHookType.TouchPost, onPhasePost);
-      }
-      selfUnsubArmed = true;
-      firstInvokePre = 0;
-      firstInvokePost = 0;
-      phaseStage = 3;
-    }
-    writePhaseStage();
-    return;
-  }
-  if (phaseStage === 3) {
-    if (firstInvokePre === 0 && phasePre >= 1) {
-      firstInvokePre = phasePre;
-      firstInvokePost = phasePost;
-      phasePre = 0;
-      phasePost = 0;
-      selfUnsubArmed = false;
-      writePhaseStage();
-      return;
-    }
-    if (firstInvokePre >= 1 && phasePre === 0 && phasePost >= 1) {
-      phaseSnaps.self_unsubscribe = {
-        pre: firstInvokePre,
-        post: firstInvokePost,
-      };
-      phaseSnaps.self_unsubscribe_second = { pre: phasePre, post: phasePost };
-      if (preHooked) {
-        SDKUnhook(phaseEnt, SDKHookType.Touch, onPhasePre);
-        preHooked = false;
-      }
-      if (postHooked) {
-        SDKUnhook(phaseEnt, SDKHookType.TouchPost, onPhasePost);
-        postHooked = false;
-      }
-      phasePre = 0;
-      phasePost = 0;
-      phaseStage4At = r6Frames;
-      phaseStage = 4;
-    }
-    writePhaseStage();
-    return;
-  }
-  if (phaseStage === 4) {
-    if (r6Frames > phaseStage4At && phasePre === 0 && phasePost === 0) {
-      snapPhase("final_unsubscribe");
-      phaseStage = 5;
-    }
-    writePhaseStage();
-  }
+  phaseStage += 1;
+  writePhaseStage();
 }
 
 function spawnPair(): void {
@@ -442,6 +386,7 @@ function applyVoice(): void {
   voiceAllowed = humans[1].slot;
   voiceDenied = humans[2].slot;
   voiceApplied = Voice.setAudibleTo(voiceSpeaker, [voiceAllowed]);
+  setCvar("s2_khook_accept_voice_phase", "policy");
   setCvar("s2_khook_accept_voice_speaker", String(voiceSpeaker));
   setCvar("s2_khook_accept_voice_allowed", String(voiceAllowed));
   setCvar("s2_khook_accept_voice_denied", String(voiceDenied));
@@ -452,7 +397,7 @@ function applyVoice(): void {
       voiceAllowed +
       " denied=" +
       voiceDenied +
-      ": speaker talks now (allowed hears / denied silent). After collect of denied phase, operator Voice.reset via teardown/unmuting collect.",
+      ": speaker talks now (allowed hears / denied silent). After collect of denied phase, operator run s2_khook_accept restore RUN_ID; then collect the unmuted observation.",
   );
 }
 
@@ -492,6 +437,7 @@ function applyTransmit(): void {
   }
   const slotA = humans[0].slot;
   transmitPolicy = Transmit.setVisibleTo(transmitEnt, [slotA]);
+  setCvar("s2_khook_accept_tx_phase", "policy");
   SDKHook(transmitEnt, SDKHookType.SetTransmit, onSetTransmit);
   setCvar("s2_khook_accept_tx_ent", String(transmitEnt.index));
   setCvar("s2_khook_accept_tx_a", String(slotA));
@@ -503,7 +449,7 @@ function applyTransmit(): void {
       humans[1].slot +
       " entity=" +
       transmitEnt.index +
-      ": both stand in PVS of the green S2KHOOK TRANSMIT text. A should see it, B should not. Then sm / collect restore.",
+      ": both stand in PVS of the green S2KHOOK TRANSMIT text. A should see it, B should not. Then run s2_khook_accept restore RUN_ID and capture both clients seeing the same text.",
   );
 }
 
@@ -615,52 +561,24 @@ function pushFilter(): void {
 }
 
 function pushPhase(): void {
-  const subExp = { pre: 1, post: 1 };
-  const rmPre = { pre: 0, post: 1 };
-  const rmPost = { pre: 1, post: 0 };
-  const selfExp = { first_pre: 1, second_pre: 0, second_post: 1 };
-  const finExp = { pre: 0, post: 0 };
-  const adapter =
-    "need live engine: Touch invoke through the actual SDKHooks adapter (CTriggerPush::Touch PRE+POST); " +
-    "Dummy Virtuals are supporting evidence only";
-  if (phaseStage < 0) {
-    pending("sdkhooks_phase_removal", "js_phase_subscribe_pre_post", subExp, "SDKHook Touch/TouchPost registration failed");
-    pending("sdkhooks_phase_removal", "js_phase_remove_pre", rmPre, "SDKHook Touch/TouchPost registration failed");
-    pending("sdkhooks_phase_removal", "js_phase_remove_post", rmPost, "SDKHook Touch/TouchPost registration failed");
-    pending("sdkhooks_phase_removal", "js_phase_self_unsubscribe", selfExp, "SDKHook Touch/TouchPost registration failed");
-    pending("sdkhooks_phase_removal", "js_phase_final_unsubscribe", finExp, "SDKHook Touch/TouchPost registration failed");
-    return;
-  }
-  const sub = phaseSnaps.subscribe_pre_post;
-  if (sub && sub.pre >= 1 && sub.post >= 1) {
-    push("sdkhooks_phase_removal", "js_phase_subscribe_pre_post", "pass", subExp, subExp, "PRE+POST after subscribe");
-  } else {
-    pending("sdkhooks_phase_removal", "js_phase_subscribe_pre_post", subExp, adapter);
-  }
-  const rp = phaseSnaps.remove_pre;
-  if (rp && rp.pre === 0 && rp.post >= 1) {
-    push("sdkhooks_phase_removal", "js_phase_remove_pre", "pass", rmPre, rmPre, "PRE removed, POST survives");
-  } else {
-    pending("sdkhooks_phase_removal", "js_phase_remove_pre", rmPre, adapter);
-  }
-  const ro = phaseSnaps.remove_post;
-  if (ro && ro.pre >= 1 && ro.post === 0) {
-    push("sdkhooks_phase_removal", "js_phase_remove_post", "pass", rmPost, rmPost, "POST removed, PRE survives");
-  } else {
-    pending("sdkhooks_phase_removal", "js_phase_remove_post", rmPost, adapter);
-  }
-  const su = phaseSnaps.self_unsubscribe;
-  const su2 = phaseSnaps.self_unsubscribe_second;
-  if (su && su2 && su.pre >= 1 && su2.pre === 0 && su2.post >= 1) {
-    push("sdkhooks_phase_removal", "js_phase_self_unsubscribe", "pass", selfExp, selfExp, "PRE self-unsub; second invoke POST only");
-  } else {
-    pending("sdkhooks_phase_removal", "js_phase_self_unsubscribe", selfExp, adapter);
-  }
-  const fin = phaseSnaps.final_unsubscribe;
-  if (phaseStage >= 5 && fin && fin.pre === 0 && fin.post === 0) {
-    push("sdkhooks_phase_removal", "js_phase_final_unsubscribe", "pass", finExp, finExp, "both phases removed");
-  } else {
-    pending("sdkhooks_phase_removal", "js_phase_final_unsubscribe", finExp, adapter);
+  const checks: Array<[string, string, Record<string, number>, Record<string, number> | undefined]> = [
+    ["subscribe_pre_post", "js_phase_subscribe_pre_post", { pre: 1, post: 1 }, phaseSnaps.subscribe_pre_post && { ...phaseSnaps.subscribe_pre_post }],
+    ["remove_pre", "js_phase_remove_pre", { pre: 0, post: 1 }, phaseSnaps.remove_pre && { ...phaseSnaps.remove_pre }],
+    ["remove_post", "js_phase_remove_post", { pre: 1, post: 0 }, phaseSnaps.remove_post && { ...phaseSnaps.remove_post }],
+    ["final_unsubscribe", "js_phase_final_unsubscribe", { pre: 0, post: 0 }, phaseSnaps.final_unsubscribe && { ...phaseSnaps.final_unsubscribe }],
+  ];
+  const first = phaseSnaps.self_unsubscribe, second = phaseSnaps.self_unsubscribe_second;
+  checks.push(["self_unsubscribe", "js_phase_self_unsubscribe",
+    { first_pre: 1, first_post: 1, second_pre: 0, second_post: 1 },
+    first && second ? { first_pre: first.pre, first_post: first.post, second_pre: second.pre, second_post: second.post } : undefined]);
+  for (const [name, sub, expected, actual] of checks) {
+    if (!actual) {
+      pending("sdkhooks_phase_removal", sub, expected, "waiting for native Touch acknowledgement for " + name);
+    } else {
+      const ok = Object.keys(expected).every(k => actual[k] === expected[k]);
+      push("sdkhooks_phase_removal", sub, ok ? "pass" : "fail", expected, actual,
+        "SDKHooks callback snapshot after native Touch " + name);
+    }
   }
 }
 
@@ -721,7 +639,7 @@ function pushReuseMapReload(): void {
       "entity_slot_reuse_map_teardown",
       "js_map_teardown_clears",
       clrExp,
-      "need post-map Touch invoke via live EntByIndex of a remaining trigger_push "
+      "need post-map Touch invoke via live EntByIndex of a remaining trigger_push " +
         "(not whatever now occupies the saved index); if no live trigger remains, pending",
     );
   } else if (preMapCallbacks > 0 && postMapCallbacks === preMapCallbacks) {
@@ -745,40 +663,60 @@ function pushReuseMapReload(): void {
       "post-map callback still firing on old identity",
     );
   }
-  const freshExp = { fresh: true, count: 1 };
-  if (!sawReload) {
-    pending(
-      "entity_slot_reuse_map_teardown",
-      "js_fresh_subscription_after_reload",
-      freshExp,
-      "need s2script unload/reload with the probe peer still loaded (R2 pending/retry); then collect",
-    );
-  } else if (filterHooked && freshDeliveries === 1) {
-    push(
-      "entity_slot_reuse_map_teardown",
-      "js_fresh_subscription_after_reload",
-      "pass",
-      freshExp,
-      freshExp,
-      "fresh SDKHook delivered once after reload",
-    );
-  } else if (filterHooked && freshDeliveries === 0) {
-    pending(
-      "entity_slot_reuse_map_teardown",
-      "js_fresh_subscription_after_reload",
-      freshExp,
-      "fresh SDKHook registered; need one Touch delivery on the new subscription",
-    );
-  } else {
-    push(
-      "entity_slot_reuse_map_teardown",
-      "js_fresh_subscription_after_reload",
-      "fail",
-      freshExp,
-      { fresh: filterHooked, count: freshDeliveries },
-      "fresh subscription missing or did not deliver once",
-    );
+  pushScriptReload();
+}
+
+// Deliberately leave these two subscriptions to owner-ledger teardown. A stale
+// outgoing closure appends its old generation during the native after-invoke.
+function reloadTrace(phase: "pre" | "post"): void {
+  if (Server.getCvar("s2_khook_accept_reload_active") !== runId) return;
+  setCvar("s2_khook_accept_reload_trace", Server.getCvar("s2_khook_accept_reload_trace") + instance + ":" + phase + ",");
+  if (phase === "pre") reloadPre += 1; else reloadPost += 1;
+}
+function onReloadPre(): void { reloadTrace("pre"); }
+function onReloadPost(): void { reloadTrace("post"); }
+
+function armScriptReload(replacement: boolean): boolean {
+  if (reloadTarget) return true;
+  const target = Number(Server.getCvar("s2_khook_accept_reload_target"));
+  const entity = Entity.findByClass("trigger_push").find(e => e.index === target && e.isValid());
+  if (!entity) return false;
+  if (!SDKHook(entity, SDKHookType.Touch, onReloadPre)) return false;
+  if (!SDKHook(entity, SDKHookType.TouchPost, onReloadPost)) {
+    SDKUnhook(entity, SDKHookType.Touch, onReloadPre);
+    return false;
   }
+  if (!replacement) {
+    // createEntity is game-world owned, not auto-removed by the plugin ledger.
+    // This marker checks explicit OnPluginEnd cleanup; only the subscriptions
+    // above deliberately rely on owner-ledger teardown.
+    const marker = remember(createEntity("logic_relay", { targetname: "s2khook_reload_owned_" + instance }));
+    if (!marker) {
+      SDKUnhook(entity, SDKHookType.Touch, onReloadPre);
+      SDKUnhook(entity, SDKHookType.TouchPost, onReloadPost);
+      return false;
+    }
+    setCvar("s2_khook_accept_reload_marker", String(marker.index));
+    setCvar("s2_khook_accept_reload_unloaded", "0");
+  }
+  reloadTarget = entity;
+  setCvar("s2_khook_accept_reload_ready", String(instance));
+  return true;
+}
+
+function pushScriptReload(): void {
+  const expected = { fresh: true, pre: 1, post: 1, original: 1 };
+  let ack: { run_id: string; artifact_identity: string; target_index: number; generation: number; stage: string; original: number };
+  try { ack = JSON.parse(Server.getCvar("s2_khook_accept_reload_ack")); }
+  catch { pending("entity_slot_reuse_map_teardown", "js_fresh_subscription_after_reload", expected, "await resident probe script reload invocation"); return; }
+  if (!sawReload || !reloadTarget || ack.stage !== "after" || ack.run_id !== runId ||
+      ack.artifact_identity !== artifactIdentity || ack.generation !== instance || ack.target_index !== reloadTarget.index) {
+    pending("entity_slot_reuse_map_teardown", "js_fresh_subscription_after_reload", expected, "await matching replacement invocation"); return;
+  }
+  const actual = { fresh: instance > (handoff?.instance || instance), pre: reloadPre, post: reloadPost, original: ack.original };
+  push("entity_slot_reuse_map_teardown", "js_fresh_subscription_after_reload",
+    actual.fresh && reloadPre === 1 && reloadPost === 1 && ack.original === 1 ? "pass" : "fail", expected, actual,
+    "generation-tagged callbacks on the same resident native target after script reload");
 }
 
 function pushVoiceTransmitMask(): void {
@@ -887,16 +825,32 @@ function pushOwnedPendingUncollected(): void {
   pending("sdkhooks_phase_removal", "js_phase_subscribe_pre_post", { pre: 1, post: 1 }, "report before collect");
   pending("sdkhooks_phase_removal", "js_phase_remove_pre", { pre: 0, post: 1 }, "report before collect");
   pending("sdkhooks_phase_removal", "js_phase_remove_post", { pre: 1, post: 0 }, "report before collect");
-  pending("sdkhooks_phase_removal", "js_phase_self_unsubscribe", { first_pre: 1, second_pre: 0, second_post: 1 }, "report before collect");
+  pending("sdkhooks_phase_removal", "js_phase_self_unsubscribe", { first_pre: 1, first_post: 1, second_pre: 0, second_post: 1 }, "report before collect");
   pending("sdkhooks_phase_removal", "js_phase_final_unsubscribe", { pre: 0, post: 0 }, "report before collect");
   pending("entity_slot_reuse_map_teardown", "js_identity_persisted", { persisted: true }, "report before collect");
   pending("entity_slot_reuse_map_teardown", "js_slot_reuse_no_stale", { stale: false }, "report before collect");
   pending("entity_slot_reuse_map_teardown", "js_map_teardown_clears", { cleared: true }, "report before collect");
-  pending("entity_slot_reuse_map_teardown", "js_fresh_subscription_after_reload", { fresh: true, count: 1 }, "report before collect");
+  pending("entity_slot_reuse_map_teardown", "js_fresh_subscription_after_reload", { fresh: true, pre: 1, post: 1, original: 1 }, "report before collect");
   pending("check_transmit", "js_visibility_policy", { a: true, b: false }, "report before collect");
 }
 
 function collectJs(): void {
+  if (sawReload) {
+    stored = [];
+    pushOwnedPendingUncollected();
+    stored = stored.filter(r => r.subcheck !== "js_fresh_subscription_after_reload");
+    pushScriptReload();
+    collected = true;
+    return;
+  }
+
+  // Clients can join after prepare. Complete the existing run's waiting setup
+  // without re-preparing and erasing its earlier connection/entity evidence.
+  if (runBound && Server.getCvar("s2_khook_accept_voice_phase") !== "restored" && !voiceApplied && realClients().length >= 3) applyVoice();
+  if (runBound && Server.getCvar("s2_khook_accept_tx_phase") !== "restored" && !transmitEnt && realClients().length >= 2) applyTransmit();
+  if (runBound && !maskSubsetSeen && maskMode === "off" && Server.getCvar("s2_khook_accept_tx_phase") !== "restored" && realClients().length >= 2) {
+    applyMaskSubset(); setCvar("s2_khook_accept_mask_mode", maskMode);
+  }
   stored = [];
   if (frames > 0) {
     push("frame_client_command_hooks", "js_gameframe_delivery", "pass", { observed: true }, { observed: true }, "OnGameFrame");
@@ -920,25 +874,25 @@ function collectJs(): void {
     );
   }
   const contExp = { js: 1 };
-  if (jsContinue >= 1) {
-    push("frame_client_command_hooks", "js_command_continue_delivery", "pass", contExp, contExp, "continue token");
+  if (jsContinue > 0) {
+    push("frame_client_command_hooks", "js_command_continue_delivery", jsContinue === 1 ? "pass" : "fail", contExp, { js: jsContinue }, "real ClientCommand continue token");
   } else {
     pending(
       "frame_client_command_hooks",
       "js_command_continue_delivery",
       contExp,
-      "need a real client to issue s2_khook_probe_token s2khook-continue",
+      "need a real client to issue s2khook_cc_entry RUN_ID s2khook-continue",
     );
   }
   const handExp = { js: 1 };
-  if (jsHandled >= 1) {
-    push("frame_client_command_hooks", "js_command_handled_delivery", "pass", handExp, handExp, "handled token");
+  if (jsHandled > 0) {
+    push("frame_client_command_hooks", "js_command_handled_delivery", jsHandled === 1 ? "pass" : "fail", handExp, { js: jsHandled }, "real ClientCommand handled token");
   } else {
     pending(
       "frame_client_command_hooks",
       "js_command_handled_delivery",
       handExp,
-      "need a real client to issue s2_khook_probe_token s2khook-handled",
+      "need a real client to issue s2khook_cc_entry RUN_ID s2khook-handled",
     );
   }
   const noHandled = { handled: 0 };
@@ -979,9 +933,6 @@ function resetR6Counters(): void {
   phaseStage = 0;
   selfUnsubArmed = false;
   phaseSnaps = {};
-  firstInvokePre = 0;
-  firstInvokePost = 0;
-  phaseStage4At = -1;
   identityIndex = -1;
   identityId = -1;
   identityPersisted = false;
@@ -994,7 +945,6 @@ function resetR6Counters(): void {
   mapEnded = false;
   preMapCallbacks = 0;
   postMapCallbacks = 0;
-  freshDeliveries = 0;
   voiceApplied = false;
   voiceSpeaker = -1;
   voiceAllowed = -1;
@@ -1006,12 +956,15 @@ function resetR6Counters(): void {
   maskMode = "off";
   r6Frames = 0;
   clientActions = [];
+  setCvar("s2_khook_accept_voice_phase", "off");
+  setCvar("s2_khook_accept_tx_phase", "off");
   setCvar("s2_khook_accept_tx_ent", "-1");
   setCvar("s2_khook_accept_tx_a", "-1");
   setCvar("s2_khook_accept_tx_b", "-1");
 }
 
 function prepareR6(): void {
+  setCvar("s2_khook_accept_phase_ack", "");
   resetR6Counters();
   spawnPair();
   trySlotReuse();
@@ -1028,6 +981,7 @@ function prepareR6(): void {
 
 export function OnPluginStart(): void {
   const prev = previous() as PersistState | undefined;
+  handoff = prev;
   if (prev && prev.runId) {
     sawReload = true;
     instance = (prev.instance || 0) + 1;
@@ -1039,6 +993,21 @@ export function OnPluginStart(): void {
     deliveredB = Number(prev.deliveredB) || 0;
   }
   console.log("[khook-accept] loaded (test fixture, not shipped) instance=" + instance + " reload=" + sawReload);
+  for (const name of ["target", "marker", "ready", "unloaded"]) {
+    Server.registerCvar("s2_khook_accept_reload_" + name, { type: "int", default: -1, help: "resident native script reload witness" });
+  }
+  for (const name of ["trace", "active", "ack"]) {
+    Server.registerCvar("s2_khook_accept_reload_" + name, { type: "string", default: "", help: "script reload invocation witness" });
+  }
+  Server.registerCvar("s2_khook_accept_live", { type: "int", default: 0, help: "live JS generation; zero after OnPluginEnd" });
+  instance = Math.max(instance, Number(Server.getCvar("s2_khook_accept_instance")) + 1);
+  Server.setCvar("s2_khook_accept_live", String(instance));
+  Server.registerCvar("s2_khook_accept_artifact", { type: "string", default: "", help: "frozen artifact receipt digest" });
+  Server.registerCvar("s2_khook_accept_phase_ack", { type: "string", default: "", help: "native Touch invocation acknowledgement" });
+  Server.registerCvar("s2_khook_accept_voice_phase", { type: "string", default: "off", help: "policy|restored|off" });
+  Server.registerCvar("s2_khook_accept_tx_phase", { type: "string", default: "off", help: "policy|restored|off" });
+  Server.registerCvar("s2_khook_accept_command", { type: "string", default: DEFAULT_TOKEN_CMD, help: "ClientCommand fallback target; configure before JS load" });
+  tokenCommand = Server.getCvar("s2_khook_accept_command") || DEFAULT_TOKEN_CMD;
   Server.registerCvar("s2_khook_accept_run", { type: "string", default: "", help: "khook-accept bound run_id" });
   Server.registerCvar("s2_khook_accept_old_index", { type: "int", default: -1, help: "persisted entity index" });
   Server.registerCvar("s2_khook_accept_old_id", { type: "int", default: -1, help: "persisted host id" });
@@ -1063,15 +1032,8 @@ export function OnPluginStart(): void {
   Server.registerCvar("s2_khook_accept_voice_allowed", { type: "int", default: -1, help: "voice allowed listener slot" });
   Server.registerCvar("s2_khook_accept_voice_denied", { type: "int", default: -1, help: "voice denied listener slot" });
 
-  if (sawReload && Server.getCvar("s2_khook_accept_unloaded") === "1") {
-    const rid = Server.getCvar("s2_khook_accept_run");
-    if (rid) {
-      runId = rid;
-      runBound = true;
-      spawnPair();
-      persistOutsidePlugin();
-    }
-  }
+  // Reload must explicitly resume the controller's run. An old cvar or a
+  // previous() blob alone cannot silently adopt a run after native restart.
 
   hook.onPre(MASK_EVENT, (_ev) => {
     if (!runBound || maskMode === "off") return;
@@ -1088,25 +1050,19 @@ export function OnPluginStart(): void {
     return HookResult.Handled;
   });
 
-  command.onClientCommand(TOKEN_CMD, (slot, argString) => {
-    const tok = tokenOf(argString);
-    if (!hookEnabled || tok === CTRL_MISSING) {
-      return HookResult.Continue;
-    }
-    if (tok === CTRL_FLIP_CONTINUE) {
-      return HookResult.Handled;
-    }
-    if (tok === CTRL_FLIP_HANDLED) {
-      return HookResult.Continue;
-    }
+  command.onClientCommand(tokenCommand, (slot, argString) => {
+    const args = (argString || "").trim().split(/\s+/);
+    if (!runBound || args[0] !== runId || !realClients().some(c => c.slot === slot)) return HookResult.Continue;
+    const tok = args[1] || "";
+    if (!hookEnabled || tok === CTRL_MISSING) return HookResult.Continue;
+    if (tok === CTRL_FLIP_CONTINUE) return HookResult.Handled;
+    if (tok === CTRL_FLIP_HANDLED) return HookResult.Continue;
     if (tok === CONTINUE_TOKEN) {
       jsContinue += 1;
-      lastSlot = slot;
       return flipped ? HookResult.Handled : HookResult.Continue;
     }
     if (tok === HANDLED_TOKEN) {
       jsHandled += 1;
-      lastSlot = slot;
       return flipped ? HookResult.Continue : HookResult.Handled;
     }
     return HookResult.Continue;
@@ -1115,13 +1071,52 @@ export function OnPluginStart(): void {
   command.server("s2_khook_accept", (cmd) => {
     const sub = (cmd.arg(0) || "").toLowerCase();
     const id = cmd.arg(1) || "";
+    const digest = cmd.arg(2) || "";
+    if (sub === "bind") {
+      if (!runBound || id !== runId || !bindArtifact(digest)) cmd.reply("[khook-accept] invalid binding");
+      else cmd.reply("[khook-accept] bound artifact=" + artifactIdentity);
+      return HookResult.Handled;
+    }
+    if (sub === "resume" && runBound) {
+      if (id !== runId || !bindArtifact(digest)) cmd.reply("[khook-accept] resume binding mismatch");
+      else if (sawReload && !armScriptReload(true)) cmd.reply("[khook-accept] pending: resident reload target unavailable");
+      else cmd.reply("[khook-accept] already resumed " + runId);
+      return HookResult.Handled;
+    }
+    if (sub === "reload-arm") {
+      if (!runBound || id !== runId || !artifactIdentity) cmd.reply("[khook-accept] reload-arm requires bound run/digest");
+      else if (!armScriptReload(false)) cmd.reply("[khook-accept] pending: native reload target/owned marker unavailable");
+      else cmd.reply("[khook-accept] reload armed; wait for native before-ack then reload only this .s2sp");
+      return HookResult.Handled;
+    }
+    if (sub === "resume" && !runBound) {
+      if (!handoff || handoff.runId !== id || handoff.artifactIdentity !== digest || !/^[a-f0-9]{64}$/.test(digest)) {
+        cmd.reply("[khook-accept] resume requires matching .s2sp state handoff and artifact binding");
+        return HookResult.Handled;
+      }
+      runId = id; runBound = true; sawReload = true;
+      frozenRevision = handoff.sourceRevision;
+      bindArtifact(digest);
+      for (const rec of handoff.records || []) if (rec.result !== "pending") terminal.set(rec.case + ":" + rec.subcheck, rec);
+      setCvar("s2_khook_accept_run", id);
+      setCvar("s2_khook_accept_instance", String(instance));
+      // Do not recreate or reinvoke completed filter/phase cases after reload.
+      if (!armScriptReload(true)) cmd.reply("[khook-accept] pending: resident reload target unavailable");
+      else cmd.reply("[khook-accept] resumed script " + runId);
+      return HookResult.Handled;
+    }
     if (sub === "prepare") {
       if (!id) {
         cmd.reply("usage: s2_khook_accept prepare <run_id>");
         return HookResult.Handled;
       }
+      if (digest && !/^[a-f0-9]{64}$/.test(digest)) { cmd.reply("[khook-accept] invalid artifact digest"); return HookResult.Handled; }
       runId = id;
       runBound = true;
+      artifactIdentity = "";
+      frozenRevision = Server.getCvar("s2_khook_source_revision") || "unknown";
+      if (digest) bindArtifact(digest);
+      terminal.clear();
       collected = false;
       stored = [];
       hookEnabled = true;
@@ -1135,7 +1130,8 @@ export function OnPluginStart(): void {
       lastUserId = -1;
       lastSteamId = "";
       sawReload = false;
-      freshDeliveries = 0;
+      handoff = undefined;
+      reloadTarget = null; reloadPre = reloadPost = 0;
       Server.setCvar("s2_khook_accept_run", id);
       prepareR6();
       setCvar("s2_khook_accept_mask_mode", maskMode);
@@ -1189,15 +1185,25 @@ export function OnPluginStart(): void {
       for (const rec of stored) cmd.reply(emit(rec));
       return HookResult.Handled;
     }
-    if (sub === "teardown") {
+    if (sub === "restore" || sub === "teardown") {
+      if (!runBound || id !== runId) { cmd.reply("[khook-accept] unknown or mismatched run_id"); return HookResult.Handled; }
+      // Capture the policy observations before starting the restored phase.
+      collectJs();
       restoreTransmitVisibility();
       Voice.resetAll();
       maskMode = "off";
-      cleanupOwned();
-      cmd.reply("[khook-accept] teardown");
+      setCvar("s2_khook_accept_voice_phase", "restored");
+      setCvar("s2_khook_accept_tx_phase", "restored");
+      setCvar("s2_khook_accept_mask_mode", "off");
+      if (sub === "teardown") {
+        cleanupOwned(); runBound = false;
+        setCvar("s2_khook_accept_voice_phase", "off");
+        setCvar("s2_khook_accept_tx_phase", "off");
+      }
+      cmd.reply("[khook-accept] " + sub);
       return HookResult.Handled;
     }
-    cmd.reply("usage: s2_khook_accept prepare|collect|report|teardown <run_id>");
+    cmd.reply("usage: s2_khook_accept prepare|bind|collect|report|restore|teardown|reload-arm|resume <run_id> [artifact_sha256]");
     return HookResult.Handled;
   });
 }
@@ -1210,8 +1216,8 @@ export function OnGameFrame(): void {
 }
 
 export function OnClientConnected(c: Client): void {
-  clientsConnected += 1;
-  if (c && c.isValid()) {
+  if (runBound && c && c.isValid() && !c.isBot) {
+    clientsConnected += 1;
     lastSlot = c.slot;
     lastUserId = c.userId;
     lastSteamId = c.steamId;
@@ -1242,10 +1248,15 @@ export function OnPluginState(): PersistState {
     instance,
     deliveredA,
     deliveredB,
+    artifactIdentity,
+    sourceRevision: frozenRevision,
+    records: Array.from(terminal.values()),
   };
 }
 
 export function OnPluginEnd(): void {
+  if (reloadTarget) setCvar("s2_khook_accept_reload_unloaded", String(instance));
+  setCvar("s2_khook_accept_live", "0");
   setCvar("s2_khook_accept_unloaded", "1");
   persistOutsidePlugin();
   cleanupOwned();

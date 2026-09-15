@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Verify a Metamod tree against an independently supplied build manifest.
 
-Never invents a manifest from the candidate. Exit 0 only for the expected
-corrected pinned build; otherwise exit nonzero with a named reason.
+Accepts stock official-release provenance or an optional unmodified-source build.
+Release preparation checks an operator-supplied archive checksum before extracting
+and measuring its contents. It does not claim that upstream signs that checksum.
 """
 from __future__ import annotations
 
@@ -14,10 +15,13 @@ import shutil
 import struct
 import subprocess
 import sys
-from pathlib import Path
+import tarfile
+import tempfile
+from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit
 
-EXPECTED_SCHEMA = 1
+EXPECTED_SCHEMA = 2
 EXPECTED_PLAPI = 18
 EXPECTED_METAMOD = "7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33"
 EXPECTED_KHOOK = "1e200e4cc8e0badcb7cf941525268d6977f6a4e6"
@@ -30,15 +34,12 @@ REQUIRED_LOADER = (
 REQUIRED_KEYS = (
     "schema",
     "plapi",
-    "metamod_commit",
-    "khook_commit",
-    "patchset_sha256",
+    "provenance",
     "target",
     "glibc_max",
     "artifacts",
 )
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
-COMMIT40 = re.compile(r"^[0-9a-f]{40}$")
 GLIBC_RE = re.compile(rb"GLIBC_(\d+)\.(\d+(?:\.\d+)?)")
 GLIBC_TEXT_RE = re.compile(r"GLIBC_(\d+)\.(\d+(?:\.\d+)?)")
 BOUNDED_READ = 8 * 1024 * 1024
@@ -48,9 +49,6 @@ ELFDATA2LSB = 1
 ET_DYN = 3
 EM_X86_64 = 62
 ELF64_HEADER_SIZE = 64
-
-REPO = Path(__file__).resolve().parent.parent
-
 
 def fail(reason: str, detail: str) -> None:
     sys.stderr.write(f"error: {reason}: {detail}\n")
@@ -82,33 +80,42 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def compute_patchset_sha256(patch_dir: Path) -> str:
-    series_path = patch_dir / "series"
-    if not series_path.is_file():
-        fail("missing_series", f"{series_path} is missing")
-    seen: set[str] = set()
-    digest = hashlib.sha256()
-    for raw in series_path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line in seen:
-            fail("malformed_series", f"duplicate series entry {line}")
-        seen.add(line)
-        rel = Path(line)
-        if rel.is_absolute() or ".." in rel.parts:
-            fail("path_escape", f"series path escapes patch directory: {line}")
-        full = patch_dir / line
-        if not full.is_file():
-            fail("missing_series", f"series entry missing: {full}")
-        digest.update(line.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(full.read_bytes())
-        digest.update(b"\0")
-    got = digest.hexdigest()
-    if not HEX64.fullmatch(got):
-        fail("malformed_series", "computed patchset digest is not 64 hex characters")
-    return got
+def official_release_url(value: Any) -> str:
+    if not isinstance(value, str):
+        fail("invalid_release_url", "official release URL must be a string")
+    parsed = urlsplit(value)
+    component = r"[A-Za-z0-9._+-]+"
+    asset = rf"mmsource-{component}-linux\.tar\.gz"
+    official_path = (
+        parsed.netloc == "mms.alliedmods.net"
+        and re.fullmatch(rf"/mmsdrop/{component}/{asset}", parsed.path)
+    ) or (
+        parsed.netloc == "github.com"
+        and re.fullmatch(rf"/alliedmodders/metamod-source/releases/download/{component}/{asset}", parsed.path)
+    )
+    if (parsed.scheme != "https" or not official_path
+            or parsed.query or parsed.fragment or ".." in PurePosixPath(parsed.path).parts):
+        fail("invalid_release_url", "use an explicit AlliedModders GitHub release asset or legacy mmsdrop Linux archive URL")
+    return value
+
+
+def validate_provenance(value: Any) -> None:
+    if not isinstance(value, dict):
+        fail("malformed_manifest", "provenance must be an object")
+    if value.get("kind") == "unmodified-source":
+        if set(value) != {"kind", "metamod_commit", "khook_commit"}:
+            fail("malformed_manifest", "invalid unmodified-source provenance fields")
+        for key, expected in (("metamod_commit", EXPECTED_METAMOD), ("khook_commit", EXPECTED_KHOOK)):
+            if value[key] != expected:
+                fail("unexpected_" + key, f"{value[key]!r} != {expected}")
+    elif value.get("kind") == "official-release":
+        if set(value) != {"kind", "url", "archive_sha256"}:
+            fail("malformed_manifest", "invalid official-release provenance fields")
+        official_release_url(value["url"])
+        if not isinstance(value["archive_sha256"], str) or not HEX64.fullmatch(value["archive_sha256"]):
+            fail("malformed_manifest", "archive_sha256 must be 64 lowercase hex characters")
+    else:
+        fail("unexpected_provenance", "expected official-release or unmodified-source")
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
@@ -130,31 +137,22 @@ def load_manifest(path: Path) -> dict[str, Any]:
             "malformed_manifest",
             f"strict keys failed extra={sorted(extra)} missing={sorted(missing)}",
         )
-    if doc["schema"] != EXPECTED_SCHEMA:
+    if type(doc["schema"]) is not int or doc["schema"] != EXPECTED_SCHEMA:
         fail("unexpected_schema", f"{doc['schema']!r} != {EXPECTED_SCHEMA}")
     if not isinstance(doc["plapi"], int) or isinstance(doc["plapi"], bool):
         fail("malformed_manifest", "plapi must be an integer")
     if doc["plapi"] != EXPECTED_PLAPI:
         fail("unexpected_plapi", f"{doc['plapi']!r} != {EXPECTED_PLAPI}")
     for key, expected, reason in (
-        ("metamod_commit", EXPECTED_METAMOD, "unexpected_metamod_commit"),
-        ("khook_commit", EXPECTED_KHOOK, "unexpected_khook_commit"),
         ("target", EXPECTED_TARGET, "unexpected_target"),
         ("glibc_max", EXPECTED_GLIBC_MAX, "unexpected_glibc_max"),
     ):
         value = doc[key]
         if not isinstance(value, str):
             fail("malformed_manifest", f"{key} must be a string")
-        if key.endswith("_commit") and not COMMIT40.fullmatch(value):
-            fail("malformed_manifest", f"{key} must be 40 lowercase hex characters")
         if value != expected:
             fail(reason, f"{value} != {expected}")
-    patch = doc["patchset_sha256"]
-    if not isinstance(patch, str) or not HEX64.fullmatch(patch):
-        fail("malformed_manifest", "patchset_sha256 must be 64 lowercase hex characters")
-    expected_patch = compute_patchset_sha256(REPO / "patches" / "metamod-source")
-    if patch != expected_patch:
-        fail("unexpected_patchset_sha256", f"{patch} != {expected_patch}")
+    validate_provenance(doc["provenance"])
     artifacts = doc["artifacts"]
     if not isinstance(artifacts, list) or not artifacts:
         fail("malformed_manifest", "artifacts must be a nonempty list")
@@ -288,12 +286,85 @@ def verify(tree: Path, manifest_path: Path) -> None:
         )
 
 
+def extract_official_archive(archive_path: Path, expected_sha: str, url: str, destination: Path) -> None:
+    """Extract regular files from a checksum-verified stock release into a fresh directory."""
+    official_release_url(url)
+    if not HEX64.fullmatch(expected_sha):
+        fail("invalid_archive_hash", "expected archive SHA256 must be supplied independently")
+    if not archive_path.is_file():
+        fail("missing_archive", str(archive_path))
+    if sha256_file(archive_path) != expected_sha:
+        fail("archive_hash_mismatch", "official archive differs from the supplied expected SHA256")
+    if destination.exists():
+        fail("existing_extract_tree", "archive extraction needs a fresh destination")
+    try:
+        with tarfile.open(archive_path, "r:gz") as archive:
+            selected = []
+            seen = set()
+            for member in archive.getmembers():
+                path = PurePosixPath(member.name)
+                if path.is_absolute() or ".." in path.parts or not (member.isfile() or member.isdir()):
+                    fail("unsafe_archive", f"only regular files and directories with safe paths are accepted: {member.name}")
+                if path in seen:
+                    fail("unsafe_archive", f"duplicate archive path: {member.name}")
+                seen.add(path)
+                if path.parts[:2] == ("addons", "metamod") and len(path.parts) > 2 and member.isfile():
+                    selected.append((member, Path(*path.parts[2:])))
+            if not selected:
+                fail("missing_archive_tree", "archive has no addons/metamod files")
+            destination.mkdir(parents=True)
+            for member, relative in selected:
+                output = destination / relative
+                output.parent.mkdir(parents=True, exist_ok=True)
+                with archive.extractfile(member) as source, output.open("xb") as target:
+                    shutil.copyfileobj(source, target)
+                output.chmod(member.mode & 0o755)
+    except (tarfile.TarError, OSError) as exc:
+        fail("unsafe_archive", str(exc))
+
+
+def prepare_release(archive: Path, expected_sha: str, url: str, plapi: int | None,
+                    tree: Path, manifest_path: Path) -> None:
+    # A failed attempt must invalidate a previous success, even before extraction.
+    manifest_path.unlink(missing_ok=True)
+    if plapi != EXPECTED_PLAPI:
+        fail("unconfirmed_release_plapi", "operator must confirm --release-plapi 18 for the selected release")
+    tree.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="metamod-release-", dir=tree.parent) as directory:
+        candidate = Path(directory) / "tree"
+        extract_official_archive(archive, expected_sha, url, candidate)
+        items = []
+        for relative in (*REQUIRED_LOADER, "metaplugins.ini", "README.txt"):
+            path = candidate / relative
+            if path.is_file():
+                items.append({"path": relative, "sha256": sha256_file(path)})
+        doc = {"schema": EXPECTED_SCHEMA, "plapi": plapi, "target": EXPECTED_TARGET,
+               "glibc_max": EXPECTED_GLIBC_MAX, "artifacts": items,
+               "provenance": {"kind": "official-release", "url": url, "archive_sha256": expected_sha}}
+        candidate_manifest = Path(directory) / "manifest.json"
+        candidate_manifest.write_text(json.dumps(doc, indent=2) + "\n")
+        verify(candidate, candidate_manifest)
+        if tree.exists():
+            shutil.rmtree(tree)
+        shutil.move(str(candidate), str(tree))
+        shutil.copyfile(candidate_manifest, manifest_path)
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Verify a Metamod artifact tree against an independent build manifest.")
     parser.add_argument("--tree", required=True, help="candidate Metamod tree")
     parser.add_argument("--manifest", required=True, help="independent metamod-build.json (never invented from the tree)")
+    parser.add_argument("--prepare-release", help="prepare stock release archive using independently supplied checksum")
+    parser.add_argument("--archive-sha256", default="", help="operator-supplied expected archive SHA256")
+    parser.add_argument("--release-url", default="", help="explicit official release archive URL")
+    parser.add_argument("--release-plapi", type=int, help="operator-confirmed plugin API version of the release")
     args = parser.parse_args(argv)
-    verify(Path(args.tree), Path(args.manifest))
+    if args.prepare_release:
+        prepare_release(Path(args.prepare_release), args.archive_sha256, args.release_url,
+                        args.release_plapi, Path(args.tree), Path(args.manifest))
+    else:
+        verify(Path(args.tree), Path(args.manifest))
     return 0
 
 

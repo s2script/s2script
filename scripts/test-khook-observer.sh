@@ -51,7 +51,12 @@ echo "==> fixed observer"
 "$out"
 echo "==> observer host tests: PASS (sanitizers=$SAN)"
 
-# Schema-compatible fixtures (including negative controls) judged by the frozen R4 judge.
+# Compile the unchanged resident-probe script reload driver with engine calls at
+# the test boundary. Exercise stale/missing/duplicate callbacks and old resources.
+python3 tools/khook-probe/testdata/script_reload_test.py
+
+# Synthetic parser fixtures and test-only identity receipts, never live evidence.
+# The generator asserts positive case counts as well as aggregate exit codes.
 # source_revision must match git HEAD because --from-file uses current_source_revision().
 REV="$(git rev-parse HEAD)"
 FIX_DIR="$WORKDIR/fixtures"
@@ -61,22 +66,31 @@ python3 tools/khook-probe/testdata/gen_from_file.py "$REV" "$FIX_DIR"
 judge_file() {
   local file="$1"
   local want="$2"
-  echo "==> judge --from-file $(basename "$file") (want exit $want)"
+  local want_pass="$3"
+  local log="$WORKDIR/$(basename "$file").judge.log"
+  local passed
+  echo "==> judge --from-file $(basename "$file") (want exit $want, pass=$want_pass)"
   set +e
-  python3 scripts/khook_acceptance.py A --from-file "$file"
+  python3 scripts/khook_acceptance.py A --from-file "$file" --identity "${file%.jsonl}.identity.json" >"$log" 2>&1
   st=$?
   set -e
+  cat "$log"
   if [[ "$st" -ne "$want" ]]; then
     echo "error: $(basename "$file") expected exit $want, got $st" >&2
     exit 1
   fi
-  echo "ok:   $(basename "$file") exit $st"
+  passed="$(awk '$1 == "PASS:" && NF == 2 {n++} END {print n+0}' "$log")"
+  if [[ "$passed" -ne "$want_pass" ]]; then
+    echo "error: $(basename "$file") expected $want_pass passing cases, got $passed" >&2
+    exit 1
+  fi
+  echo "ok:   $(basename "$file") exit $st, pass=$passed"
 }
 
-judge_file "$FIX_DIR/r6-pending.jsonl" 2
-judge_file "$FIX_DIR/negative-missing-js.jsonl" 1
-judge_file "$FIX_DIR/negative-flipped.jsonl" 1
-judge_file "$FIX_DIR/negative-omitted-plugin.jsonl" 1
-judge_file "$FIX_DIR/partial-continue.jsonl" 2
+judge_file "$FIX_DIR/r6-pending.jsonl" 2 5
+judge_file "$FIX_DIR/negative-missing-js.jsonl" 1 5
+judge_file "$FIX_DIR/negative-flipped.jsonl" 1 5
+judge_file "$FIX_DIR/negative-omitted-plugin.jsonl" 1 5
+judge_file "$FIX_DIR/partial-continue.jsonl" 2 5
 
 echo "PASS: test-khook-observer.sh"

@@ -217,6 +217,36 @@ void TestScopeRestoresOnEveryExit() {
     delete b;
 }
 
+void TestOriginalBoundaryAndVoiceRecall() {
+    s2khook::OriginalObservation original;
+    CHECK(!original.Once(), "no original invocation is not success");
+    original.Pre(); original.Post(true);
+    CHECK(!original.Once(), "suppressed function original is not success");
+    original = {};
+    original.Pre(); original.Post(false);
+    CHECK(original.Once(), "one observed original boundary passes");
+    original.Pre(); original.Post(false);
+    CHECK(!original.Once(), "duplicate original remains visible");
+    original = {}; original.Pre();
+    CHECK(!original.Once(), "missing original POST is not success");
+
+    for (bool probe_first : {false, true}) {
+        s2khook::VoiceObservation voice;
+        // Policy changes true -> false either before or after the probe PRE.
+        voice.Begin(probe_first ? true : false);
+        voice.original.Pre();
+        voice.OriginalPost(false, false, false);
+        voice.End();
+        CHECK(voice.Exact(false), "Recall effective false/original once in either probe order");
+    }
+    s2khook::VoiceObservation skipped;
+    skipped.Begin(true); skipped.End();
+    CHECK(!skipped.Exact(true), "virtual Supersede before original cannot pass voice");
+    s2khook::VoiceObservation wrong;
+    wrong.Begin(true); wrong.original.Pre(); wrong.OriginalPost(false, false, true); wrong.End();
+    CHECK(!wrong.Exact(false), "effective engine bit mismatch cannot pass voice");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -233,6 +263,7 @@ int main(int argc, char** argv) {
     TestOneAndDoubleListenerDelivery();
     TestNonfixtureDoesNotInspectConsumed();
     TestScopeRestoresOnEveryExit();
+    TestOriginalBoundaryAndVoiceRecall();
 
     if (g_fail) {
         std::cerr << "FAILED " << g_fail << " check(s)\n";

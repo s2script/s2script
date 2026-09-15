@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Isolated, reproducible build of the pinned Metamod host + KHook retirement patch.
+# Optional test build of unmodified, pinned upstream Metamod and bundled KHook.
 #
 # Never rewrites the developer's submodule checkout. Prepares a fresh tree at the
-# exact SHAs, applies patches/metamod-source/series, then AMBuilds in the sniper
+# exact SHAs, then AMBuilds the unchanged source in the sniper
 # environment. Runtime output stays untracked under build/metamod-pinned/.
 #
 # Missing AMBuild, hl2sdk, or sniper tools fail with a precise named reason. A
@@ -26,7 +26,6 @@ TARGET="linux-x86_64"
 GLIBC_MAX="2.31"
 
 MMS_SUB="$S2_REPO/third_party/metamod-source"
-PATCH_DIR="$S2_REPO/patches/metamod-source"
 OUT_ROOT="$S2_REPO/build/metamod-pinned"
 TREE="$OUT_ROOT/tree"
 MANIFEST="$OUT_ROOT/metamod-build.json"
@@ -51,7 +50,6 @@ log "repo=$S2_REPO"
 log "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 [[ -d "$MMS_SUB/core" ]] || fail "pinned Metamod source missing at $MMS_SUB"
-[[ -f "$PATCH_DIR/series" ]] || fail "patches/metamod-source/series missing"
 
 mms_head="$(git -C "$MMS_SUB" rev-parse HEAD)"
 khook_head="$(git -C "$MMS_SUB/third_party/khook" rev-parse HEAD)"
@@ -71,61 +69,6 @@ rm -rf "$ISOLATED"
 mkdir -p "$ISOLATED"
 cp -a "$MMS_SUB"/. "$ISOLATED"/
 rm -rf "$ISOLATED/.git"
-# Without its own repository, git apply discovers the outer s2script checkout
-# and silently skips patch paths outside this build subdirectory.
-git init --quiet "$ISOLATED"
-
-python3 - "$PATCH_DIR" "$ISOLATED" "$OUT_ROOT/patchset.sha256" <<'PY'
-import hashlib, pathlib, subprocess, sys
-
-patch_dir = pathlib.Path(sys.argv[1])
-mms = pathlib.Path(sys.argv[2])
-out = pathlib.Path(sys.argv[3])
-series_path = patch_dir / "series"
-if not series_path.is_file():
-    raise SystemExit("error: series file missing")
-
-seen = set()
-entries = []
-for raw in series_path.read_text(encoding="utf-8").splitlines():
-    line = raw.strip()
-    if not line or line.startswith("#"):
-        continue
-    if line in seen:
-        raise SystemExit(f"error: duplicate series entry {line}")
-    seen.add(line)
-    rel = pathlib.Path(line)
-    if rel.is_absolute() or ".." in rel.parts:
-        raise SystemExit(f"error: series path escapes patch directory: {line}")
-    full = patch_dir / line
-    if not full.is_file():
-        raise SystemExit(f"error: series entry missing: {full}")
-    entries.append((line, full))
-
-digest = hashlib.sha256()
-for name, full in entries:
-    digest.update(name.encode("utf-8"))
-    digest.update(b"\0")
-    digest.update(full.read_bytes())
-    digest.update(b"\0")
-    check = subprocess.run(
-        ["git", "apply", "--check", str(full)],
-        cwd=mms,
-        capture_output=True,
-        text=True,
-    )
-    if check.returncode != 0:
-        sys.stderr.write(check.stderr)
-        raise SystemExit(f"error: git apply --check failed for {name}")
-    subprocess.check_call(["git", "apply", str(full)], cwd=mms)
-
-out.write_text(digest.hexdigest() + "\n", encoding="utf-8")
-print(digest.hexdigest())
-PY
-PATCHSET_SHA256="$(tr -d '[:space:]' <"$OUT_ROOT/patchset.sha256")"
-[[ "${#PATCHSET_SHA256}" -eq 64 ]] || fail "patchset_sha256 is not 64 hex characters"
-log "patchset_sha256=$PATCHSET_SHA256"
-
 # PLAPI from the checked source, never from a filename.
 PLAPI="$(python3 - "$ISOLATED" <<'PY'
 from pathlib import Path
@@ -139,35 +82,6 @@ PY
 )"
 [[ "$PLAPI" == "$EXPECTED_PLAPI" ]] || fail "PLAPI from source is $PLAPI, expected $EXPECTED_PLAPI"
 log "plapi=$PLAPI (from core/ISmmPluginExt.h)"
-
-# Second isolated identity: re-hash the same series against a second copy.
-python3 - "$PATCH_DIR" "$PATCHSET_SHA256" <<'PY'
-import hashlib, pathlib, sys
-patch_dir = pathlib.Path(sys.argv[1])
-expected = sys.argv[2]
-digest = hashlib.sha256()
-seen = set()
-for raw in (patch_dir / "series").read_text(encoding="utf-8").splitlines():
-    line = raw.strip()
-    if not line or line.startswith("#"):
-        continue
-    if line in seen:
-        raise SystemExit(f"error: duplicate series entry {line}")
-    seen.add(line)
-    rel = pathlib.Path(line)
-    if rel.is_absolute() or ".." in rel.parts:
-        raise SystemExit(f"error: series path escapes patch directory: {line}")
-    full = patch_dir / line
-    digest.update(line.encode("utf-8"))
-    digest.update(b"\0")
-    digest.update(full.read_bytes())
-    digest.update(b"\0")
-got = digest.hexdigest()
-if got != expected:
-    raise SystemExit(f"error: second isolated patchset identity drifted: {got} != {expected}")
-print("second isolated patchset identity matches")
-PY
-log "second isolated source/patch identity matches"
 
 if [[ "$PREPARE_ONLY" == "1" ]]; then
   log "prepared source only; no runtime artifact or success manifest generated"
@@ -193,7 +107,7 @@ if [[ ! -d "$HL2SDK_PATH/public" ]]; then
   missing+=("hl2sdk missing at $HL2SDK_PATH (HL2SDKCS2 or third_party/hl2sdk with public/ headers)")
 fi
 if [[ ${#missing[@]} -gt 0 ]]; then
-  fail "$(printf '%s; ' "${missing[@]}")isolated patched source is at $ISOLATED"
+  fail "$(printf '%s; ' "${missing[@]}")isolated unmodified source is at $ISOLATED"
 fi
 log "hl2sdk=$HL2SDK_PATH"
 
@@ -218,15 +132,15 @@ log "cxx=$(${CXX:-c++} --version 2>/dev/null | head -1 || echo missing)"
 BUILD_DIR="$OUT_ROOT/ambuild"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
-MMS_PATCHED_SOURCE="$ISOLATED"
-export MMS_PATCHED_SOURCE S2_REPO HL2SDKCS2="$HL2SDK_PATH"
+MMS_STOCK_SOURCE="$ISOLATED"
+export MMS_STOCK_SOURCE S2_REPO HL2SDKCS2="$HL2SDK_PATH"
 
-log "configure: HL2SDKCS2=$HL2SDK_PATH python3 $MMS_PATCHED_SOURCE/configure.py --sdks=cs2 --targets=x86_64 --enable-optimize --disable-auto-versioning"
+log "configure: HL2SDKCS2=$HL2SDK_PATH python3 $MMS_STOCK_SOURCE/configure.py --sdks=cs2 --targets=x86_64 --enable-optimize --disable-auto-versioning"
 (
   cd "$BUILD_DIR"
-  # This isolated repository intentionally has no fabricated commit history.
-  # The manifest carries the checked upstream commits and ordered patch digest.
-  HL2SDKCS2="$HL2SDK_PATH" python3 "$MMS_PATCHED_SOURCE/configure.py" --sdks=cs2 --targets=x86_64 --enable-optimize --disable-auto-versioning
+  # This isolated source copy has no fabricated commit history.
+  # The manifest records the checked, unchanged upstream commits.
+  HL2SDKCS2="$HL2SDK_PATH" python3 "$MMS_STOCK_SOURCE/configure.py" --sdks=cs2 --targets=x86_64 --enable-optimize --disable-auto-versioning
   ambuild
 ) >>"$BUILD_LOG" 2>&1
 
@@ -310,18 +224,16 @@ PY
 )"
 
 # Manifest last, after successful build/verification. Real digests only.
-python3 - "$MANIFEST.tmp" "$PLAPI" "$MMS_PIN" "$KHOOK_PIN" "$PATCHSET_SHA256" "$TARGET" "$GLIBC_MAX" "$ARTIFACTS_JSON" <<'PY'
+python3 - "$MANIFEST.tmp" "$PLAPI" "$MMS_PIN" "$KHOOK_PIN" "$TARGET" "$GLIBC_MAX" "$ARTIFACTS_JSON" <<'PY'
 import json, sys
 path = sys.argv[1]
 doc = {
-    "schema": 1,
+    "schema": 2,
     "plapi": int(sys.argv[2]),
-    "metamod_commit": sys.argv[3],
-    "khook_commit": sys.argv[4],
-    "patchset_sha256": sys.argv[5],
-    "target": sys.argv[6],
-    "glibc_max": sys.argv[7],
-    "artifacts": json.loads(sys.argv[8]),
+    "provenance": {"kind": "unmodified-source", "metamod_commit": sys.argv[3], "khook_commit": sys.argv[4]},
+    "target": sys.argv[5],
+    "glibc_max": sys.argv[6],
+    "artifacts": json.loads(sys.argv[7]),
 }
 with open(path, "w", encoding="utf-8") as fh:
     json.dump(doc, fh, indent=2)
