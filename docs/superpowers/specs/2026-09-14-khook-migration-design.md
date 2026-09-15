@@ -5,7 +5,7 @@
 **Status:** Revised after source review (2026-09-14); implementation and live acceptance remain pending — planning companion is `docs/superpowers/plans/2026-09-14-khook-migration.md`.
 **Audience:** shim / core / operator-docs maintainers.
 **Execution:** The [implementation plan](../plans/2026-09-14-khook-migration.md#dynamic-subagent-execution-contract) defines dependency barriers, file ownership, worker handoffs and evidence for the user's dynamic subagent workflow. Worker packages may be scheduled independently within those barriers; the three PR slices remain atomic.
-**PR A review amendment:** Read the [remediation spec](2026-09-14-khook-pr-a-remediation-design.md) and [plan](../plans/2026-09-14-khook-pr-a-remediation.md) for the review of `57a329b7`. They supersede the provider-lifetime, installed-host verification and acceptance assumptions below. PLAPI 18 alone is insufficient for the corrected host; PR B remains blocked until amended PR A acceptance completes.
+**PR A review amendment:** Read the [remediation spec](2026-09-14-khook-pr-a-remediation-design.md) and [plan](../plans/2026-09-14-khook-pr-a-remediation.md) for the review of `57a329b7`. They supersede the provider-lifetime, installed-host verification and acceptance assumptions below. Use stock PLAPI 18 Metamod and the amended script-reload, artifact-verification and shutdown requirements; PR B remains blocked until PR A acceptance completes.
 **Primary sources:** [Metamod PR #223](https://github.com/alliedmodders/metamod-source/pull/223) (merged 2026-09-08); [Kenzzer/KHook](https://github.com/Kenzzer/KHook) at pin `1e200e4`; inventory in `docs/superpowers/specs/2026-09-14-khook-vs-sourcehook-research.md`.
 **Builds on:** `docs/ARCHITECTURE.md` §1 (issue #215 / one detour per engine function); `docs/re-strategy.md`; declarative inbound hooks (`docs/superpowers/specs/2026-08-02-declarative-inbound-hooks-design.md`).
 
@@ -301,9 +301,11 @@ a this-filter does not physically unpatch. Do not synchronously destroy a hook
 object from its callback. Physical removal must retain the typed binding,
 callback context and any pending invocation state until KHook's removal
 completion; never `RemoveHook(id, true)` followed by immediate context deletion.
-Drain retained registrations before destroying runtime resources or unloading
-the library. Reject/defer Unload invoked on an active callback stack while
-preserving runtime ownership; do not wait for that stack from inside itself. A KHook id and a declarative s2script id are different namespaces.
+The native shim stays resident through `.s2sp` reload; script unsubscribe must not
+start whole-shim retirement. Physical teardown at server shutdown must retain
+registrations and runtime ownership until a validated safe engine boundary, as
+defined in the remediation spec. Never wait for an active stack from inside
+itself. A KHook id and a declarative s2script id are different namespaces.
 
 ### 5.7 Original-byte resolution and validation (PR B prerequisite)
 

@@ -39,7 +39,7 @@ requirements. Native updates use a server restart. Failed-load cleanup and safe
 process shutdown remain relevant and must be tested separately. A refusal from
 ordinary `Unload()` does not, by itself, make forced process shutdown safe.
 
-For `.s2sp` reload, retire the outgoing plugin's subscriptions and owned resources,
+For `.s2sp` reload, retire the outgoing plugin's subscriptions and plugin-owned resources,
 prevent stale callbacks, then activate the replacement. Shared native hooks can
 remain installed for the resident shim's lifetime. Removing one plugin's routing
 or subscription must not retire the native host or disturb another plugin.

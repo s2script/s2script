@@ -32,8 +32,10 @@ blocked until the amended PR A gate passes. No merge or release is authorized.
   named and observable. Keep PRE/POST, entity filtering and peer precedence.
 - The native shim/provider can retain shared hooks while individual `.s2sp`
   subscriptions come and go. Removing a routing filter is not physical unhooking.
-- Script teardown uses the resource ledger and must remain safe even when the
-  outgoing plugin's own cleanup code is missing or fails.
+- Script-owned subscriptions and resources use the resource ledger and must remain
+  safe even when outgoing cleanup code is missing or fails. `createEntity` creates
+  game-world-owned entities, which follow the SDK's explicit cleanup contract; do
+  not add automatic entity ownership as part of this migration.
 
 ## Lifetime responsibilities
 
@@ -117,9 +119,11 @@ and `artifacts` (relative `path` plus SHA-256). Provenance is either:
   independently expected archive SHA-256, checked before extraction.
 
 Do not describe an operator-supplied checksum as an upstream signature. Source
-builds derive PLAPI from checked headers; official-release compatibility requires
-an explicit operator-confirmed PLAPI value and actual runtime load/handshake
-validation. Archive hashes and ELF structure alone do not establish the ABI. Keep
+builds derive PLAPI from checked headers. The default official release is
+`2.0.0.1467`, whose upstream tag resolves to the checked Metamod pin, with its
+published asset SHA-256. This fixed default derives PLAPI from that checked source;
+arbitrary release overrides require explicit operator-confirmed compatibility.
+Actual runtime load/handshake validation remains required. Archive hashes and ELF structure alone do not establish the ABI. Keep
 source identity and stock-release provenance distinct. Safe extraction must reject path
 escapes and unsafe links. Require valid x86_64 shared ELF objects, complete loader
 layout, appropriate GLIBC requirements and matching file hashes. Empty, malformed,
@@ -148,9 +152,10 @@ The script reload proof uses one persistent native target and one run/artifact
 identity across an actual `.s2sp` reload. Explicitly arm the check, observe the old
 JS generation, retain native target identity, then observe replacement PRE/POST
 callbacks and one independent original invocation. Require a changed JS generation,
-exact new callback counts, zero old callbacks and retirement of the old plugin's
-owned marker resource. Do not manually remove the dedicated test subscription in
-OnPluginEnd; the ledger must prove cleanup. Do not infer reload from a reset counter.
+exact new callback counts, zero old callbacks and removal of the old marker entity.
+The dedicated test subscriptions are left to owner-ledger cleanup; do not manually
+unsubscribe them in OnPluginEnd. The game-world marker separately proves explicit
+OnPluginEnd entity cleanup, not automatic entity-ledger disposal. Do not infer reload from a reset counter.
 
 A JS-only resume restores run binding without replaying completed filter/phase
 checks. Negative controls cover unchanged generation, stale/duplicate/missing
