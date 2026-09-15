@@ -12,7 +12,7 @@
 
 **Revision:** 2026-09-14 source-review corrections. These are implementation requirements; no migration or live-gate completion is claimed by this documentation change.
 
-**PR A review amendment:** The cutover at `57a329b7` requires the [PR A remediation plan](2026-09-14-khook-pr-a-remediation.md) and its [spec](../specs/2026-09-14-khook-pr-a-remediation-design.md). Those documents supersede T2–T8's assumptions about pinned-host provider lifetime, artifact verification and acceptance completeness. The corrected host needs the reviewed patch/build identity in addition to PLAPI 18. PR B remains blocked until the amended PR A gate passes.
+**PR A review amendment:** Use the [current remediation plan](2026-09-15-khook-pr-a-review-fixes.md) and [spec](../specs/2026-09-14-khook-pr-a-remediation-design.md). The user requires stock Metamod and only `.s2sp` hot reload inside resident s2script. No upstream patch or native shim hot-reload gate is required. The amended stock-host lifetime, artifact and acceptance requirements supersede T2–T8 where they conflict. PR B remains blocked until PR A passes.
 
 ## Global Constraints
 
