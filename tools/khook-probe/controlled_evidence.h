@@ -55,6 +55,7 @@ struct PeerActionObservation {
     int pre_b;
     int original;
     int ret;
+    int pre_order;
 };
 
 struct PeerActionsObservation {
@@ -66,12 +67,18 @@ struct PeerActionsObservation {
     PeerActionObservation ba_os;
 
     bool Passed() const {
-        return ab_io.pre_a == 1 && ab_io.pre_b == 1 && ab_io.original == 1 && ab_io.ret == 42 &&
-               ab_oo.pre_a == 1 && ab_oo.pre_b == 1 && ab_oo.original == 1 && ab_oo.ret == 7 &&
-               ab_os.pre_a == 1 && ab_os.pre_b == 1 && ab_os.original == 0 && ab_os.ret == 99 &&
-               ba_io.pre_a == 1 && ba_io.pre_b == 1 && ba_io.original == 1 && ba_io.ret == 42 &&
-               ba_oo.pre_a == 1 && ba_oo.pre_b == 1 && ba_oo.original == 1 && ba_oo.ret == 99 &&
-               ba_os.pre_a == 1 && ba_os.pre_b == 1 && ba_os.original == 0 && ba_os.ret == 99;
+        return ab_io.pre_a == 1 && ab_io.pre_b == 1 && ab_io.original == 1 &&
+               ab_io.ret == 42 && ab_io.pre_order == 21 &&
+               ab_oo.pre_a == 1 && ab_oo.pre_b == 1 && ab_oo.original == 1 &&
+               ab_oo.ret == 99 && ab_oo.pre_order == 21 &&
+               ab_os.pre_a == 1 && ab_os.pre_b == 1 && ab_os.original == 0 &&
+               ab_os.ret == 99 && ab_os.pre_order == 21 &&
+               ba_io.pre_a == 1 && ba_io.pre_b == 1 && ba_io.original == 1 &&
+               ba_io.ret == 42 && ba_io.pre_order == 12 &&
+               ba_oo.pre_a == 1 && ba_oo.pre_b == 1 && ba_oo.original == 1 &&
+               ba_oo.ret == 7 && ba_oo.pre_order == 12 &&
+               ba_os.pre_a == 1 && ba_os.pre_b == 1 && ba_os.original == 0 &&
+               ba_os.ret == 99 && ba_os.pre_order == 12;
     }
 
     std::string Json() const {
@@ -79,7 +86,8 @@ struct PeerActionsObservation {
             return std::string("{\"pre_a\":") + std::to_string(value.pre_a) +
                    ",\"pre_b\":" + std::to_string(value.pre_b) +
                    ",\"orig\":" + std::to_string(value.original) +
-                   ",\"ret\":" + std::to_string(value.ret) + "}";
+                   ",\"ret\":" + std::to_string(value.ret) +
+                   ",\"pre_order\":" + std::to_string(value.pre_order) + "}";
         };
         return std::string("{\"ab_io\":") + pair(ab_io) +
                ",\"ab_oo\":" + pair(ab_oo) +
@@ -91,8 +99,8 @@ struct PeerActionsObservation {
 
     static std::string ExpectedJson() {
         return PeerActionsObservation{
-            {1, 1, 1, 42}, {1, 1, 1, 7}, {1, 1, 0, 99},
-            {1, 1, 1, 42}, {1, 1, 1, 99}, {1, 1, 0, 99},
+            {1, 1, 1, 42, 21}, {1, 1, 1, 99, 21}, {1, 1, 0, 99, 21},
+            {1, 1, 1, 42, 12}, {1, 1, 1, 7, 12}, {1, 1, 0, 99, 12},
         }.Json();
     }
 };

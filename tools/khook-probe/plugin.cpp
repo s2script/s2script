@@ -208,6 +208,8 @@ static int g_pre_ab_a = 0;
 static int g_pre_ab_b = 0;
 static int g_pre_ba_a = 0;
 static int g_pre_ba_b = 0;
+static int g_order_ab = 0;
+static int g_order_ba = 0;
 
 static KHook::Action g_act_a = KHook::Action::Ignore;
 static KHook::Action g_act_b = KHook::Action::Ignore;
@@ -298,24 +300,28 @@ static KHook::Return<int> PreAB_A(int x) {
     auto obs = pAB_A ? pAB_A->Observe() : S2HookObserve{};
     (void)obs;
     g_pre_ab_a++;
+    g_order_ab = g_order_ab * 10 + 1;
     return ActionRet(g_act_a, g_ret_a);
 }
 static KHook::Return<int> PreAB_B(int x) {
     auto obs = pAB_B ? pAB_B->Observe() : S2HookObserve{};
     (void)obs;
     g_pre_ab_b++;
+    g_order_ab = g_order_ab * 10 + 2;
     return ActionRet(g_act_b, g_ret_b);
 }
 static KHook::Return<int> PreBA_A(int x) {
     auto obs = pBA_A ? pBA_A->Observe() : S2HookObserve{};
     (void)obs;
     g_pre_ba_a++;
+    g_order_ba = g_order_ba * 10 + 1;
     return ActionRet(g_act_a, g_ret_a);
 }
 static KHook::Return<int> PreBA_B(int x) {
     auto obs = pBA_B ? pBA_B->Observe() : S2HookObserve{};
     (void)obs;
     g_pre_ba_b++;
+    g_order_ba = g_order_ba * 10 + 2;
     return ActionRet(g_act_b, g_ret_b);
 }
 static KHook::Return<int> PreOnce(int x) {
@@ -758,53 +764,53 @@ static void InstallControlledHooks() {
 
 static s2khook::PeerActionsObservation RunPeerActions() {
     s2khook::PeerActionsObservation observed{};
-    g_pre_ab_a = g_pre_ab_b = g_orig_ab = 0;
+    g_pre_ab_a = g_pre_ab_b = g_orig_ab = g_order_ab = 0;
     g_act_a = KHook::Action::Ignore;
     g_act_b = KHook::Action::Override;
     g_ret_a = 0;
     g_ret_b = 42;
     const int r1 = s2khook::InvokeOpaque(g_call_target_ab, 1);
-    observed.ab_io = {g_pre_ab_a, g_pre_ab_b, g_orig_ab, r1};
+    observed.ab_io = {g_pre_ab_a, g_pre_ab_b, g_orig_ab, r1, g_order_ab};
 
-    g_pre_ab_a = g_pre_ab_b = g_orig_ab = 0;
+    g_pre_ab_a = g_pre_ab_b = g_orig_ab = g_order_ab = 0;
     g_act_a = KHook::Action::Override;
     g_act_b = KHook::Action::Override;
     g_ret_a = 7;
     g_ret_b = 99;
     const int r2 = s2khook::InvokeOpaque(g_call_target_ab, 1);
-    observed.ab_oo = {g_pre_ab_a, g_pre_ab_b, g_orig_ab, r2};
+    observed.ab_oo = {g_pre_ab_a, g_pre_ab_b, g_orig_ab, r2, g_order_ab};
 
-    g_pre_ab_a = g_pre_ab_b = g_orig_ab = 0;
+    g_pre_ab_a = g_pre_ab_b = g_orig_ab = g_order_ab = 0;
     g_act_a = KHook::Action::Override;
     g_act_b = KHook::Action::Supersede;
     g_ret_a = 7;
     g_ret_b = 99;
     const int r3 = s2khook::InvokeOpaque(g_call_target_ab, 1);
-    observed.ab_os = {g_pre_ab_a, g_pre_ab_b, g_orig_ab, r3};
+    observed.ab_os = {g_pre_ab_a, g_pre_ab_b, g_orig_ab, r3, g_order_ab};
 
-    g_pre_ba_a = g_pre_ba_b = g_orig_ba = 0;
+    g_pre_ba_a = g_pre_ba_b = g_orig_ba = g_order_ba = 0;
     g_act_a = KHook::Action::Ignore;
     g_act_b = KHook::Action::Override;
     g_ret_a = 0;
     g_ret_b = 42;
     const int r4 = s2khook::InvokeOpaque(g_call_target_ba, 1);
-    observed.ba_io = {g_pre_ba_a, g_pre_ba_b, g_orig_ba, r4};
+    observed.ba_io = {g_pre_ba_a, g_pre_ba_b, g_orig_ba, r4, g_order_ba};
 
-    g_pre_ba_a = g_pre_ba_b = g_orig_ba = 0;
+    g_pre_ba_a = g_pre_ba_b = g_orig_ba = g_order_ba = 0;
     g_act_a = KHook::Action::Override;
     g_act_b = KHook::Action::Override;
     g_ret_a = 7;
     g_ret_b = 99;
     const int r5 = s2khook::InvokeOpaque(g_call_target_ba, 1);
-    observed.ba_oo = {g_pre_ba_a, g_pre_ba_b, g_orig_ba, r5};
+    observed.ba_oo = {g_pre_ba_a, g_pre_ba_b, g_orig_ba, r5, g_order_ba};
 
-    g_pre_ba_a = g_pre_ba_b = g_orig_ba = 0;
+    g_pre_ba_a = g_pre_ba_b = g_orig_ba = g_order_ba = 0;
     g_act_a = KHook::Action::Override;
     g_act_b = KHook::Action::Supersede;
     g_ret_a = 7;
     g_ret_b = 99;
     const int r6 = s2khook::InvokeOpaque(g_call_target_ba, 1);
-    observed.ba_os = {g_pre_ba_a, g_pre_ba_b, g_orig_ba, r6};
+    observed.ba_os = {g_pre_ba_a, g_pre_ba_b, g_orig_ba, r6, g_order_ba};
     return observed;
 }
 

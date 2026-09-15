@@ -70,12 +70,18 @@ int main() {
     assert(level.MayTouchOwnedWorld(reload_target_generation));
 
     s2khook::PeerActionsObservation peers{
-        {1, 1, 1, 42}, {1, 1, 1, 7}, {1, 1, 0, 99},
-        {1, 1, 1, 42}, {1, 1, 1, 99}, {1, 1, 0, 99},
+        {1, 1, 1, 42, 21}, {1, 1, 1, 99, 21}, {1, 1, 0, 99, 21},
+        {1, 1, 1, 42, 12}, {1, 1, 1, 7, 12}, {1, 1, 0, 99, 12},
     };
     assert(peers.Passed());
     assert(peers.Json() == s2khook::PeerActionsObservation::ExpectedJson());
     std::cout << peers.Json() << "\n";
+    peers.ab_oo.ret = 7;
+    assert(!peers.Passed());
+    peers.ab_oo.ret = 99;
+    peers.ab_oo.pre_order = 12;
+    assert(!peers.Passed());
+    peers.ab_oo.pre_order = 21;
     peers.ab_io.original = 0;
     assert(!peers.Passed());
     peers.ab_io.original = 1;
@@ -107,8 +113,8 @@ with tempfile.TemporaryDirectory(prefix="khook-controlled-evidence-") as temp:
 
 records = [json.loads(line) for line in lines]
 assert len(records) == 4
-assert records[0]["ab_io"] == {"pre_a": 1, "pre_b": 1, "orig": 1, "ret": 42}
-assert records[0]["ba_os"] == {"pre_a": 1, "pre_b": 1, "orig": 0, "ret": 99}
+assert records[0]["ab_io"] == {"pre_a": 1, "pre_b": 1, "orig": 1, "ret": 42, "pre_order": 21}
+assert records[0]["ba_os"] == {"pre_a": 1, "pre_b": 1, "orig": 0, "ret": 99, "pre_order": 12}
 assert records[1]["ba_os"]["ret"] == 2139062143
 assert records[2] == {"pre": 1, "post": 1, "orig": 1, "return": 15}
 assert records[3]["return"] == 16
