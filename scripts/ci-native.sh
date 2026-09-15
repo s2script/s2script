@@ -42,6 +42,24 @@ bash scripts/test-hook-dispatch.sh
 echo "== test-khook-binding.sh (checked KHook receipts, Observe/BeginRemove) =="
 bash scripts/test-khook-binding.sh
 
+echo "== test-khook-host-lifetime.sh (patched Metamod provider/unloader) =="
+bash scripts/test-khook-host-lifetime.sh
+
+echo "== test-khook-shutdown.sh (Unload Busy/Pending/Complete) =="
+bash scripts/test-khook-shutdown.sh
+
+echo "== test-khook-observer.sh (consumed FireEvent observer + suite A fixtures) =="
+bash scripts/test-khook-observer.sh
+
+echo "== test-install-metamod.sh (artifact verifier + install transaction) =="
+bash scripts/cloud/test-install-metamod.sh
+
+echo "== test-khook-acceptance.py (suite A judge/registry) =="
+python3 scripts/test-khook-acceptance.py
+
+echo "== test-khook-live.sh --self-test (shared judge via --from-file) =="
+bash scripts/test-khook-live.sh --self-test
+
 echo "== test-detour-reloc.sh (prologue relocation, tier selection, named refusals) =="
 bash scripts/test-detour-reloc.sh
 

@@ -17,7 +17,7 @@ If you only want to *run* s2script on a server, you do not need this file — gr
 
 ```
 core/         Rust engine core (cdylib, embeds V8). Engine-generic — never imports games/*.
-shim/         C++ Metamod plugin. Owns every Source 2 touchpoint: sigscan, SourceHooks,
+shim/         C++ Metamod plugin. Owns every Source 2 touchpoint: sigscan, KHook,
               detours, protobuf reflection, vtable RTTI.
 games/cs2/    CS2 game-package prelude (generated schema + nav accessors).
 packages/     npm-published: @s2script/sdk (types + the `s2s` CLI), @s2script/cs2, eslint-plugin.
@@ -138,11 +138,14 @@ the V8 prebuilt on every run.
 
 **This is the canonical build for anything that touches a real server.**
 
-The resulting `s2script.so` requires **Metamod plugin API 18** (KHook). Pair it with the tested
-pin `7e24ce9e7a03` (the vendored `third_party/metamod-source` submodule) or an explicitly verified
-PLAPI 18 drop; a build date is not a compatibility proof. Upgrade or roll back s2script and
-Metamod together — a pre-18 plugin cannot load on the new host, including other operators'
-Metamod plugins on the same server.
+The resulting `s2script.so` requires **Metamod plugin API 18** (KHook) on the **corrected** host:
+pin `7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33` (nested KHook `1e200e4cc8e0badcb7cf941525268d6977f6a4e6`)
+plus `patches/metamod-source/` (digest `patchset_sha256`). PLAPI 18 or a `GetDetourInterface` string
+alone is not enough. Build it with `scripts/build-metamod-pinned.sh` inside the sniper environment,
+then `python3 scripts/verify-metamod-artifact.py --tree build/metamod-pinned/tree --manifest
+build/metamod-pinned/metamod-build.json`. Upgrade or roll back s2script and Metamod together —
+a pre-18 plugin cannot load on the new host, including other operators' Metamod plugins on the
+same server.
 
 ---
 
@@ -168,16 +171,25 @@ automated** — a human drives it and records the result.
 
 ### One-time setup
 
-Install Metamod:Source **PLAPI 18** into `docker/metamod/`. Use the tested pin `7e24ce9e7a03`
-or an explicitly verified PLAPI 18 drop (a download dated after PR #223 is not sufficient by
-itself — confirm plugin interface 18). Copy a verified CS2-compatible tree's
-`csgo/addons/metamod/` contents:
+Install the **corrected** Metamod:Source host into `docker/metamod/`. That is pin
+`7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33` plus `patches/metamod-source/`, not an arbitrary
+PLAPI 18 mmsdrop. A download dated after PR #223 is not sufficient.
 
 ```bash
-tar xzf metamod_*.tar.gz
-cp -r package/csgo/addons/metamod/* docker/metamod/
-# docker/metamod/ should now hold metamod.vdf, bin/, …
+# Requires AMBuild 2.2+, hl2sdk, Steam Runtime 3 / Debian bullseye.
+docker run --rm -v "$PWD:/repo" -w /repo \
+  -v s2script-cargo:/usr/local/cargo/registry \
+  rust:bullseye bash -lc 'export S2_SNIPER_ENV=1; bash /repo/scripts/build-metamod-pinned.sh'
+python3 scripts/verify-metamod-artifact.py \
+  --tree build/metamod-pinned/tree \
+  --manifest build/metamod-pinned/metamod-build.json
+sudo docker compose -f docker/docker-compose.yml stop cs2
+bash scripts/cloud/install.sh --metamod-only   # refuses a running CS2; rollback = docker/metamod.prev
+sudo docker compose -f docker/docker-compose.yml start cs2   # restart, never --force-recreate
 ```
+
+`docker/metamod/` should then hold `metamod.vdf`, `bin/`, the copied build manifest, and the
+installation receipt. `S2_METAMOD_PINNED_TREE` still needs `S2_METAMOD_BUILD_MANIFEST`.
 
 ### Run it
 

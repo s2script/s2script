@@ -9,7 +9,26 @@ Linux x86-64 only. Windows is not supported yet.
 1. A Counter-Strike 2 dedicated server.
 2. **[Metamod:Source](https://www.sourcemm.net/) plugin API (PLAPI) 18** installed under `game/csgo/addons/metamod/` (same as any other Metamod plugin).
 
-   This runtime is a hard cutover onto the post–[PR #223](https://github.com/alliedmodders/metamod-source/pull/223) host. Use the tested pin `7e24ce9e7a03` (vendored in `third_party/metamod-source`) or an explicitly verified PLAPI 18 drop. A Metamod **build date alone is not enough**.
+   This runtime is a hard cutover onto the post–[PR #223](https://github.com/alliedmodders/metamod-source/pull/223) host. The required host is the vendored pin `7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33` (nested KHook `1e200e4cc8e0badcb7cf941525268d6977f6a4e6`) **plus** the tracked series in `patches/metamod-source/`. Runtime identity is those two SHAs together with `patchset_sha256` (SHA-256 over each series pathname, one NUL, the patch bytes, and one NUL).
+
+   PLAPI 18, a `GetDetourInterface` string, a latest mmsdrop, or a Metamod **build date alone is not enough**. An unpatched PLAPI 18 host does not include the provider-lifetime fix this binary expects.
+
+   Build and verify the corrected host, then install it only while CS2 is stopped:
+
+   ```bash
+   # Sniper / Steam Runtime 3. Host gcc is not evidence.
+   docker run --rm -v "$PWD:/repo" -w /repo \
+     -v s2script-cargo:/usr/local/cargo/registry \
+     rust:bullseye bash -lc 'export S2_SNIPER_ENV=1; bash /repo/scripts/build-metamod-pinned.sh'
+   python3 scripts/verify-metamod-artifact.py \
+     --tree build/metamod-pinned/tree \
+     --manifest build/metamod-pinned/metamod-build.json
+   sudo docker compose -f docker/docker-compose.yml stop cs2
+   bash scripts/cloud/install.sh --metamod-only
+   sudo docker compose -f docker/docker-compose.yml start cs2
+   ```
+
+   `S2_METAMOD_PINNED_TREE` still requires an independently supplied `S2_METAMOD_BUILD_MANIFEST`. The installer never invents a manifest from the candidate. Rollback is the complete previous tree (`docker/metamod.prev`).
 
    Upgrade or roll back **s2script and Metamod together**. A pre-18 s2script binary cannot load on a PLAPI 18 host, and a PLAPI 18 s2script binary cannot load on an older host. The same floor applies to every other Metamod plugin on the server: a pre-18 plugin will not load on the new host.
 

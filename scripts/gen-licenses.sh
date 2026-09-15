@@ -171,7 +171,7 @@ changes that. These are the notices s2script owes to others.
 
 Pinned at generation time:""")
 o.append("    hl2sdk            %s   (branch cs2)" % rev("third_party/hl2sdk"))
-o.append("    metamod-source    %s   (PLAPI 18/KHook)" % rev("third_party/metamod-source"))
+o.append("    metamod-source    %s   (PLAPI 18/KHook; plus patches/metamod-source/ — not an unchanged upstream artifact)" % rev("third_party/metamod-source"))
 o.append("    breakpad          %s" % rev("third_party/breakpad"))
 o.append("    rust crates       %d   (from Cargo.lock)" % len(inventory))
 o.append("\nCONTENTS")
@@ -185,6 +185,14 @@ o.append("    %-3d %-52s %d texts" % (n + 3, "Rust crate dependencies — licens
 for i, (title, lic, path) in enumerate(NATIVE, 1):
     o.append(head(i, title, lic))
     o.append(VALVE_NOTICE if path is None else read(path, title))
+    if title == "Metamod:Source":
+        o.append(
+            "\nThe Metamod:Source tree this project builds against is pin "
+            "7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33 plus the tracked series "
+            "in patches/metamod-source/. That is an altered source version "
+            "(zlib/libpng clause 2). It is not an unchanged upstream artifact. "
+            "KHook remains nested at 1e200e4cc8e0badcb7cf941525268d6977f6a4e6."
+        )
 
 o.append(head(n + 1, "SQLite (bundled via libsqlite3-sys)", "public domain"))
 o.append("[%s]\n" % sqlite_src)
