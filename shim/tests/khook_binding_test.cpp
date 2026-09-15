@@ -499,6 +499,78 @@ static void test_global_active_count_and_cross_thread_drain() {
     CHECK(S2Hook_NoActiveDispatch(), "DispatchGuard destructor releases the hold");
 }
 
+static int g_guarded_hook_calls = 0;
+static int StubDispatchHook(int hookId, void* argView) {
+    (void)hookId;
+    (void)argView;
+    ++g_guarded_hook_calls;
+    CHECK(S2Hook_ActiveCount() >= 1, "guarded inbound dispatch is counted before JS");
+    CHECK(!S2Hook_DrainRetirement(), "Unload cannot finish during guarded inbound JS");
+    return 2;
+}
+static int StubDispatchHookPost(int hookId, void* argView, int skipped) {
+    (void)hookId;
+    (void)argView;
+    (void)skipped;
+    ++g_guarded_hook_calls;
+    CHECK(S2Hook_ActiveCount() >= 1, "guarded inbound POST is counted before JS");
+    return 1;
+}
+
+static void test_guarded_inbound_dispatch_stops_js_while_retiring() {
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+    g_guarded_hook_calls = 0;
+    CHECK(S2Hook_GuardedDispatchHook(&StubDispatchHook, 7, nullptr) == 2,
+          "Running inbound dispatch reaches JS");
+    CHECK(g_guarded_hook_calls == 1, "Running inbound dispatch invoked the core op once");
+    CHECK(S2Hook_NoActiveDispatch(), "guarded inbound dispatch releases the hold");
+
+    S2Hook_SetLifecycle(S2HookLifecycle::Retiring);
+    CHECK(S2Hook_GuardedDispatchHook(&StubDispatchHook, 7, nullptr) == 0,
+          "Retiring inbound dispatch returns Continue without JS");
+    CHECK(S2Hook_GuardedDispatchHookPost(&StubDispatchHookPost, 7, nullptr, 0) == 0,
+          "Retiring inbound POST returns Continue without JS");
+    CHECK(g_guarded_hook_calls == 1, "Retiring does not invoke the raw core dispatch ops");
+    CHECK(S2Hook_ActiveCount() == 0, "skipped inbound dispatch does not leak the active count");
+    CHECK(S2Hook_GuardedDispatchHook(nullptr, 1, nullptr) == 0,
+          "null core op degrades to Continue");
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+}
+
+static void test_active_count_leave_does_not_underflow() {
+    FakeKHook fake;
+    KHook::__exported__khook = &fake;
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+
+    S2CheckedFunction<void> fn(&FnPre, nullptr);
+    (void)fn.Configure(reinterpret_cast<void*>(&FnTarget));
+
+    constexpr int kIters = 20000;
+    std::atomic<int> saw_negative{0};
+    auto worker = [&]() {
+        for (int i = 0; i < kIters; ++i) {
+            {
+                auto obs = fn.Observe();
+                S2HookDispatchGuard g;
+                if (S2Hook_ActiveCount() < 0) {
+                    saw_negative.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+            if (S2Hook_ActiveCount() < 0) {
+                saw_negative.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    };
+    std::thread a(worker);
+    std::thread b(worker);
+    a.join();
+    b.join();
+    CHECK(saw_negative.load(std::memory_order_relaxed) == 0,
+          "LeaveObserve/DispatchGuard never take the active count negative");
+    CHECK(S2Hook_ActiveCount() == 0, "paired leaves restore a zero active count");
+    CHECK(S2Hook_DrainRetirement(), "drain is allowed after concurrent paired leaves");
+}
+
 static void test_callback_guard_rejects_dispatch_and_registration() {
     FakeKHook fake;
     KHook::__exported__khook = &fake;
@@ -648,6 +720,8 @@ int main() {
     test_discarded_observe_does_not_leak_invocation();
     test_drain_true_can_leave_retirement_pending();
     test_global_active_count_and_cross_thread_drain();
+    test_guarded_inbound_dispatch_stops_js_while_retiring();
+    test_active_count_leave_does_not_underflow();
     test_callback_guard_rejects_dispatch_and_registration();
     test_same_address_configure_is_idempotent();
     test_different_address_configure_rejected_old_id_still_retires();
