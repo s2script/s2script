@@ -191,6 +191,17 @@ sudo docker compose -f docker/docker-compose.yml start cs2   # restart, never --
 `docker/metamod/` should then hold `metamod.vdf`, `bin/`, the copied build manifest, and the
 installation receipt. `S2_METAMOD_PINNED_TREE` still needs `S2_METAMOD_BUILD_MANIFEST`.
 
+The source builder creates an isolated Git repository before applying the tracked
+patches, and disables AMBuild auto-versioning there. The verified manifest records
+the upstream source and patch identity. `--prepare-only` prepares patched source
+without claiming a successful binary build. Starting a rebuild invalidates any
+previous success manifest.
+
+`bash scripts/test-khook-sniper-build.sh` runs the corrected host, shim/core and
+optimized acceptance-probe builds in a Linux x86_64 bullseye container and checks
+their ELF/GLIBC requirements. It is part of `scripts/ci-native.sh` and requires
+Docker; passing engine-free tests alone does not replace this build gate.
+
 ### Run it
 
 ```bash

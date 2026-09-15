@@ -54,6 +54,9 @@ bash scripts/test-khook-observer.sh
 echo "== test-install-metamod.sh (artifact verifier + install transaction) =="
 bash scripts/cloud/test-install-metamod.sh
 
+echo "== test-metamod-build.py (isolated patch application + stale receipt invalidation) =="
+python3 scripts/test-metamod-build.py
+
 echo "== test-khook-acceptance.py (suite A judge/registry) =="
 python3 scripts/test-khook-acceptance.py
 
@@ -124,5 +127,8 @@ cmake --build build/shim --target ccommand_selftest -j >/dev/null
 
 echo "== check-shim-symbols.sh (core entry points defined; no unresolvable engine symbols) =="
 bash scripts/check-shim-symbols.sh
+
+echo "== test-khook-sniper-build.sh (actual corrected host and consumers) =="
+bash scripts/test-khook-sniper-build.sh
 
 echo "ci-native: all native gates passed"

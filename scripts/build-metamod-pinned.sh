@@ -9,6 +9,13 @@
 # planted prebuilt file is not success.
 set -euo pipefail
 
+PREPARE_ONLY=0
+case "${1:-}" in
+  --prepare-only) PREPARE_ONLY=1 ;;
+  "") ;;
+  *) echo "usage: $0 [--prepare-only]" >&2; exit 2 ;;
+esac
+
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 S2_REPO="${S2_REPO:-$REPO}"
 
@@ -36,6 +43,8 @@ fail() {
 }
 
 mkdir -p "$OUT_ROOT"
+# A failed rebuild must not leave an old success receipt usable by the installer.
+rm -f "$MANIFEST"
 : >"$BUILD_LOG"
 log "==> build-metamod-pinned.sh"
 log "repo=$S2_REPO"
@@ -62,6 +71,9 @@ rm -rf "$ISOLATED"
 mkdir -p "$ISOLATED"
 cp -a "$MMS_SUB"/. "$ISOLATED"/
 rm -rf "$ISOLATED/.git"
+# Without its own repository, git apply discovers the outer s2script checkout
+# and silently skips patch paths outside this build subdirectory.
+git init --quiet "$ISOLATED"
 
 python3 - "$PATCH_DIR" "$ISOLATED" "$OUT_ROOT/patchset.sha256" <<'PY'
 import hashlib, pathlib, subprocess, sys
@@ -157,6 +169,11 @@ print("second isolated patchset identity matches")
 PY
 log "second isolated source/patch identity matches"
 
+if [[ "$PREPARE_ONLY" == "1" ]]; then
+  log "prepared source only; no runtime artifact or success manifest generated"
+  exit 0
+fi
+
 # Toolchain. Named failures; never plant a fake tree.
 missing=()
 if ! command -v python3 >/dev/null 2>&1; then
@@ -194,7 +211,7 @@ if ! command -v ambuild >/dev/null 2>&1; then
   fail "AMBuild not found on PATH after import check"
 fi
 log "ambuild=$(command -v ambuild)"
-log "ambuild_version=$(ambuild --version 2>/dev/null || python3 -c 'from ambuild2 import run; print(getattr(run,\"CURRENT_API\",\"unknown\"))')"
+log "ambuild_api=$(python3 -c 'from ambuild2 import run; print(run.CURRENT_API)')"
 log "compiler=$(${CC:-cc} --version 2>/dev/null | head -1 || echo missing)"
 log "cxx=$(${CXX:-c++} --version 2>/dev/null | head -1 || echo missing)"
 
@@ -204,10 +221,12 @@ mkdir -p "$BUILD_DIR"
 MMS_PATCHED_SOURCE="$ISOLATED"
 export MMS_PATCHED_SOURCE S2_REPO HL2SDKCS2="$HL2SDK_PATH"
 
-log "configure: HL2SDKCS2=$HL2SDK_PATH python3 $MMS_PATCHED_SOURCE/configure.py --sdks=cs2 --targets=x86_64 --enable-optimize"
+log "configure: HL2SDKCS2=$HL2SDK_PATH python3 $MMS_PATCHED_SOURCE/configure.py --sdks=cs2 --targets=x86_64 --enable-optimize --disable-auto-versioning"
 (
   cd "$BUILD_DIR"
-  HL2SDKCS2="$HL2SDK_PATH" python3 "$MMS_PATCHED_SOURCE/configure.py" --sdks=cs2 --targets=x86_64 --enable-optimize
+  # This isolated repository intentionally has no fabricated commit history.
+  # The manifest carries the checked upstream commits and ordered patch digest.
+  HL2SDKCS2="$HL2SDK_PATH" python3 "$MMS_PATCHED_SOURCE/configure.py" --sdks=cs2 --targets=x86_64 --enable-optimize --disable-auto-versioning
   ambuild
 ) >>"$BUILD_LOG" 2>&1
 
@@ -291,7 +310,7 @@ PY
 )"
 
 # Manifest last, after successful build/verification. Real digests only.
-python3 - "$MANIFEST" "$PLAPI" "$MMS_PIN" "$KHOOK_PIN" "$PATCHSET_SHA256" "$TARGET" "$GLIBC_MAX" "$ARTIFACTS_JSON" <<'PY'
+python3 - "$MANIFEST.tmp" "$PLAPI" "$MMS_PIN" "$KHOOK_PIN" "$PATCHSET_SHA256" "$TARGET" "$GLIBC_MAX" "$ARTIFACTS_JSON" <<'PY'
 import json, sys
 path = sys.argv[1]
 doc = {
@@ -308,6 +327,9 @@ with open(path, "w", encoding="utf-8") as fh:
     json.dump(doc, fh, indent=2)
     fh.write("\n")
 PY
+
+python3 "$REPO/scripts/verify-metamod-artifact.py" --tree "$TREE" --manifest "$MANIFEST.tmp"
+mv "$MANIFEST.tmp" "$MANIFEST"
 
 log "wrote $MANIFEST"
 log "DONE"

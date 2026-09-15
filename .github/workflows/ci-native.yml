@@ -36,6 +36,11 @@ on:
       - 'scripts/check-gamedata-owners.sh'
       - 'scripts/check-gamedata-sigs.sh'
       - 'scripts/lib/**'
+      - 'patches/metamod-source/**'
+      - 'tools/khook-probe/**'
+      - 'scripts/*khook*'
+      - 'scripts/*metamod*'
+      - 'scripts/cloud/*metamod*'
       - '.github/workflows/ci-native.yml'
   push:
     branches: [main]
@@ -62,6 +67,11 @@ on:
       - 'scripts/check-gamedata-owners.sh'
       - 'scripts/check-gamedata-sigs.sh'
       - 'scripts/lib/**'
+      - 'patches/metamod-source/**'
+      - 'tools/khook-probe/**'
+      - 'scripts/*khook*'
+      - 'scripts/*metamod*'
+      - 'scripts/cloud/*metamod*'
       - '.github/workflows/ci-native.yml'
 
 concurrency:
