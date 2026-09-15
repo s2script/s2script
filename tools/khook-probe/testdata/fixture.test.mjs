@@ -15,7 +15,9 @@ const REVISION = 'b'.repeat(40);
 
 // Only the unavailable game boundary is mocked. The real plugin registers its
 // callbacks, owns transitions/entities and emits all of the asserted records.
-function host({ humans = 3, cvars = new Map(), previous, engine = { hooks: new Map(), entities: [], visibility: new Map(), nextIndex: 10 } } = {}) {
+function host({ humans = 3, cvars = new Map(), previous,
+  fixtureIdentity = { revision: REVISION, token: 'c'.repeat(64) },
+  engine = { hooks: new Map(), entities: [], visibility: new Map(), nextIndex: 10 } } = {}) {
   const handlers = new Map(), listeners = new Map(), ownedHooks = [];
   const { hooks, entities, visibility } = engine;
   cvars.set('s2_khook_source_revision', REVISION);
@@ -46,7 +48,9 @@ function host({ humans = 3, cvars = new Map(), previous, engine = { hooks: new M
     Events: { setRecipients() {} }, hook: { onPre() {} },
     command: { onClientCommand: (n, f) => listeners.set(n, f), server: (n, f) => handlers.set(n, f) },
   };
-  const ctx = { exports: {}, require: () => sdk, console: { log() {} } };
+  const ctx = { exports: {}, require: name => name === './build_identity'
+    ? { KHOOK_FIXTURE_REVISION: fixtureIdentity.revision, KHOOK_FIXTURE_TOKEN: fixtureIdentity.token }
+    : sdk, console: { log() {} } };
   vm.createContext(ctx); vm.runInContext(compiled.outputText, ctx);
   ctx.exports.OnPluginStart();
   const control = (verb, run = 'run-1', digest = ARTIFACT) => {
@@ -69,7 +73,7 @@ function host({ humans = 3, cvars = new Map(), previous, engine = { hooks: new M
   const reload = ({ keepStale = false } = {}) => {
     const state = ctx.exports.OnPluginState(); ctx.exports.OnPluginEnd();
     if (!keepStale) for (const [key, fn] of ownedHooks) hooks.set(key, (hooks.get(key) ?? []).filter(f => f !== fn));
-    return host({ humans, cvars, previous: state, engine });
+    return host({ humans, cvars, previous: state, fixtureIdentity, engine });
   };
   const nativeTarget = () => sdk.createEntity('trigger_push', { targetname: 'native-reload-target' });
   const touchReload = (target, { copies = 1, omitPost = false, ack = true, original = 1 } = {}) => {
@@ -80,12 +84,36 @@ function host({ humans = 3, cvars = new Map(), previous, engine = { hooks: new M
     if (ack) cvars.set('s2_khook_accept_reload_ack', JSON.stringify({ run_id: 'run-1', artifact_identity: ARTIFACT,
       target_index: target.index, generation: Number(cvars.get('s2_khook_accept_live')), stage: previous ? 'after' : 'before', original }));
   };
-  return { control, frame, invoke, cvars, entities, ctx, clients, listeners, visibility, reload, nativeTarget, touchReload, sdk };
+  const runtime = () => {
+    const replies = [];
+    handlers.get('s2_khook_runtime')({ arg: () => '', reply: value => replies.push(JSON.parse(value)) });
+    assert.equal(replies.length, 1);
+    return replies[0];
+  };
+  return { control, frame, invoke, cvars, entities, ctx, clients, listeners, visibility, reload, nativeTarget, touchReload, runtime, sdk };
 }
 const row = (h, sub) => h.control('collect').find(r => r.subcheck === sub);
 
 test('fixture parses without an in-memory source repair', () => {
   assert.deepEqual(compiled.diagnostics?.map(d => d.code), []);
+});
+
+test('runtime identity command reports the embedded build witness', () => {
+  const h = host();
+  assert.deepEqual(h.runtime(), {
+    schema: 1, kind: 'khook-fixture-runtime', result: 'ready',
+    fixture_revision: REVISION, fixture_token: 'c'.repeat(64), generation: 1,
+  });
+});
+
+test('ordinary unstamped fixture reports pending identity', () => {
+  const h = host({ fixtureIdentity: { revision: 'unknown', token: 'unknown' } });
+  assert.deepEqual(h.runtime(), {
+    schema: 1, kind: 'khook-fixture-runtime', result: 'pending',
+    fixture_revision: 'unknown', fixture_token: 'unknown', generation: 1,
+  });
+  h.control('prepare');
+  assert.equal(row(h, 'js_no_handled_on_unsuppressed_event').result, 'pending');
 });
 
 test('final removal requires the final native invocation acknowledgement', () => {

@@ -24,6 +24,7 @@ import {
 } from "@s2script/sdk";
 import type { Client, EntityRef, HookResultValue } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
+import { KHOOK_FIXTURE_REVISION, KHOOK_FIXTURE_TOKEN } from "./build_identity";
 
 const DEFAULT_TOKEN_CMD = "s2khook_cc_entry";
 const CONTINUE_TOKEN = "s2khook-continue";
@@ -68,7 +69,7 @@ interface PersistState {
 let runId = "";
 let runBound = false;
 let artifactIdentity = "";
-let frozenRevision = "unknown";
+let frozenRevision = KHOOK_FIXTURE_REVISION;
 let tokenCommand = DEFAULT_TOKEN_CMD;
 const terminal = new Map<string, Rec>();
 let collected = false;
@@ -138,6 +139,10 @@ let clientActions: string[] = [];
 
 function sourceRevision(): string { return frozenRevision; }
 
+function fixtureIdentityReady(): boolean {
+  return /^[a-f0-9]{40}$/.test(KHOOK_FIXTURE_REVISION) && /^[a-f0-9]{64}$/.test(KHOOK_FIXTURE_TOKEN);
+}
+
 function bindArtifact(value: string): boolean {
   if (!/^[a-f0-9]{64}$/.test(value) || (artifactIdentity && artifactIdentity !== value)) return false;
   artifactIdentity = value;
@@ -155,7 +160,7 @@ function emit(rec: Rec): string {
     case: rec.case,
     subcheck: rec.subcheck,
     producer: "js",
-    result: !artifactIdentity && rec.result === "pass" ? "pending" : rec.result,
+    result: (!artifactIdentity || !fixtureIdentityReady()) && rec.result === "pass" ? "pending" : rec.result,
     expected: rec.expected,
     actual: rec.actual,
     evidence: rec.evidence,
@@ -1095,7 +1100,6 @@ export function OnPluginStart(): void {
         return HookResult.Handled;
       }
       runId = id; runBound = true; sawReload = true;
-      frozenRevision = handoff.sourceRevision;
       bindArtifact(digest);
       for (const rec of handoff.records || []) if (rec.result !== "pending") terminal.set(rec.case + ":" + rec.subcheck, rec);
       setCvar("s2_khook_accept_run", id);
@@ -1114,7 +1118,7 @@ export function OnPluginStart(): void {
       runId = id;
       runBound = true;
       artifactIdentity = "";
-      frozenRevision = Server.getCvar("s2_khook_source_revision") || "unknown";
+      frozenRevision = KHOOK_FIXTURE_REVISION;
       if (digest) bindArtifact(digest);
       terminal.clear();
       collected = false;
@@ -1204,6 +1208,18 @@ export function OnPluginStart(): void {
       return HookResult.Handled;
     }
     cmd.reply("usage: s2_khook_accept prepare|bind|collect|report|restore|teardown|reload-arm|resume <run_id> [artifact_sha256]");
+    return HookResult.Handled;
+  });
+
+  command.server("s2_khook_runtime", (cmd) => {
+    cmd.reply(JSON.stringify({
+      schema: 1,
+      kind: "khook-fixture-runtime",
+      result: fixtureIdentityReady() ? "ready" : "pending",
+      fixture_revision: KHOOK_FIXTURE_REVISION,
+      fixture_token: KHOOK_FIXTURE_TOKEN,
+      generation: Number.isInteger(instance) && instance > 0 ? instance : 1,
+    }));
     return HookResult.Handled;
   });
 }
