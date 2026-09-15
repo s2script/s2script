@@ -71,9 +71,9 @@ lifecycle alongside them. There is no dependency patch implementation package.
 
 ## S3 — resident shim and safe process shutdown
 
-- [ ] Confirm script subscription removal only changes plugin-owned routing/rows;
+- [x] Confirm script subscription removal only changes plugin-owned routing/rows;
   shared native hooks/provider remain resident and peers are unaffected.
-- [ ] Remove tests and requirements solely for modified-host native unmapping.
+- [x] Remove tests and requirements solely for modified-host native unmapping.
   Preserve real checked-binding ownership tests and completed-helper cleanup.
 - [ ] Validate stock engine shutdown order and resource availability on a live
   server. Trace an earlier public shutdown phase, callback/original return and
@@ -83,7 +83,9 @@ lifecycle alongside them. There is no dependency patch implementation package.
   it must not begin whole-shim retirement. Choose the smallest plugin-side shutdown
   implementation supported by the ordering evidence, retaining callback contexts
   and the provider through all physical
-  removals. Validate failed-load cleanup separately. Do not replace missing engine
+  removals. Validate partial-install and degraded-load ownership separately: the
+  existing core-init failure path stays loaded for diagnosis. Do not invent a
+  false-return load path merely to satisfy a checklist. Do not replace missing engine
   evidence with a guessed phase hook, private-host patch or a refusal-only claim.
 - [ ] Add meaningful production-path regression tests for the selected lifecycle
   and repeat real process shutdown. If the server is unavailable, record the exact
@@ -91,11 +93,14 @@ lifecycle alongside them. There is no dependency patch implementation package.
 
 ## S4 — integration and documentation
 
-- [ ] Review S1/S2 commits before sequential integration. Reconcile schema 2 host
+- [x] Review S1/S2 commits before sequential integration. Reconcile schema 2 host
   provenance with existing acceptance `host_manifest_digest`; do not infer runtime
   identity from the controller checkout.
-- [ ] Remove patch-specific lifetime harness/gate, patch directory workflow filters
-  and stale instructions. Wire retained/new tests through ci-native/ci-js scripts.
+- [x] Remove patch-specific lifetime harness/gate and stale instructions. Wire
+  retained/new tests through ci-native/ci-js scripts. The existing workflow retains
+  two inert patch-directory path filters: removing those optional entries requires
+  workflow-write authorization unavailable to this session. They do not apply patches
+  or change which retained tests run.
 - [ ] Keep actual installed artifact receipt generation executable; reject wrong
   binaries and stale runs. Keep real-client capture and restore paths documented.
 - [ ] Run focused gates once integrated, then applicable full JS/native gates and
@@ -138,6 +143,12 @@ This is real artifact inspection on macOS, not Linux execution or live CS2 proof
 S3 remains incomplete: stock process-shutdown ordering, quiescence and engine
 resource availability need live validation before selecting the smallest plugin
 cleanup implementation. No native shutdown code has been falsely declared fixed.
+Independent review of `30f0cbe` confirmed script subscription removal changes only
+routing references/filters and the runtime replacement test is Metamod agnostic.
+It also confirmed two current control-flow gaps: an ordinary rejected native unload
+can begin retirement and disrupt gameplay, and forced host shutdown offers no retry
+for pending cleanup. These require plugin-side resolution; an actual shutdown crash
+has not been demonstrated. Native library unmapping remains outside acceptance.
 Actual installed-runtime receipt generation and remaining live/client observations
 also remain integration work. Keep PR #221 draft and PR B blocked. None of these
 remaining tasks justify reintroducing a host patch or native hot-reload requirement.

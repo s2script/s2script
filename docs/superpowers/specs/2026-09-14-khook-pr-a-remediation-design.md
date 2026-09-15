@@ -55,8 +55,11 @@ remove machinery that exists solely to unload/reload the native shim.
 
 Ordinary native unload during gameplay is unsupported and must reject without
 starting whole-shim retirement. Do not leave a running server with a partially
-retired s2script instance. Safe server shutdown and failed-load cleanup remain
-required. They are separate from JavaScript hot reload. Rejecting ordinary native unload cannot be used as
+retired s2script instance. Safe server shutdown and partial-install/degraded-load
+ownership remain required. The existing core-init failure path returns true and
+stays loaded for diagnosis; test that actual path rather than inventing a failed
+load return. These responsibilities are separate from JavaScript hot reload.
+Rejecting ordinary native unload cannot be used as
 proof of safe process shutdown: stock Metamod forces plugin removal before shutting
 KHook down, and its `Unload` callback has no force/shutdown argument.
 
