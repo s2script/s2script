@@ -18,6 +18,9 @@ bash scripts/check-core-boundary.sh
 echo "== test-boundary-nameleak.sh =="
 bash scripts/test-boundary-nameleak.sh
 
+echo "== test-original-module.sh (verified original instruction images) =="
+bash scripts/test-original-module.sh
+
 echo "== test-sigscan.sh =="
 bash scripts/test-sigscan.sh
 

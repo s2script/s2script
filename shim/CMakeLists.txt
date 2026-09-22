@@ -35,6 +35,7 @@ add_library(s2script SHARED
     src/entity_listener.cpp
     src/gamedata.cpp
     src/sigscan.cpp
+    src/original_module.cpp
     # Slice 5D.1: a self-contained MurmurHash2LowerCase (the ONE tier1 symbol CKV3MemberName(const char*)
     # needs to key IGameEvent field reads) — avoids linking all of tier1 (CUtlString/UtlVectorMemory cascade).
     src/tier1_shims.cpp
@@ -146,6 +147,11 @@ target_compile_options(breakpad_client PRIVATE
 add_executable(ccommand_selftest src/ccommand_selftest.cpp src/ccommand_tokenize.cpp)
 target_include_directories(ccommand_selftest PRIVATE src)
 
+# Verified original instruction images (host fixtures; Linux discovery via script).
+add_executable(original_module_selftest src/original_module.cpp tests/original_module_test.cpp)
+target_include_directories(original_module_selftest PRIVATE src)
+target_link_libraries(original_module_selftest PRIVATE ${CMAKE_DL_LIBS})
+
 # Owner-scoped gamedata loader unit test (not shipped; run by scripts/ci-native.sh).
 add_executable(gamedata_selftest src/gamedata.cpp tests/gamedata_test.cpp)
 target_include_directories(gamedata_selftest PRIVATE src third_party)
@@ -245,7 +251,7 @@ target_include_directories(s2script PRIVATE include)
 
 # Crash reporter: link the vendored Breakpad client (its PUBLIC include dir reaches
 # src/crash_handler.cpp during compilation).
-target_link_libraries(s2script PRIVATE breakpad_client)
+target_link_libraries(s2script PRIVATE breakpad_client ${CMAKE_DL_LIBS})
 
 # S2_HL2SDK_BUILD: the pinned hl2sdk submodule SHA, stamped into every crash envelope's
 # gamedata.hl2sdk. Resolved at configure time from the vendored checkout (${HL2SDK} is
