@@ -1,5 +1,7 @@
 # KHook migration — design spec
 
+> **Proposed successor stack (2026-09-22):** The [shared engine bindings design](2026-09-22-engine-bindings-design.md) combines this document's remaining PR B/C backend work into S1, followed by simpler function authoring (S2) and game-package extraction (S3). On written-design approval, use that stack's dispatch boundaries while retaining this document's invocation/evidence requirements. PR A acceptance is still a prerequisite. The successor requires precache through stock KHook; retaining a private slot patch does not complete S1. These are design changes, not implementation completion.
+
 > **Lifecycle clarification:** Use [stock Metamod with resident s2script](2026-09-15-khook-stock-host-decision.md). Only `.s2sp` hot reload is required; the native shim updates on server restart. The [current remediation spec](2026-09-14-khook-pr-a-remediation-design.md) supersedes conflicting native hot-reload or private-host assumptions. Safe process shutdown remains required.
 
 **Status:** Revised after source review (2026-09-14); implementation and live acceptance remain pending — planning companion is `docs/superpowers/plans/2026-09-14-khook-migration.md`.

@@ -1,5 +1,7 @@
 # KHook Migration Implementation Plan
 
+> **Proposed successor stack (2026-09-22):** Review the [shared engine bindings design](../specs/2026-09-22-engine-bindings-design.md) before dispatching more B/C work. Upon written-design approval, its S1 replaces T9–T13's old PR grouping while preserving their behavioral/evidence obligations; S2 and S3 cover function authoring and game-package extraction. New executable plans follow written-spec review. T1–T8 and current PR A remediation/acceptance remain authoritative. This notice does not mark any task complete or authorize bypassing the PR A gate.
+
 > **For the coordinator and subagents:** Use the user's selected dynamic workflow. Dispatch bounded work packages using the dependency, ownership and evidence rules below; no particular orchestration tool or skill is required. Task/step IDs are stable and checkbox (`- [ ]`) completion requires evidence.
 
 **Goal:** Load s2script on post–PR-223 Metamod (PLAPI 18, SourceHook deleted) and put every engine intercept we own through KHook’s one-detour-per-address catalog.
