@@ -26,6 +26,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 
 namespace s2validate {
 
@@ -41,6 +42,12 @@ struct ModuleView {
     std::size_t    textSize = 0;
     const uint8_t* lo       = nullptr;
     const uint8_t* hi       = nullptr;
+    // Original instruction reads and logical-PC range checks. Production must supply
+    // both from its verified Image. Empty callbacks retain explicit live-buffer fixtures.
+    std::function<bool(uintptr_t, void*, std::size_t)> read_code = {};
+    std::function<bool(uintptr_t, std::size_t)> executable = {};
+    // Live strings/vtable slots are separate, bounded facts; no code fallback here.
+    std::function<bool(uintptr_t, void*, std::size_t)> read_live = {};
 };
 
 // Injected: resolve `className`'s PRIMARY vtable inside `module` (the RTTI string -> type_info ->
@@ -53,6 +60,9 @@ using OriginalVirtualFn = void* (*)(void** vtable, int index);
 struct Ops {
     VtableByNameFn vtable_by_name = nullptr;
     OriginalVirtualFn original_virtual = nullptr;
+    // Preferred production lookup, bound to the same verified image as ModuleView.
+    // Keep the legacy function pointer above source-compatible until consumers migrate.
+    std::function<void** (const char* className)> vtable_from_image = {};
 };
 
 // The closed vocabulary, as the reason strings print it ("prologue, string-xref, vtable-member").

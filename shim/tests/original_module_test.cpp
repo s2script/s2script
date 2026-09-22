@@ -80,6 +80,41 @@ void original_bytes_and_ranges() {
     assert(!image->executable(0x104000)); // gap between executable segments
     assert(!image->executable(0x103000, 0));
 }
+void verified_image_reuse() {
+    ElfFixture f; std::string reason;
+    auto first=f.open(reason); auto same=f.open(reason);
+    assert(first && first==same); // identical verified identity/bytes/ranges share immutable storage
+    ++f.identity.inode; for (auto& mapping : f.mappings) ++mapping.inode;
+    auto remapped=f.open(reason); assert(remapped && remapped!=first);
+    --f.identity.inode; for (auto& mapping : f.mappings) --mapping.inode;
+    f.file[0x1000]=0xcc;
+    auto changed=f.open(reason); assert(changed && changed!=first);
+    f.file[0x1000]=0x55; f.mappings[0].readable=false;
+    auto permission=f.open(reason); assert(permission && permission!=first);
+    assert(first->mapped(0x100000) && !permission->mapped(0x100000));
+}
+void readable_live_ranges() {
+    ElfFixture f; std::string reason;
+    f.segment(4, 1, 6, 0x2080, 0x7080, 0x80, 0x2080);
+    f.mappings.push_back({0x107000,0x108000,0x2000,7,9});
+    f.mappings.push_back({0x108000,0x109100,0,0,0}); // anonymous BSS owned by PT_LOAD
+    auto image=f.open(reason); assert(image);
+    assert(image->mapped(0x107080,1));
+    assert(image->mapped(0x107ff0,32)); // file/anonymous split
+    assert(image->mapped(0x1090ff,1));
+    assert(!image->mapped(0x109100,1)); // outside memsz even though mapping could be larger
+    assert(!image->mapped(0x107000,1)); // prefix outside PT_LOAD
+    assert(!image->mapped(0x104000,1)); // mapped-module extent gap
+    assert(!image->mapped(UINTPTR_MAX-2,8));
+    assert(!image->mapped(0x108000,0));
+    assert(!image->executable(0x108000));
+    f.mappings.back().readable=false;
+    image=f.open(reason); assert(image);
+    assert(!image->mapped(0x108000,1));
+    f.mappings.back().readable=true; f.mappings.back().inode=77;
+    image=f.open(reason); assert(image);
+    assert(!image->mapped(0x108000,1)); // another mapping cannot stand in for anonymous BSS
+}
 void identity_refusals() {
     ElfFixture f; std::string reason;
     for (int field = 0; field != 4; ++field) {
@@ -135,6 +170,18 @@ void loaded_module(const char* path, const char* replacement, const char* proxy_
     uintptr_t address = reinterpret_cast<uintptr_t>(symbol);
     auto selected = s2original::OpenLoadedModule("liboriginal_fixture", reason);
     assert(selected && selected->executable(address));
+    auto* data=static_cast<uint8_t*>(dlsym(handle,"original_module_data")); assert(data);
+    auto* bss=static_cast<uint8_t*>(dlsym(handle,"original_module_bss")); assert(bss);
+    uint8_t live=0;
+    assert(image->mapped(reinterpret_cast<uintptr_t>(data)));
+    assert(image->read_live(reinterpret_cast<uintptr_t>(data),&live,1) && live==23);
+    assert(image->mapped(reinterpret_cast<uintptr_t>(bss)+32768));
+    assert(!image->executable(reinterpret_cast<uintptr_t>(bss)+32768));
+    assert(image->read_live(reinterpret_cast<uintptr_t>(bss)+32768,&live,1) && live==0);
+    bss[32768]=91;
+    assert(image->read_live(reinterpret_cast<uintptr_t>(bss)+32768,&live,1) && live==91);
+    assert(!image->read_live(1,&live,1));
+    assert(!image->read_live(UINTPTR_MAX-2,&live,8));
     uint8_t original = 0; assert(image->read(address, &original, 1));
     size_t page_size = static_cast<size_t>(sysconf(_SC_PAGESIZE));
     auto page = address & ~(uintptr_t(page_size)-1);
@@ -160,6 +207,8 @@ void loaded_module(const char* path, const char* replacement, const char* proxy_
 #endif
 }
 int main(int argc, char** argv) {
+    verified_image_reuse();
+    readable_live_ranges();
     original_bytes_and_ranges(); identity_refusals(); malformed_elf_refusals();
     std::puts("original_module: original bytes, ELF identity and bounds fixtures passed");
 #ifdef __linux__

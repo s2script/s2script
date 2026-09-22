@@ -16,7 +16,7 @@ fi
 libs=()
 args=()
 if [[ "$(uname -s)" == Linux ]]; then
-  printf 'extern "C" int original_module_fixture() { return 42; }\n' > "$tmp/fixture.cpp"
+  printf 'extern "C" int original_module_fixture() { return 42; }\nextern "C" { unsigned char original_module_data = 23; unsigned char original_module_bss[65536]; }\n' > "$tmp/fixture.cpp"
   "$compiler" -shared -fPIC -Wl,--build-id -o "$tmp/liboriginal_fixture_proxy.so" "$tmp/fixture.cpp"
   # Extra executable bytes make the real-image candidate unambiguously larger.
   printf 'asm(".text\\n.space 8192, 0x90\\n");\n' >> "$tmp/fixture.cpp"

@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <utility>
 #ifdef __linux__
 #include <cstdio>
@@ -126,10 +127,17 @@ bool mapped(const ProgramHeader& h, const Identity& id,
 }
 } // namespace
 
-Image::Image(Identity identity, std::vector<Segment> segments)
-    : identity_(std::move(identity)), segments_(std::move(segments)) {}
+Image::Image(Identity identity, std::vector<Segment> segments, std::vector<ReadableRange> ranges)
+    : identity_(std::move(identity)), segments_(std::move(segments)), readable_(std::move(ranges)) {}
 const Identity& Image::identity() const noexcept { return identity_; }
 const std::vector<Segment>& Image::executable_segments() const noexcept { return segments_; }
+const std::vector<ReadableRange>& Image::readable_ranges() const noexcept { return readable_; }
+bool Image::mapped(uintptr_t live, size_t length) const noexcept {
+    if (!length || !fits(live,length,UINTPTR_MAX)) return false;
+    for (const auto& range : readable_)
+        if (live >= range.begin && live < range.end && length <= range.end-live) return true;
+    return false;
+}
 bool Image::executable(uintptr_t live, size_t length) const noexcept {
     if (!length || !fits(live, length, UINTPTR_MAX)) return false;
     for (const auto& segment : segments_)
@@ -165,6 +173,7 @@ std::shared_ptr<const Image> FromElf(
     for (const auto& m : mappings)
         if (m.begin >= m.end) { reason = "invalid loaded mapping bounds"; return nullptr; }
     std::vector<Segment> segments;
+    std::vector<ReadableRange> ranges;
     std::vector<std::pair<uintptr_t, uintptr_t>> load_ranges;
     for (const auto& h : headers) {
         if (h.type != 1) continue;
@@ -175,6 +184,17 @@ std::shared_ptr<const Image> FromElf(
                 reason = "overlapping ELF load segments"; return nullptr;
             }
         if (h.memsz) load_ranges.emplace_back(begin, end);
+        if (h.flags & 4) {
+            for (const auto& m : mappings) {
+                uintptr_t lo = std::max(begin,m.begin), hi = std::min(end,m.end);
+                if (lo >= hi || !m.readable) continue;
+                // File-backed data and page-tail BSS share module identity. Anonymous
+                // BSS is admitted only beyond filesz and inside this selected PT_LOAD.
+                bool own = m.device == expected.device && m.inode == expected.inode;
+                if (!own && (m.device || m.inode || lo < begin+h.filesz)) continue;
+                ranges.push_back({lo,hi});
+            }
+        }
         if ((h.flags & 1) && h.filesz)
             segments.push_back({begin, std::vector<uint8_t>(file.begin()+h.offset,
                                                           file.begin()+h.offset+h.filesz)});
@@ -182,7 +202,40 @@ std::shared_ptr<const Image> FromElf(
     if (segments.empty()) { reason = "ELF has no file-backed executable segments"; return nullptr; }
     std::sort(segments.begin(), segments.end(),
               [](const Segment& a, const Segment& b) { return a.live_begin < b.live_begin; });
-    return std::shared_ptr<const Image>(new Image(expected, std::move(segments)));
+    std::sort(ranges.begin(),ranges.end(),[](const ReadableRange& a,const ReadableRange& b) {
+        return a.begin < b.begin;
+    });
+    std::vector<ReadableRange> merged;
+    for (const auto& range : ranges) {
+        if (!merged.empty() && range.begin < merged.back().end) {
+            reason = "overlapping readable mappings"; return nullptr;
+        }
+        if (!merged.empty() && range.begin == merged.back().end) merged.back().end=range.end;
+        else merged.push_back(range);
+    }
+    // Share only fully verified immutable images, never a pathname or recipe result.
+    // Re-verification above is intentional: inode reuse, changed bytes, or permission
+    // changes must not inherit stale data bounds from a still-retained image.
+    static std::mutex cache_mutex;
+    static std::vector<std::weak_ptr<const Image>> cache;
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    for (auto it=cache.begin(); it!=cache.end();) {
+        auto old=it->lock();
+        if (!old) { it=cache.erase(it); continue; }
+        ++it;
+        const auto& id=old->identity();
+        if (id.device!=expected.device || id.inode!=expected.inode || id.load_bias!=expected.load_bias ||
+            id.build_id!=expected.build_id || old->segments_.size()!=segments.size() || old->readable_.size()!=merged.size()) continue;
+        bool same=true;
+        for (size_t i=0; i<segments.size(); ++i)
+            if (old->segments_[i].live_begin!=segments[i].live_begin || old->segments_[i].bytes!=segments[i].bytes) { same=false; break; }
+        for (size_t i=0; same && i<merged.size(); ++i)
+            if (old->readable_[i].begin!=merged[i].begin || old->readable_[i].end!=merged[i].end) same=false;
+        if (same) return old;
+    }
+    auto image=std::shared_ptr<const Image>(new Image(expected,std::move(segments),std::move(merged)));
+    cache.push_back(image);
+    return image;
 }
 
 #ifdef __linux__
@@ -237,6 +290,16 @@ bool same_header(const ProgramHeader& a, const ProgramHeader& b) {
 } // namespace
 #endif
 
+bool Image::read_live(uintptr_t live, void* out, size_t length) const noexcept {
+    if (!out || !mapped(live,length)) return false;
+#ifdef __linux__
+    Fd memory(open("/proc/self/mem", O_RDONLY | O_CLOEXEC));
+    return memory.value >= 0 && read_at(memory.value,live,static_cast<uint8_t*>(out),length);
+#else
+    return false; // portable tests inject their own bounded live data; discovery is Linux-only
+#endif
+}
+
 std::shared_ptr<const Image> OpenLoadedModule(const char* module, std::string& reason) {
     reason.clear();
 #ifdef __linux__
@@ -260,7 +323,7 @@ std::shared_ptr<const Image> OpenLoadedModule(const char* module, std::string& r
                         &device_major, &device_minor, &inode) != 7)
             return fail("loaded mapping parse failure");
         mappings.push_back({static_cast<uintptr_t>(begin), static_cast<uintptr_t>(end),
-                            offset, static_cast<uint64_t>(makedev(device_major, device_minor)), inode});
+                            offset, static_cast<uint64_t>(makedev(device_major, device_minor)), inode, permissions[0] == 'r'});
     }
     Fd backing(open(loaded.path.c_str(), O_RDONLY | O_CLOEXEC));
     if (backing.value < 0) return fail("backing file missing or unverifiable");
