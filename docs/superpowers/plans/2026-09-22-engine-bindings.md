@@ -160,7 +160,7 @@ segments, gaps, file-size versus memory-size bounds and writes to the live copy.
 - [ ] Implement Linux discovery using loaded mappings plus `fstat` of the opened backing file and ELF build-id/PT_LOAD correspondence. Require exact mapping identity, support nonzero load bias, and reject missing/replaced/unverifiable backing files by name. Read no arbitrary pointer on an identity failure. Original code bytes come from verified executable file ranges; unsupported text relocations fail explicitly.
 - [ ] Keep data reads distinct: relocated vtable/data pointers and live mapped strings remain range-checked live facts. Instruction decoding uses original bytes and logical live addresses. Never relocate a copied buffer's address as though it were an engine PC.
 - [ ] Add a Linux loaded-module fixture using a tiny test shared library; replace its pathname after loading and prove the mapping identity prevents using the wrong new file. Run the test in the Linux build environment and retain output.
-- [ ] Wire the host test before dependent resolver changes, run it with sanitizers when available, and commit only the five owned paths. Report platform-skipped Linux discovery tests honestly.
+- [ ] Wire the host test before dependent resolver changes, run it with sanitizers when available, and commit only the six named paths. Report platform-skipped Linux discovery tests honestly.
 
 ### Task 2: S1-2 — One recipe-aware resolver and validator byte source
 
@@ -174,8 +174,10 @@ C++ service used underneath it. Freeze these types before assigning consumers:
 ```cpp
 namespace s2resolve {
 enum class Kind { Signature, Virtual };
+enum class TargetUse { Executable, MappedAddress };
 struct TargetRecipe {
     Kind kind = Kind::Signature;
+    TargetUse use = TargetUse::Executable;
     std::string module, pattern, strategy = "direct";
     std::string class_name, validate_json;
     int vtable_index = -1;
@@ -194,7 +196,17 @@ reads and vtable/original-virtual callbacks. Production `Resolve` obtains them f
 the module provider and Metamod; tests supply actual fixture images and a tiny
 vtable. Do not expose KHook itself or game classes in the pure evaluator.
 
+`GameEventManager` (`ctor-body-xref`) and `IGameSystem_InitAllSystems_pFirst`
+(`lea-disp`) currently produce data addresses, including writable/BSS storage.
+Their instruction operands still come from the verified original image, but their
+derived addresses require bounded live mapped-data validation. `MappedAddress`
+is an explicit internal caller choice; function/call/hook consumers retain the
+default `Executable` and must reject data targets. Keep this choice in receipts
+and any cache key. No game-name switch belongs in the generic resolver. A
+non-empty instruction validator cannot silently pass against a data target.
+
 - [ ] Add tests demonstrating the current divergent paths: a peer-patched prologue still resolves, two raw matches with one valid call site select that site, two valid sites fail ambiguous, unknown strategy fails, and a patched virtual resolves/validates its original target.
+- [ ] Prove data-address recipes resolve valid mapped data/BSS only when `MappedAddress` is explicitly requested; executable consumers reject those same addresses, and mapped gaps/out-of-range derivations fail without dereferencing them.
 
 ```cpp
 // Two E8 candidates; the string-xref validator matches only the second caller.
@@ -227,6 +239,7 @@ one recipe/validation interpretation. `S2_EngineCallResolve` still returns id>=0
 
 - [ ] Add regression coverage for current descriptors in each consumer: signature, validated-call, virtual, malformed strategy, ambiguous target and peer-patched vtable. Assert a failed recipe produces the descriptor's own name and reason.
 - [ ] Replace duplicate scan/derive/validate blocks with recipe construction and shared service invocation. Preserve consumer-specific call-id caching, SDKHooks kind/phase routing and built-in degrade accounting.
+- [ ] Preserve the existing two data-producing built-in recipes with explicit `MappedAddress` use selected from their resolver semantics. Calls, declarative hooks, and virtual function slots stay `Executable`; no data pointer becomes callable merely because a built-in needs address resolution.
 
 ```cpp
 s2resolve::TargetRecipe recipe;
