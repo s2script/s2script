@@ -1,12 +1,15 @@
 # Shared engine bindings and stock KHook — design and stack contract
 
-**Status:** Design for written review; no implementation or acceptance claimed.
+**Status:** Written design approved for implementation on 2026-09-22; no implementation or acceptance claimed by this document.
 **Baseline:** PR [#221](https://github.com/s2script/s2script/pull/221),
 `b4acdd5e7b64eb82e26db8fdd7018b683e10dd2d`.
 **Decision:** Use one shared engine-binding service, simpler plugin-owned gamedata,
 and game packages that own gameplay semantics. Breaking authoring changes are
 allowed with an explicit migration path. This document specifies slice S1 and
 the dependency contract for S1–S3.
+
+**Execution:** [Implementation plan](../plans/2026-09-22-engine-bindings.md), with
+task ownership, interface contracts, test commands and acceptance gates.
 
 ## 1. Why and scope
 
@@ -54,18 +57,23 @@ be `2026-09-22-game-package-boundary-design.md`, both in this directory. They
 are introduced by their own stacked design PRs, so S1 has no file dependency on
 the later branches.
 
-On approval of this written stack, S1 replaces the old B/C dispatch map. The old
+S1 replaces the old B/C dispatch map. The old
 spec remains a reference for concrete invocation behavior and evidence cases;
 do not execute two competing B/C plans. PR A's remediation and acceptance rules
 remain authoritative. Each slice updates its own operator and architecture docs.
 
-**Implementation prerequisite:** PR A acceptance is incomplete at this baseline.
+**Baseline and release prerequisite:** PR A acceptance is incomplete at this baseline.
 The release gate observed the CS2 child exiting with SIGSEGV/139 on ordinary
 shutdown, and required human/client evidence remains outstanding. A successful
-container wrapper exit is not a successful engine shutdown. Resolve and verify
-these under PR A before dispatching S1 production implementation. Design review
-and implementation-plan preparation may proceed; no new slice waives the gate
-or assumes the shutdown cause.
+container wrapper exit is not a successful engine shutdown. A later controlled
+comparison reproduced child139 with s2script enabled and disabled on official
+Metamod1467 and1469, with MAM1.6 present in all four cells. s2script is therefore
+not necessary to reproduce that symptom; neither fault attribution nor clean
+shutdown is established. Following the user's instruction to implement this stack,
+isolated development may proceed from the verified source/stock-host baseline.
+Shutdown and client evidence remain mandatory merge/release gates; no new slice
+waives them, reports them as passed, or assumes the shutdown cause. This scheduling
+change can require rework if later acceptance exposes a foundation defect.
 
 Each implementation slice must build, pass its applicable full CI and live gates,
 and preserve a usable release at its tip. Stacking does not make an incomplete
