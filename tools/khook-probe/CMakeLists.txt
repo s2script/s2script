@@ -48,7 +48,9 @@ add_library(s2_khook_probe SHARED
     # CKV3MemberName in plugin.cpp requires the same SDK support definitions as the production shim.
     "${S2_SOURCE_DIR}/shim/src/tier1_shims.cpp"
     "${S2_SOURCE_DIR}/shim/src/vtable.cpp"
+    "${S2_SOURCE_DIR}/shim/src/original_module.cpp"
 )
+target_link_libraries(s2_khook_probe PRIVATE ${CMAKE_DL_LIBS})
 
 target_include_directories(s2_khook_probe PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
