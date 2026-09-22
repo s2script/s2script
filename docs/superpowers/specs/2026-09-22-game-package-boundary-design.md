@@ -2,7 +2,9 @@
 
 **Date:** 2026-09-22
 
-**Status:** Approved architecture; written design for review
+**Status:** Written design approved for implementation on 2026-09-22; implementation and acceptance remain in progress.
+
+**Implementation plan:** [Game-package boundary](../plans/2026-09-22-game-package-boundary.md)
 
 **Stack:** S3, above [S1: engine bindings](2026-09-22-engine-bindings-design.md) and [S2: engine functions](2026-09-22-engine-functions-design.md)
 
