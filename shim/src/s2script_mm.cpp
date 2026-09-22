@@ -68,6 +68,7 @@
 #include "ekv.h"      // EKV slice: S2EKV_Build/AddRef/ReleaseIfSafe/SelfTest (the void*-only surface)
 #include "crash_handler.h"  // Crash-reporter slice: S2CrashArm/S2CrashDisarm (Breakpad native fault path)
 #include "engine_calls.h"   // Plugin-gamedata slice: S2_EngineCallResolve/Invoke (the two appended engine ops)
+#include "engine_consumer.h" // Shared resolver adapter for the built-in gamedata signatures
 #include "config_ops.h"     // Config paths + read/write ops and versioned loader resolver
 #include "defer_queue.h"    // deferred-dispatch slice: the engine-free queue/drain policy (ops-injected)
 #include "client_bootstrap.h"
@@ -3077,18 +3078,15 @@ void S2GamedataResult(const char* name, bool ok, const char* reason) {
 // Resolve a "direct"/"ctor-body-xref"/"lea-disp" signature AND verify it matches UNIQUELY (Rule 2): 0 = the
 // pattern moved (stale), >1 = ambiguous. Records the result and returns the resolved module offset, or kFail.
 static int64_t ResolveSigValidated(const char* name, const SigSpec& sig) {
-    ModText mt = FindModuleText(sig.module.c_str());
-    std::vector<int> pat = s2sig::ParsePattern(sig.pattern);
-    if (!mt.text || pat.empty()) { GamedataResult(name, false, "module/pattern unavailable"); return s2sig::kFail; }
-    int matches = s2sig::CountPattern(mt.text, mt.size, pat, 2);
-    if (matches == 0) { GamedataResult(name, false, "signature NOT FOUND (moved — regenerate)"); return s2sig::kFail; }
-    if (matches > 1)  { GamedataResult(name, false, "signature AMBIGUOUS (>1 match — tighten it)"); return s2sig::kFail; }
-    int64_t matchOff = s2sig::FindPattern(mt.text, mt.size, pat);
-    int64_t targetOff = matchOff;   // "direct": the match IS the target
-    if (sig.resolve == "ctor-body-xref") targetOff = s2sig::ResolveCtorXref(mt.text, mt.size, matchOff);
-    else if (sig.resolve == "lea-disp")  targetOff = s2sig::ResolveLeaDisp(mt.text, mt.size, matchOff, 3, 7);
-    if (targetOff == s2sig::kFail) { GamedataResult(name, false, "resolve step failed (xref/lea)"); return s2sig::kFail; }
-    GamedataResult(name, true, nullptr);
+    // The caller-side registrations still consume an offset from the largest executable segment.
+    // Retain each full result here so its verified image + receipt outlive those later reads.
+    static std::vector<s2resolve::Resolution> retained;
+    int64_t targetOff = s2sig::kFail;
+    std::string reason;
+    if (!s2consumer::ResolveBuiltinOffset(name, sig, retained, targetOff, reason,
+            [](const char* owner, bool ok, const char* why) {
+                GamedataResult(owner, ok, why);
+            })) return s2sig::kFail;
     return targetOff;
 }
 

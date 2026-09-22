@@ -24,6 +24,9 @@ bash scripts/test-original-module.sh
 echo "== test-engine-resolver.sh (recipe-aware original-image resolution) =="
 bash scripts/test-engine-resolver.sh
 
+echo "== test-engine-consumer.sh (production consumer delegation and retention) =="
+bash scripts/test-engine-consumer.sh
+
 echo "== test-sigscan.sh =="
 bash scripts/test-sigscan.sh
 

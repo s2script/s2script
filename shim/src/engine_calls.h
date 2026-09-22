@@ -98,3 +98,9 @@ int S2_ModuleViewForAddress(const void* addr, const unsigned char** outText, std
 int64_t S2_EngineCallAddress(int callId);
 
 }
+
+// Internal C++ handoff for consumers that must validate the original bytes behind an already
+// resolved call/hook address. Returns a COPY so later call-table vector growth cannot invalidate
+// the caller's image/receipt; successful records live for the resident module's process lifetime.
+#include "engine_resolver.h"
+bool S2_EngineCallResolutionForAddress(const void* address, s2resolve::Resolution& out);

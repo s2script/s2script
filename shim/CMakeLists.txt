@@ -37,6 +37,7 @@ add_library(s2script SHARED
     src/sigscan.cpp
     src/original_module.cpp
     src/engine_resolver.cpp
+    src/engine_consumer.cpp
     # Slice 5D.1: a self-contained MurmurHash2LowerCase (the ONE tier1 symbol CKV3MemberName(const char*)
     # needs to key IGameEvent field reads) — avoids linking all of tier1 (CUtlString/UtlVectorMemory cascade).
     src/tier1_shims.cpp
@@ -160,6 +161,16 @@ add_executable(engine_resolver_selftest
 target_compile_definitions(engine_resolver_selftest PRIVATE S2_RESOLVER_ENGINE_FREE)
 target_include_directories(engine_resolver_selftest PRIVATE src ${CMAKE_SOURCE_DIR}/../third_party/hde)
 target_link_libraries(engine_resolver_selftest PRIVATE ${CMAKE_DL_LIBS})
+
+# Production-used descriptor/SDKHook/built-in adapters over the shared resolver.
+add_executable(engine_consumer_selftest
+    src/engine_consumer.cpp src/engine_resolver.cpp src/original_module.cpp src/sigscan.cpp
+    src/call_validate.cpp src/vtable.cpp ${CMAKE_SOURCE_DIR}/../third_party/hde/hde64.c
+    tests/engine_consumer_test.cpp)
+target_compile_definitions(engine_consumer_selftest PRIVATE S2_RESOLVER_ENGINE_FREE)
+target_include_directories(engine_consumer_selftest
+    PRIVATE src third_party ${CMAKE_SOURCE_DIR}/../third_party/hde)
+target_link_libraries(engine_consumer_selftest PRIVATE ${CMAKE_DL_LIBS})
 
 # Owner-scoped gamedata loader unit test (not shipped; run by scripts/ci-native.sh).
 add_executable(gamedata_selftest src/gamedata.cpp tests/gamedata_test.cpp)
