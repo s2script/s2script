@@ -3,6 +3,7 @@
 // ahead of ${HL2SDK}/public, so the search succeeds without running protoc.
 #include "s2script_mm.h"
 #include "s2script_core.h"
+#include "engine_function_bridge.h"
 #include "khook_shutdown.h"
 #include "gamedata.h"
 

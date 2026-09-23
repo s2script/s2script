@@ -65,6 +65,9 @@ public:
     RuntimeBinding(const RuntimeBinding&) = delete;
     RuntimeBinding& operator=(const RuntimeBinding&) = delete;
     Result<NativeValue> Call(const NativeValue* args, std::size_t argc);
+    // Assign once; hook installation is independent of call availability.
+    std::string BindTarget(const void* address);
+    S2HookReceipt Receipt() const { return Snapshot(); }
     S2HookReceipt Configure(const void* address);
     void BeginRemove();
     bool RemovalComplete() const;

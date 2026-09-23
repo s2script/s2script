@@ -77,6 +77,56 @@
         }
       ],
       "comment": "TraceShape out-struct. Layout is the ABI; mirrors the C S2TraceResult."
+    },
+    {
+      "kind": "struct",
+      "name": "S2FunctionValue",
+      "c_name": "S2FunctionValue",
+      "comment": "Internal engine-function scalar/host-handle transport. Pointer bits never contain a native address.",
+      "rust_fields": [
+        {
+          "name": "kind",
+          "ty": "u8"
+        },
+        {
+          "name": "flags",
+          "ty": "u8"
+        },
+        {
+          "name": "reserved",
+          "ty": "u16"
+        },
+        {
+          "name": "aux",
+          "ty": "u32"
+        },
+        {
+          "name": "bits",
+          "ty": "u64"
+        }
+      ],
+      "c_fields": [
+        {
+          "name": "kind",
+          "ty": "unsigned char"
+        },
+        {
+          "name": "flags",
+          "ty": "unsigned char"
+        },
+        {
+          "name": "reserved",
+          "ty": "unsigned short"
+        },
+        {
+          "name": "aux",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "bits",
+          "ty": "unsigned long long"
+        }
+      ]
     }
   ],
   "ops": [
@@ -1226,6 +1276,47 @@
       "c_ret": "const char*",
       "c_params": "const char* id",
       "shim": "s2_plugin_function_overrides"
+    },
+    {
+      "name": "function_prepare",
+      "alias": "FunctionPrepareFn",
+      "rust": "extern \"C\" fn(*const c_char, *const c_char, *const c_char, *const c_char, *mut c_char, c_int) -> i64",
+      "c_ret": "long long",
+      "c_params": "const char* canonical_id, const char* target_json, const char* abi_json, const char* abi_fingerprint, char* reason, int reason_cap",
+      "shim": "S2_FunctionPrepare",
+      "group": "Shared native engine-function targets (opaque handles)"
+    },
+    {
+      "name": "function_call",
+      "alias": "FunctionCallFn",
+      "rust": "extern \"C\" fn(i64, u64, *const S2FunctionValue, c_int, *mut S2FunctionValue, *mut c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "long long target, unsigned long long owner_token, const S2FunctionValue* args, int argc, S2FunctionValue* ret, char* reason, int reason_cap",
+      "shim": "S2_FunctionCall"
+    },
+    {
+      "name": "function_hook_acquire",
+      "alias": "FunctionHookAcquireFn",
+      "rust": "extern \"C\" fn(i64, *mut c_char, c_int) -> i64",
+      "c_ret": "long long",
+      "c_params": "long long target, char* reason, int reason_cap",
+      "shim": "S2_FunctionHookAcquire"
+    },
+    {
+      "name": "function_hook_release",
+      "alias": "FunctionHookReleaseFn",
+      "rust": "extern \"C\" fn(i64) -> c_int",
+      "c_ret": "int",
+      "c_params": "long long target",
+      "shim": "S2_FunctionHookRelease"
+    },
+    {
+      "name": "function_target_release",
+      "alias": "FunctionTargetReleaseFn",
+      "rust": "extern \"C\" fn(i64) -> c_int",
+      "c_ret": "int",
+      "c_params": "long long target",
+      "shim": "S2_FunctionTargetRelease"
     }
   ]
 }

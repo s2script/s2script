@@ -31,6 +31,7 @@ include(cmake/Libffi.cmake)
 
 add_library(s2script SHARED
     src/engine_function_abi.cpp
+    src/engine_function_bridge.cpp
     src/s2script_mm.cpp
     src/config_ops.cpp
     src/plugin_function_overrides.cpp

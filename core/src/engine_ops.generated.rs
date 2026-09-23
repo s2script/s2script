@@ -22,6 +22,17 @@ pub struct S2TraceResult {
     pub hit_ent_handle: c_int,
 }
 
+/// Internal engine-function scalar/host-handle transport. Pointer bits never contain a native address.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct S2FunctionValue {
+    pub kind: u8,
+    pub flags: u8,
+    pub reserved: u16,
+    pub aux: u32,
+    pub bits: u64,
+}
+
 pub type SchemaOffsetFn = extern "C" fn(cls: *const c_char, field: *const c_char) -> c_int;
 pub type EntByIndexFn = extern "C" fn(idx: c_int) -> *mut c_void;
 pub type DerefHandleFn = extern "C" fn(handle: c_uint) -> *mut c_void;
@@ -149,6 +160,11 @@ pub type SdkhookVpAddFn = extern "C" fn(c_int, c_int, *const c_char, c_int) -> c
 pub type SdkhookVpRemoveFn = extern "C" fn(c_int, c_int, *const c_char, c_int) -> c_int;
 pub type SdkhookVpDropFn = extern "C" fn(c_int, c_int) -> c_int;
 pub type PluginFunctionOverridesFn = extern "C" fn(*const c_char) -> *const c_char;
+pub type FunctionPrepareFn = extern "C" fn(*const c_char, *const c_char, *const c_char, *const c_char, *mut c_char, c_int) -> i64;
+pub type FunctionCallFn = extern "C" fn(i64, u64, *const S2FunctionValue, c_int, *mut S2FunctionValue, *mut c_char, c_int) -> c_int;
+pub type FunctionHookAcquireFn = extern "C" fn(i64, *mut c_char, c_int) -> i64;
+pub type FunctionHookReleaseFn = extern "C" fn(i64) -> c_int;
+pub type FunctionTargetReleaseFn = extern "C" fn(i64) -> c_int;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -329,6 +345,12 @@ pub struct S2EngineOps {
     pub sdkhook_vp_drop: Option<SdkhookVpDropFn>,
     // --- Immutable bounded plugin engine-function override snapshot ---
     pub plugin_function_overrides: Option<PluginFunctionOverridesFn>,
+    // --- Shared native engine-function targets (opaque handles) ---
+    pub function_prepare: Option<FunctionPrepareFn>,
+    pub function_call: Option<FunctionCallFn>,
+    pub function_hook_acquire: Option<FunctionHookAcquireFn>,
+    pub function_hook_release: Option<FunctionHookReleaseFn>,
+    pub function_target_release: Option<FunctionTargetReleaseFn>,
 }
 
 impl S2EngineOps {

@@ -360,8 +360,36 @@ extern "C" int s2fn_probe_remove() {
     retire(bridge_binding); KHook::Shutdown(); return allocations == frees ? 1 : 0;
 }
 #endif
+static void lazy_target_lifecycle() {
+    Sink sink; AbiSignature s; s.parameters={{"i32"}}; s.returns={"i32"};
+    auto made=RuntimeBinding::Create(s,sink); assert(made); auto& b=made.value;
+    auto address=reinterpret_cast<void*>(&identity<std::int32_t>);
+    assert(b->BindTarget(address).empty());
+    assert(!b->BindTarget(reinterpret_cast<void*>(&void_target)).empty());
+    auto value=NativeValue::From<std::int32_t>(42);
+    assert(b->Call(&value,1).value.Get<std::int32_t>()==42 && sink.pre==0);
+    S2Hook_SetLifecycle(S2HookLifecycle::Retiring);
+    assert(!b->Configure(address).Accepted());
+    assert(b->Call(&value,1).value.Get<std::int32_t>()==42);
+    S2Hook_SetLifecycle(S2HookLifecycle::Running);
+    assert(b->Configure(address).state==S2HookState::Pending);
+    assert(b->Call(&value,1) && b->Receipt().state==S2HookState::Active);
+    b->BeginRemove();
+    if (!b->RemovalComplete()) { assert(!b->Call(&value,1)); assert(!b->Configure(address).Accepted()); }
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    while (!b->RemovalComplete() && std::chrono::steady_clock::now()<deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(b->RemovalComplete()); assert(S2Hook_DrainRetirement());
+    const auto observed=sink.pre;
+    assert(b->Call(&value,1).value.Get<std::int32_t>()==42 && sink.pre==observed);
+    assert(b->Configure(address).state==S2HookState::Pending);
+    assert(b->Call(&value,1) && sink.pre==observed+1);
+    retire(b);
+    std::cout << "PASS immutable target lazy call/detach/reacquire\n";
+}
 static void stock_tests() {
     std::cout << "phase=allocations-and-retirement\n";
+    lazy_target_lifecycle();
     allocations_and_retirement();
     std::cout << "phase=return-phase-lifetime\n";
     return_phase_lifetime(false);

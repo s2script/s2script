@@ -101,6 +101,9 @@ bash scripts/test-named-hook-invocation.sh
 
 echo "== bounded engine function ABI / stock provider =="
 bash scripts/test-engine-function-abi.sh --stock-provider
+
+echo "== test-engine-function-bridge.sh (shared targets and stock lifecycle) =="
+bash scripts/test-engine-function-bridge.sh --stock-provider
 echo "== engine function busy-caller real V8 spike =="
 bash scripts/test-engine-function-v8-adapter.sh --spike --stock-provider
 echo "== engine function stock peer order fixtures =="

@@ -98,11 +98,24 @@ Result<std::unique_ptr<RuntimeBinding>> RuntimeBinding::Create(AbiSignature s, D
     return {std::move(b), {}};
 #endif
 }
+std::string RuntimeBinding::BindTarget(const void* address) {
+    if (!address) return "null function address";
+    if (target_ && target_ != address) return "immutable target cannot be retargeted";
+    target_ = address;
+    return {};
+}
 S2HookReceipt RuntimeBinding::Configure(const void* address) {
-    if (!address) return Fail("null function address");
+    const auto error = BindTarget(address);
+    if (!error.empty()) return Fail(error.c_str());
     if (!S2Hook_AcceptingRegistrations()) return Fail("plugin retiring");
     if (!S2Hook_NoActiveDispatch()) return Fail("Configure requires off-callback preparation");
-    if (hook_id_ != KHook::INVALID_HOOK) return Fail("binding already configured");
+    if (hook_id_ != KHook::INVALID_HOOK) {
+        if (!RemovalComplete()) return Fail("binding already configured or removal incomplete");
+        // A fresh checked receipt cannot inherit stale id/observation state. The
+        // retirement queue retains the old shared state until its next drain.
+        state_ = std::make_shared<S2HookBindingState>();
+        hook_id_ = KHook::INVALID_HOOK;
+    }
     provider_detached_.store(false, std::memory_order_release);
     hook_id_ = KHook::SetupHook(const_cast<void*>(address), this, reinterpret_cast<void*>(&OnKHookRemoved),
         pre_.code, post_.code, make_return_.code, make_original_.code, info_.stack_bytes, false);
@@ -148,7 +161,8 @@ Result<NativeValue> RuntimeBinding::Invoke(void* address, const NativeValue* arg
 Result<NativeValue> RuntimeBinding::Call(const NativeValue* args, std::size_t argc) {
     Activity activity(*this); // retained through ffi_call and result/error handling
     const auto state = Snapshot().state;
-    if (!target_ || state == S2HookState::Removing || state == S2HookState::Removed || state == S2HookState::Failed)
+    if (!target_ || state == S2HookState::Removing ||
+        (state == S2HookState::Removed && !provider_detached_.load(std::memory_order_acquire)))
         return {{}, "binding not callable"};
     std::string callback_error;
     call_errors.emplace_back(this, &callback_error);

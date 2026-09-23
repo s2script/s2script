@@ -17,6 +17,14 @@ typedef struct {
     int hitEntHandle;
 } S2TraceResult;
 
+typedef struct {
+    unsigned char kind;
+    unsigned char flags;
+    unsigned short reserved;
+    unsigned int aux;
+    unsigned long long bits;
+} S2FunctionValue;
+
 typedef int (*s2_schema_offset_fn)(const char* cls, const char* field);
 typedef void* (*s2_ent_by_index_fn)(int idx);
 typedef void* (*s2_deref_handle_fn)(unsigned int handle);
@@ -144,6 +152,11 @@ typedef int (*s2_sdkhook_vp_add_fn)(int index, int serial, const char* type, int
 typedef int (*s2_sdkhook_vp_remove_fn)(int index, int serial, const char* type, int post);
 typedef int (*s2_sdkhook_vp_drop_fn)(int index, int serial);
 typedef const char* (*s2_plugin_function_overrides_fn)(const char* id);
+typedef long long (*s2_function_prepare_fn)(const char* canonical_id, const char* target_json, const char* abi_json, const char* abi_fingerprint, char* reason, int reason_cap);
+typedef int (*s2_function_call_fn)(long long target, unsigned long long owner_token, const S2FunctionValue* args, int argc, S2FunctionValue* ret, char* reason, int reason_cap);
+typedef long long (*s2_function_hook_acquire_fn)(long long target, char* reason, int reason_cap);
+typedef int (*s2_function_hook_release_fn)(long long target);
+typedef int (*s2_function_target_release_fn)(long long target);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -319,4 +332,10 @@ typedef struct {
     s2_sdkhook_vp_drop_fn sdkhook_vp_drop;
     /* --- Immutable bounded plugin engine-function override snapshot --- */
     s2_plugin_function_overrides_fn plugin_function_overrides;
+    /* --- Shared native engine-function targets (opaque handles) --- */
+    s2_function_prepare_fn function_prepare;
+    s2_function_call_fn function_call;
+    s2_function_hook_acquire_fn function_hook_acquire;
+    s2_function_hook_release_fn function_hook_release;
+    s2_function_target_release_fn function_target_release;
 } S2EngineOps;
