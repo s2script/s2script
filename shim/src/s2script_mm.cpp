@@ -2507,7 +2507,7 @@ static int Shim_UsercmdHookInstall() {
 
 // ---------------------------------------------------------------------------
 // Damage-info accessors (Slice 6.6 Stage 2). Read/write a field of the CURRENT CTakeDamageInfo
-// (provided by the DispatchTraceAttack checked callback) at a schema-resolved byte offset.
+// (provided by the CBaseEntity_TakeDamageOld checked callback) at a schema-resolved byte offset.
 // Valid only during a damage dispatch; null-guarded. The raw pointer never crosses to JS.
 // ---------------------------------------------------------------------------
 static float s2_damage_read_float(int offset) {
@@ -4460,29 +4460,29 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             // FreeEvent vtable slots the replay queue needs. Loud at boot, degrades game-event
             // deferral by name; scalar deferral stays on either way.
             ArmDeferredEventDuplication();
-            // Slice 6.6 (Stage 1): resolve CBaseEntity::DispatchTraceAttack (the damage entry) by direct
-            // prologue signature and install the read-only detour. Degrade-never-crash: any failure leaves
-            // the game unhooked (no damage callback), never a crash.
-            auto dit = sigs.find("DispatchTraceAttack");
+            // Audited void(victim*, info*, optional result*) damage body: exact prologue
+            // plus TakeDamageOld semantic string validator. No alias for the unsafe old key.
+            // An unavailable target leaves the public damage callbacks unavailable.
+            auto dit = sigs.find("CBaseEntity_TakeDamageOld");
             if (dit == sigs.end()) {
-                GamedataResult("DispatchTraceAttack", false, "signature absent from gamedata");
+                GamedataResult("CBaseEntity_TakeDamageOld", false, "signature absent from gamedata");
             } else {
-                int64_t dOff = ResolveSigValidated("DispatchTraceAttack", dit->second);
+                int64_t dOff = ResolveSigValidated("CBaseEntity_TakeDamageOld", dit->second);
                 ModText dmt = FindModuleText(dit->second.module.c_str());
                 if (dOff != s2sig::kFail && dmt.text) {  // resolve=="direct": the (unique) match IS the function start
-                    void* dtaAddr = const_cast<uint8_t*>(dmt.text) + dOff;
-                    const auto receipt=S2NamedConfigureDamage(dtaAddr);
+                    void* damageAddr = const_cast<uint8_t*>(dmt.text) + dOff;
+                    const auto receipt=S2NamedConfigureDamage(damageAddr);
                     if (receipt.Accepted()) {
-                        META_CONPRINTF("[s2script] DispatchTraceAttack checked hook accepted @%p (id=%u)\n",
-                                       dtaAddr,receipt.id);
+                        META_CONPRINTF("[s2script] CBaseEntity_TakeDamageOld checked hook accepted @%p (id=%u)\n",
+                                       damageAddr,receipt.id);
                     } else {
-                        META_CONPRINTF("[s2script] WARN: DispatchTraceAttack checked hook failed (%s) — damage hook off\n",
+                        META_CONPRINTF("[s2script] WARN: CBaseEntity_TakeDamageOld checked hook failed (%s) — damage hook off\n",
                                        receipt.reason.c_str());
                     }
                 }   // dOff == kFail: ResolveSigValidated already recorded the reason
             }
             // Slice 6.11b (Stage 1): resolve + detour Host_Say (the chat entry) for player chat triggers.
-            // Same direct-prologue + inline-detour pattern as DispatchTraceAttack. Degrade-never-crash:
+            // Checked stock binding, as for CBaseEntity_TakeDamageOld. Degrade-never-crash:
             // any failure leaves chat unhooked (no triggers), never a crash.
             auto hsit = sigs.find("HostSay");
             if (hsit == sigs.end()) {
@@ -4753,7 +4753,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             }
             // Entity-I/O slice (Task 2): resolve + detour CEntityIOOutput::FireOutputInternal (the
             // output-hook entry) — same direct-prologue + inline-detour pattern as
-            // DispatchTraceAttack/HostSay. Degrade-never-crash: unresolved leaves outputs unhooked
+            // CBaseEntity_TakeDamageOld/HostSay. Degrade-never-crash: unresolved leaves outputs unhooked
             // (Entity.onOutput never fires), never a crash.
             auto foiit = sigs.find("FireOutputInternal");
             if (foiit == sigs.end()) {

@@ -292,3 +292,28 @@ acceptance. Current game capability failures require verified gamedata, not rela
 validation. Known shutdown-only exit 139 is diagnostic and nonblocking under the
 accepted disposition; runtime callback retirement and stale-generation rejection
 remain required. Do not run repeated quit loops to obtain a terminal green row.
+
+### Damage recipe migration and current-build repairs
+
+The internal damage signature is now `CBaseEntity_TakeDamageOld`, paired atomically
+with the audited native `void(victim*, damageInfo*, optional damageResult*)` binding.
+Public `OnTakeDamage`/SDKHooks behavior is unchanged. The previous
+`DispatchTraceAttack` key is retired without an alias: its old pattern matched
+unrelated output logic. Re-derive any custom damage override under the new key;
+never rename/transplant that old pattern. Preserve both the exact prologue and the
+TakeDamageOld semantic string validator, including its newline. Do not deploy this
+recipe alone against an older runtime with the incompatible damage ABI.
+
+Static evaluation of the edited source accepts damage and the pFirst head-cell
+recipe on exact builds 25218825 and 25470087, and rejects a wrong damage diagnostic.
+The revised CanAcquire recipe is specific to build 25470087 (1.41.8.2), retaining
+both prologue and weapon string validators; it correctly rejects build 25218825.
+Only those three recipes are repaired here; other unavailable targets, including
+FireOutput, remain unavailable pending their own ABI/identity work.
+
+The operator separately verified pFirst/CanAcquire resolver acceptance and factory
+registration on the unchanged installed b4 runtime with official Metamod 1467 and
+14 default plugins, through inferno→nuke→inferno with two bots and no humans.
+CanAcquire was armed but its lazy hook was uninstalled without subscribers. This is
+bounded resolution/map smoke, not acquisition callback/result, resource delivery,
+new damage binding, or S1 release acceptance. Those live witnesses remain required.

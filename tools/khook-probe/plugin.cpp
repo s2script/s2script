@@ -2699,9 +2699,9 @@ static const IntegrationSpec kIntegrationSpecs[]={
     {"B","declarative_nesting_bypass","native_main_same_id_reentry_named_skip","{\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_nesting_bypass"},
     {"B","declarative_nesting_bypass","native_main_bypass_absent_then_next_delivered","{\"both_phases_observed\":true,\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_nesting_bypass"},
     {"B","acquisition_named_hook","native_acquire_real_post_peer_observed","{\"post_observed\":true,\"real_item_services\":true,\"same_invocation\":true}","live-named","live-engine","engine_hooks","acquisition_named_hook"},
-    {"B","damage_named_hook","native_damage_valid_pre_post","{\"original\":3,\"post\":3,\"pre\":3}","controlled-mechanics","controlled-stock-provider","named_hooks","damage_named_hook"},
+    {"B","damage_named_hook","native_damage_valid_pre_post","{\"arguments\":3,\"original\":3,\"output_preserved\":2,\"output_writes\":2,\"peer_post\":3,\"post\":3,\"post_ignore\":3,\"pre\":3,\"pre_ignore\":3,\"result_nonnull\":2,\"result_null\":1,\"return_kind\":\"void\",\"skipped\":0}","controlled-mechanics","controlled-stock-provider","named_hooks","damage_named_hook"},
     {"B","damage_named_hook","native_damage_nested_scopes","{\"expired\":true,\"restored\":2}","controlled-mechanics","controlled-stock-provider","named_hooks","damage_named_hook"},
-    {"B","damage_named_hook","native_damage_peer_orders_original_state","{\"current_return_matches\":true,\"orders\":[\"peer-first\",\"s2script-first\"]}","controlled-mechanics","controlled-stock-provider","named_hooks","damage_named_hook"},
+    {"B","damage_named_hook","native_damage_peer_orders_original_state","{\"arguments_preserved\":true,\"orders\":[\"peer-first\",\"s2script-first\"],\"output_preserved\":true,\"return_kind\":\"void\",\"skipped\":false}","controlled-mechanics","controlled-stock-provider","named_hooks","damage_named_hook"},
     {"B","chat_named_hook","native_chat_continue_original_once","{\"dispatch\":1,\"original\":1,\"skipped\":false}","controlled-mechanics","controlled-stock-provider","named_hooks","chat_named_hook"},
     {"B","chat_named_hook","native_chat_suppressed_original_zero","{\"dispatch\":1,\"original\":0,\"skipped\":true}","controlled-mechanics","controlled-stock-provider","named_hooks","chat_named_hook"},
     {"B","chat_named_hook","native_chat_peer_orders","{\"orders\":[\"peer-first\",\"s2script-first\"]}","controlled-mechanics","controlled-stock-provider","named_hooks","chat_named_hook"},
@@ -2844,7 +2844,12 @@ static std::string ControlledActual(const std::string& name) {
     if (name=="native_hud_continue_order_original_once" && d.hud[0].pre>0)
         return "{\"completion_before_original\":"+JBool(d.hud[0].completion==1 && d.hud[0].trace==123)+",\"original\":"+std::to_string(d.hud[0].original)+"}";
     if (name=="native_damage_valid_pre_post" && n.damage_pre>0)
-        return "{\"pre\":"+std::to_string(n.damage_pre)+",\"post\":"+std::to_string(n.damage_post)+",\"original\":"+std::to_string(n.damage_original)+"}";
+        return "{\"pre\":"+std::to_string(n.damage_pre)+",\"post\":"+std::to_string(n.damage_post)+",\"original\":"+std::to_string(n.damage_original)+
+            ",\"arguments\":"+std::to_string(n.damage_argument_matches)+",\"result_null\":"+std::to_string(n.damage_result_null)+
+            ",\"result_nonnull\":"+std::to_string(n.damage_result_nonnull)+",\"output_writes\":"+std::to_string(n.damage_output_writes)+
+            ",\"output_preserved\":"+std::to_string(n.damage_output_preserved)+",\"pre_ignore\":"+std::to_string(n.damage_pre_ignore)+
+            ",\"post_ignore\":"+std::to_string(n.damage_post_ignore)+",\"peer_post\":"+std::to_string(n.damage_post_observed)+
+            ",\"skipped\":"+std::to_string(n.damage_skipped)+",\"return_kind\":\"void\"}";
     if (name=="native_damage_nested_scopes" && n.damage_pre>0)
         return "{\"restored\":"+std::to_string(n.damage_nested_restored)+",\"expired\":"+JBool(n.damage_expired==1)+"}";
     if (name=="native_chat_continue_original_once" && n.chat_dispatch==2)
@@ -2881,7 +2886,10 @@ static std::string NamedOrderObservations(const std::vector<const s2khook::Named
             "\",\"peer_order\":\""+order+"\",\"callbacks\":"+std::to_string(row->callbacks)+
             ",\"facts\":{\"registration_phase\":\""+row->order+"\",\"trace\":\""+row->trace+
             "\",\"original\":"+std::to_string(row->original)+",\"peer_pre\":"+std::to_string(row->peer_pre)+
-            ",\"peer_post\":"+std::to_string(row->peer_post)+",\"effective\":"+std::to_string(row->effective)+"}}";
+            ",\"peer_post\":"+std::to_string(row->peer_post)+
+            (row->site=="damage" ? ",\"return_kind\":\"void\",\"arguments_preserved\":"+JBool(row->damage_arguments)+
+                ",\"output_preserved\":"+JBool(row->damage_output_preserved)+",\"skipped\":"+std::to_string(row->skipped) :
+                ",\"effective\":"+std::to_string(row->effective))+"}}";
     }
     return json+"]";
 }
@@ -2909,7 +2917,9 @@ static std::string NamedOrdersActual(const std::string& name,std::string& observ
     bool orders=rows[0]->trace.find('P')<rows[0]->trace.find('M') && rows[1]->trace.find('M')<rows[1]->trace.find('P');
     for (const auto* row:rows) orders=orders && row->callbacks==1 && row->original==1 && row->peer_pre==1 && row->peer_post==1;
     std::string actual=std::string("{\"orders\":")+(orders ? "[\"peer-first\",\"s2script-first\"]" : "[]");
-    if (site=="damage") actual+=",\"current_return_matches\":"+JBool(rows[0]->effective==INT64_C(0x1122334455667788) && rows[1]->effective==INT64_C(0x1122334455667788));
+    if (site=="damage") actual+=",\"arguments_preserved\":"+JBool(rows[0]->damage_arguments && rows[1]->damage_arguments)+
+        ",\"output_preserved\":"+JBool(rows[0]->damage_output_preserved && rows[1]->damage_output_preserved)+
+        ",\"skipped\":"+JBool(rows[0]->skipped!=0 || rows[1]->skipped!=0)+",\"return_kind\":\"void\"";
     return actual+"}";
 }
 // This summary deliberately retains each site's producer origin. Registration

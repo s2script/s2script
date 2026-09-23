@@ -303,6 +303,7 @@ struct NamedOrderObservation {
     std::string site,order,trace;
     int callbacks=0,peer_pre=0,peer_post=0,original=0,skipped=-1;
     int64_t effective=0;
+    bool damage_arguments=false,damage_output_preserved=false;
 };
 struct NamedOrderSnapshot {
     std::vector<NamedOrderObservation> rows;
@@ -321,8 +322,10 @@ struct NamedSnapshot {
     int damage_pre = 0, damage_post = 0, damage_original = 0;
     int damage_nested_restored = 0, damage_expired = 0;
     int damage_pre_ignore = 0, damage_post_ignore = 0, damage_post_observed = 0;
-    int damage_skipped = 0, damage_current_return_matches = 0;
-    int64_t damage_current_return = 0;
+    int damage_skipped = 0, damage_argument_matches = 0;
+    int damage_result_null = 0, damage_result_nonnull = 0;
+    int damage_output_writes = 0, damage_output_preserved = 0;
+    FacetObservation damage_current_return;
     int chat_dispatch = 0, chat_original = 0;
     int chat_peer_before = 0, chat_peer_after = 0, chat_peer_order = 0;
     int chat_post_observed = 0;
@@ -353,8 +356,9 @@ struct NamedSnapshot {
             damage_nested_restored == 2 && damage_expired == 1 &&
             damage_pre_ignore == 3 && damage_post_ignore == 3 && damage_post_observed == 3 &&
             damage_skipped == 0 &&
-            static_cast<uint64_t>(damage_current_return)==UINT64_C(0x1122334455667788) &&
-            damage_current_return_matches == 3 &&
+            damage_current_return.ExplicitlyInapplicable() && damage_argument_matches == 3 &&
+            damage_result_null == 1 && damage_result_nonnull == 2 &&
+            damage_output_writes == 2 && damage_output_preserved == 2 &&
             chat_dispatch == 2 && chat_original == 1 && chat_peer_before == 2 &&
             chat_peer_after == 2 && chat_peer_order == 123123 && chat_post_observed == 2 &&
             chat_actions == std::array<int,2>{{0,2}} && chat_skipped == std::array<int,2>{{0,1}} &&
@@ -391,8 +395,12 @@ struct NamedSnapshot {
             ",\"post_ignore\":" + std::to_string(damage_post_ignore) +
             ",\"post_observed\":" + std::to_string(damage_post_observed) +
             ",\"skipped\":" + std::to_string(damage_skipped) +
-            ",\"current_return\":\"" + std::to_string(static_cast<uint64_t>(damage_current_return)) +
-            "\",\"current_return_matches\":" + std::to_string(damage_current_return_matches) + "}" +
+            ",\"current_return\":" + damage_current_return.Json() +
+            ",\"argument_matches\":" + std::to_string(damage_argument_matches) +
+            ",\"result_null\":" + std::to_string(damage_result_null) +
+            ",\"result_nonnull\":" + std::to_string(damage_result_nonnull) +
+            ",\"output_writes\":" + std::to_string(damage_output_writes) +
+            ",\"output_preserved\":" + std::to_string(damage_output_preserved) + "}" +
             ",\"chat\":{\"dispatch\":" + std::to_string(chat_dispatch) +
             ",\"original\":" + std::to_string(chat_original) +
             ",\"peer_before\":" + std::to_string(chat_peer_before) +

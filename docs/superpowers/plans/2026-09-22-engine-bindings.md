@@ -311,11 +311,11 @@ their corresponding return type.
 **Consumes:** S1-3 resolution and S1-4's reviewed invocation/lifetime pattern.
 **Produces:** Named hook behavior with no separate installer or shared-slot write.
 
-- [ ] Add controlled cases before edits for DTA pre/post nesting, chat suppression, entity-output suppression, usercmd neutralization, precache original-once and nested manifest restoration.
+- [ ] Add controlled cases before edits for TakeDamageOld pre/post nesting, chat suppression, entity-output suppression, usercmd neutralization, precache original-once and nested manifest restoration.
 - [ ] Replace the four named private installers with checked native signatures. Keep original ABI widths and existing view conversions; use one typed instance per site.
 
 ```cpp
-S2CheckedFunction<int64_t, void*, void*, void*, void*> damage(&DamagePre, &DamagePost);
+S2CheckedFunction<void, void*, void*, void*> damage(&DamagePre, &DamagePost);
 S2CheckedFunction<void, void*, void*, bool, int, const char*> chat(&ChatPre, nullptr);
 S2CheckedFunction<void, CEntityIOOutput*, CEntityInstance*, CEntityInstance*,
                   const CVariant*, float, void*, char*> output(&OutputPre, nullptr);
@@ -326,6 +326,17 @@ S2CheckedFunction<int, void*, void*, int, bool, float> usercmd(&UsercmdPre, null
 handlers with matching `KHook::Return<T>` result types. Their semantic bodies stay
 as before: usercmd neutralizes in place then Ignore; chat/output suppress at their
 existing threshold; damage pointers are bound only within each callback by RAII.
+
+Task 6 fix-round-1 correction: independent exact old/new binary audits supersede the
+inherited damage ABI. `CBaseEntity_TakeDamageOld` is `void(victim*, mutable info*,
+optional result*)`; both phases Ignore, and the optional result is opaque pass-through.
+The old `DispatchTraceAttack` recipe identified unrelated output logic and has no alias.
+Require exact three-argument forwarding, null/non-null result storage and original
+writes, nested victim/info restoration, and per-phase original/peer/skipped observations.
+The new recipe retains exact prologue and TakeDamageOld diagnostic string-xref,
+including its newline. Static evaluator success is separate from required real damage
+callbacks. The five declarative shapes above and public damage semantics are unchanged.
+
 
 - [ ] Scope both damage-info and victim pointers per callback and restore outer state after nested callbacks. Validate the callback lifetime guard in accessors; no persistent raw pointer from PRE into unrelated POST work. S3 owns the later semantic extraction.
 - [ ] Configure a checked virtual precache binding from the RTTI vtable and validated index. Use the existing `AddGlobal` holder pattern and retain the vtable identity, not the temporary holder address.

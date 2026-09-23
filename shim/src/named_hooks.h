@@ -28,6 +28,8 @@ struct S2NamedHookOps {
 };
 
 void S2NamedHooksSetOps(const S2NamedHookOps& ops);
+// CBaseEntity::TakeDamageOld: void(victim*, mutable info*, optional result*).
+// Result storage is opaque and forwarded unchanged; both callback phases Ignore.
 S2HookReceipt S2NamedConfigureDamage(const void* target);
 S2HookReceipt S2NamedConfigureChat(const void* target);
 S2HookReceipt S2NamedConfigureOutput(const void* target);

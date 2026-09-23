@@ -27,6 +27,7 @@ struct Registration {
     void* post = nullptr;
     void** vtable = nullptr;
     int index = -1;
+    unsigned int stack_size = 0;
 };
 struct Frame {
     Registration* registration = nullptr;
@@ -46,10 +47,10 @@ public:
     bool fail_setup = false;
 
     KHook::HookID_t SetupHook(void* fn, void* ctx, void* removed, void* pre, void* post,
-                              void*, void*, unsigned int, bool) override {
+                              void*, void*, unsigned int stack_size, bool) override {
         if (fail_setup) return KHook::INVALID_HOOK;
         const auto id=next++;
-        entries.emplace(id,Registration{fn,ctx,removed,pre,post,nullptr,-1});
+        entries.emplace(id,Registration{fn,ctx,removed,pre,post,nullptr,-1,stack_size});
         return id;
     }
     KHook::HookID_t SetupVirtualHook(void** vt, int index, void* ctx, void* removed,
@@ -156,7 +157,11 @@ extern void* outer_manifest;
 extern void* inner_manifest;
 extern std::array<unsigned char,0xa0> nested_cmd;
 int damage_originals=0, chat_originals=0, output_originals=0, usercmd_originals=0, precache_originals=0;
-int64_t DamageTarget(void* victim,void* info,void*,void*) {
+// Controlled storage only: this is not an engine CTakeDamageResult layout.
+struct DamageOutput { uintptr_t before=0xabc, value=0, after=0xdef; };
+DamageOutput outer_output,inner_output;
+int damage_null_results=0,damage_output_writes=0;
+void DamageTarget(void* victim,void* info,void* result) {
     ++damage_originals;
     if (victim==inner_victim) {
         CHECK(S2NamedDamageInfo()==outer_info && S2NamedDamageVictim()==outer_victim,
@@ -166,7 +171,13 @@ int64_t DamageTarget(void* victim,void* info,void*,void*) {
               "damage frame does not span its own original execution");
     }
     CHECK(victim && info,"damage full-width pointers reach original");
-    return INT64_C(0x1122334455667788);
+    if (!result) ++damage_null_results;
+    else {
+        CHECK(result==(victim==inner_victim ? &inner_output : &outer_output),"optional result pointer reaches original unchanged");
+        auto* out=static_cast<DamageOutput*>(result);
+        CHECK(out->before==0xabc && out->after==0xdef,"hook preserves output storage guards");
+        out->value=reinterpret_cast<uintptr_t>(info); ++damage_output_writes;
+    }
 }
 void ChatTarget(void*,void*,bool,int,const char*) { ++chat_originals; }
 void OutputTarget(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*) {
@@ -208,8 +219,7 @@ void DamagePreOp() {
     if (permit.IsValid()) damage_terminal_refused=!S2NamedHooksCanUnloadSync(permit);
     if (!in_damage_pre && victim==outer_victim) {
         in_damage_pre=true;
-        CHECK(provider.Invoke(&DamageTarget,inner_victim,inner_info,static_cast<void*>(nullptr),static_cast<void*>(nullptr))==INT64_C(0x1122334455667788),
-              "nested damage PRE preserves the original return");
+        provider.Invoke(&DamageTarget,inner_victim,inner_info,static_cast<void*>(nullptr));
         CHECK(S2NamedDamageVictim()==outer_victim && S2NamedDamageInfo()==outer_info,
               "nested damage PRE restores outer pointers");
         in_damage_pre=false;
@@ -221,7 +231,7 @@ void DamagePostOp() {
     CHECK(victim && info,"damage POST exposes this callback's own pointers");
     if (!in_damage_post && victim==outer_victim) {
         in_damage_post=true;
-        provider.Invoke(&DamageTarget,inner_victim,inner_info,static_cast<void*>(nullptr),static_cast<void*>(nullptr));
+        provider.Invoke(&DamageTarget,inner_victim,inner_info,static_cast<void*>(&inner_output));
         CHECK(S2NamedDamageVictim()==outer_victim && S2NamedDamageInfo()==outer_info,
               "nested damage POST restores outer pointers");
         in_damage_post=false;
@@ -338,6 +348,11 @@ void ConfigureAndInvoke() {
     const auto chat=S2NamedConfigureChat(reinterpret_cast<void*>(&ChatTarget));
     const auto output=S2NamedConfigureOutput(reinterpret_cast<void*>(&OutputTarget));
     CHECK(damage.Accepted() && chat.Accepted() && output.Accepted(),"three eager named hooks are accepted");
+    // Stock wrapper copies its hidden context pointer plus three native pointers,
+    // with no integer return storage. This catches the inherited four-pointer/int64 ABI.
+    const auto damage_registration=provider.Find(reinterpret_cast<void*>(&DamageTarget));
+    CHECK((damage_registration->stack_size==KHook::Hook<void>::_copy_stack_size<void*,void*,void*,void*>()),
+          "damage registration has verified void/three-pointer ABI");
     CHECK(S2NamedHookSnapshot(S2NamedHookSite::Damage).state==S2HookState::Pending,
           "accepted damage receipt begins Pending");
 
@@ -360,8 +375,13 @@ void ConfigureAndInvoke() {
     CHECK(precache.Accepted(),"checked precache global binding is accepted");
     Receiver receiver{vtable,1}; expected_receiver=&receiver;
 
-    CHECK(provider.Invoke(&DamageTarget,outer_victim,outer_info,static_cast<void*>(nullptr),static_cast<void*>(nullptr))==INT64_C(0x1122334455667788),
-          "damage keeps the full-width original result");
+    provider.Invoke(&DamageTarget,outer_victim,outer_info,static_cast<void*>(&outer_output));
+    CHECK(damage_null_results==1 && damage_output_writes==2 &&
+          outer_output.value==reinterpret_cast<uintptr_t>(outer_info) &&
+          inner_output.value==reinterpret_cast<uintptr_t>(inner_info) &&
+          outer_output.before==0xabc && outer_output.after==0xdef &&
+          inner_output.before==0xabc && inner_output.after==0xdef,
+          "void damage preserves optional output storage and actual original writes");
     CHECK(damage_pre_calls==3 && damage_post_calls==3 && damage_originals==3,
           "nested damage runs PRE/original/POST once per invocation");
     CHECK(damage_terminal_refused,"named hook refuses removal from its own active capsule");
@@ -422,7 +442,7 @@ void ConfigureAndInvoke() {
     CHECK(terminal.Configure(&TerminalTarget).Accepted(),"terminal fixture binding is accepted");
     S2Hook_SetLifecycle(S2HookLifecycle::Retiring);
     const int pre_before=damage_pre_calls;
-    provider.Invoke(&DamageTarget,outer_victim,outer_info,static_cast<void*>(nullptr),static_cast<void*>(nullptr));
+    provider.Invoke(&DamageTarget,outer_victim,outer_info,static_cast<void*>(nullptr));
     CHECK(damage_pre_calls==pre_before && !S2NamedDamageInfo(),
           "retiring callback rejects dispatch without exposing borrowed pointers");
     provider.Invoke(&TerminalTarget,outer_victim);

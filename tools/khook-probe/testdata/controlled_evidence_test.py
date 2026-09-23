@@ -125,8 +125,9 @@ int main() {
     named.damage_pre=3; named.damage_post=3; named.damage_original=3;
     named.damage_nested_restored=2; named.damage_expired=1;
     named.damage_pre_ignore=3; named.damage_post_ignore=3; named.damage_post_observed=3;
-    named.damage_skipped=0; named.damage_current_return=INT64_C(0x1122334455667788);
-    named.damage_current_return_matches=3;
+    named.damage_skipped=0; named.damage_current_return={s2khook::FacetApplicability::Inapplicable,-1};
+    named.damage_argument_matches=3; named.damage_result_null=1; named.damage_result_nonnull=2;
+    named.damage_output_writes=2; named.damage_output_preserved=2;
     named.chat_dispatch=2; named.chat_original=1; named.chat_peer_before=2;
     named.chat_peer_after=2; named.chat_peer_order=123123;
     named.chat_post_observed=2; named.chat_actions={{0,2}}; named.chat_skipped={{0,1}};
@@ -161,9 +162,13 @@ int main() {
     named.precache_filtered_original = 0;
     assert(!named.Passed());
     named.precache_filtered_original = 1;
-    named.damage_current_return=INT64_C(0x55667788);
+    named.damage_output_writes=0;
     assert(!named.Passed());
-    named.damage_current_return=INT64_C(0x1122334455667788);
+    named.damage_output_writes=2;
+    named.damage_result_null=0; assert(!named.Passed()); named.damage_result_null=1;
+    named.damage_argument_matches=2; assert(!named.Passed()); named.damage_argument_matches=3;
+    named.damage_output_preserved=1; assert(!named.Passed()); named.damage_output_preserved=2;
+    named.damage_current_return.value=0; assert(!named.Passed()); named.damage_current_return.value=-1;
     named.chat_actions[1]=-1;
     assert(!named.Passed());
     named.chat_actions[1]=2;
@@ -284,8 +289,9 @@ assert named["damage"] == {"pre": 3, "post": 3, "original": 3,
                             "nested_restored": 2, "expired": 1,
                             "pre_ignore": 3, "post_ignore": 3,
                             "post_observed": 3, "skipped": 0,
-                            "current_return": str(0x1122334455667788),
-                            "current_return_matches": 3}
+                            "current_return": {"applicability": "inapplicable", "value": None},
+                            "argument_matches": 3, "result_null": 1, "result_nonnull": 2,
+                            "output_writes": 2, "output_preserved": 2}
 assert named["chat"]["peer_order"] == 123123
 assert named["chat"]["actions"] == [0, 2]
 assert named["chat"]["skipped"] == [0, 1]

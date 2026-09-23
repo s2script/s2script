@@ -149,11 +149,20 @@ registration before or after s2script.
 
 ## 5. S1 interception and preserved behavior
 
-Move the declarative engine-hook backend and named DispatchTraceAttack, HostSay,
+Move the declarative engine-hook backend and named CBaseEntity_TakeDamageOld, HostSay,
 FireOutputInternal, and ProcessUsercmds intercepts to checked stock KHook bindings.
 Move precache to the supported KHook virtual path, proving its slot and receiver
 semantics. Delete production `s2detour` installation and direct owned-vtable
 writes once their replacements pass acceptance.
+
+The independently audited damage ABI is `void(victim*, mutable damageInfo*,
+optional damageResult*)`. This corrects the inherited four-pointer/integer-return
+assumption: retain Ignore callbacks, schema-based damage fields and scoped victim/info;
+forward optional result storage unchanged. The internal recipe key is
+`CBaseEntity_TakeDamageOld`, with exact entry and semantic diagnostic validation.
+The retired `DispatchTraceAttack` pattern must not alias this target. Controlled
+output forwarding and static identity gates do not replace actual damage delivery.
+
 
 Precache may not silently remain a fallback private patch. If the stock API
 cannot preserve its required behavior, S1 stays incomplete and the concrete

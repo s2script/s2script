@@ -10,15 +10,15 @@ namespace {
 
 struct PrecacheReceiver {};
 
-KHook::Return<int64_t> DamagePre(void*,void*,void*,void*);
-KHook::Return<int64_t> DamagePost(void*,void*,void*,void*);
+KHook::Return<void> DamagePre(void*,void*,void*);
+KHook::Return<void> DamagePost(void*,void*,void*);
 KHook::Return<void> ChatPre(void*,void*,bool,int,const char*);
 KHook::Return<void> OutputPre(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
                               const CVariant*,float,void*,char*);
 KHook::Return<int> UsercmdPre(void*,void*,int,bool,float);
 KHook::Return<void> PrecachePre(PrecacheReceiver*,void*);
 
-S2CheckedFunction<int64_t,void*,void*,void*,void*> g_damage(&DamagePre,&DamagePost);
+S2CheckedFunction<void,void*,void*,void*> g_damage(&DamagePre,&DamagePost);
 S2CheckedFunction<void,void*,void*,bool,int,const char*> g_chat(&ChatPre,nullptr);
 S2CheckedFunction<void,CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
                   const CVariant*,float,void*,char*> g_output(&OutputPre,nullptr);
@@ -83,22 +83,22 @@ std::array<S2CheckedBindingOps*,5> Inventory() {
     return {{&g_damage,&g_chat,&g_output,&g_usercmd,&g_precache}};
 }
 
-KHook::Return<int64_t> DamagePre(void* victim,void* info,void*,void*) {
+KHook::Return<void> DamagePre(void* victim,void* info,void* /* optional result */) {
     auto observed=g_damage.Observe();
-    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore(int64_t{0});
+    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
     DamageScope scope(info,victim);
     if (g_ops.damage_pre) g_ops.damage_pre();
-    const auto action=S2_Ignore(int64_t{0});
+    const auto action=S2_Ignore();
     if (g_ops.observe_action) g_ops.observe_action(S2NamedHookSite::Damage,false,action.action);
     return action;
 }
 
-KHook::Return<int64_t> DamagePost(void* victim,void* info,void*,void*) {
+KHook::Return<void> DamagePost(void* victim,void* info,void* /* optional result */) {
     auto observed=g_damage.Observe();
-    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore(int64_t{0});
+    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
     DamageScope scope(info,victim);
     if (g_ops.damage_post) g_ops.damage_post();
-    const auto action=S2_Ignore(int64_t{0});
+    const auto action=S2_Ignore();
     if (g_ops.observe_action) g_ops.observe_action(S2NamedHookSite::Damage,true,action.action);
     return action;
 }

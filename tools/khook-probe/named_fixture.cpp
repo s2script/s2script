@@ -8,7 +8,7 @@
 #include <dlfcn.h>
 
 extern "C" void S2ProbeNamedInvokeVirtual(void*,int,void*);
-extern "C" int64_t S2ProbeNamedDamageTarget(void*,void*,void*,void*);
+extern "C" void S2ProbeNamedDamageTarget(void*,void*,void*);
 extern "C" void S2ProbeNamedChatTarget(void*,void*,bool,int,const char*);
 extern "C" void S2ProbeNamedOutputTarget(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
                                           const CVariant*,float,void*,char*);
@@ -29,6 +29,18 @@ void* outer_victim=&receiver_token;
 void* outer_info=reinterpret_cast<void*>(uintptr_t{0x5555666677778888});
 void* inner_victim=reinterpret_cast<void*>(uintptr_t{0x9999aaaabbbbcccc});
 void* inner_info=reinterpret_cast<void*>(uintptr_t{0xddddeeeeffff1111});
+// Controlled storage only: this is not an engine CTakeDamageResult layout.
+struct DamageOutput { uintptr_t before=0xabc, value=0, after=0xdef; };
+DamageOutput outer_output,inner_output;
+bool DamageArguments(void* victim,void* info,void* result) {
+    return (victim==outer_victim && info==outer_info && result==&outer_output) ||
+        (victim==inner_victim && info==inner_info && (!result || result==&inner_output));
+}
+bool DamageWritten(void* info,void* result) {
+    if (!result) return false;
+    const auto* out=static_cast<const DamageOutput*>(result);
+    return out->before==0xabc && out->after==0xdef && out->value==reinterpret_cast<uintptr_t>(info);
+}
 void* outer_manifest=reinterpret_cast<void*>(uintptr_t{0x1010101010101010});
 void* inner_manifest=reinterpret_cast<void*>(uintptr_t{0x2020202020202020});
 
@@ -44,7 +56,7 @@ public:
 ProbePrecache precache_object;
 OtherPrecache other_object;
 
-using DamageFn=int64_t (*)(void*,void*,void*,void*);
+using DamageFn=void (*)(void*,void*,void*);
 using ChatFn=void (*)(void*,void*,bool,int,const char*);
 using OutputFn=void (*)(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*);
 using UsercmdFn=int (*)(void*,void*,int,bool,float);
@@ -58,8 +70,8 @@ KHook::Return<void> EarlyVirtualPost(ProbePrecache*,void*);
 KHook::Return<void> ChatPeerBefore(void*,void*,bool,int,const char*);
 KHook::Return<void> ChatPeerAfter(void*,void*,bool,int,const char*);
 KHook::Return<void> ChatPeerPost(void*,void*,bool,int,const char*);
-KHook::Return<int64_t> DamageObservePre(void*,void*,void*,void*);
-KHook::Return<int64_t> DamageObservePost(void*,void*,void*,void*);
+KHook::Return<void> DamageObservePre(void*,void*,void*);
+KHook::Return<void> DamageObservePost(void*,void*,void*);
 KHook::Return<void> OutputObservePre(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*);
 KHook::Return<void> OutputObservePost(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
                                       const CVariant*,float,void*,char*);
@@ -68,7 +80,7 @@ KHook::Return<int> UsercmdObservePost(void*,void*,int,bool,float);
 KHook::Return<void> VirtualPeerBefore(ProbePrecache*,void*);
 KHook::Return<void> VirtualPeerAfter(ProbePrecache*,void*);
 KHook::Return<void> VirtualPeerPost(ProbePrecache*,void*);
-S2CheckedFunction<int64_t,void*,void*,void*,void*> peer_damage_observer(&DamageObservePre,&DamageObservePost);
+S2CheckedFunction<void,void*,void*,void*> peer_damage_observer(&DamageObservePre,&DamageObservePost);
 S2CheckedFunction<void,void*,void*,bool,int,const char*> peer_chat_before(&ChatPeerBefore,&EarlyChatPost);
 S2CheckedFunction<void,void*,void*,bool,int,const char*> peer_chat_after(&ChatPeerAfter,&ChatPeerPost);
 S2CheckedFunction<void,CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*>
@@ -126,19 +138,17 @@ KHook::Return<void> ChatPeerPost(void*,void*,bool,int,const char*) {
     }
     return S2_Ignore();
 }
-KHook::Return<int64_t> DamageObservePost(void*,void*,void*,void*) {
+KHook::Return<void> DamageObservePost(void* victim,void* info,void* result) {
     auto observed=peer_damage_observer.Observe();
-    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore(int64_t{0});
+    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
     OrderPeer(true,false);
-    if (order_active) { order_active->effective=KHook::GetCurrentReturn<int64_t>(); order_active->skipped=KHook::WasOriginalFunctionSkipped() ? 1 : 0; }
+    if (order_active) { order_active->damage_output_preserved=DamageWritten(info,result); order_active->skipped=KHook::WasOriginalFunctionSkipped() ? 1 : 0; }
     if (mode==Mode::Damage) {
-        const auto current=KHook::GetCurrentReturn<int64_t>();
-        observation.damage_current_return=current;
         ++observation.damage_post_observed;
-        if (current==INT64_C(0x1122334455667788)) ++observation.damage_current_return_matches;
+        if (DamageWritten(info,result)) ++observation.damage_output_preserved;
         if (KHook::WasOriginalFunctionSkipped()) ++observation.damage_skipped;
     }
-    return S2_Ignore(int64_t{0});
+    return S2_Ignore();
 }
 KHook::Return<void> OutputObservePost(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
                                       const CVariant*,float,void*,char*) {
@@ -207,10 +217,10 @@ KHook::Return<void> EarlyVirtualPost(ProbePrecache* receiver,void*) {
     if (S2Hook_EnterDispatch(observed)) { OrderPeer(true,false); if (order_active) order_active->skipped=KHook::WasOriginalFunctionSkipped() ? 1 : 0; }
     return S2_Ignore();
 }
-KHook::Return<int64_t> DamageObservePre(void*,void*,void*,void*) {
+KHook::Return<void> DamageObservePre(void*,void*,void*) {
     auto observed=peer_damage_observer.Observe();
     if (S2Hook_EnterDispatch(observed)) OrderPeer(false,false);
-    return S2_Ignore(int64_t{0});
+    return S2_Ignore();
 }
 KHook::Return<void> OutputObservePre(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*) {
     auto observed=peer_output_observer.Observe();
@@ -222,18 +232,18 @@ KHook::Return<int> UsercmdObservePre(void*,void*,int,bool,float) {
     if (S2Hook_EnterDispatch(observed)) OrderPeer(false,false);
     return S2_Ignore(0);
 }
-KHook::Return<int64_t> LateDamagePre(void*,void*,void*,void*);
-KHook::Return<int64_t> LateDamagePost(void*,void*,void*,void*);
-S2CheckedFunction<int64_t,void*,void*,void*,void*> late_damage(&LateDamagePre,&LateDamagePost);
-KHook::Return<int64_t> LateDamagePre(void* a,void* b,void* c,void* d) {
+KHook::Return<void> LateDamagePre(void*,void*,void*);
+KHook::Return<void> LateDamagePost(void*,void*,void*);
+S2CheckedFunction<void,void*,void*,void*> late_damage(&LateDamagePre,&LateDamagePost);
+KHook::Return<void> LateDamagePre(void* a,void* b,void* result) {
     auto observed=late_damage.Observe();
     if (S2Hook_EnterDispatch(observed)) { OrderPeer(false,true); }
-    return S2_Ignore(int64_t{0});
+    return S2_Ignore();
 }
-KHook::Return<int64_t> LateDamagePost(void* a,void* b,void* c,void* d) {
+KHook::Return<void> LateDamagePost(void* a,void* b,void* result) {
     auto observed=late_damage.Observe();
-    if (S2Hook_EnterDispatch(observed)) { OrderPeer(true,true); if (order_active) { order_active->skipped=KHook::WasOriginalFunctionSkipped() ? 1 : 0; order_active->effective=KHook::GetCurrentReturn<int64_t>(); } }
-    return S2_Ignore(int64_t{0});
+    if (S2Hook_EnterDispatch(observed)) { OrderPeer(true,true); if (order_active) { order_active->skipped=KHook::WasOriginalFunctionSkipped() ? 1 : 0; order_active->damage_output_preserved=DamageWritten(b,result); } }
+    return S2_Ignore();
 }
 KHook::Return<void> LateChatPre(void*,void*,bool,int,const char*);
 KHook::Return<void> LateChatPost(void*,void*,bool,int,const char*);
@@ -305,7 +315,7 @@ void DamagePreOp() {
     }
     if (!damage_pre_nested && S2NamedDamageVictim()==outer_victim) {
         damage_pre_nested=true;
-        call_damage(inner_victim,inner_info,nullptr,nullptr);
+        call_damage(inner_victim,inner_info,nullptr);
         if (S2NamedDamageVictim()==outer_victim && S2NamedDamageInfo()==outer_info)
             ++observation.damage_nested_restored;
         damage_pre_nested=false;
@@ -316,7 +326,7 @@ void DamagePostOp() {
     ++observation.damage_post;
     if (!damage_post_nested && S2NamedDamageVictim()==outer_victim) {
         damage_post_nested=true;
-        call_damage(inner_victim,inner_info,nullptr,nullptr);
+        call_damage(inner_victim,inner_info,&inner_output);
         if (S2NamedDamageVictim()==outer_victim && S2NamedDamageInfo()==outer_info)
             ++observation.damage_nested_restored;
         damage_post_nested=false;
@@ -407,10 +417,18 @@ bool VerifyEntry(const s2original::Image& image,const void* target,const std::ar
 }
 }
 
-extern "C" __attribute__((noinline)) int64_t S2ProbeNamedDamageBody(void*,void*,void*,void*) {
+extern "C" __attribute__((noinline)) void S2ProbeNamedDamageBody(void* victim,void* info,void* result) {
     OrderOriginal();
-    if (mode==Mode::Damage) ++observation.damage_original;
-    return INT64_C(0x1122334455667788);
+    if (order_active) order_active->damage_arguments=DamageArguments(victim,info,result);
+    if (mode==Mode::Damage) {
+        ++observation.damage_original;
+        if (DamageArguments(victim,info,result)) ++observation.damage_argument_matches;
+        if (result) ++observation.damage_result_nonnull; else ++observation.damage_result_null;
+    }
+    if (result) {
+        static_cast<DamageOutput*>(result)->value=reinterpret_cast<uintptr_t>(info);
+        if (mode==Mode::Damage) ++observation.damage_output_writes;
+    }
 }
 extern "C" __attribute__((noinline)) void S2ProbeNamedChatBody(void*,void*,bool,int,const char*) {
     OrderOriginal();
@@ -437,7 +455,7 @@ extern "C" __attribute__((noinline)) int S2ProbeNamedUsercmdBody(void* self,void
 }
 
 #if defined(__linux__) && defined(__x86_64__)
-extern "C" __attribute__((naked,noinline)) int64_t S2ProbeNamedDamageTarget(void*,void*,void*,void*) {
+extern "C" __attribute__((naked,noinline)) void S2ProbeNamedDamageTarget(void*,void*,void*) {
     asm volatile(".byte 0x0f,0x1f,0x84,0x00,0x53,0x32,0x44,0x35\n\tjmp S2ProbeNamedDamageBody");
 }
 extern "C" __attribute__((naked,noinline)) void S2ProbeNamedChatTarget(void*,void*,bool,int,const char*) {
@@ -451,7 +469,7 @@ extern "C" __attribute__((naked,noinline)) int S2ProbeNamedUsercmdTarget(void*,v
     asm volatile(".byte 0x0f,0x1f,0x84,0x00,0x53,0x32,0x55,0x35\n\tjmp S2ProbeNamedUsercmdBody");
 }
 #else
-extern "C" int64_t S2ProbeNamedDamageTarget(void* a,void* b,void* c,void* d) { return S2ProbeNamedDamageBody(a,b,c,d); }
+extern "C" void S2ProbeNamedDamageTarget(void* a,void* b,void* result) { S2ProbeNamedDamageBody(a,b,result); }
 extern "C" void S2ProbeNamedChatTarget(void* a,void* b,bool c,int d,const char* e) { S2ProbeNamedChatBody(a,b,c,d,e); }
 extern "C" void S2ProbeNamedOutputTarget(CEntityIOOutput* a,CEntityInstance* b,CEntityInstance* c,const CVariant* d,float e,void* f,char* g) { S2ProbeNamedOutputBody(a,b,c,d,e,f,g); }
 extern "C" int S2ProbeNamedUsercmdTarget(void* a,void* b,int c,bool d,float e) { return S2ProbeNamedUsercmdBody(a,b,c,d,e); }
@@ -528,6 +546,7 @@ bool S2ProbeNamedInstall(std::string& reason) {
 void S2ProbeNamedReset(std::uint64_t map_generation) {
     observation={};
     observation.installed=installed;
+    observation.damage_current_return={s2khook::FacetApplicability::Inapplicable,-1};
     observation.chat_current_return={s2khook::FacetApplicability::Inapplicable,-1};
     observation.output_current_return={s2khook::FacetApplicability::Inapplicable,-1};
     observation.precache_current_return={s2khook::FacetApplicability::Inapplicable,-1};
@@ -542,7 +561,8 @@ void S2ProbeNamedReset(std::uint64_t map_generation) {
 }
 void S2ProbeNamedInvoke() {
     if (!installed) return;
-    mode=Mode::Damage; call_damage(outer_victim,outer_info,nullptr,nullptr);
+    outer_output=DamageOutput{}; inner_output=DamageOutput{};
+    mode=Mode::Damage; call_damage(outer_victim,outer_info,&outer_output);
     observation.damage_expired=!S2NamedDamageInfo() && !S2NamedDamageVictim();
     mode=Mode::Chat; chat_verdict=0; call_chat(outer_victim,outer_info,true,19,"opaque");
     chat_verdict=1; call_chat(outer_victim,outer_info,true,19,"opaque");
@@ -597,7 +617,7 @@ void InvokeOrderPhase(bool late) {
     for (const char* site:{"damage","chat","output","usercmd","precache"}) {
         s2khook::NamedOrderObservation row; row.site=site; row.order=late ? "s2script-first" : "peer-first";
         order_active=&row;
-        if (row.site=="damage") call_damage(outer_victim,outer_info,nullptr,nullptr);
+        if (row.site=="damage") { outer_output=DamageOutput{}; call_damage(outer_victim,outer_info,&outer_output); }
         else if (row.site=="chat") call_chat(outer_victim,outer_info,true,19,"order");
         else if (row.site=="output") call_output(nullptr,nullptr,nullptr,nullptr,0,nullptr,nullptr);
         else if (row.site=="usercmd") { std::array<unsigned char,0xa0> commands{}; call_usercmd(outer_victim,commands.data(),1,true,2.5f); }
