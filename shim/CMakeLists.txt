@@ -46,13 +46,8 @@ add_library(s2script SHARED
     # Same doctrine as tier1_shims.cpp: define the few members we need rather than link all of tier1.
     src/ccommand_shim.cpp
     src/ccommand_tokenize.cpp
-    # Slice 6.6: a minimal self-contained x86-64 inline detour (the damage hook) + the vendored HDE
-    # length disassembler (pure, no OS deps). No third-party detour library / no dlopen cascade.
-    src/detour.cpp
-    # ...and its engine-free half: prologue decode, relocation, and the named refusals. Split out so
-    # shim/tests/detour_reloc_test.cpp drives the SHIPPED relocator against byte buffers at pretend
-    # addresses — a relocator proven only by "the server did not crash" is not proven.
-    src/detour_reloc.cpp
+    # HDE remains the instruction decoder for call_validate.cpp. Interception
+    # belongs exclusively to stock KHook; the old relocator is standalone-test-only.
     ${CMAKE_SOURCE_DIR}/../third_party/hde/hde64.c
     # Ray-trace slice: RTTI vtable-by-name resolution (ported DynLibUtils algorithm) + the
     # CNavPhysicsInterface::TraceShape structs/call. Engine-generic (Source-2 physics).
@@ -248,7 +243,7 @@ target_include_directories(s2script PRIVATE
     # protobuf 3.21.8 runtime headers (Slice 6.1c) — reflection over the game's usermessage
     # protobuf objects (CUserMessageSayText2). Matches the vendored libprotobuf.a below.
     ${HL2SDK}/thirdparty/protobuf-3.21.8/src
-    # Slice 6.6: the vendored HDE length disassembler (used by src/detour.cpp).
+    # Vendored HDE instruction decoder used by call_validate.cpp.
     ${CMAKE_SOURCE_DIR}/../third_party/hde
 )
 

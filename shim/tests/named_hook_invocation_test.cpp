@@ -279,12 +279,23 @@ int precache_calls=0;
 void PrecacheOp() {
     ++precache_calls;
     CHECK(S2NamedCurrentPrecacheManifest(),"precache callback exposes current manifest");
+    S2NamedPrecacheFrameV1 before{};
+    CHECK(S2NamedReadPrecacheFrameV1(&before,sizeof before),"native snapshot exists in actual callback");
+    CHECK(before.version==1 && before.size==sizeof before && before.serial>0,"snapshot has versioned serial");
+    CHECK(before.receiver==reinterpret_cast<uintptr_t>(expected_receiver) &&
+          before.vtable==reinterpret_cast<uintptr_t>(expected_receiver->vptr) &&
+          before.manifest==reinterpret_cast<uintptr_t>(S2NamedCurrentPrecacheManifest()),
+          "snapshot copies exact receiver, retained vtable and manifest identities");
     if (!in_precache && S2NamedCurrentPrecacheManifest()==outer_manifest) {
         in_precache=true;
         auto* entry=provider.FindVirtual(expected_receiver->vptr,0);
         provider.InvokeEntry<void,Receiver*,void*>(entry,expected_receiver,inner_manifest);
         CHECK(S2NamedCurrentPrecacheManifest()==outer_manifest,
               "nested precache restores outer manifest");
+        S2NamedPrecacheFrameV1 after{};
+        CHECK(S2NamedReadPrecacheFrameV1(&after,sizeof after) && after.serial==before.serial &&
+              after.receiver==before.receiver && after.manifest==before.manifest,
+              "nested native frame restores exact outer serial and identities");
         in_precache=false;
     }
 }
@@ -391,6 +402,12 @@ void ConfigureAndInvoke() {
     CHECK(precache_calls==2 && precache_originals==2,
           "precache nested dispatch and each original run exactly once");
     CHECK(!S2NamedCurrentPrecacheManifest(),"precache manifest expires after callback");
+    S2NamedPrecacheFrameV1 expired{};
+    expired.serial=99; expired.receiver=99; expired.manifest=99;
+    CHECK(!S2NamedReadPrecacheFrameV1(&expired,sizeof expired) && expired.serial==0 &&
+          expired.receiver==0 && expired.manifest==0 && expired.version==0,
+          "outside virtual callback snapshot fails and zeroes output");
+    CHECK(!S2NamedReadPrecacheFrameV1(nullptr,0),"null snapshot output rejected");
     void* other_vtable[1]={reinterpret_cast<void*>(&PrecacheTarget)};
     Receiver other{other_vtable,2};
     provider.InvokeEntry<void,Receiver*,void*>(entry,&other,outer_manifest);

@@ -151,6 +151,15 @@ cmake -S shim -B build/shim -DCMAKE_BUILD_TYPE=Release \
   ${LAUNCHER[@]+"${LAUNCHER[@]}"}
 cmake --build build/shim -j
 
+echo "== production interception inventory (stock KHook only) =="
+# Inspect the linked production DSO, including local symbols; standalone tests
+# intentionally retain the old decoder/relocator implementation.
+if nm -C build/shim/s2script.so | grep -E 's2detour::(Install|RemoveAll|Remove|Relocate)' > build/shim/private-interception-symbols.txt; then
+  cat build/shim/private-interception-symbols.txt >&2
+  echo 'error: production private interception linkage remains' >&2
+  exit 1
+fi
+
 echo "== ccommand_selftest (our CCommand tokenizer) =="
 cmake --build build/shim --target ccommand_selftest -j >/dev/null
 ./build/shim/ccommand_selftest

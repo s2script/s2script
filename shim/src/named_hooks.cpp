@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <atomic>
 
 namespace {
 
@@ -48,6 +49,25 @@ private:
 struct PointerFrame { void* value; PointerFrame* previous; };
 thread_local PointerFrame* g_usercmd_frame=nullptr;
 thread_local PointerFrame* g_manifest_frame=nullptr;
+struct PrecacheFrame {
+    S2NamedPrecacheFrameV1 value;
+    PrecacheFrame* previous;
+};
+thread_local PrecacheFrame* g_precache_frame=nullptr;
+std::atomic<uint64_t> g_precache_serial{0};
+class PrecacheScope {
+public:
+    PrecacheScope(void* receiver,void* manifest) : frame_{{1,sizeof(S2NamedPrecacheFrameV1),
+        ++g_precache_serial,reinterpret_cast<uintptr_t>(receiver),
+        reinterpret_cast<uintptr_t>(g_precache_resolution.vtable),reinterpret_cast<uintptr_t>(manifest)},g_precache_frame} {
+        g_precache_frame=&frame_;
+    }
+    ~PrecacheScope() { g_precache_frame=frame_.previous; }
+    PrecacheScope(const PrecacheScope&)=delete;
+    PrecacheScope& operator=(const PrecacheScope&)=delete;
+private:
+    PrecacheFrame frame_;
+};
 class PointerScope {
 public:
     PointerScope(PointerFrame*& top,void* value) : top_(top),frame_{value,top} { top_=&frame_; }
@@ -127,6 +147,7 @@ KHook::Return<void> PrecachePre(PrecacheReceiver* receiver,void* manifest) {
     auto observed=g_precache.Observe(receiver);
     if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
     PointerScope scope(g_manifest_frame,manifest);
+    PrecacheScope native_frame(receiver,manifest);
     if (g_ops.precache) g_ops.precache();
     const auto action=S2_Ignore();
     if (g_ops.observe_action) g_ops.observe_action(S2NamedHookSite::Precache,false,action.action);
@@ -216,4 +237,12 @@ bool S2NamedHooksUnloadSync(const S2HookTerminalPermit& permit) {
 
 bool S2NamedHooksRemovalComplete() {
     return S2HookInventoryRemovalComplete(Inventory());
+}
+
+extern "C" bool S2NamedReadPrecacheFrameV1(S2NamedPrecacheFrameV1* out,size_t size) {
+    if (!out || size!=sizeof(*out)) return false;
+    *out={};
+    if (!g_precache_frame) return false;
+    *out=g_precache_frame->value;
+    return true;
 }

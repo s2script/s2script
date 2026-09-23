@@ -26,6 +26,9 @@ function host({ humans = 3, cvars = new Map(), previous,
     isBot: false, isValid: () => true,
   }));
   const sdk = {
+    // B/C controlled engine descriptors are unavailable in this A-only fake host.
+    // Null is a named pending boundary, never fabricated native callback evidence.
+    Engine: { call: () => null, hook: () => null },
     Server: {
       mapName: 'de_test', getCvar: n => cvars.get(n) ?? '',
       setCvar: (n, v) => { if (!cvars.has(n)) return false; cvars.set(n, v); return true; },
@@ -41,7 +44,7 @@ function host({ humans = 3, cvars = new Map(), previous,
     Clients: { all: () => clients }, Player: { allConnected: () => [] },
     createEntity: (classname, values = {}) => {
       const e = { index: engine.nextIndex++, id: engine.nextIndex + 1000, name: values.targetname, classname, valid: true,
-        isValid() { return this.valid; }, remove() { this.valid = false; }, teleport() {} };
+        isValid() { return this.valid; }, remove() { this.valid = false; }, spawn() { return true; }, teleport() {} };
       entities.push(e); return e;
     },
     previous: () => previous,
@@ -53,9 +56,9 @@ function host({ humans = 3, cvars = new Map(), previous,
     : sdk, console: { log() {} } };
   vm.createContext(ctx); vm.runInContext(compiled.outputText, ctx);
   ctx.exports.OnPluginStart();
-  const control = (verb, run = 'run-1', digest = ARTIFACT) => {
+  const control = (verb, run = 'run-1', digest = ARTIFACT, suite = '') => {
     const rows = [];
-    handlers.get('s2_khook_accept')({ arg: i => [verb, run, digest][i] ?? '', reply: s => {
+    handlers.get('s2_khook_accept')({ arg: i => [verb, run, digest, suite][i] ?? '', reply: s => {
       if (s.startsWith('{')) rows.push(JSON.parse(s));
     } });
     return rows;
@@ -277,4 +280,30 @@ test('client commands require the active run and a real connected client', () =>
   assert.equal(row(h, 'js_command_continue_delivery').result, 'pending');
   f(0, 'run-1 s2khook-continue');
   assert.equal(row(h, 'js_command_continue_delivery').result, 'pass');
+});
+
+
+test('B/C missing native descriptors remain pending and never borrow A records', () => {
+  for (const suite of ['B', 'C']) {
+    const h = host(); h.control('prepare', 'run-1', ARTIFACT, suite);
+    const records = h.control('collect', 'run-1', '', suite);
+    assert.ok(records.length > 0);
+    assert.ok(records.every(r => r.suite === suite && r.result === 'pending'));
+    assert.ok(records.every(r => !r.subcheck.includes('js_gameframe')));
+    assert.ok(h.control('report', 'run-1', '', suite).every(r => r.result === 'pending'));
+  }
+});
+
+test('cross-suite report is a controller error without changing bound suite', () => {
+  const h = host(); h.control('prepare', 'run-1', ARTIFACT, 'B');
+  const rejected = h.control('report', 'run-1', '', 'C');
+  assert.match(rejected[0].khook_acceptance_error, /suite\/run mismatch/);
+  assert.ok(h.control('report', 'run-1', '', 'B').every(r => r.suite === 'B'));
+});
+
+test('archive handoff cannot resume another suite', () => {
+  const h = host(); h.control('prepare', 'run-1', ARTIFACT, 'B');
+  const next = h.reload();
+  const rejected = next.control('resume', 'run-1', ARTIFACT, 'C');
+  assert.match(rejected[0].khook_acceptance_error, /handoff mismatch/);
 });

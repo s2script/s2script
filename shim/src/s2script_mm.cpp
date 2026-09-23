@@ -62,7 +62,6 @@
 #include <unistd.h>     // sysconf(_SC_PAGESIZE) — readable-address probe
 #include <sys/syscall.h>
 #include "sigscan.h"
-#include "detour.h"   // Slice 6.6: the self-contained inline detour (damage hook)
 #include "vtable.h"   // Ray-trace slice: RTTI vtable-by-name resolution
 #include "trace.h"    // Ray-trace slice: Ray_t/CTraceFilterEx/CGameTrace + the TraceShape call
 #include "ekv.h"      // EKV slice: S2EKV_Build/AddRef/ReleaseIfSafe/SelfTest (the void*-only surface)
@@ -3488,29 +3487,11 @@ private:
 // added by intercepting the EXISTING CGameRulesGameSystem's OnPrecacheResource(IResourceManifest*)
 // (NOT a new game-system registration — CSSharp's heavier fallback).
 //
-// MECHANISM: a VTABLE-SLOT HOOK of the shared CGameRulesGameSystem CLASS vtable (resolved by RTTI via
-// s2vtable::GetVTableByName, the trace-slice self-resolve; gamedata carries only the vtable INDEX, a
-// validated HINT). We swap slot[idx] (OnPrecacheResource) to our free handler and save the original.
-// This was chosen over the two options the reviewer offered AFTER the offline RE ruled them out on the
-// pinned build-2000873 libserver.so:
-//   (1) NOT a factory-list walk to the live instance. The plan's premise — the game-system factory
-//       node yields the instance at node+24 — is FALSE here: CGameRulesGameSystem's factory is a
-//       CGameSystemReallocatingFactory (RTTI "30CGameSystemReallocatingFactoryI20CGameRulesGameSystemS0_E"
-//       @ factory-vtable 0x24c9f88; slot 8 IsReallocating -> `mov $1;ret`, slot 9 GetStaticGameSystem
-//       -> `xor eax;ret` = nullptr). +0x18 is m_ppGlobalPointer (U**), which the single construction
-//       site zeroes statically (`movq $0x0, 0x2867798` @0x18edbb0) and nothing in .text ever
-//       re-points; SetGlobalPtr writes THROUGH it (`mov rax,[rdi+0x18]; test; je; mov rsi,(rax)`) so
-//       it no-ops forever. The factory therefore never holds the live instance. (The factory is also
-//       registered as "GameRulesGameSystem" — NO leading 'C' — @0x90f33e; the C-name strcmp could
-//       never have matched anyway.)
-//   (2) NOT an inline detour (s2detour) of the slot function body. OnPrecacheResource's prologue
-//       @0x18d48e0 STARTS with a RIP-relative `mov [rip+0xf92e79],rdi` — s2detour::Install refuses to
-//       relocate any rip-relative stolen instruction (detour.cpp), so it can never patch this fn.
-//   (3) NOT a per-instance manual SourceHook: the reallocating factory recreates the instance per map,
-//       which would drop an instance-scoped hook. The shared CLASS-vtable patch has none of these
-//       problems — no live instance needed, no prologue relocation, and it SURVIVES instance
-//       reallocation (a new instance uses the same already-patched class vtable). The class vtable is
-//       static data present at module load, so the hook installs ONCE in Load() (no lazy retry).
+// MECHANISM: one checked stock-KHook global virtual binding on the verified
+// CGameRulesGameSystem class vtable. The shared resolver obtains the provider's
+// original slot; KHook owns slot patching and the retained class-vtable filter.
+// The actual receiver may be recreated per map. No instance or private slot write
+// is retained by s2script. named_hooks.cpp scopes the current borrowed manifest.
 // ADDING A RESOURCE (sound_precache_add) — review C1 fix. The borrowed ModSharp fact
 // "manifest->vtable[0](manifest, path)" (a 2-arg call at slot 0 of the passed pManifest) was
 // DISPROVEN against OUR pinned build-2000873 libserver.so. Offline disasm of THIS build's
@@ -5226,7 +5207,6 @@ static bool S2_FinishUnloadCleanup() {
     // Its listener storage died with that world; never reacquire/dereference it here.
     s_wantEntityListener = false;
 
-    s2detour::RemoveAll();
     S2_HookResetAll();
 
     if (s_pGameEventManager) {
