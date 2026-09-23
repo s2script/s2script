@@ -138,6 +138,14 @@ struct MainBridgeObservation {
     int a=0,b=0,c=0;
     bool opaque_a=false,opaque_b=false,hud_self=false,hud_controller=false,hud_layout=false;
     std::string text,trace;
+    int bypass_original=-1,bypass_peer_pre=-1,bypass_peer_post=-1,bypass_callbacks=-1;
+    std::string direct_trace;
+    bool BypassObserved() const {
+        return scenario==12 && bypass_original==1 && bypass_peer_pre==1 && bypass_peer_post==1 && bypass_callbacks==0 &&
+            original-bypass_original==1 && peer_pre-bypass_peer_pre==1 && peer_post-bypass_peer_post==1 && callbacks-bypass_callbacks==1;
+    }
+    uintptr_t target_address=0;
+    std::map<int,int> generation_callbacks;
 };
 
 struct PrecacheTokenObservation {
@@ -244,6 +252,17 @@ struct NamedRemovalObservation {
     }
 };
 
+struct NamedOrderObservation {
+    std::string site,order,trace;
+    int callbacks=0,peer_pre=0,peer_post=0,original=0,skipped=-1;
+    int64_t effective=0;
+};
+struct NamedOrderSnapshot {
+    std::vector<NamedOrderObservation> rows;
+    std::string run;
+    bool requested=false,completion=false,late_installed=false,active_refused=false;
+    int retired_callbacks=0;
+};
 struct NamedSnapshot {
     bool installed = false;
     int damage_pre = 0, damage_post = 0, damage_original = 0;

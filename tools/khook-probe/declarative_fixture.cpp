@@ -293,7 +293,7 @@ template<int O,typename Binding> void ObservePeer(Binding& binding,bool post) {
     auto observed=binding.Observe();
     if (!S2Hook_EnterDispatch(observed) || !active || active->order!=O) return;
     if (post) { ++active->peer_post; active->trace+='Q'; }
-    else { ++active->peer_pre; active->trace+='P'; }
+    else { ++active->peer_pre; active->trace+='P'; if (active->bypass_original>=0) active->direct_trace+='P'; }
 }
 template<int O> KHook::Return<void> PeerVoid(void* self) {
     ObservePeer<O>(peer_void[O],false); return S2_Ignore();
@@ -356,6 +356,7 @@ int32_t AcquireBody(int order,void*,int64_t a,int32_t method,int64_t b) {
 }
 void HudBody(int order,void* self,int64_t controller,int64_t layout,int64_t text) {
     Original(order); if (!active) return;
+    if (active->scenario==13) expected_receiver=self;
     active->hud_self=self==expected_receiver;
     active->hud_controller=reinterpret_cast<void*>(controller)==expected_receiver;
     active->hud_layout=reinterpret_cast<void*>(layout)==expected_receiver;
@@ -464,13 +465,14 @@ extern "C" void S2ProbeBridgeHud1(void* self,int64_t controller,int64_t layout,i
 extern "C" __attribute__((noinline)) int32_t S2ProbeBridgeDriveBody(void* self,int32_t encoded,int32_t sequence,int32_t generation,const char* run) {
     using namespace main_bridge;
     const int order=encoded/100,scenario=encoded%100;
-    if (!run || main_bridge::run!=run || artifact.empty() || suite!="B" || active || !self || sequence<=0 || generation<=0 || order<0 || order>1 || scenario<1 || scenario>13) return -1;
+    if (!run || main_bridge::run!=run || artifact.empty() || suite!="B" || active || !self || sequence<=0 || generation<=0 || order<0 || order>1 || scenario<1 || scenario>14) return -1;
     for (const auto& row:rows) if (row.sequence==sequence && row.generation==generation) return -1;
     s2khook::MainBridgeObservation observation;
     observation.scenario=scenario; observation.sequence=sequence; observation.generation=generation; observation.order=order;
+    observation.target_address=reinterpret_cast<uintptr_t>(order ? &S2ProbeBridgeVoid1 : &S2ProbeBridgeVoid0);
     active=&observation; expected_receiver=self;
     const int64_t ptr=reinterpret_cast<int64_t>(self);
-    if (scenario<=2 || scenario==10 || scenario==11) {
+    if (scenario<=2 || scenario==10 || scenario==11 || scenario==14) {
         void (*volatile fn)(void*)=order ? &S2ProbeBridgeVoid1 : &S2ProbeBridgeVoid0; fn(self);
     } else if (scenario==3) {
         void (*volatile fn)(void*,float,int32_t,int32_t,int32_t)=order ? &S2ProbeBridgeNarrow1 : &S2ProbeBridgeNarrow0; fn(self,1.5f,3,4,5);
@@ -484,15 +486,27 @@ extern "C" __attribute__((noinline)) int32_t S2ProbeBridgeDriveBody(void* self,i
         void (*volatile fn)(void*,int64_t,int64_t,int64_t)=order ? &S2ProbeBridgeHud1 : &S2ProbeBridgeHud0;
         fn(self,ptr,ptr,reinterpret_cast<int64_t>(&text));
     }
+    if (scenario==14) {
+        observation.result=0;
+        for (const auto& entry:observation.generation_callbacks) if (entry.first!=generation) observation.result+=entry.second;
+    }
     rows.push_back(observation); active=nullptr; expected_receiver=nullptr;
     return observation.result;
 }
 extern "C" __attribute__((noinline)) int32_t S2ProbeBridgeMarkBody(const char* run,int32_t scenario,int32_t sequence,int32_t generation,int32_t phase,int32_t order) {
     using namespace main_bridge;
+    if (run && main_bridge::run==run && active && !artifact.empty() && suite=="B" && phase==2 &&
+        active->scenario==14 && generation>0) { ++active->generation_callbacks[generation]; return active->sequence; }
+    if (run && main_bridge::run==run && active==&window && tick==window_tick && !artifact.empty() && suite=="B" && phase==3 &&
+        active->scenario==12 && scenario==12 && active->sequence==sequence && active->generation==generation && active->order==order && active->bypass_original==-1) {
+        active->bypass_original=active->original; active->bypass_peer_pre=active->peer_pre;
+        active->bypass_peer_post=active->peer_post; active->bypass_callbacks=active->callbacks;
+        active->direct_trace.clear(); return sequence;
+    }
     if (!run || main_bridge::run!=run || !active || artifact.empty() || suite!="B" || phase!=1 ||
         active->scenario!=scenario || active->sequence!=sequence || active->generation!=generation || active->order!=order ||
         (active==&window && tick!=window_tick)) return 0;
-    ++active->callbacks; active->trace+='J'; return sequence;
+    ++active->callbacks; active->trace+='J'; if (active->bypass_original>=0) active->direct_trace+='J'; return sequence;
 }
 extern "C" __attribute__((noinline)) bool S2ProbeBridgeWindowBody(const char* run,int32_t encoded,int32_t sequence,int32_t generation,bool open) {
     using namespace main_bridge;

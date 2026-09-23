@@ -65,6 +65,7 @@ interface PhaseSnap {
 }
 
 interface PersistState {
+  lifetimeRows?: Observation[];
   suite: Suite;
   runId: string;
   oldIndex: number;
@@ -1301,6 +1302,7 @@ export function OnPluginState(): PersistState {
     deliveredB,
     artifactIdentity,
     sourceRevision: frozenRevision,
+    lifetimeRows: [...lifetimeRows],
     records: Array.from(runSuite === "A" ? terminal.values() : integrationRecords.values()),
   };
 }
@@ -1437,6 +1439,18 @@ const INTEGRATION_ROWS: Record<"B" | "C", IntegrationRow[]> = {
       "expected": {
         "pre": 1,
         "action": 2
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "main-runtime",
+      "callback_owner": "engine_hooks",
+      "target": "declarative_hud"
+    },
+    {
+      "case": "declarative_hud",
+      "subcheck": "js_hud_direct_utlstring",
+      "expected": {
+        "text": "direct-hud",
+        "receiver_matches_controller": true
       },
       "group": "main-runtime-bridge",
       "provenance": "main-runtime",
@@ -1664,7 +1678,7 @@ function integrationCommand(sub: string, id: string, digest: string, selected: "
     runId = id; runSuite = selected; runBound = true; artifactIdentity = "";
     frozenRevision = KHOOK_FIXTURE_REVISION;
     if (digest) bindArtifact(digest);
-    integrationRecords.clear(); precacheRows.length = 0; integrationSequence = 0; integrationDriven = false; integrationNamedDriven = false;
+    integrationRecords.clear(); precacheRows.length = 0; lifetimeRows.length = 0; integrationSequence = 0; integrationDriven = false; integrationNamedDriven = false;
     activeBridge = null; collected = false; stored = []; stalePrecache = null;
     if (bridgeEntity) { bridgeEntity.remove(); bridgeEntity = null; }
     if (selected === "B") {
@@ -1682,6 +1696,7 @@ function integrationCommand(sub: string, id: string, digest: string, selected: "
     }
     runId = id; runSuite = selected; runBound = true; bindArtifact(digest);
     for (const record of handoff.records || []) integrationRecords.set(record.subcheck, record);
+    lifetimeRows.push(...(handoff.lifetimeRows || []));
     // Native target remains resident. A callback after resume must be observed separately.
     integrationDriven = false;
     if (selected === "B") { bridgeEntity = createEntity("info_target"); bridgeEntity?.spawn(); }
@@ -1705,7 +1720,7 @@ function integrationCommand(sub: string, id: string, digest: string, selected: "
     runBound = false; reply("[khook-accept] teardown " + id); return;
   }
   if (sub === "reload-arm") {
-    reply("[khook-accept] archive reload handoff prepared; native generation witness still required"); return;
+    reply("[khook-accept] generation " + instance + " captured; reload archive, resume same suite/run/artifact, then collect; repeat twice"); return;
   }
   reply(JSON.stringify({ khook_acceptance_error: "unsupported integration command" }));
 }
@@ -1727,7 +1742,8 @@ function bridgeObservation(facts: Record<string, unknown>): Observation | null {
 function installIntegrationHooks(): void {
   bridgeDrive = Engine.call("bridgeDrive"); bridgeMark = Engine.call("bridgeMark"); bridgeWindow = Engine.call("bridgeWindow");
   precacheBegin = Engine.call("precacheBegin"); precacheFinish = Engine.call("precacheFinish"); precacheRead = Engine.call("precacheRead");
-  for (const name of ["onvoid0", "onvoid1"] as const) Engine.hook(name)?.(() => {
+  for (const name of ["onvoid0", "onvoid1"] as const) Engine.hook(name)?.(view => {
+    if (runBound && runSuite === "B") bridgeMark?.(runId, 14, -1, instance, 2, -1);
     if (!activeBridge) return HookResult.Continue;
     const suppressed = activeBridge.scenario === 2;
     const row = bridgeObservation({ pre: 1, action: suppressed ? 2 : 0 });
@@ -1738,8 +1754,10 @@ function installIntegrationHooks(): void {
     }
     if (bridgeEntity && activeBridge.scenario === 11) {
       const inner = Engine.call(activeBridge.order === 0 ? "narrow0" : "narrow1");
+      const before = view.receiver;
       inner?.(bridgeEntity, 1.5, 3, 4, 5);
-      if (row) row.facts.restored = activeBridge.callbacks === 2;
+      const after = view.receiver;
+      if (row) row.facts.restored = activeBridge.callbacks === 2 && !!before && !!after && before.id === after.id && before.index === after.index;
     }
     return suppressed ? HookResult.Handled : HookResult.Continue;
   });
@@ -1803,10 +1821,22 @@ function integrationFrame(): void {
       const direct = Engine.call(order === 0 ? "void0" : "void1");
       bypass?.(bridgeEntity);
       const bypassCallbacks = activeBridge.callbacks;
+      const checkpoint = bridgeMark(runId, 12, sequence, instance, 3, order);
       direct?.(bridgeEntity);
       for (const row of activeBridge.observations) row.facts = { bypass: bypassCallbacks, next: activeBridge.callbacks - bypassCallbacks };
       const closed = bridgeWindow(runId, 12 + order * 100, sequence, instance, false);
-      if (closed) observations.set(12, [...(observations.get(12) || []), ...activeBridge.observations]);
+      if (closed && checkpoint) observations.set(12, [...(observations.get(12) || []), ...activeBridge.observations]);
+    }
+    activeBridge = null;
+  }
+  for (let order = 0; order < 2; ++order) {
+    const sequence = ++integrationSequence;
+    activeBridge = { scenario: 13, sequence, order, callbacks: 0, observations: [] };
+    if (bridgeWindow(runId, 13 + order * 100, sequence, instance, true)) {
+      const direct = Engine.call(order === 0 ? "hud0" : "hud1");
+      direct?.(bridgeEntity, bridgeEntity, bridgeEntity, "direct-hud");
+      const closed = bridgeWindow(runId, 13 + order * 100, sequence, instance, false);
+      if (closed) observations.set(13, [...(observations.get(13) || []), ...activeBridge.observations]);
     }
     activeBridge = null;
   }
@@ -1844,8 +1874,24 @@ function integrationFrame(): void {
   }, acquisition, "JS observes final caller result after Engine.call returns; this is NOT the main POST position");
   record(8, "js_hud_receiver_text_continue", f => ({ receiver_matches_controller: f.receiver_matches_controller, text: f.text }));
   record(9, "js_hud_handled_delivery", f => ({ pre: 1, action: f.action }));
+  record(13, "js_hud_direct_utlstring", f => ({ text: f.text, receiver_matches_controller: f.receiver_matches_controller }));
+  const sequence = ++integrationSequence;
+  activeBridge = { scenario: 14, sequence, order: 0, callbacks: 0, observations: [] };
+  const staleCallbacks = bridgeDrive(bridgeEntity, 14, sequence, instance, runId);
+  for (const row of activeBridge.observations) {
+    row.facts = { current_callbacks: activeBridge.callbacks, native_old_callbacks: staleCallbacks };
+    lifetimeRows.push(row);
+  }
+  activeBridge = null;
+  if (new Set(lifetimeRows.map(row => row.generation)).size >= 3) {
+    const fresh = lifetimeRows.slice(1).filter(row => row.facts.current_callbacks === 1).length;
+    const retired = lifetimeRows.slice(1).filter(row => row.facts.native_old_callbacks === 0).length;
+    integrationRecord("js_old_generation_retired", { generations_retired: retired }, [...lifetimeRows], "native driver returned zero stale-generation markers during each replacement call");
+    integrationRecord("js_new_generation_callback", { new_generations_delivered: fresh }, [...lifetimeRows], "public state handoff preserves actual new-generation callback rows");
+  }
 }
 
+const lifetimeRows: Observation[] = [];
 const precacheRows: Observation[] = [];
 export function OnPrecache(context: PrecacheContext): void {
   if (!runBound || runSuite !== "C" || !artifactIdentity || !precacheBegin || !precacheFinish || !precacheRead) return;

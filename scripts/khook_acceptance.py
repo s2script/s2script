@@ -286,7 +286,7 @@ _B_ROWS = {
         "js_acquire_outbound_pre_vote js_acquire_outbound_final_result"),
     "declarative_hud": (
         "native_hud_continue_order_original_once native_hud_handled_original_zero native_hud_pointers_text_peer_orders",
-        "js_hud_receiver_text_continue js_hud_handled_delivery"),
+        "js_hud_receiver_text_continue js_hud_handled_delivery js_hud_direct_utlstring"),
     "declarative_nesting_bypass": (
         "native_same_and_different_id_nesting native_stale_forged_views_rejected native_bypass_hit_then_next_delivered native_rejected_nested_scope_restored",
         "js_different_id_nested_delivery js_same_id_reentry_named_skip js_bypass_absent_then_next_delivered"),
@@ -369,6 +369,7 @@ INTEGRATION_EXPECTED = {
     "js_acquire_outbound_pre_vote": {"votes": [6, 0, 1], "outbound_nested": True},
     "js_acquire_outbound_final_result": {"effective": [6, 6, 1], "outbound_nested": True},
     "js_hud_receiver_text_continue": {"receiver_matches_controller": True, "text": "s2-khook-hud"},
+    "js_hud_direct_utlstring": {"text": "direct-hud", "receiver_matches_controller": True},
     "js_hud_handled_delivery": {"pre": 1, "action": 2},
     "js_different_id_nested_delivery": {"outer": 1, "inner": 1, "restored": True},
     "js_same_id_reentry_named_skip": {"delivered": 1, "nested_safe_skip": True},
@@ -392,6 +393,10 @@ for _suite_rows in (_B_ROWS, _C_ROWS):
         for _name in _js_names.split():
             INTEGRATION_EXPECTED["native_main_" + _name[3:]] = {"same_invocation_markers": True, "target_calls_observed": True}
 
+INTEGRATION_EXPECTED["native_main_bypass_absent_then_next_delivered"] = {
+    "same_invocation_markers": True, "target_calls_observed": True, "both_phases_observed": True,
+}
+
 
 def _integration_spec(rows: dict, suite: str) -> SuiteSpec:
     checks = []
@@ -411,7 +416,7 @@ def _integration_spec(rows: dict, suite: str) -> SuiteSpec:
                 provenance = "live-engine" if real or live_named else "main-runtime" if main or main_mechanics or lifetime else "controlled-stock-provider"
                 if name == "native_acquire_outbound_peer_post": provenance = "main-runtime"
                 owner = "named_hooks" if suite == "C" or (case.endswith("named_hook") and case != "acquisition_named_hook") else "engine_hooks"
-                join = name[3:] if main else "precache-map" if real and name != "native_precache_live_peer_both_orders" and name != "js_precache_stale_context_rejected" else ""
+                join = "script-generation" if lifetime else name[3:] if main else "precache-map" if real and name != "native_precache_live_peer_both_orders" and name != "js_precache_stale_context_rejected" else ""
                 check = _sc(case, name, producer)
                 checks.append(check)
                 rules[(case, name, producer)] = EvidenceRule(group, provenance, owner, case, join)
@@ -471,6 +476,11 @@ def _integration_record_error(rec: dict, rule: EvidenceRule) -> Optional[str]:
         seen.add(key)
         if not isinstance(obs.get("facts"), dict) or not obs["facts"]:
             return "typed callback facts required"
+        if rec["subcheck"] == "native_main_bypass_absent_then_next_delivered" and rec.get("result") == "pass":
+            for name, expected in dict(bypass_original=1, bypass_peer_pre=1, bypass_peer_post=1,
+                    bypass_js=0, next_original=1, next_peer_pre=1, next_peer_post=1, next_js=1).items():
+                if type(obs["facts"].get(name)) is not int or obs["facts"][name] != expected:
+                    return f"bypass requires exact measured phase counter {name}={expected}"
         if rule.provenance == "live-engine" and obs.get("stimulus") not in ("engine", "real-client"):
             return "real engine/client stimulus required; synthetic/selftest callback rejected"
         if rule.target == "precache_map_transition":

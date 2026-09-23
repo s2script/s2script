@@ -64,6 +64,13 @@ int main() {
     declarative.expired = false;
     assert(!declarative.Passed());
 
+    s2khook::MainBridgeObservation bridge;
+    bridge.scenario=12; bridge.original=2; bridge.peer_pre=2; bridge.peer_post=2; bridge.callbacks=1;
+    bridge.bypass_original=1; bridge.bypass_peer_pre=1; bridge.bypass_peer_post=1; bridge.bypass_callbacks=0;
+    assert(bridge.BypassObserved());
+    bridge.bypass_original=0; assert(!bridge.BypassObserved()); // paired call was a no-op
+    bridge.bypass_original=1; bridge.original=3; assert(!bridge.BypassObserved()); // duplicate direct original
+    bridge.original=2; bridge.bypass_callbacks=1; assert(!bridge.BypassObserved()); // bypass delivered own hook
     s2khook::DeclarativeSnapshot snapshot;
     assert(!snapshot.Passed());
     snapshot.simple = {true, 1, 1, 1, 1, true};

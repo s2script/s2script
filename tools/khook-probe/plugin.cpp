@@ -695,6 +695,7 @@ KHook::Return<void> ProbePlugin::Hook_GameFrame(ISource2Server* s, bool, bool, b
         g_game_frames++;
         S2ProbeBridgeWorld(g_level_lifetime.Generation(),g_game_frames);
         R6GameFrame();
+        S2ProbeNamedAdvanceOrders();
     }
     return S2_Ignore();
 }
@@ -2687,13 +2688,14 @@ static const IntegrationSpec kIntegrationSpecs[]={
     {"B","declarative_hud","native_hud_pointers_text_peer_orders","{\"orders\":[\"peer-first\",\"s2script-first\"],\"pointer_matches\":3,\"text\":\"s2-khook-hud\"}","main-runtime-bridge","main-runtime","engine_hooks","declarative_hud"},
     {"B","declarative_hud","native_main_hud_receiver_text_continue","{\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_hud"},
     {"B","declarative_hud","native_main_hud_handled_delivery","{\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_hud"},
+    {"B","declarative_hud","native_main_hud_direct_utlstring","{\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_hud"},
     {"B","declarative_nesting_bypass","native_same_and_different_id_nesting","{\"different_restored\":2,\"same_restored\":2}","controlled-mechanics","controlled-stock-provider","engine_hooks","declarative_nesting_bypass"},
     {"B","declarative_nesting_bypass","native_stale_forged_views_rejected","{\"forged_rejected\":true,\"stale_rejected\":true}","controlled-mechanics","controlled-stock-provider","engine_hooks","declarative_nesting_bypass"},
     {"B","declarative_nesting_bypass","native_bypass_hit_then_next_delivered","{\"bypass_pre\":0,\"next_pre\":1,\"original\":2}","controlled-mechanics","controlled-stock-provider","engine_hooks","declarative_nesting_bypass"},
     {"B","declarative_nesting_bypass","native_rejected_nested_scope_restored","{\"outer_restored\":true,\"rejected\":true}","controlled-mechanics","controlled-stock-provider","engine_hooks","declarative_nesting_bypass"},
     {"B","declarative_nesting_bypass","native_main_different_id_nested_delivery","{\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_nesting_bypass"},
     {"B","declarative_nesting_bypass","native_main_same_id_reentry_named_skip","{\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_nesting_bypass"},
-    {"B","declarative_nesting_bypass","native_main_bypass_absent_then_next_delivered","{\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_nesting_bypass"},
+    {"B","declarative_nesting_bypass","native_main_bypass_absent_then_next_delivered","{\"both_phases_observed\":true,\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_nesting_bypass"},
     {"B","acquisition_named_hook","native_acquire_real_post_peer_observed","{\"post_observed\":true,\"real_item_services\":true,\"same_invocation\":true}","live-named","live-engine","engine_hooks","acquisition_named_hook"},
     {"B","damage_named_hook","native_damage_valid_pre_post","{\"original\":3,\"post\":3,\"pre\":3}","controlled-mechanics","controlled-stock-provider","named_hooks","damage_named_hook"},
     {"B","damage_named_hook","native_damage_nested_scopes","{\"expired\":true,\"restored\":2}","controlled-mechanics","controlled-stock-provider","named_hooks","damage_named_hook"},
@@ -2729,14 +2731,19 @@ static std::string MainObservations(const std::vector<const s2khook::MainBridgeO
     std::string json="[";
     for (const auto* row:rows) {
         if (json.size()>1) json+=",";
-        const auto p=row->trace.find('P'),j=row->trace.find('J');
+        const auto& ordering=row->scenario==12 ? row->direct_trace : row->trace;
+        const auto p=ordering.find('P'),j=ordering.find('J');
         const char* order=p==std::string::npos || j==std::string::npos ? "none" : p<j ? "peer-first" : "s2script-first";
         json+="{\"scenario_id\":\"bridge-"+std::to_string(row->scenario)+"\",\"sequence\":"+std::to_string(row->sequence)+
             ",\"generation\":"+std::to_string(row->generation)+",\"invocation\":\""+JsonEscape(g_run_id.c_str())+":"+
             std::to_string(row->generation)+":"+std::to_string(row->sequence)+"\",\"peer_order\":\""+order+
             "\",\"callbacks\":"+std::to_string(row->peer_pre)+",\"facts\":{\"original\":"+std::to_string(row->original)+
             ",\"js_markers\":"+std::to_string(row->callbacks)+",\"trace\":\""+row->trace+"\",\"skipped\":"+std::to_string(row->skipped)+
-            ",\"peer_post_effective\":"+std::to_string(row->effective)+",\"final_caller_result\":"+std::to_string(row->result)+"}}";
+            ",\"peer_post_effective\":"+std::to_string(row->effective)+",\"final_caller_result\":"+std::to_string(row->result)+",\"bypass_original\":"+std::to_string(row->bypass_original)+
+            ",\"bypass_peer_pre\":"+std::to_string(row->bypass_peer_pre)+",\"bypass_peer_post\":"+std::to_string(row->bypass_peer_post)+
+            ",\"bypass_js\":"+std::to_string(row->bypass_callbacks)+",\"next_original\":"+std::to_string(row->original-row->bypass_original)+
+            ",\"next_peer_pre\":"+std::to_string(row->peer_pre-row->bypass_peer_pre)+",\"next_peer_post\":"+std::to_string(row->peer_post-row->bypass_peer_post)+
+            ",\"next_js\":"+std::to_string(row->callbacks-row->bypass_callbacks)+"}}";
     }
     return json+"]";
 }
@@ -2757,6 +2764,7 @@ static std::vector<int> MainScenarios(const std::string& name) {
     if (name=="native_main_acquire_outbound_pre_vote" || name=="native_main_acquire_outbound_final_result" || name=="native_acquire_outbound_peer_post") return {5,6,7};
     if (name=="native_main_hud_receiver_text_continue") return {8};
     if (name=="native_main_hud_handled_delivery") return {9};
+    if (name=="native_main_hud_direct_utlstring") return {13};
     if (name=="native_main_same_id_reentry_named_skip") return {10};
     if (name=="native_main_different_id_nested_delivery") return {11};
     if (name=="native_main_bypass_absent_then_next_delivered") return {12};
@@ -2840,10 +2848,53 @@ static std::string ControlledActual(const std::string& name) {
         return "{\"expired\":"+JBool(n.precache_expired==1)+"}";
     return {};
 }
+static std::string NamedOrderObservations(const std::vector<const s2khook::NamedOrderObservation*>& rows) {
+    std::string json="["; int sequence=0;
+    for (const auto* row:rows) {
+        if (json.size()>1) json+=",";
+        const auto p=row->trace.find('P'),m=row->trace.find('M');
+        const char* order=p==std::string::npos || m==std::string::npos ? "none" : p<m ? "peer-first" : "s2script-first";
+        json+="{\"scenario_id\":\"named-order-"+row->site+"\",\"sequence\":"+std::to_string(++sequence)+
+            ",\"generation\":1,\"invocation\":\""+JsonEscape(g_run_id.c_str())+":named:"+std::to_string(sequence)+
+            "\",\"peer_order\":\""+order+"\",\"callbacks\":"+std::to_string(row->callbacks)+
+            ",\"facts\":{\"registration_phase\":\""+row->order+"\",\"trace\":\""+row->trace+
+            "\",\"original\":"+std::to_string(row->original)+",\"peer_pre\":"+std::to_string(row->peer_pre)+
+            ",\"peer_post\":"+std::to_string(row->peer_post)+",\"effective\":"+std::to_string(row->effective)+"}}";
+    }
+    return json+"]";
+}
+static std::string NamedOrdersActual(const std::string& name,std::string& observations) {
+    const auto snapshot=S2ProbeNamedCollectOrders();
+    if (snapshot.run!=g_run_id || !snapshot.completion || !snapshot.late_installed) return {};
+    std::string site;
+    if (name=="native_damage_peer_orders_original_state") site="damage";
+    else if (name=="native_chat_peer_orders") site="chat";
+    else if (name=="native_output_peer_orders") site="output";
+    else if (name=="native_usercmd_peer_orders") site="usercmd";
+    else if (name=="native_precache_peer_same_slot_both_orders" || name=="native_precache_checked_retirement") site="precache";
+    else if (name=="native_async_removal_peer_survives") site="damage";
+    else return {};
+    std::vector<const s2khook::NamedOrderObservation*> rows;
+    for (const auto& row:snapshot.rows) if (row.site==site) rows.push_back(&row);
+    if (rows.size()!=2) return {};
+    observations=NamedOrderObservations(rows);
+    if (name=="native_async_removal_peer_survives")
+        return "{\"completion_observed\":"+JBool(snapshot.completion)+",\"retired_callbacks\":"+
+            std::to_string(snapshot.retired_callbacks)+",\"peer_callbacks\":"+std::to_string(rows[1]->peer_pre)+"}";
+    if (name=="native_precache_checked_retirement")
+        return "{\"active_refused\":"+JBool(snapshot.active_refused)+",\"completion_observed\":"+JBool(snapshot.completion)+
+            ",\"peer_survived\":"+JBool(rows[1]->peer_pre==1 && rows[1]->callbacks==1 && rows[1]->original==1 && snapshot.retired_callbacks==0)+"}";
+    bool orders=rows[0]->trace.find('P')<rows[0]->trace.find('M') && rows[1]->trace.find('M')<rows[1]->trace.find('P');
+    for (const auto* row:rows) orders=orders && row->callbacks==1 && row->original==1 && row->peer_pre==1 && row->peer_post==1;
+    std::string actual=std::string("{\"orders\":")+(orders ? "[\"peer-first\",\"s2script-first\"]" : "[]");
+    if (site=="damage") actual+=",\"current_return_matches\":"+JBool(rows[0]->effective==INT64_C(0x1122334455667788) && rows[1]->effective==INT64_C(0x1122334455667788));
+    return actual+"}";
+}
 static void CollectIntegration(bool drive) {
     if (drive && !g_collected) {
         S2ProbeDeclarativeReset(); S2ProbeDeclarativeInvoke();
         S2ProbeNamedReset(g_level_lifetime.Generation()); S2ProbeNamedInvoke();
+        S2ProbeNamedStartOrders(g_run_id);
     }
     g_stored.clear();
     for (const auto& spec:kIntegrationSpecs) {
@@ -2872,8 +2923,29 @@ static void CollectIntegration(bool drive) {
                         skipped+=same ? JBool((*first)->skipped==1) : "null";
                     }
                     actual="{\"effective\":"+effective+"],\"skipped\":"+skipped+"]}";
+                } else if (name=="native_main_bypass_absent_then_next_delivered") {
+                    bool exact=true; for (const auto* row:rows) exact=exact && row->BypassObserved();
+                    actual="{\"same_invocation_markers\":"+JBool(markers)+",\"target_calls_observed\":"+JBool(targets)+",\"both_phases_observed\":"+JBool(exact)+"}";
                 } else if (name.rfind("native_main_",0)==0) actual="{\"same_invocation_markers\":"+JBool(markers)+",\"target_calls_observed\":"+JBool(targets)+"}";
                 else actual=MainMechanicalActual(name,rows);
+            }
+        }
+        if (name=="native_binding_resident_across_reload" || name=="native_no_disposed_generation_callback") {
+            std::vector<const s2khook::MainBridgeObservation*> rows;
+            std::set<int> generations;
+            int stale=0,fresh=0; uintptr_t address=0; bool same=true;
+            for (const auto& row:S2ProbeBridgeCollect()) if (row.scenario==14) {
+                rows.push_back(&row); generations.insert(row.generation);
+                if (!address) address=row.target_address;
+                same=same && address!=0 && address==row.target_address;
+                for (const auto& entry:row.generation_callbacks) if (entry.first!=row.generation) stale+=entry.second;
+                if (rows.size()>1) { const auto it=row.generation_callbacks.find(row.generation); if (it!=row.generation_callbacks.end()) fresh+=it->second; }
+            }
+            if (generations.size()>=3) {
+                observations=MainObservations(rows);
+                actual=name=="native_binding_resident_across_reload" ?
+                    "{\"native_address_same\":"+JBool(same)+",\"generations\":"+std::to_string(generations.size())+"}" :
+                    "{\"old_callbacks_after_retire\":"+std::to_string(stale)+",\"new_callbacks\":"+std::to_string(fresh)+"}";
             }
         }
         if (name=="native_precache_before_after_map_callback" || name=="native_precache_map_generation_receiver") {
@@ -2886,6 +2958,7 @@ static void CollectIntegration(bool drive) {
                     "{\"distinct_generations\":true,\"receiver_vtable_manifest_observed\":true}";
             }
         }
+        if (actual.empty()) actual=NamedOrdersActual(name,observations);
         if (actual.empty() && std::string(spec.group)=="controlled-mechanics") {
             actual=ControlledActual(name);
             if (!actual.empty()) observations="[{\"scenario_id\":\""+name+"\",\"sequence\":1,\"generation\":1,\"invocation\":\""+

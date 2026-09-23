@@ -989,6 +989,9 @@ class IntegrationEvidenceTests(unittest.TestCase):
             rec["observations"] = [dict(scenario_id="fixture", sequence=1, generation=1, invocation="fixture-1",
                 callbacks=1, peer_order="peer-first", facts={"pre": 1}, stimulus="engine", route="main-virtual-precache",
                 frame_token=1, map_generation=1, receiver="r1", vtable="v1", manifest="m1")]
+            if rec["subcheck"] == "native_main_bypass_absent_then_next_delivered":
+                rec["observations"][0]["facts"].update(bypass_original=1, bypass_peer_pre=1, bypass_peer_post=1,
+                    bypass_js=0, next_original=1, next_peer_pre=1, next_peer_post=1, next_js=1)
             if "peer_orders" in rec["subcheck"] or "both_orders" in rec["subcheck"] or suite == "C":
                 rec["observations"].append(dict(rec["observations"][0], sequence=2, invocation="fixture-2",
                     peer_order="s2script-first", frame_token=2, map_generation=2, manifest="m2"))
@@ -1001,6 +1004,14 @@ class IntegrationEvidenceTests(unittest.TestCase):
         for suite in ("B", "C"):
             result = self.judge(self.records(suite), suite)
             self.assertEqual(result.exit_code, 0, result.messages)
+
+    def test_noop_or_duplicate_bypass_cannot_pass_from_direct_call_alone(self):
+        for field, value in (("bypass_original", 0), ("bypass_peer_pre", 0), ("bypass_peer_post", 0),
+                             ("bypass_js", 1), ("next_original", 2), ("next_js", 0)):
+            records = self.records("B")
+            row = next(r for r in records if r["subcheck"] == "native_main_bypass_absent_then_next_delivered")
+            row["observations"][0]["facts"][field] = value
+            self.assertEqual(self.judge(records, "B").exit_code, 1, field)
 
     def test_missing_half_case_and_pending_callback(self):
         for suite in ("B", "C"):
