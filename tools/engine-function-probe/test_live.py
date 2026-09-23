@@ -28,12 +28,16 @@ def complete_records():
             'outer_pre':1,'deliberate_nested_pre':1,'non_skipped_completions':2,'peer_pre':2,'peer_post':2,
             'direct_body_counter':False,'validation_receipt':'verified','nested_result':0,'outer_result':0,'invocations':invocations}))
         for event in ('arm','unloaded','acquire-stimulus'):
-            records.append(dict(base,kind='engine-function-script',event=event,facts={'itemCreated':True,'operation':1,'botSlot':3,'pawn':8}))
+            records.append(dict(base,kind='engine-function-script',event=event,facts={'itemCreated':True,'operation':1,'botSlot':3,'userId':12,'pawn':8}))
+        records.append(dict(base,kind='engine-function-script',event='bot-captured',facts={'slot':3,'userId':12}))
         records.append(dict(base,kind='engine-function-witness',event='armed',witnessGeneration=1,facts={}))
+        records.append(dict(base,kind='engine-function-witness',event='bot-ready',witnessGeneration=1,facts={'slot':3,'userId':12}))
+        if generation==1: records.append(dict(base,kind='engine-function-witness',event='bot-owned',witnessGeneration=1,facts={'slot':3,'userId':12}))
         for invocation in invocations:
             for event in ('acquire-pre','acquire-post'):
                 records.append(dict(base,kind='engine-function-witness',event=event,witnessGeneration=1,facts=dict(invocation)))
     records.append(dict(identity,generation=2,kind='engine-function-witness',event='unloaded',witnessGeneration=1,facts={}))
+    records.append(dict(identity,generation=2,kind='engine-function-witness',event='bot-cleaned',witnessGeneration=1,facts={'slot':3,'userId':12,'kicked':True,'settingsRestored':True}))
     return records
 
 class JudgeTests(unittest.TestCase):
@@ -63,6 +67,14 @@ class JudgeTests(unittest.TestCase):
                 row=next(r for r in records if r.get('event')=='acquire-post')
                 (row if field=='generation' else row['facts'])[field]=value
                 self.assertNotEqual(live.judge(records,'a'*40,'b'*64,'run')['result'],'pass')
+    def test_owned_bot_lifecycle_is_required(self):
+        for absent in ('bot-owned','bot-ready','bot-cleaned'):
+            with self.subTest(absent=absent):
+                records=[r for r in complete_records() if r.get('event')!=absent]
+                self.assertNotEqual(live.judge(records,'a'*40,'b'*64,'run')['result'],'pass')
+        records=complete_records()
+        records[-1]['event']='bot-cleanup-refused'
+        self.assertEqual(live.judge(records,'a'*40,'b'*64,'run')['result'],'fail')
     def test_witness_generation_must_remain_resident(self):
         records=complete_records()
         for r in records:

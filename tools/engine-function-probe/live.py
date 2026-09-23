@@ -28,6 +28,11 @@ def judge(records, source, token, run):
     witness_generations={r.get('witnessGeneration') for r in witnesses}
     if len(witness_generations)!=1 or any(not isinstance(g,int) or g<=0 for g in witness_generations): missing.append('one live witness owner across stimulus reload')
     if any(r.get('generation') not in generations for r in witnesses): errors.append('stale or wrong witness generation')
+    if any(r.get('event') in ('bot-refused','bot-cleanup-refused') for r in witnesses): errors.append('owned bot lifecycle refused')
+    owned=[r.get('facts',{}) for r in witnesses if r.get('event')=='bot-owned']
+    if len(owned)!=1 or any(not isinstance(owned[0].get(k),int) or owned[0][k]<0 for k in ('slot','userId')): missing.append('one positively owned bot')
+    ownership=owned[0] if len(owned)==1 else {}
+    if not any(r.get('event')=='bot-cleaned' and r.get('facts',{}).get('kicked') is True and r.get('facts',{}).get('settingsRestored') is True and all(r.get('facts',{}).get(k)==ownership.get(k) for k in ('slot','userId')) for r in witnesses): missing.append('guarded owned bot cleanup')
     if any(r.get('event')=='invalid-scope' for r in witnesses): errors.append('public invocation marker unavailable')
     if generations and not any(r.get('event')=='unloaded' and r.get('generation')==generations[-1] for r in witnesses): missing.append('witness owner teardown')
     for generation in generations:
@@ -47,6 +52,9 @@ def judge(records, source, token, run):
         if not any(r.get('event')=='acquire-stimulus' and r.get('facts',{}).get('itemCreated') is True for r in scripts): missing.append(f'{generation}:owned bot item')
         public=[r for r in witnesses if r.get('generation')==generation]
         if not any(r.get('event')=='armed' for r in public): missing.append(f'{generation}:witness arm')
+        if not any(r.get('event')=='bot-ready' and all(r.get('facts',{}).get(k)==ownership.get(k) for k in ('slot','userId')) for r in public): missing.append(f'{generation}:owned bot ready')
+        if not any(r.get('event')=='bot-captured' and all(r.get('facts',{}).get(k)==ownership.get(k) for k in ('slot','userId')) for r in scripts): missing.append(f'{generation}:guarded stimulus capture')
+        if not any(r.get('event')=='acquire-stimulus' and r.get('facts',{}).get('botSlot')==ownership.get('slot') and r.get('facts',{}).get('userId')==ownership.get('userId') for r in scripts): missing.append(f'{generation}:owned bot stimulus identity')
         invocations=real[0].get('facts',{}).get('invocations',[]) if real else []
         if len(invocations)!=2 or {i.get('id') for i in invocations}!={1,2}: missing.append(f'{generation}:scoped native invocation identities')
         if real and invocations:
@@ -133,7 +141,7 @@ def drive(args):
     runtimes=[r for r in records if r.get('kind')=='engine-function-runtime']
     if not runtimes or runtimes[-1].get('source')!=source or runtimes[-1].get('token')!=token: raise RuntimeError('resident probe is not this bundle')
     runtime=runtimes[-1]; mapped(runtime)
-    rcon(f'bot_quota_mode normal; bot_join_after_player 0; mp_limitteams 0; bot_add_ct s2fn_{run}')
+    generation=None; cleanup_done=False; creation_requested=False
     try:
         for attempt in range(2):
             rcon(f's2_engine_accept arm {run}')
@@ -141,14 +149,23 @@ def drive(args):
             generation=max(r['generation'] for r in records if r.get('case')=='generation-armed' and r.get('run')==run)
             rcon(f's2_engine_witness arm {run} {generation} {token}')
             wait_for(lambda rs:any(r.get('kind')=='engine-function-witness' and r.get('event')=='armed' and r.get('generation')==generation and r.get('run')==run for r in rs))
+            if attempt==0:
+                creation_requested=True
+                rcon(f's2_engine_witness create {run} {generation} {token}')
+            wait_for(lambda rs:any(r.get('kind')=='engine-function-witness' and r.get('event')=='bot-ready' and r.get('generation')==generation and r.get('run')==run for r in rs),f's2_engine_witness poll {run} {generation} {token}')
+            rcon(f's2_engine_accept capture {run}')
+            wait_for(lambda rs:any(r.get('event')=='bot-captured' and r.get('generation')==generation and r.get('run')==run for r in rs))
+            previous=max((r.get('witnessSequence',0) for r in records if r.get('event')=='bot-ready' and r.get('run')==run),default=0)
+            wait_for(lambda rs:any(r.get('event')=='bot-ready' and r.get('generation')==generation and r.get('run')==run and r.get('witnessSequence',0)>previous for r in rs),f's2_engine_witness poll {run} {generation} {token}')
             rcon(f's2_engine_probe exercise {run}')
-            # Give the freshly spawned bot a real pawn before the single stimulus.
-            time.sleep(2)
             rcon(f's2_engine_accept acquire {run}')
             wait_for(lambda rs:any(r.get('case')=='real-acquire' and r.get('generation')==generation and r.get('run')==run for r in rs),'s2_engine_probe runtime')
             rcon('sm plugins unload @example/engine-function-acceptance')
             wait_for(lambda rs:any(r.get('case')=='removal-before-free' and r.get('generation')==generation and r.get('run')==run for r in rs),f's2_engine_probe collect {run}')
             if attempt==0: rcon('sm plugins load @example/engine-function-acceptance')
+        rcon(f's2_engine_witness cleanup {run} {generation} {token}')
+        wait_for(lambda rs:any(r.get('event')=='bot-cleaned' and r.get('run')==run for r in rs))
+        cleanup_done=True
         rcon('sm plugins unload @example/engine-function-witness')
         wait_for(lambda rs:any(r.get('kind')=='engine-function-witness' and r.get('event')=='unloaded' and r.get('run')==run for r in rs))
         records.extend(collect_logs()); mapped(runtime)
@@ -160,8 +177,9 @@ def drive(args):
         print(json.dumps(result)); print(evidence)
         return 0 if result['result']=='pass' else 1
     finally:
-        # Keep native modules/server resident. Remove only our specifically named bot.
-        rcon(f'bot_kick s2fn_{run}')
+        # Only B's retained guarded handle may remove a client, including after A unload.
+        if creation_requested and not cleanup_done:
+            rcon(f's2_engine_witness cleanup {run} {generation} {token}')
 
 def port_number(value):
     try: port=int(value)

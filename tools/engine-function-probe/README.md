@@ -75,7 +75,8 @@ bash scripts/test-engine-function-live.sh --docker docker/docker-compose.yml --r
 default 27015. Values outside 1–65535 are rejected before contacting the server.
 
 The driver checks mapped native inodes, consumer hashes, and both installed fixture
-archive hashes against the source-bound bundle, creates one uniquely named bot, runs controlled compatibility signatures,
+archive hashes against the source-bound bundle, asks the resident witness to create
+and own exactly one new bot, runs controlled compatibility signatures,
 novel mixed-scalar re-entry, recall and peer suppression, then unloads/reloads only
 the fixture `.s2sp`. Five runtime bindings retire through both completion signals
 before closure destruction; the independent peer remains resident. Raw RCON, server
@@ -114,3 +115,18 @@ libffi continuation reads only cached flags and caller-stack result bytes after
 ClosureEntry; it never returns through the allocation or reads its CIF/phase again.
 The real-provider regression pauses after provider unlock until both acknowledgements
 arrive, and separately pauses after outbound ffi_call, before allowing reclamation.
+
+The witness owns bot creation and cleanup across both stimulus generations. It
+requires a settled normal quota and stable fully signed-on baseline clients, saves
+the bot settings, and queues bare `bot_add_ct` with no profile/name argument.
+Only one newly observed full-sign-on fakeclient with no network address can be
+claimed. Its guarded Client handle and userId remain retained in the witness.
+Before each acquisition A captures its own guarded handle, B revalidates ownership,
+and A uses that captured handle, so slot reuse cannot redirect the operation.
+Cleanup uses only the retained Client.kick, never a name selector or bot_kick.
+It restores saved quota/settings in the same operation only when baseline identity
+and the single owned client remain unambiguous (or creation produced no client).
+Stale/ambiguous identities cause no client mutation and leave uncertain settings
+for explicit operator recovery; the verdict cannot PASS. Witness teardown also
+attempts this guarded cleanup if the driver failed after stimulus-owner unload.
+Lifecycle control-flow regression: `node --test tools/engine-function-probe/test_fixture_lifecycle.mjs`.
