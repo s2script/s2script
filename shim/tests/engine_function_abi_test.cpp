@@ -110,9 +110,13 @@ __attribute__((noinline)) static float novel(std::uint32_t a, float b, void* p, 
     ++original_calls; return a + b + (p ? 3.0f : 0.0f) + c;
 }
 static std::unique_ptr<RuntimeBinding> bind(AbiSignature s, Sink& sink, const void* target) {
+    std::cout << "event=create-begin target=" << target << "\n";
     auto r = RuntimeBinding::Create(std::move(s), sink); assert(r);
     std::cout << "vector=" << r.value->Info().fingerprint << " stack=" << r.value->Info().stack_bytes << " closures=4\n";
-    assert(r.value->Configure(target).Accepted()); return std::move(r.value);
+    std::cout << "event=configure-begin\n";
+    assert(r.value->Configure(target).Accepted());
+    std::cout << "event=configure-returned\n";
+    return std::move(r.value);
 }
 template<class T> static void atom(const char* name, T value) {
     AbiSignature s; s.parameters = {{name, std::string(name) == "u8" ? "bool" : ""}}; s.returns = s.parameters[0];
@@ -282,23 +286,34 @@ extern "C" int s2fn_probe_remove() {
 }
 #endif
 static void stock_tests() {
+    std::cout << "phase=allocations-and-retirement\n";
     allocations_and_retirement();
+    std::cout << "phase=noncanonical-output\n";
     reject_noncanonical_output();
+    std::cout << "phase=queued-remove-and-destroy-refusal\n";
     queued_remove_and_destroy_refusal();
+    std::cout << "phase=32-GP-spill\n";
     spill_case<std::int64_t>("i64", std::make_index_sequence<32>{});
+    std::cout << "phase=32-SSE-spill\n";
     spill_case<double>("f64", std::make_index_sequence<32>{});
+    std::cout << "phase=scalar-atoms\n";
     atom<bool>("u8", false); atom<bool>("u8", true);
     atom<std::uint8_t>("u8", 0); atom<std::uint8_t>("u8", 1);
     atom<std::int32_t>("i32", -123456); atom<std::uint32_t>("u32", 0xf2345678);
     atom<std::int64_t>("i64", -0x123456781234LL); atom<std::uint64_t>("u64", 0xf123456789abcdefULL);
     atom<float>("f32", 1.25f); atom<double>("f64", -77.125); int pointer = 1; atom<void*>("ptr", &pointer);
-    recall_suppression_nested(); receiver_spills_novel();
+    std::cout << "phase=recall-suppression-nested\n";
+    recall_suppression_nested();
+    std::cout << "phase=receiver-mixed-novel\n";
+    receiver_spills_novel();
     assert(allocations == frees && S2Hook_RetirementPending() == 0);
     std::cout << "PASS stock provider atoms/member/mixed/novel/recall/suppression/reentry/removal closures=" << frees << "\n";
 }
 #endif
 #ifndef S2FN_NO_MAIN
 int main(int argc, char** argv) {
+    // CI captures stdout through a pipe: retain the last completed boundary on a crash.
+    std::cout << std::unitbuf;
 #ifdef S2FN_VALIDATION_ONLY
     (void)argc; (void)argv;
 #endif
@@ -307,7 +322,9 @@ int main(int argc, char** argv) {
     if (argc == 2 && std::string(argv[1]) == "--peers") {
         extern void s2fn_peer_fixtures(); s2fn_peer_fixtures();
     } else stock_tests();
+    std::cout << "phase=provider-shutdown\n";
     KHook::Shutdown();
+    std::cout << "phase=provider-shutdown-complete\n";
 #endif
 }
 #endif
