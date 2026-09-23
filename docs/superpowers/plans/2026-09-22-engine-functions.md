@@ -12,17 +12,17 @@
 
 ## Baseline and required reading
 
-- Commit `0e78515e` on `codex/engine-bindings-s3-design` is the approved design-source baseline only. Start implementation from the dedicated S2 branch based on the integrated S1 implementation SHA recorded in the execution ledger, never from the S3 planning tip. “Accepted S1 prerequisite” here means its code and interface are integrated for dependent work; pending peer/real-client/map/shutdown evidence still keeps merge/release gates open.
+- Commit `0e78515e` on `codex/engine-bindings-s3-design` is the approved design-source baseline only. Start implementation from the dedicated S2 branch based on the integrated S1 implementation SHA recorded in the execution ledger, never from the S3 planning tip. “Accepted S1 prerequisite” here means its code and interface are integrated for dependent work; pending peer/real-client/map/reload evidence still keeps merge/release gates open.
 - Read `CLAUDE.md`, root `AGENTS.md`, the S2 spec, `docs/superpowers/specs/2026-09-22-engine-bindings-design.md`, and `docs/superpowers/specs/2026-09-22-game-package-boundary-design.md` before editing.
 - Read S1's integrated `shim/src/engine_resolver.h`, `shim/src/engine_resolver.cpp`, `shim/src/khook_binding.h`, and its native evidence. This plan consumes `s2resolve::Resolve(const TargetRecipe &, Resolution &, std::string &reason)` where `Resolution` carries module identity, logical live address, `std::shared_ptr<const s2original::Image>`, and a validation receipt. If S1 lands a different signature, update this plan's adapter seam before dispatching work; do not hide an S1 change in S2.
 - Read the actual pinned header at `third_party/metamod-source/third_party/khook/include/khook.hpp`, especially low-level `SetupHook`, `DoRecall`, `SaveReturnValue`, `GetCurrentValuePtr`, `DestroyReturnValue`, and `FindOriginal`. `SetupHook` accepts PRE, POST, make-return, and make-original callback addresses with the target's native signature. The typed helpers prove expected sequencing but cannot supply a new runtime prototype.
 - Read libffi 3.7.1's primary `doc/libffi.texi`, `include/ffi.h.in`, `LICENSE`, and x86-64 backend before implementing. `ffi_prep_cif` retains its type vector, `ffi_call` uses caller-owned aligned value storage, and `ffi_closure_alloc`/`ffi_prep_closure_loc` require the closure and CIF to outlive every possible callback. Pin `third_party/libffi` to `v3.7.1` commit `5c1c43091ed611fdea774374355eb938c73a9157`, preserve its MIT license, build PIC static-only, and hide its symbols in the shim.
 - Preserve `S2_EngineCallResolve`/address C ABI and current checked-binding classes for v1 while the compatibility window is active. New v2 code consumes the S1 C++ resolver directly inside the shim and adds append-only engine ops for core.
-- Current stock-host/source verification permits isolated production development to begin even if peer, real-client, map/shutdown, or child-exit evidence is still pending. The reproduced shutdown 139 on official 1467/1469 with and without s2script is not evidence of an S1 migration regression. This is a scheduling fact, not a pass or waiver: record the missing evidence and rework risk in the ledger, keep affected PRs draft/non-mergeable, and require every merge/release gate below on integrated code.
+- Current stock-host/source verification permits isolated production development to begin even if peer, real-client, map or reload evidence is still pending. Record those missing runtime observations and rework risk in the ledger, keep affected PRs draft/non-mergeable, and require the runtime gates below on integrated code. The user explicitly made the known shutdown-only SIGSEGV/139 non-blocking. Preserve that observation truthfully; do not repeat quit tests, investigate shutdown, or wait for exit 0. Native callback retirement and closure lifetime tests remain mandatory because they protect normal use and script reload.
 
 ## Global constraints
 
-- The bounded native ABI functional proof in **S2-EF-01** is a hard predecessor of every public API, loader, and migration task: real stock-KHook/libffi callbacks must prove the bounded atom set, new-signature path, peer results, recall, suppression, removal-before-closure-free, and real-V8 busy-owner-A to owner-B synchronous re-entry. Failure of that path stops S2 and returns to design review. The already reproduced official-build shutdown 139 remains a separate pending merge/release gate under the baseline ruling: an identical controlled baseline result keeps the PR draft and the checkbox open but does not by itself block safe isolated source work. Do not call it passed or waived, and do not ship a finite prototype catalog or reduced call-only release.
+- The bounded native ABI functional proof in **S2-EF-01** is a hard predecessor of every public API, loader, and migration task: real stock-KHook/libffi callbacks must prove the bounded atom set, new-signature path, peer results, recall, suppression, removal-before-closure-free, and real-V8 busy-owner-A to owner-B synchronous re-entry. Failure of that path stops S2 and returns to design review. Known whole-process shutdown-only 139 is diagnostic/non-blocking under the explicit user disposition; never relabel it as a pass. Do not ship a finite prototype catalog or reduced call-only release.
 - Use pinned, unmodified stock KHook. Do not add a private detour backend, patch KHook, use an unchecked function-pointer cast as fallback, or claim arbitrary FFI. The S2 adapter is Linux x86_64 SysV only and rejects varargs, aggregates/struct-by-value, vectors, long double, references, platform-specific calling conventions, and every atom outside the bounded set. `u8` exists only for the proven native-bool projection; general signed/unsigned 8/16-bit integer authoring remains unsupported.
 - ABI, projection, and policy remain independent fields and hashes. An ABI vector never selects acquisition, HUD, damage, or any other semantic adapter.
 - Core and the generic shim service stay engine-generic. S2 may carry `legacy.acquire.v1` and `legacy.hud-click.v1` only as explicit compatibility adapters with locked hashes; S3 moves those implementations into CS2 ownership without changing ids or behavior.
@@ -55,7 +55,7 @@ fingerprint := linux-x86_64-sysv:<receiver>:<return>(<ordered native atoms>)
 
 The capability limits are 32 authored parameters, 33 CIF arguments including a member receiver, and 256 stack-copy bytes. `u8` is legal only with the author/runtime `bool` projection; inputs are canonicalized to 0 or 1 and outputs reject noncanonical values.
 
-`shim/src/engine_function_abi.{h,cpp}` maps those atoms to libffi primitive types, prepares an `ffi_cif`, allocates four `ffi_closure` objects, and passes their executable addresses to stock `KHook::SetupHook`. All four closures share the exact target CIF but carry distinct callback phase data. PRE/POST copy arguments through `void **args` into bounded `NativeValue` storage and save the generic action/typed return with `KHook::SaveReturnValue`. Because all allowed returns are trivial 1-byte, 4-byte, or 8-byte scalars, the adapter supplies audited `Copy1`, `Copy4`, `Copy8`, and no-op scalar-destroy callbacks; it never passes a null init/destroy operation for a non-void saved value. Make-original obtains `KHook::GetOriginalFunction()`, invokes it with `ffi_call`, and saves the original result. Make-return copies `KHook::GetCurrentValuePtr(true)` into libffi's aligned result storage and calls `KHook::DestroyReturnValue()`. Changed arguments enter a nested recall by calling `KHook::DoRecall` with the same size-specific copy/destroy operations, then `ffi_call` on the returned continuation with the modified argument vector. Closures and their retained CIF/type vector are freed only after KHook's asynchronous removal receipt says no callback can enter.
+`shim/src/engine_function_abi.{h,cpp}` maps those atoms to libffi primitive types, prepares an `ffi_cif`, allocates four `ffi_closure` objects, and passes their executable addresses to stock `KHook::SetupHook`. All four closures share the exact target CIF but carry distinct callback phase data. PRE/POST copy arguments through `void **args` into bounded `NativeValue` storage and save the generic action/typed return with `KHook::SaveReturnValue`. Because all allowed returns are trivial 1-byte, 4-byte, or 8-byte scalars, the adapter supplies audited `Copy1`, `Copy4`, `Copy8`, and no-op scalar-destroy callbacks; it never passes a null init/destroy operation for a non-void saved value. Make-original obtains `KHook::GetOriginalFunction()`, invokes it with `ffi_call`, and saves the original result. Make-return copies `KHook::GetCurrentValuePtr(true)` into libffi's aligned result storage and calls `KHook::DestroyReturnValue()`. Changed arguments enter a nested recall through `KHook::DoRecall`, followed by exactly one `ffi_call` on its continuation with the modified argument vector. Mutation-only recall uses `Action::Ignore`, size zero and null return operations; a permitted typed override or suppression instead supplies its matching value width and non-null copy/destroy operations. Closures and their retained CIF/type vector are freed only after KHook's asynchronous removal receipt says no callback can enter.
 
 Every value copy uses explicit fixed-width aligned storage plus `std::memcpy`; the C++17 build cannot use `std::bit_cast`. In particular, libffi widens integral returns narrower than a machine register: `ffi_call` uses zero-initialized, aligned `ffi_arg` return storage for `u8`, narrows it explicitly to a canonical 0/1 byte before `Copy1`, and POST/bridge conversion zero-extends only that byte into `NativeValue`. It never reads neighboring bytes or copies pointer-sized garbage. The closure return path also clears register-sized result storage before writing canonical 0/1. The adapter checks `FFI_DEFAULT_ABI` resolves to the expected Linux x86_64 SysV ABI, `FFI_CLOSURES` is enabled, every atom has the expected width/alignment, `ffi_prep_cif`/`ffi_prep_closure_loc` return `FFI_OK`, and executable closure allocation succeeds. Any mismatch is a named unavailable binding, never a cast or guessed call.
 
@@ -368,7 +368,7 @@ S2-EF-04 ───────────────────────�
 S2-EF-08 + S2-EF-09 ──────────────────────────────── S2-EF-10 (CI/live acceptance/docs)
 ```
 
-The S2-EF-01 dependency edge is released only by the functional stock-provider/live evidence named above. Under the recorded baseline ruling, an unchanged controlled official-build shutdown 139 may leave S2-EF-01's shutdown evidence and checkbox pending while isolated dependent implementation proceeds on draft branches; it never releases S2-EF-10 or merge/release acceptance.
+The S2-EF-01 dependency edge is released only by the functional stock-provider/live evidence named above. Known shutdown-only 139 does not hold that edge or its checkbox open; missing required runtime, re-entry or callback-retirement evidence does.
 
 Each worker receives one task id, exact baseline/integrated prerequisite SHAs, and the file allowlist below. One coordinator owns shared files: `core/engine-ops.jsonc`, its generated mirrors, `shim/CMakeLists.txt`, `scripts/ci-native.sh`, `scripts/ci-js.sh`, `packages/sdk/src/build.ts`, `packages/sdk/src/commands/index.ts`, `core/src/loader.rs`, and `core/src/v8host/natives.rs`. Workers needing an unlisted shared edit report it rather than editing opportunistically. Do not run multiple workers against the same checkout or shared live server.
 
@@ -389,7 +389,8 @@ Each worker receives one task id, exact baseline/integrated prerequisite SHAs, a
 - Create: `tools/engine-function-probe/CMakeLists.txt`
 - Create: `tools/engine-function-probe/plugin.cpp`
 - Create: `tools/engine-function-probe/README.md`
-- Create: `core/tests/engine_function_adapter_v8.rs` (test-only feasibility harness)
+- Create: `core/src/v8host/engine_function_adapter_v8.rs` (test-only feasibility harness)
+- Modify: `core/src/v8host.rs` (adjacent `cfg(test)` module include only)
 - Create: `scripts/test-engine-function-abi.sh`
 - Create: `scripts/test-engine-function-v8-adapter.sh`
 - Create: `scripts/test-engine-function-live.sh`
@@ -397,12 +398,13 @@ Each worker receives one task id, exact baseline/integrated prerequisite SHAs, a
 - Modify (generated): `licenses/licenses.txt`
 - Modify: `shim/CMakeLists.txt` (coordinator-owned integration)
 - Modify: `scripts/ci-native.sh` (coordinator-owned integration)
+- Modify: `.github/workflows/ci-native.yml` (dedicated gate path filters only)
 
 **Allowlist:** Only the files above. The Rust file is a test-only real-V8 feasibility harness; do not add production Rust, SDK, existing KHook-wrapper, S1-resolver, or game-package changes in this task.
 
 **Interfaces:**
 - Consumes: pinned low-level `khook.hpp`, S1 `S2HookReceipt`/Observe/retirement contract, and pinned libffi.
-- Produces: `s2fn::AbiSignature`, `s2fn::AbiFingerprint`, `s2fn::NativeValue`, `s2fn::DispatchFrame`, and `s2fn::RuntimeBinding::{Create,Call,Configure,BeginRemove}`. The capability source supplies the same platform/receiver/atom/return bounds to generated C++, TypeScript, and Rust artifacts; it contains no prototype list.
+- Produces: `s2fn::AbiSignature`, `s2fn::AbiFingerprint`, `s2fn::NativeValue`, `s2fn::DispatchFrame`, and `s2fn::RuntimeBinding::{Create,Call,Configure,BeginRemove,RemovalComplete}`. The capability source supplies the same platform/receiver/atom/return bounds to generated C++, TypeScript, and Rust artifacts; it contains no prototype list.
 
 - [ ] **Step 1: Pin and license the private static libffi dependency**
 
@@ -440,6 +442,7 @@ class RuntimeBinding final : private S2CheckedBindingOps {
   Result<NativeValue> Call(const NativeValue *args, std::size_t argc);
   S2HookReceipt Configure(const void *address);
   void BeginRemove();
+  bool RemovalComplete() const;
  private:
   static void ClosureEntry(ffi_cif *, void *result, void **args, void *phase);
   static void OnKHookRemoved(KHook::HookID_t);
@@ -447,12 +450,17 @@ class RuntimeBinding final : private S2CheckedBindingOps {
   std::vector<ffi_type *> argument_types_; // retained for cif_ lifetime
   Closure pre_, post_, make_return_, make_original_;
   KHook::HookID_t hook_id_ = KHook::INVALID_HOOK;
+  const void *target_ = nullptr; // retained live entry, never provider original
 };
 ```
 
 Map only the bounded primitive `ffi_type_*` objects. For a member ABI, prepend the receiver pointer to the CIF while omitting it from authored parameters. Use `std::memcpy` into width-checked aligned storage and select only `Copy1`/`Copy4`/`Copy8` plus the no-op scalar destructor for non-void saved values. Handle libffi's narrow integral-return rule with aligned `ffi_arg` storage and explicit bool narrowing/zero-extension; never reinterpret the low byte of an uninitialized larger slot. PRE/POST dispatch through the phase tag, retain `ObserveOwned(hook_id_)` for the complete callback/recall scope, and call `KHook::SaveReturnValue`. Changed PRE calls `KHook::DoRecall`, then invokes its returned continuation through `ffi_call` using the edited vector. Make-original calls `KHook::GetOriginalFunction()` via `ffi_call` and saves its result as original. Make-return copies `KHook::GetCurrentValuePtr(true)` to the cleared closure result and then destroys KHook's saved value. `OnKHookRemoved` is a fixed `void(HookID_t)` callback that obtains the binding from KHook context; it is not target-signature-specific. Calls use the live target address, not `FindOriginal`, so owner-only bypass remains fan-out filtering rather than bypassing peers.
 
 Compute and bounds-check KHook stack-copy bytes from SysV scalar GP/SSE classification, including the member receiver. Compare the helper against compiler-authored probes with no spill, GP-only spill, SSE-only spill, and interleaved independent-class spill. Do not reuse KHook's conservative compile-time template helper as runtime evidence.
+
+`Configure` installs synchronously with explicit `async=false` from an off-callback preparation boundary; a valid ID alone is not asynchronous readiness evidence. A mutation-only recall uses `Action::Ignore`, size zero and null return operations. A permitted typed override/suppression uses its matching value width and non-null copy/destroy operations. Retain the observation guard across exactly one recall continuation call, then return without a second independent save. Make-return copies the effective value before calling `DestroyReturnValue` exactly once on every void/non-void path; no exception may escape a closure.
+
+`OnKHookRemoved` records provider detachment but does not free closures, phase data, the CIF/type vector or the binding. `BeginRemove` delegates to the checked asynchronous retirement path. `RemovalComplete` requires both provider detachment and the generic checked receipt before the owner may destroy the retained binding. Test duplicate removal, queued-not-yet-inserted removal, and refusal to destroy before both completions; do not busy-wait on the game thread.
 
 Run the same commands. Expected: generator freshness PASS; host runtime-CIF tests PASS.
 
@@ -463,11 +471,14 @@ The probe must register controlled native targets through the real stock KHook l
 Run:
 
 ```bash
-python3 scripts/build-khook-runtime.py
 bash scripts/test-engine-function-abi.sh --stock-provider
 ```
 
 Expected: PASS with KHook/libffi commit identities, each vector/fingerprint, computed stack bytes, and closure/removal states printed. A fake KHook result or libffi-only call test is insufficient.
+
+The dedicated script builds a test-only, `EXCLUDE_FROM_ALL` stock provider from the pinned, unmodified KHook/SafetyHook sources and the checked-in Zydis amalgamation, following upstream's AMBuilder recipe. It asserts Linux x86_64 and prints all source revisions. Compile the focused executable and a shared V8 test bridge from `shim/tests/engine_function_abi_test.cpp` with a macro excluding `main` for the bridge. `KHOOK_STANDALONE` belongs only to these test targets; production `s2script.so` must still use Metamod's single provider and contain no test provider dependency/export. The source-bound deployable bundle builder is a later live artifact gate, not this engine-free provider proof.
+
+Add `scripts/*engine-function*` and `tools/engine-function-probe/**` to both native workflow event path filters, and invoke both dedicated ABI and V8 proof scripts from `ci-native.sh`.
 
 - [ ] **Step 5: Prove busy-caller cross-context delivery in real V8**
 
@@ -478,6 +489,10 @@ bash scripts/test-engine-function-v8-adapter.sh --spike --stock-provider
 ```
 
 Expected: PASS with owner/package generation keys, selected B instance, synchronous callback order, typed result, and independent A/B teardown. Failure is a design stop before S2-EF-02.
+
+Include the harness as a `cfg(test)` child of `v8host`, beside its existing private unit-test module. A file under `core/tests` would also become an independent Cargo integration crate and cannot access the required private host state; do not widen visibility or disable Cargo autotests. The dedicated script passes an absolute bridge path and selects one exact ignored Rust test. Ordinary core tests must not substitute a missing provider.
+
+Use the actual host context/generation installation and `nest::with_outbound` path. A's test-only V8 native calls the live target; stock KHook enters the real closure and Rust sink, which uses the published nest token, a real `CallbackScope`, liveness checks and B's `ContextScope` to synchronously call B. Assert `A-before → KHook-PRE → B-wrapper → original/return → A-after`, then repeat after reloading A while B stays live. Holding a host mutable borrow and observing a skipped/deferred callback is insufficient. The test-only typed decision parser proves transport without claiming today's generic `fan_out_inner` already transports typed return values.
 
 - [ ] **Step 6: Prove peer-result and load-order coexistence**
 
@@ -493,7 +508,7 @@ Expected: both orders PASS with real callbacks and effective result observations
 
 - [ ] **Step 7: Run the deployable bullseye/live proof and record the gate**
 
-Build through `scripts/build-sniper.sh`; deploy the probe plus a minimal internal fixture; exercise existing Ignite and compatibility signatures plus a newly supported native signature absent when the adapter was authored; trigger re-entry and unload/reload; record engine child exit status after ordinary shutdown. Record `ldd`, exported-symbol, license freshness, and GLIBC evidence for the statically linked dependency.
+Build through `scripts/build-sniper.sh`; deploy the probe plus a minimal internal fixture; exercise existing Ignite and compatibility signatures plus a newly supported native signature absent when the adapter was authored; trigger re-entry and script unload/reload. Leave the server running after runtime tests. Record `ldd`, exported-symbol, license freshness, and GLIBC evidence for the statically linked dependency.
 
 Run:
 
@@ -503,11 +518,11 @@ sudo docker run --rm -v "$PWD:/repo" -w /repo -v s2script-cargo:/usr/local/cargo
 bash scripts/test-engine-function-live.sh --docker docker/docker-compose.yml --rcon scripts/rcon.py
 ```
 
-Expected functional gate: every mandatory vector reports observed, nested owner-only bypass leaves peer observations intact, and reload drains KHook before closure free. Record the actual CS2 child status. Exit 0 closes the Task 1 shutdown evidence; a controlled result identical to the recorded official 1467/1469 with/without-s2script shutdown 139 leaves shutdown pending for S2-EF-10, keeps the PR draft/non-mergeable, and records rework risk without invalidating otherwise proven isolated adapter behavior. Store evidence under `.gate/engine-functions/<commit>/`; do not commit binary/log artifacts.
+Expected functional gate: every mandatory vector reports observed, nested owner-only bypass leaves peer observations intact, and reload drains KHook before closure free. Store evidence under `.gate/engine-functions/<commit>/`; do not commit binary/log artifacts. A necessary deployment stop may incidentally record child status, but the known shutdown-only 139 is diagnostic/non-blocking and needs no additional quit or clean-exit test.
 
 - [ ] **Step 8: Enforce the hard decision gate**
 
-If any mandatory compatibility/example vector, newly introduced signature, peer effective result, recall mutation, typed suppression, stack classification, re-entry, or removal-before-free case fails, write the precise failed fingerprint/provider behavior in the task report and stop. Return to design review; do not silently replace the runtime adapter with a finite prototype list, delete the case, add a hand-written target thunk, patch KHook, bypass it with another detour, or continue to public API work. An unchanged controlled baseline shutdown 139 follows the separate draft/merge rule above; every other unexplained adapter cleanup or shutdown difference is a functional stop.
+If any mandatory compatibility/example vector, newly introduced signature, peer effective result, recall mutation, typed suppression, stack classification, re-entry, or removal-before-free case fails, write the precise failed fingerprint/provider behavior in the task report and stop. Return to design review; do not silently replace the runtime adapter with a finite prototype list, delete the case, add a hand-written target thunk, patch KHook, bypass it with another detour, or continue to public API work. Runtime crashes, script-reload failures and unsafe callback retirement remain functional stops; the known whole-process shutdown-only symptom does not.
 
 - [ ] **Step 9: Commit the proven adapter gate**
 
@@ -516,9 +531,9 @@ git add .gitmodules third_party/libffi scripts/gen-licenses.sh licenses/licenses
   shim/engine-function-abi.jsonc scripts/gen-engine-function-abi.py shim/cmake/Libffi.cmake \
   shim/src/engine_function_abi.h shim/src/engine_function_abi.cpp \
   shim/src/engine_function_abi.generated.inc shim/tests/engine_function_abi_test.cpp \
-  tools/engine-function-probe core/tests/engine_function_adapter_v8.rs \
+  tools/engine-function-probe core/src/v8host/engine_function_adapter_v8.rs core/src/v8host.rs \
   scripts/test-engine-function-abi.sh scripts/test-engine-function-v8-adapter.sh \
-  scripts/test-engine-function-live.sh shim/CMakeLists.txt scripts/ci-native.sh
+  scripts/test-engine-function-live.sh shim/CMakeLists.txt scripts/ci-native.sh .github/workflows/ci-native.yml
 git commit -m "test: prove bounded runtime engine function ABI"
 ```
 
@@ -663,7 +678,7 @@ In `buildPlugin`, discover exactly `<plugin>/gamedata/functions.jsonc`; absence 
 
 Pack deterministic `engine-functions.json`. Add `manifest.engineFunctions` summary and union its derived permissions into `manifest.permissions`; reject authored `engine:calls`/`engine:hooks` when they merely duplicate v2 derivation with an actionable removal message, while continuing to accept them for v1 during the deprecation window. Print derived permissions and risks during build.
 
-Delete stale `.s2script/engine-functions.d.ts` when the file or a function disappears. Add it to the typecheck root internally so authors need no tsconfig include.
+Build emits current editor declarations and deletes stale `.s2script/engine-functions.d.ts` when the file disappears. Standalone typecheck derives declarations from current validated source in memory, overriding stale disk declarations without emitting new gamedata files, following S1's shared type-preparation pattern. Add declarations to the typecheck root internally so authors need no tsconfig include. Test clean checkouts and changed/removed functions through standalone typecheck as well as build.
 
 - [ ] **Step 4: Add inspect and scaffold behavior**
 
@@ -846,7 +861,7 @@ git commit -m "feat: add shared native engine function targets"
 - Create: `core/src/engine_functions/package_adapter.rs`
 - Create: `core/src/engine_functions/runtime.rs`
 - Create: `core/src/v8host/function_adapter.rs`
-- Modify: `core/tests/engine_function_adapter_v8.rs`
+- Modify: `core/src/v8host/engine_function_adapter_v8.rs`
 - Modify: `scripts/test-engine-function-v8-adapter.sh`
 - Modify: `core/src/engine_functions/mod.rs`
 - Modify: `core/src/ffi.rs`
@@ -923,7 +938,7 @@ Expected: PASS, including existing v1 behavior tests.
 
 ```bash
 git add core/src/engine_functions core/src/v8host/function_adapter.rs \
-  core/tests/engine_function_adapter_v8.rs core/src/v8host.rs core/src/v8host/natives.rs \
+  core/src/v8host/engine_function_adapter_v8.rs core/src/v8host.rs core/src/v8host/natives.rs \
   core/src/ffi.rs shim/include/s2script_core.h scripts/test-engine-function-v8-adapter.sh
 git commit -m "feat: add engine function registry and policy fanout"
 ```
@@ -1220,14 +1235,14 @@ Expected: all cases PASS with archive/base/override/final hashes in logs.
 
 - [ ] **Step 5: Prove sharing, peers, safety, and cleanup live**
 
-Load two plugin fixtures with the same address/ABI but different safe projections, plus the peer probe. Verify one physical KHook registration, compatible fan-out, explicit incompatible ABI refusal, owner-only bypass (caller skipped; other plugin/package/peer observed), nested re-entry, effective peer result in POST, stale borrowed/entity/binding/subscription refusal, repeated reload, map transition, ordinary shutdown, and actual CS2 child exit 0.
+Load two plugin fixtures with the same address/ABI but different safe projections, plus the peer probe. Verify one physical KHook registration, compatible fan-out, explicit incompatible ABI refusal, owner-only bypass (caller skipped; other plugin/package/peer observed), nested re-entry, effective peer result in POST, stale borrowed/entity/binding/subscription refusal, repeated script reload and map transition. Leave the server running afterward; do not add a whole-process quit gate.
 
 ```bash
 bash scripts/test-engine-function-live.sh --docker docker/docker-compose.yml --rcon scripts/rcon.py \
-  --suite sharing,peer,lifetime,reload,map,shutdown
+  --suite sharing,peer,lifetime,reload,map
 ```
 
-Expected: PASS with deployed revision, sniper GLIBC manifest, Metamod/KHook identity, server build, and child exit status recorded under `.gate/engine-functions/<commit>/`.
+Expected: PASS with deployed revision, sniper GLIBC manifest, Metamod/KHook identity, server build and actual runtime observations recorded under `.gate/engine-functions/<commit>/`. Preserve existing shutdown-only 139 as non-blocking diagnostic evidence; do not manufacture a passing terminal record.
 
 - [ ] **Step 6: Document the operator/author contract and S3 seam**
 
@@ -1254,4 +1269,4 @@ At implementation start create a ledger with task id, owner, exact baseline SHA,
 
 Integrate in DAG order. Review S2-EF-01's actual stock-provider evidence before allowing S2-EF-02+ work. Review normalized contract/hash/type names before dispatching consumers. After every shared-file integration, rerun its generated freshness check. Only one operator owns the Docker CS2 server and deployed artifacts during live gates.
 
-S1 changes discovered during implementation return to the S1 owner as prerequisites. S3 consumes only the locked handoff above; S2 does not move CS2 layout/data or redesign package bootstrap. Do not check off S2-EF-10 or append a COMPLETE progress entry while any mandatory stock-KHook, full CI, live reload/override, map, shutdown, or child-exit evidence is pending.
+S1 changes discovered during implementation return to the S1 owner as prerequisites. S3 consumes only the locked handoff above; S2 does not move CS2 layout/data or redesign package bootstrap. Do not check off S2-EF-10 or append a COMPLETE progress entry while any mandatory stock-KHook, full CI, live reload/override, map or real-client evidence is pending. Known whole-process shutdown-only 139 is non-blocking by the user's explicit acceptance change.
