@@ -121,6 +121,63 @@ struct DeclarativeSnapshot {
     }
 };
 
+struct NamedSnapshot {
+    bool installed = false;
+    int damage_pre = 0, damage_post = 0, damage_original = 0;
+    int damage_nested_restored = 0, damage_expired = 0;
+    int chat_dispatch = 0, chat_original = 0;
+    int chat_peer_before = 0, chat_peer_after = 0, chat_peer_order = 0;
+    int output_dispatch = 0, output_original = 0;
+    int usercmd_dispatch = 0, usercmd_neutralized = 0, usercmd_original = 0;
+    int usercmd_return = 0, usercmd_nested_restored = 0, usercmd_expired = 0;
+    int precache_dispatch = 0, precache_original = 0, precache_receiver_ok = 0;
+    int precache_nested_restored = 0, precache_filtered_original = 0, precache_expired = 0;
+    int precache_peer_before = 0, precache_peer_after = 0, precache_peer_order = 0;
+    bool Passed() const {
+        return installed && damage_pre == 3 && damage_post == 3 && damage_original == 3 &&
+            damage_nested_restored == 2 && damage_expired == 1 &&
+            chat_dispatch == 2 && chat_original == 1 && chat_peer_before == 2 &&
+            chat_peer_after == 2 && chat_peer_order == 123123 &&
+            output_dispatch == 2 && output_original == 1 &&
+            usercmd_dispatch == 3 && usercmd_neutralized == 2 && usercmd_original == 3 &&
+            usercmd_return == 37 && usercmd_nested_restored == 1 && usercmd_expired == 1 &&
+            precache_dispatch == 2 && precache_original == 2 && precache_receiver_ok == 2 &&
+            precache_nested_restored == 1 && precache_filtered_original == 1 &&
+            precache_expired == 1 && precache_peer_before == 2 && precache_peer_after == 2 &&
+            precache_peer_order == 121233;
+    }
+    std::string Json() const {
+        return std::string("{\"installed\":") + (installed ? "true" : "false") +
+            ",\"damage\":{\"pre\":" + std::to_string(damage_pre) +
+            ",\"post\":" + std::to_string(damage_post) +
+            ",\"original\":" + std::to_string(damage_original) +
+            ",\"nested_restored\":" + std::to_string(damage_nested_restored) +
+            ",\"expired\":" + std::to_string(damage_expired) + "}" +
+            ",\"chat\":{\"dispatch\":" + std::to_string(chat_dispatch) +
+            ",\"original\":" + std::to_string(chat_original) +
+            ",\"peer_before\":" + std::to_string(chat_peer_before) +
+            ",\"peer_after\":" + std::to_string(chat_peer_after) +
+            ",\"peer_order\":" + std::to_string(chat_peer_order) + "}" +
+            ",\"output\":{\"dispatch\":" + std::to_string(output_dispatch) +
+            ",\"original\":" + std::to_string(output_original) + "}" +
+            ",\"usercmd\":{\"dispatch\":" + std::to_string(usercmd_dispatch) +
+            ",\"neutralized\":" + std::to_string(usercmd_neutralized) +
+            ",\"original\":" + std::to_string(usercmd_original) +
+            ",\"return\":" + std::to_string(usercmd_return) +
+            ",\"nested_restored\":" + std::to_string(usercmd_nested_restored) +
+            ",\"expired\":" + std::to_string(usercmd_expired) + "}" +
+            ",\"precache\":{\"dispatch\":" + std::to_string(precache_dispatch) +
+            ",\"original\":" + std::to_string(precache_original) +
+            ",\"receiver_ok\":" + std::to_string(precache_receiver_ok) +
+            ",\"nested_restored\":" + std::to_string(precache_nested_restored) +
+            ",\"filtered_original\":" + std::to_string(precache_filtered_original) +
+            ",\"expired\":" + std::to_string(precache_expired) +
+            ",\"peer_before\":" + std::to_string(precache_peer_before) +
+            ",\"peer_after\":" + std::to_string(precache_peer_after) +
+            ",\"peer_order\":" + std::to_string(precache_peer_order) + "}}";
+    }
+};
+
 using IntTarget = int (*)(int);
 
 // The volatile function-pointer read is intentional. These functions are patched by KHook at

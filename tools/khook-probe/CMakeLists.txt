@@ -45,7 +45,10 @@ endif()
 add_library(s2_khook_probe SHARED
     plugin.cpp
     declarative_fixture.cpp
+    named_fixture.cpp
+    named_fixture_contacts.cpp
     "${S2_SOURCE_DIR}/shim/src/engine_hooks.cpp"
+    "${S2_SOURCE_DIR}/shim/src/named_hooks.cpp"
     "${S2_SOURCE_DIR}/shim/src/hook_dispatch.cpp"
     "${S2_SOURCE_DIR}/shim/src/call_validate.cpp"
     "${S2_SOURCE_DIR}/third_party/hde/hde64.c"

@@ -10,6 +10,7 @@
 #include "acceptance_observer.h"
 #include "controlled_evidence.h"
 #include "declarative_fixture.h"
+#include "named_fixture.h"
 #include "engine_hooks.h"
 #include "runtime_witness.h"
 
@@ -787,6 +788,10 @@ static void InstallControlledHooks() {
     const bool declarative = S2ProbeDeclarativeInstall(declarative_reason);
     META_CONPRINTF("[khook-probe] declarative native accepted=%d: %s\n",
                    declarative ? 1 : 0, declarative_reason.c_str());
+    std::string named_reason;
+    const bool named=S2ProbeNamedInstall(named_reason);
+    META_CONPRINTF("[khook-probe] named native accepted=%d: %s\n",
+                   named ? 1 : 0,named_reason.c_str());
     g_dummyA.tag = 10;
     g_dummyB.tag = 20;
     g_dummyPhase.tag = 30;
@@ -2441,6 +2446,11 @@ static void CollectControlledAndEvents() {
     const auto declarative = S2ProbeDeclarativeCollect();
     META_CONPRINTF("[khook-probe] declarative native observation_only match=%d %s\n",
                    declarative.Passed() ? 1 : 0, declarative.Json().c_str());
+    S2ProbeNamedReset();
+    S2ProbeNamedInvoke();
+    const auto named=S2ProbeNamedCollect();
+    META_CONPRINTF("[khook-probe] named native observation_only match=%d %s\n",
+                   named.Passed() ? 1 : 0,named.Json().c_str());
     const S2HookReceipt failed = fnNull.Configure(static_cast<const void*>(nullptr));
     const bool failed_ok =
         failed.state == S2HookState::Failed && failed.id == KHook::INVALID_HOOK && !failed.reason.empty();
@@ -2902,7 +2912,7 @@ static const std::array<S2CheckedBindingOps*, 25>& ProbeNormalBindings() {
 static bool ProbeRetireAndFinish(const S2HookTerminalPermit& permit) {
     const auto& bindings = ProbeNormalBindings();
     if (!permit.IsValid() || !S2HookInventoryCanRemoveSync(bindings, permit) ||
-        !S2EngineHooksCanUnloadSync(permit)) return false;
+        !S2EngineHooksCanUnloadSync(permit) || !S2ProbeNamedCanUnloadSync(permit)) return false;
 
     // The world has already been invalidated at the public PreShutdown boundary.
     // This helper retains the existing generation checks and only forgets stale
@@ -2935,8 +2945,9 @@ static bool ProbeRetireAndFinish(const S2HookTerminalPermit& permit) {
     virtPost.Remove(&g_dummyPhase);
 
     const bool complete = S2HookInventoryBeginRemoveSync(bindings, permit) &&
-        S2EngineHooksUnloadSync(permit) && S2HookInventoryRemovalComplete(bindings) &&
-        S2EngineHooksRemovalComplete();
+        S2EngineHooksUnloadSync(permit) && S2ProbeNamedUnloadSync(permit) &&
+        S2HookInventoryRemovalComplete(bindings) && S2EngineHooksRemovalComplete() &&
+        S2ProbeNamedRemovalComplete();
     if (complete) S2_HookResetAll();
     return complete;
 }
@@ -2947,7 +2958,8 @@ bool ProbePlugin::Unload(char* error, size_t maxlen) {
         if (!S2Hook_NoActiveDispatch() ||
             g_preshutdown_inflight.load(std::memory_order_acquire) != 0 ||
             g_shutdown_inflight.load(std::memory_order_acquire) != 0 ||
-            !S2HookInventoryRemovalComplete(ProbeNormalBindings())) return false;
+            !S2HookInventoryRemovalComplete(ProbeNormalBindings()) ||
+            !S2ProbeNamedRemovalComplete()) return false;
         if (!g_lifecycle_preshutdown_installed || !g_lifecycle_shutdown_installed) return false;
         if (!serverConfigPreShutdown.CanBeginRemove(false) ||
             !serverConfigShutdown.CanBeginRemove(false)) return false;

@@ -68,6 +68,28 @@ int main() {
     snapshot.bypass.post_after_bypass = 1;
     assert(!snapshot.Passed());
 
+    s2khook::NamedSnapshot named;
+    assert(!named.Passed());
+    named.installed = true;
+    named.damage_pre=3; named.damage_post=3; named.damage_original=3;
+    named.damage_nested_restored=2; named.damage_expired=1;
+    named.chat_dispatch=2; named.chat_original=1; named.chat_peer_before=2;
+    named.chat_peer_after=2; named.chat_peer_order=123123;
+    named.output_dispatch=2; named.output_original=1;
+    named.usercmd_dispatch=3; named.usercmd_neutralized=2; named.usercmd_original=3;
+    named.usercmd_return=37; named.usercmd_nested_restored=1; named.usercmd_expired=1;
+    named.precache_dispatch=2; named.precache_original=2; named.precache_receiver_ok=2;
+    named.precache_nested_restored=1; named.precache_filtered_original=1;
+    named.precache_expired=1; named.precache_peer_before=2; named.precache_peer_after=2;
+    named.precache_peer_order=121233;
+    assert(named.Passed());
+    std::cout << named.Json() << "\n";
+    named.usercmd_original = 2;
+    assert(!named.Passed());
+    named.usercmd_original = 3;
+    named.precache_filtered_original = 0;
+    assert(!named.Passed());
+
     s2khook::IntTarget volatile target = &plus_one;
     assert(s2khook::InvokeOpaque(target, 10) == 11);
     target = &override_42;
@@ -149,7 +171,7 @@ with tempfile.TemporaryDirectory(prefix="khook-controlled-evidence-") as temp:
     lines = subprocess.run([str(exe)], check=True, capture_output=True, text=True).stdout.splitlines()
 
 records = [json.loads(line) for line in lines]
-assert len(records) == 6
+assert len(records) == 7
 assert records.pop(0) == {"installed": True, "pre": 1, "original": 1,
                           "original_in_scope": 1, "receiver_ok": 1, "expired": True}
 snapshot = records.pop(0)
@@ -159,6 +181,13 @@ assert snapshot["acquire"][3] == {"pre": 1, "post": 1, "original": 0, "arguments
                                   "effective_return": 1, "post_result": 1, "skipped": 1}
 assert snapshot["nesting"]["post_methods"] == [42, 41, 40]
 assert snapshot["bypass"]["returns"] == [6, 6, 6]
+named = records.pop(0)
+assert named["damage"] == {"pre": 3, "post": 3, "original": 3,
+                            "nested_restored": 2, "expired": 1}
+assert named["chat"]["peer_order"] == 123123
+assert named["usercmd"]["return"] == 37
+assert named["precache"]["filtered_original"] == 1
+assert named["precache"]["peer_order"] == 121233
 assert records[0]["ab_io"] == {"pre_a": 1, "pre_b": 1, "orig": 1, "ret": 42, "pre_order": 21}
 assert records[0]["ba_os"] == {"pre_a": 1, "pre_b": 1, "orig": 0, "ret": 99, "pre_order": 12}
 assert records[1]["ba_os"]["ret"] == 2139062143
