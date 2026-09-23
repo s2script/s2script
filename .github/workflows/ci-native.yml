@@ -111,4 +111,34 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends autoconf automake libtool libltdl-dev gdb
       - name: native gate suite
-        run: bash scripts/ci-native.sh
+        run: |
+          # Only this disposable GitHub runner may change the kernel core policy.
+          [[ "$GITHUB_ACTIONS" == true && "$RUNNER_ENVIRONMENT" == github-hosted ]] || {
+            echo 'FAIL core capture requires a disposable GitHub runner' >&2; exit 2;
+          }
+          diagnostic_dir="$PWD/build/engine-function-v8-diagnostics"
+          mkdir -p "$diagnostic_dir/cores" "$diagnostic_dir/artifact"
+          original_core_pattern="$(cat /proc/sys/kernel/core_pattern)"
+          restore_core_pattern() {
+            gate_status=$?
+            trap - EXIT
+            if ! sudo sysctl -w "kernel.core_pattern=$original_core_pattern"; then
+              echo 'FAIL restoring runner core_pattern' >&2
+              [[ $gate_status != 0 ]] || gate_status=2
+            fi
+            exit "$gate_status"
+          }
+          trap restore_core_pattern EXIT
+          sudo sysctl -w "kernel.core_pattern=$diagnostic_dir/cores/core.%p.%t"
+          bash scripts/ci-native.sh
+      - name: retain compact V8 diagnostics and matching binaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-function-v8-diagnostics
+          # Raw multi-GiB cores are runner-local and must never be uploaded.
+          path: |
+            build/engine-function-v8-diagnostics/artifact/
+            !build/engine-function-v8-diagnostics/cores/**
+          if-no-files-found: ignore
+          retention-days: 3
