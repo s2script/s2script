@@ -13,6 +13,24 @@ test('absent file has no normalized capability', () => {
   assert.equal(normalizeFunctions('@demo/functions', undefined), undefined);
 });
 
+test('parsed JSON rejects explicit null in optional declaration fields', () => {
+  for (const field of ['resolve', 'parameters', 'returns', 'surfaces', 'requirement']) {
+    const parsed = parseFunctionFile('functions.jsonc', JSON.stringify(file({ x: { ...fn(), [field]: null } })));
+    assert.throws(() => normalizeFunctions('@demo/functions', parsed), new RegExp(field));
+  }
+});
+
+test('parsed string-xref validators use native UTF-8 byte and int32 offset bounds', () => {
+  const checked = xref => normalizeFunctions('@demo/functions', parseFunctionFile('functions.jsonc', JSON.stringify(file({
+    x: fn({ target: { ...target, validate: { 'string-xref': xref } } }),
+  }))));
+  const base = { at: 0, dispOff: 3, instrLen: 7, expect: 'x' };
+  assert.doesNotThrow(() => checked({ ...base, expect: 'é'.repeat(128), at: 2147483647, instrLen: 2147483647 }));
+  assert.throws(() => checked({ ...base, expect: 'é'.repeat(129) }), /256.*bytes/i);
+  assert.throws(() => checked({ ...base, at: 2147483648 }), /at.*int32|at.*range/i);
+  assert.throws(() => checked({ ...base, instrLen: 2147483648 }), /instrLen.*int32|instrLen.*range/i);
+});
+
 test('defaults, canonical ids, bool projection, and derived permissions', () => {
   const b = norm({ z: fn({ parameters: [{ name: 'flag', type: 'bool' }], returns: 'bool' }), a: fn() });
   assert.deepEqual(b.functions.map(f => f.localName), ['a', 'z']);

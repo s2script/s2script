@@ -33,8 +33,9 @@ function validator(value: unknown, where: string): ValidatorSpec {
     keys(x, ['at', 'dispOff', 'instrLen', 'expect'], `${where}.string-xref`);
     for (const k of ['at', 'dispOff', 'instrLen']) if (!Number.isSafeInteger(x[k]) || (x[k] as number) < (k === 'instrLen' ? 1 : 0)) throw new Error(`${where}.string-xref.${k} must be a valid offset`);
     if ((x.dispOff as number) + 4 > (x.instrLen as number)) throw new Error(`${where}.string-xref displacement exceeds instruction`);
+    for (const k of ['at', 'instrLen']) if ((x[k] as number) > 2147483647) throw new Error(`${where}.string-xref.${k} exceeds int32 range`);
     const expect = nonempty(x.expect, `${where}.string-xref.expect`);
-    if (expect.length > 256) throw new Error(`${where}.string-xref.expect exceeds 256 bytes`);
+    if (Buffer.byteLength(expect, 'utf8') > 256) throw new Error(`${where}.string-xref.expect exceeds 256 UTF-8 bytes`);
   }
   return v as ValidatorSpec;
 }
@@ -111,7 +112,7 @@ export function normalizeFunctions(ownerId: string, parsed: FunctionFileV2 | und
     if (!IDENTIFIER.test(localName) || FORBIDDEN_NAMES.has(localName)) throw new Error(`${where}: invalid or reserved function name`);
     const f = object(functions[localName], where);
     keys(f, ['target', 'receiver', 'parameters', 'returns', 'surfaces', 'requirement', 'resolve'], where);
-    const resolve = f.resolve ?? 'direct';
+    const resolve = f.resolve === undefined ? 'direct' : f.resolve;
     if (!(RESOLVERS as readonly unknown[]).includes(resolve)) throw new Error(`${where}: unknown resolve derivation ${JSON.stringify(resolve)}`);
     const rawTarget = object(f.target, `${where}.target`);
     const resolvedTarget = 'ref' in rawTarget ? (() => {
@@ -125,7 +126,7 @@ export function normalizeFunctions(ownerId: string, parsed: FunctionFileV2 | und
     keys(rawReceiver, ['type'], `${where}.receiver`);
     const receiver = rawReceiver.type;
     if (!(RECEIVERS as readonly unknown[]).includes(receiver)) throw new Error(`${where}: unsupported receiver ${JSON.stringify(receiver)}`);
-    const rawParams = f.parameters ?? [];
+    const rawParams = f.parameters === undefined ? [] : f.parameters;
     if (!Array.isArray(rawParams)) throw new Error(`${where}.parameters must be an array`);
     if (rawParams.length > maxParameters || rawParams.length + (receiver === 'entity' ? 1 : 0) > maxCifArguments) throw new Error(`${where}: maximum ${maxParameters} authored parameters / ${maxCifArguments} CIF arguments exceeded`);
     const names = new Set<string>();
@@ -140,12 +141,12 @@ export function normalizeFunctions(ownerId: string, parsed: FunctionFileV2 | und
       const type = projection(p.type as AuthorType, `${where}.parameters[${i}].type`);
       return { name, native: type.native as NativeAtom, projection: type.projection, mutable: p.mutable === 'pre' ? ['pre'] as ['pre'] : [] as [] };
     });
-    const returns = projection((f.returns ?? 'void') as AuthorType | 'void', `${where}.returns`);
-    const rawSurfaces = f.surfaces ?? ['call'];
+    const returns = projection((f.returns === undefined ? 'void' : f.returns) as AuthorType | 'void', `${where}.returns`);
+    const rawSurfaces = f.surfaces === undefined ? ['call'] : f.surfaces;
     if (!Array.isArray(rawSurfaces) || !rawSurfaces.length || rawSurfaces.some(s => !(SURFACES as readonly unknown[]).includes(s)) || new Set(rawSurfaces).size !== rawSurfaces.length) throw new Error(`${where}: invalid surfaces`);
     const surfaces = SURFACES.filter(s => rawSurfaces.includes(s));
     if (parameters.some(p => p.mutable.length) && !surfaces.includes('pre')) throw new Error(`${where}: mutable parameter requires pre surface`);
-    const requirement = f.requirement ?? 'optional';
+    const requirement = f.requirement === undefined ? 'optional' : f.requirement;
     if (requirement !== 'optional' && requirement !== 'required') throw new Error(`${where}: invalid requirement`);
     const receiverType = receiver as Receiver;
     const stackBytes = stackCopyBytes(receiverType, parameters.map(p => p.native));
