@@ -45,9 +45,10 @@ hookable or move the CS2 package.
 `s2s build` discovers `<plugin>/gamedata/functions.jsonc`; no file means no capability. There is no
 `s2script.gamedata`, `requiresGamedata`, package-derived filename, or manual tsconfig entry.
 
-The package id is the declaration namespace. A local name `ignite` in `@demo/fire` has canonical id
-`@demo/fire::ignite`. Authors use the local name; manifests, diagnostics, override paths, and runtime
-registries use the canonical id. Duplicate local names and duplicate JSON keys are build errors.
+The package id is the declaration namespace. A local name `commitSuicide` in
+`@demo/engine-function` has canonical id `@demo/engine-function::commitSuicide`. Authors use the
+local name; manifests, diagnostics, override paths, and runtime registries use the canonical id.
+Duplicate local names and duplicate JSON keys are build errors.
 
 ### Example
 
@@ -55,19 +56,17 @@ registries use the canonical id. Duplicate local names and duplicate JSON keys a
 {
   "schemaVersion": 2,
   "functions": {
-    "ignite": {
+    "commitSuicide": {
       "target": {
         "module": "libserver.so",
-        // Illustrative only; derive a deployable pattern from the pinned server binary.
-        "pattern": "55 48 89 E5 41 56 ...",
-        "validate": { "vtable-member": "CBaseModelEntity" }
+        // Illustrative only: derive the exact recipe and validator from the deployed binary.
+        "pattern": "<audited build-specific signature>",
+        "validate": { "prologue": "<audited entry bytes>" }
       },
       "receiver": { "type": "entity" },
       "parameters": [
-        { "name": "flameLifetime", "type": "f32", "mutable": "pre" },
-        { "name": "flags", "type": "i32" },
-        { "name": "attacker", "type": "entity?" },
-        { "name": "size", "type": "f32" }
+        { "name": "explode", "type": "bool" },
+        { "name": "force", "type": "bool", "mutable": "pre" }
       ],
       "returns": "void",
       "surfaces": ["call", "pre", "post"]
@@ -94,19 +93,25 @@ The generated augmentation makes local names and their complete function contrac
 import { Engine } from "@s2script/sdk/unsafe";
 import { HookResult } from "@s2script/sdk";
 
-const ignite = Engine.function("ignite");
+const commitSuicide = Engine.function("commitSuicide");
 
-if (!ignite.available) {
-  console.log(ignite.status);
+if (!commitSuicide.available) {
+  console.log(commitSuicide.status);
 } else {
-  ignite.call(pawn.ref, 10, 4, null, 0);
-  ignite.onPre((view) => {
-    view.flameLifetime = Math.min(view.flameLifetime, 20);
+  commitSuicide.onPre((view) => {
+    view.force = true;
     return HookResult.Changed;
   });
-  ignite.onPost((view) => console.log(view.flameLifetime));
+  commitSuicide.onPost((view) => console.log(view.force));
+  // In an explicit command, after selecting and checking a live bot pawn:
+  commitSuicide.call(pawn.ref, false, true);
 }
 ```
+
+This direct target invokes the `CBasePlayerPawn` base implementation, matching existing
+`pawn.slay()` behavior. It does not claim virtual `CCSPlayerPawn` override behavior: the audited
+forwarding thunk writes an additional pawn byte before calling the base body. The worked example
+must prove an actual bot pawn changes from alive to dead when the explicit command runs.
 
 The binding is a discriminated union. Optional functions require `available`; required functions
 resolve before activation and return the available branch. `status` includes canonical id and
@@ -128,7 +133,7 @@ invented numeric/default return. POST receives readonly arguments plus the typed
 public callback contracts. Observation is explicit:
 
 ```ts
-ignite.onPre({ observeOnly: true }, (view) => console.log(view.flameLifetime));
+commitSuicide.onPre({ observeOnly: true }, (view) => console.log(view.force));
 ```
 
 That callback's type permits no mutation or action result.
@@ -168,6 +173,14 @@ outside the matrix is rejected with the first unsupported ABI feature named. The
 an unchecked cast, a legacy detour, or a newly hand-written thunk per custom function. If the bounded
 runtime adapter fails, S2 stops and returns to design review; it does not self-authorize a reduced
 call-only release.
+
+The existing v1 `engine-call-demo` Ignite source is retained as a historical example, not a
+conforming v2 scalar example or an operative call on the current build. The audited Ignite ABI has
+a trailing by-value Vector deliberately omitted by that v1 descriptor; its old target pattern also
+misses the current binary. The observed dead stores in specific base implementations do not remove
+the native aggregate argument. S2 rejects aggregates without a per-name exception. Replacing only
+the old signature would leave the incomplete ABI unchanged; the demo must not be presented as a
+working current-build recipe or lossless v2 migration.
 
 ## Validation and failure behavior
 
@@ -271,13 +284,19 @@ call/hook targets and ABIs, decodes proven shapes, converts `bypassWith`, remove
 
 Missing names, empty validators, mismatched call/hook targets, lossy shape projections, unsupported
 ABI rows, and ambiguous receiver hops stop migration with a named item. The tool never guesses and
-never emits a partially weakened function.
+never emits a partially weakened conversion of the *declared* contract. A successful conversion
+proves structural preservation of those declarations, not that the author declared every native
+argument. Neither v1 nor v2 can generically detect an omitted argument from a four-scalar
+descriptor. Ignite's known missing trailing Vector is an example of that limit; parsing or
+normalizing its four declared scalars does not certify a callable native ABI. There is no name
+blacklist, silent ABI repair, or new per-declaration attestation gate.
 
-For one published deprecation window, the builder accepts v1 and normalizes it through the same v2
-intermediate representation. `Engine.call` and `Engine.hook` remain generated compatibility facades
-with their old timing and null behavior. Removal or behavior change requires an SDK major release,
-an archive schema gate, and a build error with the migration command. A v1 validator or public API
-contract is never silently dropped to make a build pass.
+For one published deprecation window, the builder accepts v1 and normalizes its declared contract
+through the same v2 intermediate representation. `Engine.call` and `Engine.hook` remain generated
+compatibility facades with their old timing and null behavior for correctly declared supported
+contracts. Removal or behavior change requires an SDK major release, an archive schema gate, and a
+build error with the migration command. A v1 validator or public API contract is never silently
+dropped to make a build pass.
 
 ## Lifecycle
 
@@ -304,7 +323,8 @@ S2 is accepted when:
 - conflicting or stale overrides fail closed and cannot change the public contract;
 - same-address compatible declarations share one registration; incompatible ABIs are refused;
 - borrowed views, stale entities, bindings, and subscription handles cannot reach native memory;
-- v1 migration preserves validators, timing, permissions, and API behavior or names the ambiguity;
+- v1 migration preserves the declared validators, timing, permissions, and API behavior for correctly
+  declared supported contracts or names a structural ambiguity; it cannot certify omitted native args;
 - stock KHook proves reentrancy, peer results, cleanup, and a new signature without a new thunk;
 - core remains engine-generic and the base-plugin/JS/native CI gates stay green.
 
