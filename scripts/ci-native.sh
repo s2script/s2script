@@ -39,6 +39,19 @@ if [[ "$(uname -s)" == Linux ]]; then
   fi
 fi
 
+# Exercise the live verdict and explicit host-only build-mode controls.
+python3 tools/engine-function-probe/test_live.py
+python3 tools/engine-function-probe/test_build_live.py
+
+# Compile the resident ABI probe as well as the standalone provider fixtures.
+# This creates no source-bound bundle/acceptance receipt and claims no live proof.
+if [[ "$(uname -s)" == Linux ]]; then
+  echo "== early Release engine-function resident probe compile =="
+  S2FN_SOURCE_REVISION="$(git rev-parse HEAD)" \
+  S2FN_BUILD_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+    bash tools/engine-function-probe/build-live.sh --probe-only --compile-only
+fi
+
 # Populates the cargo registry that check-licenses-generated.sh reads every locked crate's
 # license text out of, and warms it for the build below.
 echo "== cargo fetch --locked =="

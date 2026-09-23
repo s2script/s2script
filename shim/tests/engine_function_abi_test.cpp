@@ -55,6 +55,7 @@ static void signatures() {
 #include <sys/wait.h>
 #include <unistd.h>
 #include <type_traits>
+#include <condition_variable>
 #include <dlfcn.h>
 #include "engine_function_member_fixture.h"
 // Allocation fault injection wraps only the allocator; all successful closures,
@@ -180,6 +181,69 @@ static void reject_noncanonical_output() {
     assert(!result && result.error.find("noncanonical u8 return") != std::string::npos);
     assert(sink.errors > 0); retire(b);
 }
+namespace s2fn {
+struct RuntimeBindingTestAccess {
+    static bool BothAcknowledged(RuntimeBinding& binding) {
+        if (!binding.provider_detached_.load(std::memory_order_acquire)) return false;
+        std::lock_guard<std::mutex> lock(binding.state_->mu);
+        for (const auto& item : binding.state_->owned) if (!item.second.complete) return false;
+        return true;
+    }
+};
+static std::function<void(RuntimeBinding*)> return_unlocked, invoke_returned;
+void TestReturnUnlocked(RuntimeBinding* binding) { if (return_unlocked) return_unlocked(binding); }
+void TestInvokeReturned(RuntimeBinding* binding) { if (invoke_returned) invoke_returned(binding); }
+}
+static void return_phase_lifetime(bool outbound) {
+    AbiSignature signature; signature.parameters = {{"u8", "bool"}}; signature.returns = {"u8", "bool"};
+    Sink sink;
+    auto binding = bind(signature, sink, reinterpret_cast<void*>(&identity<bool>));
+    sink.dispatch = [&](DispatchFrame& frame) { if (frame.phase == Phase::Pre) binding->BeginRemove(); };
+    std::mutex mutex; std::condition_variable condition; bool unlocked = false, resume = false, invoke_done = false, resume_invoke = false;
+    s2fn::return_unlocked = [&](RuntimeBinding* observed) {
+        assert(observed == binding.get());
+        std::unique_lock<std::mutex> lock(mutex); unlocked = true; condition.notify_all();
+        assert(condition.wait_for(lock, std::chrono::seconds(5), [&] { return resume; }));
+    };
+    s2fn::invoke_returned = [&](RuntimeBinding* observed) {
+        std::unique_lock<std::mutex> lock(mutex);
+        if (!outbound || !resume) return; // ignore the earlier MakeOriginal ffi_call
+        assert(observed == binding.get()); invoke_done = true; condition.notify_all();
+        assert(condition.wait_for(lock, std::chrono::seconds(5), [&] { return resume_invoke; }));
+    };
+    const int before_frees = frees; bool result = false;
+    // Enter from an independent native caller, not RuntimeBinding::Call: its
+    // lifetime must be protected even without an outbound call lease.
+    std::thread caller([&] {
+        if (outbound) {
+            auto input = NativeValue::From<std::uint8_t>(1);
+            const auto returned = binding->Call(&input, 1); assert(returned);
+            result = returned.value.Get<std::uint8_t>() == 1;
+        } else { auto volatile target = &identity<bool>; result = target(true); }
+    });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        assert(condition.wait_for(lock, std::chrono::seconds(5), [&] { return unlocked; }));
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!RuntimeBindingTestAccess::BothAcknowledged(*binding) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(RuntimeBindingTestAccess::BothAcknowledged(*binding));
+    assert(!binding->RemovalComplete()); // RED: provider acknowledgements are not a return-phase lease.
+    assert(frees == before_frees);
+    { std::lock_guard<std::mutex> lock(mutex); resume = true; } condition.notify_all();
+    if (outbound) {
+        std::unique_lock<std::mutex> lock(mutex);
+        assert(condition.wait_for(lock, std::chrono::seconds(5), [&] { return invoke_done; }));
+        assert(RuntimeBindingTestAccess::BothAcknowledged(*binding));
+        assert(!binding->RemovalComplete() && frees == before_frees);
+        resume_invoke = true; lock.unlock(); condition.notify_all();
+    }
+    caller.join(); s2fn::return_unlocked = {}; s2fn::invoke_returned = {};
+    assert(result && sink.errors == 0 && sink.pre == 1 && sink.post == 1);
+    retire(binding);
+    std::cout << "PASS return phase held across both provider acknowledgements; outbound=" << outbound << " caller finished before reclamation\n";
+}
 static void allocations_and_retirement() {
     Sink sink;
     for (int i = 0; i < 4; ++i) {
@@ -299,6 +363,9 @@ extern "C" int s2fn_probe_remove() {
 static void stock_tests() {
     std::cout << "phase=allocations-and-retirement\n";
     allocations_and_retirement();
+    std::cout << "phase=return-phase-lifetime\n";
+    return_phase_lifetime(false);
+    return_phase_lifetime(true);
     std::cout << "phase=noncanonical-output\n";
     reject_noncanonical_output();
     std::cout << "phase=queued-remove-and-destroy-refusal\n";

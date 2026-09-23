@@ -28,6 +28,7 @@ target_include_directories(engine_function_stock_provider PUBLIC "${KHOOK}/inclu
     PRIVATE "${SAFETYHOOK}/include" "${SAFETYHOOK}/zydis")
 target_link_libraries(engine_function_stock_provider PUBLIC pthread dl)
 add_library(engine_function_adapter STATIC EXCLUDE_FROM_ALL "${ROOT}/shim/src/engine_function_abi.cpp")
+target_compile_definitions(engine_function_adapter PUBLIC S2FN_TESTING)
 target_include_directories(engine_function_adapter PUBLIC "${ROOT}/shim/src")
 target_link_libraries(engine_function_adapter PUBLIC engine_function_stock_provider PRIVATE s2_libffi)
 # A real member target must not share executable pages with provider/std::function

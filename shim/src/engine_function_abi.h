@@ -70,6 +70,19 @@ public:
     bool RemovalComplete() const;
     const AbiInfo& Info() const { return info_; }
 private:
+#ifdef S2FN_TESTING
+    friend struct RuntimeBindingTestAccess;
+#endif
+    // Separate from provider removal acknowledgements: MakeReturn unlocks the
+    // capsule before the native callback/Call has finished accessing this owner.
+    struct Activity {
+        explicit Activity(RuntimeBinding& binding) : count(binding.active_entries_) {
+            count.fetch_add(1, std::memory_order_acq_rel);
+        }
+        ~Activity() { count.fetch_sub(1, std::memory_order_release); }
+        Activity(const Activity&) = delete;
+        std::atomic<std::size_t>& count;
+    };
     struct Closure {
         ffi_closure* allocation = nullptr;
         void* code = nullptr;
@@ -80,7 +93,7 @@ private:
     RuntimeBinding(AbiSignature s, AbiInfo info, DispatchSink& sink);
     static void ClosureEntry(ffi_cif*, void*, void**, void*) noexcept;
     static void OnKHookRemoved(KHook::HookID_t);
-    void Enter(Phase, void*, void**);
+    void Enter(Phase, void*, void**, const S2HookObserve&);
     Result<NativeValue> Invoke(void*, const NativeValue*, std::size_t);
     void Save(KHook::Action, NativeValue&, bool);
     void WriteResult(void*, const NativeValue&);
@@ -94,6 +107,7 @@ private:
     KHook::HookID_t hook_id_ = KHook::INVALID_HOOK;
     const void* target_ = nullptr;
     std::atomic<bool> provider_detached_{true};
+    std::atomic<std::size_t> active_entries_{0};
 };
 }
 #endif

@@ -116,7 +116,8 @@ S2HookReceipt RuntimeBinding::Configure(const void* address) {
 }
 void RuntimeBinding::BeginRemove() { S2CheckedBindingOps::BeginRemove(true); }
 bool RuntimeBinding::RemovalComplete() const {
-    return provider_detached_.load(std::memory_order_acquire) && S2CheckedBindingOps::RemovalComplete();
+    return provider_detached_.load(std::memory_order_acquire) && S2CheckedBindingOps::RemovalComplete() &&
+        active_entries_.load(std::memory_order_acquire) == 0;
 }
 void RuntimeBinding::OnKHookRemoved(KHook::HookID_t) {
     KHook::GetContext<RuntimeBinding>()->provider_detached_.store(true, std::memory_order_release);
@@ -132,6 +133,10 @@ Result<NativeValue> RuntimeBinding::Invoke(void* address, const NativeValue* arg
     alignas(16) std::array<std::uint8_t, 16> storage{};
     static_assert(sizeof(ffi_arg) <= 16);
     ffi_call(&cif_, FFI_FN(address), storage.data(), pointers.data());
+#ifdef S2FN_TESTING
+    extern void TestInvokeReturned(RuntimeBinding*);
+    TestInvokeReturned(this);
+#endif
     NativeValue result;
     if (signature_.returns.native == "u8") {
         ffi_arg wide{}; std::memcpy(&wide, storage.data(), sizeof(wide));
@@ -141,7 +146,10 @@ Result<NativeValue> RuntimeBinding::Invoke(void* address, const NativeValue* arg
     return {result, {}};
 }
 Result<NativeValue> RuntimeBinding::Call(const NativeValue* args, std::size_t argc) {
-    if (!target_ || Snapshot().state == S2HookState::Removing || RemovalComplete()) return {{}, "binding not callable"};
+    Activity activity(*this); // retained through ffi_call and result/error handling
+    const auto state = Snapshot().state;
+    if (!target_ || state == S2HookState::Removing || state == S2HookState::Removed || state == S2HookState::Failed)
+        return {{}, "binding not callable"};
     std::string callback_error;
     call_errors.emplace_back(this, &callback_error);
     struct Pop { ~Pop() { call_errors.pop_back(); } } pop;
@@ -167,12 +175,26 @@ void RuntimeBinding::WriteResult(void* result, const NativeValue& value) {
 }
 void RuntimeBinding::ClosureEntry(ffi_cif*, void* result, void** args, void* phase) noexcept {
     auto& c = *static_cast<Closure*>(phase);
-    c.binding->WriteResult(result, {});
-    try { c.binding->Enter(c.phase, result, args); }
-    catch (const std::exception& e) { NoteCallError(c.binding, e.what()); c.binding->sink_.Error(e.what()); }
-    catch (...) { NoteCallError(c.binding, "unknown native closure exception"); c.binding->sink_.Error("unknown native closure exception"); }
+    auto* binding = c.binding;
+    Activity activity(*binding); // last destructor: no binding access after its release
+    try {
+        auto observe = binding->ObserveOwned(binding->hook_id_);
+        binding->WriteResult(result, {});
+        binding->Enter(c.phase, result, args, observe);
+    }
+    catch (const std::exception& e) { NoteCallError(binding, e.what()); binding->sink_.Error(e.what()); }
+    catch (...) { NoteCallError(binding, "unknown native closure exception"); binding->sink_.Error("unknown native closure exception"); }
+    // Pin-specific reclamation boundary (libffi 5c1c4309, UNIX64 only):
+    // ffi64.c ffi_closure_unix64_inner reads all CIF/type data and caches flags
+    // BEFORE invoking us; after us it returns only that local flags value.
+    // unix64.S then reads the caller-stack result via shared static return code.
+    // Both allocated and static trampolines JUMP into that shared entry; neither
+    // the trampoline, phase, nor CIF is read/executed again after this callback.
+    // Thus the final activity release may retire per-binding storage, while the
+    // resident libffi/adapter DSO code and caller-owned result stack remain live.
+    // A different libffi pin/platform requires re-auditing this exact boundary.
 }
-void RuntimeBinding::Enter(Phase phase, void* result, void** args) {
+void RuntimeBinding::Enter(Phase phase, void* result, void** args, const S2HookObserve& observe) {
     // MakeReturn executes after the provider popped its context stack. Its phase
     // tag is retained with the closure, so it must not use GetContext here.
     if (phase == Phase::MakeReturn) {
@@ -183,10 +205,13 @@ void RuntimeBinding::Enter(Phase phase, void* result, void** args) {
             if (ptr) std::memcpy(effective.bytes.data(), ptr, width);
         }
         KHook::DestroyReturnValue(); // exactly once, including void and invalid bool
+#ifdef S2FN_TESTING
+        extern void TestReturnUnlocked(RuntimeBinding*);
+        TestReturnUnlocked(this);
+#endif
         if (!Canonical(signature_.returns.native, effective)) throw std::runtime_error("noncanonical u8 effective return");
         WriteResult(result, effective); return;
     }
-    auto observe = ObserveOwned(hook_id_);
     std::vector<NativeValue> values(argument_atoms_.size());
     for (std::size_t i = 0; i < values.size(); ++i) {
         std::memcpy(values[i].bytes.data(), args[i], Width(argument_atoms_[i]));

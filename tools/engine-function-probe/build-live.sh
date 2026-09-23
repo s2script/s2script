@@ -2,6 +2,15 @@
 # Run inside Bullseye. Builds consumers only; never builds/replaces Metamod.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+# Host CI may compile with a newer libc, but that output is never a deployable
+# bundle. The opt-in is valid only on the probe-only path.
+compile_only=0
+if [[ $# == 2 && $1 == --probe-only && $2 == --compile-only ]]; then
+  compile_only=1
+elif [[ $# != 0 && !( $# == 1 && $1 == --probe-only ) ]]; then
+  echo 'usage: build-live.sh [--probe-only [--compile-only]]' >&2
+  exit 2
+fi
 for name in S2_BUILD_JOBS CARGO_BUILD_JOBS; do
   value=${!name:-}
   [[ -z "$value" || "$value" =~ ^[1-9][0-9]*$ ]] || { echo "error: $name must be a positive integer" >&2; exit 2; }
@@ -38,11 +47,16 @@ objdump -T "$probe" > build/engine-function-live/link-evidence/symbols.txt
 if grep -E 'lib(ffi|ltdl)\.so|not found' build/engine-function-live/link-evidence/ldd.txt; then exit 1; fi
 if grep 'undefined symbol:' build/engine-function-live/link-evidence/ldd.txt | grep -v 'g_pMemAlloc'; then exit 1; fi
 if grep -E ' [TWBD] (ffi_|KHook::(CreateHook|RemoveHook)|safetyhook::)' build/engine-function-live/link-evidence/exports.txt; then exit 1; fi
-python3 - <<'PY'
+python3 - "$compile_only" <<'PY'
 import re
+import sys
 from pathlib import Path
 text=Path('build/engine-function-live/link-evidence/symbols.txt').read_text()
 versions=[tuple(map(int,v.split('.'))) for v in re.findall(r'GLIBC_([0-9.]+)',text)]
-if not versions or max(versions)>(2,31): raise SystemExit('probe exceeds GLIBC_2.31 or version evidence missing')
+if not versions: raise SystemExit('probe GLIBC version evidence missing')
 print('live probe GLIBC maximum:', '.'.join(map(str,max(versions))))
+if sys.argv[1]=='1':
+    print('host compile-only output: not a deployable bundle or live acceptance receipt')
+elif max(versions)>(2,31):
+    raise SystemExit('probe exceeds GLIBC_2.31')
 PY

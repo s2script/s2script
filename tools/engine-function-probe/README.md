@@ -41,7 +41,7 @@ Actual runtime output must be reviewed before advancing beyond Task 1.
 
 Build a clean committed checkout using `python3 tools/engine-function-probe/build.py`.
 It invokes the existing Bullseye sniper build and separately builds this companion,
-then embeds a fresh token/revision in the test `.s2sp`. The receipt at
+then embeds the same fresh token/revision in both test `.s2sp` archives. The receipt at
 `build/engine-function-live/engine-function-build.json` hashes the entire staged
 addon and is written only after both builds and repeated clean-source checks.
 The installed official Metamod host is neither built nor replaced.
@@ -54,18 +54,25 @@ S2FN_BUILD_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(32))') \
 bash tools/engine-function-probe/build-live.sh --probe-only
 ```
 
+Host CI alone adds `--compile-only` after `--probe-only`: it reports the host
+GLIBC requirement while retaining all link/export checks. That explicit mode
+produces no deployable receipt. The default command and full bundle still require
+GLIBC ≤ 2.31.
+
 The coordinator's operator deploys the bundle's addon files and test VDF while the
 server is stopped, preserving existing configs/data/plugins and the official host.
 Start it once; verify both s2script and engine_function_probe with `meta list`.
-The `@s2script/basecommands` plugin must be loaded for `sm plugins load/unload`.
+The `@s2script/basecommands` plugin and both `@example/engine-function-acceptance`
+and `@example/engine-function-witness` must be loaded. The driver uses
+`sm plugins load/unload` to exercise script retirement.
 The driver deliberately performs no deployment, native unload, or restart:
 
 ```sh
 bash scripts/test-engine-function-live.sh --docker docker/docker-compose.yml --rcon scripts/rcon.py
 ```
 
-The driver checks the mapped native inodes and file hashes against the source-bound
-bundle, creates one uniquely named bot, runs controlled compatibility signatures,
+The driver checks mapped native inodes, consumer hashes, and both installed fixture
+archive hashes against the source-bound bundle, creates one uniquely named bot, runs controlled compatibility signatures,
 novel mixed-scalar re-entry, recall and peer suppression, then unloads/reloads only
 the fixture `.s2sp`. Five runtime bindings retire through both completion signals
 before closure destruction; the independent peer remains resident. Raw RCON, server
@@ -76,6 +83,14 @@ Real CanAcquire uses the actual semantic resolver and deployed gamedata, with a
 verified owned-bot receiver and current index/serial. During one expressly armed
 `giveNamedItem`, its PRE makes one deliberate nested runtime Call with the unchanged
 borrowed arguments; outer/nested non-skipped completions and peer returns are observed.
+The independent idle witness owner records actual public `items.onCanAcquire` and
+`items.onCanAcquirePost` deliveries while the stimulus owner is busy. Numeric
+operation/invocation markers are scoped around the outer stimulus and deliberate
+nested Call, independent of native/public callback ordering. The judge requires
+one PRE and POST for each native invocation, matching generation, bot, item,
+method and result; absent, stale, ambiguous or wrong markers fail closed. The
+witness remains loaded across the stimulus owner's reload, then records its own
+teardown. Neither archive exposes raw pointers or serials.
 Those are **not** direct counts inside the engine body. Exact original-body counters
 are available in the controlled stock-provider targets. The fixture preserves outer
 policy/results and never retains argument pointers for replay.
@@ -88,3 +103,11 @@ still required; queued `Server.command` actions do not substitute for synchronou
 re-entry evidence.
 
 Judge rejection tests: `python3 tools/engine-function-probe/test_live.py`.
+
+Return-phase storage has an additional full-callback/outbound-Call activity lease.
+Both provider removal acknowledgements are necessary but not sufficient to collect
+while a return callback or ffi_call result handling is active. The pinned UNIX64
+libffi continuation reads only cached flags and caller-stack result bytes after
+ClosureEntry; it never returns through the allocation or reads its CIF/phase again.
+The real-provider regression pauses after provider unlock until both acknowledgements
+arrive, and separately pauses after outbound ffi_call, before allowing reclamation.

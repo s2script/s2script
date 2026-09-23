@@ -17,6 +17,7 @@ int real_depth = 0;
 bool real_used = false, inner_ok = false;
 std::int32_t inner_result = -1;
 std::vector<std::int32_t> real_peer_results, real_results;
+nlohmann::json real_invocations = nlohmann::json::array();
 std::string FileBytes(const std::string& path) {
     std::ifstream in(path,std::ios::binary);
     Require(static_cast<bool>(in),"cannot read deployed gamedata");
@@ -45,6 +46,19 @@ int CvarInt(const char* name) {
     if(!data || data->GetType()!=EConVarType_Int32) return -1;
     const auto offset=sizeof(ConVarData)-sizeof(CVValue_t)*MAX_SPLITSCREEN_CLIENTS;
     return reinterpret_cast<const CVValue_t*>(reinterpret_cast<const char*>(data)+offset)->m_i32Value;
+}
+struct ScopedMarker { CVValue_t* slot; int previous; ~ScopedMarker() { slot->m_i32Value=previous; } };
+ScopedMarker SetScope(int value) {
+    // Fixture-only synchronous marker, not a general CVar mutation API. No
+    // callbacks subscribe to this marker; public witnesses read it in scope.
+    const auto ref=cvars->FindConVar("s2_engine_fixture_scope",false);
+    Require(ref.IsValidRef(),"fixture scope marker unavailable");
+    auto* data=cvars->GetConVarData(ref);
+    Require(data && data->GetType()==EConVarType_Int32,"fixture scope marker type mismatch");
+    const auto offset=sizeof(ConVarData)-sizeof(CVValue_t)*MAX_SPLITSCREEN_CLIENTS;
+    auto* slot=reinterpret_cast<CVValue_t*>(reinterpret_cast<char*>(data)+offset);
+    const int previous=slot->m_i32Value; slot->m_i32Value=value;
+    return {slot,previous};
 }
 int Field(CSchemaClassInfo* info,const char* name,int depth=0) {
     if(!info || depth>32) return -1;
@@ -95,7 +109,7 @@ bool OwnedBot(void* services) {
 KHook::Return<std::int32_t> RealPeerPre(void* services,void*,std::int32_t,void*) {
     auto guard=acquire_peer->Observe();
     if(S2Hook_EnterDispatch(guard) && OwnedBot(services)) ++real_peer_pre;
-    return S2_Ignore(std::int32_t{0});
+    return {KHook::Action::Ignore, std::int32_t{0}};
 }
 KHook::Return<std::int32_t> RealPeerPost(void* services,void*,std::int32_t,void*) {
     auto guard=acquire_peer->Observe();
@@ -104,7 +118,7 @@ KHook::Return<std::int32_t> RealPeerPost(void* services,void*,std::int32_t,void*
         real_peer_results.push_back(KHook::GetCurrentReturn<std::int32_t>());
         if(KHook::WasOriginalFunctionSkipped()) Record("real-acquire-peer-skipped",false);
     }
-    return S2_Ignore(std::int32_t{0});
+    return {KHook::Action::Ignore, std::int32_t{0}};
 }
 void RealDispatch(DispatchFrame& f) {
     if(!OwnedBot(f.receiver.Get<void*>())) return;
@@ -112,16 +126,29 @@ void RealDispatch(DispatchFrame& f) {
         ++real_pre;
         if(real_depth || real_used) return;
         Require(GamedataUnchanged(),"gamedata changed before real engine stimulus");
-        real_used=true; ++real_depth;
+        Require(CvarInt("s2_engine_fixture_scope")==1 && CvarInt("s2_engine_fixture_operation")>0,"outer invocation marker unavailable");
+        real_used=true;
+        struct Depth { int& value; explicit Depth(int& v):value(v){++value;} ~Depth(){--value;} } depth(real_depth);
+        const auto marker=SetScope(2);
         // This is a deliberate nested Call during the one armed giveNamedItem,
         // never a replay: these unchanged pointers remain borrowed from this PRE.
         NativeValue args[]{f.receiver,f.arguments[0],f.arguments[1],f.arguments[2]};
         const auto nested=real_acquire->binding->Call(args,4);
-        --real_depth; inner_ok=static_cast<bool>(nested);
+        inner_ok=static_cast<bool>(nested);
         if(nested) inner_result=nested.value.Get<std::int32_t>();
     } else {
         ++real_post; if(!f.original_skipped) ++real_non_skipped;
         real_results.push_back(f.result.Get<std::int32_t>());
+        const int id=CvarInt("s2_engine_fixture_scope");
+        Require(id==1 || id==2,"native completion has no scoped invocation marker");
+        const int definition_offset=Offset("CEconItemView","m_iItemDefinitionIndex");
+        Require(definition_offset>=0 && f.arguments[0].Get<void*>(),"item definition identity unavailable");
+        std::uint16_t definition=0;
+        std::memcpy(&definition,static_cast<char*>(f.arguments[0].Get<void*>())+definition_offset,sizeof(definition));
+        real_invocations.push_back({{"id",id},{"operation",CvarInt("s2_engine_fixture_operation")},
+            {"slot",CvarInt("s2_engine_fixture_slot")},{"pawn",CvarInt("s2_engine_fixture_pawn")},
+            {"method",f.arguments[1].Get<std::int32_t>()},{"defIndex",definition},
+            {"result",f.result.Get<std::int32_t>()},{"skipped",f.original_skipped}});
         // Do not change arguments, policy or return value of either invocation.
     }
 }
@@ -161,13 +188,13 @@ void PrepareReal(ISmmAPI* api) {
     }
     AbiSignature signature; signature.receiver="entity"; signature.parameters={{"ptr"},{"i32"},{"ptr"}}; signature.returns={"i32"};
     real_acquire=&Bind(signature,reinterpret_cast<void*>(acquire_resolution.address)); real_acquire->sink.fn=RealDispatch;
-    real_pre=real_post=real_non_skipped=real_peer_pre=real_peer_post=0; real_depth=0; real_used=false; inner_ok=false; real_peer_results.clear(); real_results.clear();
+    real_pre=real_post=real_non_skipped=real_peer_pre=real_peer_post=0; real_depth=0; real_used=false; inner_ok=false; real_peer_results.clear(); real_results.clear(); real_invocations=nlohmann::json::array();
 }
 void CollectReal() {
     Require(owned.size()==5 && !retiring,"real acquisition generation is not armed");
     const bool pass=real_used && inner_ok && real_pre==2 && real_post==2 && real_non_skipped==2 && real_peer_pre==2 && real_peer_post==2 &&
         real_peer_results.size()==2 && real_peer_results==real_results && real_peer_results[0]==inner_result && real_acquire->sink.error.empty() && GamedataUnchanged();
-    Record("real-acquire",pass,"{\"outer_pre\":1,\"deliberate_nested_pre\":"+std::to_string(real_pre?real_pre-1:0)+
+    Record("real-acquire",pass,"{\"invocations\":"+real_invocations.dump()+",\"outer_pre\":"+std::to_string(real_used?1:0)+",\"deliberate_nested_pre\":"+std::to_string(real_pre?real_pre-1:0)+
         ",\"non_skipped_completions\":"+std::to_string(real_non_skipped)+",\"peer_pre\":"+std::to_string(real_peer_pre)+
         ",\"peer_post\":"+std::to_string(real_peer_post)+",\"nested_result\":"+std::to_string(inner_result)+
         ",\"outer_result\":"+std::to_string(real_results.size()==2?real_results[1]:-1)+",\"validation_receipt\":\""+Escape(acquire_resolution.validation_receipt)+"\",\"direct_body_counter\":false}","real-engine-acquire");
