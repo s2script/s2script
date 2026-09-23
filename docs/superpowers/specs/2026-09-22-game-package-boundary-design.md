@@ -217,10 +217,11 @@ S3 is accepted when:
   and release every ledgered receipt in the specified order;
 - a published capability matrix states which Source 2 interfaces, platforms, and ABI rows are truly
   supported and rejects everything else by name;
-- PR A's inherited shutdown SIGSEGV/139 and required human/client evidence are resolved before S3
-  implementation acceptance;
+- required human/client and peer evidence is present before S3 implementation acceptance;
 - full native and JavaScript CI passes, and the deployable sniper release with all default plugins
-  passes live CS2 map, reload, and ordinary-shutdown gates with the engine child's actual exit status.
+  passes live CS2 plugin, map, reload and callback-lifetime gates.
+
+The user explicitly made the known whole-process shutdown-only SIGSEGV/139 non-blocking. Preserve existing observations without calling them a pass, leave the server running after runtime tests and do not add quit loops or wait for exit 0. Callback retirement, stale-context/handle rejection and crashes during normal plugin use or reload remain required safety checks.
 
 ## PR ownership
 

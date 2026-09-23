@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Isolated implementation may start after source and official-stock-host baselines are recorded. The ordinary-shutdown SIGSEGV/139 reproduces with and without S2 on official 1467/1469 and is not established as an S2 regression; it remains an unresolved merge/release gate together with required human/client and peer-host evidence. A wrapper exit is not engine-child success, and this ruling may force later rework if the latent foundation bug proves relevant.
+- Isolated implementation may start after source and official-stock-host baselines are recorded. Required human/client, peer, map and script-reload evidence remains a merge/release gate. The user explicitly made the known whole-process shutdown-only SIGSEGV/139 non-blocking: preserve its existing evidence, do not relabel it as a pass, and do not add quit loops, shutdown investigation or a clean-exit wait. Native callback retirement and context/handle lifetime tests remain mandatory because they protect normal use and script reload.
 - Base the implementation on integrated S1 and S2 commits; inherited merge/release evidence may still be pending under the ruling above. S1 owns checked resolution and KHook receipts. S2 owns function normalization, ABI/projection support, policy registration, status/provenance, permissions, and subscription teardown.
 - Preserve `@s2script/cs2`, every public subpath/type, `Player`, `Pawn`, schema wrappers, damage, acquisition, HUD, base-plugin imports, null behavior, mutation/suppression, self-call behavior, unload behavior, and callback order.
 - The deployed manifest syntax is exactly `schemaVersion`, `packages[].id`, `match.engine`, `match.game`, `gamedataOwner`, `bootstrap.{path,sha256}`, and `gamedata.{path,sha256}`. Digests are lowercase 64-character SHA-256 strings.
@@ -90,7 +90,6 @@ Multiple contexts may register the same id/hash under different instance keys. R
 | `core/src/engine_functions/{package_adapter,policy,projection}.rs` | S2-owned package callback runner, exact adapter registry, and generic codec extension points | S3-ADAPT-05/06 |
 | `games/fixture-source2/*`, `core/src/game_packages/tests.rs` | Test-only second package and ordinary S2 function harness | S3-PORT-07 |
 | `scripts/check-game-package-boundary.sh` | Literal/inventory/manifest/source-layout regression gate | S3-GATE-08 |
-| `scripts/record-live-shutdown.sh` | Capture the engine child's actual pid/wait status independently of the container wrapper | S3-GATE-08 |
 | `docs/ARCHITECTURE.md`, `docs/BUILDING.md`, `docs/INSTALL.md` | Boundary, capability matrix, packaging and compatible owner override operations | S3-GATE-08 |
 
 ## Work-package DAG and exclusive ownership
@@ -128,14 +127,14 @@ git log -1 --format='%H %s'
 
 Write the exact PR A/S1/S2 commits and evidence paths into `baseline.md`; do not accept branch names or “latest” as dependencies.
 
-- [ ] **Step 2: Run the inherited shutdown and API baselines**
+- [ ] **Step 2: Run the inherited engine-free retirement and API baselines**
 
 ```bash
 bash scripts/test-khook-shutdown.sh
 cd packages/sdk && npm test
 ```
 
-Expected: the engine-free retirement fixture and SDK tests pass. Record official-host shutdown/real-client/peer evidence separately; unresolved SIGSEGV/139 keeps the PR draft and blocks merge/release, but does not block isolated implementation under the coordinator ruling above.
+Expected: the engine-free retirement fixture and SDK tests pass. Keep missing real-client/peer observations pending. Preserve existing known shutdown-only SIGSEGV/139 as diagnostic/non-blocking; this step does not run or require a server quit test.
 
 - [ ] **Step 3: Inventory hardcoded selection and bespoke capability paths**
 
@@ -727,7 +726,6 @@ git commit -m "test: prove game package selection without native literals"
 
 **Files:**
 - Create: `scripts/check-game-package-boundary.sh`
-- Create: `scripts/record-live-shutdown.sh`
 - Modify: `scripts/ci-native.sh`
 - Modify: `scripts/ci-js.sh`
 - Modify: `docs/ARCHITECTURE.md`
@@ -759,7 +757,7 @@ Expected initially: FAIL and name every remaining leak.
 
 - [ ] **Step 2: Document support without widening claims**
 
-Implement `record-live-shutdown.sh` against the pinned `joedwards32/cs2` image: record image id and `/entry.sh` hash, verify the wrapper's child `wait`/status-reporting code before starting, mark the log with a run id, issue RCON `quit`, and parse the wrapper's post-marker child wait status into JSON. Refuse success if the wrapper source cannot prove the reported status belongs to the engine child or if only Docker container state is available. Publish a table of actual Source 2 interface versions, `linuxsteamrt64`, bounded S2 ABI atoms/vector exclusions, registered projection codecs, and rejection messages. State that CS2 is the only live-supported package and the fixture is structural evidence only. Document `gamedataOwner` compatibility and override provenance.
+Publish a table of actual Source 2 interface versions, `linuxsteamrt64`, bounded S2 ABI atoms/vector exclusions, registered projection codecs, and rejection messages. State that CS2 is the only live-supported package and the fixture is structural evidence only. Document `gamedataOwner` compatibility and override provenance. Preserve existing shutdown-only 139 observations as non-blocking diagnostics, separate from actual startup/plugin/map/reload results; add no new shutdown recorder or quit gate.
 
 - [ ] **Step 3: Run targeted static gates**
 
@@ -783,7 +781,7 @@ Expected: both pass. A Docker-only absence is recorded as infrastructure-unavail
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/check-game-package-boundary.sh scripts/record-live-shutdown.sh scripts/ci-native.sh scripts/ci-js.sh docs
+git add scripts/check-game-package-boundary.sh scripts/ci-native.sh scripts/ci-js.sh docs
 git commit -m "docs: gate and publish the game package boundary"
 ```
 
@@ -824,13 +822,9 @@ Expected: stock host lists s2script; status names `@s2script/cs2`, owner `cs2`, 
 
 Exercise acquisition allow/deny/most-restrictive fold, HUD click callback-before-original order, damage pre mutation/block and post observation, ammo write, ordinary community function sharing a physical binding, nested calls, stale borrowed view, stale closure, map change, repeated `.s2sp` reload, unload requested inside callback, and another plugin remaining subscribed. Record actual callback order and statuses.
 
-- [ ] **Step 4: Prove ordinary shutdown with child status**
+- [ ] **Step 4: Verify the running server after the runtime cases**
 
-```bash
-bash scripts/record-live-shutdown.sh docs/superpowers/plans/game-package-boundary/shutdown.json
-```
-
-Expected: actual engine child exits `0`; no SIGSEGV/139, callback into disposed context, receipt leak, or resident-state use-after-free. Container success alone is insufficient.
+Record active default plugins, map and plugin error/crash observations after the runtime cases, and leave the server running. Callbacks into disposed contexts, receipt leaks, use-after-free, or crashes during plugin use/reload remain failures. Known whole-process shutdown-only 139 is diagnostic/non-blocking; do not add a quit test or manufacture a successful terminal record. A necessary deployment stop may incidentally supply child status without becoming a separate acceptance gate.
 
 - [ ] **Step 5: Mark acceptance only from complete evidence**
 
@@ -852,4 +846,4 @@ git commit -m "test: record game package live acceptance"
 - [ ] The plan distinguishes target from owner with both a core-owned CS2 target and a CS2-owned target test.
 - [ ] The plan removes package literals and bespoke damage/adapter paths only after behavior tests exist.
 - [ ] The fixture claim remains limited to the boundary and ordinary S2 function path.
-- [ ] Full CI, deployable sniper, live map/reload, and actual engine-child shutdown remain required acceptance gates.
+- [ ] Full CI, deployable sniper, live plugin/map/reload, callback lifetime and required client evidence remain acceptance gates; known whole-process shutdown-only 139 is diagnostic/non-blocking.
