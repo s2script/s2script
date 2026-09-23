@@ -39,6 +39,13 @@ bash scripts/test-client-bootstrap.sh
 echo "== test-hook-dispatch.sh (hook shape vocabulary, bypass latch, collapse) =="
 bash scripts/test-hook-dispatch.sh
 
+echo "== bounded engine function ABI / stock provider =="
+bash scripts/test-engine-function-abi.sh --stock-provider
+echo "== engine function busy-caller real V8 spike =="
+bash scripts/test-engine-function-v8-adapter.sh --spike --stock-provider
+echo "== engine function stock peer order fixtures =="
+bash scripts/test-engine-function-live.sh --fixture-only --orders peer-first,s2-first
+
 echo "== test-khook-binding.sh (checked KHook receipts, Observe/BeginRemove) =="
 bash scripts/test-khook-binding.sh
 
@@ -135,6 +142,14 @@ cmake -S shim -B build/shim -DCMAKE_BUILD_TYPE=Release \
   -DS2_CORE_LIB_DIR=debug \
   ${LAUNCHER[@]+"${LAUNCHER[@]}"}
 cmake --build build/shim -j
+
+echo "== libffi private static linkage =="
+if ldd build/shim/s2script.so | grep -i libffi; then
+  echo 'FAIL: libffi must not be a runtime dependency' >&2; exit 1
+fi
+if nm -D --defined-only build/shim/s2script.so | grep -E '[[:space:]]ffi_'; then
+  echo 'FAIL: private ffi symbols exported' >&2; exit 1
+fi
 
 echo "== ccommand_selftest (our CCommand tokenizer) =="
 cmake --build build/shim --target ccommand_selftest -j >/dev/null

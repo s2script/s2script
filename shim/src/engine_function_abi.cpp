@@ -37,6 +37,14 @@ Result<AbiInfo> Validate(const AbiSignature& s) {
     return {{fingerprint + ")", bytes.value}, {}};
 }
 #ifndef S2FN_VALIDATION_ONLY
+// Call-local error propagation, including synchronous nested target entry. The
+// sink also receives errors for engine-originated calls with no Call frame.
+static thread_local std::vector<std::pair<RuntimeBinding*, std::string*>> call_errors;
+static void NoteCallError(RuntimeBinding* binding, const char* error) {
+    for (auto i = call_errors.rbegin(); i != call_errors.rend(); ++i) {
+        if (i->first == binding) { if (i->second->empty()) *i->second = error; break; }
+    }
+}
 static ffi_type* Type(const std::string& atom) {
     if (atom == "void") return &ffi_type_void;
     if (atom == "u8") return &ffi_type_uint8;
@@ -134,7 +142,12 @@ Result<NativeValue> RuntimeBinding::Invoke(void* address, const NativeValue* arg
 }
 Result<NativeValue> RuntimeBinding::Call(const NativeValue* args, std::size_t argc) {
     if (!target_ || Snapshot().state == S2HookState::Removing || RemovalComplete()) return {{}, "binding not callable"};
-    return Invoke(const_cast<void*>(target_), args, argc);
+    std::string callback_error;
+    call_errors.emplace_back(this, &callback_error);
+    struct Pop { ~Pop() { call_errors.pop_back(); } } pop;
+    auto result = Invoke(const_cast<void*>(target_), args, argc);
+    if (!callback_error.empty()) return {{}, callback_error};
+    return result;
 }
 void RuntimeBinding::Save(KHook::Action action, NativeValue& value, bool original) {
     const auto width = Width(signature_.returns.native);
@@ -156,8 +169,8 @@ void RuntimeBinding::ClosureEntry(ffi_cif*, void* result, void** args, void* pha
     auto& c = *static_cast<Closure*>(phase);
     c.binding->WriteResult(result, {});
     try { c.binding->Enter(c.phase, result, args); }
-    catch (const std::exception& e) { c.binding->sink_.Error(e.what()); }
-    catch (...) { c.binding->sink_.Error("unknown native closure exception"); }
+    catch (const std::exception& e) { NoteCallError(c.binding, e.what()); c.binding->sink_.Error(e.what()); }
+    catch (...) { NoteCallError(c.binding, "unknown native closure exception"); c.binding->sink_.Error("unknown native closure exception"); }
 }
 void RuntimeBinding::Enter(Phase phase, void* result, void** args) {
     // MakeReturn executes after the provider popped its context stack. Its phase

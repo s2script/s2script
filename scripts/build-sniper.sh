@@ -6,10 +6,10 @@
 # note: no `pipefail` — the `objdump | ... | tail` glibc checks SIGPIPE harmlessly
 set -eu
 
-echo "=== install C/C++ build deps (g++ 10, binutils, curl) ==="
+echo "=== install C/C++ build deps (g++ 10, binutils, curl, pinned libffi autotools bootstrap) ==="
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq build-essential binutils curl >/dev/null
+apt-get install -y -qq build-essential binutils curl autoconf automake libtool >/dev/null
 
 # bullseye ships cmake 3.18; the shim needs >= 3.20. Drop in a newer cmake binary.
 echo "=== install cmake 3.28 (bullseye's 3.18 is too old) ==="

@@ -54,6 +54,7 @@ static void signatures() {
 #include <csignal>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <type_traits>
 // Allocation fault injection wraps only the allocator; all successful closures,
 // CIFs, provider detours and callbacks are the pinned real implementations.
 static int fail_allocation = -1, allocations = 0, frees = 0;
@@ -130,6 +131,53 @@ template<class T> static void atom(const char* name, T value) {
     assert(sink.pre == 1 && sink.post == 1 && sink.errors == 0);
     retire(b);
 }
+
+template<class T, std::size_t> struct Indexed { using type = T; };
+template<class T, std::size_t... I>
+__attribute__((noinline)) static T spill_target(typename Indexed<T, I>::type... args) {
+    ++original_calls; return ((args * static_cast<T>(I + 1)) + ...);
+}
+template<class T, std::size_t... I> static void spill_case(const char* name, std::index_sequence<I...>) {
+    AbiSignature s; s.returns = {name}; s.parameters.assign(sizeof...(I), {name});
+    std::vector<NativeValue> values{NativeValue::From<T>(static_cast<T>(I + 1))...};
+    Sink sink;
+    auto b = bind(s, sink, reinterpret_cast<void*>(&spill_target<T, I...>));
+    auto result = b->Call(values.data(), values.size());
+    assert(result && result.value.Get<T>() == static_cast<T>(11440)); // sum of squares 1..32
+    retire(b);
+}
+static void queued_remove_and_destroy_refusal() {
+    AbiSignature s; s.parameters = {{"i32"}}; s.returns = {"i32"}; Sink sink;
+    auto b = bind(s, sink, reinterpret_cast<void*>(&identity<std::int32_t>));
+    const pid_t child = fork(); assert(child >= 0);
+    if (child == 0) { std::set_terminate([] { _exit(86); }); b.reset(); _exit(0); }
+    int status = 0; assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 86);
+    // The native target's shared callback lock makes stock provider insertion
+    // queue deterministically. Remove before that queue can acquire the lock.
+    std::unique_ptr<S2CheckedFunction<std::int32_t, std::int32_t>> queued;
+    sink.dispatch = [&](DispatchFrame& f) {
+        if (f.phase != Phase::Pre) return;
+        using Checked = S2CheckedFunction<std::int32_t, std::int32_t>;
+        using Callback = KHook::Return<std::int32_t>(*)(std::int32_t);
+        queued = std::make_unique<Checked>(static_cast<Callback>(nullptr), static_cast<Callback>(nullptr));
+        auto receipt = queued->Configure(reinterpret_cast<void*>(&identity<std::int32_t>));
+        assert(receipt.Accepted() && receipt.state == S2HookState::Pending);
+        queued->BeginRemove(); queued->BeginRemove();
+        assert(queued->RemovalComplete());
+    };
+    auto value = NativeValue::From<std::int32_t>(17); auto r = b->Call(&value, 1);
+    assert(r && r.value.Get<std::int32_t>() == 17); queued.reset(); retire(b);
+}
+__attribute__((noinline)) static std::uint8_t noncanonical(std::uint8_t value) { ++original_calls; return value + 2; }
+static void reject_noncanonical_output() {
+    AbiSignature s; s.parameters = {{"u8", "bool"}}; s.returns = {"u8", "bool"}; Sink sink;
+    auto b = bind(s, sink, reinterpret_cast<void*>(&noncanonical));
+    auto input = NativeValue::From<std::uint8_t>(0);
+    auto result = b->Call(&input, 1);
+    assert(!result && result.error.find("noncanonical u8 return") != std::string::npos);
+    assert(sink.errors > 0); retire(b);
+}
 static void allocations_and_retirement() {
     Sink sink;
     for (int i = 0; i < 4; ++i) {
@@ -201,8 +249,45 @@ static void receiver_spills_novel() {
     NativeValue nv[] = {NativeValue::From<std::uint32_t>(2), NativeValue::From<float>(1.25f), NativeValue::From(&object), NativeValue::From<std::uint64_t>(4)};
     auto nr = n->Call(nv, 4); assert(nr && nr.value.Get<float>() == 10.25f); retire(n);
 }
+
+#ifdef S2FN_NO_MAIN
+using BridgeCallback = int (*)(int, std::uint64_t, std::int32_t, std::int32_t*);
+static BridgeCallback bridge_callback = nullptr;
+static thread_local std::uint64_t bridge_owner = 0;
+static Sink bridge_sink;
+static std::unique_ptr<RuntimeBinding> bridge_binding;
+extern "C" int s2fn_probe_create(BridgeCallback callback) {
+    bridge_callback = callback;
+    AbiSignature s; s.parameters = {{"i32"}}; s.returns = {"i32"};
+    bridge_sink.dispatch = [](DispatchFrame& f) {
+        std::int32_t output = f.result.Get<std::int32_t>();
+        const auto action = bridge_callback(f.phase == Phase::Pre ? 0 : 1, bridge_owner,
+            f.arguments[0].Get<std::int32_t>(), &output);
+        if (f.phase == Phase::Pre && action == 2) {
+            f.action = KHook::Action::Supersede; f.result = NativeValue::From(output);
+        }
+    };
+    bridge_binding = bind(s, bridge_sink, reinterpret_cast<void*>(&identity<std::int32_t>));
+    return bridge_binding ? 1 : 0;
+}
+extern "C" int s2fn_probe_call(std::uint64_t owner, std::int32_t input, std::int32_t* output) {
+    const auto old = bridge_owner; bridge_owner = owner;
+    auto value = NativeValue::From(input); auto result = bridge_binding->Call(&value, 1);
+    bridge_owner = old;
+    if (!result || bridge_sink.errors) return 0;
+    *output = result.value.Get<std::int32_t>(); return 1;
+}
+extern "C" int s2fn_probe_remove() {
+    retire(bridge_binding); KHook::Shutdown(); return allocations == frees ? 1 : 0;
+}
+#endif
 static void stock_tests() {
     allocations_and_retirement();
+    reject_noncanonical_output();
+    queued_remove_and_destroy_refusal();
+    spill_case<std::int64_t>("i64", std::make_index_sequence<32>{});
+    spill_case<double>("f64", std::make_index_sequence<32>{});
+    atom<bool>("u8", false); atom<bool>("u8", true);
     atom<std::uint8_t>("u8", 0); atom<std::uint8_t>("u8", 1);
     atom<std::int32_t>("i32", -123456); atom<std::uint32_t>("u32", 0xf2345678);
     atom<std::int64_t>("i64", -0x123456781234LL); atom<std::uint64_t>("u64", 0xf123456789abcdefULL);
@@ -213,10 +298,16 @@ static void stock_tests() {
 }
 #endif
 #ifndef S2FN_NO_MAIN
-int main() {
+int main(int argc, char** argv) {
+#ifdef S2FN_VALIDATION_ONLY
+    (void)argc; (void)argv;
+#endif
     signatures();
 #ifndef S2FN_VALIDATION_ONLY
-    stock_tests(); KHook::Shutdown();
+    if (argc == 2 && std::string(argv[1]) == "--peers") {
+        extern void s2fn_peer_fixtures(); s2fn_peer_fixtures();
+    } else stock_tests();
+    KHook::Shutdown();
 #endif
 }
 #endif

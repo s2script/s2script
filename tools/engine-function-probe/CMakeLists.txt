@@ -29,7 +29,7 @@ target_link_libraries(engine_function_adapter PUBLIC engine_function_stock_provi
 # private dependency's headers; it is never a runtime DT_NEEDED dependency.
 foreach(target engine_function_abi_test engine_function_v8_bridge)
     if(target STREQUAL "engine_function_abi_test")
-        add_executable(${target} EXCLUDE_FROM_ALL "${ROOT}/shim/tests/engine_function_abi_test.cpp")
+        add_executable(${target} EXCLUDE_FROM_ALL "${ROOT}/shim/tests/engine_function_abi_test.cpp" plugin.cpp)
     else()
         add_library(${target} SHARED EXCLUDE_FROM_ALL "${ROOT}/shim/tests/engine_function_abi_test.cpp")
         target_compile_definitions(${target} PRIVATE S2FN_NO_MAIN)

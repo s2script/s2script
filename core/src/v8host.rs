@@ -6718,3 +6718,7 @@ pub(crate) fn register_process_singletons() {
 /// The in-isolate test harness. `pub(crate)` so feature-module tests can reuse it while
 /// preserving the established `v8host::frame_tests::*` module and test names.
 pub(crate) mod frame_tests;
+
+#[cfg(test)]
+#[path = "v8host/engine_function_adapter_v8.rs"]
+mod engine_function_adapter_v8;
