@@ -27,7 +27,10 @@ set(AMTL   ${MMS}/third_party/amtl)
 # -DS2_CORE_LIB_DIR=debug at configure time so the shim links the matching artifact.
 set(S2_CORE_LIB_DIR "release" CACHE STRING "cargo profile dir the core .so was built into (release|debug)")
 
+include(cmake/Libffi.cmake)
+
 add_library(s2script SHARED
+    src/engine_function_abi.cpp
     src/s2script_mm.cpp
     src/config_ops.cpp
     # Entity lifecycle listeners slice: the isolated IEntityListener TU (mirrors ekv.cpp's isolation
@@ -287,3 +290,7 @@ set_target_properties(s2script PROPERTIES
     INSTALL_RPATH "$ORIGIN"
     BUILD_WITH_INSTALL_RPATH TRUE
 )
+
+# libffi remains private; all interception still uses Metamod's single provider.
+target_link_libraries(s2script PRIVATE s2_libffi)
+target_link_options(s2script PRIVATE -Wl,--exclude-libs,ALL)

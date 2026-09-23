@@ -1,0 +1,222 @@
+// Real bounded ABI tests. The portable mode checks normalization only; it is never
+// reported as a CIF, stock-provider, V8, or live-server proof.
+#include "engine_function_abi.h"
+#include <cassert>
+#include <iostream>
+using namespace s2fn;
+static void signatures() {
+    AbiSignature s;
+    s.parameters = {{"i32"}, {"f64"}, {"ptr"}};
+    s.returns = {"u8", "bool"};
+    auto info = Validate(s);
+    assert(info && info.value.fingerprint == "linux-x86_64-sysv:none:u8(i32,f64,ptr)");
+    assert(info.value.stack_bytes == 128);
+    auto different = s; different.receiver = "entity";
+    assert(Validate(different).value.fingerprint != info.value.fingerprint);
+    different = s; different.returns = {"u32"};
+    assert(Validate(different).value.fingerprint != info.value.fingerprint);
+    different = s; std::swap(different.parameters[0], different.parameters[1]);
+    assert(Validate(different).value.fingerprint != info.value.fingerprint);
+    different = s; different.parameters[0] = {"i64"};
+    assert(Validate(different).value.fingerprint != info.value.fingerprint);
+    for (const auto& atom : {"u8", "i32", "u32", "i64", "u64", "f32", "f64", "ptr"}) {
+        AbiSignature vector; vector.parameters.assign(32, {atom, std::string(atom) == "u8" ? "bool" : ""});
+        assert(Validate(vector));
+    }
+    auto reject = [](AbiSignature bad, const char* feature) {
+        auto r = Validate(bad); assert(!r); assert(r.error.find(feature) != std::string::npos);
+    };
+    different = s; different.platform = "windows"; different.receiver = "struct"; reject(different, "platform: windows");
+    different = s; different.receiver = "struct"; reject(different, "receiver: struct");
+    different = s; different.varargs = true; reject(different, "varargs");
+    different = s; different.returns = {"aggregate"}; reject(different, "return: aggregate");
+    different = s; different.parameters[0] = {"i16"}; reject(different, "parameter[0]: i16");
+    different = s; different.parameters[0] = {"u8", "integer"}; reject(different, "u8 projection: integer");
+    different = s; different.parameters.assign(33, {"i32"}); reject(different, "parameter count");
+    s = {}; s.parameters.assign(6, {"i64"}); assert(Validate(s).value.stack_bytes == 128);
+    s.parameters.assign(32, {"i64"}); assert(Validate(s).value.stack_bytes == 208);
+    s.receiver = "entity"; assert(Validate(s).value.stack_bytes == 224);
+    s = {}; s.parameters.assign(32, {"f64"}); assert(Validate(s).value.stack_bytes == 192);
+    s = {}; for (int i = 0; i < 16; ++i) { s.parameters.push_back({"f64"}); s.parameters.push_back({"i64"}); }
+    assert(Validate(s).value.stack_bytes == 144);
+    assert(!StackCopyBytes(33)); // 264 bytes exceeds the independent stack budget.
+    assert(StackCopyBytes(32).value == 256);
+    auto b = NativeValue::From<std::uint8_t>(1); assert(b.Get<std::uint8_t>() == 1);
+    assert(b.bytes[1] == 0 && b.bytes[7] == 0);
+    std::cout << "PASS bounded signatures, named refusals, SysV stack-copy bounds\n";
+}
+
+#ifndef S2FN_VALIDATION_ONLY
+#include <atomic>
+#include <chrono>
+#include <thread>
+#include <functional>
+#include <csignal>
+#include <sys/wait.h>
+#include <unistd.h>
+// Allocation fault injection wraps only the allocator; all successful closures,
+// CIFs, provider detours and callbacks are the pinned real implementations.
+static int fail_allocation = -1, allocations = 0, frees = 0;
+extern "C" void* __real_ffi_closure_alloc(std::size_t, void**);
+extern "C" void __real_ffi_closure_free(void*);
+extern "C" void* __wrap_ffi_closure_alloc(std::size_t n, void** code) {
+    if (fail_allocation == 0) return nullptr;
+    if (fail_allocation > 0) --fail_allocation;
+    void* result = __real_ffi_closure_alloc(n, code); if (result) ++allocations; return result;
+}
+extern "C" void __wrap_ffi_closure_free(void* p) { if (p) ++frees; __real_ffi_closure_free(p); }
+struct Sink : DispatchSink {
+    std::function<void(DispatchFrame&)> dispatch;
+    int pre = 0, post = 0, errors = 0;
+    std::string last_error;
+    void Dispatch(DispatchFrame& f) override {
+        if (f.phase == Phase::Pre) ++pre; else ++post;
+        if (dispatch) dispatch(f);
+    }
+    void Error(const char* s) noexcept override { ++errors; last_error = s; }
+};
+static void retire(std::unique_ptr<RuntimeBinding>& b) {
+    const int prior = frees;
+    b->BeginRemove(); b->BeginRemove();
+    assert(frees == prior); // OnKHookRemoved never frees the closure or binding.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!b->RemovalComplete() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(b->RemovalComplete()); assert(S2Hook_DrainRetirement());
+    b.reset(); assert(frees == prior + 4);
+}
+// These are compiler-authored native targets, never signature-specific adapters.
+// Volatile state and noinline keep an actual function entry for SafetyHook.
+static volatile std::uint64_t original_calls = 0;
+template<class T> __attribute__((noinline)) T identity(T value) {
+    ++original_calls; return value;
+}
+__attribute__((noinline)) static void void_target(std::int32_t value) { original_calls += value; }
+struct Receiver {
+    std::int32_t base;
+    __attribute__((noinline)) std::int32_t call(std::int32_t value) { ++original_calls; return base + value; }
+};
+// Seven GP plus nine SSE values: the GP and SSE exhaustion points differ.
+__attribute__((noinline)) static double mixed(
+    std::int64_t a, double b, std::int64_t c, double d, std::int64_t e, double f,
+    std::int64_t g, double h, std::int64_t i, double j, std::int64_t k, double l,
+    std::int64_t m, double n, double o, double p, double q) {
+    ++original_calls;
+    return a + b*2 + c*3 + d*4 + e*5 + f*6 + g*7 + h*8 + i*9 + j*10 + k*11 + l*12 + m*13 + n*14 + o*15 + p*16 + q*17;
+}
+// Authored independently after the runtime adapter: no change to Type/Enter.
+__attribute__((noinline)) static float novel(std::uint32_t a, float b, void* p, std::uint64_t c) {
+    ++original_calls; return a + b + (p ? 3.0f : 0.0f) + c;
+}
+static std::unique_ptr<RuntimeBinding> bind(AbiSignature s, Sink& sink, const void* target) {
+    auto r = RuntimeBinding::Create(std::move(s), sink); assert(r);
+    std::cout << "vector=" << r.value->Info().fingerprint << " stack=" << r.value->Info().stack_bytes << " closures=4\n";
+    assert(r.value->Configure(target).Accepted()); return std::move(r.value);
+}
+template<class T> static void atom(const char* name, T value) {
+    AbiSignature s; s.parameters = {{name, std::string(name) == "u8" ? "bool" : ""}}; s.returns = s.parameters[0];
+    Sink sink; sink.dispatch = [&](DispatchFrame& f) {
+        assert(f.arguments[0].Get<T>() == value);
+        if (f.phase == Phase::Post) assert(f.result.Get<T>() == value);
+    };
+    auto b = bind(s, sink, reinterpret_cast<void*>(&identity<T>));
+    NativeValue v = NativeValue::From(value); std::fill(v.bytes.begin()+sizeof(T), v.bytes.end(), 0xa5);
+    auto r = b->Call(&v, 1); assert(r); assert(r.value.Get<T>() == value);
+    if (std::string(name) == "u8") {
+        for (std::size_t i = 1; i < r.value.bytes.size(); ++i) assert(r.value.bytes[i] == 0);
+        NativeValue invalid = NativeValue::From<std::uint8_t>(2);
+        assert(!b->Call(&invalid, 1));
+    }
+    assert(sink.pre == 1 && sink.post == 1 && sink.errors == 0);
+    retire(b);
+}
+static void allocations_and_retirement() {
+    Sink sink;
+    for (int i = 0; i < 4; ++i) {
+        const int before_a = allocations, before_f = frees;
+        fail_allocation = i;
+        auto r = RuntimeBinding::Create({}, sink); assert(!r);
+        assert(r.error == "ffi_closure_alloc phase " + std::to_string(i));
+        assert(allocations - before_a == i && frees - before_f == i);
+    }
+    fail_allocation = -1;
+    auto r = RuntimeBinding::Create({}, sink); assert(r);
+    assert(r.value->RemovalComplete()); // partial construction never needs provider removal
+    r.value.reset(); assert(allocations == frees);
+}
+static void recall_suppression_nested() {
+    AbiSignature s; s.parameters = {{"i32"}}; s.returns = {"i32"};
+    Sink sink; int mode = 0, depth = 0; RuntimeBinding* current = nullptr;
+    sink.dispatch = [&](DispatchFrame& f) {
+        if (f.phase == Phase::Pre) {
+            assert(!S2Hook_NoActiveDispatch());
+            if (mode == 1) { f.arguments[0] = NativeValue::From<std::int32_t>(41); f.changed = true; }
+            if (mode == 2) { f.action = KHook::Action::Supersede; f.result = NativeValue::From<std::int32_t>(79); }
+            if (mode == 3 && !depth) {
+                ++depth; auto nested = NativeValue::From<std::int32_t>(13);
+                auto r = current->Call(&nested, 1); assert(r && r.value.Get<std::int32_t>() == 13); --depth;
+            }
+            if (mode == 4) { current->BeginRemove(); assert(!current->RemovalComplete()); }
+        } else {
+            assert(f.original_skipped == (mode == 2));
+            if (mode == 2) assert(f.result.Get<std::int32_t>() == 79);
+        }
+    };
+    auto b = bind(s, sink, reinterpret_cast<void*>(&identity<std::int32_t>)); current = b.get();
+    auto input = NativeValue::From<std::int32_t>(8);
+    mode = 1; auto mutated = b->Call(&input, 1); assert(mutated && mutated.value.Get<std::int32_t>() == 41);
+    const auto before = original_calls;
+    mode = 2; auto suppressed = b->Call(&input, 1); assert(suppressed && suppressed.value.Get<std::int32_t>() == 79);
+    assert(original_calls == before);
+    mode = 3; auto nested = b->Call(&input, 1); assert(nested && nested.value.Get<std::int32_t>() == 8);
+    assert(original_calls == before + 2);
+    mode = 4; assert(b->Call(&input, 1)); assert(sink.errors == 0);
+    retire(b);
+    s.returns = {"void"}; Sink vs; vs.dispatch = [](DispatchFrame& f) {
+        if (f.phase == Phase::Pre) f.action = KHook::Action::Supersede;
+        else assert(f.original_skipped);
+    };
+    auto v = bind(s, vs, reinterpret_cast<void*>(&void_target));
+    auto old = original_calls; assert(v->Call(&input, 1)); assert(original_calls == old); retire(v);
+}
+static void receiver_spills_novel() {
+    AbiSignature s; s.receiver = "entity"; s.parameters = {{"i32"}}; s.returns = {"i32"};
+    Receiver object{12}; Sink sink;
+    sink.dispatch = [&](DispatchFrame& f) { assert(f.receiver.Get<void*>() == &object); };
+    auto b = bind(s, sink, KHook::ExtractMFP(&Receiver::call));
+    NativeValue args[] = {NativeValue::From(&object), NativeValue::From<std::int32_t>(5)};
+    auto result = b->Call(args, 2); assert(result && result.value.Get<std::int32_t>() == 17); retire(b);
+    s = {}; s.returns = {"f64"};
+    std::vector<NativeValue> values;
+    for (int x = 1; x <= 14; ++x) {
+        s.parameters.push_back({x % 2 ? "i64" : "f64"});
+        values.push_back(x % 2 ? NativeValue::From<std::int64_t>(x) : NativeValue::From<double>(x));
+    }
+    for (int x = 15; x <= 17; ++x) { s.parameters.push_back({"f64"}); values.push_back(NativeValue::From<double>(x)); }
+    Sink mixed_sink;
+    auto m = bind(s, mixed_sink, reinterpret_cast<void*>(&mixed));
+    result = m->Call(values.data(), values.size()); assert(result && result.value.Get<double>() == 1785.0); retire(m);
+    s = {}; s.returns = {"f32"}; s.parameters = {{"u32"}, {"f32"}, {"ptr"}, {"u64"}};
+    Sink ns; auto n = bind(s, ns, reinterpret_cast<void*>(&novel));
+    NativeValue nv[] = {NativeValue::From<std::uint32_t>(2), NativeValue::From<float>(1.25f), NativeValue::From(&object), NativeValue::From<std::uint64_t>(4)};
+    auto nr = n->Call(nv, 4); assert(nr && nr.value.Get<float>() == 10.25f); retire(n);
+}
+static void stock_tests() {
+    allocations_and_retirement();
+    atom<std::uint8_t>("u8", 0); atom<std::uint8_t>("u8", 1);
+    atom<std::int32_t>("i32", -123456); atom<std::uint32_t>("u32", 0xf2345678);
+    atom<std::int64_t>("i64", -0x123456781234LL); atom<std::uint64_t>("u64", 0xf123456789abcdefULL);
+    atom<float>("f32", 1.25f); atom<double>("f64", -77.125); int pointer = 1; atom<void*>("ptr", &pointer);
+    recall_suppression_nested(); receiver_spills_novel();
+    assert(allocations == frees && S2Hook_RetirementPending() == 0);
+    std::cout << "PASS stock provider atoms/member/mixed/novel/recall/suppression/reentry/removal closures=" << frees << "\n";
+}
+#endif
+#ifndef S2FN_NO_MAIN
+int main() {
+    signatures();
+#ifndef S2FN_VALIDATION_ONLY
+    stock_tests(); KHook::Shutdown();
+#endif
+}
+#endif
