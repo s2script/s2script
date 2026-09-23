@@ -1,4 +1,6 @@
 import ts from "typescript";
+import { loadPluginGamedata } from "../gamedata/load.ts";
+import { generateGamedataTypes, generateHookTypes } from "../gamedata/gen-types.ts";
 import {
   extractContract,
   checkInteropCalls,
@@ -47,17 +49,14 @@ function localDeclarationFiles(pluginDir: string): string[] {
     .map((f) => join(srcDir, f));
 }
 
-/** The build-generated gamedata augmentations (`.s2script/gamedata.d.ts`, `.s2script/hooks.d.ts`),
- *  when `s2s build` wrote them. They augment `@s2script/sdk/unsafe`'s `EngineCalls` / `EngineHooks`,
- *  and a module augmentation nothing imports is invisible to the program — so they MUST be typecheck
- *  ROOTs or every declared `Engine.call(name)` / `Engine.hook(name)` fails as `never`. */
-function generatedDeclarationFiles(pluginDir: string): string[] {
-  const out: string[] = [];
-  for (const name of ["gamedata.d.ts", "hooks.d.ts"]) {
-    const p = join(pluginDir, ".s2script", name);
-    if (existsSync(p)) out.push(p);
-  }
-  return out;
+/** Derive owned declarations from current validated source, never a stale build artifact.
+ * Virtual files keep standalone typecheck non-emitting, including a clean checkout. */
+function gamedataDeclarations(pluginDir: string, pkg: Parameters<typeof loadPluginGamedata>[1]): Map<string, string> {
+  const data = loadPluginGamedata(pluginDir, pkg) ?? {};
+  return new Map([
+    [join(pluginDir, ".s2script", "gamedata.d.ts"), generateGamedataTypes(data)],
+    [join(pluginDir, ".s2script", "hooks.d.ts"), generateHookTypes(data)],
+  ]);
 }
 
 /**
@@ -289,12 +288,14 @@ export function typecheckPlugin(
     },
   };
 
+  const virtualDeclarations = gamedataDeclarations(absDir, pkg);
+
   // Globals live at the consolidated path (the legacy packages/globals/ dir is deleted).
   const rootNames = [
     entry,
     join(packagesDir, "sdk", "globals.d.ts"),
     ...localDts,
-    ...generatedDeclarationFiles(absDir),
+    ...virtualDeclarations.keys(),
     ...gamePackageDeclarationFiles(pkg, packagesDir),
   ];
   const tmp = mkdtempSync(join(tmpdir(), "s2tc-"));
@@ -352,7 +353,19 @@ export function typecheckPlugin(
       );
       rootNames.push(stub);
     }
-    const program = ts.createProgram(rootNames, options);
+    const host = ts.createCompilerHost(options);
+    const originalReadFile = host.readFile.bind(host);
+    const originalFileExists = host.fileExists.bind(host);
+    host.readFile = (file) => virtualDeclarations.get(resolve(file)) ?? originalReadFile(file);
+    host.fileExists = (file) => virtualDeclarations.has(resolve(file)) || originalFileExists(file);
+    const originalGetSourceFile = host.getSourceFile.bind(host);
+    host.getSourceFile = (file, languageVersion, onError, shouldCreateNewSourceFile) => {
+      const text = virtualDeclarations.get(resolve(file));
+      return text === undefined
+        ? originalGetSourceFile(file, languageVersion, onError, shouldCreateNewSourceFile)
+        : ts.createSourceFile(file, text, languageVersion);
+    };
+    const program = ts.createProgram(rootNames, options, host);
     const diags = [
       ...program.getSyntacticDiagnostics(),
       ...program.getSemanticDiagnostics(),

@@ -12,6 +12,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { unzipSync } from "fflate";
+import { typecheckPlugin } from "../src/typecheck/typecheck.ts";
 import { buildPlugin } from "../src/build.ts";
 
 function scaffold(gamedata, permissions, body) {
@@ -192,4 +193,31 @@ test("a .json extension is accepted too", async () => {
   writeFileSync(join(dir, "package.json"), JSON.stringify(pkg));
   writeFileSync(join(dir, "gamedata", "gd.gamedata.json"), JSON.stringify(GD));
   await buildPlugin(dir);
+});
+
+for (const [kind, data, permissions, body] of [
+  ["call", GD, ["engine:calls"], OK_BODY],
+  ["hook", HOOK_GD, ["engine:hooks"], HOOK_BODY],
+]) {
+  test(`standalone typecheck derives ${kind} types on a clean checkout without writing declarations`, () => {
+    const dir = scaffold(data, permissions, body);
+    const result = typecheckPlugin(dir);
+    assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
+    assert.equal(existsSync(join(dir, ".s2script", "gamedata.d.ts")), false);
+    assert.equal(existsSync(join(dir, ".s2script", "hooks.d.ts")), false);
+  });
+  test(`standalone typecheck ignores stale ${kind} declarations after gamedata changes or removal`, async () => {
+    const dir = scaffold(data, permissions, body);
+    await buildPlugin(dir);
+    writeFileSync(join(dir, "gamedata", "gd.gamedata.jsonc"), "{}");
+    assert.equal(typecheckPlugin(dir).ok, false);
+    const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+    delete pkg.s2script.gamedata;
+    writeFileSync(join(dir, "package.json"), JSON.stringify(pkg));
+    assert.equal(typecheckPlugin(dir).ok, false);
+  });
+}
+test("standalone custom-gamedata typecheck validates permissions before generating types", () => {
+  const dir = scaffold(HOOK_GD, [], HOOK_BODY);
+  assert.throws(() => typecheckPlugin(dir), /engine:hooks/);
 });
