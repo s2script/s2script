@@ -292,6 +292,8 @@ exposing addresses. S2 promises preservation only for failures found during pre-
 
 ## Acceptance criteria
 
+Acceptance focuses on startup, plugin use, map transitions, script reload and callback lifetime. The user explicitly made the known whole-process shutdown-only SIGSEGV/139 non-blocking. Preserve existing evidence truthfully, leave the server running after runtime tests and do not add quit loops or wait for exit 0. This does not weaken stock-provider removal-before-free tests or waive missing runtime/client observations.
+
 S2 is accepted when:
 
 - a new plugin declares a typed call and pre/post hook in only `gamedata/functions.jsonc`;
