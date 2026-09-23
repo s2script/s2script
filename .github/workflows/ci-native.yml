@@ -104,5 +104,11 @@ jobs:
           # push until it merges (9 such PRs in the last 60 days).
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: hendrikmuhs/ccache-action@v1
+      # libffi configure.ac uses LT_SYS_SYMBOL_USCORE from libltdl-dev's
+      # ltdl.m4. This is a bootstrap dependency, not a linked runtime library.
+      - name: install pinned libffi bootstrap dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends autoconf automake libtool libltdl-dev
       - name: native gate suite
         run: bash scripts/ci-native.sh
