@@ -10,6 +10,11 @@ get_filename_component(ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 set(KHOOK "${ROOT}/third_party/metamod-source/third_party/khook")
 set(SAFETYHOOK "${KHOOK}/third_party/safetyhook")
 include("${ROOT}/shim/cmake/Libffi.cmake")
+option(S2FN_LIVE_PLUGIN "Build the resident Metamod consumer instead of the standalone test provider" OFF)
+if(S2FN_LIVE_PLUGIN)
+    include(live.cmake)
+    return()
+endif()
 # Exact upstream AMBuilder source inventory, including its checked-in Zydis.
 # EXCLUDE_FROM_ALL and KHOOK_STANDALONE apply only inside this test project.
 add_library(engine_function_stock_provider STATIC EXCLUDE_FROM_ALL
