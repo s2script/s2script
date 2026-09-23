@@ -939,6 +939,45 @@ class ArtifactIdentityRegressionTests(unittest.TestCase):
 
 
 class SuiteBoundaryTests(unittest.TestCase):
+    def test_bc_collect_captures_native_gamedata_before_and_after(self):
+        for suite in ("B", "C"):
+            with self.subTest(suite=suite), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                mapped = root / "gamedata"
+                file = mapped / "cs2/master.gamedata.jsonc"
+                file.parent.mkdir(parents=True)
+                data = b'{"test": true}'
+                file.write_bytes(data)
+                run = write_run(root / "run", [], dict(IDENTITY, suite=suite))
+                native = dict(kind="khook-gamedata", run_id=IDENTITY["run_id"],
+                              artifact_identity=IDENTITY["runtime_identity"]["artifact_identity"],
+                              prepared=True, unchanged=True, addon_root="/installed", files=[dict(
+                                  path="/installed/gamedata/cs2/master.gamedata.jsonc", size=len(data),
+                                  fingerprint_algorithm="fnv1a64-diagnostic", fingerprint=ka._fnv1a64(data))])
+                calls = []
+
+                def send(command):
+                    calls.append(command)
+                    return json.dumps(native) if command.split()[1] == "gamedata" else ""
+
+                result = ka.collect_run(run, suite=suite, gamedata_root=str(mapped),
+                                        rcon_send=send, max_attempts=1)
+                self.assertEqual(result.exit_code, 1, result.messages)
+                self.assertIn("missing case records", " ".join(result.messages))
+                self.assertEqual(calls, [
+                    f"s2_khook_probe gamedata {IDENTITY['run_id']} {suite}",
+                    f"s2_khook_probe collect {IDENTITY['run_id']} {suite}",
+                    f"s2_khook_accept collect {IDENTITY['run_id']} {suite}",
+                    f"s2_khook_probe report {IDENTITY['run_id']} {suite}",
+                    f"s2_khook_accept report {IDENTITY['run_id']} {suite}",
+                    f"s2_khook_probe gamedata {IDENTITY['run_id']} {suite}",
+                ])
+                capture = json.loads((run / "gamedata-capture.json").read_text())
+                for phase in ("before", "after"):
+                    self.assertEqual(capture[phase]["status"], "pass")
+                    self.assertEqual(capture[phase]["files"][0]["sha256"], hashlib.sha256(data).hexdigest())
+                    self.assertTrue((run / f"gamedata-native-{phase}.txt").exists())
+
     def test_suite_suffix_preserves_a_commands(self):
         for command in (ka.probe_cmd, ka.accept_cmd):
             self.assertTrue(command("prepare", "run").endswith("prepare run"))
