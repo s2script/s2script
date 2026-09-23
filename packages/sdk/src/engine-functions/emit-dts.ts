@@ -16,9 +16,10 @@ function typeOf(projection: ProjectionSpec): string {
 
 function binding(f: NormalizedFunction, name: string): string[] {
   const returnType = typeOf(f.abi.returns.projection);
+  // Author names remain exact view keys; positional prefixes make every call label legal TS.
   const params = [
     ...(f.abi.receiver === 'entity' ? ['self: EntityRef'] : []),
-    ...f.abi.parameters.map(p => `${p.name}: ${typeOf(p.projection)}`),
+    ...f.abi.parameters.map((p, i) => `arg${i}_${p.name}: ${typeOf(p.projection)}`),
   ];
   const preFields = [
     ...(f.abi.receiver === 'entity' ? ['    readonly self: EntityRef;'] : []),
@@ -42,7 +43,9 @@ function binding(f: NormalizedFunction, name: string): string[] {
     ...(surfaces.has('call') ? [`    call(${params.join(', ')}): ${returnType};`] : []),
     ...(surfaces.has('pre') ? [
       `    onPre(handler: (view: ${name}PreView) => ${preResult}): FunctionSubscription;`,
-      `    onPre(options: { observeOnly: true }, handler: (view: Readonly<${name}PreView>) => void): FunctionSubscription;`,
+      // A plain `=> void` callback accepts value-returning lambdas in TypeScript. The union
+      // preserves ordinary void expressions but rejects HookResult action values.
+      `    onPre(options: { observeOnly: true }, handler: (view: Readonly<${name}PreView>) => void | undefined): FunctionSubscription;`,
     ] : []),
     ...(surfaces.has('post') ? [`    onPost(handler: (view: Readonly<${name}PostView>) => void): FunctionSubscription;`] : []),
     '  }',

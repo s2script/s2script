@@ -79,3 +79,42 @@ test('reserved names are rejected before declaration emission', () => {
   const reservedParameter = fixture('export function OnPluginStart(): void {}', { safe: fn({ parameters: [{ name: 'returnValue', type: 'i32' }] }) });
   assert.throws(() => typecheckPlugin(reservedParameter), /reserved/);
 });
+
+test('observe-only PRE rejects an action return without another type error', () => {
+  for (const action of ['Handled', 'Stop', 'Changed']) {
+    const dir = fixture(imports + `Engine.function('notify').onPre({ observeOnly: true }, () => HookResult.${action});\nexport function OnPluginStart(): void {}`);
+    const result = typecheckPlugin(dir);
+    assert.equal(result.ok, false, `observe-only accepted ${action}`);
+    assert.ok(result.diagnostics.some(d => d.file.endsWith('plugin.ts')), JSON.stringify(result.diagnostics));
+  }
+});
+
+test('observe-only PRE accepts ordinary void, undefined, and console.log expression callbacks', () => {
+  const source = imports + `
+const f = Engine.function('notify');
+f.onPre({ observeOnly: true }, () => {});
+f.onPre({ observeOnly: true }, () => undefined);
+f.onPre({ observeOnly: true }, () => console.log('observed'));
+export function OnPluginStart(): void {}
+`;
+  const result = typecheckPlugin(fixture(source));
+  assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
+});
+
+test('accepted authored this/default parameter names keep call arity and view property names', () => {
+  const special = { named: fn({ requirement: 'required', parameters: [
+    { name: 'this', type: 'i32', mutable: 'pre' },
+    { name: 'default', type: 'i32' },
+  ], returns: 'void', surfaces: ['call', 'pre', 'post'] }) };
+  const source = imports + `
+const f = Engine.function('named');
+f.call(1, 2);
+f.onPre(view => { view.this = 3; const fixed: number = view.default; void fixed; });
+f.onPost(view => { const a: number = view.this; const b: number = view.default; void a; void b; });
+export function OnPluginStart(): void {}
+`;
+  const result = typecheckPlugin(fixture(source, special));
+  assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
+  const wrongArity = typecheckPlugin(fixture(source.replace('f.call(1, 2)', 'f.call(1)'), special));
+  assert.ok(wrongArity.diagnostics.some(d => d.code === 2554 && d.file.endsWith('plugin.ts')), JSON.stringify(wrongArity.diagnostics));
+});
