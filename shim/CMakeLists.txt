@@ -162,6 +162,15 @@ target_compile_definitions(engine_resolver_selftest PRIVATE S2_RESOLVER_ENGINE_F
 target_include_directories(engine_resolver_selftest PRIVATE src ${CMAKE_SOURCE_DIR}/../third_party/hde)
 target_link_libraries(engine_resolver_selftest PRIVATE ${CMAKE_DL_LIBS})
 
+# Registered production callbacks, invocation lifetimes and original-image install validation.
+add_executable(engine_hook_invocation_selftest
+    src/engine_hooks.cpp src/hook_dispatch.cpp src/call_validate.cpp src/original_module.cpp
+    src/sigscan.cpp ${CMAKE_SOURCE_DIR}/../third_party/hde/hde64.c
+    tests/engine_hook_invocation_test.cpp)
+target_include_directories(engine_hook_invocation_selftest PRIVATE src
+    ${CMAKE_SOURCE_DIR}/../third_party/hde ${MMS}/third_party/khook/include)
+target_link_libraries(engine_hook_invocation_selftest PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+
 # Production-used descriptor/SDKHook/built-in adapters over the shared resolver.
 add_executable(engine_consumer_selftest
     src/engine_consumer.cpp src/engine_resolver.cpp src/original_module.cpp src/sigscan.cpp

@@ -6,14 +6,12 @@
 // the address arrives already resolved and validated by S2_EngineCallResolve, and the shape arrives
 // as an id from the closed vocabulary in hook_dispatch.h.
 //
-// LAZY INSTALL. Core calls S2_HookInstall on the FIRST-EVER subscribe to a hook, idempotently —
-// the same discipline as the UserCmd.onRun detour (s2script_mm.cpp). No subscribers means no
-// patched bytes and no treadmill surface. s2detour::RemoveAll() at Unload restores every prologue.
+// LAZY INSTALL. Configure one checked KHook Function on the first subscribe. Native bindings
+// remain resident across script reload. Terminal inventory removes them before ResetAll.
 extern "C" {
 
-// Install the detour. `addr` is a resolved, validated absolute address. Returns 0, or -1 with a
-// NUL-terminated reason in `reasonOut` (s2detour::Install refuses an unrelocatable prologue, and a
-// shape with no compiled thunk is a named failure, never a silent skip).
+// Accept a validated target: 0 for accepted (possibly Pending), -1 with a bounded named reason.
+// First real callback observation proves activation; accepted registration never polls for it.
 int  S2_HookInstall(int hookId, int shape, int64_t addr, char* reasonOut, int reasonCap);
 
 // Arm this hook's bypass latch. Core calls it immediately before invoking the `bypassWith` call
@@ -29,12 +27,8 @@ void S2_HookArmBypass(int hookId);
 // only the thunk's take can clear it otherwise. Out-of-range ids are a silent no-op.
 void S2_HookDisarmBypass(int hookId);
 
-// Forget every installed hook. MUST be called from wherever s2detour::RemoveAll() is, and only
-// there: the two are one operation. RemoveAll() restores the prologues but knows nothing about this
-// table, so without this a later install would see used == true, take the idempotent
-// "already installed" path, and return success WITHOUT re-patching — every hook silently dead, and
-// `orig` left pointing at an munmap'd trampoline. Today Metamod dlclose's the image immediately
-// after Unload so the leak is unobservable; that is an accident of the lifecycle, not a guarantee.
+// Forget metadata only after checked terminal removal completes. Premature calls are a no-op;
+// active callbacks and their typed capsules must remain alive through Recall and post.
 void S2_HookResetAll(void);
 
 // Block-scoped arg view accessors. `idx` is the descriptor's positional param index; every one is
@@ -61,3 +55,9 @@ int  S2_HookReadU16AtQ(void* argView, int qslot, int offset, uint16_t* out);
 int  S2_HookSelfMatchesField(void* argView, int index, int serial, int offset);
 
 }  // extern "C"
+
+// Internal terminal inventory; these do not change the public engine-ops C ABI.
+struct S2HookTerminalPermit;
+bool S2EngineHooksCanUnloadSync(const S2HookTerminalPermit& permit);
+bool S2EngineHooksUnloadSync(const S2HookTerminalPermit& permit);
+bool S2EngineHooksRemovalComplete();

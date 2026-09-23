@@ -5232,7 +5232,7 @@ static void S2Shutdown_ResetLoad() {
 
 static bool S2_NormalHooksCanRemoveSync(const S2HookTerminalPermit& p) {
     return S2HookInventoryCanRemoveSync(S2NormalHookInventory(), p) &&
-        S2SdkhooksVpCanUnloadSync(p);
+        S2SdkhooksVpCanUnloadSync(p) && S2EngineHooksCanUnloadSync(p);
 }
 
 static bool S2_BeginCheckedRetirement(const S2HookTerminalPermit& permit) {
@@ -5290,12 +5290,12 @@ static bool S2_BeginCheckedRetirement(const S2HookTerminalPermit& permit) {
     }
 
     return S2HookInventoryBeginRemoveSync(S2NormalHookInventory(), permit) &&
-        S2SdkhooksVpUnloadSync(permit);
+        S2SdkhooksVpUnloadSync(permit) && S2EngineHooksUnloadSync(permit);
 }
 
 static bool S2_NormalHooksRemovalComplete() {
     return S2HookInventoryRemovalComplete(S2NormalHookInventory()) &&
-        S2SdkhooksVpRemovalComplete();
+        S2SdkhooksVpRemovalComplete() && S2EngineHooksRemovalComplete();
 }
 
 static bool S2_FinishUnloadCleanup() {

@@ -48,6 +48,9 @@ bash scripts/test-client-bootstrap.sh
 echo "== test-hook-dispatch.sh (hook shape vocabulary, bypass latch, collapse) =="
 bash scripts/test-hook-dispatch.sh
 
+echo "== test-engine-hook-invocation.sh (production declarative KHook callbacks) =="
+bash scripts/test-engine-hook-invocation.sh
+
 echo "== test-khook-binding.sh (checked KHook receipts, Observe/BeginRemove) =="
 bash scripts/test-khook-binding.sh
 
