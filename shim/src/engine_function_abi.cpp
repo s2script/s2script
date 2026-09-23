@@ -105,6 +105,8 @@ std::string RuntimeBinding::BindTarget(const void* address) {
     return {};
 }
 S2HookReceipt RuntimeBinding::Configure(const void* address) {
+    std::lock_guard<std::mutex> admission(admission_mu_);
+    if (active_entries_.load(std::memory_order_acquire)) return Fail("Configure requires idle binding");
     const auto error = BindTarget(address);
     if (!error.empty()) return Fail(error.c_str());
     if (!S2Hook_AcceptingRegistrations()) return Fail("plugin retiring");
@@ -116,6 +118,7 @@ S2HookReceipt RuntimeBinding::Configure(const void* address) {
         state_ = std::make_shared<S2HookBindingState>();
         hook_id_ = KHook::INVALID_HOOK;
     }
+    detached_callable_ = false;
     provider_detached_.store(false, std::memory_order_release);
     hook_id_ = KHook::SetupHook(const_cast<void*>(address), this, reinterpret_cast<void*>(&OnKHookRemoved),
         pre_.code, post_.code, make_return_.code, make_original_.code, info_.stack_bytes, false);
@@ -159,15 +162,28 @@ Result<NativeValue> RuntimeBinding::Invoke(void* address, const NativeValue* arg
     return {result, {}};
 }
 Result<NativeValue> RuntimeBinding::Call(const NativeValue* args, std::size_t argc) {
+    std::unique_lock<std::mutex> admission(admission_mu_);
     Activity activity(*this); // retained through ffi_call and result/error handling
+    // On refusal or an exception, unlock before releasing the activity hold:
+    // the final activity release may allow another thread to reclaim this owner.
+    struct UnlockBeforeActivity {
+        std::unique_lock<std::mutex>& lock;
+        ~UnlockBeforeActivity() { if (lock.owns_lock()) lock.unlock(); }
+    } unlock_before_activity{admission};
     const auto state = Snapshot().state;
-    // This Call owns one entry. After detachment, every earlier callback/Call
-    // must have completed before the target becomes callable again.
-    if (!target_ || state == S2HookState::Removing ||
-        (state == S2HookState::Removed &&
-         (!provider_detached_.load(std::memory_order_acquire) ||
-          active_entries_.load(std::memory_order_acquire) != 1)))
-        return {{}, "binding not callable"};
+    if (!target_ || state == S2HookState::Removing) return {{}, "binding not callable"};
+    if (state == S2HookState::Removed && !detached_callable_) {
+        // Before opening detached admission, every retirement-era entry must be
+        // gone. The mutex prevents competing new callers adding their Activity
+        // before this decision; this Call owns the single remaining entry.
+        if (!provider_detached_.load(std::memory_order_acquire) ||
+            active_entries_.load(std::memory_order_acquire) != 1)
+            return {{}, "binding not callable"};
+        detached_callable_ = true;
+    }
+    // Completion stays latched for this registration. Subsequent nested or
+    // concurrent unhooked calls must not be mistaken for retirement-era work.
+    admission.unlock();
     std::string callback_error;
     call_errors.emplace_back(this, &callback_error);
     struct Pop { ~Pop() { call_errors.pop_back(); } } pop;

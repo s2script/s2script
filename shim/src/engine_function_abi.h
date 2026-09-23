@@ -109,6 +109,10 @@ private:
     Closure pre_, post_, make_return_, make_original_;
     KHook::HookID_t hook_id_ = KHook::INVALID_HOOK;
     const void* target_ = nullptr;
+    // Admission is brief and never spans a native call. Once a registration's
+    // retirement reaches quiescence, later unhooked calls are a new activity era.
+    std::mutex admission_mu_;
+    bool detached_callable_ = false; // protected by admission_mu_; reset on Configure
     std::atomic<bool> provider_detached_{true};
     std::atomic<std::size_t> active_entries_{0};
 };

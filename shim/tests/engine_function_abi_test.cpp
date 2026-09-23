@@ -259,6 +259,39 @@ static void return_phase_lifetime(bool outbound) {
     retire(binding);
     std::cout << "PASS return phase held across both provider acknowledgements; outbound=" << outbound << " caller finished before reclamation\n";
 }
+__attribute__((noinline)) static std::int32_t detached_nested_target(std::int32_t value) {
+    ++original_calls;
+    auto volatile next=&identity<std::int32_t>;
+    return next(value)+1;
+}
+static void completed_detachment_allows_nested_calls() {
+    AbiSignature signature;signature.parameters={{"i32"}};signature.returns={"i32"};
+    Sink detached_sink, hooked_sink;
+    auto detached=bind(signature,detached_sink,reinterpret_cast<void*>(&detached_nested_target));
+    detached->BeginRemove();
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    while (!detached->RemovalComplete() && std::chrono::steady_clock::now()<deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(detached->RemovalComplete() && detached->Receipt().state==S2HookState::Removed);
+    assert(S2Hook_DrainRetirement());
+    auto hooked=bind(signature,hooked_sink,reinterpret_cast<void*>(&identity<std::int32_t>));
+    int nested_calls=0;
+    hooked_sink.dispatch=[&](DispatchFrame& frame) {
+        if (frame.phase!=Phase::Pre || frame.arguments[0].Get<std::int32_t>()!=1) return;
+        // Detached F(1) -> hooked G(1) -> F(0) -> G(0), bounded by its input.
+        auto input=NativeValue::From<std::int32_t>(0);
+        const auto nested=detached->Call(&input,1);
+        assert(nested && nested.value.Get<std::int32_t>()==1);
+        ++nested_calls;
+    };
+    auto input=NativeValue::From<std::int32_t>(1);
+    const auto result=detached->Call(&input,1);
+    assert(result && result.value.Get<std::int32_t>()==2 && nested_calls==1);
+    assert(detached_sink.pre==0 && detached_sink.post==0 && detached_sink.errors==0);
+    assert(hooked_sink.pre==2 && hooked_sink.post==2 && hooked_sink.errors==0);
+    retire(hooked);retire(detached);
+    std::cout << "PASS completed detachment permits bounded nested retained calls\n";
+}
 static void allocations_and_retirement() {
     Sink sink;
     for (int i = 0; i < 4; ++i) {
@@ -409,6 +442,7 @@ static void stock_tests() {
     std::cout << "phase=return-phase-lifetime\n";
     return_phase_lifetime(false);
     return_phase_lifetime(true);
+    completed_detachment_allows_nested_calls();
     std::cout << "phase=noncanonical-output\n";
     reject_noncanonical_output();
     std::cout << "phase=queued-remove-and-destroy-refusal\n";
