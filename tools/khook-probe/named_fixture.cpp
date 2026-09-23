@@ -15,7 +15,10 @@ Mode mode=Mode::Idle;
 s2khook::NamedSnapshot observation;
 bool installed=false;
 bool damage_pre_nested=false,damage_post_nested=false,usercmd_nested=false,precache_nested=false;
+bool removal_refusal_checked=false;
 int chat_verdict=0,output_verdict=0,precache_index=-1;
+size_t chat_action_index=0,chat_post_index=0,output_action_index=0,output_post_index=0;
+uint64_t invocation_map_generation=0;
 int receiver_token=0;
 void* outer_victim=&receiver_token;
 void* outer_info=reinterpret_cast<void*>(uintptr_t{0x5555666677778888});
@@ -52,12 +55,22 @@ UsercmdFn volatile call_usercmd=&S2ProbeNamedUsercmdTarget;
 
 KHook::Return<void> ChatPeerBefore(void*,void*,bool,int,const char*);
 KHook::Return<void> ChatPeerAfter(void*,void*,bool,int,const char*);
+KHook::Return<void> ChatPeerPost(void*,void*,bool,int,const char*);
+KHook::Return<int64_t> DamageObservePost(void*,void*,void*,void*);
+KHook::Return<void> OutputObservePost(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
+                                      const CVariant*,float,void*,char*);
+KHook::Return<int> UsercmdObservePost(void*,void*,int,bool,float);
 KHook::Return<void> VirtualPeerBefore(ProbePrecache*,void*);
 KHook::Return<void> VirtualPeerAfter(ProbePrecache*,void*);
+KHook::Return<void> VirtualPeerPost(ProbePrecache*,void*);
+S2CheckedFunction<int64_t,void*,void*,void*,void*> peer_damage_observer(nullptr,&DamageObservePost);
 S2CheckedFunction<void,void*,void*,bool,int,const char*> peer_chat_before(&ChatPeerBefore,nullptr);
-S2CheckedFunction<void,void*,void*,bool,int,const char*> peer_chat_after(&ChatPeerAfter,nullptr);
+S2CheckedFunction<void,void*,void*,bool,int,const char*> peer_chat_after(&ChatPeerAfter,&ChatPeerPost);
+S2CheckedFunction<void,CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*>
+    peer_output_observer(nullptr,&OutputObservePost);
+S2CheckedFunction<int,void*,void*,int,bool,float> peer_usercmd_observer(nullptr,&UsercmdObservePost);
 S2CheckedVirtual<ProbePrecache,void,void*> peer_virtual_before(&VirtualPeerBefore,nullptr);
-S2CheckedVirtual<ProbePrecache,void,void*> peer_virtual_after(&VirtualPeerAfter,nullptr);
+S2CheckedVirtual<ProbePrecache,void,void*> peer_virtual_after(&VirtualPeerAfter,&VirtualPeerPost);
 bool peer_virtual_before_filter=false,peer_virtual_after_filter=false;
 
 KHook::Return<void> ChatPeerBefore(void*,void*,bool,int,const char*) {
@@ -78,6 +91,53 @@ KHook::Return<void> ChatPeerAfter(void*,void*,bool,int,const char*) {
     }
     return S2_Ignore();
 }
+KHook::Return<void> ChatPeerPost(void*,void*,bool,int,const char*) {
+    auto observed=peer_chat_after.Observe();
+    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
+    if (mode==Mode::Chat) {
+        const int skipped=KHook::WasOriginalFunctionSkipped() ? 1 : 0;
+        if (chat_post_index<observation.chat_skipped.size()) observation.chat_skipped[chat_post_index]=skipped;
+        ++chat_post_index;
+        ++observation.chat_post_observed;
+    }
+    return S2_Ignore();
+}
+KHook::Return<int64_t> DamageObservePost(void*,void*,void*,void*) {
+    auto observed=peer_damage_observer.Observe();
+    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore(int64_t{0});
+    if (mode==Mode::Damage) {
+        const auto current=KHook::GetCurrentReturn<int64_t>();
+        observation.damage_current_return=current;
+        ++observation.damage_post_observed;
+        if (current==INT64_C(0x1122334455667788)) ++observation.damage_current_return_matches;
+        if (KHook::WasOriginalFunctionSkipped()) ++observation.damage_skipped;
+    }
+    return S2_Ignore(int64_t{0});
+}
+KHook::Return<void> OutputObservePost(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
+                                      const CVariant*,float,void*,char*) {
+    auto observed=peer_output_observer.Observe();
+    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
+    if (mode==Mode::Output) {
+        const int skipped=KHook::WasOriginalFunctionSkipped() ? 1 : 0;
+        if (output_post_index<observation.output_skipped.size()) observation.output_skipped[output_post_index]=skipped;
+        ++output_post_index;
+        ++observation.output_post_observed;
+    }
+    return S2_Ignore();
+}
+KHook::Return<int> UsercmdObservePost(void*,void*,int,bool,float) {
+    auto observed=peer_usercmd_observer.Observe();
+    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore(0);
+    if (mode==Mode::Usercmd) {
+        const int current=KHook::GetCurrentReturn<int>();
+        observation.usercmd_current_return=current;
+        ++observation.usercmd_post_observed;
+        if (current==37) ++observation.usercmd_current_return_matches;
+        if (KHook::WasOriginalFunctionSkipped()) ++observation.usercmd_skipped;
+    }
+    return S2_Ignore(0);
+}
 KHook::Return<void> VirtualPeerBefore(ProbePrecache* receiver,void*) {
     auto observed=peer_virtual_before.Observe(receiver);
     if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
@@ -96,13 +156,30 @@ KHook::Return<void> VirtualPeerAfter(ProbePrecache* receiver,void*) {
     }
     return S2_Ignore();
 }
+KHook::Return<void> VirtualPeerPost(ProbePrecache* receiver,void*) {
+    auto observed=peer_virtual_after.Observe(receiver);
+    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
+    if (mode==Mode::Precache) {
+        ++observation.precache_post_observed;
+        if (KHook::WasOriginalFunctionSkipped()) ++observation.precache_skipped;
+    }
+    return S2_Ignore();
+}
 
-std::array<S2CheckedBindingOps*,4> PeerInventory() {
-    return {{&peer_chat_before,&peer_chat_after,&peer_virtual_before,&peer_virtual_after}};
+std::array<S2CheckedBindingOps*,7> PeerInventory() {
+    return {{&peer_damage_observer,&peer_chat_before,&peer_chat_after,&peer_output_observer,
+             &peer_usercmd_observer,&peer_virtual_before,&peer_virtual_after}};
 }
 
 void DamagePreOp() {
     ++observation.damage_pre;
+    if (!removal_refusal_checked && S2NamedDamageVictim()==outer_victim) {
+        removal_refusal_checked=true;
+        const auto permit=S2Hook_CurrentTerminalPermit();
+        const bool allowed=permit.IsValid() &&
+            S2HookInventoryCanRemoveSync(PeerInventory(),permit) && S2NamedHooksCanUnloadSync(permit);
+        observation.removal.active_refused=permit.IsValid() && !allowed ? 1 : 0;
+    }
     if (!damage_pre_nested && S2NamedDamageVictim()==outer_victim) {
         damage_pre_nested=true;
         call_damage(inner_victim,inner_info,nullptr,nullptr);
@@ -156,12 +233,33 @@ void UsercmdNeutralize() {
 void PrecacheOp() {
     ++observation.precache_dispatch;
     observation.precache_peer_order=observation.precache_peer_order*10+2;
+    if (observation.precache_observed_map_generation==0)
+        observation.precache_observed_map_generation=invocation_map_generation;
+    if (observation.precache_observed_map_generation==invocation_map_generation)
+        ++observation.precache_generation_observations;
     if (!precache_nested && S2NamedCurrentPrecacheManifest()==outer_manifest) {
         precache_nested=true;
         S2ProbeNamedInvokeVirtual(&precache_object,precache_index,inner_manifest);
         if (S2NamedCurrentPrecacheManifest()==outer_manifest)
             ++observation.precache_nested_restored;
         precache_nested=false;
+    }
+}
+
+void ObserveAction(S2NamedHookSite site,bool post,KHook::Action action) {
+    const int value=static_cast<int>(action);
+    if (mode==Mode::Damage && site==S2NamedHookSite::Damage && action==KHook::Action::Ignore) {
+        if (post) ++observation.damage_post_ignore; else ++observation.damage_pre_ignore;
+    } else if (mode==Mode::Chat && site==S2NamedHookSite::Chat) {
+        if (chat_action_index<observation.chat_actions.size()) observation.chat_actions[chat_action_index]=value;
+        ++chat_action_index;
+    } else if (mode==Mode::Output && site==S2NamedHookSite::Output) {
+        if (output_action_index<observation.output_actions.size()) observation.output_actions[output_action_index]=value;
+        ++output_action_index;
+    } else if (mode==Mode::Usercmd && site==S2NamedHookSite::Usercmd && action==KHook::Action::Ignore) {
+        ++observation.usercmd_ignore;
+    } else if (mode==Mode::Precache && site==S2NamedHookSite::Precache && action==KHook::Action::Ignore) {
+        ++observation.precache_ignore;
     }
 }
 
@@ -239,15 +337,19 @@ bool S2ProbeNamedInstall(std::string& reason) {
     ops.damage_pre=&DamagePreOp; ops.damage_post=&DamagePostOp; ops.chat=&ChatOp; ops.output=&OutputOp;
     ops.usercmd_slot=&UsercmdSlot; ops.usercmd_dispatch=&UsercmdDispatch;
     ops.usercmd_neutralize=&UsercmdNeutralize; ops.precache=&PrecacheOp;
+    ops.observe_action=&ObserveAction;
     S2NamedHooksSetOps(ops);
 
     if (!S2NamedConfigureDamage(targets[0]).Accepted()) { reason="damage setup rejected"; return false; }
+    if (!peer_damage_observer.Configure(targets[0]).Accepted()) { reason="damage observer rejected"; return false; }
     if (!peer_chat_before.Configure(targets[1]).Accepted()) { reason="before chat peer rejected"; return false; }
     if (!S2NamedConfigureChat(targets[1]).Accepted()) { reason="chat setup rejected"; return false; }
     if (!peer_chat_after.Configure(targets[1]).Accepted()) { reason="after chat peer rejected"; return false; }
     if (!S2NamedConfigureOutput(targets[2]).Accepted()) { reason="output setup rejected"; return false; }
+    if (!peer_output_observer.Configure(targets[2]).Accepted()) { reason="output observer rejected"; return false; }
     S2NamedSetUsercmdTarget(targets[3]);
     if (!S2NamedInstallUsercmd().Accepted()) { reason="usercmd setup rejected"; return false; }
+    if (!peer_usercmd_observer.Configure(targets[3]).Accepted()) { reason="usercmd observer rejected"; return false; }
 
     precache_index=KHook::GetVtableIndex(&ProbePrecache::Run);
     void** vtable=*reinterpret_cast<void***>(&precache_object);
@@ -271,7 +373,21 @@ bool S2ProbeNamedInstall(std::string& reason) {
     return true;
 }
 
-void S2ProbeNamedReset() { observation={}; observation.installed=installed; mode=Mode::Idle; }
+void S2ProbeNamedReset(std::uint64_t map_generation) {
+    observation={};
+    observation.installed=installed;
+    observation.chat_current_return={s2khook::FacetApplicability::Inapplicable,-1};
+    observation.output_current_return={s2khook::FacetApplicability::Inapplicable,-1};
+    observation.precache_current_return={s2khook::FacetApplicability::Inapplicable,-1};
+    observation.bypass={s2khook::FacetApplicability::Inapplicable,-1};
+    observation.removal.applicability=s2khook::FacetApplicability::Applicable;
+    invocation_map_generation=map_generation;
+    observation.precache_generation_source=s2khook::MapGenerationSource::LevelLifetime;
+    observation.precache_map_generation=map_generation;
+    chat_action_index=chat_post_index=output_action_index=output_post_index=0;
+    removal_refusal_checked=false;
+    mode=Mode::Idle;
+}
 void S2ProbeNamedInvoke() {
     if (!installed) return;
     mode=Mode::Damage; call_damage(outer_victim,outer_info,nullptr,nullptr);
@@ -298,14 +414,21 @@ void S2ProbeNamedInvoke() {
 s2khook::NamedSnapshot S2ProbeNamedCollect() { return observation; }
 
 bool S2ProbeNamedCanUnloadSync(const S2HookTerminalPermit& permit) {
-    return S2HookInventoryCanRemoveSync(PeerInventory(),permit) && S2NamedHooksCanUnloadSync(permit);
+    const bool result=permit.IsValid() && S2HookInventoryCanRemoveSync(PeerInventory(),permit) &&
+        S2NamedHooksCanUnloadSync(permit);
+    observation.removal.terminal_preflight=result ? 1 : 0;
+    return result;
 }
 bool S2ProbeNamedUnloadSync(const S2HookTerminalPermit& permit) {
-    if (!S2ProbeNamedCanUnloadSync(permit)) return false;
+    if (!S2ProbeNamedCanUnloadSync(permit)) { observation.removal.terminal_remove=0; return false; }
     if (peer_virtual_before_filter) { peer_virtual_before.RemoveGlobal(&precache_object); peer_virtual_before_filter=false; }
     if (peer_virtual_after_filter) { peer_virtual_after.RemoveGlobal(&precache_object); peer_virtual_after_filter=false; }
-    return S2HookInventoryBeginRemoveSync(PeerInventory(),permit) && S2NamedHooksUnloadSync(permit);
+    const bool result=S2HookInventoryBeginRemoveSync(PeerInventory(),permit) && S2NamedHooksUnloadSync(permit);
+    observation.removal.terminal_remove=result ? 1 : 0;
+    return result;
 }
 bool S2ProbeNamedRemovalComplete() {
-    return S2HookInventoryRemovalComplete(PeerInventory()) && S2NamedHooksRemovalComplete();
+    const bool result=S2HookInventoryRemovalComplete(PeerInventory()) && S2NamedHooksRemovalComplete();
+    observation.removal.terminal_complete=result ? 1 : 0;
+    return result;
 }

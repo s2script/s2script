@@ -2,10 +2,11 @@
 
 #include "controlled_evidence.h"
 #include "khook_binding.h"
+#include <cstdint>
 #include <string>
 
 bool S2ProbeNamedInstall(std::string& reason);
-void S2ProbeNamedReset();
+void S2ProbeNamedReset(std::uint64_t map_generation);
 void S2ProbeNamedInvoke();
 s2khook::NamedSnapshot S2ProbeNamedCollect();
 bool S2ProbeNamedCanUnloadSync(const S2HookTerminalPermit& permit);

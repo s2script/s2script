@@ -73,21 +73,68 @@ int main() {
     named.installed = true;
     named.damage_pre=3; named.damage_post=3; named.damage_original=3;
     named.damage_nested_restored=2; named.damage_expired=1;
+    named.damage_pre_ignore=3; named.damage_post_ignore=3; named.damage_post_observed=3;
+    named.damage_skipped=0; named.damage_current_return=INT64_C(0x1122334455667788);
+    named.damage_current_return_matches=3;
     named.chat_dispatch=2; named.chat_original=1; named.chat_peer_before=2;
     named.chat_peer_after=2; named.chat_peer_order=123123;
+    named.chat_post_observed=2; named.chat_actions={{0,2}}; named.chat_skipped={{0,1}};
+    named.chat_current_return={s2khook::FacetApplicability::Inapplicable,-1};
     named.output_dispatch=2; named.output_original=1;
+    named.output_post_observed=2; named.output_actions={{0,2}}; named.output_skipped={{0,1}};
+    named.output_current_return={s2khook::FacetApplicability::Inapplicable,-1};
     named.usercmd_dispatch=3; named.usercmd_neutralized=2; named.usercmd_original=3;
     named.usercmd_return=37; named.usercmd_nested_restored=1; named.usercmd_expired=1;
+    named.usercmd_ignore=3; named.usercmd_post_observed=3; named.usercmd_skipped=0;
+    named.usercmd_current_return=37; named.usercmd_current_return_matches=3;
     named.precache_dispatch=2; named.precache_original=2; named.precache_receiver_ok=2;
     named.precache_nested_restored=1; named.precache_filtered_original=1;
     named.precache_expired=1; named.precache_peer_before=2; named.precache_peer_after=2;
     named.precache_peer_order=121233;
+    named.precache_ignore=2; named.precache_post_observed=2; named.precache_skipped=0;
+    named.precache_current_return={s2khook::FacetApplicability::Inapplicable,-1};
+    named.precache_generation_source=s2khook::MapGenerationSource::LevelLifetime;
+    named.precache_map_generation=41; named.precache_observed_map_generation=41;
+    named.precache_generation_observations=2;
+    named.bypass={s2khook::FacetApplicability::Inapplicable,-1};
+    named.removal={s2khook::FacetApplicability::Applicable,1,1,1,1};
     assert(named.Passed());
     std::cout << named.Json() << "\n";
+    auto pending=named;
+    pending.removal.terminal_preflight=-1; pending.removal.terminal_remove=-1;
+    pending.removal.terminal_complete=-1;
+    assert(pending.InvocationPassed() && !pending.Passed());
     named.usercmd_original = 2;
     assert(!named.Passed());
     named.usercmd_original = 3;
     named.precache_filtered_original = 0;
+    assert(!named.Passed());
+    named.precache_filtered_original = 1;
+    named.damage_current_return=INT64_C(0x55667788);
+    assert(!named.Passed());
+    named.damage_current_return=INT64_C(0x1122334455667788);
+    named.chat_actions[1]=-1;
+    assert(!named.Passed());
+    named.chat_actions[1]=2;
+    named.output_skipped[1]=0;
+    assert(!named.Passed());
+    named.output_skipped[1]=1;
+    named.chat_current_return.applicability=s2khook::FacetApplicability::Unspecified;
+    assert(!named.Passed());
+    named.chat_current_return.applicability=s2khook::FacetApplicability::Inapplicable;
+    named.chat_current_return.value=0;
+    assert(!named.Passed());
+    named.chat_current_return.value=-1;
+    named.bypass.value=1;
+    assert(!named.Passed());
+    named.bypass.value=-1;
+    named.removal.terminal_complete=-1;
+    assert(!named.Passed());
+    named.removal.terminal_complete=1;
+    named.precache_generation_source=s2khook::MapGenerationSource::Unspecified;
+    assert(!named.Passed());
+    named.precache_generation_source=s2khook::MapGenerationSource::LevelLifetime;
+    named.precache_observed_map_generation=40;
     assert(!named.Passed());
 
     s2khook::IntTarget volatile target = &plus_one;
@@ -183,11 +230,25 @@ assert snapshot["nesting"]["post_methods"] == [42, 41, 40]
 assert snapshot["bypass"]["returns"] == [6, 6, 6]
 named = records.pop(0)
 assert named["damage"] == {"pre": 3, "post": 3, "original": 3,
-                            "nested_restored": 2, "expired": 1}
+                            "nested_restored": 2, "expired": 1,
+                            "pre_ignore": 3, "post_ignore": 3,
+                            "post_observed": 3, "skipped": 0,
+                            "current_return": str(0x1122334455667788),
+                            "current_return_matches": 3}
 assert named["chat"]["peer_order"] == 123123
+assert named["chat"]["actions"] == [0, 2]
+assert named["chat"]["skipped"] == [0, 1]
+assert named["chat"]["current_return"] == {"applicability": "inapplicable", "value": None}
 assert named["usercmd"]["return"] == 37
+assert named["usercmd"]["current_return"] == 37
 assert named["precache"]["filtered_original"] == 1
 assert named["precache"]["peer_order"] == 121233
+assert named["precache"]["map_generation"] == 41
+assert named["precache"]["generation_source"] == "level_lifetime"
+assert named["bypass"] == {"applicability": "inapplicable", "value": None}
+assert named["removal"] == {"applicability": "applicable", "state": "complete", "active_refused": 1,
+                             "terminal_preflight": 1, "terminal_remove": 1,
+                             "terminal_complete": 1}
 assert records[0]["ab_io"] == {"pre_a": 1, "pre_b": 1, "orig": 1, "ret": 42, "pre_order": 21}
 assert records[0]["ba_os"] == {"pre_a": 1, "pre_b": 1, "orig": 0, "ret": 99, "pre_order": 12}
 assert records[1]["ba_os"]["ret"] == 2139062143

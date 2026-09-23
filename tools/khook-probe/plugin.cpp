@@ -2446,11 +2446,11 @@ static void CollectControlledAndEvents() {
     const auto declarative = S2ProbeDeclarativeCollect();
     META_CONPRINTF("[khook-probe] declarative native observation_only match=%d %s\n",
                    declarative.Passed() ? 1 : 0, declarative.Json().c_str());
-    S2ProbeNamedReset();
+    S2ProbeNamedReset(g_level_lifetime.ClaimCurrentWorld());
     S2ProbeNamedInvoke();
     const auto named=S2ProbeNamedCollect();
     META_CONPRINTF("[khook-probe] named native observation_only match=%d %s\n",
-                   named.Passed() ? 1 : 0,named.Json().c_str());
+                   named.InvocationPassed() ? 1 : 0,named.Json().c_str());
     const S2HookReceipt failed = fnNull.Configure(static_cast<const void*>(nullptr));
     const bool failed_ok =
         failed.state == S2HookState::Failed && failed.id == KHook::INVALID_HOOK && !failed.reason.empty();
@@ -2948,6 +2948,9 @@ static bool ProbeRetireAndFinish(const S2HookTerminalPermit& permit) {
         S2EngineHooksUnloadSync(permit) && S2ProbeNamedUnloadSync(permit) &&
         S2HookInventoryRemovalComplete(bindings) && S2EngineHooksRemovalComplete() &&
         S2ProbeNamedRemovalComplete();
+    const auto named=S2ProbeNamedCollect();
+    META_CONPRINTF("[khook-probe] named terminal observation_only match=%d %s\n",
+                   named.Passed() ? 1 : 0,named.Json().c_str());
     if (complete) S2_HookResetAll();
     return complete;
 }

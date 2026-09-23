@@ -121,51 +121,153 @@ struct DeclarativeSnapshot {
     }
 };
 
+enum class FacetApplicability { Unspecified, Applicable, Inapplicable };
+
+struct FacetObservation {
+    FacetApplicability applicability = FacetApplicability::Unspecified;
+    int value = -1;
+    bool ExplicitlyInapplicable() const {
+        return applicability == FacetApplicability::Inapplicable && value == -1;
+    }
+    std::string Json() const {
+        const char* label=applicability==FacetApplicability::Applicable ? "applicable" :
+            applicability==FacetApplicability::Inapplicable ? "inapplicable" : "unspecified";
+        return std::string("{\"applicability\":\"") + label + "\",\"value\":" +
+            (applicability==FacetApplicability::Inapplicable && value==-1 ?
+                "null" : std::to_string(value)) + "}";
+    }
+};
+
+enum class MapGenerationSource { Unspecified, LevelLifetime };
+
+struct NamedRemovalObservation {
+    FacetApplicability applicability = FacetApplicability::Unspecified;
+    int active_refused = -1;
+    int terminal_preflight = -1;
+    int terminal_remove = -1;
+    int terminal_complete = -1;
+    bool Pending() const {
+        return applicability==FacetApplicability::Applicable && active_refused==1 &&
+            terminal_preflight==-1 && terminal_remove==-1 && terminal_complete==-1;
+    }
+    bool Passed() const {
+        return applicability==FacetApplicability::Applicable && active_refused==1 &&
+            terminal_preflight==1 && terminal_remove==1 && terminal_complete==1;
+    }
+    std::string Json() const {
+        const char* label=applicability==FacetApplicability::Applicable ? "applicable" :
+            applicability==FacetApplicability::Inapplicable ? "inapplicable" : "unspecified";
+        const char* state=Passed() ? "complete" : Pending() ? "pending" : "invalid";
+        return std::string("{\"applicability\":\"") + label +
+            "\",\"state\":\"" + state +
+            "\",\"active_refused\":" + std::to_string(active_refused) +
+            ",\"terminal_preflight\":" + std::to_string(terminal_preflight) +
+            ",\"terminal_remove\":" + std::to_string(terminal_remove) +
+            ",\"terminal_complete\":" + std::to_string(terminal_complete) + "}";
+    }
+};
+
 struct NamedSnapshot {
     bool installed = false;
     int damage_pre = 0, damage_post = 0, damage_original = 0;
     int damage_nested_restored = 0, damage_expired = 0;
+    int damage_pre_ignore = 0, damage_post_ignore = 0, damage_post_observed = 0;
+    int damage_skipped = 0, damage_current_return_matches = 0;
+    int64_t damage_current_return = 0;
     int chat_dispatch = 0, chat_original = 0;
     int chat_peer_before = 0, chat_peer_after = 0, chat_peer_order = 0;
+    int chat_post_observed = 0;
+    std::array<int,2> chat_actions{{-1,-1}}, chat_skipped{{-1,-1}};
+    FacetObservation chat_current_return;
     int output_dispatch = 0, output_original = 0;
+    int output_post_observed = 0;
+    std::array<int,2> output_actions{{-1,-1}}, output_skipped{{-1,-1}};
+    FacetObservation output_current_return;
     int usercmd_dispatch = 0, usercmd_neutralized = 0, usercmd_original = 0;
     int usercmd_return = 0, usercmd_nested_restored = 0, usercmd_expired = 0;
+    int usercmd_ignore = 0, usercmd_post_observed = 0, usercmd_skipped = 0;
+    int usercmd_current_return = 0, usercmd_current_return_matches = 0;
     int precache_dispatch = 0, precache_original = 0, precache_receiver_ok = 0;
     int precache_nested_restored = 0, precache_filtered_original = 0, precache_expired = 0;
     int precache_peer_before = 0, precache_peer_after = 0, precache_peer_order = 0;
-    bool Passed() const {
+    int precache_ignore = 0, precache_post_observed = 0, precache_skipped = 0;
+    FacetObservation precache_current_return;
+    MapGenerationSource precache_generation_source = MapGenerationSource::Unspecified;
+    uint64_t precache_map_generation = 0, precache_observed_map_generation = 0;
+    int precache_generation_observations = 0;
+    FacetObservation bypass;
+    NamedRemovalObservation removal;
+    bool CorePassed() const {
         return installed && damage_pre == 3 && damage_post == 3 && damage_original == 3 &&
             damage_nested_restored == 2 && damage_expired == 1 &&
+            damage_pre_ignore == 3 && damage_post_ignore == 3 && damage_post_observed == 3 &&
+            damage_skipped == 0 &&
+            static_cast<uint64_t>(damage_current_return)==UINT64_C(0x1122334455667788) &&
+            damage_current_return_matches == 3 &&
             chat_dispatch == 2 && chat_original == 1 && chat_peer_before == 2 &&
-            chat_peer_after == 2 && chat_peer_order == 123123 &&
-            output_dispatch == 2 && output_original == 1 &&
+            chat_peer_after == 2 && chat_peer_order == 123123 && chat_post_observed == 2 &&
+            chat_actions == std::array<int,2>{{0,2}} && chat_skipped == std::array<int,2>{{0,1}} &&
+            chat_current_return.ExplicitlyInapplicable() &&
+            output_dispatch == 2 && output_original == 1 && output_post_observed == 2 &&
+            output_actions == std::array<int,2>{{0,2}} && output_skipped == std::array<int,2>{{0,1}} &&
+            output_current_return.ExplicitlyInapplicable() &&
             usercmd_dispatch == 3 && usercmd_neutralized == 2 && usercmd_original == 3 &&
             usercmd_return == 37 && usercmd_nested_restored == 1 && usercmd_expired == 1 &&
+            usercmd_ignore == 3 && usercmd_post_observed == 3 && usercmd_skipped == 0 &&
+            usercmd_current_return == 37 && usercmd_current_return_matches == 3 &&
             precache_dispatch == 2 && precache_original == 2 && precache_receiver_ok == 2 &&
             precache_nested_restored == 1 && precache_filtered_original == 1 &&
             precache_expired == 1 && precache_peer_before == 2 && precache_peer_after == 2 &&
-            precache_peer_order == 121233;
+            precache_peer_order == 121233 && precache_ignore == 2 &&
+            precache_post_observed == 2 && precache_skipped == 0 &&
+            precache_current_return.ExplicitlyInapplicable() &&
+            precache_generation_source == MapGenerationSource::LevelLifetime &&
+            precache_map_generation != 0 &&
+            precache_observed_map_generation == precache_map_generation &&
+            precache_generation_observations == 2 && bypass.ExplicitlyInapplicable() &&
+            removal.applicability == FacetApplicability::Applicable && removal.active_refused == 1;
     }
+    bool InvocationPassed() const { return CorePassed() && removal.Pending(); }
+    bool Passed() const { return CorePassed() && removal.Passed(); }
     std::string Json() const {
         return std::string("{\"installed\":") + (installed ? "true" : "false") +
             ",\"damage\":{\"pre\":" + std::to_string(damage_pre) +
             ",\"post\":" + std::to_string(damage_post) +
             ",\"original\":" + std::to_string(damage_original) +
             ",\"nested_restored\":" + std::to_string(damage_nested_restored) +
-            ",\"expired\":" + std::to_string(damage_expired) + "}" +
+            ",\"expired\":" + std::to_string(damage_expired) +
+            ",\"pre_ignore\":" + std::to_string(damage_pre_ignore) +
+            ",\"post_ignore\":" + std::to_string(damage_post_ignore) +
+            ",\"post_observed\":" + std::to_string(damage_post_observed) +
+            ",\"skipped\":" + std::to_string(damage_skipped) +
+            ",\"current_return\":\"" + std::to_string(static_cast<uint64_t>(damage_current_return)) +
+            "\",\"current_return_matches\":" + std::to_string(damage_current_return_matches) + "}" +
             ",\"chat\":{\"dispatch\":" + std::to_string(chat_dispatch) +
             ",\"original\":" + std::to_string(chat_original) +
             ",\"peer_before\":" + std::to_string(chat_peer_before) +
             ",\"peer_after\":" + std::to_string(chat_peer_after) +
-            ",\"peer_order\":" + std::to_string(chat_peer_order) + "}" +
+            ",\"peer_order\":" + std::to_string(chat_peer_order) +
+            ",\"post_observed\":" + std::to_string(chat_post_observed) +
+            ",\"actions\":[" + std::to_string(chat_actions[0]) + "," + std::to_string(chat_actions[1]) +
+            "],\"skipped\":[" + std::to_string(chat_skipped[0]) + "," + std::to_string(chat_skipped[1]) +
+            "],\"current_return\":" + chat_current_return.Json() + "}" +
             ",\"output\":{\"dispatch\":" + std::to_string(output_dispatch) +
-            ",\"original\":" + std::to_string(output_original) + "}" +
+            ",\"original\":" + std::to_string(output_original) +
+            ",\"post_observed\":" + std::to_string(output_post_observed) +
+            ",\"actions\":[" + std::to_string(output_actions[0]) + "," + std::to_string(output_actions[1]) +
+            "],\"skipped\":[" + std::to_string(output_skipped[0]) + "," + std::to_string(output_skipped[1]) +
+            "],\"current_return\":" + output_current_return.Json() + "}" +
             ",\"usercmd\":{\"dispatch\":" + std::to_string(usercmd_dispatch) +
             ",\"neutralized\":" + std::to_string(usercmd_neutralized) +
             ",\"original\":" + std::to_string(usercmd_original) +
             ",\"return\":" + std::to_string(usercmd_return) +
             ",\"nested_restored\":" + std::to_string(usercmd_nested_restored) +
-            ",\"expired\":" + std::to_string(usercmd_expired) + "}" +
+            ",\"expired\":" + std::to_string(usercmd_expired) +
+            ",\"ignore\":" + std::to_string(usercmd_ignore) +
+            ",\"post_observed\":" + std::to_string(usercmd_post_observed) +
+            ",\"skipped\":" + std::to_string(usercmd_skipped) +
+            ",\"current_return\":" + std::to_string(usercmd_current_return) +
+            ",\"current_return_matches\":" + std::to_string(usercmd_current_return_matches) + "}" +
             ",\"precache\":{\"dispatch\":" + std::to_string(precache_dispatch) +
             ",\"original\":" + std::to_string(precache_original) +
             ",\"receiver_ok\":" + std::to_string(precache_receiver_ok) +
@@ -174,7 +276,17 @@ struct NamedSnapshot {
             ",\"expired\":" + std::to_string(precache_expired) +
             ",\"peer_before\":" + std::to_string(precache_peer_before) +
             ",\"peer_after\":" + std::to_string(precache_peer_after) +
-            ",\"peer_order\":" + std::to_string(precache_peer_order) + "}}";
+            ",\"peer_order\":" + std::to_string(precache_peer_order) +
+            ",\"ignore\":" + std::to_string(precache_ignore) +
+            ",\"post_observed\":" + std::to_string(precache_post_observed) +
+            ",\"skipped\":" + std::to_string(precache_skipped) +
+            ",\"current_return\":" + precache_current_return.Json() +
+            ",\"generation_source\":\"" +
+                (precache_generation_source==MapGenerationSource::LevelLifetime ? "level_lifetime" : "unspecified") +
+            "\",\"map_generation\":" + std::to_string(precache_map_generation) +
+            ",\"observed_map_generation\":" + std::to_string(precache_observed_map_generation) +
+            ",\"generation_observations\":" + std::to_string(precache_generation_observations) + "}" +
+            ",\"bypass\":" + bypass.Json() + ",\"removal\":" + removal.Json() + "}";
     }
 };
 
