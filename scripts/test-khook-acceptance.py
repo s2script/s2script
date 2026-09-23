@@ -938,5 +938,41 @@ class ArtifactIdentityRegressionTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 1, result.messages)
 
 
+class SniperResourceTests(unittest.TestCase):
+    def capture(self, **settings):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docker = root / "docker"
+            docker.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$CAPTURE"\n')
+            docker.chmod(0o755)
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ("S2_BUILD_JOBS", "CARGO_BUILD_JOBS", "S2_BUILD_CPUS", "S2_BUILD_MEMORY", "S2_BUILD_IMAGE")}
+            env.update(PATH=str(root) + os.pathsep + env["PATH"], CAPTURE=str(root / "args"), **settings)
+            proc = subprocess.run(["bash", str(ROOT / "scripts/test-khook-sniper-build.sh")], env=env, text=True, capture_output=True)
+            args = (root / "args").read_text().splitlines() if (root / "args").exists() else []
+            return proc, args
+
+    def test_limits_and_pinned_image_forward_as_arguments(self):
+        image = "rust@sha256:" + "a" * 64
+        proc, args = self.capture(S2_BUILD_JOBS="2", CARGO_BUILD_JOBS="2", S2_BUILD_CPUS="2", S2_BUILD_MEMORY="8g", S2_BUILD_IMAGE=image)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        for pair in (("--cpus", "2"), ("--memory", "8g"), ("-e", "S2_BUILD_JOBS=2"), ("-e", "CARGO_BUILD_JOBS=2")):
+            self.assertTrue(any(args[i:i+2] == list(pair) for i in range(len(args)-1)), pair)
+        self.assertIn(image, args)
+        self.assertNotIn("rust:bullseye", args)
+
+    def test_invalid_jobs_fail_before_docker_or_package_work(self):
+        for name in ("S2_BUILD_JOBS", "CARGO_BUILD_JOBS"):
+            for value in ("0", "-1", "2; false", "two", "1.5"):
+                proc, args = self.capture(**{name: value})
+                self.assertNotEqual(proc.returncode, 0, (name, value))
+                self.assertIn(name, proc.stderr)
+                self.assertEqual(args, [])
+                env = dict(os.environ, **{name: value})
+                proc = subprocess.run(["bash", str(ROOT / "scripts/build-sniper.sh")], env=env, text=True, capture_output=True)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn(name, proc.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
