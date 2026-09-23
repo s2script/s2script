@@ -1,5 +1,8 @@
 // Drives the production named callbacks through the pinned KHook wrappers. The provider
 // substitutes only stock registration/JIT mechanics and the engine-specific operations table.
+class CVariantDefaultAllocator;
+template <typename A> class CVariantBase;
+typedef CVariantBase<CVariantDefaultAllocator> CVariant;
 #include "named_hooks.h"
 
 #include <array>
@@ -286,6 +289,19 @@ void PrecacheOp() {
     }
 }
 
+int damage_pre_ignore=0,damage_post_ignore=0,chat_ignore=0,chat_supersede=0;
+int output_ignore=0,output_supersede=0,usercmd_ignore=0,precache_ignore=0;
+void ObserveAction(S2NamedHookSite site,bool post,KHook::Action action) {
+    if (site==S2NamedHookSite::Damage && !post && action==KHook::Action::Ignore) ++damage_pre_ignore;
+    if (site==S2NamedHookSite::Damage && post && action==KHook::Action::Ignore) ++damage_post_ignore;
+    if (site==S2NamedHookSite::Chat && action==KHook::Action::Ignore) ++chat_ignore;
+    if (site==S2NamedHookSite::Chat && action==KHook::Action::Supersede) ++chat_supersede;
+    if (site==S2NamedHookSite::Output && action==KHook::Action::Ignore) ++output_ignore;
+    if (site==S2NamedHookSite::Output && action==KHook::Action::Supersede) ++output_supersede;
+    if (site==S2NamedHookSite::Usercmd && action==KHook::Action::Ignore) ++usercmd_ignore;
+    if (site==S2NamedHookSite::Precache && action==KHook::Action::Ignore) ++precache_ignore;
+}
+
 S2CheckedFunction<void,void*>* terminal_binding=nullptr;
 bool terminal_can=false,terminal_removed=false,terminal_complete=false;
 void TerminalTarget(void*) {}
@@ -304,6 +320,7 @@ void ConfigureAndInvoke() {
     ops.chat=&ChatOp; ops.output=&OutputOp;
     ops.usercmd_slot=&UsercmdSlot; ops.usercmd_dispatch=&UsercmdDispatch;
     ops.usercmd_neutralize=&UsercmdNeutralize; ops.precache=&PrecacheOp;
+    ops.observe_action=&ObserveAction;
     S2NamedHooksSetOps(ops);
 
     const auto damage=S2NamedConfigureDamage(reinterpret_cast<void*>(&DamageTarget));
@@ -379,6 +396,9 @@ void ConfigureAndInvoke() {
     provider.InvokeEntry<void,Receiver*,void*>(entry,&other,outer_manifest);
     CHECK(precache_calls==2 && precache_originals==3,
           "different-vtable receiver is filtered while its original still runs");
+    CHECK(damage_pre_ignore==3 && damage_post_ignore==3 && chat_ignore==1 && chat_supersede==3 &&
+              output_ignore==2 && output_supersede==2 && usercmd_ignore==3 && precache_ignore==2,
+          "production callbacks publish their actual accepted action and damage phase");
 
     S2CheckedFunction<void,void*> terminal(&TerminalPre,nullptr);
     terminal_binding=&terminal;

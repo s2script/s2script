@@ -68,7 +68,9 @@ KHook::Return<int64_t> DamagePre(void* victim,void* info,void*,void*) {
     if (!S2Hook_EnterDispatch(observed)) return S2_Ignore(int64_t{0});
     DamageScope scope(info,victim);
     if (g_ops.damage_pre) g_ops.damage_pre();
-    return S2_Ignore(int64_t{0});
+    const auto action=S2_Ignore(int64_t{0});
+    if (g_ops.observe_action) g_ops.observe_action(S2NamedHookSite::Damage,false,action.action);
+    return action;
 }
 
 KHook::Return<int64_t> DamagePost(void* victim,void* info,void*,void*) {
@@ -76,13 +78,18 @@ KHook::Return<int64_t> DamagePost(void* victim,void* info,void*,void*) {
     if (!S2Hook_EnterDispatch(observed)) return S2_Ignore(int64_t{0});
     DamageScope scope(info,victim);
     if (g_ops.damage_post) g_ops.damage_post();
-    return S2_Ignore(int64_t{0});
+    const auto action=S2_Ignore(int64_t{0});
+    if (g_ops.observe_action) g_ops.observe_action(S2NamedHookSite::Damage,true,action.action);
+    return action;
 }
 
 KHook::Return<void> ChatPre(void* controller,void* command,bool team,int number,const char* text) {
     auto observed=g_chat.Observe();
     if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
-    return g_ops.chat && g_ops.chat(controller,command,team,number,text) ? S2_Supersede() : S2_Ignore();
+    const auto action=g_ops.chat && g_ops.chat(controller,command,team,number,text) ?
+        S2_Supersede() : S2_Ignore();
+    if (g_ops.observe_action) g_ops.observe_action(S2NamedHookSite::Chat,false,action.action);
+    return action;
 }
 
 KHook::Return<void> OutputPre(CEntityIOOutput* output,CEntityInstance* activator,
@@ -92,7 +99,9 @@ KHook::Return<void> OutputPre(CEntityIOOutput* output,CEntityInstance* activator
     if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
     const int result=g_ops.output ?
         g_ops.output(output,activator,caller,value,delay,opaque,tail) : 0;
-    return result>=2 ? S2_Supersede() : S2_Ignore();
+    const auto action=result>=2 ? S2_Supersede() : S2_Ignore();
+    if (g_ops.observe_action) g_ops.observe_action(S2NamedHookSite::Output,false,action.action);
+    return action;
 }
 
 KHook::Return<int> UsercmdPre(void* receiver,void* commands,int count,bool,float) {
@@ -109,7 +118,9 @@ KHook::Return<int> UsercmdPre(void* receiver,void* commands,int count,bool,float
             if (result>=2 && g_ops.usercmd_neutralize) g_ops.usercmd_neutralize();
         }
     }
-    return S2_Ignore(0);
+    const auto action=S2_Ignore(0);
+    if (g_ops.observe_action) g_ops.observe_action(S2NamedHookSite::Usercmd,false,action.action);
+    return action;
 }
 
 KHook::Return<void> PrecachePre(PrecacheReceiver* receiver,void* manifest) {
@@ -117,7 +128,9 @@ KHook::Return<void> PrecachePre(PrecacheReceiver* receiver,void* manifest) {
     if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
     PointerScope scope(g_manifest_frame,manifest);
     if (g_ops.precache) g_ops.precache();
-    return S2_Ignore();
+    const auto action=S2_Ignore();
+    if (g_ops.observe_action) g_ops.observe_action(S2NamedHookSite::Precache,false,action.action);
+    return action;
 }
 
 } // namespace

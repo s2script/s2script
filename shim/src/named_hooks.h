@@ -7,7 +7,11 @@
 
 class CEntityIOOutput;
 class CEntityInstance;
-class CVariant;
+class CVariantDefaultAllocator;
+template <typename A> class CVariantBase;
+typedef CVariantBase<CVariantDefaultAllocator> CVariant;
+
+enum class S2NamedHookSite { Damage, Chat, Output, Usercmd, Precache };
 
 struct S2NamedHookOps {
     void (*damage_pre)() = nullptr;
@@ -19,9 +23,8 @@ struct S2NamedHookOps {
     int (*usercmd_dispatch)(int) = nullptr;
     void (*usercmd_neutralize)() = nullptr;
     void (*precache)() = nullptr;
+    void (*observe_action)(S2NamedHookSite, bool post, KHook::Action) = nullptr;
 };
-
-enum class S2NamedHookSite { Damage, Chat, Output, Usercmd, Precache };
 
 void S2NamedHooksSetOps(const S2NamedHookOps& ops);
 S2HookReceipt S2NamedConfigureDamage(const void* target);
