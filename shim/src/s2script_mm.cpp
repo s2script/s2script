@@ -54,12 +54,12 @@
 #include <dlfcn.h>    // dladdr
 #include <libgen.h>   // dirname
 #include <link.h>       // dl_iterate_phdr, ElfW
-#include <sys/mman.h>   // mprotect — Sound slice: patch the CGameRulesGameSystem vtable slot (precache)
+#include <sys/mman.h>   // mincore — fault-free readable-address probe
 #include <igamesystem.h>          // model precache: CBaseGameSystem + EventBuildGameSessionManifest_t
 #include <igamesystemfactory.h>   // model precache: CGameSystemStaticFactory / CBaseGameSystemFactory
 #include <sys/stat.h>   // stat/mkdir — crash-reporter slice: gamedata mtime + the crash-spool dir
 #include <errno.h>      // errno/EEXIST — crash-reporter slice: CrashSpoolDir's mkdir race tolerance
-#include <unistd.h>     // sysconf(_SC_PAGESIZE) — the mprotect page span
+#include <unistd.h>     // sysconf(_SC_PAGESIZE) — readable-address probe
 #include <sys/syscall.h>
 #include "sigscan.h"
 #include "detour.h"   // Slice 6.6: the self-contained inline detour (damage hook)
@@ -74,6 +74,7 @@
 #include "client_bootstrap.h"
 #include "hook_dispatch.h"  // declarative inbound hooks: the engine-free policy half (ops-injected)
 #include "engine_hooks.h"   // declarative inbound hooks: S2_HookInstall/ArmBypass (the two appended ops)
+#include "named_hooks.h"    // checked DTA/chat/output/usercmd/precache bindings
 #include "sdkhooks_vp.h"    // SDKHooks per-entity VP hooks (Touch family; reads s_gdSdkhooks)
 #include <cstring>
 #include <cstdio>
@@ -798,46 +799,18 @@ static void S2_InstallDeferOps() {
     S2Defer_SetOps(ops);
 }
 
-// Slice 6.6 (Stage 1): the CBaseEntity::DispatchTraceAttack detour. g_origDTA is the trampoline to the
-// original (relocated prologue + jump back). The handler is READ-ONLY here — it logs candidate m_flDamage
-// reads to prove the hook fires + identify the CTakeDamageInfo arg, then always calls the original.
-typedef int64_t (*DispatchTraceAttack_t)(void* thisptr, void* a2, void* a3, void* a4);
-static DispatchTraceAttack_t g_origDTA = nullptr;
-static void* s_currentDamageInfo = nullptr;    // the CTakeDamageInfo* for the in-flight damage dispatch (block-scoped)
-static void* s_currentDamageVictim = nullptr;  // the victim CEntityInstance* (detour `this`) for the same dispatch
-
-static const uintptr_t kDtaSelfTest = 0xD2A7E57ULL;  // sentinel `this` for the install-time diversion self-test
-
-static int64_t Detour_DispatchTraceAttack(void* thisptr, void* a2, void* a3, void* a4) {
-    // Stage-1 self-test: prove the detour DIVERTS execution to our handler on the live binary (combat is
-    // un-generatable on the maxplayers gate). Short-circuit BEFORE touching the dummy args + never run the
-    // original (its dummy pointers would fault). Reaching this line == the patch physically diverts.
-    if (reinterpret_cast<uintptr_t>(thisptr) == kDtaSelfTest) {
-        META_CONPRINTF("[s2script] DTA self-test fired — detour diverts execution on the live binary (mechanism proven)\n");
-        return 0;
-    }
-    // Real damage: expose the CTakeDamageInfo to OnTakeDamage SDKHooks, then call the original with any
-    // in-place modifications applied. a2 (rsi) is the most likely info arg (the prologue saves rdi/rsi/rdx);
-    // the candidate log reveals which arg holds a plausible m_flDamage@68 once real damage flows in.
+// Named damage callbacks bind their own callback arguments in named_hooks.cpp. The engine-specific
+// operation here performs only the existing core dispatch and diagnostics.
+static void S2NamedDamagePreOp() {
+    void* victim=S2NamedDamageVictim();
+    void* info=S2NamedDamageInfo();
     auto rd = [](void* p) -> float {
         return (p && reinterpret_cast<uintptr_t>(p) > 0x10000) ? *reinterpret_cast<float*>(reinterpret_cast<char*>(p) + 68) : -1.0f;
     };
-    META_CONPRINTF("[s2script] DTA fired: this=%p a2.dmg=%.1f a3.dmg=%.1f\n", thisptr, rd(a2), rd(a3));
-    S2HookDispatchGuard guard;
-    if (!guard) {
-        return g_origDTA ? g_origDTA(thisptr, a2, a3, a4) : 0;
-    }
-    void* prevInfo = s_currentDamageInfo;
-    void* prevVictim = s_currentDamageVictim;
-    s_currentDamageInfo = a2;                     // block-scoped: valid only across this dispatch
-    s_currentDamageVictim = thisptr;              // the victim entity (this)
-    s2script_core_dispatch_damage();              // OnTakeDamage (read/modify the live info in place)
-    int64_t ret = g_origDTA ? g_origDTA(thisptr, a2, a3, a4) : 0;
-    s2script_core_dispatch_damage_post();         // OnTakeDamagePost (info still live)
-    s_currentDamageInfo = prevInfo;
-    s_currentDamageVictim = prevVictim;
-    return ret;
+    META_CONPRINTF("[s2script] DTA fired: this=%p info.dmg=%.1f\n",victim,rd(info));
+    s2script_core_dispatch_damage();
 }
+static void S2NamedDamagePostOp() { s2script_core_dispatch_damage_post(); }
 
 // Slice 5D.3: Events.fire creates an event and retargets s_currentEvent to it (save/restore on
 // create/fire) so the same set* ops serve both pre-hook modify and fire-building. Nests correctly.
@@ -2256,29 +2229,21 @@ static int s2_cvar_set(const char* name, const char* value) {
 }
 
 // ---------------------------------------------------------------------------
-// Usercmd primitive (per-tick input read/modify/block; SM OnPlayerRunCmd parity) — detours
+// Usercmd primitive (per-tick input read/modify/block; SM OnPlayerRunCmd parity) — checked hook on
 // CCSPlayer_MovementServices::ProcessUsercmds (self-resolved sig "ProcessUsercmds"; batch ABI + return
 // type + CUserCmd stride confirmed by an offline disassembly spike, 2026-07-14 — see
-// docs/superpowers/plans/2026-07-14-usercmd-primitive.md). Each CUserCmd (stride S2_USERCMD_STRIDE)
+// docs/superpowers/plans/2026-07-14-usercmd-primitive.md). Each CUserCmd (stride 0x90)
 // wraps a CSGOUserCmdPB protobuf at +0x10; ALL read/modify happens by protobuf reflection over the
-// shim-side s_currentUserCmd (block-scoped: valid ONLY during a usercmd dispatch, mirrors
-// s_currentDamageInfo/s_currentEvent — the raw Message* NEVER crosses to JS). ENGINE-GENERIC numeric
+// the named helper's block-scoped current command. ENGINE-GENERIC numeric
 // field enum (0 fwd,1 side,2 up,3 pitch,4 yaw,5 roll,6 impulse) maps to the Source2-shared
 // usercmd.proto CBaseUserCmdPB/CMsgQAngle/CInButtonStatePB nesting HERE (shim-only — core never sees a
 // protobuf field name or a CS2 type name). LAZILY installed: the signature is resolved at Load into
-// s_pProcessUsercmdsAddr (NOT yet detoured); Shim_UsercmdHookInstall (the usercmd_hook_install op)
-// performs s2detour::Install idempotently on the FIRST-EVER UserCmd.onRun subscribe (core calls it —
+// s_pProcessUsercmdsAddr (NOT yet hooked); Shim_UsercmdHookInstall (the usercmd_hook_install op)
+// configures the checked binding idempotently on the FIRST-EVER UserCmd.onRun subscribe (core calls it —
 // see s2_usercmd_subscribe), so there is zero overhead until a plugin actually wants per-tick input.
-// s2detour::RemoveAll() (already called in Unload()) restores this detour's prologue along with every
-// other installed one — no usercmd-specific teardown code needed.
 // ---------------------------------------------------------------------------
-typedef int (*ProcessUsercmds_t)(void* thisptr, void* cmds, int numcmds, bool paused, float margin);
 static void*             s_pProcessUsercmdsAddr    = nullptr;   // sig-resolved address (Load) — NOT yet installed
-static ProcessUsercmds_t g_origProcessUsercmds     = nullptr;   // the trampoline, set once s2detour::Install succeeds
-static bool              s_usercmdHookInstalled    = false;
-static google::protobuf::Message* s_currentUserCmd = nullptr;   // the in-flight CSGOUserCmdPB; block-scoped
 
-static constexpr int S2_USERCMD_STRIDE = 0x90;   // sizeof(CUserCmd); spike-confirmed (Task 1, 2026-07-14)
 // SUBTICK VERDICT (live human spike, 2026-07-14): a coarse forwardmove=0 write ALONE (no subtick clear)
 // stopped the player — subtick_moves do NOT override the coarse fields. So neutralizing a BLOCKED cmd
 // (zeroing forwardMove/sideMove/upMove/buttons) is already a full stop without an extra subtick clear;
@@ -2288,7 +2253,7 @@ static constexpr int S2_USERCMD_STRIDE = 0x90;   // sizeof(CUserCmd); spike-conf
 static constexpr bool S2_SUBTICK_CLEAR_ON_BLOCK = false;
 
 // Cached FieldDescriptor*s for CSGOUserCmdPB's "base" (CBaseUserCmdPB) submessage + its nested fields.
-// Resolved ONCE from the first live s_currentUserCmd's descriptor (a function-local static — a C++
+// Resolved ONCE from the first live scoped command's descriptor (a function-local static — a C++
 // "magic static", thread-safe single-init; the game drives this detour from one thread). protobuf
 // FieldDescriptor*s are stable for the process lifetime (the descriptor POOL is a compiled-in
 // singleton keyed by type), so caching is always safe: a null entry here (Valve renamed/removed the
@@ -2312,8 +2277,9 @@ struct UsercmdFieldCache {
 static const UsercmdFieldCache& GetUsercmdFieldCache() {
     static UsercmdFieldCache s_cache;
     static bool s_inited = false;
-    if (s_inited || !s_currentUserCmd) return s_cache;   // no live cmd yet -> stay uninited, retry later
-    const auto* d = s_currentUserCmd->GetDescriptor();
+    auto* current=static_cast<google::protobuf::Message*>(S2NamedCurrentUsercmd());
+    if (s_inited || !current) return s_cache;   // no live cmd yet -> stay uninited, retry later
+    const auto* d = current->GetDescriptor();
     if (!d) return s_cache;                              // stay uninited -> retry on a later call
     using FD = google::protobuf::FieldDescriptor;
     s_cache.baseF = d->FindFieldByName("base");
@@ -2349,12 +2315,13 @@ static const UsercmdFieldCache& GetUsercmdFieldCache() {
 // 3 pitch,4 yaw,5 roll,6 impulse. GetMessage() ONLY (a read must never allocate / set has-bits).
 // Every FieldDescriptor* is null-guarded + cpp_type()-validated before use. 0.0 on any guard failure.
 static double s2_usercmd_read(int field) {
-    if (!s_currentUserCmd) return 0.0;
+    auto* current=static_cast<google::protobuf::Message*>(S2NamedCurrentUsercmd());
+    if (!current) return 0.0;
     const auto& c = GetUsercmdFieldCache();
     if (!c.baseF) return 0.0;
-    const auto* r = s_currentUserCmd->GetReflection();
+    const auto* r = current->GetReflection();
     if (!r) return 0.0;
-    const auto& base = r->GetMessage(*s_currentUserCmd, c.baseF);
+    const auto& base = r->GetMessage(*current, c.baseF);
     const auto* br = base.GetReflection();
     if (!br) return 0.0;
     using FD = google::protobuf::FieldDescriptor;
@@ -2390,12 +2357,13 @@ static double s2_usercmd_read(int field) {
 // abort). field 1 writes leftmove = -value (MF-2). NO auto-subtick-clear — the spike verdict found a
 // coarse write alone takes effect; callers wanting a clear call usercmd_clear_subtick explicitly.
 static void s2_usercmd_write(int field, double value) {
-    if (!s_currentUserCmd) return;
+    auto* current=static_cast<google::protobuf::Message*>(S2NamedCurrentUsercmd());
+    if (!current) return;
     const auto& c = GetUsercmdFieldCache();
     if (!c.baseF) return;
-    const auto* r = s_currentUserCmd->GetReflection();
+    const auto* r = current->GetReflection();
     if (!r) return;
-    auto* base = r->MutableMessage(s_currentUserCmd, c.baseF);
+    auto* base = r->MutableMessage(current, c.baseF);
     if (!base) return;
     const auto* br = base->GetReflection();
     if (!br) return;
@@ -2436,13 +2404,14 @@ static void s2_usercmd_write(int field, double value) {
 // s2_usercmd_read_buttons() -> the current usercmd's pressed-button mask (base.buttons_pb.buttonstate1,
 // a uint64). GetMessage() ONLY. 0 on any guard failure.
 static uint64_t s2_usercmd_read_buttons() {
-    if (!s_currentUserCmd) return 0;
+    auto* current=static_cast<google::protobuf::Message*>(S2NamedCurrentUsercmd());
+    if (!current) return 0;
     const auto& c = GetUsercmdFieldCache();
     if (!c.baseF || !c.buttonsPbF || !c.buttonState1F) return 0;
     if (c.buttonState1F->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_UINT64) return 0;
-    const auto* r = s_currentUserCmd->GetReflection();
+    const auto* r = current->GetReflection();
     if (!r) return 0;
-    const auto& base = r->GetMessage(*s_currentUserCmd, c.baseF);
+    const auto& base = r->GetMessage(*current, c.baseF);
     const auto* br = base.GetReflection();
     if (!br) return 0;
     const auto& btn = br->GetMessage(base, c.buttonsPbF);
@@ -2454,14 +2423,15 @@ static uint64_t s2_usercmd_read_buttons() {
 // s2_usercmd_write_buttons(mask) — overwrite base.buttons_pb.buttonstate1. is_repeated()/cpp_type()
 // guarded. No-op on any guard failure.
 static void s2_usercmd_write_buttons(uint64_t mask) {
-    if (!s_currentUserCmd) return;
+    auto* current=static_cast<google::protobuf::Message*>(S2NamedCurrentUsercmd());
+    if (!current) return;
     const auto& c = GetUsercmdFieldCache();
     if (!c.baseF || !c.buttonsPbF || !c.buttonState1F) return;
     if (c.buttonState1F->is_repeated() ||
         c.buttonState1F->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_UINT64) return;
-    const auto* r = s_currentUserCmd->GetReflection();
+    const auto* r = current->GetReflection();
     if (!r) return;
-    auto* base = r->MutableMessage(s_currentUserCmd, c.baseF);
+    auto* base = r->MutableMessage(current, c.baseF);
     if (!base) return;
     const auto* br = base->GetReflection();
     if (!br) return;
@@ -2475,12 +2445,13 @@ static void s2_usercmd_write_buttons(uint64_t mask) {
 // s2_usercmd_clear_subtick() — drop base.subtick_moves (an OPTIONAL helper; see S2_SUBTICK_CLEAR_ON_BLOCK
 // above — the write ops never call this automatically).
 static void s2_usercmd_clear_subtick() {
-    if (!s_currentUserCmd) return;
+    auto* current=static_cast<google::protobuf::Message*>(S2NamedCurrentUsercmd());
+    if (!current) return;
     const auto& c = GetUsercmdFieldCache();
     if (!c.baseF || !c.subtickMovesF) return;
-    const auto* r = s_currentUserCmd->GetReflection();
+    const auto* r = current->GetReflection();
     if (!r) return;
-    auto* base = r->MutableMessage(s_currentUserCmd, c.baseF);
+    auto* base = r->MutableMessage(current, c.baseF);
     if (!base) return;
     const auto* br = base->GetReflection();
     if (!br) return;
@@ -2510,31 +2481,12 @@ static int DeriveUsercmdSlot(void* thisptr) {
     return (slot >= 0 && slot < 64) ? slot : -1;
 }
 
-// The production ProcessUsercmds detour. For each in-flight CUserCmd, points s_currentUserCmd at its
-// embedded CSGOUserCmdPB (block-scoped — cleared right after dispatch) and runs the JS UserCmd.onRun
-// subscribers via the core mux. A collapsed HookResult >= Handled (2) NEUTRALIZES that one cmd (zeroes
-// movement + buttons) — server-authoritative: the original trampoline is ALWAYS still called with the
-// (possibly modified/neutralized) cmds, never skipped, since a usercmd is data the engine must still
-// process (unlike a suppressed event/output, there is no "the original call" to skip here).
-static int Detour_ProcessUsercmds(void* thisptr, void* cmds, int numcmds, bool paused, float margin) {
-    S2HookDispatchGuard guard;
-    int slot = DeriveUsercmdSlot(thisptr);
-    if (guard && cmds && numcmds > 0) {
-        for (int i = 0; i < numcmds; i++) {
-            s_currentUserCmd = reinterpret_cast<google::protobuf::Message*>(
-                reinterpret_cast<char*>(cmds) + static_cast<size_t>(i) * S2_USERCMD_STRIDE + 0x10);
-            int res = s2script_core_dispatch_usercmd(slot);   // JS reads/modifies s_currentUserCmd in place
-            if (res >= 2) {   // Handled|Stop -> neutralize this cmd
-                s2_usercmd_write(0, 0.0);
-                s2_usercmd_write(1, 0.0);
-                s2_usercmd_write(2, 0.0);
-                s2_usercmd_write_buttons(0);
-                if (S2_SUBTICK_CLEAR_ON_BLOCK) s2_usercmd_clear_subtick();
-            }
-            s_currentUserCmd = nullptr;
-        }
-    }
-    return g_origProcessUsercmds ? g_origProcessUsercmds(thisptr, cmds, numcmds, paused, margin) : 0;
+static int S2NamedUsercmdSlotOp(void* receiver) { return DeriveUsercmdSlot(receiver); }
+static int S2NamedUsercmdDispatchOp(int slot) { return s2script_core_dispatch_usercmd(slot); }
+static void S2NamedUsercmdNeutralizeOp() {
+    s2_usercmd_write(0,0.0); s2_usercmd_write(1,0.0); s2_usercmd_write(2,0.0);
+    s2_usercmd_write_buttons(0);
+    if (S2_SUBTICK_CLEAR_ON_BLOCK) s2_usercmd_clear_subtick();
 }
 
 // usercmd_hook_install: called by core on the FIRST-EVER UserCmd.onRun subscribe (lazy — zero overhead
@@ -2542,44 +2494,44 @@ static int Detour_ProcessUsercmds(void* thisptr, void* cmds, int numcmds, bool p
 // installed). Returns 1 iff the detour is (now, or already) installed, else 0 (unresolved signature on
 // this build -> UserCmd.onRun degrades to a silent no-op, never a crash).
 static int Shim_UsercmdHookInstall() {
-    if (s_usercmdHookInstalled) return 1;
     if (!s_pProcessUsercmdsAddr) return 0;   // ProcessUsercmds signature unresolved on this build
-    const s2detour::InstallResult r =
-        s2detour::Install(s_pProcessUsercmdsAddr, reinterpret_cast<void*>(&Detour_ProcessUsercmds),
-                          reinterpret_cast<void**>(&g_origProcessUsercmds), &S2_AddressIsExecutable);
-    if (r.ok) {
-        s_usercmdHookInstalled = true;
-        META_CONPRINTF("[s2script] ProcessUsercmds hooked @%p (UserCmd.onRun, lazy-installed; %s, stole %d)\n",
-                       s_pProcessUsercmdsAddr, r.usedNearJump ? "near E9" : "far FF25", r.stolen);
+    const auto receipt=S2NamedInstallUsercmd();
+    if (receipt.Accepted()) {
+        META_CONPRINTF("[s2script] ProcessUsercmds checked hook accepted @%p (UserCmd.onRun, lazy; id=%u)\n",
+                       s_pProcessUsercmdsAddr,receipt.id);
         return 1;
     }
-    META_CONPRINTF("[s2script] WARN: ProcessUsercmds detour install failed (%s) — UserCmd.onRun off\n",
-                   r.reason ? r.reason : "no reason");
+    META_CONPRINTF("[s2script] WARN: ProcessUsercmds checked hook failed (%s) — UserCmd.onRun off\n",
+                   receipt.reason.c_str());
     return 0;
 }
 
 // ---------------------------------------------------------------------------
 // Damage-info accessors (Slice 6.6 Stage 2). Read/write a field of the CURRENT CTakeDamageInfo
-// (s_currentDamageInfo, set by the DispatchTraceAttack detour) at a schema-resolved byte offset.
+// (provided by the DispatchTraceAttack checked callback) at a schema-resolved byte offset.
 // Valid only during a damage dispatch; null-guarded. The raw pointer never crosses to JS.
 // ---------------------------------------------------------------------------
 static float s2_damage_read_float(int offset) {
-    if (!s_currentDamageInfo || offset < 0 || offset > 4096) return 0.0f;
-    return *reinterpret_cast<float*>(reinterpret_cast<char*>(s_currentDamageInfo) + offset);
+    void* info=S2NamedDamageInfo();
+    if (!info || offset < 0 || offset > 4096) return 0.0f;
+    return *reinterpret_cast<float*>(reinterpret_cast<char*>(info) + offset);
 }
 static int s2_damage_read_int(int offset) {
-    if (!s_currentDamageInfo || offset < 0 || offset > 4096) return 0;
-    return *reinterpret_cast<int*>(reinterpret_cast<char*>(s_currentDamageInfo) + offset);
+    void* info=S2NamedDamageInfo();
+    if (!info || offset < 0 || offset > 4096) return 0;
+    return *reinterpret_cast<int*>(reinterpret_cast<char*>(info) + offset);
 }
 static void s2_damage_write_float(int offset, float value) {
-    if (!s_currentDamageInfo || offset < 0 || offset > 4096) return;
-    *reinterpret_cast<float*>(reinterpret_cast<char*>(s_currentDamageInfo) + offset) = value;
+    void* info=S2NamedDamageInfo();
+    if (!info || offset < 0 || offset > 4096) return;
+    *reinterpret_cast<float*>(reinterpret_cast<char*>(info) + offset) = value;
 }
 // The victim's raw CEntityHandle from the detour `this` (CEntityInstance::GetRefEHandle().ToInt() — inline,
 // == the raw m_Index the JS handle-decode expects). -1 when absent. The raw pointer never crosses to JS.
 static int s2_damage_victim() {
-    if (!s_currentDamageVictim) return -1;
-    return static_cast<CEntityInstance*>(s_currentDamageVictim)->GetRefEHandle().ToInt();
+    void* victim=S2NamedDamageVictim();
+    if (!victim) return -1;
+    return static_cast<CEntityInstance*>(victim)->GetRefEHandle().ToInt();
 }
 
 // ---------------------------------------------------------------------------
@@ -2594,10 +2546,7 @@ static int s2_damage_victim() {
 // (clean, unquoted — ArgS() wraps it in quotes). core dispatch_chat parses the !cmd / /cmd trigger and
 // returns 1 to SUPPRESS the broadcast (a matched silent `/`); we then skip the original. Every deref is
 // pointer-guarded; degrade-never-crash (a resolve failure just falls through to the original broadcast).
-typedef void (*HostSay_t)(void* pController, void* pCmd, bool teamonly, int a4, const char* a5);
-static HostSay_t g_origHostSay = nullptr;
-
-static void Detour_HostSay(void* pController, void* pCmd, bool teamonly, int a4, const char* a5) {
+static int S2NamedChatOp(void* pController, void* pCmd, bool teamonly, int, const char*) {
     int slot = -1;
     if (pController && reinterpret_cast<uintptr_t>(pController) > 0x10000) {
         int idx = static_cast<CEntityInstance*>(pController)->GetRefEHandle().GetEntryIndex();
@@ -2608,12 +2557,10 @@ static void Detour_HostSay(void* pController, void* pCmd, bool teamonly, int a4,
         msg = reinterpret_cast<const CCommand*>(pCmd)->Arg(1);   // the raw chat message, unquoted
     }
     int suppress = 0;
-    S2HookDispatchGuard guard;
-    if (guard && slot >= 0 && msg && msg[0]) {
+    if (slot >= 0 && msg && msg[0]) {
         suppress = s2script_core_dispatch_chat(slot, msg, teamonly ? 1 : 0); // trigger/dispatch + raw subs + suppress?
     }
-    // suppress (a matched silent `/` trigger) -> skip the original so the message is NOT broadcast.
-    if (!suppress && g_origHostSay) g_origHostSay(pController, pCmd, teamonly, a4, a5);
+    return suppress;
 }
 
 // ---------------------------------------------------------------------------
@@ -3578,18 +3525,13 @@ private:
 // have DESTRUCTED the live manifest mid-precache -> server crash/corruption at map load. FIX: call
 // the engine's own helper verbatim (sig-resolved as "PrecacheAddResource"; it self-resolves the
 // global + issues the correct vtable[8] args, so we make NO assumption about the global's offset,
-// the vtable index, or pManifest's identity). s_currentPrecacheManifest is now purely a WINDOW GATE:
+// the vtable index, or pManifest's identity). The scoped manifest is purely a WINDOW GATE:
 // it is non-null ONLY for the synchronous duration of the hook dispatch — exactly the window the
 // engine's global precache manifest is populated (the original slot[7] reads that global there with
 // no null-guard). We never INVOKE the stashed pManifest; it never crosses to JS. Degrade-never-crash:
 // helper unresolved / outside the window / out-of-.text -> the add no-ops (returns 0), never a crash.
 // ---------------------------------------------------------------------------
-typedef void (*OnPrecacheResourceFn_t)(void* thisptr, void* pManifest);
-static OnPrecacheResourceFn_t s_origOnPrecacheResource = nullptr;   // saved original slot value (for un-hook + chaining)
-static void** s_pGameRulesVtable   = nullptr;                       // the shared CGameRulesGameSystem class vtable (for restore)
-static void*  s_currentPrecacheManifest = nullptr;                  // WINDOW GATE: non-null ONLY during the hook dispatch
 static int    s_precacheVtblIdx    = -1;                            // gamedata offsets entry (vtable index; a HINT)
-static bool   s_precacheHookInstalled = false;                      // the vtable slot is swapped to our handler
 
 // The engine's own "add one resource string to the current precache manifest" helper (@0x19eca40 on
 // the pinned build-2000873 libserver.so): a single-arg `void add(const char* path)` that internally
@@ -3677,7 +3619,7 @@ public:
 CBaseGameSystemFactory** CBaseGameSystemFactory::sm_pFirst = nullptr;
 
 // The session manifest, live ONLY for the duration of the BuildGameSessionManifest dispatch. Same
-// window-gate discipline as s_currentPrecacheManifest: it is never retained past the event and never
+// window-gate discipline as the callback manifest: it is never retained past the event and never
 // crosses into JS.
 static IEntityResourceManifest* s_sessionManifest = nullptr;
 
@@ -3721,12 +3663,13 @@ static bool InstallGameSystem(int64_t smpFirstOffset) {
 }
 
 static int s2_precache_manifest_add(const char* path) {
-    if (!s_currentPrecacheManifest || !path || !path[0]) return 0;
-    void** vtbl = *reinterpret_cast<void***>(s_currentPrecacheManifest);
+    void* manifest=S2NamedCurrentPrecacheManifest();
+    if (!manifest || !path || !path[0]) return 0;
+    void** vtbl = *reinterpret_cast<void***>(manifest);
     if (!vtbl) return 0;
     void* fn = vtbl[0];
     if (!fn || !IsAddressInAnyModuleText(fn)) return 0;
-    reinterpret_cast<void (*)(void*, const char*)>(fn)(s_currentPrecacheManifest, path);
+    reinterpret_cast<void (*)(void*, const char*)>(fn)(manifest, path);
     return 1;
 }
 
@@ -3737,7 +3680,7 @@ static int s2_precache_manifest_add(const char* path) {
 // works for models), while the global helper is the path this shim has always used for soundevents
 // and is kept so sound precaching cannot regress. Adding the same resource twice is idempotent.
 static int s2_sound_precache_add(const char* path) {
-    if (!s_currentPrecacheManifest && !s_sessionManifest) return 0;              // outside every precache window
+    if (!S2NamedCurrentPrecacheManifest() && !s_sessionManifest) return 0;       // outside every precache window
     if (!path || !path[0]) return 0;
 
     int added = s2_session_manifest_add(path);
@@ -3750,40 +3693,7 @@ static int s2_sound_precache_add(const char* path) {
     return added;
 }
 
-// The OnPrecacheResource replacement (virtual dispatch delivers the SysV register args here:
-// rdi=this instance, rsi=manifest). Stash the manifest for the block-scoped sound_precache_add op,
-// dispatch to the Sound.onPrecache subscribers, clear, then CHAIN to the original slot (so the game's
-// own resource precache still runs). A free function — this is a vtable-slot swap, not a member hook.
-static void Detour_OnPrecacheResource(void* thisptr, void* pManifest) {
-    S2HookDispatchGuard guard;
-    if (guard) {
-        s_currentPrecacheManifest = pManifest;
-        s2script_core_dispatch_precache();
-        s_currentPrecacheManifest = nullptr;
-    }
-    if (s_origOnPrecacheResource) s_origOnPrecacheResource(thisptr, pManifest);
-}
-
-// Overwrite one class-vtable slot (Sound slice — precache). The CGameRulesGameSystem class vtable
-// lives in libserver.so's .data.rel.ro (made read-only by RELRO after load), so mprotect the page(s)
-// spanning the slot to R/W around the single pointer write, then restore R-only (best-effort). Returns
-// false (nothing written) on mprotect failure. Reused for install (-> our handler) and Unload (-> the
-// saved original).
-static bool WriteVtableSlot(void** vt, int idx, void* fn) {
-    void** slot = &vt[idx];
-    long pg = sysconf(_SC_PAGESIZE);
-    if (pg <= 0) return false;
-    uintptr_t a = reinterpret_cast<uintptr_t>(slot);
-    uintptr_t pageStart = a & ~static_cast<uintptr_t>(pg - 1);
-    size_t span = (a + sizeof(void*)) - pageStart;
-    // The mprotect(RW) / pointer-write / mprotect(R) sequence below is NOT atomic, but it is safe here:
-    // both callers (InstallPrecacheHook in Load(), the restore in Unload()) and the game systems that
-    // dispatch through this vtable run on the main game thread only — there is no concurrent reader.
-    if (mprotect(reinterpret_cast<void*>(pageStart), span, PROT_READ | PROT_WRITE) != 0) return false;
-    *slot = fn;
-    mprotect(reinterpret_cast<void*>(pageStart), span, PROT_READ);   // best-effort restore
-    return true;
-}
+static void S2NamedPrecacheOp() { s2script_core_dispatch_precache(); }
 
 // Install the OnPrecacheResource class-vtable hook (called ONCE from Load; see the block comment for
 // the mechanism rationale). RTTI-resolved vtable + the gamedata vtable INDEX (a HINT), the resolved
@@ -3791,29 +3701,25 @@ static bool WriteVtableSlot(void** vt, int idx, void* fn) {
 // untouched (the hook off; onPrecache never fires; emit unaffected). s_precacheVtblIdx is filled from
 // the offsets block earlier in Load; its key-existence is reported to the gamedata banner there.
 static void InstallPrecacheHook() {
-    if (s_precacheHookInstalled) return;
+    if (S2NamedHookSnapshot(S2NamedHookSite::Precache).Accepted()) return;
     if (s_precacheVtblIdx < 0) return;   // the offsets-block GamedataResult already recorded the absent key
-    void** vt = s2vtable::GetVTableByName("libserver.so", "CGameRulesGameSystem");
-    if (!vt) {
-        META_CONPRINTF("[s2script] WARN: precache — CGameRulesGameSystem RTTI vtable not found; onPrecache OFF\n");
+    s2resolve::VirtualSlotResolution resolved;
+    std::string reason;
+    if (!s2resolve::ResolveVirtualSlot("libserver.so","CGameRulesGameSystem",
+                                      s_precacheVtblIdx,resolved,reason)) {
+        META_CONPRINTF("[s2script] WARN: precache structural virtual lookup failed (%s); onPrecache OFF\n",
+                       reason.c_str());
         return;
     }
-    void* slotFn = vt[s_precacheVtblIdx];
-    if (!IsAddressInServerText(slotFn)) {   // a stale/wrong index could point anywhere
-        META_CONPRINTF("[s2script] WARN: precache — OnPrecacheResource vtbl[%d]=%p out of libserver .text; onPrecache OFF\n",
-                       s_precacheVtblIdx, slotFn);
+    const auto receipt=S2NamedConfigurePrecache(resolved);
+    if (!receipt.Accepted()) {
+        META_CONPRINTF("[s2script] WARN: precache checked global hook failed (%s); onPrecache OFF\n",
+                       receipt.reason.c_str());
         return;
     }
-    s_origOnPrecacheResource = reinterpret_cast<OnPrecacheResourceFn_t>(slotFn);
-    if (!WriteVtableSlot(vt, s_precacheVtblIdx, reinterpret_cast<void*>(&Detour_OnPrecacheResource))) {
-        META_CONPRINTF("[s2script] WARN: precache — vtable slot mprotect/write failed; onPrecache OFF\n");
-        s_origOnPrecacheResource = nullptr;
-        return;
-    }
-    s_pGameRulesVtable = vt;
-    s_precacheHookInstalled = true;
-    META_CONPRINTF("[s2script] precache hook installed (CGameRulesGameSystem vtable @%p, slot %d, orig=%p)\n",
-                   reinterpret_cast<void*>(vt), s_precacheVtblIdx, reinterpret_cast<void*>(s_origOnPrecacheResource));
+    META_CONPRINTF("[s2script] precache checked global hook accepted (vtable=%p slot=%d original=%p id=%u)\n",
+                   reinterpret_cast<void*>(resolved.vtable),resolved.vtable_index,
+                   reinterpret_cast<void*>(resolved.target.address),receipt.id);
 }
 
 // CBaseEntity::EmitSound — the CSSharp static prototype (entity_manager.h:257), CHOSEN because the
@@ -4125,11 +4031,6 @@ static void CVariantToString(const CVariant* v, char* buf, size_t bufSize) {
     }
 }
 
-// The FireOutputInternal detour target + trampoline (installed/removed via the shim's shared
-// s2detour engine — same mechanism as the 6.6 DispatchTraceAttack / 6.11b HostSay detours).
-using FireOutputInternalFn = void (*)(CEntityIOOutput*, CEntityInstance*, CEntityInstance*, const CVariant*, float, void*, char*);
-static FireOutputInternalFn s_origFireOutputInternal = nullptr;
-
 // Extract output name/class/activator/caller/value, dispatch SYNCHRONOUSLY to core (the
 // damage/event pre-hook pattern — a handler must be able to block), and supersede (skip) the
 // original call when the collapsed HookResult is >= Handled (2). The raw CEntityIOOutput* /
@@ -4137,11 +4038,10 @@ static FireOutputInternalFn s_origFireOutputInternal = nullptr;
 // CEntityHandle ints (core decodes + serial-gate-validates them via the existing entity-ref
 // path), the value crosses as a string. Any resolve failure (null pThis/m_pDesc/m_pName) falls
 // straight through to the original — never suppress on a shim-side miss.
-static void Hook_FireOutputInternal(CEntityIOOutput* pThis, CEntityInstance* act, CEntityInstance* caller,
-                                    const CVariant* value, float delay, void* u1, char* u2) {
+static int S2NamedOutputOp(CEntityIOOutput* pThis, CEntityInstance* act, CEntityInstance* caller,
+                           const CVariant* value, float delay, void*, char*) {
     int result = 0;   // Continue
-    S2HookDispatchGuard guard;
-    if (guard && pThis && pThis->m_pDesc && pThis->m_pDesc->m_pName) {
+    if (pThis && pThis->m_pDesc && pThis->m_pDesc->m_pName) {
         const char* outputName = pThis->m_pDesc->m_pName;
         const char* cls = caller ? caller->GetClassname() : "";
         int actH    = act    ? act->GetRefEHandle().ToInt()    : -1;
@@ -4150,8 +4050,7 @@ static void Hook_FireOutputInternal(CEntityIOOutput* pThis, CEntityInstance* act
         CVariantToString(value, valbuf, sizeof valbuf);
         result = s2script_core_dispatch_output(cls, outputName, actH, callerH, valbuf, delay);
     }
-    if (result >= 2) return;   // Handled|Stop -> suppress: skip the original (do NOT call it)
-    if (s_origFireOutputInternal) s_origFireOutputInternal(pThis, act, caller, value, delay, u1, u2);
+    return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -4167,6 +4066,18 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     m_coreDispatchReady = false;
     S2KHookLogInterfaceVtables();
     s_gdOk = 0; s_gdFail = 0;   // reset the gamedata validation report for this Load
+
+    S2NamedHookOps namedOps;
+    namedOps.damage_pre=&S2NamedDamagePreOp;
+    namedOps.damage_post=&S2NamedDamagePostOp;
+    namedOps.chat=&S2NamedChatOp;
+    namedOps.output=&S2NamedOutputOp;
+    namedOps.usercmd_slot=&S2NamedUsercmdSlotOp;
+    namedOps.usercmd_dispatch=&S2NamedUsercmdDispatchOp;
+    namedOps.usercmd_neutralize=&S2NamedUsercmdNeutralizeOp;
+    namedOps.precache=&S2NamedPrecacheOp;
+    S2NamedHooksSetOps(namedOps);
+    S2NamedSetUsercmdTarget(nullptr);
 
     // deferred-dispatch: hand the engine-free queue its engine ops before anything can push to it.
     S2_InstallDeferOps();
@@ -4579,18 +4490,13 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 ModText dmt = FindModuleText(dit->second.module.c_str());
                 if (dOff != s2sig::kFail && dmt.text) {  // resolve=="direct": the (unique) match IS the function start
                     void* dtaAddr = const_cast<uint8_t*>(dmt.text) + dOff;
-                    const s2detour::InstallResult dr =
-                        s2detour::Install(dtaAddr, reinterpret_cast<void*>(&Detour_DispatchTraceAttack),
-                                          reinterpret_cast<void**>(&g_origDTA), &S2_AddressIsExecutable);
-                    if (dr.ok) {
-                        META_CONPRINTF("[s2script] DispatchTraceAttack hooked @%p (read-only; %s, stole %d)\n",
-                                       dtaAddr, dr.usedNearJump ? "near E9" : "far FF25", dr.stolen);
-                        // Self-test: call the now-patched function with the sentinel `this` — the handler
-                        // short-circuits (never runs the original), proving the detour diverts on the live binary.
-                        reinterpret_cast<DispatchTraceAttack_t>(dtaAddr)(
-                            reinterpret_cast<void*>(kDtaSelfTest), nullptr, nullptr, nullptr);
+                    const auto receipt=S2NamedConfigureDamage(dtaAddr);
+                    if (receipt.Accepted()) {
+                        META_CONPRINTF("[s2script] DispatchTraceAttack checked hook accepted @%p (id=%u)\n",
+                                       dtaAddr,receipt.id);
                     } else {
-                        META_CONPRINTF("[s2script] WARN: DispatchTraceAttack detour install failed — damage hook off\n");
+                        META_CONPRINTF("[s2script] WARN: DispatchTraceAttack checked hook failed (%s) — damage hook off\n",
+                                       receipt.reason.c_str());
                     }
                 }   // dOff == kFail: ResolveSigValidated already recorded the reason
             }
@@ -4605,15 +4511,13 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 ModText hmt = FindModuleText(hsit->second.module.c_str());
                 if (hOff != s2sig::kFail && hmt.text) {  // resolve=="direct": the unique match IS the function start
                     void* hsAddr = const_cast<uint8_t*>(hmt.text) + hOff;
-                    const s2detour::InstallResult hr =
-                        s2detour::Install(hsAddr, reinterpret_cast<void*>(&Detour_HostSay),
-                                          reinterpret_cast<void**>(&g_origHostSay), &S2_AddressIsExecutable);
-                    if (hr.ok) {
-                        META_CONPRINTF("[s2script] HostSay hooked @%p (chat triggers !cmd / /cmd; %s, stole %d)\n",
-                                       hsAddr, hr.usedNearJump ? "near E9" : "far FF25", hr.stolen);
+                    const auto receipt=S2NamedConfigureChat(hsAddr);
+                    if (receipt.Accepted()) {
+                        META_CONPRINTF("[s2script] HostSay checked hook accepted @%p (chat triggers; id=%u)\n",
+                                       hsAddr,receipt.id);
                     } else {
-                        META_CONPRINTF("[s2script] WARN: HostSay detour install failed (%s) — chat triggers off\n",
-                                       hr.reason ? hr.reason : "no reason");
+                        META_CONPRINTF("[s2script] WARN: HostSay checked hook failed (%s) — chat triggers off\n",
+                                       receipt.reason.c_str());
                     }
                 }   // hOff == kFail: ResolveSigValidated already recorded the reason
             }
@@ -4878,16 +4782,13 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 ModText foimt = FindModuleText(foiit->second.module.c_str());
                 if (foiOff != s2sig::kFail && foimt.text) {  // resolve=="direct": the unique match IS the function start
                     void* foiAddr = const_cast<uint8_t*>(foimt.text) + foiOff;
-                    const s2detour::InstallResult fr =
-                        s2detour::Install(foiAddr, reinterpret_cast<void*>(&Hook_FireOutputInternal),
-                                          reinterpret_cast<void**>(&s_origFireOutputInternal),
-                                          &S2_AddressIsExecutable);
-                    if (fr.ok) {
-                        META_CONPRINTF("[s2script] FireOutputInternal hooked @%p (Entity.onOutput; %s, stole %d)\n",
-                                       foiAddr, fr.usedNearJump ? "near E9" : "far FF25", fr.stolen);
+                    const auto receipt=S2NamedConfigureOutput(foiAddr);
+                    if (receipt.Accepted()) {
+                        META_CONPRINTF("[s2script] FireOutputInternal checked hook accepted @%p (Entity.onOutput; id=%u)\n",
+                                       foiAddr,receipt.id);
                     } else {
-                        META_CONPRINTF("[s2script] WARN: FireOutputInternal detour install failed (%s) — Entity.onOutput off\n",
-                                       fr.reason ? fr.reason : "no reason");
+                        META_CONPRINTF("[s2script] WARN: FireOutputInternal checked hook failed (%s) — Entity.onOutput off\n",
+                                       receipt.reason.c_str());
                     }
                 }   // foiOff == kFail: ResolveSigValidated already recorded the reason
             }
@@ -4927,7 +4828,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             // entry) into s_pProcessUsercmdsAddr — a DIRECT prologue signature self-validated on OUR
             // libserver.so. Degrade-never-crash: unresolved leaves s_pProcessUsercmdsAddr null ->
             // Shim_UsercmdHookInstall (usercmd_hook_install) no-ops -> UserCmd.onRun never fires.
-            // LAZY: the detour is NOT installed here — only resolved into an address; s2detour::Install
+            // LAZY: the checked hook is NOT configured here — only resolved into an address; setup
             // runs later, once, on the first UserCmd.onRun subscribe (see Shim_UsercmdHookInstall).
             auto puit = sigs.find("ProcessUsercmds");
             if (puit == sigs.end()) {
@@ -4937,6 +4838,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 ModText pumt = FindModuleText(puit->second.module.c_str());
                 if (puOff != s2sig::kFail && pumt.text) {  // resolve=="direct": the unique match IS the function start
                     s_pProcessUsercmdsAddr = const_cast<uint8_t*>(pumt.text) + puOff;
+                    S2NamedSetUsercmdTarget(s_pProcessUsercmdsAddr);
                     META_CONPRINTF("[s2script] ProcessUsercmds resolved @%p (UserCmd.onRun; lazy install)\n",
                                    s_pProcessUsercmdsAddr);
                 }   // puOff == kFail: ResolveSigValidated already recorded the reason
@@ -5232,7 +5134,8 @@ static void S2Shutdown_ResetLoad() {
 
 static bool S2_NormalHooksCanRemoveSync(const S2HookTerminalPermit& p) {
     return S2HookInventoryCanRemoveSync(S2NormalHookInventory(), p) &&
-        S2SdkhooksVpCanUnloadSync(p) && S2EngineHooksCanUnloadSync(p);
+        S2SdkhooksVpCanUnloadSync(p) && S2EngineHooksCanUnloadSync(p) &&
+        S2NamedHooksCanUnloadSync(p);
 }
 
 static bool S2_BeginCheckedRetirement(const S2HookTerminalPermit& permit) {
@@ -5290,12 +5193,14 @@ static bool S2_BeginCheckedRetirement(const S2HookTerminalPermit& permit) {
     }
 
     return S2HookInventoryBeginRemoveSync(S2NormalHookInventory(), permit) &&
-        S2SdkhooksVpUnloadSync(permit) && S2EngineHooksUnloadSync(permit);
+        S2SdkhooksVpUnloadSync(permit) && S2EngineHooksUnloadSync(permit) &&
+        S2NamedHooksUnloadSync(permit);
 }
 
 static bool S2_NormalHooksRemovalComplete() {
     return S2HookInventoryRemovalComplete(S2NormalHookInventory()) &&
-        S2SdkhooksVpRemovalComplete() && S2EngineHooksRemovalComplete();
+        S2SdkhooksVpRemovalComplete() && S2EngineHooksRemovalComplete() &&
+        S2NamedHooksRemovalComplete();
 }
 
 static bool S2_FinishUnloadCleanup() {
@@ -5316,17 +5221,6 @@ static bool S2_FinishUnloadCleanup() {
     s_userMsgFirstFireDone = false;
     for (auto& w : s_userMsgSubBits) w = 0;
     s_transmitTable.clear();
-
-    if (s_precacheHookInstalled && s_pGameRulesVtable && s_origOnPrecacheResource && s_precacheVtblIdx >= 0) {
-        if (!WriteVtableSlot(s_pGameRulesVtable, s_precacheVtblIdx, reinterpret_cast<void*>(s_origOnPrecacheResource))) {
-            META_CONPRINTF("[s2script] WARN: precache — vtable slot restore write FAILED; slot still points at the "
-                           "detour being unloaded (next precache may crash)\n");
-            ok = false;
-        }
-        s_precacheHookInstalled = false;
-        s_pGameRulesVtable = nullptr;
-        s_origOnPrecacheResource = nullptr;
-    }
 
     // Live evidence places PreShutdown after the game world/entity system was destroyed.
     // Its listener storage died with that world; never reacquire/dereference it here.
@@ -5491,22 +5385,16 @@ KHook::Return<void> S2ScriptPlugin::Hook_GameFramePre(ISource2Server* server, bo
     // with FAKE data, so it must NOT run in production — set S2_DAMAGE_SELFTEST=1 to opt in for verification.
     // Fired at a few LATER frames (frame 1 caught the plugin mid boot-reload with no live subscriber).
     static bool s_dmgSelfTestOn = (getenv("S2_DAMAGE_SELFTEST") != nullptr);
-    if (s_dmgSelfTestOn && (s_frameNo == 300 || s_frameNo == 900 || s_frameNo == 1800) && g_origDTA) {
+    if (s_dmgSelfTestOn && (s_frameNo == 300 || s_frameNo == 900 || s_frameNo == 1800) &&
+        S2NamedHookSnapshot(S2NamedHookSite::Damage).Accepted()) {
         static char fakeInfo[256];
         memset(fakeInfo, 0, sizeof(fakeInfo));
         *reinterpret_cast<float*>(fakeInfo + 68) = 42.0f;   // CTakeDamageInfo::m_flDamage
-        void* prevInfo = s_currentDamageInfo;
-        void* prevVictim = s_currentDamageVictim;
-        s_currentDamageInfo = fakeInfo;
         void* victimEnt = nullptr;                          // scan for a REAL entity (idx 1+) -> proves the victim path
         for (int i = 1; i < 128 && !victimEnt; ++i) victimEnt = s2_ent_by_index(i);
-        s_currentDamageVictim = victimEnt;
-        META_CONPRINTF("[s2script] damage self-test (frame %ld): synthetic damage (m_flDamage=42, victim=%p, raw=%d)\n",
-                       s_frameNo, victimEnt, s2_damage_victim());
-        s2script_core_dispatch_damage();
-        s2script_core_dispatch_damage_post();
-        s_currentDamageInfo = prevInfo;
-        s_currentDamageVictim = prevVictim;
+        META_CONPRINTF("[s2script] damage self-test (frame %ld): synthetic damage (m_flDamage=42, victim=%p)\n",
+                       s_frameNo, victimEnt);
+        S2NamedDispatchSyntheticDamage(victimEnt,fakeInfo);
     }
     s2script_core_dispatch_game_frame(0, static_cast<int>(simulating),
                                       static_cast<int>(first), static_cast<int>(last));
@@ -6060,6 +5948,4 @@ KHook::Return<void> S2ScriptPlugin::Hook_CheckTransmit(ISource2GameEntities* ent
     return S2_Ignore();
 }
 
-// (Sound slice precache: the hook handler + installer are FREE functions — Detour_OnPrecacheResource /
-// WriteVtableSlot / InstallPrecacheHook — defined up with the precache statics block, because this is
-// a class-vtable slot swap, not a member SourceHook. See that block for the mechanism rationale.)
+// (Sound slice precache uses the checked global-vtable filter configured by InstallPrecacheHook.)

@@ -51,6 +51,9 @@ bash scripts/test-hook-dispatch.sh
 echo "== test-engine-hook-invocation.sh (production declarative KHook callbacks) =="
 bash scripts/test-engine-hook-invocation.sh
 
+echo "== test-named-hook-invocation.sh (production named KHook callbacks) =="
+bash scripts/test-named-hook-invocation.sh
+
 echo "== test-khook-binding.sh (checked KHook receipts, Observe/BeginRemove) =="
 bash scripts/test-khook-binding.sh
 

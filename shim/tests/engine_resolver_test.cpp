@@ -206,9 +206,18 @@ void patched_virtual() {
     auto s=f.sources();
     s.ops.vtable_from_image=[](const char*) -> void** { return reinterpret_cast<void**>(0x103000); };
     s.ops.original_virtual=[](void**,int i) -> void* { return i==0 ? reinterpret_cast<void*>(0x101200) : nullptr; };
+    s2resolve::VirtualSlotResolution slot;
+    std::string why;
+    CHECK(s2resolve::EvaluateVirtualSlot("fixture","FixtureClass",0,s,slot,why) &&
+              slot.target.address==0x101200 && slot.target.image==f.image &&
+              slot.vtable==reinterpret_cast<void**>(0x103000) && slot.vtable_index==0,
+          "structural virtual lookup judges the provider original and retains vtable identity");
+    CHECK(slot.target.validation_receipt.find("FixtureClass")!=std::string::npos &&
+              slot.target.validation_receipt.find("abcd1234")!=std::string::npos,
+          "structural virtual lookup receipts class and verified build identity");
     auto r=recipe(""); r.kind=s2resolve::Kind::Virtual; r.class_name="FixtureClass"; r.vtable_index=0;
     r.validate_json=R"({"prologue":"48 89 55 F8","vtable-member":"FixtureClass"})";
-    s2resolve::Resolution out; std::string why;
+    s2resolve::Resolution out;
     CHECK(s2resolve::Evaluate(r,s,out,why) && out.address==0x101200,
           "patched virtual resolves original before prologue and membership checks");
     r.validate_json="{}";
@@ -216,6 +225,32 @@ void patched_virtual() {
     r.validate_json=R"({"prologue":"48 89 55 F8"})"; r.vtable_index=511;
     s.ops.vtable_from_image=[](const char*) -> void** { return reinterpret_cast<void**>(0x103ff8); };
     CHECK(!s2resolve::Evaluate(r,s,out,why), "virtual slot outside bounded live mapping is rejected before callback");
+    CHECK(!s2resolve::EvaluateVirtualSlot("fixture","FixtureClass",511,s,slot,why) &&
+              why.find("readable")!=std::string::npos,
+          "structural virtual lookup rejects an incomplete live slot read");
+
+    s=f.sources();
+    CHECK(!s2resolve::EvaluateVirtualSlot("fixture","FixtureClass",0,s,slot,why) &&
+              why.find("RTTI")!=std::string::npos,
+          "structural virtual lookup requires RTTI resolution");
+    s.ops.vtable_from_image=[](const char*) -> void** { return reinterpret_cast<void**>(0x103000); };
+    CHECK(!s2resolve::EvaluateVirtualSlot("fixture","FixtureClass",0,s,slot,why) &&
+              why.find("original")!=std::string::npos,
+          "structural virtual lookup requires the stock original provider contact");
+    s.ops.original_virtual=[](void**,int) -> void* { return nullptr; };
+    CHECK(!s2resolve::EvaluateVirtualSlot("fixture","FixtureClass",0,s,slot,why) &&
+              why.find("original")!=std::string::npos,
+          "structural virtual lookup rejects a missing provider original");
+    s.ops.original_virtual=[](void**,int) -> void* { return reinterpret_cast<void*>(0xf00000); };
+    CHECK(!s2resolve::EvaluateVirtualSlot("fixture","FixtureClass",0,s,slot,why) &&
+              why.find("executable")!=std::string::npos,
+          "structural virtual lookup rejects a provider original outside the verified image");
+    CHECK(!s2resolve::EvaluateVirtualSlot("fixture","",0,s,slot,why) &&
+              why.find("class/index")!=std::string::npos,
+          "structural virtual lookup rejects an empty class");
+    CHECK(!s2resolve::EvaluateVirtualSlot("fixture","FixtureClass",512,s,slot,why) &&
+              why.find("class/index")!=std::string::npos,
+          "structural virtual lookup rejects an out-of-range index");
 }
 }
 int main() {

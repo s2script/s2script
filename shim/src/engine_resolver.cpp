@@ -58,6 +58,57 @@ bool ctor_target(const s2original::Image& image,uintptr_t ctor,uintptr_t& target
     }
     return fail(reason,"ctor-body-xref preceding LEA not found");
 }
+#if defined(__linux__) && !defined(S2_RESOLVER_ENGINE_FREE)
+bool production_sources(const std::string& module,Sources& sources,std::string& reason) {
+    auto image=s2original::OpenLoadedModule(module.c_str(),reason);
+    if (!image) return false;
+    sources={};
+    sources.image=image;
+    sources.mapped=[image](uintptr_t at,size_t n) { return image->mapped(at,n); };
+    sources.read_live=[image](uintptr_t at,void* out,size_t n) { return image->read_live(at,out,n); };
+    sources.ops.vtable_from_image=[image](const char* cls) { return s2vtable::GetVTableByName(*image,cls); };
+    sources.ops.original_virtual=&KHook::FindOriginalVirtual;
+    return true;
+}
+#endif
+}
+
+bool EvaluateVirtualSlot(const std::string& module,const std::string& className,int index,
+                         const Sources& sources,VirtualSlotResolution& out,std::string& reason) {
+    out={}; reason.clear();
+    if (!sources.image) return fail(reason,"verified original module image unavailable");
+    if (!c_string(module) || !c_string(className))
+        return fail(reason,"virtual slot input contains an interior NUL");
+    if (module.empty()) return fail(reason,"virtual module invalid");
+    if (className.empty() || index<0 || index>=512)
+        return fail(reason,"virtual class/index invalid");
+    if (!sources.ops.vtable_from_image && !sources.ops.vtable_by_name)
+        return fail(reason,"RTTI vtable resolution unavailable");
+    void** vtable=sources.ops.vtable_from_image ? sources.ops.vtable_from_image(className.c_str()) :
+        sources.ops.vtable_by_name(module.c_str(),className.c_str());
+    uintptr_t slot=0; void* live=nullptr;
+    if (!vtable || !s2sig::AddRelative(reinterpret_cast<uintptr_t>(vtable),
+                                       size_t(index)*sizeof(void*),0,slot) ||
+        !sources.read_live || !sources.read_live(slot,&live,sizeof live))
+        return fail(reason,"virtual slot outside readable module data");
+    if (!sources.ops.original_virtual)
+        return fail(reason,"virtual original provider unavailable");
+    void* original=sources.ops.original_virtual(vtable,index);
+    if (!original) return fail(reason,"virtual original provider returned null");
+    const uintptr_t target=reinterpret_cast<uintptr_t>(original);
+    if (!sources.image->executable(target))
+        return fail(reason,"virtual original outside original executable image");
+    out.target.address=target;
+    out.target.image=sources.image;
+    out.target.recipe=json{{"kind","VirtualSlot"},{"module",module},
+        {"class",className},{"index",index}}.dump();
+    out.target.validation_receipt=json{{"validated","structural-virtual-slot"},
+        {"build_id",sources.image->identity().build_id},{"class",className},
+        {"index",index},{"vtable",reinterpret_cast<uintptr_t>(vtable)},
+        {"original",target}}.dump();
+    out.vtable=vtable;
+    out.vtable_index=index;
+    return true;
 }
 
 bool Evaluate(const TargetRecipe& recipe,const Sources& sources,Resolution& out,std::string& reason) {
@@ -80,16 +131,10 @@ bool Evaluate(const TargetRecipe& recipe,const Sources& sources,Resolution& out,
             return fail(reason,"virtual class/index invalid");
         if (!s2validate::DeclaresPrologue(recipe.validate_json.c_str()))
             return fail(reason,"virtual target requires validate.prologue");
-        if (!sources.ops.vtable_from_image && !sources.ops.vtable_by_name) return fail(reason,"RTTI vtable resolution unavailable");
-        void** vt=sources.ops.vtable_from_image ? sources.ops.vtable_from_image(recipe.class_name.c_str()) :
-            sources.ops.vtable_by_name(recipe.module.c_str(),recipe.class_name.c_str());
-        uintptr_t slot=0; void* live=nullptr;
-        if (!vt || !s2sig::AddRelative(reinterpret_cast<uintptr_t>(vt),size_t(recipe.vtable_index)*sizeof(void*),0,slot) ||
-            !sources.read_live || !sources.read_live(slot,&live,sizeof live))
-            return fail(reason,"virtual slot outside readable module data");
-        // The original lookup precedes every executable/prologue/member comparison.
-        target=reinterpret_cast<uintptr_t>(sources.ops.original_virtual ?
-            sources.ops.original_virtual(vt,recipe.vtable_index) : live);
+        VirtualSlotResolution slot;
+        if (!EvaluateVirtualSlot(recipe.module,recipe.class_name,recipe.vtable_index,
+                                 sources,slot,reason)) return false;
+        target=slot.target.address;
     } else {
         auto pattern=s2sig::ParsePattern(recipe.pattern);
         if (pattern.empty()) return fail(reason,"malformed signature pattern");
@@ -140,18 +185,30 @@ bool Evaluate(const TargetRecipe& recipe,const Sources& sources,Resolution& out,
 bool Resolve(const TargetRecipe& recipe,Resolution& out,std::string& reason) {
     out={}; reason.clear();
 #if defined(__linux__) && !defined(S2_RESOLVER_ENGINE_FREE)
-    auto image=s2original::OpenLoadedModule(recipe.module.c_str(),reason);
-    if (!image) return false;
     Sources sources;
-    sources.image=image;
-    sources.mapped=[image](uintptr_t at,size_t n) { return image->mapped(at,n); };
-    sources.read_live=[image](uintptr_t at,void* out,size_t n) { return image->read_live(at,out,n); };
-    sources.ops.vtable_from_image=[image](const char* cls) { return s2vtable::GetVTableByName(*image,cls); };
-    sources.ops.original_virtual=&KHook::FindOriginalVirtual;
+    if (!production_sources(recipe.module,sources,reason)) return false;
     return Evaluate(recipe,sources,out,reason);
 #else
     (void)recipe;
     return fail(reason,"production resolver requires Linux and Metamod (use Evaluate for fixtures)");
+#endif
+}
+
+bool ResolveVirtualSlot(const std::string& module,const std::string& className,int index,
+                        VirtualSlotResolution& out,std::string& reason) {
+    out={}; reason.clear();
+#if defined(__linux__) && !defined(S2_RESOLVER_ENGINE_FREE)
+    if (!c_string(module) || !c_string(className))
+        return fail(reason,"virtual slot input contains an interior NUL");
+    if (module.empty()) return fail(reason,"virtual module invalid");
+    if (className.empty() || index<0 || index>=512)
+        return fail(reason,"virtual class/index invalid");
+    Sources sources;
+    if (!production_sources(module,sources,reason)) return false;
+    return EvaluateVirtualSlot(module,className,index,sources,out,reason);
+#else
+    (void)module; (void)className; (void)index;
+    return fail(reason,"production resolver requires Linux and Metamod (use EvaluateVirtualSlot for fixtures)");
 #endif
 }
 }

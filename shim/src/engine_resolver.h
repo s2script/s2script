@@ -18,6 +18,11 @@ struct Resolution {
     std::shared_ptr<const s2original::Image> image;
     std::string recipe, validation_receipt;
 };
+struct VirtualSlotResolution {
+    Resolution target;
+    void** vtable = nullptr;
+    int vtable_index = -1;
+};
 // All external contacts of the recipe evaluator. mapped never dereferences its address;
 // read_live must check its entire span before reading. Neither supplies instruction bytes.
 struct Sources {
@@ -28,4 +33,9 @@ struct Sources {
 };
 bool Evaluate(const TargetRecipe& recipe, const Sources& sources, Resolution& out, std::string& reason);
 bool Resolve(const TargetRecipe& recipe, Resolution& out, std::string& reason);
+bool EvaluateVirtualSlot(const std::string& module, const std::string& className,
+                         int index, const Sources& sources,
+                         VirtualSlotResolution& out, std::string& reason);
+bool ResolveVirtualSlot(const std::string& module, const std::string& className,
+                        int index, VirtualSlotResolution& out, std::string& reason);
 }

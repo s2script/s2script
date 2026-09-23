@@ -84,6 +84,8 @@ add_library(s2script SHARED
     # and the block-scoped arg view. Cannot be unit-tested outside the game (it marshals a receiver
     # through the entity system), which is precisely why the policy lives in the TU above.
     src/engine_hooks.cpp
+    # Built-in named hooks use the same checked KHook ownership/lifetime backend.
+    src/named_hooks.cpp
     # SDKHooks virtuals: per-entity SH_ADD_MANUALHOOK (Touch family). Isolated so s2script_mm.cpp
     # does not grow another resolution loop; reads gamedata/sdkhooks, never s_gdCore.
     src/sdkhooks_vp.cpp
@@ -170,6 +172,13 @@ add_executable(engine_hook_invocation_selftest
 target_include_directories(engine_hook_invocation_selftest PRIVATE src
     ${CMAKE_SOURCE_DIR}/../third_party/hde ${MMS}/third_party/khook/include)
 target_link_libraries(engine_hook_invocation_selftest PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+
+# Actual built-in named callbacks, batch scopes and virtual receiver filter.
+add_executable(named_hook_invocation_selftest
+    src/named_hooks.cpp tests/named_hook_invocation_test.cpp)
+target_include_directories(named_hook_invocation_selftest PRIVATE src
+    ${MMS}/third_party/khook/include)
+target_link_libraries(named_hook_invocation_selftest PRIVATE Threads::Threads)
 
 # Production-used descriptor/SDKHook/built-in adapters over the shared resolver.
 add_executable(engine_consumer_selftest
