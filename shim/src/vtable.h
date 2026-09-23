@@ -1,4 +1,6 @@
 #pragma once
+#include "original_module.h"
+#include <functional>
 // RTTI vtable-by-name resolution (ray-trace slice, Task 1).
 //
 // CS2 does not export game-class vtables via dlsym: the pinned libserver.so's .symtab is stripped
@@ -28,5 +30,11 @@ namespace s2vtable {
 // chain can't be located. Callers MUST treat a null return as "the class isn't resolvable on this
 // binary" and degrade (no call through the vtable) — never assume a fallback index.
 void** GetVTableByName(const char* module, const char* className);
+
+// Same selected, verified module as the resolver. All RTTI facts are bounded live
+// data; ambiguity fails closed. The reader is injectable for engine-free fixtures.
+using LiveRead = std::function<bool(uintptr_t, void*, size_t)>;
+void** GetVTableByName(const s2original::Image& image, const char* className,
+                      const LiveRead& read_live = {});
 
 } // namespace s2vtable

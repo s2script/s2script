@@ -7,6 +7,38 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+if [[ -n "${S2_BUILD_JOBS:-}" && ! "${S2_BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "error: S2_BUILD_JOBS must be a positive integer" >&2
+  exit 2
+fi
+
+# ccache is present in CI via hendrikmuhs/ccache-action; on a dev box it may not be.
+# Only pass the launcher when it actually exists, so cmake does not fail on a missing binary.
+LAUNCHER=()
+if command -v ccache >/dev/null 2>&1; then
+  LAUNCHER=(-DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+fi
+
+# Fail fast on the complete optimized acceptance plugin: fixture-only host tests
+# cannot see plugin.cpp/SDK declaration errors. The final Bullseye/sniper build
+# and its source-bound symbol gates below remain mandatory.
+if [[ "$(uname -s)" == Linux ]]; then
+  echo "== early Release acceptance probe compile =="
+  cmake -S tools/khook-probe -B build/khook-probe-early -DCMAKE_BUILD_TYPE=Release \
+    ${LAUNCHER[@]+"${LAUNCHER[@]}"}
+  cmake --build build/khook-probe-early --parallel "${S2_BUILD_JOBS:-2}"
+  # Controlled policy rejection must never alter/interpose the main DSO state.
+  if nm -D -C build/khook-probe-early/s2_khook_probe.so | grep -q 's2hook_detail::g_lifecycle'; then
+    echo "error: acceptance private lifecycle escaped into dynamic symbols" >&2
+    exit 1
+  fi
+  nm -C build/khook-probe-early/s2_khook_probe.so > build/khook-probe-early/local-symbols.txt
+  if ! grep -Eq ' [bd] s2hook_detail::g_lifecycle$' build/khook-probe-early/local-symbols.txt; then
+    echo "error: acceptance private lifecycle is not DSO-local" >&2
+    exit 1
+  fi
+fi
+
 # Populates the cargo registry that check-licenses-generated.sh reads every locked crate's
 # license text out of, and warms it for the build below.
 echo "== cargo fetch --locked =="
@@ -17,6 +49,15 @@ bash scripts/check-core-boundary.sh
 
 echo "== test-boundary-nameleak.sh =="
 bash scripts/test-boundary-nameleak.sh
+
+echo "== test-original-module.sh (verified original instruction images) =="
+bash scripts/test-original-module.sh
+
+echo "== test-engine-resolver.sh (recipe-aware original-image resolution) =="
+bash scripts/test-engine-resolver.sh
+
+echo "== test-engine-consumer.sh (production consumer delegation and retention) =="
+bash scripts/test-engine-consumer.sh
 
 echo "== test-sigscan.sh =="
 bash scripts/test-sigscan.sh
@@ -38,6 +79,12 @@ bash scripts/test-client-bootstrap.sh
 
 echo "== test-hook-dispatch.sh (hook shape vocabulary, bypass latch, collapse) =="
 bash scripts/test-hook-dispatch.sh
+
+echo "== test-engine-hook-invocation.sh (production declarative KHook callbacks) =="
+bash scripts/test-engine-hook-invocation.sh
+
+echo "== test-named-hook-invocation.sh (production named KHook callbacks) =="
+bash scripts/test-named-hook-invocation.sh
 
 echo "== bounded engine function ABI / stock provider =="
 bash scripts/test-engine-function-abi.sh --stock-provider
@@ -115,12 +162,6 @@ echo "== cargo test -p s2script-core =="
 cargo test -p s2script-core
 bash scripts/test-async-pressure.sh
 
-# ccache is present in CI via hendrikmuhs/ccache-action; on a dev box it may not be.
-# Only pass the launcher when it actually exists, so cmake does not fail on a missing binary.
-LAUNCHER=()
-if command -v ccache >/dev/null 2>&1; then
-  LAUNCHER=(-DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
-fi
 
 echo "== check-gamedata-sigs.sh (no build-specific operands in a signature) =="
 bash scripts/check-gamedata-sigs.sh
@@ -142,6 +183,15 @@ cmake -S shim -B build/shim -DCMAKE_BUILD_TYPE=Release \
   -DS2_CORE_LIB_DIR=debug \
   ${LAUNCHER[@]+"${LAUNCHER[@]}"}
 cmake --build build/shim -j
+
+echo "== production interception inventory (stock KHook only) =="
+# Inspect the linked production DSO, including local symbols; standalone tests
+# intentionally retain the old decoder/relocator implementation.
+if nm -C build/shim/s2script.so | grep -E 's2detour::(Install|RemoveAll|Remove|Relocate)' > build/shim/private-interception-symbols.txt; then
+  cat build/shim/private-interception-symbols.txt >&2
+  echo 'error: production private interception linkage remains' >&2
+  exit 1
+fi
 
 echo "== libffi private static linkage =="
 if ldd build/shim/s2script.so | grep -i libffi; then

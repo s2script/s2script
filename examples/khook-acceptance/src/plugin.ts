@@ -1,4 +1,4 @@
-// khook-acceptance — JS fixture for KHook suite A. NOT a shipped plugin.
+// khook-acceptance — JS fixture for KHook suites A/B/C. NOT a shipped plugin.
 //
 // Uses only public APIs. Protocol: s2_khook_accept runtime, or prepare|collect|report|teardown <run_id>.
 // `report` is read-only. Competing command() registration for the probe token is forbidden;
@@ -21,9 +21,13 @@ import {
   createEntity,
   hook,
   previous,
+  onOutput,
 } from "@s2script/sdk";
-import type { Client, EntityRef, HookResultValue } from "@s2script/sdk";
-import { Player } from "@s2script/cs2";
+import type { Client, DamageInfo, EntityRef, HookResultValue } from "@s2script/sdk";
+import { Engine } from "@s2script/sdk/unsafe";
+import type { PrecacheContext } from "@s2script/sdk/sound";
+import type { UserCmdView } from "@s2script/sdk/usercmd";
+import { Player, items } from "@s2script/cs2";
 import { KHOOK_FIXTURE_REVISION, KHOOK_FIXTURE_TOKEN } from "./build_identity";
 
 const DEFAULT_TOKEN_CMD = "s2khook_cc_entry";
@@ -37,6 +41,8 @@ const REUSE_MAX_ATTEMPTS = 64;
 
 type Result = "pass" | "fail" | "pending";
 
+type Suite = "A" | "B" | "C";
+
 interface Rec {
   case: string;
   subcheck: string;
@@ -45,6 +51,12 @@ interface Rec {
   expected: Record<string, unknown>;
   actual: Record<string, unknown>;
   evidence: string;
+  evidence_class?: "observed";
+  group?: string;
+  provenance?: string;
+  callback_owner?: string;
+  target?: string;
+  observations?: Observation[];
 }
 
 interface PhaseSnap {
@@ -53,6 +65,8 @@ interface PhaseSnap {
 }
 
 interface PersistState {
+  lifetimeRows?: Observation[];
+  suite: Suite;
   runId: string;
   oldIndex: number;
   oldId: number;
@@ -66,6 +80,7 @@ interface PersistState {
   records: Rec[];
 }
 
+let runSuite: Suite = "A";
 let runId = "";
 let runBound = false;
 let artifactIdentity = "";
@@ -152,8 +167,9 @@ function bindArtifact(value: string): boolean {
 
 function emit(rec: Rec): string {
   return JSON.stringify({
+    ...rec,
     schema: 1,
-    suite: "A",
+    suite: runSuite,
     run_id: runId || "",
     source_revision: sourceRevision(),
     artifact_identity: artifactIdentity,
@@ -985,6 +1001,8 @@ function prepareR6(): void {
 }
 
 export function OnPluginStart(): void {
+  installIntegrationHooks();
+  installNamedIntegrationHooks();
   const prev = previous() as PersistState | undefined;
   handoff = prev;
   if (prev && prev.runId) {
@@ -1041,7 +1059,7 @@ export function OnPluginStart(): void {
   // previous() blob alone cannot silently adopt a run after native restart.
 
   hook.onPre(MASK_EVENT, (_ev) => {
-    if (!runBound || maskMode === "off") return;
+    if (!runBound || runSuite !== "A" || maskMode === "off") return;
     const humans = realClients();
     if (humans.length < 2) return;
     handledSetRecipients = true;
@@ -1057,7 +1075,7 @@ export function OnPluginStart(): void {
 
   command.onClientCommand(tokenCommand, (slot, argString) => {
     const args = (argString || "").trim().split(/\s+/);
-    if (!runBound || args[0] !== runId || !realClients().some(c => c.slot === slot)) return HookResult.Continue;
+    if (!runBound || runSuite !== "A" || args[0] !== runId || !realClients().some(c => c.slot === slot)) return HookResult.Continue;
     const tok = args[1] || "";
     if (!hookEnabled || tok === CTRL_MISSING) return HookResult.Continue;
     if (tok === CTRL_FLIP_CONTINUE) return HookResult.Handled;
@@ -1087,7 +1105,21 @@ export function OnPluginStart(): void {
       return HookResult.Handled;
     }
     const id = cmd.arg(1) || "";
-    const digest = cmd.arg(2) || "";
+    const suffix = [cmd.arg(2), cmd.arg(3), cmd.arg(4)].filter(value => !!value);
+    const suites = suffix.filter(value => /^(A|B|C)$/.test(value));
+    const digests = suffix.filter(value => /^[a-f0-9]{64}$/.test(value));
+    const selected = (suites[0] || "A") as Suite;
+    const digest = digests[0] || "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id) || suites.length > 1 || digests.length > 1 ||
+        suites.length + digests.length !== suffix.length || !!cmd.arg(5) ||
+        (sub !== "prepare" && runBound && (selected !== runSuite || id !== runId))) {
+      cmd.reply(JSON.stringify({ khook_acceptance_error: "invalid command or suite/run mismatch" }));
+      return HookResult.Handled;
+    }
+    if (selected !== "A") {
+      integrationCommand(sub, id, digest, selected, line => cmd.reply(line));
+      return HookResult.Handled;
+    }
     if (sub === "bind") {
       if (!runBound || id !== runId || !bindArtifact(digest)) cmd.reply("[khook-accept] invalid binding");
       else cmd.reply("[khook-accept] bound artifact=" + artifactIdentity);
@@ -1106,7 +1138,7 @@ export function OnPluginStart(): void {
       return HookResult.Handled;
     }
     if (sub === "resume" && !runBound) {
-      if (!handoff || handoff.runId !== id || handoff.artifactIdentity !== digest || !/^[a-f0-9]{64}$/.test(digest)) {
+      if (!handoff || (handoff.suite || "A") !== selected || handoff.runId !== id || handoff.artifactIdentity !== digest || !/^[a-f0-9]{64}$/.test(digest)) {
         cmd.reply("[khook-accept] resume requires matching .s2sp state handoff and artifact binding");
         return HookResult.Handled;
       }
@@ -1126,6 +1158,7 @@ export function OnPluginStart(): void {
         return HookResult.Handled;
       }
       if (digest && !/^[a-f0-9]{64}$/.test(digest)) { cmd.reply("[khook-accept] invalid artifact digest"); return HookResult.Handled; }
+      runSuite = selected;
       runId = id;
       runBound = true;
       artifactIdentity = "";
@@ -1227,12 +1260,13 @@ export function OnPluginStart(): void {
 export function OnGameFrame(): void {
   frames += 1;
   if (!runBound) return;
+  if (runSuite !== "A") { integrationFrame(); return; }
   r6Frames += 1;
   advancePhase();
 }
 
 export function OnClientConnected(c: Client): void {
-  if (runBound && c && c.isValid() && !c.isBot) {
+  if (runBound && runSuite === "A" && c && c.isValid() && !c.isBot) {
     clientsConnected += 1;
     lastSlot = c.slot;
     lastUserId = c.userId;
@@ -1241,6 +1275,7 @@ export function OnClientConnected(c: Client): void {
 }
 
 export function OnMapStart(map: string): void {
+  integrationMap += 1;
   if (!runBound) return;
   if (mapAtPrepare && map && map !== mapAtPrepare) {
     mapEnded = true;
@@ -1256,6 +1291,7 @@ export function OnMapEnd(): void {
 
 export function OnPluginState(): PersistState {
   return {
+    suite: runSuite,
     runId,
     oldIndex: identityIndex,
     oldId: identityId,
@@ -1266,7 +1302,8 @@ export function OnPluginState(): PersistState {
     deliveredB,
     artifactIdentity,
     sourceRevision: frozenRevision,
-    records: Array.from(terminal.values()),
+    lifetimeRows: [...lifetimeRows],
+    records: Array.from(runSuite === "A" ? terminal.values() : integrationRecords.values()),
   };
 }
 
@@ -1276,5 +1313,715 @@ export function OnPluginEnd(): void {
   setCvar("s2_khook_accept_unloaded", "1");
   persistOutsidePlugin();
   cleanupOwned();
+  cleanupIntegrationOwned();
   console.log(`[khook-accept] unloading frames=${frames}`);
+}
+
+// B/C contract mirrors the frozen controller registry. These declarations are
+// expectations, never observations: no row passes until a real callback records it.
+interface Observation {
+  scenario_id: string;
+  sequence: number;
+  generation: number;
+  invocation: string;
+  peer_order: string;
+  callbacks: number;
+  facts: Record<string, unknown>;
+  stimulus?: string;
+  route?: string;
+  frame_token?: number;
+  map_generation?: number;
+  receiver?: string;
+  vtable?: string;
+  manifest?: string;
+}
+interface IntegrationRow {
+  case: string; subcheck: string; expected: Record<string, unknown>;
+  group: string; provenance: string; callback_owner: string; target: string;
+}
+const INTEGRATION_ROWS: Record<"B" | "C", IntegrationRow[]> = {
+  "B": [
+    {
+      "case": "declarative_this_void",
+      "subcheck": "js_this_void_continue_delivery",
+      "expected": {
+        "pre": 1
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "main-runtime",
+      "callback_owner": "engine_hooks",
+      "target": "declarative_this_void"
+    },
+    {
+      "case": "declarative_this_void",
+      "subcheck": "js_this_void_handled_delivery",
+      "expected": {
+        "pre": 1,
+        "action": 2
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "main-runtime",
+      "callback_owner": "engine_hooks",
+      "target": "declarative_this_void"
+    },
+    {
+      "case": "declarative_mutable_narrow",
+      "subcheck": "js_narrow_all_fields_mutated",
+      "expected": {
+        "value": 7.25,
+        "a": -17,
+        "b": 29,
+        "c": -31
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "main-runtime",
+      "callback_owner": "engine_hooks",
+      "target": "declarative_mutable_narrow"
+    },
+    {
+      "case": "declarative_mutable_wide",
+      "subcheck": "js_wide_mutation_delivery",
+      "expected": {
+        "value": 7.25,
+        "integer": -17
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "main-runtime",
+      "callback_owner": "engine_hooks",
+      "target": "declarative_mutable_wide"
+    },
+    {
+      "case": "declarative_acquisition",
+      "subcheck": "js_acquire_outbound_pre_vote",
+      "expected": {
+        "votes": [
+          6,
+          0,
+          1
+        ],
+        "outbound_nested": true
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "main-runtime",
+      "callback_owner": "engine_hooks",
+      "target": "declarative_acquisition"
+    },
+    {
+      "case": "declarative_acquisition",
+      "subcheck": "js_acquire_outbound_final_result",
+      "expected": {
+        "effective": [
+          6,
+          6,
+          1
+        ],
+        "outbound_nested": true
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "main-runtime",
+      "callback_owner": "engine_hooks",
+      "target": "declarative_acquisition"
+    },
+    {
+      "case": "declarative_hud",
+      "subcheck": "js_hud_receiver_text_continue",
+      "expected": {
+        "receiver_matches_controller": true,
+        "text": "s2-khook-hud"
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "main-runtime",
+      "callback_owner": "engine_hooks",
+      "target": "declarative_hud"
+    },
+    {
+      "case": "declarative_hud",
+      "subcheck": "js_hud_handled_delivery",
+      "expected": {
+        "pre": 1,
+        "action": 2
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "main-runtime",
+      "callback_owner": "engine_hooks",
+      "target": "declarative_hud"
+    },
+    {
+      "case": "declarative_hud",
+      "subcheck": "js_hud_direct_utlstring",
+      "expected": {
+        "text": "direct-hud",
+        "receiver_matches_controller": true
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "main-runtime",
+      "callback_owner": "engine_hooks",
+      "target": "declarative_hud"
+    },
+    {
+      "case": "declarative_nesting_bypass",
+      "subcheck": "js_different_id_nested_delivery",
+      "expected": {
+        "outer": 1,
+        "inner": 1,
+        "restored": true
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "main-runtime",
+      "callback_owner": "engine_hooks",
+      "target": "declarative_nesting_bypass"
+    },
+    {
+      "case": "declarative_nesting_bypass",
+      "subcheck": "js_same_id_reentry_named_skip",
+      "expected": {
+        "delivered": 1,
+        "nested_safe_skip": true
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "main-runtime",
+      "callback_owner": "engine_hooks",
+      "target": "declarative_nesting_bypass"
+    },
+    {
+      "case": "declarative_nesting_bypass",
+      "subcheck": "js_bypass_absent_then_next_delivered",
+      "expected": {
+        "bypass": 0,
+        "next": 1
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "main-runtime",
+      "callback_owner": "engine_hooks",
+      "target": "declarative_nesting_bypass"
+    },
+    {
+      "case": "acquisition_named_hook",
+      "subcheck": "js_acquire_real_post_effective",
+      "expected": {
+        "real_bot": true,
+        "effective_result_observed": true,
+        "skipped_observed": true
+      },
+      "group": "live-named",
+      "provenance": "live-engine",
+      "callback_owner": "engine_hooks",
+      "target": "acquisition_named_hook"
+    },
+    {
+      "case": "damage_named_hook",
+      "subcheck": "js_damage_pre_post_correct_victim",
+      "expected": {
+        "pre": 1,
+        "post": 1,
+        "victim_matches": true
+      },
+      "group": "live-named",
+      "provenance": "live-engine",
+      "callback_owner": "named_hooks",
+      "target": "damage_named_hook"
+    },
+    {
+      "case": "chat_named_hook",
+      "subcheck": "js_chat_continue_delivery",
+      "expected": {
+        "continue": 1
+      },
+      "group": "live-named",
+      "provenance": "live-engine",
+      "callback_owner": "named_hooks",
+      "target": "chat_named_hook"
+    },
+    {
+      "case": "chat_named_hook",
+      "subcheck": "js_chat_suppression_vote",
+      "expected": {
+        "suppressed": 1,
+        "action": 2
+      },
+      "group": "live-named",
+      "provenance": "live-engine",
+      "callback_owner": "named_hooks",
+      "target": "chat_named_hook"
+    },
+    {
+      "case": "output_named_hook",
+      "subcheck": "js_output_delivery_and_suppression",
+      "expected": {
+        "actions": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "deliveries": 4
+      },
+      "group": "live-named",
+      "provenance": "live-engine",
+      "callback_owner": "named_hooks",
+      "target": "output_named_hook"
+    },
+    {
+      "case": "usercmd_named_hook",
+      "subcheck": "js_usercmd_batch_delivery_neutralization",
+      "expected": {
+        "delivered": true,
+        "neutralized": true
+      },
+      "group": "live-named",
+      "provenance": "live-engine",
+      "callback_owner": "named_hooks",
+      "target": "usercmd_named_hook"
+    },
+    {
+      "case": "script_generation_lifetime",
+      "subcheck": "js_old_generation_retired",
+      "expected": {
+        "generations_retired": 2
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "main-runtime",
+      "callback_owner": "engine_hooks",
+      "target": "script_generation_lifetime"
+    },
+    {
+      "case": "script_generation_lifetime",
+      "subcheck": "js_new_generation_callback",
+      "expected": {
+        "new_generations_delivered": 2
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "main-runtime",
+      "callback_owner": "engine_hooks",
+      "target": "script_generation_lifetime"
+    }
+  ],
+  "C": [
+    {
+      "case": "precache_map_transition",
+      "subcheck": "js_precache_before_after_map_delivery",
+      "expected": {
+        "virtual_before": true,
+        "virtual_after": true
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "live-engine",
+      "callback_owner": "named_hooks",
+      "target": "precache_map_transition"
+    },
+    {
+      "case": "precache_map_transition",
+      "subcheck": "js_precache_resource_each_generation",
+      "expected": {
+        "added_before": true,
+        "added_after": true
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "live-engine",
+      "callback_owner": "named_hooks",
+      "target": "precache_map_transition"
+    },
+    {
+      "case": "precache_map_transition",
+      "subcheck": "js_precache_stale_context_rejected",
+      "expected": {
+        "stale_add": false
+      },
+      "group": "main-runtime-bridge",
+      "provenance": "live-engine",
+      "callback_owner": "named_hooks",
+      "target": "precache_map_transition"
+    }
+  ]
+};
+const integrationRecords = new Map<string, Rec>();
+let integrationMap = 1;
+let integrationSequence = 0;
+let integrationDriven = false;
+let bridgeEntity: EntityRef | null = null;
+let integrationNamedDriven = false;
+let realAcquireSlot = -1;
+let realOutputAction = -1;
+let realOutput: EntityRef | null = null;
+let damageSubject: EntityRef | null = null;
+const damageStack: Observation[] = [];
+const realOutputRows: Observation[] = [];
+let stalePrecache: PrecacheContext | null = null;
+let activeBridge: { scenario: number; sequence: number; order: number; callbacks: number; observations: Observation[] } | null = null;
+let bridgeDrive: ReturnType<typeof Engine.call<"bridgeDrive">> = null;
+let bridgeMark: ReturnType<typeof Engine.call<"bridgeMark">> = null;
+let bridgeWindow: ReturnType<typeof Engine.call<"bridgeWindow">> = null;
+let precacheBegin: ReturnType<typeof Engine.call<"precacheBegin">> = null;
+let precacheFinish: ReturnType<typeof Engine.call<"precacheFinish">> = null;
+let realAcquireMark: ReturnType<typeof Engine.call<"realAcquireMark">> = null;
+let precacheRead: ReturnType<typeof Engine.call<"precacheRead">> = null;
+
+function integrationRecord(name: string, actual: Record<string, unknown>, observations: Observation[], evidence: string): void {
+  if (!runBound || runSuite === "A" || !artifactIdentity || !observations.length) return;
+  const row = INTEGRATION_ROWS[runSuite].find(value => value.subcheck === name);
+  if (!row) return;
+  const result = JSON.stringify(actual) === JSON.stringify(row.expected) ? "pass" : "fail";
+  const record: Rec = { ...row, producer: "js", result, actual, evidence, evidence_class: "observed", observations };
+  const prior = integrationRecords.get(name);
+  // Snapshot once at completion. An earlier failure cannot disappear on report.
+  if (!prior || (prior.result !== "fail" && result === "fail")) integrationRecords.set(name, record);
+}
+
+function integrationCollect(): void {
+  if (runSuite === "A") return;
+  stored = INTEGRATION_ROWS[runSuite].map(row => integrationRecords.get(row.subcheck) || {
+    ...row, producer: "js", result: "pending", actual: {}, evidence: "waiting for source-bound observed callbacks",
+  });
+  collected = true;
+}
+
+function integrationCommand(sub: string, id: string, digest: string, selected: "B" | "C", reply: (line: string) => void): void {
+  if (sub === "prepare") {
+    cleanupIntegrationOwned();
+    runId = id; runSuite = selected; runBound = true; artifactIdentity = "";
+    frozenRevision = KHOOK_FIXTURE_REVISION;
+    if (digest) bindArtifact(digest);
+    integrationRecords.clear(); precacheRows.length = 0; lifetimeRows.length = 0; integrationSequence = 0; integrationDriven = false; integrationNamedDriven = false;
+    activeBridge = null; collected = false; stored = []; stalePrecache = null;
+    if (bridgeEntity) { bridgeEntity.remove(); bridgeEntity = null; }
+    if (selected === "B") {
+      bridgeEntity = createEntity("info_target");
+      if (bridgeEntity) bridgeEntity.spawn();
+    }
+    setCvar("s2_khook_accept_run", id);
+    reply("[khook-accept] prepared " + selected + " " + id);
+    return;
+  }
+  if (sub === "resume" && !runBound) {
+    if (!handoff || handoff.suite !== selected || handoff.runId !== id || handoff.artifactIdentity !== digest ||
+        handoff.sourceRevision !== KHOOK_FIXTURE_REVISION || !/^[a-f0-9]{64}$/.test(digest)) {
+      reply(JSON.stringify({ khook_acceptance_error: "suite/run/artifact/source handoff mismatch" })); return;
+    }
+    runId = id; runSuite = selected; runBound = true; bindArtifact(digest);
+    for (const record of handoff.records || []) integrationRecords.set(record.subcheck, record);
+    lifetimeRows.push(...(handoff.lifetimeRows || []));
+    // Native target remains resident. A callback after resume must be observed separately.
+    integrationDriven = false;
+    if (selected === "B") { bridgeEntity = createEntity("info_target"); bridgeEntity?.spawn(); }
+    reply("[khook-accept] resumed " + selected + " " + id); return;
+  }
+  if (!runBound || runSuite !== selected || runId !== id) {
+    reply(JSON.stringify({ khook_acceptance_error: "unknown or mismatched suite/run" })); return;
+  }
+  if (sub === "bind") {
+    if (!bindArtifact(digest)) reply(JSON.stringify({ khook_acceptance_error: "invalid binding" }));
+    return;
+  }
+  if (sub === "collect") integrationFrame();
+  if (sub === "collect" || sub === "report") {
+    integrationCollect();
+    for (const record of stored) reply(emit(record));
+    return;
+  }
+  if (sub === "teardown") {
+    cleanupIntegrationOwned();
+    runBound = false; reply("[khook-accept] teardown " + id); return;
+  }
+  if (sub === "reload-arm") {
+    reply("[khook-accept] generation " + instance + " captured; reload archive, resume same suite/run/artifact, then collect; repeat twice"); return;
+  }
+  reply(JSON.stringify({ khook_acceptance_error: "unsupported integration command" }));
+}
+
+function bridgeObservation(facts: Record<string, unknown>): Observation | null {
+  const active = activeBridge;
+  if (!active || !bridgeMark || !runBound || runSuite !== "B") return null;
+  const token = bridgeMark(runId, active.scenario, active.sequence, instance, 1, active.order);
+  if (!token) return null;
+  active.callbacks += 1;
+  const observation: Observation = { scenario_id: "bridge-" + active.scenario,
+    sequence: active.sequence, generation: instance,
+    invocation: runId + ":" + instance + ":" + active.sequence,
+    peer_order: active.order === 0 ? "peer-first" : "s2script-first", callbacks: 1, facts };
+  active.observations.push(observation);
+  return observation;
+}
+
+function installIntegrationHooks(): void {
+  realAcquireMark = Engine.call("realAcquireMark");
+  bridgeDrive = Engine.call("bridgeDrive"); bridgeMark = Engine.call("bridgeMark"); bridgeWindow = Engine.call("bridgeWindow");
+  precacheBegin = Engine.call("precacheBegin"); precacheFinish = Engine.call("precacheFinish"); precacheRead = Engine.call("precacheRead");
+  for (const name of ["onvoid0", "onvoid1"] as const) Engine.hook(name)?.(view => {
+    if (runBound && runSuite === "B") bridgeMark?.(runId, 14, -1, instance, 2, -1);
+    if (!activeBridge) return HookResult.Continue;
+    const suppressed = activeBridge.scenario === 2;
+    const row = bridgeObservation({ pre: 1, action: suppressed ? 2 : 0 });
+    if (bridgeEntity && activeBridge.scenario === 10) {
+      const same = Engine.call(activeBridge.order === 0 ? "void0" : "void1");
+      same?.(bridgeEntity);
+      if (row) row.facts.nested_safe_skip = activeBridge.callbacks === 1;
+    }
+    if (bridgeEntity && activeBridge.scenario === 11) {
+      const inner = Engine.call(activeBridge.order === 0 ? "narrow0" : "narrow1");
+      const before = view.receiver;
+      inner?.(bridgeEntity, 1.5, 3, 4, 5);
+      const after = view.receiver;
+      if (row) row.facts.restored = activeBridge.callbacks === 2 && !!before && !!after && before.id === after.id && before.index === after.index;
+    }
+    return suppressed ? HookResult.Handled : HookResult.Continue;
+  });
+  for (const name of ["onnarrow0", "onnarrow1"] as const) Engine.hook(name)?.(view => {
+    if (!activeBridge) return HookResult.Continue;
+    view.value = 7.25; view.a = -17; view.b = 29; view.c = -31;
+    bridgeObservation({ value: view.value, a: view.a, b: view.b, c: view.c });
+    return HookResult.Changed;
+  });
+  for (const name of ["onwide0", "onwide1"] as const) Engine.hook(name)?.(view => {
+    if (!activeBridge) return HookResult.Continue;
+    view.value = 7.25; view.integer = -17;
+    bridgeObservation({ value: view.value, integer: view.integer });
+    return HookResult.Changed;
+  });
+  for (const name of ["onacquire0", "onacquire1"] as const) Engine.hook(name)?.(view => {
+    if (!activeBridge) return HookResult.Continue;
+    const implicit = activeBridge.scenario === 7;
+    if (!implicit) view.result = activeBridge.scenario === 5 ? 6 : 0;
+    bridgeObservation({ vote: implicit ? 1 : view.result, method: view.method, outbound_nested: true });
+    return implicit ? HookResult.Handled : HookResult.Changed;
+  });
+  for (const name of ["onhud0", "onhud1"] as const) Engine.hook(name)?.(view => {
+    if (!activeBridge) return HookResult.Continue;
+    const suppressed = activeBridge.scenario === 9;
+    bridgeObservation({ receiver_matches_controller: !!view.receiver && !!bridgeEntity && view.receiver.index === bridgeEntity.index && view.receiver.id === bridgeEntity.id,
+      text: view.text, action: suppressed ? 2 : 0 });
+    return suppressed ? HookResult.Handled : HookResult.Continue;
+  });
+}
+
+function integrationFrame(): void {
+  if (!runBound || !artifactIdentity) return;
+  if (stalePrecache && runSuite === "C") {
+    // Public API rejects the expired manifest; this cannot touch borrowed pointers.
+    const added = stalePrecache.add("soundevents/game_sounds.vsndevts");
+    stalePrecache = null;
+    const rows = integrationRecords.get("js_precache_resource_each_generation")?.observations;
+    if (rows?.length) integrationRecord("js_precache_stale_context_rejected", { stale_add: added }, [rows[rows.length - 1]], "public add called after callback return");
+  }
+  if (runSuite === "B") collectNamedIntegration();
+  if (runSuite !== "B" || integrationDriven || !bridgeDrive || !bridgeMark || !bridgeWindow || !bridgeEntity) return;
+  integrationDriven = true;
+  // Native owns target calls/original counts and validates markers inside this
+  // synchronous JS -> Engine.call -> main-hook -> JS window.
+  const observations = new Map<number, Observation[]>();
+  const results = new Map<number, Array<number | null>>();
+  for (let order = 0; order < 2; ++order) for (let scenario = 1; scenario <= 11; ++scenario) {
+    const sequence = ++integrationSequence;
+    activeBridge = { scenario, sequence, order, callbacks: 0, observations: [] };
+    const finalResult = bridgeDrive(bridgeEntity, scenario + order * 100, sequence, instance, runId);
+    results.set(scenario, [...(results.get(scenario) || []), finalResult]);
+    observations.set(scenario, [...(observations.get(scenario) || []), ...activeBridge.observations]);
+    activeBridge = null;
+  }
+  for (let order = 0; order < 2; ++order) {
+    const sequence = ++integrationSequence;
+    activeBridge = { scenario: 12, sequence, order, callbacks: 0, observations: [] };
+    if (bridgeWindow(runId, 12 + order * 100, sequence, instance, true)) {
+      const bypass = Engine.call(order === 0 ? "void0Bypass" : "void1Bypass");
+      const direct = Engine.call(order === 0 ? "void0" : "void1");
+      bypass?.(bridgeEntity);
+      const bypassCallbacks = activeBridge.callbacks;
+      const checkpoint = bridgeMark(runId, 12, sequence, instance, 3, order);
+      direct?.(bridgeEntity);
+      for (const row of activeBridge.observations) row.facts = { bypass: bypassCallbacks, next: activeBridge.callbacks - bypassCallbacks };
+      const closed = bridgeWindow(runId, 12 + order * 100, sequence, instance, false);
+      if (closed && checkpoint) observations.set(12, [...(observations.get(12) || []), ...activeBridge.observations]);
+    }
+    activeBridge = null;
+  }
+  for (let order = 0; order < 2; ++order) {
+    const sequence = ++integrationSequence;
+    activeBridge = { scenario: 13, sequence, order, callbacks: 0, observations: [] };
+    if (bridgeWindow(runId, 13 + order * 100, sequence, instance, true)) {
+      const direct = Engine.call(order === 0 ? "hud0" : "hud1");
+      direct?.(bridgeEntity, bridgeEntity, bridgeEntity, "direct-hud");
+      const closed = bridgeWindow(runId, 13 + order * 100, sequence, instance, false);
+      if (closed) observations.set(13, [...(observations.get(13) || []), ...activeBridge.observations]);
+    }
+    activeBridge = null;
+  }
+  const record = (scenario: number, name: string, select: (facts: Record<string, unknown>) => Record<string, unknown>): void => {
+    const rows = observations.get(scenario) || [];
+    if (rows.length !== 2) return;
+    const outcomes = rows.map(row => select(row.facts));
+    const equal = JSON.stringify(outcomes[0]) === JSON.stringify(outcomes[1]);
+    integrationRecord(name, equal ? outcomes[0] : { per_invocation: outcomes }, rows, "measured JS callbacks inside native driver; both target sets");
+  };
+  record(1, "js_this_void_continue_delivery", f => ({ pre: f.pre }));
+  record(2, "js_this_void_handled_delivery", f => ({ pre: f.pre, action: f.action }));
+  record(3, "js_narrow_all_fields_mutated", f => f);
+  record(4, "js_wide_mutation_delivery", f => f);
+  record(10, "js_same_id_reentry_named_skip", f => ({ delivered: f.pre, nested_safe_skip: f.nested_safe_skip }));
+  const nested = observations.get(11) || [];
+  if (nested.length === 4) integrationRecord("js_different_id_nested_delivery", {
+    outer: nested.filter(row => "pre" in row.facts).length / 2,
+    inner: nested.filter(row => "value" in row.facts).length / 2,
+    restored: nested.filter(row => "pre" in row.facts).every(row => row.facts.restored === true),
+  }, nested.filter(row => "pre" in row.facts), "actual different-id Engine.call nested within the outer handler");
+  record(12, "js_bypass_absent_then_next_delivered", f => f);
+  const acquisition = [5, 6, 7].flatMap(scenario => observations.get(scenario) || []);
+  if (acquisition.length === 6) integrationRecord("js_acquire_outbound_pre_vote", {
+    votes: [5, 6, 7].map(scenario => {
+      const rows = observations.get(scenario) || [];
+      return rows.length === 2 && rows[0].facts.vote === rows[1].facts.vote ? rows[0].facts.vote : null;
+    }), outbound_nested: true,
+  }, acquisition, "outbound JS call delivered PRE handler votes; native and POST records decide propagation");
+  if (acquisition.length === 6) integrationRecord("js_acquire_outbound_final_result", {
+    effective: [5, 6, 7].map(scenario => {
+      const values = results.get(scenario) || [];
+      return values.length === 2 && values[0] === values[1] ? values[0] : null;
+    }), outbound_nested: true,
+  }, acquisition, "JS observes final caller result after Engine.call returns; this is NOT the main POST position");
+  record(8, "js_hud_receiver_text_continue", f => ({ receiver_matches_controller: f.receiver_matches_controller, text: f.text }));
+  record(9, "js_hud_handled_delivery", f => ({ pre: 1, action: f.action }));
+  record(13, "js_hud_direct_utlstring", f => ({ text: f.text, receiver_matches_controller: f.receiver_matches_controller }));
+  const sequence = ++integrationSequence;
+  activeBridge = { scenario: 14, sequence, order: 0, callbacks: 0, observations: [] };
+  const staleCallbacks = bridgeDrive(bridgeEntity, 14, sequence, instance, runId);
+  for (const row of activeBridge.observations) {
+    row.facts = { current_callbacks: activeBridge.callbacks, native_old_callbacks: staleCallbacks };
+    lifetimeRows.push(row);
+  }
+  activeBridge = null;
+  if (new Set(lifetimeRows.map(row => row.generation)).size >= 3) {
+    const fresh = lifetimeRows.slice(1).filter(row => row.facts.current_callbacks === 1).length;
+    const retired = lifetimeRows.slice(1).filter(row => row.facts.native_old_callbacks === 0).length;
+    integrationRecord("js_old_generation_retired", { generations_retired: retired }, [...lifetimeRows], "native driver returned zero stale-generation markers during each replacement call");
+    integrationRecord("js_new_generation_callback", { new_generations_delivered: fresh }, [...lifetimeRows], "public state handoff preserves actual new-generation callback rows");
+  }
+}
+
+const lifetimeRows: Observation[] = [];
+const precacheRows: Observation[] = [];
+export function OnPrecache(context: PrecacheContext): void {
+  if (!runBound || runSuite !== "C" || !artifactIdentity || !precacheBegin || !precacheFinish || !precacheRead) return;
+  const token = precacheBegin(runId, instance, integrationMap);
+  if (token === null || token <= 0) return; // A session-only callback is not a virtual callback.
+  const added = context.add("soundevents/game_sounds.vsndevts");
+  if (!precacheFinish(token, "soundevents/game_sounds.vsndevts", added, instance)) return;
+  const nativeGeneration = precacheRead(token, 0);
+  if (nativeGeneration === null || nativeGeneration <= 0) return;
+  const order = precacheRead(token, 1);
+  const row: Observation = { scenario_id: "precache-map", sequence: token, generation: instance,
+    invocation: "precache-" + token, callbacks: 1, facts: { added }, stimulus: "engine",
+    peer_order: order === 0 ? "peer-first" : order === 1 ? "s2script-first" : "none",
+    route: "main-virtual-precache", frame_token: token, map_generation: nativeGeneration,
+    receiver: "receiver-" + precacheRead(token, 2), vtable: "vtable-" + precacheRead(token, 3),
+    manifest: "manifest-" + precacheRead(token, 4) };
+  precacheRows.push(row); stalePrecache = context;
+  if (new Set(precacheRows.map(value => value.map_generation)).size < 2) return;
+  const rows = [...precacheRows];
+  integrationRecord("js_precache_before_after_map_delivery", { virtual_before: true, virtual_after: true }, rows, "native begin/finish token authenticates this main virtual callback");
+  integrationRecord("js_precache_resource_each_generation", { added_before: rows[0].facts.added, added_after: rows[rows.length - 1].facts.added }, rows,
+    "public ctx.add return during actual main virtual frame; no claim about internal add route or rendering");
+}
+
+export function OnClientSayCommand(slot: number, text: string): HookResultValue {
+  if (!runBound || runSuite !== "B" || !realClients().some(client => client.slot === slot)) return HookResult.Continue;
+  const suppressed = text === runId + "-suppress";
+  if (!suppressed && text !== runId + "-continue") return HookResult.Continue;
+  const name = suppressed ? "js_chat_suppression_vote" : "js_chat_continue_delivery";
+  integrationRecord(name, suppressed ? { suppressed: 1, action: 2 } : { continue: 1 }, [{
+    scenario_id: name, sequence: ++integrationSequence, generation: instance, invocation: runId + ":chat:" + integrationSequence,
+    callbacks: 1, peer_order: "none", facts: { slot, text }, stimulus: "real-client",
+  }], "real-client SayCommand callback with run-bound token");
+  return suppressed ? HookResult.Handled : HookResult.Continue;
+}
+
+export function OnPlayerRunCmd(view: UserCmdView, info: { slot: number }): HookResultValue {
+  if (!runBound || runSuite !== "B" || !realClients().some(client => client.slot === info.slot) ||
+      integrationRecords.has("js_usercmd_batch_delivery_neutralization")) return HookResult.Continue;
+  view.forwardMove = 0; view.sideMove = 0; view.upMove = 0; view.buttons = 0n;
+  integrationRecord("js_usercmd_batch_delivery_neutralization", { delivered: true, neutralized: view.forwardMove === 0 && view.sideMove === 0 && view.upMove === 0 && view.buttons === 0n }, [{
+    scenario_id: "client-input", sequence: ++integrationSequence, generation: instance, invocation: runId + ":usercmd:" + integrationSequence,
+    callbacks: 1, peer_order: "none", facts: { slot: info.slot, action: 2 }, stimulus: "real-client",
+  }], "real client's usercmd delivered and neutralized via public borrowed view");
+  return HookResult.Handled;
+}
+
+
+function installNamedIntegrationHooks(): void {
+  items.onCanAcquirePost(view => {
+    if (!runBound || runSuite !== "B" || realAcquireSlot < 0 || view.player?.slot !== realAcquireSlot) return;
+    const bot = Clients.all().find(client => client.slot === realAcquireSlot && client.isBot && client.isValid());
+    if (!bot) return;
+    if (integrationRecords.has("js_acquire_real_post_effective")) return;
+    const result = view.result, skipped = view.skipped, defIndex = view.defIndex;
+    const token = realAcquireMark?.(runId, instance, bot.slot, defIndex, result, skipped);
+    if (!token || token <= 0) return; // Native peer has no same-invocation real target frame.
+    integrationRecord("js_acquire_real_post_effective", { real_bot: true,
+      effective_result_observed: Number.isInteger(result), skipped_observed: typeof skipped === "boolean" }, [{
+      scenario_id: "real-bot-acquire", sequence: token, generation: instance,
+      invocation: "real-acquire-" + token, peer_order: "none", callbacks: 1,
+      facts: { slot: bot.slot, defIndex, result, skipped }, stimulus: "engine",
+    }], "public items.onCanAcquirePost during a real bot item action; actual POST result/skipped, not final caller result");
+  });
+  onOutput("logic_relay", "OnTrigger", event => {
+    if (!runBound || runSuite !== "B" || realOutputAction < 0 || !realOutput || event.caller?.id !== realOutput.id) return HookResult.Continue;
+    const action = realOutputAction;
+    realOutputRows.push({ scenario_id: "real-output-" + action, sequence: ++integrationSequence, generation: instance,
+      invocation: runId + ":output:" + integrationSequence, callbacks: 1, peer_order: "none",
+      facts: { action, caller: event.caller.index, output: event.output }, stimulus: "engine" });
+    return action as HookResultValue;
+  });
+}
+
+function onIntegrationDamagePre(info: DamageInfo): void {
+  const victim = info.victim;
+  if (!victim || !runBound || runSuite !== "B" || !damageSubject || victim.id !== damageSubject.id || !Number.isFinite(info.damage)) return;
+  damageStack.push({ scenario_id: "real-bot-damage", sequence: ++integrationSequence, generation: instance,
+    invocation: runId + ":damage:" + integrationSequence, callbacks: 1, peer_order: "none",
+    facts: { victim: victim.index, victim_id: victim.id, damage: info.damage }, stimulus: "engine" });
+}
+function onIntegrationDamagePost(info: DamageInfo): void {
+  const victim = info.victim;
+  const pre = damageStack[damageStack.length - 1];
+  if (!victim || !pre || !runBound || runSuite !== "B" || victim.id !== pre.facts.victim_id) return;
+  damageStack.pop();
+  integrationRecord("js_damage_pre_post_correct_victim", { pre: 1, post: 1, victim_matches: true },
+    [{ ...pre, facts: { ...pre.facts, post_damage: info.damage } }], "real bot victim synchronous PRE/POST; nested scopes pair by stack; synthetic dummy cannot match books-gated pawn");
+}
+function cleanupIntegrationOwned(): void {
+  if (damageSubject) {
+    SDKUnhook(damageSubject, SDKHookType.OnTakeDamage, onIntegrationDamagePre);
+    SDKUnhook(damageSubject, SDKHookType.OnTakeDamagePost, onIntegrationDamagePost);
+    damageSubject = null;
+  }
+  damageStack.length = 0; realOutputRows.length = 0;
+  realAcquireSlot = -1; realOutputAction = -1;
+  if (realOutput) { realOutput.remove(); realOutput = null; }
+  if (bridgeEntity) { bridgeEntity.remove(); bridgeEntity = null; }
+}
+
+function collectNamedIntegration(): void {
+  const client = Clients.all().find(value => value.isBot && value.isValid());
+  const pawn = client ? Player.fromSlot(client.slot)?.pawn : null;
+  if (pawn?.isValid && !damageSubject) {
+    damageSubject = pawn.ref;
+    SDKHook(damageSubject, SDKHookType.OnTakeDamage, onIntegrationDamagePre);
+    SDKHook(damageSubject, SDKHookType.OnTakeDamagePost, onIntegrationDamagePost);
+  }
+  if (integrationNamedDriven || !pawn?.isValid || !client) return;
+  integrationNamedDriven = true;
+  realAcquireSlot = client.slot;
+  const item = pawn.giveNamedItem("weapon_decoy");
+  realAcquireSlot = -1;
+  if (item) pawn.removeWeapon(item);
+  realOutput = createEntity("logic_relay", { targetname: "s2khook-" + runId, spawnflags: "2" });
+  if (realOutput) {
+    realOutput.spawn();
+    for (let action = 0; action < 4; ++action) {
+      realOutputAction = action;
+      realOutput.acceptInput("Trigger");
+    }
+    realOutputAction = -1;
+    if (realOutputRows.length === 4) integrationRecord("js_output_delivery_and_suppression", {
+      actions: realOutputRows.map(row => row.facts.action), deliveries: realOutputRows.length,
+    }, [...realOutputRows], "owned logic_relay real engine OnTrigger callbacks; native owns original-count proof");
+    realOutput.remove(); realOutput = null;
+  }
 }
