@@ -18,7 +18,7 @@
 - S1 preserves the five legacy shape IDs, existing JS APIs, HUD compatibility timing, acquisition fold and named-hook behavior. S2 owns the new runtime ABI adapter and authoring format.
 - Precache must use stock KHook. A remaining private slot patch is not S1 completion.
 - Preserve candidate-stage versus target-stage validators. `validated-call` requires one validated call site before following E8; never replay its caller-relative validator against the callee.
-- Pending registration is not observed delivery. Missing client or live evidence remains pending. Actual engine child exit status is required; a Docker wrapper status is insufficient.
+- Pending registration is not observed delivery. Missing required client or runtime evidence remains pending. The known shutdown-only SIGSEGV/139 is non-blocking by explicit user direction; no extra quit tests or shutdown investigation. Preserve incidental child status truthfully, separately from the Docker wrapper status.
 - Native and JavaScript CI run at each integrated slice. Ship deployable binaries only through the sniper release path, with all default plugins.
 - Do not alter the user's dirty main checkout, Nebula control checkout, operator data/configs, or unrelated HUDlab container. One coordinator-designated operator owns all server mutations.
 
@@ -30,16 +30,15 @@ corresponding slice. Keep later branch bases aligned by ordinary merges while
 preserving remote history, unless the user separately requests a history rewrite.
 Named-file staging only. Worker commits are not independently mergeable releases.
 
-The 2026-09-22 comparison reproduces shutdown139 with s2script both enabled and
-disabled on official Metamod1467 and1469 with MAM1.6. That disproves the assumption
-that s2script is necessary for this symptom, but does not establish clean shutdown,
-fault attribution, or final production Unload. Required client evidence is also
-outstanding. S1-0 records these facts before production implementation; it may
-not turn pending/failed observations into passing evidence. The user has directed
-implementation to proceed. Isolated development uses the verified baseline while
-shutdown/client evidence remains a mandatory merge/release gate. This scheduling
-ruling risks rework if later acceptance exposes a foundation defect; it does not
-waive a test or reclassify139 as success.
+The 2026-09-22 comparison reproduces shutdown-only 139 with s2script enabled and
+disabled on official Metamod 1467 and 1469 with MAM 1.6. This does not establish
+fault attribution or a clean engine exit. The user explicitly made that known
+symptom non-blocking and directed us to stop extra quit tests and shutdown
+investigation. S1-0 preserves the recorded failure without turning it into a pass.
+Isolated development uses the verified baseline; startup, normal plugin use,
+map transitions, script reload, peer coexistence and required client observations
+remain release gates. Callback lifetime and removal safety tests remain required.
+Later runtime findings can still require rework.
 
 ## File and dependency map
 
@@ -79,7 +78,7 @@ ssh -o BatchMode=yes -o ConnectTimeout=15 ghirakawa@nebula.gkh.dev 'hostname; do
 gh pr view 221 --json headRefOid,baseRefName,state,isDraft
 ```
 
-- [ ] If attribution still blocks acceptance, the sole operator prepares a controlled plain-CS2 and Metamod-only comparison, then executes it with zero human clients and exact restore receipts. Keep measured inputs constant, never use a container-wide Compose down, and restore the original server before returning. A clean baseline plus failing addon cell narrows diagnosis; identical139 still does not prove identical fault location. Follow systematic-debugging before a source fix.
+- [ ] Record the user's non-blocking disposition for the known shutdown-only 139. Do not repeat the shutdown comparison, add quit tests, or require clean process exit. Investigate any new crash during startup or normal plugin use using controlled inputs and preserved evidence.
 - [ ] Inventory outstanding A map/slot-reuse/script-reload, both peer load orders and human witnesses for client-command, voice and recipient/visibility. Assign their execution to the S1-6 release gate; do not synthesize observations or silently drop the cases.
 - [ ] Record existing judge results and source/host identities. A missing mandatory input blocks release readiness, not isolated implementation after this baseline is recorded. Run the judge again at S1-6 against fresh capture.
 
@@ -89,9 +88,9 @@ bash scripts/test-khook-live.sh A --judge --run-dir "$S1_A_RUN_DIR" --observatio
 
 `S1_A_RUN_DIR` and `S1_A_OBSERVATIONS` are operator-provided paths to genuine
 captured evidence, never generated pass files. Expected release prerequisite:
-all required A cases pass and clean process shutdown is demonstrated. If the host
-has a confirmed independent engine defect, record that fact and the explicit
-coordinator/user disposition separately; it is not a green shutdown result.
+all required runtime A cases pass. Whole-process terminal-only observations are
+diagnostic under the explicit user disposition; keep missing or failed evidence
+truthful without requiring another quit or manufacturing a passing result.
 
 ### Task 1: S1-1 — Verified original instruction images
 
@@ -360,6 +359,7 @@ than inventing free-form PASS strings.
 
 - [ ] Add judge regressions that reject missing, stale, fabricated, mismatched-owner and incomplete B/C records. A fully populated synthetic record can test the parser, but never count as live acceptance.
 - [ ] Implement B cases for all S1-4 shapes and S1-5 named hooks, both peer orders, suppression/mutation, effective result, bypass, nesting, script generations and lifetime. Implement C for precache map transition, manifest nesting, original-once and a peer holding the same slot. Require observed real callbacks.
+- [ ] Keep fixture-owned asynchronous removal and peer-survival observations mandatory. Classify whole-process terminal-only records as diagnostic/non-blocking under the user disposition; missing or known-failed terminal evidence cannot be fabricated as passed or force an extra quit.
 - [ ] Remove `s2detour::Install` and direct interception vtable writes from production. Audit includes indirect wrappers, CMake linkage and production binaries; broad symbol absence alone cannot prove a hook works.
 
 ```bash
@@ -373,7 +373,7 @@ CI=1 make ci-js
 ```
 
 - [ ] Build a fresh sniper release from the exact reviewed commit in an isolated remote source directory, preserving operator configs/data. Verify artifact hashes, PLAPI18 stock Metamod identity, default plugin count and absence of synthetic fixtures in the production release. The acceptance bundle is separate.
-- [ ] Run suites A, B and C from fresh identities in both peer orders. Run map transitions, entity delete/index reuse, repeated archive reload and normal quit. Record actual child status. Real-client witnesses remain required where the existing A registry needs them.
+- [ ] Run suites A, B and C from fresh identities in both peer orders. Run map transitions, entity delete/index reuse and repeated archive reload. Leave the server running; no separate quit gate. A necessary deployment restart may incidentally capture child status. Real-client witnesses remain required where the existing A registry needs them.
 
 ```bash
 bash scripts/test-khook-live.sh A --collect --run-dir "$S1_A_RUN_DIR"
@@ -396,7 +396,7 @@ can pass. Missing stages remain pending and cannot be waived by test code.
 | Shared resolution across all consumers | S1-3 |
 | Legacy declarative semantics and live borrowed scopes | S1-4 |
 | Named hooks/precache, no private patch | S1-5, S1-6 |
-| Peer order, map/entity/reload/shutdown, real evidence | S1-0, S1-6 |
+| Peer order, map/entity/reload, real runtime evidence | S1-0, S1-6 |
 | S2 ABI/policy dependency boundary and game extraction | S1-4/S1-5 preserve; separate S2/S3 plans implement |
 
 Each implementation report includes the exact baseline/result commits, changed
