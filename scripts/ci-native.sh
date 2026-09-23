@@ -7,6 +7,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+if [[ -n "${S2_BUILD_JOBS:-}" && ! "${S2_BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "error: S2_BUILD_JOBS must be a positive integer" >&2
+  exit 2
+fi
+
 # ccache is present in CI via hendrikmuhs/ccache-action; on a dev box it may not be.
 # Only pass the launcher when it actually exists, so cmake does not fail on a missing binary.
 LAUNCHER=()
