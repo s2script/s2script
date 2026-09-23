@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One KHook suite A acceptance controller, registry, and judge.
+"""Source-bound KHook A/B/C acceptance controller, registry, and judge.
 
 This module is the frozen R5/R6 contract. It does not implement probe or JS
 fixture bodies. JSON examples here are the executable fixtures imported by
@@ -22,7 +22,7 @@ Command syntax (shell entry point)
 ``run-001`` is a directory, not the identity. Prepare writes a unique ``run_id``
 plus build/revision/host/server identity into that directory. Collect advances
 documented actions and appends observations without resetting the run or
-re-sending prepare. Judge is read-only. Suites B and C are not authored.
+re-sending prepare. Judge is read-only. B/C distinguish controlled mechanics from main-runtime delivery.
 
 The independently verified operator receipt supplied by ``--identity`` records
 the installed shim/core/probe/fixture paths and SHA256 hashes, s2script commit and
@@ -138,10 +138,7 @@ SUITE_A_CASES = (
     "check_transmit",
 )
 
-UNAVAILABLE_SUITES = {
-    "B": "not authored",
-    "C": "not authored",
-}
+UNAVAILABLE_SUITES: Dict[str, str] = {}  # Compatibility alias; every suite is registered.
 
 EXAMPLE_IDENTITY = {
     "run_id": "khook-a-test-0001",
@@ -257,12 +254,254 @@ CLIENT_ACTIONS = {
 }
 
 
-def required_subchecks() -> List[Subcheck]:
-    return list(SUBCHECKS)
+@dataclass(frozen=True)
+class EvidenceRule:
+    group: str
+    provenance: str
+    callback_owner: str
+    target: str
+    join: str = ""
 
 
-def _registered() -> Dict[Tuple[str, str, str], Subcheck]:
-    return {(s.case, s.subcheck, s.producer): s for s in SUBCHECKS}
+@dataclass(frozen=True)
+class SuiteSpec:
+    cases: Tuple[str, ...]
+    subchecks: Tuple[Subcheck, ...]
+    client_actions: Dict[str, str]
+    rules: Dict[Tuple[str, str, str], EvidenceRule] = field(default_factory=dict)
+
+
+# Controlled callback mechanics and main-runtime delivery are separate proof
+# groups. A private production-TU copy must never supply a main-runtime join.
+_B_ROWS = {
+    "declarative_this_void": (
+        "native_this_void_continue_original_once native_this_void_handled_original_zero native_this_void_peer_orders",
+        "js_this_void_continue_delivery js_this_void_handled_delivery"),
+    "declarative_mutable_narrow": (
+        "native_narrow_edits_reach_original native_narrow_peer_orders", "js_narrow_all_fields_mutated"),
+    "declarative_mutable_wide": (
+        "native_wide_edits_reach_original native_wide_opaque_values_preserved native_wide_peer_orders", "js_wide_mutation_delivery"),
+    "declarative_acquisition": (
+        "native_acquire_changed_deny_engine_allow native_acquire_allow_engine_deny native_acquire_handled_implicit_deny native_acquire_peer_effective_result native_acquire_skipped_original_not_read native_acquire_peer_orders",
+        "js_acquire_outbound_pre_vote js_acquire_outbound_post_effective"),
+    "declarative_hud": (
+        "native_hud_continue_order_original_once native_hud_handled_original_zero native_hud_pointers_text_peer_orders",
+        "js_hud_receiver_text_continue js_hud_handled_delivery"),
+    "declarative_nesting_bypass": (
+        "native_same_and_different_id_nesting native_stale_forged_views_rejected native_bypass_hit_then_next_delivered native_rejected_nested_scope_restored",
+        "js_different_id_nested_delivery js_same_id_reentry_named_skip js_bypass_absent_then_next_delivered"),
+    "damage_named_hook": (
+        "native_damage_valid_pre_post native_damage_nested_scopes native_damage_peer_orders_original_state", "js_damage_pre_post_correct_victim"),
+    "chat_named_hook": (
+        "native_chat_continue_original_once native_chat_suppressed_original_zero native_chat_peer_orders", "js_chat_continue_delivery js_chat_suppression_vote"),
+    "output_named_hook": (
+        "native_output_01_original_once native_output_23_original_zero native_output_peer_orders", "js_output_delivery_and_suppression"),
+    "usercmd_named_hook": (
+        "native_usercmd_abi_batch_mutation native_usercmd_original_once_return_preserved native_usercmd_peer_orders", "js_usercmd_batch_delivery_neutralization"),
+    "script_generation_lifetime": (
+        "native_binding_resident_across_reload native_no_disposed_generation_callback", "js_old_generation_retired js_new_generation_callback"),
+    "binding_peer_order_retirement": (
+        "native_all_sites_both_peer_orders native_active_removal_refused native_async_removal_peer_survives", ""),
+}
+_C_ROWS = {
+    "precache_peer_slot_original_once": (
+        "native_precache_real_receiver native_precache_other_vtable_filtered native_precache_peer_same_slot_both_orders native_precache_original_once native_precache_checked_retirement", ""),
+    "precache_manifest_nesting": (
+        "native_precache_outer_inner_outer_manifest native_precache_dispatch_once_each native_precache_expired_manifest_rejected", ""),
+    "precache_map_transition": (
+        "native_precache_before_after_map_callback native_precache_map_generation_receiver native_precache_live_peer_both_orders",
+        "js_precache_before_after_map_delivery js_precache_resource_each_generation js_precache_stale_context_rejected"),
+}
+
+
+# Frozen outcomes: a producer cannot choose {ok: true} or make its own failed
+# actual the expected result. Raw per-invocation facts remain alongside these
+# aggregate assertions; native owns original counts, JS owns handler/add returns.
+INTEGRATION_EXPECTED = {
+    "native_this_void_continue_original_once": {"pre": 1, "original": 1, "expired": True},
+    "native_this_void_handled_original_zero": {"pre": 1, "original": 0, "skipped": True},
+    "native_narrow_edits_reach_original": {"original": 1, "value": 7.25, "a": -17, "b": 29, "c": -31},
+    "native_wide_edits_reach_original": {"original": 1, "value": 7.25, "integer": -17},
+    "native_wide_opaque_values_preserved": {"opaque_a": "17375808098319191535", "opaque_b": "9305357566071262703"},
+    "native_acquire_changed_deny_engine_allow": {"original": 1, "engine": 0, "effective": 6},
+    "native_acquire_allow_engine_deny": {"original": 1, "engine": 6, "effective": 0},
+    "native_acquire_handled_implicit_deny": {"original": 0, "effective": 1, "skipped": True},
+    "native_acquire_peer_effective_result": {"post_observed": True, "current_return_matches": True},
+    "native_acquire_skipped_original_not_read": {"skipped": True, "original_reads": 0},
+    "native_hud_continue_order_original_once": {"completion_before_original": True, "original": 1},
+    "native_hud_handled_original_zero": {"pre": 1, "original": 0, "skipped": True},
+    "native_hud_pointers_text_peer_orders": {"orders": ["peer-first", "s2script-first"], "pointer_matches": 3, "text": "s2-khook-hud"},
+    "native_same_and_different_id_nesting": {"same_restored": 2, "different_restored": 2},
+    "native_stale_forged_views_rejected": {"stale_rejected": True, "forged_rejected": True},
+    "native_bypass_hit_then_next_delivered": {"bypass_pre": 0, "next_pre": 1, "original": 2},
+    "native_rejected_nested_scope_restored": {"rejected": True, "outer_restored": True},
+    "native_damage_valid_pre_post": {"pre": 3, "post": 3, "original": 3},
+    "native_damage_nested_scopes": {"restored": 2, "expired": True},
+    "native_damage_peer_orders_original_state": {"orders": ["peer-first", "s2script-first"], "current_return_matches": True},
+    "native_chat_continue_original_once": {"dispatch": 1, "original": 1, "skipped": False},
+    "native_chat_suppressed_original_zero": {"dispatch": 1, "original": 0, "skipped": True},
+    "native_output_01_original_once": {"actions": [0, 1], "originals": [1, 1]},
+    "native_output_23_original_zero": {"actions": [2, 3], "originals": [0, 0]},
+    "native_usercmd_abi_batch_mutation": {"batch_delivered": True, "neutralized": True, "arguments_preserved": True},
+    "native_usercmd_original_once_return_preserved": {"original": 1, "return": 37},
+    "native_binding_resident_across_reload": {"native_address_same": True, "generations": 3},
+    "native_no_disposed_generation_callback": {"old_callbacks_after_retire": 0, "new_callbacks": 2},
+    "native_all_sites_both_peer_orders": {"sites": ["this_void", "narrow", "wide", "acquire", "hud", "damage", "chat", "output", "usercmd", "precache"], "orders": ["peer-first", "s2script-first"]},
+    "native_active_removal_refused": {"active_refused": True},
+    "native_async_removal_peer_survives": {"completion_observed": True, "retired_callbacks": 0, "peer_callbacks": 1},
+    "native_precache_real_receiver": {"delivered_receiver_matches": True, "retained_vtable_matches": True},
+    "native_precache_other_vtable_filtered": {"dispatch": 0, "original": 1},
+    "native_precache_original_once": {"dispatch": 2, "original": 2},
+    "native_precache_checked_retirement": {"active_refused": True, "completion_observed": True, "peer_survived": True},
+    "native_precache_outer_inner_outer_manifest": {"trace": ["outer", "inner", "outer"], "restored": True},
+    "native_precache_dispatch_once_each": {"dispatch": 2, "original": 2},
+    "native_precache_expired_manifest_rejected": {"expired": True},
+    "native_precache_before_after_map_callback": {"virtual_callbacks_before": True, "virtual_callbacks_after": True},
+    "native_precache_map_generation_receiver": {"distinct_generations": True, "receiver_vtable_manifest_observed": True},
+    "js_this_void_continue_delivery": {"pre": 1},
+    "js_this_void_handled_delivery": {"pre": 1, "action": 2},
+    "js_narrow_all_fields_mutated": {"value": 7.25, "a": -17, "b": 29, "c": -31},
+    "js_wide_mutation_delivery": {"value": 7.25, "integer": -17},
+    "js_acquire_outbound_pre_vote": {"votes": [6, 0, 1], "outbound_nested": True},
+    "js_acquire_outbound_post_effective": {"effective": [6, 0, 1], "outbound_nested": True},
+    "js_hud_receiver_text_continue": {"receiver_matches_controller": True, "text": "s2-khook-hud"},
+    "js_hud_handled_delivery": {"pre": 1, "action": 2},
+    "js_different_id_nested_delivery": {"outer": 1, "inner": 1, "restored": True},
+    "js_same_id_reentry_named_skip": {"delivered": 1, "nested_safe_skip": True},
+    "js_bypass_absent_then_next_delivered": {"bypass": 0, "next": 1},
+    "js_damage_pre_post_correct_victim": {"pre": 1, "post": 1, "victim_matches": True},
+    "js_chat_continue_delivery": {"continue": 1},
+    "js_chat_suppression_vote": {"suppressed": 1, "action": 2},
+    "js_output_delivery_and_suppression": {"actions": [0, 1, 2, 3], "deliveries": 4},
+    "js_usercmd_batch_delivery_neutralization": {"delivered": True, "neutralized": True},
+    "js_old_generation_retired": {"generations_retired": 2},
+    "js_new_generation_callback": {"new_generations_delivered": 2},
+    "js_precache_before_after_map_delivery": {"virtual_before": True, "virtual_after": True},
+    "js_precache_resource_each_generation": {"added_before": True, "added_after": True},
+    "js_precache_stale_context_rejected": {"stale_add": False},
+}
+for _suite_rows in (_B_ROWS, _C_ROWS):
+    for _native_names, _js_names in _suite_rows.values():
+        for _name in _native_names.split():
+            if _name not in INTEGRATION_EXPECTED and ("peer_orders" in _name or "both_orders" in _name):
+                INTEGRATION_EXPECTED[_name] = {"orders": ["peer-first", "s2script-first"]}
+        for _name in _js_names.split():
+            INTEGRATION_EXPECTED["native_main_" + _name[3:]] = {"same_invocation_markers": True, "target_calls_observed": True}
+
+
+def _integration_spec(rows: dict, suite: str) -> SuiteSpec:
+    checks = []
+    rules = {}
+    for case, (native, js) in rows.items():
+        for producer, names in (("native", native), ("js", js)):
+            for name in names.split():
+                main = case.startswith("declarative") and producer == "js"
+                real = suite == "C" and case == "precache_map_transition"
+                live_named = case.endswith("named_hook") and producer == "js"
+                lifetime = case == "script_generation_lifetime"
+                group = "main-runtime-bridge" if main or real or lifetime else "live-named" if live_named else "controlled-mechanics"
+                provenance = "live-engine" if real or live_named else "main-runtime" if main or lifetime else "controlled-stock-provider"
+                owner = "named_hooks" if suite == "C" or case.endswith("named_hook") else "engine_hooks"
+                join = name[3:] if main else "precache-map" if real and name != "native_precache_live_peer_both_orders" and name != "js_precache_stale_context_rejected" else ""
+                check = _sc(case, name, producer)
+                checks.append(check)
+                rules[(case, name, producer)] = EvidenceRule(group, provenance, owner, case, join)
+                if main:
+                    # SAME scenario native target original/marker observations,
+                    # never the independently invoked controlled snapshot.
+                    native_name = "native_main_" + name[3:]
+                    checks.append(_sc(case, native_name, "native"))
+                    rules[(case, native_name, "native")] = rules[(case, name, producer)]
+    actions = {"chat_named_hook": "a real client sends run-bound continue and suppress chat tokens",
+               "usercmd_named_hook": "a real connected client supplies usercmd input"} if suite == "B" else {}
+    return SuiteSpec(tuple(rows), tuple(checks), actions, rules)
+
+
+SUITES = {"A": SuiteSpec(SUITE_A_CASES, SUBCHECKS, CLIENT_ACTIONS),
+          "B": _integration_spec(_B_ROWS, "B"), "C": _integration_spec(_C_ROWS, "C")}
+SUITE_B_CASES = SUITES["B"].cases
+SUITE_C_CASES = SUITES["C"].cases
+
+
+def required_subchecks(suite: str = "A") -> List[Subcheck]:
+    return list(SUITES[suite].subchecks)
+
+
+def _registered(suite: str = "A") -> Dict[Tuple[str, str, str], Subcheck]:
+    return {(s.case, s.subcheck, s.producer): s for s in required_subchecks(suite)}
+
+
+def _integration_record_error(rec: dict, rule: EvidenceRule) -> Optional[str]:
+    if rec.get("result") == "pending":
+        return None
+    if _canonical(rec.get("expected")) != _canonical(INTEGRATION_EXPECTED[rec["subcheck"]]):
+        return "expected outcome differs from frozen subcheck contract"
+    if rec.get("evidence_class") != "observed":
+        return "synthetic or unclassified evidence is not live acceptance"
+    for name in ("group", "provenance", "callback_owner", "target"):
+        if rec.get(name) != getattr(rule, name):
+            return f"wrong {name}; expected {getattr(rule, name)}"
+    observations = rec.get("observations")
+    if not isinstance(observations, list) or not observations:
+        return "observed callback scenarios required (registration alone is insufficient)"
+    seen = set()
+    for obs in observations:
+        if not isinstance(obs, dict):
+            return "malformed observation"
+        for name in ("scenario_id", "invocation", "peer_order"):
+            if not isinstance(obs.get(name), str) or not obs[name]:
+                return f"observation requires {name}"
+        for name in ("sequence", "generation", "callbacks"):
+            if type(obs.get(name)) is not int or obs[name] <= 0:
+                return f"observation requires positive {name}"
+        if obs["peer_order"] not in ("peer-first", "s2script-first", "none"):
+            return "unsupported observed peer_order"
+        key = (obs["scenario_id"], obs["sequence"], obs["generation"])
+        if key in seen:
+            return "duplicate invocation scenario"
+        seen.add(key)
+        if not isinstance(obs.get("facts"), dict) or not obs["facts"]:
+            return "typed callback facts required"
+        if rule.provenance == "live-engine" and obs.get("stimulus") not in ("engine", "real-client"):
+            return "real engine/client stimulus required; synthetic/selftest callback rejected"
+        if rule.target == "precache_map_transition":
+            if obs.get("route") != "main-virtual-precache":
+                return "actual main virtual precache frame required"
+            for name in ("frame_token", "map_generation"):
+                if type(obs.get(name)) is not int or obs[name] <= 0:
+                    return f"precache requires positive {name}"
+            for name in ("receiver", "vtable", "manifest"):
+                if not isinstance(obs.get(name), str) or not obs[name]:
+                    return f"precache requires opaque {name} label"
+    if "peer_orders" in rec["subcheck"] or "both_orders" in rec["subcheck"]:
+        if {o["peer_order"] for o in observations} != {"peer-first", "s2script-first"}:
+            return "both observed peer orders required"
+    if rule.target == "precache_map_transition" and "stale_context" not in rec["subcheck"]:
+        if len({o["map_generation"] for o in observations}) < 2:
+            return "callbacks in two actual map generations required"
+    return None
+
+
+def _join_errors(records: Sequence[dict], spec: SuiteSpec) -> List[str]:
+    groups: Dict[Tuple[str, str], Dict[str, list]] = {}
+    for rec in records:
+        key = (rec.get("case"), rec.get("subcheck"), rec.get("producer"))
+        rule = spec.rules.get(key)
+        if rule and rule.join and rec.get("result") == "pass" and rec.get("artifact_identity"):
+            groups.setdefault((key[0], rule.join), {}).setdefault(key[2], []).append(rec)
+    errors = []
+    for (case, join), producers in groups.items():
+        if set(producers) != {"native", "js"}:
+            continue  # Missing counterpart already remains a required pending row.
+        def signature(rec):
+            return sorted(_canonical({k: o.get(k) for k in
+                ("scenario_id", "sequence", "generation", "invocation", "peer_order",
+                 "frame_token", "map_generation", "receiver", "vtable", "manifest")})
+                for o in rec.get("observations", []))
+        signatures = { _canonical(signature(rec)) for rows in producers.values() for rec in rows }
+        if len(signatures) != 1:
+            errors.append(f"{case}/{join}: cross-producer invocation/scenario/sequence/generation mismatch")
+    return errors
 
 
 def _human_pending_observation(sc: Subcheck) -> Dict[str, Any]:
@@ -350,24 +589,34 @@ def valid_run_id(value: Any) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", value) is not None
 
 
-def probe_cmd(verb: str, run_id: str, artifact_identity: Optional[str] = None) -> str:
+def probe_cmd(verb: str, run_id: str, artifact_identity: Optional[str] = None, *, suite: str = "A") -> str:
+    if suite not in SUITES:
+        raise ValueError("unsupported suite " + suite)
+    if artifact_identity is not None and not _hex(artifact_identity, 64):
+        raise ValueError("invalid artifact_identity")
     if not valid_run_id(run_id):
         raise ValueError("invalid run_id: expected 1-64 ASCII letters/digits, underscores or hyphens")
     if verb not in ("prepare", "collect", "report", "bind", "resume", "reload-arm"):
         raise ValueError(verb)
-    return f"s2_khook_probe {verb} {run_id}" + (f" {artifact_identity}" if artifact_identity else "")
+    return f"s2_khook_probe {verb} {run_id}" + (f" {artifact_identity}" if artifact_identity else "") + (f" {suite}" if suite != "A" else "")
 
 
-def accept_cmd(verb: str, run_id: str, artifact_identity: Optional[str] = None) -> str:
+def accept_cmd(verb: str, run_id: str, artifact_identity: Optional[str] = None, *, suite: str = "A") -> str:
+    if suite not in SUITES:
+        raise ValueError("unsupported suite " + suite)
+    if artifact_identity is not None and not _hex(artifact_identity, 64):
+        raise ValueError("invalid artifact_identity")
     if not valid_run_id(run_id):
         raise ValueError("invalid run_id: expected 1-64 ASCII letters/digits, underscores or hyphens")
     if verb not in ("prepare", "collect", "report", "teardown", "bind", "restore", "resume", "reload-arm"):
         raise ValueError(verb)
-    return f"s2_khook_accept {verb} {run_id}" + (f" {artifact_identity}" if artifact_identity else "")
+    return f"s2_khook_accept {verb} {run_id}" + (f" {artifact_identity}" if artifact_identity else "") + (f" {suite}" if suite != "A" else "")
 
 
-def new_run_id() -> str:
-    return "khook-a-" + uuid.uuid4().hex
+def new_run_id(suite: str = "A") -> str:
+    if suite not in SUITES:
+        raise ValueError("unsupported suite " + suite)
+    return "khook-" + suite.lower() + "-" + uuid.uuid4().hex
 
 
 def current_source_revision() -> str:
@@ -535,12 +784,12 @@ def parse_records(text: str) -> Tuple[List[dict], List[str]]:
     return recs, errors
 
 
-def _need_clients_messages(case_status: Dict[str, str]) -> List[str]:
+def _need_clients_messages(case_status: Dict[str, str], suite: str = "A") -> List[str]:
     out = []
     for case, status in case_status.items():
         if status != "pending":
             continue
-        action = CLIENT_ACTIONS.get(case)
+        action = SUITES[suite].client_actions.get(case)
         if action:
             out.append(f"NEED_CLIENTS: {case}: {action}")
     return out
@@ -562,7 +811,7 @@ def _legacy_contradicts(rec: dict) -> Optional[str]:
     return None
 
 
-def _normalize_observations(observations: Any, identity: dict) -> Tuple[List[dict], List[str]]:
+def _normalize_observations(observations: Any, identity: dict, suite: str = "A") -> Tuple[List[dict], List[str]]:
     if observations is None:
         return [], []
     if isinstance(observations, (str, Path)):
@@ -589,7 +838,7 @@ def _normalize_observations(observations: Any, identity: dict) -> Tuple[List[dic
         errors.append("malformed observations: observations[] required")
         return [], errors
     recs: List[dict] = []
-    registered = _registered()
+    registered = _registered(suite)
     for row in rows:
         if not isinstance(row, dict):
             errors.append("malformed observations: row is not an object")
@@ -603,7 +852,7 @@ def _normalize_observations(observations: Any, identity: dict) -> Tuple[List[dic
         rec = {
             **row,
             "schema": SCHEMA,
-            "suite": "A",
+            "suite": suite,
             "run_id": identity.get("run_id"),
             "source_revision": identity.get("source_revision"),
             "artifact_identity": observations.get("artifact_identity"),
@@ -668,11 +917,9 @@ def judge_records(
 ) -> JudgeResult:
     suite = (suite or "A").upper()
     messages: List[str] = []
-    if suite in UNAVAILABLE_SUITES:
-        reason = UNAVAILABLE_SUITES[suite]
-        return JudgeResult(1, "fail", [f"suite {suite} {reason}"], {})
-    if suite != "A":
+    if suite not in SUITES:
         return JudgeResult(1, "fail", [f"unsupported suite {suite}"], {})
+    spec = SUITES[suite]
 
     errors = list(parse_errors or [])
     receipt = identity.get("runtime_identity")
@@ -680,12 +927,12 @@ def judge_records(
     if not missing_identity:
         errors.extend(validate_runtime_identity(receipt, identity))
     artifact_identity = receipt.get("artifact_identity") if isinstance(receipt, dict) else None
-    extra, obs_errors = _normalize_observations(observations, identity)
+    extra, obs_errors = _normalize_observations(observations, identity, suite)
     errors.extend(obs_errors)
     all_recs = list(records) + extra
 
-    registered = _registered()
-    envelopes: Dict[str, List[dict]] = {c: [] for c in SUITE_A_CASES}
+    registered = _registered(suite)
+    envelopes: Dict[str, List[dict]] = {c: [] for c in spec.cases}
 
     for rec in all_recs:
         if not isinstance(rec, dict):
@@ -694,7 +941,7 @@ def judge_records(
         if type(rec.get("schema")) is not int or rec["schema"] != SCHEMA:
             errors.append(f"unsupported schema {rec.get('schema')!r}")
             continue
-        if str(rec.get("suite") or "A").upper() != "A":
+        if str(rec.get("suite") or "A").upper() != suite:
             errors.append(f"unsupported suite in record {rec.get('suite')!r}")
             continue
         if rec.get("run_id") != identity.get("run_id"):
@@ -716,10 +963,15 @@ def judge_records(
             if artifact_identity and binding != artifact_identity:
                 errors.append("wrong record artifact_identity")
                 continue
+        if rec.get("kind") == "diagnostic" and rec.get("case") == "process_terminal" and rec.get("producer") == "native":
+            verdict, reason = _subcheck_verdict(rec)
+            if verdict == "invalid": errors.append(f"malformed terminal diagnostic: {reason}")
+            else: messages.append(f"DIAGNOSTIC: process terminal result={rec.get('result')} actual={rec.get('actual')!r}; known shutdown-only139 is non-blocking by user disposition")
+            continue
         case = rec.get("case")
         subcheck = rec.get("subcheck")
         producer = rec.get("producer")
-        if case not in SUITE_A_CASES:
+        if case not in spec.cases:
             errors.append(f"unsupported case {case!r}")
             continue
         if producer not in PRODUCERS:
@@ -732,19 +984,26 @@ def judge_records(
         if key not in registered:
             errors.append(f"unsupported subcheck {case}/{subcheck} producer={producer}")
             continue
+        rule = spec.rules.get(key)
+        if rule:
+            reason = _integration_record_error(rec, rule)
+            if reason:
+                errors.append(f"{case}/{subcheck}: {reason}")
+                continue
         envelopes[case].append(rec)
 
+    errors.extend(_join_errors([r for rows in envelopes.values() for r in rows], spec))
     case_status: Dict[str, str] = {}
-    missing = [c for c in SUITE_A_CASES if not envelopes[c]]
+    missing = [c for c in spec.cases if not envelopes[c]]
     if missing:
         errors.append("missing case records: " + ", ".join(missing))
 
-    for case in SUITE_A_CASES:
+    for case in spec.cases:
         recs_for_case = envelopes[case]
         if not recs_for_case:
             case_status[case] = "invalid"
             continue
-        required = [s for s in SUBCHECKS if s.case == case]
+        required = [s for s in spec.subchecks if s.case == case]
         by_key: Dict[Tuple[str, str], List[dict]] = {}
         for rec in recs_for_case:
             by_key.setdefault((rec["producer"], rec["subcheck"]), []).append(rec)
@@ -796,14 +1055,14 @@ def judge_records(
     messages.extend(f"FAIL: {e}" for e in errors)
     if missing_identity:
         messages.append("PENDING: installed runtime identity missing; supply --identity FILE from verified runtime artifacts")
-    messages.extend(_need_clients_messages(case_status))
+    messages.extend(_need_clients_messages(case_status, suite))
 
     if errors:
         failed_n = sum(1 for v in case_status.values() if v == "fail")
         pending_n = sum(1 for v in case_status.values() if v == "pending")
         passed_n = sum(1 for v in case_status.values() if v == "pass")
         messages.append(
-            f"FAIL: suite {suite} required={len(SUITE_A_CASES)} pass={passed_n} "
+            f"FAIL: suite {suite} required={len(spec.cases)} pass={passed_n} "
             f"pending={pending_n} fail={failed_n}"
         )
         return JudgeResult(1, "fail", messages, case_status)
@@ -813,7 +1072,7 @@ def judge_records(
         pending_n = sum(1 for v in case_status.values() if v == "pending")
         passed_n = sum(1 for v in case_status.values() if v == "pass")
         messages.append(
-            f"FAIL: suite {suite} required={len(SUITE_A_CASES)} pass={passed_n} "
+            f"FAIL: suite {suite} required={len(spec.cases)} pass={passed_n} "
             f"pending={pending_n} fail={failed_n}"
         )
         return JudgeResult(1, "fail", messages, case_status)
@@ -822,12 +1081,12 @@ def judge_records(
         pending_n = sum(1 for v in case_status.values() if v == "pending")
         passed_n = sum(1 for v in case_status.values() if v == "pass")
         messages.append(
-            f"PENDING: suite {suite} required={len(SUITE_A_CASES)} pass={passed_n} "
+            f"PENDING: suite {suite} required={len(spec.cases)} pass={passed_n} "
             f"pending={pending_n} — not a green gate"
         )
         return JudgeResult(2, "pending", messages, case_status)
 
-    messages.append(f"PASS: suite {suite} ({len(SUITE_A_CASES)}/{len(SUITE_A_CASES)})")
+    messages.append(f"PASS: suite {suite} ({len(spec.cases)}/{len(spec.cases)})")
     return JudgeResult(0, "pass", messages, case_status)
 
 
@@ -927,6 +1186,8 @@ def prepare_run(
     port: int = 27015,
 ) -> JudgeResult:
     suite = (suite or "A").upper()
+    if suite not in SUITES:
+        return JudgeResult(1, "fail", [f"unsupported suite {suite}"], {})
     run_dir = Path(run_dir)
     if (run_dir / "run.json").exists():
         return JudgeResult(1, "fail", ["run_already_prepared: use collect or a new run directory"], {})
@@ -935,7 +1196,7 @@ def prepare_run(
         receipt = _read_identity(fields.get("runtime_identity"))
     except (OSError, ValueError) as error:
         return JudgeResult(1, "fail", [f"malformed runtime identity: {error}"], {})
-    run_id = fields.get("run_id") if "run_id" in fields else (receipt.get("run_id") if isinstance(receipt, dict) else new_run_id())
+    run_id = fields.get("run_id") if "run_id" in fields else (receipt.get("run_id") if isinstance(receipt, dict) else new_run_id(suite))
     if not valid_run_id(run_id):
         return JudgeResult(1, "fail", ["invalid run_id: expected 1-64 ASCII letters/digits, underscores or hyphens"], {})
     source_revision = fields.get("source_revision") or current_source_revision()
@@ -967,15 +1228,10 @@ def prepare_run(
     (run_dir / "commands.jsonl").touch()
     (run_dir / "raw").mkdir(exist_ok=True)
 
-    if suite in UNAVAILABLE_SUITES:
-        meta["reason"] = f"suite_{suite}_not_authored"
-        _write_json(run_dir / "run.json", meta)
-        return JudgeResult(1, "fail", [f"suite {suite} {UNAVAILABLE_SUITES[suite]}"], {})
-
     send = rcon_send or (lambda cmd: default_rcon_send(cmd, port=port))
     binding = receipt.get("artifact_identity") if isinstance(receipt, dict) else None
     try:
-        for cmd in (probe_cmd("prepare", run_id, binding), accept_cmd("prepare", run_id, binding)):
+        for cmd in (probe_cmd("prepare", run_id, binding, suite=suite), accept_cmd("prepare", run_id, binding, suite=suite)):
             _append_jsonl(run_dir / "commands.jsonl", {"cmd": cmd, "ts": _utc_now()})
             out = send(cmd)
             _store_raw(run_dir, "prepare", cmd, out)
@@ -993,7 +1249,7 @@ def prepare_run(
     messages = [f"prepared run_id={run_id} dir={run_dir}"]
     if not binding:
         messages.append("PENDING: installed runtime identity missing; supply --identity FILE on collect")
-    messages.extend(f"NEED_CLIENTS: {case}: {action}" for case, action in CLIENT_ACTIONS.items())
+    messages.extend(f"NEED_CLIENTS: {case}: {action}" for case, action in SUITES[suite].client_actions.items())
     return JudgeResult(2, "pending", messages, {})
 
 
@@ -1006,11 +1262,16 @@ def collect_run(
     interval_s: float = COLLECT_INTERVAL_S,
     max_attempts: int = COLLECT_MAX_ATTEMPTS,
     identity_receipt: Any = None,
+    suite: Optional[str] = None,
 ) -> JudgeResult:
     run_dir = Path(run_dir)
     if not (run_dir / "run.json").exists():
         return JudgeResult(1, "fail", ["run_not_prepared"], {})
     meta = _load_run(run_dir)
+    stored_suite = meta.get("suite", "A")
+    if stored_suite not in SUITES or (suite is not None and suite != stored_suite):
+        return JudgeResult(1, "fail", ["suite mismatch or unsupported stored suite"], {})
+    suite = stored_suite
     if not valid_run_id(meta.get("run_id")):
         return JudgeResult(1, "fail", ["invalid stored run_id: expected bounded command-safe token"], {})
     meta, errors = _with_runtime_identity(meta, identity_receipt)
@@ -1023,10 +1284,10 @@ def collect_run(
     send = rcon_send or (lambda cmd: default_rcon_send(cmd, port=port))
     # Collect never re-sends prepare. Report remains a read-only path.
     cmds = (
-        probe_cmd("collect", run_id),
-        accept_cmd("collect", run_id),
-        probe_cmd("report", run_id),
-        accept_cmd("report", run_id),
+        probe_cmd("collect", run_id, suite=suite),
+        accept_cmd("collect", run_id, suite=suite),
+        probe_cmd("report", run_id, suite=suite),
+        accept_cmd("report", run_id, suite=suite),
     )
     deadline = time.monotonic() + deadline_s
     last_err: Optional[Exception] = None
@@ -1038,7 +1299,7 @@ def collect_run(
         attempt += 1
         try:
             if binding and not meta.get("identity_bound"):
-                for cmd in (probe_cmd("bind", run_id, binding), accept_cmd("bind", run_id, binding)):
+                for cmd in (probe_cmd("bind", run_id, binding, suite=suite), accept_cmd("bind", run_id, binding, suite=suite)):
                     _append_jsonl(run_dir / "commands.jsonl", {"cmd": cmd, "ts": _utc_now()})
                     _store_raw(run_dir, "bind", cmd, send(cmd))
                 meta["identity_bound"] = True
@@ -1054,8 +1315,8 @@ def collect_run(
             last_err = e
             break
         recs = _load_stored_records(run_dir)
-        present = {r.get("case") for r in recs}
-        if all(c in present for c in SUITE_A_CASES):
+        present = {r.get("case") for r in recs if r.get("suite", "A") == suite and r.get("run_id") == run_id}
+        if all(c in present for c in SUITES[suite].cases):
             break
         if attempt < max_attempts and time.monotonic() + interval_s <= deadline:
             time.sleep(interval_s)
@@ -1120,13 +1381,13 @@ def _human_pass_actors(case: str) -> List[dict]:
     ]
 
 
-def synthetic_fixture(kind: str, identity: dict) -> List[dict]:
+def synthetic_fixture(kind: str, identity: dict, *, suite: str = "A") -> List[dict]:
     """Host self-test records. Never live evidence; evidence strings say so."""
     recs: List[dict] = []
-    for sc in SUBCHECKS:
+    for sc in required_subchecks(suite):
         rec = {
             "schema": SCHEMA,
-            "suite": "A",
+            "suite": suite,
             "run_id": identity["run_id"],
             "source_revision": identity["source_revision"],
             "case": sc.case,
@@ -1137,6 +1398,10 @@ def synthetic_fixture(kind: str, identity: dict) -> List[dict]:
             "actual": {"ok": True},
             "evidence": "self-test fixture; not live evidence",
         }
+        if suite != "A":
+            rec["evidence_class"] = "synthetic"
+            rec["expected"] = INTEGRATION_EXPECTED[sc.subcheck]
+            rec["actual"] = dict(rec["expected"])
         if sc.producer == "human":
             rec["actors"] = _human_pass_actors(sc.case)
             rec["capture_path"] = "captures/self-test.txt"
@@ -1154,20 +1419,20 @@ def synthetic_fixture(kind: str, identity: dict) -> List[dict]:
                 rec["timestamp"] = ""
         return recs
     if kind == "missing":
-        return [r for r in recs if r["case"] != "check_transmit"]
+        return [r for r in recs if r["case"] != SUITES[suite].cases[-1]]
     if kind == "duplicate":
         recs.append(dict(recs[0], result="fail", actual={"ok": False}))
         return recs
     if kind == "fail":
         for rec in recs:
-            if rec["subcheck"] == "native_one_pre_post_orig":
+            if rec["subcheck"] == ("native_one_pre_post_orig" if suite == "A" else required_subchecks(suite)[0].subcheck):
                 rec["result"] = "fail"
                 rec["actual"] = {"ok": False}
                 rec["evidence"] = "self-test fixture fail"
         return recs
     if kind == "native-fail-js-pass":
         for rec in recs:
-            if rec["producer"] == "native" and rec["case"] == "frame_client_command_hooks":
+            if rec["producer"] == "native" and rec["case"] == ("frame_client_command_hooks" if suite == "A" else SUITES[suite].cases[0]):
                 rec["result"] = "fail"
                 rec["actual"] = {"ok": False}
                 rec["evidence"] = "self-test native fail"
@@ -1200,7 +1465,7 @@ def judge_from_file(path: str | Path, suite: str = "A", *, identity_receipt: Any
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="KHook suite A acceptance controller", allow_abbrev=False)
+    p = argparse.ArgumentParser(description="KHook A/B/C acceptance controller", allow_abbrev=False)
     p.add_argument("suite", nargs="?", default="A")
     p.add_argument("--from-file")
     p.add_argument("--prepare", action="store_true")
@@ -1223,13 +1488,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "run_id": args.identity_run_id,
             "source_revision": current_source_revision(),
         }
-        for rec in synthetic_fixture(args.emit_fixture, identity):
+        for rec in synthetic_fixture(args.emit_fixture, identity, suite=suite):
             print(json.dumps(rec, sort_keys=True))
         return 0
     if args.from_file:
         return print_result(judge_from_file(args.from_file, suite=suite, identity_receipt=args.identity, observations=args.observations))
     staged = args.prepare or args.collect or args.judge
-    run_dir = Path(args.run_dir) if args.run_dir else (REPO / "build" / "khook-acceptance" / new_run_id())
+    run_dir = Path(args.run_dir) if args.run_dir else (REPO / "build" / "khook-acceptance" / new_run_id(suite))
     if not staged:
         args.prepare = args.collect = args.judge = True
     code = 0
@@ -1238,10 +1503,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if code == 1:
             return code
     if args.collect:
-        code = print_result(collect_run(run_dir, port=args.port, identity_receipt=args.identity))
+        code = print_result(collect_run(run_dir, port=args.port, identity_receipt=args.identity, suite=suite))
         if code == 1:
             return code
     if args.judge:
+        if _load_run(run_dir).get("suite", "A") != suite:
+            return print_result(JudgeResult(1, "fail", ["suite mismatch"], {}))
         code = print_result(judge_run_dir(run_dir, observations=args.observations, identity_receipt=args.identity))
     return code
 

@@ -160,12 +160,12 @@ class RegistryTests(unittest.TestCase):
             ],
         )
 
-    def test_b_and_c_explicitly_unavailable(self):
-        self.assertEqual(ka.UNAVAILABLE_SUITES["B"], "not authored")
-        self.assertEqual(ka.UNAVAILABLE_SUITES["C"], "not authored")
-        r = ka.judge_records([], identity=IDENTITY, suite="B")
-        self.assertEqual(r.exit_code, 1)
-        self.assertIn("not authored", " ".join(r.messages).lower())
+    def test_b_and_c_have_separate_registries(self):
+        for suite in ("B", "C"):
+            self.assertTrue(ka.required_subchecks(suite))
+            r = ka.judge_records([], identity=IDENTITY, suite=suite)
+            self.assertEqual(r.exit_code, 1)
+            self.assertIn("missing case records", " ".join(r.messages))
 
     def test_frame_requires_native_and_js_and_controls(self):
         names = {(s.producer, s.subcheck) for s in _req("frame_client_command_hooks")}
@@ -936,6 +936,133 @@ class ArtifactIdentityRegressionTests(unittest.TestCase):
         human["artifact_identity"] = "9" * 64
         result = judge(all_records(producers=("native", "js")), observations=human)
         self.assertEqual(result.exit_code, 1, result.messages)
+
+
+class SuiteBoundaryTests(unittest.TestCase):
+    def test_suite_suffix_preserves_a_commands(self):
+        for command in (ka.probe_cmd, ka.accept_cmd):
+            self.assertTrue(command("prepare", "run").endswith("prepare run"))
+            self.assertTrue(command("prepare", "run", "a" * 64, suite="B").endswith("run " + "a" * 64 + " B"))
+            self.assertTrue(command("collect", "run", suite="C").endswith("run C"))
+            with self.assertRaises(ValueError): command("collect", "run", suite="D")
+            with self.assertRaises(ValueError): command("prepare", "run", "bad hash")
+
+    def test_cli_suite_mismatch_refuses_before_rcon(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = write_run(Path(tmp), [], dict(IDENTITY, suite="B"))
+            calls = []
+            result = ka.collect_run(run, suite="C", rcon_send=lambda cmd: calls.append(cmd))
+            self.assertEqual(result.exit_code, 1)
+            self.assertIn("suite mismatch", " ".join(result.messages))
+            self.assertEqual(calls, [])
+
+    def test_synthetic_bc_cannot_pass_live_judge(self):
+        for suite in ("B", "C"):
+            records = ka.synthetic_fixture("all-pass", IDENTITY, suite=suite)
+            self.assertEqual({r["evidence_class"] for r in records}, {"synthetic"})
+            for rec in records: rec["artifact_identity"] = IDENTITY["runtime_identity"]["artifact_identity"]
+            result = ka.judge_records(records, identity=IDENTITY, suite=suite)
+            self.assertEqual(result.exit_code, 1)
+            self.assertIn("synthetic", " ".join(result.messages))
+
+    def test_terminal_process_status_is_diagnostic(self):
+        for suite in ("B", "C"):
+            self.assertFalse(any("terminal" in s.subcheck for s in ka.required_subchecks(suite)))
+            records = ka.synthetic_fixture("pending", IDENTITY, suite=suite)
+            diagnostic = dict(records[0], kind="diagnostic", case="process_terminal", subcheck="native_process_exit",
+                              producer="native", result="fail", expected={"exit": 0}, actual={"exit": 139},
+                              evidence="known shutdown-only139; user disposition non-blocking")
+            result = ka.judge_records(records + [diagnostic], identity=IDENTITY, suite=suite)
+            self.assertEqual(result.exit_code, 2, result.messages)
+            self.assertIn("DIAGNOSTIC", " ".join(result.messages))
+
+
+class IntegrationEvidenceTests(unittest.TestCase):
+    def records(self, suite):
+        # Deliberately fabricated test input exercises judge validation only.
+        # These are never emitted by --emit-fixture as observed/live records.
+        records = ka.synthetic_fixture("all-pass", IDENTITY, suite=suite)
+        for rec in records:
+            rule = ka.SUITES[suite].rules[(rec["case"], rec["subcheck"], rec["producer"])]
+            rec.update(artifact_identity=IDENTITY["runtime_identity"]["artifact_identity"], evidence_class="observed",
+                       group=rule.group, provenance=rule.provenance, callback_owner=rule.callback_owner, target=rule.target)
+            rec["observations"] = [dict(scenario_id="fixture", sequence=1, generation=1, invocation="fixture-1",
+                callbacks=1, peer_order="peer-first", facts={"pre": 1}, stimulus="engine", route="main-virtual-precache",
+                frame_token=1, map_generation=1, receiver="r1", vtable="v1", manifest="m1")]
+            if "peer_orders" in rec["subcheck"] or "both_orders" in rec["subcheck"] or suite == "C":
+                rec["observations"].append(dict(rec["observations"][0], sequence=2, invocation="fixture-2",
+                    peer_order="s2script-first", frame_token=2, map_generation=2, manifest="m2"))
+        return records
+
+    def judge(self, records, suite):
+        return ka.judge_records(records, identity=IDENTITY, suite=suite)
+
+    def test_populated_parser_examples(self):
+        for suite in ("B", "C"):
+            result = self.judge(self.records(suite), suite)
+            self.assertEqual(result.exit_code, 0, result.messages)
+
+    def test_missing_half_case_and_pending_callback(self):
+        for suite in ("B", "C"):
+            records = self.records(suite)
+            self.assertEqual(self.judge([r for r in records if r["producer"] != "js"], suite).exit_code, 2)
+            self.assertEqual(self.judge([r for r in records if r["case"] != records[0]["case"]], suite).exit_code, 1)
+            records[0]["result"] = "pending"
+            records[0]["actual"] = {}
+            records[0]["observations"] = []
+            self.assertEqual(self.judge(records, suite).exit_code, 2)
+
+    def test_envelope_provenance_and_owner_rejections(self):
+        mutations = [dict(suite="A"), dict(run_id="stale"), dict(source_revision="f"*40),
+            dict(artifact_identity="f"*64), dict(producer="js"), dict(evidence_class="synthetic"),
+            dict(provenance="invented"), dict(callback_owner="other"), dict(group="main-runtime-bridge"),
+            dict(observations=[])]
+        for suite in ("B", "C"):
+            for mutation in mutations:
+                records = self.records(suite)
+                records[0].update(mutation)
+                self.assertEqual(self.judge(records, suite).exit_code, 1, (suite, mutation))
+            records = self.records(suite)
+            records[0]["artifact_identity"] = ""
+            self.assertEqual(self.judge(records, suite).exit_code, 2)
+
+    def test_producer_cannot_invent_success_contract(self):
+        for suite in ("B", "C"):
+            records = self.records(suite)
+            records[0].update(expected={"ok": True}, actual={"ok": True})
+            self.assertEqual(self.judge(records, suite).exit_code, 1)
+
+    def test_main_bridge_never_joins_private_copy(self):
+        for name in ("scenario_id", "sequence", "generation", "invocation", "peer_order"):
+            records = self.records("B")
+            row = next(r for r in records if r["subcheck"] == "js_acquire_outbound_pre_vote")
+            row["observations"][0][name] = 9 if name in ("sequence", "generation") else "s2script-first" if name == "peer_order" else "unrelated"
+            result = self.judge(records, "B")
+            self.assertEqual(result.exit_code, 1, result.messages)
+        records = self.records("B")
+        row = next(r for r in records if r["subcheck"] == "native_main_acquire_outbound_pre_vote")
+        row.update(group="controlled-mechanics", provenance="controlled-stock-provider")
+        self.assertEqual(self.judge(records, "B").exit_code, 1)
+
+    def test_real_precache_requires_main_frame_two_maps(self):
+        for field, value in (("route", "session-manifest"), ("callbacks", 0), ("stimulus", "selftest"), ("frame_token", 0)):
+            records = self.records("C")
+            row = next(r for r in records if r["subcheck"] == "js_precache_resource_each_generation")
+            row["observations"][0][field] = value
+            self.assertEqual(self.judge(records, "C").exit_code, 1)
+        records = self.records("C")
+        for row in records:
+            if row["case"] == "precache_map_transition":
+                for observation in row["observations"]: observation["map_generation"] = 1
+        self.assertEqual(self.judge(records, "C").exit_code, 1)
+
+    def test_fail_cannot_be_erased_and_report_is_idempotent(self):
+        for suite in ("B", "C"):
+            records = self.records(suite)
+            self.assertEqual(self.judge(records + copy.deepcopy(records), suite).exit_code, 0)
+            first = copy.deepcopy(records[0])
+            first.update(result="fail", actual={"failed": True})
+            self.assertEqual(self.judge([first] + records, suite).exit_code, 1)
 
 
 class SniperResourceTests(unittest.TestCase):
