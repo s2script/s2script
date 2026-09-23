@@ -1,0 +1,775 @@
+// Acceptance-only hidden probe entrypoints. Eight-byte original-image NOPs are unique,
+// mandatory-validated Linux x86_64 signatures, never dynamic-symbol resolution.
+// Entity arguments are books-gated; HUD uses a borrowed first-word text holder.
+{
+  "signatures": {
+    "void0": {
+      "linuxsteamrt64": {
+        "module": "s2_khook_probe.so",
+        "pattern": "0F 1F 84 00 53 36 10 42",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "0F 1F 84 00 53 36 10 42"
+        }
+      }
+    },
+    "narrow0": {
+      "linuxsteamrt64": {
+        "module": "s2_khook_probe.so",
+        "pattern": "0F 1F 84 00 53 36 11 42",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "0F 1F 84 00 53 36 11 42"
+        }
+      }
+    },
+    "wide0": {
+      "linuxsteamrt64": {
+        "module": "s2_khook_probe.so",
+        "pattern": "0F 1F 84 00 53 36 12 42",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "0F 1F 84 00 53 36 12 42"
+        }
+      }
+    },
+    "acquire0": {
+      "linuxsteamrt64": {
+        "module": "s2_khook_probe.so",
+        "pattern": "0F 1F 84 00 53 36 13 42",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "0F 1F 84 00 53 36 13 42"
+        }
+      }
+    },
+    "hud0": {
+      "linuxsteamrt64": {
+        "module": "s2_khook_probe.so",
+        "pattern": "0F 1F 84 00 53 36 14 42",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "0F 1F 84 00 53 36 14 42"
+        }
+      }
+    },
+    "void1": {
+      "linuxsteamrt64": {
+        "module": "s2_khook_probe.so",
+        "pattern": "0F 1F 84 00 53 36 18 42",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "0F 1F 84 00 53 36 18 42"
+        }
+      }
+    },
+    "narrow1": {
+      "linuxsteamrt64": {
+        "module": "s2_khook_probe.so",
+        "pattern": "0F 1F 84 00 53 36 19 42",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "0F 1F 84 00 53 36 19 42"
+        }
+      }
+    },
+    "wide1": {
+      "linuxsteamrt64": {
+        "module": "s2_khook_probe.so",
+        "pattern": "0F 1F 84 00 53 36 1A 42",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "0F 1F 84 00 53 36 1A 42"
+        }
+      }
+    },
+    "acquire1": {
+      "linuxsteamrt64": {
+        "module": "s2_khook_probe.so",
+        "pattern": "0F 1F 84 00 53 36 1B 42",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "0F 1F 84 00 53 36 1B 42"
+        }
+      }
+    },
+    "hud1": {
+      "linuxsteamrt64": {
+        "module": "s2_khook_probe.so",
+        "pattern": "0F 1F 84 00 53 36 1C 42",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "0F 1F 84 00 53 36 1C 42"
+        }
+      }
+    },
+    "bridgeDrive": {
+      "linuxsteamrt64": {
+        "module": "s2_khook_probe.so",
+        "pattern": "0F 1F 84 00 53 36 01 42",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "0F 1F 84 00 53 36 01 42"
+        }
+      }
+    },
+    "bridgeMark": {
+      "linuxsteamrt64": {
+        "module": "s2_khook_probe.so",
+        "pattern": "0F 1F 84 00 53 36 02 42",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "0F 1F 84 00 53 36 02 42"
+        }
+      }
+    },
+    "bridgeWindow": {
+      "linuxsteamrt64": {
+        "module": "s2_khook_probe.so",
+        "pattern": "0F 1F 84 00 53 36 03 42",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "0F 1F 84 00 53 36 03 42"
+        }
+      }
+    },
+    "precacheBegin": {
+      "linuxsteamrt64": {
+        "module": "s2_khook_probe.so",
+        "pattern": "0F 1F 84 00 53 36 04 42",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "0F 1F 84 00 53 36 04 42"
+        }
+      }
+    },
+    "precacheFinish": {
+      "linuxsteamrt64": {
+        "module": "s2_khook_probe.so",
+        "pattern": "0F 1F 84 00 53 36 05 42",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "0F 1F 84 00 53 36 05 42"
+        }
+      }
+    },
+    "precacheRead": {
+      "linuxsteamrt64": {
+        "module": "s2_khook_probe.so",
+        "pattern": "0F 1F 84 00 53 36 06 42",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "0F 1F 84 00 53 36 06 42"
+        }
+      }
+    }
+  },
+  "calls": {
+    "void0": {
+      "target": {
+        "kind": "signature",
+        "name": "void0"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [],
+      "returns": "void"
+    },
+    "void0Bypass": {
+      "target": {
+        "kind": "signature",
+        "name": "void0"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [],
+      "returns": "void"
+    },
+    "narrow0": {
+      "target": {
+        "kind": "signature",
+        "name": "narrow0"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [
+        "float",
+        "int",
+        "int",
+        "int"
+      ],
+      "returns": "void"
+    },
+    "narrow0Bypass": {
+      "target": {
+        "kind": "signature",
+        "name": "narrow0"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [
+        "float",
+        "int",
+        "int",
+        "int"
+      ],
+      "returns": "void"
+    },
+    "wide0": {
+      "target": {
+        "kind": "signature",
+        "name": "wide0"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [
+        "float",
+        "int",
+        "entity",
+        "entity"
+      ],
+      "returns": "void"
+    },
+    "wide0Bypass": {
+      "target": {
+        "kind": "signature",
+        "name": "wide0"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [
+        "float",
+        "int",
+        "entity",
+        "entity"
+      ],
+      "returns": "void"
+    },
+    "acquire0": {
+      "target": {
+        "kind": "signature",
+        "name": "acquire0"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [
+        "entity",
+        "int",
+        "entity"
+      ],
+      "returns": "int"
+    },
+    "acquire0Bypass": {
+      "target": {
+        "kind": "signature",
+        "name": "acquire0"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [
+        "entity",
+        "int",
+        "entity"
+      ],
+      "returns": "int"
+    },
+    "hud0": {
+      "target": {
+        "kind": "signature",
+        "name": "hud0"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [
+        "entity",
+        "entity",
+        "utlstring"
+      ],
+      "returns": "void"
+    },
+    "hud0Bypass": {
+      "target": {
+        "kind": "signature",
+        "name": "hud0"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [
+        "entity",
+        "entity",
+        "utlstring"
+      ],
+      "returns": "void"
+    },
+    "void1": {
+      "target": {
+        "kind": "signature",
+        "name": "void1"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [],
+      "returns": "void"
+    },
+    "void1Bypass": {
+      "target": {
+        "kind": "signature",
+        "name": "void1"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [],
+      "returns": "void"
+    },
+    "narrow1": {
+      "target": {
+        "kind": "signature",
+        "name": "narrow1"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [
+        "float",
+        "int",
+        "int",
+        "int"
+      ],
+      "returns": "void"
+    },
+    "narrow1Bypass": {
+      "target": {
+        "kind": "signature",
+        "name": "narrow1"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [
+        "float",
+        "int",
+        "int",
+        "int"
+      ],
+      "returns": "void"
+    },
+    "wide1": {
+      "target": {
+        "kind": "signature",
+        "name": "wide1"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [
+        "float",
+        "int",
+        "entity",
+        "entity"
+      ],
+      "returns": "void"
+    },
+    "wide1Bypass": {
+      "target": {
+        "kind": "signature",
+        "name": "wide1"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [
+        "float",
+        "int",
+        "entity",
+        "entity"
+      ],
+      "returns": "void"
+    },
+    "acquire1": {
+      "target": {
+        "kind": "signature",
+        "name": "acquire1"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [
+        "entity",
+        "int",
+        "entity"
+      ],
+      "returns": "int"
+    },
+    "acquire1Bypass": {
+      "target": {
+        "kind": "signature",
+        "name": "acquire1"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [
+        "entity",
+        "int",
+        "entity"
+      ],
+      "returns": "int"
+    },
+    "hud1": {
+      "target": {
+        "kind": "signature",
+        "name": "hud1"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [
+        "entity",
+        "entity",
+        "utlstring"
+      ],
+      "returns": "void"
+    },
+    "hud1Bypass": {
+      "target": {
+        "kind": "signature",
+        "name": "hud1"
+      },
+      "receiver": {
+        "kind": "entity"
+      },
+      "args": [
+        "entity",
+        "entity",
+        "utlstring"
+      ],
+      "returns": "void"
+    },
+    "bridgeDrive": {
+      "target": {
+        "kind": "signature",
+        "name": "bridgeDrive"
+      },
+      "receiver": {
+        "kind": "none"
+      },
+      "args": [
+        "entity",
+        "int",
+        "int",
+        "int",
+        "string"
+      ],
+      "returns": "int"
+    },
+    "bridgeMark": {
+      "target": {
+        "kind": "signature",
+        "name": "bridgeMark"
+      },
+      "receiver": {
+        "kind": "none"
+      },
+      "args": [
+        "string",
+        "int",
+        "int",
+        "int",
+        "int",
+        "int"
+      ],
+      "returns": "int"
+    },
+    "bridgeWindow": {
+      "target": {
+        "kind": "signature",
+        "name": "bridgeWindow"
+      },
+      "receiver": {
+        "kind": "none"
+      },
+      "args": [
+        "string",
+        "int",
+        "int",
+        "int",
+        "bool"
+      ],
+      "returns": "bool"
+    },
+    "precacheBegin": {
+      "target": {
+        "kind": "signature",
+        "name": "precacheBegin"
+      },
+      "receiver": {
+        "kind": "none"
+      },
+      "args": [
+        "string",
+        "int",
+        "int"
+      ],
+      "returns": "int"
+    },
+    "precacheFinish": {
+      "target": {
+        "kind": "signature",
+        "name": "precacheFinish"
+      },
+      "receiver": {
+        "kind": "none"
+      },
+      "args": [
+        "int",
+        "string",
+        "bool"
+      ],
+      "returns": "bool"
+    },
+    "precacheRead": {
+      "target": {
+        "kind": "signature",
+        "name": "precacheRead"
+      },
+      "receiver": {
+        "kind": "none"
+      },
+      "args": [
+        "int",
+        "int"
+      ],
+      "returns": "int"
+    }
+  },
+  "hooks": {
+    "onvoid0": {
+      "target": {
+        "kind": "signature",
+        "name": "void0"
+      },
+      "shape": "this_void",
+      "receiver": {
+        "kind": "entity",
+        "as": "receiver"
+      },
+      "params": [],
+      "mutable": [],
+      "bypassWith": "void0Bypass",
+      "expose": {
+        "ctx": "acceptance"
+      }
+    },
+    "onnarrow0": {
+      "target": {
+        "kind": "signature",
+        "name": "narrow0"
+      },
+      "shape": "this_f32_i32_i32_i32",
+      "receiver": {
+        "kind": "entity",
+        "as": "receiver"
+      },
+      "params": [
+        "value",
+        "a",
+        "b",
+        "c"
+      ],
+      "mutable": [
+        "value",
+        "a",
+        "b",
+        "c"
+      ],
+      "bypassWith": "narrow0Bypass",
+      "expose": {
+        "ctx": "acceptance"
+      }
+    },
+    "onwide0": {
+      "target": {
+        "kind": "signature",
+        "name": "wide0"
+      },
+      "shape": "this_f32_i32_i64_i64",
+      "receiver": {
+        "kind": "entity",
+        "as": "receiver"
+      },
+      "params": [
+        "value",
+        "integer"
+      ],
+      "mutable": [
+        "value",
+        "integer"
+      ],
+      "bypassWith": "wide0Bypass",
+      "expose": {
+        "ctx": "acceptance"
+      }
+    },
+    "onacquire0": {
+      "target": {
+        "kind": "signature",
+        "name": "acquire0"
+      },
+      "shape": "this_i64_i32_i64",
+      "receiver": {
+        "kind": "entity",
+        "as": "receiver"
+      },
+      "params": [
+        "method",
+        "result"
+      ],
+      "mutable": [
+        "result"
+      ],
+      "bypassWith": "acquire0Bypass",
+      "expose": {
+        "ctx": "acceptance"
+      }
+    },
+    "onhud0": {
+      "target": {
+        "kind": "signature",
+        "name": "hud0"
+      },
+      "shape": "this_i64_i64_i64",
+      "receiver": {
+        "kind": "entity",
+        "as": "receiver"
+      },
+      "params": [
+        "text"
+      ],
+      "mutable": [],
+      "bypassWith": "hud0Bypass",
+      "expose": {
+        "ctx": "acceptance"
+      }
+    },
+    "onvoid1": {
+      "target": {
+        "kind": "signature",
+        "name": "void1"
+      },
+      "shape": "this_void",
+      "receiver": {
+        "kind": "entity",
+        "as": "receiver"
+      },
+      "params": [],
+      "mutable": [],
+      "bypassWith": "void1Bypass",
+      "expose": {
+        "ctx": "acceptance"
+      }
+    },
+    "onnarrow1": {
+      "target": {
+        "kind": "signature",
+        "name": "narrow1"
+      },
+      "shape": "this_f32_i32_i32_i32",
+      "receiver": {
+        "kind": "entity",
+        "as": "receiver"
+      },
+      "params": [
+        "value",
+        "a",
+        "b",
+        "c"
+      ],
+      "mutable": [
+        "value",
+        "a",
+        "b",
+        "c"
+      ],
+      "bypassWith": "narrow1Bypass",
+      "expose": {
+        "ctx": "acceptance"
+      }
+    },
+    "onwide1": {
+      "target": {
+        "kind": "signature",
+        "name": "wide1"
+      },
+      "shape": "this_f32_i32_i64_i64",
+      "receiver": {
+        "kind": "entity",
+        "as": "receiver"
+      },
+      "params": [
+        "value",
+        "integer"
+      ],
+      "mutable": [
+        "value",
+        "integer"
+      ],
+      "bypassWith": "wide1Bypass",
+      "expose": {
+        "ctx": "acceptance"
+      }
+    },
+    "onacquire1": {
+      "target": {
+        "kind": "signature",
+        "name": "acquire1"
+      },
+      "shape": "this_i64_i32_i64",
+      "receiver": {
+        "kind": "entity",
+        "as": "receiver"
+      },
+      "params": [
+        "method",
+        "result"
+      ],
+      "mutable": [
+        "result"
+      ],
+      "bypassWith": "acquire1Bypass",
+      "expose": {
+        "ctx": "acceptance"
+      }
+    },
+    "onhud1": {
+      "target": {
+        "kind": "signature",
+        "name": "hud1"
+      },
+      "shape": "this_i64_i64_i64",
+      "receiver": {
+        "kind": "entity",
+        "as": "receiver"
+      },
+      "params": [
+        "text"
+      ],
+      "mutable": [],
+      "bypassWith": "hud1Bypass",
+      "expose": {
+        "ctx": "acceptance"
+      }
+    }
+  }
+}
