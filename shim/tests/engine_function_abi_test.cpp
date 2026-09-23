@@ -55,6 +55,8 @@ static void signatures() {
 #include <sys/wait.h>
 #include <unistd.h>
 #include <type_traits>
+#include <dlfcn.h>
+#include "engine_function_member_fixture.h"
 // Allocation fault injection wraps only the allocator; all successful closures,
 // CIFs, provider detours and callbacks are the pinned real implementations.
 static int fail_allocation = -1, allocations = 0, frees = 0;
@@ -93,10 +95,6 @@ template<class T> __attribute__((noinline)) T identity(T value) {
     ++original_calls; return value;
 }
 __attribute__((noinline)) static void void_target(std::int32_t value) { original_calls += value; }
-struct Receiver {
-    std::int32_t base;
-    __attribute__((noinline)) std::int32_t call(std::int32_t value) { ++original_calls; return base + value; }
-};
 // Seven GP plus nine SSE values: the GP and SSE exhaustion points differ.
 __attribute__((noinline)) static double mixed(
     std::int64_t a, double b, std::int64_t c, double d, std::int64_t e, double f,
@@ -233,11 +231,24 @@ static void recall_suppression_nested() {
 }
 static void receiver_spills_novel() {
     AbiSignature s; s.receiver = "entity"; s.parameters = {{"i32"}}; s.returns = {"i32"};
-    Receiver object{12}; Sink sink;
+    S2FnMemberFixture object{12, &original_calls}; Sink sink;
+    const auto member_target = s2fn_member_fixture_target();
+    Dl_info target_image{}, provider_image{};
+    assert(dladdr(member_target, &target_image) != 0);
+    assert(dladdr(reinterpret_cast<void*>(&KHook::Shutdown), &provider_image) != 0);
+    // Stock SafetyHook temporarily makes the target page RW. Keeping the target
+    // in its own DSO prevents a helper needed to install it sharing that NX page.
+    assert(target_image.dli_fbase != provider_image.dli_fbase);
+    std::cout << "member-target-module=" << target_image.dli_fname
+              << " provider-module=" << provider_image.dli_fname << "\n";
     sink.dispatch = [&](DispatchFrame& f) { assert(f.receiver.Get<void*>() == &object); };
-    auto b = bind(s, sink, KHook::ExtractMFP(&Receiver::call));
+    auto b = bind(s, sink, member_target);
     NativeValue args[] = {NativeValue::From(&object), NativeValue::From<std::int32_t>(5)};
-    auto result = b->Call(args, 2); assert(result && result.value.Get<std::int32_t>() == 17); retire(b);
+    const auto member_before = original_calls;
+    auto result = b->Call(args, 2);
+    assert(result && result.value.Get<std::int32_t>() == 17 && original_calls == member_before + 1);
+    assert(sink.pre == 1 && sink.post == 1 && sink.errors == 0);
+    retire(b);
     s = {}; s.returns = {"f64"};
     std::vector<NativeValue> values;
     for (int x = 1; x <= 14; ++x) {
