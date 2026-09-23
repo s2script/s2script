@@ -31,6 +31,25 @@ static void fixture_release(char* pointer) {
 }
 
 int main() {
+    s2khook::PrecacheTokens tokens;
+    tokens.Reset("run");
+    S2NamedPrecacheFrameV1 outer{1,sizeof(S2NamedPrecacheFrameV1),31,41,51,61};
+    assert(!tokens.Begin("wrong",1,1,outer));
+    const int token=tokens.Begin("run",1,1,outer);
+    assert(token>0 && !tokens.Begin("run",1,1,outer));
+    auto inner=outer; inner.serial=32; inner.manifest=62;
+    assert(!tokens.Finish("run",token,1,inner,"resource",true));
+    assert(!tokens.Finish("run",token,2,outer,"resource",true));
+    assert(!tokens.Finish("other-run",token,1,outer,"resource",true));
+    assert(!tokens.Finish("run",token+1,1,outer,"resource",true));
+    assert(tokens.Finish("run",token,1,outer,"resource",true));
+    assert(!tokens.Finish("run",token,1,outer,"resource",true));
+    assert(tokens.Read(token,0,outer)==1 && tokens.Read(token,2,outer)>0);
+    assert(tokens.Read(token,0,inner)==0);
+    assert(!tokens.Finish("run",token,1,{},"resource",true));
+    tokens.Reset("new-run");
+    assert(tokens.Read(token,0,outer)==0);
+
     s2khook::DeclarativeVoidObservation declarative;
     assert(!declarative.Passed());
     declarative = {true, 1, 1, 1, 1, true};
@@ -211,7 +230,7 @@ with tempfile.TemporaryDirectory(prefix="khook-controlled-evidence-") as temp:
     exe = path / "test"
     source.write_text(program)
     subprocess.run(
-        [os.environ.get("CXX", "g++"), "-std=c++17", "-O2", "-I", str(ROOT / "tools/khook-probe"),
+        [os.environ.get("CXX", "g++"), "-std=c++17", "-O2", "-I", str(ROOT / "tools/khook-probe"), "-I", str(ROOT / "shim/src"), "-I", str(ROOT / "third_party/metamod-source/third_party/khook/include"),
          str(source), "-o", str(exe)],
         check=True,
     )

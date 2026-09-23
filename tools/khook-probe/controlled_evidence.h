@@ -5,6 +5,9 @@
 #include <cstring>
 #include <string>
 #include <array>
+#include <vector>
+#include <map>
+#include "named_hooks.h"
 
 namespace s2khook {
 
@@ -102,7 +105,12 @@ struct DeclarativeBypassObservation {
             std::to_string(returns[0]) + "," + std::to_string(returns[1]) + "," + std::to_string(returns[2]) + "]}";
     }
 };
+struct DeclarativeHudObservation {
+    int pre=0,completion=0,original=0,trace=0,skipped=-1;
+};
 struct DeclarativeSnapshot {
+    std::array<DeclarativeHudObservation,2> hud;
+
     DeclarativeVoidObservation simple;
     DeclarativeMutationObservation mutation;
     std::array<DeclarativeAcquireObservation, 5> acquire;
@@ -119,6 +127,75 @@ struct DeclarativeSnapshot {
         return "{\"simple\":" + simple.Json() + ",\"mutation\":" + mutation.Json() +
             ",\"acquire\":[" + rows + "],\"nesting\":" + nesting.Json() + ",\"bypass\":" + bypass.Json() + "}";
     }
+};
+
+// Main-runtime observations are never merged with the private production-TU
+// snapshots above. Only a driver-owned invocation can accept JS marker calls.
+struct MainBridgeObservation {
+    int scenario=0, sequence=0, generation=0, order=0;
+    int callbacks=0, original=0, peer_pre=0, peer_post=0, skipped=-1, effective=-1, result=-1;
+    float value=0;
+    int a=0,b=0,c=0;
+    bool opaque_a=false,opaque_b=false,hud_self=false,hud_controller=false,hud_layout=false;
+    std::string text,trace;
+};
+
+struct PrecacheTokenObservation {
+    int token=0,generation=0,map_generation=0,receiver=0,vtable=0,manifest=0;
+    S2NamedPrecacheFrameV1 frame{};
+    bool finished=false,added=false;
+    std::string resource;
+};
+
+class PrecacheTokens {
+public:
+    void Reset(const std::string& run) { run_=run; next_=0; labels_.clear(); rows_.clear(); }
+    int Begin(const std::string& run,int generation,int map,const S2NamedPrecacheFrameV1& frame) {
+        if (run.empty() || run!=run_ || generation<=0 || map<=0 || frame.version!=1 ||
+            frame.size!=sizeof frame || !frame.serial || !frame.receiver || !frame.vtable || !frame.manifest) return 0;
+        for (const auto& row:rows_) if (row.frame.serial==frame.serial) return 0;
+        PrecacheTokenObservation row;
+        row.token=++next_; row.generation=generation; row.map_generation=map; row.frame=frame;
+        row.receiver=Label(frame.receiver); row.vtable=Label(frame.vtable); row.manifest=Label(frame.manifest);
+        rows_.push_back(row); return row.token;
+    }
+    bool Finish(const std::string& run,int token,int generation,const S2NamedPrecacheFrameV1& frame,
+                const std::string& resource,bool added) {
+        auto* row=Find(token);
+        if (run!=run_ || !row || row->finished || row->generation!=generation || !Same(row->frame,frame) || resource.empty()) return false;
+        row->finished=true; row->resource=resource; row->added=added; return true;
+    }
+    int Read(int token,int field,const S2NamedPrecacheFrameV1& frame) {
+        auto* row=Find(token);
+        if (!row || !row->finished || !Same(row->frame,frame)) return 0;
+        switch (field) {
+            case 0:return row->map_generation;
+            case 1:return -1; // No ambiguous external peer/frame order inference.
+            case 2:return row->receiver;
+            case 3:return row->vtable;
+            case 4:return row->manifest;
+            default:return 0;
+        }
+    }
+    const std::vector<PrecacheTokenObservation>& Rows() const { return rows_; }
+private:
+    static bool Same(const S2NamedPrecacheFrameV1& a,const S2NamedPrecacheFrameV1& b) {
+        return b.version==1 && b.size==sizeof b && a.serial==b.serial && a.receiver==b.receiver &&
+            a.vtable==b.vtable && a.manifest==b.manifest;
+    }
+    int Label(uintptr_t pointer) {
+        auto it=labels_.find(pointer);
+        if (it!=labels_.end()) return it->second;
+        int label=static_cast<int>(labels_.size())+1; labels_[pointer]=label; return label;
+    }
+    PrecacheTokenObservation* Find(int token) {
+        if (token<=0 || static_cast<size_t>(token)>rows_.size()) return nullptr;
+        return &rows_[static_cast<size_t>(token)-1];
+    }
+    std::string run_;
+    int next_=0;
+    std::map<uintptr_t,int> labels_;
+    std::vector<PrecacheTokenObservation> rows_;
 };
 
 enum class FacetApplicability { Unspecified, Applicable, Inapplicable };
@@ -187,6 +264,8 @@ struct NamedSnapshot {
     int usercmd_return = 0, usercmd_nested_restored = 0, usercmd_expired = 0;
     int usercmd_ignore = 0, usercmd_post_observed = 0, usercmd_skipped = 0;
     int usercmd_current_return = 0, usercmd_current_return_matches = 0;
+    std::vector<std::string> precache_manifest_trace;
+    int precache_frame_receiver_matches=0,precache_frame_vtable_matches=0;
     int precache_dispatch = 0, precache_original = 0, precache_receiver_ok = 0;
     int precache_nested_restored = 0, precache_filtered_original = 0, precache_expired = 0;
     int precache_peer_before = 0, precache_peer_after = 0, precache_peer_order = 0;

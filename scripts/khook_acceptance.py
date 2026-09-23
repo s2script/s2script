@@ -282,14 +282,15 @@ _B_ROWS = {
     "declarative_mutable_wide": (
         "native_wide_edits_reach_original native_wide_opaque_values_preserved native_wide_peer_orders", "js_wide_mutation_delivery"),
     "declarative_acquisition": (
-        "native_acquire_changed_deny_engine_allow native_acquire_allow_engine_deny native_acquire_handled_implicit_deny native_acquire_peer_effective_result native_acquire_skipped_original_not_read native_acquire_peer_orders",
-        "js_acquire_outbound_pre_vote js_acquire_outbound_post_effective"),
+        "native_acquire_changed_deny_engine_allow native_acquire_allow_engine_deny native_acquire_handled_implicit_deny native_acquire_peer_effective_result native_acquire_skipped_original_not_read native_acquire_peer_orders native_acquire_outbound_peer_post",
+        "js_acquire_outbound_pre_vote js_acquire_outbound_final_result"),
     "declarative_hud": (
         "native_hud_continue_order_original_once native_hud_handled_original_zero native_hud_pointers_text_peer_orders",
         "js_hud_receiver_text_continue js_hud_handled_delivery"),
     "declarative_nesting_bypass": (
         "native_same_and_different_id_nesting native_stale_forged_views_rejected native_bypass_hit_then_next_delivered native_rejected_nested_scope_restored",
         "js_different_id_nested_delivery js_same_id_reentry_named_skip js_bypass_absent_then_next_delivered"),
+    "acquisition_named_hook": ("native_acquire_real_post_peer_observed", "js_acquire_real_post_effective"),
     "damage_named_hook": (
         "native_damage_valid_pre_post native_damage_nested_scopes native_damage_peer_orders_original_state", "js_damage_pre_post_correct_victim"),
     "chat_named_hook": (
@@ -318,7 +319,7 @@ _C_ROWS = {
 # actual the expected result. Raw per-invocation facts remain alongside these
 # aggregate assertions; native owns original counts, JS owns handler/add returns.
 INTEGRATION_EXPECTED = {
-    "native_this_void_continue_original_once": {"pre": 1, "original": 1, "expired": True},
+    "native_this_void_continue_original_once": {"pre": 1, "original": 1},
     "native_this_void_handled_original_zero": {"pre": 1, "original": 0, "skipped": True},
     "native_narrow_edits_reach_original": {"original": 1, "value": 7.25, "a": -17, "b": 29, "c": -31},
     "native_wide_edits_reach_original": {"original": 1, "value": 7.25, "integer": -17},
@@ -327,7 +328,7 @@ INTEGRATION_EXPECTED = {
     "native_acquire_allow_engine_deny": {"original": 1, "engine": 6, "effective": 6},
     "native_acquire_handled_implicit_deny": {"original": 0, "effective": 1, "skipped": True},
     "native_acquire_peer_effective_result": {"post_observed": True, "current_return_matches": True},
-    "native_acquire_skipped_original_not_read": {"skipped": True, "original_reads": 0},
+    "native_acquire_skipped_original_not_read": {"skipped": True, "original": 0, "effective": 1},
     "native_hud_continue_order_original_once": {"completion_before_original": True, "original": 1},
     "native_hud_handled_original_zero": {"pre": 1, "original": 0, "skipped": True},
     "native_hud_pointers_text_peer_orders": {"orders": ["peer-first", "s2script-first"], "pointer_matches": 3, "text": "s2-khook-hud"},
@@ -335,6 +336,9 @@ INTEGRATION_EXPECTED = {
     "native_stale_forged_views_rejected": {"stale_rejected": True, "forged_rejected": True},
     "native_bypass_hit_then_next_delivered": {"bypass_pre": 0, "next_pre": 1, "original": 2},
     "native_rejected_nested_scope_restored": {"rejected": True, "outer_restored": True},
+    "native_acquire_outbound_peer_post": {"effective": [6, 6, 1], "skipped": [False, False, True]},
+    "native_acquire_real_post_peer_observed": {"real_item_services": True, "post_observed": True, "same_invocation": True},
+    "js_acquire_real_post_effective": {"real_bot": True, "effective_result_observed": True, "skipped_observed": True},
     "native_damage_valid_pre_post": {"pre": 3, "post": 3, "original": 3},
     "native_damage_nested_scopes": {"restored": 2, "expired": True},
     "native_damage_peer_orders_original_state": {"orders": ["peer-first", "s2script-first"], "current_return_matches": True},
@@ -363,7 +367,7 @@ INTEGRATION_EXPECTED = {
     "js_narrow_all_fields_mutated": {"value": 7.25, "a": -17, "b": 29, "c": -31},
     "js_wide_mutation_delivery": {"value": 7.25, "integer": -17},
     "js_acquire_outbound_pre_vote": {"votes": [6, 0, 1], "outbound_nested": True},
-    "js_acquire_outbound_post_effective": {"effective": [6, 6, 1], "outbound_nested": True},
+    "js_acquire_outbound_final_result": {"effective": [6, 6, 1], "outbound_nested": True},
     "js_hud_receiver_text_continue": {"receiver_matches_controller": True, "text": "s2-khook-hud"},
     "js_hud_handled_delivery": {"pre": 1, "action": 2},
     "js_different_id_nested_delivery": {"outer": 1, "inner": 1, "restored": True},
@@ -396,12 +400,17 @@ def _integration_spec(rows: dict, suite: str) -> SuiteSpec:
         for producer, names in (("native", native), ("js", js)):
             for name in names.split():
                 main = case.startswith("declarative") and producer == "js"
+                main_mechanics = producer == "native" and case in (
+                    "declarative_this_void", "declarative_mutable_narrow", "declarative_mutable_wide",
+                    "declarative_acquisition", "declarative_hud") and name not in ("native_wide_opaque_values_preserved", "native_hud_continue_order_original_once")
                 real = suite == "C" and case == "precache_map_transition"
-                live_named = case.endswith("named_hook") and producer == "js"
+                live_named = case.endswith("named_hook") and (producer == "js" or case == "acquisition_named_hook")
                 lifetime = case == "script_generation_lifetime"
-                group = "main-runtime-bridge" if main or real or lifetime else "live-named" if live_named else "controlled-mechanics"
-                provenance = "live-engine" if real or live_named else "main-runtime" if main or lifetime else "controlled-stock-provider"
-                owner = "named_hooks" if suite == "C" or case.endswith("named_hook") else "engine_hooks"
+                group = "main-runtime-bridge" if main or main_mechanics or real or lifetime else "live-named" if live_named else "controlled-mechanics"
+                if name == "native_acquire_outbound_peer_post": group = "main-runtime-bridge"
+                provenance = "live-engine" if real or live_named else "main-runtime" if main or main_mechanics or lifetime else "controlled-stock-provider"
+                if name == "native_acquire_outbound_peer_post": provenance = "main-runtime"
+                owner = "named_hooks" if suite == "C" or (case.endswith("named_hook") and case != "acquisition_named_hook") else "engine_hooks"
                 join = name[3:] if main else "precache-map" if real and name != "native_precache_live_peer_both_orders" and name != "js_precache_stale_context_rejected" else ""
                 check = _sc(case, name, producer)
                 checks.append(check)

@@ -21,12 +21,13 @@ import {
   createEntity,
   hook,
   previous,
+  onOutput,
 } from "@s2script/sdk";
 import type { Client, EntityRef, HookResultValue } from "@s2script/sdk";
 import { Engine } from "@s2script/sdk/unsafe";
 import type { PrecacheContext } from "@s2script/sdk/sound";
 import type { UserCmdView } from "@s2script/sdk/usercmd";
-import { Player } from "@s2script/cs2";
+import { Player, items } from "@s2script/cs2";
 import { KHOOK_FIXTURE_REVISION, KHOOK_FIXTURE_TOKEN } from "./build_identity";
 
 const DEFAULT_TOKEN_CMD = "s2khook_cc_entry";
@@ -1000,6 +1001,7 @@ function prepareR6(): void {
 
 export function OnPluginStart(): void {
   installIntegrationHooks();
+  installNamedIntegrationHooks();
   const prev = previous() as PersistState | undefined;
   handoff = prev;
   if (prev && prev.runId) {
@@ -1403,7 +1405,7 @@ const INTEGRATION_ROWS: Record<"B" | "C", IntegrationRow[]> = {
     },
     {
       "case": "declarative_acquisition",
-      "subcheck": "js_acquire_outbound_post_effective",
+      "subcheck": "js_acquire_outbound_final_result",
       "expected": {
         "effective": [
           6,
@@ -1477,6 +1479,19 @@ const INTEGRATION_ROWS: Record<"B" | "C", IntegrationRow[]> = {
       "provenance": "main-runtime",
       "callback_owner": "engine_hooks",
       "target": "declarative_nesting_bypass"
+    },
+    {
+      "case": "acquisition_named_hook",
+      "subcheck": "js_acquire_real_post_effective",
+      "expected": {
+        "real_bot": true,
+        "effective_result_observed": true,
+        "skipped_observed": true
+      },
+      "group": "live-named",
+      "provenance": "live-engine",
+      "callback_owner": "engine_hooks",
+      "target": "acquisition_named_hook"
     },
     {
       "case": "damage_named_hook",
@@ -1609,6 +1624,13 @@ let integrationMap = 1;
 let integrationSequence = 0;
 let integrationDriven = false;
 let bridgeEntity: EntityRef | null = null;
+let integrationNamedDriven = false;
+let realAcquireSlot = -1;
+let realOutputAction = -1;
+let realOutput: EntityRef | null = null;
+let damageSubject: EntityRef | null = null;
+let damagePre: Observation | null = null;
+const realOutputRows: Observation[] = [];
 let stalePrecache: PrecacheContext | null = null;
 let activeBridge: { scenario: number; sequence: number; order: number; callbacks: number; observations: Observation[] } | null = null;
 let bridgeDrive: ReturnType<typeof Engine.call<"bridgeDrive">> = null;
@@ -1642,7 +1664,7 @@ function integrationCommand(sub: string, id: string, digest: string, selected: "
     runId = id; runSuite = selected; runBound = true; artifactIdentity = "";
     frozenRevision = KHOOK_FIXTURE_REVISION;
     if (digest) bindArtifact(digest);
-    integrationRecords.clear(); precacheRows.length = 0; integrationSequence = 0; integrationDriven = false;
+    integrationRecords.clear(); precacheRows.length = 0; integrationSequence = 0; integrationDriven = false; integrationNamedDriven = false;
     activeBridge = null; collected = false; stored = []; stalePrecache = null;
     if (bridgeEntity) { bridgeEntity.remove(); bridgeEntity = null; }
     if (selected === "B") {
@@ -1662,6 +1684,7 @@ function integrationCommand(sub: string, id: string, digest: string, selected: "
     for (const record of handoff.records || []) integrationRecords.set(record.subcheck, record);
     // Native target remains resident. A callback after resume must be observed separately.
     integrationDriven = false;
+    if (selected === "B") { bridgeEntity = createEntity("info_target"); bridgeEntity?.spawn(); }
     reply("[khook-accept] resumed " + selected + " " + id); return;
   }
   if (!runBound || runSuite !== selected || runId !== id) {
@@ -1707,7 +1730,17 @@ function installIntegrationHooks(): void {
   for (const name of ["onvoid0", "onvoid1"] as const) Engine.hook(name)?.(() => {
     if (!activeBridge) return HookResult.Continue;
     const suppressed = activeBridge.scenario === 2;
-    bridgeObservation({ pre: 1, action: suppressed ? 2 : 0 });
+    const row = bridgeObservation({ pre: 1, action: suppressed ? 2 : 0 });
+    if (bridgeEntity && activeBridge.scenario === 10) {
+      const same = Engine.call(activeBridge.order === 0 ? "void0" : "void1");
+      same?.(bridgeEntity);
+      if (row) row.facts.nested_safe_skip = activeBridge.callbacks === 1;
+    }
+    if (bridgeEntity && activeBridge.scenario === 11) {
+      const inner = Engine.call(activeBridge.order === 0 ? "narrow0" : "narrow1");
+      inner?.(bridgeEntity, 1.5, 3, 4, 5);
+      if (row) row.facts.restored = activeBridge.callbacks === 2;
+    }
     return suppressed ? HookResult.Handled : HookResult.Continue;
   });
   for (const name of ["onnarrow0", "onnarrow1"] as const) Engine.hook(name)?.(view => {
@@ -1747,16 +1780,34 @@ function integrationFrame(): void {
     const rows = integrationRecords.get("js_precache_resource_each_generation")?.observations;
     if (rows?.length) integrationRecord("js_precache_stale_context_rejected", { stale_add: added }, [rows[rows.length - 1]], "public add called after callback return");
   }
+  if (runSuite === "B") collectNamedIntegration();
   if (runSuite !== "B" || integrationDriven || !bridgeDrive || !bridgeMark || !bridgeWindow || !bridgeEntity) return;
   integrationDriven = true;
   // Native owns target calls/original counts and validates markers inside this
   // synchronous JS -> Engine.call -> main-hook -> JS window.
   const observations = new Map<number, Observation[]>();
-  for (let order = 0; order < 2; ++order) for (let scenario = 1; scenario <= 9; ++scenario) {
+  const results = new Map<number, Array<number | null>>();
+  for (let order = 0; order < 2; ++order) for (let scenario = 1; scenario <= 11; ++scenario) {
     const sequence = ++integrationSequence;
     activeBridge = { scenario, sequence, order, callbacks: 0, observations: [] };
-    bridgeDrive(bridgeEntity, scenario + order * 100, sequence, instance, runId);
+    const finalResult = bridgeDrive(bridgeEntity, scenario + order * 100, sequence, instance, runId);
+    results.set(scenario, [...(results.get(scenario) || []), finalResult]);
     observations.set(scenario, [...(observations.get(scenario) || []), ...activeBridge.observations]);
+    activeBridge = null;
+  }
+  for (let order = 0; order < 2; ++order) {
+    const sequence = ++integrationSequence;
+    activeBridge = { scenario: 12, sequence, order, callbacks: 0, observations: [] };
+    if (bridgeWindow(runId, 12 + order * 100, sequence, instance, true)) {
+      const bypass = Engine.call(order === 0 ? "void0Bypass" : "void1Bypass");
+      const direct = Engine.call(order === 0 ? "void0" : "void1");
+      bypass?.(bridgeEntity);
+      const bypassCallbacks = activeBridge.callbacks;
+      direct?.(bridgeEntity);
+      for (const row of activeBridge.observations) row.facts = { bypass: bypassCallbacks, next: activeBridge.callbacks - bypassCallbacks };
+      const closed = bridgeWindow(runId, 12 + order * 100, sequence, instance, false);
+      if (closed) observations.set(12, [...(observations.get(12) || []), ...activeBridge.observations]);
+    }
     activeBridge = null;
   }
   const record = (scenario: number, name: string, select: (facts: Record<string, unknown>) => Record<string, unknown>): void => {
@@ -1770,10 +1821,27 @@ function integrationFrame(): void {
   record(2, "js_this_void_handled_delivery", f => ({ pre: f.pre, action: f.action }));
   record(3, "js_narrow_all_fields_mutated", f => f);
   record(4, "js_wide_mutation_delivery", f => f);
+  record(10, "js_same_id_reentry_named_skip", f => ({ delivered: f.pre, nested_safe_skip: f.nested_safe_skip }));
+  const nested = observations.get(11) || [];
+  if (nested.length === 4) integrationRecord("js_different_id_nested_delivery", {
+    outer: nested.filter(row => "pre" in row.facts).length / 2,
+    inner: nested.filter(row => "value" in row.facts).length / 2,
+    restored: nested.filter(row => "pre" in row.facts).every(row => row.facts.restored === true),
+  }, nested.filter(row => "pre" in row.facts), "actual different-id Engine.call nested within the outer handler");
+  record(12, "js_bypass_absent_then_next_delivered", f => f);
   const acquisition = [5, 6, 7].flatMap(scenario => observations.get(scenario) || []);
   if (acquisition.length === 6) integrationRecord("js_acquire_outbound_pre_vote", {
-    votes: [5, 6, 7].map(scenario => observations.get(scenario)?.[0].facts.vote), outbound_nested: true,
+    votes: [5, 6, 7].map(scenario => {
+      const rows = observations.get(scenario) || [];
+      return rows.length === 2 && rows[0].facts.vote === rows[1].facts.vote ? rows[0].facts.vote : null;
+    }), outbound_nested: true,
   }, acquisition, "outbound JS call delivered PRE handler votes; native and POST records decide propagation");
+  if (acquisition.length === 6) integrationRecord("js_acquire_outbound_final_result", {
+    effective: [5, 6, 7].map(scenario => {
+      const values = results.get(scenario) || [];
+      return values.length === 2 && values[0] === values[1] ? values[0] : null;
+    }), outbound_nested: true,
+  }, acquisition, "JS observes final caller result after Engine.call returns; this is NOT the main POST position");
   record(8, "js_hud_receiver_text_continue", f => ({ receiver_matches_controller: f.receiver_matches_controller, text: f.text }));
   record(9, "js_hud_handled_delivery", f => ({ pre: 1, action: f.action }));
 }
@@ -1784,7 +1852,7 @@ export function OnPrecache(context: PrecacheContext): void {
   const token = precacheBegin(runId, instance, integrationMap);
   if (token === null || token <= 0) return; // A session-only callback is not a virtual callback.
   const added = context.add("soundevents/game_sounds.vsndevts");
-  if (!precacheFinish(token, "soundevents/game_sounds.vsndevts", added)) return;
+  if (!precacheFinish(token, "soundevents/game_sounds.vsndevts", added, instance)) return;
   const nativeGeneration = precacheRead(token, 0);
   if (nativeGeneration === null || nativeGeneration <= 0) return;
   const order = precacheRead(token, 1);
@@ -1823,4 +1891,70 @@ export function OnPlayerRunCmd(view: UserCmdView, info: { slot: number }): HookR
     callbacks: 1, peer_order: "none", facts: { slot: info.slot, action: 2 }, stimulus: "real-client",
   }], "real client's usercmd delivered and neutralized via public borrowed view");
   return HookResult.Handled;
+}
+
+
+function installNamedIntegrationHooks(): void {
+  items.onCanAcquirePost(view => {
+    if (!runBound || runSuite !== "B" || realAcquireSlot < 0 || view.player?.slot !== realAcquireSlot) return;
+    const bot = Clients.all().find(client => client.slot === realAcquireSlot && client.isBot && client.isValid());
+    if (!bot) return;
+    const result = view.result, skipped = view.skipped, defIndex = view.defIndex;
+    integrationRecord("js_acquire_real_post_effective", { real_bot: true,
+      effective_result_observed: Number.isInteger(result), skipped_observed: typeof skipped === "boolean" }, [{
+      scenario_id: "real-bot-acquire", sequence: ++integrationSequence, generation: instance,
+      invocation: runId + ":real-acquire:" + integrationSequence, peer_order: "none", callbacks: 1,
+      facts: { slot: bot.slot, defIndex, result, skipped }, stimulus: "engine",
+    }], "public items.onCanAcquirePost during a real bot item action; actual POST result/skipped, not final caller result");
+  });
+  onOutput("logic_relay", "OnTrigger", event => {
+    if (!runBound || runSuite !== "B" || realOutputAction < 0 || !realOutput || event.caller?.id !== realOutput.id) return HookResult.Continue;
+    const action = realOutputAction;
+    realOutputRows.push({ scenario_id: "real-output-" + action, sequence: ++integrationSequence, generation: instance,
+      invocation: runId + ":output:" + integrationSequence, callbacks: 1, peer_order: "none",
+      facts: { action, caller: event.caller.index, output: event.output }, stimulus: "engine" });
+    return action as HookResultValue;
+  });
+}
+
+function collectNamedIntegration(): void {
+  const client = Clients.all().find(value => value.isBot && value.isValid());
+  const pawn = client ? Player.fromSlot(client.slot)?.pawn : null;
+  if (pawn?.isValid && !damageSubject) {
+    damageSubject = pawn.ref;
+    SDKHook(damageSubject, SDKHookType.OnTakeDamage, info => {
+      const victim = info.victim;
+      if (!victim) return;
+      if (!runBound || runSuite !== "B" || !damageSubject || victim.id !== damageSubject.id || !Number.isFinite(info.damage)) return;
+      damagePre = { scenario_id: "real-bot-damage", sequence: ++integrationSequence, generation: instance,
+        invocation: runId + ":damage:" + integrationSequence, callbacks: 1, peer_order: "none",
+        facts: { victim: victim.index, victim_id: victim.id, damage: info.damage }, stimulus: "engine" };
+    });
+    SDKHook(damageSubject, SDKHookType.OnTakeDamagePost, info => {
+      const victim = info.victim;
+      if (!victim) return;
+      if (!damagePre || !runBound || runSuite !== "B" || victim.id !== damagePre.facts.victim_id) return;
+      integrationRecord("js_damage_pre_post_correct_victim", { pre: 1, post: 1, victim_matches: true },
+        [{ ...damagePre, facts: { ...damagePre.facts, post_damage: info.damage } }], "real bot victim PRE/POST; synthetic selftest dummy victim cannot match this books-gated pawn");
+      damagePre = null;
+    });
+  }
+  if (integrationNamedDriven || !pawn?.isValid || !client) return;
+  integrationNamedDriven = true;
+  realAcquireSlot = client.slot;
+  const item = pawn.giveNamedItem("weapon_decoy");
+  realAcquireSlot = -1;
+  if (item) pawn.removeWeapon(item);
+  realOutput = createEntity("logic_relay", { targetname: "s2khook-" + runId, spawnflags: "2" });
+  if (realOutput) {
+    for (let action = 0; action < 4; ++action) {
+      realOutputAction = action;
+      realOutput.acceptInput("Trigger");
+    }
+    realOutputAction = -1;
+    if (realOutputRows.length === 4) integrationRecord("js_output_delivery_and_suppression", {
+      actions: realOutputRows.map(row => row.facts.action), deliveries: realOutputRows.length,
+    }, [...realOutputRows], "owned logic_relay real engine OnTrigger callbacks; native owns original-count proof");
+    realOutput.remove(); realOutput = null;
+  }
 }

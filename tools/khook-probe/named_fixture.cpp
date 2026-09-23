@@ -232,6 +232,13 @@ void UsercmdNeutralize() {
 }
 void PrecacheOp() {
     ++observation.precache_dispatch;
+    S2NamedPrecacheFrameV1 frame{};
+    if (S2NamedReadPrecacheFrameV1(&frame,sizeof frame)) {
+        if (frame.receiver==reinterpret_cast<uintptr_t>(&precache_object)) ++observation.precache_frame_receiver_matches;
+        if (frame.vtable==reinterpret_cast<uintptr_t>(*reinterpret_cast<void***>(&precache_object))) ++observation.precache_frame_vtable_matches;
+    }
+    observation.precache_manifest_trace.push_back(S2NamedCurrentPrecacheManifest()==outer_manifest ? "outer" :
+        S2NamedCurrentPrecacheManifest()==inner_manifest ? "inner" : "unexpected");
     observation.precache_peer_order=observation.precache_peer_order*10+2;
     if (observation.precache_observed_map_generation==0)
         observation.precache_observed_map_generation=invocation_map_generation;
@@ -242,6 +249,7 @@ void PrecacheOp() {
         S2ProbeNamedInvokeVirtual(&precache_object,precache_index,inner_manifest);
         if (S2NamedCurrentPrecacheManifest()==outer_manifest)
             ++observation.precache_nested_restored;
+        observation.precache_manifest_trace.push_back(S2NamedCurrentPrecacheManifest()==outer_manifest ? "outer" : "unexpected");
         precache_nested=false;
     }
 }

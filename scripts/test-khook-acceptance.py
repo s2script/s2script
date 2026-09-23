@@ -1015,7 +1015,7 @@ class IntegrationEvidenceTests(unittest.TestCase):
     def test_envelope_provenance_and_owner_rejections(self):
         mutations = [dict(suite="A"), dict(run_id="stale"), dict(source_revision="f"*40),
             dict(artifact_identity="f"*64), dict(producer="js"), dict(evidence_class="synthetic"),
-            dict(provenance="invented"), dict(callback_owner="other"), dict(group="main-runtime-bridge"),
+            dict(provenance="invented"), dict(callback_owner="other"), dict(group="fabricated-group"),
             dict(observations=[])]
         for suite in ("B", "C"):
             for mutation in mutations:
