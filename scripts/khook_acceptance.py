@@ -730,7 +730,7 @@ def probe_cmd(verb: str, run_id: str, artifact_identity: Optional[str] = None, *
         raise ValueError("invalid artifact_identity")
     if not valid_run_id(run_id):
         raise ValueError("invalid run_id: expected 1-64 ASCII letters/digits, underscores or hyphens")
-    if verb not in ("prepare", "collect", "report", "bind", "resume", "reload-arm"):
+    if verb not in ("prepare", "collect", "report", "bind", "resume", "reload-arm", "gamedata"):
         raise ValueError(verb)
     return f"s2_khook_probe {verb} {run_id}" + (f" {artifact_identity}" if artifact_identity else "") + (f" {suite}" if suite != "A" else "")
 
