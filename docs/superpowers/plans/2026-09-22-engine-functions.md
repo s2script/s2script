@@ -12,9 +12,9 @@
 
 ## Baseline and required reading
 
-- Commit `0e78515e` on `codex/engine-bindings-s3-design` is the approved design-source baseline only. Start implementation from the dedicated S2 branch based on the integrated S1 implementation SHA recorded in the execution ledger, never from the S3 planning tip. “Accepted S1 prerequisite” here means its code and interface are integrated for dependent work; pending peer/real-client/map/reload evidence still keeps merge/release gates open.
+- Commit `0e78515e` on `codex/engine-bindings-s3-design` is the approved design-source baseline only. Implement on the dedicated S2 branch, never from the S3 planning tip. Task 1's isolated ABI/provider/V8 proof may start before the S1 parent merge after verifying its consumed checked-binding contract matches the reviewed S1 contract. Integrate the accepted S1 implementation through an ordinary merge before any S2 deployment or resolver-dependent Task 5, and record the exact parent SHA and any integration rechecks in the ledger. “Accepted S1 prerequisite” here means its code and interface are integrated for dependent work; pending peer/real-client/map/reload evidence still keeps merge/release gates open.
 - Read `CLAUDE.md`, root `AGENTS.md`, the S2 spec, `docs/superpowers/specs/2026-09-22-engine-bindings-design.md`, and `docs/superpowers/specs/2026-09-22-game-package-boundary-design.md` before editing.
-- Read S1's integrated `shim/src/engine_resolver.h`, `shim/src/engine_resolver.cpp`, `shim/src/khook_binding.h`, and its native evidence. This plan consumes `s2resolve::Resolve(const TargetRecipe &, Resolution &, std::string &reason)` where `Resolution` carries module identity, logical live address, `std::shared_ptr<const s2original::Image>`, and a validation receipt. If S1 lands a different signature, update this plan's adapter seam before dispatching work; do not hide an S1 change in S2.
+- Read S1's integrated `shim/src/engine_resolver.h`, `shim/src/engine_resolver.cpp`, `shim/src/khook_binding.h`, and its native evidence. This plan consumes `s2resolve::Resolve(const TargetRecipe &, Resolution &, std::string &reason)` where `Resolution` retains its logical live address, `std::shared_ptr<const s2original::Image>`, and validation receipt. Read module identity through `Resolution.image->identity()`; there is no separate direct identity field. If S1 lands a different signature, update this plan's adapter seam before dispatching work; do not hide an S1 change in S2.
 - Read the actual pinned header at `third_party/metamod-source/third_party/khook/include/khook.hpp`, especially low-level `SetupHook`, `DoRecall`, `SaveReturnValue`, `GetCurrentValuePtr`, `DestroyReturnValue`, and `FindOriginal`. `SetupHook` accepts PRE, POST, make-return, and make-original callback addresses with the target's native signature. The typed helpers prove expected sequencing but cannot supply a new runtime prototype.
 - Read libffi 3.7.1's primary `doc/libffi.texi`, `include/ffi.h.in`, `LICENSE`, and x86-64 backend before implementing. `ffi_prep_cif` retains its type vector, `ffi_call` uses caller-owned aligned value storage, and `ffi_closure_alloc`/`ffi_prep_closure_loc` require the closure and CIF to outlive every possible callback. Pin `third_party/libffi` to `v3.7.1` commit `5c1c43091ed611fdea774374355eb938c73a9157`, preserve its MIT license, build PIC static-only, and hide its symbols in the shim.
 - Preserve `S2_EngineCallResolve`/address C ABI and current checked-binding classes for v1 while the compatibility window is active. New v2 code consumes the S1 C++ resolver directly inside the shim and adds append-only engine ops for core.
@@ -765,7 +765,8 @@ Extend `PreparedPlugin` with the normalized bundle member. In `apply_prepared`, 
 Run:
 
 ```bash
-cargo test -p s2script-core engine_functions:: loader::
+cargo test -p s2script-core engine_functions::
+cargo test -p s2script-core loader::
 bash scripts/test-plugin-function-overrides.sh
 python3 scripts/gen-engine-ops.py --check
 ```
@@ -800,11 +801,13 @@ git commit -m "feat: prepare engine function overrides and provenance"
 
 **Interfaces:**
 - Consumes: accepted S1 `s2resolve::Resolve`, proven `s2fn::RuntimeBinding::Create`, checked binding lifecycle.
-- Produces: the handle-based native bridge contract above and callback export calls declared in `shim/include/s2script_core.h`.
+- Produces: the handle-based native bridge contract above and a bridge-owned injectable dispatch sink. Task 6 wires that sink to the real core export atomically with its Rust definition and C header declaration; Task 5 does not reference a missing core symbol or supply a successful no-op dispatcher.
 
 - [ ] **Step 1: Write red physical-record tests**
 
 Inject a fake resolver and the real runtime-CIF binding boundary. Test resolution order, module identity/address/ABI fingerprint, repeated equal declaration sharing, address/ABI conflict naming both canonical ids, failed resolve creating no record, unsupported ABI rejection before libffi allocation, target release refcounts, lazy hook acquire, one physical KHook registration for multiple logical consumers, removal completion before closure free, and no retarget operation.
+
+The injectable resolver seam belongs to the bridge and defaults to S1's free `s2resolve::Resolve`; do not change S1 to make it mockable. Use a typed test dispatch sink for native component tests. Without a configured production sink, hook acquisition fails by name before installing a hook. Task 6 supplies the real sink; these native component tests do not claim core/JS dispatch proof.
 
 Include `validated-call` fixtures proving candidate validators run before uniqueness and target validators run after one derivation.
 
@@ -822,7 +825,7 @@ Key the conflict map by `(module identity, logical live address)` and store one 
 
 - [ ] **Step 3: Implement calls and owner-only bypass**
 
-`FunctionCall` resolves/copies projected inputs, validates receiver/entity/opaque liveness, pushes `{target_id, owner_token}` on a TLS stack, calls the **live hooked target** through `RuntimeBinding::Call`, and pops with RAII. The callback passes only the suppressed owner token to core; it does not bypass KHook or other subscribers. Nested calls preserve outer state.
+`FunctionCall` resolves/copies projected inputs, validates receiver/entity/opaque liveness, pushes `{target_id, owner_token}` on a TLS stack, calls the **live hooked target** through `RuntimeBinding::Call`, and pops with RAII. The callback supplies the suppressed owner token to its dispatch sink, wired to core in Task 6; it does not bypass KHook or other subscribers. Nested calls preserve outer state.
 
 - [ ] **Step 4: Implement lazy hook acquisition and receipt state**
 
@@ -860,6 +863,10 @@ git commit -m "feat: add shared native engine function targets"
 - Create: `core/src/engine_functions/policy.rs`
 - Create: `core/src/engine_functions/package_adapter.rs`
 - Create: `core/src/engine_functions/runtime.rs`
+- Create: `core/src/engine_functions/legacy_acquire.rs`
+- Create: `core/src/engine_functions/legacy_hud_click.rs`
+- Create: `core/src/engine_functions/contracts/legacy.acquire.v1.json`
+- Create: `core/src/engine_functions/contracts/legacy.hud-click.v1.json`
 - Create: `core/src/v8host/function_adapter.rs`
 - Modify: `core/src/v8host/engine_function_adapter_v8.rs`
 - Modify: `scripts/test-engine-function-v8-adapter.sh`
@@ -868,8 +875,9 @@ git commit -m "feat: add shared native engine function targets"
 - Modify: `core/src/v8host.rs`
 - Modify: `core/src/v8host/natives.rs` (coordinator-owned narrow bootstrap seam)
 - Modify: `shim/include/s2script_core.h`
+- Modify: `shim/src/engine_function_bridge.h` and `.cpp` (real core dispatch-sink wiring only)
 
-**Allowlist:** These engine-function modules, the new core callback ABI, and the narrow package-bootstrap V8 seam/test. No loader or public SDK/API edits.
+**Allowlist:** These engine-function modules, the new core callback ABI and matching native sink wiring, and the narrow package-bootstrap V8 seam/test. No loader or public SDK/API edits. This task first owns the executable legacy adapters and canonical contract fixtures; Task 8 later wires v1 migration/facades to them.
 
 **Interfaces:**
 - Consumes: prepared immutable contract/provenance and native target handles.
@@ -923,13 +931,17 @@ Group mutating/suppressing subscribers by exact adapter contract. Run state-chan
 
 Register `generic.v2` publicly. Register compatibility ids `legacy.acquire.v1` and `legacy.hud-click.v1` with locked contract hashes and `InternalReserved` visibility; selection requires a trusted normalized compatibility input, never matching ABI shape. S2's compatibility implementations satisfy `DispatchAdapter` as temporary executable Rust callbacks; no core dispatch site branches on either id.
 
+Create the two named implementation modules and exact canonical contract files in this task, with focused vote, timing, string-copy and hash tests. Existing v1 entry points remain on their current path until Task 8 connects the compatibility facade; do not claim that passing old v1 tests already proves v2 routing. Wire the bridge sink to `s2script_core_dispatch_function` in the same integration as the Rust export and C declaration, preserving the core-symbol gate and the real-V8 proof above. No placeholder core export or silent no-op sink may satisfy that gate.
+
 Complete the reserved bootstrap natives `__s2_function_adapter_register` and `__s2_function_adapter_subscribe` described above. Unit-test that only a host-minted package bootstrap token can register; callbacks must be synchronous; duplicates are scoped to `(PackageInstanceKey,AdapterId)`; semantic hash conflicts are process-wide; implementation manifest hashes remain provenance only; instance selection excludes busy/unloading/caller-bypassed parents; subscriber cursor invocation switches to each subscriber context in stable order; and parent/package unload drains only the matching instance before disposing its callback globals. Register the generic `borrowed-record.v1` codec separately from its package-owned field schema/layout instance.
 
 Run:
 
 ```bash
 cargo test -p s2script-core engine_functions::
-cargo test -p s2script-core gamedata_calls:: gamedata_hooks:: acquire::
+cargo test -p s2script-core gamedata_calls::
+cargo test -p s2script-core gamedata_hooks::
+cargo test -p s2script-core acquire::
 ```
 
 Expected: PASS, including existing v1 behavior tests.
@@ -939,7 +951,8 @@ Expected: PASS, including existing v1 behavior tests.
 ```bash
 git add core/src/engine_functions core/src/v8host/function_adapter.rs \
   core/src/v8host/engine_function_adapter_v8.rs core/src/v8host.rs core/src/v8host/natives.rs \
-  core/src/ffi.rs shim/include/s2script_core.h scripts/test-engine-function-v8-adapter.sh
+  core/src/ffi.rs shim/include/s2script_core.h shim/src/engine_function_bridge.h \
+  shim/src/engine_function_bridge.cpp scripts/test-engine-function-v8-adapter.sh
 git commit -m "feat: add engine function registry and policy fanout"
 ```
 
@@ -967,10 +980,13 @@ git commit -m "feat: add engine function registry and policy fanout"
 
 Test optional discrimination/status/provenance, required available branch, supported/absent surfaces, call marshalling, mutable PRE access, observe-only readonly enforcement, typed suppression, POST effective return, lazy Pending→Active/Failed subscription status, explicit dispose idempotence, and captured binding/subscription failure after reload.
 
+Declare the test file explicitly in `core/src/v8host.rs` with `#[cfg(test)]`, `#[path = "v8host/tests/engine_functions.rs"]`, and `mod engine_function_tests;`. The existing `v8host/tests.rs` is exposed as `frame_tests`, not `tests`; a new file alone is not compiled. Include a named regression `optional_binding_reports_unavailable_reason`, list the module's tests before running them, and require that regression plus a nonzero executed test count in every recorded result. Zero matching tests is a failed gate.
+
 Run:
 
 ```bash
-cargo test -p s2script-core v8host::tests::engine_functions
+cargo test -p s2script-core v8host::engine_function_tests:: -- --list
+cargo test -p s2script-core v8host::engine_function_tests::
 ```
 
 Expected: FAIL because natives/prelude do not expose the API.
@@ -994,7 +1010,9 @@ Add tests for required override/resolve failure preserving old generation, optio
 Run:
 
 ```bash
-cargo test -p s2script-core v8host::tests::engine_functions loader:: plugin::
+cargo test -p s2script-core v8host::engine_function_tests::
+cargo test -p s2script-core loader::
+cargo test -p s2script-core plugin::
 ```
 
 Expected: PASS.
@@ -1017,10 +1035,8 @@ git commit -m "feat: expose ledgered engine function bindings"
 - Create: `packages/sdk/src/commands/migrate.ts`
 - Create: `packages/sdk/test/engine-functions-migrate.test.mjs`
 - Create: `core/src/engine_functions/compat.rs`
-- Create: `core/src/engine_functions/legacy_acquire.rs`
-- Create: `core/src/engine_functions/legacy_hud_click.rs`
-- Create: `core/src/engine_functions/contracts/legacy.acquire.v1.json`
-- Create: `core/src/engine_functions/contracts/legacy.hud-click.v1.json`
+- Modify: `core/src/engine_functions/legacy_acquire.rs` and `legacy_hud_click.rs` only for v1 integration; preserve Task 6's semantic contract
+- Read/test: `core/src/engine_functions/contracts/legacy.acquire.v1.json` and `legacy.hud-click.v1.json`, created and locked in Task 6
 - Modify: `packages/sdk/src/build.ts` (coordinator-owned v1 normalize seam)
 - Modify: `packages/sdk/src/commands/index.ts` (coordinator-owned)
 - Modify: `packages/sdk/src/cli.ts`
@@ -1079,7 +1095,7 @@ const LEGACY_HUD_CLICK_CONTRACT_HASH: &str =
     "28c0c9833d521cadd4eb03254f63ef7dcb1cd8b728f48ebfa8835b82ff03ecdd";
 ```
 
-Write the two canonical contract files exactly as specified above and assert their sorted-key/minified SHA-256 values. Acquisition preserves item-services-to-player mapping, synthetic result field, vote order, implicit deny, engine-result fold, and post override. HUD preserves current copied string boundary, re-entry behavior, and its compatibility callback labelled post running before the engine original. Implement both behind `DispatchAdapter`; do not add JSON fold kinds, parse these fixture documents into behavior, or `match adapter_id` in generic dispatch. Add a package-JS conformance fixture that registers the same callback contract through `__s2_function_adapter_register` and produces byte-for-byte equivalent decisions, proving S3 can relocate code rather than ask core for a new semantic primitive. Generic functions with identical ABIs must receive none of those semantics.
+Verify the two canonical contract files created in Task 6 remain byte-for-byte equal to the specified documents and assert their sorted-key/minified SHA-256 values. Wire v1 compatibility to Task 6's `DispatchAdapter` implementations. Acquisition preserves item-services-to-player mapping, synthetic result field, vote order, implicit deny, engine-result fold, and post override. HUD preserves current copied string boundary, re-entry behavior, and its compatibility callback labelled post running before the engine original. Do not add JSON fold kinds, parse these fixture documents into behavior, or `match adapter_id` in generic dispatch. Add a package-JS conformance fixture that registers the same callback contract through `__s2_function_adapter_register` and produces byte-for-byte equivalent decisions, proving S3 can relocate code rather than ask core for a new semantic primitive. Generic functions with identical ABIs must receive none of those semantics.
 
 - [ ] **Step 6: Run compatibility tests and build old archives**
 
@@ -1089,7 +1105,10 @@ node --experimental-strip-types --no-warnings --test \
   test/engine-functions-migrate.test.mjs test/gamedata-*.test.mjs \
   test/cs2-engine-calls.test.mjs test/cs2-ui.test.mjs
 cd ../..
-cargo test -p s2script-core gamedata_calls:: gamedata_hooks:: acquire:: v8host::tests::engine_functions
+cargo test -p s2script-core gamedata_calls::
+cargo test -p s2script-core gamedata_hooks::
+cargo test -p s2script-core acquire::
+cargo test -p s2script-core v8host::engine_function_tests::
 bash scripts/build-base-plugins.sh
 bash scripts/check-plugins-typecheck.sh
 ```
