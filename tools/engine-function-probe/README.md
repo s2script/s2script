@@ -68,8 +68,11 @@ and `@example/engine-function-witness` must be loaded. The driver uses
 The driver deliberately performs no deployment, native unload, or restart:
 
 ```sh
-bash scripts/test-engine-function-live.sh --docker docker/docker-compose.yml --rcon scripts/rcon.py
+bash scripts/test-engine-function-live.sh --docker docker/docker-compose.yml --rcon scripts/rcon.py --port 27016
 ```
+
+`--port` selects the RCON port for every driver command; omit it for the existing
+default 27015. Values outside 1–65535 are rejected before contacting the server.
 
 The driver checks mapped native inodes, consumer hashes, and both installed fixture
 archive hashes against the source-bound bundle, creates one uniquely named bot, runs controlled compatibility signatures,

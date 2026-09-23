@@ -4,6 +4,13 @@ import importlib.util
 from pathlib import Path
 import unittest
 import copy
+import contextlib
+import io
+import json
+import runpy
+import sys
+import tempfile
+from unittest import mock
 spec = importlib.util.spec_from_file_location('live', Path(__file__).with_name('live.py'))
 live = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(live)
@@ -61,4 +68,28 @@ class JudgeTests(unittest.TestCase):
         for r in records:
             if r.get('kind')=='engine-function-witness' and r.get('generation')==2: r['witnessGeneration']=2
         self.assertNotEqual(live.judge(records,'a'*40,'b'*64,'run')['result'],'pass')
+class RconPortTests(unittest.TestCase):
+    def test_driver_forwards_default_and_nondefault_port(self):
+        for options,port in (([],27015),(['--port','27016'],27016)):
+            with self.subTest(port=port), tempfile.TemporaryDirectory() as directory:
+                root=Path(directory)
+                bundle=root/'bundle'; bundle.mkdir()
+                (bundle/'engine-function-build.json').write_text(json.dumps({'source':'a'*40,'token':'b'*64,'files':{}}))
+                args=live.parse_args(['--docker','compose.yml','--rcon','scripts/rcon.py','--bundle',str(bundle),*options])
+                # Execute the real driver's first RCON path, stopping at process
+                # launch; no synthetic server observations or network contact.
+                with mock.patch.object(live,'__file__',str(root/'tools/probe/live.py')), mock.patch.object(live.subprocess,'check_output',side_effect=RuntimeError('stop at RCON')) as launch:
+                    with self.assertRaisesRegex(RuntimeError,'stop at RCON'):
+                        live.drive(args)
+                self.assertEqual(launch.call_args.args[0],[sys.executable,'scripts/rcon.py','--port',str(port),'s2_engine_probe runtime'])
+
+    def test_invalid_port_is_rejected_before_driver_or_process_contact(self):
+        path=str(Path(__file__).with_name('live.py'))
+        for value in ('0','65536','-1','27016.5','invalid'):
+            with self.subTest(port=value), mock.patch.object(sys,'argv',[path,'--docker','compose.yml','--rcon','scripts/rcon.py','--port',value]), mock.patch('subprocess.check_output') as launch, mock.patch.object(Path,'read_text',side_effect=AssertionError('driver must not read bundle')) as read, contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as result:
+                    runpy.run_path(path,run_name='__main__')
+                self.assertEqual(result.exception.code,2)
+                launch.assert_not_called(); read.assert_not_called()
+
 if __name__ == '__main__': unittest.main()

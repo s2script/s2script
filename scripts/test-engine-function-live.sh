@@ -8,6 +8,6 @@ elif [[ ${1:-} == --docker ]]; then
   exec python3 tools/engine-function-probe/live.py "$@"
 else
   echo 'usage: test-engine-function-live.sh --fixture-only --orders peer-first,s2-first' >&2
-  echo '   or: test-engine-function-live.sh --docker <compose> --rcon <rcon.py> [--bundle <built bundle>]' >&2
+  echo '   or: test-engine-function-live.sh --docker <compose> --rcon <rcon.py> [--bundle <built bundle>] [--port <1-65535; default 27015>]' >&2
   exit 2
 fi

@@ -89,7 +89,7 @@ def drive(args):
     records=[]; raw=[]
     compose=['docker','compose','-f',args.docker]
     def rcon(command):
-        out=subprocess.check_output([sys.executable,args.rcon,command],cwd=root,text=True,stderr=subprocess.STDOUT)
+        out=subprocess.check_output([sys.executable,args.rcon,'--port',str(args.port),command],cwd=root,text=True,stderr=subprocess.STDOUT)
         raw.append(out); records.extend(rows(out)); (evidence/'rcon.log').write_text('\n'.join(raw)); return out
     def collect_logs():
         out=subprocess.check_output(compose+['logs','--no-color','--since',started,'cs2'],cwd=root,text=True,stderr=subprocess.STDOUT)
@@ -163,10 +163,20 @@ def drive(args):
         # Keep native modules/server resident. Remove only our specifically named bot.
         rcon(f'bot_kick s2fn_{run}')
 
-if __name__=='__main__':
+def port_number(value):
+    try: port=int(value)
+    except ValueError: raise argparse.ArgumentTypeError('port must be an integer from 1 to 65535')
+    if not 1<=port<=65535: raise argparse.ArgumentTypeError('port must be an integer from 1 to 65535')
+    return port
+
+def parse_args(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--docker',required=True); p.add_argument('--rcon',required=True)
     p.add_argument('--bundle',default='build/engine-function-live')
-    try: sys.exit(drive(p.parse_args()))
+    p.add_argument('--port',type=port_number,default=27015,help='RCON port (default: 27015)')
+    return p.parse_args(argv)
+
+if __name__=='__main__':
+    try: sys.exit(drive(parse_args()))
     except (OSError,ValueError,KeyError,RuntimeError,subprocess.CalledProcessError) as e:
         print('live proof failed: '+str(e),file=sys.stderr); sys.exit(1)
