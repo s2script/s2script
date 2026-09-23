@@ -130,7 +130,7 @@ jobs:
           }
           trap restore_core_pattern EXIT
           sudo sysctl -w "kernel.core_pattern=$diagnostic_dir/cores/core.%p.%t"
-          bash scripts/ci-native.sh
+          S2FN_V8_DIAGNOSTICS=1 S2FN_V8_DIAGNOSTIC_RUNS=32 bash scripts/ci-native.sh
       - name: retain compact V8 diagnostics and matching binaries
         if: always()
         uses: actions/upload-artifact@v4

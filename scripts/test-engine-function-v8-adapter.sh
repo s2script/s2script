@@ -3,8 +3,26 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 [[ ${1:-} == --spike && ${2:-} == --stock-provider && $# == 2 ]] || { echo 'usage: test-engine-function-v8-adapter.sh --spike --stock-provider' >&2; exit 2; }
 [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || { echo 'UNSUPPORTED platform: V8 stock provider proof requires linux-x86_64-sysv' >&2; exit 2; }
-# Diagnostic execution is mandatory until the exact-head V8 crash is located.
-# Missing diagnostics must not silently fall back to an unobserved or skipped test.
+mode=${S2FN_V8_DIAGNOSTICS:-0}
+[[ $mode == 0 || $mode == 1 ]] || { echo 'FAIL S2FN_V8_DIAGNOSTICS must be 0 or 1' >&2; exit 2; }
+original_test=(cargo test --locked -p s2script-core --lib
+  v8host::engine_function_adapter_v8::busy_caller_stock_provider_spike -- --ignored --exact --nocapture)
+prepare_bridge() {
+  bash scripts/test-engine-function-abi.sh --stock-provider
+  export S2FN_V8_BRIDGE="$PWD/build/engine-function-abi/libengine_function_v8_bridge.so"
+  [[ -f "$S2FN_V8_BRIDGE" ]] || { echo 'FAIL missing real provider bridge' >&2; exit 1; }
+}
+# Ordinary local/server gates require no diagnostic tools or kernel policy.
+if [[ $mode == 0 ]]; then
+  prepare_bridge
+  "${original_test[@]}"
+  exit $?
+fi
+runs=${S2FN_V8_DIAGNOSTIC_RUNS:-32}
+[[ $runs =~ ^([1-9]|[12][0-9]|3[0-2])$ ]] || {
+  echo 'FAIL S2FN_V8_DIAGNOSTIC_RUNS must be an integer from 1 to 32' >&2; exit 2;
+}
+# Opt-in diagnostics require complete capture setup; never silently fall back.
 for tool in gdb timeout readelf nm objdump sha256sum python3; do
   command -v "$tool" >/dev/null || { echo "FAIL required V8 diagnostic tool missing: $tool" >&2; exit 2; }
 done
@@ -18,13 +36,13 @@ mkdir -p "$artifact" "$cores"
   echo 'FAIL required file-based V8 core capture is not configured' >&2; exit 2;
 }
 ulimit -c 4194304 || { echo 'FAIL cannot enable bounded 4 GiB core capture' >&2; exit 2; }
-# No previous gate core may be mistaken for this single execution.
+# No previous gate core may be mistaken for evidence from this experiment.
 shopt -s nullglob
 previous_cores=("$cores"/core.*)
 [[ ${#previous_cores[@]} == 0 ]] || { echo 'FAIL stale core files before V8 test' >&2; exit 2; }
-bash scripts/test-engine-function-abi.sh --stock-provider
-export S2FN_V8_BRIDGE="$PWD/build/engine-function-abi/libengine_function_v8_bridge.so"
-[[ -f "$S2FN_V8_BRIDGE" ]] || { echo 'FAIL missing real provider bridge' >&2; exit 1; }
+# Refuse a second experiment in this directory, preserving the first evidence.
+mkdir "$artifact/attempts" || { echo 'FAIL existing/unwritable V8 experiment artifacts' >&2; exit 2; }
+prepare_bridge
 # --no-run only compiles. Select its exact executable, never a stale glob result.
 cargo test --locked -p s2script-core --lib --no-run --message-format=json > "$artifact/artifacts.jsonl"
 executable="$(python3 - "$artifact/artifacts.jsonl" <<'PY'
@@ -72,6 +90,8 @@ capture() {
 }
 member_fixture="$PWD/build/engine-function-abi/libengine_function_member_fixture.so"
 [[ -f "$member_fixture" ]] || { echo 'FAIL missing member fixture' >&2; exit 2; }
+binaries=("$executable" "$S2FN_V8_BRIDGE" "$member_fixture")
+sha256sum "${binaries[@]}" > "$artifact/fixed.sha256"
 {
   printf '%s\n' 'command=cargo test --locked -p s2script-core --lib v8host::engine_function_adapter_v8::busy_caller_stock_provider_spike -- --ignored --exact --nocapture'
   git rev-parse HEAD
@@ -79,7 +99,8 @@ member_fixture="$PWD/build/engine-function-abi/libengine_function_member_fixture
   gdb --version
   printf 'page_size=%s core_limit_KiB=%s text_cap_bytes=1048576\n' "$(getconf PAGESIZE)" "$(ulimit -c)"
   printf 'core_pattern=%s\nexecutable=%s\n' "$(cat /proc/sys/kernel/core_pattern)" "$executable"
-  sha256sum "$executable" "$S2FN_V8_BRIDGE" "$member_fixture"
+  printf 'requested_processes=%s attempt_limit_seconds=120 kill_grace_seconds=10 experiment_budget_seconds=600\n' "$runs"
+  cat "$artifact/fixed.sha256"
 } > "$artifact/manifest.txt"
 for binary in "$executable" "$S2FN_V8_BRIDGE" "$member_fixture"; do
   capture "$artifact/$(basename "$binary").elf.txt" readelf -h -l -n -W "$binary"
@@ -101,21 +122,19 @@ PY
 capture "$artifact/target-page.txt" objdump -d -C --start-address="$page" \
   --stop-address="$((page + 2 * $(getconf PAGESIZE)))" "$S2FN_V8_BRIDGE"
 cat "$artifact/manifest.txt"
-printf '%s\n' 'V8 normal Cargo execution begin (one test; no live debugger)' | tee "$artifact/outcome.txt"
-# The preceding --no-run only discovers the matching executable. Cargo launches
-# the actual test with its original runtime environment, exactly once.
-set +e
-timeout --signal=TERM --kill-after=10s 120s \
-  cargo test --locked -p s2script-core --lib \
-  v8host::engine_function_adapter_v8::busy_caller_stock_provider_spike -- --ignored --exact --nocapture \
-  2>&1 | python3 -c '
+# Keep the reviewed bounded, fully draining consumer for every attempt. Also
+# retain emitted runtime addresses even when they occur beyond the saved prefix.
+capture_cargo() {
+  python3 -c '
 import os
+import re
 import sys
 
 # Keep draining after the saved prefix fills or a destination fails, so capture
 # cannot give the Cargo child SIGPIPE. Console output still receives the stream.
 streams = {sys.stdout.fileno(): None}
 saved = None
+runtime = None
 failed = False
 try:
     saved = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
@@ -123,14 +142,31 @@ try:
 except OSError as error:
     print(f"FAIL Cargo output capture: {error}", file=sys.stderr)
     failed = True
+try:
+    runtime = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+    streams[runtime] = 1048576
+except OSError as error:
+    print(f"FAIL Cargo output capture: {error}", file=sys.stderr)
+    failed = True
 total = 0
+pending = b""
 while True:
     chunk = os.read(sys.stdin.fileno(), 65536)
     if not chunk:
         break
     total += len(chunk)
+    combined = pending + chunk
+    addresses = b"".join(match.group() for match in re.finditer(
+        rb"event=create-begin target=0x[0-9a-fA-F]+\r?\n", combined)
+        if match.end() > len(pending))
+    pending = combined[-128:]
     for descriptor, remaining in list(streams.items()):
-        data = chunk if remaining is None else chunk[:remaining]
+        data = addresses if descriptor == runtime else chunk
+        if remaining is not None:
+            if descriptor == runtime and len(data) > remaining:
+                print("FAIL runtime address capture exceeds 1 MiB", file=sys.stderr)
+                failed = True
+            data = data[:remaining]
         if remaining is not None:
             streams[descriptor] -= len(data)
         try:
@@ -143,26 +179,98 @@ while True:
             print(f"FAIL Cargo output capture: {error}", file=sys.stderr)
             failed = True
             del streams[descriptor]
-if saved is not None:
-    try:
-        os.close(saved)
-    except OSError as error:
-        print(f"FAIL Cargo output capture: {error}", file=sys.stderr)
-        failed = True
+for descriptor in (saved, runtime):
+    if descriptor is not None:
+        try:
+            os.close(descriptor)
+        except OSError as error:
+            print(f"FAIL Cargo output capture: {error}", file=sys.stderr)
+            failed = True
 if total > 1048576:
     print("DIAGNOSTIC LIMITATION: Cargo output exceeds 1 MiB; saved prefix only", file=sys.stderr)
 sys.exit(1 if failed else 0)
-' "$artifact/test-output.txt"
-pipeline_status=("${PIPESTATUS[@]}")
-status=${pipeline_status[0]}
-capture_status=${pipeline_status[1]}
-printf 'V8 normal Cargo execution exit %s\n' "$status" | tee -a "$artifact/outcome.txt"
-printf 'V8 Cargo output capture exit %s\n' "$capture_status" | tee -a "$artifact/outcome.txt"
+' "$1" "$2"
+}
+now_ms() { python3 -c 'import time; print(time.monotonic_ns() // 1000000)'; }
+# Compilation and static ELF capture precede this fixed-build process experiment.
+# Postmortem, if needed, has its own existing 60s + 5s bounds below.
+started=$(now_ms)
+deadline=$((started + 600000))
+successes=0
+status=0
+printf 'requested=%s successes=0 budget_ms=600000\n' "$runs" > "$artifact/outcome.txt"
+for ((index=1; index<=runs; index++)); do
+  now=$(now_ms)
+  if ((deadline - now < 130000)); then
+    printf 'FAIL incomplete experiment: successes=%s requested=%s; insufficient full attempt budget\n' "$successes" "$runs" | tee -a "$artifact/outcome.txt"
+    exit 124
+  fi
+  attempt="$artifact/attempts/$(printf 'attempt-%02d' "$index")"
+  mkdir "$attempt"
+  printf 'attempt=%s elapsed_ms=%s\n' "$index" "$((now - started))" > "$attempt/outcome.txt"
+  if ! sha256sum "${binaries[@]}" > "$attempt/hashes-before.sha256" ||
+     ! cmp -s "$artifact/fixed.sha256" "$attempt/hashes-before.sha256"; then
+    printf 'FAIL hash capture/mismatch before attempt=%s; experiment invalid\n' "$index" | tee -a "$artifact/outcome.txt" "$attempt/outcome.txt"
+    exit 2
+  fi
+  # Hashing is outside the child timeout, so recheck immediately before launch.
+  now=$(now_ms)
+  if ((deadline - now < 130000)); then
+    printf 'FAIL incomplete experiment: successes=%s requested=%s; insufficient full attempt budget\n' "$successes" "$runs" | tee -a "$artifact/outcome.txt" "$attempt/outcome.txt"
+    exit 124
+  fi
+  attempt_started=$now
+  printf 'V8 normal Cargo execution begin attempt=%s/%s (no live debugger)\n' "$index" "$runs" | tee -a "$attempt/outcome.txt"
+  set +e
+  timeout --signal=TERM --kill-after=10s 120s "${original_test[@]}" 2>&1 | capture_cargo "$attempt/test-output.txt" "$attempt/runtime-addresses.txt"
+  pipeline_status=("${PIPESTATUS[@]}")
+  cargo_status=${pipeline_status[0]}
+  capture_status=${pipeline_status[1]}
+  diagnostic_status=0
+  # Check every attempted process even when Cargo failed. Never replace its status.
+  if ! sha256sum "${binaries[@]}" > "$attempt/hashes-after.sha256" ||
+     ! cmp -s "$artifact/fixed.sha256" "$attempt/hashes-after.sha256"; then
+    printf 'FAIL hash capture/mismatch after attempt=%s; experiment invalid\n' "$index" | tee -a "$artifact/outcome.txt" "$attempt/outcome.txt"
+    diagnostic_status=2
+  fi
+  now=$(now_ms) || diagnostic_status=2
+  if ((now >= deadline)); then
+    printf 'FAIL incomplete experiment: overall deadline reached at attempt=%s\n' "$index" | tee -a "$artifact/outcome.txt" "$attempt/outcome.txt"
+    diagnostic_status=124
+  fi
+  core_files=("$cores"/core.*)
+  if [[ ${#core_files[@]} != 0 && $cargo_status == 0 ]]; then
+    printf 'FAIL unexpected core after successful Cargo attempt=%s\n' "$index" | tee -a "$artifact/outcome.txt" "$attempt/outcome.txt"
+    diagnostic_status=2
+  fi
+  # Each output, address list and hash snapshot belongs only to this attempt.
+  printf 'attempt=%s elapsed_ms=%s duration_ms=%s cargo_status=%s capture_status=%s diagnostic_status=%s\n' \
+    "$index" "$((now - started))" "$((now - attempt_started))" "$cargo_status" "$capture_status" "$diagnostic_status" | tee -a "$attempt/outcome.txt" "$artifact/outcome.txt"
+  record_status=$?
+  status=$cargo_status
+  [[ $status != 0 ]] || status=$capture_status
+  [[ $status != 0 ]] || status=$diagnostic_status
+  [[ $status != 0 ]] || status=$record_status
+  if [[ $status != 0 ]]; then
+    printf 'Stopped at first failure: attempt=%s successes=%s status=%s\n' "$index" "$successes" "$status" | tee -a "$artifact/outcome.txt"
+    break
+  fi
+  set -e
+  successes=$((successes + 1))
+done
+if [[ $status == 0 ]]; then
+  printf 'Fixed-build experiment completed: successes=%s requested=%s; original SIGSEGV remains unexplained.\n' "$successes" "$runs" | tee -a "$artifact/outcome.txt"
+  cat "$artifact/fixed.sha256"
+  exit 0
+fi
+# Keep all first-failure evidence under that attempt, and never execute again.
+# Diagnostic cleanup cannot mask a nonzero Cargo/timeout/capture result.
+artifact=$attempt
 core_files=("$cores"/core.*)
 if [[ ${#core_files[@]} != 0 ]]; then
   mkdir -p "$artifact/binaries"
   cp "$executable" "$S2FN_V8_BRIDGE" "$member_fixture" "$artifact/binaries/"
-  printf 'matching binary copy exit %s\n' "$?" >> "$artifact/outcome.txt"
+  printf 'current binary copy exit %s (compare with fixed and attempt hashes)\n' "$?" >> "$artifact/outcome.txt"
 fi
 if [[ ${#core_files[@]} == 1 ]]; then
   core=${core_files[0]}
@@ -193,16 +301,10 @@ end
 GDB
   capture "$artifact/postmortem.txt" timeout --signal=TERM --kill-after=5s 60s \
     gdb -nx --batch -iex 'set auto-load off' -x "$diagnostics/postmortem.gdb" "$executable" -c "$core"
-  printf 'postmortem exit %s (original Cargo status retained)\n' "$?" >> "$artifact/outcome.txt"
+  printf 'postmortem exit %s (first failure status retained)\n' "$?" >> "$artifact/outcome.txt"
   cat "$artifact/postmortem.txt"
-elif [[ ${#core_files[@]} != 0 || $status != 0 ]]; then
-  printf 'DIAGNOSTIC LIMITATION: expected one core after failure, found %s; Cargo status retained\n' "${#core_files[@]}" | tee -a "$artifact/outcome.txt"
 else
-  printf '%s\n' 'No core: normal test passed; original SIGSEGV remains unexplained.' | tee -a "$artifact/outcome.txt"
+  printf 'DIAGNOSTIC LIMITATION: expected one core after failure, found %s; first failure status retained\n' "${#core_files[@]}" | tee -a "$artifact/outcome.txt"
 fi
 cat "$artifact/outcome.txt"
-# A lost mandatory capture fails a successful test; Cargo failure/timeout wins.
-if [[ $status == 0 && $capture_status != 0 ]]; then
-  exit "$capture_status"
-fi
 exit "$status"
