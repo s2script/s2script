@@ -102,6 +102,8 @@ test("create --yes scaffolds a CS2 plugin that typechecks against monorepo packa
   assert.doesNotMatch(createdSrc, /export default plugin/);
   assert.ok(existsSync(join(tmp, "package.json")));
   assert.ok(existsSync(join(tmp, "tsconfig.json")));
+  assert.equal(existsSync(join(tmp, 'gamedata', 'functions.jsonc')), false);
+  assert.ok(JSON.parse(readFileSync(join(tmp, 'tsconfig.json'), 'utf8')).include.includes('.s2script/*.d.ts'));
 
   const pkg = JSON.parse(
     (await import("node:fs")).readFileSync(join(tmp, "package.json"), "utf8"),
