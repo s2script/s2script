@@ -19,20 +19,35 @@ executable="$(python3 - "$tmp/artifacts.jsonl" <<'PY'
 import json
 import pathlib
 import sys
+artifacts = []
 executables = set()
 for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
     item = json.loads(line)
-    if (item.get("reason") == "compiler-artifact"
-            and item.get("target", {}).get("name") == "s2script_core"
-            and item.get("target", {}).get("kind") == ["lib"]
+    if item.get("reason") != "compiler-artifact":
+        continue
+    artifacts.append(item)
+    # Cargo preserves the cdylib target kind even for its executable
+    # unit-test harness; profile.test/executable distinguish that harness.
+    if (item.get("target", {}).get("name") == "s2script_core"
+            and item.get("target", {}).get("kind") == ["cdylib"]
             and item.get("profile", {}).get("test") is True
             and item.get("executable")):
         executables.add(item["executable"])
+
+def fail(message):
+    print("Cargo compiler-artifact discovery evidence:", file=sys.stderr)
+    for item in artifacts:
+        print(json.dumps({"package_id": item.get("package_id"),
+                          "target": item.get("target"),
+                          "profile_test": item.get("profile", {}).get("test"),
+                          "executable": item.get("executable")}, sort_keys=True), file=sys.stderr)
+    raise SystemExit(message)
+
 if len(executables) != 1:
-    raise SystemExit(f"FAIL expected one exact Rust test executable, found {len(executables)}")
+    fail(f"FAIL expected one exact Rust test executable, found {len(executables)}")
 executable = pathlib.Path(executables.pop())
 if not executable.is_absolute() or not executable.is_file():
-    raise SystemExit("FAIL compiled Rust test executable is missing/not absolute")
+    fail("FAIL compiled Rust test executable is missing/not absolute")
 print(executable)
 PY
 )"
