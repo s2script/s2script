@@ -37,7 +37,7 @@ def complete_records():
             for event in ('acquire-pre','acquire-post'):
                 records.append(dict(base,kind='engine-function-witness',event=event,witnessGeneration=1,facts=dict(invocation)))
     records.append(dict(identity,generation=2,kind='engine-function-witness',event='unloaded',witnessGeneration=1,facts={}))
-    records.append(dict(identity,generation=2,kind='engine-function-witness',event='bot-cleaned',witnessGeneration=1,facts={'slot':3,'userId':12,'kicked':True,'settingsRestored':True}))
+    records.append(dict(identity,generation=2,kind='engine-function-witness',event='bot-cleaned',witnessGeneration=1,facts={'slot':3,'userId':12,'kickRequested':True,'ownedDisconnected':True,'baselinePreserved':True,'settingsRestored':True}))
     return records
 
 class JudgeTests(unittest.TestCase):
@@ -80,6 +80,15 @@ class JudgeTests(unittest.TestCase):
         for r in records:
             if r.get('kind')=='engine-function-witness' and r.get('generation')==2: r['witnessGeneration']=2
         self.assertNotEqual(live.judge(records,'a'*40,'b'*64,'run')['result'],'pass')
+    def test_kick_request_without_observed_removal_and_restoration_cannot_pass(self):
+        for field in ('kickRequested','ownedDisconnected','baselinePreserved','settingsRestored'):
+            for value in (None,False):
+                with self.subTest(field=field,value=value):
+                    records=complete_records()
+                    # The former request-only evidence must not satisfy the judge.
+                    records[-1]['facts']['kicked']=True
+                    records[-1]['facts'][field]=value
+                    self.assertNotEqual(live.judge(records,'a'*40,'b'*64,'run')['result'],'pass')
 class RconPortTests(unittest.TestCase):
     def test_driver_forwards_default_and_nondefault_port(self):
         for options,port in (([],27015),(['--port','27016'],27016)):

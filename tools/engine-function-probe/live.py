@@ -32,7 +32,7 @@ def judge(records, source, token, run):
     owned=[r.get('facts',{}) for r in witnesses if r.get('event')=='bot-owned']
     if len(owned)!=1 or any(not isinstance(owned[0].get(k),int) or owned[0][k]<0 for k in ('slot','userId')): missing.append('one positively owned bot')
     ownership=owned[0] if len(owned)==1 else {}
-    if not any(r.get('event')=='bot-cleaned' and r.get('facts',{}).get('kicked') is True and r.get('facts',{}).get('settingsRestored') is True and all(r.get('facts',{}).get(k)==ownership.get(k) for k in ('slot','userId')) for r in witnesses): missing.append('guarded owned bot cleanup')
+    if not any(r.get('event')=='bot-cleaned' and all(r.get('facts',{}).get(k) is True for k in ('kickRequested','ownedDisconnected','baselinePreserved','settingsRestored')) and all(r.get('facts',{}).get(k)==ownership.get(k) for k in ('slot','userId')) for r in witnesses): missing.append('guarded owned bot cleanup')
     if any(r.get('event')=='invalid-scope' for r in witnesses): errors.append('public invocation marker unavailable')
     if generations and not any(r.get('event')=='unloaded' and r.get('generation')==generations[-1] for r in witnesses): missing.append('witness owner teardown')
     for generation in generations:
@@ -164,7 +164,7 @@ def drive(args):
             wait_for(lambda rs:any(r.get('case')=='removal-before-free' and r.get('generation')==generation and r.get('run')==run for r in rs),f's2_engine_probe collect {run}')
             if attempt==0: rcon('sm plugins load @example/engine-function-acceptance')
         rcon(f's2_engine_witness cleanup {run} {generation} {token}')
-        wait_for(lambda rs:any(r.get('event')=='bot-cleaned' and r.get('run')==run for r in rs))
+        wait_for(lambda rs:any(r.get('event')=='bot-cleaned' and r.get('run')==run for r in rs),f's2_engine_witness cleanup {run} {generation} {token}')
         cleanup_done=True
         rcon('sm plugins unload @example/engine-function-witness')
         wait_for(lambda rs:any(r.get('kind')=='engine-function-witness' and r.get('event')=='unloaded' and r.get('run')==run for r in rs))

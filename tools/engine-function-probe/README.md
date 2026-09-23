@@ -124,9 +124,15 @@ claimed. Its guarded Client handle and userId remain retained in the witness.
 Before each acquisition A captures its own guarded handle, B revalidates ownership,
 and A uses that captured handle, so slot reuse cannot redirect the operation.
 Cleanup uses only the retained Client.kick, never a name selector or bot_kick.
-It restores saved quota/settings in the same operation only when baseline identity
-and the single owned client remain unambiguous (or creation produced no client).
-Stale/ambiguous identities cause no client mutation and leave uncertain settings
-for explicit operator recovery; the verdict cannot PASS. Witness teardown also
-attempts this guarded cleanup if the driver failed after stimulus-owner unload.
+The guarded kick is requested once. Repeated cleanup commands observe completion:
+the original handle must become invalid and the remaining connections must be
+exactly the intact baseline before quota restoration. Saved settings are read back,
+and population is checked again before publishing cleanup success. Pending removal
+does not publish an acquirable client or lower quota. Creation timeout, cleanup of
+unclaimed creation, stale/ambiguous identities, failed restoration, or removal
+timeout enter terminal uncertainty; repeated cleanup and witness teardown retain
+the original evidence/settings for explicit operator recovery and cannot PASS.
+Temporary absence after queued creation never proves cancellation. Witness teardown
+also attempts this guarded cleanup if the driver failed after stimulus-owner unload;
+if disconnection is still pending at unload, no future observation is claimed.
 Lifecycle control-flow regression: `node --test tools/engine-function-probe/test_fixture_lifecycle.mjs`.
