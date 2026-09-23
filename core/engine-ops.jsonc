@@ -1217,6 +1217,15 @@
       "c_ret": "int",
       "c_params": "int index, int serial",
       "shim": "s2_sdkhook_vp_drop"
+    },
+    {
+      "name": "plugin_function_overrides",
+      "alias": "PluginFunctionOverridesFn",
+      "rust": "extern \"C\" fn(*const c_char) -> *const c_char",
+      "group": "Immutable bounded plugin engine-function override snapshot",
+      "c_ret": "const char*",
+      "c_params": "const char* id",
+      "shim": "s2_plugin_function_overrides"
     }
   ]
 }

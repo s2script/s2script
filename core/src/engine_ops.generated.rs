@@ -148,6 +148,7 @@ pub type HookSelfMatchesFieldFn = extern "C" fn(*mut std::ffi::c_void, c_int, c_
 pub type SdkhookVpAddFn = extern "C" fn(c_int, c_int, *const c_char, c_int) -> c_int;
 pub type SdkhookVpRemoveFn = extern "C" fn(c_int, c_int, *const c_char, c_int) -> c_int;
 pub type SdkhookVpDropFn = extern "C" fn(c_int, c_int) -> c_int;
+pub type PluginFunctionOverridesFn = extern "C" fn(*const c_char) -> *const c_char;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -326,6 +327,8 @@ pub struct S2EngineOps {
     pub sdkhook_vp_add: Option<SdkhookVpAddFn>,
     pub sdkhook_vp_remove: Option<SdkhookVpRemoveFn>,
     pub sdkhook_vp_drop: Option<SdkhookVpDropFn>,
+    // --- Immutable bounded plugin engine-function override snapshot ---
+    pub plugin_function_overrides: Option<PluginFunctionOverridesFn>,
 }
 
 impl S2EngineOps {

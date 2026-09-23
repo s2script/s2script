@@ -69,6 +69,7 @@
 #include "engine_calls.h"   // Plugin-gamedata slice: S2_EngineCallResolve/Invoke (the two appended engine ops)
 #include "engine_consumer.h" // Shared resolver adapter for the built-in gamedata signatures
 #include "config_ops.h"     // Config paths + read/write ops and versioned loader resolver
+#include "plugin_function_overrides.h"
 #include "defer_queue.h"    // deferred-dispatch slice: the engine-free queue/drain policy (ops-injected)
 #include "client_bootstrap.h"
 #include "hook_dispatch.h"  // declarative inbound hooks: the engine-free policy half (ops-injected)

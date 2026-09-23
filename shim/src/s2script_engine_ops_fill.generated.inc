@@ -170,3 +170,5 @@
     ops.sdkhook_vp_add = &s2_sdkhook_vp_add;
     ops.sdkhook_vp_remove = &s2_sdkhook_vp_remove;
     ops.sdkhook_vp_drop = &s2_sdkhook_vp_drop;
+    // --- Immutable bounded plugin engine-function override snapshot ---
+    ops.plugin_function_overrides = &s2_plugin_function_overrides;

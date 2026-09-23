@@ -143,6 +143,7 @@ typedef int (*s2_hook_self_matches_field_fn)(void* argView, int index, int seria
 typedef int (*s2_sdkhook_vp_add_fn)(int index, int serial, const char* type, int post);
 typedef int (*s2_sdkhook_vp_remove_fn)(int index, int serial, const char* type, int post);
 typedef int (*s2_sdkhook_vp_drop_fn)(int index, int serial);
+typedef const char* (*s2_plugin_function_overrides_fn)(const char* id);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -316,4 +317,6 @@ typedef struct {
     s2_sdkhook_vp_add_fn sdkhook_vp_add;
     s2_sdkhook_vp_remove_fn sdkhook_vp_remove;
     s2_sdkhook_vp_drop_fn sdkhook_vp_drop;
+    /* --- Immutable bounded plugin engine-function override snapshot --- */
+    s2_plugin_function_overrides_fn plugin_function_overrides;
 } S2EngineOps;

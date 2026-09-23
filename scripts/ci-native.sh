@@ -157,6 +157,9 @@ bash scripts/check-defer-selftest-gate.sh
 echo "== test-call-validate.sh (the descriptor validators: both gates must REJECT) =="
 bash scripts/test-call-validate.sh
 
+echo "== test-plugin-function-overrides.sh (bounded immutable operator snapshots) =="
+bash scripts/test-plugin-function-overrides.sh
+
 echo "== check-gamedata-owners.sh (gamedata ownership boundary) =="
 bash scripts/check-gamedata-owners.sh
 
