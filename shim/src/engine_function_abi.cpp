@@ -161,8 +161,12 @@ Result<NativeValue> RuntimeBinding::Invoke(void* address, const NativeValue* arg
 Result<NativeValue> RuntimeBinding::Call(const NativeValue* args, std::size_t argc) {
     Activity activity(*this); // retained through ffi_call and result/error handling
     const auto state = Snapshot().state;
+    // This Call owns one entry. After detachment, every earlier callback/Call
+    // must have completed before the target becomes callable again.
     if (!target_ || state == S2HookState::Removing ||
-        (state == S2HookState::Removed && !provider_detached_.load(std::memory_order_acquire)))
+        (state == S2HookState::Removed &&
+         (!provider_detached_.load(std::memory_order_acquire) ||
+          active_entries_.load(std::memory_order_acquire) != 1)))
         return {{}, "binding not callable"};
     std::string callback_error;
     call_errors.emplace_back(this, &callback_error);

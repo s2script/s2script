@@ -1,4 +1,5 @@
 #ifdef S2BRIDGE_TARGET_FIXTURE
+#include <thread>
 static volatile int fixture_calls=0;
 extern "C" __attribute__((visibility("default"),noinline)) int s2bridge_fixture_native(int n) {
     ++fixture_calls; return n+1;
@@ -8,6 +9,13 @@ extern "C" __attribute__((visibility("default"),noinline)) int s2bridge_fixture_
 }
 extern "C" __attribute__((visibility("default"),noinline)) void* s2bridge_fixture_pointer(void* p) {
     ++fixture_calls; return p;
+}
+extern "C" __attribute__((visibility("default"),noinline)) int s2bridge_fixture_join(int n) {
+    int result=0;
+    auto volatile target=&s2bridge_fixture_other;
+    std::thread worker([&] { result=target(n); });
+    worker.join();
+    return result+1;
 }
 #else
 #include "engine_function_bridge.h"
@@ -119,6 +127,9 @@ void stages() {
 #ifndef S2FN_VALIDATION_ONLY
 #include <chrono>
 #include <thread>
+#include <atomic>
+#include <condition_variable>
+#include <cstdlib>
 static int allocations=0, frees=0;
 extern "C" void* __real_ffi_closure_alloc(size_t,void**);
 extern "C" void __real_ffi_closure_free(void*);
@@ -128,6 +139,7 @@ namespace s2fn { void TestInvokeReturned(RuntimeBinding*) {} void TestReturnUnlo
 namespace {
 extern "C" int s2bridge_fixture_native(int);
 extern "C" int s2bridge_fixture_other(int);
+extern "C" int s2bridge_fixture_join(int);
 extern "C" void* s2bridge_fixture_pointer(void*);
 #define native s2bridge_fixture_native
 struct Sink : s2bridge::DispatchSink {
@@ -163,6 +175,69 @@ struct Codec : s2bridge::PointerCodec {
         auto result=request;result.bits=73;return {result,{}};
     }
 };
+// A stalled worker/join fails the process after five seconds instead of hanging
+// CI or destructing a still-joinable worker. This is an actual stock closure path.
+void worker_join_regression() {
+    struct Deadline {
+        std::mutex mu;
+        std::condition_variable cv;
+        bool done=false;
+        std::thread watchdog;
+        Deadline() : watchdog([this] {
+            std::unique_lock<std::mutex> lock(mu);
+            if (!cv.wait_for(lock,std::chrono::seconds(5),[this] {return done;})) {
+                std::cerr << "FAIL bridge worker/join exceeded five seconds\n";
+                std::_Exit(87);
+            }
+        }) {}
+        ~Deadline() {
+            {std::lock_guard<std::mutex> lock(mu);done=true;}
+            cv.notify_all();watchdog.join();
+        }
+    } deadline;
+    struct WorkerSink : s2bridge::DispatchSink {
+        s2bridge::Service* service=nullptr;
+        s2bridge::TargetId joining=0, worker=0;
+        std::atomic<int> worker_pre{0};
+        void Dispatch(s2bridge::TargetId id,unsigned long long,s2fn::DispatchFrame& frame) override {
+            if (frame.phase!=s2fn::Phase::Pre) return;
+            if (id==worker) {++worker_pre;return;}
+            assert(id==joining);
+            // Also catch holding the bookkeeping mutex across the host sink.
+            std::thread nested([&] {
+                assert(!service->SetDispatchSink(nullptr));
+                auto volatile target=&s2bridge_fixture_other;
+                assert(target(8)==10);
+            });
+            nested.join();
+        }
+        void Error(s2bridge::TargetId,const char*) noexcept override {std::abort();}
+    } sink;
+    uintptr_t address=reinterpret_cast<uintptr_t>(&s2bridge_fixture_other);
+    s2bridge::Service service([&](const auto&,auto& out,auto&) {
+        Fixture f(address-0x1200);f.freeze();out.address=address;out.image=f.image;return true;
+    });
+    sink.service=&service;assert(service.SetDispatchSink(&sink));
+    auto t=target();t["resolve"]="direct";t["derivation"]="identity";t["candidateValidate"]=json::object();
+    auto a=abi();
+    auto worker=service.Prepare("worker",t.dump(),a.dump(),a["fingerprint"]);assert(worker);sink.worker=worker.value;
+    assert(service.HookAcquire(worker.value));
+    address=reinterpret_cast<uintptr_t>(&s2bridge_fixture_join);
+    auto joining=service.Prepare("joining",t.dump(),a.dump(),a["fingerprint"]);assert(joining);sink.joining=joining.value;
+    S2FunctionValue input{};input.kind=static_cast<unsigned char>(s2bridge::ValueKind::I32);input.bits=7;
+    auto result=service.Call(joining.value,11,&input,1);
+    assert(result && result.value.bits==10 && sink.worker_pre==1);
+    // Second entry also performs a worker/join inside the injected host sink.
+    assert(service.HookAcquire(joining.value));
+    result=service.Call(joining.value,11,&input,1);
+    assert(result && result.value.bits==10 && sink.worker_pre==3);
+    for (auto id : {joining.value,worker.value}) {
+        assert(service.HookRelease(id));assert(service.TargetRelease(id));
+    }
+    while (!service.Collect()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(allocations==frees);
+    std::cout << "PASS bounded native and sink worker/join without service-lock deadlock\n";
+}
 void runtime() {
     std::cout << std::unitbuf;
     Fixture f(reinterpret_cast<uintptr_t>(&native)-0x1200); f.freeze();
@@ -241,6 +316,7 @@ void runtime() {
     codec.live=false;assert(!service.Call(member.value,0,&entity,1,pointer));
     assert(service.TargetRelease(member.value));assert(service.Collect() && allocations==frees);
     std::cout << "PASS real CIF/shared physical stock hook/lazy calls/nested owner bypass/refcount/retirement\n";
+    worker_join_regression();
     KHook::Shutdown();
 }
 }

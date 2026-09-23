@@ -200,6 +200,7 @@ static void return_phase_lifetime(bool outbound) {
     auto binding = bind(signature, sink, reinterpret_cast<void*>(&identity<bool>));
     sink.dispatch = [&](DispatchFrame& frame) { if (frame.phase == Phase::Pre) binding->BeginRemove(); };
     std::mutex mutex; std::condition_variable condition; bool unlocked = false, resume = false, invoke_done = false, resume_invoke = false;
+    std::thread::id outbound_thread;
     s2fn::return_unlocked = [&](RuntimeBinding* observed) {
         assert(observed == binding.get());
         std::unique_lock<std::mutex> lock(mutex); unlocked = true; condition.notify_all();
@@ -207,7 +208,7 @@ static void return_phase_lifetime(bool outbound) {
     };
     s2fn::invoke_returned = [&](RuntimeBinding* observed) {
         std::unique_lock<std::mutex> lock(mutex);
-        if (!outbound || !resume) return; // ignore the earlier MakeOriginal ffi_call
+        if (!outbound || !resume || std::this_thread::get_id()!=outbound_thread) return; // ignore MakeOriginal and the reuse probe
         assert(observed == binding.get()); invoke_done = true; condition.notify_all();
         assert(condition.wait_for(lock, std::chrono::seconds(5), [&] { return resume_invoke; }));
     };
@@ -215,6 +216,7 @@ static void return_phase_lifetime(bool outbound) {
     // Enter from an independent native caller, not RuntimeBinding::Call: its
     // lifetime must be protected even without an outbound call lease.
     std::thread caller([&] {
+        outbound_thread=std::this_thread::get_id();
         if (outbound) {
             auto input = NativeValue::From<std::uint8_t>(1);
             const auto returned = binding->Call(&input, 1); assert(returned);
@@ -237,10 +239,23 @@ static void return_phase_lifetime(bool outbound) {
         assert(condition.wait_for(lock, std::chrono::seconds(5), [&] { return invoke_done; }));
         assert(RuntimeBindingTestAccess::BothAcknowledged(*binding));
         assert(!binding->RemovalComplete() && frees == before_frees);
+        lock.unlock();
+        // Both removal acknowledgements are complete, but the first outbound
+        // Call still owns its lease. A second call must not reuse this target.
+        auto input=NativeValue::From<std::uint8_t>(1);
+        const auto early=binding->Call(&input,1);
+        assert(!early && early.error=="binding not callable");
+        lock.lock();
         resume_invoke = true; lock.unlock(); condition.notify_all();
     }
     caller.join(); s2fn::return_unlocked = {}; s2fn::invoke_returned = {};
     assert(result && sink.errors == 0 && sink.pre == 1 && sink.post == 1);
+    if (outbound) {
+        assert(binding->RemovalComplete());
+        auto input=NativeValue::From<std::uint8_t>(1);
+        const auto reused=binding->Call(&input,1);
+        assert(reused && reused.value.Get<std::uint8_t>()==1);
+    }
     retire(binding);
     std::cout << "PASS return phase held across both provider acknowledgements; outbound=" << outbound << " caller finished before reclamation\n";
 }

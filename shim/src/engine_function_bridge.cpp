@@ -148,18 +148,33 @@ struct Service::Impl {
         Declaration declaration;
         s2resolve::Resolution resolution; // private diagnostic/provenance retains its image
         std::unique_ptr<s2fn::RuntimeBinding> binding;
-        size_t refs=1, subscriptions=0;
+        size_t refs=1, subscriptions=0, active_calls=0;
         Record(Impl& h,TargetId i,std::string name,Declaration d,s2resolve::Resolution r)
             : host(h),id(i),canonical_id(std::move(name)),declaration(std::move(d)),resolution(std::move(r)) {}
         void Dispatch(s2fn::DispatchFrame& frame) override {
-            std::lock_guard<std::recursive_mutex> lock(host.mu);
+            std::shared_ptr<Record> retained;
+            s2bridge::DispatchSink* sink=nullptr;
+            {
+                std::lock_guard<std::recursive_mutex> lock(host.mu);
+                retained=host.records.at(id);
+                if (subscriptions) sink=host.sink;
+            }
+            // The record hold prevents collection/interface replacement while
+            // the host runs. Never hold service bookkeeping across host code.
             unsigned long long owner=0;
             for (auto i=bypass.rbegin();i!=bypass.rend();++i)
                 if (i->service==&host && i->target==id) { owner=i->owner; break; }
-            if (subscriptions && host.sink) host.sink->Dispatch(id,owner,frame);
+            if (sink) sink->Dispatch(id,owner,frame);
         }
         void Error(const char* why) noexcept override {
-            if (host.sink) host.sink->Error(id,why);
+            std::shared_ptr<Record> retained;
+            s2bridge::DispatchSink* sink=nullptr;
+            {
+                std::lock_guard<std::recursive_mutex> lock(host.mu);
+                retained=host.records.at(id);
+                sink=host.sink;
+            }
+            if (sink) sink->Error(id,why);
         }
     };
     mutable std::recursive_mutex mu;
@@ -201,10 +216,11 @@ bool Service::SetPointerCodec(PointerCodec* codec) {
 }
 s2fn::Result<TargetId> Service::Prepare(const std::string& name,const std::string& target,
                                        const std::string& abi,const std::string& fingerprint) {
-    std::lock_guard<std::recursive_mutex> lock(impl_->mu); impl_->collect();
     if (name.empty() || name.find('\0')!=std::string::npos) return {0,"invalid canonical id"};
     auto d=Parse(target,abi,fingerprint); if (!d) return {0,name+": "+d.error};
     auto resolution=Resolve(d.value,impl_->resolver); if (!resolution) return {0,name+": "+resolution.error};
+    // The immutable resolver may contact the host. Only interning needs the lock.
+    std::lock_guard<std::recursive_mutex> lock(impl_->mu); impl_->collect();
     auto physical=key(resolution.value); auto prior=impl_->physical.find(physical);
     if (prior!=impl_->physical.end()) {
         auto& r=*impl_->records.at(prior->second);
@@ -228,23 +244,40 @@ s2fn::Result<TargetId> Service::Prepare(const std::string& name,const std::strin
 }
 s2fn::Result<S2FunctionValue> Service::Call(TargetId id,unsigned long long owner,
     const S2FunctionValue* args,int argc,S2FunctionValue request) {
-    std::lock_guard<std::recursive_mutex> lock(impl_->mu);
-    auto r=impl_->find(id); if (!r) return {{},"target handle unavailable"};
+    std::shared_ptr<Impl::Record> r;
+    PointerCodec* codec=nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lock(impl_->mu);
+        r=impl_->find(id); if (!r) return {{},"target handle unavailable"};
+        if (r->active_calls==std::numeric_limits<size_t>::max()) return {{},"active call overflow"};
+        ++r->active_calls;
+        codec=impl_->codec;
+    }
+    struct ReleaseCall {
+        Impl& host;
+        Impl::Record& record;
+        ~ReleaseCall() {
+            std::lock_guard<std::recursive_mutex> lock(host.mu);
+            --record.active_calls;
+        }
+    } release{*impl_,*r};
+    // r keeps its map entry and immutable host interfaces alive through decode,
+    // native execution, encode, and call-storage destruction, without this lock.
     const auto& abi=r->declaration.abi;
     size_t receiver=abi.receiver=="entity" ? 1 : 0;
     if (argc<0 || static_cast<size_t>(argc)!=abi.parameters.size()+receiver || (argc && !args))
         return {{},"argument count mismatch"};
-    if (abi.returns.native=="ptr" && (!pointer_request(request) || !impl_->codec))
+    if (abi.returns.native=="ptr" && (!pointer_request(request) || !codec))
         return {{},"pointer result codec/request unavailable"};
     CallStorage storage; std::vector<s2fn::NativeValue> values; values.reserve(argc);
     for (int i=0;i<argc;++i) {
         const auto& v=args[i]; const std::string atom=receiver && i==0 ? "ptr" : abi.parameters[i-receiver].native;
         if (v.reserved || v.kind!=static_cast<unsigned char>(kind(atom))) return {{},"argument value kind/reserved mismatch"};
         if (atom=="ptr") {
-            if (!pointer_request(v) || !impl_->codec) return {{},"pointer argument codec/request unavailable"};
+            if (!pointer_request(v) || !codec) return {{},"pointer argument codec/request unavailable"};
             if (receiver && i==0 && v.flags!=static_cast<unsigned char>(PointerProjection::Entity))
                 return {{},"receiver requires live entity projection"};
-            auto native=impl_->codec->Decode(v,storage); if (!native) return {{},native.error};
+            auto native=codec->Decode(v,storage); if (!native) return {{},native.error};
             if (receiver && i==0 && !native.value.Get<void*>()) return {{},"receiver entity unavailable"};
             values.push_back(native.value);
         } else {
@@ -258,7 +291,7 @@ s2fn::Result<S2FunctionValue> Service::Call(TargetId id,unsigned long long owner
     struct Pop { ~Pop(){bypass.pop_back();} } pop;
     auto result=r->binding->Call(values.data(),values.size()); if (!result) return {{},result.error};
     if (abi.returns.native=="ptr") {
-        auto encoded=impl_->codec->Encode(result.value,request);
+        auto encoded=codec->Encode(result.value,request);
         if (encoded && (!pointer_request(encoded.value) || encoded.value.flags!=request.flags))
             return {{},"pointer codec returned invalid projection"};
         return encoded;
@@ -276,6 +309,9 @@ s2fn::Result<long long> Service::HookAcquire(TargetId id) {
     if (!impl_->sink) return {0,"function dispatch sink unavailable"};
     if (r->subscriptions==std::numeric_limits<size_t>::max()) return {0,"subscription overflow"};
     if (!r->subscriptions) {
+        // A call's host codec may still be running before RuntimeBinding has its
+        // own activity lease. Serialize installation against that entire scope.
+        if (r->active_calls) return {0,"hook acquisition requires idle target"};
         const auto receipt=r->binding->Configure(reinterpret_cast<void*>(r->resolution.address));
         if (!receipt.Accepted()) return {0,"hook acquisition failed: "+receipt.reason};
     }
