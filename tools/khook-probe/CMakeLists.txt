@@ -47,6 +47,8 @@ add_library(s2_khook_probe SHARED
     declarative_fixture.cpp
     named_fixture.cpp
     named_fixture_contacts.cpp
+    "${S2_SOURCE_DIR}/shim/src/gamedata.cpp"
+    "${S2_SOURCE_DIR}/shim/src/engine_resolver.cpp"
     "${S2_SOURCE_DIR}/shim/src/engine_hooks.cpp"
     "${S2_SOURCE_DIR}/shim/src/named_hooks.cpp"
     "${S2_SOURCE_DIR}/shim/src/hook_dispatch.cpp"

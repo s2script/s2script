@@ -978,6 +978,15 @@ class SuiteBoundaryTests(unittest.TestCase):
 
 
 class IntegrationEvidenceTests(unittest.TestCase):
+    def gamedata_fixture(self):
+        native_file = dict(path="/installed/gamedata/cs2/master.gamedata.jsonc", size=0,
+                           fingerprint_algorithm="fnv1a64-diagnostic", fingerprint=ka._fnv1a64(b""))
+        measured = dict(path=native_file["path"], size=0, fingerprint=native_file["fingerprint"], sha256=hashlib.sha256(b"").hexdigest())
+        binding = IDENTITY["runtime_identity"]["artifact_identity"]
+        native = dict(run_id=IDENTITY["run_id"], artifact_identity=binding, prepared=True, unchanged=True, files=[native_file])
+        phase = dict(run_id=IDENTITY["run_id"], artifact_identity=binding, status="pass", files=[measured])
+        return native, dict(before=copy.deepcopy(phase), after=copy.deepcopy(phase))
+
     def records(self, suite):
         # Deliberately fabricated test input exercises judge validation only.
         # These are never emitted by --emit-fixture as observed/live records.
@@ -989,6 +998,8 @@ class IntegrationEvidenceTests(unittest.TestCase):
             rec["observations"] = [dict(scenario_id="fixture", sequence=1, generation=1, invocation="fixture-1",
                 callbacks=1, peer_order="peer-first", facts={"pre": 1}, stimulus="engine", route="main-virtual-precache",
                 frame_token=1, map_generation=1, receiver="r1", vtable="v1", manifest="m1")]
+            if rec["subcheck"] in ka.GAMEDATA_SUBCHECKS:
+                rec["gamedata"] = self.gamedata_fixture()[0]
             if rec["subcheck"] == "native_main_bypass_absent_then_next_delivered":
                 rec["observations"][0]["facts"].update(bypass_original=1, bypass_peer_pre=1, bypass_peer_post=1,
                     bypass_js=0, next_original=1, next_peer_pre=1, next_peer_post=1, next_js=1)
@@ -998,7 +1009,8 @@ class IntegrationEvidenceTests(unittest.TestCase):
         return records
 
     def judge(self, records, suite):
-        return ka.judge_records(records, identity=IDENTITY, suite=suite)
+        identity = dict(IDENTITY, gamedata_capture=self.gamedata_fixture()[1])
+        return ka.judge_records(records, identity=identity, suite=suite)
 
     def test_populated_parser_examples(self):
         for suite in ("B", "C"):
@@ -1012,6 +1024,37 @@ class IntegrationEvidenceTests(unittest.TestCase):
             row = next(r for r in records if r["subcheck"] == "native_main_bypass_absent_then_next_delivered")
             row["observations"][0]["facts"][field] = value
             self.assertEqual(self.judge(records, "B").exit_code, 1, field)
+
+    def test_deployed_gamedata_requires_independent_matching_hashes(self):
+        records = self.records("B")
+        self.assertEqual(ka.judge_records(records, identity=IDENTITY, suite="B").exit_code, 2)
+        for mutation in ("hash", "native_changed", "duplicate"):
+            native, capture = self.gamedata_fixture()
+            identity = dict(IDENTITY, gamedata_capture=capture)
+            rows = copy.deepcopy(records)
+            if mutation == "hash": capture["after"]["files"][0]["sha256"] = "f" * 64
+            elif mutation == "native_changed": next(r for r in rows if r["subcheck"] in ka.GAMEDATA_SUBCHECKS)["gamedata"]["unchanged"] = False
+            else: capture["before"]["files"].append(copy.deepcopy(capture["before"]["files"][0]))
+            self.assertEqual(ka.judge_records(rows, identity=identity, suite="B").exit_code, 1)
+
+    def test_gamedata_hash_capture_reads_installed_bytes_and_rejects_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "gamedata/cs2/master.gamedata.jsonc"
+            path.parent.mkdir(parents=True)
+            data = b'{"files": []}'
+            path.write_bytes(data)
+            native, _ = self.gamedata_fixture()
+            native.update(addon_root=str(root), files=[dict(path=str(path), size=len(data),
+                fingerprint_algorithm="fnv1a64-diagnostic", fingerprint=ka._fnv1a64(data))])
+            mapped_identity = dict(IDENTITY, gamedata_root=str(root / "gamedata"))
+            observed = ka.capture_gamedata_inputs(native, mapped_identity)
+            self.assertEqual(observed["status"], "pass")
+            self.assertEqual(observed["files"][0]["sha256"], hashlib.sha256(data).hexdigest())
+            path.write_bytes(b"changed")
+            self.assertEqual(ka.capture_gamedata_inputs(native, mapped_identity)["status"], "fail")
+            path.unlink()
+            self.assertEqual(ka.capture_gamedata_inputs(native, mapped_identity)["status"], "pending")
 
     def test_missing_half_case_and_pending_callback(self):
         for suite in ("B", "C"):

@@ -344,10 +344,10 @@ INTEGRATION_EXPECTED = {
     "native_damage_peer_orders_original_state": {"orders": ["peer-first", "s2script-first"], "current_return_matches": True},
     "native_chat_continue_original_once": {"dispatch": 1, "original": 1, "skipped": False},
     "native_chat_suppressed_original_zero": {"dispatch": 1, "original": 0, "skipped": True},
-    "native_output_01_original_once": {"actions": [0, 1], "originals": [1, 1]},
-    "native_output_23_original_zero": {"actions": [2, 3], "originals": [0, 0]},
+    "native_output_01_original_once": {"actions": [0, 1], "originals": [1, 1], "dispatches": [1, 1], "skipped": [False, False]},
+    "native_output_23_original_zero": {"actions": [2, 3], "originals": [0, 0], "dispatches": [1, 1], "skipped": [True, True]},
     "native_usercmd_abi_batch_mutation": {"batch_delivered": True, "neutralized": True, "arguments_preserved": True},
-    "native_usercmd_original_once_return_preserved": {"original": 1, "return": 37},
+    "native_usercmd_original_once_return_preserved": {"originals_by_batch": [1, 1, 1], "return": 37},
     "native_binding_resident_across_reload": {"native_address_same": True, "generations": 3},
     "native_no_disposed_generation_callback": {"old_callbacks_after_retire": 0, "new_callbacks": 2},
     "native_all_sites_both_peer_orders": {"sites": ["this_void", "narrow", "wide", "acquire", "hud", "damage", "chat", "output", "usercmd", "precache"], "orders": ["peer-first", "s2script-first"]},
@@ -416,7 +416,7 @@ def _integration_spec(rows: dict, suite: str) -> SuiteSpec:
                 provenance = "live-engine" if real or live_named else "main-runtime" if main or main_mechanics or lifetime else "controlled-stock-provider"
                 if name == "native_acquire_outbound_peer_post": provenance = "main-runtime"
                 owner = "named_hooks" if suite == "C" or (case.endswith("named_hook") and case != "acquisition_named_hook") else "engine_hooks"
-                join = "script-generation" if lifetime else name[3:] if main else "precache-map" if real and name != "native_precache_live_peer_both_orders" and name != "js_precache_stale_context_rejected" else ""
+                join = "real-acquire-post" if case == "acquisition_named_hook" else "script-generation" if lifetime else name[3:] if main else "precache-map" if real and name != "native_precache_live_peer_both_orders" and name != "js_precache_stale_context_rejected" else ""
                 check = _sc(case, name, producer)
                 checks.append(check)
                 rules[(case, name, producer)] = EvidenceRule(group, provenance, owner, case, join)
@@ -439,6 +439,96 @@ SUITE_C_CASES = SUITES["C"].cases
 
 def required_subchecks(suite: str = "A") -> List[Subcheck]:
     return list(SUITES[suite].subchecks)
+
+
+GAMEDATA_SUBCHECKS = {"native_acquire_real_post_peer_observed", "native_precache_live_peer_both_orders"}
+
+
+def _fnv1a64(data: bytes) -> str:
+    value = 14695981039346656037
+    for byte in data:
+        value = ((value ^ byte) * 1099511628211) & ((1 << 64) - 1)
+    return format(value, "x")
+
+
+def capture_gamedata_inputs(native: dict, identity: dict) -> dict:
+    """Hash the actual native-inspected inputs on the controller's server filesystem.
+
+    An unavailable remote path is pending, never a checkout-file substitution.
+    The native fingerprint is diagnostic; SHA-256 is computed here from bytes.
+    """
+    result = {"run_id": identity["run_id"], "artifact_identity": identity.get("runtime_identity", {}).get("artifact_identity"), "files": []}
+    if native.get("run_id") != result["run_id"] or native.get("artifact_identity") != result["artifact_identity"]:
+        return dict(result, status="fail", reason="native gamedata identity mismatch")
+    if not native.get("prepared"):
+        return dict(result, status="pending", reason="native deployed gamedata preparation unavailable")
+    if not native.get("unchanged"):
+        return dict(result, status="fail", reason="native retained gamedata bytes changed")
+    mapped_root = identity.get("gamedata_root")
+    if not isinstance(mapped_root, str) or not mapped_root:
+        return dict(result, status="pending", reason="explicit --gamedata-root host mapping required")
+    result["mapped_root"] = mapped_root
+    files = native.get("files")
+    if not isinstance(files, list) or not files:
+        return dict(result, status="pending", reason="native effective input list unavailable")
+    try:
+        root = Path(native["addon_root"]) / "gamedata"
+        local_root = Path(mapped_root).resolve(strict=True)
+        for entry in files:
+            native_path = Path(entry["path"])
+            if not native_path.is_absolute() or root not in native_path.parents:
+                return dict(result, status="fail", reason="gamedata input outside measured addon tree")
+            relative = native_path.relative_to(root)
+            if ".." in relative.parts:
+                return dict(result, status="fail", reason="gamedata path traversal")
+            path = (local_root / relative).resolve(strict=True)
+            if local_root not in path.parents:
+                return dict(result, status="fail", reason="gamedata symlink escapes mapped root")
+            before = path.stat()
+            data = path.read_bytes()
+            after = path.stat()
+            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+                return dict(result, status="fail", reason="gamedata input changed while hashing")
+            fingerprint = _fnv1a64(data)
+            if entry.get("size") != len(data) or entry.get("fingerprint_algorithm") != "fnv1a64-diagnostic" or entry.get("fingerprint") != fingerprint:
+                return dict(result, status="fail", reason="controller bytes differ from retained native input")
+            result["files"].append(dict(path=str(native_path), host_path=str(path), size=len(data), sha256=hashlib.sha256(data).hexdigest(), fingerprint=fingerprint))
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        return dict(result, status="pending", reason="installed gamedata files unavailable on controller host: " + str(error))
+    return dict(result, status="pass")
+
+
+def _gamedata_provenance(rec: dict, identity: dict) -> Tuple[str, str]:
+    native = rec.get("gamedata")
+    if not isinstance(native, dict) or not native.get("prepared"):
+        return "pending", "native effective gamedata provenance unavailable"
+    if not native.get("unchanged") or native.get("run_id") != rec.get("run_id") or native.get("artifact_identity") != rec.get("artifact_identity"):
+        return "fail", "changed or mismatched native gamedata provenance"
+    capture = identity.get("gamedata_capture", {})
+    if not isinstance(capture, dict):
+        return "fail", "malformed gamedata capture"
+    phases = [capture.get(phase) for phase in ("before", "after")]
+    for phase in phases:
+        if not isinstance(phase, dict) or phase.get("status") == "pending":
+            return "pending", "controller before/after gamedata SHA-256 capture required"
+        if phase.get("status") != "pass" or phase.get("run_id") != rec.get("run_id") or phase.get("artifact_identity") != rec.get("artifact_identity"):
+            return "fail", "failed or mismatched controller gamedata capture"
+    before, after = phases
+    for files in (native.get("files"), before.get("files"), after.get("files")):
+        if not isinstance(files, list) or not files or any(not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not Path(entry["path"]).is_absolute() or type(entry.get("size")) is not int or entry["size"] < 0 for entry in files):
+            return "fail", "malformed gamedata file inventory"
+        if len({entry["path"] for entry in files}) != len(files):
+            return "fail", "duplicate gamedata input path"
+    if _canonical(before["files"]) != _canonical(after["files"]):
+        return "fail", "deployed gamedata hashes changed across capture"
+    expected = {entry["path"]: entry for entry in native.get("files", [])}
+    measured = {entry["path"]: entry for entry in before["files"]}
+    if not expected or expected.keys() != measured.keys():
+        return "fail", "effective gamedata input inventory differs"
+    for path, entry in measured.items():
+        if not _hex(entry.get("sha256"), 64) or entry.get("size") != expected[path].get("size") or entry.get("fingerprint") != expected[path].get("fingerprint"):
+            return "fail", "effective gamedata bytes/hash provenance differs"
+    return "pass", ""
 
 
 def _registered(suite: str = "A") -> Dict[Tuple[str, str, str], Subcheck]:
@@ -1042,6 +1132,14 @@ def judge_records(
                     continue
                 if verdict == "pending":
                     continue
+                if verdict == "pass" and sc.subcheck in GAMEDATA_SUBCHECKS:
+                    provenance, why = _gamedata_provenance(rec, identity)
+                    if provenance == "pending":
+                        messages.append("PENDING: " + sc.subcheck + ": " + why)
+                        continue
+                    if provenance == "fail":
+                        invalid_sc.append(sc.subcheck + ": " + why)
+                        continue
                 if verdict == "pass" and (missing_identity or not rec.get("artifact_identity")):
                     continue
                 # Identical reports may be replayed. A pending observation may
@@ -1272,6 +1370,30 @@ def prepare_run(
     return JudgeResult(2, "pending", messages, {})
 
 
+def _capture_live_gamedata(send: Callable[[str], str], meta: dict, run_dir: Path, phase: str) -> None:
+    command = probe_cmd("gamedata", meta["run_id"], suite=meta["suite"])
+    _append_jsonl(run_dir / "commands.jsonl", {"cmd": command, "ts": _utc_now()})
+    output = send(command)
+    (run_dir / ("gamedata-native-" + phase + ".txt")).write_text(output)
+    native = None
+    for line in output.splitlines():
+        start = line.find("{")
+        if start < 0:
+            continue
+        try:
+            candidate = json.loads(line[start:])
+        except (ValueError, TypeError):
+            continue
+        if candidate.get("kind") == "khook-gamedata":
+            native = candidate
+    result = capture_gamedata_inputs(native, meta) if native is not None else {"status": "pending", "reason": "native gamedata query unavailable"}
+    capture = meta.setdefault("gamedata_capture", {})
+    # Preserve the first successful baseline, so later collects cannot erase a change.
+    if capture.get(phase, {}).get("status") != "fail" and (phase != "before" or capture.get("before", {}).get("status") != "pass"):
+        capture[phase] = result
+    _write_json(run_dir / "gamedata-capture.json", capture)
+
+
 def collect_run(
     run_dir: Path | str,
     *,
@@ -1282,6 +1404,7 @@ def collect_run(
     max_attempts: int = COLLECT_MAX_ATTEMPTS,
     identity_receipt: Any = None,
     suite: Optional[str] = None,
+    gamedata_root: Optional[str] = None,
 ) -> JudgeResult:
     run_dir = Path(run_dir)
     if not (run_dir / "run.json").exists():
@@ -1298,6 +1421,11 @@ def collect_run(
         for error in errors:
             _append_jsonl(_records_path(run_dir), {"khook_acceptance_error": error})
         return judge_run_dir(run_dir)
+    if gamedata_root:
+        mapped = str(Path(gamedata_root).resolve())
+        if meta.get("gamedata_root") not in (None, mapped):
+            return JudgeResult(1, "fail", ["gamedata root mapping changed for bound run"], {})
+        meta["gamedata_root"] = mapped
     run_id = meta["run_id"]
     meta["phase"] = "collected"
     send = rcon_send or (lambda cmd: default_rcon_send(cmd, port=port))
@@ -1322,6 +1450,8 @@ def collect_run(
                     _append_jsonl(run_dir / "commands.jsonl", {"cmd": cmd, "ts": _utc_now()})
                     _store_raw(run_dir, "bind", cmd, send(cmd))
                 meta["identity_bound"] = True
+            if suite != "A":
+                _capture_live_gamedata(send, meta, run_dir, "before")
             for cmd in cmds:
                 verb = cmd.split()[1]
                 if verb == "prepare":
@@ -1329,6 +1459,8 @@ def collect_run(
                 _append_jsonl(run_dir / "commands.jsonl", {"cmd": cmd, "ts": _utc_now()})
                 out = send(cmd)
                 _store_raw(run_dir, "collect", cmd, out)
+            if suite != "A":
+                _capture_live_gamedata(send, meta, run_dir, "after")
             last_err = None
         except RconUnreachable as e:
             last_err = e
@@ -1493,6 +1625,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run-dir")
     p.add_argument("--observations")
     p.add_argument("--identity", help="independently verified installed-runtime receipt JSON")
+    p.add_argument("--gamedata-root", help="host bind-mounted gamedata root matching the probe-listed deployed inputs (B/C)")
     p.add_argument("--port", type=int, default=27015)
     p.add_argument("--emit-fixture", choices=("all-pass", "pending", "missing", "duplicate", "fail", "native-fail-js-pass"))
     p.add_argument("--identity-run-id", default="self-test")
@@ -1522,7 +1655,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if code == 1:
             return code
     if args.collect:
-        code = print_result(collect_run(run_dir, port=args.port, identity_receipt=args.identity, suite=suite))
+        code = print_result(collect_run(run_dir, port=args.port, identity_receipt=args.identity, suite=suite, gamedata_root=args.gamedata_root))
         if code == 1:
             return code
     if args.judge:

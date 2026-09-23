@@ -15,7 +15,7 @@ extern "C" void S2ProbeNamedOutputTarget(CEntityIOOutput*,CEntityInstance*,CEnti
 extern "C" int S2ProbeNamedUsercmdTarget(void*,void*,int,bool,float);
 
 namespace {
-enum class Mode { Idle,Damage,Chat,Output,Usercmd,Precache };
+enum class Mode { Idle,Damage,Chat,Output,OutputVector,Usercmd,Precache };
 Mode mode=Mode::Idle;
 s2khook::NamedSnapshot observation;
 bool installed=false;
@@ -145,6 +145,7 @@ KHook::Return<void> OutputObservePost(CEntityIOOutput*,CEntityInstance*,CEntityI
     auto observed=peer_output_observer.Observe();
     if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
     OrderPeer(true,false);
+    if (mode==Mode::OutputVector) observation.output_vector_skipped[output_verdict]=KHook::WasOriginalFunctionSkipped() ? 1 : 0;
     if (mode==Mode::Output) {
         const int skipped=KHook::WasOriginalFunctionSkipped() ? 1 : 0;
         if (output_post_index<observation.output_skipped.size()) observation.output_skipped[output_post_index]=skipped;
@@ -331,6 +332,7 @@ int ChatOp(void*,void*,bool,int,const char*) {
 }
 int OutputOp(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*) {
     if (OrderMain()) return 0;
+    if (mode==Mode::OutputVector) ++observation.output_vector_dispatch[output_verdict];
     if (mode==Mode::Output) ++observation.output_dispatch;
     return output_verdict;
 }
@@ -412,16 +414,25 @@ extern "C" __attribute__((noinline)) int64_t S2ProbeNamedDamageBody(void*,void*,
 }
 extern "C" __attribute__((noinline)) void S2ProbeNamedChatBody(void*,void*,bool,int,const char*) {
     OrderOriginal();
-    if (mode==Mode::Chat) ++observation.chat_original;
+    if (mode==Mode::Chat) { ++observation.chat_original; ++observation.chat_original_each[chat_verdict ? 1 : 0]; }
 }
 extern "C" __attribute__((noinline)) void S2ProbeNamedOutputBody(
     CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*) {
     OrderOriginal();
+    if (mode==Mode::OutputVector) ++observation.output_vector_original[output_verdict];
     if (mode==Mode::Output) ++observation.output_original;
 }
-extern "C" __attribute__((noinline)) int S2ProbeNamedUsercmdBody(void*,void*,int,bool,float) {
+extern "C" __attribute__((noinline)) int S2ProbeNamedUsercmdBody(void* self,void* commands,int count,bool paused,float margin) {
     OrderOriginal();
-    if (mode==Mode::Usercmd) ++observation.usercmd_original;
+    if (mode==Mode::Usercmd) {
+        ++observation.usercmd_original;
+        if (count>=0 && count<=2) ++observation.usercmd_original_by_batch[count];
+        if (self==outer_victim && commands && count>=0 && count<=2 && paused && margin==2.5f) ++observation.usercmd_argument_matches;
+        if (count==2) {
+            observation.usercmd_batch_first=static_cast<unsigned char*>(commands)[0x10];
+            observation.usercmd_batch_second=static_cast<unsigned char*>(commands)[0xa0];
+        }
+    }
     return 37;
 }
 
@@ -548,8 +559,14 @@ void S2ProbeNamedInvoke() {
     observation.usercmd_expired=S2NamedCurrentUsercmd()==nullptr;
     mode=Mode::Precache;
     S2ProbeNamedInvokeVirtual(&precache_object,precache_index,outer_manifest);
+    const int before_filtered=observation.precache_dispatch;
     S2ProbeNamedInvokeVirtual(&other_object,KHook::GetVtableIndex(&OtherPrecache::Run),outer_manifest);
+    observation.precache_filtered_dispatch=observation.precache_dispatch-before_filtered;
     observation.precache_expired=S2NamedCurrentPrecacheManifest()==nullptr;
+    mode=Mode::OutputVector;
+    for (output_verdict=0;output_verdict<4;++output_verdict)
+        call_output(reinterpret_cast<CEntityIOOutput*>(1),reinterpret_cast<CEntityInstance*>(2),reinterpret_cast<CEntityInstance*>(3),
+            reinterpret_cast<const CVariant*>(4),1.25f,outer_info,nullptr);
     mode=Mode::Idle;
 }
 s2khook::NamedSnapshot S2ProbeNamedCollect() { return observation; }

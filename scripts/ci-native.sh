@@ -27,6 +27,16 @@ if [[ "$(uname -s)" == Linux ]]; then
   cmake -S tools/khook-probe -B build/khook-probe-early -DCMAKE_BUILD_TYPE=Release \
     ${LAUNCHER[@]+"${LAUNCHER[@]}"}
   cmake --build build/khook-probe-early --parallel "${S2_BUILD_JOBS:-2}"
+  # Controlled policy rejection must never alter/interpose the main DSO state.
+  if nm -D -C build/khook-probe-early/s2_khook_probe.so | grep -q 's2hook_detail::g_lifecycle'; then
+    echo "error: acceptance private lifecycle escaped into dynamic symbols" >&2
+    exit 1
+  fi
+  nm -C build/khook-probe-early/s2_khook_probe.so > build/khook-probe-early/local-symbols.txt
+  if ! grep -Eq ' [bd] s2hook_detail::g_lifecycle$' build/khook-probe-early/local-symbols.txt; then
+    echo "error: acceptance private lifecycle is not DSO-local" >&2
+    exit 1
+  fi
 fi
 
 # Populates the cargo registry that check-licenses-generated.sh reads every locked crate's

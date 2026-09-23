@@ -1652,6 +1652,7 @@ let bridgeMark: ReturnType<typeof Engine.call<"bridgeMark">> = null;
 let bridgeWindow: ReturnType<typeof Engine.call<"bridgeWindow">> = null;
 let precacheBegin: ReturnType<typeof Engine.call<"precacheBegin">> = null;
 let precacheFinish: ReturnType<typeof Engine.call<"precacheFinish">> = null;
+let realAcquireMark: ReturnType<typeof Engine.call<"realAcquireMark">> = null;
 let precacheRead: ReturnType<typeof Engine.call<"precacheRead">> = null;
 
 function integrationRecord(name: string, actual: Record<string, unknown>, observations: Observation[], evidence: string): void {
@@ -1740,6 +1741,7 @@ function bridgeObservation(facts: Record<string, unknown>): Observation | null {
 }
 
 function installIntegrationHooks(): void {
+  realAcquireMark = Engine.call("realAcquireMark");
   bridgeDrive = Engine.call("bridgeDrive"); bridgeMark = Engine.call("bridgeMark"); bridgeWindow = Engine.call("bridgeWindow");
   precacheBegin = Engine.call("precacheBegin"); precacheFinish = Engine.call("precacheFinish"); precacheRead = Engine.call("precacheRead");
   for (const name of ["onvoid0", "onvoid1"] as const) Engine.hook(name)?.(view => {
@@ -1945,11 +1947,14 @@ function installNamedIntegrationHooks(): void {
     if (!runBound || runSuite !== "B" || realAcquireSlot < 0 || view.player?.slot !== realAcquireSlot) return;
     const bot = Clients.all().find(client => client.slot === realAcquireSlot && client.isBot && client.isValid());
     if (!bot) return;
+    if (integrationRecords.has("js_acquire_real_post_effective")) return;
     const result = view.result, skipped = view.skipped, defIndex = view.defIndex;
+    const token = realAcquireMark?.(runId, instance, bot.slot, defIndex, result, skipped);
+    if (!token || token <= 0) return; // Native peer has no same-invocation real target frame.
     integrationRecord("js_acquire_real_post_effective", { real_bot: true,
       effective_result_observed: Number.isInteger(result), skipped_observed: typeof skipped === "boolean" }, [{
-      scenario_id: "real-bot-acquire", sequence: ++integrationSequence, generation: instance,
-      invocation: runId + ":real-acquire:" + integrationSequence, peer_order: "none", callbacks: 1,
+      scenario_id: "real-bot-acquire", sequence: token, generation: instance,
+      invocation: "real-acquire-" + token, peer_order: "none", callbacks: 1,
       facts: { slot: bot.slot, defIndex, result, skipped }, stimulus: "engine",
     }], "public items.onCanAcquirePost during a real bot item action; actual POST result/skipped, not final caller result");
   });

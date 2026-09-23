@@ -162,6 +162,16 @@
           "prologue": "0F 1F 84 00 53 36 06 42"
         }
       }
+    },
+    "realAcquireMark": {
+      "linuxsteamrt64": {
+        "module": "s2_khook_probe.so",
+        "pattern": "0F 1F 84 00 53 36 07 42",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "0F 1F 84 00 53 36 07 42"
+        }
+      }
     }
   },
   "calls": {
@@ -551,6 +561,24 @@
       "args": [
         "int",
         "int"
+      ],
+      "returns": "int"
+    },
+    "realAcquireMark": {
+      "target": {
+        "kind": "signature",
+        "name": "realAcquireMark"
+      },
+      "receiver": {
+        "kind": "none"
+      },
+      "args": [
+        "string",
+        "int",
+        "int",
+        "int",
+        "int",
+        "bool"
       ],
       "returns": "int"
     }

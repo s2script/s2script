@@ -31,3 +31,9 @@ bool S2ProbeBridgeCanUnloadSync(const S2HookTerminalPermit& permit);
 bool S2ProbeBridgeUnloadSync(const S2HookTerminalPermit& permit);
 
 bool S2ProbeBridgeBind(const std::string& run,const std::string& suite,const std::string& artifact);
+
+// Source-owned deployed gamedata and real engine peers (acceptance only).
+void S2ProbeLiveInstallEarly(const std::string& probe_path);
+std::string S2ProbeLiveGamedata();
+const std::vector<s2khook::RealAcquireObservation>& S2ProbeRealAcquireCollect();
+bool S2ProbeLiveProvenanceReady();

@@ -6,12 +6,18 @@
 #include "khook_map.h"
 #include <dlfcn.h>
 #include <map>
+#include <fstream>
+#include <filesystem>
+#include <deque>
+#include <sstream>
+#include "gamedata.h"
+#include "../../shim/third_party/json.hpp"
 #include <sys/stat.h>
 
 namespace {
 std::map<const void*, s2resolve::Resolution> resolutions;
 s2khook::DeclarativeSnapshot observation;
-enum class Mode { Idle, Void, Mutation, Acquire, Nesting, Bypass, Hud };
+enum class Mode { Idle, Void, Mutation, Acquire, Nesting, Bypass, Hud, PolicyReject };
 Mode mode = Mode::Idle;
 int receiver;
 void* last_view = nullptr;
@@ -59,6 +65,25 @@ int Dispatch(int id, void* view) {
         S2_HookResetAll();
         int32_t method = -1;
         if (S2_HookReadI32(view, 0, &method) == 0 && method == 12) ++b.reset_preserved_view;
+    } else if (id == 2 && mode == Mode::PolicyReject) {
+        ++observation.policy_pre;
+        nested_views[0]=view;
+        if (depth==0) {
+            ++depth;
+            struct RestorePolicy {
+                S2HookLifecycle prior=S2Hook_Lifecycle();
+                ~RestorePolicy() { S2Hook_SetLifecycle(prior); }
+            };
+            int32_t inner=0;
+            {
+                RestorePolicy restore;
+                S2Hook_SetLifecycle(S2HookLifecycle::Retiring);
+                inner=call_acquire(&receiver,kHighA,13,kHighB);
+            }
+            --depth;
+            int32_t method=0;
+            observation.policy_restored=inner==13 && S2_HookReadI32(view,0,&method)==0 && method==12;
+        }
     } else if (id == 2 && mode == Mode::Nesting) {
         auto& n = observation.nesting;
         ++n.same_pre;
@@ -93,6 +118,9 @@ int Post(int id, void* view, int skipped) {
         a.skipped = skipped;
     } else if (mode == Mode::Bypass) {
         ++observation.bypass.post;
+    } else if (mode == Mode::PolicyReject) {
+        ++observation.policy_post;
+        observation.policy_post_view=view==nested_views[0];
     } else if (mode == Mode::Nesting) {
         auto& n = observation.nesting;
         int32_t method = -1;
@@ -127,6 +155,7 @@ extern "C" __attribute__((noinline)) int32_t S2ProbeDeclarativeAcquireBody(
         if (a == kHighA && b == kHighB && method == 12) ++row.arguments_ok;
         return engine_result;
     }
+    if (mode == Mode::PolicyReject) { ++observation.policy_original; return method; }
     if (mode == Mode::Nesting) { ++observation.nesting.same_original; return method; }
     if (mode == Mode::Bypass) { ++observation.bypass.original; return 6; }
     return 0;
@@ -213,12 +242,27 @@ void S2ProbeDeclarativeInvoke() {
     }
     mode = Mode::Nesting;
     observation.nesting.effective_return = call_acquire(&receiver, kHighA, 40, kHighB);
+    int32_t invalid=0; int forged=0;
+    observation.stale_rejected=last_view && S2_HookReadI32(last_view,0,&invalid)==-1;
+    observation.forged_rejected=S2_HookReadI32(&forged,0,&invalid)==-1 && S2_HookWriteI32(&forged,0,1)==-1;
+    // -fvisibility=hidden plus the ELF build audit makes this policy state
+    // DSO-local. Also refuse the experiment if runtime ownership differs.
+    Dl_info state_info{},fixture_info{};
+    observation.policy_isolated=dladdr(&s2hook_detail::g_lifecycle,&state_info) &&
+        dladdr(reinterpret_cast<void*>(&S2ProbeDeclarativeAcquireTarget),&fixture_info) &&
+        state_info.dli_fbase==fixture_info.dli_fbase;
+    if (observation.policy_isolated) {
+        mode=Mode::PolicyReject;
+        call_acquire(&receiver,kHighA,12,kHighB);
+    }
     mode = Mode::Bypass;
     S2_HookArmBypass(2);
     observation.bypass.returns[0] = call_acquire(&receiver, kHighA, 12, kHighB);
     observation.bypass.pre_after_bypass = observation.bypass.pre;
     observation.bypass.post_after_bypass = observation.bypass.post;
     observation.bypass.returns[1] = call_acquire(&receiver, kHighA, 12, kHighB);
+    observation.bypass_pair_pre=observation.bypass.pre;
+    observation.bypass_pair_original=observation.bypass.original;
     S2_HookArmBypass(2);
     S2_HookDisarmBypass(2);
     observation.bypass.returns[2] = call_acquire(&receiver, kHighA, 12, kHighB);
@@ -259,6 +303,13 @@ extern "C" void S2ProbeBridgeWide1(void* self,float value,int32_t a,int64_t b,in
 extern "C" int32_t S2ProbeBridgeAcquire1(void* self,int64_t a,int32_t method,int64_t b);
 extern "C" void S2ProbeBridgeHud1(void* self,int64_t controller,int64_t layout,int64_t text);
 
+namespace live_bridge {
+bool Prepare(const std::string& main_path);
+void Advance();
+bool HasPrecacheFrame(const S2NamedPrecacheFrameV1& frame);
+void PrecacheToken(int token,const S2NamedPrecacheFrameV1& frame);
+std::vector<S2CheckedBindingOps*> Inventory();
+}
 namespace main_bridge {
 std::string run,suite,artifact;
 uint64_t map_generation=0,tick=0,window_tick=0;
@@ -523,8 +574,10 @@ extern "C" __attribute__((noinline)) bool S2ProbeBridgeWindowBody(const char* ru
 extern "C" __attribute__((noinline)) int32_t S2ProbePrecacheBeginBody(const char* run,int32_t generation,int32_t) {
     using namespace main_bridge;
     S2NamedPrecacheFrameV1 frame;
-    if (!run || suite!="C" || artifact.empty() || !Frame(frame)) return 0;
-    return tokens.Begin(run,generation,static_cast<int>(map_generation),frame);
+    if (!run || suite!="C" || artifact.empty() || !Frame(frame) || !live_bridge::HasPrecacheFrame(frame)) return 0;
+    const int token=tokens.Begin(run,generation,static_cast<int>(map_generation),frame);
+    if (token) live_bridge::PrecacheToken(token,frame);
+    return token;
 }
 extern "C" __attribute__((noinline)) bool S2ProbePrecacheFinishBody(int32_t token,const char* resource,bool added,int32_t generation) {
     using namespace main_bridge;
@@ -590,6 +643,8 @@ bool S2ProbeBridgePrepare(const std::string& run,const std::string& suite,const 
     main_bridge::run=run; main_bridge::suite=suite; main_bridge::artifact=artifact;
     main_bridge::rows.clear(); main_bridge::active=nullptr; main_bridge::tokens.Reset(run);
     main_bridge::map_generation=map_generation; main_bridge::read_main_frame=nullptr;
+    const bool live_ready=live_bridge::Prepare(measured_main_path);
+    (void)live_ready; // Controlled B mechanics remain available while real gamedata is unresolved.
     if (suite=="B") return main_bridge::Configure(1) &&
         main_bridge::witness_acquire[0].Configure(&S2ProbeBridgeAcquire0).Accepted() &&
         main_bridge::witness_acquire[1].Configure(&S2ProbeBridgeAcquire1).Accepted();
@@ -613,17 +668,21 @@ bool S2ProbeBridgePrepare(const std::string& run,const std::string& suite,const 
 }
 void S2ProbeBridgeWorld(uint64_t map_generation,uint64_t tick) {
     main_bridge::map_generation=map_generation; main_bridge::tick=tick;
+    live_bridge::Advance();
     if (main_bridge::active==&main_bridge::window && main_bridge::window_tick!=tick) main_bridge::active=nullptr;
 }
 const std::vector<s2khook::MainBridgeObservation>& S2ProbeBridgeCollect() { return main_bridge::rows; }
 const std::vector<s2khook::PrecacheTokenObservation>& S2ProbePrecacheCollect() { return main_bridge::tokens.Rows(); }
 bool S2ProbeBridgeCanUnloadSync(const S2HookTerminalPermit& permit) {
     auto inventory=main_bridge::Inventory();
+    for (const auto* peer:live_bridge::Inventory()) if (!peer->CanBeginRemove(false,&permit)) return false;
     return !main_bridge::active && S2HookInventoryCanRemoveSync(inventory,permit);
 }
 bool S2ProbeBridgeUnloadSync(const S2HookTerminalPermit& permit) {
     auto inventory=main_bridge::Inventory();
-    return S2ProbeBridgeCanUnloadSync(permit) && S2HookInventoryBeginRemoveSync(inventory,permit);
+    if (!S2ProbeBridgeCanUnloadSync(permit) || !S2HookInventoryBeginRemoveSync(inventory,permit)) return false;
+    for (auto* peer:live_bridge::Inventory()) if (!peer->BeginRemove(false,&permit) || !peer->RemovalComplete()) return false;
+    return true;
 }
 
 bool S2ProbeBridgeBind(const std::string& run,const std::string& suite,const std::string& artifact) {
@@ -631,3 +690,232 @@ bool S2ProbeBridgeBind(const std::string& run,const std::string& suite,const std
         (!main_bridge::artifact.empty() && main_bridge::artifact!=artifact)) return false;
     main_bridge::artifact=artifact; return true;
 }
+
+namespace live_bridge {
+using Json=nlohmann::json;
+namespace fs=std::filesystem;
+struct InputFile { std::string bytes; uint64_t device=0,inode=0; };
+std::map<std::string,InputFile> input_files;
+std::string addon_root,game_name,reason;
+GameConfig game_config,core_config;
+s2resolve::Resolution acquire_resolution;
+s2resolve::VirtualSlotResolution precache_resolution;
+bool loaded=false,prepared=false,unchanged=false,early_installed=false,retiring=false,late_installed=false;
+uint64_t retire_tick=0;
+std::atomic<int> acquire_sequence{0};
+std::vector<s2khook::RealAcquireObservation> acquire_rows;
+thread_local s2khook::RealAcquireFrames acquire_frames;
+struct PrecacheInvocation {
+    uintptr_t receiver=0,vtable=0,manifest=0;
+    int token=0,peer_pre=0;
+    std::string trace;
+    S2NamedPrecacheFrameV1 frame{};
+};
+thread_local std::deque<PrecacheInvocation> precache_stack;
+struct Receiver { void** vtable; };
+Receiver holder{};
+KHook::Return<int32_t> AcquirePre(void*,int64_t,int32_t,int64_t);
+KHook::Return<int32_t> AcquirePost(void*,int64_t,int32_t,int64_t);
+KHook::Return<void> GuardPre(Receiver*,void*);
+KHook::Return<void> GuardPost(Receiver*,void*);
+KHook::Return<void> EarlyPre(Receiver*,void*);
+KHook::Return<void> LatePre(Receiver*,void*);
+S2CheckedFunction<int32_t,void*,int64_t,int32_t,int64_t> acquire_peer(&AcquirePre,&AcquirePost);
+S2CheckedVirtual<Receiver,void,void*> guard(&GuardPre,&GuardPost),early(&EarlyPre,nullptr),late(&LatePre,nullptr);
+std::vector<S2CheckedBindingOps*> Inventory() { return {&acquire_peer,&guard,&early,&late}; }
+std::string Root(const std::string& path) {
+    std::error_code error; auto p=fs::canonical(path,error);
+    return error ? "" : p.parent_path().parent_path().parent_path().string();
+}
+std::string Bytes(const std::string& path,bool& ok) {
+    std::ifstream in(path,std::ios::binary); if (!in) { ok=false; return {}; }
+    std::string value((std::istreambuf_iterator<char>(in)),{}); ok=!in.bad(); return value;
+}
+// Diagnostic only. Exact retained-byte comparison provides the unchanged check;
+// the external Python controller computes canonical SHA-256 before/after capture.
+std::string Fingerprint(const std::string& bytes) {
+    uint64_t hash=UINT64_C(14695981039346656037);
+    for (unsigned char c:bytes) { hash^=c; hash*=UINT64_C(1099511628211); }
+    std::ostringstream out; out<<std::hex<<hash; return out.str();
+}
+bool Files(const GameConfig& config,const std::string& owner) {
+    std::vector<std::string> files=config.filesLoaded; files.push_back("master.gamedata.jsonc");
+    for (const auto& file:files) {
+        const std::string path=addon_root+"/gamedata/"+owner+"/"+file;
+        struct stat identity{}; bool ok=false; const auto bytes=Bytes(path,ok);
+        if (!ok || stat(path.c_str(),&identity)) return false;
+        input_files[path]={bytes,static_cast<uint64_t>(identity.st_dev),static_cast<uint64_t>(identity.st_ino)};
+    }
+    return true;
+}
+bool Unchanged() {
+    if (!loaded) return false;
+    for (const auto& entry:input_files) {
+        bool ok=false; struct stat identity{};
+        if (Bytes(entry.first,ok)!=entry.second.bytes || !ok || stat(entry.first.c_str(),&identity) ||
+            entry.second.device!=static_cast<uint64_t>(identity.st_dev) || entry.second.inode!=static_cast<uint64_t>(identity.st_ino)) return false;
+    }
+    std::string error;
+    const auto game=LoadGameConfig(addon_root+"/gamedata","cs2","source2",game_name,"linuxsteamrt64",error);
+    if (!error.empty() || game.mergedJson!=game_config.mergedJson || game.filesLoaded!=game_config.filesLoaded) return false;
+    const auto core=LoadGameConfig(addon_root+"/gamedata","core","source2",game_name,"linuxsteamrt64",error);
+    return error.empty() && core.mergedJson==core_config.mergedJson && core.filesLoaded==core_config.filesLoaded;
+}
+bool Load(const std::string& path) {
+    input_files.clear();
+    addon_root=Root(path);
+    if (addon_root.empty()) { reason="measured module path unavailable"; return false; }
+    game_name=fs::path(addon_root).parent_path().parent_path().filename().string();
+    std::string error;
+    game_config=LoadGameConfig(addon_root+"/gamedata","cs2","source2",game_name,"linuxsteamrt64",error);
+    if (!error.empty() || !game_config.filesFailed.empty()) { reason="cs2 gamedata: "+error; return false; }
+    core_config=LoadGameConfig(addon_root+"/gamedata","core","source2",game_name,"linuxsteamrt64",error);
+    if (!error.empty() || !core_config.filesFailed.empty()) { reason="core gamedata: "+error; return false; }
+    if (!Files(game_config,"cs2") || !Files(core_config,"core")) { reason="cannot retain effective gamedata input bytes"; return false; }
+    loaded=true; unchanged=Unchanged();
+    if (!unchanged) { reason="gamedata changed during preparation"; return false; }
+    return true;
+}
+bool ResolveAcquire() {
+    const auto hook=game_config.hooks.find("onCanAcquire");
+    if (hook==game_config.hooks.end()) { reason="onCanAcquire descriptor missing"; return false; }
+    const auto decl=Json::parse(hook->second,nullptr,false);
+    if (decl.is_discarded() || decl.value("shape","")!="this_i64_i32_i64" || !decl.contains("target")) return false;
+    auto target=decl["target"];
+    if (target.value("kind","")!="signature") { reason="acquisition descriptor is not the declared signature ABI"; return false; }
+    if (target.value("pattern","").empty()) {
+        const auto signature=game_config.signatures.find(target.value("name",""));
+        if (signature==game_config.signatures.end()) { reason="acquisition signature missing"; return false; }
+        target["module"]=signature->second.module; target["pattern"]=signature->second.pattern; target["resolve"]=signature->second.resolve;
+        if (!target.contains("validate") && !signature->second.validate.empty()) target["validate"]=Json::parse(signature->second.validate,nullptr,false);
+    }
+    // Exactly the current descriptor's lifted validator; no acceptance-only repair.
+    if (!target.contains("validate") || target["validate"].is_discarded() || target["validate"].empty()) { reason="acquisition effective validator missing"; return false; }
+    s2resolve::TargetRecipe recipe;
+    recipe.module=target.value("module",""); recipe.pattern=target.value("pattern",""); recipe.strategy=target.value("resolve","direct");
+    recipe.validate_json=target["validate"].dump();
+    return s2resolve::Resolve(recipe,acquire_resolution,reason);
+}
+bool Prepare(const std::string& main_path) {
+    prepared=false; acquire_rows.clear(); acquire_frames.Reset(main_bridge::run); acquire_sequence=0;
+    if ((!loaded && !Load(main_path)) || Root(main_path)!=addon_root || !Unchanged()) { reason="measured main and retained deployed gamedata do not match"; return false; }
+    prepared=true; unchanged=true;
+    if (main_bridge::suite=="B") {
+        try { if (!ResolveAcquire()) return false; }
+        catch (const std::exception& error) { reason=std::string("invalid acquisition descriptor: ")+error.what(); return false; }
+        return acquire_peer.Configure(reinterpret_cast<const void*>(acquire_resolution.address)).Accepted();
+    }
+    return early_installed;
+}
+KHook::Return<int32_t> AcquirePre(void* services,int64_t item,int32_t method,int64_t opaque) {
+    auto observed=acquire_peer.Observe();
+    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore(int32_t{0});
+    acquire_frames.Enter(++acquire_sequence,reinterpret_cast<uintptr_t>(services),static_cast<uintptr_t>(item),method,static_cast<uintptr_t>(opaque));
+    return S2_Ignore(int32_t{0});
+}
+KHook::Return<int32_t> AcquirePost(void* services,int64_t item,int32_t method,int64_t opaque) {
+    auto observed=acquire_peer.Observe();
+    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore(int32_t{0});
+    s2khook::RealAcquireObservation row;
+    if (acquire_frames.Finish(reinterpret_cast<uintptr_t>(services),static_cast<uintptr_t>(item),method,static_cast<uintptr_t>(opaque),
+            KHook::GetCurrentReturn<int32_t>(),KHook::WasOriginalFunctionSkipped(),row) && prepared && main_bridge::suite=="B") acquire_rows.push_back(row);
+    return S2_Ignore(int32_t{0});
+}
+bool Same(const PrecacheInvocation& row,Receiver* self,void* manifest) {
+    return self && row.receiver==reinterpret_cast<uintptr_t>(self) && row.vtable==reinterpret_cast<uintptr_t>(self->vtable) && row.manifest==reinterpret_cast<uintptr_t>(manifest);
+}
+KHook::Return<void> GuardPre(Receiver* self,void* manifest) {
+    auto observed=guard.Observe(self);
+    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
+    PrecacheInvocation row; row.receiver=reinterpret_cast<uintptr_t>(self); row.vtable=reinterpret_cast<uintptr_t>(self->vtable); row.manifest=reinterpret_cast<uintptr_t>(manifest);
+    precache_stack.push_back(row); return S2_Ignore();
+}
+KHook::Return<void> GuardPost(Receiver* self,void* manifest) {
+    auto observed=guard.Observe(self);
+    if (!S2Hook_EnterDispatch(observed) || precache_stack.empty()) return S2_Ignore();
+    const auto row=precache_stack.back(); precache_stack.pop_back();
+    if (Same(row,self,manifest) && row.token && prepared && main_bridge::suite=="C")
+        main_bridge::tokens.ObservePeer(row.token,row.frame,row.peer_pre,row.trace);
+    return S2_Ignore();
+}
+KHook::Return<void> EarlyPre(Receiver* self,void* manifest) {
+    auto observed=early.Observe(self);
+    if (S2Hook_EnterDispatch(observed) && !precache_stack.empty() && Same(precache_stack.back(),self,manifest)) {
+        ++precache_stack.back().peer_pre; precache_stack.back().trace+='P';
+    }
+    return S2_Ignore();
+}
+KHook::Return<void> LatePre(Receiver* self,void* manifest) {
+    auto observed=late.Observe(self);
+    if (S2Hook_EnterDispatch(observed) && !precache_stack.empty() && Same(precache_stack.back(),self,manifest)) {
+        ++precache_stack.back().peer_pre; precache_stack.back().trace+='P';
+    }
+    return S2_Ignore();
+}
+bool HasPrecacheFrame(const S2NamedPrecacheFrameV1& frame) {
+    if (!prepared || !unchanged || precache_stack.empty()) return false;
+    const auto& current=precache_stack.back();
+    return current.receiver==frame.receiver && current.vtable==frame.vtable && current.manifest==frame.manifest && current.token==0;
+}
+void PrecacheToken(int token,const S2NamedPrecacheFrameV1& frame) {
+    if (precache_stack.empty()) return;
+    auto& current=precache_stack.back(); current.token=token; current.frame=frame; current.trace+='J';
+}
+void Advance() {
+    if (!prepared || main_bridge::suite!="C" || !early_installed || late_installed) return;
+    if (!retiring) {
+        for (const auto& row:main_bridge::tokens.Rows()) if (row.finished && row.peer_completed && row.peer_trace=="PJ") {
+            retiring=early.BeginRemove(true); retire_tick=main_bridge::tick; break;
+        }
+        return;
+    }
+    if (main_bridge::tick<=retire_tick || !early.RemovalComplete()) return;
+    late.Configure(precache_resolution.vtable_index);
+    late_installed=late.AddGlobal(&holder).Accepted();
+}
+}
+
+void S2ProbeLiveInstallEarly(const std::string& probe_path) {
+    using namespace live_bridge;
+    if (!Load(probe_path)) return;
+    const auto index=core_config.offsets.find("CGameRulesGameSystem_OnPrecacheResource");
+    if (index==core_config.offsets.end() || !s2resolve::ResolveVirtualSlot("libserver.so","CGameRulesGameSystem",index->second,precache_resolution,reason)) return;
+    holder.vtable=precache_resolution.vtable;
+    guard.Configure(index->second); early.Configure(index->second);
+    early_installed=guard.AddGlobal(&holder).Accepted() && early.AddGlobal(&holder).Accepted();
+}
+std::string S2ProbeLiveGamedata() {
+    using namespace live_bridge;
+    unchanged=Unchanged();
+    Json files=Json::array();
+    for (const auto& item:input_files) files.push_back({{"path",item.first},{"size",item.second.bytes.size()},
+        {"fingerprint_algorithm","fnv1a64-diagnostic"},{"fingerprint",Fingerprint(item.second.bytes)}});
+    Json result={{"kind","khook-gamedata"},{"run_id",main_bridge::run},{"suite",main_bridge::suite},{"artifact_identity",main_bridge::artifact},
+        {"prepared",prepared},{"unchanged",unchanged},{"reason",reason},{"files",files},{"addon_root",addon_root},
+        {"claim","probe inspected deployed inputs; not a main load-time snapshot"}};
+    if (acquire_resolution.image) result["acquire"]={{"recipe",acquire_resolution.recipe},{"validator",acquire_resolution.validation_receipt},
+        {"module_build_id",acquire_resolution.image->identity().build_id},{"module_device",acquire_resolution.image->identity().device},
+        {"module_inode",acquire_resolution.image->identity().inode}};
+    if (precache_resolution.target.image) result["precache"]={{"recipe",precache_resolution.target.recipe},{"validator",precache_resolution.target.validation_receipt},
+        {"slot",precache_resolution.vtable_index},{"module_build_id",precache_resolution.target.image->identity().build_id},
+        {"module_device",precache_resolution.target.image->identity().device},{"module_inode",precache_resolution.target.image->identity().inode}};
+    return result.dump();
+}
+const std::vector<s2khook::RealAcquireObservation>& S2ProbeRealAcquireCollect() { return live_bridge::acquire_rows; }
+extern "C" __attribute__((noinline)) int32_t S2ProbeRealAcquireMarkBody(const char* run,int32_t generation,int32_t slot,int32_t definition,int32_t result,bool skipped) {
+    using namespace live_bridge;
+    if (!prepared || !unchanged || !run || main_bridge::run!=run || main_bridge::artifact.empty() || main_bridge::suite!="B") return 0;
+    return acquire_frames.Mark(run,generation,slot,definition,result,skipped);
+}
+
+#if defined(__linux__) && defined(__x86_64__)
+extern "C" __attribute__((naked,noinline)) int32_t S2ProbeRealAcquireMark(const char*,int32_t,int32_t,int32_t,int32_t,bool) {
+    asm volatile(".byte 0x0f,0x1f,0x84,0x00,0x53,0x36,0x07,0x42\n\tjmp S2ProbeRealAcquireMarkBody");
+}
+#else
+extern "C" int32_t S2ProbeRealAcquireMark(const char* run,int32_t generation,int32_t slot,int32_t definition,int32_t result,bool skipped) {
+    return S2ProbeRealAcquireMarkBody(run,generation,slot,definition,result,skipped);
+}
+#endif
+
+bool S2ProbeLiveProvenanceReady() { return live_bridge::prepared && (live_bridge::unchanged=live_bridge::Unchanged()); }

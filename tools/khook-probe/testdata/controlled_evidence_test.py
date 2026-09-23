@@ -64,6 +64,19 @@ int main() {
     declarative.expired = false;
     assert(!declarative.Passed());
 
+    s2khook::RealAcquireFrames real;
+    real.Reset("run"); s2khook::RealAcquireObservation acquired;
+    assert(real.Mark("run",1,2,3,6,false)==0); // outside a native invocation
+    real.Enter(1,10,20,30,40);
+    assert(real.Mark("wrong",1,2,3,6,false)==0);
+    real.Enter(2,11,21,31,41);
+    assert(real.Mark("run",1,2,3,6,false)==2);
+    assert(real.Mark("run",1,2,3,6,false)==0); // consumed marker
+    assert(real.Finish(11,21,31,41,6,false,acquired) && acquired.token==2);
+    assert(real.Mark("run",2,2,3,1,true)==1); // restored outer frame
+    assert(real.Finish(10,20,30,40,1,true,acquired) && acquired.generation==2 && acquired.peer_skipped);
+    assert(real.Mark("run",2,2,3,1,true)==0); // expired
+    real.Enter(3,10,20,30,40); assert(!real.Finish(99,20,30,40,0,false,acquired));
     s2khook::MainBridgeObservation bridge;
     bridge.scenario=12; bridge.original=2; bridge.peer_pre=2; bridge.peer_post=2; bridge.callbacks=1;
     bridge.bypass_original=1; bridge.bypass_peer_pre=1; bridge.bypass_peer_post=1; bridge.bypass_callbacks=0;

@@ -110,6 +110,10 @@ struct DeclarativeHudObservation {
 };
 struct DeclarativeSnapshot {
     std::array<DeclarativeHudObservation,2> hud;
+    bool forged_rejected=false,stale_rejected=false;
+    int bypass_pair_pre=-1,bypass_pair_original=-1;
+    bool policy_isolated=false,policy_restored=false,policy_post_view=false;
+    int policy_pre=0,policy_post=0,policy_original=0;
 
     DeclarativeVoidObservation simple;
     DeclarativeMutationObservation mutation;
@@ -148,10 +152,44 @@ struct MainBridgeObservation {
     std::map<int,int> generation_callbacks;
 };
 
+struct RealAcquireObservation {
+    int token=0,generation=0,slot=-1,definition=0,js_result=0,peer_result=0;
+    bool js_skipped=false,peer_skipped=false,marked=false,completed=false;
+    uintptr_t services=0,item=0,opaque=0; int method=0;
+};
+class RealAcquireFrames {
+public:
+    void Reset(const std::string& run) { run_=run; stack_.clear(); }
+    void Enter(int token,uintptr_t services,uintptr_t item,int method,uintptr_t opaque) {
+        RealAcquireObservation row; row.token=token; row.services=services; row.item=item; row.method=method; row.opaque=opaque;
+        stack_.push_back(row);
+    }
+    int Mark(const std::string& run,int generation,int slot,int definition,int result,bool skipped) {
+        if (run.empty() || run!=run_ || generation<=0 || slot<0 || stack_.empty()) return 0;
+        auto& frame=stack_.back();
+        if (frame.marked || frame.token<=0 || !frame.services || !frame.item) return 0;
+        frame.marked=true; frame.generation=generation; frame.slot=slot; frame.definition=definition;
+        frame.js_result=result; frame.js_skipped=skipped; return frame.token;
+    }
+    bool Finish(uintptr_t services,uintptr_t item,int method,uintptr_t opaque,int result,bool skipped,RealAcquireObservation& out) {
+        if (stack_.empty()) return false;
+        auto row=stack_.back(); stack_.pop_back();
+        if (row.services!=services || row.item!=item || row.method!=method || row.opaque!=opaque) return false;
+        row.peer_result=result; row.peer_skipped=skipped; row.completed=true;
+        if (!row.marked) return false;
+        out=row; return true;
+    }
+private:
+    std::string run_;
+    std::vector<RealAcquireObservation> stack_;
+};
+
 struct PrecacheTokenObservation {
     int token=0,generation=0,map_generation=0,receiver=0,vtable=0,manifest=0;
     S2NamedPrecacheFrameV1 frame{};
-    bool finished=false,added=false;
+    bool finished=false,added=false,peer_completed=false;
+    int peer_pre=0;
+    std::string peer_trace;
     std::string resource;
 };
 
@@ -184,6 +222,11 @@ public:
             case 4:return row->manifest;
             default:return 0;
         }
+    }
+    bool ObservePeer(int token,const S2NamedPrecacheFrameV1& frame,int pre,const std::string& trace) {
+        auto* row=Find(token);
+        if (!row || !row->finished || row->peer_completed || !Same(row->frame,frame)) return false;
+        row->peer_completed=true; row->peer_pre=pre; row->peer_trace=trace; return true;
     }
     const std::vector<PrecacheTokenObservation>& Rows() const { return rows_; }
 private:
@@ -264,6 +307,12 @@ struct NamedOrderSnapshot {
     int retired_callbacks=0;
 };
 struct NamedSnapshot {
+    std::array<int,4> output_vector_dispatch{{0,0,0,0}},output_vector_original{{0,0,0,0}},output_vector_skipped{{-1,-1,-1,-1}};
+    std::array<int,2> chat_original_each{{0,0}};
+    int precache_filtered_dispatch=-1;
+    std::array<int,3> usercmd_original_by_batch{{0,0,0}};
+    int usercmd_argument_matches=0,usercmd_batch_first=-1,usercmd_batch_second=-1;
+
     bool installed = false;
     int damage_pre = 0, damage_post = 0, damage_original = 0;
     int damage_nested_restored = 0, damage_expired = 0;

@@ -2705,11 +2705,11 @@ static const IntegrationSpec kIntegrationSpecs[]={
     {"B","chat_named_hook","native_chat_continue_original_once","{\"dispatch\":1,\"original\":1,\"skipped\":false}","controlled-mechanics","controlled-stock-provider","named_hooks","chat_named_hook"},
     {"B","chat_named_hook","native_chat_suppressed_original_zero","{\"dispatch\":1,\"original\":0,\"skipped\":true}","controlled-mechanics","controlled-stock-provider","named_hooks","chat_named_hook"},
     {"B","chat_named_hook","native_chat_peer_orders","{\"orders\":[\"peer-first\",\"s2script-first\"]}","controlled-mechanics","controlled-stock-provider","named_hooks","chat_named_hook"},
-    {"B","output_named_hook","native_output_01_original_once","{\"actions\":[0,1],\"originals\":[1,1]}","controlled-mechanics","controlled-stock-provider","named_hooks","output_named_hook"},
-    {"B","output_named_hook","native_output_23_original_zero","{\"actions\":[2,3],\"originals\":[0,0]}","controlled-mechanics","controlled-stock-provider","named_hooks","output_named_hook"},
+    {"B","output_named_hook","native_output_01_original_once","{\"actions\":[0,1],\"dispatches\":[1,1],\"originals\":[1,1],\"skipped\":[false,false]}","controlled-mechanics","controlled-stock-provider","named_hooks","output_named_hook"},
+    {"B","output_named_hook","native_output_23_original_zero","{\"actions\":[2,3],\"dispatches\":[1,1],\"originals\":[0,0],\"skipped\":[true,true]}","controlled-mechanics","controlled-stock-provider","named_hooks","output_named_hook"},
     {"B","output_named_hook","native_output_peer_orders","{\"orders\":[\"peer-first\",\"s2script-first\"]}","controlled-mechanics","controlled-stock-provider","named_hooks","output_named_hook"},
     {"B","usercmd_named_hook","native_usercmd_abi_batch_mutation","{\"arguments_preserved\":true,\"batch_delivered\":true,\"neutralized\":true}","controlled-mechanics","controlled-stock-provider","named_hooks","usercmd_named_hook"},
-    {"B","usercmd_named_hook","native_usercmd_original_once_return_preserved","{\"original\":1,\"return\":37}","controlled-mechanics","controlled-stock-provider","named_hooks","usercmd_named_hook"},
+    {"B","usercmd_named_hook","native_usercmd_original_once_return_preserved","{\"originals_by_batch\":[1,1,1],\"return\":37}","controlled-mechanics","controlled-stock-provider","named_hooks","usercmd_named_hook"},
     {"B","usercmd_named_hook","native_usercmd_peer_orders","{\"orders\":[\"peer-first\",\"s2script-first\"]}","controlled-mechanics","controlled-stock-provider","named_hooks","usercmd_named_hook"},
     {"B","script_generation_lifetime","native_binding_resident_across_reload","{\"generations\":3,\"native_address_same\":true}","main-runtime-bridge","main-runtime","engine_hooks","script_generation_lifetime"},
     {"B","script_generation_lifetime","native_no_disposed_generation_callback","{\"new_callbacks\":2,\"old_callbacks_after_retire\":0}","main-runtime-bridge","main-runtime","engine_hooks","script_generation_lifetime"},
@@ -2763,6 +2763,7 @@ static std::vector<int> MainScenarios(const std::string& name) {
     if (name=="native_main_this_void_handled_delivery") return {2};
     if (name=="native_main_narrow_all_fields_mutated") return {3};
     if (name=="native_main_wide_mutation_delivery") return {4};
+    if (name=="native_acquire_peer_effective_result") return {5,6,7};
     if (name=="native_main_acquire_outbound_pre_vote" || name=="native_main_acquire_outbound_final_result" || name=="native_acquire_outbound_peer_post") return {5,6,7};
     if (name=="native_main_hud_receiver_text_continue") return {8};
     if (name=="native_main_hud_handled_delivery") return {9};
@@ -2817,6 +2818,25 @@ static std::string PrecacheObservations() {
 static std::string ControlledActual(const std::string& name) {
     const auto d=S2ProbeDeclarativeCollect();
     const auto n=S2ProbeNamedCollect();
+    if (name=="native_rejected_nested_scope_restored" && d.policy_isolated && d.policy_pre>0)
+        return "{\"rejected\":"+JBool(d.policy_pre==1 && d.policy_post==1 && d.policy_original==2)+
+            ",\"outer_restored\":"+JBool(d.policy_restored && d.policy_post_view)+"}";
+    if (name=="native_stale_forged_views_rejected" && d.nesting.same_pre>0)
+        return "{\"stale_rejected\":"+JBool(d.stale_rejected)+",\"forged_rejected\":"+JBool(d.forged_rejected)+"}";
+    if (name=="native_bypass_hit_then_next_delivered" && d.bypass_pair_original>=0)
+        return "{\"bypass_pre\":"+std::to_string(d.bypass.pre_after_bypass)+",\"next_pre\":"+
+            std::to_string(d.bypass_pair_pre-d.bypass.pre_after_bypass)+",\"original\":"+std::to_string(d.bypass_pair_original)+"}";
+    if ((name=="native_output_01_original_once" || name=="native_output_23_original_zero") && n.output_vector_dispatch[3]>0) {
+        const int first=name=="native_output_01_original_once" ? 0 : 2;
+        return "{\"actions\":["+std::to_string(first)+","+std::to_string(first+1)+"],\"originals\":["+
+            std::to_string(n.output_vector_original[first])+","+std::to_string(n.output_vector_original[first+1])+"],\"dispatches\":["+
+            std::to_string(n.output_vector_dispatch[first])+","+std::to_string(n.output_vector_dispatch[first+1])+"],\"skipped\":["+
+            JBool(n.output_vector_skipped[first]==1)+","+JBool(n.output_vector_skipped[first+1]==1)+"]}";
+    }
+    if (name=="native_usercmd_abi_batch_mutation" && n.usercmd_dispatch>0)
+        return "{\"batch_delivered\":"+JBool(n.usercmd_dispatch==3 && n.usercmd_batch_first==11)+",\"neutralized\":"+
+            JBool(n.usercmd_neutralized==2 && n.usercmd_batch_second==0)+",\"arguments_preserved\":"+
+            JBool(n.usercmd_argument_matches==n.usercmd_original && n.usercmd_original==3)+"}";
     if (name=="native_wide_opaque_values_preserved" && d.mutation.pre>0)
         return "{\"opaque_a\":\""+std::to_string(static_cast<uint64_t>(d.mutation.opaque_a))+"\",\"opaque_b\":\""+std::to_string(static_cast<uint64_t>(d.mutation.opaque_b))+"\"}";
     if (name=="native_same_and_different_id_nesting" && d.nesting.same_pre>0)
@@ -2828,17 +2848,17 @@ static std::string ControlledActual(const std::string& name) {
     if (name=="native_damage_nested_scopes" && n.damage_pre>0)
         return "{\"restored\":"+std::to_string(n.damage_nested_restored)+",\"expired\":"+JBool(n.damage_expired==1)+"}";
     if (name=="native_chat_continue_original_once" && n.chat_dispatch==2)
-        return "{\"dispatch\":1,\"original\":"+std::to_string(n.chat_original)+",\"skipped\":"+JBool(n.chat_skipped[0]==1)+"}";
+        return "{\"dispatch\":1,\"original\":"+std::to_string(n.chat_original_each[0])+",\"skipped\":"+JBool(n.chat_skipped[0]==1)+"}";
     if (name=="native_chat_suppressed_original_zero" && n.chat_dispatch==2 && n.chat_skipped[0]==0)
-        return "{\"dispatch\":1,\"original\":"+std::to_string(n.chat_original-1)+",\"skipped\":"+JBool(n.chat_skipped[1]==1)+"}";
+        return "{\"dispatch\":1,\"original\":"+std::to_string(n.chat_original_each[1])+",\"skipped\":"+JBool(n.chat_skipped[1]==1)+"}";
     if (name=="native_usercmd_original_once_return_preserved" && n.usercmd_dispatch>0)
-        return "{\"original\":"+std::to_string(n.usercmd_original==n.usercmd_dispatch ? 1 : n.usercmd_original)+",\"return\":"+std::to_string(n.usercmd_return)+"}";
+        return "{\"originals_by_batch\":["+std::to_string(n.usercmd_original_by_batch[0])+","+std::to_string(n.usercmd_original_by_batch[1])+","+std::to_string(n.usercmd_original_by_batch[2])+"],\"return\":"+std::to_string(n.usercmd_return)+"}";
     if (name=="native_active_removal_refused" && n.removal.active_refused>=0)
         return "{\"active_refused\":"+JBool(n.removal.active_refused==1)+"}";
     if (name=="native_precache_real_receiver" && n.precache_dispatch>0)
         return "{\"delivered_receiver_matches\":"+JBool(n.precache_frame_receiver_matches==n.precache_dispatch)+",\"retained_vtable_matches\":"+JBool(n.precache_frame_vtable_matches==n.precache_dispatch)+"}";
     if (name=="native_precache_other_vtable_filtered" && n.precache_filtered_original>0)
-        return "{\"dispatch\":"+std::to_string(n.precache_dispatch-2)+",\"original\":"+std::to_string(n.precache_filtered_original)+"}";
+        return "{\"dispatch\":"+std::to_string(n.precache_filtered_dispatch)+",\"original\":"+std::to_string(n.precache_filtered_original)+"}";
     if ((name=="native_precache_original_once" || name=="native_precache_dispatch_once_each") && n.precache_dispatch>0)
         return "{\"dispatch\":"+std::to_string(n.precache_dispatch)+",\"original\":"+std::to_string(n.precache_original)+"}";
     if (name=="native_precache_outer_inner_outer_manifest" && !n.precache_manifest_trace.empty()) {
@@ -2898,6 +2918,8 @@ static void CollectIntegration(bool drive) {
         S2ProbeNamedReset(g_level_lifetime.Generation()); S2ProbeNamedInvoke();
         S2ProbeNamedStartOrders(g_run_id);
     }
+    const bool live_provenance=S2ProbeLiveProvenanceReady();
+    const std::string live_gamedata=S2ProbeLiveGamedata();
     g_stored.clear();
     for (const auto& spec:kIntegrationSpecs) {
         if (g_run_suite!=spec.suite) continue;
@@ -2914,7 +2936,11 @@ static void CollectIntegration(bool drive) {
                 bool markers=true,targets=true;
                 for (const auto* row:rows) { markers=markers && row->callbacks>0; targets=targets && row->peer_pre>0; }
                 observations=MainObservations(rows);
-                if (name=="native_acquire_outbound_peer_post") {
+                if (name=="native_acquire_peer_effective_result") {
+                    bool post=true,current=true;
+                    for (const auto* row:rows) { post=post && row->trace.find('W')!=std::string::npos; current=current && row->effective==row->result; }
+                    actual="{\"post_observed\":"+JBool(post)+",\"current_return_matches\":"+JBool(current)+"}";
+                } else if (name=="native_acquire_outbound_peer_post") {
                     std::string effective="[",skipped="[";
                     for (const int scenario:scenarios) {
                         if (effective.size()>1) { effective+=","; skipped+=","; }
@@ -2931,6 +2957,40 @@ static void CollectIntegration(bool drive) {
                 } else if (name.rfind("native_main_",0)==0) actual="{\"same_invocation_markers\":"+JBool(markers)+",\"target_calls_observed\":"+JBool(targets)+"}";
                 else actual=MainMechanicalActual(name,rows);
             }
+        }
+        if (name=="native_acquire_real_post_peer_observed" && live_provenance) {
+            observations="["; bool same=true;
+            for (const auto& row:S2ProbeRealAcquireCollect()) {
+                if (!row.marked || !row.completed) continue;
+                if (observations.size()>1) observations+=",";
+                same=same && row.services!=0 && row.item!=0;
+                observations+="{\"scenario_id\":\"real-bot-acquire\",\"sequence\":"+std::to_string(row.token)+
+                    ",\"generation\":"+std::to_string(row.generation)+",\"invocation\":\"real-acquire-"+std::to_string(row.token)+
+                    "\",\"peer_order\":\"none\",\"callbacks\":1,\"stimulus\":\"engine\",\"facts\":{\"slot\":"+std::to_string(row.slot)+
+                    ",\"defIndex\":"+std::to_string(row.definition)+",\"js_post_result\":"+std::to_string(row.js_result)+
+                    ",\"js_post_skipped\":"+JBool(row.js_skipped)+",\"peer_post_result\":"+std::to_string(row.peer_result)+
+                    ",\"peer_post_skipped\":"+JBool(row.peer_skipped)+"}}";
+            }
+            if (observations.size()>1) actual="{\"real_item_services\":"+JBool(same)+",\"post_observed\":true,\"same_invocation\":true}";
+            observations+="]";
+        }
+        if (name=="native_precache_live_peer_both_orders" && live_provenance) {
+            observations="["; bool before=false,after=false;
+            for (const auto& row:S2ProbePrecacheCollect()) {
+                if (!row.finished || !row.peer_completed || row.peer_pre!=1) continue;
+                const bool first=row.peer_trace=="PJ",second=row.peer_trace=="JP";
+                before=before || first; after=after || second;
+                if (observations.size()>1) observations+=",";
+                observations+="{\"scenario_id\":\"precache-peer\",\"sequence\":"+std::to_string(row.token)+
+                    ",\"generation\":"+std::to_string(row.generation)+",\"invocation\":\"precache-"+std::to_string(row.token)+
+                    "\",\"peer_order\":\""+(first ? "peer-first" : second ? "s2script-first" : "none")+
+                    "\",\"callbacks\":1,\"stimulus\":\"engine\",\"route\":\"main-virtual-precache\",\"frame_token\":"+std::to_string(row.token)+
+                    ",\"map_generation\":"+std::to_string(row.map_generation)+",\"receiver\":\"receiver-"+std::to_string(row.receiver)+
+                    "\",\"vtable\":\"vtable-"+std::to_string(row.vtable)+"\",\"manifest\":\"manifest-"+std::to_string(row.manifest)+
+                    "\",\"facts\":{\"same_native_invocation\":true,\"peer_pre\":"+std::to_string(row.peer_pre)+",\"trace\":\""+row.peer_trace+"\"}}";
+            }
+            observations+="]";
+            if (before && after) actual="{\"orders\":[\"peer-first\",\"s2script-first\"]}";
         }
         if (name=="native_binding_resident_across_reload" || name=="native_no_disposed_generation_callback") {
             std::vector<const s2khook::MainBridgeObservation*> rows;
@@ -2977,6 +3037,7 @@ static void CollectIntegration(bool drive) {
         rec.metadata=std::string(",\"evidence_class\":\"observed\",\"group\":\"")+spec.group+
             "\",\"provenance\":\""+spec.provenance+"\",\"callback_owner\":\""+spec.owner+
             "\",\"target\":\""+spec.target+"\",\"observations\":"+observations;
+        if (name=="native_acquire_real_post_peer_observed" || name=="native_precache_live_peer_both_orders") rec.metadata+=",\"gamedata\":"+live_gamedata;
     }
 }
 
@@ -3063,6 +3124,9 @@ static void ProbeCommand(const CCommandContext& ctx, const CCommand& cmd) {
         if (!RunMatches(a2) || !BindArtifact(digest)) META_CONPRINTF("[khook-probe] invalid binding\n");
         else META_CONPRINTF("[khook-probe] bound artifact=%s\n", g_artifact_identity.c_str());
         return;
+    }
+    if (a1 && strcasecmp(a1,"gamedata")==0) {
+        META_CONPRINTF("%s\n",S2ProbeLiveGamedata().c_str()); return;
     }
     if (a1 && strcasecmp(a1, "reload-arm") == 0) {
         if (g_run_suite!="A") { META_CONPRINTF("[khook-probe] resident bridge armed; archive generation observations required\n"); return; }
@@ -3214,6 +3278,8 @@ bool ProbePlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, b
     InstallControlledHooks();
     std::string bridge_reason;
     S2ProbeBridgeInstallEarly(bridge_reason);
+    Dl_info probe_image{};
+    if (dladdr(reinterpret_cast<void*>(&S2ProbeLiveInstallEarly),&probe_image) && probe_image.dli_fname) S2ProbeLiveInstallEarly(probe_image.dli_fname);
     META_CONPRINTF("[khook-probe] main bridge: %s\n",bridge_reason.c_str());
     R6ResolveEngine(engineFactory, serverFactory);
     R6InstallEngineHooks();
