@@ -78,7 +78,7 @@ Multiple contexts may register the same id/hash under different instance keys. R
 | Path | Responsibility | Writer |
 | --- | --- | --- |
 | `games/cs2/game-package.jsonc` | Source manifest: package id, match, owner, ordered bootstrap inputs, gamedata source root | S3-PKG-01 |
-| `games/cs2/adapters/contracts.json` | Stable canonical adapter id/version/public frame-delivery-decision/timing contracts; independent of JS source hashes | S3-ADAPT-05 |
+| `games/cs2/adapters/contracts/{legacy.acquire.v1,legacy.hud-click.v1}.json` | Two byte-exact canonical contracts copied from S2; independent of JS source hashes | S3-ADAPT-05 |
 | `games/cs2/gamedata/{master.gamedata.jsonc,game.cs2.jsonc}` | CS2-owned target/function/layout declarations formerly under root `gamedata/cs2` | S3-PKG-01 |
 | `games/cs2/js/adapters/{acquire,hud-click,damage}.js`, `games/cs2/js/adapters/test-host.js` | CS2 public compatibility wrappers, semantic mapping, and one recording test host over S2 frames | S3-ADAPT-05/06 |
 | `scripts/build-game-packages.mjs` | Deterministically concatenate inputs, canonicalize the gamedata bundle, hash artifacts, and emit the deployed manifest | S3-PKG-01 |
@@ -162,6 +162,9 @@ git commit -m "docs: pin game package boundary prerequisites"
 - Create: `scripts/test-game-packages.mjs`
 - Modify: `scripts/package-addon.sh`
 - Modify: `games/cs2/js/eslint.config.mjs`
+- Modify: `scripts/check-gamedata-owners.sh`, `scripts/check-gamedata-sigs.sh`
+- Modify: `packages/sdk/src/hookgen/gen.ts`, `packages/sdk/src/hookgen/emit-dts.ts`
+- Modify: `packages/sdk/test/cs2-engine-calls.test.mjs`, `games/cs2/js/pawn.js` (source-path references only)
 
 **Interfaces:**
 - Consumes: current ordered JS inputs in `scripts/package-addon.sh` and current CS2 owner tree
@@ -208,7 +211,9 @@ Expected: FAIL because `build-game-packages.mjs` does not exist.
 }
 ```
 
-The emitted `gamedata.json` is canonical JSON with `{schemaVersion:1,owner:"cs2",files:[{path,document}]}`. Preserve master order and all engine/game/platform variants; parse JSONC comments away, sort object keys, retain array order, and end every emitted file with one newline.
+The emitted `gamedata.json` is canonical JSON with `{schemaVersion:1,owner:"cs2",files:[{path,document}]}`. Preserve master order and all engine/game/platform variants; parse JSONC comments away, sort object keys, retain array order, and end every emitted file with one newline. Production packaging selects the intended first-party package inputs explicitly; synthetic packages require a separate test opt-in and never enter the default release manifest.
+
+Move hook generation, static gates and the listed source-path assertions to `games/cs2/gamedata/` in the same commit as the source files. Regenerate and check hook declarations here so no integrated task points at removed inputs. Keep core/sdkhooks owner trees in place and the deployed `gamedata/cs2/custom/` operator path unchanged. S3-GD-03 consumes this completed relocation; it does not own a second move.
 
 - [ ] **Step 4: Replace the shell concatenation with the packager**
 
@@ -222,6 +227,9 @@ Delete the `js/pawn.js` output and its conditional branch. Update ESLint to read
 
 ```bash
 node --test scripts/test-game-packages.mjs
+bash scripts/check-gamedata-owners.sh
+bash scripts/check-gamedata-sigs.sh
+bash scripts/check-hooks-generated.sh
 find dist/addons/s2script/game-packages -type f -print | sort
 test ! -e dist/addons/s2script/js/pawn.js
 test ! -d gamedata/cs2
@@ -234,6 +242,7 @@ Expected: tests pass; exactly `cs2/index.js` and `cs2/gamedata.json` are emitted
 ```bash
 git add games/cs2 scripts/build-game-packages.mjs scripts/test-game-packages.mjs scripts/package-addon.sh
 git add games/cs2/js/eslint.config.mjs gamedata/cs2
+git add scripts/check-gamedata-owners.sh scripts/check-gamedata-sigs.sh packages/sdk/src/hookgen packages/sdk/test/cs2-engine-calls.test.mjs
 git commit -m "build: emit verified game package artifacts"
 ```
 
@@ -323,12 +332,7 @@ git commit -m "feat: verify and select game package manifests"
 - Create: `core/src/engine_functions/tests/package_loader.rs`
 - Modify: `core/src/engine_functions/mod.rs`
 - Modify: `core/src/game_packages/mod.rs`
-- Modify: `scripts/check-gamedata-owners.sh`
-- Modify: `scripts/check-gamedata-sigs.sh`
-- Modify: `packages/sdk/src/hookgen/gen.ts`
-- Modify: `packages/sdk/src/hookgen/emit-dts.ts`
-- Modify: `packages/sdk/test/cs2-engine-calls.test.mjs`
-- Modify: `games/cs2/js/pawn.js`
+- Read/check: relocated hookgen/static gates and source-path assertions already integrated in S3-PKG-01
 
 **Interfaces:**
 - Consumes: verified bundle bytes, `gamedata_owner`, engine/game/platform, `addon_root/gamedata/<owner>/custom`, and S2's normalizer/`OverrideSet`
@@ -375,9 +379,9 @@ pub(crate) fn load_package_bundle(
 
 Do not materialize bundle files or add a second declaration/override grammar. Select embedded documents in master order, then feed them and sorted external owner overrides through S2's existing parser, normalizer, contract-hash checks, and `OverrideSet` validation. Record both owner and target on every function receipt.
 
-- [ ] **Step 4: Update every source-path consumer atomically**
+- [ ] **Step 4: Verify the integrated source-path relocation**
 
-Point hook generation and gamedata static gates at `games/cs2/gamedata/game.cs2.jsonc`. Keep core-owned and sdkhooks-owned source trees in `gamedata/`; do not infer ownership from the `game.cs2` target filename. Update comments/tests that assert the old source path in the same change.
+Verify S3-PKG-01 already moved hook generation and static gates to `games/cs2/gamedata/game.cs2.jsonc`. Keep core-owned and sdkhooks-owned source trees in `gamedata/`; do not infer ownership from the `game.cs2` target filename. Any additional source-path consumer found here is an integration fix, not permission to use a removed path until this task.
 
 - [ ] **Step 5: Verify**
 
@@ -394,8 +398,7 @@ Expected: the final search returns no source-file references; `addons/s2script/g
 - [ ] **Step 6: Commit**
 
 ```bash
-git add core/src/engine_functions core/src/game_packages scripts/check-gamedata-owners.sh
-git add scripts/check-gamedata-sigs.sh packages/sdk/src/hookgen packages/sdk/test/cs2-engine-calls.test.mjs games/cs2/js/pawn.js
+git add core/src/engine_functions core/src/game_packages
 git commit -m "feat: merge packaged gamedata with owner overrides"
 ```
 
@@ -450,7 +453,7 @@ const char* s2script_core_game_package_status_json(void);
 void s2script_core_clear_game_package(void);
 ```
 
-Core copies strings before returning and performs all file access after validating UTF-8. It prepares the verified selection and normalized bundle, constructs `OwnerKey { id: reserved_owner_id, generation, kind: OwnerKind::GamePackage }`, calls `prepare_owner`, installs the package's reviewed adapters, calls `activate_owner`, and only then atomically publishes bootstrap source plus the active receipt. Any failure calls `drop_owner(&owner)` and publishes no id. The status JSON contains code, id, owner, manifest path, both hashes, function status summary, and error; shim logs this JSON once after selection so live acceptance has a query-free status receipt. `clear` is terminal-only: it first requires all contexts/in-flight frames retired, drops S2 owner receipts, then clears source/data/provenance.
+Core copies strings before returning and performs all file access after validating UTF-8. It prepares the verified selection and normalized bundle, constructs `OwnerKey { id: reserved_owner_id, generation, kind: OwnerKind::GamePackage }`, calls `prepare_owner`, validates the reserved adapter contracts as metadata, calls `activate_owner`, and only then atomically publishes bootstrap source plus the active process receipt. Executable JS adapters register during each context's token-scoped bootstrap below; process preparation does not invent callbacks without a context. Any failure calls `drop_owner(&owner)` and publishes no id. The status JSON contains code, id, owner, manifest path, both hashes, function status summary, and error; shim logs this JSON once after selection so live acceptance has a query-free status receipt. `clear` is terminal-only: it first requires all contexts/in-flight frames retired, drops S2 owner receipts, then clears source/data/provenance.
 
 - [ ] **Step 4: Iterate registry records during context creation**
 
@@ -458,12 +461,16 @@ Replace the literal lookup in `create_plugin_context` with:
 
 ```rust
 for package in crate::game_packages::context_bootstraps() {
-    run_prelude(scope, &package.id, &package.bootstrap_js)?;
-    crate::game_packages::record_context_instance(&package.owner, package.generation, plugin_id)?;
+    let instance = prepare_context_instance(&package, plugin_owner)?;
+    // Owns the provisional ledger entry and token; failure starts ordered retirement.
+    instance.with_bootstrap_token(scope, |scope| {
+        run_prelude(scope, &package.id, &package.bootstrap_js)
+    })?;
+    instance.activate_and_publish_require(scope, &package.id)?;
 }
 ```
 
-Make `run_prelude` return a named error. For each evaluation, mint `PackageInstanceKey { parent: plugin OwnerKey, package_owner: reserved package OwnerKey }`; the hidden bootstrap token makes it current only while package code evaluates. Register `require(id)` only after that instance's prelude succeeds. Ledger the instance so plugin retirement stops new dispatch, detaches only its S2 subscriptions, lets active synchronous frames unwind (or schedules retirement when called inside one), invalidates its epochs/wrappers/handles, releases its receipts, and drops its globals without touching peer instances.
+This is lifecycle pseudocode; implement its helpers using S2's actual integrated owner/instance API. Before evaluation, mint and provisionally ledger `PackageInstanceKey { parent: plugin OwnerKey, package_owner: reserved package OwnerKey }`. Its hidden bootstrap token is current only while package code evaluates, enabling registration inside the prelude. On throw or activation/publication failure, retire the provisional instance in this order: block new dispatch, detach its adapter callbacks/subscriptions, let active synchronous frames unwind (defer finalization through the ledger if one is still active), invalidate its epochs/views/wrappers/handles, release its receipts, then dispose V8 globals. Failure never publishes `require(id)` or affects peer instances, and an ordinary destructor must not free callbacks while a frame still uses them. Publish only after successful instance activation. The final ledger entry uses that same ordered retirement for plugin unload, without touching peer instances.
 
 - [ ] **Step 5: Replace shim registration and crash schema hashing**
 
@@ -493,7 +500,8 @@ git commit -m "feat: bootstrap selected game packages generically"
 - Create: `games/cs2/js/adapters/hud-click.js`
 - Create: `games/cs2/js/adapters/hud-click.test.js`
 - Create: `games/cs2/js/adapters/test-host.js`
-- Create: `games/cs2/adapters/contracts.json`
+- Create: `games/cs2/adapters/contracts/legacy.acquire.v1.json`
+- Create: `games/cs2/adapters/contracts/legacy.hud-click.v1.json`
 - Modify: `games/cs2/game-package.jsonc`
 - Modify: `games/cs2/gamedata/game.cs2.jsonc`
 - Modify: `games/cs2/js/pawn.js`
@@ -543,23 +551,23 @@ Expected: acquisition fold/order tests fail until package policy contracts are r
 ```jsonc
 "adapters": {
   "legacy.acquire.v1": {
-    "version": 1, "contract": "adapters/contracts.json", "source": "js/adapters/acquire.js"
+    "version": 1, "contract": "adapters/contracts/legacy.acquire.v1.json", "source": "js/adapters/acquire.js"
   },
   "legacy.hud-click.v1": {
-    "version": 1, "contract": "adapters/contracts.json", "source": "js/adapters/hud-click.js"
+    "version": 1, "contract": "adapters/contracts/legacy.hud-click.v1.json", "source": "js/adapters/hud-click.js"
   }
 }
 ```
 
-Copy S2's accepted canonical contract documents byte-for-byte into `contracts.json`; their id/version/public frame-delivery-decision/timing digests must equal the S2 baseline before deleting Rust implementations. The packager puts those stable hashes in `globalThis.__s2_adapter_contracts`. JavaScript source hashes contribute only to `implementation_manifest_hash` and the manifest's bootstrap integrity hash; changing implementation language or source without changing behavior does not change `contract_hash`. Each adapter calls `__s2_function_adapter_register("legacy.acquire.v1", globalThis.__s2_adapter_contracts["legacy.acquire.v1"], {pre,post})` (or the HUD id); package wrappers call `__s2_function_adapter_subscribe(bindingId, adapterId, phase, wrapper)`. Acquisition's `pre(&mut AdapterDispatch)` walks `SubscriberCursor.invoke_next()` and implements the current fold exactly: Handled/Stop votes precede Changed, registration order stays stable within strength, any deny beats Allowed, first deny wins between denies, unwritten Handled/Stop implies `1`, and engine result participates only if original ran. HUD owns its compatibility callback-before-original decision.
+Copy each S2 canonical contract document byte-for-byte to its matching separate file under `adapters/contracts/`; their id/version/public frame-delivery-decision/timing digests must equal the locked S2 baseline before deleting Rust implementations. Do not wrap the two documents into a new aggregate and call its hash the old contract hash. The packager verifies each document independently and puts the stable id-to-hash mapping in `globalThis.__s2_adapter_contracts`. JavaScript source hashes contribute only to `implementation_manifest_hash` and the manifest's bootstrap integrity hash; changing implementation language or source without changing behavior does not change `contract_hash`. Each adapter calls `__s2_function_adapter_register("legacy.acquire.v1", globalThis.__s2_adapter_contracts["legacy.acquire.v1"], {pre,post})` (or the HUD id); package wrappers call `__s2_function_adapter_subscribe(bindingId, adapterId, phase, wrapper)`. Acquisition's `pre(&mut AdapterDispatch)` walks `SubscriberCursor.invoke_next()` and implements the current fold exactly: Handled/Stop votes precede Changed, registration order stays stable within strength, any deny beats Allowed, first deny wins between denies, unwritten Handled/Stop implies `1`, and engine result participates only if original ran. HUD owns its compatibility callback-before-original decision.
 
 - [ ] **Step 4: Move wrapper semantics into focused adapters**
 
 `acquire.js` performs the item-services-to-pawn/controller hop and constructs the existing `CanAcquireView`. `hud-click.js` selects receiver/arguments, copies strings before callback, and exports the existing `CustomHudClickedView`. `pawn.js` and `hudinput.js` delegate without changing public names.
 
-- [ ] **Step 5: Delete temporary S2 registrations and shape branches**
+- [ ] **Step 5: Delete temporary executable implementations and shape branches**
 
-Remove S2's temporary built-in implementations for these ids and current `plan.shape == 3`/HUD-shape semantic branching only after the JS conformance fixture proves identical `SubscriberDelivery` sequences and final `PreDecision` values under the unchanged contract hashes. Keep only the generic synchronous callback runner, projected frame, action/order facts, id/hash verification, and package-owner authorization. No acquire code, receiver hop, copy rule, or HUD timing choice remains native.
+Remove S2's temporary built-in executable implementations for these ids and current `plan.shape == 3`/HUD-shape semantic branching only after the JS conformance fixture proves identical `SubscriberDelivery` sequences and final `PreDecision` values under the unchanged contract hashes. Preserve the reserved id/hash/visibility registration and trusted-owner enforcement required by S2's v1 compatibility window; replacing the implementation must not make these contracts community-selectable. Keep the generic synchronous callback runner, projected frame, action/order facts, id/hash verification, and package-owner authorization. No acquire code, receiver hop, copy rule, or HUD timing choice remains native.
 
 - [ ] **Step 6: Verify compatibility and fan-out**
 
@@ -695,6 +703,8 @@ git commit -m "refactor: route damage and ammo through shared functions"
 
 - [ ] **Step 1: Add the failing fixture test**
 
+First implement any generic `FixtureHost`/registry test seam in the listed native test files, without fixture-specific production names or branches. Freeze that generic native build before the package-only proof below. The fixture package is explicitly opted into test packaging; default production packaging still emits only the supported CS2 package, and a regression checks that exclusion.
+
 ```rust
 #[test]
 fn synthetic_package_selects_and_uses_an_ordinary_function() {
@@ -709,7 +719,7 @@ fn synthetic_package_selects_and_uses_an_ordinary_function() {
 
 Run before and after: `cargo test -p s2script-core synthetic_package_selects -- --nocapture`
 
-Expected before: no fixture. Expected after: PASS without changes in `core/` or `shim/` for fixture identity/semantics.
+Expected before: generic harness is ready but no fixture package is selected. Expected after: PASS with only fixture package data/JS added and no further native build or changes in `core/` or `shim/` for fixture identity/semantics. Record the same native artifact identity before and after this package-only step.
 
 - [ ] **Step 3: Assert the scope of the proof**
 
@@ -742,10 +752,12 @@ git commit -m "test: prove game package selection without native literals"
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-if rg -n '@s2script/cs2|pawn\.js|Cs2JsPath' core shim; then
+production=(core/src shim/src shim/include)
+test_exclusions=(--glob '!**/tests/**' --glob '!**/tests.rs' --glob '!**/*_test.cpp')
+if rg -n "${test_exclusions[@]}" '@s2script/cs2|pawn\.js|Cs2JsPath' "${production[@]}"; then
   echo 'game-package literal leaked into core/shim' >&2; exit 1
 fi
-if rg -n 's2script_core_dispatch_damage|__s2_damage_|InstallDamage' core shim; then
+if rg -n "${test_exclusions[@]}" 's2script_core_dispatch_damage|__s2_damage_|InstallDamage' "${production[@]}"; then
   echo 'bespoke damage path remains' >&2; exit 1
 fi
 node --test scripts/test-game-packages.mjs
@@ -754,6 +766,8 @@ node --test scripts/test-game-packages.mjs
 Run: `bash scripts/check-game-package-boundary.sh`
 
 Expected initially: FAIL and name every remaining leak.
+
+Keep identity-specific fixtures in explicit test files, not inline production modules. Reconcile the exclusions with actual compiled production inputs; never exempt an entire production module to silence a match. Test that a production-source literal is rejected and an explicitly test-only fixture literal is allowed, so the gate covers shipped paths without rejecting its own acceptance fixtures.
 
 - [ ] **Step 2: Document support without widening claims**
 
