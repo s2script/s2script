@@ -34,7 +34,8 @@ struct Snapshot {
 struct OverrideFile {
     schema_version: u32,
     owner_id: String,
-    functions: BTreeMap<String, Value>,
+    #[serde(deserialize_with = "unique_functions")]
+    functions: BTreeMap<String, CheckedValue>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -174,64 +175,131 @@ fn jsonc(text: &str) -> Result<String, String> {
     }
     String::from_utf8(out).map_err(|e| e.to_string())
 }
-// Value's usual deserializer silently keeps the last duplicate key. This boundary must not.
-fn strict_json(text: &str) -> Result<Value, String> {
-    struct Strict(Value);
-    impl<'de> Deserialize<'de> for Strict {
-        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-            struct Visitor;
-            impl<'de> serde::de::Visitor<'de> for Visitor {
-                type Value = Strict;
-                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                    f.write_str("JSON without duplicate keys")
-                }
-                fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<Strict, E> {
-                    Ok(Strict(v.into()))
-                }
-                fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Strict, E> {
-                    Ok(Strict(v.into()))
-                }
-                fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Strict, E> {
-                    Ok(Strict(v.into()))
-                }
-                fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Strict, E> {
-                    Ok(Strict(serde_json::json!(v)))
-                }
-                fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Strict, E> {
-                    Ok(Strict(v.into()))
-                }
-                fn visit_unit<E: serde::de::Error>(self) -> Result<Strict, E> {
-                    Ok(Strict(Value::Null))
-                }
-                fn visit_seq<A: serde::de::SeqAccess<'de>>(
-                    self,
-                    mut a: A,
-                ) -> Result<Strict, A::Error> {
-                    let mut v = vec![];
-                    while let Some(Strict(x)) = a.next_element()? {
-                        v.push(x);
+// Root fields are checked by OverrideFile's derive. Function names need their own
+// duplicate gate because a normal BTreeMap deserializer silently replaces entries.
+fn unique_functions<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<BTreeMap<String, CheckedValue>, D::Error> {
+    struct Visitor;
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = BTreeMap<String, CheckedValue>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("an object with unique function names")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut a: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut functions = BTreeMap::new();
+            while let Some((name, value)) = a.next_entry::<String, CheckedValue>()? {
+                match functions.entry(name) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(value);
                     }
-                    Ok(Strict(Value::Array(v)))
-                }
-                fn visit_map<A: serde::de::MapAccess<'de>>(
-                    self,
-                    mut a: A,
-                ) -> Result<Strict, A::Error> {
-                    let mut m = serde_json::Map::new();
-                    while let Some((k, Strict(v))) = a.next_entry::<String, Strict>()? {
-                        if m.insert(k.clone(), v).is_some() {
-                            return Err(serde::de::Error::custom(format!("duplicate key {k}")));
-                        }
+                    std::collections::btree_map::Entry::Occupied(entry) => {
+                        return Err(serde::de::Error::custom(format!(
+                            "duplicate function name {}",
+                            entry.key()
+                        )));
                     }
-                    Ok(Strict(Value::Object(m)))
                 }
             }
-            d.deserialize_any(Visitor)
+            Ok(functions)
         }
     }
-    serde_json::from_str::<Strict>(text)
-        .map(|s| s.0)
-        .map_err(|e| e.to_string())
+    d.deserialize_map(Visitor)
+}
+
+// A syntactically valid subtree belongs to one function once the enclosing unique
+// name and owner have been validated. Carry duplicate errors to that function's
+// failure handling rather than refusing unrelated optional entries. The first
+// value is retained internally, but no value from a duplicate-bearing subtree may
+// enter target parsing or be applied.
+struct CheckedValue {
+    value: Value,
+    duplicate: Option<String>,
+}
+impl CheckedValue {
+    fn new(value: Value) -> Self {
+        Self {
+            value,
+            duplicate: None,
+        }
+    }
+    fn into_result(self) -> Result<Value, String> {
+        match self.duplicate {
+            Some(reason) => Err(reason),
+            None => Ok(self.value),
+        }
+    }
+}
+impl<'de> Deserialize<'de> for CheckedValue {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = CheckedValue;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("JSON with duplicate-key diagnostics")
+            }
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<CheckedValue, E> {
+                Ok(CheckedValue::new(v.into()))
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<CheckedValue, E> {
+                Ok(CheckedValue::new(v.into()))
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<CheckedValue, E> {
+                Ok(CheckedValue::new(v.into()))
+            }
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<CheckedValue, E> {
+                Ok(CheckedValue::new(serde_json::json!(v)))
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<CheckedValue, E> {
+                Ok(CheckedValue::new(v.into()))
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<CheckedValue, E> {
+                Ok(CheckedValue::new(Value::Null))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut a: A,
+            ) -> Result<CheckedValue, A::Error> {
+                let mut values = vec![];
+                let mut duplicate = None;
+                while let Some(child) = a.next_element::<CheckedValue>()? {
+                    duplicate = duplicate.or(child.duplicate);
+                    values.push(child.value);
+                }
+                Ok(CheckedValue {
+                    value: Value::Array(values),
+                    duplicate,
+                })
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut a: A,
+            ) -> Result<CheckedValue, A::Error> {
+                let mut values = serde_json::Map::new();
+                let mut duplicate = None;
+                while let Some((key, child)) = a.next_entry::<String, CheckedValue>()? {
+                    duplicate = duplicate.or(child.duplicate);
+                    match values.entry(key) {
+                        serde_json::map::Entry::Vacant(entry) => {
+                            entry.insert(child.value);
+                        }
+                        serde_json::map::Entry::Occupied(entry) => {
+                            duplicate
+                                .get_or_insert_with(|| format!("duplicate key {}", entry.key()));
+                        }
+                    }
+                }
+                Ok(CheckedValue {
+                    value: Value::Object(values),
+                    duplicate,
+                })
+            }
+        }
+        d.deserialize_any(Visitor)
+    }
 }
 pub fn snapshot(owner: &str) -> Result<OverrideSet, String> {
     let op = crate::v8host::engine_ops()
@@ -327,8 +395,7 @@ pub fn prepare(
             return Err("invalid/unsorted/oversized override snapshot or hash".into());
         }
         previous = &record.relative_path;
-        let value = strict_json(&jsonc(&record.content)?)?;
-        let file: OverrideFile = serde_json::from_value(value)
+        let file: OverrideFile = serde_json::from_str(&jsonc(&record.content)?)
             .map_err(|e| format!("{}: unattributable override: {e}", record.relative_path))?;
         if file.schema_version != 2
             || file.owner_id != base.owner_id
@@ -342,7 +409,8 @@ pub fn prepare(
         for (name, value) in file.functions {
             let f = &mut functions[by_name[&name]];
             let result = (|| {
-                let entry: Entry = serde_json::from_value(value).map_err(|e| e.to_string())?;
+                let entry: Entry =
+                    serde_json::from_value(value.into_result()?).map_err(|e| e.to_string())?;
                 if entry.contract_hash != f.function.contract_hash {
                     return Err("stale base contract hash".into());
                 }
@@ -381,4 +449,119 @@ pub fn prepare(
         }
     }
     Ok(PreparedCandidate { base, functions })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine_functions::tests::{fixture, seal, summary};
+    use serde_json::json;
+
+    fn bundle(required: bool) -> NormalizedBundle {
+        let mut value = fixture();
+        let mut other = value["functions"][0].clone();
+        other["localName"] = "other".into();
+        other["canonicalId"] = "@demo/fire::other".into();
+        value["functions"].as_array_mut().unwrap().push(other);
+        if required {
+            value["functions"][0]["requirement"] = "required".into();
+        }
+        seal(&mut value);
+        contract::parse(
+            &value.to_string(),
+            "@demo/fire",
+            &summary(&value),
+            &["engine:calls".into()],
+        )
+        .unwrap()
+    }
+
+    fn record(content: String) -> SnapshotRecord {
+        SnapshotRecord {
+            relative_path: "gamedata/plugins/id-QGRlbW8vZmlyZQ/custom/a.jsonc".into(),
+            sha256: contract::hash_bytes(content.as_bytes()),
+            content,
+        }
+    }
+
+    fn override_text(base: &NormalizedBundle) -> String {
+        json!({
+            "schemaVersion": 2,
+            "ownerId": "@demo/fire",
+            "functions": {
+                "fire": {"contractHash": base.functions[0].contract_hash,
+                    "target": {"module":"server", "pattern":"55", "validate":{"prologue":"55"}}},
+                "other": {"contractHash": base.functions[1].contract_hash,
+                    "target": {"module":"server", "pattern":"66", "validate":{"prologue":"66"}}}
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn nested_duplicate_key_disables_only_attributed_optional_function() {
+        let base = bundle(false);
+        let content = override_text(&base).replacen(
+            "\"prologue\":\"55\"",
+            "\"prologue\":\"55\",\"prologue\":\"56\"",
+            1,
+        );
+        let candidate = prepare(base, "archive", vec![record(content)])
+            .expect("unique optional entry is attributable");
+        let fire = &candidate.functions()[0];
+        assert!(fire
+            .unavailable()
+            .unwrap()
+            .contains("duplicate key prologue"));
+        assert!(
+            fire.provenance().overrides.is_empty(),
+            "malformed entry must never apply either duplicate value"
+        );
+        let other = &candidate.functions()[1];
+        assert!(other.unavailable().is_none());
+        assert_eq!(other.provenance().overrides.len(), 1);
+        match &other.function().target {
+            NormalizedTarget::Signature { pattern, .. } => assert_eq!(pattern, "66"),
+            _ => panic!("expected signature"),
+        }
+    }
+
+    #[test]
+    fn nested_duplicate_key_in_required_function_refuses_candidate_by_name() {
+        let base = bundle(true);
+        let content = override_text(&base).replacen(
+            "\"prologue\":\"55\"",
+            "\"prologue\":\"55\",\"prologue\":\"56\"",
+            1,
+        );
+        let reason = prepare(base, "archive", vec![record(content)]).unwrap_err();
+        assert!(
+            reason.contains("@demo/fire::fire: required function unavailable"),
+            "{reason}"
+        );
+        assert!(reason.contains("duplicate key prologue"), "{reason}");
+    }
+
+    #[test]
+    fn duplicate_attribution_boundaries_still_refuse_candidate() {
+        let base = bundle(false);
+        let content = override_text(&base);
+        for (before, after) in [
+            (
+                "\"schemaVersion\":2",
+                "\"schemaVersion\":2,\"schemaVersion\":2",
+            ),
+            (
+                "\"ownerId\":\"@demo/fire\"",
+                "\"ownerId\":\"@demo/fire\",\"ownerId\":\"@demo/fire\"",
+            ),
+            ("\"functions\":{", "\"functions\":{},\"functions\":{"),
+            ("\"fire\":{", "\"fire\":{},\"fire\":{"),
+        ] {
+            let malformed = content.replacen(before, after, 1);
+            assert_ne!(content, malformed, "fixture must contain {before}");
+            let reason = prepare(base.clone(), "archive", vec![record(malformed)]).unwrap_err();
+            assert!(reason.contains("duplicate"), "{before}: {reason}");
+        }
+    }
 }
