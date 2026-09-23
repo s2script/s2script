@@ -9,6 +9,8 @@
 #include "sigscan.h"
 #include "acceptance_observer.h"
 #include "controlled_evidence.h"
+#include "declarative_fixture.h"
+#include "engine_hooks.h"
 #include "runtime_witness.h"
 
 #include <eiface.h>
@@ -781,6 +783,10 @@ static KHook::Return<void> CommandOriginalPost(ISource2GameClients*, CPlayerSlot
 }
 
 static void InstallControlledHooks() {
+    std::string declarative_reason;
+    const bool declarative = S2ProbeDeclarativeInstall(declarative_reason);
+    META_CONPRINTF("[khook-probe] declarative native accepted=%d: %s\n",
+                   declarative ? 1 : 0, declarative_reason.c_str());
     g_dummyA.tag = 10;
     g_dummyB.tag = 20;
     g_dummyPhase.tag = 30;
@@ -2428,6 +2434,13 @@ static void PushCommandSubchecks() {
 }
 
 static void CollectControlledAndEvents() {
+    // Deliberately outside the suite A case registry. S1-6 will bind these observations to suite B;
+    // neither an unexecuted fixture nor this auxiliary report is live acceptance by itself.
+    S2ProbeDeclarativeReset();
+    S2ProbeDeclarativeInvoke();
+    const auto declarative = S2ProbeDeclarativeCollect();
+    META_CONPRINTF("[khook-probe] declarative native observation_only match=%d %s\n",
+                   declarative.Passed() ? 1 : 0, declarative.Json().c_str());
     const S2HookReceipt failed = fnNull.Configure(static_cast<const void*>(nullptr));
     const bool failed_ok =
         failed.state == S2HookState::Failed && failed.id == KHook::INVALID_HOOK && !failed.reason.empty();
@@ -2888,7 +2901,8 @@ static const std::array<S2CheckedBindingOps*, 25>& ProbeNormalBindings() {
 
 static bool ProbeRetireAndFinish(const S2HookTerminalPermit& permit) {
     const auto& bindings = ProbeNormalBindings();
-    if (!permit.IsValid() || !S2HookInventoryCanRemoveSync(bindings, permit)) return false;
+    if (!permit.IsValid() || !S2HookInventoryCanRemoveSync(bindings, permit) ||
+        !S2EngineHooksCanUnloadSync(permit)) return false;
 
     // The world has already been invalidated at the public PreShutdown boundary.
     // This helper retains the existing generation checks and only forgets stale
@@ -2920,8 +2934,11 @@ static bool ProbeRetireAndFinish(const S2HookTerminalPermit& permit) {
     virtPre.Remove(&g_dummyPhase);
     virtPost.Remove(&g_dummyPhase);
 
-    return S2HookInventoryBeginRemoveSync(bindings, permit) &&
-           S2HookInventoryRemovalComplete(bindings);
+    const bool complete = S2HookInventoryBeginRemoveSync(bindings, permit) &&
+        S2EngineHooksUnloadSync(permit) && S2HookInventoryRemovalComplete(bindings) &&
+        S2EngineHooksRemovalComplete();
+    if (complete) S2_HookResetAll();
+    return complete;
 }
 
 bool ProbePlugin::Unload(char* error, size_t maxlen) {

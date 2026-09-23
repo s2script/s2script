@@ -31,6 +31,43 @@ static void fixture_release(char* pointer) {
 }
 
 int main() {
+    s2khook::DeclarativeVoidObservation declarative;
+    assert(!declarative.Passed());
+    declarative = {true, 1, 1, 1, 1, true};
+    assert(declarative.Passed());
+    std::cout << declarative.Json() << "\n";
+    declarative.original = 2;
+    assert(!declarative.Passed());
+    declarative.original = 1;
+    declarative.original_in_scope = 0;
+    assert(!declarative.Passed());
+    declarative.original_in_scope = 1;
+    declarative.expired = false;
+    assert(!declarative.Passed());
+
+    s2khook::DeclarativeSnapshot snapshot;
+    assert(!snapshot.Passed());
+    snapshot.simple = {true, 1, 1, 1, 1, true};
+    snapshot.mutation = {1, 1, 1, 7.25f, -17,
+        static_cast<int64_t>(UINT64_C(0xf123456789abcdef)), static_cast<int64_t>(UINT64_C(0x8123456789abcdef))};
+    snapshot.acquire = {{{1,1,1,1,6,6,0}, {1,1,1,1,6,6,0}, {1,1,1,1,2,2,0},
+                         {1,1,0,0,1,1,1}, {1,1,0,0,0,0,1}}};
+    snapshot.nesting = {3,3,3,2,2,2,2,2,0,40,{{42,41,40}}};
+    snapshot.bypass = {2,2,3,0,0,2,2,{{6,6,6}}};
+    assert(snapshot.Passed());
+    std::cout << snapshot.Json() << "\n";
+    snapshot.mutation.opaque_b = 0x89abcdef;
+    assert(!snapshot.Passed());
+    snapshot.mutation.opaque_b = static_cast<int64_t>(UINT64_C(0x8123456789abcdef));
+    snapshot.acquire[2].post_result = 0;
+    assert(!snapshot.Passed());
+    snapshot.acquire[2].post_result = 2;
+    snapshot.nesting.post_methods[0] = 40;
+    assert(!snapshot.Passed());
+    snapshot.nesting.post_methods[0] = 42;
+    snapshot.bypass.post_after_bypass = 1;
+    assert(!snapshot.Passed());
+
     s2khook::IntTarget volatile target = &plus_one;
     assert(s2khook::InvokeOpaque(target, 10) == 11);
     target = &override_42;
@@ -112,7 +149,16 @@ with tempfile.TemporaryDirectory(prefix="khook-controlled-evidence-") as temp:
     lines = subprocess.run([str(exe)], check=True, capture_output=True, text=True).stdout.splitlines()
 
 records = [json.loads(line) for line in lines]
-assert len(records) == 4
+assert len(records) == 6
+assert records.pop(0) == {"installed": True, "pre": 1, "original": 1,
+                          "original_in_scope": 1, "receiver_ok": 1, "expired": True}
+snapshot = records.pop(0)
+assert snapshot["mutation"]["opaque_a"] == str(0xf123456789abcdef)
+assert snapshot["mutation"]["opaque_b"] == str(0x8123456789abcdef)
+assert snapshot["acquire"][3] == {"pre": 1, "post": 1, "original": 0, "arguments_ok": 0,
+                                  "effective_return": 1, "post_result": 1, "skipped": 1}
+assert snapshot["nesting"]["post_methods"] == [42, 41, 40]
+assert snapshot["bypass"]["returns"] == [6, 6, 6]
 assert records[0]["ab_io"] == {"pre_a": 1, "pre_b": 1, "orig": 1, "ret": 42, "pre_order": 21}
 assert records[0]["ba_os"] == {"pre_a": 1, "pre_b": 1, "orig": 0, "ret": 99, "pre_order": 12}
 assert records[1]["ba_os"]["ret"] == 2139062143

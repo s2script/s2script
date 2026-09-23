@@ -44,6 +44,11 @@ endif()
 
 add_library(s2_khook_probe SHARED
     plugin.cpp
+    declarative_fixture.cpp
+    "${S2_SOURCE_DIR}/shim/src/engine_hooks.cpp"
+    "${S2_SOURCE_DIR}/shim/src/hook_dispatch.cpp"
+    "${S2_SOURCE_DIR}/shim/src/call_validate.cpp"
+    "${S2_SOURCE_DIR}/third_party/hde/hde64.c"
     "${S2_SOURCE_DIR}/shim/src/sigscan.cpp"
     # CKV3MemberName in plugin.cpp requires the same SDK support definitions as the production shim.
     "${S2_SOURCE_DIR}/shim/src/tier1_shims.cpp"
@@ -55,6 +60,7 @@ target_link_libraries(s2_khook_probe PRIVATE ${CMAKE_DL_LIBS})
 target_include_directories(s2_khook_probe PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${S2_SOURCE_DIR}/shim/src"
+    "${S2_SOURCE_DIR}/third_party/hde"
     "${S2_SOURCE_DIR}/shim/src/sdk_stubs"
     "${MMS}/core"
     "${KHOOK}/include"

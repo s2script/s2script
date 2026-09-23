@@ -153,7 +153,7 @@ int Post(int id,void* view,int skipped) { return post ? post(id,view,skipped) : 
 int originals=0;
 std::vector<int> order;
 void* last_view=nullptr;
-void VoidTarget(void*) { ++originals; order.push_back(3); }
+void VoidTarget(void*) { ++originals; order.push_back(3); CHECK(S2Hook_ActiveCount()>0,"Observe remains held through original in Recall"); }
 void OtherVoid(void*) { ++originals; }
 void MissingTarget(void*) {}
 void RejectTarget(void*) {}
@@ -276,6 +276,48 @@ void Acquisition() {
     provider.after_post=[] { provider.Peer(KHook::Action::Supersede,9); };
     CHECK(provider.Invoke(&Acquire,receiver,high_a,int32_t{4},high_b)==9 && seen==2,"our POST reports its position, not later peer outcome");
     provider.after_post={}; post={}; dispatch={};
+
+    // A peer/original can synchronously enter the same acquisition ID after our PRE has saved
+    // its vote. A shared record would replace the outer denial with the inner denial here.
+    bool nested=false;
+    void* outer_view=nullptr;
+    std::vector<int> post_values;
+    dispatch=[&](int,void* v) {
+        int32_t method=0;
+        S2_HookReadI32(v,0,&method);
+        if (method==12) outer_view=v;
+        else {
+            int32_t rejected=0;
+            CHECK(S2_HookReadI32(outer_view,0,&rejected)==-1,"outer view inaccessible during inner invocation");
+        }
+        S2_HookWriteI32(v,1,method==12?2:6); S2_HookWriteI32(v,2,1);
+        return 1;
+    };
+    post=[&](int,void* v,int skip) {
+        int32_t result=0; S2_HookReadI32(v,1,&result); post_values.push_back(result);
+        CHECK(!skip,"nested Changed still calls both originals"); return 0;
+    };
+    provider.before_original=[&] {
+        if (nested) return;
+        nested=true;
+        CHECK(provider.Invoke(&Acquire,receiver,high_a,int32_t{13},high_b)==6,"nested acquisition owns independent vote");
+        int32_t method=0;
+        CHECK(S2_HookReadI32(outer_view,0,&method)==0 && method==12,"outer acquisition view restored after peer nesting");
+    };
+    CHECK(provider.Invoke(&Acquire,receiver,high_a,int32_t{12},high_b)==2 && post_values==std::vector<int>({6,2}),"saved outer acquisition vote survives peer nesting and inner POST");
+    provider.before_original={}; dispatch={}; post={};
+
+    int pre_count=0, post_count=0;
+    nested=false;
+    dispatch=[&](int,void*) { ++pre_count; return 0; };
+    post=[&](int,void*,int) { ++post_count; return 0; };
+    provider.before_original=[&] {
+        if (!nested) { nested=true; provider.Invoke(&Acquire,receiver,high_a,int32_t{1},high_b); }
+    };
+    S2_HookArmBypass(3);
+    provider.Invoke(&Acquire,receiver,high_a,int32_t{1},high_b);
+    CHECK(pre_count==1 && post_count==1,"bypassed outer still permits normal same-ID nested dispatch");
+    provider.before_original={}; dispatch={}; post={};
 }
 
 void RejectionAndLifecycle() {
