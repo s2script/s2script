@@ -148,6 +148,10 @@ struct MainBridgeObservation {
         return scenario==12 && bypass_original==1 && bypass_peer_pre==1 && bypass_peer_post==1 && bypass_callbacks==0 &&
             original-bypass_original==1 && peer_pre-bypass_peer_pre==1 && peer_post-bypass_peer_post==1 && callbacks-bypass_callbacks==1;
     }
+    bool DirectHudObserved() const {
+        return scenario==13 && original==1 && callbacks==1 && peer_pre==1 && peer_post==1 &&
+            hud_self && hud_controller && hud_layout && text=="direct-hud";
+    }
     uintptr_t target_address=0;
     std::map<int,int> generation_callbacks;
 };

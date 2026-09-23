@@ -408,7 +408,7 @@ int32_t AcquireBody(int order,void*,int64_t a,int32_t method,int64_t b) {
 void HudBody(int order,void* self,int64_t controller,int64_t layout,int64_t text) {
     Original(order); if (!active) return;
     if (active->scenario==13) expected_receiver=self;
-    active->hud_self=self==expected_receiver;
+    active->hud_self=self && self==expected_receiver;
     active->hud_controller=reinterpret_cast<void*>(controller)==expected_receiver;
     active->hud_layout=reinterpret_cast<void*>(layout)==expected_receiver;
     // This is a borrowed first-word text holder (utlstring), NEVER std::string.
@@ -574,9 +574,9 @@ extern "C" __attribute__((noinline)) bool S2ProbeBridgeWindowBody(const char* ru
 extern "C" __attribute__((noinline)) int32_t S2ProbePrecacheBeginBody(const char* run,int32_t generation,int32_t) {
     using namespace main_bridge;
     S2NamedPrecacheFrameV1 frame;
-    if (!run || suite!="C" || artifact.empty() || !Frame(frame) || !live_bridge::HasPrecacheFrame(frame)) return 0;
+    if (!run || suite!="C" || artifact.empty() || !Frame(frame)) return 0;
     const int token=tokens.Begin(run,generation,static_cast<int>(map_generation),frame);
-    if (token) live_bridge::PrecacheToken(token,frame);
+    if (token && live_bridge::HasPrecacheFrame(frame)) live_bridge::PrecacheToken(token,frame);
     return token;
 }
 extern "C" __attribute__((noinline)) bool S2ProbePrecacheFinishBody(int32_t token,const char* resource,bool added,int32_t generation) {

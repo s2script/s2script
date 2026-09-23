@@ -1006,6 +1006,14 @@ class IntegrationEvidenceTests(unittest.TestCase):
             if "peer_orders" in rec["subcheck"] or "both_orders" in rec["subcheck"] or suite == "C":
                 rec["observations"].append(dict(rec["observations"][0], sequence=2, invocation="fixture-2",
                     peer_order="s2script-first", frame_token=2, map_generation=2, manifest="m2"))
+            if rec["case"] == "script_generation_lifetime":
+                rec["observations"] = [dict(rec["observations"][0], sequence=generation, generation=generation,
+                    invocation="generation-" + str(generation)) for generation in (1, 2, 3)]
+            if rec["subcheck"] == "native_all_sites_both_peer_orders":
+                rec["observations"] = [dict(rec["observations"][0], scenario_id=site, sequence=index * 2 + order + 1,
+                    invocation=site + str(order), peer_order=("peer-first", "s2script-first")[order],
+                    facts=dict(site=site, origin="main-runtime" if index < 5 else "controlled-stock-provider"))
+                    for index, site in enumerate(ka.INTEGRATION_EXPECTED[rec["subcheck"]]["sites"]) for order in (0, 1)]
         return records
 
     def judge(self, records, suite):
@@ -1045,7 +1053,7 @@ class IntegrationEvidenceTests(unittest.TestCase):
             data = b'{"files": []}'
             path.write_bytes(data)
             native, _ = self.gamedata_fixture()
-            native.update(addon_root=str(root), files=[dict(path=str(path), size=len(data),
+            native.update(addon_root="/container/addons/s2script", files=[dict(path="/container/addons/s2script/gamedata/cs2/master.gamedata.jsonc", size=len(data),
                 fingerprint_algorithm="fnv1a64-diagnostic", fingerprint=ka._fnv1a64(data))])
             mapped_identity = dict(IDENTITY, gamedata_root=str(root / "gamedata"))
             observed = ka.capture_gamedata_inputs(native, mapped_identity)
@@ -1055,6 +1063,37 @@ class IntegrationEvidenceTests(unittest.TestCase):
             self.assertEqual(ka.capture_gamedata_inputs(native, mapped_identity)["status"], "fail")
             path.unlink()
             self.assertEqual(ka.capture_gamedata_inputs(native, mapped_identity)["status"], "pending")
+
+    def test_gamedata_mapping_rejects_arbitrary_paths_and_symlink_escape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mapped = root / "gamedata"
+            mapped.mkdir()
+            outside = root / "outside.jsonc"
+            outside.write_bytes(b"")
+            (mapped / "escape.jsonc").symlink_to(outside)
+            native, _ = self.gamedata_fixture()
+            native["addon_root"] = "/installed"
+            identity = dict(IDENTITY, gamedata_root=str(mapped))
+            for path in ("/arbitrary/outside.jsonc", "/installed/gamedata/../outside.jsonc", "/installed/gamedata/escape.jsonc"):
+                native["files"][0]["path"] = path
+                self.assertEqual(ka.capture_gamedata_inputs(native, identity)["status"], "fail", path)
+            self.assertEqual(ka.capture_gamedata_inputs(native, IDENTITY)["status"], "pending")
+
+    def test_coverage_summary_cannot_claim_unobserved_site_or_wrong_owner(self):
+        for mutation in ("missing", "owner"):
+            records = self.records("B")
+            row = next(r for r in records if r["subcheck"] == "native_all_sites_both_peer_orders")
+            if mutation == "missing": row["observations"].pop()
+            else: row["observations"][0]["facts"]["origin"] = "controlled-stock-provider"
+            self.assertEqual(self.judge(records, "B").exit_code, 1)
+
+    def test_generation_claim_requires_three_measured_generations(self):
+        records = self.records("B")
+        for row in records:
+            if row["case"] == "script_generation_lifetime":
+                row["observations"] = row["observations"][:1]
+        self.assertEqual(self.judge(records, "B").exit_code, 1)
 
     def test_missing_half_case_and_pending_callback(self):
         for suite in ("B", "C"):

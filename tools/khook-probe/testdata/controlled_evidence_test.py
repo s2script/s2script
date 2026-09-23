@@ -47,6 +47,10 @@ int main() {
     assert(tokens.Read(token,0,outer)==1 && tokens.Read(token,2,outer)>0);
     assert(tokens.Read(token,0,inner)==0);
     assert(!tokens.Finish("run",token,1,{},"resource",true));
+    assert(!tokens.ObservePeer(token+1,outer,1,"PJ"));
+    assert(!tokens.ObservePeer(token,inner,1,"PJ"));
+    assert(tokens.ObservePeer(token,outer,1,"PJ"));
+    assert(!tokens.ObservePeer(token,outer,1,"JP"));
     tokens.Reset("new-run");
     assert(tokens.Read(token,0,outer)==0);
 
@@ -107,6 +111,14 @@ int main() {
     snapshot.bypass.post_after_bypass = 1;
     assert(!snapshot.Passed());
 
+    s2khook::MainBridgeObservation hud;
+    hud.scenario=13; hud.original=1; hud.callbacks=1; hud.peer_pre=1; hud.peer_post=1;
+    hud.hud_self=true; hud.hud_controller=true; hud.hud_layout=true; hud.text="direct-hud";
+    assert(hud.DirectHudObserved());
+    hud.original=0; assert(!hud.DirectHudObserved());
+    hud.original=2; assert(!hud.DirectHudObserved());
+    hud.original=1; hud.text="garbage"; assert(!hud.DirectHudObserved());
+    hud.text="direct-hud"; hud.hud_layout=false; assert(!hud.DirectHudObserved());
     s2khook::NamedSnapshot named;
     assert(!named.Passed());
     named.installed = true;

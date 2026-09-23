@@ -397,6 +397,10 @@ INTEGRATION_EXPECTED["native_main_bypass_absent_then_next_delivered"] = {
     "same_invocation_markers": True, "target_calls_observed": True, "both_phases_observed": True,
 }
 
+INTEGRATION_EXPECTED["native_main_hud_direct_utlstring"] = {
+    "same_invocation_markers": True, "target_calls_observed": True, "original_and_utlstring_observed": True,
+}
+
 
 def _integration_spec(rows: dict, suite: str) -> SuiteSpec:
     checks = []
@@ -417,6 +421,8 @@ def _integration_spec(rows: dict, suite: str) -> SuiteSpec:
                 if name == "native_acquire_outbound_peer_post": provenance = "main-runtime"
                 owner = "named_hooks" if suite == "C" or (case.endswith("named_hook") and case != "acquisition_named_hook") else "engine_hooks"
                 join = "real-acquire-post" if case == "acquisition_named_hook" else "script-generation" if lifetime else name[3:] if main else "precache-map" if real and name != "native_precache_live_peer_both_orders" and name != "js_precache_stale_context_rejected" else ""
+                if name == "native_all_sites_both_peer_orders":
+                    group, provenance, owner = "coverage-summary", "mixed-observed", "stock-khook"
                 check = _sc(case, name, producer)
                 checks.append(check)
                 rules[(case, name, producer)] = EvidenceRule(group, provenance, owner, case, join)
@@ -582,6 +588,23 @@ def _integration_record_error(rec: dict, rule: EvidenceRule) -> Optional[str]:
             for name in ("receiver", "vtable", "manifest"):
                 if not isinstance(obs.get(name), str) or not obs[name]:
                     return f"precache requires opaque {name} label"
+    if rule.target == "script_generation_lifetime" and len({o["generation"] for o in observations}) != 3:
+        return "three actual script generations required"
+    if rec["subcheck"] == "native_all_sites_both_peer_orders":
+        expected_sites = INTEGRATION_EXPECTED[rec["subcheck"]]["sites"]
+        measured = []
+        for observation in observations:
+            facts = observation["facts"]
+            site = facts.get("site")
+            if site not in expected_sites:
+                return "coverage summary requires a known observed site"
+            origin = "main-runtime" if expected_sites.index(site) < 5 else "controlled-stock-provider"
+            if facts.get("origin") != origin:
+                return "coverage summary site ownership mismatch"
+            measured.append((site, observation["peer_order"]))
+        wanted = {(site, order) for site in expected_sites for order in ("peer-first", "s2script-first")}
+        if len(measured) != len(wanted) or set(measured) != wanted:
+            return "coverage summary requires each site in both observed registration orders"
     if "peer_orders" in rec["subcheck"] or "both_orders" in rec["subcheck"]:
         if {o["peer_order"] for o in observations} != {"peer-first", "s2script-first"}:
             return "both observed peer orders required"
