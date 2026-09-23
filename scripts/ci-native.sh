@@ -7,6 +7,23 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# ccache is present in CI via hendrikmuhs/ccache-action; on a dev box it may not be.
+# Only pass the launcher when it actually exists, so cmake does not fail on a missing binary.
+LAUNCHER=()
+if command -v ccache >/dev/null 2>&1; then
+  LAUNCHER=(-DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+fi
+
+# Fail fast on the complete optimized acceptance plugin: fixture-only host tests
+# cannot see plugin.cpp/SDK declaration errors. The final Bullseye/sniper build
+# and its source-bound symbol gates below remain mandatory.
+if [[ "$(uname -s)" == Linux ]]; then
+  echo "== early Release acceptance probe compile =="
+  cmake -S tools/khook-probe -B build/khook-probe-early -DCMAKE_BUILD_TYPE=Release \
+    ${LAUNCHER[@]+"${LAUNCHER[@]}"}
+  cmake --build build/khook-probe-early --parallel "${S2_BUILD_JOBS:-2}"
+fi
+
 # Populates the cargo registry that check-licenses-generated.sh reads every locked crate's
 # license text out of, and warms it for the build below.
 echo "== cargo fetch --locked =="
@@ -123,12 +140,6 @@ echo "== cargo test -p s2script-core =="
 cargo test -p s2script-core
 bash scripts/test-async-pressure.sh
 
-# ccache is present in CI via hendrikmuhs/ccache-action; on a dev box it may not be.
-# Only pass the launcher when it actually exists, so cmake does not fail on a missing binary.
-LAUNCHER=()
-if command -v ccache >/dev/null 2>&1; then
-  LAUNCHER=(-DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
-fi
 
 echo "== check-gamedata-sigs.sh (no build-specific operands in a signature) =="
 bash scripts/check-gamedata-sigs.sh
