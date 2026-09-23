@@ -108,9 +108,56 @@ set +e
 timeout --signal=TERM --kill-after=10s 120s \
   cargo test --locked -p s2script-core --lib \
   v8host::engine_function_adapter_v8::busy_caller_stock_provider_spike -- --ignored --exact --nocapture \
-  2>&1 | tee "$artifact/test-output.txt"
-status=${PIPESTATUS[0]}
+  2>&1 | python3 -c '
+import os
+import sys
+
+# Keep draining after the saved prefix fills or a destination fails, so capture
+# cannot give the Cargo child SIGPIPE. Console output still receives the stream.
+streams = {sys.stdout.fileno(): None}
+saved = None
+failed = False
+try:
+    saved = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
+    streams[saved] = 1048576
+except OSError as error:
+    print(f"FAIL Cargo output capture: {error}", file=sys.stderr)
+    failed = True
+total = 0
+while True:
+    chunk = os.read(sys.stdin.fileno(), 65536)
+    if not chunk:
+        break
+    total += len(chunk)
+    for descriptor, remaining in list(streams.items()):
+        data = chunk if remaining is None else chunk[:remaining]
+        if remaining is not None:
+            streams[descriptor] -= len(data)
+        try:
+            while data:
+                written = os.write(descriptor, data)
+                if written == 0:
+                    raise OSError("write returned zero bytes")
+                data = data[written:]
+        except OSError as error:
+            print(f"FAIL Cargo output capture: {error}", file=sys.stderr)
+            failed = True
+            del streams[descriptor]
+if saved is not None:
+    try:
+        os.close(saved)
+    except OSError as error:
+        print(f"FAIL Cargo output capture: {error}", file=sys.stderr)
+        failed = True
+if total > 1048576:
+    print("DIAGNOSTIC LIMITATION: Cargo output exceeds 1 MiB; saved prefix only", file=sys.stderr)
+sys.exit(1 if failed else 0)
+' "$artifact/test-output.txt"
+pipeline_status=("${PIPESTATUS[@]}")
+status=${pipeline_status[0]}
+capture_status=${pipeline_status[1]}
 printf 'V8 normal Cargo execution exit %s\n' "$status" | tee -a "$artifact/outcome.txt"
+printf 'V8 Cargo output capture exit %s\n' "$capture_status" | tee -a "$artifact/outcome.txt"
 core_files=("$cores"/core.*)
 if [[ ${#core_files[@]} != 0 ]]; then
   mkdir -p "$artifact/binaries"
@@ -154,4 +201,8 @@ else
   printf '%s\n' 'No core: normal test passed; original SIGSEGV remains unexplained.' | tee -a "$artifact/outcome.txt"
 fi
 cat "$artifact/outcome.txt"
+# A lost mandatory capture fails a successful test; Cargo failure/timeout wins.
+if [[ $status == 0 && $capture_status != 0 ]]; then
+  exit "$capture_status"
+fi
 exit "$status"
