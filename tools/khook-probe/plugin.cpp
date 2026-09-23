@@ -117,6 +117,7 @@ static std::string JsonBool(bool v) { return v ? "true" : "false"; }
 static void PushPending(const char* cse, const char* sub, const char* producer, const std::string& expected,
                         const char* why);
 static void R6GameFrame();
+static uint64_t CurrentLevelGeneration();
 static int ProbeCvarInt(const char* name, int fallback);
 static std::string ProbeCvarStr(const char* name);
 static bool ProbeSetCvarString(const char* name, const std::string& value);
@@ -693,7 +694,7 @@ KHook::Return<void> ProbePlugin::Hook_GameFrame(ISource2Server* s, bool, bool, b
         // read-only, so wait for the first frame before touching its other slots.
         InstallLifecycleTraceOnce();
         g_game_frames++;
-        S2ProbeBridgeWorld(g_level_lifetime.Generation(),g_game_frames);
+        S2ProbeBridgeWorld(CurrentLevelGeneration(),g_game_frames);
         R6GameFrame();
         S2ProbeNamedAdvanceOrders();
     }
@@ -1191,6 +1192,7 @@ static bool g_listen_hooked = false;
 static bool g_transmit_hooked = false;
 static bool g_postevent_hooked = false;
 static s2khook::LevelLifetime g_level_lifetime;
+static uint64_t CurrentLevelGeneration() { return g_level_lifetime.Generation(); }
 static std::atomic<std::uint64_t> g_lifecycle_sequence{0};
 static std::atomic<unsigned> g_preshutdown_inflight{0};
 static std::atomic<unsigned> g_shutdown_inflight{0};
@@ -1617,7 +1619,7 @@ static void R6InvalidatePreMapPointers() {
 
 void ProbePlugin::OnLevelInit(char const*, char const*, char const*, char const*, bool, bool) {
     g_level_lifetime.OnLevelInit();
-    S2ProbeBridgeWorld(g_level_lifetime.Generation(),g_game_frames);
+    S2ProbeBridgeWorld(CurrentLevelGeneration(),g_game_frames);
 }
 
 void ProbePlugin::OnLevelShutdown() {
