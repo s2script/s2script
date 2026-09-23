@@ -8,6 +8,11 @@
 #include <dlfcn.h>
 
 extern "C" void S2ProbeNamedInvokeVirtual(void*,int,void*);
+extern "C" int64_t S2ProbeNamedDamageTarget(void*,void*,void*,void*);
+extern "C" void S2ProbeNamedChatTarget(void*,void*,bool,int,const char*);
+extern "C" void S2ProbeNamedOutputTarget(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
+                                          const CVariant*,float,void*,char*);
+extern "C" int S2ProbeNamedUsercmdTarget(void*,void*,int,bool,float);
 
 namespace {
 enum class Mode { Idle,Damage,Chat,Output,Usercmd,Precache };
@@ -39,11 +44,6 @@ public:
 ProbePrecache precache_object;
 OtherPrecache other_object;
 
-extern "C" int64_t S2ProbeNamedDamageTarget(void*,void*,void*,void*);
-extern "C" void S2ProbeNamedChatTarget(void*,void*,bool,int,const char*);
-extern "C" void S2ProbeNamedOutputTarget(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
-                                          const CVariant*,float,void*,char*);
-extern "C" int S2ProbeNamedUsercmdTarget(void*,void*,int,bool,float);
 using DamageFn=int64_t (*)(void*,void*,void*,void*);
 using ChatFn=void (*)(void*,void*,bool,int,const char*);
 using OutputFn=void (*)(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*);
