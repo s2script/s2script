@@ -409,6 +409,7 @@ git commit -m "feat: merge packaged gamedata with owner overrides"
 ### Task 5: S3-CORE-04 Register and bootstrap the selected package generically
 
 **Files:**
+- Modify: `scripts/package-addon.sh` (remove temporary legacy outputs with their runtime readers)
 - Modify: `core/src/game_packages/mod.rs`
 - Modify: `core/src/lib.rs`
 - Modify: `core/src/ffi.rs`
