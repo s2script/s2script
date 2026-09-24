@@ -2408,7 +2408,7 @@ pub(super) mod proof {
                     if(mode==='stale')return oldDelivery;
                     let first=null,next;
                     while((next=d.cursor.invokeNext())!==null){{if(!first)first=next;}}
-                    if(mode==='carry'){{globalThis.oldDelivery=first;return first;}}
+                    if(mode==='carry'){{globalThis.oldDelivery=first;return first.action>=2?first:first.action;}}
                     if(mode==='manufacture')return {{action:first.action,returnValue:first.returnValue}};
                     if(mode==='rollback'||mode==='none')return 0;
                     if(mode==='nested'){{const nested=__proofEntityCall(binding,'inner');if(nested!=='inner')throw Error('nested bypass');}}
@@ -2503,11 +2503,28 @@ pub(super) mod proof {
             if mode == "post" {
                 eval_in_context("copy-a","{let denied=false;try{savedOverride('bad')}catch(_){denied=true}if(!denied)throw Error('POST permit survived');}").unwrap();
             }
+            println!("PASS copied shared V8 mode={mode}: result={expected}, expired accessors");
         }
         copy_mode("stale");
         // A prior delivery's private tag cannot recover its original lineage.
-        eval_in_context("copy-caller","if(__proofEntityCall(binding,'input')!=='input')throw Error('stale delivery suppressed');").unwrap();
+        copy_expect_delivery_refusal("copy-caller", "input");
+        copy_mode("probe");
+        eval_in_context("copy-caller", "if(__proofEntityCall(binding,'input')!=='input')throw Error('call after stale refusal');").unwrap();
         assert_eq!(pending_invocations(), 0);
+        println!("PASS copied shared V8 stale delivery: named invocation refusal, POST cleanup, subsequent valid call");
+    }
+    pub fn copy_expect_delivery_refusal(parent: &str, input: &str) {
+        DISPATCH_ERRORS.with(|errors| errors.borrow_mut().clear());
+        eval_in_context(parent, &format!(r#"{{
+            let failure='';
+            try {{ __proofEntityCall(binding,'{input}'); }} catch(error) {{ failure=String(error); }}
+            if(!failure.includes('FunctionCopyInvocationFailure') ||
+               !failure.includes('synchronous core function dispatch failed'))
+                throw Error('stale/foreign delivery invocation did not fail: '+failure);
+        }}"#)).unwrap();
+        let errors = DISPATCH_ERRORS.with(|errors| errors.borrow_mut().drain(..).collect::<Vec<_>>());
+        assert!(errors.iter().any(|error| error == "foreign or expired host delivery"), "missing exact delivery rejection: {errors:?}");
+        assert_eq!(pending_invocations(), 0, "failed call retained PRE state after POST cleanup");
     }
     pub fn copy_peer_exercise(){
         copy_mode("peer");
@@ -5707,8 +5724,8 @@ mod copied_transport_tests {
         input: *const S2FunctionCopyInput,
         output_span: *mut S2FunctionCopyOutput,
         producer: *const S2FunctionCopyProducer,
-        _: *mut i8,
-        _: i32,
+        reason: *mut i8,
+        reason_capacity: i32,
     ) -> i32 {
         COPY_CALLS.with(|c| c.set(c.get() + 1));
         CALL_PRODUCERS.with(|s| s.borrow_mut().push(unsafe { *producer }));
@@ -5737,7 +5754,7 @@ mod copied_transport_tests {
             parameter_count: 1,
             flags: 0,
         };
-        crate::ffi::s2script_core_dispatch_function(id, &info, 0);
+        let pre = crate::ffi::s2script_core_dispatch_function(id, &info, 0);
         FRAMES.with(|s| {
             let mut s = s.borrow_mut();
             let f = s.last_mut().unwrap();
@@ -5747,8 +5764,21 @@ mod copied_transport_tests {
             }
             info.flags = u32::from(f.skipped);
         });
-        crate::ffi::s2script_core_dispatch_function(id, &info, 1);
+        let post = crate::ffi::s2script_core_dispatch_function(id, &info, 1);
         let f = FRAMES.with(|s| s.borrow_mut().pop()).unwrap();
+        // The real RuntimeBinding runs matched POST cleanup, then reports a
+        // recorded PRE/POST dispatch failure instead of returning copied output.
+        if pre != 1 || post != 1 {
+            let message = b"FunctionCopyInvocationFailure: synchronous core function dispatch failed";
+            if !reason.is_null() && reason_capacity > 0 {
+                let len = message.len().min(reason_capacity as usize - 1);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(message.as_ptr(), reason.cast(), len);
+                    *reason.add(len) = 0;
+                }
+            }
+            return 0;
+        }
         unsafe { output(&f.result, out, output_span) };
         1
     }
@@ -5991,7 +6021,10 @@ mod copied_transport_tests {
             let delivery=v8::Local::new(scope,&delivery);let global=b.global(scope);set(scope,global,"oldDelivery",delivery).unwrap();
         }).unwrap();
         proof::copy_mode("stale");
-        eval_in_context("copy-a","if(__proofEntityCall(binding,'foreign-input')!=='foreign-input')throw Error('foreign delivery recovered lineage');").unwrap();
+        let writes = WRITERS.with(|rows| rows.borrow().len());
+        proof::copy_expect_delivery_refusal("copy-a", "foreign-input");
+        assert_eq!(WRITERS.with(|rows| rows.borrow().len()), writes);
+        assert!(FRAMES.with(|frames| frames.borrow().is_empty()));
         proof::copy_exercise();
         // Each failing callback drops its private staged writes; neither parent
         // can borrow the other's generation quota on the shared target.
