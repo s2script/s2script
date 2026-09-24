@@ -702,10 +702,20 @@ static void copied_execution() {
     std::vector<std::string> churn(500,std::string(4096,'q'));assert(std::string(retained)=="edited");
     std::cout<<"PASS stock copied alias, immutable frame edits, suppression escape, POST override/arbitration and capacity rollback\n";
 }
+static void check_callback_trace(const std::vector<std::string>& actual,const std::vector<std::string>& expected) {
+    if(actual!=expected) {
+        std::cerr<<"unexpected callback order:";
+        for(const auto& event:actual) std::cerr<<" "<<event;
+        std::cerr<<"\n";
+    }
+    assert(actual==expected);
+}
 static std::string arbitration_submission,arbitration_expected;
+static std::vector<std::string> arbitration_trace;
 static int arbitration_dispatch(long long id,const S2FunctionFrameInfo* info,int phase) {
     using namespace s2bridge;CopyFrameKey key{id,info->frame_token,info->native_epoch,"linux-x86_64-sysv:none:ptr(ptr)"};
     auto request=entity_request(4);
+    arbitration_trace.push_back(phase ? "bridge:post" : "bridge:pre");
     if(!phase) {
         auto value=request;value.aux=arbitration_submission.size();CopyInput in{1,sizeof(CopyInput),reinterpret_cast<const uint8_t*>(arbitration_submission.data()),arbitration_submission.size()};
         assert(FrameCommitCopy(key,2,&value,in,copy_plugin()));
@@ -720,7 +730,7 @@ static int arbitration_dispatch(long long id,const S2FunctionFrameInfo* info,int
 }
 static void copied_peer_arbitration() {
     using namespace s2bridge;
-    for(bool peer_first:{true,false}) for(auto strength:{KHook::Action::Override,KHook::Action::Supersede}) {
+    for(bool peer_pre_first:{true,false}) for(auto strength:{KHook::Action::Override,KHook::Action::Supersede}) {
         auto address=reinterpret_cast<uintptr_t>(&s2bridge_fixture_pointer);Fixture fixture(address-0x1200);fixture.freeze();
         Service service([&](const auto&,auto& out,auto&){out.address=address;out.image=fixture.image;return true;});
         CoreDispatchSink sink(arbitration_dispatch);assert(service.SetDispatchSink(&sink));
@@ -730,17 +740,27 @@ static void copied_peer_arbitration() {
         auto prepared=service.Prepare("peer-copy",t.dump(),a.dump(),a["fingerprint"]);assert(prepared);
         struct Peer : s2fn::DispatchSink {
             KHook::Action strength;
-            void Dispatch(s2fn::DispatchFrame& f) override {if(f.phase==s2fn::Phase::Pre){f.action=strength;f.result=s2fn::NativeValue::From<const char*>("peer");}}
+            void Dispatch(s2fn::DispatchFrame& f) override {
+                arbitration_trace.push_back(f.phase==s2fn::Phase::Pre ? "peer:pre" : "peer:post");
+                if(f.phase==s2fn::Phase::Pre){f.action=strength;f.result=s2fn::NativeValue::From<const char*>("peer");}
+            }
             void Error(const char*) noexcept override {std::abort();}
         } peer;peer.strength=strength;
         s2fn::AbiSignature sig;sig.parameters={{"ptr","string"}};sig.returns={"ptr","string"};auto binding=s2fn::RuntimeBinding::Create(sig,peer);assert(binding);
-        if(peer_first) assert(binding.value->Configure(reinterpret_cast<void*>(address)).Accepted());
+        // Stock inserts each new PRE+POST callback before existing PRE+POST
+        // callbacks. Registration order is the reverse of PRE execution order.
+        if(!peer_pre_first) assert(binding.value->Configure(reinterpret_cast<void*>(address)).Accepted());
         assert(service.HookAcquire(prepared.value));
-        if(!peer_first) assert(binding.value->Configure(reinterpret_cast<void*>(address)).Accepted());
-        arbitration_submission=std::string("submitted-")+(peer_first ? "prior-" : "later-")+std::to_string(static_cast<int>(strength));
-        arbitration_expected=peer_first && strength==KHook::Action::Supersede ? "peer" : arbitration_submission;
+        if(peer_pre_first) assert(binding.value->Configure(reinterpret_cast<void*>(address)).Accepted());
+        arbitration_submission=std::string("submitted-")+(peer_pre_first ? "prior-" : "later-")+std::to_string(static_cast<int>(strength));
+        arbitration_expected=peer_pre_first && strength==KHook::Action::Supersede ? "peer" : arbitration_submission;
+        arbitration_trace.clear();
         auto before=s2fn::copy::Arena::Resident().Read();auto volatile target=&s2bridge_fixture_pointer;
         const char* escaped=static_cast<const char*>(target(const_cast<char*>("input")));assert(std::string(escaped)==arbitration_expected);
+        const std::vector<std::string> expected_trace=peer_pre_first
+            ? std::vector<std::string>{"peer:pre","bridge:pre","bridge:post","peer:post"}
+            : std::vector<std::string>{"bridge:pre","peer:pre","peer:post","bridge:post"};
+        check_callback_trace(arbitration_trace,expected_trace);
         // A host-fold winner submitted at PRE stays charged even if an earlier
         // peer Supersede wins. Public provider APIs cannot distinguish its PRE
         // strength; no hidden layout read or altered comparison is permitted.
@@ -754,14 +774,20 @@ static void copied_peer_arbitration() {
 static s2bridge::Service* borrowed_service=nullptr;
 static bool borrowed_nested=false;
 static int borrowed_reads=0, borrowed_peers=0;
+static std::vector<std::string> borrowed_trace;
 static int borrowed_dispatch(long long id,const S2FunctionFrameInfo* info,int phase) {
     using namespace s2bridge;
     CopyFrameKey key{id,info->frame_token,info->native_epoch,"linux-x86_64-sysv:none:i32(ptr)"};
     auto request=entity_request(4);uint8_t bytes[32]{};CopyOutput out{1,sizeof(CopyOutput),bytes,32,0};
     assert(FrameReadCopy(key,0,request,out));
-    if(phase) return 1;
+    if(phase) {
+        assert(std::string(reinterpret_cast<char*>(bytes),out.size)=="continued");
+        borrowed_trace.push_back(borrowed_nested ? "bridge:post:nested" : "bridge:post:outer");
+        return 1;
+    }
     ++borrowed_reads;
     const auto saved=std::string(reinterpret_cast<char*>(bytes),out.size);
+    borrowed_trace.push_back("bridge:pre:"+saved);
     if(!borrowed_nested) {
         borrowed_nested=true;
         auto arg=request;arg.aux=6;const uint8_t inner[]="nested";CopyInput in{1,sizeof(CopyInput),inner,6};CopyOutput unused{};
@@ -772,6 +798,7 @@ static int borrowed_dispatch(long long id,const S2FunctionFrameInfo* info,int ph
     const uint8_t text[]="continued";CopyInput in{1,sizeof(CopyInput),text,9};auto edit=request;edit.aux=9;
     assert(FrameWriteCopy(key,0,edit,in,copy_plugin()));
     assert(FrameCommitCopy(key,0,nullptr,{},copy_plugin()));
+    borrowed_trace.push_back("bridge:commit:"+saved);
     return 1;
 }
 static void borrowed_recall_execution() {
@@ -782,18 +809,34 @@ static void borrowed_recall_execution() {
     auto t=target();t["resolve"]="direct";t["derivation"]="identity";t["candidateValidate"]=json::object();auto a=abi();
     a["parameters"][0]["native"]="ptr";a["parameters"][0]["projection"]["id"]="string";a["parameters"][0]["ownership"]="callee-borrowed";
     a["parameters"][0]["mutable"]=json::array({"pre"});a["fingerprint"]="linux-x86_64-sysv:none:i32(ptr)";
-    auto prepared=service.Prepare("borrowed",t.dump(),a.dump(),a["fingerprint"]);assert(prepared);assert(service.HookAcquire(prepared.value));
+    auto prepared=service.Prepare("borrowed",t.dump(),a.dump(),a["fingerprint"]);assert(prepared);
     struct Peer : s2fn::DispatchSink {
         void Dispatch(s2fn::DispatchFrame& f) override {
-            if(f.phase!=s2fn::Phase::Pre) return;
+            if(f.phase==s2fn::Phase::Post) {
+                assert(std::string(f.arguments[0].Get<const char*>())=="continued");
+                borrowed_trace.push_back(borrowed_nested ? "peer:post:nested" : "peer:post:outer");
+                return;
+            }
             ++borrowed_peers;std::vector<std::string> churn(500,std::string(4096,'x'));
-            assert(std::string(f.arguments[0].Get<const char*>())=="continued");
+            const auto observed=std::string(f.arguments[0].Get<const char*>());
+            if(observed!="continued") std::cerr<<"borrowed peer PRE argument: "<<observed<<"\n";
+            assert(observed=="continued");
+            borrowed_trace.push_back(borrowed_nested ? "peer:pre:nested" : "peer:pre:outer");
         }
         void Error(const char* error) noexcept override {std::cerr<<error<<"\n";std::abort();}
     } peer;
     s2fn::AbiSignature sig;sig.parameters={{"ptr","string"}};sig.returns={"i32","i32"};
     auto binding=s2fn::RuntimeBinding::Create(sig,peer);assert(binding);assert(binding.value->Configure(reinterpret_cast<void*>(address)).Accepted());
+    // Register the intended later PRE peer first: stock prepends PRE+POST
+    // callbacks, so the bridge must be registered last to recall into this peer.
+    assert(service.HookAcquire(prepared.value));
+    borrowed_trace.clear();
     const auto before=s2fn::copy::NativeBudget().Read();auto volatile target=&s2bridge_fixture_length;assert(target("outer")==9);
+    const std::vector<std::string> expected_trace={
+        "bridge:pre:outer","bridge:pre:nested","bridge:commit:nested",
+        "peer:pre:nested","peer:post:nested","bridge:post:nested","bridge:commit:outer",
+        "peer:pre:outer","peer:post:outer","bridge:post:outer"};
+    check_callback_trace(borrowed_trace,expected_trace);
     assert(borrowed_reads==2 && borrowed_peers==2 && s2fn::copy::NativeBudget().Read().bytes==before.bytes);
     binding.value->BeginRemove();while(!binding.value->RemovalComplete()) std::this_thread::sleep_for(std::chrono::milliseconds(1));assert(binding.value->PruneCompletedTicket());binding.value.reset();
     assert(service.HookRelease(prepared.value));assert(service.TargetRelease(prepared.value));while(!service.Collect()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
