@@ -601,22 +601,31 @@ mod production {
                 unload_plugin(id);
             }
         }
-        cleanup_phase("before-native-empty-check");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         let mut drain_frames = 0usize;
-        while unsafe { empty() } == 0 && std::time::Instant::now() < deadline {
+        while {
+            cleanup_phase("before-native-empty-observation");
+            let observed = unsafe { empty() };
+            cleanup_phase("after-native-empty-observation");
+            observed
+        } == 0 && std::time::Instant::now() < deadline {
             cleanup_phase("before-native-drain-frame");
             assert_eq!(unsafe { frame(0) }, 1);
             drain_frames += 1;
             cleanup_phase("after-native-drain-frame");
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        cleanup_phase("before-final-native-empty-observation");
         let process_drained = unsafe { empty() } == 1;
+        cleanup_phase("after-final-native-empty-observation");
         eprintln!("DIAG production_registry_outer_frame drained={process_drained} frames={drain_frames}");
         cleanup_phase("before-native-pointer-clear");
         ENGINE_CALL.with(|s| s.set(None));
+        cleanup_phase("after-engine-call-clear");
         POST_PEER.with(|s| s.set(None));
+        cleanup_phase("after-post-peer-clear");
         ENTITY_SLOT.with(|s| s.set(None));
+        cleanup_phase("after-entity-slot-clear");
         cleanup_phase("before-native-close");
         let closed = unsafe { close() };
         eprintln!("DIAG production_registry_outer_frame native-close={closed}");
