@@ -11,7 +11,7 @@ static void signatures() {
     auto info = Validate(s);
     assert(info && info.value.fingerprint == "linux-x86_64-sysv:none:u8(i32,f64,ptr)");
     assert(info.value.stack_bytes == 128);
-    auto different = s; different.receiver = "entity";
+    auto different = s; different.member_receiver = true;
     assert(Validate(different).value.fingerprint != info.value.fingerprint);
     different = s; different.returns = {"u32"};
     assert(Validate(different).value.fingerprint != info.value.fingerprint);
@@ -26,8 +26,7 @@ static void signatures() {
     auto reject = [](AbiSignature bad, const char* feature) {
         auto r = Validate(bad); assert(!r); assert(r.error.find(feature) != std::string::npos);
     };
-    different = s; different.platform = "windows"; different.receiver = "struct"; reject(different, "platform: windows");
-    different = s; different.receiver = "struct"; reject(different, "receiver: struct");
+    different = s; different.platform = "windows"; reject(different, "platform: windows");
     different = s; different.varargs = true; reject(different, "varargs");
     different = s; different.returns = {"aggregate"}; reject(different, "return: aggregate");
     different = s; different.parameters[0] = {"i16"}; reject(different, "parameter[0]: i16");
@@ -35,7 +34,7 @@ static void signatures() {
     different = s; different.parameters.assign(33, {"i32"}); reject(different, "parameter count");
     s = {}; s.parameters.assign(6, {"i64"}); assert(Validate(s).value.stack_bytes == 128);
     s.parameters.assign(32, {"i64"}); assert(Validate(s).value.stack_bytes == 208);
-    s.receiver = "entity"; assert(Validate(s).value.stack_bytes == 224);
+    s.member_receiver = true; assert(Validate(s).value.stack_bytes == 224);
     s = {}; s.parameters.assign(32, {"f64"}); assert(Validate(s).value.stack_bytes == 192);
     s = {}; for (int i = 0; i < 16; ++i) { s.parameters.push_back({"f64"}); s.parameters.push_back({"i64"}); }
     assert(Validate(s).value.stack_bytes == 144);
@@ -354,7 +353,7 @@ static void recall_suppression_nested() {
     auto old = original_calls; assert(v->Call(&input, 1)); assert(original_calls == old); retire(v);
 }
 static void receiver_spills_novel() {
-    AbiSignature s; s.receiver = "entity"; s.parameters = {{"i32"}}; s.returns = {"i32"};
+    AbiSignature s; s.member_receiver = true; s.parameters = {{"i32"}}; s.returns = {"i32"};
     S2FnMemberFixture object{12, &original_calls}; Sink sink;
     const auto member_target = fixture_targets().member;
     sink.dispatch = [&](DispatchFrame& f) { assert(f.receiver.Get<void*>() == &object); };
@@ -475,6 +474,44 @@ static long long production_prepare(const char* name,const char* target,const ch
     auto result=production_service->Prepare(name,target,abi,fingerprint);
     if(why && cap>0) std::snprintf(why,cap,"%s",result.error.c_str());return result ? result.value : 0;
 }
+static int production_prepare_instance(unsigned long long binding,const S2FunctionInstanceOwner* owner,const char* name,const char* target,const char* contract,S2FunctionInstancePrepared* out,char* why,int cap) {
+    if(!owner || !out)return 0;
+    auto result=production_service->PrepareInstance(binding,*owner,name,target,contract);
+    if(why && cap>0)std::snprintf(why,cap,"%s",result.error.c_str());if(!result)return 0;*out=result.value;return 1;
+}
+static int production_instance_activate(unsigned long long id,const S2FunctionInstanceOwner* owner,char* why,int cap) {
+    if(!owner)return 0;auto result=production_service->ActivateInstance(id,*owner);
+    if(why && cap>0)std::snprintf(why,cap,"%s",result.error.c_str());return result ? 1 : 0;
+}
+static int production_instance_release(unsigned long long id) {return production_service->ReleaseInstance(id);}
+static uint64_t record_peer_calls=0, record_hidden=0;
+static double record_peer_receiver=0,record_peer_info=0;
+static KHook::Return<int32_t> record_peer_pre(S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*);
+static S2CheckedFunction<int32_t,S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*> record_peer(record_peer_pre,nullptr);
+static KHook::Return<int32_t> record_peer_pre(S2FnRecordFixture* receiver,S2FnRecordFixture* info,const char*,void* hidden) {
+    auto observation=record_peer.Observe();assert(observation);++record_peer_calls;
+    record_hidden=reinterpret_cast<uintptr_t>(hidden);record_peer_receiver=receiver->amount;record_peer_info=info ? info->amount : -1;return {KHook::Action::Ignore,0};
+}
+extern "C" int s2fn_production_record_peer(int mode) {
+    if(mode==0) {record_peer.BeginRemove(true);return 1;}
+    if(mode==1) return record_peer.Configure(checked_target(fixture_targets().record_member)).Accepted();
+    return static_cast<int>(record_peer_calls);
+}
+extern "C" int s2fn_production_record_call(int mode,double* output) {
+    if(!output || std::this_thread::get_id()!=production_owner)return 0;
+    S2FnRecordFixture receiver{2,3,0xffffffff,1,0xa5,123,4},info{7,8,0xffffffff,1,0x5a,321,9};
+    auto target=reinterpret_cast<int32_t(*)(S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*)>(fixture_targets().record_member);
+    auto hidden=(mode&1) ? reinterpret_cast<void*>(uintptr_t(0xfedcba9876543210ULL)) : nullptr;
+    const auto before=original_calls; // shared fixture counter remains observable across reentry.
+    auto result=target(&receiver,(mode&2) ? nullptr : &info,"abc",hidden);
+    output[0]=receiver.amount;output[1]=info.amount;output[2]=result;
+    output[3]=info.flags;output[4]=info.enabled;output[5]=info.scale;output[6]=info.entity;
+    output[10]=info.small;output[11]=info.sentinel;
+    output[7]=original_calls-before;output[8]=record_peer_calls;
+    output[12]=record_peer_receiver;output[13]=record_peer_info;
+    output[9]=record_peer_calls ? (record_hidden==reinterpret_cast<uintptr_t>(hidden) ? 1 : 0) : -1;
+    return 1;
+}
 static int production_call(long long id,unsigned long long owner,const S2FunctionValue* args,int argc,S2FunctionValue* out,char* why,int cap) {
     auto result=production_service->Call(id,owner,args,argc,*out);
     if(why && cap>0) std::snprintf(why,cap,"%s",result.error.c_str());if(!result)return 0;*out=result.value;return 1;
@@ -538,7 +575,8 @@ extern "C" int s2fn_production_create(s2bridge::CoreDispatch dispatch,void(*step
         // Explicit fixture recipes only. Every body remains in the isolated DSO.
         auto selected=recipe.pattern=="50" ? checked_target(reinterpret_cast<void*>(fixture_targets().identity_ptr)) :
             recipe.pattern=="51" ? checked_target(fixture_targets().member) :
-            recipe.pattern=="52" ? checked_target(s2fn_fixture_copy_length_target()) : address;
+            recipe.pattern=="52" ? checked_target(s2fn_fixture_copy_length_target()) :
+            recipe.pattern=="53" ? checked_target(fixture_targets().record_member) : address;
         result.image=image;result.address=reinterpret_cast<uintptr_t>(selected);
         result.recipe="separated compiler-authored scalar fixture";result.validation_receipt="fixture module guard";return true;
     });
@@ -557,6 +595,8 @@ extern "C" int s2fn_production_create(s2bridge::CoreDispatch dispatch,void(*step
             }return false;
         }});
     assert(production_service->SetPointerCodec(production_codec.get()));
+    ops->function_prepare_instance=production_prepare_instance;ops->function_instance_activate=production_instance_activate;ops->function_instance_release=production_instance_release;
+    ops->function_frame_read_instance=S2_FunctionFrameReadInstance;ops->function_frame_field_read=S2_FunctionFrameFieldRead;ops->function_frame_field_write=S2_FunctionFrameFieldWrite;
     ops->function_prepare=production_prepare;ops->function_call=production_call;
     ops->function_hook_acquire=production_acquire;ops->function_hook_release=production_release;
     ops->function_target_release=production_target_release;ops->function_hook_status=production_status;
@@ -606,12 +646,13 @@ extern "C" int s2fn_production_empty(){
 extern "C" int s2fn_production_close(){
     if(!production_service->Collect())return 0;
     production_copy_peer.BeginRemove(true);
+    record_peer.BeginRemove(true);
     production_peer.BeginRemove(true);
     production_later.BeginRemove(true);
     production_frame.BeginRemove(true);
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
-    while((!production_frame.RemovalComplete() || !production_peer.RemovalComplete() || !production_later.RemovalComplete() || !production_copy_peer.RemovalComplete()) && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    assert(production_frame.RemovalComplete() && production_peer.RemovalComplete() && production_later.RemovalComplete() && production_copy_peer.RemovalComplete());assert(S2Hook_DrainRetirement());
+    while((!production_frame.RemovalComplete() || !production_peer.RemovalComplete() || !production_later.RemovalComplete() || !production_copy_peer.RemovalComplete() || !record_peer.RemovalComplete()) && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(production_frame.RemovalComplete() && production_peer.RemovalComplete() && production_later.RemovalComplete() && production_copy_peer.RemovalComplete() && record_peer.RemovalComplete());assert(S2Hook_DrainRetirement());
     production_service.reset();production_sink.reset();production_codec.reset();KHook::Shutdown();return 1;
 }
 

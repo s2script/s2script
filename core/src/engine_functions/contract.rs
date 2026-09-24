@@ -239,7 +239,7 @@ impl NormalizedTarget {
         target.validate()
     }
 }
-fn projection(native: &str, p: &Projection, ret: bool) -> Result<(), String> {
+pub(crate) fn projection(native: &str, p: &Projection, ret: bool) -> Result<(), String> {
     let valid = match p.id.as_str() {
         "void" => ret && native == "void",
         "bool" => native == "u8",
@@ -252,7 +252,7 @@ fn projection(native: &str, p: &Projection, ret: bool) -> Result<(), String> {
         "unsupported ABI/projection pair (host authority required for custom codecs)",
     )
 }
-fn copied_ownership(id: &str, owner: Option<&str>, ret: bool, field: &str) -> Result<(), String> {
+pub(crate) fn copied_ownership(id: &str, owner: Option<&str>, ret: bool, field: &str) -> Result<(), String> {
     if matches!(id, "string" | "vector") {
         let allowed = if ret { &["caller-borrowed", "native-observed"][..] } else { &["callee-borrowed", "callee-retained", "native-observed"][..] };
         require(owner.is_some_and(|value| allowed.contains(&value)),
@@ -352,21 +352,8 @@ pub fn parse(
             "ABI fingerprint mismatch",
         )?;
         let p = &f.policy;
-        let surfaces: Vec<String> = ["call", "pre", "post"]
-            .into_iter()
-            .filter(|s| p.surfaces.iter().any(|v| v == s))
-            .map(String::from)
-            .collect();
-        let pre = p.surfaces.iter().any(|s| s == "pre");
-        require(
-            !surfaces.is_empty()
-                && surfaces == p.surfaces
-                && p.id == "generic.v2"
-                && p.version == 1
-                && p.self_call == "bypass-own-hooks"
-                && (if pre { matches!(p.suppression.as_str(), "generic" | "none") } else { p.suppression == "none" }),
-            "invalid/host-only policy",
-        )?;
+        validate_policy(p)?;
+        let pre=p.surfaces.iter().any(|s|s=="pre");
         require(
             pre || a.parameters.iter().all(|p| p.mutable.is_empty()),
             "mutation requires pre",
@@ -493,4 +480,25 @@ impl HostPackageOwner {
     pub(super) fn lifetime(&self) -> std::rc::Rc<PackageFunctionLifetime> {
         self.0.clone()
     }
+}
+
+pub(crate) fn validate_policy(p: &Policy) -> Result<(), String> {
+        let surfaces: Vec<String> = ["call", "pre", "post"]
+            .into_iter()
+            .filter(|s| p.surfaces.iter().any(|v| v == s))
+            .map(String::from)
+            .collect();
+        let pre = p.surfaces.iter().any(|s| s == "pre");
+        require(
+            !surfaces.is_empty()
+                && surfaces == p.surfaces
+                && p.id == "generic.v2"
+                && p.version == 1
+                && p.self_call == "bypass-own-hooks"
+                && (if pre { matches!(p.suppression.as_str(), "generic" | "none") } else { p.suppression == "none" }),
+            "invalid/host-only policy",
+        )?;
+    let mut value=serde_json::to_value(p).unwrap();
+    value.as_object_mut().unwrap().remove("contractHash");
+    require(hash(&value)==p.contract_hash,"policy hash mismatch")
 }

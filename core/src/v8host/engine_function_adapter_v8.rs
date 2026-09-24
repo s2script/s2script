@@ -216,7 +216,7 @@ fn busy_caller_stock_provider_spike() {
 mod production {
     use super::*;
     use crate::engine_functions::{contract::OwnerKey, registry, runtime};
-    use crate::v8host::function_adapter::{self, proof};
+    use crate::v8host::function_adapter::{self, proof, borrowed_proof};
     use std::collections::BTreeMap;
     type CreateProduction = unsafe extern "C" fn(
         extern "C" fn(i64, *const S2FunctionFrameInfo, i32) -> i32,
@@ -240,6 +240,10 @@ mod production {
         static COPY_PEER:Cell<Option<FrameProduction>>=const{Cell::new(None)};
         static COPY_READY:Cell<bool>=const{Cell::new(false)};
         static PROCESS_READY:Cell<bool>=const{Cell::new(false)};
+        static RECORD_STATE:RefCell<Option<borrowed_proof::State>>=const{RefCell::new(None)};
+        static RECORD_ENGINE:Cell<Option<borrowed_proof::EngineCall>>=const{Cell::new(None)};
+        static RECORD_PEER:Cell<Option<FrameProduction>>=const{Cell::new(None)};
+        static RECORD_READY:Cell<bool>=const{Cell::new(false)};
         static STEP:Cell<usize>=const{Cell::new(0)};
         static FAILURE:RefCell<Option<String>>=const{RefCell::new(None)};
     }
@@ -429,6 +433,10 @@ mod production {
             27 => COPY_PROCESS.with(|s|*s.borrow_mut()=Some(proof::copy_process_begin())),
             28 => COPY_READY.with(|s|s.set(proof::copy_process_probe())),
             29 => {proof::copy_process_exercise();proof::copy_process_finish(COPY_PROCESS.with(|s|s.borrow_mut().take()).unwrap());},
+            30 => {RECORD_STATE.with(|s|*s.borrow_mut()=Some(borrowed_proof::begin(RECORD_ENGINE.with(Cell::get).unwrap(),ENTITY_SLOT.with(Cell::get).unwrap())));assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(1)},1);},
+            31 => {RECORD_READY.with(|r|r.set(RECORD_STATE.with(|s|borrowed_proof::ready(s.borrow().as_ref().unwrap())) && unsafe{RECORD_PEER.with(Cell::get).unwrap()(2)}>0));},
+            32 => {RECORD_STATE.with(|s|borrowed_proof::exercise(s.borrow().as_ref().unwrap()));assert_eq!(borrowed_proof::call(1)[9],1.);},
+            33 => {borrowed_proof::abort(RECORD_STATE.with(|s|s.borrow_mut().take()).unwrap());assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(0)},1);},
             _ => panic!("unexpected frame callback"),
         });
         if let Err(error) = result {
@@ -473,6 +481,8 @@ mod production {
         ENTITY_SLOT.with(|s| s.set(Some(entity_slot)));
         let peer:FrameProduction=unsafe{std::mem::transmute(symbol(library,"s2fn_production_post_peer_mode"))};
         POST_PEER.with(|s|s.set(Some(peer)));
+        RECORD_ENGINE.with(|s|s.set(Some(unsafe{std::mem::transmute(symbol(library,"s2fn_production_record_call"))})));
+        RECORD_PEER.with(|s|s.set(Some(unsafe{std::mem::transmute(symbol(library,"s2fn_production_record_peer"))})));
         init(frame_tests::logger).unwrap();
         PACKAGE.with(|p| *p.borrow_mut() = Some(proof::package()));
         FAILURE.with(|f| *f.borrow_mut() = None);
@@ -621,6 +631,17 @@ mod production {
             drive(29);assert_eq!(unsafe{copy_escaped()},1);
             println!("PASS actual Service/V8 copied aliases, recall edits, suppression, strict marshalling, exact carried deliveries, nested lease expiry, POST original/effective returns and escaped native reads after owner retirement");
         }));
+        let record_result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            while unsafe{empty()}==0 && std::time::Instant::now()<deadline {assert_eq!(unsafe{frame(0)},1);std::thread::sleep(std::time::Duration::from_millis(1));}
+            assert_eq!(unsafe{empty()},1);drive(30);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(31);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record Service/peer readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            drive(32);drive(33);
+        }));
+        if let Some(state)=RECORD_STATE.with(|s|s.borrow_mut().take()){borrowed_proof::abort(state);}
+        unsafe{RECORD_PEER.with(Cell::get).unwrap()(0)};
+        RECORD_ENGINE.with(|s|s.set(None));RECORD_PEER.with(|s|s.set(None));
         if let Some(state)=COPY_STATE.with(|s|s.borrow_mut().take()){proof::copy_abort(state);}
         for id in ["copy-vector","copy-borrowed","copy-borrowed-caller"]{unload_plugin(id);}
         if let Some(state)=COPY_PROCESS.with(|s|s.borrow_mut().take()){proof::copy_process_abort(state);}
@@ -661,6 +682,7 @@ mod production {
             std::panic::resume_unwind(error);
         }
         if let Err(error)=copy_result{std::panic::resume_unwind(error);}
+        if let Err(error)=record_result{std::panic::resume_unwind(error);}
         assert!(
             process_drained,
             "process package native resources did not retire"

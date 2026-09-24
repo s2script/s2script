@@ -53,6 +53,11 @@ std::int32_t S2FnMemberFixture::Call(std::int32_t value) {
     ++*original_calls;
     return base + value;
 }
+std::int32_t S2FnRecordFixture::Call(S2FnRecordFixture* info,const char* text,void* result) {
+    ++*original_calls;
+    // result is native-only passthrough; even high-bit values are never dereferenced.
+    return static_cast<std::int32_t>(amount+(info ? info->amount : 0)+std::strlen(text))+(result ? 100 : 0);
+}
 extern "C" void* s2fn_member_fixture_target() {
     return KHook::ExtractMFP(&S2FnMemberFixture::Call);
 }
@@ -62,7 +67,7 @@ extern "C" S2FnFixtureTargets s2fn_fixture_targets() {
         &identity<float>, &identity<double>, &identity<void*>, &void_target, &mixed,
         &novel, &noncanonical, spill_address<std::int64_t>(std::make_index_sequence<32>{}),
         spill_address<double>(std::make_index_sequence<32>{}), &detached_nested_target,
-        s2fn_member_fixture_target(), &peer_boolean, &peer_mixed};
+        s2fn_member_fixture_target(), &peer_boolean, &peer_mixed, KHook::ExtractMFP(&S2FnRecordFixture::Call)};
 }
 extern "C" void s2fn_fixture_set_original_calls(volatile std::uint64_t* calls) {
     original_calls = calls ? calls : &default_original_calls;

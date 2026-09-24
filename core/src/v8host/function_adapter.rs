@@ -32,6 +32,13 @@ impl PreparedPackageReceipt {
     pub(crate) fn owner(&self) -> &OwnerKey {
         self.package.owner.key()
     }
+    pub(crate) fn instance_authority(&self) -> Result<(OwnerKey,String),String> {
+        if self.package.owner.is_retired() || !PACKAGES.with(|p|p.borrow().get(&self.owner().generation)
+            .is_some_and(|registered|Rc::ptr_eq(registered,&self.package))) {
+            return Err("verified package source receipt unavailable".into());
+        }
+        Ok((self.owner().clone(),self.package.manifest.as_str().into()))
+    }
 }
 thread_local! {
     static PACKAGES:RefCell<BTreeMap<u64,Rc<PreparedPackage>>>=const{RefCell::new(BTreeMap::new())};
@@ -1088,6 +1095,11 @@ struct InvocationState {
     copy_bookkeeping: Option<copied::Bookkeeping>,
 }
 type StagedEdits = std::collections::BTreeMap<i32, (ProjectedValue, String)>;
+#[derive(Clone)]
+struct RecordEdit { binding:Rc<Binding>, parent:OwnerKey, value:ProjectedValue, map_epoch:u64 }
+type RecordEdits = BTreeMap<(i32,u32),RecordEdit>;
+#[derive(Clone)]
+struct RecordWriter {binding:Rc<Binding>,parent:OwnerKey,map_epoch:u64}
 struct Dispatch {
     frame: Frame,
     binding: Rc<Binding>,
@@ -1096,6 +1108,9 @@ struct Dispatch {
     cursor: Cell<usize>,
     revision: Rc<Cell<u64>>,
     edits: Rc<RefCell<StagedEdits>>,
+    record_edits: Rc<RefCell<RecordEdits>>,
+    map_epoch:u64,
+    record_writers:Rc<RefCell<BTreeMap<u64,RecordWriter>>>,
     deliveries: RefCell<Vec<Decision>>,
 }
 #[derive(Clone)]
@@ -1107,6 +1122,9 @@ struct Lease {
     adapter: bool,
     mode: SubscriptionMode,
     pending_edits: Rc<RefCell<StagedEdits>>,
+    pending_records: Rc<RefCell<RecordEdits>>,
+    map_epoch:u64,
+    failed:Rc<Cell<bool>>,
     enabled: bool,
 }
 struct LeaseGuard;
@@ -1120,6 +1138,7 @@ impl LeaseGuard {
     ) -> Result<(Self, u64, Rc<RefCell<StagedEdits>>), String> {
         let id = registry::next_id()?;
         let pending_edits = Rc::new(RefCell::new(std::collections::BTreeMap::new()));
+        let map_epoch=dispatch.map_epoch;
         LEASES.with(|s| {
             s.borrow_mut().push(Lease {
                 id,
@@ -1129,6 +1148,9 @@ impl LeaseGuard {
                 adapter,
                 mode,
                 pending_edits: pending_edits.clone(),
+                pending_records:Rc::new(RefCell::new(BTreeMap::new())),
+                map_epoch,
+                failed:Rc::new(Cell::new(false)),
                 enabled: true,
             })
         });
@@ -1141,6 +1163,29 @@ impl LeaseGuard {
             }
         });
     }
+    fn accept_records(&self) -> Result<(),String> {
+        let l=LEASES.with(|s|s.borrow().last().cloned()).ok_or("missing callback lease")?;
+        accept_record_edits(&l)
+    }
+}
+fn accept_record_edits(l:&Lease) -> Result<(),String> {
+    if l.failed.get() {return Err("rejected whole record edit batch".into());}
+    if l.binding.function.trusted() && (l.map_epoch==0 || l.map_epoch!=crate::entity_live::map_epoch()) {return Err("callback map lifetime expired".into());}
+    let edits=l.pending_records.borrow();
+    for edit in edits.values() {validate_record_edit(edit)?;}
+    if l.binding.function.trusted() {
+        l.dispatch.record_writers.borrow_mut().insert(l.id,RecordWriter{binding:l.binding.clone(),parent:l.owner.clone(),map_epoch:l.map_epoch});
+    }
+    l.dispatch.record_edits.borrow_mut().extend(edits.iter().map(|(k,v)|(*k,v.clone())));Ok(())
+}
+fn validate_record_edit(edit:&RecordEdit) -> Result<(),String> {
+    registry::binding(edit.binding.id,&edit.binding.owner)?;
+    if !edit.binding.is_live() || !owner_is_live(&edit.parent.id,edit.parent.generation)
+        || (edit.map_epoch==0 || edit.map_epoch!=crate::entity_live::map_epoch()) {return Err("record writer or map lifetime expired".into());}
+    if let ProjectedValue::Entity{reference:Some(r),..}=&edit.value {
+        if crate::entity_live::engine_serial_for(r.index,r.id).is_none() {return Err("stale record entity edit".into());}
+    }
+    projection::encode(edit.value.clone())?;Ok(())
 }
 impl Drop for LeaseGuard {
     fn drop(&mut self) {
@@ -1160,6 +1205,8 @@ fn lease(scope: &mut v8::PinScope, id: u64) -> Result<Lease, String> {
                         && l.id == id
                         && l.owner == owner
                         && l.binding.is_live()
+                        && (!l.binding.function.trusted() || registry::binding(l.binding.id,&l.binding.owner).is_ok())
+                        && (!l.binding.function.trusted() || (l.map_epoch!=0 && l.map_epoch==crate::entity_live::map_epoch()))
                         && l.dispatch
                             .adapter
                             .as_ref()
@@ -1364,7 +1411,7 @@ fn scalar_from_js(
 }
 fn field_type(binding: &Binding, selector: i32) -> Result<(&str, &str), String> {
     match selector {
-        -1 if binding.function.abi.receiver == "entity" => Ok(("ptr", "entity")),
+        -1 => binding.function.abi.receiver.as_ref().filter(|p|!p.hidden()).map(|p|(p.native.as_str(),p.projection.id.as_str())).ok_or("receiver unavailable".into()),
         -2 => {
             let r = &binding.function.abi.returns;
             Ok((&r.native, &r.projection.id))
@@ -1583,6 +1630,9 @@ pub(super) fn projected_from_js(
 fn js_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let result = (|| {
         let (l, i) = accessor_data(scope, &args)?;
+        if l.binding.function.abi.position(i).is_some_and(|p|p.record()) {
+            return record_view(scope,&l,i);
+        }
         let (native, projection) = field_type(&l.binding, i)?;
         let staged = l.pending_edits.borrow().get(&i).map(|(value, _)| value.clone())
             .or_else(|| l.dispatch.edits.borrow().get(&i).map(|(value, _)| value.clone()));
@@ -1592,6 +1642,8 @@ fn js_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
                     EntityProjection::parse(projection).ok_or("entity projection mismatch")?.value(reference),
                 scalar => Ok(scalar),
             }
+        } else if i==-1 && l.binding.function.trusted() {
+            l.dispatch.frame.read_instance(&l.binding,i).and_then(|v|projection::decode(v,native,projection))
         } else {
             l.dispatch.frame.read_projected(i, native, projection)
         }.map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
@@ -1601,6 +1653,77 @@ fn js_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
         Ok(v) => rv.set(v),
         Err(e) => throw(scope, e),
     }
+}
+fn record_accessor(scope:&mut v8::PinScope,args:&v8::FunctionCallbackArguments) -> Result<(Lease,i32,u32),String> {
+    let data=v8::Local::<v8::Array>::try_from(args.data()).map_err(|_|"invalid record accessor")?;
+    let id=bigint(data.get_index(scope,0).ok_or("missing record lease")?)?;
+    let selector=data.get_index(scope,1).and_then(|v|v.int32_value(scope)).ok_or("missing record position")?;
+    let field=data.get_index(scope,2).and_then(|v|v.uint32_value(scope)).ok_or("missing record field")?;
+    Ok((lease(scope,id)?,selector,field))
+}
+fn record_get(scope:&mut v8::PinScope,args:v8::FunctionCallbackArguments,mut rv:v8::ReturnValue) {
+    let result=(|| {
+        let (l,selector,field)=record_accessor(scope,&args)?;
+        // Even an overlay read rechecks native top frame, capability and field rights.
+        let observed=l.dispatch.frame.read_field(&l.binding,selector,field)?;
+        let staged=l.pending_records.borrow().get(&(selector,field)).cloned()
+            .or_else(||l.dispatch.record_edits.borrow().get(&(selector,field)).cloned());
+        let value=if let Some(edit)=staged {
+            validate_record_edit(&edit)?;
+            let row=&l.binding.function.abi.layout(selector)?.fields[field as usize];
+            match edit.value {
+                ProjectedValue::Entity{reference,..}=>EntityProjection::parse(row.projection().1).unwrap().value(reference)?,
+                value=>value,
+            }
+        } else {observed};
+        projected_to_js(scope,value)
+    })();
+    match result {Ok(v)=>rv.set(v),Err(e)=>throw(scope,e)}
+}
+fn record_set(scope:&mut v8::PinScope,args:v8::FunctionCallbackArguments,_:v8::ReturnValue) {
+    let result=(|| {
+        let (l,selector,field)=record_accessor(scope,&args)?;
+        let row=l.binding.function.abi.layout(selector)?.fields.get(field as usize).ok_or("unknown record field")?;
+        if l.dispatch.frame.phase!=0 || !l.mode.writable() || row.write!=["pre"] {return Err("record field is readonly".into());}
+        // Native read validates the exact top frame and record extent before staging.
+        l.dispatch.frame.read_field(&l.binding,selector,field)?;
+        let (native,projection)=row.projection();
+        if row.storage=="entity-handle32" && !args.get(0).is_null() {
+            let reference=interop_wire::strict_entity_reference(scope,args.get(0)).ok_or("genuine current-context EntityRef required")?;
+            if crate::entity_live::engine_serial_for(reference.index,reference.id).is_none() {return Err("stale record entity value".into());}
+        }
+        let value=callback_projected_from_js(scope,args.get(0),native,projection)?;
+        if row.storage=="u16" && !matches!(&value,ProjectedValue::Scalar(v) if v.bits<=65535) {return Err("record u16 out of range".into());}
+        let edit=RecordEdit {binding:l.binding.clone(),parent:l.owner.clone(),value,map_epoch:l.map_epoch};
+        validate_record_edit(&edit)?;
+        let revision=l.dispatch.revision.get().checked_add(1).ok_or("record revision exhausted")?;
+        l.pending_records.borrow_mut().insert((selector,field),edit);
+        l.dispatch.revision.set(revision);Ok::<_,String>(())
+    })();
+    if let Err(e)=result {
+        LEASES.with(|s|{if let Some(l)=s.borrow().last(){l.failed.set(true);}});
+        throw(scope,e);
+    }
+}
+fn record_view<'s>(scope:&mut v8::PinScope<'s,'_>,l:&Lease,selector:i32) -> Result<v8::Local<'s,v8::Value>,String> {
+    let presence=l.dispatch.frame.read_instance(&l.binding,selector)?;
+    if presence.kind!=1 || presence.flags!=0 || presence.reserved!=0 || presence.aux!=0 || presence.bits>1 {
+        return Err("invalid native record presence".into());
+    }
+    if presence.bits==0 {return Ok(v8::null(scope).into());}
+    let object=v8::Object::new(scope);
+    for (field,row) in l.binding.function.abi.layout(selector)?.fields.iter().enumerate() {
+        let id=v8::BigInt::new_from_u64(scope,l.id);
+        let position=v8::Integer::new(scope,selector);let field=v8::Integer::new_from_unsigned(scope,field as u32);
+        let data=v8::Array::new_with_elements(scope,&[id.into(),position.into(),field.into()]);
+        let getter=v8::Function::builder(record_get).data(data.into()).build(scope).ok_or("record getter allocation")?;
+        let setter=v8::Function::builder(record_set).data(data.into()).build(scope).ok_or("record setter allocation")?;
+        let descriptor=v8::PropertyDescriptor::new_from_get_set(getter.into(),setter.into());
+        let name=v8::String::new(scope,&row.name).ok_or("record name allocation")?;
+        if object.define_property(scope,name.into(),&descriptor)!=Some(true) {return Err("record property allocation".into());}
+    }
+    object.set_integrity_level(scope,v8::IntegrityLevel::Frozen).ok_or("record view freeze")?;
+    Ok(object.into())
 }
 fn js_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
     let result = (|| {
@@ -1620,7 +1743,7 @@ fn js_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::
             .map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
         let next_revision = l.dispatch.revision.get().checked_add(1)
             .ok_or("frame revision exhausted")?;
-        if runtime::has_copies(&l.binding.function.abi) || (!l.adapter && l.binding.function.policy.suppression == "none") {
+        if runtime::has_copies(&l.binding.function.abi) || l.binding.function.trusted() || (!l.adapter && l.binding.function.policy.suppression == "none") {
             l.pending_edits.borrow_mut().insert(i, (value, l.binding.function.canonical_id.clone()));
         } else {
             l.dispatch.frame.write_projected(i, &value)
@@ -1631,6 +1754,7 @@ fn js_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::
         Ok::<_, String>(())
     })();
     if let Err(e) = result {
+        LEASES.with(|s|{if let Some(l)=s.borrow().last(){if l.binding.function.trusted(){l.failed.set(true);}}});
         throw(scope, e)
     }
 }
@@ -1647,10 +1771,11 @@ fn view<'s>(
         .parameters
         .iter()
         .enumerate()
+        .filter(|(_,p)|!p.hidden())
         .map(|(i, p)| (p.name.clone(), i as i32))
         .collect::<Vec<_>>();
-    if binding.function.abi.receiver == "entity" {
-        fields.push(("self".into(), -1));
+    if let Some(receiver)=binding.function.abi.receiver.as_ref().filter(|p|!p.hidden()) {
+        fields.push((receiver.name.clone(), -1));
     }
     if dispatch.frame.phase == 1 {
         fields.push(("returnValue".into(), -2));
@@ -1785,9 +1910,10 @@ fn js_cursor(
         if !l.adapter {
             return Err("cursor requires adapter callback lease".into());
         }
+        accept_record_edits(&l)?;
         // Adapter edits preceding invokeNext are visible to that subscriber.
         // An invalid adapter result still aborts the entire uncommitted frame.
-        if runtime::has_copies(&l.binding.function.abi) {
+        if runtime::has_copies(&l.binding.function.abi) || l.binding.function.trusted() {
             l.dispatch.edits.borrow_mut().append(&mut l.pending_edits.borrow_mut());
         }
         loop {
@@ -1889,6 +2015,7 @@ fn invoke_wrapper(
         } else { Ok(decision) }
     });
     if decision.is_ok() {
+        if let Err(e)=guard.accept_records() {dispatch.revision.set(prior_revision);return Err(e);}
         // A nonsuppressing generic callback's setters are private until its
         // decision validates. Later callbacks read accepted edits from this
         // overlay; the final transfer validates/writes before native commit.
@@ -1967,7 +2094,7 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
         dispatch.frame.phase,
         &dispatch.binding.function.policy.suppression,
     );
-    if result.is_ok() {dispatch.edits.borrow_mut().extend(pending_edits.borrow().iter().map(|(k,v)|(*k,v.clone())));}
+    if result.is_ok() {if let Err(e)=guard.accept_records() {dispatch.revision.set(prior_revision);return Err(e);}dispatch.edits.borrow_mut().extend(pending_edits.borrow().iter().map(|(k,v)|(*k,v.clone())));}
     else if runtime::has_copies(&dispatch.binding.function.abi) {dispatch.revision.set(prior_revision);}
     result
 }
@@ -2047,6 +2174,9 @@ fn invoke_domains(scope: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<De
             cursor: Cell::new(0),
             revision: dispatch.revision.clone(),
             edits: dispatch.edits.clone(),
+            record_edits:dispatch.record_edits.clone(),
+            map_epoch:dispatch.map_epoch,
+            record_writers:dispatch.record_writers.clone(),
             deliveries: RefCell::new(Vec::new()),
         });
         let decision = if group == 0 {
@@ -2259,6 +2389,9 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
         cursor: Cell::new(0),
         revision: Rc::new(Cell::new(0)),
         edits: Rc::new(RefCell::new(std::collections::BTreeMap::new())),
+        record_edits:Rc::new(RefCell::new(BTreeMap::new())),
+        map_epoch:crate::entity_live::map_epoch(),
+        record_writers:Rc::new(RefCell::new(BTreeMap::new())),
         deliveries: RefCell::new(Vec::new()),
     });
     let result = if let Some(info) = crate::nest::top().filter(|p| !p.is_null()) {
@@ -2297,6 +2430,14 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
         });
         // All callbacks have returned. Revalidate copied host identities, then
         // let the native atomic commit independently revalidate current slots.
+        if dispatch.binding.function.trusted() && (dispatch.map_epoch==0 || dispatch.map_epoch!=crate::entity_live::map_epoch()) {return Err("record dispatch map lifetime expired before commit".into());}
+        for writer in dispatch.record_writers.borrow().values() {
+            registry::binding(writer.binding.id,&writer.binding.owner)?;
+            if !writer.binding.is_live() || !owner_is_live(&writer.parent.id,writer.parent.generation)
+                || writer.map_epoch==0 || writer.map_epoch!=crate::entity_live::map_epoch() {return Err("record callback writer expired before commit".into());}
+        }
+        let record_edits=dispatch.record_edits.borrow().clone();
+        for edit in record_edits.values() {validate_record_edit(edit)?;}
         let edits=dispatch.edits.borrow().clone();
         // Validate all scalar/entity identities before any native staging.
         for (value,name) in edits.values() {
@@ -2305,6 +2446,7 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
         for (selector,(value,name)) in &edits {
             dispatch.frame.write_projected(*selector,value).map_err(|e|format!("{name}: {e}"))?;
         }
+        for ((selector,field),edit) in &record_edits {dispatch.frame.write_field(&edit.binding,*selector,*field,&edit.value)?;}
         let name=&dispatch.binding.function.canonical_id;
         dispatch.frame.commit_projected(result.action,result.value.as_ref(),runtime::has_copies(&dispatch.binding.function.abi)).map_err(|e|format!("{name}: {e}"))?;
     }
@@ -3165,7 +3307,7 @@ pub(super) mod proof {
             let binding = registry::binding(bigint(args.get(0))?, &owner)?;
             let _copy_scope=copied::Scope::enter()?;
             let abi = &binding.function.abi;
-            let receiver = usize::from(abi.receiver == "entity");
+            let receiver = usize::from(abi.member_receiver);
             if args.length() as usize != 1 + receiver + abi.parameters.len() {
                 return Err("argument count mismatch".into());
             }
@@ -6067,5 +6209,261 @@ mod copied_transport_tests {
         proof::copy_process_finish(state);
         set_engine_ops(None);
         shutdown();
+    }
+}
+
+#[cfg(test)]
+pub(super) mod borrowed_proof {
+    use super::*;
+    use crate::engine_functions::instance::*;
+    pub type EngineCall=unsafe extern "C" fn(i32,*mut f64)->i32;
+    thread_local! {
+        static ENGINE:Cell<Option<EngineCall>>=const{Cell::new(None)};
+        static SLOT:Cell<Option<proof::EntitySlot>>=const{Cell::new(None)};
+        static ORIGINAL_OPS:Cell<Option<S2EngineOps>>=const{Cell::new(None)};
+        static ACTIVATE_COUNT:Cell<usize>=const{Cell::new(0)};
+        static RELEASED:RefCell<Vec<u64>>=const{RefCell::new(Vec::new())};
+    }
+    pub struct State {active:registry::ActivePackageFunctions,source:PreparedPackageReceipt,host:HostPackageOwner,pub target:i64}
+    const SOURCE:&str=r#"
+      globalThis.record=__s2_package_function('record');
+      globalThis.readonlyRecord=__s2_package_function('readonly');
+      globalThis.mode='observe';globalThis.events=[];globalThis.preCount=0;
+      globalThis.first=record.onPre(v=>{
+        preCount++;events.push('pre');if(v.info===null){globalThis.sawNull=true;return;}globalThis.saved=v.info;globalThis.savedFrame=v;
+        if('hidden' in v || Object.keys(v).includes('hidden'))throw Error('hidden pointer exposure');
+        if(v.info.flags!==8 || v.info.enabled!==true || v.self.amount!==2)throw Error('native record fields');
+        if(mode==='probe'){__recordProbe(v.info);}
+        if(mode==='entity'){if(v.info.entity!==null)throw Error('entity initial null');v.info.entity=entityRef;}
+        if(mode==='entity-null'){v.info.entity=null;}
+        if(mode==='entity-stale'){v.info.amount=99;v.info.entity=entityRef;__recordDelete(false);}
+        if(mode==='entity-native'){v.info.amount=99;v.info.entity=entityRef;__recordDelete(true);}
+        if(mode==='entity-forged'){v.info.amount=99;try{v.info.entity={index:901,id:entityRef.id}}catch(_){};}
+        if(mode==='await'){Promise.resolve().then(()=>{let denied=false;try{v.info.amount}catch(_){denied=true}globalThis.awaitDenied=denied;});}
+        if(mode==='edit'){v.info.amount=20;v.self.amount=5;v.info.enabled=false;v.info.scale=2.5;v.info.small=65535;v.text='xy';}
+        if(mode==='u16-range'){v.info.amount=99;try{v.info.small=65536}catch(_){};}
+        if(mode==='invalid'){v.info.amount=99;try{v.info.scale=NaN}catch(_){};}
+        if(mode==='readonly'){v.info.amount=99;try{v.info.flags=4}catch(_){};}
+        if(mode==='decision'){v.info.amount=99;return {action:2,returnValue:'bad'};}
+        if(mode==='throw'){v.info.amount=99;throw Error('reject');}
+        if(mode==='promise'){v.info.amount=99;return Promise.resolve(0);}
+        if(mode==='retire'){v.info.amount=99;v.text='changed';__recordRetire();let denied=false;try{v.info.amount}catch(_){denied=true}if(!denied)throw Error('retired view survived');}
+        if(mode==='map-copy'){v.text='changed';__recordMap();}
+        if(mode==='map'){v.info.amount=99;__recordMap();let denied=false;try{v.info.amount}catch(_){denied=true}if(!denied)throw Error('map view survived');}
+        if(mode==='nested'){globalThis.outerRecord=v.info;mode='inner';__recordNested();mode='nested';if(outerRecord.amount!==7)throw Error('outer failed to resume');}
+        if(mode==='inner'){let denied=false;try{outerRecord.amount}catch(_){denied=true}if(!denied)throw Error('outer view visible during nested frame');}
+      });
+      globalThis.second=record.onPre(v=>{if(v.info!==null)events.push('later:'+v.info.amount);});
+      globalThis.post=record.onPost(v=>{if(v.info===null)return;events.push('post:'+v.info.amount);let n=0;try{v.info.amount=8}catch(_){n++}if(n!==1)throw Error('POST writable');});
+      globalThis.ro=readonlyRecord.onPre(v=>{if(v.info===null)return;globalThis.roSeen=v.info.amount;if(mode==='ro-write'){try{v.info.amount=8}catch(_){globalThis.roDenied=true;}}});
+    "#;
+    fn position(name:&str,native:&str,projection:&str,ownership:Option<&str>,mutable:bool,instance:Option<usize>) -> Position {
+        Position{name:name.into(),native:native.into(),projection:Projection{id:projection.into(),version:1},ownership:ownership.map(str::to_string),mutable:if mutable{vec!["pre".into()]}else{vec![]},instance,nullable:false}
+    }
+    fn input(readonly:bool)->TrustedFunctionInput {
+        let base=crate::engine_functions::tests::fixture();
+        let public:crate::engine_functions::contract::NormalizedFunction=serde_json::from_value(base["functions"][0].clone()).unwrap();
+        let mut f=Function::from_public(public).unwrap();
+        if let NormalizedTarget::Signature{pattern,target_validate,..}=&mut f.target {*pattern="53".into();*target_validate=Validator::default();}
+        // The fixture resolver validates its isolated compiler-authored image.
+        // Keep a syntactically real prologue requirement as the shared grammar requires.
+        if let NormalizedTarget::Signature{target_validate,..}=&mut f.target {target_validate.prologue=Some("??".into());}
+        let fields=[("amount",0,"f32"),("flags",4,"i32"),("entity",8,"entity-handle32"),("enabled",12,"bool"),("small",14,"u16"),("scale",16,"f64")]
+            .into_iter().map(|(name,offset,storage)|RecordField{name:name.into(),offset_key:name.into(),offset,storage:storage.into(),nullable:storage=="entity-handle32",read:vec!["pre".into(),"post".into()],write:if !readonly && name!="flags"{vec!["pre".into()]}else{vec![]}}).collect();
+        let layout=RecordLayout{extent:24,alignment:8,fields};
+        f.abi.member_receiver=true;f.abi.receiver=Some(position("self","ptr","borrowed-record",Some("synchronous-record"),false,Some(0)));
+        f.abi.parameters=vec![position("info","ptr","borrowed-record",Some("synchronous-record"),false,Some(0)),
+            position("text","ptr","string",Some("callee-borrowed"),!readonly,None),
+            position("hidden","ptr","native-only",Some("invocation-passthrough"),false,None)];
+        f.abi.parameters[0].nullable=true;
+        f.abi.returns=position("","i32","i32",None,false,None);
+        f.abi.instances=vec![Instance{codec_id:"borrowed-record".into(),codec_version:1,kind:None,layout_hash:layout.hash(),record:layout}];
+        f.abi.fingerprint=f.abi.physical().fingerprint().unwrap();f.abi.stack_copy_bytes=f.abi.physical().stack_bytes().unwrap();
+        f.policy.surfaces=vec!["pre".into(),"post".into()];f.policy.suppression="none".into();
+        let mut p=serde_json::to_value(&f.policy).unwrap();p.as_object_mut().unwrap().remove("contractHash");f.policy.contract_hash=crate::engine_functions::contract::hash(&p);
+        TrustedFunctionInput{local_name:if readonly{"readonly"}else{"record"}.into(),target:f.target,signature:f.abi,policy:f.policy,requirement:"required".into()}
+    }
+    fn selected()->SelectedLayoutData {
+        let bytes:Arc<str>=serde_json::json!({"amount":0,"flags":4,"entity":8,"enabled":12,"small":14,"scale":16}).to_string().into();
+        SelectedLayoutData{sha256:crate::engine_functions::contract::hash_bytes(bytes.as_bytes()),bytes}
+    }
+    fn source()->(HostPackageOwner,PreparedPackageReceipt) {
+        let host=HostPackageOwner::mint("@proof/borrowed-record").unwrap();
+        let manifest=ImplementationManifestHash::new(crate::engine_functions::contract::hash_bytes(br#"{"name":"@proof/borrowed-record","version":1}"#)).unwrap();
+        let source=register_prepared_package(host.clone(),SOURCE.into(),manifest).unwrap();(host,source)
+    }
+    unsafe fn lifetime()->SynchronousRecordLifetime {SynchronousRecordLifetime::registered_native_target()}
+    fn map(_: &mut v8::PinScope,_:v8::FunctionCallbackArguments,_:v8::ReturnValue){crate::entity_live::clear_for_map_transition();}
+    fn retire(_: &mut v8::PinScope,_:v8::FunctionCallbackArguments,_:v8::ReturnValue) {
+        let owner=LEASES.with(|s|s.borrow().last().unwrap().binding.owner.clone());drop_package(&owner);
+    }
+    fn delete(_: &mut v8::PinScope,args:v8::FunctionCallbackArguments,_:v8::ReturnValue) {
+        if args.get(0).is_true() {assert_eq!(unsafe{SLOT.with(Cell::get).unwrap()(901,72,0)},1);}
+        else {crate::entity_live::on_deleted(901,72);}
+    }
+    fn seed_entity() {
+        assert_eq!(unsafe{SLOT.with(Cell::get).unwrap()(901,72,1)},1);
+        let id=crate::entity_live::on_created(901,72);
+        with_host_isolate(|isolate|{
+            let mut storage=v8::HandleScope::new(isolate);let mut scope=unsafe{std::pin::Pin::new_unchecked(&mut storage)}.init();
+            let context=clone_plugin_context("record-a").unwrap();let context=v8::Local::new(&mut scope,&context);
+            let scope=&mut v8::ContextScope::new(&mut scope,context);let global=context.global(scope);
+            let entity=interop_wire::projected_entity_ref(scope,projection::EntityReference{index:901,id}).unwrap();
+            set_own(scope,global,"entityRef",entity.into()).unwrap();
+        }).unwrap();
+    }
+    fn nested(_: &mut v8::PinScope,_:v8::FunctionCallbackArguments,_:v8::ReturnValue) {
+        let mut output=[0.;14];assert_eq!(unsafe{ENGINE.with(Cell::get).unwrap()(0,output.as_mut_ptr())},1);
+    }
+    fn probe(scope:&mut v8::PinScope,args:v8::FunctionCallbackArguments,_:v8::ReturnValue) {
+        let l=LEASES.with(|s|s.borrow().last().cloned()).unwrap();let frame=&l.dispatch.frame;
+        let access=S2FunctionInstanceAccess{version:1,struct_size:48,target:frame.target,frame_token:frame.info.frame_token,
+            native_epoch:frame.info.native_epoch,capability:l.binding.capability.unwrap(),binding_id:l.binding.id};
+        let ops=engine_ops().unwrap();let read=ops.function_frame_field_read.unwrap();let write=ops.function_frame_field_write.unwrap();
+        let check=|key:&S2FunctionInstanceAccess|{let mut out=runtime::blank();let mut why=[0;512];read(key,0,0,&mut out,why.as_mut_ptr(),512)};
+        assert_eq!(check(&access),1);
+        for mode in 0..5 {let mut bad=access;match mode {0=>bad.target+=1,1=>bad.frame_token+=1,2=>bad.native_epoch+=1,3=>bad.capability=u64::MAX,_=>bad.binding_id+=1};assert_eq!(check(&bad),0);}
+        let threaded=access;
+        assert_eq!(std::thread::spawn(move||{let mut out=runtime::blank();let mut why=[0;512];read(&threaded,0,0,&mut out,why.as_mut_ptr(),512)}).join().unwrap(),0);
+        let mut why=[0;512];let mut value=runtime::blank();value.kind=3;value.bits=65536;
+        assert_eq!(write(&access,0,4,&value,why.as_mut_ptr(),512),0,"native u16 must reject before staging");
+        let old=ops.function_frame_read.unwrap();let mut out=runtime::blank();out.kind=8;
+        for selector in [-1,0,2] {assert_eq!(old(frame.target,frame.info.frame_token,frame.info.native_epoch,frame.fingerprint.as_ptr(),selector,8,&mut out,why.as_mut_ptr(),512),0,"legacy frame op cannot expose record/hidden");}
+        // Move only the opaque JS view into a foreign context; its getter must
+        // reject the context before the native access operation is reached.
+        let object=v8::Local::<v8::Object>::try_from(args.get(0)).unwrap();
+        let foreign=v8::Context::new(scope,Default::default());let scope=&mut v8::ContextScope::new(scope,foreign);
+        let mut storage=v8::TryCatch::new(scope);let mut tc=unsafe{std::pin::Pin::new_unchecked(&mut storage)}.init();
+        let name=v8::String::new(&mut tc,"amount").unwrap();assert!(object.get(&mut tc,name.into()).is_none());assert!(tc.has_caught());
+    }
+    extern "C" fn fail_second_activation(cap:u64,owner:*const S2FunctionInstanceOwner,why:*mut i8,size:i32)->i32 {
+        if ACTIVATE_COUNT.with(|n|{let old=n.get();n.set(old+1);old})==1 {return 0;}
+        ORIGINAL_OPS.with(Cell::get).unwrap().function_instance_activate.unwrap()(cap,owner,why,size)
+    }
+    extern "C" fn observe_release(cap:u64)->i32 {
+        RELEASED.with(|r|r.borrow_mut().push(cap));ORIGINAL_OPS.with(Cell::get).unwrap().function_instance_release.unwrap()(cap)
+    }
+    fn activation_rollback(running:&Rc<Binding>) {
+        let (host,source)=source();let candidate=prepare_verified_package(&source,vec![input(false),input(true)],selected(),unsafe{lifetime()}).unwrap();
+        let receipt=registry::prepare_package_owner(&host,candidate).unwrap();let original=engine_ops().unwrap();
+        struct Restore(S2EngineOps);impl Drop for Restore{fn drop(&mut self){set_engine_ops(Some(self.0));ORIGINAL_OPS.with(|s|s.set(None));}}
+        let _restore=Restore(original);ORIGINAL_OPS.with(|s|s.set(Some(original)));ACTIVATE_COUNT.with(|n|n.set(0));RELEASED.with(|r|r.borrow_mut().clear());
+        let mut injected=original;injected.function_instance_activate=Some(fail_second_activation);injected.function_instance_release=Some(observe_release);set_engine_ops(Some(injected));
+        assert!(registry::activate_package_owner(receipt,&host).is_err());
+        assert_eq!(ACTIVATE_COUNT.with(Cell::get),2);let released=RELEASED.with(|r|r.borrow().clone());assert_eq!(released.len(),2);
+        for cap in released {assert!(runtime::instance_activate(cap,host.key()).is_err());runtime::instance_release(cap);}
+        assert!(registry::owner_bindings(host.key()).is_empty());assert!(running.is_live(),"failed replacement preserves prior generation");
+        drop(source);
+    }
+    fn install(id:&str) {
+        with_host_isolate(|isolate|{
+            let mut storage=v8::HandleScope::new(isolate);let mut scope=unsafe{std::pin::Pin::new_unchecked(&mut storage)}.init();
+            let context=clone_plugin_context(id).unwrap();let context=v8::Local::new(&mut scope,&context);
+            let scope=&mut v8::ContextScope::new(&mut scope,context);
+            let global=context.global(scope);
+            let map=v8::Function::new(scope,map).unwrap();set_own(scope,global,"__recordMap",map.into()).unwrap();
+            let nested=v8::Function::new(scope,nested).unwrap();set_own(scope,global,"__recordNested",nested.into()).unwrap();
+            let delete=v8::Function::new(scope,delete).unwrap();set_own(scope,global,"__recordDelete",delete.into()).unwrap();
+            let probe=v8::Function::new(scope,probe).unwrap();set_own(scope,global,"__recordProbe",probe.into()).unwrap();
+            let retire=v8::Function::new(scope,retire).unwrap();set_own(scope,global,"__recordRetire",retire.into()).unwrap();
+        }).unwrap();
+    }
+    pub fn begin(engine:EngineCall,slot:proof::EntitySlot)->State {
+        SLOT.with(|s|s.set(Some(slot)));
+        ENGINE.with(|e|e.set(Some(engine)));let (host,source)=source();
+        let candidate=prepare_verified_package(&source,vec![input(false),input(true)],selected(),unsafe{lifetime()}).unwrap();
+        let wrong=HostPackageOwner::mint("@proof/borrowed-record").unwrap();
+        assert!(registry::prepare_package_owner(&wrong,candidate.clone()).is_err());
+        assert!(registry::prepare_owner(&host.key().id,candidate.clone()).is_err());
+        let receipt=registry::prepare_package_owner(&host,candidate).unwrap();
+        let active=registry::activate_package_owner(receipt,&host).unwrap();
+        let a=registry::named_binding(host.key(),"record").unwrap();let b=registry::named_binding(host.key(),"readonly").unwrap();
+        assert_eq!(a.target,b.target,"rights must not split physical target");
+        assert!(runtime::instance_activate(a.capability.unwrap(),host.key()).is_err(),"activation is one-shot");
+        assert!(runtime::instance_activate(a.capability.unwrap(),wrong.key()).is_err(),"activation owner must match");
+        activation_rollback(&a);
+        frame_tests::load_body("record-a","return {};","{}");install("record-a");
+        State{target:a.target.unwrap(),active,source,host}
+    }
+    pub fn call(mode:i32)->[f64;14] {let mut out=[0.;14];assert_eq!(unsafe{ENGINE.with(Cell::get).unwrap()(mode,out.as_mut_ptr())},1);out}
+    pub fn ready(state:&State)->bool {
+        let before=frame_tests::read_i32_global_in("record-a","preCount");call(0);
+        runtime::status(state.target).unwrap().state==2 && frame_tests::read_i32_global_in("record-a","preCount")>before
+    }
+    pub fn exercise(state:&State) {
+        eval_in_context("record-a","mode='edit';events.length=0;").unwrap();
+        let edited=call(1);assert_eq!(&edited[..7],&[5.,20.,127.,8.,0.,2.5,4294967295.]);
+        assert_eq!(&edited[12..],&[5.,20.],"peer must observe published record fields");assert_eq!(edited[7],1.,"original executes once");
+        assert_eq!(&edited[10..12],&[65535.,90.],"u16 must preserve adjacent sentinel");
+        eval_in_context("record-a","if(!events.includes('later:20')||!events.includes('post:20')||roSeen!==20)throw Error('accepted overlay/POST');let n=0;try{saved.amount}catch(_){n++}try{savedFrame.info}catch(_){n++}if(n!==2)throw Error('view escaped');").unwrap();
+        for mode in ["invalid","readonly","decision","throw","promise","map","map-copy","u16-range"] {
+            eval_in_context("record-a",&format!("mode='{mode}';events.length=0;")).unwrap();
+            let unchanged=call(0);assert_eq!(unchanged[7],1.,"{mode} original executes once");assert_eq!(&unchanged[..7],&[2.,7.,12.,8.,1.,9.,4294967295.],"{mode}: whole edit publication");
+        }
+        eval_in_context("record-a","mode='probe';").unwrap();assert_eq!(call(0)[1],7.);
+        for mode in ["entity","entity-null","entity-stale","entity-native","entity-forged"] {
+            seed_entity();eval_in_context("record-a",&format!("mode='{mode}';")).unwrap();
+            let output=call(0);
+            assert_eq!(output[6],if mode=="entity" {(72u32<<15|901) as f64}else{u32::MAX as f64},"{mode} packed publication");
+            assert_eq!(output[1],7.,"{mode} rejected scalar/record batch");
+        }
+        eval_in_context("record-a","mode='observe';sawNull=false;").unwrap();let nullable=call(2);assert_eq!(nullable[2],5.);
+        eval_in_context("record-a","if(!sawNull)throw Error('nullable record');mode='await';awaitDenied=false;").unwrap();call(0);
+        // Drain the host-owned microtask boundary; the saved callback lease is closed.
+        with_host_isolate(|isolate|isolate.perform_microtask_checkpoint()).unwrap();
+        eval_in_context("record-a","if(!awaitDenied)throw Error('await view survived');mode='nested';").unwrap();let nested=call(0);assert_eq!(nested[1],7.);assert_eq!(nested[7],2.,"nested physical entries each execute their original once");
+        eval_in_context("record-a","mode='ro-write';roDenied=false;").unwrap();call(0);
+        eval_in_context("record-a","if(!roDenied)throw Error('broader field rights leaked');let denied=false;try{record.call(saved,saved,'abc',null)}catch(_){denied=true}if(!denied)throw Error('record manufacture');").unwrap();
+        assert!(registry::named_binding(state.host.key(),"record").unwrap().is_live());
+        let old_view=with_host_isolate(|isolate|{
+            let mut storage=v8::HandleScope::new(isolate);let mut scope=unsafe{std::pin::Pin::new_unchecked(&mut storage)}.init();
+            let context=clone_plugin_context("record-a").unwrap();let context=v8::Local::new(&mut scope,&context);
+            let scope=&mut v8::ContextScope::new(&mut scope,context);let global=context.global(scope);
+            let name=v8::String::new(scope,"saved").unwrap();let value=global.get(scope,name.into()).unwrap();v8::Global::new(scope,value)
+        }).unwrap();
+        unload_plugin("record-a");frame_tests::load_body("record-a","return {};","{}");install("record-a");
+        with_host_isolate(|isolate|{
+            let mut storage=v8::HandleScope::new(isolate);let mut scope=unsafe{std::pin::Pin::new_unchecked(&mut storage)}.init();
+            let context=clone_plugin_context("record-a").unwrap();let context=v8::Local::new(&mut scope,&context);
+            let scope=&mut v8::ContextScope::new(&mut scope,context);let global=context.global(scope);let value=v8::Local::new(scope,&old_view);
+            set_own(scope,global,"oldRecord",value).unwrap();
+        }).unwrap();
+        eval_in_context("record-a","let denied=false;try{oldRecord.amount}catch(_){denied=true}if(!denied)throw Error('reload revived view');").unwrap();
+        eval_in_context("record-a","mode='retire';").unwrap();let retired=call(0);
+        assert_eq!(&retired[..7],&[2.,7.,12.,8.,1.,9.,4294967295.],"retirement during callback publishes no field/copy edits");assert!(state.host.is_retired());
+        println!("PASS borrowed real Service/V8 receiver/record/hidden/copy mixed edits, rejected whole batches, map/nested/expired views and binding-local rights");
+    }
+    pub fn abort(state:State) {
+        drop(state.active);drop(state.source);unload_plugin("record-a");ENGINE.with(|e|e.set(None));SLOT.with(|s|s.set(None));
+    }
+    #[test]
+    fn borrowed_host_data_is_sealed_and_required_optional_failures_are_named() {
+        scalar_transport_tests::init_transport();let (host,source)=source();
+        let original=input(false);
+        for failure in 0..6 {
+            let mut invalid=original.clone();
+            match failure {
+                0=>invalid.signature.instances[0].layout_hash="0".repeat(64),
+                1=>invalid.signature.instances[0].record.fields[0].offset=4,
+                2=>invalid.signature.instances[0].record.extent=65537,
+                3=>invalid.signature.instances[0].kind=Some(KindVersion{id:"unregistered".into(),version:1}),
+                4=>invalid.signature.parameters[2].ownership=None,
+                _=>invalid.signature.member_receiver=false,
+            }
+            assert!(prepare_verified_package(&source,vec![invalid.clone()],selected(),unsafe{lifetime()}).is_err());
+            invalid.requirement="optional".into();
+            let candidate=prepare_verified_package(&source,vec![invalid],selected(),unsafe{lifetime()}).unwrap();
+            assert!(candidate.functions()[0].unavailable().is_some());
+        }
+        let duplicate:Arc<str>="{\"amount\":0,\"amount\":4}".into();
+        let duplicate_hash=crate::engine_functions::contract::hash_bytes(duplicate.as_bytes());
+        assert!(prepare_verified_package(&source,vec![original.clone()],SelectedLayoutData{bytes:duplicate,sha256:duplicate_hash},unsafe{lifetime()}).is_err());
+        let candidate=prepare_verified_package(&source,vec![original],selected(),unsafe{lifetime()}).unwrap();
+        assert!(candidate.functions()[0].function().trusted_wire().is_ok());
+        let mut changed=candidate.functions()[0].function().clone();
+        changed.abi.instances[0].record.fields[0].write.clear();
+        assert!(changed.trusted_wire().is_err());
+        assert_eq!(registry::owner_bindings(host.key()).len(),0);
+        drop(source);assert!(host.is_retired());set_engine_ops(None);shutdown();
     }
 }

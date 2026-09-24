@@ -171,7 +171,7 @@ fn invoke(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
                         "availability": if binding.target.is_some() {"available"} else {"unavailable"},
                         "reason": binding.unavailable,
                         "hookObservation": function_adapter::binding_observation(binding.id),
-                        "provenance": {"archiveHash":p.archive_hash,"baseContractHash":p.base_contract_hash,
+                        "provenance": {"archiveHash":p.archive_hash,"baseContractHash":p.base_contract_hash,"instances":p.instances,
                             "appliedOverrides":p.overrides.iter().map(|o| serde_json::json!({"path":o.relative_path,"sha256":o.sha256})).collect::<Vec<_>>(),
                             "finalTargetHash":p.final_target_hash,"required":p.required,
                             "resolverReceipt":if binding.target.is_some() {"resolved"} else {"unavailable"}}
@@ -179,9 +179,10 @@ fn invoke(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
                 ))
             }
             2 => {
+                if binding.function.abi.borrowed() || !binding.function.policy.surfaces.iter().any(|s|s=="call") {return Err("function call surface unavailable".into());}
                 let _copy_scope=crate::engine_functions::copied::Scope::enter()?;
                 let abi = &binding.function.abi;
-                let receiver = usize::from(abi.receiver == "entity");
+                let receiver = usize::from(abi.member_receiver);
                 if args.length() as usize != receiver + abi.parameters.len() {
                     return Err("argument count mismatch".into());
                 }

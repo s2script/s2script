@@ -27,7 +27,7 @@ using RetainedFrame = std::unique_ptr<FrameRetention, FrameRetentionDeleter>;
 struct AbiAtom { std::string native; std::string projection = {}; };
 struct AbiSignature {
     std::string platform = "linux-x86_64-sysv";
-    std::string receiver = "none";
+    bool member_receiver = false;
     AbiAtom returns{"void", ""};
     std::vector<AbiAtom> parameters;
     bool varargs = false;

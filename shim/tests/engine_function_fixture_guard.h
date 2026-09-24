@@ -53,5 +53,6 @@ inline void S2FnRequireFixtureInventory(const S2FnFixtureTargets& t, const S2FnF
     S2FN_REQUIRE_TARGET(spill_sse); S2FN_REQUIRE_TARGET(detached_nested);
     S2FN_REQUIRE_TARGET(member); S2FN_REQUIRE_TARGET(peer_boolean);
     S2FN_REQUIRE_TARGET(peer_mixed);
+    S2FN_REQUIRE_TARGET(record_member);
 #undef S2FN_REQUIRE_TARGET
 }

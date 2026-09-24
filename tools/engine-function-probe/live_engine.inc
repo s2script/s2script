@@ -186,7 +186,7 @@ void PrepareReal(ISmmAPI* api) {
         acquire_peer=std::make_unique<AcquirePeer>(&RealPeerPre,&RealPeerPost);
         const auto receipt=acquire_peer->Configure(reinterpret_cast<void*>(acquire_resolution.address)); Require(receipt.Accepted(),receipt.reason.c_str());
     }
-    AbiSignature signature; signature.receiver="entity"; signature.parameters={{"ptr"},{"i32"},{"ptr"}}; signature.returns={"i32"};
+    AbiSignature signature; signature.member_receiver=true; signature.parameters={{"ptr"},{"i32"},{"ptr"}}; signature.returns={"i32"};
     real_acquire=&Bind(signature,reinterpret_cast<void*>(acquire_resolution.address)); real_acquire->sink.fn=RealDispatch;
     real_pre=real_post=real_non_skipped=real_peer_pre=real_peer_post=0; real_depth=0; real_used=false; inner_ok=false; real_peer_results.clear(); real_results.clear(); real_invocations=nlohmann::json::array();
 }

@@ -84,6 +84,38 @@ pub struct S2FunctionCopyProducer {
     pub generation: u64,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct S2FunctionInstanceOwner {
+    pub version: u32,
+    pub struct_size: u32,
+    pub kind: u32,
+    pub reserved: u32,
+    pub id_digest: [u8; 32],
+    pub generation: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct S2FunctionInstancePrepared {
+    pub version: u32,
+    pub struct_size: u32,
+    pub target: i64,
+    pub capability: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct S2FunctionInstanceAccess {
+    pub version: u32,
+    pub struct_size: u32,
+    pub target: i64,
+    pub frame_token: u64,
+    pub native_epoch: u64,
+    pub capability: u64,
+    pub binding_id: u64,
+}
+
 pub type SchemaOffsetFn = extern "C" fn(cls: *const c_char, field: *const c_char) -> c_int;
 pub type EntByIndexFn = extern "C" fn(idx: c_int) -> *mut c_void;
 pub type DerefHandleFn = extern "C" fn(handle: c_uint) -> *mut c_void;
@@ -226,6 +258,12 @@ pub type FunctionFrameReadCopyFn = extern "C" fn(i64, u64, u64, *const c_char, c
 pub type FunctionFrameWriteCopyFn = extern "C" fn(i64, u64, u64, *const c_char, c_int, *const S2FunctionValue, *const S2FunctionCopyInput, *const S2FunctionCopyProducer, *mut c_char, c_int) -> c_int;
 pub type FunctionFrameCommitCopyFn = extern "C" fn(i64, u64, u64, *const c_char, c_int, *const S2FunctionValue, *const S2FunctionCopyInput, *const S2FunctionCopyProducer, *mut c_char, c_int) -> c_int;
 pub type FunctionFrameOverrideReturnCopyFn = extern "C" fn(i64, u64, u64, *const c_char, *const S2FunctionValue, *const S2FunctionCopyInput, *const S2FunctionCopyProducer, *mut S2FunctionValue, *mut S2FunctionCopyOutput, *mut c_char, c_int) -> c_int;
+pub type FunctionPrepareInstanceFn = extern "C" fn(u64, *const S2FunctionInstanceOwner, *const c_char, *const c_char, *const c_char, *mut S2FunctionInstancePrepared, *mut c_char, c_int) -> c_int;
+pub type FunctionInstanceActivateFn = extern "C" fn(u64, *const S2FunctionInstanceOwner, *mut c_char, c_int) -> c_int;
+pub type FunctionInstanceReleaseFn = extern "C" fn(u64) -> c_int;
+pub type FunctionFrameReadInstanceFn = extern "C" fn(*const S2FunctionInstanceAccess, c_int, *mut S2FunctionValue, *mut c_char, c_int) -> c_int;
+pub type FunctionFrameFieldReadFn = extern "C" fn(*const S2FunctionInstanceAccess, c_int, u32, *mut S2FunctionValue, *mut c_char, c_int) -> c_int;
+pub type FunctionFrameFieldWriteFn = extern "C" fn(*const S2FunctionInstanceAccess, c_int, u32, *const S2FunctionValue, *mut c_char, c_int) -> c_int;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -422,6 +460,12 @@ pub struct S2EngineOps {
     pub function_frame_write_copy: Option<FunctionFrameWriteCopyFn>,
     pub function_frame_commit_copy: Option<FunctionFrameCommitCopyFn>,
     pub function_frame_override_return_copy: Option<FunctionFrameOverrideReturnCopyFn>,
+    pub function_prepare_instance: Option<FunctionPrepareInstanceFn>,
+    pub function_instance_activate: Option<FunctionInstanceActivateFn>,
+    pub function_instance_release: Option<FunctionInstanceReleaseFn>,
+    pub function_frame_read_instance: Option<FunctionFrameReadInstanceFn>,
+    pub function_frame_field_read: Option<FunctionFrameFieldReadFn>,
+    pub function_frame_field_write: Option<FunctionFrameFieldWriteFn>,
 }
 
 impl S2EngineOps {

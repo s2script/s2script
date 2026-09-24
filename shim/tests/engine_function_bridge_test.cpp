@@ -25,6 +25,7 @@ extern "C" __attribute__((visibility("default"),noinline)) int s2bridge_fixture_
 }
 #else
 #include "engine_function_bridge.h"
+#include "sha256.h"
 #include "../third_party/json.hpp"
 #include <cassert>
 #include <cstring>
@@ -144,6 +145,63 @@ void stages() {
     assert(!s2bridge::Parse(target().dump(),a.dump(),a["fingerprint"]));
     a["parameters"][0]["ownership"]="callee-retained"; assert(s2bridge::Parse(target().dump(),a.dump(),a["fingerprint"]));
     std::cout << "PASS bridge normalization and real S1 staged resolution\n";
+}
+
+json instance_contract() {
+    auto position=[](const char* name,const char* projection,const char* ownership) {
+        json p={{"name",name},{"native","ptr"},{"projection",{{"id",projection},{"version",1}}},
+            {"ownership",ownership},{"mutable",json::array()},{"nullable",false}};
+        if(std::string(projection)=="borrowed-record") p["instance"]=0;
+        return p;
+    };
+    json layout={{"extent",8},{"alignment",4},{"fields",json::array({
+        {{"name","small"},{"offsetKey","small"},{"offset",0},{"storage","u16"},{"nullable",false},{"read",json::array({"pre","post"})},{"write",json::array({"pre"})}},
+        {{"name","handle"},{"offsetKey","handle"},{"offset",4},{"storage","entity-handle32"},{"nullable",true},{"read",json::array({"pre","post"})},{"write",json::array()}}})}};
+    auto ret=abi()["returns"];ret["name"]="";ret["mutable"]=json::array();ret["nullable"]=false;
+    return {{"version",1},{"selectedDataHash",std::string(64,'a')},{"signature",{
+        {"platform","linux-x86_64-sysv"},{"memberReceiver",true},{"receiver",position("self","borrowed-record","synchronous-record")},
+        {"parameters",json::array({position("hidden","native-only","invocation-passthrough")})},{"returns",ret},
+        {"fingerprint","linux-x86_64-sysv:entity:i32(ptr)"},{"stackCopyBytes",128},
+        {"instances",json::array({{{"codecId","borrowed-record"},{"codecVersion",1},{"kind",nullptr},{"record",layout},{"layoutHash",s2::digest::sha256(layout.dump())}}})}}},
+        {"policy",{{"id","generic.v2"},{"version",1},{"surfaces",json::array({"pre","post"})}}}};
+}
+void instance_normalization() {
+    auto seal=[](json& j) {j.erase("contractHash");j["contractHash"]=s2::digest::sha256(j.dump());};
+    auto good=instance_contract();seal(good);
+    auto parsed=s2bridge::ParseInstance(target().dump(),good.dump());assert(parsed);
+    assert(parsed.value.abi.member_receiver && parsed.value.instances.hidden.count(0));
+    const auto& layout=parsed.value.instances.records.at(-1).layout;
+    assert(layout.extent==8 && layout.fields[0].width==2 && layout.fields[1].width==4);
+    // A trusted wire must never be admitted by the unchanged public-v2 parser.
+    assert(!s2bridge::Parse(target().dump(),good["signature"].dump(),parsed.value.info.fingerprint));
+    for(int mode=0;mode<10;++mode) {
+        auto invalid=instance_contract();auto& signature=invalid["signature"];
+        auto& instance=signature["instances"][0];auto& record=instance["record"];
+        switch(mode) {
+        case 0:record["fields"][0]["offset"]=1;break;
+        case 1:record["fields"][0]["storage"]="ptr";break;
+        case 2:record["fields"][0]["offset"]=4;break;
+        case 3:record["extent"]=65537;break;
+        case 4:record["fields"][0]["write"]=json::array({"post"});break;
+        case 5:signature["memberReceiver"]=false;break;
+        case 6:signature["receiver"]["ownership"]="inferred";break;
+        case 7:signature["parameters"][0]["instance"]=0;break;
+        case 8:instance["kind"]={{"id","unknown"},{"version",1}};break;
+        case 9:signature["fingerprint"]="linux-x86_64-sysv:none:i32(ptr)";break;
+        }
+        instance["layoutHash"]=s2::digest::sha256(record.dump());seal(invalid);
+        assert(!s2bridge::ParseInstance(target().dump(),invalid.dump()));
+    }
+    auto stale=good;stale["signature"]["instances"][0]["record"]["fields"][0]["write"]=json::array();seal(stale);
+    assert(!s2bridge::ParseInstance(target().dump(),stale.dump()));
+    auto readonly=instance_contract();readonly["signature"]["instances"][0]["record"]["fields"][0]["write"]=json::array();
+    readonly["signature"]["instances"][0]["layoutHash"]=s2::digest::sha256(readonly["signature"]["instances"][0]["record"].dump());seal(readonly);
+    auto narrow=s2bridge::ParseInstance(target().dump(),readonly.dump());assert(narrow && parsed.value.instances.compatible(narrow.value.instances));
+    auto hidden=instance_contract();hidden["signature"]["receiver"]=hidden["signature"]["parameters"][0];seal(hidden);
+    assert(s2bridge::ParseInstance(target().dump(),hidden.dump()));
+    auto nullable=instance_contract();nullable["signature"]["receiver"]={{"name","self"},{"native","ptr"},{"projection",{{"id","entity?"},{"version",1}}},{"mutable",json::array()},{"nullable",false}};seal(nullable);
+    assert(s2bridge::ParseInstance(target().dump(),nullable.dump()).value.instances.nullable_receiver);
+    std::cout << "PASS trusted physical receiver/hidden/record normalization, u16 storage, hash/bounds/rights rejection and public mint denial\n";
 }
 
 void copied_transport_primitives() {
@@ -950,7 +1008,7 @@ void runtime() {
 #endif
 int main(int argc,char** argv) {
     if(argc==2 && std::string(argv[1])=="--copy-quota") {copied_quota_transaction();return 0;}
-    stages(); copied_transport_primitives();
+    stages(); instance_normalization(); copied_transport_primitives();
 #ifndef S2FN_VALIDATION_ONLY
     runtime();
 #endif
