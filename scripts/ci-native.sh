@@ -12,6 +12,14 @@ if [[ -n "${S2_BUILD_JOBS:-}" && ! "${S2_BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
+# The real-package core test invokes the SDK's function parser while cargo test runs below.
+# As in ci-js, only CI refreshes node_modules; local runs use the installed workspace.
+if [ -n "${CI:-}" ]; then
+  echo "== npm ci (game-package parser and acceptance fixture build tools) =="
+  npm ci
+fi
+node scripts/lib/check-game-package-deps.mjs
+
 echo "== verified sniper Node bootstrap (checksum, extraction, builder ordering) =="
 bash scripts/lib/test-sniper-node.sh
 
@@ -233,11 +241,6 @@ echo "== check-shim-symbols.sh (core entry points defined; no unresolvable engin
 bash scripts/check-shim-symbols.sh
 
 # The acceptance bundle includes a freshly built .s2sp with its own identity.
-# Like ci-js, only CI refreshes node_modules; local runs use the installed SDK.
-if [ -n "${CI:-}" ]; then
-  echo "== npm ci (acceptance fixture build tools) =="
-  npm ci
-fi
 echo "== build-khook-runtime.py (stock host, native consumers and stamped fixture) =="
 python3 scripts/build-khook-runtime.py
 

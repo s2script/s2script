@@ -180,6 +180,18 @@ test("direct addon packaging fails before touching dist when locked TypeScript i
   assert.equal(readFileSync(join(root, "dist/addons/sentinel"), "utf8"), "keep");
 });
 
+test("native CI installs locked parser dependencies before its real-package core test", () => {
+  const script = readFileSync(join(scriptsRoot, "ci-native.sh"), "utf8");
+  const installs = [...script.matchAll(/^\s*npm ci\s*$/gm)];
+  assert.equal(installs.length, 1);
+  const coreTests = [...script.matchAll(/^cargo test -p s2script-core\s*$/gm)];
+  assert.equal(coreTests.length, 1);
+  const coreTest = coreTests[0].index;
+  assert.ok(installs[0].index < coreTest);
+  const dependencyCheck = script.indexOf("node scripts/lib/check-game-package-deps.mjs");
+  assert.ok(installs[0].index < dependencyCheck && dependencyCheck < coreTest);
+});
+
 test("rejects absent inputs, escapes, malformed JSONC, and unapproved synthetic packages", () => {
   const f = fixture();
   assert.throws(() => buildGamePackages({ outDir: f.out, sourceDirs: [f.source] }), /synthetic|first-party/);
