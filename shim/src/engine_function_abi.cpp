@@ -182,10 +182,10 @@ void RuntimeBinding::OnKHookRemoved(KHook::HookID_t) {
 }
 Result<NativeValue> RuntimeBinding::Invoke(void* address, const NativeValue* args, std::size_t argc) {
     if (argc != argument_atoms_.size() || (argc && !args)) return {{}, "argument count mismatch"};
-    std::vector<void*> pointers; pointers.reserve(argc);
+    std::array<void*,capabilities::maxCifArguments> pointers{};
     for (std::size_t i = 0; i < argc; ++i) {
         if (!Canonical(argument_atoms_[i], args[i])) return {{}, "noncanonical u8 argument[" + std::to_string(i) + "]"};
-        pointers.push_back(const_cast<std::uint8_t*>(args[i].bytes.data()));
+        pointers[i]=const_cast<std::uint8_t*>(args[i].bytes.data());
     }
     // ffi_call widens narrow integral returns to ffi_arg. Never hand it a byte.
     alignas(16) std::array<std::uint8_t, 16> storage{};
@@ -203,7 +203,7 @@ Result<NativeValue> RuntimeBinding::Invoke(void* address, const NativeValue* arg
     } else std::memcpy(result.bytes.data(), storage.data(), Width(signature_.returns.native));
     return {result, {}};
 }
-Result<NativeValue> RuntimeBinding::Call(const NativeValue* args, std::size_t argc) {
+Result<NativeValue> RuntimeBinding::Call(const NativeValue* args, std::size_t argc, PrepareCall prepare, void* context) {
     std::unique_lock<std::mutex> admission(admission_mu_);
     Activity activity(*this); // retained through ffi_call and result/error handling
     // On refusal or an exception, unlock before releasing the activity hold:
@@ -227,8 +227,11 @@ Result<NativeValue> RuntimeBinding::Call(const NativeValue* args, std::size_t ar
     // concurrent unhooked calls must not be mistaken for retirement-era work.
     admission.unlock();
     std::string callback_error;
+    if(argc!=argument_atoms_.size() || (argc && !args)) return {{},"argument count mismatch"};
+    for(size_t i=0;i<argc;++i) if(!Canonical(argument_atoms_[i],args[i])) return {{},"noncanonical call argument"};
     call_errors.emplace_back(this, &callback_error);
     struct Pop { ~Pop() { call_errors.pop_back(); } } pop;
+    if(prepare) {auto admitted=prepare(context);if(!admitted) return {{},admitted.error};}
     auto result = Invoke(const_cast<void*>(target_), args, argc);
     if (!callback_error.empty()) return {{}, callback_error};
     return result;

@@ -91,6 +91,15 @@ full function/bundle hashes while the pointer-shaped machine ABI fingerprint rem
 `native-observed` is copy-out only: it disallows `call` and PRE writes; a native-observed return
 with PRE requires explicit `suppression: "none"`. A mutable copied parameter on a pointer-returning
 function requires `callee-retained`, while a readonly borrowed call input may return an alias.
+Permanent quota applies to each host-folded value submitted to the native provider, billed to
+that value's verified producer. Losing candidates in the host subscriber/adapter fold do not
+publish. Once submitted, a value remains retained and charged even if peer-provider arbitration
+selects another return. Stock public APIs cannot distinguish an earlier PRE `Override` from
+`Supersede` before submission; the bridge preserves that arbitration without reading private
+provider layout. A conclusively losing POST `Override` can reuse the captured effective return
+without publishing its candidate. Arena charges never reset on script generation, target/service
+retirement, or map changes.
+
 The underlying native ownership must match the physical target; this metadata alone does not
 prove that contract. Copy buffers, native reader, arena, and sidecar execution remain the next
 Task 6 checkpoint, so copied bindings remain unavailable by name until then.

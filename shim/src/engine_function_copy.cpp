@@ -130,6 +130,7 @@ struct alignas(16) SnapshotBlock {
     Lease lease;
     Kind kind;
     std::size_t length = 0;
+    bool capture_ready = false;
     SnapshotBlock(Lease&& charge, Kind k) : lease(std::move(charge)), kind(k) {}
     std::uint8_t* Data() { return reinterpret_cast<std::uint8_t*>(this + 1); }
     void Retain() { refs.fetch_add(1, std::memory_order_relaxed); }
@@ -183,13 +184,26 @@ Reader SystemReader() {
     }();
     return reader;
 }
+Result<Snapshot> Snapshot::PrepareCapture(const Operation& op, Kind kind) {
+    if(!op.HostOwned() || (kind!=Kind::String && kind!=Kind::Vector))
+        return Fail<Snapshot>(Unsupported, "capture requires Engine operation and copied kind");
+    auto result=Allocate(op,kind,kind==Kind::String ? MaxString+1 : 12);
+    if(result) result.value.block_->capture_ready=true;
+    return result;
+}
 Result<Snapshot> Snapshot::Capture(const Operation& op, Kind kind, std::uintptr_t source, const Reader& reader) {
-    const std::size_t limit = kind == Kind::String ? MaxString + 1 : 12;
-    if (!op.HostOwned() || (kind != Kind::String && kind != Kind::Vector) || !reader.available || !reader.read || !reader.page_size || !Range(source, limit))
+    auto prepared=PrepareCapture(op,kind);if(!prepared) return prepared;
+    return CapturePrepared(std::move(prepared.value),source,reader);
+}
+Result<Snapshot> Snapshot::CapturePrepared(Snapshot&& prepared, std::uintptr_t source, const Reader& reader) {
+    if(!prepared.block_ || !prepared.block_->capture_ready || prepared.block_->refs.load()!=1)
+        return Fail<Snapshot>(Unsupported, "capture storage unavailable or shared");
+    const auto kind=prepared.kind();
+    const std::size_t limit=kind==Kind::String ? MaxString+1 : 12;
+    if(!reader.available || !reader.read || !reader.page_size || !Range(source,limit))
         return Fail<Snapshot>(Unsupported, "unavailable reader or invalid address");
-    // Bound the complete owned capacity before allocating or touching the source.
-    // Captured strings retain that admitted capacity, even when the NUL is early.
-    auto result = Allocate(op, kind, limit); if (!result) return result;
+    prepared.block_->capture_ready=false;
+    Result<Snapshot> result{std::move(prepared),{}};
     std::uint8_t scratch[4096]; std::size_t offset = 0;
     while (offset < limit) {
         auto address = source + offset;
