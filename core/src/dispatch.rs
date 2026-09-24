@@ -22,6 +22,20 @@ use crate::multiplexer::HookResult;
 use crate::v8host::{clone_plugin_context, log_warn, owner_is_live, with_host_isolate, HostAccess};
 
 thread_local! {
+    static BUSY_PARENTS: std::cell::RefCell<Vec<(String,u64)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+pub(crate) struct ParentBusy;
+impl ParentBusy {
+    pub(crate) fn enter(owner:&str,generation:u64)->Self {
+        BUSY_PARENTS.with(|b|b.borrow_mut().push((owner.into(),generation))); Self
+    }
+}
+impl Drop for ParentBusy { fn drop(&mut self) {BUSY_PARENTS.with(|b|{b.borrow_mut().pop();});} }
+pub(crate) fn parent_busy(owner:&str,generation:u64)->bool {
+    BUSY_PARENTS.with(|b|b.borrow().iter().any(|(id,g)|id==owner && *g==generation))
+}
+
+thread_local! {
     /// Called after each collapsing handler with that handler's HookResult. Used by the
     /// return-value pickup gate to collect per-handler votes (Continue is not a vote).
     ///
@@ -280,6 +294,7 @@ where
 
         let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
         let Some(args) = build_args(tc) else { continue };
+        let _busy = ParentBusy::enter(owner, *generation);
         let func = v8::Local::new(tc, handler_g);
         match func.call(tc, recv, &args) {
             None => {
@@ -399,6 +414,7 @@ where
             // `v8::String::new` allocation fails. Returning an empty Vec instead would call the
             // handler with its arguments silently missing.
             let Some(args) = build_args(tc) else { continue };
+            let _busy = ParentBusy::enter(owner, *generation);
             let func = v8::Local::new(tc, handler_g);
             let hr = match func.call(tc, recv, &args) {
                 None => {

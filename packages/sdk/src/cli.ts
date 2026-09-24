@@ -13,6 +13,7 @@ function usage(): void {
       "  s2s create --workspace <dir>\n" +
       "  s2s build [dir|workspace root] [--filter <pattern>]... [--stamp-version <v>]\n" +
       "            [--packages-dir <path>]\n" +
+      "  s2s inspect <archive.s2sp>\n" +
       "  s2s login [--token s2s_…] [--registry <url>]\n" +
       "  s2s deploy [dir|workspace root] [--filter <pattern>]... [--dry-run] [--yes|--ci]\n" +
       "             [--registry <url>] [--packages-dir <path>]\n" +

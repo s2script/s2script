@@ -170,3 +170,15 @@
     ops.sdkhook_vp_add = &s2_sdkhook_vp_add;
     ops.sdkhook_vp_remove = &s2_sdkhook_vp_remove;
     ops.sdkhook_vp_drop = &s2_sdkhook_vp_drop;
+    // --- Immutable bounded plugin engine-function override snapshot ---
+    ops.plugin_function_overrides = &s2_plugin_function_overrides;
+    // --- Shared native engine-function targets (opaque handles) ---
+    ops.function_prepare = &S2_FunctionPrepare;
+    ops.function_call = &S2_FunctionCall;
+    ops.function_hook_acquire = &S2_FunctionHookAcquire;
+    ops.function_hook_release = &S2_FunctionHookRelease;
+    ops.function_target_release = &S2_FunctionTargetRelease;
+    ops.function_hook_status = &S2_FunctionGetHookStatus;
+    ops.function_frame_read = &S2_FunctionFrameRead;
+    ops.function_frame_write = &S2_FunctionFrameWrite;
+    ops.function_frame_commit = &S2_FunctionFrameCommit;

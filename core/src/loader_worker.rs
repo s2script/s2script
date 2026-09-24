@@ -52,6 +52,8 @@ pub struct Manifest {
     pub permissions: Vec<String>,
     #[serde(default)]
     pub gamedata: Option<String>,
+    #[serde(rename = "engineFunctions", default, deserialize_with = "crate::engine_functions::contract::present")]
+    pub engine_functions: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -62,6 +64,7 @@ pub(crate) struct ParseLimits {
     pub manifest_bytes: usize,
     pub plugin_js_bytes: usize,
     pub gamedata_bytes: usize,
+    pub engine_functions_bytes: usize,
 }
 
 impl Default for ParseLimits {
@@ -72,6 +75,7 @@ impl Default for ParseLimits {
             manifest_bytes: 1 << 20,
             plugin_js_bytes: 16 << 20,
             gamedata_bytes: 8 << 20,
+            engine_functions_bytes: 4 << 20,
         }
     }
 }
@@ -143,6 +147,7 @@ impl LoaderPolicy {
             self.parse.manifest_bytes,
             self.parse.plugin_js_bytes,
             self.parse.gamedata_bytes,
+            self.parse.engine_functions_bytes,
             self.drain_items,
             self.drain_bytes,
         ];
@@ -181,6 +186,8 @@ impl LoaderPolicy {
         if self.parse.manifest_bytes
             .saturating_add(self.parse.plugin_js_bytes)
             .saturating_add(self.parse.gamedata_bytes)
+            .saturating_add(self.parse.engine_functions_bytes)
+            .saturating_add(64)
             > self.result_bytes
         {
             return Err("loader policy: parsed archive members exceed result_bytes".into());
@@ -191,6 +198,8 @@ impl LoaderPolicy {
                 .manifest_bytes
                 .saturating_add(self.parse.plugin_js_bytes)
                 .saturating_add(self.parse.gamedata_bytes)
+                .saturating_add(self.parse.engine_functions_bytes)
+                .saturating_add(64)
                 .saturating_add(self.config_bytes.saturating_mul(3))
         {
             return Err(
@@ -264,6 +273,9 @@ pub(crate) struct PreparedPlugin {
     pub manifest: Manifest,
     pub js: String,
     pub gamedata: Option<String>,
+    pub engine_functions: Option<String>,
+    pub archive_hash: String,
+    pub engine_candidate: Option<crate::engine_functions::provenance::PreparedCandidate>,
     pub stamp: FileStamp,
     resident_bytes: usize,
 }
@@ -279,6 +291,9 @@ impl PreparedPlugin {
             manifest,
             js: js.to_string(),
             gamedata: None,
+            engine_functions: None,
+            archive_hash: String::new(),
+            engine_candidate: None,
             stamp: FileStamp {
                 len: resident_bytes as u64,
                 modified_ns: 1,
@@ -429,6 +444,7 @@ impl Request {
                 .saturating_add(p.parse.manifest_bytes)
                 .saturating_add(p.parse.plugin_js_bytes)
                 .saturating_add(p.parse.gamedata_bytes)
+                .saturating_add(p.parse.engine_functions_bytes)
                 .saturating_add(2048),
             Self::Config { path, .. } => path_len(path)
                 .saturating_add(p.config_bytes.saturating_mul(3))
@@ -1161,15 +1177,20 @@ fn run_request(
         } => {
             let prepared = stable_read(&path, policy.archive_bytes).and_then(|(bytes, stamp)| {
                 parse_s2sp_parts(&bytes, policy.parse).map(
-                    |(manifest, js, gamedata, manifest_bytes)| {
+                    |(manifest, js, gamedata, engine_functions, manifest_bytes)| {
                         let resident_bytes = js
                             .len()
                             .saturating_add(gamedata.as_ref().map_or(0, String::len))
-                            .saturating_add(manifest_bytes);
+                            .saturating_add(engine_functions.as_ref().map_or(0, String::len))
+                            .saturating_add(manifest_bytes)
+                            .saturating_add(64);
                         PreparedPlugin {
                             manifest,
                             js,
                             gamedata,
+                            engine_functions,
+                            archive_hash: crate::engine_functions::contract::hash_bytes(&bytes),
+                            engine_candidate: None,
                             stamp,
                             resident_bytes,
                         }
@@ -1411,13 +1432,13 @@ pub(crate) fn parse_s2sp(
     bytes: &[u8],
     limits: ParseLimits,
 ) -> Result<(Manifest, String, Option<String>), String> {
-    parse_s2sp_parts(bytes, limits).map(|(manifest, js, gamedata, _)| (manifest, js, gamedata))
+    parse_s2sp_parts(bytes, limits).map(|(manifest, js, gamedata, _, _)| (manifest, js, gamedata))
 }
 
 fn parse_s2sp_parts(
     bytes: &[u8],
     limits: ParseLimits,
-) -> Result<(Manifest, String, Option<String>, usize), String> {
+) -> Result<(Manifest, String, Option<String>, Option<String>, usize), String> {
     let cursor = std::io::Cursor::new(bytes);
     let mut archive =
         zip::ZipArchive::new(cursor).map_err(|e| format!("read_s2sp: not a valid zip: {e}"))?;
@@ -1428,10 +1449,13 @@ fn parse_s2sp_parts(
         ));
     }
     let mut name_bytes = 0usize;
+    let mut engine_members = 0;
     for index in 0..archive.len() {
         let entry = archive
             .by_index(index)
             .map_err(|e| format!("read_s2sp: invalid archive entry {index}: {e}"))?;
+        if entry.name() == "engine-functions.json" { engine_members += 1; }
+        if engine_members > 1 { return Err("read_s2sp: duplicate engine-functions.json".into()); }
         name_bytes = name_bytes.saturating_add(entry.name_raw().len());
         if name_bytes > limits.member_name_bytes {
             return Err(format!(
@@ -1456,7 +1480,13 @@ fn parse_s2sp_parts(
     let js = read_zip_member(&mut archive, "plugin.js", limits.plugin_js_bytes, true)?.unwrap();
     let gamedata = read_zip_member(&mut archive, "gamedata.json", limits.gamedata_bytes, false)
         .unwrap_or(None);
-    Ok((manifest, js, gamedata, manifest_bytes))
+    let engine_functions = read_zip_member(&mut archive, "engine-functions.json", limits.engine_functions_bytes, false)?;
+    match (&manifest.engine_functions, &engine_functions) {
+        (Some(summary), Some(member)) => { crate::engine_functions::contract::parse(member, &manifest.id, summary, &manifest.permissions)?; }
+        (None, None) => {}
+        _ => return Err("read_s2sp: engineFunctions summary/member presence mismatch".into()),
+    }
+    Ok((manifest, js, gamedata, engine_functions, manifest_bytes))
 }
 
 fn assert_send_static<T: Send + 'static>() {}
@@ -1532,7 +1562,7 @@ mod tests {
     fn policy_requires_retained_capacity_for_archive_plus_decoded_config() {
         let mut p = LoaderPolicy::default();
         p.prepared_bytes =
-            p.parse.manifest_bytes + p.parse.plugin_js_bytes + p.parse.gamedata_bytes;
+            p.parse.manifest_bytes + p.parse.plugin_js_bytes + p.parse.gamedata_bytes + p.parse.engine_functions_bytes;
         assert!(p.validate().unwrap_err().contains("prepared_bytes"));
 
         let mut p = LoaderPolicy::default();
@@ -2361,6 +2391,105 @@ mod tests {
                 .contains("entry limit 1")
         );
     }
+    fn function_archive(summary: Option<serde_json::Value>, members: &[&str]) -> Vec<u8> {
+        let mut manifest = serde_json::json!({"id":"@demo/fire","version":"1","apiVersion":"3.x","permissions":["engine:calls"]});
+        if let Some(summary) = summary {
+            manifest["engineFunctions"] = summary;
+        }
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, text) in [
+            ("manifest.json", manifest.to_string()),
+            ("plugin.js", "module.exports={};".into()),
+        ] {
+            writer
+                .start_file(name, zip::write::FileOptions::default())
+                .unwrap();
+            writer.write_all(text.as_bytes()).unwrap();
+        }
+        for member in members {
+            writer
+                .start_file("engine-functions.json", zip::write::FileOptions::default())
+                .unwrap();
+            writer.write_all(member.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+    #[test]
+    fn engine_function_archive_presence_duplicates_and_member_budget() {
+        use crate::engine_functions::tests::{fixture, summary};
+        let bundle = fixture();
+        let text = bundle.to_string();
+        let summary = summary(&bundle);
+        assert!(parse_s2sp(&function_archive(None, &[&text]), ParseLimits::default()).is_err());
+        assert!(parse_s2sp(
+            &function_archive(Some(summary.clone()), &[]),
+            ParseLimits::default()
+        )
+        .is_err());
+        assert!(parse_s2sp(
+            &function_archive(Some(serde_json::Value::Null), &[]),
+            ParseLimits::default()
+        )
+        .is_err());
+        assert!(parse_s2sp(
+            &function_archive(Some(summary.clone()), &[&text, &text]),
+            ParseLimits::default()
+        )
+        .is_err());
+        let bytes = function_archive(Some(summary), &[&text]);
+        let parts = parse_s2sp_parts(&bytes, ParseLimits::default()).unwrap();
+        assert_eq!(parts.3.as_deref(), Some(text.as_str()));
+        let limits = ParseLimits {
+            engine_functions_bytes: text.len() - 1,
+            ..ParseLimits::default()
+        };
+        assert!(parse_s2sp(&bytes, limits).is_err());
+    }
+    #[test]
+    fn engine_function_bytes_are_reserved_and_retained_by_worker() {
+        use crate::engine_functions::tests::{fixture, summary};
+        let b = fixture();
+        let text = b.to_string();
+        let bytes = function_archive(Some(summary(&b)), &[&text]);
+        let root = std::env::temp_dir().join(format!("s2-function-budget-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("plugin.s2sp");
+        std::fs::write(&path, &bytes).unwrap();
+        let policy = LoaderPolicy::default();
+        let worker = LoaderWorker::start(policy.clone()).unwrap();
+        assert_eq!(worker.try_prepare(1, 1, path.clone()), Submit::Accepted);
+        match next_result(&worker) {
+            WorkerResult::Plugin {
+                prepared: Ok(prepared),
+                ..
+            } => {
+                assert_eq!(prepared.engine_functions.as_deref(), Some(text.as_str()));
+                let manifest_bytes = parse_s2sp_parts(&bytes, policy.parse).unwrap().4;
+                assert_eq!(
+                    prepared.bytes(),
+                    prepared.js.len() + text.len() + manifest_bytes + 64
+                );
+                assert_eq!(
+                    prepared.archive_hash,
+                    crate::engine_functions::contract::hash_bytes(&bytes)
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        worker.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+        let request = Request::Plugin {
+            epoch: 1,
+            revision: 1,
+            path,
+        };
+        let mut without = policy.clone();
+        without.parse.engine_functions_bytes = 0;
+        assert_eq!(
+            request.result_reservation(&policy) - request.result_reservation(&without),
+            policy.parse.engine_functions_bytes
+        );
+    }
 }
 #[cfg(test)]
 mod retirement_regressions {
@@ -2628,4 +2757,5 @@ mod retirement_regressions {
         assert_eq!(pressured.high_water.config_paths, 1);
         assert_eq!(pressured.high_water.config_bytes, committed.config_bytes);
     }
+
 }

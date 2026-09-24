@@ -6,7 +6,7 @@
 
 **Architecture:** Preserve the existing script APIs and five legacy shape policies while replacing duplicated resolution and private interception. Verified original instruction images carry logical live addresses into recipe-specific validation. Checked KHook bindings retain per-invocation state and follow the resident-shim lifecycle.
 
-**Tech Stack:** Linux x86_64 SysV, C++17, Rust/V8, existing JSONC gamedata, official Metamod PLAPI 18, pinned KHook `1e200e4cc8e0badcb7cf941525268d6977f6a4e6`, sniper release toolchain.
+**Tech Stack:** Linux x86_64 SysV, C++17, Rust/V8, existing JSONC gamedata, official Metamod PLAPI 18, pinned KHook `40d233d160b5bf60cc3e732939142b222fbd8ece`, sniper release toolchain.
 
 **Spec:** [Shared engine bindings design](../specs/2026-09-22-engine-bindings-design.md). Read the [old invocation contracts](../specs/2026-09-14-khook-migration-design.md) and [stock-host amendment](../specs/2026-09-15-khook-stock-host-decision.md) as well. This plan replaces the old T9–T13 execution grouping, not its behavioral evidence obligations.
 

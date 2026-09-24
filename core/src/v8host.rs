@@ -28,6 +28,7 @@ mod interop_wire;
 mod interop_lifetime;
 use interop_wire::*;
 mod timers;
+pub(crate) mod function_adapter;
 
 pub use lifecycle::unload_all;
 #[allow(unused_imports)] // retained parent-module surface for existing internal/test callers
@@ -669,7 +670,7 @@ pub(crate) fn release_resource(owner: &str, generation: u64, resource: &plugin::
     REGISTRY.with(|r| r.borrow_mut().release(owner, generation, resource))
 }
 
-fn record_resource(owner: &str, generation: u64, resource: plugin::Resource) -> bool {
+pub(crate) fn record_resource(owner: &str, generation: u64, resource: plugin::Resource) -> bool {
     REGISTRY.with(|r| r.borrow_mut().record(owner, generation, resource))
 }
 
@@ -5878,6 +5879,8 @@ pub(crate) fn dispatch_onframe(
                 v8::Local::new(tc, &jh.func).get_script_line_number().map(|l| l + 1).unwrap_or(0),
             );
 
+            let generation=ctx_local.get_slot::<InteropGeneration>().map_or(0,|g|g.0);
+            let _busy=crate::dispatch::ParentBusy::enter(owner,generation);
             let func = v8::Local::new(tc, &jh.func);
             match func.call(tc, recv, &[ctx_val]) {
                 // Exception thrown (or otherwise empty): report (kind=js) then count the error.
@@ -6718,3 +6721,7 @@ pub(crate) fn register_process_singletons() {
 /// The in-isolate test harness. `pub(crate)` so feature-module tests can reuse it while
 /// preserving the established `v8host::frame_tests::*` module and test names.
 pub(crate) mod frame_tests;
+
+#[cfg(test)]
+#[path = "v8host/engine_function_adapter_v8.rs"]
+mod engine_function_adapter_v8;

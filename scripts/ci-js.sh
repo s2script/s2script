@@ -19,6 +19,7 @@ node --test scripts/framework-version.test.mjs scripts/check-plugin-versions.tes
 
 echo "== KHook acceptance plugin callbacks and lifecycle =="
 node --test tools/khook-probe/testdata/fixture.test.mjs
+node --test tools/engine-function-probe/test_fixture_lifecycle.mjs
 
 # Codegen freshness. Globbed so a future check-*-generated.sh starts running here with no
 # edit. check-licenses-generated.sh is excluded: it needs a Rust toolchain and a populated

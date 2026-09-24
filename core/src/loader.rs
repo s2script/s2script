@@ -1191,9 +1191,34 @@ fn duplicate_manifest_id(path: &Path, id: &str) -> bool {
     WATCH_STATE.with(|watch| watch.borrow().iter().any(|(other, row)| other != path && row.id == id))
 }
 
+fn prepare_engine_functions(prepared: &mut PreparedPlugin) -> Result<(), String> {
+    match (
+        &prepared.engine_functions,
+        &prepared.manifest.engine_functions,
+    ) {
+        (None, None) => Ok(()),
+        (Some(member), Some(summary)) => {
+            let bundle = crate::engine_functions::contract::parse(
+                member,
+                &prepared.manifest.id,
+                summary,
+                &prepared.manifest.permissions,
+            )?;
+            let records = crate::engine_functions::overrides::snapshot(&prepared.manifest.id)?;
+            prepared.engine_candidate = Some(crate::engine_functions::overrides::prepare(
+                bundle,
+                &prepared.archive_hash,
+                records,
+            )?);
+            Ok(())
+        }
+        _ => Err("engineFunctions summary/member presence mismatch".into()),
+    }
+}
+
 fn apply_prepared(item: ApplyItem) {
     let _applying = ApplyingGuard::new();
-    let ApplyItem { row, allow_unmet_dependencies } = item;
+    let ApplyItem { mut row, allow_unmet_dependencies } = item;
     let id = row.prepared.manifest.id.clone();
     if !api_version_compatible(&row.prepared.manifest.api_version) {
         let reason = format!("apiVersion {:?} incompatible with host major {} (rebuild with a matching @s2script/sdk)", row.prepared.manifest.api_version, HOST_API_VERSION_MAJOR);
@@ -1240,6 +1265,12 @@ fn apply_prepared(item: ApplyItem) {
             crate::v8host::log_warn(&format!("[plugins] reload '{}' queued (still loading)", old_id));
             return;
         }
+    }
+    // Freeze and validate the entire candidate input before retiring the running generation.
+    // S2-EF-06 will resolve/install this input; preparation itself grants no callable capability.
+    if let Err(reason) = prepare_engine_functions(&mut row.prepared) {
+        refuse_prepared(&row.path, &row.prepared, &reason, row.old_id.as_deref());
+        return;
     }
     let override_json = row.config.as_ref().and_then(|snapshot| snapshot.content.as_deref());
     let cfg = crate::v8host::materialize_for_load_snapshot(
@@ -1395,6 +1426,7 @@ pub(crate) fn metrics() -> serde_json::Value {
                 "zipEntries": limits.parse.zip_entries, "memberNameBytes": limits.parse.member_name_bytes,
                 "manifestBytes": limits.parse.manifest_bytes, "pluginJsBytes": limits.parse.plugin_js_bytes,
                 "gamedataBytes": limits.parse.gamedata_bytes,
+                "engineFunctionsBytes": limits.parse.engine_functions_bytes,
             },
             "drainItems": limits.drain_items, "drainBytes": limits.drain_bytes, "drainMicros": limits.drain_micros,
         },
@@ -2672,5 +2704,77 @@ mod tests {
         assert!(permission_allowed("@demo/gd", "engine:calls"));
         assert!(!permission_allowed("@other/x", "engine:calls"));
         assert!(!permission_allowed("@demo/gd", "engine:other"));
+    }
+    thread_local! { static FUNCTION_SNAPSHOT: std::cell::RefCell<std::ffi::CString> = std::cell::RefCell::new(std::ffi::CString::new(r#"{"records":[],"error":null}"#).unwrap()); }
+    extern "C" fn function_snapshot_test_op(_: *const c_char) -> *const c_char {
+        FUNCTION_SNAPSHOT.with(|s| s.borrow().as_ptr())
+    }
+    #[test]
+    fn engine_function_preparation_failure_preserves_live_generation() {
+        use crate::engine_functions::{
+            contract,
+            tests::{fixture, seal, summary},
+        };
+        crate::v8host::init(crate::v8host::frame_tests::dummy_logger()).unwrap();
+        crate::v8host::set_engine_ops(Some(crate::v8host::S2EngineOps {
+            plugin_function_overrides: Some(function_snapshot_test_op),
+            ..Default::default()
+        }));
+        crate::v8host::load_plugin_js(
+            "@demo/fire",
+            "module.exports.OnPluginStart = function() {};",
+            "{}",
+        );
+        let generation = crate::v8host::plugin_generation("@demo/fire");
+        assert!(crate::v8host::owner_is_live("@demo/fire", generation));
+        let mut bundle = fixture();
+        bundle["functions"][0]["requirement"] = "required".into();
+        seal(&mut bundle);
+        let manifest:Manifest=serde_json::from_value(serde_json::json!({"id":"@demo/fire","version":"2","apiVersion":"3.x","permissions":["engine:calls"],"engineFunctions":summary(&bundle)})).unwrap();
+        let bad=serde_json::json!({"schemaVersion":2,"ownerId":"@demo/fire","functions":{"fire":{"contractHash":"stale","target":{"module":"server","pattern":"55","validate":{"prologue":"55"}}}}}).to_string();
+        let snapshot=serde_json::json!({"records":[{"relative_path":"gamedata/plugins/id-QGRlbW8vZmlyZQ/custom/a.jsonc","sha256":contract::hash_bytes(bad.as_bytes()),"content":bad}],"error":null}).to_string();
+        FUNCTION_SNAPSHOT.with(|s| *s.borrow_mut() = std::ffi::CString::new(snapshot).unwrap());
+        let ledger = RetainedLedger::new(1, 4096);
+        let mut row = prepared_row(manifest, Some("@demo/fire"), 2048, &ledger);
+        row.prepared.engine_functions = Some(bundle.to_string());
+        apply_prepared(ApplyItem {
+            row,
+            allow_unmet_dependencies: false,
+        });
+        assert_eq!(crate::v8host::plugin_generation("@demo/fire"), generation);
+        assert!(crate::v8host::owner_is_live("@demo/fire", generation));
+        assert_eq!(ledger.usage(), (0, 0));
+        crate::v8host::set_engine_ops(None);
+        crate::v8host::shutdown();
+    }
+    #[test]
+    fn engine_function_prepared_input_owns_snapshot_and_archive_provenance() {
+        use crate::engine_functions::tests::{fixture, summary};
+        let bundle = fixture();
+        let manifest:Manifest=serde_json::from_value(serde_json::json!({"id":"@demo/fire","version":"1","apiVersion":"3.x","permissions":["engine:calls"],"engineFunctions":summary(&bundle)})).unwrap();
+        let mut prepared = PreparedPlugin::for_test(manifest, "", 4096);
+        prepared.engine_functions = Some(bundle.to_string());
+        prepared.archive_hash = "archive-sha".into();
+        FUNCTION_SNAPSHOT.with(|s| {
+            *s.borrow_mut() = std::ffi::CString::new(r#"{"records":[],"error":null}"#).unwrap()
+        });
+        crate::v8host::set_engine_ops(Some(crate::v8host::S2EngineOps {
+            plugin_function_overrides: Some(function_snapshot_test_op),
+            ..Default::default()
+        }));
+        prepare_engine_functions(&mut prepared).unwrap();
+        FUNCTION_SNAPSHOT
+            .with(|s| *s.borrow_mut() = std::ffi::CString::new("broken later snapshot").unwrap());
+        let candidate = prepared.engine_candidate.as_ref().unwrap();
+        assert_eq!(
+            candidate.functions()[0].provenance().archive_hash,
+            "archive-sha"
+        );
+        assert!(candidate.functions()[0].unavailable().is_none());
+        assert!(matches!(
+            candidate.functions()[0].provenance().resolver_result,
+            crate::engine_functions::provenance::ValidationResult::Pending
+        ));
+        crate::v8host::set_engine_ops(None);
     }
 }

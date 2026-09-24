@@ -15,24 +15,53 @@ changes that. These are the notices s2script owes to others.
 
 Pinned at generation time:
     hl2sdk            5f891c902623   (branch cs2)
-    metamod-source    7e24ce9e7a03   (PLAPI 18/KHook; unmodified upstream source)
+    metamod-source    fa6f80e4662e   (PLAPI 18/KHook; unmodified upstream source)
+    libffi            5c1c43091ed6   (3.7.1; full revision 5c1c43091ed611fdea774374355eb938c73a9157)
     breakpad          9aebd3d8ef5a
     rust crates       296   (from Cargo.lock)
 
 CONTENTS
-    1   Valve Source 2 SDK (hl2sdk)                          NOT open source — see notice below
-    2   Metamod:Source                                       zlib/libpng license
-    3   Google Breakpad                                      BSD-3-Clause (plus aggregated sub-licenses)
-    4   Protocol Buffers 3.21.8                              BSD-3-Clause
-    5   Hacker Disassembler Engine 64 (via MinHook)          BSD-2-Clause
-    6   V8 JavaScript engine                                 BSD-3-Clause
-    7   rusty_v8 — Rust bindings, crate `v8`                 MIT
-    8   SQLite (bundled via libsqlite3-sys)                  public domain
-    9   Rust crate dependencies — inventory                  296 crates
-    10  Rust crate dependencies — license texts              187 texts
+    1   libffi 3.7.1                                         MIT
+    2   Valve Source 2 SDK (hl2sdk)                          NOT open source — see notice below
+    3   Metamod:Source                                       zlib/libpng license
+    4   Google Breakpad                                      BSD-3-Clause (plus aggregated sub-licenses)
+    5   Protocol Buffers 3.21.8                              BSD-3-Clause
+    6   Hacker Disassembler Engine 64 (via MinHook)          BSD-2-Clause
+    7   V8 JavaScript engine                                 BSD-3-Clause
+    8   rusty_v8 — Rust bindings, crate `v8`                 MIT
+    9   SQLite (bundled via libsqlite3-sys)                  public domain
+    10  Rust crate dependencies — inventory                  296 crates
+    11  Rust crate dependencies — license texts              187 texts
 
 ==============================================================================
- 1. Valve Source 2 SDK (hl2sdk)
+ 1. libffi 3.7.1
+     MIT
+==============================================================================
+
+libffi - Copyright (c) 1996-2026  Anthony Green, Red Hat, Inc and others.
+See source files for details.
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+``Software''), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED ``AS IS'', WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+==============================================================================
+ 2. Valve Source 2 SDK (hl2sdk)
      NOT open source — see notice below
 ==============================================================================
 
@@ -63,7 +92,7 @@ Metamod:Source, SourceMod, CounterStrikeSharp and CS2Fixes all ship binaries
 built against hl2sdk on the same footing.
 
 ==============================================================================
- 2. Metamod:Source
+ 3. Metamod:Source
      zlib/libpng license
 ==============================================================================
 
@@ -98,7 +127,7 @@ The zLib/libpng license has been approved by the "Open Source Initiative"
 organization.
 
 ==============================================================================
- 3. Google Breakpad
+ 4. Google Breakpad
      BSD-3-Clause (plus aggregated sub-licenses)
 ==============================================================================
 
@@ -1407,7 +1436,7 @@ of Autoconf.
                      END OF TERMS AND CONDITIONS
 
 ==============================================================================
- 4. Protocol Buffers 3.21.8
+ 5. Protocol Buffers 3.21.8
      BSD-3-Clause
 ==============================================================================
 
@@ -1445,7 +1474,7 @@ standalone and requires a support library to be linked with it.  This
 support library is itself covered by the above license.
 
 ==============================================================================
- 5. Hacker Disassembler Engine 64 (via MinHook)
+ 6. Hacker Disassembler Engine 64 (via MinHook)
      BSD-2-Clause
 ==============================================================================
 
@@ -1532,7 +1561,7 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ==============================================================================
- 6. V8 JavaScript engine
+ 7. V8 JavaScript engine
      BSD-3-Clause
 ==============================================================================
 
@@ -1599,7 +1628,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ==============================================================================
- 7. rusty_v8 — Rust bindings, crate `v8`
+ 8. rusty_v8 — Rust bindings, crate `v8`
      MIT
 ==============================================================================
 
@@ -1626,7 +1655,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ==============================================================================
- 8. SQLite (bundled via libsqlite3-sys)
+ 9. SQLite (bundled via libsqlite3-sys)
      public domain
 ==============================================================================
 
@@ -1642,7 +1671,7 @@ a legal notice, here is a blessing:
    May you share freely, never taking more than you give.
 
 ==============================================================================
- 9. Rust crate dependencies — inventory
+ 10. Rust crate dependencies — inventory
      296 crates from Cargo.lock
 ==============================================================================
 
@@ -1986,7 +2015,7 @@ named above applies; canonical texts are at https://spdx.org/licenses/.
     winapi-x86_64-pc-windows-gnu             0.4.0        MIT/Apache-2.0               https://github.com/retep998/winapi-rs
 
 ==============================================================================
- 10. Rust crate dependencies — license texts
+ 11. Rust crate dependencies — license texts
      187 distinct texts
 ==============================================================================
 

@@ -44,6 +44,7 @@ def head(n, title, lic):
 
 # ---------------------------------------------------------------- native components
 NATIVE = [
+    ("libffi 3.7.1", "MIT", "third_party/libffi/LICENSE"),
     ("Valve Source 2 SDK (hl2sdk)", "NOT open source — see notice below", None),
     ("Metamod:Source", "zlib/libpng license", "third_party/metamod-source/LICENSE.txt"),
     ("Google Breakpad", "BSD-3-Clause (plus aggregated sub-licenses)", "third_party/breakpad/LICENSE"),
@@ -172,6 +173,7 @@ changes that. These are the notices s2script owes to others.
 Pinned at generation time:""")
 o.append("    hl2sdk            %s   (branch cs2)" % rev("third_party/hl2sdk"))
 o.append("    metamod-source    %s   (PLAPI 18/KHook; unmodified upstream source)" % rev("third_party/metamod-source"))
+o.append("    libffi            %s   (3.7.1; full revision 5c1c43091ed611fdea774374355eb938c73a9157)" % rev("third_party/libffi"))
 o.append("    breakpad          %s" % rev("third_party/breakpad"))
 o.append("    rust crates       %d   (from Cargo.lock)" % len(inventory))
 o.append("\nCONTENTS")

@@ -3,6 +3,7 @@
 // ahead of ${HL2SDK}/public, so the search succeeds without running protoc.
 #include "s2script_mm.h"
 #include "s2script_core.h"
+#include "engine_function_bridge.h"
 #include "khook_shutdown.h"
 #include "gamedata.h"
 
@@ -69,6 +70,7 @@
 #include "engine_calls.h"   // Plugin-gamedata slice: S2_EngineCallResolve/Invoke (the two appended engine ops)
 #include "engine_consumer.h" // Shared resolver adapter for the built-in gamedata signatures
 #include "config_ops.h"     // Config paths + read/write ops and versioned loader resolver
+#include "plugin_function_overrides.h"
 #include "defer_queue.h"    // deferred-dispatch slice: the engine-free queue/drain policy (ops-injected)
 #include "client_bootstrap.h"
 #include "hook_dispatch.h"  // declarative inbound hooks: the engine-free policy half (ops-injected)
@@ -465,6 +467,26 @@ static void* s2_ent_resolve(int index, int serial) {
     if (id->m_flags & EF_IS_INVALID_EHANDLE) return nullptr;
     if (id->GetRefEHandle().GetSerialNumber() != serial) return nullptr;  // stale slot reuse
     return id->m_pInstance;   // may be null (removal in progress) — caller treats null as not-live
+}
+
+// Reverse adoption compares candidate addresses with system-owned identity slots.
+// Never dereference the candidate instance to decide its identity or liveness.
+static bool s2_function_identify_entity(const void* candidate, s2bridge::EntityIdentity& out) {
+    if (!candidate) return false;
+    auto* es=GetEntitySystem();if(!es) return false;
+    bool found=false;s2bridge::EntityIdentity identity;
+    for(int idx=0;idx<MAX_TOTAL_ENTITIES;++idx) {
+        auto* chunk=es->m_EntityList.m_pIdentityChunks[idx/MAX_ENTITIES_IN_LIST];
+        if(!chunk) continue;
+        auto* slot=&chunk[idx%MAX_ENTITIES_IN_LIST];
+        if((slot->m_flags & EF_IS_INVALID_EHANDLE) || !slot->m_pInstance || slot->m_pInstance!=candidate) continue;
+        if(found) return false;
+        const auto handle=slot->GetRefEHandle();
+        if(handle.GetEntryIndex()!=idx) return false;
+        identity={static_cast<uint32_t>(idx),static_cast<uint32_t>(handle.GetSerialNumber())};found=true;
+    }
+    if(found) out=identity;
+    return found;
 }
 
 // E1 engine-op: identity m_flags read from the SLOT (never instance+0x10). -1 = stale/absent.
@@ -4923,6 +4945,16 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // physical GameFrame hook remains installed as the post-loader lifecycle bootstrap.
     g_coreOwnerTid = S2Tid();
     g_terminalCoord.Reset(g_coreOwnerTid);
+    // Construct on the engine/V8 owner thread, before any package bootstrap.
+    static s2bridge::CoreDispatchSink function_sink(&s2script_core_dispatch_function);
+    static s2bridge::EntityPointerCodec function_entities({
+        [](uint32_t index,uint32_t serial)->void* {return s2_ent_resolve(static_cast<int>(index),static_cast<int>(serial));},
+        s2_function_identify_entity
+    });
+    if (!s2bridge::Global().SetDispatchSink(&function_sink) || !s2bridge::Global().SetPointerCodec(&function_entities)) {
+        std::snprintf(error, maxlen, "engine-function service still owns prior records");
+        return false;
+    }
     if (s2script_core_init(&s2_logger, &s2_request_hook, &ops) != 0) {
         META_CONPRINTF("[s2script] ERROR: V8 core init failed (plugin stays loaded for diagnosis)\n");
         return true; // degrade, do not fail the load (spec §7)
@@ -5346,6 +5378,9 @@ static uint64_t s_legacyAllowMask  = 0;
 
 KHook::Return<void> S2ScriptPlugin::Hook_GameFramePre(ISource2Server* server, bool simulating, bool first, bool last) {
     auto obs = g_hk.gameFrame.Observe(server);
+    // Runs after core returns and before this real observation leaves, including
+    // the no-core-subscribers path. This is target-local collection, not quiescence.
+    struct FunctionMaintenance { ~FunctionMaintenance() { s2bridge::Global().Collect(); } } function_maintenance;
     if (obs) S2InstallLifecycleHooks();
     if (!m_coreDispatchReady || !m_frameDispatchRequested) return S2_Ignore();
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
@@ -5383,6 +5418,9 @@ KHook::Return<void> S2ScriptPlugin::Hook_GameFramePre(ISource2Server* server, bo
 
 KHook::Return<void> S2ScriptPlugin::Hook_GameFramePost(ISource2Server* server, bool simulating, bool first, bool last) {
     auto obs = g_hk.gameFrame.Observe(server);
+    // Runs after core returns and before this real observation leaves, including
+    // the no-core-subscribers path. This is target-local collection, not quiescence.
+    struct FunctionMaintenance { ~FunctionMaintenance() { s2bridge::Global().Collect(); } } function_maintenance;
     if (!m_coreDispatchReady || !m_frameDispatchRequested) return S2_Ignore();
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     s2script_core_dispatch_game_frame(1, static_cast<int>(simulating),

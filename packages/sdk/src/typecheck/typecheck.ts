@@ -1,6 +1,8 @@
 import ts from "typescript";
 import { loadPluginGamedata } from "../gamedata/load.ts";
 import { generateGamedataTypes, generateHookTypes } from "../gamedata/gen-types.ts";
+import { loadEngineFunctions } from "../engine-functions/archive.ts";
+import { emitEngineFunctionTypes } from "../engine-functions/emit-dts.ts";
 import {
   extractContract,
   checkInteropCalls,
@@ -289,6 +291,8 @@ export function typecheckPlugin(
   };
 
   const virtualDeclarations = gamedataDeclarations(absDir, pkg);
+  const engineFunctions = loadEngineFunctions(absDir, pkg.name);
+  virtualDeclarations.set(join(absDir, '.s2script', 'engine-functions.d.ts'), emitEngineFunctionTypes(engineFunctions));
 
   // Globals live at the consolidated path (the legacy packages/globals/ dir is deleted).
   const rootNames = [

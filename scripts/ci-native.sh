@@ -39,6 +39,19 @@ if [[ "$(uname -s)" == Linux ]]; then
   fi
 fi
 
+# Exercise the live verdict and explicit host-only build-mode controls.
+python3 tools/engine-function-probe/test_live.py
+python3 tools/engine-function-probe/test_build_live.py
+
+# Compile the resident ABI probe as well as the standalone provider fixtures.
+# This creates no source-bound bundle/acceptance receipt and claims no live proof.
+if [[ "$(uname -s)" == Linux ]]; then
+  echo "== early Release engine-function resident probe compile =="
+  S2FN_SOURCE_REVISION="$(git rev-parse HEAD)" \
+  S2FN_BUILD_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+    bash tools/engine-function-probe/build-live.sh --probe-only --compile-only
+fi
+
 # Populates the cargo registry that check-licenses-generated.sh reads every locked crate's
 # license text out of, and warms it for the build below.
 echo "== cargo fetch --locked =="
@@ -85,6 +98,18 @@ bash scripts/test-engine-hook-invocation.sh
 
 echo "== test-named-hook-invocation.sh (production named KHook callbacks) =="
 bash scripts/test-named-hook-invocation.sh
+
+echo "== bounded engine function ABI / stock provider =="
+bash scripts/test-engine-function-abi.sh --stock-provider
+
+echo "== test-engine-function-bridge.sh (shared targets and stock lifecycle) =="
+bash scripts/test-engine-function-bridge.sh --stock-provider
+echo "== engine function busy-caller real V8 spike =="
+bash scripts/test-engine-function-v8-adapter.sh --spike --stock-provider
+echo "== engine function production registry / real outer frame proof =="
+S2FN_V8_DIAGNOSTICS=0 bash scripts/test-engine-function-v8-adapter.sh --stock-provider
+echo "== engine function stock peer order fixtures =="
+bash scripts/test-engine-function-live.sh --fixture-only --orders peer-first,s2-first
 
 echo "== test-khook-binding.sh (checked KHook receipts, Observe/BeginRemove) =="
 bash scripts/test-khook-binding.sh
@@ -137,6 +162,9 @@ bash scripts/check-defer-selftest-gate.sh
 echo "== test-call-validate.sh (the descriptor validators: both gates must REJECT) =="
 bash scripts/test-call-validate.sh
 
+echo "== test-plugin-function-overrides.sh (bounded immutable operator snapshots) =="
+bash scripts/test-plugin-function-overrides.sh
+
 echo "== check-gamedata-owners.sh (gamedata ownership boundary) =="
 bash scripts/check-gamedata-owners.sh
 
@@ -184,6 +212,14 @@ if nm -C build/shim/s2script.so | grep -E 's2detour::(Install|RemoveAll|Remove|R
   cat build/shim/private-interception-symbols.txt >&2
   echo 'error: production private interception linkage remains' >&2
   exit 1
+fi
+
+echo "== libffi private static linkage =="
+if ldd build/shim/s2script.so | grep -i libffi; then
+  echo 'FAIL: libffi must not be a runtime dependency' >&2; exit 1
+fi
+if nm -D --defined-only build/shim/s2script.so | grep -E '[[:space:]]ffi_'; then
+  echo 'FAIL: private ffi symbols exported' >&2; exit 1
 fi
 
 echo "== ccommand_selftest (our CCommand tokenizer) =="

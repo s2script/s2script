@@ -25,6 +25,7 @@
 #include <khook.hpp>
 
 #include <atomic>
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <memory>
@@ -360,6 +361,23 @@ inline std::size_t S2Hook_RetirementPending() {
         }
     }
     return n;
+}
+
+// Target-local bridge cleanup only. Caller has independently proved provider
+// detachment, no runtime entries, and no retained record users. Never substitutes
+// for the global quiescence required by S2Hook_DrainRetirement.
+inline bool S2Hook_PruneCompletedBridgeTicket(
+    const std::shared_ptr<S2HookBindingState>& state, KHook::HookID_t id) {
+    std::lock_guard<std::mutex> lock(s2hook_detail::g_retire_mu);
+    std::lock_guard<std::mutex> state_lock(state->mu);
+    const auto owned = state->owned.find(id);
+    if (owned != state->owned.end() &&
+        (owned->second.state != S2HookState::Removed || owned->second.invocations != 0)) return false;
+    auto& queue = s2hook_detail::g_retire;
+    queue.erase(std::remove_if(queue.begin(), queue.end(), [&](const auto& item) {
+        return item.state == state && item.id == id;
+    }), queue.end());
+    return true;
 }
 
 class S2CheckedBindingOps {

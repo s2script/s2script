@@ -30,6 +30,8 @@ typedef void (*s2_hook_request_fn)(const char* descriptor, int enable); /* core 
  * value at init; the caller's storage need not outlive the call. */
 int  s2script_core_init(s2_log_fn logger, s2_hook_request_fn request_hook, const S2EngineOps* ops);
 int  s2script_core_eval(const char* utf8_js);
+int s2script_core_dispatch_function(long long target_id, const S2FunctionFrameInfo* frame, int phase);
+
 int  s2script_core_dispatch_game_frame(int phase, int simulating, int first, int last); /* phase 0=Pre,1=Post; returns collapsed HookResult */
 void s2script_core_shutdown(void);
 /* Process-terminal shutdown, called on the same thread that attempted core init:
