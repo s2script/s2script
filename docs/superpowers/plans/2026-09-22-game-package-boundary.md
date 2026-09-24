@@ -404,6 +404,19 @@ S2 v2 functions need a separate, explicit build-time normalized product and seal
 activation; no v1-to-v2 cast or heuristic legacy call/hook translation is valid. The final S3
 shared-service acceptance remains blocked until these migration dependencies are satisfied.
 
+**Selected-bootstrap checkpoint (2026-09-24):** Implements retained verified-byte selection,
+atomic legacy call/hook publication, one token-scoped bootstrap evaluation per context and an
+explicit `{ ".": rootExports, "./ui": uiExports }` result map. Source manifests own the final
+export expression; `econ.d.ts` is type-only. Production no longer reads transitional game JS/data.
+`function_adapter::register_selected_package` reuses `HostPackageOwner` and
+`PreparedPackageReceipt`; `bootstrap` returns `PackageExports { instance, modules }` owned by
+`PluginInstance` and cleared after the existing resource ledger, before its context. Existing
+internal adapter test packages retain no-export behavior. This checkpoint does not complete
+CORE-04: explicit normalized S2 function declarations/product and sealed package-kind owner
+preparation/activation remain the next lower-layer dependency, followed by semantic migrations.
+No fake empty function owner is activated. Linux compile, live/client and peer acceptance remain
+separate evidence gates.
+
 **Files:**
 - Modify: `scripts/package-addon.sh` (remove temporary legacy outputs with their runtime readers)
 - Modify: `core/src/game_packages/mod.rs`
@@ -424,7 +437,7 @@ shared-service acceptance remains blocked until these migration dependencies are
 ```rust
 #[test]
 fn context_bootstraps_the_registered_id_without_a_cs2_literal() {
-    register_fixture("@fixture/two", "fixture-owner", "globalThis.__fixture={ok:true}");
+    register_fixture("@fixture/two", "fixture-owner", "({'.':{ok:true}})");
     create_plugin_context("consumer");
     assert!(eval_in_context_bool("consumer", "require('@fixture/two').ok"));
 }

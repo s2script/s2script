@@ -764,83 +764,111 @@ pub extern "C" fn s2script_core_ban_check(xuid: u64, now: i64, out_reason: *mut 
     .unwrap_or(0)
 }
 
-/// C-ABI entry point retained for shim link-compatibility.  Now a degrade-safe no-op: game JS
-/// is provided to core via `s2script_core_register_package` instead (see below).
-/// `catch_unwind`-wrapped (no panic may cross the FFI boundary — spec §6).
+/// Select one verified package. Zero is failure; status reports the named reason.
 #[no_mangle]
-pub extern "C" fn s2script_core_load_cs2(_path: *const c_char) {
-    // No-op: the per-plugin require model (register_injected_package) supersedes this entry.
-}
-
-/// Register a game-package JS source under `name` so core can inject it per-plugin-context
-/// without baking game JS into the core binary at compile time.
-///
-/// Called by the shim at load time (engine-generic: core never knows which game package is being
-/// registered — the name and source come entirely from the caller).
-///
-/// # Safety
-/// `name` and `js` must be valid null-terminated UTF-8 C strings.  Null pointers degrade to a
-/// no-op (never crash).  `catch_unwind`-wrapped (no panic may cross the FFI boundary — spec §6).
-///
-/// The shim calls this at load time with ("@s2script/cs2", <packaged pawn.js>), so each plugin
-/// context receives the @s2script/cs2 package via the runtime registry.
-#[no_mangle]
-pub extern "C" fn s2script_core_register_package(name: *const c_char, js: *const c_char) {
-    let _ = catch_unwind(|| {
-        if name.is_null() || js.is_null() {
-            return;
+pub extern "C" fn s2script_core_select_game_package(
+    root: *const c_char,
+    engine: *const c_char,
+    game: *const c_char,
+    platform: *const c_char,
+) -> u64 {
+    catch_unwind(|| {
+        let result = (|| {
+            fn text<'a>(p: *const c_char) -> Result<&'a str, String> {
+                if p.is_null() {
+                    return Err("null selection input".into());
+                }
+                unsafe { CStr::from_ptr(p) }
+                    .to_str()
+                    .map_err(|_| "invalid selection UTF-8".into())
+            }
+            // Decode ALL tokens before any filesystem access.
+            let (root, engine, game, platform) =
+                (text(root)?, text(engine)?, text(game)?, text(platform)?);
+            crate::game_packages::select(std::path::Path::new(root), engine, game, platform)
+        })();
+        match result {
+            Ok(handle) => handle,
+            Err(error) => {
+                crate::game_packages::report_error(&error);
+                0
+            }
         }
-        let name_str = match unsafe { CStr::from_ptr(name) }.to_str() {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        let js_str = match unsafe { CStr::from_ptr(js) }.to_str() {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        v8host::register_injected_package(name_str, js_str);
-    });
+    })
+    .unwrap_or(0)
 }
-
-/// Register a game package's own gamedata with core: the `calls` descriptors it declares, plus the
-/// `signatures` they target (A5b, spec §9.1b). The gamedata sibling of
-/// `s2script_core_register_package`, and called with the same `name`.
-///
-/// `gamedata_json` is the shim's MERGED view for that owner (`GameConfig::mergedJson`) — the tree /
-/// master / condition / `custom/` merge stays in the shim's one loader, and core consumes the
-/// result through the same registry a plugin's packed `gamedata.json` goes through. Comments are
-/// already gone (nlohmann parsed it), so plain `serde_json` is enough here.
-///
-/// Descriptors land under a RESERVED owner id derived from `name`, which no `.s2sp` can claim
-/// (`loader::read_s2sp` refuses a manifest that tries), and which is exempt from the `engine:calls`
-/// operator allow-list: this is first-party runtime shipped in the same zip as core, replacing
-/// natives that are unconditionally callable from any plugin today.
-///
-/// Engine-generic: core never names a game — the package name comes entirely from the caller.
-///
-/// # Safety
-/// `name` and `gamedata_json` must be valid null-terminated UTF-8 C strings. Null pointers degrade
-/// to a no-op (never crash). `catch_unwind`-wrapped (no panic may cross the FFI boundary).
+/// Copy immutable selection data (member 0), metadata (1), or process status (2, handle=0).
+/// Null destination with zero capacity queries length. No partial copies; -1 invalid, -2 short.
 #[no_mangle]
-pub extern "C" fn s2script_core_register_package_gamedata(
-    name: *const c_char,
-    gamedata_json: *const c_char,
-) {
-    let _ = catch_unwind(|| {
-        if name.is_null() || gamedata_json.is_null() {
-            return;
+pub extern "C" fn s2script_core_copy_game_package(
+    handle: u64,
+    member: u32,
+    destination: *mut u8,
+    capacity: usize,
+) -> i64 {
+    catch_unwind(|| {
+        let bytes = if member == 2 && handle == 0 {
+            Ok(crate::game_packages::status())
+        } else {
+            crate::game_packages::copy(handle, member)
+        };
+        let Ok(bytes) = bytes else { return -1 };
+        if destination.is_null() {
+            return if capacity == 0 {
+                bytes.len() as i64
+            } else {
+                -1
+            };
         }
-        let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return };
-        let Ok(json_str) = (unsafe { CStr::from_ptr(gamedata_json) }).to_str() else { return };
-        // An owner whose tree merged nothing is the normal pre-A5b state, not an error: register it
-        // anyway so the owner id exists and every ask reports "not declared" rather than the
-        // game-scoped natives' "no game package registered".
-        crate::gamedata_calls::register_game_package(name_str, json_str);
-        // The same tree's `hooks`, under the same reserved owner: a game package's declarative
-        // inbound hooks (`ctx.gameRules.onTerminateRound`, …). Registering resolves and reserves a
-        // shim hook slot; it patches nothing until a plugin subscribes.
-        crate::gamedata_hooks::register_game_package(name_str, json_str);
-    });
+        if capacity < bytes.len() {
+            return -2;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len());
+        }
+        bytes.len() as i64
+    })
+    .unwrap_or(-1)
+}
+/// Commit the captured native merge and its applied custom-path provenance in one transaction.
+#[no_mangle]
+pub extern "C" fn s2script_core_commit_game_package(
+    handle: u64,
+    merged: *const u8,
+    merged_len: usize,
+    custom: *const u8,
+    custom_len: usize,
+) -> i32 {
+    catch_unwind(|| {
+        let result = (|| {
+            if merged.is_null()
+                || custom.is_null()
+                || merged_len > 4 * 1024 * 1024
+                || custom_len > 65536
+            {
+                return Err("invalid merged package buffer".into());
+            }
+            let merged =
+                std::str::from_utf8(unsafe { std::slice::from_raw_parts(merged, merged_len) })
+                    .map_err(|_| "invalid merged UTF-8")?;
+            let custom =
+                std::str::from_utf8(unsafe { std::slice::from_raw_parts(custom, custom_len) })
+                    .map_err(|_| "invalid provenance UTF-8")?;
+            crate::game_packages::commit(handle, merged, custom)
+        })();
+        match result {
+            Ok(()) => 1,
+            Err(error) => {
+                crate::game_packages::report_error(&error);
+                0
+            }
+        }
+    })
+    .unwrap_or(0)
+}
+#[no_mangle]
+pub extern "C" fn s2script_core_abort_game_package(handle: u64) -> i32 {
+    catch_unwind(|| i32::from(crate::game_packages::abort(handle).is_ok())).unwrap_or(0)
 }
 
 /// Set the plugins directory path for the `.s2sp` watcher (`loader::poll_plugins`).

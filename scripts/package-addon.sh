@@ -42,7 +42,7 @@ else
     exit 1
 fi
 
-# --- Verified game packages and transitional deployed JS/data for the current readers. ---
+# --- Verified game packages; shipped game JS/data have no legacy deployed copies. ---
 node --experimental-strip-types --no-warnings scripts/build-game-packages.mjs --out "$DIST/s2script"
 
 # --- Runtime dirs (plugins drop zone + writable configs/data) ---

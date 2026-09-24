@@ -13,7 +13,7 @@
 #   Extension : keys MAY (and, like Core, MUST) appear in shim/src or core/src — they are
 #               read from that owner's GameConfig, never s_gdCore.
 #
-# The OWNER SET is not hardcoded: it is read from the shim's kGamedataOwners[] table, so a
+# The OWNER SET comes from the shim disk-owner table and game source manifests, so a
 # gamedata/<owner>/ directory nothing loads fails here rather than sitting inert on disk.
 #
 # Also checks that the master index and the files on disk agree in both directions: a file present
@@ -78,15 +78,22 @@ if table:
 for owner in sorted(loader_owners):
     if owner not in kind_by_owner:
         bad.append(f'{owner}: kGamedataOwners row is missing GdOwnerKind::Core|Game|Extension')
+# Game owners are selected from source manifests; only engine/extension owners remain in shim.
+package_roots = {}
+for source_manifest in pathlib.Path('games').glob('*/game-package.jsonc'):
+    manifest = load(source_manifest)
+    owner = manifest['gamedataOwner']
+    if owner in loader_owners:
+        bad.append(f'{owner}: duplicate disk/package owner')
+    loader_owners.add(owner)
+    kind_by_owner[owner] = 'Game'
+    package_roots[owner] = source_manifest.parent / manifest['gamedataRoot']
 on_disk_owners = {p.name for p in pathlib.Path('gamedata').iterdir() if p.is_dir()}
-if pathlib.Path('games/cs2/gamedata').is_dir():
-    on_disk_owners.add('cs2')
 for owner in sorted(on_disk_owners - loader_owners):
-    bad.append(f'{owner}: gamedata/{owner}/ exists but "{owner}" is not in the shim\'s '
-               f'kGamedataOwners[] table — the loader would never read the tree')
+    bad.append(f'{owner}: gamedata tree has no disk loader or package manifest')
 
 for owner in sorted(loader_owners | on_disk_owners):
-    owner_dir = pathlib.Path('games/cs2/gamedata') if owner == 'cs2' else pathlib.Path('gamedata') / owner
+    owner_dir = package_roots.get(owner, pathlib.Path('gamedata') / owner)
     if not owner_dir.is_dir():
         bad.append(f'{owner}: owner directory missing')
         continue

@@ -1,6 +1,7 @@
 #ifndef S2SCRIPT_CORE_H
 #define S2SCRIPT_CORE_H
 #include <stdint.h>   /* uint64_t */
+#include <stddef.h>   /* size_t */
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -234,21 +235,16 @@ int s2script_core_dispatch_hook(int hookId, void* argView) __attribute__((weak))
 /* Post-phase spectator mux for a returning inbound hook (CanAcquire). `skipped` is 1 when Pre
  * suppressed the original. Weak for the same reason as dispatch_hook. */
 int s2script_core_dispatch_hook_post(int hookId, void* argView, int skipped) __attribute__((weak));
-/* Retained for shim link-compatibility; now a no-op (game JS is provided via
- * s2script_core_register_package instead).  Safe to call; does nothing. */
-void s2script_core_load_cs2(const char* path);
-/* Register a game-package JS source under `name` so core can inject it into each
- * plugin context at runtime without baking game JS into the core binary.
- * name and js must be null-terminated UTF-8.  Null pointers degrade to a no-op. */
-void s2script_core_register_package(const char* name, const char* js);
-/* Hand core the same game package's own GAMEDATA (A5b): the merged `signatures` + `calls` the
- * shim's one loader already produced for that owner (GameConfig::mergedJson), as JSON text.
- * `name` is the SAME string passed to s2script_core_register_package. Core registers the `calls`
- * descriptors under a reserved owner id derived from it — an identity no .s2sp can claim — and
- * exempts them from the engine:calls operator allow-list (first-party runtime, not a plugin).
- * Both pointers must be null-terminated UTF-8; null degrades to a no-op, and an empty json is the
- * normal "this owner declares no calls" state, not an error. */
-void s2script_core_register_package_gamedata(const char* name, const char* gamedata_json);
+/* Retained verified selection. No public package/owner exists until commit. */
+uint64_t s2script_core_select_game_package(const char* addon_root, const char* engine,
+                                         const char* game, const char* platform);
+/* member: 0=bundle, 1=metadata JSON; 2=status JSON with handle 0.
+ * Null+0 queries size; exact copied bytes have no trailing NUL. -1 invalid, -2 short. */
+int64_t s2script_core_copy_game_package(uint64_t handle, uint32_t member,
+                                      uint8_t* destination, size_t capacity);
+int s2script_core_commit_game_package(uint64_t handle, const uint8_t* merged, size_t merged_len,
+                                      const uint8_t* custom_paths, size_t custom_paths_len);
+int s2script_core_abort_game_package(uint64_t handle);
 /* Set the plugins directory for the .s2sp watcher.  Called once by the shim at
  * load time with the resolved addons/s2script/plugins/ path (dladdr-derived).
  * path must be null-terminated UTF-8.  A null pointer degrades to a no-op. */

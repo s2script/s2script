@@ -21,6 +21,7 @@ struct PreparedPackage {
     source: Arc<str>,
     manifest: ImplementationManifestHash,
     grants: Vec<HostAdapterGrant>,
+    exports_required: bool,
     #[allow(dead_code)] // Retained payload measurement for Task 7's loader accounting seam.
     retained_bytes: usize,
 }
@@ -62,9 +63,34 @@ pub(crate) fn register_prepared_package_with_authorities(
     if source.is_empty() {
         return Err("empty prepared package source".into());
     }
+    register_package(owner, source, manifest, grants, false)
+}
+pub(crate) fn register_selected_package(
+    owner: HostPackageOwner,
+    source: Arc<str>,
+    manifest: ImplementationManifestHash,
+) -> Result<PreparedPackageReceipt, String> {
+    register_package(owner, source, manifest, Vec::new(), true)
+}
+fn register_package(
+    owner: HostPackageOwner,
+    source: Arc<str>,
+    manifest: ImplementationManifestHash,
+    grants: Vec<HostAdapterGrant>,
+    exports_required: bool,
+) -> Result<PreparedPackageReceipt, String> {
+    if source.is_empty() {
+        return Err("empty prepared package source".into());
+    }
     let package = Rc::new(PreparedPackage {
-        retained_bytes: source.len() + manifest.as_str().len() + owner.key().id.len()
-            + grants.iter().map(HostAdapterGrant::retained_bytes).sum::<usize>(),
+        exports_required,
+        retained_bytes: source.len()
+            + manifest.as_str().len()
+            + owner.key().id.len()
+            + grants
+                .iter()
+                .map(HostAdapterGrant::retained_bytes)
+                .sum::<usize>(),
         grants,
         owner,
         source,
@@ -76,6 +102,7 @@ pub(crate) fn register_prepared_package_with_authorities(
     });
     Ok(PreparedPackageReceipt { package })
 }
+
 impl Drop for PreparedPackageReceipt {
     fn drop(&mut self) {
         PACKAGES.with(|p| p.borrow_mut().remove(&self.owner().generation));
@@ -249,14 +276,119 @@ fn sync_function(
         v8::Local::<v8::Function>::try_from(value).map_err(|_| "callback must be function")?;
     Ok(Some(v8::Global::new(scope, function)))
 }
-pub(crate) fn bootstrap(scope: &mut v8::PinScope, id: &str, generation: u64) -> Result<(), String> {
+pub(crate) struct PackageExports {
+    pub(crate) instance: PackageInstanceKey,
+    pub(crate) modules: BTreeMap<String, v8::Global<v8::Object>>,
+}
+/// Snapshot only own data properties; host validation never invokes user getters or proxy traps.
+fn capture_exports<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    result: v8::Local<'s, v8::Value>,
+) -> Result<BTreeMap<String, v8::Global<v8::Object>>, String> {
+    fn synchronous_object<'s>(
+        scope: &mut v8::PinScope<'s, '_>,
+        value: v8::Local<'s, v8::Value>,
+    ) -> Result<v8::Local<'s, v8::Object>, String> {
+        if !value.is_object()
+            || value.is_proxy()
+            || value.is_promise()
+            || value.is_function()
+            || value.is_array()
+        {
+            return Err("package exports must be synchronous module objects".into());
+        }
+        let object =
+            v8::Local::<v8::Object>::try_from(value).map_err(|_| "module object required")?;
+        let mut cursor = Some(object);
+        for _ in 0..32 {
+            let Some(current) = cursor else {
+                return Ok(object);
+            };
+            if current.is_proxy() {
+                return Err("proxy export prototype".into());
+            }
+            let then = v8::String::new(scope, "then").ok_or("property allocation")?;
+            let descriptor = current
+                .get_own_property_descriptor(scope, then.into())
+                .ok_or("export descriptor")?;
+            if !descriptor.is_undefined() {
+                return Err("asynchronous or accessor then export".into());
+            }
+            let prototype = current.get_prototype(scope).ok_or("export prototype")?;
+            cursor = v8::Local::<v8::Object>::try_from(prototype).ok();
+        }
+        Err("export prototype depth exceeded".into())
+    }
+    let map = synchronous_object(scope, result)?;
+    let keys = map
+        .get_own_property_names(
+            scope,
+            v8::GetPropertyNamesArgs {
+                property_filter: v8::PropertyFilter::ALL_PROPERTIES,
+                key_conversion: v8::KeyConversionMode::KeepNumbers,
+                ..Default::default()
+            },
+        )
+        .ok_or("export map keys")?;
+    if keys.length() == 0 || keys.length() > 64 {
+        return Err("export map size limit".into());
+    }
+    let mut modules = BTreeMap::new();
+    for i in 0..keys.length() {
+        let key = keys.get_index(scope, i).ok_or("export key")?;
+        if !key.is_string() {
+            return Err("export key must be string".into());
+        }
+        let name = key.to_rust_string_lossy(scope);
+        if name.len() > 256
+            || (name != "."
+                && !name.strip_prefix("./").is_some_and(|p| {
+                    p.split('/').all(|part| {
+                        !part.is_empty()
+                            && part != "."
+                            && part != ".."
+                            && part
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+                    })
+                }))
+        {
+            return Err("invalid package export subpath".into());
+        }
+        let key = v8::Local::<v8::Name>::try_from(key).map_err(|_| "export key")?;
+        let descriptor = map
+            .get_own_property_descriptor(scope, key)
+            .ok_or("export property descriptor")?;
+        let descriptor = v8::Local::<v8::Object>::try_from(descriptor)
+            .map_err(|_| "export property descriptor")?;
+        let value_key = v8::String::new(scope, "value").ok_or("property allocation")?;
+        if descriptor.has_own_property(scope, value_key.into()) != Some(true) {
+            return Err("export map accessor forbidden".into());
+        }
+        let value = descriptor
+            .get(scope, value_key.into())
+            .ok_or("export value")?;
+        let module = synchronous_object(scope, value)?;
+        modules.insert(name, v8::Global::new(scope, module));
+    }
+    if !modules.contains_key(".") {
+        return Err("root package export required".into());
+    }
+    Ok(modules)
+}
+pub(crate) fn bootstrap(
+    scope: &mut v8::PinScope,
+    id: &str,
+    generation: u64,
+) -> Result<Vec<PackageExports>, String> {
+    let mut exports = Vec::new();
     let packages = PACKAGES.with(|p| p.borrow().values().cloned().collect::<Vec<_>>());
     for package in packages {
         let instance = PackageInstanceKey {
             parent: OwnerKey::plugin(id, generation),
             package_owner: package.owner.key().clone(),
         };
-        let prior = BOOTSTRAP.with(|b| b.replace(Some(instance)));
+        let prior = BOOTSTRAP.with(|b| b.replace(Some(instance.clone())));
         struct Reset(Option<PackageInstanceKey>);
         impl Drop for Reset {
             fn drop(&mut self) {
@@ -316,9 +448,18 @@ pub(crate) fn bootstrap(scope: &mut v8::PinScope, id: &str, generation: u64) -> 
         if let Some(error) = error {
             return Err(error);
         }
+        if package.exports_required {
+            let modules = capture_exports(&mut tc, result.ok_or("package bootstrap failed")?)?;
+            if !owner_is_live(id, generation) || plugin_phase(id) == Some(plugin::Phase::Unloading)
+            {
+                return Err("package parent retired during bootstrap".into());
+            }
+            exports.push(PackageExports { instance, modules });
+        }
     }
-    Ok(())
+    Ok(exports)
 }
+
 fn instance(
     scope: &mut v8::PinScope,
     data: v8::Local<v8::Value>,
@@ -1815,6 +1956,10 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
 #[cfg(test)]
 pub(super) mod proof {
     use super::*;
+    pub fn owner_resources(id: &str) -> (usize, usize) {
+        (ADAPTERS.with(|a| a.borrow().values().filter(|a| a.instance.parent.id == id).count()),
+         SUBSCRIPTIONS.with(|s| s.borrow().values().filter(|s| s.owner.id == id).count()))
+    }
     pub fn pending_invocations() -> usize {
         INVOCATIONS.with(|i| i.borrow().len())
     }

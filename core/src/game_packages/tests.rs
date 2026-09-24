@@ -247,3 +247,113 @@ fn rejects_non_utf8_bootstrap_and_tampered_bytes() {
         "invalid-bootstrap"
     );
 }
+
+#[test]
+fn retained_selection_copy_and_atomic_commit() {
+    let root = complete_fixture(vec![record("@fixture/two", "independent", "other")]);
+    let handle = super::select(root.path(), "source2", "other", "linuxsteamrt64").unwrap();
+    write(
+        &root.path().join("game-packages/independent/index.js"),
+        b"changed",
+    );
+    write(
+        &root.path().join("game-packages/independent/gamedata.json"),
+        b"changed",
+    );
+    assert_eq!(super::copy(handle, 0).unwrap(), b"data");
+    assert_eq!(super::copy(handle, 0).unwrap(), b"data");
+    assert!(super::commit(handle, "[]", "[]").is_err());
+    assert!(super::selected_id().is_none());
+    assert!(super::select(root.path(), "source2", "other", "linuxsteamrt64").is_err());
+    let merged = r#"{"calls":{"call":{}},"hooks":{"hook":{}}}"#;
+    super::commit(handle, merged, r#"["custom/fix.jsonc"]"#).unwrap();
+    assert_eq!(super::selected_id().as_deref(), Some("@fixture/two"));
+    let status: Value = serde_json::from_slice(&super::status()).unwrap();
+    assert_eq!(status["bootstrapSha256"], hash(b"boot"));
+    assert_eq!(status["mergedSha256"], hash(merged.as_bytes()));
+    let owner = crate::gamedata_calls::reserved_owner_id("@fixture/two");
+    assert!(!crate::gamedata_calls::status(&owner, "call").contains("not declared"));
+    assert!(!crate::gamedata_hooks::status(&owner, "hook").contains("not declared"));
+    assert!(super::copy(handle, 0).is_err());
+    assert!(super::commit(handle, "{}", "[]").is_err());
+    super::clear().unwrap();
+    assert_eq!(crate::gamedata_calls::game_package_owner(), None);
+    assert!(crate::gamedata_hooks::status(&owner, "hook").contains("not declared"));
+}
+
+#[test]
+fn aborted_handles_do_not_alias_the_next_selection() {
+    let root = complete_fixture(vec![record("@fixture/two", "two", "other")]);
+    let a = super::select(root.path(), "source2", "other", "linuxsteamrt64").unwrap();
+    super::abort(a).unwrap();
+    let b = super::select(root.path(), "source2", "other", "linuxsteamrt64").unwrap();
+    assert_ne!(a, b);
+    assert!(super::copy(a, 0).is_err());
+    assert!(super::abort(a).is_err());
+    assert_eq!(super::copy(b, 0).unwrap(), b"data");
+    super::abort(b).unwrap();
+}
+
+#[test]
+fn ffi_copy_rejects_short_buffers_stale_handles_and_invalid_utf8() {
+    use crate::ffi::*;
+    use std::ffi::CString;
+    let root = complete_fixture(vec![record("@fixture/two", "two", "other")]);
+    let root_text = CString::new(root.path().to_str().unwrap()).unwrap();
+    let engine = CString::new("source2").unwrap();
+    let game = CString::new("other").unwrap();
+    let platform = CString::new("linuxsteamrt64").unwrap();
+    let invalid = [0xffu8, 0];
+    assert_eq!(
+        s2script_core_select_game_package(
+            root_text.as_ptr(),
+            engine.as_ptr(),
+            invalid.as_ptr().cast(),
+            platform.as_ptr()
+        ),
+        0
+    );
+    assert!(super::selected_id().is_none());
+    let handle = s2script_core_select_game_package(
+        root_text.as_ptr(),
+        engine.as_ptr(),
+        game.as_ptr(),
+        platform.as_ptr(),
+    );
+    assert_ne!(handle, 0);
+    assert_eq!(
+        s2script_core_copy_game_package(handle, 0, std::ptr::null_mut(), 0),
+        4
+    );
+    let mut bytes = [55; 4];
+    assert_eq!(
+        s2script_core_copy_game_package(handle, 0, bytes.as_mut_ptr(), 3),
+        -2
+    );
+    assert_eq!(bytes, [55; 4]);
+    assert_eq!(
+        s2script_core_copy_game_package(handle, 0, bytes.as_mut_ptr(), 4),
+        4
+    );
+    assert_eq!(&bytes, b"data");
+    assert_eq!(
+        s2script_core_commit_game_package(handle, invalid.as_ptr(), 1, b"[]".as_ptr(), 2),
+        0
+    );
+    assert!(super::selected_id().is_none());
+    assert_eq!(s2script_core_abort_game_package(handle), 1);
+    assert_eq!(
+        s2script_core_copy_game_package(handle, 0, bytes.as_mut_ptr(), 4),
+        -1
+    );
+    assert_eq!(s2script_core_abort_game_package(handle), 0);
+}
+
+#[test]
+fn layout_only_empty_legacy_merge_registers_without_a_function_owner() {
+    let root = complete_fixture(vec![record("@fixture/two", "two", "other")]);
+    let handle = super::select(root.path(), "source2", "other", "linuxsteamrt64").unwrap();
+    super::commit(handle, "", "[]").unwrap();
+    assert_eq!(super::selected_id().as_deref(), Some("@fixture/two"));
+    super::clear().unwrap();
+}

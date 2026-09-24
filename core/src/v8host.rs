@@ -155,6 +155,8 @@ struct PluginInstance {
     /// hooks). Declared FIRST so Rust drops it BEFORE `context` (teardown discipline: inner Globals
     /// released before the `Global<Context>`). (Field kept named `exports` to minimize churn.)
     exports: Option<v8::Global<v8::Object>>,
+    // Same context lifetime ledger: released after subscriptions/adapters, before context.
+    package_exports: Vec<function_adapter::PackageExports>,
     context: v8::Global<v8::Context>,
     // NOTE: no `generation` field. The generation lives ONLY in REGISTRY (`generation_of`) — a
     // copy here was "kept in lockstep" but readable in the window where the two diverge (prelude
@@ -253,9 +255,8 @@ thread_local! {
     /// same id string as `PLUGINS`.  Reset on `shutdown` so a re-init starts empty.
     static REGISTRY: std::cell::RefCell<plugin::Registry>
         = std::cell::RefCell::new(plugin::Registry::new());
-    /// Runtime package registry: maps package name (e.g. `"@s2script/cs2"`) to JS source.
-    /// Populated by the shim at load time via `s2script_core_register_package` (C-ABI, see ffi.rs).
-    /// NOT cleared on `shutdown` — package registrations are valid for the process lifetime.
+    /// Test-only compatibility prelude/configuration seeds; production uses verified receipts.
+    #[cfg(test)]
     static INJECTED_PACKAGES: std::cell::RefCell<std::collections::HashMap<String, String>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Inter-plugin interface bookkeeping (Slice 4.5). Pure state lives here; the V8 handles are in
@@ -620,13 +621,10 @@ pub fn set_hook_request(f: Option<HookRequestFn>) {
     HOOK_REQUEST.with(|c| c.set(f));
 }
 
-/// Register a game-package JS source string under `name` (e.g. `"@s2script/cs2"`).
+/// Register a compatibility test prelude under an opaque name.
 ///
-/// Called by the shim at load time (via the C-ABI `s2script_core_register_package`) to provide
-/// game-specific JS to core without baking it in at compile time.  Each call overwrites any prior
-/// value for the same name (idempotent for the shim's load-once use).  The stored source is then
-/// evaluated per-context in `create_plugin_context` and stashed at `globalThis.__s2pkg_*` for
-/// the `__s2require` native.
+/// Internal test prelude/configuration helper. It grants no package adapter authority.
+#[cfg(test)]
 pub fn register_injected_package(name: &str, js: &str) {
     INJECTED_PACKAGES.with(|p| p.borrow_mut().insert(name.to_string(), js.to_string()));
 }
@@ -750,13 +748,11 @@ fn config_templates_prelude() -> String {
 /// line N WAS V8 line N — the file starts directly at `globalThis.HookResult`, where the old
 /// `r#"` literal opened with a newline and shifted every reported line by one.
 // colors.js FIRST: it sets globalThis.__s2_colors, which prelude.js's chat and console
-// funnels call. Same ordering contract as games/cs2/js (activity.js before pawn.js).
+// funnels call. Package source ordering belongs to each package manifest.
 const INJECTED_STD_PRELUDE: &str =
     concat!(include_str!("../js/colors.js"), "\n", include_str!("../js/prelude.js"));
 
-// @s2script/cs2 is NOT embedded here. It is provided externally at runtime by the shim via
-// `register_injected_package("@s2script/cs2", <js>)` (see `ffi.rs`).  Core contains zero cs2 JS.
-// If the package is not registered, `require("@s2script/cs2")` returns null (graceful degrade).
+// Game code is supplied by the selected verified package receipt (see game_packages).
 
 /// Initialize the V8 platform exactly once for the process.  Never torn down.
 fn ensure_platform() {
@@ -1403,17 +1399,7 @@ pub(crate) fn log_warn(msg: &str) {
     }
 }
 
-/// Native `__s2require(name) -> object|null` — resolves first-party builtin specifiers to their
-/// per-context module globals under BOTH spellings: the consolidated `@s2script/sdk/<cap>` and the
-/// legacy `@s2script/<cap>` (e.g. `"@s2script/sdk/frame"` or `"@s2script/frame"` → `globalThis.__s2pkg_frame`).
-/// Bare `@s2script/sdk` (no capability) maps to `globalThis.__s2pkg_sdk`, the engine-generic
-/// authoring barrel. ORDER IS LOAD-BEARING: `@s2script/sdk/` is stripped BEFORE the shorter
-/// `@s2script/`, which also matches `@s2script/sdk/<cap>` and would strip to the garbage cap
-/// `sdk/<cap>`. Non-`@s2script/` specifiers → `null` (the JS `__s2_require` shim resolves those as
-/// inter-plugin deps).  A retired/unknown name (global undefined) → `null`. Engine-generic: no
-/// module list hardcoded; `@s2script/cs2` maps to `__s2pkg_cs2` via the plain `@s2script/` strip.
-///
-/// Like every native, the body runs under `catch_unwind` (no panic may cross the FFI boundary).
+/// Resolve selected package ids/subpaths from a private host snapshot, then engine builtins.
 fn s2require(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -1425,17 +1411,40 @@ fn s2require(
             return;
         }
         let name = args.get(0).to_rust_string_lossy(scope);
-        // First-party rule: @s2script/<name> → globalThis.__s2pkg_<name> (engine-generic; no module list
-        // hardcoded; @s2script/cs2 → __s2pkg_cs2 subsumed). Non-@s2script specifiers → null (the JS
-        // `__s2_require` shim resolves those as inter-plugin deps). A retired/unknown name → the global is
-        // undefined → null.
-        // Dual-prefix (packaging consolidation): a builtin resolves as BOTH the consolidated
-        // `@s2script/sdk/<cap>` and the legacy `@s2script/<cap>` — both map to `__s2pkg_<cap>`.
-        // ORDER IS LOAD-BEARING: the shorter `@s2script/` also matches `@s2script/sdk/entity`
-        // and would strip to `sdk/entity` → `__s2pkg_sdk/entity` garbage — try `@s2script/sdk/`
-        // FIRST. Bare `@s2script/sdk` (no capability) falls to the plain strip → `__s2pkg_sdk`,
-        // the engine-generic authoring barrel (populated by the prelude). Still generic — no
-        // module list hardcoded; `@s2script/cs2` keeps riding the plain `@s2script/` strip.
+        if let Some(id) = crate::game_packages::selected_id() {
+            let subpath = if name == id {
+                Some(".".to_string())
+            } else {
+                name.strip_prefix(&(id.clone() + "/"))
+                    .map(|p| format!("./{p}"))
+            };
+            if let Some(subpath) = subpath {
+                let generation = scope
+                    .get_current_context()
+                    .get_slot::<InteropGeneration>()
+                    .map(|g| g.0);
+                let module = current_plugin(scope).and_then(|parent| {
+                    let generation = generation.filter(|g| owner_is_live(&parent, *g))?;
+                    PLUGINS.with(|p| {
+                        p.borrow().get(&parent).and_then(|pi| {
+                            pi.package_exports
+                                .iter()
+                                .find(|e| {
+                                    e.instance.package_owner.id == id
+                                        && e.instance.parent.generation == generation
+                                })
+                                .and_then(|e| e.modules.get(&subpath))
+                                .cloned()
+                        })
+                    })
+                });
+                if let Some(module) = module {
+                    rv.set(v8::Local::new(scope, module).into());
+                }
+                // Selected identity is reserved even while bootstrap is provisional or failed.
+                return;
+            }
+        }
         let Some(rest) = name
             .strip_prefix("@s2script/sdk/")
             .or_else(|| name.strip_prefix("@s2script/"))
@@ -1444,7 +1453,9 @@ fn s2require(
         };
         let key = format!("__s2pkg_{}", rest);
         let global = scope.get_current_context().global(scope);
-        let Some(k) = v8::String::new(scope, &key) else { return };
+        let Some(k) = v8::String::new(scope, &key) else {
+            return;
+        };
         if let Some(v) = global.get(scope, k.into()) {
             if !v.is_undefined() {
                 rv.set(v);
@@ -5937,6 +5948,10 @@ pub(crate) fn dispatch_onframe(
     }
 }
 
+/// Process package receipts may retire only after all context ledgers and active dispatch.
+pub(crate) fn package_contexts_retired() -> bool {
+    PLUGINS.with(|p| p.borrow().is_empty()) && can_shutdown()
+}
 /// True only when HOST is not borrowed and no dispatch is in progress.
 pub fn can_shutdown() -> bool {
     let host_free = HOST.with(|h| h.try_borrow().is_ok());
@@ -6596,6 +6611,12 @@ pub(crate) fn register_process_singletons() {
         crate::process_singletons::register(name, phase, Box::new(f));
     }
 
+    // Contexts have already retired through unload_all before this process receipt is released.
+    reg("SELECTED_GAME_PACKAGE", BeforeIsolateDrop, || {
+        crate::game_packages::clear().expect("terminal package retirement before contexts");
+    });
+    #[cfg(test)]
+    reg("TEST_INJECTED_PACKAGES", BeforeIsolateDrop, || INJECTED_PACKAGES.with(|p| p.borrow_mut().clear()));
     // ---- BeforeIsolateDrop: holds V8 handles, or must be torn down while the isolate lives. ----
 
     // Async state: RESOLVERS holds Globals into the isolate, so the handles must be released here.
@@ -6730,3 +6751,6 @@ mod engine_function_adapter_v8;
 #[cfg(test)]
 #[path = "v8host/tests/engine_functions.rs"]
 mod engine_function_tests;
+
+#[cfg(test)]
+mod game_package_tests;

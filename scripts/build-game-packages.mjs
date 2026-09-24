@@ -58,7 +58,7 @@ export function buildGamePackages({ outDir, sourceDirs = [firstParty], allowSynt
     if (ids.has(id) || owners.has(gamedataOwner)) throw new Error(`duplicate package id or gamedata owner: ${id}`);
     ids.add(id); owners.add(gamedataOwner);
     const js = Buffer.concat(bootstrapInputs.map(name => readFileSync(confined(root, name))));
-    // Keep the old concatenation bytes exactly; source files end in a newline except generated schema.
+    // The final source expression supplies the package-local module export map.
     const bootstrap = Buffer.from(js.toString().replace(/\n*$/, "") + "\n");
     const gdRoot = confined(root, gamedataRoot);
     const masterName = "master.gamedata.jsonc";
@@ -72,9 +72,6 @@ export function buildGamePackages({ outDir, sourceDirs = [firstParty], allowSynt
     const bootstrapPath = `${prefix}/index.js`, gamedataPath = `${prefix}/gamedata.json`;
     write(outDir, bootstrapPath, bootstrap);
     write(outDir, gamedataPath, gamedata);
-    // Transitional deployed paths: runtime readers switch to the manifest in CORE-04.
-    write(outDir, "js/pawn.js", bootstrap);
-    for (const name of names) write(outDir, `gamedata/${gamedataOwner}/${name}`, readFileSync(confined(gdRoot, name)));
     packages.push({
       id, match: { engine: match.engine, game: match.game }, gamedataOwner,
       bootstrap: { path: bootstrapPath, sha256: sha256(bootstrap) },

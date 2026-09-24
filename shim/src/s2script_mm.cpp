@@ -6,6 +6,7 @@
 #include "engine_function_bridge.h"
 #include "khook_shutdown.h"
 #include "gamedata.h"
+#include "../third_party/json.hpp"
 
 // Pull in ISource2Server (and the typedef IServerGameDLL = ISource2Server)
 // from the HL2SDK.  The stub sdk_stubs/network_connection.pb.h satisfies the
@@ -92,6 +93,8 @@
 #include <unordered_map>   // the CheckTransmit rule table (checktransmit slice)
 #include <unordered_set>
 #include <vector>
+#include <iterator>
+#include <stdexcept>
 
 S2ScriptPlugin g_S2ScriptPlugin;
 PLUGIN_EXPOSE(S2ScriptPlugin, g_S2ScriptPlugin);
@@ -2788,33 +2791,8 @@ static std::string DetectModDir() {
 }
 
 // ---------------------------------------------------------------------------
-// Cs2JsPath: resolve pawn.js relative to the plugin .so via dladdr (mirrors
-// GamedataRoot).  Expected layout (three dirname steps from the .so):
-//   addons/s2script/bin/linuxsteamrt64/s2script.so
-//     dirname ×1 → bin/linuxsteamrt64
-//     dirname ×2 → bin
-//     dirname ×3 → s2script addon root
-//   + /js/pawn.js
-// ---------------------------------------------------------------------------
-static std::string Cs2JsPath() {
-    Dl_info info;
-    if (dladdr(reinterpret_cast<void*>(&Cs2JsPath), &info) && info.dli_fname) {
-        char buf[4096];
-        snprintf(buf, sizeof buf, "%s", info.dli_fname);
-        std::string dir = dirname(buf);             // linuxsteamrt64
-        snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);                         // bin
-        snprintf(buf, sizeof buf, "%s", dir.c_str());
-        dir = dirname(buf);                         // s2script addon root
-        return dir + "/js/pawn.js";
-    }
-    // Fallback: relative to the server's cwd (mirrors the GamedataRoot fallback).
-    return "addons/s2script/js/pawn.js";
-}
-
-// ---------------------------------------------------------------------------
 // PluginsDir: resolve the plugins directory relative to the plugin .so via dladdr
-// (mirrors Cs2JsPath / GamedataRoot).  Expected layout:
+// (mirrors AddonRoot / GamedataRoot).  Expected layout:
 //   addons/s2script/bin/linuxsteamrt64/s2script.so
 //     dirname ×1 → bin/linuxsteamrt64
 //     dirname ×2 → bin
@@ -3010,17 +2988,17 @@ static ModBounds FindModuleBounds(const char* soname) {
 // ---------------------------------------------------------------------------
 static int s_gdOk = 0, s_gdFail = 0;
 static GameConfig s_gdCore;   // the core owner's merged gamedata, rebuilt each Load
-static GameConfig s_gdGame;   // the cs2 game-package owner's, likewise (spec §8: loader-exercised
-                              // from the first commit, so a mistyped master fails HERE, not in the
-                              // slice that first consumes one of its entries)
+static GameConfig s_gdGame; // selected verified package's merged legacy data
+static std::string s_gamePackageId, s_gamePackageOwner, s_gamePackageIdentity;
+static std::string s_gameBootstrapHash;
 static GameConfig s_gdSdkhooks;  // SDKHooks virtuals (extension owner; keys MAY be named in shim)
 // Kept for GamedataBanner(): the summary an operator is pointed at must report the load errors
 // too, otherwise a broken custom/ override looks exactly like "my fix didn't work".
 static std::string s_gdErrorCore, s_gdErrorGame, s_gdErrorSdkhooks, s_gdModDir;
 
-// THE owner set this build loads, and where each owner's merged view and load error live. Single
-// source of truth: Load(), GamedataBanner() and the crash fingerprint all walk this array, and
-// scripts/check-gamedata-owners.sh PARSES it — a gamedata/<owner>/ directory missing from here
+// Disk owners and their merged views. The selected manifest owner is appended for reporting.
+// Load() and the disk portion of crash identity walk this table;
+// scripts/check-gamedata-owners.sh parses it plus the source manifests. A disk directory with no owner
 // fails that gate, because a tree nothing loads is data that can never take effect.
 //
 // PARSER WARNING: that script derives its owner list with a regex that pulls every quoted string
@@ -3033,9 +3011,22 @@ enum class GdOwnerKind { Core, Game, Extension };
 struct GamedataOwner { const char* name; GameConfig* cfg; std::string* error; GdOwnerKind kind; };
 static const GamedataOwner kGamedataOwners[] = {
     { "core", &s_gdCore, &s_gdErrorCore, GdOwnerKind::Core },
-    { "cs2",  &s_gdGame, &s_gdErrorGame, GdOwnerKind::Game },
     { "sdkhooks", &s_gdSdkhooks, &s_gdErrorSdkhooks, GdOwnerKind::Extension },
 };
+static std::vector<GamedataOwner> GamedataOwners() {
+    std::vector<GamedataOwner> owners(std::begin(kGamedataOwners), std::end(kGamedataOwners));
+    if (!s_gamePackageOwner.empty())
+        owners.push_back({s_gamePackageOwner.c_str(), &s_gdGame, &s_gdErrorGame, GdOwnerKind::Game});
+    return owners;
+}
+// Both calls use the same retained handle. No source path is returned for a second read.
+static bool CopySelectedPackage(uint64_t handle, uint32_t member, std::string& bytes) {
+    int64_t size = s2script_core_copy_game_package(handle, member, nullptr, 0);
+    if (size < 0 || size > 16 * 1024 * 1024) return false;
+    bytes.assign(static_cast<size_t>(size), '\0');
+    return s2script_core_copy_game_package(handle, member,
+        reinterpret_cast<uint8_t*>(bytes.data()), bytes.size()) == size;
+}
 static void GamedataResult(const char* name, bool ok, const char* reason) {
     if (ok) { s_gdOk++;  META_CONPRINTF("[s2script]   gamedata OK    %s\n", name); }
     else    { s_gdFail++; META_CONPRINTF("[s2script]   gamedata FAIL  %s — %s\n", name, reason ? reason : "?"); }
@@ -3059,12 +3050,15 @@ static int64_t ResolveSigValidated(const char* name, const SigSpec& sig) {
 }
 
 static void GamedataBanner() {
+    if (!s_gamePackageId.empty())
+        META_CONPRINTF("[s2script] === GAME PACKAGE %s (gamedata owner %s) ===\n",
+                       s_gamePackageId.c_str(), s_gamePackageOwner.c_str());
     META_CONPRINTF("[s2script] === GAMEDATA VALIDATION: %d ok, %d FAILED%s ===\n", s_gdOk, s_gdFail,
                    s_gdFail ? "  (STALE for this CS2 build — regenerate; see docs/re-strategy.md)" : "");
     // The LOAD errors, not just the resolve results. A malformed custom/ override sets these and
     // nothing else: without this line the summary an operator reads after dropping in a hot-fix is
     // identical to a clean boot, and the stale shipped value is silently still in use.
-    for (const auto& o : kGamedataOwners)
+    for (const auto& o : GamedataOwners())
         if (!o.error->empty())
             META_CONPRINTF("[s2script] === GAMEDATA LOAD ERROR (%s): %s ===\n",
                            o.name, o.error->c_str());
@@ -3074,7 +3068,7 @@ static void GamedataBanner() {
         META_CONPRINTF("[s2script] === GAMEDATA FAIL: mod directory UNDETECTED — every "
                        "\"game\"-conditioned gamedata file was skipped (unexpected addon layout; "
                        "expected <game>/csgo/addons/s2script/bin/linuxsteamrt64/) ===\n");
-    for (const auto& o : kGamedataOwners)
+    for (const auto& o : GamedataOwners())
         if (!o.cfg->overridden.empty())
             META_CONPRINTF("[s2script] === %zu ENTRY/ENTRIES FROM gamedata/%s/custom/ — "
                            "operator-supplied, NOT the shipped values ===\n",
@@ -4100,8 +4094,11 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
 
     // --- Gamedata (owner-scoped; built ONCE per Load, spec §6) ---
     // One helper, run per owner: the owners differ only in name and in who consumes them.
-    auto loadOwner = [&](const char* owner, GameConfig& out, std::string& outError) {
-        out = LoadGameConfig(gdRoot, owner, "source2", modDir, "linuxsteamrt64", outError);
+    s_gdGame = GameConfig{};
+    s_gdErrorGame.clear();
+    s_gamePackageId.clear(); s_gamePackageOwner.clear();
+    s_gamePackageIdentity.clear(); s_gameBootstrapHash.clear();
+    auto reportOwner = [&](const char* owner, GameConfig& out, std::string& outError) {
         if (!outError.empty())
             META_CONPRINTF("[s2script] WARN: %s — %s gamedata degraded\n", outError.c_str(), owner);
         META_CONPRINTF("[s2script] gamedata %s: %zu interfaces, %zu offsets, %zu signatures, "
@@ -4156,10 +4153,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         }
     };
 
-    // Every owner in kGamedataOwners, in order. "cs2" is loaded even though nothing consumes its
-    // entries yet (A5b wires them): loading it now is what makes a mistyped master or a missing
-    // file a boot-time error in THIS slice rather than a surprise in the next one (spec §8).
-    for (const auto& o : kGamedataOwners) loadOwner(o.name, *o.cfg, *o.error);
+    for (const auto& o : kGamedataOwners) {
+        *o.cfg = LoadGameConfig(gdRoot, o.name, "source2", modDir, "linuxsteamrt64", *o.error);
+        reportOwner(o.name, *o.cfg, *o.error);
+    }
 
     // --- Interface acquisition (data-driven, degrade-never-crash) ---
     auto& versions = s_gdCore.interfaces;
@@ -4929,7 +4926,6 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // SDKHooks VP virtuals: resolve Touch-family signatures against s_gdSdkhooks (never s_gdCore)
     // and SH_MANUALHOOK_RECONFIGURE the derived slots. Missing rows degrade by name (vp_add → 0).
     S2SdkhooksVpLoad(s_gdSdkhooks);
-    GamedataBanner();
 
     META_CONPRINTF("[s2script] Load(): initializing V8 core\n");
 
@@ -4996,9 +4992,63 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                            "onCanAcquirePost will not fire (shim/core version mismatch)\n");
     }
 
+    // Select verified owned bytes after core initialization; native merge reads custom/ only.
+    // No public package or legacy owner appears until the single core commit succeeds.
+    {
+        const uint64_t handle = s2script_core_select_game_package(AddonRoot().c_str(),
+            "source2", modDir.c_str(), "linuxsteamrt64");
+        struct AbortSelection {
+            uint64_t handle;
+            ~AbortSelection() { if (handle) s2script_core_abort_game_package(handle); }
+        } pending{handle};
+        std::string status;
+        try {
+            if (handle) {
+                std::string metadata, bundle;
+                if (!CopySelectedPackage(handle, 1, metadata) || !CopySelectedPackage(handle, 0, bundle))
+                    throw std::runtime_error("verified selection copy failed");
+                auto info = nlohmann::json::parse(metadata);
+                const std::string owner = info.at("gamedataOwner").get<std::string>();
+                GameConfig candidate = LoadGameConfigFromBundle(bundle, owner, gdRoot,
+                    "source2", modDir, "linuxsteamrt64", info.at("gamedataSha256").get<std::string>(), s_gdErrorGame);
+                reportOwner(owner.c_str(), candidate, s_gdErrorGame);
+                if (!candidate.filesFailed.empty())
+                    throw std::runtime_error("selected shipped bundle failed: " + s_gdErrorGame);
+                // Capture ALL merged sections for process identity, including layout-only custom
+                // repairs. The legacy serializer already supplies signatures/calls/hooks.
+                auto mergedData = candidate.mergedJson.empty() ? nlohmann::json::object()
+                    : nlohmann::json::parse(candidate.mergedJson);
+                mergedData["interfaces"] = candidate.interfaces;
+                mergedData["offsets"] = candidate.offsets;
+                mergedData["keys"] = candidate.keys;
+                const std::string merged = mergedData.dump();
+                const std::string custom = nlohmann::json(candidate.packageProvenance.customPaths).dump();
+                if (s2script_core_commit_game_package(handle,
+                        reinterpret_cast<const uint8_t*>(merged.data()), merged.size(),
+                        reinterpret_cast<const uint8_t*>(custom.data()), custom.size()) != 1)
+                    throw std::runtime_error("selected package commit failed");
+                s_gdGame = std::move(candidate);
+                s_gamePackageOwner = owner;
+                s_gamePackageId = info.at("id").get<std::string>();
+                s_gameBootstrapHash = info.at("bootstrapSha256").get<std::string>();
+                CopySelectedPackage(0, 2, s_gamePackageIdentity);
+                status = s_gamePackageIdentity;
+            } else {
+                CopySelectedPackage(0, 2, status);
+            }
+        } catch (const std::exception& e) {
+            std::string coreStatus;
+            CopySelectedPackage(0, 2, coreStatus);
+            status = nlohmann::json({{"code", "failed"}, {"error", e.what()},
+                                     {"selection", coreStatus}}).dump();
+        }
+        META_CONPRINTF("[s2script] game-package-status %s\n", status.c_str());
+    }
+    GamedataBanner();
+
     // --- Crash reporter: identity + spool-dir push (fail-off: any miss degrades to "") ---
     {
-        // FNV-1a 64 over a file's bytes; also reused for the registered game-package JS below.
+        // FNV-1a 64 for the fixed schema envelope; package artifacts retain their verified SHA-256.
         auto fnv64hex = [](const std::string& bytes) -> std::string {
             uint64_t h = 0xcbf29ce484222325ULL;
             for (unsigned char c : bytes) { h ^= c; h *= 0x100000001b3ULL; }
@@ -5040,13 +5090,13 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         // owner. Same field, same "how fresh is this deployment's gamedata" question, different
         // basis — anything comparing values across the split has to know that.
         if (newest) snprintf(gdMtime, sizeof gdMtime, "%lld", newest);
+        // The frozen crash fields hold 40 bytes. Compress the captured verified identity into
+        // the existing short fingerprint; exact SHA-256 values remain in process status.
+        gdBytes += s_gamePackageIdentity;
+        gdOverrides += s_gdGame.overridden.size();
         std::string gdFp = gdBytes.empty() ? "" : fnv64hex(gdBytes);
         if (gdOverrides) gdFp += "+custom" + std::to_string(gdOverrides);
-        std::string schemaHash;
-        {
-            std::string js = slurp(Cs2JsPath());   // the deployed pawn.js concat carries the
-            if (!js.empty()) schemaHash = fnv64hex(js);  // generated schema accessors (D-6)
-        }
+        const std::string schemaHash = s_gameBootstrapHash.empty() ? "" : fnv64hex(s_gameBootstrapHash);
         std::string spool = CrashSpoolDir();
 #ifndef S2_HL2SDK_BUILD
 #define S2_HL2SDK_BUILD "unknown"
@@ -5065,63 +5115,6 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         } else {
             META_CONPRINTF("[s2script] WARN: crash handler NOT armed (spool dir unavailable)\n");
         }
-    }
-
-    // Register the @s2script/cs2 package (pawn.js) with the core so each plugin context
-    // gets the game API injected at creation.  CS2 names live in the file, never in core.
-    // Degrade-never-crash: a missing or unreadable pawn.js logs a WARN and continues;
-    // require("@s2script/cs2") will return null in plugin contexts until it is registered.
-    {
-        std::string cs2JsPath = Cs2JsPath();
-        FILE* f = fopen(cs2JsPath.c_str(), "rb");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long sz = ftell(f);
-            fseek(f, 0, SEEK_SET);
-            if (sz > 0) {
-                std::string js(static_cast<size_t>(sz), '\0');
-                size_t n = fread(&js[0], 1, static_cast<size_t>(sz), f);
-                fclose(f);
-                if (n == static_cast<size_t>(sz)) {
-                    s2script_core_register_package("@s2script/cs2", js.c_str());
-                    META_CONPRINTF("[s2script] @s2script/cs2 registered (%ld bytes from %s)\n",
-                                   sz, cs2JsPath.c_str());
-                } else {
-                    META_CONPRINTF("[s2script] WARN: short read for %s (%zu/%ld bytes)"
-                                   " — @s2script/cs2 not registered\n",
-                                   cs2JsPath.c_str(), n, sz);
-                }
-            } else {
-                fclose(f);
-                META_CONPRINTF("[s2script] WARN: %s is empty — @s2script/cs2 not registered\n",
-                               cs2JsPath.c_str());
-            }
-        } else {
-            META_CONPRINTF("[s2script] WARN: could not open %s — @s2script/cs2 not registered\n",
-                           cs2JsPath.c_str());
-        }
-    }
-
-    // The gamedata sibling of the registration above (A5b, spec §9.1b): the game package's OWN
-    // merged gamedata — its `calls` descriptors and the `signatures` they target — handed to core
-    // under the same identity. Core registers them against a reserved owner id derived from that
-    // name, so an engine call the game package declares is a gamedata entry with ZERO core diff.
-    //
-    // Deliberately NOT a second loader: the tree/master/condition/custom merge already ran once,
-    // above, in gamedata.cpp. This passes the RESULT. A degraded owner still registers whatever
-    // merged — each descriptor then degrades on its own named reason rather than the whole set
-    // vanishing silently. Independent of the pawn.js block: JS missing must not take the
-    // descriptors with it, and vice versa.
-    {
-        const std::string& gdJson = s_gdGame.mergedJson;
-        s2script_core_register_package_gamedata("@s2script/cs2", gdJson.c_str());
-        // The hook count is on this line for the same reason the call count is: it is the one place
-        // a boot log says how many descriptors actually crossed to core. It reading 0 while the
-        // gamedata file plainly declares two is the symptom that would have caught the dropped
-        // `hooks` section without a live server.
-        META_CONPRINTF("[s2script] @s2script/cs2 gamedata registered (%zu declared call(s), "
-                       "%zu declared hook(s), %zu byte(s))\n",
-                       s_gdGame.calls.size(), s_gdGame.hooks.size(), gdJson.size());
     }
 
     // Register the versioned path-only resolver before starting the loader. This deliberately does

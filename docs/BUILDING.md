@@ -74,9 +74,11 @@ dist/addons/
       s2script.so
     gamedata/
       core/             # common / engine.source2 / game.cs2 + master.gamedata.jsonc
-      cs2/              # the CS2 game package's own facts + master.gamedata.jsonc
-    js/
-      pawn.js
+      sdkhooks/         # native extension facts
+    game-packages.json  # target selection and verified artifact hashes
+    game-packages/cs2/
+      index.js          # ordered package bootstrap, ending in its module export map
+      gamedata.json     # verified owner/master/target documents
     plugins/            # base .s2sp plugins (release) / drop zone
     configs/            # empty — must be writable at runtime
     data/               # empty — must be writable at runtime
@@ -320,7 +322,7 @@ git commit -m "chore: bump hl2sdk to <newsha>"
 - Every patch is reviewed and tracked in the update-day fire drill.
 
 **Interface version strings live in the `gamedata/` tree** (owner-scoped: `gamedata/core/` for
-what shim+core name in source, `gamedata/cs2/` for the CS2 game package's own facts), never
+what shim+core name in source, `games/cs2/gamedata/` for the CS2 game package's own facts), never
 hardcoded in C++ or Rust. When a game update changes one, fix the owning gamedata file — and
 confirm the new value with `meta interfaces` on the live server, which is ground truth over the SDK
 headers. See [`re-strategy.md`](re-strategy.md) for the full doctrine.

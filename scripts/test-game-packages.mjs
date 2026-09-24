@@ -2,12 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { fileURLToPath } from "node:url";
 import { buildGamePackages } from "./build-game-packages.mjs";
-
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "s2-game-package-"));
@@ -20,7 +17,7 @@ function fixture() {
     "gamedataRoot": "gamedata"
   }`);
   writeFileSync(join(source, "js/a.js"), "globalThis.a = 1;\n");
-  writeFileSync(join(source, "js/b.js"), "globalThis.b = 2;\n");
+  writeFileSync(join(source, "js/b.js"), '({".":{a:globalThis.a,b:2},"./ui":{value:23}});\n');
   writeFileSync(join(source, "gamedata/master.gamedata.jsonc"),
     '{"files":[{"file":"game.cs2.jsonc","game":"csgo"}]}');
   writeFileSync(join(source, "gamedata/game.cs2.jsonc"),
@@ -59,16 +56,17 @@ test("emits the frozen deployed schema and lowercase SHA-256", () => {
   assert.ok(out.gamedata.toString().endsWith("\n"));
 });
 
-test("default build contains only CS2 and preserves transitional deployed bytes", () => {
+test("default build contains only selected artifacts and explicit package exports", () => {
   const out = mkdtempSync(join(tmpdir(), "s2-game-package-default-"));
   const manifest = buildGamePackages({ outDir: out });
   assert.deepEqual(manifest.packages.map(p => p.id), ["@s2script/cs2"]);
-  assert.deepEqual(readFileSync(join(out, "game-packages/cs2/index.js")),
-    readFileSync(join(out, "js/pawn.js")));
-  for (const name of ["master.gamedata.jsonc", "game.cs2.jsonc"])
-    assert.deepEqual(readFileSync(join(out, "gamedata/cs2", name)),
-      readFileSync(join(repoRoot, "games/cs2/gamedata", name)));
-  assert.equal(existsSync(join(out, "gamedata/cs2/custom")), false);
+  assert.equal(existsSync(join(out, "js/pawn.js")), false);
+  assert.equal(existsSync(join(out, "gamedata/cs2/master.gamedata.jsonc")), false);
+  assert.equal(existsSync(join(out, "gamedata/cs2/game.cs2.jsonc")), false);
+  const source = readFileSync(join(out, "game-packages/cs2/index.js"), "utf8");
+  assert.ok(source.includes('"./ui"'));
+  assert.equal(source.includes('"./econ"'), false);
+
 });
 
 test("same inputs produce byte-identical manifest and artifacts", () => {

@@ -89,6 +89,27 @@ Core's per-context bootstrap iterates the selected manifest records. The shim no
 packaging may still concatenate modules, but the manifest names the resulting artifact and its hash;
 the runtime does not know the concatenation recipe or entry filename.
 
+The bootstrap's final synchronous expression returns an explicit module map such as
+`{ ".": rootExports, "./ui": uiExports }`. The root is required; keys are exact normalized
+package-local subpaths (at most 64 keys, 256 bytes each), with module objects as values.
+Host validation rejects proxies, map accessors, promises and thenable objects without executing
+getters. The host captures a private map after successful evaluation under the existing
+host-minted package token, evaluates each package once, and publishes exact id/subpath lookup
+only for that context. CS2's `./ui` exports its five runtime constants; `econ.d.ts` remains
+type-only and has no invented runtime module. Internal adapter test helpers may intentionally
+have no public export map.
+
+The selected-bootstrap checkpoint retains one immutable pending handle, stages legacy call/hook
+registries, then commits source, owner and the existing prepared package receipt synchronously.
+Size-query/copy pairs use that handle; stale or aborted handles cannot be reused. Status carries
+verified artifact hashes, the captured merged-data hash and applied custom-path provenance.
+The fixed-size crash envelope carries a short digest derived from this captured identity;
+full SHA-256 values remain in process status. Pure JavaScript copied data is not revoked by
+retirement; captured engine-facing closures continue to check owner/generation liveness.
+PluginInstance owns package module Globals before its Context Global and releases them after
+its existing subscription/adapter ledger retires. Process source/owner registration survives
+script reload and is cleared only after contexts retire at terminal teardown.
+
 The manifest loads JavaScript/data only. Native Source 2 support remains in the existing Metamod
 shim; no manifest field names or loads another `.so`.
 
