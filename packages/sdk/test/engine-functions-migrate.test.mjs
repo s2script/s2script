@@ -199,6 +199,7 @@ test('rejects indirect unsafe namespace access before publishing', () => {
     'const unsafe = require("@s2script/sdk/unsafe"); unsafe.Engine.call(dynamicName);',
     'const unsafe = await import("@s2script/sdk/unsafe"); unsafe.Engine.call(dynamicName);',
     'import * as unsafe from "@s2script/sdk/unsafe"; consume(unsafe);',
+    'import { default as unsafe } from "@s2script/sdk/unsafe"; unsafe.Engine.call(dynamicName);',
   ]) {
     const dir = fixture(undefined, source);
     try {
@@ -240,6 +241,43 @@ test('rejects escaped local module loaders before ignoring helper source', () =>
       const report = migrateV1Package(dir);
       assert.match(report.ambiguities.join(' '), /module loader/i, source);
       assert.equal(existsSync(output(dir)), false, source);
+    } finally { cleanup(dir); }
+  }
+});
+
+test('rejects unsafe Engine reexports at the module boundary', () => {
+  for (const [barrel, use] of [
+    ['export * as unsafe from "@s2script/sdk/unsafe";', 'import { unsafe } from "./barrel.js"; unsafe.Engine.call(dynamicName);'],
+    ['export * from "@s2script/sdk/unsafe";', 'import { Engine } from "./barrel.js"; Engine.call("run");'],
+    ['export { Engine as E } from "@s2script/sdk/unsafe";', 'import { E } from "./barrel.js"; E.call(dynamicName);'],
+    ['export { Engine } from "@s2script/sdk/unsafe";', 'import { Engine } from "./barrel.js"; Engine.call("run");'],
+    ['import unsafe = require("@s2script/sdk/unsafe"); export { unsafe };', 'import { unsafe } from "./barrel.js"; unsafe.Engine.call(dynamicName);'],
+  ]) {
+    const dir = fixture(undefined, use);
+    try {
+      writeFileSync(join(dir, 'src/barrel.ts'), barrel);
+      const report = migrateV1Package(dir);
+      assert.match(report.ambiguities.join(' '), /barrel\.ts.*Engine.*(reexport|export)|barrel\.ts.*unsafe.*(reexport|export)/i, barrel);
+      assert.equal(existsSync(output(dir)), false, barrel);
+    } finally { cleanup(dir); }
+  }
+});
+
+test('rejects module-loader reexports before omitting local helper source', () => {
+  for (const [barrel, use] of [
+    ['export * as loader from "node:module";', 'import { loader } from "./barrel.js"; const load = loader["createRequire"](import.meta.url); load("../helpers.js");'],
+    ['export * from "node:module";', 'import "./barrel.js";'],
+    ['export { createRequire as load } from "node:module";', 'import { load } from "./barrel.js"; load("../helpers.js");'],
+    ['export { default as loader } from "module";', 'import "./barrel.js";'],
+    ['import loader = require("node:module"); export { loader };', 'import { loader } from "./barrel.js"; const load = loader.createRequire(import.meta.url); load("../helpers.js");'],
+  ]) {
+    const dir = fixture(undefined, use);
+    try {
+      writeFileSync(join(dir, 'src/barrel.ts'), barrel);
+      writeFileSync(join(dir, 'helpers.js'), 'Engine.call(dynamicName);');
+      const report = migrateV1Package(dir);
+      assert.match(report.ambiguities.join(' '), /barrel\.ts.*module loader.*(reexport|export)/i, barrel);
+      assert.equal(existsSync(output(dir)), false, barrel);
     } finally { cleanup(dir); }
   }
 });

@@ -179,16 +179,32 @@ function scanSource(files: string[], calls: Set<string>, hooks: Map<string, stri
       report.ambiguities.push(`${relative(report.package, file)}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}: ${message}`);
     };
     const visit = (node: ts.Node): void => {
-      // Bounded policy: named Engine calls and direct literal module loads can be inspected.
-      // Namespace values, loader values, and computed global access can hide additional uses.
-      if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
-        const bindings = node.importClause?.namedBindings;
-        if (node.moduleSpecifier.text === '@s2script/sdk/unsafe' && (node.importClause?.name || bindings && ts.isNamespaceImport(bindings))) {
-          ambiguity(node, 'indirect Engine namespace import from unsafe SDK prevents proving legacy timing/null behavior');
+      // Bounded module policy: direct named Engine imports and literal local edges can be
+      // inspected. External namespace values and reexports can hide references downstream.
+      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+        const spec = node.moduleSpecifier.text;
+        if (spec === '@s2script/sdk/unsafe') {
+          if (ts.isExportDeclaration(node)) ambiguity(node, 'unsafe Engine reexport prevents proving legacy timing/null behavior');
+          else {
+            const bindings = node.importClause?.namedBindings;
+            const defaultBinding = bindings && ts.isNamedImports(bindings) && bindings.elements.some(e => (e.propertyName?.text ?? e.name.text) === 'default');
+            if (node.importClause?.name || bindings && ts.isNamespaceImport(bindings) || defaultBinding) {
+              ambiguity(node, 'indirect Engine namespace import from unsafe SDK prevents proving legacy timing/null behavior');
+            }
+          }
         }
-        if (['node:module', 'module'].includes(node.moduleSpecifier.text) && node.importClause) {
-          ambiguity(node, 'indirect module loader import prevents complete local source analysis');
+        if (['node:module', 'module'].includes(spec) && (ts.isExportDeclaration(node) || node.importClause)) {
+          ambiguity(node, ts.isExportDeclaration(node)
+            ? 'module loader reexport prevents complete local source analysis'
+            : 'indirect module loader import prevents complete local source analysis');
         }
+      }
+      if (ts.isImportEqualsDeclaration(node) && !node.isTypeOnly && ts.isExternalModuleReference(node.moduleReference)) {
+        const ref = node.moduleReference.expression;
+        const spec = ref && ts.isStringLiteral(ref) ? ref.text : undefined;
+        if (spec === '@s2script/sdk/unsafe') ambiguity(node, 'unsafe Engine import-equals export or alias prevents proving legacy timing/null behavior');
+        else if (spec === 'node:module' || spec === 'module') ambiguity(node, 'module loader import-equals export or alias prevents complete local source analysis');
+        else ambiguity(node, 'import-equals module edge cannot be followed for complete source analysis');
       }
       if (ts.isImportSpecifier(node) && (node.propertyName?.text ?? node.name.text) === 'createRequire') {
         ambiguity(node, 'indirect module loader factory prevents complete local source analysis');
