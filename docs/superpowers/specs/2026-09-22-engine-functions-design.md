@@ -81,6 +81,20 @@ pre hooks, and `bypass-own-hooks` for calls through this binding. Ordinary autho
 receiver, parameters, and return; `surfaces` and `mutable` opt into hooks. Advanced declarations may
 set `requirement`, supported resolver inputs, or an authorized named projection adapter.
 
+Copied `string` and `vector` positions require explicit native ownership. Parameters declare
+`ownership: "callee-borrowed"`, `"callee-retained"`, or `"native-observed"` beside `type`; copied
+returns use `{ "type": "string" | "vector", "ownership": "caller-borrowed" | "native-observed" }`.
+Scalar/entity/void syntax stays unchanged. This prerelease contract correction makes old copied
+descriptors and archives without ownership fail with a rebuild diagnostic, even if their hashes are
+recomputed; v1 migration cannot infer the missing native lifetime. Ownership is included in the
+full function/bundle hashes while the pointer-shaped machine ABI fingerprint remains unchanged.
+`native-observed` is copy-out only: it disallows `call` and PRE writes; a native-observed return
+with PRE requires explicit `suppression: "none"`. A mutable copied parameter on a pointer-returning
+function requires `callee-retained`, while a readonly borrowed call input may return an alias.
+The underlying native ownership must match the physical target; this metadata alone does not
+prove that contract. Copy buffers, native reader, arena, and sidecar execution remain the next
+Task 6 checkpoint, so copied bindings remain unavailable by name until then.
+
 `target` remains data because it changes with the game binary. The declaration may instead refer to
 a named target within the same file when several functions intentionally share an address recipe.
 References are local to the owner and are flattened during normalization.
@@ -131,6 +145,11 @@ for void functions. An invalid suppression decision is reported and ignored, nev
 invented numeric/default return. POST receives readonly arguments plus the typed effective
 `returnValue` and cannot override it in generic v2. Named compatibility adapters keep their existing
 public callback contracts. Observation is explicit:
+
+Authors may set `suppression: "none"` when PRE exists. It permits only `Continue`, `Changed`, or
+`void` in generated PRE types; the real JS callback boundary also rejects `Handled`/`Stop` and
+suppression objects without committing that callback's staged edits. The default is `generic` for
+PRE functions and `none` otherwise.
 
 ```ts
 commitSuicide.onPre({ observeOnly: true }, (view) => console.log(view.force));

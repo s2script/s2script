@@ -54,6 +54,8 @@ pub struct Parameter {
     pub name: String,
     pub native: String,
     pub projection: Projection,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "present")]
+    pub ownership: Option<String>,
     pub mutable: Vec<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,6 +63,8 @@ pub struct Parameter {
 pub struct Returns {
     pub native: String,
     pub projection: Projection,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "present")]
+    pub ownership: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -248,6 +252,15 @@ fn projection(native: &str, p: &Projection, ret: bool) -> Result<(), String> {
         "unsupported ABI/projection pair (host authority required for custom codecs)",
     )
 }
+fn copied_ownership(id: &str, owner: Option<&str>, ret: bool, field: &str) -> Result<(), String> {
+    if matches!(id, "string" | "vector") {
+        let allowed = if ret { &["caller-borrowed", "native-observed"][..] } else { &["callee-borrowed", "callee-retained", "native-observed"][..] };
+        require(owner.is_some_and(|value| allowed.contains(&value)),
+            &format!("{field}: copied ownership is required and must match its direction; rebuild old copied declarations"))
+    } else {
+        require(owner.is_none(), &format!("{field}: ownership is only valid for copied string/vector positions"))
+    }
+}
 pub fn parse(
     text: &str,
     owner: &str,
@@ -295,6 +308,7 @@ pub fn parse(
                 "invalid/duplicate parameter name",
             )?;
             projection(&p.native, &p.projection, false)?;
+            copied_ownership(&p.projection.id, p.ownership.as_deref(), false, &format!("{} parameter {}", f.canonical_id, p.name))?;
             require(
                 p.mutable.is_empty() || p.mutable == ["pre"],
                 "invalid mutability",
@@ -316,6 +330,7 @@ pub fn parse(
             }
         }
         projection(&a.returns.native, &a.returns.projection, true)?;
+        copied_ownership(&a.returns.projection.id, a.returns.ownership.as_deref(), true, &format!("{} returns", f.canonical_id))?;
         let stack = abi::STACK_SAFETY_BUFFER.max((spill + 15) / 16 * 16);
         require(
             stack <= abi::MAX_STACK_BYTES && a.stack_copy_bytes == stack,
@@ -349,13 +364,25 @@ pub fn parse(
                 && p.id == "generic.v2"
                 && p.version == 1
                 && p.self_call == "bypass-own-hooks"
-                && p.suppression == if pre { "generic" } else { "none" },
+                && (if pre { matches!(p.suppression.as_str(), "generic" | "none") } else { p.suppression == "none" }),
             "invalid/host-only policy",
         )?;
         require(
             pre || a.parameters.iter().all(|p| p.mutable.is_empty()),
             "mutation requires pre",
         )?;
+        for parameter in &a.parameters {
+            require(!(parameter.ownership.as_deref() == Some("native-observed") && p.surfaces.iter().any(|s| s == "call")),
+                &format!("{} parameter {}: native-observed disallows call", f.canonical_id, parameter.name))?;
+            require(!(parameter.ownership.as_deref() == Some("native-observed") && !parameter.mutable.is_empty()),
+                &format!("{} parameter {}: native-observed disallows PRE edits", f.canonical_id, parameter.name))?;
+            require(!(parameter.ownership.as_deref() == Some("callee-borrowed") && !parameter.mutable.is_empty() && a.returns.native == "ptr"),
+                &format!("{} parameter {}: mutable copied pointer-return input requires callee-retained", f.canonical_id, parameter.name))?;
+        }
+        require(!(a.returns.ownership.as_deref() == Some("native-observed") && p.surfaces.iter().any(|s| s == "call")),
+            &format!("{} returns: native-observed disallows call", f.canonical_id))?;
+        require(!(a.returns.ownership.as_deref() == Some("native-observed") && pre && p.suppression != "none"),
+            &format!("{} returns: native-observed requires suppression:none", f.canonical_id))?;
         let mut policy = serde_json::to_value(p).unwrap();
         policy.as_object_mut().unwrap().remove("contractHash");
         require(hash(&policy) == p.contract_hash, "policy hash mismatch")?;

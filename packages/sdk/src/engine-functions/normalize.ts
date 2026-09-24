@@ -1,12 +1,25 @@
 import { ATOM_WIDTHS, PLATFORM, RECEIVERS, gpRegisters, maxCifArguments, maxParameters, maxStackBytes, sseRegisters, stackSafetyBuffer } from './abi.generated.ts';
 import { hashCanonical } from './canonical-json.ts';
-import type { AuthorFunction, AuthorTarget, AuthorType, EngineFunctionsManifestSummary, FunctionFileV2, NativeAtom, NormalizedBundle, NormalizedFunction, NormalizedTarget, ProjectionSpec, Receiver, ValidatorSpec } from './model.ts';
+import type { AuthorFunction, AuthorTarget, AuthorType, EngineFunctionsManifestSummary, FunctionFileV2, NativeAtom, NormalizedBundle, NormalizedFunction, NormalizedTarget, ParameterCopyOwnership, ProjectionSpec, Receiver, ReturnCopyOwnership, ValidatorSpec } from './model.ts';
 
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const FORBIDDEN_NAMES = new Set(['self', 'returnValue', 'constructor', 'prototype', '__proto__']);
 const SURFACES = ['call', 'pre', 'post'] as const;
 const RESOLVERS = ['direct', 'ctor-body-xref', 'lea-disp', 'validated-call'] as const;
 const TYPES = ['bool', 'i32', 'u32', 'i64', 'u64', 'f32', 'f64', 'entity', 'entity?', 'string', 'vector'] as const;
+const PARAMETER_OWNERSHIP = ['callee-borrowed', 'callee-retained', 'native-observed'] as const;
+const RETURN_OWNERSHIP = ['caller-borrowed', 'native-observed'] as const;
+const copied = (type: unknown): boolean => type === 'string' || type === 'vector';
+
+function ownership(value: unknown, type: unknown, allowed: readonly string[], where: string): string | undefined {
+  if (copied(type)) {
+    if (value === undefined) throw new Error(`${where}: copied ownership is required; rebuild the declaration with an explicit native ownership`);
+    if (!allowed.includes(value as string)) throw new Error(`${where}: unsupported copied ownership ${JSON.stringify(value)}`);
+    return value as string;
+  }
+  if (value !== undefined) throw new Error(`${where}: ownership is only valid for copied string/vector positions`);
+  return undefined;
+}
 
 function object(value: unknown, where: string): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${where} must be an object`);
@@ -111,7 +124,7 @@ export function normalizeFunctions(ownerId: string, parsed: FunctionFileV2 | und
     const where = `function ${JSON.stringify(localName)}`;
     if (!IDENTIFIER.test(localName) || FORBIDDEN_NAMES.has(localName)) throw new Error(`${where}: invalid or reserved function name`);
     const f = object(functions[localName], where);
-    keys(f, ['target', 'receiver', 'parameters', 'returns', 'surfaces', 'requirement', 'resolve'], where);
+    keys(f, ['target', 'receiver', 'parameters', 'returns', 'surfaces', 'requirement', 'resolve', 'suppression'], where);
     const resolve = f.resolve === undefined ? 'direct' : f.resolve;
     if (!(RESOLVERS as readonly unknown[]).includes(resolve)) throw new Error(`${where}: unknown resolve derivation ${JSON.stringify(resolve)}`);
     const rawTarget = object(f.target, `${where}.target`);
@@ -132,20 +145,43 @@ export function normalizeFunctions(ownerId: string, parsed: FunctionFileV2 | und
     const names = new Set<string>();
     const parameters = rawParams.map((raw, i) => {
       const p = object(raw, `${where}.parameters[${i}]`);
-      keys(p, ['name', 'type', 'mutable'], `${where}.parameters[${i}]`);
+      keys(p, ['name', 'type', 'ownership', 'mutable'], `${where}.parameters[${i}]`);
       const name = nonempty(p.name, `${where}.parameters[${i}].name`);
       if (!IDENTIFIER.test(name) || FORBIDDEN_NAMES.has(name)) throw new Error(`${where}: parameter ${JSON.stringify(name)} is invalid or reserved`);
       if (names.has(name)) throw new Error(`${where}: duplicate parameter name ${JSON.stringify(name)}`);
       names.add(name);
       if (p.mutable !== undefined && p.mutable !== 'pre') throw new Error(`${where}: parameter ${name} mutable must be "pre"`);
       const type = projection(p.type as AuthorType, `${where}.parameters[${i}].type`);
-      return { name, native: type.native as NativeAtom, projection: type.projection, mutable: p.mutable === 'pre' ? ['pre'] as ['pre'] : [] as [] };
+      const owner = ownership(p.ownership, p.type, PARAMETER_OWNERSHIP, `${where}.parameters[${i}] ${name}.ownership`) as ParameterCopyOwnership | undefined;
+      return { name, native: type.native as NativeAtom, projection: type.projection, ...(owner && { ownership: owner }), mutable: p.mutable === 'pre' ? ['pre'] as ['pre'] : [] as [] };
     });
-    const returns = projection((f.returns === undefined ? 'void' : f.returns) as AuthorType | 'void', `${where}.returns`);
+    let returnType: AuthorType | 'void' = (f.returns === undefined ? 'void' : f.returns) as AuthorType | 'void';
+    let returnOwnership: ReturnCopyOwnership | undefined;
+    if (typeof returnType === 'object' && returnType !== null && !Array.isArray(returnType)) {
+      const returnObject = object(returnType, `${where}.returns`);
+      keys(returnObject, ['type', 'ownership'], `${where}.returns`);
+      if (!('type' in returnObject)) throw new Error(`${where}.returns.type is required`);
+      returnOwnership = ownership(returnObject.ownership, returnObject.type, RETURN_OWNERSHIP, `${where}.returns.ownership`) as ReturnCopyOwnership | undefined;
+      if (!copied(returnObject.type)) throw new Error(`${where}.returns: object form requires copied string/vector type and ownership`);
+      returnType = returnObject.type as 'string' | 'vector';
+    } else if (copied(returnType)) {
+      throw new Error(`${where}.returns.ownership is required for copied return; rebuild the declaration`);
+    }
+    const returns = projection(returnType, `${where}.returns`);
     const rawSurfaces = f.surfaces === undefined ? ['call'] : f.surfaces;
     if (!Array.isArray(rawSurfaces) || !rawSurfaces.length || rawSurfaces.some(s => !(SURFACES as readonly unknown[]).includes(s)) || new Set(rawSurfaces).size !== rawSurfaces.length) throw new Error(`${where}: invalid surfaces`);
     const surfaces = SURFACES.filter(s => rawSurfaces.includes(s));
     if (parameters.some(p => p.mutable.length) && !surfaces.includes('pre')) throw new Error(`${where}: mutable parameter requires pre surface`);
+    const suppression: 'generic' | 'none' = f.suppression === undefined ? (surfaces.includes('pre') ? 'generic' : 'none') : f.suppression;
+    if (suppression !== 'generic' && suppression !== 'none') throw new Error(`${where}: invalid suppression ${JSON.stringify(suppression)}`);
+    if (!surfaces.includes('pre') && f.suppression !== undefined) throw new Error(`${where}: explicit suppression requires pre surface`);
+    for (const p of parameters) {
+      if (p.ownership === 'native-observed' && surfaces.includes('call')) throw new Error(`${where}: ${p.name} native-observed ownership disallows call surface`);
+      if (p.ownership === 'native-observed' && p.mutable.length) throw new Error(`${where}: ${p.name} native-observed ownership disallows mutable PRE edits`);
+      if (p.ownership === 'callee-borrowed' && p.mutable.length && returns.native === 'ptr') throw new Error(`${where}: mutable copied parameter ${p.name} with pointer return requires callee-retained ownership`);
+    }
+    if (returnOwnership === 'native-observed' && surfaces.includes('call')) throw new Error(`${where}: returns native-observed ownership disallows call surface`);
+    if (returnOwnership === 'native-observed' && surfaces.includes('pre') && suppression !== 'none') throw new Error(`${where}: returns native-observed ownership requires suppression:none for PRE`);
     const requirement = f.requirement === undefined ? 'optional' : f.requirement;
     if (requirement !== 'optional' && requirement !== 'required') throw new Error(`${where}: invalid requirement`);
     const receiverType = receiver as Receiver;
@@ -156,12 +192,12 @@ export function normalizeFunctions(ownerId: string, parsed: FunctionFileV2 | und
       platform: PLATFORM, receiver: receiverType,
       fingerprint: `${PLATFORM}:${receiverType}:${nativeReturn}(${parameters.map(p => p.native).join(',')})`,
       stackCopyBytes: stackBytes, parameters,
-      returns: { native: nativeReturn, projection: returns.projection },
+      returns: { native: nativeReturn, projection: returns.projection, ...(returnOwnership && { ownership: returnOwnership }) },
     };
     const policyBase = {
       id: 'generic.v2' as const, version: 1 as const, surfaces,
       selfCall: 'bypass-own-hooks' as const,
-      suppression: (surfaces.includes('pre') ? 'generic' : 'none') as 'generic' | 'none',
+      suppression,
     };
     const policy = { ...policyBase, contractHash: hashCanonical(policyBase) };
     normalized.push({ localName, canonicalId: `${ownerId}::${localName}`, contractHash: hashCanonical({ abi, policy }), target: normalizedTarget, abi, policy, requirement });

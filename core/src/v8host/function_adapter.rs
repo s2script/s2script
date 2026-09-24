@@ -975,6 +975,7 @@ struct InvocationState {
     deliveries: Vec<Decision>,
     retained_bytes: usize,
 }
+type StagedEdits = std::collections::BTreeMap<i32, (ProjectedValue, String)>;
 struct Dispatch {
     frame: Frame,
     binding: Rc<Binding>,
@@ -982,7 +983,7 @@ struct Dispatch {
     subscribers: Vec<Rc<Subscription>>,
     cursor: Cell<usize>,
     revision: Rc<Cell<u64>>,
-    edits: Rc<RefCell<std::collections::BTreeMap<i32, (ProjectedValue, String)>>>,
+    edits: Rc<RefCell<StagedEdits>>,
     deliveries: RefCell<Vec<Decision>>,
 }
 #[derive(Clone)]
@@ -993,6 +994,7 @@ struct Lease {
     binding: Rc<Binding>,
     adapter: bool,
     mode: SubscriptionMode,
+    pending_edits: Rc<RefCell<StagedEdits>>,
     enabled: bool,
 }
 struct LeaseGuard;
@@ -1003,8 +1005,9 @@ impl LeaseGuard {
         binding: Rc<Binding>,
         adapter: bool,
         mode: SubscriptionMode,
-    ) -> Result<(Self, u64), String> {
+    ) -> Result<(Self, u64, Rc<RefCell<StagedEdits>>), String> {
         let id = registry::next_id()?;
+        let pending_edits = Rc::new(RefCell::new(std::collections::BTreeMap::new()));
         LEASES.with(|s| {
             s.borrow_mut().push(Lease {
                 id,
@@ -1013,10 +1016,11 @@ impl LeaseGuard {
                 binding,
                 adapter,
                 mode,
+                pending_edits: pending_edits.clone(),
                 enabled: true,
             })
         });
-        Ok((Self, id))
+        Ok((Self, id, pending_edits))
     }
     fn close(&self) {
         LEASES.with(|s| {
@@ -1300,12 +1304,18 @@ fn js_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
     let result = (|| {
         let (l, i) = accessor_data(scope, &args)?;
         let (native, projection) = field_type(&l.binding, i)?;
-        let v = l
-            .dispatch
-            .frame
-            .read_requested(i, projection::request(native, projection)?)
-            .and_then(|v| projection::decode(v, native, projection))
-            .map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
+        let staged = l.pending_edits.borrow().get(&i).map(|(value, _)| *value)
+            .or_else(|| l.dispatch.edits.borrow().get(&i).map(|(value, _)| *value));
+        let v = if let Some(value) = staged {
+            match value {
+                ProjectedValue::Entity { reference, .. } =>
+                    EntityProjection::parse(projection).ok_or("entity projection mismatch")?.value(reference),
+                scalar => Ok(scalar),
+            }
+        } else {
+            l.dispatch.frame.read_requested(i, projection::request(native, projection)?)
+                .and_then(|v| projection::decode(v, native, projection))
+        }.map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
         projected_to_js(scope, v)
     })();
     match result {
@@ -1331,21 +1341,16 @@ fn js_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::
             .map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
         let wire = projection::encode(value)
             .map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
-        l.dispatch
-            .frame
-            .write(i, &wire)
-            .map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
-        l.dispatch
-            .edits
-            .borrow_mut()
-            .insert(i, (value, l.binding.function.canonical_id.clone()));
-        l.dispatch.revision.set(
-            l.dispatch
-                .revision
-                .get()
-                .checked_add(1)
-                .ok_or("frame revision exhausted")?,
-        );
+        let next_revision = l.dispatch.revision.get().checked_add(1)
+            .ok_or("frame revision exhausted")?;
+        if !l.adapter && l.binding.function.policy.suppression == "none" {
+            l.pending_edits.borrow_mut().insert(i, (value, l.binding.function.canonical_id.clone()));
+        } else {
+            l.dispatch.frame.write(i, &wire)
+                .map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
+            l.dispatch.edits.borrow_mut().insert(i, (value, l.binding.function.canonical_id.clone()));
+        }
+        l.dispatch.revision.set(next_revision);
         Ok::<_, String>(())
     })();
     if let Err(e) = result {
@@ -1416,6 +1421,7 @@ fn decision(
     native: &str,
     projection: &str,
     phase: i32,
+    suppression: &str,
 ) -> Result<Decision, String> {
     let kind = projection::request(native, projection)?.kind;
     if observe_thenable(scope, value) {
@@ -1438,6 +1444,9 @@ fn decision(
     }
     if value.is_int32() {
         let action = value.int32_value(scope).unwrap();
+        if suppression == "none" && (2..=3).contains(&action) {
+            return Err("suppression:none forbids Handled/Stop".into());
+        }
         if (0..=1).contains(&action) || (kind == 0 && (2..=3).contains(&action)) {
             return Ok(Decision {
                 action,
@@ -1456,6 +1465,9 @@ fn decision(
         .int32_value(scope)
         .filter(|a| (2..=3).contains(a))
         .ok_or("invalid suppression action")?;
+    if suppression == "none" {
+        return Err("suppression:none forbids suppression decision objects".into());
+    }
     let value = get(scope, object, "returnValue")?;
     let value = projected_from_js(scope, value, native, projection)?;
     Ok(Decision {
@@ -1526,13 +1538,14 @@ fn invoke_wrapper(
     dispatch: &Rc<Dispatch>,
     sub: &Subscription,
 ) -> Result<Decision, String> {
+    let prior_revision = dispatch.revision.get();
     let context = clone_plugin_context(&sub.owner.id).ok_or("subscriber context unavailable")?;
     let context = v8::Local::new(parent, &context);
     let scope = &mut v8::ContextScope::new(parent, context);
     let mut storage = v8::TryCatch::new(scope);
     let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
     let _busy = crate::dispatch::ParentBusy::enter(&sub.owner.id, sub.owner.generation);
-    let (guard, id) = LeaseGuard::enter(
+    let (guard, id, pending_edits) = LeaseGuard::enter(
         sub.owner.clone(),
         dispatch.clone(),
         sub.binding.clone(),
@@ -1544,18 +1557,29 @@ fn invoke_wrapper(
     let recv = v8::undefined(&mut tc);
     let value = function.call(&mut tc, recv.into(), &[view.into()]);
     guard.close();
-    let value = value.ok_or("subscriber wrapper threw")?;
-    let decision = decision(
-        &mut tc,
-        value,
-        &sub.binding.function.abi.returns.native,
-        &sub.binding.function.abi.returns.projection.id,
-        dispatch.frame.phase,
-    )?;
-    if sub.mode == SubscriptionMode::Observe && decision.action != 0 {
-        return Err("observe-only subscriber cannot change the decision".into());
+    let decision = value.ok_or_else(|| "subscriber wrapper threw".to_string()).and_then(|value| {
+        decision(
+            &mut tc,
+            value,
+            &sub.binding.function.abi.returns.native,
+            &sub.binding.function.abi.returns.projection.id,
+            dispatch.frame.phase,
+            &sub.binding.function.policy.suppression,
+        )
+    }).and_then(|decision| {
+        if sub.mode == SubscriptionMode::Observe && decision.action != 0 {
+            Err("observe-only subscriber cannot change the decision".into())
+        } else { Ok(decision) }
+    });
+    if decision.is_ok() {
+        // A nonsuppressing generic callback's setters are private until its
+        // decision validates. Later callbacks read accepted edits from this
+        // overlay; the final transfer validates/writes before native commit.
+        dispatch.edits.borrow_mut().extend(pending_edits.borrow().iter().map(|(k, v)| (*k, v.clone())));
+    } else if sub.binding.function.policy.suppression == "none" {
+        dispatch.revision.set(prior_revision);
     }
-    Ok(decision)
+    decision
 }
 fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<Decision, String> {
     let adapter = dispatch
@@ -1583,7 +1607,7 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
         &adapter.instance.parent.id,
         adapter.instance.parent.generation,
     );
-    let (guard, id) = LeaseGuard::enter(
+    let (guard, id, _) = LeaseGuard::enter(
         adapter.instance.parent.clone(),
         dispatch.clone(),
         dispatch.binding.clone(),
@@ -1623,6 +1647,7 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
         &dispatch.binding.function.abi.returns.native,
         &dispatch.binding.function.abi.returns.projection.id,
         dispatch.frame.phase,
+        &dispatch.binding.function.policy.suppression,
     )
 }
 struct GenericCursor<'a, 's, 'i> {
@@ -4583,6 +4608,7 @@ pub(super) mod entity_transport_tests {
         edit: Option<S2FunctionValue>,
         action: i32,
         overridden: bool,
+        writes: usize,
     }
     thread_local! {
         static SLOTS:RefCell<std::collections::BTreeMap<i32,u32>>=const{RefCell::new(std::collections::BTreeMap::new())};
@@ -4713,6 +4739,7 @@ pub(super) mod entity_transport_tests {
                 return 0;
             };
             f.edit = Some(v);
+            f.writes += 1;
             1
         })
     }
@@ -4787,6 +4814,7 @@ pub(super) mod entity_transport_tests {
                 edit: None,
                 action: 0,
                 overridden: false,
+                writes: 0,
             })
         });
         let mut info = S2FunctionFrameInfo {
@@ -4850,6 +4878,66 @@ pub(super) mod entity_transport_tests {
     pub(crate) fn seed_public_entity(index: i32, serial: u32) -> u64 {
         assert_eq!(unsafe { slot(index, serial, 1) }, 1);
         crate::entity_live::on_created(index, serial as i32)
+    }
+    #[test]
+    fn rejected_none_decision_does_not_write_unadoptable_entity_or_replay_prior_edit() {
+        // Real V8 callback path with a transport model of the bridge's lossy
+        // nullable entity read and write/changed bookkeeping. This is not a
+        // native shim proof.
+        init_public_transport();
+        frame_tests::load_body("entity-rollback", "return {};", "{}");
+        proof::install_generic_test_native("entity-rollback");
+        let binding = proof::prepared_binding("entity-rollback", |f| {
+            f["abi"]["fingerprint"] = "linux-x86_64-sysv:none:void(ptr)".into();
+            f["abi"]["parameters"] = serde_json::json!([{"name":"x","native":"ptr","projection":{"id":"entity?","version":1},"mutable":["pre"]}]);
+            f["abi"]["returns"] = serde_json::json!({"native":"void","projection":{"id":"void","version":1}});
+            f["policy"]["surfaces"] = serde_json::json!(["pre"]);
+            f["policy"]["suppression"] = "none".into();
+        });
+        frame_tests::load_body("entity-strict-witness", "return {};", "{}");
+        proof::install_generic_test_native("entity-strict-witness");
+        let strict_binding = proof::prepared_binding("entity-strict-witness", |f| {
+            f["abi"]["fingerprint"] = "linux-x86_64-sysv:none:void(ptr)".into();
+            f["abi"]["parameters"] = serde_json::json!([{"name":"x","native":"ptr","projection":{"id":"entity","version":1},"mutable":[]}]);
+            f["abi"]["returns"] = serde_json::json!({"native":"void","projection":{"id":"void","version":1}});
+            f["policy"]["surfaces"] = serde_json::json!(["pre"]);
+            f["policy"]["suppression"] = "none".into();
+        });
+        eval_in_context("entity-strict-witness", &format!(
+            "globalThis.denied=0;__proofSubscribeGeneric({strict_binding}n,'pre',true,v=>{{let failed=false;try{{void v.x;}}catch(_){{failed=true;}}if(!failed)throw Error('strict read accepted null');denied++;}});"
+        )).unwrap();
+        let raw = S2FunctionValue { kind: 8, flags: 2, reserved: 0, aux: 903, bits: 44 };
+        let run = |id: u64| {
+            STACK.with(|s| s.borrow_mut().push(MockFrame {
+                id, input: raw, output: raw, receiver: None, edit: None,
+                action: 0, overridden: false, writes: 0,
+            }));
+            let info = S2FunctionFrameInfo {
+                version: 1, struct_size: 48, frame_token: id, native_epoch: id,
+                invocation_id: id, suppressed_owner: 0, parameter_count: 1, flags: 0,
+            };
+            assert_eq!(crate::ffi::s2script_core_dispatch_function(11, &info, 0), 1);
+            STACK.with(|s| s.borrow_mut().pop().unwrap())
+        };
+        eval_in_context("entity-rollback", &format!(
+            "globalThis.bad=__proofSubscribeGeneric({binding}n,'pre',false,v=>{{if(v.x!==null)throw Error('unadoptable value');return 3;}});"
+        )).unwrap();
+        let untouched = run(71);
+        assert_eq!(untouched.writes, 0, "rejected no-setter callback wrote native staging");
+        assert!(untouched.edit.is_none());
+        assert_eq!((untouched.input.aux, untouched.input.bits), (903, 44));
+        eval_in_context("entity-rollback", &format!(
+            "bad.dispose();globalThis.good=__proofSubscribeGeneric({binding}n,'pre',false,v=>{{v.x=null;return 1;}});globalThis.bad=__proofSubscribeGeneric({binding}n,'pre',false,v=>3);"
+        )).unwrap();
+        let prior = run(72);
+        assert_eq!(prior.writes, 1, "rejected callback replayed an accepted native edit");
+        assert_eq!(prior.action, 1);
+        assert_eq!(prior.input.aux, u32::MAX);
+        eval_in_context("entity-strict-witness", "if(denied!==2)throw Error('strict overlay read');").unwrap();
+        unload_plugin("entity-rollback");
+        unload_plugin("entity-strict-witness");
+        set_engine_ops(None);
+        shutdown();
     }
     #[test]
     fn entity_projections_real_v8_all_preparation_subscription_orders() {

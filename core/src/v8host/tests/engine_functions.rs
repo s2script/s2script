@@ -144,6 +144,33 @@ fn public_pre_mutation_observers_post_and_typed_suppression_use_real_v8_dispatch
 }
 
 #[test]
+fn suppression_none_rejects_untyped_js_decisions_without_committing_their_edits() {
+    function_adapter::scalar_transport_tests::init_transport();
+    scalar_owner("quiet-sub", |f| {
+        f["abi"]["parameters"][0]["mutable"] = serde_json::json!(["pre"]);
+        f["policy"]["suppression"] = "none".into();
+    });
+    scalar_owner("quiet-caller", |_| {});
+    js("quiet-sub", r#"
+        globalThis.f=__s2pkg_unsafe.Engine.function('fire');
+        globalThis.seen=[];
+        globalThis.bad=f.onPre(v=>{v.x=99; return {action:2,returnValue:77};});
+        globalThis.witness=f.onPre({observeOnly:true},v=>seen.push(v.x));
+    "#);
+    js("quiet-caller", "if(__s2pkg_unsafe.Engine.function('fire').call(4)!==4)throw Error('invalid suppression committed');");
+    js("quiet-sub", "if(JSON.stringify(seen)!=='[4]')throw Error('invalid edit leaked to observer'); bad.dispose(); globalThis.bad=f.onPre(v=>{v.x=99; return 3;});");
+    js("quiet-caller", "if(__s2pkg_unsafe.Engine.function('fire').call(4)!==4)throw Error('Stop bypassed suppression:none');");
+    js("quiet-sub", "if(JSON.stringify(seen)!=='[4,4]')throw Error('Stop edit leaked to observer'); bad.dispose(); globalThis.good=f.onPre(v=>{v.x=8; return 1;});");
+    js("quiet-caller", "if(__s2pkg_unsafe.Engine.function('fire').call(4)!==4)throw Error('changed/continue broken');");
+    js("quiet-sub", "if(JSON.stringify(seen)!=='[4,4,8]')throw Error('Changed edit hidden'); globalThis.late=f.onPre(v=>{v.x=99;return 3;}); globalThis.tail=f.onPre({observeOnly:true},v=>seen.push(v.x));");
+    js("quiet-caller", "if(__s2pkg_unsafe.Engine.function('fire').call(4)!==4)throw Error('invalid later Stop committed');");
+    js("quiet-sub", "if(JSON.stringify(seen)!=='[4,4,8,8,8]')throw Error('prior accepted edit lost'); late.dispose(); globalThis.thrown=f.onPre(v=>{v.x=99;throw Error('bad decision');});");
+    js("quiet-caller", "if(__s2pkg_unsafe.Engine.function('fire').call(4)!==4)throw Error('throw committed');");
+    js("quiet-sub", "if(JSON.stringify(seen)!=='[4,4,8,8,8,8,8]')throw Error('throw leaked edit');");
+    finish();
+}
+
+#[test]
 fn captured_facade_and_subscription_cannot_reach_replacement_generation() {
     function_adapter::scalar_transport_tests::init_transport();
     scalar_owner("captured", |_| {});
