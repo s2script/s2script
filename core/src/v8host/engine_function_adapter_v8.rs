@@ -321,6 +321,17 @@ mod production {
                 assert_eq!(function_adapter::proof::pending_invocations(), 0);
             }
             3 => exercise(),
+            4 => proof::policy_conformance(|| {
+                // New ordinary generic observers retain the physical target while
+                // the completed A/B scenario releases its named subscriptions.
+                for owner in ["owner-a", "owner-b"] {
+                    eval_in_context(
+                        owner,
+                        "proofSubscription.dispose();proofPostSubscription.dispose();",
+                    )
+                    .unwrap();
+                }
+            }),
             _ => panic!("unexpected frame callback"),
         });
         if let Err(error) = result {
@@ -393,6 +404,7 @@ mod production {
             unsafe { peer_calls() } > 0,
             "external stock peer must observe the live package call"
         );
+        drive(4); // Additional policy proof; original A/B scenario already passed independently.
         drive(2);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while unsafe { empty() } == 0 && std::time::Instant::now() < deadline {

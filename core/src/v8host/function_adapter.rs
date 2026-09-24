@@ -1,8 +1,10 @@
-//! Host-authorized package bootstrap and synchronous scalar adapter dispatch.
+//! Host-authorized package bootstrap and synchronous scalar policy fan-out.
 //! The public function API and pointer projections remain later Task 6/7 work.
 use super::*;
 use crate::engine_functions::{
     contract::*,
+    package_adapter::{self, DispatchAdapter, SubscriberCursor},
+    policy::{AdapterContract, SubscriptionMode},
     registry::{self, Binding},
     runtime::{self, Frame},
 };
@@ -85,8 +87,13 @@ struct Adapter {
 }
 struct Subscription {
     id: u64,
-    instance: PackageInstanceKey,
+    owner: OwnerKey,
+    instance: Option<PackageInstanceKey>,
     adapter: String,
+    contract: AdapterContract,
+    mode: SubscriptionMode,
+    generic: bool,
+    builtin: Option<&'static dyn DispatchAdapter>,
     phase: i32,
     binding: Rc<Binding>,
     wrapper: v8::Global<v8::Function>,
@@ -121,23 +128,34 @@ pub(crate) fn authorize_binding(
     {
         return Err("cannot change authorization of a subscribed binding".into());
     }
-    validate_subscription_domain(&binding, adapter)?;
+    let contract = AdapterContract {
+        id: adapter.into(),
+        version: 1,
+        contract_hash: hash.into(),
+    };
+    validate_subscription_domain(&binding, &contract, false, SubscriptionMode::Mutating)?;
     AUTHORIZED.with(|a| a.borrow_mut().insert(binding_id, authorization));
     Ok(())
 }
-fn validate_subscription_domain(binding: &Binding, adapter: &str) -> Result<(), String> {
+fn validate_subscription_domain(
+    binding: &Binding,
+    contract: &AdapterContract,
+    generic: bool,
+    mode: SubscriptionMode,
+) -> Result<(), String> {
     let conflict = SUBSCRIPTIONS.with(|s| {
         s.borrow().values().any(|s| {
             s.binding.target == binding.target
-                && (s.adapter != adapter
-                    || serde_json::to_string(&s.binding.function.abi).ok()
-                        != serde_json::to_string(&binding.function.abi).ok())
+                && (!crate::engine_functions::projection::compatible(
+                    &s.binding.function.abi,
+                    &binding.function.abi,
+                ) || (!(generic && mode == SubscriptionMode::Observe)
+                    && !(s.generic && s.mode == SubscriptionMode::Observe)
+                    && s.contract != *contract))
         })
     });
     if conflict {
-        return Err(
-            "scalar proof requires one exact adapter/ABI projection domain per target".into(),
-        );
+        return Err("incompatible adapter contract or projection domain".into());
     }
     Ok(())
 }
@@ -422,41 +440,120 @@ fn js_subscribe(
             return Err("adapter phase unimplemented".into());
         }
         let wrapper = sync_function(scope, args.get(3))?.ok_or("wrapper required")?;
-        let target = binding.target.ok_or("binding unavailable")?;
-        // Authorizations may precede all subscriptions. Admission runs on the
-        // V8 owner thread with no JS call between this check and insertion;
-        // HookAcquire registers the native binding without invoking the target.
-        validate_subscription_domain(&binding, &adapter)?;
-        runtime::hook_acquire(target)?;
-        let id = match registry::next_id() {
-            Ok(id) => id,
-            Err(e) => {
-                runtime::hook_release(target);
-                return Err(e);
-            }
+        let mode = SubscriptionMode::for_phase(phase, false)?;
+        let contract = AdapterContract {
+            id: adapter.clone(),
+            version: 1,
+            contract_hash: row.hash.clone(),
         };
-        let subscription = Rc::new(Subscription {
-            id,
-            instance: instance.clone(),
-            adapter,
-            phase,
+        let id = insert_subscription(
+            instance.parent.clone(),
+            Some(instance),
             binding,
+            adapter,
+            contract,
+            mode,
+            false,
+            None,
+            phase,
             wrapper,
-        });
-        if !record_resource(
-            &instance.parent.id,
-            instance.parent.generation,
-            plugin::Resource::FunctionSubscription(id),
-        ) {
-            return Err("parent ledger unavailable".into());
-        }
-        SUBSCRIPTIONS.with(|s| s.borrow_mut().insert(id, subscription));
+        )?;
         receipt(scope, id, true)
     })();
     match result {
         Ok(value) => rv.set(value.into()),
         Err(e) => throw(scope, e),
     }
+}
+fn insert_subscription(
+    owner: OwnerKey,
+    instance: Option<PackageInstanceKey>,
+    binding: Rc<Binding>,
+    adapter: String,
+    contract: AdapterContract,
+    mode: SubscriptionMode,
+    generic: bool,
+    builtin: Option<&'static dyn DispatchAdapter>,
+    phase: i32,
+    wrapper: v8::Global<v8::Function>,
+) -> Result<u64, String> {
+    let target = binding.target.ok_or("binding unavailable")?;
+    // No JavaScript runs between domain validation and admission.
+    validate_subscription_domain(&binding, &contract, generic, mode)?;
+    runtime::hook_acquire(target)?;
+    let id = match registry::next_id() {
+        Ok(id) => id,
+        Err(e) => {
+            runtime::hook_release(target);
+            return Err(e);
+        }
+    };
+    let subscription = Rc::new(Subscription {
+        id,
+        owner: owner.clone(),
+        instance,
+        binding,
+        adapter,
+        contract,
+        mode,
+        generic,
+        builtin,
+        phase,
+        wrapper,
+    });
+    if !record_resource(
+        &owner.id,
+        owner.generation,
+        plugin::Resource::FunctionSubscription(id),
+    ) {
+        return Err("parent ledger unavailable".into());
+    }
+    SUBSCRIPTIONS.with(|s| s.borrow_mut().insert(id, subscription));
+    Ok(id)
+}
+/// Internal host entry consumed by Task 7; no public global is installed here.
+/// Generic subscriptions require only their exact plugin owner, never package authority.
+pub(crate) fn subscribe_generic(
+    scope: &mut v8::PinScope,
+    owner: OwnerKey,
+    binding_id: u64,
+    phase: i32,
+    observe_only: bool,
+    wrapper: v8::Global<v8::Function>,
+) -> Result<u64, String> {
+    if current_owner(scope)? != owner {
+        return Err("subscription context owner mismatch".into());
+    }
+    let binding = registry::binding(binding_id, &owner)?;
+    let mode = SubscriptionMode::for_phase(phase, observe_only)?;
+    let surface = if phase == 0 { "pre" } else { "post" };
+    if !binding
+        .function
+        .policy
+        .surfaces
+        .iter()
+        .any(|s| s == surface)
+    {
+        return Err("undeclared subscription surface".into());
+    }
+    let function = v8::Local::new(scope, &wrapper);
+    if function.is_async_function() {
+        return Err("synchronous wrapper required".into());
+    }
+    let contract = AdapterContract::generic(&binding.function.policy)?;
+    let implementation = crate::engine_functions::policy::public_adapter(&binding.function.policy)?;
+    insert_subscription(
+        owner,
+        None,
+        binding,
+        contract.id.clone(),
+        contract,
+        mode,
+        true,
+        Some(implementation),
+        phase,
+        wrapper,
+    )
 }
 fn receipt<'s>(
     scope: &mut v8::PinScope<'s, '_>,
@@ -499,7 +596,7 @@ fn receipt_data(
 }
 fn receipt_owner(id: u64, sub: bool) -> Option<OwnerKey> {
     if sub {
-        SUBSCRIPTIONS.with(|s| s.borrow().get(&id).map(|s| s.instance.parent.clone()))
+        SUBSCRIPTIONS.with(|s| s.borrow().get(&id).map(|s| s.owner.clone()))
     } else {
         ADAPTERS.with(|s| s.borrow().get(&id).map(|s| s.instance.parent.clone()))
     }
@@ -574,8 +671,13 @@ pub(crate) fn drop_subscription(id: u64) {
             let rows = s.borrow();
             [0, 1].map(|phase| {
                 rows.values()
-                    .any(|s| s.binding.target == Some(target) && s.phase == phase)
+                    .any(|s| s.binding.target == Some(target) && s.phase == phase && !s.generic)
             })
+        });
+        let any_live = SUBSCRIPTIONS.with(|s| {
+            s.borrow()
+                .values()
+                .any(|s| s.binding.target == Some(target))
         });
         INVOCATIONS.with(|i| {
             i.borrow_mut().retain(|(t, _), state| {
@@ -585,7 +687,7 @@ pub(crate) fn drop_subscription(id: u64) {
                 // Abort even neutral rows after the last target subscription. If
                 // only one phase disappears, release that phase's V8 hold while
                 // preserving its copied scalar deliveries for the matched peer.
-                if !live_phases.iter().any(|live| *live) {
+                if !any_live {
                     return false;
                 }
                 for (phase, live) in live_phases.iter().enumerate() {
@@ -605,7 +707,9 @@ pub(crate) fn drop_adapter(id: u64) {
         let ids = SUBSCRIPTIONS.with(|s| {
             s.borrow()
                 .values()
-                .filter(|s| s.instance == adapter.instance && s.adapter == adapter.semantic)
+                .filter(|s| {
+                    s.instance.as_ref() == Some(&adapter.instance) && s.adapter == adapter.semantic
+                })
                 .map(|s| s.id)
                 .collect::<Vec<_>>()
         });
@@ -618,7 +722,7 @@ pub(crate) fn drop_adapter(id: u64) {
             drop_subscription(id);
         }
         INVOCATIONS.with(|s| {
-            s.borrow_mut().retain(|_, state| {
+            s.borrow_mut().retain(|(target, _), state| {
                 let mut removed = false;
                 for selected in &mut state.adapters {
                     if selected.as_ref().is_some_and(|a| a.id == adapter.id) {
@@ -626,12 +730,28 @@ pub(crate) fn drop_adapter(id: u64) {
                         removed = true;
                     }
                 }
-                !removed || state.adapters.iter().any(Option::is_some)
+                !removed
+                    || state.adapters.iter().any(Option::is_some)
+                    || SUBSCRIPTIONS.with(|s| {
+                        s.borrow()
+                            .values()
+                            .any(|s| s.binding.target == Some(*target))
+                    })
             })
         });
     }
 }
 pub(crate) fn drop_owner(owner: &OwnerKey) {
+    let subscriptions = SUBSCRIPTIONS.with(|s| {
+        s.borrow()
+            .values()
+            .filter(|s| s.owner == *owner)
+            .map(|s| s.id)
+            .collect::<Vec<_>>()
+    });
+    for id in subscriptions {
+        drop_subscription(id);
+    }
     let adapters = ADAPTERS.with(|a| {
         a.borrow()
             .values()
@@ -662,10 +782,10 @@ struct InvocationState {
 struct Dispatch {
     frame: Frame,
     binding: Rc<Binding>,
-    adapter: Rc<Adapter>,
+    adapter: Option<Rc<Adapter>>,
     subscribers: Vec<Rc<Subscription>>,
     cursor: Cell<usize>,
-    revision: Cell<u64>,
+    revision: Rc<Cell<u64>>,
     deliveries: RefCell<Vec<Decision>>,
 }
 #[derive(Clone)]
@@ -673,7 +793,9 @@ struct Lease {
     id: u64,
     owner: OwnerKey,
     dispatch: Rc<Dispatch>,
+    binding: Rc<Binding>,
     adapter: bool,
+    mode: SubscriptionMode,
     enabled: bool,
 }
 struct LeaseGuard;
@@ -681,7 +803,9 @@ impl LeaseGuard {
     fn enter(
         owner: OwnerKey,
         dispatch: Rc<Dispatch>,
+        binding: Rc<Binding>,
         adapter: bool,
+        mode: SubscriptionMode,
     ) -> Result<(Self, u64), String> {
         let id = registry::next_id()?;
         LEASES.with(|s| {
@@ -689,7 +813,9 @@ impl LeaseGuard {
                 id,
                 owner,
                 dispatch,
+                binding,
                 adapter,
+                mode,
                 enabled: true,
             })
         });
@@ -796,12 +922,11 @@ fn scalar_from_js(
     };
     Ok(out)
 }
-fn field_kind(dispatch: &Dispatch, selector: i32) -> Result<u8, String> {
+fn field_kind(binding: &Binding, selector: i32) -> Result<u8, String> {
     if selector == -2 {
-        runtime::kind(&dispatch.binding.function.abi.returns.native)
+        runtime::kind(&binding.function.abi.returns.native)
     } else {
-        let p = dispatch
-            .binding
+        let p = binding
             .function
             .abi
             .parameters
@@ -813,7 +938,7 @@ fn field_kind(dispatch: &Dispatch, selector: i32) -> Result<u8, String> {
 fn js_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let result = (|| {
         let (l, i) = accessor_data(scope, &args)?;
-        let v = l.dispatch.frame.read(i, field_kind(&l.dispatch, i)?)?;
+        let v = l.dispatch.frame.read(i, field_kind(&l.binding, i)?)?;
         scalar_to_js(scope, v)
     })();
     match result {
@@ -824,16 +949,17 @@ fn js_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
 fn js_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
     let result = (|| {
         let (l, i) = accessor_data(scope, &args)?;
-        if l.dispatch.frame.phase != 0
+        if !l.mode.writable()
+            || l.dispatch.frame.phase != 0
             || i < 0
-            || !l.dispatch.binding.function.abi.parameters[i as usize]
+            || !l.binding.function.abi.parameters[i as usize]
                 .mutable
                 .iter()
                 .any(|p| p == "pre")
         {
             return Err("undeclared field mutation".into());
         }
-        let value = scalar_from_js(scope, args.get(0), field_kind(&l.dispatch, i)?)?;
+        let value = scalar_from_js(scope, args.get(0), field_kind(&l.binding, i)?)?;
         l.dispatch.frame.write(i, &value)?;
         l.dispatch.revision.set(
             l.dispatch
@@ -851,11 +977,11 @@ fn js_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::
 fn view<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     dispatch: &Dispatch,
+    binding: &Binding,
     lease: u64,
 ) -> Result<v8::Local<'s, v8::Object>, String> {
     let object = v8::Object::new(scope);
-    let mut fields = dispatch
-        .binding
+    let mut fields = binding
         .function
         .abi
         .parameters
@@ -917,7 +1043,7 @@ fn decision(
     }
     if value.is_int32() {
         let action = value.int32_value(scope).unwrap();
-        if (0..=1).contains(&action) {
+        if (0..=1).contains(&action) || (kind == 0 && (2..=3).contains(&action)) {
             return Ok(Decision {
                 action,
                 value: None,
@@ -959,15 +1085,12 @@ fn js_cursor(
             };
             l.dispatch.cursor.set(index + 1);
             if !SUBSCRIPTIONS.with(|s| s.borrow().contains_key(&sub.id))
-                || !owner_is_live(&sub.instance.parent.id, sub.instance.parent.generation)
+                || !owner_is_live(&sub.owner.id, sub.owner.generation)
             {
                 continue;
             }
-            if sub.instance.parent != l.owner
-                && crate::dispatch::parent_busy(
-                    &sub.instance.parent.id,
-                    sub.instance.parent.generation,
-                )
+            if sub.owner != l.owner
+                && crate::dispatch::parent_busy(&sub.owner.id, sub.owner.generation)
             {
                 continue;
             }
@@ -981,6 +1104,9 @@ fn js_cursor(
                     }
                 }
             };
+            if value.action == 3 {
+                l.dispatch.cursor.set(l.dispatch.subscribers.len());
+            }
             l.dispatch.deliveries.borrow_mut().push(value);
             let out = v8::Object::new(scope);
             let action = v8::Integer::new(scope, value.action);
@@ -1005,30 +1131,41 @@ fn invoke_wrapper(
     dispatch: &Rc<Dispatch>,
     sub: &Subscription,
 ) -> Result<Decision, String> {
-    let context =
-        clone_plugin_context(&sub.instance.parent.id).ok_or("subscriber context unavailable")?;
+    let context = clone_plugin_context(&sub.owner.id).ok_or("subscriber context unavailable")?;
     let context = v8::Local::new(parent, &context);
     let scope = &mut v8::ContextScope::new(parent, context);
     let mut storage = v8::TryCatch::new(scope);
     let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
-    let _busy =
-        crate::dispatch::ParentBusy::enter(&sub.instance.parent.id, sub.instance.parent.generation);
-    let (guard, id) = LeaseGuard::enter(sub.instance.parent.clone(), dispatch.clone(), false)?;
-    let view = view(&mut tc, dispatch, id)?;
+    let _busy = crate::dispatch::ParentBusy::enter(&sub.owner.id, sub.owner.generation);
+    let (guard, id) = LeaseGuard::enter(
+        sub.owner.clone(),
+        dispatch.clone(),
+        sub.binding.clone(),
+        false,
+        sub.mode,
+    )?;
+    let view = view(&mut tc, dispatch, &sub.binding, id)?;
     let function = v8::Local::new(&mut tc, &sub.wrapper);
     let recv = v8::undefined(&mut tc);
     let value = function.call(&mut tc, recv.into(), &[view.into()]);
     guard.close();
     let value = value.ok_or("subscriber wrapper threw")?;
-    decision(
+    let decision = decision(
         &mut tc,
         value,
-        runtime::kind(&dispatch.binding.function.abi.returns.native)?,
+        runtime::kind(&sub.binding.function.abi.returns.native)?,
         dispatch.frame.phase,
-    )
+    )?;
+    if sub.mode == SubscriptionMode::Observe && decision.action != 0 {
+        return Err("observe-only subscriber cannot change the decision".into());
+    }
+    Ok(decision)
 }
 fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<Decision, String> {
-    let adapter = &dispatch.adapter;
+    let adapter = dispatch
+        .adapter
+        .as_ref()
+        .ok_or("package implementation required")?;
     let callback = if dispatch.frame.phase == 0 {
         &adapter.pre
     } else {
@@ -1050,9 +1187,15 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
         &adapter.instance.parent.id,
         adapter.instance.parent.generation,
     );
-    let (guard, id) = LeaseGuard::enter(adapter.instance.parent.clone(), dispatch.clone(), true)?;
+    let (guard, id) = LeaseGuard::enter(
+        adapter.instance.parent.clone(),
+        dispatch.clone(),
+        dispatch.binding.clone(),
+        true,
+        SubscriptionMode::for_phase(dispatch.frame.phase, false)?,
+    )?;
     let facade = v8::Object::new(&mut tc);
-    let frame = view(&mut tc, &dispatch, id)?;
+    let frame = view(&mut tc, &dispatch, &dispatch.binding, id)?;
     set(&mut tc, facade, "frame", frame.into())?;
     let phase = v8::String::new(
         &mut tc,
@@ -1084,6 +1227,136 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
         runtime::kind(&dispatch.binding.function.abi.returns.native)?,
         dispatch.frame.phase,
     )
+}
+struct GenericCursor<'a, 's, 'i> {
+    scope: &'a mut v8::PinScope<'s, 'i>,
+    dispatch: Rc<Dispatch>,
+}
+impl SubscriberCursor for GenericCursor<'_, '_, '_> {
+    fn invoke_next(&mut self) -> Result<Option<package_adapter::SubscriberDelivery>, String> {
+        loop {
+            let index = self.dispatch.cursor.get();
+            let Some(sub) = self.dispatch.subscribers.get(index) else {
+                return Ok(None);
+            };
+            self.dispatch.cursor.set(index + 1);
+            if !SUBSCRIPTIONS.with(|s| s.borrow().contains_key(&sub.id))
+                || !owner_is_live(&sub.owner.id, sub.owner.generation)
+                || crate::dispatch::parent_busy(&sub.owner.id, sub.owner.generation)
+            {
+                continue;
+            }
+            let decision = match invoke_wrapper(self.scope, &self.dispatch, sub) {
+                Ok(value) => value,
+                Err(error) => {
+                    log_warn(&format!("function subscriber decision: {error}"));
+                    Decision {
+                        action: 0,
+                        value: None,
+                    }
+                }
+            };
+            self.dispatch.deliveries.borrow_mut().push(decision);
+            let action = match decision.action {
+                0 => crate::multiplexer::HookResult::Continue,
+                1 => crate::multiplexer::HookResult::Changed,
+                2 => crate::multiplexer::HookResult::Handled,
+                3 => crate::multiplexer::HookResult::Stop,
+                _ => unreachable!("checked callback decision"),
+            };
+            return Ok(Some(package_adapter::SubscriberDelivery {
+                action,
+                return_value: decision.value,
+                frame_revision: self.dispatch.revision.get(),
+            }));
+        }
+    }
+}
+fn invoke_domains(scope: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<Decision, String> {
+    let mut result = Decision {
+        action: 0,
+        value: None,
+    };
+    // One admitted mutating semantic domain, then generic observers. Package
+    // POST runs before generic POST, which sees its provider-effective snapshot.
+    for group in 0..3 {
+        let subscribers = dispatch
+            .subscribers
+            .iter()
+            .filter(|s| match group {
+                0 => !s.generic,
+                1 => s.generic && s.mode == SubscriptionMode::Mutating,
+                _ => s.generic && s.mode == SubscriptionMode::Observe,
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if subscribers.is_empty() {
+            continue;
+        }
+        let binding = subscribers.first().unwrap().binding.clone();
+        let part = Rc::new(Dispatch {
+            frame: dispatch.frame.clone(),
+            binding,
+            adapter: dispatch.adapter.clone(),
+            subscribers,
+            cursor: Cell::new(0),
+            revision: dispatch.revision.clone(),
+            deliveries: RefCell::new(Vec::new()),
+        });
+        let decision = if group == 0 {
+            invoke_adapter(scope, part.clone())?
+        } else {
+            let mut cursor = GenericCursor {
+                scope,
+                dispatch: part.clone(),
+            };
+            let mut args = package_adapter::AdapterDispatch {
+                cursor: &mut cursor,
+            };
+            if group == 2 || dispatch.frame.phase == 1 {
+                let implementation = part.subscribers[0]
+                    .builtin
+                    .ok_or("missing builtin implementation")?;
+                implementation.post(&mut args)?;
+                Decision {
+                    action: 0,
+                    value: None,
+                }
+            } else {
+                let implementation = part.subscribers[0]
+                    .builtin
+                    .ok_or("missing builtin implementation")?;
+                match implementation.pre(&mut args)? {
+                    package_adapter::PreDecision::Continue => Decision {
+                        action: 0,
+                        value: None,
+                    },
+                    package_adapter::PreDecision::Changed => Decision {
+                        action: 1,
+                        value: None,
+                    },
+                    package_adapter::PreDecision::Suppress {
+                        action,
+                        return_value,
+                    } => Decision {
+                        action: match action {
+                            package_adapter::SuppressAction::Handled => 2,
+                            package_adapter::SuppressAction::Stop => 3,
+                        },
+                        value: return_value,
+                    },
+                }
+            }
+        };
+        if group != 2 {
+            result = decision;
+        }
+        dispatch
+            .deliveries
+            .borrow_mut()
+            .extend(part.deliveries.borrow().iter().copied());
+    }
+    Ok(result)
 }
 fn eligible(adapter: &Adapter, bypass: u64, phase: i32) -> bool {
     let owner = &adapter.instance.parent;
@@ -1121,10 +1394,11 @@ pub(crate) fn dispatch(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Re
                     // PRE must reserve the matched adapter even for POST-only
                     // subscriptions. Actual delivery is phase-filtered below.
                     && (phase == 0 || s.phase == phase)
-                    && s.instance.parent.generation != info.suppressed_owner
+                    && plugin_phase(&s.owner.id) == Some(plugin::Phase::Active)
+                    && s.owner.generation != info.suppressed_owner
                     && !crate::dispatch::parent_busy(
-                        &s.instance.parent.id,
-                        s.instance.parent.generation,
+                        &s.owner.id,
+                        s.owner.generation,
                     )
             })
             .cloned()
@@ -1183,20 +1457,21 @@ pub(crate) fn dispatch(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Re
                     && eligible(a, info.suppressed_owner, 1)
             })
     };
-    let Some(adapter) = adapter else {
-        return Ok(());
-    };
     let subscribers = subscribers
         .into_iter()
         .filter(|s| s.phase == phase)
         .collect::<Vec<_>>();
-    let Some(binding) = subscribers
-        .iter()
-        .find(|s| s.adapter == adapter.semantic)
-        .map(|s| s.binding.clone())
-    else {
+    if subscribers.is_empty() {
         return Ok(());
-    };
+    }
+    if subscribers.iter().any(|s| !s.generic) && adapter.is_none() {
+        return Err("no eligible synchronous package adapter instance".into());
+    }
+    // A matching native PRE is required even for generic POST-only subscribers.
+    if phase == 1 && post_state.is_none() {
+        return Ok(());
+    }
+    let binding = subscribers[0].binding.clone();
     if binding.function.abi.parameters.len() != info.parameter_count as usize {
         return Err("frame parameter count mismatch".into());
     }
@@ -1205,27 +1480,24 @@ pub(crate) fn dispatch(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Re
         frame,
         binding,
         adapter: adapter.clone(),
-        subscribers: subscribers
-            .into_iter()
-            .filter(|s| s.adapter == adapter.semantic)
-            .collect(),
+        subscribers,
         cursor: Cell::new(0),
-        revision: Cell::new(0),
+        revision: Rc::new(Cell::new(0)),
         deliveries: RefCell::new(Vec::new()),
     });
     let result = if let Some(info) = crate::nest::top().filter(|p| !p.is_null()) {
         let mut storage = unsafe { v8::CallbackScope::new(&*info) };
         let mut scope = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
-        invoke_adapter(&mut scope, dispatch.clone())
+        invoke_domains(&mut scope, dispatch.clone())
     } else {
         with_host_isolate(|isolate| {
             let mut storage = v8::HandleScope::new(isolate);
             let mut scope = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
-            let context = clone_plugin_context(&adapter.instance.parent.id)
-                .ok_or("adapter context unavailable")?;
+            let context = clone_plugin_context(&dispatch.binding.owner.id)
+                .ok_or("dispatch context unavailable")?;
             let context = v8::Local::new(&mut scope, &context);
             let scope = &mut v8::ContextScope::new(&mut scope, context);
-            invoke_adapter(scope, dispatch.clone())
+            invoke_domains(scope, dispatch.clone())
         })
         .map_err(|_| "synchronous host isolate unavailable")?
     };
@@ -1344,11 +1616,224 @@ pub(super) mod proof {
         let receipt = registry::prepare_owner(owner.clone(), candidate).unwrap();
         registry::activate_owner(receipt).unwrap()[0]
     }
+    fn js_subscribe_generic_test(
+        scope: &mut v8::PinScope,
+        args: v8::FunctionCallbackArguments,
+        mut rv: v8::ReturnValue,
+    ) {
+        let result = (|| {
+            let owner = current_owner(scope)?;
+            if owner.generation != bigint(args.data())? {
+                return Err("test owner generation mismatch".into());
+            }
+            let binding = bigint(args.get(0))?;
+            let phase = match args.get(1).to_rust_string_lossy(scope).as_str() {
+                "pre" => 0,
+                "post" => 1,
+                _ => return Err("invalid phase".into()),
+            };
+            if !args.get(2).is_boolean() {
+                return Err("observeOnly must be boolean".into());
+            }
+            let observe_only = args.get(2).boolean_value(scope);
+            let wrapper = sync_function(scope, args.get(3))?.ok_or("wrapper required")?;
+            let id = subscribe_generic(scope, owner, binding, phase, observe_only, wrapper)?;
+            receipt(scope, id, true)
+        })();
+        match result {
+            Ok(value) => rv.set(value.into()),
+            Err(error) => throw(scope, error),
+        }
+    }
+    pub fn install_generic_test_native(id: &str) {
+        with_host_isolate(|isolate| {
+            let mut storage = v8::HandleScope::new(isolate);
+            let mut scope = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+            let context = clone_plugin_context(id).unwrap();
+            let context = v8::Local::new(&mut scope, &context);
+            let scope = &mut v8::ContextScope::new(&mut scope, context);
+            let data = v8::BigInt::new_from_u64(scope, plugin_generation(id));
+            let callback = v8::Function::builder(js_subscribe_generic_test)
+                .data(data.into())
+                .build(scope)
+                .unwrap();
+            let global = context.global(scope);
+            set(scope, global, "__proofSubscribeGeneric", callback.into()).unwrap();
+        })
+        .unwrap();
+    }
+    /// Run with the caller's transport: host tests install the explicit scalar
+    /// mock; the Linux outer-frame fixture supplies the real Service/strong export.
+    pub fn policy_conformance(after_observer: impl FnOnce()) {
+        const POLICY: &str = "proof.policy.v1";
+        let source = format!(
+            r#"(()=>{{
+            const subscribe=__s2_function_adapter_subscribe;
+            __s2_function_adapter_register('{POLICY}','{HASH}',{{
+                pre(d){{
+                    let best={{action:0}},next;
+                    while((next=d.cursor.invokeNext())!==null){{if(next.action>best.action)best=next;}}
+                    return best.action>=2?{{action:best.action,returnValue:best.returnValue}}:best.action;
+                }},
+                post(d){{while(d.cursor.invokeNext()!==null){{}}}}
+            }});
+            globalThis.policySubscribe=(binding,phase,wrapper)=>subscribe(binding,'{POLICY}',phase,wrapper);
+            globalThis.policyEvents=[];
+        }})()"#
+        );
+        let package = register_prepared_package(
+            HostPackageOwner::mint("@proof/policy").unwrap(),
+            source.into(),
+            ImplementationManifestHash::new(crate::engine_functions::contract::hash_bytes(
+                br#"{"name":"@proof/policy","entry":"policy.js","version":"1.0.0"}"#,
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        frame_tests::load_body("policy-observer", "return {};", "{}");
+        install_generic_test_native("policy-observer");
+        let observer = prepared_binding("policy-observer", |f| {
+            f["abi"]["parameters"][0]["name"] = "observed".into();
+            f["abi"]["parameters"][0]["mutable"] = serde_json::json!(["pre"]);
+        });
+        eval_in_context(
+            "policy-observer",
+            &format!(
+                r#"
+            __proofSubscribeGeneric({observer}n,'pre',true,v=>{{
+                policyEvents.push('pre:'+v.observed);
+                if('x' in v)throw Error('mutator field leaked');
+                let denied=false;try{{v.observed=999;}}catch(_){{denied=true;}}
+                if(!denied)throw Error('observer acquired mutation authority');
+                globalThis.expired=v;
+                return {{action:3,returnValue:999}};
+            }});
+            __proofSubscribeGeneric({observer}n,'post',false,v=>{{
+                policyEvents.push('post:'+v.returnValue);
+                let denied=false;try{{v.observed=999;}}catch(_){{denied=true;}}
+                if(!denied)throw Error('POST acquired mutation authority');
+            }});
+        "#
+            ),
+        )
+        .unwrap();
+        after_observer();
+        for id in ["policy-writer", "policy-reader"] {
+            frame_tests::load_body(id, "return {};", "{}");
+        }
+        let writer = prepared_binding("policy-writer", |f| {
+            f["abi"]["parameters"][0]["mutable"] = serde_json::json!(["pre"]);
+        });
+        let reader = prepared_binding("policy-reader", |f| {
+            f["abi"]["parameters"][0]["name"] = "renamed".into();
+        });
+        for (id, binding) in [("policy-writer", writer), ("policy-reader", reader)] {
+            authorize_binding(
+                &package,
+                &OwnerKey::plugin(id, plugin_generation(id)),
+                binding,
+                POLICY,
+                HASH,
+            )
+            .unwrap();
+        }
+        eval_in_context("policy-writer", &format!(r#"
+            policySubscribe({writer}n,'pre',v=>{{v.x=41;policyEvents.push('write:'+v.x);return 1;}});
+        "#)).unwrap();
+        eval_in_context("policy-reader", &format!(r#"
+            policySubscribe({reader}n,'pre',v=>{{
+                policyEvents.push('read:'+v.renamed);
+                if('x' in v)throw Error('writer field leaked');
+                let denied=false;try{{v.renamed=999;}}catch(_){{denied=true;}}
+                if(!denied)throw Error('writer rights leaked');
+                return {{action:3,returnValue:73}};
+            }});
+            policySubscribe({reader}n,'pre',()=>{{policyEvents.push('after-stop');return 0;}});
+            policySubscribe({reader}n,'post',v=>{{policyEvents.push('post:'+v.renamed+':'+v.returnValue);}});
+        "#)).unwrap();
+        let binding = registry::binding(
+            observer,
+            &OwnerKey::plugin("policy-observer", plugin_generation("policy-observer")),
+        )
+        .unwrap();
+        let mut input = runtime::blank();
+        input.kind = 2;
+        input.bits = 7;
+        assert_eq!(
+            runtime::call(binding.target.unwrap(), 0, &[input])
+                .unwrap()
+                .bits,
+            73
+        );
+        eval_in_context(
+            "policy-writer",
+            "if(policyEvents.join(',')!=='write:41')throw Error(policyEvents);",
+        )
+        .unwrap();
+        eval_in_context(
+            "policy-reader",
+            "if(policyEvents.join(',')!=='read:41,post:41:73')throw Error(policyEvents);",
+        )
+        .unwrap();
+        eval_in_context("policy-observer","if(policyEvents.join(',')!=='pre:41,post:73')throw Error(policyEvents);let denied=false;try{expired.observed}catch(_){denied=true}if(!denied)throw Error('expired observer lease');policyEvents.length=0;").unwrap();
+        for id in ["policy-writer", "policy-reader"] {
+            unload_plugin(id);
+        }
+        assert_eq!(pending_invocations(), 0);
+        // Keep the physical target subscribed while switching its semantic domain.
+        frame_tests::load_body("policy-generic", "return {};", "{}");
+        install_generic_test_native("policy-generic");
+        let generic = prepared_binding("policy-generic", |f| {
+            f["abi"]["parameters"][0]["mutable"] = serde_json::json!(["pre"]);
+        });
+        eval_in_context("policy-generic", &format!(r#"
+            globalThis.stopEnabled=false;
+            __proofSubscribeGeneric({generic}n,'pre',false,v=>{{v.x=12;return {{action:2,returnValue:31}};}});
+            __proofSubscribeGeneric({generic}n,'pre',false,v=>{{if(v.x!==12)throw Error('edit lost');return {{action:2,returnValue:32}};}});
+            __proofSubscribeGeneric({generic}n,'pre',false,v=>stopEnabled?{{action:3,returnValue:33}}:0);
+            __proofSubscribeGeneric({generic}n,'pre',false,v=>{{policyEvents.push('tail');return 0;}});
+        "#)).unwrap();
+        assert_eq!(
+            runtime::call(binding.target.unwrap(), 0, &[input])
+                .unwrap()
+                .bits,
+            31
+        );
+        eval_in_context("policy-observer","if(policyEvents.join(',')!=='pre:12,post:31')throw Error(policyEvents);policyEvents.length=0;").unwrap();
+        eval_in_context("policy-generic","if(policyEvents.join(',')!=='tail')throw Error(policyEvents);policyEvents.length=0;stopEnabled=true;").unwrap();
+        assert_eq!(
+            runtime::call(binding.target.unwrap(), 0, &[input])
+                .unwrap()
+                .bits,
+            33
+        );
+        eval_in_context(
+            "policy-observer",
+            "if(policyEvents.join(',')!=='pre:12,post:33')throw Error(policyEvents);",
+        )
+        .unwrap();
+        eval_in_context(
+            "policy-generic",
+            "if(policyEvents.length)throw Error('Stop did not end domain');",
+        )
+        .unwrap();
+        unload_plugin("policy-generic");
+        unload_plugin("policy-observer");
+        drop(binding);
+        drop(package);
+        assert_eq!(pending_invocations(), 0);
+        println!("PASS production policy fanout: per-wrapper names/rights, shared edits, named Stop plus generic observers, first typed return at strength, generic Stop and independent teardown");
+    }
     pub fn counts(owner: &str, generation: u64) -> (usize, usize) {
         let matches = |i: &PackageInstanceKey| i.parent == OwnerKey::plugin(owner, generation);
         (
             ADAPTERS.with(|a| a.borrow().values().filter(|a| matches(&a.instance)).count()),
-            SUBSCRIPTIONS.with(|s| s.borrow().values().filter(|s| matches(&s.instance)).count()),
+            SUBSCRIPTIONS.with(|s| {
+                s.borrow()
+                    .values()
+                    .filter(|s| s.instance.as_ref().is_some_and(&matches))
+                    .count()
+            }),
         )
     }
     pub fn provenance(owner: &str) -> (PackageInstanceKey, String) {
@@ -1578,6 +2063,7 @@ mod scalar_transport_tests {
         init(frame_tests::logger).unwrap();
         let mut ops = S2EngineOps::default();
         ops.function_prepare = Some(prepare);
+        ops.function_call = Some(call);
         ops.function_hook_acquire = Some(acquire);
         ops.function_hook_release = Some(release);
         ops.function_target_release = Some(release);
@@ -1864,7 +2350,7 @@ mod scalar_transport_tests {
     fn subscription_admission_refuses_preauthorized_conflicting_domains() {
         init_transport();
         let mut admitted = Vec::new();
-        for conflict in ["semantic", "mutation", "name"] {
+        for conflict in ["semantic", "projection"] {
             let package = review_package(&format!(
                 r#"
                 for(const semantic of ['proof.review.v1','proof.review.other'])
@@ -1878,8 +2364,11 @@ mod scalar_transport_tests {
             }
             let first = proof::prepared_binding("domain-a", |_| {});
             let second = proof::prepared_binding("domain-b", |f| match conflict {
-                "mutation" => f["abi"]["parameters"][0]["mutable"] = serde_json::json!(["pre"]),
-                "name" => f["abi"]["parameters"][0]["name"] = "other".into(),
+                "projection" => {
+                    f["abi"]["fingerprint"] = "linux-x86_64-sysv:none:i32(u32)".into();
+                    f["abi"]["parameters"][0]["native"] = "u32".into();
+                    f["abi"]["parameters"][0]["projection"]["id"] = "u32".into();
+                }
                 _ => (),
             });
             let second_semantic = if conflict == "semantic" {
@@ -1887,8 +2376,8 @@ mod scalar_transport_tests {
             } else {
                 "proof.review.v1"
             };
-            // Both authorizations precede either subscription; native fingerprints
-            // are identical even when the copied wrapper contract differs.
+            // Both authorizations precede either subscription. The mock target id
+            // also exercises a conflicting native fingerprint at admission.
             authorize(&package, "domain-a", first, "proof.review.v1").unwrap();
             authorize(&package, "domain-b", second, second_semantic).unwrap();
             eval_in_context("domain-a", &format!("subscribeProof({first}n);")).unwrap();
@@ -1921,6 +2410,205 @@ mod scalar_transport_tests {
             admitted.is_empty(),
             "conflicting domains admitted after prior authorization: {admitted:?}"
         );
+    }
+    #[test]
+    fn policy_conformance_real_v8_mock_transport() {
+        init_transport();
+        proof::policy_conformance(|| {});
+        set_engine_ops(None);
+        shutdown();
+    }
+    #[test]
+    fn generic_invalid_votes_continue_and_expired_views_fail_after_await() {
+        init_transport();
+        frame_tests::load_body("generic-invalid", "return {};", "{}");
+        proof::install_generic_test_native("generic-invalid");
+        let binding = proof::prepared_binding("generic-invalid", |f| {
+            f["abi"]["parameters"][0]["mutable"] = serde_json::json!(["pre"]);
+        });
+        eval_in_context("generic-invalid", &format!(r#"
+            globalThis.expiredReads=0;globalThis.expiredWrites=0;globalThis.coercions=0;
+            __proofSubscribeGeneric({binding}n,'pre',false,v=>{{
+                globalThis.expired=v;
+                (async()=>{{await 0;
+                    try{{v.x;}}catch(_){{expiredReads++;}}
+                    try{{v.x=88;}}catch(_){{expiredWrites++;}}
+                }})();
+                return invalidVote;
+            }});
+            __proofSubscribeGeneric({binding}n,'pre',false,v=>{{return {{action:2,returnValue:37}};}});
+        "#)).unwrap();
+        for vote in [
+            "2",
+            "{action:2}",
+            "{action:3,returnValue:'37'}",
+            "{action:2.5,returnValue:90}",
+            "{action:'2',returnValue:90}",
+            "{action:{valueOf(){coercions++;return 2;}},returnValue:90}",
+            "Promise.resolve(0)",
+        ] {
+            eval_in_context(
+                "generic-invalid",
+                &format!("globalThis.invalidVote={vote};"),
+            )
+            .unwrap();
+            let info = open_frame();
+            assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+            let result = close_frame(&info);
+            assert_eq!(
+                (result.action, result.output.bits, result.input.bits),
+                (2, 37, 7),
+                "{vote}"
+            );
+        }
+        with_host_isolate(|isolate| {
+            let mut storage = v8::HandleScope::new(isolate);
+            let mut scope = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+            scope.perform_microtask_checkpoint();
+        })
+        .unwrap();
+        eval_in_context("generic-invalid","if(expiredReads!==7||expiredWrites!==7||coercions!==0)throw Error([expiredReads,expiredWrites,coercions]);").unwrap();
+        assert!(eval_in_context(
+            "generic-invalid",
+            &format!("__proofSubscribeGeneric({binding}n,'pre',false,async()=>0);")
+        )
+        .is_err());
+        unload_plugin("generic-invalid");
+        set_engine_ops(None);
+        shutdown();
+    }
+    #[test]
+    fn generic_observer_survives_named_pre_owner_unload_between_phases() {
+        init_transport();
+        let package = review_package(&format!(
+            r#"
+            register('proof.review.v1','{}',{{pre(d){{d.cursor.invokeNext();return 0;}}}});
+            globalThis.wrapper=()=>0;
+        "#,
+            proof::HASH
+        ));
+        frame_tests::load_body("retire-named", "return {};", "{}");
+        frame_tests::load_body("retire-observer", "return {};", "{}");
+        let named = proof::prepared_binding("retire-named", |_| {});
+        authorize(&package, "retire-named", named, "proof.review.v1").unwrap();
+        eval_in_context("retire-named", &format!("subscribeProof({named}n);")).unwrap();
+        let observer = proof::prepared_binding("retire-observer", |_| {});
+        proof::install_generic_test_native("retire-observer");
+        eval_in_context("retire-observer",&format!("__proofSubscribeGeneric({observer}n,'post',false,v=>events.push(v.returnValue) && undefined);")).unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        unload_plugin("retire-named");
+        assert_eq!(proof::pending_invocations(), 1);
+        close_frame(&info);
+        eval_in_context(
+            "retire-observer",
+            "if(events.join(',')!=='7')throw Error(events);",
+        )
+        .unwrap();
+        assert_eq!(proof::pending_invocations(), 0);
+        unload_plugin("retire-observer");
+        drop(package);
+        set_engine_ops(None);
+        shutdown();
+    }
+    #[test]
+    fn generic_fanout_folds_ties_stops_its_domain_and_observes_final_edits() {
+        init_transport();
+        frame_tests::load_body("generic-owner", "return {};", "{}");
+        proof::install_generic_test_native("generic-owner");
+        let binding = proof::prepared_binding("generic-owner", |f| {
+            f["abi"]["parameters"][0]["mutable"] = serde_json::json!(["pre"]);
+        });
+        eval_in_context("generic-owner", &format!(r#"
+            globalThis.events=[];
+            __proofSubscribeGeneric({binding}n,'pre',true,v=>{{
+                events.push('observer:'+v.x);
+                let denied=false;try{{v.x=99;}}catch(_){{denied=true;}}
+                if(!denied)throw Error('observer inherited mutation rights');
+                return {{action:3,returnValue:999}};
+            }});
+            __proofSubscribeGeneric({binding}n,'pre',false,v=>{{v.x=12;events.push('first');return {{action:2,returnValue:31}};}});
+            __proofSubscribeGeneric({binding}n,'pre',false,v=>{{events.push('second:'+v.x);return {{action:2,returnValue:32}};}});
+            __proofSubscribeGeneric({binding}n,'pre',false,v=>{{events.push('third');return {{action:3,returnValue:33}};}});
+            __proofSubscribeGeneric({binding}n,'pre',false,v=>{{throw Error('ran after domain Stop');}});
+            __proofSubscribeGeneric({binding}n,'post',false,v=>{{events.push('post:'+v.returnValue);}});
+        "#)).unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        let result = close_frame(&info);
+        assert_eq!(
+            (result.action, result.output.bits, result.input.bits),
+            (3, 33, 12)
+        );
+        eval_in_context("generic-owner", "if(events.join(',')!=='first,second:12,third,observer:12,post:33')throw Error(events);").unwrap();
+        unload_plugin("generic-owner");
+        set_engine_ops(None);
+        shutdown();
+    }
+    #[test]
+    fn compatible_scalar_bindings_keep_each_wrappers_fields_and_rights() {
+        init_transport();
+        let package = review_package(&format!(
+            r#"
+            register('proof.review.v1','{}',{{pre(d){{
+                while(d.cursor.invokeNext()!==null){{}}
+                return 1;
+            }}}});
+        "#,
+            proof::HASH
+        ));
+        for name in ["rights-writer", "rights-reader"] {
+            frame_tests::load_body(name, "return {};", "{}");
+        }
+        let writer = proof::prepared_binding("rights-writer", |f| {
+            f["abi"]["parameters"][0]["mutable"] = serde_json::json!(["pre"]);
+        });
+        let reader = proof::prepared_binding("rights-reader", |f| {
+            f["abi"]["parameters"][0]["name"] = "renamed".into();
+        });
+        authorize(&package, "rights-writer", writer, "proof.review.v1").unwrap();
+        authorize(&package, "rights-reader", reader, "proof.review.v1").unwrap();
+        eval_in_context(
+            "rights-writer",
+            &format!(
+                r#"
+            globalThis.wrapper=v=>{{v.x=41;events.push('wrote:'+v.x);return 1;}};
+            subscribeProof({writer}n);
+        "#
+            ),
+        )
+        .unwrap();
+        eval_in_context(
+            "rights-reader",
+            &format!(
+                r#"
+            globalThis.wrapper=v=>{{
+                if('x' in v)throw Error('another binding field leaked');
+                events.push('read:'+v.renamed);
+                let denied=false;try{{v.renamed=99;}}catch(_){{denied=true;}}
+                if(!denied)throw Error('another binding mutation right leaked');
+                return 0;
+            }};
+            subscribeProof({reader}n);
+        "#
+            ),
+        )
+        .unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        let result = close_frame(&info);
+        assert_eq!(result.input.bits, 41);
+        eval_in_context(
+            "rights-reader",
+            "if(events.join(',')!=='read:41')throw Error(events);",
+        )
+        .unwrap();
+        for name in ["rights-writer", "rights-reader"] {
+            unload_plugin(name);
+        }
+        drop(package);
+        set_engine_ops(None);
+        shutdown();
     }
     #[test]
     fn live_binding_authorization_cannot_change_package_or_contract() {
