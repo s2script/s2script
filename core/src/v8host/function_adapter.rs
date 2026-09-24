@@ -1171,12 +1171,14 @@ impl LeaseGuard {
 fn accept_record_edits(l:&Lease) -> Result<(),String> {
     if l.failed.get() {return Err("rejected whole record edit batch".into());}
     if l.binding.function.trusted() && (l.map_epoch==0 || l.map_epoch!=crate::entity_live::map_epoch()) {return Err("callback map lifetime expired".into());}
-    let edits=l.pending_records.borrow();
+    let mut edits=l.pending_records.borrow_mut();
     for edit in edits.values() {validate_record_edit(edit)?;}
     if l.binding.function.trusted() {
         l.dispatch.record_writers.borrow_mut().insert(l.id,RecordWriter{binding:l.binding.clone(),parent:l.owner.clone(),map_epoch:l.map_epoch});
     }
-    l.dispatch.record_edits.borrow_mut().extend(edits.iter().map(|(k,v)|(*k,v.clone())));Ok(())
+    // A cursor handoff accepts this batch once. Later subscribers and explicit
+    // subsequent adapter assignments must remain authoritative.
+    l.dispatch.record_edits.borrow_mut().append(&mut edits);Ok(())
 }
 fn validate_record_edit(edit:&RecordEdit) -> Result<(),String> {
     registry::binding(edit.binding.id,&edit.binding.owner)?;
@@ -6225,6 +6227,30 @@ pub(super) mod borrowed_proof {
         static RELEASED:RefCell<Vec<u64>>=const{RefCell::new(Vec::new())};
     }
     pub struct State {active:registry::ActivePackageFunctions,source:PreparedPackageReceipt,host:HostPackageOwner,pub target:i64}
+    const CURSOR_ID:&str="proof.borrowed-cursor.v1";
+    const CURSOR_SOURCE:&str=r#"(()=>{
+      const register=__s2_function_adapter_register,subscribe=__s2_function_adapter_subscribe;
+      globalThis.cursorMode='keep';globalThis.cursorEvents=[];globalThis.cursorPreCount=0;
+      register('proof.borrowed-cursor.v1','3e4f14eb33cba81079d21282c1abb09e06542218078a3959317b811f52a3cca9',{
+        pre(d){
+          cursorPreCount++;cursorEvents.push('adapter:'+d.frame.info.amount);
+          d.frame.info.amount=20;
+          d.cursor.invokeNext();
+          cursorEvents.push('resumed:'+d.frame.info.amount);
+          if(cursorMode==='rewrite')d.frame.info.amount=40;
+          d.cursor.invokeNext();
+          cursorEvents.push('later:'+d.frame.info.amount);
+          if(d.cursor.invokeNext()!==null)throw Error('extra subscriber');
+          if(cursorMode==='throw')throw Error('reject final adapter');
+          if(cursorMode==='invalid')return {action:2,returnValue:'bad'};
+          return 0;
+        }
+      });
+      globalThis.subscribeCursor=id=>{
+        subscribe(id,'proof.borrowed-cursor.v1','pre',v=>{cursorEvents.push('first:'+v.info.amount);v.info.amount=30;return 0;});
+        subscribe(id,'proof.borrowed-cursor.v1','pre',v=>{cursorEvents.push('second:'+v.info.amount);return 0;});
+      };
+    })();"#;
     const SOURCE:&str=r#"
       globalThis.record=__s2_package_function('record');
       globalThis.readonlyRecord=__s2_package_function('readonly');
@@ -6313,7 +6339,7 @@ pub(super) mod borrowed_proof {
         }).unwrap();
     }
     fn nested(_: &mut v8::PinScope,_:v8::FunctionCallbackArguments,_:v8::ReturnValue) {
-        let mut output=[0.;14];assert_eq!(unsafe{ENGINE.with(Cell::get).unwrap()(0,output.as_mut_ptr())},1);
+        let mut output=[0.;18];assert_eq!(unsafe{ENGINE.with(Cell::get).unwrap()(0,output.as_mut_ptr())},1);
     }
     fn probe(scope:&mut v8::PinScope,args:v8::FunctionCallbackArguments,_:v8::ReturnValue) {
         let l=LEASES.with(|s|s.borrow().last().cloned()).unwrap();let frame=&l.dispatch.frame;
@@ -6385,7 +6411,7 @@ pub(super) mod borrowed_proof {
         frame_tests::load_body("record-a","return {};","{}");install("record-a");
         State{target:a.target.unwrap(),active,source,host}
     }
-    pub fn call(mode:i32)->[f64;14] {let mut out=[0.;14];assert_eq!(unsafe{ENGINE.with(Cell::get).unwrap()(mode,out.as_mut_ptr())},1);out}
+    pub fn call(mode:i32)->[f64;18] {let mut out=[0.;18];assert_eq!(unsafe{ENGINE.with(Cell::get).unwrap()(mode,out.as_mut_ptr())},1);out}
     pub fn ready(state:&State)->bool {
         let before=frame_tests::read_i32_global_in("record-a","preCount");call(0);
         runtime::status(state.target).unwrap().state==2 && frame_tests::read_i32_global_in("record-a","preCount")>before
@@ -6393,7 +6419,8 @@ pub(super) mod borrowed_proof {
     pub fn exercise(state:&State) {
         eval_in_context("record-a","mode='edit';events.length=0;").unwrap();
         let edited=call(1);assert_eq!(&edited[..7],&[5.,20.,127.,8.,0.,2.5,4294967295.]);
-        assert_eq!(&edited[12..],&[5.,20.],"peer must observe published record fields");assert_eq!(edited[7],1.,"original executes once");
+        assert_eq!(&edited[12..14],&[5.,20.],"later PRE peer must observe published record fields");
+        assert_eq!(&edited[14..18],&[2.,7.,1.,1.],"earlier PRE peer sees input; both peers execute exactly once");assert_eq!(edited[7],1.,"original executes once");
         assert_eq!(&edited[10..12],&[65535.,90.],"u16 must preserve adjacent sentinel");
         eval_in_context("record-a","if(!events.includes('later:20')||!events.includes('post:20')||roSeen!==20)throw Error('accepted overlay/POST');let n=0;try{saved.amount}catch(_){n++}try{savedFrame.info}catch(_){n++}if(n!==2)throw Error('view escaped');").unwrap();
         for mode in ["invalid","readonly","decision","throw","promise","map","map-copy","u16-range"] {
@@ -6435,6 +6462,96 @@ pub(super) mod borrowed_proof {
     }
     pub fn abort(state:State) {
         drop(state.active);drop(state.source);unload_plugin("record-a");ENGINE.with(|e|e.set(None));SLOT.with(|s|s.set(None));
+    }
+    fn cursor_prepare(engine:EngineCall,transport_only:bool)->State {
+        ENGINE.with(|e|e.set(Some(engine)));
+        let host=HostPackageOwner::mint("@proof/borrowed-cursor").unwrap();
+        let source=register_prepared_package(host.clone(),CURSOR_SOURCE.into(),ImplementationManifestHash::new(
+            crate::engine_functions::contract::hash_bytes(b"borrowed-cursor-fixture-manifest-v1")).unwrap()).unwrap();
+        let mut declared=input(false);
+        if transport_only {
+            // Explicit scalar host transport: no native pointer/record storage is
+            // created or dereferenced. The same adapter program also runs in the
+            // real compiler-authored Service fixture below.
+            declared.signature.parameters.truncate(1);
+            declared.signature.fingerprint=declared.signature.physical().fingerprint().unwrap();
+            declared.signature.stack_copy_bytes=declared.signature.physical().stack_bytes().unwrap();
+        }
+        let candidate=prepare_verified_package(&source,vec![declared],selected(),unsafe{lifetime()}).unwrap();
+        let active=registry::activate_package_owner(registry::prepare_package_owner(&host,candidate).unwrap(),&host).unwrap();
+        let binding=registry::named_binding(host.key(),"record").unwrap();
+        authorize_binding(&source,host.key(),binding.id,CURSOR_ID,proof::HASH).unwrap();
+        frame_tests::load_body("record-cursor","return {};","{}");
+        eval_in_context("record-cursor","subscribeCursor('record');").unwrap();
+        State{target:binding.target.unwrap(),active,source,host}
+    }
+    pub fn cursor_begin(engine:EngineCall)->State {cursor_prepare(engine,false)}
+    pub fn cursor_ready(state:&State)->bool {
+        let before=frame_tests::read_i32_global_in("record-cursor","cursorPreCount");call(0);
+        runtime::status(state.target).unwrap().state==2 && frame_tests::read_i32_global_in("record-cursor","cursorPreCount")>before
+    }
+    pub fn cursor_exercise(native:bool) {
+        for mode in ["keep","rewrite","invalid","throw"] {
+            eval_in_context("record-cursor",&format!("cursorMode='{mode}';cursorEvents.length=0;")).unwrap();
+            let output=call(0);
+            let later=if mode=="rewrite"{40}else{30};
+            let expected=format!("adapter:7,first:20,resumed:30,second:{later},later:{later}");
+            let trace=frame_tests::eval_in_context_string("record-cursor","cursorEvents.join(',')");
+            assert_eq!(trace,expected,"{mode}: adapter pending batch must be consumed at cursor handoff");
+            let accepted=if matches!(mode,"invalid"|"throw"){7.}else{later as f64};
+            assert_eq!(output[1],accepted,"{mode}: final publication");
+            if native {
+                assert_eq!(output[2],accepted+5.,"{mode}: real original sees accepted record");
+                assert_eq!(output[7],1.,"{mode}: real original executes once");
+                assert_eq!(&output[12..14],&[2.,accepted],"{mode}: later native PRE peer sees final record");
+                assert_eq!(&output[14..18],&[2.,7.,1.,1.],"{mode}: earlier PRE sees input; each peer executes once");
+            }
+        }
+        println!("PASS borrowed package adapter cursor resumed/later reads, subscriber/native publication, explicit adapter rewrite and rejected final decisions");
+    }
+    pub fn cursor_abort(state:State) {
+        unload_plugin("record-cursor");drop(state.active);drop(state.source);ENGINE.with(|e|e.set(None));
+    }
+    #[derive(Clone,Copy)]
+    struct CursorTransportFrame {token:u64,amount:f32,pending:Option<f32>}
+    thread_local! {static CURSOR_FRAME:RefCell<Option<CursorTransportFrame>>=const{RefCell::new(None)};}
+    extern "C" fn cursor_prepare_op(binding:u64,_:*const S2FunctionInstanceOwner,_:*const i8,_:*const i8,_:*const i8,out:*mut S2FunctionInstancePrepared,_:*mut i8,_:i32)->i32 {
+        unsafe{*out=S2FunctionInstancePrepared{version:1,struct_size:24,target:1,capability:binding};}1
+    }
+    extern "C" fn cursor_activate_op(_:u64,_:*const S2FunctionInstanceOwner,_:*mut i8,_:i32)->i32 {1}
+    extern "C" fn cursor_release_op(_:u64)->i32 {1}
+    extern "C" fn cursor_presence_op(_:*const S2FunctionInstanceAccess,_:i32,out:*mut S2FunctionValue,_:*mut i8,_:i32)->i32 {
+        let mut value=runtime::blank();value.kind=1;value.bits=1;unsafe{*out=value;}1
+    }
+    extern "C" fn cursor_read_op(access:*const S2FunctionInstanceAccess,selector:i32,field:u32,out:*mut S2FunctionValue,_:*mut i8,_:i32)->i32 {
+        CURSOR_FRAME.with(|f|{let f=f.borrow();let Some(f)=f.as_ref().filter(|f|f.token==unsafe{(*access).frame_token})else{return 0};
+            if selector!=0 || field!=0{return 0;}let mut value=runtime::blank();value.kind=6;value.bits=f.amount.to_bits() as u64;unsafe{*out=value;}1})
+    }
+    extern "C" fn cursor_write_op(access:*const S2FunctionInstanceAccess,selector:i32,field:u32,value:*const S2FunctionValue,_:*mut i8,_:i32)->i32 {
+        CURSOR_FRAME.with(|f|{let mut f=f.borrow_mut();let Some(f)=f.as_mut().filter(|f|f.token==unsafe{(*access).frame_token})else{return 0};
+            if selector!=0 || field!=0{return 0;}f.pending=Some(f32::from_bits(unsafe{(*value).bits} as u32));1})
+    }
+    extern "C" fn cursor_commit_op(_:i64,token:u64,_:u64,_:*const i8,_:i32,_:*const S2FunctionValue,_:*mut i8,_:i32)->i32 {
+        CURSOR_FRAME.with(|f|{let mut f=f.borrow_mut();let Some(f)=f.as_mut().filter(|f|f.token==token)else{return 0};if let Some(value)=f.pending.take(){f.amount=value;}1})
+    }
+    unsafe extern "C" fn cursor_engine_op(_:i32,out:*mut f64)->i32 {
+        let token=registry::next_id().unwrap();
+        CURSOR_FRAME.with(|f|*f.borrow_mut()=Some(CursorTransportFrame{token,amount:7.,pending:None}));
+        let info=S2FunctionFrameInfo{version:1,struct_size:48,frame_token:token,native_epoch:token,invocation_id:token,suppressed_owner:0,parameter_count:1,flags:0};
+        crate::ffi::s2script_core_dispatch_function(1,&info,0);
+        crate::ffi::s2script_core_dispatch_function(1,&info,1);
+        let amount=CURSOR_FRAME.with(|f|f.borrow_mut().take().unwrap().amount);
+        for i in 0..18{*out.add(i)=0.;}*out.add(1)=amount as f64;1
+    }
+    #[test]
+    fn borrowed_adapter_cursor_consumes_each_validated_batch() {
+        scalar_transport_tests::init_transport();let mut ops=engine_ops().unwrap();
+        ops.function_prepare_instance=Some(cursor_prepare_op);ops.function_instance_activate=Some(cursor_activate_op);ops.function_instance_release=Some(cursor_release_op);
+        ops.function_frame_read_instance=Some(cursor_presence_op);ops.function_frame_field_read=Some(cursor_read_op);ops.function_frame_field_write=Some(cursor_write_op);ops.function_frame_commit=Some(cursor_commit_op);
+        set_engine_ops(Some(ops));let state=cursor_prepare(cursor_engine_op,true);
+        let result=std::panic::catch_unwind(||cursor_exercise(false));
+        cursor_abort(state);set_engine_ops(None);shutdown();
+        if let Err(error)=result{std::panic::resume_unwind(error);}
     }
     #[test]
     fn borrowed_host_data_is_sealed_and_required_optional_failures_are_named() {

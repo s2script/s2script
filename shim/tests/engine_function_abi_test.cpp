@@ -484,18 +484,33 @@ static int production_instance_activate(unsigned long long id,const S2FunctionIn
     if(why && cap>0)std::snprintf(why,cap,"%s",result.error.c_str());return result ? 1 : 0;
 }
 static int production_instance_release(unsigned long long id) {return production_service->ReleaseInstance(id);}
-static uint64_t record_peer_calls=0, record_hidden=0;
-static double record_peer_receiver=0,record_peer_info=0;
+static uint64_t record_peer_calls=0, record_early_calls=0, record_hidden=0;
+static double record_peer_receiver=0,record_peer_info=0,record_early_receiver=0,record_early_info=0;
 static KHook::Return<int32_t> record_peer_pre(S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*);
-static S2CheckedFunction<int32_t,S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*> record_peer(record_peer_pre,nullptr);
+static KHook::Return<int32_t> record_peer_post(S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*);
+static KHook::Return<int32_t> record_early_pre(S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*);
+// Stock KHook prepends PRE-only hooks. A paired hook configured before Service
+// runs its PRE after Service's paired hook; the PRE-only hook proves the input.
+static S2CheckedFunction<int32_t,S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*> record_peer(record_peer_pre,record_peer_post);
+static S2CheckedFunction<int32_t,S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*> record_early(record_early_pre,nullptr);
 static KHook::Return<int32_t> record_peer_pre(S2FnRecordFixture* receiver,S2FnRecordFixture* info,const char*,void* hidden) {
     auto observation=record_peer.Observe();assert(observation);++record_peer_calls;
     record_hidden=reinterpret_cast<uintptr_t>(hidden);record_peer_receiver=receiver->amount;record_peer_info=info ? info->amount : -1;return {KHook::Action::Ignore,0};
 }
+static KHook::Return<int32_t> record_peer_post(S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*) {
+    auto observation=record_peer.Observe();assert(observation);return {KHook::Action::Ignore,0};
+}
+static KHook::Return<int32_t> record_early_pre(S2FnRecordFixture* receiver,S2FnRecordFixture* info,const char*,void*) {
+    auto observation=record_early.Observe();assert(observation);++record_early_calls;
+    record_early_receiver=receiver->amount;record_early_info=info ? info->amount : -1;return {KHook::Action::Ignore,0};
+}
 extern "C" int s2fn_production_record_peer(int mode) {
-    if(mode==0) {record_peer.BeginRemove(true);return 1;}
-    if(mode==1) return record_peer.Configure(checked_target(fixture_targets().record_member)).Accepted();
-    return static_cast<int>(record_peer_calls);
+    if(mode==0) {record_peer.BeginRemove(true);record_early.BeginRemove(true);return 1;}
+    if(mode==1) {
+        const auto target=checked_target(fixture_targets().record_member);
+        return record_peer.Configure(target).Accepted() && record_early.Configure(target).Accepted();
+    }
+    return static_cast<int>(std::min(record_peer_calls,record_early_calls));
 }
 extern "C" int s2fn_production_record_call(int mode,double* output) {
     if(!output || std::this_thread::get_id()!=production_owner)return 0;
@@ -503,12 +518,15 @@ extern "C" int s2fn_production_record_call(int mode,double* output) {
     auto target=reinterpret_cast<int32_t(*)(S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*)>(fixture_targets().record_member);
     auto hidden=(mode&1) ? reinterpret_cast<void*>(uintptr_t(0xfedcba9876543210ULL)) : nullptr;
     const auto before=original_calls; // shared fixture counter remains observable across reentry.
+    const auto peer_before=record_peer_calls,early_before=record_early_calls;
     auto result=target(&receiver,(mode&2) ? nullptr : &info,"abc",hidden);
     output[0]=receiver.amount;output[1]=info.amount;output[2]=result;
     output[3]=info.flags;output[4]=info.enabled;output[5]=info.scale;output[6]=info.entity;
     output[10]=info.small;output[11]=info.sentinel;
     output[7]=original_calls-before;output[8]=record_peer_calls;
     output[12]=record_peer_receiver;output[13]=record_peer_info;
+    output[14]=record_early_receiver;output[15]=record_early_info;
+    output[16]=record_peer_calls-peer_before;output[17]=record_early_calls-early_before;
     output[9]=record_peer_calls ? (record_hidden==reinterpret_cast<uintptr_t>(hidden) ? 1 : 0) : -1;
     return 1;
 }
@@ -646,13 +664,13 @@ extern "C" int s2fn_production_empty(){
 extern "C" int s2fn_production_close(){
     if(!production_service->Collect())return 0;
     production_copy_peer.BeginRemove(true);
-    record_peer.BeginRemove(true);
+    record_peer.BeginRemove(true);record_early.BeginRemove(true);
     production_peer.BeginRemove(true);
     production_later.BeginRemove(true);
     production_frame.BeginRemove(true);
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
-    while((!production_frame.RemovalComplete() || !production_peer.RemovalComplete() || !production_later.RemovalComplete() || !production_copy_peer.RemovalComplete() || !record_peer.RemovalComplete()) && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    assert(production_frame.RemovalComplete() && production_peer.RemovalComplete() && production_later.RemovalComplete() && production_copy_peer.RemovalComplete() && record_peer.RemovalComplete());assert(S2Hook_DrainRetirement());
+    while((!production_frame.RemovalComplete() || !production_peer.RemovalComplete() || !production_later.RemovalComplete() || !production_copy_peer.RemovalComplete() || !record_peer.RemovalComplete() || !record_early.RemovalComplete()) && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(production_frame.RemovalComplete() && production_peer.RemovalComplete() && production_later.RemovalComplete() && production_copy_peer.RemovalComplete() && record_peer.RemovalComplete() && record_early.RemovalComplete());assert(S2Hook_DrainRetirement());
     production_service.reset();production_sink.reset();production_codec.reset();KHook::Shutdown();return 1;
 }
 

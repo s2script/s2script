@@ -241,6 +241,7 @@ mod production {
         static COPY_READY:Cell<bool>=const{Cell::new(false)};
         static PROCESS_READY:Cell<bool>=const{Cell::new(false)};
         static RECORD_STATE:RefCell<Option<borrowed_proof::State>>=const{RefCell::new(None)};
+        static CURSOR_STATE:RefCell<Option<borrowed_proof::State>>=const{RefCell::new(None)};
         static RECORD_ENGINE:Cell<Option<borrowed_proof::EngineCall>>=const{Cell::new(None)};
         static RECORD_PEER:Cell<Option<FrameProduction>>=const{Cell::new(None)};
         static RECORD_READY:Cell<bool>=const{Cell::new(false)};
@@ -433,10 +434,14 @@ mod production {
             27 => COPY_PROCESS.with(|s|*s.borrow_mut()=Some(proof::copy_process_begin())),
             28 => COPY_READY.with(|s|s.set(proof::copy_process_probe())),
             29 => {proof::copy_process_exercise();proof::copy_process_finish(COPY_PROCESS.with(|s|s.borrow_mut().take()).unwrap());},
-            30 => {RECORD_STATE.with(|s|*s.borrow_mut()=Some(borrowed_proof::begin(RECORD_ENGINE.with(Cell::get).unwrap(),ENTITY_SLOT.with(Cell::get).unwrap())));assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(1)},1);},
+            30 => {assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(1)},1);RECORD_STATE.with(|s|*s.borrow_mut()=Some(borrowed_proof::begin(RECORD_ENGINE.with(Cell::get).unwrap(),ENTITY_SLOT.with(Cell::get).unwrap())));},
             31 => {RECORD_READY.with(|r|r.set(RECORD_STATE.with(|s|borrowed_proof::ready(s.borrow().as_ref().unwrap())) && unsafe{RECORD_PEER.with(Cell::get).unwrap()(2)}>0));},
             32 => {RECORD_STATE.with(|s|borrowed_proof::exercise(s.borrow().as_ref().unwrap()));assert_eq!(borrowed_proof::call(1)[9],1.);},
-            33 => {borrowed_proof::abort(RECORD_STATE.with(|s|s.borrow_mut().take()).unwrap());assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(0)},1);},
+            33 => {borrowed_proof::abort(RECORD_STATE.with(|s|s.borrow_mut().take()).unwrap());},
+            34 => {CURSOR_STATE.with(|s|*s.borrow_mut()=Some(borrowed_proof::cursor_begin(RECORD_ENGINE.with(Cell::get).unwrap())));},
+            35 => {RECORD_READY.with(|r|r.set(CURSOR_STATE.with(|s|borrowed_proof::cursor_ready(s.borrow().as_ref().unwrap()))));},
+            36 => {borrowed_proof::cursor_exercise(true);},
+            37 => {borrowed_proof::cursor_abort(CURSOR_STATE.with(|s|s.borrow_mut().take()).unwrap());assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(0)},1);},
             _ => panic!("unexpected frame callback"),
         });
         if let Err(error) = result {
@@ -638,8 +643,16 @@ mod production {
             let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
             loop{drive(31);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record Service/peer readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
             drive(32);drive(33);
+            // Keep the paired observer installed before the new Service hook.
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            while unsafe{empty()}==0 && std::time::Instant::now()<deadline {assert_eq!(unsafe{frame(0)},1);std::thread::sleep(std::time::Duration::from_millis(1));}
+            assert_eq!(unsafe{empty()},1);drive(34);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(35);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record cursor Service readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            drive(36);drive(37);
         }));
         if let Some(state)=RECORD_STATE.with(|s|s.borrow_mut().take()){borrowed_proof::abort(state);}
+        if let Some(state)=CURSOR_STATE.with(|s|s.borrow_mut().take()){borrowed_proof::cursor_abort(state);}
         unsafe{RECORD_PEER.with(Cell::get).unwrap()(0)};
         RECORD_ENGINE.with(|s|s.set(None));RECORD_PEER.with(|s|s.set(None));
         if let Some(state)=COPY_STATE.with(|s|s.borrow_mut().take()){proof::copy_abort(state);}
