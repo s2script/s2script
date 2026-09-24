@@ -1,5 +1,7 @@
 #ifdef S2BRIDGE_TARGET_FIXTURE
 #include <thread>
+#include <cstring>
+static const void* escaped_input=nullptr;
 static volatile int fixture_calls=0;
 extern "C" __attribute__((visibility("default"),noinline)) int s2bridge_fixture_native(int n) {
     ++fixture_calls; return n+1;
@@ -8,8 +10,12 @@ extern "C" __attribute__((visibility("default"),noinline)) int s2bridge_fixture_
     ++fixture_calls; return n+2;
 }
 extern "C" __attribute__((visibility("default"),noinline)) void* s2bridge_fixture_pointer(void* p) {
-    ++fixture_calls; return p;
+    ++fixture_calls; escaped_input=p; return p;
 }
+extern "C" __attribute__((visibility("default"),noinline)) int s2bridge_fixture_call_count() { return fixture_calls; }
+extern "C" __attribute__((visibility("default"),noinline)) void* s2bridge_fixture_bad_pointer(void*) { ++fixture_calls; return reinterpret_cast<void*>(1); }
+extern "C" __attribute__((visibility("default"),noinline)) const void* s2bridge_fixture_last_pointer() { return escaped_input; }
+extern "C" __attribute__((visibility("default"),noinline)) int s2bridge_fixture_length(const char* value) { ++fixture_calls; return std::strlen(value); }
 extern "C" __attribute__((visibility("default"),noinline)) int s2bridge_fixture_join(int n) {
     int result=0;
     auto volatile target=&s2bridge_fixture_other;
@@ -23,6 +29,7 @@ extern "C" __attribute__((visibility("default"),noinline)) int s2bridge_fixture_
 #include <cassert>
 #include <cstring>
 #include <iostream>
+#include <limits>
 using nlohmann::json;
 #define CHECK(c, label) assert((c) && label)
 namespace {
@@ -121,8 +128,109 @@ void stages() {
     assert(!s2bridge::Parse(target().dump(),abi().dump(),"wrong"));
     t=target(); t["derivation"]="identity"; assert(!s2bridge::Parse(t.dump(),abi().dump(),abi()["fingerprint"]));
     t=target(); t["candidateValidate"]["oops"]=true; assert(!s2bridge::Parse(t.dump(),abi().dump(),abi()["fingerprint"]));
+    // Ownership is a semantic contract, not a change to the machine fingerprint.
+    a=abi(); a["parameters"][0]["native"]="ptr"; a["parameters"][0]["projection"]["id"]="string";
+    a["parameters"][0]["ownership"]="callee-borrowed"; a["fingerprint"]="linux-x86_64-sysv:none:i32(ptr)";
+    assert(s2bridge::Parse(target().dump(),a.dump(),a["fingerprint"]));
+    a["parameters"][0].erase("ownership"); assert(!s2bridge::Parse(target().dump(),a.dump(),a["fingerprint"]));
+    for (const auto owner : {"caller-borrowed", "garbage"}) {
+        a["parameters"][0]["ownership"]=owner; assert(!s2bridge::Parse(target().dump(),a.dump(),a["fingerprint"]));
+    }
+    a["parameters"][0]["ownership"]="native-observed";
+    a["parameters"][0]["mutable"]=json::array({"pre"}); assert(!s2bridge::Parse(target().dump(),a.dump(),a["fingerprint"]));
+    a["parameters"][0]["ownership"]="callee-borrowed";
+    a["returns"]["native"]="ptr"; a["returns"]["projection"]["id"]="entity";
+    a["fingerprint"]="linux-x86_64-sysv:none:ptr(ptr)";
+    assert(!s2bridge::Parse(target().dump(),a.dump(),a["fingerprint"]));
+    a["parameters"][0]["ownership"]="callee-retained"; assert(s2bridge::Parse(target().dump(),a.dump(),a["fingerprint"]));
     std::cout << "PASS bridge normalization and real S1 staged resolution\n";
 }
+
+void copied_transport_primitives() {
+    using namespace s2bridge; using namespace s2fn::copy;
+    CopyProducer engine, plugin; plugin.domain=1;plugin.digest[0]=23;plugin.generation=7;
+    auto context=CopyTransaction::Create(engine); assert(context);
+    auto& tx=static_cast<CopyTransaction&>(*context.value);
+    S2FunctionValue value{};value.kind=8;value.flags=4;value.aux=3;
+    const uint8_t bytes[]={'a','b','c'};CopyInput input{1,sizeof(CopyInput),bytes,3};
+    assert(tx.Stage(0,Kind::String,value,input,plugin));
+    assert(tx.Read(0).size()==3 && std::memcmp(tx.Read(0).data(),"abc",3)==0);
+    auto saved=tx.Read(0);
+    auto bad=value;bad.bits=UINT64_MAX;assert(!tx.Stage(0,Kind::String,bad,input,plugin));
+    bad=value;bad.bits=2;assert(!tx.Stage(0,Kind::String,bad,input,plugin));
+    bad=value;bad.reserved=1;assert(!tx.Stage(0,Kind::String,bad,input,plugin));
+    bad=value;bad.flags=5;assert(!tx.Stage(0,Kind::String,bad,input,plugin));
+    CopyInput malformed=input;malformed.struct_size=0;assert(!tx.Stage(0,Kind::String,value,malformed,plugin));
+    malformed=input;malformed.size=UINT64_MAX;assert(!tx.Stage(0,Kind::String,value,malformed,plugin));
+    const uint8_t nul[]={0,'x'};malformed={1,sizeof(CopyInput),nul,2};bad=value;bad.aux=2;
+    assert(!tx.Stage(0,Kind::String,bad,malformed,plugin));
+    const uint8_t utf8[]={0xc0,0x80};malformed.data=utf8;assert(!tx.Stage(0,Kind::String,bad,malformed,plugin));
+    auto invalid_owner=plugin;invalid_owner.domain=17;assert(!tx.Stage(0,Kind::String,value,input,invalid_owner));
+    invalid_owner=plugin;invalid_owner.reserved=1;assert(!tx.Stage(0,Kind::String,value,input,invalid_owner));
+    invalid_owner=plugin;invalid_owner.version=2;assert(!tx.Stage(0,Kind::String,value,input,invalid_owner));
+    invalid_owner=plugin;invalid_owner.struct_size=0;assert(!tx.Stage(0,Kind::String,value,input,invalid_owner));
+    assert(saved.data()==tx.Read(0).data());
+    value.aux=0;assert(tx.Stage(0,Kind::String,value,{},plugin));
+    assert(tx.Read(0).size()==0 && tx.Read(0).data()[0]==0 && saved.size()==3);
+    uint8_t output[16];std::memset(output,0x7f,sizeof output);CopyOutput out{1,sizeof(CopyOutput),output,2,9};
+    S2FunctionValue request{};request.kind=8;request.flags=4;
+    assert(!EncodeCopy(saved,request,out) && out.size==9 && output[0]==0x7f);
+    out.capacity=16;auto encoded=EncodeCopy(saved,request,out);assert(encoded && encoded.value.bits==0 && encoded.value.aux==3 && out.size==3 && output[3]==0x7f);
+    float vector[3]={-0.0f,2,3};value.flags=5;value.aux=12;input={1,sizeof(CopyInput),reinterpret_cast<const uint8_t*>(vector),12};
+    assert(tx.Stage(1,Kind::Vector,value,input,plugin));
+    assert(std::memcmp(tx.Read(1).data(),vector,12)==0);
+    value.aux=11;assert(!tx.Stage(1,Kind::Vector,value,input,plugin));
+    vector[2]=std::numeric_limits<float>::infinity();value.aux=12;assert(!tx.Stage(1,Kind::Vector,value,input,plugin));
+    // Native call capture capacity must be reserved before the invocation.
+    auto capture=s2fn::copy::Snapshot::PrepareCapture(tx.EngineOperation(),Kind::String);assert(capture);
+    auto reserved=s2fn::copy::NativeBudget().Read();
+    Reader reader{[](void*,uintptr_t source,void* dest,size_t count)->size_t { std::memcpy(dest,reinterpret_cast<const void*>(source),count);return count; },nullptr,4096,true};
+    std::array<uint8_t,65536> native{};native[0]='z';
+    auto captured=s2fn::copy::Snapshot::CapturePrepared(std::move(capture.value),reinterpret_cast<uintptr_t>(native.data()),reader);assert(captured && captured.value.size()==1);
+    assert(s2fn::copy::NativeBudget().Read().bytes==reserved.bytes);
+    assert(tx.Capture(2,Kind::String,reinterpret_cast<uintptr_t>(native.data()),reader));
+    auto initial=tx.Read(2);native[0]='q';
+    assert(initial.data()[0]=='z' && tx.Read(2).data()[0]=='z');
+    auto immutable=captured.value;
+    assert(!s2fn::copy::Snapshot::CapturePrepared(std::move(captured.value),reinterpret_cast<uintptr_t>(native.data()),reader));
+    std::array<CopyPosition,32> positions{};positions[0]={Kind::String,CopyOwnership::CalleeRetained,true};positions[1]={Kind::Vector,CopyOwnership::CalleeBorrowed,true};
+    auto before=Arena::Resident().Read();auto published=tx.Publish(positions,2,false);assert(published);
+    assert(static_cast<const char*>(published.value[0])[0]==0);
+    assert(std::memcmp(published.value[1],tx.Read(1).data(),12)==0);
+    const auto* escaped=published.value[0];context.value.reset();
+    std::vector<std::string> churn(500,std::string(4096,'x'));assert(static_cast<const char*>(escaped)[0]==0);
+    assert(Arena::Resident().Read().values==before.values+1);
+    std::cout << "PASS copied span validation, immutable staging, transactional output, borrowed/permanent publication\n";
+}
+void copied_quota_transaction() {
+    using namespace s2bridge;using namespace s2fn::copy;
+    CopyProducer engine,full,fresh,loser;full.domain=1;full.digest[0]=31;fresh.domain=2;fresh.digest[0]=32;loser.domain=1;loser.digest[0]=33;
+    std::array<CopyPosition,32> positions{};positions[0]={Kind::String,CopyOwnership::CalleeRetained,true};positions[1]=positions[0];
+    std::string content(65535,'x');S2FunctionValue value{};value.kind=8;value.flags=4;value.aux=65535;
+    CopyInput input{1,sizeof(CopyInput),reinterpret_cast<const uint8_t*>(content.data()),content.size()};
+    for(int i=0;i<64;++i) {
+        content[0]='A'+i/26;content[1]='a'+i%26;
+        auto frame=CopyTransaction::Create(engine);assert(frame);auto& tx=static_cast<CopyTransaction&>(*frame.value);
+        assert(tx.Stage(0,Kind::String,value,input,full));assert(tx.Publish(positions,1,false));
+    }
+    const auto before=Arena::Resident().Read();assert(before.bytes==4*MiB && before.values==64 && before.owners==1);
+    auto frame=CopyTransaction::Create(engine);assert(frame);auto& tx=static_cast<CopyTransaction&>(*frame.value);
+    S2FunctionValue tiny=value;tiny.aux=3;const uint8_t small[]="new";CopyInput small_input{1,sizeof(CopyInput),small,3};
+    assert(tx.Stage(0,Kind::String,tiny,small_input,loser));
+    assert(tx.Stage(0,Kind::String,tiny,small_input,fresh)); // Losing owner never reaches permanent admission.
+    content[0]='Z';assert(tx.Stage(1,Kind::String,value,input,full));
+    auto failed=tx.Publish(positions,2,false);assert(!failed && failed.error.find("FunctionCopyPermanentBudgetExceeded")!=std::string::npos);
+    auto after=Arena::Resident().Read();assert(after.bytes==before.bytes && after.values==before.values && after.owners==before.owners);
+    content[0]='A';content[1]='a';++full.generation;
+    assert(tx.Stage(1,Kind::String,value,input,full));auto committed=tx.Publish(positions,2,false);assert(committed);
+    assert(std::memcmp(committed.value[0],"new",3)==0 && std::memcmp(committed.value[1],"Aa",2)==0);
+    after=Arena::Resident().Read();assert(after.bytes==before.bytes+16 && after.values==65 && after.owners==2);
+    const char* escaped=static_cast<const char*>(committed.value[1]);frame.value.reset();
+    auto next=CopyTransaction::Create(engine);assert(next);std::vector<std::string> churn(500,std::string(4096,'p'));
+    assert(std::memcmp(escaped,"Aa",2)==0 && Arena::Resident().Read().bytes==after.bytes);
+    std::cout<<"PASS production-quota mixed-producer transaction rollback, losing candidate no-charge, generation reuse and escaped lifetime\n";
+}
+
 }
 #ifndef S2FN_VALIDATION_ONLY
 #include <chrono>
@@ -141,6 +249,10 @@ extern "C" int s2bridge_fixture_native(int);
 extern "C" int s2bridge_fixture_other(int);
 extern "C" int s2bridge_fixture_join(int);
 extern "C" void* s2bridge_fixture_pointer(void*);
+extern "C" const void* s2bridge_fixture_last_pointer();
+extern "C" int s2bridge_fixture_call_count();
+extern "C" void* s2bridge_fixture_bad_pointer(void*);
+extern "C" int s2bridge_fixture_length(const char*);
 #define native s2bridge_fixture_native
 struct Sink : s2bridge::DispatchSink {
     s2bridge::Service* service=nullptr;
@@ -453,6 +565,283 @@ static void entity_transport() {
     }
     std::cout<<"PASS entity binding-local requests both physical orders, staged null/strict reads, atomic stale commit, phase/lease/thread guards\n";
 }
+static s2bridge::CopyProducer copy_plugin() {s2bridge::CopyProducer p;p.domain=1;p.digest[0]=91;p.generation=4;return p;}
+static int copy_mode=0, copy_pre=0, copy_post=0;
+static int copied_dispatch(long long id,const S2FunctionFrameInfo* info,int phase) {
+    using namespace s2bridge;
+    CopyFrameKey key{id,info->frame_token,info->native_epoch,"linux-x86_64-sysv:none:ptr(ptr)"};
+    auto request=entity_request(4);std::array<uint8_t,65535> bytes{};CopyOutput out{1,sizeof(CopyOutput),bytes.data(),bytes.size(),0};
+    auto read=FrameReadCopy(key,phase ? -2 : 0,request,out);assert(read && out.size>0);
+    auto saved=std::string(reinterpret_cast<char*>(bytes.data()),out.size);
+    if(!phase) {
+        ++copy_pre;assert(saved=="input");
+        auto bad=key;++bad.token;assert(!FrameReadCopy(bad,0,request,out));
+        S2FunctionValue edit=request;edit.aux=6;const uint8_t replacement[]="edited";CopyInput in{1,sizeof(CopyInput),replacement,6};
+        auto before=s2fn::copy::Arena::Resident().Read();
+        assert(FrameWriteCopy(key,0,edit,in,copy_plugin()));
+        assert(FrameReadCopy(key,0,request,out) && out.size==6 && std::memcmp(bytes.data(),"edited",6)==0);
+        assert(!FrameCommitCopy(key,2,nullptr,{},copy_plugin()));
+        assert(s2fn::copy::Arena::Resident().Read().values==before.values);
+        const uint8_t result[]="suppressed";CopyInput result_in{1,sizeof(CopyInput),result,10};auto returned=request;returned.aux=10;
+        assert(FrameCommitCopy(key,copy_mode==2 ? 2 : 0,copy_mode==2 ? &returned : nullptr,result_in,copy_plugin()));
+        assert(saved=="input");
+    } else {
+        ++copy_post;assert(saved==(copy_mode==2 ? "suppressed" : "edited"));
+        auto original=FrameReadCopy(key,-3,request,out);assert(bool(original)==(copy_mode!=2));
+        assert(!FrameWriteCopy(key,0,request,{},copy_plugin()));
+        const uint8_t replacement[]="post";CopyInput in{1,sizeof(CopyInput),replacement,4};auto edit=request;edit.aux=4;
+        out.capacity=3;out.size=71;bytes[0]=99;auto before=s2fn::copy::Arena::Resident().Read();
+        assert(!FrameOverrideReturnCopy(key,edit,in,copy_plugin(),request,out));
+        assert(out.size==71 && bytes[0]==99 && s2fn::copy::Arena::Resident().Read().values==before.values);
+        out.capacity=bytes.size();assert(FrameOverrideReturnCopy(key,edit,in,copy_plugin(),request,out));
+        assert(std::string(reinterpret_cast<char*>(bytes.data()),out.size)==(copy_mode==2 ? "suppressed" : "post"));
+        if(copy_mode==2) assert(s2fn::copy::Arena::Resident().Read().values==before.values);
+        if(copy_mode!=2) {assert(FrameReadCopy(key,-3,request,out));assert(std::string(reinterpret_cast<char*>(bytes.data()),out.size)=="edited");}
+    }
+    return 1;
+}
+static int observed_copy_dispatch(long long id,const S2FunctionFrameInfo* info,int phase) {
+    using namespace s2bridge;CopyFrameKey key{id,info->frame_token,info->native_epoch,"linux-x86_64-sysv:none:ptr(ptr)"};
+    auto request=entity_request(4);uint8_t bytes[16]{};CopyOutput out{1,sizeof(CopyOutput),bytes,16,0};
+    assert(FrameReadCopy(key,phase ? -2 : 0,request,out) && out.size==5 && std::memcmp(bytes,"input",5)==0);
+    auto value=request;value.aux=1;const uint8_t replacement[]="x";CopyInput in{1,sizeof(CopyInput),replacement,1};
+    char reason[256]{};auto entity=entity_request(1);
+    // Both copied flags and a misleading entity request are rejected by the old
+    // transport before codec contact on a physically copied position.
+    assert(!S2_FunctionFrameRead(id,key.token,key.epoch,key.fingerprint,0,8,&entity,reason,sizeof reason));
+    assert(!S2_FunctionFrameWrite(id,key.token,key.epoch,key.fingerprint,0,&entity,reason,sizeof reason));
+    assert(!S2_FunctionFrameCommit(id,key.token,key.epoch,key.fingerprint,0,nullptr,reason,sizeof reason));
+    assert(!FrameWriteCopy(key,0,value,in,copy_plugin()));
+    if(!phase) {
+        assert(!FrameCommitCopy(key,2,&value,in,copy_plugin()));
+        assert(FrameCommitCopy(key,0,nullptr,{},copy_plugin()));
+    } else {
+        assert(!FrameOverrideReturnCopy(key,value,in,copy_plugin(),request,out));
+        assert(!S2_FunctionFrameOverrideReturn(id,key.token,key.epoch,key.fingerprint,&entity,&entity,reason,sizeof reason));
+    }
+    return 1;
+}
+static void copied_execution() {
+    using namespace s2bridge;
+    auto address=reinterpret_cast<uintptr_t>(&s2bridge_fixture_pointer);Fixture fixture(address-0x1200);fixture.freeze();
+    Service service([&](const auto&,auto& out,auto&){out.address=address;out.image=fixture.image;return true;});
+    CoreDispatchSink sink(copied_dispatch);assert(service.SetDispatchSink(&sink));
+    auto t=target();t["resolve"]="direct";t["derivation"]="identity";t["candidateValidate"]=json::object();auto a=abi();
+    a["parameters"][0]["native"]="ptr";a["parameters"][0]["projection"]["id"]="string";a["parameters"][0]["ownership"]="callee-borrowed";
+    a["returns"]["native"]="ptr";a["returns"]["projection"]["id"]="string";a["returns"]["ownership"]="caller-borrowed";
+    a["fingerprint"]="linux-x86_64-sysv:none:ptr(ptr)";
+    auto prepared=service.Prepare("copy-alias",t.dump(),a.dump(),a["fingerprint"]);assert(prepared);
+    const uint8_t input[]="input";CopyInput in{1,sizeof(CopyInput),input,5};std::array<uint8_t,65535> bytes{};
+    CopyOutput out{1,sizeof(CopyOutput),bytes.data(),bytes.size(),0};auto arg=entity_request(4);arg.aux=5;auto request=entity_request(4);
+    assert(!service.Call(prepared.value,0,&arg,1,request));
+    char reason[256]{};assert(!S2_FunctionPrepare("copied-public",t.dump().c_str(),a.dump().c_str(),"linux-x86_64-sysv:none:ptr(ptr)",reason,sizeof reason));
+    assert(std::strstr(reason,"FunctionCopyExecutionUnavailable"));
+    const auto calls_before=s2bridge_fixture_call_count();auto metrics=s2fn::copy::Arena::Resident().Read();
+    out.capacity=65534;out.size=99;bytes[0]=71;
+    assert(!service.CallCopy(prepared.value,0,&arg,1,request,in,out,copy_plugin()));
+    assert(s2bridge_fixture_call_count()==calls_before && out.size==99 && bytes[0]==71 && s2fn::copy::Arena::Resident().Read().values==metrics.values);
+    out.capacity=bytes.size();auto bad=arg;bad.bits=UINT64_MAX;
+    assert(!service.CallCopy(prepared.value,0,&bad,1,request,in,out,copy_plugin()) && s2bridge_fixture_call_count()==calls_before);
+    auto result=service.CallCopy(prepared.value,0,&arg,1,request,in,out,copy_plugin());
+    assert(result && out.size==5 && std::memcmp(bytes.data(),"input",5)==0);
+    auto empty=arg;empty.aux=0;assert(service.CallCopy(prepared.value,0,&empty,1,request,{},out,copy_plugin()) && out.size==0);
+    auto conflict=a;conflict["parameters"][0]["ownership"]="callee-retained";
+    assert(!service.Prepare("copy-conflict",t.dump(),conflict.dump(),a["fingerprint"]));
+    assert(service.TargetRelease(prepared.value));assert(service.Collect());
+    {
+        auto vector_abi=a;vector_abi["parameters"][0]["projection"]["id"]="vector";vector_abi["returns"]["projection"]["id"]="vector";
+        auto vector=service.Prepare("vector-alias",t.dump(),vector_abi.dump(),vector_abi["fingerprint"]);assert(vector);
+        float native_vector[3]={-0.0f,1.25f,-2};CopyInput vector_input{1,sizeof(CopyInput),reinterpret_cast<const uint8_t*>(native_vector),12};
+        auto vector_arg=entity_request(5);vector_arg.aux=12;auto vector_request=entity_request(5);out.capacity=12;
+        auto result=service.CallCopy(vector.value,0,&vector_arg,1,vector_request,vector_input,out,copy_plugin());assert(result && out.size==12 && std::memcmp(bytes.data(),native_vector,12)==0);
+        auto before=s2bridge_fixture_call_count();vector_arg.aux=11;assert(!service.CallCopy(vector.value,0,&vector_arg,1,vector_request,vector_input,out,copy_plugin()) && s2bridge_fixture_call_count()==before);
+        vector_arg.aux=12;native_vector[2]=std::numeric_limits<float>::infinity();assert(!service.CallCopy(vector.value,0,&vector_arg,1,vector_request,vector_input,out,copy_plugin()) && s2bridge_fixture_call_count()==before);
+        assert(service.TargetRelease(vector.value));assert(service.Collect());out.capacity=bytes.size();
+    }
+    {
+        const auto bad_address=reinterpret_cast<uintptr_t>(&s2bridge_fixture_bad_pointer);Fixture image(bad_address-0x1200);image.freeze();
+        Service bad_service([&](const auto&,auto& out,auto&){out.address=bad_address;out.image=image.image;return true;});
+        auto bad=bad_service.Prepare("bad-native-copy",t.dump(),a.dump(),a["fingerprint"]);assert(bad);
+        const auto count=s2bridge_fixture_call_count();out.size=91;bytes[0]=72;
+        auto failure=bad_service.CallCopy(bad.value,0,&arg,1,request,in,out,copy_plugin());
+        assert(!failure && failure.error.find("FunctionCopyCaptureAfterCall")!=std::string::npos && s2bridge_fixture_call_count()==count+1);
+        assert(out.size==91 && bytes[0]==72);assert(bad_service.TargetRelease(bad.value));assert(bad_service.Collect());
+    }
+    {
+        CoreDispatchSink observer(observed_copy_dispatch);assert(service.SetDispatchSink(&observer));
+        auto observed=a;observed["parameters"][0]["ownership"]="native-observed";observed["returns"]["ownership"]="native-observed";
+        auto binding=service.Prepare("observed-copy",t.dump(),observed.dump(),observed["fingerprint"]);assert(binding);
+        const auto count=s2bridge_fixture_call_count();assert(!service.CallCopy(binding.value,0,&arg,1,request,in,out,copy_plugin()) && s2bridge_fixture_call_count()==count);
+        assert(service.HookAcquire(binding.value));auto volatile target=&s2bridge_fixture_pointer;
+        assert(target(const_cast<uint8_t*>(input))==input);
+        assert(service.HookRelease(binding.value));assert(service.TargetRelease(binding.value));while(!service.Collect()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        assert(service.SetDispatchSink(&sink));
+    }
+    a=conflict;a["parameters"][0]["mutable"]=json::array({"pre"});
+    for(bool mutable_first:{false,true}) {
+        auto one=a;one["parameters"][0]["mutable"]=mutable_first ? json::array({"pre"}) : json::array();
+        auto two=a;two["parameters"][0]["mutable"]=mutable_first ? json::array() : json::array({"pre"});
+        auto first=service.Prepare("first-copy",t.dump(),one.dump(),one["fingerprint"]);
+        auto second=service.Prepare("second-copy",t.dump(),two.dump(),two["fingerprint"]);
+        assert(first && second && first.value==second.value);
+        assert(service.TargetRelease(first.value));assert(service.TargetRelease(second.value));assert(service.Collect());
+    }
+    prepared=service.Prepare("copy-mutation",t.dump(),a.dump(),a["fingerprint"]);assert(prepared);assert(service.HookAcquire(prepared.value));
+    for(copy_mode=1;copy_mode<=2;++copy_mode) {
+        auto result=service.CallCopy(prepared.value,0,&arg,1,request,in,out,copy_plugin());assert(result);
+        assert(std::string(reinterpret_cast<char*>(bytes.data()),out.size)==(copy_mode==2 ? "suppressed" : "post"));
+        auto volatile native_target=&s2bridge_fixture_pointer;
+        auto escaped=static_cast<const char*>(native_target(const_cast<uint8_t*>(input)));
+        std::vector<std::string> churn(500,std::string(4096,'x'));
+        assert(std::string(escaped)==(copy_mode==2 ? "suppressed" : "post"));
+    }
+    assert(copy_pre==4 && copy_post==4);
+    const auto* retained=static_cast<const char*>(s2bridge_fixture_last_pointer());assert(std::string(retained)=="edited");
+    assert(service.HookRelease(prepared.value));assert(service.TargetRelease(prepared.value));
+    while(!service.Collect()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    std::vector<std::string> churn(500,std::string(4096,'q'));assert(std::string(retained)=="edited");
+    std::cout<<"PASS stock copied alias, immutable frame edits, suppression escape, POST override/arbitration and capacity rollback\n";
+}
+static void check_callback_trace(const std::vector<std::string>& actual,const std::vector<std::string>& expected) {
+    if(actual!=expected) {
+        std::cerr<<"unexpected callback order:";
+        for(const auto& event:actual) std::cerr<<" "<<event;
+        std::cerr<<"\n";
+    }
+    assert(actual==expected);
+}
+static std::string arbitration_submission,arbitration_expected;
+static std::vector<std::string> arbitration_trace;
+static int arbitration_dispatch(long long id,const S2FunctionFrameInfo* info,int phase) {
+    using namespace s2bridge;CopyFrameKey key{id,info->frame_token,info->native_epoch,"linux-x86_64-sysv:none:ptr(ptr)"};
+    auto request=entity_request(4);
+    arbitration_trace.push_back(phase ? "bridge:post" : "bridge:pre");
+    if(!phase) {
+        auto value=request;value.aux=arbitration_submission.size();CopyInput in{1,sizeof(CopyInput),reinterpret_cast<const uint8_t*>(arbitration_submission.data()),arbitration_submission.size()};
+        assert(FrameCommitCopy(key,2,&value,in,copy_plugin()));
+    } else {
+        std::array<uint8_t,65535> bytes{};CopyOutput out{1,sizeof(CopyOutput),bytes.data(),bytes.size(),0};
+        assert(FrameReadCopy(key,-2,request,out));assert(std::string(reinterpret_cast<char*>(bytes.data()),out.size)==arbitration_expected);
+        const uint8_t losing[]="post-loser-never-published";CopyInput in{1,sizeof(CopyInput),losing,sizeof(losing)-1};auto value=request;value.aux=in.size;
+        const auto before=s2fn::copy::Arena::Resident().Read();assert(FrameOverrideReturnCopy(key,value,in,copy_plugin(),request,out));
+        assert(std::string(reinterpret_cast<char*>(bytes.data()),out.size)==arbitration_expected && s2fn::copy::Arena::Resident().Read().values==before.values);
+    }
+    return 1;
+}
+static void copied_peer_arbitration() {
+    using namespace s2bridge;
+    for(bool peer_pre_first:{true,false}) for(auto strength:{KHook::Action::Override,KHook::Action::Supersede}) {
+        auto address=reinterpret_cast<uintptr_t>(&s2bridge_fixture_pointer);Fixture fixture(address-0x1200);fixture.freeze();
+        Service service([&](const auto&,auto& out,auto&){out.address=address;out.image=fixture.image;return true;});
+        CoreDispatchSink sink(arbitration_dispatch);assert(service.SetDispatchSink(&sink));
+        auto t=target();t["resolve"]="direct";t["derivation"]="identity";t["candidateValidate"]=json::object();auto a=abi();
+        a["parameters"][0]["native"]="ptr";a["parameters"][0]["projection"]["id"]="string";a["parameters"][0]["ownership"]="callee-borrowed";
+        a["returns"]["native"]="ptr";a["returns"]["projection"]["id"]="string";a["returns"]["ownership"]="caller-borrowed";a["fingerprint"]="linux-x86_64-sysv:none:ptr(ptr)";
+        auto prepared=service.Prepare("peer-copy",t.dump(),a.dump(),a["fingerprint"]);assert(prepared);
+        struct Peer : s2fn::DispatchSink {
+            KHook::Action strength;
+            void Dispatch(s2fn::DispatchFrame& f) override {
+                arbitration_trace.push_back(f.phase==s2fn::Phase::Pre ? "peer:pre" : "peer:post");
+                if(f.phase==s2fn::Phase::Pre){f.action=strength;f.result=s2fn::NativeValue::From<const char*>("peer");}
+            }
+            void Error(const char*) noexcept override {std::abort();}
+        } peer;peer.strength=strength;
+        s2fn::AbiSignature sig;sig.parameters={{"ptr","string"}};sig.returns={"ptr","string"};auto binding=s2fn::RuntimeBinding::Create(sig,peer);assert(binding);
+        // Stock inserts each new PRE+POST callback before existing PRE+POST
+        // callbacks. Registration order is the reverse of PRE execution order.
+        if(!peer_pre_first) assert(binding.value->Configure(reinterpret_cast<void*>(address)).Accepted());
+        assert(service.HookAcquire(prepared.value));
+        if(peer_pre_first) assert(binding.value->Configure(reinterpret_cast<void*>(address)).Accepted());
+        arbitration_submission=std::string("submitted-")+(peer_pre_first ? "prior-" : "later-")+std::to_string(static_cast<int>(strength));
+        arbitration_expected=peer_pre_first && strength==KHook::Action::Supersede ? "peer" : arbitration_submission;
+        arbitration_trace.clear();
+        auto before=s2fn::copy::Arena::Resident().Read();auto volatile target=&s2bridge_fixture_pointer;
+        const char* escaped=static_cast<const char*>(target(const_cast<char*>("input")));assert(std::string(escaped)==arbitration_expected);
+        const std::vector<std::string> expected_trace=peer_pre_first
+            ? std::vector<std::string>{"peer:pre","bridge:pre","bridge:post","peer:post"}
+            : std::vector<std::string>{"bridge:pre","peer:pre","peer:post","bridge:post"};
+        check_callback_trace(arbitration_trace,expected_trace);
+        // A host-fold winner submitted at PRE stays charged even if an earlier
+        // peer Supersede wins. Public provider APIs cannot distinguish its PRE
+        // strength; no hidden layout read or altered comparison is permitted.
+        assert(s2fn::copy::Arena::Resident().Read().values==before.values+1);
+        binding.value->BeginRemove();while(!binding.value->RemovalComplete()) std::this_thread::sleep_for(std::chrono::milliseconds(1));assert(binding.value->PruneCompletedTicket());binding.value.reset();
+        assert(service.HookRelease(prepared.value));assert(service.TargetRelease(prepared.value));while(!service.Collect()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        std::vector<std::string> churn(500,std::string(4096,'z'));assert(std::string(escaped)==arbitration_expected);
+    }
+    std::cout<<"PASS stock copied PRE submission with prior/later Override/Supersede and conclusive POST loser no-charge\n";
+}
+static s2bridge::Service* borrowed_service=nullptr;
+static bool borrowed_nested=false;
+static int borrowed_reads=0, borrowed_peers=0;
+static std::vector<std::string> borrowed_trace;
+static int borrowed_dispatch(long long id,const S2FunctionFrameInfo* info,int phase) {
+    using namespace s2bridge;
+    CopyFrameKey key{id,info->frame_token,info->native_epoch,"linux-x86_64-sysv:none:i32(ptr)"};
+    auto request=entity_request(4);uint8_t bytes[32]{};CopyOutput out{1,sizeof(CopyOutput),bytes,32,0};
+    assert(FrameReadCopy(key,0,request,out));
+    if(phase) {
+        assert(std::string(reinterpret_cast<char*>(bytes),out.size)=="continued");
+        borrowed_trace.push_back(borrowed_nested ? "bridge:post:nested" : "bridge:post:outer");
+        return 1;
+    }
+    ++borrowed_reads;
+    const auto saved=std::string(reinterpret_cast<char*>(bytes),out.size);
+    borrowed_trace.push_back("bridge:pre:"+saved);
+    if(!borrowed_nested) {
+        borrowed_nested=true;
+        auto arg=request;arg.aux=6;const uint8_t inner[]="nested";CopyInput in{1,sizeof(CopyInput),inner,6};CopyOutput unused{};
+        auto result=borrowed_service->CallCopy(id,0,&arg,1,{},in,unused,copy_plugin());assert(result && result.value.bits==9);
+        borrowed_nested=false;
+        assert(FrameReadCopy(key,0,request,out) && std::string(reinterpret_cast<char*>(bytes),out.size)==saved);
+    }
+    const uint8_t text[]="continued";CopyInput in{1,sizeof(CopyInput),text,9};auto edit=request;edit.aux=9;
+    assert(FrameWriteCopy(key,0,edit,in,copy_plugin()));
+    assert(FrameCommitCopy(key,0,nullptr,{},copy_plugin()));
+    borrowed_trace.push_back("bridge:commit:"+saved);
+    return 1;
+}
+static void borrowed_recall_execution() {
+    using namespace s2bridge;
+    auto address=reinterpret_cast<uintptr_t>(&s2bridge_fixture_length);Fixture fixture(address-0x1200);fixture.freeze();
+    Service service([&](const auto&,auto& out,auto&){out.address=address;out.image=fixture.image;return true;});borrowed_service=&service;
+    CoreDispatchSink sink(borrowed_dispatch);assert(service.SetDispatchSink(&sink));
+    auto t=target();t["resolve"]="direct";t["derivation"]="identity";t["candidateValidate"]=json::object();auto a=abi();
+    a["parameters"][0]["native"]="ptr";a["parameters"][0]["projection"]["id"]="string";a["parameters"][0]["ownership"]="callee-borrowed";
+    a["parameters"][0]["mutable"]=json::array({"pre"});a["fingerprint"]="linux-x86_64-sysv:none:i32(ptr)";
+    auto prepared=service.Prepare("borrowed",t.dump(),a.dump(),a["fingerprint"]);assert(prepared);
+    struct Peer : s2fn::DispatchSink {
+        void Dispatch(s2fn::DispatchFrame& f) override {
+            if(f.phase==s2fn::Phase::Post) {
+                assert(std::string(f.arguments[0].Get<const char*>())=="continued");
+                borrowed_trace.push_back(borrowed_nested ? "peer:post:nested" : "peer:post:outer");
+                return;
+            }
+            ++borrowed_peers;std::vector<std::string> churn(500,std::string(4096,'x'));
+            const auto observed=std::string(f.arguments[0].Get<const char*>());
+            if(observed!="continued") std::cerr<<"borrowed peer PRE argument: "<<observed<<"\n";
+            assert(observed=="continued");
+            borrowed_trace.push_back(borrowed_nested ? "peer:pre:nested" : "peer:pre:outer");
+        }
+        void Error(const char* error) noexcept override {std::cerr<<error<<"\n";std::abort();}
+    } peer;
+    s2fn::AbiSignature sig;sig.parameters={{"ptr","string"}};sig.returns={"i32","i32"};
+    auto binding=s2fn::RuntimeBinding::Create(sig,peer);assert(binding);assert(binding.value->Configure(reinterpret_cast<void*>(address)).Accepted());
+    // Register the intended later PRE peer first: stock prepends PRE+POST
+    // callbacks, so the bridge must be registered last to recall into this peer.
+    assert(service.HookAcquire(prepared.value));
+    borrowed_trace.clear();
+    const auto before=s2fn::copy::NativeBudget().Read();auto volatile target=&s2bridge_fixture_length;assert(target("outer")==9);
+    const std::vector<std::string> expected_trace={
+        "bridge:pre:outer","bridge:pre:nested","bridge:commit:nested",
+        "peer:pre:nested","peer:post:nested","bridge:post:nested","bridge:commit:outer",
+        "peer:pre:outer","peer:post:outer","bridge:post:outer"};
+    check_callback_trace(borrowed_trace,expected_trace);
+    assert(borrowed_reads==2 && borrowed_peers==2 && s2fn::copy::NativeBudget().Read().bytes==before.bytes);
+    binding.value->BeginRemove();while(!binding.value->RemovalComplete()) std::this_thread::sleep_for(std::chrono::milliseconds(1));assert(binding.value->PruneCompletedTicket());binding.value.reset();
+    assert(service.HookRelease(prepared.value));assert(service.TargetRelease(prepared.value));while(!service.Collect()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    borrowed_service=nullptr;std::cout<<"PASS stock borrowed PRE storage across recall/later peer heap churn and nested frame leases\n";
+}
 static void scalar_transport() {
     Fixture fixture(reinterpret_cast<uintptr_t>(&native)-0x1200);fixture.freeze();
     s2bridge::Service service([&](const auto&,auto& out,auto&){out.address=reinterpret_cast<uintptr_t>(&native);out.image=fixture.image;return true;});
@@ -524,11 +913,11 @@ void runtime() {
     assert(service.Collect() && allocations==frees);
     resolved_address=reinterpret_cast<uintptr_t>(&s2bridge_fixture_pointer);
     Fixture pointer_image(resolved_address-0x1200); pointer_image.freeze();f.image=pointer_image.image;
-    a["parameters"][0]["native"]="ptr";a["parameters"][0]["projection"]["id"]="string";
-    a["returns"]["native"]="ptr";a["returns"]["projection"]["id"]="string";
+    a["parameters"][0]["native"]="ptr";a["parameters"][0]["projection"]["id"]="entity";
+    a["returns"]["native"]="ptr";a["returns"]["projection"]["id"]="entity";
     a["fingerprint"]="linux-x86_64-sysv:none:ptr(ptr)";
     S2FunctionValue pointer{};pointer.kind=static_cast<unsigned char>(s2bridge::ValueKind::Pointer);
-    pointer.flags=static_cast<unsigned char>(s2bridge::PointerProjection::String);pointer.bits=73;
+    pointer.flags=static_cast<unsigned char>(s2bridge::PointerProjection::Opaque);pointer.bits=73;
     auto unavailable=prepare("pointer-unavailable");assert(unavailable);
     assert(!service.Call(unavailable.value,0,&pointer,1,pointer));
     assert(service.TargetRelease(unavailable.value));assert(service.Collect());
@@ -540,13 +929,16 @@ void runtime() {
     assert(service.TargetRelease(copied.value));assert(service.Collect());
     a["receiver"]="entity";a["parameters"]=json::array();a["fingerprint"]="linux-x86_64-sysv:entity:ptr()";
     auto member=prepare("entity-receiver");assert(member);
-    assert(!service.Call(member.value,0,&pointer,1,pointer)); // string is not a receiver
+    assert(!service.Call(member.value,0,&pointer,1,pointer)); // opaque is not a receiver
     auto entity=pointer;entity.flags=static_cast<unsigned char>(s2bridge::PointerProjection::Entity);
     assert(service.Call(member.value,0,&entity,1,pointer));
     codec.live=false;assert(!service.Call(member.value,0,&entity,1,pointer));
     assert(service.TargetRelease(member.value));assert(service.Collect() && allocations==frees);
     std::cout << "PASS real CIF/shared physical stock hook/lazy calls/nested owner bypass/refcount/retirement\n";
     worker_join_regression();
+    copied_execution();
+    borrowed_recall_execution();
+    copied_peer_arbitration();
     scalar_transport();
     entity_codec();
     entity_transport();
@@ -555,7 +947,9 @@ void runtime() {
 }
 }
 #endif
-int main() { stages();
+int main(int argc,char** argv) {
+    if(argc==2 && std::string(argv[1])=="--copy-quota") {copied_quota_transaction();return 0;}
+    stages(); copied_transport_primitives();
 #ifndef S2FN_VALIDATION_ONLY
     runtime();
 #endif

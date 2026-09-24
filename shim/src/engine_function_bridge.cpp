@@ -33,8 +33,8 @@ void validator(const json& j) {
     }
 }
 s2fn::AbiAtom atom(const json& j, bool returns) {
-    keys(j,returns ? std::initializer_list<const char*>{"native","projection"} :
-                    std::initializer_list<const char*>{"name","native","projection","mutable"});
+    keys(j,returns ? std::initializer_list<const char*>{"native","projection","ownership"} :
+                    std::initializer_list<const char*>{"name","native","projection","mutable","ownership"});
     s2fn::AbiAtom result{string(j,"native"),string(j.at("projection"),"id")};
     keys(j.at("projection"),{"id","version"});
     require(j.at("projection").at("version")==1,"unsupported projection version");
@@ -44,8 +44,43 @@ s2fn::AbiAtom atom(const json& j, bool returns) {
     if (result.native=="ptr") valid=result.projection=="entity" || result.projection=="entity?" ||
         result.projection=="string" || result.projection=="vector";
     require(valid,"unsupported native/projection pair");
+    const bool copied=result.projection=="string" || result.projection=="vector";
+    if (copied) {
+        require(j.contains("ownership"),"FunctionCopyLifetimeUnsupported: copied ownership required; rebuild declaration");
+        const auto owner=string(j,"ownership");
+        require(owner=="native-observed" || (returns ? owner=="caller-borrowed" : owner=="callee-borrowed" || owner=="callee-retained"),
+            "FunctionCopyLifetimeUnsupported: invalid directional ownership");
+    } else require(!j.contains("ownership"),"ownership only allowed on copied positions");
     return result;
 }
+CopyPosition copy_position(const json& j, bool returns) {
+    CopyPosition p;
+    auto projection=string(j.at("projection"),"id");
+    if(projection!="string" && projection!="vector") return p;
+    p.kind=projection=="string" ? s2fn::copy::Kind::String : s2fn::copy::Kind::Vector;
+    auto owner=string(j,"ownership");
+    p.ownership=owner=="callee-borrowed" ? CopyOwnership::CalleeBorrowed :
+        owner=="callee-retained" ? CopyOwnership::CalleeRetained :
+        owner=="caller-borrowed" ? CopyOwnership::CallerBorrowed : CopyOwnership::NativeObserved;
+    if(!returns) {
+        require(j.at("mutable").is_array(),"invalid copied mutable phases");
+        require(j.at("mutable").empty() || j.at("mutable")==json::array({"pre"}),"invalid copied mutable phases");
+        p.mutable_pre=!j.at("mutable").empty();
+        require(!p.mutable_pre || p.ownership!=CopyOwnership::NativeObserved,"FunctionCopyLifetimeUnsupported: native-observed is readonly");
+    }
+    return p;
+}
+}
+bool Declaration::HasCopies() const {
+    if(return_copy) return true;
+    for(const auto& p:copies) if(p) return true;
+    return false;
+}
+bool Declaration::CompatibleCopies(const Declaration& b) const {
+    auto same=[](const CopyPosition& a,const CopyPosition& b) {return a.kind==b.kind && a.ownership==b.ownership;};
+    if(!same(return_copy,b.return_copy)) return false;
+    for(size_t i=0;i<copies.size();++i) if(!same(copies[i],b.copies[i])) return false;
+    return true; // entity and entity? retain their binding-local projection rules.
 }
 s2fn::Result<Declaration> Parse(const std::string& target, const std::string& abi, const std::string& fingerprint) {
     try {
@@ -83,11 +118,112 @@ s2fn::Result<Declaration> Parse(const std::string& target, const std::string& ab
         d.abi.returns=atom(a.at("returns"),true);
         require(a.at("parameters").is_array(),"expected parameters array");
         for (const auto& p : a.at("parameters")) d.abi.parameters.push_back(atom(p,false));
+        require(d.abi.parameters.size()<=32,"unsupported parameter count");
+        d.return_copy=copy_position(a.at("returns"),true);
+        for(size_t i=0;i<d.abi.parameters.size();++i) {
+            d.copies[i]=copy_position(a.at("parameters")[i],false);
+            require(!(d.copies[i].mutable_pre && d.copies[i].ownership==CopyOwnership::CalleeBorrowed && d.abi.returns.native=="ptr"),
+                "FunctionCopyLifetimeUnsupported: mutable copied input with pointer return requires callee-retained");
+        }
         auto info=s2fn::Validate(d.abi); if (!info) return {{},info.error};
         require(info.value.fingerprint==fingerprint && string(a,"fingerprint")==fingerprint,"ABI fingerprint mismatch");
         require(a.at("stackCopyBytes")==info.value.stack_bytes,"stack-copy mismatch");
         d.info=std::move(info.value); return {std::move(d),{}};
     } catch (const std::exception& e) { return {{},std::string("invalid normalized declaration: ")+e.what()}; }
+}
+namespace {
+unsigned char copy_flag(s2fn::copy::Kind kind) { return kind==s2fn::copy::Kind::String ? 4 : 5; }
+constexpr size_t SpanBudget = s2fn::copy::MaxBatch * s2fn::copy::MaxString;
+bool valid_copy_input(const CopyInput& input) {
+    return input.version==1 && input.struct_size==sizeof(CopyInput) && input.size<=SpanBudget &&
+        (!input.size || input.data) && (!input.data || input.size<=UINTPTR_MAX-reinterpret_cast<uintptr_t>(input.data));
+}
+}
+s2fn::Result<s2fn::copy::OwnerGeneration> CheckedProducer(const CopyProducer& producer) {
+    if(producer.version!=1 || producer.struct_size!=sizeof(CopyProducer) || producer.reserved || producer.domain>2)
+        return {{},"FunctionCopyLifetimeUnsupported: invalid trusted producer context"};
+    return {{{static_cast<s2fn::copy::Domain>(producer.domain),producer.digest},producer.generation},{}};
+}
+s2fn::Result<s2fn::copy::Snapshot> DecodeCopy(const s2fn::copy::Operation& operation,s2fn::copy::Kind kind,
+    const S2FunctionValue& value,const CopyInput& input) {
+    if(!valid_copy_input(input) ||
+       value.kind!=8 || value.flags!=copy_flag(kind) || value.reserved || value.bits>input.size || value.aux>input.size-value.bits)
+        return {{},"FunctionCopyLifetimeUnsupported: invalid copied span/value"};
+    static const uint8_t empty=0;
+    const auto* data=input.data ? input.data+value.bits : &empty;
+    return s2fn::copy::Snapshot::FromBytes(operation,kind,data,value.aux);
+}
+s2fn::Result<bool> AdmitCopyOutput(s2fn::copy::Kind kind,const S2FunctionValue& request,const CopyOutput& out,size_t size) {
+    if(request.kind!=8 || request.flags!=copy_flag(kind) || request.reserved || request.bits || request.aux ||
+       out.version!=1 || out.struct_size!=sizeof(CopyOutput) || out.capacity>SpanBudget || (out.capacity && !out.data) || (out.data && out.capacity>UINTPTR_MAX-reinterpret_cast<uintptr_t>(out.data)))
+        return {false,"FunctionCopyLifetimeUnsupported: invalid copied output request"};
+    if(size>out.capacity) return {false,"FunctionCopyBudgetExceeded: copied output capacity"};
+    return {true,{}};
+}
+s2fn::Result<S2FunctionValue> EncodeCopy(const s2fn::copy::Snapshot& snapshot,const S2FunctionValue& request,CopyOutput& out) {
+    if(!snapshot) return {{},"FunctionCopyLifetimeUnsupported: missing snapshot"};
+    auto admitted=AdmitCopyOutput(snapshot.kind(),request,out,snapshot.size());if(!admitted) return {{},admitted.error};
+    if(snapshot.size()) std::memcpy(out.data,snapshot.data(),snapshot.size());
+    auto result=request;result.aux=static_cast<uint32_t>(snapshot.size());out.size=snapshot.size();
+    return {result,{}};
+}
+s2fn::Result<s2fn::RetainedFrame> CopyTransaction::Create(const CopyProducer& engine) {
+    auto producer=CheckedProducer(engine);if(!producer) return {{},producer.error};
+    if(producer.value.owner.domain!=s2fn::copy::Domain::Engine) return {{},"FunctionCopyLifetimeUnsupported: capture requires Engine producer"};
+    auto operation=s2fn::copy::NativeBudget().Begin(producer.value);if(!operation) return {{},operation.error};
+    auto charge=operation.value.Reserve(sizeof(CopyTransaction));if(!charge) return {{},charge.error};
+    auto* state=new(std::nothrow) CopyTransaction;
+    if(!state) return {{},"FunctionCopyBudgetExceeded: frame storage"};
+    state->charge_=std::move(charge.value);state->engine_=std::move(operation.value);
+    return {s2fn::RetainedFrame(state),{}};
+}
+void CopyTransaction::Release() noexcept { auto charge=std::move(charge_);delete this; }
+s2fn::Result<bool> CopyTransaction::Capture(size_t index,s2fn::copy::Kind kind,uintptr_t source,const s2fn::copy::Reader& reader) {
+    if(index>=observed_.size()) return {false,"invalid copied capture position"};
+    auto snapshot=s2fn::copy::Snapshot::Capture(engine_,kind,source,reader);if(!snapshot) return {false,snapshot.error};
+    observed_[index]=std::move(snapshot.value);return {true,{}};
+}
+s2fn::Result<bool> CopyTransaction::Stage(size_t index,s2fn::copy::Kind kind,const S2FunctionValue& value,
+    const CopyInput& input,const CopyProducer& producer) {
+    if(index>=edits_.size()) return {false,"invalid copied edit position"};
+    auto checked=CheckedProducer(producer);if(!checked) return {false,checked.error};
+    auto operation=s2fn::copy::NativeBudget().Begin(checked.value);if(!operation) return {false,operation.error};
+    auto snapshot=DecodeCopy(operation.value,kind,value,input);if(!snapshot) return {false,snapshot.error};
+    edits_[index]=std::move(snapshot.value);producers_[index]=checked.value.owner;return {true,{}};
+}
+const s2fn::copy::Snapshot& CopyTransaction::Read(size_t index) const {
+    require(index<observed_.size(),"invalid copied read position");
+    return index<edits_.size() && edits_[index] ? edits_[index] : observed_[index];
+}
+void CopyTransaction::AcceptReturn(const s2fn::copy::Snapshot& value) noexcept {
+    observed_[Return]=value;edits_[Return]={};
+}
+s2fn::Result<std::array<const void*,33>> CopyTransaction::Publish(const std::array<CopyPosition,32>& positions,size_t count,bool return_wins) {
+    using namespace s2fn::copy;
+    if(count>32) return {{},"invalid copied transaction count"};
+    struct Batch {
+        std::array<Snapshot,MaxBatch> values;
+        std::array<StableOwner,MaxBatch> owners;
+        std::array<const void*,MaxBatch> permanent{}, result{};
+        std::array<size_t,MaxBatch> indices{};
+    };
+    auto charge=engine_.Reserve(sizeof(Batch));if(!charge) return {{},charge.error};
+    Batch batch{};size_t size=0;
+    for(size_t i=0;i<MaxBatch;++i) {
+        if(!edits_[i] || (i<count ? false : i!=Return || !return_wins)) continue;
+        if(i<count && (!positions[i] || positions[i].ownership==CopyOwnership::NativeObserved || positions[i].kind!=edits_[i].kind()))
+            return {{},"FunctionCopyLifetimeUnsupported: invalid copied transaction position"};
+        const bool permanent=i==Return || positions[i].ownership==CopyOwnership::CalleeRetained;
+        if(permanent) {batch.values[size]=edits_[i];batch.owners[size]=producers_[i];batch.indices[size++]=i;}
+        else batch.result[i]=edits_[i].data();
+    }
+    auto intern=Arena::Resident().Intern(engine_,batch.owners.data(),batch.values.data(),size,batch.permanent.data());
+    if(!intern) return {{},intern.error};
+    // No fallible work after publication: fixed-array assignments retain leases.
+    for(size_t i=0;i<size;++i) batch.result[batch.indices[i]]=batch.permanent[i];
+    for(size_t i=0;i<count;++i) if(edits_[i]) observed_[i]=edits_[i];
+    if(return_wins && edits_[Return]) observed_[Return]=edits_[Return];
+    return {batch.result,{}};
 }
 s2fn::Result<s2resolve::Resolution> Resolve(const Declaration& d, const Resolver& resolver,
     s2validate::Ops ops, std::function<bool(uintptr_t,void*,size_t)> read_live) {
@@ -138,7 +274,7 @@ ValueKind kind(const std::string& atom) {
 bool pointer_request(const S2FunctionValue& v) {
     return v.kind==static_cast<unsigned char>(ValueKind::Pointer) && v.reserved==0 &&
         v.flags>=static_cast<unsigned char>(PointerProjection::Entity) &&
-        v.flags<=static_cast<unsigned char>(PointerProjection::Vector);
+        v.flags<=static_cast<unsigned char>(PointerProjection::Opaque);
 }
 }
 s2fn::Result<s2fn::NativeValue> EntityPointerCodec::Decode(const S2FunctionValue& value,CallStorage&) {
@@ -171,6 +307,7 @@ static_assert(sizeof(S2FunctionHookStatus)==16 && offsetof(S2FunctionHookStatus,
 struct FrameAccess {
     TargetId target;
     const Declaration& declaration;
+    const std::string& canonical;
     s2fn::DispatchFrame& native;
     S2FunctionFrameInfo info;
     s2fn::RuntimeBinding& binding;
@@ -179,6 +316,7 @@ struct FrameAccess {
     PointerCodec* codec=nullptr;
     std::map<int,S2FunctionValue> entity_edits;
     bool changed=false, committed=false;
+    CopyTransaction* copies=nullptr;
 };
 thread_local std::vector<FrameAccess*> frames;
 std::atomic<unsigned long long> next_frame{1};
@@ -253,11 +391,30 @@ struct Service::Impl {
             for (auto i=bypass.rbegin();i!=bypass.rend();++i)
                 if (i->service==&host && i->target==id) { owner=i->owner; break; }
             if (sink) {
+                CopyTransaction* copies=nullptr;
+                if(declaration.HasCopies()) {
+                    require(std::this_thread::get_id()==host.owner,"copied frame unavailable off host thread");
+                    auto storage=CopyTransaction::Create(host.engine);require(bool(storage),storage.error.c_str());
+                    frame.copied=std::move(storage.value);copies=static_cast<CopyTransaction*>(frame.copied.get());
+                    for(size_t i=0;i<declaration.abi.parameters.size();++i) if(declaration.copies[i]) {
+                        auto captured=copies->Capture(i,declaration.copies[i].kind,frame.arguments[i].Get<uintptr_t>(),host.reader);
+                        require(bool(captured),captured.error.c_str());
+                    }
+                    if(frame.phase==s2fn::Phase::Post && declaration.return_copy) {
+                        auto captured=copies->Capture(CopyTransaction::Return,declaration.return_copy.kind,frame.result.Get<uintptr_t>(),host.reader);
+                        require(bool(captured),captured.error.c_str());
+                        if(!frame.original_skipped) {
+                            captured=copies->Capture(CopyTransaction::Original,declaration.return_copy.kind,frame.original_result.Get<uintptr_t>(),host.reader);
+                            require(bool(captured),captured.error.c_str());
+                        }
+                    }
+                }
                 const auto epoch=unique_frame();
-                FrameAccess access{id,declaration,frame,
+                FrameAccess access{id,declaration,canonical_id,frame,
                     {1,sizeof(S2FunctionFrameInfo),epoch,epoch,frame.invocation_id,owner,
                      static_cast<unsigned int>(frame.arguments.size()),frame.original_skipped ? 1u : 0u},
                     *binding,host.owner,frame.arguments,host.codec,{}};
+                access.copies=copies;
                 frames.push_back(&access);
                 struct Pop { ~Pop() { frames.pop_back(); } } pop;
                 sink->Dispatch(id,owner,frame);
@@ -279,6 +436,8 @@ struct Service::Impl {
     Resolver resolver;
     DispatchSink* sink=nullptr;
     PointerCodec* codec=nullptr;
+    s2fn::copy::Reader reader=s2fn::copy::SystemReader();
+    CopyProducer engine{};
     TargetId next=1;
     std::map<TargetId,std::shared_ptr<Record>> records;
     std::map<PhysicalKey,TargetId> physical;
@@ -313,17 +472,26 @@ bool Service::SetPointerCodec(PointerCodec* codec) {
     if (!impl_->records.empty()) return false;
     impl_->codec=codec; return true;
 }
+bool Service::SetCopyContext(s2fn::copy::Reader reader,const CopyProducer& engine) {
+    auto checked=CheckedProducer(engine);
+    if(!checked || checked.value.owner.domain!=s2fn::copy::Domain::Engine) return false;
+    std::lock_guard<std::recursive_mutex> lock(impl_->mu);impl_->collect();
+    if(!impl_->records.empty()) return false;
+    impl_->reader=reader;impl_->engine=engine;return true;
+}
 s2fn::Result<TargetId> Service::Prepare(const std::string& name,const std::string& target,
                                        const std::string& abi,const std::string& fingerprint) {
     if (name.empty() || name.find('\0')!=std::string::npos) return {0,"invalid canonical id"};
     auto d=Parse(target,abi,fingerprint); if (!d) return {0,name+": "+d.error};
+    if(d.value.HasCopies() && (!impl_->reader.available || !impl_->reader.read || !impl_->reader.page_size))
+        return {0,name+": FunctionCopyLifetimeUnsupported: native reader unavailable"};
     auto resolution=Resolve(d.value,impl_->resolver); if (!resolution) return {0,name+": "+resolution.error};
     // The immutable resolver may contact the host. Only interning needs the lock.
     std::lock_guard<std::recursive_mutex> lock(impl_->mu); impl_->collect();
     auto physical=key(resolution.value); auto prior=impl_->physical.find(physical);
     if (prior!=impl_->physical.end()) {
         auto& r=*impl_->records.at(prior->second);
-        if (r.declaration.info.fingerprint!=fingerprint)
+        if (r.declaration.info.fingerprint!=fingerprint || !r.declaration.CompatibleCopies(d.value))
             return {0,"ABI conflict: "+r.canonical_id+" and "+name};
         if (!r.refs) return {0,name+": physical target retirement pending"};
         if (r.refs==std::numeric_limits<size_t>::max()) return {0,"target reference overflow"};
@@ -343,6 +511,14 @@ s2fn::Result<TargetId> Service::Prepare(const std::string& name,const std::strin
 }
 s2fn::Result<S2FunctionValue> Service::Call(TargetId id,unsigned long long owner,
     const S2FunctionValue* args,int argc,S2FunctionValue request) {
+    return CallImpl(id,owner,args,argc,request,nullptr,nullptr,nullptr);
+}
+s2fn::Result<S2FunctionValue> Service::CallCopy(TargetId id,unsigned long long owner,
+    const S2FunctionValue* args,int argc,S2FunctionValue request,const CopyInput& input,CopyOutput& output,const CopyProducer& producer) {
+    return CallImpl(id,owner,args,argc,request,&input,&output,&producer);
+}
+s2fn::Result<S2FunctionValue> Service::CallImpl(TargetId id,unsigned long long owner,
+    const S2FunctionValue* args,int argc,S2FunctionValue request,const CopyInput* input,CopyOutput* output,const CopyProducer* producer) {
     std::shared_ptr<Impl::Record> r;
     PointerCodec* codec=nullptr;
     {
@@ -367,13 +543,40 @@ s2fn::Result<S2FunctionValue> Service::Call(TargetId id,unsigned long long owner
     size_t receiver=abi.receiver=="entity" ? 1 : 0;
     if (argc<0 || static_cast<size_t>(argc)!=abi.parameters.size()+receiver || (argc && !args))
         return {{},"argument count mismatch"};
-    if (abi.returns.native=="ptr" && (!pointer_request(request) || !codec))
+    if(r->declaration.HasCopies() && !input) return {{},"FunctionCopyLifetimeUnsupported: copied sidecar required"};
+    s2fn::RetainedFrame copy_storage;
+    CopyTransaction* copies=nullptr;
+    s2fn::copy::Snapshot capture;
+    if(input) {
+        if(std::this_thread::get_id()!=impl_->owner) return {{},"copied call unavailable off host thread"};
+        if(!valid_copy_input(*input)) return {{},"FunctionCopyLifetimeUnsupported: invalid copied input span"};
+        auto checked=CheckedProducer(*producer);if(!checked) return {{},checked.error};
+        for(const auto& p:r->declaration.copies) if(p.ownership==CopyOwnership::NativeObserved)
+            return {{},"FunctionCopyLifetimeUnsupported: native-observed disallows call"};
+        if(r->declaration.return_copy.ownership==CopyOwnership::NativeObserved)
+            return {{},"FunctionCopyLifetimeUnsupported: native-observed disallows call"};
+        auto state=CopyTransaction::Create(impl_->engine);if(!state) return {{},state.error};
+        copy_storage=std::move(state.value);copies=static_cast<CopyTransaction*>(copy_storage.get());
+        if(r->declaration.return_copy) {
+            const auto kind=r->declaration.return_copy.kind;
+            auto admitted=AdmitCopyOutput(kind,request,*output,kind==s2fn::copy::Kind::String ? s2fn::copy::MaxString : 12);
+            if(!admitted) return {{},admitted.error};
+            auto prepared=s2fn::copy::Snapshot::PrepareCapture(copies->EngineOperation(),kind);if(!prepared) return {{},prepared.error};
+            capture=std::move(prepared.value);
+        }
+    }
+    if (abi.returns.native=="ptr" && !r->declaration.return_copy && (!pointer_request(request) || !codec))
         return {{},"pointer result codec/request unavailable"};
     CallStorage storage; std::vector<s2fn::NativeValue> values; values.reserve(argc);
     for (int i=0;i<argc;++i) {
         const auto& v=args[i]; const std::string atom=receiver && i==0 ? "ptr" : abi.parameters[i-receiver].native;
         if (v.reserved || v.kind!=static_cast<unsigned char>(kind(atom))) return {{},"argument value kind/reserved mismatch"};
         if (atom=="ptr") {
+            const CopyPosition* position=receiver && i==0 ? nullptr : &r->declaration.copies[i-receiver];
+            if(position && *position) {
+                auto staged=copies->Stage(i-receiver,position->kind,v,*input,*producer);if(!staged) return {{},r->canonical_id+" parameter["+std::to_string(i-receiver)+"]: "+staged.error};
+                values.push_back({});continue;
+            }
             if (!pointer_request(v) || !codec) return {{},"pointer argument codec/request unavailable"};
             if (receiver && i==0 && v.flags!=static_cast<unsigned char>(PointerProjection::Entity))
                 return {{},"receiver requires live entity projection"};
@@ -387,9 +590,32 @@ s2fn::Result<S2FunctionValue> Service::Call(TargetId id,unsigned long long owner
             values.push_back(native);
         }
     }
+    // Reserve all vector/TLS slots before permanent publication or ffi_call.
+    bypass.reserve(bypass.size()+1);
+    struct Publication {
+        CopyTransaction* copies;
+        const Declaration& declaration;
+        std::vector<s2fn::NativeValue>& values;
+        size_t receiver;
+    } publication{copies,r->declaration,values,receiver};
+    auto publish=[](void* opaque)->s2fn::Result<bool> {
+        auto& p=*static_cast<Publication*>(opaque);
+        if(!p.copies) return {true,{}};
+        auto result=p.copies->Publish(p.declaration.copies,p.declaration.abi.parameters.size(),false);
+        if(!result) return {false,result.error};
+        for(size_t i=0;i<p.declaration.abi.parameters.size();++i) if(p.declaration.copies[i])
+            p.values[i+p.receiver]=s2fn::NativeValue::From(result.value[i]);
+        return {true,{}};
+    };
     bypass.push_back({impl_.get(),id,owner});
     struct Pop { ~Pop(){bypass.pop_back();} } pop;
-    auto result=r->binding->Call(values.data(),values.size()); if (!result) return {{},result.error};
+    auto result=r->binding->Call(values.data(),values.size(),publish,&publication);
+    if(!result) return {{},copies ? "FunctionCopyInvocationFailure: "+result.error : result.error};
+    if(r->declaration.return_copy) {
+        auto captured=s2fn::copy::Snapshot::CapturePrepared(std::move(capture),result.value.Get<uintptr_t>(),impl_->reader);
+        if(!captured) return {{},r->canonical_id+": FunctionCopyCaptureAfterCall: native invocation completed: "+captured.error};
+        return EncodeCopy(captured.value,request,*output); // borrowed inputs still alive, including a returned alias.
+    }
     if (abi.returns.native=="ptr") {
         auto encoded=codec->Encode(result.value,request);
         if (encoded && (!pointer_request(encoded.value) || encoded.value.flags!=request.flags))
@@ -458,6 +684,109 @@ s2fn::Result<S2FunctionHookStatus> Service::HookStatus(TargetId id) const {
     }
     return {{state,0,receipt.id==KHook::INVALID_HOOK ? 0 : static_cast<unsigned long long>(receipt.id)+1},{}};
 }
+namespace {
+FrameAccess& copy_frame(CopyFrameKey key) {
+    auto& f=frame_access(key.target,key.token,key.epoch,key.fingerprint);
+    require(f.copies,"FunctionCopyLifetimeUnsupported: frame has no copied storage");return f;
+}
+size_t copy_index(FrameAccess& f,int selector) {
+    if(selector==-2 || selector==-3) {
+        require(f.native.phase==s2fn::Phase::Post,"return read is POST-only");
+        require(selector!=-3 || !f.native.original_skipped,"original return unavailable: original skipped");
+        return selector==-2 ? CopyTransaction::Return : CopyTransaction::Original;
+    }
+    require(selector>=0 && static_cast<size_t>(selector)<f.staged.size(),"invalid copied selector");
+    return static_cast<size_t>(selector);
+}
+}
+s2fn::Result<S2FunctionValue> FrameReadCopy(CopyFrameKey key,int selector,S2FunctionValue request,CopyOutput& out) {
+    try {
+        auto& f=copy_frame(key);const auto index=copy_index(f,selector);
+        const auto& position=selector<0 ? f.declaration.return_copy : f.declaration.copies[index];
+        require(bool(position),"selector is not copied");
+        return EncodeCopy(f.copies->Read(index),request,out);
+    } catch(const std::exception& e) {return {{},e.what()};}
+}
+s2fn::Result<bool> FrameWriteCopy(CopyFrameKey key,int selector,const S2FunctionValue& value,const CopyInput& input,const CopyProducer& producer) {
+    try {
+        auto& f=copy_frame(key);
+        require(f.native.phase==s2fn::Phase::Pre && !f.committed,"frame is readonly");
+        require(selector>=0 && static_cast<size_t>(selector)<f.staged.size(),"invalid copied write selector");
+        const auto& position=f.declaration.copies[selector];
+        require(position && position.ownership!=CopyOwnership::NativeObserved,"copied position is readonly");
+        auto staged=f.copies->Stage(selector,position.kind,value,input,producer);if(!staged) return {false,f.canonical+" parameter["+std::to_string(selector)+"]: "+staged.error};
+        f.changed=true;return {true,{}};
+    } catch(const std::exception& e) {return {false,e.what()};}
+}
+s2fn::Result<bool> FrameCommitCopy(CopyFrameKey key,int action,const S2FunctionValue* value,const CopyInput& input,const CopyProducer& producer) {
+    try {
+        auto& f=copy_frame(key);
+        require(f.native.phase==s2fn::Phase::Pre && !f.committed,"frame commit is PRE-only and single-use");
+        require(action>=0 && action<=3,"invalid generic action");
+        const auto k=kind(f.declaration.abi.returns.native);
+        s2fn::NativeValue result;CallStorage storage;
+        bool return_wins=false;
+        if(action<2 || k==ValueKind::Void) require(!value,"unexpected suppression return");
+        else {
+            require(value,"missing typed suppression return");
+            if(f.declaration.return_copy) {
+                require(f.declaration.return_copy.ownership==CopyOwnership::CallerBorrowed,"FunctionCopyLifetimeUnsupported: native-observed disallows suppression");
+                // Stock PRE strength remains owned by the provider; this batch
+                // contains the host's final folded suppression candidate only.
+                auto staged=f.copies->Stage(CopyTransaction::Return,f.declaration.return_copy.kind,*value,input,producer);
+                if(!staged) return staged;
+                return_wins=true;
+            } else if(k==ValueKind::Pointer) {
+                require(f.codec && pointer_request(*value),"pointer return codec/request unavailable");
+                auto decoded=f.codec->Decode(*value,storage);require(bool(decoded),decoded.error.c_str());result=decoded.value;
+            } else result=scalar_decode(*value,k);
+        }
+        // Allocate native slots and validate every scalar/entity edit before
+        // publishing any permanent value in this mixed-producer transaction.
+        auto staged=f.staged;
+        for(const auto& edit:f.entity_edits) {
+            require(f.codec,"entity codec unavailable");
+            auto decoded=f.codec->Decode(edit.second,storage);require(bool(decoded),decoded.error.c_str());
+            staged.at(edit.first)=decoded.value;
+        }
+        auto published=f.copies->Publish(f.declaration.copies,staged.size(),return_wins);
+        if(!published) return {false,published.error};
+        for(size_t i=0;i<staged.size();++i) if(published.value[i]) staged[i]=s2fn::NativeValue::From(published.value[i]);
+        if(return_wins) result=s2fn::NativeValue::From(published.value[CopyTransaction::Return]);
+        f.native.arguments.swap(staged);f.native.changed=f.changed;f.native.result=result;
+        f.native.action=action>=2 ? KHook::Action::Supersede : KHook::Action::Ignore;f.committed=true;
+        return {true,{}};
+    } catch(const std::exception& e) {return {false,e.what()};}
+}
+s2fn::Result<S2FunctionValue> FrameOverrideReturnCopy(CopyFrameKey key,const S2FunctionValue& value,
+    const CopyInput& input,const CopyProducer& producer,S2FunctionValue request,CopyOutput& output) {
+    bool submitted=false;
+    try {
+        auto& f=copy_frame(key);require(f.native.phase==s2fn::Phase::Post,"return override is POST-only");
+        const auto& position=f.declaration.return_copy;
+        require(position && position.ownership==CopyOwnership::CallerBorrowed,"FunctionCopyLifetimeUnsupported: copied return override unavailable");
+        auto checked=CheckedProducer(producer);if(!checked) return {{},checked.error};
+        auto operation=s2fn::copy::NativeBudget().Begin(checked.value);if(!operation) return {{},operation.error};
+        auto candidate=DecodeCopy(operation.value,position.kind,value,input);if(!candidate) return {{},candidate.error};
+        // Stock uses strictly-greater strength. A prior typed override (including
+        // Supersede) beats this Override. Capture/readmission happens before Save.
+        const bool wins=KHook::GetOverrideValuePtr()==nullptr;
+        auto effective=wins ? candidate.value : f.copies->Read(CopyTransaction::Return);
+        auto admitted=AdmitCopyOutput(position.kind,request,output,effective.size());if(!admitted) return {{},admitted.error};
+        const void* pointer=f.native.result.Get<const void*>();
+        if(wins) {
+            auto intern=s2fn::copy::Arena::Resident().Intern(f.copies->EngineOperation(),&checked.value.owner,&candidate.value,1,&pointer);
+            if(!intern) return {{},intern.error};
+        }
+        // All bytes/capacities are ready; Save can only select candidate/current.
+        // This internal entry is reached only after the host's exact adapter
+        // permit validation; producer identity is deliberately not that permit.
+        submitted=true;f.binding.OverridePostReturn(f.native,s2fn::NativeValue::From(pointer));
+        if(f.native.result.Get<const void*>()!=pointer) return {{},"FunctionCopyPostSubmitFailure: unexpected provider arbitration"};
+        f.copies->AcceptReturn(effective);
+        return EncodeCopy(effective,request,output);
+    } catch(const std::exception& e) {return {{},submitted ? std::string("FunctionCopyPostSubmitFailure: ")+e.what() : e.what()};}
+}
 Service& Global() {
     // Explicitly drained by the host ledger/safe-boundary integration; static
     // destruction cannot race the provider's asynchronous removal thread.
@@ -473,6 +802,9 @@ void reason_out(char* out,int cap,const std::string& reason) {
 extern "C" long long S2_FunctionPrepare(const char* name,const char* target,const char* abi,const char* fingerprint,char* reason,int cap) {
     try {
         if (!name || !target || !abi || !fingerprint) { reason_out(reason,cap,"null declaration input"); return 0; }
+        auto declaration=s2bridge::Parse(target,abi,fingerprint);
+        if(!declaration) {reason_out(reason,cap,declaration.error);return 0;}
+        if(declaration.value.HasCopies()) {reason_out(reason,cap,"FunctionCopyExecutionUnavailable: Rust/V8 sidecar operations not connected");return 0;}
         auto result=s2bridge::Global().Prepare(name,target,abi,fingerprint); reason_out(reason,cap,result.error);return result ? result.value : 0;
     } catch (...) { reason_out(reason,cap,"native function preparation exception");return 0; }
 }
@@ -520,6 +852,7 @@ extern "C" int S2_FunctionFrameRead(long long id,unsigned long long token,unsign
             require(selector>=0 && static_cast<size_t>(selector)<f.staged.size(),"unsupported frame selector");
             k=kind(f.declaration.abi.parameters[selector].native); value=f.staged[selector];
         }
+        require(!(selector>=0 ? bool(f.declaration.copies[selector]) : selector<-1 && bool(f.declaration.return_copy)),"copied position requires sidecar operation");
         require(projection==static_cast<unsigned char>(k),"projection kind mismatch");
         S2FunctionValue result{};
         if(k==ValueKind::Pointer) {
@@ -550,12 +883,14 @@ extern "C" int S2_FunctionFrameOverrideReturn(long long id,unsigned long long to
         const auto k=kind(f.declaration.abi.returns.native);
         require(k!=ValueKind::Void,"void return cannot be overridden");
         require(value && out,"missing override input/output");
+        require(!f.declaration.return_copy,"copied return requires sidecar operation");
         s2fn::NativeValue native;
         CallStorage storage;
         if(k==ValueKind::Pointer) {
             require(f.codec,"entity codec unavailable");
             require(out->kind==8 && (out->flags==1 || out->flags==2) && !out->reserved && !out->aux && !out->bits,
                 "invalid entity projection request");
+            require(pointer_request(*value),"copied value requires sidecar operation");
             auto decoded=f.codec->Decode(*value,storage);require(bool(decoded),decoded.error.c_str());native=decoded.value;
         } else native=scalar_decode(*value,k);
         submitted=true;
@@ -576,8 +911,10 @@ extern "C" int S2_FunctionFrameWrite(long long id,unsigned long long token,unsig
         auto& f=frame_access(id,token,epoch,fp);
         require(f.native.phase==s2fn::Phase::Pre && !f.committed,"frame is readonly");
         require(value && selector>=0 && static_cast<size_t>(selector)<f.staged.size(),"invalid frame write selector");
+        require(!f.declaration.copies[selector],"copied position requires sidecar operation");
         if(kind(f.declaration.abi.parameters[selector].native)==ValueKind::Pointer) {
             require(f.codec,"entity codec unavailable");CallStorage storage;
+            require(pointer_request(*value),"copied value requires sidecar operation");
             auto decoded=f.codec->Decode(*value,storage);require(bool(decoded),decoded.error.c_str());
             f.entity_edits[selector]=*value; // Never retain the resolved address as the staged edit.
         } else f.staged[selector]=scalar_decode(*value,kind(f.declaration.abi.parameters[selector].native));
@@ -591,6 +928,7 @@ extern "C" int S2_FunctionFrameCommit(long long id,unsigned long long token,unsi
         using namespace s2bridge;
         auto& f=frame_access(id,token,epoch,fp);
         require(f.native.phase==s2fn::Phase::Pre && !f.committed,"frame commit is PRE-only and single-use");
+        require(!f.declaration.HasCopies(),"copied frame requires sidecar commit");
         require(action>=0 && action<=3,"invalid generic action");
         auto k=kind(f.declaration.abi.returns.native);
         s2fn::NativeValue result;
@@ -599,6 +937,7 @@ extern "C" int S2_FunctionFrameCommit(long long id,unsigned long long token,unsi
             require(value,"missing typed suppression return");
             if(k==ValueKind::Pointer) {
                 require(f.codec,"entity codec unavailable");CallStorage storage;
+                require(pointer_request(*value),"copied value requires sidecar operation");
                 auto decoded=f.codec->Decode(*value,storage);require(bool(decoded),decoded.error.c_str());result=decoded.value;
             } else result=scalar_decode(*value,k);
         }

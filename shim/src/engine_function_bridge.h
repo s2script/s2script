@@ -1,6 +1,7 @@
 #pragma once
 #include "engine_function_abi.h"
 #include "engine_resolver.h"
+#include "engine_function_transport.h"
 
 namespace s2bridge {
 struct Declaration {
@@ -8,6 +9,10 @@ struct Declaration {
     std::string target_validation;
     s2fn::AbiSignature abi;
     s2fn::AbiInfo info;
+    std::array<CopyPosition,32> copies{};
+    CopyPosition return_copy{};
+    bool HasCopies() const;
+    bool CompatibleCopies(const Declaration&) const;
 };
 using Resolver = std::function<bool(const s2resolve::TargetRecipe&, s2resolve::Resolution&, std::string&)>;
 s2fn::Result<Declaration> Parse(const std::string& target, const std::string& abi,
@@ -77,6 +82,10 @@ public:
     // Host wiring is immutable while records exist. The host owns these objects.
     bool SetDispatchSink(DispatchSink*);
     bool SetPointerCodec(PointerCodec*);
+    bool SetCopyContext(s2fn::copy::Reader, const CopyProducer& engine);
+    s2fn::Result<S2FunctionValue> CallCopy(TargetId, unsigned long long suppressed_owner,
+        const S2FunctionValue*, int argc, S2FunctionValue result_request,
+        const CopyInput&, CopyOutput&, const CopyProducer& caller);
     s2fn::Result<TargetId> Prepare(const std::string& canonical_id, const std::string& target,
                                  const std::string& abi, const std::string& fingerprint);
     s2fn::Result<S2FunctionValue> Call(TargetId, unsigned long long owner,
@@ -91,9 +100,21 @@ public:
     bool Collect();
     bool Empty() const;
 private:
+    s2fn::Result<S2FunctionValue> CallImpl(TargetId,unsigned long long,const S2FunctionValue*,int,
+        S2FunctionValue,const CopyInput*,CopyOutput*,const CopyProducer*);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+struct CopyFrameKey {
+    TargetId target; unsigned long long token, epoch; const char* fingerprint;
+};
+s2fn::Result<S2FunctionValue> FrameReadCopy(CopyFrameKey,int selector,S2FunctionValue request,CopyOutput&);
+s2fn::Result<bool> FrameWriteCopy(CopyFrameKey,int selector,const S2FunctionValue&,const CopyInput&,const CopyProducer&);
+s2fn::Result<bool> FrameCommitCopy(CopyFrameKey,int action,const S2FunctionValue*,const CopyInput&,const CopyProducer&);
+// Host-only: caller MUST have already validated the exact Rust adapter permit.
+// Producer is billing metadata and cannot authorize this operation.
+s2fn::Result<S2FunctionValue> FrameOverrideReturnCopy(CopyFrameKey,const S2FunctionValue&,
+    const CopyInput&,const CopyProducer&,S2FunctionValue request,CopyOutput&);
 Service& Global();
 }
 using s2_function_target_id = long long;

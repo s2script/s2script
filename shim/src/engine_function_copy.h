@@ -100,6 +100,10 @@ public:
     static Result<Snapshot> FromBytes(const Operation&, Kind, const void*, std::size_t);
     // Native-origin capture requires a distinct Engine-domain operation.
     static Result<Snapshot> Capture(const Operation&, Kind, std::uintptr_t, const Reader&);
+    // Admit the complete capture allocation before an irreversible native call.
+    // Prepared storage is single-use and must not have been shared.
+    static Result<Snapshot> PrepareCapture(const Operation&, Kind);
+    static Result<Snapshot> CapturePrepared(Snapshot&&, std::uintptr_t, const Reader&);
 private:
     static Result<Snapshot> Allocate(const Operation&, Kind, std::size_t);
     SnapshotBlock* block_ = nullptr;
