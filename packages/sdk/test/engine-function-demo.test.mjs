@@ -126,3 +126,40 @@ test('public binding fixture registers, disposes, reports status, and refuses a 
   assert.equal(nativeCalls, 0);
   assert.match(replies[0], /refused/);
 });
+
+test('valid-bot command uses exact call arguments and reports API health reads (control flow only)', () => {
+  // The health transition is a host/API fixture. It proves command wiring, not native gameplay.
+  const commands = new Map();
+  const pawnRef = { index: 41, id: 207 };
+  let health = 100;
+  let healthReads = 0;
+  const pawn = { isValid: true, ref: pawnRef, get health() { healthReads++; return health; } };
+  const bot = { isValid: () => true, isBot: true, signonState: 6, userId: 27 };
+  const calls = [];
+  const handle = () => ({ status: 'active', reason: null, dispose: () => true });
+  const binding = { available: true, status: { canonicalId: '@demo/engine-function::commitSuicide' },
+    onPre: handle, onPost: handle,
+    call(...args) { calls.push(args); health = 0; } };
+  const imports = {
+    '@s2script/sdk/unsafe': { Engine: { function(name) { return name === 'commitSuicide'
+      ? binding : { available: false, status: { reason: 'prologue mismatch' } }; } } },
+    '@s2script/sdk': { Clients: { fromSlot(slot) { assert.equal(slot, 3); return bot; } },
+      command(name, handler) { commands.set(name, handler); }, HookResult: { Handled: 3, Changed: 1 } },
+    '@s2script/cs2': { Player: { fromSlot(slot) { assert.equal(slot, 3); return { userId: 27, pawn }; } } },
+  };
+  const js = transformSync(read(join(example, 'src/plugin.ts')), { loader: 'ts', format: 'cjs' }).code;
+  const module = { exports: {} };
+  runInNewContext(js, { module, exports: module.exports, require: name => imports[name],
+    console: { log() {}, error() {} } });
+  module.exports.OnPluginStart();
+  assert.equal(calls.length, 0, 'startup must not invoke the lethal binding');
+  const replies = [];
+  commands.get('sm_ef_suicide_bot')({ callerSlot: -1, arg: () => '3', reply: text => replies.push(text) });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], pawnRef);
+  assert.equal(calls[0][1], false);
+  assert.equal(calls[0][2], true);
+  assert.equal(healthReads >= 2, true, 'health must be read both before and after call');
+  assert.equal(replies.length, 1);
+  assert.match(replies[0], /alive true -> false; health 100 -> 0; sameBot=true; samePawn=true/);
+});
