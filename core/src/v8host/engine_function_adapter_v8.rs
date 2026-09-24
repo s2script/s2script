@@ -277,7 +277,7 @@ mod production {
     }
     fn exercise() {
         eval_in_context("owner-a","proofEvents.length=0;if(__proofCall(7)!==80)throw Error('nested typed return');if(proofEvents.length)throw Error('busy caller A ran');").unwrap();
-        eval_in_context("owner-b","if(proofEvents.join(',')!=='adapter,wrapper,post,post-wrapper:80')throw Error('B selection order: '+proofEvents);proofEvents.length=0;let refused=0;try{savedView.x}catch(_){refused++}try{savedCursor.invokeNext()}catch(_){refused++}if(refused!==2)throw Error('stale callback facade');").unwrap();
+        eval_in_context("owner-b","if(proofEvents.join(',')!=='adapter,wrapper,post,post-wrapper:80')throw Error('B selection order: '+proofEvents);proofEvents.length=0;{let refused=0;try{savedView.x}catch(_){refused++}try{savedCursor.invokeNext()}catch(_){refused++}if(refused!==2)throw Error('stale callback facade');}").unwrap();
         assert_eq!(function_adapter::proof::pending_invocations(), 0);
         println!("PASS production A busy -> B adapter -> B SubscriberCursor wrapper -> nested both-busy original -> typed return 80, matched PRE/POST");
     }
