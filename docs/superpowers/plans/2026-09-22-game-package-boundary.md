@@ -362,7 +362,7 @@ GameConfig LoadGameConfigFromBundle(const std::string& verifiedBundleJson,
                                     std::string& error);
 ```
 
-Validate the v1 envelope, owner, unique normalized paths, exactly one master, object-valued selected documents, and bounds before merging. Disk and bundle sources share master selection, `MergeFile`, sorted custom scanning, and serialization. The bundle source never reopens a shipped path. A nonempty `filesFailed` is a catastrophic selected shipped failure and blocks later activation; a custom parse error retains valid shipped entries. Keep the S2 v2 function normalizer and contract separate: legacy calls/hooks remain until their individual migration has parity evidence.
+Validate the v1 envelope, owner, unique normalized paths, exactly one master, object-valued selected documents, and bounds before merging. The bundle parser rejects container nesting at depth 128 before it can construct or copy an overdeep document, including an unselected one. Disk and bundle sources share master selection, `MergeFile`, sorted custom scanning, and serialization. The bundle source never reopens a shipped path. A nonempty `filesFailed` is a catastrophic selected shipped failure and blocks later activation; a custom parse error retains valid shipped entries. Keep the S2 v2 function normalizer and contract separate: legacy calls/hooks remain until their individual migration has parity evidence.
 
 - [ ] **Step 4: Verify the integrated source-path relocation**
 

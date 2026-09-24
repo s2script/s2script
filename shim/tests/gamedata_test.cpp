@@ -1105,6 +1105,43 @@ static void test_package_bundle_envelope_failures() {
     CHECK(!error.empty() && !gc.filesFailed.empty(), "oversized bundle rejected before parse");
 }
 
+static void test_package_bundle_nesting_limit() {
+    TempRoot root;
+    auto nested = [](size_t depth) {
+        return std::string(depth, '[') + "0" + std::string(depth, ']');
+    };
+    auto rawBundle = [](const std::string& master, const std::string& document) {
+        return std::string(R"({"schemaVersion":1,"owner":"cs2","files":[{"path":"master.gamedata.jsonc","document":)") +
+               master + R"(},{"path":"deep.jsonc","document":)" + document + "}]}";
+    };
+    auto loadRaw = [&](const std::string& raw, std::string& error) {
+        return LoadGameConfigFromBundle(raw, "cs2", root.path.string(), "source2", "csgo",
+                                        "linuxsteamrt64", std::string(64, 'a'), error);
+    };
+    std::string error;
+    const auto ordinary = rawBundle(R"({"files":[{"file":"deep.jsonc"}]})",
+                                    std::string(R"({"calls":{"Nested":{"data":)") +
+                                    nested(16) + "}}}");
+    auto supported = loadRaw(ordinary, error);
+    CHECK(error.empty() && supported.filesFailed.empty() && supported.calls.count("Nested") == 1,
+          "ordinary nested selected descriptor remains supported");
+
+    // Build raw bytes, never a deeply recursive nlohmann::json fixture whose own destruction
+    // could overflow before the loader has a chance to enforce its boundary.
+    const auto unselected = rawBundle(R"({"files":[]})", nested(129));
+    auto rejected = loadRaw(unselected, error);
+    CHECK(rejected.filesFailed == std::vector<std::string>({"gamedata.json"}) &&
+          error.find("nesting") != std::string::npos && rejected.mergedJson.empty(),
+          "overdeep unselected document is rejected at parse boundary");
+    const auto selected = rawBundle(R"({"files":[{"file":"deep.jsonc"}]})",
+                                    std::string(R"({"calls":{"Nested":{"data":)") +
+                                    nested(129) + "}}}");
+    rejected = loadRaw(selected, error);
+    CHECK(rejected.filesFailed == std::vector<std::string>({"gamedata.json"}) &&
+          error.find("nesting") != std::string::npos && rejected.calls.empty(),
+          "overdeep selected document is rejected before merge or copy");
+}
+
 static void test_package_custom_and_diagnostics() {
     TempRoot root;
     put(root.path / "cs2" / "custom" / "20-late.jsonc", R"({"signatures":{"S":{"linuxsteamrt64":{"module":"server","pattern":"CC","validate":{}}}}})");
@@ -1142,6 +1179,7 @@ static void test_package_custom_and_diagnostics() {
 int main() {
     test_package_bundle_selection_and_sections();
     test_package_bundle_envelope_failures();
+    test_package_bundle_nesting_limit();
     test_package_custom_and_diagnostics();
     test_master_selects_by_condition();
     test_array_order_is_apply_order();

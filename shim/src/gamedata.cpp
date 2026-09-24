@@ -5,6 +5,7 @@
 #include <fstream>
 #include <functional>
 #include <set>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -458,7 +459,14 @@ GameConfig LoadGameConfigFromBundle(const std::string& verifiedBundleJson,
     // so an ambiguous schemaVersion/owner/path/document cannot be silently selected.
     bool duplicateKey = false;
     std::vector<std::set<std::string>> objectKeys;
-    const auto callback = [&](int, nlohmann::json::parse_event_t event, nlohmann::json& value) {
+    // Reject recursion at container start, before the parser can construct/copy a hostile tree.
+    // The v1 artifact needs only shallow master/layout documents; 128 containers is generous for
+    // ordinary nested call/hook descriptors while bounding parser, copy and destructor stack use.
+    constexpr int kMaxContainerDepth = 128;
+    const auto callback = [&](int depth, nlohmann::json::parse_event_t event, nlohmann::json& value) {
+        if ((event == nlohmann::json::parse_event_t::object_start ||
+             event == nlohmann::json::parse_event_t::array_start) && depth >= kMaxContainerDepth)
+            throw std::runtime_error("JSON nesting exceeds 128 containers");
         if (event == nlohmann::json::parse_event_t::object_start) objectKeys.emplace_back();
         else if (event == nlohmann::json::parse_event_t::object_end) objectKeys.pop_back();
         else if (event == nlohmann::json::parse_event_t::key &&
