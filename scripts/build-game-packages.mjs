@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Build first-party game package artifacts from their ordered source manifests.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -124,6 +124,16 @@ function existingArtifacts(outDir) {
   return paths;
 }
 
+function checkOutputParent(outDir, name) {
+  let parent = outDir;
+  for (const part of dirname(name).split(/[\\/]/)) {
+    parent = join(parent, part);
+    const entry = lstatSync(parent, { throwIfNoEntry: false });
+    if (entry && (entry.isSymbolicLink() || !entry.isDirectory()))
+      throw new Error(`invalid builder output destination parent: ${parent}`);
+  }
+}
+
 export function buildGamePackages({ outDir, sourceDirs = [firstParty], allowSynthetic = false } = {}) {
   if (!outDir) throw new Error("--out is required");
   if (!allowSynthetic && (sourceDirs.length !== 1 || resolve(sourceDirs[0]) !== firstParty))
@@ -221,15 +231,22 @@ export function buildGamePackages({ outDir, sourceDirs = [firstParty], allowSynt
     for (const [name, bytes] of outputs) write(stage, name, bytes);
     write(stage, "game-packages.json", pretty(deployed));
     const obsolete = existingArtifacts(outDir).filter(name => !outputs.has(name));
+    // A direct rebuild may inherit existing output directories. Refuse redirected parents
+    // before invalidating the old manifest, including parents used only by stale-file removal.
+    for (const name of [...outputs.keys(), ...obsolete]) checkOutputParent(outDir, name);
     // Staging is complete before publication. Once any artifact can change, the old manifest
     // must no longer describe a valid build. The new manifest is the final published file.
     rmSync(join(outDir, "game-packages.json"), { force: true });
     for (const name of outputs.keys()) {
       const dest = join(outDir, name);
       mkdirSync(dirname(dest), { recursive: true });
+      checkOutputParent(outDir, name);
       renameSync(join(stage, name), dest);
     }
-    for (const name of obsolete) rmSync(join(outDir, name), { force: true });
+    for (const name of obsolete) {
+      checkOutputParent(outDir, name);
+      rmSync(join(outDir, name), { force: true });
+    }
     renameSync(join(stage, "game-packages.json"), join(outDir, "game-packages.json"));
   } finally {
     rmSync(stage, { recursive: true, force: true });

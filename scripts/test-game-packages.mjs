@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
@@ -296,6 +296,39 @@ test("a failed preparation preserves the previous complete build; failed publica
   assert.equal(existsSync(join(f.out, "game-packages/cs2/index.js")), true);
   assert.equal(readFileSync(join(f.out, "operator-note.txt"), "utf8"), "keep");
   assert.equal(readFileSync(join(f.out, "game-packages/cs2/operator-note.txt"), "utf8"), "keep");
+});
+
+test("direct rebuild rejects symlinked package output parent before invalidating a previous build", () => {
+  const f = withAdapters(fixture());
+  const prior = built(f);
+  const outside = join(f.root, "outside-packages");
+  renameSync(join(f.out, "game-packages"), outside);
+  writeFileSync(join(outside, "sentinel"), "keep");
+  symlinkSync(outside, join(f.out, "game-packages"));
+  assert.throws(() => built(f), /symlink|output|destination/i);
+  assert.deepEqual(readFileSync(join(f.out, "game-packages.json")), prior.manifest);
+  assert.deepEqual(readFileSync(join(outside, "cs2/index.js")), prior.bootstrap);
+  assert.equal(readFileSync(join(outside, "sentinel"), "utf8"), "keep");
+});
+
+test("direct rebuild rejects symlinked owner output parent before obsolete artifact removal", () => {
+  const f = withFunctions(fixture());
+  const prior = built(f);
+  const functionPath = join(f.out, "game-packages/cs2/engine-functions.json");
+  const oldFunctions = readFileSync(functionPath);
+  const outside = join(f.root, "outside-owner");
+  renameSync(join(f.out, "game-packages/cs2"), outside);
+  writeFileSync(join(outside, "sentinel"), "keep");
+  symlinkSync(outside, join(f.out, "game-packages/cs2"));
+  const sourceManifest = join(f.source, "game-package.jsonc");
+  const declared = JSON.parse(readFileSync(sourceManifest, "utf8"));
+  delete declared.functionsFile;
+  writeFileSync(sourceManifest, JSON.stringify(declared));
+  assert.throws(() => built(f), /symlink|output|destination/i);
+  assert.deepEqual(readFileSync(join(f.out, "game-packages.json")), prior.manifest);
+  assert.deepEqual(readFileSync(join(outside, "index.js")), prior.bootstrap);
+  assert.deepEqual(readFileSync(join(outside, "engine-functions.json")), oldFunctions);
+  assert.equal(readFileSync(join(outside, "sentinel"), "utf8"), "keep");
 });
 
 test("function source must be a distinct confined regular input", () => {
