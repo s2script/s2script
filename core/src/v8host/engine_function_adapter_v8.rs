@@ -229,6 +229,8 @@ mod production {
         static BINDINGS:RefCell<BTreeMap<String,u64>>=const{RefCell::new(BTreeMap::new())};
         static ENTITY_SLOT:Cell<Option<proof::EntitySlot>>=const{Cell::new(None)};
         static ENTITY_STATE:RefCell<Option<proof::EntityConformance>>=const{RefCell::new(None)};
+        static POST_STATE:RefCell<Option<proof::PostConformance>>=const{RefCell::new(None)};
+        static POST_PEER:Cell<Option<FrameProduction>>=const{Cell::new(None)};
         static STEP:Cell<usize>=const{Cell::new(0)};
         static FAILURE:RefCell<Option<String>>=const{RefCell::new(None)};
     }
@@ -353,6 +355,26 @@ mod production {
                 }
                 ENTITY_STATE.with(|s| *s.borrow_mut() = Some(state));
             }
+            11 => POST_STATE.with(|s|*s.borrow_mut()=Some(proof::post_begin())),
+            12 => {
+                let mut state=POST_STATE.with(|s|s.borrow_mut().take()).unwrap();
+                proof::post_probe(&mut state);POST_STATE.with(|s|*s.borrow_mut()=Some(state));
+            }
+            13 => {
+                proof::post_exercise("js",41,Some(7));
+                proof::post_exercise("rust",41,Some(7));
+                proof::post_exercise("skip",63,None);
+                proof::post_exercise("nested",41,Some(7));
+                let peer=POST_PEER.with(Cell::get).unwrap();
+                assert_eq!(unsafe{peer(1)},1);proof::post_exercise("earlier-equal",71,Some(7));
+                assert_eq!(unsafe{peer(2)},1);proof::post_exercise("earlier-stronger",72,None);
+                assert_eq!(unsafe{peer(3)},1);
+            }
+            14 => proof::post_exercise("later-equal",41,Some(7)),
+            15 => {
+                assert_eq!(unsafe{POST_PEER.with(Cell::get).unwrap()(0)},1);
+                proof::post_finish(POST_STATE.with(|s|s.borrow_mut().take()).unwrap());
+            }
             _ => panic!("unexpected frame callback"),
         });
         if let Err(error) = result {
@@ -388,6 +410,8 @@ mod production {
         let entity_slot: proof::EntitySlot =
             unsafe { std::mem::transmute(symbol(library, "s2fn_production_entity_slot")) };
         ENTITY_SLOT.with(|s| s.set(Some(entity_slot)));
+        let peer:FrameProduction=unsafe{std::mem::transmute(symbol(library,"s2fn_production_post_peer_mode"))};
+        POST_PEER.with(|s|s.set(Some(peer)));
         init(frame_tests::logger).unwrap();
         PACKAGE.with(|p| *p.borrow_mut() = Some(proof::package()));
         FAILURE.with(|f| *f.borrow_mut() = None);
@@ -470,6 +494,30 @@ mod production {
                 "entity scenario must retire before next preparation order"
             );
         }
+        drive(11);
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+        loop {
+            drive(12);
+            if POST_STATE.with(|s|s.borrow().as_ref().unwrap().ready) {break;}
+            assert!(std::time::Instant::now()<deadline,"trusted POST readiness timeout");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        drive(13);
+        // Prove actual peer delivery; an accepted pending hook is insufficient.
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+        loop {
+            drive(14);
+            if unsafe{peer(3)}==2 {break;}
+            assert!(std::time::Instant::now()<deadline,"later equal peer delivery timeout");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        drive(15);
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+        while unsafe{empty()}==0 && std::time::Instant::now()<deadline {
+            assert_eq!(unsafe{frame(0)},1);std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(unsafe{empty()},1);
+        POST_PEER.with(|s|s.set(None));
         ENTITY_SLOT.with(|s| s.set(None));
         assert_eq!(unsafe { close() }, 1);
         PACKAGE.with(|p| p.borrow_mut().take());

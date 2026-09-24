@@ -178,6 +178,7 @@ typedef int (*s2_function_hook_status_fn)(long long target, S2FunctionHookStatus
 typedef int (*s2_function_frame_read_fn)(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int selector, unsigned char projection_kind, S2FunctionValue* out, char* reason, int reason_cap);
 typedef int (*s2_function_frame_write_fn)(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int selector, const S2FunctionValue* value, char* reason, int reason_cap);
 typedef int (*s2_function_frame_commit_fn)(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int action, const S2FunctionValue* value, char* reason, int reason_cap);
+typedef int (*s2_function_frame_override_return_fn)(long long target_id, unsigned long long frame_token, unsigned long long native_epoch, const char* abi_fingerprint, const S2FunctionValue* override_value, S2FunctionValue* effective_out, char* reason, int reason_cap);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -363,4 +364,5 @@ typedef struct {
     s2_function_frame_read_fn function_frame_read;
     s2_function_frame_write_fn function_frame_write;
     s2_function_frame_commit_fn function_frame_commit;
+    s2_function_frame_override_return_fn function_frame_override_return;
 } S2EngineOps;
