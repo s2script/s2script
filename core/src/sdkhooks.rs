@@ -2,7 +2,7 @@
 //!
 //! The table is books-gated host identity (`entity_live` id), never a raw pointer. `OnTakeDamage`
 //! fans out from the process-wide `DispatchTraceAttack` detour. The Touch family is per-entity
-//! SourceHook (`sdkhook_vp_add` / `SH_ADD_MANUALHOOK`), not `SH_ADD_MANUALVPHOOK`.
+//! KHook (`sdkhook_vp_add` / `KHook::Virtual::Add`), not a process-wide detour.
 
 use crate::dispatch::{fan_out_collapsing, Instrument, StopAt};
 use crate::multiplexer::HookResult;

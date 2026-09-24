@@ -106,6 +106,31 @@ pub extern "C" fn s2script_core_shutdown() {
     let _ = catch_unwind(|| v8host::shutdown());
 }
 
+/// Terminal native shutdown, called on the same thread that attempted core init:
+/// revoke every copied engine callback before plugin onUnload handlers run, then
+/// report whether the complete core teardown returned.
+#[no_mangle]
+pub extern "C" fn s2script_core_terminal_shutdown() -> c_int {
+    catch_unwind(|| {
+        if !v8host::can_shutdown() {
+            return -2;
+        }
+        v8host::set_hook_request(None);
+        v8host::set_engine_ops(None);
+        v8host::shutdown();
+        0
+    })
+    .unwrap_or(-99)
+}
+
+/// Read-only: 1 iff the core isolate is safe to shut down. Backed by actual
+/// host-borrow / dispatch-in-progress state. A swallowed shutdown panic is not
+/// success and must not be inferred from a quiet log.
+#[no_mangle]
+pub extern "C" fn s2script_core_can_shutdown() -> c_int {
+    catch_unwind(|| if v8host::can_shutdown() { 1 } else { 0 }).unwrap_or(0)
+}
+
 /// Shim → core: called by the shim's `IGameEventListener2` when an event fires (the shim has already
 /// stashed the live `IGameEvent*` for the accessor engine-ops). Dispatches to the name's JS subscribers.
 ///
@@ -896,13 +921,138 @@ mod tests {
     use super::*;
     use std::ffi::CStr;
     use std::os::raw::{c_char, c_int};
-    use std::sync::Mutex;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    };
 
     static CAPTURED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static TERMINAL_ENGINE_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static TERMINAL_HOOK_CALLS: AtomicUsize = AtomicUsize::new(0);
 
     extern "C" fn test_logger(_level: c_int, msg: *const c_char) {
         let s = unsafe { CStr::from_ptr(msg) }.to_string_lossy().into_owned();
         CAPTURED.lock().unwrap().push(s);
+    }
+
+    extern "C" fn count_client_valid(_slot: c_int) -> c_int {
+        TERMINAL_ENGINE_CALLS.fetch_add(1, Ordering::SeqCst);
+        1
+    }
+
+    extern "C" fn count_hook_request(_descriptor: *const c_char, _enable: c_int) {
+        TERMINAL_HOOK_CALLS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn install_counting_engine_ops() {
+        v8host::set_engine_ops(Some(v8host::S2EngineOps {
+            client_valid: Some(count_client_valid),
+            ..v8host::S2EngineOps::none()
+        }));
+    }
+
+    fn captured_contains(needle: &str) -> bool {
+        CAPTURED.lock().unwrap().iter().any(|line| line.contains(needle))
+    }
+
+    #[test]
+    fn terminal_shutdown_runs_onunload_with_engine_callbacks_revoked() {
+        CAPTURED.lock().unwrap().clear();
+        TERMINAL_ENGINE_CALLS.store(0, Ordering::SeqCst);
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
+        install_counting_engine_ops();
+        v8host::frame_tests::load_body(
+            "terminal",
+            r#"return { onUnload: function () {
+                if (__s2_client_valid(0) !== false) throw new Error("engine callback remained live");
+                throw new Error("terminal-onunload-ran");
+            } };"#,
+            "{}",
+        );
+
+        assert_eq!(s2script_core_terminal_shutdown(), 0);
+        assert_eq!(TERMINAL_ENGINE_CALLS.load(Ordering::SeqCst), 0);
+        assert!(captured_contains("terminal-onunload-ran"));
+    }
+
+    #[test]
+    fn ordinary_shutdown_preserves_onunload_engine_callback_behavior() {
+        CAPTURED.lock().unwrap().clear();
+        TERMINAL_ENGINE_CALLS.store(0, Ordering::SeqCst);
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
+        install_counting_engine_ops();
+        v8host::frame_tests::load_body(
+            "ordinary",
+            r#"return { onUnload: function () {
+                if (__s2_client_valid(0) !== true) throw new Error("ordinary engine callback unavailable");
+                throw new Error("ordinary-onunload-ran");
+            } };"#,
+            "{}",
+        );
+
+        s2script_core_shutdown();
+        assert_eq!(TERMINAL_ENGINE_CALLS.load(Ordering::SeqCst), 1);
+        assert!(captured_contains("ordinary-onunload-ran"));
+    }
+
+    #[test]
+    fn busy_terminal_shutdown_refuses_without_revoking_engine_callbacks() {
+        TERMINAL_ENGINE_CALLS.store(0, Ordering::SeqCst);
+        TERMINAL_HOOK_CALLS.store(0, Ordering::SeqCst);
+        assert_eq!(
+            s2script_core_init(Some(test_logger), Some(count_hook_request), std::ptr::null()),
+            0
+        );
+        install_counting_engine_ops();
+        v8host::create_plugin_context("busy-terminal");
+
+        let result =
+            v8host::frame_tests::with_host_borrowed(|| s2script_core_terminal_shutdown());
+        assert_eq!(result, -2);
+        v8host::eval_in_context(
+            "busy-terminal",
+            "if (__s2_client_valid(0) !== true) throw new Error('engine callback was revoked');",
+        )
+        .unwrap();
+        assert_eq!(TERMINAL_ENGINE_CALLS.load(Ordering::SeqCst), 1);
+        let request = v8host::hook_request().expect("busy refusal preserved hook callback");
+        request(std::ptr::null(), 1);
+        assert_eq!(TERMINAL_HOOK_CALLS.load(Ordering::SeqCst), 1);
+        s2script_core_shutdown();
+    }
+
+    #[test]
+    fn terminal_shutdown_clears_callbacks_after_early_init_failure() {
+        TERMINAL_ENGINE_CALLS.store(0, Ordering::SeqCst);
+        TERMINAL_HOOK_CALLS.store(0, Ordering::SeqCst);
+        let ops = v8host::S2EngineOps {
+            client_valid: Some(count_client_valid),
+            ..v8host::S2EngineOps::none()
+        };
+        assert_eq!(
+            s2script_core_init(None, Some(count_hook_request), &ops),
+            -2,
+            "missing logger rejects after copying callbacks"
+        );
+        let engine = v8host::engine_ops().expect("early init retained copied engine ops");
+        engine.client_valid.expect("client_valid copied")(0);
+        v8host::hook_request().expect("early init retained hook callback")(std::ptr::null(), 1);
+        assert_eq!(TERMINAL_ENGINE_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(TERMINAL_HOOK_CALLS.load(Ordering::SeqCst), 1);
+
+        assert_eq!(s2script_core_terminal_shutdown(), 0);
+        assert!(v8host::engine_ops().is_none());
+        assert!(v8host::hook_request().is_none());
+    }
+
+    #[test]
+    fn terminal_shutdown_is_safe_for_empty_and_repeated_core_state() {
+        assert_eq!(s2script_core_terminal_shutdown(), 0);
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
+        assert_eq!(s2script_core_terminal_shutdown(), 0);
+        assert_eq!(s2script_core_terminal_shutdown(), 0);
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
+        s2script_core_shutdown();
     }
 
     /// The deferred-dispatch sentinel cannot collide with anything a dispatch entry returns.
@@ -928,6 +1078,22 @@ mod tests {
         // And the mapping the C ABI actually ships.
         assert_eq!(deferral_code(Delivery::Deferred), S2_DISPATCH_DEFERRED);
         assert_eq!(deferral_code(Delivery::Delivered), 0);
+    }
+
+    #[test]
+    fn can_shutdown_is_zero_while_host_is_borrowed_then_one_after_return() {
+        assert_eq!(s2script_core_init(Some(test_logger), None, std::ptr::null()), 0);
+        assert_eq!(s2script_core_can_shutdown(), 1, "idle after init is safe to shut down");
+        let during = crate::v8host::frame_tests::with_host_borrowed(|| s2script_core_can_shutdown());
+        assert_eq!(during, 0, "borrowed HOST is not safe to shut down");
+        assert_eq!(s2script_core_can_shutdown(), 1, "safe again after the borrow returns");
+        let during_dispatch = {
+            let _scope = crate::dispatch::DispatchScope::enter();
+            s2script_core_can_shutdown()
+        };
+        assert_eq!(during_dispatch, 0, "dispatch-in-progress is not safe to shut down");
+        assert_eq!(s2script_core_can_shutdown(), 1, "safe again after dispatch returns");
+        s2script_core_shutdown();
     }
 
     #[test]

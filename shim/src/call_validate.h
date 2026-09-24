@@ -46,9 +46,13 @@ struct ModuleView {
 // Injected: resolve `className`'s PRIMARY vtable inside `module` (the RTTI string -> type_info ->
 // vtable walk in vtable.cpp). Null = the class is not resolvable on this build; the caller degrades.
 using VtableByNameFn = void** (*)(const char* module, const char* className);
+// Optional: resolve the original virtual target for a live vtable slot (KHook::FindOriginalVirtual).
+// Unhooked slots: identity (returns vt[index]). Null means compare the live slot, same as today.
+using OriginalVirtualFn = void* (*)(void** vtable, int index);
 
 struct Ops {
     VtableByNameFn vtable_by_name = nullptr;
+    OriginalVirtualFn original_virtual = nullptr;
 };
 
 // The closed vocabulary, as the reason strings print it ("prologue, string-xref, vtable-member").

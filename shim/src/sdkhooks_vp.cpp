@@ -1,4 +1,4 @@
-// Per-entity SDKHooks VP hooks — SourceMod SH_ADD_MANUALHOOK, not process-wide detours.
+// Per-entity SDKHooks VP hooks — KHook::Virtual::Add, not process-wide detours.
 //
 // Touch family: `void (CEntityInstance *pOther)`.
 // Lifecycle: this-void (Spawn/Think/PreThink/PostThink/VPhysicsUpdate/GroundEntChangedPost),
@@ -21,6 +21,9 @@
 #include <entity2/entityinstance.h>
 
 PLUGIN_GLOBALVARS();
+
+#include <khook.hpp>
+#include "khook_map.h"
 
 #include <link.h>
 #include <cstring>
@@ -47,22 +50,63 @@ static const char* kVPhysicsUpdate         = "VPhysicsUpdate";
 static const char* kGroundEntChangedPost   = "GroundEntChangedPost";
 static const char* kCanBeAutobalanced      = "CanBeAutobalanced";
 
-SH_DECL_MANUALHOOK1_void(MHook_StartTouch, 0, 0, 0, CEntityInstance *);
-SH_DECL_MANUALHOOK1_void(MHook_Touch,      0, 0, 0, CEntityInstance *);
-SH_DECL_MANUALHOOK1_void(MHook_EndTouch,   0, 0, 0, CEntityInstance *);
-SH_DECL_MANUALHOOK1_void(MHook_Blocked,    0, 0, 0, CEntityInstance *);
-SH_DECL_MANUALHOOK0_void(MHook_Spawn, 0, 0, 0);
-SH_DECL_MANUALHOOK0_void(MHook_Think, 0, 0, 0);
-SH_DECL_MANUALHOOK0_void(MHook_PreThink, 0, 0, 0);
-SH_DECL_MANUALHOOK0_void(MHook_PostThink, 0, 0, 0);
-SH_DECL_MANUALHOOK4_void(MHook_Use, 0, 0, 0, CEntityInstance *, CEntityInstance *, int, float);
-SH_DECL_MANUALHOOK0(MHook_GetMaxHealth, 0, 0, 0, int);
-SH_DECL_MANUALHOOK2(MHook_ShouldCollide, 0, 0, 0, bool, int, int);
-SH_DECL_MANUALHOOK0_void(MHook_VPhysicsUpdate, 0, 0, 0);
-SH_DECL_MANUALHOOK0_void(MHook_GroundEntChanged, 0, 0, 0);
-SH_DECL_MANUALHOOK0(MHook_CanBeAutobalanced, 0, 0, 0, bool);
+static KHook::Return<void> Hook_StartTouch(CEntityInstance* thisPtr, CEntityInstance* pOther);
+static KHook::Return<void> Hook_StartTouchPost(CEntityInstance* thisPtr, CEntityInstance* pOther);
+static KHook::Return<void> Hook_Touch(CEntityInstance* thisPtr, CEntityInstance* pOther);
+static KHook::Return<void> Hook_TouchPost(CEntityInstance* thisPtr, CEntityInstance* pOther);
+static KHook::Return<void> Hook_EndTouch(CEntityInstance* thisPtr, CEntityInstance* pOther);
+static KHook::Return<void> Hook_EndTouchPost(CEntityInstance* thisPtr, CEntityInstance* pOther);
+static KHook::Return<void> Hook_Blocked(CEntityInstance* thisPtr, CEntityInstance* pOther);
+static KHook::Return<void> Hook_BlockedPost(CEntityInstance* thisPtr, CEntityInstance* pOther);
+static KHook::Return<void> Hook_Spawn(CEntityInstance* thisPtr);
+static KHook::Return<void> Hook_SpawnPost(CEntityInstance* thisPtr);
+static KHook::Return<void> Hook_Think(CEntityInstance* thisPtr);
+static KHook::Return<void> Hook_ThinkPost(CEntityInstance* thisPtr);
+static KHook::Return<void> Hook_PreThink(CEntityInstance* thisPtr);
+static KHook::Return<void> Hook_PreThinkPost(CEntityInstance* thisPtr);
+static KHook::Return<void> Hook_PostThink(CEntityInstance* thisPtr);
+static KHook::Return<void> Hook_PostThinkPost(CEntityInstance* thisPtr);
+static KHook::Return<void> Hook_VPhysicsUpdate(CEntityInstance* thisPtr);
+static KHook::Return<void> Hook_VPhysicsUpdatePost(CEntityInstance* thisPtr);
+static KHook::Return<void> Hook_GroundEntChangedPost(CEntityInstance* thisPtr);
+static KHook::Return<void> Hook_Use(CEntityInstance* thisPtr, CEntityInstance* act,
+                                      CEntityInstance* caller, int useType, float value);
+static KHook::Return<void> Hook_UsePost(CEntityInstance* thisPtr, CEntityInstance* act,
+                                          CEntityInstance* caller, int useType, float value);
+static KHook::Return<int> Hook_GetMaxHealth(CEntityInstance* thisPtr);
+static KHook::Return<bool> Hook_ShouldCollide(CEntityInstance* thisPtr, int collisionGroup,
+                                             int contentsMask);
+static KHook::Return<bool> Hook_CanBeAutobalanced(CEntityInstance* thisPtr);
 
 namespace {
+S2CheckedVirtual<CEntityInstance, void, CEntityInstance*> g_hkStartTouch(
+    &Hook_StartTouch, &Hook_StartTouchPost);
+S2CheckedVirtual<CEntityInstance, void, CEntityInstance*> g_hkTouch(&Hook_Touch, &Hook_TouchPost);
+S2CheckedVirtual<CEntityInstance, void, CEntityInstance*> g_hkEndTouch(
+    &Hook_EndTouch, &Hook_EndTouchPost);
+S2CheckedVirtual<CEntityInstance, void, CEntityInstance*> g_hkBlocked(
+    &Hook_Blocked, &Hook_BlockedPost);
+S2CheckedVirtual<CEntityInstance, void> g_hkSpawn(&Hook_Spawn, &Hook_SpawnPost);
+S2CheckedVirtual<CEntityInstance, void> g_hkThink(&Hook_Think, &Hook_ThinkPost);
+S2CheckedVirtual<CEntityInstance, void> g_hkPreThink(&Hook_PreThink, &Hook_PreThinkPost);
+S2CheckedVirtual<CEntityInstance, void> g_hkPostThink(&Hook_PostThink, &Hook_PostThinkPost);
+S2CheckedVirtual<CEntityInstance, void, CEntityInstance*, CEntityInstance*, int, float> g_hkUse(
+    &Hook_Use, &Hook_UsePost);
+S2CheckedVirtual<CEntityInstance, int> g_hkGetMaxHealth(&Hook_GetMaxHealth, nullptr);
+S2CheckedVirtual<CEntityInstance, bool, int, int> g_hkShouldCollide(&Hook_ShouldCollide, nullptr);
+S2CheckedVirtual<CEntityInstance, void> g_hkVPhysicsUpdate(
+    &Hook_VPhysicsUpdate, &Hook_VPhysicsUpdatePost);
+S2CheckedVirtual<CEntityInstance, void> g_hkGroundEntChanged(nullptr, &Hook_GroundEntChangedPost);
+S2CheckedVirtual<CEntityInstance, bool> g_hkCanBeAutobalanced(&Hook_CanBeAutobalanced, nullptr);
+
+std::array<S2CheckedBindingOps*, 14> SdkhookBindingInventory() {
+    return {{
+        &g_hkStartTouch, &g_hkTouch, &g_hkEndTouch, &g_hkBlocked,
+        &g_hkSpawn, &g_hkThink, &g_hkPreThink, &g_hkPostThink,
+        &g_hkUse, &g_hkGetMaxHealth, &g_hkShouldCollide, &g_hkVPhysicsUpdate,
+        &g_hkGroundEntChanged, &g_hkCanBeAutobalanced,
+    }};
+}
 
 constexpr int kMaxVtableSlots = 512;
 
@@ -132,15 +176,15 @@ bool ParseKind(const char* type, Kind* out) {
     if (std::strcmp(type, kStartTouch) == 0)           { *out = Kind::StartTouch;        return true; }
     if (std::strcmp(type, kTouch) == 0)                { *out = Kind::Touch;             return true; }
     if (std::strcmp(type, kEndTouch) == 0)             { *out = Kind::EndTouch;          return true; }
-    if (std::strcmp(type, kBlocked) == 0)              { *out = Kind::Blocked;           return true; }
+    if (std::strcmp(type, kBlocked) == 0)             { *out = Kind::Blocked;           return true; }
     if (std::strcmp(type, kSpawn) == 0)                { *out = Kind::Spawn;             return true; }
     if (std::strcmp(type, kThink) == 0)                { *out = Kind::Think;             return true; }
     if (std::strcmp(type, kPreThink) == 0)             { *out = Kind::PreThink;          return true; }
-    if (std::strcmp(type, kPostThink) == 0)            { *out = Kind::PostThink;         return true; }
+    if (std::strcmp(type, kPostThink) == 0)            { *out = Kind::PostThink;          return true; }
     if (std::strcmp(type, kUse) == 0)                  { *out = Kind::Use;               return true; }
     if (std::strcmp(type, kGetMaxHealth) == 0)         { *out = Kind::GetMaxHealth;      return true; }
     if (std::strcmp(type, kShouldCollide) == 0)        { *out = Kind::ShouldCollide;     return true; }
-    if (std::strcmp(type, kVPhysicsUpdate) == 0)       { *out = Kind::VPhysicsUpdate;    return true; }
+    if (std::strcmp(type, kVPhysicsUpdate) == 0)        { *out = Kind::VPhysicsUpdate;     return true; }
     if (std::strcmp(type, kGroundEntChangedPost) == 0) { *out = Kind::GroundEntChanged;  return true; }
     if (std::strcmp(type, kCanBeAutobalanced) == 0)    { *out = Kind::CanBeAutobalanced; return true; }
     return false;
@@ -165,7 +209,6 @@ struct VpKey {
     }
 };
 struct VpInst {
-    int hook_id = 0;
     int refcount = 0;
     int index = 0;
     int serial = 0;
@@ -199,201 +242,236 @@ int DispatchUse(const char* wiki, int post, CEntityInstance* self,
         useType, value, post, wiki);
 }
 
+static S2HookReceipt VpAddThis(Kind kind, void* p) {
+    auto* ent = static_cast<CEntityInstance*>(p);
+    switch (kind) {
+    case Kind::StartTouch:        return g_hkStartTouch.Add(ent);
+    case Kind::Touch:             return g_hkTouch.Add(ent);
+    case Kind::EndTouch:          return g_hkEndTouch.Add(ent);
+    case Kind::Blocked:           return g_hkBlocked.Add(ent);
+    case Kind::Spawn:             return g_hkSpawn.Add(ent);
+    case Kind::Think:             return g_hkThink.Add(ent);
+    case Kind::PreThink:          return g_hkPreThink.Add(ent);
+    case Kind::PostThink:         return g_hkPostThink.Add(ent);
+    case Kind::Use:               return g_hkUse.Add(ent);
+    case Kind::GetMaxHealth:      return g_hkGetMaxHealth.Add(ent);
+    case Kind::ShouldCollide:     return g_hkShouldCollide.Add(ent);
+    case Kind::VPhysicsUpdate:    return g_hkVPhysicsUpdate.Add(ent);
+    case Kind::GroundEntChanged:  return g_hkGroundEntChanged.Add(ent);
+    case Kind::CanBeAutobalanced: return g_hkCanBeAutobalanced.Add(ent);
+    }
+    return {KHook::INVALID_HOOK, S2HookState::Failed, "unknown SDKHook kind"};
+}
+
+static void VpRemoveThis(Kind kind, void* p) {
+    auto* ent = static_cast<CEntityInstance*>(p);
+    switch (kind) {
+    case Kind::StartTouch:        g_hkStartTouch.Remove(ent); break;
+    case Kind::Touch:             g_hkTouch.Remove(ent); break;
+    case Kind::EndTouch:          g_hkEndTouch.Remove(ent); break;
+    case Kind::Blocked:           g_hkBlocked.Remove(ent); break;
+    case Kind::Spawn:             g_hkSpawn.Remove(ent); break;
+    case Kind::Think:             g_hkThink.Remove(ent); break;
+    case Kind::PreThink:          g_hkPreThink.Remove(ent); break;
+    case Kind::PostThink:         g_hkPostThink.Remove(ent); break;
+    case Kind::Use:               g_hkUse.Remove(ent); break;
+    case Kind::GetMaxHealth:      g_hkGetMaxHealth.Remove(ent); break;
+    case Kind::ShouldCollide:     g_hkShouldCollide.Remove(ent); break;
+    case Kind::VPhysicsUpdate:    g_hkVPhysicsUpdate.Remove(ent); break;
+    case Kind::GroundEntChanged:  g_hkGroundEntChanged.Remove(ent); break;
+    case Kind::CanBeAutobalanced: g_hkCanBeAutobalanced.Remove(ent); break;
+    }
+}
+
+static bool KindLive(void* p, Kind kind) {
+    return g_installed.find(VpKey{p, kind, 0}) != g_installed.end()
+        || g_installed.find(VpKey{p, kind, 1}) != g_installed.end();
+}
+
+static bool OtherPhaseLive(void* p, Kind kind, int post) {
+    return g_installed.find(VpKey{p, kind, post ? 0 : 1}) != g_installed.end();
+}
+
 }  // namespace
 
-static void Hook_StartTouch(CEntityInstance* pOther) {
-    int r = DispatchTouch(kStartTouch, 0, META_IFACEPTR(CEntityInstance), pOther);
-    if (r >= 2) RETURN_META(MRES_SUPERCEDE);
-    RETURN_META(MRES_IGNORED);
+static KHook::Return<void> Hook_StartTouch(CEntityInstance* thisPtr, CEntityInstance* pOther) {
+    auto obs = g_hkStartTouch.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    return S2_FromHookResult(DispatchTouch(kStartTouch, 0, thisPtr, pOther));
 }
-static void Hook_StartTouchPost(CEntityInstance* pOther) {
-    DispatchTouch("StartTouchPost", 1, META_IFACEPTR(CEntityInstance), pOther);
-    RETURN_META(MRES_IGNORED);
+static KHook::Return<void> Hook_StartTouchPost(CEntityInstance* thisPtr, CEntityInstance* pOther) {
+    auto obs = g_hkStartTouch.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    DispatchTouch("StartTouchPost", 1, thisPtr, pOther);
+    return S2_Ignore();
 }
-static void Hook_Touch(CEntityInstance* pOther) {
-    int r = DispatchTouch(kTouch, 0, META_IFACEPTR(CEntityInstance), pOther);
-    if (r >= 2) RETURN_META(MRES_SUPERCEDE);
-    RETURN_META(MRES_IGNORED);
+static KHook::Return<void> Hook_Touch(CEntityInstance* thisPtr, CEntityInstance* pOther) {
+    auto obs = g_hkTouch.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    return S2_FromHookResult(DispatchTouch(kTouch, 0, thisPtr, pOther));
 }
-static void Hook_TouchPost(CEntityInstance* pOther) {
-    DispatchTouch("TouchPost", 1, META_IFACEPTR(CEntityInstance), pOther);
-    RETURN_META(MRES_IGNORED);
+static KHook::Return<void> Hook_TouchPost(CEntityInstance* thisPtr, CEntityInstance* pOther) {
+    auto obs = g_hkTouch.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    DispatchTouch("TouchPost", 1, thisPtr, pOther);
+    return S2_Ignore();
 }
-static void Hook_EndTouch(CEntityInstance* pOther) {
-    int r = DispatchTouch(kEndTouch, 0, META_IFACEPTR(CEntityInstance), pOther);
-    if (r >= 2) RETURN_META(MRES_SUPERCEDE);
-    RETURN_META(MRES_IGNORED);
+static KHook::Return<void> Hook_EndTouch(CEntityInstance* thisPtr, CEntityInstance* pOther) {
+    auto obs = g_hkEndTouch.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    return S2_FromHookResult(DispatchTouch(kEndTouch, 0, thisPtr, pOther));
 }
-static void Hook_EndTouchPost(CEntityInstance* pOther) {
-    DispatchTouch("EndTouchPost", 1, META_IFACEPTR(CEntityInstance), pOther);
-    RETURN_META(MRES_IGNORED);
+static KHook::Return<void> Hook_EndTouchPost(CEntityInstance* thisPtr, CEntityInstance* pOther) {
+    auto obs = g_hkEndTouch.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    DispatchTouch("EndTouchPost", 1, thisPtr, pOther);
+    return S2_Ignore();
 }
-static void Hook_Blocked(CEntityInstance* pOther) {
-    int r = DispatchTouch(kBlocked, 0, META_IFACEPTR(CEntityInstance), pOther);
-    if (r >= 2) RETURN_META(MRES_SUPERCEDE);
-    RETURN_META(MRES_IGNORED);
+static KHook::Return<void> Hook_Blocked(CEntityInstance* thisPtr, CEntityInstance* pOther) {
+    auto obs = g_hkBlocked.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    return S2_FromHookResult(DispatchTouch(kBlocked, 0, thisPtr, pOther));
 }
-static void Hook_BlockedPost(CEntityInstance* pOther) {
-    DispatchTouch("BlockedPost", 1, META_IFACEPTR(CEntityInstance), pOther);
-    RETURN_META(MRES_IGNORED);
-}
-
-static void Hook_Spawn() {
-    int r = DispatchThis(kSpawn, 0, META_IFACEPTR(CEntityInstance));
-    if (r >= 2) RETURN_META(MRES_SUPERCEDE);
-    RETURN_META(MRES_IGNORED);
-}
-static void Hook_SpawnPost() {
-    DispatchThis("SpawnPost", 1, META_IFACEPTR(CEntityInstance));
-    RETURN_META(MRES_IGNORED);
-}
-static void Hook_Think() {
-    int r = DispatchThis(kThink, 0, META_IFACEPTR(CEntityInstance));
-    if (r >= 2) RETURN_META(MRES_SUPERCEDE);
-    RETURN_META(MRES_IGNORED);
-}
-static void Hook_ThinkPost() {
-    DispatchThis("ThinkPost", 1, META_IFACEPTR(CEntityInstance));
-    RETURN_META(MRES_IGNORED);
-}
-static void Hook_PreThink() {
-    DispatchThis(kPreThink, 0, META_IFACEPTR(CEntityInstance));
-    RETURN_META(MRES_IGNORED);
-}
-static void Hook_PreThinkPost() {
-    DispatchThis("PreThinkPost", 1, META_IFACEPTR(CEntityInstance));
-    RETURN_META(MRES_IGNORED);
-}
-static void Hook_PostThink() {
-    DispatchThis(kPostThink, 0, META_IFACEPTR(CEntityInstance));
-    RETURN_META(MRES_IGNORED);
-}
-static void Hook_PostThinkPost() {
-    DispatchThis("PostThinkPost", 1, META_IFACEPTR(CEntityInstance));
-    RETURN_META(MRES_IGNORED);
-}
-static void Hook_VPhysicsUpdate() {
-    DispatchThis(kVPhysicsUpdate, 0, META_IFACEPTR(CEntityInstance));
-    RETURN_META(MRES_IGNORED);
-}
-static void Hook_VPhysicsUpdatePost() {
-    DispatchThis("VPhysicsUpdatePost", 1, META_IFACEPTR(CEntityInstance));
-    RETURN_META(MRES_IGNORED);
-}
-static void Hook_GroundEntChangedPost() {
-    DispatchThis(kGroundEntChangedPost, 1, META_IFACEPTR(CEntityInstance));
-    RETURN_META(MRES_IGNORED);
+static KHook::Return<void> Hook_BlockedPost(CEntityInstance* thisPtr, CEntityInstance* pOther) {
+    auto obs = g_hkBlocked.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    DispatchTouch("BlockedPost", 1, thisPtr, pOther);
+    return S2_Ignore();
 }
 
-static void Hook_Use(CEntityInstance* act, CEntityInstance* caller, int useType, float value) {
-    int r = DispatchUse(kUse, 0, META_IFACEPTR(CEntityInstance), act, caller, useType, value);
-    if (r >= 2) RETURN_META(MRES_SUPERCEDE);
-    RETURN_META(MRES_IGNORED);
+static KHook::Return<void> Hook_Spawn(CEntityInstance* thisPtr) {
+    auto obs = g_hkSpawn.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    return S2_FromHookResult(DispatchThis(kSpawn, 0, thisPtr));
 }
-static void Hook_UsePost(CEntityInstance* act, CEntityInstance* caller, int useType, float value) {
-    DispatchUse("UsePost", 1, META_IFACEPTR(CEntityInstance), act, caller, useType, value);
-    RETURN_META(MRES_IGNORED);
+static KHook::Return<void> Hook_SpawnPost(CEntityInstance* thisPtr) {
+    auto obs = g_hkSpawn.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    DispatchThis("SpawnPost", 1, thisPtr);
+    return S2_Ignore();
+}
+static KHook::Return<void> Hook_Think(CEntityInstance* thisPtr) {
+    auto obs = g_hkThink.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    return S2_FromHookResult(DispatchThis(kThink, 0, thisPtr));
+}
+static KHook::Return<void> Hook_ThinkPost(CEntityInstance* thisPtr) {
+    auto obs = g_hkThink.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    DispatchThis("ThinkPost", 1, thisPtr);
+    return S2_Ignore();
+}
+static KHook::Return<void> Hook_PreThink(CEntityInstance* thisPtr) {
+    auto obs = g_hkPreThink.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    DispatchThis(kPreThink, 0, thisPtr);
+    return S2_Ignore();
+}
+static KHook::Return<void> Hook_PreThinkPost(CEntityInstance* thisPtr) {
+    auto obs = g_hkPreThink.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    DispatchThis("PreThinkPost", 1, thisPtr);
+    return S2_Ignore();
+}
+static KHook::Return<void> Hook_PostThink(CEntityInstance* thisPtr) {
+    auto obs = g_hkPostThink.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    DispatchThis(kPostThink, 0, thisPtr);
+    return S2_Ignore();
+}
+static KHook::Return<void> Hook_PostThinkPost(CEntityInstance* thisPtr) {
+    auto obs = g_hkPostThink.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    DispatchThis("PostThinkPost", 1, thisPtr);
+    return S2_Ignore();
+}
+static KHook::Return<void> Hook_VPhysicsUpdate(CEntityInstance* thisPtr) {
+    auto obs = g_hkVPhysicsUpdate.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    DispatchThis(kVPhysicsUpdate, 0, thisPtr);
+    return S2_Ignore();
+}
+static KHook::Return<void> Hook_VPhysicsUpdatePost(CEntityInstance* thisPtr) {
+    auto obs = g_hkVPhysicsUpdate.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    DispatchThis("VPhysicsUpdatePost", 1, thisPtr);
+    return S2_Ignore();
+}
+static KHook::Return<void> Hook_GroundEntChangedPost(CEntityInstance* thisPtr) {
+    auto obs = g_hkGroundEntChanged.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    DispatchThis(kGroundEntChangedPost, 1, thisPtr);
+    return S2_Ignore();
 }
 
-static int Hook_GetMaxHealth() {
-    CEntityInstance* self = META_IFACEPTR(CEntityInstance);
+static KHook::Return<void> Hook_Use(CEntityInstance* thisPtr, CEntityInstance* act,
+                                      CEntityInstance* caller, int useType, float value) {
+    auto obs = g_hkUse.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    return S2_FromHookResult(DispatchUse(kUse, 0, thisPtr, act, caller, useType, value));
+}
+static KHook::Return<void> Hook_UsePost(CEntityInstance* thisPtr, CEntityInstance* act,
+                                          CEntityInstance* caller, int useType, float value) {
+    auto obs = g_hkUse.Observe(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    DispatchUse("UsePost", 1, thisPtr, act, caller, useType, value);
+    return S2_Ignore();
+}
+
+static KHook::Return<int> Hook_GetMaxHealth(CEntityInstance* thisPtr) {
+    auto obs = g_hkGetMaxHealth.Observe(thisPtr);
     int maxH = 0;
-    if (self) {
-        maxH = SH_MCALL(self, MHook_GetMaxHealth)();
-        CEntityHandle h = self->GetRefEHandle();
-        int hr = s2script_core_dispatch_sdkhook_getmaxhealth(
-            h.GetEntryIndex(), h.GetSerialNumber(), &maxH);
-        if (hr >= 2) RETURN_META_VALUE(MRES_SUPERCEDE, maxH);
-    }
-    RETURN_META_VALUE(MRES_IGNORED, maxH);
+    if (!thisPtr) return S2_Ignore(maxH);
+    maxH = g_hkGetMaxHealth.CallOriginal(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore(maxH);
+    CEntityHandle h = thisPtr->GetRefEHandle();
+    int hr = s2script_core_dispatch_sdkhook_getmaxhealth(
+        h.GetEntryIndex(), h.GetSerialNumber(), &maxH);
+    if (hr >= 2) return S2_Supersede(maxH);
+    return S2_Ignore(maxH);
 }
 
-static bool Hook_ShouldCollide(int collisionGroup, int contentsMask) {
-    CEntityInstance* self = META_IFACEPTR(CEntityInstance);
+static KHook::Return<bool> Hook_ShouldCollide(CEntityInstance* thisPtr, int collisionGroup,
+                                             int contentsMask) {
+    auto obs = g_hkShouldCollide.Observe(thisPtr);
     bool orig = true;
-    if (self) {
-        orig = SH_MCALL(self, MHook_ShouldCollide)(collisionGroup, contentsMask);
-        CEntityHandle h = self->GetRefEHandle();
-        int r = s2script_core_dispatch_sdkhook_shouldcollide(
-            h.GetEntryIndex(), h.GetSerialNumber(), collisionGroup, contentsMask, orig ? 1 : 0);
-        RETURN_META_VALUE(MRES_SUPERCEDE, r != 0);
-    }
-    RETURN_META_VALUE(MRES_IGNORED, orig);
+    if (!thisPtr) return S2_Ignore(orig);
+    orig = g_hkShouldCollide.CallOriginal(thisPtr, collisionGroup, contentsMask);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore(orig);
+    CEntityHandle h = thisPtr->GetRefEHandle();
+    int r = s2script_core_dispatch_sdkhook_shouldcollide(
+        h.GetEntryIndex(), h.GetSerialNumber(), collisionGroup, contentsMask, orig ? 1 : 0);
+    return S2_Supersede(r != 0);
 }
 
-static bool Hook_CanBeAutobalanced() {
-    CEntityInstance* self = META_IFACEPTR(CEntityInstance);
+static KHook::Return<bool> Hook_CanBeAutobalanced(CEntityInstance* thisPtr) {
+    auto obs = g_hkCanBeAutobalanced.Observe(thisPtr);
     bool orig = true;
-    if (self) {
-        orig = SH_MCALL(self, MHook_CanBeAutobalanced)();
-        CEntityHandle h = self->GetRefEHandle();
-        int r = s2script_core_dispatch_sdkhook_canbeautobalanced(
-            h.GetEntryIndex(), h.GetSerialNumber(), orig ? 1 : 0);
-        RETURN_META_VALUE(MRES_SUPERCEDE, r != 0);
-    }
-    RETURN_META_VALUE(MRES_IGNORED, orig);
-}
-
-static int AddManual(Kind kind, void* p, int post) {
-    switch (kind) {
-    case Kind::StartTouch:
-        return post ? SH_ADD_MANUALHOOK(MHook_StartTouch, p, SH_STATIC(Hook_StartTouchPost), true)
-                    : SH_ADD_MANUALHOOK(MHook_StartTouch, p, SH_STATIC(Hook_StartTouch), false);
-    case Kind::Touch:
-        return post ? SH_ADD_MANUALHOOK(MHook_Touch, p, SH_STATIC(Hook_TouchPost), true)
-                    : SH_ADD_MANUALHOOK(MHook_Touch, p, SH_STATIC(Hook_Touch), false);
-    case Kind::EndTouch:
-        return post ? SH_ADD_MANUALHOOK(MHook_EndTouch, p, SH_STATIC(Hook_EndTouchPost), true)
-                    : SH_ADD_MANUALHOOK(MHook_EndTouch, p, SH_STATIC(Hook_EndTouch), false);
-    case Kind::Blocked:
-        return post ? SH_ADD_MANUALHOOK(MHook_Blocked, p, SH_STATIC(Hook_BlockedPost), true)
-                    : SH_ADD_MANUALHOOK(MHook_Blocked, p, SH_STATIC(Hook_Blocked), false);
-    case Kind::Spawn:
-        return post ? SH_ADD_MANUALHOOK(MHook_Spawn, p, SH_STATIC(Hook_SpawnPost), true)
-                    : SH_ADD_MANUALHOOK(MHook_Spawn, p, SH_STATIC(Hook_Spawn), false);
-    case Kind::Think:
-        return post ? SH_ADD_MANUALHOOK(MHook_Think, p, SH_STATIC(Hook_ThinkPost), true)
-                    : SH_ADD_MANUALHOOK(MHook_Think, p, SH_STATIC(Hook_Think), false);
-    case Kind::PreThink:
-        return post ? SH_ADD_MANUALHOOK(MHook_PreThink, p, SH_STATIC(Hook_PreThinkPost), true)
-                    : SH_ADD_MANUALHOOK(MHook_PreThink, p, SH_STATIC(Hook_PreThink), false);
-    case Kind::PostThink:
-        return post ? SH_ADD_MANUALHOOK(MHook_PostThink, p, SH_STATIC(Hook_PostThinkPost), true)
-                    : SH_ADD_MANUALHOOK(MHook_PostThink, p, SH_STATIC(Hook_PostThink), false);
-    case Kind::Use:
-        return post ? SH_ADD_MANUALHOOK(MHook_Use, p, SH_STATIC(Hook_UsePost), true)
-                    : SH_ADD_MANUALHOOK(MHook_Use, p, SH_STATIC(Hook_Use), false);
-    case Kind::GetMaxHealth:
-        return SH_ADD_MANUALHOOK(MHook_GetMaxHealth, p, SH_STATIC(Hook_GetMaxHealth), false);
-    case Kind::ShouldCollide:
-        return SH_ADD_MANUALHOOK(MHook_ShouldCollide, p, SH_STATIC(Hook_ShouldCollide), false);
-    case Kind::VPhysicsUpdate:
-        return post ? SH_ADD_MANUALHOOK(MHook_VPhysicsUpdate, p, SH_STATIC(Hook_VPhysicsUpdatePost), true)
-                    : SH_ADD_MANUALHOOK(MHook_VPhysicsUpdate, p, SH_STATIC(Hook_VPhysicsUpdate), false);
-    case Kind::GroundEntChanged:
-        return SH_ADD_MANUALHOOK(MHook_GroundEntChanged, p, SH_STATIC(Hook_GroundEntChangedPost), true);
-    case Kind::CanBeAutobalanced:
-        return SH_ADD_MANUALHOOK(MHook_CanBeAutobalanced, p, SH_STATIC(Hook_CanBeAutobalanced), false);
-    }
-    return 0;
+    if (!thisPtr) return S2_Ignore(orig);
+    orig = g_hkCanBeAutobalanced.CallOriginal(thisPtr);
+    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore(orig);
+    CEntityHandle h = thisPtr->GetRefEHandle();
+    int r = s2script_core_dispatch_sdkhook_canbeautobalanced(
+        h.GetEntryIndex(), h.GetSerialNumber(), orig ? 1 : 0);
+    return S2_Supersede(r != 0);
 }
 
 static void Reconfigure(Kind kind, int slot) {
     switch (kind) {
-    case Kind::StartTouch:        SH_MANUALHOOK_RECONFIGURE(MHook_StartTouch, slot, 0, 0); break;
-    case Kind::Touch:             SH_MANUALHOOK_RECONFIGURE(MHook_Touch, slot, 0, 0); break;
-    case Kind::EndTouch:          SH_MANUALHOOK_RECONFIGURE(MHook_EndTouch, slot, 0, 0); break;
-    case Kind::Blocked:           SH_MANUALHOOK_RECONFIGURE(MHook_Blocked, slot, 0, 0); break;
-    case Kind::Spawn:             SH_MANUALHOOK_RECONFIGURE(MHook_Spawn, slot, 0, 0); break;
-    case Kind::Think:             SH_MANUALHOOK_RECONFIGURE(MHook_Think, slot, 0, 0); break;
-    case Kind::PreThink:          SH_MANUALHOOK_RECONFIGURE(MHook_PreThink, slot, 0, 0); break;
-    case Kind::PostThink:         SH_MANUALHOOK_RECONFIGURE(MHook_PostThink, slot, 0, 0); break;
-    case Kind::Use:               SH_MANUALHOOK_RECONFIGURE(MHook_Use, slot, 0, 0); break;
-    case Kind::GetMaxHealth:      SH_MANUALHOOK_RECONFIGURE(MHook_GetMaxHealth, slot, 0, 0); break;
-    case Kind::ShouldCollide:     SH_MANUALHOOK_RECONFIGURE(MHook_ShouldCollide, slot, 0, 0); break;
-    case Kind::VPhysicsUpdate:    SH_MANUALHOOK_RECONFIGURE(MHook_VPhysicsUpdate, slot, 0, 0); break;
-    case Kind::GroundEntChanged:  SH_MANUALHOOK_RECONFIGURE(MHook_GroundEntChanged, slot, 0, 0); break;
-    case Kind::CanBeAutobalanced: SH_MANUALHOOK_RECONFIGURE(MHook_CanBeAutobalanced, slot, 0, 0); break;
+    case Kind::StartTouch:        g_hkStartTouch.Configure(slot); break;
+    case Kind::Touch:             g_hkTouch.Configure(slot); break;
+    case Kind::EndTouch:          g_hkEndTouch.Configure(slot); break;
+    case Kind::Blocked:           g_hkBlocked.Configure(slot); break;
+    case Kind::Spawn:             g_hkSpawn.Configure(slot); break;
+    case Kind::Think:             g_hkThink.Configure(slot); break;
+    case Kind::PreThink:          g_hkPreThink.Configure(slot); break;
+    case Kind::PostThink:         g_hkPostThink.Configure(slot); break;
+    case Kind::Use:               g_hkUse.Configure(slot); break;
+    case Kind::GetMaxHealth:      g_hkGetMaxHealth.Configure(slot); break;
+    case Kind::ShouldCollide:     g_hkShouldCollide.Configure(slot); break;
+    case Kind::VPhysicsUpdate:    g_hkVPhysicsUpdate.Configure(slot); break;
+    case Kind::GroundEntChanged:  g_hkGroundEntChanged.Configure(slot); break;
+    case Kind::CanBeAutobalanced: g_hkCanBeAutobalanced.Configure(slot); break;
     }
 }
 
@@ -406,7 +484,7 @@ void S2SdkhooksVpLoad(const GameConfig& gd) {
         { kStartTouch,           Kind::StartTouch },
         { kTouch,                Kind::Touch },
         { kEndTouch,             Kind::EndTouch },
-        { kBlocked,              Kind::Blocked },
+        { kBlocked,             Kind::Blocked },
         { kSpawn,                Kind::Spawn },
         { kThink,                Kind::Think },
         { kPreThink,             Kind::PreThink },
@@ -414,13 +492,14 @@ void S2SdkhooksVpLoad(const GameConfig& gd) {
         { kUse,                  Kind::Use },
         { kGetMaxHealth,         Kind::GetMaxHealth },
         { kShouldCollide,        Kind::ShouldCollide },
-        { kVPhysicsUpdate,       Kind::VPhysicsUpdate },
+        { kVPhysicsUpdate,        Kind::VPhysicsUpdate },
         { kGroundEntChangedPost, Kind::GroundEntChanged },
         { kCanBeAutobalanced,    Kind::CanBeAutobalanced },
     };
 
     s2validate::Ops vops;
     vops.vtable_by_name = &s2vtable::GetVTableByName;
+    vops.original_virtual = &KHook::FindOriginalVirtual;
 
     for (const Row& row : rows) {
         auto it = gd.signatures.find(row.name);
@@ -477,8 +556,9 @@ void S2SdkhooksVpLoad(const GameConfig& gd) {
         }
         int slot = -1;
         for (int i = 0; i < kMaxVtableSlots; i++) {
-            if (!InModuleText(mt, vt[i])) break;
-            if (vt[i] == fn) { slot = i; break; }
+            void* orig = KHook::FindOriginalVirtual(vt, i);
+            if (!InModuleText(mt, orig)) break;
+            if (orig == fn) { slot = i; break; }
         }
         if (slot < 0) {
             S2GamedataResult(row.name, false, "sig-resolved address is not a vtable slot");
@@ -492,29 +572,52 @@ void S2SdkhooksVpLoad(const GameConfig& gd) {
     }
 }
 
-void S2SdkhooksVpUnload() {
-    for (auto& kv : g_installed) {
-        if (kv.second.hook_id) SH_REMOVE_HOOK_ID(kv.second.hook_id);
+bool S2SdkhooksVpCanUnloadSync(const S2HookTerminalPermit& p) {
+    return S2HookInventoryCanRemoveSync(SdkhookBindingInventory(), p);
+}
+
+bool S2SdkhooksVpUnloadSync(const S2HookTerminalPermit& p) {
+    if (!S2SdkhooksVpCanUnloadSync(p)) return false;
+    while (!g_installed.empty()) {
+        auto it = g_installed.begin();
+        void* hooked = it->first.ptr;
+        Kind kind = it->first.kind;
+        g_installed.erase(it);
+        if (!KindLive(hooked, kind)) VpRemoveThis(kind, hooked);
     }
-    g_installed.clear();
+    const bool ok = S2HookInventoryBeginRemoveSync(SdkhookBindingInventory(), p);
     ClearSlots();
+    return ok && S2SdkhooksVpRemovalComplete();
+}
+
+bool S2SdkhooksVpRemovalComplete() {
+    return S2HookInventoryRemovalComplete(SdkhookBindingInventory());
 }
 
 extern "C" int s2_sdkhook_vp_add(int index, int serial, const char* type, int post) {
+    if (!S2Hook_AcceptingRegistrations()) return 0;
     Kind kind;
     if (!ParseKind(type, &kind)) return 0;
     if (s_slot[static_cast<int>(kind)] < 0) return 0;
     void* p = S2_ResolveEntity(index, serial);
     if (!p) return 0;
-    VpKey key{ p, kind, post ? 1 : 0 };
+    const int phase = post ? 1 : 0;
+    VpKey key{ p, kind, phase };
     auto it = g_installed.find(key);
     if (it != g_installed.end()) {
         it->second.refcount++;
         return 1;
     }
-    int hid = AddManual(kind, p, post ? 1 : 0);
-    if (hid <= 0) return 0;
-    g_installed[key] = VpInst{ hid, 1, index, serial };
+    if (!OtherPhaseLive(p, kind, phase)) {
+        S2HookReceipt rec = VpAddThis(kind, p);
+        if (!rec.Accepted()) {
+            META_CONPRINTF("[s2script] SDKHook VP add FAILED (%s): %s\n",
+                           type ? type : "?",
+                           rec.reason.empty() ? "registration rejected" : rec.reason.c_str());
+            return 0;
+        }
+    }
+    g_installed[key] = VpInst{ 1, index, serial };
     return 1;
 }
 
@@ -522,15 +625,12 @@ extern "C" int s2_sdkhook_vp_remove(int index, int serial, const char* type, int
     Kind kind;
     if (!ParseKind(type, &kind)) return 0;
     void* p = S2_ResolveEntity(index, serial);
-    VpKey key{ p, kind, post ? 1 : 0 };
+    const int phase = post ? 1 : 0;
+    VpKey key{ p, kind, phase };
     auto it = g_installed.find(key);
-    if (it == g_installed.end() && p) {
-        // Stale resolve: search by index/serial.
-        it = g_installed.end();
-    }
     if (it == g_installed.end()) {
         for (auto jt = g_installed.begin(); jt != g_installed.end(); ++jt) {
-            if (jt->first.kind == kind && jt->first.post == (post ? 1 : 0)
+            if (jt->first.kind == kind && jt->first.post == phase
                 && jt->second.index == index && jt->second.serial == serial) {
                 it = jt;
                 break;
@@ -540,8 +640,12 @@ extern "C" int s2_sdkhook_vp_remove(int index, int serial, const char* type, int
     if (it == g_installed.end()) return 0;
     it->second.refcount--;
     if (it->second.refcount > 0) return 1;
-    if (it->second.hook_id) SH_REMOVE_HOOK_ID(it->second.hook_id);
+    void* hooked = it->first.ptr;
+    Kind k = it->first.kind;
     g_installed.erase(it);
+    if (!KindLive(hooked, k)) {
+        VpRemoveThis(k, hooked);
+    }
     return 1;
 }
 
@@ -549,9 +653,13 @@ extern "C" int s2_sdkhook_vp_drop(int index, int serial) {
     int n = 0;
     for (auto it = g_installed.begin(); it != g_installed.end(); ) {
         if (it->second.index == index && it->second.serial == serial) {
-            if (it->second.hook_id) SH_REMOVE_HOOK_ID(it->second.hook_id);
+            void* hooked = it->first.ptr;
+            Kind k = it->first.kind;
             it = g_installed.erase(it);
             n++;
+            if (!KindLive(hooked, k)) {
+                VpRemoveThis(k, hooked);
+            }
         } else {
             ++it;
         }

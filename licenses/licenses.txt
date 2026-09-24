@@ -15,7 +15,7 @@ changes that. These are the notices s2script owes to others.
 
 Pinned at generation time:
     hl2sdk            5f891c902623   (branch cs2)
-    metamod-source    26c03fa192c3   (2.0.0.1403)
+    metamod-source    7e24ce9e7a03   (PLAPI 18/KHook; unmodified upstream source)
     breakpad          9aebd3d8ef5a
     rust crates       296   (from Cargo.lock)
 

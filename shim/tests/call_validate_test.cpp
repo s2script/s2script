@@ -211,6 +211,49 @@ void test_vtable_member_malformed_value_degrades_by_name() {
     CHECK(Named(RunOn(R"({"vtable-member":""})")), "vtable-member: an empty class name is rejected");
 }
 
+// A peer's JIT trampoline lives outside .text. Comparing/range-checking the live slot first
+// would treat it as the sub-vtable terminator and miss later members. Resolve the original
+// virtual target BEFORE InText/equality. Unhooked slots: identity lookup == vt[i].
+void* g_peer_jit = reinterpret_cast<void*>(static_cast<uintptr_t>(0x7));
+
+void** FakeVtableWithPeerJit(const char* module, const char* className) {
+    void** vt = FakeVtableByName(module, className);
+    if (vt) vt[0] = g_peer_jit;
+    return vt;
+}
+
+void* IdentityOriginalVirtual(void** vt, int index) {
+    return vt[index];
+}
+
+void* FakeFindOriginalVirtual(void** vt, int index) {
+    if (vt[index] == g_peer_jit) {
+        return const_cast<void*>(reinterpret_cast<const void*>(TextBase() + kOtherFnOff));
+    }
+    return vt[index];
+}
+
+void test_vtable_member_identity_lookup_preserves_unhooked_slots() {
+    s2validate::Ops ops;
+    ops.vtable_by_name = &FakeVtableByName;
+    ops.original_virtual = &IdentityOriginalVirtual;
+    Result member = RunOn(R"({"vtable-member":"CFixtureClass"})", Fn(), ops);
+    CHECK(member.ok, "vtable-member: identity original_virtual still accepts an unhooked member");
+    Result stranger = RunOn(R"({"vtable-member":"CFixtureClass"})", TextBase() + kStrangerOff, ops);
+    CHECK(Named(stranger), "vtable-member: identity original_virtual still rejects a non-member");
+    Result past = RunOn(R"({"vtable-member":"CFixtureClass"})", TextBase() + kBeyondEndOff, ops);
+    CHECK(Named(past), "vtable-member: identity original_virtual still fail-closes at the terminator");
+}
+
+void test_vtable_member_peer_jit_does_not_terminate_walk() {
+    s2validate::Ops ops;
+    ops.vtable_by_name = &FakeVtableWithPeerJit;
+    ops.original_virtual = &FakeFindOriginalVirtual;
+    Result r = RunOn(R"({"vtable-member":"CFixtureClass"})", Fn(), ops);
+    CHECK(r.ok, "vtable-member: FindOriginalVirtual before InText sees past a peer JIT entry");
+    CHECK(r.reason.empty(), "vtable-member: a JIT-safe walk leaves the reason buffer empty");
+}
+
 // -----------------------------------------------------------------------------------------------
 // string-xref
 // -----------------------------------------------------------------------------------------------
@@ -672,6 +715,8 @@ int main() {
     test_vtable_member_unresolvable_class_degrades_by_name();
     test_vtable_member_without_a_resolver_degrades_by_name();
     test_vtable_member_malformed_value_degrades_by_name();
+    test_vtable_member_identity_lookup_preserves_unhooked_slots();
+    test_vtable_member_peer_jit_does_not_terminate_walk();
 
     test_string_xref_accepts_the_right_literal();
     test_string_xref_rejects_a_wrong_expectation();

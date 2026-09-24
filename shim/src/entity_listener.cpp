@@ -12,6 +12,7 @@
 #include <cstdio>                     // printf — opt-in lifecycle trace
 #include <cstdlib>                    // getenv
 #include "s2script_core.h"              // s2script_core_dispatch_entity_event (Task 1 core export)
+#include "khook_binding.h"              // S2HookDispatchGuard — skip JS while Retiring
 
 // deferred-dispatch-queue slice: the queue itself lives in s2script_mm.cpp (it owns the payload and
 // the drain). This TU sees exactly one function of it — the same opaque-boundary discipline as
@@ -52,6 +53,8 @@ private:
             printf("[s2script] ENTLIFE %s index=%d class=%s\n", kind, handle & 0x7fff, cls ? cls : "?");
             if (left == 0) printf("[s2script] ENTLIFE budget spent — tracing off\n");
         }
+        S2HookDispatchGuard guard;
+        if (!guard) return;
         // A re-entrant dispatch (this entity was created/deleted BY a JS handler, e.g. a plugin's own
         // synchronous createEntity) delivers nothing — queue the scalars for the next GameFrame
         // instead of dropping it silently. GetClassname() points into engine memory that may be gone
