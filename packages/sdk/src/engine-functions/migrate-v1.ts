@@ -27,7 +27,7 @@ export interface MigrationReport {
   recommendedEdits: string[];
   ambiguities: string[];
   filesChanged: string[];
-  replacedFile?: string;
+  publication?: { action: 'created' | 'create-or-replace'; path: string; priorExistence?: 'cannot-be-established-under-concurrency' };
   output?: FunctionFileV2;
 }
 
@@ -92,14 +92,17 @@ function callOf(name: string, value: unknown, signatures: Raw, errors: string[])
   if (!returns) return;
   return { target: target.target, resolve: target.resolve, receiver: { type: r.kind as 'entity' | 'none' }, parameters: args.map((a, i) => ({ name: names[i] as string, type: AUTHOR_TYPES[a as keyof typeof AUTHOR_TYPES] })), returns, surfaces: ['call'] };
 }
-function hookOf(name: string, value: unknown, signatures: Raw, errors: string[]): { function: AuthorFunction; bypassWith?: string; exposeCtx: string } | undefined {
+function hookOf(name: string, value: unknown, signatures: Raw, errors: string[]): { function: AuthorFunction; bypassWith?: string } | undefined {
   const where = `hook ${name}`;
   const h = obj(value);
   if (!h) { errors.push(`${where}: declaration must be an object`); return; }
   fields(h, ['target', 'shape', 'params', 'mutable', 'receiver', 'bypassWith', 'expose'], where, errors);
   const r = obj(h.receiver);
   if (!r || r.kind !== 'entity' || !valid(r.as)) errors.push(`${where}: receiver is not a representable entity receiver`);
-  else fields(r, ['kind', 'as'], `${where}.receiver`, errors);
+  else {
+    fields(r, ['kind', 'as'], `${where}.receiver`, errors);
+    errors.push(`${where}: nullable v1 entity receiver callback cannot be preserved by the frozen v2 non-null receiver projection`);
+  }
   const expose = obj(h.expose);
   if (!expose || !valid(expose.ctx)) errors.push(`${where}: missing expose.ctx`);
   else fields(expose, ['ctx'], `${where}.expose`, errors);
@@ -113,10 +116,10 @@ function hookOf(name: string, value: unknown, signatures: Raw, errors: string[])
   const target = targetOf(h.target, signatures, where, errors);
   if (h.bypassWith !== undefined && !valid(h.bypassWith)) errors.push(`${where}: invalid bypassWith`);
   if (!target || !r || !expose || !types || !Array.isArray(names) || names.length !== types.length || !Array.isArray(mutable)) return;
-  return { function: { target: target.target, resolve: target.resolve, receiver: { type: 'entity' }, parameters: types.map((type, i) => ({ name: names[i] as string, type: type as 'f32' | 'i32', ...(mutable.includes(names[i]) && { mutable: 'pre' as const }) })), returns: 'void', surfaces: ['pre'] }, bypassWith: h.bypassWith as string | undefined, exposeCtx: expose.ctx as string };
+  return { function: { target: target.target, resolve: target.resolve, receiver: { type: 'entity' }, parameters: types.map((type, i) => ({ name: names[i] as string, type: type as 'f32' | 'i32', ...(mutable.includes(names[i]) && { mutable: 'pre' as const }) })), returns: 'void', surfaces: ['pre'] }, bypassWith: h.bypassWith as string | undefined };
 }
 
-function sourceFiles(dir: string, pkg: Raw): string[] {
+function sourceFiles(dir: string, pkg: Raw, errors: string[]): string[] {
   const result = new Set<string>();
   const src = join(dir, 'src');
   function walk(at: string): void {
@@ -136,26 +139,85 @@ function sourceFiles(dir: string, pkg: Raw): string[] {
   for (let i = 0; i < queue.length; i++) {
     const file = queue[i]!;
     const ast = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+    const follow = (spec: string, node: ts.Node): void => {
+      if (!spec.startsWith('.')) return;
+      const at = `${relative(dir, file)}:${ast.getLineAndCharacterOfPosition(node.getStart(ast)).line + 1}`;
+      const base = resolve(dirname(file), spec);
+      if (!contained(dir, base)) { errors.push(`${at}: local module ${JSON.stringify(spec)} escapes plugin directory`); return; }
+      const stem = base.replace(/\.[cm]?[jt]sx?$/, '');
+      const candidates = [base, ...['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.cts', '.cjs'].map(x => stem + x), ...['index.ts', 'index.tsx', 'index.js', 'index.jsx'].map(x => join(base, x))];
+      const found = candidates.find(p => contained(dir, p) && existsSync(p) && lstatSync(p).isFile());
+      if (!found) { errors.push(`${at}: unresolved local module ${JSON.stringify(spec)}`); return; }
+      if (!/\.[cm]?[jt]sx?$/.test(found) || found.endsWith('.d.ts') || result.has(found)) return;
+      result.add(found);
+      queue.push(found);
+    };
     for (const statement of ast.statements) {
       if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) continue;
       const spec = statement.moduleSpecifier;
-      if (!spec || !ts.isStringLiteral(spec) || !spec.text.startsWith('.')) continue;
-      const base = resolve(dirname(file), spec.text);
-      for (const candidate of [base, ...['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.cts', '.cjs'].map(x => base + x), ...['index.ts', 'index.tsx', 'index.js', 'index.jsx'].map(x => join(base, x))]) {
-        if (!contained(dir, candidate) || !existsSync(candidate) || !lstatSync(candidate).isFile() || !/\.[cm]?[jt]sx?$/.test(candidate) || result.has(candidate)) continue;
-        result.add(candidate);
-        queue.push(candidate);
-        break;
-      }
+      if (spec && ts.isStringLiteral(spec)) follow(spec.text, spec);
     }
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ((ts.isIdentifier(node.expression) && node.expression.text === 'require') || node.expression.kind === ts.SyntaxKind.ImportKeyword)) {
+        const arg = node.arguments[0];
+        if (!arg || (!ts.isStringLiteral(arg) && !ts.isNoSubstitutionTemplateLiteral(arg))) {
+          errors.push(`${relative(dir, file)}:${ast.getLineAndCharacterOfPosition(node.getStart(ast)).line + 1}: dynamic module edge cannot be resolved for source analysis`);
+        } else follow(arg.text, node);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(ast);
   }
   return [...result].sort();
 }
 function scanSource(files: string[], calls: Set<string>, hooks: Map<string, string>, report: MigrationReport): void {
+  const namespaces = new Set(hooks.values());
   for (const file of files) {
     const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true) as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] };
     if (source.parseDiagnostics?.length) report.ambiguities.push(`${relative(report.package, file)}: source syntax errors prevent reliable reference analysis`);
+    const unsafeNamespaces = new Set<string>();
+    for (const statement of source.statements) {
+      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) || statement.moduleSpecifier.text !== '@s2script/sdk/unsafe') continue;
+      const bindings = statement.importClause?.namedBindings;
+      if (bindings && ts.isNamespaceImport(bindings)) unsafeNamespaces.add(bindings.name.text);
+    }
     const visit = (node: ts.Node): void => {
+      if (ts.isImportSpecifier(node) && node.propertyName?.text === 'Engine' && node.name.text !== 'Engine') {
+        report.ambiguities.push(`${relative(report.package, file)}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}: imported Engine alias prevents proving legacy timing/null behavior`);
+      }
+      if (ts.isExportSpecifier(node) && (node.propertyName?.text ?? node.name.text) === 'Engine') {
+        report.ambiguities.push(`${relative(report.package, file)}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}: exported Engine escape prevents proving legacy timing/null behavior`);
+      }
+      if (ts.isBindingElement(node) && node.propertyName && ts.isIdentifier(node.propertyName) && node.propertyName.text === 'Engine') {
+        report.ambiguities.push(`${relative(report.package, file)}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}: destructured Engine alias prevents proving legacy timing/null behavior`);
+      }
+      if (ts.isParameter(node) && hooks.size && ts.isObjectBindingPattern(node.name) && node.name.elements.some(e => namespaces.has(e.propertyName && ts.isIdentifier(e.propertyName) ? e.propertyName.text : e.name.getText(source)))) {
+        report.ambiguities.push(`${relative(report.package, file)}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}: destructured ctx hook namespace alias prevents proving callback timing`);
+      }
+      if (ts.isPropertyAccessExpression(node) && node.name.text === 'Engine') {
+        const owner = node.expression;
+        const global = ts.isIdentifier(owner) && owner.text === 'globalThis';
+        const importedNamespace = ts.isIdentifier(owner) && unsafeNamespaces.has(owner.text);
+        const requiredNamespace = ts.isCallExpression(owner) && ts.isIdentifier(owner.expression) && owner.expression.text === 'require' && owner.arguments.length === 1 && ts.isStringLiteral(owner.arguments[0]!) && owner.arguments[0]!.text === '@s2script/sdk/unsafe';
+        if (global || importedNamespace || requiredNamespace) report.ambiguities.push(`${relative(report.package, file)}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}: indirect Engine alias prevents proving legacy timing/null behavior`);
+      }
+      if (ts.isIdentifier(node) && (node.text === 'Engine' || node.text === 'ctx')) {
+        const parent = node.parent;
+        const declaration = (ts.isVariableDeclaration(parent) || ts.isParameter(parent) || ts.isBindingElement(parent)) && parent.name === node;
+        const importName = ts.isImportSpecifier(parent) || ts.isImportClause(parent) || ts.isNamespaceImport(parent) || ts.isExportSpecifier(parent);
+        const propertyName = (ts.isPropertyAccessExpression(parent) || ts.isPropertyAssignment(parent)) && parent.name === node;
+        if (!declaration && !importName && !propertyName && !(ts.isElementAccessExpression(parent) && parent.expression === node)) {
+          let indirect = false;
+          if (ts.isPropertyAccessExpression(parent) && parent.expression === node) {
+            if (node.text === 'Engine') indirect = !(['call', 'hook'].includes(parent.name.text) && ts.isCallExpression(parent.parent) && parent.parent.expression === parent);
+            else if (namespaces.has(parent.name.text)) {
+              const member = parent.parent;
+              indirect = !(ts.isPropertyAccessExpression(member) && member.expression === parent && hooks.get(member.name.text) === parent.name.text && ts.isCallExpression(member.parent) && member.parent.expression === member);
+            }
+          } else indirect = node.text === 'Engine' || hooks.size > 0;
+          if (indirect) report.ambiguities.push(`${relative(report.package, file)}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}: indirect ${node.text} alias or escape prevents proving legacy timing/null behavior`);
+        }
+      }
       if (ts.isElementAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'Engine') {
         const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
         report.ambiguities.push(`${relative(report.package, file)}:${line}: computed Engine lookup prevents proving timing/null behavior`);
@@ -245,9 +307,10 @@ export function analyzeV1Migration(pluginDir: string, options: { force?: boolean
     if (converted) author.functions[name] = converted;
   }
   for (const [name, raw] of Object.entries(hooks)) {
+    const declaredCtx = obj(obj(raw)?.expose)?.ctx;
+    if (valid(declaredCtx)) hookCtx.set(name, declaredCtx);
     const converted = hookOf(name, raw, signatures, report.ambiguities);
     if (!converted) continue;
-    hookCtx.set(name, converted.exposeCtx);
     if (converted.bypassWith) {
       const oldCall = author.functions[converted.bypassWith];
       if (!oldCall) { report.ambiguities.push(`hook ${name}: bypassWith ${converted.bypassWith} names no convertible call`); continue; }
@@ -303,7 +366,7 @@ export function analyzeV1Migration(pluginDir: string, options: { force?: boolean
   }
   report.recommendedEdits.push(`package.json: remove s2script.gamedata and authored engine:calls/engine:hooks permissions after adopting ${destination}`);
   if (report.generatedDeclarations.length) report.recommendedEdits.push('generated declarations: regenerate after changing package metadata and source imports');
-  try { scanSource(sourceFiles(dir, pkg), new Set(Object.keys(calls)), hookCtx, report); }
+  try { scanSource(sourceFiles(dir, pkg, report.ambiguities), new Set(Object.keys(calls)), hookCtx, report); }
   catch (e) { report.ambiguities.push(`source analysis: ${(e as Error).message}`); }
   if (report.sourceReferences.length && !report.recommendedEdits.some(x => x.startsWith('plugin source'))) report.recommendedEdits.push('plugin source: manually update reported Engine.call/Engine.hook/ctx references; check null behavior and callback timing');
   return report;
@@ -320,15 +383,16 @@ export function migrateV1Package(pluginDir: string, options: { force?: boolean }
     try { writeFileSync(fd, JSON.stringify(report.output, null, 2) + '\n'); }
     finally { closeSync(fd); }
     if (options.force) {
-      if (pathExists(dest)) report.replacedFile = dest;
       renameSync(temp, dest);
+      report.publication = { action: 'create-or-replace', path: dest, priorExistence: 'cannot-be-established-under-concurrency' };
     } else {
       linkSync(temp, dest); // EEXIST is atomic; no check-then-clobber race.
       unlinkSync(temp);
+      report.publication = { action: 'created', path: dest };
     }
     report.filesChanged.push(dest);
   } catch (e) {
-    report.replacedFile = undefined;
+    report.publication = undefined;
     report.ambiguities.push(`${dest}: publication failed: ${(e as Error).message}`);
   } finally {
     if (existsSync(temp)) unlinkSync(temp);

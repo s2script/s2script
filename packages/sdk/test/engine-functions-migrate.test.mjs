@@ -44,18 +44,30 @@ test('converts declared scalar/member/bool contract, preserving validator and de
   } finally { cleanup(dir); }
 });
 
-test('joins identical call and hook with bypass pairing, mutation and pre timing', () => {
+test('ordinary named Engine import and direct static call remain analyzable', () => {
+  const dir = fixture(undefined, 'import { Engine } from "@s2script/sdk/unsafe"; Engine.call("run");');
+  try {
+    const report = migrateV1Package(dir);
+    assert.deepEqual(report.ambiguities, []);
+    assert.equal(report.sourceReferences[0].name, 'run');
+    assert.equal(existsSync(output(dir)), true);
+  } finally { cleanup(dir); }
+});
+
+test('analyzes identical bypass pair but refuses nullable v1 hook receiver', () => {
   const gd = { signatures: { Target: signature }, calls: { run: { ...call, args: [], argNames: [], returns: 'void' } }, hooks: { onRun: { target: { kind: 'signature', name: 'Target' }, shape: 'this_void', params: [], mutable: [], receiver: { kind: 'entity', as: 'receiver' }, bypassWith: 'run', expose: { ctx: 'things' } } } };
   const dir = fixture(gd, 'export function OnPluginStart(ctx) { ctx.things.onRun(() => {}); Engine.hook("onRun")?.(() => {}); }');
   try {
     const report = migrateV1Package(dir);
-    assert.deepEqual(report.ambiguities, []);
+    assert.match(report.ambiguities.join(' '), /nullable.*receiver.*v2/i);
+    assert.equal(existsSync(output(dir)), false);
+    assert.deepEqual(report.filesChanged, []);
     assert.equal(report.entries.length, 1);
     assert.equal(report.entries[0].oldHook, 'onRun');
     assert.equal(report.entries[0].oldCall, 'run');
     assert.equal(report.entries[0].oldExposeCtx, 'things');
     assert.equal(report.entries[0].oldReceiverAs, 'receiver');
-    const bundle = normalizeFunctions('@demo/migrate', parseFunctionFile(output(dir), readFileSync(output(dir), 'utf8')));
+    const bundle = normalizeFunctions('@demo/migrate', report.output);
     assert.deepEqual(bundle.functions[0].policy.surfaces, ['call', 'pre']);
     assert.equal(bundle.functions[0].policy.selfCall, 'bypass-own-hooks');
     assert.equal(report.sourceReferences.length, 2);
@@ -74,15 +86,16 @@ test('preserves candidate and target validator stages for validated-call', () =>
   } finally { cleanup(dir); }
 });
 
-test('standalone four-parameter hook preserves pre mutation and derived hook permission', () => {
+test('standalone entity hook is refused even when shape and mutation are representable', () => {
   const gd = { signatures: { Target: signature }, hooks: { onRun: { target: { kind: 'signature', name: 'Target' }, shape: 'this_f32_i32_i32_i32', params: ['scale', 'a', 'b', 'c'], mutable: ['scale'], receiver: { kind: 'entity', as: 'receiver' }, expose: { ctx: 'things' } } } };
   const dir = fixture(gd, 'export function OnPluginStart(ctx) { ctx.things.onRun(view => { view.scale = 2; }); }');
   try {
     const report = migrateV1Package(dir);
-    assert.deepEqual(report.ambiguities, []);
+    assert.match(report.ambiguities.join(' '), /nullable.*receiver.*v2/i);
+    assert.equal(existsSync(output(dir)), false);
     assert.deepEqual(report.permissions, ['engine:hooks']);
     assert.equal(report.entries[0].mutates, true);
-    const bundle = normalizeFunctions('@demo/migrate', parseFunctionFile(output(dir), readFileSync(output(dir), 'utf8')));
+    const bundle = normalizeFunctions('@demo/migrate', report.output);
     assert.deepEqual(bundle.functions[0].policy.surfaces, ['pre']);
     assert.deepEqual(bundle.functions[0].abi.parameters.map(p => p.mutable), [['pre'], [], [], []]);
   } finally { cleanup(dir); }
@@ -123,6 +136,62 @@ test('scans local source imports outside src and refuses dynamic references', ()
     assert.match(report.ambiguities.join(' '), /helpers\.ts.*dynamic Engine\.call/);
     assert.equal(existsSync(output(dir)), false);
   } finally { cleanup(dir); }
+});
+
+test('refuses Engine and ctx aliases and escapes rather than silently omitting source edits', () => {
+  for (const source of [
+    'const { call } = Engine; call(name);',
+    'const lookup = Engine.call; lookup(name);',
+    'const E = Engine; E.call(name);',
+    'import { Engine as E } from "@s2script/sdk/unsafe"; E.call(name);',
+    'const E = globalThis.Engine; E.call(name);',
+    'import * as unsafe from "@s2script/sdk/unsafe"; const E = unsafe.Engine; E.call(name);',
+    'const E = require("@s2script/sdk/unsafe").Engine; E.call(name);',
+  ]) {
+    const dir = fixture(undefined, source);
+    try {
+      const report = migrateV1Package(dir);
+      assert.match(report.ambiguities.join(' '), /indirect.*Engine|Engine.*alias|Engine.*escape/i, source);
+      assert.equal(existsSync(output(dir)), false);
+    } finally { cleanup(dir); }
+  }
+  const gd = { signatures: { Target: signature }, hooks: { onRun: { target: { kind: 'signature', name: 'Target' }, shape: 'this_void', params: [], receiver: { kind: 'entity', as: 'receiver' }, expose: { ctx: 'things' } } } };
+  for (const source of [
+    'const subscribe = ctx.things.onRun; subscribe(handler);',
+    'const { onRun } = ctx.things; onRun(handler);',
+    'const alias = ctx; alias.things.onRun(handler);',
+    'export function OnPluginStart({ things }) { things.onRun(handler); }',
+  ]) {
+    const dir = fixture(gd, source);
+    try {
+      const report = migrateV1Package(dir);
+      assert.match(report.ambiguities.join(' '), /indirect.*ctx|ctx.*alias|ctx.*escape/i, source);
+      assert.equal(existsSync(output(dir)), false);
+    } finally { cleanup(dir); }
+  }
+});
+
+test('follows bounded local require and dynamic import edges outside src', () => {
+  for (const edge of ['require("../helpers.js")', 'import("../helpers.js")']) {
+    const dir = fixture(undefined, `export function OnPluginStart() { ${edge}; }`);
+    try {
+      writeFileSync(join(dir, 'helpers.js'), 'Engine.call(dynamicName);');
+      const report = migrateV1Package(dir);
+      assert.match(report.ambiguities.join(' '), /helpers\.js.*dynamic Engine\.call/, edge);
+      assert.equal(existsSync(output(dir)), false);
+    } finally { cleanup(dir); }
+  }
+});
+
+test('rejects unresolved local require and dynamic import edges', () => {
+  for (const edge of ['require("../missing.js")', 'import("../missing.js")', 'require(moduleName)']) {
+    const dir = fixture(undefined, `export function OnPluginStart() { ${edge}; }`);
+    try {
+      const report = migrateV1Package(dir);
+      assert.match(report.ambiguities.join(' '), /unresolved local module|dynamic module edge/i, edge);
+      assert.equal(existsSync(output(dir)), false);
+    } finally { cleanup(dir); }
+  }
 });
 
 test('aggregates ambiguities and writes nothing for incomplete or unsupported declarations', () => {
@@ -180,7 +249,8 @@ test('existing destination is refused; force reports replacement and retains old
     assert.equal(refused.filesChanged.length, 0);
     assert.equal(readFileSync(output(dir), 'utf8'), 'old');
     const report = migrateV1Package(dir, { force: true });
-    assert.equal(report.replacedFile, output(dir));
+    assert.deepEqual(report.publication, { action: 'create-or-replace', path: output(dir), priorExistence: 'cannot-be-established-under-concurrency' });
+    assert.equal(report.replacedFile, undefined);
     assert.notEqual(readFileSync(output(dir), 'utf8'), 'old');
   } finally { cleanup(dir); }
 });
@@ -205,6 +275,7 @@ test('force preserves existing file when analysis reports an ambiguity', () => {
     const report = migrateV1Package(dir, { force: true });
     assert.match(report.ambiguities.join(' '), /argNames/);
     assert.equal(report.replacedFile, undefined);
+    assert.equal(report.publication, undefined);
     assert.equal(readFileSync(output(dir), 'utf8'), 'keep me');
   } finally { cleanup(dir); }
 });
@@ -219,5 +290,8 @@ test('real CLI emits report and exit codes', () => {
     const refused = spawnSync(process.execPath, [cli, 'migrate', 'engine-functions', dir], { encoding: 'utf8' });
     assert.equal(refused.status, 1);
     assert.match(JSON.parse(refused.stdout).ambiguities.join(' '), /already exists/);
+    const forced = spawnSync(process.execPath, [cli, 'migrate', 'engine-functions', dir, '--force'], { encoding: 'utf8' });
+    assert.equal(forced.status, 0, forced.stderr);
+    assert.deepEqual(JSON.parse(forced.stdout).publication, { action: 'create-or-replace', path: output(dir), priorExistence: 'cannot-be-established-under-concurrency' });
   } finally { cleanup(dir); }
 });

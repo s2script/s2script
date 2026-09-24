@@ -44,7 +44,10 @@ declared contract can be converted without loss. It refuses an existing destinat
 manually, including removal of the old `s2script.gamedata` field and authored engine permissions
 when adopting the v2 file. A successful conversion does not verify that the v1 declaration listed
 every native argument or that the resulting call works on the current game build. The command alone
-does not provide the runtime compatibility facades for old source code.
+does not provide the runtime compatibility facades for old source code. V1 entity hooks are refused
+because their callbacks may receive a null receiver, which the current v2 receiver contract cannot
+preserve. With `--force`, the report identifies the exact create-or-replace path; concurrent prior
+existence cannot be established by the atomic rename.
 
 This package is **types-only** — the engine injects the implementation at load time, and
 `s2s build` marks `@s2script/*` external rather than bundling it. Capabilities are imported as
