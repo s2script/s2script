@@ -635,7 +635,8 @@ static void copied_execution() {
     CopyOutput out{1,sizeof(CopyOutput),bytes.data(),bytes.size(),0};auto arg=entity_request(4);arg.aux=5;auto request=entity_request(4);
     assert(!service.Call(prepared.value,0,&arg,1,request));
     char reason[256]{};assert(!S2_FunctionPrepare("copied-public",t.dump().c_str(),a.dump().c_str(),"linux-x86_64-sysv:none:ptr(ptr)",reason,sizeof reason));
-    assert(std::strstr(reason,"FunctionCopyExecutionUnavailable"));
+    // The real public export reaches ordinary service/resolver admission now.
+    assert(reason[0] && !std::strstr(reason,"FunctionCopyExecutionUnavailable"));
     const auto calls_before=s2bridge_fixture_call_count();auto metrics=s2fn::copy::Arena::Resident().Read();
     out.capacity=65534;out.size=99;bytes[0]=71;
     assert(!service.CallCopy(prepared.value,0,&arg,1,request,in,out,copy_plugin()));

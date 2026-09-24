@@ -479,6 +479,48 @@ static int production_call(long long id,unsigned long long owner,const S2Functio
     auto result=production_service->Call(id,owner,args,argc,*out);
     if(why && cap>0) std::snprintf(why,cap,"%s",result.error.c_str());if(!result)return 0;*out=result.value;return 1;
 }
+static int production_copy_call(long long id,unsigned long long owner,const S2FunctionValue* args,int argc,S2FunctionValue* out,const S2FunctionCopyInput* input,S2FunctionCopyOutput* output,const S2FunctionCopyProducer* producer,char* why,int cap) {
+    if(!out || !input || !output || !producer)return 0;
+    s2bridge::CopyInput in{input->version,input->struct_size,input->data,input->size};
+    s2bridge::CopyOutput result_out{output->version,output->struct_size,output->data,output->capacity,output->size};
+    s2bridge::CopyProducer who{producer->version,producer->struct_size,producer->domain,producer->reserved,{},producer->generation};
+    std::copy_n(producer->digest,32,who.digest.begin());
+    auto result=production_service->CallCopy(id,owner,args,argc,*out,in,result_out,who);
+    if(why && cap>0)std::snprintf(why,cap,"%s",result.error.c_str());if(!result)return 0;
+    *out=result.value;output->size=result_out.size;return 1;
+}
+static int production_copy_peer_mode=0;
+static bool production_copy_peer_installed=false;
+static unsigned production_copy_peer_calls=0;
+static KHook::Return<void*> production_copy_post(void*);
+static S2CheckedFunction<void*,void*> production_copy_peer(nullptr,production_copy_post);
+static KHook::Return<void*> production_copy_post(void*) {
+    auto observation=production_copy_peer.Observe();assert(observation);
+    if(production_copy_peer_mode==2){++production_copy_peer_calls;return {KHook::Action::Override,const_cast<char*>("late-native-peer")};}
+    return {KHook::Action::Ignore};
+}
+extern "C" int s2fn_production_copy_peer(int mode) {
+    if(mode==1 && !production_copy_peer_installed){production_copy_peer_installed=production_copy_peer.Configure(checked_target(reinterpret_cast<void*>(fixture_targets().identity_ptr))).Accepted();return production_copy_peer_installed;}
+    if(mode==3){production_copy_peer_mode=0;production_copy_peer.BeginRemove(true);return 1;}
+    production_copy_peer_mode=mode;return mode==2 && production_copy_peer_calls ? 2 : 1;
+}
+static const char* production_copy_escaped=nullptr;
+static std::string production_copy_expected;
+extern "C" int s2fn_production_copy_engine_call(const char* input,const char* expected) {
+    auto volatile target=fixture_targets().identity_ptr;
+    auto result=static_cast<const char*>(target(const_cast<char*>(input)));
+    if(!result || std::strcmp(result,expected))return 0;
+    production_copy_escaped=result;production_copy_expected=expected;return 1;
+}
+extern "C" int s2fn_production_copy_escaped_check() {
+    std::vector<std::string> churn(256,std::string(4096,'z'));
+    return production_copy_escaped && std::strcmp(production_copy_escaped,production_copy_expected.c_str())==0;
+}
+extern "C" int s2fn_production_copy_borrowed_call() {
+    auto volatile target=reinterpret_cast<std::int32_t(*)(const char*)>(s2fn_fixture_copy_length_target());
+    return target("outer");
+}
+extern "C" unsigned long long s2fn_production_copy_arena_values(){return s2fn::copy::Arena::Resident().Read().values;}
 static long long production_acquire(long long id,char* why,int cap) {
     assert(s2hook_detail::g_callback_depth>0); // actual outer or peer observation; never fabricated
     auto result=production_service->HookAcquire(id);
@@ -495,7 +537,8 @@ extern "C" int s2fn_production_create(s2bridge::CoreDispatch dispatch,void(*step
     production_service=std::make_unique<s2bridge::Service>([image,address](const auto& recipe,auto& result,auto&){
         // Explicit fixture recipes only. Every body remains in the isolated DSO.
         auto selected=recipe.pattern=="50" ? checked_target(reinterpret_cast<void*>(fixture_targets().identity_ptr)) :
-            recipe.pattern=="51" ? checked_target(fixture_targets().member) : address;
+            recipe.pattern=="51" ? checked_target(fixture_targets().member) :
+            recipe.pattern=="52" ? checked_target(s2fn_fixture_copy_length_target()) : address;
         result.image=image;result.address=reinterpret_cast<uintptr_t>(selected);
         result.recipe="separated compiler-authored scalar fixture";result.validation_receipt="fixture module guard";return true;
     });
@@ -520,6 +563,11 @@ extern "C" int s2fn_production_create(s2bridge::CoreDispatch dispatch,void(*step
     ops->function_frame_read=S2_FunctionFrameRead;ops->function_frame_write=S2_FunctionFrameWrite;
     ops->function_frame_commit=S2_FunctionFrameCommit;
     ops->function_frame_override_return=S2_FunctionFrameOverrideReturn;
+    ops->function_call_copy=production_copy_call;
+    ops->function_frame_read_copy=S2_FunctionFrameReadCopy;
+    ops->function_frame_write_copy=S2_FunctionFrameWriteCopy;
+    ops->function_frame_commit_copy=S2_FunctionFrameCommitCopy;
+    ops->function_frame_override_return_copy=S2_FunctionFrameOverrideReturnCopy;
     assert(production_frame.Configure(checked_target(reinterpret_cast<void*>(fixture_targets().void_target))).Accepted());
     return 1;
 }
@@ -539,12 +587,13 @@ extern "C" int s2fn_production_empty(){
 }
 extern "C" int s2fn_production_close(){
     if(!production_service->Collect())return 0;
+    production_copy_peer.BeginRemove(true);
     production_peer.BeginRemove(true);
     production_later.BeginRemove(true);
     production_frame.BeginRemove(true);
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
-    while((!production_frame.RemovalComplete() || !production_peer.RemovalComplete() || !production_later.RemovalComplete()) && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    assert(production_frame.RemovalComplete() && production_peer.RemovalComplete() && production_later.RemovalComplete());assert(S2Hook_DrainRetirement());
+    while((!production_frame.RemovalComplete() || !production_peer.RemovalComplete() || !production_later.RemovalComplete() || !production_copy_peer.RemovalComplete()) && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(production_frame.RemovalComplete() && production_peer.RemovalComplete() && production_later.RemovalComplete() && production_copy_peer.RemovalComplete());assert(S2Hook_DrainRetirement());
     production_service.reset();production_sink.reset();production_codec.reset();KHook::Shutdown();return 1;
 }
 

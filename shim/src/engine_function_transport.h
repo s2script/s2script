@@ -30,6 +30,9 @@ struct CopyProducer {
 static_assert(sizeof(CopyInput)==24 && offsetof(CopyInput,size)==16, "copy input v1 layout");
 static_assert(sizeof(CopyOutput)==32 && offsetof(CopyOutput,size)==24, "copy output v1 layout");
 static_assert(sizeof(CopyProducer)==56 && offsetof(CopyProducer,generation)==48, "copy producer v1 layout");
+static_assert(sizeof(S2FunctionCopyInput)==sizeof(CopyInput) && offsetof(S2FunctionCopyInput,size)==16, "public copy input layout");
+static_assert(sizeof(S2FunctionCopyOutput)==sizeof(CopyOutput) && offsetof(S2FunctionCopyOutput,size)==24, "public copy output layout");
+static_assert(sizeof(S2FunctionCopyProducer)==sizeof(CopyProducer) && offsetof(S2FunctionCopyProducer,generation)==48, "public copy producer layout");
 s2fn::Result<s2fn::copy::OwnerGeneration> CheckedProducer(const CopyProducer&);
 s2fn::Result<s2fn::copy::Snapshot> DecodeCopy(const s2fn::copy::Operation&, s2fn::copy::Kind,
     const S2FunctionValue&, const CopyInput&);

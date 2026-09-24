@@ -68,6 +68,10 @@ int main(int argc, char** argv) {
     assert(!targets.peer_boolean(false) && targets.peer_boolean(true));
     assert(targets.peer_mixed(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17) == 153.0);
     assert(s2fn_fixture_peer_calls() == peers + 3 && calls == 27);
+    const auto copied_length = s2fn_fixture_copy_length_target();
+    boundary.Require("copied_length", copied_length);
+    const auto length = reinterpret_cast<std::int32_t(*)(const char*)>(copied_length);
+    assert(length("continued") == 9 && length("") == 0 && calls == 29);
     s2fn_fixture_set_original_calls(nullptr);
-    std::cout << "PASS 19 native target layouts/signatures/counters and local-target rejection before Configure\n";
+    std::cout << "PASS 20 native target layouts/signatures/counters and local-target rejection before Configure\n";
 }

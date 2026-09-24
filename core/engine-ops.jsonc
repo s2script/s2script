@@ -233,6 +233,153 @@
           "ty": "unsigned long long"
         }
       ]
+    },
+    {
+      "kind": "struct",
+      "name": "S2FunctionCopyInput",
+      "c_name": "S2FunctionCopyInput",
+      "rust_fields": [
+        {
+          "name": "version",
+          "ty": "u32"
+        },
+        {
+          "name": "struct_size",
+          "ty": "u32"
+        },
+        {
+          "name": "data",
+          "ty": "*const u8"
+        },
+        {
+          "name": "size",
+          "ty": "u64"
+        }
+      ],
+      "c_fields": [
+        {
+          "name": "version",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "struct_size",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "data",
+          "ty": "const unsigned char*"
+        },
+        {
+          "name": "size",
+          "ty": "unsigned long long"
+        }
+      ]
+    },
+    {
+      "kind": "struct",
+      "name": "S2FunctionCopyOutput",
+      "c_name": "S2FunctionCopyOutput",
+      "rust_fields": [
+        {
+          "name": "version",
+          "ty": "u32"
+        },
+        {
+          "name": "struct_size",
+          "ty": "u32"
+        },
+        {
+          "name": "data",
+          "ty": "*mut u8"
+        },
+        {
+          "name": "capacity",
+          "ty": "u64"
+        },
+        {
+          "name": "size",
+          "ty": "u64"
+        }
+      ],
+      "c_fields": [
+        {
+          "name": "version",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "struct_size",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "data",
+          "ty": "unsigned char*"
+        },
+        {
+          "name": "capacity",
+          "ty": "unsigned long long"
+        },
+        {
+          "name": "size",
+          "ty": "unsigned long long"
+        }
+      ]
+    },
+    {
+      "kind": "struct",
+      "name": "S2FunctionCopyProducer",
+      "c_name": "S2FunctionCopyProducer",
+      "rust_fields": [
+        {
+          "name": "version",
+          "ty": "u32"
+        },
+        {
+          "name": "struct_size",
+          "ty": "u32"
+        },
+        {
+          "name": "domain",
+          "ty": "u32"
+        },
+        {
+          "name": "reserved",
+          "ty": "u32"
+        },
+        {
+          "name": "digest",
+          "ty": "[u8; 32]"
+        },
+        {
+          "name": "generation",
+          "ty": "u64"
+        }
+      ],
+      "c_fields": [
+        {
+          "name": "version",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "struct_size",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "domain",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "reserved",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "digest[32]",
+          "ty": "unsigned char"
+        },
+        {
+          "name": "generation",
+          "ty": "unsigned long long"
+        }
+      ]
     }
   ],
   "ops": [
@@ -1062,7 +1209,7 @@
       "name": "server_build_number",
       "alias": "ServerBuildNumberFn",
       "rust": "extern \"C\" fn() -> c_int",
-      "group": "Crash-reporter slice — APPENDED after usermsg_hook_debug",
+      "group": "Crash-reporter slice \u2014 APPENDED after usermsg_hook_debug",
       "c_ret": "int",
       "c_params": "void",
       "shim": "s2_server_build_number"
@@ -1071,7 +1218,7 @@
       "name": "crash_test_native",
       "alias": "CrashTestNativeFn",
       "rust": "extern \"C\" fn(kind: c_int)",
-      "group": "Crash-harness — APPENDED after server_build_number",
+      "group": "Crash-harness \u2014 APPENDED after server_build_number",
       "c_ret": "void",
       "c_params": "int kind",
       "shim": "s2_crash_test_native"
@@ -1230,9 +1377,6 @@
       "shim": "S2_HookReadI32"
     },
     {
-      // Text params. The engine hands strings as pointers that die with the thunk's frame, so the
-      // thunk copies the bytes into the view and this reads the COPY. Appended after hook_read_i32:
-      // field order is the ABI, so a new op goes on the end, never in the middle.
       "name": "hook_read_str",
       "alias": "HookReadStrFn",
       "rust": "extern \"C\" fn(*mut std::ffi::c_void, c_int, *mut std::ffi::c_char, c_int) -> c_int",
@@ -1326,7 +1470,7 @@
       "name": "cvar_set",
       "alias": "CvarSetFn",
       "rust": "extern \"C\" fn(name: *const c_char, value: *const c_char) -> c_int",
-      "group": "ICvar set — write through ConVarData, not ServerCommand",
+      "group": "ICvar set \u2014 write through ConVarData, not ServerCommand",
       "c_ret": "int",
       "c_params": "const char* name, const char* value",
       "shim": "s2_cvar_set"
@@ -1335,7 +1479,7 @@
       "name": "hook_read_u16_at_q",
       "alias": "HookReadU16AtQFn",
       "rust": "extern \"C\" fn(*mut std::ffi::c_void, c_int, c_int, *mut u16) -> c_int",
-      "group": "Pickup-gate accessors — u16 at q[qslot]+schemaOffset; pointer never crosses to JS",
+      "group": "Pickup-gate accessors \u2014 u16 at q[qslot]+schemaOffset; pointer never crosses to JS",
       "c_ret": "int",
       "c_params": "void* argView, int qslot, int offset, uint16_t* out",
       "shim": "S2_HookReadU16AtQ"
@@ -1344,7 +1488,7 @@
       "name": "hook_self_matches_field",
       "alias": "HookSelfMatchesFieldFn",
       "rust": "extern \"C\" fn(*mut std::ffi::c_void, c_int, c_int, c_int) -> c_int",
-      "group": "Pickup-gate accessors — does this live entity's pointer-at-offset equal the view self",
+      "group": "Pickup-gate accessors \u2014 does this live entity's pointer-at-offset equal the view self",
       "c_ret": "int",
       "c_params": "void* argView, int index, int serial, int offset",
       "shim": "S2_HookSelfMatchesField"
@@ -1353,7 +1497,7 @@
       "name": "sdkhook_vp_add",
       "alias": "SdkhookVpAddFn",
       "rust": "extern \"C\" fn(c_int, c_int, *const c_char, c_int) -> c_int",
-      "group": "SDKHooks VP — install per-entity SourceHook",
+      "group": "SDKHooks VP \u2014 install per-entity SourceHook",
       "c_ret": "int",
       "c_params": "int index, int serial, const char* type, int post",
       "shim": "s2_sdkhook_vp_add"
@@ -1463,6 +1607,46 @@
       "c_ret": "int",
       "c_params": "long long target_id, unsigned long long frame_token, unsigned long long native_epoch, const char* abi_fingerprint, const S2FunctionValue* override_value, S2FunctionValue* effective_out, char* reason, int reason_cap",
       "shim": "S2_FunctionFrameOverrideReturn"
+    },
+    {
+      "name": "function_call_copy",
+      "alias": "FunctionCallCopyFn",
+      "rust": "extern \"C\" fn(i64, u64, *const S2FunctionValue, c_int, *mut S2FunctionValue, *const S2FunctionCopyInput, *mut S2FunctionCopyOutput, *const S2FunctionCopyProducer, *mut c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "long long target, unsigned long long owner, const S2FunctionValue* args, int argc, S2FunctionValue* ret, const S2FunctionCopyInput* input, S2FunctionCopyOutput* output, const S2FunctionCopyProducer* producer, char* reason, int reason_cap",
+      "shim": "S2_FunctionCallCopy"
+    },
+    {
+      "name": "function_frame_read_copy",
+      "alias": "FunctionFrameReadCopyFn",
+      "rust": "extern \"C\" fn(i64, u64, u64, *const c_char, c_int, *mut S2FunctionValue, *mut S2FunctionCopyOutput, *mut c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int selector, S2FunctionValue* value, S2FunctionCopyOutput* output, char* reason, int reason_cap",
+      "shim": "S2_FunctionFrameReadCopy"
+    },
+    {
+      "name": "function_frame_write_copy",
+      "alias": "FunctionFrameWriteCopyFn",
+      "rust": "extern \"C\" fn(i64, u64, u64, *const c_char, c_int, *const S2FunctionValue, *const S2FunctionCopyInput, *const S2FunctionCopyProducer, *mut c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int selector, const S2FunctionValue* value, const S2FunctionCopyInput* input, const S2FunctionCopyProducer* producer, char* reason, int reason_cap",
+      "shim": "S2_FunctionFrameWriteCopy"
+    },
+    {
+      "name": "function_frame_commit_copy",
+      "alias": "FunctionFrameCommitCopyFn",
+      "rust": "extern \"C\" fn(i64, u64, u64, *const c_char, c_int, *const S2FunctionValue, *const S2FunctionCopyInput, *const S2FunctionCopyProducer, *mut c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int action, const S2FunctionValue* value, const S2FunctionCopyInput* input, const S2FunctionCopyProducer* producer, char* reason, int reason_cap",
+      "shim": "S2_FunctionFrameCommitCopy"
+    },
+    {
+      "name": "function_frame_override_return_copy",
+      "alias": "FunctionFrameOverrideReturnCopyFn",
+      "rust": "extern \"C\" fn(i64, u64, u64, *const c_char, *const S2FunctionValue, *const S2FunctionCopyInput, *const S2FunctionCopyProducer, *mut S2FunctionValue, *mut S2FunctionCopyOutput, *mut c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, const S2FunctionValue* value, const S2FunctionCopyInput* input, const S2FunctionCopyProducer* producer, S2FunctionValue* effective, S2FunctionCopyOutput* output, char* reason, int reason_cap",
+      "shim": "S2_FunctionFrameOverrideReturnCopy"
     }
   ]
 }

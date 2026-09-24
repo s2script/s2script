@@ -42,6 +42,30 @@ typedef struct {
     unsigned long long receipt;
 } S2FunctionHookStatus;
 
+typedef struct {
+    unsigned int version;
+    unsigned int struct_size;
+    const unsigned char* data;
+    unsigned long long size;
+} S2FunctionCopyInput;
+
+typedef struct {
+    unsigned int version;
+    unsigned int struct_size;
+    unsigned char* data;
+    unsigned long long capacity;
+    unsigned long long size;
+} S2FunctionCopyOutput;
+
+typedef struct {
+    unsigned int version;
+    unsigned int struct_size;
+    unsigned int domain;
+    unsigned int reserved;
+    unsigned char digest[32];
+    unsigned long long generation;
+} S2FunctionCopyProducer;
+
 typedef int (*s2_schema_offset_fn)(const char* cls, const char* field);
 typedef void* (*s2_ent_by_index_fn)(int idx);
 typedef void* (*s2_deref_handle_fn)(unsigned int handle);
@@ -179,6 +203,11 @@ typedef int (*s2_function_frame_read_fn)(long long target, unsigned long long to
 typedef int (*s2_function_frame_write_fn)(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int selector, const S2FunctionValue* value, char* reason, int reason_cap);
 typedef int (*s2_function_frame_commit_fn)(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int action, const S2FunctionValue* value, char* reason, int reason_cap);
 typedef int (*s2_function_frame_override_return_fn)(long long target_id, unsigned long long frame_token, unsigned long long native_epoch, const char* abi_fingerprint, const S2FunctionValue* override_value, S2FunctionValue* effective_out, char* reason, int reason_cap);
+typedef int (*s2_function_call_copy_fn)(long long target, unsigned long long owner, const S2FunctionValue* args, int argc, S2FunctionValue* ret, const S2FunctionCopyInput* input, S2FunctionCopyOutput* output, const S2FunctionCopyProducer* producer, char* reason, int reason_cap);
+typedef int (*s2_function_frame_read_copy_fn)(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int selector, S2FunctionValue* value, S2FunctionCopyOutput* output, char* reason, int reason_cap);
+typedef int (*s2_function_frame_write_copy_fn)(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int selector, const S2FunctionValue* value, const S2FunctionCopyInput* input, const S2FunctionCopyProducer* producer, char* reason, int reason_cap);
+typedef int (*s2_function_frame_commit_copy_fn)(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int action, const S2FunctionValue* value, const S2FunctionCopyInput* input, const S2FunctionCopyProducer* producer, char* reason, int reason_cap);
+typedef int (*s2_function_frame_override_return_copy_fn)(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, const S2FunctionValue* value, const S2FunctionCopyInput* input, const S2FunctionCopyProducer* producer, S2FunctionValue* effective, S2FunctionCopyOutput* output, char* reason, int reason_cap);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -365,4 +394,9 @@ typedef struct {
     s2_function_frame_write_fn function_frame_write;
     s2_function_frame_commit_fn function_frame_commit;
     s2_function_frame_override_return_fn function_frame_override_return;
+    s2_function_call_copy_fn function_call_copy;
+    s2_function_frame_read_copy_fn function_frame_read_copy;
+    s2_function_frame_write_copy_fn function_frame_write_copy;
+    s2_function_frame_commit_copy_fn function_frame_commit_copy;
+    s2_function_frame_override_return_copy_fn function_frame_override_return_copy;
 } S2EngineOps;

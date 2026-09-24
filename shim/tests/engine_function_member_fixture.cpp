@@ -1,6 +1,7 @@
 #include "engine_function_member_fixture.h"
 #include <khook.hpp>
 #include <utility>
+#include <cstring>
 
 namespace {
 // No adapter, callbacks, provider workers, or shared std helper bodies live in
@@ -39,6 +40,7 @@ __attribute__((noinline)) std::int32_t detached_nested_target(std::int32_t value
     auto volatile next = &identity<std::int32_t>;
     return next(value) + 1;
 }
+__attribute__((noinline)) std::int32_t copied_length(const char* value) { ++*original_calls; return static_cast<std::int32_t>(std::strlen(value)); }
 __attribute__((noinline)) bool peer_boolean(bool value) { ++peer_calls; return value; }
 __attribute__((noinline)) double peer_mixed(std::int64_t a, double b, std::int64_t c, double d,
     std::int64_t e, double f, std::int64_t g, double h, std::int64_t i, double j,
@@ -66,3 +68,5 @@ extern "C" void s2fn_fixture_set_original_calls(volatile std::uint64_t* calls) {
     original_calls = calls ? calls : &default_original_calls;
 }
 extern "C" unsigned s2fn_fixture_peer_calls() { return peer_calls; }
+
+extern "C" void* s2fn_fixture_copy_length_target() { return reinterpret_cast<void*>(&copied_length); }

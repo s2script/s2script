@@ -2,7 +2,7 @@
 use super::projection::ProjectedValue;
 use crate::multiplexer::HookResult;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct SubscriberDelivery {
     pub action: HookResult,
     pub return_value: Option<ProjectedValue>,

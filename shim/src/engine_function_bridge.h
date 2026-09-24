@@ -130,5 +130,10 @@ int S2_FunctionFrameOverrideReturn(long long, unsigned long long, unsigned long 
 int S2_FunctionFrameRead(long long, unsigned long long, unsigned long long, const char*, int, unsigned char, S2FunctionValue*, char*, int);
 int S2_FunctionFrameWrite(long long, unsigned long long, unsigned long long, const char*, int, const S2FunctionValue*, char*, int);
 int S2_FunctionFrameCommit(long long, unsigned long long, unsigned long long, const char*, int, const S2FunctionValue*, char*, int);
+int S2_FunctionCallCopy(long long target, unsigned long long owner, const S2FunctionValue* args, int argc, S2FunctionValue* ret, const S2FunctionCopyInput* input, S2FunctionCopyOutput* output, const S2FunctionCopyProducer* producer, char* reason, int reason_cap);
+int S2_FunctionFrameReadCopy(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int selector, S2FunctionValue* value, S2FunctionCopyOutput* output, char* reason, int reason_cap);
+int S2_FunctionFrameWriteCopy(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int selector, const S2FunctionValue* value, const S2FunctionCopyInput* input, const S2FunctionCopyProducer* producer, char* reason, int reason_cap);
+int S2_FunctionFrameCommitCopy(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int action, const S2FunctionValue* value, const S2FunctionCopyInput* input, const S2FunctionCopyProducer* producer, char* reason, int reason_cap);
+int S2_FunctionFrameOverrideReturnCopy(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, const S2FunctionValue* value, const S2FunctionCopyInput* input, const S2FunctionCopyProducer* producer, S2FunctionValue* effective, S2FunctionCopyOutput* output, char* reason, int reason_cap);
 }
 #endif

@@ -804,7 +804,6 @@ extern "C" long long S2_FunctionPrepare(const char* name,const char* target,cons
         if (!name || !target || !abi || !fingerprint) { reason_out(reason,cap,"null declaration input"); return 0; }
         auto declaration=s2bridge::Parse(target,abi,fingerprint);
         if(!declaration) {reason_out(reason,cap,declaration.error);return 0;}
-        if(declaration.value.HasCopies()) {reason_out(reason,cap,"FunctionCopyExecutionUnavailable: Rust/V8 sidecar operations not connected");return 0;}
         auto result=s2bridge::Global().Prepare(name,target,abi,fingerprint); reason_out(reason,cap,result.error);return result ? result.value : 0;
     } catch (...) { reason_out(reason,cap,"native function preparation exception");return 0; }
 }
@@ -953,5 +952,45 @@ extern "C" int S2_FunctionFrameCommit(long long id,unsigned long long token,unsi
         f.native.result=result; f.committed=true; reason_out(reason,cap,""); return 1;
     } catch (const std::exception& e) {reason_out(reason,cap,e.what());return 0;}
       catch (...) {reason_out(reason,cap,"frame commit exception");return 0;}
+}
+namespace {
+s2bridge::CopyInput copy_input(const S2FunctionCopyInput* p) {
+    if(!p) throw std::runtime_error("FunctionCopyInvalidTransport: missing input span");
+    return {p->version,p->struct_size,p->data,p->size};
+}
+s2bridge::CopyOutput copy_output(S2FunctionCopyOutput* p) {
+    if(!p) throw std::runtime_error("FunctionCopyInvalidTransport: missing output span");
+    return {p->version,p->struct_size,p->data,p->capacity,p->size};
+}
+s2bridge::CopyProducer copy_producer(const S2FunctionCopyProducer* p) {
+    if(!p) throw std::runtime_error("FunctionCopyInvalidTransport: missing producer");
+    s2bridge::CopyProducer out{p->version,p->struct_size,p->domain,p->reserved,{},p->generation};
+    std::copy_n(p->digest,32,out.digest.begin());return out;
+}
+}
+extern "C" int S2_FunctionCallCopy(long long target, unsigned long long owner, const S2FunctionValue* args, int argc, S2FunctionValue* ret, const S2FunctionCopyInput* input, S2FunctionCopyOutput* output, const S2FunctionCopyProducer* producer, char* reason, int reason_cap) {
+    try {auto in=copy_input(input);auto out=copy_output(output);auto who=copy_producer(producer);if(!ret)throw std::runtime_error("missing return request");auto result=s2bridge::Global().CallCopy(target,owner,args,argc,*ret,in,out,who);reason_out(reason,reason_cap,result.error);if(!result)return 0;*ret=result.value;output->size=out.size;return 1;}
+    catch(const std::exception& e){reason_out(reason,reason_cap,e.what());return 0;}
+    catch(...){reason_out(reason,reason_cap,"FunctionCopyTransportFailure: native exception");return 0;}
+}
+extern "C" int S2_FunctionFrameReadCopy(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int selector, S2FunctionValue* value, S2FunctionCopyOutput* output, char* reason, int reason_cap) {
+    try {auto out=copy_output(output);if(!value)throw std::runtime_error("missing read request");auto result=s2bridge::FrameReadCopy({target,token,epoch,fingerprint},selector,*value,out);reason_out(reason,reason_cap,result.error);if(!result)return 0;*value=result.value;output->size=out.size;return 1;}
+    catch(const std::exception& e){reason_out(reason,reason_cap,e.what());return 0;}
+    catch(...){reason_out(reason,reason_cap,"FunctionCopyTransportFailure: native exception");return 0;}
+}
+extern "C" int S2_FunctionFrameWriteCopy(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int selector, const S2FunctionValue* value, const S2FunctionCopyInput* input, const S2FunctionCopyProducer* producer, char* reason, int reason_cap) {
+    try {auto in=copy_input(input);auto who=copy_producer(producer);if(!value)throw std::runtime_error("missing write value");auto result=s2bridge::FrameWriteCopy({target,token,epoch,fingerprint},selector,*value,in,who);reason_out(reason,reason_cap,result.error);if(!result)return 0;return 1;}
+    catch(const std::exception& e){reason_out(reason,reason_cap,e.what());return 0;}
+    catch(...){reason_out(reason,reason_cap,"FunctionCopyTransportFailure: native exception");return 0;}
+}
+extern "C" int S2_FunctionFrameCommitCopy(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int action, const S2FunctionValue* value, const S2FunctionCopyInput* input, const S2FunctionCopyProducer* producer, char* reason, int reason_cap) {
+    try {auto in=copy_input(input);auto who=copy_producer(producer);auto result=s2bridge::FrameCommitCopy({target,token,epoch,fingerprint},action,value,in,who);reason_out(reason,reason_cap,result.error);if(!result)return 0;return 1;}
+    catch(const std::exception& e){reason_out(reason,reason_cap,e.what());return 0;}
+    catch(...){reason_out(reason,reason_cap,"FunctionCopyTransportFailure: native exception");return 0;}
+}
+extern "C" int S2_FunctionFrameOverrideReturnCopy(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, const S2FunctionValue* value, const S2FunctionCopyInput* input, const S2FunctionCopyProducer* producer, S2FunctionValue* effective, S2FunctionCopyOutput* output, char* reason, int reason_cap) {
+    try {auto in=copy_input(input);auto out=copy_output(output);auto who=copy_producer(producer);if(!value || !effective)throw std::runtime_error("missing override request");auto result=s2bridge::FrameOverrideReturnCopy({target,token,epoch,fingerprint},*value,in,who,*effective,out);reason_out(reason,reason_cap,result.error);if(!result)return 0;*effective=result.value;output->size=out.size;return 1;}
+    catch(const std::exception& e){reason_out(reason,reason_cap,e.what());return 0;}
+    catch(...){reason_out(reason,reason_cap,"FunctionCopyTransportFailure: native exception");return 0;}
 }
 #endif

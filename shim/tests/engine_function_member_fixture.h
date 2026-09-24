@@ -41,3 +41,5 @@ struct S2FnFixtureTargets {
 extern "C" __attribute__((visibility("default"))) S2FnFixtureTargets s2fn_fixture_targets();
 extern "C" __attribute__((visibility("default"))) void s2fn_fixture_set_original_calls(volatile std::uint64_t* calls);
 extern "C" __attribute__((visibility("default"))) unsigned s2fn_fixture_peer_calls();
+
+extern "C" __attribute__((visibility("default"))) void* s2fn_fixture_copy_length_target();

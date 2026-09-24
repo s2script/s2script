@@ -179,6 +179,7 @@ fn invoke(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
                 ))
             }
             2 => {
+                let _copy_scope=crate::engine_functions::copied::Scope::enter()?;
                 let abi = &binding.function.abi;
                 let receiver = usize::from(abi.receiver == "entity");
                 if args.length() as usize != receiver + abi.parameters.len() {
