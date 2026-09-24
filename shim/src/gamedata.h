@@ -47,8 +47,23 @@ struct SigSpec {
     std::string validate;
 };
 
+// The identity is supplied by the caller after manifest SHA-256 verification. This loader merges
+// those exact bytes; it does not hash or reopen shipped package files. Custom paths are external,
+// operator-writable files and are deliberately not labelled hash-verified.
+struct PackageGamedataProvenance {
+    std::string owner;
+    std::string engine;
+    std::string game;
+    std::string platform;
+    std::string verifiedSha256;
+    std::vector<std::string> appliedPaths; // selected shipped, then successfully applied custom
+    std::vector<std::string> shippedPaths;
+    std::vector<std::string> customPaths;
+};
+
 // One owner's merged view, for one platform.
 struct GameConfig {
+    PackageGamedataProvenance packageProvenance; // populated only by the verified-bundle entry
     std::map<std::string, std::string> interfaces;
     std::map<std::string, int>         offsets;
     std::map<std::string, SigSpec>     signatures;
@@ -160,3 +175,16 @@ GameConfig LoadGameConfig(const std::string& gamedataRoot,
                           const std::string& game,
                           const std::string& platform,
                           std::string& error);
+
+// Merge a v1 owner bundle copied from Rust's verified PreparedSelection. `verifiedBundleJson`
+// must be the exact SHA-256-verified bytes, and `verifiedSha256` the identity of those bytes.
+// The caller must reject nonempty filesFailed before activating the selected package. Only
+// gamedata/<owner>/custom/ is read from disk; no shipped package file is reopened.
+GameConfig LoadGameConfigFromBundle(const std::string& verifiedBundleJson,
+                                    const std::string& owner,
+                                    const std::string& gamedataRoot,
+                                    const std::string& engine,
+                                    const std::string& game,
+                                    const std::string& platform,
+                                    const std::string& verifiedSha256,
+                                    std::string& error);

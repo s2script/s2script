@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <set>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -72,13 +75,19 @@ size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOv
     size_t applied = 0;
     auto mark = [&](const std::string& name) { applied++; if (isOverride) gc.overridden.insert(name); };
 
-    if (j.contains("interfaces"))
+    // A present but scalar section must be visible. Otherwise .items() can turn it into a
+    // successful empty file, hiding an entire authored section behind filesEmpty alone.
+    for (const char* section : {"interfaces", "offsets", "signatures", "keys", "calls", "hooks"})
+        if (j.contains(section) && !j.at(section).is_object())
+            error = "gamedata " + fileLabel + " section " + section + " has the wrong type (expected an object)";
+
+    if (j.contains("interfaces") && j.at("interfaces").is_object())
         for (auto& [k, v] : j.at("interfaces").items()) {
             if (v.is_string()) { gc.interfaces[k] = v.get<std::string>(); mark(k); }
             else error = "gamedata interfaces." + k + " has the wrong type (expected a string)";
         }
 
-    if (j.contains("offsets"))
+    if (j.contains("offsets") && j.at("offsets").is_object())
         for (auto& [k, platforms] : j.at("offsets").items()) {
             if (!platforms.is_object()) {
                 error = "gamedata offsets." + k + " is not a platform-keyed object (expected "
@@ -95,7 +104,7 @@ size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOv
             }
         }
 
-    if (j.contains("signatures"))
+    if (j.contains("signatures") && j.at("signatures").is_object())
         for (auto& [k, platforms] : j.at("signatures").items()) {
             if (!platforms.is_object()) {
                 error = "gamedata signatures." + k + " is not a platform-keyed object (expected "
@@ -141,7 +150,7 @@ size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOv
             }
         }
 
-    if (j.contains("keys"))
+    if (j.contains("keys") && j.at("keys").is_object())
         for (auto& [k, v] : j.at("keys").items()) {
             if (v.is_string()) { gc.keys[k] = v.get<std::string>(); mark(k); }
             else error = "gamedata keys." + k + " has the wrong type (expected a string)";
@@ -152,7 +161,7 @@ size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOv
     // pattern), and core's flatten step lifts them. The entry crosses this loader verbatim — the
     // only thing checked here is that it IS an object, because a scalar could never be a
     // descriptor and would otherwise reach core as an unexplained "malformed descriptor".
-    if (j.contains("calls"))
+    if (j.contains("calls") && j.at("calls").is_object())
         for (auto& [k, v] : j.at("calls").items()) {
             if (v.is_object()) { gc.calls[k] = v.dump(); mark(k); }
             else error = "gamedata calls." + k + " has the wrong type (expected an object)";
@@ -161,7 +170,7 @@ size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOv
     // `hooks` — an INBOUND descriptor (a declared engine detour). Carried verbatim, exactly like
     // `calls`: same reason (the grammar is core's), same entry-level replacement, same is-it-an-
     // object check and nothing more.
-    if (j.contains("hooks"))
+    if (j.contains("hooks") && j.at("hooks").is_object())
         for (auto& [k, v] : j.at("hooks").items()) {
             if (v.is_object()) { gc.hooks[k] = v.dump(); mark(k); }
             else error = "gamedata hooks." + k + " has the wrong type (expected an object)";
@@ -262,11 +271,15 @@ bool ParseFile(const std::filesystem::path& p, nlohmann::json& out, std::string&
 // The merge itself. Wrapped by LoadGameConfig below, which serialises the result exactly once —
 // this function has five early returns and a per-return `mergedJson` build is a missed one waiting
 // to happen (a degraded owner would hand core an EMPTY string that reads as "no descriptors").
+using DocumentReader = std::function<bool(const std::string&, nlohmann::json&, std::string&)>;
+
 GameConfig MergeOwner(const std::string& gamedataRoot,
                       const std::string& owner,
                       const std::string& engine,
                       const std::string& game,
                       const std::string& platform,
+                      const DocumentReader& readShipped,
+                      PackageGamedataProvenance* provenance,
                       std::string& error) {
     namespace fs = std::filesystem;
     GameConfig gc;
@@ -280,13 +293,13 @@ GameConfig MergeOwner(const std::string& gamedataRoot,
     const std::string masterName = "master.gamedata.jsonc";
 
     nlohmann::json master;
-    if (!ParseFile(masterPath, master, error)) {
+    if (!readShipped(masterName, master, error)) {
         // A missing/broken master is a NAMED hard error for this owner — never a silent empty
         // namespace. ParseFile already set `error` naming the master path.
         gc.filesFailed.push_back(masterName);
         return gc;
     }
-    if (!master.contains("files") || !master.at("files").is_array()) {
+    if (!master.is_object() || !master.contains("files") || !master.at("files").is_array()) {
         error = "gamedata master has no \"files\" array: " + masterPath.string();
         gc.filesFailed.push_back(masterName);
         return gc;
@@ -306,7 +319,7 @@ GameConfig MergeOwner(const std::string& gamedataRoot,
         if (!ConditionMatches(entry, "game", game, name, error)) continue;
 
         nlohmann::json j;
-        if (!ParseFile(ownerDir / name, j, error)) {
+        if (!readShipped(name, j, error)) {
             // Selected but unapplicable: record it before returning, so the caller can tell this
             // (our shipped tree is broken) from a merely malformed entry. Returning here keeps the
             // pre-existing fail-fast behaviour for the shipped tier.
@@ -316,6 +329,10 @@ GameConfig MergeOwner(const std::string& gamedataRoot,
         if (MergeFile(j, platform, /*isOverride=*/false, name, gc, error) == 0)
             gc.filesEmpty.push_back(name);
         gc.filesLoaded.push_back(name);
+        if (provenance) {
+            provenance->shippedPaths.push_back(name);
+            provenance->appliedPaths.push_back(name);
+        }
     }
 
     // Operator overrides, applied LAST, in sorted filename order for determinism (SourceMod reads
@@ -355,9 +372,48 @@ GameConfig MergeOwner(const std::string& gamedataRoot,
             if (MergeFile(j, platform, /*isOverride=*/true, label, gc, error) == 0)
                 gc.filesEmpty.push_back(label);
             gc.filesLoaded.push_back(label);
+            if (provenance) {
+                provenance->customPaths.push_back(label);
+                provenance->appliedPaths.push_back(label);
+            }
         }
     }
 
+    return gc;
+}
+
+// The artifact builder uses confined normalized relative names. Recheck the envelope at the
+// consumption boundary: a malformed or mismatched verified artifact must not select another file.
+bool SafeEmbeddedPath(const std::string& path) {
+    if (path.empty() || path.size() > 240 || path.front() == '/' ||
+        path.find('\\') != std::string::npos || path.find(':') != std::string::npos ||
+        path.find('\0') != std::string::npos) return false;
+    size_t start = 0;
+    while (start < path.size()) {
+        size_t end = path.find('/', start);
+        if (end == std::string::npos) end = path.size();
+        const auto part = path.substr(start, end - start);
+        if (part.empty() || part == "." || part == "..") return false;
+        start = end + 1;
+    }
+    return path.back() != '/';
+}
+
+bool ValidMasterCondition(const nlohmann::json& entry, const char* field) {
+    if (!entry.contains(field)) return true;
+    const auto& value = entry.at(field);
+    if (value.is_string()) return true;
+    if (!value.is_array()) return false;
+    return std::all_of(value.begin(), value.end(),
+                       [](const nlohmann::json& item) { return item.is_string(); });
+}
+
+GameConfig BundleFailure(const std::string& file, const std::string& reason,
+                         const PackageGamedataProvenance& provenance, std::string& error) {
+    GameConfig gc;
+    gc.packageProvenance = provenance;
+    gc.filesFailed.push_back(file);
+    error = "gamedata package " + file + ": " + reason;
     return gc;
 }
 
@@ -369,10 +425,115 @@ GameConfig LoadGameConfig(const std::string& gamedataRoot,
                           const std::string& game,
                           const std::string& platform,
                           std::string& error) {
-    GameConfig gc = MergeOwner(gamedataRoot, owner, engine, game, platform, error);
+    const auto reader = [&](const std::string& name, nlohmann::json& doc, std::string& failure) {
+        return ParseFile(std::filesystem::path(gamedataRoot) / owner / name, doc, failure);
+    };
+    GameConfig gc = MergeOwner(gamedataRoot, owner, engine, game, platform, reader, nullptr, error);
     // Serialised on EVERY path, including a degraded one: whatever merged before the failure is
     // what the owner's consumers get, and a partially-merged view must degrade per-descriptor
     // downstream rather than silently arrive as "this owner declared nothing".
+    gc.mergedJson = SerializeMerged(gc, platform);
+    return gc;
+}
+
+GameConfig LoadGameConfigFromBundle(const std::string& verifiedBundleJson,
+                                    const std::string& owner,
+                                    const std::string& gamedataRoot,
+                                    const std::string& engine,
+                                    const std::string& game,
+                                    const std::string& platform,
+                                    const std::string& verifiedSha256,
+                                    std::string& error) {
+    constexpr size_t kMaxBytes = 4 * 1024 * 1024;
+    constexpr size_t kMaxFiles = 128;
+    PackageGamedataProvenance provenance{owner, engine, game, platform, verifiedSha256, {}, {}, {}};
+    if (verifiedBundleJson.size() > kMaxBytes)
+        return BundleFailure("gamedata.json", "bundle exceeds 4 MiB", provenance, error);
+    if (owner.empty() || owner.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-") != std::string::npos)
+        return BundleFailure("gamedata.json", "invalid selected owner", provenance, error);
+    if (verifiedSha256.size() != 64 || verifiedSha256.find_first_not_of("0123456789abcdef") != std::string::npos)
+        return BundleFailure("gamedata.json", "invalid verified SHA-256 identity", provenance, error);
+
+    // nlohmann::json's default object parser overwrites duplicate keys. Reject them at parse time
+    // so an ambiguous schemaVersion/owner/path/document cannot be silently selected.
+    bool duplicateKey = false;
+    std::vector<std::set<std::string>> objectKeys;
+    const auto callback = [&](int, nlohmann::json::parse_event_t event, nlohmann::json& value) {
+        if (event == nlohmann::json::parse_event_t::object_start) objectKeys.emplace_back();
+        else if (event == nlohmann::json::parse_event_t::object_end) objectKeys.pop_back();
+        else if (event == nlohmann::json::parse_event_t::key &&
+                 !objectKeys.back().insert(value.get<std::string>()).second) duplicateKey = true;
+        return true;
+    };
+    nlohmann::json envelope;
+    try { envelope = nlohmann::json::parse(verifiedBundleJson, callback); }
+    catch (const std::exception& e) {
+        return BundleFailure("gamedata.json", std::string("invalid JSON: ") + e.what(), provenance, error);
+    }
+    if (duplicateKey)
+        return BundleFailure("gamedata.json", "duplicate JSON object key", provenance, error);
+    if (!envelope.is_object() || envelope.size() != 3 ||
+        !envelope.contains("schemaVersion") || !envelope.at("schemaVersion").is_number_integer() ||
+        envelope.at("schemaVersion") != 1 || !envelope.contains("owner") ||
+        !envelope.at("owner").is_string() || envelope.at("owner") != owner ||
+        !envelope.contains("files") || !envelope.at("files").is_array())
+        return BundleFailure("gamedata.json", "invalid v1 envelope or owner mismatch", provenance, error);
+
+    const auto& files = envelope.at("files");
+    if (files.empty() || files.size() > kMaxFiles)
+        return BundleFailure("gamedata.json", "embedded file count outside 1..128", provenance, error);
+    std::unordered_map<std::string, nlohmann::json> documents;
+    documents.reserve(files.size());
+    for (const auto& entry : files) {
+        if (!entry.is_object() || entry.size() != 2 || !entry.contains("path") ||
+            !entry.at("path").is_string() || !entry.contains("document"))
+            return BundleFailure("gamedata.json", "invalid embedded file record", provenance, error);
+        const auto name = entry.at("path").get<std::string>();
+        if (!SafeEmbeddedPath(name))
+            return BundleFailure(name, "unsafe embedded path", provenance, error);
+        if (!documents.emplace(name, entry.at("document")).second)
+            return BundleFailure(name, "duplicate embedded path", provenance, error);
+    }
+    const std::string masterName = "master.gamedata.jsonc";
+    if (documents.count(masterName) != 1)
+        return BundleFailure(masterName, "exactly one master is required", provenance, error);
+    const auto& master = documents.at(masterName);
+    if (!master.is_object() || !master.contains("files") || !master.at("files").is_array())
+        return BundleFailure(masterName, "master has no files array", provenance, error);
+    if (master.at("files").size() > kMaxFiles)
+        return BundleFailure(masterName, "master entry count exceeds 128", provenance, error);
+    for (const auto& entry : master.at("files")) {
+        if (!entry.is_object() || !entry.contains("file") || !entry.at("file").is_string() ||
+            !SafeEmbeddedPath(entry.at("file").get<std::string>()) ||
+            !ValidMasterCondition(entry, "engine") || !ValidMasterCondition(entry, "game"))
+            return BundleFailure(masterName, "malformed master entry", provenance, error);
+    }
+    const auto reader = [&](const std::string& name, nlohmann::json& doc, std::string& failure) {
+        if (!SafeEmbeddedPath(name)) {
+            failure = "gamedata package unsafe selected path: " + name;
+            return false;
+        }
+        const auto it = documents.find(name);
+        if (it == documents.end()) {
+            failure = "gamedata package selected document not found: " + name;
+            return false;
+        }
+        if (!it->second.is_object()) {
+            failure = "gamedata package selected document is not an object: " + name;
+            return false;
+        }
+        doc = it->second;
+        return true;
+    };
+    GameConfig gc = MergeOwner(gamedataRoot, owner, engine, game, platform, reader, &provenance, error);
+    gc.packageProvenance = std::move(provenance);
+    // A selected shipped failure must never expose a partially merged package to Task 5's
+    // activation path. Diagnostics still name every previously applied and failed document.
+    if (!gc.filesFailed.empty()) {
+        gc.interfaces.clear(); gc.offsets.clear(); gc.signatures.clear(); gc.keys.clear();
+        gc.calls.clear(); gc.hooks.clear();
+        return gc;
+    }
     gc.mergedJson = SerializeMerged(gc, platform);
     return gc;
 }

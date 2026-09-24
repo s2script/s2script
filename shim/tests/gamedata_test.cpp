@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 
@@ -985,7 +986,163 @@ static void test_absent_custom_dir_is_not_an_error() {
     CHECK(gc.overridden.empty(), "nothing is marked overridden without a custom/ file");
 }
 
+static nlohmann::json bundle(const std::string& owner, const nlohmann::json& files) {
+    return {{"schemaVersion", 1}, {"owner", owner}, {"files", files}};
+}
+
+static nlohmann::json embedded(const std::string& path, const nlohmann::json& document) {
+    return {{"path", path}, {"document", document}};
+}
+
+static GameConfig loadBundle(const nlohmann::json& value, const TempRoot& root,
+                             std::string& error, const std::string& owner = "cs2",
+                             const std::string& engine = "source2",
+                             const std::string& game = "csgo",
+                             const std::string& platform = "linuxsteamrt64") {
+    return LoadGameConfigFromBundle(value.dump(), owner, root.path.string(), engine, game,
+                                    platform, std::string(64, 'a'), error);
+}
+
+static void test_package_bundle_selection_and_sections() {
+    TempRoot root;
+    const auto selected = nlohmann::json::parse(R"({
+      "interfaces":{"Version":"V1"}, "offsets":{"Slot":{"linuxsteamrt64":7,"win64":9}},
+      "signatures":{"Sig":{"linuxsteamrt64":{"module":"server","pattern":"AA","validate":{"opcode":"call"}}}},
+      "keys":{"Sound":"bell"}, "calls":{"Call":{"target":"Sig"}},
+      "hooks":{"Hook":{"target":"Sig"}}, "future":{"x":1}
+    })");
+    const auto b = bundle("cs2", nlohmann::json::array({
+        embedded("master.gamedata.jsonc", {{"files", nlohmann::json::array({
+            {{"file","z.jsonc"}}, {{"file","a.jsonc"}, {"engine","source2"}, {"game",nlohmann::json::array({"csgo","dota"})}},
+            {{"file","other.jsonc"}, {"game","dota"}}
+        })}}),
+        embedded("z.jsonc", {{"offsets", {{"Slot", {{"linuxsteamrt64",1}}}}}}),
+        embedded("a.jsonc", selected),
+        embedded("other.jsonc", 42)
+    }));
+    std::string error;
+    const auto gc = loadBundle(b, root, error);
+    CHECK(error.empty() && gc.filesFailed.empty(), "selected package documents load");
+    CHECK(gc.interfaces.at("Version") == "V1" && gc.offsets.at("Slot") == 7 &&
+          gc.signatures.at("Sig").pattern == "AA" && gc.keys.at("Sound") == "bell" &&
+          gc.calls.count("Call") && gc.hooks.count("Hook"), "all six sections survive package merge");
+    CHECK(gc.filesLoaded == std::vector<std::string>({"z.jsonc", "a.jsonc"}),
+          "master array order wins and nonmatching documents are not consumed");
+    CHECK(gc.sectionsIgnored == std::vector<std::string>({"a.jsonc: future"}),
+          "unknown package sections are reported");
+    auto merged = nlohmann::json::parse(gc.mergedJson);
+    CHECK(merged.contains("calls") && merged.contains("hooks") &&
+          merged["signatures"]["Sig"]["linuxsteamrt64"]["pattern"] == "AA",
+          "merged JSON retains calls, hooks and selected signature");
+    CHECK(gc.packageProvenance.owner == "cs2" && gc.packageProvenance.engine == "source2" &&
+          gc.packageProvenance.game == "csgo" && gc.packageProvenance.platform == "linuxsteamrt64" &&
+          gc.packageProvenance.verifiedSha256 == std::string(64, 'a') &&
+          gc.packageProvenance.shippedPaths == gc.filesLoaded &&
+          gc.packageProvenance.appliedPaths == gc.filesLoaded,
+          "package provenance records owner, target, identity and selected paths");
+    auto win = loadBundle(b, root, error, "cs2", "source2", "csgo", "win64");
+    CHECK(win.offsets.at("Slot") == 9 && win.signatures.empty(), "platform selects independent variants");
+    auto dota = loadBundle(b, root, error, "cs2", "source2", "dota");
+    CHECK(dota.filesFailed == std::vector<std::string>({"other.jsonc"}),
+          "non-object selected document fails, while the same unselected document was ignored");
+    CHECK(dota.offsets.empty() && dota.interfaces.empty() && dota.mergedJson.empty(),
+          "catastrophic selected-file failure exposes no partial package data");
+    put(root.path / "core" / "master.gamedata.jsonc", R"({"files":[{"file":"game.cs2.jsonc"}]})");
+    put(root.path / "core" / "game.cs2.jsonc", R"({"interfaces":{"CoreVersion":"C1"}})");
+    auto core = LoadGameConfig(root.path.string(), "core", "source2", "csgo", "linuxsteamrt64", error);
+    CHECK(core.interfaces.at("CoreVersion") == "C1" && !core.interfaces.count("Version") &&
+          gc.interfaces.at("Version") == "V1" && !gc.interfaces.count("CoreVersion"),
+          "disk core and package cs2 owners stay independent for the same target");
+}
+
+static void test_package_bundle_envelope_failures() {
+    TempRoot root;
+    const auto good = bundle("cs2", nlohmann::json::array({
+        embedded("master.gamedata.jsonc", {{"files", nlohmann::json::array({{{"file","a.jsonc"}}})}}),
+        embedded("a.jsonc", {{"keys", {{"K","v"}}}})
+    }));
+    auto fails = [&](const nlohmann::json& b, const std::string& name) {
+        std::string error;
+        auto gc = loadBundle(b, root, error);
+        CHECK(!error.empty() && !gc.filesFailed.empty(), name + " is a named catastrophic failure");
+    };
+    auto bad = good; bad["owner"] = "other"; fails(bad, "owner mismatch");
+    bad = good; bad["schemaVersion"] = 2; fails(bad, "schema mismatch");
+    bad = good; bad["files"].push_back(bad["files"][1]); fails(bad, "duplicate embedded path");
+    bad = good; bad["files"][1]["path"] = "../a.jsonc"; fails(bad, "parent path");
+    bad = good; bad["files"][1]["path"] = "sub\\a.jsonc"; fails(bad, "backslash path");
+    bad = good; bad["files"][1]["path"] = "sub//a.jsonc"; fails(bad, "empty path segment");
+    bad = good; bad["files"][1]["path"] = "sub/./a.jsonc"; fails(bad, "dot path segment");
+    bad = good; bad["files"][1]["path"] = "/a.jsonc"; fails(bad, "absolute path");
+    bad = good; bad["files"].erase(bad["files"].begin()); fails(bad, "missing master");
+    bad = good; bad["files"][0]["document"] = {{"files", 1}}; fails(bad, "malformed master");
+    bad = good; bad["files"][0]["document"]["files"][0]["engine"] = 3;
+    fails(bad, "malformed master condition");
+    bad = good; bad["files"][0]["document"]["files"][0]["file"] = "missing.jsonc";
+    fails(bad, "selected missing document");
+    bad = good; bad["files"][1]["document"] = "bad"; fails(bad, "selected scalar document");
+    bad = good; bad["files"] = nlohmann::json::array(); fails(bad, "empty files");
+    bad = good; bad["files"] = nlohmann::json::array();
+    for (int i = 0; i < 130; ++i) bad["files"].push_back(embedded("f"+std::to_string(i), nlohmann::json::object()));
+    fails(bad, "file-count limit");
+    bad = good;
+    for (int i = 0; i < 130; ++i) bad["files"][0]["document"]["files"].push_back({{"file","a.jsonc"}});
+    fails(bad, "master-entry-count limit");
+    bad = good; bad["files"][1]["document"] = {{"keys", 4}};
+    std::string sectionError;
+    auto section = loadBundle(bad, root, sectionError);
+    CHECK(sectionError.find("section keys") != std::string::npos &&
+          section.filesFailed.empty() && section.filesEmpty == std::vector<std::string>({"a.jsonc"}),
+          "a malformed known section is named instead of silently dropped");
+    std::string error;
+    auto gc = LoadGameConfigFromBundle(R"({"schemaVersion":1,"schemaVersion":1,"owner":"cs2","files":[]})",
+                                       "cs2", root.path.string(), "source2", "csgo", "linuxsteamrt64",
+                                       std::string(64,'a'), error);
+    CHECK(!error.empty() && !gc.filesFailed.empty(), "duplicate JSON keys cannot choose envelope fields");
+    gc = LoadGameConfigFromBundle(std::string(4 * 1024 * 1024 + 1, 'x'), "cs2",
+                                  root.path.string(), "source2", "csgo", "linuxsteamrt64",
+                                  std::string(64,'a'), error);
+    CHECK(!error.empty() && !gc.filesFailed.empty(), "oversized bundle rejected before parse");
+}
+
+static void test_package_custom_and_diagnostics() {
+    TempRoot root;
+    put(root.path / "cs2" / "custom" / "20-late.jsonc", R"({"signatures":{"S":{"linuxsteamrt64":{"module":"server","pattern":"CC","validate":{}}}}})");
+    put(root.path / "cs2" / "custom" / "10-first.jsonc", R"(// JSONC operator repair
+      {"signatures":{"S":{"linuxsteamrt64":{"module":"server","pattern":"BB"}}},"keys":{"K":"fixed"}})");
+    const auto b = bundle("cs2", nlohmann::json::array({
+        embedded("master.gamedata.jsonc", {{"files", nlohmann::json::array({{{"file","a.jsonc"}}})}}),
+        embedded("a.jsonc", {{"signatures", {{"S", {{"linuxsteamrt64", {{"module","server"},{"pattern","AA"},{"validate", {{"opcode","call"}}}}}}}}},
+                              {"keys", {{"K","old"}}}})
+    }));
+    std::string error;
+    const auto gc = loadBundle(b, root, error);
+    CHECK(error.empty() && gc.signatures.at("S").pattern == "CC" && gc.keys.at("K") == "fixed",
+          "JSONC custom overrides apply after shipped documents in sorted order");
+    CHECK(gc.validatorsCarried == std::vector<std::string>({"S"}) &&
+          gc.validatorsDisarmed == std::vector<std::string>({"S"}),
+          "validator carry and explicit disarm remain visible");
+    CHECK(gc.filesLoaded == std::vector<std::string>({"a.jsonc","custom/10-first.jsonc","custom/20-late.jsonc"}) &&
+          gc.packageProvenance.customPaths == std::vector<std::string>({"custom/10-first.jsonc","custom/20-late.jsonc"}) &&
+          gc.packageProvenance.appliedPaths == gc.filesLoaded,
+          "diagnostics and provenance retain custom ordering");
+    put(root.path / "cs2" / "custom" / "30-bad.jsonc", R"({"keys":)");
+    const auto broken = loadBundle(b, root, error);
+    CHECK(!error.empty() && error.find("30-bad.jsonc") != std::string::npos &&
+          broken.filesFailed.empty() && broken.keys.at("K") == "fixed",
+          "bad custom file is named and retains shipped and earlier custom entries");
+    fs::remove(root.path / "cs2" / "custom" / "30-bad.jsonc");
+    put(root.path / "cs2" / "custom" / "30-entry.jsonc", R"({"keys":{"Bad":3,"Good":"ok"}})");
+    const auto malformed = loadBundle(b, root, error);
+    CHECK(!error.empty() && error.find("keys.Bad") != std::string::npos &&
+          malformed.keys.at("Good") == "ok" && malformed.filesFailed.empty(),
+          "malformed custom entry degrades by name without failing package");
+}
+
 int main() {
+    test_package_bundle_selection_and_sections();
+    test_package_bundle_envelope_failures();
+    test_package_custom_and_diagnostics();
     test_master_selects_by_condition();
     test_array_order_is_apply_order();
     test_condition_accepts_an_array();

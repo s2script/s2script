@@ -63,12 +63,14 @@ deterministic deployed manifest `addons/s2script/game-packages.json`, for exampl
 ```
 
 The illustrative `<sha256>` values are replaced by packaging with lowercase
-64-character SHA-256 digests. The gamedata bundle retains the owner's layout,
-keys, target variants, and S2 function definitions, not only its functions. The
+64-character SHA-256 digests. The v1 gamedata bundle retains the owner's legacy layout,
+keys, target variants, interfaces, calls, and hooks. It is merged with the existing native
+gamedata grammar; it is not an S2 v2 normalized functions archive. Explicit S2 function
+declarations require a separate build-time normalized product and the S2 contract. The
 `gamedataOwner` field maps the reserved package id to the existing owner tree and
 operator override directory; CS2 keeps the `cs2` mapping so existing custom files
 are not silently ignored. Hashes cover the shipped artifacts; operator overlays
-are applied afterward by the shared loader with their own provenance.
+are applied afterward by the shared loader with separate, unhashed custom-path provenance.
 
 The native bridge supplies the detected game token; runtime code does not branch on it. Matching is
 deterministic. Zero matches leaves the generic runtime available but refuses plugins requiring a
@@ -104,6 +106,9 @@ its filename is not a reason to transfer ownership. CS2-owned layout consumed on
 package moves with that package. Provenance always records both owner and target.
 Common defaults, game/engine and OS variants, and custom overrides keep their ordered merge and
 attribution. S2 plugin overrides stay namespaced; S3 adds no second precedence system.
+The existing `gamedata/<owner>/custom/` operator grammar continues to patch legacy named entries,
+including validator carry and explicit disarm, until each call or hook is deliberately migrated
+with parity evidence. The S2 `OverrideSet` grammar does not reinterpret those legacy files.
 
 ## Semantic adapters on the function service
 
