@@ -12,6 +12,8 @@
 
 **Integration status (2026-09-24):** The user authorized merging the existing stack into main. This PR records the approved S3 design and implementation plan; S3 implementation has not started. The merged S2 foundations do not yet supply the complete public `Engine.function` runtime, loader activation, or all codecs/adapters required below. Complete those prerequisites and the outstanding runtime/client/peer acceptance before claiming S3 complete or releasing the unfinished SDK surface. Merging the plan does not mark its unchecked tasks or inherited acceptance gates as passed.
 
+**Execution staging (2026-09-24):** S3 packaging and manifest verification may proceed against the merged S2 foundations because they do not invoke unfinished S2 APIs. Record missing runtime/codec/adapter prerequisites in PRE-00 and keep GD-03, CORE-04 and semantic migrations dependent on those interfaces. PKG-01 retains temporary legacy deployed artifacts derived from the same canonical package inputs until CORE-04 switches the loader, so each intermediate build remains usable. This does not add a second runtime loader or change the final boundary.
+
 ## Global Constraints
 
 - Isolated implementation may start after source and official-stock-host baselines are recorded. Required human/client, peer, map and script-reload evidence remains a merge/release gate. The user explicitly made the known whole-process shutdown-only SIGSEGV/139 non-blocking: preserve its existing evidence, do not relabel it as a pass, and do not add quit loops, shutdown investigation or a clean-exit wait. Native callback retirement and context/handle lifetime tests remain mandatory because they protect normal use and script reload.
@@ -223,7 +225,7 @@ Move hook generation, static gates and the listed source-path assertions to `gam
 node scripts/build-game-packages.mjs --out "$DIST/s2script"
 ```
 
-Delete the `js/pawn.js` output and its conditional branch. Update ESLint to read `bootstrapInputs` from the source manifest instead of scraping shell text.
+Replace the independent shell concatenation and its conditional branch. Until CORE-04 switches runtime loading, copy the emitted bootstrap to the existing deployed `js/pawn.js` path and package the relocated CS2 source data at the existing deployed `gamedata/cs2/` path, still excluding operator `custom/` files. These temporary compatibility outputs must derive from the same canonical inputs; do not maintain a second JS file list or duplicate source data. Update ESLint to read `bootstrapInputs` from the source manifest instead of scraping shell text. CORE-04 removes these compatibility outputs in the same change that removes their runtime readers.
 
 - [ ] **Step 5: Verify hashes, determinism, and owner relocation**
 
@@ -233,11 +235,11 @@ bash scripts/check-gamedata-owners.sh
 bash scripts/check-gamedata-sigs.sh
 bash scripts/check-hooks-generated.sh
 find dist/addons/s2script/game-packages -type f -print | sort
-test ! -e dist/addons/s2script/js/pawn.js
+cmp dist/addons/s2script/game-packages/cs2/index.js dist/addons/s2script/js/pawn.js
 test ! -d gamedata/cs2
 ```
 
-Expected: tests pass; exactly `cs2/index.js` and `cs2/gamedata.json` are emitted below the package root.
+Expected: tests pass; exactly `cs2/index.js` and `cs2/gamedata.json` are emitted below the package root. The temporary legacy bootstrap is byte-identical and the legacy deployed CS2 data comes from the relocated source. Deleting these compatibility outputs belongs to CORE-04.
 
 - [ ] **Step 6: Commit**
 
@@ -477,6 +479,8 @@ This is lifecycle pseudocode; implement its helpers using S2's actual integrated
 - [ ] **Step 5: Replace shim registration and crash schema hashing**
 
 Delete `Cs2JsPath`, the `@s2script/cs2` literals, old source/gamedata registration calls, the static `s_gdGame` package load, and the CS2-specific crash hash read. Pass `AddonRoot()`, `"source2"`, `DetectModDir()`, and `"linuxsteamrt64"` to the new selector. Use selected artifact hashes/provenance for crash identity. Call terminal `clear` only after context shutdown succeeds.
+
+In this same cutover, remove PKG-01's temporary deployed `js/pawn.js` and shipped `gamedata/cs2/` compatibility copies from `scripts/package-addon.sh`. Preserve the operator `gamedata/cs2/custom/` lookup and prove there is no old bootstrap fallback. Before this step, those compatibility copies keep intermediate releases loadable; afterward the verified package artifacts are authoritative.
 
 - [ ] **Step 6: Verify targeted and boundary tests**
 
