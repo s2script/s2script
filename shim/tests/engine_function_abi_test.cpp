@@ -489,8 +489,9 @@ static double record_peer_receiver=0,record_peer_info=0,record_early_receiver=0,
 static KHook::Return<int32_t> record_peer_pre(S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*);
 static KHook::Return<int32_t> record_peer_post(S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*);
 static KHook::Return<int32_t> record_early_pre(S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*);
-// Stock KHook prepends PRE-only hooks. A paired hook configured before Service
-// runs its PRE after Service's paired hook; the PRE-only hook proves the input.
+// KHook::Function registers both physical phase thunks even with a null logical
+// POST callback. Paired insertion prepends existing paired hooks: configure the
+// later observer before Service and the early observer after Service.
 static S2CheckedFunction<int32_t,S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*> record_peer(record_peer_pre,record_peer_post);
 static S2CheckedFunction<int32_t,S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*> record_early(record_early_pre,nullptr);
 static KHook::Return<int32_t> record_peer_pre(S2FnRecordFixture* receiver,S2FnRecordFixture* info,const char*,void* hidden) {
@@ -506,10 +507,10 @@ static KHook::Return<int32_t> record_early_pre(S2FnRecordFixture* receiver,S2FnR
 }
 extern "C" int s2fn_production_record_peer(int mode) {
     if(mode==0) {record_peer.BeginRemove(true);record_early.BeginRemove(true);return 1;}
-    if(mode==1) {
-        const auto target=checked_target(fixture_targets().record_member);
-        return record_peer.Configure(target).Accepted() && record_early.Configure(target).Accepted();
-    }
+    if(mode==1) return record_peer.Configure(checked_target(fixture_targets().record_member)).Accepted();
+    if(mode==3) return record_early.Configure(checked_target(fixture_targets().record_member)).Accepted();
+    if(mode==4) return record_early.BeginRemove(true);
+    if(mode==5) return record_early.RemovalComplete();
     return static_cast<int>(std::min(record_peer_calls,record_early_calls));
 }
 extern "C" int s2fn_production_record_call(int mode,double* output) {

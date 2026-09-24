@@ -434,14 +434,22 @@ mod production {
             27 => COPY_PROCESS.with(|s|*s.borrow_mut()=Some(proof::copy_process_begin())),
             28 => COPY_READY.with(|s|s.set(proof::copy_process_probe())),
             29 => {proof::copy_process_exercise();proof::copy_process_finish(COPY_PROCESS.with(|s|s.borrow_mut().take()).unwrap());},
-            30 => {assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(1)},1);RECORD_STATE.with(|s|*s.borrow_mut()=Some(borrowed_proof::begin(RECORD_ENGINE.with(Cell::get).unwrap(),ENTITY_SLOT.with(Cell::get).unwrap())));},
-            31 => {RECORD_READY.with(|r|r.set(RECORD_STATE.with(|s|borrowed_proof::ready(s.borrow().as_ref().unwrap())) && unsafe{RECORD_PEER.with(Cell::get).unwrap()(2)}>0));},
+            30 => {RECORD_STATE.with(|s|*s.borrow_mut()=Some(borrowed_proof::begin(RECORD_ENGINE.with(Cell::get).unwrap(),ENTITY_SLOT.with(Cell::get).unwrap())));},
+            31 => {RECORD_READY.with(|r|r.set(RECORD_STATE.with(|s|borrowed_proof::ready(s.borrow().as_ref().unwrap()))));},
             32 => {RECORD_STATE.with(|s|borrowed_proof::exercise(s.borrow().as_ref().unwrap()));assert_eq!(borrowed_proof::call(1)[9],1.);},
-            33 => {borrowed_proof::abort(RECORD_STATE.with(|s|s.borrow_mut().take()).unwrap());},
-            34 => {CURSOR_STATE.with(|s|*s.borrow_mut()=Some(borrowed_proof::cursor_begin(RECORD_ENGINE.with(Cell::get).unwrap())));},
+            33 => {assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(4)},1);borrowed_proof::abort(RECORD_STATE.with(|s|s.borrow_mut().take()).unwrap());},
+            34 => {assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(5)},1);CURSOR_STATE.with(|s|*s.borrow_mut()=Some(borrowed_proof::cursor_begin(RECORD_ENGINE.with(Cell::get).unwrap())));},
             35 => {RECORD_READY.with(|r|r.set(CURSOR_STATE.with(|s|borrowed_proof::cursor_ready(s.borrow().as_ref().unwrap()))));},
             36 => {borrowed_proof::cursor_exercise(true);},
             37 => {borrowed_proof::cursor_abort(CURSOR_STATE.with(|s|s.borrow_mut().take()).unwrap());assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(0)},1);},
+            38 => {assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(3)},1);},
+            39 => {RECORD_READY.with(|r|r.set(borrowed_proof::observers_ready()));},
+            40 => {assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(1)},1);},
+            41 => {
+                let mut output=[0.;18];
+                assert_eq!(unsafe{RECORD_ENGINE.with(Cell::get).unwrap()(0,output.as_mut_ptr())},1);
+                RECORD_READY.with(|r|r.set(output[16..18]==[1.,0.]));
+            },
             _ => panic!("unexpected frame callback"),
         });
         if let Err(error) = result {
@@ -639,16 +647,32 @@ mod production {
         let record_result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
             let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
             while unsafe{empty()}==0 && std::time::Instant::now()<deadline {assert_eq!(unsafe{frame(0)},1);std::thread::sleep(std::time::Duration::from_millis(1));}
-            assert_eq!(unsafe{empty()},1);drive(30);
+            assert_eq!(unsafe{empty()},1);drive(40);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(41);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record later observer readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            drive(30);
             let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
             loop{drive(31);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record Service/peer readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            // Registration acceptance does not establish physical order: the
+            // provider may requeue an insertion. Observe Service before adding
+            // the early paired observer, then observe both before assertions.
+            drive(38);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(39);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record early observer readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
             drive(32);drive(33);
-            // Keep the paired observer installed before the new Service hook.
+            // Keep the later paired observer installed. Drain the early observer
+            // before reinstalling it after the new Service hook.
             let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
             while unsafe{empty()}==0 && std::time::Instant::now()<deadline {assert_eq!(unsafe{frame(0)},1);std::thread::sleep(std::time::Duration::from_millis(1));}
-            assert_eq!(unsafe{empty()},1);drive(34);
+            assert_eq!(unsafe{empty()},1);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(41);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record cursor retained later observer readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            drive(34);
             let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
             loop{drive(35);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record cursor Service readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            drive(38);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(39);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record cursor early observer readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
             drive(36);drive(37);
         }));
         if let Some(state)=RECORD_STATE.with(|s|s.borrow_mut().take()){borrowed_proof::abort(state);}

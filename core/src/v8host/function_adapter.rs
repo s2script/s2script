@@ -6413,15 +6413,17 @@ pub(super) mod borrowed_proof {
     }
     pub fn call(mode:i32)->[f64;18] {let mut out=[0.;18];assert_eq!(unsafe{ENGINE.with(Cell::get).unwrap()(mode,out.as_mut_ptr())},1);out}
     pub fn ready(state:&State)->bool {
-        let before=frame_tests::read_i32_global_in("record-a","preCount");call(0);
-        runtime::status(state.target).unwrap().state==2 && frame_tests::read_i32_global_in("record-a","preCount")>before
+        let before=frame_tests::read_i32_global_in("record-a","preCount");let output=call(0);
+        runtime::status(state.target).unwrap().state==2 && frame_tests::read_i32_global_in("record-a","preCount")>before && output[16]==1.
     }
+    pub fn observers_ready()->bool {call(0)[16..18]==[1.,1.]}
     pub fn exercise(state:&State) {
         eval_in_context("record-a","mode='edit';events.length=0;").unwrap();
         let edited=call(1);assert_eq!(&edited[..7],&[5.,20.,127.,8.,0.,2.5,4294967295.]);
         assert_eq!(&edited[12..14],&[5.,20.],"later PRE peer must observe published record fields");
         assert_eq!(&edited[14..18],&[2.,7.,1.,1.],"earlier PRE peer sees input; both peers execute exactly once");assert_eq!(edited[7],1.,"original executes once");
         assert_eq!(&edited[10..12],&[65535.,90.],"u16 must preserve adjacent sentinel");
+        println!("PASS actual record observer order early={:?} later={:?}, peer counts={:?}, original={}",&edited[14..16],&edited[12..14],&edited[16..18],edited[7]);
         eval_in_context("record-a","if(!events.includes('later:20')||!events.includes('post:20')||roSeen!==20)throw Error('accepted overlay/POST');let n=0;try{saved.amount}catch(_){n++}try{savedFrame.info}catch(_){n++}if(n!==2)throw Error('view escaped');").unwrap();
         for mode in ["invalid","readonly","decision","throw","promise","map","map-copy","u16-range"] {
             eval_in_context("record-a",&format!("mode='{mode}';events.length=0;")).unwrap();
@@ -6487,8 +6489,8 @@ pub(super) mod borrowed_proof {
     }
     pub fn cursor_begin(engine:EngineCall)->State {cursor_prepare(engine,false)}
     pub fn cursor_ready(state:&State)->bool {
-        let before=frame_tests::read_i32_global_in("record-cursor","cursorPreCount");call(0);
-        runtime::status(state.target).unwrap().state==2 && frame_tests::read_i32_global_in("record-cursor","cursorPreCount")>before
+        let before=frame_tests::read_i32_global_in("record-cursor","cursorPreCount");let output=call(0);
+        runtime::status(state.target).unwrap().state==2 && frame_tests::read_i32_global_in("record-cursor","cursorPreCount")>before && output[16]==1.
     }
     pub fn cursor_exercise(native:bool) {
         for mode in ["keep","rewrite","invalid","throw"] {
@@ -6505,6 +6507,7 @@ pub(super) mod borrowed_proof {
                 assert_eq!(output[7],1.,"{mode}: real original executes once");
                 assert_eq!(&output[12..14],&[2.,accepted],"{mode}: later native PRE peer sees final record");
                 assert_eq!(&output[14..18],&[2.,7.,1.,1.],"{mode}: earlier PRE sees input; each peer executes once");
+                println!("PASS actual record cursor {mode}: trace={trace}, early={:?}, later={:?}, original result={}, count={}",&output[14..16],&output[12..14],output[2],output[7]);
             }
         }
         println!("PASS borrowed package adapter cursor resumed/later reads, subscriber/native publication, explicit adapter rewrite and rejected final decisions");
