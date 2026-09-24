@@ -272,7 +272,7 @@ extensions without copying every historical mechanism.
   function descriptions and plugin-owned dynamic hooks are established patterns.
 - [SourceMod GameConfigs](https://github.com/alliedmodders/sourcemod/blob/master/core/logic/GameConfigs.cpp):
   game/platform selection and custom configuration layering.
-- [Pinned KHook interface](https://github.com/Kenzzer/KHook/blob/1e200e4cc8e0badcb7cf941525268d6977f6a4e6/include/khook.hpp):
+- [Pinned KHook interface](https://github.com/Kenzzer/KHook/blob/40d233d160b5bf60cc3e732939142b222fbd8ece/include/khook.hpp):
   the stock provider contract against which feasibility must be demonstrated.
 - [Existing migration invocation contracts](2026-09-14-khook-migration-design.md)
   and [stock-host decision](2026-09-15-khook-stock-host-decision.md).

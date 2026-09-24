@@ -9,16 +9,16 @@ Linux x86-64 only. Windows is not supported yet.
 1. A Counter-Strike 2 dedicated server.
 2. **Stock [Metamod:Source](https://www.sourcemm.net/) with plugin API (PLAPI) 18 support**, installed under `game/csgo/addons/metamod/` according to the upstream instructions. No Metamod or KHook patches, private host binaries, or s2script-specific host build are required.
 
-   The vendored Metamod pin `7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33` and nested KHook `1e200e4cc8e0badcb7cf941525268d6977f6a4e6` are an unmodified source reference for development tests. Operators may use a compatible official upstream release. Confirm PLAPI compatibility for that release and every other native plugin installed on the server.
+   The vendored Metamod pin `fa6f80e4662e5b96cc2e97722d812f374581dfd8` and nested KHook `40d233d160b5bf60cc3e732939142b222fbd8ece` are an unmodified source reference for development tests. Operators may use a compatible official upstream release. Confirm PLAPI compatibility for that release and every other native plugin installed on the server.
 
    The native s2script shim stays resident during gameplay. Hot reload applies to `.s2sp` plugins managed inside s2script. Stop and restart the server for native shim or Metamod updates; native shim hot unload/reload is not required.
 
-   For the repository's Docker setup, the optional installer defaults to the exact official 2.0.0.1467 archive and published checksum below when no source/release variables are set. Its PLAPI 18 compatibility comes from that release's checked source pin. An existing verified installation is rechecked and kept. To select an archive explicitly:
+   For the repository's Docker setup, the optional installer defaults to the exact official 2.0.0.1469 archive and published checksum below when no source/release variables are set. Its PLAPI 18 compatibility comes from that release's checked source pin. An existing verified installation is rechecked and kept. To select an archive explicitly:
 
    ```bash
-   # Official 2.0.0.1467 release: the unchanged vendored Metamod source pin.
-   export S2_METAMOD_RELEASE_URL='https://github.com/alliedmodders/metamod-source/releases/download/2.0.0.1467/mmsource-2.0.0-git1467-linux.tar.gz'
-   export S2_METAMOD_RELEASE_SHA256='f3dd81999e93ef86d45ed8f0f451c93806ad7fba1514dafd5f2623c61ca637a2'
+   # Official 2.0.0.1469 release: the unchanged vendored Metamod source pin.
+   export S2_METAMOD_RELEASE_URL='https://github.com/alliedmodders/metamod-source/releases/download/2.0.0.1469/mmsource-2.0.0-git1469-linux.tar.gz'
+   export S2_METAMOD_RELEASE_SHA256='a552e4cb1399ced15a1192880f1f6bdd3d16f930a9cb33bc9e45396a26f177ad'
    export S2_METAMOD_RELEASE_PLAPI=18  # operator-confirmed for this release
    # Optional: use an already downloaded archive instead of downloading the URL.
    # export S2_METAMOD_RELEASE_ARCHIVE=/path/to/mmsource-release-linux.tar.gz
@@ -27,7 +27,7 @@ Linux x86-64 only. Windows is not supported yet.
    sudo docker compose -f docker/docker-compose.yml start cs2
    ```
 
-   This concrete example uses the [official 2.0.0.1467 release](https://github.com/alliedmodders/metamod-source/releases/tag/2.0.0.1467) and its Linux asset digest from the [GitHub release API](https://api.github.com/repos/alliedmodders/metamod-source/releases/tags/2.0.0.1467). That is a published checksum, not a signature. For another selected release, supply its independently recorded expected checksum and confirm PLAPI explicitly. Exact AlliedModders GitHub release asset URLs and legacy `https://mms.alliedmods.net/mmsdrop/<branch>/mmsource-<version>-linux.tar.gz` URLs are accepted; moving `releases/latest` URLs are not selected. The installer verifies the checksum before extracting regular files, then checks the required Linux x86-64 shared objects and GLIBC requirements. Archive hashes do not establish the ABI, and actual runtime load/handshake remains required for acceptance.
+   This concrete example uses the [official 2.0.0.1469 release](https://github.com/alliedmodders/metamod-source/releases/tag/2.0.0.1469) and its Linux asset digest from the [GitHub release API](https://api.github.com/repos/alliedmodders/metamod-source/releases/tags/2.0.0.1469). That is a published checksum, not a signature. For another selected release, supply its independently recorded expected checksum and confirm PLAPI explicitly. Exact AlliedModders GitHub release asset URLs and legacy `https://mms.alliedmods.net/mmsdrop/<branch>/mmsource-<version>-linux.tar.gz` URLs are accepted; moving `releases/latest` URLs are not selected. The installer verifies the checksum before extracting regular files, then checks the required Linux x86-64 shared objects and GLIBC requirements. Archive hashes do not establish the ABI, and actual runtime load/handshake remains required for acceptance.
 
    Any release override requires all three identity variables; it never inherits the default's compatibility confirmation. A supplied tree uses `S2_METAMOD_TREE` plus `S2_METAMOD_BUILD_MANIFEST`. Schema 2 manifests identify either an official archive or an unmodified source build and hash the required runtime artifacts. The optional [source build](BUILDING.md#docker-live-gate) produces this manifest from checked upstream source and is selected explicitly with those tree/manifest variables. No manifest is invented from a candidate tree during verification. Previously installed bytes are rechecked, replacement is staged while CS2 is stopped, and rollback preserves the complete prior tree (`docker/metamod.prev`).
 

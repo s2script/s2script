@@ -91,8 +91,8 @@ class RuntimeTree:
             "plapi": 18,
             "provenance": {
                 "kind": "unmodified-source",
-                "metamod_commit": "7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33",
-                "khook_commit": "1e200e4cc8e0badcb7cf941525268d6977f6a4e6",
+                "metamod_commit": "fa6f80e4662e5b96cc2e97722d812f374581dfd8",
+                "khook_commit": "40d233d160b5bf60cc3e732939142b222fbd8ece",
             },
             "target": "linux-x86_64",
             "glibc_max": "2.31",

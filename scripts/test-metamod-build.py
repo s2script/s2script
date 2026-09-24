@@ -19,7 +19,7 @@ VERIFIER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VERIFIER)
 RELEASE_URL = "https://mms.alliedmods.net/mmsdrop/2.0/mmsource-test-linux.tar.gz"
 GITHUB_RELEASE_URL = "https://github.com/alliedmodders/metamod-source/releases/download/2.0.0.1466/mmsource-2.0.0-git1466-linux.tar.gz"
-DEFAULT_RELEASE_URL = "https://github.com/alliedmodders/metamod-source/releases/download/2.0.0.1467/mmsource-2.0.0-git1467-linux.tar.gz"
+DEFAULT_RELEASE_URL = "https://github.com/alliedmodders/metamod-source/releases/download/2.0.0.1469/mmsource-2.0.0-git1469-linux.tar.gz"
 
 
 def manifest(provenance):
