@@ -89,7 +89,7 @@ capture() {
   "$@" 2>&1 | head -c 1048576 > "$output"
 }
 member_fixture="$PWD/build/engine-function-abi/libengine_function_member_fixture.so"
-[[ -f "$member_fixture" ]] || { echo 'FAIL missing member fixture' >&2; exit 2; }
+[[ -f "$member_fixture" ]] || { echo 'FAIL missing native target fixture' >&2; exit 2; }
 binaries=("$executable" "$S2FN_V8_BRIDGE" "$member_fixture")
 sha256sum "${binaries[@]}" > "$artifact/fixed.sha256"
 {
@@ -106,21 +106,31 @@ for binary in "$executable" "$S2FN_V8_BRIDGE" "$member_fixture"; do
   capture "$artifact/$(basename "$binary").elf.txt" readelf -h -l -n -W "$binary"
 done
 capture "$artifact/bridge-symbols.txt" nm -anC "$S2FN_V8_BRIDGE"
+capture "$artifact/fixture-symbols.txt" nm -anC "$member_fixture"
+capture "$artifact/fixture-elf-boundary.txt" python3 scripts/check-engine-function-fixture.py "$member_fixture"
 # Locate the real int target and disassemble its page plus the following page.
-# This records layout without changing or relinking the fixture.
-page="$(python3 - "$artifact/bridge-symbols.txt" "$(getconf PAGESIZE)" <<'PY'
+# Its hidden body now belongs to the target fixture, not the adapter bridge.
+# This records layout without changing or relinking any of the three binaries.
+page="$(python3 - "$artifact/fixture-symbols.txt" "$(getconf PAGESIZE)" "$artifact/target-identity.txt" "$member_fixture" <<'PY'
 import pathlib
 import sys
 symbols = pathlib.Path(sys.argv[1]).read_text().splitlines()
-addresses = {int(line.split()[0], 16) for line in symbols if "identity<int>(int)" in line}
+addresses = {int(line.split()[0], 16) for line in symbols
+             if "identity<int>(int)" in line and line.split()[1] in ("t", "T")}
 if len(addresses) != 1:
     raise SystemExit("FAIL expected one identity<int> ELF target")
 size = int(sys.argv[2])
-print(addresses.pop() // size * size)
+address = addresses.pop()
+page = address // size * size
+pathlib.Path(sys.argv[3]).write_text(
+    f"target_owner={sys.argv[4]}\ntarget_symbol=identity<int>(int)\n"
+    f"target_rva={address:#x}\ntarget_page_rva={page:#x}\n")
+print(page)
 PY
 )"
 capture "$artifact/target-page.txt" objdump -d -C --start-address="$page" \
-  --stop-address="$((page + 2 * $(getconf PAGESIZE)))" "$S2FN_V8_BRIDGE"
+  --stop-address="$((page + 2 * $(getconf PAGESIZE)))" "$member_fixture"
+cat "$artifact/target-identity.txt"
 cat "$artifact/manifest.txt"
 # Keep the reviewed bounded, fully draining consumer for every attempt. Also
 # retain emitted runtime addresses even when they occur beyond the saved prefix.
@@ -157,9 +167,9 @@ while True:
     total += len(chunk)
     combined = pending + chunk
     addresses = b"".join(match.group() for match in re.finditer(
-        rb"event=create-begin target=0x[0-9a-fA-F]+\r?\n", combined)
+        rb"(?:event=create-begin target=0x[0-9a-fA-F]+|fixture-boundary=accepted [^\r\n]+)\r?\n", combined)
         if match.end() > len(pending))
-    pending = combined[-128:]
+    pending = combined[-65536:] # Retain bounded module-identity lines across reads.
     for descriptor, remaining in list(streams.items()):
         data = addresses if descriptor == runtime else chunk
         if remaining is not None:

@@ -56,8 +56,7 @@ static void signatures() {
 #include <unistd.h>
 #include <type_traits>
 #include <condition_variable>
-#include <dlfcn.h>
-#include "engine_function_member_fixture.h"
+#include "engine_function_fixture_guard.h"
 // Allocation fault injection wraps only the allocator; all successful closures,
 // CIFs, provider detours and callbacks are the pinned real implementations.
 static int fail_allocation = -1, allocations = 0, frees = 0;
@@ -89,26 +88,45 @@ static void retire(std::unique_ptr<RuntimeBinding>& b) {
     assert(b->RemovalComplete()); assert(S2Hook_DrainRetirement());
     b.reset(); assert(frees == prior + 4);
 }
-// These are compiler-authored native targets, never signature-specific adapters.
-// Volatile state and noinline keep an actual function entry for SafetyHook.
+// Counter storage stays with the assertions; native bodies live only in the DSO.
 static volatile std::uint64_t original_calls = 0;
-template<class T> __attribute__((noinline)) T identity(T value) {
-    ++original_calls; return value;
+__attribute__((noinline)) static std::int32_t local_dummy_target(std::int32_t value) { return value; }
+static S2FnFixtureBoundary fixture_boundary() {
+    return {reinterpret_cast<const void*>(&s2fn_fixture_targets),
+        reinterpret_cast<const void*>(&KHook::Shutdown), reinterpret_cast<const void*>(&signatures)};
 }
-__attribute__((noinline)) static void void_target(std::int32_t value) { original_calls += value; }
-// Seven GP plus nine SSE values: the GP and SSE exhaustion points differ.
-__attribute__((noinline)) static double mixed(
-    std::int64_t a, double b, std::int64_t c, double d, std::int64_t e, double f,
-    std::int64_t g, double h, std::int64_t i, double j, std::int64_t k, double l,
-    std::int64_t m, double n, double o, double p, double q) {
-    ++original_calls;
-    return a + b*2 + c*3 + d*4 + e*5 + f*6 + g*7 + h*8 + i*9 + j*10 + k*11 + l*12 + m*13 + n*14 + o*15 + p*16 + q*17;
+static const S2FnFixtureTargets& fixture_targets() {
+    static const auto targets = [] {
+        const auto boundary = fixture_boundary();
+        // Regression: old consumer-local targets must be refused BEFORE Configure.
+        assert(!boundary.Accepts(reinterpret_cast<const void*>(&local_dummy_target)));
+        auto resolved = s2fn_fixture_targets();
+        S2FnRequireFixtureInventory(resolved, boundary);
+        s2fn_fixture_set_original_calls(&original_calls);
+        return resolved;
+    }();
+    return targets;
 }
-// Authored independently after the runtime adapter: no change to Type/Enter.
-__attribute__((noinline)) static float novel(std::uint32_t a, float b, void* p, std::uint64_t c) {
-    ++original_calls; return a + b + (p ? 3.0f : 0.0f) + c;
+static const void* checked_target(const void* target) {
+    (void)fixture_targets();
+    fixture_boundary().Require("hook-install", target);
+    return target;
+}
+// This selects pointers; it never defines or instantiates a target body here.
+template<class T> static auto identity_target() {
+    const auto& t = fixture_targets();
+    if constexpr (std::is_same_v<T, bool>) return t.identity_bool;
+    else if constexpr (std::is_same_v<T, std::uint8_t>) return t.identity_u8;
+    else if constexpr (std::is_same_v<T, std::int32_t>) return t.identity_i32;
+    else if constexpr (std::is_same_v<T, std::uint32_t>) return t.identity_u32;
+    else if constexpr (std::is_same_v<T, std::int64_t>) return t.identity_i64;
+    else if constexpr (std::is_same_v<T, std::uint64_t>) return t.identity_u64;
+    else if constexpr (std::is_same_v<T, float>) return t.identity_f32;
+    else if constexpr (std::is_same_v<T, double>) return t.identity_f64;
+    else { static_assert(std::is_same_v<T, void*>); return t.identity_ptr; }
 }
 static std::unique_ptr<RuntimeBinding> bind(AbiSignature s, Sink& sink, const void* target) {
+    target = checked_target(target);
     std::cout << "event=create-begin target=" << target << "\n";
     auto r = RuntimeBinding::Create(std::move(s), sink); assert(r);
     std::cout << "vector=" << r.value->Info().fingerprint << " stack=" << r.value->Info().stack_bytes << " closures=4\n";
@@ -123,7 +141,7 @@ template<class T> static void atom(const char* name, T value) {
         assert(f.arguments[0].Get<T>() == value);
         if (f.phase == Phase::Post) assert(f.result.Get<T>() == value);
     };
-    auto b = bind(s, sink, reinterpret_cast<void*>(&identity<T>));
+    auto b = bind(s, sink, reinterpret_cast<void*>(identity_target<T>()));
     NativeValue v = NativeValue::From(value); std::fill(v.bytes.begin()+sizeof(T), v.bytes.end(), 0xa5);
     auto r = b->Call(&v, 1); assert(r); assert(r.value.Get<T>() == value);
     if (std::string(name) == "u8") {
@@ -135,23 +153,22 @@ template<class T> static void atom(const char* name, T value) {
     retire(b);
 }
 
-template<class T, std::size_t> struct Indexed { using type = T; };
-template<class T, std::size_t... I>
-__attribute__((noinline)) static T spill_target(typename Indexed<T, I>::type... args) {
-    ++original_calls; return ((args * static_cast<T>(I + 1)) + ...);
-}
 template<class T, std::size_t... I> static void spill_case(const char* name, std::index_sequence<I...>) {
     AbiSignature s; s.returns = {name}; s.parameters.assign(sizeof...(I), {name});
     std::vector<NativeValue> values{NativeValue::From<T>(static_cast<T>(I + 1))...};
     Sink sink;
-    auto b = bind(s, sink, reinterpret_cast<void*>(&spill_target<T, I...>));
+    auto b = bind(s, sink, reinterpret_cast<void*>([] {
+        static_assert(sizeof...(I) == 32);
+        if constexpr (std::is_same_v<T, std::int64_t>) return fixture_targets().spill_gp;
+        else { static_assert(std::is_same_v<T, double>); return fixture_targets().spill_sse; }
+    }()));
     auto result = b->Call(values.data(), values.size());
     assert(result && result.value.Get<T>() == static_cast<T>(11440)); // sum of squares 1..32
     retire(b);
 }
 static void queued_remove_and_destroy_refusal() {
     AbiSignature s; s.parameters = {{"i32"}}; s.returns = {"i32"}; Sink sink;
-    auto b = bind(s, sink, reinterpret_cast<void*>(&identity<std::int32_t>));
+    auto b = bind(s, sink, reinterpret_cast<void*>(identity_target<std::int32_t>()));
     const pid_t child = fork(); assert(child >= 0);
     if (child == 0) { std::set_terminate([] { _exit(86); }); b.reset(); _exit(0); }
     int status = 0; assert(waitpid(child, &status, 0) == child);
@@ -164,7 +181,7 @@ static void queued_remove_and_destroy_refusal() {
         using Checked = S2CheckedFunction<std::int32_t, std::int32_t>;
         using Callback = KHook::Return<std::int32_t>(*)(std::int32_t);
         queued = std::make_unique<Checked>(static_cast<Callback>(nullptr), static_cast<Callback>(nullptr));
-        auto receipt = queued->Configure(reinterpret_cast<void*>(&identity<std::int32_t>));
+        auto receipt = queued->Configure(checked_target(reinterpret_cast<void*>(identity_target<std::int32_t>())));
         assert(receipt.Accepted() && receipt.state == S2HookState::Pending);
         queued->BeginRemove(); queued->BeginRemove();
         assert(queued->RemovalComplete());
@@ -172,10 +189,9 @@ static void queued_remove_and_destroy_refusal() {
     auto value = NativeValue::From<std::int32_t>(17); auto r = b->Call(&value, 1);
     assert(r && r.value.Get<std::int32_t>() == 17); queued.reset(); retire(b);
 }
-__attribute__((noinline)) static std::uint8_t noncanonical(std::uint8_t value) { ++original_calls; return value + 2; }
 static void reject_noncanonical_output() {
     AbiSignature s; s.parameters = {{"u8", "bool"}}; s.returns = {"u8", "bool"}; Sink sink;
-    auto b = bind(s, sink, reinterpret_cast<void*>(&noncanonical));
+    auto b = bind(s, sink, reinterpret_cast<void*>(fixture_targets().noncanonical));
     auto input = NativeValue::From<std::uint8_t>(0);
     auto result = b->Call(&input, 1);
     assert(!result && result.error.find("noncanonical u8 return") != std::string::npos);
@@ -197,7 +213,7 @@ void TestInvokeReturned(RuntimeBinding* binding) { if (invoke_returned) invoke_r
 static void return_phase_lifetime(bool outbound) {
     AbiSignature signature; signature.parameters = {{"u8", "bool"}}; signature.returns = {"u8", "bool"};
     Sink sink;
-    auto binding = bind(signature, sink, reinterpret_cast<void*>(&identity<bool>));
+    auto binding = bind(signature, sink, reinterpret_cast<void*>(identity_target<bool>()));
     sink.dispatch = [&](DispatchFrame& frame) { if (frame.phase == Phase::Pre) binding->BeginRemove(); };
     std::mutex mutex; std::condition_variable condition; bool unlocked = false, resume = false, invoke_done = false, resume_invoke = false;
     std::thread::id outbound_thread;
@@ -221,7 +237,7 @@ static void return_phase_lifetime(bool outbound) {
             auto input = NativeValue::From<std::uint8_t>(1);
             const auto returned = binding->Call(&input, 1); assert(returned);
             result = returned.value.Get<std::uint8_t>() == 1;
-        } else { auto volatile target = &identity<bool>; result = target(true); }
+        } else { auto volatile target = identity_target<bool>(); result = target(true); }
     });
     {
         std::unique_lock<std::mutex> lock(mutex);
@@ -259,22 +275,17 @@ static void return_phase_lifetime(bool outbound) {
     retire(binding);
     std::cout << "PASS return phase held across both provider acknowledgements; outbound=" << outbound << " caller finished before reclamation\n";
 }
-__attribute__((noinline)) static std::int32_t detached_nested_target(std::int32_t value) {
-    ++original_calls;
-    auto volatile next=&identity<std::int32_t>;
-    return next(value)+1;
-}
 static void completed_detachment_allows_nested_calls() {
     AbiSignature signature;signature.parameters={{"i32"}};signature.returns={"i32"};
     Sink detached_sink, hooked_sink;
-    auto detached=bind(signature,detached_sink,reinterpret_cast<void*>(&detached_nested_target));
+    auto detached=bind(signature,detached_sink,reinterpret_cast<void*>(fixture_targets().detached_nested));
     detached->BeginRemove();
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
     while (!detached->RemovalComplete() && std::chrono::steady_clock::now()<deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     assert(detached->RemovalComplete() && detached->Receipt().state==S2HookState::Removed);
     assert(S2Hook_DrainRetirement());
-    auto hooked=bind(signature,hooked_sink,reinterpret_cast<void*>(&identity<std::int32_t>));
+    auto hooked=bind(signature,hooked_sink,reinterpret_cast<void*>(identity_target<std::int32_t>()));
     int nested_calls=0;
     hooked_sink.dispatch=[&](DispatchFrame& frame) {
         if (frame.phase!=Phase::Pre || frame.arguments[0].Get<std::int32_t>()!=1) return;
@@ -324,7 +335,7 @@ static void recall_suppression_nested() {
             if (mode == 2) assert(f.result.Get<std::int32_t>() == 79);
         }
     };
-    auto b = bind(s, sink, reinterpret_cast<void*>(&identity<std::int32_t>)); current = b.get();
+    auto b = bind(s, sink, reinterpret_cast<void*>(identity_target<std::int32_t>())); current = b.get();
     auto input = NativeValue::From<std::int32_t>(8);
     mode = 1; auto mutated = b->Call(&input, 1); assert(mutated && mutated.value.Get<std::int32_t>() == 41);
     const auto before = original_calls;
@@ -338,21 +349,13 @@ static void recall_suppression_nested() {
         if (f.phase == Phase::Pre) f.action = KHook::Action::Supersede;
         else assert(f.original_skipped);
     };
-    auto v = bind(s, vs, reinterpret_cast<void*>(&void_target));
+    auto v = bind(s, vs, reinterpret_cast<void*>(fixture_targets().void_target));
     auto old = original_calls; assert(v->Call(&input, 1)); assert(original_calls == old); retire(v);
 }
 static void receiver_spills_novel() {
     AbiSignature s; s.receiver = "entity"; s.parameters = {{"i32"}}; s.returns = {"i32"};
     S2FnMemberFixture object{12, &original_calls}; Sink sink;
-    const auto member_target = s2fn_member_fixture_target();
-    Dl_info target_image{}, provider_image{};
-    assert(dladdr(member_target, &target_image) != 0);
-    assert(dladdr(reinterpret_cast<void*>(&KHook::Shutdown), &provider_image) != 0);
-    // Stock SafetyHook temporarily makes the target page RW. Keeping the target
-    // in its own DSO prevents a helper needed to install it sharing that NX page.
-    assert(target_image.dli_fbase != provider_image.dli_fbase);
-    std::cout << "member-target-module=" << target_image.dli_fname
-              << " provider-module=" << provider_image.dli_fname << "\n";
+    const auto member_target = fixture_targets().member;
     sink.dispatch = [&](DispatchFrame& f) { assert(f.receiver.Get<void*>() == &object); };
     auto b = bind(s, sink, member_target);
     NativeValue args[] = {NativeValue::From(&object), NativeValue::From<std::int32_t>(5)};
@@ -369,10 +372,10 @@ static void receiver_spills_novel() {
     }
     for (int x = 15; x <= 17; ++x) { s.parameters.push_back({"f64"}); values.push_back(NativeValue::From<double>(x)); }
     Sink mixed_sink;
-    auto m = bind(s, mixed_sink, reinterpret_cast<void*>(&mixed));
+    auto m = bind(s, mixed_sink, reinterpret_cast<void*>(fixture_targets().mixed));
     result = m->Call(values.data(), values.size()); assert(result && result.value.Get<double>() == 1785.0); retire(m);
     s = {}; s.returns = {"f32"}; s.parameters = {{"u32"}, {"f32"}, {"ptr"}, {"u64"}};
-    Sink ns; auto n = bind(s, ns, reinterpret_cast<void*>(&novel));
+    Sink ns; auto n = bind(s, ns, reinterpret_cast<void*>(fixture_targets().novel));
     NativeValue nv[] = {NativeValue::From<std::uint32_t>(2), NativeValue::From<float>(1.25f), NativeValue::From(&object), NativeValue::From<std::uint64_t>(4)};
     auto nr = n->Call(nv, 4); assert(nr && nr.value.Get<float>() == 10.25f); retire(n);
 }
@@ -394,7 +397,7 @@ extern "C" int s2fn_probe_create(BridgeCallback callback) {
             f.action = KHook::Action::Supersede; f.result = NativeValue::From(output);
         }
     };
-    bridge_binding = bind(s, bridge_sink, reinterpret_cast<void*>(&identity<std::int32_t>));
+    bridge_binding = bind(s, bridge_sink, reinterpret_cast<void*>(identity_target<std::int32_t>()));
     return bridge_binding ? 1 : 0;
 }
 extern "C" int s2fn_probe_call(std::uint64_t owner, std::int32_t input, std::int32_t* output) {
@@ -411,9 +414,9 @@ extern "C" int s2fn_probe_remove() {
 static void lazy_target_lifecycle() {
     Sink sink; AbiSignature s; s.parameters={{"i32"}}; s.returns={"i32"};
     auto made=RuntimeBinding::Create(s,sink); assert(made); auto& b=made.value;
-    auto address=reinterpret_cast<void*>(&identity<std::int32_t>);
+    auto address=checked_target(reinterpret_cast<void*>(identity_target<std::int32_t>()));
     assert(b->BindTarget(address).empty());
-    assert(!b->BindTarget(reinterpret_cast<void*>(&void_target)).empty());
+    assert(!b->BindTarget(reinterpret_cast<void*>(fixture_targets().void_target)).empty());
     auto value=NativeValue::From<std::int32_t>(42);
     assert(b->Call(&value,1).value.Get<std::int32_t>()==42 && sink.pre==0);
     S2Hook_SetLifecycle(S2HookLifecycle::Retiring);
@@ -474,6 +477,7 @@ int main(int argc, char** argv) {
 #endif
     signatures();
 #ifndef S2FN_VALIDATION_ONLY
+    (void)fixture_targets();
     if (argc == 2 && std::string(argv[1]) == "--peers") {
         extern void s2fn_peer_fixtures(); s2fn_peer_fixtures();
     } else stock_tests();

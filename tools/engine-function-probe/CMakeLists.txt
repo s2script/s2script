@@ -31,13 +31,17 @@ add_library(engine_function_adapter STATIC EXCLUDE_FROM_ALL "${ROOT}/shim/src/en
 target_compile_definitions(engine_function_adapter PUBLIC S2FN_TESTING)
 target_include_directories(engine_function_adapter PUBLIC "${ROOT}/shim/src")
 target_link_libraries(engine_function_adapter PUBLIC engine_function_stock_provider PRIVATE s2_libffi)
-# A real member target must not share executable pages with provider/std::function
+# Native targets must not share executable pages with provider/std::function
 # helpers: stock SafetyHook removes execute permission while patching its page.
-# Hide every symbol except the address accessor; never link a provider here.
+# Hide every symbol except the fixture accessors; never link a provider here.
 add_library(engine_function_member_fixture SHARED EXCLUDE_FROM_ALL
     "${ROOT}/shim/tests/engine_function_member_fixture.cpp")
 target_include_directories(engine_function_member_fixture PRIVATE "${KHOOK}/include")
-target_compile_options(engine_function_member_fixture PRIVATE -fvisibility=hidden -fno-gnu-unique)
+target_compile_options(engine_function_member_fixture PRIVATE -fvisibility=hidden -fvisibility-inlines-hidden -fno-gnu-unique)
+add_executable(engine_function_fixture_layout_test EXCLUDE_FROM_ALL
+    "${ROOT}/shim/tests/engine_function_fixture_layout_test.cpp")
+target_link_libraries(engine_function_fixture_layout_test PRIVATE engine_function_member_fixture ${CMAKE_DL_LIBS})
+target_compile_options(engine_function_fixture_layout_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 # Static adapter headers contain ffi_cif, so each direct consumer also needs the
 # private dependency's headers; it is never a runtime DT_NEEDED dependency.
 foreach(target engine_function_abi_test engine_function_v8_bridge)
@@ -48,6 +52,7 @@ foreach(target engine_function_abi_test engine_function_v8_bridge)
         target_compile_definitions(${target} PRIVATE S2FN_NO_MAIN)
     endif()
     target_link_libraries(${target} PRIVATE engine_function_adapter s2_libffi engine_function_member_fixture ${CMAKE_DL_LIBS})
+    target_include_directories(${target} PRIVATE "${ROOT}/shim/tests")
     target_link_options(${target} PRIVATE "-Wl,--exclude-libs,ALL" "-Wl,--wrap=ffi_closure_alloc" "-Wl,--wrap=ffi_closure_free")
     target_compile_options(${target} PRIVATE -UNDEBUG -Wall -Wextra)
 endforeach()

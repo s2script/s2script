@@ -1,12 +1,33 @@
 // Test-only independent typed KHook peer. This fixture is linked into the stock
 // provider executable; it is not a second production provider or an ABI thunk.
 #include "engine_function_abi.h"
+#include "engine_function_fixture_guard.h"
 #include <cassert>
 #include <chrono>
 #include <thread>
 #include <iostream>
 using namespace s2fn;
 namespace {
+__attribute__((noinline)) static bool local_dummy_target(bool value) { return value; }
+static S2FnFixtureBoundary fixture_boundary() {
+    return {reinterpret_cast<const void*>(&s2fn_fixture_targets),
+        reinterpret_cast<const void*>(&KHook::Shutdown), reinterpret_cast<const void*>(&local_dummy_target)};
+}
+static const S2FnFixtureTargets& fixture_targets() {
+    static const auto targets = [] {
+        const auto boundary = fixture_boundary();
+        assert(!boundary.Accepts(reinterpret_cast<const void*>(&local_dummy_target)));
+        auto resolved = s2fn_fixture_targets();
+        S2FnRequireFixtureInventory(resolved, boundary);
+        return resolved;
+    }();
+    return targets;
+}
+static void* checked_target(void* target) {
+    (void)fixture_targets();
+    fixture_boundary().Require("peer-hook-install", target);
+    return target;
+}
 template<class R, class... Args> struct Peer {
     KHook::HookID_t id = KHook::INVALID_HOOK;
     R override_value{}, observed{};
@@ -34,19 +55,12 @@ template<class R, class... Args> struct Peer {
         KHook::__internal__savereturnvalue(KHook::Return<R>{KHook::Action::Ignore, value}, true); return value;
     }
     void Install(void* target, unsigned stack) {
-        id = KHook::SetupHook(target, this, reinterpret_cast<void*>(&Removed), reinterpret_cast<void*>(&Pre),
+        id = KHook::SetupHook(checked_target(target), this, reinterpret_cast<void*>(&Removed), reinterpret_cast<void*>(&Pre),
             reinterpret_cast<void*>(&Post), reinterpret_cast<void*>(&MakeReturn), reinterpret_cast<void*>(&Original), stack, false);
         assert(id != KHook::INVALID_HOOK);
     }
     ~Peer() { if (id != KHook::INVALID_HOOK) KHook::RemoveHook(id, false); }
 };
-static volatile unsigned calls = 0;
-__attribute__((noinline)) bool boolean(bool value) { ++calls; return value; }
-__attribute__((noinline)) double mixed(std::int64_t a, double b, std::int64_t c, double d,
-    std::int64_t e, double f, std::int64_t g, double h, std::int64_t i, double j,
-    std::int64_t k, double l, std::int64_t m, double n, double o, double p, double q) {
-    ++calls; return a+b+c+d+e+f+g+h+i+j+k+l+m+n+o+p+q;
-}
 struct Observer : DispatchSink {
     bool suppress = false;
     NativeValue decision, expected;
@@ -68,14 +82,14 @@ template<class R, class... Args> void order(bool peer_first, AbiSignature signat
     sink.decision = NativeValue::From(suppressed_value);
     auto made = RuntimeBinding::Create(signature, sink); assert(made); auto b = std::move(made.value);
     if (peer_first) peer.Install(reinterpret_cast<void*>(target), b->Info().stack_bytes);
-    assert(b->Configure(reinterpret_cast<void*>(target)).Accepted());
+    assert(b->Configure(checked_target(reinterpret_cast<void*>(target))).Accepted());
     if (!peer_first) peer.Install(reinterpret_cast<void*>(target), b->Info().stack_bytes);
     auto r = b->Call(values.data(), values.size()); assert(r && r.value.Get<R>() == override_value);
     assert(peer.observed == override_value && !peer.skipped);
     if (signature.returns.native == "u8") for (std::size_t i = 1; i < r.value.bytes.size(); ++i) assert(r.value.bytes[i] == 0);
-    sink.suppress = true; sink.expected = sink.decision; const auto originals = calls;
+    sink.suppress = true; sink.expected = sink.decision; const auto originals = s2fn_fixture_peer_calls();
     r = b->Call(values.data(), values.size()); assert(r && r.value.Get<R>() == suppressed_value);
-    assert(calls == originals && peer.observed == suppressed_value && peer.skipped && sink.seen == 2);
+    assert(s2fn_fixture_peer_calls() == originals && peer.observed == suppressed_value && peer.skipped && sink.seen == 2);
     b->BeginRemove(); b->BeginRemove();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
     while (!b->RemovalComplete() && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -86,7 +100,7 @@ template<class R, class... Args> void order(bool peer_first, AbiSignature signat
     // peer observations must advance independently of the retired subscription.
     Observer second; second.width = sizeof(R); second.expected = NativeValue::From(override_value);
     auto next = RuntimeBinding::Create(signature, second); assert(next);
-    assert(next.value->Configure(reinterpret_cast<void*>(target)).Accepted());
+    assert(next.value->Configure(checked_target(reinterpret_cast<void*>(target))).Accepted());
     r = next.value->Call(values.data(), values.size()); assert(r && r.value.Get<R>() == override_value);
     assert(peer.observations == 3 && sink.seen == 2);
     next.value->BeginRemove();
@@ -99,13 +113,13 @@ template<class R, class... Args> void order(bool peer_first, AbiSignature signat
 void s2fn_peer_fixtures() {
     for (bool first : {true, false}) {
         AbiSignature s; s.parameters = {{"u8", "bool"}}; s.returns = {"u8", "bool"};
-        order(first, s, &boolean, {NativeValue::From<bool>(false)}, true, false);
+        order(first, s, fixture_targets().peer_boolean, {NativeValue::From<bool>(false)}, true, false);
         s = {}; s.returns = {"f64"}; std::vector<NativeValue> v;
         for (int i = 1; i <= 14; ++i) {
             s.parameters.push_back({i % 2 ? "i64" : "f64"});
             v.push_back(i % 2 ? NativeValue::From<std::int64_t>(i) : NativeValue::From<double>(i));
         }
         for (int i = 15; i <= 17; ++i) { s.parameters.push_back({"f64"}); v.push_back(NativeValue::From<double>(i)); }
-        order(first, s, &mixed, v, 998.5, -13.25);
+        order(first, s, fixture_targets().peer_mixed, v, 998.5, -13.25);
     }
 }
