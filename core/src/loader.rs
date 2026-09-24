@@ -538,7 +538,7 @@ impl RetainedLedger {
         usage.high_water_items = usage.high_water_items.max(usage.items);
         usage.high_water_bytes = usage.high_water_bytes.max(usage.bytes);
         self.usage.set(usage);
-        Some(RetainedLease { ledger: self.clone(), bytes })
+        Some(RetainedLease { ledger: self.clone(), bytes, prepared_item: true })
     }
 
     fn metrics(&self) -> RetainedUsage { self.usage.get() }
@@ -550,9 +550,19 @@ impl RetainedLedger {
     }
 }
 
-struct RetainedLease { ledger: RetainedLedger, bytes: usize }
+struct RetainedLease { ledger: RetainedLedger, bytes: usize, prepared_item: bool }
 
 impl RetainedLease {
+    /// Completed preparation retains its byte charge through active bindings, but no longer
+    /// occupies a queue item. Drop subsequently releases bytes only, exactly once.
+    fn into_active_bytes(mut self) -> Self {
+        let mut usage = self.ledger.usage.get();
+        usage.items -= usize::from(self.prepared_item);
+        self.ledger.usage.set(usage);
+        self.prepared_item = false;
+        self
+    }
+
     fn try_grow(&mut self, bytes: usize) -> bool {
         let mut usage = self.ledger.usage.get();
         if usage.bytes.saturating_add(bytes) > self.ledger.max_bytes {
@@ -572,7 +582,7 @@ impl Drop for RetainedLease {
     fn drop(&mut self) {
         let usage = self.ledger.usage.get();
         self.ledger.usage.set(RetainedUsage {
-            items: usage.items.saturating_sub(1),
+            items: usage.items.saturating_sub(usize::from(self.prepared_item)),
             bytes: usage.bytes.saturating_sub(self.bytes),
             ..usage
         });
@@ -629,6 +639,8 @@ impl LoaderDrainBudget {
 struct PreparedLoad {
     path: PathBuf,
     old_id: Option<String>,
+    // Accepted baseline before this candidate temporarily parks in WAITING.
+    baseline_stamp: Option<FileStamp>,
     prepared: PreparedPlugin,
     config: Option<ConfigSnapshot>,
     lease: RetainedLease,
@@ -974,6 +986,20 @@ fn refuse_prepared(path: &Path, prepared: &PreparedPlugin, reason: &str, old_id:
     commit_path(path, prepared.stamp, old_id.unwrap_or(&prepared.manifest.id));
 }
 
+/// Resource pressure is retryable: restore the accepted baseline even when WAITING temporarily
+/// committed the candidate stamp. Dropping the row releases its queue item and byte reservation.
+fn defer_prepared(row: &PreparedLoad, reason: &str) {
+    crate::v8host::log_warn(&format!("WARN: poll_plugins: {:?} retryable {reason}; baseline unchanged", row.path));
+    if let Some(stamp) = row.baseline_stamp {
+        commit_path(&row.path, stamp, row.old_id.as_deref().unwrap_or(&row.prepared.manifest.id));
+    } else {
+        FILE_STAMPS.with(|s| { s.borrow_mut().remove(&row.path); });
+        if row.old_id.is_none() {
+            WATCH_STATE.with(|w| { w.borrow_mut().remove(&row.path); });
+        }
+    }
+}
+
 fn handle_plugin(revision: u64, path: PathBuf, result: Result<PreparedPlugin, String>) {
     let expected = ACTIVE_BATCH.with(|b| b.borrow().as_ref().and_then(|b| b.pending.get(&path).copied()));
     if expected != Some(revision) { return; }
@@ -1006,7 +1032,9 @@ fn handle_plugin(revision: u64, path: PathBuf, result: Result<PreparedPlugin, St
     };
     ACTIVE_BATCH.with(|b| {
         let mut b = b.borrow_mut(); let b = b.as_mut().unwrap();
-        b.prepared.insert(path.clone(), PreparedLoad { path: path.clone(), old_id, prepared, config: None, lease });
+        b.prepared.insert(path.clone(), PreparedLoad { path: path.clone(), old_id,
+            baseline_stamp: FILE_STAMPS.with(|s| s.borrow().get(&path).copied()),
+            prepared, config: None, lease });
     });
     let needs_config = ACTIVE_BATCH.with(|b| b.borrow().as_ref().and_then(|b| b.prepared.get(&path))
         .is_some_and(|p| !p.prepared.manifest.config.is_empty()));
@@ -1279,7 +1307,7 @@ fn apply_prepared_budgeted(item: ApplyItem, mut drain_budget: Option<&mut Loader
         let weight = crate::engine_functions::registry::preparation_bytes(&candidate);
         if let Some(budget) = drain_budget.as_mut() { budget.bytes = budget.bytes.saturating_add(weight); }
         if !row.lease.try_grow(weight) {
-            refuse_prepared(&row.path, &row.prepared, "engine function preparation retained-byte budget exceeded", row.old_id.as_deref());
+            defer_prepared(&row, "engine function preparation retained-byte pressure");
             return;
         }
         match crate::engine_functions::registry::prepare_owner_with_grants(&id, candidate,
@@ -1304,7 +1332,7 @@ fn apply_prepared_budgeted(item: ApplyItem, mut drain_budget: Option<&mut Loader
         override_json,
     );
     if let Some(old_id) = row.old_id.as_deref() { crate::v8host::unload_plugin(old_id); }
-    if let Some(receipt) = receipt.as_mut() { receipt.retain(Rc::new(row.lease)); }
+    if let Some(receipt) = receipt.as_mut() { receipt.retain(Rc::new(row.lease.into_active_bytes())); }
     begin_load_prepared(&row.prepared, &cfg, &row.path, receipt);
 }
 
@@ -1928,6 +1956,7 @@ mod tests {
         PreparedLoad {
             path: PathBuf::from(format!("{}.s2sp", prepared.manifest.id)),
             old_id: old_id.map(str::to_string),
+            baseline_stamp: FILE_STAMPS.with(|s| s.borrow().get(&PathBuf::from(format!("{}.s2sp", prepared.manifest.id))).copied()),
             prepared,
             config: None,
             lease: ledger.try_acquire(bytes).expect("test payload fits"),
@@ -2876,7 +2905,7 @@ mod tests {
         let ledger=RetainedLedger::new(4,1024*1024);
         apply_function(function_row(&ledger,false, |_|{}, FUNCTION_JS));
         let old=crate::v8host::plugin_generation("@demo/fire");
-        let baseline=ledger.usage(); assert_eq!(baseline.0,1,"{:?}",crate::v8host::frame_tests::LOG.lock().unwrap()); assert!(baseline.1>1024);
+        let baseline=ledger.usage(); assert_eq!(baseline.0,0,"{:?}",crate::v8host::frame_tests::LOG.lock().unwrap()); assert!(baseline.1>1024);
         EXPECT_RUNNING.with(|n|n.set(old));
         // First candidate target succeeds, later required target fails: acquired refs must roll back.
         apply_function(function_row(&ledger,true, |b| {let mut later=b["functions"][0].clone();later["localName"]="later".into();later["canonicalId"]="@demo/fire::later".into();later["target"]["pattern"]="FF".into();b["functions"].as_array_mut().unwrap().push(later);}, FUNCTION_JS));
@@ -2910,7 +2939,7 @@ mod tests {
             let script="const f=require('@s2script/sdk/unsafe').Engine.function('fire');if(f.available || !f.status.reason || 'call' in f)throw Error('optional');module.exports.OnPluginStart=()=>{};";
             apply_function(function_row(&ledger,false,|b|{b["functions"][0]["requirement"]="optional".into();b["functions"][0]["target"]["pattern"]="FF".into();},script));
             assert_eq!(crate::v8host::plugin_phase("@demo/fire"),Some(crate::plugin::Phase::Active));
-            assert_eq!(ledger.usage().0,1);
+            assert_eq!(ledger.usage().0,0);
             end_function_loader(&ledger);
         }
     }
@@ -2943,7 +2972,7 @@ mod tests {
         assert_ne!(crate::v8host::plugin_generation("@demo/fire"),old);
         assert_eq!(FUNCTION_TARGET_REFS.with(|r|r.borrow().clone()),HashMap::from([(66,1)]));
         crate::v8host::eval_in_context("@demo/fire","if(f.status.provenance.appliedOverrides.length!==1)throw Error('override provenance');f.call();").unwrap();
-        assert_eq!(ledger.usage().0,1);
+        assert_eq!(ledger.usage().0,0);
         end_function_loader(&ledger);
     }
 
@@ -2989,6 +3018,147 @@ mod tests {
             crate::v8host::eval_in_context("@demo/fire","f.call();").unwrap();
         }
         end_function_loader(&ledger);
+    }
+
+
+    fn admission_fixture(tag: &str, max_items: usize, max_bytes: usize) -> (PathBuf, RetainedLedger) {
+        shutdown_worker();
+        start_function_loader();
+        load_permissions_from_str(r#"{"engine:calls":["@demo/fire","@demo/second"],"engine:hooks":["@demo/fire","@demo/second"]}"#).unwrap();
+        let root=std::env::temp_dir().join(format!("s2-function-admission-{tag}-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let ledger=RetainedLedger::new(max_items,max_bytes);
+        RETAINED_LEDGER.with(|slot|*slot.borrow_mut()=ledger.clone());
+        WORKER.with(|slot|*slot.borrow_mut()=Some(LoaderWorker::start(LoaderPolicy::default()).unwrap()));
+        (root,ledger)
+    }
+    fn write_function_archive(path: &Path, id: &str, version: &str, pattern: &str) {
+        write_function_archive_waiting(path, id, version, pattern, false);
+    }
+    fn write_function_archive_waiting(path: &Path, id: &str, version: &str, pattern: &str, waiting: bool) {
+        use crate::engine_functions::tests::{fixture,seal,summary};
+        let mut bundle=fixture();
+        bundle["ownerId"]=id.into();
+        bundle["functions"][0]["canonicalId"]=format!("{id}::fire").into();
+        bundle["functions"][0]["requirement"]="required".into();
+        bundle["functions"][0]["policy"]["surfaces"]=serde_json::json!(["call","pre"]);
+        bundle["functions"][0]["policy"]["suppression"]="generic".into();
+        bundle["functions"][0]["target"]["pattern"]=pattern.into();
+        seal(&mut bundle);
+        let mut summary=summary(&bundle);summary["functions"][0]["suppresses"]=true.into();
+        let mut manifest=serde_json::json!({"id":id,"version":version,"apiVersion":"3.x","permissions":["engine:calls","engine:hooks"],"engineFunctions":summary});
+        if waiting { manifest["pluginDependencies"]=serde_json::json!({"admission-gate":"1.x"}); }
+        let mut writer=zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name,text) in [("manifest.json",manifest.to_string()),("plugin.js",FUNCTION_JS.into()),("engine-functions.json",bundle.to_string())] {
+            writer.start_file(name,zip::write::FileOptions::default()).unwrap();
+            writer.write_all(text.as_bytes()).unwrap();
+        }
+        std::fs::write(path,writer.finish().unwrap().into_inner()).unwrap();
+    }
+    // Real file scan, archive worker preparation, handle_plugin admission and drain/apply.
+    // Returns the number of archives actually reconsidered, including budget refusals.
+    fn scan_function_admission(root: &Path) -> usize {
+        let revision=SCAN_REVISION.with(|r|{let next=r.get()+1;r.set(next);next});
+        handle_scan(revision,Ok(crate::loader_worker::scan_plugins(root,&LoaderPolicy::default()).unwrap()));
+        let mut count=0;
+        let deadline=Instant::now()+Duration::from_secs(3);
+        while ACTIVE_BATCH.with(|b|b.borrow().is_some()) {
+            if let Some(WorkerResult::Plugin {revision,path,prepared,..})=WORKER.with(|w|w.borrow().as_ref().unwrap().try_result()) {
+                assert!(prepared.is_ok(),"archive fixture rejected: {prepared:?}");
+                handle_plugin(revision,path,prepared);count+=1;
+            } else { assert!(Instant::now()<deadline,"worker preparation timed out"); std::thread::yield_now(); }
+        }
+        drain_ready(&mut LoaderDrainBudget::new(8,usize::MAX,Duration::from_secs(1)));
+        count
+    }
+    fn finish_admission_fixture(root: PathBuf, ledger: &RetainedLedger) {
+        end_function_loader(ledger);
+        shutdown_worker();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn engine_function_admission_live_bytes_do_not_hold_prepared_item_slots() {
+        let (root,ledger)=admission_fixture("slots",1,1024*1024);
+        let path=root.join("first.s2sp");
+        write_function_archive(&path,"@demo/fire","1","55");
+        assert_eq!(scan_function_admission(&root),1);
+        assert_eq!(crate::v8host::plugin_phase("@demo/fire"),Some(crate::plugin::Phase::Active));
+        let active_bytes=ledger.usage().1;
+        assert!(active_bytes>1024);
+        assert_eq!(ledger.usage().0,0,"completed preparation must return its queue item slot");
+        std::fs::write(root.join("ordinary.s2sp"),make_test_s2sp(r#"{"id":"ordinary","version":"1","apiVersion":"3.x"}"#,"module.exports.OnPluginStart=()=>{};")).unwrap();
+        assert_eq!(scan_function_admission(&root),1);
+        assert_eq!(crate::v8host::plugin_phase("ordinary"),Some(crate::plugin::Phase::Active));
+        assert_eq!(ledger.usage(),(0,active_bytes));
+        write_function_archive(&root.join("second.s2sp"),"@demo/second","1","55");
+        assert_eq!(scan_function_admission(&root),1);
+        assert_eq!(crate::v8host::plugin_phase("@demo/second"),Some(crate::plugin::Phase::Active));
+        assert_eq!(ledger.usage().0,0);assert!(ledger.usage().1>active_bytes);
+        let before_reload=ledger.usage().1;
+        let old=crate::v8host::plugin_generation("@demo/fire");EXPECT_RUNNING.with(|n|n.set(old));
+        write_function_archive(&path,"@demo/fire","2","55");
+        assert_eq!(scan_function_admission(&root),1);
+        EXPECT_RUNNING.with(|n|n.set(0));
+        assert_ne!(crate::v8host::plugin_generation("@demo/fire"),old);
+        assert_eq!(ledger.usage(),(0,before_reload));
+        assert_eq!(FUNCTION_HOOK_REFS.with(Cell::get),2);
+        crate::v8host::eval_in_context("@demo/fire","f.call();").unwrap();
+        finish_admission_fixture(root,&ledger);
+    }
+    #[test]
+    fn engine_function_admission_pressure_retries_identical_archive_without_committing_stamp() {
+        for (reload, waiting) in [(false,false),(true,false),(false,true),(true,true)] {
+            let (root,ledger)=admission_fixture(&format!("retry-{reload}-{waiting}"),8,200_000);
+            let path=root.join("first.s2sp");
+            let old=if reload {
+                write_function_archive(&path,"@demo/fire","1","55");
+                assert_eq!(scan_function_admission(&root),1);
+                crate::v8host::plugin_generation("@demo/fire")
+            } else {0};
+            let accepted=FILE_STAMPS.with(|s|s.borrow().get(&path).copied());
+            let baseline=ledger.usage();
+            write_function_archive_waiting(&path,"@demo/fire","2","55",waiting);
+            let archive_stamp=crate::loader_worker::scan_plugins(&root,&LoaderPolicy::default()).unwrap()[0].1;
+            // Base archive admission fits, but the extra decoded/native preparation does not.
+            let competing=ledger.try_acquire(ledger.max_bytes-baseline.1-5000).unwrap();
+            EXPECT_RUNNING.with(|n|n.set(old));
+            assert_eq!(scan_function_admission(&root),1);
+            if waiting {
+                assert!(WAITING.with(|w|w.borrow().contains_key("@demo/fire")));
+                assert_eq!(FILE_STAMPS.with(|s|s.borrow().get(&path).copied()),Some(archive_stamp));
+                crate::v8host::set_plugin_publishes("gate-producer",HashMap::from([("admission-gate".to_string(),PublishDecl {
+                    contract:None,version:"1".into(),types_sha256:String::new(),
+                })]));
+                crate::v8host::frame_tests::load_body("gate-producer",r#"require('@s2script/interfaces').publishInterface('admission-gate', {});"#,"{}");
+                start_unblocked_waiters();
+                drain_ready(&mut LoaderDrainBudget::new(8,usize::MAX,Duration::from_secs(1)));
+                assert!(WAITING.with(|w|w.borrow().is_empty()));
+            }
+            assert!(crate::v8host::frame_tests::LOG.lock().unwrap().iter().any(|message|
+                message.contains("retryable engine function preparation retained-byte pressure")),
+                "test must reach decoded/native growth refusal after base archive admission");
+            assert_eq!(FILE_STAMPS.with(|s|s.borrow().get(&path).copied()),accepted,"temporary pressure must preserve the accepted baseline");
+            assert!(!crate::v8host::is_failed("@demo/fire"),"pressure is not a semantic load failure");
+            assert_eq!(crate::v8host::plugin_generation("@demo/fire"),old);
+            if reload {
+                assert_eq!(FUNCTION_HOOK_REFS.with(Cell::get),1);
+                crate::v8host::eval_in_context("@demo/fire","f.call();if(!f.available)throw Error('old binding');").unwrap();
+            }
+            drop(competing);assert_eq!(ledger.usage(),baseline);
+            assert_eq!(scan_function_admission(&root),1,"unchanged archive must retry after pressure clears");
+            EXPECT_RUNNING.with(|n|n.set(0));
+            assert_eq!(FILE_STAMPS.with(|s|s.borrow().get(&path).copied()),Some(archive_stamp));
+            assert_ne!(crate::v8host::plugin_generation("@demo/fire"),old);
+            assert_eq!(ledger.usage().0,0);
+            assert_eq!(crate::v8host::plugin_phase("@demo/fire"),Some(crate::plugin::Phase::Active));
+            // Semantic native resolution failure is still terminal for the same archive stamp.
+            write_function_archive(&path,"@demo/fire","3","FF");
+            let good=crate::v8host::plugin_generation("@demo/fire");
+            assert_eq!(scan_function_admission(&root),1);
+            assert_eq!(crate::v8host::plugin_generation("@demo/fire"),good);
+            assert_eq!(scan_function_admission(&root),0);
+            finish_admission_fixture(root,&ledger);
+        }
     }
 
 }
