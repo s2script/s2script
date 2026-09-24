@@ -20,7 +20,7 @@ fn install_as(id: &str, source: &str) {
         "throw Error('mutated')",
     )
     .unwrap();
-    crate::game_packages::commit(handle, "{}", "[]").unwrap();
+    crate::game_packages::commit(handle, "{}", b"GCR1\0\0\0\0\0\0\0\0").unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
 extern "C" fn logger(_: c_int, _: *const c_char) {}
@@ -115,7 +115,7 @@ fn selected_real_package_bootstraps_root_and_runtime_ui_exports() {
         String::from_utf8_lossy(&result.stderr)
     );
     let handle = crate::game_packages::select(&root, "source2", "csgo", "linuxsteamrt64").unwrap();
-    crate::game_packages::commit(handle, "{}", "[]").unwrap();
+    crate::game_packages::commit(handle, "{}", b"GCR1\0\0\0\0\0\0\0\0").unwrap();
     load_plugin_js("real-package", "exports.OnPluginStart=()=>{};", "{}");
     assert!(
         !is_failed("real-package"),

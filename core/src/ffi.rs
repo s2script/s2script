@@ -831,7 +831,7 @@ pub extern "C" fn s2script_core_copy_game_package(
     })
     .unwrap_or(-1)
 }
-/// Commit the captured native merge and its applied custom-path provenance in one transaction.
+/// Commit the captured native merge and private GCR1 operator-repair snapshot in one transaction.
 #[no_mangle]
 pub extern "C" fn s2script_core_commit_game_package(
     handle: u64,
@@ -845,16 +845,14 @@ pub extern "C" fn s2script_core_commit_game_package(
             if merged.is_null()
                 || custom.is_null()
                 || merged_len > 4 * 1024 * 1024
-                || custom_len > 65536
+                || custom_len > crate::game_packages::repair_snapshot_max_packet()
             {
                 return Err("invalid merged package buffer".into());
             }
             let merged =
                 std::str::from_utf8(unsafe { std::slice::from_raw_parts(merged, merged_len) })
                     .map_err(|_| "invalid merged UTF-8")?;
-            let custom =
-                std::str::from_utf8(unsafe { std::slice::from_raw_parts(custom, custom_len) })
-                    .map_err(|_| "invalid provenance UTF-8")?;
+            let custom = unsafe { std::slice::from_raw_parts(custom, custom_len) };
             crate::game_packages::commit(handle, merged, custom)
         })();
         match result {

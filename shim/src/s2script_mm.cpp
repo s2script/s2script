@@ -5022,11 +5022,14 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 mergedData["offsets"] = candidate.offsets;
                 mergedData["keys"] = candidate.keys;
                 const std::string merged = mergedData.dump();
-                const std::string custom = nlohmann::json(candidate.packageProvenance.customPaths).dump();
+                const std::string custom = EncodePackageRepairSnapshot(candidate.packageProvenance);
                 if (s2script_core_commit_game_package(handle,
                         reinterpret_cast<const uint8_t*>(merged.data()), merged.size(),
                         reinterpret_cast<const uint8_t*>(custom.data()), custom.size()) != 1)
                     throw std::runtime_error("selected package commit failed");
+                // Rust owns the bounded repair snapshot under the selected-package receipt now.
+                // Keep the legacy banner/path diagnostics without a second resident byte copy.
+                candidate.packageProvenance.repairs.clear();
                 s_gdGame = std::move(candidate);
                 s_gamePackageOwner = owner;
                 s_gamePackageId = info.at("id").get<std::string>();

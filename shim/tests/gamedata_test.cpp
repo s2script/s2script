@@ -1163,17 +1163,78 @@ static void test_package_custom_and_diagnostics() {
           gc.packageProvenance.customPaths == std::vector<std::string>({"custom/10-first.jsonc","custom/20-late.jsonc"}) &&
           gc.packageProvenance.appliedPaths == gc.filesLoaded,
           "diagnostics and provenance retain custom ordering");
+    const auto& repairs = gc.packageProvenance.repairs;
+    CHECK(repairs.size() == 2 && repairs[0].path == "custom/10-first.jsonc" &&
+          repairs[0].bytes.find("// JSONC operator repair") == 0 &&
+          repairs[1].path == "custom/20-late.jsonc",
+          "operator bytes, including comments and whitespace, are captured in lexical order");
+    CHECK(repairs[0].effects.size() == 2 && repairs[0].effects[0].section == "signatures" &&
+          repairs[0].effects[0].name == "S" && repairs[0].effects[0].validator == "carried" &&
+          repairs[1].effects[0].validator == "disarmed",
+          "per-file effects attribute validator carry and disarm to their actual source");
+    const auto captured = EncodePackageRepairSnapshot(gc.packageProvenance);
+    put(root.path / "cs2" / "custom" / "10-first.jsonc", R"({"keys":{"K":"changed later"}})");
+    CHECK(EncodePackageRepairSnapshot(gc.packageProvenance) == captured && gc.keys.at("K") == "fixed",
+          "a later disk change cannot alter the captured snapshot or merged decision");
+    put(root.path / "cs2" / "custom" / "10-first.jsonc", repairs[0].bytes);
     put(root.path / "cs2" / "custom" / "30-bad.jsonc", R"({"keys":)");
     const auto broken = loadBundle(b, root, error);
     CHECK(!error.empty() && error.find("30-bad.jsonc") != std::string::npos &&
           broken.filesFailed.empty() && broken.keys.at("K") == "fixed",
           "bad custom file is named and retains shipped and earlier custom entries");
+    CHECK(broken.packageProvenance.repairs.back().path == "custom/30-bad.jsonc" &&
+          broken.packageProvenance.repairs.back().result == "parse-error" &&
+          broken.packageProvenance.repairs.back().bytes == R"({"keys":)" &&
+          broken.packageProvenance.customPaths.size() == 2,
+          "malformed exact bytes remain attributable without being called an applied repair");
     fs::remove(root.path / "cs2" / "custom" / "30-bad.jsonc");
     put(root.path / "cs2" / "custom" / "30-entry.jsonc", R"({"keys":{"Bad":3,"Good":"ok"}})");
     const auto malformed = loadBundle(b, root, error);
     CHECK(!error.empty() && error.find("keys.Bad") != std::string::npos &&
           malformed.keys.at("Good") == "ok" && malformed.filesFailed.empty(),
           "malformed custom entry degrades by name without failing package");
+    CHECK(malformed.packageProvenance.repairs.back().result == "type-error" &&
+          malformed.packageProvenance.repairs.back().effects.size() == 2 &&
+          malformed.packageProvenance.repairs.back().effects[0].name == "Bad" &&
+          malformed.packageProvenance.repairs.back().effects[0].result == "invalid" &&
+          malformed.packageProvenance.repairs.back().effects[1].name == "Good" &&
+          malformed.packageProvenance.repairs.back().effects[1].result == "applied",
+          "malformed entry and applied sibling retain separate section/name effects");
+}
+
+static void test_package_custom_capture_limits() {
+    TempRoot root;
+    const auto b = bundle("cs2", nlohmann::json::array({
+        embedded("master.gamedata.jsonc", {{"files", nlohmann::json::array({{{"file","a.jsonc"}}})}}),
+        embedded("a.jsonc", {{"keys", {{"K","old"}}}})
+    }));
+    std::string error;
+    auto gc = loadBundle(b, root, error);
+    CHECK(error.empty() && gc.packageProvenance.repairs.empty() &&
+          EncodePackageRepairSnapshot(gc.packageProvenance).size() == 12,
+          "package without custom files captures an empty versioned snapshot");
+    put(root.path / "cs2" / "custom" / "a.jsonc", std::string(256 * 1024 + 1, 'x'));
+    gc = loadBundle(b, root, error);
+    CHECK(!gc.filesFailed.empty() && error.find("256 KiB") != std::string::npos,
+          "oversized custom bytes abort selected snapshot before parsing");
+    fs::remove(root.path / "cs2" / "custom" / "a.jsonc");
+    for (int i = 0; i < 65; ++i)
+        put(root.path / "cs2" / "custom" / (std::to_string(100 + i) + ".jsonc"), "{}");
+    gc = loadBundle(b, root, error);
+    CHECK(!gc.filesFailed.empty() && error.find("count exceeds 64") != std::string::npos,
+          "custom file count is refused before unbounded capture");
+    fs::remove_all(root.path / "cs2" / "custom");
+    put(root.path / "cs2" / "custom" / (std::string(235, 'x') + ".jsonc"), "{}");
+    gc = loadBundle(b, root, error);
+    CHECK(!gc.filesFailed.empty() && error.find("path invalid") != std::string::npos,
+          "overlong lexical custom path refuses the selected snapshot");
+    fs::remove_all(root.path / "cs2" / "custom");
+    const std::string large = std::string("{\"keys\":{\"K\":\"") + std::string(256 * 1024 - 18, 'x') + "\"}}";
+    for (int i = 0; i < 17; ++i)
+        put(root.path / "cs2" / "custom" / (std::to_string(100 + i) + ".jsonc"), large);
+    gc = loadBundle(b, root, error);
+    CHECK(!gc.filesFailed.empty() && error.find("aggregate exceeds 4 MiB") != std::string::npos,
+          "aggregate raw-byte cap stops further custom merge");
 }
 
 int main() {
@@ -1181,6 +1242,7 @@ int main() {
     test_package_bundle_envelope_failures();
     test_package_bundle_nesting_limit();
     test_package_custom_and_diagnostics();
+    test_package_custom_capture_limits();
     test_master_selects_by_condition();
     test_array_order_is_apply_order();
     test_condition_accepts_an_array();

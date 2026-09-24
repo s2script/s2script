@@ -59,7 +59,21 @@ struct PackageGamedataProvenance {
     std::vector<std::string> appliedPaths; // selected shipped, then successfully applied custom
     std::vector<std::string> shippedPaths;
     std::vector<std::string> customPaths;
+    struct Effect {
+        std::string section, name, platform, result, validator, error;
+    };
+    struct Repair {
+        std::string path; // lexical custom/<filename>, never a resolved filesystem path
+        std::string bytes; // exact bounded bytes parsed by this merge
+        std::string result, error;
+        std::vector<Effect> effects;
+    };
+    std::vector<Repair> repairs;
 };
+
+// Private v1 length-prefixed binary commit payload. Rust validates every bound and identity.
+// Throws if the captured metadata cannot be represented within its fixed budget.
+std::string EncodePackageRepairSnapshot(const PackageGamedataProvenance& provenance);
 
 // One owner's merged view, for one platform.
 struct GameConfig {

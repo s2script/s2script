@@ -243,8 +243,9 @@ uint64_t s2script_core_select_game_package(const char* addon_root, const char* e
  * Null+0 queries size; exact copied bytes have no trailing NUL. -1 invalid, -2 short. */
 int64_t s2script_core_copy_game_package(uint64_t handle, uint32_t member,
                                       uint8_t* destination, size_t capacity);
+/* custom_snapshot is the private, bounded GCR1 capture of exact operator file bytes/effects. */
 int s2script_core_commit_game_package(uint64_t handle, const uint8_t* merged, size_t merged_len,
-                                      const uint8_t* custom_paths, size_t custom_paths_len);
+                                      const uint8_t* custom_snapshot, size_t custom_snapshot_len);
 int s2script_core_abort_game_package(uint64_t handle);
 /* Record a bounded UTF-8 native copy/merge failure on a pending handle before abort. */
 int s2script_core_fail_game_package(uint64_t handle, const uint8_t* reason, size_t reason_len);

@@ -1,4 +1,5 @@
 mod manifest;
+mod repair_snapshot;
 #[cfg(test)]
 mod tests;
 
@@ -24,6 +25,7 @@ struct RegisteredPackage {
     _receipt: PreparedPackageReceipt,
     _retention: Rc<RefCell<crate::loader::RetainedLease>>,
     _merged_data: Box<str>,
+    _repair_snapshot: repair_snapshot::Snapshot,
     status: Vec<u8>,
 }
 struct PendingPackage {
@@ -39,6 +41,8 @@ thread_local! {
     static STATUS: RefCell<Vec<u8>> = RefCell::new(b"{\"code\":\"unselected\"}".to_vec());
 }
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) const fn repair_snapshot_max_packet() -> usize { repair_snapshot::MAX_PACKET }
 
 fn metadata(selection: &PreparedSelection) -> Value {
     let mut value = json!({"code":"prepared", "id":selection.id, "gamedataOwner":selection.gamedata_owner,
@@ -142,15 +146,18 @@ pub(crate) fn select(root: &Path, engine: &str, game: &str, platform: &str) -> R
     } else {
         (None, 0, 0)
     };
-    // Commit temporarily clones the selection and snapshot. The fixed headroom admits the
-    // bounded merged legacy data and custom-path/status strings kept after publication.
+    // Commit temporarily clones selection and function overrides. GCR1 adds one inbound
+    // packet, its decoded owned bytes/effects, and bounded status serialization. Reserve all
+    // of that at selection so a failed admission cannot publish any owner or source.
     let prepared_status = metadata(&selection).to_string();
     let charged = selection_storage(&selection).saturating_mul(2)
         .saturating_add(selection.bootstrap_bytes.len())
         .saturating_add(prepared_status.len().saturating_mul(2))
         .saturating_add(snapshot_bytes.saturating_mul(2))
         .saturating_add(preparation_bytes)
-        .saturating_add(4 * 1024 * 1024 + 65536 + 4096);
+        .saturating_add(4 * 1024 * 1024 + 4096)
+        .saturating_add(repair_snapshot::MAX_PACKET.saturating_mul(3))
+        .saturating_add(2 * 1024 * 1024);
     let retention = crate::loader::retain_game_package(charged)
         .ok_or("game package retained-byte admission unavailable")?;
     let handle = NEXT_HANDLE
@@ -198,7 +205,7 @@ pub(crate) fn abort(handle: u64) -> Result<(), String> {
         Ok(())
     })
 }
-pub(crate) fn commit(handle: u64, merged: &str, custom_paths: &str) -> Result<(), String> {
+pub(crate) fn commit(handle: u64, merged: &str, repair_bytes: &[u8]) -> Result<(), String> {
     if REGISTERED.with(|r| r.borrow().is_some()) {
         return Err("package already active".into());
     }
@@ -210,9 +217,10 @@ pub(crate) fn commit(handle: u64, merged: &str, custom_paths: &str) -> Result<()
                 .map(|p| (p.selection.clone(), p.overrides.clone(), p.retention.clone(), p.preparation_bytes))
         })
         .ok_or("stale selection handle")?;
-    if merged.len() > 4 * 1024 * 1024 || custom_paths.len() > 65536 {
+    if merged.len() > 4 * 1024 * 1024 || repair_bytes.len() > repair_snapshot::MAX_PACKET {
         return Err("merged package size limit".into());
     }
+    let repairs = repair_snapshot::decode(repair_bytes)?;
     let gd: Value = if merged.is_empty() {
         json!({})
     } else {
@@ -233,8 +241,6 @@ pub(crate) fn commit(handle: u64, merged: &str, custom_paths: &str) -> Result<()
             return Err(format!("invalid merged {name}"));
         }
     }
-    let custom: Vec<String> =
-        serde_json::from_str(custom_paths).map_err(|_| "invalid custom provenance")?;
     let owner = crate::gamedata_calls::reserved_owner_id(&selection.id);
     if crate::gamedata_calls::game_package_owner().is_some() {
         return Err("legacy package owner already active".into());
@@ -246,8 +252,12 @@ pub(crate) fn commit(handle: u64, merged: &str, custom_paths: &str) -> Result<()
     let mut info = metadata(&selection);
     info["code"] = json!("active");
     info["mergedSha256"] = json!(format!("{:x}", Sha256::digest(merged.as_bytes())));
-    info["customPaths"] = json!(custom);
+    info["customPaths"] = json!(&repairs.custom_paths);
+    info["operatorRepairs"] = repairs.status();
     let status = info.to_string().into_bytes();
+    if status.len() > 2 * 1024 * 1024 || repairs.retained_bytes() > repair_snapshot::MAX_PACKET * 2 {
+        return Err("repair snapshot retention/status size limit".into());
+    }
     // No public owner/source before every fallible preparation succeeds. Resolution failures are
     // descriptor-level unavailable entries. Hook reservations roll back if staging is dropped.
     let calls = crate::gamedata_calls::prepare_game_package(&owner, &gd);
@@ -281,6 +291,7 @@ pub(crate) fn commit(handle: u64, merged: &str, custom_paths: &str) -> Result<()
             _receipt: receipt,
             _retention: retention.clone(),
             _merged_data: merged.into(),
+            _repair_snapshot: repairs,
             status,
         })
     });

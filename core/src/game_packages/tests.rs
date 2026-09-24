@@ -192,7 +192,7 @@ fn synthetic_package_selects_and_uses_an_ordinary_function() {
     crate::v8host::set_engine_ops(Some(ops));
     TEST_TARGET_CALLS.with(|calls| calls.set(0));
     let handle = super::select(Path::new(&root), "source2", "fixture", "linuxsteamrt64").unwrap();
-    super::commit(handle, "{}", "[]").unwrap();
+    super::commit(handle, "{}", b"GCR1\0\0\0\0\0\0\0\0").unwrap();
     assert_eq!(super::selected_id().as_deref(), Some("@fixture/source2"));
     assert_eq!(crate::gamedata_calls::game_package_owner().as_deref(), Some("game-package:@fixture/source2"));
     crate::v8host::frame_tests::load_body("fixture-consumer",
@@ -373,7 +373,7 @@ fn selected_function_product_activates_from_verified_bytes() {
     let mut ops = crate::v8host::engine_ops().unwrap();
     ops.plugin_function_overrides = Some(failed_function_overrides);
     crate::v8host::set_engine_ops(Some(ops));
-    assert_eq!(s2script_core_commit_game_package(handle, b"{}".as_ptr(), 2, b"[]".as_ptr(), 2), 1);
+    assert_eq!(s2script_core_commit_game_package(handle, b"{}".as_ptr(), 2, b"GCR1\0\0\0\0\0\0\0\0".as_ptr(), 12), 1);
     let status: Value = serde_json::from_slice(&super::status()).unwrap();
     assert_eq!(status["code"], "active");
     assert_eq!(super::selected_id().as_deref(), Some("@fixture/a"));
@@ -396,7 +396,7 @@ fn selected_nonempty_function_bootstraps_two_live_parents_and_retires() {
     let handle = super::select(root.path(), "source2", "csgo", "linuxsteamrt64").unwrap();
     write(&root.path().join("game-packages/a/index.js"), b"throw Error('changed bootstrap');");
     write(&root.path().join("game-packages/a/engine-functions.json"), b"changed functions");
-    super::commit(handle, "{}", "[]").unwrap();
+    super::commit(handle, "{}", b"GCR1\0\0\0\0\0\0\0\0").unwrap();
     super::REGISTERED.with(|registered| {
         let registered = registered.borrow();
         let package = registered.as_ref().unwrap();
@@ -438,7 +438,7 @@ fn required_target_failure_rolls_back_selected_source_and_legacy_owner() {
     crate::v8host::set_engine_ops(Some(ops));
     let root = live_function_fixture("({'.':{}})");
     let handle = super::select(root.path(), "source2", "csgo", "linuxsteamrt64").unwrap();
-    let error = super::commit(handle, "{}", "[]").unwrap_err();
+    let error = super::commit(handle, "{}", b"GCR1\0\0\0\0\0\0\0\0").unwrap_err();
     assert!(error.contains("@fixture/a::fire"), "{error}");
     assert!(super::selected_id().is_none());
     assert!(crate::gamedata_calls::game_package_owner().is_none());
@@ -454,7 +454,7 @@ fn optional_selected_target_failure_is_per_function_unavailable() {
     crate::v8host::set_engine_ops(Some(ops));
     let root = complete_fixture(vec![with_functions(record("@fixture/a", "a", "csgo"))]);
     let handle = super::select(root.path(), "source2", "csgo", "linuxsteamrt64").unwrap();
-    super::commit(handle, "{}", "[]").unwrap();
+    super::commit(handle, "{}", b"GCR1\0\0\0\0\0\0\0\0").unwrap();
     super::REGISTERED.with(|registered| {
         let registered = registered.borrow();
         let owner = registered.as_ref().unwrap()._functions.as_ref().unwrap().owner();
@@ -477,7 +477,7 @@ fn activation_failure_retires_prepared_source_and_native_target() {
     let root = live_function_fixture("({'.':{}})");
     let handle = super::select(root.path(), "source2", "csgo", "linuxsteamrt64").unwrap();
     let _injection = crate::engine_functions::registry::fail_next_package_activation("@fixture/a");
-    let error = super::commit(handle, "{}", "[]").unwrap_err();
+    let error = super::commit(handle, "{}", b"GCR1\0\0\0\0\0\0\0\0").unwrap_err();
     assert!(error.contains("injected package activation failure"), "{error}");
     assert_eq!(RELEASED_PACKAGE_TARGETS.with(|n| n.get()), 1);
     assert!(super::selected_id().is_none());
@@ -493,7 +493,7 @@ fn selected_export_validation_failure_revokes_provisional_function_facade() {
         "globalThis.failedFacade=__s2_package_function('fire');failedFacade.onPre(()=>{});({bad:{}})"
     );
     let handle = super::select(root.path(), "source2", "csgo", "linuxsteamrt64").unwrap();
-    super::commit(handle, "{}", "[]").unwrap();
+    super::commit(handle, "{}", b"GCR1\0\0\0\0\0\0\0\0").unwrap();
     crate::v8host::create_plugin_context("fixture-bad-export");
     assert!(crate::v8host::is_failed("fixture-bad-export"));
     crate::v8host::eval_in_context("fixture-bad-export", r#"
@@ -538,7 +538,7 @@ fn authored_empty_function_product_gets_one_real_package_receipt() {
     transport_with_snapshot();
     let root = function_fixture("({'.':{}})", true);
     let handle = super::select(root.path(), "source2", "csgo", "linuxsteamrt64").unwrap();
-    super::commit(handle, "{}", "[]").unwrap();
+    super::commit(handle, "{}", b"GCR1\0\0\0\0\0\0\0\0").unwrap();
     super::REGISTERED.with(|registered| {
         let registered = registered.borrow();
         let package = registered.as_ref().unwrap();
@@ -678,11 +678,11 @@ fn retained_selection_copy_and_atomic_commit() {
     );
     assert_eq!(super::copy(handle, 0).unwrap(), b"data");
     assert_eq!(super::copy(handle, 0).unwrap(), b"data");
-    assert!(super::commit(handle, "[]", "[]").is_err());
+    assert!(super::commit(handle, "[]", b"GCR1\0\0\0\0\0\0\0\0").is_err());
     assert!(super::selected_id().is_none());
     assert!(super::select(root.path(), "source2", "other", "linuxsteamrt64").is_err());
     let merged = r#"{"calls":{"call":{}},"hooks":{"hook":{}}}"#;
-    super::commit(handle, merged, r#"["custom/fix.jsonc"]"#).unwrap();
+    super::commit(handle, merged, b"GCR1\0\0\0\0\0\0\0\0").unwrap();
     assert_eq!(super::selected_id().as_deref(), Some("@fixture/two"));
     let status: Value = serde_json::from_slice(&super::status()).unwrap();
     assert_eq!(status["bootstrapSha256"], hash(b"boot"));
@@ -691,10 +691,46 @@ fn retained_selection_copy_and_atomic_commit() {
     assert!(!crate::gamedata_calls::status(&owner, "call").contains("not declared"));
     assert!(!crate::gamedata_hooks::status(&owner, "hook").contains("not declared"));
     assert!(super::copy(handle, 0).is_err());
-    assert!(super::commit(handle, "{}", "[]").is_err());
+    assert!(super::commit(handle, "{}", b"GCR1\0\0\0\0\0\0\0\0").is_err());
     super::clear().unwrap();
     assert_eq!(crate::gamedata_calls::game_package_owner(), None);
     assert!(crate::gamedata_hooks::status(&owner, "hook").contains("not declared"));
+}
+
+#[test]
+fn repair_snapshot_admission_precedes_owner_publication_and_retains_exact_bytes() {
+    let root = complete_fixture(vec![record("@fixture/two", "independent", "other")]);
+    let handle = super::select(root.path(), "source2", "other", "linuxsteamrt64").unwrap();
+    let owner = crate::gamedata_calls::reserved_owner_id("@fixture/two");
+    assert!(super::commit(handle, "{}", b"bad").is_err());
+    assert!(super::selected_id().is_none());
+    assert!(crate::gamedata_calls::game_package_owner().is_none());
+    assert!(crate::gamedata_hooks::status(&owner, "hook").contains("not declared"));
+
+    let exact = b"// operator note\n {\"keys\":{\"K\":\"v\"}}\n";
+    let path = b"custom/10-fix.jsonc";
+    let mut snapshot = b"GCR1".to_vec();
+    let mut word = |n: usize| snapshot.extend_from_slice(&(n as u32).to_le_bytes());
+    word(1);
+    drop(word);
+    for value in [path.as_slice(), b"applied", b"", exact.as_slice()] {
+        snapshot.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        snapshot.extend_from_slice(value);
+    }
+    snapshot.extend_from_slice(&0u32.to_le_bytes()); // effects
+    snapshot.extend_from_slice(&1u32.to_le_bytes()); // applied paths
+    snapshot.extend_from_slice(&(path.len() as u32).to_le_bytes());
+    snapshot.extend_from_slice(path);
+    super::commit(handle, "{}", &snapshot).unwrap();
+    let status: Value = serde_json::from_slice(&super::status()).unwrap();
+    assert_eq!(status["operatorRepairs"][0]["sha256"], hash(exact));
+    assert_eq!(status["operatorRepairs"][0]["path"], "custom/10-fix.jsonc");
+    assert_eq!(status["customPaths"][0], "custom/10-fix.jsonc");
+    assert!(!status.to_string().contains("operator note"));
+    super::REGISTERED.with(|slot| {
+        assert_eq!(slot.borrow().as_ref().unwrap()._repair_snapshot.repairs[0].bytes, exact);
+    });
+    super::clear().unwrap();
 }
 
 #[test]
@@ -728,7 +764,7 @@ fn native_failure_status_survives_abort_and_stale_failure_cannot_replace_active(
     assert_eq!(failed["error"], std::str::from_utf8(reason).unwrap());
     assert_eq!(s2script_core_fail_game_package(a, reason.as_ptr(), reason.len()), 0);
     let b = super::select(root.path(), "source2", "other", "linuxsteamrt64").unwrap();
-    super::commit(b, "{}", "[]").unwrap();
+    super::commit(b, "{}", b"GCR1\0\0\0\0\0\0\0\0").unwrap();
     assert_eq!(s2script_core_abort_game_package(b), 0);
     assert_eq!(s2script_core_fail_game_package(b, reason.as_ptr(), reason.len()), 0);
     let active: Value = serde_json::from_slice(&super::status()).unwrap();
@@ -779,7 +815,7 @@ fn ffi_copy_rejects_short_buffers_stale_handles_and_invalid_utf8() {
     );
     assert_eq!(&bytes, b"data");
     assert_eq!(
-        s2script_core_commit_game_package(handle, invalid.as_ptr(), 1, b"[]".as_ptr(), 2),
+        s2script_core_commit_game_package(handle, invalid.as_ptr(), 1, b"GCR1\0\0\0\0\0\0\0\0".as_ptr(), 12),
         0
     );
     assert!(super::selected_id().is_none());
@@ -795,7 +831,7 @@ fn ffi_copy_rejects_short_buffers_stale_handles_and_invalid_utf8() {
 fn layout_only_empty_legacy_merge_registers_without_a_function_owner() {
     let root = complete_fixture(vec![record("@fixture/two", "two", "other")]);
     let handle = super::select(root.path(), "source2", "other", "linuxsteamrt64").unwrap();
-    super::commit(handle, "", "[]").unwrap();
+    super::commit(handle, "", b"GCR1\0\0\0\0\0\0\0\0").unwrap();
     assert_eq!(super::selected_id().as_deref(), Some("@fixture/two"));
     super::clear().unwrap();
 }

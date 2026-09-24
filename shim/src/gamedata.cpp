@@ -1,6 +1,7 @@
 #include "gamedata.h"
 #include "../third_party/json.hpp"
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -72,47 +73,68 @@ bool DeclaresValidator(const std::string& dumped) {
 // failure mode (a stale value reading garbage while reporting success) on the one surface a
 // server admin hand-edits under time pressure. Reject a non-object by NAME instead.
 size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOverride,
-                 const std::string& fileLabel, GameConfig& gc, std::string& error) {
+                 const std::string& fileLabel, GameConfig& gc, std::string& error,
+                 PackageGamedataProvenance::Repair* repair = nullptr) {
     size_t applied = 0;
-    auto mark = [&](const std::string& name) { applied++; if (isOverride) gc.overridden.insert(name); };
+    auto effect = [&](const std::string& section, const std::string& name,
+                      const std::string& result, const std::string& validator = "",
+                      const std::string& reason = "") {
+        if (repair) repair->effects.push_back({section, name,
+            section == "offsets" || section == "signatures" ? platform : "",
+            result, validator, reason});
+    };
+    auto mark = [&](const std::string& section, const std::string& name,
+                    const std::string& validator = "") {
+        applied++;
+        if (isOverride) gc.overridden.insert(name);
+        effect(section, name, "applied", validator);
+    };
+    auto fail = [&](const std::string& section, const std::string& name,
+                    const std::string& reason) {
+        error = reason;
+        effect(section, name, "invalid", "", reason);
+    };
+
+    if (repair && !j.is_object())
+        fail("document", "", "gamedata " + fileLabel + " has the wrong top-level type (expected an object)");
 
     // A present but scalar section must be visible. Otherwise .items() can turn it into a
     // successful empty file, hiding an entire authored section behind filesEmpty alone.
     for (const char* section : {"interfaces", "offsets", "signatures", "keys", "calls", "hooks"})
         if (j.contains(section) && !j.at(section).is_object())
-            error = "gamedata " + fileLabel + " section " + section + " has the wrong type (expected an object)";
+            fail(section, "", "gamedata " + fileLabel + " section " + section + " has the wrong type (expected an object)");
 
     if (j.contains("interfaces") && j.at("interfaces").is_object())
         for (auto& [k, v] : j.at("interfaces").items()) {
-            if (v.is_string()) { gc.interfaces[k] = v.get<std::string>(); mark(k); }
-            else error = "gamedata interfaces." + k + " has the wrong type (expected a string)";
+            if (v.is_string()) { gc.interfaces[k] = v.get<std::string>(); mark("interfaces", k); }
+            else fail("interfaces", k, "gamedata interfaces." + k + " has the wrong type (expected a string)");
         }
 
     if (j.contains("offsets") && j.at("offsets").is_object())
         for (auto& [k, platforms] : j.at("offsets").items()) {
             if (!platforms.is_object()) {
-                error = "gamedata offsets." + k + " is not a platform-keyed object (expected "
-                        "{ \"" + platform + "\": <int> })";
+                fail("offsets", k, "gamedata offsets." + k + " is not a platform-keyed object (expected "
+                        "{ \"" + platform + "\": <int> })");
                 continue;
             }
-            if (!platforms.contains(platform)) continue;
+            if (!platforms.contains(platform)) { effect("offsets", k, "other-platform"); continue; }
             try {
                 gc.offsets[k] = platforms.at(platform).get<int>();
-                mark(k);
+                mark("offsets", k);
             } catch (const std::exception& e) {
-                error = "gamedata offsets." + k + " has the wrong type for platform \"" +
-                        platform + "\": " + e.what();
+                fail("offsets", k, "gamedata offsets." + k + " has the wrong type for platform \"" +
+                        platform + "\": " + e.what());
             }
         }
 
     if (j.contains("signatures") && j.at("signatures").is_object())
         for (auto& [k, platforms] : j.at("signatures").items()) {
             if (!platforms.is_object()) {
-                error = "gamedata signatures." + k + " is not a platform-keyed object (expected "
-                        "{ \"" + platform + "\": { \"module\": …, \"pattern\": … } })";
+                fail("signatures", k, "gamedata signatures." + k + " is not a platform-keyed object (expected "
+                        "{ \"" + platform + "\": { \"module\": …, \"pattern\": … } })");
                 continue;
             }
-            if (!platforms.contains(platform)) continue;
+            if (!platforms.contains(platform)) { effect("signatures", k, "other-platform"); continue; }
             try {
                 const auto& p = platforms.at(platform);
                 SigSpec s;
@@ -131,30 +153,34 @@ size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOv
                 const auto prevIt = gc.signatures.find(k);
                 const bool prevHadValidator =
                     prevIt != gc.signatures.end() && DeclaresValidator(prevIt->second.validate);
+                std::string validator = "unchanged";
                 if (p.contains("validate")) {
                     s.validate = p.at("validate").dump();
                     // An EXPLICIT empty value is the operator saying "no gate, I mean it". Honoured,
                     // but never silently: it is a banner line of its own.
-                    if (isOverride && prevHadValidator && !DeclaresValidator(s.validate))
+                    if (isOverride && prevHadValidator && !DeclaresValidator(s.validate)) {
                         gc.validatorsDisarmed.push_back(k);
+                        validator = "disarmed";
+                    } else validator = DeclaresValidator(s.validate) ? "explicit" : "empty";
                 } else if (isOverride && prevHadValidator) {
                     // Carried, not dropped. Copied out of the previous entry here, before the
                     // assignment below overwrites it.
                     s.validate = prevIt->second.validate;
                     gc.validatorsCarried.push_back(k);
+                    validator = "carried";
                 }
                 gc.signatures[k] = s;
-                mark(k);
+                mark("signatures", k, validator);
             } catch (const std::exception& e) {
-                error = "gamedata signatures." + k + " has the wrong type for platform \"" +
-                        platform + "\": " + e.what();
+                fail("signatures", k, "gamedata signatures." + k + " has the wrong type for platform \"" +
+                        platform + "\": " + e.what());
             }
         }
 
     if (j.contains("keys") && j.at("keys").is_object())
         for (auto& [k, v] : j.at("keys").items()) {
-            if (v.is_string()) { gc.keys[k] = v.get<std::string>(); mark(k); }
-            else error = "gamedata keys." + k + " has the wrong type (expected a string)";
+            if (v.is_string()) { gc.keys[k] = v.get<std::string>(); mark("keys", k); }
+            else fail("keys", k, "gamedata keys." + k + " has the wrong type (expected a string)");
         }
 
     // `calls` is NOT platform-keyed at the entry level: a descriptor's platform-specific details
@@ -164,8 +190,8 @@ size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOv
     // descriptor and would otherwise reach core as an unexplained "malformed descriptor".
     if (j.contains("calls") && j.at("calls").is_object())
         for (auto& [k, v] : j.at("calls").items()) {
-            if (v.is_object()) { gc.calls[k] = v.dump(); mark(k); }
-            else error = "gamedata calls." + k + " has the wrong type (expected an object)";
+            if (v.is_object()) { gc.calls[k] = v.dump(); mark("calls", k); }
+            else fail("calls", k, "gamedata calls." + k + " has the wrong type (expected an object)");
         }
 
     // `hooks` — an INBOUND descriptor (a declared engine detour). Carried verbatim, exactly like
@@ -173,8 +199,8 @@ size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOv
     // object check and nothing more.
     if (j.contains("hooks") && j.at("hooks").is_object())
         for (auto& [k, v] : j.at("hooks").items()) {
-            if (v.is_object()) { gc.hooks[k] = v.dump(); mark(k); }
-            else error = "gamedata hooks." + k + " has the wrong type (expected an object)";
+            if (v.is_object()) { gc.hooks[k] = v.dump(); mark("hooks", k); }
+            else fail("hooks", k, "gamedata hooks." + k + " has the wrong type (expected an object)");
         }
 
     // WHAT THIS MERGE DID NOT READ. Everything above is opt-in by name, so a section this loader
@@ -194,6 +220,7 @@ size_t MergeFile(const nlohmann::json& j, const std::string& platform, bool isOv
                 k == "calls" || k == "hooks")
                 continue;
             gc.sectionsIgnored.push_back(fileLabel + ": " + k);
+            effect(k, "", "ignored");
         }
 
     return applied;
@@ -349,9 +376,22 @@ GameConfig MergeOwner(const std::string& gamedataRoot,
             // instead of throwing; treat "couldn't tell" the same as "not a regular file".
             std::error_code fileEc;
             bool isRegular = de.is_regular_file(fileEc);
-            if (fileEc || !isRegular) continue;
+            if (fileEc) {
+                if (provenance) {
+                    error = "gamedata custom override stat failed: " + de.path().string() + ": " + fileEc.message();
+                    gc.filesFailed.push_back("custom/" + de.path().filename().string());
+                    return gc;
+                }
+                continue;
+            }
+            if (!isRegular) continue;
             const std::string ext = de.path().extension().string();
             if (ext != ".jsonc" && ext != ".json") continue;
+            if (provenance && customFiles.size() == 64) {
+                error = "gamedata custom override file count exceeds 64: " + de.path().string();
+                gc.filesFailed.push_back("custom/" + de.path().filename().string());
+                return gc;
+            }
             customFiles.push_back(de.path());
         }
         // The directory_iterator constructor above was also given `ec`; a failure opening/
@@ -361,21 +401,96 @@ GameConfig MergeOwner(const std::string& gamedataRoot,
         if (ec) {
             error = "gamedata custom overrides directory could not be fully read: " +
                     customDir.string() + ": " + ec.message();
+            if (provenance) { gc.filesFailed.push_back("custom/"); return gc; }
         }
         std::sort(customFiles.begin(), customFiles.end());
+        size_t capturedBytes = 0, capturedEffects = 0;
         for (const auto& p : customFiles) {
             const std::string label = "custom/" + p.filename().string();
             nlohmann::json j;
+            PackageGamedataProvenance::Repair* repair = nullptr;
+            if (provenance) {
+                if (label.size() > 240 || label.find('\0') != std::string::npos ||
+                    label.find('/') != label.rfind('/')) {
+                    error = "gamedata custom override path invalid: " + label;
+                    gc.filesFailed.push_back(label);
+                    return gc;
+                }
+                provenance->repairs.push_back({});
+                repair = &provenance->repairs.back();
+                repair->path = label;
+                std::ifstream file(p, std::ios::binary);
+                if (!file) {
+                    repair->result = "read-error";
+                    repair->error = error = "gamedata file not found: " + p.string();
+                    return gc;
+                }
+                // Read at most one byte beyond the cap. Never slurp an operator file first.
+                char chunk[8192];
+                while (file) {
+                    file.read(chunk, std::min(sizeof(chunk), size_t(256 * 1024 + 1 - repair->bytes.size())));
+                    repair->bytes.append(chunk, static_cast<size_t>(file.gcount()));
+                    if (repair->bytes.size() > 256 * 1024) {
+                        error = "gamedata custom override exceeds 256 KiB: " + label;
+                        gc.filesFailed.push_back(label);
+                        return gc;
+                    }
+                }
+                if (file.bad()) {
+                    repair->result = "read-error";
+                    repair->error = error = "gamedata custom override read failed: " + label;
+                    return gc;
+                }
+                capturedBytes += repair->bytes.size();
+                if (capturedBytes > 4 * 1024 * 1024) {
+                    error = "gamedata custom override aggregate exceeds 4 MiB: " + label;
+                    gc.filesFailed.push_back(label);
+                    return gc;
+                }
+                try {
+                    const auto depth = [](int nesting, nlohmann::json::parse_event_t event,
+                                          nlohmann::json&) {
+                        if ((event == nlohmann::json::parse_event_t::object_start ||
+                             event == nlohmann::json::parse_event_t::array_start) && nesting >= 128)
+                            throw std::runtime_error("JSON nesting exceeds 128 containers");
+                        return true;
+                    };
+                    j = nlohmann::json::parse(repair->bytes, depth, true, true);
+                } catch (const std::exception& e) {
+                    repair->result = "parse-error";
+                    repair->error = error = "gamedata parse error in " + p.string() + ": " + e.what();
+                    return gc;
+                }
+                size_t potentialEffects = j.is_object() ? j.size() : 1;
+                if (j.is_object())
+                    for (const char* section : {"interfaces", "offsets", "signatures", "keys", "calls", "hooks"})
+                        if (j.contains(section)) potentialEffects +=
+                            j.at(section).is_object() ? j.at(section).size() : 1;
+                if (potentialEffects > 4096 - capturedEffects) {
+                    error = "gamedata custom override effect count exceeds 4096: " + label;
+                    gc.filesFailed.push_back(label);
+                    return gc;
+                }
+                capturedEffects += potentialEffects;
+            }
             // Deliberately NOT recorded in filesFailed: the shipped tree is intact, so a typo in
             // an operator's hot-fix must not disable the engine surface. It is a named `error`,
             // which the boot banner reports.
-            if (!ParseFile(p, j, error)) return gc;
-            if (MergeFile(j, platform, /*isOverride=*/true, label, gc, error) == 0)
+            if (!repair && !ParseFile(p, j, error)) return gc;
+            const std::string priorError = error;
+            const size_t applied = MergeFile(j, platform, /*isOverride=*/true, label, gc, error, repair);
+            if (applied == 0)
                 gc.filesEmpty.push_back(label);
             gc.filesLoaded.push_back(label);
             if (provenance) {
                 provenance->customPaths.push_back(label);
                 provenance->appliedPaths.push_back(label);
+                repair->result = repair->effects.empty() || applied == 0 ? "empty" : "applied";
+                if (error != priorError || std::any_of(repair->effects.begin(), repair->effects.end(),
+                    [](const auto& item) { return item.result == "invalid"; })) {
+                    repair->result = "type-error";
+                    repair->error = error;
+                }
             }
         }
     }
@@ -447,7 +562,7 @@ GameConfig LoadGameConfigFromBundle(const std::string& verifiedBundleJson,
                                     std::string& error) {
     constexpr size_t kMaxBytes = 4 * 1024 * 1024;
     constexpr size_t kMaxFiles = 128;
-    PackageGamedataProvenance provenance{owner, engine, game, platform, verifiedSha256, {}, {}, {}};
+    PackageGamedataProvenance provenance{owner, engine, game, platform, verifiedSha256, {}, {}, {}, {}};
     if (verifiedBundleJson.size() > kMaxBytes)
         return BundleFailure("gamedata.json", "bundle exceeds 4 MiB", provenance, error);
     if (owner.empty() || owner.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-") != std::string::npos)
@@ -544,4 +659,42 @@ GameConfig LoadGameConfigFromBundle(const std::string& verifiedBundleJson,
     }
     gc.mergedJson = SerializeMerged(gc, platform);
     return gc;
+}
+
+std::string EncodePackageRepairSnapshot(const PackageGamedataProvenance& provenance) {
+    // GCR1, u32 count, then length-prefixed UTF-8 path/result/error, raw bytes, and
+    // length-prefixed effect tuples. Finish with an independent applied-path list so Rust can
+    // reject any identity disagreement between the captured records and legacy diagnostics.
+    std::string out = "GCR1";
+    size_t metadata = 0, raw = 0, effects = 0;
+    auto number = [&](size_t n) {
+        if (n > UINT32_MAX) throw std::runtime_error("repair snapshot field too large");
+        const uint32_t v = static_cast<uint32_t>(n);
+        for (unsigned i = 0; i < 4; ++i) out.push_back(static_cast<char>(v >> (8 * i)));
+    };
+    auto field = [&](const std::string& s, bool content = false) {
+        (content ? raw : metadata) += s.size();
+        if (raw > 4 * 1024 * 1024 || metadata > 256 * 1024)
+            throw std::runtime_error("repair snapshot aggregate size limit");
+        number(s.size()); out.append(s);
+    };
+    if (provenance.repairs.size() > 64) throw std::runtime_error("repair snapshot file count limit");
+    number(provenance.repairs.size());
+    for (const auto& repair : provenance.repairs) {
+        if (repair.path.size() > 240 || repair.bytes.size() > 256 * 1024)
+            throw std::runtime_error("repair snapshot path/file size limit: " + repair.path);
+        field(repair.path); field(repair.result); field(repair.error); field(repair.bytes, true);
+        effects += repair.effects.size();
+        if (effects > 4096) throw std::runtime_error("repair snapshot effect count limit: " + repair.path);
+        number(repair.effects.size());
+        for (const auto& effect : repair.effects) {
+            field(effect.section); field(effect.name); field(effect.platform);
+            field(effect.result); field(effect.validator); field(effect.error);
+        }
+    }
+    number(provenance.customPaths.size());
+    for (const auto& path : provenance.customPaths) field(path);
+    if (out.size() > 4 * 1024 * 1024 + 256 * 1024 + 128 * 1024)
+        throw std::runtime_error("repair snapshot encoding size limit");
+    return out;
 }
