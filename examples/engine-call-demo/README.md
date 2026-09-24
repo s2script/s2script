@@ -1,4 +1,12 @@
-# engine-call-demo — calling an engine function the framework doesn't wrap
+# engine-call-demo — historical v1 Ignite example
+
+This source and the console output below are retained as historical observations from the old
+CS2 build. The shipped Ignite pattern matched the old retained image at `0x1605290` but is
+unavailable in the audited current image (its entry is `0x162acb0`). The native
+`CBaseModelEntity::Ignite` ABI also has a trailing by-value `Vector` carried in `xmm2`/`xmm3`
+that this four-scalar descriptor omitted. Replacing only the pattern does not repair the
+incomplete ABI. Do not deploy or run `sm_ec_burn` from this retained source on the current build.
+See `examples/engine-function-demo/` for the ordinary v2 scalar example.
 
 s2script's entity API covers **state** thoroughly: `EntityRef` can read and write any field, through
 pointer chains, with liveness gating. What it historically could not do is call a **function** the
@@ -6,14 +14,14 @@ core hadn't already wrapped. Every engine call — `respawn`, `switchTeam`, `ter
 signature-resolved and exposed by the framework, so "the core doesn't wrap X" meant waiting for a
 release.
 
-This example declares its own engine call and uses it. It burns a player by calling
-`CBaseModelEntity::Ignite` directly, and it deliberately includes a **second descriptor that is
-supposed to fail**, because the interesting property here isn't that a good descriptor works — it's
+This historical example declared its own engine call. It called
+`CBaseModelEntity::Ignite` directly, and it deliberately included a **second descriptor that was
+supposed to fail**, because the interesting property here wasn't that a good descriptor worked — it was
 that a bad one is caught by name instead of silently misbehaving.
 
 ```
 sm_ec_status        report every declared call and why it is (or isn't) available
-sm_ec_burn <target> set a player on fire for 10s
+sm_ec_burn <target> historical command; do not use on the current build
 ```
 
 ## The three files
@@ -53,6 +61,9 @@ gamedata uses that identical shape: a named entry keyed by **platform id**, deta
 }
 ```
 
+The displayed Ignite pattern is stale on the audited current binary, and this declaration omits
+the native trailing by-value `Vector`. Its four-scalar ABI is incomplete even with a new signature.
+
 `args` is the marshalling contract the runtime uses. `argNames` is documentary — the runtime never
 reads it — but it's what makes the generated signature readable.
 
@@ -86,7 +97,7 @@ if (ignite && pawn?.isValid) ignite(pawn.ref, 10.0, 4, null, 0.0);
 Resolve once at load and null-check there. An undeclared name is a `TS2345`, a wrong argument count a
 `TS2554` — the same gate that checks the rest of your plugin.
 
-## Why it's safe enough to ship
+## Historical v1 validation design
 
 **No raw pointer ever reaches JavaScript.** Your code holds a descriptor *name*. Core holds
 `(index, serial)` pairs. Only the shim holds pointers. A call whose receiver went stale degrades to a
@@ -101,7 +112,7 @@ shows why: it names the `CCSPlayer_ItemServices` slot that other frameworks' gam
 `DropActivePlayerWeapon`, but on this build that slot is a `GiveNamedItem` **thunk**. A thunk is
 valid, in-range executable code, so a `.text`-range check *passes* it — calling through would hand an
 entity pointer to a `const char*` parameter and misbehave silently. Only the prologue tells them
-apart. On load you'll see:
+apart. On the old build, the archived output showed:
 
 ```
 WARN: [engine-calls] '@demo/engine-call' call 'dropActiveWeaponRejected' unavailable:
@@ -121,12 +132,11 @@ listed in `addons/s2script/configs/permissions.json`, every declared call resolv
 Omit it and the plugin still loads and runs — just with its calls degraded. An operator's oversight
 can't take a server down.
 
-## Running it
+## Historical run record (old build only)
 
 ```bash
 cd examples/engine-call-demo && npx @s2script/sdk build
-cp dist/_demo_engine-call.s2sp <server>/addons/s2script/plugins/
-# add "@demo/engine-call" under "engine:calls" in addons/s2script/configs/permissions.json
+# Retained build command only; the following output is archived history, not a current runbook.
 ```
 
 ```
@@ -138,9 +148,12 @@ cp dist/_demo_engine-call.s2sp <server>/addons/s2script/plugins/
 [engine-call-demo] called ignite on 2 pawn(s); entityflame 0 -> 2 (EFFECT CONFIRMED)
 ```
 
+The “EFFECT CONFIRMED” text above is an old-build log line, not a current-build claim.
+
 ### Why the reply counts entities
 
-`sm_ec_burn` could just say "called ignite on 2 pawns" — but that would only prove a call was
+Historically, `sm_ec_burn` could have just said "called ignite on 2 pawns" — but that would only
+prove a call was
 *dispatched*. A declared call that resolves and receives a **wrong argument** returns cleanly and does
 nothing at all. Two real ways that happens here:
 
@@ -151,10 +164,8 @@ nothing at all. Two real ways that happens here:
   32 bits of the register, `10.0` arrived as `0.0f`. No crash, no diagnostic — just a burn with zero
   duration.
 
-Both look identical from the caller's side. `Ignite` spawns one `CEntityFlame` per victim, so a rising
-`entityflame` count is independent evidence the *engine* acted. If you write plugins on this API,
-**measure an effect, not a return value** — and if you're checking a float landed, check that its
-effect *persists* (flames alive after 4s, gone by 12s, for a 10-second burn).
+Both looked identical from the caller's side. The old flame count was evidence of engine activity
+on that old build; it does not establish a complete declared ABI or current-build behavior.
 
 ## What you own by using this
 

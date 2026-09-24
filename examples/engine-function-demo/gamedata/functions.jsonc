@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 2,
+  "functions": {
+    "commitSuicide": {
+      // Retained installed CS2 build 25472966, libserver.so SHA-256 23373cfd...366e87f.
+      // Unique executable match: VA 0x1867a90, file 0x1866a90. Re-audit after updates.
+      "target": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 55 41 89 F5 41 54 41 89 D4 53 48 8D 15 ? ? ? ? 48 89 FB 48 81 EC ? ? ? ?",
+        "validate": {
+          "prologue": "55 48 89 E5 41 55 41 89 F5 41 54 41 89 D4",
+          "vtable-member": "CBasePlayerPawn"
+        }
+      },
+      "receiver": { "type": "entity" },
+      "parameters": [
+        { "name": "explode", "type": "bool" },
+        { "name": "force", "type": "bool", "mutable": "pre" }
+      ],
+      "returns": "void",
+      "surfaces": ["call", "pre", "post"]
+    },
+    "staleEntryProbe": {
+      // Same unique candidate; this deliberately stale entry validator must reject it alone.
+      "target": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 55 41 89 F5 41 54 41 89 D4 53 48 8D 15 ? ? ? ? 48 89 FB 48 81 EC ? ? ? ?",
+        "validate": { "prologue": "00 00 00 00" }
+      },
+      "receiver": { "type": "entity" },
+      "parameters": [],
+      "returns": "void",
+      "surfaces": ["call"]
+    }
+  }
+}
