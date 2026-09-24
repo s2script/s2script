@@ -325,6 +325,7 @@ fn function_storage(f: &NormalizedFunction) -> usize {
         + a.fingerprint.capacity()
         + a.returns.native.capacity()
         + a.returns.projection.id.capacity()
+        + a.returns.ownership.as_ref().map_or(0, String::capacity)
         + a.parameters.capacity() * std::mem::size_of::<Parameter>()
         + a.parameters
             .iter()
@@ -332,6 +333,7 @@ fn function_storage(f: &NormalizedFunction) -> usize {
                 p.name.capacity()
                     + p.native.capacity()
                     + p.projection.id.capacity()
+                    + p.ownership.as_ref().map_or(0, String::capacity)
                     + strings(&p.mutable)
             })
             .sum::<usize>()

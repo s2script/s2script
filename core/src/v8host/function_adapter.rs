@@ -1275,6 +1275,7 @@ fn decision(
     native: &str,
     projection: &str,
     phase: i32,
+    suppression: &str,
 ) -> Result<Decision, String> {
     let kind = projection::request(native, projection)?.kind;
     if observe_thenable(scope, value) {
@@ -1297,6 +1298,9 @@ fn decision(
     }
     if value.is_int32() {
         let action = value.int32_value(scope).unwrap();
+        if suppression == "none" && (2..=3).contains(&action) {
+            return Err("suppression:none forbids Handled/Stop".into());
+        }
         if (0..=1).contains(&action) || (kind == 0 && (2..=3).contains(&action)) {
             return Ok(Decision {
                 action,
@@ -1315,6 +1319,9 @@ fn decision(
         .int32_value(scope)
         .filter(|a| (2..=3).contains(a))
         .ok_or("invalid suppression action")?;
+    if suppression == "none" {
+        return Err("suppression:none forbids suppression decision objects".into());
+    }
     let value = get(scope, object, "returnValue")?;
     let value = projected_from_js(scope, value, native, projection)?;
     Ok(Decision {
@@ -1385,6 +1392,25 @@ fn invoke_wrapper(
     dispatch: &Rc<Dispatch>,
     sub: &Subscription,
 ) -> Result<Decision, String> {
+    // Native frame setters stage immediately so later callbacks can observe successful edits.
+    // Save the prior staged state so a rejected JS decision cannot leak its own writes.
+    let before = if dispatch.frame.phase == 0
+        && sub.mode == SubscriptionMode::Mutating
+        && sub.binding.function.policy.suppression == "none"
+    {
+        sub.binding.function.abi.parameters.iter().enumerate()
+            .filter(|(_, p)| p.mutable.iter().any(|m| m == "pre"))
+            .map(|(i, p)| {
+                // A strict entity may currently be null, which is invalid for JS
+                // projection but still must be restorable after a rejected setter.
+                let snapshot_projection = if p.projection.id == "entity" { "entity?" } else { &p.projection.id };
+                let request = projection::request(&p.native, snapshot_projection)?;
+                dispatch.frame.read_requested(i as i32, request).map(|value| (i as i32, value))
+            })
+            .collect::<Result<Vec<_>, String>>()?
+    } else { Vec::new() };
+    let prior_edits = dispatch.edits.borrow().clone();
+    let prior_revision = dispatch.revision.get();
     let context = clone_plugin_context(&sub.owner.id).ok_or("subscriber context unavailable")?;
     let context = v8::Local::new(parent, &context);
     let scope = &mut v8::ContextScope::new(parent, context);
@@ -1403,18 +1429,28 @@ fn invoke_wrapper(
     let recv = v8::undefined(&mut tc);
     let value = function.call(&mut tc, recv.into(), &[view.into()]);
     guard.close();
-    let value = value.ok_or("subscriber wrapper threw")?;
-    let decision = decision(
-        &mut tc,
-        value,
-        &sub.binding.function.abi.returns.native,
-        &sub.binding.function.abi.returns.projection.id,
-        dispatch.frame.phase,
-    )?;
-    if sub.mode == SubscriptionMode::Observe && decision.action != 0 {
-        return Err("observe-only subscriber cannot change the decision".into());
+    let decision = value.ok_or_else(|| "subscriber wrapper threw".to_string()).and_then(|value| {
+        decision(
+            &mut tc,
+            value,
+            &sub.binding.function.abi.returns.native,
+            &sub.binding.function.abi.returns.projection.id,
+            dispatch.frame.phase,
+            &sub.binding.function.policy.suppression,
+        )
+    }).and_then(|decision| {
+        if sub.mode == SubscriptionMode::Observe && decision.action != 0 {
+            Err("observe-only subscriber cannot change the decision".into())
+        } else { Ok(decision) }
+    });
+    if decision.is_err() {
+        for (selector, value) in before {
+            dispatch.frame.write(selector, &value)?;
+        }
+        *dispatch.edits.borrow_mut() = prior_edits;
+        dispatch.revision.set(prior_revision);
     }
-    Ok(decision)
+    decision
 }
 fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<Decision, String> {
     let adapter = dispatch
@@ -1482,6 +1518,7 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
         &dispatch.binding.function.abi.returns.native,
         &dispatch.binding.function.abi.returns.projection.id,
         dispatch.frame.phase,
+        &dispatch.binding.function.policy.suppression,
     )
 }
 struct GenericCursor<'a, 's, 'i> {

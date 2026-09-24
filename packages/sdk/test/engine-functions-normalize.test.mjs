@@ -88,11 +88,51 @@ test('two-site validated-call fixture validates callers before one E8 derivation
 
 test('pointer-class projections copy values without exposing raw ptr authoring', () => {
   const b = norm({ x: fn({ parameters: [
-    { name: 'subject', type: 'entity?' }, { name: 'label', type: 'string' }, { name: 'position', type: 'vector' },
+    { name: 'subject', type: 'entity?' }, { name: 'label', type: 'string', ownership: 'callee-borrowed' }, { name: 'position', type: 'vector', ownership: 'callee-retained' },
   ], returns: 'entity' }) });
   assert.equal(b.functions[0].abi.fingerprint, 'linux-x86_64-sysv:none:ptr(ptr,ptr,ptr)');
   assert.deepEqual(b.functions[0].abi.parameters.map(p => p.projection.id), ['entity?', 'string', 'vector']);
   assert.equal(b.functions[0].abi.returns.projection.id, 'entity');
+  assert.deepEqual(b.functions[0].abi.parameters.map(p => p.ownership), [undefined, 'callee-borrowed', 'callee-retained']);
+});
+
+test('copied ownership changes full hashes without changing the machine fingerprint', () => {
+  const make = ownership => norm({ x: fn({ parameters: [{ name: 'text', type: 'string', ownership }], returns: { type: 'vector', ownership: 'caller-borrowed' }, surfaces: ['pre', 'post'], suppression: 'none' }) });
+  const borrowed = make('callee-borrowed');
+  const retained = make('callee-retained');
+  assert.equal(borrowed.functions[0].abi.fingerprint, retained.functions[0].abi.fingerprint);
+  assert.notEqual(borrowed.functions[0].contractHash, retained.functions[0].contractHash);
+  assert.notEqual(borrowed.bundleHash, retained.bundleHash);
+  assert.equal(borrowed.functions[0].policy.suppression, 'none');
+  assert.equal(summarizeFunctions(borrowed).functions[0].suppresses, false);
+});
+
+test('copied ownership and suppression reject unsupported directions and surfaces by name', () => {
+  const copied = (ownership, extra = {}) => fn({ parameters: [{ name: 'text', type: 'string', ownership, ...extra }], surfaces: ['pre', 'post'], returns: 'void' });
+  const cases = [
+    [copied(undefined), /text.*ownership.*required|text.*rebuild/i],
+    [copied(null), /text.*ownership/i],
+    [copied('caller-borrowed'), /text.*ownership/i],
+    [copied('mystery'), /text.*ownership/i],
+    [fn({ parameters: [{ name: 'count', type: 'i32', ownership: 'callee-borrowed' }] }), /count.*ownership/i],
+    [fn({ returns: 'string' }), /returns.*ownership.*required|returns.*rebuild/i],
+    [fn({ returns: { type: 'string', ownership: 'callee-borrowed' } }), /returns.*ownership/i],
+    [fn({ returns: { type: 'i32', ownership: 'caller-borrowed' } }), /returns.*ownership|returns.*copied/i],
+    [fn({ returns: { type: 'string', ownership: null } }), /returns.*ownership/i],
+    [fn({ returns: { type: 'string', ownership: 'caller-borrowed', extra: true } }), /returns.*extra/i],
+    [fn({ returns: { ownership: 'caller-borrowed' } }), /returns.*type/i],
+    [fn({ parameters: [{ name: 'text', type: 'string', ownership: 'native-observed' }], surfaces: ['call'] }), /text.*call|call.*text/i],
+    [copied('native-observed', { mutable: 'pre' }), /text.*mutable|text.*PRE/i],
+    [fn({ returns: { type: 'string', ownership: 'native-observed' }, surfaces: ['call'] }), /returns.*call|call.*returns/i],
+    [fn({ returns: { type: 'string', ownership: 'native-observed' }, surfaces: ['pre', 'post'] }), /returns.*suppression/i],
+    [fn({ returns: { type: 'string', ownership: 'native-observed' }, surfaces: ['pre', 'post'], suppression: 'none' }) , null],
+    [fn({ parameters: [{ name: 'text', type: 'string', ownership: 'callee-borrowed', mutable: 'pre' }], returns: 'entity', surfaces: ['pre'] }), /text.*callee-retained/i],
+    [fn({ parameters: [{ name: 'text', type: 'string', ownership: 'callee-borrowed' }], returns: 'entity', surfaces: ['call'] }), null],
+  ];
+  for (const [decl, error] of cases) {
+    if (error) assert.throws(() => norm({ x: decl }), error, JSON.stringify(decl));
+    else assert.doesNotThrow(() => norm({ x: decl }), JSON.stringify(decl));
+  }
 });
 
 test('hook permissions and inspectable summary derive from normalized contract', () => {
