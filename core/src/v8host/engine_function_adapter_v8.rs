@@ -218,6 +218,14 @@ mod production {
     use crate::engine_functions::{contract::OwnerKey, registry, runtime};
     use crate::v8host::function_adapter::{self, proof};
     use std::collections::BTreeMap;
+
+    // The Linux production test can fault after its functional assertion marker.
+    // Flush each boundary so a signal still leaves the last completed cleanup step.
+    fn cleanup_phase(phase: &str) {
+        eprintln!("DIAG production_registry_outer_frame cleanup={phase}");
+        use std::io::Write;
+        let _ = std::io::stderr().flush();
+    }
     type CreateProduction = unsafe extern "C" fn(
         extern "C" fn(i64, *const S2FunctionFrameInfo, i32) -> i32,
         extern "C" fn(),
@@ -575,34 +583,56 @@ mod production {
             drive(19);
             println!("PASS actual compiler-authored target engine entry: package-only and mixed public/package PRE/POST, owner0/no-nest, shared native Service");
         }));
+        cleanup_phase("after-process-result");
         // Drain RAII owners while the isolate, native Service and all TLS maps
         // are still alive. Thread-local destruction must not mask the first panic.
         let abandoned = PROCESS_STATE.with(|s| s.borrow_mut().take());
+        cleanup_phase(if abandoned.is_some() {
+            "abandoned-process-state"
+        } else {
+            "no-abandoned-process-state"
+        });
         if let Some(state) = abandoned {
             super::super::engine_function_tests::package_service_abort(state);
         }
+        cleanup_phase("after-abandoned-state-cleanup");
         if process_result.is_err() {
             for id in ["process-a", "process-b", "process-plugin"] {
                 unload_plugin(id);
             }
         }
+        cleanup_phase("before-native-empty-check");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut drain_frames = 0usize;
         while unsafe { empty() } == 0 && std::time::Instant::now() < deadline {
+            cleanup_phase("before-native-drain-frame");
             assert_eq!(unsafe { frame(0) }, 1);
+            drain_frames += 1;
+            cleanup_phase("after-native-drain-frame");
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         let process_drained = unsafe { empty() } == 1;
+        eprintln!("DIAG production_registry_outer_frame drained={process_drained} frames={drain_frames}");
+        cleanup_phase("before-native-pointer-clear");
         ENGINE_CALL.with(|s| s.set(None));
         POST_PEER.with(|s| s.set(None));
         ENTITY_SLOT.with(|s| s.set(None));
+        cleanup_phase("before-native-close");
         let closed = unsafe { close() };
+        eprintln!("DIAG production_registry_outer_frame native-close={closed}");
+        cleanup_phase("before-test-package-drop");
         PACKAGE.with(|p| p.borrow_mut().take());
+        cleanup_phase("before-engine-ops-clear");
         set_engine_ops(None);
+        cleanup_phase("before-v8-shutdown");
         shutdown();
+        cleanup_phase("after-v8-shutdown");
         if closed == 1 {
+            cleanup_phase("before-dlclose");
             unsafe {
                 libc::dlclose(library);
             }
+            cleanup_phase("after-dlclose");
         }
         if let Err(error) = process_result {
             eprintln!("process failure cleanup: drained={process_drained} closed={closed}");
