@@ -36,6 +36,16 @@ export function OnClientPostAdminCheck(client: Client): void {
 }
 ```
 
+For an existing plugin with `s2script.gamedata` declarations, run
+`npx @s2script/sdk migrate engine-functions [plugin-dir]`. The command analyzes the v1 declarations
+and source references, reports ambiguities, and writes `gamedata/functions.jsonc` only when the
+declared contract can be converted without loss. It refuses an existing destination unless you pass
+`--force`. Its JSON report lists files actually changed and the package/source edits you must make
+manually, including removal of the old `s2script.gamedata` field and authored engine permissions
+when adopting the v2 file. A successful conversion does not verify that the v1 declaration listed
+every native argument or that the resulting call works on the current game build. The command alone
+does not provide the runtime compatibility facades for old source code.
+
 This package is **types-only** — the engine injects the implementation at load time, and
 `s2s build` marks `@s2script/*` external rather than bundling it. Capabilities are imported as
 per-capability subpaths (`@s2script/sdk/entity`, `@s2script/sdk/timers`, `@s2script/sdk/clients`, …);
