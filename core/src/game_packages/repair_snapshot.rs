@@ -4,6 +4,8 @@ use crate::engine_functions::contract::hash_bytes;
 use serde_json::{json, Value};
 
 pub(super) const MAX_PACKET: usize = 4 * 1024 * 1024 + 256 * 1024 + 128 * 1024;
+// Selected shim JSONC parser allows a 1 MiB expanded tree plus lexer/callback temporaries.
+pub(super) const MAX_PARSE_TEMP: usize = 2 * 1024 * 1024;
 const MAX_RAW: usize = 4 * 1024 * 1024;
 const MAX_METADATA: usize = 256 * 1024;
 

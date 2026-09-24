@@ -157,6 +157,7 @@ pub(crate) fn select(root: &Path, engine: &str, game: &str, platform: &str) -> R
         .saturating_add(preparation_bytes)
         .saturating_add(4 * 1024 * 1024 + 4096)
         .saturating_add(repair_snapshot::MAX_PACKET.saturating_mul(3))
+        .saturating_add(repair_snapshot::MAX_PARSE_TEMP)
         .saturating_add(2 * 1024 * 1024);
     let retention = crate::loader::retain_game_package(charged)
         .ok_or("game package retained-byte admission unavailable")?;

@@ -734,6 +734,33 @@ fn repair_snapshot_admission_precedes_owner_publication_and_retains_exact_bytes(
 }
 
 #[test]
+fn long_malformed_operator_bytes_remain_nonfatal_and_private_at_commit() {
+    let root = complete_fixture(vec![record("@fixture/two", "independent", "other")]);
+    let handle = super::select(root.path(), "source2", "other", "linuxsteamrt64").unwrap();
+    let raw = format!("{{\"keys\":\"{}", "Q".repeat(12000)).into_bytes();
+    let path = b"custom/10-malformed.jsonc";
+    let diagnostic = b"gamedata parse error in custom/10-malformed.jsonc: JSON category 101 at byte 12010";
+    let mut packet = b"GCR1".to_vec();
+    packet.extend_from_slice(&1u32.to_le_bytes());
+    for value in [path.as_slice(), b"parse-error", diagnostic.as_slice(), raw.as_slice()] {
+        packet.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        packet.extend_from_slice(value);
+    }
+    packet.extend_from_slice(&0u32.to_le_bytes()); // effects
+    packet.extend_from_slice(&0u32.to_le_bytes()); // no applied custom paths
+    super::commit(handle, "{}", &packet).unwrap();
+    let status: Value = serde_json::from_slice(&super::status()).unwrap();
+    assert_eq!(status["operatorRepairs"][0]["result"], "parse-error");
+    assert_eq!(status["operatorRepairs"][0]["sha256"], hash(&raw));
+    assert!(status["customPaths"].as_array().unwrap().is_empty());
+    assert!(!status.to_string().contains(&"Q".repeat(64)));
+    super::REGISTERED.with(|slot| {
+        assert_eq!(slot.borrow().as_ref().unwrap()._repair_snapshot.repairs[0].bytes, raw);
+    });
+    super::clear().unwrap();
+}
+
+#[test]
 fn aborted_handles_do_not_alias_the_next_selection() {
     let root = complete_fixture(vec![record("@fixture/two", "two", "other")]);
     let a = super::select(root.path(), "source2", "other", "linuxsteamrt64").unwrap();

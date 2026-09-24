@@ -12,6 +12,10 @@
 
 namespace {
 
+struct RepairParseLimit : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
 // Does a master entry's condition field match? Absent condition = matches. Value may be a string
 // or an array of strings (SourceMod's repeated-key idiom; JSON has no duplicate keys).
 //
@@ -448,17 +452,43 @@ GameConfig MergeOwner(const std::string& gamedataRoot,
                     return gc;
                 }
                 try {
-                    const auto depth = [](int nesting, nlohmann::json::parse_event_t event,
-                                          nlohmann::json&) {
+                    size_t nodes = 0, decodedBytes = 0;
+                    // The callback runs at container start and before a parsed key/value is
+                    // inserted into the DOM. Charge ALL sections, including unknown nested
+                    // ones, rather than counting only effects after the tree exists.
+                    const auto budget = [&](int nesting, nlohmann::json::parse_event_t event,
+                                            nlohmann::json& value) {
                         if ((event == nlohmann::json::parse_event_t::object_start ||
                              event == nlohmann::json::parse_event_t::array_start) && nesting >= 128)
-                            throw std::runtime_error("JSON nesting exceeds 128 containers");
+                            throw RepairParseLimit("JSON nesting exceeds 128 containers");
+                        if (event == nlohmann::json::parse_event_t::object_start ||
+                            event == nlohmann::json::parse_event_t::array_start ||
+                            event == nlohmann::json::parse_event_t::key ||
+                            event == nlohmann::json::parse_event_t::value) {
+                            ++nodes;
+                            if (value.is_string()) decodedBytes +=
+                                value.get_ref<const std::string&>().size();
+                            // 192 bytes/node conservatively covers JSON value, map/vector
+                            // slot, allocator overhead; decoded strings are charged separately.
+                            if (nodes > 4096 || nodes * 192 + decodedBytes > 1024 * 1024)
+                                throw RepairParseLimit("expanded JSON exceeds 1 MiB or 4096 nodes");
+                        }
                         return true;
                     };
-                    j = nlohmann::json::parse(repair->bytes, depth, true, true);
-                } catch (const std::exception& e) {
+                    j = nlohmann::json::parse(repair->bytes, budget, true, true);
+                } catch (const RepairParseLimit& e) {
+                    error = "gamedata custom override " + label + ": " + e.what();
+                    gc.filesFailed.push_back(label);
+                    return gc;
+                } catch (const nlohmann::json::parse_error& e) {
                     repair->result = "parse-error";
-                    repair->error = error = "gamedata parse error in " + p.string() + ": " + e.what();
+                    repair->error = error = "gamedata parse error in " + label +
+                        ": JSON category " + std::to_string(e.id) +
+                        " at byte " + std::to_string(e.byte);
+                    return gc;
+                } catch (const std::exception&) {
+                    repair->result = "parse-error";
+                    repair->error = error = "gamedata parse error in " + label + ": JSON parser failure";
                     return gc;
                 }
                 size_t potentialEffects = j.is_object() ? j.size() : 1;

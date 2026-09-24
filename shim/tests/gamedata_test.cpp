@@ -1237,12 +1237,49 @@ static void test_package_custom_capture_limits() {
           "aggregate raw-byte cap stops further custom merge");
 }
 
+static void test_package_custom_parser_safety() {
+    TempRoot root;
+    const auto b = bundle("cs2", nlohmann::json::array({
+        embedded("master.gamedata.jsonc", {{"files", nlohmann::json::array({{{"file","a.jsonc"}}})}}),
+        embedded("a.jsonc", {{"keys", {{"K","shipped"}}}})
+    }));
+    std::string error;
+    const std::string token(12000, 'Q');
+    const std::string malformed = std::string("{\"keys\":\"") + token;
+    put(root.path / "cs2" / "custom" / "10-malformed.jsonc", malformed);
+    auto gc = loadBundle(b, root, error);
+    CHECK(gc.filesFailed.empty() && gc.keys.at("K") == "shipped" &&
+          gc.packageProvenance.repairs.back().result == "parse-error" &&
+          gc.packageProvenance.repairs.back().bytes == malformed,
+          "long malformed token remains a nonfatal exact-byte repair record");
+    const auto& diagnostic = gc.packageProvenance.repairs.back().error;
+    CHECK(error.size() < 512 && diagnostic.size() < 512 &&
+          error.find(token.substr(0, 64)) == std::string::npos &&
+          diagnostic.find(token.substr(0, 64)) == std::string::npos &&
+          diagnostic.find("JSON category 101 at byte ") != std::string::npos &&
+          diagnostic.find("10-malformed.jsonc") != std::string::npos,
+          "parse diagnostics retain path and position/category without raw token text");
+    CHECK(EncodePackageRepairSnapshot(gc.packageProvenance).size() > malformed.size(),
+          "long malformed bytes cross the bounded GCR1 encoder unchanged");
+
+    fs::remove(root.path / "cs2" / "custom" / "10-malformed.jsonc");
+    std::string ignored = "{\"future\":[";
+    for (int i = 0; i < 6000; ++i) ignored += i ? ",0" : "0";
+    ignored += "]}";
+    put(root.path / "cs2" / "custom" / "20-expanded.jsonc", ignored);
+    gc = loadBundle(b, root, error);
+    CHECK(!gc.filesFailed.empty() && error.find("expanded JSON") != std::string::npos &&
+          gc.keys.empty(),
+          "ignored nested section hits parse-event expansion budget before package publication");
+}
+
 int main() {
     test_package_bundle_selection_and_sections();
     test_package_bundle_envelope_failures();
     test_package_bundle_nesting_limit();
     test_package_custom_and_diagnostics();
     test_package_custom_capture_limits();
+    test_package_custom_parser_safety();
     test_master_selects_by_condition();
     test_array_order_is_apply_order();
     test_condition_accepts_an_array();
