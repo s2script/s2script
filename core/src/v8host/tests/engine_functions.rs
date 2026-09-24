@@ -162,7 +162,11 @@ fn suppression_none_rejects_untyped_js_decisions_without_committing_their_edits(
     js("quiet-caller", "if(__s2pkg_unsafe.Engine.function('fire').call(4)!==4)throw Error('Stop bypassed suppression:none');");
     js("quiet-sub", "if(JSON.stringify(seen)!=='[4,4]')throw Error('Stop edit leaked to observer'); bad.dispose(); globalThis.good=f.onPre(v=>{v.x=8; return 1;});");
     js("quiet-caller", "if(__s2pkg_unsafe.Engine.function('fire').call(4)!==4)throw Error('changed/continue broken');");
-    js("quiet-sub", "if(JSON.stringify(seen)!=='[4,4,8]')throw Error('Changed edit hidden');");
+    js("quiet-sub", "if(JSON.stringify(seen)!=='[4,4,8]')throw Error('Changed edit hidden'); globalThis.late=f.onPre(v=>{v.x=99;return 3;}); globalThis.tail=f.onPre({observeOnly:true},v=>seen.push(v.x));");
+    js("quiet-caller", "if(__s2pkg_unsafe.Engine.function('fire').call(4)!==4)throw Error('invalid later Stop committed');");
+    js("quiet-sub", "if(JSON.stringify(seen)!=='[4,4,8,8,8]')throw Error('prior accepted edit lost'); late.dispose(); globalThis.thrown=f.onPre(v=>{v.x=99;throw Error('bad decision');});");
+    js("quiet-caller", "if(__s2pkg_unsafe.Engine.function('fire').call(4)!==4)throw Error('throw committed');");
+    js("quiet-sub", "if(JSON.stringify(seen)!=='[4,4,8,8,8,8,8]')throw Error('throw leaked edit');");
     finish();
 }
 
