@@ -7,6 +7,7 @@ import * as create from "./create.ts";
 import * as login from "./login.ts";
 import * as config from "./config.ts";
 import * as codegen from "./codegen.ts";
+import * as inspect from './inspect.ts';
 
 export interface Command {
   name: string;
@@ -18,6 +19,7 @@ export interface Command {
 export const COMMANDS: Command[] = [
   { name: "create", summary: "Scaffold a new plugin or workspace", run: create.run },
   { name: "build", summary: "Build a plugin (or a whole workspace) to .s2sp", run: build.run },
+  { name: 'inspect', summary: 'Inspect a plugin archive without loading it', run: inspect.run },
   { name: "deploy", summary: "Publish a plugin (or a whole workspace) to the registry", run: deploy.run },
   { name: "version", summary: "Apply pending changesets across a workspace", run: version.run },
   { name: "add", summary: "Add a registry package's types", run: add.run },

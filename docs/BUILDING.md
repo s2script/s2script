@@ -200,6 +200,16 @@ it never applies a patch or creates fabricated source history. `--prepare-only` 
 preparation without a compiler and leaves no success manifest. A failed rebuild also removes
 the previous success manifest so old output cannot satisfy a new build attempt.
 
+The source-bound acceptance builder invokes `test-khook-sniper-build.sh` itself.
+Bound that inner build with `S2_BUILD_CPUS=2 S2_BUILD_MEMORY=8g S2_BUILD_JOBS=2
+CARGO_BUILD_JOBS=2`; `S2_BUILD_IMAGE=rust@sha256:<verified-digest>` selects the
+operator's verified Bullseye image. These environment values reach the actual
+Docker invocation, and the two job limits reach the build container. Job counts
+must be positive integers and are validated before expensive work. Explicit
+`S2_BUILD_JOBS` bounds both shim and probe CMake builds. Unset values preserve CI's
+existing Docker/image and compiler defaults. Record the selected image digest and
+limits alongside artifact hashes; an argv-capture test is not a native build.
+
 `bash scripts/test-khook-sniper-build.sh` builds the unmodified reference host, shim/core and
 optimized probe in the compatibility environment and validates their ELF/GLIBC requirements.
 These builds do not establish live `.s2sp` reload, process shutdown or human-assisted acceptance.

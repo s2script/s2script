@@ -105,12 +105,11 @@ Stated honestly rather than optimistically: **adding a hook on an existing shape
 change** — a new thunk in `shim/src/hook_dispatch.h`/`shim/src/engine_hooks.cpp` plus a table row in
 `core/src/gamedata_hooks.rs`'s `SHAPES`, kept in sync with the shim's mirror by
 `scripts/check-hook-shapes.sh` — the same cost class as adding a `fan_out` channel, not "purely
-data." Two shapes ship today; a third is deferred until an actual consumer needs one.
+data." Five reviewed native shapes currently ship.
 
 **A validator is mandatory for every `hooks` entry**, unlike `calls`, where signature uniqueness
 alone suffices for a signature target. A wrong *call* address just misbehaves; a wrong *detour*
-address overwrites the prologue of whatever function is actually sitting there. `s2detour::Install`
-refuses an unrelocatable prologue, but that's a decode check, not an identity check — so a `hooks`
+address overwrites the prologue of whatever function is actually sitting there. Stock KHook owns physical relocation; relocation success is not an identity check — so a `hooks`
 entry without `validate` on its target fails the **build**, in `scripts/check-call-descriptors.sh`'s
 `hooks` grammar pass, not the load.
 
@@ -186,10 +185,13 @@ install-on-first-subscribe pattern `UserCmd.onRun` already uses in `shim/src/s2s
 no subscribers means no patched bytes. Dispatch goes through `fan_out_inner` (§2.2): priority,
 per-handler `TryCatch` isolation, and the standard collapse all apply unchanged — `Handled` or
 `Stop` suppresses the original call, `Changed` writes the mutated params back and still calls it.
-There is **no** uninstall on last-unsubscribe: `s2detour::RemoveAll()` at Unload is the only removal
-path, because unpatching a live detour races the engine calling through it (SourceMod doesn't do it
-either) — an installed hook slot outlives that plugin's own reload and is reused for the same
-address on the next subscribe. Mutation is a block-scoped view over the thunk's stack args, exactly
+There is **no** physical removal on last-unsubscribe. Checked stock-KHook bindings
+remain resident across ordinary `.s2sp` archive replacement; script subscriptions
+retire through the ledger. Completion-aware native retirement requires quiescent
+callbacks and keeps storage alive until the provider acknowledges removal. Native
+updates require a server restart; they are not plugin archive reloads. The legacy
+private detour/relocator is no longer linked into production (standalone historical
+relocator tests remain). Mutation is a block-scoped view over the thunk's stack args, exactly
 like an OnTakeDamage `DamageInfo` — no pointer crosses into JS, and the view cannot outlive the dispatch
 (`s2script_core_dispatch_hook` in `core/src/ffi.rs`).
 

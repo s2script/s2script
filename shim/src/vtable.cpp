@@ -1,3 +1,4 @@
+#ifdef __linux__
 #include "vtable.h"
 #include "sigscan.h"
 
@@ -195,3 +196,60 @@ void** GetVTableByName(const char* module, const char* className) {
 }
 
 } // namespace s2vtable
+
+#else
+#include "vtable.h"
+namespace s2vtable { void** GetVTableByName(const char*, const char*) { return nullptr; } }
+#endif
+
+#include "sigscan.h"
+#include <cstring>
+#include <set>
+#include <vector>
+
+namespace s2vtable {
+void** GetVTableByName(const s2original::Image& image,const char* className,const LiveRead& read_live) {
+    if (!className || !*className) return nullptr;
+    struct Snapshot { uintptr_t begin; std::vector<uint8_t> bytes; };
+    std::vector<Snapshot> snapshots;
+    for (const auto& range : image.readable_ranges()) {
+        Snapshot snap{range.begin,std::vector<uint8_t>(range.end-range.begin)};
+        bool ok=read_live ? read_live(range.begin,snap.bytes.data(),snap.bytes.size()) :
+                           image.read_live(range.begin,snap.bytes.data(),snap.bytes.size());
+        if (!ok) return nullptr;
+        snapshots.push_back(std::move(snap));
+    }
+    auto find=[&](const uint8_t* bytes,size_t size,bool aligned) {
+        std::vector<int> pattern(bytes,bytes+size); std::vector<uintptr_t> result;
+        for (const auto& snap : snapshots)
+            for (size_t off : s2sig::FindPatterns(snap.bytes.data(),snap.bytes.size(),pattern)) {
+                uintptr_t at=snap.begin+off;
+                if (!aligned || at%alignof(uintptr_t)==0) result.push_back(at);
+            }
+        return result;
+    };
+    auto word=[&](uintptr_t at,uintptr_t& out) {
+        for (const auto& snap : snapshots)
+            if (at>=snap.begin && at-snap.begin<snap.bytes.size() && sizeof out<=snap.bytes.size()-(at-snap.begin)) {
+                std::memcpy(&out,snap.bytes.data()+(at-snap.begin),sizeof out); return true;
+            }
+        return false;
+    };
+    std::string decorated=std::to_string(std::strlen(className))+className;
+    std::set<uintptr_t> winners;
+    for (uintptr_t name : find(reinterpret_cast<const uint8_t*>(decorated.c_str()),decorated.size()+1,false)) {
+        for (uintptr_t name_ref : find(reinterpret_cast<const uint8_t*>(&name),sizeof name,true)) {
+            if (name_ref<sizeof(uintptr_t) || !image.mapped(name_ref-sizeof(uintptr_t),2*sizeof(uintptr_t))) continue;
+            uintptr_t typeinfo=name_ref-sizeof(uintptr_t);
+            for (uintptr_t type_ref : find(reinterpret_cast<const uint8_t*>(&typeinfo),sizeof typeinfo,true)) {
+                uintptr_t offset=1;
+                if (type_ref<sizeof(uintptr_t) || !word(type_ref-sizeof(uintptr_t),offset) || offset!=0 ||
+                    type_ref>UINTPTR_MAX-sizeof(uintptr_t) || !image.mapped(type_ref+sizeof(uintptr_t),sizeof(uintptr_t))) continue;
+                winners.insert(type_ref+sizeof(uintptr_t));
+                if (winners.size()>1) return nullptr; // no incidental first match
+            }
+        }
+    }
+    return winners.size()==1 ? reinterpret_cast<void**>(*winners.begin()) : nullptr;
+}
+}

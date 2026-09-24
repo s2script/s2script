@@ -45,8 +45,8 @@ assert_reason() {
   fi
 }
 
-EXPECTED_MMS="7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33"
-EXPECTED_KHOOK="1e200e4cc8e0badcb7cf941525268d6977f6a4e6"
+EXPECTED_MMS="fa6f80e4662e5b96cc2e97722d812f374581dfd8"
+EXPECTED_KHOOK="40d233d160b5bf60cc3e732939142b222fbd8ece"
 
 tree_digest() {
   local d="$1"
@@ -164,7 +164,7 @@ make_so() {
       printf 'Metamod:Source 2.0.0-dev+1411\n    SourceHook version: %%d:%%d\n' >"$path"
       ;;
     plapi18)
-      printf 'Metamod:Source pin 7e24ce9e7a03 PLAPI 18\nGetDetourInterface\nKHook\n' >"$path"
+      printf 'Metamod:Source pin fa6f80e4662e PLAPI 18\nGetDetourInterface\nKHook\n' >"$path"
       ;;
     stripped18)
       printf 'stripped-metamod-bytes-no-symbols\n' >"$path"
@@ -624,7 +624,7 @@ assert_eq "$(tree_digest "$DEST")" "$before" "no-source path preserved dest byte
 assert_contains "$DEST/KEEP_ME" "still-here" "no-source preserved dest"
 curl_calls="$(grep -c . "$CURL_LOG" || true)"
 assert_eq "$curl_calls" "1" "fresh setup selects the immutable official default"
-assert_contains "$CURL_LOG" "https://github.com/alliedmodders/metamod-source/releases/download/2.0.0.1467/mmsource-2.0.0-git1467-linux.tar.gz" "default uses exact official asset, never moving latest"
+assert_contains "$CURL_LOG" "https://github.com/alliedmodders/metamod-source/releases/download/2.0.0.1469/mmsource-2.0.0-git1469-linux.tar.gz" "default uses exact official asset, never moving latest"
 
 echo "== transaction: stock official archive needs no private build manifest"
 RELEASE_ROOT="$WORKDIR/release-root"

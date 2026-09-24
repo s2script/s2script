@@ -62,18 +62,18 @@ spec remains a reference for concrete invocation behavior and evidence cases;
 do not execute two competing B/C plans. PR A's remediation and acceptance rules
 remain authoritative. Each slice updates its own operator and architecture docs.
 
-**Baseline and release prerequisite:** PR A acceptance is incomplete at this baseline.
-The release gate observed the CS2 child exiting with SIGSEGV/139 on ordinary
-shutdown, and required human/client evidence remains outstanding. A successful
-container wrapper exit is not a successful engine shutdown. A later controlled
-comparison reproduced child139 with s2script enabled and disabled on official
-Metamod1467 and1469, with MAM1.6 present in all four cells. s2script is therefore
-not necessary to reproduce that symptom; neither fault attribution nor clean
-shutdown is established. Following the user's instruction to implement this stack,
-isolated development may proceed from the verified source/stock-host baseline.
-Shutdown and client evidence remain mandatory merge/release gates; no new slice
-waives them, reports them as passed, or assumes the shutdown cause. This scheduling
-change can require rework if later acceptance exposes a foundation defect.
+**Baseline and release prerequisite:** PR A acceptance is incomplete at this baseline;
+required runtime and human/client evidence remains outstanding. A controlled
+comparison reproduced the known shutdown-only SIGSEGV/139 with s2script enabled
+and disabled on official Metamod 1467 and 1469, with MAM 1.6 in all four cells.
+That does not establish fault attribution or a clean engine exit. The user has
+explicitly made this known shutdown-only symptom non-blocking and directed us
+to stop additional quit tests and shutdown investigation. Preserve the recorded
+failure without relabeling it as a pass or treating a wrapper exit as child success.
+Isolated development proceeds from the verified source/stock-host baseline.
+Startup, plugin use, map transitions, script reload, peer coexistence and required
+client observations remain release gates; callback lifetime and removal safety
+tests remain mandatory. Later runtime findings can still require rework.
 
 Each implementation slice must build, pass its applicable full CI and live gates,
 and preserve a usable release at its tip. Stacking does not make an incomplete
@@ -149,11 +149,20 @@ registration before or after s2script.
 
 ## 5. S1 interception and preserved behavior
 
-Move the declarative engine-hook backend and named DispatchTraceAttack, HostSay,
+Move the declarative engine-hook backend and named CBaseEntity_TakeDamageOld, HostSay,
 FireOutputInternal, and ProcessUsercmds intercepts to checked stock KHook bindings.
 Move precache to the supported KHook virtual path, proving its slot and receiver
 semantics. Delete production `s2detour` installation and direct owned-vtable
 writes once their replacements pass acceptance.
+
+The independently audited damage ABI is `void(victim*, mutable damageInfo*,
+optional damageResult*)`. This corrects the inherited four-pointer/integer-return
+assumption: retain Ignore callbacks, schema-based damage fields and scoped victim/info;
+forward optional result storage unchanged. The internal recipe key is
+`CBaseEntity_TakeDamageOld`, with exact entry and semantic diagnostic validation.
+The retired `DispatchTraceAttack` pattern must not alias this target. Controlled
+output forwarding and static identity gates do not replace actual damage delivery.
+
 
 Precache may not silently remain a fallback private patch. If the stock API
 cannot preserve its required behavior, S1 stays incomplete and the concrete
@@ -221,8 +230,12 @@ and fixture ownership; these are its mandatory outcomes:
   of arbitrary JavaScript startup effects or redesign activation.
 - Full native/JS CI passes; the deployable sniper release includes the default
   plugins and passes the relevant live CS2 regression gates.
-- Ordinary shutdown, map transitions, and restart pass on the integrated release.
-  Record the actual engine child exit status, not only the container status.
+- Startup, map transitions, required restarts and normal plugin use pass on the
+  integrated release. Leave the tested server running. The known shutdown-only
+  SIGSEGV/139 is diagnostic and non-blocking; no separate quit gate is required.
+  Preserve any incidentally captured child status without substituting the
+  container wrapper status. Fixture-owned removal and peer-survival proof remain
+  required independently of whole-process exit.
 - Production interception inventory contains no remaining `s2detour` installer,
   private interception provider, or direct shared-vtable patch owned by s2script.
   Dependency diff and deployed host identity establish that upstream is stock.
@@ -259,7 +272,7 @@ extensions without copying every historical mechanism.
   function descriptions and plugin-owned dynamic hooks are established patterns.
 - [SourceMod GameConfigs](https://github.com/alliedmodders/sourcemod/blob/master/core/logic/GameConfigs.cpp):
   game/platform selection and custom configuration layering.
-- [Pinned KHook interface](https://github.com/Kenzzer/KHook/blob/1e200e4cc8e0badcb7cf941525268d6977f6a4e6/include/khook.hpp):
+- [Pinned KHook interface](https://github.com/Kenzzer/KHook/blob/40d233d160b5bf60cc3e732939142b222fbd8ece/include/khook.hpp):
   the stock provider contract against which feasibility must be demonstrated.
 - [Existing migration invocation contracts](2026-09-14-khook-migration-design.md)
   and [stock-host decision](2026-09-15-khook-stock-host-decision.md).

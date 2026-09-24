@@ -47,6 +47,31 @@ int64_t FindPattern(const uint8_t* text, size_t len, const std::vector<int>& pat
     return -1;
 }
 
+std::vector<size_t> FindPatterns(const uint8_t* text, size_t len, const std::vector<int>& pat) {
+    std::vector<size_t> matches;
+    if (!text || pat.empty()) return matches;
+    for (size_t cursor = 0; cursor < len;) {
+        int64_t off = FindPattern(text+cursor,len-cursor,pat);
+        if (off < 0) break;
+        size_t at = cursor+static_cast<size_t>(off);
+        matches.push_back(at); cursor=at+1;
+    }
+    return matches;
+}
+bool AddRelative(uintptr_t instruction, size_t length, int32_t displacement, uintptr_t& target) {
+    if (length > UINTPTR_MAX-instruction) return false;
+    uintptr_t end=instruction+length;
+    if (displacement < 0) {
+        uint64_t magnitude=uint64_t(-int64_t(displacement));
+        if (magnitude > end) return false;
+        target=end-static_cast<uintptr_t>(magnitude);
+    } else {
+        if (uint32_t(displacement) > UINTPTR_MAX-end) return false;
+        target=end+uint32_t(displacement);
+    }
+    return true;
+}
+
 int CountPattern(const uint8_t* text, size_t len, const std::vector<int>& pat, int cap) {
     if (!text || pat.empty() || pat.size() > len) return 0;
     const size_t last = len - pat.size();

@@ -6,10 +6,19 @@
 # note: no `pipefail` — the `objdump | ... | tail` glibc checks SIGPIPE harmlessly
 set -eu
 
-echo "=== install C/C++ build deps (g++ 10, binutils, curl) ==="
+# Explicit limits are validated before Docker, downloads, or compilation.
+for job_name in S2_BUILD_JOBS CARGO_BUILD_JOBS; do
+  job_value=${!job_name:-}
+  if [[ -n "$job_value" && ! "$job_value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "error: $job_name must be a positive integer" >&2
+    exit 1
+  fi
+done
+
+echo "=== install C/C++ build deps (g++ 10, binutils, curl, pinned libffi autotools bootstrap) ==="
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq build-essential binutils curl >/dev/null
+apt-get install -y -qq build-essential binutils curl autoconf automake libtool libltdl-dev >/dev/null
 
 # bullseye ships cmake 3.18; the shim needs >= 3.20. Drop in a newer cmake binary.
 echo "=== install cmake 3.28 (bullseye's 3.18 is too old) ==="
@@ -31,7 +40,9 @@ objdump -T target/release/libs2script_core.so | grep -oE 'GLIBC_[0-9.]+' | sort 
 echo "=== build C++ shim (links the just-built core) ==="
 rm -rf build/shim
 cmake -S shim -B build/shim -DCMAKE_BUILD_TYPE=Release >/dev/null
-cmake --build build/shim -j
+cmake_jobs=(-j)
+if [[ -n "${S2_BUILD_JOBS:-}" ]]; then cmake_jobs=(-j "$S2_BUILD_JOBS"); fi
+cmake --build build/shim "${cmake_jobs[@]}"
 
 echo "=== package addon ==="
 ./scripts/package-addon.sh

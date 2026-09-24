@@ -22,6 +22,32 @@ export interface EngineCalls {}
  */
 export interface EngineHooks {}
 
+/** Generated bindings augment this map from gamedata/functions.jsonc. */
+export interface EngineFunctions {}
+
+export interface FunctionStatus {
+  readonly canonicalId: string;
+  readonly availability: 'available' | 'unavailable';
+  readonly reason: string | null;
+  readonly hookObservation: 'not-requested' | 'pending' | 'active' | 'failed';
+  readonly provenance: {
+    readonly archiveHash: string;
+    readonly baseContractHash: string;
+    readonly appliedOverrides: readonly { readonly path: string; readonly sha256: string }[];
+    readonly finalTargetHash: string;
+    readonly resolverReceipt: string;
+    readonly required: boolean;
+  };
+}
+
+export interface Disposable { dispose(): boolean; }
+
+export interface FunctionSubscription extends Disposable {
+  readonly status: 'pending' | 'active' | 'failed' | 'disposed';
+  readonly reason: string | null;
+  dispose(): boolean;
+}
+
 /**
  * Plugin-declared engine calls and inbound hooks, resolved from this plugin's own gamedata.
  *
@@ -34,6 +60,7 @@ export interface EngineHooks {}
  * if (onFoo) onFoo((view) => { view.reason = 0; });
  */
 export declare const Engine: {
+  function<K extends keyof EngineFunctions>(name: K): EngineFunctions[K];
   /**
    * The declared call, or `null` when its descriptor failed a load-time gate (signature miss,
    * validator rejection, slot outside `.text`, missing platform entry, or the plugin is not

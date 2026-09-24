@@ -33,10 +33,10 @@ S2_METAMOD_IDENTITY_NAME=".s2script-metamod-identity"
 S2_METAMOD_BUILD_COPY_NAME=".s2script-metamod-build.json"
 S2_METAMOD_SO_REL="bin/linuxsteamrt64/metamod.2.cs2.so"
 S2_METAMOD_VERIFY_PY="$S2_SCRIPT_REPO/scripts/verify-metamod-artifact.py"
-# Official release 2.0.0.1467 targets the checked upstream pin 7e24ce9e7a03.
+# Official release 2.0.0.1469 targets the checked upstream pin fa6f80e4662e.
 # Its source declares PLAPI 18; GitHub publishes this asset checksum (not a signature).
-S2_METAMOD_STOCK_RELEASE_URL="https://github.com/alliedmodders/metamod-source/releases/download/2.0.0.1467/mmsource-2.0.0-git1467-linux.tar.gz"
-S2_METAMOD_STOCK_RELEASE_SHA256="f3dd81999e93ef86d45ed8f0f451c93806ad7fba1514dafd5f2623c61ca637a2"
+S2_METAMOD_STOCK_RELEASE_URL="https://github.com/alliedmodders/metamod-source/releases/download/2.0.0.1469/mmsource-2.0.0-git1469-linux.tar.gz"
+S2_METAMOD_STOCK_RELEASE_SHA256="a552e4cb1399ced15a1192880f1f6bdd3d16f930a9cb33bc9e45396a26f177ad"
 
 s2_metamod_so() { echo "$1/$S2_METAMOD_SO_REL"; }
 s2_metamod_identity() { echo "$1/$S2_METAMOD_IDENTITY_NAME"; }

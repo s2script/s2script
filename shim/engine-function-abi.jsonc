@@ -1,0 +1,11 @@
+{
+  "platform": "linux-x86_64-sysv",
+  "receivers": ["none", "entity"],
+  "atoms": {"u8": 1, "i32": 4, "u32": 4, "i64": 8, "u64": 8, "f32": 4, "f64": 8, "ptr": 8},
+  "maxParameters": 32,
+  "maxCifArguments": 33,
+  "maxStackBytes": 256,
+  "stackSafetyBuffer": 128,
+  "gpRegisters": 6,
+  "sseRegisters": 8
+}

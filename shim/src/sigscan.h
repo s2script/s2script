@@ -18,6 +18,11 @@ std::vector<int> ParsePattern(const std::string& pattern);
 // First offset in [text, text+len) where every non-wildcard token matches; -1 if none.
 int64_t FindPattern(const uint8_t* text, size_t len, const std::vector<int>& pat);
 
+// Every candidate, including overlapping matches, in ascending byte offset order.
+std::vector<size_t> FindPatterns(const uint8_t* text, size_t len, const std::vector<int>& pat);
+// Checked logical-PC RIP calculation, independent of the address of copied instruction bytes.
+bool AddRelative(uintptr_t instruction, size_t length, int32_t displacement, uintptr_t& target);
+
 // Count matches of `pat` in `text`, stopping once `cap` is reached (a stale-signature validation gate
 // only needs 0 = not found / 1 = unique / >1 = ambiguous). Cheap uniqueness check for the gamedata gate.
 int CountPattern(const uint8_t* text, size_t len, const std::vector<int>& pat, int cap);

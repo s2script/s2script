@@ -1,5 +1,9 @@
 # Engine Functions Implementation Plan
 
+**Foundation merge status — 2026-09-24:** The user explicitly authorized merging tested foundation PRs #220–224 into `main`, with S2 and S3 still unfinished. This authorization supersedes earlier draft/non-mergeable instructions only for that foundation integration; it does not waive remaining live, client, peer, map or reload acceptance gates, authorize deployment, or declare this plan complete. S2's accepted scalar/entity checkpoint is `8aac96a9eee05f577cad94ea9fc21c9b53efb6ed`, with exact JavaScript run 35961320531 and native run 35961320527 passing. Public runtime `Engine.function` and loader activation remain unimplemented. Remaining projections/lifetimes, trusted POST effects, compatibility adapters, migration, worked example, S3 integration and live acceptance still require implementation and validation.
+
+**SDK release hold:** The SDK already contains `Engine.function` declarations and enabled function-authoring/build tooling, while the runtime does not expose that method. Do not publish the next SDK release with that mismatch: first supply and validate the matching runtime, or explicitly gate/remove the unfinished public declarations and tooling from the release. Existing pending changesets already include SDK updates, so omitting a new changeset does not prevent these files from entering the next release. The changesets workflow may create/update the separate release PR #218; merging #218, creating release tags and publishing/deploying a runtime are outside the foundation merge request. Keep that release hold explicit until resolved.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace v1 plugin calls/hooks authoring with one typed engine-function declaration whose validated call, pre-hook, and post-hook surfaces share one stock-KHook binding, remain operator-repairable, and preserve existing archives and APIs for one deprecation window.
@@ -35,7 +39,7 @@
 - Raw pointers never enter JavaScript. Entities use live handle adoption; opaque values use registered host-invalidated handles; strings/vectors are copied; borrowed views carry a dispatch epoch and reject every access after callback return or across `await`.
 - Required preparation failure preserves the running generation. Optional failure creates a named unavailable binding. Once activation begins, baseline lifecycle applies: unload the old generation first; a failed candidate start cleans the candidate and does not restore arbitrary old JavaScript effects.
 - All bindings, subscriptions, and shared target references are ledgered. Teardown does not depend on plugin cleanup.
-- Keep v1 accepted for one published deprecation window. Migration preserves validators, timing, permissions, public null behavior, and explicit adapters, or stops with a named ambiguity without writing a weakened partial output.
+- Keep v1 accepted for one published deprecation window. Migration preserves the declared validators, timing, permissions, public null behavior, and explicit adapters for correctly declared supported contracts, or stops with a named structural ambiguity without writing a weakened partial output. Neither v1 nor v2 can infer an undeclared native argument; structural conversion is not native ABI certification.
 - No task checkbox is complete until its named evidence exists. Host/unit evidence does not substitute for stock-provider or live CS2 evidence.
 
 ---
@@ -61,7 +65,7 @@ Every value copy uses explicit fixed-width aligned storage plus `std::memcpy`; t
 
 Compute `SetupHook`'s stack-copy byte count from the normalized vector using the SysV scalar classification used by this bounded contract: the optional member receiver consumes the first GP slot; `u8`, integer, and pointer atoms consume the six GP slots; float/double atoms consume the eight SSE slots; exhausted classes spill in original argument order to aligned eight-byte stack slots. Pass `max(128, align16(spilled_bytes))`, where 128 is the pinned provider's `STACK_SAFETY_BUFFER`, so even a no-spill signature never relies on the special zero input. Reject a result over 256 bytes or any class the helper does not understand. S2-EF-01 compares this computation with compiler-authored typed probes for no spill, mixed GP/SSE spill, and order before any public API consumes it.
 
-The proof corpus includes native bool (`u8` with 0/1 projection) and every other atom as argument and return, free/member receivers, void/non-void, the S2/S3 compatibility and Ignite signatures, no-spill calls, mixed classes, more than six GP arguments, more than eight SSE arguments, and a previously absent native signature assembled from the bounded atoms after the runtime adapter is built. That new signature must call and hook without adding a signature-specific thunk, prototype, or regenerated callback. A failure of any mandatory case stops at design review.
+The proof corpus includes native bool (`u8` with 0/1 projection) and every other atom as argument and return, free/member receivers, void/non-void, controlled S2/S3 compatibility signatures and the audited scalar CanAcquire signature, no-spill calls, mixed classes, more than six GP arguments, more than eight SSE arguments, and a previously absent native signature assembled from the bounded atoms after the runtime adapter is built. That new signature must call and hook without adding a signature-specific thunk, prototype, or regenerated callback. The legacy Ignite demo is not a scalar proof: its actual ABI ends in a by-value Vector omitted by the v1 descriptor. A failure of any mandatory case stops at design review.
 
 ABI types and projections are separate. For example, author type `entity?` normalizes to native `ptr` plus generic `entity?` projection. `string`, `vector`, registered opaque handles, and borrowed records also use pointer-class ABI atoms but different explicit projection codecs. No projection can change the ABI fingerprint.
 
@@ -508,7 +512,7 @@ Expected: both orders PASS with real callbacks and effective result observations
 
 - [ ] **Step 7: Run the deployable bullseye/live proof and record the gate**
 
-Build through `scripts/build-sniper.sh`; deploy the probe plus a minimal internal fixture; exercise existing Ignite and compatibility signatures plus a newly supported native signature absent when the adapter was authored; trigger re-entry and script unload/reload. Leave the server running after runtime tests. Record `ldd`, exported-symbol, license freshness, and GLIBC evidence for the statically linked dependency.
+Build through `scripts/build-sniper.sh`; deploy the probe plus a minimal internal fixture. Label evidence separately: (1) real-engine `CCSPlayer_ItemServices::CanAcquire(CEconItemView*, AcquireMethod, void*) -> AcquireResult`, whose bounded member ABI is receiver pointer plus pointer, i32, pointer arguments and i32 return, using actual bot ItemServices/CEconItemView objects and bot item actions, with public acquisition PRE/POST observations, non-skipped outer/nested completion, main/peer POST current-return observations, and separately labeled final-caller result; (2) controlled compatibility and newly assembled scalar signatures, including direct original-once body counters, recall, peer effective-return observations, suppression and cleanup; and (3) real-V8 owner-A-to-owner-B synchronous re-entry and lifetime evidence. An explicitly armed, owned-bot CanAcquire PRE may make a one-shot nested live-target call only with its unchanged callback-scoped arguments, a depth latch and checked observation guard. It must never replay saved pointers later or run against human activity. No fake pointer, function body, or original-once counter may stand in for real engine objects or controlled original execution. Trigger script unload/reload and leave the server running after runtime tests. Record `ldd`, exported-symbol, license freshness, and GLIBC evidence for the statically linked dependency. The deployed CanAcquire recipe and validators must be derived from the audited exact server binary; an illustrative or stale pattern is not a deployable target.
 
 Run:
 
@@ -518,7 +522,7 @@ sudo docker run --rm -v "$PWD:/repo" -w /repo -v s2script-cargo:/usr/local/cargo
 bash scripts/test-engine-function-live.sh --docker docker/docker-compose.yml --rcon scripts/rcon.py
 ```
 
-Expected functional gate: every mandatory vector reports observed, nested owner-only bypass leaves peer observations intact, and reload drains KHook before closure free. Store evidence under `.gate/engine-functions/<commit>/`; do not commit binary/log artifacts. A necessary deployment stop may incidentally record child status, but the known shutdown-only 139 is diagnostic/non-blocking and needs no additional quit or clean-exit test.
+Expected functional gate: each labeled real-engine, controlled, and real-V8 vector reports observed; the real CanAcquire row uses actual bot objects and shows non-skipped completion and effective POST return without equating it to the later final-caller result, while controlled rows prove original-once counters and peer result semantics. Nested owner-only bypass leaves peer observations intact, and reload drains KHook before closure free. Store evidence under `.gate/engine-functions/<commit>/`; do not commit binary/log artifacts. A necessary deployment stop may incidentally record child status, but the known shutdown-only 139 is diagnostic/non-blocking and needs no additional quit or clean-exit test.
 
 - [ ] **Step 8: Enforce the hard decision gate**
 
@@ -1028,7 +1032,7 @@ git commit -m "feat: expose ledgered engine function bindings"
 
 ---
 
-### Task 8: S2-EF-08 — Preserve v1 behavior and add a lossless migration command
+### Task 8: S2-EF-08 — Preserve v1 behavior and add a structurally lossless migration command
 
 **Files:**
 - Create: `packages/sdk/src/engine-functions/migrate-v1.ts`
@@ -1055,7 +1059,7 @@ git commit -m "feat: expose ledgered engine function bindings"
 
 - [ ] **Step 1: Write red migration success/ambiguity tests**
 
-Success fixtures must zip `args`/`argNames`, carry every validator with its stage, join identical call/hook targets and ABIs, decode supported shapes, convert `bypassWith`, remove plugin-only `expose.ctx`, derive permissions, and emit a report.
+Success fixtures must zip `args`/`argNames`, carry every validator with its stage, join identical call/hook targets and ABIs, decode supported shapes, convert `bypassWith`, remove plugin-only `expose.ctx`, derive permissions, and emit a report that identifies success as lossless conversion of the *declared* contract only. A fixture with four declared scalar arguments must not gain an inferred fifth argument or receive a claim that its actual native ABI is complete. Neither v1 nor v2 has a general oracle for omitted native arguments.
 
 Failure fixtures: missing names, empty validators, mismatched call/hook targets, lossy shape projection, unsupported ABI feature, ambiguous receiver hop, source usage that cannot prove timing/null behavior, and an existing destination file. Assert no output file is written on any ambiguity.
 
@@ -1070,17 +1074,17 @@ Expected: FAIL because the command is absent.
 
 - [ ] **Step 2: Implement analysis-first migration**
 
-Parse all inputs, build a complete migration report in memory, and write `gamedata/functions.jsonc` only if every function is lossless. Use atomic temp+rename and refuse overwrite without an explicit `--force` whose report still names replaced files. The report includes old names, new canonical ids, validator stages, permissions removed from package authoring, compatibility adapter selection, and source references requiring manual edits.
+Parse all inputs, build a complete migration report in memory, and write `gamedata/functions.jsonc` only if every function is structurally lossless relative to its declared v1 contract. Use atomic temp+rename and refuse overwrite without an explicit `--force` whose report still names replaced files. The report includes old names, new canonical ids, validator stages, permissions removed from package authoring, compatibility adapter selection, source references requiring manual edits, and the scope of its structural guarantee. It does not certify undeclared native arguments or impose a new attestation step on all authors. The known incomplete Ignite demo remains historical and unavailable on the current build; do not treat its four-scalar conversion as evidence of a valid v2 native call or repair it by replacing only the stale pattern.
 
 - [ ] **Step 3: Normalize v1 through the same v2 intermediate representation**
 
-For the deprecation window, `s2s build` may read `s2script.gamedata` only on the v1 path and convert it to `NormalizedBundle` before common validation/type generation/packing. Do not drop a validator or coerce an unsupported shape to make it pass. Archive summary marks `compatibilityInput: "v1"` for diagnostics.
+For the deprecation window, `s2s build` may read `s2script.gamedata` only on the v1 path and convert its declared contract to `NormalizedBundle` before common validation/type generation/packing. Do not drop a validator or coerce an unsupported shape to make it pass. Archive summary marks `compatibilityInput: "v1"` for diagnostics. Common schema validation cannot discover arguments omitted from source; a successful v1 normalization must not be described as native ABI certification, including for the known truncated Ignite descriptor. This is a documentation and fixture boundary, not a name-specific runtime exception or alternate backend.
 
 Preserve every v1 native `bool` argument/return as native `u8` plus bool projection. Never widen a bool return to `i32`: upper return-register bits are not part of the C++ bool result. Any other legacy small-integer shape remains an explicit unsupported migration unless separately added to the proven capability contract.
 
 - [ ] **Step 4: Preserve `Engine.call` and `Engine.hook` facades**
 
-Map v1 call/hook lookup to the v2 binding while keeping the old `call -> callable|null`, `hook -> subscribe|null`, status strings, timing, and null behavior. `bypassWith` becomes explicit owner-only bypass policy on the paired normalized function.
+Map v1 call/hook lookup to the v2 binding while keeping the old `call -> callable|null`, `hook -> subscribe|null`, status strings, timing, and null behavior for correctly declared supported contracts. `bypassWith` becomes explicit owner-only bypass policy on the paired normalized function. The stale Ignite recipe resolves unavailable on the current build; no compatibility claim promises a working call from that known incomplete ABI, even if an operator replaces only its target pattern.
 
 - [ ] **Step 5: Lock acquisition and HUD adapters by name/hash**
 
@@ -1113,7 +1117,7 @@ bash scripts/build-base-plugins.sh
 bash scripts/check-plugins-typecheck.sh
 ```
 
-Expected: PASS; old base plugins/archives keep public behavior.
+Expected: PASS; correctly declared supported old base plugins/archives keep public behavior. The retained Ignite demo's historical observations do not count as a current-build call/ABI pass; its unavailable target and incomplete declared ABI remain documented separately.
 
 - [ ] **Step 7: Commit migration and compatibility**
 
@@ -1136,26 +1140,29 @@ git commit -m "feat: migrate legacy engine calls and hooks"
 - Create: `examples/engine-function-demo/src/plugin.ts`
 - Create: `examples/engine-function-demo/README.md`
 - Create: `packages/sdk/test/engine-function-demo.test.mjs`
-- Remove after parity is proved: `examples/engine-call-demo/**`
+- Modify: `examples/engine-call-demo/README.md` to label the retained v1 source and logs as historical
+- Retain: other `examples/engine-call-demo/**` source as the historical v1 example
 - Modify: `scripts/check-examples-coverage.sh` only if discovery requires it
 
-**Allowlist:** Worked example and its contract test. No runtime changes.
+**Allowlist:** Worked example, historical v1 README correction, and its contract test. No runtime changes.
 
 **Interfaces:**
-- Consumes: v2 SDK/runtime API and the already self-resolved Ignite target.
+- Consumes: v2 SDK/runtime API and the audited scalar `CBasePlayerPawn_CommitSuicide` base target.
 - Produces: one ordinary plugin that declares typed call+PRE+POST only in `gamedata/functions.jsonc` and exercises a deliberate per-function failure.
 
 - [ ] **Step 1: Write the red example contract test**
 
-Assert package.json has no `s2script.gamedata`, engine permissions, `requiresGamedata`, or generated include; archive has derived permissions and normalized member; source uses only `Engine.function("ignite")`; generated types reject wrong call args, invalid PRE mutation, bare non-void suppression in a returning fixture, and POST return override.
+Assert package.json has no `s2script.gamedata`, engine permissions, `requiresGamedata`, or generated include; archive has derived permissions and normalized member; source uses only `Engine.function("commitSuicide")`; generated types reject wrong call args, invalid PRE mutation, bare non-void suppression in a returning fixture, and POST return override. Assert the v1 Ignite source remains present, its README labels the old logs as historical, states the current target is unavailable and the declared ABI omits the native Vector, and makes no current safe/working claim.
 
-- [ ] **Step 2: Author the v2 Ignite function**
+- [ ] **Step 2: Author the v2 CommitSuicide function**
 
-Use the proved deployed pattern/validator from the existing example, never the illustrative pattern in the spec. Declare `receiver: {type:"entity"}`, parameters `{flameLifetime:f32 mutable:pre}`, `{flags:i32}`, `{attacker:entity?}`, `{size:f32}`, return `void`, and surfaces call/pre/post. Include a second stale-validator function that degrades independently.
+Use a source recipe and complete validator derived from the audited exact deployed binary, not the illustrative pattern in the spec or the old Ignite recipe. Declare local `commitSuicide` with `receiver: {type:"entity"}`, parameters `{explode:bool}` and `{force:bool mutable:pre}`, return `void`, and surfaces call/pre/post. The direct target is `CBasePlayerPawn_CommitSuicide(this, bool, bool)`; verify the base-class entry and scalar ABI. It invokes the base implementation directly on the pawn, as existing `pawn.slay()` does. It does not claim virtual `CCSPlayerPawn` override behavior: the audited forwarding thunk writes an additional pawn byte before jumping to the base body. Include a second stale-validator function that degrades independently.
 
 - [ ] **Step 3: Exercise binding/status/subscriptions**
 
-At start, print structured status/provenance, subscribe PRE and POST, mutate lifetime in PRE, call through the same binding, dispose/re-subscribe one handle, and measure the engine effect as the old demo did. The example must not depend on a package path or manual archive/type step.
+At start, print structured status/provenance and register PRE and POST, with PRE mutating `force` and POST observing the void call. Dispose/re-subscribe one handle. An explicit command then selects an actual live bot pawn, calls the same binding with `explode=false, force=true`, and proves that pawn was alive before and dead afterward. Do not trigger the kill at startup, substitute callback counts for the engine effect, or claim the direct base call reproduces the subclass override's extra side effect. The example must not depend on a package path or manual archive/type step.
+
+Correct `examples/engine-call-demo/README.md` in this task: place the stale current-binary pattern and deliberately omitted trailing Vector caveat beside the descriptor, label old output and flame counts as historical observations on the old build, and remove present-tense instructions that imply `sm_ec_burn` is safe or operative now. Preserve the source and historical evidence. Explain that replacing only the pattern does not make its four-scalar ABI complete. Stage this README with the new example at the Task 9 commit checkpoint.
 
 - [ ] **Step 4: Build and test**
 
@@ -1171,9 +1178,9 @@ Expected: PASS and `dist/_demo_engine-function.s2sp` contains manifest, plugin, 
 - [ ] **Step 5: Commit the v2 acceptance example**
 
 ```bash
-git add examples/engine-function-demo packages/sdk/test/engine-function-demo.test.mjs \
+git add examples/engine-function-demo examples/engine-call-demo/README.md \
+  packages/sdk/test/engine-function-demo.test.mjs \
   scripts/check-examples-coverage.sh
-git rm -r examples/engine-call-demo
 git commit -m "examples: demonstrate unified engine functions"
 ```
 
@@ -1237,7 +1244,7 @@ Expected: PASS. If the environment lacks Docker for the final JS gate, record th
 
 Deploy the sniper artifact and v2 demo. Through RCON:
 
-1. Verify call/PRE/POST and typed mutation on the base target.
+1. On an explicit command against a live bot, verify `commitSuicide` call/PRE/POST, typed `force` mutation, and observed alive-to-dead transition on the base target. Do not claim virtual override side-effect parity.
 2. Add a valid namespaced override and reload; verify archive hash stays fixed, final target/provenance changes, and no archive rebuild occurs.
 3. Add a stale-contract override; verify reload refuses and old generation still answers commands.
 4. Add two conflicting files without `supersedes`; verify fail-closed. Add explicit `supersedes`; verify deterministic repair.
@@ -1265,7 +1272,7 @@ Expected: PASS with deployed revision, sniper GLIBC manifest, Metamod/KHook iden
 
 - [ ] **Step 6: Document the operator/author contract and S3 seam**
 
-Document authoring defaults, bounded Linux x86_64 scalar ABI contract/exclusions, generated API, migration command, default-deny permissions, override path/contract/supersedes rules, status/provenance, and update-day recovery. State the S3 handoff exactly:
+Document authoring defaults, bounded Linux x86_64 scalar ABI contract/exclusions, generated API, migration command, default-deny permissions, override path/contract/supersedes rules, status/provenance, and update-day recovery. Explain that Ignite's four declared scalars could convert structurally but cannot establish a complete native ABI: its descriptor omits a trailing by-value Vector, the old recipe misses the current binary, and the v2 scalar ABI rejects aggregates. State the direct-base CommitSuicide example's subclass-forwarder caveat. State the S3 handoff exactly:
 
 - keep `core/src/engine_functions/*` and `shim/src/engine_function_*` game-generic;
 - preserve `OwnerKind::GamePackage`, `__s2_function_adapter_register`, `__s2_function_adapter_subscribe`, exact ids/hashes, subscriber cursor semantics, receipt/status/provenance, and owner-generation teardown;

@@ -9,16 +9,16 @@ Linux x86-64 only. Windows is not supported yet.
 1. A Counter-Strike 2 dedicated server.
 2. **Stock [Metamod:Source](https://www.sourcemm.net/) with plugin API (PLAPI) 18 support**, installed under `game/csgo/addons/metamod/` according to the upstream instructions. No Metamod or KHook patches, private host binaries, or s2script-specific host build are required.
 
-   The vendored Metamod pin `7e24ce9e7a03bfeb5c8ab1e4dd55d5d5747f3d33` and nested KHook `1e200e4cc8e0badcb7cf941525268d6977f6a4e6` are an unmodified source reference for development tests. Operators may use a compatible official upstream release. Confirm PLAPI compatibility for that release and every other native plugin installed on the server.
+   The vendored Metamod pin `fa6f80e4662e5b96cc2e97722d812f374581dfd8` and nested KHook `40d233d160b5bf60cc3e732939142b222fbd8ece` are an unmodified source reference for development tests. Operators may use a compatible official upstream release. Confirm PLAPI compatibility for that release and every other native plugin installed on the server.
 
    The native s2script shim stays resident during gameplay. Hot reload applies to `.s2sp` plugins managed inside s2script. Stop and restart the server for native shim or Metamod updates; native shim hot unload/reload is not required.
 
-   For the repository's Docker setup, the optional installer defaults to the exact official 2.0.0.1467 archive and published checksum below when no source/release variables are set. Its PLAPI 18 compatibility comes from that release's checked source pin. An existing verified installation is rechecked and kept. To select an archive explicitly:
+   For the repository's Docker setup, the optional installer defaults to the exact official 2.0.0.1469 archive and published checksum below when no source/release variables are set. Its PLAPI 18 compatibility comes from that release's checked source pin. An existing verified installation is rechecked and kept. To select an archive explicitly:
 
    ```bash
-   # Official 2.0.0.1467 release: the unchanged vendored Metamod source pin.
-   export S2_METAMOD_RELEASE_URL='https://github.com/alliedmodders/metamod-source/releases/download/2.0.0.1467/mmsource-2.0.0-git1467-linux.tar.gz'
-   export S2_METAMOD_RELEASE_SHA256='f3dd81999e93ef86d45ed8f0f451c93806ad7fba1514dafd5f2623c61ca637a2'
+   # Official 2.0.0.1469 release: the unchanged vendored Metamod source pin.
+   export S2_METAMOD_RELEASE_URL='https://github.com/alliedmodders/metamod-source/releases/download/2.0.0.1469/mmsource-2.0.0-git1469-linux.tar.gz'
+   export S2_METAMOD_RELEASE_SHA256='a552e4cb1399ced15a1192880f1f6bdd3d16f930a9cb33bc9e45396a26f177ad'
    export S2_METAMOD_RELEASE_PLAPI=18  # operator-confirmed for this release
    # Optional: use an already downloaded archive instead of downloading the URL.
    # export S2_METAMOD_RELEASE_ARCHIVE=/path/to/mmsource-release-linux.tar.gz
@@ -27,7 +27,7 @@ Linux x86-64 only. Windows is not supported yet.
    sudo docker compose -f docker/docker-compose.yml start cs2
    ```
 
-   This concrete example uses the [official 2.0.0.1467 release](https://github.com/alliedmodders/metamod-source/releases/tag/2.0.0.1467) and its Linux asset digest from the [GitHub release API](https://api.github.com/repos/alliedmodders/metamod-source/releases/tags/2.0.0.1467). That is a published checksum, not a signature. For another selected release, supply its independently recorded expected checksum and confirm PLAPI explicitly. Exact AlliedModders GitHub release asset URLs and legacy `https://mms.alliedmods.net/mmsdrop/<branch>/mmsource-<version>-linux.tar.gz` URLs are accepted; moving `releases/latest` URLs are not selected. The installer verifies the checksum before extracting regular files, then checks the required Linux x86-64 shared objects and GLIBC requirements. Archive hashes do not establish the ABI, and actual runtime load/handshake remains required for acceptance.
+   This concrete example uses the [official 2.0.0.1469 release](https://github.com/alliedmodders/metamod-source/releases/tag/2.0.0.1469) and its Linux asset digest from the [GitHub release API](https://api.github.com/repos/alliedmodders/metamod-source/releases/tags/2.0.0.1469). That is a published checksum, not a signature. For another selected release, supply its independently recorded expected checksum and confirm PLAPI explicitly. Exact AlliedModders GitHub release asset URLs and legacy `https://mms.alliedmods.net/mmsdrop/<branch>/mmsource-<version>-linux.tar.gz` URLs are accepted; moving `releases/latest` URLs are not selected. The installer verifies the checksum before extracting regular files, then checks the required Linux x86-64 shared objects and GLIBC requirements. Archive hashes do not establish the ABI, and actual runtime load/handshake remains required for acceptance.
 
    Any release override requires all three identity variables; it never inherits the default's compatibility confirmation. A supplied tree uses `S2_METAMOD_TREE` plus `S2_METAMOD_BUILD_MANIFEST`. Schema 2 manifests identify either an official archive or an unmodified source build and hash the required runtime artifacts. The optional [source build](BUILDING.md#docker-live-gate) produces this manifest from checked upstream source and is selected explicitly with those tree/manifest variables. No manifest is invented from a candidate tree during verification. Previously installed bytes are rechecked, replacement is staged while CS2 is stopped, and rollback preserves the complete prior tree (`docker/metamod.prev`).
 
@@ -243,3 +243,77 @@ What `--apply` does for every public `packages/*` package:
 Optional hardening afterward: package **Publishing access** → “Require two-factor authentication and disallow tokens” (OIDC still works; revoke leftover automation tokens).
 
 After that, version-PR merges publish without secrets. Emergency local fallback: `DRY_RUN=1 scripts/publish-packages.sh` (classic token login — prefer OIDC CI).
+
+## S1 acceptance bundle (maintainers)
+
+The production runtime uses the shared validated resolver and stock Metamod KHook
+provider. The native module stays resident; normal plugin updates replace `.s2sp`
+archives. The separate `tools/khook-probe` and `examples/khook-acceptance` artifacts
+are acceptance tools and must not enter production release packages.
+
+Suites B and C now have source-bound registries and collectors. Prepare each run
+with the controller's exact runtime/artifact identity, then use the same run folder
+for collection. A remains the default suite. On a host controlling a container,
+pass the bind-mounted gamedata directory explicitly:
+
+```bash
+bash scripts/test-khook-live.sh B --collect --run-dir "$S1_B_RUN_DIR" \
+  --gamedata-root "$HOST_S2SCRIPT_ADDON/gamedata"
+bash scripts/test-khook-live.sh C --collect --run-dir "$S1_C_RUN_DIR" \
+  --gamedata-root "$HOST_S2SCRIPT_ADDON/gamedata"
+```
+
+The controller maps only the probe-listed relative gamedata files into that root,
+rejects escapes, and captures SHA-256 before and after. These hashes establish the
+inspected deployed inputs, not an unseen main module load-time snapshot. Missing
+mapping, unresolved current-build recipes, missing callbacks and missing human
+actions remain pending.
+
+B needs a real bot for public item POST and damage witnesses, a real connected
+client for chat/usercmd witnesses, and two archive replacements with the same
+run/artifact handoff to observe three script generations. The fixture can drive a
+safe bot item grant and owned relay output; actual damage still requires an engine
+action against the hooked bot. C needs actual precache callbacks across two map
+generations. Private native fixtures separately prove exact original counts and
+nested manifest restoration. Public resource-add evidence makes no claim about
+later rendering or a particular internal AddResource route.
+
+Named registration phases remove only early peer callbacks asynchronously, observe
+completion on a later frame, then install retained late peers around resident main
+bindings. These one-way phases require a fresh process for another independent
+run. They do not replace fresh operator captures in both physical module load
+orders. The actual C peer join additionally needs a guard registered before the
+main callback; otherwise that peer row stays pending while independent main-frame
+resource evidence can still collect. Never infer its invocation from matching raw
+pointer values after the main scope ends.
+
+The integrated S1 release is still pending exact-head review and mandatory live
+acceptance. Current game capability failures require verified gamedata, not relaxed
+validation. Known shutdown-only exit 139 is diagnostic and nonblocking under the
+accepted disposition; runtime callback retirement and stale-generation rejection
+remain required. Do not run repeated quit loops to obtain a terminal green row.
+
+### Damage recipe migration and current-build repairs
+
+The internal damage signature is now `CBaseEntity_TakeDamageOld`, paired atomically
+with the audited native `void(victim*, damageInfo*, optional damageResult*)` binding.
+Public `OnTakeDamage`/SDKHooks behavior is unchanged. The previous
+`DispatchTraceAttack` key is retired without an alias: its old pattern matched
+unrelated output logic. Re-derive any custom damage override under the new key;
+never rename/transplant that old pattern. Preserve both the exact prologue and the
+TakeDamageOld semantic string validator, including its newline. Do not deploy this
+recipe alone against an older runtime with the incompatible damage ABI.
+
+Static evaluation of the edited source accepts damage and the pFirst head-cell
+recipe on exact builds 25218825 and 25470087, and rejects a wrong damage diagnostic.
+The revised CanAcquire recipe is specific to build 25470087 (1.41.8.2), retaining
+both prologue and weapon string validators; it correctly rejects build 25218825.
+Only those three recipes are repaired here; other unavailable targets, including
+FireOutput, remain unavailable pending their own ABI/identity work.
+
+The operator separately verified pFirst/CanAcquire resolver acceptance and factory
+registration on the unchanged installed b4 runtime with official Metamod 1467 and
+14 default plugins, through inferno→nuke→inferno with two bots and no humans.
+CanAcquire was armed but its lazy hook was uninstalled without subscribers. This is
+bounded resolution/map smoke, not acquisition callback/result, resource delivery,
+new damage binding, or S1 release acceptance. Those live witnesses remain required.

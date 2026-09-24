@@ -1427,3 +1427,15 @@ pub extern "C" fn s2script_core_take_event_recipients(out_mask: *mut u64) -> c_i
     })
     .unwrap_or(0)
 }
+
+/// Native-only synchronous function dispatch. Metadata is copied immediately;
+/// opaque capabilities are validated again by every native frame operation.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_function(target:i64,frame:*const v8host::S2FunctionFrameInfo,phase:c_int)->c_int {
+    let result=catch_unwind(||{
+        if frame.is_null(){return Err("missing function frame metadata".to_string());}
+        let info=unsafe{*frame};
+        v8host::function_adapter::dispatch(target,info,phase)
+    });
+    match result {Ok(Ok(()))=>1,Ok(Err(error))=>{eprintln!("[s2script] function dispatch: {error}");0},Err(_)=>{eprintln!("[s2script] function dispatch panic");0}}
+}

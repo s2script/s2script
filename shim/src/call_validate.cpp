@@ -49,10 +49,31 @@ bool Fail(char* out, int cap, const char* fmt, ...) {
     return false;
 }
 
+bool Span(uintptr_t at, size_t n, uintptr_t lo, uintptr_t hi) {
+    return lo && n && at >= lo && at < hi && n <= hi-at;
+}
 bool InText(const ModuleView& mv, const void* p) {
-    if (!mv.text || !p) return false;
-    const uint8_t* q = static_cast<const uint8_t*>(p);
-    return q >= mv.text && q < mv.text + mv.textSize;
+    auto at=reinterpret_cast<uintptr_t>(p);
+    if (mv.executable) return mv.executable(at,1);
+    auto lo=reinterpret_cast<uintptr_t>(mv.text);
+    return mv.textSize <= UINTPTR_MAX-lo && Span(at,1,lo,lo+mv.textSize);
+}
+bool CodeSpan(const ModuleView& mv, uintptr_t at, size_t n) {
+    if (mv.read_code || mv.executable)
+        return mv.read_code && mv.executable && mv.executable(at,n);
+    auto lo=reinterpret_cast<uintptr_t>(mv.text);
+    return mv.textSize <= UINTPTR_MAX-lo && Span(at,n,lo,lo+mv.textSize);
+}
+bool ReadCode(const ModuleView& mv, uintptr_t at, void* out, size_t n) {
+    if (!CodeSpan(mv,at,n)) return false;
+    if (mv.read_code) return mv.read_code(at,out,n);
+    std::memcpy(out,reinterpret_cast<const void*>(at),n); return true;
+}
+bool ReadLive(const ModuleView& mv, uintptr_t at, void* out, size_t n) {
+    if (mv.read_live) return mv.read_live(at,out,n);
+    if (mv.read_code || mv.executable) return false; // original-code users must bound data separately
+    if (!Span(at,n,reinterpret_cast<uintptr_t>(mv.lo),reinterpret_cast<uintptr_t>(mv.hi))) return false;
+    std::memcpy(out,reinterpret_cast<const void*>(at),n); return true;
 }
 
 // Parse the whole `validate` object. Non-throwing (`allow_exceptions=false`): a malformed blob is a
@@ -83,12 +104,11 @@ bool ValidatePrologue(const json& v, const ModuleView& mv, const void* fn, char*
     std::vector<int> pat = s2sig::ParsePattern(v.get<std::string>());
     if (pat.empty()) return Fail(out, cap, "malformed validate.prologue pattern");
 
-    const uint8_t* p = static_cast<const uint8_t*>(fn);
-    // Fully bounds-checked against the module's text BEFORE any read.
-    if (!mv.text || !p || p < mv.text || p + pat.size() > mv.text + mv.textSize)
+    std::vector<uint8_t> bytes(pat.size());
+    if (!ReadCode(mv,reinterpret_cast<uintptr_t>(fn),bytes.data(),bytes.size()))
         return Fail(out, cap, "prologue mismatch (resolved slot is not the intended function)");
     for (std::size_t i = 0; i < pat.size(); i++) {
-        if (pat[i] >= 0 && p[i] != static_cast<uint8_t>(pat[i]))
+        if (pat[i] >= 0 && bytes[i] != static_cast<uint8_t>(pat[i]))
             return Fail(out, cap, "prologue mismatch (resolved slot is not the intended function)");
     }
     return true;
@@ -133,7 +153,7 @@ bool ValidateStringXref(const json& v, const ModuleView& mv, const void* fn, cha
         return Fail(out, cap, "validate.string-xref has a negative/zero offset");
     // Self-contradictory descriptor: the displacement would lie past the end of its own
     // instruction, so the rip base could never be right. Catchable without touching the binary.
-    if (dispOff + 4 > instrLen)
+    if (dispOff > instrLen || instrLen-dispOff < 4)
         return Fail(out, cap, "validate.string-xref displacement lies outside the instruction");
     // The int arithmetic below is done in int64 and only narrowed once the values are known sane.
     if (at > INT32_MAX || instrLen > INT32_MAX)
@@ -151,26 +171,24 @@ bool ValidateStringXref(const json& v, const ModuleView& mv, const void* fn, cha
     if (expect.find('\0') != std::string::npos)
         return Fail(out, cap, "validate.string-xref 'expect' contains an interior NUL");
 
-    if (!mv.text) return Fail(out, cap, "validate.string-xref: module text unavailable");
-    const int64_t fnOff = static_cast<const uint8_t*>(fn) - mv.text;   // fn is in .text (checked)
-    const int64_t tgt = s2sig::ResolveLeaDisp(mv.text, mv.textSize, fnOff + at,
-                                              static_cast<int>(dispOff), static_cast<int>(instrLen));
-    if (tgt == s2sig::kFail)
+    const uintptr_t pc=reinterpret_cast<uintptr_t>(fn);
+    uintptr_t instruction=0, operand=0, addr=0;
+    if (!s2sig::AddRelative(pc,static_cast<size_t>(at),0,instruction) ||
+        !CodeSpan(mv,instruction,static_cast<size_t>(instrLen)) ||
+        !s2sig::AddRelative(instruction,static_cast<size_t>(dispOff),0,operand))
         return Fail(out, cap, "validate.string-xref: displacement read is out of bounds");
-
-    // uintptr arithmetic, and the guard is the FULL mapped extent, not .text: the target is normally
-    // BELOW the text base (.rodata precedes .text in the mapping), so `tgt` is legitimately
-    // NEGATIVE. A .text-range guard here would reject every valid xref by construction.
-    const uintptr_t addr = reinterpret_cast<uintptr_t>(mv.text) + static_cast<uintptr_t>(tgt);
-    const uintptr_t lo   = reinterpret_cast<uintptr_t>(mv.lo);
-    const uintptr_t hi   = reinterpret_cast<uintptr_t>(mv.hi);
-    const std::size_t need = expect.size() + 1;                        // compare INCLUDING the NUL
-    if (!lo || !hi || addr < lo || addr >= hi || (hi - addr) < need)
+    int32_t displacement=0;
+    if (!ReadCode(mv,operand,&displacement,sizeof displacement) ||
+        !s2sig::AddRelative(instruction,static_cast<size_t>(instrLen),displacement,addr))
+        return Fail(out, cap, "validate.string-xref: displacement read is out of bounds");
+    const size_t need=expect.size()+1;
+    std::vector<uint8_t> live(need);
+    if (!ReadLive(mv,addr,live.data(),need))
         return Fail(out, cap, "validate.string-xref target is outside the module");
 
     // Including the NUL is load-bearing: without it "Round" is satisfied by "RoundEnd", which is
     // precisely the near-miss a borrowed signature lands on.
-    if (std::memcmp(reinterpret_cast<const void*>(addr), expect.c_str(), need) != 0)
+    if (std::memcmp(live.data(), expect.c_str(), need) != 0)
         return Fail(out, cap,
                     "the xref at fn+0x%llx does not reference the '%s' string "
                     "(unique-but-WRONG match — the borrowed-sig trap)",
@@ -205,19 +223,25 @@ bool ValidateVtableMember(const json& v, const ModuleView& mv, const char* modul
     const std::string cls = v.get<std::string>();
     if (cls.find('\0') != std::string::npos)
         return Fail(out, cap, "validate.vtable-member class name contains an interior NUL");
-    if (!ops.vtable_by_name)
+    if (!ops.vtable_from_image && !ops.vtable_by_name)
         return Fail(out, cap, "validate.vtable-member: RTTI vtable resolution is unavailable");
 
     // The module is NOT a parameter of the validator: it is the descriptor's own module, the same
     // one the resolve step scanned. One fewer thing to get out of sync, and strictly more general
     // than the hardcoded soname this replaces.
-    void** vt = ops.vtable_by_name(module, cls.c_str());
+    void** vt = ops.vtable_from_image ? ops.vtable_from_image(cls.c_str()) : ops.vtable_by_name(module, cls.c_str());
     if (!vt) return Fail(out, cap, "class RTTI vtable '%s' not found on this build", cls.c_str());
 
     for (int i = 0; i < kMaxVtableSlots; i++) {
         // Resolve the original virtual target BEFORE executable-range/equality checks so a
         // peer's JIT trampoline (outside .text) does not terminate the walk. Unhooked: identity.
-        const void* p = ops.original_virtual ? ops.original_virtual(vt, i) : vt[i];
+        void* slot=nullptr;
+        if (mv.read_live || mv.read_code || mv.executable) {
+            uintptr_t at=0;
+            if (!s2sig::AddRelative(reinterpret_cast<uintptr_t>(vt),size_t(i)*sizeof(void*),0,at) ||
+                !ReadLive(mv,at,&slot,sizeof slot)) break;
+        } else slot=vt[i]; // existing explicitly supplied live-buffer fixtures/legacy callers
+        const void* p = ops.original_virtual ? ops.original_virtual(vt, i) : slot;
         if (!InText(mv, p)) break;   // sub-vtable offset-to-top header = end of the fn slots
         if (p == fn) return true;
     }
@@ -312,10 +336,14 @@ const void* ResolveValidatedCall(const char* pattern, const char* validateJson,
         Fail(reasonOut, reasonCap, "validated-call has no valid pattern/text");
         return nullptr;
     }
+    std::vector<uint8_t> bytes(mv.textSize);
+    if (!ReadCode(mv,reinterpret_cast<uintptr_t>(mv.text),bytes.data(),bytes.size())) {
+        Fail(reasonOut,reasonCap,"validated-call original text unavailable"); return nullptr;
+    }
     int64_t winner = -1;
     char rejection[256] = "pattern did not match";
     for (std::size_t cursor = 0; cursor < mv.textSize;) {
-        const int64_t relative = s2sig::FindPattern(mv.text + cursor, mv.textSize - cursor, pat);
+        const int64_t relative = s2sig::FindPattern(bytes.data() + cursor, bytes.size() - cursor, pat);
         if (relative < 0) break;
         const std::size_t at = cursor + static_cast<std::size_t>(relative);
         cursor = at + 1;
@@ -330,16 +358,20 @@ const void* ResolveValidatedCall(const char* pattern, const char* validateJson,
         Fail(reasonOut, reasonCap, "validated-call: no validated call site (%s)", rejection);
         return nullptr;
     }
-    if (mv.text[winner] != 0xe8) {
+    if (bytes[winner] != 0xe8) {
         Fail(reasonOut, reasonCap, "validated-call site is not E8 rel32");
         return nullptr;
     }
-    const int64_t target = s2sig::ResolveLeaDisp(mv.text, mv.textSize, winner, 1, 5);
-    if (target < 0 || static_cast<uint64_t>(target) >= mv.textSize) {
+    int32_t displacement=0;
+    uintptr_t target=0;
+    uintptr_t call=reinterpret_cast<uintptr_t>(mv.text)+static_cast<size_t>(winner);
+    if (!ReadCode(mv,call+1,&displacement,sizeof displacement) ||
+        !s2sig::AddRelative(call,5,displacement,target) ||
+        !InText(mv,reinterpret_cast<void*>(target))) {
         Fail(reasonOut, reasonCap, "validated-call target outside module text");
         return nullptr;
     }
-    return mv.text + target;
+    return reinterpret_cast<void*>(target);
 }
 
 // arg-width. See call_validate.h for why this is NOT in kVocabulary and why only narrowing fails.
@@ -461,15 +493,14 @@ ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail) {
 int ArgWidths(const uint8_t* wide, int count, const ModuleView& mv, const void* fn,
               char* reasonOut, int reasonCap) {
     if (reasonOut && reasonCap > 0) reasonOut[0] = '\0';
-    if (!wide || count <= 0 || !fn || !mv.text) {
+    if (!wide || count <= 0 || !fn) {
         if (reasonOut && reasonCap > 0)
             std::snprintf(reasonOut, static_cast<std::size_t>(reasonCap), "arg-width: nothing to check");
         return 0;
     }
 
-    const uint8_t* const code = static_cast<const uint8_t*>(fn);
-    const uint8_t* const end  = mv.text + mv.textSize;
-    if (code < mv.text || code >= end) {
+    const uintptr_t code = reinterpret_cast<uintptr_t>(fn);
+    if (!InText(mv,fn)) {
         if (reasonOut && reasonCap > 0)
             std::snprintf(reasonOut, static_cast<std::size_t>(reasonCap),
                           "arg-width: address outside .text (not checked)");
@@ -481,9 +512,12 @@ int ArgWidths(const uint8_t* wide, int count, const ModuleView& mv, const void* 
     std::size_t off   = 0;
 
     for (int i = 0; i < kScanInsns && off < static_cast<std::size_t>(kScanBytes); i++) {
-        const std::size_t avail = static_cast<std::size_t>(end - (code + off));
-        if (avail == 0) break;
-        const ArgUse u = DecodeArgUse(code + off, avail);
+        uint8_t bytes[kMaxInsn] = {};
+        std::size_t avail=kMaxInsn;
+        if (off > UINTPTR_MAX-code) break;
+        while (avail && !ReadCode(mv,code+off,bytes,avail)) --avail;
+        if (!avail) break;
+        const ArgUse u = DecodeArgUse(bytes,avail);
         if (u.length == 0) break;   // undecodable: stop, do NOT guess
         if (u.terminator) break;    // end of the callee's own flow (or a call that clobbers args)
 

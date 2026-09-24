@@ -35,7 +35,9 @@ fi
 # code we ship as-is. Blanketing the binary would also switch alignment off for OUR decode
 # arithmetic, which is precisely the code this gate exists to police.
 hde_o="$(dirname "$out")/hde64.o"
-g++ "${flags[@]}" -fno-sanitize=alignment -I third_party/hde -c -o "$hde_o" third_party/hde/hde64.c
+hde_flags=()
+case "$(uname -m)" in arm64|aarch64) hde_flags+=(-D_M_X64);; esac
+g++ "${flags[@]}" ${hde_flags[@]+"${hde_flags[@]}"} -x c++ -fno-sanitize=alignment -I third_party/hde -c -o "$hde_o" third_party/hde/hde64.c
 g++ "${flags[@]}" -I shim/src -I third_party/hde \
     -o "$out" shim/src/call_validate.cpp shim/src/sigscan.cpp "$hde_o" \
     shim/tests/call_validate_test.cpp
