@@ -18,8 +18,9 @@ fn callback<'s>(
     binding: u64,
     subscription: u64,
     op: i32,
+    package_token: Option<v8::Local<v8::Value>>,
 ) -> v8::Local<'s, v8::Function> {
-    let data = v8::Array::new(scope, 5);
+    let data = v8::Array::new(scope, 6);
     let id = v8::String::new(scope, &owner.id).unwrap();
     data.set_index(scope, 0, id.into());
     for (i, value) in [owner.generation, binding, subscription]
@@ -28,6 +29,9 @@ fn callback<'s>(
     {
         let value = v8::BigInt::new_from_u64(scope, value);
         data.set_index(scope, (i + 1) as u32, value.into());
+    }
+    if let Some(token) = package_token {
+        data.set_index(scope, 5, token);
     }
     let op = v8::Integer::new(scope, op);
     data.set_index(scope, 4, op.into());
@@ -87,36 +91,44 @@ pub(super) fn lookup(
             return Err("engine function name must be a string".to_string());
         }
         let binding = registry::named_binding(&owner, &args.get(0).to_rust_string_lossy(scope))?;
-        let object = v8::Object::new(scope);
-        for (name, op) in [("available", 0), ("status", 1)] {
-            let function = callback(scope, &owner, binding.id, 0, op);
-            getter(scope, object, name, function);
-        }
-        if binding.target.is_some() {
-            for (surface, name, op) in [
-                ("call", "call", 2),
-                ("pre", "onPre", 3),
-                ("post", "onPost", 4),
-            ] {
-                if binding
-                    .function
-                    .policy
-                    .surfaces
-                    .iter()
-                    .any(|s| s == surface)
-                {
-                    let function = callback(scope, &owner, binding.id, 0, op);
-                    set(scope, object, name, function.into());
-                }
-            }
-        }
-        object.set_integrity_level(scope, v8::IntegrityLevel::Frozen);
-        Ok(object)
+        Ok(facade(scope, &owner, &binding, None))
     })();
     match result {
         Ok(v) => rv.set(v.into()),
         Err(e) => throw(scope, e),
     }
+}
+pub(super) fn facade<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    owner: &OwnerKey,
+    binding: &registry::Binding,
+    package_token: Option<v8::Local<v8::Value>>,
+) -> v8::Local<'s, v8::Object> {
+    let object = v8::Object::new(scope);
+    for (name, op) in [("available", 0), ("status", 1)] {
+        let function = callback(scope, owner, binding.id, 0, op, package_token);
+        getter(scope, object, name, function);
+    }
+    if binding.target.is_some() {
+        for (surface, name, op) in [
+            ("call", "call", 2),
+            ("pre", "onPre", 3),
+            ("post", "onPost", 4),
+        ] {
+            if binding
+                .function
+                .policy
+                .surfaces
+                .iter()
+                .any(|s| s == surface)
+            {
+                let function = callback(scope, owner, binding.id, 0, op, package_token);
+                set(scope, object, name, function.into());
+            }
+        }
+    }
+    object.set_integrity_level(scope, v8::IntegrityLevel::Frozen);
+    object
 }
 fn invoke(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let result = (|| {
@@ -136,7 +148,12 @@ fn invoke(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
         if current_owner(scope)? != owner {
             return Err("function facade owner mismatch".into());
         }
-        let binding = registry::binding(number(scope, 2), &owner)?;
+        let token = data.get_index(scope, 5).filter(|v| !v.is_undefined());
+        let instance = token
+            .map(|token| function_adapter::instance(scope, token).map(|(i, _)| i))
+            .transpose()?;
+        let binding_owner = instance.as_ref().map_or(&owner, |i| &i.package_owner);
+        let binding = registry::binding(number(scope, 2), binding_owner)?;
         let sub = number(scope, 3);
         let op = data
             .get_index(scope, 4)
@@ -182,8 +199,13 @@ fn invoke(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
                         projection,
                     )?);
                 }
-                let value =
-                    crate::nest::with_outbound(&args, || runtime::call_binding(&binding, &values))?;
+                let value = crate::nest::with_outbound(&args, || {
+                    if let Some(instance) = &instance {
+                        runtime::call_package_binding(&binding, instance, &values)
+                    } else {
+                        runtime::call_binding(&binding, &owner, &values)
+                    }
+                })?;
                 projected_to_js(scope, value)
             }
             3 | 4 => {
@@ -208,20 +230,31 @@ fn invoke(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
                 let handler = v8::Local::<v8::Function>::try_from(handler)
                     .map_err(|_| "subscription handler must be a function")?;
                 let handler = v8::Global::new(scope, handler);
-                let sub = function_adapter::subscribe_generic(
-                    scope,
-                    owner.clone(),
-                    binding.id,
-                    op - 3,
-                    observe,
-                    handler,
-                )?;
+                let sub = if let Some(token) = token {
+                    function_adapter::subscribe_package_generic(
+                        scope,
+                        token,
+                        binding.id,
+                        op - 3,
+                        observe,
+                        handler,
+                    )?
+                } else {
+                    function_adapter::subscribe_generic(
+                        scope,
+                        owner.clone(),
+                        binding.id,
+                        op - 3,
+                        observe,
+                        handler,
+                    )?
+                };
                 let object = v8::Object::new(scope);
                 for (name, op) in [("status", 5), ("reason", 6)] {
-                    let function = callback(scope, &owner, binding.id, sub, op);
+                    let function = callback(scope, &owner, binding.id, sub, op, token);
                     getter(scope, object, name, function);
                 }
-                let function = callback(scope, &owner, binding.id, sub, 7);
+                let function = callback(scope, &owner, binding.id, sub, 7, token);
                 set(scope, object, "dispose", function.into());
                 object.set_integrity_level(scope, v8::IntegrityLevel::Frozen);
                 Ok(object.into())

@@ -486,7 +486,7 @@ static long long production_acquire(long long id,char* why,int cap) {
 }
 static int production_release(long long id){return production_service->HookRelease(id);}
 static int production_target_release(long long id){return production_service->TargetRelease(id);}
-static int production_status(long long id,S2FunctionHookStatus* out,char* why,int cap){auto result=production_service->HookStatus(id);if(why && cap>0)std::snprintf(why,cap,"%s",result.error.c_str());if(!result)return 0;*out=result.value;return 1;}
+static int production_status(long long id,S2FunctionHookStatus* out,char* why,int cap){auto result=production_service->HookStatus(id);if(why && cap>0)std::snprintf(why,cap,"%s",(result && result.value.state==0 ? production_service->Receipt(id).reason : result.error).c_str());if(!result)return 0;*out=result.value;return 1;}
 extern "C" int s2fn_production_create(s2bridge::CoreDispatch dispatch,void(*step)(),S2EngineOps* ops) {
     production_step=step;production_requested=true;production_owner=std::this_thread::get_id();
     Dl_info module{};auto address=checked_target(reinterpret_cast<void*>(identity_target<std::int32_t>()));
@@ -526,6 +526,11 @@ extern "C" int s2fn_production_create(s2bridge::CoreDispatch dispatch,void(*step
 extern "C" int s2fn_production_frame(int requested) {
     production_requested=requested!=0;
     auto volatile target=fixture_targets().void_target;target(0);return 1;
+}
+// Test-only actual engine entry: no Service::Call and no script caller owner.
+extern "C" int s2fn_production_engine_call(int value,int* out) {
+    if(std::this_thread::get_id()!=production_owner || !out)return 0;
+    auto volatile target=identity_target<std::int32_t>();*out=target(value);return 1;
 }
 extern "C" int s2fn_production_empty(){
     if(!production_service->Empty() || allocations!=frees)return 0;

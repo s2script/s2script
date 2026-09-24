@@ -21,7 +21,12 @@ mod tests {
 use super::{contract::*, provenance::PreparedCandidate, runtime};
 use crate::{plugin::Resource, v8host};
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+enum BindingLifetime {
+    Plugin,
+    Package(Rc<PackageFunctionLifetime>),
+}
 pub(crate) struct Binding {
+    lifetime: BindingLifetime,
     pub id: u64,
     pub owner: OwnerKey,
     pub function: NormalizedFunction,
@@ -30,6 +35,18 @@ pub(crate) struct Binding {
     pub provenance: super::provenance::Provenance,
     pub retained_bytes: usize,
     _retention: Option<Rc<dyn std::any::Any>>,
+}
+impl Binding {
+    pub(crate) fn is_live(&self) -> bool {
+        match &self.lifetime {
+            BindingLifetime::Plugin => v8host::owner_is_live(&self.owner.id, self.owner.generation),
+            BindingLifetime::Package(state) => {
+                state.key == self.owner
+                    && state.phase.get() == PackageFunctionPhase::Active
+                    && state.source.get() != PackageFunctionPhase::Retired
+            }
+        }
+    }
 }
 impl Drop for Binding {
     fn drop(&mut self) {
@@ -220,6 +237,7 @@ pub(crate) fn activate_owner(
     }
     for mut prepared in receipt.bindings {
         let binding = Rc::new(Binding {
+            lifetime: BindingLifetime::Plugin,
             id: prepared.id,
             owner: owner.clone(),
             function: prepared.function.clone(),
@@ -249,7 +267,7 @@ pub(crate) fn binding(id: u64, owner: &OwnerKey) -> Result<Rc<Binding>, String> 
         .with(|b| {
             b.borrow()
                 .get(&id)
-                .filter(|b| b.owner == *owner && v8host::owner_is_live(&owner.id, owner.generation))
+                .filter(|b| b.owner == *owner && b.is_live())
                 .cloned()
         })
         .ok_or("binding owner generation unavailable".into())
@@ -371,11 +389,93 @@ pub(crate) fn retained_bytes(owner: &OwnerKey) -> usize {
     })
 }
 
-pub(crate) fn owner_for_token(token: u64) -> Option<OwnerKey> {
+/// Seals the complete host capability before native preparation can publish anything.
+pub(crate) struct PreparedPackageFunctionReceipt {
+    owner: HostPackageOwner,
+    prepared: PreparedOwnerReceipt,
+}
+impl PreparedPackageFunctionReceipt {
+    pub(crate) fn retain(&mut self, lease: Rc<dyn std::any::Any>) {
+        self.prepared.retain(lease);
+    }
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.prepared.retained_bytes()
+    }
+}
+/// Unique process retirement authority; clones of the host capability never retire functions.
+pub(crate) struct ActivePackageFunctions {
+    owner: HostPackageOwner,
+    ids: Vec<u64>,
+    _retention: Option<Rc<dyn std::any::Any>>,
+}
+impl ActivePackageFunctions {
+    pub(crate) fn owner(&self) -> &OwnerKey {
+        self.owner.key()
+    }
+}
+impl Drop for ActivePackageFunctions {
+    fn drop(&mut self) {
+        self.owner
+            .lifetime()
+            .phase
+            .set(PackageFunctionPhase::Retired);
+        v8host::function_adapter::drop_package(self.owner.key());
+        for id in self.ids.drain(..).rev() {
+            drop_binding(id);
+        }
+    }
+}
+pub(crate) fn prepare_package_owner(
+    owner: &HostPackageOwner,
+    candidate: PreparedCandidate,
+) -> Result<PreparedPackageFunctionReceipt, String> {
+    if owner.is_retired() || owner.lifetime().phase.get() != PackageFunctionPhase::Unactivated {
+        return Err("package functions already activated or retired".into());
+    }
+    Ok(PreparedPackageFunctionReceipt {
+        owner: owner.clone(),
+        prepared: prepare_owner(&owner.key().id, candidate)?,
+    })
+}
+pub(crate) fn activate_package_owner(
+    receipt: PreparedPackageFunctionReceipt,
+    owner: &HostPackageOwner,
+) -> Result<ActivePackageFunctions, String> {
+    let state = owner.lifetime();
+    if !Rc::ptr_eq(&state, &receipt.owner.lifetime()) || state.key != *receipt.owner.key() {
+        return Err("prepared package capability mismatch".into());
+    }
+    if owner.is_retired() || state.phase.get() != PackageFunctionPhase::Unactivated {
+        return Err("package functions already activated or retired".into());
+    }
+    let prepared = receipt.prepared;
+    let mut staged = Vec::with_capacity(prepared.bindings.len());
+    let mut ids = Vec::with_capacity(prepared.bindings.len());
+    for mut candidate in prepared.bindings {
+        ids.push(candidate.id);
+        staged.push(Rc::new(Binding {
+            lifetime: BindingLifetime::Package(state.clone()),
+            id: candidate.id,
+            owner: owner.key().clone(),
+            function: candidate.function.clone(),
+            target: candidate.target.take(),
+            unavailable: candidate.unavailable.take(),
+            provenance: candidate.provenance.clone(),
+            retained_bytes: candidate.retained_bytes,
+            _retention: prepared.retention.clone(),
+        }));
+    }
+    // No callbacks or fallible admission after this point. The ledger stores ids, never bindings.
+    state.phase.set(PackageFunctionPhase::Active);
     BINDINGS.with(|b| {
-        b.borrow()
-            .values()
-            .find(|b| b.owner.generation == token)
-            .map(|b| b.owner.clone())
+        let mut b = b.borrow_mut();
+        for binding in staged {
+            b.insert(binding.id, binding);
+        }
+    });
+    Ok(ActivePackageFunctions {
+        owner: owner.clone(),
+        ids,
+        _retention: prepared.retention,
     })
 }
