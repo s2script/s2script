@@ -239,6 +239,19 @@ void RuntimeBinding::Save(KHook::Action action, NativeValue& value, bool origina
     KHook::SaveReturnValue(action, typed ? value.bytes.data() : nullptr, typed ? width : 0,
         typed ? CopyOp(width) : nullptr, typed ? reinterpret_cast<void*>(&DestroyScalar) : nullptr, original);
 }
+void RuntimeBinding::OverridePostReturn(DispatchFrame& frame, const NativeValue& value) {
+    const auto width = Width(signature_.returns.native);
+    if (frame.phase != Phase::Post || !width) throw std::runtime_error("nonvoid POST return required");
+    if (!Canonical(signature_.returns.native, value)) throw std::runtime_error("noncanonical POST override");
+    auto submitted = value;
+    Save(KHook::Action::Override, submitted, false);
+    // Submission is irreversible. Refresh even if subsequent validation fails.
+    const auto current = KHook::GetCurrentValuePtr(false);
+    if (!current) throw std::runtime_error("POST override submitted: current return unavailable");
+    std::memcpy(frame.result.bytes.data(), current, width);
+    if (!Canonical(signature_.returns.native, frame.result))
+        throw std::runtime_error("POST override submitted: noncanonical current return");
+}
 void RuntimeBinding::WriteResult(void* result, const NativeValue& value) {
     if (!Width(signature_.returns.native)) return;
     if (signature_.returns.native == "u8") {
@@ -315,6 +328,11 @@ void RuntimeBinding::Enter(Phase phase, void* result, void** args, const S2HookO
     frame.arguments.assign(values.begin() + offset, values.end());
     if (phase == Phase::Post) {
         frame.original_skipped = KHook::WasOriginalFunctionSkipped();
+        if (!frame.original_skipped && Width(signature_.returns.native)) {
+            const auto original = KHook::GetOriginalValuePtr();
+            if (!original) throw std::runtime_error("original return unavailable");
+            std::memcpy(frame.original_result.bytes.data(), original, Width(signature_.returns.native));
+        }
         auto ptr = KHook::GetCurrentValuePtr();
         if (ptr) std::memcpy(frame.result.bytes.data(), ptr, Width(signature_.returns.native));
         if (!Canonical(signature_.returns.native, frame.result)) throw std::runtime_error("noncanonical u8 POST result");

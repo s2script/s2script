@@ -431,10 +431,31 @@ extern "C" int s2fn_production_entity_slot(int index,unsigned serial,int live) {
 static void (*production_step)()=nullptr;
 static bool production_requested=true;
 static int production_peer_calls=0;
+static int production_post_mode=0;
+static int production_later_calls=0;
+static bool production_later_installed=false;
+static KHook::Return<std::int32_t> production_later_post(std::int32_t);
+static S2CheckedFunction<std::int32_t,std::int32_t> production_later(nullptr,production_later_post);
+static KHook::Return<std::int32_t> production_later_post(std::int32_t) {
+    auto observation=production_later.Observe();assert(observation);++production_later_calls;
+    return {production_post_mode==3 ? KHook::Action::Override : KHook::Action::Ignore,91};
+}
+extern "C" int s2fn_production_post_peer_mode(int mode) {
+    if(std::this_thread::get_id()!=production_owner || mode<0 || mode>3)return 0;
+    production_post_mode=mode;
+    if(mode==3) {
+        if(production_later_installed)return production_later_calls ? 2 : 1;
+        production_later_installed=production_later.Configure(checked_target(reinterpret_cast<void*>(identity_target<std::int32_t>()))).Accepted();
+        return production_later_installed ? 1 : 0;
+    }
+    return 1;
+}
 static KHook::Return<std::int32_t> production_peer_pre(std::int32_t);
 static S2CheckedFunction<std::int32_t,std::int32_t> production_peer(production_peer_pre,nullptr);
 static KHook::Return<std::int32_t> production_peer_pre(std::int32_t value){
     auto observation=production_peer.Observe();assert(observation);++production_peer_calls;
+    if(production_post_mode==1)return {KHook::Action::Override,71};
+    if(production_post_mode==2)return {KHook::Action::Supersede,72};
     return {KHook::Action::Ignore,value};
 }
 extern "C" int s2fn_production_add_peer(){
@@ -498,6 +519,7 @@ extern "C" int s2fn_production_create(s2bridge::CoreDispatch dispatch,void(*step
     ops->function_target_release=production_target_release;ops->function_hook_status=production_status;
     ops->function_frame_read=S2_FunctionFrameRead;ops->function_frame_write=S2_FunctionFrameWrite;
     ops->function_frame_commit=S2_FunctionFrameCommit;
+    ops->function_frame_override_return=S2_FunctionFrameOverrideReturn;
     assert(production_frame.Configure(checked_target(reinterpret_cast<void*>(fixture_targets().void_target))).Accepted());
     return 1;
 }
@@ -513,10 +535,11 @@ extern "C" int s2fn_production_empty(){
 extern "C" int s2fn_production_close(){
     if(!production_service->Collect())return 0;
     production_peer.BeginRemove(true);
+    production_later.BeginRemove(true);
     production_frame.BeginRemove(true);
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
-    while((!production_frame.RemovalComplete() || !production_peer.RemovalComplete()) && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    assert(production_frame.RemovalComplete() && production_peer.RemovalComplete());assert(S2Hook_DrainRetirement());
+    while((!production_frame.RemovalComplete() || !production_peer.RemovalComplete() || !production_later.RemovalComplete()) && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(production_frame.RemovalComplete() && production_peer.RemovalComplete() && production_later.RemovalComplete());assert(S2Hook_DrainRetirement());
     production_service.reset();production_sink.reset();production_codec.reset();KHook::Shutdown();return 1;
 }
 
@@ -618,11 +641,47 @@ static void invocation_pairing_regression() {
     assert(binding->Call(&value,1));assert(stack.empty());retire(binding);
     std::cout<<"PASS invocation ids pair across neutral, nested, recall, suppression and PRE/POST exceptions\n";
 }
+static void trusted_post_scalars() {
+    for(bool boolean:{false,true}) {
+        AbiSignature signature;signature.parameters={{boolean ? "u8" : "i32",boolean ? "bool" : "i32"}};
+        signature.returns=signature.parameters[0];Sink sink;
+        auto address=boolean ? reinterpret_cast<void*>(identity_target<bool>()) : reinterpret_cast<void*>(identity_target<std::int32_t>());
+        auto binding=bind(signature,sink,address);
+        const auto original=boolean ? NativeValue::From<std::uint8_t>(1) : NativeValue::From<std::int32_t>(7);
+        const auto effect=boolean ? NativeValue::From<std::uint8_t>(0) : NativeValue::From<std::int32_t>(41);
+        sink.dispatch=[&](DispatchFrame& f){
+            if(f.phase==Phase::Pre) {
+                bool refused=false;try{binding->OverridePostReturn(f,effect);}catch(const std::exception&){refused=true;}
+                assert(refused);return;
+            }
+            assert(!f.original_skipped && f.original_result.bytes==original.bytes);
+            if(boolean) {
+                bool refused=false;try{binding->OverridePostReturn(f,NativeValue::From<std::uint8_t>(2));}catch(const std::exception&){refused=true;}
+                assert(refused && f.result.bytes==original.bytes);
+            }
+            binding->OverridePostReturn(f,effect);assert(f.result.bytes==effect.bytes);
+            binding->OverridePostReturn(f,original);assert(f.result.bytes==effect.bytes);
+            assert(!f.original_skipped && f.original_result.bytes==original.bytes);
+        };
+        auto result=binding->Call(&original,1);assert(result && result.value.bytes==effect.bytes);
+        if(!boolean) {
+            sink.dispatch=[&](DispatchFrame& f){if(f.phase==Phase::Post){binding->OverridePostReturn(f,effect);throw std::runtime_error("after accepted effect");}};
+            auto volatile target=identity_target<std::int32_t>();assert(target(7)==41);assert(sink.errors>0);
+        }
+        retire(binding);
+    }
+    AbiSignature signature;signature.parameters={{"i32"}};signature.returns={"void"};Sink sink;
+    auto binding=bind(signature,sink,reinterpret_cast<void*>(fixture_targets().void_target));
+    sink.dispatch=[&](DispatchFrame& f){if(f.phase==Phase::Post){bool refused=false;try{binding->OverridePostReturn(f,NativeValue{});}catch(const std::exception&){refused=true;}assert(refused);}};
+    auto input=NativeValue::From<std::int32_t>(7);assert(binding->Call(&input,1));retire(binding);
+    std::cout<<"PASS trusted POST scalar original/current, canonical bool, void/PRE refusal and first Override preserved\n";
+}
 static void stock_tests() {
     std::cout << "phase=allocations-and-retirement\n";
     lazy_target_lifecycle();
     busy_capsule_runtime_insertion();
     invocation_pairing_regression();
+    trusted_post_scalars();
     allocations_and_retirement();
     std::cout << "phase=return-phase-lifetime\n";
     return_phase_lifetime(false);

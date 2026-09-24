@@ -173,6 +173,8 @@ struct FrameAccess {
     const Declaration& declaration;
     s2fn::DispatchFrame& native;
     S2FunctionFrameInfo info;
+    s2fn::RuntimeBinding& binding;
+    std::thread::id owner;
     std::vector<s2fn::NativeValue> staged;
     PointerCodec* codec=nullptr;
     std::map<int,S2FunctionValue> entity_edits;
@@ -189,6 +191,7 @@ unsigned long long unique_frame() {
 FrameAccess& frame_access(TargetId target, unsigned long long token, unsigned long long epoch, const char* fingerprint) {
     require(!frames.empty(),"function frame unavailable on this thread");
     auto& f=*frames.back();
+    require(std::this_thread::get_id()==f.owner,"function frame unavailable off host thread");
     require(f.target==target && f.info.frame_token==token && f.info.native_epoch==epoch &&
         fingerprint && f.declaration.info.fingerprint==fingerprint,"function frame capability mismatch");
     return f;
@@ -254,7 +257,7 @@ struct Service::Impl {
                 FrameAccess access{id,declaration,frame,
                     {1,sizeof(S2FunctionFrameInfo),epoch,epoch,frame.invocation_id,owner,
                      static_cast<unsigned int>(frame.arguments.size()),frame.original_skipped ? 1u : 0u},
-                    frame.arguments,host.codec,{}};
+                    *binding,host.owner,frame.arguments,host.codec,{}};
                 frames.push_back(&access);
                 struct Pop { ~Pop() { frames.pop_back(); } } pop;
                 sink->Dispatch(id,owner,frame);
@@ -272,6 +275,7 @@ struct Service::Impl {
         }
     };
     mutable std::recursive_mutex mu;
+    const std::thread::id owner=std::this_thread::get_id();
     Resolver resolver;
     DispatchSink* sink=nullptr;
     PointerCodec* codec=nullptr;
@@ -507,9 +511,11 @@ extern "C" int S2_FunctionFrameRead(long long id,unsigned long long token,unsign
             require(f.declaration.abi.receiver=="entity","receiver unavailable");
             k=ValueKind::Pointer;value=f.native.receiver;
             require(out->flags==static_cast<unsigned char>(PointerProjection::Entity),"receiver requires strict entity projection");
-        } else if (selector==-2) {
-            require(f.native.phase==s2fn::Phase::Post,"effective return is POST-only");
-            k=kind(f.declaration.abi.returns.native); value=f.native.result;
+        } else if (selector==-2 || selector==-3) {
+            require(f.native.phase==s2fn::Phase::Post,"return read is POST-only");
+            require(selector!=-3 || !f.native.original_skipped,"original return unavailable: original skipped");
+            k=kind(f.declaration.abi.returns.native);
+            value=selector==-3 ? f.native.original_result : f.native.result;
         } else {
             require(selector>=0 && static_cast<size_t>(selector)<f.staged.size(),"unsupported frame selector");
             k=kind(f.declaration.abi.parameters[selector].native); value=f.staged[selector];
@@ -533,6 +539,35 @@ extern "C" int S2_FunctionFrameRead(long long id,unsigned long long token,unsign
         *out=result; reason_out(reason,cap,""); return 1;
     } catch (const std::exception& e) {reason_out(reason,cap,e.what());return 0;}
       catch (...) {reason_out(reason,cap,"frame read exception");return 0;}
+}
+extern "C" int S2_FunctionFrameOverrideReturn(long long id,unsigned long long token,unsigned long long epoch,
+    const char* fp,const S2FunctionValue* value,S2FunctionValue* out,char* reason,int cap) {
+    bool submitted=false;
+    try {
+        using namespace s2bridge;
+        auto& f=frame_access(id,token,epoch,fp);
+        require(f.native.phase==s2fn::Phase::Post,"return override is POST-only");
+        const auto k=kind(f.declaration.abi.returns.native);
+        require(k!=ValueKind::Void,"void return cannot be overridden");
+        require(value && out,"missing override input/output");
+        s2fn::NativeValue native;
+        CallStorage storage;
+        if(k==ValueKind::Pointer) {
+            require(f.codec,"entity codec unavailable");
+            require(out->kind==8 && (out->flags==1 || out->flags==2) && !out->reserved && !out->aux && !out->bits,
+                "invalid entity projection request");
+            auto decoded=f.codec->Decode(*value,storage);require(bool(decoded),decoded.error.c_str());native=decoded.value;
+        } else native=scalar_decode(*value,k);
+        submitted=true;
+        f.binding.OverridePostReturn(f.native,native);
+        S2FunctionValue effective{};
+        if(k==ValueKind::Pointer) {
+            auto encoded=f.codec->Encode(f.native.result,*out);require(bool(encoded),encoded.error.c_str());effective=encoded.value;
+        } else effective=scalar_copy(f.native.result,k);
+        *out=effective;reason_out(reason,cap,"");return 1;
+    } catch(const std::exception& e) {
+        reason_out(reason,cap,submitted ? std::string("POST override submitted: readback failed: ")+e.what() : e.what());return 0;
+    } catch(...) {reason_out(reason,cap,submitted ? "POST override submitted: readback exception" : "POST override exception");return 0;}
 }
 extern "C" int S2_FunctionFrameWrite(long long id,unsigned long long token,unsigned long long epoch,
     const char* fp,int selector,const S2FunctionValue* value,char* reason,int cap) {

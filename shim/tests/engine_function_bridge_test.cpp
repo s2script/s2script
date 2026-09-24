@@ -240,6 +240,7 @@ void worker_join_regression() {
 }
 static S2FunctionFrameInfo last_frame{};
 static std::vector<unsigned long long> transport_invocations;
+static bool scalar_suppressed=true;
 static int scalar_dispatch(long long target_id,const S2FunctionFrameInfo* info,int phase) {
     assert(info && info->version==1 && info->struct_size==48 && info->invocation_id);
     const char* fp="linux-x86_64-sysv:none:i32(i32)";char why[256]{};S2FunctionValue value{};
@@ -248,9 +249,20 @@ static int scalar_dispatch(long long target_id,const S2FunctionFrameInfo* info,i
     assert(!S2_FunctionFrameRead(target_id,info->frame_token+1,info->native_epoch,fp,0,2,&value,why,sizeof why));
     assert(value.kind==old.kind && value.bits==old.bits);
     assert(!S2_FunctionFrameRead(target_id,info->frame_token,info->native_epoch,"wrong",0,2,&value,why,sizeof why));
+    S2FunctionValue effect{}; effect.kind=2; effect.bits=91;
+    S2FunctionValue effective{};
+    auto override_return=[&](const S2FunctionValue& v) {
+        return S2_FunctionFrameOverrideReturn(target_id,info->frame_token,info->native_epoch,fp,&v,&effective,why,sizeof why);
+    };
     if(phase==0){
+        assert(!override_return(effect));
+        assert(!S2_FunctionFrameRead(target_id,info->frame_token,info->native_epoch,fp,-3,2,&value,why,sizeof why));
         transport_invocations.push_back(info->invocation_id);
         assert(!S2_FunctionFrameRead(target_id,info->frame_token,info->native_epoch,fp,-2,2,&value,why,sizeof why));
+        if(!scalar_suppressed) {
+            assert(S2_FunctionFrameCommit(target_id,info->frame_token,info->native_epoch,fp,0,nullptr,why,sizeof why));
+            last_frame=*info;return 1;
+        }
         auto invalid=value;invalid.flags=1;
         assert(!S2_FunctionFrameWrite(target_id,info->frame_token,info->native_epoch,fp,0,&invalid,why,sizeof why));
         value.bits=19;
@@ -262,8 +274,28 @@ static int scalar_dispatch(long long target_id,const S2FunctionFrameInfo* info,i
         assert(!S2_FunctionFrameCommit(target_id,info->frame_token,info->native_epoch,fp,2,&value,why,sizeof why));
     }else{
         assert(transport_invocations.back()==info->invocation_id);transport_invocations.pop_back();
-        assert(info->flags==1);
-        assert(S2_FunctionFrameRead(target_id,info->frame_token,info->native_epoch,fp,-2,2,&value,why,sizeof why) && value.bits==73);
+        assert(info->flags==unsigned(scalar_suppressed));
+        if(scalar_suppressed) {
+            assert(!S2_FunctionFrameRead(target_id,info->frame_token,info->native_epoch,fp,-3,2,&value,why,sizeof why));
+            assert(std::string(why).find("original return unavailable")!=std::string::npos);
+        } else assert(S2_FunctionFrameRead(target_id,info->frame_token,info->native_epoch,fp,-3,2,&value,why,sizeof why) && value.bits==8);
+        auto bad=effect;bad.flags=1;assert(!override_return(bad));
+        bad=effect;bad.reserved=1;assert(!override_return(bad));
+        bad=effect;bad.aux=1;assert(!override_return(bad));
+        bad=effect;bad.kind=8;assert(!override_return(bad));
+        bad=effect;bad.bits=UINT64_MAX;assert(!override_return(bad));
+        assert(!S2_FunctionFrameOverrideReturn(target_id+1,info->frame_token,info->native_epoch,fp,&effect,&effective,why,sizeof why));
+        assert(!S2_FunctionFrameOverrideReturn(target_id,info->frame_token+1,info->native_epoch,fp,&effect,&effective,why,sizeof why));
+        assert(!S2_FunctionFrameOverrideReturn(target_id,info->frame_token,info->native_epoch+1,fp,&effect,&effective,why,sizeof why));
+        assert(!S2_FunctionFrameOverrideReturn(target_id,info->frame_token,info->native_epoch,"wrong",&effect,&effective,why,sizeof why));
+        std::thread worker([&]{assert(!override_return(effect));});worker.join();
+        assert(effective.kind==0 && effective.bits==0); // Every failed effect leaves output untouched.
+        assert(S2_FunctionFrameRead(target_id,info->frame_token,info->native_epoch,fp,-2,2,&value,why,sizeof why) && value.bits==(scalar_suppressed ? 73u : 8u));
+        const auto expected=scalar_suppressed ? 73u : 91u;
+        assert(override_return(effect) && effective.bits==expected); // Earlier Supersede wins.
+        effect.bits=92;assert(override_return(effect) && effective.bits==expected);
+        assert(S2_FunctionFrameRead(target_id,info->frame_token,info->native_epoch,fp,-2,2,&value,why,sizeof why) && value.bits==expected);
+        if(!scalar_suppressed)assert(S2_FunctionFrameRead(target_id,info->frame_token,info->native_epoch,fp,-3,2,&value,why,sizeof why) && value.bits==8);
         assert(!S2_FunctionFrameWrite(target_id,info->frame_token,info->native_epoch,fp,0,&value,why,sizeof why));
         assert(!S2_FunctionFrameCommit(target_id,info->frame_token,info->native_epoch,fp,2,&value,why,sizeof why));
     }
@@ -368,6 +400,26 @@ static int entity_dispatch(long long target_id,const S2FunctionFrameInfo* info,i
     } else {
         auto value=entity_request(2);assert(read(-2,value));assert(value.aux==(entity_mode==0 ? UINT32_MAX : 901));
         assert(!S2_FunctionFrameWrite(target_id,info->frame_token,info->native_epoch,fp,0,&value,why,sizeof why));
+        const auto original=value;auto snapshot=entity_request(2);assert(read(-3,snapshot) && snapshot.aux==original.aux);
+        auto effect=entity_request(2);effect.aux=UINT32_MAX;
+        auto out=entity_request(1);
+        const int contacts=entity_contacts;
+        auto bad=out;bad.flags=3;assert(!S2_FunctionFrameOverrideReturn(target_id,info->frame_token,info->native_epoch,fp,&effect,&bad,why,sizeof why));assert(entity_contacts==contacts);
+        bad=out;bad.reserved=1;assert(!S2_FunctionFrameOverrideReturn(target_id,info->frame_token,info->native_epoch,fp,&effect,&bad,why,sizeof why));assert(entity_contacts==contacts);
+        bad=out;bad.bits=1;assert(!S2_FunctionFrameOverrideReturn(target_id,info->frame_token,info->native_epoch,fp,&effect,&bad,why,sizeof why));assert(entity_contacts==contacts);
+        bad=effect;bad.flags=0;assert(!S2_FunctionFrameOverrideReturn(target_id,info->frame_token,info->native_epoch,fp,&bad,&out,why,sizeof why));
+        bad=effect;bad.reserved=1;assert(!S2_FunctionFrameOverrideReturn(target_id,info->frame_token,info->native_epoch,fp,&bad,&out,why,sizeof why));
+        bad=effect;bad.kind=2;assert(!S2_FunctionFrameOverrideReturn(target_id,info->frame_token,info->native_epoch,fp,&bad,&out,why,sizeof why));
+        if(entity_mode==0) {
+            // Null was valid input but cannot satisfy this strict output request.
+            assert(!S2_FunctionFrameOverrideReturn(target_id,info->frame_token,info->native_epoch,fp,&effect,&out,why,sizeof why));
+            assert(std::strstr(why,"POST override submitted: readback failed"));
+            assert(out.kind==8 && out.flags==1 && out.aux==0 && out.bits==0);
+            auto current=entity_request(2);assert(read(-2,current) && current.aux==UINT32_MAX);
+            effect=entity_request(1);effect.aux=901;effect.bits=71;out=entity_request(2);
+            assert(S2_FunctionFrameOverrideReturn(target_id,info->frame_token,info->native_epoch,fp,&effect,&out,why,sizeof why) && out.aux==UINT32_MAX);
+        }
+        snapshot=entity_request(2);assert(read(-3,snapshot) && snapshot.aux==original.aux);
     }
     entity_last_frame=*info;return 1;
 }
@@ -407,7 +459,8 @@ static void scalar_transport() {
     s2bridge::CoreDispatchSink sink(scalar_dispatch);assert(service.SetDispatchSink(&sink));
     auto t=target();t["resolve"]="direct";t["derivation"]="identity";t["candidateValidate"]=json::object();auto a=abi();
     auto binding=service.Prepare("transport",t.dump(),a.dump(),a["fingerprint"]);assert(binding);assert(service.HookAcquire(binding.value));
-    S2FunctionValue input{};input.kind=2;input.bits=7;auto result=service.Call(binding.value,0,&input,1);assert(result && result.value.bits==73 && transport_invocations.empty());
+    S2FunctionValue input{};input.kind=2;input.bits=7;
+    for(bool suppressed:{false,true}) {scalar_suppressed=suppressed;auto result=service.Call(binding.value,0,&input,1);assert(result && result.value.bits==(suppressed ? 73u : 91u) && transport_invocations.empty());}
     char why[256]{};S2FunctionValue out{};
     assert(!S2_FunctionFrameRead(binding.value,last_frame.frame_token,last_frame.native_epoch,"linux-x86_64-sysv:none:i32(i32)",0,2,&out,why,sizeof why));
     assert(service.HookRelease(binding.value));assert(service.TargetRelease(binding.value));

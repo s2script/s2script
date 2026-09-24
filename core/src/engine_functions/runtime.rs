@@ -311,3 +311,81 @@ mod tests {
         assert!(kind("ptr").is_err());
     }
 }
+
+/// Only the leased adapter service can construct the permit required here.
+pub(crate) fn original_return(
+    permit: &crate::v8host::function_adapter::AdapterPostReturnPermit,
+) -> Result<Option<super::projection::ProjectedValue>, String> {
+    let (frame, binding) = permit.validate()?;
+    let ret = &binding.function.abi.returns;
+    if frame.info.flags & 1 != 0 || ret.native == "void" {
+        return Ok(None);
+    }
+    frame
+        .read_requested(
+            -3,
+            super::projection::request(&ret.native, &ret.projection.id)?,
+        )
+        .and_then(|v| super::projection::decode(v, &ret.native, &ret.projection.id))
+        .map(Some)
+        .map_err(|e| format!("{}: {e}", binding.function.canonical_id))
+}
+pub(crate) fn override_return(
+    permit: &crate::v8host::function_adapter::AdapterPostReturnPermit,
+    value: super::projection::ProjectedValue,
+) -> Result<super::projection::ProjectedValue, String> {
+    let (frame, binding) = permit.validate()?;
+    let run = || {
+        let ret = &binding.function.abi.returns;
+        let mut out = super::projection::request(&ret.native, &ret.projection.id)?;
+        if out.kind == 0 {
+            return Err("void return cannot be overridden".into());
+        }
+        if matches!(
+            (out.kind, value),
+            (8, super::projection::ProjectedValue::Scalar(_))
+                | (1..=7, super::projection::ProjectedValue::Entity { .. })
+        ) {
+            return Err("binding return value category mismatch".into());
+        }
+        let wire = super::projection::encode(value)?;
+        if wire.kind != out.kind
+            || wire.flags != out.flags
+            || wire.reserved != 0
+            || (wire.kind != 8
+                && (wire.aux != 0
+                    || match wire.kind {
+                        1 => wire.bits > 1,
+                        2 | 3 => wire.bits > u32::MAX as u64,
+                        6 => {
+                            wire.bits > u32::MAX as u64
+                                || !f32::from_bits(wire.bits as u32).is_finite()
+                        }
+                        7 => !f64::from_bits(wire.bits).is_finite(),
+                        _ => false,
+                    }))
+        {
+            return Err("binding return projection mismatch".into());
+        }
+        let op = engine_ops()
+            .and_then(|o| o.function_frame_override_return)
+            .ok_or("native POST override unavailable")?;
+        let mut why = [0; 512];
+        if op(
+            frame.target,
+            frame.info.frame_token,
+            frame.info.native_epoch,
+            frame.fingerprint.as_ptr(),
+            &wire,
+            &mut out,
+            why.as_mut_ptr(),
+            512,
+        ) != 1
+        {
+            return Err(reason(&why));
+        }
+        super::projection::decode(out, &ret.native, &ret.projection.id)
+            .map_err(|e| format!("POST override submitted: readback projection failed: {e}"))
+    };
+    run().map_err(|e: String| format!("{}: {e}", binding.function.canonical_id))
+}

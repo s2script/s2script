@@ -190,6 +190,7 @@ pub type FunctionHookStatusFn = extern "C" fn(i64, *mut S2FunctionHookStatus, *m
 pub type FunctionFrameReadFn = extern "C" fn(i64, u64, u64, *const c_char, c_int, u8, *mut S2FunctionValue, *mut c_char, c_int) -> c_int;
 pub type FunctionFrameWriteFn = extern "C" fn(i64, u64, u64, *const c_char, c_int, *const S2FunctionValue, *mut c_char, c_int) -> c_int;
 pub type FunctionFrameCommitFn = extern "C" fn(i64, u64, u64, *const c_char, c_int, *const S2FunctionValue, *mut c_char, c_int) -> c_int;
+pub type FunctionFrameOverrideReturnFn = extern "C" fn(i64, u64, u64, *const c_char, *const S2FunctionValue, *mut S2FunctionValue, *mut c_char, c_int) -> c_int;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -380,6 +381,7 @@ pub struct S2EngineOps {
     pub function_frame_read: Option<FunctionFrameReadFn>,
     pub function_frame_write: Option<FunctionFrameWriteFn>,
     pub function_frame_commit: Option<FunctionFrameCommitFn>,
+    pub function_frame_override_return: Option<FunctionFrameOverrideReturnFn>,
 }
 
 impl S2EngineOps {

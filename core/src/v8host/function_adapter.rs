@@ -4,7 +4,7 @@ use super::*;
 use crate::engine_functions::{
     contract::*,
     package_adapter::{self, DispatchAdapter, SubscriberCursor},
-    policy::{AdapterContract, SubscriptionMode},
+    policy::{AdapterContract, HostAdapterGrant, PostReturnAuthority, SubscriptionMode},
     projection::{self, EntityProjection, ProjectedValue},
     registry::{self, Binding},
     runtime::{self, Frame},
@@ -20,6 +20,7 @@ struct PreparedPackage {
     owner: HostPackageOwner,
     source: Arc<str>,
     manifest: ImplementationManifestHash,
+    grants: Vec<HostAdapterGrant>,
     #[allow(dead_code)] // Retained payload measurement for Task 7's loader accounting seam.
     retained_bytes: usize,
 }
@@ -47,11 +48,24 @@ pub(crate) fn register_prepared_package(
     source: Arc<str>,
     manifest: ImplementationManifestHash,
 ) -> Result<PreparedPackageReceipt, String> {
+    register_prepared_package_with_authorities(owner, source, manifest, Vec::new())
+}
+pub(crate) fn register_prepared_package_with_authorities(
+    owner: HostPackageOwner,
+    source: Arc<str>,
+    manifest: ImplementationManifestHash,
+    grants: Vec<HostAdapterGrant>,
+) -> Result<PreparedPackageReceipt, String> {
+    if grants.iter().any(|g| !g.belongs_to(&owner)) {
+        return Err("adapter grant belongs to another package generation".into());
+    }
     if source.is_empty() {
         return Err("empty prepared package source".into());
     }
     let package = Rc::new(PreparedPackage {
-        retained_bytes: source.len() + manifest.as_str().len() + owner.key().id.len(),
+        retained_bytes: source.len() + manifest.as_str().len() + owner.key().id.len()
+            + grants.iter().map(HostAdapterGrant::retained_bytes).sum::<usize>(),
+        grants,
         owner,
         source,
         manifest,
@@ -79,6 +93,7 @@ impl Drop for PreparedPackageReceipt {
 }
 struct Adapter {
     id: u64,
+    post_authority: PostReturnAuthority,
     instance: PackageInstanceKey,
     semantic: String,
     hash: String,
@@ -385,6 +400,9 @@ fn js_register(
                 id,
                 Rc::new(Adapter {
                     id,
+                    post_authority: package.grants.iter().map(|g| g.authority(&AdapterContract {
+                        id: semantic.clone(), version: 1, contract_hash: hash.clone(),
+                    })).find(|a| *a == PostReturnAuthority::Override).unwrap_or_default(),
                     instance,
                     semantic,
                     hash,
@@ -852,6 +870,124 @@ fn lease(scope: &mut v8::PinScope, id: u64) -> Result<Lease, String> {
         })
         .ok_or("expired or suspended callback lease".into())
 }
+/// Private construction binds authority to one exact active adapter callback.
+/// Holding this object does not extend its lease or revive a removed registration.
+pub(crate) struct AdapterPostReturnPermit {
+    lease: Lease,
+}
+impl AdapterPostReturnPermit {
+    fn issue(lease: Lease) -> Result<Self, String> {
+        let permit = Self { lease };
+        permit.validate()?;
+        Ok(permit)
+    }
+    pub(crate) fn validate(&self) -> Result<(Frame, Rc<Binding>), String> {
+        let l = &self.lease;
+        if !LEASES.with(|s| {
+            s.borrow().last().is_some_and(|top| {
+                top.enabled
+                    && top.adapter
+                    && top.id == l.id
+                    && top.owner == l.owner
+                    && Rc::ptr_eq(&top.dispatch, &l.dispatch)
+                    && Rc::ptr_eq(&top.binding, &l.binding)
+            })
+        }) {
+            return Err("expired or suspended adapter POST permit".into());
+        }
+        let adapter = l
+            .dispatch
+            .adapter
+            .as_ref()
+            .ok_or("adapter POST authority required")?;
+        if !l.adapter
+            || l.dispatch.frame.phase != 1
+            || adapter.post_authority != PostReturnAuthority::Override
+            || adapter.instance.parent != l.owner
+            || !owner_is_live(&l.owner.id, l.owner.generation)
+            || plugin_phase(&l.owner.id) != Some(plugin::Phase::Active)
+            || !ADAPTERS.with(|a| {
+                a.borrow()
+                    .get(&adapter.id)
+                    .is_some_and(|a| Rc::ptr_eq(a, adapter))
+            })
+            || !PACKAGES.with(|p| {
+                p.borrow()
+                    .get(&adapter.instance.package_owner.generation)
+                    .is_some_and(|p| Rc::ptr_eq(p, &adapter.package))
+            })
+        {
+            return Err("adapter POST authority revoked or unavailable".into());
+        }
+        registry::binding(l.binding.id, &l.binding.owner)?;
+        if !AUTHORIZED.with(|a| {
+            a.borrow()
+                .get(&l.binding.id)
+                .is_some_and(|(owner, id, hash)| {
+                    *owner == adapter.instance.package_owner
+                        && *id == adapter.semantic
+                        && *hash == adapter.hash
+                })
+        }) {
+            return Err("adapter POST binding authorization mismatch".into());
+        }
+        Ok((l.dispatch.frame.clone(), l.binding.clone()))
+    }
+}
+struct GuardedPostFrame {
+    permit: AdapterPostReturnPermit,
+}
+impl package_adapter::ProjectedFrame for GuardedPostFrame {
+    fn original_return(&self) -> Result<Option<ProjectedValue>, String> {
+        runtime::original_return(&self.permit)
+    }
+    fn override_return(&mut self, value: ProjectedValue) -> Result<ProjectedValue, String> {
+        runtime::override_return(&self.permit, value)
+    }
+}
+fn js_original_return(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let result = (|| {
+        let l = lease(scope, bigint(args.data())?)?;
+        let permit = AdapterPostReturnPermit::issue(l)?;
+        let frame = GuardedPostFrame { permit };
+        match package_adapter::ProjectedFrame::original_return(&frame)? {
+            Some(value) => projected_to_js(scope, value),
+            None => Ok(v8::undefined(scope).into()),
+        }
+    })();
+    match result {
+        Ok(value) => rv.set(value),
+        Err(e) => throw(scope, e),
+    }
+}
+fn js_override_return(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let result = (|| {
+        let l = lease(scope, bigint(args.data())?)?;
+        let permit = AdapterPostReturnPermit::issue(l)?;
+        let (_, binding) = permit.validate()?;
+        let ret = &binding.function.abi.returns;
+        let value = projected_from_js(scope, args.get(0), &ret.native, &ret.projection.id)
+            .map_err(|e| format!("{}: {e}", binding.function.canonical_id))?;
+        let mut frame = GuardedPostFrame { permit };
+        projected_to_js(
+            scope,
+            package_adapter::ProjectedFrame::override_return(&mut frame, value)?,
+        )
+    })();
+    match result {
+        Ok(value) => rv.set(value),
+        Err(e) => throw(scope, e),
+    }
+}
+
 fn accessor_data(
     scope: &mut v8::PinScope,
     args: &v8::FunctionCallbackArguments,
@@ -1085,6 +1221,18 @@ fn view<'s>(
         let skipped = v8::Boolean::new(scope, dispatch.frame.info.flags & 1 != 0);
         set(scope, object, "skipped", skipped.into())?;
     }
+    if dispatch.frame.phase == 1 && LEASES.with(|s| s.borrow().last().is_some_and(|l|
+        l.id == lease && l.adapter && dispatch.adapter.as_ref().is_some_and(|a|
+            a.post_authority == PostReturnAuthority::Override))) {
+        let data = v8::BigInt::new_from_u64(scope, lease);
+        let getter = v8::Function::builder(js_original_return).data(data.into()).build(scope).ok_or("getter allocation")?;
+        let undefined = v8::undefined(scope);
+        let desc = v8::PropertyDescriptor::new_from_get_set(getter.into(), undefined.into());
+        let key = v8::String::new(scope, "originalReturnValue").unwrap();
+        object.define_property(scope,key.into(),&desc);
+        let method = v8::Function::builder(js_override_return).data(data.into()).build(scope).ok_or("method allocation")?;
+        set(scope,object,"overrideReturn",method.into())?;
+    }
     object.set_integrity_level(scope, v8::IntegrityLevel::Frozen);
     Ok(object)
 }
@@ -1304,6 +1452,7 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
     )
 }
 struct GenericCursor<'a, 's, 'i> {
+    adapter_owner: Option<OwnerKey>,
     scope: &'a mut v8::PinScope<'s, 'i>,
     dispatch: Rc<Dispatch>,
 }
@@ -1317,7 +1466,8 @@ impl SubscriberCursor for GenericCursor<'_, '_, '_> {
             self.dispatch.cursor.set(index + 1);
             if !SUBSCRIPTIONS.with(|s| s.borrow().contains_key(&sub.id))
                 || !owner_is_live(&sub.owner.id, sub.owner.generation)
-                || crate::dispatch::parent_busy(&sub.owner.id, sub.owner.generation)
+                || (self.adapter_owner.as_ref() != Some(&sub.owner)
+                    && crate::dispatch::parent_busy(&sub.owner.id, sub.owner.generation))
             {
                 continue;
             }
@@ -1383,11 +1533,13 @@ fn invoke_domains(scope: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<De
             invoke_adapter(scope, part.clone())?
         } else {
             let mut cursor = GenericCursor {
+                adapter_owner: None,
                 scope,
                 dispatch: part.clone(),
             };
             let mut args = package_adapter::AdapterDispatch {
                 cursor: &mut cursor,
+                frame: None,
             };
             if group == 2 || dispatch.frame.phase == 1 {
                 let implementation = part.subscribers[0]
@@ -1683,6 +1835,307 @@ pub(super) mod proof {
         )
         .unwrap()
     }
+    // Both native Service and portable host tests execute this exact package body.
+    pub struct PostConformance {
+        pub package: PreparedPackageReceipt,
+        pub ready: bool,
+    }
+    fn js_rust_post(
+        scope: &mut v8::PinScope,
+        args: v8::FunctionCallbackArguments,
+        _: v8::ReturnValue,
+    ) {
+        struct RustPost {
+            original: ProjectedValue,
+            desired: ProjectedValue,
+        }
+        fn same(a: ProjectedValue, b: ProjectedValue) -> bool {
+            match (a, b) {
+                (ProjectedValue::Scalar(a), ProjectedValue::Scalar(b)) => {
+                    a.kind == b.kind && a.bits == b.bits
+                }
+                (
+                    ProjectedValue::Entity { reference: a, .. },
+                    ProjectedValue::Entity { reference: b, .. },
+                ) => a == b,
+                _ => false,
+            }
+        }
+        impl DispatchAdapter for RustPost {
+            fn pre(
+                &self,
+                _: &mut package_adapter::AdapterDispatch<'_>,
+            ) -> Result<package_adapter::PreDecision, String> {
+                Err("proof is POST-only".into())
+            }
+            fn post(&self, d: &mut package_adapter::AdapterDispatch<'_>) -> Result<(), String> {
+                let frame = d.frame.as_deref_mut().ok_or("missing guarded frame")?;
+                if !frame
+                    .original_return()?
+                    .is_some_and(|v| same(v, self.original))
+                {
+                    return Err("Rust original snapshot mismatch".into());
+                }
+                for malformed in [
+                    S2FunctionValue {
+                        kind: 2,
+                        flags: 1,
+                        reserved: 0,
+                        aux: 0,
+                        bits: 41,
+                    },
+                    S2FunctionValue {
+                        kind: 2,
+                        flags: 0,
+                        reserved: 1,
+                        aux: 0,
+                        bits: 41,
+                    },
+                    S2FunctionValue {
+                        kind: 2,
+                        flags: 0,
+                        reserved: 0,
+                        aux: 1,
+                        bits: 41,
+                    },
+                    S2FunctionValue {
+                        kind: 2,
+                        flags: 0,
+                        reserved: 0,
+                        aux: 0,
+                        bits: u64::MAX,
+                    },
+                    // A Scalar POD cannot impersonate a host EntityReference, even
+                    // when its index/serial happen to identify a currently live slot.
+                    S2FunctionValue {
+                        kind: 8,
+                        flags: 1,
+                        reserved: 0,
+                        aux: 901,
+                        bits: 71,
+                    },
+                    S2FunctionValue {
+                        kind: 8,
+                        flags: 2,
+                        reserved: 0,
+                        aux: 901,
+                        bits: 71,
+                    },
+                ] {
+                    if frame
+                        .override_return(ProjectedValue::Scalar(malformed))
+                        .is_ok()
+                    {
+                        return Err("malformed Rust effect accepted".into());
+                    }
+                }
+                if !same(frame.override_return(self.desired)?, self.desired) {
+                    return Err("Rust effective mismatch".into());
+                }
+                while d.cursor.invoke_next()?.is_some() {}
+                if !d
+                    .frame
+                    .as_deref_mut()
+                    .unwrap()
+                    .original_return()?
+                    .is_some_and(|v| same(v, self.original))
+                {
+                    return Err("Rust original changed".into());
+                }
+                Ok(())
+            }
+        }
+        let result = (|| {
+            let id = LEASES
+                .with(|s| s.borrow().last().map(|l| l.id))
+                .ok_or("missing adapter lease")?;
+            let l = lease(scope, id)?;
+            let mut frame = GuardedPostFrame {
+                permit: AdapterPostReturnPermit::issue(l.clone())?,
+            };
+            let ret = &l.binding.function.abi.returns;
+            let (original, desired) = if ret.native == "ptr" {
+                let context = scope.get_current_context();
+                let global = context.global(scope);
+                let a = get(scope, global, "a")?;
+                (
+                    projected_from_js(scope, a, &ret.native, &ret.projection.id)?,
+                    projected_from_js(scope, args.get(0), &ret.native, &ret.projection.id)?,
+                )
+            } else {
+                let mut a = runtime::blank();
+                a.kind = 2;
+                a.bits = 7;
+                let mut b = a;
+                b.bits = 41;
+                (ProjectedValue::Scalar(a), ProjectedValue::Scalar(b))
+            };
+            let mut cursor = GenericCursor {
+                adapter_owner: Some(l.owner),
+                scope,
+                dispatch: l.dispatch,
+            };
+            RustPost { original, desired }.post(&mut package_adapter::AdapterDispatch {
+                cursor: &mut cursor,
+                frame: Some(&mut frame),
+            })
+        })();
+        if let Err(e) = result {
+            throw(scope, e)
+        }
+    }
+    fn js_publish_post_methods(
+        scope: &mut v8::PinScope,
+        args: v8::FunctionCallbackArguments,
+        _: v8::ReturnValue,
+    ) {
+        let method = v8::Global::new(scope, args.get(0));
+        let getter = v8::Global::new(scope, args.get(1));
+        let context = clone_plugin_context("post-observer").unwrap();
+        let context = v8::Local::new(scope, &context);
+        let scope = &mut v8::ContextScope::new(scope, context);
+        let global = context.global(scope);
+        let method = v8::Local::new(scope, &method);
+        let getter = v8::Local::new(scope, &getter);
+        set(scope, global, "borrowed", method).unwrap();
+        set(scope, global, "borrowedOriginal", getter).unwrap();
+    }
+
+    pub fn post_begin() -> PostConformance {
+        const ID: &str = "proof.trusted-post.v1";
+        let owner = HostPackageOwner::mint("@proof/trusted-post-shared").unwrap();
+        let grant = HostAdapterGrant::override_return(
+            &owner,
+            AdapterContract {
+                id: ID.into(),
+                version: 1,
+                contract_hash: HASH.into(),
+            },
+        )
+        .unwrap();
+        let source = format!(
+            r#"(()=>{{
+          const register=__s2_function_adapter_register,subscribe=__s2_function_adapter_subscribe;
+          globalThis.events=[];globalThis.mode='probe';globalThis.expected=41;globalThis.original=7;
+          globalThis.adapterReceipt=register('{ID}','{HASH}',{{
+            pre(d){{
+              if('overrideReturn' in d.frame || 'originalReturnValue' in d.frame)throw Error('PRE authority');
+              if(globalThis.retained){{let denied=false;try{{retained(999)}}catch(_){{denied=true}}if(!denied)throw Error('old permit revived');}}
+              if(mode==='skip')return {{action:2,returnValue:63}};
+            }},
+            post(d){{
+              if(mode==='probe'){{events.push('ready');return;}}
+              if(d.frame.originalReturnValue!==original)throw Error('original snapshot');
+              globalThis.retained=d.frame.overrideReturn;
+              globalThis.retainedOriginal=Object.getOwnPropertyDescriptor(d.frame,'originalReturnValue').get;
+              if(mode==='rust'){{__proofRustPost();events.push('adapter');return;}}
+              if(mode==='nested'){{
+                // Caller bypass leaves a different instance selected during this nested frame.
+                __proofPublishPost(retained,retainedOriginal);
+                const nested=__proofEntityCall(globalThis.localBinding,3);
+                if(nested!==3)throw Error('nested original');
+              }}
+              if(retained(41)!==expected || d.frame.returnValue!==expected)throw Error('provider current');
+              if(d.frame.originalReturnValue!==original)throw Error('original changed');
+              while(d.cursor.invokeNext()!==null){{}}
+              if(retained(43)!==expected)throw Error('equal Override replaced first winner');
+              if(mode==='throw')throw Error('after effect');
+              events.push('adapter');
+            }}
+          }});
+          globalThis.subscribePost=id=>{{
+            globalThis.localBinding=id;
+            globalThis.preReceipt=subscribe(id,'{ID}','pre',()=>{{}});
+            globalThis.postReceipt=subscribe(id,'{ID}','post',v=>{{
+              if('originalReturnValue' in v || 'overrideReturn' in v)throw Error('public grant');
+              let refused=0;try{{retained(99)}}catch(_){{refused++}}try{{retainedOriginal()}}catch(_){{refused++}}
+              try{{v.returnValue=99}}catch(_){{refused++}}
+              if(refused!==3 || v.returnValue!==expected)throw Error('subscriber lease or timing');
+              events.push('named:'+v.returnValue);
+            }});
+          }};
+        }})()"#
+        );
+        let package = register_prepared_package_with_authorities(
+            owner,
+            source.into(),
+            ImplementationManifestHash::new(HASH.into()).unwrap(),
+            vec![grant],
+        )
+        .unwrap();
+        for id in ["post-adapter", "post-caller", "post-observer"] {
+            frame_tests::load_body(id, "return {};", "{}");
+            entity_native(id);
+            let binding = prepared_binding(id, |_| {});
+            eval_in_context(id, &format!("globalThis.binding={binding}n;")).unwrap();
+            if id == "post-adapter" {
+                authorize_binding(
+                    &package,
+                    &OwnerKey::plugin(id, plugin_generation(id)),
+                    binding,
+                    ID,
+                    HASH,
+                )
+                .unwrap();
+                eval_in_context(id, &format!("subscribePost({binding}n);")).unwrap();
+                with_host_isolate(|isolate| {
+                    let mut storage = v8::HandleScope::new(isolate);
+                    let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+                    let context = clone_plugin_context(id).unwrap();
+                    let context = v8::Local::new(&mut hs, &context);
+                    let scope = &mut v8::ContextScope::new(&mut hs, context);
+                    let f = v8::Function::new(scope, js_rust_post).unwrap();
+                    let global = context.global(scope);
+                    set(scope, global, "__proofRustPost", f.into()).unwrap();
+                })
+                .unwrap();
+            } else if id == "post-observer" {
+                eval_in_context(id,"__proofSubscribeGeneric(binding,'post',true,v=>{if('overrideReturn' in v || 'originalReturnValue' in v)throw Error('generic authority');if(v.returnValue===3){let n=0;try{borrowed(99)}catch(_){n++}try{borrowedOriginal()}catch(_){n++}if(n!==2)throw Error('nested cross-context permit');events.push('nested-refused');return;}events.push(v.returnValue);});").unwrap();
+            }
+        }
+        PostConformance {
+            package,
+            ready: false,
+        }
+    }
+    pub fn post_probe(state: &mut PostConformance) {
+        eval_in_context("post-adapter", "events.length=0;").unwrap();
+        eval_in_context("post-caller", "__proofEntityCall(binding,7);").unwrap();
+        state.ready = eval_in_context(
+            "post-adapter",
+            "if(events.join(',')!=='ready')throw Error('not ready');",
+        )
+        .is_ok();
+    }
+    pub fn post_exercise(mode: &str, expected: i32, original: Option<i32>) {
+        let original = original
+            .map(|v| v.to_string())
+            .unwrap_or("undefined".into());
+        eval_in_context(
+            "post-adapter",
+            &format!("mode='{mode}';expected={expected};original={original};events.length=0;"),
+        )
+        .unwrap();
+        eval_in_context("post-observer", "events.length=0;").unwrap();
+        eval_in_context("post-caller",&format!("if(__proofEntityCall(binding,7)!=={expected})throw Error('final provider result');")).unwrap();
+        eval_in_context("post-adapter",&format!("if(events.join(',')!=='named:{expected},adapter')throw Error(events);{{let n=0;try{{retained(99)}}catch(_){{n++}}try{{retainedOriginal()}}catch(_){{n++}}if(n!==2)throw Error('expired permit');}}")).unwrap();
+        let observer_expected=if mode=="nested" {format!("nested-refused,{expected}")}else{expected.to_string()};
+        eval_in_context(
+            "post-observer",
+            &format!("if(events.join(',')!=='{observer_expected}')throw Error('generic current:'+events);"),
+        )
+        .unwrap();
+        assert_eq!(pending_invocations(), 0);
+        println!("PASS trusted POST {mode}: original={original}, current/final={expected}, named/generic observation, expired and suspended leases");
+    }
+    pub fn post_finish(state: PostConformance) {
+        for id in ["post-adapter", "post-caller", "post-observer"] {
+            unload_plugin(id);
+        }
+        drop(state.package);
+        assert_eq!(pending_invocations(), 0);
+    }
+
     pub fn bind(package: &PreparedPackageReceipt, id: &str) -> u64 {
         let binding = prepared_binding(id, |_| {});
         let owner = OwnerKey::plugin(id, plugin_generation(id));
@@ -1869,6 +2322,10 @@ pub(super) mod proof {
             let global = context.global(scope);
             set(scope, global, "__proofEntityCall", call.into()).unwrap();
             set(scope, global, "__proofEntityDelete", delete.into()).unwrap();
+            let rust_post = v8::Function::new(scope, js_rust_post).unwrap();
+            set(scope, global, "__proofRustPost", rust_post.into()).unwrap();
+            let publish = v8::Function::new(scope, js_publish_post_methods).unwrap();
+            set(scope, global, "__proofPublishPost", publish.into()).unwrap();
         })
         .unwrap();
     }
@@ -2446,6 +2903,7 @@ pub(super) mod proof {
             "if(call(b).id!==b.id)throw Error('new serial did not adopt');",
         )
         .unwrap();
+        entity_post_conformance(a,replacement,slot);
         let member = entity_binding("entity-member", false, false, true);
         eval_in_context("entity-member",&format!("if(__proofEntityCall({member}n,a,3)!==13)throw Error('receiver convention');let refused=false;try{{__proofEntityCall({member}n,null,3)}}catch(_){{refused=true}}if(!refused)throw Error('nullable receiver');")).unwrap();
         eval_in_context("entity-member",&format!(r#"
@@ -2463,6 +2921,125 @@ pub(super) mod proof {
         state.receipt = state.status().map(|s| s.receipt);
         state.detail = state.diagnostic("subscribed");
     }
+    fn entity_post_conformance(a: u64, b: u64, slot: EntitySlot) {
+        const ID: &str = "proof.entity-post.v1";
+        let owner = HostPackageOwner::mint("@proof/entity-post").unwrap();
+        let grant = HostAdapterGrant::override_return(
+            &owner,
+            AdapterContract {
+                id: ID.into(),
+                version: 1,
+                contract_hash: HASH.into(),
+            },
+        )
+        .unwrap();
+        let source = format!(
+            r#"(()=>{{
+          const subscribe=__s2_function_adapter_subscribe;
+          globalThis.mode='normal';globalThis.seen=[];
+          __s2_function_adapter_register('{ID}','{HASH}',{{
+            pre(d){{if(mode==='skip')return {{action:2,returnValue:b}};}},
+            post(d){{
+              const original=d.frame.originalReturnValue;
+              if(mode==='skip'){{if(original!==undefined)throw Error('skipped original not undefined');}}
+              else if(mode==='null-original'){{if(original!==null)throw Error('nullable original not null');}}
+              else if(original?.id!==a.id)throw Error('entity original');
+              if(mode==='rust'){{__proofRustPost(b);seen.push('adapter');return;}}
+              let result;
+              if(mode==='invalid'){{
+                let refused=0;for(const value of [null,17,{{index:902,id:b.id}}]){{try{{d.frame.overrideReturn(value)}}catch(_){{refused++}}}}
+                if(refused!==3 || d.frame.returnValue.id!==a.id)throw Error('strict invalid effect');
+              }}
+              if(mode==='books'||mode==='native'){{
+                __proofEntityDelete(902,73,mode);
+                let refused=false;try{{d.frame.overrideReturn(b)}}catch(e){{refused=String(e).includes('entity-post::fire');}}
+                if(!refused || d.frame.returnValue.id!==a.id)throw Error('stale entity effect');
+                seen.push('refused');return;
+              }}
+              result=d.frame.overrideReturn(mode==='null-effect'?null:b);
+              if(mode==='null-effect'){{if(result!==null || d.frame.returnValue!==null)throw Error('nullable override');}}
+              else if(result.id!==b.id || d.frame.returnValue.id!==b.id)throw Error('entity override');
+              const after=d.frame.originalReturnValue;
+              if(after!==original && after?.id!==original?.id)throw Error('original snapshot changed');
+              while(d.cursor.invokeNext()!==null){{}}
+              seen.push('adapter');
+            }}
+          }});
+          globalThis.subscribeEntity=id=>{{
+            globalThis.pre=subscribe(id,'{ID}','pre',()=>{{}});
+            globalThis.post=subscribe(id,'{ID}','post',v=>{{
+              if('overrideReturn' in v || 'originalReturnValue' in v)throw Error('entity subscriber grant');
+              if(mode==='null-effect'?v.returnValue!==null:v.returnValue.id!==b.id)throw Error('entity observer');
+              seen.push('named');
+            }});
+          }};
+        }})()"#
+        );
+        let package = register_prepared_package_with_authorities(
+            owner,
+            source.into(),
+            ImplementationManifestHash::new(HASH.into()).unwrap(),
+            vec![grant],
+        )
+        .unwrap();
+        let mut b = b;
+        // Existing generic observers keep the proven physical hook alive throughout.
+        eval_in_context("entity-strict", "pre.dispose();").unwrap();
+        for nullable in [false, true] {
+            frame_tests::load_body("entity-post", "return {};", "{}");
+            entity_native("entity-post");
+            eval_in_context("entity-post",&format!("globalThis.E=__s2require('@s2script/entity').EntityRef;globalThis.a=new E(901,{a});globalThis.b=new E(902,{b});")).unwrap();
+            let binding = entity_binding("entity-post", nullable, false, false);
+            authorize_binding(
+                &package,
+                &OwnerKey::plugin("entity-post", plugin_generation("entity-post")),
+                binding,
+                ID,
+                HASH,
+            )
+            .unwrap();
+            eval_in_context("entity-post", &format!("subscribeEntity({binding}n);")).unwrap();
+            for mode in if nullable {
+                vec!["normal", "rust", "null-effect", "null-original", "skip"]
+            } else {
+                vec!["normal", "rust", "invalid", "native", "books"]
+            } {
+                eval_in_context("entity-post", &format!("mode='{mode}';seen.length=0;")).unwrap();
+                let (input, want) = match mode {
+                    "null-original" => ("null", "b"),
+                    "null-effect" => ("a", "null"),
+                    "native" | "books" => ("a", "a"),
+                    _ => ("a", "b"),
+                };
+                eval_in_context("entity-caller",&format!("if(call({input})?.id!=={want}?.id)throw Error('entity POST final {mode}');")).unwrap();
+                eval_in_context(
+                    "entity-post",
+                    if matches!(mode, "native" | "books") {
+                        "if(seen.join(',')!=='refused')throw Error(seen);"
+                    } else {
+                        "if(seen.join(',')!=='named,adapter')throw Error(seen);"
+                    },
+                )
+                .unwrap();
+                assert_eq!(unsafe { slot(902, 73, 1) }, 1);
+                let current = crate::entity_live::on_created(902, 73);
+                b = current;
+                for id in [
+                    "entity-post",
+                    "entity-caller",
+                    "entity-strict",
+                    "entity-nullable",
+                ] {
+                    eval_in_context(id, &format!("globalThis.b=new E(902,{current});")).unwrap();
+                }
+                assert_eq!(pending_invocations(), 0);
+                println!("PASS trusted entity POST nullable={nullable} mode={mode}: exact binding, original/current, observer timing");
+            }
+            unload_plugin("entity-post");
+        }
+        drop(package);
+    }
+
     fn entity_member_finish(state: &mut EntityConformance) {
         let nullable_first = state.nullable_first;
         let reverse_sub = state.reverse_sub;
@@ -2751,6 +3328,7 @@ mod scalar_transport_tests {
         input: S2FunctionValue,
         output: S2FunctionValue,
         action: i32,
+        overridden: bool,
     }
     thread_local! {static STACK:RefCell<Vec<MockFrame>>=const{RefCell::new(Vec::new())};}
     extern "C" fn prepare(
@@ -2855,6 +3433,7 @@ mod scalar_transport_tests {
                 input,
                 output: input,
                 action: 0,
+                overridden: false,
             })
         });
         let mut info = S2FunctionFrameInfo {
@@ -2888,6 +3467,15 @@ mod scalar_transport_tests {
                 .unwrap();
         rv.set_int32(output.bits as i32);
     }
+    thread_local! {static EFFECTS:Cell<usize>=const{Cell::new(0)};}
+    extern "C" fn override_return(_:i64,token:u64,_:u64,_:*const i8,value:*const S2FunctionValue,out:*mut S2FunctionValue,_:*mut i8,_:i32)->i32 {
+        EFFECTS.with(|c|c.set(c.get()+1));
+        STACK.with(|s| {
+            let mut s=s.borrow_mut();let f=s.last_mut().unwrap();assert_eq!(f.id,token);
+            if !f.overridden && f.action < 2 { f.output=unsafe{*value}; f.overridden=true; }
+            unsafe{*out=f.output};1
+        })
+    }
     fn init_transport() {
         init(frame_tests::logger).unwrap();
         let mut ops = S2EngineOps::default();
@@ -2899,6 +3487,8 @@ mod scalar_transport_tests {
         ops.function_frame_read = Some(read);
         ops.function_frame_write = Some(write);
         ops.function_frame_commit = Some(commit);
+        ops.function_frame_override_return = Some(override_return);
+        EFFECTS.with(|c|c.set(0));
         set_engine_ops(Some(ops));
     }
     fn review_package(body: &str) -> PreparedPackageReceipt {
@@ -2945,6 +3535,7 @@ mod scalar_transport_tests {
                 input,
                 output: input,
                 action: 0,
+                overridden: false,
             })
         });
         S2FunctionFrameInfo {
@@ -2962,6 +3553,208 @@ mod scalar_transport_tests {
         assert_eq!(crate::ffi::s2script_core_dispatch_function(1, info, 1), 1);
         STACK.with(|s| s.borrow_mut().pop().unwrap())
     }
+    // Catches grants leaking across contracts, lost lease suspension, and delayed effects.
+    #[test]
+    fn trusted_post_absent_and_foreign_grants_cannot_be_forged() {
+        init_transport();
+        let owner = HostPackageOwner::mint("@proof/foreign").unwrap();
+        let grant = HostAdapterGrant::override_return(
+            &owner,
+            AdapterContract {
+                id: "proof.review.v1".into(),
+                version: 1,
+                contract_hash: proof::HASH.into(),
+            },
+        )
+        .unwrap();
+        assert!(register_prepared_package_with_authorities(
+            HostPackageOwner::mint("@proof/foreign").unwrap(),
+            "ignored".into(),
+            ImplementationManifestHash::new(proof::HASH.into()).unwrap(),
+            vec![grant]
+        )
+        .is_err());
+        let package = review_package(&format!(
+            r#"
+            register('proof.review.v1','{}',{{postReturnAuthority:'override',post(d){{
+                if('originalReturnValue' in d.frame || 'overrideReturn' in d.frame)throw Error('forged authority');events.push('refused');
+            }}}},{{id:'proof.review.v1',contractHash:'{}',overrideReturn:true}});
+            globalThis.wrapper=()=>{{}};
+        "#,
+            proof::HASH,
+            proof::HASH
+        ));
+        frame_tests::load_body("no-grant", "return {};", "{}");
+        let binding = proof::prepared_binding("no-grant", |_| {});
+        authorize(&package, "no-grant", binding, "proof.review.v1").unwrap();
+        eval_in_context(
+            "no-grant",
+            &format!("subscribeProof({binding}n,'proof.review.v1','post');"),
+        )
+        .unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        assert_eq!(close_frame(&info).output.bits, 7);
+        eval_in_context(
+            "no-grant",
+            "if(events.join(',')!=='refused')throw Error(events);",
+        )
+        .unwrap();
+        assert_eq!(EFFECTS.with(Cell::get), 0);
+        unload_plugin("no-grant");
+        drop(package);
+        set_engine_ops(None);
+        shutdown();
+    }
+    #[test]
+    fn trusted_post_shared_production_body() {
+        init_transport();
+        let mut state = proof::post_begin();
+        proof::post_probe(&mut state);
+        assert!(state.ready);
+        proof::post_exercise("js", 41, Some(7));
+        proof::post_exercise("rust", 41, Some(7));
+        proof::post_exercise("skip", 63, None);
+        proof::post_exercise("nested", 41, Some(7));
+        assert_eq!(EFFECTS.with(Cell::get), 7);
+        proof::post_finish(state);
+        set_engine_ops(None);
+        shutdown();
+    }
+    #[test]
+    fn trusted_post_authority_effect_and_lease_boundaries() {
+        init_transport();
+        let owner = HostPackageOwner::mint("@proof/trusted-post").unwrap();
+        let grant = HostAdapterGrant::override_return(
+            &owner,
+            AdapterContract {
+                id: "proof.review.v1".into(),
+                version: 1,
+                contract_hash: proof::HASH.into(),
+            },
+        )
+        .unwrap();
+        let source = format!(
+            r#"(()=>{{
+            const register=__s2_function_adapter_register,subscribe=__s2_function_adapter_subscribe;
+            globalThis.events=[];
+            globalThis.receipt=register('proof.review.v1','{}',{{
+              pre(d){{if('overrideReturn' in d.frame || 'originalReturnValue' in d.frame)throw Error('PRE authority');}},
+              post(d){{
+                if(d.frame.originalReturnValue!==7 || d.frame.returnValue!==7)throw Error('initial snapshot');
+                globalThis.retained=d.frame.overrideReturn;
+                if(globalThis.stale){{let refused=false;try{{stale(90)}}catch(_){{refused=true}}if(!refused)throw Error('old generation revived');}}
+                Promise.resolve().then(()=>{{let refused=false;try{{retained(90)}}catch(_){{refused=true}}if(!refused)throw Error('await authority');globalThis.awaitRefused=true;}});
+                let rejected=0;for(const value of [null,true,1.5,2147483648,{{}}]){{try{{retained(value);}}catch(_){{rejected++;}}}}
+                if(rejected!==5)throw Error('invalid input accepted');
+                if(retained(41)!==41 || d.frame.returnValue!==41 || d.frame.originalReturnValue!==7)throw Error('immediate effect/snapshot');
+                if(globalThis.revoke){{receipt.dispose();let refused=false;try{{retained(90)}}catch(_){{refused=true}}if(!refused)throw Error('revoked permit');return;}}
+                while(d.cursor.invokeNext()!==null){{}}
+                if(retained(43)!==41 || d.frame.originalReturnValue!==7)throw Error('outer lease did not resume');
+                events.push('adapter');
+              }}
+            }});
+            register('proof.other.v1','{}',{{post(d){{if('overrideReturn' in d.frame)throw Error('grant leaked');events.push('other');}}}},{{overrideReturn:true}});
+            globalThis.subscribeProof=(id,semantic='proof.review.v1',phase='pre')=>subscribe(id,semantic,phase,(view)=>{{
+                if('overrideReturn' in view || 'originalReturnValue' in view)throw Error('subscriber authority');
+                let rejected=0;try{{retained(99);}}catch(_){{rejected++;}}
+                try{{view.returnValue=99;}}catch(_){{rejected++;}}
+                if(rejected!==2 || view.returnValue!==41)throw Error('lease/observer order');
+                events.push('wrapper');
+            }});
+        }})()"#,
+            proof::HASH,
+            proof::HASH
+        );
+        let package = register_prepared_package_with_authorities(
+            owner,
+            source.into(),
+            ImplementationManifestHash::new(proof::HASH.into()).unwrap(),
+            vec![grant],
+        )
+        .unwrap();
+        frame_tests::load_body("trusted-post", "return {};", "{}");
+        let binding = proof::prepared_binding("trusted-post", |_| {});
+        authorize(&package, "trusted-post", binding, "proof.review.v1").unwrap();
+        eval_in_context(
+            "trusted-post",
+            &format!("globalThis.sub=subscribeProof({binding}n,'proof.review.v1','post');"),
+        )
+        .unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        let result = close_frame(&info);
+        assert_eq!(result.output.bits, 41);
+        assert_eq!(EFFECTS.with(Cell::get), 2);
+        eval_in_context("trusted-post","if(events.join(',')!=='wrapper,adapter')throw Error(events);let refused=false;try{retained(99);}catch(_){refused=true;}if(!refused)throw Error('expired authority');").unwrap();
+        with_host_isolate(|isolate| {
+            let mut storage = v8::HandleScope::new(isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+            hs.perform_microtask_checkpoint();
+        })
+        .unwrap();
+        eval_in_context("trusted-post","if(!awaitRefused)throw Error('missing awaited refusal');sub.dispose();events.length=0;").unwrap();
+        authorize(&package, "trusted-post", binding, "proof.other.v1").unwrap();
+        eval_in_context(
+            "trusted-post",
+            &format!("subscribeProof({binding}n,'proof.other.v1','post');"),
+        )
+        .unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        assert_eq!(close_frame(&info).output.bits, 7);
+        eval_in_context(
+            "trusted-post",
+            "if(events.join(',')!=='other')throw Error('exact-contract grant leaked');",
+        )
+        .unwrap();
+        let stale = with_host_isolate(|isolate| {
+            let mut storage = v8::HandleScope::new(isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+            let context = clone_plugin_context("trusted-post").unwrap();
+            let context = v8::Local::new(&mut hs, &context);
+            let scope = &mut v8::ContextScope::new(&mut hs, context);
+            let global = context.global(scope);
+            let value = get(scope, global, "retained").unwrap();
+            v8::Global::new(scope, value)
+        })
+        .unwrap();
+        unload_plugin("trusted-post");
+        frame_tests::load_body("trusted-post", "return {};", "{}");
+        with_host_isolate(|isolate| {
+            let mut storage = v8::HandleScope::new(isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+            let context = clone_plugin_context("trusted-post").unwrap();
+            let context = v8::Local::new(&mut hs, &context);
+            let scope = &mut v8::ContextScope::new(&mut hs, context);
+            let global = context.global(scope);
+            let value = v8::Local::new(scope, &stale);
+            set(scope, global, "stale", value).unwrap();
+        })
+        .unwrap();
+        let binding = proof::prepared_binding("trusted-post", |_| {});
+        authorize(&package, "trusted-post", binding, "proof.review.v1").unwrap();
+        eval_in_context(
+            "trusted-post",
+            &format!("subscribeProof({binding}n,'proof.review.v1','post');"),
+        )
+        .unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        assert_eq!(close_frame(&info).output.bits, 41);
+        assert_eq!(EFFECTS.with(Cell::get), 4);
+        eval_in_context("trusted-post", "globalThis.revoke=true;").unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        assert_eq!(close_frame(&info).output.bits, 41);
+        assert_eq!(EFFECTS.with(Cell::get), 5);
+        unload_plugin("trusted-post");
+        drop(stale);
+        drop(package);
+        set_engine_ops(None);
+        shutdown();
+    }
+
     #[test]
     fn post_only_subscription_delivers_without_pre_and_unload_clears_matched_state() {
         init_transport();
@@ -3611,10 +4404,12 @@ mod entity_transport_tests {
         receiver: Option<S2FunctionValue>,
         edit: Option<S2FunctionValue>,
         action: i32,
+        overridden: bool,
     }
     thread_local! {
         static SLOTS:RefCell<std::collections::BTreeMap<i32,u32>>=const{RefCell::new(std::collections::BTreeMap::new())};
         static STACK:RefCell<Vec<MockFrame>>=const{RefCell::new(Vec::new())};
+        static EFFECTS:Cell<usize>=const{Cell::new(0)};
     }
     unsafe extern "C" fn slot(index: i32, serial: u32, live: i32) -> i32 {
         if !matches!(index, 901 | 902) {
@@ -3709,6 +4504,17 @@ mod entity_transport_tests {
         }
         0
     }
+    extern "C" fn override_return(_:i64,token:u64,_:u64,_:*const i8,value:*const S2FunctionValue,out:*mut S2FunctionValue,why:*mut i8,cap:i32)->i32 {
+        EFFECTS.with(|c|c.set(c.get()+1));
+        let input=unsafe{*value};
+        let Some(input)=project(input,input.flags) else{return refusal(why,cap)};
+        STACK.with(|s|{
+            let mut s=s.borrow_mut();let f=s.last_mut().unwrap();assert_eq!(f.id,token);
+            if !f.overridden && f.action<2 {f.output=input;f.overridden=true;}
+            let Some(result)=project(f.output,unsafe{(*out).flags}) else{return refusal(why,cap)};
+            unsafe{*out=result};1
+        })
+    }
     extern "C" fn write(
         _: i64,
         token: u64,
@@ -3802,6 +4608,7 @@ mod entity_transport_tests {
                 receiver,
                 edit: None,
                 action: 0,
+                overridden: false,
             })
         });
         let mut info = S2FunctionFrameInfo {
@@ -3864,12 +4671,15 @@ mod entity_transport_tests {
         ops.function_frame_read = Some(read);
         ops.function_frame_write = Some(write);
         ops.function_frame_commit = Some(commit);
+        ops.function_frame_override_return = Some(override_return);
         set_engine_ops(Some(ops));
+        EFFECTS.with(|c|c.set(0));
         for first in [false, true] {
             for reverse in [false, true] {
                 proof::entity_conformance(first, reverse, slot);
             }
         }
+        assert_eq!(EFFECTS.with(Cell::get),36,"books/typed rejection must precede native effect");
         set_engine_ops(None);
         shutdown();
     }

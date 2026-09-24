@@ -182,3 +182,4 @@
     ops.function_frame_read = &S2_FunctionFrameRead;
     ops.function_frame_write = &S2_FunctionFrameWrite;
     ops.function_frame_commit = &S2_FunctionFrameCommit;
+    ops.function_frame_override_return = &S2_FunctionFrameOverrideReturn;

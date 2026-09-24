@@ -49,6 +49,7 @@ struct DispatchFrame {
     NativeValue receiver;
     std::vector<NativeValue> arguments;
     NativeValue result;
+    NativeValue original_result;
     KHook::Action action = KHook::Action::Ignore;
     bool changed = false;
     bool original_skipped = false;
@@ -66,6 +67,7 @@ public:
     RuntimeBinding(const RuntimeBinding&) = delete;
     RuntimeBinding& operator=(const RuntimeBinding&) = delete;
     Result<NativeValue> Call(const NativeValue* args, std::size_t argc);
+    void OverridePostReturn(DispatchFrame&, const NativeValue&);
     // Assign once; hook installation is independent of call availability.
     std::string BindTarget(const void* address);
     S2HookReceipt Receipt() const { return Snapshot(); }

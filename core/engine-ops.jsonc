@@ -1455,6 +1455,14 @@
       "c_ret": "int",
       "c_params": "long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int action, const S2FunctionValue* value, char* reason, int reason_cap",
       "shim": "S2_FunctionFrameCommit"
+    },
+    {
+      "name": "function_frame_override_return",
+      "alias": "FunctionFrameOverrideReturnFn",
+      "rust": "extern \"C\" fn(i64, u64, u64, *const c_char, *const S2FunctionValue, *mut S2FunctionValue, *mut c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "long long target_id, unsigned long long frame_token, unsigned long long native_epoch, const char* abi_fingerprint, const S2FunctionValue* override_value, S2FunctionValue* effective_out, char* reason, int reason_cap",
+      "shim": "S2_FunctionFrameOverrideReturn"
     }
   ]
 }

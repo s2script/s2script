@@ -105,6 +105,7 @@ long long S2_FunctionHookAcquire(s2_function_target_id, char*, int);
 int S2_FunctionHookRelease(s2_function_target_id);
 int S2_FunctionTargetRelease(s2_function_target_id);
 int S2_FunctionGetHookStatus(long long, S2FunctionHookStatus*, char*, int);
+int S2_FunctionFrameOverrideReturn(long long, unsigned long long, unsigned long long, const char*, const S2FunctionValue*, S2FunctionValue*, char*, int);
 int S2_FunctionFrameRead(long long, unsigned long long, unsigned long long, const char*, int, unsigned char, S2FunctionValue*, char*, int);
 int S2_FunctionFrameWrite(long long, unsigned long long, unsigned long long, const char*, int, const S2FunctionValue*, char*, int);
 int S2_FunctionFrameCommit(long long, unsigned long long, unsigned long long, const char*, int, const S2FunctionValue*, char*, int);
