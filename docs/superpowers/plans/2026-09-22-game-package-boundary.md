@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-22-game-package-boundary-design.md`
 
+**Integration status (2026-09-24):** The user authorized merging the existing stack into main. This PR records the approved S3 design and implementation plan; S3 implementation has not started. The merged S2 foundations do not yet supply the complete public `Engine.function` runtime, loader activation, or all codecs/adapters required below. Complete those prerequisites and the outstanding runtime/client/peer acceptance before claiming S3 complete or releasing the unfinished SDK surface. Merging the plan does not mark its unchecked tasks or inherited acceptance gates as passed.
+
 ## Global Constraints
 
 - Isolated implementation may start after source and official-stock-host baselines are recorded. Required human/client, peer, map and script-reload evidence remains a merge/release gate. The user explicitly made the known whole-process shutdown-only SIGSEGV/139 non-blocking: preserve its existing evidence, do not relabel it as a pass, and do not add quit loops, shutdown investigation or a clean-exit wait. Native callback retirement and context/handle lifetime tests remain mandatory because they protect normal use and script reload.
@@ -602,12 +604,14 @@ git commit -m "refactor: move CS2 compatibility policies into the game package"
 - Modify: `core/src/v8host/natives.rs`
 - Modify: `core/src/ffi.rs`
 - Modify: `shim/include/s2script_core.h`
-- Modify: `shim/src/engine_hooks.{h,cpp}`
+- Modify: `shim/src/named_hooks.{h,cpp}`
 - Modify: `shim/src/s2script_mm.cpp`
 
 **Interfaces:**
-- Consumes: ordinary S2 function `dispatchTraceAttack`, generic bounded codec `borrowed-record.v1`, ordinary schema fields/function declarations
+- Consumes: ordinary S2 function `takeDamageOld` targeting the audited `CBaseEntity_TakeDamageOld`, generic bounded codec `borrowed-record.v1`, ordinary schema fields/function declarations
 - Produces: unchanged `DamageInfo`, `SDKHook(OnTakeDamage/OnTakeDamagePost)`, and `Weapon.setAmmo` behavior without bespoke damage installer/dispatch natives
+
+The current audited native contract is `void(victim*, mutable info*, optional result*)`. Forward the opaque result storage unchanged; it is not a public damage field. Preserve the existing native PRE/POST `Ignore` behavior, including block-to-zero mutation rather than skipping the engine original. Prove null and non-null result storage and nested invocation parity before retiring the named binding.
 
 - [ ] **Step 1: Write red tests for borrowed epochs and public parity**
 
@@ -632,7 +636,7 @@ test("setAmmo uses schema/function facilities and stale weapons fail", () => {
 });
 ```
 
-Add post-readonly, block-to-zero, attacker/inflictor/weapon handle adoption, `await` escape, map invalidation, reload, nested damage, and subscription receipt fan-out tests.
+Add post-readonly, block-to-zero, attacker/inflictor/weapon handle adoption, `await` escape, map invalidation, reload, nested damage, unchanged null/non-null result-storage forwarding, and subscription receipt fan-out tests.
 
 - [ ] **Step 2: Verify red**
 
@@ -648,7 +652,7 @@ Expected: tests expose current bespoke globals/dispatch and non-epoch view.
 The shim codec reads/writes only declared scalar slots from an opaque callback-frame pointer. S2 creates a dispatch epoch and exposes typed numeric slots, copied values, `EntityRef`, or registered handles. It rejects post-callback access and async retention. `borrowed-record.v1` is capability-neutral; all `CTakeDamageInfo` offsets, field names, mutability, and meaning stay in CS2 data/code.
 
 ```jsonc
-"dispatchTraceAttack": {
+"takeDamageOld": {
   "projection": { "codec": "borrowed-record.v1", "layout": {
     "damage": { "offsetKey": "CTakeDamageInfo_m_flDamage", "type": "f32", "mutable": "pre" },
     "damageType": { "offsetKey": "CTakeDamageInfo_m_bitsDamageType", "type": "i32" }
