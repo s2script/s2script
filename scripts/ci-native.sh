@@ -12,6 +12,9 @@ if [[ -n "${S2_BUILD_JOBS:-}" && ! "${S2_BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
+echo "== verified sniper Node bootstrap (checksum, extraction, builder ordering) =="
+bash scripts/lib/test-sniper-node.sh
+
 # ccache is present in CI via hendrikmuhs/ccache-action; on a dev box it may not be.
 # Only pass the launcher when it actually exists, so cmake does not fail on a missing binary.
 LAUNCHER=()
