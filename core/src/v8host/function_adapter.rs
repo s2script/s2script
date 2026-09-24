@@ -2066,7 +2066,7 @@ pub(super) mod proof {
         ] {
             frame_tests::load_body(id, "return {};", "{}");
             entity_native(id);
-            eval_in_context(id,&format!("globalThis.E=__s2pkg_entity.EntityRef;globalThis.a=new E(901,{a});globalThis.b=new E(902,{b});globalThis.mode='read';globalThis.seen=[];")).unwrap();
+            eval_in_context(id,&format!("globalThis.E=__s2pkg_entity.EntityRef;globalThis.a=new E(901,{a});globalThis.b=new E(902,{b});globalThis.mode='read';globalThis.seen=[];globalThis.phaseCounts={{pre:0,post:0}};")).unwrap();
         }
         let order = if nullable_first {
             ["entity-nullable", "entity-strict"]
@@ -2150,7 +2150,7 @@ pub(super) mod proof {
             let code = if id == "entity-strict" {
                 r#"
                 globalThis.pre=__proofSubscribeGeneric(binding,'pre',false,v=>{
-                    globalThis.saved=v;let value;try{value=v.required}catch(e){if(!String(e).includes('entity-strict::fire'))throw e;seen.push('strict-error');return 0;}
+                    phaseCounts.pre++;globalThis.saved=v;let value;try{value=v.required}catch(e){if(!String(e).includes('entity-strict::fire'))throw e;seen.push('strict-error');return 0;}
                     seen.push(value.id);globalThis.copy=value;
                     if(mode==='edit')v.required=b;
                     if(mode==='stale-edit'){v.required=b;__proofEntityDelete(902,72,'native');}
@@ -2160,7 +2160,7 @@ pub(super) mod proof {
                     if(mode==='bad-return')return {action:2,returnValue:17};
                     return 0;
                 });
-                globalThis.post=__proofSubscribeGeneric(binding,'post',true,v=>{try{
+                globalThis.post=__proofSubscribeGeneric(binding,'post',true,v=>{phaseCounts.post++;try{
                     seen.push('post:'+v.returnValue.id);
                     if(globalThis.capturePost)postSnapshots.push([v.required.index,v.required.id,v.returnValue.index,v.returnValue.id,v.skipped]);
                 }catch(e){if(!String(e).includes('entity-strict::fire'))throw e;seen.push('post-error')}});
@@ -2168,20 +2168,54 @@ pub(super) mod proof {
             } else {
                 r#"
                 globalThis.pre=__proofSubscribeGeneric(binding,'pre',true,v=>{
-                    globalThis.saved=v;seen.push(v.optional===null?'null':v.optional.id);
+                    phaseCounts.pre++;globalThis.saved=v;seen.push(v.optional===null?'null':v.optional.id);
                     if(mode==='unadoptable')__proofEntityDelete(901,71,'books');
                     let refused=false;try{v.optional=b}catch(_){refused=true}if(!refused)throw Error('observer mutated');return 0;
                 });
                 globalThis.post=__proofSubscribeGeneric(binding,'post',true,v=>{
-                    seen.push(v.returnValue===null?'post:null':'post:'+v.returnValue.id);
+                    phaseCounts.post++;seen.push(v.returnValue===null?'post:null':'post:'+v.returnValue.id);
                     if(globalThis.capturePost)postSnapshots.push([v.optional.index,v.optional.id,v.returnValue.index,v.returnValue.id,v.skipped]);
                 });
             "#
             };
             eval_in_context(id, code).unwrap();
         }
-        eval_in_context("entity-caller","if(call(a).id!==a.id)throw Error('callback identity');if(call(null)!==null)throw Error('null callback');").unwrap();
-        eval_in_context("entity-strict","if(!seen.includes('strict-error')||!seen.includes('post-error'))throw Error('strict null local errors');let lease=false;try{saved.required}catch(_){lease=true}if(!lease)throw Error('lease survived');if(copy.id!==a.id)throw Error('copy lost');seen.length=0;mode='edit';").unwrap();
+        // Diagnose registration observation without changing the Pending lifecycle.
+        let target = lookup("entity-strict", strict)
+            .target
+            .expect("prepared entity target");
+        let diagnostic = |stage| {
+            let status = match runtime::status(target) {
+                Ok(status) => format!(
+                    "state={} receipt={} reserved={}",
+                    status.state, status.receipt, status.reserved
+                ),
+                Err(error) => format!("status unavailable: {error}"),
+            };
+            let snapshot = |id| {
+                frame_tests::eval_in_context_string(
+                    id,
+                    "JSON.stringify({seen,pre:phaseCounts.pre,post:phaseCounts.post})",
+                )
+            };
+            let detail = format!(
+                "entity order nullable-first={nullable_first} reverse-sub={reverse_sub} stage={stage} target={target} {status} strict={} nullable={}",
+                snapshot("entity-strict"), snapshot("entity-nullable")
+            );
+            println!("DIAG {detail}");
+            detail
+        };
+        diagnostic("subscribed");
+        for (stage, code) in [
+            ("call(a)", "if(call(a).id!==a.id)throw Error('callback identity');"),
+            ("call(null)", "if(call(null)!==null)throw Error('null callback');"),
+        ] {
+            let result = eval_in_context("entity-caller", code);
+            let detail = diagnostic(stage);
+            result.unwrap_or_else(|error| panic!("{error}; {detail}"));
+        }
+        let detail = diagnostic("before strict assertions");
+        eval_in_context("entity-strict","if(!seen.includes('strict-error')||!seen.includes('post-error'))throw Error('strict null local errors');let lease=false;try{saved.required}catch(_){lease=true}if(!lease)throw Error('lease survived');if(copy.id!==a.id)throw Error('copy lost');seen.length=0;mode='edit';").unwrap_or_else(|error| panic!("{error}; {detail}"));
         eval_in_context("entity-nullable", "seen.length=0;").unwrap();
         eval_in_context(
             "entity-caller",
