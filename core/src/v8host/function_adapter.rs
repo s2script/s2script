@@ -570,15 +570,32 @@ fn js_receipt_status(
 pub(crate) fn drop_subscription(id: u64) {
     let removed = SUBSCRIPTIONS.with(|s| s.borrow_mut().remove(&id));
     if let Some(target) = removed.as_ref().and_then(|s| s.binding.target) {
-        if !SUBSCRIPTIONS.with(|s| {
-            s.borrow()
-                .values()
-                .any(|s| s.binding.target == Some(target))
-        }) {
-            // Explicit abort cleanup when no logical subscriber can receive a
-            // future POST. Includes neutral/bypassed PRE bookkeeping rows.
-            INVOCATIONS.with(|i| i.borrow_mut().retain(|(t, _), _| *t != target));
-        }
+        let live_phases = SUBSCRIPTIONS.with(|s| {
+            let rows = s.borrow();
+            [0, 1].map(|phase| {
+                rows.values()
+                    .any(|s| s.binding.target == Some(target) && s.phase == phase)
+            })
+        });
+        INVOCATIONS.with(|i| {
+            i.borrow_mut().retain(|(t, _), state| {
+                if *t != target {
+                    return true;
+                }
+                // Abort even neutral rows after the last target subscription. If
+                // only one phase disappears, release that phase's V8 hold while
+                // preserving its copied scalar deliveries for the matched peer.
+                if !live_phases.iter().any(|live| *live) {
+                    return false;
+                }
+                for (phase, live) in live_phases.iter().enumerate() {
+                    if !live {
+                        state.adapters[phase] = None;
+                    }
+                }
+                true
+            })
+        });
     }
     drop(removed);
 }
@@ -601,8 +618,16 @@ pub(crate) fn drop_adapter(id: u64) {
             drop_subscription(id);
         }
         INVOCATIONS.with(|s| {
-            s.borrow_mut()
-                .retain(|_, state| state.adapter.as_ref().is_none_or(|a| a.id != adapter.id))
+            s.borrow_mut().retain(|_, state| {
+                let mut removed = false;
+                for selected in &mut state.adapters {
+                    if selected.as_ref().is_some_and(|a| a.id == adapter.id) {
+                        *selected = None;
+                        removed = true;
+                    }
+                }
+                !removed || state.adapters.iter().any(Option::is_some)
+            })
         });
     }
 }
@@ -628,7 +653,9 @@ struct Decision {
     value: Option<S2FunctionValue>,
 }
 struct InvocationState {
-    adapter: Option<Rc<Adapter>>,
+    // Independently selected PRE/POST instances, pinned to one invocation ID.
+    // Copied decisions carry no V8 values and survive either instance's removal.
+    adapters: [Option<Rc<Adapter>>; 2],
     deliveries: Vec<Decision>,
     retained_bytes: usize,
 }
@@ -1058,9 +1085,15 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
         dispatch.frame.phase,
     )
 }
-fn eligible(adapter: &Adapter, bypass: u64) -> bool {
+fn eligible(adapter: &Adapter, bypass: u64, phase: i32) -> bool {
     let owner = &adapter.instance.parent;
-    owner.generation != bypass
+    let implements_phase = if phase == 0 {
+        adapter.pre.is_some()
+    } else {
+        adapter.post.is_some()
+    };
+    implements_phase
+        && owner.generation != bypass
         && owner_is_live(&owner.id, owner.generation)
         && plugin_phase(&owner.id) == Some(plugin::Phase::Active)
         && !crate::dispatch::parent_busy(&owner.id, owner.generation)
@@ -1107,15 +1140,10 @@ pub(crate) fn dispatch(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Re
     let adapter = if phase == 0 {
         let selected = ADAPTERS.with(|a| {
             let rows = a.borrow();
-            [0, 1].into_iter().find_map(|selection_phase| {
+            [0, 1].map(|selection_phase| {
                 rows.values()
                     .find(|a| {
-                        eligible(a, info.suppressed_owner)
-                            && if selection_phase == 0 {
-                                a.pre.is_some()
-                            } else {
-                                a.post.is_some()
-                            }
+                        eligible(a, info.suppressed_owner, selection_phase)
                             && subscribers.iter().any(|s| {
                                 s.phase == selection_phase
                                     && s.adapter == a.semantic
@@ -1129,12 +1157,13 @@ pub(crate) fn dispatch(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Re
                     .cloned()
             })
         });
+        let pre = selected[0].clone();
         if INVOCATIONS
             .with(|i| {
                 i.borrow_mut().insert(
                     key,
                     InvocationState {
-                        adapter: selected.clone(),
+                        adapters: selected,
                         deliveries: Vec::new(),
                         retained_bytes: 0,
                     },
@@ -1144,14 +1173,14 @@ pub(crate) fn dispatch(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Re
         {
             return Err("duplicate PRE invocation".into());
         }
-        selected
+        pre
     } else {
         post_state
             .as_ref()
-            .and_then(|state| state.adapter.clone())
+            .and_then(|state| state.adapters[1].clone())
             .filter(|a| {
                 ADAPTERS.with(|rows| rows.borrow().contains_key(&a.id))
-                    && eligible(a, info.suppressed_owner)
+                    && eligible(a, info.suppressed_owner, 1)
             })
     };
     let Some(adapter) = adapter else {
@@ -1669,6 +1698,167 @@ mod scalar_transport_tests {
         }
         set_engine_ops(None);
         shutdown();
+    }
+    #[test]
+    fn mixed_phase_instances_preserve_post_across_registration_and_retirement_order() {
+        init_transport();
+        let mut failures = Vec::new();
+        for order in [
+            [("mixed-a", "pre"), ("mixed-b", "post")],
+            [("mixed-b", "post"), ("mixed-a", "pre")],
+        ] {
+            for retirement in [
+                "none",
+                "unload-pre",
+                "unload-post",
+                "dispose-pre",
+                "dispose-post",
+            ] {
+                let package = review_package(&format!(
+                    r#"
+                    const phase=globalThis.fixturePhase;
+                    const callbacks={{}};
+                    callbacks[phase]=(d)=>{{
+                      if(d.phase!==phase)throw Error('wrong-phase adapter');
+                      events.push('adapter:'+phase);
+                      while(d.cursor.invokeNext()!==null){{}}
+                      return phase==='pre'?0:undefined;
+                    }};
+                    register('proof.review.v1','{}',callbacks);
+                    globalThis.wrapper=(view)=>{{
+                      events.push('wrapper:'+phase+(phase==='post'?':'+view.returnValue:''));
+                      return phase==='pre'?0:undefined;
+                    }};
+                "#,
+                    proof::HASH
+                ));
+                for (owner, phase) in order {
+                    // Existing host prelude supplies fixture configuration before
+                    // actual package bootstrap; it grants no adapter authority.
+                    register_injected_package(
+                        "@s2script/cs2",
+                        &format!("globalThis.fixturePhase='{phase}';"),
+                    );
+                    frame_tests::load_body(owner, "return {};", "{}");
+                    let binding = proof::prepared_binding(owner, |_| {});
+                    authorize(&package, owner, binding, "proof.review.v1").unwrap();
+                    eval_in_context(owner,&format!("globalThis.mixedSubscription=subscribeProof({binding}n,'proof.review.v1','{phase}');")).unwrap();
+                }
+                let a = OwnerKey::plugin("mixed-a", plugin_generation("mixed-a"));
+                let b = OwnerKey::plugin("mixed-b", plugin_generation("mixed-b"));
+                let weak_adapter = |owner: &OwnerKey| {
+                    ADAPTERS.with(|rows| {
+                        Rc::downgrade(
+                            rows.borrow()
+                                .values()
+                                .find(|row| row.instance.parent == *owner)
+                                .unwrap(),
+                        )
+                    })
+                };
+                let a_hold = weak_adapter(&a);
+                let b_hold = weak_adapter(&b);
+                let info = open_frame();
+                assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+                eval_in_context("mixed-a","if(events.join(',')!=='adapter:pre,wrapper:pre')throw Error('PRE delivery mismatch');").unwrap();
+                eval_in_context(
+                    "mixed-b",
+                    "if(events.length)throw Error('invented POST delivery during PRE');",
+                )
+                .unwrap();
+                assert_eq!(proof::pending_invocations(), 1);
+                assert!(INVOCATIONS
+                    .with(|rows| rows.borrow().values().all(|row| row.deliveries.len() == 1)));
+                let retained_before =
+                    INVOCATIONS.with(|rows| rows.borrow()[&(1, info.invocation_id)].retained_bytes);
+                assert!(
+                    retained_before > 0,
+                    "copied PRE delivery must remain measured"
+                );
+                match retirement {
+                    "unload-pre" => {
+                        unload_plugin("mixed-a");
+                        assert!(a_hold.upgrade().is_none(), "unloaded PRE adapter retained");
+                    }
+                    "unload-post" => {
+                        unload_plugin("mixed-b");
+                        assert!(b_hold.upgrade().is_none(), "unloaded POST adapter retained");
+                    }
+                    "dispose-pre" => {
+                        eval_in_context("mixed-a", "mixedSubscription.dispose();").unwrap()
+                    }
+                    "dispose-post" => {
+                        eval_in_context("mixed-b", "mixedSubscription.dispose();").unwrap()
+                    }
+                    _ => (),
+                }
+                if retirement == "unload-pre" || retirement == "dispose-pre" {
+                    assert_eq!(
+                        a_hold.strong_count(),
+                        usize::from(retirement == "dispose-pre"),
+                        "PRE phase hold survived retirement"
+                    );
+                    INVOCATIONS.with(|rows| {
+                        let rows = rows.borrow();
+                        let row = &rows[&(1, info.invocation_id)];
+                        assert!(row.adapters[0].is_none());
+                        assert_eq!(row.adapters[1].as_ref().unwrap().instance.parent, b);
+                        assert_eq!(row.deliveries.len(), 1);
+                        assert_eq!(row.deliveries[0].action, 0);
+                        assert_eq!(
+                            row.retained_bytes, retained_before,
+                            "copied data accounting lost with PRE V8 hold"
+                        );
+                    });
+                }
+                if retirement == "unload-post" || retirement == "dispose-post" {
+                    assert_eq!(
+                        b_hold.strong_count(),
+                        usize::from(retirement == "dispose-post"),
+                        "POST phase hold survived retirement"
+                    );
+                    INVOCATIONS.with(|rows| {
+                        let rows = rows.borrow();
+                        let row = &rows[&(1, info.invocation_id)];
+                        assert!(row.adapters[1].is_none());
+                        assert_eq!(row.adapters[0].as_ref().unwrap().instance.parent, a);
+                    });
+                }
+                if retirement == "unload-pre" && proof::pending_invocations() != 1 {
+                    failures.push(format!(
+                        "{order:?}/{retirement}: lost B's matched POST state"
+                    ));
+                }
+                close_frame(&info);
+                assert_eq!(proof::pending_invocations(), 0);
+                if retirement != "unload-post" {
+                    let expected = if retirement == "dispose-post" {
+                        ""
+                    } else {
+                        "adapter:post,wrapper:post:7"
+                    };
+                    if let Err(error)=eval_in_context("mixed-b",&format!("if(events.join(',')!=='{expected}')throw Error('POST delivery mismatch: '+events);")) {
+                        failures.push(format!("{order:?}/{retirement}: {error}"));
+                    }
+                    unload_plugin("mixed-b");
+                }
+                if retirement != "unload-pre" {
+                    eval_in_context("mixed-a","if(events.join(',')!=='adapter:pre,wrapper:pre')throw Error('wrong-phase PRE callback');").unwrap();
+                    unload_plugin("mixed-a");
+                }
+                assert!(a_hold.upgrade().is_none() && b_hold.upgrade().is_none());
+                assert_eq!(proof::counts(&a.id, a.generation), (0, 0));
+                assert_eq!(proof::counts(&b.id, b.generation), (0, 0));
+                drop(package);
+            }
+        }
+        register_injected_package("@s2script/cs2", "");
+        set_engine_ops(None);
+        shutdown();
+        assert!(
+            failures.is_empty(),
+            "mixed phase delivery failures: {failures:#?}"
+        );
     }
     #[test]
     fn subscription_admission_refuses_preauthorized_conflicting_domains() {
