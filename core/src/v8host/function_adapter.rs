@@ -1898,6 +1898,155 @@ pub(super) mod proof {
                 if receiver { "i32" } else { projection }.into();
         })
     }
+    /// Nullable writes/decisions must not lend their nullability to strict siblings.
+    /// Run in the shared proof so these assertions also exercise the real Service.
+    fn entity_null_conformance(reverse_readers: bool) {
+        const WRITER: &str = "entity-null-writer";
+        frame_tests::load_body(WRITER, "return {};", "{}");
+        entity_native(WRITER);
+        let writer = entity_binding(WRITER, true, true, false);
+        eval_in_context(
+            WRITER,
+            &format!(
+                r#"
+            globalThis.nullMode='read';globalThis.writeAttempts=0;
+            globalThis.nullWriter=__proofSubscribeGeneric({writer}n,'pre',false,v=>{{
+                if(nullMode==='edit'){{writeAttempts++;v.optional=null;}}
+                if(nullMode==='suppress'){{writeAttempts++;return {{action:2,returnValue:null}};}}
+                return 0;
+            }});
+        "#
+            ),
+        )
+        .unwrap();
+        // The new writer holds the existing native target while readers change.
+        for id in ["entity-strict", "entity-nullable"] {
+            eval_in_context(id, "pre.dispose();post.dispose();globalThis.nullSeen=[];").unwrap();
+        }
+        eval_in_context("entity-strict", r#"
+            globalThis.strictNullMode='read';globalThis.strictNullAttempts=0;globalThis.strictNullRefused=0;
+            globalThis.strictNullVote=__proofSubscribeGeneric(binding,'pre',false,v=>{
+                if(strictNullMode==='write'){
+                    strictNullAttempts++;
+                    try{v.required=null}catch(e){
+                        if(!String(e).includes('entity-strict::fire')||!String(e).includes('strict entity'))throw e;
+                        strictNullRefused++;
+                    }
+                    if(v.required.id!==a.id)throw Error('strict null write changed field');
+                }
+                if(strictNullMode==='suppress'){strictNullAttempts++;return {action:2,returnValue:null};}
+                return 0;
+            });
+        "#).unwrap();
+        let reader_order = if reverse_readers {
+            ["entity-nullable", "entity-strict"]
+        } else {
+            ["entity-strict", "entity-nullable"]
+        };
+        for id in reader_order {
+            let source = if id == "entity-strict" {
+                r#"
+                globalThis.pre=__proofSubscribeGeneric(binding,'pre',true,v=>{
+                    try{nullSeen.push('pre:'+v.required.id)}catch(e){
+                        if(!String(e).includes('entity-strict::fire')||!String(e).includes('strict entity'))throw e;
+                        nullSeen.push('pre:error');
+                    }
+                    let denied=false;try{v.required=a}catch(_){denied=true}
+                    if(!denied)throw Error('strict observer acquired mutation rights');
+                    nullSeen.push('readonly');
+                });
+                globalThis.post=__proofSubscribeGeneric(binding,'post',true,v=>{
+                    try{nullSeen.push('post:'+v.returnValue.id+':'+v.skipped)}catch(e){
+                        if(!String(e).includes('entity-strict::fire')||!String(e).includes('strict entity'))throw e;
+                        nullSeen.push('post:error:'+v.skipped);
+                    }
+                });
+            "#
+            } else {
+                r#"
+                globalThis.pre=__proofSubscribeGeneric(binding,'pre',true,v=>{
+                    const value=v.optional;nullSeen.push(value===null?'pre:null':'pre:'+value.id);
+                    let denied=false;try{v.optional=a}catch(_){denied=true}
+                    if(!denied)throw Error('nullable observer acquired mutation rights');
+                    nullSeen.push('readonly');
+                });
+                globalThis.post=__proofSubscribeGeneric(binding,'post',true,v=>{
+                    const value=v.returnValue;nullSeen.push('post:'+(value===null?'null':value.id)+':'+v.skipped);
+                });
+            "#
+            };
+            eval_in_context(id, source).unwrap();
+        }
+        for (writer_mode, strict_mode, expected_strict, expected_nullable, returns_null) in [
+            (
+                "edit",
+                "read",
+                "['pre:error','readonly','post:error:false']",
+                "['pre:null','readonly','post:null:false']",
+                true,
+            ),
+            (
+                "suppress",
+                "read",
+                "['pre:'+a.id,'readonly','post:error:true']",
+                "['pre:'+a.id,'readonly','post:null:true']",
+                true,
+            ),
+            (
+                "read",
+                "write",
+                "['pre:'+a.id,'readonly','post:'+a.id+':false']",
+                "['pre:'+a.id,'readonly','post:'+a.id+':false']",
+                false,
+            ),
+            (
+                "read",
+                "suppress",
+                "['pre:'+a.id,'readonly','post:'+a.id+':false']",
+                "['pre:'+a.id,'readonly','post:'+a.id+':false']",
+                false,
+            ),
+            (
+                "read",
+                "read",
+                "['pre:'+a.id,'readonly','post:'+a.id+':false']",
+                "['pre:'+a.id,'readonly','post:'+a.id+':false']",
+                false,
+            ),
+        ] {
+            eval_in_context(
+                WRITER,
+                &format!("nullMode='{writer_mode}';writeAttempts=0;"),
+            )
+            .unwrap();
+            eval_in_context("entity-strict", &format!("strictNullMode='{strict_mode}';strictNullAttempts=0;strictNullRefused=0;nullSeen.length=0;")).unwrap();
+            eval_in_context("entity-nullable", "nullSeen.length=0;").unwrap();
+            let check = if returns_null {
+                "if(call(a)!==null)throw Error('nullable null result lost');"
+            } else {
+                "if(call(a)?.id!==a.id)throw Error('strict refusal or live recovery failed');"
+            };
+            eval_in_context("entity-caller", check).unwrap();
+            eval_in_context(
+                WRITER,
+                &format!(
+                    "if(writeAttempts!=={})throw Error('nullable writer not exercised');",
+                    u8::from(writer_mode != "read")
+                ),
+            )
+            .unwrap();
+            for (id, expected) in [
+                ("entity-strict", expected_strict),
+                ("entity-nullable", expected_nullable),
+            ] {
+                eval_in_context(id, &format!("if(JSON.stringify(nullSeen)!==JSON.stringify({expected}))throw Error('null projection sequence: '+nullSeen);")).unwrap();
+            }
+            eval_in_context("entity-strict", &format!("if(strictNullAttempts!=={}||strictNullRefused!=={})throw Error('strict null refusal not exercised');",u8::from(strict_mode!="read"),u8::from(strict_mode=="write"))).unwrap();
+            println!("PASS shared V8 null rights writer={writer_mode} strict={strict_mode} reader-order={reader_order:?}");
+        }
+        eval_in_context("entity-strict", "strictNullVote.dispose();").unwrap();
+        unload_plugin(WRITER);
+    }
     /// Same real V8/projection path for host mock and native Service fixture.
     /// Slot controls are fixture authority, never public EntityRef identities.
     pub fn entity_conformance(nullable_first: bool, reverse_sub: bool, slot: EntitySlot) {
@@ -2101,6 +2250,7 @@ pub(super) mod proof {
             "if(call(a).id!==a.id)throw Error('strict output failure poisoned binding');",
         )
         .unwrap();
+        entity_null_conformance(reverse_sub);
         // Reused engine index/serial produces a fresh host identity. Old refs stay stale.
         crate::entity_live::on_deleted(902, 72);
         let replacement = seed(902, 73);
@@ -3341,8 +3491,8 @@ mod entity_transport_tests {
         selector: i32,
         _: u8,
         out: *mut S2FunctionValue,
-        _: *mut i8,
-        _: i32,
+        why: *mut i8,
+        cap: i32,
     ) -> i32 {
         STACK.with(|s| {
             let s = s.borrow();
@@ -3361,7 +3511,7 @@ mod entity_transport_tests {
                 return 1;
             }
             let Some(v) = project(v, unsafe { (*out).flags }) else {
-                return 0;
+                return refusal(why, cap);
             };
             unsafe { *out = v };
             1
