@@ -135,7 +135,7 @@ extern "C" void* __real_ffi_closure_alloc(size_t,void**);
 extern "C" void __real_ffi_closure_free(void*);
 extern "C" void* __wrap_ffi_closure_alloc(size_t n,void** p) { auto v=__real_ffi_closure_alloc(n,p); if(v) ++allocations;return v; }
 extern "C" void __wrap_ffi_closure_free(void* p) { if(p) ++frees;__real_ffi_closure_free(p); }
-namespace s2fn { void TestInvokeReturned(RuntimeBinding*) {} void TestReturnUnlocked(RuntimeBinding*) {} }
+namespace s2fn { void TestBeforeInvocationId(RuntimeBinding*) {} void TestInvokeReturned(RuntimeBinding*) {} void TestReturnUnlocked(RuntimeBinding*) {} }
 namespace {
 extern "C" int s2bridge_fixture_native(int);
 extern "C" int s2bridge_fixture_other(int);
@@ -238,6 +238,91 @@ void worker_join_regression() {
     assert(allocations==frees);
     std::cout << "PASS bounded native and sink worker/join without service-lock deadlock\n";
 }
+static S2FunctionFrameInfo last_frame{};
+static std::vector<unsigned long long> transport_invocations;
+static int scalar_dispatch(long long target_id,const S2FunctionFrameInfo* info,int phase) {
+    assert(info && info->version==1 && info->struct_size==48 && info->invocation_id);
+    const char* fp="linux-x86_64-sysv:none:i32(i32)";char why[256]{};S2FunctionValue value{};
+    assert(S2_FunctionFrameRead(target_id,info->frame_token,info->native_epoch,fp,0,2,&value,why,sizeof why));
+    const auto old=value;
+    assert(!S2_FunctionFrameRead(target_id,info->frame_token+1,info->native_epoch,fp,0,2,&value,why,sizeof why));
+    assert(value.kind==old.kind && value.bits==old.bits);
+    assert(!S2_FunctionFrameRead(target_id,info->frame_token,info->native_epoch,"wrong",0,2,&value,why,sizeof why));
+    if(phase==0){
+        transport_invocations.push_back(info->invocation_id);
+        assert(!S2_FunctionFrameRead(target_id,info->frame_token,info->native_epoch,fp,-2,2,&value,why,sizeof why));
+        auto invalid=value;invalid.flags=1;
+        assert(!S2_FunctionFrameWrite(target_id,info->frame_token,info->native_epoch,fp,0,&invalid,why,sizeof why));
+        value.bits=19;
+        assert(S2_FunctionFrameWrite(target_id,info->frame_token,info->native_epoch,fp,0,&value,why,sizeof why));
+        assert(!S2_FunctionFrameCommit(target_id,info->frame_token,info->native_epoch,fp,2,nullptr,why,sizeof why));
+        assert(S2_FunctionFrameRead(target_id,info->frame_token,info->native_epoch,fp,0,2,&value,why,sizeof why) && value.bits==19);
+        value.bits=73;
+        assert(S2_FunctionFrameCommit(target_id,info->frame_token,info->native_epoch,fp,2,&value,why,sizeof why));
+        assert(!S2_FunctionFrameCommit(target_id,info->frame_token,info->native_epoch,fp,2,&value,why,sizeof why));
+    }else{
+        assert(transport_invocations.back()==info->invocation_id);transport_invocations.pop_back();
+        assert(info->flags==1);
+        assert(S2_FunctionFrameRead(target_id,info->frame_token,info->native_epoch,fp,-2,2,&value,why,sizeof why) && value.bits==73);
+        assert(!S2_FunctionFrameWrite(target_id,info->frame_token,info->native_epoch,fp,0,&value,why,sizeof why));
+        assert(!S2_FunctionFrameCommit(target_id,info->frame_token,info->native_epoch,fp,2,&value,why,sizeof why));
+    }
+    last_frame=*info;return 1;
+}
+static void busy_service_insertion() {
+    Fixture fixture(reinterpret_cast<uintptr_t>(&native)-0x1200);fixture.freeze();
+    s2bridge::Service service([&](const auto&,auto& out,auto&){out.address=reinterpret_cast<uintptr_t>(&native);out.image=fixture.image;return true;});
+    s2bridge::CoreDispatchSink sink(scalar_dispatch);assert(service.SetDispatchSink(&sink));
+    auto t=target();t["resolve"]="direct";t["derivation"]="identity";t["candidateValidate"]=json::object();auto a=abi();
+    struct Outer : s2fn::DispatchSink {
+        std::function<void(s2fn::DispatchFrame&)> callback;
+        void Dispatch(s2fn::DispatchFrame& f)override{callback(f);}
+        void Error(const char*)noexcept override{std::abort();}
+    } outer_sink;
+    s2fn::AbiSignature signature;signature.parameters={{"i32"}};signature.returns={"i32"};
+    auto outer_result=s2fn::RuntimeBinding::Create(signature,outer_sink);assert(outer_result);auto outer=std::move(outer_result.value);
+    assert(outer->Configure(reinterpret_cast<void*>(&native)).Accepted());
+    auto binding=service.Prepare("busy-service",t.dump(),a.dump(),a["fingerprint"]);assert(binding);
+    bool acquired=false;
+    outer_sink.callback=[&](auto& f){
+        assert(s2hook_detail::g_callback_depth>0);
+        if(f.phase==s2fn::Phase::Pre && !acquired){acquired=true;assert(service.HookAcquire(binding.value));assert(service.Receipt(binding.value).state==S2HookState::Pending);}
+        service.Collect();
+    };
+    auto input=s2fn::NativeValue::From<std::int32_t>(7);assert(outer->Call(&input,1));
+    auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    while(service.Receipt(binding.value).state==S2HookState::Pending && std::chrono::steady_clock::now()<deadline){std::this_thread::sleep_for(std::chrono::milliseconds(1));assert(outer->Call(&input,1));}
+    assert(service.Receipt(binding.value).state==S2HookState::Active);
+    assert(service.HookRelease(binding.value));assert(service.TargetRelease(binding.value));
+    // Collection occurs inside a real outer observation, without global drain.
+    deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    while(!service.Empty() && std::chrono::steady_clock::now()<deadline){std::this_thread::sleep_for(std::chrono::milliseconds(1));assert(outer->Call(&input,1));}
+    assert(service.Empty());
+    binding=service.Prepare("pending-cancel-service",t.dump(),a.dump(),a["fingerprint"]);assert(binding);bool cancelled=false;
+    outer_sink.callback=[&](auto& f){
+        if(f.phase==s2fn::Phase::Pre && !cancelled){cancelled=true;assert(service.HookAcquire(binding.value));assert(service.Receipt(binding.value).state==S2HookState::Pending);assert(service.HookRelease(binding.value));assert(service.TargetRelease(binding.value));}
+        service.Collect();
+    };
+    assert(outer->Call(&input,1));deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    while(!service.Empty() && std::chrono::steady_clock::now()<deadline){std::this_thread::sleep_for(std::chrono::milliseconds(1));assert(outer->Call(&input,1));}assert(service.Empty());
+    {std::lock_guard<std::mutex> lock(s2hook_detail::g_retire_mu);assert(s2hook_detail::g_retire.empty());}
+    outer->BeginRemove();deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);while(!outer->RemovalComplete() && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));assert(outer->RemovalComplete());assert(outer->PruneCompletedTicket());outer.reset();
+    std::cout<<"PASS Service busy-capsule Pending/Observe/cancel and target-local ticket collection under real observation\n";
+}
+static void scalar_transport() {
+    Fixture fixture(reinterpret_cast<uintptr_t>(&native)-0x1200);fixture.freeze();
+    s2bridge::Service service([&](const auto&,auto& out,auto&){out.address=reinterpret_cast<uintptr_t>(&native);out.image=fixture.image;return true;});
+    s2bridge::CoreDispatchSink sink(scalar_dispatch);assert(service.SetDispatchSink(&sink));
+    auto t=target();t["resolve"]="direct";t["derivation"]="identity";t["candidateValidate"]=json::object();auto a=abi();
+    auto binding=service.Prepare("transport",t.dump(),a.dump(),a["fingerprint"]);assert(binding);assert(service.HookAcquire(binding.value));
+    S2FunctionValue input{};input.kind=2;input.bits=7;auto result=service.Call(binding.value,0,&input,1);assert(result && result.value.bits==73 && transport_invocations.empty());
+    char why[256]{};S2FunctionValue out{};
+    assert(!S2_FunctionFrameRead(binding.value,last_frame.frame_token,last_frame.native_epoch,"linux-x86_64-sysv:none:i32(i32)",0,2,&out,why,sizeof why));
+    assert(service.HookRelease(binding.value));assert(service.TargetRelease(binding.value));
+    auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    while(!service.Collect() && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));assert(service.Empty());
+    std::cout<<"PASS scalar frame capability, staged commit, exact invocation and readonly POST\n";
+}
 void runtime() {
     std::cout << std::unitbuf;
     Fixture f(reinterpret_cast<uintptr_t>(&native)-0x1200); f.freeze();
@@ -317,6 +402,8 @@ void runtime() {
     assert(service.TargetRelease(member.value));assert(service.Collect() && allocations==frees);
     std::cout << "PASS real CIF/shared physical stock hook/lazy calls/nested owner bypass/refcount/retirement\n";
     worker_join_regression();
+    scalar_transport();
+    busy_service_insertion();
     KHook::Shutdown();
 }
 }

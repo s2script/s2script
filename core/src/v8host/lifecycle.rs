@@ -132,6 +132,11 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
                 run_prelude(scope, "@s2script/cs2", &src);
             }
 
+            if let Err(error) = function_adapter::bootstrap(scope, id, generation) {
+                log_warn(&format!("package adapter bootstrap '{id}': {error}"));
+                set_failed(id,&error);
+                function_adapter::drop_owner(&crate::engine_functions::contract::OwnerKey::plugin(id,generation));
+            }
             v8::Global::new(scope.as_ref(), ctx_local)
             // scope, hs, hs_storage drop here — the isolate borrow is released.
         };
@@ -181,6 +186,7 @@ pub(crate) fn dispose_plugin_context(id: &str) {
 /// `TryCatch` construction.  Returns `Err` if `init` hasn't run, the id has no context, or the JS
 /// fails to compile/run.
 pub(crate) fn eval_in_context(id: &str, src: &str) -> Result<(), String> {
+    let _busy = crate::dispatch::ParentBusy::enter(id,plugin_generation(id));
     HOST.with(|h| {
         let mut borrow = h.borrow_mut();
         let host = borrow
@@ -481,6 +487,10 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str
 
     // (1) Fresh context with the full injected API installed.
     create_plugin_context(id);
+    if is_failed(id) {
+        unload_partial(id);
+        return;
+    }
 
     // Inject the materialized config as a per-context global BEFORE the plugin evals (so config reads
     // in the factory see it). @s2script/config's getters read globalThis.__s2pkg_config_values.
@@ -493,6 +503,7 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str
         plugin_js
     );
 
+    let _busy=crate::dispatch::ParentBusy::enter(id,plugin_generation(id));
     let start = HOST.with(|h| -> LoadStart {
         let mut borrow = h.borrow_mut();
         let Some(host) = borrow.as_mut() else {
@@ -799,11 +810,15 @@ fn capture_state_and_run_onunload(id: &str) {
 /// for any lingering resolver of this generation).
 fn teardown_ledger_and_dispose(id: &str) {
     interop_lifetime::teardown_plugin(id);
+    function_adapter::drop_owner(&crate::engine_functions::contract::OwnerKey::plugin(id,plugin_generation(id)));
     // (c) Ledger reverse-walk: the teardown authority.  REGISTRY.remove yields the entry (also makes
     // is_live false for any lingering resolver of this generation).
     if let Some(entry) = REGISTRY.with(|r| r.borrow_mut().remove(id)) {
         for res in entry.ledger.teardown_order() {
             match res {
+                plugin::Resource::FunctionBinding(binding) => crate::engine_functions::registry::drop_binding(binding),
+                plugin::Resource::FunctionSubscription(subscription) => function_adapter::drop_subscription(subscription),
+                plugin::Resource::FunctionAdapter(adapter) => function_adapter::drop_adapter(adapter),
                 plugin::Resource::Timer(tid) => {
                     TIMERS.with(|t| {
                         t.borrow_mut().remove(tid);

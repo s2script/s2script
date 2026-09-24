@@ -45,6 +45,39 @@ static void NoteCallError(RuntimeBinding* binding, const char* error) {
         if (i->first == binding) { if (i->second->empty()) *i->second = error; break; }
     }
 }
+// Every physical PRE, including neutral/bypassed entries, owns one pairing row.
+// Stock KHook walks PRE forward and POST backward exactly once; recall resumes
+// after the current callback and must not mint another row for its continuation.
+struct InvocationRow { RuntimeBinding* binding=nullptr; std::uint64_t id=0; };
+// Allocation-free bookkeeping precedes even checked Observe allocation. A
+// neutral sentinel protects the enclosing invocation when PRE fails before it
+// can mint an id. Excess nesting is refused without ever consuming an outer row.
+static thread_local std::array<InvocationRow,1024> invocation_rows;
+static thread_local std::size_t invocation_depth=0, invocation_overflow=0;
+struct InvocationPhase {
+    RuntimeBinding* binding;
+    Phase phase;
+    bool paired=false, overflow=false;
+    std::size_t index=0;
+    InvocationPhase(RuntimeBinding* b,Phase p) noexcept:binding(b),phase(p) {
+        if(p==Phase::Pre){
+            if(invocation_depth==invocation_rows.size() || invocation_overflow){++invocation_overflow;overflow=true;}
+            else{index=invocation_depth++;invocation_rows[index]={b,0};paired=true;}
+        }else if(p==Phase::Post){
+            if(invocation_overflow){overflow=true;}
+            else if(invocation_depth && invocation_rows[invocation_depth-1].binding==b){index=invocation_depth-1;paired=true;}
+        }
+    }
+    ~InvocationPhase(){if(phase==Phase::Post){if(overflow)--invocation_overflow;else if(paired)--invocation_depth;}}
+    std::uint64_t id()const{return paired ? invocation_rows[index].id : 0;}
+};
+static std::atomic<std::uint64_t> next_invocation{1};
+static std::uint64_t NewInvocation() {
+    auto id = next_invocation.load(std::memory_order_relaxed);
+    do { if (id == UINT64_MAX) throw std::runtime_error("invocation id exhausted"); }
+    while (!next_invocation.compare_exchange_weak(id, id + 1, std::memory_order_relaxed));
+    return id;
+}
 static ffi_type* Type(const std::string& atom) {
     if (atom == "void") return &ffi_type_void;
     if (atom == "u8") return &ffi_type_uint8;
@@ -110,18 +143,24 @@ S2HookReceipt RuntimeBinding::Configure(const void* address) {
     const auto error = BindTarget(address);
     if (!error.empty()) return Fail(error.c_str());
     if (!S2Hook_AcceptingRegistrations()) return Fail("plugin retiring");
-    if (!S2Hook_NoActiveDispatch()) return Fail("Configure requires off-callback preparation");
+    // An unrelated checked outer GameFrame is normal host execution. A new
+    // capsule still patches synchronously: callers must establish target-page
+    // quiescence; async insertion only covers an already existing capsule.
+    // This binding's own runtime entries were rejected above. An unrelated
+    // subscriber on an existing capsule may be active: stock queues insertion
+    // without waiting for that capsule's dispatch lock.
     if (hook_id_ != KHook::INVALID_HOOK) {
         if (!RemovalComplete()) return Fail("binding already configured or removal incomplete");
         // A fresh checked receipt cannot inherit stale id/observation state. The
         // retirement queue retains the old shared state until its next drain.
+        if (!PruneCompletedTicket()) return Fail("completed bridge ticket not collectable");
         state_ = std::make_shared<S2HookBindingState>();
         hook_id_ = KHook::INVALID_HOOK;
     }
     detached_callable_ = false;
     provider_detached_.store(false, std::memory_order_release);
     hook_id_ = KHook::SetupHook(const_cast<void*>(address), this, reinterpret_cast<void*>(&OnKHookRemoved),
-        pre_.code, post_.code, make_return_.code, make_original_.code, info_.stack_bytes, false);
+        pre_.code, post_.code, make_return_.code, make_original_.code, info_.stack_bytes, !S2Hook_NoActiveDispatch());
     if (hook_id_ == KHook::INVALID_HOOK) {
         provider_detached_.store(true, std::memory_order_release); return Fail("SetupHook returned INVALID_HOOK");
     }
@@ -134,6 +173,9 @@ void RuntimeBinding::BeginRemove() { S2CheckedBindingOps::BeginRemove(true); }
 bool RuntimeBinding::RemovalComplete() const {
     return provider_detached_.load(std::memory_order_acquire) && S2CheckedBindingOps::RemovalComplete() &&
         active_entries_.load(std::memory_order_acquire) == 0;
+}
+bool RuntimeBinding::PruneCompletedTicket() {
+    return RemovalComplete() && S2Hook_PruneCompletedBridgeTicket(state_, hook_id_);
 }
 void RuntimeBinding::OnKHookRemoved(KHook::HookID_t) {
     KHook::GetContext<RuntimeBinding>()->provider_detached_.store(true, std::memory_order_release);
@@ -211,10 +253,21 @@ void RuntimeBinding::ClosureEntry(ffi_cif*, void* result, void** args, void* pha
     auto& c = *static_cast<Closure*>(phase);
     auto* binding = c.binding;
     Activity activity(*binding); // last destructor: no binding access after its release
+    InvocationPhase pairing(binding,c.phase);
     try {
+        if(c.phase==Phase::Pre){
+            if(!pairing.paired)throw std::runtime_error("function invocation nesting exhausted");
+#ifdef S2FN_TESTING
+            extern void TestBeforeInvocationId(RuntimeBinding*);
+            TestBeforeInvocationId(binding);
+#endif
+            invocation_rows[pairing.index].id=NewInvocation();
+        }
+        if(c.phase==Phase::Post && !pairing.paired && !pairing.overflow)
+            throw std::runtime_error("unmatched function POST invocation");
         auto observe = binding->ObserveOwned(binding->hook_id_);
         binding->WriteResult(result, {});
-        binding->Enter(c.phase, result, args, observe);
+        binding->Enter(c.phase, result, args, observe, pairing.id());
     }
     catch (const std::exception& e) { NoteCallError(binding, e.what()); binding->sink_.Error(e.what()); }
     catch (...) { NoteCallError(binding, "unknown native closure exception"); binding->sink_.Error("unknown native closure exception"); }
@@ -228,7 +281,7 @@ void RuntimeBinding::ClosureEntry(ffi_cif*, void* result, void** args, void* pha
     // resident libffi/adapter DSO code and caller-owned result stack remain live.
     // A different libffi pin/platform requires re-auditing this exact boundary.
 }
-void RuntimeBinding::Enter(Phase phase, void* result, void** args, const S2HookObserve& observe) {
+void RuntimeBinding::Enter(Phase phase, void* result, void** args, const S2HookObserve& observe, std::uint64_t invocation) {
     // MakeReturn executes after the provider popped its context stack. Its phase
     // tag is retained with the closure, so it must not use GetContext here.
     if (phase == Phase::MakeReturn) {
@@ -256,7 +309,7 @@ void RuntimeBinding::Enter(Phase phase, void* result, void** args, const S2HookO
         if (!native) throw std::runtime_error(native.error);
         Save(KHook::Action::Ignore, native.value, true); WriteResult(result, native.value); return;
     }
-    DispatchFrame frame{}; frame.phase = phase;
+    DispatchFrame frame{}; frame.phase = phase; frame.invocation_id = invocation;
     const auto offset = signature_.receiver == "entity" ? 1 : 0;
     if (offset) frame.receiver = values[0];
     frame.arguments.assign(values.begin() + offset, values.end());
@@ -266,7 +319,7 @@ void RuntimeBinding::Enter(Phase phase, void* result, void** args, const S2HookO
         if (ptr) std::memcpy(frame.result.bytes.data(), ptr, Width(signature_.returns.native));
         if (!Canonical(signature_.returns.native, frame.result)) throw std::runtime_error("noncanonical u8 POST result");
     }
-    if (S2Hook_EnterDispatch(observe)) sink_.Dispatch(frame);
+    if (invocation && S2Hook_EnterDispatch(observe)) sink_.Dispatch(frame);
     if (phase == Phase::Post) { Save(KHook::Action::Ignore, frame.result, false); return; }
     if (!Canonical(signature_.returns.native, frame.result)) throw std::runtime_error("noncanonical u8 decision");
     if (frame.changed) {

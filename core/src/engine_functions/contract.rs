@@ -386,3 +386,42 @@ pub fn parse(
     }
     Ok(b)
 }
+
+/// Host identities are never deserialized from community archive text.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum OwnerKind { Plugin, GamePackage }
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct OwnerKey { pub id: String, pub generation: u64, pub kind: OwnerKind }
+impl OwnerKey {
+    pub(crate) fn plugin(id: &str, generation: u64) -> Self {
+        Self { id: id.into(), generation, kind: OwnerKind::Plugin }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct PackageInstanceKey { pub parent: OwnerKey, pub package_owner: OwnerKey }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ImplementationManifestHash(String);
+impl ImplementationManifestHash {
+    /// The host caller must have verified the actual manifest bytes for this source.
+    /// This constructor checks encoding only; it does not validate a package manifest.
+    pub(crate) fn new(hash: String) -> Result<Self, String> {
+        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+            return Err("implementation manifest hash must be lowercase SHA256".into());
+        }
+        Ok(Self(hash))
+    }
+    pub(crate) fn as_str(&self) -> &str { &self.0 }
+}
+/// Possession of this capability, rather than the serializable key, grants bootstrap authority.
+pub(crate) struct HostPackageOwner(OwnerKey);
+impl HostPackageOwner {
+    pub(crate) fn mint(id: &str) -> Result<Self, String> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        if id.is_empty() || id.contains('\0') { return Err("invalid host package id".into()); }
+        let generation = NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+            .map_err(|_| "package generation exhausted")?;
+        Ok(Self(OwnerKey { id: id.into(), generation, kind: OwnerKind::GamePackage }))
+    }
+    pub(crate) fn key(&self) -> &OwnerKey { &self.0 }
+}

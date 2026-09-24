@@ -56,3 +56,13 @@ foreach(target engine_function_abi_test engine_function_v8_bridge)
     target_link_options(${target} PRIVATE "-Wl,--exclude-libs,ALL" "-Wl,--wrap=ffi_closure_alloc" "-Wl,--wrap=ffi_closure_free")
     target_compile_options(${target} PRIVATE -UNDEBUG -Wall -Wextra)
 endforeach()
+
+# The production path proof uses the same Service and frame transport, while
+# all patch targets remain in the existing hidden fixture DSO.
+target_sources(engine_function_v8_bridge PRIVATE
+    "${ROOT}/shim/src/engine_function_bridge.cpp" "${ROOT}/shim/src/engine_resolver.cpp"
+    "${ROOT}/shim/src/original_module.cpp" "${ROOT}/shim/src/sigscan.cpp"
+    "${ROOT}/shim/src/call_validate.cpp" "${ROOT}/shim/src/vtable.cpp"
+    "${ROOT}/third_party/hde/hde64.c")
+target_compile_definitions(engine_function_v8_bridge PRIVATE S2_RESOLVER_ENGINE_FREE)
+target_include_directories(engine_function_v8_bridge PRIVATE "${ROOT}/third_party/hde")

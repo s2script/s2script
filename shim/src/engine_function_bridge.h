@@ -18,6 +18,7 @@ s2fn::Result<s2resolve::Resolution> Resolve(const Declaration&, const Resolver& 
 #ifndef S2FN_VALIDATION_ONLY
 #include "../include/s2script_core.h"
 #include <functional>
+#include <thread>
 namespace s2bridge {
 using TargetId = long long;
 static_assert(sizeof(S2FunctionValue)==16 && offsetof(S2FunctionValue,bits)==8, "function transport layout");
@@ -41,6 +42,18 @@ public:
     virtual void Dispatch(TargetId, unsigned long long suppressed_owner, s2fn::DispatchFrame&) = 0;
     virtual void Error(TargetId, const char*) noexcept = 0;
 };
+using CoreDispatch = int (*)(long long, const S2FunctionFrameInfo*, int);
+class CoreDispatchSink final : public DispatchSink {
+public:
+    // Constructed on the host owner thread. The production caller supplies the
+    // strong core export; the DSO proof supplies that same export from Rust.
+    explicit CoreDispatchSink(CoreDispatch dispatch) : dispatch_(dispatch), owner_(std::this_thread::get_id()) {}
+    void Dispatch(TargetId, unsigned long long, s2fn::DispatchFrame&) override;
+    void Error(TargetId, const char*) noexcept override;
+private:
+    CoreDispatch dispatch_;
+    std::thread::id owner_;
+};
 class Service {
 public:
     explicit Service(Resolver = s2resolve::Resolve);
@@ -59,8 +72,10 @@ public:
     bool HookRelease(TargetId);
     bool TargetRelease(TargetId);
     S2HookReceipt Receipt(TargetId) const;
+    s2fn::Result<S2FunctionHookStatus> HookStatus(TargetId) const;
     // Host safe-boundary drain: never waits. False means callbacks/removal still own records.
     bool Collect();
+    bool Empty() const;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -75,5 +90,9 @@ int S2_FunctionCall(s2_function_target_id, unsigned long long, const S2FunctionV
 long long S2_FunctionHookAcquire(s2_function_target_id, char*, int);
 int S2_FunctionHookRelease(s2_function_target_id);
 int S2_FunctionTargetRelease(s2_function_target_id);
+int S2_FunctionGetHookStatus(long long, S2FunctionHookStatus*, char*, int);
+int S2_FunctionFrameRead(long long, unsigned long long, unsigned long long, const char*, int, unsigned char, S2FunctionValue*, char*, int);
+int S2_FunctionFrameWrite(long long, unsigned long long, unsigned long long, const char*, int, const S2FunctionValue*, char*, int);
+int S2_FunctionFrameCommit(long long, unsigned long long, unsigned long long, const char*, int, const S2FunctionValue*, char*, int);
 }
 #endif

@@ -25,6 +25,23 @@ typedef struct {
     unsigned long long bits;
 } S2FunctionValue;
 
+typedef struct {
+    unsigned int version;
+    unsigned int struct_size;
+    unsigned long long frame_token;
+    unsigned long long native_epoch;
+    unsigned long long invocation_id;
+    unsigned long long suppressed_owner;
+    unsigned int parameter_count;
+    unsigned int flags;
+} S2FunctionFrameInfo;
+
+typedef struct {
+    unsigned int state;
+    unsigned int reserved;
+    unsigned long long receipt;
+} S2FunctionHookStatus;
+
 typedef int (*s2_schema_offset_fn)(const char* cls, const char* field);
 typedef void* (*s2_ent_by_index_fn)(int idx);
 typedef void* (*s2_deref_handle_fn)(unsigned int handle);
@@ -157,6 +174,10 @@ typedef int (*s2_function_call_fn)(long long target, unsigned long long owner_to
 typedef long long (*s2_function_hook_acquire_fn)(long long target, char* reason, int reason_cap);
 typedef int (*s2_function_hook_release_fn)(long long target);
 typedef int (*s2_function_target_release_fn)(long long target);
+typedef int (*s2_function_hook_status_fn)(long long target, S2FunctionHookStatus* out, char* reason, int reason_cap);
+typedef int (*s2_function_frame_read_fn)(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int selector, unsigned char projection_kind, S2FunctionValue* out, char* reason, int reason_cap);
+typedef int (*s2_function_frame_write_fn)(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int selector, const S2FunctionValue* value, char* reason, int reason_cap);
+typedef int (*s2_function_frame_commit_fn)(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int action, const S2FunctionValue* value, char* reason, int reason_cap);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -338,4 +359,8 @@ typedef struct {
     s2_function_hook_acquire_fn function_hook_acquire;
     s2_function_hook_release_fn function_hook_release;
     s2_function_target_release_fn function_target_release;
+    s2_function_hook_status_fn function_hook_status;
+    s2_function_frame_read_fn function_frame_read;
+    s2_function_frame_write_fn function_frame_write;
+    s2_function_frame_commit_fn function_frame_commit;
 } S2EngineOps;

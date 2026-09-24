@@ -4925,6 +4925,12 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // physical GameFrame hook remains installed as the post-loader lifecycle bootstrap.
     g_coreOwnerTid = S2Tid();
     g_terminalCoord.Reset(g_coreOwnerTid);
+    // Construct on the engine/V8 owner thread, before any package bootstrap.
+    static s2bridge::CoreDispatchSink function_sink(&s2script_core_dispatch_function);
+    if (!s2bridge::Global().SetDispatchSink(&function_sink)) {
+        std::snprintf(error, maxlen, "engine-function service still owns prior records");
+        return false;
+    }
     if (s2script_core_init(&s2_logger, &s2_request_hook, &ops) != 0) {
         META_CONPRINTF("[s2script] ERROR: V8 core init failed (plugin stays loaded for diagnosis)\n");
         return true; // degrade, do not fail the load (spec §7)
@@ -5348,6 +5354,9 @@ static uint64_t s_legacyAllowMask  = 0;
 
 KHook::Return<void> S2ScriptPlugin::Hook_GameFramePre(ISource2Server* server, bool simulating, bool first, bool last) {
     auto obs = g_hk.gameFrame.Observe(server);
+    // Runs after core returns and before this real observation leaves, including
+    // the no-core-subscribers path. This is target-local collection, not quiescence.
+    struct FunctionMaintenance { ~FunctionMaintenance() { s2bridge::Global().Collect(); } } function_maintenance;
     if (obs) S2InstallLifecycleHooks();
     if (!m_coreDispatchReady || !m_frameDispatchRequested) return S2_Ignore();
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
@@ -5385,6 +5394,9 @@ KHook::Return<void> S2ScriptPlugin::Hook_GameFramePre(ISource2Server* server, bo
 
 KHook::Return<void> S2ScriptPlugin::Hook_GameFramePost(ISource2Server* server, bool simulating, bool first, bool last) {
     auto obs = g_hk.gameFrame.Observe(server);
+    // Runs after core returns and before this real observation leaves, including
+    // the no-core-subscribers path. This is target-local collection, not quiescence.
+    struct FunctionMaintenance { ~FunctionMaintenance() { s2bridge::Global().Collect(); } } function_maintenance;
     if (!m_coreDispatchReady || !m_frameDispatchRequested) return S2_Ignore();
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     s2script_core_dispatch_game_frame(1, static_cast<int>(simulating),

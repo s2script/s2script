@@ -127,6 +127,112 @@
           "ty": "unsigned long long"
         }
       ]
+    },
+    {
+      "kind": "struct",
+      "name": "S2FunctionFrameInfo",
+      "c_name": "S2FunctionFrameInfo",
+      "rust_fields": [
+        {
+          "name": "version",
+          "ty": "u32"
+        },
+        {
+          "name": "struct_size",
+          "ty": "u32"
+        },
+        {
+          "name": "frame_token",
+          "ty": "u64"
+        },
+        {
+          "name": "native_epoch",
+          "ty": "u64"
+        },
+        {
+          "name": "invocation_id",
+          "ty": "u64"
+        },
+        {
+          "name": "suppressed_owner",
+          "ty": "u64"
+        },
+        {
+          "name": "parameter_count",
+          "ty": "u32"
+        },
+        {
+          "name": "flags",
+          "ty": "u32"
+        }
+      ],
+      "c_fields": [
+        {
+          "name": "version",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "struct_size",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "frame_token",
+          "ty": "unsigned long long"
+        },
+        {
+          "name": "native_epoch",
+          "ty": "unsigned long long"
+        },
+        {
+          "name": "invocation_id",
+          "ty": "unsigned long long"
+        },
+        {
+          "name": "suppressed_owner",
+          "ty": "unsigned long long"
+        },
+        {
+          "name": "parameter_count",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "flags",
+          "ty": "unsigned int"
+        }
+      ]
+    },
+    {
+      "kind": "struct",
+      "name": "S2FunctionHookStatus",
+      "c_name": "S2FunctionHookStatus",
+      "rust_fields": [
+        {
+          "name": "state",
+          "ty": "u32"
+        },
+        {
+          "name": "reserved",
+          "ty": "u32"
+        },
+        {
+          "name": "receipt",
+          "ty": "u64"
+        }
+      ],
+      "c_fields": [
+        {
+          "name": "state",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "reserved",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "receipt",
+          "ty": "unsigned long long"
+        }
+      ]
     }
   ],
   "ops": [
@@ -1317,6 +1423,38 @@
       "c_ret": "int",
       "c_params": "long long target",
       "shim": "S2_FunctionTargetRelease"
+    },
+    {
+      "name": "function_hook_status",
+      "alias": "FunctionHookStatusFn",
+      "rust": "extern \"C\" fn(i64, *mut S2FunctionHookStatus, *mut c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "long long target, S2FunctionHookStatus* out, char* reason, int reason_cap",
+      "shim": "S2_FunctionGetHookStatus"
+    },
+    {
+      "name": "function_frame_read",
+      "alias": "FunctionFrameReadFn",
+      "rust": "extern \"C\" fn(i64, u64, u64, *const c_char, c_int, u8, *mut S2FunctionValue, *mut c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int selector, unsigned char projection_kind, S2FunctionValue* out, char* reason, int reason_cap",
+      "shim": "S2_FunctionFrameRead"
+    },
+    {
+      "name": "function_frame_write",
+      "alias": "FunctionFrameWriteFn",
+      "rust": "extern \"C\" fn(i64, u64, u64, *const c_char, c_int, *const S2FunctionValue, *mut c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int selector, const S2FunctionValue* value, char* reason, int reason_cap",
+      "shim": "S2_FunctionFrameWrite"
+    },
+    {
+      "name": "function_frame_commit",
+      "alias": "FunctionFrameCommitFn",
+      "rust": "extern \"C\" fn(i64, u64, u64, *const c_char, c_int, *const S2FunctionValue, *mut c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int action, const S2FunctionValue* value, char* reason, int reason_cap",
+      "shim": "S2_FunctionFrameCommit"
     }
   ]
 }

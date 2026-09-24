@@ -27,6 +27,9 @@ pub enum Phase {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Resource {
     Hook(u64),
+    FunctionBinding(u64),
+    FunctionSubscription(u64),
+    FunctionAdapter(u64),
     Timer(u64),
     Job(u64),
     /// A published interface name (producer-owned). Teardown removes the registry entry +

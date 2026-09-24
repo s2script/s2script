@@ -45,6 +45,7 @@ namespace s2fn {
 enum class Phase { Pre, Post, MakeReturn, MakeOriginal };
 struct DispatchFrame {
     Phase phase;
+    std::uint64_t invocation_id = 0;
     NativeValue receiver;
     std::vector<NativeValue> arguments;
     NativeValue result;
@@ -71,6 +72,7 @@ public:
     S2HookReceipt Configure(const void* address);
     void BeginRemove();
     bool RemovalComplete() const;
+    bool PruneCompletedTicket();
     const AbiInfo& Info() const { return info_; }
 private:
 #ifdef S2FN_TESTING
@@ -96,7 +98,7 @@ private:
     RuntimeBinding(AbiSignature s, AbiInfo info, DispatchSink& sink);
     static void ClosureEntry(ffi_cif*, void*, void**, void*) noexcept;
     static void OnKHookRemoved(KHook::HookID_t);
-    void Enter(Phase, void*, void**, const S2HookObserve&);
+    void Enter(Phase, void*, void**, const S2HookObserve&, std::uint64_t invocation);
     Result<NativeValue> Invoke(void*, const NativeValue*, std::size_t);
     void Save(KHook::Action, NativeValue&, bool);
     void WriteResult(void*, const NativeValue&);

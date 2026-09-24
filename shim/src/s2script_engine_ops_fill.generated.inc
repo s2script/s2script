@@ -178,3 +178,7 @@
     ops.function_hook_acquire = &S2_FunctionHookAcquire;
     ops.function_hook_release = &S2_FunctionHookRelease;
     ops.function_target_release = &S2_FunctionTargetRelease;
+    ops.function_hook_status = &S2_FunctionGetHookStatus;
+    ops.function_frame_read = &S2_FunctionFrameRead;
+    ops.function_frame_write = &S2_FunctionFrameWrite;
+    ops.function_frame_commit = &S2_FunctionFrameCommit;

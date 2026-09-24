@@ -1,3 +1,5 @@
+pub(crate) mod runtime;
+pub(crate) mod registry;
 pub(crate) mod contract;
 pub(crate) mod overrides;
 pub(crate) mod provenance;

@@ -21,7 +21,9 @@ thread_local! {
     static CALL: Cell<Option<Call>> = const { Cell::new(None) };
     static BYPASS: RefCell<Vec<(String, u64)>> = const { RefCell::new(Vec::new()) };
 }
-fn record(event: &str) { ORDER.with(|o| o.borrow_mut().push(event.into())); }
+fn record(event: &str) {
+    ORDER.with(|o| o.borrow_mut().push(event.into()));
+}
 fn js_event(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
     record(&args.get(0).to_rust_string_lossy(scope));
 }
@@ -33,7 +35,13 @@ fn js_call(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv
     let input = args.get(0).int32_value(scope).unwrap();
     BYPASS.with(|b| b.borrow_mut().push((owner.clone(), generation)));
     struct Pop;
-    impl Drop for Pop { fn drop(&mut self) { BYPASS.with(|b| { b.borrow_mut().pop(); }); } }
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            BYPASS.with(|b| {
+                b.borrow_mut().pop();
+            });
+        }
+    }
     let _pop = Pop;
     let mut output = 0;
     let call = CALL.with(|c| c.get().unwrap());
@@ -43,10 +51,18 @@ fn js_call(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv
 }
 // This callback is reached only via stock KHook -> actual libffi PRE closure.
 extern "C" fn inbound(phase: i32, caller: u64, input: i32, output: *mut i32) -> i32 {
-    if phase == 1 { record("return"); return 0; }
+    if phase == 1 {
+        record("return");
+        return 0;
+    }
     record("KHook-PRE");
-    assert!(HOST.with(|h| h.try_borrow_mut().is_err()), "A must still be executing");
-    let info = crate::nest::top().filter(|p| !p.is_null()).expect("real outbound nest token");
+    assert!(
+        HOST.with(|h| h.try_borrow_mut().is_err()),
+        "A must still be executing"
+    );
+    let info = crate::nest::top()
+        .filter(|p| !p.is_null())
+        .expect("real outbound nest token");
     let instances = INSTANCES.with(|i| i.borrow().clone());
     let bypass = BYPASS.with(|b| b.borrow().last().cloned().unwrap());
     assert_eq!(bypass.1, caller);
@@ -55,8 +71,12 @@ extern "C" fn inbound(phase: i32, caller: u64, input: i32, output: *mut i32) -> 
     let parent = &mut callback_scope;
     let mut selected = 0;
     for instance in instances {
-        if (instance.owner.clone(), instance.generation) == bypass { continue; }
-        if !owner_is_live(&instance.owner, instance.generation) { continue; }
+        if (instance.owner.clone(), instance.generation) == bypass {
+            continue;
+        }
+        if !owner_is_live(&instance.owner, instance.generation) {
+            continue;
+        }
         assert_eq!(instance.contract, 0x5332464e);
         let context = clone_plugin_context(&instance.owner).unwrap();
         let ctx = v8::Local::new(parent, &context);
@@ -64,17 +84,25 @@ extern "C" fn inbound(phase: i32, caller: u64, input: i32, output: *mut i32) -> 
         let wrapper = v8::Local::new(scope, &instance.wrapper);
         let argument = v8::Integer::new(scope, input);
         let receiver = v8::undefined(scope).into();
-        let decision = wrapper.call(scope, receiver, &[argument.into()]).expect("B wrapper ran synchronously");
+        let decision = wrapper
+            .call(scope, receiver, &[argument.into()])
+            .expect("B wrapper ran synchronously");
         let object = decision.to_object(scope).expect("typed test decision");
         let action_key = v8::String::new(scope, "action").unwrap();
         let action = object.get(scope, action_key.into()).unwrap();
-        assert!(action.is_int32()); assert_eq!(action.int32_value(scope), Some(2));
+        assert!(action.is_int32());
+        assert_eq!(action.int32_value(scope), Some(2));
         let value_key = v8::String::new(scope, "returnValue").unwrap();
         let value = object.get(scope, value_key.into()).unwrap();
         assert!(value.is_int32());
-        unsafe { *output = value.int32_value(scope).unwrap(); }
+        unsafe {
+            *output = value.int32_value(scope).unwrap();
+        }
         selected += 1;
-        println!("selected package=B owner={} generation={} contract={:x}", instance.owner, instance.generation, instance.contract);
+        println!(
+            "selected package=B owner={} generation={} contract={:x}",
+            instance.owner, instance.generation, instance.contract
+        );
     }
     assert_eq!(selected, 1, "exactly B, never A's busy instance");
     2
@@ -86,7 +114,8 @@ fn install(owner: &str) {
     let generation = plugin_generation(owner);
     assert!(owner_is_live(owner, generation));
     HOST.with(|h| {
-        let mut host = h.borrow_mut(); let host = host.as_mut().unwrap();
+        let mut host = h.borrow_mut();
+        let host = host.as_mut().unwrap();
         let context = clone_plugin_context(owner).unwrap();
         let mut storage = v8::HandleScope::new(&mut host.isolate);
         let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
@@ -94,14 +123,17 @@ fn install(owner: &str) {
         let scope = &mut v8::ContextScope::new(&mut hs, ctx);
         let global = ctx.global(scope);
         let event = v8::Function::new(scope, js_event).unwrap();
-        let key = v8::String::new(scope, "__probeEvent").unwrap(); global.set(scope, key.into(), event.into());
+        let key = v8::String::new(scope, "__probeEvent").unwrap();
+        global.set(scope, key.into(), event.into());
         let call = v8::Function::new(scope, js_call).unwrap();
-        let key = v8::String::new(scope, "__probeCall").unwrap(); global.set(scope, key.into(), call.into());
+        let key = v8::String::new(scope, "__probeCall").unwrap();
+        global.set(scope, key.into(), call.into());
     });
     let script = format!("globalThis.__packageInstance = Object.freeze({{ contract: 0x5332464e, owner: '{owner}', generation: {generation} }}); globalThis.__wrapper = function(input) {{ if (__packageInstance.owner !== 'owner-b') throw Error('busy A selected'); __probeEvent('B-wrapper'); return {{action: 2, returnValue: input + 70}}; }};");
     eval_in_context(owner, &script).unwrap();
     HOST.with(|h| {
-        let mut host = h.borrow_mut(); let host = host.as_mut().unwrap();
+        let mut host = h.borrow_mut();
+        let host = host.as_mut().unwrap();
         let context = clone_plugin_context(owner).unwrap();
         let mut storage = v8::HandleScope::new(&mut host.isolate);
         let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
@@ -110,7 +142,12 @@ fn install(owner: &str) {
         let key = v8::String::new(scope, "__wrapper").unwrap();
         let value = ctx.global(scope).get(scope, key.into()).unwrap();
         let wrapper = v8::Local::<v8::Function>::try_from(value).unwrap();
-        let instance = Instance { owner: owner.into(), generation, contract: 0x5332464e, wrapper: v8::Global::new(scope, wrapper) };
+        let instance = Instance {
+            owner: owner.into(),
+            generation,
+            contract: 0x5332464e,
+            wrapper: v8::Global::new(scope, wrapper),
+        };
         INSTANCES.with(|i| i.borrow_mut().push(instance));
     });
     println!("installed package owner={owner} generation={generation} contract=5332464e");
@@ -129,30 +166,251 @@ fn busy_caller_stock_provider_spike() {
     let library = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
     assert!(!library.is_null(), "cannot load real stock-provider bridge");
     unsafe fn symbol(lib: *mut libc::c_void, name: &str) -> *mut libc::c_void {
-        let name = CString::new(name).unwrap(); let p = libc::dlsym(lib, name.as_ptr()); assert!(!p.is_null()); p
+        let name = CString::new(name).unwrap();
+        let p = libc::dlsym(lib, name.as_ptr());
+        assert!(!p.is_null());
+        p
     }
     let create: Create = unsafe { std::mem::transmute(symbol(library, "s2fn_probe_create")) };
     let call: Call = unsafe { std::mem::transmute(symbol(library, "s2fn_probe_call")) };
     let remove: Remove = unsafe { std::mem::transmute(symbol(library, "s2fn_probe_remove")) };
-    init(frame_tests::dummy_logger()).unwrap(); CALL.with(|c| c.set(Some(call)));
-    install("owner-a"); install("owner-b");
+    init(frame_tests::dummy_logger()).unwrap();
+    CALL.with(|c| c.set(Some(call)));
+    install("owner-a");
+    install("owner-b");
     let b_generation = plugin_generation("owner-b");
     assert_eq!(unsafe { create(inbound) }, 1);
     let a_first = plugin_generation("owner-a");
     for run in 0..2 {
         ORDER.with(|o| o.borrow_mut().clear());
         eval_in_context("owner-a", "__probeEvent('A-before'); const result = __probeCall(7); if(result !== 77) throw Error('typed decision was lost'); __probeEvent('A-after');").unwrap();
-        ORDER.with(|o| assert_eq!(&*o.borrow(), &["A-before", "KHook-PRE", "B-wrapper", "return", "A-after"]));
+        ORDER.with(|o| {
+            assert_eq!(
+                &*o.borrow(),
+                &["A-before", "KHook-PRE", "B-wrapper", "return", "A-after"]
+            )
+        });
         println!("PASS synchronous order A-before -> KHook-PRE -> B-wrapper -> return -> A-after result=77 run={run}");
         if run == 0 {
-            remove_instance("owner-a"); assert!(!owner_is_live("owner-a", a_first));
+            remove_instance("owner-a");
+            assert!(!owner_is_live("owner-a", a_first));
             assert!(owner_is_live("owner-b", b_generation));
-            install("owner-a"); assert_ne!(plugin_generation("owner-a"), a_first);
+            install("owner-a");
+            assert_ne!(plugin_generation("owner-a"), a_first);
         }
     }
-    remove_instance("owner-a"); assert!(owner_is_live("owner-b", b_generation));
+    remove_instance("owner-a");
+    assert!(owner_is_live("owner-b", b_generation));
     remove_instance("owner-b");
-    assert_eq!(unsafe { remove() }, 1); CALL.with(|c| c.set(None));
-    shutdown(); unsafe { libc::dlclose(library); }
+    assert_eq!(unsafe { remove() }, 1);
+    CALL.with(|c| c.set(None));
+    shutdown();
+    unsafe {
+        libc::dlclose(library);
+    }
     println!("PASS real V8 owner-only bypass and independent A/B generation teardown");
+}
+
+// The Task 6 gate deliberately retains the old feasibility regression above,
+// but registers all callbacks/subscriptions below through production bootstrap.
+mod production {
+    use super::*;
+    use crate::engine_functions::{contract::OwnerKey, registry, runtime};
+    use crate::v8host::function_adapter::{self, proof};
+    use std::collections::BTreeMap;
+    type CreateProduction = unsafe extern "C" fn(
+        extern "C" fn(i64, *const S2FunctionFrameInfo, i32) -> i32,
+        extern "C" fn(),
+        *mut S2EngineOps,
+    ) -> i32;
+    type FrameProduction = unsafe extern "C" fn(i32) -> i32;
+    thread_local! {
+        static PACKAGE:RefCell<Option<function_adapter::PreparedPackageReceipt>>=const{RefCell::new(None)};
+        static BINDINGS:RefCell<BTreeMap<String,u64>>=const{RefCell::new(BTreeMap::new())};
+        static STEP:Cell<usize>=const{Cell::new(0)};
+        static FAILURE:RefCell<Option<String>>=const{RefCell::new(None)};
+    }
+    fn call(
+        scope: &mut v8::PinScope,
+        args: v8::FunctionCallbackArguments,
+        mut rv: v8::ReturnValue,
+    ) {
+        let context = scope.get_current_context();
+        let id = context.get_slot::<PluginId>().unwrap().0.clone();
+        let generation = context.get_slot::<InteropGeneration>().unwrap().0;
+        let owner = OwnerKey::plugin(&id, generation);
+        let binding = BINDINGS.with(|b| b.borrow()[&id]);
+        let binding = registry::binding(binding, &owner).unwrap();
+        let input = args.get(0).int32_value(scope).unwrap();
+        let mut value = runtime::blank();
+        value.kind = 2;
+        value.bits = input as u32 as u64;
+        match crate::nest::with_outbound(&args, || {
+            runtime::call(binding.target.unwrap(), generation, &[value])
+        }) {
+            Ok(value) => rv.set_int32(value.bits as i32),
+            Err(error) => {
+                let text = v8::String::new(scope, &error).unwrap();
+                let exception = v8::Exception::error(scope, text);
+                scope.throw_exception(exception);
+            }
+        }
+    }
+    fn load(id: &str) {
+        frame_tests::load_body(id, "return {};", "{}");
+        HOST.with(|h| {
+            let mut host = h.borrow_mut();
+            let host = host.as_mut().unwrap();
+            let context = clone_plugin_context(id).unwrap();
+            let mut storage = v8::HandleScope::new(&mut host.isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+            let context = v8::Local::new(&mut hs, &context);
+            let scope = &mut v8::ContextScope::new(&mut hs, context);
+            let function = v8::Function::new(scope, call).unwrap();
+            let key = v8::String::new(scope, "__proofCall").unwrap();
+            context
+                .global(scope)
+                .set(scope, key.into(), function.into());
+        });
+        let binding = PACKAGE.with(|p| proof::bind(p.borrow().as_ref().unwrap(), id));
+        BINDINGS.with(|b| b.borrow_mut().insert(id.into(), binding));
+    }
+    fn exercise() {
+        eval_in_context("owner-a","proofEvents.length=0;if(__proofCall(7)!==80)throw Error('nested typed return');if(proofEvents.length)throw Error('busy caller A ran');").unwrap();
+        eval_in_context("owner-b","if(proofEvents.join(',')!=='adapter,wrapper,post,post-wrapper:80')throw Error('B selection order: '+proofEvents);proofEvents.length=0;let refused=0;try{savedView.x}catch(_){refused++}try{savedCursor.invokeNext()}catch(_){refused++}if(refused!==2)throw Error('stale callback facade');").unwrap();
+        assert_eq!(function_adapter::proof::pending_invocations(), 0);
+        println!("PASS production A busy -> B adapter -> B SubscriberCursor wrapper -> nested both-busy original -> typed return 80, matched PRE/POST");
+    }
+    extern "C" fn frame_step() {
+        let result = std::panic::catch_unwind(|| match STEP.with(Cell::get) {
+            0 => {
+                load("owner-a");
+                load("owner-b");
+                let id = BINDINGS.with(|b| b.borrow()["owner-a"]);
+                let owner = OwnerKey::plugin("owner-a", plugin_generation("owner-a"));
+                let binding = registry::binding(id, &owner).unwrap();
+                assert_eq!(runtime::status(binding.target.unwrap()).unwrap().state, 1);
+                let (a, ha) = proof::provenance("owner-a");
+                let (b, hb) = proof::provenance("owner-b");
+                assert_ne!(a.parent, b.parent);
+                assert_eq!(a.package_owner, b.package_owner);
+                assert_eq!(ha, hb);
+                println!("production parent A={a:?} B={b:?} actual_manifest_sha256={ha}");
+                exercise();
+                assert_eq!(runtime::status(binding.target.unwrap()).unwrap().state, 2);
+            }
+            1 => {
+                let a = plugin_generation("owner-a");
+                let b = plugin_generation("owner-b");
+                unload_plugin("owner-a");
+                assert_eq!(proof::counts("owner-a", a), (0, 0));
+                assert_eq!(proof::counts("owner-b", b), (1, 2));
+                load("owner-a");
+                assert_ne!(plugin_generation("owner-a"), a);
+                exercise();
+                create_plugin_context("never-active");
+                let generation = plugin_generation("never-active");
+                PACKAGE.with(|p| proof::bind(p.borrow().as_ref().unwrap(), "never-active"));
+                unload_plugin("never-active");
+                assert_eq!(proof::counts("never-active", generation), (0, 0));
+            }
+            2 => {
+                unload_plugin("owner-a");
+                unload_plugin("owner-b");
+                BINDINGS.with(|b| b.borrow_mut().clear());
+                assert_eq!(function_adapter::proof::pending_invocations(), 0);
+            }
+            3 => exercise(),
+            _ => panic!("unexpected frame callback"),
+        });
+        if let Err(error) = result {
+            let message = error
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| error.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or("frame proof panic".into());
+            FAILURE.with(|f| *f.borrow_mut() = Some(message));
+        }
+    }
+    #[test]
+    #[ignore = "requires real stock provider; run scripts/test-engine-function-v8-adapter.sh --stock-provider"]
+    fn production_registry_outer_frame() {
+        assert!(cfg!(all(target_os = "linux", target_arch = "x86_64")));
+        let path = CString::new(std::env::var("S2FN_V8_BRIDGE").unwrap()).unwrap();
+        let library = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        assert!(!library.is_null());
+        unsafe fn symbol(lib: *mut libc::c_void, name: &str) -> *mut libc::c_void {
+            let name = CString::new(name).unwrap();
+            let p = libc::dlsym(lib, name.as_ptr());
+            assert!(!p.is_null());
+            p
+        }
+        let create: CreateProduction =
+            unsafe { std::mem::transmute(symbol(library, "s2fn_production_create")) };
+        let frame: FrameProduction =
+            unsafe { std::mem::transmute(symbol(library, "s2fn_production_frame")) };
+        let empty: Remove =
+            unsafe { std::mem::transmute(symbol(library, "s2fn_production_empty")) };
+        let close: Remove =
+            unsafe { std::mem::transmute(symbol(library, "s2fn_production_close")) };
+        init(frame_tests::logger).unwrap();
+        PACKAGE.with(|p| *p.borrow_mut() = Some(proof::package()));
+        FAILURE.with(|f| *f.borrow_mut() = None);
+        let mut ops = S2EngineOps::default();
+        assert_eq!(
+            unsafe {
+                create(
+                    crate::ffi::s2script_core_dispatch_function,
+                    frame_step,
+                    &mut ops,
+                )
+            },
+            1
+        );
+        set_engine_ops(Some(ops));
+        let add_peer: Remove =
+            unsafe { std::mem::transmute(symbol(library, "s2fn_production_add_peer")) };
+        let peer_calls: Remove =
+            unsafe { std::mem::transmute(symbol(library, "s2fn_production_peer_calls")) };
+        let drive = |step| {
+            STEP.with(|s| s.set(step));
+            assert_eq!(unsafe { frame(1) }, 1);
+            assert!(
+                FAILURE.with(|f| f.borrow().is_none()),
+                "{:?}",
+                FAILURE.with(|f| f.borrow().clone())
+            );
+        };
+        drive(0); // New target first-patched under the real unrelated outer observation.
+        assert_eq!(unsafe { add_peer() }, 1);
+        drive(1);
+        let peer_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while unsafe { peer_calls() } == 0 && std::time::Instant::now() < peer_deadline {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            drive(3);
+        }
+        assert!(
+            unsafe { peer_calls() } > 0,
+            "external stock peer must observe the live package call"
+        );
+        drive(2);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while unsafe { empty() } == 0 && std::time::Instant::now() < deadline {
+            assert_eq!(unsafe { frame(0) }, 1);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(
+            unsafe { empty() },
+            1,
+            "normal frames must automatically collect after last core subscriber"
+        );
+        assert_eq!(unsafe { close() }, 1);
+        PACKAGE.with(|p| p.borrow_mut().take());
+        set_engine_ops(None);
+        shutdown();
+        unsafe {
+            libc::dlclose(library);
+        }
+        println!("PASS production Service/sink/strong Rust export, real checked outer frames, unload/reload, never-Active cleanup and no-core-frame-subscriber native maintenance");
+    }
 }

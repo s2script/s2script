@@ -206,7 +206,8 @@ struct RuntimeBindingTestAccess {
         return true;
     }
 };
-static std::function<void(RuntimeBinding*)> return_unlocked, invoke_returned;
+static std::function<void(RuntimeBinding*)> return_unlocked, invoke_returned, before_invocation_id;
+void TestBeforeInvocationId(RuntimeBinding* binding) { if(before_invocation_id)before_invocation_id(binding); }
 void TestReturnUnlocked(RuntimeBinding* binding) { if (return_unlocked) return_unlocked(binding); }
 void TestInvokeReturned(RuntimeBinding* binding) { if (invoke_returned) invoke_returned(binding); }
 }
@@ -381,6 +382,8 @@ static void receiver_spills_novel() {
 }
 
 #ifdef S2FN_NO_MAIN
+#include "engine_function_bridge.h"
+#include <dlfcn.h>
 using BridgeCallback = int (*)(int, std::uint64_t, std::int32_t, std::int32_t*);
 static BridgeCallback bridge_callback = nullptr;
 static thread_local std::uint64_t bridge_owner = 0;
@@ -410,6 +413,88 @@ extern "C" int s2fn_probe_call(std::uint64_t owner, std::int32_t input, std::int
 extern "C" int s2fn_probe_remove() {
     retire(bridge_binding); KHook::Shutdown(); return allocations == frees ? 1 : 0;
 }
+// Production proof: no callback Globals/registration are supplied by this DSO.
+// It supplies only the real Service ops and the real checked outer frame.
+static std::unique_ptr<s2bridge::Service> production_service;
+static std::unique_ptr<s2bridge::CoreDispatchSink> production_sink;
+static void (*production_step)()=nullptr;
+static bool production_requested=true;
+static int production_peer_calls=0;
+static KHook::Return<std::int32_t> production_peer_pre(std::int32_t);
+static S2CheckedFunction<std::int32_t,std::int32_t> production_peer(production_peer_pre,nullptr);
+static KHook::Return<std::int32_t> production_peer_pre(std::int32_t value){
+    auto observation=production_peer.Observe();assert(observation);++production_peer_calls;
+    return {KHook::Action::Ignore,value};
+}
+extern "C" int s2fn_production_add_peer(){
+    return production_peer.Configure(checked_target(reinterpret_cast<void*>(identity_target<std::int32_t>()))).Accepted();
+}
+extern "C" int s2fn_production_peer_calls(){return production_peer_calls;}
+static KHook::Return<void> production_frame_pre(std::int32_t);
+static S2CheckedFunction<void,std::int32_t> production_frame(production_frame_pre,nullptr);
+static KHook::Return<void> production_frame_pre(std::int32_t) {
+    auto observation=production_frame.Observe();
+    assert(s2hook_detail::g_callback_depth>0);
+    struct Maintenance { ~Maintenance() { production_service->Collect(); } } maintenance;
+    if (production_requested && S2Hook_EnterDispatch(observation)) production_step();
+    return {KHook::Action::Ignore};
+}
+static long long production_prepare(const char* name,const char* target,const char* abi,const char* fingerprint,char* why,int cap) {
+    auto result=production_service->Prepare(name,target,abi,fingerprint);
+    if(why && cap>0) std::snprintf(why,cap,"%s",result.error.c_str());return result ? result.value : 0;
+}
+static int production_call(long long id,unsigned long long owner,const S2FunctionValue* args,int argc,S2FunctionValue* out,char* why,int cap) {
+    auto result=production_service->Call(id,owner,args,argc,*out);
+    if(why && cap>0) std::snprintf(why,cap,"%s",result.error.c_str());if(!result)return 0;*out=result.value;return 1;
+}
+static long long production_acquire(long long id,char* why,int cap) {
+    assert(s2hook_detail::g_callback_depth>0); // actual outer or peer observation; never fabricated
+    auto result=production_service->HookAcquire(id);
+    if(why && cap>0) std::snprintf(why,cap,"%s",result.error.c_str());return result ? result.value : 0;
+}
+static int production_release(long long id){return production_service->HookRelease(id);}
+static int production_target_release(long long id){return production_service->TargetRelease(id);}
+static int production_status(long long id,S2FunctionHookStatus* out,char* why,int cap){auto result=production_service->HookStatus(id);if(why && cap>0)std::snprintf(why,cap,"%s",result.error.c_str());if(!result)return 0;*out=result.value;return 1;}
+extern "C" int s2fn_production_create(s2bridge::CoreDispatch dispatch,void(*step)(),S2EngineOps* ops) {
+    production_step=step;production_requested=true;
+    Dl_info module{};auto address=checked_target(reinterpret_cast<void*>(identity_target<std::int32_t>()));
+    assert(dladdr(address,&module));std::string why;
+    auto image=s2original::OpenLoadedModule(module.dli_fname,why);assert(image);
+    production_service=std::make_unique<s2bridge::Service>([image,address](const auto&,auto& result,auto&){
+        result.image=image;result.address=reinterpret_cast<uintptr_t>(address);
+        result.recipe="separated compiler-authored scalar fixture";result.validation_receipt="fixture module guard";return true;
+    });
+    // An uninitialized Service refuses hook registration; the actual Rust export
+    // is then bound, in this same process/runtime, without another core DSO.
+    production_sink=std::make_unique<s2bridge::CoreDispatchSink>(dispatch);
+    assert(production_service->SetDispatchSink(production_sink.get()));
+    ops->function_prepare=production_prepare;ops->function_call=production_call;
+    ops->function_hook_acquire=production_acquire;ops->function_hook_release=production_release;
+    ops->function_target_release=production_target_release;ops->function_hook_status=production_status;
+    ops->function_frame_read=S2_FunctionFrameRead;ops->function_frame_write=S2_FunctionFrameWrite;
+    ops->function_frame_commit=S2_FunctionFrameCommit;
+    assert(production_frame.Configure(checked_target(reinterpret_cast<void*>(fixture_targets().void_target))).Accepted());
+    return 1;
+}
+extern "C" int s2fn_production_frame(int requested) {
+    production_requested=requested!=0;
+    auto volatile target=fixture_targets().void_target;target(0);return 1;
+}
+extern "C" int s2fn_production_empty(){
+    if(!production_service->Empty() || allocations!=frees)return 0;
+    std::lock_guard<std::mutex> lock(s2hook_detail::g_retire_mu);
+    return s2hook_detail::g_retire.empty();
+}
+extern "C" int s2fn_production_close(){
+    if(!production_service->Collect())return 0;
+    production_peer.BeginRemove(true);
+    production_frame.BeginRemove(true);
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    while((!production_frame.RemovalComplete() || !production_peer.RemovalComplete()) && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(production_frame.RemovalComplete() && production_peer.RemovalComplete());assert(S2Hook_DrainRetirement());
+    production_service.reset();production_sink.reset();return 1;
+}
+
 #endif
 static void lazy_target_lifecycle() {
     Sink sink; AbiSignature s; s.parameters={{"i32"}}; s.returns={"i32"};
@@ -438,9 +523,81 @@ static void lazy_target_lifecycle() {
     retire(b);
     std::cout << "PASS immutable target lazy call/detach/reacquire\n";
 }
+// Same-target admission uses the stock insertion queue while another checked
+// binding owns the capsule lock. No callback depth counter is manufactured.
+static void busy_capsule_runtime_insertion() {
+    AbiSignature signature;signature.parameters={{"i32"}};signature.returns={"i32"};
+    Sink outer_sink,queued_sink;auto address=checked_target(reinterpret_cast<void*>(identity_target<std::int32_t>()));
+    auto outer=bind(signature,outer_sink,const_cast<void*>(address));
+    auto made=RuntimeBinding::Create(signature,queued_sink);assert(made);auto queued=std::move(made.value);
+    bool inserted=false;
+    outer_sink.dispatch=[&](DispatchFrame& frame){
+        if(frame.phase!=Phase::Pre || inserted)return;inserted=true;
+        assert(s2hook_detail::g_callback_depth>0);
+        const auto receipt=queued->Configure(address);
+        assert(receipt.Accepted() && receipt.state==S2HookState::Pending);
+        assert(queued_sink.pre==0); // Cannot insert while this capsule owns its lock.
+    };
+    auto input=NativeValue::From<std::int32_t>(4);assert(outer->Call(&input,1));
+    auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    while(queued_sink.pre==0 && std::chrono::steady_clock::now()<deadline){
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));assert(outer->Call(&input,1));
+    }
+    assert(queued->Receipt().state==S2HookState::Active && queued_sink.pre>0);
+    // Retire another still-Pending runtime registration before the provider can
+    // insert it. Its storage stays until both acknowledgements/activity drain.
+    auto cancelled_result=RuntimeBinding::Create(signature,queued_sink);assert(cancelled_result);
+    auto cancelled=std::move(cancelled_result.value);bool cancelled_once=false;
+    outer_sink.dispatch=[&](DispatchFrame& frame){
+        if(frame.phase!=Phase::Pre || cancelled_once)return;cancelled_once=true;
+        assert(cancelled->Configure(address).state==S2HookState::Pending);
+        cancelled->BeginRemove();
+    };
+    assert(outer->Call(&input,1));
+    deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    while(!cancelled->RemovalComplete() && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(cancelled->RemovalComplete());assert(cancelled->PruneCompletedTicket());cancelled.reset();
+    retire(queued);retire(outer);
+    std::cout<<"PASS real same-target busy capsule runtime Pending -> Observe and pending cancellation\n";
+}
+static void invocation_pairing_regression() {
+    AbiSignature signature;signature.parameters={{"i32"}};signature.returns={"i32"};Sink sink;
+    auto binding=bind(signature,sink,reinterpret_cast<void*>(identity_target<std::int32_t>()));
+    std::vector<std::uint64_t> stack;std::vector<std::uint64_t> seen;
+    bool nested=false;int mode=0;
+    sink.dispatch=[&](DispatchFrame& frame){
+        assert(frame.invocation_id!=0);
+        if(frame.phase==Phase::Pre){
+            assert(std::find(seen.begin(),seen.end(),frame.invocation_id)==seen.end());seen.push_back(frame.invocation_id);stack.push_back(frame.invocation_id);
+            if(!nested && mode==1){nested=true;auto input=NativeValue::From<std::int32_t>(3);assert(binding->Call(&input,1));nested=false;}
+            if(mode==2){frame.arguments[0]=NativeValue::From<std::int32_t>(8);frame.changed=true;}
+            if(mode==3){frame.action=KHook::Action::Supersede;frame.result=NativeValue::From<std::int32_t>(91);}
+            if(mode==4)throw std::runtime_error("proof PRE exception after pairing insertion");
+        }else{
+            assert(!stack.empty() && stack.back()==frame.invocation_id);stack.pop_back();
+            if(mode==5)throw std::runtime_error("proof POST exception before pairing cleanup");
+        }
+    };
+    auto value=NativeValue::From<std::int32_t>(7);
+    for(mode=0;mode<=5;++mode){auto result=binding->Call(&value,1);assert(bool(result)==(mode<4));assert(stack.empty());}
+    // Neutral dispatch refusal still runs the native pairing book for this row.
+    const auto count=seen.size();S2Hook_SetLifecycle(S2HookLifecycle::Retiring);assert(binding->Call(&value,1));S2Hook_SetLifecycle(S2HookLifecycle::Running);assert(seen.size()==count);
+    mode=0;assert(binding->Call(&value,1));assert(stack.empty());
+    // Failure before id mint/Observe must leave a neutral nested row; the inner
+    // POST cannot consume the still-open outer PRE state.
+    bool fail_nested=true;
+    sink.dispatch=[&](DispatchFrame& frame){
+        if(frame.phase==Phase::Pre){stack.push_back(frame.invocation_id);if(fail_nested){fail_nested=false;s2fn::before_invocation_id=[](RuntimeBinding*){throw std::runtime_error("before id mint");};auto nested_result=binding->Call(&value,1);assert(!nested_result);s2fn::before_invocation_id={};}}
+        else{assert(stack.back()==frame.invocation_id);stack.pop_back();}
+    };
+    assert(binding->Call(&value,1));assert(stack.empty());retire(binding);
+    std::cout<<"PASS invocation ids pair across neutral, nested, recall, suppression and PRE/POST exceptions\n";
+}
 static void stock_tests() {
     std::cout << "phase=allocations-and-retirement\n";
     lazy_target_lifecycle();
+    busy_capsule_runtime_insertion();
+    invocation_pairing_regression();
     allocations_and_retirement();
     std::cout << "phase=return-phase-lifetime\n";
     return_phase_lifetime(false);

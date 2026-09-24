@@ -106,6 +106,8 @@ echo "== test-engine-function-bridge.sh (shared targets and stock lifecycle) =="
 bash scripts/test-engine-function-bridge.sh --stock-provider
 echo "== engine function busy-caller real V8 spike =="
 bash scripts/test-engine-function-v8-adapter.sh --spike --stock-provider
+echo "== engine function production registry / real outer frame proof =="
+S2FN_V8_DIAGNOSTICS=0 bash scripts/test-engine-function-v8-adapter.sh --stock-provider
 echo "== engine function stock peer order fixtures =="
 bash scripts/test-engine-function-live.sh --fixture-only --orders peer-first,s2-first
 

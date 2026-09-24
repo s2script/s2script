@@ -115,6 +115,7 @@ s2fn::Result<s2resolve::Resolution> Resolve(const Declaration& d, const Resolver
 #include <mutex>
 #include <tuple>
 #include <cstdio>
+#include <climits>
 namespace s2bridge {
 namespace {
 using PhysicalKey = std::tuple<uint64_t,uint64_t,uintptr_t,std::string,uintptr_t>;
@@ -140,6 +141,66 @@ bool pointer_request(const S2FunctionValue& v) {
         v.flags<=static_cast<unsigned char>(PointerProjection::Vector);
 }
 }
+namespace {
+static_assert(sizeof(S2FunctionFrameInfo)==48 && alignof(S2FunctionFrameInfo)==8 &&
+    offsetof(S2FunctionFrameInfo,invocation_id)==24 && offsetof(S2FunctionFrameInfo,flags)==44,
+    "frame metadata v1 layout");
+static_assert(sizeof(S2FunctionHookStatus)==16 && offsetof(S2FunctionHookStatus,receipt)==8,
+    "hook status layout");
+struct FrameAccess {
+    TargetId target;
+    const Declaration& declaration;
+    s2fn::DispatchFrame& native;
+    S2FunctionFrameInfo info;
+    std::vector<s2fn::NativeValue> staged;
+    bool changed=false, committed=false;
+};
+thread_local std::vector<FrameAccess*> frames;
+std::atomic<unsigned long long> next_frame{1};
+unsigned long long unique_frame() {
+    auto value=next_frame.load(std::memory_order_relaxed);
+    do { if (value==ULLONG_MAX) throw std::runtime_error("frame epoch exhausted"); }
+    while (!next_frame.compare_exchange_weak(value,value+1,std::memory_order_relaxed));
+    return value;
+}
+FrameAccess& frame_access(TargetId target, unsigned long long token, unsigned long long epoch, const char* fingerprint) {
+    require(!frames.empty(),"function frame unavailable on this thread");
+    auto& f=*frames.back();
+    require(f.target==target && f.info.frame_token==token && f.info.native_epoch==epoch &&
+        fingerprint && f.declaration.info.fingerprint==fingerprint,"function frame capability mismatch");
+    return f;
+}
+size_t scalar_width(ValueKind k) {
+    if (k==ValueKind::Void) return 0;
+    if (k==ValueKind::Bool) return 1;
+    if (k==ValueKind::I32 || k==ValueKind::U32 || k==ValueKind::F32) return 4;
+    require(k!=ValueKind::Pointer,"unsupported pointer projection in scalar frame");
+    return 8;
+}
+S2FunctionValue scalar_copy(const s2fn::NativeValue& value, ValueKind k) {
+    S2FunctionValue result{}; result.kind=static_cast<unsigned char>(k);
+    std::memcpy(&result.bits,value.bytes.data(),scalar_width(k));
+    require(k!=ValueKind::Bool || result.bits<=1,"noncanonical bool");
+    return result;
+}
+s2fn::NativeValue scalar_decode(const S2FunctionValue& value, ValueKind k) {
+    const auto width=scalar_width(k);
+    require(value.kind==static_cast<unsigned char>(k) && !value.flags && !value.reserved && !value.aux,
+        "scalar value kind/metadata mismatch");
+    require((width==8 || (width==4 ? value.bits<=UINT32_MAX : width==1 ? value.bits<=1 : value.bits==0)),
+        "noncanonical scalar value");
+    s2fn::NativeValue out; std::memcpy(out.bytes.data(),&value.bits,width); return out;
+}
+}
+void CoreDispatchSink::Dispatch(TargetId target, unsigned long long, s2fn::DispatchFrame& frame) {
+    if (!dispatch_ || std::this_thread::get_id()!=owner_) throw std::runtime_error("function dispatch unavailable off host thread");
+    require(!frames.empty() && frames.back()->target==target,"missing native frame lease");
+    if (dispatch_(target,&frames.back()->info,frame.phase==s2fn::Phase::Pre ? 0 : 1)!=1)
+        throw std::runtime_error("synchronous core function dispatch failed");
+}
+void CoreDispatchSink::Error(TargetId target,const char* why) noexcept {
+    std::fprintf(stderr,"[s2script] function target %lld: %s\n",target,why);
+}
 struct Service::Impl {
     struct Record final : s2fn::DispatchSink {
         Impl& host;
@@ -149,6 +210,7 @@ struct Service::Impl {
         s2resolve::Resolution resolution; // private diagnostic/provenance retains its image
         std::unique_ptr<s2fn::RuntimeBinding> binding;
         size_t refs=1, subscriptions=0, active_calls=0;
+        bool installing=false;
         Record(Impl& h,TargetId i,std::string name,Declaration d,s2resolve::Resolution r)
             : host(h),id(i),canonical_id(std::move(name)),declaration(std::move(d)),resolution(std::move(r)) {}
         void Dispatch(s2fn::DispatchFrame& frame) override {
@@ -164,7 +226,16 @@ struct Service::Impl {
             unsigned long long owner=0;
             for (auto i=bypass.rbegin();i!=bypass.rend();++i)
                 if (i->service==&host && i->target==id) { owner=i->owner; break; }
-            if (sink) sink->Dispatch(id,owner,frame);
+            if (sink) {
+                const auto epoch=unique_frame();
+                FrameAccess access{id,declaration,frame,
+                    {1,sizeof(S2FunctionFrameInfo),epoch,epoch,frame.invocation_id,owner,
+                     static_cast<unsigned int>(frame.arguments.size()),frame.original_skipped ? 1u : 0u},
+                    frame.arguments};
+                frames.push_back(&access);
+                struct Pop { ~Pop() { frames.pop_back(); } } pop;
+                sink->Dispatch(id,owner,frame);
+            }
         }
         void Error(const char* why) noexcept override {
             std::shared_ptr<Record> retained;
@@ -191,11 +262,12 @@ struct Service::Impl {
     void collect() {
         for (auto i=records.begin();i!=records.end();) {
             auto& r=*i->second;
-            if (!r.refs && !r.subscriptions && r.binding->RemovalComplete() && i->second.use_count()==1) {
+            if (!r.refs && !r.subscriptions && r.binding->RemovalComplete() && i->second.use_count()==1 && r.binding->PruneCompletedTicket()) {
                 physical.erase(key(r.resolution)); i=records.erase(i);
             } else ++i;
         }
-        S2Hook_DrainRetirement();
+        // Completed bridge tickets were pruned individually above. The global
+        // drain retains its unrelated-callback quiescence requirement.
     }
 };
 Service::Service(Resolver r):impl_(new Impl(std::move(r))) {}
@@ -249,6 +321,7 @@ s2fn::Result<S2FunctionValue> Service::Call(TargetId id,unsigned long long owner
     {
         std::lock_guard<std::recursive_mutex> lock(impl_->mu);
         r=impl_->find(id); if (!r) return {{},"target handle unavailable"};
+        if (r->installing) return {{},"target registration pending admission"};
         if (r->active_calls==std::numeric_limits<size_t>::max()) return {{},"active call overflow"};
         ++r->active_calls;
         codec=impl_->codec;
@@ -304,16 +377,21 @@ s2fn::Result<S2FunctionValue> Service::Call(TargetId id,unsigned long long owner
     return {out,{}};
 }
 s2fn::Result<long long> Service::HookAcquire(TargetId id) {
-    std::lock_guard<std::recursive_mutex> lock(impl_->mu);
+    std::unique_lock<std::recursive_mutex> lock(impl_->mu);
     auto r=impl_->find(id); if (!r) return {0,"target handle unavailable"};
     if (!impl_->sink) return {0,"function dispatch sink unavailable"};
+    if (r->installing) return {0,"target registration pending admission"};
     if (r->subscriptions==std::numeric_limits<size_t>::max()) return {0,"subscription overflow"};
     if (!r->subscriptions) {
-        // A call's host codec may still be running before RuntimeBinding has its
-        // own activity lease. Serialize installation against that entire scope.
         if (r->active_calls) return {0,"hook acquisition requires idle target"};
-        const auto receipt=r->binding->Configure(reinterpret_cast<void*>(r->resolution.address));
+        r->installing=true;
+        lock.unlock();
+        S2HookReceipt receipt;
+        try { receipt=r->binding->Configure(reinterpret_cast<void*>(r->resolution.address)); }
+        catch (...) { lock.lock();r->installing=false;throw; }
+        lock.lock();r->installing=false;
         if (!receipt.Accepted()) return {0,"hook acquisition failed: "+receipt.reason};
+        if (!r->refs) { r->binding->BeginRemove();return {0,"target retired during registration"}; }
     }
     ++r->subscriptions; return {static_cast<long long>(r->binding->Receipt().id)+1,{}};
 }
@@ -335,8 +413,23 @@ S2HookReceipt Service::Receipt(TargetId id) const {
     auto i=impl_->records.find(id);
     return i==impl_->records.end() ? S2HookReceipt{KHook::INVALID_HOOK,S2HookState::Failed,"target handle unavailable"} : i->second->binding->Receipt();
 }
+bool Service::Empty() const { std::lock_guard<std::recursive_mutex> lock(impl_->mu); return impl_->records.empty(); }
 bool Service::Collect() {
     std::lock_guard<std::recursive_mutex> lock(impl_->mu); impl_->collect(); return impl_->records.empty();
+}
+s2fn::Result<S2FunctionHookStatus> Service::HookStatus(TargetId id) const {
+    std::lock_guard<std::recursive_mutex> lock(impl_->mu);
+    if (!impl_->find(id)) return {{},"target handle unavailable"};
+    const auto receipt=impl_->records.at(id)->binding->Receipt();
+    unsigned state=0;
+    switch (receipt.state) {
+        case S2HookState::Pending: state=1; break;
+        case S2HookState::Active: state=2; break;
+        case S2HookState::Removing: state=3; break;
+        case S2HookState::Removed: state=4; break;
+        default: break;
+    }
+    return {{state,0,receipt.id==KHook::INVALID_HOOK ? 0 : static_cast<unsigned long long>(receipt.id)+1},{}};
 }
 Service& Global() {
     // Explicitly drained by the host ledger/safe-boundary integration; static
@@ -372,5 +465,61 @@ extern "C" int S2_FunctionHookRelease(long long id) {
 }
 extern "C" int S2_FunctionTargetRelease(long long id) {
     try {return s2bridge::Global().TargetRelease(id) ? 1 : 0;} catch (...) {return 0;}
+}
+extern "C" int S2_FunctionGetHookStatus(long long id,S2FunctionHookStatus* out,char* reason,int cap) {
+    try {
+        if (!out) throw std::runtime_error("missing hook status output");
+        auto result=s2bridge::Global().HookStatus(id); reason_out(reason,cap,result && result.value.state==0 ? s2bridge::Global().Receipt(id).reason : result.error);
+        if (!result) return 0; *out=result.value; return 1;
+    } catch (const std::exception& e) {reason_out(reason,cap,e.what());return 0;}
+      catch (...) {reason_out(reason,cap,"hook status exception");return 0;}
+}
+extern "C" int S2_FunctionFrameRead(long long id,unsigned long long token,unsigned long long epoch,
+    const char* fp,int selector,unsigned char projection,S2FunctionValue* out,char* reason,int cap) {
+    try {
+        using namespace s2bridge;
+        auto& f=frame_access(id,token,epoch,fp); require(out,"missing frame output");
+        ValueKind k; s2fn::NativeValue value;
+        if (selector==-2) {
+            require(f.native.phase==s2fn::Phase::Post,"effective return is POST-only");
+            k=kind(f.declaration.abi.returns.native); value=f.native.result;
+        } else {
+            require(selector>=0 && static_cast<size_t>(selector)<f.staged.size(),"unsupported frame selector");
+            k=kind(f.declaration.abi.parameters[selector].native); value=f.staged[selector];
+        }
+        require(projection==static_cast<unsigned char>(k),"projection kind mismatch");
+        auto result=scalar_copy(value,k); *out=result; reason_out(reason,cap,""); return 1;
+    } catch (const std::exception& e) {reason_out(reason,cap,e.what());return 0;}
+      catch (...) {reason_out(reason,cap,"frame read exception");return 0;}
+}
+extern "C" int S2_FunctionFrameWrite(long long id,unsigned long long token,unsigned long long epoch,
+    const char* fp,int selector,const S2FunctionValue* value,char* reason,int cap) {
+    try {
+        using namespace s2bridge;
+        auto& f=frame_access(id,token,epoch,fp);
+        require(f.native.phase==s2fn::Phase::Pre && !f.committed,"frame is readonly");
+        require(value && selector>=0 && static_cast<size_t>(selector)<f.staged.size(),"invalid frame write selector");
+        const auto converted=scalar_decode(*value,kind(f.declaration.abi.parameters[selector].native));
+        f.staged[selector]=converted; f.changed=true; reason_out(reason,cap,""); return 1;
+    } catch (const std::exception& e) {reason_out(reason,cap,e.what());return 0;}
+      catch (...) {reason_out(reason,cap,"frame write exception");return 0;}
+}
+extern "C" int S2_FunctionFrameCommit(long long id,unsigned long long token,unsigned long long epoch,
+    const char* fp,int action,const S2FunctionValue* value,char* reason,int cap) {
+    try {
+        using namespace s2bridge;
+        auto& f=frame_access(id,token,epoch,fp);
+        require(f.native.phase==s2fn::Phase::Pre && !f.committed,"frame commit is PRE-only and single-use");
+        require(action>=0 && action<=3,"invalid generic action");
+        auto k=kind(f.declaration.abi.returns.native);
+        s2fn::NativeValue result;
+        if (action<2 || k==ValueKind::Void) require(!value,"unexpected suppression return");
+        else { require(value,"missing typed suppression return");result=scalar_decode(*value,k); }
+        // All validation and allocation precede the atomic final transfer.
+        f.native.arguments.swap(f.staged); f.native.changed=f.changed;
+        f.native.action=action>=2 ? KHook::Action::Supersede : KHook::Action::Ignore;
+        f.native.result=result; f.committed=true; reason_out(reason,cap,""); return 1;
+    } catch (const std::exception& e) {reason_out(reason,cap,e.what());return 0;}
+      catch (...) {reason_out(reason,cap,"frame commit exception");return 0;}
 }
 #endif

@@ -33,6 +33,27 @@ pub struct S2FunctionValue {
     pub bits: u64,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct S2FunctionFrameInfo {
+    pub version: u32,
+    pub struct_size: u32,
+    pub frame_token: u64,
+    pub native_epoch: u64,
+    pub invocation_id: u64,
+    pub suppressed_owner: u64,
+    pub parameter_count: u32,
+    pub flags: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct S2FunctionHookStatus {
+    pub state: u32,
+    pub reserved: u32,
+    pub receipt: u64,
+}
+
 pub type SchemaOffsetFn = extern "C" fn(cls: *const c_char, field: *const c_char) -> c_int;
 pub type EntByIndexFn = extern "C" fn(idx: c_int) -> *mut c_void;
 pub type DerefHandleFn = extern "C" fn(handle: c_uint) -> *mut c_void;
@@ -165,6 +186,10 @@ pub type FunctionCallFn = extern "C" fn(i64, u64, *const S2FunctionValue, c_int,
 pub type FunctionHookAcquireFn = extern "C" fn(i64, *mut c_char, c_int) -> i64;
 pub type FunctionHookReleaseFn = extern "C" fn(i64) -> c_int;
 pub type FunctionTargetReleaseFn = extern "C" fn(i64) -> c_int;
+pub type FunctionHookStatusFn = extern "C" fn(i64, *mut S2FunctionHookStatus, *mut c_char, c_int) -> c_int;
+pub type FunctionFrameReadFn = extern "C" fn(i64, u64, u64, *const c_char, c_int, u8, *mut S2FunctionValue, *mut c_char, c_int) -> c_int;
+pub type FunctionFrameWriteFn = extern "C" fn(i64, u64, u64, *const c_char, c_int, *const S2FunctionValue, *mut c_char, c_int) -> c_int;
+pub type FunctionFrameCommitFn = extern "C" fn(i64, u64, u64, *const c_char, c_int, *const S2FunctionValue, *mut c_char, c_int) -> c_int;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -351,6 +376,10 @@ pub struct S2EngineOps {
     pub function_hook_acquire: Option<FunctionHookAcquireFn>,
     pub function_hook_release: Option<FunctionHookReleaseFn>,
     pub function_target_release: Option<FunctionTargetReleaseFn>,
+    pub function_hook_status: Option<FunctionHookStatusFn>,
+    pub function_frame_read: Option<FunctionFrameReadFn>,
+    pub function_frame_write: Option<FunctionFrameWriteFn>,
+    pub function_frame_commit: Option<FunctionFrameCommitFn>,
 }
 
 impl S2EngineOps {

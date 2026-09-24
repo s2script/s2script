@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-[[ ${1:-} == --spike && ${2:-} == --stock-provider && $# == 2 ]] || { echo 'usage: test-engine-function-v8-adapter.sh --spike --stock-provider' >&2; exit 2; }
+test_filter=v8host::engine_function_adapter_v8::production::production_registry_outer_frame
+if [[ ${1:-} == --spike && ${2:-} == --stock-provider && $# == 2 ]]; then
+  test_filter=v8host::engine_function_adapter_v8::busy_caller_stock_provider_spike
+elif [[ ${1:-} != --stock-provider || $# != 1 ]]; then
+  echo 'usage: test-engine-function-v8-adapter.sh [--spike] --stock-provider' >&2; exit 2
+fi
 [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || { echo 'UNSUPPORTED platform: V8 stock provider proof requires linux-x86_64-sysv' >&2; exit 2; }
 mode=${S2FN_V8_DIAGNOSTICS:-0}
 [[ $mode == 0 || $mode == 1 ]] || { echo 'FAIL S2FN_V8_DIAGNOSTICS must be 0 or 1' >&2; exit 2; }
 original_test=(cargo test --locked -p s2script-core --lib
-  v8host::engine_function_adapter_v8::busy_caller_stock_provider_spike -- --ignored --exact --nocapture)
+  "$test_filter" -- --ignored --exact --nocapture)
 prepare_bridge() {
   bash scripts/test-engine-function-abi.sh --stock-provider
   export S2FN_V8_BRIDGE="$PWD/build/engine-function-abi/libengine_function_v8_bridge.so"
@@ -93,7 +98,7 @@ member_fixture="$PWD/build/engine-function-abi/libengine_function_member_fixture
 binaries=("$executable" "$S2FN_V8_BRIDGE" "$member_fixture")
 sha256sum "${binaries[@]}" > "$artifact/fixed.sha256"
 {
-  printf '%s\n' 'command=cargo test --locked -p s2script-core --lib v8host::engine_function_adapter_v8::busy_caller_stock_provider_spike -- --ignored --exact --nocapture'
+  printf 'command=cargo test --locked -p s2script-core --lib %s -- --ignored --exact --nocapture\n' "$test_filter"
   git rev-parse HEAD
   cargo --version
   gdb --version
