@@ -867,6 +867,7 @@ pub(super) struct PackageServiceProof {
     source: function_adapter::PreparedPackageReceipt,
     target: i64,
     receipt: u64,
+    pub(super) detail: String,
 }
 pub(super) fn package_service_begin() -> PackageServiceProof {
     let host = contract::HostPackageOwner::mint("@proof/service-package").unwrap();
@@ -886,23 +887,8 @@ pub(super) fn package_service_begin() -> PackageServiceProof {
     "#.into(),contract::ImplementationManifestHash::new("a".repeat(64)).unwrap()).unwrap();
     for id in ["process-a", "process-b"] {
         frame_tests::load_body(id, "return {};", "{}");
+        assert!(registry::owner_bindings(&contract::OwnerKey::plugin(id, plugin_generation(id))).is_empty());
     }
-    scalar_owner("process-plugin", |_| {});
-    let plugin_owner =
-        contract::OwnerKey::plugin("process-plugin", plugin_generation("process-plugin"));
-    let plugin_binding = registry::named_binding(&plugin_owner, "fire").unwrap();
-    assert_eq!(
-        plugin_binding.target,
-        Some(target),
-        "package/plugin split the native physical Service record"
-    );
-    // The plugin also bootstrapped the source; remove its package subscriptions
-    // so this third participant proves ordinary public generic admission.
-    js(
-        "process-plugin",
-        "processPre.dispose();processPost.dispose();",
-    );
-    js("process-plugin","globalThis.publicFunction=__s2pkg_unsafe.Engine.function('fire');globalThis.publicEvents=[];publicFunction.onPre(v=>{publicEvents.push('pre:'+v.x);});publicFunction.onPost(v=>{publicEvents.push('post:'+v.returnValue);});");
     let incompatible = contract::HostPackageOwner::mint("@proof/incompatible-package").unwrap();
     let candidate = package_candidate_config(&incompatible.key().id, false, |value| {
         let f = &mut value["functions"][0];
@@ -923,15 +909,104 @@ pub(super) fn package_service_begin() -> PackageServiceProof {
         source,
         target,
         receipt: 0,
+        detail: String::new(),
     }
 }
-pub(super) fn package_service_ready(state: &mut PackageServiceProof) -> bool {
-    let status = crate::engine_functions::runtime::status(state.target).unwrap();
+pub(super) fn package_service_add_public(state: &PackageServiceProof) {
+    let target = state.target;
+    scalar_owner("process-plugin", |_| {});
+    let plugin_owner =
+        contract::OwnerKey::plugin("process-plugin", plugin_generation("process-plugin"));
+    let plugin_binding = registry::named_binding(&plugin_owner, "fire").unwrap();
+    assert_eq!(
+        plugin_binding.target,
+        Some(target),
+        "package/plugin split the native physical Service record"
+    );
+    // The plugin also bootstrapped the source; remove its package subscriptions
+    // so this third participant proves ordinary public generic admission.
+    js(
+        "process-plugin",
+        "processPre.dispose();processPost.dispose();",
+    );
+    js("process-plugin","globalThis.publicFunction=__s2pkg_unsafe.Engine.function('fire');globalThis.publicEvents=[];globalThis.publicPre=publicFunction.onPre(v=>{publicEvents.push('pre:'+v.x);});globalThis.publicPost=publicFunction.onPost(v=>{publicEvents.push('post:'+v.returnValue);});");
+}
+pub(super) fn package_service_ready(
+    state: &mut PackageServiceProof,
+    engine_call: unsafe extern "C" fn(i32, *mut i32) -> i32,
+    with_public: bool,
+) -> bool {
+    let parents = if with_public {
+        &["process-a", "process-b", "process-plugin"][..]
+    } else {
+        &["process-a", "process-b"][..]
+    };
+    for id in parents {
+        js(
+            id,
+            if *id == "process-plugin" {
+                "publicEvents.length=0;"
+            } else {
+                "processEvents.length=0;"
+            },
+        );
+    }
+    // A status snapshot cannot promote Pending. Observe the compiler-authored
+    // target itself, without a JS outbound nest or synthetic Service::Call.
+    assert!(crate::nest::top().is_none());
+    let mut output = 0;
+    assert_eq!(unsafe { engine_call(17, &mut output) }, 1);
+    assert_eq!(output, 17);
+    let status = crate::engine_functions::runtime::status(state.target);
+    let mut native = S2FunctionHookStatus {
+        state: 0,
+        reserved: 0,
+        receipt: 0,
+    };
+    let mut reason = [0; 512];
+    let code = engine_ops().unwrap().function_hook_status.unwrap()(
+        state.target,
+        &mut native,
+        reason.as_mut_ptr(),
+        512,
+    );
+    let reason = unsafe { std::ffi::CStr::from_ptr(reason.as_ptr()) }.to_string_lossy();
+    let traces = parents.iter().map(|id| {
+        let source = if *id == "process-plugin" {
+            "({events:publicEvents,pre:publicPre.status,preReason:publicPre.reason,post:publicPost.status,postReason:publicPost.reason})"
+        } else {
+            "({events:processEvents,pre:processPre.status,preReason:processPre.reason,post:processPost.status,postReason:processPost.reason})"
+        };
+        (id, frame_tests::eval_in_context_string(id, &format!("JSON.stringify((()=>{{try{{return {source}}}catch(e){{return {{error:String(e)}}}}}})())")))
+    }).collect::<Vec<_>>();
+    state.detail = format!("target={} state={} receipt={} nativeCode={} reason={:?} parents={:?} traces={:?} bootstrapLogs={:?} pending={}",
+        state.target,native.state,native.receipt,code,reason,parents,traces,
+        frame_tests::LOG.lock().unwrap(),function_adapter::proof::pending_invocations());
+    println!("DIAG process engine origin {}", state.detail);
+    let status = status.unwrap_or_else(|e| panic!("native status {e}: {}", state.detail));
     if status.state != 2 {
         return false;
     }
+    for id in parents {
+        let events = if *id == "process-plugin" {
+            "publicEvents"
+        } else {
+            "processEvents"
+        };
+        eval_in_context(id,&format!("if(JSON.stringify({events})!=='[\"pre:17\",\"post:17\"]')throw Error(JSON.stringify({events}));"))
+            .unwrap_or_else(|e| panic!("engine-origin delivery {id}: {e}: {}",state.detail));
+    }
+    assert_eq!(function_adapter::proof::pending_invocations(), 0);
     state.receipt = status.receipt;
+    println!("PASS engine-origin owner0/no-nest PRE/POST with public={with_public}");
     true
+}
+pub(super) fn package_service_abort(state: PackageServiceProof) {
+    drop(state.active);
+    drop(state.source);
+    for id in ["process-a", "process-b", "process-plugin"] {
+        unload_plugin(id);
+    }
 }
 pub(super) fn package_service_exercise(state: &PackageServiceProof) {
     for id in ["process-a", "process-b"] {
@@ -981,7 +1056,7 @@ pub(super) fn package_service_finish(state: PackageServiceProof) {
         unload_plugin(id);
     }
     assert_eq!(function_adapter::proof::pending_invocations(), 0);
-    println!("PASS exact process package owner: shared native Service/registration with Plugin, incompatible ABI rejection, two parents without declarations, nested peer fanout/bypass, reload, independent retirement");
+    println!("PASS process package control flow: shared target/registration with Plugin, incompatible ABI rejection, two parents without declarations, nested peer fanout/bypass, reload, independent retirement");
 }
 
 thread_local! { static PREPARATIONS:std::cell::Cell<usize>=const{std::cell::Cell::new(0)}; }
@@ -1232,3 +1307,190 @@ fn package_functions_retirement_requires_full_kind_id_generation() {
     result.unwrap();
     second.unwrap();
 }
+
+#[test]
+fn package_engine_origin_dispatch_uses_live_parents_in_both_subscription_orders() {
+    for public_first in [false, true] {
+        function_adapter::scalar_transport_tests::init_transport();
+        if public_first {
+            scalar_owner("origin-public", |_| {});
+            js("origin-public","globalThis.publicEvents=[];const p=__s2pkg_unsafe.Engine.function('fire');p.onPre(v=>{publicEvents.push('pre:'+v.x)});p.onPost(v=>{publicEvents.push('post:'+v.returnValue)});");
+        }
+        let host = contract::HostPackageOwner::mint("@proof/engine-origin").unwrap();
+        let active = registry::activate_package_owner(
+            registry::prepare_package_owner(&host, package_candidate(&host.key().id, false))
+                .unwrap(),
+            &host,
+        )
+        .unwrap();
+        let source=function_adapter::register_prepared_package(host.clone(),"globalThis.originEvents=[];const f=__s2_package_function('fire');f.onPre(v=>{originEvents.push('pre:'+v.x)});f.onPost(v=>{originEvents.push('post:'+v.returnValue)});".into(),contract::ImplementationManifestHash::new("a".repeat(64)).unwrap()).unwrap();
+        for id in ["origin-a", "origin-b"] {
+            frame_tests::load_body(id, "return {};", "{}");
+            assert!(registry::owner_bindings(&contract::OwnerKey::plugin(
+                id,
+                plugin_generation(id)
+            ))
+            .is_empty());
+        }
+        let target = registry::named_binding(host.key(), "fire")
+            .unwrap()
+            .target
+            .unwrap();
+        assert!(crate::nest::top().is_none());
+        let mut value = crate::engine_functions::runtime::blank();
+        value.kind = 2;
+        value.bits = 17;
+        let result = crate::engine_functions::runtime::call(target, None, &[value]);
+        let expectations=["origin-a","origin-b"].map(|id|eval_in_context(id,"if(JSON.stringify(originEvents)!=='[\"pre:17\",\"post:17\"]')throw Error(JSON.stringify(originEvents));"));
+        if !public_first {
+            // Add the public subscriber after the package-only first call.
+            scalar_owner("origin-public", |_| {});
+            js("origin-public","globalThis.publicEvents=[];const p=__s2pkg_unsafe.Engine.function('fire');p.onPre(v=>{publicEvents.push('pre:'+v.x)});p.onPost(v=>{publicEvents.push('post:'+v.returnValue)});");
+        }
+        let mixed = crate::engine_functions::runtime::call(target, None, &[value]);
+        let public = eval_in_context(
+            "origin-public",
+            if public_first {
+                "if(publicEvents.length!==4)throw Error('public first');"
+            } else {
+                "if(publicEvents.length!==2)throw Error('package first');"
+            },
+        );
+        let pending = function_adapter::proof::pending_invocations();
+        drop(active);
+        drop(source);
+        finish();
+        assert_eq!(result.unwrap().bits, 17);
+        for outcome in expectations {
+            outcome.unwrap();
+        }
+        assert_eq!(mixed.unwrap().bits, 17);
+        public.unwrap();
+        assert_eq!(pending, 0);
+    }
+}
+
+#[test]
+fn named_package_receipts_reject_foreign_native_status_and_disposal() {
+    function_adapter::scalar_transport_tests::init_transport();
+    let host = contract::HostPackageOwner::mint("@proof/named-receipts").unwrap();
+    let active = registry::activate_package_owner(
+        registry::prepare_package_owner(&host, package_candidate(&host.key().id, false)).unwrap(),
+        &host,
+    )
+    .unwrap();
+    let source=function_adapter::register_prepared_package(host.clone(),format!(r#"
+        globalThis.f=__s2_package_function('fire');globalThis.receiptEvents=[];
+        const subscribe=__s2_function_adapter_subscribe;
+        globalThis.adapterReceipt=__s2_function_adapter_register('proof.receipts.v1','{}',{{pre(d){{while(d.cursor.invokeNext()!==null){{}}}}}});
+        globalThis.subscribeReceipt=()=>subscribe('fire','proof.receipts.v1','pre',v=>{{receiptEvents.push(v.x)}});
+    "#,function_adapter::proof::HASH).into(),contract::ImplementationManifestHash::new("a".repeat(64)).unwrap()).unwrap();
+    for id in ["receipt-a", "receipt-b"] {
+        frame_tests::load_body(id, "return {};", "{}");
+    }
+    let binding = registry::named_binding(host.key(), "fire").unwrap();
+    function_adapter::authorize_binding(
+        &source,
+        host.key(),
+        binding.id,
+        "proof.receipts.v1",
+        function_adapter::proof::HASH,
+    )
+    .unwrap();
+    drop(binding);
+    js(
+        "receipt-a",
+        r#"
+        globalThis.namedReceipt=subscribeReceipt();
+        globalThis.namedDispose=namedReceipt.dispose;
+        globalThis.namedStatus=Object.getOwnPropertyDescriptor(namedReceipt,'status').get;
+        globalThis.adapterDispose=adapterReceipt.dispose;
+        globalThis.adapterStatus=Object.getOwnPropertyDescriptor(adapterReceipt,'status').get;
+    "#,
+    );
+    for name in [
+        "namedDispose",
+        "namedStatus",
+        "adapterDispose",
+        "adapterStatus",
+    ] {
+        copy_global("receipt-a", "receipt-b", name, name);
+    }
+    let foreign=eval_in_context("receipt-b","var denied=0;for(const op of [namedStatus,adapterStatus,namedDispose,adapterDispose]){try{op()}catch(_){denied++}}if(denied!==4)throw Error('foreign receipt accepted '+denied);");
+    js("receipt-b", "f.call(7);");
+    let unchanged = eval_in_context(
+        "receipt-a",
+        "if(JSON.stringify(receiptEvents)!=='[7]')throw Error('foreign disposal removed A');",
+    );
+    let own=eval_in_context("receipt-a","if(!namedReceipt.dispose() || namedReceipt.dispose() || namedReceipt.status!=='disposed')throw Error('own named idempotence');if(!adapterReceipt.dispose() || adapterReceipt.dispose() || adapterReceipt.status!=='disposed')throw Error('own adapter idempotence');");
+    unload_plugin("receipt-a");
+    frame_tests::load_body("receipt-a", "return {};", "{}");
+    let stale=eval_in_context("receipt-b","var denied=0;for(const op of [namedStatus,adapterStatus,namedDispose,adapterDispose]){try{op()}catch(_){denied++}}if(denied!==4)throw Error('stale receipt accepted');");
+    js("receipt-a", "globalThis.namedReceipt=subscribeReceipt();");
+    drop(active);
+    let retired=eval_in_context("receipt-a","let denied=0;for(const op of [()=>namedReceipt.status,()=>adapterReceipt.status,()=>namedReceipt.dispose(),()=>adapterReceipt.dispose()]){try{op()}catch(_){denied++}}if(denied!==4)throw Error('retired receipt accepted');");
+    drop(source);
+    finish();
+    foreign.unwrap();
+    unchanged.unwrap();
+    own.unwrap();
+    stale.unwrap();
+    retired.unwrap();
+}
+
+#[test]
+fn package_service_probe_and_failure_cleanup_control_flow() {
+    // This portable test checks driver control flow only. Physical ABI sharing
+    // and provider readiness remain assertions of the real Linux driver.
+    extern "C" fn scalar_only(
+        _: *const i8,
+        _: *const i8,
+        _: *const i8,
+        fingerprint: *const i8,
+        _: *mut i8,
+        _: i32,
+    ) -> i64 {
+        i64::from(
+            unsafe { std::ffi::CStr::from_ptr(fingerprint) }.to_bytes()
+                == b"linux-x86_64-sysv:none:i32(i32)",
+        )
+    }
+    unsafe extern "C" fn engine_entry(value: i32, out: *mut i32) -> i32 {
+        let owner = PROCESS_PROBE_OWNER.with(|o| o.borrow().clone()).unwrap();
+        let target = registry::named_binding(&owner, "fire")
+            .unwrap()
+            .target
+            .unwrap();
+        let mut wire = crate::engine_functions::runtime::blank();
+        wire.kind = 2;
+        wire.bits = value as u64;
+        let result = crate::engine_functions::runtime::call(target, None, &[wire]).unwrap();
+        *out = result.bits as i32;
+        1
+    }
+    for abort in [false, true] {
+        function_adapter::scalar_transport_tests::init_transport();
+        let mut ops = engine_ops().unwrap();
+        ops.function_prepare = Some(scalar_only);
+        ops.function_hook_status = Some(status);
+        STATE.with(|s| s.set(2));
+        set_engine_ops(Some(ops));
+        let mut state = package_service_begin();
+        PROCESS_PROBE_OWNER.with(|o| *o.borrow_mut() = Some(state.host.key().clone()));
+        assert!(package_service_ready(&mut state, engine_entry, false));
+        package_service_add_public(&state);
+        assert!(package_service_ready(&mut state, engine_entry, true));
+        let owner = state.host.key().clone();
+        if abort {
+            package_service_abort(state);
+        } else {
+            package_service_exercise(&state);
+            package_service_finish(state);
+        }
+        assert!(registry::owner_bindings(&owner).is_empty());
+        assert_eq!(function_adapter::proof::pending_invocations(), 0);
+        PROCESS_PROBE_OWNER.with(|o| o.borrow_mut().take());
+        finish();
+    }
+}
+thread_local! { static PROCESS_PROBE_OWNER: std::cell::RefCell<Option<contract::OwnerKey>> = const { std::cell::RefCell::new(None) }; }

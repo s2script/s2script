@@ -224,6 +224,7 @@ mod production {
         *mut S2EngineOps,
     ) -> i32;
     type FrameProduction = unsafe extern "C" fn(i32) -> i32;
+    type EngineCallProduction = unsafe extern "C" fn(i32, *mut i32) -> i32;
     thread_local! {
         static PACKAGE:RefCell<Option<function_adapter::PreparedPackageReceipt>>=const{RefCell::new(None)};
         static BINDINGS:RefCell<BTreeMap<String,u64>>=const{RefCell::new(BTreeMap::new())};
@@ -232,6 +233,7 @@ mod production {
         static POST_STATE:RefCell<Option<proof::PostConformance>>=const{RefCell::new(None)};
         static POST_PEER:Cell<Option<FrameProduction>>=const{Cell::new(None)};
         static PROCESS_STATE:RefCell<Option<super::super::engine_function_tests::PackageServiceProof>>=const{RefCell::new(None)};
+        static ENGINE_CALL:Cell<Option<EngineCallProduction>>=const{Cell::new(None)};
         static PROCESS_READY:Cell<bool>=const{Cell::new(false)};
         static STEP:Cell<usize>=const{Cell::new(0)};
         static FAILURE:RefCell<Option<String>>=const{RefCell::new(None)};
@@ -385,12 +387,20 @@ mod production {
                 PROCESS_READY.with(|r| {
                     r.set(super::super::engine_function_tests::package_service_ready(
                         &mut state,
+                        ENGINE_CALL.with(Cell::get).unwrap(),
+                        false,
                     ))
                 });
                 PROCESS_STATE.with(|s| *s.borrow_mut() = Some(state));
             }
             18 => {
-                let state = PROCESS_STATE.with(|s| s.borrow_mut().take()).unwrap();
+                let mut state = PROCESS_STATE.with(|s| s.borrow_mut().take()).unwrap();
+                super::super::engine_function_tests::package_service_add_public(&state);
+                assert!(super::super::engine_function_tests::package_service_ready(
+                    &mut state,
+                    ENGINE_CALL.with(Cell::get).unwrap(),
+                    true
+                ));
                 super::super::engine_function_tests::package_service_exercise(&state);
                 PROCESS_STATE.with(|s| *s.borrow_mut() = Some(state));
             }
@@ -425,6 +435,9 @@ mod production {
             unsafe { std::mem::transmute(symbol(library, "s2fn_production_create")) };
         let frame: FrameProduction =
             unsafe { std::mem::transmute(symbol(library, "s2fn_production_frame")) };
+        let engine_call: EngineCallProduction =
+            unsafe { std::mem::transmute(symbol(library, "s2fn_production_engine_call")) };
+        ENGINE_CALL.with(|s| s.set(Some(engine_call)));
         let empty: Remove =
             unsafe { std::mem::transmute(symbol(library, "s2fn_production_empty")) };
         let close: Remove =
@@ -458,8 +471,9 @@ mod production {
             assert_eq!(unsafe { frame(1) }, 1);
             assert!(
                 FAILURE.with(|f| f.borrow().is_none()),
-                "{:?}",
-                FAILURE.with(|f| f.borrow().clone())
+                "{:?}; bootstrap logs: {:?}",
+                FAILURE.with(|f| f.borrow().clone()),
+                frame_tests::LOG.lock().unwrap()
             );
         };
         drive(0); // New target first-patched under the real unrelated outer observation.
@@ -540,40 +554,65 @@ mod production {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert_eq!(unsafe { empty() }, 1);
-        drive(16);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        loop {
-            drive(17);
-            if PROCESS_READY.with(Cell::get) {
-                break;
+        let process_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            frame_tests::LOG.lock().unwrap().clear();
+            PROCESS_READY.with(|r| r.set(false));
+            drive(16);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            loop {
+                drive(17);
+                if PROCESS_READY.with(Cell::get) {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "process package hook readiness timeout: {}",
+                    PROCESS_STATE.with(|s| s.borrow().as_ref().unwrap().detail.clone())
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "process package hook readiness timeout"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            drive(18);
+            drive(19);
+            println!("PASS actual compiler-authored target engine entry: package-only and mixed public/package PRE/POST, owner0/no-nest, shared native Service");
+        }));
+        // Drain RAII owners while the isolate, native Service and all TLS maps
+        // are still alive. Thread-local destruction must not mask the first panic.
+        let abandoned = PROCESS_STATE.with(|s| s.borrow_mut().take());
+        if let Some(state) = abandoned {
+            super::super::engine_function_tests::package_service_abort(state);
         }
-        drive(18);
-        drive(19);
+        if process_result.is_err() {
+            for id in ["process-a", "process-b", "process-plugin"] {
+                unload_plugin(id);
+            }
+        }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while unsafe { empty() } == 0 && std::time::Instant::now() < deadline {
             assert_eq!(unsafe { frame(0) }, 1);
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        assert_eq!(
-            unsafe { empty() },
-            1,
-            "process package native resources did not retire"
-        );
+        let process_drained = unsafe { empty() } == 1;
+        ENGINE_CALL.with(|s| s.set(None));
         POST_PEER.with(|s| s.set(None));
         ENTITY_SLOT.with(|s| s.set(None));
-        assert_eq!(unsafe { close() }, 1);
+        let closed = unsafe { close() };
         PACKAGE.with(|p| p.borrow_mut().take());
         set_engine_ops(None);
         shutdown();
-        unsafe {
-            libc::dlclose(library);
+        if closed == 1 {
+            unsafe {
+                libc::dlclose(library);
+            }
         }
+        if let Err(error) = process_result {
+            eprintln!("process failure cleanup: drained={process_drained} closed={closed}");
+            std::panic::resume_unwind(error);
+        }
+        assert!(
+            process_drained,
+            "process package native resources did not retire"
+        );
+        assert_eq!(closed, 1);
         println!("PASS production Service/sink/strong Rust export, real checked outer frames, unload/reload, never-Active cleanup and no-core-frame-subscriber native maintenance");
     }
 }

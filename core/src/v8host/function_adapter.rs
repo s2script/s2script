@@ -492,7 +492,7 @@ fn js_register(
                 }),
             )
         });
-        receipt(scope, id, false)
+        receipt(scope, id, false, Some(args.data()))
     })();
     match result {
         Ok(value) => rv.set(value.into()),
@@ -569,7 +569,7 @@ fn js_subscribe(
             phase,
             wrapper,
         )?;
-        receipt(scope, id, true)
+        receipt(scope, id, true, Some(args.data()))
     })();
     match result {
         Ok(value) => rv.set(value.into()),
@@ -706,13 +706,18 @@ fn receipt<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     id: u64,
     subscription: bool,
+    // Only the test-only public-generic proof entry lacks a package instance.
+    token: Option<v8::Local<v8::Value>>,
 ) -> Result<v8::Local<'s, v8::Object>, String> {
     let object = v8::Object::new(scope);
-    let data = v8::Array::new(scope, 2);
+    let data = v8::Array::new(scope, 3);
     let id = v8::BigInt::new_from_u64(scope, id);
     let kind = v8::Boolean::new(scope, subscription);
     data.set_index(scope, 0, id.into());
     data.set_index(scope, 1, kind.into());
+    if let Some(token) = token {
+        data.set_index(scope, 2, token);
+    }
     let dispose = v8::Function::builder(js_dispose)
         .data(data.into())
         .build(scope)
@@ -739,6 +744,23 @@ fn receipt_data(
         .get_index(scope, 1)
         .ok_or("receipt type")?
         .boolean_value(scope);
+    if let Some(token) = data.get_index(scope, 2).filter(|v| !v.is_undefined()) {
+        // Validate the retained native token even after its resource row was removed:
+        // disposal stays idempotent only in the same live instance/context.
+        let (instance, _) = instance(scope, token)?;
+        let matches = if sub {
+            SUBSCRIPTIONS.with(|s| {
+                s.borrow()
+                    .get(&id)
+                    .map(|s| s.instance.as_ref() == Some(&instance))
+            })
+        } else {
+            ADAPTERS.with(|a| a.borrow().get(&id).map(|a| a.instance == instance))
+        };
+        if matches == Some(false) {
+            return Err("receipt package instance mismatch".into());
+        }
+    }
     Ok((id, sub))
 }
 fn receipt_owner(id: u64, sub: bool) -> Option<OwnerKey> {
@@ -785,31 +807,35 @@ fn js_receipt_status(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let state = receipt_data(scope, args.data())
-        .ok()
-        .map_or("disposed", |(id, sub)| {
-            if !sub {
-                return if receipt_owner(id, false).is_some() {
-                    "active"
-                } else {
-                    "disposed"
-                };
-            }
-            let target = SUBSCRIPTIONS.with(|s| s.borrow().get(&id).and_then(|s| s.binding.target));
-            match target.map(runtime::status) {
-                None => "disposed",
-                Some(Err(_)) => "unavailable",
-                Some(Ok(status)) => match status.state {
-                    1 => "pending",
-                    2 => "active",
-                    3 => "removing",
-                    4 => "disposed",
-                    _ => "failed",
-                },
-            }
-        });
-    let text = v8::String::new(scope, state).unwrap();
-    rv.set(text.into());
+    let state = (|| -> Result<&'static str, String> {
+        let (id, sub) = receipt_data(scope, args.data())?;
+        if !sub {
+            return Ok(if receipt_owner(id, false).is_some() {
+                "active"
+            } else {
+                "disposed"
+            });
+        }
+        let target = SUBSCRIPTIONS.with(|s| s.borrow().get(&id).and_then(|s| s.binding.target));
+        Ok(match target.map(runtime::status) {
+            None => "disposed",
+            Some(Err(_)) => "unavailable",
+            Some(Ok(status)) => match status.state {
+                1 => "pending",
+                2 => "active",
+                3 => "removing",
+                4 => "disposed",
+                _ => "failed",
+            },
+        })
+    })();
+    match state {
+        Ok(state) => {
+            let text = v8::String::new(scope, state).unwrap();
+            rv.set(text.into());
+        }
+        Err(error) => throw(scope, error),
+    }
 }
 /// Public receipt projection; never leaks target or hook ids.
 pub(super) fn subscription_state(id: u64, owner: &OwnerKey) -> Result<(&'static str, Option<String>), String> {
@@ -2002,9 +2028,17 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
         with_host_isolate(|isolate| {
             let mut storage = v8::HandleScope::new(isolate);
             let mut scope = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
-            let context = clone_plugin_context(&dispatch.binding.owner.id)
-                .ok_or("dispatch context unavailable")?;
+            // The binding may be process-owned and have no Plugin context. Callback
+            // execution belongs to an admitted subscriber's exact live parent.
+            let parent = &dispatch.subscribers[0].owner;
+            if parent.kind != OwnerKind::Plugin || !owner_is_live(&parent.id, parent.generation) {
+                return Err("dispatch parent generation unavailable".into());
+            }
+            let context = clone_plugin_context(&parent.id).ok_or("dispatch context unavailable")?;
             let context = v8::Local::new(&mut scope, &context);
+            if context.get_slot::<InteropGeneration>().map(|g| g.0) != Some(parent.generation) {
+                return Err("dispatch context generation mismatch".into());
+            }
             let scope = &mut v8::ContextScope::new(&mut scope, context);
             invoke_domains(scope, dispatch.clone())
         })
@@ -2473,7 +2507,7 @@ pub(super) mod proof {
             let observe_only = args.get(2).boolean_value(scope);
             let wrapper = sync_function(scope, args.get(3))?.ok_or("wrapper required")?;
             let id = subscribe_generic(scope, owner, binding, phase, observe_only, wrapper)?;
-            receipt(scope, id, true)
+            receipt(scope, id, true, None)
         })();
         match result {
             Ok(value) => rv.set(value.into()),
