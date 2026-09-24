@@ -23,6 +23,28 @@ impl From<Vec<SnapshotRecord>> for OverrideSet {
         Self { records }
     }
 }
+impl OverrideSet {
+    pub(crate) fn retained_bytes(&self) -> Result<usize, String> {
+        if self.records.len() > MAX_FILES {
+            return Err("override file count limit".into());
+        }
+        let mut bytes = self.records.capacity() * std::mem::size_of::<SnapshotRecord>();
+        let mut content = 0usize;
+        for record in &self.records {
+            if record.content.len() > MAX_FILE_BYTES {
+                return Err(format!("{}: override file size limit", record.relative_path));
+            }
+            content = content.saturating_add(record.content.len());
+            bytes = bytes.saturating_add(record.relative_path.capacity())
+                .saturating_add(record.sha256.capacity())
+                .saturating_add(record.content.capacity());
+        }
+        if content > MAX_TOTAL_BYTES {
+            return Err("override total size limit".into());
+        }
+        Ok(bytes)
+    }
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Snapshot {
@@ -314,11 +336,17 @@ pub fn snapshot(owner: &str) -> Result<OverrideSet, String> {
     let text = unsafe { std::ffi::CStr::from_ptr(ptr) }
         .to_str()
         .map_err(|_| "invalid UTF-8 snapshot")?;
+    // JSON string escaping can expand a bounded decoded file by up to six bytes per byte.
+    if text.len() > MAX_TOTAL_BYTES * 6 + MAX_FILES * 4096 {
+        return Err("override snapshot size limit".into());
+    }
     let result: Snapshot = serde_json::from_str(text).map_err(|e| e.to_string())?;
     if let Some(error) = result.error {
         return Err(error);
     }
-    Ok(result.records.into())
+    let records: OverrideSet = result.records.into();
+    records.retained_bytes()?;
+    Ok(records)
 }
 fn plugin_directory(owner: &str) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";

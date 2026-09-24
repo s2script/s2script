@@ -3761,7 +3761,7 @@ pub(super) mod proof {
 }
 
 #[cfg(test)]
-pub(super) mod scalar_transport_tests {
+pub(crate) mod scalar_transport_tests {
     use super::*;
     #[derive(Clone)]
     struct MockFrame {

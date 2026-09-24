@@ -43,6 +43,41 @@ fn manifest(packages: Vec<Value>) -> Value {
 static SCALAR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../games/fixture-source2/engine-functions.json")).unwrap()
 });
+extern "C" fn no_function_overrides(_: *const std::ffi::c_char) -> *const std::ffi::c_char {
+    c"{\"records\":[],\"error\":null}".as_ptr()
+}
+extern "C" fn failed_function_overrides(_: *const std::ffi::c_char) -> *const std::ffi::c_char {
+    c"{\"records\":[],\"error\":\"changed override source\"}".as_ptr()
+}
+extern "C" fn active_function_hook(_: i64, out: *mut crate::v8host::S2FunctionHookStatus,
+    _: *mut i8, _: i32) -> i32 {
+    unsafe { *out = crate::v8host::S2FunctionHookStatus { state: 2, reserved: 0, receipt: 1 }; }
+    1
+}
+extern "C" fn unavailable_function_target(_: *const i8, _: *const i8, _: *const i8,
+    _: *const i8, why: *mut i8, cap: i32) -> i64 {
+    let reason = b"fixture target unavailable\0";
+    if cap >= reason.len() as i32 {
+        unsafe { std::ptr::copy_nonoverlapping(reason.as_ptr(), why.cast(), reason.len()); }
+    }
+    0
+}
+thread_local! { static RELEASED_PACKAGE_TARGETS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+extern "C" fn counted_target_release(_: i64) -> i32 {
+    RELEASED_PACKAGE_TARGETS.with(|n| n.set(n.get() + 1));
+    1
+}
+fn transport_with_snapshot() {
+    crate::v8host::function_adapter::scalar_transport_tests::init_transport();
+    let mut ops = crate::v8host::engine_ops().unwrap();
+    ops.plugin_function_overrides = Some(no_function_overrides);
+    ops.function_hook_status = Some(active_function_hook);
+    crate::v8host::set_engine_ops(Some(ops));
+}
+fn stop_transport() {
+    crate::v8host::shutdown();
+    crate::v8host::set_engine_ops(None);
+}
 fn with_functions(mut package: Value) -> Value {
     let artifact: Value = serde_json::from_str(SCALAR.as_str()).unwrap();
     package["functions"] = json!({
@@ -73,6 +108,34 @@ fn complete_fixture(packages: Vec<Value>) -> TestDir {
     );
     root
 }
+fn function_fixture(bootstrap: &str, empty: bool) -> TestDir {
+    let mut artifact = crate::engine_functions::tests::fixture();
+    artifact["ownerId"] = "@fixture/a".into();
+    let function = &mut artifact["functions"][0];
+    function["localName"] = "fire".into();
+    function["canonicalId"] = "@fixture/a::fire".into();
+    function["requirement"] = "required".into();
+    function["abi"]["fingerprint"] = "linux-x86_64-sysv:none:i32(i32)".into();
+    function["abi"]["parameters"] = json!([{"name":"x","native":"i32","projection":{"id":"i32","version":1},"mutable":[]}]);
+    function["abi"]["returns"] = json!({"native":"i32","projection":{"id":"i32","version":1}});
+    function["policy"]["surfaces"] = json!(["call", "pre", "post"]);
+    function["policy"]["suppression"] = "generic".into();
+    if empty { artifact["functions"] = json!([]); }
+    crate::engine_functions::tests::seal(&mut artifact);
+    let mut summary = crate::engine_functions::tests::summary(&artifact);
+    if !empty { summary["functions"][0]["suppresses"] = true.into(); }
+    let bytes = artifact.to_string();
+    let mut package = record("@fixture/a", "a", "csgo");
+    package["bootstrap"]["sha256"] = hash(bootstrap.as_bytes()).into();
+    package["functions"] = json!({"path":"game-packages/a/engine-functions.json",
+        "sha256":hash(bytes.as_bytes()),"summary":summary,
+        "permissions":if empty { json!([]) } else { json!(["engine:calls","engine:hooks"]) }});
+    let root = complete_fixture(vec![package]);
+    write(&root.path().join("game-packages/a/index.js"), bootstrap.as_bytes());
+    write(&root.path().join("game-packages/a/engine-functions.json"), bytes.as_bytes());
+    root
+}
+fn live_function_fixture(bootstrap: &str) -> TestDir { function_fixture(bootstrap, false) }
 fn select(root: &TestDir, game: &str) -> Result<super::PreparedSelection, super::PackageError> {
     prepare_selection(root.path(), "source2", game, "linuxsteamrt64")
 }
@@ -225,8 +288,9 @@ fn function_artifact_rejects_traversal_symlink_and_size_over_four_mib() {
 }
 
 #[test]
-fn selected_function_product_cannot_commit_without_sealed_activation() {
+fn selected_function_product_activates_from_verified_bytes() {
     use crate::ffi::*;
+    transport_with_snapshot();
     let root = complete_fixture(vec![with_functions(record("@fixture/a", "a", "csgo"))]);
     let handle = super::select(root.path(), "source2", "csgo", "linuxsteamrt64").unwrap();
     let metadata: Value = serde_json::from_slice(&super::copy(handle, 1).unwrap()).unwrap();
@@ -234,13 +298,185 @@ fn selected_function_product_cannot_commit_without_sealed_activation() {
     assert_eq!(metadata["functionsBundleHash"], "498db83833b306c91054f5b48abaf776fb88851cd3736638e7cf26bdd10829e4");
     assert_eq!(metadata["functionsPath"], root.path().join("game-packages/a/engine-functions.json").canonicalize().unwrap().to_str().unwrap());
     assert_eq!(super::copy(handle, 3).unwrap(), SCALAR.as_bytes());
-    assert_eq!(s2script_core_commit_game_package(handle, b"{}".as_ptr(), 2, b"[]".as_ptr(), 2), 0);
+    write(&root.path().join("game-packages/a/engine-functions.json"), b"changed");
+    let mut ops = crate::v8host::engine_ops().unwrap();
+    ops.plugin_function_overrides = Some(failed_function_overrides);
+    crate::v8host::set_engine_ops(Some(ops));
+    assert_eq!(s2script_core_commit_game_package(handle, b"{}".as_ptr(), 2, b"[]".as_ptr(), 2), 1);
     let status: Value = serde_json::from_slice(&super::status()).unwrap();
-    assert!(status["error"].as_str().unwrap().contains("unavailable"));
+    assert_eq!(status["code"], "active");
+    assert_eq!(super::selected_id().as_deref(), Some("@fixture/a"));
+    super::clear().unwrap();
+    stop_transport();
+}
+
+#[test]
+fn selected_nonempty_function_bootstraps_two_live_parents_and_retires() {
+    transport_with_snapshot();
+    let root = live_function_fixture(r#"
+        globalThis.bootCount=(globalThis.bootCount||0)+1;
+        globalThis.packageEvents=[];
+        const f=__s2_package_function('fire');
+        globalThis.capturedPackageFunction=f;
+        f.onPre(v=>packageEvents.push('pre:'+v.x));
+        f.onPost(v=>packageEvents.push('post:'+v.returnValue));
+        ({'.':{fire(n){return f.call(n)}}})
+    "#);
+    let handle = super::select(root.path(), "source2", "csgo", "linuxsteamrt64").unwrap();
+    write(&root.path().join("game-packages/a/index.js"), b"throw Error('changed bootstrap');");
+    write(&root.path().join("game-packages/a/engine-functions.json"), b"changed functions");
+    super::commit(handle, "{}", "[]").unwrap();
+    super::REGISTERED.with(|registered| {
+        let registered = registered.borrow();
+        let package = registered.as_ref().unwrap();
+        assert_eq!(package._functions.as_ref().unwrap().owner(), package._receipt.owner());
+    });
+    for id in ["fixture-parent-a", "fixture-parent-b"] {
+        crate::v8host::frame_tests::load_body(id, "return {};", "{}");
+        crate::v8host::eval_in_context(id,
+            "if(bootCount!==1||__s2_require('@fixture/a').fire(17)!==17)throw Error('package call');")
+            .unwrap();
+    }
+    crate::v8host::eval_in_context("fixture-parent-a",
+        "packageEvents.length=0;if(__s2_require('@fixture/a').fire(29)!==29)throw Error('cross-parent call');")
+        .unwrap();
+    crate::v8host::eval_in_context("fixture-parent-b",
+        "if(JSON.stringify(packageEvents)!=='[\"pre:29\",\"post:29\"]')throw Error(JSON.stringify(packageEvents));")
+        .unwrap();
+    crate::v8host::unload_plugin("fixture-parent-a");
+    crate::v8host::eval_in_context("fixture-parent-b",
+        "if(__s2_require('@fixture/a').fire(19)!==19)throw Error('surviving parent');")
+        .unwrap();
+    crate::v8host::frame_tests::load_body("fixture-parent-a", "return {};", "{}");
+    crate::v8host::eval_in_context("fixture-parent-a",
+        "if(__s2_require('@fixture/a').fire(23)!==23)throw Error('reloaded parent');")
+        .unwrap();
+    crate::v8host::unload_plugin("fixture-parent-a");
+    crate::v8host::unload_plugin("fixture-parent-b");
+    super::clear().unwrap();
+    let released_budget = crate::loader::retain_game_package(64 << 20).unwrap();
+    drop(released_budget);
+    stop_transport();
+}
+
+#[test]
+fn required_target_failure_rolls_back_selected_source_and_legacy_owner() {
+    transport_with_snapshot();
+    let mut ops = crate::v8host::engine_ops().unwrap();
+    ops.function_prepare = Some(unavailable_function_target);
+    crate::v8host::set_engine_ops(Some(ops));
+    let root = live_function_fixture("({'.':{}})");
+    let handle = super::select(root.path(), "source2", "csgo", "linuxsteamrt64").unwrap();
+    let error = super::commit(handle, "{}", "[]").unwrap_err();
+    assert!(error.contains("@fixture/a::fire"), "{error}");
     assert!(super::selected_id().is_none());
+    assert!(crate::gamedata_calls::game_package_owner().is_none());
     super::abort(handle).unwrap();
-    let status: Value = serde_json::from_slice(&super::status()).unwrap();
-    assert_eq!(status["code"], "failed");
+    stop_transport();
+}
+
+#[test]
+fn optional_selected_target_failure_is_per_function_unavailable() {
+    transport_with_snapshot();
+    let mut ops = crate::v8host::engine_ops().unwrap();
+    ops.function_prepare = Some(unavailable_function_target);
+    crate::v8host::set_engine_ops(Some(ops));
+    let root = complete_fixture(vec![with_functions(record("@fixture/a", "a", "csgo"))]);
+    let handle = super::select(root.path(), "source2", "csgo", "linuxsteamrt64").unwrap();
+    super::commit(handle, "{}", "[]").unwrap();
+    super::REGISTERED.with(|registered| {
+        let registered = registered.borrow();
+        let owner = registered.as_ref().unwrap()._functions.as_ref().unwrap().owner();
+        let binding = crate::engine_functions::registry::named_binding(owner, "scalar").unwrap();
+        assert!(binding.target.is_none());
+        assert!(binding.unavailable.as_deref().unwrap().contains("fixture target unavailable"));
+        assert_eq!(binding.provenance.archive_hash, hash(SCALAR.as_bytes()));
+    });
+    super::clear().unwrap();
+    stop_transport();
+}
+
+#[test]
+fn activation_failure_retires_prepared_source_and_native_target() {
+    transport_with_snapshot();
+    RELEASED_PACKAGE_TARGETS.with(|n| n.set(0));
+    let mut ops = crate::v8host::engine_ops().unwrap();
+    ops.function_target_release = Some(counted_target_release);
+    crate::v8host::set_engine_ops(Some(ops));
+    let root = live_function_fixture("({'.':{}})");
+    let handle = super::select(root.path(), "source2", "csgo", "linuxsteamrt64").unwrap();
+    let _injection = crate::engine_functions::registry::fail_next_package_activation("@fixture/a");
+    let error = super::commit(handle, "{}", "[]").unwrap_err();
+    assert!(error.contains("injected package activation failure"), "{error}");
+    assert_eq!(RELEASED_PACKAGE_TARGETS.with(|n| n.get()), 1);
+    assert!(super::selected_id().is_none());
+    assert!(crate::gamedata_calls::game_package_owner().is_none());
+    super::abort(handle).unwrap();
+    stop_transport();
+}
+
+#[test]
+fn selected_export_validation_failure_revokes_provisional_function_facade() {
+    transport_with_snapshot();
+    let root = live_function_fixture(
+        "globalThis.failedFacade=__s2_package_function('fire');failedFacade.onPre(()=>{});({bad:{}})"
+    );
+    let handle = super::select(root.path(), "source2", "csgo", "linuxsteamrt64").unwrap();
+    super::commit(handle, "{}", "[]").unwrap();
+    crate::v8host::create_plugin_context("fixture-bad-export");
+    assert!(crate::v8host::is_failed("fixture-bad-export"));
+    crate::v8host::eval_in_context("fixture-bad-export", r#"
+        let refused=0;
+        for(const op of [()=>failedFacade.call(1),()=>failedFacade.status,
+            ()=>failedFacade.onPre(()=>{})]) { try { op(); } catch (_) { refused++; } }
+        if(refused!==3)throw Error('provisional facade remained live');
+    "#).unwrap();
+    crate::v8host::unload_plugin("fixture-bad-export");
+    super::clear().unwrap();
+    stop_transport();
+}
+
+#[test]
+fn selection_admission_uses_shared_loader_retained_budget() {
+    transport_with_snapshot();
+    let root = live_function_fixture("({'.':{}})");
+    let pressure = crate::loader::retain_game_package(64 << 20).unwrap();
+    let error = super::select(root.path(), "source2", "csgo", "linuxsteamrt64").unwrap_err();
+    assert!(error.contains("retained-byte admission"), "{error}");
+    drop(pressure);
+    let handle = super::select(root.path(), "source2", "csgo", "linuxsteamrt64").unwrap();
+    super::abort(handle).unwrap();
+    stop_transport();
+}
+
+#[test]
+fn invalid_override_snapshot_fails_selection_by_package_name() {
+    transport_with_snapshot();
+    let mut ops = crate::v8host::engine_ops().unwrap();
+    ops.plugin_function_overrides = Some(failed_function_overrides);
+    crate::v8host::set_engine_ops(Some(ops));
+    let root = live_function_fixture("({'.':{}})");
+    let error = super::select(root.path(), "source2", "csgo", "linuxsteamrt64").unwrap_err();
+    assert!(error.contains("@fixture/a: override snapshot: changed override source"), "{error}");
+    assert!(super::selected_id().is_none());
+    stop_transport();
+}
+
+#[test]
+fn authored_empty_function_product_gets_one_real_package_receipt() {
+    transport_with_snapshot();
+    let root = function_fixture("({'.':{}})", true);
+    let handle = super::select(root.path(), "source2", "csgo", "linuxsteamrt64").unwrap();
+    super::commit(handle, "{}", "[]").unwrap();
+    super::REGISTERED.with(|registered| {
+        let registered = registered.borrow();
+        let package = registered.as_ref().unwrap();
+        assert!(package._functions.is_some());
+        let owner = package._functions.as_ref().unwrap().owner();
+        assert!(crate::engine_functions::registry::owner_bindings(owner).is_empty());
+    });
+    super::clear().unwrap();
+    stop_transport();
 }
 
 #[test]

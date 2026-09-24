@@ -7,23 +7,34 @@ pub(crate) use manifest::{prepare_selection, PreparedSelection};
 pub(crate) use manifest::PackageError;
 
 use crate::engine_functions::contract::{HostPackageOwner, ImplementationManifestHash};
+use crate::engine_functions::{contract, overrides, registry};
 use crate::v8host::function_adapter::{self, PreparedPackageReceipt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
     path::Path,
+    rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
 };
 
 struct RegisteredPackage {
     selection: PreparedSelection,
+    _functions: Option<registry::ActivePackageFunctions>,
     _receipt: PreparedPackageReceipt,
+    _retention: Rc<RefCell<crate::loader::RetainedLease>>,
     _merged_data: Box<str>,
     status: Vec<u8>,
 }
+struct PendingPackage {
+    handle: u64,
+    selection: PreparedSelection,
+    overrides: Option<overrides::OverrideSet>,
+    retention: Rc<RefCell<crate::loader::RetainedLease>>,
+    preparation_bytes: usize,
+}
 thread_local! {
-    static PENDING: RefCell<Option<(u64, PreparedSelection)>> = const { RefCell::new(None) };
+    static PENDING: RefCell<Option<PendingPackage>> = const { RefCell::new(None) };
     static REGISTERED: RefCell<Option<RegisteredPackage>> = const { RefCell::new(None) };
     static STATUS: RefCell<Vec<u8>> = RefCell::new(b"{\"code\":\"unselected\"}".to_vec());
 }
@@ -42,6 +53,36 @@ fn metadata(selection: &PreparedSelection) -> Value {
     }
     value
 }
+fn json_storage(value: &Value) -> usize {
+    match value {
+        Value::String(s) => s.capacity(),
+        Value::Array(items) => items.capacity() * std::mem::size_of::<Value>()
+            + items.iter().map(json_storage).sum::<usize>(),
+        Value::Object(entries) => entries.iter().map(|(key, value)|
+            key.capacity() + std::mem::size_of::<(String, Value)>() + json_storage(value)).sum(),
+        _ => 0,
+    }
+}
+fn selection_storage(selection: &PreparedSelection) -> usize {
+    let path = |p: &Path| p.as_os_str().len();
+    std::mem::size_of::<PreparedSelection>()
+        + selection.id.capacity() + selection.gamedata_owner.capacity()
+        + selection.bootstrap_bytes.capacity() + selection.gamedata_bytes.capacity()
+        + selection.bootstrap_sha256.capacity() + selection.gamedata_sha256.capacity()
+        + selection.provenance.engine.capacity() + selection.provenance.game.capacity()
+        + selection.provenance.platform.capacity()
+        + path(&selection.provenance.manifest_path)
+        + path(&selection.provenance.bootstrap_path)
+        + path(&selection.provenance.gamedata_path)
+        + selection.provenance.functions_path.as_deref().map_or(0, path)
+        + selection.functions.as_ref().map_or(0, |functions| {
+            std::mem::size_of_val(functions) + functions.bytes.capacity()
+                + functions.sha256.capacity() + functions.bundle_hash.capacity()
+                + json_storage(&functions.summary)
+                + functions.permissions.capacity() * std::mem::size_of::<String>()
+                + functions.permissions.iter().map(String::capacity).sum::<usize>()
+        })
+}
 pub(crate) fn report_error(error: &str) {
     STATUS.with(|s| {
         *s.borrow_mut() = json!({"code":"failed","error":error})
@@ -53,7 +94,7 @@ pub(crate) fn report_selection_failure(handle: u64, error: &str) -> Result<(), S
     if error.is_empty() || error.len() > 4096 || error.contains('\0') {
         return Err("invalid selection failure reason".into());
     }
-    let current = PENDING.with(|p| p.borrow().as_ref().is_some_and(|(h, _)| *h == handle));
+    let current = PENDING.with(|p| p.borrow().as_ref().is_some_and(|p| p.handle == handle));
     if !current { return Err("stale selection handle".into()); }
     let already_failed = STATUS.with(|s| serde_json::from_slice::<Value>(&s.borrow()).ok()
         .and_then(|v| v["code"].as_str().map(str::to_owned)).as_deref() == Some("failed"));
@@ -87,21 +128,49 @@ pub(crate) fn select(root: &Path, engine: &str, game: &str, platform: &str) -> R
     {
         return Err("package artifact size limit".into());
     }
+    let (overrides, preparation_bytes, snapshot_bytes) = if let Some(functions) = &selection.functions {
+        let snapshot = overrides::snapshot(&selection.id)
+            .map_err(|e| format!("{}: override snapshot: {e}", selection.id))?;
+        let snapshot_bytes = snapshot.retained_bytes()
+            .map_err(|e| format!("{}: override snapshot: {e}", selection.id))?;
+        let source = std::str::from_utf8(&functions.bytes).map_err(|_| "invalid function UTF-8")?;
+        let bundle = contract::parse(source, &selection.id, &functions.summary, &functions.permissions)?;
+        let candidate = overrides::prepare(bundle, &functions.sha256, snapshot.clone())
+            .map_err(|e| format!("{}: override preparation: {e}", selection.id))?;
+        let weight = registry::preparation_bytes(&candidate);
+        (Some(snapshot), weight, snapshot_bytes)
+    } else {
+        (None, 0, 0)
+    };
+    // Commit temporarily clones the selection and snapshot. The fixed headroom admits the
+    // bounded merged legacy data and custom-path/status strings kept after publication.
+    let prepared_status = metadata(&selection).to_string();
+    let charged = selection_storage(&selection).saturating_mul(2)
+        .saturating_add(selection.bootstrap_bytes.len())
+        .saturating_add(prepared_status.len().saturating_mul(2))
+        .saturating_add(snapshot_bytes.saturating_mul(2))
+        .saturating_add(preparation_bytes)
+        .saturating_add(4 * 1024 * 1024 + 65536 + 4096);
+    let retention = crate::loader::retain_game_package(charged)
+        .ok_or("game package retained-byte admission unavailable")?;
     let handle = NEXT_HANDLE
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
         .map_err(|_| "selection handles exhausted")?;
-    STATUS.with(|s| *s.borrow_mut() = metadata(&selection).to_string().into_bytes());
-    PENDING.with(|p| *p.borrow_mut() = Some((handle, selection)));
+    STATUS.with(|s| *s.borrow_mut() = prepared_status.into_bytes());
+    PENDING.with(|p| *p.borrow_mut() = Some(PendingPackage {
+        handle, selection, overrides, retention: Rc::new(RefCell::new(retention)), preparation_bytes,
+    }));
     Ok(handle)
 }
 /// Returns owned bytes from the retained snapshot, never paths to reopen.
 pub(crate) fn copy(handle: u64, member: u32) -> Result<Vec<u8>, String> {
     PENDING.with(|p| {
         let p = p.borrow();
-        let (_, selection) = p
+        let pending = p
             .as_ref()
-            .filter(|(h, _)| *h == handle)
+            .filter(|p| p.handle == handle)
             .ok_or("stale selection handle")?;
+        let selection = &pending.selection;
         match member {
             0 => Ok(selection.gamedata_bytes.clone()),
             1 => Ok(metadata(selection).to_string().into_bytes()),
@@ -113,7 +182,7 @@ pub(crate) fn copy(handle: u64, member: u32) -> Result<Vec<u8>, String> {
 pub(crate) fn abort(handle: u64) -> Result<(), String> {
     PENDING.with(|p| {
         let mut p = p.borrow_mut();
-        if p.as_ref().is_none_or(|(h, _)| *h != handle) {
+        if p.as_ref().is_none_or(|p| p.handle != handle) {
             return Err("stale selection handle".into());
         }
         p.take();
@@ -133,17 +202,14 @@ pub(crate) fn commit(handle: u64, merged: &str, custom_paths: &str) -> Result<()
     if REGISTERED.with(|r| r.borrow().is_some()) {
         return Err("package already active".into());
     }
-    let selection = PENDING
+    let (selection, override_snapshot, retention, reserved) = PENDING
         .with(|p| {
             p.borrow()
                 .as_ref()
-                .filter(|(h, _)| *h == handle)
-                .map(|(_, s)| s.clone())
+                .filter(|p| p.handle == handle)
+                .map(|p| (p.selection.clone(), p.overrides.clone(), p.retention.clone(), p.preparation_bytes))
         })
         .ok_or("stale selection handle")?;
-    if selection.functions.is_some() {
-        return Err("sealed package function activation unavailable".into());
-    }
     if merged.len() > 4 * 1024 * 1024 || custom_paths.len() > 65536 {
         return Err("merged package size limit".into());
     }
@@ -186,18 +252,40 @@ pub(crate) fn commit(handle: u64, merged: &str, custom_paths: &str) -> Result<()
     // descriptor-level unavailable entries. Hook reservations roll back if staging is dropped.
     let calls = crate::gamedata_calls::prepare_game_package(&owner, &gd);
     let hooks = crate::gamedata_hooks::prepare_game_package(&owner, &gd);
-    let receipt = function_adapter::register_selected_package(authority, source.into(), hash)?;
+    let prepared_functions = if let Some(functions) = &selection.functions {
+        let snapshot = override_snapshot.ok_or("missing retained function override snapshot")?;
+        let text = std::str::from_utf8(&functions.bytes).map_err(|_| "invalid function UTF-8")?;
+        let bundle = contract::parse(text, &selection.id, &functions.summary, &functions.permissions)?;
+        let candidate = overrides::prepare(bundle, &functions.sha256, snapshot)
+            .map_err(|e| format!("{}: retained override preparation: {e}", selection.id))?;
+        if registry::preparation_bytes(&candidate) > reserved {
+            return Err("function preparation exceeded retained-byte admission".into());
+        }
+        let mut receipt = registry::prepare_package_owner(&authority, candidate)?;
+        if receipt.retained_bytes() > reserved {
+            return Err("function receipt exceeded retained-byte admission".into());
+        }
+        receipt.retain(retention.clone());
+        Some(receipt)
+    } else {
+        None
+    };
+    let receipt = function_adapter::register_selected_package(authority.clone(), source.into(), hash)?;
+    let functions = prepared_functions.map(|prepared| registry::activate_package_owner(prepared, &authority)).transpose()?;
     crate::gamedata_calls::commit_game_package(&owner, calls);
     crate::gamedata_hooks::commit_game_package(hooks);
     REGISTERED.with(|r| {
         *r.borrow_mut() = Some(RegisteredPackage {
             selection,
+            _functions: functions,
             _receipt: receipt,
+            _retention: retention.clone(),
             _merged_data: merged.into(),
             status,
         })
     });
     PENDING.with(|p| p.borrow_mut().take());
+    retention.borrow_mut().activate();
     Ok(())
 }
 /// Terminal retirement only. A plugin reload must never reach this path.
