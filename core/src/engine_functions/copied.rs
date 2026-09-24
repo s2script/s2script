@@ -148,14 +148,29 @@ pub(crate) struct Bookkeeping {
     _charge: Rc<Charge>,
 }
 impl Bookkeeping {
+    #[cfg(test)]
+    pub(crate) fn alive_probe(&self) -> Box<dyn Fn() -> bool> {
+        let weak = Rc::downgrade(&self._charge);
+        Box::new(move || weak.strong_count() != 0)
+    }
     pub(crate) fn reserve(bytes: usize, producer: Producer) -> Result<Self, String> {
         Ok(Self {
             _charge: Rc::new(Charge::acquire(bytes, producer)?),
         })
     }
 }
+#[cfg(test)]
+struct DropProbe(Box<dyn Fn()>);
+#[cfg(test)]
+impl Drop for DropProbe {
+    fn drop(&mut self) {
+        (self.0)();
+    }
+}
 struct Allocation {
     bytes: Vec<u8>,
+    #[cfg(test)]
+    after_bytes_drop: Option<DropProbe>,
     producer: Producer,
     _charge: Charge,
 }
@@ -177,6 +192,8 @@ impl Buffer {
         Ok(Self {
             allocation: Rc::new(Allocation {
                 bytes,
+                #[cfg(test)]
+                after_bytes_drop: None,
                 producer,
                 _charge: charge,
             }),
@@ -251,6 +268,12 @@ pub(crate) struct Owned {
     pub(crate) flags: u8,
 }
 impl Owned {
+    #[cfg(test)]
+    pub(crate) fn observe_destruction(&mut self, observer: Box<dyn Fn()>) {
+        Rc::get_mut(&mut self.allocation)
+            .expect("unique test value")
+            .after_bytes_drop = Some(DropProbe(observer));
+    }
     pub(crate) fn bytes(&self) -> &[u8] {
         &self.allocation.bytes
     }

@@ -240,6 +240,30 @@ fn set<'s>(
         Err("property write failed".into())
     }
 }
+// Host-created snapshots must not invoke inherited setters or expose inherited values.
+fn set_own<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    object: v8::Local<v8::Object>,
+    key: &str,
+    value: v8::Local<'s, v8::Value>,
+) -> Result<(), String> {
+    let key = v8::String::new(scope, key).ok_or("string allocation")?;
+    if object.create_data_property(scope, key.into(), value) == Some(true) {
+        Ok(())
+    } else {
+        Err("own data property creation failed".into())
+    }
+}
+fn freeze_snapshot(
+    scope: &mut v8::PinScope,
+    object: v8::Local<v8::Object>,
+) -> Result<(), String> {
+    if object.set_integrity_level(scope, v8::IntegrityLevel::Frozen) == Some(true) {
+        Ok(())
+    } else {
+        Err("snapshot freeze failed".into())
+    }
+}
 fn sync_function(
     scope: &mut v8::PinScope,
     value: v8::Local<v8::Value>,
@@ -1054,12 +1078,14 @@ struct Decision {
     value: Option<ProjectedValue>,
 }
 struct InvocationState {
-    copy_bookkeeping: Option<copied::Bookkeeping>,
     // Independently selected PRE/POST instances, pinned to one invocation ID.
     // Copied decisions carry no V8 values and survive either instance's removal.
     adapters: [Option<Rc<Adapter>>; 2],
     deliveries: Vec<Decision>,
     retained_bytes: usize,
+    // Rust drops fields in declaration order. Keep the charge until all retained
+    // adapter holds, delivery elements and their vector allocation are destroyed.
+    copy_bookkeeping: Option<copied::Bookkeeping>,
 }
 type StagedEdits = std::collections::BTreeMap<i32, (ProjectedValue, String)>;
 struct Dispatch {
@@ -1377,10 +1403,9 @@ pub(super) fn projected_to_js<'s>(
                         scope,
                         f32::from_le_bytes(bytes.try_into().unwrap()) as f64,
                     );
-                    set(scope, out, key, value.into())?;
+                    set_own(scope, out, key, value.into())?;
                 }
-                out.set_integrity_level(scope, v8::IntegrityLevel::Frozen)
-                    .ok_or("FunctionCopyOutputAllocationFailure")?;
+                freeze_snapshot(scope, out)?;
                 Ok(out.into())
             }
         }
@@ -1798,19 +1823,25 @@ fn js_cursor(
             l.dispatch.deliveries.borrow_mut().push(value.clone());
             let out = v8::Object::new(scope);
             let action = v8::Integer::new(scope, value.action);
-            set(scope, out, "action", action.into())?;
-            if let Some(value) = value.value {
-                let value = projected_to_js(scope, value)?;
-                set(scope, out, "returnValue", value)?;
+            set_own(scope, out, "action", action.into())?;
+            let original = match value.value {
+                Some(value) => projected_to_js(scope, value)?,
+                None => v8::undefined(scope).into(),
+            };
+            set_own(scope, out, "returnValue", original)?;
+            let lease_id = v8::BigInt::new_from_u64(scope, l.id);
+            let index = v8::BigInt::new_from_u64(scope, delivery_index as u64 + 1);
+            // Array construction initializes own elements directly; no prototype
+            // setter or getter participates in recording the emitted return.
+            let tag = v8::Array::new_with_elements(scope, &[lease_id.into(), index.into(), original]);
+            freeze_snapshot(scope, tag.into())?;
+            let key = delivery_key(scope)?;
+            if out.set_private(scope, key, tag.into()) != Some(true) {
+                return Err("delivery lineage allocation".into());
             }
-            let tag=v8::Array::new(scope,3);
-            let lease_id=v8::BigInt::new_from_u64(scope,l.id);let index=v8::BigInt::new_from_u64(scope,delivery_index as u64 + 1);
-            tag.set_index(scope,0,lease_id.into());tag.set_index(scope,1,index.into());
-            let original=get(scope,out,"returnValue")?;tag.set_index(scope,2,original);
-            let key=delivery_key(scope)?;out.set_private(scope,key,tag.into()).ok_or("delivery lineage allocation")?;
             let revision = v8::Number::new(scope, l.dispatch.revision.get() as f64);
-            set(scope, out, "frameRevision", revision.into())?;
-            out.set_integrity_level(scope, v8::IntegrityLevel::Frozen);
+            set_own(scope, out, "frameRevision", revision.into())?;
+            freeze_snapshot(scope, out)?;
             return Ok(out.into());
         }
     })();
@@ -2330,6 +2361,12 @@ pub(super) mod proof {
             for(const v of [{x:Infinity,y:0,z:0},{x:1e100,y:0,z:0},{x:'1',y:0,z:0},{get x(){touched++;return 1},y:0,z:0},new Proxy({x:1,y:2,z:3},{ownKeys(){touched++;return ['x','y','z']}}),{x:1,y:2,z:3,w:4},{x:1,y:2,z:3,[Symbol()]:4},[1,2,3]]) {
                 let rejected=false;try{copyValue(v,true)}catch(_){rejected=true}if(!rejected)throw Error('invalid vector accepted');
             }
+            Object.defineProperty(Object.prototype,'x',{configurable:true,get(){touched++;return 99},set(_){touched++;throw Error('inherited x setter')}});
+            try {
+                const poisoned=copyValue({x:-0,y:2,z:3},true);
+                const desc=Object.getOwnPropertyDescriptor(poisoned,'x');
+                if(!desc||!('value' in desc)||!Object.is(desc.value,-0)||!Object.isFrozen(poisoned))throw Error('poisoned vector snapshot');
+            } finally { delete Object.prototype.x; }
             if(touched)throw Error('user coercion executed');globalThis.savedCopy=saved;
         "#,
         );
@@ -5816,6 +5853,56 @@ mod copied_transport_tests {
         1
     }
     #[test]
+    fn retained_copy_bookkeeping_survives_delivery_destruction_and_retirement() {
+        scalar_transport_tests::init_transport();
+        let mut ops = engine_ops().unwrap();
+        ops.function_call_copy = Some(call);
+        ops.function_frame_read_copy = Some(read);
+        ops.function_frame_write_copy = Some(write);
+        ops.function_frame_commit_copy = Some(commit);
+        ops.function_frame_override_return_copy = Some(override_return);
+        set_engine_ops(Some(ops));
+        let state = proof::copy_begin();
+        let target = SUBSCRIPTIONS.with(|rows| rows.borrow().values().next().unwrap().binding.target.unwrap());
+        let mut charged_during_destruction = Vec::new();
+        for retirement in [false, true] {
+            let charged = Rc::new(Cell::new(false));
+            charged_during_destruction.push(charged.clone());
+            let guard = copied::Bookkeeping::reserve(4096, copied::Producer::engine()).unwrap();
+            let alive = guard.alive_probe();
+            let after = guard.alive_probe();
+            let destroyed = Rc::new(Cell::new(0));
+            let observed = destroyed.clone();
+            let mut buffer = copied::Buffer::new(8, copied::Producer::engine()).unwrap();
+            buffer.bytes_mut().copy_from_slice(b"retained");
+            let mut value = buffer.own(4).unwrap();
+            value.observe_destruction(Box::new(move || {
+                charged.set(alive());
+                observed.set(observed.get() + 1);
+            }));
+            INVOCATIONS.with(|rows| rows.borrow_mut().insert((target, 12345), InvocationState {
+                copy_bookkeeping: Some(guard),
+                adapters: [None, None],
+                deliveries: vec![Decision { action: 2, value: Some(ProjectedValue::Copied(value)) }],
+                retained_bytes: std::mem::size_of::<Decision>(),
+            }));
+            if retirement {
+                let ids = SUBSCRIPTIONS.with(|rows| rows.borrow().keys().copied().collect::<Vec<_>>());
+                for id in ids { drop_subscription(id); }
+            } else {
+                // Matched POST takes the retained row; dropping it destroys its deliveries.
+                drop(INVOCATIONS.with(|rows| rows.borrow_mut().remove(&(target, 12345))));
+            }
+            assert_eq!(destroyed.get(), 1);
+            assert!(!after(), "dispatch charge leaked after retained storage destruction");
+        }
+        proof::copy_abort(state);
+        set_engine_ops(None);
+        shutdown();
+        assert_eq!(charged_during_destruction.iter().map(|v| v.get()).collect::<Vec<_>>(), [true, true], "dispatch charge released during delivery element destruction (POST, retirement)");
+    }
+
+    #[test]
     fn real_v8_copied_callbacks_use_sidecars_and_exact_delivery_lineage_mock_transport() {
         scalar_transport_tests::init_transport();
         let mut ops = engine_ops().unwrap();
@@ -5867,12 +5954,18 @@ mod copied_transport_tests {
         assert_eq!(COPY_CALLS.with(Cell::get), calls);
         drop(exhausted);
 
+        for id in ["copy-a", "copy-b"] {
+            eval_in_context(id,"globalThis.poisonTouches=0;Object.defineProperty(Object.prototype,'returnValue',{configurable:true,get(){poisonTouches++;return 'spoofed'},set(_){poisonTouches++;}});").unwrap();
+        }
         proof::copy_mode("carry");
         eval_in_context(
             "copy-caller",
             "if(__proofEntityCall(binding,'input')!=='same-copied-result')throw Error('carry');",
         )
         .unwrap();
+        for id in ["copy-a", "copy-b"] {
+            eval_in_context(id,"if(poisonTouches)throw Error('delivery inherited accessor ran');if(globalThis.oldDelivery){const d=Object.getOwnPropertyDescriptor(oldDelivery,'returnValue');if(!d||!('value' in d)||d.value!=='same-copied-result'||!Object.isFrozen(oldDelivery))throw Error('delivery visible bytes');}delete Object.prototype.returnValue;").unwrap();
+        }
         let a = copied::Producer::owner(&OwnerKey::plugin("copy-a", plugin_generation("copy-a")))
             .wire();
         let b = copied::Producer::owner(&OwnerKey::plugin("copy-b", plugin_generation("copy-b")))
