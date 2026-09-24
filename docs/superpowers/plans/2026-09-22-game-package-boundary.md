@@ -194,7 +194,7 @@ test("same inputs produce byte-identical manifest and artifacts", async () => {
 
 - [ ] **Step 2: Run the tests and verify the packager is absent**
 
-Run: `node --test scripts/test-game-packages.mjs`
+Run: `node --experimental-strip-types --no-warnings --test scripts/test-game-packages.mjs`
 
 Expected: FAIL because `build-game-packages.mjs` does not exist.
 
@@ -222,7 +222,7 @@ Move hook generation, static gates and the listed source-path assertions to `gam
 - [ ] **Step 4: Replace the shell concatenation with the packager**
 
 ```bash
-node scripts/build-game-packages.mjs --out "$DIST/s2script"
+node --experimental-strip-types --no-warnings scripts/build-game-packages.mjs --out "$DIST/s2script"
 ```
 
 Replace the independent shell concatenation and its conditional branch. Until CORE-04 switches runtime loading, copy the emitted bootstrap to the existing deployed `js/pawn.js` path and package the relocated CS2 source data at the existing deployed `gamedata/cs2/` path, still excluding operator `custom/` files. These temporary compatibility outputs must derive from the same canonical inputs; do not maintain a second JS file list or duplicate source data. Update ESLint to read `bootstrapInputs` from the source manifest instead of scraping shell text. CORE-04 removes these compatibility outputs in the same change that removes their runtime readers.
@@ -230,7 +230,7 @@ Replace the independent shell concatenation and its conditional branch. Until CO
 - [ ] **Step 5: Verify hashes, determinism, and owner relocation**
 
 ```bash
-node --test scripts/test-game-packages.mjs
+node --experimental-strip-types --no-warnings --test scripts/test-game-packages.mjs
 bash scripts/check-gamedata-owners.sh
 bash scripts/check-gamedata-sigs.sh
 bash scripts/check-hooks-generated.sh
@@ -769,7 +769,7 @@ fi
 if rg -n "${test_exclusions[@]}" 's2script_core_dispatch_damage|__s2_damage_|InstallDamage' "${production[@]}"; then
   echo 'bespoke damage path remains' >&2; exit 1
 fi
-node --test scripts/test-game-packages.mjs
+node --experimental-strip-types --no-warnings --test scripts/test-game-packages.mjs
 ```
 
 Run: `bash scripts/check-game-package-boundary.sh`
