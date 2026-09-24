@@ -105,7 +105,21 @@ test("default build contains only selected artifacts and explicit package export
   assert.ok(source.includes('"./ui"'));
   assert.equal(source.includes('"./econ"'), false);
   assert.equal(source.includes("__s2_adapter_contracts"), false);
+  assert.equal(existsSync(join(out, "game-packages/fixture")), false);
 
+});
+
+test("fixture source is packaged only through explicit synthetic opt-in", () => {
+  const source = join(scriptsRoot, "../games/fixture-source2");
+  const out = mkdtempSync(join(tmpdir(), "s2-fixture-package-"));
+  assert.throws(() => buildGamePackages({ outDir: out, sourceDirs: [source] }), /synthetic.*opt-in/);
+  const manifest = buildGamePackages({ outDir: out, sourceDirs: [source], allowSynthetic: true });
+  assert.deepEqual(manifest.packages.map(packageEntry => packageEntry.id), ["@fixture/source2"]);
+  assert.deepEqual(manifest.packages[0].match, { engine: "source2", game: "fixture" });
+  assert.ok(manifest.packages[0].functions);
+  assert.equal(existsSync(join(out, "game-packages/cs2")), false);
+  assert.match(readFileSync(join(out, manifest.packages[0].bootstrap.path), "utf8"),
+    /fixture proves package boundary only; it is not a supported live game/);
 });
 
 test("same inputs produce byte-identical manifest and artifacts", () => {

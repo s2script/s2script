@@ -136,6 +136,77 @@ fn function_fixture(bootstrap: &str, empty: bool) -> TestDir {
     root
 }
 fn live_function_fixture(bootstrap: &str) -> TestDir { function_fixture(bootstrap, false) }
+
+// A controlled S2 target lives in the test executable. Package bytes are always loaded from
+// S2_TEST_GAME_PACKAGE_ROOT at runtime, so this executable can be frozen before they exist.
+extern "C" fn test_target_twice(value: i32) -> i32 { value * 2 }
+thread_local! { static TEST_TARGET_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+extern "C" fn test_target_prepare(
+    _: *const i8, target: *const i8, abi: *const i8, fingerprint: *const i8,
+    why: *mut i8, cap: i32,
+) -> i64 {
+    let target: Value = serde_json::from_str(unsafe { std::ffi::CStr::from_ptr(target) }.to_str().unwrap()).unwrap();
+    let abi: Value = serde_json::from_str(unsafe { std::ffi::CStr::from_ptr(abi) }.to_str().unwrap()).unwrap();
+    let fingerprint = unsafe { std::ffi::CStr::from_ptr(fingerprint) }.to_str().unwrap();
+    let checked = target["kind"] == "signature"
+        && target["module"] == "s2-test-target"
+        && target["pattern"] == "54 57 49 43 45"
+        && target["targetValidate"]["prologue"] == "54 57 49 43 45"
+        && fingerprint == "linux-x86_64-sysv:none:i32(i32)"
+        && abi["receiver"] == "none"
+        && abi["parameters"][0]["native"] == "i32"
+        && abi["returns"]["native"] == "i32";
+    if checked { test_target_twice as *const () as usize as i64 } else {
+        let reason = b"S2 test target declaration failed checked resolution\0";
+        if !why.is_null() && cap >= reason.len() as i32 {
+            unsafe { std::ptr::copy_nonoverlapping(reason.as_ptr(), why.cast(), reason.len()); }
+        }
+        0
+    }
+}
+extern "C" fn test_target_call(
+    target: i64, _: u64, args: *const crate::v8host::S2FunctionValue, count: i32,
+    out: *mut crate::v8host::S2FunctionValue, _: *mut i8, _: i32,
+) -> i32 {
+    if target != test_target_twice as *const () as usize as i64 || count != 1 || args.is_null() || out.is_null() {
+        return 0;
+    }
+    let input = unsafe { *args };
+    if input.kind != 2 { return 0; }
+    // This is a real native call through the resolved test target, not a JS calculation.
+    let function: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(target as usize) };
+    let result = function(input.bits as i32);
+    unsafe { *out = crate::v8host::S2FunctionValue { kind: 2, bits: result as u32 as u64,
+        flags: 0, reserved: 0, aux: 0 }; }
+    TEST_TARGET_CALLS.with(|calls| calls.set(calls.get() + 1));
+    1
+}
+
+#[test]
+fn synthetic_package_selects_and_uses_an_ordinary_function() {
+    let Ok(root) = std::env::var("S2_TEST_GAME_PACKAGE_ROOT") else { return; };
+    transport_with_snapshot();
+    let mut ops = crate::v8host::engine_ops().unwrap();
+    ops.function_prepare = Some(test_target_prepare);
+    ops.function_call = Some(test_target_call);
+    crate::v8host::set_engine_ops(Some(ops));
+    TEST_TARGET_CALLS.with(|calls| calls.set(0));
+    let handle = super::select(Path::new(&root), "source2", "fixture", "linuxsteamrt64").unwrap();
+    super::commit(handle, "{}", "[]").unwrap();
+    assert_eq!(super::selected_id().as_deref(), Some("@fixture/source2"));
+    assert_eq!(crate::gamedata_calls::game_package_owner().as_deref(), Some("game-package:@fixture/source2"));
+    crate::v8host::frame_tests::load_body("fixture-consumer",
+        "globalThis.fixture = require('@fixture/source2'); return {};", "{}");
+    crate::v8host::eval_in_context("fixture-consumer", r#"
+        if (fixture.twice(21) !== 42) throw Error('checked S2 target result');
+        if (__s2_require('@s2script/cs2') !== null)
+            throw Error('CS2 owner admitted on fixture selection');
+    "#).unwrap();
+    assert_eq!(TEST_TARGET_CALLS.with(std::cell::Cell::get), 1);
+    crate::v8host::unload_plugin("fixture-consumer");
+    super::clear().unwrap();
+    stop_transport();
+}
 fn select(root: &TestDir, game: &str) -> Result<super::PreparedSelection, super::PackageError> {
     prepare_selection(root.path(), "source2", game, "linuxsteamrt64")
 }
