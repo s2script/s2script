@@ -1,8 +1,10 @@
 //! Preparation of a deployed game package, before any runtime registration or bootstrap.
 use serde::Deserialize;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -43,6 +45,16 @@ pub(crate) struct Provenance {
     pub manifest_path: PathBuf,
     pub bootstrap_path: PathBuf,
     pub gamedata_path: PathBuf,
+    pub functions_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PreparedFunctions {
+    pub bytes: Vec<u8>,
+    pub sha256: String,
+    pub bundle_hash: String,
+    pub summary: Value,
+    pub permissions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +65,7 @@ pub(crate) struct PreparedSelection {
     pub gamedata_bytes: Vec<u8>,
     pub bootstrap_sha256: String,
     pub gamedata_sha256: String,
+    pub functions: Option<PreparedFunctions>,
     pub provenance: Provenance,
 }
 
@@ -72,6 +85,17 @@ struct Package {
     gamedata_owner: String,
     bootstrap: Artifact,
     gamedata: Artifact,
+    #[serde(default, deserialize_with = "crate::engine_functions::contract::present")]
+    functions: Option<FunctionArtifact>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FunctionArtifact {
+    path: String,
+    sha256: String,
+    summary: Value,
+    permissions: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -170,6 +194,14 @@ fn verify(bytes: &[u8], expected: &str) -> Result<(), PackageError> {
     Ok(())
 }
 
+fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, PackageError> {
+    let mut file = fs::File::open(path).map_err(|_| PackageError::InvalidPath)?;
+    let mut bytes = Vec::new();
+    file.by_ref().take(limit + 1).read_to_end(&mut bytes).map_err(|_| PackageError::InvalidPath)?;
+    if bytes.len() as u64 > limit { return Err(PackageError::InvalidManifest); }
+    Ok(bytes)
+}
+
 pub(crate) fn prepare_selection(
     addon_root: &Path,
     engine: &str,
@@ -177,16 +209,16 @@ pub(crate) fn prepare_selection(
     platform: &str,
 ) -> Result<PreparedSelection, PackageError> {
     let manifest_path = addon_root.join("game-packages.json");
-    let manifest_bytes = match fs::read(&manifest_path) {
+    let manifest_bytes = match read_bounded(&manifest_path, 1024 * 1024) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(_) if !manifest_path.exists() => {
             return Err(PackageError::Missing)
         }
         Err(_) => return Err(PackageError::InvalidManifest),
     };
     let manifest: Manifest =
         serde_json::from_slice(&manifest_bytes).map_err(|_| PackageError::InvalidManifest)?;
-    if manifest.schema_version != 1 {
+    if manifest.schema_version != 2 {
         return Err(PackageError::InvalidManifest);
     }
 
@@ -206,6 +238,13 @@ pub(crate) fn prepare_selection(
         for artifact in [&package.bootstrap, &package.gamedata] {
             path_parts(&artifact.path)?;
             if digest(&artifact.sha256).is_none() || !paths.insert(&artifact.path) {
+                return Err(PackageError::InvalidManifest);
+            }
+        }
+        if let Some(functions) = &package.functions {
+            path_parts(&functions.path)?;
+            if digest(&functions.sha256).is_none() || !paths.insert(&functions.path)
+                || !functions.summary.is_object() || functions.permissions.len() > 2 {
                 return Err(PackageError::InvalidManifest);
             }
         }
@@ -237,14 +276,38 @@ pub(crate) fn prepare_selection(
     }
     let bootstrap_path = artifact_path(&root, &package_root, &package.bootstrap)?;
     let gamedata_path = artifact_path(&root, &package_root, &package.gamedata)?;
-    if bootstrap_path == gamedata_path {
+    let functions_path = package.functions.as_ref().map(|f| artifact_path(&root, &package_root,
+        &Artifact { path: f.path.clone(), sha256: f.sha256.clone() })).transpose()?;
+    if bootstrap_path == gamedata_path || functions_path.as_ref().is_some_and(|path|
+        path == &bootstrap_path || path == &gamedata_path) {
         return Err(PackageError::InvalidManifest);
     }
-    let bootstrap_bytes = fs::read(&bootstrap_path).map_err(|_| PackageError::InvalidPath)?;
-    let gamedata_bytes = fs::read(&gamedata_path).map_err(|_| PackageError::InvalidPath)?;
+    let bootstrap_bytes = read_bounded(&bootstrap_path, 16 * 1024 * 1024)?;
+    let gamedata_bytes = read_bounded(&gamedata_path, 4 * 1024 * 1024)?;
     std::str::from_utf8(&bootstrap_bytes).map_err(|_| PackageError::InvalidBootstrap)?;
     verify(&bootstrap_bytes, &package.bootstrap.sha256)?;
     verify(&gamedata_bytes, &package.gamedata.sha256)?;
+    let functions = match (&package.functions, &functions_path) {
+        (Some(product), Some(path)) => {
+            let bytes = read_bounded(path, 4 * 1024 * 1024)?;
+            verify(&bytes, &product.sha256)?;
+            let text = std::str::from_utf8(&bytes).map_err(|_| PackageError::InvalidManifest)?;
+            let bundle = crate::engine_functions::contract::parse(text, &package.id,
+                &product.summary, &product.permissions).map_err(|_| PackageError::InvalidManifest)?;
+            let mut expected = Vec::new();
+            if bundle.functions.iter().any(|f| f.policy.surfaces.iter().any(|s| s == "call")) {
+                expected.push("engine:calls".to_string());
+            }
+            if bundle.functions.iter().any(|f| f.policy.surfaces.iter().any(|s| s == "pre" || s == "post")) {
+                expected.push("engine:hooks".to_string());
+            }
+            if product.permissions != expected { return Err(PackageError::InvalidManifest); }
+            Some(PreparedFunctions { bytes, sha256: product.sha256.clone(),
+                bundle_hash: bundle.bundle_hash, summary: product.summary.clone(),
+                permissions: product.permissions.clone() })
+        }
+        _ => None,
+    };
     Ok(PreparedSelection {
         id: package.id.clone(),
         gamedata_owner: package.gamedata_owner.clone(),
@@ -252,6 +315,7 @@ pub(crate) fn prepare_selection(
         gamedata_bytes,
         bootstrap_sha256: package.bootstrap.sha256.clone(),
         gamedata_sha256: package.gamedata.sha256.clone(),
+        functions,
         provenance: Provenance {
             engine: engine.to_owned(),
             game: game.to_owned(),
@@ -259,6 +323,7 @@ pub(crate) fn prepare_selection(
             manifest_path: root.join("game-packages.json"),
             bootstrap_path,
             gamedata_path,
+            functions_path,
         },
     })
 }

@@ -38,7 +38,20 @@ fn record(id: &str, owner: &str, game: &str) -> Value {
       "gamedata":{"path":format!("game-packages/{owner}/gamedata.json"),"sha256":hash(b"data")}})
 }
 fn manifest(packages: Vec<Value>) -> Value {
-    json!({"schemaVersion":1,"packages":packages})
+    json!({"schemaVersion":2,"packages":packages})
+}
+static SCALAR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../games/fixture-source2/engine-functions.json")).unwrap()
+});
+fn with_functions(mut package: Value) -> Value {
+    let artifact: Value = serde_json::from_str(SCALAR.as_str()).unwrap();
+    package["functions"] = json!({
+        "path":"game-packages/a/engine-functions.json", "sha256":hash(SCALAR.as_bytes()),
+        "summary":{"schemaVersion":2,"bundleHash":artifact["bundleHash"],
+          "functions":[{"canonicalId":"@fixture/a::scalar","contractHash":artifact["functions"][0]["contractHash"],
+            "surfaces":["call"],"mutates":false,"suppresses":false,"requirement":"optional"}]},
+        "permissions":["engine:calls"]});
+    package
 }
 fn complete_fixture(packages: Vec<Value>) -> TestDir {
     let root = fixture();
@@ -49,6 +62,9 @@ fn complete_fixture(packages: Vec<Value>) -> TestDir {
         ] {
             let path = package[kind]["path"].as_str().unwrap();
             write(&root.path().join(path), bytes);
+        }
+        if let Some(path) = package["functions"]["path"].as_str() {
+            write(&root.path().join(path), SCALAR.as_bytes());
         }
     }
     write(
@@ -114,7 +130,7 @@ fn names_every_ambiguous_candidate_in_sorted_order() {
 fn rejects_invalid_schema_and_exact_field_sets() {
     let root = fixture();
     for value in [
-        json!({"schemaVersion":2,"packages":[]}),
+        json!({"schemaVersion":1,"packages":[]}),
         json!({"schemaVersion":1,"packages":[],"extra":0}),
         json!({"schemaVersion":1,"packages":[{"id":"@fixture/a"}]}),
         manifest(vec![{
@@ -132,6 +148,99 @@ fn rejects_invalid_schema_and_exact_field_sets() {
             "invalid-manifest"
         );
     }
+}
+
+#[test]
+fn selects_shared_validated_function_bytes_and_retains_them_after_mutation() {
+    let root = complete_fixture(vec![with_functions(record("@fixture/a", "a", "csgo"))]);
+    let selected = select(&root, "csgo").unwrap();
+    let product = selected.functions.as_ref().unwrap();
+    assert_eq!(product.bytes, SCALAR.as_bytes());
+    assert_eq!(product.sha256, hash(SCALAR.as_bytes()));
+    assert_eq!(product.bundle_hash, "498db83833b306c91054f5b48abaf776fb88851cd3736638e7cf26bdd10829e4");
+    write(&root.path().join("game-packages/a/engine-functions.json"), b"changed");
+    assert_eq!(product.bytes, SCALAR.as_bytes());
+}
+
+#[test]
+fn rejects_function_metadata_tamper_digest_and_path_collision() {
+    for change in ["summary", "permissions", "digest", "path", "extra"] {
+        let mut record = with_functions(record("@fixture/a", "a", "csgo"));
+        match change {
+            "summary" => record["functions"]["summary"]["bundleHash"] = json!("0".repeat(64)),
+            "permissions" => record["functions"]["permissions"] = json!(["engine:hooks"]),
+            "digest" => record["functions"]["sha256"] = json!("0".repeat(64)),
+            "path" => record["functions"]["path"] = record["bootstrap"]["path"].clone(),
+            _ => record["functions"]["extra"] = json!(true),
+        }
+        let root = complete_fixture(vec![record]);
+        assert!(select(&root, "csgo").is_err(), "{change}");
+    }
+}
+
+#[test]
+fn rejects_rehashed_unsupported_function_abi_and_host_only_policy() {
+    for change in ["abi", "policy"] {
+        let mut bundle: Value = serde_json::from_str(SCALAR.as_str()).unwrap();
+        let function = &mut bundle["functions"][0];
+        if change == "abi" {
+            function["abi"]["fingerprint"] = json!("linux-x86_64-sysv:none:void(ptr)");
+        } else {
+            function["policy"]["id"] = json!("host-only.v1");
+            let mut policy = function["policy"].clone();
+            policy.as_object_mut().unwrap().remove("contractHash");
+            function["policy"]["contractHash"] = json!(crate::engine_functions::contract::hash(&policy));
+        }
+        function["contractHash"] = json!(crate::engine_functions::contract::hash(&json!({
+            "abi":function["abi"], "policy":function["policy"]})));
+        let mut unhashed = bundle.clone();
+        unhashed.as_object_mut().unwrap().remove("bundleHash");
+        bundle["bundleHash"] = json!(crate::engine_functions::contract::hash(&unhashed));
+        let bytes = format!("{}\n", serde_json::to_string(&bundle).unwrap());
+        let mut record = with_functions(record("@fixture/a", "a", "csgo"));
+        record["functions"]["sha256"] = json!(hash(bytes.as_bytes()));
+        record["functions"]["summary"]["bundleHash"] = bundle["bundleHash"].clone();
+        record["functions"]["summary"]["functions"][0]["contractHash"] = bundle["functions"][0]["contractHash"].clone();
+        let root = complete_fixture(vec![record]);
+        write(&root.path().join("game-packages/a/engine-functions.json"), bytes.as_bytes());
+        assert_eq!(select(&root, "csgo").unwrap_err().code(), "invalid-manifest", "{change}");
+    }
+}
+
+#[test]
+fn function_artifact_rejects_traversal_symlink_and_size_over_four_mib() {
+    let mut item = with_functions(record("@fixture/a", "a", "csgo"));
+    item["functions"]["path"] = json!("game-packages/../escape.json");
+    assert_eq!(error_for(vec![item]), "invalid-path");
+    let root = complete_fixture(vec![with_functions(record("@fixture/a", "a", "csgo"))]);
+    let path = root.path().join("game-packages/a/engine-functions.json");
+    write(&path, &vec![b' '; 4 * 1024 * 1024 + 1]);
+    assert_eq!(select(&root, "csgo").unwrap_err().code(), "invalid-manifest");
+    #[cfg(unix)] {
+        std::fs::remove_file(&path).unwrap();
+        write(&root.path().join("outside.json"), SCALAR.as_bytes());
+        std::os::unix::fs::symlink(root.path().join("outside.json"), &path).unwrap();
+        assert_eq!(select(&root, "csgo").unwrap_err().code(), "invalid-path");
+    }
+}
+
+#[test]
+fn selected_function_product_cannot_commit_without_sealed_activation() {
+    use crate::ffi::*;
+    let root = complete_fixture(vec![with_functions(record("@fixture/a", "a", "csgo"))]);
+    let handle = super::select(root.path(), "source2", "csgo", "linuxsteamrt64").unwrap();
+    let metadata: Value = serde_json::from_slice(&super::copy(handle, 1).unwrap()).unwrap();
+    assert_eq!(metadata["functionsSha256"], hash(SCALAR.as_bytes()));
+    assert_eq!(metadata["functionsBundleHash"], "498db83833b306c91054f5b48abaf776fb88851cd3736638e7cf26bdd10829e4");
+    assert_eq!(metadata["functionsPath"], root.path().join("game-packages/a/engine-functions.json").canonicalize().unwrap().to_str().unwrap());
+    assert_eq!(super::copy(handle, 3).unwrap(), SCALAR.as_bytes());
+    assert_eq!(s2script_core_commit_game_package(handle, b"{}".as_ptr(), 2, b"[]".as_ptr(), 2), 0);
+    let status: Value = serde_json::from_slice(&super::status()).unwrap();
+    assert!(status["error"].as_str().unwrap().contains("unavailable"));
+    assert!(super::selected_id().is_none());
+    super::abort(handle).unwrap();
+    let status: Value = serde_json::from_slice(&super::status()).unwrap();
+    assert_eq!(status["code"], "failed");
 }
 
 #[test]
@@ -286,12 +395,38 @@ fn aborted_handles_do_not_alias_the_next_selection() {
     let root = complete_fixture(vec![record("@fixture/two", "two", "other")]);
     let a = super::select(root.path(), "source2", "other", "linuxsteamrt64").unwrap();
     super::abort(a).unwrap();
+    let after_abort: Value = serde_json::from_slice(&super::status()).unwrap();
+    assert_eq!(after_abort["code"], "aborted");
+    assert_eq!(after_abort["id"], "@fixture/two");
     let b = super::select(root.path(), "source2", "other", "linuxsteamrt64").unwrap();
     assert_ne!(a, b);
     assert!(super::copy(a, 0).is_err());
     assert!(super::abort(a).is_err());
     assert_eq!(super::copy(b, 0).unwrap(), b"data");
     super::abort(b).unwrap();
+}
+
+#[test]
+fn native_failure_status_survives_abort_and_stale_failure_cannot_replace_active() {
+    use crate::ffi::*;
+    let root = complete_fixture(vec![record("@fixture/two", "two", "other")]);
+    let a = super::select(root.path(), "source2", "other", "linuxsteamrt64").unwrap();
+    let reason = b"selected shipped bundle failed: invalid layout";
+    assert_eq!(s2script_core_fail_game_package(a, [0xffu8].as_ptr(), 1), 0);
+    assert_eq!(s2script_core_fail_game_package(a, std::ptr::null(), 0), 0);
+    assert_eq!(s2script_core_fail_game_package(a, reason.as_ptr(), reason.len()), 1);
+    super::abort(a).unwrap();
+    let failed: Value = serde_json::from_slice(&super::status()).unwrap();
+    assert_eq!(failed["code"], "failed");
+    assert_eq!(failed["error"], std::str::from_utf8(reason).unwrap());
+    assert_eq!(s2script_core_fail_game_package(a, reason.as_ptr(), reason.len()), 0);
+    let b = super::select(root.path(), "source2", "other", "linuxsteamrt64").unwrap();
+    super::commit(b, "{}", "[]").unwrap();
+    assert_eq!(s2script_core_abort_game_package(b), 0);
+    assert_eq!(s2script_core_fail_game_package(b, reason.as_ptr(), reason.len()), 0);
+    let active: Value = serde_json::from_slice(&super::status()).unwrap();
+    assert_eq!(active["code"], "active");
+    super::clear().unwrap();
 }
 
 #[test]

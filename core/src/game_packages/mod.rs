@@ -30,11 +30,17 @@ thread_local! {
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 
 fn metadata(selection: &PreparedSelection) -> Value {
-    json!({"code":"prepared", "id":selection.id, "gamedataOwner":selection.gamedata_owner,
+    let mut value = json!({"code":"prepared", "id":selection.id, "gamedataOwner":selection.gamedata_owner,
         "bootstrapSha256":selection.bootstrap_sha256,"gamedataSha256":selection.gamedata_sha256,
         "manifestPath":selection.provenance.manifest_path,
         "target":{"engine":selection.provenance.engine,"game":selection.provenance.game,
-            "platform":selection.provenance.platform}})
+            "platform":selection.provenance.platform}});
+    if let Some(functions) = &selection.functions {
+        value["functionsSha256"] = json!(functions.sha256);
+        value["functionsBundleHash"] = json!(functions.bundle_hash);
+        value["functionsPath"] = json!(selection.provenance.functions_path);
+    }
+    value
 }
 pub(crate) fn report_error(error: &str) {
     STATUS.with(|s| {
@@ -42,6 +48,17 @@ pub(crate) fn report_error(error: &str) {
             .to_string()
             .into_bytes()
     });
+}
+pub(crate) fn report_selection_failure(handle: u64, error: &str) -> Result<(), String> {
+    if error.is_empty() || error.len() > 4096 || error.contains('\0') {
+        return Err("invalid selection failure reason".into());
+    }
+    let current = PENDING.with(|p| p.borrow().as_ref().is_some_and(|(h, _)| *h == handle));
+    if !current { return Err("stale selection handle".into()); }
+    let already_failed = STATUS.with(|s| serde_json::from_slice::<Value>(&s.borrow()).ok()
+        .and_then(|v| v["code"].as_str().map(str::to_owned)).as_deref() == Some("failed"));
+    if !already_failed { report_error(error); }
+    Ok(())
 }
 pub(crate) fn status() -> Vec<u8> {
     REGISTERED
@@ -58,9 +75,15 @@ pub(crate) fn select(root: &Path, engine: &str, game: &str, platform: &str) -> R
     let selection = prepare_selection(root, engine, game, platform)
         .map_err(|e| format!("{}: {:?}", e.code(), e.candidates()))?;
     // One pending record, with bounded retained bytes even before native merge.
+    let total = selection.bootstrap_bytes.len()
+        .checked_add(selection.gamedata_bytes.len())
+        .and_then(|n| n.checked_add(selection.functions.as_ref().map_or(0, |f| f.bytes.len())))
+        .ok_or("package aggregate size limit")?;
     if selection.bootstrap_bytes.is_empty()
         || selection.bootstrap_bytes.len() > 16 * 1024 * 1024
         || selection.gamedata_bytes.len() > 4 * 1024 * 1024
+        || selection.functions.as_ref().is_some_and(|f| f.bytes.len() > 4 * 1024 * 1024)
+        || total > 24 * 1024 * 1024
     {
         return Err("package artifact size limit".into());
     }
@@ -71,7 +94,7 @@ pub(crate) fn select(root: &Path, engine: &str, game: &str, platform: &str) -> R
     PENDING.with(|p| *p.borrow_mut() = Some((handle, selection)));
     Ok(handle)
 }
-/// Returns owned bytes from the retained snapshot, never paths to reopen. 0=data, 1=metadata.
+/// Returns owned bytes from the retained snapshot, never paths to reopen.
 pub(crate) fn copy(handle: u64, member: u32) -> Result<Vec<u8>, String> {
     PENDING.with(|p| {
         let p = p.borrow();
@@ -82,6 +105,7 @@ pub(crate) fn copy(handle: u64, member: u32) -> Result<Vec<u8>, String> {
         match member {
             0 => Ok(selection.gamedata_bytes.clone()),
             1 => Ok(metadata(selection).to_string().into_bytes()),
+            3 => selection.functions.as_ref().map(|f| f.bytes.clone()).ok_or("no function artifact".into()),
             _ => Err("unknown selection member".into()),
         }
     })
@@ -93,6 +117,15 @@ pub(crate) fn abort(handle: u64) -> Result<(), String> {
             return Err("stale selection handle".into());
         }
         p.take();
+        STATUS.with(|s| {
+            let mut status = s.borrow_mut();
+            if let Ok(mut value) = serde_json::from_slice::<Value>(&status) {
+                if value["code"] == "prepared" {
+                    value["code"] = json!("aborted");
+                    *status = value.to_string().into_bytes();
+                }
+            }
+        });
         Ok(())
     })
 }
@@ -108,6 +141,9 @@ pub(crate) fn commit(handle: u64, merged: &str, custom_paths: &str) -> Result<()
                 .map(|(_, s)| s.clone())
         })
         .ok_or("stale selection handle")?;
+    if selection.functions.is_some() {
+        return Err("sealed package function activation unavailable".into());
+    }
     if merged.len() > 4 * 1024 * 1024 || custom_paths.len() > 65536 {
         return Err("merged package size limit".into());
     }

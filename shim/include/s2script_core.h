@@ -238,13 +238,16 @@ int s2script_core_dispatch_hook_post(int hookId, void* argView, int skipped) __a
 /* Retained verified selection. No public package/owner exists until commit. */
 uint64_t s2script_core_select_game_package(const char* addon_root, const char* engine,
                                          const char* game, const char* platform);
-/* member: 0=bundle, 1=metadata JSON; 2=status JSON with handle 0.
+/* member: 0=bundle, 1=metadata JSON; 2=status JSON with handle 0;
+ * 3=retained normalized function artifact when present.
  * Null+0 queries size; exact copied bytes have no trailing NUL. -1 invalid, -2 short. */
 int64_t s2script_core_copy_game_package(uint64_t handle, uint32_t member,
                                       uint8_t* destination, size_t capacity);
 int s2script_core_commit_game_package(uint64_t handle, const uint8_t* merged, size_t merged_len,
                                       const uint8_t* custom_paths, size_t custom_paths_len);
 int s2script_core_abort_game_package(uint64_t handle);
+/* Record a bounded UTF-8 native copy/merge failure on a pending handle before abort. */
+int s2script_core_fail_game_package(uint64_t handle, const uint8_t* reason, size_t reason_len);
 /* Set the plugins directory for the .s2sp watcher.  Called once by the shim at
  * load time with the resolved addons/s2script/plugins/ path (dladdr-derived).
  * path must be null-terminated UTF-8.  A null pointer degrades to a no-op. */

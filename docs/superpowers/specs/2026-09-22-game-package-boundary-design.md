@@ -51,7 +51,7 @@ deterministic deployed manifest `addons/s2script/game-packages.json`, for exampl
 
 ```jsonc
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "packages": [{
     "id": "@s2script/cs2",
     "match": { "engine": "source2", "game": "csgo" },
@@ -61,6 +61,18 @@ deterministic deployed manifest `addons/s2script/game-packages.json`, for exampl
   }]
 }
 ```
+
+The optional source-manifest `functionsFile` names a separate, authored v2 function declaration
+file. When present, packaging uses the SDK's `parseFunctionFile`, `normalizeFunctions`,
+`engineFunctionsArchive`, and `engineFunctionsManifest` path with the package id as owner. The
+deployed v2 record then additionally has exactly `functions:{path,sha256,summary,permissions}`;
+the latter two values are SDK-derived and are checked by the Rust shared contract validator against
+the retained normalized bytes. The SHA-256 of those bytes and their `bundleHash` are distinct from
+the bootstrap and legacy gamedata identities. Without `functionsFile`, the deployed field and
+artifact are absent. The existing v1 gamedata artifact remains independent. A present empty
+declaration is valid but provides no execution proof. The default CS2 manifest omits
+`functionsFile` until sealed package-owner activation is integrated; a present product fails
+process commit by name at that boundary and cannot partially publish source or legacy data.
 
 The illustrative `<sha256>` values are replaced by packaging with lowercase
 64-character SHA-256 digests. The v1 gamedata bundle retains the owner's legacy layout,
@@ -110,7 +122,7 @@ PluginInstance owns package module Globals before its Context Global and release
 its existing subscription/adapter ledger retires. Process source/owner registration survives
 script reload and is cleared only after contexts retire at terminal teardown.
 
-The manifest loads JavaScript/data only. Native Source 2 support remains in the existing Metamod
+The manifest selects JavaScript, legacy data, and optional normalized function bytes only. Native Source 2 support remains in the existing Metamod
 shim; no manifest field names or loads another `.so`.
 
 ## Layout data and semantic code

@@ -797,7 +797,8 @@ pub extern "C" fn s2script_core_select_game_package(
     })
     .unwrap_or(0)
 }
-/// Copy immutable selection data (member 0), metadata (1), or process status (2, handle=0).
+/// Copy immutable selection data (member 0), metadata (1), process status (2, handle=0),
+/// or retained normalized functions (3, only when present).
 /// Null destination with zero capacity queries length. No partial copies; -1 invalid, -2 short.
 #[no_mangle]
 pub extern "C" fn s2script_core_copy_game_package(
@@ -869,6 +870,18 @@ pub extern "C" fn s2script_core_commit_game_package(
 #[no_mangle]
 pub extern "C" fn s2script_core_abort_game_package(handle: u64) -> i32 {
     catch_unwind(|| i32::from(crate::game_packages::abort(handle).is_ok())).unwrap_or(0)
+}
+/// Capture a native merge/copy failure on the still-pending selection before abort.
+#[no_mangle]
+pub extern "C" fn s2script_core_fail_game_package(
+    handle: u64, reason: *const u8, reason_len: usize,
+) -> i32 {
+    catch_unwind(|| {
+        if reason.is_null() || reason_len == 0 || reason_len > 4096 { return 0; }
+        let bytes = unsafe { std::slice::from_raw_parts(reason, reason_len) };
+        let Ok(reason) = std::str::from_utf8(bytes) else { return 0 };
+        i32::from(crate::game_packages::report_selection_failure(handle, reason).is_ok())
+    }).unwrap_or(0)
 }
 
 /// Set the plugins directory path for the `.s2sp` watcher (`loader::poll_plugins`).

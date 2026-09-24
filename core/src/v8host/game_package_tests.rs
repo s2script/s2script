@@ -11,7 +11,7 @@ fn install_as(id: &str, source: &str) {
     let data = b"{}";
     std::fs::write(root.join("game-packages/two/index.js"), source).unwrap();
     std::fs::write(root.join("game-packages/two/data.json"), data).unwrap();
-    let manifest = json!({"schemaVersion":1,"packages":[{"id":id, "match":{"engine":"source2","game":"fixture"}, "gamedataOwner":"independent", "bootstrap":{"path":"game-packages/two/index.js","sha256":format!("{:x}",Sha256::digest(source.as_bytes()))},"gamedata":{"path":"game-packages/two/data.json","sha256":format!("{:x}",Sha256::digest(data))}}]});
+    let manifest = json!({"schemaVersion":2,"packages":[{"id":id, "match":{"engine":"source2","game":"fixture"}, "gamedataOwner":"independent", "bootstrap":{"path":"game-packages/two/index.js","sha256":format!("{:x}",Sha256::digest(source.as_bytes()))},"gamedata":{"path":"game-packages/two/data.json","sha256":format!("{:x}",Sha256::digest(data))}}]});
     std::fs::write(root.join("game-packages.json"), manifest.to_string()).unwrap();
     let handle =
         crate::game_packages::select(&root, "source2", "fixture", "linuxsteamrt64").unwrap();

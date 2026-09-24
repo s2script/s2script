@@ -49,6 +49,7 @@ third_party/  Vendored hl2sdk + Metamod:Source + Breakpad submodules (pinned, pa
 git clone https://github.com/s2script/s2script.git
 cd s2script
 git submodule update --init --recursive   # vendored hl2sdk + Metamod:Source
+npm ci                                    # locked root TypeScript parser for game-package packaging
 
 make all      # = core + shim + package
 ```
@@ -79,6 +80,7 @@ dist/addons/
     game-packages/cs2/
       index.js          # ordered package bootstrap, ending in its module export map
       gamedata.json     # verified owner/master/target documents
+      engine-functions.json # only for an explicitly authored functionsFile; CS2 does not ship one yet
     plugins/            # base .s2sp plugins (release) / drop zone
     configs/            # empty — must be writable at runtime
     data/               # empty — must be writable at runtime
@@ -128,6 +130,7 @@ version 'GLIBC_2.32' not found ... [META] Loaded 0 plugins
 Build inside a matching-glibc container instead:
 
 ```bash
+npm ci  # host checkout, before mounting it into the container
 docker run --rm -v "$PWD:/repo" -w /repo \
   -v s2script-cargo:/usr/local/cargo/registry \
   rust:bullseye bash /repo/scripts/build-sniper.sh
@@ -136,7 +139,10 @@ docker run --rm -v "$PWD:/repo" -w /repo \
 `scripts/build-sniper.sh` installs g++/cmake, rebuilds `core` + `shim`, repackages `dist/`, and
 prints the resulting GLIBC requirement (must be ≤ 2.31 — currently `s2script.so` needs only
 `GLIBC_2.14` and `libs2script_core.so` `GLIBC_2.30`). The named cargo volume avoids re-downloading
-the V8 prebuilt on every run.
+the V8 prebuilt on every run. Both direct addon packaging and the sniper script check the
+bind-mounted root `node_modules/typescript` before package generation and fail with a root
+`npm ci` instruction if it is absent. The release workflow installs locked dependencies before
+the Docker build.
 
 **This is the canonical build for anything that touches a real server.**
 

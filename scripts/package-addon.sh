@@ -5,6 +5,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# The SDK's strict function JSONC parser imports TypeScript even when the shipped game has
+# no functionsFile. Fail before replacing dist so direct packaging cannot leave stale output.
+node scripts/lib/check-game-package-deps.mjs
+
 DIST=dist/addons
 rm -rf "$DIST"
 mkdir -p "$DIST/s2script/bin/linuxsteamrt64"

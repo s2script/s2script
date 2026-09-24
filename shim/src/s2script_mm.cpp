@@ -5037,6 +5037,11 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 CopySelectedPackage(0, 2, status);
             }
         } catch (const std::exception& e) {
+            if (handle) {
+                const std::string reason(e.what());
+                s2script_core_fail_game_package(handle,
+                    reinterpret_cast<const uint8_t*>(reason.data()), reason.size());
+            }
             std::string coreStatus;
             CopySelectedPackage(0, 2, coreStatus);
             status = nlohmann::json({{"code", "failed"}, {"error", e.what()},

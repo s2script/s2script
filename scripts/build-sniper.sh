@@ -29,6 +29,7 @@ cd /repo
 echo "=== install verified build-only Node 22.14 (Linux x86_64) ==="
 NODE_BIN=$(bash scripts/lib/setup-sniper-node.sh /opt/s2script-node-v22.14.0)
 export PATH="$NODE_BIN:$PATH"
+node scripts/lib/check-game-package-deps.mjs
 echo "=== container toolchain ==="
 gcc --version | head -1; cmake --version | head -1; cargo --version; node --version; ldd --version | head -1
 

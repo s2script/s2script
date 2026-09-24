@@ -69,6 +69,7 @@ helper = s.find('scripts/lib/setup-sniper-node.sh')
 package = s.find('./scripts/package-addon.sh')
 assert 0 <= helper < package, 'sniper builder must install verified Node before packaging'
 assert 'export PATH="$NODE_BIN:$PATH"' in s, 'sniper builder must expose only local Node on PATH'
+assert s.find('node scripts/lib/check-game-package-deps.mjs') < s.find('cargo build --release -p s2script-core'), 'locked parser dependency must be checked before the native build'
 PY
 
 echo 'test-sniper-node: corrupt archive rejected before extraction; official archive verified through supplied and download paths; builder ordering OK'
