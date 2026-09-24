@@ -704,7 +704,52 @@ static void test_validated_call() {
           "validated call refuses a non-call opcode");
 }
 
+// Regression: switching instruction reads back to live memory breaks all three checks.
+static void test_original_code_and_separate_live_reads() {
+    BuildImage();
+    auto original = g_image;
+    auto mv = View();
+    const uintptr_t text = reinterpret_cast<uintptr_t>(mv.text);
+    mv.executable = [text](uintptr_t at, size_t n) {
+        return at >= text && at-text < kTextSize && n <= kTextSize-(at-text);
+    };
+    mv.read_code = [&,text](uintptr_t at, void* out, size_t n) {
+        if (!mv.executable(at,n)) return false;
+        std::memcpy(out, original.data()+kTextBase+at-text,n); return true;
+    };
+    mv.read_live = [&](uintptr_t at, void* out, size_t n) {
+        uintptr_t lo = reinterpret_cast<uintptr_t>(Image());
+        if (at < lo || at-lo >= kTextBase || n > kTextBase-(at-lo)) return false;
+        std::memcpy(out,reinterpret_cast<void*>(at),n); return true;
+    };
+    std::fill(g_image.begin()+kTextBase+kFnOff,g_image.begin()+kTextBase+kFnOff+32,0xcc);
+    char reason[256] = {};
+    CHECK(s2validate::Run(R"({"prologue":"55 48 89 E5"})",mv,"fixture",Fn(),{},reason,sizeof reason),
+          "prologue reads immutable original code after peer patch");
+    CHECK(s2validate::Run(R"({"string-xref":{"at":11,"dispOff":3,"instrLen":7,"expect":"ScopeAlpha"}})",
+          mv,"fixture",Fn(),{},reason,sizeof reason), "RIP operand comes from original code at logical live PC");
+    auto whole_text=mv.executable;
+    mv.executable = [text,whole_text](uintptr_t at, size_t n) {
+        const uintptr_t split=text+kFnOff+14;
+        return whole_text(at,n) && (at>=split || n<=split-at);
+    };
+    CHECK(!s2validate::Run(R"({"string-xref":{"at":11,"dispOff":3,"instrLen":7,"expect":"ScopeAlpha"}})",
+          mv,"fixture",Fn(),{},reason,sizeof reason),
+          "RIP instruction cannot borrow its operand from an adjacent original segment");
+    mv.executable=whole_text;
+    mv.read_live = [](uintptr_t,void*,size_t) { return false; };
+    CHECK(!s2validate::Run(R"({"string-xref":{"at":11,"dispOff":3,"instrLen":7,"expect":"ScopeAlpha"}})",
+          mv,"fixture",Fn(),{},reason,sizeof reason), "live string reader refusal cannot fall back to broad extent");
+    original[kTextBase+kFnOff]=0x48; original[kTextBase+kFnOff+1]=0x89;
+    original[kTextBase+kFnOff+2]=0x55; original[kTextBase+kFnOff+3]=0xf8;
+    original[kTextBase+kFnOff+4]=0xc3;
+    uint8_t widths[] = {1,1,0};
+    CHECK(s2validate::ArgWidths(widths,3,mv,Fn(),reason,sizeof reason)==-1,
+          "argument-width validator reads original spill after peer patch");
+}
+
 int main() {
+    test_original_code_and_separate_live_reads();
     test_validated_call();
     std::cout << std::unitbuf;
     BuildImage();

@@ -160,12 +160,12 @@ class RegistryTests(unittest.TestCase):
             ],
         )
 
-    def test_b_and_c_explicitly_unavailable(self):
-        self.assertEqual(ka.UNAVAILABLE_SUITES["B"], "not authored")
-        self.assertEqual(ka.UNAVAILABLE_SUITES["C"], "not authored")
-        r = ka.judge_records([], identity=IDENTITY, suite="B")
-        self.assertEqual(r.exit_code, 1)
-        self.assertIn("not authored", " ".join(r.messages).lower())
+    def test_b_and_c_have_separate_registries(self):
+        for suite in ("B", "C"):
+            self.assertTrue(ka.required_subchecks(suite))
+            r = ka.judge_records([], identity=IDENTITY, suite=suite)
+            self.assertEqual(r.exit_code, 1)
+            self.assertIn("missing case records", " ".join(r.messages))
 
     def test_frame_requires_native_and_js_and_controls(self):
         names = {(s.producer, s.subcheck) for s in _req("frame_client_command_hooks")}
@@ -936,6 +936,313 @@ class ArtifactIdentityRegressionTests(unittest.TestCase):
         human["artifact_identity"] = "9" * 64
         result = judge(all_records(producers=("native", "js")), observations=human)
         self.assertEqual(result.exit_code, 1, result.messages)
+
+
+class SuiteBoundaryTests(unittest.TestCase):
+    def test_bc_collect_captures_native_gamedata_before_and_after(self):
+        for suite in ("B", "C"):
+            with self.subTest(suite=suite), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                mapped = root / "gamedata"
+                file = mapped / "cs2/master.gamedata.jsonc"
+                file.parent.mkdir(parents=True)
+                data = b'{"test": true}'
+                file.write_bytes(data)
+                run = write_run(root / "run", [], dict(IDENTITY, suite=suite))
+                native = dict(kind="khook-gamedata", run_id=IDENTITY["run_id"],
+                              artifact_identity=IDENTITY["runtime_identity"]["artifact_identity"],
+                              prepared=True, unchanged=True, addon_root="/installed", files=[dict(
+                                  path="/installed/gamedata/cs2/master.gamedata.jsonc", size=len(data),
+                                  fingerprint_algorithm="fnv1a64-diagnostic", fingerprint=ka._fnv1a64(data))])
+                calls = []
+
+                def send(command):
+                    calls.append(command)
+                    return json.dumps(native) if command.split()[1] == "gamedata" else ""
+
+                result = ka.collect_run(run, suite=suite, gamedata_root=str(mapped),
+                                        rcon_send=send, max_attempts=1)
+                self.assertEqual(result.exit_code, 1, result.messages)
+                self.assertIn("missing case records", " ".join(result.messages))
+                self.assertEqual(calls, [
+                    f"s2_khook_probe gamedata {IDENTITY['run_id']} {suite}",
+                    f"s2_khook_probe collect {IDENTITY['run_id']} {suite}",
+                    f"s2_khook_accept collect {IDENTITY['run_id']} {suite}",
+                    f"s2_khook_probe report {IDENTITY['run_id']} {suite}",
+                    f"s2_khook_accept report {IDENTITY['run_id']} {suite}",
+                    f"s2_khook_probe gamedata {IDENTITY['run_id']} {suite}",
+                ])
+                capture = json.loads((run / "gamedata-capture.json").read_text())
+                for phase in ("before", "after"):
+                    self.assertEqual(capture[phase]["status"], "pass")
+                    self.assertEqual(capture[phase]["files"][0]["sha256"], hashlib.sha256(data).hexdigest())
+                    self.assertTrue((run / f"gamedata-native-{phase}.txt").exists())
+
+    def test_suite_suffix_preserves_a_commands(self):
+        for command in (ka.probe_cmd, ka.accept_cmd):
+            self.assertTrue(command("prepare", "run").endswith("prepare run"))
+            self.assertTrue(command("prepare", "run", "a" * 64, suite="B").endswith("run " + "a" * 64 + " B"))
+            self.assertTrue(command("collect", "run", suite="C").endswith("run C"))
+            with self.assertRaises(ValueError): command("collect", "run", suite="D")
+            with self.assertRaises(ValueError): command("prepare", "run", "bad hash")
+
+    def test_cli_suite_mismatch_refuses_before_rcon(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = write_run(Path(tmp), [], dict(IDENTITY, suite="B"))
+            calls = []
+            result = ka.collect_run(run, suite="C", rcon_send=lambda cmd: calls.append(cmd))
+            self.assertEqual(result.exit_code, 1)
+            self.assertIn("suite mismatch", " ".join(result.messages))
+            self.assertEqual(calls, [])
+
+    def test_synthetic_bc_cannot_pass_live_judge(self):
+        for suite in ("B", "C"):
+            records = ka.synthetic_fixture("all-pass", IDENTITY, suite=suite)
+            self.assertEqual({r["evidence_class"] for r in records}, {"synthetic"})
+            for rec in records: rec["artifact_identity"] = IDENTITY["runtime_identity"]["artifact_identity"]
+            result = ka.judge_records(records, identity=IDENTITY, suite=suite)
+            self.assertEqual(result.exit_code, 1)
+            self.assertIn("synthetic", " ".join(result.messages))
+
+    def test_terminal_process_status_is_diagnostic(self):
+        for suite in ("B", "C"):
+            self.assertFalse(any("terminal" in s.subcheck for s in ka.required_subchecks(suite)))
+            records = ka.synthetic_fixture("pending", IDENTITY, suite=suite)
+            diagnostic = dict(records[0], kind="diagnostic", case="process_terminal", subcheck="native_process_exit",
+                              producer="native", result="fail", expected={"exit": 0}, actual={"exit": 139},
+                              evidence="known shutdown-only139; user disposition non-blocking")
+            result = ka.judge_records(records + [diagnostic], identity=IDENTITY, suite=suite)
+            self.assertEqual(result.exit_code, 2, result.messages)
+            self.assertIn("DIAGNOSTIC", " ".join(result.messages))
+
+
+class IntegrationEvidenceTests(unittest.TestCase):
+    def gamedata_fixture(self):
+        native_file = dict(path="/installed/gamedata/cs2/master.gamedata.jsonc", size=0,
+                           fingerprint_algorithm="fnv1a64-diagnostic", fingerprint=ka._fnv1a64(b""))
+        measured = dict(path=native_file["path"], size=0, fingerprint=native_file["fingerprint"], sha256=hashlib.sha256(b"").hexdigest())
+        binding = IDENTITY["runtime_identity"]["artifact_identity"]
+        native = dict(run_id=IDENTITY["run_id"], artifact_identity=binding, prepared=True, unchanged=True, files=[native_file])
+        phase = dict(run_id=IDENTITY["run_id"], artifact_identity=binding, status="pass", files=[measured])
+        return native, dict(before=copy.deepcopy(phase), after=copy.deepcopy(phase))
+
+    def records(self, suite):
+        # Deliberately fabricated test input exercises judge validation only.
+        # These are never emitted by --emit-fixture as observed/live records.
+        records = ka.synthetic_fixture("all-pass", IDENTITY, suite=suite)
+        for rec in records:
+            rule = ka.SUITES[suite].rules[(rec["case"], rec["subcheck"], rec["producer"])]
+            rec.update(artifact_identity=IDENTITY["runtime_identity"]["artifact_identity"], evidence_class="observed",
+                       group=rule.group, provenance=rule.provenance, callback_owner=rule.callback_owner, target=rule.target)
+            rec["observations"] = [dict(scenario_id="fixture", sequence=1, generation=1, invocation="fixture-1",
+                callbacks=1, peer_order="peer-first", facts={"pre": 1}, stimulus="engine", route="main-virtual-precache",
+                frame_token=1, map_generation=1, receiver="r1", vtable="v1", manifest="m1")]
+            if rec["subcheck"] in ka.GAMEDATA_SUBCHECKS:
+                rec["gamedata"] = self.gamedata_fixture()[0]
+            if rec["subcheck"] == "native_main_bypass_absent_then_next_delivered":
+                rec["observations"][0]["facts"].update(bypass_original=1, bypass_peer_pre=1, bypass_peer_post=1,
+                    bypass_js=0, next_original=1, next_peer_pre=1, next_peer_post=1, next_js=1)
+            if "peer_orders" in rec["subcheck"] or "both_orders" in rec["subcheck"] or suite == "C":
+                rec["observations"].append(dict(rec["observations"][0], sequence=2, invocation="fixture-2",
+                    peer_order="s2script-first", frame_token=2, map_generation=2, manifest="m2"))
+            if rec["case"] == "script_generation_lifetime":
+                rec["observations"] = [dict(rec["observations"][0], sequence=generation, generation=generation,
+                    invocation="generation-" + str(generation)) for generation in (1, 2, 3)]
+            if rec["subcheck"] == "native_all_sites_both_peer_orders":
+                rec["observations"] = [dict(rec["observations"][0], scenario_id=site, sequence=index * 2 + order + 1,
+                    invocation=site + str(order), peer_order=("peer-first", "s2script-first")[order],
+                    facts=dict(site=site, origin="main-runtime" if index < 5 else "controlled-stock-provider"))
+                    for index, site in enumerate(ka.INTEGRATION_EXPECTED[rec["subcheck"]]["sites"]) for order in (0, 1)]
+        return records
+
+    def judge(self, records, suite):
+        identity = dict(IDENTITY, gamedata_capture=self.gamedata_fixture()[1])
+        return ka.judge_records(records, identity=identity, suite=suite)
+
+    def test_damage_requires_void_three_pointer_and_real_output_witnesses(self):
+        for field, value in (("arguments", 2), ("result_null", 0), ("result_nonnull", 0),
+                             ("output_writes", 0), ("output_preserved", 1), ("return_kind", "int64"), ("skipped", 1)):
+            records = self.records("B")
+            row = next(r for r in records if r["subcheck"] == "native_damage_valid_pre_post")
+            row["actual"][field] = value
+            self.assertEqual(self.judge(records, "B").exit_code, 1, field)
+        records = self.records("B")
+        row = next(r for r in records if r["subcheck"] == "native_damage_peer_orders_original_state")
+        row["actual"] = {"orders": ["peer-first", "s2script-first"], "current_return_matches": True}
+        self.assertEqual(self.judge(records, "B").exit_code, 1)
+
+    def test_populated_parser_examples(self):
+        for suite in ("B", "C"):
+            result = self.judge(self.records(suite), suite)
+            self.assertEqual(result.exit_code, 0, result.messages)
+
+    def test_noop_or_duplicate_bypass_cannot_pass_from_direct_call_alone(self):
+        for field, value in (("bypass_original", 0), ("bypass_peer_pre", 0), ("bypass_peer_post", 0),
+                             ("bypass_js", 1), ("next_original", 2), ("next_js", 0)):
+            records = self.records("B")
+            row = next(r for r in records if r["subcheck"] == "native_main_bypass_absent_then_next_delivered")
+            row["observations"][0]["facts"][field] = value
+            self.assertEqual(self.judge(records, "B").exit_code, 1, field)
+
+    def test_deployed_gamedata_requires_independent_matching_hashes(self):
+        records = self.records("B")
+        self.assertEqual(ka.judge_records(records, identity=IDENTITY, suite="B").exit_code, 2)
+        for mutation in ("hash", "native_changed", "duplicate"):
+            native, capture = self.gamedata_fixture()
+            identity = dict(IDENTITY, gamedata_capture=capture)
+            rows = copy.deepcopy(records)
+            if mutation == "hash": capture["after"]["files"][0]["sha256"] = "f" * 64
+            elif mutation == "native_changed": next(r for r in rows if r["subcheck"] in ka.GAMEDATA_SUBCHECKS)["gamedata"]["unchanged"] = False
+            else: capture["before"]["files"].append(copy.deepcopy(capture["before"]["files"][0]))
+            self.assertEqual(ka.judge_records(rows, identity=identity, suite="B").exit_code, 1)
+
+    def test_gamedata_hash_capture_reads_installed_bytes_and_rejects_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "gamedata/cs2/master.gamedata.jsonc"
+            path.parent.mkdir(parents=True)
+            data = b'{"files": []}'
+            path.write_bytes(data)
+            native, _ = self.gamedata_fixture()
+            native.update(addon_root="/container/addons/s2script", files=[dict(path="/container/addons/s2script/gamedata/cs2/master.gamedata.jsonc", size=len(data),
+                fingerprint_algorithm="fnv1a64-diagnostic", fingerprint=ka._fnv1a64(data))])
+            mapped_identity = dict(IDENTITY, gamedata_root=str(root / "gamedata"))
+            observed = ka.capture_gamedata_inputs(native, mapped_identity)
+            self.assertEqual(observed["status"], "pass")
+            self.assertEqual(observed["files"][0]["sha256"], hashlib.sha256(data).hexdigest())
+            path.write_bytes(b"changed")
+            self.assertEqual(ka.capture_gamedata_inputs(native, mapped_identity)["status"], "fail")
+            path.unlink()
+            self.assertEqual(ka.capture_gamedata_inputs(native, mapped_identity)["status"], "pending")
+
+    def test_gamedata_mapping_rejects_arbitrary_paths_and_symlink_escape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mapped = root / "gamedata"
+            mapped.mkdir()
+            outside = root / "outside.jsonc"
+            outside.write_bytes(b"")
+            (mapped / "escape.jsonc").symlink_to(outside)
+            native, _ = self.gamedata_fixture()
+            native["addon_root"] = "/installed"
+            identity = dict(IDENTITY, gamedata_root=str(mapped))
+            for path in ("/arbitrary/outside.jsonc", "/installed/gamedata/../outside.jsonc", "/installed/gamedata/escape.jsonc"):
+                native["files"][0]["path"] = path
+                self.assertEqual(ka.capture_gamedata_inputs(native, identity)["status"], "fail", path)
+            self.assertEqual(ka.capture_gamedata_inputs(native, IDENTITY)["status"], "pending")
+
+    def test_coverage_summary_cannot_claim_unobserved_site_or_wrong_owner(self):
+        for mutation in ("missing", "owner"):
+            records = self.records("B")
+            row = next(r for r in records if r["subcheck"] == "native_all_sites_both_peer_orders")
+            if mutation == "missing": row["observations"].pop()
+            else: row["observations"][0]["facts"]["origin"] = "controlled-stock-provider"
+            self.assertEqual(self.judge(records, "B").exit_code, 1)
+
+    def test_generation_claim_requires_three_measured_generations(self):
+        records = self.records("B")
+        for row in records:
+            if row["case"] == "script_generation_lifetime":
+                row["observations"] = row["observations"][:1]
+        self.assertEqual(self.judge(records, "B").exit_code, 1)
+
+    def test_missing_half_case_and_pending_callback(self):
+        for suite in ("B", "C"):
+            records = self.records(suite)
+            self.assertEqual(self.judge([r for r in records if r["producer"] != "js"], suite).exit_code, 2)
+            self.assertEqual(self.judge([r for r in records if r["case"] != records[0]["case"]], suite).exit_code, 1)
+            records[0]["result"] = "pending"
+            records[0]["actual"] = {}
+            records[0]["observations"] = []
+            self.assertEqual(self.judge(records, suite).exit_code, 2)
+
+    def test_envelope_provenance_and_owner_rejections(self):
+        mutations = [dict(suite="A"), dict(run_id="stale"), dict(source_revision="f"*40),
+            dict(artifact_identity="f"*64), dict(producer="js"), dict(evidence_class="synthetic"),
+            dict(provenance="invented"), dict(callback_owner="other"), dict(group="fabricated-group"),
+            dict(observations=[])]
+        for suite in ("B", "C"):
+            for mutation in mutations:
+                records = self.records(suite)
+                records[0].update(mutation)
+                self.assertEqual(self.judge(records, suite).exit_code, 1, (suite, mutation))
+            records = self.records(suite)
+            records[0]["artifact_identity"] = ""
+            self.assertEqual(self.judge(records, suite).exit_code, 2)
+
+    def test_producer_cannot_invent_success_contract(self):
+        for suite in ("B", "C"):
+            records = self.records(suite)
+            records[0].update(expected={"ok": True}, actual={"ok": True})
+            self.assertEqual(self.judge(records, suite).exit_code, 1)
+
+    def test_main_bridge_never_joins_private_copy(self):
+        for name in ("scenario_id", "sequence", "generation", "invocation", "peer_order"):
+            records = self.records("B")
+            row = next(r for r in records if r["subcheck"] == "js_acquire_outbound_pre_vote")
+            row["observations"][0][name] = 9 if name in ("sequence", "generation") else "s2script-first" if name == "peer_order" else "unrelated"
+            result = self.judge(records, "B")
+            self.assertEqual(result.exit_code, 1, result.messages)
+        records = self.records("B")
+        row = next(r for r in records if r["subcheck"] == "native_main_acquire_outbound_pre_vote")
+        row.update(group="controlled-mechanics", provenance="controlled-stock-provider")
+        self.assertEqual(self.judge(records, "B").exit_code, 1)
+
+    def test_real_precache_requires_main_frame_two_maps(self):
+        for field, value in (("route", "session-manifest"), ("callbacks", 0), ("stimulus", "selftest"), ("frame_token", 0)):
+            records = self.records("C")
+            row = next(r for r in records if r["subcheck"] == "js_precache_resource_each_generation")
+            row["observations"][0][field] = value
+            self.assertEqual(self.judge(records, "C").exit_code, 1)
+        records = self.records("C")
+        for row in records:
+            if row["case"] == "precache_map_transition":
+                for observation in row["observations"]: observation["map_generation"] = 1
+        self.assertEqual(self.judge(records, "C").exit_code, 1)
+
+    def test_fail_cannot_be_erased_and_report_is_idempotent(self):
+        for suite in ("B", "C"):
+            records = self.records(suite)
+            self.assertEqual(self.judge(records + copy.deepcopy(records), suite).exit_code, 0)
+            first = copy.deepcopy(records[0])
+            first.update(result="fail", actual={"failed": True})
+            self.assertEqual(self.judge([first] + records, suite).exit_code, 1)
+
+
+class SniperResourceTests(unittest.TestCase):
+    def capture(self, **settings):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docker = root / "docker"
+            docker.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$CAPTURE"\n')
+            docker.chmod(0o755)
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ("S2_BUILD_JOBS", "CARGO_BUILD_JOBS", "S2_BUILD_CPUS", "S2_BUILD_MEMORY", "S2_BUILD_IMAGE")}
+            env.update(PATH=str(root) + os.pathsep + env["PATH"], CAPTURE=str(root / "args"), **settings)
+            proc = subprocess.run(["bash", str(ROOT / "scripts/test-khook-sniper-build.sh")], env=env, text=True, capture_output=True)
+            args = (root / "args").read_text().splitlines() if (root / "args").exists() else []
+            return proc, args
+
+    def test_limits_and_pinned_image_forward_as_arguments(self):
+        image = "rust@sha256:" + "a" * 64
+        proc, args = self.capture(S2_BUILD_JOBS="2", CARGO_BUILD_JOBS="2", S2_BUILD_CPUS="2", S2_BUILD_MEMORY="8g", S2_BUILD_IMAGE=image)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        for pair in (("--cpus", "2"), ("--memory", "8g"), ("-e", "S2_BUILD_JOBS=2"), ("-e", "CARGO_BUILD_JOBS=2")):
+            self.assertTrue(any(args[i:i+2] == list(pair) for i in range(len(args)-1)), pair)
+        self.assertIn(image, args)
+        self.assertNotIn("rust:bullseye", args)
+
+    def test_invalid_jobs_fail_before_docker_or_package_work(self):
+        for name in ("S2_BUILD_JOBS", "CARGO_BUILD_JOBS"):
+            for value in ("0", "-1", "2; false", "two", "1.5"):
+                proc, args = self.capture(**{name: value})
+                self.assertNotEqual(proc.returncode, 0, (name, value))
+                self.assertIn(name, proc.stderr)
+                self.assertEqual(args, [])
+                env = dict(os.environ, **{name: value})
+                proc = subprocess.run(["bash", str(ROOT / "scripts/build-sniper.sh")], env=env, text=True, capture_output=True)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn(name, proc.stderr)
 
 
 if __name__ == "__main__":

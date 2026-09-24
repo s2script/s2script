@@ -50,6 +50,13 @@ int main() {
     CHECK(CountPattern(b4.data(), b4.size(), ParsePattern("DE AD"), 2) == 0, "CountPattern not-found");
     CHECK(CountPattern(b4.data(), b4.size(), ParsePattern("AB ?"),  2) == 2, "CountPattern wildcard");
 
+    CHECK(FindPatterns(b4.data(), b4.size(), ParsePattern("AB ?")) == std::vector<size_t>({0x10,0x20}),
+          "FindPatterns enumerates every candidate instead of first or capped count");
+    uintptr_t target = 0;
+    CHECK(AddRelative(0x1000, 7, -0x807, target) && target == 0x800, "RIP arithmetic supports negative displacement");
+    CHECK(!AddRelative(UINTPTR_MAX-2, 7, 0, target), "RIP end overflow is rejected");
+    CHECK(!AddRelative(1, 2, -4, target), "RIP target underflow is rejected");
+
     if (g_fail) { std::printf("sigscan_test: FAILURES\n"); return 1; }
     std::printf("sigscan_test: all passed\n");
     return 0;

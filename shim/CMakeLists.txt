@@ -35,6 +35,9 @@ add_library(s2script SHARED
     src/entity_listener.cpp
     src/gamedata.cpp
     src/sigscan.cpp
+    src/original_module.cpp
+    src/engine_resolver.cpp
+    src/engine_consumer.cpp
     # Slice 5D.1: a self-contained MurmurHash2LowerCase (the ONE tier1 symbol CKV3MemberName(const char*)
     # needs to key IGameEvent field reads) — avoids linking all of tier1 (CUtlString/UtlVectorMemory cascade).
     src/tier1_shims.cpp
@@ -43,13 +46,8 @@ add_library(s2script SHARED
     # Same doctrine as tier1_shims.cpp: define the few members we need rather than link all of tier1.
     src/ccommand_shim.cpp
     src/ccommand_tokenize.cpp
-    # Slice 6.6: a minimal self-contained x86-64 inline detour (the damage hook) + the vendored HDE
-    # length disassembler (pure, no OS deps). No third-party detour library / no dlopen cascade.
-    src/detour.cpp
-    # ...and its engine-free half: prologue decode, relocation, and the named refusals. Split out so
-    # shim/tests/detour_reloc_test.cpp drives the SHIPPED relocator against byte buffers at pretend
-    # addresses — a relocator proven only by "the server did not crash" is not proven.
-    src/detour_reloc.cpp
+    # HDE remains the instruction decoder for call_validate.cpp. Interception
+    # belongs exclusively to stock KHook; the old relocator is standalone-test-only.
     ${CMAKE_SOURCE_DIR}/../third_party/hde/hde64.c
     # Ray-trace slice: RTTI vtable-by-name resolution (ported DynLibUtils algorithm) + the
     # CNavPhysicsInterface::TraceShape structs/call. Engine-generic (Source-2 physics).
@@ -81,6 +79,8 @@ add_library(s2script SHARED
     # and the block-scoped arg view. Cannot be unit-tested outside the game (it marshals a receiver
     # through the entity system), which is precisely why the policy lives in the TU above.
     src/engine_hooks.cpp
+    # Built-in named hooks use the same checked KHook ownership/lifetime backend.
+    src/named_hooks.cpp
     # SDKHooks virtuals: per-entity SH_ADD_MANUALHOOK (Touch family). Isolated so s2script_mm.cpp
     # does not grow another resolution loop; reads gamedata/sdkhooks, never s_gdCore.
     src/sdkhooks_vp.cpp
@@ -146,6 +146,45 @@ target_compile_options(breakpad_client PRIVATE
 add_executable(ccommand_selftest src/ccommand_selftest.cpp src/ccommand_tokenize.cpp)
 target_include_directories(ccommand_selftest PRIVATE src)
 
+# Verified original instruction images (host fixtures; Linux discovery via script).
+add_executable(original_module_selftest src/original_module.cpp tests/original_module_test.cpp)
+target_include_directories(original_module_selftest PRIVATE src)
+target_link_libraries(original_module_selftest PRIVATE ${CMAKE_DL_LIBS})
+
+# Same recipe evaluator/validator used by production; external contacts injected.
+add_executable(engine_resolver_selftest
+    src/engine_resolver.cpp src/original_module.cpp src/sigscan.cpp src/call_validate.cpp src/vtable.cpp
+    ${CMAKE_SOURCE_DIR}/../third_party/hde/hde64.c tests/engine_resolver_test.cpp)
+target_compile_definitions(engine_resolver_selftest PRIVATE S2_RESOLVER_ENGINE_FREE)
+target_include_directories(engine_resolver_selftest PRIVATE src ${CMAKE_SOURCE_DIR}/../third_party/hde)
+target_link_libraries(engine_resolver_selftest PRIVATE ${CMAKE_DL_LIBS})
+
+# Registered production callbacks, invocation lifetimes and original-image install validation.
+add_executable(engine_hook_invocation_selftest
+    src/engine_hooks.cpp src/hook_dispatch.cpp src/call_validate.cpp src/original_module.cpp
+    src/sigscan.cpp ${CMAKE_SOURCE_DIR}/../third_party/hde/hde64.c
+    tests/engine_hook_invocation_test.cpp)
+target_include_directories(engine_hook_invocation_selftest PRIVATE src
+    ${CMAKE_SOURCE_DIR}/../third_party/hde ${MMS}/third_party/khook/include)
+target_link_libraries(engine_hook_invocation_selftest PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+
+# Actual built-in named callbacks, batch scopes and virtual receiver filter.
+add_executable(named_hook_invocation_selftest
+    src/named_hooks.cpp tests/named_hook_invocation_test.cpp)
+target_include_directories(named_hook_invocation_selftest PRIVATE src
+    ${MMS}/third_party/khook/include)
+target_link_libraries(named_hook_invocation_selftest PRIVATE Threads::Threads)
+
+# Production-used descriptor/SDKHook/built-in adapters over the shared resolver.
+add_executable(engine_consumer_selftest
+    src/engine_consumer.cpp src/engine_resolver.cpp src/original_module.cpp src/sigscan.cpp
+    src/call_validate.cpp src/vtable.cpp ${CMAKE_SOURCE_DIR}/../third_party/hde/hde64.c
+    tests/engine_consumer_test.cpp)
+target_compile_definitions(engine_consumer_selftest PRIVATE S2_RESOLVER_ENGINE_FREE)
+target_include_directories(engine_consumer_selftest
+    PRIVATE src third_party ${CMAKE_SOURCE_DIR}/../third_party/hde)
+target_link_libraries(engine_consumer_selftest PRIVATE ${CMAKE_DL_LIBS})
+
 # Owner-scoped gamedata loader unit test (not shipped; run by scripts/ci-native.sh).
 add_executable(gamedata_selftest src/gamedata.cpp tests/gamedata_test.cpp)
 target_include_directories(gamedata_selftest PRIVATE src third_party)
@@ -204,7 +243,7 @@ target_include_directories(s2script PRIVATE
     # protobuf 3.21.8 runtime headers (Slice 6.1c) — reflection over the game's usermessage
     # protobuf objects (CUserMessageSayText2). Matches the vendored libprotobuf.a below.
     ${HL2SDK}/thirdparty/protobuf-3.21.8/src
-    # Slice 6.6: the vendored HDE length disassembler (used by src/detour.cpp).
+    # Vendored HDE instruction decoder used by call_validate.cpp.
     ${CMAKE_SOURCE_DIR}/../third_party/hde
 )
 
@@ -245,7 +284,7 @@ target_include_directories(s2script PRIVATE include)
 
 # Crash reporter: link the vendored Breakpad client (its PUBLIC include dir reaches
 # src/crash_handler.cpp during compilation).
-target_link_libraries(s2script PRIVATE breakpad_client)
+target_link_libraries(s2script PRIVATE breakpad_client ${CMAKE_DL_LIBS})
 
 # S2_HL2SDK_BUILD: the pinned hl2sdk submodule SHA, stamped into every crash envelope's
 # gamedata.hl2sdk. Resolved at configure time from the vendored checkout (${HL2SDK} is

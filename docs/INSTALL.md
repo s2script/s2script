@@ -243,3 +243,77 @@ What `--apply` does for every public `packages/*` package:
 Optional hardening afterward: package **Publishing access** → “Require two-factor authentication and disallow tokens” (OIDC still works; revoke leftover automation tokens).
 
 After that, version-PR merges publish without secrets. Emergency local fallback: `DRY_RUN=1 scripts/publish-packages.sh` (classic token login — prefer OIDC CI).
+
+## S1 acceptance bundle (maintainers)
+
+The production runtime uses the shared validated resolver and stock Metamod KHook
+provider. The native module stays resident; normal plugin updates replace `.s2sp`
+archives. The separate `tools/khook-probe` and `examples/khook-acceptance` artifacts
+are acceptance tools and must not enter production release packages.
+
+Suites B and C now have source-bound registries and collectors. Prepare each run
+with the controller's exact runtime/artifact identity, then use the same run folder
+for collection. A remains the default suite. On a host controlling a container,
+pass the bind-mounted gamedata directory explicitly:
+
+```bash
+bash scripts/test-khook-live.sh B --collect --run-dir "$S1_B_RUN_DIR" \
+  --gamedata-root "$HOST_S2SCRIPT_ADDON/gamedata"
+bash scripts/test-khook-live.sh C --collect --run-dir "$S1_C_RUN_DIR" \
+  --gamedata-root "$HOST_S2SCRIPT_ADDON/gamedata"
+```
+
+The controller maps only the probe-listed relative gamedata files into that root,
+rejects escapes, and captures SHA-256 before and after. These hashes establish the
+inspected deployed inputs, not an unseen main module load-time snapshot. Missing
+mapping, unresolved current-build recipes, missing callbacks and missing human
+actions remain pending.
+
+B needs a real bot for public item POST and damage witnesses, a real connected
+client for chat/usercmd witnesses, and two archive replacements with the same
+run/artifact handoff to observe three script generations. The fixture can drive a
+safe bot item grant and owned relay output; actual damage still requires an engine
+action against the hooked bot. C needs actual precache callbacks across two map
+generations. Private native fixtures separately prove exact original counts and
+nested manifest restoration. Public resource-add evidence makes no claim about
+later rendering or a particular internal AddResource route.
+
+Named registration phases remove only early peer callbacks asynchronously, observe
+completion on a later frame, then install retained late peers around resident main
+bindings. These one-way phases require a fresh process for another independent
+run. They do not replace fresh operator captures in both physical module load
+orders. The actual C peer join additionally needs a guard registered before the
+main callback; otherwise that peer row stays pending while independent main-frame
+resource evidence can still collect. Never infer its invocation from matching raw
+pointer values after the main scope ends.
+
+The integrated S1 release is still pending exact-head review and mandatory live
+acceptance. Current game capability failures require verified gamedata, not relaxed
+validation. Known shutdown-only exit 139 is diagnostic and nonblocking under the
+accepted disposition; runtime callback retirement and stale-generation rejection
+remain required. Do not run repeated quit loops to obtain a terminal green row.
+
+### Damage recipe migration and current-build repairs
+
+The internal damage signature is now `CBaseEntity_TakeDamageOld`, paired atomically
+with the audited native `void(victim*, damageInfo*, optional damageResult*)` binding.
+Public `OnTakeDamage`/SDKHooks behavior is unchanged. The previous
+`DispatchTraceAttack` key is retired without an alias: its old pattern matched
+unrelated output logic. Re-derive any custom damage override under the new key;
+never rename/transplant that old pattern. Preserve both the exact prologue and the
+TakeDamageOld semantic string validator, including its newline. Do not deploy this
+recipe alone against an older runtime with the incompatible damage ABI.
+
+Static evaluation of the edited source accepts damage and the pFirst head-cell
+recipe on exact builds 25218825 and 25470087, and rejects a wrong damage diagnostic.
+The revised CanAcquire recipe is specific to build 25470087 (1.41.8.2), retaining
+both prologue and weapon string validators; it correctly rejects build 25218825.
+Only those three recipes are repaired here; other unavailable targets, including
+FireOutput, remain unavailable pending their own ABI/identity work.
+
+The operator separately verified pFirst/CanAcquire resolver acceptance and factory
+registration on the unchanged installed b4 runtime with official Metamod 1467 and
+14 default plugins, through inferno→nuke→inferno with two bots and no humans.
+CanAcquire was armed but its lazy hook was uninstalled without subscribers. This is
+bounded resolution/map smoke, not acquisition callback/result, resource delivery,
+new damage binding, or S1 release acceptance. Those live witnesses remain required.

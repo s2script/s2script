@@ -92,7 +92,7 @@ code blocks.
 
 ```
 core/        Rust engine core (cdylib, embeds V8). Engine-generic — NEVER imports games/*. All engine facts flow through S2EngineOps + set_native'd natives.
-shim/        C++ Metamod plugin (s2script.so). Owns every CS2/Source2 touchpoint: sigscan, SourceHooks, inline detours, protobuf reflection, vtable RTTI.
+shim/        C++ Metamod plugin (s2script.so). Owns every CS2/Source2 touchpoint: shared original-image resolution, checked stock KHook bindings, protobuf reflection, vtable RTTI.
 games/cs2/   CS2 game-package prelude (pawn.js + generated schema/nav accessors). CS2 field/class names live here, never in core/ or shim.
 packages/    npm-published: @s2script/sdk (builtin capability .d.ts as @s2script/sdk/<cap> subpaths + the `s2s` CLI) and @s2script/cs2 (game types).
 plugins/     The base-plugin suite (SourceMod parity) — ships in the runtime zip.

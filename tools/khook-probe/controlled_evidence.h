@@ -4,8 +4,450 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <array>
+#include <vector>
+#include <map>
+#include "named_hooks.h"
 
 namespace s2khook {
+
+struct DeclarativeVoidObservation {
+    bool installed = false;
+    int pre = 0;
+    int original = 0;
+    int original_in_scope = 0;
+    int receiver_ok = 0;
+    bool expired = false;
+    bool Passed() const {
+        return installed && pre == 1 && original == 1 && original_in_scope == 1 &&
+               receiver_ok == 1 && expired;
+    }
+    std::string Json() const {
+        return std::string("{\"installed\":") + (installed ? "true" : "false") +
+            ",\"pre\":" + std::to_string(pre) + ",\"original\":" + std::to_string(original) +
+            ",\"original_in_scope\":" + std::to_string(original_in_scope) +
+            ",\"receiver_ok\":" + std::to_string(receiver_ok) +
+            ",\"expired\":" + (expired ? "true" : "false") + "}";
+    }
+};
+
+struct DeclarativeMutationObservation {
+    int pre = 0, original = 0, original_in_scope = 0;
+    float value = 0;
+    int32_t integer = 0;
+    int64_t opaque_a = 0, opaque_b = 0;
+    bool Passed() const {
+        return pre == 1 && original == 1 && original_in_scope == 1 && value == 7.25f &&
+            integer == -17 && static_cast<uint64_t>(opaque_a) == UINT64_C(0xf123456789abcdef) &&
+            static_cast<uint64_t>(opaque_b) == UINT64_C(0x8123456789abcdef);
+    }
+    std::string Json() const {
+        return std::string("{\"pre\":") + std::to_string(pre) +
+            ",\"original\":" + std::to_string(original) +
+            ",\"original_in_scope\":" + std::to_string(original_in_scope) +
+            ",\"value\":" + std::to_string(value) + ",\"integer\":" + std::to_string(integer) +
+            ",\"opaque_a\":\"" + std::to_string(static_cast<uint64_t>(opaque_a)) +
+            "\",\"opaque_b\":\"" + std::to_string(static_cast<uint64_t>(opaque_b)) + "\"}";
+    }
+};
+struct DeclarativeAcquireObservation {
+    int pre = 0, post = 0, original = 0, arguments_ok = 0;
+    int32_t effective_return = -1, post_result = -1;
+    int skipped = -1;
+    bool Matches(int32_t expected, bool skip) const {
+        return pre == 1 && post == 1 && original == (skip ? 0 : 1) &&
+            arguments_ok == (skip ? 0 : 1) && effective_return == expected &&
+            post_result == expected && skipped == (skip ? 1 : 0);
+    }
+    std::string Json() const {
+        return std::string("{\"pre\":") + std::to_string(pre) + ",\"post\":" + std::to_string(post) +
+            ",\"original\":" + std::to_string(original) + ",\"arguments_ok\":" + std::to_string(arguments_ok) +
+            ",\"effective_return\":" + std::to_string(effective_return) +
+            ",\"post_result\":" + std::to_string(post_result) + ",\"skipped\":" + std::to_string(skipped) + "}";
+    }
+};
+struct DeclarativeNestingObservation {
+    int same_pre = 0, same_post = 0, same_original = 0, same_restored = 0;
+    int other_pre = 0, other_original = 0, other_restored = 0, stale_rejected = 0;
+    int skipped = 0;
+    int32_t effective_return = -1;
+    std::array<int32_t, 3> post_methods{{-1, -1, -1}};
+    bool Passed() const {
+        return same_pre == 3 && same_post == 3 && same_original == 3 && same_restored == 2 &&
+            other_pre == 2 && other_original == 2 && other_restored == 2 && stale_rejected == 2 &&
+            skipped == 0 && effective_return == 40 && post_methods == std::array<int32_t,3>{{42,41,40}};
+    }
+    std::string Json() const {
+        return std::string("{\"same_pre\":") + std::to_string(same_pre) +
+            ",\"same_post\":" + std::to_string(same_post) + ",\"same_original\":" + std::to_string(same_original) +
+            ",\"same_restored\":" + std::to_string(same_restored) + ",\"other_pre\":" + std::to_string(other_pre) +
+            ",\"other_original\":" + std::to_string(other_original) + ",\"other_restored\":" + std::to_string(other_restored) +
+            ",\"stale_rejected\":" + std::to_string(stale_rejected) + ",\"skipped\":" + std::to_string(skipped) +
+            ",\"effective_return\":" + std::to_string(effective_return) + ",\"post_methods\":[" +
+            std::to_string(post_methods[0]) + "," + std::to_string(post_methods[1]) + "," + std::to_string(post_methods[2]) + "]}";
+    }
+};
+struct DeclarativeBypassObservation {
+    int pre = 0, post = 0, original = 0;
+    int pre_after_bypass = -1, post_after_bypass = -1;
+    int removal_refused = 0, reset_preserved_view = 0;
+    std::array<int32_t,3> returns{{-1,-1,-1}};
+    bool Passed() const {
+        return pre == 2 && post == 2 && original == 3 && pre_after_bypass == 0 && post_after_bypass == 0 &&
+            removal_refused == 2 && reset_preserved_view == 2 && returns == std::array<int32_t,3>{{6,6,6}};
+    }
+    std::string Json() const {
+        return std::string("{\"pre\":") + std::to_string(pre) + ",\"post\":" + std::to_string(post) +
+            ",\"original\":" + std::to_string(original) + ",\"pre_after_bypass\":" + std::to_string(pre_after_bypass) +
+            ",\"post_after_bypass\":" + std::to_string(post_after_bypass) +
+            ",\"removal_refused\":" + std::to_string(removal_refused) +
+            ",\"reset_preserved_view\":" + std::to_string(reset_preserved_view) + ",\"returns\":[" +
+            std::to_string(returns[0]) + "," + std::to_string(returns[1]) + "," + std::to_string(returns[2]) + "]}";
+    }
+};
+struct DeclarativeHudObservation {
+    int pre=0,completion=0,original=0,trace=0,skipped=-1;
+};
+struct DeclarativeSnapshot {
+    std::array<DeclarativeHudObservation,2> hud;
+    bool forged_rejected=false,stale_rejected=false;
+    int bypass_pair_pre=-1,bypass_pair_original=-1;
+    bool policy_isolated=false,policy_restored=false,policy_post_view=false;
+    int policy_pre=0,policy_post=0,policy_original=0;
+
+    DeclarativeVoidObservation simple;
+    DeclarativeMutationObservation mutation;
+    std::array<DeclarativeAcquireObservation, 5> acquire;
+    DeclarativeNestingObservation nesting;
+    DeclarativeBypassObservation bypass;
+    bool Passed() const {
+        return simple.Passed() && mutation.Passed() && nesting.Passed() && bypass.Passed() &&
+            acquire[0].Matches(6,false) && acquire[1].Matches(6,false) && acquire[2].Matches(2,false) &&
+            acquire[3].Matches(1,true) && acquire[4].Matches(0,true);
+    }
+    std::string Json() const {
+        std::string rows;
+        for (const auto& row : acquire) { if (!rows.empty()) rows += ','; rows += row.Json(); }
+        return "{\"simple\":" + simple.Json() + ",\"mutation\":" + mutation.Json() +
+            ",\"acquire\":[" + rows + "],\"nesting\":" + nesting.Json() + ",\"bypass\":" + bypass.Json() + "}";
+    }
+};
+
+// Main-runtime observations are never merged with the private production-TU
+// snapshots above. Only a driver-owned invocation can accept JS marker calls.
+struct MainBridgeObservation {
+    int scenario=0, sequence=0, generation=0, order=0;
+    int callbacks=0, original=0, peer_pre=0, peer_post=0, skipped=-1, effective=-1, result=-1;
+    float value=0;
+    int a=0,b=0,c=0;
+    bool opaque_a=false,opaque_b=false,hud_self=false,hud_controller=false,hud_layout=false;
+    std::string text,trace;
+    int bypass_original=-1,bypass_peer_pre=-1,bypass_peer_post=-1,bypass_callbacks=-1;
+    std::string direct_trace;
+    bool BypassObserved() const {
+        return scenario==12 && bypass_original==1 && bypass_peer_pre==1 && bypass_peer_post==1 && bypass_callbacks==0 &&
+            original-bypass_original==1 && peer_pre-bypass_peer_pre==1 && peer_post-bypass_peer_post==1 && callbacks-bypass_callbacks==1;
+    }
+    bool DirectHudObserved() const {
+        return scenario==13 && original==1 && callbacks==1 && peer_pre==1 && peer_post==1 &&
+            hud_self && hud_controller && hud_layout && text=="direct-hud";
+    }
+    uintptr_t target_address=0;
+    std::map<int,int> generation_callbacks;
+};
+
+struct RealAcquireObservation {
+    int token=0,generation=0,slot=-1,definition=0,js_result=0,peer_result=0;
+    bool js_skipped=false,peer_skipped=false,marked=false,completed=false;
+    uintptr_t services=0,item=0,opaque=0; int method=0;
+};
+class RealAcquireFrames {
+public:
+    void Reset(const std::string& run) { run_=run; stack_.clear(); }
+    void Enter(int token,uintptr_t services,uintptr_t item,int method,uintptr_t opaque) {
+        RealAcquireObservation row; row.token=token; row.services=services; row.item=item; row.method=method; row.opaque=opaque;
+        stack_.push_back(row);
+    }
+    int Mark(const std::string& run,int generation,int slot,int definition,int result,bool skipped) {
+        if (run.empty() || run!=run_ || generation<=0 || slot<0 || stack_.empty()) return 0;
+        auto& frame=stack_.back();
+        if (frame.marked || frame.token<=0 || !frame.services || !frame.item) return 0;
+        frame.marked=true; frame.generation=generation; frame.slot=slot; frame.definition=definition;
+        frame.js_result=result; frame.js_skipped=skipped; return frame.token;
+    }
+    bool Finish(uintptr_t services,uintptr_t item,int method,uintptr_t opaque,int result,bool skipped,RealAcquireObservation& out) {
+        if (stack_.empty()) return false;
+        auto row=stack_.back(); stack_.pop_back();
+        if (row.services!=services || row.item!=item || row.method!=method || row.opaque!=opaque) return false;
+        row.peer_result=result; row.peer_skipped=skipped; row.completed=true;
+        if (!row.marked) return false;
+        out=row; return true;
+    }
+private:
+    std::string run_;
+    std::vector<RealAcquireObservation> stack_;
+};
+
+struct PrecacheTokenObservation {
+    int token=0,generation=0,map_generation=0,receiver=0,vtable=0,manifest=0;
+    S2NamedPrecacheFrameV1 frame{};
+    bool finished=false,added=false,peer_completed=false;
+    int peer_pre=0;
+    std::string peer_trace;
+    std::string resource;
+};
+
+class PrecacheTokens {
+public:
+    void Reset(const std::string& run) { run_=run; next_=0; labels_.clear(); rows_.clear(); }
+    int Begin(const std::string& run,int generation,int map,const S2NamedPrecacheFrameV1& frame) {
+        if (run.empty() || run!=run_ || generation<=0 || map<=0 || frame.version!=1 ||
+            frame.size!=sizeof frame || !frame.serial || !frame.receiver || !frame.vtable || !frame.manifest) return 0;
+        for (const auto& row:rows_) if (row.frame.serial==frame.serial) return 0;
+        PrecacheTokenObservation row;
+        row.token=++next_; row.generation=generation; row.map_generation=map; row.frame=frame;
+        row.receiver=Label(frame.receiver); row.vtable=Label(frame.vtable); row.manifest=Label(frame.manifest);
+        rows_.push_back(row); return row.token;
+    }
+    bool Finish(const std::string& run,int token,int generation,const S2NamedPrecacheFrameV1& frame,
+                const std::string& resource,bool added) {
+        auto* row=Find(token);
+        if (run!=run_ || !row || row->finished || row->generation!=generation || !Same(row->frame,frame) || resource.empty()) return false;
+        row->finished=true; row->resource=resource; row->added=added; return true;
+    }
+    int Read(int token,int field,const S2NamedPrecacheFrameV1& frame) {
+        auto* row=Find(token);
+        if (!row || !row->finished || !Same(row->frame,frame)) return 0;
+        switch (field) {
+            case 0:return row->map_generation;
+            case 1:return -1; // No ambiguous external peer/frame order inference.
+            case 2:return row->receiver;
+            case 3:return row->vtable;
+            case 4:return row->manifest;
+            default:return 0;
+        }
+    }
+    bool ObservePeer(int token,const S2NamedPrecacheFrameV1& frame,int pre,const std::string& trace) {
+        auto* row=Find(token);
+        if (!row || !row->finished || row->peer_completed || !Same(row->frame,frame)) return false;
+        row->peer_completed=true; row->peer_pre=pre; row->peer_trace=trace; return true;
+    }
+    const std::vector<PrecacheTokenObservation>& Rows() const { return rows_; }
+private:
+    static bool Same(const S2NamedPrecacheFrameV1& a,const S2NamedPrecacheFrameV1& b) {
+        return b.version==1 && b.size==sizeof b && a.serial==b.serial && a.receiver==b.receiver &&
+            a.vtable==b.vtable && a.manifest==b.manifest;
+    }
+    int Label(uintptr_t pointer) {
+        auto it=labels_.find(pointer);
+        if (it!=labels_.end()) return it->second;
+        int label=static_cast<int>(labels_.size())+1; labels_[pointer]=label; return label;
+    }
+    PrecacheTokenObservation* Find(int token) {
+        if (token<=0 || static_cast<size_t>(token)>rows_.size()) return nullptr;
+        return &rows_[static_cast<size_t>(token)-1];
+    }
+    std::string run_;
+    int next_=0;
+    std::map<uintptr_t,int> labels_;
+    std::vector<PrecacheTokenObservation> rows_;
+};
+
+enum class FacetApplicability { Unspecified, Applicable, Inapplicable };
+
+struct FacetObservation {
+    FacetApplicability applicability = FacetApplicability::Unspecified;
+    int value = -1;
+    bool ExplicitlyInapplicable() const {
+        return applicability == FacetApplicability::Inapplicable && value == -1;
+    }
+    std::string Json() const {
+        const char* label=applicability==FacetApplicability::Applicable ? "applicable" :
+            applicability==FacetApplicability::Inapplicable ? "inapplicable" : "unspecified";
+        return std::string("{\"applicability\":\"") + label + "\",\"value\":" +
+            (applicability==FacetApplicability::Inapplicable && value==-1 ?
+                "null" : std::to_string(value)) + "}";
+    }
+};
+
+enum class MapGenerationSource { Unspecified, LevelLifetime };
+
+struct NamedRemovalObservation {
+    FacetApplicability applicability = FacetApplicability::Unspecified;
+    int active_refused = -1;
+    int terminal_preflight = -1;
+    int terminal_remove = -1;
+    int terminal_complete = -1;
+    bool Pending() const {
+        return applicability==FacetApplicability::Applicable && active_refused==1 &&
+            terminal_preflight==-1 && terminal_remove==-1 && terminal_complete==-1;
+    }
+    bool Passed() const {
+        return applicability==FacetApplicability::Applicable && active_refused==1 &&
+            terminal_preflight==1 && terminal_remove==1 && terminal_complete==1;
+    }
+    std::string Json() const {
+        const char* label=applicability==FacetApplicability::Applicable ? "applicable" :
+            applicability==FacetApplicability::Inapplicable ? "inapplicable" : "unspecified";
+        const char* state=Passed() ? "complete" : Pending() ? "pending" : "invalid";
+        return std::string("{\"applicability\":\"") + label +
+            "\",\"state\":\"" + state +
+            "\",\"active_refused\":" + std::to_string(active_refused) +
+            ",\"terminal_preflight\":" + std::to_string(terminal_preflight) +
+            ",\"terminal_remove\":" + std::to_string(terminal_remove) +
+            ",\"terminal_complete\":" + std::to_string(terminal_complete) + "}";
+    }
+};
+
+struct NamedOrderObservation {
+    std::string site,order,trace;
+    int callbacks=0,peer_pre=0,peer_post=0,original=0,skipped=-1;
+    int64_t effective=0;
+    bool damage_arguments=false,damage_output_preserved=false;
+};
+struct NamedOrderSnapshot {
+    std::vector<NamedOrderObservation> rows;
+    std::string run;
+    bool requested=false,completion=false,late_installed=false,active_refused=false;
+    int retired_callbacks=0;
+};
+struct NamedSnapshot {
+    std::array<int,4> output_vector_dispatch{{0,0,0,0}},output_vector_original{{0,0,0,0}},output_vector_skipped{{-1,-1,-1,-1}};
+    std::array<int,2> chat_original_each{{0,0}};
+    int precache_filtered_dispatch=-1;
+    std::array<int,3> usercmd_original_by_batch{{0,0,0}};
+    int usercmd_argument_matches=0,usercmd_batch_first=-1,usercmd_batch_second=-1;
+
+    bool installed = false;
+    int damage_pre = 0, damage_post = 0, damage_original = 0;
+    int damage_nested_restored = 0, damage_expired = 0;
+    int damage_pre_ignore = 0, damage_post_ignore = 0, damage_post_observed = 0;
+    int damage_skipped = 0, damage_argument_matches = 0;
+    int damage_result_null = 0, damage_result_nonnull = 0;
+    int damage_output_writes = 0, damage_output_preserved = 0;
+    FacetObservation damage_current_return;
+    int chat_dispatch = 0, chat_original = 0;
+    int chat_peer_before = 0, chat_peer_after = 0, chat_peer_order = 0;
+    int chat_post_observed = 0;
+    std::array<int,2> chat_actions{{-1,-1}}, chat_skipped{{-1,-1}};
+    FacetObservation chat_current_return;
+    int output_dispatch = 0, output_original = 0;
+    int output_post_observed = 0;
+    std::array<int,2> output_actions{{-1,-1}}, output_skipped{{-1,-1}};
+    FacetObservation output_current_return;
+    int usercmd_dispatch = 0, usercmd_neutralized = 0, usercmd_original = 0;
+    int usercmd_return = 0, usercmd_nested_restored = 0, usercmd_expired = 0;
+    int usercmd_ignore = 0, usercmd_post_observed = 0, usercmd_skipped = 0;
+    int usercmd_current_return = 0, usercmd_current_return_matches = 0;
+    std::vector<std::string> precache_manifest_trace;
+    int precache_frame_receiver_matches=0,precache_frame_vtable_matches=0;
+    int precache_dispatch = 0, precache_original = 0, precache_receiver_ok = 0;
+    int precache_nested_restored = 0, precache_filtered_original = 0, precache_expired = 0;
+    int precache_peer_before = 0, precache_peer_after = 0, precache_peer_order = 0;
+    int precache_ignore = 0, precache_post_observed = 0, precache_skipped = 0;
+    FacetObservation precache_current_return;
+    MapGenerationSource precache_generation_source = MapGenerationSource::Unspecified;
+    uint64_t precache_map_generation = 0, precache_observed_map_generation = 0;
+    int precache_generation_observations = 0;
+    FacetObservation bypass;
+    NamedRemovalObservation removal;
+    bool CorePassed() const {
+        return installed && damage_pre == 3 && damage_post == 3 && damage_original == 3 &&
+            damage_nested_restored == 2 && damage_expired == 1 &&
+            damage_pre_ignore == 3 && damage_post_ignore == 3 && damage_post_observed == 3 &&
+            damage_skipped == 0 &&
+            damage_current_return.ExplicitlyInapplicable() && damage_argument_matches == 3 &&
+            damage_result_null == 1 && damage_result_nonnull == 2 &&
+            damage_output_writes == 2 && damage_output_preserved == 2 &&
+            chat_dispatch == 2 && chat_original == 1 && chat_peer_before == 2 &&
+            chat_peer_after == 2 && chat_peer_order == 123123 && chat_post_observed == 2 &&
+            chat_actions == std::array<int,2>{{0,2}} && chat_skipped == std::array<int,2>{{0,1}} &&
+            chat_current_return.ExplicitlyInapplicable() &&
+            output_dispatch == 2 && output_original == 1 && output_post_observed == 2 &&
+            output_actions == std::array<int,2>{{0,2}} && output_skipped == std::array<int,2>{{0,1}} &&
+            output_current_return.ExplicitlyInapplicable() &&
+            usercmd_dispatch == 3 && usercmd_neutralized == 2 && usercmd_original == 3 &&
+            usercmd_return == 37 && usercmd_nested_restored == 1 && usercmd_expired == 1 &&
+            usercmd_ignore == 3 && usercmd_post_observed == 3 && usercmd_skipped == 0 &&
+            usercmd_current_return == 37 && usercmd_current_return_matches == 3 &&
+            precache_dispatch == 2 && precache_original == 2 && precache_receiver_ok == 2 &&
+            precache_nested_restored == 1 && precache_filtered_original == 1 &&
+            precache_expired == 1 && precache_peer_before == 2 && precache_peer_after == 2 &&
+            precache_peer_order == 121233 && precache_ignore == 2 &&
+            precache_post_observed == 2 && precache_skipped == 0 &&
+            precache_current_return.ExplicitlyInapplicable() &&
+            precache_generation_source == MapGenerationSource::LevelLifetime &&
+            precache_map_generation != 0 &&
+            precache_observed_map_generation == precache_map_generation &&
+            precache_generation_observations == 2 && bypass.ExplicitlyInapplicable() &&
+            removal.applicability == FacetApplicability::Applicable && removal.active_refused == 1;
+    }
+    bool InvocationPassed() const { return CorePassed() && removal.Pending(); }
+    bool Passed() const { return CorePassed() && removal.Passed(); }
+    std::string Json() const {
+        return std::string("{\"installed\":") + (installed ? "true" : "false") +
+            ",\"damage\":{\"pre\":" + std::to_string(damage_pre) +
+            ",\"post\":" + std::to_string(damage_post) +
+            ",\"original\":" + std::to_string(damage_original) +
+            ",\"nested_restored\":" + std::to_string(damage_nested_restored) +
+            ",\"expired\":" + std::to_string(damage_expired) +
+            ",\"pre_ignore\":" + std::to_string(damage_pre_ignore) +
+            ",\"post_ignore\":" + std::to_string(damage_post_ignore) +
+            ",\"post_observed\":" + std::to_string(damage_post_observed) +
+            ",\"skipped\":" + std::to_string(damage_skipped) +
+            ",\"current_return\":" + damage_current_return.Json() +
+            ",\"argument_matches\":" + std::to_string(damage_argument_matches) +
+            ",\"result_null\":" + std::to_string(damage_result_null) +
+            ",\"result_nonnull\":" + std::to_string(damage_result_nonnull) +
+            ",\"output_writes\":" + std::to_string(damage_output_writes) +
+            ",\"output_preserved\":" + std::to_string(damage_output_preserved) + "}" +
+            ",\"chat\":{\"dispatch\":" + std::to_string(chat_dispatch) +
+            ",\"original\":" + std::to_string(chat_original) +
+            ",\"peer_before\":" + std::to_string(chat_peer_before) +
+            ",\"peer_after\":" + std::to_string(chat_peer_after) +
+            ",\"peer_order\":" + std::to_string(chat_peer_order) +
+            ",\"post_observed\":" + std::to_string(chat_post_observed) +
+            ",\"actions\":[" + std::to_string(chat_actions[0]) + "," + std::to_string(chat_actions[1]) +
+            "],\"skipped\":[" + std::to_string(chat_skipped[0]) + "," + std::to_string(chat_skipped[1]) +
+            "],\"current_return\":" + chat_current_return.Json() + "}" +
+            ",\"output\":{\"dispatch\":" + std::to_string(output_dispatch) +
+            ",\"original\":" + std::to_string(output_original) +
+            ",\"post_observed\":" + std::to_string(output_post_observed) +
+            ",\"actions\":[" + std::to_string(output_actions[0]) + "," + std::to_string(output_actions[1]) +
+            "],\"skipped\":[" + std::to_string(output_skipped[0]) + "," + std::to_string(output_skipped[1]) +
+            "],\"current_return\":" + output_current_return.Json() + "}" +
+            ",\"usercmd\":{\"dispatch\":" + std::to_string(usercmd_dispatch) +
+            ",\"neutralized\":" + std::to_string(usercmd_neutralized) +
+            ",\"original\":" + std::to_string(usercmd_original) +
+            ",\"return\":" + std::to_string(usercmd_return) +
+            ",\"nested_restored\":" + std::to_string(usercmd_nested_restored) +
+            ",\"expired\":" + std::to_string(usercmd_expired) +
+            ",\"ignore\":" + std::to_string(usercmd_ignore) +
+            ",\"post_observed\":" + std::to_string(usercmd_post_observed) +
+            ",\"skipped\":" + std::to_string(usercmd_skipped) +
+            ",\"current_return\":" + std::to_string(usercmd_current_return) +
+            ",\"current_return_matches\":" + std::to_string(usercmd_current_return_matches) + "}" +
+            ",\"precache\":{\"dispatch\":" + std::to_string(precache_dispatch) +
+            ",\"original\":" + std::to_string(precache_original) +
+            ",\"receiver_ok\":" + std::to_string(precache_receiver_ok) +
+            ",\"nested_restored\":" + std::to_string(precache_nested_restored) +
+            ",\"filtered_original\":" + std::to_string(precache_filtered_original) +
+            ",\"expired\":" + std::to_string(precache_expired) +
+            ",\"peer_before\":" + std::to_string(precache_peer_before) +
+            ",\"peer_after\":" + std::to_string(precache_peer_after) +
+            ",\"peer_order\":" + std::to_string(precache_peer_order) +
+            ",\"ignore\":" + std::to_string(precache_ignore) +
+            ",\"post_observed\":" + std::to_string(precache_post_observed) +
+            ",\"skipped\":" + std::to_string(precache_skipped) +
+            ",\"current_return\":" + precache_current_return.Json() +
+            ",\"generation_source\":\"" +
+                (precache_generation_source==MapGenerationSource::LevelLifetime ? "level_lifetime" : "unspecified") +
+            "\",\"map_generation\":" + std::to_string(precache_map_generation) +
+            ",\"observed_map_generation\":" + std::to_string(precache_observed_map_generation) +
+            ",\"generation_observations\":" + std::to_string(precache_generation_observations) + "}" +
+            ",\"bypass\":" + bypass.Json() + ",\"removal\":" + removal.Json() + "}";
+    }
+};
 
 using IntTarget = int (*)(int);
 

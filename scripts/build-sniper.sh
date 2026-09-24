@@ -6,6 +6,15 @@
 # note: no `pipefail` — the `objdump | ... | tail` glibc checks SIGPIPE harmlessly
 set -eu
 
+# Explicit limits are validated before Docker, downloads, or compilation.
+for job_name in S2_BUILD_JOBS CARGO_BUILD_JOBS; do
+  job_value=${!job_name:-}
+  if [[ -n "$job_value" && ! "$job_value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "error: $job_name must be a positive integer" >&2
+    exit 1
+  fi
+done
+
 echo "=== install C/C++ build deps (g++ 10, binutils, curl) ==="
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
@@ -31,7 +40,9 @@ objdump -T target/release/libs2script_core.so | grep -oE 'GLIBC_[0-9.]+' | sort 
 echo "=== build C++ shim (links the just-built core) ==="
 rm -rf build/shim
 cmake -S shim -B build/shim -DCMAKE_BUILD_TYPE=Release >/dev/null
-cmake --build build/shim -j
+cmake_jobs=(-j)
+if [[ -n "${S2_BUILD_JOBS:-}" ]]; then cmake_jobs=(-j "$S2_BUILD_JOBS"); fi
+cmake --build build/shim "${cmake_jobs[@]}"
 
 echo "=== package addon ==="
 ./scripts/package-addon.sh

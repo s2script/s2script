@@ -14,6 +14,10 @@ flags=(-std=c++17 -O1 -g -Wall -Wextra -pthread)
 # Probe for the sanitizer runtime rather than assuming it: a missing libasan must not fail the gate.
 if echo 'int main(){return 0;}' | g++ -x c++ -fsanitize=address,undefined -o /dev/null - 2>/dev/null; then
   flags+=(-fsanitize=address,undefined -fno-sanitize-recover=all)
+  if [[ "$(uname -s)" == Linux ]]; then
+    # GCC 10 ASan can fail before main when PIE lands at an incompatible Linux address.
+    flags+=(-no-pie)
+  fi
   echo "   (with -fsanitize=address,undefined)"
 else
   echo "   (no sanitizer runtime)"

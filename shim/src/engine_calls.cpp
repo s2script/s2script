@@ -30,13 +30,7 @@
 // packed CEntityHandle read off the entity's own identity, which the core then runs through the
 // books-gated __s2_handle_adopt path (spec §4), so a raw pointer can never mint an EntityRef.
 #include "engine_calls.h"
-#include "sigscan.h"
-#include "vtable.h"   // s2vtable::GetVTableByName — RTTI vtable-by-name (CS2 exports no game vtables)
-// The CLOSED validator vocabulary (prologue / string-xref / vtable-member). It lives in its own
-// engine-free TU so shim/tests/call_validate_test.cpp can drive the SHIPPED gates over a synthetic
-// module image — this TU cannot be compiled outside the game (it includes the entity system), and a
-// validator that cannot fail in a test is decoration.
-#include "call_validate.h"
+#include "engine_consumer.h"
 
 // Entity system: CGameEntitySystem / CConcreteEntityList::m_pIdentityChunks / CEntityIdentity /
 // MAX_TOTAL_ENTITIES / EF_IS_INVALID_EHANDLE — the receiver + entity-arg resolution walk below reads
@@ -48,6 +42,7 @@
 #include <cstdio>     // snprintf — the degrade-reason string
 #include <cstring>    // strcmp/strstr/memcpy
 #include <string>
+#include <utility>
 #include <vector>
 
 // The shim's existing non-static bridge to GetEntitySystem() (defined in s2script_mm.cpp, where the
@@ -58,11 +53,6 @@ class CGameEntitySystem;
 CGameEntitySystem* S2_EntitySystemBridge();
 
 namespace {
-
-// The engine's server module. Used when a descriptor names no module (the "vtable" target kind
-// carries a class, not a module). Kept HERE rather than in the core so no module/game identifier is
-// compiled into core/ (the check-boundary invariant); s2_schema_offset hardcodes the same soname.
-constexpr const char* kEngineModule = "libserver.so";
 
 // Arg budget (spec §4): `this` consumes the first of SysV's six GP argument registers, so at most 5
 // integer-class args, and at most 8 float args. The SDK's build-time validator rejects a descriptor
@@ -77,10 +67,6 @@ constexpr const char* kEngineModule = "libserver.so";
 // of scope".
 constexpr int kMaxGpArgs = 9;
 constexpr int kMaxFpArgs = 8;
-
-// A vtable has a naturally small bound; cap the index BEFORE the vt[] read so a corrupt/hostile
-// index degrades instead of reading out of bounds (the Shim_EntitySubobjVcall precedent).
-constexpr int kMaxVtableIndex = 512;
 
 // The "no entity" value for `returns: "entity"` — see the S2_ENTITY_HANDLE_NONE comment in
 // engine_calls.h for why it is not 0. Core skips decoding when it sees it.
@@ -97,91 +83,7 @@ enum : unsigned char { kArgScalar = 0, kArgEntity = 1, kArgString = 2, kArgVecto
 // retKind values — must match the core's return vocabulary.
 enum { kRetVoid = 0, kRetBool = 1, kRetInt = 2, kRetFloat = 3, kRetEntity = 4 };
 
-struct ResolvedCall { void* fn; };
-std::vector<ResolvedCall> g_calls;   // the returned call id is the index; entries are never removed
-                                     // (an id stays valid for the process; the core's registry owns
-                                     // per-plugin lifetime and drops its own table on unload)
-
-// ---------------------------------------------------------------------------
-// Module lookup. A per-TU copy of s2script_mm.cpp's FindModuleText (which is file-static there):
-// pick the LARGEST PF_X segment across ALL loaded modules whose soname contains `soname`, because
-// Metamod:Source inserts its own thin libserver.so proxy via the gameinfo SearchPath whose path ALSO
-// contains the substring — stopping at the first match grabs the ~95 KB proxy instead of the real
-// ~25 MB game module (Slice 5D.2). vtable.cpp keeps the same local copy for the same TU-boundary
-// reason.
-//
-// ONE walk yields BOTH views, deliberately: the .text segment (where a resolved function must live)
-// and the winning module's FULL mapped [lo, hi) LOAD extent (where a rip-relative string target
-// legitimately lives — .rodata sits BELOW the PF_X base, so `string-xref` MUST range-guard against
-// the whole mapping). Deriving them in one pass means the two can never disagree about which module
-// won, which is the failure mode two hand-copied phdr walks invite.
-// ---------------------------------------------------------------------------
-struct ModText {
-    const uint8_t* text = nullptr;   // largest PF_X segment of the winning module
-    size_t         size = 0;
-    const uint8_t* lo   = nullptr;   // full mapped LOAD extent of that SAME module
-    const uint8_t* hi   = nullptr;
-};
-
-ModText FindModuleText(const char* soname) {
-    struct Ctx { const char* name; size_t bestX; ModText out; } ctx{ soname, 0, {} };
-    dl_iterate_phdr([](struct dl_phdr_info* info, size_t, void* data) -> int {
-        auto* c = static_cast<Ctx*>(data);
-        if (!info->dlpi_name || !std::strstr(info->dlpi_name, c->name)) return 0;
-        size_t maxX = 0;
-        const uint8_t* text = nullptr;
-        ElfW(Addr) lo = ~static_cast<ElfW(Addr)>(0), hi = 0;
-        for (int i = 0; i < info->dlpi_phnum; i++) {
-            const ElfW(Phdr)& ph = info->dlpi_phdr[i];
-            if (ph.p_type != PT_LOAD) continue;
-            if ((ph.p_flags & PF_X) && ph.p_filesz > maxX) {
-                maxX = ph.p_filesz;
-                text = reinterpret_cast<const uint8_t*>(info->dlpi_addr + ph.p_vaddr);
-            }
-            if (ph.p_vaddr < lo) lo = ph.p_vaddr;
-            if (ph.p_vaddr + ph.p_memsz > hi) hi = ph.p_vaddr + ph.p_memsz;
-        }
-        if (maxX > c->bestX) {   // largest PF_X wins, module-wide — the metamod proxy loses
-            c->bestX    = maxX;
-            c->out.text = text;
-            c->out.size = maxX;
-            c->out.lo   = reinterpret_cast<const uint8_t*>(info->dlpi_addr + lo);
-            c->out.hi   = reinterpret_cast<const uint8_t*>(info->dlpi_addr + hi);
-        }
-        return 0;   // keep scanning ALL modules — the metamod proxy must not shadow the game module
-    }, &ctx);
-    return ctx.out;
-}
-
-// The IsAddressInServerText guard, generalized to the descriptor's own module: a resolved
-// address/slot must land inside that module's executable segment. A borrowed or stale index/xref
-// could point anywhere; this stops the out-of-module case before the first call (it canNOT stop a
-// wrong-but-in-range function — that is what the VALIDATORS are for, and the two must stay
-// distinguishable in the reason string: "outside .text" means the pattern computed off the map, a
-// validator failure means it computed a real in-range function and it is the WRONG one).
-bool InModuleText(const ModText& mt, const void* fn) {
-    if (!mt.text || !fn) return false;
-    const uint8_t* p = static_cast<const uint8_t*>(fn);
-    return p >= mt.text && p < mt.text + mt.size;
-}
-
-// Hand the (engine-free) validator TU the module's two views.
-s2validate::ModuleView ViewOf(const ModText& mt) {
-    s2validate::ModuleView mv;
-    mv.text     = mt.text;
-    mv.textSize = mt.size;
-    mv.lo       = mt.lo;
-    mv.hi       = mt.hi;
-    return mv;
-}
-
-// The one engine touchpoint the vocabulary needs, injected rather than reached for: RTTI
-// vtable-by-name. The validators never name a module or a class — both come from the descriptor.
-s2validate::Ops ValidatorOps() {
-    s2validate::Ops ops;
-    ops.vtable_by_name = &s2vtable::GetVTableByName;
-    return ops;
-}
+s2consumer::CallRecords g_calls(kMaxCalls); // ids and retained verified images live for the process
 
 // ---------------------------------------------------------------------------
 // Receiver / entity-arg resolution: (index, engine serial) -> CEntityInstance*, decided ENTIRELY in
@@ -352,8 +254,11 @@ int S2_ModuleViewForAddress(const void* addr, const unsigned char** outText, std
 // returns 0, which S2_HookInstall already refuses by name ("hook target address is null") — so a
 // stale id degrades that hook instead of patching address 0.
 int64_t S2_EngineCallAddress(int callId) {
-    if (callId < 0 || static_cast<size_t>(callId) >= g_calls.size()) return 0;
-    return static_cast<int64_t>(reinterpret_cast<uintptr_t>(g_calls[static_cast<size_t>(callId)].fn));
+    return static_cast<int64_t>(g_calls.Address(callId));
+}
+
+bool S2_EngineCallResolutionForAddress(const void* address, s2resolve::Resolution& out) {
+    return g_calls.CopyForAddress(address, out);
 }
 
 // ---------------------------------------------------------------------------
@@ -365,80 +270,13 @@ int S2_EngineCallResolve(const char* kind, const char* module, const char* patte
                          const char* validateJson, char* reasonOut, int reasonCap) {
     if (reasonOut && reasonCap > 0) reasonOut[0] = '\0';
     if (!kind || !kind[0]) return Fail(reasonOut, reasonCap, "descriptor has no target kind");
-
-    const char* mod = (module && module[0]) ? module : kEngineModule;
-    ModText mt = FindModuleText(mod);
-    if (!mt.text) return Fail(reasonOut, reasonCap, "target module is not loaded");
-
-    void* fn = nullptr;
-    const bool validatedCall = resolve && std::strcmp(resolve, "validated-call") == 0;
-
-    if (std::strcmp(kind, "signature") == 0) {
-        if (!pattern || !pattern[0]) return Fail(reasonOut, reasonCap, "signature has no pattern");
-        if (validatedCall) {
-            fn = const_cast<void*>(s2validate::ResolveValidatedCall(pattern, validateJson,
-                ViewOf(mt), mod, ValidatorOps(), reasonOut, reasonCap));
-            if (!fn) return -1;
-        } else {
-            std::vector<int> pat = s2sig::ParsePattern(pattern);
-            if (pat.empty()) return Fail(reasonOut, reasonCap, "malformed signature pattern");
-            // Rule 2: uniqueness, not just presence — an ambiguous pattern is as unusable as a missing one.
-            int matches = s2sig::CountPattern(mt.text, mt.size, pat, 2);
-            if (matches == 0) return Fail(reasonOut, reasonCap, "signature did not match this build");
-            if (matches > 1)  return Fail(reasonOut, reasonCap, "signature is ambiguous (>1 match — tighten it)");
-            int64_t matchOff  = s2sig::FindPattern(mt.text, mt.size, pat);
-            int64_t targetOff = matchOff;                       // "direct": the match IS the target
-            const char* res = (resolve && resolve[0]) ? resolve : "direct";
-            if (std::strcmp(res, "ctor-body-xref") == 0) {
-                targetOff = s2sig::ResolveCtorXref(mt.text, mt.size, matchOff);
-            } else if (std::strcmp(res, "lea-disp") == 0) {
-                targetOff = s2sig::ResolveLeaDisp(mt.text, mt.size, matchOff, /*dispOff=*/3, /*instrLen=*/7);
-            } else if (std::strcmp(res, "direct") != 0) {
-                return Fail(reasonOut, reasonCap, "unknown resolve strategy");
-            }
-            if (targetOff == s2sig::kFail) return Fail(reasonOut, reasonCap, "resolve step failed (xref/lea)");
-            // uintptr arithmetic: a lea/xref target can legitimately compute to a NEGATIVE offset
-            // (.rodata precedes .text in the mapping), which InModuleText then rejects.
-            fn = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(mt.text) +
-                                         static_cast<uintptr_t>(targetOff));
-            if (!InModuleText(mt, fn)) return Fail(reasonOut, reasonCap, "resolved address outside the module's .text");
-        }
-    } else if (std::strcmp(kind, "vtable") == 0) {
-        if (validatedCall) return Fail(reasonOut, reasonCap, "validated-call requires a signature target");
-        if (!className || !className[0]) return Fail(reasonOut, reasonCap, "vtable target has no class");
-        // A `prologue` is MANDATORY for a vtable target — a rule about which validator must be
-        // PRESENT, separate from how validators are evaluated below. The SDK fails the BUILD on a
-        // missing one; this is the load-time backstop.
-        if (!s2validate::DeclaresPrologue(validateJson))
-            return Fail(reasonOut, reasonCap, "vtable target requires validate.prologue");
-        if (vtableIndex < 0 || vtableIndex >= kMaxVtableIndex)
-            return Fail(reasonOut, reasonCap, "vtable index out of range");
-        void** vt = s2vtable::GetVTableByName(mod, className);
-        if (!vt) return Fail(reasonOut, reasonCap, "class RTTI vtable not found on this build");
-        fn = vt[vtableIndex];
-        if (!InModuleText(mt, fn)) return Fail(reasonOut, reasonCap, "resolved slot outside libserver .text");
-    } else {
-        return Fail(reasonOut, reasonCap, "unknown target kind");
-    }
-
-    // THE SEMANTIC GATE, after the .text-range check and never merged into it (see InModuleText):
-    // every validator computes or dereferences FROM `fn`, so it must first be known to be inside the
-    // module. One shared, kind-agnostic pass over the descriptor's whole `validate` object — the
-    // vocabulary is CLOSED, so an unknown key fails HERE by name rather than being silently ignored,
-    // which is the one way a mistyped gate could vanish without a trace.
-    // validated-call already checked the caller's semantic anchor before following E8.
-    // Its validate offsets deliberately describe that call site, not the callee.
-    if (!validatedCall && !s2validate::Run(validateJson, ViewOf(mt), mod, fn, ValidatorOps(), reasonOut, reasonCap))
-        return -1;
-
-    // Idempotent: the same resolved address always yields the same id, so a plugin reload (or two
-    // plugins declaring the same target) re-uses the entry instead of growing the table.
-    for (size_t i = 0; i < g_calls.size(); i++) {
-        if (g_calls[i].fn == fn) return static_cast<int>(i);
-    }
-    if (g_calls.size() >= kMaxCalls) return Fail(reasonOut, reasonCap, "engine-call table is full");
-    g_calls.push_back(ResolvedCall{ fn });
-    return static_cast<int>(g_calls.size() - 1);
+    s2resolve::Resolution resolved;
+    std::string why;
+    if (!s2consumer::ResolveEngineTarget(kind, module, pattern, resolve, className, vtableIndex,
+                                         validateJson, resolved, why))
+        return Fail(reasonOut, reasonCap, why.c_str());
+    const int id = g_calls.Add(std::move(resolved), why);
+    return id >= 0 ? id : Fail(reasonOut, reasonCap, why.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -452,14 +290,14 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
                         const char* const* strs, const float* vecs,
                         int retKind, uint64_t* retOut) {
     if (retOut) *retOut = 0;
-    if (callId < 0 || static_cast<size_t>(callId) >= g_calls.size()) return 0;
+    const uintptr_t address = g_calls.Address(callId);
+    if (!address) return 0;
     if (retKind < kRetVoid || retKind > kRetEntity) return 0;     // validated BEFORE any call
     if (gpCount < 0 || gpCount > kMaxGpArgs) return 0;
     if (fpCount < 0 || fpCount > kMaxFpArgs) return 0;
     if (gpCount > 0 && (!gp || !gpKind)) return 0;
     if (fpCount > 0 && !fp) return 0;
-    void* fn = g_calls[static_cast<size_t>(callId)].fn;
-    if (!fn) return 0;
+    void* fn = reinterpret_cast<void*>(address);
 
     // Receiver: a books-gated (index, serial) pair, optionally hopping through ONE schema-named
     // sub-object pointer (`receiver.via`, whose offset the core live-resolves via the cached
