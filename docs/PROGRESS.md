@@ -410,3 +410,11 @@ Authenticated voice, command/menu, ban/kick/reconnect and actual stale connectio
 human checks. Real zones boundary/reload evidence is also separate. This closes the automated
 and bot/offline fixture gates, not those remaining human/zone checks; no production deployment
 or merge is claimed.
+
+## 2026-09-24 — S2 scalar/entity foundation accepted; merge authorized, release held
+
+The user explicitly authorized merging tested foundation PRs #220–224 into `main` after being informed that S2's public `Engine.function` runtime and loader activation remain incomplete. This entry records authorization and the tested checkpoint, not a completed merge, finished S2/S3 implementation or deployment. Checkpoint `8aac96a9eee05f577cad94ea9fc21c9b53efb6ed` passed exact JavaScript run 35961320531 and native run 35961320527, including all four entity preparation/subscription orders, eight actual Active receipt/readiness traces, 20 null-rights cases, stale-edit atomicity/recovery, full Rust 940 passed/5 ignored, and release/sniper build checks. Those build and fixture results do not establish live CS2 acceptance.
+
+Remaining work includes public runtime/loader activation, other projections and lifetimes, sealed trusted POST effects, compatibility adapters, migration, the worked example, S3 integration and the integrated live gate. Foundation merge authorization does not waive outstanding client, peer, map, reload or other live acceptance requirements. See the current status at the top of `docs/superpowers/plans/2026-09-22-engine-functions.md`.
+
+The next SDK release is blocked from publishing the enabled `Engine.function` declarations and authoring/build tooling without matching validated runtime support or explicit gating/removal of that unfinished surface. Existing pending changesets already cover SDK updates; no new changeset is not a release safeguard. The separate changesets release PR #218 and release tags are outside this merge request and must remain held until that mismatch is resolved. No SDK publication or runtime deployment is claimed or authorized by this checkpoint.
