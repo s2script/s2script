@@ -1,10 +1,11 @@
 //! Executable adapter contract. Policy behavior is code, never a semantic DSL.
-use crate::{multiplexer::HookResult, v8host::S2FunctionValue};
+use super::projection::ProjectedValue;
+use crate::multiplexer::HookResult;
 
 #[derive(Clone, Copy)]
 pub(crate) struct SubscriberDelivery {
     pub action: HookResult,
-    pub return_value: Option<S2FunctionValue>,
+    pub return_value: Option<ProjectedValue>,
     pub frame_revision: u64,
 }
 #[derive(Clone, Copy)]
@@ -17,7 +18,7 @@ pub(crate) enum PreDecision {
     Changed,
     Suppress {
         action: SuppressAction,
-        return_value: Option<S2FunctionValue>,
+        return_value: Option<ProjectedValue>,
     },
 }
 pub(crate) trait SubscriberCursor {

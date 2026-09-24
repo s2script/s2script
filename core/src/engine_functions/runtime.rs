@@ -30,12 +30,9 @@ fn reason(buf: &[i8]) -> String {
         .into_owned()
 }
 pub(crate) fn prepare(f: &NormalizedFunction) -> Result<i64, String> {
-    if f.abi.receiver != "none" {
-        return Err("receiver projection awaits full Task 6".into());
-    }
-    kind(&f.abi.returns.native)?;
+    super::projection::request(&f.abi.returns.native, &f.abi.returns.projection.id)?;
     for p in &f.abi.parameters {
-        kind(&p.native)?;
+        super::projection::request(&p.native, &p.projection.id)?;
     }
     let op = engine_ops()
         .and_then(|o| o.function_prepare)
@@ -108,6 +105,14 @@ pub(crate) fn call(
     owner: u64,
     values: &[S2FunctionValue],
 ) -> Result<S2FunctionValue, String> {
+    call_requested(id, owner, values, blank())
+}
+fn call_requested(
+    id: i64,
+    owner: u64,
+    values: &[S2FunctionValue],
+    mut out: S2FunctionValue,
+) -> Result<S2FunctionValue, String> {
     // Mark the exact caller for the complete outbound FFI scope, regardless of
     // which host entry originally invoked its JavaScript.
     let parent = if owner == 0 {
@@ -124,7 +129,6 @@ pub(crate) fn call(
     let op = engine_ops()
         .and_then(|o| o.function_call)
         .ok_or("native function call unavailable")?;
-    let mut out = blank();
     let mut why = [0; 512];
     if op(
         id,
@@ -140,6 +144,47 @@ pub(crate) fn call(
     } else {
         Err(reason(&why))
     }
+}
+/// Exact owned binding supplies every projection; physical target metadata supplies ABI only.
+pub(crate) fn call_binding(
+    binding: &super::registry::Binding,
+    values: &[super::projection::ProjectedValue],
+) -> Result<super::projection::ProjectedValue, String> {
+    let operation = || {
+        super::registry::binding(binding.id, &binding.owner)?;
+        if !binding.function.policy.surfaces.iter().any(|s| s == "call") {
+            return Err("undeclared call surface".into());
+        }
+        let abi = &binding.function.abi;
+        let receiver = usize::from(abi.receiver == "entity");
+        if values.len() != abi.parameters.len() + receiver {
+            return Err("argument count mismatch".into());
+        }
+        let mut wire = Vec::with_capacity(values.len());
+        for (i, value) in values.iter().enumerate() {
+            let (native, projection) = if i == 0 && receiver == 1 {
+                ("ptr", "entity")
+            } else {
+                let p = &abi.parameters[i - receiver];
+                (p.native.as_str(), p.projection.id.as_str())
+            };
+            let request = super::projection::request(native, projection)?;
+            let value = super::projection::encode(*value)?;
+            if value.kind != request.kind || value.flags != request.flags {
+                return Err("binding argument projection mismatch".into());
+            }
+            wire.push(value);
+        }
+        let ret = &abi.returns;
+        let result = call_requested(
+            binding.target.ok_or("binding unavailable")?,
+            binding.owner.generation,
+            &wire,
+            super::projection::request(&ret.native, &ret.projection.id)?,
+        )?;
+        super::projection::decode(result, &ret.native, &ret.projection.id)
+    };
+    operation().map_err(|e: String| format!("{}: {e}", binding.function.canonical_id))
 }
 #[derive(Clone)]
 pub(crate) struct Frame {
@@ -175,10 +220,19 @@ impl Frame {
         })
     }
     pub(crate) fn read(&self, selector: i32, kind: u8) -> Result<S2FunctionValue, String> {
+        let mut request = blank();
+        request.kind = kind;
+        self.read_requested(selector, request)
+    }
+    pub(crate) fn read_requested(
+        &self,
+        selector: i32,
+        mut out: S2FunctionValue,
+    ) -> Result<S2FunctionValue, String> {
+        let kind = out.kind;
         let op = engine_ops()
             .and_then(|o| o.function_frame_read)
             .ok_or("native frame read unavailable")?;
-        let mut out = blank();
         let mut why = [0; 512];
         if op(
             self.target,

@@ -309,6 +309,98 @@ static void busy_service_insertion() {
     outer->BeginRemove();deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);while(!outer->RemovalComplete() && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));assert(outer->RemovalComplete());assert(outer->PruneCompletedTicket());outer.reset();
     std::cout<<"PASS Service busy-capsule Pending/Observe/cancel and target-local ticket collection under real observation\n";
 }
+static void entity_codec() {
+    int object=7,contacts=0;uint32_t serial=71;bool live=true;
+    s2bridge::EntityPointerCodec codec({
+        [&](uint32_t index,uint32_t wanted)->void* {++contacts;return live && index==901 && wanted==serial ? &object : nullptr;},
+        [&](const void* candidate,s2bridge::EntityIdentity& out) {++contacts;if(!live || candidate!=&object)return false;out={901,serial};return true;}
+    });
+    s2bridge::CallStorage storage;S2FunctionValue strict{};strict.kind=8;strict.flags=1;
+    auto nullable=strict;nullable.flags=2;
+    auto identity=strict;identity.aux=901;identity.bits=71;
+    auto decoded=codec.Decode(identity,storage);assert(decoded && decoded.value.Get<void*>()==&object);
+    auto encoded=codec.Encode(decoded.value,strict);assert(encoded && encoded.value.aux==901 && encoded.value.bits==71);
+    auto null=nullable;null.aux=UINT32_MAX;
+    assert(codec.Decode(null,storage) && codec.Decode(null,storage).value.Get<void*>()==nullptr);
+    // Even an inaccessible candidate is compared, never dereferenced.
+    auto unknown=s2fn::NativeValue::From(reinterpret_cast<void*>(uintptr_t(1)));
+    assert(!codec.Encode(unknown,strict));auto optional=codec.Encode(unknown,nullable);assert(optional && optional.value.aux==UINT32_MAX && !optional.value.bits);
+    const int before=contacts;
+    for(int field=0;field<6;++field) {
+        auto bad=identity;
+        if(field==0)bad.kind=2;if(field==1)bad.flags=3;if(field==2)bad.reserved=1;
+        if(field==3)bad.bits=UINT64_MAX;if(field==4)bad.aux=UINT32_MAX-1;if(field==5)bad.aux=UINT32_MAX;
+        assert(!codec.Decode(bad,storage));
+    }
+    for(int field=0;field<5;++field) {
+        auto bad=strict;
+        if(field==0)bad.kind=2;if(field==1)bad.flags=0;if(field==2)bad.reserved=1;if(field==3)bad.aux=901;if(field==4)bad.bits=71;
+        assert(!codec.Encode(decoded.value,bad));
+    }
+    assert(contacts==before);
+    std::thread worker([&]{s2bridge::CallStorage worker_storage;assert(!codec.Decode(identity,worker_storage));assert(!codec.Encode(decoded.value,strict));});worker.join();assert(contacts==before);
+    live=false;assert(!codec.Decode(identity,storage));identity.flags=2;assert(codec.Decode(identity,storage).value.Get<void*>()==nullptr);
+    live=true;serial=72;identity.flags=1;assert(!codec.Decode(identity,storage));identity.bits=72;assert(codec.Decode(identity,storage));
+    assert(codec.Encode(decoded.value,strict).value.bits==72);
+    std::cout<<"PASS entity codec canonical identity, unknown-address non-dereference, null/stale/reuse and pre-contact owner-thread refusal\n";
+}
+static bool entity_second_live=true;
+static int entity_mode=0,entity_contacts=0;
+static S2FunctionFrameInfo entity_last_frame{};
+static S2FunctionValue entity_request(unsigned char flags) {S2FunctionValue v{};v.kind=8;v.flags=flags;return v;}
+static int entity_dispatch(long long target_id,const S2FunctionFrameInfo* info,int phase) {
+    const char* fp="linux-x86_64-sysv:none:ptr(ptr)";char why[256]{};
+    auto read=[&](int selector,S2FunctionValue& out){return S2_FunctionFrameRead(target_id,info->frame_token,info->native_epoch,fp,selector,8,&out,why,sizeof why);};
+    if(phase==0) {
+        auto strict=entity_request(1),nullable=entity_request(2);
+        assert(read(0,strict) && strict.aux==901);assert(read(0,nullable) && nullable.aux==901);
+        const int before=entity_contacts;
+        auto bad=entity_request(1);bad.bits=1;assert(!read(0,bad));assert(entity_contacts==before);
+        std::thread worker([&]{auto request=entity_request(1);assert(!read(0,request));});worker.join();assert(entity_contacts==before);
+        auto edit=entity_request(entity_mode==0 ? 2 : 1);edit.aux=entity_mode==0 ? UINT32_MAX : 902;edit.bits=entity_mode==0 ? 0 : 72;
+        assert(S2_FunctionFrameWrite(target_id,info->frame_token,info->native_epoch,fp,0,&edit,why,sizeof why));
+        if(entity_mode==1)entity_second_live=false;
+        strict=entity_request(1);nullable=entity_request(2);
+        assert(!read(0,strict));assert(std::strstr(why,"strict entity"));
+        assert(read(0,nullable) && nullable.aux==UINT32_MAX);
+        const auto committed=S2_FunctionFrameCommit(target_id,info->frame_token,info->native_epoch,fp,0,nullptr,why,sizeof why);
+        if(entity_mode==0)assert(committed);else {assert(!committed);assert(std::strstr(why,"strict entity"));}
+    } else {
+        auto value=entity_request(2);assert(read(-2,value));assert(value.aux==(entity_mode==0 ? UINT32_MAX : 901));
+        assert(!S2_FunctionFrameWrite(target_id,info->frame_token,info->native_epoch,fp,0,&value,why,sizeof why));
+    }
+    entity_last_frame=*info;return 1;
+}
+static void entity_transport() {
+    for(bool nullable_first:{false,true}) {
+        int objects[2]={};entity_second_live=true;
+        s2bridge::EntityPointerCodec codec({
+            [&](uint32_t index,uint32_t serial)->void* {++entity_contacts;if(index==901 && serial==71)return &objects[0];if(index==902 && serial==72 && entity_second_live)return &objects[1];return nullptr;},
+            [&](const void* pointer,s2bridge::EntityIdentity& out) {++entity_contacts;for(unsigned i=0;i<2;++i)if(pointer==&objects[i] && (i==0 || entity_second_live)){out={901+i,71+i};return true;}return false;}
+        });
+        auto address=reinterpret_cast<uintptr_t>(&s2bridge_fixture_pointer);Fixture fixture(address-0x1200);fixture.freeze();
+        s2bridge::Service service([&](const auto&,auto& out,auto&){out.address=address;out.image=fixture.image;return true;});
+        s2bridge::CoreDispatchSink sink(entity_dispatch);assert(service.SetDispatchSink(&sink));assert(service.SetPointerCodec(&codec));
+        auto t=target();t["resolve"]="direct";t["derivation"]="identity";t["candidateValidate"]=json::object();auto a=abi();
+        a["parameters"][0]["native"]="ptr";a["returns"]["native"]="ptr";a["fingerprint"]="linux-x86_64-sysv:none:ptr(ptr)";
+        auto prepare=[&](bool nullable){a["parameters"][0]["projection"]["id"]=nullable ? "entity?" : "entity";a["returns"]["projection"]["id"]=nullable ? "entity?" : "entity";return service.Prepare(nullable ? "optional" : "required",t.dump(),a.dump(),a["fingerprint"]);};
+        auto first=prepare(nullable_first),second=prepare(!nullable_first);assert(first && second && first.value==second.value);
+        auto input=entity_request(1);input.aux=901;input.bits=71;
+        for(unsigned char flags:{1,2}) {auto arg=input;arg.flags=flags;auto result=service.Call(first.value,0,&arg,1,entity_request(flags));assert(result && result.value.flags==flags && result.value.aux==901);}
+        auto null=entity_request(2);null.aux=UINT32_MAX;assert(service.Call(first.value,0,&null,1,entity_request(2)));
+        assert(!service.Call(first.value,0,&null,1,entity_request(1)));
+        assert(service.HookAcquire(first.value));
+        for(entity_mode=0;entity_mode<2;++entity_mode) {
+            auto result=service.Call(first.value,0,&input,1,entity_request(2));assert(result && result.value.aux==(entity_mode==0 ? UINT32_MAX : 901));
+        }
+        const int before=entity_contacts;auto request=entity_request(1);char why[256]{};
+        assert(!S2_FunctionFrameRead(first.value,entity_last_frame.frame_token,entity_last_frame.native_epoch,a["fingerprint"].get<std::string>().c_str(),0,8,&request,why,sizeof why));assert(entity_contacts==before);
+        assert(service.HookRelease(first.value));assert(service.TargetRelease(first.value));assert(service.TargetRelease(second.value));
+        auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+        while(!service.Collect() && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));assert(service.Empty());
+    }
+    std::cout<<"PASS entity binding-local requests both physical orders, staged null/strict reads, atomic stale commit, phase/lease/thread guards\n";
+}
 static void scalar_transport() {
     Fixture fixture(reinterpret_cast<uintptr_t>(&native)-0x1200);fixture.freeze();
     s2bridge::Service service([&](const auto&,auto& out,auto&){out.address=reinterpret_cast<uintptr_t>(&native);out.image=fixture.image;return true;});
@@ -403,6 +495,8 @@ void runtime() {
     std::cout << "PASS real CIF/shared physical stock hook/lazy calls/nested owner bypass/refcount/retirement\n";
     worker_join_regression();
     scalar_transport();
+    entity_codec();
+    entity_transport();
     busy_service_insertion();
     KHook::Shutdown();
 }

@@ -469,6 +469,26 @@ static void* s2_ent_resolve(int index, int serial) {
     return id->m_pInstance;   // may be null (removal in progress) — caller treats null as not-live
 }
 
+// Reverse adoption compares candidate addresses with system-owned identity slots.
+// Never dereference the candidate instance to decide its identity or liveness.
+static bool s2_function_identify_entity(const void* candidate, s2bridge::EntityIdentity& out) {
+    if (!candidate) return false;
+    auto* es=GetEntitySystem();if(!es) return false;
+    bool found=false;s2bridge::EntityIdentity identity;
+    for(int idx=0;idx<MAX_TOTAL_ENTITIES;++idx) {
+        auto* chunk=es->m_EntityList.m_pIdentityChunks[idx/MAX_ENTITIES_IN_LIST];
+        if(!chunk) continue;
+        auto* slot=&chunk[idx%MAX_ENTITIES_IN_LIST];
+        if((slot->m_flags & EF_IS_INVALID_EHANDLE) || !slot->m_pInstance || slot->m_pInstance!=candidate) continue;
+        if(found) return false;
+        const auto handle=slot->GetRefEHandle();
+        if(handle.GetEntryIndex()!=idx) return false;
+        identity={static_cast<uint32_t>(idx),static_cast<uint32_t>(handle.GetSerialNumber())};found=true;
+    }
+    if(found) out=identity;
+    return found;
+}
+
 // E1 engine-op: identity m_flags read from the SLOT (never instance+0x10). -1 = stale/absent.
 // Backs pawn.isValid's EF_IN_STAGING_LIST check without touching instance memory; the flag's
 // bit value stays in the game package (engine-generic: raw flags cross the ABI).
@@ -4927,7 +4947,11 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     g_terminalCoord.Reset(g_coreOwnerTid);
     // Construct on the engine/V8 owner thread, before any package bootstrap.
     static s2bridge::CoreDispatchSink function_sink(&s2script_core_dispatch_function);
-    if (!s2bridge::Global().SetDispatchSink(&function_sink)) {
+    static s2bridge::EntityPointerCodec function_entities({
+        [](uint32_t index,uint32_t serial)->void* {return s2_ent_resolve(static_cast<int>(index),static_cast<int>(serial));},
+        s2_function_identify_entity
+    });
+    if (!s2bridge::Global().SetDispatchSink(&function_sink) || !s2bridge::Global().SetPointerCodec(&function_entities)) {
         std::snprintf(error, maxlen, "engine-function service still owns prior records");
         return false;
     }

@@ -227,6 +227,7 @@ mod production {
     thread_local! {
         static PACKAGE:RefCell<Option<function_adapter::PreparedPackageReceipt>>=const{RefCell::new(None)};
         static BINDINGS:RefCell<BTreeMap<String,u64>>=const{RefCell::new(BTreeMap::new())};
+        static ENTITY_SLOT:Cell<Option<proof::EntitySlot>>=const{Cell::new(None)};
         static STEP:Cell<usize>=const{Cell::new(0)};
         static FAILURE:RefCell<Option<String>>=const{RefCell::new(None)};
     }
@@ -332,6 +333,14 @@ mod production {
                     .unwrap();
                 }
             }),
+            5..=8 => {
+                let step = STEP.with(Cell::get) - 5;
+                proof::entity_conformance(
+                    step >= 2,
+                    step % 2 == 1,
+                    ENTITY_SLOT.with(Cell::get).unwrap(),
+                );
+            }
             _ => panic!("unexpected frame callback"),
         });
         if let Err(error) = result {
@@ -364,6 +373,9 @@ mod production {
             unsafe { std::mem::transmute(symbol(library, "s2fn_production_empty")) };
         let close: Remove =
             unsafe { std::mem::transmute(symbol(library, "s2fn_production_close")) };
+        let entity_slot: proof::EntitySlot =
+            unsafe { std::mem::transmute(symbol(library, "s2fn_production_entity_slot")) };
+        ENTITY_SLOT.with(|s| s.set(Some(entity_slot)));
         init(frame_tests::logger).unwrap();
         PACKAGE.with(|p| *p.borrow_mut() = Some(proof::package()));
         FAILURE.with(|f| *f.borrow_mut() = None);
@@ -416,6 +428,20 @@ mod production {
             1,
             "normal frames must automatically collect after last core subscriber"
         );
+        for step in 5..=8 {
+            drive(step);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while unsafe { empty() } == 0 && std::time::Instant::now() < deadline {
+                assert_eq!(unsafe { frame(0) }, 1);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert_eq!(
+                unsafe { empty() },
+                1,
+                "entity scenario must retire before next preparation order"
+            );
+        }
+        ENTITY_SLOT.with(|s| s.set(None));
         assert_eq!(unsafe { close() }, 1);
         PACKAGE.with(|p| p.borrow_mut().take());
         set_engine_ops(None);

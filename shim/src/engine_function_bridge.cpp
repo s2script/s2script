@@ -141,6 +141,27 @@ bool pointer_request(const S2FunctionValue& v) {
         v.flags<=static_cast<unsigned char>(PointerProjection::Vector);
 }
 }
+s2fn::Result<s2fn::NativeValue> EntityPointerCodec::Decode(const S2FunctionValue& value,CallStorage&) {
+    if(std::this_thread::get_id()!=owner_) return {{},"entity codec off host thread"};
+    if(value.kind!=8 || (value.flags!=1 && value.flags!=2) || value.reserved || value.bits>UINT32_MAX ||
+       (value.aux>INT32_MAX && value.aux!=UINT32_MAX) ||
+       (value.aux==UINT32_MAX && (value.flags!=2 || value.bits!=0))) return {{},"invalid entity identity transport"};
+    void* pointer=nullptr;
+    if(value.aux!=UINT32_MAX && access_.resolve) pointer=access_.resolve(value.aux,static_cast<uint32_t>(value.bits));
+    if(!pointer && value.flags==1) return {{},"strict entity projection is null or stale"};
+    return {s2fn::NativeValue::From(pointer),{}};
+}
+s2fn::Result<S2FunctionValue> EntityPointerCodec::Encode(const s2fn::NativeValue& value,const S2FunctionValue& request) {
+    if(std::this_thread::get_id()!=owner_) return {{},"entity codec off host thread"};
+    if(request.kind!=8 || (request.flags!=1 && request.flags!=2) || request.reserved || request.aux || request.bits)
+        return {{},"invalid entity projection request"};
+    EntityIdentity identity;const auto pointer=value.Get<void*>();
+    bool live=pointer && access_.identify && access_.identify(pointer,identity);
+    if(live && (identity.index>INT32_MAX || !access_.resolve || access_.resolve(identity.index,identity.serial)!=pointer)) live=false;
+    if(!live && request.flags==1) return {{},"strict entity projection cannot adopt native value"};
+    auto out=request;out.aux=live ? identity.index : UINT32_MAX;out.bits=live ? identity.serial : 0;
+    return {out,{}};
+}
 namespace {
 static_assert(sizeof(S2FunctionFrameInfo)==48 && alignof(S2FunctionFrameInfo)==8 &&
     offsetof(S2FunctionFrameInfo,invocation_id)==24 && offsetof(S2FunctionFrameInfo,flags)==44,
@@ -153,6 +174,8 @@ struct FrameAccess {
     s2fn::DispatchFrame& native;
     S2FunctionFrameInfo info;
     std::vector<s2fn::NativeValue> staged;
+    PointerCodec* codec=nullptr;
+    std::map<int,S2FunctionValue> entity_edits;
     bool changed=false, committed=false;
 };
 thread_local std::vector<FrameAccess*> frames;
@@ -231,7 +254,7 @@ struct Service::Impl {
                 FrameAccess access{id,declaration,frame,
                     {1,sizeof(S2FunctionFrameInfo),epoch,epoch,frame.invocation_id,owner,
                      static_cast<unsigned int>(frame.arguments.size()),frame.original_skipped ? 1u : 0u},
-                    frame.arguments};
+                    frame.arguments,host.codec,{}};
                 frames.push_back(&access);
                 struct Pop { ~Pop() { frames.pop_back(); } } pop;
                 sink->Dispatch(id,owner,frame);
@@ -480,7 +503,11 @@ extern "C" int S2_FunctionFrameRead(long long id,unsigned long long token,unsign
         using namespace s2bridge;
         auto& f=frame_access(id,token,epoch,fp); require(out,"missing frame output");
         ValueKind k; s2fn::NativeValue value;
-        if (selector==-2) {
+        if (selector==-1) {
+            require(f.declaration.abi.receiver=="entity","receiver unavailable");
+            k=ValueKind::Pointer;value=f.native.receiver;
+            require(out->flags==static_cast<unsigned char>(PointerProjection::Entity),"receiver requires strict entity projection");
+        } else if (selector==-2) {
             require(f.native.phase==s2fn::Phase::Post,"effective return is POST-only");
             k=kind(f.declaration.abi.returns.native); value=f.native.result;
         } else {
@@ -488,7 +515,22 @@ extern "C" int S2_FunctionFrameRead(long long id,unsigned long long token,unsign
             k=kind(f.declaration.abi.parameters[selector].native); value=f.staged[selector];
         }
         require(projection==static_cast<unsigned char>(k),"projection kind mismatch");
-        auto result=scalar_copy(value,k); *out=result; reason_out(reason,cap,""); return 1;
+        S2FunctionValue result{};
+        if(k==ValueKind::Pointer) {
+            require(f.codec,"entity codec unavailable");
+            // Validate the caller's binding-local request before touching any slot.
+            require(out->kind==8 && (out->flags==1 || out->flags==2) && !out->reserved && !out->aux && !out->bits,
+                "invalid entity projection request");
+            auto edit=f.entity_edits.find(selector);
+            CallStorage storage;
+            if(edit!=f.entity_edits.end()) {
+                // Decode using writer's checked identity, encode using reader's request.
+                auto identity=edit->second;identity.flags=static_cast<unsigned char>(PointerProjection::NullableEntity);
+                auto decoded=f.codec->Decode(identity,storage);require(bool(decoded),decoded.error.c_str());value=decoded.value;
+            }
+            auto encoded=f.codec->Encode(value,*out);require(bool(encoded),encoded.error.c_str());result=encoded.value;
+        } else result=scalar_copy(value,k);
+        *out=result; reason_out(reason,cap,""); return 1;
     } catch (const std::exception& e) {reason_out(reason,cap,e.what());return 0;}
       catch (...) {reason_out(reason,cap,"frame read exception");return 0;}
 }
@@ -499,8 +541,12 @@ extern "C" int S2_FunctionFrameWrite(long long id,unsigned long long token,unsig
         auto& f=frame_access(id,token,epoch,fp);
         require(f.native.phase==s2fn::Phase::Pre && !f.committed,"frame is readonly");
         require(value && selector>=0 && static_cast<size_t>(selector)<f.staged.size(),"invalid frame write selector");
-        const auto converted=scalar_decode(*value,kind(f.declaration.abi.parameters[selector].native));
-        f.staged[selector]=converted; f.changed=true; reason_out(reason,cap,""); return 1;
+        if(kind(f.declaration.abi.parameters[selector].native)==ValueKind::Pointer) {
+            require(f.codec,"entity codec unavailable");CallStorage storage;
+            auto decoded=f.codec->Decode(*value,storage);require(bool(decoded),decoded.error.c_str());
+            f.entity_edits[selector]=*value; // Never retain the resolved address as the staged edit.
+        } else f.staged[selector]=scalar_decode(*value,kind(f.declaration.abi.parameters[selector].native));
+        f.changed=true; reason_out(reason,cap,""); return 1;
     } catch (const std::exception& e) {reason_out(reason,cap,e.what());return 0;}
       catch (...) {reason_out(reason,cap,"frame write exception");return 0;}
 }
@@ -514,9 +560,21 @@ extern "C" int S2_FunctionFrameCommit(long long id,unsigned long long token,unsi
         auto k=kind(f.declaration.abi.returns.native);
         s2fn::NativeValue result;
         if (action<2 || k==ValueKind::Void) require(!value,"unexpected suppression return");
-        else { require(value,"missing typed suppression return");result=scalar_decode(*value,k); }
+        else {
+            require(value,"missing typed suppression return");
+            if(k==ValueKind::Pointer) {
+                require(f.codec,"entity codec unavailable");CallStorage storage;
+                auto decoded=f.codec->Decode(*value,storage);require(bool(decoded),decoded.error.c_str());result=decoded.value;
+            } else result=scalar_decode(*value,k);
+        }
+        auto staged=f.staged;CallStorage storage;
+        for(const auto& edit:f.entity_edits) {
+            require(f.codec,"entity codec unavailable");
+            auto decoded=f.codec->Decode(edit.second,storage);require(bool(decoded),decoded.error.c_str());
+            staged.at(edit.first)=decoded.value;
+        }
         // All validation and allocation precede the atomic final transfer.
-        f.native.arguments.swap(f.staged); f.native.changed=f.changed;
+        f.native.arguments.swap(staged); f.native.changed=f.changed;
         f.native.action=action>=2 ? KHook::Action::Supersede : KHook::Action::Ignore;
         f.native.result=result; f.committed=true; reason_out(reason,cap,""); return 1;
     } catch (const std::exception& e) {reason_out(reason,cap,e.what());return 0;}

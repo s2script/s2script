@@ -35,6 +35,20 @@ public:
     // request flags/aux select the projection; encode/adopt an opaque host handle.
     virtual s2fn::Result<S2FunctionValue> Encode(const s2fn::NativeValue&, const S2FunctionValue& request) = 0;
 };
+struct EntityIdentity { uint32_t index=0, serial=0; };
+struct EntityAccess {
+    std::function<void*(uint32_t,uint32_t)> resolve;
+    std::function<bool(const void*,EntityIdentity&)> identify;
+};
+class EntityPointerCodec final : public PointerCodec {
+public:
+    explicit EntityPointerCodec(EntityAccess access) : access_(std::move(access)), owner_(std::this_thread::get_id()) {}
+    s2fn::Result<s2fn::NativeValue> Decode(const S2FunctionValue&,CallStorage&) override;
+    s2fn::Result<S2FunctionValue> Encode(const s2fn::NativeValue&,const S2FunctionValue&) override;
+private:
+    EntityAccess access_;
+    std::thread::id owner_;
+};
 class DispatchSink {
 public:
     virtual ~DispatchSink() = default;

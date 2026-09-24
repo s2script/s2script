@@ -45,6 +45,36 @@ fn is_entity_ref(scope: &mut v8::PinScope, prototype: v8::Local<v8::Value>) -> b
         .get_private(scope, key)
         .is_some_and(|original| original.is_object() && original.strict_equals(prototype))
 }
+/// Read a genuine current-context reference without executing getters or coercion.
+pub(super) fn strict_entity_reference(scope:&mut v8::PinScope,value:v8::Local<v8::Value>) -> Option<crate::engine_functions::projection::EntityReference> {
+    if value.is_proxy() || !value.is_object() {return None;}
+    let obj=v8::Local::<v8::Object>::try_from(value).ok()?;
+    if !is_entity_ref(scope,obj.get_prototype(scope)?) {return None;}
+    let keys=obj.get_own_property_names(scope,v8::GetPropertyNamesArgs {
+        property_filter:v8::PropertyFilter::ALL_PROPERTIES,key_conversion:v8::KeyConversionMode::ConvertToString,..Default::default()
+    })?;
+    if keys.length()!=2 {return None;}
+    for i in 0..2 {let key=keys.get_index(scope,i)?;if !key.is_string() || !matches!(strict_string(scope,key)?.as_str(),"index"|"id") {return None;}}
+    let index=data_property(scope,obj,"index")?;let id=data_property(scope,obj,"id")?;
+    if !index.is_number() || !id.is_number() {return None;}
+    let index=index.number_value(scope)?;let id=id.number_value(scope)?;
+    if !index.is_finite() || !id.is_finite() || index<0.0 || index>i32::MAX as f64 || id<0.0 || id>9_007_199_254_740_991.0 || index.fract()!=0.0 || id.fract()!=0.0 {return None;}
+    Some(crate::engine_functions::projection::EntityReference {index:index as i32,id:id as u64})
+}
+/// No user constructor/property lookup runs while creating a projected copy.
+pub(super) fn projected_entity_ref<'s>(scope:&mut v8::PinScope<'s,'_>,reference:crate::engine_functions::projection::EntityReference) -> Option<v8::Local<'s,v8::Value>> {
+    let global=scope.get_current_context().global(scope);
+    let name=v8::String::new(scope,"s2script.interop.EntityRef.prototype")?;
+    let key=v8::Private::for_api(scope,Some(name));
+    let prototype=global.get_private(scope,key)?;
+    if !prototype.is_object() {return None;}
+    let object=v8::Object::new(scope);object.set_prototype(scope,prototype)?;
+    for (name,value) in [("index",reference.index as f64),("id",reference.id as f64)] {
+        let key=v8::String::new(scope,name)?;let value=v8::Number::new(scope,value);
+        object.define_own_property(scope,key.into(),value.into(),v8::PropertyAttribute::READ_ONLY)?;
+    }
+    Some(object.into())
+}
 pub(super) fn published_contract(name: &str) -> Option<crate::interop::Contract> {
     let (owner, _) = IFACES.with(|r| r.borrow().producer_of(name))?;
     PLUGIN_PUBLISHES.with(|p| p.borrow().get(&owner)?.get(name)?.contract.clone())
@@ -128,46 +158,8 @@ fn copy_value(
     let obj = v8::Local::<v8::Object>::try_from(value).ok()?;
     let proto = obj.get_prototype(scope)?;
     if is_entity_ref(scope, proto) {
-        // The shipped SDK ref has only index/id own data properties. Include non-enumerable
-        // and symbol keys: silently dropping extra values would weaken the strict boundary.
-        let keys = obj.get_own_property_names(
-            scope,
-            v8::GetPropertyNamesArgs {
-                property_filter: v8::PropertyFilter::ALL_PROPERTIES,
-                key_conversion: v8::KeyConversionMode::ConvertToString,
-                ..Default::default()
-            },
-        )?;
-        if keys.length() != 2 {
-            return None;
-        }
-        for i in 0..keys.length() {
-            let key = keys.get_index(scope, i)?;
-            if !key.is_string()
-                || !matches!(strict_string(scope, key)?.as_str(), "index" | "id")
-            {
-                return None;
-            }
-        }
-        let index = data_property(scope, obj, "index")?;
-        let id = data_property(scope, obj, "id")?;
-        if !index.is_number() || !id.is_number() {
-            return None;
-        }
-        let index = index.number_value(scope)?;
-        let id = id.number_value(scope)?;
-        if index < 0.0
-            || index > i32::MAX as f64
-            || id < 0.0
-            || id > 9_007_199_254_740_991.0
-            || index.fract() != 0.0
-            || id.fract() != 0.0
-            || !index.is_finite()
-            || !id.is_finite()
-        {
-            return None;
-        }
-        return Some(serde_json::json!({"__s2ref":[index as u64,id as u64]}));
+        let reference=strict_entity_reference(scope,value)?;
+        return Some(serde_json::json!({"__s2ref":[reference.index as u64,reference.id]}));
     }
     if !value.is_array() && !proto.is_null() {
         let plain = v8::Object::new(scope);

@@ -417,6 +417,17 @@ extern "C" int s2fn_probe_remove() {
 // It supplies only the real Service ops and the real checked outer frame.
 static std::unique_ptr<s2bridge::Service> production_service;
 static std::unique_ptr<s2bridge::CoreDispatchSink> production_sink;
+// Fixture-owned entity slots substitute only for the absent CS2 entity system.
+static volatile std::uint64_t production_entity_calls=0;
+static S2FnMemberFixture production_entities[2]={{10,&production_entity_calls},{20,&production_entity_calls}};
+static unsigned production_serials[2]={};
+static bool production_live[2]={};
+static std::thread::id production_owner;
+static std::unique_ptr<s2bridge::EntityPointerCodec> production_codec;
+extern "C" int s2fn_production_entity_slot(int index,unsigned serial,int live) {
+    if(std::this_thread::get_id()!=production_owner || (index!=901 && index!=902) || (live!=0 && live!=1))return 0;
+    production_serials[index-901]=serial;production_live[index-901]=live!=0;return 1;
+}
 static void (*production_step)()=nullptr;
 static bool production_requested=true;
 static int production_peer_calls=0;
@@ -456,18 +467,32 @@ static int production_release(long long id){return production_service->HookRelea
 static int production_target_release(long long id){return production_service->TargetRelease(id);}
 static int production_status(long long id,S2FunctionHookStatus* out,char* why,int cap){auto result=production_service->HookStatus(id);if(why && cap>0)std::snprintf(why,cap,"%s",result.error.c_str());if(!result)return 0;*out=result.value;return 1;}
 extern "C" int s2fn_production_create(s2bridge::CoreDispatch dispatch,void(*step)(),S2EngineOps* ops) {
-    production_step=step;production_requested=true;
+    production_step=step;production_requested=true;production_owner=std::this_thread::get_id();
     Dl_info module{};auto address=checked_target(reinterpret_cast<void*>(identity_target<std::int32_t>()));
     assert(dladdr(address,&module));std::string why;
     auto image=s2original::OpenLoadedModule(module.dli_fname,why);assert(image);
-    production_service=std::make_unique<s2bridge::Service>([image,address](const auto&,auto& result,auto&){
-        result.image=image;result.address=reinterpret_cast<uintptr_t>(address);
+    production_service=std::make_unique<s2bridge::Service>([image,address](const auto& recipe,auto& result,auto&){
+        // Explicit fixture recipes only. Every body remains in the isolated DSO.
+        auto selected=recipe.pattern=="50" ? checked_target(reinterpret_cast<void*>(fixture_targets().identity_ptr)) :
+            recipe.pattern=="51" ? checked_target(fixture_targets().member) : address;
+        result.image=image;result.address=reinterpret_cast<uintptr_t>(selected);
         result.recipe="separated compiler-authored scalar fixture";result.validation_receipt="fixture module guard";return true;
     });
     // An uninitialized Service refuses hook registration; the actual Rust export
     // is then bound, in this same process/runtime, without another core DSO.
     production_sink=std::make_unique<s2bridge::CoreDispatchSink>(dispatch);
     assert(production_service->SetDispatchSink(production_sink.get()));
+    production_codec=std::make_unique<s2bridge::EntityPointerCodec>(s2bridge::EntityAccess{
+        [](uint32_t index,uint32_t serial)->void* {
+            if(index<901 || index>902 || !production_live[index-901] || production_serials[index-901]!=serial)return nullptr;
+            return &production_entities[index-901];
+        },
+        [](const void* candidate,s2bridge::EntityIdentity& out) {
+            for(unsigned i=0;i<2;++i)if(production_live[i] && candidate==&production_entities[i]) {
+                out={901+i,production_serials[i]};return true;
+            }return false;
+        }});
+    assert(production_service->SetPointerCodec(production_codec.get()));
     ops->function_prepare=production_prepare;ops->function_call=production_call;
     ops->function_hook_acquire=production_acquire;ops->function_hook_release=production_release;
     ops->function_target_release=production_target_release;ops->function_hook_status=production_status;
@@ -492,7 +517,7 @@ extern "C" int s2fn_production_close(){
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
     while((!production_frame.RemovalComplete() || !production_peer.RemovalComplete()) && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));
     assert(production_frame.RemovalComplete() && production_peer.RemovalComplete());assert(S2Hook_DrainRetirement());
-    production_service.reset();production_sink.reset();KHook::Shutdown();return 1;
+    production_service.reset();production_sink.reset();production_codec.reset();KHook::Shutdown();return 1;
 }
 
 #endif
