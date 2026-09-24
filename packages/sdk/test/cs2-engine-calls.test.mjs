@@ -1,6 +1,6 @@
 /**
  * A5b — the behaviour that moved OUT of core/shim and INTO games/cs2/js when the eight CS2 engine
- * calls became `calls` descriptors in gamedata/cs2/game.cs2.jsonc.
+ * calls became `calls` descriptors in games/cs2/gamedata/game.cs2.jsonc.
  *
  * WHY THIS FILE EXISTS. A descriptor expresses LAYOUT: receiver, arg kinds, return kind. It cannot
  * express a precondition, a default, a bound, or a fallback to a different descriptor — and every
@@ -15,7 +15,7 @@
  * — most often the interesting one — when nothing is called at all.
  *
  * The subject is the REAL shipped bundle (packages/sdk/test/cs2-addon.mjs derives the file list from
- * scripts/package-addon.sh), run in a vm context whose natives are fakes that record. Nothing here
+ * games/cs2/game-package.jsonc), run in a vm context whose natives are fakes that record. Nothing here
  * is a re-implementation of pawn.js, so nothing here can drift from it without going red.
  */
 import { test } from "node:test";
@@ -24,7 +24,7 @@ import vm from "node:vm";
 import { installClientHost } from "./client-host.mjs";
 import { cs2AddonBundle } from "./cs2-addon.mjs";
 
-/** Every descriptor gamedata/cs2/game.cs2.jsonc declares — the default "all eight resolved" host. */
+/** Every descriptor games/cs2/gamedata/game.cs2.jsonc declares — the default "all eight resolved" host. */
 const ALL_CALLS = ["commitSuicide", "changeTeam", "switchTeam", "terminateRound",
                    "respawn", "setPawn", "giveNamedItem", "removePlayerItem"];
 

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "@s2script/cs2",
+  "match": { "engine": "source2", "game": "csgo" },
+  "gamedataOwner": "cs2",
+  "bootstrapInputs": [
+    "js/schema.generated.js", "js/nav.generated.js", "js/activity.js",
+    "js/csitem.generated.js", "js/weapon.js", "js/pawn.js", "js/camera.js",
+    "js/ui.js", "js/components.js", "js/hudinput.js", "js/menuhud.js", "js/voterail.js"
+  ],
+  "gamedataRoot": "gamedata"
+}

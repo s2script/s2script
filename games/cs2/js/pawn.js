@@ -8,7 +8,7 @@
   var schema = globalThis.__s2pkg_cs2_schema;   // set by schema.generated.js
   var Weapon = globalThis.__s2pkg_cs2.Weapon;   // set by weapon.js (concatenated before this file)
 
-  // --- A5b: engine calls this game package DECLARES (gamedata/cs2/game.cs2.jsonc `calls`) ---
+  // --- A5b: engine calls this game package DECLARES (games/cs2/gamedata/game.cs2.jsonc `calls`) ---
   // The descriptors are registered by the HOST at Load — the shim hands core gamedata/cs2's merged
   // view — under the game package's own reserved owner id. This file never declares one and a
   // plugin cannot: the natives below take a call NAME only, exactly like @s2script/sdk/unsafe's
@@ -54,7 +54,7 @@
       return __s2_game_call_invoke(name, ref.index, ref.id, args);
     };
   }
-  // The eleven descriptors gamedata/cs2/game.cs2.jsonc declares, resolved ONCE here. Resolution is a
+  // The eleven descriptors games/cs2/gamedata/game.cs2.jsonc declares, resolved ONCE here. Resolution is a
   // load-time fact — the shim resolves + validates every descriptor at Load and never retries — so a
   // per-call `engineCall()` would re-derive the same answer on every slay(). Each is a plain callable
   // or `null`; the typed wrappers below test for null and degrade to their documented no-op/false,
@@ -398,7 +398,7 @@
 
   // --- Item / weapon manipulation slice (Task 4): pawn.giveNamedItem/weapons/stripWeapons/
   // dropActiveWeapon/removeWeapon — over the `giveNamedItem`/`removePlayerItem` descriptors declared
-  // in gamedata/cs2/game.cs2.jsonc (A5b; they were bespoke shim ops before) plus the Task-1
+  // in games/cs2/gamedata/game.cs2.jsonc (A5b; they were bespoke shim ops before) plus the Task-1
   // __s2_entity_subobj_vcall op and EntityRef.readHandleVector.
   // Offsets are live-resolved via __s2_schema_offset (never baked, self-healing); __s2_schema_offset
   // walks the base-class chain (schema_find_field in the shim), so passing "CCSPlayer_WeaponServices"
@@ -1015,7 +1015,7 @@
   // prelude.js merges these into every plugin's ctx). Each factory gets the prelude's ledger
   // registrar, so ctx.gameRules.onTerminateRound is torn down at unload like any other
   // subscription. The hook NAMES here must match the `hooks` keys declared for "@s2script/cs2"
-  // in gamedata/cs2/game.cs2.jsonc — degrade is graceful (a WARN, never a crash) if they drift,
+  // in games/cs2/gamedata/game.cs2.jsonc — degrade is graceful (a WARN, never a crash) if they drift,
   // but the handler simply never fires.
   globalThis.__s2pkg_game_ctx = {
     gameRules: function (reg, viaId) {

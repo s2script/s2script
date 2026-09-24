@@ -79,12 +79,14 @@ for owner in sorted(loader_owners):
     if owner not in kind_by_owner:
         bad.append(f'{owner}: kGamedataOwners row is missing GdOwnerKind::Core|Game|Extension')
 on_disk_owners = {p.name for p in pathlib.Path('gamedata').iterdir() if p.is_dir()}
+if pathlib.Path('games/cs2/gamedata').is_dir():
+    on_disk_owners.add('cs2')
 for owner in sorted(on_disk_owners - loader_owners):
     bad.append(f'{owner}: gamedata/{owner}/ exists but "{owner}" is not in the shim\'s '
                f'kGamedataOwners[] table — the loader would never read the tree')
 
 for owner in sorted(loader_owners | on_disk_owners):
-    owner_dir = pathlib.Path('gamedata') / owner
+    owner_dir = pathlib.Path('games/cs2/gamedata') if owner == 'cs2' else pathlib.Path('gamedata') / owner
     if not owner_dir.is_dir():
         bad.append(f'{owner}: owner directory missing')
         continue

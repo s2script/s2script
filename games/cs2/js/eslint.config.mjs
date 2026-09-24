@@ -9,6 +9,7 @@
 // The globals are DERIVED from core's own source, never hand-listed: a checked-in literal list
 // drifts and turns the gate into decoration.
 import { readFileSync, readdirSync } from "node:fs";
+import { stripJsonComments } from "../../../packages/sdk/src/gamedata/jsonc.ts";
 
 const root = new URL("../../../", import.meta.url);
 
@@ -25,17 +26,15 @@ const coreSrc = readdirSync(coreSrcDir, { withFileTypes: true, recursive: true }
 // why a global published by one file and read bare by another is legitimate here and invisible to a
 // per-file linter.
 //
-// The file list is READ OUT OF package-addon.sh, never written here. A hand-kept copy of it shipped
+// The file list is READ OUT OF the source manifest, never written here. A hand-kept copy of it shipped
 // STALE in this very file's first version: it listed four of the six files the packager concatenates,
 // omitting activity.js and csitem.generated.js — while carrying a comment about how hand-kept lists
 // drift. Derive it, and fail loudly if the derivation stops working.
-const packager = readFileSync(new URL("scripts/package-addon.sh", root), "utf8");
-const catLine = packager.match(/cat (games\/cs2\/js\/\S+(?: games\/cs2\/js\/\S+)*)\s*>/);
-if (!catLine) {
-  throw new Error("games/cs2/js/eslint.config.mjs: could not find the prelude `cat` line in " +
-                  "scripts/package-addon.sh — this config can no longer tell which files ship");
+const sourceManifest = JSON.parse(stripJsonComments(readFileSync(new URL("../game-package.jsonc", import.meta.url), "utf8")));
+const shipped = sourceManifest.bootstrapInputs.map((f) => f.replace(/^js\//, ""));
+if (!shipped.length || shipped.some((f) => f.includes("/"))) {
+  throw new Error("games/cs2/js/eslint.config.mjs: invalid bootstrapInputs in game-package.jsonc");
 }
-const shipped = catLine[1].split(/\s+/).map((f) => f.replace(/^games\/cs2\/js\//, ""));
 const sources = shipped
   .map((f) => {
     try { return readFileSync(new URL(`./${f}`, import.meta.url), "utf8"); }

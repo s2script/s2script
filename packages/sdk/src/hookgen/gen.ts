@@ -7,7 +7,7 @@ import { stripJsonComments } from "../gamedata/jsonc.ts";
 // The cs2 game package's own gamedata (JSONC — comments are load-bearing documentation there, see
 // the file's own header). `hooks` is Task 5's descriptor section; this generator reads it directly
 // rather than re-deriving names, so a ninth hook needs no codegen edit, only a gamedata entry.
-const GAMEDATA_PATH = "gamedata/cs2/game.cs2.jsonc";
+const GAMEDATA_PATH = "games/cs2/gamedata/game.cs2.jsonc";
 const DTS_OUT = "packages/cs2/hooks.generated.d.ts";
 
 /** Generate the `ctx` hook-augmentation `.d.ts` artifact from the cs2 game package's declared
