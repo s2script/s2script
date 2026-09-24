@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { runInNewContext } from "node:vm";
 import { fileURLToPath } from "node:url";
 import { buildGamePackages } from "./build-game-packages.mjs";
 import { parseFunctionFile } from "../packages/sdk/src/engine-functions/parse.ts";
@@ -43,6 +44,36 @@ function buildFixture() {
 
 const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
 const scriptsRoot = dirname(fileURLToPath(import.meta.url));
+const acquireContract = '{"frame":{"post":["player:entity?","defIndex:u16-number","method:i32","result:i32","skipped:bool"],"pre":["player:entity?","defIndex:u16-number","method:i32","result:i32:mutable"]},"id":"legacy.acquire.v1","preDecision":"s2.pre-decision.v1","semantics":{"allowed":0,"deny":"nonzero","denyTie":"first","engineResult":"only-if-original-ran","implicitDeny":1,"stableWithinStrength":true,"voteOrder":["handled-stop","changed"]},"subscriberDelivery":"s2.subscriber-delivery.v1","timing":{"post":"after-effective-return","pre":"before-original"},"version":1}';
+const hudContract = '{"frame":{"delivery":["player:entity?","buttonId:copied-string"]},"id":"legacy.hud-click.v1","preDecision":"s2.pre-decision.v1","semantics":{"buttonIdCopy":"before-javascript","finalAction":"continue","reentry":"synchronous-nested"},"subscriberDelivery":"s2.subscriber-delivery.v1","timing":{"deliveryLabel":"post","nativePhase":"pre","relativeToOriginal":"before"},"version":1}';
+
+function withAdapters(f, entries = [
+  ["legacy.acquire.v1", acquireContract, 'globalThis.adapterSeen = [Object.isFrozen(globalThis.__s2_adapter_contracts), globalThis.__s2_adapter_contracts["legacy.acquire.v1"]];\n'],
+  ["legacy.hud-click.v1", hudContract, 'globalThis.hudSeen = globalThis.__s2_adapter_contracts["legacy.hud-click.v1"];\n'],
+]) {
+  mkdirSync(join(f.source, "adapters/contracts"), { recursive: true });
+  mkdirSync(join(f.source, "js/adapters"), { recursive: true });
+  const adapters = {};
+  for (const [id, contract, source] of entries) {
+    const contractPath = `adapters/contracts/${id}.json`;
+    const sourcePath = `js/adapters/${id}.js`;
+    writeFileSync(join(f.source, contractPath), contract);
+    writeFileSync(join(f.source, sourcePath), source);
+    adapters[id] = { version: 1, contract: contractPath, source: sourcePath };
+  }
+  const path = join(f.source, "game-package.jsonc");
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  manifest.adapters = adapters;
+  writeFileSync(path, JSON.stringify(manifest));
+  return f;
+}
+
+function built(f) {
+  buildGamePackages({ outDir: f.out, sourceDirs: [f.source], allowSynthetic: true });
+  const manifest = readFileSync(join(f.out, "game-packages.json"));
+  const bootstrap = readFileSync(join(f.out, "game-packages/cs2/index.js"));
+  return { manifest, bootstrap, product: JSON.parse(manifest).packages[0] };
+}
 
 test("emits the frozen deployed schema and lowercase SHA-256", () => {
   const out = buildFixture();
@@ -73,6 +104,7 @@ test("default build contains only selected artifacts and explicit package export
   const source = readFileSync(join(out, "game-packages/cs2/index.js"), "utf8");
   assert.ok(source.includes('"./ui"'));
   assert.equal(source.includes('"./econ"'), false);
+  assert.equal(source.includes("__s2_adapter_contracts"), false);
 
 });
 
@@ -81,14 +113,112 @@ test("same inputs produce byte-identical manifest and artifacts", () => {
   for (const key of ["manifestBytes", "bootstrap", "gamedata"]) assert.deepEqual(a[key], b[key]);
 });
 
+test("separate canonical adapter contracts produce frozen hashes before deterministic source execution", () => {
+  const a = built(withAdapters(fixture()));
+  const b = built(withAdapters(fixture(), [
+    ["legacy.hud-click.v1", hudContract, 'globalThis.hudSeen = globalThis.__s2_adapter_contracts["legacy.hud-click.v1"];\n'],
+    ["legacy.acquire.v1", acquireContract, 'globalThis.adapterSeen = [Object.isFrozen(globalThis.__s2_adapter_contracts), globalThis.__s2_adapter_contracts["legacy.acquire.v1"]];\n'],
+  ]));
+  assert.deepEqual(a.manifest, b.manifest);
+  assert.deepEqual(a.bootstrap, b.bootstrap);
+  assert.deepEqual(Object.keys(a.product), ["id", "match", "gamedataOwner", "bootstrap", "gamedata"]);
+  assert.equal(a.product.bootstrap.sha256, sha256(a.bootstrap));
+  const context = {};
+  const exports = runInNewContext(a.bootstrap.toString(), context);
+  assert.deepEqual([...context.adapterSeen], [true, "69247dc63a6200f5bb8c8ff651b8dd632e8d6af9ad4a0b8d2933199800bc48c0"]);
+  assert.equal(context.hudSeen, "28c0c9833d521cadd4eb03254f63ef7dcb1cd8b728f48ebfa8835b82ff03ecdd");
+  assert.equal(exports["."].a, 1);
+  assert.equal(exports["./ui"].value, 23);
+  assert.ok(a.bootstrap.indexOf(Buffer.from("__s2_adapter_contracts")) < a.bootstrap.indexOf(Buffer.from("adapterSeen")));
+  assert.ok(a.bootstrap.indexOf(Buffer.from("adapterSeen")) < a.bootstrap.indexOf(Buffer.from("globalThis.a = 1")));
+  assert.equal(a.bootstrap.includes(Buffer.from('"voteOrder"')), false, "contract policy data is not executable source");
+});
+
+test("adapter source changes implementation identity; one contract change changes only its canonical digest", () => {
+  const f = withAdapters(fixture());
+  const baseline = built(f);
+  const contractPath = join(f.source, "adapters/contracts/legacy.acquire.v1.json");
+  writeFileSync(contractPath, JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(acquireContract)).reverse()), null, 2));
+  const reformatted = built(f);
+  assert.deepEqual(reformatted.bootstrap, baseline.bootstrap, "canonical contract identity ignores key order and whitespace");
+  const path = join(f.source, "js/adapters/legacy.acquire.v1.js");
+  writeFileSync(path, readFileSync(path, "utf8") + "globalThis.sourceRevision = 2;\n");
+  const sourceChanged = built(f);
+  assert.notEqual(sourceChanged.product.bootstrap.sha256, baseline.product.bootstrap.sha256);
+  const hashMap = source => {
+    const context = {};
+    runInNewContext(source.toString(), context);
+    return { acquire: context.adapterSeen[1], hud: context.hudSeen };
+  };
+  assert.deepEqual(hashMap(sourceChanged.bootstrap), hashMap(baseline.bootstrap));
+  writeFileSync(contractPath, JSON.stringify({ ...JSON.parse(acquireContract), semantics: { ...JSON.parse(acquireContract).semantics, implicitDeny: 2 } }));
+  const contractChanged = built(f);
+  assert.notEqual(contractChanged.product.bootstrap.sha256, sourceChanged.product.bootstrap.sha256);
+  assert.notEqual(hashMap(contractChanged.bootstrap).acquire, hashMap(sourceChanged.bootstrap).acquire);
+  assert.equal(hashMap(contractChanged.bootstrap).hud, hashMap(sourceChanged.bootstrap).hud);
+  assert.equal(runInNewContext(contractChanged.bootstrap.toString(), {})["."].a, 1);
+});
+
+test("adapter declarations reject invalid ids, versions, paths, duplicates, and bounded contract documents", () => {
+  const cases = [
+    { label: "invalid adapter key", edit: f => {
+      const path = join(f.source, "game-package.jsonc");
+      const raw = readFileSync(path, "utf8");
+      writeFileSync(path, raw.replace('"legacy.acquire.v1":', '"invalid/adapter":'));
+    }, match: /id|adapter/i },
+    { label: "id mismatch", edit: f => writeFileSync(join(f.source, "adapters/contracts/legacy.acquire.v1.json"), acquireContract.replace("legacy.acquire.v1", "wrong.id")), match: /id|contract/i },
+    { label: "entry version", edit: f => updateAdapter(f, entry => { entry.version = 2; }), match: /version|adapter/i },
+    { label: "document version", edit: f => writeFileSync(join(f.source, "adapters/contracts/legacy.acquire.v1.json"), acquireContract.replace('"version":1', '"version":2')), match: /version|adapter/i },
+    { label: "traversal", edit: f => updateAdapter(f, entry => { entry.contract = "../escape.json"; }), match: /confined|path/i },
+    { label: "source traversal", edit: f => updateAdapter(f, entry => { entry.source = "../escape.js"; }), match: /confined|path/i },
+    { label: "source symlink escape", edit: f => {
+      const path = join(f.source, "js/adapters/legacy.acquire.v1.js");
+      rmSync(path);
+      writeFileSync(join(f.root, "outside.js"), "globalThis.outside = true;");
+      symlinkSync(join(f.root, "outside.js"), path);
+    }, match: /escapes/i },
+    { label: "unknown entry field", edit: f => updateAdapter(f, entry => { entry.authority = "post"; }), match: /adapter/i },
+    { label: "duplicate source", edit: f => updateAdapter(f, entry => { entry.source = "js/a.js"; }), match: /duplicate/i },
+    { label: "duplicate contract", edit: f => updateAdapter(f, entry => { entry.contract = "adapters/contracts/legacy.acquire.v1.json"; }, "legacy.hud-click.v1"), match: /duplicate/i },
+    { label: "duplicate JSON key", edit: f => writeFileSync(join(f.source, "adapters/contracts/legacy.acquire.v1.json"), acquireContract.replace('"version":1', '"version":1,"version":1')), match: /duplicate/i },
+    { label: "invalid JSON", edit: f => writeFileSync(join(f.source, "adapters/contracts/legacy.acquire.v1.json"), acquireContract + ","), match: /invalid|JSON/i },
+    { label: "oversized document", edit: f => writeFileSync(join(f.source, "adapters/contracts/legacy.acquire.v1.json"), acquireContract + " ".repeat(65536)), match: /size|limit|large/i },
+    { label: "oversized source", edit: f => writeFileSync(join(f.source, "js/adapters/legacy.acquire.v1.js"), "x".repeat(1024 * 1024 + 1)), match: /size|limit|large/i },
+  ];
+  for (const { label, edit, match } of cases) {
+    const f = withAdapters(fixture());
+    edit(f);
+    assert.throws(() => built(f), match, label);
+    assert.equal(existsSync(join(f.out, "game-packages.json")), false, label);
+  }
+});
+
+test("duplicate adapter declarations in source JSON are rejected before any output", () => {
+  const f = withAdapters(fixture());
+  const path = join(f.source, "game-package.jsonc");
+  const raw = readFileSync(path, "utf8");
+  const duplicate = '"legacy.acquire.v1":' + JSON.stringify(JSON.parse(raw).adapters["legacy.acquire.v1"]) + ",";
+  writeFileSync(path, raw.replace('"adapters":{', `"adapters":{${duplicate}`));
+  assert.throws(() => built(f), /duplicate/i);
+  assert.equal(existsSync(join(f.out, "game-packages.json")), false);
+});
+
+function updateAdapter(f, edit, id = "legacy.acquire.v1") {
+  const path = join(f.source, "game-package.jsonc");
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  edit(manifest.adapters[id]);
+  writeFileSync(path, JSON.stringify(manifest));
+}
+
 function withFunctions(f, text = JSON.stringify({ schemaVersion: 2, functions: {
   scalar: { target: { module: "libserver.so", pattern: "55 48", validate: { prologue: "55 48" } },
     parameters: [{ name: "enabled", type: "bool" }], returns: "void", surfaces: ["call"] },
 } })) {
   writeFileSync(join(f.source, "functions.jsonc"), text);
-  writeFileSync(join(f.source, "game-package.jsonc"),
-    readFileSync(join(f.source, "game-package.jsonc"), "utf8").replace('"gamedataRoot": "gamedata"',
-      '"gamedataRoot": "gamedata", "functionsFile": "functions.jsonc"'));
+  const path = join(f.source, "game-package.jsonc");
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  manifest.functionsFile = "functions.jsonc";
+  writeFileSync(path, JSON.stringify(manifest));
   return f;
 }
 
@@ -126,7 +256,10 @@ test("absent functions omit the product; an authored empty file emits an empty b
   const product = JSON.parse(readFileSync(join(f.out, "game-packages.json"))).packages[0].functions;
   assert.deepEqual(JSON.parse(readFileSync(join(f.out, product.path))).functions, []);
   rmSync(join(f.source, "functions.jsonc"));
-  writeFileSync(join(f.source, "game-package.jsonc"), readFileSync(join(f.source, "game-package.jsonc"), "utf8").replace(', "functionsFile": "functions.jsonc"', ''));
+  const path = join(f.source, "game-package.jsonc");
+  const sourceManifest = JSON.parse(readFileSync(path, "utf8"));
+  delete sourceManifest.functionsFile;
+  writeFileSync(path, JSON.stringify(sourceManifest));
   buildGamePackages({ outDir: f.out, sourceDirs: [f.source], allowSynthetic: true });
   assert.equal(existsSync(join(f.out, product.path)), false);
 });
@@ -142,6 +275,27 @@ test("invalid or duplicate function source never writes final artifacts", () => 
     assert.equal(existsSync(join(f.out, "game-packages.json")), false);
     assert.equal(existsSync(join(f.out, "game-packages/cs2/index.js")), false);
   }
+});
+
+test("a failed preparation preserves the previous complete build; failed publication removes its manifest", () => {
+  const f = withAdapters(fixture());
+  const old = built(f);
+  writeFileSync(join(f.out, "operator-note.txt"), "keep");
+  writeFileSync(join(f.out, "game-packages/cs2/operator-note.txt"), "keep");
+  writeFileSync(join(f.source, "adapters/contracts/legacy.acquire.v1.json"), "{broken");
+  assert.throws(() => built(f), /invalid|JSON/i);
+  assert.deepEqual(readFileSync(join(f.out, "game-packages.json")), old.manifest);
+  assert.deepEqual(readFileSync(join(f.out, "game-packages/cs2/index.js")), old.bootstrap);
+
+  writeFileSync(join(f.source, "adapters/contracts/legacy.acquire.v1.json"), acquireContract);
+  withFunctions(f);
+  mkdirSync(join(f.out, "game-packages/cs2/engine-functions.json"));
+  writeFileSync(join(f.out, "game-packages/cs2/engine-functions.json/sentinel"), "block");
+  assert.throws(() => built(f));
+  assert.equal(existsSync(join(f.out, "game-packages.json")), false);
+  assert.equal(existsSync(join(f.out, "game-packages/cs2/index.js")), true);
+  assert.equal(readFileSync(join(f.out, "operator-note.txt"), "utf8"), "keep");
+  assert.equal(readFileSync(join(f.out, "game-packages/cs2/operator-note.txt"), "utf8"), "keep");
 });
 
 test("function source must be a distinct confined regular input", () => {
