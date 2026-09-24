@@ -194,6 +194,56 @@ test('rejects unresolved local require and dynamic import edges', () => {
   }
 });
 
+test('rejects indirect unsafe namespace access before publishing', () => {
+  for (const source of [
+    'const unsafe = require("@s2script/sdk/unsafe"); unsafe.Engine.call(dynamicName);',
+    'const unsafe = await import("@s2script/sdk/unsafe"); unsafe.Engine.call(dynamicName);',
+    'import * as unsafe from "@s2script/sdk/unsafe"; consume(unsafe);',
+  ]) {
+    const dir = fixture(undefined, source);
+    try {
+      const report = migrateV1Package(dir);
+      assert.match(report.ambiguities.join(' '), /unsafe namespace|indirect Engine/i, source);
+      assert.equal(existsSync(output(dir)), false, source);
+    } finally { cleanup(dir); }
+  }
+});
+
+test('rejects computed global Engine access and global object escapes', () => {
+  for (const source of [
+    'globalThis["Engine"].call(dynamicName);',
+    'global["Engine"].call(dynamicName);',
+    'const root = globalThis; root.Engine.call(dynamicName);',
+    'const key = getKey(); globalThis[key].call(dynamicName);',
+  ]) {
+    const dir = fixture(undefined, source);
+    try {
+      const report = migrateV1Package(dir);
+      assert.match(report.ambiguities.join(' '), /global.*Engine|global.*escape|computed global/i, source);
+      assert.equal(existsSync(output(dir)), false, source);
+    } finally { cleanup(dir); }
+  }
+});
+
+test('rejects escaped local module loaders before ignoring helper source', () => {
+  for (const source of [
+    'const load = require; load("../helpers.js");',
+    'const load = require.bind(null); load("../helpers.js");',
+    'const load = module.require; load("../helpers.js");',
+    'const load = createRequire(import.meta.url); load("../helpers.js");',
+    'import Module from "node:module"; const load = Module.createRequire(import.meta.url); load("../helpers.js");',
+    'function use(require) { require("../helpers.js"); }',
+  ]) {
+    const dir = fixture(undefined, source);
+    try {
+      writeFileSync(join(dir, 'helpers.js'), 'Engine.call(dynamicName);');
+      const report = migrateV1Package(dir);
+      assert.match(report.ambiguities.join(' '), /module loader/i, source);
+      assert.equal(existsSync(output(dir)), false, source);
+    } finally { cleanup(dir); }
+  }
+});
+
 test('aggregates ambiguities and writes nothing for incomplete or unsupported declarations', () => {
   const cases = [
     ['missing names', gd => { delete gd.calls.run.argNames; }, /argNames/],

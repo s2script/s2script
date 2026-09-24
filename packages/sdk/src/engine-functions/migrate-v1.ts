@@ -175,13 +175,67 @@ function scanSource(files: string[], calls: Set<string>, hooks: Map<string, stri
   for (const file of files) {
     const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true) as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] };
     if (source.parseDiagnostics?.length) report.ambiguities.push(`${relative(report.package, file)}: source syntax errors prevent reliable reference analysis`);
-    const unsafeNamespaces = new Set<string>();
-    for (const statement of source.statements) {
-      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) || statement.moduleSpecifier.text !== '@s2script/sdk/unsafe') continue;
-      const bindings = statement.importClause?.namedBindings;
-      if (bindings && ts.isNamespaceImport(bindings)) unsafeNamespaces.add(bindings.name.text);
-    }
+    const ambiguity = (node: ts.Node, message: string): void => {
+      report.ambiguities.push(`${relative(report.package, file)}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}: ${message}`);
+    };
     const visit = (node: ts.Node): void => {
+      // Bounded policy: named Engine calls and direct literal module loads can be inspected.
+      // Namespace values, loader values, and computed global access can hide additional uses.
+      if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+        const bindings = node.importClause?.namedBindings;
+        if (node.moduleSpecifier.text === '@s2script/sdk/unsafe' && (node.importClause?.name || bindings && ts.isNamespaceImport(bindings))) {
+          ambiguity(node, 'indirect Engine namespace import from unsafe SDK prevents proving legacy timing/null behavior');
+        }
+        if (['node:module', 'module'].includes(node.moduleSpecifier.text) && node.importClause) {
+          ambiguity(node, 'indirect module loader import prevents complete local source analysis');
+        }
+      }
+      if (ts.isImportSpecifier(node) && (node.propertyName?.text ?? node.name.text) === 'createRequire') {
+        ambiguity(node, 'indirect module loader factory prevents complete local source analysis');
+      }
+      if (ts.isCallExpression(node) && (
+        (ts.isIdentifier(node.expression) && node.expression.text === 'require') ||
+        node.expression.kind === ts.SyntaxKind.ImportKeyword
+      )) {
+        const arg = node.arguments[0];
+        if (arg && (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) && arg.text === '@s2script/sdk/unsafe') {
+          ambiguity(node, 'indirect Engine namespace load from unsafe SDK prevents proving legacy timing/null behavior');
+        }
+        if (arg && (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) && ['node:module', 'module'].includes(arg.text)) {
+          ambiguity(node, 'indirect module loader import prevents complete local source analysis');
+        }
+      }
+      if (ts.isIdentifier(node) && node.text === 'require') {
+        const parent = node.parent;
+        const directCall = ts.isCallExpression(parent) && parent.expression === node;
+        const declaredName = (ts.isVariableDeclaration(parent) || ts.isParameter(parent)) && parent.name === node;
+        const propertyName = (ts.isPropertyAccessExpression(parent) || ts.isPropertyAssignment(parent)) && parent.name === node;
+        if (declaredName || ts.isImportSpecifier(parent)) ambiguity(node, 'shadowed module loader binding prevents complete local source analysis');
+        else if (!directCall && !propertyName) ambiguity(node, 'indirect module loader alias or escape prevents complete local source analysis');
+      }
+      if (ts.isIdentifier(node) && node.text === 'createRequire') {
+        const parent = node.parent;
+        if (!ts.isImportSpecifier(parent) && !((ts.isVariableDeclaration(parent) || ts.isParameter(parent)) && parent.name === node)) {
+          ambiguity(node, 'indirect module loader factory prevents complete local source analysis');
+        }
+      }
+      if (ts.isIdentifier(node) && (node.text === 'globalThis' || node.text === 'global' || node.text === 'module')) {
+        const parent = node.parent;
+        const declaredName = (ts.isVariableDeclaration(parent) || ts.isParameter(parent)) && parent.name === node;
+        if (!declaredName) {
+          if (ts.isPropertyAccessExpression(parent) && parent.expression === node) {
+            if (node.text !== 'module' && parent.name.text === 'Engine') ambiguity(parent, 'indirect global Engine access prevents proving legacy timing/null behavior');
+            else if (parent.name.text === 'require' || parent.name.text === 'createRequire') ambiguity(parent, 'indirect module loader access prevents complete local source analysis');
+            else if (node.text === 'module' && parent.name.text !== 'exports') ambiguity(parent, 'indirect module loader or module escape prevents complete local source analysis');
+          } else if (ts.isElementAccessExpression(parent) && parent.expression === node) {
+            const key = parent.argumentExpression;
+            const literal = key && (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) ? key.text : undefined;
+            if (node.text !== 'module' && literal === 'Engine') ambiguity(parent, 'computed global Engine access prevents proving legacy timing/null behavior');
+            else if (literal === 'require' || literal === 'createRequire' || node.text === 'module') ambiguity(parent, 'indirect module loader access prevents complete local source analysis');
+            else if (literal === undefined) ambiguity(parent, 'computed global access may hide Engine or a module loader');
+          } else ambiguity(node, `indirect ${node.text} escape may hide Engine or a module loader`);
+        }
+      }
       if (ts.isImportSpecifier(node) && node.propertyName?.text === 'Engine' && node.name.text !== 'Engine') {
         report.ambiguities.push(`${relative(report.package, file)}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}: imported Engine alias prevents proving legacy timing/null behavior`);
       }
@@ -193,13 +247,6 @@ function scanSource(files: string[], calls: Set<string>, hooks: Map<string, stri
       }
       if (ts.isParameter(node) && hooks.size && ts.isObjectBindingPattern(node.name) && node.name.elements.some(e => namespaces.has(e.propertyName && ts.isIdentifier(e.propertyName) ? e.propertyName.text : e.name.getText(source)))) {
         report.ambiguities.push(`${relative(report.package, file)}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}: destructured ctx hook namespace alias prevents proving callback timing`);
-      }
-      if (ts.isPropertyAccessExpression(node) && node.name.text === 'Engine') {
-        const owner = node.expression;
-        const global = ts.isIdentifier(owner) && owner.text === 'globalThis';
-        const importedNamespace = ts.isIdentifier(owner) && unsafeNamespaces.has(owner.text);
-        const requiredNamespace = ts.isCallExpression(owner) && ts.isIdentifier(owner.expression) && owner.expression.text === 'require' && owner.arguments.length === 1 && ts.isStringLiteral(owner.arguments[0]!) && owner.arguments[0]!.text === '@s2script/sdk/unsafe';
-        if (global || importedNamespace || requiredNamespace) report.ambiguities.push(`${relative(report.package, file)}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}: indirect Engine alias prevents proving legacy timing/null behavior`);
       }
       if (ts.isIdentifier(node) && (node.text === 'Engine' || node.text === 'ctx')) {
         const parent = node.parent;
