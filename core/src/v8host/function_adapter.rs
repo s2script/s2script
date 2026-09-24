@@ -2160,7 +2160,10 @@ pub(super) mod proof {
                     if(mode==='bad-return')return {action:2,returnValue:17};
                     return 0;
                 });
-                globalThis.post=__proofSubscribeGeneric(binding,'post',true,v=>{try{seen.push('post:'+v.returnValue.id)}catch(e){if(!String(e).includes('entity-strict::fire'))throw e;seen.push('post-error')}});
+                globalThis.post=__proofSubscribeGeneric(binding,'post',true,v=>{try{
+                    seen.push('post:'+v.returnValue.id);
+                    if(globalThis.capturePost)postSnapshots.push([v.required.index,v.required.id,v.returnValue.index,v.returnValue.id,v.skipped]);
+                }catch(e){if(!String(e).includes('entity-strict::fire'))throw e;seen.push('post-error')}});
             "#
             } else {
                 r#"
@@ -2169,7 +2172,10 @@ pub(super) mod proof {
                     if(mode==='unadoptable')__proofEntityDelete(901,71,'books');
                     let refused=false;try{v.optional=b}catch(_){refused=true}if(!refused)throw Error('observer mutated');return 0;
                 });
-                globalThis.post=__proofSubscribeGeneric(binding,'post',true,v=>{seen.push(v.returnValue===null?'post:null':'post:'+v.returnValue.id)});
+                globalThis.post=__proofSubscribeGeneric(binding,'post',true,v=>{
+                    seen.push(v.returnValue===null?'post:null':'post:'+v.returnValue.id);
+                    if(globalThis.capturePost)postSnapshots.push([v.optional.index,v.optional.id,v.returnValue.index,v.returnValue.id,v.skipped]);
+                });
             "#
             };
             eval_in_context(id, code).unwrap();
@@ -2195,25 +2201,55 @@ pub(super) mod proof {
             "if(call(a).id!==a.id)throw Error('invalid entity suppression committed');",
         )
         .unwrap();
-        eval_in_context("entity-strict", "mode='stale-edit';").unwrap();
-        eval_in_context(
-            "entity-caller",
-            "if(call(a).id!==a.id)throw Error('stale staged pointer committed');",
-        )
-        .unwrap();
-        expect_entity_failure("strict entity");
+        let assert_stale_call = |mode: &str| {
+            eval_in_context("entity-strict", &format!("mode='{mode}';")).unwrap();
+            for id in ["entity-strict", "entity-nullable"] {
+                eval_in_context(
+                    id,
+                    "globalThis.capturePost=true;globalThis.postSnapshots=[];",
+                )
+                .unwrap();
+            }
+            eval_in_context("entity-caller",r#"{
+                let failure;
+                try{call(a)}catch(e){failure=String(e)}
+                if(failure!=='Error: entity-caller::fire: synchronous core function dispatch failed')
+                    throw Error('expected exact invocation-local caller error, got: '+failure);
+            }"#).unwrap();
+            expect_entity_failure("entity-strict::fire: strict entity projection is null or stale");
+            for id in ["entity-strict", "entity-nullable"] {
+                eval_in_context(id,r#"
+                    if(JSON.stringify(postSnapshots)!==JSON.stringify([[a.index,a.id,a.index,a.id,false]]))
+                        throw Error('failed edit changed original/POST or skipped delivery: '+JSON.stringify(postSnapshots));
+                    capturePost=false;
+                "#).unwrap();
+            }
+            assert_eq!(
+                pending_invocations(),
+                0,
+                "failed call must drain its matched invocation"
+            );
+            println!("PASS {mode}: exact caller error, independent strict refusal, original POST argument/result and skipped=false, paired state drained");
+        };
+        let assert_recovered_call = |mode: &str| {
+            eval_in_context("entity-strict", "mode='read';").unwrap();
+            eval_in_context(
+                "entity-caller",
+                "if(call(a)?.id!==a.id)throw Error('failed invocation poisoned later valid call');",
+            )
+            .unwrap();
+            assert_eq!(pending_invocations(), 0);
+            println!("PASS {mode}: later valid call on the same bindings recovered");
+        };
+        assert_stale_call("stale-edit");
         assert_eq!(unsafe { slot(902, 72, 1) }, 1);
-        eval_in_context("entity-strict", "mode='stale-books-edit';").unwrap();
-        eval_in_context(
-            "entity-caller",
-            "if(call(a)?.id!==a.id)throw Error('host-stale staged identity committed');",
-        )
-        .unwrap();
-        expect_entity_failure("strict entity projection is null or stale");
+        assert_recovered_call("native-slot-only");
+        assert_stale_call("stale-books-edit");
         let b = seed(902, 72);
         for id in ["entity-strict", "entity-nullable", "entity-caller"] {
             eval_in_context(id, &format!("globalThis.b=new E(902,{b});")).unwrap();
         }
+        assert_recovered_call("host-books-only");
         eval_in_context("entity-strict", "mode='unadoptable';").unwrap();
         eval_in_context(
             "entity-caller",
@@ -3596,8 +3632,8 @@ mod entity_transport_tests {
         args: *const S2FunctionValue,
         _: i32,
         out: *mut S2FunctionValue,
-        _: *mut i8,
-        _: i32,
+        why: *mut i8,
+        cap: i32,
     ) -> i32 {
         let input = unsafe { *args };
         let Some(input) = project(input, input.flags) else {
@@ -3631,7 +3667,7 @@ mod entity_transport_tests {
             parameter_count: 1,
             flags: 0,
         };
-        crate::ffi::s2script_core_dispatch_function(target, &info, 0);
+        let pre = crate::ffi::s2script_core_dispatch_function(target, &info, 0);
         STACK.with(|s| {
             let mut s = s.borrow_mut();
             let f = s.last_mut().unwrap();
@@ -3644,8 +3680,21 @@ mod entity_transport_tests {
             info.flags = u32::from(f.action >= 2);
             f.edit = None;
         });
-        crate::ffi::s2script_core_dispatch_function(target, &info, 1);
+        let post = crate::ffi::s2script_core_dispatch_function(target, &info, 1);
         let value = STACK.with(|s| s.borrow_mut().pop().unwrap().output);
+        // RuntimeBinding::Call records callback failure, lets native original/POST
+        // finish, then propagates the invocation-local error rather than output.
+        if pre != 1 || post != 1 {
+            let message = b"synchronous core function dispatch failed";
+            if !why.is_null() && cap > 0 {
+                let count = message.len().min(cap as usize - 1);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(message.as_ptr(), why.cast(), count);
+                    *why.add(count) = 0;
+                }
+            }
+            return 0;
+        }
         if value.kind != 8 {
             unsafe { *out = value };
             return 1;
