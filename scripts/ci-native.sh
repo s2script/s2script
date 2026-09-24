@@ -195,6 +195,8 @@ cargo build
 # scripts/test-interop.sh native runs that focused subset when iterating on acceptance.
 echo "== cargo test -p s2script-core =="
 cargo test -p s2script-core
+echo "== game-package portability (same native test executable, absent/present artifacts) =="
+bash scripts/test-game-package-portability.sh
 bash scripts/test-async-pressure.sh
 
 
