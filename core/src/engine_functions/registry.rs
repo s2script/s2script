@@ -26,8 +26,11 @@ pub(crate) struct Binding {
     pub owner: OwnerKey,
     pub function: NormalizedFunction,
     pub target: Option<i64>,
+    #[allow(dead_code)] // Retained for Task 7's public availability projection.
     pub unavailable: Option<String>,
+    #[allow(dead_code)] // Immutable Task 4 provenance retained for later public diagnostics.
     pub provenance: super::provenance::Provenance,
+    #[allow(dead_code)] // Payload measurement; Task 7 supplies the loader-budget consumer.
     pub retained_bytes: usize,
 }
 impl Drop for Binding {
@@ -234,6 +237,7 @@ fn provenance_storage(p: &super::provenance::Provenance) -> usize {
             .map(|o| o.relative_path.capacity() + o.sha256.capacity())
             .sum::<usize>()
 }
+#[allow(dead_code)] // Task 7 activation consumes this measurement, not yet a loader budget charge.
 pub(crate) fn retained_bytes(owner: &OwnerKey) -> usize {
     BINDINGS.with(|b| {
         b.borrow()

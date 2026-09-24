@@ -17,6 +17,7 @@ struct PreparedPackage {
     owner: HostPackageOwner,
     source: Arc<str>,
     manifest: ImplementationManifestHash,
+    #[allow(dead_code)] // Retained payload measurement for Task 7's loader accounting seam.
     retained_bytes: usize,
 }
 pub(crate) struct PreparedPackageReceipt {
@@ -114,6 +115,17 @@ pub(crate) fn authorize_binding(
     if adapter == "generic.v2" {
         return Err("package cannot replace public generic policy".into());
     }
+    let authorization = (package.owner().clone(), adapter.into(), hash.into());
+    if SUBSCRIPTIONS.with(|s| s.borrow().values().any(|s| s.binding.id == binding_id))
+        && !AUTHORIZED.with(|a| a.borrow().get(&binding_id) == Some(&authorization))
+    {
+        return Err("cannot change authorization of a subscribed binding".into());
+    }
+    validate_subscription_domain(&binding, adapter)?;
+    AUTHORIZED.with(|a| a.borrow_mut().insert(binding_id, authorization));
+    Ok(())
+}
+fn validate_subscription_domain(binding: &Binding, adapter: &str) -> Result<(), String> {
     let conflict = SUBSCRIPTIONS.with(|s| {
         s.borrow().values().any(|s| {
             s.binding.target == binding.target
@@ -127,12 +139,6 @@ pub(crate) fn authorize_binding(
             "scalar proof requires one exact adapter/ABI projection domain per target".into(),
         );
     }
-    AUTHORIZED.with(|a| {
-        a.borrow_mut().insert(
-            binding_id,
-            (package.owner().clone(), adapter.into(), hash.into()),
-        )
-    });
     Ok(())
 }
 fn current_owner(scope: &mut v8::PinScope) -> Result<OwnerKey, String> {
@@ -417,6 +423,10 @@ fn js_subscribe(
         }
         let wrapper = sync_function(scope, args.get(3))?.ok_or("wrapper required")?;
         let target = binding.target.ok_or("binding unavailable")?;
+        // Authorizations may precede all subscriptions. Admission runs on the
+        // V8 owner thread with no JS call between this check and insertion;
+        // HookAcquire registers the native binding without invoking the target.
+        validate_subscription_domain(&binding, &adapter)?;
         runtime::hook_acquire(target)?;
         let id = match registry::next_id() {
             Ok(id) => id,
@@ -891,6 +901,9 @@ fn decision(
     let object =
         v8::Local::<v8::Object>::try_from(value).map_err(|_| "invalid adapter decision")?;
     let action = get(scope, object, "action")?;
+    if !action.is_int32() {
+        return Err("suppression action must be an int32".into());
+    }
     let action = action
         .int32_value(scope)
         .filter(|a| (2..=3).contains(a))
@@ -1072,7 +1085,9 @@ pub(crate) fn dispatch(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Re
             .values()
             .filter(|s| {
                 s.binding.target == Some(target)
-                    && s.phase == phase
+                    // PRE must reserve the matched adapter even for POST-only
+                    // subscriptions. Actual delivery is phase-filtered below.
+                    && (phase == 0 || s.phase == phase)
                     && s.instance.parent.generation != info.suppressed_owner
                     && !crate::dispatch::parent_busy(
                         &s.instance.parent.id,
@@ -1091,20 +1106,28 @@ pub(crate) fn dispatch(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Re
     };
     let adapter = if phase == 0 {
         let selected = ADAPTERS.with(|a| {
-            a.borrow()
-                .values()
-                .find(|a| {
-                    eligible(a, info.suppressed_owner)
-                        && subscribers.iter().any(|s| {
-                            s.adapter == a.semantic
-                                && AUTHORIZED.with(|auth| {
-                                    auth.borrow()
-                                        .get(&s.binding.id)
-                                        .is_some_and(|(_, _, hash)| *hash == a.hash)
-                                })
-                        })
-                })
-                .cloned()
+            let rows = a.borrow();
+            [0, 1].into_iter().find_map(|selection_phase| {
+                rows.values()
+                    .find(|a| {
+                        eligible(a, info.suppressed_owner)
+                            && if selection_phase == 0 {
+                                a.pre.is_some()
+                            } else {
+                                a.post.is_some()
+                            }
+                            && subscribers.iter().any(|s| {
+                                s.phase == selection_phase
+                                    && s.adapter == a.semantic
+                                    && AUTHORIZED.with(|auth| {
+                                        auth.borrow()
+                                            .get(&s.binding.id)
+                                            .is_some_and(|(_, _, hash)| *hash == a.hash)
+                                    })
+                            })
+                    })
+                    .cloned()
+            })
         });
         if INVOCATIONS
             .with(|i| {
@@ -1134,6 +1157,10 @@ pub(crate) fn dispatch(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Re
     let Some(adapter) = adapter else {
         return Ok(());
     };
+    let subscribers = subscribers
+        .into_iter()
+        .filter(|s| s.phase == phase)
+        .collect::<Vec<_>>();
     let Some(binding) = subscribers
         .iter()
         .find(|s| s.adapter == adapter.semantic)
@@ -1246,6 +1273,13 @@ pub(super) mod proof {
         .unwrap()
     }
     pub fn bind(package: &PreparedPackageReceipt, id: &str) -> u64 {
+        let binding = prepared_binding(id, |_| {});
+        let owner = OwnerKey::plugin(id, plugin_generation(id));
+        authorize_binding(package, &owner, binding, SEMANTIC, HASH).unwrap();
+        eval_in_context(id, &format!("proofSubscribe({binding}n);")).unwrap();
+        binding
+    }
+    pub fn prepared_binding(id: &str, configure: impl FnOnce(&mut serde_json::Value)) -> u64 {
         use crate::engine_functions::{contract, overrides, tests};
         let owner = OwnerKey::plugin(id, plugin_generation(id));
         let mut value = tests::fixture();
@@ -1259,9 +1293,17 @@ pub(super) mod proof {
             serde_json::json!({"native":"i32","projection":{"id":"i32","version":1}});
         f["policy"]["surfaces"] = serde_json::json!(["call", "pre", "post"]);
         f["policy"]["suppression"] = "generic".into();
+        configure(f);
         tests::seal(&mut value);
         let mut summary = tests::summary(&value);
-        summary["functions"][0]["suppresses"] = true.into();
+        summary["functions"][0]["suppresses"] =
+            (value["functions"][0]["policy"]["suppression"] == "generic").into();
+        summary["functions"][0]["mutates"] = value["functions"][0]["abi"]["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| !p["mutable"].as_array().unwrap().is_empty())
+            .into();
         let parsed = contract::parse(
             &value.to_string(),
             id,
@@ -1271,10 +1313,7 @@ pub(super) mod proof {
         .unwrap();
         let candidate = overrides::prepare(parsed, "actual-proof-archive", vec![]).unwrap();
         let receipt = registry::prepare_owner(owner.clone(), candidate).unwrap();
-        let binding = registry::activate_owner(receipt).unwrap()[0];
-        authorize_binding(package, &owner, binding, SEMANTIC, HASH).unwrap();
-        eval_in_context(id, &format!("proofSubscribe({binding}n);")).unwrap();
-        binding
+        registry::activate_owner(receipt).unwrap()[0]
     }
     pub fn counts(owner: &str, generation: u64) -> (usize, usize) {
         let matches = |i: &PackageInstanceKey| i.parent == OwnerKey::plugin(owner, generation);
@@ -1505,6 +1544,310 @@ mod scalar_transport_tests {
             crate::nest::with_outbound(&args, || runtime::call(1, owner.generation, &[value]))
                 .unwrap();
         rv.set_int32(output.bits as i32);
+    }
+    fn init_transport() {
+        init(frame_tests::logger).unwrap();
+        let mut ops = S2EngineOps::default();
+        ops.function_prepare = Some(prepare);
+        ops.function_hook_acquire = Some(acquire);
+        ops.function_hook_release = Some(release);
+        ops.function_target_release = Some(release);
+        ops.function_frame_read = Some(read);
+        ops.function_frame_write = Some(write);
+        ops.function_frame_commit = Some(commit);
+        set_engine_ops(Some(ops));
+    }
+    fn review_package(body: &str) -> PreparedPackageReceipt {
+        let source = format!(
+            r#"(()=>{{
+            const register=__s2_function_adapter_register,subscribe=__s2_function_adapter_subscribe;
+            globalThis.events=[];
+            globalThis.subscribeProof=(id,semantic='proof.review.v1',phase='pre')=>subscribe(id,semantic,phase,globalThis.wrapper);
+            {body}
+        }})()"#
+        );
+        register_prepared_package(
+            HostPackageOwner::mint("@proof/review").unwrap(),
+            source.into(),
+            ImplementationManifestHash::new(crate::engine_functions::contract::hash_bytes(
+                br#"{"name":"@proof/review","entry":"review.js"}"#,
+            ))
+            .unwrap(),
+        )
+        .unwrap()
+    }
+    fn authorize(
+        package: &PreparedPackageReceipt,
+        id: &str,
+        binding: u64,
+        semantic: &str,
+    ) -> Result<(), String> {
+        authorize_binding(
+            package,
+            &OwnerKey::plugin(id, plugin_generation(id)),
+            binding,
+            semantic,
+            proof::HASH,
+        )
+    }
+    fn open_frame() -> S2FunctionFrameInfo {
+        let id = registry::next_id().unwrap();
+        let mut input = runtime::blank();
+        input.kind = 2;
+        input.bits = 7;
+        STACK.with(|s| {
+            s.borrow_mut().push(MockFrame {
+                id,
+                input,
+                output: input,
+                action: 0,
+            })
+        });
+        S2FunctionFrameInfo {
+            version: 1,
+            struct_size: 48,
+            frame_token: id,
+            native_epoch: id,
+            invocation_id: id,
+            suppressed_owner: 0,
+            parameter_count: 1,
+            flags: 0,
+        }
+    }
+    fn close_frame(info: &S2FunctionFrameInfo) -> MockFrame {
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, info, 1), 1);
+        STACK.with(|s| s.borrow_mut().pop().unwrap())
+    }
+    #[test]
+    fn post_only_subscription_delivers_without_pre_and_unload_clears_matched_state() {
+        init_transport();
+        for pre in ["", "pre(){throw Error('invented PRE delivery');},"] {
+            let package = review_package(&format!(
+                r#"
+                register('proof.review.v1','{}',{{{pre}post(d){{events.push('post');while(d.cursor.invokeNext()!==null){{}}}}}});
+                globalThis.wrapper=(view)=>{{events.push('wrapper:'+view.returnValue);}};
+            "#,
+                proof::HASH
+            ));
+            frame_tests::load_body("post-only", "return {};", "{}");
+            let owner = OwnerKey::plugin("post-only", plugin_generation("post-only"));
+            let binding = proof::prepared_binding("post-only", |f| {
+                f["policy"]["surfaces"] = serde_json::json!(["call", "post"]);
+                f["policy"]["suppression"] = "none".into();
+            });
+            authorize(&package, "post-only", binding, "proof.review.v1").unwrap();
+            eval_in_context(
+                "post-only",
+                &format!("subscribeProof({binding}n,'proof.review.v1','post');"),
+            )
+            .unwrap();
+            let info = open_frame();
+            assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+            assert_eq!(proof::pending_invocations(), 1);
+            assert!(INVOCATIONS.with(|s| s.borrow().values().all(|s| s.deliveries.is_empty())));
+            eval_in_context(
+                "post-only",
+                "if(events.length)throw Error('PRE delivery invented');",
+            )
+            .unwrap();
+            let result = close_frame(&info);
+            assert_eq!(result.action, 0);
+            let delivered=eval_in_context("post-only","if(events.join(',')!=='post,wrapper:7')throw Error('missing POST-only delivery: '+events);");
+            assert_eq!(proof::pending_invocations(), 0);
+            let unfinished = open_frame();
+            assert_eq!(
+                crate::ffi::s2script_core_dispatch_function(1, &unfinished, 0),
+                1
+            );
+            unload_plugin("post-only");
+            assert_eq!(proof::pending_invocations(), 0);
+            assert_eq!(proof::counts("post-only", owner.generation), (0, 0));
+            assert_eq!(registry::retained_bytes(&owner), 0);
+            close_frame(&unfinished);
+            drop(package);
+            delivered.unwrap();
+        }
+        set_engine_ops(None);
+        shutdown();
+    }
+    #[test]
+    fn subscription_admission_refuses_preauthorized_conflicting_domains() {
+        init_transport();
+        let mut admitted = Vec::new();
+        for conflict in ["semantic", "mutation", "name"] {
+            let package = review_package(&format!(
+                r#"
+                for(const semantic of ['proof.review.v1','proof.review.other'])
+                  register(semantic,'{}',{{pre(d){{while(d.cursor.invokeNext()!==null){{}}return 0;}}}});
+                globalThis.wrapper=()=>{{events.push('wrapper');return 0;}};
+            "#,
+                proof::HASH
+            ));
+            for id in ["domain-a", "domain-b"] {
+                frame_tests::load_body(id, "return {};", "{}");
+            }
+            let first = proof::prepared_binding("domain-a", |_| {});
+            let second = proof::prepared_binding("domain-b", |f| match conflict {
+                "mutation" => f["abi"]["parameters"][0]["mutable"] = serde_json::json!(["pre"]),
+                "name" => f["abi"]["parameters"][0]["name"] = "other".into(),
+                _ => (),
+            });
+            let second_semantic = if conflict == "semantic" {
+                "proof.review.other"
+            } else {
+                "proof.review.v1"
+            };
+            // Both authorizations precede either subscription; native fingerprints
+            // are identical even when the copied wrapper contract differs.
+            authorize(&package, "domain-a", first, "proof.review.v1").unwrap();
+            authorize(&package, "domain-b", second, second_semantic).unwrap();
+            eval_in_context("domain-a", &format!("subscribeProof({first}n);")).unwrap();
+            let result = eval_in_context(
+                "domain-b",
+                &format!("subscribeProof({second}n,'{second_semantic}');"),
+            );
+            match result {
+                Ok(()) => admitted.push(conflict),
+                Err(error) => assert!(
+                    error.contains("projection domain"),
+                    "unexpected admission refusal: {error}"
+                ),
+            }
+            let info = open_frame();
+            assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+            close_frame(&info);
+            eval_in_context(
+                "domain-a",
+                "if(events.join(',')!=='wrapper')throw Error('first domain lost');",
+            )
+            .unwrap();
+            unload_plugin("domain-a");
+            unload_plugin("domain-b");
+            drop(package);
+        }
+        set_engine_ops(None);
+        shutdown();
+        assert!(
+            admitted.is_empty(),
+            "conflicting domains admitted after prior authorization: {admitted:?}"
+        );
+    }
+    #[test]
+    fn live_binding_authorization_cannot_change_package_or_contract() {
+        init_transport();
+        let package = review_package(&format!(
+            r#"
+            register('proof.review.v1','{}',{{pre(d){{d.cursor.invokeNext();return 0;}}}});
+            globalThis.wrapper=()=>{{events.push('wrapper');return 0;}};
+        "#,
+            proof::HASH
+        ));
+        frame_tests::load_body("domain-live", "return {};", "{}");
+        let binding = proof::prepared_binding("domain-live", |_| {});
+        let owner = OwnerKey::plugin("domain-live", plugin_generation("domain-live"));
+        authorize(&package, "domain-live", binding, "proof.review.v1").unwrap();
+        eval_in_context("domain-live", &format!("subscribeProof({binding}n);")).unwrap();
+        let other = review_package("// intentionally no adapters");
+        let mut accepted = Vec::new();
+        for (label, pkg, semantic, hash) in [
+            (
+                "semantic",
+                &package,
+                "proof.review.other",
+                proof::HASH.to_string(),
+            ),
+            ("hash", &package, "proof.review.v1", "a".repeat(64)),
+            (
+                "package",
+                &other,
+                "proof.review.v1",
+                proof::HASH.to_string(),
+            ),
+        ] {
+            if authorize_binding(pkg, &owner, binding, semantic, &hash).is_ok() {
+                accepted.push(label);
+            }
+        }
+        authorize(&package, "domain-live", binding, "proof.review.v1").unwrap(); // Idempotent identity.
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        close_frame(&info);
+        eval_in_context(
+            "domain-live",
+            "if(events.join(',')!=='wrapper')throw Error('authorization changed live delivery');",
+        )
+        .unwrap();
+        unload_plugin("domain-live");
+        drop(other);
+        drop(package);
+        set_engine_ops(None);
+        shutdown();
+        assert!(
+            accepted.is_empty(),
+            "live authorization changed: {accepted:?}"
+        );
+    }
+    #[test]
+    fn malformed_object_actions_never_suppress_through_subscriber_or_adapter() {
+        init_transport();
+        let package = review_package(&format!(
+            r#"
+            register('proof.review.v1','{}',{{pre(d){{
+                const delivery=d.cursor.invokeNext();events.push('delivery:'+delivery.action);
+                if(mode==='adapter')return {{action:invalidAction,returnValue:73}};
+                return delivery.action>=2?{{action:delivery.action,returnValue:delivery.returnValue}}:delivery.action;
+            }}}});
+            globalThis.wrapper=()=>mode==='subscriber'?{{action:invalidAction,returnValue:73}}:0;
+        "#,
+            proof::HASH
+        ));
+        frame_tests::load_body("typed-actions", "return {};", "{}");
+        let binding = proof::prepared_binding("typed-actions", |_| {});
+        authorize(&package, "typed-actions", binding, "proof.review.v1").unwrap();
+        eval_in_context("typed-actions", &format!("subscribeProof({binding}n);")).unwrap();
+        let mut failures = Vec::new();
+        for mode in ["subscriber", "adapter"] {
+            for (label, action) in [
+                ("fractional", "2.5"),
+                ("string", "'2'"),
+                ("valueOf", "({valueOf(){coercions++;return 2;}})"),
+            ] {
+                eval_in_context("typed-actions",&format!("globalThis.mode='{mode}';globalThis.coercions=0;globalThis.invalidAction={action};events.length=0;")).unwrap();
+                let info = open_frame();
+                let pre = crate::ffi::s2script_core_dispatch_function(1, &info, 0);
+                let result = close_frame(&info);
+                let expected_pre = if mode == "subscriber" { 1 } else { 0 };
+                if pre != expected_pre || result.action != 0 || result.output.bits != 7 {
+                    failures.push(format!(
+                        "{mode}/{label}: PRE={pre}, committed action={}, return={}",
+                        result.action, result.output.bits
+                    ));
+                }
+                if let Err(e)=eval_in_context("typed-actions","if(coercions!==0)throw Error('action coercion ran');if(events.join(',')!=='delivery:0')throw Error('invalid subscriber decision escaped: '+events);") {
+                    failures.push(format!("{mode}/{label}: {e}"));
+                }
+                assert_eq!(proof::pending_invocations(), 0);
+            }
+            for action in [2, 3] {
+                eval_in_context("typed-actions",&format!("globalThis.mode='{mode}';globalThis.invalidAction={action};events.length=0;")).unwrap();
+                let info = open_frame();
+                assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+                let result = close_frame(&info);
+                assert_eq!(
+                    (result.action, result.output.bits),
+                    (action, 73),
+                    "valid typed {mode} action"
+                );
+            }
+        }
+        unload_plugin("typed-actions");
+        drop(package);
+        set_engine_ops(None);
+        shutdown();
+        assert!(
+            failures.is_empty(),
+            "malformed decisions crossed the typed boundary: {failures:#?}"
+        );
     }
     #[test]
     fn scalar_transport_mock_proves_real_v8_cursor_leases_and_nested_busy_selection() {
