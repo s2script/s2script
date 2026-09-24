@@ -492,7 +492,7 @@ extern "C" int s2fn_production_close(){
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
     while((!production_frame.RemovalComplete() || !production_peer.RemovalComplete()) && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));
     assert(production_frame.RemovalComplete() && production_peer.RemovalComplete());assert(S2Hook_DrainRetirement());
-    production_service.reset();production_sink.reset();return 1;
+    production_service.reset();production_sink.reset();KHook::Shutdown();return 1;
 }
 
 #endif
