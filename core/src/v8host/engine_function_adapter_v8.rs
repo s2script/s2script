@@ -228,6 +228,7 @@ mod production {
         static PACKAGE:RefCell<Option<function_adapter::PreparedPackageReceipt>>=const{RefCell::new(None)};
         static BINDINGS:RefCell<BTreeMap<String,u64>>=const{RefCell::new(BTreeMap::new())};
         static ENTITY_SLOT:Cell<Option<proof::EntitySlot>>=const{Cell::new(None)};
+        static ENTITY_STATE:RefCell<Option<proof::EntityConformance>>=const{RefCell::new(None)};
         static STEP:Cell<usize>=const{Cell::new(0)};
         static FAILURE:RefCell<Option<String>>=const{RefCell::new(None)};
     }
@@ -335,11 +336,22 @@ mod production {
             }),
             5..=8 => {
                 let step = STEP.with(Cell::get) - 5;
-                proof::entity_conformance(
-                    step >= 2,
-                    step % 2 == 1,
-                    ENTITY_SLOT.with(Cell::get).unwrap(),
+                assert!(ENTITY_STATE.with(|s| s.borrow().is_none()));
+                let state = proof::entity_begin(
+                    step >= 2, step % 2 == 1,
+                    ENTITY_SLOT.with(Cell::get).unwrap(), true,
                 );
+                ENTITY_STATE.with(|s| *s.borrow_mut() = Some(state));
+            }
+            9 | 10 => {
+                // Never retain a RefCell borrow across V8/native reentry.
+                let mut state = ENTITY_STATE.with(|s| s.borrow_mut().take()).unwrap();
+                if STEP.with(Cell::get) == 9 {
+                    proof::entity_probe(&mut state);
+                } else {
+                    proof::entity_advance(&mut state);
+                }
+                ENTITY_STATE.with(|s| *s.borrow_mut() = Some(state));
             }
             _ => panic!("unexpected frame callback"),
         });
@@ -429,7 +441,24 @@ mod production {
             "normal frames must automatically collect after last core subscriber"
         );
         for step in 5..=8 {
-            drive(step);
+            drive(step); // Identity subscriptions return a genuine outer frame first.
+            for stage in [proof::EntityStage::Identity, proof::EntityStage::Member] {
+                assert_eq!(ENTITY_STATE.with(|s| s.borrow().as_ref().unwrap().stage), stage);
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                loop {
+                    drive(9); // Exactly one probe in each later genuine frame.
+                    if ENTITY_STATE.with(|s| s.borrow().as_ref().unwrap().ready) {
+                        break;
+                    }
+                    assert!(std::time::Instant::now() < deadline, "entity readiness timeout: {}",
+                        ENTITY_STATE.with(|s| s.borrow().as_ref().unwrap().detail.clone()));
+                    // The real frame and every checked observation have returned.
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                drive(10); // Independent semantics; identity stage registers member then returns.
+            }
+            let state = ENTITY_STATE.with(|s| s.borrow_mut().take()).unwrap();
+            assert_eq!(state.stage, proof::EntityStage::Done);
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
             while unsafe { empty() } == 0 && std::time::Instant::now() < deadline {
                 assert_eq!(unsafe { frame(0) }, 1);

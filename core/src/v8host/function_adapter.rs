@@ -2047,9 +2047,114 @@ pub(super) mod proof {
         eval_in_context("entity-strict", "strictNullVote.dispose();").unwrap();
         unload_plugin(WRITER);
     }
-    /// Same real V8/projection path for host mock and native Service fixture.
-    /// Slot controls are fixture authority, never public EntityRef identities.
-    pub fn entity_conformance(nullable_first: bool, reverse_sub: bool, slot: EntitySlot) {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum EntityStage {
+        Identity,
+        Member,
+        Done,
+    }
+    // Only owned fixture IDs/control survive returned frames; no V8 or frame lease.
+    pub struct EntityConformance {
+        nullable_first: bool,
+        reverse_sub: bool,
+        slot: EntitySlot,
+        a: u64,
+        b: u64,
+        target: i64,
+        receipt: Option<u64>,
+        native_status: bool,
+        pub stage: EntityStage,
+        pub ready: bool,
+        pub detail: String,
+    }
+    impl EntityConformance {
+        fn owners(&self) -> &[&str] {
+            match self.stage {
+                EntityStage::Identity => &["entity-strict", "entity-nullable"],
+                EntityStage::Member => &["entity-member"],
+                EntityStage::Done => panic!("completed entity fixture has no probe"),
+            }
+        }
+        fn status(&self) -> Option<S2FunctionHookStatus> {
+            if engine_ops().and_then(|ops| ops.function_hook_status).is_none() {
+                assert!(!self.native_status, "native entity receipt unavailable");
+                return None;
+            }
+            let status = runtime::status(self.target).unwrap();
+            assert!(matches!(status.state, 1 | 2), "entity target {} unexpected state {}", self.target, status.state);
+            assert_ne!(status.receipt, 0, "entity target {} missing receipt", self.target);
+            assert_eq!(status.reserved, 0);
+            if let Some(receipt) = self.receipt {
+                assert_eq!(status.receipt, receipt, "entity target {} receipt changed", self.target);
+            }
+            Some(status)
+        }
+        fn snapshots(&self) -> Vec<serde_json::Value> {
+            self.owners().iter().map(|id| {
+                serde_json::from_str(&frame_tests::eval_in_context_string(
+                    id, "JSON.stringify({seen,pre:phaseCounts.pre,post:phaseCounts.post})",
+                )).unwrap()
+            }).collect()
+        }
+        fn diagnostic(&self, point: &str) -> String {
+            let status = self.status().map(|s| format!("state={} receipt={}", s.state, s.receipt))
+                .unwrap_or_else(|| "status unavailable: explicit host transport".into());
+            let detail = format!(
+                "entity order nullable-first={} reverse-sub={} stage={:?} point={point} target={} {status} owners={:?} traces={:?} pending={}",
+                self.nullable_first, self.reverse_sub, self.stage, self.target,
+                self.owners(), self.snapshots(), pending_invocations()
+            );
+            println!("DIAG {detail}");
+            detail
+        }
+        fn clear_probe(&self) {
+            for id in self.owners() {
+                eval_in_context(id, "seen.length=0;phaseCounts.pre=0;phaseCounts.post=0;delete globalThis.saved;delete globalThis.copy;delete globalThis.memberView;").unwrap();
+            }
+        }
+        fn call_member(&self) -> Result<(), String> {
+            let receiver = projection::encode(
+                EntityProjection::Strict
+                    .value(Some(projection::EntityReference { index: 901, id: self.a }))?
+            )?;
+            let mut arg = runtime::blank();
+            arg.kind = 2;
+            arg.bits = 3;
+            assert_eq!(runtime::call(self.target, 0, &[receiver, arg])?.bits, 13);
+            Ok(())
+        }
+    }
+    /// One harmless call per returned-frame probe. Only Pending + zero delivery retries.
+    pub fn entity_probe(state: &mut EntityConformance) {
+        assert!(!state.ready);
+        state.clear_probe();
+        state.diagnostic("before probe");
+        let result = match state.stage {
+            EntityStage::Identity => eval_in_context("entity-caller", "if(call(a).id!==a.id)throw Error('probe identity');"),
+            EntityStage::Member => state.call_member(),
+            EntityStage::Done => panic!("probe after entity cleanup"),
+        };
+        state.detail = state.diagnostic("after probe");
+        result.unwrap_or_else(|error| panic!("{error}; {}", state.detail));
+        assert_eq!(pending_invocations(), 0, "{}", state.detail);
+        let snapshots = state.snapshots();
+        let expected = match state.stage {
+            EntityStage::Identity => serde_json::json!({"seen":[state.a,format!("post:{}",state.a)],"pre":1,"post":1}),
+            EntityStage::Member => serde_json::json!({"seen":["receiver","receiver-post"],"pre":1,"post":1}),
+            EntityStage::Done => unreachable!(),
+        };
+        let complete = snapshots.iter().all(|v| *v == expected);
+        let empty = snapshots.iter().all(|v| *v == serde_json::json!({"seen":[],"pre":0,"post":0}));
+        match state.status() {
+            Some(status) if status.state == 1 && empty => return,
+            Some(status) => assert!(status.state == 2 && complete, "{}", state.detail),
+            None => assert!(complete, "{}", state.detail),
+        }
+        state.ready = true;
+        println!("PASS entity readiness {}", state.detail);
+    }
+    /// Same staged semantic body for host transport and real native outer frames.
+    pub fn entity_begin(nullable_first: bool, reverse_sub: bool, slot: EntitySlot, native_status: bool) -> EntityConformance {
         ENTITY_SLOT.with(|s| s.set(Some(slot)));
         DISPATCH_ERRORS.with(|s| s.borrow_mut().clear());
         let seed = |index, serial| {
@@ -2180,41 +2285,44 @@ pub(super) mod proof {
             };
             eval_in_context(id, code).unwrap();
         }
-        // Diagnose registration observation without changing the Pending lifecycle.
-        let target = lookup("entity-strict", strict)
-            .target
-            .expect("prepared entity target");
-        let diagnostic = |stage| {
-            let status = match runtime::status(target) {
-                Ok(status) => format!(
-                    "state={} receipt={} reserved={}",
-                    status.state, status.receipt, status.reserved
-                ),
-                Err(error) => format!("status unavailable: {error}"),
-            };
-            let snapshot = |id| {
-                frame_tests::eval_in_context_string(
-                    id,
-                    "JSON.stringify({seen,pre:phaseCounts.pre,post:phaseCounts.post})",
-                )
-            };
-            let detail = format!(
-                "entity order nullable-first={nullable_first} reverse-sub={reverse_sub} stage={stage} target={target} {status} strict={} nullable={}",
-                snapshot("entity-strict"), snapshot("entity-nullable")
-            );
-            println!("DIAG {detail}");
-            detail
+        let target = lookup("entity-strict", strict).target.unwrap();
+        let mut state = EntityConformance {
+            nullable_first, reverse_sub, slot, a, b, target, receipt: None,
+            native_status, stage: EntityStage::Identity, ready: false, detail: String::new(),
         };
-        diagnostic("subscribed");
+        state.receipt = state.status().map(|s| s.receipt);
+        state.detail = state.diagnostic("subscribed");
+        assert_eq!(pending_invocations(), 0);
+        state
+    }
+    pub fn entity_advance(state: &mut EntityConformance) {
+        assert!(state.ready, "advance before readiness: {}", state.detail);
+        state.clear_probe();
+        state.ready = false;
+        match state.stage {
+            EntityStage::Identity => entity_identity_exercise(state),
+            EntityStage::Member => entity_member_finish(state),
+            EntityStage::Done => panic!("advance after entity cleanup"),
+        }
+        assert_eq!(pending_invocations(), 0);
+    }
+    fn entity_identity_exercise(state: &mut EntityConformance) {
+        let reverse_sub = state.reverse_sub;
+        let slot = state.slot;
+        let b = state.b;
+        let seed = |index, serial| {
+            assert_eq!(unsafe { slot(index, serial, 1) }, 1);
+            crate::entity_live::on_created(index, serial as i32)
+        };
         for (stage, code) in [
             ("call(a)", "if(call(a).id!==a.id)throw Error('callback identity');"),
             ("call(null)", "if(call(null)!==null)throw Error('null callback');"),
         ] {
             let result = eval_in_context("entity-caller", code);
-            let detail = diagnostic(stage);
+            let detail = state.diagnostic(stage);
             result.unwrap_or_else(|error| panic!("{error}; {detail}"));
         }
-        let detail = diagnostic("before strict assertions");
+        let detail = state.diagnostic("before strict assertions");
         eval_in_context("entity-strict","if(!seen.includes('strict-error')||!seen.includes('post-error'))throw Error('strict null local errors');let lease=false;try{saved.required}catch(_){lease=true}if(!lease)throw Error('lease survived');if(copy.id!==a.id)throw Error('copy lost');seen.length=0;mode='edit';").unwrap_or_else(|error| panic!("{error}; {detail}"));
         eval_in_context("entity-nullable", "seen.length=0;").unwrap();
         eval_in_context(
@@ -2342,27 +2450,23 @@ pub(super) mod proof {
         eval_in_context("entity-member",&format!("if(__proofEntityCall({member}n,a,3)!==13)throw Error('receiver convention');let refused=false;try{{__proofEntityCall({member}n,null,3)}}catch(_){{refused=true}}if(!refused)throw Error('nullable receiver');")).unwrap();
         eval_in_context("entity-member",&format!(r#"
             globalThis.memberPre=__proofSubscribeGeneric({member}n,'pre',true,v=>{{
-                globalThis.memberView=v;if(v.self.id!==a.id||v.required!==3)throw Error('receiver view');
+                phaseCounts.pre++;globalThis.memberView=v;if(v.self.id!==a.id||v.required!==3)throw Error('receiver view');
                 let refused=false;try{{v.self=b}}catch(_){{refused=true}}if(!refused)throw Error('receiver writable');seen.push('receiver');
             }});
-            globalThis.memberPost=__proofSubscribeGeneric({member}n,'post',true,v=>{{if(v.self.id!==a.id||v.returnValue!==13)throw Error('receiver POST');seen.push('receiver-post')}});
+            globalThis.memberPost=__proofSubscribeGeneric({member}n,'post',true,v=>{{phaseCounts.post++;if(v.self.id!==a.id||v.returnValue!==13)throw Error('receiver POST');seen.push('receiver-post')}});
         "#)).unwrap();
-        let member_binding = lookup("entity-member", member);
-        let receiver = projection::encode(
-            EntityProjection::Strict
-                .value(Some(projection::EntityReference { index: 901, id: a }))
-                .unwrap(),
-        )
-        .unwrap();
-        let mut arg = runtime::blank();
-        arg.kind = 2;
-        arg.bits = 3;
-        assert_eq!(
-            runtime::call(member_binding.target.unwrap(), 0, &[receiver, arg])
-                .unwrap()
-                .bits,
-            13
-        );
+        state.a = a;
+        state.b = replacement;
+        state.target = registry::binding(member, &OwnerKey::plugin("entity-member", plugin_generation("entity-member"))).unwrap().target.unwrap();
+        state.stage = EntityStage::Member;
+        state.receipt = None;
+        state.receipt = state.status().map(|s| s.receipt);
+        state.detail = state.diagnostic("subscribed");
+    }
+    fn entity_member_finish(state: &mut EntityConformance) {
+        let nullable_first = state.nullable_first;
+        let reverse_sub = state.reverse_sub;
+        state.call_member().unwrap();
         eval_in_context("entity-member","if(seen.join(',')!=='receiver,receiver-post')throw Error('receiver callback not entered');let expired=false;try{memberView.self}catch(_){expired=true}if(!expired)throw Error('receiver lease survived');").unwrap();
         for id in [
             "entity-strict",
@@ -2377,6 +2481,15 @@ pub(super) mod proof {
         assert_eq!(pending_invocations(), 0);
         ENTITY_SLOT.with(|s| s.set(None));
         println!("PASS entity projection orders nullable-first={nullable_first} reverse-sub={reverse_sub}: calls, V8 authenticity, per-wrapper rights, recall, suppression, stale commit and adoption recovery");
+        state.stage = EntityStage::Done;
+    }
+    pub fn entity_conformance(nullable_first: bool, reverse_sub: bool, slot: EntitySlot) {
+        let mut state = entity_begin(nullable_first, reverse_sub, slot, false);
+        entity_probe(&mut state);
+        entity_advance(&mut state);
+        entity_probe(&mut state);
+        entity_advance(&mut state);
+        assert_eq!(state.stage, EntityStage::Done);
     }
     /// Run with the caller's transport: host tests install the explicit scalar
     /// mock; the Linux outer-frame fixture supplies the real Service/strong export.
