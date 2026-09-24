@@ -440,15 +440,57 @@ impl ImplementationManifestHash {
     pub(crate) fn as_str(&self) -> &str { &self.0 }
 }
 /// Possession of this capability, rather than the serializable key, grants bootstrap authority.
-pub(crate) struct HostPackageOwner(OwnerKey);
+#[derive(Clone)]
+pub(crate) struct HostPackageOwner(std::rc::Rc<PackageFunctionLifetime>);
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PackageFunctionPhase {
+    Unactivated,
+    Active,
+    Retired,
+}
+pub(crate) struct PackageFunctionLifetime {
+    pub(super) key: OwnerKey,
+    pub(super) phase: std::cell::Cell<PackageFunctionPhase>,
+    pub(super) source: std::cell::Cell<PackageFunctionPhase>,
+}
 impl HostPackageOwner {
     pub(crate) fn mint(id: &str) -> Result<Self, String> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        if id.is_empty() || id.contains('\0') { return Err("invalid host package id".into()); }
-        let generation = NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+        if id.is_empty() || id.contains('\0') {
+            return Err("invalid host package id".into());
+        }
+        let generation = NEXT
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| "package generation exhausted")?;
-        Ok(Self(OwnerKey { id: id.into(), generation, kind: OwnerKind::GamePackage }))
+        Ok(Self(std::rc::Rc::new(PackageFunctionLifetime {
+            key: OwnerKey {
+                id: id.into(),
+                generation,
+                kind: OwnerKind::GamePackage,
+            },
+            phase: std::cell::Cell::new(PackageFunctionPhase::Unactivated),
+            source: std::cell::Cell::new(PackageFunctionPhase::Unactivated),
+        })))
     }
-    pub(crate) fn key(&self) -> &OwnerKey { &self.0 }
+    pub(crate) fn key(&self) -> &OwnerKey {
+        &self.0.key
+    }
+    pub(crate) fn claim_source(&self) -> Result<(), String> {
+        if self.0.source.get() != PackageFunctionPhase::Unactivated || self.is_retired() {
+            return Err("package source already registered or retired".into());
+        }
+        self.0.source.set(PackageFunctionPhase::Active);
+        Ok(())
+    }
+    pub(crate) fn retire_source(&self) {
+        self.0.source.set(PackageFunctionPhase::Retired);
+    }
+    pub(crate) fn is_retired(&self) -> bool {
+        self.0.phase.get() == PackageFunctionPhase::Retired
+            || self.0.source.get() == PackageFunctionPhase::Retired
+    }
+    pub(super) fn lifetime(&self) -> std::rc::Rc<PackageFunctionLifetime> {
+        self.0.clone()
+    }
 }

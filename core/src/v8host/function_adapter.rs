@@ -16,7 +16,7 @@ use std::{
     sync::Arc,
 };
 
-struct PreparedPackage {
+pub(super) struct PreparedPackage {
     owner: HostPackageOwner,
     source: Arc<str>,
     manifest: ImplementationManifestHash,
@@ -59,9 +59,13 @@ pub(crate) fn register_prepared_package_with_authorities(
     if grants.iter().any(|g| !g.belongs_to(&owner)) {
         return Err("adapter grant belongs to another package generation".into());
     }
+    if PACKAGES.with(|p| p.borrow().contains_key(&owner.key().generation)) {
+        return Err("package source already registered".into());
+    }
     if source.is_empty() {
         return Err("empty prepared package source".into());
     }
+    owner.claim_source()?;
     let package = Rc::new(PreparedPackage {
         retained_bytes: source.len() + manifest.as_str().len() + owner.key().id.len()
             + grants.iter().map(HostAdapterGrant::retained_bytes).sum::<usize>(),
@@ -78,17 +82,7 @@ pub(crate) fn register_prepared_package_with_authorities(
 }
 impl Drop for PreparedPackageReceipt {
     fn drop(&mut self) {
-        PACKAGES.with(|p| p.borrow_mut().remove(&self.owner().generation));
-        let ids = ADAPTERS.with(|a| {
-            a.borrow()
-                .values()
-                .filter(|a| a.instance.package_owner == *self.owner())
-                .map(|a| a.id)
-                .collect::<Vec<_>>()
-        });
-        for id in ids {
-            drop_adapter(id);
-        }
+        drop_package(self.owner());
     }
 }
 struct Adapter {
@@ -130,6 +124,16 @@ pub(crate) fn authorize_binding(
     adapter: &str,
     hash: &str,
 ) -> Result<(), String> {
+    if owner.kind == OwnerKind::GamePackage && owner != package.owner() {
+        return Err("binding belongs to another package".into());
+    }
+    if !PACKAGES.with(|p| {
+        p.borrow()
+            .get(&package.owner().generation)
+            .is_some_and(|p| Rc::ptr_eq(p, &package.package))
+    }) {
+        return Err("package receipt revoked".into());
+    }
     let binding = registry::binding(binding_id, owner)?;
     if binding.target.is_none() {
         return Err("binding unavailable".into());
@@ -247,6 +251,9 @@ fn sync_function(
     }
     let function =
         v8::Local::<v8::Function>::try_from(value).map_err(|_| "callback must be function")?;
+    if function.get_creation_context(scope) != Some(scope.get_current_context()) {
+        return Err("package callback belongs to another context".into());
+    }
     Ok(Some(v8::Global::new(scope, function)))
 }
 pub(crate) fn bootstrap(scope: &mut v8::PinScope, id: &str, generation: u64) -> Result<(), String> {
@@ -256,7 +263,7 @@ pub(crate) fn bootstrap(scope: &mut v8::PinScope, id: &str, generation: u64) -> 
             parent: OwnerKey::plugin(id, generation),
             package_owner: package.owner.key().clone(),
         };
-        let prior = BOOTSTRAP.with(|b| b.replace(Some(instance)));
+        let prior = BOOTSTRAP.with(|b| b.replace(Some(instance.clone())));
         struct Reset(Option<PackageInstanceKey>);
         impl Drop for Reset {
             fn drop(&mut self) {
@@ -268,58 +275,82 @@ pub(crate) fn bootstrap(scope: &mut v8::PinScope, id: &str, generation: u64) -> 
         let global = scope.get_current_context().global(scope);
         // Hidden callback data binds BOTH generations; retaining a native from
         // another context/reload cannot acquire that context's package authority.
-        let data = v8::Array::new(scope, 2);
+        let data = v8::Array::new(scope, 4);
         let package_generation = v8::BigInt::new_from_u64(scope, package.owner.key().generation);
         let parent_generation = v8::BigInt::new_from_u64(scope, generation);
         data.set_index(scope, 0, package_generation.into());
         data.set_index(scope, 1, parent_generation.into());
-        let register = v8::Function::builder(js_register)
-            .data(data.into())
-            .build(scope)
-            .ok_or("register allocation")?;
-        let subscribe = v8::Function::builder(js_subscribe)
-            .data(data.into())
-            .build(scope)
-            .ok_or("subscribe allocation")?;
-        set(
-            scope,
-            global,
-            "__s2_function_adapter_register",
-            register.into(),
-        )?;
-        set(
-            scope,
-            global,
-            "__s2_function_adapter_subscribe",
-            subscribe.into(),
-        )?;
-        let mut storage = v8::TryCatch::new(scope);
-        let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
-        let source = v8::String::new(&mut tc, &package.source).ok_or("source allocation")?;
-        let result = v8::Script::compile(&mut tc, source, None).and_then(|s| s.run(&mut tc));
-        let error = if result.is_none() {
-            Some(
-                tc.exception()
-                    .map(|e| e.to_rust_string_lossy(&tc))
-                    .unwrap_or("package bootstrap threw".into()),
-            )
-        } else {
-            None
-        };
+        let parent_id = v8::String::new(scope, id).ok_or("parent allocation")?;
+        data.set_index(scope, 2, parent_id.into());
+        let provisional = v8::Integer::new(scope, 0);
+        data.set_index(scope, 3, provisional.into());
+        // One shared hidden token, not a second instance book. A failed evaluation
+        // revokes all its captured callbacks, including those leaked by reviewed JS.
+        let result = (|| -> Result<(), String> {
+            let register = v8::Function::builder(js_register)
+                .data(data.into())
+                .build(scope)
+                .ok_or("register allocation")?;
+            let subscribe = v8::Function::builder(js_subscribe)
+                .data(data.into())
+                .build(scope)
+                .ok_or("subscribe allocation")?;
+            set(
+                scope,
+                global,
+                "__s2_function_adapter_register",
+                register.into(),
+            )?;
+            set(
+                scope,
+                global,
+                "__s2_function_adapter_subscribe",
+                subscribe.into(),
+            )?;
+            let lookup = v8::Function::builder(js_package_lookup)
+                .data(data.into())
+                .build(scope)
+                .ok_or("lookup allocation")?;
+            set(scope, global, "__s2_package_function", lookup.into())?;
+            let mut storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+            let source = v8::String::new(&mut tc, &package.source).ok_or("source allocation")?;
+            let result = v8::Script::compile(&mut tc, source, None).and_then(|s| s.run(&mut tc));
+            let error = if result.is_none() {
+                Some(
+                    tc.exception()
+                        .map(|e| e.to_rust_string_lossy(&tc))
+                        .unwrap_or("package bootstrap threw".into()),
+                )
+            } else {
+                None
+            };
+            if let Some(error) = error {
+                return Err(error);
+            }
+            if current_owner(&mut tc)? != instance.parent {
+                return Err("package parent retired during bootstrap".into());
+            }
+            Ok(())
+        })();
+        let state = v8::Integer::new(scope, if result.is_ok() { 1 } else { 2 });
+        data.set_index(scope, 3, state.into());
         for name in [
             "__s2_function_adapter_register",
             "__s2_function_adapter_subscribe",
+            "__s2_package_function",
         ] {
-            let key = v8::String::new(&mut tc, name).unwrap();
-            global.delete(&mut tc, key.into());
+            let key = v8::String::new(scope, name).unwrap();
+            global.delete(scope, key.into());
         }
-        if let Some(error) = error {
-            return Err(error);
+        if result.is_err() {
+            drop_instance(&instance);
         }
+        result?;
     }
     Ok(())
 }
-fn instance(
+pub(super) fn instance(
     scope: &mut v8::PinScope,
     data: v8::Local<v8::Value>,
 ) -> Result<(PackageInstanceKey, Rc<PreparedPackage>), String> {
@@ -334,19 +365,68 @@ fn instance(
             .ok_or("missing parent generation")?,
     )?;
     let parent = current_owner(scope)?;
-    if parent.generation != expected_parent {
+    let entered = scope.get_entered_or_microtask_context();
+    if !entered
+        .get_slot::<PluginId>()
+        .is_some_and(|p| p.0 == parent.id)
+        || entered.get_slot::<InteropGeneration>().map(|g| g.0) != Some(parent.generation)
+    {
+        return Err("package token used from another context".into());
+    }
+    let expected_id = data
+        .get_index(scope, 2)
+        .ok_or("missing parent id")?
+        .to_rust_string_lossy(scope);
+    let state = data
+        .get_index(scope, 3)
+        .and_then(|v| v.int32_value(scope))
+        .ok_or("missing instance state")?;
+    if state == 2 {
+        return Err("package instance revoked".into());
+    }
+    if parent.generation != expected_parent || parent.id != expected_id {
         return Err("package token belongs to another parent generation".into());
     }
     let package = PACKAGES
         .with(|p| p.borrow().get(&generation).cloned())
         .ok_or("package receipt revoked")?;
-    Ok((
-        PackageInstanceKey {
-            parent,
-            package_owner: package.owner.key().clone(),
-        },
-        package,
-    ))
+    let instance = PackageInstanceKey {
+        parent,
+        package_owner: package.owner.key().clone(),
+    };
+    if state != 1 && !(state == 0 && BOOTSTRAP.with(|b| b.borrow().as_ref() == Some(&instance))) {
+        return Err("package instance not active".into());
+    }
+    Ok((instance, package))
+}
+fn js_package_lookup(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let result = (|| {
+        let (instance, _) = instance(scope, args.data())?;
+        if BOOTSTRAP.with(|b| b.borrow().as_ref() != Some(&instance)) {
+            return Err("host bootstrap authority required".to_string());
+        }
+        if !args.get(0).is_string() {
+            return Err("engine function name must be a string".into());
+        }
+        let binding = registry::named_binding(
+            &instance.package_owner,
+            &args.get(0).to_rust_string_lossy(scope),
+        )?;
+        Ok(super::engine_functions::facade(
+            scope,
+            &instance.parent,
+            &binding,
+            Some(args.data()),
+        ))
+    })();
+    match result {
+        Ok(v) => rv.set(v.into()),
+        Err(e) => throw(scope, e),
+    }
 }
 fn js_register(
     scope: &mut v8::PinScope,
@@ -426,8 +506,17 @@ fn js_subscribe(
 ) {
     let result = (|| {
         let (instance, _) = instance(scope, args.data())?;
-        let id = bigint(args.get(0))?;
-        let binding = registry::binding(id, &instance.parent)?;
+        // Process bindings are resolved only in this package namespace. The numeric
+        // path is the existing explicit plugin-binding compatibility/proof seam.
+        let binding = if args.get(0).is_string() {
+            registry::named_binding(
+                &instance.package_owner,
+                &args.get(0).to_rust_string_lossy(scope),
+            )?
+        } else {
+            registry::binding(bigint(args.get(0))?, &instance.parent)?
+        };
+        let id = binding.id;
         let adapter = args.get(1).to_rust_string_lossy(scope);
         let phase = match args.get(2).to_rust_string_lossy(scope).as_str() {
             "pre" => 0,
@@ -547,6 +636,37 @@ pub(crate) fn subscribe_generic(
         return Err("subscription context owner mismatch".into());
     }
     let binding = registry::binding(binding_id, &owner)?;
+    subscribe_generic_binding(scope, owner, None, binding, phase, observe_only, wrapper)
+}
+pub(super) fn subscribe_package_generic(
+    scope: &mut v8::PinScope,
+    token: v8::Local<v8::Value>,
+    binding_id: u64,
+    phase: i32,
+    observe_only: bool,
+    wrapper: v8::Global<v8::Function>,
+) -> Result<u64, String> {
+    let (instance, _) = instance(scope, token)?;
+    let binding = registry::binding(binding_id, &instance.package_owner)?;
+    subscribe_generic_binding(
+        scope,
+        instance.parent.clone(),
+        Some(instance),
+        binding,
+        phase,
+        observe_only,
+        wrapper,
+    )
+}
+fn subscribe_generic_binding(
+    scope: &mut v8::PinScope,
+    owner: OwnerKey,
+    instance: Option<PackageInstanceKey>,
+    binding: Rc<Binding>,
+    phase: i32,
+    observe_only: bool,
+    wrapper: v8::Global<v8::Function>,
+) -> Result<u64, String> {
     let mode = SubscriptionMode::for_phase(phase, observe_only)?;
     let surface = if phase == 0 { "pre" } else { "post" };
     if !binding
@@ -559,6 +679,11 @@ pub(crate) fn subscribe_generic(
         return Err("undeclared subscription surface".into());
     }
     let function = v8::Local::new(scope, &wrapper);
+    if instance.is_some()
+        && function.get_creation_context(scope) != Some(scope.get_current_context())
+    {
+        return Err("package callback belongs to another context".into());
+    }
     if function.is_async_function() {
         return Err("synchronous wrapper required".into());
     }
@@ -566,7 +691,7 @@ pub(crate) fn subscribe_generic(
     let implementation = crate::engine_functions::policy::public_adapter(&binding.function.policy)?;
     insert_subscription(
         owner,
-        None,
+        instance,
         binding,
         contract.id.clone(),
         contract,
@@ -759,6 +884,9 @@ pub(crate) fn drop_subscription(id: u64) {
 pub(crate) fn drop_adapter(id: u64) {
     let removed = ADAPTERS.with(|a| a.borrow_mut().remove(&id));
     if let Some(adapter) = removed {
+        if !ADAPTERS.with(|a| a.borrow().values().any(|a| a.semantic == adapter.semantic)) {
+            SEMANTICS.with(|s| s.borrow_mut().remove(&adapter.semantic));
+        }
         let ids = SUBSCRIPTIONS.with(|s| {
             s.borrow()
                 .values()
@@ -795,6 +923,77 @@ pub(crate) fn drop_adapter(id: u64) {
             })
         });
     }
+}
+// Called only after the bootstrap token, parent, or package authority is revoked.
+// Token state is carried by the native callback data, never reconstructed from these rows.
+fn drop_instance(instance: &PackageInstanceKey) {
+    let subscriptions = SUBSCRIPTIONS.with(|s| {
+        s.borrow()
+            .values()
+            .filter(|s| s.instance.as_ref() == Some(instance))
+            .map(|s| s.id)
+            .collect::<Vec<_>>()
+    });
+    for id in subscriptions {
+        release_resource(
+            &instance.parent.id,
+            instance.parent.generation,
+            &plugin::Resource::FunctionSubscription(id),
+        );
+        drop_subscription(id);
+    }
+    let adapters = ADAPTERS.with(|a| {
+        a.borrow()
+            .values()
+            .filter(|a| a.instance == *instance)
+            .map(|a| a.id)
+            .collect::<Vec<_>>()
+    });
+    for id in adapters {
+        release_resource(
+            &instance.parent.id,
+            instance.parent.generation,
+            &plugin::Resource::FunctionAdapter(id),
+        );
+        drop_adapter(id);
+    }
+}
+pub(crate) fn drop_package(owner: &OwnerKey) {
+    // Remove source authority first. Holds in callbacks can retain memory, never access.
+    let removed = PACKAGES.with(|p| {
+        let mut packages = p.borrow_mut();
+        if packages
+            .get(&owner.generation)
+            .is_some_and(|p| p.owner.key() == owner)
+        {
+            packages.remove(&owner.generation)
+        } else {
+            None
+        }
+    });
+    if let Some(package) = &removed {
+        package.owner.retire_source();
+    }
+    let mut instances = ADAPTERS.with(|a| {
+        a.borrow()
+            .values()
+            .filter(|a| a.instance.package_owner == *owner)
+            .map(|a| a.instance.clone())
+            .collect::<Vec<_>>()
+    });
+    SUBSCRIPTIONS.with(|s| {
+        instances.extend(s.borrow().values().filter_map(|s| {
+            s.instance
+                .as_ref()
+                .filter(|i| i.package_owner == *owner)
+                .cloned()
+        }))
+    });
+    for instance in instances {
+        drop_instance(&instance);
+    }
+    AUTHORIZED.with(|a| a.borrow_mut().retain(|_, (package, _, _)| package != owner));
+    drop(removed);
 }
 pub(crate) fn drop_owner(owner: &OwnerKey) {
     let subscriptions = SUBSCRIPTIONS.with(|s| {
@@ -902,7 +1101,16 @@ fn lease(scope: &mut v8::PinScope, id: u64) -> Result<Lease, String> {
         .with(|s| {
             s.borrow()
                 .last()
-                .filter(|l| l.enabled && l.id == id && l.owner == owner)
+                .filter(|l| {
+                    l.enabled
+                        && l.id == id
+                        && l.owner == owner
+                        && l.binding.is_live()
+                        && l.dispatch
+                            .adapter
+                            .as_ref()
+                            .is_none_or(|a| ADAPTERS.with(|rows| rows.borrow().contains_key(&a.id)))
+                })
                 .cloned()
         })
         .ok_or("expired or suspended callback lease".into())
@@ -1652,6 +1860,10 @@ fn eligible(adapter: &Adapter, bypass: u64, phase: i32) -> bool {
         adapter.post.is_some()
     };
     implements_phase
+        && PACKAGES.with(|p| {
+            p.borrow()
+                .contains_key(&adapter.instance.package_owner.generation)
+        })
         && owner.generation != bypass
         && owner_is_live(&owner.id, owner.generation)
         && plugin_phase(&owner.id) == Some(plugin::Phase::Active)
@@ -1685,6 +1897,8 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
             .values()
             .filter(|s| {
                 s.binding.target == Some(target)
+                    && s.binding.is_live()
+                    && s.instance.as_ref().is_none_or(|i| PACKAGES.with(|p| p.borrow().contains_key(&i.package_owner.generation)))
                     // PRE must reserve the matched adapter even for POST-only
                     // subscriptions. Actual delivery is phase-filtered below.
                     && (phase == 0 || s.phase == phase)
@@ -2325,8 +2539,9 @@ pub(super) mod proof {
                         .map_err(|e| format!("{}: {e}", binding.function.canonical_id))?,
                 );
             }
-            let value =
-                crate::nest::with_outbound(&args, || runtime::call_binding(&binding, &values))?;
+            let value = crate::nest::with_outbound(&args, || {
+                runtime::call_binding(&binding, &owner, &values)
+            })?;
             projected_to_js(scope, value)
         })();
         match result {
@@ -2635,7 +2850,7 @@ pub(super) mod proof {
             let mut arg = runtime::blank();
             arg.kind = 2;
             arg.bits = 3;
-            assert_eq!(runtime::call(self.target, 0, &[receiver, arg])?.bits, 13);
+            assert_eq!(runtime::call(self.target, None, &[receiver, arg])?.bits, 13);
             Ok(())
         }
     }
@@ -3224,7 +3439,7 @@ pub(super) mod proof {
         input.kind = 2;
         input.bits = 7;
         assert_eq!(
-            runtime::call(binding.target.unwrap(), 0, &[input])
+            runtime::call(binding.target.unwrap(), None, &[input])
                 .unwrap()
                 .bits,
             73
@@ -3258,7 +3473,7 @@ pub(super) mod proof {
             __proofSubscribeGeneric({generic}n,'pre',false,v=>{{policyEvents.push('tail');return 0;}});
         "#)).unwrap();
         assert_eq!(
-            runtime::call(binding.target.unwrap(), 0, &[input])
+            runtime::call(binding.target.unwrap(), None, &[input])
                 .unwrap()
                 .bits,
             31
@@ -3266,7 +3481,7 @@ pub(super) mod proof {
         eval_in_context("policy-observer","if(policyEvents.join(',')!=='pre:12,post:31')throw Error(policyEvents);policyEvents.length=0;").unwrap();
         eval_in_context("policy-generic","if(policyEvents.join(',')!=='tail')throw Error(policyEvents);policyEvents.length=0;stopEnabled=true;").unwrap();
         assert_eq!(
-            runtime::call(binding.target.unwrap(), 0, &[input])
+            runtime::call(binding.target.unwrap(), None, &[input])
                 .unwrap()
                 .bits,
             33
@@ -3521,8 +3736,7 @@ pub(super) mod scalar_transport_tests {
         value.kind = 2;
         value.bits = args.get(0).int32_value(scope).unwrap() as u32 as u64;
         let output =
-            crate::nest::with_outbound(&args, || runtime::call(1, owner.generation, &[value]))
-                .unwrap();
+            crate::nest::with_outbound(&args, || runtime::call(1, Some(&owner), &[value])).unwrap();
         rv.set_int32(output.bits as i32);
     }
     thread_local! {static EFFECTS:Cell<usize>=const{Cell::new(0)};}

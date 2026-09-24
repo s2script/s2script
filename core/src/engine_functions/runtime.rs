@@ -1,5 +1,5 @@
 //! The bounded scalar native transport. All pointers remain inside this C boundary.
-use super::contract::NormalizedFunction;
+use super::contract::{NormalizedFunction, OwnerKey, OwnerKind};
 use crate::v8host::{engine_ops, S2FunctionFrameInfo, S2FunctionHookStatus, S2FunctionValue};
 use std::ffi::{CStr, CString};
 pub(crate) fn blank() -> S2FunctionValue {
@@ -102,30 +102,29 @@ pub(crate) fn status(id: i64) -> Result<S2FunctionHookStatus, String> {
 }
 pub(crate) fn call(
     id: i64,
-    owner: u64,
+    caller: Option<&OwnerKey>,
     values: &[S2FunctionValue],
 ) -> Result<S2FunctionValue, String> {
-    call_requested(id, owner, values, blank())
+    call_requested(id, caller, values, blank())
 }
 fn call_requested(
     id: i64,
-    owner: u64,
+    caller: Option<&OwnerKey>,
     values: &[S2FunctionValue],
     mut out: S2FunctionValue,
 ) -> Result<S2FunctionValue, String> {
     // Mark the exact caller for the complete outbound FFI scope, regardless of
     // which host entry originally invoked its JavaScript.
-    let parent = if owner == 0 {
-        None
-    } else {
-        Some(
-            super::registry::owner_for_token(owner)
-                .ok_or("function caller generation unavailable")?,
-        )
-    };
-    let _busy = parent
-        .as_ref()
-        .map(|p| crate::dispatch::ParentBusy::enter(&p.id, p.generation));
+    if let Some(caller) = caller {
+        if caller.kind != OwnerKind::Plugin
+            || !crate::v8host::owner_is_live(&caller.id, caller.generation)
+            || crate::v8host::plugin_phase(&caller.id) == Some(crate::plugin::Phase::Unloading)
+        {
+            return Err("function caller generation unavailable".into());
+        }
+    }
+    let _busy = caller.map(|p| crate::dispatch::ParentBusy::enter(&p.id, p.generation));
+    let owner = caller.map_or(0, |p| p.generation);
     let op = engine_ops()
         .and_then(|o| o.function_call)
         .ok_or("native function call unavailable")?;
@@ -148,6 +147,29 @@ fn call_requested(
 /// Exact owned binding supplies every projection; physical target metadata supplies ABI only.
 pub(crate) fn call_binding(
     binding: &super::registry::Binding,
+    caller: &OwnerKey,
+    values: &[super::projection::ProjectedValue],
+) -> Result<super::projection::ProjectedValue, String> {
+    if binding.owner.kind != OwnerKind::Plugin || binding.owner != *caller {
+        return Err("public binding caller mismatch".into());
+    }
+    call_binding_from(binding, caller, values)
+}
+/// The V8 caller has validated the sealed instance token; retain exact identities here too.
+pub(crate) fn call_package_binding(
+    binding: &super::registry::Binding,
+    instance: &super::contract::PackageInstanceKey,
+    values: &[super::projection::ProjectedValue],
+) -> Result<super::projection::ProjectedValue, String> {
+    if binding.owner.kind != OwnerKind::GamePackage || binding.owner != instance.package_owner {
+        return Err("package binding caller mismatch".into());
+    }
+    call_binding_from(binding, &instance.parent, values)
+}
+/// Caller is supplied by the checked public facade or exact package-instance facade.
+fn call_binding_from(
+    binding: &super::registry::Binding,
+    caller: &OwnerKey,
     values: &[super::projection::ProjectedValue],
 ) -> Result<super::projection::ProjectedValue, String> {
     let operation = || {
@@ -178,7 +200,7 @@ pub(crate) fn call_binding(
         let ret = &abi.returns;
         let result = call_requested(
             binding.target.ok_or("binding unavailable")?,
-            binding.owner.generation,
+            Some(caller),
             &wire,
             super::projection::request(&ret.native, &ret.projection.id)?,
         )?;

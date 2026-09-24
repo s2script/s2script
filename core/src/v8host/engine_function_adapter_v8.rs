@@ -231,6 +231,8 @@ mod production {
         static ENTITY_STATE:RefCell<Option<proof::EntityConformance>>=const{RefCell::new(None)};
         static POST_STATE:RefCell<Option<proof::PostConformance>>=const{RefCell::new(None)};
         static POST_PEER:Cell<Option<FrameProduction>>=const{Cell::new(None)};
+        static PROCESS_STATE:RefCell<Option<super::super::engine_function_tests::PackageServiceProof>>=const{RefCell::new(None)};
+        static PROCESS_READY:Cell<bool>=const{Cell::new(false)};
         static STEP:Cell<usize>=const{Cell::new(0)};
         static FAILURE:RefCell<Option<String>>=const{RefCell::new(None)};
     }
@@ -250,7 +252,7 @@ mod production {
         value.kind = 2;
         value.bits = input as u32 as u64;
         match crate::nest::with_outbound(&args, || {
-            runtime::call(binding.target.unwrap(), generation, &[value])
+            runtime::call(binding.target.unwrap(), Some(&owner), &[value])
         }) {
             Ok(value) => rv.set_int32(value.bits as i32),
             Err(error) => {
@@ -370,11 +372,31 @@ mod production {
                 assert_eq!(unsafe{peer(2)},1);proof::post_exercise("earlier-stronger",72,None);
                 assert_eq!(unsafe{peer(3)},1);
             }
-            14 => proof::post_exercise("later-equal",41,Some(7)),
+            14 => proof::post_exercise("later-equal", 41, Some(7)),
             15 => {
-                assert_eq!(unsafe{POST_PEER.with(Cell::get).unwrap()(0)},1);
-                proof::post_finish(POST_STATE.with(|s|s.borrow_mut().take()).unwrap());
+                assert_eq!(unsafe { POST_PEER.with(Cell::get).unwrap()(0) }, 1);
+                proof::post_finish(POST_STATE.with(|s| s.borrow_mut().take()).unwrap());
             }
+            16 => PROCESS_STATE.with(|s| {
+                *s.borrow_mut() = Some(super::super::engine_function_tests::package_service_begin())
+            }),
+            17 => {
+                let mut state = PROCESS_STATE.with(|s| s.borrow_mut().take()).unwrap();
+                PROCESS_READY.with(|r| {
+                    r.set(super::super::engine_function_tests::package_service_ready(
+                        &mut state,
+                    ))
+                });
+                PROCESS_STATE.with(|s| *s.borrow_mut() = Some(state));
+            }
+            18 => {
+                let state = PROCESS_STATE.with(|s| s.borrow_mut().take()).unwrap();
+                super::super::engine_function_tests::package_service_exercise(&state);
+                PROCESS_STATE.with(|s| *s.borrow_mut() = Some(state));
+            }
+            19 => super::super::engine_function_tests::package_service_finish(
+                PROCESS_STATE.with(|s| s.borrow_mut().take()).unwrap(),
+            ),
             _ => panic!("unexpected frame callback"),
         });
         if let Err(error) = result {
@@ -512,12 +534,38 @@ mod production {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         drive(15);
-        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
-        while unsafe{empty()}==0 && std::time::Instant::now()<deadline {
-            assert_eq!(unsafe{frame(0)},1);std::thread::sleep(std::time::Duration::from_millis(1));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while unsafe { empty() } == 0 && std::time::Instant::now() < deadline {
+            assert_eq!(unsafe { frame(0) }, 1);
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        assert_eq!(unsafe{empty()},1);
-        POST_PEER.with(|s|s.set(None));
+        assert_eq!(unsafe { empty() }, 1);
+        drive(16);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            drive(17);
+            if PROCESS_READY.with(Cell::get) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "process package hook readiness timeout"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        drive(18);
+        drive(19);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while unsafe { empty() } == 0 && std::time::Instant::now() < deadline {
+            assert_eq!(unsafe { frame(0) }, 1);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(
+            unsafe { empty() },
+            1,
+            "process package native resources did not retire"
+        );
+        POST_PEER.with(|s| s.set(None));
         ENTITY_SLOT.with(|s| s.set(None));
         assert_eq!(unsafe { close() }, 1);
         PACKAGE.with(|p| p.borrow_mut().take());
