@@ -43,7 +43,7 @@ else
 fi
 
 # --- Verified game packages and transitional deployed JS/data for the current readers. ---
-node scripts/build-game-packages.mjs --out "$DIST/s2script"
+node --experimental-strip-types --no-warnings scripts/build-game-packages.mjs --out "$DIST/s2script"
 
 # --- Runtime dirs (plugins drop zone + writable configs/data) ---
 mkdir -p "$DIST/s2script/plugins" "$DIST/s2script/configs" "$DIST/s2script/data"
