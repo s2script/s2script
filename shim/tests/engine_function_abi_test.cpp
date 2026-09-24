@@ -571,9 +571,14 @@ extern "C" int s2fn_production_create(s2bridge::CoreDispatch dispatch,void(*step
     assert(production_frame.Configure(checked_target(reinterpret_cast<void*>(fixture_targets().void_target))).Accepted());
     return 1;
 }
+extern "C" int s2fn_production_empty();
 extern "C" int s2fn_production_frame(int requested) {
     production_requested=requested!=0;
-    auto volatile target=fixture_targets().void_target;target(0);return 1;
+    auto volatile target=fixture_targets().void_target;target(0);
+    if(production_copy_peer_installed)s2fn_production_empty(); // component receipt before owner maintenance
+    // Service::Collect inside the observed frame prunes only its bridge tickets.
+    // Ordinary peer tickets need the existing global drain after that frame unwinds.
+    return S2Hook_DrainRetirement() ? 1 : 0;
 }
 // Test-only actual engine entry: no Service::Call and no script caller owner.
 extern "C" int s2fn_production_engine_call(int value,int* out) {
@@ -581,9 +586,22 @@ extern "C" int s2fn_production_engine_call(int value,int* out) {
     auto volatile target=identity_target<std::int32_t>();*out=target(value);return 1;
 }
 extern "C" int s2fn_production_empty(){
-    if(!production_service->Empty() || allocations!=frees)return 0;
-    std::lock_guard<std::mutex> lock(s2hook_detail::g_retire_mu);
-    return s2hook_detail::g_retire.empty();
+    const bool service_empty=production_service->Empty();
+    const auto pending=S2Hook_RetirementPending();
+    const auto peer=production_copy_peer.Snapshot();
+    const bool peer_removed=production_copy_peer.RemovalComplete();
+    std::size_t tickets=0;
+    {std::lock_guard<std::mutex> lock(s2hook_detail::g_retire_mu);tickets=s2hook_detail::g_retire.size();}
+    const bool empty=service_empty && allocations==frees && tickets==0;
+    const std::array<long long,8> receipt{{service_empty,allocations,frees,static_cast<long long>(tickets),
+        static_cast<long long>(pending),static_cast<long long>(peer.id),static_cast<long long>(peer.state),peer_removed}};
+    static std::array<long long,8> previous{{-1}};
+    if(production_copy_peer_installed && receipt!=previous) {
+        std::fprintf(stderr,"DIAG copied fixture retirement service_empty=%d closures=%d/%d tickets=%zu pending=%zu copy_peer_id=%lld copy_peer_state=%d copy_peer_removed=%d\n",
+            service_empty,allocations,frees,tickets,pending,static_cast<long long>(peer.id),static_cast<int>(peer.state),peer_removed);
+        previous=receipt;
+    }
+    return empty;
 }
 extern "C" int s2fn_production_close(){
     if(!production_service->Collect())return 0;
