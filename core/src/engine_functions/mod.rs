@@ -1,6 +1,7 @@
 pub(crate) mod policy;
 pub(crate) mod package_adapter;
 pub(crate) mod projection;
+pub(crate) mod copied;
 pub(crate) mod runtime;
 pub(crate) mod registry;
 pub(crate) mod contract;

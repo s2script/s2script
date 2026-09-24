@@ -492,6 +492,37 @@ static void test_drain_true_can_leave_retirement_pending() {
     CHECK(S2Hook_RetirementPending() == 0, "pending drops only after Removed");
 }
 
+// A completed ordinary peer still occupies the global queue after an unrelated
+// outer frame returns. Service-local bridge collection cannot own that ticket.
+static void test_completed_peer_drains_between_outer_frames() {
+    FakeKHook fake;
+    KHook::__exported__khook = &fake;
+    CHECK(S2Hook_DrainRetirement(), "start peer boundary with a drained queue");
+    const auto tickets = [] {
+        std::lock_guard<std::mutex> lock(s2hook_detail::g_retire_mu);
+        return s2hook_detail::g_retire.size();
+    };
+    CHECK(tickets() == 0, "peer boundary starts without retained tickets");
+    S2CheckedFunction<void> outer(&FnPre, nullptr);
+    S2CheckedFunction<void> peer(&FnPre, nullptr);
+    CHECK(outer.Configure(reinterpret_cast<void*>(&FnTarget)).Accepted(), "outer frame configured");
+    CHECK(peer.Configure(reinterpret_cast<void*>(&FnTargetB)).Accepted(), "ordinary peer configured");
+    {
+        auto frame = outer.Observe();
+        CHECK(peer.BeginRemove(true), "ordinary peer removal scheduled inside outer frame");
+        fake.FireLastCompletion();
+        CHECK(peer.RemovalComplete(), "ordinary peer provider removal is complete");
+        CHECK(S2Hook_RetirementPending() == 0, "no incomplete retirement remains");
+        CHECK(tickets() == 1, "completed ordinary peer ticket still needs owner drain");
+        CHECK(!S2Hook_DrainRetirement(), "global drain remains forbidden inside unrelated frame");
+    }
+    CHECK(S2Hook_DrainRetirement(), "global owner drain runs after outer frame unwinds");
+    CHECK(tickets() == 0, "unwound fixture frame drains completed ordinary peer ticket");
+    CHECK(peer.RemovalComplete() && outer.Snapshot().state == S2HookState::Active,
+          "between-workload drain preserves peer completion and live outer registration");
+    CHECK(S2Hook_DrainRetirement(), "clean up peer boundary regression");
+}
+
 static void test_global_active_count_and_cross_thread_drain() {
     FakeKHook fake;
     KHook::__exported__khook = &fake;
@@ -955,6 +986,7 @@ int main() {
     test_idempotent_add_one_completion_per_id();
     test_discarded_observe_does_not_leak_invocation();
     test_drain_true_can_leave_retirement_pending();
+    test_completed_peer_drains_between_outer_frames();
     test_global_active_count_and_cross_thread_drain();
     test_guarded_inbound_dispatch_stops_js_while_retiring();
     test_active_count_leave_does_not_underflow();

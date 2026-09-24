@@ -7,10 +7,12 @@ pub(crate) fn compatible(a: &Abi, b: &Abi) -> bool {
         && a.parameters.len() == b.parameters.len()
         && a.parameters.iter().zip(&b.parameters).all(|(a, b)| {
             a.native == b.native
+                && a.ownership == b.ownership
                 && codec_compatible(&a.projection.id, &b.projection.id)
                 && a.projection.version == b.projection.version
         })
         && a.returns.native == b.returns.native
+        && a.returns.ownership == b.returns.ownership
         && codec_compatible(&a.returns.projection.id, &b.returns.projection.id)
         && a.returns.projection.version == b.returns.projection.version
 }
@@ -24,9 +26,10 @@ pub(crate) struct EntityReference {
     pub index: i32,
     pub id: u64,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) enum ProjectedValue {
     Scalar(S2FunctionValue),
+    Copied(super::copied::Owned),
     Entity {
         reference: Option<EntityReference>,
         nullable: bool,
@@ -76,6 +79,18 @@ pub(crate) fn request(native: &str, projection: &str) -> Result<S2FunctionValue,
         }
         return Ok(entity.request());
     }
+    if let Some(flags) = super::copied::flag(projection) {
+        if native != "ptr" {
+            return Err("copied projection requires pointer ABI".into());
+        }
+        return Ok(S2FunctionValue {
+            kind: 8,
+            flags,
+            reserved: 0,
+            aux: 0,
+            bits: 0,
+        });
+    }
     let mut out = super::runtime::blank();
     out.kind = super::runtime::kind(native)?;
     Ok(out)
@@ -83,6 +98,7 @@ pub(crate) fn request(native: &str, projection: &str) -> Result<S2FunctionValue,
 pub(crate) fn encode(value: ProjectedValue) -> Result<S2FunctionValue, String> {
     match value {
         ProjectedValue::Scalar(value) => Ok(value),
+        ProjectedValue::Copied(_) => Err("copied value requires sidecar operation".into()),
         ProjectedValue::Entity {
             reference,
             nullable,
@@ -167,7 +183,7 @@ mod entity_tests {
             reference: Some(EntityReference { index: 901, id }),
             nullable: false,
         };
-        let wire = encode(value).unwrap();
+        let wire = encode(value.clone()).unwrap();
         assert_eq!(
             (wire.kind, wire.flags, wire.aux, wire.bits),
             (8, 1, 901, 72)
@@ -180,7 +196,7 @@ mod entity_tests {
             }
         ));
         crate::entity_live::on_deleted(901, 72);
-        assert!(encode(value).is_err());
+        assert!(encode(value.clone()).is_err());
         assert!(adopt(wire, strict).is_err());
         let mut nullable_wire = wire;
         nullable_wire.flags = 2;
@@ -193,7 +209,7 @@ mod entity_tests {
         ));
         let replacement = crate::entity_live::on_created(901, 73);
         assert_ne!(id, replacement);
-        assert!(encode(value).is_err());
+        assert!(encode(value.clone()).is_err());
         let mut malformed = nullable.request();
         malformed.aux = u32::MAX;
         malformed.bits = 1;

@@ -1,5 +1,6 @@
-//! The bounded scalar native transport. All pointers remain inside this C boundary.
+//! Bounded scalar, entity and owned-copy transport. Native addresses stay in the shim.
 use super::contract::{NormalizedFunction, OwnerKey, OwnerKind};
+use super::{copied, projection::ProjectedValue};
 use crate::v8host::{engine_ops, S2FunctionFrameInfo, S2FunctionHookStatus, S2FunctionValue};
 use std::ffi::{CStr, CString};
 pub(crate) fn blank() -> S2FunctionValue {
@@ -29,7 +30,17 @@ fn reason(buf: &[i8]) -> String {
         .to_string_lossy()
         .into_owned()
 }
+pub(crate) fn has_copies(abi: &super::contract::Abi) -> bool {
+    copied::flag(&abi.returns.projection.id).is_some()
+        || abi
+            .parameters
+            .iter()
+            .any(|p| copied::flag(&p.projection.id).is_some())
+}
 pub(crate) fn prepare(f: &NormalizedFunction) -> Result<i64, String> {
+    if has_copies(&f.abi) {
+        require_copy_ops()?;
+    }
     super::projection::request(&f.abi.returns.native, &f.abi.returns.projection.id)?;
     for p in &f.abi.parameters {
         super::projection::request(&p.native, &p.projection.id)?;
@@ -182,6 +193,9 @@ fn call_binding_from(
         if values.len() != abi.parameters.len() + receiver {
             return Err("argument count mismatch".into());
         }
+        if has_copies(abi) {
+            return call_copied(binding, caller, values);
+        }
         let mut wire = Vec::with_capacity(values.len());
         for (i, value) in values.iter().enumerate() {
             let (native, projection) = if i == 0 && receiver == 1 {
@@ -191,7 +205,7 @@ fn call_binding_from(
                 (p.native.as_str(), p.projection.id.as_str())
             };
             let request = super::projection::request(native, projection)?;
-            let value = super::projection::encode(*value)?;
+            let value = super::projection::encode(value.clone())?;
             if value.kind != request.kind || value.flags != request.flags {
                 return Err("binding argument projection mismatch".into());
             }
@@ -325,6 +339,23 @@ mod tests {
     use super::*;
     #[test]
     fn metadata_layout_is_final_v1() {
+        assert_eq!(
+            std::mem::size_of::<crate::v8host::S2FunctionCopyInput>(),
+            24
+        );
+        assert_eq!(
+            std::mem::size_of::<crate::v8host::S2FunctionCopyOutput>(),
+            32
+        );
+        assert_eq!(
+            std::mem::size_of::<crate::v8host::S2FunctionCopyProducer>(),
+            56
+        );
+        assert_eq!(
+            std::mem::offset_of!(crate::v8host::S2FunctionCopyProducer, generation),
+            48
+        );
+        assert_eq!(std::mem::size_of::<crate::v8host::S2FunctionValue>(), 16);
         assert_eq!(std::mem::size_of::<S2FunctionFrameInfo>(), 48);
         assert_eq!(std::mem::align_of::<S2FunctionFrameInfo>(), 8);
         assert_eq!(std::mem::offset_of!(S2FunctionFrameInfo, invocation_id), 24);
@@ -344,11 +375,7 @@ pub(crate) fn original_return(
         return Ok(None);
     }
     frame
-        .read_requested(
-            -3,
-            super::projection::request(&ret.native, &ret.projection.id)?,
-        )
-        .and_then(|v| super::projection::decode(v, &ret.native, &ret.projection.id))
+        .read_projected(-3, &ret.native, &ret.projection.id)
         .map(Some)
         .map_err(|e| format!("{}: {e}", binding.function.canonical_id))
 }
@@ -364,11 +391,43 @@ pub(crate) fn override_return(
             return Err("void return cannot be overridden".into());
         }
         if matches!(
-            (out.kind, value),
+            (out.kind, &value),
             (8, super::projection::ProjectedValue::Scalar(_))
                 | (1..=7, super::projection::ProjectedValue::Entity { .. })
         ) {
             return Err("binding return value category mismatch".into());
+        }
+        if let ProjectedValue::Copied(copy) = &value {
+            if copy.flags != out.flags {
+                return Err("binding return projection mismatch".into());
+            }
+            let op = engine_ops()
+                .and_then(|o| o.function_frame_override_return_copy)
+                .ok_or("FunctionCopyExecutionUnavailable: POST sidecar")?;
+            let mut buffer =
+                copied::Buffer::new(copied::max_size(copy.flags), copied::Producer::engine())?;
+            let mut output = buffer.output();
+            let mut why = [0; 512];
+            if op(
+                frame.target,
+                frame.info.frame_token,
+                frame.info.native_epoch,
+                frame.fingerprint.as_ptr(),
+                &copy.wire(),
+                &copy.input(),
+                &copy.producer().wire(),
+                &mut out,
+                &mut output,
+                why.as_mut_ptr(),
+                512,
+            ) != 1
+            {
+                return Err(reason(&why));
+            }
+            return buffer
+                .finish(copy.flags, out, &output)
+                .map(ProjectedValue::Copied)
+                .map_err(|e| format!("FunctionCopyPostSubmitFailure: {e}"));
         }
         let wire = super::projection::encode(value)?;
         if wire.kind != out.kind
@@ -410,4 +469,228 @@ pub(crate) fn override_return(
             .map_err(|e| format!("POST override submitted: readback projection failed: {e}"))
     };
     run().map_err(|e: String| format!("{}: {e}", binding.function.canonical_id))
+}
+
+fn require_copy_ops() -> Result<(), String> {
+    let o = engine_ops().ok_or("FunctionCopyExecutionUnavailable: engine ops")?;
+    for (name, present) in [
+        ("function_call_copy", o.function_call_copy.is_some()),
+        (
+            "function_frame_read_copy",
+            o.function_frame_read_copy.is_some(),
+        ),
+        (
+            "function_frame_write_copy",
+            o.function_frame_write_copy.is_some(),
+        ),
+        (
+            "function_frame_commit_copy",
+            o.function_frame_commit_copy.is_some(),
+        ),
+        (
+            "function_frame_override_return_copy",
+            o.function_frame_override_return_copy.is_some(),
+        ),
+    ] {
+        if !present {
+            return Err(format!("FunctionCopyExecutionUnavailable: {name}"));
+        }
+    }
+    Ok(())
+}
+fn call_copied(
+    binding: &super::registry::Binding,
+    caller: &OwnerKey,
+    values: &[ProjectedValue],
+) -> Result<ProjectedValue, String> {
+    if caller.kind != OwnerKind::Plugin
+        || !crate::v8host::owner_is_live(&caller.id, caller.generation)
+        || crate::v8host::plugin_phase(&caller.id) == Some(crate::plugin::Phase::Unloading)
+    {
+        return Err("function caller generation unavailable".into());
+    }
+    require_copy_ops()?;
+    let producer = copied::Producer::owner(caller);
+    let abi = &binding.function.abi;
+    let receiver = usize::from(abi.receiver == "entity");
+    let mut wire = [blank(); 33];
+    let mut size = 0;
+    for (i, value) in values.iter().enumerate() {
+        let (native, projection) = if i == 0 && receiver == 1 {
+            ("ptr", "entity")
+        } else {
+            let p = &abi.parameters[i - receiver];
+            (p.native.as_str(), p.projection.id.as_str())
+        };
+        let request = super::projection::request(native, projection)?;
+        wire[i] = match value {
+            ProjectedValue::Copied(v) => {
+                // Public call values are newly materialized under the actual caller.
+                if v.producer() != producer {
+                    return Err("FunctionCopyProducerMismatch: direct call input".into());
+                }
+                let mut w = v.wire();
+                w.bits = size as u64;
+                size += v.bytes().len();
+                w
+            }
+            other => super::projection::encode(other.clone())?,
+        };
+        if wire[i].kind != request.kind || wire[i].flags != request.flags {
+            return Err("binding argument projection mismatch".into());
+        }
+    }
+    let mut input = copied::Buffer::new(size, producer)?;
+    let mut offset = 0;
+    for value in values {
+        if let ProjectedValue::Copied(v) = value {
+            let n = v.bytes().len();
+            input.bytes_mut()[offset..offset + n].copy_from_slice(v.bytes());
+            offset += n;
+        }
+    }
+    let ret = &abi.returns;
+    let flag = copied::flag(&ret.projection.id);
+    let mut buffer =
+        copied::Buffer::new(flag.map_or(0, copied::max_size), copied::Producer::engine())?;
+    let mut output = buffer.output();
+    let mut out = super::projection::request(&ret.native, &ret.projection.id)?;
+    let mut why = [0; 512];
+    let _busy = crate::dispatch::ParentBusy::enter(&caller.id, caller.generation);
+    let op = engine_ops().unwrap().function_call_copy.unwrap();
+    if op(
+        binding.target.ok_or("binding unavailable")?,
+        caller.generation,
+        wire.as_ptr(),
+        values.len() as i32,
+        &mut out,
+        &input.input(),
+        &mut output,
+        &producer.wire(),
+        why.as_mut_ptr(),
+        512,
+    ) != 1
+    {
+        return Err(reason(&why));
+    }
+    if let Some(flag) = flag {
+        buffer
+            .finish(flag, out, &output)
+            .map(ProjectedValue::Copied)
+            .map_err(|e| format!("FunctionCopyPostCallFailure: {e}"))
+    } else {
+        super::projection::decode(out, &ret.native, &ret.projection.id)
+            .map_err(|e| format!("FunctionCopyPostCallFailure: {e}"))
+    }
+}
+impl Frame {
+    pub(crate) fn read_projected(
+        &self,
+        selector: i32,
+        native: &str,
+        projection: &str,
+    ) -> Result<ProjectedValue, String> {
+        let Some(flag) = copied::flag(projection) else {
+            return self
+                .read_requested(selector, super::projection::request(native, projection)?)
+                .and_then(|v| super::projection::decode(v, native, projection));
+        };
+        let mut buffer = copied::Buffer::new(copied::max_size(flag), copied::Producer::engine())?;
+        let mut output = buffer.output();
+        let mut value = super::projection::request(native, projection)?;
+        let mut why = [0; 512];
+        let op = engine_ops()
+            .and_then(|o| o.function_frame_read_copy)
+            .ok_or("FunctionCopyExecutionUnavailable: read sidecar")?;
+        if op(
+            self.target,
+            self.info.frame_token,
+            self.info.native_epoch,
+            self.fingerprint.as_ptr(),
+            selector,
+            &mut value,
+            &mut output,
+            why.as_mut_ptr(),
+            512,
+        ) != 1
+        {
+            return Err(reason(&why));
+        }
+        buffer
+            .finish(flag, value, &output)
+            .map(ProjectedValue::Copied)
+    }
+    pub(crate) fn write_projected(
+        &self,
+        selector: i32,
+        value: &ProjectedValue,
+    ) -> Result<(), String> {
+        let ProjectedValue::Copied(copy) = value else {
+            return self.write(selector, &super::projection::encode(value.clone())?);
+        };
+        let op = engine_ops()
+            .and_then(|o| o.function_frame_write_copy)
+            .ok_or("FunctionCopyExecutionUnavailable: write sidecar")?;
+        let mut why = [0; 512];
+        if op(
+            self.target,
+            self.info.frame_token,
+            self.info.native_epoch,
+            self.fingerprint.as_ptr(),
+            selector,
+            &copy.wire(),
+            &copy.input(),
+            &copy.producer().wire(),
+            why.as_mut_ptr(),
+            512,
+        ) == 1
+        {
+            Ok(())
+        } else {
+            Err(reason(&why))
+        }
+    }
+    pub(crate) fn commit_projected(
+        &self,
+        action: i32,
+        value: Option<&ProjectedValue>,
+        copies: bool,
+    ) -> Result<(), String> {
+        if !copies {
+            let wire = value.cloned().map(super::projection::encode).transpose()?;
+            return self.commit(action, wire.as_ref());
+        }
+        let op = engine_ops()
+            .and_then(|o| o.function_frame_commit_copy)
+            .ok_or("FunctionCopyExecutionUnavailable: commit sidecar")?;
+        let mut input = copied::empty_input();
+        let mut producer = copied::Producer::engine().wire();
+        let wire = match value {
+            Some(ProjectedValue::Copied(copy)) => {
+                input = copy.input();
+                producer = copy.producer().wire();
+                Some(copy.wire())
+            }
+            Some(other) => Some(super::projection::encode(other.clone())?),
+            None => None,
+        };
+        let mut why = [0; 512];
+        if op(
+            self.target,
+            self.info.frame_token,
+            self.info.native_epoch,
+            self.fingerprint.as_ptr(),
+            action,
+            wire.as_ref().map_or(std::ptr::null(), |v| v),
+            &input,
+            &producer,
+            why.as_mut_ptr(),
+            512,
+        ) == 1
+        {
+            Ok(())
+        } else {
+            Err(reason(&why))
+        }
+    }
 }

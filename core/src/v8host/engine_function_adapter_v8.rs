@@ -242,6 +242,11 @@ mod production {
         static POST_PEER:Cell<Option<FrameProduction>>=const{Cell::new(None)};
         static PROCESS_STATE:RefCell<Option<super::super::engine_function_tests::PackageServiceProof>>=const{RefCell::new(None)};
         static ENGINE_CALL:Cell<Option<EngineCallProduction>>=const{Cell::new(None)};
+        static COPY_PROCESS:RefCell<Option<proof::CopyProcess>>=const{RefCell::new(None)};
+        static COPY_STATE:RefCell<Option<proof::CopyConformance>>=const{RefCell::new(None)};
+        static COPY_ENGINE:Cell<Option<unsafe extern "C" fn(*const i8,*const i8)->i32>>=const{Cell::new(None)};
+        static COPY_PEER:Cell<Option<FrameProduction>>=const{Cell::new(None)};
+        static COPY_READY:Cell<bool>=const{Cell::new(false)};
         static PROCESS_READY:Cell<bool>=const{Cell::new(false)};
         static STEP:Cell<usize>=const{Cell::new(0)};
         static FAILURE:RefCell<Option<String>>=const{RefCell::new(None)};
@@ -415,6 +420,23 @@ mod production {
             19 => super::super::engine_function_tests::package_service_finish(
                 PROCESS_STATE.with(|s| s.borrow_mut().take()).unwrap(),
             ),
+            20 => {assert_eq!(unsafe{COPY_PEER.with(Cell::get).unwrap()(1)},1);COPY_STATE.with(|s|*s.borrow_mut()=Some(proof::copy_begin()));},
+            21 => {let mut state=COPY_STATE.with(|s|s.borrow_mut().take()).unwrap();proof::copy_probe(&mut state);COPY_READY.with(|r|r.set(state.ready));COPY_STATE.with(|s|*s.borrow_mut()=Some(state));},
+            22 => {
+                proof::copy_exercise();
+                unsafe{COPY_PEER.with(Cell::get).unwrap()(2)};proof::copy_peer_exercise();
+                assert_eq!(unsafe{COPY_PEER.with(Cell::get).unwrap()(2)},2);unsafe{COPY_PEER.with(Cell::get).unwrap()(3)};
+                proof::copy_mode("carry");
+                let input=CString::new("raw-input").unwrap();let expected=CString::new("same-copied-result").unwrap();
+                assert_eq!(unsafe{COPY_ENGINE.with(Cell::get).unwrap()(input.as_ptr(),expected.as_ptr())},1);
+            },
+            23 => proof::copy_finish(COPY_STATE.with(|s|s.borrow_mut().take()).unwrap()),
+            24 => proof::copy_borrowed_begin(),
+            25 => COPY_READY.with(|s|s.set(proof::copy_borrowed_probe())),
+            26 => proof::copy_borrowed_finish(),
+            27 => COPY_PROCESS.with(|s|*s.borrow_mut()=Some(proof::copy_process_begin())),
+            28 => COPY_READY.with(|s|s.set(proof::copy_process_probe())),
+            29 => {proof::copy_process_exercise();proof::copy_process_finish(COPY_PROCESS.with(|s|s.borrow_mut().take()).unwrap());},
             _ => panic!("unexpected frame callback"),
         });
         if let Err(error) = result {
@@ -446,6 +468,10 @@ mod production {
         let engine_call: EngineCallProduction =
             unsafe { std::mem::transmute(symbol(library, "s2fn_production_engine_call")) };
         ENGINE_CALL.with(|s| s.set(Some(engine_call)));
+        COPY_ENGINE.with(|s|s.set(Some(unsafe{std::mem::transmute(symbol(library,"s2fn_production_copy_engine_call"))})));
+        COPY_PEER.with(|s|s.set(Some(unsafe{std::mem::transmute(symbol(library,"s2fn_production_copy_peer"))})));
+        let copy_borrowed:Remove=unsafe{std::mem::transmute(symbol(library,"s2fn_production_copy_borrowed_call"))};
+        let copy_escaped:Remove=unsafe{std::mem::transmute(symbol(library,"s2fn_production_copy_escaped_check"))};
         let empty: Remove =
             unsafe { std::mem::transmute(symbol(library, "s2fn_production_empty")) };
         let close: Remove =
@@ -584,6 +610,31 @@ mod production {
             println!("PASS actual compiler-authored target engine entry: package-only and mixed public/package PRE/POST, owner0/no-nest, shared native Service");
         }));
         cleanup_phase("after-process-result");
+        let copy_result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
+            // Retire previous physical identity targets before changing projection representation.
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            while unsafe{empty()}==0 && std::time::Instant::now()<deadline {assert_eq!(unsafe{frame(0)},1);std::thread::sleep(std::time::Duration::from_millis(1));}
+            assert_eq!(unsafe{empty()},1);
+            drive(20);let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(21);if COPY_READY.with(Cell::get){break}assert!(std::time::Instant::now()<deadline,"copied hook readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            drive(22);assert_eq!(unsafe{copy_escaped()},1);drive(23);assert_eq!(unsafe{copy_escaped()},1);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            while unsafe{empty()}==0 && std::time::Instant::now()<deadline {assert_eq!(unsafe{frame(0)},1);std::thread::sleep(std::time::Duration::from_millis(1));}
+            assert_eq!(unsafe{empty()},1);COPY_READY.with(|s|s.set(false));drive(24);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(25);if COPY_READY.with(Cell::get){break}assert!(std::time::Instant::now()<deadline,"borrowed copy readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            assert_eq!(unsafe{copy_borrowed()},9);drive(26);assert_eq!(unsafe{copy_escaped()},1);
+            COPY_READY.with(|s|s.set(false));drive(27);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(28);if COPY_READY.with(Cell::get){break}assert!(std::time::Instant::now()<deadline,"process copy readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            drive(29);assert_eq!(unsafe{copy_escaped()},1);
+            println!("PASS actual Service/V8 copied aliases, recall edits, suppression, strict marshalling, exact carried deliveries, nested lease expiry, POST original/effective returns and escaped native reads after owner retirement");
+        }));
+        if let Some(state)=COPY_STATE.with(|s|s.borrow_mut().take()){proof::copy_abort(state);}
+        for id in ["copy-vector","copy-borrowed","copy-borrowed-caller"]{unload_plugin(id);}
+        if let Some(state)=COPY_PROCESS.with(|s|s.borrow_mut().take()){proof::copy_process_abort(state);}
+        COPY_PEER.with(|s|s.set(None));
+        COPY_ENGINE.with(|s|s.set(None));
         // Drain RAII owners while the isolate, native Service and all TLS maps
         // are still alive. Thread-local destruction must not mask the first panic.
         let abandoned = PROCESS_STATE.with(|s| s.borrow_mut().take());
@@ -637,6 +688,7 @@ mod production {
         shutdown();
         cleanup_phase("after-v8-shutdown");
         if closed == 1 {
+            if copy_result.is_ok(){assert_eq!(unsafe{copy_escaped()},1);}
             cleanup_phase("before-dlclose");
             unsafe {
                 libc::dlclose(library);
@@ -647,6 +699,7 @@ mod production {
             eprintln!("process failure cleanup: drained={process_drained} closed={closed}");
             std::panic::resume_unwind(error);
         }
+        if let Err(error)=copy_result{std::panic::resume_unwind(error);}
         assert!(
             process_drained,
             "process package native resources did not retire"

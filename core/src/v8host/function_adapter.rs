@@ -1,6 +1,7 @@
-//! Host-authorized bootstrap and synchronous scalar/entity policy fan-out.
+//! Host-authorized bootstrap and synchronous projected-value policy fan-out.
 //! The public facade shares this service; additional projection codecs remain separate work.
 use super::*;
+use crate::engine_functions::copied;
 use crate::engine_functions::{
     contract::*,
     package_adapter::{self, DispatchAdapter, SubscriberCursor},
@@ -261,6 +262,30 @@ fn set<'s>(
         Ok(())
     } else {
         Err("property write failed".into())
+    }
+}
+// Host-created snapshots must not invoke inherited setters or expose inherited values.
+fn set_own<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    object: v8::Local<v8::Object>,
+    key: &str,
+    value: v8::Local<'s, v8::Value>,
+) -> Result<(), String> {
+    let key = v8::String::new(scope, key).ok_or("string allocation")?;
+    if object.create_data_property(scope, key.into(), value) == Some(true) {
+        Ok(())
+    } else {
+        Err("own data property creation failed".into())
+    }
+}
+fn freeze_snapshot(
+    scope: &mut v8::PinScope,
+    object: v8::Local<v8::Object>,
+) -> Result<(), String> {
+    if object.set_integrity_level(scope, v8::IntegrityLevel::Frozen) == Some(true) {
+        Ok(())
+    } else {
+        Err("snapshot freeze failed".into())
     }
 }
 fn sync_function(
@@ -1177,7 +1202,7 @@ pub(crate) fn drop_owner(owner: &OwnerKey) {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Decision {
     action: i32,
     value: Option<ProjectedValue>,
@@ -1188,6 +1213,9 @@ struct InvocationState {
     adapters: [Option<Rc<Adapter>>; 2],
     deliveries: Vec<Decision>,
     retained_bytes: usize,
+    // Rust drops fields in declaration order. Keep the charge until all retained
+    // adapter holds, delivery elements and their vector allocation are destroyed.
+    copy_bookkeeping: Option<copied::Bookkeeping>,
 }
 type StagedEdits = std::collections::BTreeMap<i32, (ProjectedValue, String)>;
 struct Dispatch {
@@ -1375,7 +1403,7 @@ fn js_override_return(
         let permit = AdapterPostReturnPermit::issue(l)?;
         let (_, binding) = permit.validate()?;
         let ret = &binding.function.abi.returns;
-        let value = projected_from_js(scope, args.get(0), &ret.native, &ret.projection.id)
+        let value = callback_projected_from_js(scope, args.get(0), &ret.native, &ret.projection.id)
             .map_err(|e| format!("{}: {e}", binding.function.canonical_id))?;
         let mut frame = GuardedPostFrame { permit };
         projected_to_js(
@@ -1488,6 +1516,29 @@ pub(super) fn projected_to_js<'s>(
     value: ProjectedValue,
 ) -> Result<v8::Local<'s, v8::Value>, String> {
     match value {
+        ProjectedValue::Copied(copy) => {
+            if copy.flags == 4 {
+                let text =
+                    std::str::from_utf8(copy.bytes()).map_err(|_| "invalid copied string")?;
+                Ok(v8::String::new(scope, text)
+                    .ok_or("FunctionCopyOutputAllocationFailure")?
+                    .into())
+            } else {
+                let out = v8::Object::new(scope);
+                for (key, bytes) in ["x", "y", "z"]
+                    .into_iter()
+                    .zip(copy.bytes().chunks_exact(4))
+                {
+                    let value = v8::Number::new(
+                        scope,
+                        f32::from_le_bytes(bytes.try_into().unwrap()) as f64,
+                    );
+                    set_own(scope, out, key, value.into())?;
+                }
+                freeze_snapshot(scope, out)?;
+                Ok(out.into())
+            }
+        }
         ProjectedValue::Scalar(value) => scalar_to_js(scope, value),
         ProjectedValue::Entity {
             reference: None, ..
@@ -1499,12 +1550,147 @@ pub(super) fn projected_to_js<'s>(
             .ok_or("captured EntityRef prototype unavailable".into()),
     }
 }
+fn copied_from_js(
+    scope: &mut v8::PinScope,
+    value: v8::Local<v8::Value>,
+    flag: u8,
+    producer: copied::Producer,
+) -> Result<copied::Owned, String> {
+    if flag == 4 {
+        let text =
+            v8::Local::<v8::String>::try_from(value).map_err(|_| "primitive string required")?;
+        let len = text.length();
+        if len > copied::MAX_STRING {
+            return Err("FunctionCopyInvalidValue: string limit".into());
+        }
+        let mut utf16 = copied::Buffer::new(len * 2, producer)?;
+        let mut chunk = [0u16; 512];
+        for offset in (0..len).step_by(512) {
+            let n = (len - offset).min(512);
+            text.write_v2(
+                scope,
+                offset as u32,
+                &mut chunk[..n],
+                v8::WriteFlags::empty(),
+            );
+            for (i, u) in chunk[..n].iter().enumerate() {
+                utf16.bytes_mut()[(offset + i) * 2..(offset + i) * 2 + 2]
+                    .copy_from_slice(&u.to_le_bytes());
+            }
+        }
+        let units = || {
+            utf16
+                .bytes()
+                .chunks_exact(2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        };
+        let mut count = 0;
+        for c in char::decode_utf16(units()) {
+            let c = c.map_err(|_| "FunctionCopyInvalidValue: lone UTF-16 surrogate")?;
+            if c == '\0' {
+                return Err("FunctionCopyInvalidValue: NUL".into());
+            }
+            count += c.len_utf8();
+        }
+        if count > copied::MAX_STRING {
+            return Err("FunctionCopyInvalidValue: UTF-8 limit".into());
+        }
+        let mut out = copied::Buffer::new(count, producer)?;
+        let mut offset = 0;
+        for c in char::decode_utf16(units()) {
+            let c = c.unwrap();
+            let n = c.len_utf8();
+            c.encode_utf8(&mut out.bytes_mut()[offset..offset + n]);
+            offset += n;
+        }
+        out.own(flag)
+    } else {
+        if value.is_proxy() || !value.is_object() || value.is_array() {
+            return Err("strict vector data object required".into());
+        }
+        let object = v8::Local::<v8::Object>::try_from(value).map_err(|_| "vector required")?;
+        let keys = object
+            .get_own_property_names(
+                scope,
+                v8::GetPropertyNamesArgs {
+                    property_filter: v8::PropertyFilter::ALL_PROPERTIES,
+                    key_conversion: v8::KeyConversionMode::KeepNumbers,
+                    ..Default::default()
+                },
+            )
+            .ok_or("vector keys unavailable")?;
+        if keys.length() != 3 {
+            return Err("vector requires exactly x/y/z".into());
+        }
+        let mut bytes = [0u8; 12];
+        for (i, key) in ["x", "y", "z"].into_iter().enumerate() {
+            let key = v8::String::new(scope, key).ok_or("vector key allocation")?;
+            let desc = object
+                .get_own_property_descriptor(scope, key.into())
+                .ok_or("vector data property required")?;
+            let desc = v8::Local::<v8::Object>::try_from(desc)
+                .map_err(|_| "vector own data property required")?;
+            let key = v8::String::new(scope, "value").ok_or("descriptor allocation")?;
+            if desc.has_own_property(scope, key.into()) != Some(true) {
+                return Err("vector accessors forbidden".into());
+            }
+            let value = desc.get(scope, key.into()).ok_or("vector value missing")?;
+            if !value.is_number() {
+                return Err("vector primitive numbers required".into());
+            }
+            let f = value.number_value(scope).unwrap() as f32;
+            if !f.is_finite() {
+                return Err("finite f32 vector required".into());
+            }
+            bytes[i * 4..i * 4 + 4].copy_from_slice(&f.to_le_bytes());
+        }
+        let mut out = copied::Buffer::new(12, producer)?;
+        out.bytes_mut().copy_from_slice(&bytes);
+        out.own(flag)
+    }
+}
+fn callback_projected_from_js(
+    scope: &mut v8::PinScope,
+    value: v8::Local<v8::Value>,
+    native: &str,
+    projection: &str,
+) -> Result<ProjectedValue, String> {
+    if let Some(flag) = copied::flag(projection) {
+        let owner = LEASES
+            .with(|s| {
+                s.borrow().last().map(|l| {
+                    if l.adapter {
+                        l.dispatch
+                            .adapter
+                            .as_ref()
+                            .unwrap()
+                            .instance
+                            .package_owner
+                            .clone()
+                    } else {
+                        l.owner.clone()
+                    }
+                })
+            })
+            .unwrap_or(current_owner(scope)?);
+        return copied_from_js(scope, value, flag, copied::Producer::owner(&owner))
+            .map(ProjectedValue::Copied);
+    }
+    projected_from_js(scope, value, native, projection)
+}
 pub(super) fn projected_from_js(
     scope: &mut v8::PinScope,
     value: v8::Local<v8::Value>,
     native: &str,
     projection: &str,
 ) -> Result<ProjectedValue, String> {
+    if let Some(flag) = copied::flag(projection) {
+        if native != "ptr" {
+            return Err("copied projection requires pointer ABI".into());
+        }
+        let producer = copied::Producer::owner(&current_owner(scope)?);
+        return copied_from_js(scope, value, flag, producer).map(ProjectedValue::Copied);
+    }
     if let Some(entity) = EntityProjection::parse(projection) {
         let reference = if value.is_null() {
             None
@@ -1523,12 +1709,13 @@ pub(super) fn projected_from_js(
         )?))
     }
 }
+
 fn js_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let result = (|| {
         let (l, i) = accessor_data(scope, &args)?;
         let (native, projection) = field_type(&l.binding, i)?;
-        let staged = l.pending_edits.borrow().get(&i).map(|(value, _)| *value)
-            .or_else(|| l.dispatch.edits.borrow().get(&i).map(|(value, _)| *value));
+        let staged = l.pending_edits.borrow().get(&i).map(|(value, _)| value.clone())
+            .or_else(|| l.dispatch.edits.borrow().get(&i).map(|(value, _)| value.clone()));
         let v = if let Some(value) = staged {
             match value {
                 ProjectedValue::Entity { reference, .. } =>
@@ -1536,8 +1723,7 @@ fn js_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
                 scalar => Ok(scalar),
             }
         } else {
-            l.dispatch.frame.read_requested(i, projection::request(native, projection)?)
-                .and_then(|v| projection::decode(v, native, projection))
+            l.dispatch.frame.read_projected(i, native, projection)
         }.map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
         projected_to_js(scope, v)
     })();
@@ -1560,16 +1746,14 @@ fn js_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::
             return Err("undeclared field mutation".into());
         }
         let (native, projection) = field_type(&l.binding, i)?;
-        let value = projected_from_js(scope, args.get(0), native, projection)
-            .map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
-        let wire = projection::encode(value)
+        let value = callback_projected_from_js(scope, args.get(0), native, projection)
             .map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
         let next_revision = l.dispatch.revision.get().checked_add(1)
             .ok_or("frame revision exhausted")?;
-        if !l.adapter && l.binding.function.policy.suppression == "none" {
+        if runtime::has_copies(&l.binding.function.abi) || (!l.adapter && l.binding.function.policy.suppression == "none") {
             l.pending_edits.borrow_mut().insert(i, (value, l.binding.function.canonical_id.clone()));
         } else {
-            l.dispatch.frame.write(i, &wire)
+            l.dispatch.frame.write_projected(i, &value)
                 .map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
             l.dispatch.edits.borrow_mut().insert(i, (value, l.binding.function.canonical_id.clone()));
         }
@@ -1638,6 +1822,14 @@ fn view<'s>(
     object.set_integrity_level(scope, v8::IntegrityLevel::Frozen);
     Ok(object)
 }
+fn delivery_key<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+) -> Result<v8::Local<'s, v8::Private>, String> {
+    let name = v8::String::new(scope, "s2script.function-copy.delivery.v1")
+        .ok_or("delivery key allocation")?;
+    Ok(v8::Private::for_api(scope, Some(name)))
+}
+
 fn decision(
     scope: &mut v8::PinScope,
     value: v8::Local<v8::Value>,
@@ -1678,6 +1870,7 @@ fn decision(
         }
         return Err("suppression requires typed decision object".into());
     }
+    if value.is_proxy() {return Err("proxy decision forbidden".into())}
     let object =
         v8::Local::<v8::Object>::try_from(value).map_err(|_| "invalid adapter decision")?;
     let action = get(scope, object, "action")?;
@@ -1692,7 +1885,21 @@ fn decision(
         return Err("suppression:none forbids suppression decision objects".into());
     }
     let value = get(scope, object, "returnValue")?;
-    let value = projected_from_js(scope, value, native, projection)?;
+    let key=delivery_key(scope)?;
+    if let Some(tag)=object.get_private(scope,key).filter(|v|!v.is_undefined()) {
+        let tag=v8::Local::<v8::Array>::try_from(tag).map_err(|_|"invalid host delivery")?;
+        let lease_id=bigint(tag.get_index(scope,0).ok_or("missing delivery lease")?)?;
+        let index=bigint(tag.get_index(scope,1).ok_or("missing delivery index")?)? - 1;
+        let original=tag.get_index(scope,2).ok_or("missing delivery value")?;
+        let carried=LEASES.with(|s| {
+            let s=s.borrow();let l=s.last().filter(|l|l.adapter && l.id==lease_id).ok_or("foreign or expired host delivery")?;
+            let d=l.dispatch.deliveries.borrow();let d=d.get(index as usize).ok_or("expired delivery index")?;
+            if d.action!=action || !value.strict_equals(original){return Err("host delivery changed")}
+            Ok(d.clone())
+        })?;
+        return Ok(carried);
+    }
+    let value = callback_projected_from_js(scope, value, native, projection)?;
     Ok(Decision {
         action,
         value: if kind == 0 { None } else { Some(value) },
@@ -1707,6 +1914,11 @@ fn js_cursor(
         let l = lease(scope, bigint(args.data())?)?;
         if !l.adapter {
             return Err("cursor requires adapter callback lease".into());
+        }
+        // Adapter edits preceding invokeNext are visible to that subscriber.
+        // An invalid adapter result still aborts the entire uncommitted frame.
+        if runtime::has_copies(&l.binding.function.abi) {
+            l.dispatch.edits.borrow_mut().append(&mut l.pending_edits.borrow_mut());
         }
         loop {
             let index = l.dispatch.cursor.get();
@@ -1737,17 +1949,29 @@ fn js_cursor(
             if value.action == 3 {
                 l.dispatch.cursor.set(l.dispatch.subscribers.len());
             }
-            l.dispatch.deliveries.borrow_mut().push(value);
+            let delivery_index=l.dispatch.deliveries.borrow().len();
+            l.dispatch.deliveries.borrow_mut().push(value.clone());
             let out = v8::Object::new(scope);
             let action = v8::Integer::new(scope, value.action);
-            set(scope, out, "action", action.into())?;
-            if let Some(value) = value.value {
-                let value = projected_to_js(scope, value)?;
-                set(scope, out, "returnValue", value)?;
+            set_own(scope, out, "action", action.into())?;
+            let original = match value.value {
+                Some(value) => projected_to_js(scope, value)?,
+                None => v8::undefined(scope).into(),
+            };
+            set_own(scope, out, "returnValue", original)?;
+            let lease_id = v8::BigInt::new_from_u64(scope, l.id);
+            let index = v8::BigInt::new_from_u64(scope, delivery_index as u64 + 1);
+            // Array construction initializes own elements directly; no prototype
+            // setter or getter participates in recording the emitted return.
+            let tag = v8::Array::new_with_elements(scope, &[lease_id.into(), index.into(), original]);
+            freeze_snapshot(scope, tag.into())?;
+            let key = delivery_key(scope)?;
+            if out.set_private(scope, key, tag.into()) != Some(true) {
+                return Err("delivery lineage allocation".into());
             }
             let revision = v8::Number::new(scope, l.dispatch.revision.get() as f64);
-            set(scope, out, "frameRevision", revision.into())?;
-            out.set_integrity_level(scope, v8::IntegrityLevel::Frozen);
+            set_own(scope, out, "frameRevision", revision.into())?;
+            freeze_snapshot(scope, out)?;
             return Ok(out.into());
         }
     })();
@@ -1799,7 +2023,7 @@ fn invoke_wrapper(
         // decision validates. Later callbacks read accepted edits from this
         // overlay; the final transfer validates/writes before native commit.
         dispatch.edits.borrow_mut().extend(pending_edits.borrow().iter().map(|(k, v)| (*k, v.clone())));
-    } else if sub.binding.function.policy.suppression == "none" {
+    } else if runtime::has_copies(&sub.binding.function.abi) || sub.binding.function.policy.suppression == "none" {
         dispatch.revision.set(prior_revision);
     }
     decision
@@ -1830,7 +2054,8 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
         &adapter.instance.parent.id,
         adapter.instance.parent.generation,
     );
-    let (guard, id, _) = LeaseGuard::enter(
+    let prior_revision=dispatch.revision.get();
+    let (guard, id, pending_edits) = LeaseGuard::enter(
         adapter.instance.parent.clone(),
         dispatch.clone(),
         dispatch.binding.clone(),
@@ -1864,14 +2089,17 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
     let recv = v8::undefined(&mut tc);
     let value = function.call(&mut tc, recv.into(), &[facade.into()]);
     guard.close();
-    decision(
+    let result=decision(
         &mut tc,
         value.ok_or("adapter threw")?,
         &dispatch.binding.function.abi.returns.native,
         &dispatch.binding.function.abi.returns.projection.id,
         dispatch.frame.phase,
         &dispatch.binding.function.policy.suppression,
-    )
+    );
+    if result.is_ok() {dispatch.edits.borrow_mut().extend(pending_edits.borrow().iter().map(|(k,v)|(*k,v.clone())));}
+    else if runtime::has_copies(&dispatch.binding.function.abi) {dispatch.revision.set(prior_revision);}
+    result
 }
 struct GenericCursor<'a, 's, 'i> {
     adapter_owner: Option<OwnerKey>,
@@ -1903,7 +2131,7 @@ impl SubscriberCursor for GenericCursor<'_, '_, '_> {
                     }
                 }
             };
-            self.dispatch.deliveries.borrow_mut().push(decision);
+            self.dispatch.deliveries.borrow_mut().push(decision.clone());
             let action = match decision.action {
                 0 => crate::multiplexer::HookResult::Continue,
                 1 => crate::multiplexer::HookResult::Changed,
@@ -2004,7 +2232,7 @@ fn invoke_domains(scope: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<De
         dispatch
             .deliveries
             .borrow_mut()
-            .extend(part.deliveries.borrow().iter().copied());
+            .extend(part.deliveries.borrow().iter().cloned());
     }
     Ok(result)
 }
@@ -2035,6 +2263,7 @@ pub(crate) fn dispatch(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Re
     result
 }
 fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<(), String> {
+    let _copy_scope=copied::Scope::enter()?;
     if target <= 0
         || info.version != 1
         || info.struct_size != 48
@@ -2048,6 +2277,24 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
         return Err("invalid frame metadata".into());
     }
     let key = (target, info.invocation_id);
+    // Take the exact paired PRE state into this POST stack, keeping its copied
+    // deliveries and registration hold alive until POST actually completes.
+    let post_state = if phase == 1 {
+        INVOCATIONS.with(|i| i.borrow_mut().remove(&key))
+    } else {
+        None
+    };
+    // Reserve an upper bound for callback maps, cloned owned-value handles,
+    // V8 delivery tags, and retained decision vectors before dispatch allocations.
+    // Byte payloads are charged independently by Buffer for their actual capacity.
+    let copy_bookkeeping=SUBSCRIPTIONS.with(|rows| {
+        let rows=rows.borrow();let mut bytes=4096usize;let mut copies=false;
+        for sub in rows.values().filter(|sub|sub.binding.target==Some(target)) {
+            copies|=runtime::has_copies(&sub.binding.function.abi);
+            bytes=bytes.checked_add(4*32*(256+sub.binding.function.canonical_id.len())).ok_or("FunctionCopyBudgetExceeded: dispatch bookkeeping")?;
+        }
+        if copies {copied::Bookkeeping::reserve(bytes,copied::Producer::engine()).map(Some)}else{Ok(None)}
+    })?;
     let subscribers = SUBSCRIPTIONS.with(|s| {
         s.borrow()
             .values()
@@ -2068,13 +2315,6 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
             .cloned()
             .collect::<Vec<_>>()
     });
-    // Take the exact paired PRE state into this POST stack, keeping its copied
-    // deliveries and registration hold alive until POST actually completes.
-    let post_state = if phase == 1 {
-        INVOCATIONS.with(|i| i.borrow_mut().remove(&key))
-    } else {
-        None
-    };
     let adapter = if phase == 0 {
         let selected = ADAPTERS.with(|a| {
             let rows = a.borrow();
@@ -2101,6 +2341,7 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
                 i.borrow_mut().insert(
                     key,
                     InvocationState {
+                        copy_bookkeeping: None,
                         adapters: selected,
                         deliveries: Vec::new(),
                         retained_bytes: 0,
@@ -2178,6 +2419,7 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
     if phase == 0 {
         INVOCATIONS.with(|i| {
             if let Some(state) = i.borrow_mut().get_mut(&key) {
+                state.copy_bookkeeping=copy_bookkeeping.clone();
                 state.deliveries = dispatch.deliveries.borrow().clone();
                 state.retained_bytes =
                     state.deliveries.capacity() * std::mem::size_of::<Decision>();
@@ -2185,32 +2427,16 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
         });
         // All callbacks have returned. Revalidate copied host identities, then
         // let the native atomic commit independently revalidate current slots.
-        let edits = dispatch
-            .edits
-            .borrow()
-            .iter()
-            .map(|(selector, (value, name))| {
-                projection::encode(*value)
-                    .map(|value| (*selector, value, name.clone()))
-                    .map_err(|e| format!("{name}: {e}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        for (selector, value, name) in edits {
-            dispatch
-                .frame
-                .write(selector, &value)
-                .map_err(|e| format!("{name}: {e}"))?;
+        let edits=dispatch.edits.borrow().clone();
+        // Validate all scalar/entity identities before any native staging.
+        for (value,name) in edits.values() {
+            if !matches!(value,ProjectedValue::Copied(_)) {projection::encode(value.clone()).map_err(|e|format!("{name}: {e}"))?;}
         }
-        let name = &dispatch.binding.function.canonical_id;
-        let value = result
-            .value
-            .map(projection::encode)
-            .transpose()
-            .map_err(|e| format!("{name}: {e}"))?;
-        dispatch
-            .frame
-            .commit(result.action, value.as_ref())
-            .map_err(|e| format!("{name}: {e}"))?;
+        for (selector,(value,name)) in &edits {
+            dispatch.frame.write_projected(*selector,value).map_err(|e|format!("{name}: {e}"))?;
+        }
+        let name=&dispatch.binding.function.canonical_id;
+        dispatch.frame.commit_projected(result.action,result.value.as_ref(),runtime::has_copies(&dispatch.binding.function.abi)).map_err(|e|format!("{name}: {e}"))?;
     }
     Ok(())
 }
@@ -2222,6 +2448,388 @@ pub(super) mod proof {
         (ADAPTERS.with(|a| a.borrow().values().filter(|a| a.instance.parent.id == id).count()),
          SUBSCRIPTIONS.with(|s| s.borrow().values().filter(|s| s.owner.id == id).count()))
     }
+    #[test]
+    fn copied_v8_roundtrip_is_strict_and_immutable() {
+        fn roundtrip(
+            scope: &mut v8::PinScope,
+            args: v8::FunctionCallbackArguments,
+            mut rv: v8::ReturnValue,
+        ) {
+            let projection = if args.get(1).is_true() {
+                "vector"
+            } else {
+                "string"
+            };
+            match projected_from_js(scope, args.get(0), "ptr", projection)
+                .and_then(|v| projected_to_js(scope, v))
+            {
+                Ok(v) => rv.set(v),
+                Err(e) => throw(scope, e),
+            }
+        }
+        init(frame_tests::logger).unwrap();
+        frame_tests::load_body("copy-marshalling", "return {};", "{}");
+        HOST.with(|h| {
+            let mut host = h.borrow_mut();
+            let context = clone_plugin_context("copy-marshalling").unwrap();
+            let mut storage = v8::HandleScope::new(&mut host.as_mut().unwrap().isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+            let context = v8::Local::new(&mut hs, &context);
+            let scope = &mut v8::ContextScope::new(&mut hs, context);
+            let f = v8::Function::new(scope, roundtrip).unwrap();
+            let key = v8::String::new(scope, "copyValue").unwrap();
+            context.global(scope).set(scope, key.into(), f.into());
+        });
+        let result = eval_in_context(
+            "copy-marshalling",
+            r#"
+            for (const s of ['', 'hello', 'é🔥', 'x'.repeat(511)+'🔥', 'é'.repeat(32767)+'x', 'x'.repeat(65535)]) {
+                if(copyValue(s)!==s) throw Error('string copy');
+            }
+            let touched=0;
+            for(const s of ['\ud800','\udfff','nul\0byte','x'.repeat(65536),'é'.repeat(32768),new String('x'),{toString(){touched++;return 'x'}}]) {
+                let rejected=false;try{copyValue(s)}catch(_){rejected=true}if(!rejected)throw Error('invalid string accepted');
+            }
+            const input={x:-0,y:1.25,z:-3};const saved=copyValue(input,true);input.y=100;
+            if(!Object.is(saved.x,-0)||saved.y!==1.25||saved.z!==-3||!Object.isFrozen(saved))throw Error('vector copy');
+            for(const v of [{x:Infinity,y:0,z:0},{x:1e100,y:0,z:0},{x:'1',y:0,z:0},{get x(){touched++;return 1},y:0,z:0},new Proxy({x:1,y:2,z:3},{ownKeys(){touched++;return ['x','y','z']}}),{x:1,y:2,z:3,w:4},{x:1,y:2,z:3,[Symbol()]:4},[1,2,3]]) {
+                let rejected=false;try{copyValue(v,true)}catch(_){rejected=true}if(!rejected)throw Error('invalid vector accepted');
+            }
+            Object.defineProperty(Object.prototype,'x',{configurable:true,get(){touched++;return 99},set(_){touched++;throw Error('inherited x setter')}});
+            try {
+                const poisoned=copyValue({x:-0,y:2,z:3},true);
+                const desc=Object.getOwnPropertyDescriptor(poisoned,'x');
+                if(!desc||!('value' in desc)||!Object.is(desc.value,-0)||!Object.isFrozen(poisoned))throw Error('poisoned vector snapshot');
+            } finally { delete Object.prototype.x; }
+            if(touched)throw Error('user coercion executed');globalThis.savedCopy=saved;
+        "#,
+        );
+        unload_plugin("copy-marshalling");
+        shutdown();
+        result.unwrap();
+    }
+    pub struct CopyConformance {
+        package: PreparedPackageReceipt,
+        pub ready: bool,
+    }
+    const COPY_ID: &str = "proof.copied.v1";
+    pub(super) fn copy_binding(id: &str) -> u64 {
+        prepared_binding(id, |f| {
+            f["target"]["pattern"] = "50".into();
+            f["abi"]["fingerprint"] = "linux-x86_64-sysv:none:ptr(ptr)".into();
+            f["abi"]["parameters"] = serde_json::json!([{"name":"text","native":"ptr","projection":{"id":"string","version":1},"ownership":"callee-retained","mutable":["pre"]}]);
+            f["abi"]["returns"] = serde_json::json!({"native":"ptr","projection":{"id":"string","version":1},"ownership":"caller-borrowed"});
+        })
+    }
+    pub fn copy_begin() -> CopyConformance {
+        let owner = HostPackageOwner::mint("@proof/copied").unwrap();
+        let grant = HostAdapterGrant::override_return(
+            &owner,
+            AdapterContract {
+                id: COPY_ID.into(),
+                version: 1,
+                contract_hash: HASH.into(),
+            },
+        )
+        .unwrap();
+        let source = format!(
+            r#"(()=>{{
+            const register=__s2_function_adapter_register,subscribe=__s2_function_adapter_subscribe;
+            globalThis.mode='probe';globalThis.seen=[];globalThis.rejected=0;
+            register('{COPY_ID}','{HASH}',{{
+                pre(d){{
+                    globalThis.savedFrame=d.frame;
+                    if(mode==='stale')return oldDelivery;
+                    let first=null,next;
+                    while((next=d.cursor.invokeNext())!==null){{if(!first)first=next;}}
+                    if(mode==='carry'){{globalThis.oldDelivery=first;return first.action>=2?first:first.action;}}
+                    if(mode==='manufacture')return {{action:first.action,returnValue:first.returnValue}};
+                    if(mode==='rollback'||mode==='none')return 0;
+                    if(mode==='nested'){{const nested=__proofEntityCall(binding,'inner');if(nested!=='inner')throw Error('nested bypass');}}
+                }},
+                post(d){{
+                    if(mode==='probe'){{seen.push('ready');return;}}
+                    if(mode==='peer'){{if(d.frame.originalReturnValue!=='input'||d.frame.returnValue!=='late-native-peer')throw Error('native peer POST capture');}}
+                    if(mode==='post'){{
+                        if(d.frame.originalReturnValue!=='input')throw Error('original capture');
+                        globalThis.savedOverride=d.frame.overrideReturn;
+                        if(d.frame.overrideReturn('post-owned')!=='post-owned')throw Error('override');
+                        if(d.frame.originalReturnValue!=='input')throw Error('original changed');
+                    }}
+                    while(d.cursor.invokeNext()!==null){{}}
+                }}
+            }});
+            globalThis.subscribeCopy=id=>{{globalThis.binding=id;
+                subscribe(id,'{COPY_ID}','pre',v=>{{
+                    globalThis.savedValue=v.text;globalThis.savedView=v;
+                    if(mode==='rollback'){{v.text='rejected-edit';return {{action:-1,returnValue:'bad'}};}}
+                    if(mode==='carry'||mode==='manufacture'){{v.text='winning-edit';return {{action:2,returnValue:'same-copied-result'}};}}
+                    return 0;
+                }});
+                subscribe(id,'{COPY_ID}','post',v=>{{
+                    if('overrideReturn' in v)throw Error('subscriber POST authority');
+                    if(mode==='post'){{let denied=false;try{{savedOverride('forbidden')}}catch(_){{denied=true}}if(!denied)throw Error('suspended permit');}}
+                    seen.push(v.returnValue);
+                }});
+            }};
+        }})()"#
+        );
+        let package = register_prepared_package_with_authorities(
+            owner,
+            source.into(),
+            ImplementationManifestHash::new(crate::engine_functions::contract::hash_bytes(
+                b"copied-fixture-v1",
+            ))
+            .unwrap(),
+            vec![grant],
+        )
+        .unwrap();
+        for id in ["copy-a", "copy-b", "copy-caller"] {
+            frame_tests::load_body(id, "return {};", "{}");
+            entity_native(id);
+            let binding = copy_binding(id);
+            eval_in_context(id, &format!("globalThis.binding={binding}n;")).unwrap();
+            if id != "copy-caller" {
+                let owner = OwnerKey::plugin(id, plugin_generation(id));
+                authorize_binding(&package, &owner, binding, COPY_ID, HASH).unwrap();
+                eval_in_context(id, "subscribeCopy(binding);").unwrap();
+            }
+        }
+        eval_in_context(
+            "copy-caller",
+            "if(__proofEntityCall(binding,'input')!=='input')throw Error('native alias');",
+        )
+        .unwrap();
+        CopyConformance {
+            package,
+            ready: false,
+        }
+    }
+    pub fn copy_probe(state: &mut CopyConformance) {
+        eval_in_context("copy-a", "seen.length=0;").unwrap();
+        eval_in_context(
+            "copy-caller",
+            "if(__proofEntityCall(binding,'input')!=='input')throw Error('probe alias');",
+        )
+        .unwrap();
+        state.ready = eval_in_context(
+            "copy-a",
+            "if(!seen.includes('ready'))throw Error('not ready');",
+        )
+        .is_ok();
+    }
+    pub fn copy_mode(mode: &str) {
+        for id in ["copy-a", "copy-b"] {
+            eval_in_context(id, &format!("mode='{mode}';seen.length=0;")).unwrap();
+        }
+    }
+    pub fn copy_exercise() {
+        for (mode, expected) in [
+            ("rollback", "input"),
+            ("nested", "input"),
+            ("carry", "same-copied-result"),
+            ("manufacture", "same-copied-result"),
+            ("post", "post-owned"),
+        ] {
+            copy_mode(mode);
+            eval_in_context("copy-caller",&format!("globalThis.result=__proofEntityCall(binding,'input');if(result!=='{expected}')throw Error('copied result: '+result);")).unwrap();
+            eval_in_context("copy-a","{if(savedValue!=='input')throw Error('immutable PRE snapshot');let denied=0;try{savedView.text}catch(_){denied++}try{savedFrame.text}catch(_){denied++}if(denied!==2)throw Error('retained lease');}").unwrap();
+            if mode == "post" {
+                eval_in_context("copy-a","{let denied=false;try{savedOverride('bad')}catch(_){denied=true}if(!denied)throw Error('POST permit survived');}").unwrap();
+            }
+            println!("PASS copied shared V8 mode={mode}: result={expected}, expired accessors");
+        }
+        copy_mode("stale");
+        // A prior delivery's private tag cannot recover its original lineage.
+        copy_expect_delivery_refusal("copy-caller", "input");
+        copy_mode("probe");
+        eval_in_context("copy-caller", "if(__proofEntityCall(binding,'input')!=='input')throw Error('call after stale refusal');").unwrap();
+        assert_eq!(pending_invocations(), 0);
+        println!("PASS copied shared V8 stale delivery: named invocation refusal, POST cleanup, subsequent valid call");
+    }
+    pub fn copy_expect_delivery_refusal(parent: &str, input: &str) {
+        DISPATCH_ERRORS.with(|errors| errors.borrow_mut().clear());
+        eval_in_context(parent, &format!(r#"{{
+            let failure='';
+            try {{ __proofEntityCall(binding,'{input}'); }} catch(error) {{ failure=String(error); }}
+            if(!failure.includes('FunctionCopyInvocationFailure') ||
+               !failure.includes('synchronous core function dispatch failed'))
+                throw Error('stale/foreign delivery invocation did not fail: '+failure);
+        }}"#)).unwrap();
+        let errors = DISPATCH_ERRORS.with(|errors| errors.borrow_mut().drain(..).collect::<Vec<_>>());
+        assert!(errors.iter().any(|error| error == "foreign or expired host delivery"), "missing exact delivery rejection: {errors:?}");
+        assert_eq!(pending_invocations(), 0, "failed call retained PRE state after POST cleanup");
+    }
+    pub fn copy_peer_exercise(){
+        copy_mode("peer");
+        eval_in_context("copy-caller","if(__proofEntityCall(binding,'input')!=='late-native-peer')throw Error('native peer final');").unwrap();
+        eval_in_context("copy-a","if(!seen.includes('late-native-peer'))throw Error('peer observation');").unwrap();
+    }
+    pub fn copy_abort(state: CopyConformance) {
+        for id in ["copy-a", "copy-b", "copy-caller"] {
+            unload_plugin(id);
+        }
+        drop(state.package);
+    }
+    pub struct CopyProcess {
+        active: registry::ActivePackageFunctions,
+        source: PreparedPackageReceipt,
+    }
+    pub fn copy_process_begin() -> CopyProcess {
+        use crate::engine_functions::{contract, overrides, tests};
+        let host = HostPackageOwner::mint("@proof/copied-process").unwrap();
+        let mut bundle = tests::fixture();
+        bundle["ownerId"] = host.key().id.clone().into();
+        let f = &mut bundle["functions"][0];
+        f["canonicalId"] = format!("{}::fire", host.key().id).into();
+        f["requirement"] = "required".into();
+        f["target"]["pattern"] = "50".into();
+        f["abi"]["fingerprint"] = "linux-x86_64-sysv:none:ptr(ptr)".into();
+        f["abi"]["parameters"] = serde_json::json!([{"name":"text","native":"ptr","projection":{"id":"string","version":1},"ownership":"callee-retained","mutable":["pre"]}]);
+        f["abi"]["returns"] = serde_json::json!({"native":"ptr","projection":{"id":"string","version":1},"ownership":"caller-borrowed"});
+        f["policy"]["surfaces"] = serde_json::json!(["call", "pre", "post"]);
+        f["policy"]["suppression"] = "none".into();
+        tests::seal(&mut bundle);
+        let mut summary = tests::summary(&bundle);
+        summary["functions"][0]["mutates"] = true.into();
+        let parsed = contract::parse(
+            &bundle.to_string(),
+            &host.key().id,
+            &summary,
+            &["engine:calls".into(), "engine:hooks".into()],
+        )
+        .unwrap();
+        let candidate = overrides::prepare(parsed, "copied-process-fixture", vec![]).unwrap();
+        let active = registry::activate_package_owner(
+            registry::prepare_package_owner(&host, candidate).unwrap(),
+            &host,
+        )
+        .unwrap();
+        let source=register_prepared_package(host,r#"
+            globalThis.processCopy=__s2_package_function('fire');globalThis.edit=null;globalThis.seen=0;
+            globalThis.pre=processCopy.onPre(v=>{seen++;globalThis.saved=v.text;if(edit!==null)v.text=edit;});
+            globalThis.post=processCopy.onPost(v=>{globalThis.result=v.returnValue;});
+        "#.into(),ImplementationManifestHash::new(HASH.into()).unwrap()).unwrap();
+        for id in ["copy-process-a", "copy-process-b"] {
+            frame_tests::load_body(id, "return {};", "{}");
+            assert!(
+                registry::owner_bindings(&OwnerKey::plugin(id, plugin_generation(id))).is_empty()
+            );
+        }
+        CopyProcess { active, source }
+    }
+    pub fn copy_process_probe() -> bool {
+        eval_in_context(
+            "copy-process-a",
+            "if(processCopy.call('parent-a')!=='parent-a')throw Error('process alias');",
+        )
+        .unwrap();
+        eval_in_context("copy-process-b", "if(seen===0)throw Error('pending');").is_ok()
+    }
+    pub fn copy_process_exercise() {
+        eval_in_context("copy-process-a", "edit='from-a';").unwrap();
+        eval_in_context("copy-process-b", "edit='from-b';").unwrap();
+        eval_in_context(
+            "copy-process-a",
+            "if(processCopy.call('parent-a')!=='from-b')throw Error('other parent B mutation');",
+        )
+        .unwrap();
+        eval_in_context(
+            "copy-process-b",
+            "if(processCopy.call('parent-b')!=='from-a')throw Error('other parent A mutation');",
+        )
+        .unwrap();
+    }
+    pub fn copy_process_finish(state: CopyProcess) {
+        drop(state.active);
+        drop(state.source);
+        for id in ["copy-process-a", "copy-process-b"] {
+            let result=eval_in_context(id,"{let refused=false;try{processCopy.call('gone')}catch(_){refused=true}if(!refused||typeof result!=='string')throw Error('retired copy binding');}");
+            unload_plugin(id);
+            result.unwrap();
+        }
+    }
+    pub fn copy_process_abort(state: CopyProcess) {
+        for id in ["copy-process-a", "copy-process-b"] {
+            unload_plugin(id);
+        }
+        drop(state.active);
+        drop(state.source);
+    }
+    pub fn copy_borrowed_begin() {
+        frame_tests::load_body("copy-vector", "return {};", "{}");
+        entity_native("copy-vector");
+        let binding = prepared_binding("copy-vector", |f| {
+            f["target"]["pattern"] = "50".into();
+            f["abi"]["fingerprint"] = "linux-x86_64-sysv:none:ptr(ptr)".into();
+            f["abi"]["parameters"] = serde_json::json!([{"name":"vector","native":"ptr","projection":{"id":"vector","version":1},"ownership":"callee-borrowed","mutable":[]}]);
+            f["abi"]["returns"] = serde_json::json!({"native":"ptr","projection":{"id":"vector","version":1},"ownership":"caller-borrowed"});
+        });
+        eval_in_context("copy-vector",&format!("{{const v=__proofEntityCall({binding}n,{{x:-0,y:1.25,z:-3}});if(!Object.is(v.x,-0)||v.y!==1.25||v.z!==-3||!Object.isFrozen(v))throw Error('native vector alias');}}")).unwrap();
+        unload_plugin("copy-vector");
+        for id in ["copy-borrowed", "copy-borrowed-caller"] {
+            frame_tests::load_body(id, "return {};", "{}");
+            entity_native(id);
+            let binding = prepared_binding(id, |f| {
+                f["target"]["pattern"] = "52".into();
+                f["abi"]["fingerprint"] = "linux-x86_64-sysv:none:i32(ptr)".into();
+                f["abi"]["parameters"] = serde_json::json!([{"name":"text","native":"ptr","projection":{"id":"string","version":1},"ownership":"callee-borrowed","mutable":["pre"]}]);
+                f["policy"]["suppression"] = "none".into();
+            });
+            eval_in_context(
+                id,
+                &format!(
+                    "globalThis.binding={binding}n;globalThis.invalid=false;globalThis.seen=0;"
+                ),
+            )
+            .unwrap();
+            if id == "copy-borrowed" {
+                eval_in_context(id,"globalThis.receipt=__proofSubscribeGeneric(binding,'pre',false,v=>{seen++;globalThis.saved=v.text;v.text=invalid?'rejected':'continued';if(invalid)return {action:2,returnValue:33};return 0;});").unwrap();
+            }
+        }
+    }
+    pub fn copy_borrowed_probe() -> bool {
+        eval_in_context(
+            "copy-borrowed-caller",
+            "globalThis.result=__proofEntityCall(binding,'outer');",
+        )
+        .unwrap();
+        eval_in_context(
+            "copy-borrowed-caller",
+            "if(result!==9)throw Error('not ready');",
+        )
+        .is_ok()
+    }
+    pub fn copy_borrowed_finish() {
+        eval_in_context(
+            "copy-borrowed",
+            "if(saved!=='outer')throw Error('borrowed snapshot');invalid=true;",
+        )
+        .unwrap();
+        eval_in_context(
+            "copy-borrowed-caller",
+            "if(__proofEntityCall(binding,'outer')!==5)throw Error('suppression:none rollback');",
+        )
+        .unwrap();
+        for id in ["copy-borrowed", "copy-borrowed-caller"] {
+            unload_plugin(id);
+        }
+    }
+    pub fn copy_finish(state: CopyConformance) {
+        // Another plugin keeps independent JavaScript-owned results across source owner retirement.
+        for id in ["copy-a", "copy-b"] {
+            unload_plugin(id);
+        }
+        let result = eval_in_context(
+            "copy-caller",
+            "if(result!=='post-owned')throw Error('saved result after retirement');",
+        );
+        unload_plugin("copy-caller");
+        drop(state.package);
+        assert_eq!(pending_invocations(), 0);
+        result.unwrap();
+    }
+
     pub fn pending_invocations() -> usize {
         INVOCATIONS.with(|i| i.borrow().len())
     }
@@ -2312,7 +2920,7 @@ pub(super) mod proof {
                 let frame = d.frame.as_deref_mut().ok_or("missing guarded frame")?;
                 if !frame
                     .original_return()?
-                    .is_some_and(|v| same(v, self.original))
+                    .is_some_and(|v| same(v, self.original.clone()))
                 {
                     return Err("Rust original snapshot mismatch".into());
                 }
@@ -2369,7 +2977,7 @@ pub(super) mod proof {
                         return Err("malformed Rust effect accepted".into());
                     }
                 }
-                if !same(frame.override_return(self.desired)?, self.desired) {
+                if !same(frame.override_return(self.desired.clone())?, self.desired.clone()) {
                     return Err("Rust effective mismatch".into());
                 }
                 while d.cursor.invoke_next()?.is_some() {}
@@ -2378,7 +2986,7 @@ pub(super) mod proof {
                     .as_deref_mut()
                     .unwrap()
                     .original_return()?
-                    .is_some_and(|v| same(v, self.original))
+                    .is_some_and(|v| same(v, self.original.clone()))
                 {
                     return Err("Rust original changed".into());
                 }
@@ -2689,6 +3297,7 @@ pub(super) mod proof {
         let result = (|| {
             let owner = current_owner(scope)?;
             let binding = registry::binding(bigint(args.get(0))?, &owner)?;
+            let _copy_scope=copied::Scope::enter()?;
             let abi = &binding.function.abi;
             let receiver = usize::from(abi.receiver == "entity");
             if args.length() as usize != 1 + receiver + abi.parameters.len() {
@@ -5197,6 +5806,399 @@ pub(super) mod entity_transport_tests {
             }
         }
         assert_eq!(EFFECTS.with(Cell::get),36,"books/typed rejection must precede native effect");
+        set_engine_ops(None);
+        shutdown();
+    }
+}
+
+#[cfg(test)]
+mod copied_transport_tests {
+    use super::*;
+    struct NativeFrame {
+        token: u64,
+        argument: Vec<u8>,
+        original: Vec<u8>,
+        result: Vec<u8>,
+        staged: Option<Vec<u8>>,
+        skipped: bool,
+    }
+    thread_local! {
+        static FRAMES:RefCell<Vec<NativeFrame>>=const{RefCell::new(Vec::new())};
+        static CALL_PRODUCERS:RefCell<Vec<S2FunctionCopyProducer>>=const{RefCell::new(Vec::new())};
+        static COPY_CALLS:Cell<usize>=const{Cell::new(0)};
+        static LAST_COMMIT:RefCell<Option<S2FunctionCopyProducer>>=const{RefCell::new(None)};
+        static WRITERS:RefCell<Vec<S2FunctionCopyProducer>>=const{RefCell::new(Vec::new())};
+    }
+    unsafe fn bytes(v: *const S2FunctionValue, i: *const S2FunctionCopyInput) -> Vec<u8> {
+        let v = &*v;
+        let i = &*i;
+        assert_eq!((i.version, i.struct_size), (1, 24));
+        assert!(v.bits + v.aux as u64 <= i.size);
+        if v.aux == 0 {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts(i.data.add(v.bits as usize), v.aux as usize).to_vec()
+        }
+    }
+    unsafe fn output(b: &[u8], v: *mut S2FunctionValue, o: *mut S2FunctionCopyOutput) {
+        let o = &mut *o;
+        assert_eq!((o.version, o.struct_size), (1, 32));
+        assert!(o.capacity >= 65535);
+        std::ptr::copy_nonoverlapping(b.as_ptr(), o.data, b.len());
+        o.size = b.len() as u64;
+        (*v).aux = b.len() as u32;
+        (*v).bits = 0;
+    }
+    extern "C" fn call(
+        id: i64,
+        owner: u64,
+        args: *const S2FunctionValue,
+        argc: i32,
+        out: *mut S2FunctionValue,
+        input: *const S2FunctionCopyInput,
+        output_span: *mut S2FunctionCopyOutput,
+        producer: *const S2FunctionCopyProducer,
+        reason: *mut i8,
+        reason_capacity: i32,
+    ) -> i32 {
+        COPY_CALLS.with(|c| c.set(c.get() + 1));
+        CALL_PRODUCERS.with(|s| s.borrow_mut().push(unsafe { *producer }));
+        assert_eq!(argc, 1);
+        assert_eq!(unsafe { (*producer).domain }, 1);
+        assert_eq!(unsafe { (*producer).generation }, owner);
+        let argument = unsafe { bytes(args, input) };
+        let token = registry::next_id().unwrap();
+        FRAMES.with(|s| {
+            s.borrow_mut().push(NativeFrame {
+                token,
+                argument: argument.clone(),
+                original: argument.clone(),
+                result: argument,
+                staged: None,
+                skipped: false,
+            })
+        });
+        let mut info = S2FunctionFrameInfo {
+            version: 1,
+            struct_size: 48,
+            frame_token: token,
+            native_epoch: token,
+            invocation_id: token,
+            suppressed_owner: owner,
+            parameter_count: 1,
+            flags: 0,
+        };
+        let pre = crate::ffi::s2script_core_dispatch_function(id, &info, 0);
+        FRAMES.with(|s| {
+            let mut s = s.borrow_mut();
+            let f = s.last_mut().unwrap();
+            if !f.skipped {
+                f.result = f.argument.clone();
+                f.original = f.argument.clone();
+            }
+            info.flags = u32::from(f.skipped);
+        });
+        let post = crate::ffi::s2script_core_dispatch_function(id, &info, 1);
+        let f = FRAMES.with(|s| s.borrow_mut().pop()).unwrap();
+        // The real RuntimeBinding runs matched POST cleanup, then reports a
+        // recorded PRE/POST dispatch failure instead of returning copied output.
+        if pre != 1 || post != 1 {
+            let message = b"FunctionCopyInvocationFailure: synchronous core function dispatch failed";
+            if !reason.is_null() && reason_capacity > 0 {
+                let len = message.len().min(reason_capacity as usize - 1);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(message.as_ptr(), reason.cast(), len);
+                    *reason.add(len) = 0;
+                }
+            }
+            return 0;
+        }
+        unsafe { output(&f.result, out, output_span) };
+        1
+    }
+    extern "C" fn read(
+        _: i64,
+        token: u64,
+        _: u64,
+        _: *const i8,
+        selector: i32,
+        value: *mut S2FunctionValue,
+        out: *mut S2FunctionCopyOutput,
+        _: *mut i8,
+        _: i32,
+    ) -> i32 {
+        FRAMES.with(|s| {
+            let s = s.borrow();
+            let f = s.last().unwrap();
+            assert_eq!(token, f.token);
+            let bytes = match selector {
+                -3 => &f.original,
+                -2 => &f.result,
+                0 => &f.argument,
+                _ => panic!("selector"),
+            };
+            unsafe { output(bytes, value, out) }
+        });
+        1
+    }
+    extern "C" fn write(
+        _: i64,
+        token: u64,
+        _: u64,
+        _: *const i8,
+        selector: i32,
+        value: *const S2FunctionValue,
+        input: *const S2FunctionCopyInput,
+        producer: *const S2FunctionCopyProducer,
+        _: *mut i8,
+        _: i32,
+    ) -> i32 {
+        assert_eq!(selector, 0);
+        let value = unsafe { bytes(value, input) };
+        FRAMES.with(|s| {
+            let mut s = s.borrow_mut();
+            let f = s.last_mut().unwrap();
+            assert_eq!(f.token, token);
+            f.staged = Some(value)
+        });
+        WRITERS.with(|s| s.borrow_mut().push(unsafe { *producer }));
+        1
+    }
+    extern "C" fn commit(
+        _: i64,
+        token: u64,
+        _: u64,
+        _: *const i8,
+        action: i32,
+        value: *const S2FunctionValue,
+        input: *const S2FunctionCopyInput,
+        producer: *const S2FunctionCopyProducer,
+        _: *mut i8,
+        _: i32,
+    ) -> i32 {
+        let result = (!value.is_null()).then(|| unsafe { bytes(value, input) });
+        FRAMES.with(|s| {
+            let mut s = s.borrow_mut();
+            let f = s.last_mut().unwrap();
+            assert_eq!(f.token, token);
+            if let Some(v) = f.staged.take() {
+                f.argument = v
+            }
+            if let Some(v) = result {
+                f.result = v;
+            }
+            f.skipped = action >= 2;
+        });
+        LAST_COMMIT.with(|s| *s.borrow_mut() = Some(unsafe { *producer }));
+        1
+    }
+    extern "C" fn override_return(
+        _: i64,
+        token: u64,
+        _: u64,
+        _: *const i8,
+        value: *const S2FunctionValue,
+        input: *const S2FunctionCopyInput,
+        producer: *const S2FunctionCopyProducer,
+        out: *mut S2FunctionValue,
+        span: *mut S2FunctionCopyOutput,
+        _: *mut i8,
+        _: i32,
+    ) -> i32 {
+        assert_eq!(unsafe { (*producer).domain }, 2);
+        let result = unsafe { bytes(value, input) };
+        FRAMES.with(|s| {
+            let mut s = s.borrow_mut();
+            let f = s.last_mut().unwrap();
+            assert_eq!(f.token, token);
+            f.result = result;
+            unsafe { output(&f.result, out, span) }
+        });
+        1
+    }
+    #[test]
+    fn retained_copy_bookkeeping_survives_delivery_destruction_and_retirement() {
+        scalar_transport_tests::init_transport();
+        let mut ops = engine_ops().unwrap();
+        ops.function_call_copy = Some(call);
+        ops.function_frame_read_copy = Some(read);
+        ops.function_frame_write_copy = Some(write);
+        ops.function_frame_commit_copy = Some(commit);
+        ops.function_frame_override_return_copy = Some(override_return);
+        set_engine_ops(Some(ops));
+        let state = proof::copy_begin();
+        let target = SUBSCRIPTIONS.with(|rows| rows.borrow().values().next().unwrap().binding.target.unwrap());
+        let mut charged_during_destruction = Vec::new();
+        for retirement in [false, true] {
+            let charged = Rc::new(Cell::new(false));
+            charged_during_destruction.push(charged.clone());
+            let guard = copied::Bookkeeping::reserve(4096, copied::Producer::engine()).unwrap();
+            let alive = guard.alive_probe();
+            let after = guard.alive_probe();
+            let destroyed = Rc::new(Cell::new(0));
+            let observed = destroyed.clone();
+            let mut buffer = copied::Buffer::new(8, copied::Producer::engine()).unwrap();
+            buffer.bytes_mut().copy_from_slice(b"retained");
+            let mut value = buffer.own(4).unwrap();
+            value.observe_destruction(Box::new(move || {
+                charged.set(alive());
+                observed.set(observed.get() + 1);
+            }));
+            INVOCATIONS.with(|rows| rows.borrow_mut().insert((target, 12345), InvocationState {
+                copy_bookkeeping: Some(guard),
+                adapters: [None, None],
+                deliveries: vec![Decision { action: 2, value: Some(ProjectedValue::Copied(value)) }],
+                retained_bytes: std::mem::size_of::<Decision>(),
+            }));
+            if retirement {
+                let ids = SUBSCRIPTIONS.with(|rows| rows.borrow().keys().copied().collect::<Vec<_>>());
+                for id in ids { drop_subscription(id); }
+            } else {
+                // Matched POST takes the retained row; dropping it destroys its deliveries.
+                drop(INVOCATIONS.with(|rows| rows.borrow_mut().remove(&(target, 12345))));
+            }
+            assert_eq!(destroyed.get(), 1);
+            assert!(!after(), "dispatch charge leaked after retained storage destruction");
+        }
+        proof::copy_abort(state);
+        set_engine_ops(None);
+        shutdown();
+        assert_eq!(charged_during_destruction.iter().map(|v| v.get()).collect::<Vec<_>>(), [true, true], "dispatch charge released during delivery element destruction (POST, retirement)");
+    }
+
+    #[test]
+    fn real_v8_copied_callbacks_use_sidecars_and_exact_delivery_lineage_mock_transport() {
+        scalar_transport_tests::init_transport();
+        let mut ops = engine_ops().unwrap();
+        ops.function_call_copy = Some(call);
+        ops.function_frame_read_copy = Some(read);
+        ops.function_frame_write_copy = Some(write);
+        ops.function_frame_commit_copy = Some(commit);
+        ops.function_frame_override_return_copy = Some(override_return);
+        set_engine_ops(Some(ops));
+        let mut state = proof::copy_begin();
+        proof::copy_probe(&mut state);
+        assert!(state.ready);
+        let caller = OwnerKey::plugin("copy-caller", plugin_generation("copy-caller"));
+        let binding = registry::binding(registry::owner_bindings(&caller)[0], &caller).unwrap();
+        for missing in 0..5 {
+            let mut incomplete = ops;
+            let name = match missing {
+                0 => {
+                    incomplete.function_call_copy = None;
+                    "function_call_copy"
+                }
+                1 => {
+                    incomplete.function_frame_read_copy = None;
+                    "function_frame_read_copy"
+                }
+                2 => {
+                    incomplete.function_frame_write_copy = None;
+                    "function_frame_write_copy"
+                }
+                3 => {
+                    incomplete.function_frame_commit_copy = None;
+                    "function_frame_commit_copy"
+                }
+                _ => {
+                    incomplete.function_frame_override_return_copy = None;
+                    "function_frame_override_return_copy"
+                }
+            };
+            set_engine_ops(Some(incomplete));
+            assert!(runtime::prepare(&binding.function)
+                .unwrap_err()
+                .contains(name));
+        }
+        set_engine_ops(Some(ops));
+        let calls = COPY_CALLS.with(Cell::get);
+        let exhausted =
+            copied::Buffer::new(8 * 1024 * 1024 - 256, copied::Producer::engine()).unwrap();
+        eval_in_context("copy-caller","{let denied=false;try{__proofEntityCall(binding,'input')}catch(e){denied=String(e).includes('FunctionCopyBudgetExceeded')}if(!denied)throw Error('output admission');}").unwrap();
+        assert_eq!(COPY_CALLS.with(Cell::get), calls);
+        drop(exhausted);
+
+        for id in ["copy-a", "copy-b"] {
+            eval_in_context(id,"globalThis.poisonTouches=0;Object.defineProperty(Object.prototype,'returnValue',{configurable:true,get(){poisonTouches++;return 'spoofed'},set(_){poisonTouches++;}});").unwrap();
+        }
+        proof::copy_mode("carry");
+        eval_in_context(
+            "copy-caller",
+            "if(__proofEntityCall(binding,'input')!=='same-copied-result')throw Error('carry');",
+        )
+        .unwrap();
+        for id in ["copy-a", "copy-b"] {
+            eval_in_context(id,"if(poisonTouches)throw Error('delivery inherited accessor ran');if(globalThis.oldDelivery){const d=Object.getOwnPropertyDescriptor(oldDelivery,'returnValue');if(!d||!('value' in d)||d.value!=='same-copied-result'||!Object.isFrozen(oldDelivery))throw Error('delivery visible bytes');}delete Object.prototype.returnValue;").unwrap();
+        }
+        let a = copied::Producer::owner(&OwnerKey::plugin("copy-a", plugin_generation("copy-a")))
+            .wire();
+        let b = copied::Producer::owner(&OwnerKey::plugin("copy-b", plugin_generation("copy-b")))
+            .wire();
+        let carry = LAST_COMMIT.with(|s| s.borrow().unwrap());
+        assert_eq!(
+            (carry.domain, carry.digest, carry.generation),
+            (a.domain, a.digest, a.generation)
+        );
+        let writer = WRITERS.with(|s| *s.borrow().last().unwrap());
+        assert_eq!(
+            (writer.domain, writer.digest, writer.generation),
+            (b.domain, b.digest, b.generation)
+        );
+        proof::copy_mode("manufacture");
+        eval_in_context("copy-caller", "__proofEntityCall(binding,'input');").unwrap();
+        assert_eq!(LAST_COMMIT.with(|s| s.borrow().unwrap().domain), 2);
+        with_host_isolate(|isolate| {
+            let mut storage=v8::HandleScope::new(isolate);let mut hs=unsafe{std::pin::Pin::new_unchecked(&mut storage)}.init();
+            let a=clone_plugin_context("copy-a").unwrap();let a=v8::Local::new(&mut hs,&a);
+            let delivery={let scope=&mut v8::ContextScope::new(&mut hs,a);let global=a.global(scope);let object=get(scope,global,"oldDelivery").unwrap();v8::Global::new(scope,object)};
+            let b=clone_plugin_context("copy-b").unwrap();let b=v8::Local::new(&mut hs,&b);let scope=&mut v8::ContextScope::new(&mut hs,b);
+            let delivery=v8::Local::new(scope,&delivery);let global=b.global(scope);set(scope,global,"oldDelivery",delivery).unwrap();
+        }).unwrap();
+        proof::copy_mode("stale");
+        let writes = WRITERS.with(|rows| rows.borrow().len());
+        proof::copy_expect_delivery_refusal("copy-a", "foreign-input");
+        assert_eq!(WRITERS.with(|rows| rows.borrow().len()), writes);
+        assert!(FRAMES.with(|frames| frames.borrow().is_empty()));
+        proof::copy_exercise();
+        // Each failing callback drops its private staged writes; neither parent
+        // can borrow the other's generation quota on the shared target.
+        proof::copy_mode("carry");
+        let a_full=copied::Buffer::new(8*1024*1024-256,copied::Producer::owner(&OwnerKey::plugin("copy-a",plugin_generation("copy-a")))).unwrap();
+        let b_full=copied::Buffer::new(8*1024*1024-256,copied::Producer::owner(&OwnerKey::plugin("copy-b",plugin_generation("copy-b")))).unwrap();
+        let writes=WRITERS.with(|s|s.borrow().len());
+        eval_in_context("copy-caller","if(__proofEntityCall(binding,'input')!=='input')throw Error('quota rollback');").unwrap();
+        assert_eq!(WRITERS.with(|s|s.borrow().len()),writes);drop(a_full);drop(b_full);
+        // Copied JS values survive a microtask boundary while saved accessors do not.
+        eval_in_context("copy-a","globalThis.awaitCopy=false;(async()=>{const value=savedValue;await 0;let denied=false;try{savedView.text}catch(_){denied=true}if(value!=='input'||!denied)throw Error('await copy lifetime');awaitCopy=true;})();").unwrap();
+        with_host_isolate(|isolate|{let mut storage=v8::HandleScope::new(isolate);let mut scope=unsafe{std::pin::Pin::new_unchecked(&mut storage)}.init();scope.perform_microtask_checkpoint();}).unwrap();
+        eval_in_context("copy-a","if(!awaitCopy)throw Error('microtask did not run');").unwrap();
+        proof::copy_finish(state);
+        let state = proof::copy_process_begin();
+        assert!(proof::copy_process_probe());
+        proof::copy_process_exercise();
+        for (offset, id) in [(2, "copy-process-a"), (1, "copy-process-b")] {
+            let expected =
+                copied::Producer::owner(&OwnerKey::plugin(id, plugin_generation(id))).wire();
+            let actual = CALL_PRODUCERS.with(|s| {
+                let s = s.borrow();
+                s[s.len() - offset]
+            });
+            assert_eq!(
+                (actual.domain, actual.digest, actual.generation),
+                (expected.domain, expected.digest, expected.generation)
+            );
+        }
+        let expected = copied::Producer::owner(&OwnerKey::plugin(
+            "copy-process-a",
+            plugin_generation("copy-process-a"),
+        ))
+        .wire();
+        let actual = WRITERS.with(|s| *s.borrow().last().unwrap());
+        assert_eq!(
+            (actual.domain, actual.digest, actual.generation),
+            (expected.domain, expected.digest, expected.generation)
+        );
+        proof::copy_process_finish(state);
         set_engine_ops(None);
         shutdown();
     }
