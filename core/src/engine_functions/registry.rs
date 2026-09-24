@@ -26,12 +26,10 @@ pub(crate) struct Binding {
     pub owner: OwnerKey,
     pub function: NormalizedFunction,
     pub target: Option<i64>,
-    #[allow(dead_code)] // Retained for Task 7's public availability projection.
     pub unavailable: Option<String>,
-    #[allow(dead_code)] // Immutable Task 4 provenance retained for later public diagnostics.
     pub provenance: super::provenance::Provenance,
-    #[allow(dead_code)] // Payload measurement; Task 7 supplies the loader-budget consumer.
     pub retained_bytes: usize,
+    _retention: Option<Rc<dyn std::any::Any>>,
 }
 impl Drop for Binding {
     fn drop(&mut self) {
@@ -51,76 +49,200 @@ pub(crate) fn next_id() -> Result<u64, String> {
         Ok(id)
     })
 }
-pub(crate) struct PreparedOwnerReceipt {
-    owner: OwnerKey,
-    bindings: Vec<Rc<Binding>>,
+struct PreparedBinding {
+    id: u64,
+    function: NormalizedFunction,
+    target: Option<i64>,
+    unavailable: Option<String>,
+    provenance: super::provenance::Provenance,
+    retained_bytes: usize,
 }
-/// Consumes the immutable Task 4 snapshot; it never rereads overrides or archive bytes.
-/// This accounts owned decoded receipt storage, not the later loader/worker budget.
+impl Drop for PreparedBinding {
+    fn drop(&mut self) {
+        if let Some(target) = self.target {
+            runtime::target_release(target);
+        }
+    }
+}
+pub(crate) struct PreparedOwnerReceipt {
+    intended_id: String,
+    bindings: Vec<PreparedBinding>,
+    retention: Option<Rc<dyn std::any::Any>>,
+}
+impl PreparedOwnerReceipt {
+    pub(crate) fn retain(&mut self, lease: Rc<dyn std::any::Any>) {
+        self.retention = Some(lease);
+    }
+    pub(crate) fn retained_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.intended_id.capacity()
+            + self.bindings.capacity() * std::mem::size_of::<PreparedBinding>()
+            + self
+                .bindings
+                .iter()
+                .map(|b| b.retained_bytes)
+                .sum::<usize>()
+    }
+}
+/// A conservative admission weight for decoded snapshots and native preparation receipts.
+/// Reserve before acquiring targets. The 8x payload weight covers simultaneous decoded copies
+/// and escaped native argument serialization; 4 KiB per function reserves container/receipt
+/// overhead. This is admission accounting, not telemetry from the foreign allocator.
+/// Charge both temporary decoded copies and retained bindings;
+/// the shared loader lease outlives activation and is released by the last binding.
+pub(crate) fn preparation_bytes(candidate: &PreparedCandidate) -> usize {
+    candidate.functions().iter().fold(
+        std::mem::size_of::<PreparedOwnerReceipt>() + candidate.base().owner_id.len(),
+        |n, f| {
+            n.saturating_add(
+                4096 + 8
+                    * (std::mem::size_of::<Binding>()
+                        + candidate.base().owner_id.len()
+                        + function_storage(f.function())
+                        + provenance_storage(f.provenance())
+                        + f.unavailable().map_or(512, str::len)),
+            )
+        },
+    )
+}
+/// Native preparation grants no live owner or JS capability. Dropping it releases only candidates.
 pub(crate) fn prepare_owner(
-    owner: OwnerKey,
+    intended_id: &str,
     candidate: PreparedCandidate,
 ) -> Result<PreparedOwnerReceipt, String> {
-    if owner.kind != OwnerKind::Plugin || !v8host::owner_is_live(&owner.id, owner.generation) {
-        return Err("owner generation unavailable".into());
-    }
-    if candidate.base().owner_id != owner.id {
+    prepare_owner_with_grants(intended_id, candidate, true, true)
+}
+pub(crate) fn prepare_owner_with_grants(
+    intended_id: &str,
+    candidate: PreparedCandidate,
+    calls_allowed: bool,
+    hooks_allowed: bool,
+) -> Result<PreparedOwnerReceipt, String> {
+    if candidate.base().owner_id != intended_id {
         return Err("prepared candidate owner mismatch".into());
     }
-    let mut bindings = Vec::new();
+    let mut bindings = Vec::with_capacity(candidate.functions().len());
     for prepared in candidate.functions() {
         let f = prepared.function();
-        // Host adapter binding authorization is explicit and separate from archive parsing.
         if f.policy.id != "generic.v2" {
             return Err("internal policy requires host adapter binding authority".into());
         }
         let binding_id = next_id()?;
-        let resolved = prepared
-            .unavailable()
+        let denied = f
+            .policy
+            .surfaces
+            .iter()
+            .find_map(|surface| match surface.as_str() {
+                "call" if !calls_allowed => Some("operator permission denied: engine:calls"),
+                "pre" | "post" if !hooks_allowed => {
+                    Some("operator permission denied: engine:hooks")
+                }
+                _ => None,
+            });
+        let resolved = denied
+            .or(prepared.unavailable())
             .map_or_else(|| runtime::prepare(f), |e| Err(e.into()));
         let (target, unavailable) = match resolved {
             Ok(id) => (Some(id), None),
-            Err(e) if f.requirement == "required" => return Err(e),
+            Err(e) if f.requirement == "required" => {
+                return Err(format!("{}: {e}", f.canonical_id));
+            }
             Err(e) => (None, Some(e)),
         };
         let function = f.clone();
         let provenance = prepared.provenance().clone();
         let retained_bytes = std::mem::size_of::<Binding>()
-            + owner.id.len()
+            + intended_id.len()
             + function_storage(&function)
             + provenance_storage(&provenance)
             + unavailable.as_ref().map_or(0, String::capacity);
-        bindings.push(Rc::new(Binding {
+        bindings.push(PreparedBinding {
             id: binding_id,
-            owner: owner.clone(),
             function,
             target,
             unavailable,
             provenance,
             retained_bytes,
-        }));
+        });
     }
-    Ok(PreparedOwnerReceipt { owner, bindings })
+    Ok(PreparedOwnerReceipt {
+        intended_id: intended_id.into(),
+        bindings,
+        retention: None,
+    })
 }
-pub(crate) fn activate_owner(receipt: PreparedOwnerReceipt) -> Result<Vec<u64>, String> {
-    if !v8host::owner_is_live(&receipt.owner.id, receipt.owner.generation) {
+#[cfg(test)]
+thread_local! { pub(crate) static ACTIVATION_LEDGER_LIMIT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) }; }
+fn record_activation(owner: &OwnerKey, id: u64) -> bool {
+    #[cfg(test)]
+    if !ACTIVATION_LEDGER_LIMIT.with(|limit| match limit.get() {
+        Some(0) => {
+            limit.set(None);
+            false
+        }
+        Some(n) => {
+            limit.set(Some(n - 1));
+            true
+        }
+        None => true,
+    }) {
+        return false;
+    }
+    v8host::record_resource(&owner.id, owner.generation, Resource::FunctionBinding(id))
+}
+pub(crate) fn activate_owner(
+    receipt: PreparedOwnerReceipt,
+    owner: OwnerKey,
+) -> Result<Vec<u64>, String> {
+    if owner.kind != OwnerKind::Plugin || receipt.intended_id != owner.id {
+        return Err("prepared candidate owner mismatch".into());
+    }
+    if !v8host::owner_is_live(&owner.id, owner.generation) {
         return Err("owner generation unavailable".into());
     }
-    if BINDINGS.with(|b| b.borrow().values().any(|b| b.owner == receipt.owner)) {
+    if BINDINGS.with(|b| b.borrow().values().any(|b| b.owner == owner)) {
         return Err("owner already activated".into());
     }
-    let ids = receipt.bindings.iter().map(|b| b.id).collect();
-    for binding in receipt.bindings {
-        if !v8host::record_resource(
-            &binding.owner.id,
-            binding.owner.generation,
-            Resource::FunctionBinding(binding.id),
-        ) {
+    // Stage the entire ledger before publishing any binding. Roll back in reverse acquisition order.
+    let mut ids = Vec::new();
+    for binding in &receipt.bindings {
+        if !record_activation(&owner, binding.id) {
+            for id in ids.iter().rev() {
+                v8host::release_resource(
+                    &owner.id,
+                    owner.generation,
+                    &Resource::FunctionBinding(*id),
+                );
+            }
             return Err("owner ledger unavailable".into());
         }
+        ids.push(binding.id);
+    }
+    for mut prepared in receipt.bindings {
+        let binding = Rc::new(Binding {
+            id: prepared.id,
+            owner: owner.clone(),
+            function: prepared.function.clone(),
+            target: prepared.target.take(),
+            unavailable: prepared.unavailable.take(),
+            provenance: prepared.provenance.clone(),
+            retained_bytes: prepared.retained_bytes,
+            _retention: receipt.retention.clone(),
+        });
         BINDINGS.with(|b| b.borrow_mut().insert(binding.id, binding));
     }
     Ok(ids)
+}
+pub(crate) fn named_binding(owner: &OwnerKey, name: &str) -> Result<Rc<Binding>, String> {
+    let id = BINDINGS
+        .with(|b| {
+            b.borrow()
+                .values()
+                .find(|b| b.owner == *owner && b.function.local_name == name)
+                .map(|b| b.id)
+        })
+        .ok_or("undeclared engine function")?;
+    binding(id, owner)
 }
 pub(crate) fn binding(id: u64, owner: &OwnerKey) -> Result<Rc<Binding>, String> {
     BINDINGS
@@ -146,9 +268,8 @@ pub(crate) fn owner_bindings(owner: &OwnerKey) -> Vec<u64> {
     })
 }
 
-// Charge retained decoded payload allocations at the owning receipt. Container
-// allocator overhead and the loader worker's budget are accounted at Task 7's
-// activation seam; this is deliberately not a claim of complete loader budgeting.
+// Measure retained decoded payload allocations. Admission additionally reserves
+// temporary preparation storage and container/receipt overhead at the loader seam.
 fn strings(values: &Vec<String>) -> usize {
     values.capacity() * std::mem::size_of::<String>()
         + values.iter().map(String::capacity).sum::<usize>()
@@ -237,7 +358,7 @@ fn provenance_storage(p: &super::provenance::Provenance) -> usize {
             .map(|o| o.relative_path.capacity() + o.sha256.capacity())
             .sum::<usize>()
 }
-#[allow(dead_code)] // Task 7 activation consumes this measurement, not yet a loader budget charge.
+#[allow(dead_code)] // Diagnostic retained payload total; shared loader lease also reserves preparation work.
 pub(crate) fn retained_bytes(owner: &OwnerKey) -> usize {
     BINDINGS.with(|b| {
         b.borrow()

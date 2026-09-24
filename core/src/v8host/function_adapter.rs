@@ -1,5 +1,5 @@
 //! Host-authorized bootstrap and synchronous scalar/entity policy fan-out.
-//! Public activation and the remaining codecs stay in later Task 6/7 work.
+//! The public facade shares this service; additional projection codecs remain separate work.
 use super::*;
 use crate::engine_functions::{
     contract::*,
@@ -178,7 +178,7 @@ fn validate_subscription_domain(
     }
     Ok(())
 }
-fn current_owner(scope: &mut v8::PinScope) -> Result<OwnerKey, String> {
+pub(super) fn current_owner(scope: &mut v8::PinScope) -> Result<OwnerKey, String> {
     let ctx = scope.get_current_context();
     let id = ctx
         .get_slot::<PluginId>()
@@ -197,7 +197,7 @@ fn current_owner(scope: &mut v8::PinScope) -> Result<OwnerKey, String> {
     }
     Ok(OwnerKey::plugin(&id, generation))
 }
-fn throw(scope: &mut v8::PinScope, error: impl AsRef<str>) {
+pub(super) fn throw(scope: &mut v8::PinScope, error: impl AsRef<str>) {
     if let Some(text) = v8::String::new(scope, error.as_ref()) {
         let e = v8::Exception::error(scope, text);
         scope.throw_exception(e);
@@ -686,6 +686,39 @@ fn js_receipt_status(
     let text = v8::String::new(scope, state).unwrap();
     rv.set(text.into());
 }
+/// Public receipt projection; never leaks target or hook ids.
+pub(super) fn subscription_state(id: u64, owner: &OwnerKey) -> Result<(&'static str, Option<String>), String> {
+    let target = SUBSCRIPTIONS.with(|s| {
+        let rows = s.borrow();
+        match rows.get(&id) {
+            Some(s) if s.owner == *owner => Ok(s.binding.target),
+            Some(_) => Err("subscription owner mismatch".to_string()),
+            None => Ok(None),
+        }
+    })?;
+    Ok(match target.map(runtime::status) {
+        None => ("disposed", None),
+        Some(Err(e)) => ("failed", Some(e)),
+        Some(Ok(status)) => match status.state {
+            1 => ("pending", None), 2 => ("active", None), 3 | 4 => ("disposed", None),
+            _ => ("failed", Some("native hook installation failed".into())),
+        }
+    })
+}
+pub(super) fn binding_observation(binding: u64) -> &'static str {
+    let subscribers = SUBSCRIPTIONS.with(|s| s.borrow().values().filter(|s| s.binding.id == binding)
+        .map(|s| (s.id, s.owner.clone())).collect::<Vec<_>>());
+    let mut state = "not-requested";
+    for (id, owner) in subscribers {
+        match subscription_state(id, &owner).map(|s| s.0) {
+            Ok("failed") | Err(_) => return "failed",
+            Ok("pending") => state = "pending",
+            Ok("active") if state != "pending" => state = "active",
+            _ => {},
+        }
+    }
+    state
+}
 pub(crate) fn drop_subscription(id: u64) {
     let removed = SUBSCRIPTIONS.with(|s| s.borrow_mut().remove(&id));
     if let Some(target) = removed.as_ref().and_then(|s| s.binding.target) {
@@ -1082,7 +1115,7 @@ fn field_type(binding: &Binding, selector: i32) -> Result<(&str, &str), String> 
         _ => Err("unknown field".into()),
     }
 }
-fn projected_to_js<'s>(
+pub(super) fn projected_to_js<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     value: ProjectedValue,
 ) -> Result<v8::Local<'s, v8::Value>, String> {
@@ -1098,7 +1131,7 @@ fn projected_to_js<'s>(
             .ok_or("captured EntityRef prototype unavailable".into()),
     }
 }
-fn projected_from_js(
+pub(super) fn projected_from_js(
     scope: &mut v8::PinScope,
     value: v8::Local<v8::Value>,
     native: &str,
@@ -2176,8 +2209,8 @@ pub(super) mod proof {
         )
         .unwrap();
         let candidate = overrides::prepare(parsed, "actual-proof-archive", vec![]).unwrap();
-        let receipt = registry::prepare_owner(owner.clone(), candidate).unwrap();
-        registry::activate_owner(receipt).unwrap()[0]
+        let receipt = registry::prepare_owner(&owner.id, candidate).unwrap();
+        registry::activate_owner(receipt, owner).unwrap()[0]
     }
     fn js_subscribe_generic_test(
         scope: &mut v8::PinScope,
@@ -2329,7 +2362,7 @@ pub(super) mod proof {
         })
         .unwrap();
     }
-    fn entity_binding(id: &str, nullable: bool, writable: bool, receiver: bool) -> u64 {
+    pub(crate) fn entity_binding(id: &str, nullable: bool, writable: bool, receiver: bool) -> u64 {
         prepared_binding(id, |f| {
             f["target"]["pattern"] = if receiver { "51" } else { "50" }.into();
             f["abi"]["receiver"] = if receiver { "entity" } else { "none" }.into();
@@ -3320,7 +3353,7 @@ pub(super) mod proof {
 }
 
 #[cfg(test)]
-mod scalar_transport_tests {
+pub(super) mod scalar_transport_tests {
     use super::*;
     #[derive(Clone)]
     struct MockFrame {
@@ -3476,7 +3509,7 @@ mod scalar_transport_tests {
             unsafe{*out=f.output};1
         })
     }
-    fn init_transport() {
+    pub(crate) fn init_transport() {
         init(frame_tests::logger).unwrap();
         let mut ops = S2EngineOps::default();
         ops.function_prepare = Some(prepare);
@@ -4393,7 +4426,7 @@ mod scalar_transport_tests {
 }
 
 #[cfg(test)]
-mod entity_transport_tests {
+pub(super) mod entity_transport_tests {
     use super::*;
     // This host transport models identities/staged commits, not native pointers.
     // The shared conformance body also runs against the real Linux fixture.
@@ -4658,6 +4691,20 @@ mod entity_transport_tests {
         };
         unsafe { *out = value };
         1
+    }
+    pub(crate) fn init_public_transport() {
+        init(frame_tests::logger).unwrap();
+        set_engine_ops(Some(S2EngineOps {
+            function_prepare: Some(prepare), function_call: Some(call),
+            function_hook_acquire: Some(acquire), function_hook_release: Some(release),
+            function_target_release: Some(release), function_frame_read: Some(read),
+            function_frame_write: Some(write), function_frame_commit: Some(commit),
+            function_frame_override_return: Some(override_return), ..Default::default()
+        }));
+    }
+    pub(crate) fn seed_public_entity(index: i32, serial: u32) -> u64 {
+        assert_eq!(unsafe { slot(index, serial, 1) }, 1);
+        crate::entity_live::on_created(index, serial as i32)
     }
     #[test]
     fn entity_projections_real_v8_all_preparation_subscription_orders() {

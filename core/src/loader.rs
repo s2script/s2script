@@ -96,9 +96,9 @@ fn api_version_compatible(api_version: &str) -> bool {
 /// this design exists to remove.
 ///
 /// Degrade per-descriptor: only THIS plugin is refused; the framework keeps running.
-fn start_load(manifest: &Manifest, js: &str, cfg: &str) {
+fn start_load(manifest: &Manifest, js: &str, cfg: &str, receipt: Option<crate::engine_functions::registry::PreparedOwnerReceipt>) {
     crate::v8host::set_plugin_version(&manifest.id, &manifest.version);
-    crate::v8host::load_plugin_js(&manifest.id, js, cfg);
+    crate::v8host::load_plugin_js_prepared(&manifest.id, js, cfg, receipt);
 }
 
 /// True when every hard `pluginDependencies` interface of `manifest` is currently published (design
@@ -231,7 +231,7 @@ fn stamp_time(stamp: FileStamp) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_nanos(stamp.modified_ns.min(u64::MAX as u128) as u64)
 }
 
-fn begin_load_prepared(prepared: &PreparedPlugin, cfg: &str, path: &Path) {
+fn begin_load_prepared(prepared: &PreparedPlugin, cfg: &str, path: &Path, receipt: Option<crate::engine_functions::registry::PreparedOwnerReceipt>) {
     let manifest = &prepared.manifest;
     crate::v8host::set_plugin_imports(&manifest.id, imports_from_manifest(manifest));
     crate::v8host::set_plugin_publishes(&manifest.id, manifest.publishes.clone());
@@ -240,7 +240,7 @@ fn begin_load_prepared(prepared: &PreparedPlugin, cfg: &str, path: &Path) {
         crate::gamedata_calls::register_plugin(&manifest.id, gd);
         crate::gamedata_hooks::register_plugin(&manifest.id, gd);
     }
-    start_load(manifest, &prepared.js, cfg);
+    start_load(manifest, &prepared.js, cfg, receipt);
     crate::v8host::store_config_decls(&manifest.id, manifest.config.clone());
     WATCH_STATE.with(|w| { w.borrow_mut().insert(path.to_path_buf(), WatchedPlugin {
         mtime: stamp_time(prepared.stamp), id: manifest.id.clone(),
@@ -1216,7 +1216,9 @@ fn prepare_engine_functions(prepared: &mut PreparedPlugin) -> Result<(), String>
     }
 }
 
-fn apply_prepared(item: ApplyItem) {
+#[cfg(test)]
+fn apply_prepared(item: ApplyItem) { apply_prepared_budgeted(item, None); }
+fn apply_prepared_budgeted(item: ApplyItem, mut drain_budget: Option<&mut LoaderDrainBudget>) {
     let _applying = ApplyingGuard::new();
     let ApplyItem { mut row, allow_unmet_dependencies } = item;
     let id = row.prepared.manifest.id.clone();
@@ -1267,11 +1269,34 @@ fn apply_prepared(item: ApplyItem) {
         }
     }
     // Freeze and validate the entire candidate input before retiring the running generation.
-    // S2-EF-06 will resolve/install this input; preparation itself grants no callable capability.
     if let Err(reason) = prepare_engine_functions(&mut row.prepared) {
         refuse_prepared(&row.path, &row.prepared, &reason, row.old_id.as_deref());
         return;
     }
+    // Reserve decoded/native-receipt preparation against the existing retained policy before
+    // acquiring targets. Keep that lease through activation and final binding teardown.
+    let mut receipt = if let Some(candidate) = row.prepared.engine_candidate.take() {
+        let weight = crate::engine_functions::registry::preparation_bytes(&candidate);
+        if let Some(budget) = drain_budget.as_mut() { budget.bytes = budget.bytes.saturating_add(weight); }
+        if !row.lease.try_grow(weight) {
+            refuse_prepared(&row.path, &row.prepared, "engine function preparation retained-byte budget exceeded", row.old_id.as_deref());
+            return;
+        }
+        match crate::engine_functions::registry::prepare_owner_with_grants(&id, candidate,
+            permission_allowed(&id, "engine:calls"), permission_allowed(&id, "engine:hooks")) {
+            Ok(receipt) => {
+                if receipt.retained_bytes() > weight {
+                    refuse_prepared(&row.path, &row.prepared, "engine function prepared receipt exceeded reservation", row.old_id.as_deref());
+                    return;
+                }
+                Some(receipt)
+            },
+            Err(reason) => {
+                refuse_prepared(&row.path, &row.prepared, &reason, row.old_id.as_deref());
+                return;
+            }
+        }
+    } else { None };
     let override_json = row.config.as_ref().and_then(|snapshot| snapshot.content.as_deref());
     let cfg = crate::v8host::materialize_for_load_snapshot(
         &id,
@@ -1279,13 +1304,14 @@ fn apply_prepared(item: ApplyItem) {
         override_json,
     );
     if let Some(old_id) = row.old_id.as_deref() { crate::v8host::unload_plugin(old_id); }
-    begin_load_prepared(&row.prepared, &cfg, &row.path);
+    if let Some(receipt) = receipt.as_mut() { receipt.retain(Rc::new(row.lease)); }
+    begin_load_prepared(&row.prepared, &cfg, &row.path, receipt);
 }
 
 fn drain_ready(budget: &mut LoaderDrainBudget) {
     loop {
         let Some(item) = take_ready(budget) else { return };
-        apply_prepared(item);
+        apply_prepared_budgeted(item, Some(budget));
     }
 }
 
@@ -2777,4 +2803,192 @@ mod tests {
         ));
         crate::v8host::set_engine_ops(None);
     }
+
+    thread_local! {
+        static FUNCTION_TARGET_REFS: std::cell::RefCell<HashMap<i64, usize>> = std::cell::RefCell::new(HashMap::new());
+        static FUNCTION_HOOK_REFS: Cell<usize> = const { Cell::new(0) };
+        static FUNCTION_CALLS: Cell<usize> = const { Cell::new(0) };
+        static EXPECT_RUNNING: Cell<u64> = const { Cell::new(0) };
+    }
+    extern "C" fn prepared_target(_: *const c_char, target:*const c_char, _: *const c_char, _: *const c_char, reason: *mut c_char, _: i32) -> i64 {
+        let target = unsafe { CStr::from_ptr(target) }.to_str().unwrap();
+        let old = EXPECT_RUNNING.with(Cell::get);
+        if old != 0 { assert!(crate::v8host::owner_is_live("@demo/fire", old), "native preparation must precede retirement"); }
+        if target.contains("FF") {
+            unsafe { std::ptr::copy_nonoverlapping(b"fixture resolution failed\0".as_ptr().cast(), reason, 26); }
+            return 0;
+        }
+        let id = if target.contains("66") { 66 } else { 55 };
+        FUNCTION_TARGET_REFS.with(|r| *r.borrow_mut().entry(id).or_default() += 1);
+        id
+    }
+    extern "C" fn release_prepared_target(id: i64) -> i32 {
+        FUNCTION_TARGET_REFS.with(|r| { let mut r=r.borrow_mut(); let count=r.get_mut(&id).unwrap(); *count-=1; if *count==0 {r.remove(&id);} }); 1
+    }
+    extern "C" fn prepared_call(_: i64, _:u64, _: *const crate::v8host::S2FunctionValue, _:i32, out:*mut crate::v8host::S2FunctionValue, _: *mut c_char, _:i32) -> i32 {
+        FUNCTION_CALLS.with(|n|n.set(n.get()+1));
+        unsafe { *out=crate::engine_functions::runtime::blank(); } 1
+    }
+    extern "C" fn acquire_prepared_hook(_:i64,_:*mut c_char,_:i32)->i64 { FUNCTION_HOOK_REFS.with(|n|n.set(n.get()+1)); 1 }
+    extern "C" fn release_prepared_hook(_:i64)->i32 { FUNCTION_HOOK_REFS.with(|n|n.set(n.get()-1)); 1 }
+    fn start_function_loader() {
+        crate::v8host::frame_tests::LOG.lock().unwrap().clear();
+        crate::v8host::init(crate::v8host::frame_tests::logger).unwrap();
+        WATCH_STATE.with(|w|w.borrow_mut().clear());
+        FILE_STAMPS.with(|w|w.borrow_mut().clear());
+        FUNCTION_TARGET_REFS.with(|r|r.borrow_mut().clear());
+        FUNCTION_HOOK_REFS.with(|n|n.set(0)); FUNCTION_CALLS.with(|n|n.set(0)); EXPECT_RUNNING.with(|n|n.set(0));
+        FUNCTION_SNAPSHOT.with(|s| *s.borrow_mut()=CString::new(r#"{"records":[],"error":null}"#).unwrap());
+        load_permissions_from_str(r#"{"engine:calls":["@demo/fire"],"engine:hooks":["@demo/fire"]}"#).unwrap();
+        crate::v8host::set_engine_ops(Some(crate::v8host::S2EngineOps {
+            plugin_function_overrides:Some(function_snapshot_test_op), function_prepare:Some(prepared_target),
+            function_target_release:Some(release_prepared_target), function_call:Some(prepared_call),
+            function_hook_acquire:Some(acquire_prepared_hook), function_hook_release:Some(release_prepared_hook),
+            ..Default::default()
+        }));
+    }
+    fn function_row(ledger:&RetainedLedger, old:bool, configure:impl FnOnce(&mut serde_json::Value), js:&str)->PreparedLoad {
+        use crate::engine_functions::tests::{fixture,seal,summary};
+        let mut bundle=fixture();
+        bundle["functions"][0]["requirement"]="required".into();
+        bundle["functions"][0]["policy"]["surfaces"]=serde_json::json!(["call","pre"]);bundle["functions"][0]["policy"]["suppression"]="generic".into();
+        configure(&mut bundle); seal(&mut bundle);
+        let mut summary=summary(&bundle);
+        for row in summary["functions"].as_array_mut().unwrap() {row["suppresses"]=true.into();}
+        let manifest=serde_json::from_value(serde_json::json!({"id":"@demo/fire","version":"1","apiVersion":"3.x","permissions":["engine:calls","engine:hooks"],"engineFunctions":summary})).unwrap();
+        let mut row=prepared_row(manifest, old.then_some("@demo/fire"),1024,ledger);
+        row.prepared.engine_functions=Some(bundle.to_string()); row.prepared.js=js.into(); row
+    }
+    const FUNCTION_JS:&str = "const f=require('@s2script/sdk/unsafe').Engine.function('fire'); if(!f.available) throw Error(f.status.reason); globalThis.f=f; globalThis.sub=f.onPre(()=>{}); module.exports.OnPluginStart=()=>{f.call();};";
+    fn apply_function(row:PreparedLoad) {apply_prepared(ApplyItem {row,allow_unmet_dependencies:false});}
+    fn end_function_loader(ledger:&RetainedLedger) {
+        EXPECT_RUNNING.with(|n|n.set(0));
+        crate::v8host::shutdown();
+        assert!(FUNCTION_TARGET_REFS.with(|r|r.borrow().is_empty()));
+        assert_eq!(FUNCTION_HOOK_REFS.with(Cell::get),0);
+        assert_eq!(ledger.usage(),(0,0));
+        crate::v8host::set_engine_ops(None);
+        WATCH_STATE.with(|w|w.borrow_mut().clear()); FILE_STAMPS.with(|w|w.borrow_mut().clear());
+    }
+    #[test]
+    fn engine_function_required_resolution_grant_and_budget_failures_preserve_running_owner() {
+        start_function_loader();
+        let ledger=RetainedLedger::new(4,1024*1024);
+        apply_function(function_row(&ledger,false, |_|{}, FUNCTION_JS));
+        let old=crate::v8host::plugin_generation("@demo/fire");
+        let baseline=ledger.usage(); assert_eq!(baseline.0,1,"{:?}",crate::v8host::frame_tests::LOG.lock().unwrap()); assert!(baseline.1>1024);
+        EXPECT_RUNNING.with(|n|n.set(old));
+        // First candidate target succeeds, later required target fails: acquired refs must roll back.
+        apply_function(function_row(&ledger,true, |b| {let mut later=b["functions"][0].clone();later["localName"]="later".into();later["canonicalId"]="@demo/fire::later".into();later["target"]["pattern"]="FF".into();b["functions"].as_array_mut().unwrap().push(later);}, FUNCTION_JS));
+        assert_eq!(ledger.usage(),baseline);
+        assert_eq!(FUNCTION_TARGET_REFS.with(|r|r.borrow().clone()),HashMap::from([(55,1)]));
+        for permissions in [r#"{"engine:hooks":["@demo/fire"]}"#,r#"{"engine:calls":["@demo/fire"]}"#] {
+            load_permissions_from_str(permissions).unwrap();
+            apply_function(function_row(&ledger,true, |_|{},FUNCTION_JS));
+            assert_eq!(ledger.usage(),baseline);
+        }
+        // Required override rejection also leaves the actual public callable/subscriber intact.
+        let invalid=serde_json::json!({"schemaVersion":2,"ownerId":"@demo/fire","functions":{"fire":{"contractHash":"stale","target":{"module":"server","pattern":"66","validate":{"prologue":"66"}}}}}).to_string();
+        let snapshot=serde_json::json!({"records":[{"relative_path":"gamedata/plugins/id-QGRlbW8vZmlyZQ/custom/stale.jsonc","sha256":crate::engine_functions::contract::hash_bytes(invalid.as_bytes()),"content":invalid}],"error":null}).to_string();
+        FUNCTION_SNAPSHOT.with(|s|*s.borrow_mut()=CString::new(snapshot).unwrap());
+        apply_function(function_row(&ledger,true, |_|{}, FUNCTION_JS));
+        assert_eq!(ledger.usage(),baseline);
+        FUNCTION_SNAPSHOT.with(|s|*s.borrow_mut()=CString::new(r#"{"records":[],"error":null}"#).unwrap());
+        let tiny=RetainedLedger::new(1,1024);
+        apply_function(function_row(&tiny,true, |_|{}, FUNCTION_JS)); assert_eq!(tiny.usage(),(0,0));
+        assert_eq!(crate::v8host::plugin_generation("@demo/fire"),old);
+        assert_eq!(FUNCTION_HOOK_REFS.with(Cell::get),1);
+        crate::v8host::eval_in_context("@demo/fire","f.call(); if(!f.available || sub.dispose()!==true)throw Error('old resource');").unwrap();
+        assert_eq!(FUNCTION_CALLS.with(Cell::get),2);
+        end_function_loader(&ledger);
+    }
+    #[test]
+    fn engine_function_optional_denial_and_resolution_failure_activate_unavailable() {
+        for denied in [true,false] {
+            start_function_loader(); let ledger=RetainedLedger::new(2,1024*1024);
+            if denied {load_permissions_from_str("{}").unwrap();}
+            let script="const f=require('@s2script/sdk/unsafe').Engine.function('fire');if(f.available || !f.status.reason || 'call' in f)throw Error('optional');module.exports.OnPluginStart=()=>{};";
+            apply_function(function_row(&ledger,false,|b|{b["functions"][0]["requirement"]="optional".into();b["functions"][0]["target"]["pattern"]="FF".into();},script));
+            assert_eq!(crate::v8host::plugin_phase("@demo/fire"),Some(crate::plugin::Phase::Active));
+            assert_eq!(ledger.usage().0,1);
+            end_function_loader(&ledger);
+        }
+    }
+    #[test]
+    fn engine_function_factory_failure_releases_candidate_bindings_subscriptions_and_lease() {
+        start_function_loader();let ledger=RetainedLedger::new(2,1024*1024);
+        apply_function(function_row(&ledger,false, |_|{}, FUNCTION_JS));
+        let old=crate::v8host::plugin_generation("@demo/fire"); EXPECT_RUNNING.with(|n|n.set(old));
+        let source=format!("{FUNCTION_JS} module.exports.OnPluginStart=()=>{{throw Error('factory failed');}};");
+        apply_function(function_row(&ledger,true, |_|{},&source));
+        assert!(crate::v8host::is_failed("@demo/fire"));
+        assert!(!crate::v8host::owner_is_live("@demo/fire",old));
+        assert_eq!(ledger.usage(),(0,0));
+        end_function_loader(&ledger);
+    }
+    #[test]
+    fn engine_function_override_rebinds_after_preparation_without_mutating_old_target() {
+        use crate::engine_functions::{contract,tests::{fixture,seal}};
+        start_function_loader();let ledger=RetainedLedger::new(2,1024*1024);
+        apply_function(function_row(&ledger,false, |_|{}, FUNCTION_JS));
+        let old=crate::v8host::plugin_generation("@demo/fire"); EXPECT_RUNNING.with(|n|n.set(old));
+        let mut bundle=fixture();bundle["functions"][0]["requirement"]="required".into();bundle["functions"][0]["policy"]["surfaces"]=serde_json::json!(["call","pre"]);bundle["functions"][0]["policy"]["suppression"]="generic".into();seal(&mut bundle);
+        let data=serde_json::json!({"schemaVersion":2,"ownerId":"@demo/fire","functions":{"fire":{"contractHash":bundle["functions"][0]["contractHash"],"target":{"module":"server","pattern":"66","validate":{"prologue":"66"}}}}}).to_string();
+        let snapshot=serde_json::json!({"records":[{"relative_path":"gamedata/plugins/id-QGRlbW8vZmlyZQ/custom/change.jsonc","sha256":contract::hash_bytes(data.as_bytes()),"content":data}],"error":null}).to_string();
+        FUNCTION_SNAPSHOT.with(|s|*s.borrow_mut()=CString::new(snapshot).unwrap());
+        let mut budget=LoaderDrainBudget::new(8,1024,Duration::from_secs(1));
+        budget.try_admit(1024);
+        apply_prepared_budgeted(ApplyItem{row:function_row(&ledger,true, |_|{}, FUNCTION_JS),allow_unmet_dependencies:false},Some(&mut budget));
+        assert!(!budget.try_admit(1),"decoded/native work participates in frame admission");
+        assert_ne!(crate::v8host::plugin_generation("@demo/fire"),old);
+        assert_eq!(FUNCTION_TARGET_REFS.with(|r|r.borrow().clone()),HashMap::from([(66,1)]));
+        crate::v8host::eval_in_context("@demo/fire","if(f.status.provenance.appliedOverrides.length!==1)throw Error('override provenance');f.call();").unwrap();
+        assert_eq!(ledger.usage().0,1);
+        end_function_loader(&ledger);
+    }
+
+    #[test]
+    fn engine_function_partial_activation_rolls_back_ledger_targets_and_lease() {
+        start_function_loader();let ledger=RetainedLedger::new(2,1024*1024);
+        apply_function(function_row(&ledger,false, |_|{}, FUNCTION_JS));
+        let old=crate::v8host::plugin_generation("@demo/fire"); EXPECT_RUNNING.with(|n|n.set(old));
+        crate::engine_functions::registry::ACTIVATION_LEDGER_LIMIT.with(|n|n.set(Some(1)));
+        apply_function(function_row(&ledger,true, |b| {
+            let mut later=b["functions"][0].clone();later["localName"]="later".into();later["canonicalId"]="@demo/fire::later".into();
+            b["functions"].as_array_mut().unwrap().push(later);
+        }, "throw Error('must not evaluate factory');"));
+        assert!(crate::v8host::is_failed("@demo/fire"));
+        assert!(!crate::v8host::owner_is_live("@demo/fire",old));
+        assert_eq!(ledger.usage(),(0,0));
+        assert_eq!(FUNCTION_CALLS.with(Cell::get),1);
+        end_function_loader(&ledger);
+    }
+    #[test]
+    fn engine_function_unactivated_drop_and_wrong_owner_release_only_candidate_resources() {
+        use crate::engine_functions::{registry,contract::OwnerKey};
+        start_function_loader();let ledger=RetainedLedger::new(3,1024*1024);
+        apply_function(function_row(&ledger,false, |_|{}, FUNCTION_JS));
+        let old=crate::v8host::plugin_generation("@demo/fire"); EXPECT_RUNNING.with(|n|n.set(old));
+        let baseline=ledger.usage();
+        for wrong_owner in [false,true] {
+            let mut row=function_row(&ledger,true, |_|{}, FUNCTION_JS);
+            prepare_engine_functions(&mut row.prepared).unwrap();
+            let candidate=row.prepared.engine_candidate.take().unwrap();
+            assert!(row.lease.try_grow(registry::preparation_bytes(&candidate)));
+            let mut receipt=registry::prepare_owner("@demo/fire",candidate).unwrap();
+            receipt.retain(Rc::new(row.lease));
+            assert_eq!(FUNCTION_TARGET_REFS.with(|r|r.borrow()[&55]),2);
+            if wrong_owner {
+                let generation=crate::v8host::create_plugin_context("other");
+                assert!(registry::activate_owner(receipt,OwnerKey::plugin("other",generation)).is_err());
+                crate::v8host::unload_plugin("other");
+            } else {drop(receipt);}
+            assert_eq!(ledger.usage(),baseline);
+            assert_eq!(FUNCTION_TARGET_REFS.with(|r|r.borrow()[&55]),1);
+            assert_eq!(FUNCTION_HOOK_REFS.with(Cell::get),1);
+            crate::v8host::eval_in_context("@demo/fire","f.call();").unwrap();
+        }
+        end_function_loader(&ledger);
+    }
+
 }

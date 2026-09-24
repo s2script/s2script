@@ -1001,6 +1001,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   //     cannot cross the plugin boundary (inter-plugin payloads are JSON structured copies). ---
   globalThis.__s2pkg_unsafe = {
     Engine: {
+      function: function (name) { return __s2_engine_function(name); },
       call: function (name) {
         if (!__s2_engine_call_ready(name)) return null;
         // A receiverless call (`receiver.kind: "none"` — a static engine function) takes NO leading
