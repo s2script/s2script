@@ -4,8 +4,10 @@
 // through `cursor.invokeNext()` as frozen {action, returnValue, frameRevision} records, the
 // typed-decision rules, per-dispatch shared scratch with per-callback staging, busy-context
 // skipping for nested dispatch, PRE proposals forcing the adapter's POST with
-// `proposedReturn`/`originalReturnValue`/`overrideReturn`, and a native "original" whose
-// timing is recorded in `trace`. It models the contract the adapters rely on; it is not a proof
+// `proposedReturn`/`originalReturnValue`/`overrideReturn`, borrowed-record positions (per-field
+// PRE-only writes staged per callback, accepted with the callback's decision, visible to later
+// callbacks, committed to the native record before the original; readonly in POST), and a native
+// "original" whose timing is recorded in `trace`. It models the contract the adapters rely on; it is not a proof
 // of the Rust implementation, which has its own tests.
 "use strict";
 const vm = require("node:vm");
@@ -15,6 +17,7 @@ const { join } = require("node:path");
 const CONTRACTS = {
   "legacy.acquire.v1": "69247dc63a6200f5bb8c8ff651b8dd632e8d6af9ad4a0b8d2933199800bc48c0",
   "legacy.hud-click.v1": "28c0c9833d521cadd4eb03254f63ef7dcb1cd8b728f48ebfa8835b82ff03ecdd",
+  "legacy.damage.v1": "37e53fb0dfcb8d986cacaa28bba02394f9957e3600411dc5d8785e0e4bd0711e",
 };
 
 function isI32(v) { return typeof v === "number" && Number.isInteger(v) && v >= -2147483648 && v <= 2147483647; }
@@ -28,7 +31,7 @@ function createHost(binding) {
   const logs = [];
   let revision = 0;
 
-  function mount(name, sources) {
+  function mount(name, sources, extra) {
     const context = { name };
     const natives = {
       register(id, hash, callbacks) {
@@ -53,6 +56,7 @@ function createHost(binding) {
       __s2_adapter_contracts: Object.freeze({ ...CONTRACTS }),
       __s2_function_adapter_register: natives.register,
       __s2_function_adapter_subscribe: natives.subscribe,
+      ...(extra || {}),
     };
     sandbox.globalThis = sandbox;
     vm.createContext(sandbox);
@@ -95,6 +99,9 @@ function createHost(binding) {
     for (const [key, read] of Object.entries(state.fields)) {
       Object.defineProperty(frame, key, { enumerable: true, get() { guard(); return read(); } });
     }
+    for (const [key, record] of Object.entries(state.records || {})) {
+      Object.defineProperty(frame, key, { enumerable: true, get() { guard(); return recordView(state, key, record, phase, lease); } });
+    }
     if (phase === "pre") {
       for (const slot of binding.scratch || []) {
         Object.defineProperty(frame, slot, {
@@ -116,14 +123,44 @@ function createHost(binding) {
     return Object.freeze(frame);
   }
 
+  // A borrowed record: null when the native pointer is null; otherwise per-field accessors.
+  function recordView(state, key, record, phase, lease) {
+    if (!record.present) return null;
+    const view = {};
+    for (const field of Object.keys(record.values)) {
+      const slot = `${key}.${field}`;
+      Object.defineProperty(view, field, {
+        enumerable: true,
+        get() {
+          if (!lease.live) throw new Error("expired function frame lease");
+          if (slot in lease.pendingRecords) return lease.pendingRecords[slot];
+          if (slot in state.recordEdits) return state.recordEdits[slot];
+          return record.values[field];
+        },
+        set(v) {
+          if (!lease.live) throw new Error("expired function frame lease");
+          if (phase !== "pre" || !(record.writable || []).includes(field)) {
+            lease.poisoned = true;
+            throw new Error("record field is readonly");
+          }
+          if (typeof v !== "number") { lease.poisoned = true; throw new TypeError("typed scalar required"); }
+          lease.pendingRecords[slot] = record.storage && record.storage[field] === "f32" ? Math.fround(v) : v;
+        },
+      });
+    }
+    return Object.freeze(view);
+  }
+
   function accept(state, lease) {
     if (lease.poisoned) return false;
     Object.assign(state.scratch, lease.pending);
+    Object.assign(state.recordEdits, lease.pendingRecords);
+    lease.pending = {}; lease.pendingRecords = {};
     return true;
   }
 
   function runSubscriber(state, phase, sub) {
-    const lease = { live: true, pending: {}, poisoned: false };
+    const lease = { live: true, pending: {}, pendingRecords: {}, poisoned: false };
     busy.add(sub.context);
     let result;
     try {
@@ -142,12 +179,13 @@ function createHost(binding) {
   }
 
   function runAdapter(state, phase, adapter, subscribers) {
-    const lease = { live: true, pending: {}, poisoned: false };
+    const lease = { live: true, pending: {}, pendingRecords: {}, poisoned: false };
     let index = 0;
     const cursor = Object.freeze({
       invokeNext() {
         if (!lease.live) throw new Error("expired cursor");
-        Object.assign(state.scratch, lease.pending); lease.pending = {};
+        if (lease.poisoned) throw new Error("rejected whole record edit batch");
+        accept(state, lease);
         while (index < subscribers.length) {
           const sub = subscribers[index++];
           // The adapter's own context is busy by construction and still delivered (S2 js_cursor).
@@ -164,7 +202,9 @@ function createHost(binding) {
     try {
       const value = adapter[phase](Object.freeze({ frame: view(state, phase, lease, true), phase, cursor }));
       lease.live = false;
-      return decision(value, phase, true);
+      const result = decision(value, phase, true);
+      if (!accept(state, lease)) throw new Error("rejected whole record edit batch");
+      return result;
     } finally {
       lease.live = false;
       busy.delete(adapter.context);
@@ -175,11 +215,15 @@ function createHost(binding) {
     return adapters.find(a => a[phase] && !busy.has(a.context)) || null;
   }
 
-  // native: {fields: {name: () => value}, original: () => engine return, hiddenReferencedBy?, peer?}
+  // native: {fields: {name: () => value}, records?: {name: {present, values, writable?, storage?}},
+  //          original: () => engine return, hiddenReferencedBy?, peer?}
   // peer: {skip: true, returnValue} models a higher KHook peer superseding the original.
+  // Record values are the NATIVE storage: PRE's accepted edits are written into them before the
+  // original, so the original and POST observe committed values.
   function dispatch(native) {
     const state = {
-      fields: native.fields, scratch: {}, hiddenReferencedBy: native.hiddenReferencedBy,
+      fields: native.fields, records: native.records || {}, recordEdits: {}, scratch: {},
+      hiddenReferencedBy: native.hiddenReferencedBy,
       skipped: false, current: undefined, original: undefined, proposal: undefined,
     };
     for (const slot of binding.scratch || []) state.scratch[slot] = 0;
@@ -196,6 +240,13 @@ function createHost(binding) {
       if (d.proposal !== undefined) state.proposal = d.proposal;
       if (action >= 2) suppressReturn = d.returnValue;
     }
+    // PRE commit: accepted record edits reach native storage before the original.
+    for (const [slot, value] of Object.entries(state.recordEdits)) {
+      const [key, field] = slot.split(".");
+      state.records[key].values[field] = value;
+      trace.push(`commit:${slot}=${value}`);
+    }
+    state.recordEdits = {};
     if (action >= 2) {
       state.skipped = true;
       state.current = suppressReturn;

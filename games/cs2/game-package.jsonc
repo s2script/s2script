@@ -12,7 +12,8 @@
   // JavaScript that implements them. The builder prepends the sources to the bootstrap.
   "adapters": {
     "legacy.acquire.v1": { "version": 1, "contract": "adapters/contracts/legacy.acquire.v1.json", "source": "js/adapters/acquire.js" },
-    "legacy.hud-click.v1": { "version": 1, "contract": "adapters/contracts/legacy.hud-click.v1.json", "source": "js/adapters/hud-click.js" }
+    "legacy.hud-click.v1": { "version": 1, "contract": "adapters/contracts/legacy.hud-click.v1.json", "source": "js/adapters/hud-click.js" },
+    "legacy.damage.v1": { "version": 1, "contract": "adapters/contracts/legacy.damage.v1.json", "source": "js/adapters/damage.js" }
   },
   "gamedataRoot": "gamedata",
   // Host-verified trusted function declarations (see the file's header).

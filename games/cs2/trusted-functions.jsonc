@@ -12,7 +12,11 @@
 {
   "schemaVersion": 1,
   "offsets": {
-    "CEconItemView::m_iItemDefinitionIndex": { "class": "CEconItemView", "field": "m_iItemDefinitionIndex" }
+    "CEconItemView::m_iItemDefinitionIndex": { "class": "CEconItemView", "field": "m_iItemDefinitionIndex" },
+    "CTakeDamageInfo::m_hInflictor": { "class": "CTakeDamageInfo", "field": "m_hInflictor" },
+    "CTakeDamageInfo::m_hAttacker": { "class": "CTakeDamageInfo", "field": "m_hAttacker" },
+    "CTakeDamageInfo::m_flDamage": { "class": "CTakeDamageInfo", "field": "m_flDamage" },
+    "CTakeDamageInfo::m_bitsDamageType": { "class": "CTakeDamageInfo", "field": "m_bitsDamageType" }
   },
   "functions": [
     // CCSPlayer_ItemServices::CanAcquire(ItemServices* this, CEconItemView* item, int method,
@@ -81,6 +85,49 @@
       },
       "policy": { "surfaces": ["pre"], "suppression": "none" },
       "adapter": { "id": "legacy.hud-click.v1", "postOverride": false }
+    },
+    // CBaseEntity::TakeDamageOld(victim* this, CTakeDamageInfo* info, optional result*) -> void,
+    // audited rdi/rsi/rdx (gamedata CBaseEntity_TakeDamageOld). The victim is the entity receiver
+    // (books-adopted, null when unadoptable). The info is a borrowed record exposing only the four
+    // fields DamageInfo has always had; `damage` is the one PRE-writable field (block-to-zero is an
+    // adapter write, never a skipped original). The optional result storage is a native-only
+    // pass-through: never projected, forwarded unchanged whether null or not. Suppression stays
+    // "generic" only so subscriber Handled/Stop votes reach the adapter; the adapter always returns
+    // Continue, so the original always runs.
+    {
+      "localName": "takeDamageOld",
+      "requirement": "optional",
+      "signatureName": "CBaseEntity_TakeDamageOld",
+      "signature": {
+        "platform": "linux-x86_64-sysv",
+        "memberReceiver": true,
+        "receiver": { "name": "victim", "native": "ptr", "projection": { "id": "entity?", "version": 1 },
+          "mutable": [], "nullable": false },
+        "parameters": [
+          { "name": "info", "native": "ptr", "projection": { "id": "borrowed-record", "version": 1 },
+            "ownership": "synchronous-record", "mutable": [], "instance": 0, "nullable": true },
+          { "name": "result", "native": "ptr", "projection": { "id": "native-only", "version": 1 },
+            "ownership": "invocation-passthrough", "mutable": [], "nullable": false }
+        ],
+        "returns": { "name": "", "native": "void", "projection": { "id": "void", "version": 1 },
+          "mutable": [], "nullable": false },
+        "instances": [
+          { "codecId": "borrowed-record", "codecVersion": 1, "kind": null,
+            "record": { "fields": [
+              { "name": "inflictor", "offsetKey": "CTakeDamageInfo::m_hInflictor", "storage": "entity-handle32",
+                "nullable": true, "read": ["pre", "post"], "write": [] },
+              { "name": "attacker", "offsetKey": "CTakeDamageInfo::m_hAttacker", "storage": "entity-handle32",
+                "nullable": true, "read": ["pre", "post"], "write": [] },
+              { "name": "damage", "offsetKey": "CTakeDamageInfo::m_flDamage", "storage": "f32",
+                "nullable": false, "read": ["pre", "post"], "write": ["pre"] },
+              { "name": "damageType", "offsetKey": "CTakeDamageInfo::m_bitsDamageType", "storage": "i32",
+                "nullable": false, "read": ["pre", "post"], "write": [] }
+            ] } }
+        ],
+        "scratch": []
+      },
+      "policy": { "surfaces": ["pre", "post"], "suppression": "generic" },
+      "adapter": { "id": "legacy.damage.v1", "postOverride": false }
     }
   ]
 }

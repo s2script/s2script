@@ -220,7 +220,7 @@ fn selected_real_package_activates_trusted_functions_from_merged_gamedata() {
     crate::game_packages::commit(handle, &merged, b"GCR1\0\0\0\0\0\0\0\0").unwrap();
     let status: serde_json::Value = serde_json::from_slice(&crate::game_packages::status()).unwrap();
     let trusted = &status["trustedFunctions"];
-    assert_eq!(trusted["functions"].as_array().unwrap().len(), 2, "{status}");
+    assert_eq!(trusted["functions"].as_array().unwrap().len(), 3, "{status}");
     for f in trusted["functions"].as_array().unwrap() {
         assert!(f.get("unavailable").is_none() && f["targetSha256"].is_string(), "{f}");
         assert_eq!(f["binding"], "available", "{f}");
