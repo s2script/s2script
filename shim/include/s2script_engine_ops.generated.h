@@ -240,6 +240,7 @@ typedef int (*s2_function_instance_release_fn)(unsigned long long capability);
 typedef int (*s2_function_frame_read_instance_fn)(const S2FunctionInstanceAccess* access, int selector, S2FunctionValue* out, char* reason, int cap);
 typedef int (*s2_function_frame_field_read_fn)(const S2FunctionInstanceAccess* access, int selector, unsigned int field, S2FunctionValue* out, char* reason, int cap);
 typedef int (*s2_function_frame_field_write_fn)(const S2FunctionInstanceAccess* access, int selector, unsigned int field, const S2FunctionValue* value, char* reason, int cap);
+typedef int (*s2_function_frame_hidden_referenced_by_fn)(const S2FunctionInstanceAccess* access, int selector, const S2FunctionValue* entity, unsigned int offset, int* out, char* reason, int cap);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -437,4 +438,5 @@ typedef struct {
     s2_function_frame_read_instance_fn function_frame_read_instance;
     s2_function_frame_field_read_fn function_frame_field_read;
     s2_function_frame_field_write_fn function_frame_field_write;
+    s2_function_frame_hidden_referenced_by_fn function_frame_hidden_referenced_by;
 } S2EngineOps;

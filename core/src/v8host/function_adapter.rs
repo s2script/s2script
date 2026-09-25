@@ -16,6 +16,7 @@ use std::{
     rc::Rc,
     sync::Arc,
 };
+mod hidden_relation;
 
 pub(super) struct PreparedPackage {
     owner: HostPackageOwner,
@@ -1822,6 +1823,11 @@ fn view<'s>(
         object.define_property(scope,key.into(),&desc);
         let method = v8::Function::builder(js_override_return).data(data.into()).build(scope).ok_or("method allocation")?;
         set(scope,object,"overrideReturn",method.into())?;
+    }
+    if hidden_relation::has_hidden(binding) {
+        let data = v8::BigInt::new_from_u64(scope, lease);
+        let method = v8::Function::builder(hidden_relation::js_hidden_referenced_by).data(data.into()).build(scope).ok_or("method allocation")?;
+        set(scope,object,"hiddenReferencedBy",method.into())?;
     }
     object.set_integrity_level(scope, v8::IntegrityLevel::Frozen);
     Ok(object)

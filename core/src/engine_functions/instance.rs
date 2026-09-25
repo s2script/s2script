@@ -554,13 +554,21 @@ pub(crate) fn prepare_verified_package(
                     if p.instance.is_some() || p.nullable {
                         return Err("unexpected instance/nullability".into());
                     }
-                    contract::projection(&p.native, &p.projection, index == -2)?;
-                    contract::copied_ownership(
-                        &p.projection.id,
-                        p.ownership.as_deref(),
-                        index == -2,
-                        &canonical,
-                    )?;
+                    if p.projection.id == "string-indirect" {
+                        // Trusted-only: ptr to an object whose first word is a char*.
+                        if index < 0 || p.native != "ptr" || p.projection.version != 1
+                            || p.ownership.as_deref() != Some("native-observed") || !p.mutable.is_empty() {
+                            return Err("string-indirect is a readonly native-observed parameter".into());
+                        }
+                    } else {
+                        contract::projection(&p.native, &p.projection, index == -2)?;
+                        contract::copied_ownership(
+                            &p.projection.id,
+                            p.ownership.as_deref(),
+                            index == -2,
+                            &canonical,
+                        )?;
+                    }
                     if !(p.mutable.is_empty() || p.mutable == ["pre"])
                         || (!p.mutable.is_empty()
                             && !input.policy.surfaces.iter().any(|s| s == "pre"))
