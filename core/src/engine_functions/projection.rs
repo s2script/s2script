@@ -15,8 +15,10 @@ pub(crate) fn compatible(a: &Abi, b: &Abi) -> bool {
             _=>false,
         }
     }
-    // Scratch selectors share one per-dispatch overlay, so their declarations must agree.
-    a.fingerprint == b.fingerprint && a.member_receiver == b.member_receiver && a.scratch == b.scratch
+    // Scratch selectors share one per-dispatch overlay: two declaring bindings must agree.
+    // A binding without scratch never addresses those selectors.
+    a.fingerprint == b.fingerprint && a.member_receiver == b.member_receiver
+        && (a.scratch.is_empty() || b.scratch.is_empty() || a.scratch == b.scratch)
         && match (&a.receiver,&b.receiver) {(None,None)=>true,(Some(x),Some(y))=>position(a,b,x,y),_=>false}
         && a.parameters.len()==b.parameters.len()
         && a.parameters.iter().zip(&b.parameters).all(|(x,y)|position(a,b,x,y))
