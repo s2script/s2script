@@ -46,6 +46,7 @@ pub(crate) struct Provenance {
     pub bootstrap_path: PathBuf,
     pub gamedata_path: PathBuf,
     pub functions_path: Option<PathBuf>,
+    pub trusted_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +58,14 @@ pub(crate) struct PreparedFunctions {
     pub permissions: Vec<String>,
 }
 
+/// Host-verified trusted function declarations (first-party packages only). The bytes are the
+/// builder's sealed source; `trusted_source::materialize` turns them into the activation artifact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PreparedTrusted {
+    pub bytes: Vec<u8>,
+    pub sha256: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PreparedSelection {
     pub id: String,
@@ -66,6 +75,7 @@ pub(crate) struct PreparedSelection {
     pub bootstrap_sha256: String,
     pub gamedata_sha256: String,
     pub functions: Option<PreparedFunctions>,
+    pub trusted: Option<PreparedTrusted>,
     pub provenance: Provenance,
 }
 
@@ -87,6 +97,8 @@ struct Package {
     gamedata: Artifact,
     #[serde(default, deserialize_with = "crate::engine_functions::contract::present")]
     functions: Option<FunctionArtifact>,
+    #[serde(default, rename = "trustedFunctions", deserialize_with = "crate::engine_functions::contract::present")]
+    trusted_functions: Option<Artifact>,
 }
 
 #[derive(Deserialize)]
@@ -241,6 +253,12 @@ pub(crate) fn prepare_selection(
                 return Err(PackageError::InvalidManifest);
             }
         }
+        if let Some(trusted) = &package.trusted_functions {
+            path_parts(&trusted.path)?;
+            if digest(&trusted.sha256).is_none() || !paths.insert(&trusted.path) {
+                return Err(PackageError::InvalidManifest);
+            }
+        }
         if let Some(functions) = &package.functions {
             path_parts(&functions.path)?;
             if digest(&functions.sha256).is_none() || !paths.insert(&functions.path)
@@ -278,8 +296,12 @@ pub(crate) fn prepare_selection(
     let gamedata_path = artifact_path(&root, &package_root, &package.gamedata)?;
     let functions_path = package.functions.as_ref().map(|f| artifact_path(&root, &package_root,
         &Artifact { path: f.path.clone(), sha256: f.sha256.clone() })).transpose()?;
-    if bootstrap_path == gamedata_path || functions_path.as_ref().is_some_and(|path|
-        path == &bootstrap_path || path == &gamedata_path) {
+    let trusted_path = package.trusted_functions.as_ref()
+        .map(|t| artifact_path(&root, &package_root, t)).transpose()?;
+    let mut distinct = vec![&bootstrap_path, &gamedata_path];
+    distinct.extend(functions_path.iter());
+    distinct.extend(trusted_path.iter());
+    if (1..distinct.len()).any(|i| distinct[..i].contains(&distinct[i])) {
         return Err(PackageError::InvalidManifest);
     }
     let bootstrap_bytes = read_bounded(&bootstrap_path, 16 * 1024 * 1024)?;
@@ -308,6 +330,19 @@ pub(crate) fn prepare_selection(
         }
         _ => None,
     };
+    let trusted = match (&package.trusted_functions, &trusted_path) {
+        (Some(product), Some(path)) => {
+            let bytes = read_bounded(path, 4 * 1024 * 1024)?;
+            verify(&bytes, &product.sha256)?;
+            // Identity only; the full grammar is checked when the host materializes it at commit.
+            let head: Value = serde_json::from_slice(&bytes).map_err(|_| PackageError::InvalidManifest)?;
+            if head["schemaVersion"] != 1 || head["ownerId"] != package.id.as_str() {
+                return Err(PackageError::InvalidManifest);
+            }
+            Some(PreparedTrusted { bytes, sha256: product.sha256.clone() })
+        }
+        _ => None,
+    };
     Ok(PreparedSelection {
         id: package.id.clone(),
         gamedata_owner: package.gamedata_owner.clone(),
@@ -316,6 +351,7 @@ pub(crate) fn prepare_selection(
         bootstrap_sha256: package.bootstrap.sha256.clone(),
         gamedata_sha256: package.gamedata.sha256.clone(),
         functions,
+        trusted,
         provenance: Provenance {
             engine: engine.to_owned(),
             game: game.to_owned(),
@@ -324,6 +360,7 @@ pub(crate) fn prepare_selection(
             bootstrap_path,
             gamedata_path,
             functions_path,
+            trusted_path,
         },
     })
 }

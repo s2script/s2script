@@ -862,3 +862,30 @@ fn layout_only_empty_legacy_merge_registers_without_a_function_owner() {
     assert_eq!(super::selected_id().as_deref(), Some("@fixture/two"));
     super::clear().unwrap();
 }
+
+#[test]
+fn selects_verified_trusted_function_source_and_rejects_tamper_identity_and_collision() {
+    let trusted = |owner: &str| json!({"schemaVersion":1,"ownerId":owner,"offsets":{},"functions":[]}).to_string();
+    let build = |bytes: &str, sha: String, path: &str| {
+        let mut package = record("@fixture/a", "a", "csgo");
+        package["trustedFunctions"] = json!({"path":path,"sha256":sha});
+        let root = complete_fixture(vec![package]);
+        write(&root.path().join("game-packages/a/trusted-functions.json"), bytes.as_bytes());
+        root
+    };
+    let good = trusted("@fixture/a");
+    let root = build(&good, hash(good.as_bytes()), "game-packages/a/trusted-functions.json");
+    let selected = select(&root, "csgo").unwrap();
+    let product = selected.trusted.as_ref().unwrap();
+    assert_eq!((product.bytes.as_slice(), product.sha256.as_str()), (good.as_bytes(), hash(good.as_bytes()).as_str()));
+    assert!(selected.provenance.trusted_path.as_ref().unwrap().ends_with("game-packages/a/trusted-functions.json"));
+    std::fs::write(root.path().join("game-packages/a/trusted-functions.json"), b"mutated").unwrap();
+    assert_eq!(selected.trusted.as_ref().unwrap().bytes, good.as_bytes(), "retained verified bytes");
+    let tampered = build(&good, hash(b"other"), "game-packages/a/trusted-functions.json");
+    assert_eq!(select(&tampered, "csgo").unwrap_err().code(), "hash-mismatch");
+    let foreign = trusted("@fixture/b");
+    let foreign = build(&foreign, hash(foreign.as_bytes()), "game-packages/a/trusted-functions.json");
+    assert_eq!(select(&foreign, "csgo").unwrap_err().code(), "invalid-manifest");
+    let collision = build(&good, hash(b"boot"), "game-packages/a/index.js");
+    assert_eq!(select(&collision, "csgo").unwrap_err().code(), "invalid-manifest");
+}

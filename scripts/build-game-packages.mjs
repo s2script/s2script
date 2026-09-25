@@ -9,7 +9,8 @@ import { stripJsonComments } from "../packages/sdk/src/gamedata/jsonc.ts";
 import { parseFunctionFile } from "../packages/sdk/src/engine-functions/parse.ts";
 import { normalizeFunctions } from "../packages/sdk/src/engine-functions/normalize.ts";
 import { engineFunctionsArchive, engineFunctionsManifest } from "../packages/sdk/src/engine-functions/archive.ts";
-import { canonicalJson } from "../packages/sdk/src/engine-functions/canonical-json.ts";
+import { canonicalJson, hashCanonical } from "../packages/sdk/src/engine-functions/canonical-json.ts";
+import { stackCopyBytes } from "../packages/sdk/src/engine-functions/normalize.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const firstParty = resolve(repoRoot, "games/cs2");
@@ -106,6 +107,108 @@ function parseContract(path, bytes, id) {
   return sha256(Buffer.from(canonicalJson(document)));
 }
 
+// Trusted (host-verified, first-party-only) function declarations. The builder seals everything a
+// build can know — physical fingerprints, stack sizes, policy and adapter contract hashes, the
+// schema-catalog fallback of every record offset — and leaves the layout the HOST must choose to
+// commit time: the resolved target (from the merged shipped + operator-custom gamedata, by
+// signature NAME) and the selected record offsets (live schema first). Any shape the Rust decoder
+// would refuse is refused here too, so a bad declaration fails the build, not a server boot.
+const MAX_TRUSTED_BYTES = 1024 * 1024;
+const trustedKeys = ["schemaVersion", "offsets", "functions"];
+const trustedFunctionKeys = ["localName", "requirement", "signatureName", "signature", "policy", "adapter"];
+const identifierPattern = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+const PLATFORM = "linux-x86_64-sysv";
+
+function plainObject(value, where) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${where} must be an object`);
+  return value;
+}
+function exactKeys(value, allowed, where, required = allowed) {
+  for (const key of Object.keys(value)) if (!allowed.includes(key)) throw new Error(`${where}: unknown field ${key}`);
+  for (const key of required) if (!(key in value)) throw new Error(`${where}: missing ${key}`);
+}
+
+function catalogOffset(catalog, className, field, where) {
+  const fields = catalog?.[className]?.fields;
+  const row = Array.isArray(fields) ? fields.find(f => f?.name === field) : undefined;
+  if (!row || !Number.isInteger(row.offset) || row.offset < 0 || row.offset > 0xffffffff)
+    throw new Error(`${where}: ${className}::${field} is absent from the schema catalog`);
+  return row.offset;
+}
+
+function trustedArtifact({ path, text, id, adapterHashes, signatures, catalog }) {
+  if (Buffer.byteLength(text) > MAX_TRUSTED_BYTES) throw new Error(`${path}: trusted functions size limit`);
+  const stripped = stripJsonComments(text);
+  rejectDuplicateKeys(path, stripped);
+  let source;
+  try { source = JSON.parse(stripped); }
+  catch (error) { throw new Error(`${path}: ${error.message}`); }
+  plainObject(source, path);
+  exactKeys(source, trustedKeys, path);
+  if (source.schemaVersion !== 1) throw new Error(`${path}: unsupported schemaVersion`);
+  const offsets = {};
+  for (const [key, entry] of Object.entries(plainObject(source.offsets, `${path}.offsets`))) {
+    const where = `${path}.offsets[${JSON.stringify(key)}]`;
+    plainObject(entry, where);
+    exactKeys(entry, ["class", "field"], where);
+    if (!key || key.length > 256 || key.includes("\0") || typeof entry.class !== "string" || !entry.class ||
+        typeof entry.field !== "string" || !entry.field)
+      throw new Error(`${where}: invalid offset key or schema name`);
+    offsets[key] = { class: entry.class, field: entry.field, catalog: catalogOffset(catalog, entry.class, entry.field, where) };
+  }
+  if (!Array.isArray(source.functions) || source.functions.length > 256) throw new Error(`${path}.functions must be an array of at most 256`);
+  const names = new Set(), used = new Set();
+  const functions = source.functions.map((raw, index) => {
+    const where = `${path}.functions[${index}]`;
+    const f = plainObject(raw, where);
+    exactKeys(f, trustedFunctionKeys, where, trustedFunctionKeys.filter(k => k !== "adapter"));
+    if (typeof f.localName !== "string" || !identifierPattern.test(f.localName) || names.has(f.localName))
+      throw new Error(`${where}: invalid or duplicate localName`);
+    names.add(f.localName);
+    if (f.requirement !== "optional" && f.requirement !== "required") throw new Error(`${where}: invalid requirement`);
+    if (typeof f.signatureName !== "string" || !plainObject(signatures, "gamedata signatures")[f.signatureName]?.linuxsteamrt64)
+      throw new Error(`${where}: gamedata signature ${JSON.stringify(f.signatureName)} has no linuxsteamrt64 entry`);
+    const signature = structuredClone(plainObject(f.signature, `${where}.signature`));
+    if ("fingerprint" in signature || "stackCopyBytes" in signature) throw new Error(`${where}.signature: fingerprint/stackCopyBytes are derived`);
+    if (signature.platform !== PLATFORM || typeof signature.memberReceiver !== "boolean" || !Array.isArray(signature.parameters) ||
+        !signature.returns || typeof signature.returns.native !== "string" || !Array.isArray(signature.instances))
+      throw new Error(`${where}.signature: invalid platform/receiver/parameters/returns/instances`);
+    const natives = signature.parameters.map(p => p?.native);
+    const stack = stackCopyBytes(signature.memberReceiver ? "entity" : "none", natives);
+    signature.fingerprint = `${PLATFORM}:${signature.memberReceiver ? "entity" : "none"}:${signature.returns.native}(${natives.join(",")})`;
+    signature.stackCopyBytes = stack;
+    for (const [i, instance] of signature.instances.entries()) {
+      const at = `${where}.signature.instances[${i}]`;
+      plainObject(instance, at);
+      exactKeys(instance, ["codecId", "codecVersion", "kind", "record"], at);
+      exactKeys(plainObject(instance.record, `${at}.record`), ["fields"], `${at}.record`);
+      if (!Array.isArray(instance.record.fields) || instance.record.fields.length === 0) throw new Error(`${at}.record.fields must be non-empty`);
+      for (const field of instance.record.fields) {
+        plainObject(field, `${at}.record.fields`);
+        if ("offset" in field) throw new Error(`${at}: record offsets are selected by the host, not declared`);
+        if (!(field.offsetKey in offsets)) throw new Error(`${at}: unknown offsetKey ${JSON.stringify(field.offsetKey)}`);
+        used.add(field.offsetKey);
+      }
+    }
+    const policySource = plainObject(f.policy, `${where}.policy`);
+    exactKeys(policySource, ["surfaces", "suppression"], `${where}.policy`);
+    const policyBase = { id: "generic.v2", version: 1, surfaces: policySource.surfaces,
+      selfCall: "bypass-own-hooks", suppression: policySource.suppression };
+    const out = { localName: f.localName, requirement: f.requirement, signatureName: f.signatureName, signature,
+      policy: { ...policyBase, contractHash: hashCanonical(policyBase) } };
+    if (f.adapter !== undefined) {
+      const adapter = plainObject(f.adapter, `${where}.adapter`);
+      exactKeys(adapter, ["id", "postOverride"], `${where}.adapter`);
+      if (typeof adapter.postOverride !== "boolean" || !(adapter.id in adapterHashes))
+        throw new Error(`${where}.adapter: ${JSON.stringify(adapter.id)} is not a packaged adapter`);
+      out.adapter = { id: adapter.id, contractHash: adapterHashes[adapter.id], postOverride: adapter.postOverride };
+    }
+    return out;
+  });
+  for (const key of Object.keys(offsets)) if (!used.has(key)) throw new Error(`${path}: unused offset key ${key}`);
+  return pretty(canonical({ schemaVersion: 1, ownerId: id, offsets, functions }));
+}
+
 function existingArtifacts(outDir) {
   const path = join(outDir, "game-packages.json");
   if (!existsSync(path)) return [];
@@ -115,9 +218,9 @@ function existingArtifacts(outDir) {
   const paths = [];
   if (!Array.isArray(manifest.packages)) return [];
   for (const product of manifest.packages) {
-    for (const key of ["bootstrap", "gamedata", "functions"]) {
+    for (const key of ["bootstrap", "gamedata", "functions", "trustedFunctions"]) {
       const name = product?.[key]?.path;
-      if (typeof name === "string" && /^game-packages\/[a-z0-9-]+\/(?:index\.js|gamedata\.json|engine-functions\.json)$/.test(name))
+      if (typeof name === "string" && /^game-packages\/[a-z0-9-]+\/(?:index\.js|gamedata\.json|engine-functions\.json|trusted-functions\.json)$/.test(name))
         paths.push(name);
     }
   }
@@ -143,14 +246,15 @@ export function buildGamePackages({ outDir, sourceDirs = [firstParty], allowSynt
   for (const source of sourceDirs) {
     const root = resolve(source);
     const manifest = parseJsonc(confined(root, "game-package.jsonc"), true);
-    const { schemaVersion, id, match, gamedataOwner, bootstrapInputs, gamedataRoot, functionsFile, adapters } = manifest;
+    const { schemaVersion, id, match, gamedataOwner, bootstrapInputs, gamedataRoot, functionsFile, trustedFunctionsFile, adapters } = manifest;
     if (schemaVersion !== 1 || typeof id !== "string" || !/^@[a-z0-9-]+\/[a-z0-9-]+$/.test(id) ||
         typeof match?.engine !== "string" || typeof match?.game !== "string" ||
         typeof gamedataOwner !== "string" || !/^[a-z0-9-]+$/.test(gamedataOwner) ||
         !Array.isArray(bootstrapInputs) || bootstrapInputs.length === 0 || typeof gamedataRoot !== "string" ||
         (functionsFile !== undefined && typeof functionsFile !== "string") ||
+        (trustedFunctionsFile !== undefined && typeof trustedFunctionsFile !== "string") ||
         (adapters !== undefined && (adapters === null || typeof adapters !== "object" || Array.isArray(adapters))) ||
-        Object.keys(manifest).some(key => !["schemaVersion", "id", "match", "gamedataOwner", "bootstrapInputs", "gamedataRoot", "functionsFile", "adapters"].includes(key)) ||
+        Object.keys(manifest).some(key => !["schemaVersion", "id", "match", "gamedataOwner", "bootstrapInputs", "gamedataRoot", "functionsFile", "trustedFunctionsFile", "adapters"].includes(key)) ||
         Object.keys(match).some(key => !["engine", "game"].includes(key)))
       throw new Error(`${root}: invalid game package source manifest`);
     if (ids.has(id) || owners.has(gamedataOwner)) throw new Error(`duplicate package id or gamedata owner: ${id}`);
@@ -221,6 +325,19 @@ export function buildGamePackages({ outDir, sourceDirs = [firstParty], allowSynt
       const functionPath = `${prefix}/engine-functions.json`;
       outputs.set(functionPath, bytes);
       record.functions = { path: functionPath, sha256: sha256(bytes), ...engineFunctionsManifest(bundle) };
+    }
+    if (trustedFunctionsFile !== undefined) {
+      const path = input(trustedFunctionsFile);
+      const signatures = {};
+      for (const file of files) Object.assign(signatures, file.document.signatures ?? {});
+      const catalogPath = confined(root, `${gamedataRoot}/schema-catalog.json`);
+      let catalog;
+      try { catalog = JSON.parse(readFileSync(catalogPath, "utf8")); }
+      catch (error) { throw new Error(`${catalogPath}: ${error.message}`); }
+      const bytes = trustedArtifact({ path, text: readFileSync(path, "utf8"), id, adapterHashes, signatures, catalog });
+      const trustedPath = `${prefix}/trusted-functions.json`;
+      outputs.set(trustedPath, bytes);
+      record.trustedFunctions = { path: trustedPath, sha256: sha256(bytes) };
     }
     packages.push(record);
   }

@@ -138,6 +138,107 @@ fn selected_real_package_bootstraps_root_and_runtime_ui_exports() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+fn build_real_package(tag: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!("s2-real-package-{tag}-{}", std::process::id()));
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let result = std::process::Command::new("node")
+        .current_dir(repo)
+        .args(["--experimental-strip-types", "--no-warnings", "scripts/build-game-packages.mjs", "--out"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    root
+}
+extern "C" fn trusted_instance_prepare(binding: u64, _: *const S2FunctionInstanceOwner, _: *const i8, _: *const i8,
+    _: *const i8, out: *mut S2FunctionInstancePrepared, _: *mut i8, _: i32) -> i32 {
+    // Distinct native targets per binding, as two different engine functions resolve to.
+    unsafe { *out = S2FunctionInstancePrepared { version: 1, struct_size: 24, target: binding as i64, capability: binding } };
+    1
+}
+extern "C" fn trusted_instance_activate(_: u64, _: *const S2FunctionInstanceOwner, _: *mut i8, _: i32) -> i32 { 1 }
+extern "C" fn trusted_instance_release(_: u64) -> i32 { 1 }
+extern "C" fn active_hook(_: i64, out: *mut S2FunctionHookStatus, _: *mut i8, _: i32) -> i32 {
+    unsafe { *out = S2FunctionHookStatus { state: 2, reserved: 0, receipt: 1 }; }
+    1
+}
+extern "C" fn no_read(_: *const S2FunctionInstanceAccess, _: i32, _: *mut S2FunctionValue, _: *mut i8, _: i32) -> i32 { 0 }
+extern "C" fn no_field_read(_: *const S2FunctionInstanceAccess, _: i32, _: u32, _: *mut S2FunctionValue, _: *mut i8, _: i32) -> i32 { 0 }
+extern "C" fn no_field_write(_: *const S2FunctionInstanceAccess, _: i32, _: u32, _: *const S2FunctionValue, _: *mut i8, _: i32) -> i32 { 0 }
+extern "C" fn no_call_copy(_: i64, _: u64, _: *const S2FunctionValue, _: i32, _: *mut S2FunctionValue, _: *const S2FunctionCopyInput,
+    _: *mut S2FunctionCopyOutput, _: *const S2FunctionCopyProducer, _: *mut i8, _: i32) -> i32 { 0 }
+extern "C" fn no_read_copy(_: i64, _: u64, _: u64, _: *const i8, _: i32, _: *mut S2FunctionValue, _: *mut S2FunctionCopyOutput,
+    _: *mut i8, _: i32) -> i32 { 0 }
+extern "C" fn no_write_copy(_: i64, _: u64, _: u64, _: *const i8, _: i32, _: *const S2FunctionValue, _: *const S2FunctionCopyInput,
+    _: *const S2FunctionCopyProducer, _: *mut i8, _: i32) -> i32 { 0 }
+extern "C" fn no_override_copy(_: i64, _: u64, _: u64, _: *const i8, _: *const S2FunctionValue, _: *const S2FunctionCopyInput,
+    _: *const S2FunctionCopyProducer, _: *mut S2FunctionValue, _: *mut S2FunctionCopyOutput, _: *mut i8, _: i32) -> i32 { 0 }
+
+/// The shipped CS2 package: its sealed trusted source is materialized against the MERGED gamedata
+/// signatures at commit, both adapter bindings are prepared, activated and authorized, and a
+/// plugin context can subscribe through the package adapters (the natives themselves are gone).
+#[test]
+fn selected_real_package_activates_trusted_functions_from_merged_gamedata() {
+    function_adapter::scalar_transport_tests::init_transport();
+    let mut ops = engine_ops().unwrap();
+    ops.function_prepare_instance = Some(trusted_instance_prepare);
+    ops.function_instance_activate = Some(trusted_instance_activate);
+    ops.function_instance_release = Some(trusted_instance_release);
+    ops.function_hook_status = Some(active_hook);
+    ops.function_frame_read_instance = Some(no_read);
+    ops.function_frame_field_read = Some(no_field_read);
+    ops.function_frame_field_write = Some(no_field_write);
+    ops.function_call_copy = Some(no_call_copy);
+    ops.function_frame_read_copy = Some(no_read_copy);
+    ops.function_frame_write_copy = Some(no_write_copy);
+    ops.function_frame_commit_copy = Some(no_write_copy);
+    ops.function_frame_override_return_copy = Some(no_override_copy);
+    set_engine_ops(Some(ops));
+    let root = build_real_package("trusted");
+    let bundle: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("game-packages/cs2/gamedata.json")).unwrap()).unwrap();
+    let mut signatures = serde_json::Map::new();
+    for file in bundle["files"].as_array().unwrap() {
+        if let Some(entries) = file["document"]["signatures"].as_object() {
+            signatures.extend(entries.clone());
+        }
+    }
+    let merged = json!({ "signatures": signatures }).to_string();
+    let handle = crate::game_packages::select(&root, "source2", "csgo", "linuxsteamrt64").unwrap();
+    crate::game_packages::commit(handle, &merged, b"GCR1\0\0\0\0\0\0\0\0").unwrap();
+    let status: serde_json::Value = serde_json::from_slice(&crate::game_packages::status()).unwrap();
+    let trusted = &status["trustedFunctions"];
+    assert_eq!(trusted["functions"].as_array().unwrap().len(), 2, "{status}");
+    for f in trusted["functions"].as_array().unwrap() {
+        assert!(f.get("unavailable").is_none() && f["targetSha256"].is_string(), "{f}");
+        assert_eq!(f["binding"], "available", "{f}");
+        assert_eq!(f["customRepairs"], json!([]));
+    }
+    // No live schema in this host: the build's schema-catalog value is selected and named.
+    assert_eq!(trusted["offsets"][0]["source"], "schema-catalog");
+    assert_eq!(trusted["offsets"][0]["offset"], 0x38);
+    load_plugin_js("trusted-real", "exports.OnPluginStart=()=>{};", "{}");
+    assert!(!is_failed("trusted-real"), "{:?}", FAILED_PLUGINS.with(|p| p.borrow().clone()));
+    eval_in_context(
+        "trusted-real",
+        r#"
+        if(typeof __s2_function_adapter_register!=='undefined'||typeof __s2_function_adapter_subscribe!=='undefined')
+            throw Error('bootstrap natives leaked');
+        const a=globalThis.__s2pkg_cs2_adapters;
+        let warned='';console.log=m=>{warned+=m;};
+        if(a.acquire.status()!=='available'||a.hudClick.status()!=='available')throw Error('adapters '+a.acquire.status());
+        const pawns={maxPlayers:0,forSlot:()=>null};
+        for(const r of [a.acquire.subscribe('pre',()=>0,pawns),a.acquire.subscribe('post',()=>{},pawns),a.hudClick.subscribe(()=>{})])
+            if(!r||r.status!=='active')throw Error('subscription '+(r&&r.status)+' '+warned);
+    "#,
+    )
+    .unwrap();
+    unload_plugin("trusted-real");
+    shutdown();
+    set_engine_ops(None);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn selected_exports_survive_callback_until_queued_unload_and_stale_native_closures_reject() {
     use std::io::Write;

@@ -228,6 +228,21 @@ pub(super) fn decode(input: &[u8]) -> Result<Snapshot, String> {
     })
 }
 impl Snapshot {
+    /// Operator repairs that replaced one named signature entry (in apply order). Used as the
+    /// custom provenance of a trusted function whose target was filled from that entry.
+    pub(super) fn signature_repairs(&self, name: &str) -> Vec<Value> {
+        self.repairs
+            .iter()
+            .flat_map(|record| {
+                record
+                    .effects
+                    .iter()
+                    .filter(move |e| e.section == "signatures" && e.name == name && e.result == "applied")
+                    .map(move |e| json!({"path": record.path, "sha256": hash_bytes(&record.bytes),
+                        "platform": e.platform, "validator": e.validator}))
+            })
+            .collect()
+    }
     pub(super) fn status(&self) -> Value {
         json!(self
             .repairs

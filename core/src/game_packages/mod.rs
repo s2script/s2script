@@ -1,5 +1,6 @@
 mod manifest;
 mod repair_snapshot;
+mod trusted_source;
 #[cfg(test)]
 mod tests;
 
@@ -8,7 +9,7 @@ pub(crate) use manifest::{prepare_selection, PreparedSelection};
 pub(crate) use manifest::PackageError;
 
 use crate::engine_functions::contract::{HostPackageOwner, ImplementationManifestHash};
-use crate::engine_functions::{contract, overrides, registry};
+use crate::engine_functions::{contract, instance::SynchronousRecordLifetime, overrides, registry, trusted};
 use crate::v8host::function_adapter::{self, PreparedPackageReceipt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -55,6 +56,10 @@ fn metadata(selection: &PreparedSelection) -> Value {
         value["functionsBundleHash"] = json!(functions.bundle_hash);
         value["functionsPath"] = json!(selection.provenance.functions_path);
     }
+    if let Some(trusted) = &selection.trusted {
+        value["trustedFunctionsSha256"] = json!(trusted.sha256);
+        value["trustedFunctionsPath"] = json!(selection.provenance.trusted_path);
+    }
     value
 }
 fn json_storage(value: &Value) -> usize {
@@ -79,6 +84,8 @@ fn selection_storage(selection: &PreparedSelection) -> usize {
         + path(&selection.provenance.bootstrap_path)
         + path(&selection.provenance.gamedata_path)
         + selection.provenance.functions_path.as_deref().map_or(0, path)
+        + selection.provenance.trusted_path.as_deref().map_or(0, path)
+        + selection.trusted.as_ref().map_or(0, |t| std::mem::size_of_val(t) + t.bytes.capacity() + t.sha256.capacity())
         + selection.functions.as_ref().map_or(0, |functions| {
             std::mem::size_of_val(functions) + functions.bytes.capacity()
                 + functions.sha256.capacity() + functions.bundle_hash.capacity()
@@ -123,11 +130,13 @@ pub(crate) fn select(root: &Path, engine: &str, game: &str, platform: &str) -> R
     let total = selection.bootstrap_bytes.len()
         .checked_add(selection.gamedata_bytes.len())
         .and_then(|n| n.checked_add(selection.functions.as_ref().map_or(0, |f| f.bytes.len())))
+        .and_then(|n| n.checked_add(selection.trusted.as_ref().map_or(0, |t| t.bytes.len())))
         .ok_or("package aggregate size limit")?;
     if selection.bootstrap_bytes.is_empty()
         || selection.bootstrap_bytes.len() > 16 * 1024 * 1024
         || selection.gamedata_bytes.len() > 4 * 1024 * 1024
         || selection.functions.as_ref().is_some_and(|f| f.bytes.len() > 4 * 1024 * 1024)
+        || selection.trusted.as_ref().is_some_and(|t| t.bytes.len() > 4 * 1024 * 1024)
         || total > 24 * 1024 * 1024
     {
         return Err("package artifact size limit".into());
@@ -146,6 +155,10 @@ pub(crate) fn select(root: &Path, engine: &str, game: &str, platform: &str) -> R
     } else {
         (None, 0, 0)
     };
+    // A trusted source is materialized (targets and offsets chosen) only at commit, so reserve a
+    // conservative multiple of its sealed bytes for the decoded artifact and prepared receipt.
+    let preparation_bytes = preparation_bytes.saturating_add(selection.trusted.as_ref()
+        .map_or(0, |t| t.bytes.len().saturating_mul(32).saturating_add(256 * 1024)));
     // Commit temporarily clones selection and function overrides. GCR1 adds one inbound
     // packet, its decoded owned bytes/effects, and bounded status serialization. Reserve all
     // of that at selection so a failed admission cannot publish any owner or source.
@@ -242,6 +255,13 @@ pub(crate) fn commit(handle: u64, merged: &str, repair_bytes: &[u8]) -> Result<(
             return Err(format!("invalid merged {name}"));
         }
     }
+    // Trusted functions: fill each target from THIS merged view (shipped + operator custom) and
+    // select record offsets from the live schema, before any owner or source becomes visible.
+    let materialized = match &selection.trusted {
+        Some(t) => Some(trusted_source::materialize(&t.bytes, &selection.id, &gd, &repairs,
+            &|class, field| crate::v8host::schema_offset_cached(class, field))?),
+        None => None,
+    };
     let owner = crate::gamedata_calls::reserved_owner_id(&selection.id);
     if crate::gamedata_calls::game_package_owner().is_some() {
         return Err("legacy package owner already active".into());
@@ -255,15 +275,17 @@ pub(crate) fn commit(handle: u64, merged: &str, repair_bytes: &[u8]) -> Result<(
     info["mergedSha256"] = json!(format!("{:x}", Sha256::digest(merged.as_bytes())));
     info["customPaths"] = json!(&repairs.custom_paths);
     info["operatorRepairs"] = repairs.status();
-    let status = info.to_string().into_bytes();
-    if status.len() > 2 * 1024 * 1024 || repairs.retained_bytes() > repair_snapshot::MAX_PACKET * 2 {
+    if let Some(m) = &materialized {
+        info["trustedFunctions"] = m.status.clone();
+    }
+    if info.to_string().len() > 2 * 1024 * 1024 || repairs.retained_bytes() > repair_snapshot::MAX_PACKET * 2 {
         return Err("repair snapshot retention/status size limit".into());
     }
     // No public owner/source before every fallible preparation succeeds. Resolution failures are
     // descriptor-level unavailable entries. Hook reservations roll back if staging is dropped.
     let calls = crate::gamedata_calls::prepare_game_package(&owner, &gd);
     let hooks = crate::gamedata_hooks::prepare_game_package(&owner, &gd);
-    let prepared_functions = if let Some(functions) = &selection.functions {
+    let public = if let Some(functions) = &selection.functions {
         let snapshot = override_snapshot.ok_or("missing retained function override snapshot")?;
         let text = std::str::from_utf8(&functions.bytes).map_err(|_| "invalid function UTF-8")?;
         let bundle = contract::parse(text, &selection.id, &functions.summary, &functions.permissions)?;
@@ -272,17 +294,45 @@ pub(crate) fn commit(handle: u64, merged: &str, repair_bytes: &[u8]) -> Result<(
         if registry::preparation_bytes(&candidate) > reserved {
             return Err("function preparation exceeded retained-byte admission".into());
         }
-        let mut receipt = registry::prepare_package_owner(&authority, candidate)?;
-        if receipt.retained_bytes() > reserved {
-            return Err("function receipt exceeded retained-byte admission".into());
-        }
-        receipt.retain(retention.clone());
-        Some(receipt)
+        Some(candidate)
     } else {
         None
     };
-    let receipt = function_adapter::register_selected_package(authority.clone(), source.into(), hash)?;
-    let functions = prepared_functions.map(|prepared| registry::activate_package_owner(prepared, &authority)).transpose()?;
+    let (receipt, functions) = if let Some(materialized) = materialized {
+        // SAFETY: the trusted artifact's record positions are the verified native target's
+        // synchronous arguments (see games/cs2/trusted-functions.jsonc); the host, not the JSON,
+        // owns this promise. Its live proof across every engine callsite is recorded as an open
+        // acceptance item, not established by this code.
+        let lifetime = unsafe { SynchronousRecordLifetime::registered_native_target() };
+        let activation = trusted::activate_selected_trusted(&authority, source.into(), hash, &materialized.bytes,
+            public, lifetime, trusted::SelectedRetention { lease: retention.clone(), reserved_bytes: reserved })
+            .map_err(|e| format!("{}: {e}", selection.id))?;
+        // Each declared function's binding state: "available" or its named degrade reason.
+        if let Some(rows) = info["trustedFunctions"]["functions"].as_array_mut() {
+            for row in rows {
+                let name = row["localName"].as_str().unwrap_or_default().to_owned();
+                row["binding"] = match registry::named_binding(authority.key(), &name) {
+                    Ok(b) if b.target.is_some() => json!("available"),
+                    Ok(b) => json!(b.unavailable.clone().unwrap_or_else(|| "unavailable".into())),
+                    Err(e) => json!(e),
+                };
+            }
+        }
+        (activation.source, Some(activation.functions))
+    } else {
+        let prepared_functions = public.map(|candidate| {
+            let mut receipt = registry::prepare_package_owner(&authority, candidate)?;
+            if receipt.retained_bytes() > reserved {
+                return Err::<_, String>("function receipt exceeded retained-byte admission".into());
+            }
+            receipt.retain(retention.clone());
+            Ok(receipt)
+        }).transpose()?;
+        let receipt = function_adapter::register_selected_package(authority.clone(), source.into(), hash)?;
+        let functions = prepared_functions.map(|prepared| registry::activate_package_owner(prepared, &authority)).transpose()?;
+        (receipt, functions)
+    };
+    let status = info.to_string().into_bytes();
     crate::gamedata_calls::commit_game_package(&owner, calls);
     crate::gamedata_hooks::commit_game_package(hooks);
     REGISTERED.with(|r| {

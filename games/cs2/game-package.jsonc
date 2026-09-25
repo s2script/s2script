@@ -14,5 +14,7 @@
     "legacy.acquire.v1": { "version": 1, "contract": "adapters/contracts/legacy.acquire.v1.json", "source": "js/adapters/acquire.js" },
     "legacy.hud-click.v1": { "version": 1, "contract": "adapters/contracts/legacy.hud-click.v1.json", "source": "js/adapters/hud-click.js" }
   },
-  "gamedataRoot": "gamedata"
+  "gamedataRoot": "gamedata",
+  // Host-verified trusted function declarations (see the file's header).
+  "trustedFunctionsFile": "trusted-functions.jsonc"
 }

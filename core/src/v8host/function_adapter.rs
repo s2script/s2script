@@ -78,6 +78,18 @@ pub(crate) fn register_selected_package(
 ) -> Result<PreparedPackageReceipt, String> {
     register_package(owner, source, manifest, Vec::new(), true)
 }
+/// The selected game package with host adapter grants (its trusted functions artifact).
+pub(crate) fn register_selected_package_with_authorities(
+    owner: HostPackageOwner,
+    source: Arc<str>,
+    manifest: ImplementationManifestHash,
+    grants: Vec<HostAdapterGrant>,
+) -> Result<PreparedPackageReceipt, String> {
+    if grants.iter().any(|g| !g.belongs_to(&owner)) {
+        return Err("adapter grant belongs to another package generation".into());
+    }
+    register_package(owner, source, manifest, grants, true)
+}
 fn register_package(
     owner: HostPackageOwner,
     source: Arc<str>,

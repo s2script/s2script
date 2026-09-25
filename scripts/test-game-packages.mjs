@@ -416,3 +416,77 @@ test("rejects absent inputs, escapes, malformed JSONC, and unapproved synthetic 
   writeFileSync(join(i.source, "game-package.jsonc"), readFileSync(join(i.source, "game-package.jsonc"), "utf8").replace('"js/b.js"', '"js/escape.js"'));
   assert.throws(() => buildGamePackages({ outDir: i.out, sourceDirs: [i.source], allowSynthetic: true }), /escapes package root/);
 });
+
+function withTrusted(f, edit = source => source) {
+  withAdapters(f);
+  writeFileSync(join(f.source, "gamedata/game.cs2.jsonc"), JSON.stringify({ signatures: {
+    Gate: { linuxsteamrt64: { module: "libserver.so", pattern: "55 48", validate: { prologue: "55 48" } } },
+  } }));
+  writeFileSync(join(f.source, "gamedata/schema-catalog.json"), JSON.stringify({
+    Item: { parent: null, fields: [{ name: "m_def", offset: 56, type: { kind: "atomic", name: "uint16" } }] },
+  }));
+  const hidden = name => ({ name, native: "ptr", projection: { id: "native-only", version: 1 }, ownership: "invocation-passthrough", mutable: [], nullable: false });
+  const source = edit({
+    schemaVersion: 1,
+    offsets: { "Item::m_def": { class: "Item", field: "m_def" } },
+    functions: [{
+      localName: "gate", requirement: "optional", signatureName: "Gate",
+      signature: { platform: "linux-x86_64-sysv", memberReceiver: false, receiver: null,
+        parameters: [hidden("services"),
+          { name: "item", native: "ptr", projection: { id: "borrowed-record", version: 1 }, ownership: "synchronous-record", mutable: [], instance: 0, nullable: false },
+          { name: "method", native: "i32", projection: { id: "i32", version: 1 }, mutable: [], nullable: false }],
+        returns: { name: "", native: "i32", projection: { id: "i32", version: 1 }, mutable: [], nullable: false },
+        instances: [{ codecId: "borrowed-record", codecVersion: 1, kind: null, record: { fields: [
+          { name: "defIndex", offsetKey: "Item::m_def", storage: "u16", nullable: false, read: ["pre", "post"], write: [] }] } }],
+        scratch: [{ name: "result", storage: "i32" }] },
+      policy: { surfaces: ["pre", "post"], suppression: "generic" },
+      adapter: { id: "legacy.acquire.v1", postOverride: true },
+    }],
+  });
+  writeFileSync(join(f.source, "trusted.jsonc"), "// trusted\n" + JSON.stringify(source));
+  const path = join(f.source, "game-package.jsonc");
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  manifest.trustedFunctionsFile = "trusted.jsonc";
+  writeFileSync(path, JSON.stringify(manifest));
+  return f;
+}
+
+test("trusted functions are sealed by the builder and left for the host to target and lay out", () => {
+  const f = withTrusted(fixture());
+  const { product } = built(f);
+  assert.deepEqual(Object.keys(product), ["id", "match", "gamedataOwner", "bootstrap", "gamedata", "trustedFunctions"]);
+  assert.equal(product.trustedFunctions.path, "game-packages/cs2/trusted-functions.json");
+  const bytes = readFileSync(join(f.out, product.trustedFunctions.path));
+  assert.equal(product.trustedFunctions.sha256, sha256(bytes));
+  const artifact = JSON.parse(bytes);
+  assert.equal(artifact.ownerId, "@test/cs2");
+  assert.deepEqual(artifact.offsets, { "Item::m_def": { catalog: 56, class: "Item", field: "m_def" } });
+  const gate = artifact.functions[0];
+  assert.equal(gate.signatureName, "Gate");
+  assert.equal("target" in gate, false, "the target is filled from merged gamedata at commit");
+  assert.equal(gate.signature.fingerprint, "linux-x86_64-sysv:none:i32(ptr,ptr,i32)");
+  assert.equal(gate.signature.stackCopyBytes, 128);
+  assert.equal("offset" in gate.signature.instances[0].record.fields[0], false);
+  assert.deepEqual(gate.adapter, { contractHash: "69247dc63a6200f5bb8c8ff651b8dd632e8d6af9ad4a0b8d2933199800bc48c0", id: "legacy.acquire.v1", postOverride: true });
+  assert.match(gate.policy.contractHash, /^[0-9a-f]{64}$/);
+  assert.deepEqual(built(withTrusted(fixture())).manifest, built(f).manifest, "deterministic");
+});
+
+test("trusted function sources refuse what the host decoder would refuse", () => {
+  const cases = [
+    ["unknown signature", s => { s.functions[0].signatureName = "Nope"; }, /signature "Nope"/],
+    ["unpackaged adapter", s => { s.functions[0].adapter.id = "other.v1"; }, /not a packaged adapter/],
+    ["declared offset", s => { s.functions[0].signature.instances[0].record.fields[0].offset = 8; }, /selected by the host/],
+    ["unknown offset key", s => { s.functions[0].signature.instances[0].record.fields[0].offsetKey = "X::y"; }, /unknown offsetKey/],
+    ["catalog miss", s => { s.offsets["Item::m_def"].field = "m_missing"; }, /schema catalog/],
+    ["unused offset", s => { s.offsets["Other::x"] = { class: "Item", field: "m_def" }; }, /unused offset key/],
+    ["derived field", s => { s.functions[0].signature.fingerprint = "x"; }, /derived/],
+    ["unknown field", s => { s.functions[0].target = {}; }, /unknown field target/],
+    ["duplicate name", s => { s.functions.push(structuredClone(s.functions[0])); }, /duplicate localName/],
+  ];
+  for (const [label, edit, match] of cases) {
+    const f = withTrusted(fixture(), source => { edit(source); return source; });
+    assert.throws(() => built(f), match, label);
+    assert.equal(existsSync(join(f.out, "game-packages.json")), false, label);
+  }
+});
