@@ -9,6 +9,9 @@ struct CopyPosition {
     s2fn::copy::Kind kind{};
     CopyOwnership ownership = CopyOwnership::None;
     bool mutable_pre = false;
+    // Trusted-only `string-indirect`: the native argument points at an object whose
+    // first pointer-sized word is the char*. Always NativeObserved (read-only).
+    bool indirect = false;
     explicit operator bool() const { return kind != s2fn::copy::Kind{}; }
 };
 struct CopyInput {
@@ -46,6 +49,7 @@ public:
     static s2fn::Result<s2fn::RetainedFrame> Create(const CopyProducer& engine);
     void Release() noexcept override;
     s2fn::Result<bool> Capture(size_t, s2fn::copy::Kind, uintptr_t, const s2fn::copy::Reader&);
+    s2fn::Result<bool> CaptureIndirect(size_t, uintptr_t, const s2fn::copy::Reader&);
     s2fn::Result<bool> Stage(size_t, s2fn::copy::Kind, const S2FunctionValue&, const CopyInput&, const CopyProducer&);
     s2fn::Result<std::array<const void*,33>> Publish(const std::array<CopyPosition,32>&, size_t, bool return_wins);
     const s2fn::copy::Snapshot& Read(size_t) const;

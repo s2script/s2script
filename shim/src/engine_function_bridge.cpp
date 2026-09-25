@@ -79,7 +79,7 @@ bool Declaration::HasCopies() const {
     return false;
 }
 bool Declaration::CompatibleCopies(const Declaration& b) const {
-    auto same=[](const CopyPosition& a,const CopyPosition& b) {return a.kind==b.kind && a.ownership==b.ownership;};
+    auto same=[](const CopyPosition& a,const CopyPosition& b) {return a.kind==b.kind && a.ownership==b.ownership && a.indirect==b.indirect;};
     if(!same(return_copy,b.return_copy)) return false;
     for(size_t i=0;i<copies.size();++i) if(!same(copies[i],b.copies[i])) return false;
     return true; // entity and entity? retain their binding-local projection rules.
@@ -208,6 +208,13 @@ Declaration parse_instance(const std::string& target,const std::string& text) {
             return s2fn::AbiAtom{native,projection};
         }
         require(!p.contains("instance") && !p.at("nullable").get<bool>(),"unexpected position instance/nullability");
+        if(projection=="string-indirect") {
+            // Trusted-only copied projection; the public grammar (atom) never admits it.
+            require(!ret && selector>=0 && native=="ptr" && p.at("mutable")==json::array() &&
+                p.contains("ownership") && p.at("ownership")=="native-observed","string-indirect is a readonly native-observed parameter");
+            d.copies[selector]={s2fn::copy::Kind::String,CopyOwnership::NativeObserved,false,true};
+            return s2fn::AbiAtom{native,projection};
+        }
         auto simple=p;simple.erase("nullable");
         if(ret) {simple.erase("name");simple.erase("mutable");}
         auto value=atom(simple,ret);
@@ -287,6 +294,11 @@ s2fn::Result<bool> CopyTransaction::Capture(size_t index,s2fn::copy::Kind kind,u
     auto snapshot=s2fn::copy::Snapshot::Capture(engine_,kind,source,reader);if(!snapshot) return {false,snapshot.error};
     observed_[index]=std::move(snapshot.value);return {true,{}};
 }
+s2fn::Result<bool> CopyTransaction::CaptureIndirect(size_t index,uintptr_t object,const s2fn::copy::Reader& reader) {
+    if(index>=32) return {false,"invalid indirect capture position"};
+    auto snapshot=s2fn::copy::Snapshot::CaptureIndirect(engine_,object,reader);if(!snapshot) return {false,snapshot.error};
+    observed_[index]=std::move(snapshot.value);return {true,{}};
+}
 s2fn::Result<bool> CopyTransaction::Stage(size_t index,s2fn::copy::Kind kind,const S2FunctionValue& value,
     const CopyInput& input,const CopyProducer& producer) {
     if(index>=edits_.size()) return {false,"invalid copied edit position"};
@@ -328,6 +340,19 @@ s2fn::Result<std::array<const void*,33>> CopyTransaction::Publish(const std::arr
     for(size_t i=0;i<count;++i) if(edits_[i]) observed_[i]=edits_[i];
     if(return_wins && edits_[Return]) observed_[Return]=edits_[Return];
     return {batch.result,{}};
+}
+s2fn::Result<bool> ReferencesHidden(const s2fn::copy::Reader& reader,uintptr_t owner,uint32_t offset,uintptr_t hidden) {
+    if(!reader.available || !reader.read || !reader.page_size) return {false,"relationship check: native reader unavailable"};
+    constexpr size_t Word=sizeof(uintptr_t);
+    if(!owner || !hidden || offset>UINTPTR_MAX-owner || owner+offset>UINTPTR_MAX-(Word-1)) return {false,{}};
+    const uintptr_t at=owner+offset;uint8_t word[Word];size_t done=0;
+    while(done<Word) {
+        const auto address=at+done;const auto count=std::min(Word-done,reader.page_size-address%reader.page_size);
+        if(reader.read(reader.context,address,word+done,count)!=count) return {false,{}};
+        done+=count;
+    }
+    uintptr_t stored=0;std::memcpy(&stored,word,Word);
+    return {stored==hidden,{}};
 }
 s2fn::Result<s2resolve::Resolution> Resolve(const Declaration& d, const Resolver& resolver,
     s2validate::Ops ops, std::function<bool(uintptr_t,void*,size_t)> read_live) {
@@ -431,6 +456,7 @@ struct FrameAccess {
     Capabilities* capabilities=nullptr;
     struct FieldEdit { std::shared_ptr<InstanceCapability> capability; uint32_t field; S2FunctionValue value; };
     std::map<std::pair<int,uint32_t>,FieldEdit> field_edits;
+    const s2fn::copy::Reader* reader=nullptr; // host checked reader for relationship reads
 };
 thread_local std::vector<FrameAccess*> frames;
 std::atomic<unsigned long long> next_frame{1};
@@ -574,7 +600,9 @@ struct Service::Impl {
                     auto storage=CopyTransaction::Create(host.engine);require(bool(storage),storage.error.c_str());
                     frame.copied=std::move(storage.value);copies=static_cast<CopyTransaction*>(frame.copied.get());
                     for(size_t i=0;i<declaration.abi.parameters.size();++i) if(declaration.copies[i]) {
-                        auto captured=copies->Capture(i,declaration.copies[i].kind,frame.arguments[i].Get<uintptr_t>(),host.reader);
+                        auto captured=declaration.copies[i].indirect ?
+                            copies->CaptureIndirect(i,frame.arguments[i].Get<uintptr_t>(),host.reader) :
+                            copies->Capture(i,declaration.copies[i].kind,frame.arguments[i].Get<uintptr_t>(),host.reader);
                         require(bool(captured),captured.error.c_str());
                     }
                     if(frame.phase==s2fn::Phase::Post && declaration.return_copy) {
@@ -591,7 +619,7 @@ struct Service::Impl {
                     {1,sizeof(S2FunctionFrameInfo),epoch,epoch,frame.invocation_id,owner,
                      static_cast<unsigned int>(frame.arguments.size()),frame.original_skipped ? 1u : 0u},
                     *binding,host.owner,frame.arguments,host.codec,{}};
-                access.copies=copies;access.capabilities=&host.capabilities;
+                access.copies=copies;access.capabilities=&host.capabilities;access.reader=&host.reader;
                 frames.push_back(&access);
                 struct Pop { ~Pop() { frames.pop_back(); } } pop;
                 sink->Dispatch(id,owner,frame);
@@ -1295,6 +1323,29 @@ extern "C" int S2_FunctionFrameFieldWrite(const S2FunctionInstanceAccess* access
         auto [frame,c]=instance_access(*access);auto& f=*frame;const auto& row=record_field(f,*c,selector,field,true);
         require(record_pointer(f,*c,selector),"null record has no fields");field_bits(f,row,*value);
         f.field_edits[{selector,row.offset}]={c,field,*value};f.changed=true;
+    });
+}
+// Authority/usage failures (expired frame, foreign binding, non-hidden position,
+// malformed identity) are named errors. A stale entity or an unreadable/unequal
+// field is `false`: the answer is only ever "provably referenced" or not.
+extern "C" int S2_FunctionFrameHiddenReferencedBy(const S2FunctionInstanceAccess* access,int selector,
+    const S2FunctionValue* entity,unsigned int offset,int* out,char* reason,int cap) {
+    if(out) *out=0;
+    return instance_boundary(reason,cap,[&] {
+        using namespace s2bridge;require(access && entity && out,"missing relationship access/entity/output");
+        auto [frame,c]=instance_access(*access);auto& f=*frame;
+        require(c->declaration.instances.hidden.count(selector),"relationship check requires a hidden native position");
+        require(f.native.phase==s2fn::Phase::Pre || f.native.phase==s2fn::Phase::Post,"relationship check unavailable in this phase");
+        require(offset<=INT32_MAX,"relationship field offset out of range");
+        require(entity->kind==8 && entity->flags==static_cast<unsigned char>(PointerProjection::Entity) && !entity->reserved &&
+            entity->aux<=INT32_MAX && entity->bits<=UINT32_MAX,"invalid entity identity transport");
+        require(f.codec && f.reader,"relationship codec/reader unavailable");
+        // Serial-gated host books resolve the owner; a stale identity is simply unrelated.
+        CallStorage storage;auto owner=f.codec->Decode(*entity,storage);
+        if(!owner || !owner.value.Get<void*>()) return;
+        const auto hidden=selector==-1 ? f.native.receiver.Get<uintptr_t>() : f.native.arguments.at(selector).Get<uintptr_t>();
+        auto related=ReferencesHidden(*f.reader,owner.value.Get<uintptr_t>(),offset,hidden);
+        require(bool(related),related.error.c_str());*out=related.value ? 1 : 0;
     });
 }
 static_assert(sizeof(S2FunctionInstanceOwner)==56 && offsetof(S2FunctionInstanceOwner,generation)==48,"instance owner v1");
