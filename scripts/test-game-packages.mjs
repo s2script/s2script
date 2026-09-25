@@ -104,7 +104,13 @@ test("default build contains only selected artifacts and explicit package export
   const source = readFileSync(join(out, "game-packages/cs2/index.js"), "utf8");
   assert.ok(source.includes('"./ui"'));
   assert.equal(source.includes('"./econ"'), false);
-  assert.equal(source.includes("__s2_adapter_contracts"), false);
+  // The CS2 package ships its two locked adapter contracts, registered ahead of every input.
+  const contracts = source.slice(0, source.indexOf("\n"));
+  assert.match(contracts, /__s2_adapter_contracts/);
+  assert.ok(contracts.includes('"legacy.acquire.v1":"69247dc63a6200f5bb8c8ff651b8dd632e8d6af9ad4a0b8d2933199800bc48c0"'));
+  assert.ok(contracts.includes('"legacy.hud-click.v1":"28c0c9833d521cadd4eb03254f63ef7dcb1cd8b728f48ebfa8835b82ff03ecdd"'));
+  assert.ok(source.indexOf("__s2pkg_cs2_adapters") < source.indexOf("__s2pkg_cs2_schema"));
+  assert.equal(source.includes('"voteOrder"'), false, "contract policy data is not executable source");
   assert.equal(existsSync(join(out, "game-packages/fixture")), false);
 
 });

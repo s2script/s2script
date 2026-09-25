@@ -8,5 +8,11 @@
     "js/csitem.generated.js", "js/weapon.js", "js/pawn.js", "js/camera.js",
     "js/ui.js", "js/components.js", "js/hudinput.js", "js/menuhud.js", "js/voterail.js", "js/exports.js"
   ],
+  // Engine-function adapters: frozen semantic contracts (hash-locked) + the reviewed package
+  // JavaScript that implements them. The builder prepends the sources to the bootstrap.
+  "adapters": {
+    "legacy.acquire.v1": { "version": 1, "contract": "adapters/contracts/legacy.acquire.v1.json", "source": "js/adapters/acquire.js" },
+    "legacy.hud-click.v1": { "version": 1, "contract": "adapters/contracts/legacy.hud-click.v1.json", "source": "js/adapters/hud-click.js" }
+  },
   "gamedataRoot": "gamedata"
 }
