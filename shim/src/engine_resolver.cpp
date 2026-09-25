@@ -157,6 +157,18 @@ bool Evaluate(const TargetRecipe& recipe,const Sources& sources,Resolution& out,
             if (!relative(*sources.image,caller,1,5,target)) return fail(reason,"validated-call displacement out of bounds");
             call_site_validated=true;
         } else {
+            // A direct recipe may break a tie with its own validators (e.g. two classes' byte-identical
+            // thunks, told apart by vtable-member). Exactly one survivor is required; derived
+            // strategies keep the strict single-match rule because their validators judge the
+            // derived target, not the match.
+            if (candidates.size()>1 && strategy=="direct" && !recipe.validate_json.empty() && recipe.validate_json!="{}") {
+                std::vector<uintptr_t> passed; std::string rejection;
+                for (uintptr_t at : candidates) if (validate(recipe,mv,sources,at,rejection)) passed.push_back(at);
+                if (passed.size()!=1)
+                    return fail(reason,"signature ambiguous ("+std::to_string(candidates.size())+" matches, "+
+                                std::to_string(passed.size())+" passed validators)");
+                candidates=passed;
+            }
             if (candidates.size()!=1) return fail(reason,candidates.empty() ? "signature not found" : "signature ambiguous (>1 match)");
             target=candidates.front();
             if (strategy=="lea-disp" && !relative(*sources.image,target,3,7,target))
