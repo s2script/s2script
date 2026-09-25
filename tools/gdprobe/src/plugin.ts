@@ -76,6 +76,14 @@ export function OnPluginStart(): void {
           after(700, () => { L(`  after out2 ${r()}`); z.remove(); }); }); }); });
   });
 
+  // Engine-originated round end (onTerminateRound): kill every alive pawn on one team.
+  command.server("gd_slay", () => {
+    const t = Player.all().find((x) => x.pawn && (x.pawn.health ?? 0) > 0 && (x.teamNum ?? 0) > 1)?.teamNum;
+    let k = 0;
+    for (const p of Player.all()) if (p.teamNum === t && p.pawn && (p.pawn.health ?? 0) > 0) { p.pawn.slay(); k += 1; }
+    L(`slay team=${t} killed=${k}`);
+  });
+
   command.server("gd_round", () => { L(`terminateRound=${GameRules.terminateRound(9, 1)}`); });
 
   command.server("gd_report", () => {
