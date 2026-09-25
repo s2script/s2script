@@ -252,10 +252,38 @@ void patched_virtual() {
               why.find("class/index")!=std::string::npos,
           "structural virtual lookup rejects an out-of-range index");
 }
+// Two classes can share a byte-identical override (a thin thunk). The pattern alone cannot pick
+// one; the entry's own vtable-member validator can, and only an exactly-one survivor is accepted.
+void validators_break_direct_ties() {
+    Fixture f;
+    f.bytes(0x1200,{0x48,0x85,0xf6,0x74,0x01,0xc3});
+    f.bytes(0x1300,{0x48,0x85,0xf6,0x74,0x01,0xc3});
+    f.freeze();
+    put(f.live,0x3000,0x101300,8); // FixtureClass primary vtable: slot 0 is the SECOND twin
+    auto s=f.sources();
+    s.ops.vtable_from_image=[](const char*) -> void** { return reinterpret_cast<void**>(0x103000); };
+    auto r=recipe("48 85 F6 74 01 C3");
+    s2resolve::Resolution out; std::string why;
+    CHECK(!s2resolve::Evaluate(r,s,out,why) && why.find("ambiguous")!=std::string::npos,
+          "twins without a validator stay ambiguous");
+    r.validate_json=R"({"vtable-member":"FixtureClass"})";
+    CHECK(s2resolve::Evaluate(r,s,out,why) && out.address==0x101300,
+          "vtable-member selects the one twin that is a slot of the class");
+    put(f.live,0x3008,0x101200,8); // both twins are now slots
+    CHECK(!s2resolve::Evaluate(r,s,out,why) && why.find("2 passed")!=std::string::npos,
+          "two validated twins fail ambiguous and say how many passed");
+    put(f.live,0x3000,0x101400,8); put(f.live,0x3008,0,8); // neither twin is a slot
+    CHECK(!s2resolve::Evaluate(r,s,out,why) && why.find("0 passed")!=std::string::npos,
+          "no validated twin fails and names the validator result");
+    r.strategy="lea-disp";
+    CHECK(!s2resolve::Evaluate(r,s,out,why) && why.find("ambiguous (>1 match)")!=std::string::npos,
+          "derived strategies keep the strict single-match rule");
+}
 }
 int main() {
     verified_rtti_data(); direct_and_closed_recipes(); validated_call_sites();
     multiple_segments_and_instruction_bounds(); data_targets(); patched_virtual();
+    validators_break_direct_ties();
     if (failures) { std::cerr << "engine_resolver_test: " << failures << " failures\n"; return 1; }
     std::cout << "engine_resolver_test: all passed\n";
 }
