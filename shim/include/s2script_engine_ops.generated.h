@@ -202,7 +202,6 @@ typedef void (*s2_hook_arm_bypass_fn)(int hookId);
 typedef void (*s2_hook_disarm_bypass_fn)(int hookId);
 typedef int (*s2_hook_read_f32_fn)(void* argView, int idx, float* out);
 typedef int (*s2_hook_read_i32_fn)(void* argView, int idx, int32_t* out);
-typedef int (*s2_hook_read_str_fn)(void* argView, int idx, char* out, int cap);
 typedef int (*s2_hook_write_f32_fn)(void* argView, int idx, float value);
 typedef int (*s2_hook_write_i32_fn)(void* argView, int idx, int32_t value);
 typedef int (*s2_hook_receiver_handle_fn)(void* argView, uint32_t* outHandle);
@@ -213,8 +212,6 @@ typedef int (*s2_entity_stop_sound_fn)(int index, int serial, const char* soundN
 typedef int (*s2_entity_set_body_group_by_name_fn)(int index, int serial, const char* name, int group);
 typedef int (*s2_entity_set_model_scale_fn)(int index, int serial, float scale);
 typedef int (*s2_cvar_set_fn)(const char* name, const char* value);
-typedef int (*s2_hook_read_u16_at_q_fn)(void* argView, int qslot, int offset, uint16_t* out);
-typedef int (*s2_hook_self_matches_field_fn)(void* argView, int index, int serial, int offset);
 typedef int (*s2_sdkhook_vp_add_fn)(int index, int serial, const char* type, int post);
 typedef int (*s2_sdkhook_vp_remove_fn)(int index, int serial, const char* type, int post);
 typedef int (*s2_sdkhook_vp_drop_fn)(int index, int serial);
@@ -393,7 +390,6 @@ typedef struct {
     s2_hook_disarm_bypass_fn hook_disarm_bypass;
     s2_hook_read_f32_fn hook_read_f32;
     s2_hook_read_i32_fn hook_read_i32;
-    s2_hook_read_str_fn hook_read_str;
     s2_hook_write_f32_fn hook_write_f32;
     s2_hook_write_i32_fn hook_write_i32;
     s2_hook_receiver_handle_fn hook_receiver_handle;
@@ -406,10 +402,6 @@ typedef struct {
     s2_entity_set_model_scale_fn entity_set_model_scale;
     /* --- ICvar set — write through ConVarData, not ServerCommand --- */
     s2_cvar_set_fn cvar_set;
-    /* --- Pickup-gate accessors — u16 at q[qslot]+schemaOffset; pointer never crosses to JS --- */
-    s2_hook_read_u16_at_q_fn hook_read_u16_at_q;
-    /* --- Pickup-gate accessors — does this live entity's pointer-at-offset equal the view self --- */
-    s2_hook_self_matches_field_fn hook_self_matches_field;
     /* --- SDKHooks VP — install per-entity SourceHook --- */
     s2_sdkhook_vp_add_fn sdkhook_vp_add;
     s2_sdkhook_vp_remove_fn sdkhook_vp_remove;

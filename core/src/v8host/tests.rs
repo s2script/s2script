@@ -5801,7 +5801,7 @@
         shutdown();
     }
 
-    /// Same hook already on the stack (give from onCanAcquire) is skip-and-named, not nested.
+    /// Same hook already on the stack (a handler re-entering it) is skip-and-named, not nested.
     #[test]
     fn same_hook_reentry_is_skipped_and_named() {
         let _ = init(dummy_logger());

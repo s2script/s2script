@@ -522,13 +522,5 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
         s2_engine_hook_status,
     );
     set_native(scope, global_obj, "__s2_engine_hook_on", s2_engine_hook_on);
-    set_native(scope, global_obj, "__s2_hook_on_post", s2_hook_on_post);
-    set_native(scope, global_obj, "__s2_hook_q_u16", s2_hook_q_u16);
-    set_native(
-        scope,
-        global_obj,
-        "__s2_hook_self_matches",
-        s2_hook_self_matches,
-    );
 }
 

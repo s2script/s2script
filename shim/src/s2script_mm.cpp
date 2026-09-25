@@ -4979,17 +4979,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         hookOps.dispatch = [](int hookId, void* argView) -> int {
             return S2Hook_GuardedDispatchHook(s2script_core_dispatch_hook, hookId, argView);
         };
-        hookOps.dispatch_post = [](int hookId, void* argView, int skipped) -> int {
-            return S2Hook_GuardedDispatchHookPost(s2script_core_dispatch_hook_post, hookId, argView,
-                                                  skipped);
-        };
         S2Hook_SetOps(hookOps);
         if (!s2script_core_dispatch_hook)
             META_CONPRINTF("[s2script] WARN: core exports no inbound-hook dispatch entry — "
                            "declarative inbound hooks are OFF (shim/core version mismatch)\n");
-        if (!s2script_core_dispatch_hook_post)
-            META_CONPRINTF("[s2script] WARN: core exports no inbound-hook POST dispatch entry — "
-                           "onCanAcquirePost will not fire (shim/core version mismatch)\n");
     }
 
     // Select verified owned bytes after core initialization; native merge reads custom/ only.

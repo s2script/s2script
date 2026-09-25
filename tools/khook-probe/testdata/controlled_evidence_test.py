@@ -68,19 +68,6 @@ int main() {
     declarative.expired = false;
     assert(!declarative.Passed());
 
-    s2khook::RealAcquireFrames real;
-    real.Reset("run"); s2khook::RealAcquireObservation acquired;
-    assert(real.Mark("run",1,2,3,6,false)==0); // outside a native invocation
-    real.Enter(1,10,20,30,40);
-    assert(real.Mark("wrong",1,2,3,6,false)==0);
-    real.Enter(2,11,21,31,41);
-    assert(real.Mark("run",1,2,3,6,false)==2);
-    assert(real.Mark("run",1,2,3,6,false)==0); // consumed marker
-    assert(real.Finish(11,21,31,41,6,false,acquired) && acquired.token==2);
-    assert(real.Mark("run",2,2,3,1,true)==1); // restored outer frame
-    assert(real.Finish(10,20,30,40,1,true,acquired) && acquired.generation==2 && acquired.peer_skipped);
-    assert(real.Mark("run",2,2,3,1,true)==0); // expired
-    real.Enter(3,10,20,30,40); assert(!real.Finish(99,20,30,40,0,false,acquired));
     s2khook::MainBridgeObservation bridge;
     bridge.scenario=12; bridge.original=2; bridge.peer_pre=2; bridge.peer_post=2; bridge.callbacks=1;
     bridge.bypass_original=1; bridge.bypass_peer_pre=1; bridge.bypass_peer_post=1; bridge.bypass_callbacks=0;
@@ -93,32 +80,19 @@ int main() {
     snapshot.simple = {true, 1, 1, 1, 1, true};
     snapshot.mutation = {1, 1, 1, 7.25f, -17,
         static_cast<int64_t>(UINT64_C(0xf123456789abcdef)), static_cast<int64_t>(UINT64_C(0x8123456789abcdef))};
-    snapshot.acquire = {{{1,1,1,1,6,6,0}, {1,1,1,1,6,6,0}, {1,1,1,1,2,2,0},
-                         {1,1,0,0,1,1,1}, {1,1,0,0,0,0,1}}};
-    snapshot.nesting = {3,3,3,2,2,2,2,2,0,40,{{42,41,40}}};
-    snapshot.bypass = {2,2,3,0,0,2,2,{{6,6,6}}};
+    snapshot.nesting = {3,3,2,2,2,2,2,40};
+    snapshot.bypass = {2,3,0,2,2};
     assert(snapshot.Passed());
     std::cout << snapshot.Json() << "\n";
     snapshot.mutation.opaque_b = 0x89abcdef;
     assert(!snapshot.Passed());
     snapshot.mutation.opaque_b = static_cast<int64_t>(UINT64_C(0x8123456789abcdef));
-    snapshot.acquire[2].post_result = 0;
+    snapshot.nesting.outer_method = 42;
     assert(!snapshot.Passed());
-    snapshot.acquire[2].post_result = 2;
-    snapshot.nesting.post_methods[0] = 40;
-    assert(!snapshot.Passed());
-    snapshot.nesting.post_methods[0] = 42;
-    snapshot.bypass.post_after_bypass = 1;
+    snapshot.nesting.outer_method = 40;
+    snapshot.bypass.pre_after_bypass = 1;
     assert(!snapshot.Passed());
 
-    s2khook::MainBridgeObservation hud;
-    hud.scenario=13; hud.original=1; hud.callbacks=1; hud.peer_pre=1; hud.peer_post=1;
-    hud.hud_self=true; hud.hud_controller=true; hud.hud_layout=true; hud.text="direct-hud";
-    assert(hud.DirectHudObserved());
-    hud.original=0; assert(!hud.DirectHudObserved());
-    hud.original=2; assert(!hud.DirectHudObserved());
-    hud.original=1; hud.text="garbage"; assert(!hud.DirectHudObserved());
-    hud.text="direct-hud"; hud.hud_layout=false; assert(!hud.DirectHudObserved());
     s2khook::NamedSnapshot named;
     assert(!named.Passed());
     named.installed = true;
@@ -280,10 +254,10 @@ assert records.pop(0) == {"installed": True, "pre": 1, "original": 1,
 snapshot = records.pop(0)
 assert snapshot["mutation"]["opaque_a"] == str(0xf123456789abcdef)
 assert snapshot["mutation"]["opaque_b"] == str(0x8123456789abcdef)
-assert snapshot["acquire"][3] == {"pre": 1, "post": 1, "original": 0, "arguments_ok": 0,
-                                  "effective_return": 1, "post_result": 1, "skipped": 1}
-assert snapshot["nesting"]["post_methods"] == [42, 41, 40]
-assert snapshot["bypass"]["returns"] == [6, 6, 6]
+assert "acquire" not in snapshot
+assert snapshot["nesting"]["outer_method"] == 40
+assert snapshot["bypass"] == {"pre": 2, "original": 3, "pre_after_bypass": 0,
+                              "removal_refused": 2, "reset_preserved_view": 2}
 named = records.pop(0)
 assert named["damage"] == {"pre": 3, "post": 3, "original": 3,
                             "nested_restored": 2, "expired": 1,

@@ -13,7 +13,7 @@
 
 use crate::async_rt::{Pool, TimerKind, TimerQueue};
 use crate::dispatch::{
-    fan_out, fan_out_collapsing, fan_out_inner, set_after_handler, Delivery, Instrument, StopAt,
+    fan_out, fan_out_collapsing, fan_out_inner, Delivery, Instrument, StopAt,
 };
 use crate::multiplexer::{self, Descriptor, DetourChange, HookResult, Phase, Priority};
 use crate::plugin;
@@ -411,22 +411,6 @@ thread_local! {
     /// epoch collide with a fresh dispatch's. At one dispatch per tick it would take ~9 billion
     /// years to wrap.
     static HOOK_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-// Pickup-gate vote collection. Its own block: the one above is at the thread_local_inner! limit.
-thread_local! {
-    /// Live acquire-fold session, save/restored around a nested dispatch.
-    static ACQUIRE: std::cell::RefCell<Option<AcquireSession>> =
-        const { std::cell::RefCell::new(None) };
-
-    /// Post-phase `skipped` flag, published only while `dispatch_hook_post` builds its view.
-    static HOOK_POST_SKIPPED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
-}
-
-struct AcquireSession {
-    view: *mut std::ffi::c_void,
-    votes: Vec<crate::acquire::AcquireVote>,
-    wrote: bool,
 }
 
 /// A registered TopMenu tab (dashboard page). `id` is the addItem grouping key; `title` is the label.
@@ -4190,7 +4174,6 @@ enum HookParamValue {
     /// `is_float` preserves the reader's class so the WRITE path can keep refusing values the
     /// param cannot represent (an f32 overflow, an out-of-range i32) instead of coercing them.
     Num { value: f64, is_float: bool },
-    Text(String),
 }
 
 fn hook_param_read(view: *mut std::ffi::c_void, idx: i32) -> Option<HookParamValue> {
@@ -4205,19 +4188,6 @@ fn hook_param_read(view: *mut std::ffi::c_void, idx: i32) -> Option<HookParamVal
         let mut out: i32 = 0;
         if f(view, idx, &mut out) == 0 {
             return Some(HookParamValue::Num { value: out as f64, is_float: false });
-        }
-    }
-    // Text params. The buffer matches the view's own capacity; the shim always NUL-terminates and
-    // bounds the copy by BOTH capacities, so a short read here can only truncate, never overrun.
-    if let Some(f) = ops.hook_read_str {
-        let mut buf = [0i8; 128];
-        if f(view, idx, buf.as_mut_ptr(), buf.len() as c_int) == 0 {
-            let bytes: Vec<u8> = buf
-                .iter()
-                .take_while(|c| **c != 0)
-                .map(|c| *c as u8)
-                .collect();
-            return Some(HookParamValue::Text(String::from_utf8_lossy(&bytes).into_owned()));
         }
     }
     None
@@ -4244,12 +4214,6 @@ fn s2_hook_param_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
         };
         match hook_param_read(view, idx) {
             Some(HookParamValue::Num { value, .. }) => rv.set_double(value),
-            Some(HookParamValue::Text(t)) => {
-                match v8::String::new(scope, &t) {
-                    Some(js) => rv.set(js.into()),
-                    None => return,
-                }
-            }
             None => crate::gamedata_hooks::note_miss(
                 &owner,
                 &name,
@@ -4307,9 +4271,6 @@ fn s2_hook_param_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
                 if !(value >= i32::MIN as f64 && value <= i32::MAX as f64) => None,
             Some(HookParamValue::Num { is_float: true, .. }) => ops.and_then(|o| o.hook_write_f32).map(|f| f(view, idx, value as f32)),
             Some(HookParamValue::Num { is_float: false, .. }) => ops.and_then(|o| o.hook_write_i32).map(|f| f(view, idx, value as i32)),
-            // A text param is read-only: there is nowhere to put a written string that the engine
-            // would ever look at (the view holds a COPY made after the engine handed the pointer over).
-            Some(HookParamValue::Text(_)) => None,
             None => None,
         };
         if ok != Some(0) {
@@ -4323,13 +4284,6 @@ fn s2_hook_param_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
                     idx
                 )),
             );
-        } else {
-            // A successful write during an acquire session is a vote-eligible `result` write.
-            ACQUIRE.with(|a| {
-                if let Some(s) = a.borrow_mut().as_mut() {
-                    s.wrote = true;
-                }
-            });
         }
     }));
 }
@@ -4362,8 +4316,7 @@ fn build_hook_view<'s>(
             v8::Function::builder(s2_hook_param_get).data(data).build(tc)?.into();
         // No setter at all for a read-only param — `undefined` is how V8 spells "accessor with no
         // setter", which makes an assignment throw under strict mode instead of silently vanishing.
-        let post = HOOK_POST_SKIPPED.with(|c| c.get().is_some());
-        let setter: v8::Local<v8::Value> = if plan.writable[i] && !post {
+        let setter: v8::Local<v8::Value> = if plan.writable[i] {
             v8::Function::builder(s2_hook_param_set).data(data).build(tc)?.into()
         } else {
             v8::undefined(tc).into()
@@ -4402,11 +4355,6 @@ fn build_hook_view<'s>(
             None => v8::null(tc).into(),
         };
         obj.set(tc, key.into(), ent);
-    }
-    if let Some(skipped) = HOOK_POST_SKIPPED.with(|c| c.get()) {
-        let key = v8::String::new(tc, "skipped")?;
-        let val: v8::Local<v8::Value> = v8::Boolean::new(tc, skipped).into();
-        obj.set(tc, key.into(), val);
     }
     Some(vec![obj.into()])
 }
@@ -4509,7 +4457,7 @@ pub(crate) fn dispatch_hook(hook_id: i32, arg_view: *mut std::ffi::c_void) -> i3
     // An id core never handed out — a detour installed by a PREVIOUS core (Metamod reload) — has no
     // descriptor. Continue, so the engine proceeds unhooked.
     let Some((owner, name)) = crate::gamedata_hooks::hook_for_id(hook_id) else { return 0 };
-    // Same hook already on the stack: giveNamedItem from onCanAcquire, etc. Skip and name —
+    // Same hook already on the stack: a handler whose engine call re-enters it. Skip and name —
     // not a nest, not a queue.
     let same = ACTIVE_HOOK.with(|a| {
         a.borrow()
@@ -4543,46 +4491,11 @@ pub(crate) fn dispatch_hook(hook_id: i32, arg_view: *mut std::ffi::c_void) -> i3
             epoch,
         })
     });
-    let is_acquire = plan.shape == 3; // this_i64_i32_i64 — see gamedata_hooks::SHAPES
-    let prev_acq = if is_acquire {
-        ACQUIRE.with(|a| {
-            a.borrow_mut().replace(AcquireSession {
-                view: arg_view,
-                votes: Vec::new(),
-                wrote: false,
-            })
-        })
-    } else {
-        None
-    };
-    let prev_after = if is_acquire {
-        set_after_handler(Some(acquire_after_handler))
-    } else {
-        None
-    };
     let label = format!("dispatch_hook('{}.{}')", owner, name);
     let (result, delivery) =
         fan_out_inner(&snap, &label, Instrument::breadcrumb(&label), StopAt::Stop, |tc| {
             build_hook_view(tc, &plan, arg_view, epoch)
         });
-    if is_acquire {
-        set_after_handler(prev_after);
-        let session = ACQUIRE.with(|a| {
-            let cur = a.borrow_mut().take();
-            *a.borrow_mut() = prev_acq;
-            cur
-        });
-        if let Some(mut session) = session {
-            crate::acquire::order_votes(&mut session.votes);
-            let (folded, _) = crate::acquire::fold_acquire(&session.votes, None);
-            if let Some(ops) = ENGINE_OPS.with(|o| o.get()) {
-                if let Some(w) = ops.hook_write_i32 {
-                    let _ = w(arg_view, 1, folded);
-                    let _ = w(arg_view, 2, if session.votes.is_empty() { 0 } else { 1 });
-                }
-            }
-        }
-    }
     ACTIVE_HOOK.with(|a| *a.borrow_mut() = prev);
     // Nothing ran. The `Continue` above is still the right answer for the thunk (never a replay —
     // the frame is gone), but the skip is now NAMED instead of silent, and rate-limited to once per
@@ -4592,144 +4505,6 @@ pub(crate) fn dispatch_hook(hook_id: i32, arg_view: *mut std::ffi::c_void) -> i3
     }
     result as i32
 }
-
-fn acquire_after_handler(hr: HookResult) {
-    ACQUIRE.with(|a| {
-        let mut slot = a.borrow_mut();
-        let Some(s) = slot.as_mut() else { return };
-        // Param 1 of the acquire shape is an i32; a text param here would mean the shape table
-        // and this call site disagree, so treat anything else as 0 rather than guessing.
-        let result = match hook_param_read(s.view, 1) {
-            Some(HookParamValue::Num { value, .. }) => value as i32,
-            _ => 0,
-        };
-        match hr {
-            HookResult::Continue => {
-                s.wrote = false;
-            }
-            HookResult::Changed => {
-                s.votes.push(crate::acquire::AcquireVote { result, skip_original: false });
-                s.wrote = false;
-            }
-            HookResult::Handled | HookResult::Stop => {
-                let r = if s.wrote { result } else { crate::acquire::ACQUIRE_IMPLICIT_DENY };
-                s.votes.push(crate::acquire::AcquireVote { result: r, skip_original: true });
-                s.wrote = false;
-            }
-        }
-    });
-}
-
-/// Post-phase spectator mux. Readonly view. `HookResult` ignored. Always runs if subscribed,
-/// including after a Pre skip (`skipped: true`).
-pub(crate) fn dispatch_hook_post(hook_id: i32, arg_view: *mut std::ffi::c_void, skipped: bool) -> i32 {
-    let Some((owner, name)) = crate::gamedata_hooks::hook_for_id(hook_id) else { return 0 };
-    let Some(plan) = crate::gamedata_hooks::plan(&owner, &name) else { return 0 };
-    let snap = HOOK_MUX.with(|m| m.borrow().snapshot(&hook_key_post(&owner, &name)));
-    if snap.is_empty() {
-        return 0;
-    }
-    let epoch = HOOK_EPOCH.with(|e| {
-        let next = e.get().wrapping_add(1);
-        e.set(next);
-        next
-    });
-    let prev = ACTIVE_HOOK.with(|a| {
-        a.borrow_mut().replace(ActiveHook {
-            view: arg_view,
-            owner: owner.clone(),
-            name: name.clone(),
-            epoch,
-        })
-    });
-    let prev_skipped = HOOK_POST_SKIPPED.with(|c| c.replace(Some(skipped)));
-    let label = format!("dispatch_hook_post('{}.{}')", owner, name);
-    let (_, delivery) = fan_out_inner(&snap, &label, Instrument::breadcrumb(&label), StopAt::Never, |tc| {
-        build_hook_view(tc, &plan, arg_view, epoch)
-    });
-    HOOK_POST_SKIPPED.with(|c| c.set(prev_skipped));
-    ACTIVE_HOOK.with(|a| *a.borrow_mut() = prev);
-    if delivery == Delivery::Deferred {
-        crate::gamedata_hooks::note_reentrant_skip(&owner, &name);
-    }
-    0
-}
-
-fn hook_key_post(owner: &str, name: &str) -> String {
-    format!("{}\u{0}{}\u{0}post", owner, name)
-}
-
-/// `__s2_hook_on_post(owner, hookName, handler)` — subscribe to the Post spectator of a declared hook.
-fn s2_hook_on_post(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_double(0.0);
-        if args.length() < 3 {
-            return;
-        }
-        let owner = hook_owner_id(&args.get(0).to_rust_string_lossy(scope));
-        let name = args.get(1).to_rust_string_lossy(scope);
-        let key = hook_key_post(&owner, &name);
-        let Some((sub_id, _)) = subscribe_into(scope, &args, &HOOK_MUX, &key, 2) else { return };
-        if let Err(reason) = crate::gamedata_hooks::subscribe(&owner, &name) {
-            log_warn(&format!(
-                "WARN: hook_on_post('{}', '{}'): the detour is not installed, so this handler will not \
-                 fire: {}",
-                owner, name, reason
-            ));
-        }
-        rv.set(v8::Number::new(scope, sub_id as f64).into());
-    }));
-}
-
-/// `__s2_hook_q_u16(qslot, class, field)` — u16 at the live view's q[qslot] + schema offset.
-/// Game package supplies the class/field names; the pointer never crosses to JS.
-fn s2_hook_q_u16(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_undefined();
-        let Some((view, _, _, _)) = active_hook() else { return };
-        if args.length() < 3 {
-            return;
-        }
-        let qslot = args.get(0).int32_value(scope).unwrap_or(-1);
-        let class = args.get(1).to_rust_string_lossy(scope);
-        let field = args.get(2).to_rust_string_lossy(scope);
-        let off = schema_offset_cached(&class, &field);
-        if off < 0 {
-            return;
-        }
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(f) = ops.hook_read_u16_at_q else { return };
-        let mut out: u16 = 0;
-        if f(view, qslot, off, &mut out) != 0 {
-            return;
-        }
-        rv.set_uint32(out as u32);
-    }));
-}
-
-/// `__s2_hook_self_matches(entityRef, offset)` — does this live entity's pointer-at-offset equal
-/// the detour `this`? Used by the game package to hop a services sub-object back to its pawn.
-fn s2_hook_self_matches(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_bool(false);
-        let Some((view, _, _, _)) = active_hook() else { return };
-        if args.length() < 2 {
-            return;
-        }
-        let packed = pack_entity_arg(scope, args.get(0));
-        const NO_ENTITY: u64 = 0xffff_ffff_ffff_ffff;
-        if packed == NO_ENTITY {
-            return;
-        }
-        let index = (packed >> 32) as i32;
-        let serial = packed as u32 as i32;
-        let offset = args.get(1).int32_value(scope).unwrap_or(-1);
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(f) = ops.hook_self_matches_field else { return };
-        rv.set_bool(f(view, index, serial, offset) == 1);
-    }));
-}
-
 
 /// Synchronous output dispatch (entity-I/O slice). Called from `ffi.rs`'s
 /// `s2script_core_dispatch_output` (a C-ABI export), which the shim's `FireOutputInternal` detour

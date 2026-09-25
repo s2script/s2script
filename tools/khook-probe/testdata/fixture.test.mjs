@@ -29,7 +29,7 @@ function host({ humans = 3, cvars = new Map(), previous,
     // B/C controlled engine descriptors are unavailable in this A-only fake host.
     // Null is a named pending boundary, never fabricated native callback evidence.
     Engine: { call: () => null, hook: () => null },
-    items: { onCanAcquirePost() {} }, onOutput() {},
+    onOutput() {},
     Server: {
       mapName: 'de_test', getCvar: n => cvars.get(n) ?? '',
       setCvar: (n, v) => { if (!cvars.has(n)) return false; cvars.set(n, v); return true; },

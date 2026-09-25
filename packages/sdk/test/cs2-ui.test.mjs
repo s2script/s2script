@@ -91,7 +91,6 @@ function makeHost({ ready = BASE_CALLS, onInvoke, onHook, entities = [], signon 
       hookSubs.push(handler);
       return { status: "active" };
     },
-    __s2_hook_self_matches: () => false,
     __s2_schema_offset: () => -1,
     __s2_client_valid: () => true,
     __s2_client_signon: () => signon,

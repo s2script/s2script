@@ -232,9 +232,6 @@ int s2script_core_dispatch_usermsg(const char* name, int id);
  * resolve to null instead; S2Hook_SetOps then receives a null dispatch, S2Hook_Dispatch returns
  * Continue, and Load logs the miss BY NAME. */
 int s2script_core_dispatch_hook(int hookId, void* argView) __attribute__((weak));
-/* Post-phase spectator mux for a returning inbound hook (CanAcquire). `skipped` is 1 when Pre
- * suppressed the original. Weak for the same reason as dispatch_hook. */
-int s2script_core_dispatch_hook_post(int hookId, void* argView, int skipped) __attribute__((weak));
 /* Retained verified selection. No public package/owner exists until commit. */
 uint64_t s2script_core_select_game_package(const char* addon_root, const char* engine,
                                          const char* game, const char* platform);

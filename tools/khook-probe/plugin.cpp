@@ -2676,21 +2676,6 @@ static const IntegrationSpec kIntegrationSpecs[]={
     {"B","declarative_mutable_wide","native_wide_opaque_values_preserved","{\"opaque_a\":\"17375808098319191535\",\"opaque_b\":\"9305357566071262703\"}","controlled-mechanics","controlled-stock-provider","engine_hooks","declarative_mutable_wide"},
     {"B","declarative_mutable_wide","native_wide_peer_orders","{\"orders\":[\"peer-first\",\"s2script-first\"]}","main-runtime-bridge","main-runtime","engine_hooks","declarative_mutable_wide"},
     {"B","declarative_mutable_wide","native_main_wide_mutation_delivery","{\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_mutable_wide"},
-    {"B","declarative_acquisition","native_acquire_changed_deny_engine_allow","{\"effective\":6,\"engine\":0,\"original\":1}","main-runtime-bridge","main-runtime","engine_hooks","declarative_acquisition"},
-    {"B","declarative_acquisition","native_acquire_allow_engine_deny","{\"effective\":6,\"engine\":6,\"original\":1}","main-runtime-bridge","main-runtime","engine_hooks","declarative_acquisition"},
-    {"B","declarative_acquisition","native_acquire_handled_implicit_deny","{\"effective\":1,\"original\":0,\"skipped\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_acquisition"},
-    {"B","declarative_acquisition","native_acquire_peer_effective_result","{\"current_return_matches\":true,\"post_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_acquisition"},
-    {"B","declarative_acquisition","native_acquire_skipped_original_not_read","{\"effective\":1,\"original\":0,\"skipped\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_acquisition"},
-    {"B","declarative_acquisition","native_acquire_peer_orders","{\"orders\":[\"peer-first\",\"s2script-first\"]}","main-runtime-bridge","main-runtime","engine_hooks","declarative_acquisition"},
-    {"B","declarative_acquisition","native_acquire_outbound_peer_post","{\"effective\":[6,6,1],\"skipped\":[false,false,true]}","main-runtime-bridge","main-runtime","engine_hooks","declarative_acquisition"},
-    {"B","declarative_acquisition","native_main_acquire_outbound_pre_vote","{\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_acquisition"},
-    {"B","declarative_acquisition","native_main_acquire_outbound_final_result","{\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_acquisition"},
-    {"B","declarative_hud","native_hud_continue_order_original_once","{\"completion_before_original\":true,\"original\":1}","controlled-mechanics","controlled-stock-provider","engine_hooks","declarative_hud"},
-    {"B","declarative_hud","native_hud_handled_original_zero","{\"original\":0,\"pre\":1,\"skipped\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_hud"},
-    {"B","declarative_hud","native_hud_pointers_text_peer_orders","{\"orders\":[\"peer-first\",\"s2script-first\"],\"pointer_matches\":3,\"text\":\"s2-khook-hud\"}","main-runtime-bridge","main-runtime","engine_hooks","declarative_hud"},
-    {"B","declarative_hud","native_main_hud_receiver_text_continue","{\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_hud"},
-    {"B","declarative_hud","native_main_hud_handled_delivery","{\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_hud"},
-    {"B","declarative_hud","native_main_hud_direct_utlstring","{\"original_and_utlstring_observed\":true,\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_hud"},
     {"B","declarative_nesting_bypass","native_same_and_different_id_nesting","{\"different_restored\":2,\"same_restored\":2}","controlled-mechanics","controlled-stock-provider","engine_hooks","declarative_nesting_bypass"},
     {"B","declarative_nesting_bypass","native_stale_forged_views_rejected","{\"forged_rejected\":true,\"stale_rejected\":true}","controlled-mechanics","controlled-stock-provider","engine_hooks","declarative_nesting_bypass"},
     {"B","declarative_nesting_bypass","native_bypass_hit_then_next_delivered","{\"bypass_pre\":0,\"next_pre\":1,\"original\":2}","controlled-mechanics","controlled-stock-provider","engine_hooks","declarative_nesting_bypass"},
@@ -2698,7 +2683,6 @@ static const IntegrationSpec kIntegrationSpecs[]={
     {"B","declarative_nesting_bypass","native_main_different_id_nested_delivery","{\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_nesting_bypass"},
     {"B","declarative_nesting_bypass","native_main_same_id_reentry_named_skip","{\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_nesting_bypass"},
     {"B","declarative_nesting_bypass","native_main_bypass_absent_then_next_delivered","{\"both_phases_observed\":true,\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_nesting_bypass"},
-    {"B","acquisition_named_hook","native_acquire_real_post_peer_observed","{\"post_observed\":true,\"real_item_services\":true,\"same_invocation\":true}","live-named","live-engine","engine_hooks","acquisition_named_hook"},
     {"B","damage_named_hook","native_damage_valid_pre_post","{\"arguments\":3,\"original\":3,\"output_preserved\":2,\"output_writes\":2,\"peer_post\":3,\"post\":3,\"post_ignore\":3,\"pre\":3,\"pre_ignore\":3,\"result_nonnull\":2,\"result_null\":1,\"return_kind\":\"void\",\"skipped\":0}","controlled-mechanics","controlled-stock-provider","named_hooks","damage_named_hook"},
     {"B","damage_named_hook","native_damage_nested_scopes","{\"expired\":true,\"restored\":2}","controlled-mechanics","controlled-stock-provider","named_hooks","damage_named_hook"},
     {"B","damage_named_hook","native_damage_peer_orders_original_state","{\"arguments_preserved\":true,\"orders\":[\"peer-first\",\"s2script-first\"],\"output_preserved\":true,\"return_kind\":\"void\",\"skipped\":false}","controlled-mechanics","controlled-stock-provider","named_hooks","damage_named_hook"},
@@ -2713,7 +2697,7 @@ static const IntegrationSpec kIntegrationSpecs[]={
     {"B","usercmd_named_hook","native_usercmd_peer_orders","{\"orders\":[\"peer-first\",\"s2script-first\"]}","controlled-mechanics","controlled-stock-provider","named_hooks","usercmd_named_hook"},
     {"B","script_generation_lifetime","native_binding_resident_across_reload","{\"generations\":3,\"native_address_same\":true}","main-runtime-bridge","main-runtime","engine_hooks","script_generation_lifetime"},
     {"B","script_generation_lifetime","native_no_disposed_generation_callback","{\"new_callbacks\":2,\"old_callbacks_after_retire\":0}","main-runtime-bridge","main-runtime","engine_hooks","script_generation_lifetime"},
-    {"B","binding_peer_order_retirement","native_all_sites_both_peer_orders","{\"orders\":[\"peer-first\",\"s2script-first\"],\"sites\":[\"this_void\",\"narrow\",\"wide\",\"acquire\",\"hud\",\"damage\",\"chat\",\"output\",\"usercmd\",\"precache\"]}","coverage-summary","mixed-observed","stock-khook","binding_peer_order_retirement"},
+    {"B","binding_peer_order_retirement","native_all_sites_both_peer_orders","{\"orders\":[\"peer-first\",\"s2script-first\"],\"sites\":[\"this_void\",\"narrow\",\"wide\",\"damage\",\"chat\",\"output\",\"usercmd\",\"precache\"]}","coverage-summary","mixed-observed","stock-khook","binding_peer_order_retirement"},
     {"B","binding_peer_order_retirement","native_active_removal_refused","{\"active_refused\":true}","controlled-mechanics","controlled-stock-provider","engine_hooks","binding_peer_order_retirement"},
     {"B","binding_peer_order_retirement","native_async_removal_peer_survives","{\"completion_observed\":true,\"peer_callbacks\":1,\"retired_callbacks\":0}","controlled-mechanics","controlled-stock-provider","engine_hooks","binding_peer_order_retirement"},
     {"C","precache_peer_slot_original_once","native_precache_real_receiver","{\"delivered_receiver_matches\":true,\"retained_vtable_matches\":true}","controlled-mechanics","controlled-stock-provider","named_hooks","precache_peer_slot_original_once"},
@@ -2754,20 +2738,10 @@ static std::vector<int> MainScenarios(const std::string& name) {
     if (name=="native_this_void_handled_original_zero") return {2};
     if (name=="native_narrow_edits_reach_original" || name=="native_narrow_peer_orders") return {3};
     if (name=="native_wide_edits_reach_original" || name=="native_wide_peer_orders") return {4};
-    if (name=="native_acquire_changed_deny_engine_allow" || name=="native_acquire_peer_orders") return {5};
-    if (name=="native_acquire_allow_engine_deny") return {6};
-    if (name=="native_acquire_handled_implicit_deny" || name=="native_acquire_skipped_original_not_read") return {7};
-    if (name=="native_hud_pointers_text_peer_orders") return {8};
-    if (name=="native_hud_handled_original_zero") return {9};
     if (name=="native_main_this_void_continue_delivery") return {1};
     if (name=="native_main_this_void_handled_delivery") return {2};
     if (name=="native_main_narrow_all_fields_mutated") return {3};
     if (name=="native_main_wide_mutation_delivery") return {4};
-    if (name=="native_acquire_peer_effective_result") return {5,6,7};
-    if (name=="native_main_acquire_outbound_pre_vote" || name=="native_main_acquire_outbound_final_result" || name=="native_acquire_outbound_peer_post") return {5,6,7};
-    if (name=="native_main_hud_receiver_text_continue") return {8};
-    if (name=="native_main_hud_handled_delivery") return {9};
-    if (name=="native_main_hud_direct_utlstring") return {13};
     if (name=="native_main_same_id_reentry_named_skip") return {10};
     if (name=="native_main_different_id_nested_delivery") return {11};
     if (name=="native_main_bypass_absent_then_next_delivered") return {12};
@@ -2783,20 +2757,12 @@ static std::string MainMechanicalActual(const std::string& name,const std::vecto
     const bool orders= a.trace.find('P')<a.trace.find('J') && b.trace.find('J')<b.trace.find('P');
     if (name=="native_this_void_continue_original_once")
         return "{\"pre\":"+std::to_string(a.callbacks)+",\"original\":"+original+"}";
-    if (name=="native_this_void_handled_original_zero" || name=="native_hud_handled_original_zero")
+    if (name=="native_this_void_handled_original_zero")
         return "{\"pre\":"+std::to_string(a.callbacks)+",\"original\":"+original+",\"skipped\":"+JBool(a.original==0)+"}";
     if (name=="native_narrow_edits_reach_original")
         return "{\"original\":"+original+",\"value\":"+std::to_string(a.value)+",\"a\":"+std::to_string(a.a)+",\"b\":"+std::to_string(a.b)+",\"c\":"+std::to_string(a.c)+"}";
     if (name=="native_wide_edits_reach_original")
         return "{\"original\":"+original+",\"value\":"+std::to_string(a.value)+",\"integer\":"+std::to_string(a.a)+"}";
-    if (name=="native_acquire_changed_deny_engine_allow" || name=="native_acquire_allow_engine_deny")
-        return "{\"original\":"+original+",\"engine\":"+std::to_string(a.scenario==6 ? 6 : 0)+",\"effective\":"+std::to_string(a.effective)+"}";
-    if (name=="native_acquire_handled_implicit_deny" || name=="native_acquire_skipped_original_not_read")
-        return "{\"original\":"+original+",\"effective\":"+std::to_string(a.effective)+",\"skipped\":"+JBool(a.skipped==1)+"}";
-    if (name=="native_hud_pointers_text_peer_orders")
-        return std::string("{\"orders\":")+(orders ? "[\"peer-first\",\"s2script-first\"]" : "[]")+
-            ",\"pointer_matches\":"+std::to_string((a.hud_self&&b.hud_self)+(a.hud_controller&&b.hud_controller)+(a.hud_layout&&b.hud_layout))+
-            ",\"text\":\""+JsonEscape(a.text==b.text ? a.text.c_str() : "mismatch")+"\"}";
     if (name.find("peer_orders")!=std::string::npos)
         return std::string("{\"orders\":")+(orders ? "[\"peer-first\",\"s2script-first\"]" : "[]")+"}";
     return {};
@@ -2819,8 +2785,9 @@ static std::string ControlledActual(const std::string& name) {
     const auto d=S2ProbeDeclarativeCollect();
     const auto n=S2ProbeNamedCollect();
     if (name=="native_rejected_nested_scope_restored" && d.policy_isolated && d.policy_pre>0)
-        return "{\"rejected\":"+JBool(d.policy_pre==1 && d.policy_post==1 && d.policy_original==2)+
-            ",\"outer_restored\":"+JBool(d.policy_restored && d.policy_post_view)+"}";
+        // The retired v1 POST phase is gone: rejection is PRE-once with both originals run.
+        return "{\"rejected\":"+JBool(d.policy_pre==1 && d.policy_original==2)+
+            ",\"outer_restored\":"+JBool(d.policy_restored)+"}";
     if (name=="native_stale_forged_views_rejected" && d.nesting.same_pre>0)
         return "{\"stale_rejected\":"+JBool(d.stale_rejected)+",\"forged_rejected\":"+JBool(d.forged_rejected)+"}";
     if (name=="native_bypass_hit_then_next_delivered" && d.bypass_pair_original>=0)
@@ -2841,8 +2808,6 @@ static std::string ControlledActual(const std::string& name) {
         return "{\"opaque_a\":\""+std::to_string(static_cast<uint64_t>(d.mutation.opaque_a))+"\",\"opaque_b\":\""+std::to_string(static_cast<uint64_t>(d.mutation.opaque_b))+"\"}";
     if (name=="native_same_and_different_id_nesting" && d.nesting.same_pre>0)
         return "{\"same_restored\":"+std::to_string(d.nesting.same_restored)+",\"different_restored\":"+std::to_string(d.nesting.other_restored)+"}";
-    if (name=="native_hud_continue_order_original_once" && d.hud[0].pre>0)
-        return "{\"completion_before_original\":"+JBool(d.hud[0].completion==1 && d.hud[0].trace==123)+",\"original\":"+std::to_string(d.hud[0].original)+"}";
     if (name=="native_damage_valid_pre_post" && n.damage_pre>0)
         return "{\"pre\":"+std::to_string(n.damage_pre)+",\"post\":"+std::to_string(n.damage_post)+",\"original\":"+std::to_string(n.damage_original)+
             ",\"arguments\":"+std::to_string(n.damage_argument_matches)+",\"result_null\":"+std::to_string(n.damage_result_null)+
@@ -2925,14 +2890,16 @@ static std::string NamedOrdersActual(const std::string& name,std::string& observ
 // This summary deliberately retains each site's producer origin. Registration
 // phases are not evidence of reversed physical DSO load-order operator runs.
 static std::string AllSiteOrders(std::string& observations) {
-    const char* sites[]={"this_void","narrow","wide","acquire","hud","damage","chat","output","usercmd","precache"};
-    const int scenarios[]={1,3,4,5,8};
+    // The first kMainSites entries are main-runtime bridge sites; the rest are stock-provider peers.
+    const char* sites[]={"this_void","narrow","wide","damage","chat","output","usercmd","precache"};
+    const int scenarios[]={1,3,4};
+    constexpr int kMainSites=3,kSites=8;
     const auto named=S2ProbeNamedCollectOrders();
     if (named.run!=g_run_id || !named.completion || !named.late_installed) return {};
     observations="["; std::string observed_sites="[";
-    for (int index=0;index<10;++index) {
+    for (int index=0;index<kSites;++index) {
         std::string rows; bool valid=true;
-        if (index<5) {
+        if (index<kMainSites) {
             std::vector<const s2khook::MainBridgeObservation*> matched;
             for (const auto& row:S2ProbeBridgeCollect()) if (row.scenario==scenarios[index]) matched.push_back(&row);
             if (matched.size()!=2) return {};
@@ -2954,7 +2921,7 @@ static std::string AllSiteOrders(std::string& observations) {
             rows=NamedOrderObservations(matched);
         }
         const std::string tag=std::string("\"facts\":{\"site\":\"")+sites[index]+"\",\"origin\":\""+
-            (index<5 ? "main-runtime" : "controlled-stock-provider")+"\",";
+            (index<kMainSites ? "main-runtime" : "controlled-stock-provider")+"\",";
         size_t position=0;
         while ((position=rows.find("\"facts\":{",position))!=std::string::npos) {
             rows.replace(position,9,tag); position+=tag.size();
@@ -2990,46 +2957,12 @@ static void CollectIntegration(bool drive) {
                 bool markers=true,targets=true;
                 for (const auto* row:rows) { markers=markers && row->callbacks>0; targets=targets && row->peer_pre>0; }
                 observations=MainObservations(rows);
-                if (name=="native_acquire_peer_effective_result") {
-                    bool post=true,current=true;
-                    for (const auto* row:rows) { post=post && row->trace.find('W')!=std::string::npos; current=current && row->effective==row->result; }
-                    actual="{\"post_observed\":"+JBool(post)+",\"current_return_matches\":"+JBool(current)+"}";
-                } else if (name=="native_acquire_outbound_peer_post") {
-                    std::string effective="[",skipped="[";
-                    for (const int scenario:scenarios) {
-                        if (effective.size()>1) { effective+=","; skipped+=","; }
-                        const auto first=std::find_if(rows.begin(),rows.end(),[scenario](const auto* row){ return row->scenario==scenario && row->order==0; });
-                        const auto second=std::find_if(rows.begin(),rows.end(),[scenario](const auto* row){ return row->scenario==scenario && row->order==1; });
-                        const bool same=first!=rows.end() && second!=rows.end() && (*first)->effective==(*second)->effective && (*first)->skipped==(*second)->skipped;
-                        effective+=std::to_string(same ? (*first)->effective : -1);
-                        skipped+=same ? JBool((*first)->skipped==1) : "null";
-                    }
-                    actual="{\"effective\":"+effective+"],\"skipped\":"+skipped+"]}";
-                } else if (name=="native_main_bypass_absent_then_next_delivered") {
+                if (name=="native_main_bypass_absent_then_next_delivered") {
                     bool exact=true; for (const auto* row:rows) exact=exact && row->BypassObserved();
                     actual="{\"same_invocation_markers\":"+JBool(markers)+",\"target_calls_observed\":"+JBool(targets)+",\"both_phases_observed\":"+JBool(exact)+"}";
-                } else if (name=="native_main_hud_direct_utlstring") {
-                    const bool exact=rows[0]->DirectHudObserved() && rows[1]->DirectHudObserved();
-                    actual="{\"same_invocation_markers\":"+JBool(markers)+",\"target_calls_observed\":"+JBool(targets)+",\"original_and_utlstring_observed\":"+JBool(exact)+"}";
                 } else if (name.rfind("native_main_",0)==0) actual="{\"same_invocation_markers\":"+JBool(markers)+",\"target_calls_observed\":"+JBool(targets)+"}";
                 else actual=MainMechanicalActual(name,rows);
             }
-        }
-        if (name=="native_acquire_real_post_peer_observed" && live_provenance) {
-            observations="["; bool same=true;
-            for (const auto& row:S2ProbeRealAcquireCollect()) {
-                if (!row.marked || !row.completed) continue;
-                if (observations.size()>1) observations+=",";
-                same=same && row.services!=0 && row.item!=0;
-                observations+="{\"scenario_id\":\"real-bot-acquire\",\"sequence\":"+std::to_string(row.token)+
-                    ",\"generation\":"+std::to_string(row.generation)+",\"invocation\":\"real-acquire-"+std::to_string(row.token)+
-                    "\",\"peer_order\":\"none\",\"callbacks\":1,\"stimulus\":\"engine\",\"facts\":{\"slot\":"+std::to_string(row.slot)+
-                    ",\"defIndex\":"+std::to_string(row.definition)+",\"js_post_result\":"+std::to_string(row.js_result)+
-                    ",\"js_post_skipped\":"+JBool(row.js_skipped)+",\"peer_post_result\":"+std::to_string(row.peer_result)+
-                    ",\"peer_post_skipped\":"+JBool(row.peer_skipped)+"}}";
-            }
-            if (observations.size()>1) actual="{\"real_item_services\":"+JBool(same)+",\"post_observed\":true,\"same_invocation\":true}";
-            observations+="]";
         }
         if (name=="native_precache_live_peer_both_orders" && live_provenance) {
             observations="["; bool before=false,after=false;
@@ -3095,7 +3028,7 @@ static void CollectIntegration(bool drive) {
         rec.metadata=std::string(",\"evidence_class\":\"observed\",\"group\":\"")+spec.group+
             "\",\"provenance\":\""+spec.provenance+"\",\"callback_owner\":\""+spec.owner+
             "\",\"target\":\""+spec.target+"\",\"observations\":"+observations;
-        if (name=="native_acquire_real_post_peer_observed" || name=="native_precache_live_peer_both_orders") rec.metadata+=",\"gamedata\":"+live_gamedata;
+        if (name=="native_precache_live_peer_both_orders") rec.metadata+=",\"gamedata\":"+live_gamedata;
     }
 }
 

@@ -577,14 +577,6 @@ static int StubDispatchHook(int hookId, void* argView) {
     CHECK(!S2Hook_DrainRetirement(), "Unload cannot finish during guarded inbound JS");
     return 2;
 }
-static int StubDispatchHookPost(int hookId, void* argView, int skipped) {
-    (void)hookId;
-    (void)argView;
-    (void)skipped;
-    ++g_guarded_hook_calls;
-    CHECK(S2Hook_ActiveCount() >= 1, "guarded inbound POST is counted before JS");
-    return 1;
-}
 
 static void test_guarded_inbound_dispatch_stops_js_while_retiring() {
     S2Hook_SetLifecycle(S2HookLifecycle::Running);
@@ -597,8 +589,6 @@ static void test_guarded_inbound_dispatch_stops_js_while_retiring() {
     S2Hook_SetLifecycle(S2HookLifecycle::Retiring);
     CHECK(S2Hook_GuardedDispatchHook(&StubDispatchHook, 7, nullptr) == 0,
           "Retiring inbound dispatch returns Continue without JS");
-    CHECK(S2Hook_GuardedDispatchHookPost(&StubDispatchHookPost, 7, nullptr, 0) == 0,
-          "Retiring inbound POST returns Continue without JS");
     CHECK(g_guarded_hook_calls == 1, "Retiring does not invoke the raw core dispatch ops");
     CHECK(S2Hook_ActiveCount() == 0, "skipped inbound dispatch does not leak the active count");
     CHECK(S2Hook_GuardedDispatchHook(nullptr, 1, nullptr) == 0,

@@ -27,7 +27,7 @@ import type { Client, DamageInfo, EntityRef, HookResultValue } from "@s2script/s
 import { Engine } from "@s2script/sdk/unsafe";
 import type { PrecacheContext } from "@s2script/sdk/sound";
 import type { UserCmdView } from "@s2script/sdk/usercmd";
-import { Player, items } from "@s2script/cs2";
+import { Player } from "@s2script/cs2";
 import { KHOOK_FIXTURE_REVISION, KHOOK_FIXTURE_TOKEN } from "./build_identity";
 
 const DEFAULT_TOKEN_CMD = "s2khook_cc_entry";
@@ -1391,74 +1391,6 @@ const INTEGRATION_ROWS: Record<"B" | "C", IntegrationRow[]> = {
       "target": "declarative_mutable_wide"
     },
     {
-      "case": "declarative_acquisition",
-      "subcheck": "js_acquire_outbound_pre_vote",
-      "expected": {
-        "votes": [
-          6,
-          0,
-          1
-        ],
-        "outbound_nested": true
-      },
-      "group": "main-runtime-bridge",
-      "provenance": "main-runtime",
-      "callback_owner": "engine_hooks",
-      "target": "declarative_acquisition"
-    },
-    {
-      "case": "declarative_acquisition",
-      "subcheck": "js_acquire_outbound_final_result",
-      "expected": {
-        "effective": [
-          6,
-          6,
-          1
-        ],
-        "outbound_nested": true
-      },
-      "group": "main-runtime-bridge",
-      "provenance": "main-runtime",
-      "callback_owner": "engine_hooks",
-      "target": "declarative_acquisition"
-    },
-    {
-      "case": "declarative_hud",
-      "subcheck": "js_hud_receiver_text_continue",
-      "expected": {
-        "receiver_matches_controller": true,
-        "text": "s2-khook-hud"
-      },
-      "group": "main-runtime-bridge",
-      "provenance": "main-runtime",
-      "callback_owner": "engine_hooks",
-      "target": "declarative_hud"
-    },
-    {
-      "case": "declarative_hud",
-      "subcheck": "js_hud_handled_delivery",
-      "expected": {
-        "pre": 1,
-        "action": 2
-      },
-      "group": "main-runtime-bridge",
-      "provenance": "main-runtime",
-      "callback_owner": "engine_hooks",
-      "target": "declarative_hud"
-    },
-    {
-      "case": "declarative_hud",
-      "subcheck": "js_hud_direct_utlstring",
-      "expected": {
-        "text": "direct-hud",
-        "receiver_matches_controller": true
-      },
-      "group": "main-runtime-bridge",
-      "provenance": "main-runtime",
-      "callback_owner": "engine_hooks",
-      "target": "declarative_hud"
-    },
-    {
       "case": "declarative_nesting_bypass",
       "subcheck": "js_different_id_nested_delivery",
       "expected": {
@@ -1494,19 +1426,6 @@ const INTEGRATION_ROWS: Record<"B" | "C", IntegrationRow[]> = {
       "provenance": "main-runtime",
       "callback_owner": "engine_hooks",
       "target": "declarative_nesting_bypass"
-    },
-    {
-      "case": "acquisition_named_hook",
-      "subcheck": "js_acquire_real_post_effective",
-      "expected": {
-        "real_bot": true,
-        "effective_result_observed": true,
-        "skipped_observed": true
-      },
-      "group": "live-named",
-      "provenance": "live-engine",
-      "callback_owner": "engine_hooks",
-      "target": "acquisition_named_hook"
     },
     {
       "case": "damage_named_hook",
@@ -1640,7 +1559,6 @@ let integrationSequence = 0;
 let integrationDriven = false;
 let bridgeEntity: EntityRef | null = null;
 let integrationNamedDriven = false;
-let realAcquireSlot = -1;
 let realOutputAction = -1;
 let realOutput: EntityRef | null = null;
 let damageSubject: EntityRef | null = null;
@@ -1653,7 +1571,6 @@ let bridgeMark: ReturnType<typeof Engine.call<"bridgeMark">> = null;
 let bridgeWindow: ReturnType<typeof Engine.call<"bridgeWindow">> = null;
 let precacheBegin: ReturnType<typeof Engine.call<"precacheBegin">> = null;
 let precacheFinish: ReturnType<typeof Engine.call<"precacheFinish">> = null;
-let realAcquireMark: ReturnType<typeof Engine.call<"realAcquireMark">> = null;
 let precacheRead: ReturnType<typeof Engine.call<"precacheRead">> = null;
 
 function integrationRecord(name: string, actual: Record<string, unknown>, observations: Observation[], evidence: string): void {
@@ -1743,7 +1660,6 @@ function bridgeObservation(facts: Record<string, unknown>): Observation | null {
 }
 
 function installIntegrationHooks(): void {
-  realAcquireMark = Engine.call("realAcquireMark");
   bridgeDrive = Engine.call("bridgeDrive"); bridgeMark = Engine.call("bridgeMark"); bridgeWindow = Engine.call("bridgeWindow");
   precacheBegin = Engine.call("precacheBegin"); precacheFinish = Engine.call("precacheFinish"); precacheRead = Engine.call("precacheRead");
   for (const name of ["onvoid0", "onvoid1"] as const) Engine.hook(name)?.(view => {
@@ -1777,20 +1693,6 @@ function installIntegrationHooks(): void {
     bridgeObservation({ value: view.value, integer: view.integer });
     return HookResult.Changed;
   });
-  for (const name of ["onacquire0", "onacquire1"] as const) Engine.hook(name)?.(view => {
-    if (!activeBridge) return HookResult.Continue;
-    const implicit = activeBridge.scenario === 7;
-    if (!implicit) view.result = activeBridge.scenario === 5 ? 6 : 0;
-    bridgeObservation({ vote: implicit ? 1 : view.result, method: view.method, outbound_nested: true });
-    return implicit ? HookResult.Handled : HookResult.Changed;
-  });
-  for (const name of ["onhud0", "onhud1"] as const) Engine.hook(name)?.(view => {
-    if (!activeBridge) return HookResult.Continue;
-    const suppressed = activeBridge.scenario === 9;
-    bridgeObservation({ receiver_matches_controller: !!view.receiver && !!bridgeEntity && view.receiver.index === bridgeEntity.index && view.receiver.id === bridgeEntity.id,
-      text: view.text, action: suppressed ? 2 : 0 });
-    return suppressed ? HookResult.Handled : HookResult.Continue;
-  });
 }
 
 function integrationFrame(): void {
@@ -1808,12 +1710,11 @@ function integrationFrame(): void {
   // Native owns target calls/original counts and validates markers inside this
   // synchronous JS -> Engine.call -> main-hook -> JS window.
   const observations = new Map<number, Observation[]>();
-  const results = new Map<number, Array<number | null>>();
-  for (let order = 0; order < 2; ++order) for (let scenario = 1; scenario <= 11; ++scenario) {
+  // Scenarios 5-9 and 13 were the retired declarative acquire/HUD shapes; their ids stay unused.
+  for (let order = 0; order < 2; ++order) for (const scenario of [1, 2, 3, 4, 10, 11]) {
     const sequence = ++integrationSequence;
     activeBridge = { scenario, sequence, order, callbacks: 0, observations: [] };
-    const finalResult = bridgeDrive(bridgeEntity, scenario + order * 100, sequence, instance, runId);
-    results.set(scenario, [...(results.get(scenario) || []), finalResult]);
+    bridgeDrive(bridgeEntity, scenario + order * 100, sequence, instance, runId);
     observations.set(scenario, [...(observations.get(scenario) || []), ...activeBridge.observations]);
     activeBridge = null;
   }
@@ -1830,17 +1731,6 @@ function integrationFrame(): void {
       for (const row of activeBridge.observations) row.facts = { bypass: bypassCallbacks, next: activeBridge.callbacks - bypassCallbacks };
       const closed = bridgeWindow(runId, 12 + order * 100, sequence, instance, false);
       if (closed && checkpoint) observations.set(12, [...(observations.get(12) || []), ...activeBridge.observations]);
-    }
-    activeBridge = null;
-  }
-  for (let order = 0; order < 2; ++order) {
-    const sequence = ++integrationSequence;
-    activeBridge = { scenario: 13, sequence, order, callbacks: 0, observations: [] };
-    if (bridgeWindow(runId, 13 + order * 100, sequence, instance, true)) {
-      const direct = Engine.call(order === 0 ? "hud0" : "hud1");
-      direct?.(bridgeEntity, bridgeEntity, bridgeEntity, "direct-hud");
-      const closed = bridgeWindow(runId, 13 + order * 100, sequence, instance, false);
-      if (closed) observations.set(13, [...(observations.get(13) || []), ...activeBridge.observations]);
     }
     activeBridge = null;
   }
@@ -1863,22 +1753,6 @@ function integrationFrame(): void {
     restored: nested.filter(row => "pre" in row.facts).every(row => row.facts.restored === true),
   }, nested.filter(row => "pre" in row.facts), "actual different-id Engine.call nested within the outer handler");
   record(12, "js_bypass_absent_then_next_delivered", f => f);
-  const acquisition = [5, 6, 7].flatMap(scenario => observations.get(scenario) || []);
-  if (acquisition.length === 6) integrationRecord("js_acquire_outbound_pre_vote", {
-    votes: [5, 6, 7].map(scenario => {
-      const rows = observations.get(scenario) || [];
-      return rows.length === 2 && rows[0].facts.vote === rows[1].facts.vote ? rows[0].facts.vote : null;
-    }), outbound_nested: true,
-  }, acquisition, "outbound JS call delivered PRE handler votes; native and POST records decide propagation");
-  if (acquisition.length === 6) integrationRecord("js_acquire_outbound_final_result", {
-    effective: [5, 6, 7].map(scenario => {
-      const values = results.get(scenario) || [];
-      return values.length === 2 && values[0] === values[1] ? values[0] : null;
-    }), outbound_nested: true,
-  }, acquisition, "JS observes final caller result after Engine.call returns; this is NOT the main POST position");
-  record(8, "js_hud_receiver_text_continue", f => ({ receiver_matches_controller: f.receiver_matches_controller, text: f.text }));
-  record(9, "js_hud_handled_delivery", f => ({ pre: 1, action: f.action }));
-  record(13, "js_hud_direct_utlstring", f => ({ text: f.text, receiver_matches_controller: f.receiver_matches_controller }));
   const sequence = ++integrationSequence;
   activeBridge = { scenario: 14, sequence, order: 0, callbacks: 0, observations: [] };
   const staleCallbacks = bridgeDrive(bridgeEntity, 14, sequence, instance, runId);
@@ -1945,21 +1819,6 @@ export function OnPlayerRunCmd(view: UserCmdView, info: { slot: number }): HookR
 
 
 function installNamedIntegrationHooks(): void {
-  items.onCanAcquirePost(view => {
-    if (!runBound || runSuite !== "B" || realAcquireSlot < 0 || view.player?.slot !== realAcquireSlot) return;
-    const bot = Clients.all().find(client => client.slot === realAcquireSlot && client.isBot && client.isValid());
-    if (!bot) return;
-    if (integrationRecords.has("js_acquire_real_post_effective")) return;
-    const result = view.result, skipped = view.skipped, defIndex = view.defIndex;
-    const token = realAcquireMark?.(runId, instance, bot.slot, defIndex, result, skipped);
-    if (!token || token <= 0) return; // Native peer has no same-invocation real target frame.
-    integrationRecord("js_acquire_real_post_effective", { real_bot: true,
-      effective_result_observed: Number.isInteger(result), skipped_observed: typeof skipped === "boolean" }, [{
-      scenario_id: "real-bot-acquire", sequence: token, generation: instance,
-      invocation: "real-acquire-" + token, peer_order: "none", callbacks: 1,
-      facts: { slot: bot.slot, defIndex, result, skipped }, stimulus: "engine",
-    }], "public items.onCanAcquirePost during a real bot item action; actual POST result/skipped, not final caller result");
-  });
   onOutput("logic_relay", "OnTrigger", event => {
     if (!runBound || runSuite !== "B" || realOutputAction < 0 || !realOutput || event.caller?.id !== realOutput.id) return HookResult.Continue;
     const action = realOutputAction;
@@ -1992,7 +1851,7 @@ function cleanupIntegrationOwned(): void {
     damageSubject = null;
   }
   damageStack.length = 0; realOutputRows.length = 0;
-  realAcquireSlot = -1; realOutputAction = -1;
+  realOutputAction = -1;
   if (realOutput) { realOutput.remove(); realOutput = null; }
   if (bridgeEntity) { bridgeEntity.remove(); bridgeEntity = null; }
 }
@@ -2007,10 +1866,6 @@ function collectNamedIntegration(): void {
   }
   if (integrationNamedDriven || !pawn?.isValid || !client) return;
   integrationNamedDriven = true;
-  realAcquireSlot = client.slot;
-  const item = pawn.giveNamedItem("weapon_decoy");
-  realAcquireSlot = -1;
-  if (item) pawn.removeWeapon(item);
   realOutput = createEntity("logic_relay", { targetname: "s2khook-" + runId, spawnflags: "2" });
   if (realOutput) {
     realOutput.spawn();
