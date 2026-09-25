@@ -284,8 +284,6 @@ _B_ROWS = {
     "declarative_nesting_bypass": (
         "native_same_and_different_id_nesting native_stale_forged_views_rejected native_bypass_hit_then_next_delivered native_rejected_nested_scope_restored",
         "js_different_id_nested_delivery js_same_id_reentry_named_skip js_bypass_absent_then_next_delivered"),
-    "damage_named_hook": (
-        "native_damage_valid_pre_post native_damage_nested_scopes native_damage_peer_orders_original_state", "js_damage_pre_post_correct_victim"),
     "chat_named_hook": (
         "native_chat_continue_original_once native_chat_suppressed_original_zero native_chat_peer_orders", "js_chat_continue_delivery js_chat_suppression_vote"),
     "output_named_hook": (
@@ -321,11 +319,6 @@ INTEGRATION_EXPECTED = {
     "native_stale_forged_views_rejected": {"stale_rejected": True, "forged_rejected": True},
     "native_bypass_hit_then_next_delivered": {"bypass_pre": 0, "next_pre": 1, "original": 2},
     "native_rejected_nested_scope_restored": {"rejected": True, "outer_restored": True},
-    "native_damage_valid_pre_post": {"pre": 3, "post": 3, "original": 3, "arguments": 3,
-        "result_null": 1, "result_nonnull": 2, "output_writes": 2, "output_preserved": 2,
-        "pre_ignore": 3, "post_ignore": 3, "peer_post": 3, "skipped": 0, "return_kind": "void"},
-    "native_damage_nested_scopes": {"restored": 2, "expired": True},
-    "native_damage_peer_orders_original_state": {"orders": ["peer-first", "s2script-first"], "arguments_preserved": True, "output_preserved": True, "skipped": False, "return_kind": "void"},
     "native_chat_continue_original_once": {"dispatch": 1, "original": 1, "skipped": False},
     "native_chat_suppressed_original_zero": {"dispatch": 1, "original": 0, "skipped": True},
     "native_output_01_original_once": {"actions": [0, 1], "originals": [1, 1], "dispatches": [1, 1], "skipped": [False, False]},
@@ -334,7 +327,7 @@ INTEGRATION_EXPECTED = {
     "native_usercmd_original_once_return_preserved": {"originals_by_batch": [1, 1, 1], "return": 37},
     "native_binding_resident_across_reload": {"native_address_same": True, "generations": 3},
     "native_no_disposed_generation_callback": {"old_callbacks_after_retire": 0, "new_callbacks": 2},
-    "native_all_sites_both_peer_orders": {"sites": ["this_void", "narrow", "wide", "damage", "chat", "output", "usercmd", "precache"], "orders": ["peer-first", "s2script-first"]},
+    "native_all_sites_both_peer_orders": {"sites": ["this_void", "narrow", "wide", "chat", "output", "usercmd", "precache"], "orders": ["peer-first", "s2script-first"]},
     "native_active_removal_refused": {"active_refused": True},
     "native_async_removal_peer_survives": {"completion_observed": True, "retired_callbacks": 0, "peer_callbacks": 1},
     "native_precache_real_receiver": {"delivered_receiver_matches": True, "retained_vtable_matches": True},
@@ -353,7 +346,6 @@ INTEGRATION_EXPECTED = {
     "js_different_id_nested_delivery": {"outer": 1, "inner": 1, "restored": True},
     "js_same_id_reentry_named_skip": {"delivered": 1, "nested_safe_skip": True},
     "js_bypass_absent_then_next_delivered": {"bypass": 0, "next": 1},
-    "js_damage_pre_post_correct_victim": {"pre": 1, "post": 1, "victim_matches": True},
     "js_chat_continue_delivery": {"continue": 1},
     "js_chat_suppression_vote": {"suppressed": 1, "action": 2},
     "js_output_delivery_and_suppression": {"actions": [0, 1, 2, 3], "deliveries": 4},

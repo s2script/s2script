@@ -149,10 +149,6 @@ pub type ClientSteamidFn = extern "C" fn(slot: c_int) -> *const c_char;
 pub type ClientKickFn = extern "C" fn(slot: c_int, reason: *const c_char);
 pub type ServerCommandFn = extern "C" fn(cmd: *const c_char);
 pub type ServerMapValidFn = extern "C" fn(map: *const c_char) -> c_int;
-pub type DamageReadFloatFn = extern "C" fn(offset: c_int) -> f32;
-pub type DamageReadIntFn = extern "C" fn(offset: c_int) -> c_int;
-pub type DamageWriteFloatFn = extern "C" fn(offset: c_int, value: f32);
-pub type DamageVictimFn = extern "C" fn() -> c_int;
 pub type CvarGetFn = extern "C" fn(name: *const c_char) -> *const c_char;
 pub type ClientConsolePrintFn = extern "C" fn(slot: c_int, msg: *const c_char);
 pub type ClientAddressFn = extern "C" fn(slot: c_int) -> *const c_char;
@@ -312,10 +308,6 @@ pub struct S2EngineOps {
     // --- Slice 6.4: server command + map-validity ops ---
     pub server_command: Option<ServerCommandFn>,
     pub server_map_valid: Option<ServerMapValidFn>,
-    pub damage_read_float: Option<DamageReadFloatFn>,
-    pub damage_read_int: Option<DamageReadIntFn>,
-    pub damage_write_float: Option<DamageWriteFloatFn>,
-    pub damage_victim: Option<DamageVictimFn>,
     pub cvar_get: Option<CvarGetFn>,
     // --- ban-reason sub-project 2 ---
     pub client_console_print: Option<ClientConsolePrintFn>,

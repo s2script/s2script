@@ -813,43 +813,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     get gameTime() { return __s2_server_game_time(); },       // GetGlobals()->curtime; 0 if unavailable
   };
   globalThis.__s2pkg_server = { Server: __s2_server };   // named export `Server`
-  // --- Slice 6.6: damage module (block-scoped DamageInfo over the current CTakeDamageInfo).
-  //     CTakeDamageInfo is a Source 2 engine type (not CS2-specific) -> engine-generic, lives in core.
-  //     Subscribe with SDKHook(entity, SDKHookType.OnTakeDamage, cb) — not a global mux.
-  //     OnTakeDamagePost uses the same DamageInfo view; the damage setter is frozen. ---
-  function DamageInfo() {}
-  function __s2_dmg_ref(field) {
-    var o = __s2_schema_offset("CTakeDamageInfo", field);
-    if (o < 0) return null;
-    var h = __s2_damage_read_int(o) >>> 0;
-    if (h === 0 || h === 0xFFFFFFFF) return null;            // empty/invalid handle
-    var d = __s2_handle_adopt(h);
-    return d ? new EntityRef(d[0], d[1]) : null;             // books-adopted; dangling/stale -> null
-  }
-  Object.defineProperties(DamageInfo.prototype, {
-    // m_flDamage: read the damage; SETTING it modifies the live info (set to 0 to block).
-    damage: {
-      get: function () { var o = __s2_schema_offset("CTakeDamageInfo", "m_flDamage"); return o < 0 ? 0 : __s2_damage_read_float(o); },
-      set: function (v) { var o = __s2_schema_offset("CTakeDamageInfo", "m_flDamage"); if (o >= 0) __s2_damage_write_float(o, +v); },
-      enumerable: true, configurable: true,
-    },
-    damageType: {
-      get: function () { var o = __s2_schema_offset("CTakeDamageInfo", "m_bitsDamageType"); return o < 0 ? 0 : __s2_damage_read_int(o); },
-      enumerable: true, configurable: true,
-    },
-    attacker:  { get: function () { return __s2_dmg_ref("m_hAttacker"); },  enumerable: true, configurable: true },
-    inflictor: { get: function () { return __s2_dmg_ref("m_hInflictor"); }, enumerable: true, configurable: true },
-    // The victim (the entity taking damage) — decoded from the detour `this`, not a field of the info.
-    victim: {
-      get: function () {
-        var h = __s2_damage_victim() >>> 0;
-        if (h === 0 || h === 0xFFFFFFFF) return null;
-        var d = __s2_handle_adopt(h);
-        return d ? new EntityRef(d[0], d[1]) : null;
-      }, enumerable: true, configurable: true,
-    },
-  });
-  globalThis.__s2pkg_damage = { DamageInfo: DamageInfo };
+  // @s2script/sdk/damage is TYPE-ONLY: the DamageInfo view belongs to the selected game package (its
+  // damage function and CTakeDamageInfo layout are game facts), delivered through the SDKHook provider
+  // hand-off below. The empty module keeps `require("@s2script/sdk/damage")` resolvable.
+  globalThis.__s2pkg_damage = {};
   var SDKHookType = {
     OnTakeDamage: "OnTakeDamage",
     OnTakeDamagePost: "OnTakeDamagePost",

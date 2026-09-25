@@ -1811,17 +1811,14 @@
     /// Named publics OnGameFrame subscribe at load. SDKHook after settle (not a named public).
     /// Post-simulation frame is createScope().server.onGameFrame({ phase: "post" }), not a SM public.
     /// hook.on still throws after settle.
-    extern "C" fn named_publics_damage_victim() -> c_int {
-        let bits = crate::entity::HANDLE_ENTRY_BITS;
-        ((1u32 << bits) | 5) as c_int
-    }
+    extern "C" fn named_publics_vp_add(_: c_int, _: c_int, _: *const std::os::raw::c_char, _: c_int) -> c_int { 1 }
     #[test]
     fn named_publics_frame_and_hook_on_throw_after_settle() {
         init(dummy_logger()).unwrap();
         crate::entity_live::reset_for_tests();
         let id = crate::entity_live::on_created(5, 1);
         set_engine_ops(Some(S2EngineOps {
-            damage_victim: Some(named_publics_damage_victim),
+            sdkhook_vp_add: Some(named_publics_vp_add),
             ..mock_event_ops()
         }));
         load_plugin_js(
@@ -1846,7 +1843,7 @@
                 &format!(
                     r#"
                     globalThis.__dmg = 0;
-                    String(__s2pkg_sdkhooks.SDKHook({{index:5,id:{id}}}, "OnTakeDamage", function () {{
+                    String(__s2pkg_sdkhooks.SDKHook({{index:5,id:{id}}}, "Touch", function () {{
                         globalThis.__dmg = (globalThis.__dmg|0)+1;
                     }}))
                     "#
@@ -1855,7 +1852,7 @@
             "true",
             "SDKHook after settle must succeed"
         );
-        dispatch_damage();
+        crate::sdkhooks::dispatch_touch(5, 1, -1, 0, "Touch");
         assert_eq!(eval_in_context_string("hookmore", "String(globalThis.__dmg|0)"), "1");
         let threw = eval_in_context_string(
             "hookmore",

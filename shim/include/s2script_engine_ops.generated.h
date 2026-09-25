@@ -125,10 +125,6 @@ typedef const char* (*s2_client_steamid_fn)(int slot);
 typedef void (*s2_client_kick_fn)(int slot, const char* reason);
 typedef void (*s2_server_command_fn)(const char* cmd);
 typedef int (*s2_server_map_valid_fn)(const char* map);
-typedef float (*s2_damage_read_float_fn)(int offset);
-typedef int (*s2_damage_read_int_fn)(int offset);
-typedef void (*s2_damage_write_float_fn)(int offset, float value);
-typedef int (*s2_damage_victim_fn)(void);
 typedef const char* (*s2_cvar_get_fn)(const char* name);
 typedef void (*s2_client_console_print_fn)(int slot, const char* msg);
 typedef const char* (*s2_client_address_fn)(int slot);
@@ -283,10 +279,6 @@ typedef struct {
     /* --- Slice 6.4: server command + map-validity ops --- */
     s2_server_command_fn server_command;
     s2_server_map_valid_fn server_map_valid;
-    s2_damage_read_float_fn damage_read_float;
-    s2_damage_read_int_fn damage_read_int;
-    s2_damage_write_float_fn damage_write_float;
-    s2_damage_victim_fn damage_victim;
     s2_cvar_get_fn cvar_get;
     /* --- ban-reason sub-project 2 --- */
     s2_client_console_print_fn client_console_print;

@@ -10,15 +10,12 @@ namespace {
 
 struct PrecacheReceiver {};
 
-KHook::Return<void> DamagePre(void*,void*,void*);
-KHook::Return<void> DamagePost(void*,void*,void*);
 KHook::Return<void> ChatPre(void*,void*,bool,int,const char*);
 KHook::Return<void> OutputPre(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
                               const CVariant*,float,void*,char*);
 KHook::Return<int> UsercmdPre(void*,void*,int,bool,float);
 KHook::Return<void> PrecachePre(PrecacheReceiver*,void*);
 
-S2CheckedFunction<void,void*,void*,void*> g_damage(&DamagePre,&DamagePost);
 S2CheckedFunction<void,void*,void*,bool,int,const char*> g_chat(&ChatPre,nullptr);
 S2CheckedFunction<void,CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
                   const CVariant*,float,void*,char*> g_output(&OutputPre,nullptr);
@@ -29,22 +26,6 @@ S2NamedHookOps g_ops;
 const void* g_usercmd_target=nullptr;
 s2resolve::VirtualSlotResolution g_precache_resolution;
 bool g_precache_filter_added=false;
-
-struct DamageFrame {
-    void* info;
-    void* victim;
-    DamageFrame* previous;
-};
-thread_local DamageFrame* g_damage_frame=nullptr;
-class DamageScope {
-public:
-    DamageScope(void* info,void* victim) : frame_{info,victim,g_damage_frame} { g_damage_frame=&frame_; }
-    ~DamageScope() { g_damage_frame=frame_.previous; }
-    DamageScope(const DamageScope&)=delete;
-    DamageScope& operator=(const DamageScope&)=delete;
-private:
-    DamageFrame frame_;
-};
 
 struct PointerFrame { void* value; PointerFrame* previous; };
 thread_local PointerFrame* g_usercmd_frame=nullptr;
@@ -79,28 +60,8 @@ private:
     PointerFrame frame_;
 };
 
-std::array<S2CheckedBindingOps*,5> Inventory() {
-    return {{&g_damage,&g_chat,&g_output,&g_usercmd,&g_precache}};
-}
-
-KHook::Return<void> DamagePre(void* victim,void* info,void* /* optional result */) {
-    auto observed=g_damage.Observe();
-    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
-    DamageScope scope(info,victim);
-    if (g_ops.damage_pre) g_ops.damage_pre();
-    const auto action=S2_Ignore();
-    if (g_ops.observe_action) g_ops.observe_action(S2NamedHookSite::Damage,false,action.action);
-    return action;
-}
-
-KHook::Return<void> DamagePost(void* victim,void* info,void* /* optional result */) {
-    auto observed=g_damage.Observe();
-    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
-    DamageScope scope(info,victim);
-    if (g_ops.damage_post) g_ops.damage_post();
-    const auto action=S2_Ignore();
-    if (g_ops.observe_action) g_ops.observe_action(S2NamedHookSite::Damage,true,action.action);
-    return action;
+std::array<S2CheckedBindingOps*,4> Inventory() {
+    return {{&g_chat,&g_output,&g_usercmd,&g_precache}};
 }
 
 KHook::Return<void> ChatPre(void* controller,void* command,bool team,int number,const char* text) {
@@ -157,7 +118,6 @@ KHook::Return<void> PrecachePre(PrecacheReceiver* receiver,void* manifest) {
 } // namespace
 
 void S2NamedHooksSetOps(const S2NamedHookOps& ops) { g_ops=ops; }
-S2HookReceipt S2NamedConfigureDamage(const void* target) { return g_damage.Configure(target); }
 S2HookReceipt S2NamedConfigureChat(const void* target) { return g_chat.Configure(target); }
 S2HookReceipt S2NamedConfigureOutput(const void* target) { return g_output.Configure(target); }
 void S2NamedSetUsercmdTarget(const void* target) { g_usercmd_target=target; }
@@ -184,7 +144,6 @@ S2HookReceipt S2NamedConfigurePrecache(const s2resolve::VirtualSlotResolution& r
 
 S2HookReceipt S2NamedHookSnapshot(S2NamedHookSite site) {
     switch (site) {
-        case S2NamedHookSite::Damage: return g_damage.Snapshot();
         case S2NamedHookSite::Chat: return g_chat.Snapshot();
         case S2NamedHookSite::Output: return g_output.Snapshot();
         case S2NamedHookSite::Usercmd: return g_usercmd.Snapshot();
@@ -193,32 +152,11 @@ S2HookReceipt S2NamedHookSnapshot(S2NamedHookSite site) {
     return {KHook::INVALID_HOOK,S2HookState::Failed,"unknown named hook site"};
 }
 
-void* S2NamedDamageInfo() {
-    return S2Hook_MayDispatch() && g_damage_frame ? g_damage_frame->info : nullptr;
-}
-void* S2NamedDamageVictim() {
-    return S2Hook_MayDispatch() && g_damage_frame ? g_damage_frame->victim : nullptr;
-}
 void* S2NamedCurrentUsercmd() {
     return S2Hook_MayDispatch() && g_usercmd_frame ? g_usercmd_frame->value : nullptr;
 }
 void* S2NamedCurrentPrecacheManifest() {
     return S2Hook_MayDispatch() && g_manifest_frame ? g_manifest_frame->value : nullptr;
-}
-
-bool S2NamedDispatchSyntheticDamage(void* victim,void* info) {
-    if (!g_damage.Snapshot().Accepted()) return false;
-    S2HookDispatchGuard guard;
-    if (!guard) return false;
-    {
-        DamageScope scope(info,victim);
-        if (g_ops.damage_pre) g_ops.damage_pre();
-    }
-    {
-        DamageScope scope(info,victim);
-        if (g_ops.damage_post) g_ops.damage_post();
-    }
-    return true;
 }
 
 bool S2NamedHooksCanUnloadSync(const S2HookTerminalPermit& permit) {

@@ -23,7 +23,7 @@ import {
   previous,
   onOutput,
 } from "@s2script/sdk";
-import type { Client, DamageInfo, EntityRef, HookResultValue } from "@s2script/sdk";
+import type { Client, EntityRef, HookResultValue } from "@s2script/sdk";
 import { Engine } from "@s2script/sdk/unsafe";
 import type { PrecacheContext } from "@s2script/sdk/sound";
 import type { UserCmdView } from "@s2script/sdk/usercmd";
@@ -1428,19 +1428,6 @@ const INTEGRATION_ROWS: Record<"B" | "C", IntegrationRow[]> = {
       "target": "declarative_nesting_bypass"
     },
     {
-      "case": "damage_named_hook",
-      "subcheck": "js_damage_pre_post_correct_victim",
-      "expected": {
-        "pre": 1,
-        "post": 1,
-        "victim_matches": true
-      },
-      "group": "live-named",
-      "provenance": "live-engine",
-      "callback_owner": "named_hooks",
-      "target": "damage_named_hook"
-    },
-    {
       "case": "chat_named_hook",
       "subcheck": "js_chat_continue_delivery",
       "expected": {
@@ -1561,8 +1548,6 @@ let bridgeEntity: EntityRef | null = null;
 let integrationNamedDriven = false;
 let realOutputAction = -1;
 let realOutput: EntityRef | null = null;
-let damageSubject: EntityRef | null = null;
-const damageStack: Observation[] = [];
 const realOutputRows: Observation[] = [];
 let stalePrecache: PrecacheContext | null = null;
 let activeBridge: { scenario: number; sequence: number; order: number; callbacks: number; observations: Observation[] } | null = null;
@@ -1829,28 +1814,8 @@ function installNamedIntegrationHooks(): void {
   });
 }
 
-function onIntegrationDamagePre(info: DamageInfo): void {
-  const victim = info.victim;
-  if (!victim || !runBound || runSuite !== "B" || !damageSubject || victim.id !== damageSubject.id || !Number.isFinite(info.damage)) return;
-  damageStack.push({ scenario_id: "real-bot-damage", sequence: ++integrationSequence, generation: instance,
-    invocation: runId + ":damage:" + integrationSequence, callbacks: 1, peer_order: "none",
-    facts: { victim: victim.index, victim_id: victim.id, damage: info.damage }, stimulus: "engine" });
-}
-function onIntegrationDamagePost(info: DamageInfo): void {
-  const victim = info.victim;
-  const pre = damageStack[damageStack.length - 1];
-  if (!victim || !pre || !runBound || runSuite !== "B" || victim.id !== pre.facts.victim_id) return;
-  damageStack.pop();
-  integrationRecord("js_damage_pre_post_correct_victim", { pre: 1, post: 1, victim_matches: true },
-    [{ ...pre, facts: { ...pre.facts, post_damage: info.damage } }], "real bot victim synchronous PRE/POST; nested scopes pair by stack; synthetic dummy cannot match books-gated pawn");
-}
 function cleanupIntegrationOwned(): void {
-  if (damageSubject) {
-    SDKUnhook(damageSubject, SDKHookType.OnTakeDamage, onIntegrationDamagePre);
-    SDKUnhook(damageSubject, SDKHookType.OnTakeDamagePost, onIntegrationDamagePost);
-    damageSubject = null;
-  }
-  damageStack.length = 0; realOutputRows.length = 0;
+  realOutputRows.length = 0;
   realOutputAction = -1;
   if (realOutput) { realOutput.remove(); realOutput = null; }
   if (bridgeEntity) { bridgeEntity.remove(); bridgeEntity = null; }
@@ -1859,11 +1824,6 @@ function cleanupIntegrationOwned(): void {
 function collectNamedIntegration(): void {
   const client = Clients.all().find(value => value.isBot && value.isValid());
   const pawn = client ? Player.fromSlot(client.slot)?.pawn : null;
-  if (pawn?.isValid && !damageSubject) {
-    damageSubject = pawn.ref;
-    SDKHook(damageSubject, SDKHookType.OnTakeDamage, onIntegrationDamagePre);
-    SDKHook(damageSubject, SDKHookType.OnTakeDamagePost, onIntegrationDamagePost);
-  }
   if (integrationNamedDriven || !pawn?.isValid || !client) return;
   integrationNamedDriven = true;
   realOutput = createEntity("logic_relay", { targetname: "s2khook-" + runId, spawnflags: "2" });

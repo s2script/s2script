@@ -139,25 +139,6 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     );
     // ban-reason sub-project 2: developer-console print + client IP address.
     crate::sdkhooks::install_natives(scope, global_obj);
-    set_native(
-        scope,
-        global_obj,
-        "__s2_damage_read_float",
-        s2_damage_read_float,
-    );
-    set_native(
-        scope,
-        global_obj,
-        "__s2_damage_read_int",
-        s2_damage_read_int,
-    );
-    set_native(
-        scope,
-        global_obj,
-        "__s2_damage_write_float",
-        s2_damage_write_float,
-    );
-    set_native(scope, global_obj, "__s2_damage_victim", s2_damage_victim);
     set_native(scope, global_obj, "__s2_cvar_get", s2_cvar_get);
     set_native(scope, global_obj, "__s2_cvar_set", s2_cvar_set);
     set_native(

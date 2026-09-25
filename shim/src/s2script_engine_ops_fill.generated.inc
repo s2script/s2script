@@ -42,10 +42,6 @@
     // --- Slice 6.4: server command + map-validity ops ---
     ops.server_command = &s2_server_command;
     ops.server_map_valid = &s2_server_map_valid;
-    ops.damage_read_float = &s2_damage_read_float;
-    ops.damage_read_int = &s2_damage_read_int;
-    ops.damage_write_float = &s2_damage_write_float;
-    ops.damage_victim = &s2_damage_victim;
     ops.cvar_get = &s2_cvar_get;
     // --- ban-reason sub-project 2 ---
     ops.client_console_print = &s2_client_console_print;

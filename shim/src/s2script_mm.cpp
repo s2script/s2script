@@ -76,12 +76,12 @@
 #include "client_bootstrap.h"
 #include "hook_dispatch.h"  // declarative inbound hooks: the engine-free policy half (ops-injected)
 #include "engine_hooks.h"   // declarative inbound hooks: S2_HookInstall/ArmBypass (the two appended ops)
-#include "named_hooks.h"    // checked DTA/chat/output/usercmd/precache bindings
+#include "named_hooks.h"    // checked chat/output/usercmd/precache bindings
 #include "sdkhooks_vp.h"    // SDKHooks per-entity VP hooks (Touch family; reads s_gdSdkhooks)
 #include <cstring>
 #include <cstdio>
 #include <ctime>    // Voice-control slice: time()/time_t for the per-slot ClientVoice notify throttle
-#include <cstdlib>   // getenv — the S2_DAMAGE_SELFTEST opt-in gate
+#include <cstdlib>   // getenv — the env-gated opt-in self-tests
 #include <strings.h> // strcasecmp — cvar_set bool parse
 #include <ctime>     // clock_gettime — CheckTransmit hot-path timing (checktransmit slice)
 #include <fstream>
@@ -823,19 +823,6 @@ static void S2_InstallDeferOps() {
     S2Defer_SetOps(ops);
 }
 
-// Named damage callbacks bind their own callback arguments in named_hooks.cpp. The engine-specific
-// operation here performs only the existing core dispatch and diagnostics.
-static void S2NamedDamagePreOp() {
-    void* victim=S2NamedDamageVictim();
-    void* info=S2NamedDamageInfo();
-    auto rd = [](void* p) -> float {
-        return (p && reinterpret_cast<uintptr_t>(p) > 0x10000) ? *reinterpret_cast<float*>(reinterpret_cast<char*>(p) + 68) : -1.0f;
-    };
-    META_CONPRINTF("[s2script] DTA fired: this=%p info.dmg=%.1f\n",victim,rd(info));
-    s2script_core_dispatch_damage();
-}
-static void S2NamedDamagePostOp() { s2script_core_dispatch_damage_post(); }
-
 // Slice 5D.3: Events.fire creates an event and retargets s_currentEvent to it (save/restore on
 // create/fire) so the same set* ops serve both pre-hook modify and fire-building. Nests correctly.
 static IGameEvent* s_pendingFireEvent  = nullptr;
@@ -981,8 +968,8 @@ static int s2_event_fire(int dontBroadcast) {
 // queue would ship with its headline variant never once executed on a real server (the boot log
 // says "armed (pending the first-duplication round-trip)" and the round-trip line never appears).
 //
-// This is the same shape of problem as combat on a bots-only gate, and it takes the same answer as
-// S2_DAMAGE_SELFTEST in Hook_GameFramePre: a synthetic, ENV-GATED, off-by-default, loudly labelled
+// This is the same shape of problem as combat on a bots-only gate, and it takes the same answer the
+// retired S2_DAMAGE_SELFTEST took: a synthetic, ENV-GATED, off-by-default, loudly labelled
 // re-entrancy. THIS MUST NOT BE ARMED IN PRODUCTION — it dispatches a REAL catalog event name with
 // FAKE field values to every subscribed plugin.
 //
@@ -2531,34 +2518,6 @@ static int Shim_UsercmdHookInstall() {
 }
 
 // ---------------------------------------------------------------------------
-// Damage-info accessors (Slice 6.6 Stage 2). Read/write a field of the CURRENT CTakeDamageInfo
-// (provided by the CBaseEntity_TakeDamageOld checked callback) at a schema-resolved byte offset.
-// Valid only during a damage dispatch; null-guarded. The raw pointer never crosses to JS.
-// ---------------------------------------------------------------------------
-static float s2_damage_read_float(int offset) {
-    void* info=S2NamedDamageInfo();
-    if (!info || offset < 0 || offset > 4096) return 0.0f;
-    return *reinterpret_cast<float*>(reinterpret_cast<char*>(info) + offset);
-}
-static int s2_damage_read_int(int offset) {
-    void* info=S2NamedDamageInfo();
-    if (!info || offset < 0 || offset > 4096) return 0;
-    return *reinterpret_cast<int*>(reinterpret_cast<char*>(info) + offset);
-}
-static void s2_damage_write_float(int offset, float value) {
-    void* info=S2NamedDamageInfo();
-    if (!info || offset < 0 || offset > 4096) return;
-    *reinterpret_cast<float*>(reinterpret_cast<char*>(info) + offset) = value;
-}
-// The victim's raw CEntityHandle from the detour `this` (CEntityInstance::GetRefEHandle().ToInt() — inline,
-// == the raw m_Index the JS handle-decode expects). -1 when absent. The raw pointer never crosses to JS.
-static int s2_damage_victim() {
-    void* victim=S2NamedDamageVictim();
-    if (!victim) return -1;
-    return static_cast<CEntityInstance*>(victim)->GetRefEHandle().ToInt();
-}
-
-// ---------------------------------------------------------------------------
 // Host_Say detour (Slice 6.11b): player chat triggers (!cmd / /cmd).
 //
 // CS2 fires no usable player_chat game event, so chat is intercepted by detouring Host_Say (the chat
@@ -4065,8 +4024,6 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     s_gdOk = 0; s_gdFail = 0;   // reset the gamedata validation report for this Load
 
     S2NamedHookOps namedOps;
-    namedOps.damage_pre=&S2NamedDamagePreOp;
-    namedOps.damage_post=&S2NamedDamagePostOp;
     namedOps.chat=&S2NamedChatOp;
     namedOps.output=&S2NamedOutputOp;
     namedOps.usercmd_slot=&S2NamedUsercmdSlotOp;
@@ -4479,29 +4436,8 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             // FreeEvent vtable slots the replay queue needs. Loud at boot, degrades game-event
             // deferral by name; scalar deferral stays on either way.
             ArmDeferredEventDuplication();
-            // Audited void(victim*, info*, optional result*) damage body: exact prologue
-            // plus TakeDamageOld semantic string validator. No alias for the unsafe old key.
-            // An unavailable target leaves the public damage callbacks unavailable.
-            auto dit = sigs.find("CBaseEntity_TakeDamageOld");
-            if (dit == sigs.end()) {
-                GamedataResult("CBaseEntity_TakeDamageOld", false, "signature absent from gamedata");
-            } else {
-                int64_t dOff = ResolveSigValidated("CBaseEntity_TakeDamageOld", dit->second);
-                ModText dmt = FindModuleText(dit->second.module.c_str());
-                if (dOff != s2sig::kFail && dmt.text) {  // resolve=="direct": the (unique) match IS the function start
-                    void* damageAddr = const_cast<uint8_t*>(dmt.text) + dOff;
-                    const auto receipt=S2NamedConfigureDamage(damageAddr);
-                    if (receipt.Accepted()) {
-                        META_CONPRINTF("[s2script] CBaseEntity_TakeDamageOld checked hook accepted @%p (id=%u)\n",
-                                       damageAddr,receipt.id);
-                    } else {
-                        META_CONPRINTF("[s2script] WARN: CBaseEntity_TakeDamageOld checked hook failed (%s) — damage hook off\n",
-                                       receipt.reason.c_str());
-                    }
-                }   // dOff == kFail: ResolveSigValidated already recorded the reason
-            }
             // Slice 6.11b (Stage 1): resolve + detour Host_Say (the chat entry) for player chat triggers.
-            // Checked stock binding, as for CBaseEntity_TakeDamageOld. Degrade-never-crash:
+            // Checked stock binding. Degrade-never-crash:
             // any failure leaves chat unhooked (no triggers), never a crash.
             auto hsit = sigs.find("HostSay");
             if (hsit == sigs.end()) {
@@ -4772,7 +4708,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             }
             // Entity-I/O slice (Task 2): resolve + detour CEntityIOOutput::FireOutputInternal (the
             // output-hook entry) — same direct-prologue + inline-detour pattern as
-            // CBaseEntity_TakeDamageOld/HostSay. Degrade-never-crash: unresolved leaves outputs unhooked
+            // HostSay. Degrade-never-crash: unresolved leaves outputs unhooked
             // (Entity.onOutput never fires), never a crash.
             auto foiit = sigs.find("FireOutputInternal");
             if (foiit == sigs.end()) {
@@ -5384,27 +5320,10 @@ KHook::Return<void> S2ScriptPlugin::Hook_GameFramePre(ISource2Server* server, bo
     // weaken the drain's position below. Incremented once per PRE that reaches this path.
     ++s_frameNo;
     // deferred-dispatch: the FIRST statement in this hook that reaches core, before ANYTHING here
-    // enters JS — the damage self-test below is the next thing that does, so the isolate is
+    // enters JS — the frame dispatch below is the next thing that does, so the isolate is
     // provably free at this point and a replay cannot re-defer. Delivers everything a re-entrant
     // dispatch could not deliver last frame.
     S2Defer_Drain();
-    // Slice 6.6 Stage-2 self-test: fire a synthetic damage dispatch over a fake CTakeDamageInfo
-    // (m_flDamage@68 = 42) to prove detour->core mux->JS handler->schema read end-to-end (combat is
-    // un-generatable on the bots-only gate). GATED OFF by default: it fires plugins' OnTakeDamage handlers
-    // with FAKE data, so it must NOT run in production — set S2_DAMAGE_SELFTEST=1 to opt in for verification.
-    // Fired at a few LATER frames (frame 1 caught the plugin mid boot-reload with no live subscriber).
-    static bool s_dmgSelfTestOn = (getenv("S2_DAMAGE_SELFTEST") != nullptr);
-    if (s_dmgSelfTestOn && (s_frameNo == 300 || s_frameNo == 900 || s_frameNo == 1800) &&
-        S2NamedHookSnapshot(S2NamedHookSite::Damage).Accepted()) {
-        static char fakeInfo[256];
-        memset(fakeInfo, 0, sizeof(fakeInfo));
-        *reinterpret_cast<float*>(fakeInfo + 68) = 42.0f;   // CTakeDamageInfo::m_flDamage
-        void* victimEnt = nullptr;                          // scan for a REAL entity (idx 1+) -> proves the victim path
-        for (int i = 1; i < 128 && !victimEnt; ++i) victimEnt = s2_ent_by_index(i);
-        META_CONPRINTF("[s2script] damage self-test (frame %ld): synthetic damage (m_flDamage=42, victim=%p)\n",
-                       s_frameNo, victimEnt);
-        S2NamedDispatchSyntheticDamage(victimEnt,fakeInfo);
-    }
     s2script_core_dispatch_game_frame(0, static_cast<int>(simulating),
                                       static_cast<int>(first), static_cast<int>(last));
     return S2_Ignore();

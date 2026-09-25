@@ -2683,9 +2683,6 @@ static const IntegrationSpec kIntegrationSpecs[]={
     {"B","declarative_nesting_bypass","native_main_different_id_nested_delivery","{\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_nesting_bypass"},
     {"B","declarative_nesting_bypass","native_main_same_id_reentry_named_skip","{\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_nesting_bypass"},
     {"B","declarative_nesting_bypass","native_main_bypass_absent_then_next_delivered","{\"both_phases_observed\":true,\"same_invocation_markers\":true,\"target_calls_observed\":true}","main-runtime-bridge","main-runtime","engine_hooks","declarative_nesting_bypass"},
-    {"B","damage_named_hook","native_damage_valid_pre_post","{\"arguments\":3,\"original\":3,\"output_preserved\":2,\"output_writes\":2,\"peer_post\":3,\"post\":3,\"post_ignore\":3,\"pre\":3,\"pre_ignore\":3,\"result_nonnull\":2,\"result_null\":1,\"return_kind\":\"void\",\"skipped\":0}","controlled-mechanics","controlled-stock-provider","named_hooks","damage_named_hook"},
-    {"B","damage_named_hook","native_damage_nested_scopes","{\"expired\":true,\"restored\":2}","controlled-mechanics","controlled-stock-provider","named_hooks","damage_named_hook"},
-    {"B","damage_named_hook","native_damage_peer_orders_original_state","{\"arguments_preserved\":true,\"orders\":[\"peer-first\",\"s2script-first\"],\"output_preserved\":true,\"return_kind\":\"void\",\"skipped\":false}","controlled-mechanics","controlled-stock-provider","named_hooks","damage_named_hook"},
     {"B","chat_named_hook","native_chat_continue_original_once","{\"dispatch\":1,\"original\":1,\"skipped\":false}","controlled-mechanics","controlled-stock-provider","named_hooks","chat_named_hook"},
     {"B","chat_named_hook","native_chat_suppressed_original_zero","{\"dispatch\":1,\"original\":0,\"skipped\":true}","controlled-mechanics","controlled-stock-provider","named_hooks","chat_named_hook"},
     {"B","chat_named_hook","native_chat_peer_orders","{\"orders\":[\"peer-first\",\"s2script-first\"]}","controlled-mechanics","controlled-stock-provider","named_hooks","chat_named_hook"},
@@ -2697,7 +2694,7 @@ static const IntegrationSpec kIntegrationSpecs[]={
     {"B","usercmd_named_hook","native_usercmd_peer_orders","{\"orders\":[\"peer-first\",\"s2script-first\"]}","controlled-mechanics","controlled-stock-provider","named_hooks","usercmd_named_hook"},
     {"B","script_generation_lifetime","native_binding_resident_across_reload","{\"generations\":3,\"native_address_same\":true}","main-runtime-bridge","main-runtime","engine_hooks","script_generation_lifetime"},
     {"B","script_generation_lifetime","native_no_disposed_generation_callback","{\"new_callbacks\":2,\"old_callbacks_after_retire\":0}","main-runtime-bridge","main-runtime","engine_hooks","script_generation_lifetime"},
-    {"B","binding_peer_order_retirement","native_all_sites_both_peer_orders","{\"orders\":[\"peer-first\",\"s2script-first\"],\"sites\":[\"this_void\",\"narrow\",\"wide\",\"damage\",\"chat\",\"output\",\"usercmd\",\"precache\"]}","coverage-summary","mixed-observed","stock-khook","binding_peer_order_retirement"},
+    {"B","binding_peer_order_retirement","native_all_sites_both_peer_orders","{\"orders\":[\"peer-first\",\"s2script-first\"],\"sites\":[\"this_void\",\"narrow\",\"wide\",\"chat\",\"output\",\"usercmd\",\"precache\"]}","coverage-summary","mixed-observed","stock-khook","binding_peer_order_retirement"},
     {"B","binding_peer_order_retirement","native_active_removal_refused","{\"active_refused\":true}","controlled-mechanics","controlled-stock-provider","engine_hooks","binding_peer_order_retirement"},
     {"B","binding_peer_order_retirement","native_async_removal_peer_survives","{\"completion_observed\":true,\"peer_callbacks\":1,\"retired_callbacks\":0}","controlled-mechanics","controlled-stock-provider","engine_hooks","binding_peer_order_retirement"},
     {"C","precache_peer_slot_original_once","native_precache_real_receiver","{\"delivered_receiver_matches\":true,\"retained_vtable_matches\":true}","controlled-mechanics","controlled-stock-provider","named_hooks","precache_peer_slot_original_once"},
@@ -2808,15 +2805,6 @@ static std::string ControlledActual(const std::string& name) {
         return "{\"opaque_a\":\""+std::to_string(static_cast<uint64_t>(d.mutation.opaque_a))+"\",\"opaque_b\":\""+std::to_string(static_cast<uint64_t>(d.mutation.opaque_b))+"\"}";
     if (name=="native_same_and_different_id_nesting" && d.nesting.same_pre>0)
         return "{\"same_restored\":"+std::to_string(d.nesting.same_restored)+",\"different_restored\":"+std::to_string(d.nesting.other_restored)+"}";
-    if (name=="native_damage_valid_pre_post" && n.damage_pre>0)
-        return "{\"pre\":"+std::to_string(n.damage_pre)+",\"post\":"+std::to_string(n.damage_post)+",\"original\":"+std::to_string(n.damage_original)+
-            ",\"arguments\":"+std::to_string(n.damage_argument_matches)+",\"result_null\":"+std::to_string(n.damage_result_null)+
-            ",\"result_nonnull\":"+std::to_string(n.damage_result_nonnull)+",\"output_writes\":"+std::to_string(n.damage_output_writes)+
-            ",\"output_preserved\":"+std::to_string(n.damage_output_preserved)+",\"pre_ignore\":"+std::to_string(n.damage_pre_ignore)+
-            ",\"post_ignore\":"+std::to_string(n.damage_post_ignore)+",\"peer_post\":"+std::to_string(n.damage_post_observed)+
-            ",\"skipped\":"+std::to_string(n.damage_skipped)+",\"return_kind\":\"void\"}";
-    if (name=="native_damage_nested_scopes" && n.damage_pre>0)
-        return "{\"restored\":"+std::to_string(n.damage_nested_restored)+",\"expired\":"+JBool(n.damage_expired==1)+"}";
     if (name=="native_chat_continue_original_once" && n.chat_dispatch==2)
         return "{\"dispatch\":1,\"original\":"+std::to_string(n.chat_original_each[0])+",\"skipped\":"+JBool(n.chat_skipped[0]==1)+"}";
     if (name=="native_chat_suppressed_original_zero" && n.chat_dispatch==2 && n.chat_skipped[0]==0)
@@ -2852,9 +2840,7 @@ static std::string NamedOrderObservations(const std::vector<const s2khook::Named
             ",\"facts\":{\"registration_phase\":\""+row->order+"\",\"trace\":\""+row->trace+
             "\",\"original\":"+std::to_string(row->original)+",\"peer_pre\":"+std::to_string(row->peer_pre)+
             ",\"peer_post\":"+std::to_string(row->peer_post)+
-            (row->site=="damage" ? ",\"return_kind\":\"void\",\"arguments_preserved\":"+JBool(row->damage_arguments)+
-                ",\"output_preserved\":"+JBool(row->damage_output_preserved)+",\"skipped\":"+std::to_string(row->skipped) :
-                ",\"effective\":"+std::to_string(row->effective))+"}}";
+            ",\"effective\":"+std::to_string(row->effective)+"}}";
     }
     return json+"]";
 }
@@ -2862,12 +2848,11 @@ static std::string NamedOrdersActual(const std::string& name,std::string& observ
     const auto snapshot=S2ProbeNamedCollectOrders();
     if (snapshot.run!=g_run_id || !snapshot.completion || !snapshot.late_installed) return {};
     std::string site;
-    if (name=="native_damage_peer_orders_original_state") site="damage";
-    else if (name=="native_chat_peer_orders") site="chat";
+    if (name=="native_chat_peer_orders") site="chat";
     else if (name=="native_output_peer_orders") site="output";
     else if (name=="native_usercmd_peer_orders") site="usercmd";
     else if (name=="native_precache_peer_same_slot_both_orders" || name=="native_precache_checked_retirement") site="precache";
-    else if (name=="native_async_removal_peer_survives") site="damage";
+    else if (name=="native_async_removal_peer_survives") site="chat";
     else return {};
     std::vector<const s2khook::NamedOrderObservation*> rows;
     for (const auto& row:snapshot.rows) if (row.site==site) rows.push_back(&row);
@@ -2882,18 +2867,15 @@ static std::string NamedOrdersActual(const std::string& name,std::string& observ
     bool orders=rows[0]->trace.find('P')<rows[0]->trace.find('M') && rows[1]->trace.find('M')<rows[1]->trace.find('P');
     for (const auto* row:rows) orders=orders && row->callbacks==1 && row->original==1 && row->peer_pre==1 && row->peer_post==1;
     std::string actual=std::string("{\"orders\":")+(orders ? "[\"peer-first\",\"s2script-first\"]" : "[]");
-    if (site=="damage") actual+=",\"arguments_preserved\":"+JBool(rows[0]->damage_arguments && rows[1]->damage_arguments)+
-        ",\"output_preserved\":"+JBool(rows[0]->damage_output_preserved && rows[1]->damage_output_preserved)+
-        ",\"skipped\":"+JBool(rows[0]->skipped!=0 || rows[1]->skipped!=0)+",\"return_kind\":\"void\"";
     return actual+"}";
 }
 // This summary deliberately retains each site's producer origin. Registration
 // phases are not evidence of reversed physical DSO load-order operator runs.
 static std::string AllSiteOrders(std::string& observations) {
     // The first kMainSites entries are main-runtime bridge sites; the rest are stock-provider peers.
-    const char* sites[]={"this_void","narrow","wide","damage","chat","output","usercmd","precache"};
+    const char* sites[]={"this_void","narrow","wide","chat","output","usercmd","precache"};
     const int scenarios[]={1,3,4};
-    constexpr int kMainSites=3,kSites=8;
+    constexpr int kMainSites=3,kSites=7;
     const auto named=S2ProbeNamedCollectOrders();
     if (named.run!=g_run_id || !named.completion || !named.late_installed) return {};
     observations="["; std::string observed_sites="[";

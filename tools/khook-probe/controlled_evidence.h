@@ -239,7 +239,6 @@ struct NamedOrderObservation {
     std::string site,order,trace;
     int callbacks=0,peer_pre=0,peer_post=0,original=0,skipped=-1;
     int64_t effective=0;
-    bool damage_arguments=false,damage_output_preserved=false;
 };
 struct NamedOrderSnapshot {
     std::vector<NamedOrderObservation> rows;
@@ -255,13 +254,6 @@ struct NamedSnapshot {
     int usercmd_argument_matches=0,usercmd_batch_first=-1,usercmd_batch_second=-1;
 
     bool installed = false;
-    int damage_pre = 0, damage_post = 0, damage_original = 0;
-    int damage_nested_restored = 0, damage_expired = 0;
-    int damage_pre_ignore = 0, damage_post_ignore = 0, damage_post_observed = 0;
-    int damage_skipped = 0, damage_argument_matches = 0;
-    int damage_result_null = 0, damage_result_nonnull = 0;
-    int damage_output_writes = 0, damage_output_preserved = 0;
-    FacetObservation damage_current_return;
     int chat_dispatch = 0, chat_original = 0;
     int chat_peer_before = 0, chat_peer_after = 0, chat_peer_order = 0;
     int chat_post_observed = 0;
@@ -288,13 +280,7 @@ struct NamedSnapshot {
     FacetObservation bypass;
     NamedRemovalObservation removal;
     bool CorePassed() const {
-        return installed && damage_pre == 3 && damage_post == 3 && damage_original == 3 &&
-            damage_nested_restored == 2 && damage_expired == 1 &&
-            damage_pre_ignore == 3 && damage_post_ignore == 3 && damage_post_observed == 3 &&
-            damage_skipped == 0 &&
-            damage_current_return.ExplicitlyInapplicable() && damage_argument_matches == 3 &&
-            damage_result_null == 1 && damage_result_nonnull == 2 &&
-            damage_output_writes == 2 && damage_output_preserved == 2 &&
+        return installed &&
             chat_dispatch == 2 && chat_original == 1 && chat_peer_before == 2 &&
             chat_peer_after == 2 && chat_peer_order == 123123 && chat_post_observed == 2 &&
             chat_actions == std::array<int,2>{{0,2}} && chat_skipped == std::array<int,2>{{0,1}} &&
@@ -322,21 +308,6 @@ struct NamedSnapshot {
     bool Passed() const { return CorePassed() && removal.Passed(); }
     std::string Json() const {
         return std::string("{\"installed\":") + (installed ? "true" : "false") +
-            ",\"damage\":{\"pre\":" + std::to_string(damage_pre) +
-            ",\"post\":" + std::to_string(damage_post) +
-            ",\"original\":" + std::to_string(damage_original) +
-            ",\"nested_restored\":" + std::to_string(damage_nested_restored) +
-            ",\"expired\":" + std::to_string(damage_expired) +
-            ",\"pre_ignore\":" + std::to_string(damage_pre_ignore) +
-            ",\"post_ignore\":" + std::to_string(damage_post_ignore) +
-            ",\"post_observed\":" + std::to_string(damage_post_observed) +
-            ",\"skipped\":" + std::to_string(damage_skipped) +
-            ",\"current_return\":" + damage_current_return.Json() +
-            ",\"argument_matches\":" + std::to_string(damage_argument_matches) +
-            ",\"result_null\":" + std::to_string(damage_result_null) +
-            ",\"result_nonnull\":" + std::to_string(damage_result_nonnull) +
-            ",\"output_writes\":" + std::to_string(damage_output_writes) +
-            ",\"output_preserved\":" + std::to_string(damage_output_preserved) + "}" +
             ",\"chat\":{\"dispatch\":" + std::to_string(chat_dispatch) +
             ",\"original\":" + std::to_string(chat_original) +
             ",\"peer_before\":" + std::to_string(chat_peer_before) +

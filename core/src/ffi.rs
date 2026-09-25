@@ -360,19 +360,6 @@ pub extern "C" fn s2script_core_dispatch_game_event_pre(name: *const c_char) -> 
     std::panic::catch_unwind(|| crate::events::dispatch_game_event_pre(name_str)).unwrap_or(0)
 }
 
-/// Slice 6.6 Stage 2: run OnTakeDamage SDKHooks for the current victim. The shim has already
-/// set the current CTakeDamageInfo pointer; handlers read/modify it in place via the damage_* ops.
-#[no_mangle]
-pub extern "C" fn s2script_core_dispatch_damage() {
-    let _ = catch_unwind(|| v8host::dispatch_damage());
-}
-
-/// `OnTakeDamagePost` — after the original DispatchTraceAttack ran. Info pointer still live.
-#[no_mangle]
-pub extern "C" fn s2script_core_dispatch_damage_post() {
-    let _ = catch_unwind(|| v8host::dispatch_damage_post());
-}
-
 /// Shim → core: a per-entity SDKHook VP virtual (Touch family). `type` is the wiki name
 /// (`Touch` / `TouchPost`). `other_handle` is a packed `CEntityHandle` (`ToInt()`), or `-1`.
 /// Returns collapsed `HookResult` 0..=3; shim SUPERCEDEs the original when `>= Handled` on pre.

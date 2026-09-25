@@ -2655,74 +2655,6 @@ fn s2_precache_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 
 // `__s2_cookie_on_cached` / `__s2_cookie_dispatch_cached` moved to `crate::cookies`.
 
-thread_local! {
-    /// `OnTakeDamagePost` must not write through `DamageInfo.damage` (spec: info is read-only).
-    static DAMAGE_WRITES_FROZEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-fn with_damage_writes_frozen(frozen: bool, f: impl FnOnce()) {
-    DAMAGE_WRITES_FROZEN.with(|c| {
-        let prev = c.get();
-        c.set(frozen);
-        f();
-        c.set(prev);
-    });
-}
-
-/// `__s2_damage_read_float(offset) -> f32` — read a float from the current CTakeDamageInfo. 0 if no op.
-fn s2_damage_read_float(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_double(0.0);
-        if args.length() < 1 { return; }
-        let off = args.get(0).int32_value(scope).unwrap_or(-1);
-        if off < 0 { return; }
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(func) = ops.damage_read_float else { return };
-        rv.set_double(func(off) as f64);
-    }));
-}
-
-/// `__s2_damage_read_int(offset) -> i32` — read an int (e.g. a handle or m_bitsDamageType). 0 if no op.
-fn s2_damage_read_int(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_double(0.0);
-        if args.length() < 1 { return; }
-        let off = args.get(0).int32_value(scope).unwrap_or(-1);
-        if off < 0 { return; }
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(func) = ops.damage_read_int else { return };
-        rv.set_double(func(off) as f64);
-    }));
-}
-
-/// `__s2_damage_write_float(offset, value)` — write m_flDamage etc. during a pre-hook (modify/block).
-/// No-op if no op, or during `OnTakeDamagePost` (info is read-only after the original ran).
-fn s2_damage_write_float(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if DAMAGE_WRITES_FROZEN.with(|c| c.get()) {
-            return;
-        }
-        if args.length() < 2 { return; }
-        let off = args.get(0).int32_value(scope).unwrap_or(-1);
-        if off < 0 { return; }
-        let val = args.get(1).number_value(scope).unwrap_or(0.0) as f32;
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(func) = ops.damage_write_float else { return };
-        func(off, val);
-    }));
-}
-
-/// `__s2_damage_victim() -> i32` — the victim's raw CEntityHandle (from the detour `this`). -1 if no op.
-/// JS decodes it via `__s2_handle_decode` into an EntityRef.
-fn s2_damage_victim(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_double(-1.0);
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(func) = ops.damage_victim else { return };
-        rv.set_double(func() as f64);
-    }));
-}
-
 /// `__s2_cvar_get(name) -> string` — a cvar's current value as a string. "" if no op / absent / null.
 fn s2_cvar_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -3904,90 +3836,6 @@ fn s2_translations_read(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
 
 
 
-/// Slice 6.6 Stage 2: run OnTakeDamage SDKHooks over the current CTakeDamageInfo (set by the
-/// shim detour). Mirrors `dispatch_game_event`: snapshot (release the table borrow), re-entrancy guard,
-/// per-subscriber liveness + context + TryCatch. Each handler gets `new DamageInfo()` (a block-scoped
-/// accessor over the current damage) and reads/modifies it in place; blocking = the handler setting
-/// damage to 0.
-/// Zero the live CTakeDamageInfo damage — the block power behind an OnTakeDamage SDKHook
-/// returning `>= HookResult.Handled` (locked decision #8). Reuses the exact write path the JS
-/// `DamageInfo.damage = 0` setter takes: resolve `m_flDamage`'s schema offset, then the
-/// `damage_write_float` engine op with `0.0`. (CTakeDamageInfo is a Source 2 engine type, not a
-/// game-specific one — engine-generic, like the rest of the damage module.) No-op if the offset is
-/// unresolved or the op is absent (degrade-never-crash).
-fn zero_current_damage() {
-    let live_raw = |c: &str, f: &str| -> i32 {
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return -1 };
-        let Some(func) = ops.schema_offset else { return -1 };
-        let (Ok(cc), Ok(cf)) = (CString::new(c), CString::new(f)) else { return -1 };
-        func(cc.as_ptr(), cf.as_ptr())
-    };
-    let live_log = |_msg: &str| {};
-    let off = SCHEMA_OFFSETS.with(|c| c.borrow_mut().resolve("CTakeDamageInfo", "m_flDamage", live_raw, live_log));
-    if off < 0 { return; }
-    if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.damage_write_float) {
-        func(off, 0.0);
-    }
-}
-
-pub(crate) fn dispatch_damage() {
-    // Handled zeroes live damage AFTER the collapse (does not skip later observers). Stop truncates.
-    with_damage_writes_frozen(false, || {
-        dispatch_damage_kind(
-            crate::sdkhooks::snapshot_ontakedamage(),
-            "dispatch_damage",
-            "damage:onPre",
-            StopAt::Stop,
-            true,
-        );
-    });
-}
-
-/// `OnTakeDamagePost` — after the original DTA ran. Return is ignored; Handled does not zero.
-/// `DamageInfo.damage` assignment is frozen (spec: info is read-only on the post-hook).
-pub(crate) fn dispatch_damage_post() {
-    with_damage_writes_frozen(true, || {
-        dispatch_damage_kind(
-            crate::sdkhooks::snapshot_ontakedamage_post(),
-            "dispatch_damage_post",
-            "damage:onPost",
-            StopAt::Never,
-            false,
-        );
-    });
-}
-
-fn dispatch_damage_kind(
-    snap: Vec<(String, u64, v8::Global<v8::Function>)>,
-    label: &'static str,
-    breadcrumb: &'static str,
-    stop_at: StopAt,
-    zero_on_handled: bool,
-) {
-    let result = fan_out_collapsing(
-        &snap,
-        label,
-        Instrument::breadcrumb(breadcrumb),
-        stop_at,
-        |tc| {
-            let info: Option<v8::Local<v8::Value>> = (|| {
-                let global = tc.get_current_context().global(tc);
-                let pkg_key = v8::String::new(tc, "__s2pkg_damage")?;
-                let pkg = global.get(tc, pkg_key.into())?;
-                let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
-                let ctor_key = v8::String::new(tc, "DamageInfo")?;
-                let ctor_val = pkg.get(tc, ctor_key.into())?;
-                let ctor = v8::Local::<v8::Function>::try_from(ctor_val).ok()?;
-                ctor.new_instance(tc, &[]).map(|o| -> v8::Local<v8::Value> { o.into() })
-            })();
-            Some(vec![info.unwrap_or_else(|| v8::undefined(tc).into())])
-        },
-    );
-    if zero_on_handled && result >= HookResult::Handled {
-        zero_current_damage();
-    }
-}
-
 /// Usercmd primitive Task 2: run the `UserCmd.onRun` subscribers over the current tick's input (the
 /// Task-3 shim detour sets the current `s_currentUserCmd` before calling this, and reads the
 /// possibly-modified fields back after). Mirrors `dispatch_damage`'s snapshot + `try_borrow_mut`
@@ -4668,7 +4516,7 @@ fn defer_selftest_armed() -> bool {
 /// engine call that fires an event synchronously inside the borrow — which is exactly what A5b's
 /// `Respawn`/`TerminateRound` descriptors now are, but reaching them needs a live player on a real
 /// server, so the synthetic path stays the bot-only-server proof. This is the same reason
-/// `S2_DAMAGE_SELFTEST` exists for the damage detour, and it carries the same discipline: env-gated,
+/// the (now retired) `S2_DAMAGE_SELFTEST` existed for the damage detour, and it carries the same discipline: env-gated,
 /// off by default, loudly labelled, and NOT to be run in production — it dispatches a REAL event
 /// name with FAKE field values to every subscribed plugin.
 ///

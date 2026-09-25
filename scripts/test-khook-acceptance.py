@@ -1059,18 +1059,6 @@ class IntegrationEvidenceTests(unittest.TestCase):
         identity = dict(IDENTITY, gamedata_capture=self.gamedata_fixture()[1])
         return ka.judge_records(records, identity=identity, suite=suite)
 
-    def test_damage_requires_void_three_pointer_and_real_output_witnesses(self):
-        for field, value in (("arguments", 2), ("result_null", 0), ("result_nonnull", 0),
-                             ("output_writes", 0), ("output_preserved", 1), ("return_kind", "int64"), ("skipped", 1)):
-            records = self.records("B")
-            row = next(r for r in records if r["subcheck"] == "native_damage_valid_pre_post")
-            row["actual"][field] = value
-            self.assertEqual(self.judge(records, "B").exit_code, 1, field)
-        records = self.records("B")
-        row = next(r for r in records if r["subcheck"] == "native_damage_peer_orders_original_state")
-        row["actual"] = {"orders": ["peer-first", "s2script-first"], "current_return_matches": True}
-        self.assertEqual(self.judge(records, "B").exit_code, 1)
-
     def test_populated_parser_examples(self):
         for suite in ("B", "C"):
             result = self.judge(self.records(suite), suite)
