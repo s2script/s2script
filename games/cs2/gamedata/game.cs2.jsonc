@@ -284,6 +284,8 @@
     // correctly rejects build 25218825; rederive on updates rather than weakening validation.
     // The build-25470087 weapon_incgrenade LEA is at +0x7f7. Keep its opcode in
     // the signature; mask the intervening body and its RIP displacement.
+    // Bound BY NAME by the trusted `canAcquire` engine function (games/cs2/trusted-functions.jsonc);
+    // a custom/ override of this entry repairs it and is recorded in the package status.
     "CCSPlayer_ItemServices_CanAcquire": {
       "linuxsteamrt64": {
         "module": "libserver.so",
@@ -367,6 +369,7 @@
     // update (one listener vfunc inserted); on a miss, re-derive from the sole direct caller.
     // Verified UNIQUE across PF_X @ va 0xb26020 in libserver.so SHA-256 23373cfd…e87f (1.41.8.2;
     // sole caller 0xac2c36). Previous +0x120 form: 0xb2bcb0 (24916958), 0xb2e370 (a4c54f83…).
+    // Bound BY NAME by the trusted `customHudClicked` engine function (trusted-functions.jsonc).
     "CCSCustomHudLayout_CustomHudClickedReceiver": {
       "linuxsteamrt64": {
         "module": "libserver.so",
@@ -646,27 +649,6 @@
       "receiver": { "kind": "entity", "as": "player" },
       "bypassWith": "respawn",
       "expose": { "ctx": "players" }
-    },
-
-    // ctx.items.onCanAcquire — pickup gate. NO bypassWith: giveNamedItem must fire this hook.
-    // ItemServices* is not an entity; player is recovered in the game-package wrapper.
-    // `result` is the i32 return (synthetic addressable slot), not an ABI argument.
-    "onCanAcquire": {
-      "target": { "kind": "signature", "name": "CCSPlayer_ItemServices_CanAcquire" },
-      "shape": "this_i64_i32_i64",
-      "params": ["method", "result"],
-      "mutable": ["result"],
-      "expose": { "ctx": "items", "handwritten": true }
-    },
-
-    // ctx.ui.onCustomHudClicked — observer only. The handwritten wrapper in games/cs2/js/ui.js
-    // always returns Continue so map cs_script handlers (e.g. zoo Dismiss) still run.
-    "onCustomHudClicked": {
-      "target": { "kind": "signature", "name": "CCSCustomHudLayout_CustomHudClickedReceiver" },
-      "shape": "this_i64_i64_i64",
-      "params": ["buttonId"],
-      "receiver": { "kind": "entity", "as": "player" },
-      "expose": { "ctx": "ui", "handwritten": true }
     }
   }
 }

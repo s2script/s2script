@@ -7,7 +7,7 @@ import vm from "node:vm";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { cs2AddonBundle } from "./cs2-addon.mjs";
+import { cs2AddonBundle, cs2AdapterContracts } from "./cs2-addon.mjs";
 import { sharedSwitchFixture } from "../../../games/cs2/js/shared-switch-fixture.js";
 import { installClientHost } from "./client-host.mjs";
 
@@ -83,10 +83,13 @@ function makeHost({ ready = BASE_CALLS, onInvoke, onHook, entities = [], signon 
       invokes.push({ name, index, id, args });
       return onInvoke ? onInvoke(name, args, { index, id }) : undefined;
     },
-    __s2_hook_on: (owner, name, handler) => {
-      hooks.push({ owner, name, handler });
+    // The S2 adapter natives the package bootstrap captures (see games/cs2/js/adapters).
+    __s2_adapter_contracts: cs2AdapterContracts,
+    __s2_function_adapter_register: () => ({}),
+    __s2_function_adapter_subscribe: (name, adapter, phase, handler) => {
+      hooks.push({ name, adapter, phase, handler });
       hookSubs.push(handler);
-      return hooks.length;
+      return { status: "active" };
     },
     __s2_hook_self_matches: () => false,
     __s2_schema_offset: () => -1,
@@ -510,12 +513,12 @@ test("one click hook is installed in the plugin load window before routes are ad
   const h = makeHost();
   const ui = h.armPlugin();
   h.ctx.__s2_ctx_arm();
-  assert.equal(h.hooks.filter((x) => x.name === "onCustomHudClicked").length, 1);
+  assert.equal(h.hooks.filter((x) => x.name === "customHudClicked").length, 1);
   ui.createLayout();
   const hud = ui.hud();
   hud.onClick("s2_btn_0", () => {});
   ui.onCustomHudClicked(() => {});
-  assert.equal(h.hooks.filter((x) => x.name === "onCustomHudClicked").length, 1);
+  assert.equal(h.hooks.filter((x) => x.name === "customHudClicked").length, 1);
 });
 
 test("MAM banner emitted once on first hud()", () => {

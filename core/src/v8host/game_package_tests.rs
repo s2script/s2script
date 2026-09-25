@@ -150,9 +150,26 @@ fn build_real_package(tag: &str) -> std::path::PathBuf {
     assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
     root
 }
-extern "C" fn trusted_instance_prepare(binding: u64, _: *const S2FunctionInstanceOwner, _: *const i8, _: *const i8,
+fn merged_signatures(root: &std::path::Path) -> String {
+    let bundle: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("game-packages/cs2/gamedata.json")).unwrap()).unwrap();
+    let mut signatures = serde_json::Map::new();
+    for file in bundle["files"].as_array().unwrap() {
+        if let Some(entries) = file["document"]["signatures"].as_object() {
+            signatures.extend(entries.clone());
+        }
+    }
+    json!({ "signatures": signatures }).to_string()
+}
+thread_local! {
+    static TRUSTED_TARGETS: std::cell::RefCell<std::collections::BTreeMap<String, i64>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+extern "C" fn trusted_instance_prepare(binding: u64, _: *const S2FunctionInstanceOwner, name: *const i8, _: *const i8,
     _: *const i8, out: *mut S2FunctionInstancePrepared, _: *mut i8, _: i32) -> i32 {
     // Distinct native targets per binding, as two different engine functions resolve to.
+    let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+    TRUSTED_TARGETS.with(|t| t.borrow_mut().insert(name, binding as i64));
     unsafe { *out = S2FunctionInstancePrepared { version: 1, struct_size: 24, target: binding as i64, capability: binding } };
     1
 }
@@ -174,11 +191,7 @@ extern "C" fn no_write_copy(_: i64, _: u64, _: u64, _: *const i8, _: i32, _: *co
 extern "C" fn no_override_copy(_: i64, _: u64, _: u64, _: *const i8, _: *const S2FunctionValue, _: *const S2FunctionCopyInput,
     _: *const S2FunctionCopyProducer, _: *mut S2FunctionValue, _: *mut S2FunctionCopyOutput, _: *mut i8, _: i32) -> i32 { 0 }
 
-/// The shipped CS2 package: its sealed trusted source is materialized against the MERGED gamedata
-/// signatures at commit, both adapter bindings are prepared, activated and authorized, and a
-/// plugin context can subscribe through the package adapters (the natives themselves are gone).
-#[test]
-fn selected_real_package_activates_trusted_functions_from_merged_gamedata() {
+fn install_trusted_ops() {
     function_adapter::scalar_transport_tests::init_transport();
     let mut ops = engine_ops().unwrap();
     ops.function_prepare_instance = Some(trusted_instance_prepare);
@@ -194,16 +207,15 @@ fn selected_real_package_activates_trusted_functions_from_merged_gamedata() {
     ops.function_frame_commit_copy = Some(no_write_copy);
     ops.function_frame_override_return_copy = Some(no_override_copy);
     set_engine_ops(Some(ops));
+}
+/// The shipped CS2 package: its sealed trusted source is materialized against the MERGED gamedata
+/// signatures at commit, both adapter bindings are prepared, activated and authorized, and a
+/// plugin context can subscribe through the package adapters (the natives themselves are gone).
+#[test]
+fn selected_real_package_activates_trusted_functions_from_merged_gamedata() {
+    install_trusted_ops();
     let root = build_real_package("trusted");
-    let bundle: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(root.join("game-packages/cs2/gamedata.json")).unwrap()).unwrap();
-    let mut signatures = serde_json::Map::new();
-    for file in bundle["files"].as_array().unwrap() {
-        if let Some(entries) = file["document"]["signatures"].as_object() {
-            signatures.extend(entries.clone());
-        }
-    }
-    let merged = json!({ "signatures": signatures }).to_string();
+    let merged = merged_signatures(&root);
     let handle = crate::game_packages::select(&root, "source2", "csgo", "linuxsteamrt64").unwrap();
     crate::game_packages::commit(handle, &merged, b"GCR1\0\0\0\0\0\0\0\0").unwrap();
     let status: serde_json::Value = serde_json::from_slice(&crate::game_packages::status()).unwrap();
@@ -234,6 +246,250 @@ fn selected_real_package_activates_trusted_functions_from_merged_gamedata() {
     )
     .unwrap();
     unload_plugin("trusted-real");
+    shutdown();
+    set_engine_ops(None);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+// A pointer-free native frame for the trusted canAcquire binding: (hidden services, item record,
+// i32 method, hidden) -> i32. It models the shim's order: PRE commit decides whether the
+// original runs; POST reads the current return (-2), the engine original (-3) and may override.
+#[derive(Clone, Copy, Default)]
+struct AcquireFrame {
+    token: u64,
+    method: i32,
+    def_index: u32,
+    item: bool,
+    original: i32,
+    current: i32,
+    action: i32,
+    committed: Option<i32>,
+    overrides: u32,
+}
+thread_local! { static ACQUIRE_FRAME: std::cell::Cell<AcquireFrame> = std::cell::Cell::new(AcquireFrame::default()); }
+fn i32_value(v: i32) -> S2FunctionValue {
+    let mut out = crate::engine_functions::runtime::blank();
+    out.kind = 2;
+    out.bits = v as u32 as u64;
+    out
+}
+extern "C" fn acquire_read(_: i64, token: u64, _: u64, _: *const i8, selector: i32, kind: u8, out: *mut S2FunctionValue,
+    _: *mut i8, _: i32) -> i32 {
+    let f = ACQUIRE_FRAME.with(|c| c.get());
+    let value = match selector { 2 => f.method, -2 => f.current, -3 => f.original, _ => return 0 };
+    if token != f.token || kind != 2 { return 0; }
+    unsafe { *out = i32_value(value) };
+    1
+}
+extern "C" fn acquire_commit(_: i64, token: u64, _: u64, _: *const i8, action: i32, value: *const S2FunctionValue,
+    _: *mut i8, _: i32) -> i32 {
+    ACQUIRE_FRAME.with(|c| {
+        let mut f = c.get();
+        if token != f.token { return 0; }
+        f.action = action;
+        f.committed = (!value.is_null()).then(|| unsafe { (*value).bits as i32 });
+        c.set(f);
+        1
+    })
+}
+extern "C" fn acquire_override(_: i64, token: u64, _: u64, _: *const i8, value: *const S2FunctionValue,
+    out: *mut S2FunctionValue, _: *mut i8, _: i32) -> i32 {
+    ACQUIRE_FRAME.with(|c| {
+        let mut f = c.get();
+        if token != f.token { return 0; }
+        f.current = unsafe { (*value).bits as i32 };
+        f.overrides += 1;
+        c.set(f);
+        unsafe { *out = *value };
+        1
+    })
+}
+extern "C" fn acquire_presence(access: *const S2FunctionInstanceAccess, selector: i32, out: *mut S2FunctionValue,
+    _: *mut i8, _: i32) -> i32 {
+    let f = ACQUIRE_FRAME.with(|c| c.get());
+    if unsafe { (*access).frame_token } != f.token || selector != 1 { return 0; }
+    let mut v = crate::engine_functions::runtime::blank();
+    v.kind = 1;
+    v.bits = f.item as u64;
+    unsafe { *out = v };
+    1
+}
+extern "C" fn acquire_field(access: *const S2FunctionInstanceAccess, selector: i32, field: u32, out: *mut S2FunctionValue,
+    _: *mut i8, _: i32) -> i32 {
+    let f = ACQUIRE_FRAME.with(|c| c.get());
+    if unsafe { (*access).frame_token } != f.token || selector != 1 || field != 0 { return 0; }
+    let mut v = crate::engine_functions::runtime::blank();
+    v.kind = 3;
+    v.bits = f.def_index as u64;
+    unsafe { *out = v };
+    1
+}
+extern "C" fn acquire_unrelated(_: *const S2FunctionInstanceAccess, _: i32, _: *const S2FunctionValue, _: u32,
+    out: *mut i32, _: *mut i8, _: i32) -> i32 {
+    unsafe { *out = 0 };
+    1
+}
+/// PRE, then (as the shim would) the original unless PRE suppressed, then POST. Returns the
+/// final native return and whether the original was skipped.
+fn acquire_dispatch(target: i64, engine: i32, item: bool) -> (i32, bool, u32) {
+    let id = crate::engine_functions::registry::next_id().unwrap();
+    ACQUIRE_FRAME.with(|c| c.set(AcquireFrame { token: id, method: 1, def_index: 42, item, ..Default::default() }));
+    let mut info = S2FunctionFrameInfo { version: 1, struct_size: 48, frame_token: id, native_epoch: id,
+        invocation_id: id, suppressed_owner: 0, parameter_count: 4, flags: 0 };
+    assert_eq!(crate::ffi::s2script_core_dispatch_function(target, &info, 0), 1, "PRE");
+    let skipped = ACQUIRE_FRAME.with(|c| {
+        let mut f = c.get();
+        let skipped = f.action >= 2;
+        if skipped { f.current = f.committed.expect("a suppressing PRE commits its return"); }
+        else { f.original = engine; f.current = engine; }
+        c.set(f);
+        skipped
+    });
+    info.flags = skipped as _;
+    assert_eq!(crate::ffi::s2script_core_dispatch_function(target, &info, 1), 1, "POST");
+    let f = ACQUIRE_FRAME.with(|c| c.get());
+    (f.current, skipped, f.overrides)
+}
+
+/// The shipped package end to end on the real V8 facade: two plugins' `items` gates fold through
+/// the packaged legacy.acquire.v1 adapter over the trusted canAcquire binding.
+#[test]
+fn shipped_items_gates_fold_through_the_trusted_acquire_adapter() {
+    install_trusted_ops();
+    let mut ops = engine_ops().unwrap();
+    ops.function_frame_read = Some(acquire_read);
+    ops.function_frame_commit = Some(acquire_commit);
+    ops.function_frame_override_return = Some(acquire_override);
+    ops.function_frame_read_instance = Some(acquire_presence);
+    ops.function_frame_field_read = Some(acquire_field);
+    ops.function_frame_hidden_referenced_by = Some(acquire_unrelated);
+    set_engine_ops(Some(ops));
+    let root = build_real_package("acquire");
+    let handle = crate::game_packages::select(&root, "source2", "csgo", "linuxsteamrt64").unwrap();
+    crate::game_packages::commit(handle, &merged_signatures(&root), b"GCR1\0\0\0\0\0\0\0\0").unwrap();
+    let target = TRUSTED_TARGETS.with(|t| t.borrow()["@s2script/cs2::canAcquire"]);
+    let plugin = r#"const {items}=require("@s2script/cs2");
+        globalThis.log=[];globalThis.mode=null;
+        exports.OnPluginStart=()=>{
+          items.onCanAcquire(v=>{
+            log.push(`pre:${v.method}:${v.defIndex}:${v.result}:${v.player}:${v.skipped}`);
+            if(!mode)return 0;
+            if(mode.write!==undefined)v.result=mode.write;
+            return mode.action;
+          });
+          items.onCanAcquirePost(v=>{log.push(`post:${v.result}:${v.skipped}`);v.result=99;});
+        };"#;
+    for id in ["acquire-a", "acquire-b"] {
+        load_plugin_js(id, plugin, "{}");
+        assert!(!is_failed(id), "{:?}", FAILED_PLUGINS.with(|p| p.borrow().clone()));
+    }
+    // Each step sets both plugins' mode and clears both logs.
+    let set = |a: &str, b: &str| {
+        eval_in_context("acquire-a", &format!("log.length=0;mode={a};")).unwrap();
+        eval_in_context("acquire-b", &format!("log.length=0;mode={b};")).unwrap();
+    };
+    let log = |id: &str| frame_tests::eval_in_context_string(id, "log.join('|')");
+    // No vote: the engine result stands, both POST observers see it unskipped.
+    set("null", "null");
+    assert_eq!(acquire_dispatch(target, 3, true), (3, false, 0));
+    assert_eq!(log("acquire-a"), "pre:1:42:0:null:false|post:3:false");
+    // Changed deny with engine Allow: carried to the forced POST and overridden once.
+    set("{write:6,action:1}", "null");
+    assert_eq!(acquire_dispatch(target, 0, true), (6, false, 1));
+    assert_eq!(log("acquire-b"), "pre:1:42:6:null:false|post:6:false", "B sees A's shared write and the effective return");
+    // Changed Allow with engine deny: no override.
+    set("{write:0,action:1}", "null");
+    assert_eq!(acquire_dispatch(target, 6, true), (6, false, 0));
+    // A later Handled deny outranks an earlier Changed deny; the original is skipped.
+    set("{write:6,action:1}", "{write:2,action:2}");
+    assert_eq!(acquire_dispatch(target, 0, true), (2, true, 0));
+    assert_eq!(log("acquire-a"), "pre:1:42:0:null:false|post:2:true");
+    assert_eq!(log("acquire-b"), "pre:1:42:6:null:false|post:2:true");
+    // Handled without a write: the implicit deny 1; a null item reads defIndex 0.
+    set("{action:2}", "null");
+    assert_eq!(acquire_dispatch(target, 0, false), (1, true, 0));
+    assert_eq!(log("acquire-a"), "pre:1:0:0:null:false|post:1:true");
+    // Stop ends delivery: B never runs.
+    set("{write:4,action:3}", "{write:9,action:2}");
+    assert_eq!(acquire_dispatch(target, 0, true), (4, true, 0));
+    assert_eq!(log("acquire-b"), "post:4:true");
+    // Outside the load window the module API refuses registration.
+    assert!(frame_tests::eval_in_context_string("acquire-a",
+        r#"(()=>{try{__s2require("@s2script/cs2").items.onCanAcquire(()=>0);return 'ok'}catch(e){return String(e.message)}})()"#)
+        .contains("outside the load window"));
+    for id in ["acquire-a", "acquire-b"] { unload_plugin(id); }
+    shutdown();
+    set_engine_ops(None);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+thread_local! {
+    static HUD_FRAME: std::cell::Cell<(u64, i32, bool)> = const { std::cell::Cell::new((0, -1, false)) };
+    static HUD_CLICKER: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+extern "C" fn hud_read(_: i64, token: u64, _: u64, _: *const i8, selector: i32, _: u8, out: *mut S2FunctionValue,
+    _: *mut i8, _: i32) -> i32 {
+    if token != HUD_FRAME.with(|f| f.get().0) || selector != 1 { return 0; }
+    let reference = crate::engine_functions::projection::EntityReference { index: 611, id: HUD_CLICKER.with(|c| c.get()) };
+    let value = crate::engine_functions::projection::encode(crate::engine_functions::projection::ProjectedValue::Entity {
+        reference: Some(reference), nullable: true }).unwrap();
+    unsafe { *out = value };
+    1
+}
+/// The native side copied the CUtlString before dispatch; the host serves that snapshot.
+extern "C" fn hud_read_copy(_: i64, token: u64, _: u64, _: *const i8, selector: i32, value: *mut S2FunctionValue,
+    output: *mut S2FunctionCopyOutput, _: *mut i8, _: i32) -> i32 {
+    if token != HUD_FRAME.with(|f| f.get().0) || selector != 3 { return 0; }
+    let text = b"Dismiss";
+    unsafe {
+        if (*value).flags != 4 || (*output).capacity < text.len() as u64 { return 0; }
+        std::ptr::copy_nonoverlapping(text.as_ptr(), (*output).data, text.len());
+        (*output).size = text.len() as u64;
+        (*value).aux = text.len() as u32;
+    }
+    1
+}
+extern "C" fn hud_commit_copy(_: i64, token: u64, _: u64, _: *const i8, action: i32, _: *const S2FunctionValue,
+    _: *const S2FunctionCopyInput, _: *const S2FunctionCopyProducer, _: *mut i8, _: i32) -> i32 {
+    HUD_FRAME.with(|f| {
+        let (id, _, committed) = f.get();
+        if token != id || committed { return 0; }
+        f.set((id, action, true));
+        1
+    })
+}
+
+/// The shipped package end to end: a plugin's `ui.onClicked` receives the host-copied button id
+/// and the clicker during the native PRE (before the original would run), and the adapter
+/// commits Continue so the engine's own click handling proceeds.
+#[test]
+fn shipped_ui_clicks_are_delivered_by_the_trusted_hud_adapter_before_the_original() {
+    install_trusted_ops();
+    let mut ops = engine_ops().unwrap();
+    ops.function_frame_read = Some(hud_read);
+    ops.function_frame_read_copy = Some(hud_read_copy);
+    ops.function_frame_commit_copy = Some(hud_commit_copy);
+    set_engine_ops(Some(ops));
+    let root = build_real_package("hud");
+    let handle = crate::game_packages::select(&root, "source2", "csgo", "linuxsteamrt64").unwrap();
+    crate::game_packages::commit(handle, &merged_signatures(&root), b"GCR1\0\0\0\0\0\0\0\0").unwrap();
+    let target = TRUSTED_TARGETS.with(|t| t.borrow()["@s2script/cs2::customHudClicked"]);
+    load_plugin_js("hud-clicks", r#"const {ui}=require("@s2script/cs2/ui");
+        globalThis.log=[];
+        exports.OnPluginStart=()=>{ ui.onClicked(v=>log.push(`${v.buttonId}:${v.slot}:${v.player&&v.player.index}`)); };"#, "{}");
+    assert!(!is_failed("hud-clicks"), "{:?}", FAILED_PLUGINS.with(|p| p.borrow().clone()));
+    HUD_CLICKER.with(|c| c.set(crate::entity_live::on_created(611, 42)));
+    let id = crate::engine_functions::registry::next_id().unwrap();
+    HUD_FRAME.with(|f| f.set((id, -1, false)));
+    let info = S2FunctionFrameInfo { version: 1, struct_size: 48, frame_token: id, native_epoch: id,
+        invocation_id: id, suppressed_owner: 0, parameter_count: 4, flags: 0 };
+    assert_eq!(crate::ffi::s2script_core_dispatch_function(target, &info, 0), 1);
+    // Delivered within PRE (the original has not run yet) and committed as Continue.
+    assert_eq!(frame_tests::eval_in_context_string("hud-clicks", "log.join('|')"), "Dismiss:-1:611");
+    assert_eq!(HUD_FRAME.with(|f| f.get()), (id, 0, true));
+    assert_eq!(crate::ffi::s2script_core_dispatch_function(target, &info, 1), 1);
+    crate::entity_live::on_deleted(611, 42);
+    unload_plugin("hud-clicks");
     shutdown();
     set_engine_ops(None);
     std::fs::remove_dir_all(root).unwrap();

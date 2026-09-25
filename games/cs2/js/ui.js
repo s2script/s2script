@@ -918,8 +918,17 @@
           for (var i = 0; i < pending.length; i++) pending[i]();
         }, { phase: "pre" });
       }));
-      reg(viaId(function () {
-        return __s2_hook_on("@s2script/cs2", "onCustomHudClicked", function (view) {
+      // Clicks arrive through the trusted `customHudClicked` engine function and the
+      // legacy.hud-click.v1 package adapter (js/adapters/hud-click.js): delivered during the
+      // native PRE, before the engine's own handlers, with a host-copied button id; this wrapper
+      // never suppresses, so map cs_script handlers still run.
+      reg(function () {
+        var hudClick = globalThis.__s2pkg_cs2_adapters && globalThis.__s2pkg_cs2_adapters.hudClick;
+        if (!hudClick) {
+          console.log("[s2script] WARN: ctx.ui click routing is not packaged, so HUD clicks will not be delivered");
+          return;
+        }
+        hudClick.subscribe(function (view) {
           var clicker = resolveClicker(view.player);
           var slot = clicker ? clicker.slot : -1;
           if (slot >= 0) {
@@ -935,9 +944,8 @@
           for (var r = 0; r < rawSnapshot.length; r++) {
             rawSnapshot[r]({ player: view.player, buttonId: view.buttonId, slot: slot });
           }
-          return 0;
         });
-      }));
+      });
 
       function notReadyReason() {
         return ready

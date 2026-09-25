@@ -777,18 +777,12 @@ bool Load(const std::string& path) {
     return true;
 }
 bool ResolveAcquire() {
-    const auto hook=game_config.hooks.find("onCanAcquire");
-    if (hook==game_config.hooks.end()) { reason="onCanAcquire descriptor missing"; return false; }
-    const auto decl=Json::parse(hook->second,nullptr,false);
-    if (decl.is_discarded() || decl.value("shape","")!="this_i64_i32_i64" || !decl.contains("target")) return false;
-    auto target=decl["target"];
-    if (target.value("kind","")!="signature") { reason="acquisition descriptor is not the declared signature ABI"; return false; }
-    if (target.value("pattern","").empty()) {
-        const auto signature=game_config.signatures.find(target.value("name",""));
-        if (signature==game_config.signatures.end()) { reason="acquisition signature missing"; return false; }
-        target["module"]=signature->second.module; target["pattern"]=signature->second.pattern; target["resolve"]=signature->second.resolve;
-        if (!target.contains("validate") && !signature->second.validate.empty()) target["validate"]=Json::parse(signature->second.validate,nullptr,false);
-    }
+    // CanAcquire is a trusted package function now (no legacy hook descriptor): resolve its
+    // named signature entry, with the validator authored next to the pattern.
+    const auto signature=game_config.signatures.find("CCSPlayer_ItemServices_CanAcquire");
+    if (signature==game_config.signatures.end()) { reason="acquisition signature missing"; return false; }
+    Json target={{"module",signature->second.module},{"pattern",signature->second.pattern},{"resolve",signature->second.resolve}};
+    if (!signature->second.validate.empty()) target["validate"]=Json::parse(signature->second.validate,nullptr,false);
     // Exactly the current descriptor's lifted validator; no acceptance-only repair.
     if (!target.contains("validate") || target["validate"].is_discarded() || target["validate"].empty()) { reason="acquisition effective validator missing"; return false; }
     s2resolve::TargetRecipe recipe;

@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { stripJsonComments } from "../src/gamedata/jsonc.ts";
+import { hashCanonical } from "../src/engine-functions/canonical-json.ts";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -24,7 +25,20 @@ function bundleFiles() {
   return files.map(f => `games/cs2/${f}`);
 }
 
+/** Engine-function adapter sources in the builder's order (sorted by adapter id), prepended. */
+function adapterEntries() {
+  const source = JSON.parse(stripJsonComments(readFileSync(join(repo, "games/cs2/game-package.jsonc"), "utf8")));
+  return Object.keys(source.adapters ?? {}).sort().map(id => [id, source.adapters[id]]);
+}
+
+/**
+ * id -> locked contract hash, as the builder's `__s2_adapter_contracts` prelude publishes it.
+ * A test host that models the S2 adapter natives installs this global itself.
+ */
+export const cs2AdapterContracts = Object.freeze(Object.fromEntries(adapterEntries().map(([id, entry]) =>
+  [id, hashCanonical(JSON.parse(readFileSync(join(repo, "games/cs2", entry.contract), "utf8")))])));
+
 /** The concatenated CS2 addon bundle, ready to hand to vm.runInContext. */
-export const cs2AddonBundle = bundleFiles()
+export const cs2AddonBundle = [...adapterEntries().map(([, entry]) => `games/cs2/${entry.source}`), ...bundleFiles()]
   .map((f) => readFileSync(join(repo, f), "utf8"))
   .join("\n");
