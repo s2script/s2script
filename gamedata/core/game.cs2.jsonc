@@ -69,7 +69,10 @@
     // resolved fn ptr must land inside libserver.so's own .text range, mirroring
     // CNavPhysicsInterface_TraceShape above) before ever being called; a stale/wrong index
     // degrades the teleport op to unavailable, never crashes.
-    "CBaseEntity_Teleport": { "linuxsteamrt64": 162 },
+    // Build 25515854 inserted two CBaseEntity virtuals (237 -> 239 slots): Teleport moved 162 -> 164
+    // (identical body). The bare index kept "working" at 162, calling a different virtual with
+    // Teleport's arguments: teleport() returned true and moved nothing. Nothing validates this index.
+    "CBaseEntity_Teleport": { "linuxsteamrt64": 164 },
     // CGameRulesGameSystem::OnPrecacheResource vtable INDEX (not byte offset).
     // Resolve the class vtable through RTTI, retain its identity and validate the slot's
     // original target. Register the checked stock KHook global virtual binding; KHook owns
