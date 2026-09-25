@@ -74,6 +74,10 @@ bash scripts/check-core-boundary.sh
 echo "== test-boundary-nameleak.sh =="
 bash scripts/test-boundary-nameleak.sh
 
+echo "== check-game-package-boundary.sh (+ self-test) =="
+bash scripts/check-game-package-boundary.sh
+bash scripts/check-game-package-boundary.sh --self-test
+
 echo "== test-original-module.sh (verified original instruction images) =="
 bash scripts/test-original-module.sh
 

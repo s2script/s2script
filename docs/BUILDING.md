@@ -80,6 +80,7 @@ dist/addons/
     game-packages/cs2/
       index.js          # ordered package bootstrap, ending in its module export map
       gamedata.json     # verified owner/master/target documents
+      trusted-functions.json # package-owned functions: acquire, HUD click, damage
       engine-functions.json # only for an explicitly authored functionsFile; CS2 does not ship one yet
     plugins/            # base .s2sp plugins (release) / drop zone
     configs/            # empty — must be writable at runtime
@@ -115,6 +116,8 @@ else, so a new gate is added to the script, never to the workflow YAML. `npm ci`
 
 The boundary checks are the load-bearing ones: the core is engine-generic and must never learn a
 CS2 name. Dependencies point one way — game → core, never core → game.
+`scripts/check-game-package-boundary.sh` extends that to production core/shim: no package id, no
+prelude path, no bespoke damage path (run `--self-test` to prove it still catches a planted leak).
 
 ---
 

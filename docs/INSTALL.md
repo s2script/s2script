@@ -54,6 +54,7 @@ Linux x86-64 only. Windows is not supported yet.
      game-packages.json       # selected package metadata and artifact hashes
      game-packages/cs2/index.js
      game-packages/cs2/gamedata.json
+     game-packages/cs2/trusted-functions.json  # package-owned engine functions (live-schema offsets)
      plugins/          # base .s2sp plugins + drop more here
      configs/          # auto-generated on first load
      data/             # SQLite DBs
