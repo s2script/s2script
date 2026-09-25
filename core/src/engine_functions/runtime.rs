@@ -759,3 +759,18 @@ impl Frame {
         }
     }
 }
+
+impl Frame {
+    /// Hidden-position relationship check on the exact trusted binding's top frame.
+    /// `entity` is an already books-gated strict identity; `offset` is a live schema
+    /// offset. The shim compares raw bits only; no address crosses this boundary.
+    pub(crate) fn hidden_referenced_by(&self, binding: &super::registry::Binding, selector: i32,
+        entity: &S2FunctionValue, offset: u32) -> Result<bool, String> {
+        let key = self.instance_access(binding)?;
+        let op = engine_ops().and_then(|o| o.function_frame_hidden_referenced_by)
+            .ok_or("native relationship check unavailable")?;
+        let (mut out, mut why) = (0, [0; 512]);
+        if op(&key, selector, entity, offset, &mut out, why.as_mut_ptr(), 512) != 1 {return Err(reason(&why));}
+        match out {0 => Ok(false), 1 => Ok(true), _ => Err("invalid native relationship result".into())}
+    }
+}

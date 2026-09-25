@@ -203,6 +203,82 @@ void instance_normalization() {
     assert(s2bridge::ParseInstance(target().dump(),nullable.dump()).value.instances.nullable_receiver);
     std::cout << "PASS trusted physical receiver/hidden/record normalization, u16 storage, hash/bounds/rights rejection and public mint denial\n";
 }
+void string_indirect_normalization() {
+    auto seal=[](json& j) {j.erase("contractHash");j["contractHash"]=s2::digest::sha256(j.dump());};
+    auto indirect=[]() {
+        auto c=instance_contract();
+        c["signature"]["parameters"].push_back({{"name","label"},{"native","ptr"},{"projection",{{"id","string-indirect"},{"version",1}}},
+            {"ownership","native-observed"},{"mutable",json::array()},{"nullable",false}});
+        c["signature"]["fingerprint"]="linux-x86_64-sysv:entity:i32(ptr,ptr)";
+        return c;
+    };
+    auto good=indirect();seal(good);
+    auto parsed=s2bridge::ParseInstance(target().dump(),good.dump());assert(parsed);
+    const auto& p=parsed.value.copies[1];
+    assert(p && p.indirect && p.kind==s2fn::copy::Kind::String && p.ownership==s2bridge::CopyOwnership::NativeObserved && !p.mutable_pre);
+    assert(parsed.value.HasCopies() && !parsed.value.copies[0]);
+    // A plain copied string at the same position is a different native contract.
+    auto plain=indirect();auto& row=plain["signature"]["parameters"][1];row["projection"]["id"]="string";seal(plain);
+    auto direct=s2bridge::ParseInstance(target().dump(),plain.dump());assert(direct && !direct.value.copies[1].indirect);
+    assert(!parsed.value.CompatibleCopies(direct.value) && parsed.value.CompatibleCopies(parsed.value));
+    for(int mode=0;mode<5;++mode) {
+        auto bad=indirect();auto& q=bad["signature"]["parameters"][1];
+        switch(mode) {
+        case 0:q["mutable"]=json::array({"pre"});break;
+        case 1:q["ownership"]="callee-borrowed";break;
+        case 2:q.erase("ownership");break;
+        case 3:q["native"]="u64";bad["signature"]["fingerprint"]="linux-x86_64-sysv:entity:i32(ptr,u64)";break;
+        case 4:q["nullable"]=true;break;
+        }
+        seal(bad);assert(!s2bridge::ParseInstance(target().dump(),bad.dump()));
+    }
+    auto ret=indirect();ret["signature"]["returns"]={{"name",""},{"native","ptr"},{"projection",{{"id","string-indirect"},{"version",1}}},
+        {"ownership","native-observed"},{"mutable",json::array()},{"nullable",false}};
+    ret["signature"]["fingerprint"]="linux-x86_64-sysv:entity:ptr(ptr,ptr)";seal(ret);
+    assert(!s2bridge::ParseInstance(target().dump(),ret.dump()));
+    // The public-v2 grammar stays closed to the trusted projection.
+    auto a=abi();a["parameters"][0]["native"]="ptr";a["parameters"][0]["projection"]["id"]="string-indirect";
+    a["parameters"][0]["ownership"]="native-observed";a["fingerprint"]="linux-x86_64-sysv:none:i32(ptr)";
+    assert(!s2bridge::Parse(target().dump(),a.dump(),a["fingerprint"]));
+    std::cout << "PASS trusted string-indirect normalization, readonly/direction rejection and public denial\n";
+}
+// Member fixture: an owner object holding a services sub-object pointer at a
+// schema-style offset, compared against a hidden native-only argument.
+struct RelationServices { int32_t marker=7; };
+struct RelationOwner { uint64_t header=0; int32_t health=100; RelationServices* services=nullptr; };
+void hidden_relationship() {
+    using s2fn::copy::Reader;
+    Reader reader{[](void*,uintptr_t source,void* dest,size_t count)->size_t {std::memcpy(dest,reinterpret_cast<const void*>(source),count);return count;},nullptr,4096,true};
+    RelationServices mine, other; RelationOwner owner; owner.services=&mine;
+    const auto base=reinterpret_cast<uintptr_t>(&owner);const auto field=static_cast<uint32_t>(offsetof(RelationOwner,services));
+    auto hidden=[](const RelationServices& s){return reinterpret_cast<uintptr_t>(&s);};
+    auto r=s2bridge::ReferencesHidden(reader,base,field,hidden(mine));assert(r && r.value);
+    r=s2bridge::ReferencesHidden(reader,base,field,hidden(other));assert(r && !r.value);
+    // Wrong field offset reads some other word: not referenced.
+    r=s2bridge::ReferencesHidden(reader,base,static_cast<uint32_t>(offsetof(RelationOwner,health)),hidden(mine));assert(r && !r.value);
+    // Null hidden / null owner / null stored pointer are never "referenced".
+    owner.services=nullptr;r=s2bridge::ReferencesHidden(reader,base,field,0);assert(r && !r.value);
+    owner.services=&mine;r=s2bridge::ReferencesHidden(reader,0,field,hidden(mine));assert(r && !r.value);
+    // Overflowing ranges never reach the reader; a hidden value is never dereferenced.
+    static int reads=0;
+    Reader counting{[](void*,uintptr_t source,void* dest,size_t count)->size_t {++reads;std::memcpy(dest,reinterpret_cast<const void*>(source),count);return count;},nullptr,4096,true};
+    r=s2bridge::ReferencesHidden(counting,UINTPTR_MAX-4,0,hidden(mine));assert(r && !r.value && reads==0);
+    r=s2bridge::ReferencesHidden(counting,UINTPTR_MAX-64,UINT32_MAX,hidden(mine));assert(r && !r.value && reads==0);
+    r=s2bridge::ReferencesHidden(counting,base,field,0x10);assert(r && !r.value && reads==1); // 0x10 compared, not read
+    // Unreadable word: denied read is false, not a fault.
+    Reader denied{[](void*,uintptr_t,void*,size_t)->size_t {return 0;},nullptr,4096,true};
+    r=s2bridge::ReferencesHidden(denied,base,field,hidden(mine));assert(r && !r.value);
+    Reader shortread{[](void*,uintptr_t,void*,size_t count)->size_t {return count>1 ? count-1 : 0;},nullptr,4096,true};
+    r=s2bridge::ReferencesHidden(shortread,base,field,hidden(mine));assert(r && !r.value);
+    // A word straddling a (fake, tiny) page boundary is assembled from page-bounded reads.
+    alignas(16) uint8_t storage[32]{};const auto target=hidden(mine);std::memcpy(storage+4,&target,sizeof target);
+    const auto at=reinterpret_cast<uintptr_t>(storage);reads=0;
+    Reader paged{[](void*,uintptr_t source,void* dest,size_t count)->size_t {++reads;assert(source/8==(source+count-1)/8);std::memcpy(dest,reinterpret_cast<const void*>(source),count);return count;},nullptr,8,true};
+    r=s2bridge::ReferencesHidden(paged,at,4,target);assert(r && r.value && reads==2);
+    // Missing reader is a named error, not a silent false.
+    Reader none{};r=s2bridge::ReferencesHidden(none,base,field,hidden(mine));assert(!r && r.error.find("reader unavailable")!=std::string::npos);
+    std::cout << "PASS hidden relationship check via checked reader: match, mismatch, null, overflow, denied, straddle and unavailable\n";
+}
 
 void copied_transport_primitives() {
     using namespace s2bridge; using namespace s2fn::copy;
@@ -1008,7 +1084,7 @@ void runtime() {
 #endif
 int main(int argc,char** argv) {
     if(argc==2 && std::string(argv[1])=="--copy-quota") {copied_quota_transaction();return 0;}
-    stages(); instance_normalization(); copied_transport_primitives();
+    stages(); instance_normalization(); string_indirect_normalization(); hidden_relationship(); copied_transport_primitives();
 #ifndef S2FN_VALIDATION_ONLY
     runtime();
 #endif

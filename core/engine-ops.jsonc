@@ -1858,6 +1858,14 @@
       "c_ret": "int",
       "c_params": "const S2FunctionInstanceAccess* access, int selector, unsigned int field, const S2FunctionValue* value, char* reason, int cap",
       "shim": "S2_FunctionFrameFieldWrite"
+    },
+    {
+      "name": "function_frame_hidden_referenced_by",
+      "alias": "FunctionFrameHiddenReferencedByFn",
+      "rust": "extern \"C\" fn(*const S2FunctionInstanceAccess, c_int, *const S2FunctionValue, u32, *mut c_int, *mut c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "const S2FunctionInstanceAccess* access, int selector, const S2FunctionValue* entity, unsigned int offset, int* out, char* reason, int cap",
+      "shim": "S2_FunctionFrameHiddenReferencedBy"
     }
   ]
 }

@@ -194,3 +194,4 @@
     ops.function_frame_read_instance = &S2_FunctionFrameReadInstance;
     ops.function_frame_field_read = &S2_FunctionFrameFieldRead;
     ops.function_frame_field_write = &S2_FunctionFrameFieldWrite;
+    ops.function_frame_hidden_referenced_by = &S2_FunctionFrameHiddenReferencedBy;

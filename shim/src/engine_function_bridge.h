@@ -23,6 +23,12 @@ s2fn::Result<Declaration> Parse(const std::string& target, const std::string& ab
                                 const std::string& fingerprint);
 s2fn::Result<s2resolve::Resolution> Resolve(const Declaration&, const Resolver& = s2resolve::Resolve,
     s2validate::Ops = {}, std::function<bool(uintptr_t, void*, size_t)> read_live = {});
+// Hidden-position relationship check: does the pointer-sized word stored at
+// owner+offset equal `hidden`'s raw bits? The word is read only through the
+// checked Reader; `hidden` is compared, never dereferenced, and no address is
+// returned. A null owner/hidden, an overflowing range or an unreadable word is
+// `false` (not provably referenced); only an unavailable reader is an error.
+s2fn::Result<bool> ReferencesHidden(const s2fn::copy::Reader&, uintptr_t owner, uint32_t offset, uintptr_t hidden);
 }
 #ifndef S2FN_VALIDATION_ONLY
 #include "../include/s2script_core.h"
@@ -155,4 +161,5 @@ int S2_FunctionInstanceRelease(unsigned long long);
 int S2_FunctionFrameReadInstance(const S2FunctionInstanceAccess*,int,S2FunctionValue*,char*,int);
 int S2_FunctionFrameFieldRead(const S2FunctionInstanceAccess*,int,unsigned int,S2FunctionValue*,char*,int);
 int S2_FunctionFrameFieldWrite(const S2FunctionInstanceAccess*,int,unsigned int,const S2FunctionValue*,char*,int);
+int S2_FunctionFrameHiddenReferencedBy(const S2FunctionInstanceAccess*,int,const S2FunctionValue*,unsigned int,int*,char*,int);
 }

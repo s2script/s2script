@@ -11,6 +11,6 @@ if echo 'int main(){return 0;}' | "$compiler" -x c++ -fsanitize=address,undefine
 fi
 "$compiler" "${flags[@]}" \
   shim/src/engine_function_copy.cpp shim/tests/engine_function_copy_test.cpp -o "$tmp/copy"
-for scenario in capture budget arena owner-bytes owner-values owner-rows values payload linux linux-denied linux-missing; do
+for scenario in capture indirect budget arena owner-bytes owner-values owner-rows values payload linux linux-denied linux-missing; do
   "$tmp/copy" "$scenario"
 done

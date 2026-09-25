@@ -264,6 +264,7 @@ pub type FunctionInstanceReleaseFn = extern "C" fn(u64) -> c_int;
 pub type FunctionFrameReadInstanceFn = extern "C" fn(*const S2FunctionInstanceAccess, c_int, *mut S2FunctionValue, *mut c_char, c_int) -> c_int;
 pub type FunctionFrameFieldReadFn = extern "C" fn(*const S2FunctionInstanceAccess, c_int, u32, *mut S2FunctionValue, *mut c_char, c_int) -> c_int;
 pub type FunctionFrameFieldWriteFn = extern "C" fn(*const S2FunctionInstanceAccess, c_int, u32, *const S2FunctionValue, *mut c_char, c_int) -> c_int;
+pub type FunctionFrameHiddenReferencedByFn = extern "C" fn(*const S2FunctionInstanceAccess, c_int, *const S2FunctionValue, u32, *mut c_int, *mut c_char, c_int) -> c_int;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -466,6 +467,7 @@ pub struct S2EngineOps {
     pub function_frame_read_instance: Option<FunctionFrameReadInstanceFn>,
     pub function_frame_field_read: Option<FunctionFrameFieldReadFn>,
     pub function_frame_field_write: Option<FunctionFrameFieldWriteFn>,
+    pub function_frame_hidden_referenced_by: Option<FunctionFrameHiddenReferencedByFn>,
 }
 
 impl S2EngineOps {
