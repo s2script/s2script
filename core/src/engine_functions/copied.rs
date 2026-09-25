@@ -300,7 +300,8 @@ impl Owned {
 }
 pub(crate) fn flag(projection: &str) -> Option<u8> {
     match projection {
-        "string" => Some(4),
+        // Trusted-only indirect string (checked by instance.rs); JS sees a plain string.
+        "string" | "string-indirect" => Some(4),
         "vector" => Some(5),
         _ => None,
     }

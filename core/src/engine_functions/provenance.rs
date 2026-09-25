@@ -60,3 +60,26 @@ impl PreparedCandidate {
         &self.functions
     }
 }
+impl PreparedCandidate {
+    /// Joins a package's public v2 archive candidate with its host-verified trusted
+    /// candidate. Neither side's grammar changes; local names must stay disjoint.
+    pub(crate) fn merge_trusted(public: Option<Self>, trusted: Self) -> Result<Self, String> {
+        if trusted.base.is_some() || trusted.functions.iter().any(|f| !f.function.trusted()) {
+            return Err("trusted merge requires a host-verified trusted candidate".into());
+        }
+        let Some(mut public) = public else { return Ok(trusted) };
+        if public.base.is_none() || public.functions.iter().any(|f| f.function.trusted()) {
+            return Err("trusted merge requires a public archive candidate".into());
+        }
+        if public.owner_id != trusted.owner_id {
+            return Err("public/trusted candidate owner mismatch".into());
+        }
+        for f in &trusted.functions {
+            if public.functions.iter().any(|p| p.function.local_name == f.function.local_name) {
+                return Err(format!("trusted function {} duplicates a public declaration", f.function.canonical_id));
+            }
+        }
+        public.functions.extend(trusted.functions);
+        Ok(public)
+    }
+}

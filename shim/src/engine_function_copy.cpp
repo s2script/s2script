@@ -228,6 +228,27 @@ Result<Snapshot> Snapshot::CapturePrepared(Snapshot&& prepared, std::uintptr_t s
     if (!Valid(kind, result.value.data(), 12)) return Fail<Snapshot>(Unsupported, "nonfinite vector source");
     return result;
 }
+Result<Snapshot> Snapshot::CaptureIndirect(const Operation& op, std::uintptr_t object, const Reader& reader) {
+    // Admit the full capture storage (and the Engine-domain requirement) before
+    // reading anything, so a denied operation performs no native read at all.
+    auto prepared = PrepareCapture(op, Kind::String); if (!prepared) return prepared;
+    constexpr std::size_t Word = sizeof(std::uintptr_t);
+    if (!reader.available || !reader.read || !reader.page_size || !Range(object, Word))
+        return Fail<Snapshot>(Unsupported, "unavailable reader or invalid indirect object");
+    std::uint8_t word[Word]; std::size_t offset = 0;
+    while (offset < Word) { // The word may straddle a page boundary.
+        auto address = object + offset;
+        auto count = std::min(Word - offset, reader.page_size - address % reader.page_size);
+        auto received = reader.read(reader.context, address, word + offset, count);
+        if (received != count) return Fail<Snapshot>(Unsupported, "unreadable indirect object");
+        offset += count;
+    }
+    std::uintptr_t text = 0; std::memcpy(&text, word, Word);
+    if (text) return CapturePrepared(std::move(prepared.value), text, reader);
+    auto& block = *prepared.value.block_;
+    block.capture_ready = false; block.length = 0; block.Data()[0] = 0;
+    return prepared;
+}
 
 namespace {
 constexpr std::size_t MappingBytes = 16 * MiB, MetadataBytes = 2 * MiB, PayloadBytes = 14 * MiB;

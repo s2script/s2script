@@ -269,8 +269,51 @@ static void linux_tests() {
     std::cout << "SKIP actual Linux reader: macOS production reader explicitly unsupported\n";
 #endif
 }
+static void indirect_tests() {
+    Budget budget; auto host = budget.Begin({}); CHECK(host); auto op = std::move(host.value);
+    Fake f; f.bytes.assign(0x20000, 0);
+    auto word = [&](std::size_t at, std::uintptr_t value) { std::memcpy(f.bytes.data() + at, &value, sizeof value); };
+    auto text = [&](std::size_t at, const std::string& s) { std::memcpy(f.bytes.data() + at, s.data(), s.size()); f.bytes[at + s.size()] = 0; };
+    // Null char* word: an empty, NUL-terminated string without reading any text.
+    auto empty = Snapshot::CaptureIndirect(op, f.base, f.reader());
+    CHECK(empty && empty.value.kind() == Kind::String && empty.value.size() == 0 && empty.value.data()[0] == 0);
+    // Pointer word -> captured bytes, immune to later native mutation.
+    text(0x100, "hello\xf0\x9f\x98\x80"); word(0, f.base + 0x100);
+    auto ok = Snapshot::CaptureIndirect(op, f.base, f.reader());
+    CHECK(ok && ok.value.size() == 9 && std::memcmp(ok.value.data(), "hello", 5) == 0);
+    f.bytes[0x100] = 'j'; CHECK(ok.value.data()[0] == 'h');
+    // A word straddling a page boundary is read in two page-bounded pieces.
+    word(0x0ffc, f.base + 0x100); auto calls = f.calls;
+    auto straddle = Snapshot::CaptureIndirect(op, f.base + 0x0ffc, f.reader());
+    CHECK(straddle && straddle.value.size() == 9 && f.calls == calls + 3);
+    // Engine-domain capture only: a plugin operation performs no native read.
+    auto plugin = begin(budget); calls = f.calls;
+    error(Snapshot::CaptureIndirect(plugin, f.base, f.reader()), "FunctionCopyLifetimeUnsupported"); CHECK(f.calls == calls);
+    // Null / overflowing / unreadable object and unavailable reader are denials, never dereferences.
+    error(Snapshot::CaptureIndirect(op, 0, f.reader()), "FunctionCopyLifetimeUnsupported");
+    error(Snapshot::CaptureIndirect(op, UINTPTR_MAX - 3, f.reader()), "FunctionCopyLifetimeUnsupported");
+    CHECK(f.calls == calls);
+    error(Snapshot::CaptureIndirect(op, f.base + f.bytes.size() - 4, f.reader()), "FunctionCopyLifetimeUnsupported");
+    error(Snapshot::CaptureIndirect(op, 0x20, f.reader()), "FunctionCopyLifetimeUnsupported");
+    auto unavailable = f.reader(); unavailable.available = false; calls = f.calls;
+    error(Snapshot::CaptureIndirect(op, f.base, unavailable), "FunctionCopyLifetimeUnsupported"); CHECK(f.calls == calls);
+    f.deny = true; error(Snapshot::CaptureIndirect(op, f.base, f.reader()), "FunctionCopyLifetimeUnsupported"); f.deny = false;
+    // Word points at unreadable memory.
+    word(0, 0x40); error(Snapshot::CaptureIndirect(op, f.base, f.reader()), "FunctionCopyLifetimeUnsupported");
+    // Oversize: no NUL within 65536 bytes of the pointed-to text.
+    std::memset(f.bytes.data() + 0x1000, 'x', 0x10000); word(0, f.base + 0x1000);
+    error(Snapshot::CaptureIndirect(op, f.base, f.reader()), "FunctionCopyTooLarge");
+    f.bytes[0x1000 + 65535] = 0;
+    auto max = Snapshot::CaptureIndirect(op, f.base, f.reader()); CHECK(max && max.value.size() == 65535);
+    // Invalid UTF-8 (overlong NUL, lone continuation, surrogate) is refused.
+    for (auto bad : {"\xc0\x80", "\x80", "\xed\xa0\x80", "ok\xe2\x82"}) {
+        text(0x200, bad); word(0, f.base + 0x200);
+        error(Snapshot::CaptureIndirect(op, f.base, f.reader()), "FunctionCopyLifetimeUnsupported");
+    }
+    std::cout << "PASS string-indirect null word, capture, straddle, denial, oversize and UTF-8 rejection\n";
+}
 int main(int argc, char** argv) {
     const std::string mode = argc > 1 ? argv[1] : "capture";
-    if (mode == "capture") capture_tests(); else if (mode == "budget") budget_tests(); else if (mode == "linux") linux_tests(); else if (mode == "linux-denied" || mode == "linux-missing") linux_denied_tests(mode == "linux-missing"); else arena_tests(mode);
+    if (mode == "capture") capture_tests(); else if (mode == "indirect") indirect_tests(); else if (mode == "budget") budget_tests(); else if (mode == "linux") linux_tests(); else if (mode == "linux-denied" || mode == "linux-missing") linux_denied_tests(mode == "linux-missing"); else arena_tests(mode);
     std::cout << mode << ": " << checks << " checks passed\n";
 }

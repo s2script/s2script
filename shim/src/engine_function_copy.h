@@ -104,6 +104,11 @@ public:
     // Prepared storage is single-use and must not have been shared.
     static Result<Snapshot> PrepareCapture(const Operation&, Kind);
     static Result<Snapshot> CapturePrepared(Snapshot&&, std::uintptr_t, const Reader&);
+    // Indirect string (CUtlString-shaped): `object` points at storage whose first
+    // pointer-sized word is a char*. The word is read through the checked Reader;
+    // a null word captures "", otherwise the string is captured exactly like
+    // Capture (bounds, NUL, canonical UTF-8). `object` itself must be non-null.
+    static Result<Snapshot> CaptureIndirect(const Operation&, std::uintptr_t object, const Reader&);
 private:
     static Result<Snapshot> Allocate(const Operation&, Kind, std::size_t);
     SnapshotBlock* block_ = nullptr;

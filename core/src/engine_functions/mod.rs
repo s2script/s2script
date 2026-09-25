@@ -8,6 +8,7 @@ pub(crate) mod registry;
 pub(crate) mod contract;
 pub(crate) mod overrides;
 pub(crate) mod provenance;
+pub(crate) mod trusted;
 mod abi {
     include!("abi.generated.rs");
 }
