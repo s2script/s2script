@@ -59,8 +59,7 @@ Non-obvious gotchas for the live gate:
 - Bring it up: `sudo docker compose -f docker/docker-compose.yml up -d`; watch
   `sudo docker logs -f s2script-cs2` for `[plugins] '@s2script/...' Active`.
 - Drive it over RCON (`127.0.0.1:27015`, pw `s2script`): `python3 scripts/rcon.py "meta list"`
-  (should list `s2script`), `"sm_slap <name> <dmg>"`, etc. `S2_DAMAGE_SELFTEST=1` (compose) fires a
-  synthetic damage hook every few hundred frames as a built-in liveness proof.
+  (should list `s2script`), `"sm_slap <name> <dmg>"`, etc.
 - Bots on this headless LAN server get kicked unless you set `bot_quota_mode normal`,
   `bot_join_after_player 0`, `mp_limitteams 0` before `bot_add` / `bot_quota N`.
 - After rebuilding `core`/`shim`, re-run the sniper build + `scripts/package-addon.sh`, then

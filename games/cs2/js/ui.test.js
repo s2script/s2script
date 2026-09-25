@@ -20,7 +20,7 @@ test.afterEach(() => {
   delete globalThis.__s2pkg_server;
   delete globalThis.__s2pkg_clients;
   delete globalThis.__s2pkg_game_ctx;
-  delete globalThis.__s2_hook_on;
+  delete globalThis.__s2pkg_cs2_adapters;
   delete globalThis.__s2_shared_entity_switch;
   delete globalThis.__s2_surface_reserve_owned;
   delete globalThis.__s2_surface_reserve_linked;
@@ -95,7 +95,7 @@ function mount({ active = true, missingCalls = [] } = {}) {
       onDisconnect: (fn) => disconnectHandlers.push(fn),
     },
   };
-  globalThis.__s2_hook_on = (_pkg, _event, fn) => { clickHook = fn; return 0; };
+  globalThis.__s2pkg_cs2_adapters = { hudClick: { subscribe: (fn) => { clickHook = fn; return {}; } } };
 
   evalFile("ui.js");
   // reg executes immediately: the map-start / client subscriptions are live, and the fake active

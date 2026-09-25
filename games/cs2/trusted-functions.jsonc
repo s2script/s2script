@@ -1,0 +1,133 @@
+// Trusted engine functions of the @s2script/cs2 package — host-verified declarations that only a
+// selected first-party package may make (hidden native positions, borrowed records, scratch
+// slots, copied string-indirect text). Community plugins never reach this grammar.
+//
+// LAYOUT IS DATA HERE, SEMANTICS ARE THE ADAPTERS. Each function names its gamedata signature BY
+// NAME: the host fills the resolved target from the MERGED shipped + operator-custom gamedata at
+// package commit, so a `gamedata/cs2/custom/` signature repair keeps working and is recorded as
+// provenance. Record field offsets are named by offset key and resolved at commit against the
+// LIVE schema (falling back to the schema catalog this package was built from). The builder
+// (scripts/build-game-packages.mjs) seals fingerprints, stack sizes, policy and adapter contract
+// hashes; the fold/timing semantics live in js/adapters/*.js.
+{
+  "schemaVersion": 1,
+  "offsets": {
+    "CEconItemView::m_iItemDefinitionIndex": { "class": "CEconItemView", "field": "m_iItemDefinitionIndex" },
+    "CTakeDamageInfo::m_hInflictor": { "class": "CTakeDamageInfo", "field": "m_hInflictor" },
+    "CTakeDamageInfo::m_hAttacker": { "class": "CTakeDamageInfo", "field": "m_hAttacker" },
+    "CTakeDamageInfo::m_flDamage": { "class": "CTakeDamageInfo", "field": "m_flDamage" },
+    "CTakeDamageInfo::m_bitsDamageType": { "class": "CTakeDamageInfo", "field": "m_bitsDamageType" }
+  },
+  "functions": [
+    // CCSPlayer_ItemServices::CanAcquire(ItemServices* this, CEconItemView* item, int method,
+    // void* unknown) -> AcquireResult. rdi/rsi/edx/rcx per the signature's prologue
+    // (mov rbx,rdi; mov r14,rsi; [rbp-0x44]=edx; mov r12,rcx). The receiver is NOT an entity: it
+    // stays native-only and the adapter maps it to a player with hiddenReferencedBy. `result` is a
+    // per-dispatch scratch vote, never written to native memory.
+    {
+      "localName": "canAcquire",
+      "requirement": "optional",
+      "signatureName": "CCSPlayer_ItemServices_CanAcquire",
+      "signature": {
+        "platform": "linux-x86_64-sysv",
+        "memberReceiver": false,
+        "receiver": null,
+        "parameters": [
+          { "name": "itemServices", "native": "ptr", "projection": { "id": "native-only", "version": 1 },
+            "ownership": "invocation-passthrough", "mutable": [], "nullable": false },
+          { "name": "item", "native": "ptr", "projection": { "id": "borrowed-record", "version": 1 },
+            "ownership": "synchronous-record", "mutable": [], "instance": 0, "nullable": false },
+          { "name": "method", "native": "i32", "projection": { "id": "i32", "version": 1 },
+            "mutable": [], "nullable": false },
+          { "name": "unknown", "native": "ptr", "projection": { "id": "native-only", "version": 1 },
+            "ownership": "invocation-passthrough", "mutable": [], "nullable": false }
+        ],
+        "returns": { "name": "", "native": "i32", "projection": { "id": "i32", "version": 1 },
+          "mutable": [], "nullable": false },
+        "instances": [
+          { "codecId": "borrowed-record", "codecVersion": 1, "kind": null,
+            "record": { "fields": [
+              { "name": "defIndex", "offsetKey": "CEconItemView::m_iItemDefinitionIndex", "storage": "u16",
+                "nullable": false, "read": ["pre", "post"], "write": [] }
+            ] } }
+        ],
+        "scratch": [{ "name": "result", "storage": "i32" }]
+      },
+      "policy": { "surfaces": ["pre", "post"], "suppression": "generic" },
+      "adapter": { "id": "legacy.acquire.v1", "postOverride": true }
+    },
+    // CCSCustomHudLayout CustomHudClickedReceiver(?, CCSPlayerController* clicker, layout*,
+    // CUtlString* buttonId). rdi is never read (the body walks a global listener list and
+    // forwards rsi/rdx/rcx), so it and the layout pointer are opaque pass-through. The button id is
+    // copied by the host before any JavaScript runs.
+    {
+      "localName": "customHudClicked",
+      "requirement": "optional",
+      "signatureName": "CCSCustomHudLayout_CustomHudClickedReceiver",
+      "signature": {
+        "platform": "linux-x86_64-sysv",
+        "memberReceiver": false,
+        "receiver": null,
+        "parameters": [
+          { "name": "unused", "native": "ptr", "projection": { "id": "native-only", "version": 1 },
+            "ownership": "invocation-passthrough", "mutable": [], "nullable": false },
+          { "name": "player", "native": "ptr", "projection": { "id": "entity?", "version": 1 },
+            "mutable": [], "nullable": false },
+          { "name": "layout", "native": "ptr", "projection": { "id": "native-only", "version": 1 },
+            "ownership": "invocation-passthrough", "mutable": [], "nullable": false },
+          { "name": "buttonId", "native": "ptr", "projection": { "id": "string-indirect", "version": 1 },
+            "ownership": "native-observed", "mutable": [], "nullable": false }
+        ],
+        "returns": { "name": "", "native": "void", "projection": { "id": "void", "version": 1 },
+          "mutable": [], "nullable": false },
+        "instances": [],
+        "scratch": []
+      },
+      "policy": { "surfaces": ["pre"], "suppression": "none" },
+      "adapter": { "id": "legacy.hud-click.v1", "postOverride": false }
+    },
+    // CBaseEntity::TakeDamageOld(victim* this, CTakeDamageInfo* info, optional result*) -> void,
+    // audited rdi/rsi/rdx (gamedata CBaseEntity_TakeDamageOld). The victim is the entity receiver
+    // (books-adopted, null when unadoptable). The info is a borrowed record exposing only the four
+    // fields DamageInfo has always had; `damage` is the one PRE-writable field (block-to-zero is an
+    // adapter write, never a skipped original). The optional result storage is a native-only
+    // pass-through: never projected, forwarded unchanged whether null or not. Suppression stays
+    // "generic" only so subscriber Handled/Stop votes reach the adapter; the adapter always returns
+    // Continue, so the original always runs.
+    {
+      "localName": "takeDamageOld",
+      "requirement": "optional",
+      "signatureName": "CBaseEntity_TakeDamageOld",
+      "signature": {
+        "platform": "linux-x86_64-sysv",
+        "memberReceiver": true,
+        "receiver": { "name": "victim", "native": "ptr", "projection": { "id": "entity?", "version": 1 },
+          "mutable": [], "nullable": false },
+        "parameters": [
+          { "name": "info", "native": "ptr", "projection": { "id": "borrowed-record", "version": 1 },
+            "ownership": "synchronous-record", "mutable": [], "instance": 0, "nullable": true },
+          { "name": "result", "native": "ptr", "projection": { "id": "native-only", "version": 1 },
+            "ownership": "invocation-passthrough", "mutable": [], "nullable": false }
+        ],
+        "returns": { "name": "", "native": "void", "projection": { "id": "void", "version": 1 },
+          "mutable": [], "nullable": false },
+        "instances": [
+          { "codecId": "borrowed-record", "codecVersion": 1, "kind": null,
+            "record": { "fields": [
+              { "name": "inflictor", "offsetKey": "CTakeDamageInfo::m_hInflictor", "storage": "entity-handle32",
+                "nullable": true, "read": ["pre", "post"], "write": [] },
+              { "name": "attacker", "offsetKey": "CTakeDamageInfo::m_hAttacker", "storage": "entity-handle32",
+                "nullable": true, "read": ["pre", "post"], "write": [] },
+              { "name": "damage", "offsetKey": "CTakeDamageInfo::m_flDamage", "storage": "f32",
+                "nullable": false, "read": ["pre", "post"], "write": ["pre"] },
+              { "name": "damageType", "offsetKey": "CTakeDamageInfo::m_bitsDamageType", "storage": "i32",
+                "nullable": false, "read": ["pre", "post"], "write": [] }
+            ] } }
+        ],
+        "scratch": []
+      },
+      "policy": { "surfaces": ["pre", "post"], "suppression": "generic" },
+      "adapter": { "id": "legacy.damage.v1", "postOverride": false }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 2,
+  "functions": {
+    "twice": {
+      "target": {
+        "module": "s2-test-target",
+        "pattern": "54 57 49 43 45",
+        "validate": { "prologue": "54 57 49 43 45" }
+      },
+      "parameters": [{ "name": "value", "type": "i32" }],
+      "returns": "i32",
+      "surfaces": ["call"],
+      "requirement": "required"
+    }
+  }
+}

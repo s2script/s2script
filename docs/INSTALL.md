@@ -50,12 +50,20 @@ Linux x86-64 only. Windows is not supported yet.
      bin/linuxsteamrt64/s2script.so
      bin/linuxsteamrt64/libs2script_core.so
      gamedata/core/            # common / engine.source2 / game.cs2 + master.gamedata.jsonc
-     gamedata/cs2/             # the CS2 game package's own facts + master.gamedata.jsonc
-     js/pawn.js
+     gamedata/sdkhooks/        # native extension facts
+     game-packages.json       # selected package metadata and artifact hashes
+     game-packages/cs2/index.js
+     game-packages/cs2/gamedata.json
+     game-packages/cs2/trusted-functions.json  # package-owned engine functions (live-schema offsets)
      plugins/          # base .s2sp plugins + drop more here
      configs/          # auto-generated on first load
      data/             # SQLite DBs
    ```
+
+   Operator overrides still live in `addons/s2script/gamedata/cs2/custom/` and apply after
+   the verified package data. Shipped game files are no longer loaded from `gamedata/cs2/`
+   or `js/pawn.js`; selected shipped-file failures have no legacy fallback.
+
 
 3. Patch `game/csgo/gameinfo.gi` so Metamod is on the SearchPath (once per game install; CS2 updates can wipe this). Insert as the **first** SearchPath entry:
 

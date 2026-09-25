@@ -102,7 +102,7 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
 
         // Build the context in a nested block so the HandleScope borrow on the shared isolate is
         // released before we touch PLUGINS.  Mirrors `init`'s scope construction.
-        let g_ctx = {
+        let (g_ctx, package_exports) = {
             let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
             let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
             let hs = &mut hs;
@@ -124,20 +124,22 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
             run_prelude(scope, "config-templates", &config_templates_prelude());
             run_prelude(scope, "engine-prelude", INJECTED_STD_PRELUDE);
             capture_entity_ref_prototype(scope);
-            // @s2script/cs2: provided externally at runtime via register_injected_package
-            // (the shim calls s2script_core_register_package at load — see ffi.rs).
-            // If not registered, __s2pkg_cs2 stays undefined and require("@s2script/cs2") → null.
-            let cs2_src = INJECTED_PACKAGES.with(|p| p.borrow().get("@s2script/cs2").cloned());
-            if let Some(src) = cs2_src {
-                run_prelude(scope, "@s2script/cs2", &src);
+            // Compatibility test fixtures seed configuration before the actual receipt bootstrap.
+            #[cfg(test)]
+            for (name, source) in INJECTED_PACKAGES.with(|p| p.borrow().clone()) {
+                run_prelude(scope, &name, &source);
             }
-
-            if let Err(error) = function_adapter::bootstrap(scope, id, generation) {
-                log_warn(&format!("package adapter bootstrap '{id}': {error}"));
-                set_failed(id,&error);
-                function_adapter::drop_owner(&crate::engine_functions::contract::OwnerKey::plugin(id,generation));
-            }
-            v8::Global::new(scope.as_ref(), ctx_local)
+            let package_exports = match function_adapter::bootstrap(scope, id, generation) {
+                Ok(exports) => exports,
+                Err(error) => {
+                    log_warn(&format!("package bootstrap '{id}': {error}"));
+                    set_failed(id, &error);
+                    function_adapter::drop_owner(&crate::engine_functions::contract::OwnerKey::plugin(id, generation));
+                    Vec::new()
+                }
+            };
+            function_adapter::close_bootstrap_globals(scope);
+            (v8::Global::new(scope.as_ref(), ctx_local), package_exports)
             // scope, hs, hs_storage drop here — the isolate borrow is released.
         };
 
@@ -148,6 +150,7 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
                 id.to_string(),
                 PluginInstance {
                     exports: None,
+                    package_exports,
                     context: g_ctx,
                     config_decls: std::collections::HashMap::new(),
                     phase: crate::plugin::Phase::Loading,
@@ -954,6 +957,7 @@ fn teardown_ledger_and_dispose(id: &str) {
     PLUGINS.with(|p| {
         if let Some(pi) = p.borrow_mut().get_mut(id) {
             pi.exports = None;
+            pi.package_exports.clear();
         }
     });
 

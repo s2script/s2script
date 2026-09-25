@@ -13,7 +13,7 @@
 
 use crate::async_rt::{Pool, TimerKind, TimerQueue};
 use crate::dispatch::{
-    fan_out, fan_out_collapsing, fan_out_inner, set_after_handler, Delivery, Instrument, StopAt,
+    fan_out, fan_out_collapsing, fan_out_inner, Delivery, Instrument, StopAt,
 };
 use crate::multiplexer::{self, Descriptor, DetourChange, HookResult, Phase, Priority};
 use crate::plugin;
@@ -155,6 +155,8 @@ struct PluginInstance {
     /// hooks). Declared FIRST so Rust drops it BEFORE `context` (teardown discipline: inner Globals
     /// released before the `Global<Context>`). (Field kept named `exports` to minimize churn.)
     exports: Option<v8::Global<v8::Object>>,
+    // Same context lifetime ledger: released after subscriptions/adapters, before context.
+    package_exports: Vec<function_adapter::PackageExports>,
     context: v8::Global<v8::Context>,
     // NOTE: no `generation` field. The generation lives ONLY in REGISTRY (`generation_of`) — a
     // copy here was "kept in lockstep" but readable in the window where the two diverge (prelude
@@ -253,9 +255,8 @@ thread_local! {
     /// same id string as `PLUGINS`.  Reset on `shutdown` so a re-init starts empty.
     static REGISTRY: std::cell::RefCell<plugin::Registry>
         = std::cell::RefCell::new(plugin::Registry::new());
-    /// Runtime package registry: maps package name (e.g. `"@s2script/cs2"`) to JS source.
-    /// Populated by the shim at load time via `s2script_core_register_package` (C-ABI, see ffi.rs).
-    /// NOT cleared on `shutdown` — package registrations are valid for the process lifetime.
+    /// Test-only compatibility prelude/configuration seeds; production uses verified receipts.
+    #[cfg(test)]
     static INJECTED_PACKAGES: std::cell::RefCell<std::collections::HashMap<String, String>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Inter-plugin interface bookkeeping (Slice 4.5). Pure state lives here; the V8 handles are in
@@ -410,22 +411,6 @@ thread_local! {
     /// epoch collide with a fresh dispatch's. At one dispatch per tick it would take ~9 billion
     /// years to wrap.
     static HOOK_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-// Pickup-gate vote collection. Its own block: the one above is at the thread_local_inner! limit.
-thread_local! {
-    /// Live acquire-fold session, save/restored around a nested dispatch.
-    static ACQUIRE: std::cell::RefCell<Option<AcquireSession>> =
-        const { std::cell::RefCell::new(None) };
-
-    /// Post-phase `skipped` flag, published only while `dispatch_hook_post` builds its view.
-    static HOOK_POST_SKIPPED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
-}
-
-struct AcquireSession {
-    view: *mut std::ffi::c_void,
-    votes: Vec<crate::acquire::AcquireVote>,
-    wrote: bool,
 }
 
 /// A registered TopMenu tab (dashboard page). `id` is the addItem grouping key; `title` is the label.
@@ -620,13 +605,10 @@ pub fn set_hook_request(f: Option<HookRequestFn>) {
     HOOK_REQUEST.with(|c| c.set(f));
 }
 
-/// Register a game-package JS source string under `name` (e.g. `"@s2script/cs2"`).
+/// Register a compatibility test prelude under an opaque name.
 ///
-/// Called by the shim at load time (via the C-ABI `s2script_core_register_package`) to provide
-/// game-specific JS to core without baking it in at compile time.  Each call overwrites any prior
-/// value for the same name (idempotent for the shim's load-once use).  The stored source is then
-/// evaluated per-context in `create_plugin_context` and stashed at `globalThis.__s2pkg_*` for
-/// the `__s2require` native.
+/// Internal test prelude/configuration helper. It grants no package adapter authority.
+#[cfg(test)]
 pub fn register_injected_package(name: &str, js: &str) {
     INJECTED_PACKAGES.with(|p| p.borrow_mut().insert(name.to_string(), js.to_string()));
 }
@@ -750,13 +732,11 @@ fn config_templates_prelude() -> String {
 /// line N WAS V8 line N — the file starts directly at `globalThis.HookResult`, where the old
 /// `r#"` literal opened with a newline and shifted every reported line by one.
 // colors.js FIRST: it sets globalThis.__s2_colors, which prelude.js's chat and console
-// funnels call. Same ordering contract as games/cs2/js (activity.js before pawn.js).
+// funnels call. Package source ordering belongs to each package manifest.
 const INJECTED_STD_PRELUDE: &str =
     concat!(include_str!("../js/colors.js"), "\n", include_str!("../js/prelude.js"));
 
-// @s2script/cs2 is NOT embedded here. It is provided externally at runtime by the shim via
-// `register_injected_package("@s2script/cs2", <js>)` (see `ffi.rs`).  Core contains zero cs2 JS.
-// If the package is not registered, `require("@s2script/cs2")` returns null (graceful degrade).
+// Game code is supplied by the selected verified package receipt (see game_packages).
 
 /// Initialize the V8 platform exactly once for the process.  Never torn down.
 fn ensure_platform() {
@@ -1403,17 +1383,7 @@ pub(crate) fn log_warn(msg: &str) {
     }
 }
 
-/// Native `__s2require(name) -> object|null` — resolves first-party builtin specifiers to their
-/// per-context module globals under BOTH spellings: the consolidated `@s2script/sdk/<cap>` and the
-/// legacy `@s2script/<cap>` (e.g. `"@s2script/sdk/frame"` or `"@s2script/frame"` → `globalThis.__s2pkg_frame`).
-/// Bare `@s2script/sdk` (no capability) maps to `globalThis.__s2pkg_sdk`, the engine-generic
-/// authoring barrel. ORDER IS LOAD-BEARING: `@s2script/sdk/` is stripped BEFORE the shorter
-/// `@s2script/`, which also matches `@s2script/sdk/<cap>` and would strip to the garbage cap
-/// `sdk/<cap>`. Non-`@s2script/` specifiers → `null` (the JS `__s2_require` shim resolves those as
-/// inter-plugin deps).  A retired/unknown name (global undefined) → `null`. Engine-generic: no
-/// module list hardcoded; `@s2script/cs2` maps to `__s2pkg_cs2` via the plain `@s2script/` strip.
-///
-/// Like every native, the body runs under `catch_unwind` (no panic may cross the FFI boundary).
+/// Resolve selected package ids/subpaths from a private host snapshot, then engine builtins.
 fn s2require(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -1425,17 +1395,40 @@ fn s2require(
             return;
         }
         let name = args.get(0).to_rust_string_lossy(scope);
-        // First-party rule: @s2script/<name> → globalThis.__s2pkg_<name> (engine-generic; no module list
-        // hardcoded; @s2script/cs2 → __s2pkg_cs2 subsumed). Non-@s2script specifiers → null (the JS
-        // `__s2_require` shim resolves those as inter-plugin deps). A retired/unknown name → the global is
-        // undefined → null.
-        // Dual-prefix (packaging consolidation): a builtin resolves as BOTH the consolidated
-        // `@s2script/sdk/<cap>` and the legacy `@s2script/<cap>` — both map to `__s2pkg_<cap>`.
-        // ORDER IS LOAD-BEARING: the shorter `@s2script/` also matches `@s2script/sdk/entity`
-        // and would strip to `sdk/entity` → `__s2pkg_sdk/entity` garbage — try `@s2script/sdk/`
-        // FIRST. Bare `@s2script/sdk` (no capability) falls to the plain strip → `__s2pkg_sdk`,
-        // the engine-generic authoring barrel (populated by the prelude). Still generic — no
-        // module list hardcoded; `@s2script/cs2` keeps riding the plain `@s2script/` strip.
+        if let Some(id) = crate::game_packages::selected_id() {
+            let subpath = if name == id {
+                Some(".".to_string())
+            } else {
+                name.strip_prefix(&(id.clone() + "/"))
+                    .map(|p| format!("./{p}"))
+            };
+            if let Some(subpath) = subpath {
+                let generation = scope
+                    .get_current_context()
+                    .get_slot::<InteropGeneration>()
+                    .map(|g| g.0);
+                let module = current_plugin(scope).and_then(|parent| {
+                    let generation = generation.filter(|g| owner_is_live(&parent, *g))?;
+                    PLUGINS.with(|p| {
+                        p.borrow().get(&parent).and_then(|pi| {
+                            pi.package_exports
+                                .iter()
+                                .find(|e| {
+                                    e.instance.package_owner.id == id
+                                        && e.instance.parent.generation == generation
+                                })
+                                .and_then(|e| e.modules.get(&subpath))
+                                .cloned()
+                        })
+                    })
+                });
+                if let Some(module) = module {
+                    rv.set(v8::Local::new(scope, module).into());
+                }
+                // Selected identity is reserved even while bootstrap is provisional or failed.
+                return;
+            }
+        }
         let Some(rest) = name
             .strip_prefix("@s2script/sdk/")
             .or_else(|| name.strip_prefix("@s2script/"))
@@ -1444,7 +1437,9 @@ fn s2require(
         };
         let key = format!("__s2pkg_{}", rest);
         let global = scope.get_current_context().global(scope);
-        let Some(k) = v8::String::new(scope, &key) else { return };
+        let Some(k) = v8::String::new(scope, &key) else {
+            return;
+        };
         if let Some(v) = global.get(scope, k.into()) {
             if !v.is_undefined() {
                 rv.set(v);
@@ -2660,74 +2655,6 @@ fn s2_precache_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 
 // `__s2_cookie_on_cached` / `__s2_cookie_dispatch_cached` moved to `crate::cookies`.
 
-thread_local! {
-    /// `OnTakeDamagePost` must not write through `DamageInfo.damage` (spec: info is read-only).
-    static DAMAGE_WRITES_FROZEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-fn with_damage_writes_frozen(frozen: bool, f: impl FnOnce()) {
-    DAMAGE_WRITES_FROZEN.with(|c| {
-        let prev = c.get();
-        c.set(frozen);
-        f();
-        c.set(prev);
-    });
-}
-
-/// `__s2_damage_read_float(offset) -> f32` — read a float from the current CTakeDamageInfo. 0 if no op.
-fn s2_damage_read_float(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_double(0.0);
-        if args.length() < 1 { return; }
-        let off = args.get(0).int32_value(scope).unwrap_or(-1);
-        if off < 0 { return; }
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(func) = ops.damage_read_float else { return };
-        rv.set_double(func(off) as f64);
-    }));
-}
-
-/// `__s2_damage_read_int(offset) -> i32` — read an int (e.g. a handle or m_bitsDamageType). 0 if no op.
-fn s2_damage_read_int(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_double(0.0);
-        if args.length() < 1 { return; }
-        let off = args.get(0).int32_value(scope).unwrap_or(-1);
-        if off < 0 { return; }
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(func) = ops.damage_read_int else { return };
-        rv.set_double(func(off) as f64);
-    }));
-}
-
-/// `__s2_damage_write_float(offset, value)` — write m_flDamage etc. during a pre-hook (modify/block).
-/// No-op if no op, or during `OnTakeDamagePost` (info is read-only after the original ran).
-fn s2_damage_write_float(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if DAMAGE_WRITES_FROZEN.with(|c| c.get()) {
-            return;
-        }
-        if args.length() < 2 { return; }
-        let off = args.get(0).int32_value(scope).unwrap_or(-1);
-        if off < 0 { return; }
-        let val = args.get(1).number_value(scope).unwrap_or(0.0) as f32;
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(func) = ops.damage_write_float else { return };
-        func(off, val);
-    }));
-}
-
-/// `__s2_damage_victim() -> i32` — the victim's raw CEntityHandle (from the detour `this`). -1 if no op.
-/// JS decodes it via `__s2_handle_decode` into an EntityRef.
-fn s2_damage_victim(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_double(-1.0);
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(func) = ops.damage_victim else { return };
-        rv.set_double(func() as f64);
-    }));
-}
-
 /// `__s2_cvar_get(name) -> string` — a cvar's current value as a string. "" if no op / absent / null.
 fn s2_cvar_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -3909,90 +3836,6 @@ fn s2_translations_read(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
 
 
 
-/// Slice 6.6 Stage 2: run OnTakeDamage SDKHooks over the current CTakeDamageInfo (set by the
-/// shim detour). Mirrors `dispatch_game_event`: snapshot (release the table borrow), re-entrancy guard,
-/// per-subscriber liveness + context + TryCatch. Each handler gets `new DamageInfo()` (a block-scoped
-/// accessor over the current damage) and reads/modifies it in place; blocking = the handler setting
-/// damage to 0.
-/// Zero the live CTakeDamageInfo damage — the block power behind an OnTakeDamage SDKHook
-/// returning `>= HookResult.Handled` (locked decision #8). Reuses the exact write path the JS
-/// `DamageInfo.damage = 0` setter takes: resolve `m_flDamage`'s schema offset, then the
-/// `damage_write_float` engine op with `0.0`. (CTakeDamageInfo is a Source 2 engine type, not a
-/// game-specific one — engine-generic, like the rest of the damage module.) No-op if the offset is
-/// unresolved or the op is absent (degrade-never-crash).
-fn zero_current_damage() {
-    let live_raw = |c: &str, f: &str| -> i32 {
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return -1 };
-        let Some(func) = ops.schema_offset else { return -1 };
-        let (Ok(cc), Ok(cf)) = (CString::new(c), CString::new(f)) else { return -1 };
-        func(cc.as_ptr(), cf.as_ptr())
-    };
-    let live_log = |_msg: &str| {};
-    let off = SCHEMA_OFFSETS.with(|c| c.borrow_mut().resolve("CTakeDamageInfo", "m_flDamage", live_raw, live_log));
-    if off < 0 { return; }
-    if let Some(func) = ENGINE_OPS.with(|o| o.get()).and_then(|o| o.damage_write_float) {
-        func(off, 0.0);
-    }
-}
-
-pub(crate) fn dispatch_damage() {
-    // Handled zeroes live damage AFTER the collapse (does not skip later observers). Stop truncates.
-    with_damage_writes_frozen(false, || {
-        dispatch_damage_kind(
-            crate::sdkhooks::snapshot_ontakedamage(),
-            "dispatch_damage",
-            "damage:onPre",
-            StopAt::Stop,
-            true,
-        );
-    });
-}
-
-/// `OnTakeDamagePost` — after the original DTA ran. Return is ignored; Handled does not zero.
-/// `DamageInfo.damage` assignment is frozen (spec: info is read-only on the post-hook).
-pub(crate) fn dispatch_damage_post() {
-    with_damage_writes_frozen(true, || {
-        dispatch_damage_kind(
-            crate::sdkhooks::snapshot_ontakedamage_post(),
-            "dispatch_damage_post",
-            "damage:onPost",
-            StopAt::Never,
-            false,
-        );
-    });
-}
-
-fn dispatch_damage_kind(
-    snap: Vec<(String, u64, v8::Global<v8::Function>)>,
-    label: &'static str,
-    breadcrumb: &'static str,
-    stop_at: StopAt,
-    zero_on_handled: bool,
-) {
-    let result = fan_out_collapsing(
-        &snap,
-        label,
-        Instrument::breadcrumb(breadcrumb),
-        stop_at,
-        |tc| {
-            let info: Option<v8::Local<v8::Value>> = (|| {
-                let global = tc.get_current_context().global(tc);
-                let pkg_key = v8::String::new(tc, "__s2pkg_damage")?;
-                let pkg = global.get(tc, pkg_key.into())?;
-                let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
-                let ctor_key = v8::String::new(tc, "DamageInfo")?;
-                let ctor_val = pkg.get(tc, ctor_key.into())?;
-                let ctor = v8::Local::<v8::Function>::try_from(ctor_val).ok()?;
-                ctor.new_instance(tc, &[]).map(|o| -> v8::Local<v8::Value> { o.into() })
-            })();
-            Some(vec![info.unwrap_or_else(|| v8::undefined(tc).into())])
-        },
-    );
-    if zero_on_handled && result >= HookResult::Handled {
-        zero_current_damage();
-    }
-}
-
 /// Usercmd primitive Task 2: run the `UserCmd.onRun` subscribers over the current tick's input (the
 /// Task-3 shim detour sets the current `s_currentUserCmd` before calling this, and reads the
 /// possibly-modified fields back after). Mirrors `dispatch_damage`'s snapshot + `try_borrow_mut`
@@ -4179,7 +4022,6 @@ enum HookParamValue {
     /// `is_float` preserves the reader's class so the WRITE path can keep refusing values the
     /// param cannot represent (an f32 overflow, an out-of-range i32) instead of coercing them.
     Num { value: f64, is_float: bool },
-    Text(String),
 }
 
 fn hook_param_read(view: *mut std::ffi::c_void, idx: i32) -> Option<HookParamValue> {
@@ -4194,19 +4036,6 @@ fn hook_param_read(view: *mut std::ffi::c_void, idx: i32) -> Option<HookParamVal
         let mut out: i32 = 0;
         if f(view, idx, &mut out) == 0 {
             return Some(HookParamValue::Num { value: out as f64, is_float: false });
-        }
-    }
-    // Text params. The buffer matches the view's own capacity; the shim always NUL-terminates and
-    // bounds the copy by BOTH capacities, so a short read here can only truncate, never overrun.
-    if let Some(f) = ops.hook_read_str {
-        let mut buf = [0i8; 128];
-        if f(view, idx, buf.as_mut_ptr(), buf.len() as c_int) == 0 {
-            let bytes: Vec<u8> = buf
-                .iter()
-                .take_while(|c| **c != 0)
-                .map(|c| *c as u8)
-                .collect();
-            return Some(HookParamValue::Text(String::from_utf8_lossy(&bytes).into_owned()));
         }
     }
     None
@@ -4233,12 +4062,6 @@ fn s2_hook_param_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
         };
         match hook_param_read(view, idx) {
             Some(HookParamValue::Num { value, .. }) => rv.set_double(value),
-            Some(HookParamValue::Text(t)) => {
-                match v8::String::new(scope, &t) {
-                    Some(js) => rv.set(js.into()),
-                    None => return,
-                }
-            }
             None => crate::gamedata_hooks::note_miss(
                 &owner,
                 &name,
@@ -4296,9 +4119,6 @@ fn s2_hook_param_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
                 if !(value >= i32::MIN as f64 && value <= i32::MAX as f64) => None,
             Some(HookParamValue::Num { is_float: true, .. }) => ops.and_then(|o| o.hook_write_f32).map(|f| f(view, idx, value as f32)),
             Some(HookParamValue::Num { is_float: false, .. }) => ops.and_then(|o| o.hook_write_i32).map(|f| f(view, idx, value as i32)),
-            // A text param is read-only: there is nowhere to put a written string that the engine
-            // would ever look at (the view holds a COPY made after the engine handed the pointer over).
-            Some(HookParamValue::Text(_)) => None,
             None => None,
         };
         if ok != Some(0) {
@@ -4312,13 +4132,6 @@ fn s2_hook_param_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
                     idx
                 )),
             );
-        } else {
-            // A successful write during an acquire session is a vote-eligible `result` write.
-            ACQUIRE.with(|a| {
-                if let Some(s) = a.borrow_mut().as_mut() {
-                    s.wrote = true;
-                }
-            });
         }
     }));
 }
@@ -4351,8 +4164,7 @@ fn build_hook_view<'s>(
             v8::Function::builder(s2_hook_param_get).data(data).build(tc)?.into();
         // No setter at all for a read-only param — `undefined` is how V8 spells "accessor with no
         // setter", which makes an assignment throw under strict mode instead of silently vanishing.
-        let post = HOOK_POST_SKIPPED.with(|c| c.get().is_some());
-        let setter: v8::Local<v8::Value> = if plan.writable[i] && !post {
+        let setter: v8::Local<v8::Value> = if plan.writable[i] {
             v8::Function::builder(s2_hook_param_set).data(data).build(tc)?.into()
         } else {
             v8::undefined(tc).into()
@@ -4391,11 +4203,6 @@ fn build_hook_view<'s>(
             None => v8::null(tc).into(),
         };
         obj.set(tc, key.into(), ent);
-    }
-    if let Some(skipped) = HOOK_POST_SKIPPED.with(|c| c.get()) {
-        let key = v8::String::new(tc, "skipped")?;
-        let val: v8::Local<v8::Value> = v8::Boolean::new(tc, skipped).into();
-        obj.set(tc, key.into(), val);
     }
     Some(vec![obj.into()])
 }
@@ -4498,7 +4305,7 @@ pub(crate) fn dispatch_hook(hook_id: i32, arg_view: *mut std::ffi::c_void) -> i3
     // An id core never handed out — a detour installed by a PREVIOUS core (Metamod reload) — has no
     // descriptor. Continue, so the engine proceeds unhooked.
     let Some((owner, name)) = crate::gamedata_hooks::hook_for_id(hook_id) else { return 0 };
-    // Same hook already on the stack: giveNamedItem from onCanAcquire, etc. Skip and name —
+    // Same hook already on the stack: a handler whose engine call re-enters it. Skip and name —
     // not a nest, not a queue.
     let same = ACTIVE_HOOK.with(|a| {
         a.borrow()
@@ -4532,46 +4339,11 @@ pub(crate) fn dispatch_hook(hook_id: i32, arg_view: *mut std::ffi::c_void) -> i3
             epoch,
         })
     });
-    let is_acquire = plan.shape == 3; // this_i64_i32_i64 — see gamedata_hooks::SHAPES
-    let prev_acq = if is_acquire {
-        ACQUIRE.with(|a| {
-            a.borrow_mut().replace(AcquireSession {
-                view: arg_view,
-                votes: Vec::new(),
-                wrote: false,
-            })
-        })
-    } else {
-        None
-    };
-    let prev_after = if is_acquire {
-        set_after_handler(Some(acquire_after_handler))
-    } else {
-        None
-    };
     let label = format!("dispatch_hook('{}.{}')", owner, name);
     let (result, delivery) =
         fan_out_inner(&snap, &label, Instrument::breadcrumb(&label), StopAt::Stop, |tc| {
             build_hook_view(tc, &plan, arg_view, epoch)
         });
-    if is_acquire {
-        set_after_handler(prev_after);
-        let session = ACQUIRE.with(|a| {
-            let cur = a.borrow_mut().take();
-            *a.borrow_mut() = prev_acq;
-            cur
-        });
-        if let Some(mut session) = session {
-            crate::acquire::order_votes(&mut session.votes);
-            let (folded, _) = crate::acquire::fold_acquire(&session.votes, None);
-            if let Some(ops) = ENGINE_OPS.with(|o| o.get()) {
-                if let Some(w) = ops.hook_write_i32 {
-                    let _ = w(arg_view, 1, folded);
-                    let _ = w(arg_view, 2, if session.votes.is_empty() { 0 } else { 1 });
-                }
-            }
-        }
-    }
     ACTIVE_HOOK.with(|a| *a.borrow_mut() = prev);
     // Nothing ran. The `Continue` above is still the right answer for the thunk (never a replay —
     // the frame is gone), but the skip is now NAMED instead of silent, and rate-limited to once per
@@ -4581,144 +4353,6 @@ pub(crate) fn dispatch_hook(hook_id: i32, arg_view: *mut std::ffi::c_void) -> i3
     }
     result as i32
 }
-
-fn acquire_after_handler(hr: HookResult) {
-    ACQUIRE.with(|a| {
-        let mut slot = a.borrow_mut();
-        let Some(s) = slot.as_mut() else { return };
-        // Param 1 of the acquire shape is an i32; a text param here would mean the shape table
-        // and this call site disagree, so treat anything else as 0 rather than guessing.
-        let result = match hook_param_read(s.view, 1) {
-            Some(HookParamValue::Num { value, .. }) => value as i32,
-            _ => 0,
-        };
-        match hr {
-            HookResult::Continue => {
-                s.wrote = false;
-            }
-            HookResult::Changed => {
-                s.votes.push(crate::acquire::AcquireVote { result, skip_original: false });
-                s.wrote = false;
-            }
-            HookResult::Handled | HookResult::Stop => {
-                let r = if s.wrote { result } else { crate::acquire::ACQUIRE_IMPLICIT_DENY };
-                s.votes.push(crate::acquire::AcquireVote { result: r, skip_original: true });
-                s.wrote = false;
-            }
-        }
-    });
-}
-
-/// Post-phase spectator mux. Readonly view. `HookResult` ignored. Always runs if subscribed,
-/// including after a Pre skip (`skipped: true`).
-pub(crate) fn dispatch_hook_post(hook_id: i32, arg_view: *mut std::ffi::c_void, skipped: bool) -> i32 {
-    let Some((owner, name)) = crate::gamedata_hooks::hook_for_id(hook_id) else { return 0 };
-    let Some(plan) = crate::gamedata_hooks::plan(&owner, &name) else { return 0 };
-    let snap = HOOK_MUX.with(|m| m.borrow().snapshot(&hook_key_post(&owner, &name)));
-    if snap.is_empty() {
-        return 0;
-    }
-    let epoch = HOOK_EPOCH.with(|e| {
-        let next = e.get().wrapping_add(1);
-        e.set(next);
-        next
-    });
-    let prev = ACTIVE_HOOK.with(|a| {
-        a.borrow_mut().replace(ActiveHook {
-            view: arg_view,
-            owner: owner.clone(),
-            name: name.clone(),
-            epoch,
-        })
-    });
-    let prev_skipped = HOOK_POST_SKIPPED.with(|c| c.replace(Some(skipped)));
-    let label = format!("dispatch_hook_post('{}.{}')", owner, name);
-    let (_, delivery) = fan_out_inner(&snap, &label, Instrument::breadcrumb(&label), StopAt::Never, |tc| {
-        build_hook_view(tc, &plan, arg_view, epoch)
-    });
-    HOOK_POST_SKIPPED.with(|c| c.set(prev_skipped));
-    ACTIVE_HOOK.with(|a| *a.borrow_mut() = prev);
-    if delivery == Delivery::Deferred {
-        crate::gamedata_hooks::note_reentrant_skip(&owner, &name);
-    }
-    0
-}
-
-fn hook_key_post(owner: &str, name: &str) -> String {
-    format!("{}\u{0}{}\u{0}post", owner, name)
-}
-
-/// `__s2_hook_on_post(owner, hookName, handler)` — subscribe to the Post spectator of a declared hook.
-fn s2_hook_on_post(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_double(0.0);
-        if args.length() < 3 {
-            return;
-        }
-        let owner = hook_owner_id(&args.get(0).to_rust_string_lossy(scope));
-        let name = args.get(1).to_rust_string_lossy(scope);
-        let key = hook_key_post(&owner, &name);
-        let Some((sub_id, _)) = subscribe_into(scope, &args, &HOOK_MUX, &key, 2) else { return };
-        if let Err(reason) = crate::gamedata_hooks::subscribe(&owner, &name) {
-            log_warn(&format!(
-                "WARN: hook_on_post('{}', '{}'): the detour is not installed, so this handler will not \
-                 fire: {}",
-                owner, name, reason
-            ));
-        }
-        rv.set(v8::Number::new(scope, sub_id as f64).into());
-    }));
-}
-
-/// `__s2_hook_q_u16(qslot, class, field)` — u16 at the live view's q[qslot] + schema offset.
-/// Game package supplies the class/field names; the pointer never crosses to JS.
-fn s2_hook_q_u16(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_undefined();
-        let Some((view, _, _, _)) = active_hook() else { return };
-        if args.length() < 3 {
-            return;
-        }
-        let qslot = args.get(0).int32_value(scope).unwrap_or(-1);
-        let class = args.get(1).to_rust_string_lossy(scope);
-        let field = args.get(2).to_rust_string_lossy(scope);
-        let off = schema_offset_cached(&class, &field);
-        if off < 0 {
-            return;
-        }
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(f) = ops.hook_read_u16_at_q else { return };
-        let mut out: u16 = 0;
-        if f(view, qslot, off, &mut out) != 0 {
-            return;
-        }
-        rv.set_uint32(out as u32);
-    }));
-}
-
-/// `__s2_hook_self_matches(entityRef, offset)` — does this live entity's pointer-at-offset equal
-/// the detour `this`? Used by the game package to hop a services sub-object back to its pawn.
-fn s2_hook_self_matches(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_bool(false);
-        let Some((view, _, _, _)) = active_hook() else { return };
-        if args.length() < 2 {
-            return;
-        }
-        let packed = pack_entity_arg(scope, args.get(0));
-        const NO_ENTITY: u64 = 0xffff_ffff_ffff_ffff;
-        if packed == NO_ENTITY {
-            return;
-        }
-        let index = (packed >> 32) as i32;
-        let serial = packed as u32 as i32;
-        let offset = args.get(1).int32_value(scope).unwrap_or(-1);
-        let Some(ops) = ENGINE_OPS.with(|o| o.get()) else { return };
-        let Some(f) = ops.hook_self_matches_field else { return };
-        rv.set_bool(f(view, index, serial, offset) == 1);
-    }));
-}
-
 
 /// Synchronous output dispatch (entity-I/O slice). Called from `ffi.rs`'s
 /// `s2script_core_dispatch_output` (a C-ABI export), which the shim's `FireOutputInternal` detour
@@ -4882,7 +4516,7 @@ fn defer_selftest_armed() -> bool {
 /// engine call that fires an event synchronously inside the borrow — which is exactly what A5b's
 /// `Respawn`/`TerminateRound` descriptors now are, but reaching them needs a live player on a real
 /// server, so the synthetic path stays the bot-only-server proof. This is the same reason
-/// `S2_DAMAGE_SELFTEST` exists for the damage detour, and it carries the same discipline: env-gated,
+/// the (now retired) `S2_DAMAGE_SELFTEST` existed for the damage detour, and it carries the same discipline: env-gated,
 /// off by default, loudly labelled, and NOT to be run in production — it dispatches a REAL event
 /// name with FAKE field values to every subscribed plugin.
 ///
@@ -5937,6 +5571,10 @@ pub(crate) fn dispatch_onframe(
     }
 }
 
+/// Process package receipts may retire only after all context ledgers and active dispatch.
+pub(crate) fn package_contexts_retired() -> bool {
+    PLUGINS.with(|p| p.borrow().is_empty()) && can_shutdown()
+}
 /// True only when HOST is not borrowed and no dispatch is in progress.
 pub fn can_shutdown() -> bool {
     let host_free = HOST.with(|h| h.try_borrow().is_ok());
@@ -6596,6 +6234,12 @@ pub(crate) fn register_process_singletons() {
         crate::process_singletons::register(name, phase, Box::new(f));
     }
 
+    // Contexts have already retired through unload_all before this process receipt is released.
+    reg("SELECTED_GAME_PACKAGE", BeforeIsolateDrop, || {
+        crate::game_packages::clear().expect("terminal package retirement before contexts");
+    });
+    #[cfg(test)]
+    reg("TEST_INJECTED_PACKAGES", BeforeIsolateDrop, || INJECTED_PACKAGES.with(|p| p.borrow_mut().clear()));
     // ---- BeforeIsolateDrop: holds V8 handles, or must be torn down while the isolate lives. ----
 
     // Async state: RESOLVERS holds Globals into the isolate, so the handles must be released here.
@@ -6730,3 +6374,6 @@ mod engine_function_adapter_v8;
 #[cfg(test)]
 #[path = "v8host/tests/engine_functions.rs"]
 mod engine_function_tests;
+
+#[cfg(test)]
+mod game_package_tests;

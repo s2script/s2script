@@ -29,7 +29,7 @@ function host({ humans = 3, cvars = new Map(), previous,
     // B/C controlled engine descriptors are unavailable in this A-only fake host.
     // Null is a named pending boundary, never fabricated native callback evidence.
     Engine: { call: () => null, hook: () => null },
-    items: { onCanAcquirePost() {} }, onOutput() {},
+    onOutput() {},
     Server: {
       mapName: 'de_test', getCvar: n => cvars.get(n) ?? '',
       setCvar: (n, v) => { if (!cvars.has(n)) return false; cvars.set(n, v); return true; },
@@ -309,23 +309,21 @@ test('archive handoff cannot resume another suite', () => {
   assert.match(rejected[0].khook_acceptance_error, /handoff mismatch/);
 });
 
-test('B owned entities and bot damage subscriptions retire on prepare and teardown', () => {
+test('B owned entities retire on prepare and teardown; the bot pawn gets no SDKHook', () => {
   const h = host();
   const pawn = h.sdk.createEntity('player');
   pawn.ref = pawn; pawn.giveNamedItem = () => null;
   h.sdk.Player.fromSlot = () => ({ pawn });
   h.sdk.Clients.all = () => [{ slot: 2, isBot: true, isValid: () => true }];
-  h.sdk.SDKHookType.OnTakeDamage = 20; h.sdk.SDKHookType.OnTakeDamagePost = 21;
   const live = new Set(); const hook = h.sdk.SDKHook, unhook = h.sdk.SDKUnhook;
   h.sdk.SDKHook = (entity, type, handler) => { live.add(handler); return hook(entity, type, handler); };
   h.sdk.SDKUnhook = (entity, type, handler) => { live.delete(handler); return unhook(entity, type, handler); };
   const create = h.sdk.createEntity;
   h.sdk.createEntity = (...args) => { const entity = create(...args); entity.acceptInput = () => false; return entity; };
   h.control('prepare', 'run-1', ARTIFACT, 'B'); h.control('collect', 'run-1', ARTIFACT, 'B');
-  assert.equal(live.size, 2);
+  assert.equal(live.size, 0, 'the retired named damage case no longer hooks the bot pawn');
   h.control('prepare', 'run-1', ARTIFACT, 'B');
-  assert.equal(live.size, 0, 'prepare retires prior run SDKHooks before changing identity');
-  h.control('collect', 'run-1', ARTIFACT, 'B'); assert.equal(live.size, 2);
+  h.control('collect', 'run-1', ARTIFACT, 'B');
   h.control('teardown', 'run-1', ARTIFACT, 'B');
   assert.equal(live.size, 0);
   assert.equal(h.entities.filter(entity => entity.valid && entity !== pawn).length, 0);

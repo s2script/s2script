@@ -1051,25 +1051,13 @@ class IntegrationEvidenceTests(unittest.TestCase):
             if rec["subcheck"] == "native_all_sites_both_peer_orders":
                 rec["observations"] = [dict(rec["observations"][0], scenario_id=site, sequence=index * 2 + order + 1,
                     invocation=site + str(order), peer_order=("peer-first", "s2script-first")[order],
-                    facts=dict(site=site, origin="main-runtime" if index < 5 else "controlled-stock-provider"))
+                    facts=dict(site=site, origin="main-runtime" if site in ka.MAIN_RUNTIME_SITES else "controlled-stock-provider"))
                     for index, site in enumerate(ka.INTEGRATION_EXPECTED[rec["subcheck"]]["sites"]) for order in (0, 1)]
         return records
 
     def judge(self, records, suite):
         identity = dict(IDENTITY, gamedata_capture=self.gamedata_fixture()[1])
         return ka.judge_records(records, identity=identity, suite=suite)
-
-    def test_damage_requires_void_three_pointer_and_real_output_witnesses(self):
-        for field, value in (("arguments", 2), ("result_null", 0), ("result_nonnull", 0),
-                             ("output_writes", 0), ("output_preserved", 1), ("return_kind", "int64"), ("skipped", 1)):
-            records = self.records("B")
-            row = next(r for r in records if r["subcheck"] == "native_damage_valid_pre_post")
-            row["actual"][field] = value
-            self.assertEqual(self.judge(records, "B").exit_code, 1, field)
-        records = self.records("B")
-        row = next(r for r in records if r["subcheck"] == "native_damage_peer_orders_original_state")
-        row["actual"] = {"orders": ["peer-first", "s2script-first"], "current_return_matches": True}
-        self.assertEqual(self.judge(records, "B").exit_code, 1)
 
     def test_populated_parser_examples(self):
         for suite in ("B", "C"):
@@ -1085,8 +1073,9 @@ class IntegrationEvidenceTests(unittest.TestCase):
             self.assertEqual(self.judge(records, "B").exit_code, 1, field)
 
     def test_deployed_gamedata_requires_independent_matching_hashes(self):
-        records = self.records("B")
-        self.assertEqual(ka.judge_records(records, identity=IDENTITY, suite="B").exit_code, 2)
+        # The only deployed-gamedata subcheck (native_precache_live_peer_both_orders) is suite C.
+        records = self.records("C")
+        self.assertEqual(ka.judge_records(records, identity=IDENTITY, suite="C").exit_code, 2)
         for mutation in ("hash", "native_changed", "duplicate"):
             native, capture = self.gamedata_fixture()
             identity = dict(IDENTITY, gamedata_capture=capture)
@@ -1094,7 +1083,7 @@ class IntegrationEvidenceTests(unittest.TestCase):
             if mutation == "hash": capture["after"]["files"][0]["sha256"] = "f" * 64
             elif mutation == "native_changed": next(r for r in rows if r["subcheck"] in ka.GAMEDATA_SUBCHECKS)["gamedata"]["unchanged"] = False
             else: capture["before"]["files"].append(copy.deepcopy(capture["before"]["files"][0]))
-            self.assertEqual(ka.judge_records(rows, identity=identity, suite="B").exit_code, 1)
+            self.assertEqual(ka.judge_records(rows, identity=identity, suite="C").exit_code, 1)
 
     def test_gamedata_hash_capture_reads_installed_bytes_and_rejects_changes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1179,12 +1168,12 @@ class IntegrationEvidenceTests(unittest.TestCase):
     def test_main_bridge_never_joins_private_copy(self):
         for name in ("scenario_id", "sequence", "generation", "invocation", "peer_order"):
             records = self.records("B")
-            row = next(r for r in records if r["subcheck"] == "js_acquire_outbound_pre_vote")
+            row = next(r for r in records if r["subcheck"] == "js_this_void_continue_delivery")
             row["observations"][0][name] = 9 if name in ("sequence", "generation") else "s2script-first" if name == "peer_order" else "unrelated"
             result = self.judge(records, "B")
             self.assertEqual(result.exit_code, 1, result.messages)
         records = self.records("B")
-        row = next(r for r in records if r["subcheck"] == "native_main_acquire_outbound_pre_vote")
+        row = next(r for r in records if r["subcheck"] == "native_main_this_void_continue_delivery")
         row.update(group="controlled-mechanics", provenance="controlled-stock-provider")
         self.assertEqual(self.judge(records, "B").exit_code, 1)
 

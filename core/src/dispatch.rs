@@ -3,7 +3,7 @@
 //! Feature modules snapshot their mux and hand the list here. This module owns the
 //! re-entrancy / nest / isolate-borrow decision, the per-subscriber liveness + context
 //! walk, TryCatch isolation, HookResult collapse, and `Delivery`. It does **not** own
-//! hook views, `ACTIVE_HOOK`, acquire sessions, argument construction, `dispatch_onframe`,
+//! hook views, `ACTIVE_HOOK`, argument construction, `dispatch_onframe`,
 //! TopMenu, or inter-plugin emit — those stay in `v8host`.
 //!
 //! Isolate facts arrive through a narrow adapter (`HostAccess`, `with_host_isolate`,
@@ -13,10 +13,6 @@
 //! `nest::top()` is consulted **before** any host-isolate borrow. A non-null nest token
 //! uses `CallbackScope` and never takes `HOST`. `#63` (Busy) still applies when the
 //! stack is empty.
-//!
-//! `AFTER_HANDLER` is host-path-only: the pickup-gate acquire fold installs a setter
-//! around `fan_out_inner`, and only the host-borrow subscriber walk invokes it. The
-//! nested CallbackScope walk does not.
 
 use crate::multiplexer::HookResult;
 use crate::v8host::{clone_plugin_context, log_warn, owner_is_live, with_host_isolate, HostAccess};
@@ -41,15 +37,6 @@ impl Drop for ParentBusy { fn drop(&mut self) {BUSY_PARENTS.with(|b|{b.borrow_mu
 /// command, timer or event must not hide its subscriptions from a function it caused to run.
 pub(crate) fn parent_busy(owner:&str,generation:u64,target:i64)->bool {
     BUSY_PARENTS.with(|b|b.borrow().iter().any(|(id,g,t)|id==owner && *g==generation && *t==Some(target)))
-}
-
-thread_local! {
-    /// Called after each collapsing handler with that handler's HookResult. Used by the
-    /// return-value pickup gate to collect per-handler votes (Continue is not a vote).
-    ///
-    /// Invoked only on the host-borrow walk. Nested CallbackScope fan-out never calls it.
-    static AFTER_HANDLER: std::cell::Cell<Option<fn(HookResult)>> =
-        const { std::cell::Cell::new(None) };
 }
 
 thread_local! {
@@ -79,12 +66,6 @@ impl Drop for DispatchScope {
             state.set((epoch, depth - 1));
         });
     }
-}
-
-/// Crate-private setter used by acquire folding. Returns the previous handler so the
-/// caller can save/restore around a nested dispatch.
-pub(crate) fn set_after_handler(f: Option<fn(HookResult)>) -> Option<fn(HookResult)> {
-    AFTER_HANDLER.with(|c| c.replace(f))
 }
 
 /// THE dispatch preamble, owned once.
@@ -341,7 +322,7 @@ where
 /// public wrappers must not drift in re-entrancy discipline, and the borrow-failure signal exists in
 /// exactly one place.
 ///
-/// `dispatch_hook` / `dispatch_hook_post` call this directly so they can inspect `Delivery` (those
+/// `dispatch_hook` calls this directly so it can inspect `Delivery` (its
 /// pre-hooks cannot be replayed; a `Deferred` is a named skip).
 thread_local! {
     static DEFER_CALLBACKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -424,7 +405,7 @@ where
             let Some(args) = build_args(tc) else { continue };
             let _busy = ParentBusy::enter(owner, *generation);
             let func = v8::Local::new(tc, handler_g);
-            let hr = match func.call(tc, recv, &args) {
+            let _ = match func.call(tc, recv, &args) {
                 None => {
                     let msg = tc
                         .exception()
@@ -458,11 +439,6 @@ where
                 }
                 Some(_) => HookResult::Continue,
             };
-            AFTER_HANDLER.with(|c| {
-                if let Some(f) = c.get() {
-                    f(hr);
-                }
-            });
         }
         (result, Delivery::Delivered)
     }) {

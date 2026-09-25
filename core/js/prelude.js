@@ -813,43 +813,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     get gameTime() { return __s2_server_game_time(); },       // GetGlobals()->curtime; 0 if unavailable
   };
   globalThis.__s2pkg_server = { Server: __s2_server };   // named export `Server`
-  // --- Slice 6.6: damage module (block-scoped DamageInfo over the current CTakeDamageInfo).
-  //     CTakeDamageInfo is a Source 2 engine type (not CS2-specific) -> engine-generic, lives in core.
-  //     Subscribe with SDKHook(entity, SDKHookType.OnTakeDamage, cb) — not a global mux.
-  //     OnTakeDamagePost uses the same DamageInfo view; the damage setter is frozen. ---
-  function DamageInfo() {}
-  function __s2_dmg_ref(field) {
-    var o = __s2_schema_offset("CTakeDamageInfo", field);
-    if (o < 0) return null;
-    var h = __s2_damage_read_int(o) >>> 0;
-    if (h === 0 || h === 0xFFFFFFFF) return null;            // empty/invalid handle
-    var d = __s2_handle_adopt(h);
-    return d ? new EntityRef(d[0], d[1]) : null;             // books-adopted; dangling/stale -> null
-  }
-  Object.defineProperties(DamageInfo.prototype, {
-    // m_flDamage: read the damage; SETTING it modifies the live info (set to 0 to block).
-    damage: {
-      get: function () { var o = __s2_schema_offset("CTakeDamageInfo", "m_flDamage"); return o < 0 ? 0 : __s2_damage_read_float(o); },
-      set: function (v) { var o = __s2_schema_offset("CTakeDamageInfo", "m_flDamage"); if (o >= 0) __s2_damage_write_float(o, +v); },
-      enumerable: true, configurable: true,
-    },
-    damageType: {
-      get: function () { var o = __s2_schema_offset("CTakeDamageInfo", "m_bitsDamageType"); return o < 0 ? 0 : __s2_damage_read_int(o); },
-      enumerable: true, configurable: true,
-    },
-    attacker:  { get: function () { return __s2_dmg_ref("m_hAttacker"); },  enumerable: true, configurable: true },
-    inflictor: { get: function () { return __s2_dmg_ref("m_hInflictor"); }, enumerable: true, configurable: true },
-    // The victim (the entity taking damage) — decoded from the detour `this`, not a field of the info.
-    victim: {
-      get: function () {
-        var h = __s2_damage_victim() >>> 0;
-        if (h === 0 || h === 0xFFFFFFFF) return null;
-        var d = __s2_handle_adopt(h);
-        return d ? new EntityRef(d[0], d[1]) : null;
-      }, enumerable: true, configurable: true,
-    },
-  });
-  globalThis.__s2pkg_damage = { DamageInfo: DamageInfo };
+  // @s2script/sdk/damage is TYPE-ONLY: the DamageInfo view belongs to the selected game package (its
+  // damage function and CTakeDamageInfo layout are game facts), delivered through the SDKHook provider
+  // hand-off below. The empty module keeps `require("@s2script/sdk/damage")` resolvable.
+  globalThis.__s2pkg_damage = {};
   var SDKHookType = {
     OnTakeDamage: "OnTakeDamage",
     OnTakeDamagePost: "OnTakeDamagePost",
@@ -884,16 +851,42 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     for (var k in SDKHookType) if (SDKHookType[k] === type) return true;
     return false;
   }
+  // Game-package SDKHook providers — the documented hand-off for hook types whose engine function and
+  // argument meaning belong to a game (e.g. damage). The SELECTED game package registers a provider per
+  // SDKHookType member during its bootstrap through __s2_sdkhook_provider_register(type, {hook, unhook});
+  // the host deletes the registrar once package bootstrap ends, so plugin code can never install one.
+  // A provided type routes here instead of the core per-entity table: hook(index, id, callback) and
+  // unhook(index, id, callback) return booleans, and receive only an entity the books say is live
+  // (SDKHook) — the provider owns ordering, collapse and teardown (its receipts are host-ledgered).
+  // An SDKHookType member with neither a provider nor core backing returns false, never throws.
+  var sdkhookProviders = Object.create(null);
+  Object.defineProperty(globalThis, "__s2_sdkhook_provider_register", {
+    configurable: true, enumerable: false, writable: false,
+    value: function (type, provider) {
+      if (!SDKHookKnown(type)) throw new Error("s2script: SDKHook provider type '" + type + "' is not an SDKHookType");
+      if (sdkhookProviders[type]) throw new Error("s2script: SDKHook provider for '" + type + "' already registered");
+      if (provider == null || typeof provider.hook !== "function" || typeof provider.unhook !== "function")
+        throw new TypeError("s2script: SDKHook provider needs hook/unhook functions");
+      sdkhookProviders[type] = provider;
+    },
+  });
   function SDKHook(entity, type, callback) {
     if (entity == null || typeof entity.index !== "number" || typeof entity.id !== "number") return false;
     if (!SDKHookKnown(type)) throw new Error("s2script: SDKHook type '" + type + "' is not supported");
     if (typeof callback !== "function") throw new TypeError("s2script: SDKHook callback must be a function");
+    var provider = sdkhookProviders[type];
+    if (provider) {
+      if (__s2_ent_ref_valid(entity.index, entity.id) !== true) return false;
+      return provider.hook(entity.index, entity.id, callback) === true;
+    }
     return __s2_sdkhook(entity.index, entity.id, type, callback);
   }
   function SDKUnhook(entity, type, callback) {
     if (entity == null || typeof entity.index !== "number" || typeof entity.id !== "number") return false;
     if (!SDKHookKnown(type)) throw new Error("s2script: SDKUnhook type '" + type + "' is not supported");
     if (typeof callback !== "function") throw new TypeError("s2script: SDKUnhook callback must be a function");
+    var provider = sdkhookProviders[type];
+    if (provider) return provider.unhook(entity.index, entity.id, callback) === true;
     return __s2_sdkunhook(entity.index, entity.id, type, callback);
   }
   var UseType = { Off: 0, On: 1, Set: 2, Toggle: 3 };

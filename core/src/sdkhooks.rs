@@ -1,8 +1,10 @@
 //! Per-entity SDKHooks — SourceMod `SDKHook` / `SDKUnhook`.
 //!
-//! The table is books-gated host identity (`entity_live` id), never a raw pointer. `OnTakeDamage`
-//! fans out from the process-wide `DispatchTraceAttack` detour. The Touch family is per-entity
-//! KHook (`sdkhook_vp_add` / `KHook::Virtual::Add`), not a process-wide detour.
+//! The table is books-gated host identity (`entity_live` id), never a raw pointer. The Touch family is
+//! per-entity KHook (`sdkhook_vp_add` / `KHook::Virtual::Add`), not a process-wide detour. Hook types
+//! whose engine function belongs to a game (damage: `OnTakeDamage` / `OnTakeDamagePost`) are not in
+//! this table: the selected game package provides them through the prelude's SDKHook provider
+//! hand-off (`__s2_sdkhook_provider_register`, core/js/prelude.js).
 
 use crate::dispatch::{fan_out_collapsing, Instrument, StopAt};
 use crate::multiplexer::HookResult;
@@ -16,8 +18,6 @@ use std::ffi::CString;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::os::raw::c_int;
 
-const KIND_ON_TAKE_DAMAGE: &str = "OnTakeDamage";
-const KIND_ON_TAKE_DAMAGE_POST: &str = "OnTakeDamagePost";
 pub(crate) const KIND_SET_TRANSMIT: &str = "SetTransmit";
 
 /// Entity ids and hook kinds are host-controlled keys. A compact deterministic hasher avoids the
@@ -311,10 +311,7 @@ fn vp_kind(kind: &str) -> Option<(&'static str, c_int)> {
 }
 
 fn is_known_kind(kind: &str) -> bool {
-    kind == KIND_ON_TAKE_DAMAGE
-        || kind == KIND_ON_TAKE_DAMAGE_POST
-        || kind == KIND_SET_TRANSMIT
-        || vp_kind(kind).is_some()
+    kind == KIND_SET_TRANSMIT || vp_kind(kind).is_some()
 }
 
 fn vp_add(index: i32, serial: i32, ty: &str, post: c_int) -> bool {
@@ -364,35 +361,6 @@ fn unhook_vp_if_last(index: i32, serial: i32, entity_id: u64, kind: &str) {
         return;
     }
     vp_remove(index, serial, ty, post);
-}
-
-/// Host id of the current damage victim, or `None` when there is no op / no live books match.
-fn current_victim_id() -> Option<u64> {
-    let ops = engine_ops()?;
-    let f = ops.damage_victim?;
-    let raw = f();
-    if raw < 0 {
-        return None;
-    }
-    let (index, serial) = crate::entity::decode_handle(raw as u32);
-    crate::entity_live::adopt(index, serial)
-}
-
-/// Snapshot `OnTakeDamage` callbacks whose hooked identity is the current victim, subscribe order.
-pub(crate) fn snapshot_ontakedamage() -> Vec<(String, u64, v8::Global<v8::Function>)> {
-    snapshot_damage_kind(KIND_ON_TAKE_DAMAGE)
-}
-
-/// Snapshot `OnTakeDamagePost` callbacks for the current victim.
-pub(crate) fn snapshot_ontakedamage_post() -> Vec<(String, u64, v8::Global<v8::Function>)> {
-    snapshot_damage_kind(KIND_ON_TAKE_DAMAGE_POST)
-}
-
-fn snapshot_damage_kind(kind: &str) -> Vec<(String, u64, v8::Global<v8::Function>)> {
-    let Some(vid) = current_victim_id() else {
-        return Vec::new();
-    };
-    snapshot_kind(vid, kind)
 }
 
 pub(crate) fn snapshot_kind(entity_id: u64, kind: &str) -> Vec<(String, u64, v8::Global<v8::Function>)> {
@@ -897,31 +865,18 @@ mod tests {
     use super::*;
     use crate::v8host::frame_tests::{dummy_logger, eval_in_context_string, mock_event_ops};
     use crate::v8host::{
-        create_plugin_context, dispatch_damage, dispatch_damage_post, eval_in_context, init, load_plugin_js, plugin_phase,
+        create_plugin_context, eval_in_context, init, load_plugin_js, plugin_phase,
         set_engine_ops, shutdown, unload_plugin, S2EngineOps,
     };
     use std::cell::Cell;
     use std::os::raw::c_char;
-    use std::sync::Mutex;
 
     thread_local! {
-        static FAKE_VICTIM: Cell<i32> = const { Cell::new(-1) };
         static VP_ADDS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
         static VP_REMOVES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
         static VP_DROPS: RefCell<Vec<(i32, i32)>> = const { RefCell::new(Vec::new()) };
         static VP_ADD_OK: Cell<i32> = const { Cell::new(1) };
         static CLIENT_VALID: Cell<i32> = const { Cell::new(-1) };
-    }
-    static DMG_WRITE_REC: Mutex<Option<(i32, f32)>> = Mutex::new(None);
-
-    extern "C" fn fake_damage_victim() -> c_int {
-        FAKE_VICTIM.with(|c| c.get())
-    }
-    extern "C" fn rec_damage_write_float(offset: c_int, value: f32) {
-        *DMG_WRITE_REC.lock().unwrap() = Some((offset, value));
-    }
-    extern "C" fn fake_dmg_schema_offset(_cls: *const c_char, _field: *const c_char) -> c_int {
-        68
     }
     extern "C" fn fake_vp_add(index: c_int, serial: c_int, ty: *const c_char, post: c_int) -> c_int {
         let name = if ty.is_null() {
@@ -948,16 +903,7 @@ mod tests {
 
     fn seed(index: i32, serial: i32) -> u64 {
         crate::entity_live::reset_for_tests();
-        let id = crate::entity_live::on_created(index, serial);
-        FAKE_VICTIM.with(|c| c.set(packed_handle(index, serial)));
-        id
-    }
-
-    fn ops_with_victim() -> S2EngineOps {
-        S2EngineOps {
-            damage_victim: Some(fake_damage_victim),
-            ..mock_event_ops()
-        }
+        crate::entity_live::on_created(index, serial)
     }
 
     fn ops_with_vp() -> S2EngineOps {
@@ -973,13 +919,17 @@ mod tests {
         }
     }
 
+    /// The generic per-entity store is exercised through the Touch VP type (needs `ops_with_vp`).
     fn hook_js(index: i32, id: u64, body: &str) -> String {
         format!(
             r#"
-            globalThis.__cb = function (info) {{ {body} }};
-            String(__s2_sdkhook({index}, {id}, "OnTakeDamage", globalThis.__cb))
+            globalThis.__cb = function (entity, other) {{ {body} }};
+            String(__s2_sdkhook({index}, {id}, "Touch", globalThis.__cb))
             "#
         )
+    }
+    fn touch(index: i32, serial: i32) -> c_int {
+        dispatch_touch(index, serial, -1, 0, "Touch")
     }
 
     #[test]
@@ -988,24 +938,23 @@ mod tests {
         crate::entity_live::reset_for_tests();
         create_plugin_context("p");
         assert_eq!(
-            eval_in_context_string("p", r#"String(__s2_sdkhook(99, 1, "OnTakeDamage", function () {}))"#),
+            eval_in_context_string("p", r#"String(__s2_sdkhook(99, 1, "Touch", function () {}))"#),
             "false"
         );
         shutdown();
     }
 
     #[test]
-    fn sdkhook_dispatch_only_matching_victim() {
+    fn sdkhook_dispatch_only_matching_entity() {
         let _ = init(dummy_logger());
         let id_a = seed(5, 1);
         let id_b = crate::entity_live::on_created(6, 2);
-        set_engine_ops(Some(ops_with_victim()));
+        set_engine_ops(Some(ops_with_vp()));
         create_plugin_context("p");
         eval_in_context("p", "globalThis.__a=0; globalThis.__b=0;").unwrap();
         assert_eq!(eval_in_context_string("p", &hook_js(5, id_a, "globalThis.__a++;")), "true");
         assert_eq!(eval_in_context_string("p", &hook_js(6, id_b, "globalThis.__b++;")), "true");
-        FAKE_VICTIM.with(|c| c.set(packed_handle(5, 1)));
-        dispatch_damage();
+        touch(5, 1);
         assert_eq!(eval_in_context_string("p", "String(globalThis.__a)"), "1");
         assert_eq!(eval_in_context_string("p", "String(globalThis.__b)"), "0", "other entity must not run");
         shutdown();
@@ -1015,6 +964,7 @@ mod tests {
     fn sdkhook_snapshot_lookup_work_depends_on_addressed_subscribers() {
         let _ = init(dummy_logger());
         crate::entity_live::reset_for_tests();
+        set_engine_ops(Some(ops_with_vp()));
         create_plugin_context("p");
         for index in 1..=100 {
             let id = crate::entity_live::on_created(index, index);
@@ -1022,7 +972,7 @@ mod tests {
         }
         let target_id = crate::entity_live::on_created(101, 101);
         assert_eq!(eval_in_context_string("p", &hook_js(101, target_id, "")), "true");
-        let (snapshot, visited) = snapshot_kind_with_work(target_id, KIND_ON_TAKE_DAMAGE);
+        let (snapshot, visited) = snapshot_kind_with_work(target_id, "Touch");
         assert_eq!(snapshot.len(), 1);
         assert_eq!(
             visited, 1,
@@ -1035,7 +985,7 @@ mod tests {
     fn sdkhook_dispatch_uses_detached_registration_snapshot() {
         let _ = init(dummy_logger());
         let id = seed(5, 1);
-        set_engine_ops(Some(ops_with_victim()));
+        set_engine_ops(Some(ops_with_vp()));
         create_plugin_context("p");
         eval_in_context(
             "p",
@@ -1046,24 +996,24 @@ mod tests {
                 globalThis.__second = function () {{ globalThis.__calls.push("second"); }};
                 globalThis.__first = function () {{
                     globalThis.__calls.push("first");
-                    __s2_sdkunhook(5, {id}, "OnTakeDamage", globalThis.__second);
+                    __s2_sdkunhook(5, {id}, "Touch", globalThis.__second);
                     if (!globalThis.__added) {{
                         globalThis.__added = true;
-                        __s2_sdkhook(5, {id}, "OnTakeDamage", globalThis.__late);
+                        __s2_sdkhook(5, {id}, "Touch", globalThis.__late);
                     }}
                 }};
-                __s2_sdkhook(5, {id}, "OnTakeDamage", globalThis.__first);
-                __s2_sdkhook(5, {id}, "OnTakeDamage", globalThis.__second);
+                __s2_sdkhook(5, {id}, "Touch", globalThis.__first);
+                __s2_sdkhook(5, {id}, "Touch", globalThis.__second);
             "#),
         ).unwrap();
-        dispatch_damage();
+        touch(5, 1);
         assert_eq!(
             eval_in_context_string("p", "globalThis.__calls.join(',')"),
             "first,second",
             "unsubscribe must not mutate the current snapshot and subscribe waits for next dispatch"
         );
         eval_in_context("p", "globalThis.__calls = [];").unwrap();
-        dispatch_damage();
+        touch(5, 1);
         assert_eq!(eval_in_context_string("p", "globalThis.__calls.join(',')"), "first,late");
         shutdown();
     }
@@ -1072,15 +1022,14 @@ mod tests {
     fn sdkhook_slot_reuse_does_not_dispatch_removed_identity() {
         let _ = init(dummy_logger());
         let old_id = seed(5, 1);
-        set_engine_ops(Some(ops_with_victim()));
+        set_engine_ops(Some(ops_with_vp()));
         create_plugin_context("p");
         eval_in_context("p", "globalThis.__n=0;").unwrap();
         eval_in_context_string("p", &hook_js(5, old_id, "globalThis.__n++;"));
         drop_entity(old_id);
         let new_id = crate::entity_live::on_created(5, 2);
         assert_ne!(old_id, new_id);
-        FAKE_VICTIM.with(|c| c.set(packed_handle(5, 2)));
-        dispatch_damage();
+        touch(5, 2);
         assert_eq!(eval_in_context_string("p", "String(globalThis.__n)"), "0");
         shutdown();
     }
@@ -1089,83 +1038,16 @@ mod tests {
     fn sdkhook_stale_owner_generation_is_disabled() {
         let _ = init(dummy_logger());
         let id = seed(5, 1);
-        *DMG_WRITE_REC.lock().unwrap() = None;
-        set_engine_ops(Some(S2EngineOps {
-            damage_write_float: Some(rec_damage_write_float),
-            ..ops_with_victim()
-        }));
+        set_engine_ops(Some(ops_with_vp()));
         create_plugin_context("p");
-        eval_in_context_string("p", &hook_js(5, id, "__s2_damage_write_float(777, 9);"));
+        eval_in_context_string("p", &hook_js(5, id, &format!(r#"__s2_sdkhook(5, {id}, "StartTouch", function () {{}});"#)));
 
         create_plugin_context("p"); // same owner, new generation; old row deliberately remains
-        dispatch_damage();
-        assert_eq!(
-            *DMG_WRITE_REC.lock().unwrap(),
-            None,
+        touch(5, 1);
+        assert!(
+            VP_ADDS.with(|v| v.borrow().iter().all(|a| !a.starts_with("StartTouch"))),
             "the stale-generation handler must not reach its observable native side effect"
         );
-        shutdown();
-    }
-
-    #[test]
-    fn sdkhook_no_victim_runs_nobody() {
-        let _ = init(dummy_logger());
-        let id = seed(5, 1);
-        set_engine_ops(Some(ops_with_victim()));
-        create_plugin_context("p");
-        eval_in_context("p", "globalThis.__n=0;").unwrap();
-        eval_in_context_string("p", &hook_js(5, id, "globalThis.__n++;"));
-        FAKE_VICTIM.with(|c| c.set(-1));
-        dispatch_damage();
-        assert_eq!(eval_in_context_string("p", "String(globalThis.__n)"), "0");
-        shutdown();
-    }
-
-    #[test]
-    fn sdkhook_handled_does_not_stop_the_chain() {
-        let _ = init(dummy_logger());
-        let id = seed(5, 1);
-        set_engine_ops(Some(ops_with_victim()));
-        create_plugin_context("p");
-        eval_in_context("p", "globalThis.__a=0; globalThis.__b=0;").unwrap();
-        eval_in_context_string("p", &hook_js(5, id, "globalThis.__a++; return HookResult.Handled;"));
-        eval_in_context_string("p", &hook_js(5, id, "globalThis.__b++; return HookResult.Continue;"));
-        dispatch_damage();
-        assert_eq!(eval_in_context_string("p", "String(globalThis.__a)"), "1");
-        assert_eq!(eval_in_context_string("p", "String(globalThis.__b)"), "1");
-        shutdown();
-    }
-
-    #[test]
-    fn sdkhook_stop_truncates_the_chain() {
-        let _ = init(dummy_logger());
-        let id = seed(5, 1);
-        set_engine_ops(Some(ops_with_victim()));
-        create_plugin_context("p");
-        eval_in_context("p", "globalThis.__a=0; globalThis.__b=0;").unwrap();
-        eval_in_context_string("p", &hook_js(5, id, "globalThis.__a++; return HookResult.Stop;"));
-        eval_in_context_string("p", &hook_js(5, id, "globalThis.__b++;"));
-        dispatch_damage();
-        assert_eq!(eval_in_context_string("p", "String(globalThis.__a)"), "1");
-        assert_eq!(eval_in_context_string("p", "String(globalThis.__b)"), "0");
-        shutdown();
-    }
-
-    #[test]
-    fn sdkhook_handled_zeroes_live_damage() {
-        let _ = init(dummy_logger());
-        let id = seed(5, 1);
-        *DMG_WRITE_REC.lock().unwrap() = None;
-        set_engine_ops(Some(S2EngineOps {
-            schema_offset: Some(fake_dmg_schema_offset),
-            damage_write_float: Some(rec_damage_write_float),
-            damage_victim: Some(fake_damage_victim),
-            ..mock_event_ops()
-        }));
-        create_plugin_context("p");
-        eval_in_context_string("p", &hook_js(5, id, "return HookResult.Handled;"));
-        dispatch_damage();
-        assert_eq!(*DMG_WRITE_REC.lock().unwrap(), Some((68, 0.0)));
         shutdown();
     }
 
@@ -1173,21 +1055,21 @@ mod tests {
     fn sdkunhook_removes_one_callback() {
         let _ = init(dummy_logger());
         let id = seed(5, 1);
-        set_engine_ops(Some(ops_with_victim()));
+        set_engine_ops(Some(ops_with_vp()));
         create_plugin_context("p");
         eval_in_context("p", "globalThis.__n=0; globalThis.__cb = function () { globalThis.__n++; };").unwrap();
         eval_in_context_string(
             "p",
-            &format!(r#"String(__s2_sdkhook(5, {id}, "OnTakeDamage", globalThis.__cb))"#),
+            &format!(r#"String(__s2_sdkhook(5, {id}, "Touch", globalThis.__cb))"#),
         );
         assert_eq!(
             eval_in_context_string(
                 "p",
-                &format!(r#"String(__s2_sdkunhook(5, {id}, "OnTakeDamage", globalThis.__cb))"#),
+                &format!(r#"String(__s2_sdkunhook(5, {id}, "Touch", globalThis.__cb))"#),
             ),
             "true"
         );
-        dispatch_damage();
+        touch(5, 1);
         assert_eq!(eval_in_context_string("p", "String(globalThis.__n)"), "0");
         shutdown();
     }
@@ -1196,12 +1078,12 @@ mod tests {
     fn sdkhook_destroy_unhooks() {
         let _ = init(dummy_logger());
         let id = seed(5, 1);
-        set_engine_ops(Some(ops_with_victim()));
+        set_engine_ops(Some(ops_with_vp()));
         create_plugin_context("p");
         eval_in_context("p", "globalThis.__n=0;").unwrap();
         eval_in_context_string("p", &hook_js(5, id, "globalThis.__n++;"));
         drop_entity(id);
-        dispatch_damage();
+        touch(5, 1);
         assert_eq!(eval_in_context_string("p", "String(globalThis.__n)"), "0");
         shutdown();
     }
@@ -1210,7 +1092,7 @@ mod tests {
     fn sdkhook_works_after_settle() {
         let _ = init(dummy_logger());
         let id = seed(5, 1);
-        set_engine_ops(Some(ops_with_victim()));
+        set_engine_ops(Some(ops_with_vp()));
         load_plugin_js(
             "hookmore",
             r#"module.exports.OnPluginStart = function () {};"#,
@@ -1222,7 +1104,7 @@ mod tests {
             eval_in_context_string("hookmore", &hook_js(5, id, "globalThis.__n++;")),
             "true"
         );
-        dispatch_damage();
+        touch(5, 1);
         assert_eq!(eval_in_context_string("hookmore", "String(globalThis.__n)"), "1");
         shutdown();
     }
@@ -1231,7 +1113,7 @@ mod tests {
     fn sdkhook_unload_clears() {
         let _ = init(dummy_logger());
         let id = seed(5, 1);
-        set_engine_ops(Some(ops_with_victim()));
+        set_engine_ops(Some(ops_with_vp()));
         load_plugin_js(
             "u",
             r#"
@@ -1242,12 +1124,12 @@ mod tests {
             "#,
             "{}",
         );
-        eval_in_context_string("u", &format!(r#"String(__s2_sdkhook(5, {id}, "OnTakeDamage", globalThis.__cb))"#));
+        eval_in_context_string("u", &format!(r#"String(__s2_sdkhook(5, {id}, "Touch", globalThis.__cb))"#));
         unload_plugin("u");
-        assert!(snapshot_kind(id, KIND_ON_TAKE_DAMAGE).is_empty());
-        assert!(!kind_active(KIND_ON_TAKE_DAMAGE));
-        // Context is gone; dispatch must not panic. Victim still set.
-        dispatch_damage();
+        assert!(snapshot_kind(id, "Touch").is_empty());
+        assert!(!kind_active("Touch"));
+        // Context is gone; dispatch must not panic. 
+        touch(5, 1);
         shutdown();
     }
 
@@ -1839,124 +1721,23 @@ mod tests {
     }
 
     #[test]
-    fn sdkhook_ontakedamage_post_records_without_vp() {
+    fn sdkhook_damage_types_have_no_core_backing() {
         let _ = init(dummy_logger());
         let id = seed(5, 1);
-        set_engine_ops(Some(ops_with_victim()));
+        set_engine_ops(Some(ops_with_vp()));
         create_plugin_context("p");
-        assert_eq!(
-            eval_in_context_string("p", &hook_named(5, id, "OnTakeDamagePost")),
-            "true",
-            "OnTakeDamagePost is the DTA mux, not a VP"
-        );
-        shutdown();
-    }
-
-    #[test]
-    fn sdkhook_ontakedamage_post_does_not_run_on_pre_dispatch() {
-        let _ = init(dummy_logger());
-        let id = seed(5, 1);
-        set_engine_ops(Some(ops_with_victim()));
-        create_plugin_context("p");
-        eval_in_context("p", "globalThis.__n=0;").unwrap();
-        eval_in_context_string(
-            "p",
-            &format!(
-                r#"
-                globalThis.__cb = function () {{ globalThis.__n++; }};
-                String(__s2_sdkhook(5, {id}, "OnTakeDamagePost", globalThis.__cb))
-            "#
-            ),
-        );
-        dispatch_damage();
-        assert_eq!(eval_in_context_string("p", "String(globalThis.__n)"), "0");
-        dispatch_damage_post();
-        assert_eq!(eval_in_context_string("p", "String(globalThis.__n)"), "1");
-        shutdown();
-    }
-
-    #[test]
-    fn sdkhook_ontakedamage_post_handled_does_not_zero() {
-        let _ = init(dummy_logger());
-        let id = seed(5, 1);
-        *DMG_WRITE_REC.lock().unwrap() = None;
-        set_engine_ops(Some(S2EngineOps {
-            schema_offset: Some(fake_dmg_schema_offset),
-            damage_write_float: Some(rec_damage_write_float),
-            damage_victim: Some(fake_damage_victim),
-            ..mock_event_ops()
-        }));
-        create_plugin_context("p");
-        eval_in_context_string(
-            "p",
-            &format!(
-                r#"
-                globalThis.__cb = function () {{ return HookResult.Handled; }};
-                String(__s2_sdkhook(5, {id}, "OnTakeDamagePost", globalThis.__cb))
-            "#
-            ),
-        );
-        dispatch_damage_post();
-        assert_eq!(*DMG_WRITE_REC.lock().unwrap(), None);
-        shutdown();
-    }
-
-    #[test]
-    fn sdkhook_ontakedamage_post_setter_is_ignored() {
-        let _ = init(dummy_logger());
-        let id = seed(5, 1);
-        *DMG_WRITE_REC.lock().unwrap() = None;
-        set_engine_ops(Some(S2EngineOps {
-            schema_offset: Some(fake_dmg_schema_offset),
-            damage_write_float: Some(rec_damage_write_float),
-            damage_victim: Some(fake_damage_victim),
-            ..mock_event_ops()
-        }));
-        create_plugin_context("p");
-        eval_in_context_string(
-            "p",
-            &format!(
-                r#"
-                globalThis.__pre = function (info) {{ info.damage = 50; }};
-                globalThis.__post = function (info) {{ info.damage = 99; }};
-                String(__s2_sdkhook(5, {id}, "OnTakeDamage", globalThis.__pre)
-                    && __s2_sdkhook(5, {id}, "OnTakeDamagePost", globalThis.__post))
-            "#
-            ),
-        );
-        dispatch_damage();
-        assert_eq!(*DMG_WRITE_REC.lock().unwrap(), Some((68, 50.0)), "pre-hook setter must write");
-        *DMG_WRITE_REC.lock().unwrap() = None;
-        dispatch_damage_post();
-        assert_eq!(
-            *DMG_WRITE_REC.lock().unwrap(),
-            None,
-            "OnTakeDamagePost must not write through DamageInfo.damage"
-        );
-        shutdown();
-    }
-
-    #[test]
-    fn sdkhook_ontakedamage_post_stop_does_not_truncate() {
-        let _ = init(dummy_logger());
-        let id = seed(5, 1);
-        set_engine_ops(Some(ops_with_victim()));
-        create_plugin_context("p");
-        eval_in_context("p", "globalThis.__a=0; globalThis.__b=0;").unwrap();
-        eval_in_context_string(
-            "p",
-            &format!(
-                r#"
-                globalThis.__h1 = function () {{ globalThis.__a++; return HookResult.Stop; }};
-                globalThis.__h2 = function () {{ globalThis.__b++; }};
-                String(__s2_sdkhook(5, {id}, "OnTakeDamagePost", globalThis.__h1)
-                    && __s2_sdkhook(5, {id}, "OnTakeDamagePost", globalThis.__h2))
-            "#
-            ),
-        );
-        dispatch_damage_post();
-        assert_eq!(eval_in_context_string("p", "String(globalThis.__a)"), "1");
-        assert_eq!(eval_in_context_string("p", "String(globalThis.__b)"), "1");
+        for kind in ["OnTakeDamage", "OnTakeDamagePost"] {
+            assert_eq!(eval_in_context_string("p", &hook_named(5, id, kind)), "false", "{kind} is package-provided");
+            assert_eq!(
+                eval_in_context_string(
+                    "p",
+                    &format!(r#"String(__s2pkg_sdkhooks.SDKHook({{index:5,id:{id}}}, "{kind}", function () {{}}))"#),
+                ),
+                "false",
+                "{kind} without a selected game package degrades to false (does not throw)"
+            );
+        }
+        assert_eq!(eval_in_context_string("p", "typeof __s2_sdkhook_provider_register"), "undefined");
         shutdown();
     }
 
@@ -1964,7 +1745,7 @@ mod tests {
     fn sdkhook_alive_without_backing_returns_false() {
         let _ = init(dummy_logger());
         let id = seed(5, 1);
-        set_engine_ops(Some(ops_with_victim()));
+        set_engine_ops(Some(mock_event_ops()));
         create_plugin_context("p");
         assert_eq!(
             eval_in_context_string("p", &hook_named(5, id, "OnTakeDamageAlive")),

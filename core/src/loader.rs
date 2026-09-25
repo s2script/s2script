@@ -550,16 +550,21 @@ impl RetainedLedger {
     }
 }
 
-struct RetainedLease { ledger: RetainedLedger, bytes: usize, prepared_item: bool }
+pub(crate) struct RetainedLease { ledger: RetainedLedger, bytes: usize, prepared_item: bool }
 
 impl RetainedLease {
+    pub(crate) fn activate(&mut self) {
+        if self.prepared_item {
+            let mut usage = self.ledger.usage.get();
+            usage.items -= 1;
+            self.ledger.usage.set(usage);
+            self.prepared_item = false;
+        }
+    }
     /// Completed preparation retains its byte charge through active bindings, but no longer
     /// occupies a queue item. Drop subsequently releases bytes only, exactly once.
     fn into_active_bytes(mut self) -> Self {
-        let mut usage = self.ledger.usage.get();
-        usage.items -= usize::from(self.prepared_item);
-        self.ledger.usage.set(usage);
-        self.prepared_item = false;
+        self.activate();
         self
     }
 
@@ -576,6 +581,11 @@ impl RetainedLease {
         self.bytes += bytes;
         true
     }
+}
+
+/// Package selection shares the plugin loader's retained-byte admission and policy.
+pub(crate) fn retain_game_package(bytes: usize) -> Option<RetainedLease> {
+    RETAINED_LEDGER.with(|ledger| ledger.borrow().try_acquire(bytes))
 }
 
 impl Drop for RetainedLease {

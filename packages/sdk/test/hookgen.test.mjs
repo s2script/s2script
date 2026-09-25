@@ -47,12 +47,10 @@ test("buildHookModel groups hooks by expose.ctx, sorted, with per-param mutabili
   assert.equal(onRespawn.receiverAs, "player");
 });
 
-test("buildHookModel skips a handwritten hook (first-class view lives in items.d.ts)", () => {
+test("buildHookModel skips a handwritten hook (its first-class view is hand-written)", () => {
   const gd = {
-    onCanAcquire: {
-      shape: "this_i64_i32_i64",
-      params: ["method", "result"],
-      mutable: ["result"],
+    onCustom: {
+      shape: "this_void",
       expose: { ctx: "items", handwritten: true },
     },
     onTerminateRound: {

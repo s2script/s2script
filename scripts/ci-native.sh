@@ -12,6 +12,17 @@ if [[ -n "${S2_BUILD_JOBS:-}" && ! "${S2_BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
+# The real-package core test invokes the SDK's function parser while cargo test runs below.
+# As in ci-js, only CI refreshes node_modules; local runs use the installed workspace.
+if [ -n "${CI:-}" ]; then
+  echo "== npm ci (game-package parser and acceptance fixture build tools) =="
+  npm ci
+fi
+node scripts/lib/check-game-package-deps.mjs
+
+echo "== verified sniper Node bootstrap (checksum, extraction, builder ordering) =="
+bash scripts/lib/test-sniper-node.sh
+
 # ccache is present in CI via hendrikmuhs/ccache-action; on a dev box it may not be.
 # Only pass the launcher when it actually exists, so cmake does not fail on a missing binary.
 LAUNCHER=()
@@ -62,6 +73,10 @@ bash scripts/check-core-boundary.sh
 
 echo "== test-boundary-nameleak.sh =="
 bash scripts/test-boundary-nameleak.sh
+
+echo "== check-game-package-boundary.sh (+ self-test) =="
+bash scripts/check-game-package-boundary.sh
+bash scripts/check-game-package-boundary.sh --self-test
 
 echo "== test-original-module.sh (verified original instruction images) =="
 bash scripts/test-original-module.sh
@@ -184,6 +199,8 @@ cargo build
 # scripts/test-interop.sh native runs that focused subset when iterating on acceptance.
 echo "== cargo test -p s2script-core =="
 cargo test -p s2script-core
+echo "== game-package portability (same native test executable, absent/present artifacts) =="
+bash scripts/test-game-package-portability.sh
 bash scripts/test-async-pressure.sh
 
 
@@ -233,11 +250,6 @@ echo "== check-shim-symbols.sh (core entry points defined; no unresolvable engin
 bash scripts/check-shim-symbols.sh
 
 # The acceptance bundle includes a freshly built .s2sp with its own identity.
-# Like ci-js, only CI refreshes node_modules; local runs use the installed SDK.
-if [ -n "${CI:-}" ]; then
-  echo "== npm ci (acceptance fixture build tools) =="
-  npm ci
-fi
 echo "== build-khook-runtime.py (stock host, native consumers and stamped fixture) =="
 python3 scripts/build-khook-runtime.py
 

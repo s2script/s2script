@@ -56,26 +56,14 @@ auto& g_hooks = *new std::array<Installed, S2_HOOK_MAX>;
 // do not know what it is. It has no accessor and no `params` entry, so JS can neither read nor write
 // it — its only job is to be handed back to the original function unchanged (see hook_dispatch.h on
 // why narrowing one of these segfaulted a live server).
-// kParamStr is TEXT copied into the view by the thunk (see ArgView::s). Like kParamI64 it is not
-// an f32/i32 slot, but unlike it, it IS surfaced — through hook_read_str rather than an accessor.
-enum ParamClass : unsigned char { kParamF32 = 0, kParamI32 = 1, kParamI64 = 2, kParamStr = 3 };
+enum ParamClass : unsigned char { kParamF32 = 0, kParamI32 = 1, kParamI64 = 2 };
 struct ParamSlot { ParamClass cls; unsigned char slot; };
 
 // Sized to the WIDEST shape in the vocabulary; each shape's table is static_asserted to fit, so
 // adding a shape that needs more storage fails to COMPILE rather than writing past the view.
 constexpr int kViewF32Slots = 1;
 constexpr int kViewI32Slots = 3;
-constexpr int kViewI64Slots = 3; // HUD relays three native pointers.
-constexpr int kReadableI64Slots = 2; // Keep the existing C accessor's exposure unchanged.
-static_assert(kViewI64Slots >= 3, "HUD requires three opaque native arguments");
-
-// A hook param that is TEXT. The engine hands these as pointers, and a pointer cannot be surfaced
-// through the i32/f32 accessors — narrowing one is the documented segfault. So the thunk COPIES the
-// bytes into the view while the frame is alive, and JS reads the copy. Fixed capacity, always
-// NUL-terminated: a button id is an author-chosen identifier, not user input, and a name longer
-// than this is a design error in the layout rather than something to allocate for.
-constexpr int kViewStrSlots = 2;
-constexpr int kViewStrCap   = 128;
+constexpr int kViewI64Slots = 2;
 
 struct ArgView {
     int     hookId = -1;
@@ -84,15 +72,12 @@ struct ArgView {
     float   f[kViewF32Slots] = {};
     int32_t i[kViewI32Slots] = {};
     int64_t q[kViewI64Slots] = {};   // opaque pass-through; never surfaced to JS
-    char    s[kViewStrSlots][kViewStrCap] = {};   // copied text params (see above)
 };
 
 struct HookInvocation {
     ArgView view;
     HookInvocation* previous = nullptr;
     bool bypass = false;
-    bool voted = false;
-    int32_t plugin_result = 0;
 };
 thread_local std::array<HookInvocation*, S2_HOOK_MAX> g_invocations{};
 thread_local const void* g_activeView = nullptr;
@@ -138,28 +123,6 @@ constexpr ParamSlot kParamsThisF32I32I64I64[] = {
     { kParamI32, 0 },
 };
 
-// S2_HOOK_SHAPE_THIS_I64_I32_I64 — i32(void* self, int64, int32, int64).
-// Addressable: method (i32 slot 0), result (i32 slot 1, the RETURN — not an ABI arg),
-// and voted (i32 slot 2, core-only: set when a handler's HookResult is a vote).
-// The two i64s are opaque pass-through (item view + unknown).
-constexpr ParamSlot kParamsThisI64I32I64[] = {
-    { kParamI32, 0 },
-    { kParamI32, 1 },
-    { kParamI32, 2 },
-};
-
-// S2_HOOK_SHAPE_THIS_I64_I64_I64 — void(void* self, int64, int64, int64).
-//
-// Nothing is addressable through the i32/f32 accessors: all three args are pointers. The two that
-// matter reach JS by other routes instead —
-//   * WHO clicked: the thunk points the view's `self` at the CCSPlayerController argument, so the
-//     existing receiver path books-gates it into an EntityRef. No new machinery.
-//   * WHICH button: copied into string slot 0 and read back through hook_read_str.
-// The layout pointer is carried at full width and never surfaced (kParamI64's whole purpose).
-constexpr ParamSlot kParamsThisI64I64I64[] = {
-    { kParamStr, 0 },
-};
-
 struct ShapeInfo { const ParamSlot* params; int count; };
 
 
@@ -173,8 +136,6 @@ constexpr ShapeInfo InfoFor(int shape) {
         case S2_HOOK_SHAPE_THIS_VOID:            return { kParamsThisVoid, 0 };
         case S2_HOOK_SHAPE_THIS_F32_I32_I32_I32: return { kParamsThisF32I32I32I32, 4 };
         case S2_HOOK_SHAPE_THIS_F32_I32_I64_I64: return { kParamsThisF32I32I64I64, 2 };
-        case S2_HOOK_SHAPE_THIS_I64_I32_I64:     return { kParamsThisI64I32I64, 3 };
-        case S2_HOOK_SHAPE_THIS_I64_I64_I64:     return { kParamsThisI64I64I64, 1 };
         default:                                 return { nullptr, 0 };
     }
 }
@@ -189,7 +150,6 @@ constexpr bool ShapeFitsView(int shape) {
     for (int k = 0; k < si.count; k++) {
         const int limit = (si.params[k].cls == kParamF32)   ? kViewF32Slots
                           : (si.params[k].cls == kParamI64) ? kViewI64Slots
-                          : (si.params[k].cls == kParamStr) ? kViewStrSlots
                                                             : kViewI32Slots;
         if (static_cast<int>(si.params[k].slot) >= limit) return false;
     }
@@ -221,16 +181,12 @@ struct ShapeAbi { const uint8_t* wide; int slots; };
 constexpr uint8_t kAbiThisVoid[]         = { 1 };             // (this)
 constexpr uint8_t kAbiThisF32I32I32I32[] = { 1, 0, 0, 0 };    // (this, [f32], i32, i32, i32)
 constexpr uint8_t kAbiThisF32I32I64I64[] = { 1, 0, 1, 1 };    // (this, [f32], i32, i64, i64)
-constexpr uint8_t kAbiThisI64I32I64[]    = { 1, 1, 0, 1 };    // (this, i64, i32, i64)
-constexpr uint8_t kAbiThisI64I64I64[]    = { 1, 1, 1, 1 };    // (this, i64, i64, i64)
 
 constexpr ShapeAbi AbiFor(int shape) {
     switch (shape) {
         case S2_HOOK_SHAPE_THIS_VOID:            return { kAbiThisVoid,         1 };
         case S2_HOOK_SHAPE_THIS_F32_I32_I32_I32: return { kAbiThisF32I32I32I32, 4 };
         case S2_HOOK_SHAPE_THIS_F32_I32_I64_I64: return { kAbiThisF32I32I64I64, 4 };
-        case S2_HOOK_SHAPE_THIS_I64_I32_I64:     return { kAbiThisI64I32I64,    4 };
-        case S2_HOOK_SHAPE_THIS_I64_I64_I64:     return { kAbiThisI64I64I64,    4 };
         default:                                 return { nullptr, 0 };
     }
 }
@@ -252,15 +208,12 @@ constexpr bool AbiCoversShape(int shape) {
 static_assert(AbiCoversShape(S2_HOOK_SHAPE_THIS_VOID),            "this_void: ABI row too short");
 static_assert(AbiCoversShape(S2_HOOK_SHAPE_THIS_F32_I32_I32_I32), "narrow 4-arg: ABI row too short");
 static_assert(AbiCoversShape(S2_HOOK_SHAPE_THIS_F32_I32_I64_I64), "wide 4-arg: ABI row too short");
-static_assert(AbiCoversShape(S2_HOOK_SHAPE_THIS_I64_I32_I64),     "canaquire: ABI row too short");
 
 
-// Exact positional mapping is deliberately explicit for each of the five native signatures.
+// Exact positional mapping is deliberately explicit for each of the three native signatures.
 using VoidCapsule = TypedCapsule<void, void*>;
 using NarrowCapsule = TypedCapsule<void, void*, float, int32_t, int32_t, int32_t>;
 using WideCapsule = TypedCapsule<void, void*, float, int32_t, int64_t, int64_t>;
-using AcquireCapsule = TypedCapsule<int32_t, void*, int64_t, int32_t, int64_t>;
-using HudCapsule = TypedCapsule<void, void*, int64_t, int64_t, int64_t>;
 
 template <typename Capsule, int Id> Capsule& Binding() {
     return static_cast<Capsule&>(*g_hooks[Id].capsule);
@@ -305,77 +258,6 @@ KHook::Return<void> PreWide(void* self, float f, int32_t a, int64_t b, int64_t c
                          v.f[0], v.i[0], v.q[0], v.q[1]);
 }
 
-template <int Id>
-KHook::Return<void> PreHud(void* self, int64_t controller, int64_t layout, int64_t text_object) {
-    HookInvocation invocation;
-    InvocationScope scope(Id, invocation);
-    auto& capsule = Binding<HudCapsule, Id>();
-    auto observed = capsule.binding.Observe();
-    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
-    auto& v = invocation.view;
-    v.self = reinterpret_cast<void*>(controller);
-    v.q[0] = controller; v.q[1] = layout; v.q[2] = text_object;
-    int action = 0;
-    if (!invocation.bypass) {
-        // The engine's libstdc++ string has its data pointer in the first word.
-        // Keep a bounded copy before plugin dispatch; never narrow any native pointer.
-        if (text_object) {
-            const char* text = *reinterpret_cast<const char* const*>(text_object);
-            if (text) {
-                int n = 0;
-                while (n < kViewStrCap - 1 && text[n]) { v.s[0][n] = text[n]; ++n; }
-                v.s[0][n] = '\0';
-            }
-        }
-        action = S2Hook_Dispatch(Id, &v);
-        // Compatibility completion is intentionally BEFORE the engine, not KHook POST.
-        S2Hook_DispatchPost(Id, &v, S2Hook_Suppresses(action) ? 1 : 0);
-    }
-    return KHook::Recall(capsule.target, S2_FromHookResult(action), self,
-                         v.q[0], v.q[1], v.q[2]);
-}
-
-template <int Id>
-KHook::Return<int32_t> PreAcquire(void* self, int64_t item, int32_t method, int64_t unknown) {
-    HookInvocation invocation;
-    InvocationScope scope(Id, invocation);
-    auto& capsule = Binding<AcquireCapsule, Id>();
-    auto observed = capsule.binding.Observe();
-    auto& v = invocation.view;
-    v.self = self; v.q[0] = item; v.i[0] = method; v.q[1] = unknown;
-    // Even a rejected acquisition dispatch holds its record through POST. Otherwise a nested
-    // same-ID rejected PRE could leave POST looking at an enclosing invocation's saved vote.
-    const bool dispatch = S2Hook_EnterDispatch(observed) && !invocation.bypass;
-    invocation.bypass = !dispatch;
-    const int action = dispatch ? S2Hook_Dispatch(Id, &v) : 0;
-    invocation.voted = v.i[2] != 0;
-    invocation.plugin_result = v.i[1];
-    const int32_t local = invocation.voted ? invocation.plugin_result : 1;
-    return KHook::Recall(capsule.target, S2_FromHookResult(action, local), self,
-                         v.q[0], v.i[0], v.q[1]);
-}
-
-template <int Id>
-KHook::Return<int32_t> PostAcquire(void*, int64_t, int32_t, int64_t) {
-    auto observed = Binding<AcquireCapsule, Id>().binding.Observe();
-    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore(int32_t{0});
-    auto* invocation = g_invocations[Id];
-    if (!invocation || invocation->bypass) return S2_Ignore(int32_t{0});
-    const bool skipped = KHook::WasOriginalFunctionSkipped();
-    if (!skipped) {
-        const int32_t engine = KHook::GetOriginalReturn<int32_t>();
-        const int32_t folded = invocation->voted
-            ? S2Hook_MostRestrictiveAcquire(invocation->plugin_result, engine) : engine;
-        if (invocation->voted && folded != engine)
-            KHook::ManualReturn(KHook::Return<int32_t>{KHook::Action::Override, folded});
-    }
-    // ManualReturn submits our vote before JS observes it. Equal/higher peer actions can win;
-    // later peer POSTs can still alter the final result after this position in the chain.
-    invocation->view.i[1] = KHook::GetCurrentReturn<int32_t>();
-    S2Hook_DispatchPost(Id, &invocation->view, skipped ? 1 : 0);
-    return S2_Ignore(int32_t{0});
-}
-
 template <int Id> std::unique_ptr<CallbackCapsule> MakeCapsule(int shape) {
     switch (shape) {
         case S2_HOOK_SHAPE_THIS_VOID:
@@ -384,10 +266,6 @@ template <int Id> std::unique_ptr<CallbackCapsule> MakeCapsule(int shape) {
             return std::make_unique<NarrowCapsule>(&PreNarrow<Id>, nullptr);
         case S2_HOOK_SHAPE_THIS_F32_I32_I64_I64:
             return std::make_unique<WideCapsule>(&PreWide<Id>, nullptr);
-        case S2_HOOK_SHAPE_THIS_I64_I32_I64:
-            return std::make_unique<AcquireCapsule>(&PreAcquire<Id>, &PostAcquire<Id>);
-        case S2_HOOK_SHAPE_THIS_I64_I64_I64:
-            return std::make_unique<HudCapsule>(&PreHud<Id>, nullptr);
         default: return nullptr;
     }
 }
@@ -543,26 +421,6 @@ int S2_HookReadI32(void* argView, int idx, int32_t* out) {
     return 0;
 }
 
-// Read a TEXT param out of the live view. Same liveness + class gating as the scalar readers: a
-// view retained past its dispatch, a bad index, or a param that is not text all fail by -1 rather
-// than handing back a stale or misinterpreted buffer.
-//
-// `out` is always NUL-terminated on success, and the copy is bounded by the SMALLER of the caller's
-// capacity and the view's — the string in the view is already NUL-terminated by the thunk, so this
-// cannot run off the end even if `cap` lies.
-int S2_HookReadStr(void* argView, int idx, char* out, int cap) {
-    const ArgView* v = LiveViewOf(argView);
-    if (!v || !out || cap <= 0) return -1;
-    const ShapeInfo si = InfoFor(v->shape);
-    if (idx < 0 || idx >= si.count) return -1;
-    if (si.params[idx].cls != kParamStr) return -1;
-    const char* src = v->s[si.params[idx].slot];
-    int n = 0;
-    while (n < cap - 1 && n < kViewStrCap - 1 && src[n] != '\0') { out[n] = src[n]; n++; }
-    out[n] = '\0';
-    return 0;
-}
-
 int S2_HookWriteF32(void* argView, int idx, float value) {
     ArgView* v = LiveViewOf(argView);
     if (!v) return -1;
@@ -596,23 +454,4 @@ int S2_HookReceiverHandle(void* argView, uint32_t* outHandle) {
     if (h == S2_ENTITY_HANDLE_NONE) return -1;
     *outHandle = h;
     return 0;
-}
-
-int S2_HookReadU16AtQ(void* argView, int qslot, int offset, uint16_t* out) {
-    const ArgView* v = LiveViewOf(argView);
-    if (!v || !out) return -1;
-    if (qslot < 0 || qslot >= kReadableI64Slots || offset < 0) return -1;
-    const int64_t p = v->q[qslot];
-    if (p == 0) return -1;
-    *out = *reinterpret_cast<const uint16_t*>(static_cast<uintptr_t>(p) + static_cast<uintptr_t>(offset));
-    return 0;
-}
-
-int S2_HookSelfMatchesField(void* argView, int index, int serial, int offset) {
-    const ArgView* v = LiveViewOf(argView);
-    if (!v || !v->self || offset < 0) return 0;
-    void* ent = S2_ResolveEntity(index, serial);
-    if (!ent) return 0;
-    void* field = *reinterpret_cast<void**>(static_cast<char*>(ent) + offset);
-    return field == v->self ? 1 : 0;
 }

@@ -67,20 +67,6 @@ pub(crate) const SHAPES: &[(&str, i32)] = &[
     // "truncate whatever the engine put in that register", which is a live-server SEGV when the
     // thing being truncated is a pointer. See shim/src/hook_dispatch.h.
     ("this_f32_i32_i64_i64", 2),
-    // i32(void* self, int64, int32, int64). The two i64s are opaque pass-through (an item
-    // view pointer and an unknown trailing ptr). JS sees `method` and a writable `result`
-    // (the i32 return), never the pointers. Pickup-gates spec PR1.
-    ("this_i64_i32_i64", 3),
-    // void(this, i64, i64, i64) — three FULL-WIDTH pointer args. Added for a game package's
-    // UI-click receiver, whose four arguments are all pointers (a script binding, a player
-    // controller, the layout entity, and a `const std::string*`). Because every one is a pointer
-    // there is no shape above that can carry it: `this_i64_i32_i64`'s middle slot is i32, and
-    // narrowing a pointer is the exact bug documented in shim/src/hook_dispatch.h that segfaulted
-    // a live server. See that comment before ever reaching for a narrower shape again.
-    //
-    // The concrete class and method names live in the game package's gamedata, never here — core
-    // knows shapes, not games.
-    ("this_i64_i64_i64", 4),
 ];
 
 /// The shape id for a vocabulary name, or `None` for anything outside it.
@@ -288,6 +274,7 @@ pub(crate) fn register_plugin(plugin_id: &str, gamedata_json: &str) {
 /// Register the GAME PACKAGE's declared hooks from the merged gamedata the shim produced for that
 /// owner. Lands under `gamedata_calls::reserved_owner_id(package)`, which no `.s2sp` can hold, and
 /// is permission-exempt: first-party runtime shipped in the same zip as core and the shim.
+#[cfg(test)]
 pub(crate) fn register_game_package(package: &str, gamedata_json: &str) {
     let owner = crate::gamedata_calls::reserved_owner_id(package);
     // Idempotent: a re-register replaces the previous view whole. The SLOT table is deliberately
@@ -321,7 +308,17 @@ fn register_owner_inner(owner_id: &str, gamedata_json: &str, permission_exempt: 
             return;
         }
     };
-    let Some(hooks) = gd.get("hooks").and_then(|v| v.as_object()) else { return };
+    REGISTRY.with(|r| fill_owner(&mut r.borrow_mut(), owner_id, &gd, permission_exempt));
+}
+fn fill_owner(
+    registry: &mut HookRegistry,
+    owner_id: &str,
+    gd: &serde_json::Value,
+    permission_exempt: bool,
+) {
+    let Some(hooks) = gd.get("hooks").and_then(|v| v.as_object()) else {
+        return;
+    };
     let signatures = gd.get("signatures").and_then(|v| v.as_object());
     // The owner's own `calls` keys — what `bypassWith` must name. Read from the SAME tree rather
     // than from the call registry, so the check does not depend on registration order and reports
@@ -338,7 +335,7 @@ fn register_owner_inner(owner_id: &str, gamedata_json: &str, permission_exempt: 
         let decl = match crate::gamedata_calls::flatten_decl(&hooks[name], signatures) {
             Ok(flat) => flat,
             Err(reason) => {
-                REGISTRY.with(|r| r.borrow_mut().degrade(owner_id, name, &reason));
+                registry.degrade(owner_id, name, &reason);
                 continue;
             }
         };
@@ -355,16 +352,48 @@ fn register_owner_inner(owner_id: &str, gamedata_json: &str, permission_exempt: 
                     shape_name(plan.shape),
                     plan.ctx_ns
                 ));
-                REGISTRY.with(|r| {
-                    r.borrow_mut().hooks.insert(
-                        (owner_id.to_string(), name.to_string()),
-                        Descriptor::Ready { plan, addr, bypass_with, miss: None },
-                    )
-                });
+                registry.hooks.insert(
+                    (owner_id.to_string(), name.to_string()),
+                    Descriptor::Ready {
+                        plan,
+                        addr,
+                        bypass_with,
+                        miss: None,
+                    },
+                );
             }
-            Err(reason) => REGISTRY.with(|r| r.borrow_mut().degrade(owner_id, name, &reason)),
+            Err(reason) => registry.degrade(owner_id, name, &reason),
         }
     }
+}
+
+pub(crate) struct PreparedGameHooks {
+    owner: String,
+    registry: HookRegistry,
+    committed: bool,
+}
+impl Drop for PreparedGameHooks {
+    fn drop(&mut self) {
+        if !self.committed {
+            SLOTS.with(|s| {
+                s.borrow_mut()
+                    .retain(|(owner, _), slot| owner != &self.owner || slot.installed)
+            });
+        }
+    }
+}
+pub(crate) fn prepare_game_package(owner: &str, gd: &serde_json::Value) -> PreparedGameHooks {
+    let mut staged = PreparedGameHooks {
+        owner: owner.into(),
+        registry: HookRegistry::new(),
+        committed: false,
+    };
+    fill_owner(&mut staged.registry, owner, gd, true);
+    staged
+}
+pub(crate) fn commit_game_package(mut staged: PreparedGameHooks) {
+    REGISTRY.with(|r| r.borrow_mut().hooks.extend(staged.registry.hooks.drain()));
+    staged.committed = true;
 }
 
 /// The canonical name of a shape id (for logs). Falls back to the id — an id with no name cannot
@@ -1214,7 +1243,10 @@ mod tests {
         assert_eq!(shape_id("this_void"), Some(0));
         assert_eq!(shape_id("this_f32_i32_i32_i32"), Some(1));
         assert_eq!(shape_id("this_f32_i32_i64_i64"), Some(2));
-        assert_eq!(shape_id("this_i64_i32_i64"), Some(3));
+        // The pickup-gate and HUD-click shapes (3, 4) are retired: those functions are trusted
+        // package engine functions now, and their ids are never reused.
+        assert_eq!(shape_id("this_i64_i32_i64"), None);
+        assert_eq!(shape_id("this_i64_i64_i64"), None);
         assert_eq!(shape_id("this_i32"), None);
         assert_eq!(shape_id(""), None);
     }
@@ -1231,4 +1263,23 @@ mod tests {
         assert!(!detour_still_installed("@t/x", "onX"), "a re-inited core must patch again");
         assert!(status("@t/x", "onX").contains("not declared"));
     }
+    #[test]
+    fn selected_package_staging_is_private_and_aborted_hook_slots_are_released() {
+        let owner = crate::gamedata_calls::reserved_owner_id("@fixture/staging");
+        harness(&owner);
+        let gd = serde_json::from_str(VALID_GD).unwrap();
+        let staged = prepare_game_package(&owner, &gd);
+        assert!(status(&owner, "onX").contains("not declared"));
+        assert_eq!(SLOTS.with(|s| s.borrow().len()), 1);
+        assert_eq!(INSTALLS.with(Cell::get), 0);
+        drop(staged);
+        assert!(SLOTS.with(|s| s.borrow().is_empty()));
+        assert!(status(&owner, "onX").contains("not declared"));
+        let staged = prepare_game_package(&owner, &gd);
+        commit_game_package(staged);
+        assert_eq!(status(&owner, "onX"), "available");
+        assert_eq!(INSTALLS.with(Cell::get), 0, "commit does not install a detour");
+        reset_all();
+    }
+
 }

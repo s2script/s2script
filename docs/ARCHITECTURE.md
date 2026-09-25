@@ -74,6 +74,36 @@ The ownership rule is mechanical — **a key belongs to whoever names it in sour
 after a CS2 update without waiting for a release. Overridden entries are named in the boot banner
 and marked in the crash-report fingerprint.
 
+### 2.0.6.1 Game-package support matrix (what is actually claimed)
+
+A game package is selected by `game-packages.json`, verified by hash, and bootstrapped generically;
+core and shim never name it. `scripts/check-game-package-boundary.sh` (in `ci-native.sh`) fails the
+build if production core/shim source names a package, loads a prelude by path, or keeps the old
+bespoke damage path.
+
+| Axis | Supported | Evidence |
+|---|---|---|
+| Live game package | `@s2script/cs2` only | fresh install of the release zip on a live CS2 server |
+| Second package | synthetic Source 2 fixture: selection plus one ordinary function | `scripts/test-game-package-portability.sh`. Structural evidence only; not a supported game |
+| Platform | `linuxsteamrt64` (`linux-x86_64-sysv`) | Windows is not built or claimed |
+| Engine interfaces (live-logged) | `Source2Server001`, `Source2GameClients001`, `Source2GameEntities001`, `Source2EngineToServer001`, `SchemaSystem_001`, `GameEventSystemServerV001`, `GameResourceServiceServerV001`, `NetworkMessagesVersion001`, `NetworkServerService_001`, `VEngineCvar007` | boot banner `interface OK` lines |
+| Function ABI atoms | `u8`, `i32`, `u32`, `i64`, `u64`, `f32`, `f64`, `ptr`, `void` (return only) | no by-value aggregates, no SIMD/vector-register arguments |
+| Public projections | `bool` (`u8`), scalar = same-named atom, `entity` / `entity?` / `string` / `vector` (`ptr`) | anything else: `unsupported ABI/projection pair (host authority required for custom codecs)` |
+| Trusted-only (package) projections | `borrowed-record` (fields `bool`, `u16`, `i32`, `u32`, `f32`, `i64`, `u64`, `f64`, `entity-handle32`), `native-only` pass-through, read-only `string-indirect`, frame scratch slots | the CS2 package's `canAcquire`, `customHudClicked` and `takeDamageOld` |
+
+**Trusted function offsets come only from the live schema.** `trusted-functions.json` names a
+`class`/`field` per record field; an offset the live schema cannot resolve degrades that one
+function (`live schema has no offset for …`). No shipped offset is used as a fallback.
+Signatures resolve from the merged package gamedata by name.
+
+**Owner compatibility and override provenance.** The package's `gamedataOwner` (`cs2`) is the
+namespace its gamedata merges into. `addons/s2script/gamedata/cs2/custom/*.jsonc` still applies
+last, and `game-package-status` lists every operator repair (`operatorRepairs`, and per function
+`customRepairs`) alongside the manifest, merged-gamedata and trusted-functions hashes.
+
+Known whole-process shutdown-only exit 139 is a non-blocking diagnostic. It is kept separate from
+startup, plugin, map and reload results, which are acceptance gates.
+
 ### 2.0.7 Declarative inbound hooks — a gamedata-declared engine detour
 
 A5b closed the declarative **outbound** half: an engine *call* is a `calls` gamedata entry with zero

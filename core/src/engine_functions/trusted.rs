@@ -152,6 +152,39 @@ pub(crate) fn activate_trusted(
     public: Option<PreparedCandidate>,
     lifetime: SynchronousRecordLifetime,
 ) -> Result<TrustedPackageActivation, String> {
+    activate(owner, source, manifest, artifact, public, lifetime, None)
+}
+
+/// Loader retained-byte admission for a selected package's prepared function receipt.
+pub(crate) struct SelectedRetention {
+    pub lease: std::rc::Rc<dyn std::any::Any>,
+    pub reserved_bytes: usize,
+}
+
+/// `activate_trusted` for the process-selected game package (`game_packages::commit`): its
+/// source must supply a root export map, and its prepared receipt is charged to the loader
+/// admission the selection already reserved.
+pub(crate) fn activate_selected_trusted(
+    owner: &HostPackageOwner,
+    source: Arc<str>,
+    manifest: ImplementationManifestHash,
+    artifact: &[u8],
+    public: Option<PreparedCandidate>,
+    lifetime: SynchronousRecordLifetime,
+    retention: SelectedRetention,
+) -> Result<TrustedPackageActivation, String> {
+    activate(owner, source, manifest, artifact, public, lifetime, Some(retention))
+}
+
+fn activate(
+    owner: &HostPackageOwner,
+    source: Arc<str>,
+    manifest: ImplementationManifestHash,
+    artifact: &[u8],
+    public: Option<PreparedCandidate>,
+    lifetime: SynchronousRecordLifetime,
+    selected: Option<SelectedRetention>,
+) -> Result<TrustedPackageActivation, String> {
     let decoded = decode(artifact, &owner.key().id)?;
     let mut grants = Vec::new();
     let mut granted = std::collections::BTreeSet::new();
@@ -160,11 +193,20 @@ pub(crate) fn activate_trusted(
             grants.push(HostAdapterGrant::override_return(owner, a.contract.clone())?);
         }
     }
-    let receipt =
-        function_adapter::register_prepared_package_with_authorities(owner.clone(), source, manifest, grants)?;
+    let receipt = if selected.is_some() {
+        function_adapter::register_selected_package_with_authorities(owner.clone(), source, manifest, grants)?
+    } else {
+        function_adapter::register_prepared_package_with_authorities(owner.clone(), source, manifest, grants)?
+    };
     let candidate = instance::prepare_verified_package(&receipt, decoded.inputs, decoded.selected, lifetime)?;
     let merged = PreparedCandidate::merge_trusted(public, candidate)?;
-    let prepared = registry::prepare_package_owner(owner, merged)?;
+    let mut prepared = registry::prepare_package_owner(owner, merged)?;
+    if let Some(selected) = selected {
+        if prepared.retained_bytes() > selected.reserved_bytes {
+            return Err("trusted function receipt exceeded retained-byte admission".into());
+        }
+        prepared.retain(selected.lease);
+    }
     let functions = registry::activate_package_owner(prepared, owner)?;
     for a in &decoded.adapters {
         let binding = registry::named_binding(owner.key(), &a.local_name)?;

@@ -267,16 +267,12 @@ mod tests {
         assert_eq!(eval_in_context_string("p", "String(__s2_server_map_valid('x'))"), "0");
         assert_eq!(eval_in_context_string("p", "typeof __s2pkg_server.Server.command"), "function");
         assert_eq!(eval_in_context_string("p", "String(__s2pkg_server.Server.isMapValid('x'))"), "false");
-        // Slice 6.6: the damage natives degrade without ops (read->0, victim->-1, write no-op) and the
-        // @s2script/sdkhooks + DamageInfo wires (SDKHook a function; DamageInfo reads degrade to 0/null).
-        assert_eq!(eval_in_context_string("p", "String(__s2_damage_read_float(68))"), "0");
-        assert_eq!(eval_in_context_string("p", "String(__s2_damage_read_int(60))"), "0");
-        assert_eq!(eval_in_context_string("p", "String(__s2_damage_victim())"), "-1");
-        assert_eq!(eval_in_context_string("p", "String(__s2_damage_write_float(68, 5))"), "undefined");
+        // @s2script/sdkhooks is wired; damage (DamageInfo) is a game-package provider, so core ships
+        // no damage native and the @s2script/sdk/damage module is type-only.
+        assert_eq!(eval_in_context_string("p", "typeof __s2_damage_read_float"), "undefined");
         assert_eq!(eval_in_context_string("p", "typeof __s2pkg_sdkhooks.SDKHook"), "function");
         assert_eq!(eval_in_context_string("p", "typeof __s2pkg_sdkhooks.SDKUnhook"), "function");
-        assert_eq!(eval_in_context_string("p", "String(new __s2pkg_damage.DamageInfo().damage)"), "0");
-        assert_eq!(eval_in_context_string("p", "String(new __s2pkg_damage.DamageInfo().victim)"), "null");
+        assert_eq!(eval_in_context_string("p", "JSON.stringify(__s2pkg_damage)"), "{}");
         // Slice 6.7: cvar_get degrades to "" without the op; Server.getCvar/setCvar wired.
         assert_eq!(eval_in_context_string("p", "String(__s2_cvar_get('sv_gravity'))"), "");
         assert_eq!(eval_in_context_string("p", "String(__s2_cvar_set('sv_gravity', '800'))"), "false");

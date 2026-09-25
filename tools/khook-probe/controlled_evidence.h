@@ -50,86 +50,58 @@ struct DeclarativeMutationObservation {
             "\",\"opaque_b\":\"" + std::to_string(static_cast<uint64_t>(opaque_b)) + "\"}";
     }
 };
-struct DeclarativeAcquireObservation {
-    int pre = 0, post = 0, original = 0, arguments_ok = 0;
-    int32_t effective_return = -1, post_result = -1;
-    int skipped = -1;
-    bool Matches(int32_t expected, bool skip) const {
-        return pre == 1 && post == 1 && original == (skip ? 0 : 1) &&
-            arguments_ok == (skip ? 0 : 1) && effective_return == expected &&
-            post_result == expected && skipped == (skip ? 1 : 0);
-    }
-    std::string Json() const {
-        return std::string("{\"pre\":") + std::to_string(pre) + ",\"post\":" + std::to_string(post) +
-            ",\"original\":" + std::to_string(original) + ",\"arguments_ok\":" + std::to_string(arguments_ok) +
-            ",\"effective_return\":" + std::to_string(effective_return) +
-            ",\"post_result\":" + std::to_string(post_result) + ",\"skipped\":" + std::to_string(skipped) + "}";
-    }
-};
+// Nesting/bypass/policy mechanics ride the controlled narrow-shape target (hook id 2). The
+// retired v1 POST phase is gone, so only PRE callbacks and original-body counts are observable;
+// `outer_method` is the method the outermost original body last saw (the old return value).
 struct DeclarativeNestingObservation {
-    int same_pre = 0, same_post = 0, same_original = 0, same_restored = 0;
+    int same_pre = 0, same_original = 0, same_restored = 0;
     int other_pre = 0, other_original = 0, other_restored = 0, stale_rejected = 0;
-    int skipped = 0;
-    int32_t effective_return = -1;
-    std::array<int32_t, 3> post_methods{{-1, -1, -1}};
+    int32_t outer_method = -1;
     bool Passed() const {
-        return same_pre == 3 && same_post == 3 && same_original == 3 && same_restored == 2 &&
+        return same_pre == 3 && same_original == 3 && same_restored == 2 &&
             other_pre == 2 && other_original == 2 && other_restored == 2 && stale_rejected == 2 &&
-            skipped == 0 && effective_return == 40 && post_methods == std::array<int32_t,3>{{42,41,40}};
+            outer_method == 40;
     }
     std::string Json() const {
         return std::string("{\"same_pre\":") + std::to_string(same_pre) +
-            ",\"same_post\":" + std::to_string(same_post) + ",\"same_original\":" + std::to_string(same_original) +
+            ",\"same_original\":" + std::to_string(same_original) +
             ",\"same_restored\":" + std::to_string(same_restored) + ",\"other_pre\":" + std::to_string(other_pre) +
             ",\"other_original\":" + std::to_string(other_original) + ",\"other_restored\":" + std::to_string(other_restored) +
-            ",\"stale_rejected\":" + std::to_string(stale_rejected) + ",\"skipped\":" + std::to_string(skipped) +
-            ",\"effective_return\":" + std::to_string(effective_return) + ",\"post_methods\":[" +
-            std::to_string(post_methods[0]) + "," + std::to_string(post_methods[1]) + "," + std::to_string(post_methods[2]) + "]}";
+            ",\"stale_rejected\":" + std::to_string(stale_rejected) +
+            ",\"outer_method\":" + std::to_string(outer_method) + "}";
     }
 };
 struct DeclarativeBypassObservation {
-    int pre = 0, post = 0, original = 0;
-    int pre_after_bypass = -1, post_after_bypass = -1;
+    int pre = 0, original = 0;
+    int pre_after_bypass = -1;
     int removal_refused = 0, reset_preserved_view = 0;
-    std::array<int32_t,3> returns{{-1,-1,-1}};
     bool Passed() const {
-        return pre == 2 && post == 2 && original == 3 && pre_after_bypass == 0 && post_after_bypass == 0 &&
-            removal_refused == 2 && reset_preserved_view == 2 && returns == std::array<int32_t,3>{{6,6,6}};
+        return pre == 2 && original == 3 && pre_after_bypass == 0 &&
+            removal_refused == 2 && reset_preserved_view == 2;
     }
     std::string Json() const {
-        return std::string("{\"pre\":") + std::to_string(pre) + ",\"post\":" + std::to_string(post) +
+        return std::string("{\"pre\":") + std::to_string(pre) +
             ",\"original\":" + std::to_string(original) + ",\"pre_after_bypass\":" + std::to_string(pre_after_bypass) +
-            ",\"post_after_bypass\":" + std::to_string(post_after_bypass) +
             ",\"removal_refused\":" + std::to_string(removal_refused) +
-            ",\"reset_preserved_view\":" + std::to_string(reset_preserved_view) + ",\"returns\":[" +
-            std::to_string(returns[0]) + "," + std::to_string(returns[1]) + "," + std::to_string(returns[2]) + "]}";
+            ",\"reset_preserved_view\":" + std::to_string(reset_preserved_view) + "}";
     }
 };
-struct DeclarativeHudObservation {
-    int pre=0,completion=0,original=0,trace=0,skipped=-1;
-};
 struct DeclarativeSnapshot {
-    std::array<DeclarativeHudObservation,2> hud;
     bool forged_rejected=false,stale_rejected=false;
     int bypass_pair_pre=-1,bypass_pair_original=-1;
-    bool policy_isolated=false,policy_restored=false,policy_post_view=false;
-    int policy_pre=0,policy_post=0,policy_original=0;
+    bool policy_isolated=false,policy_restored=false;
+    int policy_pre=0,policy_original=0;
 
     DeclarativeVoidObservation simple;
     DeclarativeMutationObservation mutation;
-    std::array<DeclarativeAcquireObservation, 5> acquire;
     DeclarativeNestingObservation nesting;
     DeclarativeBypassObservation bypass;
     bool Passed() const {
-        return simple.Passed() && mutation.Passed() && nesting.Passed() && bypass.Passed() &&
-            acquire[0].Matches(6,false) && acquire[1].Matches(6,false) && acquire[2].Matches(2,false) &&
-            acquire[3].Matches(1,true) && acquire[4].Matches(0,true);
+        return simple.Passed() && mutation.Passed() && nesting.Passed() && bypass.Passed();
     }
     std::string Json() const {
-        std::string rows;
-        for (const auto& row : acquire) { if (!rows.empty()) rows += ','; rows += row.Json(); }
         return "{\"simple\":" + simple.Json() + ",\"mutation\":" + mutation.Json() +
-            ",\"acquire\":[" + rows + "],\"nesting\":" + nesting.Json() + ",\"bypass\":" + bypass.Json() + "}";
+            ",\"nesting\":" + nesting.Json() + ",\"bypass\":" + bypass.Json() + "}";
     }
 };
 
@@ -140,52 +112,16 @@ struct MainBridgeObservation {
     int callbacks=0, original=0, peer_pre=0, peer_post=0, skipped=-1, effective=-1, result=-1;
     float value=0;
     int a=0,b=0,c=0;
-    bool opaque_a=false,opaque_b=false,hud_self=false,hud_controller=false,hud_layout=false;
-    std::string text,trace;
+    bool opaque_a=false,opaque_b=false;
+    std::string trace;
     int bypass_original=-1,bypass_peer_pre=-1,bypass_peer_post=-1,bypass_callbacks=-1;
     std::string direct_trace;
     bool BypassObserved() const {
         return scenario==12 && bypass_original==1 && bypass_peer_pre==1 && bypass_peer_post==1 && bypass_callbacks==0 &&
             original-bypass_original==1 && peer_pre-bypass_peer_pre==1 && peer_post-bypass_peer_post==1 && callbacks-bypass_callbacks==1;
     }
-    bool DirectHudObserved() const {
-        return scenario==13 && original==1 && callbacks==1 && peer_pre==1 && peer_post==1 &&
-            hud_self && hud_controller && hud_layout && text=="direct-hud";
-    }
     uintptr_t target_address=0;
     std::map<int,int> generation_callbacks;
-};
-
-struct RealAcquireObservation {
-    int token=0,generation=0,slot=-1,definition=0,js_result=0,peer_result=0;
-    bool js_skipped=false,peer_skipped=false,marked=false,completed=false;
-    uintptr_t services=0,item=0,opaque=0; int method=0;
-};
-class RealAcquireFrames {
-public:
-    void Reset(const std::string& run) { run_=run; stack_.clear(); }
-    void Enter(int token,uintptr_t services,uintptr_t item,int method,uintptr_t opaque) {
-        RealAcquireObservation row; row.token=token; row.services=services; row.item=item; row.method=method; row.opaque=opaque;
-        stack_.push_back(row);
-    }
-    int Mark(const std::string& run,int generation,int slot,int definition,int result,bool skipped) {
-        if (run.empty() || run!=run_ || generation<=0 || slot<0 || stack_.empty()) return 0;
-        auto& frame=stack_.back();
-        if (frame.marked || frame.token<=0 || !frame.services || !frame.item) return 0;
-        frame.marked=true; frame.generation=generation; frame.slot=slot; frame.definition=definition;
-        frame.js_result=result; frame.js_skipped=skipped; return frame.token;
-    }
-    bool Finish(uintptr_t services,uintptr_t item,int method,uintptr_t opaque,int result,bool skipped,RealAcquireObservation& out) {
-        if (stack_.empty()) return false;
-        auto row=stack_.back(); stack_.pop_back();
-        if (row.services!=services || row.item!=item || row.method!=method || row.opaque!=opaque) return false;
-        row.peer_result=result; row.peer_skipped=skipped; row.completed=true;
-        if (!row.marked) return false;
-        out=row; return true;
-    }
-private:
-    std::string run_;
-    std::vector<RealAcquireObservation> stack_;
 };
 
 struct PrecacheTokenObservation {
@@ -303,7 +239,6 @@ struct NamedOrderObservation {
     std::string site,order,trace;
     int callbacks=0,peer_pre=0,peer_post=0,original=0,skipped=-1;
     int64_t effective=0;
-    bool damage_arguments=false,damage_output_preserved=false;
 };
 struct NamedOrderSnapshot {
     std::vector<NamedOrderObservation> rows;
@@ -319,13 +254,6 @@ struct NamedSnapshot {
     int usercmd_argument_matches=0,usercmd_batch_first=-1,usercmd_batch_second=-1;
 
     bool installed = false;
-    int damage_pre = 0, damage_post = 0, damage_original = 0;
-    int damage_nested_restored = 0, damage_expired = 0;
-    int damage_pre_ignore = 0, damage_post_ignore = 0, damage_post_observed = 0;
-    int damage_skipped = 0, damage_argument_matches = 0;
-    int damage_result_null = 0, damage_result_nonnull = 0;
-    int damage_output_writes = 0, damage_output_preserved = 0;
-    FacetObservation damage_current_return;
     int chat_dispatch = 0, chat_original = 0;
     int chat_peer_before = 0, chat_peer_after = 0, chat_peer_order = 0;
     int chat_post_observed = 0;
@@ -352,13 +280,7 @@ struct NamedSnapshot {
     FacetObservation bypass;
     NamedRemovalObservation removal;
     bool CorePassed() const {
-        return installed && damage_pre == 3 && damage_post == 3 && damage_original == 3 &&
-            damage_nested_restored == 2 && damage_expired == 1 &&
-            damage_pre_ignore == 3 && damage_post_ignore == 3 && damage_post_observed == 3 &&
-            damage_skipped == 0 &&
-            damage_current_return.ExplicitlyInapplicable() && damage_argument_matches == 3 &&
-            damage_result_null == 1 && damage_result_nonnull == 2 &&
-            damage_output_writes == 2 && damage_output_preserved == 2 &&
+        return installed &&
             chat_dispatch == 2 && chat_original == 1 && chat_peer_before == 2 &&
             chat_peer_after == 2 && chat_peer_order == 123123 && chat_post_observed == 2 &&
             chat_actions == std::array<int,2>{{0,2}} && chat_skipped == std::array<int,2>{{0,1}} &&
@@ -386,21 +308,6 @@ struct NamedSnapshot {
     bool Passed() const { return CorePassed() && removal.Passed(); }
     std::string Json() const {
         return std::string("{\"installed\":") + (installed ? "true" : "false") +
-            ",\"damage\":{\"pre\":" + std::to_string(damage_pre) +
-            ",\"post\":" + std::to_string(damage_post) +
-            ",\"original\":" + std::to_string(damage_original) +
-            ",\"nested_restored\":" + std::to_string(damage_nested_restored) +
-            ",\"expired\":" + std::to_string(damage_expired) +
-            ",\"pre_ignore\":" + std::to_string(damage_pre_ignore) +
-            ",\"post_ignore\":" + std::to_string(damage_post_ignore) +
-            ",\"post_observed\":" + std::to_string(damage_post_observed) +
-            ",\"skipped\":" + std::to_string(damage_skipped) +
-            ",\"current_return\":" + damage_current_return.Json() +
-            ",\"argument_matches\":" + std::to_string(damage_argument_matches) +
-            ",\"result_null\":" + std::to_string(damage_result_null) +
-            ",\"result_nonnull\":" + std::to_string(damage_result_nonnull) +
-            ",\"output_writes\":" + std::to_string(damage_output_writes) +
-            ",\"output_preserved\":" + std::to_string(damage_output_preserved) + "}" +
             ",\"chat\":{\"dispatch\":" + std::to_string(chat_dispatch) +
             ",\"original\":" + std::to_string(chat_original) +
             ",\"peer_before\":" + std::to_string(chat_peer_before) +

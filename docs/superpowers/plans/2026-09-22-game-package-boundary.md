@@ -4,7 +4,7 @@
 
 **Goal:** Select a verified first-party game package from data, bootstrap it in every plugin context, and move CS2 function semantics onto the shared S1/S2 facilities without changing any public CS2 behavior.
 
-**Architecture:** Packaging emits one deterministic manifest plus hashed JavaScript and gamedata artifacts under `addons/s2script/game-packages/`. The shim supplies only detected engine/game/platform tokens and the addon root; Rust uses its existing `sha2` dependency to select, confine, verify, normalize, and atomically register the package through S2, then iterates that registry for every context. CS2 JavaScript adapters run synchronously over generic S2 projected frames; core and shim retain only generic package, function, codec, lifetime, and receipt machinery.
+**Architecture:** Packaging emits one deterministic manifest plus hashed JavaScript and gamedata artifacts under `addons/s2script/game-packages/`. The shim supplies detected engine/game/platform tokens and the addon root; Rust uses its existing `sha2` dependency to select, confine, and verify the artifacts. The shim merges the verified v1 legacy gamedata bytes through the existing owner loader before atomic package registration. Separately authored v2 function declarations are normalized at build time and activated through S2. The resulting package registry is iterated for every context. CS2 JavaScript adapters run synchronously over generic S2 projected frames; core and shim retain only generic package, function, codec, lifetime, and receipt machinery.
 
 **Tech Stack:** C++17 shim and stock Metamod KHook, Rust/V8 core (`sha2`, `serde`, `serde_json`), JavaScript game package, TypeScript declaration packages, Node.js packager/tests, JSON/JSONC, SHA-256.
 
@@ -12,12 +12,14 @@
 
 **Integration status (2026-09-24):** The user authorized merging the existing stack into main. This PR records the approved S3 design and implementation plan; S3 implementation has not started. The merged S2 foundations do not yet supply the complete public `Engine.function` runtime, loader activation, or all codecs/adapters required below. Complete those prerequisites and the outstanding runtime/client/peer acceptance before claiming S3 complete or releasing the unfinished SDK surface. Merging the plan does not mark its unchecked tasks or inherited acceptance gates as passed.
 
+**Execution staging (2026-09-24):** S3 packaging and manifest verification may proceed against the merged S2 foundations because they do not invoke unfinished S2 APIs. Record missing runtime/codec/adapter prerequisites in PRE-00 and keep GD-03, CORE-04 and semantic migrations dependent on those interfaces. PKG-01 retains temporary legacy deployed artifacts derived from the same canonical package inputs until CORE-04 switches the loader, so each intermediate build remains usable. This does not add a second runtime loader or change the final boundary.
+
 ## Global Constraints
 
 - Isolated implementation may start after source and official-stock-host baselines are recorded. Required human/client, peer, map and script-reload evidence remains a merge/release gate. The user explicitly made the known whole-process shutdown-only SIGSEGV/139 non-blocking: preserve its existing evidence, do not relabel it as a pass, and do not add quit loops, shutdown investigation or a clean-exit wait. Native callback retirement and context/handle lifetime tests remain mandatory because they protect normal use and script reload.
 - Base the implementation on integrated S1 and S2 commits; inherited merge/release evidence may still be pending under the ruling above. S1 owns checked resolution and KHook receipts. S2 owns function normalization, ABI/projection support, policy registration, status/provenance, permissions, and subscription teardown.
 - Preserve `@s2script/cs2`, every public subpath/type, `Player`, `Pawn`, schema wrappers, damage, acquisition, HUD, base-plugin imports, null behavior, mutation/suppression, self-call behavior, unload behavior, and callback order.
-- The deployed manifest syntax is exactly `schemaVersion`, `packages[].id`, `match.engine`, `match.game`, `gamedataOwner`, `bootstrap.{path,sha256}`, and `gamedata.{path,sha256}`. Digests are lowercase 64-character SHA-256 strings.
+- The deployed manifest schema is v2: exactly `schemaVersion`, `packages[].id`, `match.engine`, `match.game`, `gamedataOwner`, `bootstrap.{path,sha256}`, `gamedata.{path,sha256}`, and optional `functions.{path,sha256,summary,permissions}`. Digests are lowercase 64-character SHA-256 strings. The optional source `functionsFile` is the only authored function input; the SDK derives the normalized archive, summary, and grants. No file means no field/artifact/owner. The v1 gamedata bundle remains separate. A present function product must fail process commit by name until sealed S2 package-owner activation exists. This 2026-09-24 amendment supersedes the v1 example and exact field assertions below for the function-artifact checkpoint.
 - Manifest paths are addon-relative and must resolve beneath `addons/s2script/game-packages/`. Reject absolute paths, `..`, symlink escapes, non-regular files, and duplicate resolved artifact paths.
 - Preserve the two independent dimensions: descriptor `owner` says who declares and overrides it; descriptor `target` says which engine/game/platform it matches.
 - `gamedataOwner: "cs2"` must continue to apply operator files from `addons/s2script/gamedata/cs2/custom/` after the verified shipped artifact. Existing operator repairs must not become invisible.
@@ -192,7 +194,7 @@ test("same inputs produce byte-identical manifest and artifacts", async () => {
 
 - [ ] **Step 2: Run the tests and verify the packager is absent**
 
-Run: `node --test scripts/test-game-packages.mjs`
+Run: `node --experimental-strip-types --no-warnings --test scripts/test-game-packages.mjs`
 
 Expected: FAIL because `build-game-packages.mjs` does not exist.
 
@@ -220,24 +222,24 @@ Move hook generation, static gates and the listed source-path assertions to `gam
 - [ ] **Step 4: Replace the shell concatenation with the packager**
 
 ```bash
-node scripts/build-game-packages.mjs --out "$DIST/s2script"
+node --experimental-strip-types --no-warnings scripts/build-game-packages.mjs --out "$DIST/s2script"
 ```
 
-Delete the `js/pawn.js` output and its conditional branch. Update ESLint to read `bootstrapInputs` from the source manifest instead of scraping shell text.
+Replace the independent shell concatenation and its conditional branch. Until CORE-04 switches runtime loading, copy the emitted bootstrap to the existing deployed `js/pawn.js` path and package the relocated CS2 source data at the existing deployed `gamedata/cs2/` path, still excluding operator `custom/` files. These temporary compatibility outputs must derive from the same canonical inputs; do not maintain a second JS file list or duplicate source data. Update ESLint to read `bootstrapInputs` from the source manifest instead of scraping shell text. CORE-04 removes these compatibility outputs in the same change that removes their runtime readers.
 
 - [ ] **Step 5: Verify hashes, determinism, and owner relocation**
 
 ```bash
-node --test scripts/test-game-packages.mjs
+node --experimental-strip-types --no-warnings --test scripts/test-game-packages.mjs
 bash scripts/check-gamedata-owners.sh
 bash scripts/check-gamedata-sigs.sh
 bash scripts/check-hooks-generated.sh
 find dist/addons/s2script/game-packages -type f -print | sort
-test ! -e dist/addons/s2script/js/pawn.js
+cmp dist/addons/s2script/game-packages/cs2/index.js dist/addons/s2script/js/pawn.js
 test ! -d gamedata/cs2
 ```
 
-Expected: tests pass; exactly `cs2/index.js` and `cs2/gamedata.json` are emitted below the package root.
+Expected: tests pass; exactly `cs2/index.js` and `cs2/gamedata.json` are emitted below the package root. The temporary legacy bootstrap is byte-identical and the legacy deployed CS2 data comes from the relocated source. Deleting these compatibility outputs belongs to CORE-04.
 
 - [ ] **Step 6: Commit**
 
@@ -330,56 +332,37 @@ git commit -m "feat: verify and select game package manifests"
 ### Task 4: S3-GD-03 Merge verified package gamedata with compatible owner overrides
 
 **Files:**
-- Create: `core/src/engine_functions/package_loader.rs`
-- Create: `core/src/engine_functions/tests/package_loader.rs`
-- Modify: `core/src/engine_functions/mod.rs`
-- Modify: `core/src/game_packages/mod.rs`
-- Read/check: relocated hookgen/static gates and source-path assertions already integrated in S3-PKG-01
+- Modify: `shim/src/gamedata.h`, `shim/src/gamedata.cpp`, `shim/tests/gamedata_test.cpp`
+- Correct this plan/spec and the stale source-path comment in `scripts/check-hooks-generated.sh`
 
 **Interfaces:**
-- Consumes: verified bundle bytes, `gamedata_owner`, engine/game/platform, `addon_root/gamedata/<owner>/custom`, and S2's normalizer/`OverrideSet`
-- Produces: `(NormalizedBundle, OverrideSet, PackageGamedataProvenance)` with verified files selected in master order and sorted compatible overrides last
+- Consumes: copied, already SHA-256-verified v1 bundle bytes, selected `gamedata_owner`, trusted artifact digest, engine/game/platform, and external `gamedata/<owner>/custom/`
+- Produces: the existing complete `GameConfig` plus legacy package provenance (owner, target, verified digest, selected shipped and applied custom paths)
 
-- [ ] **Step 1: Add failing bundle/override/orthogonality tests with real temporary files**
+- [ ] **Step 1: Add failing native loader tests**
 
-```rust
-#[test]
-fn applies_compatible_owner_overrides_after_verified_files() {
-    let fx = PackageFixture::new("cs2", "source2", "csgo", "linuxsteamrt64");
-    fx.write_override("90-fix.jsonc", repair_for("canAcquire", "operator-pattern"));
-    let (_, overrides, provenance) = load_package_bundle(
-        fx.bundle(), fx.addon_root(), "cs2", fx.target()).unwrap();
-    assert_eq!(overrides.target_for("canAcquire").unwrap().pattern, "operator-pattern");
-    assert_eq!(provenance.applied_paths.last().unwrap(), "gamedata/cs2/custom/90-fix.jsonc");
-}
-
-#[test]
-fn owner_and_target_are_independent() {
-    let core = normalize_fixture("core", target("source2", "csgo"), "coreFact");
-    let cs2 = normalize_fixture("cs2", target("source2", "csgo"), "packageFact");
-    assert_eq!(core.owner(), "core");
-    assert_eq!(cs2.owner(), "cs2");
-    assert_eq!(core.target(), cs2.target());
-}
-```
-
-`PackageFixture`, `repair_for`, `target`, and `normalize_fixture` are test helpers defined in this module using the same standard-library `TestDir` pattern, `serde_json`, and S2's normalization constructors. Also assert malformed bundle path, duplicate embedded path, owner mismatch, selected-file parse failure, absent `custom/`, stale base hash, conflicting sorted overrides, and attempts to change ABI/projection/policy/requirement.
+Use an in-memory v1 bundle plus temporary operator files. Cover envelope, owner, path/count/size validation; master order and conditions; target/platform independence; all six sections and merged calls/hooks; unknown and malformed sections; sorted JSONC overrides; validator carry/disarm; and the named shipped-failure versus custom/per-entry-error distinction. Do not use S2 v2 function fixtures for this legacy artifact.
 
 - [ ] **Step 2: Verify red**
 
-Run: `cargo test -p s2script-core engine_functions::tests::package_loader -- --nocapture`
+Run: `bash scripts/test-gamedata.sh`
 
-Expected: compile failure because `load_package_bundle` is undefined.
+Expected: compile failure because `LoadGameConfigFromBundle` is undefined.
 
-- [ ] **Step 3: Feed the package artifact through S2's single normalizer**
+- [ ] **Step 3: Add an in-memory shipped-document source to the existing merge**
 
-```rust
-pub(crate) fn load_package_bundle(
-    bundle_bytes: &[u8], addon_root: &Path, gamedata_owner: &str, target: TargetKey,
-) -> Result<(NormalizedBundle, OverrideSet, PackageGamedataProvenance), FunctionError>;
+```cpp
+GameConfig LoadGameConfigFromBundle(const std::string& verifiedBundleJson,
+                                    const std::string& owner,
+                                    const std::string& gamedataRoot,
+                                    const std::string& engine,
+                                    const std::string& game,
+                                    const std::string& platform,
+                                    const std::string& verifiedSha256,
+                                    std::string& error);
 ```
 
-Do not materialize bundle files or add a second declaration/override grammar. Select embedded documents in master order, then feed them and sorted external owner overrides through S2's existing parser, normalizer, contract-hash checks, and `OverrideSet` validation. Record both owner and target on every function receipt.
+Validate the v1 envelope, owner, unique normalized paths, exactly one master, object-valued selected documents, and bounds before merging. The bundle parser rejects container nesting at depth 128 before it can construct or copy an overdeep document, including an unselected one. Disk and bundle sources share master selection, `MergeFile`, sorted custom scanning, and serialization. The bundle source never reopens a shipped path. A nonempty `filesFailed` is a catastrophic selected shipped failure and blocks later activation; a custom parse error retains valid shipped entries. Keep the S2 v2 function normalizer and contract separate: legacy calls/hooks remain until their individual migration has parity evidence.
 
 - [ ] **Step 4: Verify the integrated source-path relocation**
 
@@ -388,25 +371,54 @@ Verify S3-PKG-01 already moved hook generation and static gates to `games/cs2/ga
 - [ ] **Step 5: Verify**
 
 ```bash
-cargo test -p s2script-core engine_functions::tests::package_loader -- --nocapture
+bash scripts/test-gamedata.sh
+node --experimental-strip-types scripts/test-game-packages.mjs
 bash scripts/check-gamedata-owners.sh
 bash scripts/check-gamedata-sigs.sh
 bash scripts/check-hooks-generated.sh
-rg -n 'gamedata/cs2/game\.cs2\.jsonc' games packages scripts
+rg -n 'gamedata/cs2/game\.cs2\.jsonc' games packages/sdk/src scripts
 ```
 
-Expected: the final search returns no source-file references; `addons/s2script/gamedata/cs2/custom/` remains documented as the operator compatibility path.
+Expected: the final search returns no executable source-file references; historical changelog and
+type-comment mentions outside this task do not affect source selection.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add core/src/engine_functions core/src/game_packages
+git add shim/src/gamedata.h shim/src/gamedata.cpp shim/tests/gamedata_test.cpp scripts/check-hooks-generated.sh docs/superpowers
 git commit -m "feat: merge packaged gamedata with owner overrides"
 ```
 
 ### Task 5: S3-CORE-04 Register and bootstrap the selected package generically
 
+**Dependency corrected after GD-03:** The v1 `gamedata.json` artifact is legacy owner gamedata,
+not an S2 v2 normalized function archive. Obtain its exact verified bytes and SHA-256 from a
+prepared selection handle/copy-out ABI, then call `LoadGameConfigFromBundle` with the selected
+`gamedataOwner` and detected target. Run this after core initialization and before package
+fingerprinting/registration. Require empty `filesFailed` before publishing either bootstrap source
+or a package owner. Feed the resulting `mergedJson` to existing package call/hook registration
+until each descriptor has an explicit S2 replacement with parity evidence. The selection and
+registration commit must be atomic with respect to a failed shipped merge; never reopen the
+shipped artifact or fall back to the old tree. Keep core and sdkhooks on disk `LoadGameConfig`.
+S2 v2 functions need a separate, explicit build-time normalized product and sealed package owner
+activation; no v1-to-v2 cast or heuristic legacy call/hook translation is valid. The final S3
+shared-service acceptance remains blocked until these migration dependencies are satisfied.
+
+**Selected-bootstrap checkpoint (2026-09-24):** Implements retained verified-byte selection,
+atomic legacy call/hook publication, one token-scoped bootstrap evaluation per context and an
+explicit `{ ".": rootExports, "./ui": uiExports }` result map. Source manifests own the final
+export expression; `econ.d.ts` is type-only. Production no longer reads transitional game JS/data.
+`function_adapter::register_selected_package` reuses `HostPackageOwner` and
+`PreparedPackageReceipt`; `bootstrap` returns `PackageExports { instance, modules }` owned by
+`PluginInstance` and cleared after the existing resource ledger, before its context. Existing
+internal adapter test packages retain no-export behavior. This checkpoint does not complete
+CORE-04: explicit normalized S2 function declarations/product and sealed package-kind owner
+preparation/activation remain the next lower-layer dependency, followed by semantic migrations.
+No fake empty function owner is activated. Linux compile, live/client and peer acceptance remain
+separate evidence gates.
+
 **Files:**
+- Modify: `scripts/package-addon.sh` (remove temporary legacy outputs with their runtime readers)
 - Modify: `core/src/game_packages/mod.rs`
 - Modify: `core/src/lib.rs`
 - Modify: `core/src/ffi.rs`
@@ -425,7 +437,7 @@ git commit -m "feat: merge packaged gamedata with owner overrides"
 ```rust
 #[test]
 fn context_bootstraps_the_registered_id_without_a_cs2_literal() {
-    register_fixture("@fixture/two", "fixture-owner", "globalThis.__fixture={ok:true}");
+    register_fixture("@fixture/two", "fixture-owner", "({'.':{ok:true}})");
     create_plugin_context("consumer");
     assert!(eval_in_context_bool("consumer", "require('@fixture/two').ok"));
 }
@@ -448,14 +460,17 @@ Expected: FAIL because the registry does not exist.
 
 - [ ] **Step 3: Add a narrow copying C ABI**
 
-```c
-int s2script_core_select_game_package(const char* addon_root, const char* engine,
-                                      const char* game, const char* platform);
-const char* s2script_core_game_package_status_json(void);
-void s2script_core_clear_game_package(void);
-```
-
-Core copies strings before returning and performs all file access after validating UTF-8. It prepares the verified selection and normalized bundle, constructs `OwnerKey { id: reserved_owner_id, generation, kind: OwnerKind::GamePackage }`, calls `prepare_owner`, validates the reserved adapter contracts as metadata, calls `activate_owner`, and only then atomically publishes bootstrap source plus the active process receipt. Executable JS adapters register during each context's token-scoped bootstrap below; process preparation does not invent callbacks without a context. Any failure calls `drop_owner(&owner)` and publishes no id. The status JSON contains code, id, owner, manifest path, both hashes, function status summary, and error; shim logs this JSON once after selection so live acceptance has a query-free status receipt. `clear` is terminal-only: it first requires all contexts/in-flight frames retired, drops S2 owner receipts, then clears source/data/provenance.
+Provide a prepared-selection handle or equivalent two-phase ABI. Rust validates the manifest,
+copies the selected artifact bytes and hash into owned memory, and makes those exact bytes
+available to the shim without another file open. The shim merges legacy owner gamedata and
+operator custom files and rejects nonempty `filesFailed`; only then may Rust commit package
+registration and publish bootstrap source. A failed commit drops provisional receipts and
+publishes no id. The status JSON names id, owner, target, manifest, both hashes, function status,
+and error. Core copies strings before returning and performs file access after UTF-8 validation.
+Executable JS adapters register during each context's token-scoped bootstrap below; process
+preparation does not invent callbacks without a context. `clear` is terminal-only after all
+contexts and in-flight frames retire. The S2 owner activation part of this step applies to a
+separately authored normalized v2 function product, never to the legacy v1 gamedata bundle.
 
 - [ ] **Step 4: Iterate registry records during context creation**
 
@@ -478,6 +493,8 @@ This is lifecycle pseudocode; implement its helpers using S2's actual integrated
 
 Delete `Cs2JsPath`, the `@s2script/cs2` literals, old source/gamedata registration calls, the static `s_gdGame` package load, and the CS2-specific crash hash read. Pass `AddonRoot()`, `"source2"`, `DetectModDir()`, and `"linuxsteamrt64"` to the new selector. Use selected artifact hashes/provenance for crash identity. Call terminal `clear` only after context shutdown succeeds.
 
+In this same cutover, remove PKG-01's temporary deployed `js/pawn.js` and shipped `gamedata/cs2/` compatibility copies from `scripts/package-addon.sh`. Preserve the operator `gamedata/cs2/custom/` lookup and prove there is no old bootstrap fallback. Before this step, those compatibility copies keep intermediate releases loadable; afterward the verified package artifacts are authoritative.
+
 - [ ] **Step 6: Verify targeted and boundary tests**
 
 ```bash
@@ -495,6 +512,12 @@ git commit -m "feat: bootstrap selected game packages generically"
 ```
 
 ### Task 6: S3-ADAPT-05 Relocate acquisition and HUD compatibility policies
+
+**Migration dependency:** This loader preserves legacy calls/hooks; it does not make acquisition
+or HUD use S2. Each adapter step must add explicit build-time normalized S2 declarations, register
+them under the sealed package owner, preserve operator repair behavior for migrated descriptors,
+and prove parity before retiring its legacy path. The final shared-service acceptance remains
+blocked until these steps are complete.
 
 **Files:**
 - Create: `games/cs2/js/adapters/acquire.js`
@@ -764,7 +787,7 @@ fi
 if rg -n "${test_exclusions[@]}" 's2script_core_dispatch_damage|__s2_damage_|InstallDamage' "${production[@]}"; then
   echo 'bespoke damage path remains' >&2; exit 1
 fi
-node --test scripts/test-game-packages.mjs
+node --experimental-strip-types --no-warnings --test scripts/test-game-packages.mjs
 ```
 
 Run: `bash scripts/check-game-package-boundary.sh`

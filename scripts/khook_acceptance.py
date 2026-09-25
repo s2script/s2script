@@ -281,18 +281,9 @@ _B_ROWS = {
         "native_narrow_edits_reach_original native_narrow_peer_orders", "js_narrow_all_fields_mutated"),
     "declarative_mutable_wide": (
         "native_wide_edits_reach_original native_wide_opaque_values_preserved native_wide_peer_orders", "js_wide_mutation_delivery"),
-    "declarative_acquisition": (
-        "native_acquire_changed_deny_engine_allow native_acquire_allow_engine_deny native_acquire_handled_implicit_deny native_acquire_peer_effective_result native_acquire_skipped_original_not_read native_acquire_peer_orders native_acquire_outbound_peer_post",
-        "js_acquire_outbound_pre_vote js_acquire_outbound_final_result"),
-    "declarative_hud": (
-        "native_hud_continue_order_original_once native_hud_handled_original_zero native_hud_pointers_text_peer_orders",
-        "js_hud_receiver_text_continue js_hud_handled_delivery js_hud_direct_utlstring"),
     "declarative_nesting_bypass": (
         "native_same_and_different_id_nesting native_stale_forged_views_rejected native_bypass_hit_then_next_delivered native_rejected_nested_scope_restored",
         "js_different_id_nested_delivery js_same_id_reentry_named_skip js_bypass_absent_then_next_delivered"),
-    "acquisition_named_hook": ("native_acquire_real_post_peer_observed", "js_acquire_real_post_effective"),
-    "damage_named_hook": (
-        "native_damage_valid_pre_post native_damage_nested_scopes native_damage_peer_orders_original_state", "js_damage_pre_post_correct_victim"),
     "chat_named_hook": (
         "native_chat_continue_original_once native_chat_suppressed_original_zero native_chat_peer_orders", "js_chat_continue_delivery js_chat_suppression_vote"),
     "output_named_hook": (
@@ -324,26 +315,10 @@ INTEGRATION_EXPECTED = {
     "native_narrow_edits_reach_original": {"original": 1, "value": 7.25, "a": -17, "b": 29, "c": -31},
     "native_wide_edits_reach_original": {"original": 1, "value": 7.25, "integer": -17},
     "native_wide_opaque_values_preserved": {"opaque_a": "17375808098319191535", "opaque_b": "9305357566071262703"},
-    "native_acquire_changed_deny_engine_allow": {"original": 1, "engine": 0, "effective": 6},
-    "native_acquire_allow_engine_deny": {"original": 1, "engine": 6, "effective": 6},
-    "native_acquire_handled_implicit_deny": {"original": 0, "effective": 1, "skipped": True},
-    "native_acquire_peer_effective_result": {"post_observed": True, "current_return_matches": True},
-    "native_acquire_skipped_original_not_read": {"skipped": True, "original": 0, "effective": 1},
-    "native_hud_continue_order_original_once": {"completion_before_original": True, "original": 1},
-    "native_hud_handled_original_zero": {"pre": 1, "original": 0, "skipped": True},
-    "native_hud_pointers_text_peer_orders": {"orders": ["peer-first", "s2script-first"], "pointer_matches": 3, "text": "s2-khook-hud"},
     "native_same_and_different_id_nesting": {"same_restored": 2, "different_restored": 2},
     "native_stale_forged_views_rejected": {"stale_rejected": True, "forged_rejected": True},
     "native_bypass_hit_then_next_delivered": {"bypass_pre": 0, "next_pre": 1, "original": 2},
     "native_rejected_nested_scope_restored": {"rejected": True, "outer_restored": True},
-    "native_acquire_outbound_peer_post": {"effective": [6, 6, 1], "skipped": [False, False, True]},
-    "native_acquire_real_post_peer_observed": {"real_item_services": True, "post_observed": True, "same_invocation": True},
-    "js_acquire_real_post_effective": {"real_bot": True, "effective_result_observed": True, "skipped_observed": True},
-    "native_damage_valid_pre_post": {"pre": 3, "post": 3, "original": 3, "arguments": 3,
-        "result_null": 1, "result_nonnull": 2, "output_writes": 2, "output_preserved": 2,
-        "pre_ignore": 3, "post_ignore": 3, "peer_post": 3, "skipped": 0, "return_kind": "void"},
-    "native_damage_nested_scopes": {"restored": 2, "expired": True},
-    "native_damage_peer_orders_original_state": {"orders": ["peer-first", "s2script-first"], "arguments_preserved": True, "output_preserved": True, "skipped": False, "return_kind": "void"},
     "native_chat_continue_original_once": {"dispatch": 1, "original": 1, "skipped": False},
     "native_chat_suppressed_original_zero": {"dispatch": 1, "original": 0, "skipped": True},
     "native_output_01_original_once": {"actions": [0, 1], "originals": [1, 1], "dispatches": [1, 1], "skipped": [False, False]},
@@ -352,7 +327,7 @@ INTEGRATION_EXPECTED = {
     "native_usercmd_original_once_return_preserved": {"originals_by_batch": [1, 1, 1], "return": 37},
     "native_binding_resident_across_reload": {"native_address_same": True, "generations": 3},
     "native_no_disposed_generation_callback": {"old_callbacks_after_retire": 0, "new_callbacks": 2},
-    "native_all_sites_both_peer_orders": {"sites": ["this_void", "narrow", "wide", "acquire", "hud", "damage", "chat", "output", "usercmd", "precache"], "orders": ["peer-first", "s2script-first"]},
+    "native_all_sites_both_peer_orders": {"sites": ["this_void", "narrow", "wide", "chat", "output", "usercmd", "precache"], "orders": ["peer-first", "s2script-first"]},
     "native_active_removal_refused": {"active_refused": True},
     "native_async_removal_peer_survives": {"completion_observed": True, "retired_callbacks": 0, "peer_callbacks": 1},
     "native_precache_real_receiver": {"delivered_receiver_matches": True, "retained_vtable_matches": True},
@@ -368,15 +343,9 @@ INTEGRATION_EXPECTED = {
     "js_this_void_handled_delivery": {"pre": 1, "action": 2},
     "js_narrow_all_fields_mutated": {"value": 7.25, "a": -17, "b": 29, "c": -31},
     "js_wide_mutation_delivery": {"value": 7.25, "integer": -17},
-    "js_acquire_outbound_pre_vote": {"votes": [6, 0, 1], "outbound_nested": True},
-    "js_acquire_outbound_final_result": {"effective": [6, 6, 1], "outbound_nested": True},
-    "js_hud_receiver_text_continue": {"receiver_matches_controller": True, "text": "s2-khook-hud"},
-    "js_hud_direct_utlstring": {"text": "direct-hud", "receiver_matches_controller": True},
-    "js_hud_handled_delivery": {"pre": 1, "action": 2},
     "js_different_id_nested_delivery": {"outer": 1, "inner": 1, "restored": True},
     "js_same_id_reentry_named_skip": {"delivered": 1, "nested_safe_skip": True},
     "js_bypass_absent_then_next_delivered": {"bypass": 0, "next": 1},
-    "js_damage_pre_post_correct_victim": {"pre": 1, "post": 1, "victim_matches": True},
     "js_chat_continue_delivery": {"continue": 1},
     "js_chat_suppression_vote": {"suppressed": 1, "action": 2},
     "js_output_delivery_and_suppression": {"actions": [0, 1, 2, 3], "deliveries": 4},
@@ -395,12 +364,11 @@ for _suite_rows in (_B_ROWS, _C_ROWS):
         for _name in _js_names.split():
             INTEGRATION_EXPECTED["native_main_" + _name[3:]] = {"same_invocation_markers": True, "target_calls_observed": True}
 
+# Coverage-summary sites driven through the main runtime bridge; the rest are stock-provider peers.
+MAIN_RUNTIME_SITES = ("this_void", "narrow", "wide")
+
 INTEGRATION_EXPECTED["native_main_bypass_absent_then_next_delivered"] = {
     "same_invocation_markers": True, "target_calls_observed": True, "both_phases_observed": True,
-}
-
-INTEGRATION_EXPECTED["native_main_hud_direct_utlstring"] = {
-    "same_invocation_markers": True, "target_calls_observed": True, "original_and_utlstring_observed": True,
 }
 
 
@@ -412,17 +380,14 @@ def _integration_spec(rows: dict, suite: str) -> SuiteSpec:
             for name in names.split():
                 main = case.startswith("declarative") and producer == "js"
                 main_mechanics = producer == "native" and case in (
-                    "declarative_this_void", "declarative_mutable_narrow", "declarative_mutable_wide",
-                    "declarative_acquisition", "declarative_hud") and name not in ("native_wide_opaque_values_preserved", "native_hud_continue_order_original_once")
+                    "declarative_this_void", "declarative_mutable_narrow", "declarative_mutable_wide") and name != "native_wide_opaque_values_preserved"
                 real = suite == "C" and case == "precache_map_transition"
-                live_named = case.endswith("named_hook") and (producer == "js" or case == "acquisition_named_hook")
+                live_named = case.endswith("named_hook") and producer == "js"
                 lifetime = case == "script_generation_lifetime"
                 group = "main-runtime-bridge" if main or main_mechanics or real or lifetime else "live-named" if live_named else "controlled-mechanics"
-                if name == "native_acquire_outbound_peer_post": group = "main-runtime-bridge"
                 provenance = "live-engine" if real or live_named else "main-runtime" if main or main_mechanics or lifetime else "controlled-stock-provider"
-                if name == "native_acquire_outbound_peer_post": provenance = "main-runtime"
-                owner = "named_hooks" if suite == "C" or (case.endswith("named_hook") and case != "acquisition_named_hook") else "engine_hooks"
-                join = "real-acquire-post" if case == "acquisition_named_hook" else "script-generation" if lifetime else name[3:] if main else "precache-map" if real and name != "native_precache_live_peer_both_orders" and name != "js_precache_stale_context_rejected" else ""
+                owner = "named_hooks" if suite == "C" or case.endswith("named_hook") else "engine_hooks"
+                join = "script-generation" if lifetime else name[3:] if main else "precache-map" if real and name != "native_precache_live_peer_both_orders" and name != "js_precache_stale_context_rejected" else ""
                 if name == "native_all_sites_both_peer_orders":
                     group, provenance, owner = "coverage-summary", "mixed-observed", "stock-khook"
                 check = _sc(case, name, producer)
@@ -449,7 +414,7 @@ def required_subchecks(suite: str = "A") -> List[Subcheck]:
     return list(SUITES[suite].subchecks)
 
 
-GAMEDATA_SUBCHECKS = {"native_acquire_real_post_peer_observed", "native_precache_live_peer_both_orders"}
+GAMEDATA_SUBCHECKS = {"native_precache_live_peer_both_orders"}
 
 
 def _fnv1a64(data: bytes) -> str:
@@ -600,7 +565,7 @@ def _integration_record_error(rec: dict, rule: EvidenceRule) -> Optional[str]:
             site = facts.get("site")
             if site not in expected_sites:
                 return "coverage summary requires a known observed site"
-            origin = "main-runtime" if expected_sites.index(site) < 5 else "controlled-stock-provider"
+            origin = "main-runtime" if site in MAIN_RUNTIME_SITES else "controlled-stock-provider"
             if facts.get("origin") != origin:
                 return "coverage summary site ownership mismatch"
             measured.append((site, observation["peer_order"]))

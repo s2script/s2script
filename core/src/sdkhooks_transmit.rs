@@ -154,13 +154,18 @@ mod tests {
     fn sdkhook_settransmit_entity_enumeration_ignores_other_kinds() {
         let _ = init(dummy_logger());
         crate::entity_live::reset_for_tests();
+        extern "C" fn vp_add(_: std::os::raw::c_int, _: std::os::raw::c_int, _: *const std::os::raw::c_char, _: std::os::raw::c_int) -> std::os::raw::c_int { 1 }
+        crate::v8host::set_engine_ops(Some(crate::v8host::S2EngineOps {
+            sdkhook_vp_add: Some(vp_add),
+            ..crate::v8host::frame_tests::mock_event_ops()
+        }));
         create_plugin_context("p");
         for index in 1..=100 {
             let id = crate::entity_live::on_created(index, index);
             assert_eq!(
                 eval_in_context_string(
                     "p",
-                    &format!(r#"String(__s2_sdkhook({index}, {id}, "OnTakeDamage", function () {{}}))"#),
+                    &format!(r#"String(__s2_sdkhook({index}, {id}, "Touch", function () {{}}))"#),
                 ),
                 "true"
             );

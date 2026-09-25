@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 2,
+  "functions": {
+    "scalar": {
+      "target": { "module": "libserver.so", "pattern": "55 48", "validate": { "prologue": "55 48" } },
+      "parameters": [{ "name": "enabled", "type": "bool" }],
+      "returns": "void",
+      "surfaces": ["call"]
+    }
+  }
+}
