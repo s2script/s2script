@@ -49,6 +49,10 @@ export interface ItemsApi {
    * Vote on a CanAcquire. Return `Changed` to vote the current `result`, `Handled`/`Stop` to skip
    * the original and vote the result this handler wrote (or `InvalidItem` when it wrote none).
    * Handled/Stop votes outrank Changed votes; any deny beats `Allowed`; the first deny wins.
+   *
+   * A plugin's gate sees acquisitions the plugin causes elsewhere (a command's `giveNamedItem`).
+   * An acquisition triggered from inside the plugin's own gate callback skips only that plugin's
+   * gate for the nested call; other plugins' gates still vote on it.
    */
   onCanAcquire(handler: (view: CanAcquireView) => HookResultValue | void): void;
   /** Observe the effective result after the original ran (or was skipped). */

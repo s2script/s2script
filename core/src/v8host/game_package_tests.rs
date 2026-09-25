@@ -148,7 +148,34 @@ fn build_real_package(tag: &str) -> std::path::PathBuf {
         .output()
         .unwrap();
     assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    seed_fixture_schema(&root);
     root
+}
+
+thread_local! {
+    // Stands in for the live SchemaSystem: each (class, field) a built package's trusted functions
+    // name resolves to that package's catalog value. Trusted offsets never fall back to the
+    // catalog in production, so these tests must supply a schema.
+    static FIXTURE_SCHEMA: std::cell::RefCell<std::collections::HashMap<(String, String), i32>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+fn seed_fixture_schema(root: &std::path::Path) {
+    let Ok(bytes) = std::fs::read(root.join("game-packages/cs2/trusted-functions.json")) else { return };
+    let trusted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    FIXTURE_SCHEMA.with(|m| {
+        let mut m = m.borrow_mut();
+        for entry in trusted["offsets"].as_object().into_iter().flat_map(|o| o.values()) {
+            m.insert((entry["class"].as_str().unwrap().into(), entry["field"].as_str().unwrap().into()),
+                entry["catalog"].as_i64().unwrap() as i32);
+        }
+    });
+}
+extern "C" fn fixture_schema_offset(class: *const std::os::raw::c_char, field: *const std::os::raw::c_char) -> i32 {
+    let (class, field) = unsafe {
+        (std::ffi::CStr::from_ptr(class).to_string_lossy().into_owned(), std::ffi::CStr::from_ptr(field).to_string_lossy().into_owned())
+    };
+    // Thread-local teardown can reach a lookup after this table is gone; that is a plain miss.
+    FIXTURE_SCHEMA.try_with(|m| m.borrow().get(&(class, field)).copied()).ok().flatten().unwrap_or(-1)
 }
 fn merged_signatures(root: &std::path::Path) -> String {
     let bundle: serde_json::Value =
@@ -194,6 +221,7 @@ extern "C" fn no_override_copy(_: i64, _: u64, _: u64, _: *const i8, _: *const S
 fn install_trusted_ops() {
     function_adapter::scalar_transport_tests::init_transport();
     let mut ops = engine_ops().unwrap();
+    ops.schema_offset = Some(fixture_schema_offset);
     ops.function_prepare_instance = Some(trusted_instance_prepare);
     ops.function_instance_activate = Some(trusted_instance_activate);
     ops.function_instance_release = Some(trusted_instance_release);
@@ -226,8 +254,8 @@ fn selected_real_package_activates_trusted_functions_from_merged_gamedata() {
         assert_eq!(f["binding"], "available", "{f}");
         assert_eq!(f["customRepairs"], json!([]));
     }
-    // No live schema in this host: the build's schema-catalog value is selected and named.
-    assert_eq!(trusted["offsets"][0]["source"], "schema-catalog");
+    // Offsets come only from the (fixture) live schema; the catalog value is never selected.
+    assert_eq!(trusted["offsets"][0]["source"], "live-schema");
     assert_eq!(trusted["offsets"][0]["offset"], 0x38);
     load_plugin_js("trusted-real", "exports.OnPluginStart=()=>{};", "{}");
     assert!(!is_failed("trusted-real"), "{:?}", FAILED_PLUGINS.with(|p| p.borrow().clone()));

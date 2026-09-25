@@ -5,8 +5,9 @@
 //! gamedata signature NAME and each record field by an opaque offset key bound to a schema
 //! (class, field) pair. The host chooses the layout: the target comes from the MERGED shipped +
 //! operator-custom gamedata (so an owner `custom/` signature repair applies, and is recorded as
-//! provenance), and each offset comes from the live schema, falling back to the schema-catalog
-//! value the package was built from. A function whose signature is missing or malformed in the
+//! provenance), and each offset comes from the live schema only; the schema-catalog value is kept
+//! in status for diagnosis, never used. A function whose signature is missing or malformed, or
+//! whose record layout names a field the live schema cannot resolve, in the
 //! merged view degrades by name (optional) instead of failing the package.
 use super::repair_snapshot;
 use crate::engine_functions::contract::{self, NormalizedTarget};
@@ -131,6 +132,18 @@ fn fill_instances(signature: &mut Map<String, Value>, selected: &BTreeMap<String
     Ok(())
 }
 
+/// Every `offsetKey` a trusted signature's record layouts name.
+fn offset_keys(value: &Value) -> Vec<String> {
+    match value {
+        Value::Object(map) => map.iter().flat_map(|(k, v)| match (k.as_str(), v) {
+            ("offsetKey", Value::String(key)) => vec![key.clone()],
+            _ => offset_keys(v),
+        }).collect(),
+        Value::Array(items) => items.iter().flat_map(offset_keys).collect(),
+        _ => Vec::new(),
+    }
+}
+
 pub(super) fn materialize(
     bytes: &[u8],
     owner_id: &str,
@@ -145,11 +158,16 @@ pub(super) fn materialize(
     let mut selected = BTreeMap::new();
     let mut offset_status = Vec::new();
     for (key, entry) in &source.offsets {
+        // Only the running binary's schema is authoritative. The catalog value is from the build the
+        // package was authored against; using it after a field moves would read the wrong bytes, so
+        // an unresolved field disables the functions that name it instead (degrade per descriptor).
         let live = live_offset(&entry.class, &entry.field);
-        let (offset, from) = if live >= 0 { (live as u32, "live-schema") } else { (entry.catalog, "schema-catalog") };
-        selected.insert(key.clone(), offset);
-        offset_status.push(json!({"key":key,"class":entry.class,"field":entry.field,"offset":offset,
-            "source":from,"catalog":entry.catalog}));
+        if live >= 0 {
+            selected.insert(key.clone(), live as u32);
+        }
+        offset_status.push(json!({"key":key,"class":entry.class,"field":entry.field,
+            "offset":(live >= 0).then_some(live),"source":if live >= 0 {"live-schema"} else {"unresolved"},
+            "catalog":entry.catalog}));
     }
     let selected_text = serde_json::to_string(&selected).map_err(fail)?;
     let signatures = merged.get("signatures").and_then(Value::as_object);
@@ -159,8 +177,12 @@ pub(super) fn materialize(
         let entry = signatures
             .and_then(|s| s.get(&f.signature_name))
             .and_then(|s| s.get(GAMEDATA_PLATFORM));
+        let unresolved = offset_keys(&Value::Object(f.signature.clone())).into_iter().filter(|k| !selected.contains_key(k)).collect::<Vec<_>>();
         let resolved = entry
             .ok_or_else(|| format!("gamedata signature '{}' has no {GAMEDATA_PLATFORM} entry", f.signature_name))
+            .and_then(|entry| if unresolved.is_empty() { Ok(entry) } else {
+                Err(format!("live schema has no offset for {}", unresolved.join(", ")))
+            })
             .and_then(|entry| target(entry).map_err(|e| format!("gamedata signature '{}': {e}", f.signature_name)));
         let mut status = json!({"localName":f.local_name,"signature":f.signature_name,
             "customRepairs":repairs.signature_repairs(&f.signature_name)});
@@ -282,22 +304,27 @@ mod tests {
     }
 
     #[test]
-    fn catalog_fallback_malformed_targets_and_required_failures_are_named() {
+    fn unresolved_offsets_malformed_targets_and_required_failures_are_named() {
         let bytes = source().to_string();
+        // A field the live schema cannot resolve is never read at the stale catalog offset: the
+        // functions naming it degrade by name and nothing is emitted for them.
         let out = materialize(bytes.as_bytes(), "@proof/game", &merged("55"), &repairs(&[]), &|_, _| -1).unwrap();
-        let decoded = trusted::decode(&out.bytes, "@proof/game").unwrap();
-        assert_eq!(decoded.inputs[0].signature.instances[0].record.fields[0].offset, 56);
-        assert_eq!(out.status["offsets"][0]["source"], "schema-catalog");
+        assert!(trusted::decode(&out.bytes, "@proof/game").unwrap().inputs.is_empty());
+        assert_eq!(out.status["offsets"][0]["source"], "unresolved");
+        assert_eq!(out.status["offsets"][0]["offset"], Value::Null);
+        assert!(out.status["functions"][0]["unavailable"].as_str().unwrap().contains("live schema has no offset for Item::m_def"));
+        let live = |_: &str, _: &str| 56;
+        let out = materialize(bytes.as_bytes(), "@proof/game", &merged("55"), &repairs(&[]), &live).unwrap();
         assert_eq!(out.status["functions"][0]["customRepairs"], json!([]));
         // A repair that breaks the entry's shape degrades the optional function by name.
         let mut bad = merged("55");
         bad["signatures"]["Gate"]["linuxsteamrt64"]["resolve"] = "sideways".into();
-        let out = materialize(bytes.as_bytes(), "@proof/game", &bad, &repairs(&[]), &|_, _| -1).unwrap();
+        let out = materialize(bytes.as_bytes(), "@proof/game", &bad, &repairs(&[]), &live).unwrap();
         assert!(out.status["functions"][0]["unavailable"].as_str().unwrap().contains("unsupported resolver"));
         // A required function's missing signature fails the whole package by name.
         let mut required = source();
         required["functions"][1]["requirement"] = "required".into();
-        let error = materialize(required.to_string().as_bytes(), "@proof/game", &merged("55"), &repairs(&[]), &|_, _| -1)
+        let error = materialize(required.to_string().as_bytes(), "@proof/game", &merged("55"), &repairs(&[]), &live)
             .err().unwrap();
         assert!(error.contains("missing") && error.contains("Absent"), "{error}");
         // Owner, unknown fields and declared offsets are refused.
@@ -307,7 +334,7 @@ mod tests {
         assert!(materialize(extra.to_string().as_bytes(), "@proof/game", &merged("55"), &repairs(&[]), &|_, _| -1).is_err());
         let mut declared = source();
         declared["functions"][0]["signature"]["instances"][0]["record"]["fields"][0]["offset"] = 8.into();
-        assert!(materialize(declared.to_string().as_bytes(), "@proof/game", &merged("55"), &repairs(&[]), &|_, _| -1)
+        assert!(materialize(declared.to_string().as_bytes(), "@proof/game", &merged("55"), &repairs(&[]), &live)
             .err().unwrap().contains("host-selected"));
     }
 }

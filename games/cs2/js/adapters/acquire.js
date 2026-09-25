@@ -16,7 +16,7 @@
 // This file is concatenated ahead of the package bootstrap inputs and runs once per plugin
 // context, while the host's bootstrap-only natives are still installed. It captures them, registers
 // the adapter, and publishes a narrow subscribe helper at globalThis.__s2pkg_cs2_adapters.acquire
-// for pawn.js's ctx.items wrapper. Pointer-free: the item-services receiver and the 4th argument
+// for the `items` export in pawn.js. Pointer-free: the item-services receiver and the 4th argument
 // are native-only positions; the item is a borrowed record exposing only defIndex.
 (function () {
   "use strict";
@@ -104,7 +104,7 @@
     return null;
   }
 
-  // The public ctx.items view: {player, defIndex, method, result, skipped}. `player` is resolved
+  // The public `items` view: {player, defIndex, method, result, skipped}. `player` is resolved
   // lazily on read; `defIndex` falls back to 0; only PRE can write `result`.
   function view(frame, post, state, env) {
     return {
@@ -182,7 +182,7 @@
         } catch (e) {
           if (!warned) {
             warned = true;
-            warn("ctx.items.onCanAcquire" + (post ? "Post" : "") + ": the pickup gate is unavailable, so this handler will not fire: " +
+            warn("items.onCanAcquire" + (post ? "Post" : "") + ": the pickup gate is unavailable, so this handler will not fire: " +
               (e && e.message ? e.message : e));
           }
           return null;
