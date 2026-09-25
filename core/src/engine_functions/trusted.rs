@@ -140,8 +140,10 @@ pub(crate) struct TrustedPackageActivation {
 /// the package source with those grants; prepares the trusted candidate; merges it
 /// with the package's optional `public` v2 archive candidate; prepares and activates
 /// the package owner's bindings; and authorizes each declared function's available
-/// binding for its adapter id + contract hash. Any failure leaves nothing registered
-/// and burns `owner` (mint a new one to retry).
+/// binding for its adapter id + contract hash. Any failure leaves nothing registered.
+/// Failures before source registration (artifact decoding, grant issuance, or the
+/// registration refusing the source) leave `owner` unused; once the source is
+/// registered, any later failure retires `owner` (mint a new one to retry).
 pub(crate) fn activate_trusted(
     owner: &HostPackageOwner,
     source: Arc<str>,

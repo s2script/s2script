@@ -1247,8 +1247,9 @@ struct Dispatch {
     map_epoch:u64,
     record_writers:Rc<RefCell<BTreeMap<u64,RecordWriter>>>,
     deliveries: RefCell<Vec<Decision>>,
-    // PRE: the adapter's accepted return proposal. POST: the carried proposal.
-    proposal: Rc<RefCell<Option<ProjectedValue>>>,
+    // PRE: the adapter's accepted return proposal. POST: the carried proposal. Both
+    // with the authorized binding the adapter proposed through.
+    proposal: Rc<RefCell<Option<(ProjectedValue, Rc<Binding>)>>>,
 }
 /// Trusted scratch slots occupy selectors SCRATCH_BASE, SCRATCH_BASE-1, ... They are
 /// host-held overlay entries only: never read from, written to, or committed to native.
@@ -2001,7 +2002,7 @@ fn view<'s>(
         let method = v8::Function::builder(js_override_return).data(data.into()).build(scope).ok_or("method allocation")?;
         set(scope,object,"overrideReturn",method.into())?;
         let proposal = dispatch.proposal.borrow().clone();
-        if let Some(value) = proposal {
+        if let Some((value, _)) = proposal {
             // A proposed entity that died since PRE is observed as null, never revived.
             let value = match value {
                 ProjectedValue::Entity { reference, nullable } => ProjectedValue::Entity {
@@ -2037,8 +2038,9 @@ fn decision(
     projection: &str,
     phase: i32,
     suppression: &str,
-    // Adapter PRE only: (holds override authority, proposal output). Subscribers pass None.
-    proposal: Option<(bool, &mut Option<ProjectedValue>)>,
+    // Adapter PRE only: (override authority or its named refusal, proposal output).
+    // Subscribers pass None.
+    proposal: Option<(Result<(), &'static str>, &mut Option<ProjectedValue>)>,
 ) -> Result<Decision, String> {
     let kind = projection::request(native, projection)?.kind;
     if observe_thenable(scope, value) {
@@ -2084,9 +2086,7 @@ fn decision(
         // A host-carried subscriber delivery keeps its existing (rejected) meaning.
         let key = delivery_key(scope)?;
         if object.get_private(scope, key).is_none_or(|v| v.is_undefined()) {
-            if !authority {
-                return Err("PRE return proposal requires host override authority".into());
-            }
+            authority?;
             if kind == 0 || copied::flag(projection).is_some() {
                 return Err("PRE return proposal requires a scalar or entity return".into());
             }
@@ -2310,7 +2310,16 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
     let value = function.call(&mut tc, recv.into(), &[facade.into()]);
     guard.close();
     let mut proposal = None;
-    let authority = adapter.post_authority == PostReturnAuthority::Override;
+    // Same authority the POST override permit requires: the grant, and this exact
+    // binding authorized for this adapter's package contract.
+    let authority = if adapter.post_authority != PostReturnAuthority::Override {
+        Err("PRE return proposal requires host override authority")
+    } else if !AUTHORIZED.with(|a| a.borrow().get(&dispatch.binding.id).is_some_and(|(owner, id, hash)|
+        *owner == adapter.instance.package_owner && *id == adapter.semantic && *hash == adapter.hash)) {
+        Err("PRE return proposal binding authorization mismatch")
+    } else {
+        Ok(())
+    };
     let result=decision(
         &mut tc,
         value.ok_or("adapter threw")?,
@@ -2321,7 +2330,7 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
         (dispatch.frame.phase == 0).then_some((authority, &mut proposal)),
     ).and_then(|decision| match proposal.take() {
         Some(_) if adapter.post.is_none() => Err("PRE return proposal requires the adapter's POST callback".into()),
-        Some(value) => {*dispatch.proposal.borrow_mut() = Some(value); Ok(decision)}
+        Some(value) => {*dispatch.proposal.borrow_mut() = Some((value, dispatch.binding.clone())); Ok(decision)}
         None => Ok(decision),
     });
     if result.is_ok() {if let Err(e)=guard.accept_records() {dispatch.revision.set(prior_revision);return Err(e);}dispatch.edits.borrow_mut().extend(pending_edits.borrow().iter().map(|(k,v)|(*k,v.clone())));}
@@ -2400,7 +2409,12 @@ fn invoke_domains(scope: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<De
         if subscribers.is_empty() && !forced {
             continue;
         }
-        let binding = subscribers.first().map_or_else(|| dispatch.binding.clone(), |s| s.binding.clone());
+        // A POST adapter carrying a proposal runs on the binding it proposed through,
+        // which is the one authorized for its override permit.
+        let carried = (group == 0 && dispatch.frame.phase == 1)
+            .then(|| dispatch.proposal.borrow().as_ref().map(|(_, binding)| binding.clone()))
+            .flatten();
+        let binding = carried.unwrap_or_else(|| subscribers.first().map_or_else(|| dispatch.binding.clone(), |s| s.binding.clone()));
         let part = Rc::new(Dispatch {
             frame: dispatch.frame.clone(),
             binding,
@@ -2604,12 +2618,16 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
         .filter(|s| s.phase == phase)
         .collect::<Vec<_>>();
     // Only an override-authorized adapter's accepted PRE proposal forces its POST.
-    let forced = post_state
-        .as_ref()
-        .and_then(|state| state.proposal.clone())
-        .filter(|_| adapter.is_some());
+    let carried = post_state.as_ref().and_then(|state| state.proposal.clone());
+    // Losing the carried proposal is a named degrade, never a silent Ok.
+    let dropped = (carried.is_some() && adapter.is_none())
+        .then(|| format!("carried PRE proposal dropped: POST adapter no longer eligible (target {target})"));
+    if let Some(reason) = &dropped {
+        log_warn(reason);
+    }
+    let forced = carried.filter(|_| adapter.is_some());
     if subscribers.is_empty() && forced.is_none() {
-        return Ok(());
+        return dropped.map_or(Ok(()), Err);
     }
     if subscribers.iter().any(|s| !s.generic) && adapter.is_none() {
         return Err("no eligible synchronous package adapter instance".into());
@@ -2642,7 +2660,7 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
         map_epoch:crate::entity_live::map_epoch(),
         record_writers:Rc::new(RefCell::new(BTreeMap::new())),
         deliveries: RefCell::new(Vec::new()),
-        proposal: Rc::new(RefCell::new(forced.map(|(value, _)| value))),
+        proposal: Rc::new(RefCell::new(forced)),
     });
     let result = if let Some(info) = crate::nest::top().filter(|p| !p.is_null()) {
         let mut storage = unsafe { v8::CallbackScope::new(&*info) };
@@ -2709,12 +2727,14 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
             INVOCATIONS.with(|i| {
                 if let Some(state) = i.borrow_mut().get_mut(&key) {
                     state.adapters[1] = dispatch.adapter.clone();
-                    state.proposal = Some((value, dispatch.binding.clone()));
+                    state.retained_bytes = state.retained_bytes
+                        .saturating_add(std::mem::size_of::<(ProjectedValue, Rc<Binding>)>());
+                    state.proposal = Some(value);
                 }
             });
         }
     }
-    Ok(())
+    dropped.map_or(Ok(()), Err)
 }
 
 #[cfg(test)]
@@ -4877,6 +4897,9 @@ pub(crate) mod scalar_transport_tests {
             flags: 0,
         }
     }
+    pub(super) fn pop_frame() -> MockFrame {
+        STACK.with(|s| s.borrow_mut().pop().unwrap())
+    }
     pub(super) fn close_frame(info: &S2FunctionFrameInfo) -> MockFrame {
         assert_eq!(crate::ffi::s2script_core_dispatch_function(1, info, 1), 1);
         STACK.with(|s| s.borrow_mut().pop().unwrap())
@@ -6872,7 +6895,7 @@ pub(super) mod borrowed_proof {
 /// activation, per-dispatch scratch slots and PRE proposals carried to POST.
 #[cfg(test)]
 mod trusted_capability_tests {
-    use super::scalar_transport_tests::{close_frame, init_transport, open_frame, EFFECTS};
+    use super::scalar_transport_tests::{close_frame, init_transport, open_frame, pop_frame, EFFECTS};
     use super::*;
     use crate::engine_functions::{contract, instance, trusted};
     use serde_json::{json, Value};
@@ -7067,6 +7090,7 @@ mod trusted_capability_tests {
         let foreign = artifact("@proof/other", vec![function("fire", json!([]), None)]).to_string();
         assert!(trusted::activate_trusted(&other, SOURCE.into(), manifest, foreign.as_bytes(), None,
             unsafe { instance::SynchronousRecordLifetime::registered_native_target() }).err().unwrap().contains("ownerId"));
+        assert!(!other.is_retired(), "a failure before source registration leaves the owner unused");
 
         let (host, active) = activate_package(false);
         let fire = registry::named_binding(host.key(), "fire").unwrap();
@@ -7161,6 +7185,64 @@ mod trusted_capability_tests {
         assert_eq!(EFFECTS.with(Cell::get), 0);
         assert!(!events("trusted-a").contains("post:"));
         assert!(proof::take_dispatch_errors().iter().any(|e| e.contains("PRE return proposal requires host override authority")));
+        finish(&["trusted-a"], active);
+    }
+
+    fn activate_proposing(id: &str) -> trusted::TrustedPackageActivation {
+        let (_host, active) = activate_package(true);
+        frame_tests::load_body(id, "return {};", "{}");
+        eval_in_context(id, "mode='propose';subscribeTrusted('pre',v=>{});").unwrap();
+        active
+    }
+    // Review 1: with only a generic POST observer on another binding of the same
+    // target, the forced adapter POST must still run on the proposal's own binding.
+    #[test]
+    fn trusted_forced_post_uses_the_proposals_binding_beside_generic_observers() {
+        init();
+        let active = activate_proposing("trusted-a");
+        proof::install_generic_test_native("trusted-a");
+        let public = proof::prepared_binding("trusted-a", |_| {});
+        eval_in_context("trusted-a", &format!(
+            "globalThis.seen=[];__proofSubscribeGeneric({public}n,'post',true,v=>{{seen.push(v.returnValue);}});")).unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        let frame = close_frame(&info);
+        assert_eq!((frame.action, frame.output.bits), (1, 55));
+        assert_eq!(EFFECTS.with(Cell::get), 1);
+        assert!(events("trusted-a").ends_with("post:55:false"));
+        assert_eq!(frame_tests::eval_in_context_string("trusted-a", "seen.join(',')"), "55");
+        assert!(proof::take_dispatch_errors().is_empty());
+        finish(&["trusted-a"], active);
+    }
+    // Review 2: PRE proposal authority matches the POST override binding check.
+    #[test]
+    fn trusted_pre_proposal_requires_the_bindings_package_authorization() {
+        init();
+        let active = activate_proposing("trusted-a");
+        let fire = registry::named_binding(active.functions.owner(), "fire").unwrap();
+        let foreign = HostPackageOwner::mint(OWNER).unwrap();
+        AUTHORIZED.with(|a| a.borrow_mut().get_mut(&fire.id).unwrap().0 = foreign.key().clone());
+        let info = open_frame();
+        assert_ne!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        let frame = pop_frame();
+        assert_eq!((frame.action, frame.output.bits), (0, 7));
+        assert!(proof::take_dispatch_errors().iter().any(|e| e.contains("PRE return proposal binding authorization mismatch")));
+        finish(&["trusted-a"], active);
+    }
+    // Review 3 + 4: the carried proposal is charged, and an ineligible POST adapter is a named degrade.
+    #[test]
+    fn trusted_carried_proposal_is_charged_and_its_loss_is_named() {
+        init();
+        let active = activate_proposing("trusted-a");
+        let mut info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        let retained = INVOCATIONS.with(|i| i.borrow().get(&(1, info.invocation_id)).map(|s| s.retained_bytes)).unwrap();
+        assert!(retained >= std::mem::size_of::<(ProjectedValue, Rc<Binding>)>(), "proposal uncharged: {retained}");
+        info.suppressed_owner = plugin_generation("trusted-a");
+        assert_ne!(crate::ffi::s2script_core_dispatch_function(1, &info, 1), 1);
+        assert_eq!(pop_frame().output.bits, 7);
+        assert!(proof::take_dispatch_errors().iter().any(|e| e.contains("carried PRE proposal dropped")));
+        assert_eq!(proof::pending_invocations(), 0);
         finish(&["trusted-a"], active);
     }
 }
