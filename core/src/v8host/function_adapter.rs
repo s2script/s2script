@@ -6327,7 +6327,7 @@ pub(super) mod borrowed_proof {
     }
     unsafe fn lifetime()->SynchronousRecordLifetime {SynchronousRecordLifetime::registered_native_target()}
     fn map(_: &mut v8::PinScope,_:v8::FunctionCallbackArguments,_:v8::ReturnValue){crate::entity_live::clear_for_map_transition();}
-    fn retire(_: &mut v8::PinScope,_:v8::FunctionCallbackArguments,_:v8::ReturnValue) {
+    fn retire_native(_: &mut v8::PinScope,_:v8::FunctionCallbackArguments,_:v8::ReturnValue) {
         let owner=LEASES.with(|s|s.borrow().last().unwrap().binding.owner.clone());drop_package(&owner);
     }
     fn delete(_: &mut v8::PinScope,args:v8::FunctionCallbackArguments,_:v8::ReturnValue) {
@@ -6398,7 +6398,7 @@ pub(super) mod borrowed_proof {
             let nested=v8::Function::new(scope,nested).unwrap();set_own(scope,global,"__recordNested",nested.into()).unwrap();
             let delete=v8::Function::new(scope,delete).unwrap();set_own(scope,global,"__recordDelete",delete.into()).unwrap();
             let probe=v8::Function::new(scope,probe).unwrap();set_own(scope,global,"__recordProbe",probe.into()).unwrap();
-            let retire=v8::Function::new(scope,retire).unwrap();set_own(scope,global,"__recordRetire",retire.into()).unwrap();
+            let retire=v8::Function::new(scope,retire_native).unwrap();set_own(scope,global,"__recordRetire",retire.into()).unwrap();
         }).unwrap();
     }
     pub fn begin(engine:EngineCall,slot:proof::EntitySlot)->State {
@@ -6465,7 +6465,17 @@ pub(super) mod borrowed_proof {
             set_own(scope,global,"oldRecord",value).unwrap();
         }).unwrap();
         eval_in_context("record-a","let denied=false;try{oldRecord.amount}catch(_){denied=true}if(!denied)throw Error('reload revived view');").unwrap();
-        eval_in_context("record-a","mode='retire';").unwrap();let retired=call(0);
+    }
+    /// The reloaded context re-subscribes through its package bootstrap. When the old
+    /// generation's subscribers leave, the shared hook may be reinstalled asynchronously,
+    /// so readiness is observed from the outer frame loop before retirement is exercised.
+    pub fn reload_ready(state:&State)->bool {
+        let before=frame_tests::read_i32_global_in("record-a","preCount");call(0);
+        runtime::status(state.target).unwrap().state==2 && frame_tests::read_i32_global_in("record-a","preCount")>before
+    }
+    pub fn retire(state:&State) {
+        eval_in_context("record-a","mode='retire';").unwrap();let before=frame_tests::read_i32_global_in("record-a","preCount");let retired=call(0);
+        assert!(frame_tests::read_i32_global_in("record-a","preCount")>before,"retire mode must reach the reloaded subscriber");
         assert_eq!(&retired[..7],&[2.,7.,12.,8.,1.,9.,4294967295.],"retirement during callback publishes no field/copy edits");assert!(state.host.is_retired());
         println!("PASS borrowed real Service/V8 receiver/record/hidden/copy mixed edits, rejected whole batches, map/nested/expired views and binding-local rights");
     }

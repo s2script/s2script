@@ -445,6 +445,8 @@ mod production {
             38 => {assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(3)},1);},
             39 => {RECORD_READY.with(|r|r.set(borrowed_proof::observers_ready()));},
             40 => {assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(1)},1);},
+            42 => {RECORD_READY.with(|r|r.set(RECORD_STATE.with(|s|borrowed_proof::reload_ready(s.borrow().as_ref().unwrap()))));},
+            43 => {RECORD_STATE.with(|s|borrowed_proof::retire(s.borrow().as_ref().unwrap()));},
             41 => {
                 let mut output=[0.;18];
                 assert_eq!(unsafe{RECORD_ENGINE.with(Cell::get).unwrap()(0,output.as_mut_ptr())},1);
@@ -659,7 +661,11 @@ mod production {
             drive(38);
             let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
             loop{drive(39);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record early observer readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
-            drive(32);drive(33);
+            drive(32);
+            RECORD_READY.with(|r|r.set(false));
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(42);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record reloaded subscriber readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            drive(43);drive(33);
             // Keep the later paired observer installed. Drain the early observer
             // before reinstalling it after the new Service hook.
             let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
