@@ -1661,6 +1661,13 @@ fn record_accessor(scope:&mut v8::PinScope,args:&v8::FunctionCallbackArguments) 
     let id=bigint(data.get_index(scope,0).ok_or("missing record lease")?)?;
     let selector=data.get_index(scope,1).and_then(|v|v.int32_value(scope)).ok_or("missing record position")?;
     let field=data.get_index(scope,2).and_then(|v|v.uint32_value(scope)).ok_or("missing record field")?;
+    // A callback's current context is its creation context, so a view moved into
+    // another context would still name its owner; require the caller to be that owner.
+    let owner=current_owner(scope)?;let entered=scope.get_entered_or_microtask_context();
+    if !entered.get_slot::<PluginId>().is_some_and(|p|p.0==owner.id)
+        || entered.get_slot::<InteropGeneration>().map(|g|g.0)!=Some(owner.generation) {
+        return Err("record view used from another context".into());
+    }
     Ok((lease(scope,id)?,selector,field))
 }
 fn record_get(scope:&mut v8::PinScope,args:v8::FunctionCallbackArguments,mut rv:v8::ReturnValue) {
