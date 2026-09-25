@@ -227,10 +227,11 @@
     // entity_manager.h CEntityIOOutput layout (vtable@+0, m_pConnections@+0x8, m_pDesc@+0x10 —
     // matches `mov r13,[this+0x8]` [connections-list walk] and `mov r8,[this+0x10]` [m_pDesc,
     // passed to a debug-listener vcall] seen at the resolved address).
+    // Re-derived on build 25515854 (2026-09-25) from the build-25218825 body; see docs/superpowers/plans/2026-09-25-gamedata-25515854.md.
     "FireOutputInternal": {
       "linuxsteamrt64": {
         "module": "libserver.so",
-        "pattern": "55 48 89 E5 41 57 49 89 FF 41 56 41 55 41 54 49 89 D4 53 48 89 F3 48 83 EC ? 48 8D 05",
+        "pattern": "55 48 89 E5 41 57 49 89 FF 41 56 41 55 41 54 49 89 D4 53 48 89 F3 48 81 EC ? ? ? ? 48 8D 05 ? ? ? ?",
         "resolve": "direct"
       }
     },
@@ -284,10 +285,11 @@
     // MarkPartitionHandleDirty so the trigger is touch-testable THIS frame instead of waiting for the deferred
     // per-frame drain (recipe A+B; safe alongside A — the drain's re-process is idempotent). A DIRECT prologue
     // pattern. Validated UNIQUE (1 match) in the pinned libserver.so.
+    // Re-derived on build 25515854 (2026-09-25) from the build-25218825 body; see docs/superpowers/plans/2026-09-25-gamedata-25515854.md.
     "CollisionUpdatePartition": {
       "linuxsteamrt64": {
         "module": "libserver.so",
-        "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC 28 48 8B B7 B0 00 00 00 48 85 F6 74 1E",
+        "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC ? 48 8B B7 ? ? ? ? 48 85 F6 74 1E",
         "resolve": "direct"
       }
     },
@@ -383,10 +385,11 @@
         "resolve": "direct"
       }
     },
+    // Re-derived on build 25515854 (2026-09-25) from the build-25218825 body; see docs/superpowers/plans/2026-09-25-gamedata-25515854.md.
     "RemoveListenerEntity": {
       "linuxsteamrt64": {
         "module": "libserver.so",
-        "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC 08 8B BF D0 20 00 00",
+        "pattern": "55 48 89 E5 53 48 89 FB 48 83 EC ? 8B BF ? ? ? ?",
         "resolve": "direct"
       }
     },
@@ -443,10 +446,11 @@
     // shim prototype must say `int`, or a caller's high bits become garbage the callee may read.
     // The schema route is not available here: CBaseModelEntity.m_bodyGroupChoices is a
     // CUtlOrderedMap<CGlobalSymbol,int32>, not a writable scalar.
+    // Re-derived on build 25515854 (2026-09-25) from the build-25218825 body; see docs/superpowers/plans/2026-09-25-gamedata-25515854.md.
     "SetBodyGroupByName": {
       "linuxsteamrt64": {
         "module": "libserver.so",
-        "pattern": "55 48 89 E5 41 55 49 89 F5 41 54 41 89 D4 53 48 89 FB 48 83 EC 08 E8 ? ? ? ? 48 85 C0",
+        "pattern": "55 48 89 E5 41 55 49 89 F5 41 54 41 89 D4 53 48 89 FB 48 83 EC ? E8 ? ? ? ? 48 85 C0 74 0F 48 89 C7 4C 89 EE E8 ? ? ? ? 85 C0 79 11 48 83 C4 ? 5B 41 5C 41 5D 5D C3 66 0F 1F 44 00 00 48 83 C4 ? 44 89 E2 48 89 DF 5B 89 C6 41 5C 41 5D 5D E9 ? ? ? ? 48 8B 04 25 10 00 00 00",
         "resolve": "direct"
       }
     },
@@ -460,10 +464,11 @@
     // `ret` + int3 padding, arg in the right register); if it turns out to scale something other
     // than the model, that is a naming bug, not a memory-safety one. Re-confirm before relying on
     // it in a shipped plugin.
+    // Re-derived on build 25515854 (2026-09-25) from the build-25218825 body; see docs/superpowers/plans/2026-09-25-gamedata-25515854.md.
     "SetModelScale": {
       "linuxsteamrt64": {
         "module": "libserver.so",
-        "pattern": "48 8B 07 48 8D 15 ? ? ? ? 48 8B 80 B8 07 00 00",
+        "pattern": "48 8B 07 48 8D 15 ? ? ? ? 48 8B 80 ? ? ? ? 48 39 D0 75 2A 55",
         "resolve": "direct"
       }
     }
