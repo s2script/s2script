@@ -525,6 +525,18 @@ pub(crate) fn bootstrap(
     }
     Ok(exports)
 }
+/// Engine-generic prelude registrars that only the selected game package's bootstrap may call
+/// (see core/js/prelude.js). The context creator removes them after `bootstrap` returns — with or
+/// without a package, success or failure — so plugin code never reaches them.
+const BOOTSTRAP_ONLY_PRELUDE_GLOBALS: [&str; 1] = ["__s2_sdkhook_provider_register"];
+pub(crate) fn close_bootstrap_globals(scope: &mut v8::PinScope) {
+    let global = scope.get_current_context().global(scope);
+    for name in BOOTSTRAP_ONLY_PRELUDE_GLOBALS {
+        if let Some(key) = v8::String::new(scope, name) {
+            global.delete(scope, key.into());
+        }
+    }
+}
 pub(super) fn instance(
     scope: &mut v8::PinScope,
     data: v8::Local<v8::Value>,

@@ -138,6 +138,7 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
                     Vec::new()
                 }
             };
+            function_adapter::close_bootstrap_globals(scope);
             (v8::Global::new(scope.as_ref(), ctx_local), package_exports)
             // scope, hs, hs_storage drop here — the isolate borrow is released.
         };

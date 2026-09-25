@@ -613,3 +613,260 @@ fn selected_identity_cannot_publish_a_partial_global_or_mutate_the_host_export_m
     "#).unwrap();
     shutdown();
 }
+
+// A pointer-free native frame stack for the trusted takeDamageOld binding: victim receiver (-1),
+// borrowed CTakeDamageInfo record (0: inflictor, attacker, damage, damageType) and the hidden
+// result pass-through (1). The shim always runs the original (the adapter never suppresses), so a
+// frame only records the committed action and the native damage the original would observe.
+#[derive(Clone, Copy, Default)]
+struct DamageFrame {
+    token: u64,
+    victim: Option<(i32, u64)>,
+    attacker: Option<(i32, u64)>,
+    inflictor: Option<(i32, u64)>,
+    info: bool,
+    damage: f32,
+    damage_type: i32,
+    action: Option<i32>,
+    writes: u32,
+}
+thread_local! {
+    static DAMAGE_FRAMES: std::cell::RefCell<Vec<DamageFrame>> = const { std::cell::RefCell::new(Vec::new()) };
+    static DAMAGE_TARGET: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
+    static DAMAGE_NEXT: std::cell::RefCell<Option<DamageFrame>> = const { std::cell::RefCell::new(None) };
+}
+fn with_damage_frame<R>(token: u64, f: impl FnOnce(&mut DamageFrame) -> R) -> Option<R> {
+    DAMAGE_FRAMES.with(|s| s.borrow_mut().iter_mut().find(|d| d.token == token).map(f))
+}
+fn entity_value(e: Option<(i32, u64)>) -> S2FunctionValue {
+    crate::engine_functions::projection::encode(crate::engine_functions::projection::ProjectedValue::Entity {
+        reference: e.map(|(index, id)| crate::engine_functions::projection::EntityReference { index, id }),
+        nullable: true,
+    }).unwrap()
+}
+extern "C" fn damage_instance(access: *const S2FunctionInstanceAccess, selector: i32, out: *mut S2FunctionValue,
+    _: *mut i8, _: i32) -> i32 {
+    with_damage_frame(unsafe { (*access).frame_token }, |f| {
+        let value = match selector {
+            -1 => entity_value(f.victim),
+            0 => {
+                let mut v = crate::engine_functions::runtime::blank();
+                v.kind = 1;
+                v.bits = f.info as u64;
+                v
+            }
+            _ => return 0,
+        };
+        unsafe { *out = value };
+        1
+    }).unwrap_or(0)
+}
+extern "C" fn damage_field(access: *const S2FunctionInstanceAccess, selector: i32, field: u32, out: *mut S2FunctionValue,
+    _: *mut i8, _: i32) -> i32 {
+    with_damage_frame(unsafe { (*access).frame_token }, |f| {
+        if selector != 0 || !f.info { return 0; }
+        let mut v = crate::engine_functions::runtime::blank();
+        match field {
+            0 => v = entity_value(f.inflictor),
+            1 => v = entity_value(f.attacker),
+            2 => { v.kind = 6; v.bits = f.damage.to_bits() as u64; }
+            3 => { v.kind = 2; v.bits = f.damage_type as u32 as u64; }
+            _ => return 0,
+        }
+        unsafe { *out = v };
+        1
+    }).unwrap_or(0)
+}
+extern "C" fn damage_field_write(access: *const S2FunctionInstanceAccess, selector: i32, field: u32,
+    value: *const S2FunctionValue, _: *mut i8, _: i32) -> i32 {
+    with_damage_frame(unsafe { (*access).frame_token }, |f| {
+        if selector != 0 || field != 2 || !f.info || unsafe { (*value).kind } != 6 { return 0; }
+        f.damage = f32::from_bits(unsafe { (*value).bits } as u32);
+        f.writes += 1;
+        1
+    }).unwrap_or(0)
+}
+extern "C" fn damage_commit(_: i64, token: u64, _: u64, _: *const i8, action: i32, value: *const S2FunctionValue,
+    _: *mut i8, _: i32) -> i32 {
+    with_damage_frame(token, |f| {
+        if !value.is_null() || f.action.is_some() { return 0; }
+        f.action = Some(action);
+        1
+    }).unwrap_or(0)
+}
+/// One native TakeDamageOld call: PRE, the original (always — the adapter never suppresses), POST.
+/// Returns the frame as the original observed it (after PRE's commit) and after POST.
+fn damage_dispatch(frame: DamageFrame) -> (DamageFrame, DamageFrame) {
+    let (original, after, pre) = damage_dispatch_status(frame);
+    assert_eq!(pre, 1, "PRE");
+    (original, after)
+}
+fn damage_dispatch_status(frame: DamageFrame) -> (DamageFrame, DamageFrame, i32) {
+    let target = DAMAGE_TARGET.with(|t| t.get());
+    let id = crate::engine_functions::registry::next_id().unwrap();
+    DAMAGE_FRAMES.with(|s| s.borrow_mut().push(DamageFrame { token: id, ..frame }));
+    let info = S2FunctionFrameInfo { version: 1, struct_size: 48, frame_token: id, native_epoch: id,
+        invocation_id: id, suppressed_owner: 0, parameter_count: 2, flags: 0 };
+    let pre = crate::ffi::s2script_core_dispatch_function(target, &info, 0);
+    let original = with_damage_frame(id, |f| *f).unwrap();
+    assert_eq!(crate::ffi::s2script_core_dispatch_function(target, &info, 1), 1, "POST");
+    let after = DAMAGE_FRAMES.with(|s| {
+        let mut s = s.borrow_mut();
+        let at = s.iter().position(|d| d.token == id).unwrap();
+        s.remove(at)
+    });
+    (original, after, pre)
+}
+/// `__damageMap()` — a map transition inside a callback (the entity books and record epoch roll).
+fn damage_map(_: &mut v8::PinScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
+    crate::entity_live::clear_for_map_transition();
+}
+/// The identity-chunk slot check behind `EntityRef.isValid()`: any booked entity resolves here.
+extern "C" fn damage_ent_resolve(index: c_int, _: c_int) -> *mut std::ffi::c_void {
+    static SLOT: [u8; 8] = [0; 8];
+    if crate::entity_live::lookup(index).is_some() { SLOT.as_ptr() as *mut _ } else { std::ptr::null_mut() }
+}
+/// `__damageNested()` — a plugin native that deals damage synchronously (published as a nest
+/// token like every outbound native, so the inner dispatch runs under the caller's CallbackScope).
+fn damage_nested(_: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let frame = DAMAGE_NEXT.with(|n| n.borrow_mut().take()).unwrap();
+    let (original, _) = crate::nest::with_outbound(&args, || damage_dispatch(frame));
+    rv.set_double(original.damage as f64);
+}
+
+/// The shipped package end to end on the real V8 facade: engine-generic SDKHook routes
+/// OnTakeDamage/OnTakeDamagePost to the provider the CS2 package registered at bootstrap, which
+/// subscribes to the trusted takeDamageOld binding through legacy.damage.v1.
+#[test]
+fn shipped_sdkhook_damage_routes_through_the_trusted_damage_adapter() {
+    install_trusted_ops();
+    let mut ops = engine_ops().unwrap();
+    ops.function_frame_read_instance = Some(damage_instance);
+    ops.function_frame_field_read = Some(damage_field);
+    ops.function_frame_field_write = Some(damage_field_write);
+    ops.function_frame_commit = Some(damage_commit);
+    ops.ent_resolve = Some(damage_ent_resolve);
+    set_engine_ops(Some(ops));
+    let root = build_real_package("damage");
+    let handle = crate::game_packages::select(&root, "source2", "csgo", "linuxsteamrt64").unwrap();
+    crate::game_packages::commit(handle, &merged_signatures(&root), b"GCR1\0\0\0\0\0\0\0\0").unwrap();
+    DAMAGE_TARGET.with(|t| t.set(TRUSTED_TARGETS.with(|t| t.borrow()["@s2script/cs2::takeDamageOld"])));
+    let victim = crate::entity_live::on_created(5, 50);
+    let other = crate::entity_live::on_created(6, 60);
+    let attacker = crate::entity_live::on_created(1, 10);
+    let plugin = r#"const {SDKHook,SDKUnhook,SDKHookType}=require("@s2script/sdk/sdkhooks");
+        globalThis.log=[];globalThis.mode={};globalThis.saved=null;
+        globalThis.pre=function(d){
+          globalThis.saved=d;
+          log.push(`pre:${d.damage}:${d.damageType}:${d.attacker&&d.attacker.index}:${d.inflictor}:${d.victim&&d.victim.index}`);
+          if(mode.half)d.damage=d.damage/2;
+          if(mode.nested){log.push('nested:'+__damageNested());}
+          if(mode.throwAfter){d.damage=77;throw new Error('boom');}
+          if(mode.map){__damageMap();try{d.damage=1;log.push('wrote')}catch(e){log.push('refused')}}
+          if(mode.async){(async()=>{await null;try{log.push('late:'+d.damage)}catch(e){log.push('late:'+e.message)}})();}
+          return mode.action;
+        };
+        globalThis.post=function(d){log.push(`post:${d.damage}`);d.damage=99;return 2;};
+        globalThis.hookAll=function(v){return [SDKHook(v,SDKHookType.OnTakeDamage,pre),SDKHook(v,SDKHookType.OnTakeDamagePost,post)].join();};
+        exports.OnPluginStart=()=>{};"#;
+    for id in ["damage-a", "damage-b"] {
+        load_plugin_js(id, plugin, "{}");
+        assert!(!is_failed(id), "{:?}", FAILED_PLUGINS.with(|p| p.borrow().clone()));
+        with_host_isolate(|isolate| {
+            let mut storage = v8::HandleScope::new(isolate);
+            let mut scope = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+            let context = clone_plugin_context(id).unwrap();
+            let context = v8::Local::new(&mut scope, &context);
+            let scope = &mut v8::ContextScope::new(&mut scope, context);
+            let global = context.global(scope);
+            let nested = v8::Function::new(scope, damage_nested).unwrap();
+            let key = v8::String::new(scope, "__damageNested").unwrap();
+            global.set(scope, key.into(), nested.into()).unwrap();
+            let map = v8::Function::new(scope, damage_map).unwrap();
+            let key = v8::String::new(scope, "__damageMap").unwrap();
+            global.set(scope, key.into(), map.into()).unwrap();
+        }).unwrap();
+        // The registrar is bootstrap-only; the package provider is reached only through SDKHook.
+        assert_eq!(frame_tests::eval_in_context_string(id, "typeof __s2_sdkhook_provider_register"), "undefined");
+        assert_eq!(frame_tests::eval_in_context_string(id,
+            &format!("globalThis.victim={{index:5,id:{victim}}};globalThis.other={{index:6,id:{other}}};hookAll(victim)")), "true,true");
+    }
+    let set = |a: &str, b: &str| {
+        eval_in_context("damage-a", &format!("log.length=0;mode={a};")).unwrap();
+        eval_in_context("damage-b", &format!("log.length=0;mode={b};")).unwrap();
+    };
+    let log = |id: &str| frame_tests::eval_in_context_string(id, "log.join('|')");
+    let base = DamageFrame { victim: Some((5, victim)), attacker: Some((1, attacker)), inflictor: None, info: true,
+        damage: 40.0, damage_type: 2, ..Default::default() };
+    // A PRE write commits before the original; POST sees it, its write and return are ignored.
+    set("{half:true}", "{}");
+    let (original, after) = damage_dispatch(base);
+    assert_eq!((original.damage, original.action, original.writes), (20.0, Some(0), 1));
+    assert_eq!((after.damage, after.writes), (20.0, 1), "POST cannot write");
+    assert_eq!(log("damage-a"), "pre:40:2:1:null:5|post:20");
+    assert_eq!(log("damage-b"), "pre:20:2:1:null:5|post:20", "b sees a's accepted write");
+    // The view is borrowed: it expires with the synchronous callback.
+    assert!(frame_tests::eval_in_context_string("damage-a",
+        "(()=>{try{return String(saved.damage)}catch(e){return e.message}})()").contains("expired borrowed view"));
+    // Handled blocks by zeroing AFTER the fan-out: later handlers still run, the original still runs.
+    set("{action:2}", "{half:true}");
+    let (original, _) = damage_dispatch(base);
+    assert_eq!((original.damage, original.action), (0.0, Some(0)), "block-to-zero with Continue, never a skip");
+    assert_eq!(log("damage-b"), "pre:40:2:1:null:5|post:0");
+    // Stop ends delivery (b never runs) and blocks.
+    set("{action:3}", "{half:true}");
+    let (original, _) = damage_dispatch(base);
+    assert_eq!(original.damage, 0.0);
+    assert_eq!(log("damage-b"), "post:0");
+    // A throwing handler is Continue and keeps the write it made before throwing.
+    set("{throwAfter:true}", "{}");
+    let (original, _) = damage_dispatch(base);
+    assert_eq!((original.damage, original.action), (77.0, Some(0)));
+    // Per-entity filtering: a different victim runs nobody and writes nothing.
+    set("{half:true}", "{half:true}");
+    let (original, _) = damage_dispatch(DamageFrame { victim: Some((6, other)), ..base });
+    assert_eq!((original.damage, original.writes), (40.0, 0));
+    assert_eq!(log("damage-a"), "");
+    // A null info degrades every field and cannot be written.
+    let (original, _) = damage_dispatch(DamageFrame { info: false, ..base });
+    assert_eq!(log("damage-a"), "pre:0:0:null:null:5|post:0");
+    assert_eq!(original.writes, 0);
+    // Nested damage: the busy context is skipped, the other plugin is delivered, the outer frame
+    // stays valid and each frame commits its own value.
+    set("{nested:true,half:true}", "{}");
+    DAMAGE_NEXT.with(|n| *n.borrow_mut() = Some(DamageFrame { damage: 8.0, ..base }));
+    let (original, _) = damage_dispatch(base);
+    assert_eq!(original.damage, 20.0);
+    assert_eq!(log("damage-a"), "pre:40:2:1:null:5|nested:8|post:20");
+    assert_eq!(log("damage-b"), "pre:8:2:1:null:5|post:8|pre:20:2:1:null:5|post:20");
+    // A view retained across await is expired.
+    set("{async:true}", "{}");
+    damage_dispatch(base);
+    with_host_isolate(|isolate| isolate.perform_microtask_checkpoint()).unwrap();
+    assert!(log("damage-a").ends_with("|late:DamageInfo: expired borrowed view (valid only during the synchronous SDKHook callback)"),
+        "{}", log("damage-a"));
+    // SDKUnhook removes exactly that registration.
+    assert_eq!(frame_tests::eval_in_context_string("damage-a",
+        "String(__s2require('@s2script/sdk/sdkhooks').SDKUnhook(victim,'OnTakeDamage',pre))"), "true");
+    set("{}", "{}");
+    damage_dispatch(base);
+    assert_eq!(log("damage-a"), "post:40");
+    // A stale entity is refused before reaching the provider.
+    crate::entity_live::on_deleted(6, 60);
+    assert_eq!(frame_tests::eval_in_context_string("damage-a", "hookAll(other)"), "false,false");
+    // A map transition inside the callback expires the borrowed record: the write after it is
+    // refused, nothing is committed, and the native frame is left exactly as the engine built it.
+    set("{}", "{map:true}");
+    let (original, _, pre) = damage_dispatch_status(base);
+    assert_eq!(pre, 0, "the PRE dispatch names the expired record lifetime");
+    assert_eq!((original.damage, original.writes, original.action), (40.0, 0, None));
+    assert!(log("damage-b").starts_with("pre:40:2:1:null:5|refused"), "{}", log("damage-b"));
+    for id in ["damage-a", "damage-b"] { unload_plugin(id); }
+    // Unload disposes every receipt: nothing is delivered and the frame is untouched.
+    let (original, _) = damage_dispatch(base);
+    assert_eq!((original.damage, original.writes, original.action), (40.0, 0, None));
+    shutdown();
+    crate::game_packages::clear().unwrap();
+    set_engine_ops(None);
+    std::fs::remove_dir_all(root).unwrap();
+}

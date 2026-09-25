@@ -169,6 +169,18 @@ test("later handlers see earlier accepted writes; a throwing handler is Continue
   assert.ok(t.host.logs.some(l => l.includes("OnTakeDamage handler threw")));
 });
 
+test("a non-finite damage write is refused without discarding the handler's other writes", () => {
+  const t = setup(["a", "b"]);
+  const seen = [];
+  t.pre("a", VICTIM, v => { v.damage = 9; v.damage = NaN; v.damage = Infinity; v.damage = 1e39; seen.push(v.damage); });
+  t.pre("b", VICTIM, v => { seen.push(v.damage); });
+  const damage = mountDamage(t, { damage: 40 });
+  damage.fire();
+  assert.deepEqual(seen, [9, 9]);
+  assert.equal(damage.nativeDamage(), 9);
+  assert.equal(t.host.logs.filter(l => l.includes("damage write refused")).length, 3);
+});
+
 test("attacker/inflictor/victim are adopted entity handles; absent handles and a null info degrade", () => {
   const t = setup();
   const seen = [];

@@ -884,16 +884,42 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     for (var k in SDKHookType) if (SDKHookType[k] === type) return true;
     return false;
   }
+  // Game-package SDKHook providers — the documented hand-off for hook types whose engine function and
+  // argument meaning belong to a game (e.g. damage). The SELECTED game package registers a provider per
+  // SDKHookType member during its bootstrap through __s2_sdkhook_provider_register(type, {hook, unhook});
+  // the host deletes the registrar once package bootstrap ends, so plugin code can never install one.
+  // A provided type routes here instead of the core per-entity table: hook(index, id, callback) and
+  // unhook(index, id, callback) return booleans, and receive only an entity the books say is live
+  // (SDKHook) — the provider owns ordering, collapse and teardown (its receipts are host-ledgered).
+  // An SDKHookType member with neither a provider nor core backing returns false, never throws.
+  var sdkhookProviders = Object.create(null);
+  Object.defineProperty(globalThis, "__s2_sdkhook_provider_register", {
+    configurable: true, enumerable: false, writable: false,
+    value: function (type, provider) {
+      if (!SDKHookKnown(type)) throw new Error("s2script: SDKHook provider type '" + type + "' is not an SDKHookType");
+      if (sdkhookProviders[type]) throw new Error("s2script: SDKHook provider for '" + type + "' already registered");
+      if (provider == null || typeof provider.hook !== "function" || typeof provider.unhook !== "function")
+        throw new TypeError("s2script: SDKHook provider needs hook/unhook functions");
+      sdkhookProviders[type] = provider;
+    },
+  });
   function SDKHook(entity, type, callback) {
     if (entity == null || typeof entity.index !== "number" || typeof entity.id !== "number") return false;
     if (!SDKHookKnown(type)) throw new Error("s2script: SDKHook type '" + type + "' is not supported");
     if (typeof callback !== "function") throw new TypeError("s2script: SDKHook callback must be a function");
+    var provider = sdkhookProviders[type];
+    if (provider) {
+      if (__s2_ent_ref_valid(entity.index, entity.id) !== true) return false;
+      return provider.hook(entity.index, entity.id, callback) === true;
+    }
     return __s2_sdkhook(entity.index, entity.id, type, callback);
   }
   function SDKUnhook(entity, type, callback) {
     if (entity == null || typeof entity.index !== "number" || typeof entity.id !== "number") return false;
     if (!SDKHookKnown(type)) throw new Error("s2script: SDKUnhook type '" + type + "' is not supported");
     if (typeof callback !== "function") throw new TypeError("s2script: SDKUnhook callback must be a function");
+    var provider = sdkhookProviders[type];
+    if (provider) return provider.unhook(entity.index, entity.id, callback) === true;
     return __s2_sdkunhook(entity.index, entity.id, type, callback);
   }
   var UseType = { Off: 0, On: 1, Set: 2, Toggle: 3 };

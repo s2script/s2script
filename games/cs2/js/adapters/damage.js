@@ -55,8 +55,10 @@
     }
   };
 
+  var F32_MAX = 3.4028234663852886e38;
+
   // The public DamageInfo over one borrowed frame. `lease.live` is true only while the handler runs.
-  function damageInfo(frame, post, lease) {
+  function damageInfo(frame, post, lease, warn) {
     function guard() { if (!lease.live) throw new Error(EXPIRED); }
     function field(name, fallback) {
       guard();
@@ -74,8 +76,15 @@
         set: function (v) {
           guard();
           if (post) return; // the original already ran: POST assignment is ignored
+          var n = +v;
+          // A non-finite / out-of-f32 value is refused here, so it cannot poison this handler's
+          // other accepted writes; the previous damage stands.
+          if (!isFinite(n) || n > F32_MAX || n < -F32_MAX) {
+            warn("DamageInfo.damage write refused (not a finite f32) — the damage keeps its prior value");
+            return;
+          }
           var info = frame.info;
-          if (info) info.damage = +v;
+          if (info) info.damage = n;
         },
         enumerable: true, configurable: true,
       },
@@ -101,7 +110,7 @@
       var lease = { live: true };
       var hr = CONTINUE;
       try {
-        hr = hookResult(handler(damageInfo(frame, post, lease)));
+        hr = hookResult(handler(damageInfo(frame, post, lease, warn)));
       } catch (e) {
         warn(label + " handler threw: " + (e && e.stack ? e.stack : e));
         hr = CONTINUE;
