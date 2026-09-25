@@ -549,7 +549,9 @@ struct Service::Impl {
         s2resolve::Resolution resolution; // private diagnostic/provenance retains its image
         std::unique_ptr<s2fn::RuntimeBinding> binding;
         size_t refs=1, subscriptions=0, active_calls=0;
-        bool installing=false;
+        // The provider hook outlives its last subscription while the target is referenced, so an
+        // immediate resubscription (plugin reload) reuses it instead of racing async removal.
+        bool installing=false, hooked=false;
         Record(Impl& h,TargetId i,std::string name,Declaration d,s2resolve::Resolution r)
             : host(h),id(i),canonical_id(std::move(name)),declaration(std::move(d)),resolution(std::move(r)) {}
         void Dispatch(s2fn::DispatchFrame& frame) override {
@@ -625,7 +627,7 @@ struct Service::Impl {
     void collect() {
         for (auto i=records.begin();i!=records.end();) {
             auto& r=*i->second;
-            if (!r.refs && !r.subscriptions && r.binding->RemovalComplete() && i->second.use_count()==1 && r.binding->PruneCompletedTicket()) {
+            if (!r.refs && !r.subscriptions && !r.hooked && r.binding->RemovalComplete() && i->second.use_count()==1 && r.binding->PruneCompletedTicket()) {
                 physical.erase(key(r.resolution)); i=records.erase(i);
             } else ++i;
         }
@@ -855,7 +857,7 @@ s2fn::Result<long long> Service::HookAcquire(TargetId id) {
     if (!impl_->sink) return {0,"function dispatch sink unavailable"};
     if (r->installing) return {0,"target registration pending admission"};
     if (r->subscriptions==std::numeric_limits<size_t>::max()) return {0,"subscription overflow"};
-    if (!r->subscriptions) {
+    if (!r->subscriptions && !r->hooked) {
         if (r->active_calls) return {0,"hook acquisition requires idle target"};
         r->installing=true;
         lock.unlock();
@@ -865,19 +867,21 @@ s2fn::Result<long long> Service::HookAcquire(TargetId id) {
         lock.lock();r->installing=false;
         if (!receipt.Accepted()) return {0,"hook acquisition failed: "+receipt.reason};
         if (!r->refs) { r->binding->BeginRemove();return {0,"target retired during registration"}; }
+        r->hooked=true;
     }
     ++r->subscriptions; return {static_cast<long long>(r->binding->Receipt().id)+1,{}};
 }
 bool Service::HookRelease(TargetId id) {
     std::lock_guard<std::recursive_mutex> lock(impl_->mu);
     auto i=impl_->records.find(id); if (i==impl_->records.end() || !i->second->subscriptions) return false;
-    auto& r=*i->second; if (--r.subscriptions==0) r.binding->BeginRemove();
+    auto& r=*i->second; if (--r.subscriptions==0 && !r.refs && r.hooked) { r.hooked=false; r.binding->BeginRemove(); }
     impl_->collect(); return true;
 }
 bool Service::TargetRelease(TargetId id) {
     std::lock_guard<std::recursive_mutex> lock(impl_->mu);
     auto r=impl_->find(id); if (!r) return false;
     --r->refs;
+    if (!r->refs && !r->subscriptions && r->hooked) { r->hooked=false; r->binding->BeginRemove(); }
     // Hook ledger entries release separately; retained subscriptions keep storage alive.
     r.reset(); impl_->collect(); return true;
 }
