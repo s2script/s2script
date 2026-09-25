@@ -171,7 +171,7 @@ fn call_requested(
             return Err("function caller generation unavailable".into());
         }
     }
-    let _busy = caller.map(|p| crate::dispatch::ParentBusy::enter(&p.id, p.generation));
+    let _busy = caller.map(|p| crate::dispatch::ParentBusy::enter_target(&p.id, p.generation, id));
     let owner = caller.map_or(0, |p| p.generation);
     let op = engine_ops()
         .and_then(|o| o.function_call)
@@ -621,7 +621,8 @@ fn call_copied(
     let mut output = buffer.output();
     let mut out = super::projection::request(&ret.native, &ret.projection.id)?;
     let mut why = [0; 512];
-    let _busy = crate::dispatch::ParentBusy::enter(&caller.id, caller.generation);
+    let target = binding.target.ok_or("binding unavailable")?;
+    let _busy = crate::dispatch::ParentBusy::enter_target(&caller.id, caller.generation, target);
     let op = engine_ops().unwrap().function_call_copy.unwrap();
     if op(
         binding.target.ok_or("binding unavailable")?,

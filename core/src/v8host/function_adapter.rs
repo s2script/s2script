@@ -2020,7 +2020,7 @@ fn js_cursor(
                 continue;
             }
             if sub.owner != l.owner
-                && crate::dispatch::parent_busy(&sub.owner.id, sub.owner.generation)
+                && crate::dispatch::parent_busy(&sub.owner.id, sub.owner.generation, l.dispatch.frame.target)
             {
                 continue;
             }
@@ -2079,7 +2079,7 @@ fn invoke_wrapper(
     let scope = &mut v8::ContextScope::new(parent, context);
     let mut storage = v8::TryCatch::new(scope);
     let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
-    let _busy = crate::dispatch::ParentBusy::enter(&sub.owner.id, sub.owner.generation);
+    let _busy = crate::dispatch::ParentBusy::enter_target(&sub.owner.id, sub.owner.generation, dispatch.frame.target);
     let (guard, id, pending_edits) = LeaseGuard::enter(
         sub.owner.clone(),
         dispatch.clone(),
@@ -2140,9 +2140,10 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
     let scope = &mut v8::ContextScope::new(parent, context);
     let mut storage = v8::TryCatch::new(scope);
     let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
-    let _busy = crate::dispatch::ParentBusy::enter(
+    let _busy = crate::dispatch::ParentBusy::enter_target(
         &adapter.instance.parent.id,
         adapter.instance.parent.generation,
+        dispatch.frame.target,
     );
     let prior_revision=dispatch.revision.get();
     let (guard, id, pending_edits) = LeaseGuard::enter(
@@ -2223,7 +2224,7 @@ impl SubscriberCursor for GenericCursor<'_, '_, '_> {
             if !SUBSCRIPTIONS.with(|s| s.borrow().contains_key(&sub.id))
                 || !owner_is_live(&sub.owner.id, sub.owner.generation)
                 || (self.adapter_owner.as_ref() != Some(&sub.owner)
-                    && crate::dispatch::parent_busy(&sub.owner.id, sub.owner.generation))
+                    && crate::dispatch::parent_busy(&sub.owner.id, sub.owner.generation, self.dispatch.frame.target))
             {
                 continue;
             }
@@ -2356,7 +2357,7 @@ fn invoke_domains(scope: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<De
     }
     Ok(result)
 }
-fn eligible(adapter: &Adapter, bypass: u64, phase: i32) -> bool {
+fn eligible(adapter: &Adapter, bypass: u64, phase: i32, target: i64) -> bool {
     let owner = &adapter.instance.parent;
     let implements_phase = if phase == 0 {
         adapter.pre.is_some()
@@ -2371,7 +2372,7 @@ fn eligible(adapter: &Adapter, bypass: u64, phase: i32) -> bool {
         && owner.generation != bypass
         && owner_is_live(&owner.id, owner.generation)
         && plugin_phase(&owner.id) == Some(plugin::Phase::Active)
-        && !crate::dispatch::parent_busy(&owner.id, owner.generation)
+        && !crate::dispatch::parent_busy(&owner.id, owner.generation, target)
 }
 /// Synchronous, including nested CallbackScope entry. Never queues V8 work.
 pub(crate) fn dispatch(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<(), String> {
@@ -2430,6 +2431,7 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
                     && !crate::dispatch::parent_busy(
                         &s.owner.id,
                         s.owner.generation,
+                        target,
                     )
             })
             .cloned()
@@ -2441,7 +2443,7 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
             [0, 1].map(|selection_phase| {
                 rows.values()
                     .find(|a| {
-                        eligible(a, info.suppressed_owner, selection_phase)
+                        eligible(a, info.suppressed_owner, selection_phase, target)
                             && subscribers.iter().any(|s| {
                                 s.phase == selection_phase
                                     && s.adapter == a.semantic
@@ -2480,7 +2482,7 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
             .and_then(|state| state.adapters[1].clone())
             .filter(|a| {
                 ADAPTERS.with(|rows| rows.borrow().contains_key(&a.id))
-                    && eligible(a, info.suppressed_owner, 1)
+                    && eligible(a, info.suppressed_owner, 1, target)
             })
     };
     let subscribers = subscribers

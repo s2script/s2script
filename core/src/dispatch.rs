@@ -22,17 +22,25 @@ use crate::multiplexer::HookResult;
 use crate::v8host::{clone_plugin_context, log_warn, owner_is_live, with_host_isolate, HostAccess};
 
 thread_local! {
-    static BUSY_PARENTS: std::cell::RefCell<Vec<(String,u64)>> = const { std::cell::RefCell::new(Vec::new()) };
+    // Plugin generations currently executing host-entered JavaScript. An entry tagged with a
+    // function target means that generation is inside a call to, or a callback of, that target.
+    static BUSY_PARENTS: std::cell::RefCell<Vec<(String,u64,Option<i64>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 pub(crate) struct ParentBusy;
 impl ParentBusy {
     pub(crate) fn enter(owner:&str,generation:u64)->Self {
-        BUSY_PARENTS.with(|b|b.borrow_mut().push((owner.into(),generation))); Self
+        BUSY_PARENTS.with(|b|b.borrow_mut().push((owner.into(),generation,None))); Self
+    }
+    pub(crate) fn enter_target(owner:&str,generation:u64,target:i64)->Self {
+        BUSY_PARENTS.with(|b|b.borrow_mut().push((owner.into(),generation,Some(target)))); Self
     }
 }
 impl Drop for ParentBusy { fn drop(&mut self) {BUSY_PARENTS.with(|b|{b.borrow_mut().pop();});} }
-pub(crate) fn parent_busy(owner:&str,generation:u64)->bool {
-    BUSY_PARENTS.with(|b|b.borrow().iter().any(|(id,g)|id==owner && *g==generation))
+/// A plugin generation is excluded from a function dispatch only while it is already inside that
+/// same target (a nested invocation from its own call or callback). Being busy in an unrelated
+/// command, timer or event must not hide its subscriptions from a function it caused to run.
+pub(crate) fn parent_busy(owner:&str,generation:u64,target:i64)->bool {
+    BUSY_PARENTS.with(|b|b.borrow().iter().any(|(id,g,t)|id==owner && *g==generation && *t==Some(target)))
 }
 
 thread_local! {
@@ -461,5 +469,28 @@ where
         Ok(pair) => pair,
         Err(HostAccess::Busy) => (HookResult::Continue, Delivery::Deferred),
         Err(HostAccess::Absent) => (HookResult::Continue, Delivery::Delivered),
+    }
+}
+
+#[cfg(test)]
+mod parent_busy_tests {
+    use super::{parent_busy, ParentBusy};
+
+    #[test]
+    fn busy_in_an_unrelated_callback_does_not_hide_a_function_subscription() {
+        // A command/timer/event callback: the plugin's own hooks on any function it causes to run
+        // must still see that invocation (e.g. a pickup gate observing its own !give command).
+        let _command = ParentBusy::enter("gate", 3);
+        assert!(!parent_busy("gate", 3, 41));
+        {
+            // Inside target 41 (its own call or callback): the nested invocation of 41 skips it,
+            // while a different target it reaches from there is still delivered.
+            let _inside = ParentBusy::enter_target("gate", 3, 41);
+            assert!(parent_busy("gate", 3, 41));
+            assert!(!parent_busy("gate", 3, 42));
+            assert!(!parent_busy("gate", 4, 41), "another generation is a different owner");
+            assert!(!parent_busy("other", 3, 41));
+        }
+        assert!(!parent_busy("gate", 3, 41), "leaving the target restores delivery");
     }
 }
