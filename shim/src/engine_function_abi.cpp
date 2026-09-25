@@ -14,7 +14,6 @@ Result<std::size_t> StackCopyBytes(std::size_t slots) {
 Result<AbiInfo> Validate(const AbiSignature& s) {
     auto fail = [](std::string error) -> Result<AbiInfo> { return {{}, std::move(error)}; };
     if (s.platform != capabilities::Platform) return fail("unsupported platform: " + s.platform);
-    if (s.receiver != "none" && s.receiver != "entity") return fail("unsupported receiver: " + s.receiver);
     if (s.varargs) return fail("unsupported varargs");
     auto check = [](const AbiAtom& a, const std::string& position, bool ret) {
         if (!Width(a.native) && !(ret && a.native == "void")) return "unsupported " + position + ": " + a.native;
@@ -23,8 +22,8 @@ Result<AbiInfo> Validate(const AbiSignature& s) {
     };
     auto err = check(s.returns, "return", true); if (!err.empty()) return fail(err);
     if (s.parameters.size() > capabilities::maxParameters) return fail("unsupported parameter count");
-    std::size_t gp = s.receiver == "entity" ? 1 : 0, sse = 0, spills = 0;
-    std::string fingerprint = s.platform + ":" + s.receiver + ":" + s.returns.native + "(";
+    std::size_t gp = s.member_receiver ? 1 : 0, sse = 0, spills = 0;
+    std::string fingerprint = s.platform + ":" + (s.member_receiver ? "entity" : "none") + ":" + s.returns.native + "(";
     for (std::size_t i = 0; i < s.parameters.size(); ++i) {
         const auto& a = s.parameters[i];
         err = check(a, "parameter[" + std::to_string(i) + "]", false); if (!err.empty()) return fail(err);
@@ -114,7 +113,7 @@ Result<std::unique_ptr<RuntimeBinding>> RuntimeBinding::Create(AbiSignature s, D
     return {{}, "unsupported runtime platform: requires linux-x86_64-sysv"};
 #else
     auto b = std::unique_ptr<RuntimeBinding>(new RuntimeBinding(std::move(s), std::move(info.value), sink));
-    if (b->signature_.receiver == "entity") b->argument_atoms_.push_back("ptr");
+    if (b->signature_.member_receiver) b->argument_atoms_.push_back("ptr");
     for (const auto& a : b->signature_.parameters) b->argument_atoms_.push_back(a.native);
     for (const auto& a : b->argument_atoms_) b->argument_types_.push_back(Type(a));
     if (b->argument_types_.size() > capabilities::maxCifArguments) return {{}, "CIF argument overflow"};
@@ -326,7 +325,7 @@ void RuntimeBinding::Enter(Phase phase, void* result, void** args, const S2HookO
         Save(KHook::Action::Ignore, native.value, true); WriteResult(result, native.value); return;
     }
     DispatchFrame frame{}; frame.phase = phase; frame.invocation_id = invocation;
-    const auto offset = signature_.receiver == "entity" ? 1 : 0;
+    const auto offset = signature_.member_receiver ? 1 : 0;
     if (offset) frame.receiver = values[0];
     frame.arguments.assign(values.begin() + offset, values.end());
     if (phase == Phase::Post) {

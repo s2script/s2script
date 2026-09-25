@@ -1,5 +1,6 @@
 //! Bounded scalar, entity and owned-copy transport. Native addresses stay in the shim.
-use super::contract::{NormalizedFunction, OwnerKey, OwnerKind};
+use super::contract::{OwnerKey, OwnerKind};
+use super::instance::Function;
 use super::{copied, projection::ProjectedValue};
 use crate::v8host::{engine_ops, S2FunctionFrameInfo, S2FunctionHookStatus, S2FunctionValue};
 use std::ffi::{CStr, CString};
@@ -30,14 +31,15 @@ fn reason(buf: &[i8]) -> String {
         .to_string_lossy()
         .into_owned()
 }
-pub(crate) fn has_copies(abi: &super::contract::Abi) -> bool {
+pub(crate) fn has_copies(abi: &super::instance::Signature) -> bool {
     copied::flag(&abi.returns.projection.id).is_some()
         || abi
             .parameters
             .iter()
             .any(|p| copied::flag(&p.projection.id).is_some())
 }
-pub(crate) fn prepare(f: &NormalizedFunction) -> Result<i64, String> {
+pub(crate) fn prepare(f: &Function) -> Result<i64, String> {
+    if f.trusted() {return Err("trusted instance requires prepared binding authority".into());}
     if has_copies(&f.abi) {
         require_copy_ops()?;
     }
@@ -51,7 +53,7 @@ pub(crate) fn prepare(f: &NormalizedFunction) -> Result<i64, String> {
     let args = [
         f.canonical_id.clone(),
         serde_json::to_string(&f.target).unwrap(),
-        serde_json::to_string(&f.abi).unwrap(),
+        f.abi.public_wire().to_string(),
         f.abi.fingerprint.clone(),
     ];
     let args = args
@@ -73,6 +75,41 @@ pub(crate) fn prepare(f: &NormalizedFunction) -> Result<i64, String> {
     } else {
         Ok(id)
     }
+}
+pub(crate) fn instance_owner(owner:&OwnerKey) -> crate::v8host::S2FunctionInstanceOwner {
+    use sha2::{Digest,Sha256};
+    crate::v8host::S2FunctionInstanceOwner {version:1,struct_size:56,
+        kind:if owner.kind==OwnerKind::Plugin {1} else {2},reserved:0,
+        id_digest:Sha256::digest(owner.id.as_bytes()).into(),generation:owner.generation}
+}
+pub(crate) fn prepare_binding(f:&Function,binding:u64) -> Result<(i64,Option<u64>),String> {
+    if !f.trusted() {return prepare(f).map(|t|(t,None));}
+    if has_copies(&f.abi) {require_copy_ops()?;}
+    let ops=engine_ops().ok_or("native instance operations unavailable")?;
+    if ops.function_instance_activate.is_none() || ops.function_instance_release.is_none()
+        || ops.function_frame_read_instance.is_none() || ops.function_frame_field_read.is_none() || ops.function_frame_field_write.is_none() {
+        return Err("native instance capability operations unavailable".into());
+    }
+    let op=ops.function_prepare_instance.ok_or("native instance prepare unavailable")?;
+    let name=CString::new(f.canonical_id.as_str()).map_err(|_|"invalid instance name")?;
+    let target=CString::new(serde_json::to_string(&f.target).unwrap()).unwrap();
+    let contract=CString::new(f.trusted_wire()?).map_err(|_|"invalid instance contract")?;
+    let owner=instance_owner(f.host_owner().ok_or("host instance owner unavailable")?);
+    let mut out=crate::v8host::S2FunctionInstancePrepared {version:1,struct_size:24,target:0,capability:0};
+    let mut why=[0;512];
+    if op(binding,&owner,name.as_ptr(),target.as_ptr(),contract.as_ptr(),&mut out,why.as_mut_ptr(),512)!=1 {return Err(reason(&why));}
+    if out.version!=1 || out.struct_size!=24 || out.target<=0 || out.capability==0 {
+        if out.capability!=0 {instance_release(out.capability);} if out.target>0 {target_release(out.target);}
+        return Err("invalid native instance preparation receipt".into());
+    }
+    Ok((out.target,Some(out.capability)))
+}
+pub(crate) fn instance_activate(capability:u64,owner:&OwnerKey) -> Result<(),String> {
+    let op=engine_ops().and_then(|o|o.function_instance_activate).ok_or("native instance activation unavailable")?;
+    let mut why=[0;512];if op(capability,&instance_owner(owner),why.as_mut_ptr(),512)==1 {Ok(())} else {Err(reason(&why))}
+}
+pub(crate) fn instance_release(capability:u64) {
+    if let Some(op)=engine_ops().and_then(|o|o.function_instance_release) {op(capability);}
 }
 pub(crate) fn target_release(id: i64) {
     if let Some(op) = engine_ops().and_then(|o| o.function_target_release) {
@@ -189,7 +226,8 @@ fn call_binding_from(
             return Err("undeclared call surface".into());
         }
         let abi = &binding.function.abi;
-        let receiver = usize::from(abi.receiver == "entity");
+        if abi.borrowed() {return Err("record/hidden native input cannot be manufactured".into());}
+        let receiver = usize::from(abi.member_receiver);
         if values.len() != abi.parameters.len() + receiver {
             return Err("argument count mismatch".into());
         }
@@ -230,6 +268,33 @@ pub(crate) struct Frame {
     pub fingerprint: CString,
 }
 impl Frame {
+    fn instance_access(&self,binding:&super::registry::Binding) -> Result<crate::v8host::S2FunctionInstanceAccess,String> {
+        super::registry::binding(binding.id,&binding.owner)?;
+        if binding.target!=Some(self.target) {return Err("instance frame target mismatch".into());}
+        Ok(crate::v8host::S2FunctionInstanceAccess {version:1,struct_size:48,target:self.target,
+            frame_token:self.info.frame_token,native_epoch:self.info.native_epoch,
+            capability:binding.capability.ok_or("instance capability unavailable")?,binding_id:binding.id})
+    }
+    pub(crate) fn read_instance(&self,binding:&super::registry::Binding,selector:i32) -> Result<S2FunctionValue,String> {
+        let key=self.instance_access(binding)?;
+        let op=engine_ops().and_then(|o|o.function_frame_read_instance).ok_or("native instance read unavailable")?;
+        let mut out=blank();let mut why=[0;512];
+        if op(&key,selector,&mut out,why.as_mut_ptr(),512)==1 {Ok(out)} else {Err(reason(&why))}
+    }
+    pub(crate) fn read_field(&self,binding:&super::registry::Binding,selector:i32,field:u32) -> Result<ProjectedValue,String> {
+        let key=self.instance_access(binding)?;
+        let row=binding.function.abi.layout(selector)?.fields.get(field as usize).ok_or("unknown record field")?;
+        let op=engine_ops().and_then(|o|o.function_frame_field_read).ok_or("native record read unavailable")?;
+        let mut out=blank();let mut why=[0;512];
+        if op(&key,selector,field,&mut out,why.as_mut_ptr(),512)!=1 {return Err(reason(&why));}
+        let (native,projection)=row.projection();super::projection::decode(out,native,projection)
+    }
+    pub(crate) fn write_field(&self,binding:&super::registry::Binding,selector:i32,field:u32,value:&ProjectedValue) -> Result<(),String> {
+        let key=self.instance_access(binding)?;
+        let op=engine_ops().and_then(|o|o.function_frame_field_write).ok_or("native record write unavailable")?;
+        let wire=super::projection::encode(value.clone())?;let mut why=[0;512];
+        if op(&key,selector,field,&wire,why.as_mut_ptr(),512)==1 {Ok(())} else {Err(reason(&why))}
+    }
     pub(crate) fn validate(
         target: i64,
         info: S2FunctionFrameInfo,
@@ -512,7 +577,7 @@ fn call_copied(
     require_copy_ops()?;
     let producer = copied::Producer::owner(caller);
     let abi = &binding.function.abi;
-    let receiver = usize::from(abi.receiver == "entity");
+    let receiver = usize::from(abi.member_receiver);
     let mut wire = [blank(); 33];
     let mut size = 0;
     for (i, value) in values.iter().enumerate() {

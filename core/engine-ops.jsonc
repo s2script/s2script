@@ -380,6 +380,169 @@
           "ty": "unsigned long long"
         }
       ]
+    },
+    {
+      "kind": "struct",
+      "name": "S2FunctionInstanceOwner",
+      "c_name": "S2FunctionInstanceOwner",
+      "rust_fields": [
+        {
+          "name": "version",
+          "ty": "u32"
+        },
+        {
+          "name": "struct_size",
+          "ty": "u32"
+        },
+        {
+          "name": "kind",
+          "ty": "u32"
+        },
+        {
+          "name": "reserved",
+          "ty": "u32"
+        },
+        {
+          "name": "id_digest",
+          "ty": "[u8; 32]"
+        },
+        {
+          "name": "generation",
+          "ty": "u64"
+        }
+      ],
+      "c_fields": [
+        {
+          "name": "version",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "struct_size",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "kind",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "reserved",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "id_digest[32]",
+          "ty": "unsigned char"
+        },
+        {
+          "name": "generation",
+          "ty": "unsigned long long"
+        }
+      ]
+    },
+    {
+      "kind": "struct",
+      "name": "S2FunctionInstancePrepared",
+      "c_name": "S2FunctionInstancePrepared",
+      "rust_fields": [
+        {
+          "name": "version",
+          "ty": "u32"
+        },
+        {
+          "name": "struct_size",
+          "ty": "u32"
+        },
+        {
+          "name": "target",
+          "ty": "i64"
+        },
+        {
+          "name": "capability",
+          "ty": "u64"
+        }
+      ],
+      "c_fields": [
+        {
+          "name": "version",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "struct_size",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "target",
+          "ty": "long long"
+        },
+        {
+          "name": "capability",
+          "ty": "unsigned long long"
+        }
+      ]
+    },
+    {
+      "kind": "struct",
+      "name": "S2FunctionInstanceAccess",
+      "c_name": "S2FunctionInstanceAccess",
+      "rust_fields": [
+        {
+          "name": "version",
+          "ty": "u32"
+        },
+        {
+          "name": "struct_size",
+          "ty": "u32"
+        },
+        {
+          "name": "target",
+          "ty": "i64"
+        },
+        {
+          "name": "frame_token",
+          "ty": "u64"
+        },
+        {
+          "name": "native_epoch",
+          "ty": "u64"
+        },
+        {
+          "name": "capability",
+          "ty": "u64"
+        },
+        {
+          "name": "binding_id",
+          "ty": "u64"
+        }
+      ],
+      "c_fields": [
+        {
+          "name": "version",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "struct_size",
+          "ty": "unsigned int"
+        },
+        {
+          "name": "target",
+          "ty": "long long"
+        },
+        {
+          "name": "frame_token",
+          "ty": "unsigned long long"
+        },
+        {
+          "name": "native_epoch",
+          "ty": "unsigned long long"
+        },
+        {
+          "name": "capability",
+          "ty": "unsigned long long"
+        },
+        {
+          "name": "binding_id",
+          "ty": "unsigned long long"
+        }
+      ]
     }
   ],
   "ops": [
@@ -1647,6 +1810,54 @@
       "c_ret": "int",
       "c_params": "long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, const S2FunctionValue* value, const S2FunctionCopyInput* input, const S2FunctionCopyProducer* producer, S2FunctionValue* effective, S2FunctionCopyOutput* output, char* reason, int reason_cap",
       "shim": "S2_FunctionFrameOverrideReturnCopy"
+    },
+    {
+      "name": "function_prepare_instance",
+      "alias": "FunctionPrepareInstanceFn",
+      "rust": "extern \"C\" fn(u64, *const S2FunctionInstanceOwner, *const c_char, *const c_char, *const c_char, *mut S2FunctionInstancePrepared, *mut c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "unsigned long long binding, const S2FunctionInstanceOwner* owner, const char* name, const char* target, const char* contract, S2FunctionInstancePrepared* out, char* reason, int cap",
+      "shim": "S2_FunctionPrepareInstance"
+    },
+    {
+      "name": "function_instance_activate",
+      "alias": "FunctionInstanceActivateFn",
+      "rust": "extern \"C\" fn(u64, *const S2FunctionInstanceOwner, *mut c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "unsigned long long capability, const S2FunctionInstanceOwner* owner, char* reason, int cap",
+      "shim": "S2_FunctionInstanceActivate"
+    },
+    {
+      "name": "function_instance_release",
+      "alias": "FunctionInstanceReleaseFn",
+      "rust": "extern \"C\" fn(u64) -> c_int",
+      "c_ret": "int",
+      "c_params": "unsigned long long capability",
+      "shim": "S2_FunctionInstanceRelease"
+    },
+    {
+      "name": "function_frame_read_instance",
+      "alias": "FunctionFrameReadInstanceFn",
+      "rust": "extern \"C\" fn(*const S2FunctionInstanceAccess, c_int, *mut S2FunctionValue, *mut c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "const S2FunctionInstanceAccess* access, int selector, S2FunctionValue* out, char* reason, int cap",
+      "shim": "S2_FunctionFrameReadInstance"
+    },
+    {
+      "name": "function_frame_field_read",
+      "alias": "FunctionFrameFieldReadFn",
+      "rust": "extern \"C\" fn(*const S2FunctionInstanceAccess, c_int, u32, *mut S2FunctionValue, *mut c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "const S2FunctionInstanceAccess* access, int selector, unsigned int field, S2FunctionValue* out, char* reason, int cap",
+      "shim": "S2_FunctionFrameFieldRead"
+    },
+    {
+      "name": "function_frame_field_write",
+      "alias": "FunctionFrameFieldWriteFn",
+      "rust": "extern \"C\" fn(*const S2FunctionInstanceAccess, c_int, u32, *const S2FunctionValue, *mut c_char, c_int) -> c_int",
+      "c_ret": "int",
+      "c_params": "const S2FunctionInstanceAccess* access, int selector, unsigned int field, const S2FunctionValue* value, char* reason, int cap",
+      "shim": "S2_FunctionFrameFieldWrite"
     }
   ]
 }

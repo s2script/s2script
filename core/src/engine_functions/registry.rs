@@ -19,6 +19,7 @@ mod tests {
 }
 
 use super::{contract::*, provenance::PreparedCandidate, runtime};
+use super::instance::Function;
 use crate::{plugin::Resource, v8host};
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 enum BindingLifetime {
@@ -29,8 +30,9 @@ pub(crate) struct Binding {
     lifetime: BindingLifetime,
     pub id: u64,
     pub owner: OwnerKey,
-    pub function: NormalizedFunction,
+    pub function: Function,
     pub target: Option<i64>,
+    pub capability: Option<u64>,
     pub unavailable: Option<String>,
     pub provenance: super::provenance::Provenance,
     pub retained_bytes: usize,
@@ -50,6 +52,7 @@ impl Binding {
 }
 impl Drop for Binding {
     fn drop(&mut self) {
+        if let Some(capability)=self.capability.take() {runtime::instance_release(capability);}
         if let Some(target) = self.target {
             runtime::target_release(target);
         }
@@ -68,14 +71,16 @@ pub(crate) fn next_id() -> Result<u64, String> {
 }
 struct PreparedBinding {
     id: u64,
-    function: NormalizedFunction,
+    function: Function,
     target: Option<i64>,
+    capability: Option<u64>,
     unavailable: Option<String>,
     provenance: super::provenance::Provenance,
     retained_bytes: usize,
 }
 impl Drop for PreparedBinding {
     fn drop(&mut self) {
+        if let Some(capability)=self.capability.take() {runtime::instance_release(capability);}
         if let Some(target) = self.target {
             runtime::target_release(target);
         }
@@ -109,12 +114,12 @@ impl PreparedOwnerReceipt {
 /// the shared loader lease outlives activation and is released by the last binding.
 pub(crate) fn preparation_bytes(candidate: &PreparedCandidate) -> usize {
     candidate.functions().iter().fold(
-        std::mem::size_of::<PreparedOwnerReceipt>() + candidate.base().owner_id.len(),
+        std::mem::size_of::<PreparedOwnerReceipt>() + candidate.owner_id().len(),
         |n, f| {
             n.saturating_add(
                 4096 + 8
                     * (std::mem::size_of::<Binding>()
-                        + candidate.base().owner_id.len()
+                        + candidate.owner_id().len()
                         + function_storage(f.function())
                         + provenance_storage(f.provenance())
                         + f.unavailable().map_or(512, str::len)),
@@ -135,7 +140,10 @@ pub(crate) fn prepare_owner_with_grants(
     calls_allowed: bool,
     hooks_allowed: bool,
 ) -> Result<PreparedOwnerReceipt, String> {
-    if candidate.base().owner_id != intended_id {
+    prepare_owner_authorized(intended_id,candidate,calls_allowed,hooks_allowed,None)
+}
+fn prepare_owner_authorized(intended_id:&str,candidate:PreparedCandidate,calls_allowed:bool,hooks_allowed:bool,host:Option<&HostPackageOwner>) -> Result<PreparedOwnerReceipt,String> {
+    if candidate.owner_id() != intended_id {
         return Err("prepared candidate owner mismatch".into());
     }
     let mut bindings = Vec::with_capacity(candidate.functions().len());
@@ -143,6 +151,9 @@ pub(crate) fn prepare_owner_with_grants(
         let f = prepared.function();
         if f.policy.id != "generic.v2" {
             return Err("internal policy requires host adapter binding authority".into());
+        }
+        if let Some(owner)=f.host_owner() {
+            if host.is_none_or(|h|h.is_retired() || h.key()!=owner) {return Err("trusted instance requires exact verified package owner".into());}
         }
         let binding_id = next_id()?;
         let denied = f
@@ -158,13 +169,13 @@ pub(crate) fn prepare_owner_with_grants(
             });
         let resolved = denied
             .or(prepared.unavailable())
-            .map_or_else(|| runtime::prepare(f), |e| Err(e.into()));
-        let (target, unavailable) = match resolved {
-            Ok(id) => (Some(id), None),
+            .map_or_else(|| runtime::prepare_binding(f,binding_id), |e| Err(e.into()));
+        let (target, capability, unavailable) = match resolved {
+            Ok((id,capability)) => (Some(id), capability, None),
             Err(e) if f.requirement == "required" => {
                 return Err(format!("{}: {e}", f.canonical_id));
             }
-            Err(e) => (None, Some(e)),
+            Err(e) => (None, None, Some(e)),
         };
         let function = f.clone();
         let provenance = prepared.provenance().clone();
@@ -177,6 +188,7 @@ pub(crate) fn prepare_owner_with_grants(
             id: binding_id,
             function,
             target,
+            capability,
             unavailable,
             provenance,
             retained_bytes,
@@ -235,6 +247,12 @@ pub(crate) fn activate_owner(
         }
         ids.push(binding.id);
     }
+    for prepared in &receipt.bindings {
+        if let Some(cap)=prepared.capability {if let Err(e)=runtime::instance_activate(cap,&owner) {
+            for id in ids.iter().rev() {v8host::release_resource(&owner.id,owner.generation,&Resource::FunctionBinding(*id));}
+            return Err(e);
+        }}
+    }
     for mut prepared in receipt.bindings {
         let binding = Rc::new(Binding {
             lifetime: BindingLifetime::Plugin,
@@ -242,6 +260,7 @@ pub(crate) fn activate_owner(
             owner: owner.clone(),
             function: prepared.function.clone(),
             target: prepared.target.take(),
+            capability: prepared.capability.take(),
             unavailable: prepared.unavailable.take(),
             provenance: prepared.provenance.clone(),
             retained_bytes: prepared.retained_bytes,
@@ -274,6 +293,7 @@ pub(crate) fn binding(id: u64, owner: &OwnerKey) -> Result<Rc<Binding>, String> 
 }
 pub(crate) fn drop_binding(id: u64) {
     let removed = BINDINGS.with(|b| b.borrow_mut().remove(&id));
+    if let Some(binding)=&removed {if let Some(cap)=binding.capability {runtime::instance_release(cap);}}
     drop(removed);
 }
 pub(crate) fn owner_bindings(owner: &OwnerKey) -> Vec<u64> {
@@ -297,7 +317,7 @@ fn validator_storage(v: &Validator) -> usize {
         + v.vtable_member.as_ref().map_or(0, String::capacity)
         + v.string_xref.as_ref().map_or(0, |x| x.expect.capacity())
 }
-fn function_storage(f: &NormalizedFunction) -> usize {
+fn function_storage(f: &Function) -> usize {
     let a = &f.abi;
     let p = &f.policy;
     let target = match &f.target {
@@ -339,7 +359,7 @@ fn function_storage(f: &NormalizedFunction) -> usize {
         + f.requirement.capacity()
         + target
         + a.platform.capacity()
-        + a.receiver.capacity()
+        + f.retained_bytes()
         + a.fingerprint.capacity()
         + a.returns.native.capacity()
         + a.returns.projection.id.capacity()
@@ -368,6 +388,7 @@ fn provenance_storage(p: &super::provenance::Provenance) -> usize {
         ValidationResult::Unavailable(s) => s.capacity(),
     };
     p.archive_hash.capacity()
+        + p.instances.as_ref().map_or(0, |i| i.manifest_hash.capacity()+i.selected_data_hash.capacity()+i.layouts.capacity()*std::mem::size_of::<super::provenance::LayoutProvenance>()+i.layouts.iter().map(|l|l.codec_id.capacity()+l.layout_hash.capacity()).sum::<usize>())
         + p.base_contract_hash.capacity()
         + p.final_target_hash.capacity()
         + result(&p.resolver_result)
@@ -451,7 +472,7 @@ pub(crate) fn prepare_package_owner(
     }
     Ok(PreparedPackageFunctionReceipt {
         owner: owner.clone(),
-        prepared: prepare_owner(&owner.key().id, candidate)?,
+        prepared: prepare_owner_authorized(&owner.key().id, candidate, true, true, Some(owner))?,
     })
 }
 pub(crate) fn activate_package_owner(
@@ -478,6 +499,7 @@ pub(crate) fn activate_package_owner(
         return Err("injected package activation failure".into());
     }
     let prepared = receipt.prepared;
+    for binding in &prepared.bindings {if let Some(cap)=binding.capability {runtime::instance_activate(cap,owner.key())?;}}
     let mut staged = Vec::with_capacity(prepared.bindings.len());
     let mut ids = Vec::with_capacity(prepared.bindings.len());
     for mut candidate in prepared.bindings {
@@ -488,6 +510,7 @@ pub(crate) fn activate_package_owner(
             owner: owner.key().clone(),
             function: candidate.function.clone(),
             target: candidate.target.take(),
+            capability: candidate.capability.take(),
             unavailable: candidate.unavailable.take(),
             provenance: candidate.provenance.clone(),
             retained_bytes: candidate.retained_bytes,

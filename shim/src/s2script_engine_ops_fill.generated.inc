@@ -188,3 +188,9 @@
     ops.function_frame_write_copy = &S2_FunctionFrameWriteCopy;
     ops.function_frame_commit_copy = &S2_FunctionFrameCommitCopy;
     ops.function_frame_override_return_copy = &S2_FunctionFrameOverrideReturnCopy;
+    ops.function_prepare_instance = &S2_FunctionPrepareInstance;
+    ops.function_instance_activate = &S2_FunctionInstanceActivate;
+    ops.function_instance_release = &S2_FunctionInstanceRelease;
+    ops.function_frame_read_instance = &S2_FunctionFrameReadInstance;
+    ops.function_frame_field_read = &S2_FunctionFrameFieldRead;
+    ops.function_frame_field_write = &S2_FunctionFrameFieldWrite;

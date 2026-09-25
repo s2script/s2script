@@ -1,8 +1,10 @@
 #include "engine_function_bridge.h"
 #include "../third_party/json.hpp"
 #include "vtable.h"
+#include "sha256.h"
 #include <limits>
 #include <stdexcept>
+#include <cmath>
 using nlohmann::json;
 namespace s2bridge {
 namespace {
@@ -82,9 +84,7 @@ bool Declaration::CompatibleCopies(const Declaration& b) const {
     for(size_t i=0;i<copies.size();++i) if(!same(copies[i],b.copies[i])) return false;
     return true; // entity and entity? retain their binding-local projection rules.
 }
-s2fn::Result<Declaration> Parse(const std::string& target, const std::string& abi, const std::string& fingerprint) {
-    try {
-        Declaration d; auto t=json::parse(target); auto a=json::parse(abi);
+static void parse_target(Declaration& d,const json& t) {
         keys(t,{"kind","module","pattern","class","index","resolve","derivation","candidateValidate","targetValidate"});
         d.recipe.module=string(t,"module"); d.recipe.strategy=string(t,"resolve");
         const auto& candidate=t.at("candidateValidate"); const auto& final=t.at("targetValidate");
@@ -113,8 +113,15 @@ s2fn::Result<Declaration> Parse(const std::string& target, const std::string& ab
                 candidate.empty() && final.contains("prologue"),"invalid virtual target");
             d.recipe.validate_json=final.dump();
         }
+}
+s2fn::Result<Declaration> Parse(const std::string& target, const std::string& abi, const std::string& fingerprint) {
+    try {
+        Declaration d; auto t=json::parse(target); auto a=json::parse(abi);
+        parse_target(d,t);
         keys(a,{"platform","receiver","fingerprint","stackCopyBytes","parameters","returns"});
-        d.abi.platform=string(a,"platform"); d.abi.receiver=string(a,"receiver");
+        d.abi.platform=string(a,"platform");
+        auto receiver=string(a,"receiver"); require(receiver=="none" || receiver=="entity","invalid public receiver");
+        d.abi.member_receiver=receiver=="entity";
         d.abi.returns=atom(a.at("returns"),true);
         require(a.at("parameters").is_array(),"expected parameters array");
         for (const auto& p : a.at("parameters")) d.abi.parameters.push_back(atom(p,false));
@@ -132,12 +139,109 @@ s2fn::Result<Declaration> Parse(const std::string& target, const std::string& ab
     } catch (const std::exception& e) { return {{},std::string("invalid normalized declaration: ")+e.what()}; }
 }
 namespace {
+uint32_t bounded_integer(const json& j,uint32_t max,const char* why) {
+    require(j.is_number_unsigned() || (j.is_number_integer() && j.get<int64_t>()>=0),why);
+    auto n=j.get<uint64_t>();require(n<=max,why);return static_cast<uint32_t>(n);
+}
+uint8_t record_phases(const json& j,bool write) {
+    require(j.is_array(),"invalid record phases");
+    if(j==json::array()) {require(write,"empty record read phases");return 0;}
+    if(j==json::array({"pre"})) return 1;
+    if(!write && j==json::array({"post"})) return 2;
+    if(!write && j==json::array({"pre","post"})) return 3;
+    throw std::runtime_error("invalid record phases");
+}
+RecordLayout record_layout(const json& instance) {
+    keys(instance,{"codecId","codecVersion","kind","layoutHash","record"});
+    require(instance.at("codecId")=="borrowed-record" && instance.at("codecVersion")==1 && instance.at("kind").is_null(),"unsupported registered instance kind/version");
+    const auto& j=instance.at("record");keys(j,{"extent","alignment","fields"});
+    RecordLayout out;out.extent=bounded_integer(j.at("extent"),65536,"record extent limit");
+    out.alignment=bounded_integer(j.at("alignment"),8,"record alignment limit");
+    require(out.extent && out.alignment && !(out.alignment&(out.alignment-1)) && out.extent%out.alignment==0,"invalid record extent/alignment");
+    out.hash=string(instance,"layoutHash");
+    require(out.hash==s2::digest::sha256(j.dump()),"record layout hash mismatch");
+    const auto& fields=j.at("fields");require(fields.is_array() && !fields.empty() && fields.size()<=256,"record field count limit");
+    std::set<std::string> names;json storage=json::array();
+    for(const auto& row:fields) {
+        keys(row,{"name","offsetKey","offset","storage","nullable","read","write"});
+        RecordField f;f.name=string(row,"name");
+        require(f.name.size()<=128 && names.insert(f.name).second && string(row,"offsetKey").size()<=256,"invalid record field name");
+        f.storage=string(row,"storage");
+        f.width=f.storage=="bool" ? 1 : f.storage=="u16" ? 2 : (f.storage=="i32" || f.storage=="u32" || f.storage=="f32" || f.storage=="entity-handle32") ? 4 :
+            (f.storage=="i64" || f.storage=="u64" || f.storage=="f64") ? 8 : 0;
+        require(f.width,"unsupported record storage");
+        f.offset=bounded_integer(row.at("offset"),out.extent,"record offset exceeds extent");
+        require(f.width<=out.extent-f.offset && out.alignment>=f.width && f.offset%f.width==0,"record field extent/alignment");
+        for(const auto& prior:out.fields) require(f.offset>=prior.offset+prior.width || prior.offset>=f.offset+f.width,"record field overlap");
+        require(row.at("nullable").is_boolean(),"invalid record nullability");f.nullable=row.at("nullable");
+        require(!f.nullable || f.storage=="entity-handle32","invalid record nullability");
+        f.read=record_phases(row.at("read"),false);f.write=record_phases(row.at("write"),true);
+        require(!f.write || (f.read&1),"record write requires PRE read");
+        storage.push_back({f.offset,f.storage});out.fields.push_back(std::move(f));
+    }
+    out.storage_key=json::array({out.extent,out.alignment,storage}).dump();return out;
+}
+Declaration parse_instance(const std::string& target,const std::string& text) {
+    require(text.size()<=1024*1024,"instance contract byte limit");
+    auto j=json::parse(text);keys(j,{"version","signature","policy","selectedDataHash","contractHash"});
+    require(j.at("version")==1,"unsupported instance contract version");
+    const auto hash=string(j,"contractHash");j.erase("contractHash");
+    require(hash==s2::digest::sha256(j.dump()),"instance contract hash mismatch");
+    require(string(j,"selectedDataHash").size()==64,"invalid selected-data hash");
+    const auto& a=j.at("signature");
+    keys(a,{"platform","memberReceiver","receiver","parameters","returns","fingerprint","stackCopyBytes","instances"});
+    Declaration d;parse_target(d,json::parse(target));d.abi.platform=string(a,"platform");
+    require(a.at("memberReceiver").is_boolean(),"invalid physical receiver");d.abi.member_receiver=a.at("memberReceiver");
+    std::vector<RecordLayout> layouts;
+    require(a.at("instances").is_array() && a.at("instances").size()<=33,"instance count limit");
+    for(const auto& row:a.at("instances")) layouts.push_back(record_layout(row));
+    auto position=[&](const json& p,int selector,bool ret) {
+        keys(p,{"name","native","projection","ownership","mutable","instance","nullable"});
+        const auto native=string(p,"native");const auto projection=string(p.at("projection"),"id");
+        keys(p.at("projection"),{"id","version"});require(p.at("projection").at("version")==1,"unsupported position version");
+        require(p.at("nullable").is_boolean(),"invalid position nullability");
+        if(projection=="borrowed-record" || projection=="native-only") {
+            require(!ret && native=="ptr" && p.at("mutable")==json::array(),"record/hidden position direction or mutation");
+            require(p.at("ownership")== (projection=="borrowed-record" ? "synchronous-record" : "invocation-passthrough"),"missing native lifetime registration");
+            if(projection=="native-only") {require(!p.contains("instance") && !p.at("nullable").get<bool>(),"hidden instance/nullability");d.instances.hidden.insert(selector);}
+            else {const auto index=bounded_integer(p.at("instance"),32,"invalid instance index");require(index<layouts.size(),"unknown record instance");d.instances.records.emplace(selector,RecordPosition{layouts[index],p.at("nullable")});}
+            return s2fn::AbiAtom{native,projection};
+        }
+        require(!p.contains("instance") && !p.at("nullable").get<bool>(),"unexpected position instance/nullability");
+        auto simple=p;simple.erase("nullable");
+        if(ret) {simple.erase("name");simple.erase("mutable");}
+        auto value=atom(simple,ret);
+        if(selector==-1) {require(native=="ptr" && (projection=="entity" || projection=="entity?") && p.at("mutable")==json::array(),"invalid receiver projection");d.instances.nullable_receiver=projection=="entity?";}
+        else if(ret) d.return_copy=copy_position(simple,true);
+        else d.copies[selector]=copy_position(simple,false);
+        return value;
+    };
+    require(d.abi.member_receiver==!a.at("receiver").is_null(),"physical receiver projection mismatch");
+    if(d.abi.member_receiver) position(a.at("receiver"),-1,false);
+    require(a.at("parameters").is_array() && a.at("parameters").size()<=32,"physical parameter limit");
+    for(const auto& p:a.at("parameters")) {auto index=static_cast<int>(d.abi.parameters.size());d.abi.parameters.push_back(position(p,index,false));}
+    d.abi.returns=position(a.at("returns"),-2,true);
+    auto info=s2fn::Validate(d.abi);require(bool(info),info.error.c_str());
+    require(a.at("fingerprint")==info.value.fingerprint && a.at("stackCopyBytes")==info.value.stack_bytes,"physical fingerprint/stack mismatch");
+    d.info=std::move(info.value);
+    const auto& policy=j.at("policy");
+    require(policy.at("id")=="generic.v2" && policy.at("version")==1,"unsupported instance policy");
+    const auto& surfaces=policy.at("surfaces");require(surfaces.is_array() && !surfaces.empty(),"invalid instance surfaces");
+    for(const auto& s:surfaces) require(s=="pre" || s=="post","record/hidden declarations are hook-only");
+    for(const auto& row:d.instances.records) for(const auto& field:row.second.layout.fields)
+        require(!field.write || std::find(surfaces.begin(),surfaces.end(),"pre")!=surfaces.end(),"record writes require PRE surface");
+    return d;
+}
 unsigned char copy_flag(s2fn::copy::Kind kind) { return kind==s2fn::copy::Kind::String ? 4 : 5; }
 constexpr size_t SpanBudget = s2fn::copy::MaxBatch * s2fn::copy::MaxString;
 bool valid_copy_input(const CopyInput& input) {
     return input.version==1 && input.struct_size==sizeof(CopyInput) && input.size<=SpanBudget &&
         (!input.size || input.data) && (!input.data || input.size<=UINTPTR_MAX-reinterpret_cast<uintptr_t>(input.data));
 }
+}
+s2fn::Result<Declaration> ParseInstance(const std::string& target,const std::string& contract) {
+    try {return {parse_instance(target,contract),{}};}
+    catch(const std::exception& e) {return {{},std::string("invalid trusted instance declaration: ")+e.what()};}
 }
 s2fn::Result<s2fn::copy::OwnerGeneration> CheckedProducer(const CopyProducer& producer) {
     if(producer.version!=1 || producer.struct_size!=sizeof(CopyProducer) || producer.reserved || producer.domain>2)
@@ -317,6 +421,16 @@ struct FrameAccess {
     std::map<int,S2FunctionValue> entity_edits;
     bool changed=false, committed=false;
     CopyTransaction* copies=nullptr;
+    struct InstanceCapability {
+        uint64_t binding=0; TargetId target=0;
+        S2FunctionInstanceOwner owner{};
+        Declaration declaration;
+        bool active=false, released=false;
+    };
+    using Capabilities=std::map<uint64_t,std::shared_ptr<InstanceCapability>>;
+    Capabilities* capabilities=nullptr;
+    struct FieldEdit { std::shared_ptr<InstanceCapability> capability; uint32_t field; S2FunctionValue value; };
+    std::map<std::pair<int,uint32_t>,FieldEdit> field_edits;
 };
 thread_local std::vector<FrameAccess*> frames;
 std::atomic<unsigned long long> next_frame{1};
@@ -355,6 +469,67 @@ s2fn::NativeValue scalar_decode(const S2FunctionValue& value, ValueKind k) {
         "noncanonical scalar value");
     s2fn::NativeValue out; std::memcpy(out.bytes.data(),&value.bits,width); return out;
 }
+using InstanceCapability=FrameAccess::InstanceCapability;
+std::pair<FrameAccess*,std::shared_ptr<InstanceCapability>> instance_access(const S2FunctionInstanceAccess& key) {
+    require(key.version==1 && key.struct_size==48 && !frames.empty(),"invalid instance frame access");
+    auto& f=*frames.back();
+    require(std::this_thread::get_id()==f.owner && f.target==key.target && f.info.frame_token==key.frame_token &&
+        f.info.native_epoch==key.native_epoch && f.capabilities,"instance frame capability mismatch");
+    auto i=f.capabilities->find(key.capability);require(i!=f.capabilities->end(),"instance capability retired");
+    const auto& c=i->second;
+    require(c->active && !c->released && c->binding==key.binding_id && c->target==key.target && c->owner.generation &&
+        c->declaration.info.fingerprint==f.declaration.info.fingerprint,"instance binding authority mismatch");
+    return {&f,c};
+}
+uintptr_t record_pointer(FrameAccess& f,const InstanceCapability& c,int selector) {
+    const auto i=c.declaration.instances.records.find(selector);require(i!=c.declaration.instances.records.end(),"not a record position");
+    const auto pointer=selector==-1 ? f.native.receiver.Get<uintptr_t>() : f.native.arguments.at(selector).Get<uintptr_t>();
+    require(pointer || i->second.nullable,"null strict record");
+    if(pointer) require(pointer%i->second.layout.alignment==0 && pointer<=UINTPTR_MAX-i->second.layout.extent,"record pointer alignment/extent");
+    return pointer;
+}
+const RecordField& record_field(FrameAccess& f,const InstanceCapability& c,int selector,uint32_t field,bool write) {
+    auto row=c.declaration.instances.records.find(selector);require(row!=c.declaration.instances.records.end(),"not a record position");
+    require(field<row->second.layout.fields.size(),"record field index out of bounds");
+    const auto& result=row->second.layout.fields[field];
+    const auto phase=f.native.phase==s2fn::Phase::Pre ? 1 : f.native.phase==s2fn::Phase::Post ? 2 : 0;
+    require(phase && (result.read&phase) && (!write || (phase==1 && !f.committed && (result.write&1))),"record field is readonly/unavailable in this phase");
+    return result;
+}
+uint64_t field_bits(FrameAccess& f,const RecordField& field,const S2FunctionValue& value) {
+    if(field.storage=="entity-handle32") {
+        require(value.kind==8 && value.flags==(field.nullable ? 2 : 1) && !value.reserved && value.bits<=0x1ffff,"invalid packed entity value");
+        if(value.aux==UINT32_MAX) {require(field.nullable && !value.bits,"invalid null entity field");return UINT32_MAX;}
+        require(value.aux<0x8000 && f.codec,"packed entity index/codec unavailable");
+        auto strict=value;strict.flags=1;CallStorage storage;
+        auto resolved=f.codec->Decode(strict,storage);require(bool(resolved) && resolved.value.Get<void*>(),"stale packed entity field");
+        return (value.bits<<15)|value.aux;
+    }
+    const auto k=kind(field.storage=="bool" ? "u8" : field.storage=="u16" ? "u32" : field.storage);
+    auto decoded=scalar_decode(value,k);
+    require(field.storage!="u16" || value.bits<=UINT16_MAX,"record u16 out of range");
+    require(k!=ValueKind::F32 || std::isfinite(decoded.Get<float>()),"nonfinite record f32");
+    require(k!=ValueKind::F64 || std::isfinite(decoded.Get<double>()),"nonfinite record f64");
+    return value.bits;
+}
+struct FieldPublication { uintptr_t destination; uint64_t bits; uint32_t width; };
+std::vector<FieldPublication> prepare_fields(FrameAccess& f) {
+    std::vector<FieldPublication> stores;stores.reserve(f.field_edits.size());
+    for(const auto& row:f.field_edits) {
+        const auto& edit=row.second;const auto& c=*edit.capability;
+        require(c.active && !c.released && c.target==f.target,"record writer retired before commit");
+        const auto& field=record_field(f,c,row.first.first,edit.field,true);
+        auto pointer=record_pointer(f,c,row.first.first);require(pointer,"cannot write null record");
+        const auto bits=field_bits(f,field,edit.value);
+        stores.push_back({pointer+field.offset,bits,field.width});
+    }
+    return stores;
+}
+void publish_fields(const std::vector<FieldPublication>& fields) noexcept {
+    // Registered synchronous native lifetime is a prerequisite. No rollback claim
+    // is made for a host contract violation or fault after the first store.
+    for(const auto& f:fields) std::memcpy(reinterpret_cast<void*>(f.destination),&f.bits,f.width);
+}
 }
 void CoreDispatchSink::Dispatch(TargetId target, unsigned long long, s2fn::DispatchFrame& frame) {
     if (!dispatch_ || std::this_thread::get_id()!=owner_) throw std::runtime_error("function dispatch unavailable off host thread");
@@ -374,7 +549,9 @@ struct Service::Impl {
         s2resolve::Resolution resolution; // private diagnostic/provenance retains its image
         std::unique_ptr<s2fn::RuntimeBinding> binding;
         size_t refs=1, subscriptions=0, active_calls=0;
-        bool installing=false;
+        // The provider hook outlives its last subscription while the target is referenced, so an
+        // immediate resubscription (plugin reload) reuses it instead of racing async removal.
+        bool installing=false, hooked=false;
         Record(Impl& h,TargetId i,std::string name,Declaration d,s2resolve::Resolution r)
             : host(h),id(i),canonical_id(std::move(name)),declaration(std::move(d)),resolution(std::move(r)) {}
         void Dispatch(s2fn::DispatchFrame& frame) override {
@@ -414,7 +591,7 @@ struct Service::Impl {
                     {1,sizeof(S2FunctionFrameInfo),epoch,epoch,frame.invocation_id,owner,
                      static_cast<unsigned int>(frame.arguments.size()),frame.original_skipped ? 1u : 0u},
                     *binding,host.owner,frame.arguments,host.codec,{}};
-                access.copies=copies;
+                access.copies=copies;access.capabilities=&host.capabilities;
                 frames.push_back(&access);
                 struct Pop { ~Pop() { frames.pop_back(); } } pop;
                 sink->Dispatch(id,owner,frame);
@@ -441,6 +618,8 @@ struct Service::Impl {
     TargetId next=1;
     std::map<TargetId,std::shared_ptr<Record>> records;
     std::map<PhysicalKey,TargetId> physical;
+    FrameAccess::Capabilities capabilities;
+    uint64_t next_capability=1;
     explicit Impl(Resolver r):resolver(std::move(r)) {}
     std::shared_ptr<Record> find(TargetId id) {
         auto i=records.find(id); return i==records.end() || !i->second->refs ? nullptr : i->second;
@@ -448,7 +627,7 @@ struct Service::Impl {
     void collect() {
         for (auto i=records.begin();i!=records.end();) {
             auto& r=*i->second;
-            if (!r.refs && !r.subscriptions && r.binding->RemovalComplete() && i->second.use_count()==1 && r.binding->PruneCompletedTicket()) {
+            if (!r.refs && !r.subscriptions && !r.hooked && r.binding->RemovalComplete() && i->second.use_count()==1 && r.binding->PruneCompletedTicket()) {
                 physical.erase(key(r.resolution)); i=records.erase(i);
             } else ++i;
         }
@@ -483,22 +662,25 @@ s2fn::Result<TargetId> Service::Prepare(const std::string& name,const std::strin
                                        const std::string& abi,const std::string& fingerprint) {
     if (name.empty() || name.find('\0')!=std::string::npos) return {0,"invalid canonical id"};
     auto d=Parse(target,abi,fingerprint); if (!d) return {0,name+": "+d.error};
-    if(d.value.HasCopies() && (!impl_->reader.available || !impl_->reader.read || !impl_->reader.page_size))
+    return PrepareDeclaration(name,std::move(d.value));
+}
+s2fn::Result<TargetId> Service::PrepareDeclaration(const std::string& name,Declaration d) {
+    if(d.HasCopies() && (!impl_->reader.available || !impl_->reader.read || !impl_->reader.page_size))
         return {0,name+": FunctionCopyLifetimeUnsupported: native reader unavailable"};
-    auto resolution=Resolve(d.value,impl_->resolver); if (!resolution) return {0,name+": "+resolution.error};
+    auto resolution=Resolve(d,impl_->resolver); if (!resolution) return {0,name+": "+resolution.error};
     // The immutable resolver may contact the host. Only interning needs the lock.
     std::lock_guard<std::recursive_mutex> lock(impl_->mu); impl_->collect();
     auto physical=key(resolution.value); auto prior=impl_->physical.find(physical);
     if (prior!=impl_->physical.end()) {
         auto& r=*impl_->records.at(prior->second);
-        if (r.declaration.info.fingerprint!=fingerprint || !r.declaration.CompatibleCopies(d.value))
+        if (r.declaration.info.fingerprint!=d.info.fingerprint || !r.declaration.CompatibleCopies(d) || !r.declaration.instances.compatible(d.instances))
             return {0,"ABI conflict: "+r.canonical_id+" and "+name};
         if (!r.refs) return {0,name+": physical target retirement pending"};
         if (r.refs==std::numeric_limits<size_t>::max()) return {0,"target reference overflow"};
         ++r.refs; return {r.id,{}};
     }
     if (impl_->next==std::numeric_limits<TargetId>::max()) return {0,"target id exhausted"};
-    auto r=std::make_shared<Impl::Record>(*impl_,impl_->next,name,std::move(d.value),std::move(resolution.value));
+    auto r=std::make_shared<Impl::Record>(*impl_,impl_->next,name,std::move(d),std::move(resolution.value));
     auto binding=s2fn::RuntimeBinding::Create(r->declaration.abi,*r);
     if (!binding) return {0,name+": "+binding.error};
     auto error=binding.value->BindTarget(reinterpret_cast<void*>(r->resolution.address));
@@ -508,6 +690,45 @@ s2fn::Result<TargetId> Service::Prepare(const std::string& name,const std::strin
     try { impl_->physical.emplace(std::move(physical),r->id); }
     catch (...) { impl_->records.erase(r->id); throw; }
     ++impl_->next; return {r->id,{}};
+}
+namespace {
+void instance_owner(const S2FunctionInstanceOwner& o,bool active) {
+    require(o.version==1 && o.struct_size==56 && !o.reserved && (o.kind==1 || o.kind==2) && (!active || o.generation),"invalid instance owner");
+    require(std::any_of(std::begin(o.id_digest),std::end(o.id_digest),[](uint8_t b){return b!=0;}),"empty instance owner identity");
+}
+}
+s2fn::Result<S2FunctionInstancePrepared> Service::PrepareInstance(uint64_t binding,
+    const S2FunctionInstanceOwner& owner,const std::string& name,const std::string& target,const std::string& contract) {
+    TargetId acquired=0;
+    try {
+        require(std::this_thread::get_id()==impl_->owner,"instance preparation off host thread");
+        instance_owner(owner,false);require(binding && !name.empty() && name.find('\0')==std::string::npos,"invalid instance binding/name");
+        auto declaration=parse_instance(target,contract);
+        auto capability=std::make_shared<FrameAccess::InstanceCapability>();
+        capability->binding=binding;capability->owner=owner;capability->declaration=declaration;
+        require(impl_->next_capability && impl_->next_capability<UINT64_MAX,"instance capability exhaustion");
+        const auto id=impl_->next_capability++;
+        auto prepared=PrepareDeclaration(name,std::move(declaration));require(bool(prepared),prepared.error.c_str());
+        acquired=prepared.value;capability->target=acquired;
+        impl_->capabilities.emplace(id,std::move(capability));
+        return {{1,24,acquired,id},{}};
+    } catch(const std::exception& e) {if(acquired) TargetRelease(acquired);return {{},e.what()};}
+}
+s2fn::Result<bool> Service::ActivateInstance(uint64_t id,const S2FunctionInstanceOwner& owner) {
+    try {
+        require(std::this_thread::get_id()==impl_->owner,"instance activation off host thread");instance_owner(owner,true);
+        auto found=impl_->capabilities.find(id);require(found!=impl_->capabilities.end(),"unknown instance capability");
+        auto& c=*found->second;
+        require(!c.active && !c.released && c.owner.kind==owner.kind &&
+            std::equal(std::begin(owner.id_digest),std::end(owner.id_digest),std::begin(c.owner.id_digest)) &&
+            (!c.owner.generation || c.owner.generation==owner.generation),"instance activation owner/generation mismatch");
+        c.owner=owner;c.active=true;return {true,{}};
+    } catch(const std::exception& e) {return {false,e.what()};}
+}
+bool Service::ReleaseInstance(uint64_t id) {
+    if(std::this_thread::get_id()!=impl_->owner) return false;
+    auto found=impl_->capabilities.find(id);if(found==impl_->capabilities.end()) return true;
+    found->second->active=false;found->second->released=true;impl_->capabilities.erase(found);return true;
 }
 s2fn::Result<S2FunctionValue> Service::Call(TargetId id,unsigned long long owner,
     const S2FunctionValue* args,int argc,S2FunctionValue request) {
@@ -539,8 +760,9 @@ s2fn::Result<S2FunctionValue> Service::CallImpl(TargetId id,unsigned long long o
     } release{*impl_,*r};
     // r keeps its map entry and immutable host interfaces alive through decode,
     // native execution, encode, and call-storage destruction, without this lock.
+    if(r->declaration.instances.restricted()) return {{},"record/hidden native input cannot be manufactured"};
     const auto& abi=r->declaration.abi;
-    size_t receiver=abi.receiver=="entity" ? 1 : 0;
+    size_t receiver=abi.member_receiver ? 1 : 0;
     if (argc<0 || static_cast<size_t>(argc)!=abi.parameters.size()+receiver || (argc && !args))
         return {{},"argument count mismatch"};
     if(r->declaration.HasCopies() && !input) return {{},"FunctionCopyLifetimeUnsupported: copied sidecar required"};
@@ -635,7 +857,7 @@ s2fn::Result<long long> Service::HookAcquire(TargetId id) {
     if (!impl_->sink) return {0,"function dispatch sink unavailable"};
     if (r->installing) return {0,"target registration pending admission"};
     if (r->subscriptions==std::numeric_limits<size_t>::max()) return {0,"subscription overflow"};
-    if (!r->subscriptions) {
+    if (!r->subscriptions && !r->hooked) {
         if (r->active_calls) return {0,"hook acquisition requires idle target"};
         r->installing=true;
         lock.unlock();
@@ -645,19 +867,21 @@ s2fn::Result<long long> Service::HookAcquire(TargetId id) {
         lock.lock();r->installing=false;
         if (!receipt.Accepted()) return {0,"hook acquisition failed: "+receipt.reason};
         if (!r->refs) { r->binding->BeginRemove();return {0,"target retired during registration"}; }
+        r->hooked=true;
     }
     ++r->subscriptions; return {static_cast<long long>(r->binding->Receipt().id)+1,{}};
 }
 bool Service::HookRelease(TargetId id) {
     std::lock_guard<std::recursive_mutex> lock(impl_->mu);
     auto i=impl_->records.find(id); if (i==impl_->records.end() || !i->second->subscriptions) return false;
-    auto& r=*i->second; if (--r.subscriptions==0) r.binding->BeginRemove();
+    auto& r=*i->second; if (--r.subscriptions==0 && !r.refs && r.hooked) { r.hooked=false; r.binding->BeginRemove(); }
     impl_->collect(); return true;
 }
 bool Service::TargetRelease(TargetId id) {
     std::lock_guard<std::recursive_mutex> lock(impl_->mu);
     auto r=impl_->find(id); if (!r) return false;
     --r->refs;
+    if (!r->refs && !r->subscriptions && r->hooked) { r->hooked=false; r->binding->BeginRemove(); }
     // Hook ledger entries release separately; retained subscriptions keep storage alive.
     r.reset(); impl_->collect(); return true;
 }
@@ -666,9 +890,9 @@ S2HookReceipt Service::Receipt(TargetId id) const {
     auto i=impl_->records.find(id);
     return i==impl_->records.end() ? S2HookReceipt{KHook::INVALID_HOOK,S2HookState::Failed,"target handle unavailable"} : i->second->binding->Receipt();
 }
-bool Service::Empty() const { std::lock_guard<std::recursive_mutex> lock(impl_->mu); return impl_->records.empty(); }
+bool Service::Empty() const { std::lock_guard<std::recursive_mutex> lock(impl_->mu); return impl_->records.empty() && impl_->capabilities.empty(); }
 bool Service::Collect() {
-    std::lock_guard<std::recursive_mutex> lock(impl_->mu); impl_->collect(); return impl_->records.empty();
+    std::lock_guard<std::recursive_mutex> lock(impl_->mu); impl_->collect(); return impl_->records.empty() && impl_->capabilities.empty();
 }
 s2fn::Result<S2FunctionHookStatus> Service::HookStatus(TargetId id) const {
     std::lock_guard<std::recursive_mutex> lock(impl_->mu);
@@ -749,10 +973,12 @@ s2fn::Result<bool> FrameCommitCopy(CopyFrameKey key,int action,const S2FunctionV
             auto decoded=f.codec->Decode(edit.second,storage);require(bool(decoded),decoded.error.c_str());
             staged.at(edit.first)=decoded.value;
         }
+        auto fields=prepare_fields(f);
         auto published=f.copies->Publish(f.declaration.copies,staged.size(),return_wins);
         if(!published) return {false,published.error};
         for(size_t i=0;i<staged.size();++i) if(published.value[i]) staged[i]=s2fn::NativeValue::From(published.value[i]);
         if(return_wins) result=s2fn::NativeValue::From(published.value[CopyTransaction::Return]);
+        publish_fields(fields);
         f.native.arguments.swap(staged);f.native.changed=f.changed;f.native.result=result;
         f.native.action=action>=2 ? KHook::Action::Supersede : KHook::Action::Ignore;f.committed=true;
         return {true,{}};
@@ -837,9 +1063,10 @@ extern "C" int S2_FunctionFrameRead(long long id,unsigned long long token,unsign
     try {
         using namespace s2bridge;
         auto& f=frame_access(id,token,epoch,fp); require(out,"missing frame output");
+        require(!f.declaration.instances.records.count(selector) && !f.declaration.instances.hidden.count(selector),"instance position requires capability operation");
         ValueKind k; s2fn::NativeValue value;
         if (selector==-1) {
-            require(f.declaration.abi.receiver=="entity","receiver unavailable");
+            require(f.declaration.abi.member_receiver,"receiver unavailable");
             k=ValueKind::Pointer;value=f.native.receiver;
             require(out->flags==static_cast<unsigned char>(PointerProjection::Entity),"receiver requires strict entity projection");
         } else if (selector==-2 || selector==-3) {
@@ -910,6 +1137,7 @@ extern "C" int S2_FunctionFrameWrite(long long id,unsigned long long token,unsig
         auto& f=frame_access(id,token,epoch,fp);
         require(f.native.phase==s2fn::Phase::Pre && !f.committed,"frame is readonly");
         require(value && selector>=0 && static_cast<size_t>(selector)<f.staged.size(),"invalid frame write selector");
+        require(!f.declaration.instances.records.count(selector) && !f.declaration.instances.hidden.count(selector),"instance position requires capability operation");
         require(!f.declaration.copies[selector],"copied position requires sidecar operation");
         if(kind(f.declaration.abi.parameters[selector].native)==ValueKind::Pointer) {
             require(f.codec,"entity codec unavailable");CallStorage storage;
@@ -946,7 +1174,9 @@ extern "C" int S2_FunctionFrameCommit(long long id,unsigned long long token,unsi
             auto decoded=f.codec->Decode(edit.second,storage);require(bool(decoded),decoded.error.c_str());
             staged.at(edit.first)=decoded.value;
         }
-        // All validation and allocation precede the atomic final transfer.
+        auto fields=prepare_fields(f);
+        // All validation and allocation precede the final no-fail publication.
+        publish_fields(fields);
         f.native.arguments.swap(staged); f.native.changed=f.changed;
         f.native.action=action>=2 ? KHook::Action::Supersede : KHook::Action::Ignore;
         f.native.result=result; f.committed=true; reason_out(reason,cap,""); return 1;
@@ -993,4 +1223,81 @@ extern "C" int S2_FunctionFrameOverrideReturnCopy(long long target, unsigned lon
     catch(const std::exception& e){reason_out(reason,reason_cap,e.what());return 0;}
     catch(...){reason_out(reason,reason_cap,"FunctionCopyTransportFailure: native exception");return 0;}
 }
+
+namespace {
+template<class F> int instance_boundary(char* reason,int cap,F&& f) {
+    try { f();reason_out(reason,cap,"");return 1; }
+    catch(const std::exception& e) {reason_out(reason,cap,e.what());return 0;}
+    catch(...) {reason_out(reason,cap,"native instance exception");return 0;}
+}
+}
+extern "C" int S2_FunctionPrepareInstance(unsigned long long binding,const S2FunctionInstanceOwner* owner,
+    const char* name,const char* target,const char* contract,S2FunctionInstancePrepared* out,char* reason,int cap) {
+    return instance_boundary(reason,cap,[&] {
+        s2bridge::require(owner && name && target && contract && out,"missing instance preparation input");
+        auto result=s2bridge::Global().PrepareInstance(binding,*owner,name,target,contract);
+        s2bridge::require(bool(result),result.error.c_str());*out=result.value;
+    });
+}
+extern "C" int S2_FunctionInstanceActivate(unsigned long long capability,const S2FunctionInstanceOwner* owner,char* reason,int cap) {
+    return instance_boundary(reason,cap,[&] {
+        s2bridge::require(owner,"missing instance owner");auto result=s2bridge::Global().ActivateInstance(capability,*owner);
+        s2bridge::require(bool(result),result.error.c_str());
+    });
+}
+extern "C" int S2_FunctionInstanceRelease(unsigned long long capability) {
+    try {return s2bridge::Global().ReleaseInstance(capability) ? 1 : 0;} catch(...) {return 0;}
+}
+extern "C" int S2_FunctionFrameReadInstance(const S2FunctionInstanceAccess* access,int selector,S2FunctionValue* out,char* reason,int cap) {
+    return instance_boundary(reason,cap,[&] {
+        using namespace s2bridge;require(access && out,"missing instance access/output");
+        auto [frame,c]=instance_access(*access);auto& f=*frame;
+        require(!c->declaration.instances.hidden.count(selector),"hidden native position has no projection");
+        if(c->declaration.instances.records.count(selector)) {
+            const auto pointer=record_pointer(f,*c,selector);S2FunctionValue v{};v.kind=1;v.bits=pointer ? 1 : 0;*out=v;return;
+        }
+        if(selector==-1) {
+            require(c->declaration.abi.member_receiver && f.codec,"receiver unavailable");
+            S2FunctionValue request{};request.kind=8;request.flags=c->declaration.instances.nullable_receiver ? 2 : 1;
+            auto value=f.codec->Encode(f.native.receiver,request);require(bool(value),value.error.c_str());*out=value.value;return;
+        }
+        char why[512]{};
+        require(S2_FunctionFrameRead(f.target,f.info.frame_token,f.info.native_epoch,c->declaration.info.fingerprint.c_str(),selector,out->kind,out,why,512)==1,why);
+    });
+}
+extern "C" int S2_FunctionFrameFieldRead(const S2FunctionInstanceAccess* access,int selector,unsigned int field,S2FunctionValue* out,char* reason,int cap) {
+    return instance_boundary(reason,cap,[&] {
+        using namespace s2bridge;require(access && out,"missing record access/output");
+        auto [frame,c]=instance_access(*access);auto& f=*frame;const auto& row=record_field(f,*c,selector,field,false);
+        auto pointer=record_pointer(f,*c,selector);require(pointer,"null record has no fields");
+        S2FunctionValue value{};uint64_t bits=0;
+        auto staged=f.field_edits.find({selector,row.offset});
+        if(staged!=f.field_edits.end()) bits=field_bits(f,row,staged->second.value);
+        else std::memcpy(&bits,reinterpret_cast<const void*>(pointer+row.offset),row.width);
+        if(row.storage=="entity-handle32") {
+            value.kind=8;value.flags=row.nullable ? 2 : 1;
+            if(bits==UINT32_MAX) {require(row.nullable,"null strict entity field");value.aux=UINT32_MAX;}
+            else {value.aux=bits&0x7fff;value.bits=bits>>15;}
+            require(f.codec,"record entity codec unavailable");CallStorage storage;
+            auto decoded=f.codec->Decode(value,storage);require(bool(decoded),decoded.error.c_str());
+            auto request=value;request.aux=0;request.bits=0;
+            auto encoded=f.codec->Encode(decoded.value,request);require(bool(encoded),encoded.error.c_str());value=encoded.value;
+        } else {
+            value.kind=static_cast<uint8_t>(kind(row.storage=="bool" ? "u8" : row.storage=="u16" ? "u32" : row.storage));value.bits=bits;
+            field_bits(f,row,value);
+        }
+        *out=value;
+    });
+}
+extern "C" int S2_FunctionFrameFieldWrite(const S2FunctionInstanceAccess* access,int selector,unsigned int field,const S2FunctionValue* value,char* reason,int cap) {
+    return instance_boundary(reason,cap,[&] {
+        using namespace s2bridge;require(access && value,"missing record access/value");
+        auto [frame,c]=instance_access(*access);auto& f=*frame;const auto& row=record_field(f,*c,selector,field,true);
+        require(record_pointer(f,*c,selector),"null record has no fields");field_bits(f,row,*value);
+        f.field_edits[{selector,row.offset}]={c,field,*value};f.changed=true;
+    });
+}
+static_assert(sizeof(S2FunctionInstanceOwner)==56 && offsetof(S2FunctionInstanceOwner,generation)==48,"instance owner v1");
+static_assert(sizeof(S2FunctionInstancePrepared)==24 && offsetof(S2FunctionInstancePrepared,capability)==16,"instance prepared v1");
+static_assert(sizeof(S2FunctionInstanceAccess)==48 && offsetof(S2FunctionInstanceAccess,binding_id)==40,"instance access v1");
 #endif

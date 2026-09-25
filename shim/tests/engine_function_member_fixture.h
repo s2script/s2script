@@ -9,6 +9,16 @@ struct S2FnMemberFixture {
     volatile std::uint64_t* original_calls;
     __attribute__((noinline, visibility("hidden"))) std::int32_t Call(std::int32_t value);
 };
+struct S2FnRecordFixture {
+    float amount;
+    std::int32_t flags;
+    std::uint32_t entity;
+    std::uint8_t enabled;
+    std::uint8_t sentinel;
+    std::uint16_t small;
+    double scale;
+    __attribute__((noinline, visibility("hidden"))) std::int32_t Call(S2FnRecordFixture*,const char*,void*);
+};
 extern "C" __attribute__((visibility("default"))) void* s2fn_member_fixture_target();
 
 using S2FnMixedTarget = double (*)(std::int64_t, double, std::int64_t, double,
@@ -37,6 +47,7 @@ struct S2FnFixtureTargets {
     void* member;
     bool (*peer_boolean)(bool);
     S2FnMixedTarget peer_mixed;
+    void* record_member;
 };
 extern "C" __attribute__((visibility("default"))) S2FnFixtureTargets s2fn_fixture_targets();
 extern "C" __attribute__((visibility("default"))) void s2fn_fixture_set_original_calls(volatile std::uint64_t* calls);

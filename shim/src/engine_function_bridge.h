@@ -2,6 +2,7 @@
 #include "engine_function_abi.h"
 #include "engine_resolver.h"
 #include "engine_function_transport.h"
+#include "engine_function_instance.h"
 
 namespace s2bridge {
 struct Declaration {
@@ -11,10 +12,13 @@ struct Declaration {
     s2fn::AbiInfo info;
     std::array<CopyPosition,32> copies{};
     CopyPosition return_copy{};
+    InstancePositions instances;
     bool HasCopies() const;
     bool CompatibleCopies(const Declaration&) const;
 };
 using Resolver = std::function<bool(const s2resolve::TargetRecipe&, s2resolve::Resolution&, std::string&)>;
+// Host-only normalization helper; creates no capability or lifetime authority.
+s2fn::Result<Declaration> ParseInstance(const std::string& target,const std::string& contract);
 s2fn::Result<Declaration> Parse(const std::string& target, const std::string& abi,
                                 const std::string& fingerprint);
 s2fn::Result<s2resolve::Resolution> Resolve(const Declaration&, const Resolver& = s2resolve::Resolve,
@@ -88,6 +92,11 @@ public:
         const CopyInput&, CopyOutput&, const CopyProducer& caller);
     s2fn::Result<TargetId> Prepare(const std::string& canonical_id, const std::string& target,
                                  const std::string& abi, const std::string& fingerprint);
+    s2fn::Result<S2FunctionInstancePrepared> PrepareInstance(uint64_t binding,
+        const S2FunctionInstanceOwner&, const std::string& name, const std::string& target,
+        const std::string& contract);
+    s2fn::Result<bool> ActivateInstance(uint64_t, const S2FunctionInstanceOwner&);
+    bool ReleaseInstance(uint64_t);
     s2fn::Result<S2FunctionValue> Call(TargetId, unsigned long long owner,
         const S2FunctionValue*, int argc, S2FunctionValue result_request = {});
     // Positive opaque receipt (provider id + 1); zero is the C boundary failure.
@@ -100,6 +109,7 @@ public:
     bool Collect();
     bool Empty() const;
 private:
+    s2fn::Result<TargetId> PrepareDeclaration(const std::string&, Declaration);
     s2fn::Result<S2FunctionValue> CallImpl(TargetId,unsigned long long,const S2FunctionValue*,int,
         S2FunctionValue,const CopyInput*,CopyOutput*,const CopyProducer*);
     struct Impl;
@@ -137,3 +147,12 @@ int S2_FunctionFrameCommitCopy(long long target, unsigned long long token, unsig
 int S2_FunctionFrameOverrideReturnCopy(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, const S2FunctionValue* value, const S2FunctionCopyInput* input, const S2FunctionCopyProducer* producer, S2FunctionValue* effective, S2FunctionCopyOutput* output, char* reason, int reason_cap);
 }
 #endif
+
+extern "C" {
+int S2_FunctionPrepareInstance(unsigned long long,const S2FunctionInstanceOwner*,const char*,const char*,const char*,S2FunctionInstancePrepared*,char*,int);
+int S2_FunctionInstanceActivate(unsigned long long,const S2FunctionInstanceOwner*,char*,int);
+int S2_FunctionInstanceRelease(unsigned long long);
+int S2_FunctionFrameReadInstance(const S2FunctionInstanceAccess*,int,S2FunctionValue*,char*,int);
+int S2_FunctionFrameFieldRead(const S2FunctionInstanceAccess*,int,unsigned int,S2FunctionValue*,char*,int);
+int S2_FunctionFrameFieldWrite(const S2FunctionInstanceAccess*,int,unsigned int,const S2FunctionValue*,char*,int);
+}

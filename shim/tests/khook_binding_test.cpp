@@ -37,6 +37,8 @@ public:
     KHook::HookID_t next_id = 1;
     bool fail_setup = false;
     int setup_hook_calls = 0;
+    void* last_function_pre = nullptr;
+    void* last_function_post = nullptr;
     int setup_virtual_calls = 0;
     int find_original_calls = 0;
     int find_original_virtual_calls = 0;
@@ -54,9 +56,11 @@ public:
     };
     std::vector<Removal> removals;
 
-    KHook::HookID_t SetupHook(void*, void* context, void* helper, void*, void*, void*, void*, unsigned int,
+    KHook::HookID_t SetupHook(void*, void* context, void* helper, void* pre, void* post, void*, void*, unsigned int,
                              bool = false) override {
         ++setup_hook_calls;
+        last_function_pre = pre;
+        last_function_post = post;
         if (fail_setup) {
             return KHook::INVALID_HOOK;
         }
@@ -234,6 +238,11 @@ static void test_valid_id_is_pending_until_observe() {
     CHECK(fn.Snapshot().state != S2HookState::Active, "no Active claim before Observe");
     CHECK(fake.find_original_calls == 0, "Pending Function does not probe the engine");
     CHECK(fake.setup_hook_calls == 1, "one SetupHook for a new Function capsule");
+    // The actual pinned Function wrapper supplies both make-phase thunks even
+    // though fn was constructed with a null logical POST callback. Provider
+    // insertion order must therefore treat this registration as paired.
+    CHECK(fake.last_function_pre != nullptr, "logical PRE-only Function registers a physical PRE thunk");
+    CHECK(fake.last_function_post != nullptr, "logical PRE-only Function registers a physical POST thunk");
 
     Dummy obj;
     S2CheckedVirtual<Dummy, void> virt(0u, &DummyPre, nullptr);

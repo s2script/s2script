@@ -1,3 +1,4 @@
+pub(crate) mod instance;
 pub(crate) mod policy;
 pub(crate) mod package_adapter;
 pub(crate) mod projection;
@@ -24,6 +25,43 @@ pub(crate) mod tests {
             "policy":{"id":"generic.v2","version":1,"contractHash":"","surfaces":["call"],"selfCall":"bypass-own-hooks","suppression":"none"},"requirement":"optional"}]});
         seal(&mut b);
         b
+    }
+    #[test]
+    fn borrowed_instance_pods_preserve_exact_c_layout() {
+        use crate::v8host::{S2FunctionInstanceOwner as Owner,S2FunctionInstancePrepared as Prepared,S2FunctionInstanceAccess as Access};
+        use std::mem::{align_of,size_of,offset_of};
+        assert_eq!((size_of::<Owner>(),align_of::<Owner>(),offset_of!(Owner,id_digest),offset_of!(Owner,generation)),(56,8,16,48));
+        assert_eq!((size_of::<Prepared>(),align_of::<Prepared>(),offset_of!(Prepared,target),offset_of!(Prepared,capability)),(24,8,8,16));
+        assert_eq!((size_of::<Access>(),align_of::<Access>(),offset_of!(Access,target),offset_of!(Access,frame_token),offset_of!(Access,native_epoch),offset_of!(Access,capability),offset_of!(Access,binding_id)),(48,8,8,16,24,32,40));
+    }
+    #[test]
+    fn borrowed_physical_signature_preserves_public_fingerprint() {
+        let bundle = parse(&fixture()).unwrap();
+        let f = super::instance::Function::from_public(bundle.functions[0].clone()).unwrap();
+        assert!(!f.abi.member_receiver);
+        assert_eq!(f.abi.fingerprint, "linux-x86_64-sysv:none:void()");
+        let mut physical = f.abi.physical();
+        physical.member_receiver = true;
+        assert_eq!(physical.fingerprint().unwrap(), "linux-x86_64-sysv:entity:void()");
+    }
+    #[test]
+    fn borrowed_record_layout_rejects_overlap_and_pointer_fields() {
+        use super::instance::{RecordField, RecordLayout};
+        let mut layout = RecordLayout {
+            extent: 16, alignment: 8,
+            fields: vec![RecordField { name: "value".into(), offset_key: "value".into(),
+                offset: 0, storage: "f32".into(), nullable: false,
+                read: vec!["pre".into(), "post".into()], write: vec!["pre".into()] }],
+        };
+        assert!(layout.validate().is_ok());
+        layout.fields.push(RecordField { name: "overlap".into(), ..layout.fields[0].clone() });
+        assert!(layout.validate().unwrap_err().contains("overlap"));
+        layout.fields.pop();
+        layout.fields[0].storage = "ptr".into();
+        assert!(layout.validate().unwrap_err().contains("storage"));
+        layout.fields[0].storage = "bool".into();
+        layout.fields[0].offset = 16;
+        assert!(layout.validate().unwrap_err().contains("extent"));
     }
     pub(crate) fn seal(b: &mut Value) {
         for f in b["functions"].as_array_mut().unwrap() {

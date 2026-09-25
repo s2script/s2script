@@ -1,20 +1,25 @@
 //! Projection compatibility is independent of callback names and mutation rights.
-use super::contract::Abi;
+use super::instance::Signature as Abi;
 
 pub(crate) fn compatible(a: &Abi, b: &Abi) -> bool {
-    a.fingerprint == b.fingerprint
-        && a.receiver == b.receiver
-        && a.parameters.len() == b.parameters.len()
-        && a.parameters.iter().zip(&b.parameters).all(|(a, b)| {
-            a.native == b.native
-                && a.ownership == b.ownership
-                && codec_compatible(&a.projection.id, &b.projection.id)
-                && a.projection.version == b.projection.version
-        })
-        && a.returns.native == b.returns.native
-        && a.returns.ownership == b.returns.ownership
-        && codec_compatible(&a.returns.projection.id, &b.returns.projection.id)
-        && a.returns.projection.version == b.returns.projection.version
+    fn position(a:&Abi,b:&Abi,x:&super::instance::Position,y:&super::instance::Position)->bool {
+        if x.native!=y.native || x.ownership!=y.ownership || x.projection.version!=y.projection.version
+            || !codec_compatible(&x.projection.id,&y.projection.id) {return false;}
+        match (x.instance,y.instance) {
+            (None,None)=>true,
+            (Some(i),Some(j))=>a.instances.get(i).zip(b.instances.get(j)).is_some_and(|(x,y)|
+                x.codec_id==y.codec_id && x.codec_version==y.codec_version && x.kind.is_none() && y.kind.is_none()
+                && x.record.extent==y.record.extent && x.record.alignment==y.record.alignment
+                && x.record.fields.len()==y.record.fields.len() && x.record.fields.iter().zip(&y.record.fields)
+                    .all(|(x,y)|x.offset==y.offset && x.storage==y.storage)),
+            _=>false,
+        }
+    }
+    a.fingerprint == b.fingerprint && a.member_receiver == b.member_receiver
+        && match (&a.receiver,&b.receiver) {(None,None)=>true,(Some(x),Some(y))=>position(a,b,x,y),_=>false}
+        && a.parameters.len()==b.parameters.len()
+        && a.parameters.iter().zip(&b.parameters).all(|(x,y)|position(a,b,x,y))
+        && position(a,b,&a.returns,&b.returns)
 }
 
 fn codec_compatible(a: &str, b: &str) -> bool {
