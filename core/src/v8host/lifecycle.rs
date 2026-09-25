@@ -472,6 +472,10 @@ enum LoadStart {
 /// Degrade-never-crash: a compile/run error logs a named WARN and tears down; no exception propagates
 /// (the whole JS run is under a `TryCatch`).
 pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str) {
+    load_plugin_js_prepared(id, plugin_js, config_values_json, None);
+}
+pub(crate) fn load_plugin_js_prepared(id: &str, plugin_js: &str, config_values_json: &str,
+    receipt: Option<crate::engine_functions::registry::PreparedOwnerReceipt>) {
     // Defensive guard: if the plugin is already loaded (e.g. the caller is performing a
     // reload but did not call unload_plugin first), tear it down now so the old handler
     // Global/context can never leak into the new instance.  The loader's explicit
@@ -486,7 +490,15 @@ pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str
     }
 
     // (1) Fresh context with the full injected API installed.
-    create_plugin_context(id);
+    let generation = create_plugin_context(id);
+    if !is_failed(id) {
+        if let Some(receipt) = receipt {
+            if let Err(error) = crate::engine_functions::registry::activate_owner(receipt,
+                crate::engine_functions::contract::OwnerKey::plugin(id, generation)) {
+                set_failed(id, &error);
+            }
+        }
+    }
     if is_failed(id) {
         unload_partial(id);
         return;

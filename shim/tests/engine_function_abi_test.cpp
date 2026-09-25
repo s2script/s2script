@@ -11,7 +11,7 @@ static void signatures() {
     auto info = Validate(s);
     assert(info && info.value.fingerprint == "linux-x86_64-sysv:none:u8(i32,f64,ptr)");
     assert(info.value.stack_bytes == 128);
-    auto different = s; different.receiver = "entity";
+    auto different = s; different.member_receiver = true;
     assert(Validate(different).value.fingerprint != info.value.fingerprint);
     different = s; different.returns = {"u32"};
     assert(Validate(different).value.fingerprint != info.value.fingerprint);
@@ -26,8 +26,7 @@ static void signatures() {
     auto reject = [](AbiSignature bad, const char* feature) {
         auto r = Validate(bad); assert(!r); assert(r.error.find(feature) != std::string::npos);
     };
-    different = s; different.platform = "windows"; different.receiver = "struct"; reject(different, "platform: windows");
-    different = s; different.receiver = "struct"; reject(different, "receiver: struct");
+    different = s; different.platform = "windows"; reject(different, "platform: windows");
     different = s; different.varargs = true; reject(different, "varargs");
     different = s; different.returns = {"aggregate"}; reject(different, "return: aggregate");
     different = s; different.parameters[0] = {"i16"}; reject(different, "parameter[0]: i16");
@@ -35,7 +34,7 @@ static void signatures() {
     different = s; different.parameters.assign(33, {"i32"}); reject(different, "parameter count");
     s = {}; s.parameters.assign(6, {"i64"}); assert(Validate(s).value.stack_bytes == 128);
     s.parameters.assign(32, {"i64"}); assert(Validate(s).value.stack_bytes == 208);
-    s.receiver = "entity"; assert(Validate(s).value.stack_bytes == 224);
+    s.member_receiver = true; assert(Validate(s).value.stack_bytes == 224);
     s = {}; s.parameters.assign(32, {"f64"}); assert(Validate(s).value.stack_bytes == 192);
     s = {}; for (int i = 0; i < 16; ++i) { s.parameters.push_back({"f64"}); s.parameters.push_back({"i64"}); }
     assert(Validate(s).value.stack_bytes == 144);
@@ -354,7 +353,7 @@ static void recall_suppression_nested() {
     auto old = original_calls; assert(v->Call(&input, 1)); assert(original_calls == old); retire(v);
 }
 static void receiver_spills_novel() {
-    AbiSignature s; s.receiver = "entity"; s.parameters = {{"i32"}}; s.returns = {"i32"};
+    AbiSignature s; s.member_receiver = true; s.parameters = {{"i32"}}; s.returns = {"i32"};
     S2FnMemberFixture object{12, &original_calls}; Sink sink;
     const auto member_target = fixture_targets().member;
     sink.dispatch = [&](DispatchFrame& f) { assert(f.receiver.Get<void*>() == &object); };
@@ -431,10 +430,31 @@ extern "C" int s2fn_production_entity_slot(int index,unsigned serial,int live) {
 static void (*production_step)()=nullptr;
 static bool production_requested=true;
 static int production_peer_calls=0;
+static int production_post_mode=0;
+static int production_later_calls=0;
+static bool production_later_installed=false;
+static KHook::Return<std::int32_t> production_later_post(std::int32_t);
+static S2CheckedFunction<std::int32_t,std::int32_t> production_later(nullptr,production_later_post);
+static KHook::Return<std::int32_t> production_later_post(std::int32_t) {
+    auto observation=production_later.Observe();assert(observation);++production_later_calls;
+    return {production_post_mode==3 ? KHook::Action::Override : KHook::Action::Ignore,91};
+}
+extern "C" int s2fn_production_post_peer_mode(int mode) {
+    if(std::this_thread::get_id()!=production_owner || mode<0 || mode>3)return 0;
+    production_post_mode=mode;
+    if(mode==3) {
+        if(production_later_installed)return production_later_calls ? 2 : 1;
+        production_later_installed=production_later.Configure(checked_target(reinterpret_cast<void*>(identity_target<std::int32_t>()))).Accepted();
+        return production_later_installed ? 1 : 0;
+    }
+    return 1;
+}
 static KHook::Return<std::int32_t> production_peer_pre(std::int32_t);
 static S2CheckedFunction<std::int32_t,std::int32_t> production_peer(production_peer_pre,nullptr);
 static KHook::Return<std::int32_t> production_peer_pre(std::int32_t value){
     auto observation=production_peer.Observe();assert(observation);++production_peer_calls;
+    if(production_post_mode==1)return {KHook::Action::Override,71};
+    if(production_post_mode==2)return {KHook::Action::Supersede,72};
     return {KHook::Action::Ignore,value};
 }
 extern "C" int s2fn_production_add_peer(){
@@ -454,10 +474,109 @@ static long long production_prepare(const char* name,const char* target,const ch
     auto result=production_service->Prepare(name,target,abi,fingerprint);
     if(why && cap>0) std::snprintf(why,cap,"%s",result.error.c_str());return result ? result.value : 0;
 }
+static int production_prepare_instance(unsigned long long binding,const S2FunctionInstanceOwner* owner,const char* name,const char* target,const char* contract,S2FunctionInstancePrepared* out,char* why,int cap) {
+    if(!owner || !out)return 0;
+    auto result=production_service->PrepareInstance(binding,*owner,name,target,contract);
+    if(why && cap>0)std::snprintf(why,cap,"%s",result.error.c_str());if(!result)return 0;*out=result.value;return 1;
+}
+static int production_instance_activate(unsigned long long id,const S2FunctionInstanceOwner* owner,char* why,int cap) {
+    if(!owner)return 0;auto result=production_service->ActivateInstance(id,*owner);
+    if(why && cap>0)std::snprintf(why,cap,"%s",result.error.c_str());return result ? 1 : 0;
+}
+static int production_instance_release(unsigned long long id) {return production_service->ReleaseInstance(id);}
+static uint64_t record_peer_calls=0, record_early_calls=0, record_hidden=0;
+static double record_peer_receiver=0,record_peer_info=0,record_early_receiver=0,record_early_info=0;
+static KHook::Return<int32_t> record_peer_pre(S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*);
+static KHook::Return<int32_t> record_peer_post(S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*);
+static KHook::Return<int32_t> record_early_pre(S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*);
+// KHook::Function registers both physical phase thunks even with a null logical
+// POST callback. Paired insertion prepends existing paired hooks: configure the
+// later observer before Service and the early observer after Service.
+static S2CheckedFunction<int32_t,S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*> record_peer(record_peer_pre,record_peer_post);
+static S2CheckedFunction<int32_t,S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*> record_early(record_early_pre,nullptr);
+static KHook::Return<int32_t> record_peer_pre(S2FnRecordFixture* receiver,S2FnRecordFixture* info,const char*,void* hidden) {
+    auto observation=record_peer.Observe();assert(observation);++record_peer_calls;
+    record_hidden=reinterpret_cast<uintptr_t>(hidden);record_peer_receiver=receiver->amount;record_peer_info=info ? info->amount : -1;return {KHook::Action::Ignore,0};
+}
+static KHook::Return<int32_t> record_peer_post(S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*) {
+    auto observation=record_peer.Observe();assert(observation);return {KHook::Action::Ignore,0};
+}
+static KHook::Return<int32_t> record_early_pre(S2FnRecordFixture* receiver,S2FnRecordFixture* info,const char*,void*) {
+    auto observation=record_early.Observe();assert(observation);++record_early_calls;
+    record_early_receiver=receiver->amount;record_early_info=info ? info->amount : -1;return {KHook::Action::Ignore,0};
+}
+extern "C" int s2fn_production_record_peer(int mode) {
+    if(mode==0) {record_peer.BeginRemove(true);record_early.BeginRemove(true);return 1;}
+    if(mode==1) return record_peer.Configure(checked_target(fixture_targets().record_member)).Accepted();
+    if(mode==3) return record_early.Configure(checked_target(fixture_targets().record_member)).Accepted();
+    if(mode==4) return record_early.BeginRemove(true);
+    if(mode==5) return record_early.RemovalComplete();
+    return static_cast<int>(std::min(record_peer_calls,record_early_calls));
+}
+extern "C" int s2fn_production_record_call(int mode,double* output) {
+    if(!output || std::this_thread::get_id()!=production_owner)return 0;
+    S2FnRecordFixture receiver{2,3,0xffffffff,1,0xa5,123,4},info{7,8,0xffffffff,1,0x5a,321,9};
+    auto target=reinterpret_cast<int32_t(*)(S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*)>(fixture_targets().record_member);
+    auto hidden=(mode&1) ? reinterpret_cast<void*>(uintptr_t(0xfedcba9876543210ULL)) : nullptr;
+    const auto before=original_calls; // shared fixture counter remains observable across reentry.
+    const auto peer_before=record_peer_calls,early_before=record_early_calls;
+    auto result=target(&receiver,(mode&2) ? nullptr : &info,"abc",hidden);
+    output[0]=receiver.amount;output[1]=info.amount;output[2]=result;
+    output[3]=info.flags;output[4]=info.enabled;output[5]=info.scale;output[6]=info.entity;
+    output[10]=info.small;output[11]=info.sentinel;
+    output[7]=original_calls-before;output[8]=record_peer_calls;
+    output[12]=record_peer_receiver;output[13]=record_peer_info;
+    output[14]=record_early_receiver;output[15]=record_early_info;
+    output[16]=record_peer_calls-peer_before;output[17]=record_early_calls-early_before;
+    output[9]=record_peer_calls ? (record_hidden==reinterpret_cast<uintptr_t>(hidden) ? 1 : 0) : -1;
+    return 1;
+}
 static int production_call(long long id,unsigned long long owner,const S2FunctionValue* args,int argc,S2FunctionValue* out,char* why,int cap) {
     auto result=production_service->Call(id,owner,args,argc,*out);
     if(why && cap>0) std::snprintf(why,cap,"%s",result.error.c_str());if(!result)return 0;*out=result.value;return 1;
 }
+static int production_copy_call(long long id,unsigned long long owner,const S2FunctionValue* args,int argc,S2FunctionValue* out,const S2FunctionCopyInput* input,S2FunctionCopyOutput* output,const S2FunctionCopyProducer* producer,char* why,int cap) {
+    if(!out || !input || !output || !producer)return 0;
+    s2bridge::CopyInput in{input->version,input->struct_size,input->data,input->size};
+    s2bridge::CopyOutput result_out{output->version,output->struct_size,output->data,output->capacity,output->size};
+    s2bridge::CopyProducer who{producer->version,producer->struct_size,producer->domain,producer->reserved,{},producer->generation};
+    std::copy_n(producer->digest,32,who.digest.begin());
+    auto result=production_service->CallCopy(id,owner,args,argc,*out,in,result_out,who);
+    if(why && cap>0)std::snprintf(why,cap,"%s",result.error.c_str());if(!result)return 0;
+    *out=result.value;output->size=result_out.size;return 1;
+}
+static int production_copy_peer_mode=0;
+static bool production_copy_peer_installed=false;
+static unsigned production_copy_peer_calls=0;
+static KHook::Return<void*> production_copy_post(void*);
+static S2CheckedFunction<void*,void*> production_copy_peer(nullptr,production_copy_post);
+static KHook::Return<void*> production_copy_post(void*) {
+    auto observation=production_copy_peer.Observe();assert(observation);
+    if(production_copy_peer_mode==2){++production_copy_peer_calls;return {KHook::Action::Override,const_cast<char*>("late-native-peer")};}
+    return {KHook::Action::Ignore};
+}
+extern "C" int s2fn_production_copy_peer(int mode) {
+    if(mode==1 && !production_copy_peer_installed){production_copy_peer_installed=production_copy_peer.Configure(checked_target(reinterpret_cast<void*>(fixture_targets().identity_ptr))).Accepted();return production_copy_peer_installed;}
+    if(mode==3){production_copy_peer_mode=0;production_copy_peer.BeginRemove(true);return 1;}
+    production_copy_peer_mode=mode;return mode==2 && production_copy_peer_calls ? 2 : 1;
+}
+static const char* production_copy_escaped=nullptr;
+static std::string production_copy_expected;
+extern "C" int s2fn_production_copy_engine_call(const char* input,const char* expected) {
+    auto volatile target=fixture_targets().identity_ptr;
+    auto result=static_cast<const char*>(target(const_cast<char*>(input)));
+    if(!result || std::strcmp(result,expected))return 0;
+    production_copy_escaped=result;production_copy_expected=expected;return 1;
+}
+extern "C" int s2fn_production_copy_escaped_check() {
+    std::vector<std::string> churn(256,std::string(4096,'z'));
+    return production_copy_escaped && std::strcmp(production_copy_escaped,production_copy_expected.c_str())==0;
+}
+extern "C" int s2fn_production_copy_borrowed_call() {
+    auto volatile target=reinterpret_cast<std::int32_t(*)(const char*)>(s2fn_fixture_copy_length_target());
+    return target("outer");
+}
+extern "C" unsigned long long s2fn_production_copy_arena_values(){return s2fn::copy::Arena::Resident().Read().values;}
 static long long production_acquire(long long id,char* why,int cap) {
     assert(s2hook_detail::g_callback_depth>0); // actual outer or peer observation; never fabricated
     auto result=production_service->HookAcquire(id);
@@ -465,7 +584,7 @@ static long long production_acquire(long long id,char* why,int cap) {
 }
 static int production_release(long long id){return production_service->HookRelease(id);}
 static int production_target_release(long long id){return production_service->TargetRelease(id);}
-static int production_status(long long id,S2FunctionHookStatus* out,char* why,int cap){auto result=production_service->HookStatus(id);if(why && cap>0)std::snprintf(why,cap,"%s",result.error.c_str());if(!result)return 0;*out=result.value;return 1;}
+static int production_status(long long id,S2FunctionHookStatus* out,char* why,int cap){auto result=production_service->HookStatus(id);if(why && cap>0)std::snprintf(why,cap,"%s",(result && result.value.state==0 ? production_service->Receipt(id).reason : result.error).c_str());if(!result)return 0;*out=result.value;return 1;}
 extern "C" int s2fn_production_create(s2bridge::CoreDispatch dispatch,void(*step)(),S2EngineOps* ops) {
     production_step=step;production_requested=true;production_owner=std::this_thread::get_id();
     Dl_info module{};auto address=checked_target(reinterpret_cast<void*>(identity_target<std::int32_t>()));
@@ -474,7 +593,9 @@ extern "C" int s2fn_production_create(s2bridge::CoreDispatch dispatch,void(*step
     production_service=std::make_unique<s2bridge::Service>([image,address](const auto& recipe,auto& result,auto&){
         // Explicit fixture recipes only. Every body remains in the isolated DSO.
         auto selected=recipe.pattern=="50" ? checked_target(reinterpret_cast<void*>(fixture_targets().identity_ptr)) :
-            recipe.pattern=="51" ? checked_target(fixture_targets().member) : address;
+            recipe.pattern=="51" ? checked_target(fixture_targets().member) :
+            recipe.pattern=="52" ? checked_target(s2fn_fixture_copy_length_target()) :
+            recipe.pattern=="53" ? checked_target(fixture_targets().record_member) : address;
         result.image=image;result.address=reinterpret_cast<uintptr_t>(selected);
         result.recipe="separated compiler-authored scalar fixture";result.validation_receipt="fixture module guard";return true;
     });
@@ -493,30 +614,64 @@ extern "C" int s2fn_production_create(s2bridge::CoreDispatch dispatch,void(*step
             }return false;
         }});
     assert(production_service->SetPointerCodec(production_codec.get()));
+    ops->function_prepare_instance=production_prepare_instance;ops->function_instance_activate=production_instance_activate;ops->function_instance_release=production_instance_release;
+    ops->function_frame_read_instance=S2_FunctionFrameReadInstance;ops->function_frame_field_read=S2_FunctionFrameFieldRead;ops->function_frame_field_write=S2_FunctionFrameFieldWrite;
     ops->function_prepare=production_prepare;ops->function_call=production_call;
     ops->function_hook_acquire=production_acquire;ops->function_hook_release=production_release;
     ops->function_target_release=production_target_release;ops->function_hook_status=production_status;
     ops->function_frame_read=S2_FunctionFrameRead;ops->function_frame_write=S2_FunctionFrameWrite;
     ops->function_frame_commit=S2_FunctionFrameCommit;
+    ops->function_frame_override_return=S2_FunctionFrameOverrideReturn;
+    ops->function_call_copy=production_copy_call;
+    ops->function_frame_read_copy=S2_FunctionFrameReadCopy;
+    ops->function_frame_write_copy=S2_FunctionFrameWriteCopy;
+    ops->function_frame_commit_copy=S2_FunctionFrameCommitCopy;
+    ops->function_frame_override_return_copy=S2_FunctionFrameOverrideReturnCopy;
     assert(production_frame.Configure(checked_target(reinterpret_cast<void*>(fixture_targets().void_target))).Accepted());
     return 1;
 }
+extern "C" int s2fn_production_empty();
 extern "C" int s2fn_production_frame(int requested) {
     production_requested=requested!=0;
-    auto volatile target=fixture_targets().void_target;target(0);return 1;
+    auto volatile target=fixture_targets().void_target;target(0);
+    if(production_copy_peer_installed)s2fn_production_empty(); // component receipt before owner maintenance
+    // Service::Collect inside the observed frame prunes only its bridge tickets.
+    // Ordinary peer tickets need the existing global drain after that frame unwinds.
+    return S2Hook_DrainRetirement() ? 1 : 0;
+}
+// Test-only actual engine entry: no Service::Call and no script caller owner.
+extern "C" int s2fn_production_engine_call(int value,int* out) {
+    if(std::this_thread::get_id()!=production_owner || !out)return 0;
+    auto volatile target=identity_target<std::int32_t>();*out=target(value);return 1;
 }
 extern "C" int s2fn_production_empty(){
-    if(!production_service->Empty() || allocations!=frees)return 0;
-    std::lock_guard<std::mutex> lock(s2hook_detail::g_retire_mu);
-    return s2hook_detail::g_retire.empty();
+    const bool service_empty=production_service->Empty();
+    const auto pending=S2Hook_RetirementPending();
+    const auto peer=production_copy_peer.Snapshot();
+    const bool peer_removed=production_copy_peer.RemovalComplete();
+    std::size_t tickets=0;
+    {std::lock_guard<std::mutex> lock(s2hook_detail::g_retire_mu);tickets=s2hook_detail::g_retire.size();}
+    const bool empty=service_empty && allocations==frees && tickets==0;
+    const std::array<long long,8> receipt{{service_empty,allocations,frees,static_cast<long long>(tickets),
+        static_cast<long long>(pending),static_cast<long long>(peer.id),static_cast<long long>(peer.state),peer_removed}};
+    static std::array<long long,8> previous{{-1}};
+    if(production_copy_peer_installed && receipt!=previous) {
+        std::fprintf(stderr,"DIAG copied fixture retirement service_empty=%d closures=%d/%d tickets=%zu pending=%zu copy_peer_id=%lld copy_peer_state=%d copy_peer_removed=%d\n",
+            service_empty,allocations,frees,tickets,pending,static_cast<long long>(peer.id),static_cast<int>(peer.state),peer_removed);
+        previous=receipt;
+    }
+    return empty;
 }
 extern "C" int s2fn_production_close(){
     if(!production_service->Collect())return 0;
+    production_copy_peer.BeginRemove(true);
+    record_peer.BeginRemove(true);record_early.BeginRemove(true);
     production_peer.BeginRemove(true);
+    production_later.BeginRemove(true);
     production_frame.BeginRemove(true);
     const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
-    while((!production_frame.RemovalComplete() || !production_peer.RemovalComplete()) && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    assert(production_frame.RemovalComplete() && production_peer.RemovalComplete());assert(S2Hook_DrainRetirement());
+    while((!production_frame.RemovalComplete() || !production_peer.RemovalComplete() || !production_later.RemovalComplete() || !production_copy_peer.RemovalComplete() || !record_peer.RemovalComplete() || !record_early.RemovalComplete()) && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(production_frame.RemovalComplete() && production_peer.RemovalComplete() && production_later.RemovalComplete() && production_copy_peer.RemovalComplete() && record_peer.RemovalComplete() && record_early.RemovalComplete());assert(S2Hook_DrainRetirement());
     production_service.reset();production_sink.reset();production_codec.reset();KHook::Shutdown();return 1;
 }
 
@@ -618,11 +773,47 @@ static void invocation_pairing_regression() {
     assert(binding->Call(&value,1));assert(stack.empty());retire(binding);
     std::cout<<"PASS invocation ids pair across neutral, nested, recall, suppression and PRE/POST exceptions\n";
 }
+static void trusted_post_scalars() {
+    for(bool boolean:{false,true}) {
+        AbiSignature signature;signature.parameters={{boolean ? "u8" : "i32",boolean ? "bool" : "i32"}};
+        signature.returns=signature.parameters[0];Sink sink;
+        auto address=boolean ? reinterpret_cast<void*>(identity_target<bool>()) : reinterpret_cast<void*>(identity_target<std::int32_t>());
+        auto binding=bind(signature,sink,address);
+        const auto original=boolean ? NativeValue::From<std::uint8_t>(1) : NativeValue::From<std::int32_t>(7);
+        const auto effect=boolean ? NativeValue::From<std::uint8_t>(0) : NativeValue::From<std::int32_t>(41);
+        sink.dispatch=[&](DispatchFrame& f){
+            if(f.phase==Phase::Pre) {
+                bool refused=false;try{binding->OverridePostReturn(f,effect);}catch(const std::exception&){refused=true;}
+                assert(refused);return;
+            }
+            assert(!f.original_skipped && f.original_result.bytes==original.bytes);
+            if(boolean) {
+                bool refused=false;try{binding->OverridePostReturn(f,NativeValue::From<std::uint8_t>(2));}catch(const std::exception&){refused=true;}
+                assert(refused && f.result.bytes==original.bytes);
+            }
+            binding->OverridePostReturn(f,effect);assert(f.result.bytes==effect.bytes);
+            binding->OverridePostReturn(f,original);assert(f.result.bytes==effect.bytes);
+            assert(!f.original_skipped && f.original_result.bytes==original.bytes);
+        };
+        auto result=binding->Call(&original,1);assert(result && result.value.bytes==effect.bytes);
+        if(!boolean) {
+            sink.dispatch=[&](DispatchFrame& f){if(f.phase==Phase::Post){binding->OverridePostReturn(f,effect);throw std::runtime_error("after accepted effect");}};
+            auto volatile target=identity_target<std::int32_t>();assert(target(7)==41);assert(sink.errors>0);
+        }
+        retire(binding);
+    }
+    AbiSignature signature;signature.parameters={{"i32"}};signature.returns={"void"};Sink sink;
+    auto binding=bind(signature,sink,reinterpret_cast<void*>(fixture_targets().void_target));
+    sink.dispatch=[&](DispatchFrame& f){if(f.phase==Phase::Post){bool refused=false;try{binding->OverridePostReturn(f,NativeValue{});}catch(const std::exception&){refused=true;}assert(refused);}};
+    auto input=NativeValue::From<std::int32_t>(7);assert(binding->Call(&input,1));retire(binding);
+    std::cout<<"PASS trusted POST scalar original/current, canonical bool, void/PRE refusal and first Override preserved\n";
+}
 static void stock_tests() {
     std::cout << "phase=allocations-and-retirement\n";
     lazy_target_lifecycle();
     busy_capsule_runtime_insertion();
     invocation_pairing_regression();
+    trusted_post_scalars();
     allocations_and_retirement();
     std::cout << "phase=return-phase-lifetime\n";
     return_phase_lifetime(false);

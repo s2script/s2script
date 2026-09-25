@@ -1,10 +1,11 @@
-//! Host-authorized bootstrap and synchronous scalar/entity policy fan-out.
-//! Public activation and the remaining codecs stay in later Task 6/7 work.
+//! Host-authorized bootstrap and synchronous projected-value policy fan-out.
+//! The public facade shares this service; additional projection codecs remain separate work.
 use super::*;
+use crate::engine_functions::copied;
 use crate::engine_functions::{
     contract::*,
     package_adapter::{self, DispatchAdapter, SubscriberCursor},
-    policy::{AdapterContract, SubscriptionMode},
+    policy::{AdapterContract, HostAdapterGrant, PostReturnAuthority, SubscriptionMode},
     projection::{self, EntityProjection, ProjectedValue},
     registry::{self, Binding},
     runtime::{self, Frame},
@@ -15,11 +16,13 @@ use std::{
     rc::Rc,
     sync::Arc,
 };
+mod hidden_relation;
 
-struct PreparedPackage {
+pub(super) struct PreparedPackage {
     owner: HostPackageOwner,
     source: Arc<str>,
     manifest: ImplementationManifestHash,
+    grants: Vec<HostAdapterGrant>,
     #[allow(dead_code)] // Retained payload measurement for Task 7's loader accounting seam.
     retained_bytes: usize,
 }
@@ -29,6 +32,13 @@ pub(crate) struct PreparedPackageReceipt {
 impl PreparedPackageReceipt {
     pub(crate) fn owner(&self) -> &OwnerKey {
         self.package.owner.key()
+    }
+    pub(crate) fn instance_authority(&self) -> Result<(OwnerKey,String),String> {
+        if self.package.owner.is_retired() || !PACKAGES.with(|p|p.borrow().get(&self.owner().generation)
+            .is_some_and(|registered|Rc::ptr_eq(registered,&self.package))) {
+            return Err("verified package source receipt unavailable".into());
+        }
+        Ok((self.owner().clone(),self.package.manifest.as_str().into()))
     }
 }
 thread_local! {
@@ -47,11 +57,28 @@ pub(crate) fn register_prepared_package(
     source: Arc<str>,
     manifest: ImplementationManifestHash,
 ) -> Result<PreparedPackageReceipt, String> {
+    register_prepared_package_with_authorities(owner, source, manifest, Vec::new())
+}
+pub(crate) fn register_prepared_package_with_authorities(
+    owner: HostPackageOwner,
+    source: Arc<str>,
+    manifest: ImplementationManifestHash,
+    grants: Vec<HostAdapterGrant>,
+) -> Result<PreparedPackageReceipt, String> {
+    if grants.iter().any(|g| !g.belongs_to(&owner)) {
+        return Err("adapter grant belongs to another package generation".into());
+    }
+    if PACKAGES.with(|p| p.borrow().contains_key(&owner.key().generation)) {
+        return Err("package source already registered".into());
+    }
     if source.is_empty() {
         return Err("empty prepared package source".into());
     }
+    owner.claim_source()?;
     let package = Rc::new(PreparedPackage {
-        retained_bytes: source.len() + manifest.as_str().len() + owner.key().id.len(),
+        retained_bytes: source.len() + manifest.as_str().len() + owner.key().id.len()
+            + grants.iter().map(HostAdapterGrant::retained_bytes).sum::<usize>(),
+        grants,
         owner,
         source,
         manifest,
@@ -64,21 +91,12 @@ pub(crate) fn register_prepared_package(
 }
 impl Drop for PreparedPackageReceipt {
     fn drop(&mut self) {
-        PACKAGES.with(|p| p.borrow_mut().remove(&self.owner().generation));
-        let ids = ADAPTERS.with(|a| {
-            a.borrow()
-                .values()
-                .filter(|a| a.instance.package_owner == *self.owner())
-                .map(|a| a.id)
-                .collect::<Vec<_>>()
-        });
-        for id in ids {
-            drop_adapter(id);
-        }
+        drop_package(self.owner());
     }
 }
 struct Adapter {
     id: u64,
+    post_authority: PostReturnAuthority,
     instance: PackageInstanceKey,
     semantic: String,
     hash: String,
@@ -115,6 +133,16 @@ pub(crate) fn authorize_binding(
     adapter: &str,
     hash: &str,
 ) -> Result<(), String> {
+    if owner.kind == OwnerKind::GamePackage && owner != package.owner() {
+        return Err("binding belongs to another package".into());
+    }
+    if !PACKAGES.with(|p| {
+        p.borrow()
+            .get(&package.owner().generation)
+            .is_some_and(|p| Rc::ptr_eq(p, &package.package))
+    }) {
+        return Err("package receipt revoked".into());
+    }
     let binding = registry::binding(binding_id, owner)?;
     if binding.target.is_none() {
         return Err("binding unavailable".into());
@@ -163,7 +191,7 @@ fn validate_subscription_domain(
     }
     Ok(())
 }
-fn current_owner(scope: &mut v8::PinScope) -> Result<OwnerKey, String> {
+pub(super) fn current_owner(scope: &mut v8::PinScope) -> Result<OwnerKey, String> {
     let ctx = scope.get_current_context();
     let id = ctx
         .get_slot::<PluginId>()
@@ -182,7 +210,7 @@ fn current_owner(scope: &mut v8::PinScope) -> Result<OwnerKey, String> {
     }
     Ok(OwnerKey::plugin(&id, generation))
 }
-fn throw(scope: &mut v8::PinScope, error: impl AsRef<str>) {
+pub(super) fn throw(scope: &mut v8::PinScope, error: impl AsRef<str>) {
     if let Some(text) = v8::String::new(scope, error.as_ref()) {
         let e = v8::Exception::error(scope, text);
         scope.throw_exception(e);
@@ -220,6 +248,30 @@ fn set<'s>(
         Err("property write failed".into())
     }
 }
+// Host-created snapshots must not invoke inherited setters or expose inherited values.
+fn set_own<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    object: v8::Local<v8::Object>,
+    key: &str,
+    value: v8::Local<'s, v8::Value>,
+) -> Result<(), String> {
+    let key = v8::String::new(scope, key).ok_or("string allocation")?;
+    if object.create_data_property(scope, key.into(), value) == Some(true) {
+        Ok(())
+    } else {
+        Err("own data property creation failed".into())
+    }
+}
+fn freeze_snapshot(
+    scope: &mut v8::PinScope,
+    object: v8::Local<v8::Object>,
+) -> Result<(), String> {
+    if object.set_integrity_level(scope, v8::IntegrityLevel::Frozen) == Some(true) {
+        Ok(())
+    } else {
+        Err("snapshot freeze failed".into())
+    }
+}
 fn sync_function(
     scope: &mut v8::PinScope,
     value: v8::Local<v8::Value>,
@@ -232,6 +284,9 @@ fn sync_function(
     }
     let function =
         v8::Local::<v8::Function>::try_from(value).map_err(|_| "callback must be function")?;
+    if function.get_creation_context(scope) != Some(scope.get_current_context()) {
+        return Err("package callback belongs to another context".into());
+    }
     Ok(Some(v8::Global::new(scope, function)))
 }
 pub(crate) fn bootstrap(scope: &mut v8::PinScope, id: &str, generation: u64) -> Result<(), String> {
@@ -241,7 +296,7 @@ pub(crate) fn bootstrap(scope: &mut v8::PinScope, id: &str, generation: u64) -> 
             parent: OwnerKey::plugin(id, generation),
             package_owner: package.owner.key().clone(),
         };
-        let prior = BOOTSTRAP.with(|b| b.replace(Some(instance)));
+        let prior = BOOTSTRAP.with(|b| b.replace(Some(instance.clone())));
         struct Reset(Option<PackageInstanceKey>);
         impl Drop for Reset {
             fn drop(&mut self) {
@@ -253,58 +308,82 @@ pub(crate) fn bootstrap(scope: &mut v8::PinScope, id: &str, generation: u64) -> 
         let global = scope.get_current_context().global(scope);
         // Hidden callback data binds BOTH generations; retaining a native from
         // another context/reload cannot acquire that context's package authority.
-        let data = v8::Array::new(scope, 2);
+        let data = v8::Array::new(scope, 4);
         let package_generation = v8::BigInt::new_from_u64(scope, package.owner.key().generation);
         let parent_generation = v8::BigInt::new_from_u64(scope, generation);
         data.set_index(scope, 0, package_generation.into());
         data.set_index(scope, 1, parent_generation.into());
-        let register = v8::Function::builder(js_register)
-            .data(data.into())
-            .build(scope)
-            .ok_or("register allocation")?;
-        let subscribe = v8::Function::builder(js_subscribe)
-            .data(data.into())
-            .build(scope)
-            .ok_or("subscribe allocation")?;
-        set(
-            scope,
-            global,
-            "__s2_function_adapter_register",
-            register.into(),
-        )?;
-        set(
-            scope,
-            global,
-            "__s2_function_adapter_subscribe",
-            subscribe.into(),
-        )?;
-        let mut storage = v8::TryCatch::new(scope);
-        let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
-        let source = v8::String::new(&mut tc, &package.source).ok_or("source allocation")?;
-        let result = v8::Script::compile(&mut tc, source, None).and_then(|s| s.run(&mut tc));
-        let error = if result.is_none() {
-            Some(
-                tc.exception()
-                    .map(|e| e.to_rust_string_lossy(&tc))
-                    .unwrap_or("package bootstrap threw".into()),
-            )
-        } else {
-            None
-        };
+        let parent_id = v8::String::new(scope, id).ok_or("parent allocation")?;
+        data.set_index(scope, 2, parent_id.into());
+        let provisional = v8::Integer::new(scope, 0);
+        data.set_index(scope, 3, provisional.into());
+        // One shared hidden token, not a second instance book. A failed evaluation
+        // revokes all its captured callbacks, including those leaked by reviewed JS.
+        let result = (|| -> Result<(), String> {
+            let register = v8::Function::builder(js_register)
+                .data(data.into())
+                .build(scope)
+                .ok_or("register allocation")?;
+            let subscribe = v8::Function::builder(js_subscribe)
+                .data(data.into())
+                .build(scope)
+                .ok_or("subscribe allocation")?;
+            set(
+                scope,
+                global,
+                "__s2_function_adapter_register",
+                register.into(),
+            )?;
+            set(
+                scope,
+                global,
+                "__s2_function_adapter_subscribe",
+                subscribe.into(),
+            )?;
+            let lookup = v8::Function::builder(js_package_lookup)
+                .data(data.into())
+                .build(scope)
+                .ok_or("lookup allocation")?;
+            set(scope, global, "__s2_package_function", lookup.into())?;
+            let mut storage = v8::TryCatch::new(scope);
+            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+            let source = v8::String::new(&mut tc, &package.source).ok_or("source allocation")?;
+            let result = v8::Script::compile(&mut tc, source, None).and_then(|s| s.run(&mut tc));
+            let error = if result.is_none() {
+                Some(
+                    tc.exception()
+                        .map(|e| e.to_rust_string_lossy(&tc))
+                        .unwrap_or("package bootstrap threw".into()),
+                )
+            } else {
+                None
+            };
+            if let Some(error) = error {
+                return Err(error);
+            }
+            if current_owner(&mut tc)? != instance.parent {
+                return Err("package parent retired during bootstrap".into());
+            }
+            Ok(())
+        })();
+        let state = v8::Integer::new(scope, if result.is_ok() { 1 } else { 2 });
+        data.set_index(scope, 3, state.into());
         for name in [
             "__s2_function_adapter_register",
             "__s2_function_adapter_subscribe",
+            "__s2_package_function",
         ] {
-            let key = v8::String::new(&mut tc, name).unwrap();
-            global.delete(&mut tc, key.into());
+            let key = v8::String::new(scope, name).unwrap();
+            global.delete(scope, key.into());
         }
-        if let Some(error) = error {
-            return Err(error);
+        if result.is_err() {
+            drop_instance(&instance);
         }
+        result?;
     }
     Ok(())
 }
-fn instance(
+pub(super) fn instance(
     scope: &mut v8::PinScope,
     data: v8::Local<v8::Value>,
 ) -> Result<(PackageInstanceKey, Rc<PreparedPackage>), String> {
@@ -319,19 +398,68 @@ fn instance(
             .ok_or("missing parent generation")?,
     )?;
     let parent = current_owner(scope)?;
-    if parent.generation != expected_parent {
+    let entered = scope.get_entered_or_microtask_context();
+    if !entered
+        .get_slot::<PluginId>()
+        .is_some_and(|p| p.0 == parent.id)
+        || entered.get_slot::<InteropGeneration>().map(|g| g.0) != Some(parent.generation)
+    {
+        return Err("package token used from another context".into());
+    }
+    let expected_id = data
+        .get_index(scope, 2)
+        .ok_or("missing parent id")?
+        .to_rust_string_lossy(scope);
+    let state = data
+        .get_index(scope, 3)
+        .and_then(|v| v.int32_value(scope))
+        .ok_or("missing instance state")?;
+    if state == 2 {
+        return Err("package instance revoked".into());
+    }
+    if parent.generation != expected_parent || parent.id != expected_id {
         return Err("package token belongs to another parent generation".into());
     }
     let package = PACKAGES
         .with(|p| p.borrow().get(&generation).cloned())
         .ok_or("package receipt revoked")?;
-    Ok((
-        PackageInstanceKey {
-            parent,
-            package_owner: package.owner.key().clone(),
-        },
-        package,
-    ))
+    let instance = PackageInstanceKey {
+        parent,
+        package_owner: package.owner.key().clone(),
+    };
+    if state != 1 && !(state == 0 && BOOTSTRAP.with(|b| b.borrow().as_ref() == Some(&instance))) {
+        return Err("package instance not active".into());
+    }
+    Ok((instance, package))
+}
+fn js_package_lookup(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let result = (|| {
+        let (instance, _) = instance(scope, args.data())?;
+        if BOOTSTRAP.with(|b| b.borrow().as_ref() != Some(&instance)) {
+            return Err("host bootstrap authority required".to_string());
+        }
+        if !args.get(0).is_string() {
+            return Err("engine function name must be a string".into());
+        }
+        let binding = registry::named_binding(
+            &instance.package_owner,
+            &args.get(0).to_rust_string_lossy(scope),
+        )?;
+        Ok(super::engine_functions::facade(
+            scope,
+            &instance.parent,
+            &binding,
+            Some(args.data()),
+        ))
+    })();
+    match result {
+        Ok(v) => rv.set(v.into()),
+        Err(e) => throw(scope, e),
+    }
 }
 fn js_register(
     scope: &mut v8::PinScope,
@@ -385,6 +513,9 @@ fn js_register(
                 id,
                 Rc::new(Adapter {
                     id,
+                    post_authority: package.grants.iter().map(|g| g.authority(&AdapterContract {
+                        id: semantic.clone(), version: 1, contract_hash: hash.clone(),
+                    })).find(|a| *a == PostReturnAuthority::Override).unwrap_or_default(),
                     instance,
                     semantic,
                     hash,
@@ -394,7 +525,7 @@ fn js_register(
                 }),
             )
         });
-        receipt(scope, id, false)
+        receipt(scope, id, false, Some(args.data()))
     })();
     match result {
         Ok(value) => rv.set(value.into()),
@@ -408,8 +539,17 @@ fn js_subscribe(
 ) {
     let result = (|| {
         let (instance, _) = instance(scope, args.data())?;
-        let id = bigint(args.get(0))?;
-        let binding = registry::binding(id, &instance.parent)?;
+        // Process bindings are resolved only in this package namespace. The numeric
+        // path is the existing explicit plugin-binding compatibility/proof seam.
+        let binding = if args.get(0).is_string() {
+            registry::named_binding(
+                &instance.package_owner,
+                &args.get(0).to_rust_string_lossy(scope),
+            )?
+        } else {
+            registry::binding(bigint(args.get(0))?, &instance.parent)?
+        };
+        let id = binding.id;
         let adapter = args.get(1).to_rust_string_lossy(scope);
         let phase = match args.get(2).to_rust_string_lossy(scope).as_str() {
             "pre" => 0,
@@ -462,7 +602,7 @@ fn js_subscribe(
             phase,
             wrapper,
         )?;
-        receipt(scope, id, true)
+        receipt(scope, id, true, Some(args.data()))
     })();
     match result {
         Ok(value) => rv.set(value.into()),
@@ -529,6 +669,37 @@ pub(crate) fn subscribe_generic(
         return Err("subscription context owner mismatch".into());
     }
     let binding = registry::binding(binding_id, &owner)?;
+    subscribe_generic_binding(scope, owner, None, binding, phase, observe_only, wrapper)
+}
+pub(super) fn subscribe_package_generic(
+    scope: &mut v8::PinScope,
+    token: v8::Local<v8::Value>,
+    binding_id: u64,
+    phase: i32,
+    observe_only: bool,
+    wrapper: v8::Global<v8::Function>,
+) -> Result<u64, String> {
+    let (instance, _) = instance(scope, token)?;
+    let binding = registry::binding(binding_id, &instance.package_owner)?;
+    subscribe_generic_binding(
+        scope,
+        instance.parent.clone(),
+        Some(instance),
+        binding,
+        phase,
+        observe_only,
+        wrapper,
+    )
+}
+fn subscribe_generic_binding(
+    scope: &mut v8::PinScope,
+    owner: OwnerKey,
+    instance: Option<PackageInstanceKey>,
+    binding: Rc<Binding>,
+    phase: i32,
+    observe_only: bool,
+    wrapper: v8::Global<v8::Function>,
+) -> Result<u64, String> {
     let mode = SubscriptionMode::for_phase(phase, observe_only)?;
     let surface = if phase == 0 { "pre" } else { "post" };
     if !binding
@@ -541,6 +712,11 @@ pub(crate) fn subscribe_generic(
         return Err("undeclared subscription surface".into());
     }
     let function = v8::Local::new(scope, &wrapper);
+    if instance.is_some()
+        && function.get_creation_context(scope) != Some(scope.get_current_context())
+    {
+        return Err("package callback belongs to another context".into());
+    }
     if function.is_async_function() {
         return Err("synchronous wrapper required".into());
     }
@@ -548,7 +724,7 @@ pub(crate) fn subscribe_generic(
     let implementation = crate::engine_functions::policy::public_adapter(&binding.function.policy)?;
     insert_subscription(
         owner,
-        None,
+        instance,
         binding,
         contract.id.clone(),
         contract,
@@ -563,13 +739,18 @@ fn receipt<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     id: u64,
     subscription: bool,
+    // Only the test-only public-generic proof entry lacks a package instance.
+    token: Option<v8::Local<v8::Value>>,
 ) -> Result<v8::Local<'s, v8::Object>, String> {
     let object = v8::Object::new(scope);
-    let data = v8::Array::new(scope, 2);
+    let data = v8::Array::new(scope, 3);
     let id = v8::BigInt::new_from_u64(scope, id);
     let kind = v8::Boolean::new(scope, subscription);
     data.set_index(scope, 0, id.into());
     data.set_index(scope, 1, kind.into());
+    if let Some(token) = token {
+        data.set_index(scope, 2, token);
+    }
     let dispose = v8::Function::builder(js_dispose)
         .data(data.into())
         .build(scope)
@@ -596,6 +777,23 @@ fn receipt_data(
         .get_index(scope, 1)
         .ok_or("receipt type")?
         .boolean_value(scope);
+    if let Some(token) = data.get_index(scope, 2).filter(|v| !v.is_undefined()) {
+        // Validate the retained native token even after its resource row was removed:
+        // disposal stays idempotent only in the same live instance/context.
+        let (instance, _) = instance(scope, token)?;
+        let matches = if sub {
+            SUBSCRIPTIONS.with(|s| {
+                s.borrow()
+                    .get(&id)
+                    .map(|s| s.instance.as_ref() == Some(&instance))
+            })
+        } else {
+            ADAPTERS.with(|a| a.borrow().get(&id).map(|a| a.instance == instance))
+        };
+        if matches == Some(false) {
+            return Err("receipt package instance mismatch".into());
+        }
+    }
     Ok((id, sub))
 }
 fn receipt_owner(id: u64, sub: bool) -> Option<OwnerKey> {
@@ -642,31 +840,68 @@ fn js_receipt_status(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let state = receipt_data(scope, args.data())
-        .ok()
-        .map_or("disposed", |(id, sub)| {
-            if !sub {
-                return if receipt_owner(id, false).is_some() {
-                    "active"
-                } else {
-                    "disposed"
-                };
-            }
-            let target = SUBSCRIPTIONS.with(|s| s.borrow().get(&id).and_then(|s| s.binding.target));
-            match target.map(runtime::status) {
-                None => "disposed",
-                Some(Err(_)) => "unavailable",
-                Some(Ok(status)) => match status.state {
-                    1 => "pending",
-                    2 => "active",
-                    3 => "removing",
-                    4 => "disposed",
-                    _ => "failed",
-                },
-            }
-        });
-    let text = v8::String::new(scope, state).unwrap();
-    rv.set(text.into());
+    let state = (|| -> Result<&'static str, String> {
+        let (id, sub) = receipt_data(scope, args.data())?;
+        if !sub {
+            return Ok(if receipt_owner(id, false).is_some() {
+                "active"
+            } else {
+                "disposed"
+            });
+        }
+        let target = SUBSCRIPTIONS.with(|s| s.borrow().get(&id).and_then(|s| s.binding.target));
+        Ok(match target.map(runtime::status) {
+            None => "disposed",
+            Some(Err(_)) => "unavailable",
+            Some(Ok(status)) => match status.state {
+                1 => "pending",
+                2 => "active",
+                3 => "removing",
+                4 => "disposed",
+                _ => "failed",
+            },
+        })
+    })();
+    match state {
+        Ok(state) => {
+            let text = v8::String::new(scope, state).unwrap();
+            rv.set(text.into());
+        }
+        Err(error) => throw(scope, error),
+    }
+}
+/// Public receipt projection; never leaks target or hook ids.
+pub(super) fn subscription_state(id: u64, owner: &OwnerKey) -> Result<(&'static str, Option<String>), String> {
+    let target = SUBSCRIPTIONS.with(|s| {
+        let rows = s.borrow();
+        match rows.get(&id) {
+            Some(s) if s.owner == *owner => Ok(s.binding.target),
+            Some(_) => Err("subscription owner mismatch".to_string()),
+            None => Ok(None),
+        }
+    })?;
+    Ok(match target.map(runtime::status) {
+        None => ("disposed", None),
+        Some(Err(e)) => ("failed", Some(e)),
+        Some(Ok(status)) => match status.state {
+            1 => ("pending", None), 2 => ("active", None), 3 | 4 => ("disposed", None),
+            _ => ("failed", Some("native hook installation failed".into())),
+        }
+    })
+}
+pub(super) fn binding_observation(binding: u64) -> &'static str {
+    let subscribers = SUBSCRIPTIONS.with(|s| s.borrow().values().filter(|s| s.binding.id == binding)
+        .map(|s| (s.id, s.owner.clone())).collect::<Vec<_>>());
+    let mut state = "not-requested";
+    for (id, owner) in subscribers {
+        match subscription_state(id, &owner).map(|s| s.0) {
+            Ok("failed") | Err(_) => return "failed",
+            Ok("pending") => state = "pending",
+            Ok("active") if state != "pending" => state = "active",
+            _ => {},
+        }
+    }
+    state
 }
 pub(crate) fn drop_subscription(id: u64) {
     let removed = SUBSCRIPTIONS.with(|s| s.borrow_mut().remove(&id));
@@ -695,7 +930,8 @@ pub(crate) fn drop_subscription(id: u64) {
                     return false;
                 }
                 for (phase, live) in live_phases.iter().enumerate() {
-                    if !live {
+                    // A carried proposal holds its POST adapter without POST subscribers.
+                    if !live && !(phase == 1 && state.proposal.is_some()) {
                         state.adapters[phase] = None;
                     }
                 }
@@ -708,6 +944,9 @@ pub(crate) fn drop_subscription(id: u64) {
 pub(crate) fn drop_adapter(id: u64) {
     let removed = ADAPTERS.with(|a| a.borrow_mut().remove(&id));
     if let Some(adapter) = removed {
+        if !ADAPTERS.with(|a| a.borrow().values().any(|a| a.semantic == adapter.semantic)) {
+            SEMANTICS.with(|s| s.borrow_mut().remove(&adapter.semantic));
+        }
         let ids = SUBSCRIPTIONS.with(|s| {
             s.borrow()
                 .values()
@@ -745,6 +984,77 @@ pub(crate) fn drop_adapter(id: u64) {
         });
     }
 }
+// Called only after the bootstrap token, parent, or package authority is revoked.
+// Token state is carried by the native callback data, never reconstructed from these rows.
+fn drop_instance(instance: &PackageInstanceKey) {
+    let subscriptions = SUBSCRIPTIONS.with(|s| {
+        s.borrow()
+            .values()
+            .filter(|s| s.instance.as_ref() == Some(instance))
+            .map(|s| s.id)
+            .collect::<Vec<_>>()
+    });
+    for id in subscriptions {
+        release_resource(
+            &instance.parent.id,
+            instance.parent.generation,
+            &plugin::Resource::FunctionSubscription(id),
+        );
+        drop_subscription(id);
+    }
+    let adapters = ADAPTERS.with(|a| {
+        a.borrow()
+            .values()
+            .filter(|a| a.instance == *instance)
+            .map(|a| a.id)
+            .collect::<Vec<_>>()
+    });
+    for id in adapters {
+        release_resource(
+            &instance.parent.id,
+            instance.parent.generation,
+            &plugin::Resource::FunctionAdapter(id),
+        );
+        drop_adapter(id);
+    }
+}
+pub(crate) fn drop_package(owner: &OwnerKey) {
+    // Remove source authority first. Holds in callbacks can retain memory, never access.
+    let removed = PACKAGES.with(|p| {
+        let mut packages = p.borrow_mut();
+        if packages
+            .get(&owner.generation)
+            .is_some_and(|p| p.owner.key() == owner)
+        {
+            packages.remove(&owner.generation)
+        } else {
+            None
+        }
+    });
+    if let Some(package) = &removed {
+        package.owner.retire_source();
+    }
+    let mut instances = ADAPTERS.with(|a| {
+        a.borrow()
+            .values()
+            .filter(|a| a.instance.package_owner == *owner)
+            .map(|a| a.instance.clone())
+            .collect::<Vec<_>>()
+    });
+    SUBSCRIPTIONS.with(|s| {
+        instances.extend(s.borrow().values().filter_map(|s| {
+            s.instance
+                .as_ref()
+                .filter(|i| i.package_owner == *owner)
+                .cloned()
+        }))
+    });
+    for instance in instances {
+        drop_instance(&instance);
+    }
+    AUTHORIZED.with(|a| a.borrow_mut().retain(|_, (package, _, _)| package != owner));
+    drop(removed);
+}
 pub(crate) fn drop_owner(owner: &OwnerKey) {
     let subscriptions = SUBSCRIPTIONS.with(|s| {
         s.borrow()
@@ -771,7 +1081,7 @@ pub(crate) fn drop_owner(owner: &OwnerKey) {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Decision {
     action: i32,
     value: Option<ProjectedValue>,
@@ -781,8 +1091,20 @@ struct InvocationState {
     // Copied decisions carry no V8 values and survive either instance's removal.
     adapters: [Option<Rc<Adapter>>; 2],
     deliveries: Vec<Decision>,
+    // Trusted PRE return proposal from an override-authorized adapter, with the
+    // binding its forced POST adapter run validates the frame against.
+    proposal: Option<(ProjectedValue, Rc<Binding>)>,
     retained_bytes: usize,
+    // Rust drops fields in declaration order. Keep the charge until all retained
+    // adapter holds, delivery elements and their vector allocation are destroyed.
+    copy_bookkeeping: Option<copied::Bookkeeping>,
 }
+type StagedEdits = std::collections::BTreeMap<i32, (ProjectedValue, String)>;
+#[derive(Clone)]
+struct RecordEdit { binding:Rc<Binding>, parent:OwnerKey, value:ProjectedValue, map_epoch:u64 }
+type RecordEdits = BTreeMap<(i32,u32),RecordEdit>;
+#[derive(Clone)]
+struct RecordWriter {binding:Rc<Binding>,parent:OwnerKey,map_epoch:u64}
 struct Dispatch {
     frame: Frame,
     binding: Rc<Binding>,
@@ -790,8 +1112,23 @@ struct Dispatch {
     subscribers: Vec<Rc<Subscription>>,
     cursor: Cell<usize>,
     revision: Rc<Cell<u64>>,
-    edits: Rc<RefCell<std::collections::BTreeMap<i32, (ProjectedValue, String)>>>,
+    edits: Rc<RefCell<StagedEdits>>,
+    record_edits: Rc<RefCell<RecordEdits>>,
+    map_epoch:u64,
+    record_writers:Rc<RefCell<BTreeMap<u64,RecordWriter>>>,
     deliveries: RefCell<Vec<Decision>>,
+    // PRE: the adapter's accepted return proposal. POST: the carried proposal. Both
+    // with the authorized binding the adapter proposed through.
+    proposal: Rc<RefCell<Option<(ProjectedValue, Rc<Binding>)>>>,
+}
+/// Trusted scratch slots occupy selectors SCRATCH_BASE, SCRATCH_BASE-1, ... They are
+/// host-held overlay entries only: never read from, written to, or committed to native.
+const SCRATCH_BASE: i32 = -16;
+fn scratch_slot(binding: &Binding, selector: i32) -> Option<&crate::engine_functions::instance::ScratchSlot> {
+    if selector > SCRATCH_BASE {
+        return None;
+    }
+    binding.function.abi.scratch.get((SCRATCH_BASE - selector) as usize)
 }
 #[derive(Clone)]
 struct Lease {
@@ -801,6 +1138,10 @@ struct Lease {
     binding: Rc<Binding>,
     adapter: bool,
     mode: SubscriptionMode,
+    pending_edits: Rc<RefCell<StagedEdits>>,
+    pending_records: Rc<RefCell<RecordEdits>>,
+    map_epoch:u64,
+    failed:Rc<Cell<bool>>,
     enabled: bool,
 }
 struct LeaseGuard;
@@ -811,8 +1152,10 @@ impl LeaseGuard {
         binding: Rc<Binding>,
         adapter: bool,
         mode: SubscriptionMode,
-    ) -> Result<(Self, u64), String> {
+    ) -> Result<(Self, u64, Rc<RefCell<StagedEdits>>), String> {
         let id = registry::next_id()?;
+        let pending_edits = Rc::new(RefCell::new(std::collections::BTreeMap::new()));
+        let map_epoch=dispatch.map_epoch;
         LEASES.with(|s| {
             s.borrow_mut().push(Lease {
                 id,
@@ -821,10 +1164,14 @@ impl LeaseGuard {
                 binding,
                 adapter,
                 mode,
+                pending_edits: pending_edits.clone(),
+                pending_records:Rc::new(RefCell::new(BTreeMap::new())),
+                map_epoch,
+                failed:Rc::new(Cell::new(false)),
                 enabled: true,
             })
         });
-        Ok((Self, id))
+        Ok((Self, id, pending_edits))
     }
     fn close(&self) {
         LEASES.with(|s| {
@@ -833,6 +1180,31 @@ impl LeaseGuard {
             }
         });
     }
+    fn accept_records(&self) -> Result<(),String> {
+        let l=LEASES.with(|s|s.borrow().last().cloned()).ok_or("missing callback lease")?;
+        accept_record_edits(&l)
+    }
+}
+fn accept_record_edits(l:&Lease) -> Result<(),String> {
+    if l.failed.get() {return Err("rejected whole record edit batch".into());}
+    if l.binding.function.trusted() && (l.map_epoch==0 || l.map_epoch!=crate::entity_live::map_epoch()) {return Err("callback map lifetime expired".into());}
+    let mut edits=l.pending_records.borrow_mut();
+    for edit in edits.values() {validate_record_edit(edit)?;}
+    if l.binding.function.trusted() {
+        l.dispatch.record_writers.borrow_mut().insert(l.id,RecordWriter{binding:l.binding.clone(),parent:l.owner.clone(),map_epoch:l.map_epoch});
+    }
+    // A cursor handoff accepts this batch once. Later subscribers and explicit
+    // subsequent adapter assignments must remain authoritative.
+    l.dispatch.record_edits.borrow_mut().append(&mut edits);Ok(())
+}
+fn validate_record_edit(edit:&RecordEdit) -> Result<(),String> {
+    registry::binding(edit.binding.id,&edit.binding.owner)?;
+    if !edit.binding.is_live() || !owner_is_live(&edit.parent.id,edit.parent.generation)
+        || (edit.map_epoch==0 || edit.map_epoch!=crate::entity_live::map_epoch()) {return Err("record writer or map lifetime expired".into());}
+    if let ProjectedValue::Entity{reference:Some(r),..}=&edit.value {
+        if crate::entity_live::engine_serial_for(r.index,r.id).is_none() {return Err("stale record entity edit".into());}
+    }
+    projection::encode(edit.value.clone())?;Ok(())
 }
 impl Drop for LeaseGuard {
     fn drop(&mut self) {
@@ -847,11 +1219,140 @@ fn lease(scope: &mut v8::PinScope, id: u64) -> Result<Lease, String> {
         .with(|s| {
             s.borrow()
                 .last()
-                .filter(|l| l.enabled && l.id == id && l.owner == owner)
+                .filter(|l| {
+                    l.enabled
+                        && l.id == id
+                        && l.owner == owner
+                        && l.binding.is_live()
+                        && (!l.binding.function.trusted() || registry::binding(l.binding.id,&l.binding.owner).is_ok())
+                        && (!l.binding.function.trusted() || (l.map_epoch!=0 && l.map_epoch==crate::entity_live::map_epoch()))
+                        && l.dispatch
+                            .adapter
+                            .as_ref()
+                            .is_none_or(|a| ADAPTERS.with(|rows| rows.borrow().contains_key(&a.id)))
+                })
                 .cloned()
         })
         .ok_or("expired or suspended callback lease".into())
 }
+/// Private construction binds authority to one exact active adapter callback.
+/// Holding this object does not extend its lease or revive a removed registration.
+pub(crate) struct AdapterPostReturnPermit {
+    lease: Lease,
+}
+impl AdapterPostReturnPermit {
+    fn issue(lease: Lease) -> Result<Self, String> {
+        let permit = Self { lease };
+        permit.validate()?;
+        Ok(permit)
+    }
+    pub(crate) fn validate(&self) -> Result<(Frame, Rc<Binding>), String> {
+        let l = &self.lease;
+        if !LEASES.with(|s| {
+            s.borrow().last().is_some_and(|top| {
+                top.enabled
+                    && top.adapter
+                    && top.id == l.id
+                    && top.owner == l.owner
+                    && Rc::ptr_eq(&top.dispatch, &l.dispatch)
+                    && Rc::ptr_eq(&top.binding, &l.binding)
+            })
+        }) {
+            return Err("expired or suspended adapter POST permit".into());
+        }
+        let adapter = l
+            .dispatch
+            .adapter
+            .as_ref()
+            .ok_or("adapter POST authority required")?;
+        if !l.adapter
+            || l.dispatch.frame.phase != 1
+            || adapter.post_authority != PostReturnAuthority::Override
+            || adapter.instance.parent != l.owner
+            || !owner_is_live(&l.owner.id, l.owner.generation)
+            || plugin_phase(&l.owner.id) != Some(plugin::Phase::Active)
+            || !ADAPTERS.with(|a| {
+                a.borrow()
+                    .get(&adapter.id)
+                    .is_some_and(|a| Rc::ptr_eq(a, adapter))
+            })
+            || !PACKAGES.with(|p| {
+                p.borrow()
+                    .get(&adapter.instance.package_owner.generation)
+                    .is_some_and(|p| Rc::ptr_eq(p, &adapter.package))
+            })
+        {
+            return Err("adapter POST authority revoked or unavailable".into());
+        }
+        registry::binding(l.binding.id, &l.binding.owner)?;
+        if !AUTHORIZED.with(|a| {
+            a.borrow()
+                .get(&l.binding.id)
+                .is_some_and(|(owner, id, hash)| {
+                    *owner == adapter.instance.package_owner
+                        && *id == adapter.semantic
+                        && *hash == adapter.hash
+                })
+        }) {
+            return Err("adapter POST binding authorization mismatch".into());
+        }
+        Ok((l.dispatch.frame.clone(), l.binding.clone()))
+    }
+}
+struct GuardedPostFrame {
+    permit: AdapterPostReturnPermit,
+}
+impl package_adapter::ProjectedFrame for GuardedPostFrame {
+    fn original_return(&self) -> Result<Option<ProjectedValue>, String> {
+        runtime::original_return(&self.permit)
+    }
+    fn override_return(&mut self, value: ProjectedValue) -> Result<ProjectedValue, String> {
+        runtime::override_return(&self.permit, value)
+    }
+}
+fn js_original_return(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let result = (|| {
+        let l = lease(scope, bigint(args.data())?)?;
+        let permit = AdapterPostReturnPermit::issue(l)?;
+        let frame = GuardedPostFrame { permit };
+        match package_adapter::ProjectedFrame::original_return(&frame)? {
+            Some(value) => projected_to_js(scope, value),
+            None => Ok(v8::undefined(scope).into()),
+        }
+    })();
+    match result {
+        Ok(value) => rv.set(value),
+        Err(e) => throw(scope, e),
+    }
+}
+fn js_override_return(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let result = (|| {
+        let l = lease(scope, bigint(args.data())?)?;
+        let permit = AdapterPostReturnPermit::issue(l)?;
+        let (_, binding) = permit.validate()?;
+        let ret = &binding.function.abi.returns;
+        let value = callback_projected_from_js(scope, args.get(0), &ret.native, &ret.projection.id)
+            .map_err(|e| format!("{}: {e}", binding.function.canonical_id))?;
+        let mut frame = GuardedPostFrame { permit };
+        projected_to_js(
+            scope,
+            package_adapter::ProjectedFrame::override_return(&mut frame, value)?,
+        )
+    })();
+    match result {
+        Ok(value) => rv.set(value),
+        Err(e) => throw(scope, e),
+    }
+}
+
 fn accessor_data(
     scope: &mut v8::PinScope,
     args: &v8::FunctionCallbackArguments,
@@ -929,7 +1430,7 @@ fn scalar_from_js(
 }
 fn field_type(binding: &Binding, selector: i32) -> Result<(&str, &str), String> {
     match selector {
-        -1 if binding.function.abi.receiver == "entity" => Ok(("ptr", "entity")),
+        -1 => binding.function.abi.receiver.as_ref().filter(|p|!p.hidden()).map(|p|(p.native.as_str(),p.projection.id.as_str())).ok_or("receiver unavailable".into()),
         -2 => {
             let r = &binding.function.abi.returns;
             Ok((&r.native, &r.projection.id))
@@ -946,11 +1447,34 @@ fn field_type(binding: &Binding, selector: i32) -> Result<(&str, &str), String> 
         _ => Err("unknown field".into()),
     }
 }
-fn projected_to_js<'s>(
+pub(super) fn projected_to_js<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     value: ProjectedValue,
 ) -> Result<v8::Local<'s, v8::Value>, String> {
     match value {
+        ProjectedValue::Copied(copy) => {
+            if copy.flags == 4 {
+                let text =
+                    std::str::from_utf8(copy.bytes()).map_err(|_| "invalid copied string")?;
+                Ok(v8::String::new(scope, text)
+                    .ok_or("FunctionCopyOutputAllocationFailure")?
+                    .into())
+            } else {
+                let out = v8::Object::new(scope);
+                for (key, bytes) in ["x", "y", "z"]
+                    .into_iter()
+                    .zip(copy.bytes().chunks_exact(4))
+                {
+                    let value = v8::Number::new(
+                        scope,
+                        f32::from_le_bytes(bytes.try_into().unwrap()) as f64,
+                    );
+                    set_own(scope, out, key, value.into())?;
+                }
+                freeze_snapshot(scope, out)?;
+                Ok(out.into())
+            }
+        }
         ProjectedValue::Scalar(value) => scalar_to_js(scope, value),
         ProjectedValue::Entity {
             reference: None, ..
@@ -962,12 +1486,147 @@ fn projected_to_js<'s>(
             .ok_or("captured EntityRef prototype unavailable".into()),
     }
 }
-fn projected_from_js(
+fn copied_from_js(
+    scope: &mut v8::PinScope,
+    value: v8::Local<v8::Value>,
+    flag: u8,
+    producer: copied::Producer,
+) -> Result<copied::Owned, String> {
+    if flag == 4 {
+        let text =
+            v8::Local::<v8::String>::try_from(value).map_err(|_| "primitive string required")?;
+        let len = text.length();
+        if len > copied::MAX_STRING {
+            return Err("FunctionCopyInvalidValue: string limit".into());
+        }
+        let mut utf16 = copied::Buffer::new(len * 2, producer)?;
+        let mut chunk = [0u16; 512];
+        for offset in (0..len).step_by(512) {
+            let n = (len - offset).min(512);
+            text.write_v2(
+                scope,
+                offset as u32,
+                &mut chunk[..n],
+                v8::WriteFlags::empty(),
+            );
+            for (i, u) in chunk[..n].iter().enumerate() {
+                utf16.bytes_mut()[(offset + i) * 2..(offset + i) * 2 + 2]
+                    .copy_from_slice(&u.to_le_bytes());
+            }
+        }
+        let units = || {
+            utf16
+                .bytes()
+                .chunks_exact(2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        };
+        let mut count = 0;
+        for c in char::decode_utf16(units()) {
+            let c = c.map_err(|_| "FunctionCopyInvalidValue: lone UTF-16 surrogate")?;
+            if c == '\0' {
+                return Err("FunctionCopyInvalidValue: NUL".into());
+            }
+            count += c.len_utf8();
+        }
+        if count > copied::MAX_STRING {
+            return Err("FunctionCopyInvalidValue: UTF-8 limit".into());
+        }
+        let mut out = copied::Buffer::new(count, producer)?;
+        let mut offset = 0;
+        for c in char::decode_utf16(units()) {
+            let c = c.unwrap();
+            let n = c.len_utf8();
+            c.encode_utf8(&mut out.bytes_mut()[offset..offset + n]);
+            offset += n;
+        }
+        out.own(flag)
+    } else {
+        if value.is_proxy() || !value.is_object() || value.is_array() {
+            return Err("strict vector data object required".into());
+        }
+        let object = v8::Local::<v8::Object>::try_from(value).map_err(|_| "vector required")?;
+        let keys = object
+            .get_own_property_names(
+                scope,
+                v8::GetPropertyNamesArgs {
+                    property_filter: v8::PropertyFilter::ALL_PROPERTIES,
+                    key_conversion: v8::KeyConversionMode::KeepNumbers,
+                    ..Default::default()
+                },
+            )
+            .ok_or("vector keys unavailable")?;
+        if keys.length() != 3 {
+            return Err("vector requires exactly x/y/z".into());
+        }
+        let mut bytes = [0u8; 12];
+        for (i, key) in ["x", "y", "z"].into_iter().enumerate() {
+            let key = v8::String::new(scope, key).ok_or("vector key allocation")?;
+            let desc = object
+                .get_own_property_descriptor(scope, key.into())
+                .ok_or("vector data property required")?;
+            let desc = v8::Local::<v8::Object>::try_from(desc)
+                .map_err(|_| "vector own data property required")?;
+            let key = v8::String::new(scope, "value").ok_or("descriptor allocation")?;
+            if desc.has_own_property(scope, key.into()) != Some(true) {
+                return Err("vector accessors forbidden".into());
+            }
+            let value = desc.get(scope, key.into()).ok_or("vector value missing")?;
+            if !value.is_number() {
+                return Err("vector primitive numbers required".into());
+            }
+            let f = value.number_value(scope).unwrap() as f32;
+            if !f.is_finite() {
+                return Err("finite f32 vector required".into());
+            }
+            bytes[i * 4..i * 4 + 4].copy_from_slice(&f.to_le_bytes());
+        }
+        let mut out = copied::Buffer::new(12, producer)?;
+        out.bytes_mut().copy_from_slice(&bytes);
+        out.own(flag)
+    }
+}
+fn callback_projected_from_js(
     scope: &mut v8::PinScope,
     value: v8::Local<v8::Value>,
     native: &str,
     projection: &str,
 ) -> Result<ProjectedValue, String> {
+    if let Some(flag) = copied::flag(projection) {
+        let owner = LEASES
+            .with(|s| {
+                s.borrow().last().map(|l| {
+                    if l.adapter {
+                        l.dispatch
+                            .adapter
+                            .as_ref()
+                            .unwrap()
+                            .instance
+                            .package_owner
+                            .clone()
+                    } else {
+                        l.owner.clone()
+                    }
+                })
+            })
+            .unwrap_or(current_owner(scope)?);
+        return copied_from_js(scope, value, flag, copied::Producer::owner(&owner))
+            .map(ProjectedValue::Copied);
+    }
+    projected_from_js(scope, value, native, projection)
+}
+pub(super) fn projected_from_js(
+    scope: &mut v8::PinScope,
+    value: v8::Local<v8::Value>,
+    native: &str,
+    projection: &str,
+) -> Result<ProjectedValue, String> {
+    if let Some(flag) = copied::flag(projection) {
+        if native != "ptr" {
+            return Err("copied projection requires pointer ABI".into());
+        }
+        let producer = copied::Producer::owner(&current_owner(scope)?);
+        return copied_from_js(scope, value, flag, producer).map(ProjectedValue::Copied);
+    }
     if let Some(entity) = EntityProjection::parse(projection) {
         let reference = if value.is_null() {
             None
@@ -986,16 +1645,43 @@ fn projected_from_js(
         )?))
     }
 }
+
 fn js_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let result = (|| {
         let (l, i) = accessor_data(scope, &args)?;
+        if let Some(slot) = scratch_slot(&l.binding, i) {
+            if l.dispatch.frame.phase != 0 {
+                return Err("scratch slots are PRE-only".into());
+            }
+            let staged = l.pending_edits.borrow().get(&i).map(|(value, _)| value.clone())
+                .or_else(|| l.dispatch.edits.borrow().get(&i).map(|(value, _)| value.clone()));
+            let value = match staged {
+                Some(value) => value,
+                None => {
+                    let mut zero = runtime::blank();
+                    zero.kind = runtime::kind(slot.projection()?.0)?;
+                    ProjectedValue::Scalar(zero)
+                }
+            };
+            return projected_to_js(scope, value);
+        }
+        if l.binding.function.abi.position(i).is_some_and(|p|p.record()) {
+            return record_view(scope,&l,i);
+        }
         let (native, projection) = field_type(&l.binding, i)?;
-        let v = l
-            .dispatch
-            .frame
-            .read_requested(i, projection::request(native, projection)?)
-            .and_then(|v| projection::decode(v, native, projection))
-            .map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
+        let staged = l.pending_edits.borrow().get(&i).map(|(value, _)| value.clone())
+            .or_else(|| l.dispatch.edits.borrow().get(&i).map(|(value, _)| value.clone()));
+        let v = if let Some(value) = staged {
+            match value {
+                ProjectedValue::Entity { reference, .. } =>
+                    EntityProjection::parse(projection).ok_or("entity projection mismatch")?.value(reference),
+                scalar => Ok(scalar),
+            }
+        } else if i==-1 && l.binding.function.trusted() {
+            l.dispatch.frame.read_instance(&l.binding,i).and_then(|v|projection::decode(v,native,projection))
+        } else {
+            l.dispatch.frame.read_projected(i, native, projection)
+        }.map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
         projected_to_js(scope, v)
     })();
     match result {
@@ -1003,9 +1689,99 @@ fn js_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
         Err(e) => throw(scope, e),
     }
 }
+fn record_accessor(scope:&mut v8::PinScope,args:&v8::FunctionCallbackArguments) -> Result<(Lease,i32,u32),String> {
+    let data=v8::Local::<v8::Array>::try_from(args.data()).map_err(|_|"invalid record accessor")?;
+    let id=bigint(data.get_index(scope,0).ok_or("missing record lease")?)?;
+    let selector=data.get_index(scope,1).and_then(|v|v.int32_value(scope)).ok_or("missing record position")?;
+    let field=data.get_index(scope,2).and_then(|v|v.uint32_value(scope)).ok_or("missing record field")?;
+    // A callback's current context is its creation context, so a view moved into
+    // another context would still name its owner; require the caller to be that owner.
+    let owner=current_owner(scope)?;let entered=scope.get_entered_or_microtask_context();
+    if !entered.get_slot::<PluginId>().is_some_and(|p|p.0==owner.id)
+        || entered.get_slot::<InteropGeneration>().map(|g|g.0)!=Some(owner.generation) {
+        return Err("record view used from another context".into());
+    }
+    Ok((lease(scope,id)?,selector,field))
+}
+fn record_get(scope:&mut v8::PinScope,args:v8::FunctionCallbackArguments,mut rv:v8::ReturnValue) {
+    let result=(|| {
+        let (l,selector,field)=record_accessor(scope,&args)?;
+        // Even an overlay read rechecks native top frame, capability and field rights.
+        let observed=l.dispatch.frame.read_field(&l.binding,selector,field)?;
+        let staged=l.pending_records.borrow().get(&(selector,field)).cloned()
+            .or_else(||l.dispatch.record_edits.borrow().get(&(selector,field)).cloned());
+        let value=if let Some(edit)=staged {
+            validate_record_edit(&edit)?;
+            let row=&l.binding.function.abi.layout(selector)?.fields[field as usize];
+            match edit.value {
+                ProjectedValue::Entity{reference,..}=>EntityProjection::parse(row.projection().1).unwrap().value(reference)?,
+                value=>value,
+            }
+        } else {observed};
+        projected_to_js(scope,value)
+    })();
+    match result {Ok(v)=>rv.set(v),Err(e)=>throw(scope,e)}
+}
+fn record_set(scope:&mut v8::PinScope,args:v8::FunctionCallbackArguments,_:v8::ReturnValue) {
+    let result=(|| {
+        let (l,selector,field)=record_accessor(scope,&args)?;
+        let row=l.binding.function.abi.layout(selector)?.fields.get(field as usize).ok_or("unknown record field")?;
+        if l.dispatch.frame.phase!=0 || !l.mode.writable() || row.write!=["pre"] {return Err("record field is readonly".into());}
+        // Native read validates the exact top frame and record extent before staging.
+        l.dispatch.frame.read_field(&l.binding,selector,field)?;
+        let (native,projection)=row.projection();
+        if row.storage=="entity-handle32" && !args.get(0).is_null() {
+            let reference=interop_wire::strict_entity_reference(scope,args.get(0)).ok_or("genuine current-context EntityRef required")?;
+            if crate::entity_live::engine_serial_for(reference.index,reference.id).is_none() {return Err("stale record entity value".into());}
+        }
+        let value=callback_projected_from_js(scope,args.get(0),native,projection)?;
+        if row.storage=="u16" && !matches!(&value,ProjectedValue::Scalar(v) if v.bits<=65535) {return Err("record u16 out of range".into());}
+        let edit=RecordEdit {binding:l.binding.clone(),parent:l.owner.clone(),value,map_epoch:l.map_epoch};
+        validate_record_edit(&edit)?;
+        let revision=l.dispatch.revision.get().checked_add(1).ok_or("record revision exhausted")?;
+        l.pending_records.borrow_mut().insert((selector,field),edit);
+        l.dispatch.revision.set(revision);Ok::<_,String>(())
+    })();
+    if let Err(e)=result {
+        LEASES.with(|s|{if let Some(l)=s.borrow().last(){l.failed.set(true);}});
+        throw(scope,e);
+    }
+}
+fn record_view<'s>(scope:&mut v8::PinScope<'s,'_>,l:&Lease,selector:i32) -> Result<v8::Local<'s,v8::Value>,String> {
+    let presence=l.dispatch.frame.read_instance(&l.binding,selector)?;
+    if presence.kind!=1 || presence.flags!=0 || presence.reserved!=0 || presence.aux!=0 || presence.bits>1 {
+        return Err("invalid native record presence".into());
+    }
+    if presence.bits==0 {return Ok(v8::null(scope).into());}
+    let object=v8::Object::new(scope);
+    for (field,row) in l.binding.function.abi.layout(selector)?.fields.iter().enumerate() {
+        let id=v8::BigInt::new_from_u64(scope,l.id);
+        let position=v8::Integer::new(scope,selector);let field=v8::Integer::new_from_unsigned(scope,field as u32);
+        let data=v8::Array::new_with_elements(scope,&[id.into(),position.into(),field.into()]);
+        let getter=v8::Function::builder(record_get).data(data.into()).build(scope).ok_or("record getter allocation")?;
+        let setter=v8::Function::builder(record_set).data(data.into()).build(scope).ok_or("record setter allocation")?;
+        let descriptor=v8::PropertyDescriptor::new_from_get_set(getter.into(),setter.into());
+        let name=v8::String::new(scope,&row.name).ok_or("record name allocation")?;
+        if object.define_property(scope,name.into(),&descriptor)!=Some(true) {return Err("record property allocation".into());}
+    }
+    object.set_integrity_level(scope,v8::IntegrityLevel::Frozen).ok_or("record view freeze")?;
+    Ok(object.into())
+}
 fn js_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
     let result = (|| {
         let (l, i) = accessor_data(scope, &args)?;
+        if let Some(slot) = scratch_slot(&l.binding, i) {
+            if !l.mode.writable() || l.dispatch.frame.phase != 0 {
+                return Err("scratch slot is readonly".into());
+            }
+            let value = ProjectedValue::Scalar(scalar_from_js(scope, args.get(0), runtime::kind(slot.projection()?.0)?)
+                .map_err(|e| format!("{} scratch {}: {e}", l.binding.function.canonical_id, slot.name))?);
+            let next_revision = l.dispatch.revision.get().checked_add(1).ok_or("frame revision exhausted")?;
+            // Always staged: accepted with this callback's decision, discarded with its rejection.
+            l.pending_edits.borrow_mut().insert(i, (value, l.binding.function.canonical_id.clone()));
+            l.dispatch.revision.set(next_revision);
+            return Ok(());
+        }
         if !l.mode.writable()
             || l.dispatch.frame.phase != 0
             || i < 0
@@ -1017,28 +1793,22 @@ fn js_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::
             return Err("undeclared field mutation".into());
         }
         let (native, projection) = field_type(&l.binding, i)?;
-        let value = projected_from_js(scope, args.get(0), native, projection)
+        let value = callback_projected_from_js(scope, args.get(0), native, projection)
             .map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
-        let wire = projection::encode(value)
-            .map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
-        l.dispatch
-            .frame
-            .write(i, &wire)
-            .map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
-        l.dispatch
-            .edits
-            .borrow_mut()
-            .insert(i, (value, l.binding.function.canonical_id.clone()));
-        l.dispatch.revision.set(
-            l.dispatch
-                .revision
-                .get()
-                .checked_add(1)
-                .ok_or("frame revision exhausted")?,
-        );
+        let next_revision = l.dispatch.revision.get().checked_add(1)
+            .ok_or("frame revision exhausted")?;
+        if runtime::has_copies(&l.binding.function.abi) || l.binding.function.trusted() || (!l.adapter && l.binding.function.policy.suppression == "none") {
+            l.pending_edits.borrow_mut().insert(i, (value, l.binding.function.canonical_id.clone()));
+        } else {
+            l.dispatch.frame.write_projected(i, &value)
+                .map_err(|e| format!("{}: {e}", l.binding.function.canonical_id))?;
+            l.dispatch.edits.borrow_mut().insert(i, (value, l.binding.function.canonical_id.clone()));
+        }
+        l.dispatch.revision.set(next_revision);
         Ok::<_, String>(())
     })();
     if let Err(e) = result {
+        LEASES.with(|s|{if let Some(l)=s.borrow().last(){if l.binding.function.trusted(){l.failed.set(true);}}});
         throw(scope, e)
     }
 }
@@ -1055,13 +1825,18 @@ fn view<'s>(
         .parameters
         .iter()
         .enumerate()
+        .filter(|(_,p)|!p.hidden())
         .map(|(i, p)| (p.name.clone(), i as i32))
         .collect::<Vec<_>>();
-    if binding.function.abi.receiver == "entity" {
-        fields.push(("self".into(), -1));
+    if let Some(receiver)=binding.function.abi.receiver.as_ref().filter(|p|!p.hidden()) {
+        fields.push((receiver.name.clone(), -1));
     }
     if dispatch.frame.phase == 1 {
         fields.push(("returnValue".into(), -2));
+    } else {
+        for (k, slot) in binding.function.abi.scratch.iter().enumerate() {
+            fields.push((slot.name.clone(), SCRATCH_BASE - k as i32));
+        }
     }
     for (name, index) in fields {
         let data = v8::Array::new(scope, 2);
@@ -1085,15 +1860,57 @@ fn view<'s>(
         let skipped = v8::Boolean::new(scope, dispatch.frame.info.flags & 1 != 0);
         set(scope, object, "skipped", skipped.into())?;
     }
+    if dispatch.frame.phase == 1 && LEASES.with(|s| s.borrow().last().is_some_and(|l|
+        l.id == lease && l.adapter && dispatch.adapter.as_ref().is_some_and(|a|
+            a.post_authority == PostReturnAuthority::Override))) {
+        let data = v8::BigInt::new_from_u64(scope, lease);
+        let getter = v8::Function::builder(js_original_return).data(data.into()).build(scope).ok_or("getter allocation")?;
+        let undefined = v8::undefined(scope);
+        let desc = v8::PropertyDescriptor::new_from_get_set(getter.into(), undefined.into());
+        let key = v8::String::new(scope, "originalReturnValue").unwrap();
+        object.define_property(scope,key.into(),&desc);
+        let method = v8::Function::builder(js_override_return).data(data.into()).build(scope).ok_or("method allocation")?;
+        set(scope,object,"overrideReturn",method.into())?;
+        let proposal = dispatch.proposal.borrow().clone();
+        if let Some((value, _)) = proposal {
+            // A proposed entity that died since PRE is observed as null, never revived.
+            let value = match value {
+                ProjectedValue::Entity { reference, nullable } => ProjectedValue::Entity {
+                    reference: reference.filter(|r| crate::entity_live::engine_serial_for(r.index, r.id).is_some()),
+                    nullable,
+                },
+                value => value,
+            };
+            let value = projected_to_js(scope, value)?;
+            set_own(scope, object, "proposedReturn", value)?;
+        }
+    }
+    if hidden_relation::has_hidden(binding) {
+        let data = v8::BigInt::new_from_u64(scope, lease);
+        let method = v8::Function::builder(hidden_relation::js_hidden_referenced_by).data(data.into()).build(scope).ok_or("method allocation")?;
+        set(scope,object,"hiddenReferencedBy",method.into())?;
+    }
     object.set_integrity_level(scope, v8::IntegrityLevel::Frozen);
     Ok(object)
 }
+fn delivery_key<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+) -> Result<v8::Local<'s, v8::Private>, String> {
+    let name = v8::String::new(scope, "s2script.function-copy.delivery.v1")
+        .ok_or("delivery key allocation")?;
+    Ok(v8::Private::for_api(scope, Some(name)))
+}
+
 fn decision(
     scope: &mut v8::PinScope,
     value: v8::Local<v8::Value>,
     native: &str,
     projection: &str,
     phase: i32,
+    suppression: &str,
+    // Adapter PRE only: (override authority or its named refusal, proposal output).
+    // Subscribers pass None.
+    proposal: Option<(Result<(), &'static str>, &mut Option<ProjectedValue>)>,
 ) -> Result<Decision, String> {
     let kind = projection::request(native, projection)?.kind;
     if observe_thenable(scope, value) {
@@ -1116,6 +1933,9 @@ fn decision(
     }
     if value.is_int32() {
         let action = value.int32_value(scope).unwrap();
+        if suppression == "none" && (2..=3).contains(&action) {
+            return Err("suppression:none forbids Handled/Stop".into());
+        }
         if (0..=1).contains(&action) || (kind == 0 && (2..=3).contains(&action)) {
             return Ok(Decision {
                 action,
@@ -1124,18 +1944,49 @@ fn decision(
         }
         return Err("suppression requires typed decision object".into());
     }
+    if value.is_proxy() {return Err("proxy decision forbidden".into())}
     let object =
         v8::Local::<v8::Object>::try_from(value).map_err(|_| "invalid adapter decision")?;
     let action = get(scope, object, "action")?;
     if !action.is_int32() {
         return Err("suppression action must be an int32".into());
     }
-    let action = action
-        .int32_value(scope)
+    let action = action.int32_value(scope).unwrap();
+    if let Some((authority, out)) = proposal.filter(|_| action == 1 && phase == 0) {
+        // A host-carried subscriber delivery keeps its existing (rejected) meaning.
+        let key = delivery_key(scope)?;
+        if object.get_private(scope, key).is_none_or(|v| v.is_undefined()) {
+            authority?;
+            if kind == 0 || copied::flag(projection).is_some() {
+                return Err("PRE return proposal requires a scalar or entity return".into());
+            }
+            let value = get(scope, object, "returnValue")?;
+            *out = Some(callback_projected_from_js(scope, value, native, projection)?);
+            return Ok(Decision { action: 1, value: None });
+        }
+    }
+    let action = Some(action)
         .filter(|a| (2..=3).contains(a))
         .ok_or("invalid suppression action")?;
+    if suppression == "none" {
+        return Err("suppression:none forbids suppression decision objects".into());
+    }
     let value = get(scope, object, "returnValue")?;
-    let value = projected_from_js(scope, value, native, projection)?;
+    let key=delivery_key(scope)?;
+    if let Some(tag)=object.get_private(scope,key).filter(|v|!v.is_undefined()) {
+        let tag=v8::Local::<v8::Array>::try_from(tag).map_err(|_|"invalid host delivery")?;
+        let lease_id=bigint(tag.get_index(scope,0).ok_or("missing delivery lease")?)?;
+        let index=bigint(tag.get_index(scope,1).ok_or("missing delivery index")?)? - 1;
+        let original=tag.get_index(scope,2).ok_or("missing delivery value")?;
+        let carried=LEASES.with(|s| {
+            let s=s.borrow();let l=s.last().filter(|l|l.adapter && l.id==lease_id).ok_or("foreign or expired host delivery")?;
+            let d=l.dispatch.deliveries.borrow();let d=d.get(index as usize).ok_or("expired delivery index")?;
+            if d.action!=action || !value.strict_equals(original){return Err("host delivery changed")}
+            Ok(d.clone())
+        })?;
+        return Ok(carried);
+    }
+    let value = callback_projected_from_js(scope, value, native, projection)?;
     Ok(Decision {
         action,
         value: if kind == 0 { None } else { Some(value) },
@@ -1151,6 +2002,12 @@ fn js_cursor(
         if !l.adapter {
             return Err("cursor requires adapter callback lease".into());
         }
+        accept_record_edits(&l)?;
+        // Adapter edits preceding invokeNext are visible to that subscriber.
+        // An invalid adapter result still aborts the entire uncommitted frame.
+        if runtime::has_copies(&l.binding.function.abi) || l.binding.function.trusted() {
+            l.dispatch.edits.borrow_mut().append(&mut l.pending_edits.borrow_mut());
+        }
         loop {
             let index = l.dispatch.cursor.get();
             let Some(sub) = l.dispatch.subscribers.get(index).cloned() else {
@@ -1163,7 +2020,7 @@ fn js_cursor(
                 continue;
             }
             if sub.owner != l.owner
-                && crate::dispatch::parent_busy(&sub.owner.id, sub.owner.generation)
+                && crate::dispatch::parent_busy(&sub.owner.id, sub.owner.generation, l.dispatch.frame.target)
             {
                 continue;
             }
@@ -1180,17 +2037,29 @@ fn js_cursor(
             if value.action == 3 {
                 l.dispatch.cursor.set(l.dispatch.subscribers.len());
             }
-            l.dispatch.deliveries.borrow_mut().push(value);
+            let delivery_index=l.dispatch.deliveries.borrow().len();
+            l.dispatch.deliveries.borrow_mut().push(value.clone());
             let out = v8::Object::new(scope);
             let action = v8::Integer::new(scope, value.action);
-            set(scope, out, "action", action.into())?;
-            if let Some(value) = value.value {
-                let value = projected_to_js(scope, value)?;
-                set(scope, out, "returnValue", value)?;
+            set_own(scope, out, "action", action.into())?;
+            let original = match value.value {
+                Some(value) => projected_to_js(scope, value)?,
+                None => v8::undefined(scope).into(),
+            };
+            set_own(scope, out, "returnValue", original)?;
+            let lease_id = v8::BigInt::new_from_u64(scope, l.id);
+            let index = v8::BigInt::new_from_u64(scope, delivery_index as u64 + 1);
+            // Array construction initializes own elements directly; no prototype
+            // setter or getter participates in recording the emitted return.
+            let tag = v8::Array::new_with_elements(scope, &[lease_id.into(), index.into(), original]);
+            freeze_snapshot(scope, tag.into())?;
+            let key = delivery_key(scope)?;
+            if out.set_private(scope, key, tag.into()) != Some(true) {
+                return Err("delivery lineage allocation".into());
             }
             let revision = v8::Number::new(scope, l.dispatch.revision.get() as f64);
-            set(scope, out, "frameRevision", revision.into())?;
-            out.set_integrity_level(scope, v8::IntegrityLevel::Frozen);
+            set_own(scope, out, "frameRevision", revision.into())?;
+            freeze_snapshot(scope, out)?;
             return Ok(out.into());
         }
     })();
@@ -1204,13 +2073,14 @@ fn invoke_wrapper(
     dispatch: &Rc<Dispatch>,
     sub: &Subscription,
 ) -> Result<Decision, String> {
+    let prior_revision = dispatch.revision.get();
     let context = clone_plugin_context(&sub.owner.id).ok_or("subscriber context unavailable")?;
     let context = v8::Local::new(parent, &context);
     let scope = &mut v8::ContextScope::new(parent, context);
     let mut storage = v8::TryCatch::new(scope);
     let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
-    let _busy = crate::dispatch::ParentBusy::enter(&sub.owner.id, sub.owner.generation);
-    let (guard, id) = LeaseGuard::enter(
+    let _busy = crate::dispatch::ParentBusy::enter_target(&sub.owner.id, sub.owner.generation, dispatch.frame.target);
+    let (guard, id, pending_edits) = LeaseGuard::enter(
         sub.owner.clone(),
         dispatch.clone(),
         sub.binding.clone(),
@@ -1222,18 +2092,31 @@ fn invoke_wrapper(
     let recv = v8::undefined(&mut tc);
     let value = function.call(&mut tc, recv.into(), &[view.into()]);
     guard.close();
-    let value = value.ok_or("subscriber wrapper threw")?;
-    let decision = decision(
-        &mut tc,
-        value,
-        &sub.binding.function.abi.returns.native,
-        &sub.binding.function.abi.returns.projection.id,
-        dispatch.frame.phase,
-    )?;
-    if sub.mode == SubscriptionMode::Observe && decision.action != 0 {
-        return Err("observe-only subscriber cannot change the decision".into());
+    let decision = value.ok_or_else(|| "subscriber wrapper threw".to_string()).and_then(|value| {
+        decision(
+            &mut tc,
+            value,
+            &sub.binding.function.abi.returns.native,
+            &sub.binding.function.abi.returns.projection.id,
+            dispatch.frame.phase,
+            &sub.binding.function.policy.suppression,
+            None,
+        )
+    }).and_then(|decision| {
+        if sub.mode == SubscriptionMode::Observe && decision.action != 0 {
+            Err("observe-only subscriber cannot change the decision".into())
+        } else { Ok(decision) }
+    });
+    if decision.is_ok() {
+        if let Err(e)=guard.accept_records() {dispatch.revision.set(prior_revision);return Err(e);}
+        // A nonsuppressing generic callback's setters are private until its
+        // decision validates. Later callbacks read accepted edits from this
+        // overlay; the final transfer validates/writes before native commit.
+        dispatch.edits.borrow_mut().extend(pending_edits.borrow().iter().map(|(k, v)| (*k, v.clone())));
+    } else if runtime::has_copies(&sub.binding.function.abi) || sub.binding.function.policy.suppression == "none" {
+        dispatch.revision.set(prior_revision);
     }
-    Ok(decision)
+    decision
 }
 fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<Decision, String> {
     let adapter = dispatch
@@ -1257,11 +2140,13 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
     let scope = &mut v8::ContextScope::new(parent, context);
     let mut storage = v8::TryCatch::new(scope);
     let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
-    let _busy = crate::dispatch::ParentBusy::enter(
+    let _busy = crate::dispatch::ParentBusy::enter_target(
         &adapter.instance.parent.id,
         adapter.instance.parent.generation,
+        dispatch.frame.target,
     );
-    let (guard, id) = LeaseGuard::enter(
+    let prior_revision=dispatch.revision.get();
+    let (guard, id, pending_edits) = LeaseGuard::enter(
         adapter.instance.parent.clone(),
         dispatch.clone(),
         dispatch.binding.clone(),
@@ -1295,15 +2180,36 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
     let recv = v8::undefined(&mut tc);
     let value = function.call(&mut tc, recv.into(), &[facade.into()]);
     guard.close();
-    decision(
+    let mut proposal = None;
+    // Same authority the POST override permit requires: the grant, and this exact
+    // binding authorized for this adapter's package contract.
+    let authority = if adapter.post_authority != PostReturnAuthority::Override {
+        Err("PRE return proposal requires host override authority")
+    } else if !AUTHORIZED.with(|a| a.borrow().get(&dispatch.binding.id).is_some_and(|(owner, id, hash)|
+        *owner == adapter.instance.package_owner && *id == adapter.semantic && *hash == adapter.hash)) {
+        Err("PRE return proposal binding authorization mismatch")
+    } else {
+        Ok(())
+    };
+    let result=decision(
         &mut tc,
         value.ok_or("adapter threw")?,
         &dispatch.binding.function.abi.returns.native,
         &dispatch.binding.function.abi.returns.projection.id,
         dispatch.frame.phase,
-    )
+        &dispatch.binding.function.policy.suppression,
+        (dispatch.frame.phase == 0).then_some((authority, &mut proposal)),
+    ).and_then(|decision| match proposal.take() {
+        Some(_) if adapter.post.is_none() => Err("PRE return proposal requires the adapter's POST callback".into()),
+        Some(value) => {*dispatch.proposal.borrow_mut() = Some((value, dispatch.binding.clone())); Ok(decision)}
+        None => Ok(decision),
+    });
+    if result.is_ok() {if let Err(e)=guard.accept_records() {dispatch.revision.set(prior_revision);return Err(e);}dispatch.edits.borrow_mut().extend(pending_edits.borrow().iter().map(|(k,v)|(*k,v.clone())));}
+    else if runtime::has_copies(&dispatch.binding.function.abi) {dispatch.revision.set(prior_revision);}
+    result
 }
 struct GenericCursor<'a, 's, 'i> {
+    adapter_owner: Option<OwnerKey>,
     scope: &'a mut v8::PinScope<'s, 'i>,
     dispatch: Rc<Dispatch>,
 }
@@ -1317,7 +2223,8 @@ impl SubscriberCursor for GenericCursor<'_, '_, '_> {
             self.dispatch.cursor.set(index + 1);
             if !SUBSCRIPTIONS.with(|s| s.borrow().contains_key(&sub.id))
                 || !owner_is_live(&sub.owner.id, sub.owner.generation)
-                || crate::dispatch::parent_busy(&sub.owner.id, sub.owner.generation)
+                || (self.adapter_owner.as_ref() != Some(&sub.owner)
+                    && crate::dispatch::parent_busy(&sub.owner.id, sub.owner.generation, self.dispatch.frame.target))
             {
                 continue;
             }
@@ -1331,7 +2238,7 @@ impl SubscriberCursor for GenericCursor<'_, '_, '_> {
                     }
                 }
             };
-            self.dispatch.deliveries.borrow_mut().push(decision);
+            self.dispatch.deliveries.borrow_mut().push(decision.clone());
             let action = match decision.action {
                 0 => crate::multiplexer::HookResult::Continue,
                 1 => crate::multiplexer::HookResult::Changed,
@@ -1365,10 +2272,20 @@ fn invoke_domains(scope: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<De
             })
             .cloned()
             .collect::<Vec<_>>();
-        if subscribers.is_empty() {
+        // A carried PRE proposal runs its adapter's POST even without POST subscribers.
+        let forced = group == 0
+            && dispatch.frame.phase == 1
+            && dispatch.adapter.is_some()
+            && dispatch.proposal.borrow().is_some();
+        if subscribers.is_empty() && !forced {
             continue;
         }
-        let binding = subscribers.first().unwrap().binding.clone();
+        // A POST adapter carrying a proposal runs on the binding it proposed through,
+        // which is the one authorized for its override permit.
+        let carried = (group == 0 && dispatch.frame.phase == 1)
+            .then(|| dispatch.proposal.borrow().as_ref().map(|(_, binding)| binding.clone()))
+            .flatten();
+        let binding = carried.unwrap_or_else(|| subscribers.first().map_or_else(|| dispatch.binding.clone(), |s| s.binding.clone()));
         let part = Rc::new(Dispatch {
             frame: dispatch.frame.clone(),
             binding,
@@ -1377,17 +2294,23 @@ fn invoke_domains(scope: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<De
             cursor: Cell::new(0),
             revision: dispatch.revision.clone(),
             edits: dispatch.edits.clone(),
+            record_edits:dispatch.record_edits.clone(),
+            map_epoch:dispatch.map_epoch,
+            record_writers:dispatch.record_writers.clone(),
             deliveries: RefCell::new(Vec::new()),
+            proposal: dispatch.proposal.clone(),
         });
         let decision = if group == 0 {
             invoke_adapter(scope, part.clone())?
         } else {
             let mut cursor = GenericCursor {
+                adapter_owner: None,
                 scope,
                 dispatch: part.clone(),
             };
             let mut args = package_adapter::AdapterDispatch {
                 cursor: &mut cursor,
+                frame: None,
             };
             if group == 2 || dispatch.frame.phase == 1 {
                 let implementation = part.subscribers[0]
@@ -1430,11 +2353,11 @@ fn invoke_domains(scope: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<De
         dispatch
             .deliveries
             .borrow_mut()
-            .extend(part.deliveries.borrow().iter().copied());
+            .extend(part.deliveries.borrow().iter().cloned());
     }
     Ok(result)
 }
-fn eligible(adapter: &Adapter, bypass: u64, phase: i32) -> bool {
+fn eligible(adapter: &Adapter, bypass: u64, phase: i32, target: i64) -> bool {
     let owner = &adapter.instance.parent;
     let implements_phase = if phase == 0 {
         adapter.pre.is_some()
@@ -1442,10 +2365,14 @@ fn eligible(adapter: &Adapter, bypass: u64, phase: i32) -> bool {
         adapter.post.is_some()
     };
     implements_phase
+        && PACKAGES.with(|p| {
+            p.borrow()
+                .contains_key(&adapter.instance.package_owner.generation)
+        })
         && owner.generation != bypass
         && owner_is_live(&owner.id, owner.generation)
         && plugin_phase(&owner.id) == Some(plugin::Phase::Active)
-        && !crate::dispatch::parent_busy(&owner.id, owner.generation)
+        && !crate::dispatch::parent_busy(&owner.id, owner.generation, target)
 }
 /// Synchronous, including nested CallbackScope entry. Never queues V8 work.
 pub(crate) fn dispatch(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<(), String> {
@@ -1457,6 +2384,7 @@ pub(crate) fn dispatch(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Re
     result
 }
 fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<(), String> {
+    let _copy_scope=copied::Scope::enter()?;
     if target <= 0
         || info.version != 1
         || info.struct_size != 48
@@ -1470,11 +2398,31 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
         return Err("invalid frame metadata".into());
     }
     let key = (target, info.invocation_id);
+    // Take the exact paired PRE state into this POST stack, keeping its copied
+    // deliveries and registration hold alive until POST actually completes.
+    let post_state = if phase == 1 {
+        INVOCATIONS.with(|i| i.borrow_mut().remove(&key))
+    } else {
+        None
+    };
+    // Reserve an upper bound for callback maps, cloned owned-value handles,
+    // V8 delivery tags, and retained decision vectors before dispatch allocations.
+    // Byte payloads are charged independently by Buffer for their actual capacity.
+    let copy_bookkeeping=SUBSCRIPTIONS.with(|rows| {
+        let rows=rows.borrow();let mut bytes=4096usize;let mut copies=false;
+        for sub in rows.values().filter(|sub|sub.binding.target==Some(target)) {
+            copies|=runtime::has_copies(&sub.binding.function.abi);
+            bytes=bytes.checked_add(4*32*(256+sub.binding.function.canonical_id.len())).ok_or("FunctionCopyBudgetExceeded: dispatch bookkeeping")?;
+        }
+        if copies {copied::Bookkeeping::reserve(bytes,copied::Producer::engine()).map(Some)}else{Ok(None)}
+    })?;
     let subscribers = SUBSCRIPTIONS.with(|s| {
         s.borrow()
             .values()
             .filter(|s| {
                 s.binding.target == Some(target)
+                    && s.binding.is_live()
+                    && s.instance.as_ref().is_none_or(|i| PACKAGES.with(|p| p.borrow().contains_key(&i.package_owner.generation)))
                     // PRE must reserve the matched adapter even for POST-only
                     // subscriptions. Actual delivery is phase-filtered below.
                     && (phase == 0 || s.phase == phase)
@@ -1483,25 +2431,19 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
                     && !crate::dispatch::parent_busy(
                         &s.owner.id,
                         s.owner.generation,
+                        target,
                     )
             })
             .cloned()
             .collect::<Vec<_>>()
     });
-    // Take the exact paired PRE state into this POST stack, keeping its copied
-    // deliveries and registration hold alive until POST actually completes.
-    let post_state = if phase == 1 {
-        INVOCATIONS.with(|i| i.borrow_mut().remove(&key))
-    } else {
-        None
-    };
     let adapter = if phase == 0 {
         let selected = ADAPTERS.with(|a| {
             let rows = a.borrow();
             [0, 1].map(|selection_phase| {
                 rows.values()
                     .find(|a| {
-                        eligible(a, info.suppressed_owner, selection_phase)
+                        eligible(a, info.suppressed_owner, selection_phase, target)
                             && subscribers.iter().any(|s| {
                                 s.phase == selection_phase
                                     && s.adapter == a.semantic
@@ -1521,8 +2463,10 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
                 i.borrow_mut().insert(
                     key,
                     InvocationState {
+                        copy_bookkeeping: None,
                         adapters: selected,
                         deliveries: Vec::new(),
+                        proposal: None,
                         retained_bytes: 0,
                     },
                 )
@@ -1538,15 +2482,24 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
             .and_then(|state| state.adapters[1].clone())
             .filter(|a| {
                 ADAPTERS.with(|rows| rows.borrow().contains_key(&a.id))
-                    && eligible(a, info.suppressed_owner, 1)
+                    && eligible(a, info.suppressed_owner, 1, target)
             })
     };
     let subscribers = subscribers
         .into_iter()
         .filter(|s| s.phase == phase)
         .collect::<Vec<_>>();
-    if subscribers.is_empty() {
-        return Ok(());
+    // Only an override-authorized adapter's accepted PRE proposal forces its POST.
+    let carried = post_state.as_ref().and_then(|state| state.proposal.clone());
+    // Losing the carried proposal is a named degrade, never a silent Ok.
+    let dropped = (carried.is_some() && adapter.is_none())
+        .then(|| format!("carried PRE proposal dropped: POST adapter no longer eligible (target {target})"));
+    if let Some(reason) = &dropped {
+        log_warn(reason);
+    }
+    let forced = carried.filter(|_| adapter.is_some());
+    if subscribers.is_empty() && forced.is_none() {
+        return dropped.map_or(Ok(()), Err);
     }
     if subscribers.iter().any(|s| !s.generic) && adapter.is_none() {
         return Err("no eligible synchronous package adapter instance".into());
@@ -1555,7 +2508,14 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
     if phase == 1 && post_state.is_none() {
         return Ok(());
     }
-    let binding = subscribers[0].binding.clone();
+    let binding = match (subscribers.first(), &forced) {
+        (Some(sub), _) => sub.binding.clone(),
+        (None, Some((_, binding))) => binding.clone(),
+        (None, None) => unreachable!("checked above"),
+    };
+    if !binding.is_live() {
+        return Err("binding owner generation unavailable".into());
+    }
     if binding.function.abi.parameters.len() != info.parameter_count as usize {
         return Err("frame parameter count mismatch".into());
     }
@@ -1568,7 +2528,11 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
         cursor: Cell::new(0),
         revision: Rc::new(Cell::new(0)),
         edits: Rc::new(RefCell::new(std::collections::BTreeMap::new())),
+        record_edits:Rc::new(RefCell::new(BTreeMap::new())),
+        map_epoch:crate::entity_live::map_epoch(),
+        record_writers:Rc::new(RefCell::new(BTreeMap::new())),
         deliveries: RefCell::new(Vec::new()),
+        proposal: Rc::new(RefCell::new(forced)),
     });
     let result = if let Some(info) = crate::nest::top().filter(|p| !p.is_null()) {
         let mut storage = unsafe { v8::CallbackScope::new(&*info) };
@@ -1578,9 +2542,19 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
         with_host_isolate(|isolate| {
             let mut storage = v8::HandleScope::new(isolate);
             let mut scope = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
-            let context = clone_plugin_context(&dispatch.binding.owner.id)
-                .ok_or("dispatch context unavailable")?;
+            // The binding may be process-owned and have no Plugin context. Callback
+            // execution belongs to an admitted subscriber's exact live parent.
+            let parent = dispatch.subscribers.first().map(|s| &s.owner)
+                .or(dispatch.adapter.as_ref().map(|a| &a.instance.parent))
+                .ok_or("dispatch parent unavailable")?;
+            if parent.kind != OwnerKind::Plugin || !owner_is_live(&parent.id, parent.generation) {
+                return Err("dispatch parent generation unavailable".into());
+            }
+            let context = clone_plugin_context(&parent.id).ok_or("dispatch context unavailable")?;
             let context = v8::Local::new(&mut scope, &context);
+            if context.get_slot::<InteropGeneration>().map(|g| g.0) != Some(parent.generation) {
+                return Err("dispatch context generation mismatch".into());
+            }
             let scope = &mut v8::ContextScope::new(&mut scope, context);
             invoke_domains(scope, dispatch.clone())
         })
@@ -1590,6 +2564,7 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
     if phase == 0 {
         INVOCATIONS.with(|i| {
             if let Some(state) = i.borrow_mut().get_mut(&key) {
+                state.copy_bookkeeping=copy_bookkeeping.clone();
                 state.deliveries = dispatch.deliveries.borrow().clone();
                 state.retained_bytes =
                     state.deliveries.capacity() * std::mem::size_of::<Decision>();
@@ -1597,39 +2572,428 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
         });
         // All callbacks have returned. Revalidate copied host identities, then
         // let the native atomic commit independently revalidate current slots.
-        let edits = dispatch
-            .edits
-            .borrow()
-            .iter()
-            .map(|(selector, (value, name))| {
-                projection::encode(*value)
-                    .map(|value| (*selector, value, name.clone()))
-                    .map_err(|e| format!("{name}: {e}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        for (selector, value, name) in edits {
-            dispatch
-                .frame
-                .write(selector, &value)
-                .map_err(|e| format!("{name}: {e}"))?;
+        if dispatch.binding.function.trusted() && (dispatch.map_epoch==0 || dispatch.map_epoch!=crate::entity_live::map_epoch()) {return Err("record dispatch map lifetime expired before commit".into());}
+        for writer in dispatch.record_writers.borrow().values() {
+            registry::binding(writer.binding.id,&writer.binding.owner)?;
+            if !writer.binding.is_live() || !owner_is_live(&writer.parent.id,writer.parent.generation)
+                || writer.map_epoch==0 || writer.map_epoch!=crate::entity_live::map_epoch() {return Err("record callback writer expired before commit".into());}
         }
-        let name = &dispatch.binding.function.canonical_id;
-        let value = result
-            .value
-            .map(projection::encode)
-            .transpose()
-            .map_err(|e| format!("{name}: {e}"))?;
-        dispatch
-            .frame
-            .commit(result.action, value.as_ref())
-            .map_err(|e| format!("{name}: {e}"))?;
+        let record_edits=dispatch.record_edits.borrow().clone();
+        for edit in record_edits.values() {validate_record_edit(edit)?;}
+        // Scratch selectors are host-only and never reach native arguments.
+        let edits=dispatch.edits.borrow().iter().filter(|(selector,_)|**selector>SCRATCH_BASE)
+            .map(|(k,v)|(*k,v.clone())).collect::<StagedEdits>();
+        // Validate all scalar/entity identities before any native staging.
+        for (value,name) in edits.values() {
+            if !matches!(value,ProjectedValue::Copied(_)) {projection::encode(value.clone()).map_err(|e|format!("{name}: {e}"))?;}
+        }
+        for (selector,(value,name)) in &edits {
+            dispatch.frame.write_projected(*selector,value).map_err(|e|format!("{name}: {e}"))?;
+        }
+        for ((selector,field),edit) in &record_edits {dispatch.frame.write_field(&edit.binding,*selector,*field,&edit.value)?;}
+        let name=&dispatch.binding.function.canonical_id;
+        dispatch.frame.commit_projected(result.action,result.value.as_ref(),runtime::has_copies(&dispatch.binding.function.abi)).map_err(|e|format!("{name}: {e}"))?;
+        // Carry an accepted proposal only once PRE has committed; its adapter owns POST.
+        let proposal = dispatch.proposal.borrow_mut().take();
+        if let Some(value) = proposal {
+            INVOCATIONS.with(|i| {
+                if let Some(state) = i.borrow_mut().get_mut(&key) {
+                    state.adapters[1] = dispatch.adapter.clone();
+                    state.retained_bytes = state.retained_bytes
+                        .saturating_add(std::mem::size_of::<(ProjectedValue, Rc<Binding>)>());
+                    state.proposal = Some(value);
+                }
+            });
+        }
     }
-    Ok(())
+    dropped.map_or(Ok(()), Err)
 }
 
 #[cfg(test)]
 pub(super) mod proof {
     use super::*;
+    #[test]
+    fn copied_v8_roundtrip_is_strict_and_immutable() {
+        fn roundtrip(
+            scope: &mut v8::PinScope,
+            args: v8::FunctionCallbackArguments,
+            mut rv: v8::ReturnValue,
+        ) {
+            let projection = if args.get(1).is_true() {
+                "vector"
+            } else {
+                "string"
+            };
+            match projected_from_js(scope, args.get(0), "ptr", projection)
+                .and_then(|v| projected_to_js(scope, v))
+            {
+                Ok(v) => rv.set(v),
+                Err(e) => throw(scope, e),
+            }
+        }
+        init(frame_tests::logger).unwrap();
+        frame_tests::load_body("copy-marshalling", "return {};", "{}");
+        HOST.with(|h| {
+            let mut host = h.borrow_mut();
+            let context = clone_plugin_context("copy-marshalling").unwrap();
+            let mut storage = v8::HandleScope::new(&mut host.as_mut().unwrap().isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+            let context = v8::Local::new(&mut hs, &context);
+            let scope = &mut v8::ContextScope::new(&mut hs, context);
+            let f = v8::Function::new(scope, roundtrip).unwrap();
+            let key = v8::String::new(scope, "copyValue").unwrap();
+            context.global(scope).set(scope, key.into(), f.into());
+        });
+        let result = eval_in_context(
+            "copy-marshalling",
+            r#"
+            for (const s of ['', 'hello', 'é🔥', 'x'.repeat(511)+'🔥', 'é'.repeat(32767)+'x', 'x'.repeat(65535)]) {
+                if(copyValue(s)!==s) throw Error('string copy');
+            }
+            let touched=0;
+            for(const s of ['\ud800','\udfff','nul\0byte','x'.repeat(65536),'é'.repeat(32768),new String('x'),{toString(){touched++;return 'x'}}]) {
+                let rejected=false;try{copyValue(s)}catch(_){rejected=true}if(!rejected)throw Error('invalid string accepted');
+            }
+            const input={x:-0,y:1.25,z:-3};const saved=copyValue(input,true);input.y=100;
+            if(!Object.is(saved.x,-0)||saved.y!==1.25||saved.z!==-3||!Object.isFrozen(saved))throw Error('vector copy');
+            for(const v of [{x:Infinity,y:0,z:0},{x:1e100,y:0,z:0},{x:'1',y:0,z:0},{get x(){touched++;return 1},y:0,z:0},new Proxy({x:1,y:2,z:3},{ownKeys(){touched++;return ['x','y','z']}}),{x:1,y:2,z:3,w:4},{x:1,y:2,z:3,[Symbol()]:4},[1,2,3]]) {
+                let rejected=false;try{copyValue(v,true)}catch(_){rejected=true}if(!rejected)throw Error('invalid vector accepted');
+            }
+            Object.defineProperty(Object.prototype,'x',{configurable:true,get(){touched++;return 99},set(_){touched++;throw Error('inherited x setter')}});
+            try {
+                const poisoned=copyValue({x:-0,y:2,z:3},true);
+                const desc=Object.getOwnPropertyDescriptor(poisoned,'x');
+                if(!desc||!('value' in desc)||!Object.is(desc.value,-0)||!Object.isFrozen(poisoned))throw Error('poisoned vector snapshot');
+            } finally { delete Object.prototype.x; }
+            if(touched)throw Error('user coercion executed');globalThis.savedCopy=saved;
+        "#,
+        );
+        unload_plugin("copy-marshalling");
+        shutdown();
+        result.unwrap();
+    }
+    pub struct CopyConformance {
+        package: PreparedPackageReceipt,
+        pub ready: bool,
+    }
+    const COPY_ID: &str = "proof.copied.v1";
+    pub(super) fn copy_binding(id: &str) -> u64 {
+        prepared_binding(id, |f| {
+            f["target"]["pattern"] = "50".into();
+            f["abi"]["fingerprint"] = "linux-x86_64-sysv:none:ptr(ptr)".into();
+            f["abi"]["parameters"] = serde_json::json!([{"name":"text","native":"ptr","projection":{"id":"string","version":1},"ownership":"callee-retained","mutable":["pre"]}]);
+            f["abi"]["returns"] = serde_json::json!({"native":"ptr","projection":{"id":"string","version":1},"ownership":"caller-borrowed"});
+        })
+    }
+    pub fn copy_begin() -> CopyConformance {
+        let owner = HostPackageOwner::mint("@proof/copied").unwrap();
+        let grant = HostAdapterGrant::override_return(
+            &owner,
+            AdapterContract {
+                id: COPY_ID.into(),
+                version: 1,
+                contract_hash: HASH.into(),
+            },
+        )
+        .unwrap();
+        let source = format!(
+            r#"(()=>{{
+            const register=__s2_function_adapter_register,subscribe=__s2_function_adapter_subscribe;
+            globalThis.mode='probe';globalThis.seen=[];globalThis.rejected=0;
+            register('{COPY_ID}','{HASH}',{{
+                pre(d){{
+                    globalThis.savedFrame=d.frame;
+                    if(mode==='stale')return oldDelivery;
+                    let first=null,next;
+                    while((next=d.cursor.invokeNext())!==null){{if(!first)first=next;}}
+                    if(mode==='carry'){{globalThis.oldDelivery=first;return first.action>=2?first:first.action;}}
+                    if(mode==='manufacture')return {{action:first.action,returnValue:first.returnValue}};
+                    if(mode==='rollback'||mode==='none')return 0;
+                    if(mode==='nested'){{const nested=__proofEntityCall(binding,'inner');if(nested!=='inner')throw Error('nested bypass');}}
+                }},
+                post(d){{
+                    if(mode==='probe'){{seen.push('ready');return;}}
+                    if(mode==='peer'){{if(d.frame.originalReturnValue!=='input'||d.frame.returnValue!=='late-native-peer')throw Error('native peer POST capture');}}
+                    if(mode==='post'){{
+                        if(d.frame.originalReturnValue!=='input')throw Error('original capture');
+                        globalThis.savedOverride=d.frame.overrideReturn;
+                        if(d.frame.overrideReturn('post-owned')!=='post-owned')throw Error('override');
+                        if(d.frame.originalReturnValue!=='input')throw Error('original changed');
+                    }}
+                    while(d.cursor.invokeNext()!==null){{}}
+                }}
+            }});
+            globalThis.subscribeCopy=id=>{{globalThis.binding=id;
+                subscribe(id,'{COPY_ID}','pre',v=>{{
+                    globalThis.savedValue=v.text;globalThis.savedView=v;
+                    if(mode==='rollback'){{v.text='rejected-edit';return {{action:-1,returnValue:'bad'}};}}
+                    if(mode==='carry'||mode==='manufacture'){{v.text='winning-edit';return {{action:2,returnValue:'same-copied-result'}};}}
+                    return 0;
+                }});
+                subscribe(id,'{COPY_ID}','post',v=>{{
+                    if('overrideReturn' in v)throw Error('subscriber POST authority');
+                    if(mode==='post'){{let denied=false;try{{savedOverride('forbidden')}}catch(_){{denied=true}}if(!denied)throw Error('suspended permit');}}
+                    seen.push(v.returnValue);
+                }});
+            }};
+        }})()"#
+        );
+        let package = register_prepared_package_with_authorities(
+            owner,
+            source.into(),
+            ImplementationManifestHash::new(crate::engine_functions::contract::hash_bytes(
+                b"copied-fixture-v1",
+            ))
+            .unwrap(),
+            vec![grant],
+        )
+        .unwrap();
+        for id in ["copy-a", "copy-b", "copy-caller"] {
+            frame_tests::load_body(id, "return {};", "{}");
+            entity_native(id);
+            let binding = copy_binding(id);
+            eval_in_context(id, &format!("globalThis.binding={binding}n;")).unwrap();
+            if id != "copy-caller" {
+                let owner = OwnerKey::plugin(id, plugin_generation(id));
+                authorize_binding(&package, &owner, binding, COPY_ID, HASH).unwrap();
+                eval_in_context(id, "subscribeCopy(binding);").unwrap();
+            }
+        }
+        eval_in_context(
+            "copy-caller",
+            "if(__proofEntityCall(binding,'input')!=='input')throw Error('native alias');",
+        )
+        .unwrap();
+        CopyConformance {
+            package,
+            ready: false,
+        }
+    }
+    pub fn copy_probe(state: &mut CopyConformance) {
+        eval_in_context("copy-a", "seen.length=0;").unwrap();
+        eval_in_context(
+            "copy-caller",
+            "if(__proofEntityCall(binding,'input')!=='input')throw Error('probe alias');",
+        )
+        .unwrap();
+        state.ready = eval_in_context(
+            "copy-a",
+            "if(!seen.includes('ready'))throw Error('not ready');",
+        )
+        .is_ok();
+    }
+    pub fn copy_mode(mode: &str) {
+        for id in ["copy-a", "copy-b"] {
+            eval_in_context(id, &format!("mode='{mode}';seen.length=0;")).unwrap();
+        }
+    }
+    pub fn copy_exercise() {
+        for (mode, expected) in [
+            ("rollback", "input"),
+            ("nested", "input"),
+            ("carry", "same-copied-result"),
+            ("manufacture", "same-copied-result"),
+            ("post", "post-owned"),
+        ] {
+            copy_mode(mode);
+            eval_in_context("copy-caller",&format!("globalThis.result=__proofEntityCall(binding,'input');if(result!=='{expected}')throw Error('copied result: '+result);")).unwrap();
+            eval_in_context("copy-a","{if(savedValue!=='input')throw Error('immutable PRE snapshot');let denied=0;try{savedView.text}catch(_){denied++}try{savedFrame.text}catch(_){denied++}if(denied!==2)throw Error('retained lease');}").unwrap();
+            if mode == "post" {
+                eval_in_context("copy-a","{let denied=false;try{savedOverride('bad')}catch(_){denied=true}if(!denied)throw Error('POST permit survived');}").unwrap();
+            }
+            println!("PASS copied shared V8 mode={mode}: result={expected}, expired accessors");
+        }
+        copy_mode("stale");
+        // A prior delivery's private tag cannot recover its original lineage.
+        copy_expect_delivery_refusal("copy-caller", "input");
+        copy_mode("probe");
+        eval_in_context("copy-caller", "if(__proofEntityCall(binding,'input')!=='input')throw Error('call after stale refusal');").unwrap();
+        assert_eq!(pending_invocations(), 0);
+        println!("PASS copied shared V8 stale delivery: named invocation refusal, POST cleanup, subsequent valid call");
+    }
+    pub fn copy_expect_delivery_refusal(parent: &str, input: &str) {
+        DISPATCH_ERRORS.with(|errors| errors.borrow_mut().clear());
+        eval_in_context(parent, &format!(r#"{{
+            let failure='';
+            try {{ __proofEntityCall(binding,'{input}'); }} catch(error) {{ failure=String(error); }}
+            if(!failure.includes('FunctionCopyInvocationFailure') ||
+               !failure.includes('synchronous core function dispatch failed'))
+                throw Error('stale/foreign delivery invocation did not fail: '+failure);
+        }}"#)).unwrap();
+        let errors = DISPATCH_ERRORS.with(|errors| errors.borrow_mut().drain(..).collect::<Vec<_>>());
+        assert!(errors.iter().any(|error| error == "foreign or expired host delivery"), "missing exact delivery rejection: {errors:?}");
+        assert_eq!(pending_invocations(), 0, "failed call retained PRE state after POST cleanup");
+    }
+    pub fn copy_peer_exercise(){
+        copy_mode("peer");
+        eval_in_context("copy-caller","if(__proofEntityCall(binding,'input')!=='late-native-peer')throw Error('native peer final');").unwrap();
+        eval_in_context("copy-a","if(!seen.includes('late-native-peer'))throw Error('peer observation');").unwrap();
+    }
+    pub fn copy_abort(state: CopyConformance) {
+        for id in ["copy-a", "copy-b", "copy-caller"] {
+            unload_plugin(id);
+        }
+        drop(state.package);
+    }
+    pub struct CopyProcess {
+        active: registry::ActivePackageFunctions,
+        source: PreparedPackageReceipt,
+    }
+    pub fn copy_process_begin() -> CopyProcess {
+        use crate::engine_functions::{contract, overrides, tests};
+        let host = HostPackageOwner::mint("@proof/copied-process").unwrap();
+        let mut bundle = tests::fixture();
+        bundle["ownerId"] = host.key().id.clone().into();
+        let f = &mut bundle["functions"][0];
+        f["canonicalId"] = format!("{}::fire", host.key().id).into();
+        f["requirement"] = "required".into();
+        f["target"]["pattern"] = "50".into();
+        f["abi"]["fingerprint"] = "linux-x86_64-sysv:none:ptr(ptr)".into();
+        f["abi"]["parameters"] = serde_json::json!([{"name":"text","native":"ptr","projection":{"id":"string","version":1},"ownership":"callee-retained","mutable":["pre"]}]);
+        f["abi"]["returns"] = serde_json::json!({"native":"ptr","projection":{"id":"string","version":1},"ownership":"caller-borrowed"});
+        f["policy"]["surfaces"] = serde_json::json!(["call", "pre", "post"]);
+        f["policy"]["suppression"] = "none".into();
+        tests::seal(&mut bundle);
+        let mut summary = tests::summary(&bundle);
+        summary["functions"][0]["mutates"] = true.into();
+        let parsed = contract::parse(
+            &bundle.to_string(),
+            &host.key().id,
+            &summary,
+            &["engine:calls".into(), "engine:hooks".into()],
+        )
+        .unwrap();
+        let candidate = overrides::prepare(parsed, "copied-process-fixture", vec![]).unwrap();
+        let active = registry::activate_package_owner(
+            registry::prepare_package_owner(&host, candidate).unwrap(),
+            &host,
+        )
+        .unwrap();
+        let source=register_prepared_package(host,r#"
+            globalThis.processCopy=__s2_package_function('fire');globalThis.edit=null;globalThis.seen=0;
+            globalThis.pre=processCopy.onPre(v=>{seen++;globalThis.saved=v.text;if(edit!==null)v.text=edit;});
+            globalThis.post=processCopy.onPost(v=>{globalThis.result=v.returnValue;});
+        "#.into(),ImplementationManifestHash::new(HASH.into()).unwrap()).unwrap();
+        for id in ["copy-process-a", "copy-process-b"] {
+            frame_tests::load_body(id, "return {};", "{}");
+            assert!(
+                registry::owner_bindings(&OwnerKey::plugin(id, plugin_generation(id))).is_empty()
+            );
+        }
+        CopyProcess { active, source }
+    }
+    pub fn copy_process_probe() -> bool {
+        eval_in_context(
+            "copy-process-a",
+            "if(processCopy.call('parent-a')!=='parent-a')throw Error('process alias');",
+        )
+        .unwrap();
+        eval_in_context("copy-process-b", "if(seen===0)throw Error('pending');").is_ok()
+    }
+    pub fn copy_process_exercise() {
+        eval_in_context("copy-process-a", "edit='from-a';").unwrap();
+        eval_in_context("copy-process-b", "edit='from-b';").unwrap();
+        eval_in_context(
+            "copy-process-a",
+            "if(processCopy.call('parent-a')!=='from-b')throw Error('other parent B mutation');",
+        )
+        .unwrap();
+        eval_in_context(
+            "copy-process-b",
+            "if(processCopy.call('parent-b')!=='from-a')throw Error('other parent A mutation');",
+        )
+        .unwrap();
+    }
+    pub fn copy_process_finish(state: CopyProcess) {
+        drop(state.active);
+        drop(state.source);
+        for id in ["copy-process-a", "copy-process-b"] {
+            let result=eval_in_context(id,"{let refused=false;try{processCopy.call('gone')}catch(_){refused=true}if(!refused||typeof result!=='string')throw Error('retired copy binding');}");
+            unload_plugin(id);
+            result.unwrap();
+        }
+    }
+    pub fn copy_process_abort(state: CopyProcess) {
+        for id in ["copy-process-a", "copy-process-b"] {
+            unload_plugin(id);
+        }
+        drop(state.active);
+        drop(state.source);
+    }
+    pub fn copy_borrowed_begin() {
+        frame_tests::load_body("copy-vector", "return {};", "{}");
+        entity_native("copy-vector");
+        let binding = prepared_binding("copy-vector", |f| {
+            f["target"]["pattern"] = "50".into();
+            f["abi"]["fingerprint"] = "linux-x86_64-sysv:none:ptr(ptr)".into();
+            f["abi"]["parameters"] = serde_json::json!([{"name":"vector","native":"ptr","projection":{"id":"vector","version":1},"ownership":"callee-borrowed","mutable":[]}]);
+            f["abi"]["returns"] = serde_json::json!({"native":"ptr","projection":{"id":"vector","version":1},"ownership":"caller-borrowed"});
+        });
+        eval_in_context("copy-vector",&format!("{{const v=__proofEntityCall({binding}n,{{x:-0,y:1.25,z:-3}});if(!Object.is(v.x,-0)||v.y!==1.25||v.z!==-3||!Object.isFrozen(v))throw Error('native vector alias');}}")).unwrap();
+        unload_plugin("copy-vector");
+        for id in ["copy-borrowed", "copy-borrowed-caller"] {
+            frame_tests::load_body(id, "return {};", "{}");
+            entity_native(id);
+            let binding = prepared_binding(id, |f| {
+                f["target"]["pattern"] = "52".into();
+                f["abi"]["fingerprint"] = "linux-x86_64-sysv:none:i32(ptr)".into();
+                f["abi"]["parameters"] = serde_json::json!([{"name":"text","native":"ptr","projection":{"id":"string","version":1},"ownership":"callee-borrowed","mutable":["pre"]}]);
+                f["policy"]["suppression"] = "none".into();
+            });
+            eval_in_context(
+                id,
+                &format!(
+                    "globalThis.binding={binding}n;globalThis.invalid=false;globalThis.seen=0;"
+                ),
+            )
+            .unwrap();
+            if id == "copy-borrowed" {
+                eval_in_context(id,"globalThis.receipt=__proofSubscribeGeneric(binding,'pre',false,v=>{seen++;globalThis.saved=v.text;v.text=invalid?'rejected':'continued';if(invalid)return {action:2,returnValue:33};return 0;});").unwrap();
+            }
+        }
+    }
+    pub fn copy_borrowed_probe() -> bool {
+        eval_in_context(
+            "copy-borrowed-caller",
+            "globalThis.result=__proofEntityCall(binding,'outer');",
+        )
+        .unwrap();
+        eval_in_context(
+            "copy-borrowed-caller",
+            "if(result!==9)throw Error('not ready');",
+        )
+        .is_ok()
+    }
+    pub fn copy_borrowed_finish() {
+        eval_in_context(
+            "copy-borrowed",
+            "if(saved!=='outer')throw Error('borrowed snapshot');invalid=true;",
+        )
+        .unwrap();
+        eval_in_context(
+            "copy-borrowed-caller",
+            "if(__proofEntityCall(binding,'outer')!==5)throw Error('suppression:none rollback');",
+        )
+        .unwrap();
+        for id in ["copy-borrowed", "copy-borrowed-caller"] {
+            unload_plugin(id);
+        }
+    }
+    pub fn copy_finish(state: CopyConformance) {
+        // Another plugin keeps independent JavaScript-owned results across source owner retirement.
+        for id in ["copy-a", "copy-b"] {
+            unload_plugin(id);
+        }
+        let result = eval_in_context(
+            "copy-caller",
+            "if(result!=='post-owned')throw Error('saved result after retirement');",
+        );
+        unload_plugin("copy-caller");
+        drop(state.package);
+        assert_eq!(pending_invocations(), 0);
+        result.unwrap();
+    }
+
     pub fn pending_invocations() -> usize {
         INVOCATIONS.with(|i| i.borrow().len())
     }
@@ -1683,6 +3047,307 @@ pub(super) mod proof {
         )
         .unwrap()
     }
+    // Both native Service and portable host tests execute this exact package body.
+    pub struct PostConformance {
+        pub package: PreparedPackageReceipt,
+        pub ready: bool,
+    }
+    fn js_rust_post(
+        scope: &mut v8::PinScope,
+        args: v8::FunctionCallbackArguments,
+        _: v8::ReturnValue,
+    ) {
+        struct RustPost {
+            original: ProjectedValue,
+            desired: ProjectedValue,
+        }
+        fn same(a: ProjectedValue, b: ProjectedValue) -> bool {
+            match (a, b) {
+                (ProjectedValue::Scalar(a), ProjectedValue::Scalar(b)) => {
+                    a.kind == b.kind && a.bits == b.bits
+                }
+                (
+                    ProjectedValue::Entity { reference: a, .. },
+                    ProjectedValue::Entity { reference: b, .. },
+                ) => a == b,
+                _ => false,
+            }
+        }
+        impl DispatchAdapter for RustPost {
+            fn pre(
+                &self,
+                _: &mut package_adapter::AdapterDispatch<'_>,
+            ) -> Result<package_adapter::PreDecision, String> {
+                Err("proof is POST-only".into())
+            }
+            fn post(&self, d: &mut package_adapter::AdapterDispatch<'_>) -> Result<(), String> {
+                let frame = d.frame.as_deref_mut().ok_or("missing guarded frame")?;
+                if !frame
+                    .original_return()?
+                    .is_some_and(|v| same(v, self.original.clone()))
+                {
+                    return Err("Rust original snapshot mismatch".into());
+                }
+                for malformed in [
+                    S2FunctionValue {
+                        kind: 2,
+                        flags: 1,
+                        reserved: 0,
+                        aux: 0,
+                        bits: 41,
+                    },
+                    S2FunctionValue {
+                        kind: 2,
+                        flags: 0,
+                        reserved: 1,
+                        aux: 0,
+                        bits: 41,
+                    },
+                    S2FunctionValue {
+                        kind: 2,
+                        flags: 0,
+                        reserved: 0,
+                        aux: 1,
+                        bits: 41,
+                    },
+                    S2FunctionValue {
+                        kind: 2,
+                        flags: 0,
+                        reserved: 0,
+                        aux: 0,
+                        bits: u64::MAX,
+                    },
+                    // A Scalar POD cannot impersonate a host EntityReference, even
+                    // when its index/serial happen to identify a currently live slot.
+                    S2FunctionValue {
+                        kind: 8,
+                        flags: 1,
+                        reserved: 0,
+                        aux: 901,
+                        bits: 71,
+                    },
+                    S2FunctionValue {
+                        kind: 8,
+                        flags: 2,
+                        reserved: 0,
+                        aux: 901,
+                        bits: 71,
+                    },
+                ] {
+                    if frame
+                        .override_return(ProjectedValue::Scalar(malformed))
+                        .is_ok()
+                    {
+                        return Err("malformed Rust effect accepted".into());
+                    }
+                }
+                if !same(frame.override_return(self.desired.clone())?, self.desired.clone()) {
+                    return Err("Rust effective mismatch".into());
+                }
+                while d.cursor.invoke_next()?.is_some() {}
+                if !d
+                    .frame
+                    .as_deref_mut()
+                    .unwrap()
+                    .original_return()?
+                    .is_some_and(|v| same(v, self.original.clone()))
+                {
+                    return Err("Rust original changed".into());
+                }
+                Ok(())
+            }
+        }
+        let result = (|| {
+            let id = LEASES
+                .with(|s| s.borrow().last().map(|l| l.id))
+                .ok_or("missing adapter lease")?;
+            let l = lease(scope, id)?;
+            let mut frame = GuardedPostFrame {
+                permit: AdapterPostReturnPermit::issue(l.clone())?,
+            };
+            let ret = &l.binding.function.abi.returns;
+            let (original, desired) = if ret.native == "ptr" {
+                let context = scope.get_current_context();
+                let global = context.global(scope);
+                let a = get(scope, global, "a")?;
+                (
+                    projected_from_js(scope, a, &ret.native, &ret.projection.id)?,
+                    projected_from_js(scope, args.get(0), &ret.native, &ret.projection.id)?,
+                )
+            } else {
+                let mut a = runtime::blank();
+                a.kind = 2;
+                a.bits = 7;
+                let mut b = a;
+                b.bits = 41;
+                (ProjectedValue::Scalar(a), ProjectedValue::Scalar(b))
+            };
+            let mut cursor = GenericCursor {
+                adapter_owner: Some(l.owner),
+                scope,
+                dispatch: l.dispatch,
+            };
+            RustPost { original, desired }.post(&mut package_adapter::AdapterDispatch {
+                cursor: &mut cursor,
+                frame: Some(&mut frame),
+            })
+        })();
+        if let Err(e) = result {
+            throw(scope, e)
+        }
+    }
+    fn js_publish_post_methods(
+        scope: &mut v8::PinScope,
+        args: v8::FunctionCallbackArguments,
+        _: v8::ReturnValue,
+    ) {
+        let method = v8::Global::new(scope, args.get(0));
+        let getter = v8::Global::new(scope, args.get(1));
+        let context = clone_plugin_context("post-observer").unwrap();
+        let context = v8::Local::new(scope, &context);
+        let scope = &mut v8::ContextScope::new(scope, context);
+        let global = context.global(scope);
+        let method = v8::Local::new(scope, &method);
+        let getter = v8::Local::new(scope, &getter);
+        set(scope, global, "borrowed", method).unwrap();
+        set(scope, global, "borrowedOriginal", getter).unwrap();
+    }
+
+    pub fn post_begin() -> PostConformance {
+        const ID: &str = "proof.trusted-post.v1";
+        let owner = HostPackageOwner::mint("@proof/trusted-post-shared").unwrap();
+        let grant = HostAdapterGrant::override_return(
+            &owner,
+            AdapterContract {
+                id: ID.into(),
+                version: 1,
+                contract_hash: HASH.into(),
+            },
+        )
+        .unwrap();
+        let source = format!(
+            r#"(()=>{{
+          const register=__s2_function_adapter_register,subscribe=__s2_function_adapter_subscribe;
+          globalThis.events=[];globalThis.mode='probe';globalThis.expected=41;globalThis.original=7;
+          globalThis.adapterReceipt=register('{ID}','{HASH}',{{
+            pre(d){{
+              if('overrideReturn' in d.frame || 'originalReturnValue' in d.frame)throw Error('PRE authority');
+              if(globalThis.retained){{let denied=false;try{{retained(999)}}catch(_){{denied=true}}if(!denied)throw Error('old permit revived');}}
+              if(mode==='skip')return {{action:2,returnValue:63}};
+            }},
+            post(d){{
+              if(mode==='probe'){{events.push('ready');return;}}
+              if(d.frame.originalReturnValue!==original)throw Error('original snapshot');
+              globalThis.retained=d.frame.overrideReturn;
+              globalThis.retainedOriginal=Object.getOwnPropertyDescriptor(d.frame,'originalReturnValue').get;
+              if(mode==='rust'){{__proofRustPost();events.push('adapter');return;}}
+              if(mode==='nested'){{
+                // Caller bypass leaves a different instance selected during this nested frame.
+                __proofPublishPost(retained,retainedOriginal);
+                const nested=__proofEntityCall(globalThis.localBinding,3);
+                if(nested!==3)throw Error('nested original');
+              }}
+              if(retained(41)!==expected || d.frame.returnValue!==expected)throw Error('provider current');
+              if(d.frame.originalReturnValue!==original)throw Error('original changed');
+              while(d.cursor.invokeNext()!==null){{}}
+              if(retained(43)!==expected)throw Error('equal Override replaced first winner');
+              if(mode==='throw')throw Error('after effect');
+              events.push('adapter');
+            }}
+          }});
+          globalThis.subscribePost=id=>{{
+            globalThis.localBinding=id;
+            globalThis.preReceipt=subscribe(id,'{ID}','pre',()=>{{}});
+            globalThis.postReceipt=subscribe(id,'{ID}','post',v=>{{
+              if('originalReturnValue' in v || 'overrideReturn' in v)throw Error('public grant');
+              let refused=0;try{{retained(99)}}catch(_){{refused++}}try{{retainedOriginal()}}catch(_){{refused++}}
+              try{{v.returnValue=99}}catch(_){{refused++}}
+              if(refused!==3 || v.returnValue!==expected)throw Error('subscriber lease or timing');
+              events.push('named:'+v.returnValue);
+            }});
+          }};
+        }})()"#
+        );
+        let package = register_prepared_package_with_authorities(
+            owner,
+            source.into(),
+            ImplementationManifestHash::new(HASH.into()).unwrap(),
+            vec![grant],
+        )
+        .unwrap();
+        for id in ["post-adapter", "post-caller", "post-observer"] {
+            frame_tests::load_body(id, "return {};", "{}");
+            entity_native(id);
+            let binding = prepared_binding(id, |_| {});
+            eval_in_context(id, &format!("globalThis.binding={binding}n;")).unwrap();
+            if id == "post-adapter" {
+                authorize_binding(
+                    &package,
+                    &OwnerKey::plugin(id, plugin_generation(id)),
+                    binding,
+                    ID,
+                    HASH,
+                )
+                .unwrap();
+                eval_in_context(id, &format!("subscribePost({binding}n);")).unwrap();
+                with_host_isolate(|isolate| {
+                    let mut storage = v8::HandleScope::new(isolate);
+                    let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+                    let context = clone_plugin_context(id).unwrap();
+                    let context = v8::Local::new(&mut hs, &context);
+                    let scope = &mut v8::ContextScope::new(&mut hs, context);
+                    let f = v8::Function::new(scope, js_rust_post).unwrap();
+                    let global = context.global(scope);
+                    set(scope, global, "__proofRustPost", f.into()).unwrap();
+                })
+                .unwrap();
+            } else if id == "post-observer" {
+                eval_in_context(id,"__proofSubscribeGeneric(binding,'post',true,v=>{if('overrideReturn' in v || 'originalReturnValue' in v)throw Error('generic authority');if(v.returnValue===3){let n=0;try{borrowed(99)}catch(_){n++}try{borrowedOriginal()}catch(_){n++}if(n!==2)throw Error('nested cross-context permit');events.push('nested-refused');return;}events.push(v.returnValue);});").unwrap();
+            }
+        }
+        PostConformance {
+            package,
+            ready: false,
+        }
+    }
+    pub fn post_probe(state: &mut PostConformance) {
+        eval_in_context("post-adapter", "events.length=0;").unwrap();
+        eval_in_context("post-caller", "__proofEntityCall(binding,7);").unwrap();
+        state.ready = eval_in_context(
+            "post-adapter",
+            "if(events.join(',')!=='ready')throw Error('not ready');",
+        )
+        .is_ok();
+    }
+    pub fn post_exercise(mode: &str, expected: i32, original: Option<i32>) {
+        let original = original
+            .map(|v| v.to_string())
+            .unwrap_or("undefined".into());
+        eval_in_context(
+            "post-adapter",
+            &format!("mode='{mode}';expected={expected};original={original};events.length=0;"),
+        )
+        .unwrap();
+        eval_in_context("post-observer", "events.length=0;").unwrap();
+        eval_in_context("post-caller",&format!("if(__proofEntityCall(binding,7)!=={expected})throw Error('final provider result');")).unwrap();
+        eval_in_context("post-adapter",&format!("if(events.join(',')!=='named:{expected},adapter')throw Error(events);{{let n=0;try{{retained(99)}}catch(_){{n++}}try{{retainedOriginal()}}catch(_){{n++}}if(n!==2)throw Error('expired permit');}}")).unwrap();
+        let observer_expected=if mode=="nested" {format!("nested-refused,{expected}")}else{expected.to_string()};
+        eval_in_context(
+            "post-observer",
+            &format!("if(events.join(',')!=='{observer_expected}')throw Error('generic current:'+events);"),
+        )
+        .unwrap();
+        assert_eq!(pending_invocations(), 0);
+        println!("PASS trusted POST {mode}: original={original}, current/final={expected}, named/generic observation, expired and suspended leases");
+    }
+    pub fn post_finish(state: PostConformance) {
+        for id in ["post-adapter", "post-caller", "post-observer"] {
+            unload_plugin(id);
+        }
+        drop(state.package);
+        assert_eq!(pending_invocations(), 0);
+    }
+
     pub fn bind(package: &PreparedPackageReceipt, id: &str) -> u64 {
         let binding = prepared_binding(id, |_| {});
         let owner = OwnerKey::plugin(id, plugin_generation(id));
@@ -1723,8 +3388,8 @@ pub(super) mod proof {
         )
         .unwrap();
         let candidate = overrides::prepare(parsed, "actual-proof-archive", vec![]).unwrap();
-        let receipt = registry::prepare_owner(owner.clone(), candidate).unwrap();
-        registry::activate_owner(receipt).unwrap()[0]
+        let receipt = registry::prepare_owner(&owner.id, candidate).unwrap();
+        registry::activate_owner(receipt, owner).unwrap()[0]
     }
     fn js_subscribe_generic_test(
         scope: &mut v8::PinScope,
@@ -1748,7 +3413,7 @@ pub(super) mod proof {
             let observe_only = args.get(2).boolean_value(scope);
             let wrapper = sync_function(scope, args.get(3))?.ok_or("wrapper required")?;
             let id = subscribe_generic(scope, owner, binding, phase, observe_only, wrapper)?;
-            receipt(scope, id, true)
+            receipt(scope, id, true, None)
         })();
         match result {
             Ok(value) => rv.set(value.into()),
@@ -1776,6 +3441,9 @@ pub(super) mod proof {
     pub(super) fn record_dispatch_error(error: &str) {
         DISPATCH_ERRORS.with(|s| s.borrow_mut().push(error.into()));
     }
+    pub(super) fn take_dispatch_errors() -> Vec<String> {
+        DISPATCH_ERRORS.with(|s| s.borrow_mut().drain(..).collect())
+    }
     fn expect_entity_failure(fragment: &str) {
         let errors = DISPATCH_ERRORS.with(|s| s.borrow_mut().drain(..).collect::<Vec<_>>());
         assert!(
@@ -1796,8 +3464,9 @@ pub(super) mod proof {
         let result = (|| {
             let owner = current_owner(scope)?;
             let binding = registry::binding(bigint(args.get(0))?, &owner)?;
+            let _copy_scope=copied::Scope::enter()?;
             let abi = &binding.function.abi;
-            let receiver = usize::from(abi.receiver == "entity");
+            let receiver = usize::from(abi.member_receiver);
             if args.length() as usize != 1 + receiver + abi.parameters.len() {
                 return Err("argument count mismatch".into());
             }
@@ -1814,8 +3483,9 @@ pub(super) mod proof {
                         .map_err(|e| format!("{}: {e}", binding.function.canonical_id))?,
                 );
             }
-            let value =
-                crate::nest::with_outbound(&args, || runtime::call_binding(&binding, &values))?;
+            let value = crate::nest::with_outbound(&args, || {
+                runtime::call_binding(&binding, &owner, &values)
+            })?;
             projected_to_js(scope, value)
         })();
         match result {
@@ -1869,10 +3539,14 @@ pub(super) mod proof {
             let global = context.global(scope);
             set(scope, global, "__proofEntityCall", call.into()).unwrap();
             set(scope, global, "__proofEntityDelete", delete.into()).unwrap();
+            let rust_post = v8::Function::new(scope, js_rust_post).unwrap();
+            set(scope, global, "__proofRustPost", rust_post.into()).unwrap();
+            let publish = v8::Function::new(scope, js_publish_post_methods).unwrap();
+            set(scope, global, "__proofPublishPost", publish.into()).unwrap();
         })
         .unwrap();
     }
-    fn entity_binding(id: &str, nullable: bool, writable: bool, receiver: bool) -> u64 {
+    pub(crate) fn entity_binding(id: &str, nullable: bool, writable: bool, receiver: bool) -> u64 {
         prepared_binding(id, |f| {
             f["target"]["pattern"] = if receiver { "51" } else { "50" }.into();
             f["abi"]["receiver"] = if receiver { "entity" } else { "none" }.into();
@@ -2120,7 +3794,7 @@ pub(super) mod proof {
             let mut arg = runtime::blank();
             arg.kind = 2;
             arg.bits = 3;
-            assert_eq!(runtime::call(self.target, 0, &[receiver, arg])?.bits, 13);
+            assert_eq!(runtime::call(self.target, None, &[receiver, arg])?.bits, 13);
             Ok(())
         }
     }
@@ -2446,6 +4120,7 @@ pub(super) mod proof {
             "if(call(b).id!==b.id)throw Error('new serial did not adopt');",
         )
         .unwrap();
+        entity_post_conformance(a,replacement,slot);
         let member = entity_binding("entity-member", false, false, true);
         eval_in_context("entity-member",&format!("if(__proofEntityCall({member}n,a,3)!==13)throw Error('receiver convention');let refused=false;try{{__proofEntityCall({member}n,null,3)}}catch(_){{refused=true}}if(!refused)throw Error('nullable receiver');")).unwrap();
         eval_in_context("entity-member",&format!(r#"
@@ -2463,6 +4138,125 @@ pub(super) mod proof {
         state.receipt = state.status().map(|s| s.receipt);
         state.detail = state.diagnostic("subscribed");
     }
+    fn entity_post_conformance(a: u64, b: u64, slot: EntitySlot) {
+        const ID: &str = "proof.entity-post.v1";
+        let owner = HostPackageOwner::mint("@proof/entity-post").unwrap();
+        let grant = HostAdapterGrant::override_return(
+            &owner,
+            AdapterContract {
+                id: ID.into(),
+                version: 1,
+                contract_hash: HASH.into(),
+            },
+        )
+        .unwrap();
+        let source = format!(
+            r#"(()=>{{
+          const subscribe=__s2_function_adapter_subscribe;
+          globalThis.mode='normal';globalThis.seen=[];
+          __s2_function_adapter_register('{ID}','{HASH}',{{
+            pre(d){{if(mode==='skip')return {{action:2,returnValue:b}};}},
+            post(d){{
+              const original=d.frame.originalReturnValue;
+              if(mode==='skip'){{if(original!==undefined)throw Error('skipped original not undefined');}}
+              else if(mode==='null-original'){{if(original!==null)throw Error('nullable original not null');}}
+              else if(original?.id!==a.id)throw Error('entity original');
+              if(mode==='rust'){{__proofRustPost(b);seen.push('adapter');return;}}
+              let result;
+              if(mode==='invalid'){{
+                let refused=0;for(const value of [null,17,{{index:902,id:b.id}}]){{try{{d.frame.overrideReturn(value)}}catch(_){{refused++}}}}
+                if(refused!==3 || d.frame.returnValue.id!==a.id)throw Error('strict invalid effect');
+              }}
+              if(mode==='books'||mode==='native'){{
+                __proofEntityDelete(902,73,mode);
+                let refused=false;try{{d.frame.overrideReturn(b)}}catch(e){{refused=String(e).includes('entity-post::fire');}}
+                if(!refused || d.frame.returnValue.id!==a.id)throw Error('stale entity effect');
+                seen.push('refused');return;
+              }}
+              result=d.frame.overrideReturn(mode==='null-effect'?null:b);
+              if(mode==='null-effect'){{if(result!==null || d.frame.returnValue!==null)throw Error('nullable override');}}
+              else if(result.id!==b.id || d.frame.returnValue.id!==b.id)throw Error('entity override');
+              const after=d.frame.originalReturnValue;
+              if(after!==original && after?.id!==original?.id)throw Error('original snapshot changed');
+              while(d.cursor.invokeNext()!==null){{}}
+              seen.push('adapter');
+            }}
+          }});
+          globalThis.subscribeEntity=id=>{{
+            globalThis.pre=subscribe(id,'{ID}','pre',()=>{{}});
+            globalThis.post=subscribe(id,'{ID}','post',v=>{{
+              if('overrideReturn' in v || 'originalReturnValue' in v)throw Error('entity subscriber grant');
+              if(mode==='null-effect'?v.returnValue!==null:v.returnValue.id!==b.id)throw Error('entity observer');
+              seen.push('named');
+            }});
+          }};
+        }})()"#
+        );
+        let package = register_prepared_package_with_authorities(
+            owner,
+            source.into(),
+            ImplementationManifestHash::new(HASH.into()).unwrap(),
+            vec![grant],
+        )
+        .unwrap();
+        let mut b = b;
+        // Existing generic observers keep the proven physical hook alive throughout.
+        eval_in_context("entity-strict", "pre.dispose();").unwrap();
+        for nullable in [false, true] {
+            frame_tests::load_body("entity-post", "return {};", "{}");
+            entity_native("entity-post");
+            eval_in_context("entity-post",&format!("globalThis.E=__s2require('@s2script/entity').EntityRef;globalThis.a=new E(901,{a});globalThis.b=new E(902,{b});")).unwrap();
+            let binding = entity_binding("entity-post", nullable, false, false);
+            authorize_binding(
+                &package,
+                &OwnerKey::plugin("entity-post", plugin_generation("entity-post")),
+                binding,
+                ID,
+                HASH,
+            )
+            .unwrap();
+            eval_in_context("entity-post", &format!("subscribeEntity({binding}n);")).unwrap();
+            for mode in if nullable {
+                vec!["normal", "rust", "null-effect", "null-original", "skip"]
+            } else {
+                vec!["normal", "rust", "invalid", "native", "books"]
+            } {
+                eval_in_context("entity-post", &format!("mode='{mode}';seen.length=0;")).unwrap();
+                let (input, want) = match mode {
+                    "null-original" => ("null", "b"),
+                    "null-effect" => ("a", "null"),
+                    "native" | "books" => ("a", "a"),
+                    _ => ("a", "b"),
+                };
+                eval_in_context("entity-caller",&format!("if(call({input})?.id!=={want}?.id)throw Error('entity POST final {mode}');")).unwrap();
+                eval_in_context(
+                    "entity-post",
+                    if matches!(mode, "native" | "books") {
+                        "if(seen.join(',')!=='refused')throw Error(seen);"
+                    } else {
+                        "if(seen.join(',')!=='named,adapter')throw Error(seen);"
+                    },
+                )
+                .unwrap();
+                assert_eq!(unsafe { slot(902, 73, 1) }, 1);
+                let current = crate::entity_live::on_created(902, 73);
+                b = current;
+                for id in [
+                    "entity-post",
+                    "entity-caller",
+                    "entity-strict",
+                    "entity-nullable",
+                ] {
+                    eval_in_context(id, &format!("globalThis.b=new E(902,{current});")).unwrap();
+                }
+                assert_eq!(pending_invocations(), 0);
+                println!("PASS trusted entity POST nullable={nullable} mode={mode}: exact binding, original/current, observer timing");
+            }
+            unload_plugin("entity-post");
+        }
+        drop(package);
+    }
+
     fn entity_member_finish(state: &mut EntityConformance) {
         let nullable_first = state.nullable_first;
         let reverse_sub = state.reverse_sub;
@@ -2589,7 +4383,7 @@ pub(super) mod proof {
         input.kind = 2;
         input.bits = 7;
         assert_eq!(
-            runtime::call(binding.target.unwrap(), 0, &[input])
+            runtime::call(binding.target.unwrap(), None, &[input])
                 .unwrap()
                 .bits,
             73
@@ -2623,7 +4417,7 @@ pub(super) mod proof {
             __proofSubscribeGeneric({generic}n,'pre',false,v=>{{policyEvents.push('tail');return 0;}});
         "#)).unwrap();
         assert_eq!(
-            runtime::call(binding.target.unwrap(), 0, &[input])
+            runtime::call(binding.target.unwrap(), None, &[input])
                 .unwrap()
                 .bits,
             31
@@ -2631,7 +4425,7 @@ pub(super) mod proof {
         eval_in_context("policy-observer","if(policyEvents.join(',')!=='pre:12,post:31')throw Error(policyEvents);policyEvents.length=0;").unwrap();
         eval_in_context("policy-generic","if(policyEvents.join(',')!=='tail')throw Error(policyEvents);policyEvents.length=0;stopEnabled=true;").unwrap();
         assert_eq!(
-            runtime::call(binding.target.unwrap(), 0, &[input])
+            runtime::call(binding.target.unwrap(), None, &[input])
                 .unwrap()
                 .bits,
             33
@@ -2743,14 +4537,15 @@ pub(super) mod proof {
 }
 
 #[cfg(test)]
-mod scalar_transport_tests {
+pub(super) mod scalar_transport_tests {
     use super::*;
     #[derive(Clone)]
-    struct MockFrame {
+    pub(super) struct MockFrame {
         id: u64,
-        input: S2FunctionValue,
-        output: S2FunctionValue,
-        action: i32,
+        pub(super) input: S2FunctionValue,
+        pub(super) output: S2FunctionValue,
+        pub(super) action: i32,
+        overridden: bool,
     }
     thread_local! {static STACK:RefCell<Vec<MockFrame>>=const{RefCell::new(Vec::new())};}
     extern "C" fn prepare(
@@ -2855,6 +4650,7 @@ mod scalar_transport_tests {
                 input,
                 output: input,
                 action: 0,
+                overridden: false,
             })
         });
         let mut info = S2FunctionFrameInfo {
@@ -2884,11 +4680,19 @@ mod scalar_transport_tests {
         value.kind = 2;
         value.bits = args.get(0).int32_value(scope).unwrap() as u32 as u64;
         let output =
-            crate::nest::with_outbound(&args, || runtime::call(1, owner.generation, &[value]))
-                .unwrap();
+            crate::nest::with_outbound(&args, || runtime::call(1, Some(&owner), &[value])).unwrap();
         rv.set_int32(output.bits as i32);
     }
-    fn init_transport() {
+    thread_local! {pub(super) static EFFECTS:Cell<usize>=const{Cell::new(0)};}
+    extern "C" fn override_return(_:i64,token:u64,_:u64,_:*const i8,value:*const S2FunctionValue,out:*mut S2FunctionValue,_:*mut i8,_:i32)->i32 {
+        EFFECTS.with(|c|c.set(c.get()+1));
+        STACK.with(|s| {
+            let mut s=s.borrow_mut();let f=s.last_mut().unwrap();assert_eq!(f.id,token);
+            if !f.overridden && f.action < 2 { f.output=unsafe{*value}; f.overridden=true; }
+            unsafe{*out=f.output};1
+        })
+    }
+    pub(crate) fn init_transport() {
         init(frame_tests::logger).unwrap();
         let mut ops = S2EngineOps::default();
         ops.function_prepare = Some(prepare);
@@ -2899,6 +4703,8 @@ mod scalar_transport_tests {
         ops.function_frame_read = Some(read);
         ops.function_frame_write = Some(write);
         ops.function_frame_commit = Some(commit);
+        ops.function_frame_override_return = Some(override_return);
+        EFFECTS.with(|c|c.set(0));
         set_engine_ops(Some(ops));
     }
     fn review_package(body: &str) -> PreparedPackageReceipt {
@@ -2934,7 +4740,7 @@ mod scalar_transport_tests {
             proof::HASH,
         )
     }
-    fn open_frame() -> S2FunctionFrameInfo {
+    pub(super) fn open_frame() -> S2FunctionFrameInfo {
         let id = registry::next_id().unwrap();
         let mut input = runtime::blank();
         input.kind = 2;
@@ -2945,6 +4751,7 @@ mod scalar_transport_tests {
                 input,
                 output: input,
                 action: 0,
+                overridden: false,
             })
         });
         S2FunctionFrameInfo {
@@ -2958,10 +4765,215 @@ mod scalar_transport_tests {
             flags: 0,
         }
     }
-    fn close_frame(info: &S2FunctionFrameInfo) -> MockFrame {
+    pub(super) fn pop_frame() -> MockFrame {
+        STACK.with(|s| s.borrow_mut().pop().unwrap())
+    }
+    pub(super) fn close_frame(info: &S2FunctionFrameInfo) -> MockFrame {
         assert_eq!(crate::ffi::s2script_core_dispatch_function(1, info, 1), 1);
         STACK.with(|s| s.borrow_mut().pop().unwrap())
     }
+    // Catches grants leaking across contracts, lost lease suspension, and delayed effects.
+    #[test]
+    fn trusted_post_absent_and_foreign_grants_cannot_be_forged() {
+        init_transport();
+        let owner = HostPackageOwner::mint("@proof/foreign").unwrap();
+        let grant = HostAdapterGrant::override_return(
+            &owner,
+            AdapterContract {
+                id: "proof.review.v1".into(),
+                version: 1,
+                contract_hash: proof::HASH.into(),
+            },
+        )
+        .unwrap();
+        assert!(register_prepared_package_with_authorities(
+            HostPackageOwner::mint("@proof/foreign").unwrap(),
+            "ignored".into(),
+            ImplementationManifestHash::new(proof::HASH.into()).unwrap(),
+            vec![grant]
+        )
+        .is_err());
+        let package = review_package(&format!(
+            r#"
+            register('proof.review.v1','{}',{{postReturnAuthority:'override',post(d){{
+                if('originalReturnValue' in d.frame || 'overrideReturn' in d.frame)throw Error('forged authority');events.push('refused');
+            }}}},{{id:'proof.review.v1',contractHash:'{}',overrideReturn:true}});
+            globalThis.wrapper=()=>{{}};
+        "#,
+            proof::HASH,
+            proof::HASH
+        ));
+        frame_tests::load_body("no-grant", "return {};", "{}");
+        let binding = proof::prepared_binding("no-grant", |_| {});
+        authorize(&package, "no-grant", binding, "proof.review.v1").unwrap();
+        eval_in_context(
+            "no-grant",
+            &format!("subscribeProof({binding}n,'proof.review.v1','post');"),
+        )
+        .unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        assert_eq!(close_frame(&info).output.bits, 7);
+        eval_in_context(
+            "no-grant",
+            "if(events.join(',')!=='refused')throw Error(events);",
+        )
+        .unwrap();
+        assert_eq!(EFFECTS.with(Cell::get), 0);
+        unload_plugin("no-grant");
+        drop(package);
+        set_engine_ops(None);
+        shutdown();
+    }
+    #[test]
+    fn trusted_post_shared_production_body() {
+        init_transport();
+        let mut state = proof::post_begin();
+        proof::post_probe(&mut state);
+        assert!(state.ready);
+        proof::post_exercise("js", 41, Some(7));
+        proof::post_exercise("rust", 41, Some(7));
+        proof::post_exercise("skip", 63, None);
+        proof::post_exercise("nested", 41, Some(7));
+        assert_eq!(EFFECTS.with(Cell::get), 7);
+        proof::post_finish(state);
+        set_engine_ops(None);
+        shutdown();
+    }
+    #[test]
+    fn trusted_post_authority_effect_and_lease_boundaries() {
+        init_transport();
+        let owner = HostPackageOwner::mint("@proof/trusted-post").unwrap();
+        let grant = HostAdapterGrant::override_return(
+            &owner,
+            AdapterContract {
+                id: "proof.review.v1".into(),
+                version: 1,
+                contract_hash: proof::HASH.into(),
+            },
+        )
+        .unwrap();
+        let source = format!(
+            r#"(()=>{{
+            const register=__s2_function_adapter_register,subscribe=__s2_function_adapter_subscribe;
+            globalThis.events=[];
+            globalThis.receipt=register('proof.review.v1','{}',{{
+              pre(d){{if('overrideReturn' in d.frame || 'originalReturnValue' in d.frame)throw Error('PRE authority');}},
+              post(d){{
+                if(d.frame.originalReturnValue!==7 || d.frame.returnValue!==7)throw Error('initial snapshot');
+                globalThis.retained=d.frame.overrideReturn;
+                if(globalThis.stale){{let refused=false;try{{stale(90)}}catch(_){{refused=true}}if(!refused)throw Error('old generation revived');}}
+                Promise.resolve().then(()=>{{let refused=false;try{{retained(90)}}catch(_){{refused=true}}if(!refused)throw Error('await authority');globalThis.awaitRefused=true;}});
+                let rejected=0;for(const value of [null,true,1.5,2147483648,{{}}]){{try{{retained(value);}}catch(_){{rejected++;}}}}
+                if(rejected!==5)throw Error('invalid input accepted');
+                if(retained(41)!==41 || d.frame.returnValue!==41 || d.frame.originalReturnValue!==7)throw Error('immediate effect/snapshot');
+                if(globalThis.revoke){{receipt.dispose();let refused=false;try{{retained(90)}}catch(_){{refused=true}}if(!refused)throw Error('revoked permit');return;}}
+                while(d.cursor.invokeNext()!==null){{}}
+                if(retained(43)!==41 || d.frame.originalReturnValue!==7)throw Error('outer lease did not resume');
+                events.push('adapter');
+              }}
+            }});
+            register('proof.other.v1','{}',{{post(d){{if('overrideReturn' in d.frame)throw Error('grant leaked');events.push('other');}}}},{{overrideReturn:true}});
+            globalThis.subscribeProof=(id,semantic='proof.review.v1',phase='pre')=>subscribe(id,semantic,phase,(view)=>{{
+                if('overrideReturn' in view || 'originalReturnValue' in view)throw Error('subscriber authority');
+                let rejected=0;try{{retained(99);}}catch(_){{rejected++;}}
+                try{{view.returnValue=99;}}catch(_){{rejected++;}}
+                if(rejected!==2 || view.returnValue!==41)throw Error('lease/observer order');
+                events.push('wrapper');
+            }});
+        }})()"#,
+            proof::HASH,
+            proof::HASH
+        );
+        let package = register_prepared_package_with_authorities(
+            owner,
+            source.into(),
+            ImplementationManifestHash::new(proof::HASH.into()).unwrap(),
+            vec![grant],
+        )
+        .unwrap();
+        frame_tests::load_body("trusted-post", "return {};", "{}");
+        let binding = proof::prepared_binding("trusted-post", |_| {});
+        authorize(&package, "trusted-post", binding, "proof.review.v1").unwrap();
+        eval_in_context(
+            "trusted-post",
+            &format!("globalThis.sub=subscribeProof({binding}n,'proof.review.v1','post');"),
+        )
+        .unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        let result = close_frame(&info);
+        assert_eq!(result.output.bits, 41);
+        assert_eq!(EFFECTS.with(Cell::get), 2);
+        eval_in_context("trusted-post","if(events.join(',')!=='wrapper,adapter')throw Error(events);let refused=false;try{retained(99);}catch(_){refused=true;}if(!refused)throw Error('expired authority');").unwrap();
+        with_host_isolate(|isolate| {
+            let mut storage = v8::HandleScope::new(isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+            hs.perform_microtask_checkpoint();
+        })
+        .unwrap();
+        eval_in_context("trusted-post","if(!awaitRefused)throw Error('missing awaited refusal');sub.dispose();events.length=0;").unwrap();
+        authorize(&package, "trusted-post", binding, "proof.other.v1").unwrap();
+        eval_in_context(
+            "trusted-post",
+            &format!("subscribeProof({binding}n,'proof.other.v1','post');"),
+        )
+        .unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        assert_eq!(close_frame(&info).output.bits, 7);
+        eval_in_context(
+            "trusted-post",
+            "if(events.join(',')!=='other')throw Error('exact-contract grant leaked');",
+        )
+        .unwrap();
+        let stale = with_host_isolate(|isolate| {
+            let mut storage = v8::HandleScope::new(isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+            let context = clone_plugin_context("trusted-post").unwrap();
+            let context = v8::Local::new(&mut hs, &context);
+            let scope = &mut v8::ContextScope::new(&mut hs, context);
+            let global = context.global(scope);
+            let value = get(scope, global, "retained").unwrap();
+            v8::Global::new(scope, value)
+        })
+        .unwrap();
+        unload_plugin("trusted-post");
+        frame_tests::load_body("trusted-post", "return {};", "{}");
+        with_host_isolate(|isolate| {
+            let mut storage = v8::HandleScope::new(isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+            let context = clone_plugin_context("trusted-post").unwrap();
+            let context = v8::Local::new(&mut hs, &context);
+            let scope = &mut v8::ContextScope::new(&mut hs, context);
+            let global = context.global(scope);
+            let value = v8::Local::new(scope, &stale);
+            set(scope, global, "stale", value).unwrap();
+        })
+        .unwrap();
+        let binding = proof::prepared_binding("trusted-post", |_| {});
+        authorize(&package, "trusted-post", binding, "proof.review.v1").unwrap();
+        eval_in_context(
+            "trusted-post",
+            &format!("subscribeProof({binding}n,'proof.review.v1','post');"),
+        )
+        .unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        assert_eq!(close_frame(&info).output.bits, 41);
+        assert_eq!(EFFECTS.with(Cell::get), 4);
+        eval_in_context("trusted-post", "globalThis.revoke=true;").unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        assert_eq!(close_frame(&info).output.bits, 41);
+        assert_eq!(EFFECTS.with(Cell::get), 5);
+        unload_plugin("trusted-post");
+        drop(stale);
+        drop(package);
+        set_engine_ops(None);
+        shutdown();
+    }
+
     #[test]
     fn post_only_subscription_delivers_without_pre_and_unload_clears_matched_state() {
         init_transport();
@@ -3600,7 +5612,7 @@ mod scalar_transport_tests {
 }
 
 #[cfg(test)]
-mod entity_transport_tests {
+pub(super) mod entity_transport_tests {
     use super::*;
     // This host transport models identities/staged commits, not native pointers.
     // The shared conformance body also runs against the real Linux fixture.
@@ -3611,10 +5623,13 @@ mod entity_transport_tests {
         receiver: Option<S2FunctionValue>,
         edit: Option<S2FunctionValue>,
         action: i32,
+        overridden: bool,
+        writes: usize,
     }
     thread_local! {
         static SLOTS:RefCell<std::collections::BTreeMap<i32,u32>>=const{RefCell::new(std::collections::BTreeMap::new())};
         static STACK:RefCell<Vec<MockFrame>>=const{RefCell::new(Vec::new())};
+        static EFFECTS:Cell<usize>=const{Cell::new(0)};
     }
     unsafe extern "C" fn slot(index: i32, serial: u32, live: i32) -> i32 {
         if !matches!(index, 901 | 902) {
@@ -3709,6 +5724,17 @@ mod entity_transport_tests {
         }
         0
     }
+    extern "C" fn override_return(_:i64,token:u64,_:u64,_:*const i8,value:*const S2FunctionValue,out:*mut S2FunctionValue,why:*mut i8,cap:i32)->i32 {
+        EFFECTS.with(|c|c.set(c.get()+1));
+        let input=unsafe{*value};
+        let Some(input)=project(input,input.flags) else{return refusal(why,cap)};
+        STACK.with(|s|{
+            let mut s=s.borrow_mut();let f=s.last_mut().unwrap();assert_eq!(f.id,token);
+            if !f.overridden && f.action<2 {f.output=input;f.overridden=true;}
+            let Some(result)=project(f.output,unsafe{(*out).flags}) else{return refusal(why,cap)};
+            unsafe{*out=result};1
+        })
+    }
     extern "C" fn write(
         _: i64,
         token: u64,
@@ -3729,6 +5755,7 @@ mod entity_transport_tests {
                 return 0;
             };
             f.edit = Some(v);
+            f.writes += 1;
             1
         })
     }
@@ -3802,6 +5829,8 @@ mod entity_transport_tests {
                 receiver,
                 edit: None,
                 action: 0,
+                overridden: false,
+                writes: 0,
             })
         });
         let mut info = S2FunctionFrameInfo {
@@ -3852,6 +5881,80 @@ mod entity_transport_tests {
         unsafe { *out = value };
         1
     }
+    pub(crate) fn init_public_transport() {
+        init(frame_tests::logger).unwrap();
+        set_engine_ops(Some(S2EngineOps {
+            function_prepare: Some(prepare), function_call: Some(call),
+            function_hook_acquire: Some(acquire), function_hook_release: Some(release),
+            function_target_release: Some(release), function_frame_read: Some(read),
+            function_frame_write: Some(write), function_frame_commit: Some(commit),
+            function_frame_override_return: Some(override_return), ..Default::default()
+        }));
+    }
+    pub(crate) fn seed_public_entity(index: i32, serial: u32) -> u64 {
+        assert_eq!(unsafe { slot(index, serial, 1) }, 1);
+        crate::entity_live::on_created(index, serial as i32)
+    }
+    #[test]
+    fn rejected_none_decision_does_not_write_unadoptable_entity_or_replay_prior_edit() {
+        // Real V8 callback path with a transport model of the bridge's lossy
+        // nullable entity read and write/changed bookkeeping. This is not a
+        // native shim proof.
+        init_public_transport();
+        frame_tests::load_body("entity-rollback", "return {};", "{}");
+        proof::install_generic_test_native("entity-rollback");
+        let binding = proof::prepared_binding("entity-rollback", |f| {
+            f["abi"]["fingerprint"] = "linux-x86_64-sysv:none:void(ptr)".into();
+            f["abi"]["parameters"] = serde_json::json!([{"name":"x","native":"ptr","projection":{"id":"entity?","version":1},"mutable":["pre"]}]);
+            f["abi"]["returns"] = serde_json::json!({"native":"void","projection":{"id":"void","version":1}});
+            f["policy"]["surfaces"] = serde_json::json!(["pre"]);
+            f["policy"]["suppression"] = "none".into();
+        });
+        frame_tests::load_body("entity-strict-witness", "return {};", "{}");
+        proof::install_generic_test_native("entity-strict-witness");
+        let strict_binding = proof::prepared_binding("entity-strict-witness", |f| {
+            f["abi"]["fingerprint"] = "linux-x86_64-sysv:none:void(ptr)".into();
+            f["abi"]["parameters"] = serde_json::json!([{"name":"x","native":"ptr","projection":{"id":"entity","version":1},"mutable":[]}]);
+            f["abi"]["returns"] = serde_json::json!({"native":"void","projection":{"id":"void","version":1}});
+            f["policy"]["surfaces"] = serde_json::json!(["pre"]);
+            f["policy"]["suppression"] = "none".into();
+        });
+        eval_in_context("entity-strict-witness", &format!(
+            "globalThis.denied=0;__proofSubscribeGeneric({strict_binding}n,'pre',true,v=>{{let failed=false;try{{void v.x;}}catch(_){{failed=true;}}if(!failed)throw Error('strict read accepted null');denied++;}});"
+        )).unwrap();
+        let raw = S2FunctionValue { kind: 8, flags: 2, reserved: 0, aux: 903, bits: 44 };
+        let run = |id: u64| {
+            STACK.with(|s| s.borrow_mut().push(MockFrame {
+                id, input: raw, output: raw, receiver: None, edit: None,
+                action: 0, overridden: false, writes: 0,
+            }));
+            let info = S2FunctionFrameInfo {
+                version: 1, struct_size: 48, frame_token: id, native_epoch: id,
+                invocation_id: id, suppressed_owner: 0, parameter_count: 1, flags: 0,
+            };
+            assert_eq!(crate::ffi::s2script_core_dispatch_function(11, &info, 0), 1);
+            STACK.with(|s| s.borrow_mut().pop().unwrap())
+        };
+        eval_in_context("entity-rollback", &format!(
+            "globalThis.bad=__proofSubscribeGeneric({binding}n,'pre',false,v=>{{if(v.x!==null)throw Error('unadoptable value');return 3;}});"
+        )).unwrap();
+        let untouched = run(71);
+        assert_eq!(untouched.writes, 0, "rejected no-setter callback wrote native staging");
+        assert!(untouched.edit.is_none());
+        assert_eq!((untouched.input.aux, untouched.input.bits), (903, 44));
+        eval_in_context("entity-rollback", &format!(
+            "bad.dispose();globalThis.good=__proofSubscribeGeneric({binding}n,'pre',false,v=>{{v.x=null;return 1;}});globalThis.bad=__proofSubscribeGeneric({binding}n,'pre',false,v=>3);"
+        )).unwrap();
+        let prior = run(72);
+        assert_eq!(prior.writes, 1, "rejected callback replayed an accepted native edit");
+        assert_eq!(prior.action, 1);
+        assert_eq!(prior.input.aux, u32::MAX);
+        eval_in_context("entity-strict-witness", "if(denied!==2)throw Error('strict overlay read');").unwrap();
+        unload_plugin("entity-rollback");
+        unload_plugin("entity-strict-witness");
+        set_engine_ops(None);
+        shutdown();
+    }
     #[test]
     fn entity_projections_real_v8_all_preparation_subscription_orders() {
         init(frame_tests::logger).unwrap();
@@ -3864,13 +5967,1150 @@ mod entity_transport_tests {
         ops.function_frame_read = Some(read);
         ops.function_frame_write = Some(write);
         ops.function_frame_commit = Some(commit);
+        ops.function_frame_override_return = Some(override_return);
         set_engine_ops(Some(ops));
+        EFFECTS.with(|c|c.set(0));
         for first in [false, true] {
             for reverse in [false, true] {
                 proof::entity_conformance(first, reverse, slot);
             }
         }
+        assert_eq!(EFFECTS.with(Cell::get),36,"books/typed rejection must precede native effect");
         set_engine_ops(None);
         shutdown();
+    }
+}
+
+#[cfg(test)]
+mod copied_transport_tests {
+    use super::*;
+    struct NativeFrame {
+        token: u64,
+        argument: Vec<u8>,
+        original: Vec<u8>,
+        result: Vec<u8>,
+        staged: Option<Vec<u8>>,
+        skipped: bool,
+    }
+    thread_local! {
+        static FRAMES:RefCell<Vec<NativeFrame>>=const{RefCell::new(Vec::new())};
+        static CALL_PRODUCERS:RefCell<Vec<S2FunctionCopyProducer>>=const{RefCell::new(Vec::new())};
+        static COPY_CALLS:Cell<usize>=const{Cell::new(0)};
+        static LAST_COMMIT:RefCell<Option<S2FunctionCopyProducer>>=const{RefCell::new(None)};
+        static WRITERS:RefCell<Vec<S2FunctionCopyProducer>>=const{RefCell::new(Vec::new())};
+    }
+    unsafe fn bytes(v: *const S2FunctionValue, i: *const S2FunctionCopyInput) -> Vec<u8> {
+        let v = &*v;
+        let i = &*i;
+        assert_eq!((i.version, i.struct_size), (1, 24));
+        assert!(v.bits + v.aux as u64 <= i.size);
+        if v.aux == 0 {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts(i.data.add(v.bits as usize), v.aux as usize).to_vec()
+        }
+    }
+    unsafe fn output(b: &[u8], v: *mut S2FunctionValue, o: *mut S2FunctionCopyOutput) {
+        let o = &mut *o;
+        assert_eq!((o.version, o.struct_size), (1, 32));
+        assert!(o.capacity >= 65535);
+        std::ptr::copy_nonoverlapping(b.as_ptr(), o.data, b.len());
+        o.size = b.len() as u64;
+        (*v).aux = b.len() as u32;
+        (*v).bits = 0;
+    }
+    extern "C" fn call(
+        id: i64,
+        owner: u64,
+        args: *const S2FunctionValue,
+        argc: i32,
+        out: *mut S2FunctionValue,
+        input: *const S2FunctionCopyInput,
+        output_span: *mut S2FunctionCopyOutput,
+        producer: *const S2FunctionCopyProducer,
+        reason: *mut i8,
+        reason_capacity: i32,
+    ) -> i32 {
+        COPY_CALLS.with(|c| c.set(c.get() + 1));
+        CALL_PRODUCERS.with(|s| s.borrow_mut().push(unsafe { *producer }));
+        assert_eq!(argc, 1);
+        assert_eq!(unsafe { (*producer).domain }, 1);
+        assert_eq!(unsafe { (*producer).generation }, owner);
+        let argument = unsafe { bytes(args, input) };
+        let token = registry::next_id().unwrap();
+        FRAMES.with(|s| {
+            s.borrow_mut().push(NativeFrame {
+                token,
+                argument: argument.clone(),
+                original: argument.clone(),
+                result: argument,
+                staged: None,
+                skipped: false,
+            })
+        });
+        let mut info = S2FunctionFrameInfo {
+            version: 1,
+            struct_size: 48,
+            frame_token: token,
+            native_epoch: token,
+            invocation_id: token,
+            suppressed_owner: owner,
+            parameter_count: 1,
+            flags: 0,
+        };
+        let pre = crate::ffi::s2script_core_dispatch_function(id, &info, 0);
+        FRAMES.with(|s| {
+            let mut s = s.borrow_mut();
+            let f = s.last_mut().unwrap();
+            if !f.skipped {
+                f.result = f.argument.clone();
+                f.original = f.argument.clone();
+            }
+            info.flags = u32::from(f.skipped);
+        });
+        let post = crate::ffi::s2script_core_dispatch_function(id, &info, 1);
+        let f = FRAMES.with(|s| s.borrow_mut().pop()).unwrap();
+        // The real RuntimeBinding runs matched POST cleanup, then reports a
+        // recorded PRE/POST dispatch failure instead of returning copied output.
+        if pre != 1 || post != 1 {
+            let message = b"FunctionCopyInvocationFailure: synchronous core function dispatch failed";
+            if !reason.is_null() && reason_capacity > 0 {
+                let len = message.len().min(reason_capacity as usize - 1);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(message.as_ptr(), reason.cast(), len);
+                    *reason.add(len) = 0;
+                }
+            }
+            return 0;
+        }
+        unsafe { output(&f.result, out, output_span) };
+        1
+    }
+    extern "C" fn read(
+        _: i64,
+        token: u64,
+        _: u64,
+        _: *const i8,
+        selector: i32,
+        value: *mut S2FunctionValue,
+        out: *mut S2FunctionCopyOutput,
+        _: *mut i8,
+        _: i32,
+    ) -> i32 {
+        FRAMES.with(|s| {
+            let s = s.borrow();
+            let f = s.last().unwrap();
+            assert_eq!(token, f.token);
+            let bytes = match selector {
+                -3 => &f.original,
+                -2 => &f.result,
+                0 => &f.argument,
+                _ => panic!("selector"),
+            };
+            unsafe { output(bytes, value, out) }
+        });
+        1
+    }
+    extern "C" fn write(
+        _: i64,
+        token: u64,
+        _: u64,
+        _: *const i8,
+        selector: i32,
+        value: *const S2FunctionValue,
+        input: *const S2FunctionCopyInput,
+        producer: *const S2FunctionCopyProducer,
+        _: *mut i8,
+        _: i32,
+    ) -> i32 {
+        assert_eq!(selector, 0);
+        let value = unsafe { bytes(value, input) };
+        FRAMES.with(|s| {
+            let mut s = s.borrow_mut();
+            let f = s.last_mut().unwrap();
+            assert_eq!(f.token, token);
+            f.staged = Some(value)
+        });
+        WRITERS.with(|s| s.borrow_mut().push(unsafe { *producer }));
+        1
+    }
+    extern "C" fn commit(
+        _: i64,
+        token: u64,
+        _: u64,
+        _: *const i8,
+        action: i32,
+        value: *const S2FunctionValue,
+        input: *const S2FunctionCopyInput,
+        producer: *const S2FunctionCopyProducer,
+        _: *mut i8,
+        _: i32,
+    ) -> i32 {
+        let result = (!value.is_null()).then(|| unsafe { bytes(value, input) });
+        FRAMES.with(|s| {
+            let mut s = s.borrow_mut();
+            let f = s.last_mut().unwrap();
+            assert_eq!(f.token, token);
+            if let Some(v) = f.staged.take() {
+                f.argument = v
+            }
+            if let Some(v) = result {
+                f.result = v;
+            }
+            f.skipped = action >= 2;
+        });
+        LAST_COMMIT.with(|s| *s.borrow_mut() = Some(unsafe { *producer }));
+        1
+    }
+    extern "C" fn override_return(
+        _: i64,
+        token: u64,
+        _: u64,
+        _: *const i8,
+        value: *const S2FunctionValue,
+        input: *const S2FunctionCopyInput,
+        producer: *const S2FunctionCopyProducer,
+        out: *mut S2FunctionValue,
+        span: *mut S2FunctionCopyOutput,
+        _: *mut i8,
+        _: i32,
+    ) -> i32 {
+        assert_eq!(unsafe { (*producer).domain }, 2);
+        let result = unsafe { bytes(value, input) };
+        FRAMES.with(|s| {
+            let mut s = s.borrow_mut();
+            let f = s.last_mut().unwrap();
+            assert_eq!(f.token, token);
+            f.result = result;
+            unsafe { output(&f.result, out, span) }
+        });
+        1
+    }
+    #[test]
+    fn retained_copy_bookkeeping_survives_delivery_destruction_and_retirement() {
+        scalar_transport_tests::init_transport();
+        let mut ops = engine_ops().unwrap();
+        ops.function_call_copy = Some(call);
+        ops.function_frame_read_copy = Some(read);
+        ops.function_frame_write_copy = Some(write);
+        ops.function_frame_commit_copy = Some(commit);
+        ops.function_frame_override_return_copy = Some(override_return);
+        set_engine_ops(Some(ops));
+        let state = proof::copy_begin();
+        let target = SUBSCRIPTIONS.with(|rows| rows.borrow().values().next().unwrap().binding.target.unwrap());
+        let mut charged_during_destruction = Vec::new();
+        for retirement in [false, true] {
+            let charged = Rc::new(Cell::new(false));
+            charged_during_destruction.push(charged.clone());
+            let guard = copied::Bookkeeping::reserve(4096, copied::Producer::engine()).unwrap();
+            let alive = guard.alive_probe();
+            let after = guard.alive_probe();
+            let destroyed = Rc::new(Cell::new(0));
+            let observed = destroyed.clone();
+            let mut buffer = copied::Buffer::new(8, copied::Producer::engine()).unwrap();
+            buffer.bytes_mut().copy_from_slice(b"retained");
+            let mut value = buffer.own(4).unwrap();
+            value.observe_destruction(Box::new(move || {
+                charged.set(alive());
+                observed.set(observed.get() + 1);
+            }));
+            INVOCATIONS.with(|rows| rows.borrow_mut().insert((target, 12345), InvocationState {
+                copy_bookkeeping: Some(guard),
+                adapters: [None, None],
+                deliveries: vec![Decision { action: 2, value: Some(ProjectedValue::Copied(value)) }],
+                proposal: None,
+                retained_bytes: std::mem::size_of::<Decision>(),
+            }));
+            if retirement {
+                let ids = SUBSCRIPTIONS.with(|rows| rows.borrow().keys().copied().collect::<Vec<_>>());
+                for id in ids { drop_subscription(id); }
+            } else {
+                // Matched POST takes the retained row; dropping it destroys its deliveries.
+                drop(INVOCATIONS.with(|rows| rows.borrow_mut().remove(&(target, 12345))));
+            }
+            assert_eq!(destroyed.get(), 1);
+            assert!(!after(), "dispatch charge leaked after retained storage destruction");
+        }
+        proof::copy_abort(state);
+        set_engine_ops(None);
+        shutdown();
+        assert_eq!(charged_during_destruction.iter().map(|v| v.get()).collect::<Vec<_>>(), [true, true], "dispatch charge released during delivery element destruction (POST, retirement)");
+    }
+
+    #[test]
+    fn real_v8_copied_callbacks_use_sidecars_and_exact_delivery_lineage_mock_transport() {
+        scalar_transport_tests::init_transport();
+        let mut ops = engine_ops().unwrap();
+        ops.function_call_copy = Some(call);
+        ops.function_frame_read_copy = Some(read);
+        ops.function_frame_write_copy = Some(write);
+        ops.function_frame_commit_copy = Some(commit);
+        ops.function_frame_override_return_copy = Some(override_return);
+        set_engine_ops(Some(ops));
+        let mut state = proof::copy_begin();
+        proof::copy_probe(&mut state);
+        assert!(state.ready);
+        let caller = OwnerKey::plugin("copy-caller", plugin_generation("copy-caller"));
+        let binding = registry::binding(registry::owner_bindings(&caller)[0], &caller).unwrap();
+        for missing in 0..5 {
+            let mut incomplete = ops;
+            let name = match missing {
+                0 => {
+                    incomplete.function_call_copy = None;
+                    "function_call_copy"
+                }
+                1 => {
+                    incomplete.function_frame_read_copy = None;
+                    "function_frame_read_copy"
+                }
+                2 => {
+                    incomplete.function_frame_write_copy = None;
+                    "function_frame_write_copy"
+                }
+                3 => {
+                    incomplete.function_frame_commit_copy = None;
+                    "function_frame_commit_copy"
+                }
+                _ => {
+                    incomplete.function_frame_override_return_copy = None;
+                    "function_frame_override_return_copy"
+                }
+            };
+            set_engine_ops(Some(incomplete));
+            assert!(runtime::prepare(&binding.function)
+                .unwrap_err()
+                .contains(name));
+        }
+        set_engine_ops(Some(ops));
+        let calls = COPY_CALLS.with(Cell::get);
+        let exhausted =
+            copied::Buffer::new(8 * 1024 * 1024 - 256, copied::Producer::engine()).unwrap();
+        eval_in_context("copy-caller","{let denied=false;try{__proofEntityCall(binding,'input')}catch(e){denied=String(e).includes('FunctionCopyBudgetExceeded')}if(!denied)throw Error('output admission');}").unwrap();
+        assert_eq!(COPY_CALLS.with(Cell::get), calls);
+        drop(exhausted);
+
+        for id in ["copy-a", "copy-b"] {
+            eval_in_context(id,"globalThis.poisonTouches=0;Object.defineProperty(Object.prototype,'returnValue',{configurable:true,get(){poisonTouches++;return 'spoofed'},set(_){poisonTouches++;}});").unwrap();
+        }
+        proof::copy_mode("carry");
+        eval_in_context(
+            "copy-caller",
+            "if(__proofEntityCall(binding,'input')!=='same-copied-result')throw Error('carry');",
+        )
+        .unwrap();
+        for id in ["copy-a", "copy-b"] {
+            eval_in_context(id,"if(poisonTouches)throw Error('delivery inherited accessor ran');if(globalThis.oldDelivery){const d=Object.getOwnPropertyDescriptor(oldDelivery,'returnValue');if(!d||!('value' in d)||d.value!=='same-copied-result'||!Object.isFrozen(oldDelivery))throw Error('delivery visible bytes');}delete Object.prototype.returnValue;").unwrap();
+        }
+        let a = copied::Producer::owner(&OwnerKey::plugin("copy-a", plugin_generation("copy-a")))
+            .wire();
+        let b = copied::Producer::owner(&OwnerKey::plugin("copy-b", plugin_generation("copy-b")))
+            .wire();
+        let carry = LAST_COMMIT.with(|s| s.borrow().unwrap());
+        assert_eq!(
+            (carry.domain, carry.digest, carry.generation),
+            (a.domain, a.digest, a.generation)
+        );
+        let writer = WRITERS.with(|s| *s.borrow().last().unwrap());
+        assert_eq!(
+            (writer.domain, writer.digest, writer.generation),
+            (b.domain, b.digest, b.generation)
+        );
+        proof::copy_mode("manufacture");
+        eval_in_context("copy-caller", "__proofEntityCall(binding,'input');").unwrap();
+        assert_eq!(LAST_COMMIT.with(|s| s.borrow().unwrap().domain), 2);
+        with_host_isolate(|isolate| {
+            let mut storage=v8::HandleScope::new(isolate);let mut hs=unsafe{std::pin::Pin::new_unchecked(&mut storage)}.init();
+            let a=clone_plugin_context("copy-a").unwrap();let a=v8::Local::new(&mut hs,&a);
+            let delivery={let scope=&mut v8::ContextScope::new(&mut hs,a);let global=a.global(scope);let object=get(scope,global,"oldDelivery").unwrap();v8::Global::new(scope,object)};
+            let b=clone_plugin_context("copy-b").unwrap();let b=v8::Local::new(&mut hs,&b);let scope=&mut v8::ContextScope::new(&mut hs,b);
+            let delivery=v8::Local::new(scope,&delivery);let global=b.global(scope);set(scope,global,"oldDelivery",delivery).unwrap();
+        }).unwrap();
+        proof::copy_mode("stale");
+        let writes = WRITERS.with(|rows| rows.borrow().len());
+        proof::copy_expect_delivery_refusal("copy-a", "foreign-input");
+        assert_eq!(WRITERS.with(|rows| rows.borrow().len()), writes);
+        assert!(FRAMES.with(|frames| frames.borrow().is_empty()));
+        proof::copy_exercise();
+        // Each failing callback drops its private staged writes; neither parent
+        // can borrow the other's generation quota on the shared target.
+        proof::copy_mode("carry");
+        let a_full=copied::Buffer::new(8*1024*1024-256,copied::Producer::owner(&OwnerKey::plugin("copy-a",plugin_generation("copy-a")))).unwrap();
+        let b_full=copied::Buffer::new(8*1024*1024-256,copied::Producer::owner(&OwnerKey::plugin("copy-b",plugin_generation("copy-b")))).unwrap();
+        let writes=WRITERS.with(|s|s.borrow().len());
+        eval_in_context("copy-caller","if(__proofEntityCall(binding,'input')!=='input')throw Error('quota rollback');").unwrap();
+        assert_eq!(WRITERS.with(|s|s.borrow().len()),writes);drop(a_full);drop(b_full);
+        // Copied JS values survive a microtask boundary while saved accessors do not.
+        eval_in_context("copy-a","globalThis.awaitCopy=false;(async()=>{const value=savedValue;await 0;let denied=false;try{savedView.text}catch(_){denied=true}if(value!=='input'||!denied)throw Error('await copy lifetime');awaitCopy=true;})();").unwrap();
+        with_host_isolate(|isolate|{let mut storage=v8::HandleScope::new(isolate);let mut scope=unsafe{std::pin::Pin::new_unchecked(&mut storage)}.init();scope.perform_microtask_checkpoint();}).unwrap();
+        eval_in_context("copy-a","if(!awaitCopy)throw Error('microtask did not run');").unwrap();
+        proof::copy_finish(state);
+        let state = proof::copy_process_begin();
+        assert!(proof::copy_process_probe());
+        proof::copy_process_exercise();
+        for (offset, id) in [(2, "copy-process-a"), (1, "copy-process-b")] {
+            let expected =
+                copied::Producer::owner(&OwnerKey::plugin(id, plugin_generation(id))).wire();
+            let actual = CALL_PRODUCERS.with(|s| {
+                let s = s.borrow();
+                s[s.len() - offset]
+            });
+            assert_eq!(
+                (actual.domain, actual.digest, actual.generation),
+                (expected.domain, expected.digest, expected.generation)
+            );
+        }
+        let expected = copied::Producer::owner(&OwnerKey::plugin(
+            "copy-process-a",
+            plugin_generation("copy-process-a"),
+        ))
+        .wire();
+        let actual = WRITERS.with(|s| *s.borrow().last().unwrap());
+        assert_eq!(
+            (actual.domain, actual.digest, actual.generation),
+            (expected.domain, expected.digest, expected.generation)
+        );
+        proof::copy_process_finish(state);
+        set_engine_ops(None);
+        shutdown();
+    }
+}
+
+#[cfg(test)]
+pub(super) mod borrowed_proof {
+    use super::*;
+    use crate::engine_functions::instance::*;
+    pub type EngineCall=unsafe extern "C" fn(i32,*mut f64)->i32;
+    thread_local! {
+        static ENGINE:Cell<Option<EngineCall>>=const{Cell::new(None)};
+        static SLOT:Cell<Option<proof::EntitySlot>>=const{Cell::new(None)};
+        static ORIGINAL_OPS:Cell<Option<S2EngineOps>>=const{Cell::new(None)};
+        static ACTIVATE_COUNT:Cell<usize>=const{Cell::new(0)};
+        static RELEASED:RefCell<Vec<u64>>=const{RefCell::new(Vec::new())};
+    }
+    pub struct State {active:registry::ActivePackageFunctions,source:PreparedPackageReceipt,host:HostPackageOwner,pub target:i64}
+    const CURSOR_ID:&str="proof.borrowed-cursor.v1";
+    const CURSOR_SOURCE:&str=r#"(()=>{
+      const register=__s2_function_adapter_register,subscribe=__s2_function_adapter_subscribe;
+      globalThis.cursorMode='keep';globalThis.cursorEvents=[];globalThis.cursorPreCount=0;
+      register('proof.borrowed-cursor.v1','3e4f14eb33cba81079d21282c1abb09e06542218078a3959317b811f52a3cca9',{
+        pre(d){
+          cursorPreCount++;cursorEvents.push('adapter:'+d.frame.info.amount);
+          d.frame.info.amount=20;
+          d.cursor.invokeNext();
+          cursorEvents.push('resumed:'+d.frame.info.amount);
+          if(cursorMode==='rewrite')d.frame.info.amount=40;
+          d.cursor.invokeNext();
+          cursorEvents.push('later:'+d.frame.info.amount);
+          if(d.cursor.invokeNext()!==null)throw Error('extra subscriber');
+          if(cursorMode==='throw')throw Error('reject final adapter');
+          if(cursorMode==='invalid')return {action:2,returnValue:'bad'};
+          return 0;
+        }
+      });
+      globalThis.subscribeCursor=id=>{
+        subscribe(id,'proof.borrowed-cursor.v1','pre',v=>{cursorEvents.push('first:'+v.info.amount);v.info.amount=30;return 0;});
+        subscribe(id,'proof.borrowed-cursor.v1','pre',v=>{cursorEvents.push('second:'+v.info.amount);return 0;});
+      };
+    })();"#;
+    const SOURCE:&str=r#"
+      globalThis.record=__s2_package_function('record');
+      globalThis.readonlyRecord=__s2_package_function('readonly');
+      globalThis.mode='observe';globalThis.events=[];globalThis.preCount=0;
+      globalThis.first=record.onPre(v=>{
+        preCount++;events.push('pre');if(v.info===null){globalThis.sawNull=true;return;}globalThis.saved=v.info;globalThis.savedFrame=v;
+        if('hidden' in v || Object.keys(v).includes('hidden'))throw Error('hidden pointer exposure');
+        if(v.info.flags!==8 || v.info.enabled!==true || v.self.amount!==2)throw Error('native record fields');
+        if(mode==='probe'){__recordProbe(v.info);}
+        if(mode==='entity'){if(v.info.entity!==null)throw Error('entity initial null');v.info.entity=entityRef;}
+        if(mode==='entity-null'){v.info.entity=null;}
+        if(mode==='entity-stale'){v.info.amount=99;v.info.entity=entityRef;__recordDelete(false);}
+        if(mode==='entity-native'){v.info.amount=99;v.info.entity=entityRef;__recordDelete(true);}
+        if(mode==='entity-forged'){v.info.amount=99;try{v.info.entity={index:901,id:entityRef.id}}catch(_){};}
+        if(mode==='await'){Promise.resolve().then(()=>{let denied=false;try{v.info.amount}catch(_){denied=true}globalThis.awaitDenied=denied;});}
+        if(mode==='edit'){v.info.amount=20;v.self.amount=5;v.info.enabled=false;v.info.scale=2.5;v.info.small=65535;v.text='xy';}
+        if(mode==='u16-range'){v.info.amount=99;try{v.info.small=65536}catch(_){};}
+        if(mode==='invalid'){v.info.amount=99;try{v.info.scale=NaN}catch(_){};}
+        if(mode==='readonly'){v.info.amount=99;try{v.info.flags=4}catch(_){};}
+        if(mode==='decision'){v.info.amount=99;return {action:2,returnValue:'bad'};}
+        if(mode==='throw'){v.info.amount=99;throw Error('reject');}
+        if(mode==='promise'){v.info.amount=99;return Promise.resolve(0);}
+        if(mode==='retire'){v.info.amount=99;v.text='changed';__recordRetire();let denied=false;try{v.info.amount}catch(_){denied=true}if(!denied)throw Error('retired view survived');}
+        if(mode==='map-copy'){v.text='changed';__recordMap();}
+        if(mode==='map'){v.info.amount=99;__recordMap();let denied=false;try{v.info.amount}catch(_){denied=true}if(!denied)throw Error('map view survived');}
+        if(mode==='nested'){globalThis.outerRecord=v.info;mode='inner';__recordNested();mode='nested';if(outerRecord.amount!==7)throw Error('outer failed to resume');}
+        if(mode==='inner'){let denied=false;try{outerRecord.amount}catch(_){denied=true}if(!denied)throw Error('outer view visible during nested frame');}
+      });
+      globalThis.second=record.onPre(v=>{if(v.info!==null)events.push('later:'+v.info.amount);});
+      globalThis.post=record.onPost(v=>{if(v.info===null)return;events.push('post:'+v.info.amount);let n=0;try{v.info.amount=8}catch(_){n++}if(n!==1)throw Error('POST writable');});
+      globalThis.ro=readonlyRecord.onPre(v=>{if(v.info===null)return;globalThis.roSeen=v.info.amount;if(mode==='ro-write'){try{v.info.amount=8}catch(_){globalThis.roDenied=true;}}});
+    "#;
+    fn position(name:&str,native:&str,projection:&str,ownership:Option<&str>,mutable:bool,instance:Option<usize>) -> Position {
+        Position{name:name.into(),native:native.into(),projection:Projection{id:projection.into(),version:1},ownership:ownership.map(str::to_string),mutable:if mutable{vec!["pre".into()]}else{vec![]},instance,nullable:false}
+    }
+    fn input(readonly:bool)->TrustedFunctionInput {
+        let base=crate::engine_functions::tests::fixture();
+        let public:crate::engine_functions::contract::NormalizedFunction=serde_json::from_value(base["functions"][0].clone()).unwrap();
+        let mut f=Function::from_public(public).unwrap();
+        if let NormalizedTarget::Signature{pattern,target_validate,..}=&mut f.target {*pattern="53".into();*target_validate=Validator::default();}
+        // The fixture resolver validates its isolated compiler-authored image.
+        // Keep a syntactically real prologue requirement as the shared grammar requires.
+        if let NormalizedTarget::Signature{target_validate,..}=&mut f.target {target_validate.prologue=Some("??".into());}
+        let fields=[("amount",0,"f32"),("flags",4,"i32"),("entity",8,"entity-handle32"),("enabled",12,"bool"),("small",14,"u16"),("scale",16,"f64")]
+            .into_iter().map(|(name,offset,storage)|RecordField{name:name.into(),offset_key:name.into(),offset,storage:storage.into(),nullable:storage=="entity-handle32",read:vec!["pre".into(),"post".into()],write:if !readonly && name!="flags"{vec!["pre".into()]}else{vec![]}}).collect();
+        let layout=RecordLayout{extent:24,alignment:8,fields};
+        f.abi.member_receiver=true;f.abi.receiver=Some(position("self","ptr","borrowed-record",Some("synchronous-record"),false,Some(0)));
+        f.abi.parameters=vec![position("info","ptr","borrowed-record",Some("synchronous-record"),false,Some(0)),
+            position("text","ptr","string",Some("callee-borrowed"),!readonly,None),
+            position("hidden","ptr","native-only",Some("invocation-passthrough"),false,None)];
+        f.abi.parameters[0].nullable=true;
+        f.abi.returns=position("","i32","i32",None,false,None);
+        f.abi.instances=vec![Instance{codec_id:"borrowed-record".into(),codec_version:1,kind:None,layout_hash:layout.hash(),record:layout}];
+        f.abi.fingerprint=f.abi.physical().fingerprint().unwrap();f.abi.stack_copy_bytes=f.abi.physical().stack_bytes().unwrap();
+        f.policy.surfaces=vec!["pre".into(),"post".into()];f.policy.suppression="none".into();
+        let mut p=serde_json::to_value(&f.policy).unwrap();p.as_object_mut().unwrap().remove("contractHash");f.policy.contract_hash=crate::engine_functions::contract::hash(&p);
+        TrustedFunctionInput{local_name:if readonly{"readonly"}else{"record"}.into(),target:f.target,signature:f.abi,policy:f.policy,requirement:"required".into()}
+    }
+    fn selected()->SelectedLayoutData {
+        let bytes:Arc<str>=serde_json::json!({"amount":0,"flags":4,"entity":8,"enabled":12,"small":14,"scale":16}).to_string().into();
+        SelectedLayoutData{sha256:crate::engine_functions::contract::hash_bytes(bytes.as_bytes()),bytes}
+    }
+    fn source()->(HostPackageOwner,PreparedPackageReceipt) {
+        let host=HostPackageOwner::mint("@proof/borrowed-record").unwrap();
+        let manifest=ImplementationManifestHash::new(crate::engine_functions::contract::hash_bytes(br#"{"name":"@proof/borrowed-record","version":1}"#)).unwrap();
+        let source=register_prepared_package(host.clone(),SOURCE.into(),manifest).unwrap();(host,source)
+    }
+    unsafe fn lifetime()->SynchronousRecordLifetime {SynchronousRecordLifetime::registered_native_target()}
+    fn map(_: &mut v8::PinScope,_:v8::FunctionCallbackArguments,_:v8::ReturnValue){crate::entity_live::clear_for_map_transition();}
+    fn retire_native(_: &mut v8::PinScope,_:v8::FunctionCallbackArguments,_:v8::ReturnValue) {
+        let owner=LEASES.with(|s|s.borrow().last().unwrap().binding.owner.clone());drop_package(&owner);
+    }
+    fn delete(_: &mut v8::PinScope,args:v8::FunctionCallbackArguments,_:v8::ReturnValue) {
+        if args.get(0).is_true() {assert_eq!(unsafe{SLOT.with(Cell::get).unwrap()(901,72,0)},1);}
+        else {crate::entity_live::on_deleted(901,72);}
+    }
+    fn seed_entity() {
+        assert_eq!(unsafe{SLOT.with(Cell::get).unwrap()(901,72,1)},1);
+        let id=crate::entity_live::on_created(901,72);
+        with_host_isolate(|isolate|{
+            let mut storage=v8::HandleScope::new(isolate);let mut scope=unsafe{std::pin::Pin::new_unchecked(&mut storage)}.init();
+            let context=clone_plugin_context("record-a").unwrap();let context=v8::Local::new(&mut scope,&context);
+            let scope=&mut v8::ContextScope::new(&mut scope,context);let global=context.global(scope);
+            let entity=interop_wire::projected_entity_ref(scope,projection::EntityReference{index:901,id}).unwrap();
+            set_own(scope,global,"entityRef",entity.into()).unwrap();
+        }).unwrap();
+    }
+    fn nested(_: &mut v8::PinScope,_:v8::FunctionCallbackArguments,_:v8::ReturnValue) {
+        let mut output=[0.;18];assert_eq!(unsafe{ENGINE.with(Cell::get).unwrap()(0,output.as_mut_ptr())},1);
+    }
+    fn probe(scope:&mut v8::PinScope,args:v8::FunctionCallbackArguments,_:v8::ReturnValue) {
+        let l=LEASES.with(|s|s.borrow().last().cloned()).unwrap();let frame=&l.dispatch.frame;
+        let access=S2FunctionInstanceAccess{version:1,struct_size:48,target:frame.target,frame_token:frame.info.frame_token,
+            native_epoch:frame.info.native_epoch,capability:l.binding.capability.unwrap(),binding_id:l.binding.id};
+        let ops=engine_ops().unwrap();let read=ops.function_frame_field_read.unwrap();let write=ops.function_frame_field_write.unwrap();
+        let check=|key:&S2FunctionInstanceAccess|{let mut out=runtime::blank();let mut why=[0;512];read(key,0,0,&mut out,why.as_mut_ptr(),512)};
+        assert_eq!(check(&access),1);
+        for mode in 0..5 {let mut bad=access;match mode {0=>bad.target+=1,1=>bad.frame_token+=1,2=>bad.native_epoch+=1,3=>bad.capability=u64::MAX,_=>bad.binding_id+=1};assert_eq!(check(&bad),0);}
+        let threaded=access;
+        assert_eq!(std::thread::spawn(move||{let mut out=runtime::blank();let mut why=[0;512];read(&threaded,0,0,&mut out,why.as_mut_ptr(),512)}).join().unwrap(),0);
+        let mut why=[0;512];let mut value=runtime::blank();value.kind=3;value.bits=65536;
+        assert_eq!(write(&access,0,4,&value,why.as_mut_ptr(),512),0,"native u16 must reject before staging");
+        let old=ops.function_frame_read.unwrap();let mut out=runtime::blank();out.kind=8;
+        for selector in [-1,0,2] {assert_eq!(old(frame.target,frame.info.frame_token,frame.info.native_epoch,frame.fingerprint.as_ptr(),selector,8,&mut out,why.as_mut_ptr(),512),0,"legacy frame op cannot expose record/hidden");}
+        // Move only the opaque JS view into a foreign context; its getter must
+        // reject the context before the native access operation is reached.
+        let object=v8::Local::<v8::Object>::try_from(args.get(0)).unwrap();
+        let foreign=v8::Context::new(scope,Default::default());let scope=&mut v8::ContextScope::new(scope,foreign);
+        let mut storage=v8::TryCatch::new(scope);let mut tc=unsafe{std::pin::Pin::new_unchecked(&mut storage)}.init();
+        let name=v8::String::new(&mut tc,"amount").unwrap();assert!(object.get(&mut tc,name.into()).is_none());assert!(tc.has_caught());
+    }
+    extern "C" fn fail_second_activation(cap:u64,owner:*const S2FunctionInstanceOwner,why:*mut i8,size:i32)->i32 {
+        if ACTIVATE_COUNT.with(|n|{let old=n.get();n.set(old+1);old})==1 {return 0;}
+        ORIGINAL_OPS.with(Cell::get).unwrap().function_instance_activate.unwrap()(cap,owner,why,size)
+    }
+    extern "C" fn observe_release(cap:u64)->i32 {
+        RELEASED.with(|r|r.borrow_mut().push(cap));ORIGINAL_OPS.with(Cell::get).unwrap().function_instance_release.unwrap()(cap)
+    }
+    fn activation_rollback(running:&Rc<Binding>) {
+        let (host,source)=source();let candidate=prepare_verified_package(&source,vec![input(false),input(true)],selected(),unsafe{lifetime()}).unwrap();
+        let receipt=registry::prepare_package_owner(&host,candidate).unwrap();let original=engine_ops().unwrap();
+        struct Restore(S2EngineOps);impl Drop for Restore{fn drop(&mut self){set_engine_ops(Some(self.0));ORIGINAL_OPS.with(|s|s.set(None));}}
+        let _restore=Restore(original);ORIGINAL_OPS.with(|s|s.set(Some(original)));ACTIVATE_COUNT.with(|n|n.set(0));RELEASED.with(|r|r.borrow_mut().clear());
+        let mut injected=original;injected.function_instance_activate=Some(fail_second_activation);injected.function_instance_release=Some(observe_release);set_engine_ops(Some(injected));
+        assert!(registry::activate_package_owner(receipt,&host).is_err());
+        assert_eq!(ACTIVATE_COUNT.with(Cell::get),2);let released=RELEASED.with(|r|r.borrow().clone());assert_eq!(released.len(),2);
+        for cap in released {assert!(runtime::instance_activate(cap,host.key()).is_err());runtime::instance_release(cap);}
+        assert!(registry::owner_bindings(host.key()).is_empty());assert!(running.is_live(),"failed replacement preserves prior generation");
+        drop(source);
+    }
+    fn install(id:&str) {
+        with_host_isolate(|isolate|{
+            let mut storage=v8::HandleScope::new(isolate);let mut scope=unsafe{std::pin::Pin::new_unchecked(&mut storage)}.init();
+            let context=clone_plugin_context(id).unwrap();let context=v8::Local::new(&mut scope,&context);
+            let scope=&mut v8::ContextScope::new(&mut scope,context);
+            let global=context.global(scope);
+            let map=v8::Function::new(scope,map).unwrap();set_own(scope,global,"__recordMap",map.into()).unwrap();
+            let nested=v8::Function::new(scope,nested).unwrap();set_own(scope,global,"__recordNested",nested.into()).unwrap();
+            let delete=v8::Function::new(scope,delete).unwrap();set_own(scope,global,"__recordDelete",delete.into()).unwrap();
+            let probe=v8::Function::new(scope,probe).unwrap();set_own(scope,global,"__recordProbe",probe.into()).unwrap();
+            let retire=v8::Function::new(scope,retire_native).unwrap();set_own(scope,global,"__recordRetire",retire.into()).unwrap();
+        }).unwrap();
+    }
+    pub fn begin(engine:EngineCall,slot:proof::EntitySlot)->State {
+        SLOT.with(|s|s.set(Some(slot)));
+        ENGINE.with(|e|e.set(Some(engine)));let (host,source)=source();
+        let candidate=prepare_verified_package(&source,vec![input(false),input(true)],selected(),unsafe{lifetime()}).unwrap();
+        let wrong=HostPackageOwner::mint("@proof/borrowed-record").unwrap();
+        assert!(registry::prepare_package_owner(&wrong,candidate.clone()).is_err());
+        assert!(registry::prepare_owner(&host.key().id,candidate.clone()).is_err());
+        let receipt=registry::prepare_package_owner(&host,candidate).unwrap();
+        let active=registry::activate_package_owner(receipt,&host).unwrap();
+        let a=registry::named_binding(host.key(),"record").unwrap();let b=registry::named_binding(host.key(),"readonly").unwrap();
+        assert_eq!(a.target,b.target,"rights must not split physical target");
+        assert!(runtime::instance_activate(a.capability.unwrap(),host.key()).is_err(),"activation is one-shot");
+        assert!(runtime::instance_activate(a.capability.unwrap(),wrong.key()).is_err(),"activation owner must match");
+        activation_rollback(&a);
+        frame_tests::load_body("record-a","return {};","{}");install("record-a");
+        State{target:a.target.unwrap(),active,source,host}
+    }
+    pub fn call(mode:i32)->[f64;18] {let mut out=[0.;18];assert_eq!(unsafe{ENGINE.with(Cell::get).unwrap()(mode,out.as_mut_ptr())},1);out}
+    pub fn ready(state:&State)->bool {
+        let before=frame_tests::read_i32_global_in("record-a","preCount");let output=call(0);
+        runtime::status(state.target).unwrap().state==2 && frame_tests::read_i32_global_in("record-a","preCount")>before && output[16]==1.
+    }
+    pub fn observers_ready()->bool {call(0)[16..18]==[1.,1.]}
+    pub fn exercise(state:&State) {
+        eval_in_context("record-a","mode='edit';events.length=0;").unwrap();
+        let edited=call(1);assert_eq!(&edited[..7],&[5.,20.,127.,8.,0.,2.5,4294967295.]);
+        assert_eq!(&edited[12..14],&[5.,20.],"later PRE peer must observe published record fields");
+        assert_eq!(&edited[14..18],&[2.,7.,1.,1.],"earlier PRE peer sees input; both peers execute exactly once");assert_eq!(edited[7],1.,"original executes once");
+        assert_eq!(&edited[10..12],&[65535.,90.],"u16 must preserve adjacent sentinel");
+        println!("PASS actual record observer order early={:?} later={:?}, peer counts={:?}, original={}",&edited[14..16],&edited[12..14],&edited[16..18],edited[7]);
+        eval_in_context("record-a","if(!events.includes('later:20')||!events.includes('post:20')||roSeen!==20)throw Error('accepted overlay/POST');let n=0;try{saved.amount}catch(_){n++}try{savedFrame.info}catch(_){n++}if(n!==2)throw Error('view escaped');").unwrap();
+        for mode in ["invalid","readonly","decision","throw","promise","map","map-copy","u16-range"] {
+            eval_in_context("record-a",&format!("mode='{mode}';events.length=0;")).unwrap();
+            let unchanged=call(0);assert_eq!(unchanged[7],1.,"{mode} original executes once");assert_eq!(&unchanged[..7],&[2.,7.,12.,8.,1.,9.,4294967295.],"{mode}: whole edit publication");
+        }
+        eval_in_context("record-a","mode='probe';").unwrap();assert_eq!(call(0)[1],7.);
+        for mode in ["entity","entity-null","entity-stale","entity-native","entity-forged"] {
+            seed_entity();eval_in_context("record-a",&format!("mode='{mode}';")).unwrap();
+            let output=call(0);
+            assert_eq!(output[6],if mode=="entity" {(72u32<<15|901) as f64}else{u32::MAX as f64},"{mode} packed publication");
+            assert_eq!(output[1],7.,"{mode} rejected scalar/record batch");
+        }
+        eval_in_context("record-a","mode='observe';sawNull=false;").unwrap();let nullable=call(2);assert_eq!(nullable[2],5.);
+        eval_in_context("record-a","if(!sawNull)throw Error('nullable record');mode='await';awaitDenied=false;").unwrap();call(0);
+        // Drain the host-owned microtask boundary; the saved callback lease is closed.
+        with_host_isolate(|isolate|isolate.perform_microtask_checkpoint()).unwrap();
+        eval_in_context("record-a","if(!awaitDenied)throw Error('await view survived');mode='nested';").unwrap();let nested=call(0);assert_eq!(nested[1],7.);assert_eq!(nested[7],2.,"nested physical entries each execute their original once");
+        eval_in_context("record-a","mode='ro-write';roDenied=false;").unwrap();call(0);
+        eval_in_context("record-a","if(!roDenied)throw Error('broader field rights leaked');let denied=false;try{record.call(saved,saved,'abc',null)}catch(_){denied=true}if(!denied)throw Error('record manufacture');").unwrap();
+        assert!(registry::named_binding(state.host.key(),"record").unwrap().is_live());
+        let old_view=with_host_isolate(|isolate|{
+            let mut storage=v8::HandleScope::new(isolate);let mut scope=unsafe{std::pin::Pin::new_unchecked(&mut storage)}.init();
+            let context=clone_plugin_context("record-a").unwrap();let context=v8::Local::new(&mut scope,&context);
+            let scope=&mut v8::ContextScope::new(&mut scope,context);let global=context.global(scope);
+            let name=v8::String::new(scope,"saved").unwrap();let value=global.get(scope,name.into()).unwrap();v8::Global::new(scope,value)
+        }).unwrap();
+        unload_plugin("record-a");frame_tests::load_body("record-a","return {};","{}");install("record-a");
+        with_host_isolate(|isolate|{
+            let mut storage=v8::HandleScope::new(isolate);let mut scope=unsafe{std::pin::Pin::new_unchecked(&mut storage)}.init();
+            let context=clone_plugin_context("record-a").unwrap();let context=v8::Local::new(&mut scope,&context);
+            let scope=&mut v8::ContextScope::new(&mut scope,context);let global=context.global(scope);let value=v8::Local::new(scope,&old_view);
+            set_own(scope,global,"oldRecord",value).unwrap();
+        }).unwrap();
+        eval_in_context("record-a","let denied=false;try{oldRecord.amount}catch(_){denied=true}if(!denied)throw Error('reload revived view');").unwrap();
+    }
+    /// The reloaded context re-subscribes through its package bootstrap. When the old
+    /// generation's subscribers leave, the shared hook may be reinstalled asynchronously,
+    /// so readiness is observed from the outer frame loop before retirement is exercised.
+    pub fn reload_ready(state:&State)->bool {
+        let before=frame_tests::read_i32_global_in("record-a","preCount");call(0);
+        runtime::status(state.target).unwrap().state==2 && frame_tests::read_i32_global_in("record-a","preCount")>before
+    }
+    pub fn retire(state:&State) {
+        eval_in_context("record-a","mode='retire';").unwrap();let before=frame_tests::read_i32_global_in("record-a","preCount");let retired=call(0);
+        assert!(frame_tests::read_i32_global_in("record-a","preCount")>before,"retire mode must reach the reloaded subscriber");
+        assert_eq!(&retired[..7],&[2.,7.,12.,8.,1.,9.,4294967295.],"retirement during callback publishes no field/copy edits");assert!(state.host.is_retired());
+        println!("PASS borrowed real Service/V8 receiver/record/hidden/copy mixed edits, rejected whole batches, map/nested/expired views and binding-local rights");
+    }
+    pub fn abort(state:State) {
+        drop(state.active);drop(state.source);unload_plugin("record-a");ENGINE.with(|e|e.set(None));SLOT.with(|s|s.set(None));
+    }
+    fn cursor_prepare(engine:EngineCall,transport_only:bool)->State {
+        ENGINE.with(|e|e.set(Some(engine)));
+        let host=HostPackageOwner::mint("@proof/borrowed-cursor").unwrap();
+        let source=register_prepared_package(host.clone(),CURSOR_SOURCE.into(),ImplementationManifestHash::new(
+            crate::engine_functions::contract::hash_bytes(b"borrowed-cursor-fixture-manifest-v1")).unwrap()).unwrap();
+        let mut declared=input(false);
+        if transport_only {
+            // Explicit scalar host transport: no native pointer/record storage is
+            // created or dereferenced. The same adapter program also runs in the
+            // real compiler-authored Service fixture below.
+            declared.signature.parameters.truncate(1);
+            declared.signature.fingerprint=declared.signature.physical().fingerprint().unwrap();
+            declared.signature.stack_copy_bytes=declared.signature.physical().stack_bytes().unwrap();
+        }
+        let candidate=prepare_verified_package(&source,vec![declared],selected(),unsafe{lifetime()}).unwrap();
+        let active=registry::activate_package_owner(registry::prepare_package_owner(&host,candidate).unwrap(),&host).unwrap();
+        let binding=registry::named_binding(host.key(),"record").unwrap();
+        authorize_binding(&source,host.key(),binding.id,CURSOR_ID,proof::HASH).unwrap();
+        frame_tests::load_body("record-cursor","return {};","{}");
+        eval_in_context("record-cursor","subscribeCursor('record');").unwrap();
+        State{target:binding.target.unwrap(),active,source,host}
+    }
+    pub fn cursor_begin(engine:EngineCall)->State {cursor_prepare(engine,false)}
+    pub fn cursor_ready(state:&State)->bool {
+        let before=frame_tests::read_i32_global_in("record-cursor","cursorPreCount");let output=call(0);
+        runtime::status(state.target).unwrap().state==2 && frame_tests::read_i32_global_in("record-cursor","cursorPreCount")>before && output[16]==1.
+    }
+    pub fn cursor_exercise(native:bool) {
+        for mode in ["keep","rewrite","invalid","throw"] {
+            eval_in_context("record-cursor",&format!("cursorMode='{mode}';cursorEvents.length=0;")).unwrap();
+            let output=call(0);
+            let later=if mode=="rewrite"{40}else{30};
+            let expected=format!("adapter:7,first:20,resumed:30,second:{later},later:{later}");
+            let trace=frame_tests::eval_in_context_string("record-cursor","cursorEvents.join(',')");
+            assert_eq!(trace,expected,"{mode}: adapter pending batch must be consumed at cursor handoff");
+            let accepted=if matches!(mode,"invalid"|"throw"){7.}else{later as f64};
+            assert_eq!(output[1],accepted,"{mode}: final publication");
+            if native {
+                assert_eq!(output[2],accepted+5.,"{mode}: real original sees accepted record");
+                assert_eq!(output[7],1.,"{mode}: real original executes once");
+                assert_eq!(&output[12..14],&[2.,accepted],"{mode}: later native PRE peer sees final record");
+                assert_eq!(&output[14..18],&[2.,7.,1.,1.],"{mode}: earlier PRE sees input; each peer executes once");
+                println!("PASS actual record cursor {mode}: trace={trace}, early={:?}, later={:?}, original result={}, count={}",&output[14..16],&output[12..14],output[2],output[7]);
+            }
+        }
+        println!("PASS borrowed package adapter cursor resumed/later reads, subscriber/native publication, explicit adapter rewrite and rejected final decisions");
+    }
+    pub fn cursor_abort(state:State) {
+        unload_plugin("record-cursor");drop(state.active);drop(state.source);ENGINE.with(|e|e.set(None));
+    }
+    #[derive(Clone,Copy)]
+    struct CursorTransportFrame {token:u64,amount:f32,pending:Option<f32>}
+    thread_local! {static CURSOR_FRAME:RefCell<Option<CursorTransportFrame>>=const{RefCell::new(None)};}
+    extern "C" fn cursor_prepare_op(binding:u64,_:*const S2FunctionInstanceOwner,_:*const i8,_:*const i8,_:*const i8,out:*mut S2FunctionInstancePrepared,_:*mut i8,_:i32)->i32 {
+        unsafe{*out=S2FunctionInstancePrepared{version:1,struct_size:24,target:1,capability:binding};}1
+    }
+    extern "C" fn cursor_activate_op(_:u64,_:*const S2FunctionInstanceOwner,_:*mut i8,_:i32)->i32 {1}
+    extern "C" fn cursor_release_op(_:u64)->i32 {1}
+    extern "C" fn cursor_presence_op(_:*const S2FunctionInstanceAccess,_:i32,out:*mut S2FunctionValue,_:*mut i8,_:i32)->i32 {
+        let mut value=runtime::blank();value.kind=1;value.bits=1;unsafe{*out=value;}1
+    }
+    extern "C" fn cursor_read_op(access:*const S2FunctionInstanceAccess,selector:i32,field:u32,out:*mut S2FunctionValue,_:*mut i8,_:i32)->i32 {
+        CURSOR_FRAME.with(|f|{let f=f.borrow();let Some(f)=f.as_ref().filter(|f|f.token==unsafe{(*access).frame_token})else{return 0};
+            if selector!=0 || field!=0{return 0;}let mut value=runtime::blank();value.kind=6;value.bits=f.amount.to_bits() as u64;unsafe{*out=value;}1})
+    }
+    extern "C" fn cursor_write_op(access:*const S2FunctionInstanceAccess,selector:i32,field:u32,value:*const S2FunctionValue,_:*mut i8,_:i32)->i32 {
+        CURSOR_FRAME.with(|f|{let mut f=f.borrow_mut();let Some(f)=f.as_mut().filter(|f|f.token==unsafe{(*access).frame_token})else{return 0};
+            if selector!=0 || field!=0{return 0;}f.pending=Some(f32::from_bits(unsafe{(*value).bits} as u32));1})
+    }
+    extern "C" fn cursor_commit_op(_:i64,token:u64,_:u64,_:*const i8,_:i32,_:*const S2FunctionValue,_:*mut i8,_:i32)->i32 {
+        CURSOR_FRAME.with(|f|{let mut f=f.borrow_mut();let Some(f)=f.as_mut().filter(|f|f.token==token)else{return 0};if let Some(value)=f.pending.take(){f.amount=value;}1})
+    }
+    unsafe extern "C" fn cursor_engine_op(_:i32,out:*mut f64)->i32 {
+        let token=registry::next_id().unwrap();
+        CURSOR_FRAME.with(|f|*f.borrow_mut()=Some(CursorTransportFrame{token,amount:7.,pending:None}));
+        let info=S2FunctionFrameInfo{version:1,struct_size:48,frame_token:token,native_epoch:token,invocation_id:token,suppressed_owner:0,parameter_count:1,flags:0};
+        crate::ffi::s2script_core_dispatch_function(1,&info,0);
+        crate::ffi::s2script_core_dispatch_function(1,&info,1);
+        let amount=CURSOR_FRAME.with(|f|f.borrow_mut().take().unwrap().amount);
+        for i in 0..18{*out.add(i)=0.;}*out.add(1)=amount as f64;1
+    }
+    #[test]
+    fn borrowed_adapter_cursor_consumes_each_validated_batch() {
+        scalar_transport_tests::init_transport();let mut ops=engine_ops().unwrap();
+        ops.function_prepare_instance=Some(cursor_prepare_op);ops.function_instance_activate=Some(cursor_activate_op);ops.function_instance_release=Some(cursor_release_op);
+        ops.function_frame_read_instance=Some(cursor_presence_op);ops.function_frame_field_read=Some(cursor_read_op);ops.function_frame_field_write=Some(cursor_write_op);ops.function_frame_commit=Some(cursor_commit_op);
+        set_engine_ops(Some(ops));let state=cursor_prepare(cursor_engine_op,true);
+        let result=std::panic::catch_unwind(||cursor_exercise(false));
+        cursor_abort(state);set_engine_ops(None);shutdown();
+        if let Err(error)=result{std::panic::resume_unwind(error);}
+    }
+    #[test]
+    fn borrowed_host_data_is_sealed_and_required_optional_failures_are_named() {
+        scalar_transport_tests::init_transport();let (host,source)=source();
+        let original=input(false);
+        for failure in 0..6 {
+            let mut invalid=original.clone();
+            match failure {
+                0=>invalid.signature.instances[0].layout_hash="0".repeat(64),
+                1=>invalid.signature.instances[0].record.fields[0].offset=4,
+                2=>invalid.signature.instances[0].record.extent=65537,
+                3=>invalid.signature.instances[0].kind=Some(KindVersion{id:"unregistered".into(),version:1}),
+                4=>invalid.signature.parameters[2].ownership=None,
+                _=>invalid.signature.member_receiver=false,
+            }
+            assert!(prepare_verified_package(&source,vec![invalid.clone()],selected(),unsafe{lifetime()}).is_err());
+            invalid.requirement="optional".into();
+            let candidate=prepare_verified_package(&source,vec![invalid],selected(),unsafe{lifetime()}).unwrap();
+            assert!(candidate.functions()[0].unavailable().is_some());
+        }
+        let duplicate:Arc<str>="{\"amount\":0,\"amount\":4}".into();
+        let duplicate_hash=crate::engine_functions::contract::hash_bytes(duplicate.as_bytes());
+        assert!(prepare_verified_package(&source,vec![original.clone()],SelectedLayoutData{bytes:duplicate,sha256:duplicate_hash},unsafe{lifetime()}).is_err());
+        let candidate=prepare_verified_package(&source,vec![original],selected(),unsafe{lifetime()}).unwrap();
+        assert!(candidate.functions()[0].function().trusted_wire().is_ok());
+        let mut changed=candidate.functions()[0].function().clone();
+        changed.abi.instances[0].record.fields[0].write.clear();
+        assert!(changed.trusted_wire().is_err());
+        assert_eq!(registry::owner_bindings(host.key()).len(),0);
+        drop(source);assert!(host.is_retired());set_engine_ops(None);shutdown();
+    }
+}
+
+/// Portable proofs for the trusted (host-verified package) facilities: artifact
+/// activation, per-dispatch scratch slots and PRE proposals carried to POST.
+#[cfg(test)]
+mod trusted_capability_tests {
+    use super::scalar_transport_tests::{close_frame, init_transport, open_frame, pop_frame, EFFECTS};
+    use super::*;
+    use crate::engine_functions::{contract, instance, trusted};
+    use serde_json::{json, Value};
+    const OWNER: &str = "@proof/trusted";
+    const ADAPTER: &str = "proof.trusted.v1";
+    extern "C" fn prepare_instance(binding: u64, _: *const S2FunctionInstanceOwner, _: *const i8, _: *const i8, _: *const i8,
+        out: *mut S2FunctionInstancePrepared, _: *mut i8, _: i32) -> i32 {
+        unsafe { *out = S2FunctionInstancePrepared { version: 1, struct_size: 24, target: 1, capability: binding } };
+        1
+    }
+    extern "C" fn activate(_: u64, _: *const S2FunctionInstanceOwner, _: *mut i8, _: i32) -> i32 { 1 }
+    extern "C" fn release(_: u64) -> i32 { 1 }
+    extern "C" fn no_read(_: *const S2FunctionInstanceAccess, _: i32, _: *mut S2FunctionValue, _: *mut i8, _: i32) -> i32 { 0 }
+    extern "C" fn no_field_read(_: *const S2FunctionInstanceAccess, _: i32, _: u32, _: *mut S2FunctionValue, _: *mut i8, _: i32) -> i32 { 0 }
+    extern "C" fn no_field_write(_: *const S2FunctionInstanceAccess, _: i32, _: u32, _: *const S2FunctionValue, _: *mut i8, _: i32) -> i32 { 0 }
+    fn init() {
+        init_transport();
+        let mut ops = engine_ops().unwrap();
+        ops.function_prepare_instance = Some(prepare_instance);
+        ops.function_instance_activate = Some(activate);
+        ops.function_instance_release = Some(release);
+        ops.function_frame_read_instance = Some(no_read);
+        ops.function_frame_field_read = Some(no_field_read);
+        ops.function_frame_field_write = Some(no_field_write);
+        set_engine_ops(Some(ops));
+        proof::take_dispatch_errors();
+    }
+    fn policy(surfaces: &[&str]) -> Value {
+        let suppression = if surfaces.contains(&"pre") { "generic" } else { "none" };
+        let mut p = json!({"id":"generic.v2","version":1,"surfaces":surfaces,"selfCall":"bypass-own-hooks","suppression":suppression});
+        p["contractHash"] = contract::hash(&p).into();
+        p
+    }
+    fn function(name: &str, scratch: Value, post_override: Option<bool>) -> Value {
+        let mut f = json!({"localName":name,"requirement":"required",
+            "target":{"kind":"signature","module":"server","pattern":"55","resolve":"direct","derivation":"identity","candidateValidate":{},"targetValidate":{"prologue":"55"}},
+            "signature":{"platform":"linux-x86_64-sysv","memberReceiver":false,"receiver":null,
+                "parameters":[{"name":"x","native":"i32","projection":{"id":"i32","version":1},"mutable":["pre"],"nullable":false}],
+                "returns":{"name":"","native":"i32","projection":{"id":"i32","version":1},"mutable":[],"nullable":false},
+                "fingerprint":"linux-x86_64-sysv:none:i32(i32)","stackCopyBytes":128,"instances":[],"scratch":scratch},
+            "policy":policy(&["pre","post"])});
+        if let Some(post_override) = post_override {
+            f["adapter"] = json!({"id":ADAPTER,"contractHash":proof::HASH,"postOverride":post_override});
+        }
+        f
+    }
+    fn artifact(owner: &str, functions: Vec<Value>) -> Value {
+        let selected = "{}";
+        json!({"schemaVersion":1,"ownerId":owner,"selectedOffsets":selected,
+            "selectedOffsetsSha256":contract::hash_bytes(selected.as_bytes()),"functions":functions})
+    }
+    fn public_candidate(local: &str) -> crate::engine_functions::provenance::PreparedCandidate {
+        use crate::engine_functions::{overrides, tests};
+        let mut value = tests::fixture();
+        value["ownerId"] = OWNER.into();
+        value["functions"][0]["localName"] = local.into();
+        value["functions"][0]["canonicalId"] = format!("{OWNER}::{local}").into();
+        tests::seal(&mut value);
+        let summary = tests::summary(&value);
+        let parsed = contract::parse(&value.to_string(), OWNER, &summary, &["engine:calls".into()]).unwrap();
+        overrides::prepare(parsed, "trusted-proof-archive", vec![]).unwrap()
+    }
+    const SOURCE: &str = r#"(()=>{
+      const register=__s2_function_adapter_register,subscribe=__s2_function_adapter_subscribe;
+      globalThis.events=[];globalThis.mode='plain';
+      register('proof.trusted.v1','3e4f14eb33cba81079d21282c1abb09e06542218078a3959317b811f52a3cca9',{
+        pre(d){
+          events.push('start:'+d.frame.votes+':'+d.frame.flag);
+          d.frame.votes=1;
+          while(d.cursor.invokeNext()!==null){events.push('after:'+d.frame.votes);}
+          events.push('final:'+d.frame.votes+':'+d.frame.flag);
+          if(mode==='propose')return {action:1,returnValue:55};
+          if(mode==='propose-invalid')return {action:1,returnValue:'bad'};
+          return 0;
+        },
+        post(d){
+          const has='proposedReturn' in d.frame;
+          events.push('post:'+(has?d.frame.proposedReturn:'none')+':'+('votes' in d.frame));
+          if(has)d.frame.overrideReturn(d.frame.proposedReturn);
+          while(d.cursor.invokeNext()!==null){}
+        }
+      });
+      globalThis.subscribeTrusted=(phase,fn)=>subscribe('fire','proof.trusted.v1',phase,fn);
+    })()"#;
+    fn activate_package(post_override: bool) -> (HostPackageOwner, trusted::TrustedPackageActivation) {
+        let host = HostPackageOwner::mint(OWNER).unwrap();
+        let manifest = ImplementationManifestHash::new(contract::hash_bytes(b"trusted-proof-manifest")).unwrap();
+        let bytes = artifact(OWNER, vec![function("fire", json!([{"name":"votes","storage":"i32"},{"name":"flag","storage":"bool"}]), Some(post_override))]);
+        let active = trusted::activate_trusted(&host, SOURCE.into(), manifest, bytes.to_string().as_bytes(),
+            Some(public_candidate("pub")), unsafe { instance::SynchronousRecordLifetime::registered_native_target() }).unwrap();
+        (host, active)
+    }
+    fn events(id: &str) -> String {
+        frame_tests::eval_in_context_string(id, "(()=>{const e=events.join(',');events.length=0;return e})()")
+    }
+    fn finish(plugins: &[&str], active: trusted::TrustedPackageActivation) {
+        for id in plugins { unload_plugin(id); }
+        drop(active);
+        set_engine_ops(None);
+        shutdown();
+    }
+
+    #[test]
+    fn trusted_artifact_decoder_is_strict_and_named() {
+        let good = artifact(OWNER, vec![function("fire", json!([]), Some(false))]);
+        assert!(trusted::decode(good.to_string().as_bytes(), OWNER).is_ok());
+        let cases: Vec<(Box<dyn Fn(&mut Value)>, &str)> = vec![
+            (Box::new(|v| v["extra"] = 1.into()), "unknown field"),
+            (Box::new(|v| v["functions"][0]["signature"]["hidden"] = true.into()), "unknown field"),
+            (Box::new(|v| v["functions"][0]["signature"]["parameters"][0]["offset"] = 1.into()), "unknown field"),
+            (Box::new(|v| v["functions"][0]["signature"]["parameters"][0]["ownership"] = Value::Null), "invalid type"),
+            (Box::new(|v| v["functions"][0]["signature"]["scratch"] = json!([{"name":"a","storage":"i32","init":1}])), "unknown field"),
+            (Box::new(|v| v["functions"][0]["adapter"]["grant"] = true.into()), "unknown field"),
+            (Box::new(|v| v["schemaVersion"] = 2.into()), "unsupported schemaVersion"),
+            (Box::new(|v| v["ownerId"] = "@proof/other".into()), "ownerId does not match"),
+            (Box::new(|v| v["selectedOffsets"] = "{\"a\":1}".into()), "selectedOffsets hash mismatch"),
+            (Box::new(|v| v["selectedOffsetsSha256"] = "A".repeat(64).into()), "lowercase SHA256"),
+            (Box::new(|v| v["functions"][0]["adapter"]["id"] = "generic.v2".into()), "invalid adapter id"),
+            (Box::new(|v| v["functions"][0]["adapter"]["contractHash"] = "x".into()), "adapter contractHash"),
+            (Box::new(|v| { let mut other = v["functions"][0].clone(); other["localName"] = "other".into();
+                other["adapter"]["postOverride"] = true.into(); v["functions"].as_array_mut().unwrap().push(other); }), "conflicting"),
+        ];
+        for (mutate, expected) in cases {
+            let mut value = good.clone();
+            mutate(&mut value);
+            let error = trusted::decode(value.to_string().as_bytes(), OWNER).err().unwrap_or_default();
+            assert!(error.starts_with("trusted functions artifact:") && error.contains(expected), "{expected}: {error}");
+        }
+        let duplicate = good.to_string().replacen("\"schemaVersion\":1", "\"schemaVersion\":1,\"schemaVersion\":1", 1);
+        assert!(trusted::decode(duplicate.as_bytes(), OWNER).err().unwrap().contains("duplicate field"));
+        let oversized = vec![b' '; trusted::MAX_ARTIFACT_BYTES + 1];
+        assert!(trusted::decode(&oversized, OWNER).err().unwrap().contains("byte limit"));
+    }
+
+    #[test]
+    fn trusted_scratch_is_validated_and_sealed_into_the_contract_but_not_the_native_wire() {
+        init();
+        let host = HostPackageOwner::mint(OWNER).unwrap();
+        let manifest = ImplementationManifestHash::new(contract::hash_bytes(b"scratch-proof")).unwrap();
+        let receipt = register_prepared_package(host.clone(), "0".into(), manifest).unwrap();
+        let prepare = |scratch: Value, surfaces: Option<&[&str]>| {
+            let mut f = function("fire", scratch, None);
+            if let Some(surfaces) = surfaces {
+                f["policy"] = policy(surfaces);
+                f["signature"]["parameters"][0]["mutable"] = json!([]);
+            }
+            let decoded = trusted::decode(artifact(OWNER, vec![f]).to_string().as_bytes(), OWNER).unwrap();
+            instance::prepare_verified_package(&receipt, decoded.inputs, decoded.selected,
+                unsafe { instance::SynchronousRecordLifetime::registered_native_target() })
+        };
+        for (scratch, surfaces, expected) in [
+            (json!([{"name":"proposedReturn","storage":"i32"}]), None, "scratch slot name"),
+            (json!([{"name":"x","storage":"i32"}]), None, "scratch slot name"),
+            (json!([{"name":"a","storage":"i32"},{"name":"a","storage":"u32"}]), None, "scratch slot name"),
+            (json!([{"name":"a","storage":"ptr"}]), None, "unsupported scratch storage"),
+            (json!((0..17).map(|i| json!({"name":format!("s{i}"),"storage":"i32"})).collect::<Vec<_>>()), None, "scratch slot limit"),
+            (json!([{"name":"a","storage":"i32"}]), Some(&["post"][..]), "scratch slots require PRE"),
+        ] {
+            let error = prepare(scratch, surfaces).err().unwrap_or_default();
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
+        let plain = prepare(json!([]), None).unwrap();
+        let with = prepare(json!([{"name":"votes","storage":"i32"}]), None).unwrap();
+        let (plain, with) = (plain.functions()[0].function(), with.functions()[0].function());
+        assert_ne!(plain.contract_hash, with.contract_hash, "scratch is part of the sealed contract");
+        let native: Value = serde_json::from_str(&with.trusted_wire().unwrap()).unwrap();
+        assert!(native["signature"].get("scratch").is_none(), "scratch never reaches the native wire");
+        let mut unsealed = native.clone();
+        unsealed.as_object_mut().unwrap().remove("contractHash");
+        assert_eq!(native["contractHash"], contract::hash(&unsealed), "native wire hash covers exactly its bytes");
+        let legacy: Value = serde_json::from_str(&plain.trusted_wire().unwrap()).unwrap();
+        assert_eq!(legacy["contractHash"], plain.contract_hash.as_str(), "scratch-free contracts are unchanged");
+        drop(receipt);
+        set_engine_ops(None);
+        shutdown();
+    }
+
+    #[test]
+    fn trusted_activation_merges_public_authorizes_and_fails_whole() {
+        init();
+        // A trusted/public name collision refuses before any binding is published and burns the owner.
+        let host = HostPackageOwner::mint(OWNER).unwrap();
+        let manifest = ImplementationManifestHash::new(contract::hash_bytes(b"collision")).unwrap();
+        let bytes = artifact(OWNER, vec![function("fire", json!([]), Some(true))]).to_string();
+        let error = trusted::activate_trusted(&host, SOURCE.into(), manifest.clone(), bytes.as_bytes(),
+            Some(public_candidate("fire")), unsafe { instance::SynchronousRecordLifetime::registered_native_target() })
+            .err().unwrap();
+        assert!(error.contains("duplicates a public declaration"), "{error}");
+        assert!(host.is_retired() && registry::owner_bindings(host.key()).is_empty());
+        // A foreign-owner artifact is refused by name before registration.
+        let other = HostPackageOwner::mint(OWNER).unwrap();
+        let foreign = artifact("@proof/other", vec![function("fire", json!([]), None)]).to_string();
+        assert!(trusted::activate_trusted(&other, SOURCE.into(), manifest, foreign.as_bytes(), None,
+            unsafe { instance::SynchronousRecordLifetime::registered_native_target() }).err().unwrap().contains("ownerId"));
+        assert!(!other.is_retired(), "a failure before source registration leaves the owner unused");
+
+        let (host, active) = activate_package(false);
+        let fire = registry::named_binding(host.key(), "fire").unwrap();
+        let public = registry::named_binding(host.key(), "pub").unwrap();
+        assert!(fire.function.trusted() && !public.function.trusted());
+        assert_eq!(AUTHORIZED.with(|a| a.borrow().get(&fire.id).cloned()),
+            Some((host.key().clone(), ADAPTER.to_string(), proof::HASH.to_string())));
+        frame_tests::load_body("trusted-a", "return {};", "{}");
+        eval_in_context("trusted-a", "subscribeTrusted('pre',v=>{events.push('sub:'+v.x);});").unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        assert_eq!(close_frame(&info).output.bits, 7);
+        assert_eq!(events("trusted-a"), "start:0:false,sub:7,after:1,final:1:false");
+        finish(&["trusted-a"], active);
+    }
+
+    #[test]
+    fn trusted_scratch_is_shared_per_dispatch_rolled_back_and_never_native() {
+        init();
+        let (_host, active) = activate_package(false);
+        frame_tests::load_body("trusted-a", "return {};", "{}");
+        frame_tests::load_body("trusted-b", "return {};", "{}");
+        eval_in_context("trusted-a", "subscribeTrusted('pre',v=>{v.votes=v.votes+1;v.flag=true;});").unwrap();
+        eval_in_context("trusted-b", r#"globalThis.reject='none';subscribeTrusted('pre',v=>{
+            events.push('b:'+v.votes+':'+v.flag);v.votes=v.votes+1;
+            if(reject==='throw'){v.votes=100;v.x=99;throw Error('rejected batch');}
+            // An invalid typed write poisons this callback's whole staged batch.
+            if(reject==='typed'){v.x=99;let n=0;try{v.votes=1.5}catch(_){n++}try{v.flag=1}catch(_){n++}if(n!==2)throw Error('typed scratch');}
+        });"#).unwrap();
+        for (reject, votes, x) in [("none", 3, 7), ("throw", 2, 7), ("typed", 2, 7), ("none", 3, 7)] {
+            eval_in_context("trusted-b", &format!("reject='{reject}';")).unwrap();
+            let info = open_frame();
+            assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+            let frame = close_frame(&info);
+            assert_eq!((frame.input.bits, frame.output.bits, frame.action), (x, 7, 0), "scratch is never written or committed");
+            // Each invocation starts at zero; the adapter sees every accepted subscriber edit
+            // from both contexts and nothing from the rejected callback.
+            assert_eq!(events("trusted-a"), format!("start:0:false,after:2,after:{votes},final:{votes}:true"));
+            assert_eq!(events("trusted-b"), "b:2:true");
+        }
+        finish(&["trusted-a", "trusted-b"], active);
+    }
+
+    #[test]
+    fn trusted_pre_proposal_forces_its_authorized_post_adapter() {
+        init();
+        let (_host, active) = activate_package(true);
+        frame_tests::load_body("trusted-a", "return {};", "{}");
+        eval_in_context("trusted-a", "subscribeTrusted('pre',v=>{});").unwrap();
+        // No proposal: zero POST subscribers means no POST run (unchanged).
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        assert_eq!(close_frame(&info).output.bits, 7);
+        assert!(!events("trusted-a").contains("post:"));
+        // Proposal: the adapter's POST runs without POST subscribers and applies it.
+        eval_in_context("trusted-a", "mode='propose';").unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        let frame = close_frame(&info);
+        assert_eq!((frame.action, frame.output.bits), (1, 55));
+        assert_eq!(EFFECTS.with(Cell::get), 1);
+        let trace = events("trusted-a");
+        assert!(trace.ends_with("final:1:false,post:55:false"), "{trace}");
+        assert_eq!(proof::pending_invocations(), 0);
+        // An invalid proposal fails the adapter's PRE by name; nothing is committed or carried.
+        eval_in_context("trusted-a", "mode='propose-invalid';").unwrap();
+        let info = open_frame();
+        assert_ne!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        assert_eq!(close_frame(&info).output.bits, 7);
+        assert!(!events("trusted-a").contains("post:"));
+        assert!(proof::take_dispatch_errors().iter().any(|e| e.contains("typed scalar")));
+        // A subscriber cannot propose: its {action:1} object stays a rejected vote.
+        eval_in_context("trusted-a", "mode='plain';subscribeTrusted('pre',v=>({action:1,returnValue:9}));").unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        assert_eq!(close_frame(&info).output.bits, 7);
+        assert!(!events("trusted-a").contains("post:"));
+        assert_eq!(proof::pending_invocations(), 0);
+        finish(&["trusted-a"], active);
+    }
+
+    #[test]
+    fn trusted_pre_proposal_without_override_authority_is_rejected_by_name() {
+        init();
+        let (_host, active) = activate_package(false);
+        frame_tests::load_body("trusted-a", "return {};", "{}");
+        eval_in_context("trusted-a", "mode='propose';subscribeTrusted('pre',v=>{});").unwrap();
+        let info = open_frame();
+        assert_ne!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        let frame = close_frame(&info);
+        assert_eq!((frame.action, frame.output.bits), (0, 7));
+        assert_eq!(EFFECTS.with(Cell::get), 0);
+        assert!(!events("trusted-a").contains("post:"));
+        assert!(proof::take_dispatch_errors().iter().any(|e| e.contains("PRE return proposal requires host override authority")));
+        finish(&["trusted-a"], active);
+    }
+
+    fn activate_proposing(id: &str) -> trusted::TrustedPackageActivation {
+        let (_host, active) = activate_package(true);
+        frame_tests::load_body(id, "return {};", "{}");
+        eval_in_context(id, "mode='propose';subscribeTrusted('pre',v=>{});").unwrap();
+        active
+    }
+    // Review 1: with only a generic POST observer on another binding of the same
+    // target, the forced adapter POST must still run on the proposal's own binding.
+    #[test]
+    fn trusted_forced_post_uses_the_proposals_binding_beside_generic_observers() {
+        init();
+        let active = activate_proposing("trusted-a");
+        proof::install_generic_test_native("trusted-a");
+        let public = proof::prepared_binding("trusted-a", |_| {});
+        eval_in_context("trusted-a", &format!(
+            "globalThis.seen=[];__proofSubscribeGeneric({public}n,'post',true,v=>{{seen.push(v.returnValue);}});")).unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        let frame = close_frame(&info);
+        assert_eq!((frame.action, frame.output.bits), (1, 55));
+        assert_eq!(EFFECTS.with(Cell::get), 1);
+        assert!(events("trusted-a").ends_with("post:55:false"));
+        assert_eq!(frame_tests::eval_in_context_string("trusted-a", "seen.join(',')"), "55");
+        assert!(proof::take_dispatch_errors().is_empty());
+        finish(&["trusted-a"], active);
+    }
+    // Review 2: PRE proposal authority matches the POST override binding check.
+    #[test]
+    fn trusted_pre_proposal_requires_the_bindings_package_authorization() {
+        init();
+        let active = activate_proposing("trusted-a");
+        let fire = registry::named_binding(active.functions.owner(), "fire").unwrap();
+        let foreign = HostPackageOwner::mint(OWNER).unwrap();
+        AUTHORIZED.with(|a| a.borrow_mut().get_mut(&fire.id).unwrap().0 = foreign.key().clone());
+        let info = open_frame();
+        assert_ne!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        let frame = pop_frame();
+        assert_eq!((frame.action, frame.output.bits), (0, 7));
+        assert!(proof::take_dispatch_errors().iter().any(|e| e.contains("PRE return proposal binding authorization mismatch")));
+        finish(&["trusted-a"], active);
+    }
+    // Review 3 + 4: the carried proposal is charged, and an ineligible POST adapter is a named degrade.
+    #[test]
+    fn trusted_carried_proposal_is_charged_and_its_loss_is_named() {
+        init();
+        let active = activate_proposing("trusted-a");
+        let mut info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        let retained = INVOCATIONS.with(|i| i.borrow().get(&(1, info.invocation_id)).map(|s| s.retained_bytes)).unwrap();
+        assert!(retained >= std::mem::size_of::<(ProjectedValue, Rc<Binding>)>(), "proposal uncharged: {retained}");
+        info.suppressed_owner = plugin_generation("trusted-a");
+        assert_ne!(crate::ffi::s2script_core_dispatch_function(1, &info, 1), 1);
+        assert_eq!(pop_frame().output.bits, 7);
+        assert!(proof::take_dispatch_errors().iter().any(|e| e.contains("carried PRE proposal dropped")));
+        assert_eq!(proof::pending_invocations(), 0);
+        finish(&["trusted-a"], active);
     }
 }

@@ -216,7 +216,7 @@ fn busy_caller_stock_provider_spike() {
 mod production {
     use super::*;
     use crate::engine_functions::{contract::OwnerKey, registry, runtime};
-    use crate::v8host::function_adapter::{self, proof};
+    use crate::v8host::function_adapter::{self, proof, borrowed_proof};
     use std::collections::BTreeMap;
     type CreateProduction = unsafe extern "C" fn(
         extern "C" fn(i64, *const S2FunctionFrameInfo, i32) -> i32,
@@ -224,11 +224,27 @@ mod production {
         *mut S2EngineOps,
     ) -> i32;
     type FrameProduction = unsafe extern "C" fn(i32) -> i32;
+    type EngineCallProduction = unsafe extern "C" fn(i32, *mut i32) -> i32;
     thread_local! {
         static PACKAGE:RefCell<Option<function_adapter::PreparedPackageReceipt>>=const{RefCell::new(None)};
         static BINDINGS:RefCell<BTreeMap<String,u64>>=const{RefCell::new(BTreeMap::new())};
         static ENTITY_SLOT:Cell<Option<proof::EntitySlot>>=const{Cell::new(None)};
         static ENTITY_STATE:RefCell<Option<proof::EntityConformance>>=const{RefCell::new(None)};
+        static POST_STATE:RefCell<Option<proof::PostConformance>>=const{RefCell::new(None)};
+        static POST_PEER:Cell<Option<FrameProduction>>=const{Cell::new(None)};
+        static PROCESS_STATE:RefCell<Option<super::super::engine_function_tests::PackageServiceProof>>=const{RefCell::new(None)};
+        static ENGINE_CALL:Cell<Option<EngineCallProduction>>=const{Cell::new(None)};
+        static COPY_PROCESS:RefCell<Option<proof::CopyProcess>>=const{RefCell::new(None)};
+        static COPY_STATE:RefCell<Option<proof::CopyConformance>>=const{RefCell::new(None)};
+        static COPY_ENGINE:Cell<Option<unsafe extern "C" fn(*const i8,*const i8)->i32>>=const{Cell::new(None)};
+        static COPY_PEER:Cell<Option<FrameProduction>>=const{Cell::new(None)};
+        static COPY_READY:Cell<bool>=const{Cell::new(false)};
+        static PROCESS_READY:Cell<bool>=const{Cell::new(false)};
+        static RECORD_STATE:RefCell<Option<borrowed_proof::State>>=const{RefCell::new(None)};
+        static CURSOR_STATE:RefCell<Option<borrowed_proof::State>>=const{RefCell::new(None)};
+        static RECORD_ENGINE:Cell<Option<borrowed_proof::EngineCall>>=const{Cell::new(None)};
+        static RECORD_PEER:Cell<Option<FrameProduction>>=const{Cell::new(None)};
+        static RECORD_READY:Cell<bool>=const{Cell::new(false)};
         static STEP:Cell<usize>=const{Cell::new(0)};
         static FAILURE:RefCell<Option<String>>=const{RefCell::new(None)};
     }
@@ -248,7 +264,7 @@ mod production {
         value.kind = 2;
         value.bits = input as u32 as u64;
         match crate::nest::with_outbound(&args, || {
-            runtime::call(binding.target.unwrap(), generation, &[value])
+            runtime::call(binding.target.unwrap(), Some(&owner), &[value])
         }) {
             Ok(value) => rv.set_int32(value.bits as i32),
             Err(error) => {
@@ -353,6 +369,89 @@ mod production {
                 }
                 ENTITY_STATE.with(|s| *s.borrow_mut() = Some(state));
             }
+            11 => POST_STATE.with(|s|*s.borrow_mut()=Some(proof::post_begin())),
+            12 => {
+                let mut state=POST_STATE.with(|s|s.borrow_mut().take()).unwrap();
+                proof::post_probe(&mut state);POST_STATE.with(|s|*s.borrow_mut()=Some(state));
+            }
+            13 => {
+                proof::post_exercise("js",41,Some(7));
+                proof::post_exercise("rust",41,Some(7));
+                proof::post_exercise("skip",63,None);
+                proof::post_exercise("nested",41,Some(7));
+                let peer=POST_PEER.with(Cell::get).unwrap();
+                assert_eq!(unsafe{peer(1)},1);proof::post_exercise("earlier-equal",71,Some(7));
+                assert_eq!(unsafe{peer(2)},1);proof::post_exercise("earlier-stronger",72,None);
+                assert_eq!(unsafe{peer(3)},1);
+            }
+            14 => proof::post_exercise("later-equal", 41, Some(7)),
+            15 => {
+                assert_eq!(unsafe { POST_PEER.with(Cell::get).unwrap()(0) }, 1);
+                proof::post_finish(POST_STATE.with(|s| s.borrow_mut().take()).unwrap());
+            }
+            16 => PROCESS_STATE.with(|s| {
+                *s.borrow_mut() = Some(super::super::engine_function_tests::package_service_begin())
+            }),
+            17 => {
+                let mut state = PROCESS_STATE.with(|s| s.borrow_mut().take()).unwrap();
+                PROCESS_READY.with(|r| {
+                    r.set(super::super::engine_function_tests::package_service_ready(
+                        &mut state,
+                        ENGINE_CALL.with(Cell::get).unwrap(),
+                        false,
+                    ))
+                });
+                PROCESS_STATE.with(|s| *s.borrow_mut() = Some(state));
+            }
+            18 => {
+                let mut state = PROCESS_STATE.with(|s| s.borrow_mut().take()).unwrap();
+                super::super::engine_function_tests::package_service_add_public(&state);
+                assert!(super::super::engine_function_tests::package_service_ready(
+                    &mut state,
+                    ENGINE_CALL.with(Cell::get).unwrap(),
+                    true
+                ));
+                super::super::engine_function_tests::package_service_exercise(&state);
+                PROCESS_STATE.with(|s| *s.borrow_mut() = Some(state));
+            }
+            19 => super::super::engine_function_tests::package_service_finish(
+                PROCESS_STATE.with(|s| s.borrow_mut().take()).unwrap(),
+            ),
+            20 => {assert_eq!(unsafe{COPY_PEER.with(Cell::get).unwrap()(1)},1);COPY_STATE.with(|s|*s.borrow_mut()=Some(proof::copy_begin()));},
+            21 => {let mut state=COPY_STATE.with(|s|s.borrow_mut().take()).unwrap();proof::copy_probe(&mut state);COPY_READY.with(|r|r.set(state.ready));COPY_STATE.with(|s|*s.borrow_mut()=Some(state));},
+            22 => {
+                proof::copy_exercise();
+                unsafe{COPY_PEER.with(Cell::get).unwrap()(2)};proof::copy_peer_exercise();
+                assert_eq!(unsafe{COPY_PEER.with(Cell::get).unwrap()(2)},2);unsafe{COPY_PEER.with(Cell::get).unwrap()(3)};
+                proof::copy_mode("carry");
+                let input=CString::new("raw-input").unwrap();let expected=CString::new("same-copied-result").unwrap();
+                assert_eq!(unsafe{COPY_ENGINE.with(Cell::get).unwrap()(input.as_ptr(),expected.as_ptr())},1);
+            },
+            23 => proof::copy_finish(COPY_STATE.with(|s|s.borrow_mut().take()).unwrap()),
+            24 => proof::copy_borrowed_begin(),
+            25 => COPY_READY.with(|s|s.set(proof::copy_borrowed_probe())),
+            26 => proof::copy_borrowed_finish(),
+            27 => COPY_PROCESS.with(|s|*s.borrow_mut()=Some(proof::copy_process_begin())),
+            28 => COPY_READY.with(|s|s.set(proof::copy_process_probe())),
+            29 => {proof::copy_process_exercise();proof::copy_process_finish(COPY_PROCESS.with(|s|s.borrow_mut().take()).unwrap());},
+            30 => {RECORD_STATE.with(|s|*s.borrow_mut()=Some(borrowed_proof::begin(RECORD_ENGINE.with(Cell::get).unwrap(),ENTITY_SLOT.with(Cell::get).unwrap())));},
+            31 => {RECORD_READY.with(|r|r.set(RECORD_STATE.with(|s|borrowed_proof::ready(s.borrow().as_ref().unwrap()))));},
+            32 => {RECORD_STATE.with(|s|borrowed_proof::exercise(s.borrow().as_ref().unwrap()));assert_eq!(borrowed_proof::call(1)[9],1.);},
+            33 => {assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(4)},1);borrowed_proof::abort(RECORD_STATE.with(|s|s.borrow_mut().take()).unwrap());},
+            34 => {assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(5)},1);CURSOR_STATE.with(|s|*s.borrow_mut()=Some(borrowed_proof::cursor_begin(RECORD_ENGINE.with(Cell::get).unwrap())));},
+            35 => {RECORD_READY.with(|r|r.set(CURSOR_STATE.with(|s|borrowed_proof::cursor_ready(s.borrow().as_ref().unwrap()))));},
+            36 => {borrowed_proof::cursor_exercise(true);},
+            37 => {borrowed_proof::cursor_abort(CURSOR_STATE.with(|s|s.borrow_mut().take()).unwrap());assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(0)},1);},
+            38 => {assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(3)},1);},
+            39 => {RECORD_READY.with(|r|r.set(borrowed_proof::observers_ready()));},
+            40 => {assert_eq!(unsafe{RECORD_PEER.with(Cell::get).unwrap()(1)},1);},
+            42 => {RECORD_READY.with(|r|r.set(RECORD_STATE.with(|s|borrowed_proof::reload_ready(s.borrow().as_ref().unwrap()))));},
+            43 => {RECORD_STATE.with(|s|borrowed_proof::retire(s.borrow().as_ref().unwrap()));},
+            41 => {
+                let mut output=[0.;18];
+                assert_eq!(unsafe{RECORD_ENGINE.with(Cell::get).unwrap()(0,output.as_mut_ptr())},1);
+                RECORD_READY.with(|r|r.set(output[16..18]==[1.,0.]));
+            },
             _ => panic!("unexpected frame callback"),
         });
         if let Err(error) = result {
@@ -381,6 +480,13 @@ mod production {
             unsafe { std::mem::transmute(symbol(library, "s2fn_production_create")) };
         let frame: FrameProduction =
             unsafe { std::mem::transmute(symbol(library, "s2fn_production_frame")) };
+        let engine_call: EngineCallProduction =
+            unsafe { std::mem::transmute(symbol(library, "s2fn_production_engine_call")) };
+        ENGINE_CALL.with(|s| s.set(Some(engine_call)));
+        COPY_ENGINE.with(|s|s.set(Some(unsafe{std::mem::transmute(symbol(library,"s2fn_production_copy_engine_call"))})));
+        COPY_PEER.with(|s|s.set(Some(unsafe{std::mem::transmute(symbol(library,"s2fn_production_copy_peer"))})));
+        let copy_borrowed:Remove=unsafe{std::mem::transmute(symbol(library,"s2fn_production_copy_borrowed_call"))};
+        let copy_escaped:Remove=unsafe{std::mem::transmute(symbol(library,"s2fn_production_copy_escaped_check"))};
         let empty: Remove =
             unsafe { std::mem::transmute(symbol(library, "s2fn_production_empty")) };
         let close: Remove =
@@ -388,6 +494,10 @@ mod production {
         let entity_slot: proof::EntitySlot =
             unsafe { std::mem::transmute(symbol(library, "s2fn_production_entity_slot")) };
         ENTITY_SLOT.with(|s| s.set(Some(entity_slot)));
+        let peer:FrameProduction=unsafe{std::mem::transmute(symbol(library,"s2fn_production_post_peer_mode"))};
+        POST_PEER.with(|s|s.set(Some(peer)));
+        RECORD_ENGINE.with(|s|s.set(Some(unsafe{std::mem::transmute(symbol(library,"s2fn_production_record_call"))})));
+        RECORD_PEER.with(|s|s.set(Some(unsafe{std::mem::transmute(symbol(library,"s2fn_production_record_peer"))})));
         init(frame_tests::logger).unwrap();
         PACKAGE.with(|p| *p.borrow_mut() = Some(proof::package()));
         FAILURE.with(|f| *f.borrow_mut() = None);
@@ -412,8 +522,9 @@ mod production {
             assert_eq!(unsafe { frame(1) }, 1);
             assert!(
                 FAILURE.with(|f| f.borrow().is_none()),
-                "{:?}",
-                FAILURE.with(|f| f.borrow().clone())
+                "{:?}; bootstrap logs: {:?}",
+                FAILURE.with(|f| f.borrow().clone()),
+                frame_tests::LOG.lock().unwrap()
             );
         };
         drive(0); // New target first-patched under the real unrelated outer observation.
@@ -470,14 +581,156 @@ mod production {
                 "entity scenario must retire before next preparation order"
             );
         }
+        drive(11);
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+        loop {
+            drive(12);
+            if POST_STATE.with(|s|s.borrow().as_ref().unwrap().ready) {break;}
+            assert!(std::time::Instant::now()<deadline,"trusted POST readiness timeout");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        drive(13);
+        // Prove actual peer delivery; an accepted pending hook is insufficient.
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+        loop {
+            drive(14);
+            if unsafe{peer(3)}==2 {break;}
+            assert!(std::time::Instant::now()<deadline,"later equal peer delivery timeout");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        drive(15);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while unsafe { empty() } == 0 && std::time::Instant::now() < deadline {
+            assert_eq!(unsafe { frame(0) }, 1);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(unsafe { empty() }, 1);
+        let process_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            frame_tests::LOG.lock().unwrap().clear();
+            PROCESS_READY.with(|r| r.set(false));
+            drive(16);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            loop {
+                drive(17);
+                if PROCESS_READY.with(Cell::get) {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "process package hook readiness timeout: {}",
+                    PROCESS_STATE.with(|s| s.borrow().as_ref().unwrap().detail.clone())
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            drive(18);
+            drive(19);
+            println!("PASS actual compiler-authored target engine entry: package-only and mixed public/package PRE/POST, owner0/no-nest, shared native Service");
+        }));
+        let copy_result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
+            // Retire previous physical identity targets before changing projection representation.
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            while unsafe{empty()}==0 && std::time::Instant::now()<deadline {assert_eq!(unsafe{frame(0)},1);std::thread::sleep(std::time::Duration::from_millis(1));}
+            assert_eq!(unsafe{empty()},1);
+            drive(20);let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(21);if COPY_READY.with(Cell::get){break}assert!(std::time::Instant::now()<deadline,"copied hook readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            drive(22);assert_eq!(unsafe{copy_escaped()},1);drive(23);assert_eq!(unsafe{copy_escaped()},1);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            while unsafe{empty()}==0 && std::time::Instant::now()<deadline {assert_eq!(unsafe{frame(0)},1);std::thread::sleep(std::time::Duration::from_millis(1));}
+            assert_eq!(unsafe{empty()},1);COPY_READY.with(|s|s.set(false));drive(24);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(25);if COPY_READY.with(Cell::get){break}assert!(std::time::Instant::now()<deadline,"borrowed copy readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            assert_eq!(unsafe{copy_borrowed()},9);drive(26);assert_eq!(unsafe{copy_escaped()},1);
+            COPY_READY.with(|s|s.set(false));drive(27);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(28);if COPY_READY.with(Cell::get){break}assert!(std::time::Instant::now()<deadline,"process copy readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            drive(29);assert_eq!(unsafe{copy_escaped()},1);
+            println!("PASS actual Service/V8 copied aliases, recall edits, suppression, strict marshalling, exact carried deliveries, nested lease expiry, POST original/effective returns and escaped native reads after owner retirement");
+        }));
+        let record_result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            while unsafe{empty()}==0 && std::time::Instant::now()<deadline {assert_eq!(unsafe{frame(0)},1);std::thread::sleep(std::time::Duration::from_millis(1));}
+            assert_eq!(unsafe{empty()},1);drive(40);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(41);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record later observer readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            drive(30);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(31);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record Service/peer readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            // Registration acceptance does not establish physical order: the
+            // provider may requeue an insertion. Observe Service before adding
+            // the early paired observer, then observe both before assertions.
+            drive(38);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(39);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record early observer readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            drive(32);
+            RECORD_READY.with(|r|r.set(false));
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(42);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record reloaded subscriber readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            drive(43);drive(33);
+            // Keep the later paired observer installed. Drain the early observer
+            // before reinstalling it after the new Service hook.
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            while unsafe{empty()}==0 && std::time::Instant::now()<deadline {assert_eq!(unsafe{frame(0)},1);std::thread::sleep(std::time::Duration::from_millis(1));}
+            assert_eq!(unsafe{empty()},1);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(41);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record cursor retained later observer readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            drive(34);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(35);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record cursor Service readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            drive(38);
+            let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+            loop{drive(39);if RECORD_READY.with(Cell::get){break;}assert!(std::time::Instant::now()<deadline,"record cursor early observer readiness timeout");std::thread::sleep(std::time::Duration::from_millis(1));}
+            drive(36);drive(37);
+        }));
+        if let Some(state)=RECORD_STATE.with(|s|s.borrow_mut().take()){borrowed_proof::abort(state);}
+        if let Some(state)=CURSOR_STATE.with(|s|s.borrow_mut().take()){borrowed_proof::cursor_abort(state);}
+        unsafe{RECORD_PEER.with(Cell::get).unwrap()(0)};
+        RECORD_ENGINE.with(|s|s.set(None));RECORD_PEER.with(|s|s.set(None));
+        if let Some(state)=COPY_STATE.with(|s|s.borrow_mut().take()){proof::copy_abort(state);}
+        for id in ["copy-vector","copy-borrowed","copy-borrowed-caller"]{unload_plugin(id);}
+        if let Some(state)=COPY_PROCESS.with(|s|s.borrow_mut().take()){proof::copy_process_abort(state);}
+        COPY_PEER.with(|s|s.set(None));
+        COPY_ENGINE.with(|s|s.set(None));
+        // Drain RAII owners while the isolate, native Service and all TLS maps
+        // are still alive. Thread-local destruction must not mask the first panic.
+        let abandoned = PROCESS_STATE.with(|s| s.borrow_mut().take());
+        if let Some(state) = abandoned {
+            super::super::engine_function_tests::package_service_abort(state);
+        }
+        if process_result.is_err() {
+            for id in ["process-a", "process-b", "process-plugin"] {
+                unload_plugin(id);
+            }
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while unsafe { empty() } == 0 && std::time::Instant::now() < deadline {
+            assert_eq!(unsafe { frame(0) }, 1);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let process_drained = unsafe { empty() } == 1;
+        ENGINE_CALL.with(|s| s.set(None));
+        POST_PEER.with(|s| s.set(None));
         ENTITY_SLOT.with(|s| s.set(None));
-        assert_eq!(unsafe { close() }, 1);
+        let closed = unsafe { close() };
         PACKAGE.with(|p| p.borrow_mut().take());
         set_engine_ops(None);
         shutdown();
-        unsafe {
-            libc::dlclose(library);
+        if closed == 1 {
+            if copy_result.is_ok(){assert_eq!(unsafe{copy_escaped()},1);}
+            unsafe {
+                libc::dlclose(library);
+            }
         }
+        if let Err(error) = process_result {
+            eprintln!("process failure cleanup: drained={process_drained} closed={closed}");
+            std::panic::resume_unwind(error);
+        }
+        if let Err(error)=copy_result{std::panic::resume_unwind(error);}
+        if let Err(error)=record_result{std::panic::resume_unwind(error);}
+        assert!(
+            process_drained,
+            "process package native resources did not retire"
+        );
+        assert_eq!(closed, 1);
         println!("PASS production Service/sink/strong Rust export, real checked outer frames, unload/reload, never-Active cleanup and no-core-frame-subscriber native maintenance");
     }
 }

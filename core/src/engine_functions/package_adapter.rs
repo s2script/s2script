@@ -2,7 +2,7 @@
 use super::projection::ProjectedValue;
 use crate::multiplexer::HookResult;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct SubscriberDelivery {
     pub action: HookResult,
     pub return_value: Option<ProjectedValue>,
@@ -24,8 +24,13 @@ pub(crate) enum PreDecision {
 pub(crate) trait SubscriberCursor {
     fn invoke_next(&mut self) -> Result<Option<SubscriberDelivery>, String>;
 }
+pub(crate) trait ProjectedFrame {
+    fn original_return(&self) -> Result<Option<ProjectedValue>, String>;
+    fn override_return(&mut self, value: ProjectedValue) -> Result<ProjectedValue, String>;
+}
 pub(crate) struct AdapterDispatch<'a> {
     pub cursor: &'a mut dyn SubscriberCursor,
+    pub frame: Option<&'a mut dyn ProjectedFrame>,
 }
 pub(crate) trait DispatchAdapter {
     fn pre(&self, dispatch: &mut AdapterDispatch<'_>) -> Result<PreDecision, String>;

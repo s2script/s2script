@@ -182,3 +182,16 @@
     ops.function_frame_read = &S2_FunctionFrameRead;
     ops.function_frame_write = &S2_FunctionFrameWrite;
     ops.function_frame_commit = &S2_FunctionFrameCommit;
+    ops.function_frame_override_return = &S2_FunctionFrameOverrideReturn;
+    ops.function_call_copy = &S2_FunctionCallCopy;
+    ops.function_frame_read_copy = &S2_FunctionFrameReadCopy;
+    ops.function_frame_write_copy = &S2_FunctionFrameWriteCopy;
+    ops.function_frame_commit_copy = &S2_FunctionFrameCommitCopy;
+    ops.function_frame_override_return_copy = &S2_FunctionFrameOverrideReturnCopy;
+    ops.function_prepare_instance = &S2_FunctionPrepareInstance;
+    ops.function_instance_activate = &S2_FunctionInstanceActivate;
+    ops.function_instance_release = &S2_FunctionInstanceRelease;
+    ops.function_frame_read_instance = &S2_FunctionFrameReadInstance;
+    ops.function_frame_field_read = &S2_FunctionFrameFieldRead;
+    ops.function_frame_field_write = &S2_FunctionFrameFieldWrite;
+    ops.function_frame_hidden_referenced_by = &S2_FunctionFrameHiddenReferencedBy;

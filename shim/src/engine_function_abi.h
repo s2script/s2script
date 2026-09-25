@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <utility>
+#include <memory>
 
 namespace s2fn {
 template<class T> struct Result {
@@ -13,10 +14,20 @@ template<class T> struct Result {
     std::string error;
     explicit operator bool() const { return error.empty(); }
 };
+// Opaque execution-owned storage: release includes its allocation accounting.
+struct FrameRetention {
+    virtual void Release() noexcept = 0;
+protected:
+    virtual ~FrameRetention() = default;
+};
+struct FrameRetentionDeleter {
+    void operator()(FrameRetention* value) const noexcept { if (value) value->Release(); }
+};
+using RetainedFrame = std::unique_ptr<FrameRetention, FrameRetentionDeleter>;
 struct AbiAtom { std::string native; std::string projection = {}; };
 struct AbiSignature {
     std::string platform = "linux-x86_64-sysv";
-    std::string receiver = "none";
+    bool member_receiver = false;
     AbiAtom returns{"void", ""};
     std::vector<AbiAtom> parameters;
     bool varargs = false;
@@ -49,9 +60,11 @@ struct DispatchFrame {
     NativeValue receiver;
     std::vector<NativeValue> arguments;
     NativeValue result;
+    NativeValue original_result;
     KHook::Action action = KHook::Action::Ignore;
     bool changed = false;
     bool original_skipped = false;
+    RetainedFrame copied; // PRE lifetime spans the entire DoRecall -> Invoke continuation.
 };
 class DispatchSink {
 public:
@@ -65,7 +78,11 @@ public:
     ~RuntimeBinding();
     RuntimeBinding(const RuntimeBinding&) = delete;
     RuntimeBinding& operator=(const RuntimeBinding&) = delete;
-    Result<NativeValue> Call(const NativeValue* args, std::size_t argc);
+    using PrepareCall = Result<bool> (*)(void*);
+    // Preparation runs after callable/scalar admission and before the allocation-
+    // free Invoke boundary. Copied callers atomically publish retained inputs here.
+    Result<NativeValue> Call(const NativeValue* args, std::size_t argc, PrepareCall = nullptr, void* = nullptr);
+    void OverridePostReturn(DispatchFrame&, const NativeValue&);
     // Assign once; hook installation is independent of call availability.
     std::string BindTarget(const void* address);
     S2HookReceipt Receipt() const { return Snapshot(); }

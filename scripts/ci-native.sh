@@ -99,6 +99,9 @@ bash scripts/test-engine-hook-invocation.sh
 echo "== test-named-hook-invocation.sh (production named KHook callbacks) =="
 bash scripts/test-named-hook-invocation.sh
 
+echo "== test-engine-function-copy.sh (native storage and actual Linux reader) =="
+bash scripts/test-engine-function-copy.sh
+
 echo "== bounded engine function ABI / stock provider =="
 bash scripts/test-engine-function-abi.sh --stock-provider
 

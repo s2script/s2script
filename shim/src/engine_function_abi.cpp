@@ -14,7 +14,6 @@ Result<std::size_t> StackCopyBytes(std::size_t slots) {
 Result<AbiInfo> Validate(const AbiSignature& s) {
     auto fail = [](std::string error) -> Result<AbiInfo> { return {{}, std::move(error)}; };
     if (s.platform != capabilities::Platform) return fail("unsupported platform: " + s.platform);
-    if (s.receiver != "none" && s.receiver != "entity") return fail("unsupported receiver: " + s.receiver);
     if (s.varargs) return fail("unsupported varargs");
     auto check = [](const AbiAtom& a, const std::string& position, bool ret) {
         if (!Width(a.native) && !(ret && a.native == "void")) return "unsupported " + position + ": " + a.native;
@@ -23,8 +22,8 @@ Result<AbiInfo> Validate(const AbiSignature& s) {
     };
     auto err = check(s.returns, "return", true); if (!err.empty()) return fail(err);
     if (s.parameters.size() > capabilities::maxParameters) return fail("unsupported parameter count");
-    std::size_t gp = s.receiver == "entity" ? 1 : 0, sse = 0, spills = 0;
-    std::string fingerprint = s.platform + ":" + s.receiver + ":" + s.returns.native + "(";
+    std::size_t gp = s.member_receiver ? 1 : 0, sse = 0, spills = 0;
+    std::string fingerprint = s.platform + ":" + (s.member_receiver ? "entity" : "none") + ":" + s.returns.native + "(";
     for (std::size_t i = 0; i < s.parameters.size(); ++i) {
         const auto& a = s.parameters[i];
         err = check(a, "parameter[" + std::to_string(i) + "]", false); if (!err.empty()) return fail(err);
@@ -114,7 +113,7 @@ Result<std::unique_ptr<RuntimeBinding>> RuntimeBinding::Create(AbiSignature s, D
     return {{}, "unsupported runtime platform: requires linux-x86_64-sysv"};
 #else
     auto b = std::unique_ptr<RuntimeBinding>(new RuntimeBinding(std::move(s), std::move(info.value), sink));
-    if (b->signature_.receiver == "entity") b->argument_atoms_.push_back("ptr");
+    if (b->signature_.member_receiver) b->argument_atoms_.push_back("ptr");
     for (const auto& a : b->signature_.parameters) b->argument_atoms_.push_back(a.native);
     for (const auto& a : b->argument_atoms_) b->argument_types_.push_back(Type(a));
     if (b->argument_types_.size() > capabilities::maxCifArguments) return {{}, "CIF argument overflow"};
@@ -182,10 +181,10 @@ void RuntimeBinding::OnKHookRemoved(KHook::HookID_t) {
 }
 Result<NativeValue> RuntimeBinding::Invoke(void* address, const NativeValue* args, std::size_t argc) {
     if (argc != argument_atoms_.size() || (argc && !args)) return {{}, "argument count mismatch"};
-    std::vector<void*> pointers; pointers.reserve(argc);
+    std::array<void*,capabilities::maxCifArguments> pointers{};
     for (std::size_t i = 0; i < argc; ++i) {
         if (!Canonical(argument_atoms_[i], args[i])) return {{}, "noncanonical u8 argument[" + std::to_string(i) + "]"};
-        pointers.push_back(const_cast<std::uint8_t*>(args[i].bytes.data()));
+        pointers[i]=const_cast<std::uint8_t*>(args[i].bytes.data());
     }
     // ffi_call widens narrow integral returns to ffi_arg. Never hand it a byte.
     alignas(16) std::array<std::uint8_t, 16> storage{};
@@ -203,7 +202,7 @@ Result<NativeValue> RuntimeBinding::Invoke(void* address, const NativeValue* arg
     } else std::memcpy(result.bytes.data(), storage.data(), Width(signature_.returns.native));
     return {result, {}};
 }
-Result<NativeValue> RuntimeBinding::Call(const NativeValue* args, std::size_t argc) {
+Result<NativeValue> RuntimeBinding::Call(const NativeValue* args, std::size_t argc, PrepareCall prepare, void* context) {
     std::unique_lock<std::mutex> admission(admission_mu_);
     Activity activity(*this); // retained through ffi_call and result/error handling
     // On refusal or an exception, unlock before releasing the activity hold:
@@ -227,8 +226,11 @@ Result<NativeValue> RuntimeBinding::Call(const NativeValue* args, std::size_t ar
     // concurrent unhooked calls must not be mistaken for retirement-era work.
     admission.unlock();
     std::string callback_error;
+    if(argc!=argument_atoms_.size() || (argc && !args)) return {{},"argument count mismatch"};
+    for(size_t i=0;i<argc;++i) if(!Canonical(argument_atoms_[i],args[i])) return {{},"noncanonical call argument"};
     call_errors.emplace_back(this, &callback_error);
     struct Pop { ~Pop() { call_errors.pop_back(); } } pop;
+    if(prepare) {auto admitted=prepare(context);if(!admitted) return {{},admitted.error};}
     auto result = Invoke(const_cast<void*>(target_), args, argc);
     if (!callback_error.empty()) return {{}, callback_error};
     return result;
@@ -238,6 +240,19 @@ void RuntimeBinding::Save(KHook::Action action, NativeValue& value, bool origina
     const bool typed = width && (original || action != KHook::Action::Ignore);
     KHook::SaveReturnValue(action, typed ? value.bytes.data() : nullptr, typed ? width : 0,
         typed ? CopyOp(width) : nullptr, typed ? reinterpret_cast<void*>(&DestroyScalar) : nullptr, original);
+}
+void RuntimeBinding::OverridePostReturn(DispatchFrame& frame, const NativeValue& value) {
+    const auto width = Width(signature_.returns.native);
+    if (frame.phase != Phase::Post || !width) throw std::runtime_error("nonvoid POST return required");
+    if (!Canonical(signature_.returns.native, value)) throw std::runtime_error("noncanonical POST override");
+    auto submitted = value;
+    Save(KHook::Action::Override, submitted, false);
+    // Submission is irreversible. Refresh even if subsequent validation fails.
+    const auto current = KHook::GetCurrentValuePtr(false);
+    if (!current) throw std::runtime_error("POST override submitted: current return unavailable");
+    std::memcpy(frame.result.bytes.data(), current, width);
+    if (!Canonical(signature_.returns.native, frame.result))
+        throw std::runtime_error("POST override submitted: noncanonical current return");
 }
 void RuntimeBinding::WriteResult(void* result, const NativeValue& value) {
     if (!Width(signature_.returns.native)) return;
@@ -310,11 +325,16 @@ void RuntimeBinding::Enter(Phase phase, void* result, void** args, const S2HookO
         Save(KHook::Action::Ignore, native.value, true); WriteResult(result, native.value); return;
     }
     DispatchFrame frame{}; frame.phase = phase; frame.invocation_id = invocation;
-    const auto offset = signature_.receiver == "entity" ? 1 : 0;
+    const auto offset = signature_.member_receiver ? 1 : 0;
     if (offset) frame.receiver = values[0];
     frame.arguments.assign(values.begin() + offset, values.end());
     if (phase == Phase::Post) {
         frame.original_skipped = KHook::WasOriginalFunctionSkipped();
+        if (!frame.original_skipped && Width(signature_.returns.native)) {
+            const auto original = KHook::GetOriginalValuePtr();
+            if (!original) throw std::runtime_error("original return unavailable");
+            std::memcpy(frame.original_result.bytes.data(), original, Width(signature_.returns.native));
+        }
         auto ptr = KHook::GetCurrentValuePtr();
         if (ptr) std::memcpy(frame.result.bytes.data(), ptr, Width(signature_.returns.native));
         if (!Canonical(signature_.returns.native, frame.result)) throw std::runtime_error("noncanonical u8 POST result");
