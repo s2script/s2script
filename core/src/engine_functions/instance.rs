@@ -119,18 +119,46 @@ pub(crate) struct KindVersion {
     pub id: String,
     pub version: u32,
 }
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Position {
     pub name: String,
     pub native: String,
     pub projection: Projection,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "contract::present")]
     pub ownership: Option<String>,
     pub mutable: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "contract::present")]
     pub instance: Option<usize>,
     pub nullable: bool,
+}
+/// Trusted-only per-dispatch host scalar. It starts at zero for each native PRE
+/// invocation, is shared by every PRE callback of that dispatch, follows staged-edit
+/// acceptance/rollback, and is never written to native arguments or committed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ScratchSlot {
+    pub name: String,
+    pub storage: String,
+}
+pub(crate) const MAX_SCRATCH: usize = 16;
+/// Frame names owned by the host facade; neither positions nor scratch may shadow them.
+pub(crate) const RESERVED_FRAME_NAMES: [&str; 5] =
+    ["returnValue", "skipped", "originalReturnValue", "overrideReturn", "proposedReturn"];
+impl ScratchSlot {
+    /// (native atom, projection id) of the scalar value; storage names match record fields.
+    pub(crate) fn projection(&self) -> Result<(&'static str, &'static str), String> {
+        Ok(match self.storage.as_str() {
+            "bool" => ("u8", "bool"),
+            "i32" => ("i32", "i32"),
+            "u32" => ("u32", "u32"),
+            "i64" => ("i64", "i64"),
+            "u64" => ("u64", "u64"),
+            "f32" => ("f32", "f32"),
+            "f64" => ("f64", "f64"),
+            _ => return Err("unsupported scratch storage".into()),
+        })
+    }
 }
 impl Position {
     pub(crate) fn hidden(&self) -> bool {
@@ -140,8 +168,8 @@ impl Position {
         self.projection.id == "borrowed-record"
     }
 }
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Signature {
     pub platform: String,
     pub member_receiver: bool,
@@ -151,6 +179,9 @@ pub(crate) struct Signature {
     pub fingerprint: String,
     pub stack_copy_bytes: usize,
     pub instances: Vec<Instance>,
+    /// Host-only; omitted from the serialized contract when empty so existing hashes hold.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scratch: Vec<ScratchSlot>,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct PhysicalAbi {
@@ -329,6 +360,7 @@ impl Function {
             fingerprint: f.abi.fingerprint,
             stack_copy_bytes: f.abi.stack_copy_bytes,
             instances: vec![],
+            scratch: vec![],
         };
         if abi.physical().fingerprint()? != abi.fingerprint
             || abi.physical().stack_bytes()? != abi.stack_copy_bytes
@@ -367,6 +399,15 @@ impl Function {
             || contract::hash(&serde_json::to_value(&self.target).unwrap()) != grant.target_hash
         {
             return Err("host instance contract/layout/target changed after admission".into());
+        }
+        // Scratch is sealed into the host contract but is never a native fact: the
+        // native wire omits it and carries its own hash over exactly what it receives.
+        if let Some(signature) = value["signature"].as_object_mut() {
+            if signature.remove("scratch").is_some() {
+                let native = contract::hash(&value);
+                value["contractHash"] = native.into();
+                return Ok(value.to_string());
+            }
         }
         value["contractHash"] = grant.sealed_contract.clone().into();
         Ok(value.to_string())
@@ -526,6 +567,7 @@ pub(crate) fn prepare_verified_package(
                 if index != -2
                     && !p.hidden()
                     && (!(contract::identifier(&p.name) || (index == -1 && p.name == "self"))
+                        || RESERVED_FRAME_NAMES.contains(&p.name.as_str())
                         || !exposed.insert(&p.name))
                 {
                     return Err("invalid/duplicate exposed position name".into());
@@ -587,6 +629,22 @@ pub(crate) fn prepare_verified_package(
                         );
                     }
                 }
+            }
+            if signature.scratch.len() > MAX_SCRATCH {
+                return Err("scratch slot limit".into());
+            }
+            if !signature.scratch.is_empty() && !input.policy.surfaces.iter().any(|s| s == "pre") {
+                return Err("scratch slots require PRE surface".into());
+            }
+            for slot in &signature.scratch {
+                if !contract::identifier(&slot.name)
+                    || slot.name.len() > 128
+                    || RESERVED_FRAME_NAMES.contains(&slot.name.as_str())
+                    || !exposed.insert(&slot.name)
+                {
+                    return Err("invalid/duplicate scratch slot name".into());
+                }
+                slot.projection()?;
             }
             if signature.returns.ownership.as_deref() == Some("native-observed")
                 && input.policy.suppression != "none"

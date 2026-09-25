@@ -929,7 +929,8 @@ pub(crate) fn drop_subscription(id: u64) {
                     return false;
                 }
                 for (phase, live) in live_phases.iter().enumerate() {
-                    if !live {
+                    // A carried proposal holds its POST adapter without POST subscribers.
+                    if !live && !(phase == 1 && state.proposal.is_some()) {
                         state.adapters[phase] = None;
                     }
                 }
@@ -1089,6 +1090,9 @@ struct InvocationState {
     // Copied decisions carry no V8 values and survive either instance's removal.
     adapters: [Option<Rc<Adapter>>; 2],
     deliveries: Vec<Decision>,
+    // Trusted PRE return proposal from an override-authorized adapter, with the
+    // binding its forced POST adapter run validates the frame against.
+    proposal: Option<(ProjectedValue, Rc<Binding>)>,
     retained_bytes: usize,
     // Rust drops fields in declaration order. Keep the charge until all retained
     // adapter holds, delivery elements and their vector allocation are destroyed.
@@ -1112,6 +1116,17 @@ struct Dispatch {
     map_epoch:u64,
     record_writers:Rc<RefCell<BTreeMap<u64,RecordWriter>>>,
     deliveries: RefCell<Vec<Decision>>,
+    // PRE: the adapter's accepted return proposal. POST: the carried proposal.
+    proposal: Rc<RefCell<Option<ProjectedValue>>>,
+}
+/// Trusted scratch slots occupy selectors SCRATCH_BASE, SCRATCH_BASE-1, ... They are
+/// host-held overlay entries only: never read from, written to, or committed to native.
+const SCRATCH_BASE: i32 = -16;
+fn scratch_slot(binding: &Binding, selector: i32) -> Option<&crate::engine_functions::instance::ScratchSlot> {
+    if selector > SCRATCH_BASE {
+        return None;
+    }
+    binding.function.abi.scratch.get((SCRATCH_BASE - selector) as usize)
 }
 #[derive(Clone)]
 struct Lease {
@@ -1632,6 +1647,22 @@ pub(super) fn projected_from_js(
 fn js_get(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let result = (|| {
         let (l, i) = accessor_data(scope, &args)?;
+        if let Some(slot) = scratch_slot(&l.binding, i) {
+            if l.dispatch.frame.phase != 0 {
+                return Err("scratch slots are PRE-only".into());
+            }
+            let staged = l.pending_edits.borrow().get(&i).map(|(value, _)| value.clone())
+                .or_else(|| l.dispatch.edits.borrow().get(&i).map(|(value, _)| value.clone()));
+            let value = match staged {
+                Some(value) => value,
+                None => {
+                    let mut zero = runtime::blank();
+                    zero.kind = runtime::kind(slot.projection()?.0)?;
+                    ProjectedValue::Scalar(zero)
+                }
+            };
+            return projected_to_js(scope, value);
+        }
         if l.binding.function.abi.position(i).is_some_and(|p|p.record()) {
             return record_view(scope,&l,i);
         }
@@ -1737,6 +1768,18 @@ fn record_view<'s>(scope:&mut v8::PinScope<'s,'_>,l:&Lease,selector:i32) -> Resu
 fn js_set(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
     let result = (|| {
         let (l, i) = accessor_data(scope, &args)?;
+        if let Some(slot) = scratch_slot(&l.binding, i) {
+            if !l.mode.writable() || l.dispatch.frame.phase != 0 {
+                return Err("scratch slot is readonly".into());
+            }
+            let value = ProjectedValue::Scalar(scalar_from_js(scope, args.get(0), runtime::kind(slot.projection()?.0)?)
+                .map_err(|e| format!("{} scratch {}: {e}", l.binding.function.canonical_id, slot.name))?);
+            let next_revision = l.dispatch.revision.get().checked_add(1).ok_or("frame revision exhausted")?;
+            // Always staged: accepted with this callback's decision, discarded with its rejection.
+            l.pending_edits.borrow_mut().insert(i, (value, l.binding.function.canonical_id.clone()));
+            l.dispatch.revision.set(next_revision);
+            return Ok(());
+        }
         if !l.mode.writable()
             || l.dispatch.frame.phase != 0
             || i < 0
@@ -1788,6 +1831,10 @@ fn view<'s>(
     }
     if dispatch.frame.phase == 1 {
         fields.push(("returnValue".into(), -2));
+    } else {
+        for (k, slot) in binding.function.abi.scratch.iter().enumerate() {
+            fields.push((slot.name.clone(), SCRATCH_BASE - k as i32));
+        }
     }
     for (name, index) in fields {
         let data = v8::Array::new(scope, 2);
@@ -1822,6 +1869,19 @@ fn view<'s>(
         object.define_property(scope,key.into(),&desc);
         let method = v8::Function::builder(js_override_return).data(data.into()).build(scope).ok_or("method allocation")?;
         set(scope,object,"overrideReturn",method.into())?;
+        let proposal = dispatch.proposal.borrow().clone();
+        if let Some(value) = proposal {
+            // A proposed entity that died since PRE is observed as null, never revived.
+            let value = match value {
+                ProjectedValue::Entity { reference, nullable } => ProjectedValue::Entity {
+                    reference: reference.filter(|r| crate::entity_live::engine_serial_for(r.index, r.id).is_some()),
+                    nullable,
+                },
+                value => value,
+            };
+            let value = projected_to_js(scope, value)?;
+            set_own(scope, object, "proposedReturn", value)?;
+        }
     }
     object.set_integrity_level(scope, v8::IntegrityLevel::Frozen);
     Ok(object)
@@ -1841,6 +1901,8 @@ fn decision(
     projection: &str,
     phase: i32,
     suppression: &str,
+    // Adapter PRE only: (holds override authority, proposal output). Subscribers pass None.
+    proposal: Option<(bool, &mut Option<ProjectedValue>)>,
 ) -> Result<Decision, String> {
     let kind = projection::request(native, projection)?.kind;
     if observe_thenable(scope, value) {
@@ -1881,8 +1943,23 @@ fn decision(
     if !action.is_int32() {
         return Err("suppression action must be an int32".into());
     }
-    let action = action
-        .int32_value(scope)
+    let action = action.int32_value(scope).unwrap();
+    if let Some((authority, out)) = proposal.filter(|_| action == 1 && phase == 0) {
+        // A host-carried subscriber delivery keeps its existing (rejected) meaning.
+        let key = delivery_key(scope)?;
+        if object.get_private(scope, key).is_none_or(|v| v.is_undefined()) {
+            if !authority {
+                return Err("PRE return proposal requires host override authority".into());
+            }
+            if kind == 0 || copied::flag(projection).is_some() {
+                return Err("PRE return proposal requires a scalar or entity return".into());
+            }
+            let value = get(scope, object, "returnValue")?;
+            *out = Some(callback_projected_from_js(scope, value, native, projection)?);
+            return Ok(Decision { action: 1, value: None });
+        }
+    }
+    let action = Some(action)
         .filter(|a| (2..=3).contains(a))
         .ok_or("invalid suppression action")?;
     if suppression == "none" {
@@ -2017,6 +2094,7 @@ fn invoke_wrapper(
             &sub.binding.function.abi.returns.projection.id,
             dispatch.frame.phase,
             &sub.binding.function.policy.suppression,
+            None,
         )
     }).and_then(|decision| {
         if sub.mode == SubscriptionMode::Observe && decision.action != 0 {
@@ -2095,6 +2173,8 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
     let recv = v8::undefined(&mut tc);
     let value = function.call(&mut tc, recv.into(), &[facade.into()]);
     guard.close();
+    let mut proposal = None;
+    let authority = adapter.post_authority == PostReturnAuthority::Override;
     let result=decision(
         &mut tc,
         value.ok_or("adapter threw")?,
@@ -2102,7 +2182,12 @@ fn invoke_adapter(parent: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<D
         &dispatch.binding.function.abi.returns.projection.id,
         dispatch.frame.phase,
         &dispatch.binding.function.policy.suppression,
-    );
+        (dispatch.frame.phase == 0).then_some((authority, &mut proposal)),
+    ).and_then(|decision| match proposal.take() {
+        Some(_) if adapter.post.is_none() => Err("PRE return proposal requires the adapter's POST callback".into()),
+        Some(value) => {*dispatch.proposal.borrow_mut() = Some(value); Ok(decision)}
+        None => Ok(decision),
+    });
     if result.is_ok() {if let Err(e)=guard.accept_records() {dispatch.revision.set(prior_revision);return Err(e);}dispatch.edits.borrow_mut().extend(pending_edits.borrow().iter().map(|(k,v)|(*k,v.clone())));}
     else if runtime::has_copies(&dispatch.binding.function.abi) {dispatch.revision.set(prior_revision);}
     result
@@ -2171,10 +2256,15 @@ fn invoke_domains(scope: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<De
             })
             .cloned()
             .collect::<Vec<_>>();
-        if subscribers.is_empty() {
+        // A carried PRE proposal runs its adapter's POST even without POST subscribers.
+        let forced = group == 0
+            && dispatch.frame.phase == 1
+            && dispatch.adapter.is_some()
+            && dispatch.proposal.borrow().is_some();
+        if subscribers.is_empty() && !forced {
             continue;
         }
-        let binding = subscribers.first().unwrap().binding.clone();
+        let binding = subscribers.first().map_or_else(|| dispatch.binding.clone(), |s| s.binding.clone());
         let part = Rc::new(Dispatch {
             frame: dispatch.frame.clone(),
             binding,
@@ -2187,6 +2277,7 @@ fn invoke_domains(scope: &mut v8::PinScope, dispatch: Rc<Dispatch>) -> Result<De
             map_epoch:dispatch.map_epoch,
             record_writers:dispatch.record_writers.clone(),
             deliveries: RefCell::new(Vec::new()),
+            proposal: dispatch.proposal.clone(),
         });
         let decision = if group == 0 {
             invoke_adapter(scope, part.clone())?
@@ -2353,6 +2444,7 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
                         copy_bookkeeping: None,
                         adapters: selected,
                         deliveries: Vec::new(),
+                        proposal: None,
                         retained_bytes: 0,
                     },
                 )
@@ -2375,7 +2467,12 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
         .into_iter()
         .filter(|s| s.phase == phase)
         .collect::<Vec<_>>();
-    if subscribers.is_empty() {
+    // Only an override-authorized adapter's accepted PRE proposal forces its POST.
+    let forced = post_state
+        .as_ref()
+        .and_then(|state| state.proposal.clone())
+        .filter(|_| adapter.is_some());
+    if subscribers.is_empty() && forced.is_none() {
         return Ok(());
     }
     if subscribers.iter().any(|s| !s.generic) && adapter.is_none() {
@@ -2385,7 +2482,14 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
     if phase == 1 && post_state.is_none() {
         return Ok(());
     }
-    let binding = subscribers[0].binding.clone();
+    let binding = match (subscribers.first(), &forced) {
+        (Some(sub), _) => sub.binding.clone(),
+        (None, Some((_, binding))) => binding.clone(),
+        (None, None) => unreachable!("checked above"),
+    };
+    if !binding.is_live() {
+        return Err("binding owner generation unavailable".into());
+    }
     if binding.function.abi.parameters.len() != info.parameter_count as usize {
         return Err("frame parameter count mismatch".into());
     }
@@ -2402,6 +2506,7 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
         map_epoch:crate::entity_live::map_epoch(),
         record_writers:Rc::new(RefCell::new(BTreeMap::new())),
         deliveries: RefCell::new(Vec::new()),
+        proposal: Rc::new(RefCell::new(forced.map(|(value, _)| value))),
     });
     let result = if let Some(info) = crate::nest::top().filter(|p| !p.is_null()) {
         let mut storage = unsafe { v8::CallbackScope::new(&*info) };
@@ -2413,7 +2518,9 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
             let mut scope = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
             // The binding may be process-owned and have no Plugin context. Callback
             // execution belongs to an admitted subscriber's exact live parent.
-            let parent = &dispatch.subscribers[0].owner;
+            let parent = dispatch.subscribers.first().map(|s| &s.owner)
+                .or(dispatch.adapter.as_ref().map(|a| &a.instance.parent))
+                .ok_or("dispatch parent unavailable")?;
             if parent.kind != OwnerKind::Plugin || !owner_is_live(&parent.id, parent.generation) {
                 return Err("dispatch parent generation unavailable".into());
             }
@@ -2447,7 +2554,9 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
         }
         let record_edits=dispatch.record_edits.borrow().clone();
         for edit in record_edits.values() {validate_record_edit(edit)?;}
-        let edits=dispatch.edits.borrow().clone();
+        // Scratch selectors are host-only and never reach native arguments.
+        let edits=dispatch.edits.borrow().iter().filter(|(selector,_)|**selector>SCRATCH_BASE)
+            .map(|(k,v)|(*k,v.clone())).collect::<StagedEdits>();
         // Validate all scalar/entity identities before any native staging.
         for (value,name) in edits.values() {
             if !matches!(value,ProjectedValue::Copied(_)) {projection::encode(value.clone()).map_err(|e|format!("{name}: {e}"))?;}
@@ -2458,6 +2567,16 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
         for ((selector,field),edit) in &record_edits {dispatch.frame.write_field(&edit.binding,*selector,*field,&edit.value)?;}
         let name=&dispatch.binding.function.canonical_id;
         dispatch.frame.commit_projected(result.action,result.value.as_ref(),runtime::has_copies(&dispatch.binding.function.abi)).map_err(|e|format!("{name}: {e}"))?;
+        // Carry an accepted proposal only once PRE has committed; its adapter owns POST.
+        let proposal = dispatch.proposal.borrow_mut().take();
+        if let Some(value) = proposal {
+            INVOCATIONS.with(|i| {
+                if let Some(state) = i.borrow_mut().get_mut(&key) {
+                    state.adapters[1] = dispatch.adapter.clone();
+                    state.proposal = Some((value, dispatch.binding.clone()));
+                }
+            });
+        }
     }
     Ok(())
 }
@@ -3293,6 +3412,9 @@ pub(super) mod proof {
     thread_local! {static DISPATCH_ERRORS:RefCell<Vec<String>>=const{RefCell::new(Vec::new())};}
     pub(super) fn record_dispatch_error(error: &str) {
         DISPATCH_ERRORS.with(|s| s.borrow_mut().push(error.into()));
+    }
+    pub(super) fn take_dispatch_errors() -> Vec<String> {
+        DISPATCH_ERRORS.with(|s| s.borrow_mut().drain(..).collect())
     }
     fn expect_entity_failure(fragment: &str) {
         let errors = DISPATCH_ERRORS.with(|s| s.borrow_mut().drain(..).collect::<Vec<_>>());
@@ -4390,11 +4512,11 @@ pub(super) mod proof {
 pub(super) mod scalar_transport_tests {
     use super::*;
     #[derive(Clone)]
-    struct MockFrame {
+    pub(super) struct MockFrame {
         id: u64,
-        input: S2FunctionValue,
-        output: S2FunctionValue,
-        action: i32,
+        pub(super) input: S2FunctionValue,
+        pub(super) output: S2FunctionValue,
+        pub(super) action: i32,
         overridden: bool,
     }
     thread_local! {static STACK:RefCell<Vec<MockFrame>>=const{RefCell::new(Vec::new())};}
@@ -4533,7 +4655,7 @@ pub(super) mod scalar_transport_tests {
             crate::nest::with_outbound(&args, || runtime::call(1, Some(&owner), &[value])).unwrap();
         rv.set_int32(output.bits as i32);
     }
-    thread_local! {static EFFECTS:Cell<usize>=const{Cell::new(0)};}
+    thread_local! {pub(super) static EFFECTS:Cell<usize>=const{Cell::new(0)};}
     extern "C" fn override_return(_:i64,token:u64,_:u64,_:*const i8,value:*const S2FunctionValue,out:*mut S2FunctionValue,_:*mut i8,_:i32)->i32 {
         EFFECTS.with(|c|c.set(c.get()+1));
         STACK.with(|s| {
@@ -4590,7 +4712,7 @@ pub(super) mod scalar_transport_tests {
             proof::HASH,
         )
     }
-    fn open_frame() -> S2FunctionFrameInfo {
+    pub(super) fn open_frame() -> S2FunctionFrameInfo {
         let id = registry::next_id().unwrap();
         let mut input = runtime::blank();
         input.kind = 2;
@@ -4615,7 +4737,7 @@ pub(super) mod scalar_transport_tests {
             flags: 0,
         }
     }
-    fn close_frame(info: &S2FunctionFrameInfo) -> MockFrame {
+    pub(super) fn close_frame(info: &S2FunctionFrameInfo) -> MockFrame {
         assert_eq!(crate::ffi::s2script_core_dispatch_function(1, info, 1), 1);
         STACK.with(|s| s.borrow_mut().pop().unwrap())
     }
@@ -6065,6 +6187,7 @@ mod copied_transport_tests {
                 copy_bookkeeping: Some(guard),
                 adapters: [None, None],
                 deliveries: vec![Decision { action: 2, value: Some(ProjectedValue::Copied(value)) }],
+                proposal: None,
                 retained_bytes: std::mem::size_of::<Decision>(),
             }));
             if retirement {
@@ -6602,5 +6725,302 @@ pub(super) mod borrowed_proof {
         assert!(changed.trusted_wire().is_err());
         assert_eq!(registry::owner_bindings(host.key()).len(),0);
         drop(source);assert!(host.is_retired());set_engine_ops(None);shutdown();
+    }
+}
+
+/// Portable proofs for the trusted (host-verified package) facilities: artifact
+/// activation, per-dispatch scratch slots and PRE proposals carried to POST.
+#[cfg(test)]
+mod trusted_capability_tests {
+    use super::scalar_transport_tests::{close_frame, init_transport, open_frame, EFFECTS};
+    use super::*;
+    use crate::engine_functions::{contract, instance, trusted};
+    use serde_json::{json, Value};
+    const OWNER: &str = "@proof/trusted";
+    const ADAPTER: &str = "proof.trusted.v1";
+    extern "C" fn prepare_instance(binding: u64, _: *const S2FunctionInstanceOwner, _: *const i8, _: *const i8, _: *const i8,
+        out: *mut S2FunctionInstancePrepared, _: *mut i8, _: i32) -> i32 {
+        unsafe { *out = S2FunctionInstancePrepared { version: 1, struct_size: 24, target: 1, capability: binding } };
+        1
+    }
+    extern "C" fn activate(_: u64, _: *const S2FunctionInstanceOwner, _: *mut i8, _: i32) -> i32 { 1 }
+    extern "C" fn release(_: u64) -> i32 { 1 }
+    extern "C" fn no_read(_: *const S2FunctionInstanceAccess, _: i32, _: *mut S2FunctionValue, _: *mut i8, _: i32) -> i32 { 0 }
+    extern "C" fn no_field_read(_: *const S2FunctionInstanceAccess, _: i32, _: u32, _: *mut S2FunctionValue, _: *mut i8, _: i32) -> i32 { 0 }
+    extern "C" fn no_field_write(_: *const S2FunctionInstanceAccess, _: i32, _: u32, _: *const S2FunctionValue, _: *mut i8, _: i32) -> i32 { 0 }
+    fn init() {
+        init_transport();
+        let mut ops = engine_ops().unwrap();
+        ops.function_prepare_instance = Some(prepare_instance);
+        ops.function_instance_activate = Some(activate);
+        ops.function_instance_release = Some(release);
+        ops.function_frame_read_instance = Some(no_read);
+        ops.function_frame_field_read = Some(no_field_read);
+        ops.function_frame_field_write = Some(no_field_write);
+        set_engine_ops(Some(ops));
+        proof::take_dispatch_errors();
+    }
+    fn policy(surfaces: &[&str]) -> Value {
+        let suppression = if surfaces.contains(&"pre") { "generic" } else { "none" };
+        let mut p = json!({"id":"generic.v2","version":1,"surfaces":surfaces,"selfCall":"bypass-own-hooks","suppression":suppression});
+        p["contractHash"] = contract::hash(&p).into();
+        p
+    }
+    fn function(name: &str, scratch: Value, post_override: Option<bool>) -> Value {
+        let mut f = json!({"localName":name,"requirement":"required",
+            "target":{"kind":"signature","module":"server","pattern":"55","resolve":"direct","derivation":"identity","candidateValidate":{},"targetValidate":{"prologue":"55"}},
+            "signature":{"platform":"linux-x86_64-sysv","memberReceiver":false,"receiver":null,
+                "parameters":[{"name":"x","native":"i32","projection":{"id":"i32","version":1},"mutable":["pre"],"nullable":false}],
+                "returns":{"name":"","native":"i32","projection":{"id":"i32","version":1},"mutable":[],"nullable":false},
+                "fingerprint":"linux-x86_64-sysv:none:i32(i32)","stackCopyBytes":128,"instances":[],"scratch":scratch},
+            "policy":policy(&["pre","post"])});
+        if let Some(post_override) = post_override {
+            f["adapter"] = json!({"id":ADAPTER,"contractHash":proof::HASH,"postOverride":post_override});
+        }
+        f
+    }
+    fn artifact(owner: &str, functions: Vec<Value>) -> Value {
+        let selected = "{}";
+        json!({"schemaVersion":1,"ownerId":owner,"selectedOffsets":selected,
+            "selectedOffsetsSha256":contract::hash_bytes(selected.as_bytes()),"functions":functions})
+    }
+    fn public_candidate(local: &str) -> crate::engine_functions::provenance::PreparedCandidate {
+        use crate::engine_functions::{overrides, tests};
+        let mut value = tests::fixture();
+        value["ownerId"] = OWNER.into();
+        value["functions"][0]["localName"] = local.into();
+        value["functions"][0]["canonicalId"] = format!("{OWNER}::{local}").into();
+        tests::seal(&mut value);
+        let summary = tests::summary(&value);
+        let parsed = contract::parse(&value.to_string(), OWNER, &summary, &["engine:calls".into()]).unwrap();
+        overrides::prepare(parsed, "trusted-proof-archive", vec![]).unwrap()
+    }
+    const SOURCE: &str = r#"(()=>{
+      const register=__s2_function_adapter_register,subscribe=__s2_function_adapter_subscribe;
+      globalThis.events=[];globalThis.mode='plain';
+      register('proof.trusted.v1','3e4f14eb33cba81079d21282c1abb09e06542218078a3959317b811f52a3cca9',{
+        pre(d){
+          events.push('start:'+d.frame.votes+':'+d.frame.flag);
+          d.frame.votes=1;
+          while(d.cursor.invokeNext()!==null){events.push('after:'+d.frame.votes);}
+          events.push('final:'+d.frame.votes+':'+d.frame.flag);
+          if(mode==='propose')return {action:1,returnValue:55};
+          if(mode==='propose-invalid')return {action:1,returnValue:'bad'};
+          return 0;
+        },
+        post(d){
+          const has='proposedReturn' in d.frame;
+          events.push('post:'+(has?d.frame.proposedReturn:'none')+':'+('votes' in d.frame));
+          if(has)d.frame.overrideReturn(d.frame.proposedReturn);
+          while(d.cursor.invokeNext()!==null){}
+        }
+      });
+      globalThis.subscribeTrusted=(phase,fn)=>subscribe('fire','proof.trusted.v1',phase,fn);
+    })()"#;
+    fn activate_package(post_override: bool) -> (HostPackageOwner, trusted::TrustedPackageActivation) {
+        let host = HostPackageOwner::mint(OWNER).unwrap();
+        let manifest = ImplementationManifestHash::new(contract::hash_bytes(b"trusted-proof-manifest")).unwrap();
+        let bytes = artifact(OWNER, vec![function("fire", json!([{"name":"votes","storage":"i32"},{"name":"flag","storage":"bool"}]), Some(post_override))]);
+        let active = trusted::activate_trusted(&host, SOURCE.into(), manifest, bytes.to_string().as_bytes(),
+            Some(public_candidate("pub")), unsafe { instance::SynchronousRecordLifetime::registered_native_target() }).unwrap();
+        (host, active)
+    }
+    fn events(id: &str) -> String {
+        frame_tests::eval_in_context_string(id, "(()=>{const e=events.join(',');events.length=0;return e})()")
+    }
+    fn finish(plugins: &[&str], active: trusted::TrustedPackageActivation) {
+        for id in plugins { unload_plugin(id); }
+        drop(active);
+        set_engine_ops(None);
+        shutdown();
+    }
+
+    #[test]
+    fn trusted_artifact_decoder_is_strict_and_named() {
+        let good = artifact(OWNER, vec![function("fire", json!([]), Some(false))]);
+        assert!(trusted::decode(good.to_string().as_bytes(), OWNER).is_ok());
+        let cases: Vec<(Box<dyn Fn(&mut Value)>, &str)> = vec![
+            (Box::new(|v| v["extra"] = 1.into()), "unknown field"),
+            (Box::new(|v| v["functions"][0]["signature"]["hidden"] = true.into()), "unknown field"),
+            (Box::new(|v| v["functions"][0]["signature"]["parameters"][0]["offset"] = 1.into()), "unknown field"),
+            (Box::new(|v| v["functions"][0]["signature"]["parameters"][0]["ownership"] = Value::Null), "invalid type"),
+            (Box::new(|v| v["functions"][0]["signature"]["scratch"] = json!([{"name":"a","storage":"i32","init":1}])), "unknown field"),
+            (Box::new(|v| v["functions"][0]["adapter"]["grant"] = true.into()), "unknown field"),
+            (Box::new(|v| v["schemaVersion"] = 2.into()), "unsupported schemaVersion"),
+            (Box::new(|v| v["ownerId"] = "@proof/other".into()), "ownerId does not match"),
+            (Box::new(|v| v["selectedOffsets"] = "{\"a\":1}".into()), "selectedOffsets hash mismatch"),
+            (Box::new(|v| v["selectedOffsetsSha256"] = "A".repeat(64).into()), "lowercase SHA256"),
+            (Box::new(|v| v["functions"][0]["adapter"]["id"] = "generic.v2".into()), "invalid adapter id"),
+            (Box::new(|v| v["functions"][0]["adapter"]["contractHash"] = "x".into()), "adapter contractHash"),
+            (Box::new(|v| { let mut other = v["functions"][0].clone(); other["localName"] = "other".into();
+                other["adapter"]["postOverride"] = true.into(); v["functions"].as_array_mut().unwrap().push(other); }), "conflicting"),
+        ];
+        for (mutate, expected) in cases {
+            let mut value = good.clone();
+            mutate(&mut value);
+            let error = trusted::decode(value.to_string().as_bytes(), OWNER).err().unwrap_or_default();
+            assert!(error.starts_with("trusted functions artifact:") && error.contains(expected), "{expected}: {error}");
+        }
+        let duplicate = good.to_string().replacen("\"schemaVersion\":1", "\"schemaVersion\":1,\"schemaVersion\":1", 1);
+        assert!(trusted::decode(duplicate.as_bytes(), OWNER).err().unwrap().contains("duplicate field"));
+        let oversized = vec![b' '; trusted::MAX_ARTIFACT_BYTES + 1];
+        assert!(trusted::decode(&oversized, OWNER).err().unwrap().contains("byte limit"));
+    }
+
+    #[test]
+    fn trusted_scratch_is_validated_and_sealed_into_the_contract_but_not_the_native_wire() {
+        init();
+        let host = HostPackageOwner::mint(OWNER).unwrap();
+        let manifest = ImplementationManifestHash::new(contract::hash_bytes(b"scratch-proof")).unwrap();
+        let receipt = register_prepared_package(host.clone(), "0".into(), manifest).unwrap();
+        let prepare = |scratch: Value, surfaces: Option<&[&str]>| {
+            let mut f = function("fire", scratch, None);
+            if let Some(surfaces) = surfaces {
+                f["policy"] = policy(surfaces);
+                f["signature"]["parameters"][0]["mutable"] = json!([]);
+            }
+            let decoded = trusted::decode(artifact(OWNER, vec![f]).to_string().as_bytes(), OWNER).unwrap();
+            instance::prepare_verified_package(&receipt, decoded.inputs, decoded.selected,
+                unsafe { instance::SynchronousRecordLifetime::registered_native_target() })
+        };
+        for (scratch, surfaces, expected) in [
+            (json!([{"name":"proposedReturn","storage":"i32"}]), None, "scratch slot name"),
+            (json!([{"name":"x","storage":"i32"}]), None, "scratch slot name"),
+            (json!([{"name":"a","storage":"i32"},{"name":"a","storage":"u32"}]), None, "scratch slot name"),
+            (json!([{"name":"a","storage":"ptr"}]), None, "unsupported scratch storage"),
+            (json!((0..17).map(|i| json!({"name":format!("s{i}"),"storage":"i32"})).collect::<Vec<_>>()), None, "scratch slot limit"),
+            (json!([{"name":"a","storage":"i32"}]), Some(&["post"][..]), "scratch slots require PRE"),
+        ] {
+            let error = prepare(scratch, surfaces).err().unwrap_or_default();
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
+        let plain = prepare(json!([]), None).unwrap();
+        let with = prepare(json!([{"name":"votes","storage":"i32"}]), None).unwrap();
+        let (plain, with) = (plain.functions()[0].function(), with.functions()[0].function());
+        assert_ne!(plain.contract_hash, with.contract_hash, "scratch is part of the sealed contract");
+        let native: Value = serde_json::from_str(&with.trusted_wire().unwrap()).unwrap();
+        assert!(native["signature"].get("scratch").is_none(), "scratch never reaches the native wire");
+        let mut unsealed = native.clone();
+        unsealed.as_object_mut().unwrap().remove("contractHash");
+        assert_eq!(native["contractHash"], contract::hash(&unsealed), "native wire hash covers exactly its bytes");
+        let legacy: Value = serde_json::from_str(&plain.trusted_wire().unwrap()).unwrap();
+        assert_eq!(legacy["contractHash"], plain.contract_hash.as_str(), "scratch-free contracts are unchanged");
+        drop(receipt);
+        set_engine_ops(None);
+        shutdown();
+    }
+
+    #[test]
+    fn trusted_activation_merges_public_authorizes_and_fails_whole() {
+        init();
+        // A trusted/public name collision refuses before any binding is published and burns the owner.
+        let host = HostPackageOwner::mint(OWNER).unwrap();
+        let manifest = ImplementationManifestHash::new(contract::hash_bytes(b"collision")).unwrap();
+        let bytes = artifact(OWNER, vec![function("fire", json!([]), Some(true))]).to_string();
+        let error = trusted::activate_trusted(&host, SOURCE.into(), manifest.clone(), bytes.as_bytes(),
+            Some(public_candidate("fire")), unsafe { instance::SynchronousRecordLifetime::registered_native_target() })
+            .err().unwrap();
+        assert!(error.contains("duplicates a public declaration"), "{error}");
+        assert!(host.is_retired() && registry::owner_bindings(host.key()).is_empty());
+        // A foreign-owner artifact is refused by name before registration.
+        let other = HostPackageOwner::mint(OWNER).unwrap();
+        let foreign = artifact("@proof/other", vec![function("fire", json!([]), None)]).to_string();
+        assert!(trusted::activate_trusted(&other, SOURCE.into(), manifest, foreign.as_bytes(), None,
+            unsafe { instance::SynchronousRecordLifetime::registered_native_target() }).err().unwrap().contains("ownerId"));
+
+        let (host, active) = activate_package(false);
+        let fire = registry::named_binding(host.key(), "fire").unwrap();
+        let public = registry::named_binding(host.key(), "pub").unwrap();
+        assert!(fire.function.trusted() && !public.function.trusted());
+        assert_eq!(AUTHORIZED.with(|a| a.borrow().get(&fire.id).cloned()),
+            Some((host.key().clone(), ADAPTER.to_string(), proof::HASH.to_string())));
+        frame_tests::load_body("trusted-a", "return {};", "{}");
+        eval_in_context("trusted-a", "subscribeTrusted('pre',v=>{events.push('sub:'+v.x);});").unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        assert_eq!(close_frame(&info).output.bits, 7);
+        assert_eq!(events("trusted-a"), "start:0:false,sub:7,after:1,final:1:false");
+        finish(&["trusted-a"], active);
+    }
+
+    #[test]
+    fn trusted_scratch_is_shared_per_dispatch_rolled_back_and_never_native() {
+        init();
+        let (_host, active) = activate_package(false);
+        frame_tests::load_body("trusted-a", "return {};", "{}");
+        frame_tests::load_body("trusted-b", "return {};", "{}");
+        eval_in_context("trusted-a", "subscribeTrusted('pre',v=>{v.votes=v.votes+1;v.flag=true;});").unwrap();
+        eval_in_context("trusted-b", r#"globalThis.reject='none';subscribeTrusted('pre',v=>{
+            events.push('b:'+v.votes+':'+v.flag);v.votes=v.votes+1;
+            if(reject==='throw'){v.votes=100;v.x=99;throw Error('rejected batch');}
+            // An invalid typed write poisons this callback's whole staged batch.
+            if(reject==='typed'){v.x=99;let n=0;try{v.votes=1.5}catch(_){n++}try{v.flag=1}catch(_){n++}if(n!==2)throw Error('typed scratch');}
+        });"#).unwrap();
+        for (reject, votes, x) in [("none", 3, 7), ("throw", 2, 7), ("typed", 2, 7), ("none", 3, 7)] {
+            eval_in_context("trusted-b", &format!("reject='{reject}';")).unwrap();
+            let info = open_frame();
+            assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+            let frame = close_frame(&info);
+            assert_eq!((frame.input.bits, frame.output.bits, frame.action), (x, 7, 0), "scratch is never written or committed");
+            // Each invocation starts at zero; the adapter sees every accepted subscriber edit
+            // from both contexts and nothing from the rejected callback.
+            assert_eq!(events("trusted-a"), format!("start:0:false,after:2,after:{votes},final:{votes}:true"));
+            assert_eq!(events("trusted-b"), "b:2:true");
+        }
+        finish(&["trusted-a", "trusted-b"], active);
+    }
+
+    #[test]
+    fn trusted_pre_proposal_forces_its_authorized_post_adapter() {
+        init();
+        let (_host, active) = activate_package(true);
+        frame_tests::load_body("trusted-a", "return {};", "{}");
+        eval_in_context("trusted-a", "subscribeTrusted('pre',v=>{});").unwrap();
+        // No proposal: zero POST subscribers means no POST run (unchanged).
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        assert_eq!(close_frame(&info).output.bits, 7);
+        assert!(!events("trusted-a").contains("post:"));
+        // Proposal: the adapter's POST runs without POST subscribers and applies it.
+        eval_in_context("trusted-a", "mode='propose';").unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        let frame = close_frame(&info);
+        assert_eq!((frame.action, frame.output.bits), (1, 55));
+        assert_eq!(EFFECTS.with(Cell::get), 1);
+        let trace = events("trusted-a");
+        assert!(trace.ends_with("final:1:false,post:55:false"), "{trace}");
+        assert_eq!(proof::pending_invocations(), 0);
+        // An invalid proposal fails the adapter's PRE by name; nothing is committed or carried.
+        eval_in_context("trusted-a", "mode='propose-invalid';").unwrap();
+        let info = open_frame();
+        assert_ne!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        assert_eq!(close_frame(&info).output.bits, 7);
+        assert!(!events("trusted-a").contains("post:"));
+        assert!(proof::take_dispatch_errors().iter().any(|e| e.contains("typed scalar")));
+        // A subscriber cannot propose: its {action:1} object stays a rejected vote.
+        eval_in_context("trusted-a", "mode='plain';subscribeTrusted('pre',v=>({action:1,returnValue:9}));").unwrap();
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        assert_eq!(close_frame(&info).output.bits, 7);
+        assert!(!events("trusted-a").contains("post:"));
+        assert_eq!(proof::pending_invocations(), 0);
+        finish(&["trusted-a"], active);
+    }
+
+    #[test]
+    fn trusted_pre_proposal_without_override_authority_is_rejected_by_name() {
+        init();
+        let (_host, active) = activate_package(false);
+        frame_tests::load_body("trusted-a", "return {};", "{}");
+        eval_in_context("trusted-a", "mode='propose';subscribeTrusted('pre',v=>{});").unwrap();
+        let info = open_frame();
+        assert_ne!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        let frame = close_frame(&info);
+        assert_eq!((frame.action, frame.output.bits), (0, 7));
+        assert_eq!(EFFECTS.with(Cell::get), 0);
+        assert!(!events("trusted-a").contains("post:"));
+        assert!(proof::take_dispatch_errors().iter().any(|e| e.contains("PRE return proposal requires host override authority")));
+        finish(&["trusted-a"], active);
     }
 }
