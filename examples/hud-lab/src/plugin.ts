@@ -81,10 +81,11 @@ export function OnPluginStart(): void {
   kit = hudkit.modal({
     title: "s2script kit",
     subtitle: "hudkit modal · s2script_lib",
+    // One short line per row: the right-aligned `b` column wins over `a` at the default width.
     rows: (slot) => [
-      { a: "Player", b: Player.fromSlot(slot)?.playerName ?? `slot ${slot}` },
-      { a: "Layout", b: "s2script_lib (shared)" },
-      { a: "Clicks", b: "CustomHudClickedReceiver" },
+      { a: `Player: ${Player.fromSlot(slot)?.playerName ?? `slot ${slot}`}` },
+      { a: "Layout: shared hudkit (s2script_lib)" },
+      { a: "Clicks: engine hook -> onClick" },
     ],
     buttons: [
       { text: "Alpha", variant: "primary", onClick: clicked("Alpha") },
