@@ -95,3 +95,15 @@ The path: client click → `CS_UM_CustomHudClicked` → `CustomHudClickedReceive
 raw `CustomHudLayout.onClicked`. Each id maps to the button clicked, and a list-row click
 (`s2_m0_r2`) is delivered too. A live engine hook confirmed input capture reached
 `SetInputCaptureEnabledForPlayer` for that slot on the layout entity.
+
+## Plugin reload clears the panels it was showing (human client, 2026-09-28)
+
+Found live: hot-reloading hud-lab while its kit modal was open left the sheet on screen with no
+handler behind it, so nothing could close it. Cursor capture was already released by its
+owner-swept switch lease, but the non-focused modal held no host-owned record of its visibility.
+Fixed in `e55ae36b`: a non-focused modal now holds an owned, hide-only surface lease while open,
+and the host's owner sweep on unload/reload retires it.
+
+Retest on CS2 25588766, fresh install: the player ran `sm_kit` (22:46:05) and left it open, and
+hud-lab was hot-reloaded 8 s later (22:46:13, no warnings). The player confirmed the sheet
+disappeared on its own and the mouse returned to normal.
