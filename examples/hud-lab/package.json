@@ -16,8 +16,8 @@
       },
       "auto_show": {
         "type": "bool",
-        "default": true,
-        "description": "Show the shipped s2script_hud kit automatically when a player becomes active. Requires MultiAddonManager + workshop addon 3790153369."
+        "default": false,
+        "description": "Open the hudkit kit modal automatically when a player becomes active. Off by default: it captures the mouse, so the player cannot move until they close it (and mp_autokick may then kick them as idle)."
       }
     }
   }

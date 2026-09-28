@@ -39,9 +39,8 @@
  */
 import { ADMFLAG, config, Chat, hook, command, HookResult } from "@s2script/sdk";
 import type { CommandInvocation, Client } from "@s2script/sdk";
-import { Player, Pawn, CustomHudLayout, CustomCameraMode } from "@s2script/cs2";
-import type { HudLayout } from "@s2script/cs2";
-import { LIVE_HUD, LIVE_PANELS } from "./livehud";
+import { Player, Pawn, CustomHudLayout, CustomCameraMode, hudkit } from "@s2script/cs2";
+import type { Modal } from "@s2script/cs2";
 import { LiveDemo } from "./livedemo";
 
 import * as layout from "./layout";
@@ -63,7 +62,8 @@ function log(line: string): void {
   console.log(`${TAG} ${line}`);
 }
 
-let kitHud!: HudLayout;
+/** The kit dialog: a pooled hudkit modal (s2script_lib), not a private layout. Null if the pool is full. */
+let kit: Modal | null = null;
 let hud!: DemoHud;
 let demo!: LiveDemo;
 
@@ -72,13 +72,28 @@ let demo!: LiveDemo;
 const EYE_HEIGHT = 64;
 
 export function OnPluginStart(): void {
-  /** Shipped workshop kit driven through the game-package `CustomHudLayout` API. */
-  kitHud = CustomHudLayout.probe();
-
-  kitHud.onClick("s2_btn_3", (p) => {
-    p.hide("s2_dialog");
-    Chat.toSlot(p.slot, "[hud] dismissed");
+  // The kit dialog is a hudkit modal: it renders from s2script_lib, which every client already has,
+  // so it needs no layout of its own and no workshop republish. Four footer buttons exercise clicks.
+  const clicked = (label: string) => (slot: number) => {
+    Chat.toSlot(slot, `[hud] ${label} clicked`);
+    log(`kit button "${label}" clicked by slot ${slot}`);
+  };
+  kit = hudkit.modal({
+    title: "s2script kit",
+    subtitle: "hudkit modal · s2script_lib",
+    rows: (slot) => [
+      { a: "Player", b: Player.fromSlot(slot)?.playerName ?? `slot ${slot}` },
+      { a: "Layout", b: "s2script_lib (shared)" },
+      { a: "Clicks", b: "CustomHudClickedReceiver" },
+    ],
+    buttons: [
+      { text: "Alpha", variant: "primary", onClick: clicked("Alpha") },
+      { text: "Bravo", variant: "good", onClick: clicked("Bravo") },
+      { text: "Charlie", variant: "warn", onClick: clicked("Charlie") },
+      { text: "Close", variant: "ghost", onClick: (slot, view) => { view.close(); clicked("Close")(slot); } },
+    ],
   });
+  if (!kit) log("hudkit modal pool exhausted — sm_kit is unavailable while other plugins hold every sheet");
 
   CustomHudLayout.onClicked((view) => {
     const slot = view.slot;
@@ -120,10 +135,10 @@ export function OnPluginStart(): void {
     cmd.reply(`  demo HUD viewers: ${hud.count}`);
 
     cmd.reply(`${TAG} ── TIER B (CustomHudLayout / @s2script/cs2) ──`);
-    cmd.reply("  layout: panorama/layout/custom_game/s2script_hud.xml");
+    cmd.reply("  layout: hudkit shared components (panorama/layout/custom_game/s2script_lib.xml)");
     cmd.reply("  addons: 3790153369 (MultiAddonManager)");
     cmd.reply(`${TAG} ── TIER C (CustomHudLayout.onClicked) ──`);
-    cmd.reply("  ARMED via game-package hook — use sm_kit / sm_hud_show, then click s2_btn_*");
+    cmd.reply("  ARMED via game-package hook — use sm_kit or sm_motd, then click a button");
     return HookResult.Handled;
   });
 
@@ -257,7 +272,7 @@ export function OnPluginStart(): void {
     if (cmd.argCount < 3) { cmd.reply(`${TAG} usage: sm_hud_class <panelId> <className> <1|0|-1> [target]`); return HookResult.Handled; }
     const slot = resolveOptionalSlot(cmd, 3, cmd.callerSlot);
     const status = parseClassStatus(cmd.arg(2));
-    const err = kitHud.setClass(slot, cmd.arg(0), cmd.arg(1), status === 1);
+    const err = hudkit.layout.setClass(slot, cmd.arg(0), cmd.arg(1), status === 1);
     cmd.reply(err ? `${TAG} ${err}` : `${TAG} setClass slot ${slot} "${cmd.arg(0)}" "${cmd.arg(1)}" -> ${status}`);
     return HookResult.Handled;
   });
@@ -265,7 +280,7 @@ export function OnPluginStart(): void {
   command.admin("sm_hud_var", ADMFLAG.ROOT, (cmd) => {
     if (cmd.argCount < 3) { cmd.reply(`${TAG} usage: sm_hud_var <panelId> <variableName> <value> [target]`); return HookResult.Handled; }
     const slot = resolveOptionalSlot(cmd, 3, cmd.callerSlot);
-    const err = kitHud.setText(slot, cmd.arg(0), cmd.argsFrom(2));
+    const err = hudkit.layout.setText(slot, cmd.arg(0), cmd.argsFrom(2));
     cmd.reply(err ? `${TAG} ${err}` : `${TAG} setText slot ${slot} "${cmd.arg(0)}"`);
     return HookResult.Handled;
   });
@@ -413,24 +428,8 @@ export function OnPluginStart(): void {
     return HookResult.Handled;
   });
 
-  // ── Drive OUR OWN published kit ──────────────────────────────────────────────────────────────
-  // One command that exercises everything still unproven: create the entity against our workshop
-  // addon, set dialog variables (the {s:} binding is untested), and turn on input capture so the
-  // buttons become clickable and the click hook can fire.
-  // ── sm_live — drive the PRODUCTION layout (s2script_hud_live.xml) ────────────────────────────
-  //
-  // This is the one to look at. Unlike the probe, every slot is a {s:} binding, so it renders as an
-  // empty frame until filled — which is exactly why this command fills it before revealing it.
-  const liveHud = CustomHudLayout.create(LIVE_HUD);
-  liveHud.onClick("motd_ok", (p) => {
-    p.hide(LIVE_PANELS.motd);
-    p.cursor(false);
-    Chat.toSlot(p.slot, "[hud] MOTD dismissed");
-    log(`motd_ok clicked by slot ${p.slot} -> hidden, cursor released`);
-  });
-
-  // ── The live demo: HUD driven by real game state ─────────────────────────────────────────────
-  demo = new LiveDemo(liveHud, log);
+  // ── The live demo: HUD driven by real game state, from hudkit badges + toasts ───────────────
+  demo = new LiveDemo(log);
 
   // Kill feed from the real event. `player_death` carries the slots; the weapon is a string field.
   hook.on("player_death", (ev) => {
@@ -447,15 +446,13 @@ export function OnPluginStart(): void {
 
   command.admin("sm_hud", ADMFLAG.GENERIC, (cmd) => {
     if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_hud needs an in-game caller`); return HookResult.Handled; }
-    const spawn = liveHud.ensure();
-    if (spawn !== null) { cmd.reply(`${TAG} ${spawn}`); return HookResult.Handled; }
     const slot = cmd.callerSlot;
     const arg = cmd.arg(0).toLowerCase();
     const want = arg === "" ? !demo.has(slot) : (arg === "1" || arg === "on");
     if (want) {
-      demo.start(slot);
+      const err = demo.start(slot);
+      if (err) { cmd.reply(`${TAG} live HUD refused: ${err}`); return HookResult.Handled; }
       cmd.reply(`${TAG} live HUD ON — round clock, scoreboard, your K/D, kill feed. ${demo.count} viewer(s)`);
-      cmd.reply(`${TAG} sm_motd for the interactive panel; sm_hud off to stop`);
     } else {
       demo.stop(slot);
       cmd.reply(`${TAG} live HUD off`);
@@ -465,87 +462,51 @@ export function OnPluginStart(): void {
 
   command.admin("sm_motd", ADMFLAG.GENERIC, (cmd) => {
     if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_motd needs an in-game caller`); return HookResult.Handled; }
-    const slot = cmd.callerSlot;
-    const p = liveHud.forSlot(slot);
-    const name = Player.fromSlot(slot)?.playerName ?? `slot ${slot}`;
-    const errs: string[] = [];
-    const put = (r: string | null) => { if (r) errs.push(r); };
-
-    // Scoreboard + timer — always-on chrome.
-    put(p.set({
-      timer_label: "ROUND",
-      timer_value: "1:42",
-      team_ct_name: "COUNTER-TERRORISTS",
-      team_ct_score: "7",
-      team_t_name: "TERRORISTS",
-      team_t_score: "5",
-      pcard_name: name,
-      pcard_meta: "driven live by s2script",
-      pcard_badge_t: "MVP",
-      pcard_k: "18",
-      pcard_d: "9",
-      pcard_a: "4",
-      pcard_hs: "61%",
-      pcard_form_label: "LAST 5",
-      feed_0_a: name,
-      feed_0_w: "ak47",
-      feed_0_v: "bot Kadeem",
-      feed_0_t: "HS",
-      motd_title: "s2script HUD",
-      motd_sub: "server-driven Panorama",
-      motd_h0: "Layout",
-      motd_p0: "workshop addon 3790153369, mounted per-client",
-      motd_h1: "Drive",
-      motd_p1: "CustomHudLayout — SetHasClass / SetDialogVariableString",
-      motd_h2: "Clicks",
-      motd_p2: "CustomHudClickedReceiver detour -> CustomHudLayout.onClicked",
-      motd_note: "click OK to dismiss",
-      motd_ok_t: "OK",
-    }));
-    put(p.setMeter("timer", 70));
-    put(p.show(LIVE_PANELS.feed[0]));
-    put(p.show(LIVE_PANELS.motd, { cursor: true }));
-
-    cmd.reply(errs.length
-      ? `${TAG} ${errs.length} call(s) refused; first: ${errs[0]}`
-      : `${TAG} live HUD driven for ${name} — click OK to dismiss`);
+    const handle = hudkit.motd(cmd.callerSlot, {
+      title: "s2script HUD",
+      subtitle: "server-driven Panorama",
+      sections: [
+        { heading: "Layout", body: "shared hudkit components (s2script_lib), mounted per-client" },
+        { heading: "Drive", body: "SetHasClassForPlayer / SetDialogVariableStringForPlayer" },
+        { heading: "Clicks", body: "CustomHudClickedReceiver -> CustomHudLayout.onClicked" },
+      ],
+      note: "click OK to dismiss",
+      onClose: (slot) => {
+        Chat.toSlot(slot, "[hud] MOTD dismissed");
+        log(`MOTD OK clicked by slot ${slot}`);
+      },
+    });
+    cmd.reply(handle.isValid() ? `${TAG} MOTD shown — click OK to dismiss` : `${TAG} MOTD refused (HUD not ready)`);
     return HookResult.Handled;
   });
 
+  /** Open the kit modal for `slot`; the reply names why when it cannot. */
+  function openKit(slot: number): string | null {
+    if (!kit) return "hudkit modal pool exhausted";
+    const r = kit.tryOpen(slot, { cursor: true });
+    return r.ok ? null : r.error;
+  }
+
   command.admin("sm_kit", ADMFLAG.GENERIC, (cmd) => {
     if (cmd.callerSlot < 0) { cmd.reply(`${TAG} sm_kit needs an in-game caller`); return HookResult.Handled; }
-    const slot = cmd.callerSlot;
-
-    const p = kitHud.forSlot(slot);
-    p.setText({
-      s2_dialog_title: "s2script kit",
-      s2_dialog_kicker: "LIVE",
-      s2_dialog_body: `driven via CustomHudLayout for ${Player.fromSlot(slot)?.playerName ?? "you"}`,
-      s2_btn_0_text: "Alpha",
-      s2_btn_1_text: "Bravo",
-      s2_btn_2_text: "Charlie",
-      s2_btn_3_text: "Close",
-    });
-    p.setMeter("meter", 50);
-
-    const err = p.show("s2_dialog", { cursor: true });
-    cmd.reply(err ? `${TAG} show refused: ${err}` : `${TAG} kit visible — click s2_btn_0..s2_btn_3`);
+    const err = openKit(cmd.callerSlot);
+    cmd.reply(err ? `${TAG} kit refused: ${err}` : `${TAG} kit visible — click Alpha / Bravo / Charlie / Close`);
     return HookResult.Handled;
   });
 
   command.admin("sm_hud_show", ADMFLAG.GENERIC, (cmd) => {
     const slot = resolveOptionalSlot(cmd, 0, cmd.callerSlot);
     if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_show [target]`); return HookResult.Handled; }
-    const err = kitHud.show(slot, "s2_dialog", { cursor: true });
-    cmd.reply(err ? `${TAG} ${err}` : `${TAG} shown for slot ${slot} (class cleared + cursor on)`);
+    const err = openKit(slot);
+    cmd.reply(err ? `${TAG} ${err}` : `${TAG} kit shown for slot ${slot} (cursor on)`);
     return HookResult.Handled;
   });
 
   command.admin("sm_hud_hide", ADMFLAG.GENERIC, (cmd) => {
     const slot = resolveOptionalSlot(cmd, 0, cmd.callerSlot);
     if (slot < 0) { cmd.reply(`${TAG} usage: sm_hud_hide [target]`); return HookResult.Handled; }
-    const err = kitHud.hide(slot, "s2_dialog");
-    cmd.reply(err ? `${TAG} ${err}` : `${TAG} hidden for slot ${slot}`);
+    kit?.close(slot);
+    cmd.reply(`${TAG} kit hidden for slot ${slot}`);
     return HookResult.Handled;
   });
 
@@ -585,8 +546,9 @@ export function OnPluginStart(): void {
       return HookResult.Handled;
     }
     const on = cmd.arg(0) === "1" || cmd.arg(0).toLowerCase() === "on";
-    const err = kitHud.cursor(slot, on);
-    cmd.reply(err ? `${TAG} refused: ${err}` : `${TAG} slot ${slot} cursor -> ${on}`);
+    if (!kit) { cmd.reply(`${TAG} refused: hudkit modal pool exhausted`); return HookResult.Handled; }
+    kit.setCursor(slot, on);
+    cmd.reply(`${TAG} slot ${slot} cursor -> ${on}`);
     return HookResult.Handled;
   });
 
@@ -682,16 +644,23 @@ export function OnPluginStart(): void {
   }
 }
 
-/** A disconnecting player must not leave diff-cache entries behind. */
+/** A disconnecting player stops the live demo for their slot. */
 export function OnClientDisconnect(client: Client): void {
   demo.stop(client.slot);
-  demo.forget(client.slot);
 }
 
-/** Collapse the live layout as players become active (panels default VISIBLE in the markup). */
+/**
+ * Optional: open the kit for every player as they become active. OFF by default — it takes the
+ * mouse, so a player who never asked for it cannot move, and mp_autokick then kicks them as idle.
+ */
 export function OnClientActive(client: Client): void {
-  demo.hideAll(client.slot);
   if (!config.getBool("auto_show")) return;
-  const err = kitHud.show(client.slot, "s2_dialog", { cursor: true });
+  const err = openKitForJoin(client.slot);
   log(err ? `auto-show refused for slot ${client.slot}: ${err}` : `auto-shown for slot ${client.slot}`);
+}
+
+function openKitForJoin(slot: number): string | null {
+  if (!kit) return "hudkit modal pool exhausted";
+  const r = kit.tryOpen(slot, { cursor: true });
+  return r.ok ? null : r.error;
 }
