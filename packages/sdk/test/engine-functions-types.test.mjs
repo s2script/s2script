@@ -118,3 +118,30 @@ export function OnPluginStart(): void {}
   const wrongArity = typecheckPlugin(fixture(source.replace('f.call(1, 2)', 'f.call(1)'), special));
   assert.ok(wrongArity.diagnostics.some(d => d.code === 2554 && d.file.endsWith('plugin.ts')), JSON.stringify(wrongArity.diagnostics));
 });
+
+test('suppression:none PRE types reject Handled, Stop, and typed suppression while allowing edits', () => {
+  const data = { quiet: fn({ requirement: 'required', parameters: [{ name: 'count', type: 'i32', mutable: 'pre' }], returns: 'i32', surfaces: ['pre', 'post'], suppression: 'none' }) };
+  const source = imports + `
+const f = Engine.function('quiet');
+f.onPre(v => { v.count = 4; return HookResult.Changed; });
+f.onPre(() => HookResult.Handled);
+f.onPre(() => HookResult.Stop);
+f.onPre(() => ({ action: HookResult.Handled, returnValue: 5 }));
+f.onPost(v => { const n: number = v.returnValue; void n; });
+export function OnPluginStart(): void {}
+`;
+  const result = typecheckPlugin(fixture(source, data));
+  assert.equal(result.ok, false);
+  assert.equal(result.diagnostics.filter(d => d.file.endsWith('plugin.ts')).length, 3, JSON.stringify(result.diagnostics));
+});
+
+test('borrowed copied return retains typed PRE suppression', () => {
+  const data = { borrowed: fn({ requirement: 'required', returns: { type: 'string', ownership: 'caller-borrowed' }, surfaces: ['pre', 'post'] }) };
+  const source = imports + `
+Engine.function('borrowed').onPre(() => ({ action: HookResult.Handled, returnValue: 'held' }));
+Engine.function('borrowed').onPost(v => { const s: string = v.returnValue; void s; });
+export function OnPluginStart(): void {}
+`;
+  const result = typecheckPlugin(fixture(source, data));
+  assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
+});

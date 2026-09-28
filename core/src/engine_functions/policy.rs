@@ -52,3 +52,45 @@ pub(crate) fn public_adapter(
         .map(|(_, _, implementation)| implementation)
         .ok_or_else(|| "public executable adapter unavailable".into())
 }
+
+/// A host capability; neither contract strings nor package visibility grant effects.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum PostReturnAuthority {
+    #[default]
+    None,
+    Override,
+}
+pub(crate) struct HostAdapterGrant {
+    owner: super::contract::OwnerKey,
+    contract: AdapterContract,
+    authority: PostReturnAuthority,
+}
+impl HostAdapterGrant {
+    pub(crate) fn override_return(
+        owner: &super::contract::HostPackageOwner,
+        contract: AdapterContract,
+    ) -> Result<Self, String> {
+        if contract.id.is_empty() || contract.id == "generic.v2" || contract.version != 1 {
+            return Err("invalid host adapter contract".into());
+        }
+        super::contract::ImplementationManifestHash::new(contract.contract_hash.clone())?;
+        Ok(Self {
+            owner: owner.key().clone(),
+            contract,
+            authority: PostReturnAuthority::Override,
+        })
+    }
+    pub(crate) fn belongs_to(&self, owner: &super::contract::HostPackageOwner) -> bool {
+        self.owner == *owner.key()
+    }
+    pub(crate) fn authority(&self, contract: &AdapterContract) -> PostReturnAuthority {
+        if self.contract == *contract {
+            self.authority
+        } else {
+            PostReturnAuthority::None
+        }
+    }
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.owner.id.len() + self.contract.id.len() + self.contract.contract_hash.len()
+    }
+}

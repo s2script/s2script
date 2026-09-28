@@ -6,6 +6,8 @@ export type Receiver = (typeof RECEIVERS)[number];
 export type Platform = typeof PLATFORM;
 export type Surface = 'call' | 'pre' | 'post';
 export type AuthorType = 'bool' | 'i32' | 'u32' | 'i64' | 'u64' | 'f32' | 'f64' | 'entity' | 'entity?' | 'string' | 'vector';
+export type ParameterCopyOwnership = 'callee-borrowed' | 'callee-retained' | 'native-observed';
+export type ReturnCopyOwnership = 'caller-borrowed' | 'native-observed';
 
 export interface ValidatorSpec {
   prologue?: string;
@@ -35,9 +37,10 @@ export type AuthorTarget = AuthorSignatureTarget | AuthorVirtualTarget;
 export interface AuthorFunction {
   target: AuthorTarget | { ref: string };
   receiver?: { type: Receiver };
-  parameters?: Array<{ name: string; type: AuthorType; mutable?: 'pre' }>;
-  returns?: AuthorType | 'void';
+  parameters?: Array<{ name: string; type: AuthorType; ownership?: ParameterCopyOwnership; mutable?: 'pre' }>;
+  returns?: AuthorType | 'void' | { type: 'string' | 'vector'; ownership: ReturnCopyOwnership };
   surfaces?: Surface[];
+  suppression?: 'generic' | 'none';
   requirement?: 'optional' | 'required';
   resolve?: 'direct' | 'ctor-body-xref' | 'lea-disp' | 'validated-call';
 }
@@ -85,8 +88,8 @@ export interface NormalizedFunction {
     receiver: Receiver;
     fingerprint: string;
     stackCopyBytes: number;
-    parameters: Array<{ name: string; native: NativeAtom; projection: ProjectionSpec; mutable: ('pre')[] }>;
-    returns: { native: NativeReturn; projection: ProjectionSpec };
+    parameters: Array<{ name: string; native: NativeAtom; projection: ProjectionSpec; ownership?: ParameterCopyOwnership; mutable: ('pre')[] }>;
+    returns: { native: NativeReturn; projection: ProjectionSpec; ownership?: ReturnCopyOwnership };
   };
   policy: {
     /** Host-owned compatibility adapters may use a named id; community normalization emits generic.v2 only. */

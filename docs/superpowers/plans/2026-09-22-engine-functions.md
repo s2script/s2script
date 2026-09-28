@@ -860,6 +860,18 @@ git commit -m "feat: add shared native engine function targets"
 
 ### Task 6: S2-EF-06 — Build the core registry, projections, and executable adapter fan-out
 
+**Copied-value checkpoint after Task 7:** SDK author declarations and normalized archives now
+carry explicit directional ownership for copied string/vector positions. Rust validates ownership,
+surface, alias, and suppression capabilities independently of SDK hashes before native prepare;
+generated PRE types and V8 dispatch enforce `suppression:none`. Scalar/entity/void archives and
+machine ABI fingerprints retain their established shape. Existing native copy bindings remain
+named unavailable until the next checkpoint implements native buffers, bounded reader, intern
+arena, sidecar transport, physical-target ownership agreement, and integrated runtime proofs.
+This is a prerelease declaration correction: old copied archives require rebuilding with an
+explicit native ownership choice, and v1 migration must report unresolved ownership instead of
+guessing it. No native addon reload protocol is part of this work; resident Metamod unload refusal
+remains the lifetime boundary.
+
 **Files:**
 - Create: `core/src/engine_functions/registry.rs`
 - Create: `core/src/engine_functions/binding.rs`

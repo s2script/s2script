@@ -84,6 +84,7 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_iface_dispatch", s2_iface_dispatch);
     // Game-event system (Slice 5D.1): subscribe/unsubscribe + accessor natives.
     crate::events::install_natives(scope, global_obj);
+    set_native(scope, global_obj, "__s2_engine_function", engine_functions::lookup);
     // Engine-identity client-list natives (Slice 5D.2).
     crate::client::install_natives(scope, global_obj);
     // Translations slice: root/language phrase-file read + the client's cl_language cvar.

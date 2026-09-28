@@ -30,9 +30,11 @@ function binding(f: NormalizedFunction, name: string): string[] {
     ...f.abi.parameters.map(p => `    readonly ${p.name}: ${typeOf(p.projection)};`),
     `    readonly returnValue: ${returnType};`,
   ];
-  const preResult = returnType === 'void'
-    ? '0 | 1 | 2 | 3 | void'
-    : `0 | 1 | void | { action: 2 | 3; returnValue: ${returnType} }`;
+  const preResult = f.policy.suppression === 'none'
+    ? '0 | 1 | void'
+    : returnType === 'void'
+      ? '0 | 1 | 2 | 3 | void'
+      : `0 | 1 | void | { action: 2 | 3; returnValue: ${returnType} }`;
   const surfaces = new Set(f.policy.surfaces);
   return [
     `  interface ${name}PreView {`, ...preFields, '  }',

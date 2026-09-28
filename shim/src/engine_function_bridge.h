@@ -1,6 +1,8 @@
 #pragma once
 #include "engine_function_abi.h"
 #include "engine_resolver.h"
+#include "engine_function_transport.h"
+#include "engine_function_instance.h"
 
 namespace s2bridge {
 struct Declaration {
@@ -8,12 +10,25 @@ struct Declaration {
     std::string target_validation;
     s2fn::AbiSignature abi;
     s2fn::AbiInfo info;
+    std::array<CopyPosition,32> copies{};
+    CopyPosition return_copy{};
+    InstancePositions instances;
+    bool HasCopies() const;
+    bool CompatibleCopies(const Declaration&) const;
 };
 using Resolver = std::function<bool(const s2resolve::TargetRecipe&, s2resolve::Resolution&, std::string&)>;
+// Host-only normalization helper; creates no capability or lifetime authority.
+s2fn::Result<Declaration> ParseInstance(const std::string& target,const std::string& contract);
 s2fn::Result<Declaration> Parse(const std::string& target, const std::string& abi,
                                 const std::string& fingerprint);
 s2fn::Result<s2resolve::Resolution> Resolve(const Declaration&, const Resolver& = s2resolve::Resolve,
     s2validate::Ops = {}, std::function<bool(uintptr_t, void*, size_t)> read_live = {});
+// Hidden-position relationship check: does the pointer-sized word stored at
+// owner+offset equal `hidden`'s raw bits? The word is read only through the
+// checked Reader; `hidden` is compared, never dereferenced, and no address is
+// returned. A null owner/hidden, an overflowing range or an unreadable word is
+// `false` (not provably referenced); only an unavailable reader is an error.
+s2fn::Result<bool> ReferencesHidden(const s2fn::copy::Reader&, uintptr_t owner, uint32_t offset, uintptr_t hidden);
 }
 #ifndef S2FN_VALIDATION_ONLY
 #include "../include/s2script_core.h"
@@ -77,8 +92,17 @@ public:
     // Host wiring is immutable while records exist. The host owns these objects.
     bool SetDispatchSink(DispatchSink*);
     bool SetPointerCodec(PointerCodec*);
+    bool SetCopyContext(s2fn::copy::Reader, const CopyProducer& engine);
+    s2fn::Result<S2FunctionValue> CallCopy(TargetId, unsigned long long suppressed_owner,
+        const S2FunctionValue*, int argc, S2FunctionValue result_request,
+        const CopyInput&, CopyOutput&, const CopyProducer& caller);
     s2fn::Result<TargetId> Prepare(const std::string& canonical_id, const std::string& target,
                                  const std::string& abi, const std::string& fingerprint);
+    s2fn::Result<S2FunctionInstancePrepared> PrepareInstance(uint64_t binding,
+        const S2FunctionInstanceOwner&, const std::string& name, const std::string& target,
+        const std::string& contract);
+    s2fn::Result<bool> ActivateInstance(uint64_t, const S2FunctionInstanceOwner&);
+    bool ReleaseInstance(uint64_t);
     s2fn::Result<S2FunctionValue> Call(TargetId, unsigned long long owner,
         const S2FunctionValue*, int argc, S2FunctionValue result_request = {});
     // Positive opaque receipt (provider id + 1); zero is the C boundary failure.
@@ -91,9 +115,22 @@ public:
     bool Collect();
     bool Empty() const;
 private:
+    s2fn::Result<TargetId> PrepareDeclaration(const std::string&, Declaration);
+    s2fn::Result<S2FunctionValue> CallImpl(TargetId,unsigned long long,const S2FunctionValue*,int,
+        S2FunctionValue,const CopyInput*,CopyOutput*,const CopyProducer*);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+struct CopyFrameKey {
+    TargetId target; unsigned long long token, epoch; const char* fingerprint;
+};
+s2fn::Result<S2FunctionValue> FrameReadCopy(CopyFrameKey,int selector,S2FunctionValue request,CopyOutput&);
+s2fn::Result<bool> FrameWriteCopy(CopyFrameKey,int selector,const S2FunctionValue&,const CopyInput&,const CopyProducer&);
+s2fn::Result<bool> FrameCommitCopy(CopyFrameKey,int action,const S2FunctionValue*,const CopyInput&,const CopyProducer&);
+// Host-only: caller MUST have already validated the exact Rust adapter permit.
+// Producer is billing metadata and cannot authorize this operation.
+s2fn::Result<S2FunctionValue> FrameOverrideReturnCopy(CopyFrameKey,const S2FunctionValue&,
+    const CopyInput&,const CopyProducer&,S2FunctionValue request,CopyOutput&);
 Service& Global();
 }
 using s2_function_target_id = long long;
@@ -105,8 +142,24 @@ long long S2_FunctionHookAcquire(s2_function_target_id, char*, int);
 int S2_FunctionHookRelease(s2_function_target_id);
 int S2_FunctionTargetRelease(s2_function_target_id);
 int S2_FunctionGetHookStatus(long long, S2FunctionHookStatus*, char*, int);
+int S2_FunctionFrameOverrideReturn(long long, unsigned long long, unsigned long long, const char*, const S2FunctionValue*, S2FunctionValue*, char*, int);
 int S2_FunctionFrameRead(long long, unsigned long long, unsigned long long, const char*, int, unsigned char, S2FunctionValue*, char*, int);
 int S2_FunctionFrameWrite(long long, unsigned long long, unsigned long long, const char*, int, const S2FunctionValue*, char*, int);
 int S2_FunctionFrameCommit(long long, unsigned long long, unsigned long long, const char*, int, const S2FunctionValue*, char*, int);
+int S2_FunctionCallCopy(long long target, unsigned long long owner, const S2FunctionValue* args, int argc, S2FunctionValue* ret, const S2FunctionCopyInput* input, S2FunctionCopyOutput* output, const S2FunctionCopyProducer* producer, char* reason, int reason_cap);
+int S2_FunctionFrameReadCopy(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int selector, S2FunctionValue* value, S2FunctionCopyOutput* output, char* reason, int reason_cap);
+int S2_FunctionFrameWriteCopy(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int selector, const S2FunctionValue* value, const S2FunctionCopyInput* input, const S2FunctionCopyProducer* producer, char* reason, int reason_cap);
+int S2_FunctionFrameCommitCopy(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, int action, const S2FunctionValue* value, const S2FunctionCopyInput* input, const S2FunctionCopyProducer* producer, char* reason, int reason_cap);
+int S2_FunctionFrameOverrideReturnCopy(long long target, unsigned long long token, unsigned long long epoch, const char* fingerprint, const S2FunctionValue* value, const S2FunctionCopyInput* input, const S2FunctionCopyProducer* producer, S2FunctionValue* effective, S2FunctionCopyOutput* output, char* reason, int reason_cap);
 }
 #endif
+
+extern "C" {
+int S2_FunctionPrepareInstance(unsigned long long,const S2FunctionInstanceOwner*,const char*,const char*,const char*,S2FunctionInstancePrepared*,char*,int);
+int S2_FunctionInstanceActivate(unsigned long long,const S2FunctionInstanceOwner*,char*,int);
+int S2_FunctionInstanceRelease(unsigned long long);
+int S2_FunctionFrameReadInstance(const S2FunctionInstanceAccess*,int,S2FunctionValue*,char*,int);
+int S2_FunctionFrameFieldRead(const S2FunctionInstanceAccess*,int,unsigned int,S2FunctionValue*,char*,int);
+int S2_FunctionFrameFieldWrite(const S2FunctionInstanceAccess*,int,unsigned int,const S2FunctionValue*,char*,int);
+int S2_FunctionFrameHiddenReferencedBy(const S2FunctionInstanceAccess*,int,const S2FunctionValue*,unsigned int,int*,char*,int);
+}

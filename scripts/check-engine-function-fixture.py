@@ -12,6 +12,7 @@ symbols = subprocess.check_output(["nm", "-anC", "--defined-only", str(fixture)]
 allowed = {
     "s2fn_member_fixture_target", "s2fn_fixture_targets",
     "s2fn_fixture_set_original_calls", "s2fn_fixture_peer_calls",
+    "s2fn_fixture_copy_length_target",
 }
 exported = {line.split()[-1] for line in exports.splitlines() if line.strip()}
 if exported != allowed:
@@ -33,4 +34,4 @@ for line in symbols.splitlines():
 print(f"fixture-elf={fixture}")
 print("fixture-needed=" + ",".join(dependencies))
 print(exports, end="")
-print("PASS fixture ELF has only four accessors and no provider/SafetyHook/libffi/runtime implementation")
+print("PASS fixture ELF has only five accessors and no provider/SafetyHook/libffi/runtime implementation")

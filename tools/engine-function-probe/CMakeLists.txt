@@ -60,7 +60,7 @@ endforeach()
 # The production path proof uses the same Service and frame transport, while
 # all patch targets remain in the existing hidden fixture DSO.
 target_sources(engine_function_v8_bridge PRIVATE
-    "${ROOT}/shim/src/engine_function_bridge.cpp" "${ROOT}/shim/src/engine_resolver.cpp"
+    "${ROOT}/shim/src/engine_function_bridge.cpp" "${ROOT}/shim/src/engine_function_copy.cpp" "${ROOT}/shim/src/engine_resolver.cpp"
     "${ROOT}/shim/src/original_module.cpp" "${ROOT}/shim/src/sigscan.cpp"
     "${ROOT}/shim/src/call_validate.cpp" "${ROOT}/shim/src/vtable.cpp"
     "${ROOT}/third_party/hde/hde64.c")

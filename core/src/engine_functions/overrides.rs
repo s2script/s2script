@@ -352,9 +352,10 @@ pub fn prepare(
         .functions
         .iter()
         .cloned()
-        .map(|function| PreparedFunction {
+        .map(|function| Ok(PreparedFunction {
             provenance: Provenance {
                 archive_hash: archive_hash.into(),
+                instances: None,
                 base_contract_hash: function.contract_hash.clone(),
                 overrides: vec![],
                 final_target_hash: contract::hash(&serde_json::to_value(&function.target).unwrap()),
@@ -362,10 +363,10 @@ pub fn prepare(
                 validator_result: ValidationResult::Pending,
                 required: function.requirement == "required",
             },
-            function,
+            function: super::instance::Function::from_public(function)?,
             unavailable: None,
-        })
-        .collect();
+        }))
+        .collect::<Result<_, String>>()?;
     let by_name: BTreeMap<_, _> = functions
         .iter()
         .enumerate()
@@ -448,7 +449,7 @@ pub fn prepare(
             f.provenance.validator_result = ValidationResult::Unavailable(reason.clone());
         }
     }
-    Ok(PreparedCandidate { base, functions })
+    Ok(PreparedCandidate { owner_id: base.owner_id.clone(), base: Some(base), functions })
 }
 
 #[cfg(test)]

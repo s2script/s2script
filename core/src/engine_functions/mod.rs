@@ -1,11 +1,14 @@
+pub(crate) mod instance;
 pub(crate) mod policy;
 pub(crate) mod package_adapter;
 pub(crate) mod projection;
+pub(crate) mod copied;
 pub(crate) mod runtime;
 pub(crate) mod registry;
 pub(crate) mod contract;
 pub(crate) mod overrides;
 pub(crate) mod provenance;
+pub(crate) mod trusted;
 mod abi {
     include!("abi.generated.rs");
 }
@@ -23,6 +26,43 @@ pub(crate) mod tests {
             "policy":{"id":"generic.v2","version":1,"contractHash":"","surfaces":["call"],"selfCall":"bypass-own-hooks","suppression":"none"},"requirement":"optional"}]});
         seal(&mut b);
         b
+    }
+    #[test]
+    fn borrowed_instance_pods_preserve_exact_c_layout() {
+        use crate::v8host::{S2FunctionInstanceOwner as Owner,S2FunctionInstancePrepared as Prepared,S2FunctionInstanceAccess as Access};
+        use std::mem::{align_of,size_of,offset_of};
+        assert_eq!((size_of::<Owner>(),align_of::<Owner>(),offset_of!(Owner,id_digest),offset_of!(Owner,generation)),(56,8,16,48));
+        assert_eq!((size_of::<Prepared>(),align_of::<Prepared>(),offset_of!(Prepared,target),offset_of!(Prepared,capability)),(24,8,8,16));
+        assert_eq!((size_of::<Access>(),align_of::<Access>(),offset_of!(Access,target),offset_of!(Access,frame_token),offset_of!(Access,native_epoch),offset_of!(Access,capability),offset_of!(Access,binding_id)),(48,8,8,16,24,32,40));
+    }
+    #[test]
+    fn borrowed_physical_signature_preserves_public_fingerprint() {
+        let bundle = parse(&fixture()).unwrap();
+        let f = super::instance::Function::from_public(bundle.functions[0].clone()).unwrap();
+        assert!(!f.abi.member_receiver);
+        assert_eq!(f.abi.fingerprint, "linux-x86_64-sysv:none:void()");
+        let mut physical = f.abi.physical();
+        physical.member_receiver = true;
+        assert_eq!(physical.fingerprint().unwrap(), "linux-x86_64-sysv:entity:void()");
+    }
+    #[test]
+    fn borrowed_record_layout_rejects_overlap_and_pointer_fields() {
+        use super::instance::{RecordField, RecordLayout};
+        let mut layout = RecordLayout {
+            extent: 16, alignment: 8,
+            fields: vec![RecordField { name: "value".into(), offset_key: "value".into(),
+                offset: 0, storage: "f32".into(), nullable: false,
+                read: vec!["pre".into(), "post".into()], write: vec!["pre".into()] }],
+        };
+        assert!(layout.validate().is_ok());
+        layout.fields.push(RecordField { name: "overlap".into(), ..layout.fields[0].clone() });
+        assert!(layout.validate().unwrap_err().contains("overlap"));
+        layout.fields.pop();
+        layout.fields[0].storage = "ptr".into();
+        assert!(layout.validate().unwrap_err().contains("storage"));
+        layout.fields[0].storage = "bool".into();
+        layout.fields[0].offset = 16;
+        assert!(layout.validate().unwrap_err().contains("extent"));
     }
     pub(crate) fn seal(b: &mut Value) {
         for f in b["functions"].as_array_mut().unwrap() {
@@ -217,18 +257,67 @@ pub(crate) mod tests {
     #[test]
     fn approved_sdk_complex_abi_and_projection_parity() {
         let text = r#"{"bundleHash":"da0aeda9d417db7934a25ee6920c0cf281d721c40c3314ad6b9a034ecd34aa92","functions":[{"abi":{"fingerprint":"linux-x86_64-sysv:entity:ptr(u8,i32,u32,i64,u64,f32,f64,ptr,ptr,ptr,ptr)","parameters":[{"mutable":["pre"],"name":"a0","native":"u8","projection":{"id":"bool","version":1}},{"mutable":[],"name":"a1","native":"i32","projection":{"id":"i32","version":1}},{"mutable":[],"name":"a2","native":"u32","projection":{"id":"u32","version":1}},{"mutable":[],"name":"a3","native":"i64","projection":{"id":"i64","version":1}},{"mutable":[],"name":"a4","native":"u64","projection":{"id":"u64","version":1}},{"mutable":[],"name":"a5","native":"f32","projection":{"id":"f32","version":1}},{"mutable":[],"name":"a6","native":"f64","projection":{"id":"f64","version":1}},{"mutable":[],"name":"a7","native":"ptr","projection":{"id":"entity","version":1}},{"mutable":[],"name":"a8","native":"ptr","projection":{"id":"entity?","version":1}},{"mutable":[],"name":"a9","native":"ptr","projection":{"id":"string","version":1}},{"mutable":[],"name":"a10","native":"ptr","projection":{"id":"vector","version":1}}],"platform":"linux-x86_64-sysv","receiver":"entity","returns":{"native":"ptr","projection":{"id":"entity?","version":1}},"stackCopyBytes":128},"canonicalId":"@demo/fire::mixed","contractHash":"095ece0601c4e8468fd96db948521955c507889c3d036ff88a497144c6e53fd3","localName":"mixed","policy":{"contractHash":"b4ed916980ec0d251c18f1cc26b17e927fb0343741ef56dae12162adf14aac06","id":"generic.v2","selfCall":"bypass-own-hooks","suppression":"generic","surfaces":["call","pre","post"],"version":1},"requirement":"required","target":{"candidateValidate":{},"class":"Entity","derivation":"virtual-slot","index":511,"kind":"virtual","module":"server","resolve":"direct","targetValidate":{"prologue":"55"}}},{"abi":{"fingerprint":"linux-x86_64-sysv:none:u8()","parameters":[],"platform":"linux-x86_64-sysv","receiver":"none","returns":{"native":"u8","projection":{"id":"bool","version":1}},"stackCopyBytes":128},"canonicalId":"@demo/fire::site","contractHash":"6d632e61411a2f3e7a67adf38c17c272953b6ce51e932cc213f5a71e013592de","localName":"site","policy":{"contractHash":"0e62b39ca77029a170b6b56c199c827cd6c0db7c4b0908cefaaca46513c5e1b5","id":"generic.v2","selfCall":"bypass-own-hooks","suppression":"none","surfaces":["call"],"version":1},"requirement":"optional","target":{"candidateValidate":{"string-xref":{"at":0,"dispOff":1,"expect":"é🔥","instrLen":5}},"derivation":"e8-rel32","kind":"signature","module":"server","pattern":"E8 ?? ?? ?? ??","resolve":"validated-call","targetValidate":{"prologue":"55"}}}],"ownerId":"@demo/fire","schemaVersion":2}"#;
-        let b: Value = serde_json::from_str(text).unwrap();
+        let mut b: Value = serde_json::from_str(text).unwrap();
         let mut summary = summary(&b);
         summary["functions"][0]["mutates"] = true.into();
         summary["functions"][0]["suppresses"] = true.into();
+        assert!(contract::parse(text, "@demo/fire", &summary, &["engine:calls".into(), "engine:hooks".into()]).unwrap_err().contains("ownership"));
+        b["functions"][0]["abi"]["parameters"][9]["ownership"] = "callee-borrowed".into();
+        b["functions"][0]["abi"]["parameters"][10]["ownership"] = "callee-retained".into();
+        seal(&mut b);
+        summary["bundleHash"] = b["bundleHash"].clone();
+        summary["functions"][0]["contractHash"] = b["functions"][0]["contractHash"].clone();
+        let text = b.to_string();
         assert!(contract::parse(
-            text,
+            &text,
             "@demo/fire",
             &summary,
             &["engine:calls".into(), "engine:hooks".into()]
         )
         .is_ok());
-        assert!(contract::parse(text, "@demo/fire", &summary, &["engine:calls".into()]).is_err());
+        assert!(contract::parse(&text, "@demo/fire", &summary, &["engine:calls".into()]).is_err());
+    }
+    #[test]
+    fn copied_ownership_is_required_and_capabilities_are_checked_after_rehash() {
+        let make = |input: Option<&str>, result: Option<&str>, mutable: bool, surfaces: &[&str], suppression: &str| {
+            let mut b = fixture();
+            let f = &mut b["functions"][0];
+            f["abi"]["parameters"] = json!([{"name":"text","native":"ptr","projection":{"id":"string","version":1},"mutable":if mutable { json!(["pre"]) } else { json!([]) }}]);
+            if let Some(owner) = input { f["abi"]["parameters"][0]["ownership"] = owner.into(); }
+            f["abi"]["returns"] = json!({"native":"ptr","projection":{"id":"vector","version":1}});
+            if let Some(owner) = result { f["abi"]["returns"]["ownership"] = owner.into(); }
+            f["abi"]["fingerprint"] = "linux-x86_64-sysv:none:ptr(ptr)".into();
+            f["policy"]["surfaces"] = json!(surfaces);
+            f["policy"]["suppression"] = suppression.into();
+            seal(&mut b);
+            b
+        };
+        let check = |b: &Value| {
+            let mut s = summary(b);
+            s["functions"][0]["mutates"] = (!b["functions"][0]["abi"]["parameters"][0]["mutable"].as_array().unwrap().is_empty()).into();
+            s["functions"][0]["suppresses"] = (b["functions"][0]["policy"]["suppression"] != "none").into();
+            contract::parse(&b.to_string(), "@demo/fire", &s, &["engine:calls".into(), "engine:hooks".into()])
+        };
+        let valid = make(Some("callee-retained"), Some("caller-borrowed"), true, &["call", "pre", "post"], "generic");
+        assert!(check(&valid).is_ok());
+        assert!(check(&make(None, Some("caller-borrowed"), false, &["pre", "post"], "generic")).unwrap_err().contains("ownership"));
+        assert!(check(&make(Some("callee-borrowed"), None, false, &["pre", "post"], "generic")).unwrap_err().contains("ownership"));
+        assert!(check(&make(Some("caller-borrowed"), Some("caller-borrowed"), false, &["pre", "post"], "generic")).is_err());
+        assert!(check(&make(Some("callee-borrowed"), Some("caller-borrowed"), true, &["pre", "post"], "generic")).is_err());
+        assert!(check(&make(Some("callee-borrowed"), Some("caller-borrowed"), false, &["call"], "none")).is_ok());
+        assert!(check(&make(Some("native-observed"), Some("caller-borrowed"), false, &["call", "pre"], "generic")).is_err());
+        assert!(check(&make(Some("native-observed"), Some("caller-borrowed"), true, &["pre", "post"], "generic")).is_err());
+        assert!(check(&make(Some("callee-borrowed"), Some("native-observed"), false, &["pre", "post"], "generic")).is_err());
+        assert!(check(&make(Some("callee-borrowed"), Some("native-observed"), false, &["pre", "post"], "none")).is_ok());
+        assert!(check(&make(Some("callee-borrowed"), Some("native-observed"), false, &["call", "post"], "none")).is_err());
+        let mut null_owner = valid.clone();
+        null_owner["functions"][0]["abi"]["parameters"][0]["ownership"] = Value::Null;
+        seal(&mut null_owner);
+        assert!(check(&null_owner).is_err());
+        let mut irrelevant = fixture();
+        irrelevant["functions"][0]["abi"]["returns"]["ownership"] = "caller-borrowed".into();
+        seal(&mut irrelevant);
+        assert!(parse(&irrelevant).unwrap_err().contains("ownership"));
     }
     #[test]
     fn exact_approved_sdk_fixture_hash_parity() {

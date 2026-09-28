@@ -29,13 +29,14 @@ mod interop_lifetime;
 use interop_wire::*;
 mod timers;
 pub(crate) mod function_adapter;
+mod engine_functions;
 
 pub use lifecycle::unload_all;
 #[allow(unused_imports)] // retained parent-module surface for existing internal/test callers
 pub(crate) use lifecycle::{
     clear_failed, clear_pending_handoff, config_file_content, create_plugin_context, current_frame,
     dispose_plugin_context, eval_in_context, failed_plugin_ids, finalize_loading_plugins,
-    iface_published, iface_published_types_sha256, is_failed, is_loading, load_plugin_js,
+    iface_published, iface_published_types_sha256, is_failed, is_loading, load_plugin_js, load_plugin_js_prepared,
     materialize_for_load, materialize_for_load_snapshot, plugin_phase, queue_pending_reload,
     read_engine_config, re_materialize_config, re_materialize_config_snapshot, reconcile_initial_config_snapshot, set_failed,
     set_plugin_version, store_config_decls, unload_plugin,
@@ -6725,3 +6726,7 @@ pub(crate) mod frame_tests;
 #[cfg(test)]
 #[path = "v8host/engine_function_adapter_v8.rs"]
 mod engine_function_adapter_v8;
+
+#[cfg(test)]
+#[path = "v8host/tests/engine_functions.rs"]
+mod engine_function_tests;

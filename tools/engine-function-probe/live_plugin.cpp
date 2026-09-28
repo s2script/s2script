@@ -127,7 +127,7 @@ void Arm(std::uint64_t next) {
     Require(owned.empty() && !retiring, "previous generation has not drained");
     Require(next > generation && (generation == 0 || last_retired == generation), "generation order mismatch");
     generation = next;
-    AbiSignature s; s.receiver = "entity"; s.parameters = {{"f32"},{"i32"},{"ptr"},{"f32"}};
+    AbiSignature s; s.member_receiver = true; s.parameters = {{"f32"},{"i32"},{"ptr"},{"f32"}};
     Bind(s, reinterpret_cast<void*>(&IgniteAbi));
     s.parameters = {{"ptr"},{"i32"},{"ptr"}}; s.returns = {"i32"}; Bind(s,reinterpret_cast<void*>(&AcquireAbi));
     s.parameters = {{"ptr"},{"ptr"},{"ptr"}}; s.returns = {"void"}; Bind(s,reinterpret_cast<void*>(&HudAbi));

@@ -5,17 +5,22 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 compiler="${CXX:-c++}"
 flags=(-std=c++17 -O1 -g -Wall -Wextra -Ishim/src -Ithird_party/hde)
+if echo 'int main(){return 0;}' | "$compiler" -x c++ -fsanitize=address,undefined -o "$tmp/sanitizer-probe" - 2>/dev/null; then
+  flags+=(-fsanitize=address,undefined -fno-sanitize-recover=all)
+  echo 'Portable bridge/transport gate with address/undefined sanitizers'
+fi
 hde_flags=()
 case "$(uname -m)" in arm64|aarch64) hde_flags+=(-D_M_X64);; esac
 "$compiler" "${flags[@]}" ${hde_flags[@]+"${hde_flags[@]}"} -x c++ -c third_party/hde/hde64.c -o "$tmp/hde64.o"
 libs=()
 if [[ "$(uname -s)" == Linux ]]; then libs+=(-ldl); fi
 "$compiler" "${flags[@]}" -DS2FN_VALIDATION_ONLY -DS2_RESOLVER_ENGINE_FREE \
-  shim/src/engine_function_bridge.cpp shim/src/engine_function_abi.cpp \
+  shim/src/engine_function_bridge.cpp shim/src/engine_function_copy.cpp shim/src/engine_function_abi.cpp \
   shim/src/engine_resolver.cpp shim/src/original_module.cpp shim/src/sigscan.cpp \
   shim/src/call_validate.cpp shim/src/vtable.cpp shim/tests/engine_function_bridge_test.cpp "$tmp/hde64.o" \
   ${libs[@]+"${libs[@]}"} -o "$tmp/bridge"
 "$tmp/bridge"
+"$tmp/bridge" --copy-quota
 if [[ ${1:-} == --stock-provider ]]; then
   [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || { echo 'UNSUPPORTED platform: bridge runtime proof requires linux-x86_64-sysv' >&2; exit 2; }
   # Reuse the exact upstream provider inventory and private pinned libffi build.
@@ -32,6 +37,7 @@ target_compile_definitions(bridge_target_fixture PRIVATE S2BRIDGE_TARGET_FIXTURE
 target_compile_options(bridge_target_fixture PRIVATE -fvisibility=hidden -fno-gnu-unique)
 add_executable(bridge_stock
   "$PWD/shim/src/engine_function_bridge.cpp"
+  "$PWD/shim/src/engine_function_copy.cpp"
   "$PWD/shim/src/engine_resolver.cpp" "$PWD/shim/src/original_module.cpp"
   "$PWD/shim/src/sigscan.cpp" "$PWD/shim/src/call_validate.cpp" "$PWD/shim/src/vtable.cpp"
   "$PWD/third_party/hde/hde64.c" "$PWD/shim/tests/engine_function_bridge_test.cpp")

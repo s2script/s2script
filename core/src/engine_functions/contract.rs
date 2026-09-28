@@ -54,6 +54,8 @@ pub struct Parameter {
     pub name: String,
     pub native: String,
     pub projection: Projection,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "present")]
+    pub ownership: Option<String>,
     pub mutable: Vec<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,6 +63,8 @@ pub struct Parameter {
 pub struct Returns {
     pub native: String,
     pub projection: Projection,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "present")]
+    pub ownership: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -235,7 +239,7 @@ impl NormalizedTarget {
         target.validate()
     }
 }
-fn projection(native: &str, p: &Projection, ret: bool) -> Result<(), String> {
+pub(crate) fn projection(native: &str, p: &Projection, ret: bool) -> Result<(), String> {
     let valid = match p.id.as_str() {
         "void" => ret && native == "void",
         "bool" => native == "u8",
@@ -247,6 +251,15 @@ fn projection(native: &str, p: &Projection, ret: bool) -> Result<(), String> {
         p.version == 1 && valid,
         "unsupported ABI/projection pair (host authority required for custom codecs)",
     )
+}
+pub(crate) fn copied_ownership(id: &str, owner: Option<&str>, ret: bool, field: &str) -> Result<(), String> {
+    if matches!(id, "string" | "vector") {
+        let allowed = if ret { &["caller-borrowed", "native-observed"][..] } else { &["callee-borrowed", "callee-retained", "native-observed"][..] };
+        require(owner.is_some_and(|value| allowed.contains(&value)),
+            &format!("{field}: copied ownership is required and must match its direction; rebuild old copied declarations"))
+    } else {
+        require(owner.is_none(), &format!("{field}: ownership is only valid for copied string/vector positions"))
+    }
 }
 pub fn parse(
     text: &str,
@@ -295,6 +308,7 @@ pub fn parse(
                 "invalid/duplicate parameter name",
             )?;
             projection(&p.native, &p.projection, false)?;
+            copied_ownership(&p.projection.id, p.ownership.as_deref(), false, &format!("{} parameter {}", f.canonical_id, p.name))?;
             require(
                 p.mutable.is_empty() || p.mutable == ["pre"],
                 "invalid mutability",
@@ -316,6 +330,7 @@ pub fn parse(
             }
         }
         projection(&a.returns.native, &a.returns.projection, true)?;
+        copied_ownership(&a.returns.projection.id, a.returns.ownership.as_deref(), true, &format!("{} returns", f.canonical_id))?;
         let stack = abi::STACK_SAFETY_BUFFER.max((spill + 15) / 16 * 16);
         require(
             stack <= abi::MAX_STACK_BYTES && a.stack_copy_bytes == stack,
@@ -337,25 +352,24 @@ pub fn parse(
             "ABI fingerprint mismatch",
         )?;
         let p = &f.policy;
-        let surfaces: Vec<String> = ["call", "pre", "post"]
-            .into_iter()
-            .filter(|s| p.surfaces.iter().any(|v| v == s))
-            .map(String::from)
-            .collect();
-        let pre = p.surfaces.iter().any(|s| s == "pre");
-        require(
-            !surfaces.is_empty()
-                && surfaces == p.surfaces
-                && p.id == "generic.v2"
-                && p.version == 1
-                && p.self_call == "bypass-own-hooks"
-                && p.suppression == if pre { "generic" } else { "none" },
-            "invalid/host-only policy",
-        )?;
+        validate_policy(p)?;
+        let pre=p.surfaces.iter().any(|s|s=="pre");
         require(
             pre || a.parameters.iter().all(|p| p.mutable.is_empty()),
             "mutation requires pre",
         )?;
+        for parameter in &a.parameters {
+            require(!(parameter.ownership.as_deref() == Some("native-observed") && p.surfaces.iter().any(|s| s == "call")),
+                &format!("{} parameter {}: native-observed disallows call", f.canonical_id, parameter.name))?;
+            require(!(parameter.ownership.as_deref() == Some("native-observed") && !parameter.mutable.is_empty()),
+                &format!("{} parameter {}: native-observed disallows PRE edits", f.canonical_id, parameter.name))?;
+            require(!(parameter.ownership.as_deref() == Some("callee-borrowed") && !parameter.mutable.is_empty() && a.returns.native == "ptr"),
+                &format!("{} parameter {}: mutable copied pointer-return input requires callee-retained", f.canonical_id, parameter.name))?;
+        }
+        require(!(a.returns.ownership.as_deref() == Some("native-observed") && p.surfaces.iter().any(|s| s == "call")),
+            &format!("{} returns: native-observed disallows call", f.canonical_id))?;
+        require(!(a.returns.ownership.as_deref() == Some("native-observed") && pre && p.suppression != "none"),
+            &format!("{} returns: native-observed requires suppression:none", f.canonical_id))?;
         let mut policy = serde_json::to_value(p).unwrap();
         policy.as_object_mut().unwrap().remove("contractHash");
         require(hash(&policy) == p.contract_hash, "policy hash mismatch")?;
@@ -413,15 +427,78 @@ impl ImplementationManifestHash {
     pub(crate) fn as_str(&self) -> &str { &self.0 }
 }
 /// Possession of this capability, rather than the serializable key, grants bootstrap authority.
-pub(crate) struct HostPackageOwner(OwnerKey);
+#[derive(Clone)]
+pub(crate) struct HostPackageOwner(std::rc::Rc<PackageFunctionLifetime>);
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PackageFunctionPhase {
+    Unactivated,
+    Active,
+    Retired,
+}
+pub(crate) struct PackageFunctionLifetime {
+    pub(super) key: OwnerKey,
+    pub(super) phase: std::cell::Cell<PackageFunctionPhase>,
+    pub(super) source: std::cell::Cell<PackageFunctionPhase>,
+}
 impl HostPackageOwner {
     pub(crate) fn mint(id: &str) -> Result<Self, String> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        if id.is_empty() || id.contains('\0') { return Err("invalid host package id".into()); }
-        let generation = NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+        if id.is_empty() || id.contains('\0') {
+            return Err("invalid host package id".into());
+        }
+        let generation = NEXT
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| "package generation exhausted")?;
-        Ok(Self(OwnerKey { id: id.into(), generation, kind: OwnerKind::GamePackage }))
+        Ok(Self(std::rc::Rc::new(PackageFunctionLifetime {
+            key: OwnerKey {
+                id: id.into(),
+                generation,
+                kind: OwnerKind::GamePackage,
+            },
+            phase: std::cell::Cell::new(PackageFunctionPhase::Unactivated),
+            source: std::cell::Cell::new(PackageFunctionPhase::Unactivated),
+        })))
     }
-    pub(crate) fn key(&self) -> &OwnerKey { &self.0 }
+    pub(crate) fn key(&self) -> &OwnerKey {
+        &self.0.key
+    }
+    pub(crate) fn claim_source(&self) -> Result<(), String> {
+        if self.0.source.get() != PackageFunctionPhase::Unactivated || self.is_retired() {
+            return Err("package source already registered or retired".into());
+        }
+        self.0.source.set(PackageFunctionPhase::Active);
+        Ok(())
+    }
+    pub(crate) fn retire_source(&self) {
+        self.0.source.set(PackageFunctionPhase::Retired);
+    }
+    pub(crate) fn is_retired(&self) -> bool {
+        self.0.phase.get() == PackageFunctionPhase::Retired
+            || self.0.source.get() == PackageFunctionPhase::Retired
+    }
+    pub(super) fn lifetime(&self) -> std::rc::Rc<PackageFunctionLifetime> {
+        self.0.clone()
+    }
+}
+
+pub(crate) fn validate_policy(p: &Policy) -> Result<(), String> {
+        let surfaces: Vec<String> = ["call", "pre", "post"]
+            .into_iter()
+            .filter(|s| p.surfaces.iter().any(|v| v == s))
+            .map(String::from)
+            .collect();
+        let pre = p.surfaces.iter().any(|s| s == "pre");
+        require(
+            !surfaces.is_empty()
+                && surfaces == p.surfaces
+                && p.id == "generic.v2"
+                && p.version == 1
+                && p.self_call == "bypass-own-hooks"
+                && (if pre { matches!(p.suppression.as_str(), "generic" | "none") } else { p.suppression == "none" }),
+            "invalid/host-only policy",
+        )?;
+    let mut value=serde_json::to_value(p).unwrap();
+    value.as_object_mut().unwrap().remove("contractHash");
+    require(hash(&value)==p.contract_hash,"policy hash mismatch")
 }

@@ -1,7 +1,7 @@
 //! The entity books — the ONLY liveness authority for entities (north-star §3.1,
 //! Candidate D). `LIVE: index → (host-id, engine_serial)`, fed by the shim's
 //! IEntityListener through the ffi entry (UNCONDITIONALLY — before/independent of the
-//! JS mux dispatch), cleared at map start (the implicit epoch — no counter to stamp).
+//! JS mux dispatch), cleared at map start (the entity identity epoch).
 //! Engine memory is NEVER read to answer "is this entity alive". Host ids are u64,
 //! monotonic, never reset across maps; JS-safe as f64 up to 2^53 mints. Game-thread
 //! only (thread_local), like every other v8host-adjacent table.
@@ -10,6 +10,7 @@ use std::cell::{Cell, RefCell};
 use crate::liveness::LiveTable;
 
 thread_local! {
+    static MAP_EPOCH: Cell<u64> = const {Cell::new(1)};
     static LIVE: RefCell<LiveTable<i32, i32>> = RefCell::new(LiveTable::new(1));
     /// Armed by `clear_for_map_transition`; consumed by the first simulating frame's
     /// repair sweep (north-star §7 / E0-V4 contingency: entities created before
@@ -78,8 +79,9 @@ pub fn engine_serial_for(index: i32, id: u64) -> Option<i32> {
         .and_then(|(cur, s)| if cur == id { Some(*s) } else { None }))
 }
 
-/// Map transition: clear the whole table (this IS the epoch, implicit) + arm the sweep.
+/// Map transition: advance record invalidation epoch, clear entity books, and arm the sweep.
 pub fn clear_for_map_transition() {
+    MAP_EPOCH.with(|epoch| epoch.set(if epoch.get()==0 {0} else {epoch.get().checked_add(1).unwrap_or(0)}));
     LIVE.with(|t| t.borrow_mut().clear());
     crate::surface_leases::reset();
     crate::shared_entity_switch::reset();
@@ -179,6 +181,18 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_map_epoch_exhaustion_is_permanently_fail_closed() {
+        let saved=map_epoch();
+        struct Restore(u64);
+        impl Drop for Restore { fn drop(&mut self) { MAP_EPOCH.with(|e|e.set(self.0));reset_for_tests(); } }
+        let _restore=Restore(saved);
+        MAP_EPOCH.with(|e|e.set(u64::MAX-1));
+        clear_for_map_transition();assert_eq!(map_epoch(),u64::MAX);
+        clear_for_map_transition();assert_eq!(map_epoch(),0);
+        clear_for_map_transition();assert_eq!(map_epoch(),0);
+    }
+
+    #[test]
     fn repair_reconcile_upserts_and_evicts() {
         fresh();
         let kept = on_created(1, 11);           // present + matching → kept
@@ -192,3 +206,6 @@ mod tests {
         assert_eq!(len(), 3);
     }
 }
+
+/// Map invalidation only; this does not establish any native record lifetime.
+pub(crate) fn map_epoch() -> u64 {MAP_EPOCH.with(Cell::get)}

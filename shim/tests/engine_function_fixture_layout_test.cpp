@@ -68,6 +68,16 @@ int main(int argc, char** argv) {
     assert(!targets.peer_boolean(false) && targets.peer_boolean(true));
     assert(targets.peer_mixed(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17) == 153.0);
     assert(s2fn_fixture_peer_calls() == peers + 3 && calls == 27);
+    const auto copied_length = s2fn_fixture_copy_length_target();
+    boundary.Require("copied_length", copied_length);
+    const auto length = reinterpret_cast<std::int32_t(*)(const char*)>(copied_length);
+    assert(length("continued") == 9 && length("") == 0 && calls == 29);
+    static_assert(sizeof(S2FnRecordFixture)==24 && alignof(S2FnRecordFixture)==8);
+    static_assert(offsetof(S2FnRecordFixture,scale)==16 && offsetof(S2FnRecordFixture,enabled)==12 && offsetof(S2FnRecordFixture,sentinel)==13 && offsetof(S2FnRecordFixture,small)==14);
+    S2FnRecordFixture receiver{2,3,0xffffffff,1,0xa5,123,4},info{7,8,0xffffffff,1,0x5a,321,9};
+    auto record=reinterpret_cast<std::int32_t(*)(S2FnRecordFixture*,S2FnRecordFixture*,const char*,void*)>(targets.record_member);
+    assert(record(&receiver,&info,"abc",nullptr)==12 && calls==30);
+    assert(record(&receiver,&info,"abc",&info)==112 && calls==31);
     s2fn_fixture_set_original_calls(nullptr);
-    std::cout << "PASS 19 native target layouts/signatures/counters and local-target rejection before Configure\n";
+    std::cout << "PASS 21 native target layouts/signatures/counters and local-target rejection before Configure\n";
 }
