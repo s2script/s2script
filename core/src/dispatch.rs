@@ -328,6 +328,12 @@ thread_local! {
     static DEFER_CALLBACKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 /// Owner-store engine follow-ups must not re-enter JavaScript while the store registry is borrowed.
+/// True while [`defer_while`] is active on this thread: host-originated engine calls are running
+/// with no plugin `FunctionCallbackInfo` to nest under, so synchronous callbacks must be skipped.
+pub(crate) fn callbacks_deferred() -> bool {
+    DEFER_CALLBACKS.with(std::cell::Cell::get)
+}
+
 /// Notify events use the usual deferred replay; synchronous pre-hooks follow its normal skip policy.
 pub(crate) fn defer_while<R>(f: impl FnOnce() -> R) -> R {
     struct Restore(bool);
