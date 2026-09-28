@@ -761,6 +761,7 @@
     // One key per pooled sheet. Held only while a NON-focused modal is open (a focused one already
     // holds a focus lease with the same hide action).
     var OWNED_MODAL = "cs2:hudkit:owned:modal:";
+    var OWNED_BADGE = "cs2:hudkit:owned:badge:";
     var TOAST_ROOTS = TOAST.map(function (item) { return item.id; });
 
     function surfaceSlot(map, slot) {
@@ -1685,9 +1686,29 @@
       var badgeReleased = false;
       var shownBindings = {};
       var selfBadge;
+      // Host-owned visibility lease per slot, as for modals: while held, the owner sweep on
+      // unload/reload retires it, which hides the badge instead of stranding it on screen.
+      var badgeLeases = {};
+      function holdBadge(slot, binding) {
+        var held = surfaceSlot(badgeLeases, slot)[0];
+        if (held && surfaceCurrent(badgeLeases, held)) return held;
+        var begun = beginSurface(badgeLeases, binding, OWNED_BADGE + slotIds.id, "legacy", [slotIds.id], "visible");
+        if (!begun.ok) {
+          log("badge " + slotIds.id + ": visibility lease unavailable (" + begun.error.message +
+            "); it will not be cleared if this plugin unloads while it is shown");
+          return null;
+        }
+        return begun.value;
+      }
+      function dropBadge(slot) {
+        var held = surfaceSlot(badgeLeases, slot)[0];
+        if (held) retireSurface(badgeLeases, held, true);
+      }
       function tryShowBadge(slot, data, binding) {
         if (badgeReleased) return releasedResult("badge");
         if (!bindingValid(binding)) return staleResult();
+        // Reserve BEFORE painting, so a winning reservation can never hide this show.
+        var lease = holdBadge(slot, binding);
         function currentBadge() { return !badgeReleased; }
         var paintText = resultBoundDriver(binding, driveSetText, currentBadge);
         var paintClass = resultBoundDriver(binding, driveSetClass, currentBadge);
@@ -1714,7 +1735,12 @@
         }
         paint(paintReveal, slot, slotIds.id, FADE.badge);
         if (badgeReleased) return releasedResult("badge");
-        return error || uiOk(undefined);
+        if (error) {
+          if (!shownBindings[slot]) dropBadge(slot);
+          return error;
+        }
+        if (lease) activateSurface(badgeLeases, lease);
+        return uiOk(undefined);
       }
       function showBadge(slot, data, binding) {
         var result = tryShowBadge(slot, data, binding);
@@ -1743,6 +1769,7 @@
           hide: function () {
             if (valid()) boundDriver(binding, hide, valid)(slot, slotIds.id);
             if (shownBindings[slot] === binding) delete shownBindings[slot];
+            dropBadge(slot);
           }
         };
       }
@@ -1754,12 +1781,20 @@
           var binding = shownBindings[slot];
           if (!badgeReleased && bindingValid(binding)) boundDriver(binding, hide)(slot, slotIds.id);
           delete shownBindings[slot];
+          dropBadge(slot);
         },
         forSlot: function (slot) {
           return makeBadgeView(slot, captureBinding(slot));
         },
         release: function () {
           if (badgeReleased) return;
+          // Returning the badge to the pool must not leave it on anyone's screen.
+          for (var bs in shownBindings) {
+            if (Object.prototype.hasOwnProperty.call(shownBindings, bs)) selfBadge.hide(Number(bs));
+          }
+          for (var ls in badgeLeases) {
+            if (Object.prototype.hasOwnProperty.call(badgeLeases, ls)) dropBadge(Number(ls));
+          }
           badgeReleased = true;
           shownBindings = {};
           releaseSlot("badge", idx);

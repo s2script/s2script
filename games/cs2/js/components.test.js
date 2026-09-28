@@ -295,16 +295,45 @@ test("a badge sets exactly one corner class", () => {
 });
 
 test("a badge shown through tryShow remains tracked for owner hide and hideAll", () => {
-  const { ui, calls } = mount();
+  const { ui, calls, surfaceRecords } = mount();
+  // Plugin-side hides only; a released visibility lease adds an (idempotent) host hide.
+  const ownHides = () => calls.filter(c => c.op === "hide" && c.id === "s2_b0" && !c.host).length;
+  const badgeLeases = () => [...surfaceRecords.values()].filter(r => r.key.startsWith("cs2:hudkit:owned:badge:")).length;
   const badge = ui.badge({ title: "Tracked" });
   const view = badge.forSlot(1);
   assert.equal(view.tryShow({ text: "owner hide" }).ok, true);
+  assert.equal(badgeLeases(), 1, "a shown badge holds a visibility lease");
   badge.hide(1);
-  assert.equal(calls.filter(c => c.op === "hide" && c.id === "s2_b0").length, 1);
+  assert.equal(ownHides(), 1);
+  assert.equal(badgeLeases(), 0, "hide releases the lease");
 
   assert.equal(view.tryShow({ text: "hide all" }).ok, true);
   ui.hideAll(1);
-  assert.equal(calls.filter(c => c.op === "hide" && c.id === "s2_b0").length, 2);
+  assert.equal(ownHides(), 2);
+});
+
+test("releasing a badge hides it for every player still seeing it", () => {
+  const { ui, calls, surfaceRecords } = mount();
+  const badge = ui.badge({ title: "Pooled" });
+  badge.show(1, { text: "a" });
+  badge.show(2, { text: "b" });
+  badge.release();
+  for (const slot of [1, 2]) {
+    assert.ok(calls.some(c => c.op === "hide" && c.id === "s2_b0" && c.slot === slot && !c.host),
+      `slot ${slot} hidden on release`);
+  }
+  assert.equal([...surfaceRecords.values()].filter(r => r.key.startsWith("cs2:hudkit:owned:badge:")).length, 0);
+});
+
+test("the host retiring a badge lease (plugin unload/reload) hides that player's badge", () => {
+  const { ui, calls, surfaceRecords, surface } = mount();
+  const badge = ui.badge({ title: "Live" });
+  badge.show(3, { text: "1:42" });
+  const lease = [...surfaceRecords.values()].find(r => r.key.startsWith("cs2:hudkit:owned:badge:"));
+  assert.equal(lease.state, "active");
+  const before = calls.length;
+  surface.release(lease.token);
+  assert.ok(calls.slice(before).some(c => c.op === "hide" && c.slot === 3 && c.id === "s2_b0" && c.host));
 });
 
 test("row clicks report an absolute index, not a page-relative one", () => {
