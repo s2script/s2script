@@ -1,7 +1,7 @@
 # S3 live acceptance receipt (2026-09-25)
 
-**Verdict: not complete.** HUD click needs a human client, and several runtime cases below have
-only unit or fixture evidence. Every row says which.
+**Verdict: live criteria met.** The HUD click passed with a human client on 2026-09-28. Several
+runtime cases still have only unit or fixture evidence; every row says which.
 
 ## Artifact
 
@@ -44,7 +44,7 @@ Fixtures were dropped into `plugins/` beside the shipped base plugins: `tools/pi
 | Acquire: plugin's own command-triggered give is gated | PASS | after target-scoped `ParentBusy` (`63ba47c5`) |
 | Acquire: nested give from inside the gate | PASS | only the causing plugin is skipped for the nested call |
 | Acquire: vote fold across plugins | unit only | `acquire.test.js`: Handled/Stop outrank Changed; first deny wins across contexts. Not driven live |
-| HUD click, callback before original | **PENDING (human)** | bots cannot click |
+| HUD click, callback before original | PASS (human, 2026-09-28) | see "HUD click" below |
 | Damage Pre observe (victim, attacker, damage) | PASS | `dmg_hurt 30`: `hookedOn=470 victim=470 damage=30`, health 100→70 |
 | Damage Pre mutate | PASS | `dmg_scale 0.5`: health 70→55 |
 | Damage block | PASS | `dmg_scale 0`: health stays 55 |
@@ -65,3 +65,33 @@ Fixtures were dropped into `plugins/` beside the shipped base plugins: `tools/pi
   degrades only its own descriptor, as designed. They need a gamedata regeneration, not S3 work.
 - A `point_hurt` with only a radius falls off with distance, so small hits floor to 0 health lost.
   That is engine behavior, not an adapter fault.
+
+## HUD click (human client, 2026-09-28)
+
+CS2 build 25537370, a fresh install of this stack's release (with #227's gamedata), and a human
+client with workshop addon 3790153369. Two blockers outside S3 had to be cleared first:
+- **MultiAddonManager v1.6 was stale for the Sep 24 update.** It wrote the client addon list at
+  CNetworkGameServer+344, but the engine now reads +376, so clients were sent `addons:''` and never
+  mounted the layouts (`ERROR_FILEOPEN` on every `.vxml_c`). Upstream v1.6.1 fixes the offset, and
+  it is installed on the test server.
+- **#227 had mapped `SetDialogVariableStringForPlayer` to the wrapper's revert branch**, so the
+  panels drew with blank text. Corrected in #227 `be9e9535`.
+
+hud-lab's `sm_kit` (a hudkit modal) then drew with text. Clicking each footer button logged, in
+this order:
+
+```
+[hud-lab] kit button "Bravo" clicked by slot 2
+[hud-lab] RAW CLICK button="s2_m0_f1" by gkh (slot 2)
+[hud-lab] kit button "Alpha" clicked by slot 2
+[hud-lab] RAW CLICK button="s2_m0_f0" by gkh (slot 2)
+[hud-lab] kit button "Charlie" clicked by slot 2
+[hud-lab] RAW CLICK button="s2_m0_f2" by gkh (slot 2)
+[hud-lab] RAW CLICK button="s2_m0_r2" by gkh (slot 2)
+```
+
+The path: client click → `CS_UM_CustomHudClicked` → `CustomHudClickedReceiver` (the trusted
+`customHudClicked` function) → the `legacy.hud-click.v1` adapter → the plugin's `onClick` and the
+raw `CustomHudLayout.onClicked`. Each id maps to the button clicked, and a list-row click
+(`s2_m0_r2`) is delivered too. A live engine hook confirmed input capture reached
+`SetInputCaptureEnabledForPlayer` for that slot on the layout entity.
