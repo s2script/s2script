@@ -2673,6 +2673,15 @@ fn dispatch_inner(target: i64, info: S2FunctionFrameInfo, phase: i32) -> Result<
     if binding.function.abi.parameters.len() != info.parameter_count as usize {
         return Err("frame parameter count mismatch".into());
     }
+    // Host-originated engine calls (surface/switch retirement, their follow-up engine ops) run under
+    // `defer_while` with no plugin `FunctionCallbackInfo` to nest under, and the host isolate is
+    // already held by the dispatch that caused them. Synchronous hooks follow the documented skip
+    // policy there, exactly like event pre-hooks: nothing is delivered and the native original
+    // runs unedited. Failing instead reported the (successful) engine call as failed, so its
+    // caller queued a pointless retry. A skipped PRE records no state, so its POST passes too.
+    if crate::dispatch::callbacks_deferred() && crate::nest::top().filter(|p| !p.is_null()).is_none() {
+        return Ok(());
+    }
     let frame = Frame::validate(target, info, phase, &binding.function.abi.fingerprint)?;
     let dispatch = Rc::new(Dispatch {
         frame,
@@ -5181,6 +5190,56 @@ pub(crate) mod scalar_transport_tests {
             drop(package);
             delivered.unwrap();
         }
+        set_engine_ops(None);
+        shutdown();
+    }
+    // Host-originated engine calls (surface/switch retirement) run under `defer_while` with no
+    // plugin FunctionCallbackInfo and the host isolate already held. Seen live: closing a hudkit
+    // MOTD released capture through a function another plugin hooked, and the hook dispatch
+    // failed with "synchronous host isolate unavailable", reporting the engine call as failed.
+    #[test]
+    fn deferred_host_calls_skip_hooks_and_pass_through() {
+        init_transport();
+        let package = review_package(&format!(
+            r#"
+            register('proof.review.v1','{}',{{
+              pre(d){{events.push('pre');while(d.cursor.invokeNext()!==null){{}}}},
+              post(d){{events.push('post');while(d.cursor.invokeNext()!==null){{}}}}}});
+            globalThis.wrapper=()=>{{events.push('wrapper');}};
+        "#,
+            proof::HASH
+        ));
+        frame_tests::load_body("deferred", "return {};", "{}");
+        let binding = proof::prepared_binding("deferred", |f| {
+            f["policy"]["surfaces"] = serde_json::json!(["call", "pre", "post"]);
+            f["policy"]["suppression"] = "none".into();
+        });
+        authorize(&package, "deferred", binding, "proof.review.v1").unwrap();
+        eval_in_context(
+            "deferred",
+            &format!("subscribeProof({binding}n,'proof.review.v1','pre');subscribeProof({binding}n,'proof.review.v1','post');"),
+        )
+        .unwrap();
+        assert!(crate::nest::top().is_none(), "precondition: no plugin callback frame to nest under");
+
+        let (pre, post) = crate::dispatch::defer_while(|| {
+            let info = open_frame();
+            let pre = crate::ffi::s2script_core_dispatch_function(1, &info, 0);
+            let post = crate::ffi::s2script_core_dispatch_function(1, &info, 1);
+            pop_frame();
+            (pre, post)
+        });
+        assert_eq!((pre, post), (1, 1), "a deferred host call passes through instead of failing");
+        assert_eq!(proof::pending_invocations(), 0, "a skipped PRE leaves no state behind");
+        eval_in_context("deferred", "if(events.length)throw Error('delivered while deferred: '+events);").unwrap();
+
+        // Outside the deferred window the same subscription is delivered as usual.
+        let info = open_frame();
+        assert_eq!(crate::ffi::s2script_core_dispatch_function(1, &info, 0), 1);
+        close_frame(&info);
+        eval_in_context("deferred", "if(!events.includes('pre')||!events.includes('post'))throw Error('not delivered: '+events);").unwrap();
+        unload_plugin("deferred");
+        drop(package);
         set_engine_ops(None);
         shutdown();
     }
