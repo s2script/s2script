@@ -93,10 +93,58 @@ function mount({ failOp = null, failActivation = false, onSurfaceRelease = null 
   const src = readFileSync(join(__dirname, "components.js"), "utf8");
   new Function(src)();
   return { ui: globalThis.__s2pkg_game_ctx.ui({}, "test").components(), calls, clickHandlers, pending,
-    surfaceRecords, frame: () => frameHandlers.slice().forEach((fn) => fn()) };
+    surfaceRecords, surface, frame: () => frameHandlers.slice().forEach((fn) => fn()) };
 }
 
 const classSet = (calls, cls) => calls.some((c) => c.op === "cls" && c.cls === cls && c.on === true);
+
+// A painted sheet is per-player engine state that outlives the plugin context. Unless the host
+// owns a lease for it, a plugin unloaded or reloaded mid-open leaves the sheet on screen with no
+// handler behind it and nothing able to close it (seen live: hud-lab's kit after a hot reload).
+test("a non-focused modal holds a host visibility lease while open and releases it on close", () => {
+  const { ui, calls, surfaceRecords } = mount();
+  const modal = ui.modal({ title: "T", rows: [{ a: "row" }] });
+  modal.open(1);
+  const leases = [...surfaceRecords.values()].filter(r => r.key.startsWith("cs2:hudkit:owned:modal:"));
+  assert.strictEqual(leases.length, 1, "exactly one modal lease while open");
+  assert.strictEqual(leases[0].slot, 1);
+  assert.strictEqual(leases[0].root, "s2_m0");
+  assert.strictEqual(leases[0].state, "active", "activated after a successful paint");
+  const reserve = calls.find(c => c.op === "surfaceReserve" && c.key.startsWith("cs2:hudkit:owned:modal:"));
+  assert.strictEqual(reserve.profile, "visible", "hide-only: cursor capture has its own swept lease");
+  assert.ok(calls.indexOf(reserve) < calls.findIndex(c => c.op === "show" && c.id === "s2_m0"),
+    "reserved before the root is shown, so a winning reservation can never hide this open");
+
+  modal.close(1);
+  assert.strictEqual([...surfaceRecords.values()].filter(r => r.key.startsWith("cs2:hudkit:owned:modal:")).length, 0,
+    "close releases the lease");
+});
+
+test("the host retiring a modal lease (plugin unload/reload) hides that player's sheet", () => {
+  const { ui, calls, surfaceRecords, surface } = mount();
+  const modal = ui.modal({ title: "T", rows: [{ a: "row" }] });
+  modal.open(2);
+  const lease = [...surfaceRecords.values()].find(r => r.key.startsWith("cs2:hudkit:owned:modal:"));
+  const before = calls.length;
+  // The host's owner sweep releases every lease the unloading plugin holds; the fake mirrors the
+  // host by recording the retirement hide.
+  surface.release(lease.token);
+  assert.ok(calls.slice(before).some(c => c.op === "hide" && c.slot === 2 && c.id === "s2_m0" && c.host),
+    "retirement hides the sheet root for that slot");
+});
+
+test("forget releases the modal lease; a focused modal does not take one", () => {
+  const { ui, surfaceRecords } = mount();
+  const modal = ui.modal({ title: "T", rows: [{ a: "row" }] });
+  modal.open(3);
+  modal.forget(3);
+  assert.strictEqual([...surfaceRecords.values()].filter(r => r.key.startsWith("cs2:hudkit:owned:modal:")).length, 0);
+
+  const focused = ui.modal({ title: "F", rows: [{ a: "row" }] });
+  focused.tryOpen(4, { focus: { mode: "exclusive" } });
+  assert.strictEqual([...surfaceRecords.values()].filter(r => r.key.startsWith("cs2:hudkit:owned:modal:")).length, 0,
+    "a focused modal is covered by its focus lease instead");
+});
 
 test("explicit modal invalidation coalesces while legacy refresh remains synchronous", () => {
   const { ui, calls, frame } = mount();
