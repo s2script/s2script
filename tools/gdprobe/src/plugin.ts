@@ -3,6 +3,7 @@
 import { command, onOutput, Entity, SDKHook, SDKHookType, HookResult } from "@s2script/sdk";
 import { Player, GameRules, CustomCameraMode, gameRules, TriggerZone } from "@s2script/cs2";
 import { after } from "@s2script/sdk/timers";
+import { Engine } from "@s2script/sdk/unsafe";
 
 const n = { postThink: 0, startTouch: 0, endTouch: 0, outStart: 0, outEnd: 0, terminateHook: 0, zStart: 0, zEnd: 0, zOutStart: 0, zOutEnd: 0 };
 
@@ -14,6 +15,16 @@ export function OnPluginStart(): void {
   onOutput("func_buyzone", "OnEndTouch", () => { n.outEnd += 1; });
   onOutput("trigger_multiple", "OnStartTouch", () => { n.zOutStart += 1; });
   onOutput("trigger_multiple", "OnEndTouch", () => { n.zOutEnd += 1; });
+  // Observe every call into the HUD input-capture setter: who calls it, for which slot, on or off.
+  const capture = Engine.function("captureProbe");
+  L(`captureProbe ${JSON.stringify(capture.status)}`);
+  if (capture.available) {
+    const sub = capture.onPre({ observeOnly: true }, (v) => {
+      L(`CAPTURE CALL layout=#${v.self.index} slot=${v.slot} enabled=${v.enabled}`);
+    });
+    L(`captureProbe hook ${sub.status}${sub.reason ? ": " + sub.reason : ""}`);
+  }
+  command.server("gd_capture", () => { L(`captureProbe ${JSON.stringify(capture.status)}`); });
   gameRules.onTerminateRound((v) => { n.terminateHook += 1; L(`onTerminateRound reason=${v.reason} delay=${v.delay}`); return HookResult.Continue; });
 
   command.server("gd_hooks", () => {

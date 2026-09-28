@@ -349,12 +349,17 @@
     },
 
     // Re-derived on build 25515854 (2026-09-25) from the build-25218825 body; see docs/superpowers/plans/2026-09-25-gamedata-25515854.md.
+    // Since 25515854 the cs_script wrapper splits this setter: value OMITTED calls a 3-argument
+    // revert-to-global function, value PRESENT calls this 4-argument setter. The twin of
+    // SetHasClassForPlayer; they diverge only at the tail: `4D 89 C4` (mov r12,r8: value pointer)
+    // here vs `45 89 C4` (mov r12d,r8d: class status) there. Mapping the revert branch left every
+    // text blank on a live client.
     "CCSCustomHudLayout_SetDialogVariableStringForPlayer": {
       "linuxsteamrt64": {
         "module": "libserver.so",
-        "pattern": "55 48 89 E5 41 55 41 54 53 89 F3 48 83 EC ? 85 F6 78 0B 49 89 FD 39 B7 ? ? ? ? 7F 12 48 83 C4 ?",
+        "pattern": "55 48 89 E5 41 56 41 55 41 54 53 89 F3 48 83 EC ? 85 F6 78 0B 49 89 FD 39 B7 ? ? ? ? 7F 10 48 83 C4 ? 5B 41 5C 41 5D 41 5E 5D C3 0F 1F 00 48 89 D6 31 D2 49 89 CE 66 89 55 ? 48 8D 55 ? 4D 89 C4",
         "resolve": "direct",
-        "validate": { "prologue": "55 48 89 E5 41 55 41 54 53 89 F3" }
+        "validate": { "prologue": "55 48 89 E5 41 56 41 55 41 54 53 89 F3" }
       }
     },
 
