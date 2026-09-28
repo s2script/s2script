@@ -1,5 +1,5 @@
 ---
-"@s2script/sdk": patch
+"@s2script/sdk": minor
 ---
 
 `SDKHook` `OnTakeDamage` / `OnTakeDamagePost` now run on the selected game package's damage
