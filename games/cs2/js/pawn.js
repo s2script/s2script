@@ -8,7 +8,7 @@
   var schema = globalThis.__s2pkg_cs2_schema;   // set by schema.generated.js
   var Weapon = globalThis.__s2pkg_cs2.Weapon;   // set by weapon.js (concatenated before this file)
 
-  // --- A5b: engine calls this game package DECLARES (gamedata/cs2/game.cs2.jsonc `calls`) ---
+  // --- A5b: engine calls this game package DECLARES (games/cs2/gamedata/game.cs2.jsonc `calls`) ---
   // The descriptors are registered by the HOST at Load — the shim hands core gamedata/cs2's merged
   // view — under the game package's own reserved owner id. This file never declares one and a
   // plugin cannot: the natives below take a call NAME only, exactly like @s2script/sdk/unsafe's
@@ -54,7 +54,7 @@
       return __s2_game_call_invoke(name, ref.index, ref.id, args);
     };
   }
-  // The eleven descriptors gamedata/cs2/game.cs2.jsonc declares, resolved ONCE here. Resolution is a
+  // The eleven descriptors games/cs2/gamedata/game.cs2.jsonc declares, resolved ONCE here. Resolution is a
   // load-time fact — the shim resolves + validates every descriptor at Load and never retries — so a
   // per-call `engineCall()` would re-derive the same answer on every slay(). Each is a plain callable
   // or `null`; the typed wrappers below test for null and degrade to their documented no-op/false,
@@ -398,7 +398,7 @@
 
   // --- Item / weapon manipulation slice (Task 4): pawn.giveNamedItem/weapons/stripWeapons/
   // dropActiveWeapon/removeWeapon — over the `giveNamedItem`/`removePlayerItem` descriptors declared
-  // in gamedata/cs2/game.cs2.jsonc (A5b; they were bespoke shim ops before) plus the Task-1
+  // in games/cs2/gamedata/game.cs2.jsonc (A5b; they were bespoke shim ops before) plus the Task-1
   // __s2_entity_subobj_vcall op and EntityRef.readHandleVector.
   // Offsets are live-resolved via __s2_schema_offset (never baked, self-healing); __s2_schema_offset
   // walks the base-class chain (schema_find_field in the shim), so passing "CCSPlayer_WeaponServices"
@@ -1015,8 +1015,8 @@
   // prelude.js merges these into every plugin's ctx). Each factory gets the prelude's ledger
   // registrar, so ctx.gameRules.onTerminateRound is torn down at unload like any other
   // subscription. The hook NAMES here must match the `hooks` keys declared for "@s2script/cs2"
-  // in gamedata/cs2/game.cs2.jsonc — degrade is graceful (a WARN, never a crash) if they drift,
-  // but the handler simply never fires.
+  // in games/cs2/gamedata/game.cs2.jsonc — degrade is graceful (a WARN, never a crash) if they drift,
+  // but the handler simply never fires. (Pickup gates are not a ctx namespace; see `items` below.)
   globalThis.__s2pkg_game_ctx = {
     gameRules: function (reg, viaId) {
       return {
@@ -1032,65 +1032,36 @@
         },
       };
     },
-    items: function (reg, viaId) {
-      var playerHopWarned = false;
-      function hopPlayer() {
-        if (typeof __s2_hook_self_matches !== "function") return null;
-        var off = __s2_schema_offset("CBasePlayerPawn", "m_pItemServices");
-        if (off < 0) return null;
-        for (var s = 0; s < MAX_PLAYERS; s++) {
-          var pawn = Pawn.forSlot(s);
-          if (pawn && pawn.ref && __s2_hook_self_matches(pawn.ref, off)) {
-            return pawn.controller;
-          }
-        }
-        if (!playerHopWarned) {
-          playerHopWarned = true;
-          console.log("[s2script] WARN: onCanAcquire player hop missed (ItemServices* matched no live pawn) — view.player is null; the hook still fires");
-        }
-        return null;
-      }
-      function readDefIndex() {
-        if (typeof __s2_hook_q_u16 !== "function") return 0;
-        var n = __s2_hook_q_u16(0, "CEconItemView", "m_iItemDefinitionIndex");
-        return typeof n === "number" ? n : 0;
-      }
-      function wrap(h, isPost) {
-        return function (raw) {
-          var view = {
-            get player() { return hopPlayer(); },
-            get defIndex() { return readDefIndex(); },
-            get method() { return raw.method; },
-            get result() { return raw.result; },
-            set result(v) { if (!isPost) raw.result = v; },
-            get skipped() { return isPost ? !!raw.skipped : false; },
-          };
-          return h(view);
-        };
-      }
-      return {
-        onCanAcquire: function (h) {
-          reg(viaId(function () { return __s2_hook_on("@s2script/cs2", "onCanAcquire", wrap(h, false)); }));
-        },
-        onCanAcquirePost: function (h) {
-          reg(viaId(function () {
-            if (typeof __s2_hook_on_post === "function") {
-              return __s2_hook_on_post("@s2script/cs2", "onCanAcquire", wrap(h, true));
-            }
-            return 0;
-          }));
-        },
-      };
-    },
   };
 
-  // Load-window free APIs: import { gameRules, players, items } from "@s2script/cs2".
+  // Load-window free APIs: import { gameRules, players } from "@s2script/cs2".
   // Proxies look up the current plugin's merged ctx at call time (same window as command()).
   if (typeof globalThis.__s2_game_ns === "function") {
     globalThis.__s2pkg_cs2.gameRules = globalThis.__s2_game_ns("gameRules");
     globalThis.__s2pkg_cs2.players = globalThis.__s2_game_ns("players");
-    globalThis.__s2pkg_cs2.items = globalThis.__s2_game_ns("items");
   }
+
+  // import { items } from "@s2script/cs2" — pickup gates on the trusted `canAcquire` engine
+  // function, folded by the legacy.acquire.v1 package adapter (js/adapters/acquire.js). There is
+  // no ctx.items: the subscription is made directly, owned and torn down by the host ledger of
+  // the calling plugin. Registration keeps the load-window contract of the former namespace.
+  var acquireGate = globalThis.__s2pkg_cs2_adapters && globalThis.__s2pkg_cs2_adapters.acquire;
+  var acquirePawns = { maxPlayers: MAX_PLAYERS, forSlot: function (slot) { return Pawn.forSlot(slot); } };
+  function acquireSubscriber(phase, api) {
+    return function (handler) {
+      if (!globalThis.__s2_load_ctx) throw new Error("s2script: " + api + " outside the load window");
+      if (typeof handler !== "function") throw new TypeError("s2script: " + api + " requires a handler function");
+      if (!acquireGate) {
+        console.log("[s2script] WARN: " + api + ": the pickup-gate adapter is not packaged, so this handler will not fire");
+        return;
+      }
+      acquireGate.subscribe(phase, handler, acquirePawns);
+    };
+  }
+  globalThis.__s2pkg_cs2.items = Object.freeze({
+    onCanAcquire: acquireSubscriber("pre", "items.onCanAcquire()"),
+    onCanAcquirePost: acquireSubscriber("post", "items.onCanAcquirePost()"),
+  });
 
   // Crash reporter: push the game identity into the engine-generic breadcrumb (spec §5 — the
   // game package supplies the value IN; core never knows the game). Best-effort: absent natives

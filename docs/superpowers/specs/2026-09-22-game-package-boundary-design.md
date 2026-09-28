@@ -51,7 +51,7 @@ deterministic deployed manifest `addons/s2script/game-packages.json`, for exampl
 
 ```jsonc
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "packages": [{
     "id": "@s2script/cs2",
     "match": { "engine": "source2", "game": "csgo" },
@@ -62,13 +62,27 @@ deterministic deployed manifest `addons/s2script/game-packages.json`, for exampl
 }
 ```
 
+The optional source-manifest `functionsFile` names a separate, authored v2 function declaration
+file. When present, packaging uses the SDK's `parseFunctionFile`, `normalizeFunctions`,
+`engineFunctionsArchive`, and `engineFunctionsManifest` path with the package id as owner. The
+deployed v2 record then additionally has exactly `functions:{path,sha256,summary,permissions}`;
+the latter two values are SDK-derived and are checked by the Rust shared contract validator against
+the retained normalized bytes. The SHA-256 of those bytes and their `bundleHash` are distinct from
+the bootstrap and legacy gamedata identities. Without `functionsFile`, the deployed field and
+artifact are absent. The existing v1 gamedata artifact remains independent. A present empty
+declaration is valid but provides no execution proof. The default CS2 manifest omits
+`functionsFile` until sealed package-owner activation is integrated; a present product fails
+process commit by name at that boundary and cannot partially publish source or legacy data.
+
 The illustrative `<sha256>` values are replaced by packaging with lowercase
-64-character SHA-256 digests. The gamedata bundle retains the owner's layout,
-keys, target variants, and S2 function definitions, not only its functions. The
+64-character SHA-256 digests. The v1 gamedata bundle retains the owner's legacy layout,
+keys, target variants, interfaces, calls, and hooks. It is merged with the existing native
+gamedata grammar; it is not an S2 v2 normalized functions archive. Explicit S2 function
+declarations require a separate build-time normalized product and the S2 contract. The
 `gamedataOwner` field maps the reserved package id to the existing owner tree and
 operator override directory; CS2 keeps the `cs2` mapping so existing custom files
 are not silently ignored. Hashes cover the shipped artifacts; operator overlays
-are applied afterward by the shared loader with their own provenance.
+are applied afterward by the shared loader with separate, unhashed custom-path provenance.
 
 The native bridge supplies the detected game token; runtime code does not branch on it. Matching is
 deterministic. Zero matches leaves the generic runtime available but refuses plugins requiring a
@@ -87,7 +101,28 @@ Core's per-context bootstrap iterates the selected manifest records. The shim no
 packaging may still concatenate modules, but the manifest names the resulting artifact and its hash;
 the runtime does not know the concatenation recipe or entry filename.
 
-The manifest loads JavaScript/data only. Native Source 2 support remains in the existing Metamod
+The bootstrap's final synchronous expression returns an explicit module map such as
+`{ ".": rootExports, "./ui": uiExports }`. The root is required; keys are exact normalized
+package-local subpaths (at most 64 keys, 256 bytes each), with module objects as values.
+Host validation rejects proxies, map accessors, promises and thenable objects without executing
+getters. The host captures a private map after successful evaluation under the existing
+host-minted package token, evaluates each package once, and publishes exact id/subpath lookup
+only for that context. CS2's `./ui` exports its five runtime constants; `econ.d.ts` remains
+type-only and has no invented runtime module. Internal adapter test helpers may intentionally
+have no public export map.
+
+The selected-bootstrap checkpoint retains one immutable pending handle, stages legacy call/hook
+registries, then commits source, owner and the existing prepared package receipt synchronously.
+Size-query/copy pairs use that handle; stale or aborted handles cannot be reused. Status carries
+verified artifact hashes, the captured merged-data hash and applied custom-path provenance.
+The fixed-size crash envelope carries a short digest derived from this captured identity;
+full SHA-256 values remain in process status. Pure JavaScript copied data is not revoked by
+retirement; captured engine-facing closures continue to check owner/generation liveness.
+PluginInstance owns package module Globals before its Context Global and releases them after
+its existing subscription/adapter ledger retires. Process source/owner registration survives
+script reload and is cleared only after contexts retire at terminal teardown.
+
+The manifest selects JavaScript, legacy data, and optional normalized function bytes only. Native Source 2 support remains in the existing Metamod
 shim; no manifest field names or loads another `.so`.
 
 ## Layout data and semantic code
@@ -104,6 +139,9 @@ its filename is not a reason to transfer ownership. CS2-owned layout consumed on
 package moves with that package. Provenance always records both owner and target.
 Common defaults, game/engine and OS variants, and custom overrides keep their ordered merge and
 attribution. S2 plugin overrides stay namespaced; S3 adds no second precedence system.
+The existing `gamedata/<owner>/custom/` operator grammar continues to patch legacy named entries,
+including validator carry and explicit disarm, until each call or hook is deliberately migrated
+with parity evidence. The S2 `OverrideSet` grammar does not reinterpret those legacy files.
 
 ## Semantic adapters on the function service
 

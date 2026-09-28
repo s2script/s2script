@@ -34,9 +34,9 @@
 
   // weapon.setAmmo(clip, reserve?) — set the magazine (clip1) via the generated setter. `reserve` is
   // deferred (m_pReserveAmmo layout unverified) — accepted but ignored. Returns false on a stale ref or a
-  // non-numeric clip (no write performed).
+  // non-numeric / non-finite clip (no write performed). Ordinary generated schema access: no ammo native.
   Weapon.prototype.setAmmo = function (clip, reserve) {
-    if (!this.ref.isValid() || typeof clip !== "number") return false;
+    if (typeof clip !== "number" || !isFinite(clip) || !this.ref.isValid()) return false;
     this.clip1 = clip;
     return true;
   };

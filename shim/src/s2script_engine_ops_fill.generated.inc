@@ -42,10 +42,6 @@
     // --- Slice 6.4: server command + map-validity ops ---
     ops.server_command = &s2_server_command;
     ops.server_map_valid = &s2_server_map_valid;
-    ops.damage_read_float = &s2_damage_read_float;
-    ops.damage_read_int = &s2_damage_read_int;
-    ops.damage_write_float = &s2_damage_write_float;
-    ops.damage_victim = &s2_damage_victim;
     ops.cvar_get = &s2_cvar_get;
     // --- ban-reason sub-project 2 ---
     ops.client_console_print = &s2_client_console_print;
@@ -149,7 +145,6 @@
     ops.hook_disarm_bypass = &S2_HookDisarmBypass;
     ops.hook_read_f32 = &S2_HookReadF32;
     ops.hook_read_i32 = &S2_HookReadI32;
-    ops.hook_read_str = &S2_HookReadStr;
     ops.hook_write_f32 = &S2_HookWriteF32;
     ops.hook_write_i32 = &S2_HookWriteI32;
     ops.hook_receiver_handle = &S2_HookReceiverHandle;
@@ -162,10 +157,6 @@
     ops.entity_set_model_scale = &Shim_EntitySetModelScale;
     // --- ICvar set — write through ConVarData, not ServerCommand ---
     ops.cvar_set = &s2_cvar_set;
-    // --- Pickup-gate accessors — u16 at q[qslot]+schemaOffset; pointer never crosses to JS ---
-    ops.hook_read_u16_at_q = &S2_HookReadU16AtQ;
-    // --- Pickup-gate accessors — does this live entity's pointer-at-offset equal the view self ---
-    ops.hook_self_matches_field = &S2_HookSelfMatchesField;
     // --- SDKHooks VP — install per-entity SourceHook ---
     ops.sdkhook_vp_add = &s2_sdkhook_vp_add;
     ops.sdkhook_vp_remove = &s2_sdkhook_vp_remove;

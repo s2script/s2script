@@ -147,9 +147,7 @@ void ImageFor(const void* target, bool narrow_mismatch = false) {
     resolutions[target]={reinterpret_cast<uintptr_t>(target),image,"fixture","original image"};
 }
 std::function<int(int,void*)> dispatch;
-std::function<int(int,void*,int)> post;
 int Dispatch(int id,void* view) { return dispatch ? dispatch(id,view) : 0; }
-int Post(int id,void* view,int skipped) { return post ? post(id,view,skipped) : 0; }
 int originals=0;
 std::vector<int> order;
 void* last_view=nullptr;
@@ -162,9 +160,6 @@ void BadWidth(void*,float,int32_t,int32_t,int32_t) {}
 float got_float=0; int32_t got_ints[3]{}; int64_t got_wide[3]{};
 void Narrow(void*,float f,int32_t a,int32_t b,int32_t c) { ++originals; got_float=f; got_ints[0]=a; got_ints[1]=b; got_ints[2]=c; }
 void Wide(void*,float f,int32_t a,int64_t b,int64_t c) { ++originals; got_float=f; got_ints[0]=a; got_wide[0]=b; got_wide[1]=c; }
-int32_t engine_result=0;
-int32_t Acquire(void*,int64_t a,int32_t method,int64_t b) { ++originals; got_wide[0]=a; got_wide[1]=b; got_ints[0]=method; return engine_result; }
-void Hud(void*,int64_t a,int64_t b,int64_t c) { ++originals; order.push_back(3); got_wide[0]=a; got_wide[1]=b; got_wide[2]=c; }
 void* receiver=reinterpret_cast<void*>(uintptr_t{0x12345678});
 constexpr int64_t high_a=static_cast<int64_t>(UINT64_C(0xf123456789abcdef));
 constexpr int64_t high_b=static_cast<int64_t>(UINT64_C(0x8123456789abcdef));
@@ -209,115 +204,30 @@ void MutationAndNesting() {
     provider.Invoke(&VoidTarget,receiver);
     CHECK(S2Hook_ActiveCount()==0,"all nested Observe holds released");
 }
-void BypassAndHud() {
-    int calls=0, posts=0;
+void Bypass() {
+    int calls=0;
     dispatch=[&](int,void*) { ++calls; return 0; };
-    post=[&](int,void*,int) { ++posts; return 0; };
-    S2_HookArmBypass(3);
+    S2_HookArmBypass(2);
     provider.Invoke(&VoidTarget,receiver);
-    provider.Invoke(&Acquire,receiver,high_a,int32_t{4},high_b);
-    CHECK(calls==1 && posts==0,"bypass belongs to its ID and skips both phases");
-    provider.Invoke(&Acquire,receiver,high_a,int32_t{4},high_b);
-    CHECK(calls==2 && posts==1,"bypass consumed once");
-    S2_HookArmBypass(3); S2_HookDisarmBypass(3);
-    provider.Invoke(&Acquire,receiver,high_a,int32_t{4},high_b);
-    CHECK(calls==3 && posts==2,"early outbound return disarms latch");
-    char source[]="button";
-    const char* text=source;
-    const int64_t text_object=reinterpret_cast<int64_t>(&text);
-    dispatch=[&](int,void* v) {
-        order.push_back(1); last_view=v;
-        uint32_t h=0; uint16_t u=0; char copy[128]{};
-        CHECK(S2_HookReceiverHandle(v,&h)==0 && h==42,"HUD receiver is controller");
-        CHECK(S2_HookReadU16AtQ(v,2,0,&u)==-1,"third opaque slot is not exposed");
-        source[0]='X';
-        CHECK(S2_HookReadStr(v,0,copy,sizeof copy)==0 && std::string(copy)=="button","HUD view owns copied text");
-        return 0;
-    };
-    post=[&](int,void*,int skipped) { order.push_back(2); CHECK(!skipped,"HUD normal completion"); return 0; };
-    order.clear();
-    provider.Invoke(&Hud,reinterpret_cast<void*>(uintptr_t{99}),reinterpret_cast<int64_t>(receiver),high_b,text_object);
-    CHECK(order==std::vector<int>({1,2,3}),"HUD completion precedes original exactly once");
-    CHECK(got_wide[0]==reinterpret_cast<int64_t>(receiver) && got_wide[1]==high_b && got_wide[2]==text_object,"HUD all three native pointer arguments preserved");
-    dispatch=[](int,void*) { order.push_back(1); return 2; };
-    post=[](int,void*,int skipped) { order.push_back(2); CHECK(skipped,"HUD suppressed completion"); return 0; };
-    order.clear();
-    provider.Invoke(&Hud,receiver,reinterpret_cast<int64_t>(receiver),high_b,text_object);
-    CHECK(order==std::vector<int>({1,2}),"HUD suppressed completion still exactly once");
-    S2_HookArmBypass(4); order.clear();
-    provider.Invoke(&Hud,receiver,reinterpret_cast<int64_t>(receiver),high_b,text_object);
-    CHECK(order==std::vector<int>({3}),"HUD bypass has no compatibility events");
-    post={};
-}
-void Acquisition() {
-    struct Row { int hr; bool voted; int vote; int engine; int want; bool skip; int overrides; };
-    const Row rows[]={{0,false,0,6,6,false,0},{1,true,0,6,6,false,0},{1,true,2,0,2,false,1},
-        {1,true,2,6,2,false,1},{1,true,2,2,2,false,0},{2,false,0,0,1,true,0},
-        {3,false,0,0,1,true,0},{2,true,0,6,0,true,0},{3,true,6,0,6,true,0}};
-    for(const auto& row:rows) {
-        engine_result=row.engine; int post_result=-1, post_skip=-1;
-        provider.original_reads=provider.override_submissions=originals=0;
-        dispatch=[&](int,void* v) { last_view=v; S2_HookWriteI32(v,0,19); S2_HookWriteI32(v,1,row.vote); S2_HookWriteI32(v,2,row.voted); return row.hr; };
-        post=[&](int,void* v,int skip) { CHECK(v==last_view,"acquisition POST uses retained PRE record"); S2_HookReadI32(v,1,&post_result); post_skip=skip; return 0; };
-        const auto result=provider.Invoke(&Acquire,receiver,high_a,int32_t{4},high_b);
-        CHECK(result==row.want && post_result==row.want && post_skip==row.skip,"acquisition effective result/actual skip");
-        CHECK(originals==(row.skip?0:1) && provider.original_reads==(row.skip?0:1),"acquisition original-read guard");
-        CHECK(provider.override_submissions==row.overrides,"Override only if vote changes engine result");
-    }
-    engine_result=0;
-    dispatch=[](int,void* v) { last_view=v; S2_HookWriteI32(v,1,2); S2_HookWriteI32(v,2,1); return 1; };
-    int seen=-1, skipped=-1;
-    post=[&](int,void* v,int skip) { S2_HookReadI32(v,1,&seen); skipped=skip; return 0; };
-    provider.before_original=[] { provider.Peer(KHook::Action::Override,0); };
-    CHECK(provider.Invoke(&Acquire,receiver,high_a,int32_t{4},high_b)==0 && seen==0 && skipped==0,"earlier equal-priority peer wins and POST reports effective return");
-    provider.before_original=[] { provider.Peer(KHook::Action::Supersede,7); };
-    CHECK(provider.Invoke(&Acquire,receiver,high_a,int32_t{4},high_b)==7 && seen==7 && skipped==1,"peer skip reports actual skip and winning return");
-    provider.before_original={};
-    provider.after_post=[] { provider.Peer(KHook::Action::Supersede,9); };
-    CHECK(provider.Invoke(&Acquire,receiver,high_a,int32_t{4},high_b)==9 && seen==2,"our POST reports its position, not later peer outcome");
-    provider.after_post={}; post={}; dispatch={};
+    provider.Invoke(&Wide,receiver,1.f,int32_t{2},high_a,high_b);
+    CHECK(calls==1,"bypass belongs to its ID");
+    CHECK(got_wide[0]==high_a && got_wide[1]==high_b,"a bypassed call still reaches the original at full width");
+    provider.Invoke(&Wide,receiver,1.f,int32_t{2},high_a,high_b);
+    CHECK(calls==2,"bypass consumed once");
+    S2_HookArmBypass(2); S2_HookDisarmBypass(2);
+    provider.Invoke(&Wide,receiver,1.f,int32_t{2},high_a,high_b);
+    CHECK(calls==3,"early outbound return disarms latch");
 
-    // A peer/original can synchronously enter the same acquisition ID after our PRE has saved
-    // its vote. A shared record would replace the outer denial with the inner denial here.
+    int pre_count=0;
     bool nested=false;
-    void* outer_view=nullptr;
-    std::vector<int> post_values;
-    dispatch=[&](int,void* v) {
-        int32_t method=0;
-        S2_HookReadI32(v,0,&method);
-        if (method==12) outer_view=v;
-        else {
-            int32_t rejected=0;
-            CHECK(S2_HookReadI32(outer_view,0,&rejected)==-1,"outer view inaccessible during inner invocation");
-        }
-        S2_HookWriteI32(v,1,method==12?2:6); S2_HookWriteI32(v,2,1);
-        return 1;
-    };
-    post=[&](int,void* v,int skip) {
-        int32_t result=0; S2_HookReadI32(v,1,&result); post_values.push_back(result);
-        CHECK(!skip,"nested Changed still calls both originals"); return 0;
-    };
-    provider.before_original=[&] {
-        if (nested) return;
-        nested=true;
-        CHECK(provider.Invoke(&Acquire,receiver,high_a,int32_t{13},high_b)==6,"nested acquisition owns independent vote");
-        int32_t method=0;
-        CHECK(S2_HookReadI32(outer_view,0,&method)==0 && method==12,"outer acquisition view restored after peer nesting");
-    };
-    CHECK(provider.Invoke(&Acquire,receiver,high_a,int32_t{12},high_b)==2 && post_values==std::vector<int>({6,2}),"saved outer acquisition vote survives peer nesting and inner POST");
-    provider.before_original={}; dispatch={}; post={};
-
-    int pre_count=0, post_count=0;
-    nested=false;
     dispatch=[&](int,void*) { ++pre_count; return 0; };
-    post=[&](int,void*,int) { ++post_count; return 0; };
     provider.before_original=[&] {
-        if (!nested) { nested=true; provider.Invoke(&Acquire,receiver,high_a,int32_t{1},high_b); }
+        if (!nested) { nested=true; provider.Invoke(&Narrow,receiver,1.f,int32_t{1},int32_t{2},int32_t{3}); }
     };
-    S2_HookArmBypass(3);
-    provider.Invoke(&Acquire,receiver,high_a,int32_t{1},high_b);
-    CHECK(pre_count==1 && post_count==1,"bypassed outer still permits normal same-ID nested dispatch");
-    provider.before_original={}; dispatch={}; post={};
+    S2_HookArmBypass(1);
+    provider.Invoke(&Narrow,receiver,1.f,int32_t{1},int32_t{2},int32_t{3});
+    CHECK(pre_count==1,"bypassed outer still permits normal same-ID nested dispatch");
+    provider.before_original={}; dispatch={};
 }
 
 void RejectionAndLifecycle() {
@@ -341,25 +251,23 @@ void RejectionAndLifecycle() {
     provider.Invoke(&RejectTarget,receiver);
     CHECK(helper->Snapshot().state==S2HookState::Active,"first production callback activates its receipt");
 
-    int depth=0, pre_count=0, post_count=0;
-    void* outer=nullptr;
+    int depth=0, pre_count=0;
     dispatch=[&](int id,void* view) {
         ++pre_count;
-        if (id==3 && depth==0) {
-            outer=view; ++depth;
+        if (id==1 && depth==0) {
+            ++depth;
             S2Hook_SetLifecycle(S2HookLifecycle::Retiring);
-            provider.Invoke(&Acquire,receiver,high_a,int32_t{4},high_b);
+            provider.Invoke(&Narrow,receiver,1.f,int32_t{4},int32_t{5},int32_t{6});
             S2Hook_SetLifecycle(S2HookLifecycle::Running);
             --depth;
-            int32_t method=0;
-            CHECK(S2_HookReadI32(view,0,&method)==0 && method==12,"rejected nested acquisition restores outer view");
+            int32_t a=0;
+            CHECK(S2_HookReadI32(view,1,&a)==0 && a==12,"rejected nested invocation restores outer view");
         }
         return 0;
     };
-    post=[&](int,void* view,int) { ++post_count; CHECK(view==outer,"rejected nested invocation cannot steal outer POST"); return 0; };
-    provider.Invoke(&Acquire,receiver,high_a,int32_t{12},high_b);
-    CHECK(pre_count==1 && post_count==1 && S2Hook_ActiveCount()==0,"rejected dispatch leaks neither JS nor Observe holds");
-    dispatch={}; post={};
+    provider.Invoke(&Narrow,receiver,1.f,int32_t{12},int32_t{2},int32_t{3});
+    CHECK(pre_count==1 && S2Hook_ActiveCount()==0,"rejected dispatch leaks neither JS nor Observe holds");
+    dispatch={};
 
     S2_HookResetAll();
     CHECK(provider.Find(reinterpret_cast<void*>(&VoidTarget)) && !S2EngineHooksRemovalComplete(),"premature reset retains native bindings");
@@ -402,10 +310,14 @@ bool S2_EngineCallResolutionForAddress(const void* p,s2resolve::Resolution& out)
 
 int main() {
     KHook::__exported__khook=&provider;
-    S2Hook_SetOps({&Dispatch,&Post});
+    S2Hook_SetOps({&Dispatch});
     const bool installed=Install(0,0,&VoidTarget) && Install(1,1,&Narrow) && Install(2,2,&Wide) &&
-        Install(3,3,&Acquire) && Install(4,4,&Hud) && Install(5,0,&OtherVoid);
-    if(installed) { MutationAndNesting(); BypassAndHud(); Acquisition(); RejectionAndLifecycle(); }
+        Install(5,0,&OtherVoid);
+    // The retired pickup-gate / HUD-click shape ids install nothing.
+    char retired[256]{};
+    CHECK(S2_HookInstall(3,3,reinterpret_cast<int64_t>(&OtherVoid),retired,sizeof retired)==-1 && std::strstr(retired,"unknown hook shape"),"retired shape 3 is unknown");
+    CHECK(S2_HookInstall(4,4,reinterpret_cast<int64_t>(&OtherVoid),retired,sizeof retired)==-1 && std::strstr(retired,"unknown hook shape"),"retired shape 4 is unknown");
+    if(installed) { MutationAndNesting(); Bypass(); RejectionAndLifecycle(); }
     char reason[256]{};
     CHECK(S2_HookInstall(6,0,reinterpret_cast<int64_t>(&MissingTarget),reason,sizeof reason)==-1 && std::strstr(reason,"image"),"missing original image is a named failure");
     ImageFor(reinterpret_cast<void*>(&BadWidth),true);

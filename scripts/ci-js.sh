@@ -17,6 +17,9 @@ fi
 
 node --test scripts/framework-version.test.mjs scripts/check-plugin-versions.test.mjs
 
+echo "== game package artifact schema, hashes, and deterministic bytes =="
+node --experimental-strip-types --no-warnings --test scripts/test-game-packages.mjs
+
 echo "== KHook acceptance plugin callbacks and lifecycle =="
 node --test tools/khook-probe/testdata/fixture.test.mjs
 node --test tools/engine-function-probe/test_fixture_lifecycle.mjs
@@ -67,6 +70,9 @@ bash scripts/check-activity-test.sh
 
 echo "== check-components-test.sh =="
 bash scripts/check-components-test.sh
+
+echo "== check-cs2-adapters-test.sh =="
+bash scripts/check-cs2-adapters-test.sh
 
 echo "== check-modals-markup-sync.sh (MODALS matches the s2_m* trees the layout ships) =="
 bash scripts/check-modals-markup-sync.sh

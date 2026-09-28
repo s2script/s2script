@@ -125,10 +125,6 @@ typedef const char* (*s2_client_steamid_fn)(int slot);
 typedef void (*s2_client_kick_fn)(int slot, const char* reason);
 typedef void (*s2_server_command_fn)(const char* cmd);
 typedef int (*s2_server_map_valid_fn)(const char* map);
-typedef float (*s2_damage_read_float_fn)(int offset);
-typedef int (*s2_damage_read_int_fn)(int offset);
-typedef void (*s2_damage_write_float_fn)(int offset, float value);
-typedef int (*s2_damage_victim_fn)(void);
 typedef const char* (*s2_cvar_get_fn)(const char* name);
 typedef void (*s2_client_console_print_fn)(int slot, const char* msg);
 typedef const char* (*s2_client_address_fn)(int slot);
@@ -202,7 +198,6 @@ typedef void (*s2_hook_arm_bypass_fn)(int hookId);
 typedef void (*s2_hook_disarm_bypass_fn)(int hookId);
 typedef int (*s2_hook_read_f32_fn)(void* argView, int idx, float* out);
 typedef int (*s2_hook_read_i32_fn)(void* argView, int idx, int32_t* out);
-typedef int (*s2_hook_read_str_fn)(void* argView, int idx, char* out, int cap);
 typedef int (*s2_hook_write_f32_fn)(void* argView, int idx, float value);
 typedef int (*s2_hook_write_i32_fn)(void* argView, int idx, int32_t value);
 typedef int (*s2_hook_receiver_handle_fn)(void* argView, uint32_t* outHandle);
@@ -213,8 +208,6 @@ typedef int (*s2_entity_stop_sound_fn)(int index, int serial, const char* soundN
 typedef int (*s2_entity_set_body_group_by_name_fn)(int index, int serial, const char* name, int group);
 typedef int (*s2_entity_set_model_scale_fn)(int index, int serial, float scale);
 typedef int (*s2_cvar_set_fn)(const char* name, const char* value);
-typedef int (*s2_hook_read_u16_at_q_fn)(void* argView, int qslot, int offset, uint16_t* out);
-typedef int (*s2_hook_self_matches_field_fn)(void* argView, int index, int serial, int offset);
 typedef int (*s2_sdkhook_vp_add_fn)(int index, int serial, const char* type, int post);
 typedef int (*s2_sdkhook_vp_remove_fn)(int index, int serial, const char* type, int post);
 typedef int (*s2_sdkhook_vp_drop_fn)(int index, int serial);
@@ -286,10 +279,6 @@ typedef struct {
     /* --- Slice 6.4: server command + map-validity ops --- */
     s2_server_command_fn server_command;
     s2_server_map_valid_fn server_map_valid;
-    s2_damage_read_float_fn damage_read_float;
-    s2_damage_read_int_fn damage_read_int;
-    s2_damage_write_float_fn damage_write_float;
-    s2_damage_victim_fn damage_victim;
     s2_cvar_get_fn cvar_get;
     /* --- ban-reason sub-project 2 --- */
     s2_client_console_print_fn client_console_print;
@@ -393,7 +382,6 @@ typedef struct {
     s2_hook_disarm_bypass_fn hook_disarm_bypass;
     s2_hook_read_f32_fn hook_read_f32;
     s2_hook_read_i32_fn hook_read_i32;
-    s2_hook_read_str_fn hook_read_str;
     s2_hook_write_f32_fn hook_write_f32;
     s2_hook_write_i32_fn hook_write_i32;
     s2_hook_receiver_handle_fn hook_receiver_handle;
@@ -406,10 +394,6 @@ typedef struct {
     s2_entity_set_model_scale_fn entity_set_model_scale;
     /* --- ICvar set — write through ConVarData, not ServerCommand --- */
     s2_cvar_set_fn cvar_set;
-    /* --- Pickup-gate accessors — u16 at q[qslot]+schemaOffset; pointer never crosses to JS --- */
-    s2_hook_read_u16_at_q_fn hook_read_u16_at_q;
-    /* --- Pickup-gate accessors — does this live entity's pointer-at-offset equal the view self --- */
-    s2_hook_self_matches_field_fn hook_self_matches_field;
     /* --- SDKHooks VP — install per-entity SourceHook --- */
     s2_sdkhook_vp_add_fn sdkhook_vp_add;
     s2_sdkhook_vp_remove_fn sdkhook_vp_remove;

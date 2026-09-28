@@ -337,7 +337,7 @@ function pluginWorld(options = {}) {
       __s2pkg_menu: { Menu: { registerRenderer(name, renderer) {
         const prev = renderers[name]; renderers[name] = renderer; return prev;
       } }, MenuStyle: { Chat: "chat", Center: "center" } },
-      __s2_hook_on: (_pkg, _name, fn) => { lifecycle.click.push(fn); return 1; },
+      __s2pkg_cs2_adapters: { hudClick: { subscribe: (fn) => { lifecycle.click.push(fn); return {}; } } },
     });
     for (const file of ["ui.js", "components.js", "menuhud.js"]) {
       vm.runInContext(readFileSync(join(__dirname, file), "utf8"), ctx);

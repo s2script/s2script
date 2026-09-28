@@ -149,10 +149,6 @@ pub type ClientSteamidFn = extern "C" fn(slot: c_int) -> *const c_char;
 pub type ClientKickFn = extern "C" fn(slot: c_int, reason: *const c_char);
 pub type ServerCommandFn = extern "C" fn(cmd: *const c_char);
 pub type ServerMapValidFn = extern "C" fn(map: *const c_char) -> c_int;
-pub type DamageReadFloatFn = extern "C" fn(offset: c_int) -> f32;
-pub type DamageReadIntFn = extern "C" fn(offset: c_int) -> c_int;
-pub type DamageWriteFloatFn = extern "C" fn(offset: c_int, value: f32);
-pub type DamageVictimFn = extern "C" fn() -> c_int;
 pub type CvarGetFn = extern "C" fn(name: *const c_char) -> *const c_char;
 pub type ClientConsolePrintFn = extern "C" fn(slot: c_int, msg: *const c_char);
 pub type ClientAddressFn = extern "C" fn(slot: c_int) -> *const c_char;
@@ -226,7 +222,6 @@ pub type HookArmBypassFn = extern "C" fn(c_int);
 pub type HookDisarmBypassFn = extern "C" fn(c_int);
 pub type HookReadF32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, *mut f32) -> c_int;
 pub type HookReadI32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, *mut i32) -> c_int;
-pub type HookReadStrFn = extern "C" fn(*mut std::ffi::c_void, c_int, *mut std::ffi::c_char, c_int) -> c_int;
 pub type HookWriteF32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, f32) -> c_int;
 pub type HookWriteI32Fn = extern "C" fn(*mut std::ffi::c_void, c_int, i32) -> c_int;
 pub type HookReceiverHandleFn = extern "C" fn(*mut std::ffi::c_void, *mut u32) -> c_int;
@@ -237,8 +232,6 @@ pub type EntityStopSoundFn = extern "C" fn(c_int, c_int, *const std::os::raw::c_
 pub type EntitySetBodyGroupByNameFn = extern "C" fn(c_int, c_int, *const std::os::raw::c_char, c_int) -> c_int;
 pub type EntitySetModelScaleFn = extern "C" fn(c_int, c_int, f32) -> c_int;
 pub type CvarSetFn = extern "C" fn(name: *const c_char, value: *const c_char) -> c_int;
-pub type HookReadU16AtQFn = extern "C" fn(*mut std::ffi::c_void, c_int, c_int, *mut u16) -> c_int;
-pub type HookSelfMatchesFieldFn = extern "C" fn(*mut std::ffi::c_void, c_int, c_int, c_int) -> c_int;
 pub type SdkhookVpAddFn = extern "C" fn(c_int, c_int, *const c_char, c_int) -> c_int;
 pub type SdkhookVpRemoveFn = extern "C" fn(c_int, c_int, *const c_char, c_int) -> c_int;
 pub type SdkhookVpDropFn = extern "C" fn(c_int, c_int) -> c_int;
@@ -315,10 +308,6 @@ pub struct S2EngineOps {
     // --- Slice 6.4: server command + map-validity ops ---
     pub server_command: Option<ServerCommandFn>,
     pub server_map_valid: Option<ServerMapValidFn>,
-    pub damage_read_float: Option<DamageReadFloatFn>,
-    pub damage_read_int: Option<DamageReadIntFn>,
-    pub damage_write_float: Option<DamageWriteFloatFn>,
-    pub damage_victim: Option<DamageVictimFn>,
     pub cvar_get: Option<CvarGetFn>,
     // --- ban-reason sub-project 2 ---
     pub client_console_print: Option<ClientConsolePrintFn>,
@@ -422,7 +411,6 @@ pub struct S2EngineOps {
     pub hook_disarm_bypass: Option<HookDisarmBypassFn>,
     pub hook_read_f32: Option<HookReadF32Fn>,
     pub hook_read_i32: Option<HookReadI32Fn>,
-    pub hook_read_str: Option<HookReadStrFn>,
     pub hook_write_f32: Option<HookWriteF32Fn>,
     pub hook_write_i32: Option<HookWriteI32Fn>,
     pub hook_receiver_handle: Option<HookReceiverHandleFn>,
@@ -435,10 +423,6 @@ pub struct S2EngineOps {
     pub entity_set_model_scale: Option<EntitySetModelScaleFn>,
     // --- ICvar set — write through ConVarData, not ServerCommand ---
     pub cvar_set: Option<CvarSetFn>,
-    // --- Pickup-gate accessors — u16 at q[qslot]+schemaOffset; pointer never crosses to JS ---
-    pub hook_read_u16_at_q: Option<HookReadU16AtQFn>,
-    // --- Pickup-gate accessors — does this live entity's pointer-at-offset equal the view self ---
-    pub hook_self_matches_field: Option<HookSelfMatchesFieldFn>,
     // --- SDKHooks VP — install per-entity SourceHook ---
     pub sdkhook_vp_add: Option<SdkhookVpAddFn>,
     pub sdkhook_vp_remove: Option<SdkhookVpRemoveFn>,

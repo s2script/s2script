@@ -156,7 +156,7 @@ def is_custom(p):
     return 'custom' in p.parts[:-1]
 
 scopes = {}   # dir -> {"calls": {(file, name): decl}, "signatures": {name: (file, spec)}, "hooks": {(file, name): decl}}
-for root in (pathlib.Path('gamedata'), pathlib.Path('examples'), pathlib.Path('plugins')):
+for root in (pathlib.Path('gamedata'), pathlib.Path('games/cs2/gamedata'), pathlib.Path('examples'), pathlib.Path('plugins')):
     if not root.is_dir():
         continue
     for p in sorted(root.rglob('*.json*')):

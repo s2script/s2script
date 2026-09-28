@@ -8,18 +8,17 @@
 #include <dlfcn.h>
 
 extern "C" void S2ProbeNamedInvokeVirtual(void*,int,void*);
-extern "C" void S2ProbeNamedDamageTarget(void*,void*,void*);
 extern "C" void S2ProbeNamedChatTarget(void*,void*,bool,int,const char*);
 extern "C" void S2ProbeNamedOutputTarget(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
                                           const CVariant*,float,void*,char*);
 extern "C" int S2ProbeNamedUsercmdTarget(void*,void*,int,bool,float);
 
 namespace {
-enum class Mode { Idle,Damage,Chat,Output,OutputVector,Usercmd,Precache };
+enum class Mode { Idle,Chat,Output,OutputVector,Usercmd,Precache };
 Mode mode=Mode::Idle;
 s2khook::NamedSnapshot observation;
 bool installed=false;
-bool damage_pre_nested=false,damage_post_nested=false,usercmd_nested=false,precache_nested=false;
+bool usercmd_nested=false,precache_nested=false;
 bool removal_refusal_checked=false;
 int chat_verdict=0,output_verdict=0,precache_index=-1;
 size_t chat_action_index=0,chat_post_index=0,output_action_index=0,output_post_index=0;
@@ -27,20 +26,6 @@ uint64_t invocation_map_generation=0;
 int receiver_token=0;
 void* outer_victim=&receiver_token;
 void* outer_info=reinterpret_cast<void*>(uintptr_t{0x5555666677778888});
-void* inner_victim=reinterpret_cast<void*>(uintptr_t{0x9999aaaabbbbcccc});
-void* inner_info=reinterpret_cast<void*>(uintptr_t{0xddddeeeeffff1111});
-// Controlled storage only: this is not an engine CTakeDamageResult layout.
-struct DamageOutput { uintptr_t before=0xabc, value=0, after=0xdef; };
-DamageOutput outer_output,inner_output;
-bool DamageArguments(void* victim,void* info,void* result) {
-    return (victim==outer_victim && info==outer_info && result==&outer_output) ||
-        (victim==inner_victim && info==inner_info && (!result || result==&inner_output));
-}
-bool DamageWritten(void* info,void* result) {
-    if (!result) return false;
-    const auto* out=static_cast<const DamageOutput*>(result);
-    return out->before==0xabc && out->after==0xdef && out->value==reinterpret_cast<uintptr_t>(info);
-}
 void* outer_manifest=reinterpret_cast<void*>(uintptr_t{0x1010101010101010});
 void* inner_manifest=reinterpret_cast<void*>(uintptr_t{0x2020202020202020});
 
@@ -56,11 +41,9 @@ public:
 ProbePrecache precache_object;
 OtherPrecache other_object;
 
-using DamageFn=void (*)(void*,void*,void*);
 using ChatFn=void (*)(void*,void*,bool,int,const char*);
 using OutputFn=void (*)(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*);
 using UsercmdFn=int (*)(void*,void*,int,bool,float);
-DamageFn volatile call_damage=reinterpret_cast<DamageFn>(&S2ProbeNamedDamageTarget);
 ChatFn volatile call_chat=&S2ProbeNamedChatTarget;
 OutputFn volatile call_output=&S2ProbeNamedOutputTarget;
 UsercmdFn volatile call_usercmd=&S2ProbeNamedUsercmdTarget;
@@ -70,8 +53,6 @@ KHook::Return<void> EarlyVirtualPost(ProbePrecache*,void*);
 KHook::Return<void> ChatPeerBefore(void*,void*,bool,int,const char*);
 KHook::Return<void> ChatPeerAfter(void*,void*,bool,int,const char*);
 KHook::Return<void> ChatPeerPost(void*,void*,bool,int,const char*);
-KHook::Return<void> DamageObservePre(void*,void*,void*);
-KHook::Return<void> DamageObservePost(void*,void*,void*);
 KHook::Return<void> OutputObservePre(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*);
 KHook::Return<void> OutputObservePost(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
                                       const CVariant*,float,void*,char*);
@@ -80,7 +61,6 @@ KHook::Return<int> UsercmdObservePost(void*,void*,int,bool,float);
 KHook::Return<void> VirtualPeerBefore(ProbePrecache*,void*);
 KHook::Return<void> VirtualPeerAfter(ProbePrecache*,void*);
 KHook::Return<void> VirtualPeerPost(ProbePrecache*,void*);
-S2CheckedFunction<void,void*,void*,void*> peer_damage_observer(&DamageObservePre,&DamageObservePost);
 S2CheckedFunction<void,void*,void*,bool,int,const char*> peer_chat_before(&ChatPeerBefore,&EarlyChatPost);
 S2CheckedFunction<void,void*,void*,bool,int,const char*> peer_chat_after(&ChatPeerAfter,&ChatPeerPost);
 S2CheckedFunction<void,CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*>
@@ -93,7 +73,7 @@ s2khook::NamedOrderSnapshot order_snapshot;
 s2khook::NamedOrderObservation* order_active=nullptr;
 bool order_late=false;
 int order_phase=0;
-std::array<const void*,4> order_targets{};
+std::array<const void*,3> order_targets{};
 bool OrderMain() {
     if (!order_active) return false;
     if (order_active->site=="precache" && !order_late) order_snapshot.active_refused=!peer_virtual_before.CanBeginRemove(false);
@@ -135,18 +115,6 @@ KHook::Return<void> ChatPeerPost(void*,void*,bool,int,const char*) {
         if (chat_post_index<observation.chat_skipped.size()) observation.chat_skipped[chat_post_index]=skipped;
         ++chat_post_index;
         ++observation.chat_post_observed;
-    }
-    return S2_Ignore();
-}
-KHook::Return<void> DamageObservePost(void* victim,void* info,void* result) {
-    auto observed=peer_damage_observer.Observe();
-    if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
-    OrderPeer(true,false);
-    if (order_active) { order_active->damage_output_preserved=DamageWritten(info,result); order_active->skipped=KHook::WasOriginalFunctionSkipped() ? 1 : 0; }
-    if (mode==Mode::Damage) {
-        ++observation.damage_post_observed;
-        if (DamageWritten(info,result)) ++observation.damage_output_preserved;
-        if (KHook::WasOriginalFunctionSkipped()) ++observation.damage_skipped;
     }
     return S2_Ignore();
 }
@@ -217,11 +185,6 @@ KHook::Return<void> EarlyVirtualPost(ProbePrecache* receiver,void*) {
     if (S2Hook_EnterDispatch(observed)) { OrderPeer(true,false); if (order_active) order_active->skipped=KHook::WasOriginalFunctionSkipped() ? 1 : 0; }
     return S2_Ignore();
 }
-KHook::Return<void> DamageObservePre(void*,void*,void*) {
-    auto observed=peer_damage_observer.Observe();
-    if (S2Hook_EnterDispatch(observed)) OrderPeer(false,false);
-    return S2_Ignore();
-}
 KHook::Return<void> OutputObservePre(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*) {
     auto observed=peer_output_observer.Observe();
     if (S2Hook_EnterDispatch(observed)) OrderPeer(false,false);
@@ -231,19 +194,6 @@ KHook::Return<int> UsercmdObservePre(void*,void*,int,bool,float) {
     auto observed=peer_usercmd_observer.Observe();
     if (S2Hook_EnterDispatch(observed)) OrderPeer(false,false);
     return S2_Ignore(0);
-}
-KHook::Return<void> LateDamagePre(void*,void*,void*);
-KHook::Return<void> LateDamagePost(void*,void*,void*);
-S2CheckedFunction<void,void*,void*,void*> late_damage(&LateDamagePre,&LateDamagePost);
-KHook::Return<void> LateDamagePre(void* a,void* b,void* result) {
-    auto observed=late_damage.Observe();
-    if (S2Hook_EnterDispatch(observed)) { OrderPeer(false,true); }
-    return S2_Ignore();
-}
-KHook::Return<void> LateDamagePost(void* a,void* b,void* result) {
-    auto observed=late_damage.Observe();
-    if (S2Hook_EnterDispatch(observed)) { OrderPeer(true,true); if (order_active) { order_active->skipped=KHook::WasOriginalFunctionSkipped() ? 1 : 0; order_active->damage_output_preserved=DamageWritten(b,result); } }
-    return S2_Ignore();
 }
 KHook::Return<void> LateChatPre(void*,void*,bool,int,const char*);
 KHook::Return<void> LateChatPost(void*,void*,bool,int,const char*);
@@ -297,43 +247,22 @@ KHook::Return<void> LatePrecachePost(ProbePrecache* a,void* b) {
     if (S2Hook_EnterDispatch(observed)) { OrderPeer(true,true); if (order_active) { order_active->skipped=KHook::WasOriginalFunctionSkipped() ? 1 : 0; } }
     return S2_Ignore();
 }
-std::array<S2CheckedBindingOps*,5> LateInventory() { return {{&late_damage,&late_chat,&late_output,&late_usercmd,&late_precache}}; }
-std::array<S2CheckedBindingOps*,7> PeerInventory() {
-    return {{&peer_damage_observer,&peer_chat_before,&peer_chat_after,&peer_output_observer,
+std::array<S2CheckedBindingOps*,4> LateInventory() { return {{&late_chat,&late_output,&late_usercmd,&late_precache}}; }
+std::array<S2CheckedBindingOps*,6> PeerInventory() {
+    return {{&peer_chat_before,&peer_chat_after,&peer_output_observer,
              &peer_usercmd_observer,&peer_virtual_before,&peer_virtual_after}};
 }
 
-void DamagePreOp() {
-    if (OrderMain()) return;
-    ++observation.damage_pre;
-    if (!removal_refusal_checked && S2NamedDamageVictim()==outer_victim) {
+int ChatOp(void*,void*,bool,int,const char*) {
+    if (OrderMain()) return 0;
+    // A named hook refuses terminal removal from inside its own active capsule.
+    if (mode==Mode::Chat && !removal_refusal_checked) {
         removal_refusal_checked=true;
         const auto permit=S2Hook_CurrentTerminalPermit();
         const bool allowed=permit.IsValid() &&
             S2HookInventoryCanRemoveSync(PeerInventory(),permit) && S2NamedHooksCanUnloadSync(permit);
         observation.removal.active_refused=permit.IsValid() && !allowed ? 1 : 0;
     }
-    if (!damage_pre_nested && S2NamedDamageVictim()==outer_victim) {
-        damage_pre_nested=true;
-        call_damage(inner_victim,inner_info,nullptr);
-        if (S2NamedDamageVictim()==outer_victim && S2NamedDamageInfo()==outer_info)
-            ++observation.damage_nested_restored;
-        damage_pre_nested=false;
-    }
-}
-void DamagePostOp() {
-    if (order_active) return;
-    ++observation.damage_post;
-    if (!damage_post_nested && S2NamedDamageVictim()==outer_victim) {
-        damage_post_nested=true;
-        call_damage(inner_victim,inner_info,&inner_output);
-        if (S2NamedDamageVictim()==outer_victim && S2NamedDamageInfo()==outer_info)
-            ++observation.damage_nested_restored;
-        damage_post_nested=false;
-    }
-}
-int ChatOp(void*,void*,bool,int,const char*) {
-    if (OrderMain()) return 0;
     if (mode==Mode::Chat) {
         observation.chat_peer_order=observation.chat_peer_order*10+2;
         ++observation.chat_dispatch;
@@ -393,11 +322,9 @@ void PrecacheOp() {
     }
 }
 
-void ObserveAction(S2NamedHookSite site,bool post,KHook::Action action) {
+void ObserveAction(S2NamedHookSite site,bool /*post*/,KHook::Action action) {
     const int value=static_cast<int>(action);
-    if (mode==Mode::Damage && site==S2NamedHookSite::Damage && action==KHook::Action::Ignore) {
-        if (post) ++observation.damage_post_ignore; else ++observation.damage_pre_ignore;
-    } else if (mode==Mode::Chat && site==S2NamedHookSite::Chat) {
+    if (mode==Mode::Chat && site==S2NamedHookSite::Chat) {
         if (chat_action_index<observation.chat_actions.size()) observation.chat_actions[chat_action_index]=value;
         ++chat_action_index;
     } else if (mode==Mode::Output && site==S2NamedHookSite::Output) {
@@ -417,19 +344,6 @@ bool VerifyEntry(const s2original::Image& image,const void* target,const std::ar
 }
 }
 
-extern "C" __attribute__((noinline)) void S2ProbeNamedDamageBody(void* victim,void* info,void* result) {
-    OrderOriginal();
-    if (order_active) order_active->damage_arguments=DamageArguments(victim,info,result);
-    if (mode==Mode::Damage) {
-        ++observation.damage_original;
-        if (DamageArguments(victim,info,result)) ++observation.damage_argument_matches;
-        if (result) ++observation.damage_result_nonnull; else ++observation.damage_result_null;
-    }
-    if (result) {
-        static_cast<DamageOutput*>(result)->value=reinterpret_cast<uintptr_t>(info);
-        if (mode==Mode::Damage) ++observation.damage_output_writes;
-    }
-}
 extern "C" __attribute__((noinline)) void S2ProbeNamedChatBody(void*,void*,bool,int,const char*) {
     OrderOriginal();
     if (mode==Mode::Chat) { ++observation.chat_original; ++observation.chat_original_each[chat_verdict ? 1 : 0]; }
@@ -455,9 +369,6 @@ extern "C" __attribute__((noinline)) int S2ProbeNamedUsercmdBody(void* self,void
 }
 
 #if defined(__linux__) && defined(__x86_64__)
-extern "C" __attribute__((naked,noinline)) void S2ProbeNamedDamageTarget(void*,void*,void*) {
-    asm volatile(".byte 0x0f,0x1f,0x84,0x00,0x53,0x32,0x44,0x35\n\tjmp S2ProbeNamedDamageBody");
-}
 extern "C" __attribute__((naked,noinline)) void S2ProbeNamedChatTarget(void*,void*,bool,int,const char*) {
     asm volatile(".byte 0x0f,0x1f,0x84,0x00,0x53,0x32,0x43,0x35\n\tjmp S2ProbeNamedChatBody");
 }
@@ -469,7 +380,6 @@ extern "C" __attribute__((naked,noinline)) int S2ProbeNamedUsercmdTarget(void*,v
     asm volatile(".byte 0x0f,0x1f,0x84,0x00,0x53,0x32,0x55,0x35\n\tjmp S2ProbeNamedUsercmdBody");
 }
 #else
-extern "C" void S2ProbeNamedDamageTarget(void* a,void* b,void* result) { S2ProbeNamedDamageBody(a,b,result); }
 extern "C" void S2ProbeNamedChatTarget(void* a,void* b,bool c,int d,const char* e) { S2ProbeNamedChatBody(a,b,c,d,e); }
 extern "C" void S2ProbeNamedOutputTarget(CEntityIOOutput* a,CEntityInstance* b,CEntityInstance* c,const CVariant* d,float e,void* f,char* g) { S2ProbeNamedOutputBody(a,b,c,d,e,f,g); }
 extern "C" int S2ProbeNamedUsercmdTarget(void* a,void* b,int c,bool d,float e) { return S2ProbeNamedUsercmdBody(a,b,c,d,e); }
@@ -486,16 +396,14 @@ void ProbePrecache::Run(void*) {
 bool S2ProbeNamedInstall(std::string& reason) {
     if (installed) return true;
     Dl_info loaded{};
-    if (!dladdr(reinterpret_cast<void*>(&S2ProbeNamedDamageTarget),&loaded) || !loaded.dli_fname) {
+    if (!dladdr(reinterpret_cast<void*>(&S2ProbeNamedChatTarget),&loaded) || !loaded.dli_fname) {
         reason="controlled named target module not found"; return false;
     }
     auto image=s2original::OpenLoadedModule(loaded.dli_fname,reason);
     if (!image) return false;
-    const std::array<const void*,4> targets{{reinterpret_cast<void*>(&S2ProbeNamedDamageTarget),
-        reinterpret_cast<void*>(&S2ProbeNamedChatTarget),reinterpret_cast<void*>(&S2ProbeNamedOutputTarget),
-        reinterpret_cast<void*>(&S2ProbeNamedUsercmdTarget)}};
-    const std::array<std::array<uint8_t,8>,4> markers{{
-        {{0x0f,0x1f,0x84,0x00,0x53,0x32,0x44,0x35}},
+    const std::array<const void*,3> targets{{reinterpret_cast<void*>(&S2ProbeNamedChatTarget),
+        reinterpret_cast<void*>(&S2ProbeNamedOutputTarget),reinterpret_cast<void*>(&S2ProbeNamedUsercmdTarget)}};
+    const std::array<std::array<uint8_t,8>,3> markers{{
         {{0x0f,0x1f,0x84,0x00,0x53,0x32,0x43,0x35}},
         {{0x0f,0x1f,0x84,0x00,0x53,0x32,0x4f,0x35}},
         {{0x0f,0x1f,0x84,0x00,0x53,0x32,0x55,0x35}}}};
@@ -503,21 +411,19 @@ bool S2ProbeNamedInstall(std::string& reason) {
         reason="controlled named target marker not present in verified image"; return false;
     }
     S2NamedHookOps ops;
-    ops.damage_pre=&DamagePreOp; ops.damage_post=&DamagePostOp; ops.chat=&ChatOp; ops.output=&OutputOp;
+    ops.chat=&ChatOp; ops.output=&OutputOp;
     ops.usercmd_slot=&UsercmdSlot; ops.usercmd_dispatch=&UsercmdDispatch;
     ops.usercmd_neutralize=&UsercmdNeutralize; ops.precache=&PrecacheOp;
     ops.observe_action=&ObserveAction;
     S2NamedHooksSetOps(ops);
 
-    if (!peer_damage_observer.Configure(targets[0]).Accepted()) { reason="damage observer rejected"; return false; }
-    if (!S2NamedConfigureDamage(targets[0]).Accepted()) { reason="damage setup rejected"; return false; }
-    if (!peer_chat_before.Configure(targets[1]).Accepted()) { reason="before chat peer rejected"; return false; }
-    if (!S2NamedConfigureChat(targets[1]).Accepted()) { reason="chat setup rejected"; return false; }
-    if (!peer_chat_after.Configure(targets[1]).Accepted()) { reason="after chat peer rejected"; return false; }
-    if (!peer_output_observer.Configure(targets[2]).Accepted()) { reason="output observer rejected"; return false; }
-    if (!S2NamedConfigureOutput(targets[2]).Accepted()) { reason="output setup rejected"; return false; }
-    S2NamedSetUsercmdTarget(targets[3]);
-    if (!peer_usercmd_observer.Configure(targets[3]).Accepted()) { reason="usercmd observer rejected"; return false; }
+    if (!peer_chat_before.Configure(targets[0]).Accepted()) { reason="before chat peer rejected"; return false; }
+    if (!S2NamedConfigureChat(targets[0]).Accepted()) { reason="chat setup rejected"; return false; }
+    if (!peer_chat_after.Configure(targets[0]).Accepted()) { reason="after chat peer rejected"; return false; }
+    if (!peer_output_observer.Configure(targets[1]).Accepted()) { reason="output observer rejected"; return false; }
+    if (!S2NamedConfigureOutput(targets[1]).Accepted()) { reason="output setup rejected"; return false; }
+    S2NamedSetUsercmdTarget(targets[2]);
+    if (!peer_usercmd_observer.Configure(targets[2]).Accepted()) { reason="usercmd observer rejected"; return false; }
     if (!S2NamedInstallUsercmd().Accepted()) { reason="usercmd setup rejected"; return false; }
 
     precache_index=KHook::GetVtableIndex(&ProbePrecache::Run);
@@ -539,14 +445,13 @@ bool S2ProbeNamedInstall(std::string& reason) {
     peer_virtual_after_filter=true;
     order_targets=targets;
     installed=true;
-    reason="five production named bindings and before/after peers accepted; observation pending";
+    reason="four production named bindings and before/after peers accepted; observation pending";
     return true;
 }
 
 void S2ProbeNamedReset(std::uint64_t map_generation) {
     observation={};
     observation.installed=installed;
-    observation.damage_current_return={s2khook::FacetApplicability::Inapplicable,-1};
     observation.chat_current_return={s2khook::FacetApplicability::Inapplicable,-1};
     observation.output_current_return={s2khook::FacetApplicability::Inapplicable,-1};
     observation.precache_current_return={s2khook::FacetApplicability::Inapplicable,-1};
@@ -561,9 +466,6 @@ void S2ProbeNamedReset(std::uint64_t map_generation) {
 }
 void S2ProbeNamedInvoke() {
     if (!installed) return;
-    outer_output=DamageOutput{}; inner_output=DamageOutput{};
-    mode=Mode::Damage; call_damage(outer_victim,outer_info,&outer_output);
-    observation.damage_expired=!S2NamedDamageInfo() && !S2NamedDamageVictim();
     mode=Mode::Chat; chat_verdict=0; call_chat(outer_victim,outer_info,true,19,"opaque");
     chat_verdict=1; call_chat(outer_victim,outer_info,true,19,"opaque");
     mode=Mode::Output; output_verdict=1;
@@ -614,11 +516,10 @@ bool S2ProbeNamedRemovalComplete() {
 namespace {
 void InvokeOrderPhase(bool late) {
     order_late=late;
-    for (const char* site:{"damage","chat","output","usercmd","precache"}) {
+    for (const char* site:{"chat","output","usercmd","precache"}) {
         s2khook::NamedOrderObservation row; row.site=site; row.order=late ? "s2script-first" : "peer-first";
         order_active=&row;
-        if (row.site=="damage") { outer_output=DamageOutput{}; call_damage(outer_victim,outer_info,&outer_output); }
-        else if (row.site=="chat") call_chat(outer_victim,outer_info,true,19,"order");
+        if (row.site=="chat") call_chat(outer_victim,outer_info,true,19,"order");
         else if (row.site=="output") call_output(nullptr,nullptr,nullptr,nullptr,0,nullptr,nullptr);
         else if (row.site=="usercmd") { std::array<unsigned char,0xa0> commands{}; call_usercmd(outer_victim,commands.data(),1,true,2.5f); }
         else S2ProbeNamedInvokeVirtual(&precache_object,precache_index,outer_manifest);
@@ -644,9 +545,8 @@ void S2ProbeNamedAdvanceOrders() {
     if (order_phase!=2 || !S2HookInventoryRemovalComplete(PeerInventory())) return;
     order_snapshot.completion=true;
     late_precache.Configure(precache_index);
-    order_snapshot.late_installed=late_damage.Configure(order_targets[0]).Accepted() &&
-        late_chat.Configure(order_targets[1]).Accepted() && late_output.Configure(order_targets[2]).Accepted() &&
-        late_usercmd.Configure(order_targets[3]).Accepted() && late_precache.AddGlobal(&precache_object).Accepted();
+    order_snapshot.late_installed=late_chat.Configure(order_targets[0]).Accepted() &&
+        late_output.Configure(order_targets[1]).Accepted() && late_usercmd.Configure(order_targets[2]).Accepted() && late_precache.AddGlobal(&precache_object).Accepted();
     if (order_snapshot.late_installed) InvokeOrderPhase(true);
 }
 s2khook::NamedOrderSnapshot S2ProbeNamedCollectOrders() { return order_snapshot; }

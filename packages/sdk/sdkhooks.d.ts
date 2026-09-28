@@ -55,7 +55,11 @@ export declare const UseType: {
  * that is not a member here throws.
  */
 export declare const SDKHookType: {
-  /** Pre-apply damage (`DispatchTraceAttack`). Mutate {@link DamageInfo.damage} in place. */
+  /**
+   * Pre-apply damage, provided by the selected game package (CS2: `CBaseEntity::TakeDamageOld`).
+   * Mutate {@link DamageInfo.damage} in place. {@link SDKHook} returns `false` when no game package
+   * provides damage hooks.
+   */
   readonly OnTakeDamage: "OnTakeDamage";
   /**
    * CheckTransmit mux (wiki `SDKHook_SetTransmit`). `Handled` / `Stop` hide this entity from this
@@ -112,8 +116,8 @@ export declare const SDKHookType: {
   /** `CanBeAutobalanced`. Return a boolean (not {@link HookResultValue}); last defined wins. */
   readonly CanBeAutobalanced: "CanBeAutobalanced";
   /**
-   * Post-apply damage (`DispatchTraceAttack` after the original). {@link DamageInfo} is read-only
-   * for effect; mutations are not written back. Return is ignored.
+   * Post-apply damage (after the original ran), provided by the selected game package.
+   * {@link DamageInfo} is read-only for effect; `damage` assignment is ignored. Return is ignored.
    */
   readonly OnTakeDamagePost: "OnTakeDamagePost";
   /**
@@ -126,7 +130,7 @@ export declare const SDKHookType: {
   readonly OnTakeDamageAlivePost: "OnTakeDamageAlivePost";
   /**
    * `TraceAttack` pre ({@link TraceAttackInfo}). No distinct CS2 virtual yet — {@link SDKHook}
-   * returns `false` (OnTakeDamage remains the DTA mux).
+   * returns `false` (use OnTakeDamage).
    */
   readonly TraceAttack: "TraceAttack";
   /**
@@ -220,8 +224,9 @@ export declare function SDKHook(
   callback: (info: DamageInfo) => HookResultValue | void,
 ): boolean;
 /**
- * Post-apply damage. {@link DamageInfo} is a read of the live info after the original ran.
- * Return is ignored; Handled does not zero the hit (that is the pre-hook).
+ * Post-apply damage. {@link DamageInfo} reads the info after the original ran; it is valid only
+ * during the synchronous callback. Return is ignored; Handled does not zero the hit (that is the
+ * pre-hook).
  */
 export declare function SDKHook(
   entity: EntityRef | null,

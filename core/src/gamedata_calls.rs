@@ -517,7 +517,7 @@ thread_local! {
         std::cell::RefCell::new(CallRegistry::new());
 
     /// The reserved owner id of the registered game package, set by
-    /// `s2script_core_register_package_gamedata`. `None` on a host with no game package (every unit
+    /// the selected package transaction. `None` on a host with no game package (every unit
     /// test, and any future headless embedding) — the game-scoped natives then report a named
     /// reason rather than silently keying on an empty id.
     static GAME_PACKAGE_OWNER: std::cell::RefCell<Option<String>> =
@@ -546,14 +546,9 @@ pub(crate) fn register_plugin(plugin_id: &str, gamedata_json: &str) {
     register_owner(plugin_id, gamedata_json, /*permission_exempt=*/ false);
 }
 
-/// Register the GAME PACKAGE's declared calls from the merged gamedata the shim already produced
-/// for that owner (spec §9.1b). Called once at Load through
-/// `s2script_core_register_package_gamedata`, with `package` the same injected-package name the
-/// shim passes to `s2script_core_register_package` (e.g. `@s2script/cs2`) — core never names a game.
-///
-/// Descriptors land under `reserved_owner_id(package)`, which no `.s2sp` can hold, and are
-/// permission-exempt: they are first-party runtime shipped in the same zip as core, replacing
-/// natives that are unconditionally callable from any plugin today.
+/// Compatibility registration for internal descriptor tests. Production stages both namespaces
+/// through game_packages::commit and cannot replace an active owner.
+#[cfg(test)]
 pub(crate) fn register_game_package(package: &str, gamedata_json: &str) {
     let owner = reserved_owner_id(package);
     // Idempotent: a re-register (a second Load in one process) replaces the previous view whole
@@ -589,21 +584,49 @@ fn register_owner(owner_id: &str, gamedata_json: &str, permission_exempt: bool) 
             return;
         }
     };
-    let Some(calls) = gd.get("calls").and_then(|v| v.as_object()) else { return };
+    REGISTRY.with(|r| fill_owner(&mut r.borrow_mut(), owner_id, &gd, permission_exempt));
+}
+fn fill_owner(
+    registry: &mut CallRegistry,
+    owner_id: &str,
+    gd: &serde_json::Value,
+    permission_exempt: bool,
+) {
+    let Some(calls) = gd.get("calls").and_then(|v| v.as_object()) else {
+        return;
+    };
     let signatures = gd.get("signatures").and_then(|v| v.as_object());
     // One op probe for the whole batch: a null resolve op degrades every descriptor identically.
-    let ops_available = crate::v8host::engine_ops().and_then(|o| o.engine_call_resolve).is_some();
+    let ops_available = crate::v8host::engine_ops()
+        .and_then(|o| o.engine_call_resolve)
+        .is_some();
     // Deterministic order so the boot log reads the same on every start.
     let mut names: Vec<&String> = calls.keys().collect();
     names.sort();
     for name in names {
         match flatten_decl(&calls[name], signatures) {
-            Ok(decl) => REGISTRY.with(|r| {
-                r.borrow_mut().register(owner_id, name, &decl, ops_available, permission_exempt)
-            }),
-            Err(reason) => REGISTRY.with(|r| r.borrow_mut().degrade(owner_id, name, &reason)),
+            Ok(decl) => registry.register(owner_id, name, &decl, ops_available, permission_exempt),
+            Err(reason) => registry.degrade(owner_id, name, &reason),
         }
     }
+}
+
+pub(crate) fn prepare_game_package(owner: &str, gd: &serde_json::Value) -> CallRegistry {
+    let mut staged = CallRegistry::new();
+    fill_owner(&mut staged, owner, gd, true);
+    staged
+}
+pub(crate) fn commit_game_package(owner: &str, staged: CallRegistry) {
+    REGISTRY.with(|r| r.borrow_mut().calls.extend(staged.calls));
+    GAME_PACKAGE_OWNER.with(|o| *o.borrow_mut() = Some(owner.into()));
+}
+pub(crate) fn clear_game_package(owner: &str) {
+    drop_plugin(owner);
+    GAME_PACKAGE_OWNER.with(|o| {
+        if o.borrow().as_deref() == Some(owner) {
+            o.borrow_mut().take();
+        }
+    });
 }
 
 /// Ledger teardown: drop every descriptor this plugin declared (unload / reload).

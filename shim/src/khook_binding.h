@@ -309,15 +309,6 @@ inline int S2Hook_GuardedDispatchHook(int (*fn)(int, void*), int hookId, void* a
     return fn(hookId, argView);
 }
 
-inline int S2Hook_GuardedDispatchHookPost(int (*fn)(int, void*, int), int hookId, void* argView,
-                                         int skipped) {
-    S2HookDispatchGuard guard;
-    if (!guard || !fn) {
-        return 0;
-    }
-    return fn(hookId, argView, skipped);
-}
-
 // true = this thread is not on a hook callback stack (safe to walk the
 // retirement queue). It does NOT mean the queue is empty: delayed
 // completions leave Removing entries. Unload must require

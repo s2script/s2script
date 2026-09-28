@@ -28,6 +28,7 @@ root = pathlib.Path("gamedata")
 # never descends into it (non-recursive glob). Skip any path under a custom/ dir at any depth so
 # both gates agree on what "shipped data" means.
 paths = sorted(p for p in root.rglob("*.jsonc") if "custom" not in p.relative_to(root).parts[:-1])
+paths += sorted(pathlib.Path('games/cs2/gamedata').glob('*.jsonc'))
 
 # Keyed by (owner-relative path, signature name), NOT by name alone: two owners (or two files)
 # defining the same signature name are namespaced apart (gamedata/core vs gamedata/cs2 never
@@ -35,7 +36,7 @@ paths = sorted(p for p in root.rglob("*.jsonc") if "custom" not in p.relative_to
 # drop one of them from this gate.
 sigs = {}
 for path in paths:
-    rel = str(path.relative_to(root))
+    rel = str(path)
     data = json.loads(strip_jsonc_comments(path.read_text()))
     for name, plats in data.get("signatures", {}).items():
         sigs[(rel, name)] = plats

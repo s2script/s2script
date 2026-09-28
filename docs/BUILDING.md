@@ -49,6 +49,7 @@ third_party/  Vendored hl2sdk + Metamod:Source + Breakpad submodules (pinned, pa
 git clone https://github.com/s2script/s2script.git
 cd s2script
 git submodule update --init --recursive   # vendored hl2sdk + Metamod:Source
+npm ci                                    # locked root TypeScript parser for game-package packaging
 
 make all      # = core + shim + package
 ```
@@ -74,9 +75,13 @@ dist/addons/
       s2script.so
     gamedata/
       core/             # common / engine.source2 / game.cs2 + master.gamedata.jsonc
-      cs2/              # the CS2 game package's own facts + master.gamedata.jsonc
-    js/
-      pawn.js
+      sdkhooks/         # native extension facts
+    game-packages.json  # target selection and verified artifact hashes
+    game-packages/cs2/
+      index.js          # ordered package bootstrap, ending in its module export map
+      gamedata.json     # verified owner/master/target documents
+      trusted-functions.json # package-owned functions: acquire, HUD click, damage
+      engine-functions.json # only for an explicitly authored functionsFile; CS2 does not ship one yet
     plugins/            # base .s2sp plugins (release) / drop zone
     configs/            # empty — must be writable at runtime
     data/               # empty — must be writable at runtime
@@ -111,6 +116,8 @@ else, so a new gate is added to the script, never to the workflow YAML. `npm ci`
 
 The boundary checks are the load-bearing ones: the core is engine-generic and must never learn a
 CS2 name. Dependencies point one way — game → core, never core → game.
+`scripts/check-game-package-boundary.sh` extends that to production core/shim: no package id, no
+prelude path, no bespoke damage path (run `--self-test` to prove it still catches a planted leak).
 
 ---
 
@@ -126,6 +133,7 @@ version 'GLIBC_2.32' not found ... [META] Loaded 0 plugins
 Build inside a matching-glibc container instead:
 
 ```bash
+npm ci  # host checkout, before mounting it into the container
 docker run --rm -v "$PWD:/repo" -w /repo \
   -v s2script-cargo:/usr/local/cargo/registry \
   rust:bullseye bash /repo/scripts/build-sniper.sh
@@ -134,7 +142,10 @@ docker run --rm -v "$PWD:/repo" -w /repo \
 `scripts/build-sniper.sh` installs g++/cmake, rebuilds `core` + `shim`, repackages `dist/`, and
 prints the resulting GLIBC requirement (must be ≤ 2.31 — currently `s2script.so` needs only
 `GLIBC_2.14` and `libs2script_core.so` `GLIBC_2.30`). The named cargo volume avoids re-downloading
-the V8 prebuilt on every run.
+the V8 prebuilt on every run. Both direct addon packaging and the sniper script check the
+bind-mounted root `node_modules/typescript` before package generation and fail with a root
+`npm ci` instruction if it is absent. The release workflow installs locked dependencies before
+the Docker build.
 
 **This is the canonical build for anything that touches a real server.**
 
@@ -320,7 +331,7 @@ git commit -m "chore: bump hl2sdk to <newsha>"
 - Every patch is reviewed and tracked in the update-day fire drill.
 
 **Interface version strings live in the `gamedata/` tree** (owner-scoped: `gamedata/core/` for
-what shim+core name in source, `gamedata/cs2/` for the CS2 game package's own facts), never
+what shim+core name in source, `games/cs2/gamedata/` for the CS2 game package's own facts), never
 hardcoded in C++ or Rust. When a game update changes one, fix the owning gamedata file — and
 confirm the new value with `meta interfaces` on the live server, which is ground truth over the SDK
 headers. See [`re-strategy.md`](re-strategy.md) for the full doctrine.

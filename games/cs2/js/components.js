@@ -758,6 +758,10 @@
     var OWNED_BANNER = "cs2:hudkit:owned:banner";
     var OWNED_MOTD = "cs2:hudkit:owned:motd";
     var OWNED_DASHBOARD = "cs2:hudkit:owned:dashboard";
+    // One key per pooled sheet. Held only while a NON-focused modal is open (a focused one already
+    // holds a focus lease with the same hide action).
+    var OWNED_MODAL = "cs2:hudkit:owned:modal:";
+    var OWNED_BADGE = "cs2:hudkit:owned:badge:";
     var TOAST_ROOTS = TOAST.map(function (item) { return item.id; });
 
     function surfaceSlot(map, slot) {
@@ -1682,9 +1686,29 @@
       var badgeReleased = false;
       var shownBindings = {};
       var selfBadge;
+      // Host-owned visibility lease per slot, as for modals: while held, the owner sweep on
+      // unload/reload retires it, which hides the badge instead of stranding it on screen.
+      var badgeLeases = {};
+      function holdBadge(slot, binding) {
+        var held = surfaceSlot(badgeLeases, slot)[0];
+        if (held && surfaceCurrent(badgeLeases, held)) return held;
+        var begun = beginSurface(badgeLeases, binding, OWNED_BADGE + slotIds.id, "legacy", [slotIds.id], "visible");
+        if (!begun.ok) {
+          log("badge " + slotIds.id + ": visibility lease unavailable (" + begun.error.message +
+            "); it will not be cleared if this plugin unloads while it is shown");
+          return null;
+        }
+        return begun.value;
+      }
+      function dropBadge(slot) {
+        var held = surfaceSlot(badgeLeases, slot)[0];
+        if (held) retireSurface(badgeLeases, held, true);
+      }
       function tryShowBadge(slot, data, binding) {
         if (badgeReleased) return releasedResult("badge");
         if (!bindingValid(binding)) return staleResult();
+        // Reserve BEFORE painting, so a winning reservation can never hide this show.
+        var lease = holdBadge(slot, binding);
         function currentBadge() { return !badgeReleased; }
         var paintText = resultBoundDriver(binding, driveSetText, currentBadge);
         var paintClass = resultBoundDriver(binding, driveSetClass, currentBadge);
@@ -1711,7 +1735,12 @@
         }
         paint(paintReveal, slot, slotIds.id, FADE.badge);
         if (badgeReleased) return releasedResult("badge");
-        return error || uiOk(undefined);
+        if (error) {
+          if (!shownBindings[slot]) dropBadge(slot);
+          return error;
+        }
+        if (lease) activateSurface(badgeLeases, lease);
+        return uiOk(undefined);
       }
       function showBadge(slot, data, binding) {
         var result = tryShowBadge(slot, data, binding);
@@ -1740,6 +1769,7 @@
           hide: function () {
             if (valid()) boundDriver(binding, hide, valid)(slot, slotIds.id);
             if (shownBindings[slot] === binding) delete shownBindings[slot];
+            dropBadge(slot);
           }
         };
       }
@@ -1751,12 +1781,20 @@
           var binding = shownBindings[slot];
           if (!badgeReleased && bindingValid(binding)) boundDriver(binding, hide)(slot, slotIds.id);
           delete shownBindings[slot];
+          dropBadge(slot);
         },
         forSlot: function (slot) {
           return makeBadgeView(slot, captureBinding(slot));
         },
         release: function () {
           if (badgeReleased) return;
+          // Returning the badge to the pool must not leave it on anyone's screen.
+          for (var bs in shownBindings) {
+            if (Object.prototype.hasOwnProperty.call(shownBindings, bs)) selfBadge.hide(Number(bs));
+          }
+          for (var ls in badgeLeases) {
+            if (Object.prototype.hasOwnProperty.call(badgeLeases, ls)) dropBadge(Number(ls));
+          }
           badgeReleased = true;
           shownBindings = {};
           releaseSlot("badge", idx);
@@ -1796,6 +1834,27 @@
       var modalUpdateRecords = {};
       var SUPERSEDED = {};
       var self;
+      // Host-owned visibility lease per slot. Painting a sheet is per-player engine state that
+      // outlives this context: without a lease, a plugin unloaded or reloaded mid-open leaves the
+      // sheet on screen with no handler behind it and nothing able to close it. While the lease is
+      // held, the host's owner sweep (unload/reload) retires it, which hides the root. Cursor
+      // capture is already an owner-swept switch lease, so this profile only hides.
+      var visibleLeases = {};
+      function holdVisible(slot, binding) {
+        var held = surfaceSlot(visibleLeases, slot)[0];
+        if (held && surfaceCurrent(visibleLeases, held)) return held;
+        var begun = beginSurface(visibleLeases, binding, OWNED_MODAL + ids.root, "legacy", [ids.root], "visible");
+        if (!begun.ok) {
+          log("modal " + ids.root + ": visibility lease unavailable (" + begun.error.message +
+            "); the sheet will not be cleared if this plugin unloads while it is open");
+          return null;
+        }
+        return begun.value;
+      }
+      function dropVisible(slot) {
+        var held = surfaceSlot(visibleLeases, slot)[0];
+        if (held) retireSurface(visibleLeases, held, true);
+      }
 
       function modalUpdateRecord(slot, binding, componentEpoch) {
         var record = modalUpdateRecords[slot];
@@ -2105,6 +2164,9 @@
         if (!bindingValid(binding) || componentEpoch !== (modalSlotEpochs[slot] || 0)) return staleResult();
         if (openAttempts[slot] !== attempt) return uiFail("PaintFailed", "modal open superseded");
         if (open[slot]) { cancelDirtyState(open[slot]); releaseFocus(open[slot]); }
+        // Reserve BEFORE painting: a winning reservation hides the lane's outgoing presentation,
+        // which must never be the sheet this open is about to show.
+        var lease = validated.value === null ? holdVisible(slot, binding) : null;
         var candidate = { page: 0, cursor: 0, interactive: false, binding: binding,
           componentEpoch: componentEpoch, focusEnabled: validated.value !== null,
           focusPriority: validated.value, root: ids.root, cursorWanted: cursorWanted,
@@ -2140,8 +2202,12 @@
             })(slot, ids.root); }
             catch (_) { /* Preserve the original failure. */ }
           }
+          // Keep the lease while any sheet remains open on this slot; a failed re-open must not
+          // strip the lease from the one still showing.
+          if (lease && !open[slot]) dropVisible(slot);
           return result;
         }
+        if (lease) activateSurface(visibleLeases, lease);
         return uiOk(makeModalView(slot, binding, componentEpoch));
       }
 
@@ -2184,6 +2250,7 @@
           delete openAttempts[slot];
           delete paintTransactions[slot];
           delete open[slot];
+          dropVisible(slot);
           if (releaseFocus(st)) return;
           if (!st || !bindingValid(st.binding) || st.componentEpoch !== (modalSlotEpochs[slot] || 0)) return;
           boundDriver(st.binding, hide, function () {
@@ -2264,6 +2331,7 @@
           releaseFocus(open[slot]);
           modalSlotEpochs[slot] = (modalSlotEpochs[slot] || 0) + 1;
           delete paintTransactions[slot]; delete open[slot];
+          dropVisible(slot);
         },
         forSlot: function (slot) {
           return makeModalView(slot, captureBinding(slot), modalSlotEpochs[slot] || 0);

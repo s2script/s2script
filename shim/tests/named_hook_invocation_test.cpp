@@ -151,34 +151,10 @@ template <typename R,typename... A> R Provider::Continue(A... args) {
 
 extern void* outer_victim;
 extern void* outer_info;
-extern void* inner_victim;
-extern void* inner_info;
 extern void* outer_manifest;
 extern void* inner_manifest;
 extern std::array<unsigned char,0xa0> nested_cmd;
-int damage_originals=0, chat_originals=0, output_originals=0, usercmd_originals=0, precache_originals=0;
-// Controlled storage only: this is not an engine CTakeDamageResult layout.
-struct DamageOutput { uintptr_t before=0xabc, value=0, after=0xdef; };
-DamageOutput outer_output,inner_output;
-int damage_null_results=0,damage_output_writes=0;
-void DamageTarget(void* victim,void* info,void* result) {
-    ++damage_originals;
-    if (victim==inner_victim) {
-        CHECK(S2NamedDamageInfo()==outer_info && S2NamedDamageVictim()==outer_victim,
-              "nested damage original sees only the still-live outer callback frame");
-    } else {
-        CHECK(S2NamedDamageInfo()==nullptr && S2NamedDamageVictim()==nullptr,
-              "damage frame does not span its own original execution");
-    }
-    CHECK(victim && info,"damage full-width pointers reach original");
-    if (!result) ++damage_null_results;
-    else {
-        CHECK(result==(victim==inner_victim ? &inner_output : &outer_output),"optional result pointer reaches original unchanged");
-        auto* out=static_cast<DamageOutput*>(result);
-        CHECK(out->before==0xabc && out->after==0xdef,"hook preserves output storage guards");
-        out->value=reinterpret_cast<uintptr_t>(info); ++damage_output_writes;
-    }
-}
+int chat_originals=0, output_originals=0, usercmd_originals=0, precache_originals=0;
 void ChatTarget(void*,void*,bool,int,const char*) { ++chat_originals; }
 void OutputTarget(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*) {
     ++output_originals;
@@ -206,41 +182,12 @@ void PrecacheTarget(Receiver* receiver,void* manifest) {
 
 void* outer_victim=reinterpret_cast<void*>(uintptr_t{0x1111222233334444});
 void* outer_info=reinterpret_cast<void*>(uintptr_t{0x5555666677778888});
-void* inner_victim=reinterpret_cast<void*>(uintptr_t{0x9999aaaabbbbcccc});
-void* inner_info=reinterpret_cast<void*>(uintptr_t{0xddddeeeeffff1111});
-bool in_damage_pre=false,in_damage_post=false;
-int damage_pre_calls=0,damage_post_calls=0;
-bool damage_terminal_refused=false;
-void DamagePreOp() {
-    ++damage_pre_calls;
-    void* victim=S2NamedDamageVictim(); void* info=S2NamedDamageInfo();
-    CHECK(victim && info,"damage PRE exposes this callback's pointers");
-    const auto permit=S2Hook_CurrentTerminalPermit();
-    if (permit.IsValid()) damage_terminal_refused=!S2NamedHooksCanUnloadSync(permit);
-    if (!in_damage_pre && victim==outer_victim) {
-        in_damage_pre=true;
-        provider.Invoke(&DamageTarget,inner_victim,inner_info,static_cast<void*>(nullptr));
-        CHECK(S2NamedDamageVictim()==outer_victim && S2NamedDamageInfo()==outer_info,
-              "nested damage PRE restores outer pointers");
-        in_damage_pre=false;
-    }
-}
-void DamagePostOp() {
-    ++damage_post_calls;
-    void* victim=S2NamedDamageVictim(); void* info=S2NamedDamageInfo();
-    CHECK(victim && info,"damage POST exposes this callback's own pointers");
-    if (!in_damage_post && victim==outer_victim) {
-        in_damage_post=true;
-        provider.Invoke(&DamageTarget,inner_victim,inner_info,static_cast<void*>(&inner_output));
-        CHECK(S2NamedDamageVictim()==outer_victim && S2NamedDamageInfo()==outer_info,
-              "nested damage POST restores outer pointers");
-        in_damage_post=false;
-    }
-}
-
 int chat_result=0,chat_calls=0;
+bool chat_terminal_refused=false;
 int ChatOp(void* controller,void* command,bool team,int number,const char* text) {
     ++chat_calls;
+    const auto permit=S2Hook_CurrentTerminalPermit();
+    if (permit.IsValid()) chat_terminal_refused=!S2NamedHooksCanUnloadSync(permit);
     CHECK(controller==outer_victim && command==outer_info && team && number==19 &&
               std::strcmp(text,"opaque")==0,"chat callback preserves exact ABI arguments");
     return chat_result;
@@ -310,11 +257,9 @@ void PrecacheOp() {
     }
 }
 
-int damage_pre_ignore=0,damage_post_ignore=0,chat_ignore=0,chat_supersede=0;
+int chat_ignore=0,chat_supersede=0;
 int output_ignore=0,output_supersede=0,usercmd_ignore=0,precache_ignore=0;
-void ObserveAction(S2NamedHookSite site,bool post,KHook::Action action) {
-    if (site==S2NamedHookSite::Damage && !post && action==KHook::Action::Ignore) ++damage_pre_ignore;
-    if (site==S2NamedHookSite::Damage && post && action==KHook::Action::Ignore) ++damage_post_ignore;
+void ObserveAction(S2NamedHookSite site,bool /*post*/,KHook::Action action) {
     if (site==S2NamedHookSite::Chat && action==KHook::Action::Ignore) ++chat_ignore;
     if (site==S2NamedHookSite::Chat && action==KHook::Action::Supersede) ++chat_supersede;
     if (site==S2NamedHookSite::Output && action==KHook::Action::Ignore) ++output_ignore;
@@ -337,24 +282,17 @@ KHook::Return<void> TerminalPre(void*) {
 
 void ConfigureAndInvoke() {
     S2NamedHookOps ops;
-    ops.damage_pre=&DamagePreOp; ops.damage_post=&DamagePostOp;
     ops.chat=&ChatOp; ops.output=&OutputOp;
     ops.usercmd_slot=&UsercmdSlot; ops.usercmd_dispatch=&UsercmdDispatch;
     ops.usercmd_neutralize=&UsercmdNeutralize; ops.precache=&PrecacheOp;
     ops.observe_action=&ObserveAction;
     S2NamedHooksSetOps(ops);
 
-    const auto damage=S2NamedConfigureDamage(reinterpret_cast<void*>(&DamageTarget));
     const auto chat=S2NamedConfigureChat(reinterpret_cast<void*>(&ChatTarget));
     const auto output=S2NamedConfigureOutput(reinterpret_cast<void*>(&OutputTarget));
-    CHECK(damage.Accepted() && chat.Accepted() && output.Accepted(),"three eager named hooks are accepted");
-    // Stock wrapper copies its hidden context pointer plus three native pointers,
-    // with no integer return storage. This catches the inherited four-pointer/int64 ABI.
-    const auto damage_registration=provider.Find(reinterpret_cast<void*>(&DamageTarget));
-    CHECK((damage_registration->stack_size==KHook::Hook<void>::_copy_stack_size<void*,void*,void*,void*>()),
-          "damage registration has verified void/three-pointer ABI");
-    CHECK(S2NamedHookSnapshot(S2NamedHookSite::Damage).state==S2HookState::Pending,
-          "accepted damage receipt begins Pending");
+    CHECK(chat.Accepted() && output.Accepted(),"two eager named hooks are accepted");
+    CHECK(S2NamedHookSnapshot(S2NamedHookSite::Chat).state==S2HookState::Pending,
+          "accepted chat receipt begins Pending");
 
     provider.fail_setup=true;
     S2NamedSetUsercmdTarget(reinterpret_cast<void*>(&UsercmdTarget));
@@ -375,23 +313,12 @@ void ConfigureAndInvoke() {
     CHECK(precache.Accepted(),"checked precache global binding is accepted");
     Receiver receiver{vtable,1}; expected_receiver=&receiver;
 
-    provider.Invoke(&DamageTarget,outer_victim,outer_info,static_cast<void*>(&outer_output));
-    CHECK(damage_null_results==1 && damage_output_writes==2 &&
-          outer_output.value==reinterpret_cast<uintptr_t>(outer_info) &&
-          inner_output.value==reinterpret_cast<uintptr_t>(inner_info) &&
-          outer_output.before==0xabc && outer_output.after==0xdef &&
-          inner_output.before==0xabc && inner_output.after==0xdef,
-          "void damage preserves optional output storage and actual original writes");
-    CHECK(damage_pre_calls==3 && damage_post_calls==3 && damage_originals==3,
-          "nested damage runs PRE/original/POST once per invocation");
-    CHECK(damage_terminal_refused,"named hook refuses removal from its own active capsule");
-    CHECK(S2NamedHookSnapshot(S2NamedHookSite::Damage).state==S2HookState::Active,
-          "first observed damage callback promotes Pending to Active");
-    CHECK(!S2NamedDamageInfo() && !S2NamedDamageVictim(),"damage pointers expire after callback");
-
     for (int result : {0,1}) { chat_result=result; provider.Invoke(&ChatTarget,outer_victim,outer_info,true,19,"opaque"); }
     for (int result : {2,3}) { chat_result=result; provider.Invoke(&ChatTarget,outer_victim,outer_info,true,19,"opaque"); }
     CHECK(chat_calls==4 && chat_originals==1,"chat suppresses every nonzero result and otherwise runs original once");
+    CHECK(chat_terminal_refused,"named hook refuses removal from its own active capsule");
+    CHECK(S2NamedHookSnapshot(S2NamedHookSite::Chat).state==S2HookState::Active,
+          "first observed chat callback promotes Pending to Active");
 
     auto* out=reinterpret_cast<CEntityIOOutput*>(uintptr_t{0x1111});
     auto* act=reinterpret_cast<CEntityInstance*>(uintptr_t{0x2222});
@@ -433,18 +360,17 @@ void ConfigureAndInvoke() {
     provider.InvokeEntry<void,Receiver*,void*>(entry,&other,outer_manifest);
     CHECK(precache_calls==2 && precache_originals==3,
           "different-vtable receiver is filtered while its original still runs");
-    CHECK(damage_pre_ignore==3 && damage_post_ignore==3 && chat_ignore==1 && chat_supersede==3 &&
+    CHECK(chat_ignore==1 && chat_supersede==3 &&
               output_ignore==2 && output_supersede==2 && usercmd_ignore==3 && precache_ignore==2,
-          "production callbacks publish their actual accepted action and damage phase");
+          "production callbacks publish their actual accepted action");
 
     S2CheckedFunction<void,void*> terminal(&TerminalPre,nullptr);
     terminal_binding=&terminal;
     CHECK(terminal.Configure(&TerminalTarget).Accepted(),"terminal fixture binding is accepted");
     S2Hook_SetLifecycle(S2HookLifecycle::Retiring);
-    const int pre_before=damage_pre_calls;
-    provider.Invoke(&DamageTarget,outer_victim,outer_info,static_cast<void*>(nullptr));
-    CHECK(damage_pre_calls==pre_before && !S2NamedDamageInfo(),
-          "retiring callback rejects dispatch without exposing borrowed pointers");
+    const int chat_before=chat_calls;
+    provider.Invoke(&ChatTarget,outer_victim,outer_info,true,19,"opaque");
+    CHECK(chat_calls==chat_before,"retiring callback rejects dispatch");
     provider.Invoke(&TerminalTarget,outer_victim);
     CHECK(terminal_can && terminal_removed && terminal_complete,
           "foreign terminal capsule preflights, removes, and completes named inventory");

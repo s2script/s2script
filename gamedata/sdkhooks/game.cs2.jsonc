@@ -30,7 +30,7 @@
 // Use, GetMaxHealth, ShouldCollide, VPhysicsUpdate, GroundEntChangedPost, CanBeAutobalanced,
 // Reload, WeaponCanUse, WeaponCanSwitchTo, WeaponDrop, WeaponEquip, WeaponSwitch.
 // OnTakeDamageAlive / TraceAttack / FireBulletsPost have no distinct CS2 function yet (OnTakeDamage
-// + OnTakeDamagePost stay on the existing DispatchTraceAttack mux in gamedata/core/).
+// + OnTakeDamagePost are the @s2script/cs2 package's trusted takeDamageOld function).
 // Do not substitute CBaseEntity::SetGroundEntity for GroundEntChangedPost (that is the setter).
 // CTriggerTeleport::Touch is the teleport body (measured 6 int / 4 float, prototype mismatch)
 // — not the Touch virtual.

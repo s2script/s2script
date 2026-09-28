@@ -23,6 +23,15 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install JS deps
+        run: npm ci
+
       - name: Sniper build (bullseye / glibc 2.31)
         run: |
           docker run --rm \
@@ -49,15 +58,6 @@ jobs:
 
       - name: Fix dist ownership after Docker
         run: sudo chown -R "$USER:$USER" dist build target docker/metamod 2>/dev/null || sudo chown -R "$(id -u):$(id -g)" dist
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-
-      - name: Install JS deps
-        run: npm ci
 
       - name: Build base plugins
         # Stamp every plugin package.json / .s2sp manifest to the release tag

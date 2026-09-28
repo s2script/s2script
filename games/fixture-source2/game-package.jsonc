@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "id": "@fixture/source2",
+  "match": { "engine": "source2", "game": "fixture" },
+  "gamedataOwner": "fixture",
+  "bootstrapInputs": ["js/index.js"],
+  "gamedataRoot": "gamedata",
+  "functionsFile": "functions.fixture.jsonc"
+}

@@ -1,6 +1,6 @@
 # pickupgate
 
-Live-gate fixture for `ctx.items.onCanAcquire` / `onCanAcquirePost`. Not shipped.
+Live-gate fixture for `items.onCanAcquire` (from `@s2script/cs2`) / `onCanAcquirePost`. Not shipped.
 
 Prefix: `[PICKUPGATE]`. Drive with `python3 scripts/rcon.py pickup_report` / `pickup_deny` / `pickup_give` / `pickup_reenter`.
 

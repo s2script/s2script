@@ -429,6 +429,23 @@ pub(crate) struct ActivePackageFunctions {
     ids: Vec<u64>,
     _retention: Option<Rc<dyn std::any::Any>>,
 }
+#[cfg(test)]
+thread_local! {
+    static PACKAGE_ACTIVATION_FAILURE_OWNER: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+#[cfg(test)]
+pub(crate) struct PackageActivationFailureGuard;
+#[cfg(test)]
+impl Drop for PackageActivationFailureGuard {
+    fn drop(&mut self) {
+        PACKAGE_ACTIVATION_FAILURE_OWNER.with(|owner| owner.borrow_mut().take());
+    }
+}
+#[cfg(test)]
+pub(crate) fn fail_next_package_activation(owner: &str) -> PackageActivationFailureGuard {
+    PACKAGE_ACTIVATION_FAILURE_OWNER.with(|slot| *slot.borrow_mut() = Some(owner.into()));
+    PackageActivationFailureGuard
+}
 impl ActivePackageFunctions {
     pub(crate) fn owner(&self) -> &OwnerKey {
         self.owner.key()
@@ -468,6 +485,18 @@ pub(crate) fn activate_package_owner(
     }
     if owner.is_retired() || state.phase.get() != PackageFunctionPhase::Unactivated {
         return Err("package functions already activated or retired".into());
+    }
+    #[cfg(test)]
+    if PACKAGE_ACTIVATION_FAILURE_OWNER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.as_deref() == Some(owner.key().id.as_str()) {
+            slot.take();
+            true
+        } else {
+            false
+        }
+    }) {
+        return Err("injected package activation failure".into());
     }
     let prepared = receipt.prepared;
     for binding in &prepared.bindings {if let Some(cap)=binding.capability {runtime::instance_activate(cap,owner.key())?;}}

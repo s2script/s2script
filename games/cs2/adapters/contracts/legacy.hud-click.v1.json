@@ -1,0 +1,1 @@
+{"frame":{"delivery":["player:entity?","buttonId:copied-string"]},"id":"legacy.hud-click.v1","preDecision":"s2.pre-decision.v1","semantics":{"buttonIdCopy":"before-javascript","finalAction":"continue","reentry":"synchronous-nested"},"subscriberDelivery":"s2.subscriber-delivery.v1","timing":{"deliveryLabel":"post","nativePhase":"pre","relativeToOriginal":"before"},"version":1}

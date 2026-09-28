@@ -846,42 +846,6 @@
       "shim": "s2_server_map_valid"
     },
     {
-      "name": "damage_read_float",
-      "alias": "DamageReadFloatFn",
-      "rust": "extern \"C\" fn(offset: c_int) -> f32",
-      "group": "Slice 6.4: server command + map-validity ops",
-      "c_ret": "float",
-      "c_params": "int offset",
-      "shim": "s2_damage_read_float"
-    },
-    {
-      "name": "damage_read_int",
-      "alias": "DamageReadIntFn",
-      "rust": "extern \"C\" fn(offset: c_int) -> c_int",
-      "group": "Slice 6.4: server command + map-validity ops",
-      "c_ret": "int",
-      "c_params": "int offset",
-      "shim": "s2_damage_read_int"
-    },
-    {
-      "name": "damage_write_float",
-      "alias": "DamageWriteFloatFn",
-      "rust": "extern \"C\" fn(offset: c_int, value: f32)",
-      "group": "Slice 6.4: server command + map-validity ops",
-      "c_ret": "void",
-      "c_params": "int offset, float value",
-      "shim": "s2_damage_write_float"
-    },
-    {
-      "name": "damage_victim",
-      "alias": "DamageVictimFn",
-      "rust": "extern \"C\" fn() -> c_int",
-      "group": "Slice 6.4: server command + map-validity ops",
-      "c_ret": "int",
-      "c_params": "void",
-      "shim": "s2_damage_victim"
-    },
-    {
       "name": "cvar_get",
       "alias": "CvarGetFn",
       "rust": "extern \"C\" fn(name: *const c_char) -> *const c_char",
@@ -1540,15 +1504,6 @@
       "shim": "S2_HookReadI32"
     },
     {
-      "name": "hook_read_str",
-      "alias": "HookReadStrFn",
-      "rust": "extern \"C\" fn(*mut std::ffi::c_void, c_int, *mut std::ffi::c_char, c_int) -> c_int",
-      "group": "declarative inbound hooks, core half",
-      "c_ret": "int",
-      "c_params": "void* argView, int idx, char* out, int cap",
-      "shim": "S2_HookReadStr"
-    },
-    {
       "name": "hook_write_f32",
       "alias": "HookWriteF32Fn",
       "rust": "extern \"C\" fn(*mut std::ffi::c_void, c_int, f32) -> c_int",
@@ -1637,24 +1592,6 @@
       "c_ret": "int",
       "c_params": "const char* name, const char* value",
       "shim": "s2_cvar_set"
-    },
-    {
-      "name": "hook_read_u16_at_q",
-      "alias": "HookReadU16AtQFn",
-      "rust": "extern \"C\" fn(*mut std::ffi::c_void, c_int, c_int, *mut u16) -> c_int",
-      "group": "Pickup-gate accessors \u2014 u16 at q[qslot]+schemaOffset; pointer never crosses to JS",
-      "c_ret": "int",
-      "c_params": "void* argView, int qslot, int offset, uint16_t* out",
-      "shim": "S2_HookReadU16AtQ"
-    },
-    {
-      "name": "hook_self_matches_field",
-      "alias": "HookSelfMatchesFieldFn",
-      "rust": "extern \"C\" fn(*mut std::ffi::c_void, c_int, c_int, c_int) -> c_int",
-      "group": "Pickup-gate accessors \u2014 does this live entity's pointer-at-offset equal the view self",
-      "c_ret": "int",
-      "c_params": "void* argView, int index, int serial, int offset",
-      "shim": "S2_HookSelfMatchesField"
     },
     {
       "name": "sdkhook_vp_add",

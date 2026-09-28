@@ -5,11 +5,10 @@
 // Actual Linux x86_64 entry prologues, suitable for verified-image signature + prologue recipes.
 inline constexpr const char* kS2ProbeVoidSignature = "0F 1F 84 00 53 32 56 34";
 inline constexpr const char* kS2ProbeWideSignature = "0F 1F 84 00 53 32 57 34";
-inline constexpr const char* kS2ProbeAcquireSignature = "0F 1F 84 00 53 32 41 34";
-extern "C" void S2ProbeDeclarativeHudTarget(void*,int64_t,int64_t,int64_t);
+inline constexpr const char* kS2ProbeNarrowSignature = "0F 1F 84 00 53 32 4E 34";
 extern "C" void S2ProbeDeclarativeVoidTarget(void* self);
 extern "C" void S2ProbeDeclarativeWideTarget(void* self, float value, int32_t integer, int64_t a, int64_t b);
-extern "C" int32_t S2ProbeDeclarativeAcquireTarget(void* self, int64_t a, int32_t method, int64_t b);
+extern "C" void S2ProbeDeclarativeNarrowTarget(void* self, float value, int32_t method, int32_t b, int32_t c);
 
 // Production engine_hooks.cpp is compiled into this separate test plugin. These snapshots prove
 // native C++ delivery only when invoked against the stock provider; S1-6 owns JS bridge evidence.
@@ -35,5 +34,4 @@ bool S2ProbeBridgeBind(const std::string& run,const std::string& suite,const std
 // Source-owned deployed gamedata and real engine peers (acceptance only).
 void S2ProbeLiveInstallEarly(const std::string& probe_path);
 std::string S2ProbeLiveGamedata();
-const std::vector<s2khook::RealAcquireObservation>& S2ProbeRealAcquireCollect();
 bool S2ProbeLiveProvenanceReady();

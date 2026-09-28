@@ -284,6 +284,8 @@
     // correctly rejects build 25218825; rederive on updates rather than weakening validation.
     // The build-25470087 weapon_incgrenade LEA is at +0x7f7. Keep its opcode in
     // the signature; mask the intervening body and its RIP displacement.
+    // Bound BY NAME by the trusted `canAcquire` engine function (games/cs2/trusted-functions.jsonc);
+    // a custom/ override of this entry repairs it and is recorded in the package status.
     "CCSPlayer_ItemServices_CanAcquire": {
       "linuxsteamrt64": {
         "module": "libserver.so",
@@ -359,13 +361,46 @@
     },
 
     // CCSCustomHudLayout click receiver — Pulse binding fan-out for CS_UM_CustomHudClicked.
-    // Whole-function pattern (71 bytes) verified UNIQUE @ va 0xb2bcb0 on build 24916958.
+    // Whole-function pattern (71 bytes). Fan-out: rdi unused (global accessor), rsi = slot
+    // entity/controller, rdx = CCSCustomHudLayout*, rcx = CUtlString* (first word = char*), each
+    // forwarded to listener vfunc +0x128. The vcall displacement is the ONLY tie-breaker: a
+    // byte-identical twin fan-out (listener slot +0xf8; was +0xf0) sits 0x1f0 bytes earlier, so
+    // it must stay literal — wildcarding it matches twice. Both slots moved +8 in the Sept 2026
+    // update (one listener vfunc inserted); on a miss, re-derive from the sole direct caller.
+    // Verified UNIQUE across PF_X @ va 0xb26020 in libserver.so SHA-256 23373cfd…e87f (1.41.8.2;
+    // sole caller 0xac2c36). Previous +0x120 form: 0xb2bcb0 (24916958), 0xb2e370 (a4c54f83…).
+    // Bound BY NAME by the trusted `customHudClicked` engine function (trusted-functions.jsonc).
     "CCSCustomHudLayout_CustomHudClickedReceiver": {
       "linuxsteamrt64": {
         "module": "libserver.so",
-        "pattern": "55 48 89 E5 41 56 41 55 41 54 53 48 8B 1D ? ? ? ? 48 85 DB 74 27 49 89 F6 49 89 D5 49 89 CC 48 8B 03 48 89 DF 4C 89 E1 4C 89 EA 4C 89 F6 FF 90 20 01 00 00 48 8B 5B 18 48 85 DB 75 E2 5B 41 5C 41 5D 41 5E 5D C3",
+        "pattern": "55 48 89 E5 41 56 41 55 41 54 53 48 8B 1D ? ? ? ? 48 85 DB 74 27 49 89 F6 49 89 D5 49 89 CC 48 8B 03 48 89 DF 4C 89 E1 4C 89 EA 4C 89 F6 FF 90 28 01 00 00 48 8B 5B 18 48 85 DB 75 E2 5B 41 5C 41 5D 41 5E 5D C3",
         "resolve": "direct",
         "validate": { "prologue": "55 48 89 E5 41 56 41 55 41 54 53 48 8B 1D" }
+      }
+    },
+
+    // CBaseEntity::TakeDamageOld: void(victim*, mutable damageInfo*, optional damageResult*).
+    // Independently audited on builds 25218825 and 25470087: exact entry plus its own
+    // TakeDamageOld force diagnostic (including newline). The retired DispatchTraceAttack
+    // pattern identified unrelated output logic; do not alias/transplant custom overrides.
+    // The TakeDamageOld force-diagnostic LEA is at +0x107 in both audited builds. Keep
+    // its opcode in the signature; mask the intervening body and its RIP displacement.
+    // Bound BY NAME by the trusted `takeDamageOld` engine function (trusted-functions.jsonc), which
+    // backs SDKHook OnTakeDamage/OnTakeDamagePost through the legacy.damage.v1 adapter.
+    "CBaseEntity_TakeDamageOld": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 66 0F EF C0 48 89 E5 41 57 41 56 41 55 49 89 FD 31 FF 41 54 49 89 D4 53 48 89 F3 48 81 EC 48 01 00 00 48 8D 05 ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? 48 8D 3D ? ? ? ?",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "55 66 0F EF C0 48 89 E5 41 57 41 56 41 55 49 89 FD 31 FF 41 54 49 89 D4 53 48 89 F3 48 81 EC 48 01 00 00",
+          "string-xref": {
+            "at": 263,
+            "dispOff": 3,
+            "instrLen": 7,
+            "expect": "CBaseEntity::TakeDamageOld: damagetype %d with info.GetDamageForce() == Vector::vZero\n"
+          }
+        }
       }
     }
   },
@@ -639,27 +674,6 @@
       "receiver": { "kind": "entity", "as": "player" },
       "bypassWith": "respawn",
       "expose": { "ctx": "players" }
-    },
-
-    // ctx.items.onCanAcquire — pickup gate. NO bypassWith: giveNamedItem must fire this hook.
-    // ItemServices* is not an entity; player is recovered in the game-package wrapper.
-    // `result` is the i32 return (synthetic addressable slot), not an ABI argument.
-    "onCanAcquire": {
-      "target": { "kind": "signature", "name": "CCSPlayer_ItemServices_CanAcquire" },
-      "shape": "this_i64_i32_i64",
-      "params": ["method", "result"],
-      "mutable": ["result"],
-      "expose": { "ctx": "items", "handwritten": true }
-    },
-
-    // ctx.ui.onCustomHudClicked — observer only. The handwritten wrapper in games/cs2/js/ui.js
-    // always returns Continue so map cs_script handlers (e.g. zoo Dismiss) still run.
-    "onCustomHudClicked": {
-      "target": { "kind": "signature", "name": "CCSCustomHudLayout_CustomHudClickedReceiver" },
-      "shape": "this_i64_i64_i64",
-      "params": ["buttonId"],
-      "receiver": { "kind": "entity", "as": "player" },
-      "expose": { "ctx": "ui", "handwritten": true }
     }
   }
 }

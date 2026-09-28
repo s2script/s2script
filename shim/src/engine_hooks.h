@@ -36,23 +36,12 @@ void S2_HookResetAll(void);
 // frame. Return 0 on success, -1 on a bad index or a null view.
 int  S2_HookReadF32 (void* argView, int idx, float* out);
 int  S2_HookReadI32 (void* argView, int idx, int32_t* out);
-// Text params (see the kParamStr note in engine_hooks.cpp): copies the view's NUL-terminated
-// copy into `out`, bounded by `cap`. -1 on a dead view, bad index, or a non-text param.
-int  S2_HookReadStr (void* argView, int idx, char* out, int cap);
 int  S2_HookWriteF32(void* argView, int idx, float value);
 int  S2_HookWriteI32(void* argView, int idx, int32_t value);
 
 // The detour's `this`, as a packed CEntityHandle, when the descriptor surfaces it. -1 when it does
 // not. NO RAW POINTER LEAVES THIS TU — core turns the handle into a books-gated EntityRef.
 int  S2_HookReceiverHandle(void* argView, uint32_t* outHandle);
-
-// Read a u16 at `q[qslot] + offset`. The pointer stays in the shim; core supplies a schema offset
-// and never sees the address. -1 if the view is dead, the slot is empty, or the pointer is null.
-int  S2_HookReadU16AtQ(void* argView, int qslot, int offset, uint16_t* out);
-
-// Does the live entity at (index, serial) have `*(entity + offset) == this`? 1 yes / 0 no.
-// Books-first resolve; the pointer compare is the pickup-gate ItemServices → pawn hop.
-int  S2_HookSelfMatchesField(void* argView, int index, int serial, int offset);
 
 }  // extern "C"
 

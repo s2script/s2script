@@ -21,6 +21,8 @@ echo "  linting core/js/ (globals derived from core/src/*.rs)"
 # it just as silently. This gate was cited during review as covering pawn.js when it did not; the
 # first run over that directory found five dead bindings.
 echo "  linting games/cs2/js/ (same derivation, the CS2 game-package prelude)"
-(cd games/cs2/js && npx --no-install eslint .)
+# The game config shares the SDK's JSONC reader (.ts). Node 22.14 needs the same strip-types
+# switch used by the SDK test and codegen gates when loading that config.
+(cd games/cs2/js && NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--experimental-strip-types --no-warnings" npx --no-install eslint .)
 
 echo "PASS: core/js + games/cs2/js lint clean"

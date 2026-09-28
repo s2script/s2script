@@ -163,15 +163,11 @@ void PrepareReal(ISmmAPI* api) {
     Require(error.empty() && core_config.filesFailed.empty(),"deployed core gamedata unavailable");
     RetainFiles(game_config,"cs2"); RetainFiles(core_config,"core");
     using Json=nlohmann::json;
-    const auto hook=game_config.hooks.find("onCanAcquire"); Require(hook!=game_config.hooks.end(),"CanAcquire hook absent");
-    const auto declaration=Json::parse(hook->second);
-    Require(declaration.value("shape","")=="this_i64_i32_i64","CanAcquire shape mismatch");
-    auto target=declaration.at("target"); Require(target.value("kind","")=="signature","CanAcquire target kind mismatch");
-    if(target.value("pattern","").empty()) {
-        const auto sig=game_config.signatures.find(target.value("name","")); Require(sig!=game_config.signatures.end(),"CanAcquire signature absent");
-        target["module"]=sig->second.module; target["pattern"]=sig->second.pattern; target["resolve"]=sig->second.resolve;
-        if(!target.contains("validate") && !sig->second.validate.empty()) target["validate"]=Json::parse(sig->second.validate);
-    }
+    // CanAcquire is a trusted package function now (no legacy hook descriptor): resolve its
+    // named signature entry, with the validator authored next to the pattern.
+    const auto sig=game_config.signatures.find("CCSPlayer_ItemServices_CanAcquire"); Require(sig!=game_config.signatures.end(),"CanAcquire signature absent");
+    Json target={{"module",sig->second.module},{"pattern",sig->second.pattern},{"resolve",sig->second.resolve}};
+    if(!sig->second.validate.empty()) target["validate"]=Json::parse(sig->second.validate);
     Require(target.contains("validate") && !target["validate"].empty(),"CanAcquire semantic validator required");
     s2resolve::TargetRecipe recipe;
     recipe.module=target.value("module",""); recipe.pattern=target.value("pattern",""); recipe.strategy=target.value("resolve","direct"); recipe.validate_json=target["validate"].dump();

@@ -1,6 +1,6 @@
 // Acceptance-only hidden probe entrypoints. Eight-byte original-image NOPs are unique,
 // mandatory-validated Linux x86_64 signatures, never dynamic-symbol resolution.
-// Entity arguments are books-gated; HUD uses a borrowed first-word text holder.
+// Entity arguments are books-gated.
 {
   "signatures": {
     "void0": {
@@ -33,26 +33,6 @@
         }
       }
     },
-    "acquire0": {
-      "linuxsteamrt64": {
-        "module": "s2_khook_probe.so",
-        "pattern": "0F 1F 84 00 53 36 13 42",
-        "resolve": "direct",
-        "validate": {
-          "prologue": "0F 1F 84 00 53 36 13 42"
-        }
-      }
-    },
-    "hud0": {
-      "linuxsteamrt64": {
-        "module": "s2_khook_probe.so",
-        "pattern": "0F 1F 84 00 53 36 14 42",
-        "resolve": "direct",
-        "validate": {
-          "prologue": "0F 1F 84 00 53 36 14 42"
-        }
-      }
-    },
     "void1": {
       "linuxsteamrt64": {
         "module": "s2_khook_probe.so",
@@ -80,26 +60,6 @@
         "resolve": "direct",
         "validate": {
           "prologue": "0F 1F 84 00 53 36 1A 42"
-        }
-      }
-    },
-    "acquire1": {
-      "linuxsteamrt64": {
-        "module": "s2_khook_probe.so",
-        "pattern": "0F 1F 84 00 53 36 1B 42",
-        "resolve": "direct",
-        "validate": {
-          "prologue": "0F 1F 84 00 53 36 1B 42"
-        }
-      }
-    },
-    "hud1": {
-      "linuxsteamrt64": {
-        "module": "s2_khook_probe.so",
-        "pattern": "0F 1F 84 00 53 36 1C 42",
-        "resolve": "direct",
-        "validate": {
-          "prologue": "0F 1F 84 00 53 36 1C 42"
         }
       }
     },
@@ -160,16 +120,6 @@
         "resolve": "direct",
         "validate": {
           "prologue": "0F 1F 84 00 53 36 06 42"
-        }
-      }
-    },
-    "realAcquireMark": {
-      "linuxsteamrt64": {
-        "module": "s2_khook_probe.so",
-        "pattern": "0F 1F 84 00 53 36 07 42",
-        "resolve": "direct",
-        "validate": {
-          "prologue": "0F 1F 84 00 53 36 07 42"
         }
       }
     }
@@ -261,66 +211,6 @@
       ],
       "returns": "void"
     },
-    "acquire0": {
-      "target": {
-        "kind": "signature",
-        "name": "acquire0"
-      },
-      "receiver": {
-        "kind": "entity"
-      },
-      "args": [
-        "entity",
-        "int",
-        "entity"
-      ],
-      "returns": "int"
-    },
-    "acquire0Bypass": {
-      "target": {
-        "kind": "signature",
-        "name": "acquire0"
-      },
-      "receiver": {
-        "kind": "entity"
-      },
-      "args": [
-        "entity",
-        "int",
-        "entity"
-      ],
-      "returns": "int"
-    },
-    "hud0": {
-      "target": {
-        "kind": "signature",
-        "name": "hud0"
-      },
-      "receiver": {
-        "kind": "entity"
-      },
-      "args": [
-        "entity",
-        "entity",
-        "utlstring"
-      ],
-      "returns": "void"
-    },
-    "hud0Bypass": {
-      "target": {
-        "kind": "signature",
-        "name": "hud0"
-      },
-      "receiver": {
-        "kind": "entity"
-      },
-      "args": [
-        "entity",
-        "entity",
-        "utlstring"
-      ],
-      "returns": "void"
-    },
     "void1": {
       "target": {
         "kind": "signature",
@@ -404,66 +294,6 @@
         "int",
         "entity",
         "entity"
-      ],
-      "returns": "void"
-    },
-    "acquire1": {
-      "target": {
-        "kind": "signature",
-        "name": "acquire1"
-      },
-      "receiver": {
-        "kind": "entity"
-      },
-      "args": [
-        "entity",
-        "int",
-        "entity"
-      ],
-      "returns": "int"
-    },
-    "acquire1Bypass": {
-      "target": {
-        "kind": "signature",
-        "name": "acquire1"
-      },
-      "receiver": {
-        "kind": "entity"
-      },
-      "args": [
-        "entity",
-        "int",
-        "entity"
-      ],
-      "returns": "int"
-    },
-    "hud1": {
-      "target": {
-        "kind": "signature",
-        "name": "hud1"
-      },
-      "receiver": {
-        "kind": "entity"
-      },
-      "args": [
-        "entity",
-        "entity",
-        "utlstring"
-      ],
-      "returns": "void"
-    },
-    "hud1Bypass": {
-      "target": {
-        "kind": "signature",
-        "name": "hud1"
-      },
-      "receiver": {
-        "kind": "entity"
-      },
-      "args": [
-        "entity",
-        "entity",
-        "utlstring"
       ],
       "returns": "void"
     },
@@ -563,24 +393,6 @@
         "int"
       ],
       "returns": "int"
-    },
-    "realAcquireMark": {
-      "target": {
-        "kind": "signature",
-        "name": "realAcquireMark"
-      },
-      "receiver": {
-        "kind": "none"
-      },
-      "args": [
-        "string",
-        "int",
-        "int",
-        "int",
-        "int",
-        "bool"
-      ],
-      "returns": "int"
     }
   },
   "hooks": {
@@ -651,47 +463,6 @@
         "ctx": "acceptance"
       }
     },
-    "onacquire0": {
-      "target": {
-        "kind": "signature",
-        "name": "acquire0"
-      },
-      "shape": "this_i64_i32_i64",
-      "receiver": {
-        "kind": "entity",
-        "as": "receiver"
-      },
-      "params": [
-        "method",
-        "result"
-      ],
-      "mutable": [
-        "result"
-      ],
-      "bypassWith": "acquire0Bypass",
-      "expose": {
-        "ctx": "acceptance"
-      }
-    },
-    "onhud0": {
-      "target": {
-        "kind": "signature",
-        "name": "hud0"
-      },
-      "shape": "this_i64_i64_i64",
-      "receiver": {
-        "kind": "entity",
-        "as": "receiver"
-      },
-      "params": [
-        "text"
-      ],
-      "mutable": [],
-      "bypassWith": "hud0Bypass",
-      "expose": {
-        "ctx": "acceptance"
-      }
-    },
     "onvoid1": {
       "target": {
         "kind": "signature",
@@ -755,47 +526,6 @@
         "integer"
       ],
       "bypassWith": "wide1Bypass",
-      "expose": {
-        "ctx": "acceptance"
-      }
-    },
-    "onacquire1": {
-      "target": {
-        "kind": "signature",
-        "name": "acquire1"
-      },
-      "shape": "this_i64_i32_i64",
-      "receiver": {
-        "kind": "entity",
-        "as": "receiver"
-      },
-      "params": [
-        "method",
-        "result"
-      ],
-      "mutable": [
-        "result"
-      ],
-      "bypassWith": "acquire1Bypass",
-      "expose": {
-        "ctx": "acceptance"
-      }
-    },
-    "onhud1": {
-      "target": {
-        "kind": "signature",
-        "name": "hud1"
-      },
-      "shape": "this_i64_i64_i64",
-      "receiver": {
-        "kind": "entity",
-        "as": "receiver"
-      },
-      "params": [
-        "text"
-      ],
-      "mutable": [],
-      "bypassWith": "hud1Bypass",
       "expose": {
         "ctx": "acceptance"
       }
