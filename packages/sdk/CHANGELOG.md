@@ -1,5 +1,53 @@
 # @s2script/cli
 
+## 0.27.0
+
+### Minor Changes
+
+- 2ec44a8: Add the CustomHudLayout observable option for CS2's September 9 update, defaulting
+  to false. Preserve the policy across respawns and reject conflicting resource reuse.
+  Keep shared hudkit UI non-observable and update passive workshop overlays to yield
+  to the client buy menu and scoreboard. Workshop CSS changes require asset delivery.
+
+  Add Pawn.getCustomCamera(), CustomPlayerCamera owner/mode access and native follow
+  configuration. Add the validated-call resolver for named call-site anchors when
+  native function bodies have indistinguishable byte signatures. Requires the matching
+  updated runtime shim.
+
+  Re-resolve the three per-player HUD setters after the observable field shifted their state vector, and use live-schema offsets in hud-lab diagnostics.
+
+- ec243c6: `SDKHook` `OnTakeDamage` / `OnTakeDamagePost` now run on the selected game package's damage
+  function (CS2: the trusted `takeDamageOld` binding through the `legacy.damage.v1` adapter) instead
+  of a core damage detour. The `SDKHook` signature and the `DamageInfo` fields are unchanged; the
+  view is now borrowed and throws "expired borrowed view" when used after the synchronous callback
+  (including after an `await`), and a non-finite `damage` write is refused. `Handled`/`Stop` still
+  block by zeroing damage after every handler ran, and the engine function always runs. Without a
+  game package that provides damage, `SDKHook` for these types returns `false`. The damage signature
+  moved from core gamedata to the CS2 package gamedata, so a repair belongs in `gamedata/cs2/custom/`.
+  Requires the matching runtime.
+- eb528fc: `s2s build` engine-function declarations: copied `string` and `vector` positions now need an explicit
+  native `ownership`. Parameters take `callee-borrowed`, `callee-retained` or `native-observed`; a
+  copied return uses the object form `{ "type": "string" | "vector", "ownership": "caller-borrowed" |
+"native-observed" }`. A declaration without it fails the build with "copied ownership is required;
+  rebuild the declaration". `native-observed` positions cannot be called, cannot be PRE-mutable, and a
+  `native-observed` return needs `"suppression": "none"` for PRE.
+
+  Functions may now declare `"suppression": "generic" | "none"` (the default is `generic` when the
+  function has a PRE surface). With `none`, the generated PRE handler type is `0 | 1 | void`: such a
+  hook cannot skip the original or supply a return value.
+
+- 9337d29: Add `s2s migrate engine-functions` to analyze v1 plugin gamedata and source references, report ambiguities, and atomically emit a v2 declaration only when the declared contract converts without loss.
+- ec243c6: Retire the `this_i64_i32_i64` and `this_i64_i64_i64` declarative hook shapes. They existed only for
+  the CS2 pickup gate and custom-HUD click, which now run as trusted engine functions of the CS2
+  package. The gamedata validator rejects them by name, and the runtime removes the matching thunks
+  and the POST path they alone used. Plugin gamedata that declares a hook with either shape degrades
+  to a named unknown-shape error. Requires the matching runtime.
+
+### Patch Changes
+
+- 9b876f7: Typecheck custom gamedata against current validated declarations so clean checkouts and edits do not depend on stale generated files.
+- ec243c6: Relocate CS2-owned gamedata source into the game package and keep generated hook declarations and SDK CS2 bundle tests reading the new source manifest. Package builds now emit deterministic, hashed CS2 artifacts while preserving the deployed paths used by the current runtime.
+
 ## 0.26.0
 
 ### Minor Changes
