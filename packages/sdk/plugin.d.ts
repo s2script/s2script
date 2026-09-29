@@ -32,7 +32,7 @@ export interface CtxEvents {
    * Subscribe to a fired game event (post-phase). The {@link GameEvent} is valid only synchronously.
    * @example
    * // plugins/disabled/nextmap/src/plugin.ts:133
-   * ctx.events.on("round_end", () => console.log("round ended"));
+   * hook.on("round_end", () => console.log("round ended"));
    */
   on(name: string, handler: (ev: GameEvent) => void): void;
   /** Pre-hook a game event: return a {@link HookResultValue} (`Handled`/`Stop` suppress the client broadcast). */
@@ -158,7 +158,7 @@ export interface CtxTranslations {
    * client's language, then English), so list your own set before any shared one if you want to be
    * able to override a shared phrase.
    *
-   * @example ctx.translations.load("basecomm", "common");
+   * @example translations.load("basecomm", "common");
    */
   load(...names: string[]): void;
 }
@@ -250,7 +250,11 @@ export interface PluginContext {
   use<T extends object>(
     name: keyof InterfaceContracts extends never ? string : never
   ): InterfaceHandle<T>;
-  /** Resolve an OPTIONAL dep (must be in `optionalPluginDependencies`); null while unpublished. */
+  /**
+   * Resolve an OPTIONAL dep (must be in `optionalPluginDependencies`); null while unpublished.
+   * One-shot lookup — does not track later availability. Prefer watchOptional to follow a provider
+   * across load and reload.
+   */
   tryUse<N extends keyof InterfaceContracts>(
     name: N
   ): TypedInterfaceHandle<InterfaceContracts[N]> | null;
@@ -305,10 +309,10 @@ export interface PluginHooks {
  * The {@link GameEvent} is valid only synchronously.
  */
 export declare const hook: {
-  /** Post-phase (`ctx.events.on`). */
+  /** Post-phase game-event subscribe. The GameEvent is valid only synchronously. */
   on(name: string, handler: (ev: GameEvent) => void): void;
   /**
-   * Pre-phase (`ctx.events.onPre`). Return {@link HookResultValue} `Handled`/`Stop` to suppress
+   * Pre-phase game-event subscribe. Return {@link HookResultValue} `Handled`/`Stop` to suppress
    * the client broadcast.
    */
   onPre(name: string, handler: (ev: GameEvent) => HookResultValue | void): void;
@@ -365,7 +369,8 @@ export declare function use<T extends object>(
 ): InterfaceHandle<T>;
 /**
  * Resolve an OPTIONAL dep (must be in `optionalPluginDependencies`); null while unpublished.
- * Load-window only. Same contract as {@link PluginContext.tryUse}.
+ * Load-window only. One-shot lookup — does not track later availability. Same contract as
+ * {@link PluginContext.tryUse}.
  */
 export declare function tryUse<N extends keyof InterfaceContracts>(
   name: N
@@ -383,7 +388,7 @@ export declare const topmenu: CtxTopMenu;
 /**
  * Load-window phrase-file declaration. Same contract as {@link PluginContext.translations}.
  * Throws after settle. `s2s build` / `sync-phrase-types.mjs` collect `translations.load(...)`
- * the same way they collect `ctx.translations.load(...)`.
+ * the same way they collect `translations.load(...)`.
  */
 export declare const translations: CtxTranslations;
 

@@ -74,7 +74,7 @@ export declare const Engine: {
    * gate (same class of reasons as {@link Engine.call}, plus a missing `validate` or an unknown
    * thunk shape). Guard once at load; the returned function records the handler and lazily
    * installs the detour. The owner is always the calling plugin — you cannot subscribe to
-   * another plugin's hook through this factory (game-package hooks hang off `ctx.*`).
+   * another plugin's hook through this factory (game-package hooks are the `@s2script/cs2` exports such as `players` and `gameRules`).
    */
   hook<K extends keyof EngineHooks>(name: K): EngineHooks[K] | null;
   /** Why a hook descriptor is unavailable; `"available"` when it resolved. */

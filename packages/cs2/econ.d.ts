@@ -17,7 +17,7 @@
  *
  * @example
  * import type { EconService } from "@s2script/cs2/econ";
- * const econ = ctx.tryUse<EconService>("econ");
+ * const econ = tryUse<EconService>("econ"); // in OnPluginStart
  * econ?.applySkin(weaponRef, { paintKit: 44, wear: 0.01, statTrak: 1337 });
  */
 

@@ -1890,7 +1890,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     var scopes = [];
     // The load-window reg: buffer while Loading, run immediately once armed, throw once sealed.
     function ctxReg(thunk) {
-      if (sealed) throw new Error("s2script: registration outside the load window - use a Scope from ctx.createScope()");
+      if (sealed) throw new Error("s2script: registration outside the load window - use a Scope from createScope()");
       if (armed) { thunk(); } else { pending.push(thunk); }
     }
     // Build one subjects bundle over `regFn`. `track` is null for ctx (plugin-lifetime) or the
@@ -1983,15 +1983,15 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       }});
     }
     ctx.use = function (name) {
-      if (sealed) throw new Error("s2script: ctx.use outside the load window");
+      if (sealed) throw new Error("s2script: use outside the load window");
       var kind = __s2_iface_dep_kind(name);
-      if (kind !== "hard") throw new Error("s2script: ctx.use('" + name + "') requires a pluginDependencies entry (declared: " + kind + ")");
+      if (kind !== "hard") throw new Error("s2script: use('" + name + "') requires a pluginDependencies entry (declared: " + kind + ")");
       return handleFor(name);
     };
     ctx.tryUse = function (name) {
-      if (sealed) throw new Error("s2script: ctx.tryUse outside the load window");
+      if (sealed) throw new Error("s2script: tryUse outside the load window");
       var kind = __s2_iface_dep_kind(name);
-      if (kind !== "optional") throw new Error("s2script: ctx.tryUse('" + name + "') requires an optionalPluginDependencies entry (declared: " + kind + ")");
+      if (kind !== "optional") throw new Error("s2script: tryUse('" + name + "') requires an optionalPluginDependencies entry (declared: " + kind + ")");
       return __s2_iface_is_published(name) ? handleFor(name) : null;
     };
     ctx.watchOptional = function (name, attach) {
@@ -2021,9 +2021,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       }, __s2_iface_watch_dispose);
     };
     ctx.bindForwards = function (name, handlers) {
-      if (sealed) throw new Error("s2script: ctx.bindForwards outside the load window");
+      if (sealed) throw new Error("s2script: bindForwards outside the load window");
       var kind = __s2_iface_dep_kind(name);
-      if (kind !== "hard") throw new Error("s2script: ctx.bindForwards('" + name + "') requires a pluginDependencies entry (declared: " + kind + ")");
+      if (kind !== "hard") throw new Error("s2script: bindForwards('" + name + "') requires a pluginDependencies entry (declared: " + kind + ")");
       if (!handlers || typeof handlers !== "object") throw new Error("s2script: bindForwards handlers must be an object");
       var keys = Object.keys(handlers), entries = [];
       for (var i = 0; i < keys.length; i++) {

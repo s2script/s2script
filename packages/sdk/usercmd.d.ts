@@ -7,16 +7,16 @@
 import type { QAngle } from "./math";
 
 /**
- * A block-scoped view of the CURRENT tick's usercmd (valid only during a `ctx.clients.onRunCmd`
+ * A block-scoped view of the CURRENT tick's usercmd (valid only during an `OnPlayerRunCmd`
  * handler — a stashed `UserCmdView` used after the handler returns, or across an `await`,
  * reads/writes nothing). There is exactly ONE `UserCmdView` instance for the whole process; every
  * handler call operates on it.
  * @example
  * import type { UserCmdView } from "@s2script/sdk/usercmd";
- * // examples/cookbook/src/recipes/usercmd.ts:27 — read this tick's input
- * ctx.clients.onRunCmd((cmd: UserCmdView, info: { slot: number }) => {
+ * // read this tick's input
+ * export function OnPlayerRunCmd(cmd: UserCmdView, info: { slot: number }): void {
  *   console.log(`slot=${info.slot} fwd=${cmd.forwardMove} btn=${cmd.buttons}`);
- * });
+ * }
  */
 export interface UserCmdView {
   /** +forward / -back. Normalized to roughly [-1, 1] (not the legacy ±450 units). */

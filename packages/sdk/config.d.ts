@@ -1,7 +1,7 @@
 /** @s2script/config — typed access to the plugin's materialized config. NO runtime code. */
 /** A materialized config value: a scalar, or a nested section object of further values. */
 export type ConfigValue = string | number | boolean | { [k: string]: ConfigValue };
-/** The whole materialized config: top-level keys to {@link ConfigValue}s. Passed to `ctx.config.onChange`. */
+/** The whole materialized config: top-level keys to {@link ConfigValue}s. Passed to `config.onChange` handlers. */
 export type Config = Record<string, ConfigValue>;
 /**
  * Typed access to this plugin's materialized config values (declared under `s2script.config` in the manifest).
@@ -25,7 +25,7 @@ export declare const config: {
   writeFile(name: string, content: string): void;
   /**
    * Fires when this plugin's config file is re-materialized on disk. Ledgered per plugin.
-   * Not load-window-gated (safe from `OnPluginStart` or from `ctx.config.onChange`).
+   * Not load-window-gated (safe from `OnPluginStart` or from a `config.onChange` handler).
    */
   onChange(handler: (cfg: Config) => void): void;
 };

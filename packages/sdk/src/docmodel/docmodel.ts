@@ -115,7 +115,10 @@ function readonlyPrefix(node: ts.Node): string {
 function signatureOf(node: ts.Node, name: string, sf: ts.SourceFile): string {
   if (ts.isFunctionDeclaration(node) || ts.isMethodSignature(node) || ts.isMethodDeclaration(node)) {
     const ret = node.type ? ": " + node.type.getText(sf) : "";
-    return name + paramsText(node, sf) + ret;
+    // Type parameters are part of the contract: `create<const ButtonId …>` is what makes literal
+    // button ids typecheck, so a signature without them misdescribes the API.
+    const tps = node.typeParameters ? "<" + node.typeParameters.map((t) => t.getText(sf)).join(", ") + ">" : "";
+    return name + tps + paramsText(node, sf) + ret;
   }
   if (ts.isGetAccessorDeclaration(node)) {
     const ret = node.type ? ": " + node.type.getText(sf) : "";

@@ -5,7 +5,7 @@ import type { HookResultValue } from "./events";
  */
 
 /**
- * Handle returned by `ctx.publish(name, impl)`: lets the producer emit forwarded
+ * Handle returned by `publish(name, impl)`: lets the producer emit forwarded
  * events to every plugin subscribed to this interface via its `on(event, …)`.
  */
 export interface PublishHandle {
@@ -133,8 +133,10 @@ export type TypedInterfaceHandle<C> = ContractMethods<C> & {
 };
 
 /** A consumer-owned registration. Repeated disposal is a no-op. */
-export interface Subscription { dispose(): void; }
+export interface Subscription { /** Remove this exact registration. Idempotent. */
+dispose(): void; }
 /** Resources owned by one synchronous optional-provider attachment. */
 export interface AttachmentScope {
+  /** Return the resource and retain its disposer for this attachment. */
   own<T extends { dispose(): void }>(resource: T): T;
 }

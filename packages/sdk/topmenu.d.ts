@@ -37,7 +37,7 @@ export interface TopMenuSnapshot {
 }
 /**
  * The shared admin/top-menu registry — renderers read {@link TopMenu.snapshot} and dispatch picks
- * through {@link TopMenu.select}; items are contributed by plugins via their own ctx.topmenu.
+ * through {@link TopMenu.select}; items are contributed by plugins via `topmenu`.
  * @example
  * import { TopMenu } from "@s2script/sdk/topmenu";
  * const snap = TopMenu.snapshot();

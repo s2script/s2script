@@ -13,12 +13,25 @@
 import type { HookResultValue } from "@s2script/sdk/events";
 import type { EntityRef } from "@s2script/sdk/entity";
 
-/** Result of a drive call: null on success, or a human-readable reason it did not happen. */
+/**
+ * Result of a drive call: null on success, or a human-readable reason it did not happen.
+ * Class/text caches update only after a successful write, so a failed drive does not poison a
+ * later retry.
+ */
 export type HudResult = string | null;
 
+/**
+ * Stable failure category for structured UI results: `NotReady` | `StaleClient` | `Released` |
+ * `Unavailable` | `PoolExhausted` | `Busy` | `InvalidArgument` | `PaintFailed`. Branch on
+ * `error.code`; never parse `error.message`.
+ */
 export type UiErrorCode = "NotReady" | "StaleClient" | "Released" |
   "Unavailable" | "PoolExhausted" | "Busy" | "InvalidArgument" | "PaintFailed";
 
+/**
+ * `{ ok: true, value }` or `{ ok: false, error: { code, message } }`. Failed ops roll back
+ * claims/capture. There is no automatic retry queue.
+ */
 export type UiResult<T> = { readonly ok: true; readonly value: T } |
   { readonly ok: false; readonly error: {
     readonly code: UiErrorCode;
@@ -26,14 +39,23 @@ export type UiResult<T> = { readonly ok: true; readonly value: T } |
   } };
 
 /** A route registration that can be removed without affecting other handlers. */
-export interface UiSubscription { dispose(): void; }
+export interface UiSubscription { /** Idempotent. Subscribe or dispose during a click changes the next delivery only. */
+dispose(): void; }
 
-/** An explicit claim on one shared hudkit presentation. */
+/**
+ * An explicit claim on one shared hudkit presentation. Disposal is idempotent; retained views
+ * report `Released` after their owner is disposed.
+ */
 export interface UiSurfaceHandle {
   isValid(): boolean;
+  /** Idempotent. Does not evict another explicit claim. */
   dispose(): void;
 }
 
+/**
+ * Server-side drive readiness. `clientContent` is always `"unknown"` — this API cannot prove that
+ * the client's workshop content rendered.
+ */
 export type UiStatus = {
   readonly server: "ready" | "not-ready" | "unavailable";
   /** Server-side state cannot prove that the client's workshop content rendered. */
@@ -70,7 +92,11 @@ export interface CustomHudSpec<ButtonId extends string = string> {
   readonly hideClass?: string;
   /** panelId -> dialog variable name for {@link HudLayout.setText}. Default: none. */
   readonly text?: Readonly<Record<string, string>>;
-  /** Button ids delivered by {@link HudLayout.onClick} / {@link CustomHudLayoutNs.onClicked}. */
+  /**
+   * Button ids delivered by {@link HudLayout.onClick} / subscribeClick /
+   * {@link CustomHudLayoutNs.onClicked}. Inline literals constrain subscribeClick ids; a dynamic
+   * `readonly string[]` keeps the string fallback.
+   */
   readonly buttons?: readonly ButtonId[];
   /** Meter name -> fill panel id (width driven via s2-w0..s2-w10 classes). */
   readonly meters?: Readonly<Record<string, string>>;
@@ -117,7 +143,10 @@ export type OnCustomHudClickedView = CustomHudClickedView;
 
 /**
  * One player's state on a {@link CustomHudLayout}. The engine's `ForPlayer` calls — classes,
- * dialog variables, input capture — are all per-slot, which is why this object exists.
+ * dialog variables, input capture — are per-slot storage on one entity, not per-recipient
+ * delivery. Observation is a rendering policy (`CustomHudSpec.observable`), not confidentiality.
+ * Default false keeps the viewer's own UI while spectating; true shows the spectated player's
+ * version. Do not put confidential values here.
  *
  * Unchanged values are not re-sent (the networked intern tables are not free).
  */
@@ -167,7 +196,11 @@ export interface HudLayout<ButtonId extends string = string> {
   readonly spec: CustomHudSpec<ButtonId>;
   /** @deprecated Use {@link HudLayout.spec}. */
   readonly layout: CustomHudSpec<ButtonId>;
-  /** Per-player view of this layout (cached per slot). */
+  /**
+   * Per-player view of this layout (cached per slot). Storage on this entity, not private
+   * delivery. Default `observable: false` keeps the viewer's own UI while spectating; `true` shows
+   * the spectated player's version.
+   */
   forSlot(slot: number): HudPlayer;
   /**
    * Spawn the layout entity if it is not already in the world. Same timing as
@@ -189,12 +222,17 @@ export interface HudLayout<ButtonId extends string = string> {
   capacity(poolName: string): number;
   setPool(slot: number, poolName: string, entries: readonly (readonly string[])[]): HudResult;
   /**
-   * Route a layout XML button id (from {@link CustomHudSpec.buttons}) to a handler.
-   * There is no widget object — `buttonId` is a string the markup already declared.
-   * The handler receives the clicking player's {@link HudPlayer}.
+   * Route a layout XML button id (from {@link CustomHudSpec.buttons}) to a handler. There is no
+   * widget object — `buttonId` is a string the markup already declared. The handler receives the
+   * clicking player's {@link HudPlayer}. Duplicate handlers throw. May coexist with
+   * subscribeClick.
    */
   onClick(buttonId: string, handler: (player: HudPlayer) => void): void;
-  /** Add a disposable route constrained to literal button ids declared by this layout. */
+  /**
+   * Add a disposable route constrained to literal button ids declared by this layout. May coexist
+   * with the legacy single onClick. Delivery snapshots the legacy handler and all subscription
+   * callbacks before invoke; subscribe/dispose during a click changes the next delivery only.
+   */
   subscribeClick(buttonId: ButtonId, handler: (player: HudPlayer) => void): UiSubscription;
   setDisabled(slot: number, buttonId: string, disabled: boolean): HudResult;
   forget(slot: number): void;
@@ -203,8 +241,9 @@ export interface HudLayout<ButtonId extends string = string> {
 /** Load-window `custom_hud_layout` API. Throws after settle. */
 export interface CustomHudLayoutNs {
   /**
-   * Bind (and spawn, once a client is active) a `custom_hud_layout` for `spec`.
-   * Same layout resource is reused if you call this twice.
+   * Bind (and spawn, once a client is active) a `custom_hud_layout` for `spec`. Same layout
+   * resource is reused if you call this twice. Inline `buttons` literals constrain
+   * HudLayout.subscribeClick ids.
    */
   create<const ButtonId extends string = string>(spec: CustomHudSpec<ButtonId>): HudLayout<ButtonId>;
   /**
@@ -231,6 +270,9 @@ export interface CustomHudLayoutNs {
   hud<const ButtonId extends string = string>(descriptor: CustomHudSpec<ButtonId>): HudLayout<ButtonId>;
   hud(descriptor?: CustomHudSpec): HudLayout<string>;
   /**
+   * Component kit for `descriptor`. Cached by layout resource — `components({@link hudkit}.spec)`
+   * and equivalent copies reuse the existing kit.
+   *
    * @deprecated Use {@link CustomHudLayoutNs.kit} or {@link hudkit}.
    */
   components(descriptor?: CustomHudSpec): HudKit;
@@ -354,7 +396,10 @@ export type UiFocusOptions = {
   readonly priority?: number;
 };
 
-/** A failed open leaves the modal closed and can be retried when the HUD is ready. */
+/**
+ * A failed open leaves the modal closed and can be retried when the HUD is ready. `{ ok: true,
+ * view }` or `{ ok: false, error }`.
+ */
 export type ModalOpenResult = { readonly ok: true; readonly view: ModalView }
   | { readonly ok: false; readonly error: string };
 
@@ -368,15 +413,21 @@ export interface ModalView {
   isValid(): boolean;
   /** Throws a descriptive error when the HUD cannot be painted or shown. */
   open(opts?: { cursor?: boolean; focus?: UiFocusOptions }): ModalView;
+  /** Attempt to open; reports paint/show failures without throwing. */
   tryOpen(opts?: { cursor?: boolean; focus?: UiFocusOptions }): ModalOpenResult;
   /** Attempt to open with a stable, machine-readable failure category. */
   tryOpenResult(opts?: { cursor?: boolean; focus?: UiFocusOptions }): UiResult<ModalView>;
   close(): void;
+  /** True only after paint and show succeed. */
   isOpen(): boolean;
+  /** Synchronous repaint now. A successful sync repaint fulfills pending invalidation intent. */
   refresh(): void;
   /** Schedule one repaint for the next server frame; repeated calls coalesce. */
   invalidate(): void;
-  /** Last completed open or repaint for this live view; pending invalidation leaves it unchanged. */
+  /**
+   * Last completed open or repaint for this live view; pending invalidation leaves it unchanged.
+   * Null before the first completed update, and after the view is stale.
+   */
   lastUpdateResult(): UiResult<void> | null;
   /** Repaint this bound player's modal and report the submitted drive result. */
   tryRefresh(): UiResult<void>;
@@ -396,10 +447,17 @@ export interface Modal {
   /** Grab or release the mouse without closing the sheet. */
   setCursor(slot: number, on: boolean): void;
   close(slot: number): void;
+  /** True only after paint and show succeed. */
   isOpen(slot: number): boolean;
-  /** Repaint from live data. Omit `slot` to repaint every player who has it open. */
+  /**
+   * Repaint from live data. Omit `slot` to repaint every player who has it open. Synchronous; a
+   * successful sync repaint fulfills pending invalidation intent.
+   */
   refresh(slot?: number): void;
-  /** Schedule open views for one repaint on the next server frame. */
+  /**
+   * Schedule open views for one repaint on the next server frame. Omit `slot` for every open view.
+   * Repeated invalidations of the same live component/client pair coalesce.
+   */
   invalidate(slot?: number): void;
   /** Repaint one player and report the submitted drive result. */
   tryRefresh(slot: number): UiResult<void>;
@@ -413,7 +471,10 @@ export interface Modal {
   cursor(slot: number): number;
   forget(slot: number): void;
   forSlot(slot: number): ModalView;
-  /** Return the pooled panel so another plugin may claim it. */
+  /**
+   * Close open viewers, revoke this handle's click routes, and return the pooled panel.
+   * Idempotent. A released handle cannot repaint or steal clicks; `open` after release throws.
+   */
   release(): void;
 }
 
@@ -479,6 +540,10 @@ export interface MotdSection {
  * Stays until OK or {@link MotdHandle.close}.
  */
 export interface MotdSpec {
+  /**
+   * Opt in to the shared modal/dashboard/MOTD exclusive-focus stack. A failed focused open logs a
+   * diagnostic and returns an invalid no-op MotdHandle.
+   */
   readonly focus?: UiFocusOptions;
   readonly title: string;
   readonly subtitle?: string;
@@ -547,10 +612,14 @@ export interface DashboardView {
   close(): void;
   isOpen(): boolean;
   setTab(tabId: string): void;
+  /** Synchronous repaint now. A successful sync repaint fulfills pending invalidation intent. */
   refresh(): void;
   /** Schedule one repaint for the next server frame; repeated calls coalesce. */
   invalidate(): void;
-  /** Last completed open or repaint for this live view; pending invalidation leaves it unchanged. */
+  /**
+   * Last completed open or repaint for this live view; pending invalidation leaves it unchanged.
+   * Null before the first completed update, and after the view is stale.
+   */
   lastUpdateResult(): UiResult<void> | null;
   /** Repaint this bound player's dashboard and report the submitted drive result. */
   tryRefresh(): UiResult<void>;
@@ -567,6 +636,7 @@ export interface Dashboard {
   close(slot: number): void;
   isOpen(slot: number): boolean;
   setTab(slot: number, tabId: string): void;
+  /** Synchronous. Omit `slot` to repaint every player who has it open. */
   refresh(slot?: number): void;
   /** Schedule open views for one repaint on the next server frame. */
   invalidate(slot?: number): void;
@@ -575,8 +645,12 @@ export interface Dashboard {
   forSlot(slot: number): DashboardView;
 }
 
-/** An independently disposable dashboard controller with explicit per-player surface claims. */
+/**
+ * An independently disposable dashboard controller with explicit per-player surface claims.
+ * Construction is player-independent; tryOpenResult(slot) claims that player's dashboard root.
+ */
 export interface OwnedDashboard extends Dashboard {
+  /** Idempotent. Retained views report `Released` after their owner is disposed. */
   dispose(): void;
 }
 
@@ -584,14 +658,32 @@ export interface HudKitPlayer {
   readonly slot: number;
   /** Whether this retained player view still belongs to the current client/component lifetime. */
   isValid(): boolean;
+  /** Legacy presentation. Reserves host occupancy while visible. */
   toast(spec: ToastSpec): HudResult;
+  /**
+   * Explicit toast claim. Reports Busy instead of overwriting a live presentation. Four lanes per
+   * player; host-selected allocation.
+   */
   tryOwnToast(spec: ToastSpec): UiResult<UiSurfaceHandle>;
+  /** Legacy presentation. Reserves host occupancy while visible. */
   callout(spec: CalloutSpec): HudResult;
+  /** Explicit callout claim. Reports Busy instead of overwriting a live presentation. */
   tryOwnCallout(spec: CalloutSpec): UiResult<UiSurfaceHandle>;
+  /** Legacy presentation. Reserves host occupancy while visible. */
   banner(spec: BannerSpec): HudResult;
+  /** Explicit banner claim. Reports Busy instead of overwriting a live presentation. */
   tryOwnBanner(spec: BannerSpec): UiResult<UiSurfaceHandle>;
+  /** Legacy presentation. A failed focused open returns an invalid no-op MotdHandle. */
   motd(spec: MotdSpec): MotdHandle;
+  /**
+   * Explicit MOTD claim. Reports Busy instead of overwriting a live presentation. Focused
+   * ownership stays linked to the physical focus lease.
+   */
   tryOwnMotd(spec: MotdSpec): UiResult<UiSurfaceHandle>;
+  /**
+   * Clear this context's pooled panels and legacy/free owned-surface lanes. Preserves every
+   * explicit claim, including the caller's.
+   */
   hideAll(): void;
   forget(): void;
 }
@@ -602,28 +694,47 @@ export interface HudKitPlayer {
  * only its static spec/descriptor data is readable at module top-level.
  */
 export interface HudKit {
+  /**
+   * Static library descriptor. Always readable at module top-level; pass to
+   * CustomHudLayout.components(hudkit.spec).
+   */
   readonly spec: CustomHudSpec;
-  /** @deprecated Use {@link HudKit.spec}. */
+  /**
+   * Alias of spec. Static library descriptor — always readable at module top-level.
+   *
+   * @deprecated Use {@link HudKit.spec}.
+   */
   readonly descriptor: CustomHudSpec;
   /**
    * Spawn the pool's layout entity. Same timing as {@link CustomHudLayout.ensure}.
    * {@link hudkit} also spawns once a client is active.
    */
   ensure(): HudResult;
-  /** The underlying `custom_hud_layout`, for anything the library does not cover. */
+  /**
+   * The underlying `custom_hud_layout`, for anything the library does not cover. Throws before
+   * plugin context exists — that is not pool exhaustion.
+   */
   readonly layout: HudLayout;
-  /** @deprecated Use {@link HudKit.layout}. */
+  /**
+   * Alias of layout. Throws before plugin context exists.
+   *
+   * @deprecated Use {@link HudKit.layout}.
+   */
   readonly hud: HudLayout;
   /** Claim a pooled modal. Null when all are in use. */
   modal(spec: ModalSpec): Modal | null;
   /** Claim a pooled modal and expose pool exhaustion as a structured result. */
   tryModal(spec: ModalSpec): UiResult<Modal>;
   /**
-   * Bind the legacy shared TopMenu dashboard controller. Last spec wins. Always returns a handle;
-   * each open reserves host occupancy for that player.
+   * Bind the legacy shared TopMenu dashboard controller. Last spec wins. Always returns a handle
+   * (the panel is a single root, not a pool). Each open reserves host occupancy for that player.
+   * Throws before plugin context exists.
    */
   dashboard(spec: DashboardSpec): Dashboard;
-  /** Construct an independent dashboard controller; each player is claimed when opened. */
+  /**
+   * Construct an independent dashboard controller; each player is claimed when opened. An explicit
+   * claim never evicts another explicit claim; Busy if the root is occupied.
+   */
   tryOwnDashboard(spec: DashboardSpec): UiResult<OwnedDashboard>;
   /** Claim a pooled corner badge. Null when all are in use. */
   badge(spec?: BadgeSpec): Badge | null;
@@ -634,7 +745,10 @@ export interface HudKit {
   banner(slot: number, spec: BannerSpec): HudResult;
   motd(slot: number, spec: MotdSpec): MotdHandle;
   forSlot(slot: number): HudKitPlayer;
-  /** Clear this context's pooled panels and legacy shared surfaces; explicit claims are preserved. */
+  /**
+   * Clear this context's pooled panels and legacy shared surfaces; explicit claims are preserved.
+   * Modal/badge pools close only this plugin context's live claims.
+   */
   hideAll(slot: number): void;
   forget(slot: number): void;
   /**
