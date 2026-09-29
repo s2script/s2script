@@ -1,36 +1,26 @@
 /**
- * A HUD driven by real game state — the demo that shows what `CustomHudLayout` is actually for.
+ * A HUD driven by real game state, built from the shared `hudkit` components — no layout of its own.
  *
- * Round clock, live scoreboard, your real K/D/A, and a kill feed fed by `player_death`.
+ * Round clock (top-left badge), live scoreboard (top-right badge), your K/D/A (bottom-left badge),
+ * and a kill feed as toasts fed by `player_death`. Everything renders from `s2script_lib`, which
+ * every client already has, so nothing here needs a workshop republish.
  *
- * THE THING THAT MATTERS HERE IS THE UPDATE DISCIPLINE. Every field is a networked engine call, so
- * a naive "push everything each frame" HUD would issue thousands of calls a second across a full
- * server. Two rules keep it cheap:
- *
- *   1. DIFF BEFORE SEND. `CustomHudLayout` compares each value against what that player was last
- *      sent and skips unchanged ones. A round clock changes ~once a second; the scoreboard changes
- *      a few times a round. Steady-state traffic is near zero.
- *   2. TICK, DON'T FRAME. The refresh runs on a coarse timer, not OnGameFrame. Nothing here is
- *      sub-second, so a 64Hz repaint would be pure waste.
+ * UPDATE DISCIPLINE. Every field is a networked engine call. The refresh runs on a coarse timer,
+ * not OnGameFrame, and hudkit diffs each value against what that player was last sent, so a round
+ * clock costs about one call a second and the scoreboard a few a round.
  */
 import { delay } from "@s2script/sdk";
-import { Player, Teams, GameRules } from "@s2script/cs2";
-import type { HudLayout } from "@s2script/cs2";
-import { LIVE_PANELS } from "./livehud";
+import { Player, Teams, GameRules, hudkit } from "@s2script/cs2";
+import type { Badge } from "@s2script/cs2";
 
 /** How often the HUD re-reads game state. Fast enough that a 1s clock never visibly stutters. */
 const TICK_SECONDS = 0.25;
 
-/** Kill-feed rows the layout declares. A hard cap — panels cannot be created at runtime. */
-const FEED_ROWS = LIVE_PANELS.feed.length;
-
 /**
  * mm:ss, clamped — the engine can report past-zero briefly at round end.
  *
- * CEIL, not floor. A countdown that reads "0:00" for a whole second before the round actually ends
- * is wrong in the direction people notice; every game clock rounds up so the last visible second is
- * a real one. `GameRulesView.timeRemaining` is documented to match the in-game HUD clock, so the
- * value needs no correction — only the display convention has to agree.
+ * CEIL, not floor: a countdown that reads "0:00" for a whole second before the round ends is wrong
+ * in the direction people notice. `GameRulesView.timeRemaining` matches the in-game clock.
  */
 function clock(seconds: number | null): string {
   if (seconds === null) return "--:--";
@@ -38,139 +28,89 @@ function clock(seconds: number | null): string {
   return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
 }
 
-/** One kill, newest first. */
-interface FeedEntry { attacker: string; weapon: string; victim: string; headshot: boolean }
+/** One kill. */
+export interface FeedEntry { attacker: string; weapon: string; victim: string; headshot: boolean }
 
 export class LiveDemo {
   private readonly viewers = new Set<number>();
-  private readonly feed: FeedEntry[] = [];
   private running = false;
+  private badges: { round: Badge; score: Badge; card: Badge } | null = null;
 
-  constructor(private readonly hud: HudLayout, private readonly log: (s: string) => void) {}
+  constructor(private readonly log: (s: string) => void) {}
 
   get count(): number { return this.viewers.size; }
   has(slot: number): boolean { return this.viewers.has(slot); }
 
-  /** Send only if the value actually changed for this player (diffed inside CustomHudLayout). */
-  private put(slot: number, id: string, value: string | number): void {
-    const err = this.hud.forSlot(slot).set(id, value);
-    if (err) this.log(`set ${id} refused: ${err}`);
-  }
-
-  /** Same for classes, which are equally networked. */
-  private putClass(slot: number, panelId: string, className: string, on: boolean): void {
-    this.hud.forSlot(slot).setClass(panelId, className, on);
-  }
-
-  /** Every panel this demo owns. Order matters only for readability. */
-  private static readonly CHROME = ["timer", "team_ct", "team_t", "pcard"] as const;
-
   /**
-   * Collapse everything for a player.
-   *
-   * REQUIRED ON CONNECT, not just on stop. The layout's panels carry no hide class in the markup,
-   * so they default visible — and a panel renders as soon as the player has ANY per-player state on
-   * the layout. Without this, the chrome appears (empty) the instant anything touches the layout for
-   * them, before they have asked for a HUD at all.
+   * Claim the three corner badges from the shared pool on first use. Returns an error when the
+   * pool is exhausted (other plugins hold them), so the caller can say so instead of failing late.
    */
-  hideAll(slot: number): void {
-    const p = this.hud.forSlot(slot);
-    for (const id of LiveDemo.CHROME) p.hide(id);
-    for (const row of LIVE_PANELS.feed) p.hide(row);
+  private claim(): string | null {
+    if (this.badges) return null;
+    const round = hudkit.badge({ corner: "tl", title: "ROUND" });
+    const score = hudkit.badge({ corner: "tr", title: "SCORE" });
+    const card = hudkit.badge({ corner: "bl", title: "YOU" });
+    if (!round || !score || !card) {
+      for (const b of [round, score, card]) b?.release();
+      return "hudkit badge pool exhausted (another plugin holds the corners)";
+    }
+    this.badges = { round, score, card };
+    return null;
   }
 
-  start(slot: number): void {
+  /** Start painting for a player. Returns an error string when the badges could not be claimed. */
+  start(slot: number): string | null {
+    const err = this.claim();
+    if (err) return err;
     this.viewers.add(slot);
-    // FILL FIRST, REVEAL SECOND. Showing before painting makes the HUD appear empty and then
-    // populate — a visible flicker on every open. Panels are still hidden while these writes land,
-    // so the player sees nothing until the whole thing is ready.
     this.paint(slot);
-    this.paintFeed(slot);
-    const p = this.hud.forSlot(slot);
-    for (const id of LiveDemo.CHROME) p.show(id);
     this.arm();
+    return null;
   }
 
   stop(slot: number): void {
     this.viewers.delete(slot);
-    this.hideAll(slot);
-    this.forget(slot);
+    if (this.badges) for (const b of Object.values(this.badges)) b.hide(slot);
+    if (this.viewers.size === 0) this.release();
   }
 
-  /** Drop a disconnected player's layout cache so it cannot grow without bound. */
-  forget(slot: number): void {
-    this.hud.forget(slot);
+  /** Return the badges to the pool once nobody is watching. */
+  private release(): void {
+    if (!this.badges) return;
+    for (const b of Object.values(this.badges)) b.release();
+    this.badges = null;
   }
 
-  /** Record a kill and repaint the feed for everyone watching. */
+  /** Show the kill to everyone watching, as a short toast. */
   pushKill(e: FeedEntry): void {
-    this.feed.unshift(e);
-    // The row count is fixed in the markup; older entries simply fall off.
-    if (this.feed.length > FEED_ROWS) this.feed.length = FEED_ROWS;
-    for (const slot of this.viewers) this.paintFeed(slot);
-  }
-
-  private paintFeed(slot: number): void {
-    // A row is only revealed for a player who actually has the HUD open; otherwise filling the feed
-    // would pop rows onto the screen of someone who never asked for one.
-    const open = this.viewers.has(slot);
-    for (let i = 0; i < FEED_ROWS; i++) {
-      const row = LIVE_PANELS.feed[i];
-      const e = this.feed[i];
-      if (!e || !open) { this.putClass(slot, row, "s2-hide", true); continue; }
-      this.putClass(slot, row, "s2-hide", false);
-      this.put(slot, `feed_${i}_a`, e.attacker);
-      this.put(slot, `feed_${i}_w`, e.weapon);
-      this.put(slot, `feed_${i}_v`, e.victim);
-      this.put(slot, `feed_${i}_t`, e.headshot ? "HS" : "");
-      this.putClass(slot, `feed_${i}_t`, "s2-feed-hs", e.headshot);
+    const message = `${e.attacker}  [${e.weapon}]  ${e.victim}${e.headshot ? "  HS" : ""}`;
+    for (const slot of this.viewers) {
+      const err = hudkit.toast(slot, { title: "KILL", message, variant: e.headshot ? "warn" : "ghost", holdSeconds: 4 });
+      if (err) this.log(`kill toast refused for slot ${slot}: ${err}`);
     }
   }
 
   private paint(slot: number): void {
     const p = Player.fromSlot(slot);
     // A player who has LEFT is dropped. A player who is merely DEAD is not: the controller
-    // survives death, only the pawn goes away, and dropping the viewer here would silently stop
-    // their HUD the moment they died.
-    if (!p) { this.viewers.delete(slot); this.forget(slot); return; }
+    // survives death, only the pawn goes away.
+    if (!p || !this.badges) { this.stop(slot); return; }
     const rules = GameRules.get();
 
-    // Round clock + the meter, which is a step class family rather than a number.
     const left = rules?.timeRemaining ?? null;
-    const total = rules?.roundTime ?? null;
-    this.put(slot, "timer_label", rules?.warmupPeriod ? "WARMUP" : "ROUND");
-    this.put(slot, "timer_value", clock(left));
-    if (left !== null && total) this.hud.forSlot(slot).setMeter("timer", (left / total) * 100);
-    // Colour states: amber under 30s, red once the bomb is down.
-    this.putClass(slot, "timer", "s2-timer-low", left !== null && left <= 30);
-    this.putClass(slot, "timer", "s2-timer-bomb", rules?.bombPlanted === true);
+    const phase = rules?.warmupPeriod ? "WARMUP" : rules?.bombPlanted ? "BOMB PLANTED" : "ROUND";
+    this.badges.round.show(slot, { title: phase, text: clock(left) });
 
-    // Live scoreboard. Team ids: 2 = T, 3 = CT.
-    this.put(slot, "team_ct_name", "COUNTER-TERRORISTS");
-    this.put(slot, "team_ct_score", Teams.getScore(3) ?? 0);
-    this.put(slot, "team_t_name", "TERRORISTS");
-    this.put(slot, "team_t_score", Teams.getScore(2) ?? 0);
+    // Team ids: 2 = T, 3 = CT.
+    this.badges.score.show(slot, { title: "SCORE", text: `CT ${Teams.getScore(3) ?? 0}  :  ${Teams.getScore(2) ?? 0} T` });
 
-    // The viewer's own card, from real match stats.
     const st = p.matchStats;
     const k = st?.kills ?? 0, d = st?.deaths ?? 0, a = st?.assists ?? 0;
-    this.put(slot, "pcard_name", p.playerName ?? `slot ${slot}`);
-    // `pawn` is null while dead — say so rather than rendering a misleading "0 HP · 0 AP", which
-    // reads as a live player at zero health.
+    // `pawn` is null while dead — say so rather than rendering a misleading "0 HP".
     const pawn = p.pawn;
-    this.put(slot, "pcard_meta", pawn?.isValid
-      ? `${pawn.health ?? 0} HP · ${pawn.armorValue ?? 0} AP`
-      : "DEAD");
-    this.put(slot, "pcard_k", k);
-    this.put(slot, "pcard_d", d);
-    this.put(slot, "pcard_a", a);
-    // K/D rather than HS% — headshots are not exposed on MatchStats, and inventing a number that
-    // looks authoritative is worse than showing one that is.
-    this.put(slot, "pcard_hs", d > 0 ? (k / d).toFixed(2) : String(k));
-    this.put(slot, "pcard_form_label", "K / D");
-    this.put(slot, "pcard_badge_t", rules?.bombPlanted ? "BOMB" : "LIVE");
-    this.putClass(slot, "pcard_badge", "s2-badge-bad", rules?.bombPlanted === true);
-    this.putClass(slot, "pcard_badge", "s2-badge-good", rules?.bombPlanted !== true);
+    const life = pawn?.isValid ? `${pawn.health ?? 0} HP · ${pawn.armorValue ?? 0} AP` : "DEAD";
+    const kd = d > 0 ? (k / d).toFixed(2) : String(k);
+    this.badges.card.show(slot, { title: p.playerName ?? `slot ${slot}`, text: `${k} / ${d} / ${a}  ·  K/D ${kd}  ·  ${life}` });
   }
 
   /** One shared loop for every viewer; it exits when the last one leaves. */
@@ -178,10 +118,8 @@ export class LiveDemo {
     if (this.running) return;
     this.running = true;
     void (async () => {
-      // EVERY paint is guarded. An unhandled throw in here rejects the promise and kills the loop
-      // for EVERY viewer, permanently and silently — the HUD just freezes at its last values and
-      // looks like a desync rather than a crash. One bad player must not stop the world, so a
-      // failing paint is logged once and the loop carries on.
+      // Every paint is guarded: one throw would otherwise end the loop for every viewer and freeze
+      // their HUD at its last values.
       const complained = new Set<number>();
       while (this.viewers.size > 0) {
         for (const slot of [...this.viewers]) {
@@ -198,7 +136,6 @@ export class LiveDemo {
         try {
           await delay(TICK_SECONDS);
         } catch {
-          // Even the timer must not be able to end the loop; drop out cleanly instead of rejecting.
           break;
         }
       }

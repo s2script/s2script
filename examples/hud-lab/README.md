@@ -173,10 +173,18 @@ re-resolved through Valve's named script wrappers; see [migration notes](../../d
 
 ## Commands
 
+`sm_kit`, `sm_motd` and `sm_hud` are built from the shared `hudkit` components in `s2script_lib`,
+which every client already mounts, so they need no layout of their own and no workshop republish.
+`auto_show` (off by default) opens the kit for each player as they join; it takes the mouse, so
+leave it off on a server with real players.
+
 Everything is admin-gated. Writes are `ROOT`; reads are `GENERIC`.
 
 ```
 sm_hud_status                              tier A/B/C report + live layout readout
+sm_kit                                     hudkit modal with four clickable buttons (cursor on)
+sm_motd                                    hudkit MOTD with an OK button
+sm_hud [on|off]                            live demo: round clock, score, your K/D (badges) + kill toasts
 sm_hud_probe [start] [len]                 raw byte window, to verify offsets against a dump
 sm_hud_create [layout] [observable:0|1]    create + spawn a custom_hud_layout
 sm_hud_list                                every custom_hud_layout in the world
