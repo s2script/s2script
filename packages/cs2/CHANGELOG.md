@@ -1,5 +1,44 @@
 # @s2script/cs2
 
+## 0.19.0
+
+### Minor Changes
+
+- ec243c6: Remove the `ctx.items` plugin-context augmentation. Pickup gates are the `items` module export
+  (`import { items } from "@s2script/cs2"`) with an unchanged `onCanAcquire` / `onCanAcquirePost`
+  view; the interface is now `ItemsApi`, and `CtxItems` remains as a deprecated type alias.
+
+  Pickup gates and custom-HUD clicks now run on the engine-function service through the CS2
+  package's `legacy.acquire.v1` and `legacy.hud-click.v1` adapters instead of legacy gamedata hooks.
+  The vote fold, POST observation, HUD click timing and button-id copy are unchanged. The
+  `onCanAcquire` and `onCustomHudClicked` hook descriptors are gone from the CS2 gamedata; their
+  signatures are bound by name, so `gamedata/cs2/custom/` signature repairs still apply. Requires the
+  matching runtime.
+
+- 2ec44a8: Add the CustomHudLayout observable option for CS2's September 9 update, defaulting
+  to false. Preserve the policy across respawns and reject conflicting resource reuse.
+  Keep shared hudkit UI non-observable and update passive workshop overlays to yield
+  to the client buy menu and scoreboard. Workshop CSS changes require asset delivery.
+
+  Add Pawn.getCustomCamera(), CustomPlayerCamera owner/mode access and native follow
+  configuration. Add the validated-call resolver for named call-site anchors when
+  native function bodies have indistinguishable byte signatures. Requires the matching
+  updated runtime shim.
+
+  Re-resolve the three per-player HUD setters after the observable field shifted their state vector, and use live-schema offsets in hud-lab diagnostics.
+
+### Patch Changes
+
+- ec243c6: Relocate CS2-owned gamedata source into the game package and keep generated hook declarations and SDK CS2 bundle tests reading the new source manifest. Package builds now emit deterministic, hashed CS2 artifacts while preserving the deployed paths used by the current runtime.
+- Updated dependencies [2ec44a8]
+- Updated dependencies [ec243c6]
+- Updated dependencies [eb528fc]
+- Updated dependencies [9b876f7]
+- Updated dependencies [ec243c6]
+- Updated dependencies [9337d29]
+- Updated dependencies [ec243c6]
+  - @s2script/sdk@0.27.0
+
 ## 0.18.0
 
 ### Minor Changes
