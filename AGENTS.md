@@ -32,6 +32,21 @@ CS2 gate (below). If Docker is not present in the VM, the last gate in `scripts/
   Inside the repo workspace, base plugins/examples resolve `@s2script/*` through the root
   `node_modules` symlinks, so a plain root `npm install` is enough.
 
+**Stacked PRs (`gh stack`):** this repo uses official GitHub stacked PRs
+([gh-stack](https://github.github.com/gh-stack/)), not Graphite. Install once:
+`gh extension install github/gh-stack`. After opening chained PRs (`base_branch` = parent),
+link them with `gh stack link --base main <numbers bottom-to-top>` (no `--open`). For a new
+stack from this VM: `gh stack init --base main <branch>` / `gh stack add <branch>` /
+`gh stack submit --auto`. Always `gh stack view --json`. Never `gh stack merge` unless the
+user asks.
+
+The cloud `gh` token is a GitHub App installation. `POST /repos/.../stacks` often returns
+HTTP 403 `Resource not accessible by integration` (`X-Accepted-Github-Permissions:
+pull_requests=write`). Create/update individual PRs with ManagePullRequest as usual (correct
+`base_branch`). If `gh stack link` 403s, leave the chain in place and give the user the exact
+`gh stack link` command to run with their own `gh` (this repo already has stacks, e.g. #101
+and #119).
+
 **Live CS2 gate (running s2script on a real server in the VM).** This IS supported in the dev VM —
 s2script is a Metamod plugin, so any behavior involving the engine (hooks, entities, commands,
 players) can only be truly tested here. The environment is wired up in
