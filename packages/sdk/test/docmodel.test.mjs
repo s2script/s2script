@@ -98,3 +98,20 @@ test("imports and re-exports produce no exported symbols", () => {
   const mod = extractModule("x.d.ts", src);
   assert.deepEqual(mod.exports.map((e) => e.name), ["Row"]);
 });
+
+test("keeps type parameters in function and method signatures", () => {
+  const src = [
+    "/** Create a layout. */",
+    "export declare function create<const ButtonId extends string = string>(spec: Spec<ButtonId>): Layout<ButtonId>;",
+    "export interface Ns {",
+    "  /** Resolve a dep. */",
+    "  use<T extends object>(name: string): Handle<T>;",
+    "}",
+  ].join("\n");
+  const mod = extractModule("ui.d.ts", src);
+  assert.equal(
+    mod.exports[0].signature,
+    "create<const ButtonId extends string = string>(spec: Spec<ButtonId>): Layout<ButtonId>",
+  );
+  assert.equal(mod.exports[1].members[0].signature, "use<T extends object>(name: string): Handle<T>");
+});

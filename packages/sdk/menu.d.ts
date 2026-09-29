@@ -51,7 +51,6 @@ export interface MenuCancelEvent {
  * import { Menu, MenuStyle } from "@s2script/sdk/menu";
  * const m = new Menu("s2script Menu Demo");
  * m.style = MenuStyle.Center;
- * m.freezePlayer = true;                 // freeze movement while the HUD menu is open
  * m.addItem("hp", "Heal to 100");
  * m.addItem("noclip", "Toggle Noclip");
  * m.onSelect(e => { console.log(`picked ${e.info} (slot ${e.slot})`); });
@@ -65,8 +64,12 @@ export declare class Menu {
   style: MenuStyle;
   /** Append an auto Exit control (default true). */
   exitButton: boolean;
-  /** When true, a renderer that supports it (the CS2 HUD renderer) freezes the player's movement
-   *  while the menu is open and restores it on close. Default false. */
+  /**
+   * When true, a renderer that supports it may freeze the player's movement while the menu is open
+   * and restore it on close. Default false. The CS2 center renderer currently ignores this and
+   * does not freeze movement — freezing is disabled until the menu surface can guarantee it is
+   * interactive. The chat renderer also ignores it.
+   */
   freezePlayer: boolean;
   /** `"immediate"` (default) arms cursor on open. `"tab"` paints first and waits for Tab. */
   activation: MenuActivation;

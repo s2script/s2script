@@ -67,7 +67,7 @@ export declare const Events: {
    * re-firing a rebuilt copy per viewer does not.
    *
    * @example
-   * ctx.events.onPre("player_death", () => {
+   * hook.onPre("player_death", () => {
    *   Events.setRecipients(traitorSlots);   // only Traitors see the kill
    *   return HookResult.Handled;
    * });

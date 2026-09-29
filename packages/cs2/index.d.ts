@@ -200,13 +200,17 @@ export declare const Pawn: {
 
 /**
  * A CS2 player (the persistent controller entity): the generated CCSPlayerController schema fields
- * (team/score/ping/…) + the liveness-gated controller ref. `pawn` is the typed body (shadows the raw
- * generated m_hPawn handle). Referenced by slot (0-based); a stored Player degrades to null on reuse.
+ * (team/score/ping/…) + the liveness-gated controller ref. `pawn` is the typed body (shadows the
+ * raw generated m_hPawn handle). Bound to a host connection lifetime — a stored Player does not
+ * target a replacement in the same slot.
  */
 export interface Player extends Omit<CCSPlayerController, "pawn"> {
-  /** The backing entity ref (the persistent controller's liveness-gated identity; degrades to `null` on reuse). */
+  /**
+   * The backing entity ref (the persistent controller's liveness-gated identity). A saved handle
+   * does not target a replacement in the same slot.
+   */
   readonly ref: EntityRef;
-  /** The 0-based player slot (CPlayerSlot). */
+  /** The 0-based player slot (`CPlayerSlot`) — not sufficient by itself to identify a connection. */
   readonly slot: number;
   /** This player's in-world pawn (the body), or null if dead/absent. */
   readonly pawn: Pawn | null;
@@ -254,7 +258,7 @@ export interface Player extends Omit<CCSPlayerController, "pawn"> {
   /** Respawn this (dead) player via the self-resolved CCSPlayerController::Respawn (byte-sig +
    *  RTTI-vtable-membership load-validated). Synchronous: SetPawn then Respawn on this call;
    *  `Events.on` / `onPre("player_spawn")` run other plugins before this returns.
-   *  `ctx.players.onRespawn` does not fire (SourceMod `blockhook` / `bypassWith`).
+   *  `players.onRespawn` does not fire (SourceMod `blockhook` / `bypassWith`).
    *  Returns false when the player is already alive, the ref is stale, or Respawn/SetPawn failed
    *  their boot gates. */
   respawn(): boolean;
@@ -345,10 +349,10 @@ export declare const ChatColors: {
 };
 
 /**
- * Show a target-picker Center menu of connected players to `adminSlot` (the adminmenu framework's shared
- * player picker; `freezePlayer` is on). The picked player is re-resolved via `Player.fromUserId` at select
- * time, so `onPicked` only ever receives a live target — a player who left in the meantime is skipped with
- * a chat notice to `adminSlot`, and `onPicked` is not called.
+ * Show a target-picker Center menu of connected players to `adminSlot` (the adminmenu framework's
+ * shared player picker). The picked player is re-resolved via `Player.fromUserId` at select time,
+ * so `onPicked` only ever receives a live target — a player who left in the meantime is skipped
+ * with a chat notice to `adminSlot`, and `onPicked` is not called.
  */
 export declare function pickPlayer(adminSlot: number, onPicked: (target: Player) => void): void;
 
@@ -411,7 +415,7 @@ export interface GameRulesView {
   addTimeRemaining(seconds: number): boolean;
   /** Force the round to end with a RoundEndReason (sig-resolved CCSGameRules::TerminateRound).
    *  Synchronous: the engine call runs now; `Events.on` / `onPre("round_end")` run other plugins
-   *  before this returns. `ctx.gameRules.onTerminateRound` does not fire for this call
+   *  before this returns. `gameRules.onTerminateRound` does not fire for this call
    *  (SourceMod `CS_OnTerminateRound` / `blockhook`). To cancel an *engine* round end, subscribe
    *  to `onTerminateRound`. delay (default 5s) is the engine's pre-restart delay. Returns false
    *  when degraded (unresolved signature, stale proxy, or reason outside 0..22). */

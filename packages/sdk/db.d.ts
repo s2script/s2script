@@ -15,9 +15,16 @@ export interface ExecuteResult {
 
 /** A driver-owned connection — what a {@link Driver} hands back from {@link Driver.connect}. */
 export interface DriverConnection {
-  /** Run a SELECT and resolve every result {@link Row}; `params` bind `?` placeholders. */
+  /**
+   * Run a SELECT and resolve every result {@link Row}; `params` bind `?` placeholders. Rejects
+   * with `AsyncQueueFull` or `AsyncPayloadTooLarge` before acceptance; `DatabaseResultTooLarge`
+   * when rows or retained bytes exceed the configured limit.
+   */
   query(sql: string, params?: SqlValue[]): Promise<Row[]>;
-  /** Run a non-SELECT statement and resolve its {@link ExecuteResult}; `params` bind `?` placeholders. */
+  /**
+   * Run a non-SELECT statement and resolve its {@link ExecuteResult}; `params` bind `?`
+   * placeholders. Rejects with `AsyncQueueFull` or `AsyncPayloadTooLarge` before acceptance.
+   */
   execute(sql: string, params?: SqlValue[]): Promise<ExecuteResult>;
   /** Close the underlying connection. */
   close(): Promise<void>;
@@ -40,9 +47,16 @@ export interface Driver {
 }
 /** A live database connection (delegates to its driver). */
 export interface Database {
-  /** Run a SELECT and resolve every result {@link Row}; `params` bind `?` placeholders. */
+  /**
+   * Run a SELECT and resolve every result {@link Row}; `params` bind `?` placeholders. Rejects
+   * with `AsyncQueueFull` or `AsyncPayloadTooLarge` before acceptance; `DatabaseResultTooLarge`
+   * when rows or retained bytes exceed the configured limit.
+   */
   query(sql: string, params?: SqlValue[]): Promise<Row[]>;
-  /** Run a non-SELECT statement and resolve its {@link ExecuteResult}; `params` bind `?` placeholders. */
+  /**
+   * Run a non-SELECT statement and resolve its {@link ExecuteResult}; `params` bind `?`
+   * placeholders. Rejects with `AsyncQueueFull` or `AsyncPayloadTooLarge` before acceptance.
+   */
   execute(sql: string, params?: SqlValue[]): Promise<ExecuteResult>;
   /** Close the connection. */
   close(): Promise<void>;

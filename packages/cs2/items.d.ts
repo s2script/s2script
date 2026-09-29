@@ -59,7 +59,7 @@ export interface ItemsApi {
   onCanAcquirePost(handler: (view: CanAcquireView) => void): void;
 }
 
-/** @deprecated Use {@link ItemsApi}. There is no `ctx.items`; import `items` instead. */
+/** @deprecated Use {@link ItemsApi}. Import `items` from `@s2script/cs2`. */
 export type CtxItems = ItemsApi;
 
 /** Load-window pickup gates: `import { items } from "@s2script/cs2"`. Throws after settle. */

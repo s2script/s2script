@@ -34,7 +34,9 @@ export interface Response {
  * @param url - Absolute `http(s)://` URL.
  * @param options - Method, headers, body, and timeout (see {@link FetchOptions}).
  * @returns Resolves for ANY HTTP response — a 4xx/5xx resolves with `ok=false`, it does not reject.
- * @throws Rejects only on a network error or timeout.
+ * @throws Rejects on a network error or timeout, or with `AsyncQueueFull` / `AsyncPayloadTooLarge`
+ * before acceptance. `HttpResponseTooLarge` when the retained UTF-8 body plus headers exceed the
+ * configured limit.
  * @example
  * import { fetch } from "@s2script/sdk/http";
  * const r = await fetch("https://httpbin.org/get", { timeoutMs: 15000 });

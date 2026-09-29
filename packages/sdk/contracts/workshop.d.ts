@@ -10,7 +10,7 @@
  *
  * @example
  * import type { WorkshopService } from "@s2script/sdk/contracts/workshop";
- * const ws = ctx.tryUse<WorkshopService>("workshop");
+ * const ws = tryUse<WorkshopService>("workshop"); // in OnPluginStart
  * if (ws) {
  *   const map = await ws.currentMap();
  *   console.log(map ? `${map.title} (${map.id})` : "not a workshop map");
