@@ -8,6 +8,8 @@
 
 class CEntityIOOutput;
 class CEntityInstance;
+struct CPulseArgumentPack;
+struct CPulseInputParamMap;
 class CVariantDefaultAllocator;
 template <typename A> class CVariantBase;
 typedef CVariantBase<CVariantDefaultAllocator> CVariant;
@@ -17,7 +19,7 @@ enum class S2NamedHookSite { Chat, Output, Usercmd, Precache };
 struct S2NamedHookOps {
     int (*chat)(void*, void*, bool, int, const char*) = nullptr;
     int (*output)(CEntityIOOutput*, CEntityInstance*, CEntityInstance*,
-                  const CVariant*, float, void*, char*) = nullptr;
+                  CPulseArgumentPack*, float, CPulseInputParamMap*, const CVariant*) = nullptr;
     int (*usercmd_slot)(void*) = nullptr;
     int (*usercmd_dispatch)(int) = nullptr;
     void (*usercmd_neutralize)() = nullptr;

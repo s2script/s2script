@@ -10,7 +10,7 @@
 extern "C" void S2ProbeNamedInvokeVirtual(void*,int,void*);
 extern "C" void S2ProbeNamedChatTarget(void*,void*,bool,int,const char*);
 extern "C" void S2ProbeNamedOutputTarget(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
-                                          const CVariant*,float,void*,char*);
+                                          CPulseArgumentPack*,float,CPulseInputParamMap*,const CVariant*);
 extern "C" int S2ProbeNamedUsercmdTarget(void*,void*,int,bool,float);
 
 namespace {
@@ -42,7 +42,7 @@ ProbePrecache precache_object;
 OtherPrecache other_object;
 
 using ChatFn=void (*)(void*,void*,bool,int,const char*);
-using OutputFn=void (*)(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*);
+using OutputFn=void (*)(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,CPulseArgumentPack*,float,CPulseInputParamMap*,const CVariant*);
 using UsercmdFn=int (*)(void*,void*,int,bool,float);
 ChatFn volatile call_chat=&S2ProbeNamedChatTarget;
 OutputFn volatile call_output=&S2ProbeNamedOutputTarget;
@@ -53,9 +53,9 @@ KHook::Return<void> EarlyVirtualPost(ProbePrecache*,void*);
 KHook::Return<void> ChatPeerBefore(void*,void*,bool,int,const char*);
 KHook::Return<void> ChatPeerAfter(void*,void*,bool,int,const char*);
 KHook::Return<void> ChatPeerPost(void*,void*,bool,int,const char*);
-KHook::Return<void> OutputObservePre(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*);
+KHook::Return<void> OutputObservePre(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,CPulseArgumentPack*,float,CPulseInputParamMap*,const CVariant*);
 KHook::Return<void> OutputObservePost(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
-                                      const CVariant*,float,void*,char*);
+                                      CPulseArgumentPack*,float,CPulseInputParamMap*,const CVariant*);
 KHook::Return<int> UsercmdObservePre(void*,void*,int,bool,float);
 KHook::Return<int> UsercmdObservePost(void*,void*,int,bool,float);
 KHook::Return<void> VirtualPeerBefore(ProbePrecache*,void*);
@@ -63,7 +63,7 @@ KHook::Return<void> VirtualPeerAfter(ProbePrecache*,void*);
 KHook::Return<void> VirtualPeerPost(ProbePrecache*,void*);
 S2CheckedFunction<void,void*,void*,bool,int,const char*> peer_chat_before(&ChatPeerBefore,&EarlyChatPost);
 S2CheckedFunction<void,void*,void*,bool,int,const char*> peer_chat_after(&ChatPeerAfter,&ChatPeerPost);
-S2CheckedFunction<void,CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*>
+S2CheckedFunction<void,CEntityIOOutput*,CEntityInstance*,CEntityInstance*,CPulseArgumentPack*,float,CPulseInputParamMap*,const CVariant*>
     peer_output_observer(&OutputObservePre,&OutputObservePost);
 S2CheckedFunction<int,void*,void*,int,bool,float> peer_usercmd_observer(&UsercmdObservePre,&UsercmdObservePost);
 S2CheckedVirtual<ProbePrecache,void,void*> peer_virtual_before(&VirtualPeerBefore,&EarlyVirtualPost);
@@ -86,6 +86,14 @@ void OrderPeer(bool post,bool late) {
     else { ++order_active->peer_pre; order_active->trace+='P'; }
 }
 void OrderOriginal() { if (order_active) { ++order_active->original; order_active->trace+='O'; } }
+
+bool OutputArgumentsMatch(CEntityIOOutput* output,CEntityInstance* activator,CEntityInstance* caller,
+                         CPulseArgumentPack* arguments,float delay,
+                         CPulseInputParamMap* parameters,const CVariant* value) {
+    return reinterpret_cast<uintptr_t>(output)==1 && reinterpret_cast<uintptr_t>(activator)==2 &&
+        reinterpret_cast<uintptr_t>(caller)==3 && reinterpret_cast<uintptr_t>(arguments)==4 &&
+        delay==1.25f && reinterpret_cast<uintptr_t>(parameters)==6 && reinterpret_cast<uintptr_t>(value)==7;
+}
 
 
 KHook::Return<void> ChatPeerBefore(void*,void*,bool,int,const char*) {
@@ -118,10 +126,12 @@ KHook::Return<void> ChatPeerPost(void*,void*,bool,int,const char*) {
     }
     return S2_Ignore();
 }
-KHook::Return<void> OutputObservePost(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
-                                      const CVariant*,float,void*,char*) {
+KHook::Return<void> OutputObservePost(CEntityIOOutput* output,CEntityInstance* activator,CEntityInstance* caller,
+                                      CPulseArgumentPack* arguments,float delay,
+                                      CPulseInputParamMap* parameters,const CVariant* value) {
     auto observed=peer_output_observer.Observe();
     if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
+    if (!OutputArgumentsMatch(output,activator,caller,arguments,delay,parameters,value)) return S2_Ignore();
     OrderPeer(true,false);
     if (mode==Mode::OutputVector) observation.output_vector_skipped[output_verdict]=KHook::WasOriginalFunctionSkipped() ? 1 : 0;
     if (mode==Mode::Output) {
@@ -185,9 +195,12 @@ KHook::Return<void> EarlyVirtualPost(ProbePrecache* receiver,void*) {
     if (S2Hook_EnterDispatch(observed)) { OrderPeer(true,false); if (order_active) order_active->skipped=KHook::WasOriginalFunctionSkipped() ? 1 : 0; }
     return S2_Ignore();
 }
-KHook::Return<void> OutputObservePre(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*) {
+KHook::Return<void> OutputObservePre(CEntityIOOutput* output,CEntityInstance* activator,CEntityInstance* caller,
+                                     CPulseArgumentPack* arguments,float delay,
+                                     CPulseInputParamMap* parameters,const CVariant* value) {
     auto observed=peer_output_observer.Observe();
-    if (S2Hook_EnterDispatch(observed)) OrderPeer(false,false);
+    if (S2Hook_EnterDispatch(observed) &&
+        OutputArgumentsMatch(output,activator,caller,arguments,delay,parameters,value)) OrderPeer(false,false);
     return S2_Ignore();
 }
 KHook::Return<int> UsercmdObservePre(void*,void*,int,bool,float) {
@@ -208,17 +221,17 @@ KHook::Return<void> LateChatPost(void* a,void* b,bool c,int d,const char* e) {
     if (S2Hook_EnterDispatch(observed)) { OrderPeer(true,true); if (order_active) { order_active->skipped=KHook::WasOriginalFunctionSkipped() ? 1 : 0; } }
     return S2_Ignore();
 }
-KHook::Return<void> LateOutputPre(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*);
-KHook::Return<void> LateOutputPost(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*);
-S2CheckedFunction<void,CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*> late_output(&LateOutputPre,&LateOutputPost);
-KHook::Return<void> LateOutputPre(CEntityIOOutput* a,CEntityInstance* b,CEntityInstance* c,const CVariant* d,float e,void* f,char* g) {
+KHook::Return<void> LateOutputPre(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,CPulseArgumentPack*,float,CPulseInputParamMap*,const CVariant*);
+KHook::Return<void> LateOutputPost(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,CPulseArgumentPack*,float,CPulseInputParamMap*,const CVariant*);
+S2CheckedFunction<void,CEntityIOOutput*,CEntityInstance*,CEntityInstance*,CPulseArgumentPack*,float,CPulseInputParamMap*,const CVariant*> late_output(&LateOutputPre,&LateOutputPost);
+KHook::Return<void> LateOutputPre(CEntityIOOutput* a,CEntityInstance* b,CEntityInstance* c,CPulseArgumentPack* d,float e,CPulseInputParamMap* f,const CVariant* g) {
     auto observed=late_output.Observe();
-    if (S2Hook_EnterDispatch(observed)) { OrderPeer(false,true); }
+    if (S2Hook_EnterDispatch(observed) && OutputArgumentsMatch(a,b,c,d,e,f,g)) { OrderPeer(false,true); }
     return S2_Ignore();
 }
-KHook::Return<void> LateOutputPost(CEntityIOOutput* a,CEntityInstance* b,CEntityInstance* c,const CVariant* d,float e,void* f,char* g) {
+KHook::Return<void> LateOutputPost(CEntityIOOutput* a,CEntityInstance* b,CEntityInstance* c,CPulseArgumentPack* d,float e,CPulseInputParamMap* f,const CVariant* g) {
     auto observed=late_output.Observe();
-    if (S2Hook_EnterDispatch(observed)) { OrderPeer(true,true); if (order_active) { order_active->skipped=KHook::WasOriginalFunctionSkipped() ? 1 : 0; } }
+    if (S2Hook_EnterDispatch(observed) && OutputArgumentsMatch(a,b,c,d,e,f,g)) { OrderPeer(true,true); if (order_active) { order_active->skipped=KHook::WasOriginalFunctionSkipped() ? 1 : 0; } }
     return S2_Ignore();
 }
 KHook::Return<int> LateUsercmdPre(void*,void*,int,bool,float);
@@ -269,7 +282,10 @@ int ChatOp(void*,void*,bool,int,const char*) {
     }
     return chat_verdict;
 }
-int OutputOp(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*) {
+int OutputOp(CEntityIOOutput* output,CEntityInstance* activator,CEntityInstance* caller,
+             CPulseArgumentPack* arguments,float delay,CPulseInputParamMap* parameters,const CVariant* value) {
+    // Counter and order assertions only succeed when all seven ABI arguments survive.
+    if (!OutputArgumentsMatch(output,activator,caller,arguments,delay,parameters,value)) return 0;
     if (OrderMain()) return 0;
     if (mode==Mode::OutputVector) ++observation.output_vector_dispatch[output_verdict];
     if (mode==Mode::Output) ++observation.output_dispatch;
@@ -349,7 +365,9 @@ extern "C" __attribute__((noinline)) void S2ProbeNamedChatBody(void*,void*,bool,
     if (mode==Mode::Chat) { ++observation.chat_original; ++observation.chat_original_each[chat_verdict ? 1 : 0]; }
 }
 extern "C" __attribute__((noinline)) void S2ProbeNamedOutputBody(
-    CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*) {
+    CEntityIOOutput* output,CEntityInstance* activator,CEntityInstance* caller,
+    CPulseArgumentPack* arguments,float delay,CPulseInputParamMap* parameters,const CVariant* value) {
+    if (!OutputArgumentsMatch(output,activator,caller,arguments,delay,parameters,value)) return;
     OrderOriginal();
     if (mode==Mode::OutputVector) ++observation.output_vector_original[output_verdict];
     if (mode==Mode::Output) ++observation.output_original;
@@ -373,7 +391,7 @@ extern "C" __attribute__((naked,noinline)) void S2ProbeNamedChatTarget(void*,voi
     asm volatile(".byte 0x0f,0x1f,0x84,0x00,0x53,0x32,0x43,0x35\n\tjmp S2ProbeNamedChatBody");
 }
 extern "C" __attribute__((naked,noinline)) void S2ProbeNamedOutputTarget(
-    CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*) {
+    CEntityIOOutput*,CEntityInstance*,CEntityInstance*,CPulseArgumentPack*,float,CPulseInputParamMap*,const CVariant*) {
     asm volatile(".byte 0x0f,0x1f,0x84,0x00,0x53,0x32,0x4f,0x35\n\tjmp S2ProbeNamedOutputBody");
 }
 extern "C" __attribute__((naked,noinline)) int S2ProbeNamedUsercmdTarget(void*,void*,int,bool,float) {
@@ -381,7 +399,7 @@ extern "C" __attribute__((naked,noinline)) int S2ProbeNamedUsercmdTarget(void*,v
 }
 #else
 extern "C" void S2ProbeNamedChatTarget(void* a,void* b,bool c,int d,const char* e) { S2ProbeNamedChatBody(a,b,c,d,e); }
-extern "C" void S2ProbeNamedOutputTarget(CEntityIOOutput* a,CEntityInstance* b,CEntityInstance* c,const CVariant* d,float e,void* f,char* g) { S2ProbeNamedOutputBody(a,b,c,d,e,f,g); }
+extern "C" void S2ProbeNamedOutputTarget(CEntityIOOutput* a,CEntityInstance* b,CEntityInstance* c,CPulseArgumentPack* d,float e,CPulseInputParamMap* f,const CVariant* g) { S2ProbeNamedOutputBody(a,b,c,d,e,f,g); }
 extern "C" int S2ProbeNamedUsercmdTarget(void* a,void* b,int c,bool d,float e) { return S2ProbeNamedUsercmdBody(a,b,c,d,e); }
 #endif
 
@@ -470,10 +488,12 @@ void S2ProbeNamedInvoke() {
     chat_verdict=1; call_chat(outer_victim,outer_info,true,19,"opaque");
     mode=Mode::Output; output_verdict=1;
     call_output(reinterpret_cast<CEntityIOOutput*>(1),reinterpret_cast<CEntityInstance*>(2),
-        reinterpret_cast<CEntityInstance*>(3),reinterpret_cast<const CVariant*>(4),1.25f,outer_info,nullptr);
+        reinterpret_cast<CEntityInstance*>(3),reinterpret_cast<CPulseArgumentPack*>(4),1.25f,
+        reinterpret_cast<CPulseInputParamMap*>(6),reinterpret_cast<const CVariant*>(7));
     output_verdict=2;
     call_output(reinterpret_cast<CEntityIOOutput*>(1),reinterpret_cast<CEntityInstance*>(2),
-        reinterpret_cast<CEntityInstance*>(3),reinterpret_cast<const CVariant*>(4),1.25f,outer_info,nullptr);
+        reinterpret_cast<CEntityInstance*>(3),reinterpret_cast<CPulseArgumentPack*>(4),1.25f,
+        reinterpret_cast<CPulseInputParamMap*>(6),reinterpret_cast<const CVariant*>(7));
     mode=Mode::Usercmd;
     std::array<unsigned char,0x130> commands{}; commands[0x10]=1; commands[0xa0]=2;
     call_usercmd(outer_victim,commands.data(),0,true,2.5f);
@@ -488,7 +508,8 @@ void S2ProbeNamedInvoke() {
     mode=Mode::OutputVector;
     for (output_verdict=0;output_verdict<4;++output_verdict)
         call_output(reinterpret_cast<CEntityIOOutput*>(1),reinterpret_cast<CEntityInstance*>(2),reinterpret_cast<CEntityInstance*>(3),
-            reinterpret_cast<const CVariant*>(4),1.25f,outer_info,nullptr);
+            reinterpret_cast<CPulseArgumentPack*>(4),1.25f,
+            reinterpret_cast<CPulseInputParamMap*>(6),reinterpret_cast<const CVariant*>(7));
     mode=Mode::Idle;
 }
 s2khook::NamedSnapshot S2ProbeNamedCollect() { return observation; }
@@ -520,7 +541,9 @@ void InvokeOrderPhase(bool late) {
         s2khook::NamedOrderObservation row; row.site=site; row.order=late ? "s2script-first" : "peer-first";
         order_active=&row;
         if (row.site=="chat") call_chat(outer_victim,outer_info,true,19,"order");
-        else if (row.site=="output") call_output(nullptr,nullptr,nullptr,nullptr,0,nullptr,nullptr);
+        else if (row.site=="output") call_output(reinterpret_cast<CEntityIOOutput*>(1),reinterpret_cast<CEntityInstance*>(2),
+            reinterpret_cast<CEntityInstance*>(3),reinterpret_cast<CPulseArgumentPack*>(4),1.25f,
+            reinterpret_cast<CPulseInputParamMap*>(6),reinterpret_cast<const CVariant*>(7));
         else if (row.site=="usercmd") { std::array<unsigned char,0xa0> commands{}; call_usercmd(outer_victim,commands.data(),1,true,2.5f); }
         else S2ProbeNamedInvokeVirtual(&precache_object,precache_index,outer_manifest);
         order_active=nullptr; order_snapshot.rows.push_back(row);

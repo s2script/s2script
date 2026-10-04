@@ -12,13 +12,13 @@ struct PrecacheReceiver {};
 
 KHook::Return<void> ChatPre(void*,void*,bool,int,const char*);
 KHook::Return<void> OutputPre(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
-                              const CVariant*,float,void*,char*);
+                              CPulseArgumentPack*,float,CPulseInputParamMap*,const CVariant*);
 KHook::Return<int> UsercmdPre(void*,void*,int,bool,float);
 KHook::Return<void> PrecachePre(PrecacheReceiver*,void*);
 
 S2CheckedFunction<void,void*,void*,bool,int,const char*> g_chat(&ChatPre,nullptr);
 S2CheckedFunction<void,CEntityIOOutput*,CEntityInstance*,CEntityInstance*,
-                  const CVariant*,float,void*,char*> g_output(&OutputPre,nullptr);
+                  CPulseArgumentPack*,float,CPulseInputParamMap*,const CVariant*> g_output(&OutputPre,nullptr);
 S2CheckedFunction<int,void*,void*,int,bool,float> g_usercmd(&UsercmdPre,nullptr);
 S2CheckedVirtual<PrecacheReceiver,void,void*> g_precache(&PrecachePre,nullptr);
 
@@ -74,12 +74,12 @@ KHook::Return<void> ChatPre(void* controller,void* command,bool team,int number,
 }
 
 KHook::Return<void> OutputPre(CEntityIOOutput* output,CEntityInstance* activator,
-                              CEntityInstance* caller,const CVariant* value,float delay,
-                              void* opaque,char* tail) {
+                              CEntityInstance* caller,CPulseArgumentPack* arguments,float delay,
+                              CPulseInputParamMap* parameters,const CVariant* value) {
     auto observed=g_output.Observe();
     if (!S2Hook_EnterDispatch(observed)) return S2_Ignore();
     const int result=g_ops.output ?
-        g_ops.output(output,activator,caller,value,delay,opaque,tail) : 0;
+        g_ops.output(output,activator,caller,arguments,delay,parameters,value) : 0;
     const auto action=result>=2 ? S2_Supersede() : S2_Ignore();
     if (g_ops.observe_action) g_ops.observe_action(S2NamedHookSite::Output,false,action.action);
     return action;
