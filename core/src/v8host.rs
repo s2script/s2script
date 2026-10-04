@@ -1529,11 +1529,21 @@ pub fn set_plugin_imports(id: &str, decls: Vec<crate::interfaces::ImportSpec>) {
     }
 }
 
+/// Game-thread admission owns immutable metadata independently of the loader worker.
+/// A crossing can retain a cheap snapshot after releasing the store borrow, including
+/// when JavaScript reenters and replaces or clears either participant's admission.
+#[derive(Clone)]
+struct AdmittedPublish {
+    version: String,
+    types_sha256: String,
+    contract: Option<std::rc::Rc<crate::interop::Contract>>,
+}
+
 thread_local! {
     /// plugin_id → the manifest's `publishes` map. The SOLE source of an interface's version
     /// (spec §4.3): JS never carries one. Set by the loader before load_plugin_js.
     static PLUGIN_PUBLISHES: std::cell::RefCell<
-        std::collections::HashMap<String, std::collections::HashMap<String, crate::loader::PublishDecl>>
+        std::collections::HashMap<String, std::collections::HashMap<String, AdmittedPublish>>
     > = std::cell::RefCell::new(std::collections::HashMap::new());
 
     /// plugin_id → interface names it tried to publish but never declared. Recorded when
@@ -1550,17 +1560,27 @@ pub fn set_plugin_publishes(
     plugin_id: &str,
     publishes: std::collections::HashMap<String, crate::loader::PublishDecl>,
 ) {
+    let publishes = publishes.into_iter().map(|(name, decl)| {
+        (name, AdmittedPublish {
+            version: decl.version,
+            types_sha256: decl.types_sha256,
+            contract: decl.contract.map(std::rc::Rc::new),
+        })
+    }).collect();
     PLUGIN_PUBLISHES.with(|p| { p.borrow_mut().insert(plugin_id.to_string(), publishes); });
 }
 
 thread_local! {
-    static PLUGIN_INTEROP: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashMap<String,crate::interop::Contract>>> = Default::default();
+    static PLUGIN_INTEROP: std::cell::RefCell<std::collections::HashMap<String, std::collections::HashMap<String,std::rc::Rc<crate::interop::Contract>>>> = Default::default();
 }
 pub fn set_plugin_interop(
     id: &str,
     contracts: std::collections::HashMap<String, crate::interop::Contract>,
 ) {
     PLUGIN_INTEROP.with(|m| {
+        let contracts = contracts.into_iter()
+            .map(|(name, contract)| (name, std::rc::Rc::new(contract)))
+            .collect();
         m.borrow_mut().insert(id.into(), contracts);
     });
 }
@@ -2041,8 +2061,7 @@ fn s2_iface_call(
         }
         let method_schema = contract
             .as_ref()
-            .and_then(|c| c.metadata.methods.get(&method))
-            .cloned();
+            .and_then(|c| c.metadata.methods.get(&method));
         if contract.is_some() && method_schema.is_none() {
             throw_named(scope, "InterfaceUnknownMethod", &method);
             return;

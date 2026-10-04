@@ -75,14 +75,14 @@ pub(super) fn projected_entity_ref<'s>(scope:&mut v8::PinScope<'s,'_>,reference:
     }
     Some(object.into())
 }
-pub(super) fn published_contract(name: &str) -> Option<crate::interop::Contract> {
+pub(super) fn published_contract(name: &str) -> Option<std::rc::Rc<crate::interop::Contract>> {
     let (owner, _) = IFACES.with(|r| r.borrow().producer_of(name))?;
     PLUGIN_PUBLISHES.with(|p| p.borrow().get(&owner)?.get(name)?.contract.clone())
 }
 pub(super) fn checked_contract(
     consumer: &str,
     name: &str,
-) -> Result<Option<crate::interop::Contract>, &'static str> {
+) -> Result<Option<std::rc::Rc<crate::interop::Contract>>, &'static str> {
     let actual = published_contract(name);
     let expected =
         PLUGIN_INTEROP.with(|p| p.borrow().get(consumer).and_then(|m| m.get(name)).cloned());
