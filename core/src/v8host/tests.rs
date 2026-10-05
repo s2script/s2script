@@ -9906,3 +9906,9 @@
         assert_eq!(crate::async_limits::domain().jobs.snapshot().bytes, 0);
         shutdown();
     }
+
+#[path = "tests/value_copy.rs"]
+mod value_copy;
+
+#[path = "tests/immutable_contract.rs"]
+mod immutable_contract;

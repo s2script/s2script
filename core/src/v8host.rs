@@ -2000,9 +2000,26 @@ fn s2_iface_is_published(
     }));
 }
 
+/// Owned method transport; no V8 handle escapes either context scope.
+enum InterfaceMethodPayload {
+    Json(String),
+    Plain(serde_json::Value),
+}
+fn iface_method_from_payload<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    payload: &InterfaceMethodPayload,
+) -> Option<v8::Local<'s, v8::Value>> {
+    match payload {
+        InterfaceMethodPayload::Json(json) => iface_from_json(scope, json),
+        // Typed no-ref values were strictly copied and admitted in the source context.
+        // Materialize that checked value without mutable target decoder hooks.
+        InterfaceMethodPayload::Plain(value) => plain_value_to_v8(scope, value),
+    }
+}
+
 /// `__s2_iface_call(name, method, argsArray) -> result` — the consumer-side cross-context call.
 /// Re-resolves the registry by name each call (so producer hot-reload auto-recovers), checks the
-/// version range + method existence, structured-copies args consumer→producer via the JSON carrier,
+/// version range + method existence, structured-copies args consumer→producer via an owned carrier,
 /// enters the producer context, calls the method Global, structured-copies the return back. Named
 /// throws on the failure modes; the whole body is catch_unwind.
 /// A throwing producer method surfaces as `InterfaceCallError`; an `undefined`/void return resolves
@@ -2072,13 +2089,19 @@ fn s2_iface_call(
                 return;
             }
         }
-        // Marshal args (the 3rd arg, an array) OUT of the consumer context to a JSON String.
-        let args_json = match if let Some(schema) = &method_schema {
-            strict_json(scope, args.get(2))
-                .filter(|(_, v)| schema.accepts_args(v))
-                .map(|(s, _)| s)
+        // Marshal args (the 3rd arg, an array) OUT to owned context-free data.
+        let args_payload = match if let Some(schema) = &method_schema {
+            if schema.args.iter().all(|f| f.schema.entity_ref_free()) {
+                strict_value(scope, args.get(2))
+                    .filter(|value| schema.accepts_args(value))
+                    .map(InterfaceMethodPayload::Plain)
+            } else {
+                strict_json(scope, args.get(2))
+                    .filter(|(_, value)| schema.accepts_args(value))
+                    .map(|(json, _)| InterfaceMethodPayload::Json(json))
+            }
         } else {
-            iface_to_json(scope, args.get(2))
+            iface_to_json(scope, args.get(2)).map(InterfaceMethodPayload::Json)
         } {
             Some(s) => s,
             None => {
@@ -2112,17 +2135,17 @@ fn s2_iface_call(
 
         // Producer-side outcome, extracted as context-free Rust values BEFORE cscope drops.
         enum Outcome {
-            Ok(String),      // serialized return JSON (a COPY)
+            Ok(InterfaceMethodPayload), // owned return data (a COPY)
             Void,            // producer returned undefined → resolve undefined in the consumer
             Threw(String),   // producer method threw; captured message
             NotSerializable, // return is cyclic/BigInt/function (and NOT undefined)
-            Internal,        // args failed to parse/spread (unexpected for valid JSON)
+            Internal,        // args failed to materialize/spread (unexpected for valid data)
         }
 
         // Enter the producer context under a TryCatch so a THROWING producer method is captured here
         // (absorbed when the TryCatch drops) rather than left pending — otherwise the consumer-side
         // throw_named would double-throw over it. iface_to_json/iface_from_json open their own inner
-        // TryCatches, so nesting is fine. CRITICAL: the return is serialized to a Rust String INSIDE
+        // TryCatches, so nesting is fine. CRITICAL: the return is copied to owned Rust data INSIDE
         // this block (before cscope drops) — no Local<Value> may escape the producer scope.
         let outcome: Outcome = {
             let ctx_local = v8::Local::new(scope, &g_ctx);
@@ -2131,9 +2154,9 @@ fn s2_iface_call(
             let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
             let tc = &mut tc;
 
-            // Parse args (a COPY) + spread positionally.
+            // Materialize args (a COPY) + spread positionally.
             let argv_opt = (|| -> Option<Vec<v8::Local<v8::Value>>> {
-                let args_val = iface_from_json(tc, &args_json)?;
+                let args_val = iface_method_from_payload(tc, &args_payload)?;
                 let arr = v8::Local::<v8::Array>::try_from(args_val).ok()?;
                 let mut argv: Vec<v8::Local<v8::Value>> = Vec::with_capacity(arr.length() as usize);
                 for i in 0..arr.length() {
@@ -2167,10 +2190,17 @@ fn s2_iface_call(
                                         Outcome::NotSerializable
                                     }
                                 } else {
-                                    match strict_json(tc, ret)
-                                        .filter(|(_, v)| schema.result.accepts(v))
-                                    {
-                                        Some((json, _)) => Outcome::Ok(json),
+                                    let payload = if schema.result.entity_ref_free() {
+                                        strict_value(tc, ret)
+                                            .filter(|value| schema.result.accepts(value))
+                                            .map(InterfaceMethodPayload::Plain)
+                                    } else {
+                                        strict_json(tc, ret)
+                                            .filter(|(_, value)| schema.result.accepts(value))
+                                            .map(|(json, _)| InterfaceMethodPayload::Json(json))
+                                    };
+                                    match payload {
+                                        Some(payload) => Outcome::Ok(payload),
                                         None => Outcome::NotSerializable,
                                     }
                                 }
@@ -2178,7 +2208,7 @@ fn s2_iface_call(
                                 Outcome::Void
                             } else {
                                 match iface_to_json(tc, ret) {
-                                    Some(json) => Outcome::Ok(json),
+                                    Some(json) => Outcome::Ok(InterfaceMethodPayload::Json(json)),
                                     None => Outcome::NotSerializable,
                                 }
                             }
@@ -2201,7 +2231,7 @@ fn s2_iface_call(
         }
         // Back in the consumer context: map the outcome to a return value or a single named throw.
         match outcome {
-            Outcome::Ok(json) => match iface_from_json(scope, &json) {
+            Outcome::Ok(payload) => match iface_method_from_payload(scope, &payload) {
                 Some(v) => rv.set(v),
                 None => throw_named(
                     scope,

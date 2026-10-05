@@ -202,11 +202,54 @@ fn copy_value(
         Some(Value::Object(fields))
     }
 }
+pub(super) fn strict_value(
+    scope: &mut v8::PinScope,
+    value: v8::Local<v8::Value>,
+) -> Option<serde_json::Value> {
+    copy_value(scope, value, 0)
+}
+/// Materialize a validated, EntityRef-free owned value in the receiving context.
+/// Own data properties bypass inherited setters; no user lookup/coercion runs here.
+/// Source copying already validated UTF-16, finite numbers, plain objects and depth.
+pub(super) fn plain_value_to_v8<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    value: &serde_json::Value,
+) -> Option<v8::Local<'s, v8::Value>> {
+    use serde_json::Value;
+    Some(match value {
+        Value::Null => v8::null(scope).into(),
+        Value::Bool(value) => v8::Boolean::new(scope, *value).into(),
+        Value::Number(value) => {
+            let number = value.as_f64()?;
+            if !number.is_finite() { return None; }
+            v8::Number::new(scope, number).into()
+        }
+        Value::String(value) => v8::String::new(scope, value)?.into(),
+        Value::Array(values) => {
+            let array = v8::Array::new(scope, 0);
+            for (index, value) in values.iter().enumerate() {
+                let key = v8::String::new(scope, &index.to_string())?;
+                let value = plain_value_to_v8(scope, value)?;
+                if array.create_data_property(scope, key.into(), value) != Some(true) { return None; }
+            }
+            array.into()
+        }
+        Value::Object(values) => {
+            let object = v8::Object::new(scope);
+            for (key, value) in values {
+                let key = v8::String::new(scope, key)?;
+                let value = plain_value_to_v8(scope, value)?;
+                if object.create_data_property(scope, key.into(), value) != Some(true) { return None; }
+            }
+            object.into()
+        }
+    })
+}
 pub(super) fn strict_json(
     scope: &mut v8::PinScope,
     value: v8::Local<v8::Value>,
 ) -> Option<(String, serde_json::Value)> {
-    let value = copy_value(scope, value, 0)?;
+    let value = strict_value(scope, value)?;
     Some((serde_json::to_string(&value).ok()?, value))
 }
 pub(super) fn observe_thenable(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> bool {
