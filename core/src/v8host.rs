@@ -748,8 +748,41 @@ fn ensure_platform() {
 }
 
 struct Host {
-    isolate: v8::OwnedIsolate,
+    // Release every persistent handle before OwnedIsolate invalidates its handle/annex.
     context: v8::Global<v8::Context>,
+    // A retired context may still be reachable from an unrun microtask or another context.
+    // Weak handles preserve terminal slot-cleanup coverage without keeping those contexts alive.
+    // Only creation/shutdown touch this registry; normal unload retains the identity slots.
+    contexts: Vec<v8::Weak<v8::Context>>,
+    isolate: v8::OwnedIsolate,
+}
+
+impl Host {
+    fn retire_context_slots(&mut self) {
+        // All plugin callbacks and owner/process stores have retired, and no Local scope or JS
+        // invocation spans this call. Do not run a microtask checkpoint here. Explicitly release
+        // WeakRef keep-alives and synchronously drain pending weak second-pass finalizers while
+        // IsolateHandle is live (V8's low-memory collection uses collect-all callback flags).
+        self.isolate.clear_kept_objects();
+        self.isolate.low_memory_notification();
+
+        // GC need not collect contexts held by pending native queues/strong cross-context roots.
+        // clear_all_slots deletes ContextAnnex and resets its self-Weak deterministically, before
+        // OwnedIsolate::drop invalidates IsolateHandle and runs guaranteed finalizers.
+        {
+            let mut storage = v8::HandleScope::new(&mut self.isolate);
+            let scope = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+            v8::Local::new(&scope, &self.context).clear_all_slots();
+        }
+        for weak in &self.contexts {
+            if let Some(context) = weak.to_global(&mut self.isolate) {
+                let mut storage = v8::HandleScope::new(&mut self.isolate);
+                let scope = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+                v8::Local::new(&scope, &context).clear_all_slots();
+            }
+        }
+        self.contexts.clear();
+    }
 }
 
 /// The `console.log` implementation installed on every new context.
@@ -5354,7 +5387,7 @@ pub fn init(logger: LogFn) -> Result<(), String> {
         // scope, hs, hs_storage drop here — borrow on isolate is released.
     };
 
-    HOST.with(|h| *h.borrow_mut() = Some(Host { isolate, context }));
+    HOST.with(|h| *h.borrow_mut() = Some(Host { context, contexts: Vec::new(), isolate }));
     // Self-register the owner-scoped teardown stores (design spec §6). Runs last so every init path
     // (including the in-isolate test harness) gets the registry; `register_builtin_stores` resets the
     // list first, so a Metamod re-init is idempotent.
@@ -5602,10 +5635,12 @@ pub fn shutdown() {
     crate::process_singletons::reset_all(crate::process_singletons::ResetPhase::BeforeIsolateDrop);
     crate::owner_stores::sweep_reset();
 
-    // Drop the isolate and context.  The platform is never torn down.
-    HOST.with(|h| {
-        let _ = h.borrow_mut().take();
-    });
+    // Take HOST before slot destructors run, so terminal cleanup holds no HOST RefCell borrow.
+    // Context slots and weak handles must retire while the isolate is live; platform stays alive.
+    let host = HOST.with(|h| h.borrow_mut().take());
+    if let Some(mut host) = host {
+        host.retire_context_slots();
+    }
 
     crate::process_singletons::reset_all(crate::process_singletons::ResetPhase::AfterIsolateDrop);
     crate::ws::shutdown_all();

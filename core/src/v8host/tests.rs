@@ -9796,3 +9796,6 @@
         assert_eq!(crate::async_limits::domain().jobs.snapshot().bytes, 0);
         shutdown();
     }
+
+#[path = "tests/shutdown_lifetime.rs"]
+mod shutdown_lifetime;
