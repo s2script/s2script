@@ -17,6 +17,7 @@ function evalFile(name) {
 test.afterEach(() => {
   delete globalThis.__s2pkg_entity;
   delete globalThis.__s2pkg_cs2_calls;
+  delete globalThis.__s2pkg_cs2;
   delete globalThis.__s2pkg_server;
   delete globalThis.__s2pkg_clients;
   delete globalThis.__s2pkg_game_ctx;
@@ -95,6 +96,10 @@ function mount({ active = true, missingCalls = [] } = {}) {
       onDisconnect: (fn) => disconnectHandlers.push(fn),
     },
   };
+  function clickPlayer(slot) {
+    return clients.has(slot) ? { slot, ref: { index: slot + 1, id: slot + 200 } } : null;
+  }
+  globalThis.__s2pkg_cs2 = { Player: { fromSlot: clickPlayer, all: () => [...clients.keys()].map(clickPlayer) } };
   globalThis.__s2pkg_cs2_adapters = { hudClick: { subscribe: (fn) => { clickHook = fn; return {}; } } };
 
   evalFile("ui.js");
@@ -122,7 +127,7 @@ function mount({ active = true, missingCalls = [] } = {}) {
     failCapture(message) { captureFailure = message; },
     click(slot, buttonId) {
       const client = clients.get(slot);
-      return clickHook({ player: client ? { index: slot + 100, id: slot + 200 } : null, buttonId });
+      return clickHook({ player: client ? { index: slot + 1, id: slot + 200 } : null, buttonId });
     },
     hook() { return clickHook; },
     // Mid-map replacement WITHOUT any lifecycle notification: the entity is killed and an

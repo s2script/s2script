@@ -184,12 +184,12 @@
 
   function resolveClicker(ref) {
     if (!ref) return null;
-    var all = globalThis.__s2pkg_cs2.Player.all();
-    for (var i = 0; i < all.length; i++) {
-      var p = all[i];
-      if (p.ref.index === ref.index && p.ref.id === ref.id) return p;
-    }
-    return null;
+    // Player.fromSlot maps the 0-based slot to controller index slot+1. Resolve only the
+    // supplied controller, then retain the same occupied-pawn and host-identity gates.
+    var index = ref.index;
+    if (typeof index !== "number" || index % 1 !== 0 || index < 1 || index > 64) return null;
+    var p = globalThis.__s2pkg_cs2.Player.fromSlot(index - 1);
+    return p && p.ref.index === index && p.ref.id === ref.id ? p : null;
   }
 
   function makeHud(desc, ctxState) {
@@ -296,8 +296,8 @@
       }
       var ent = ctxState.findEntity(layout);
       if (boundEntityId !== null && ent && boundEntityId !== ent.id) resetEntityCaches();
-      return !!binding.client && binding.client.isValid() &&
-        sameClient(binding.client, clientsApi().fromSlot(binding.slot)) &&
+      // Client.isValid checks this exact host connection token; no fresh Client is needed.
+      return !!binding.client && binding.client.slot === binding.slot && binding.client.isValid() &&
         !!binding.view && binding.view.isValid() &&
         binding.slotEpoch === (componentSlotEpochs[binding.slot] || 0) &&
         binding.entityEpoch === entityEpoch;
@@ -688,8 +688,7 @@
       var capturedSlotEpoch = slotEpochs[slot] || 0;
       function isValid() {
         if (!client || !client.isValid()) return false;
-        var occupant = clientsApi().fromSlot(slot);
-        if (!sameClient(client, occupant)) return false;
+        // The retained Client already checks the current host token, including bot reconnects.
         return capturedSlotEpoch === (slotEpochs[slot] || 0);
       }
       view = {
