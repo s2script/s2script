@@ -85,6 +85,7 @@ impl Registry {
     }
     fn remove_tree(&mut self, token: u64) -> Vec<Lease> { self.remove_many(&[token]) }
     fn remove_many(&mut self, roots: &[u64]) -> Vec<Lease> {
+        if roots.is_empty() { return Vec::new(); }
         let mut tokens: Vec<_> = self.leases.values().filter(|l| roots.contains(&l.token)
             || l.parent.as_ref().is_some_and(|p| roots.contains(&p.token))).map(|l| l.token).collect();
         // Snapshot effect ownership before removing anything. Removing a winner can promote
@@ -125,6 +126,8 @@ impl Drop for Transition { fn drop(&mut self) { TRANSITION.with(|b| b.set(false)
 struct Failure { code: &'static str, message: String }
 fn fail(code: &'static str, message: impl Into<String>) -> Failure { Failure { code, message: message.into() } }
 fn identity_live(l: &Lease) -> bool {
+    #[cfg(test)]
+    tests::IDENTITY_CHECKS.with(|n| n.set(n.get() + 1));
     crate::client::matches(l.key.slot, l.key.client)
         && crate::entity_live::engine_serial_for(l.key.index, l.key.entity).is_some()
 }
@@ -352,6 +355,7 @@ fn retire_all(leases: Vec<Lease>) -> Result<(), String> {
     failure.map_or(Ok(()), Err)
 }
 fn remove_where(mut matches: impl FnMut(&Lease) -> bool) {
+    if REGISTRY.with(|r| r.borrow().leases.is_empty()) { return; }
     // Lifecycle sweeps may run inside an existing engine transition. Outside one they
     // acquire the same exclusion guard as explicit release/reservation/clear.
     let _transition = if TRANSITION.with(Cell::get) { None } else { Transition::enter().ok() };
@@ -369,6 +373,12 @@ pub(crate) fn clear_client(slot: i32, client: u64) {
 pub(crate) fn prune_dead() {
     remove_where(|l| !identity_live(l));
     REGISTRY.with(|r| r.borrow_mut().pending.retain(identity_live));
+}
+pub(crate) fn retire_entity(index: i32, id: u64) {
+    // A linked child must share its parent's entity identity. remove_where keeps
+    // the existing cascade ordering; dead entities need no outbound hide/release.
+    remove_where(|l| l.key.index == index && l.key.entity == id);
+    REGISTRY.with(|r| r.borrow_mut().pending.retain(|l| l.key.index != index || l.key.entity != id));
 }
 pub(crate) fn reset() { REGISTRY.with(|r| *r.borrow_mut() = Registry::default()); }
 pub(crate) fn advance_frame() {
@@ -561,6 +571,9 @@ pub(crate) fn install(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
 mod tests {
     use super::*;
     use crate::v8host::{self, frame_tests::{dummy_logger, eval_in_context_string}};
+    thread_local! {
+        pub(super) static IDENTITY_CHECKS: Cell<usize> = const { Cell::new(0) };
+    }
     fn setup() -> u64 {
         v8host::init(dummy_logger()).unwrap();
         for owner in ["surface_a", "surface_b"] { v8host::create_plugin_context(owner); }
@@ -733,6 +746,66 @@ mod tests {
         let id = setup();
         assert!(claim("surface_a", id, 0, Adapter::default()) > c);
         v8host::shutdown();
+    }
+
+    #[test]
+    fn entity_lifecycle_unrelated_churn_and_noop_notifications_skip_surface_identity_checks() {
+        let id = setup_engine();
+        let token = claim("surface_a", id, 0, presentation());
+        capture("surface_a", id);
+        assert!(activate("surface_a", token));
+        IDENTITY_CHECKS.with(|n| n.set(0));
+        crate::entity_live::on_created(20, 321);
+        crate::entity_live::on_spawned(20, 321);
+        crate::entity_live::on_deleted(20, 320);
+        crate::entity_live::on_deleted(20, 321);
+        crate::entity_live::on_spawned(10, 123);
+        crate::entity_live::on_deleted(10, 122);
+        assert_eq!(IDENTITY_CHECKS.with(Cell::get), 0,
+            "unrelated entity churn and unchanged books cannot expire this presentation");
+        assert_eq!(effects(), ["capture:true"]);
+        assert!(active("surface_a", token));
+        done_engine();
+    }
+
+    #[test]
+    fn entity_lifecycle_replacement_retires_parent_child_and_pending_before_return() {
+        for event in ["create", "spawn", "delete", "repair"] {
+            let id = setup_engine();
+            let p = owned_token(&owned("surface_a", id, 2, "explicit", 1));
+            let c = focus_token(&linked_js("surface_a", id, p, 0));
+            assert!(activate("surface_a", p));
+            capture("surface_a", id);
+            assert!(activate("surface_a", c));
+            let pending = reserve("surface_a", Key { surface: "pending".into(), index: 10,
+                entity: id, slot: 2, client: crate::client::generation(2), lane: 0 },
+                0, presentation()).unwrap();
+            FAIL_HIDE.with(|v| v.set(true));
+            assert!(release("surface_a", pending));
+            assert_eq!(REGISTRY.with(|r| r.borrow().pending.len()), 1);
+            let other_id = crate::entity_live::on_created(11, 222);
+            let other = reserve("surface_b", Key { surface: "other".into(), index: 11,
+                entity: other_id, slot: 2, client: crate::client::generation(2), lane: 0 },
+                0, Adapter::default()).unwrap();
+            assert!(activate("surface_b", other));
+            let before = effects();
+            match event {
+                "create" => { crate::entity_live::on_created(10, 123); }
+                "spawn" => crate::entity_live::on_spawned(10, 124),
+                "delete" => { crate::entity_live::on_deleted(10, 123); }
+                _ => crate::entity_live::repair_reconcile(&[(10, 124), (11, 222)]),
+            }
+            assert!(REGISTRY.with(|r| {
+                let r = r.borrow();
+                r.leases.len() == 1 && r.leases.contains_key(&other) && r.pending.is_empty()
+            }), "{event}: expired parent, child and pending effects retire synchronously");
+            assert_eq!(state("surface_a", p), "invalid");
+            assert_eq!(state("surface_a", c), "invalid");
+            assert!(active("surface_b", other));
+            advance_frame();
+            assert_eq!(effects(), before, "retirement must not act on a replacement entity");
+            done_engine();
+        }
     }
 
     #[test]
