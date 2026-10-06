@@ -348,9 +348,12 @@ function pluginWorld(options = {}) {
     }, (fn) => fn);
     const rawListeners = []; base.onClicked(view => rawListeners.forEach(fn => fn(view)));
     sealed = true;
-    ctx.__s2pkg_cs2.Player = { all: () => [...clientGenerations.keys()].map(slot => ({ slot, ref: { index: slot + 1000, id: clientGenerations.get(slot) } })) };
+    function clickPlayer(slot) {
+      return clientGenerations.has(slot) ? { slot, ref: { index: slot + 1, id: clientGenerations.get(slot) } } : null;
+    }
+    ctx.__s2pkg_cs2.Player = { fromSlot: clickPlayer, all: () => [...clientGenerations.keys()].map(clickPlayer) };
     const p = { ctx, base, rawListeners, hudkit: ctx.__s2pkg_cs2.hudkit, renderers, lifecycle, fallbackCalls, pendingTimers, logs,
-      click(slot, id) { for (const fn of lifecycle.click) fn({ player: { index: slot + 1000, id: clientGenerations.get(slot) }, buttonId: id }); },
+      click(slot, id) { for (const fn of lifecycle.click) fn({ player: { index: slot + 1, id: clientGenerations.get(slot) }, buttonId: id }); },
       runTimer(index = 0) { const fn = pendingTimers.splice(index, 1)[0]; if (fn) fn(); } };
     plugins.push(p); return p;
   }

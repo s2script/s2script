@@ -489,10 +489,11 @@ test("click handler receives a HudPlayer bound to the clicker slot", () => {
   });
   let seen = null;
   hud.onClick("s2_btn_0", (p) => { seen = p; });
+  const controller = new h.EntityRef(3, 3); // controller index = slot + 1
   h.ctx.__s2pkg_cs2.Player = {
-    all: () => [{ slot: 2, ref: { index: 7, id: 3 } }],
+    fromSlot: (slot) => slot === 2 ? { slot, ref: controller } : null,
   };
-  h.fireClick("s2_btn_0", new h.EntityRef(7, 3));
+  h.fireClick("s2_btn_0", new h.EntityRef(3, 3));
   assert.equal(seen.slot, 2);
   assert.equal(typeof seen.hide, "function");
   assert.equal(hud.forSlot(2), seen, "the click view is the cached forSlot object");
