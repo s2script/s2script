@@ -103,10 +103,16 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
         // Build the context in a nested block so the HandleScope borrow on the shared isolate is
         // released before we touch PLUGINS.  Mirrors `init`'s scope construction.
         let (g_ctx, package_exports) = {
+            // Prune dead trackers in creation-only batches; no per-frame or IPC work.
+            if host.contexts.len() % 64 == 0 {
+                host.contexts.retain(|context| !context.is_empty());
+            }
             let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
             let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
             let hs = &mut hs;
             let ctx_local = v8::Context::new(hs, Default::default());
+            // Register before the first slot/bootstrap operation, including partial loads.
+            host.contexts.push(v8::Weak::new(hs, ctx_local));
 
             // Stamp the plugin identity (no scope needed — Rust-typed slot).
             let _ = ctx_local.set_slot(std::rc::Rc::new(PluginId(id.to_string())));

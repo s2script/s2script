@@ -9907,6 +9907,9 @@
         shutdown();
     }
 
+#[path = "tests/shutdown_lifetime.rs"]
+mod shutdown_lifetime;
+
 #[path = "tests/value_copy.rs"]
 mod value_copy;
 
