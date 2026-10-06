@@ -82,6 +82,17 @@ impl Schema {
             _ => true,
         }
     }
+    /// Prove that a typed direction cannot carry an EntityRef envelope.
+    /// Unknown/future alternatives must retain the existing JSON/reviver route.
+    pub(crate) fn entity_ref_free(&self) -> bool {
+        match self {
+            Self::Null | Self::Boolean | Self::Number | Self::String | Self::Literal { .. } => true,
+            Self::Array { item } => item.entity_ref_free(),
+            Self::Object { fields } => fields.values().all(|f| f.schema.entity_ref_free()),
+            Self::Union { variants } => variants.iter().all(Self::entity_ref_free),
+            _ => false,
+        }
+    }
     pub fn accepts(&self, value: &Value) -> bool {
         match self {
             Self::Null => value.is_null(),
