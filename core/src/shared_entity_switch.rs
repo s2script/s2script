@@ -14,7 +14,11 @@ thread_local! {
     static EPOCH: Cell<u64> = const { Cell::new(0) };
 }
 fn invalidate_pending() { EPOCH.with(|e| e.set(e.get().wrapping_add(1))); }
-fn live(key: &Key) -> bool { crate::entity_live::engine_serial_for(key.index, key.id).is_some() }
+fn live(key: &Key) -> bool {
+    #[cfg(test)]
+    tests::IDENTITY_CHECKS.with(|n| n.set(n.get() + 1));
+    crate::entity_live::engine_serial_for(key.index, key.id).is_some()
+}
 
 fn invoke(key: &Key, on: bool) -> Result<(), String> {
     let serial = crate::entity_live::engine_serial_for(key.index, key.id)
@@ -147,6 +151,14 @@ pub(crate) fn prune_dead() {
     invalidate_pending();
     LEASES.with(|l| l.borrow_mut().retain(|k, _| live(k)));
 }
+pub(crate) fn on_entity_lifecycle(index: i32, retired: Option<u64>) {
+    // Preserve the global transition fence even when this notification did not
+    // retire an identity (or concerns a different entity from an in-flight call).
+    invalidate_pending();
+    if let Some(id) = retired {
+        LEASES.with(|l| l.borrow_mut().retain(|k, _| k.index != index || k.id != id));
+    }
+}
 pub(crate) fn register_store() {
     crate::owner_stores::register("SHARED_ENTITY_SWITCH", Box::new(remove_owner),
         Box::new(|_| {}), Box::new(reset));
@@ -184,6 +196,7 @@ mod tests {
     use std::ffi::{c_char, c_int};
     use crate::v8host::{self, frame_tests::{dummy_logger, eval_in_context_string, mock_event_ops}, S2EngineOps};
     thread_local! {
+        pub(super) static IDENTITY_CHECKS: Cell<usize> = const { Cell::new(0) };
         static CALLS: RefCell<Vec<(i32, i32, i32, bool)>> = RefCell::new(Vec::new());
         static FAIL: Cell<bool> = const { Cell::new(false) };
         static REENTER: Cell<bool> = const { Cell::new(false) };
@@ -336,6 +349,78 @@ mod tests {
         let third = crate::entity_live::on_created(10, 789);
         assert_eq!(run("switch_a", third, Some("new-map"), true), "null");
         assert_eq!(calls(), [true, true, true]); done();
+    }
+
+    #[test]
+    fn entity_lifecycle_unrelated_churn_and_noop_notifications_skip_switch_identity_checks() {
+        let id = setup();
+        assert_eq!(run("switch_a", id, Some("active"), true), "null");
+        IDENTITY_CHECKS.with(|n| n.set(0));
+        crate::entity_live::on_created(20, 321);
+        crate::entity_live::on_spawned(20, 321);
+        crate::entity_live::on_deleted(20, 320);
+        crate::entity_live::on_deleted(20, 321);
+        crate::entity_live::on_spawned(10, 123);
+        crate::entity_live::on_deleted(10, 122);
+        assert_eq!(IDENTITY_CHECKS.with(Cell::get), 0,
+            "unrelated entity churn and unchanged books cannot expire this switch");
+        assert_eq!(holder_count(), 1);
+        assert_eq!(calls(), [true]);
+        done();
+    }
+
+    #[test]
+    fn entity_lifecycle_invalidates_inflight_enable_even_for_noop_or_unrelated_events() {
+        for event in ["create", "spawn", "stale_delete", "replace", "delete", "map", "client"] {
+            let id = setup();
+            let key = Key { game: "game-package:@test/game".into(), call: "toggle".into(),
+                index: 10, id, slot: 2 };
+            let result = change("switch_a", key, Some("pending".into()), true, |key, on| {
+                invoke(key, on)?;
+                match event {
+                    "create" => { crate::entity_live::on_created(20, 321); }
+                    "spawn" => crate::entity_live::on_spawned(10, 123),
+                    "stale_delete" => { crate::entity_live::on_deleted(10, 122); }
+                    "replace" => crate::entity_live::on_spawned(10, 124),
+                    "delete" => { crate::entity_live::on_deleted(10, 123); }
+                    "map" => crate::entity_live::clear_for_map_transition(),
+                    _ => crate::client::end(2, crate::client::generation(2)),
+                }
+                Ok(())
+            });
+            assert!(result.unwrap_err().contains("lifecycle changed"), "{event}");
+            assert_eq!(holder_count(), 0, "{event}: no reentrant claim may commit");
+            assert!(LEASES.with(|l| l.borrow().is_empty()));
+            assert_eq!(calls(), if ["create", "spawn", "stale_delete", "client"].contains(&event) {
+                vec![true, false]
+            } else { vec![true] }, "{event}: rollback only touches the original live entity");
+            done();
+        }
+    }
+
+    #[test]
+    fn entity_lifecycle_replacement_discards_pending_disable_without_touching_successor() {
+        for event in ["create", "spawn", "delete", "repair"] {
+            let id = setup();
+            assert_eq!(run("switch_a", id, Some("pending"), true), "null");
+            FAIL.with(|f| f.set(true));
+            assert!(run("switch_a", id, Some("pending"), false).contains("invocation failed"));
+            assert_eq!(LEASES.with(|l| l.borrow().len()), 1);
+            crate::entity_live::on_spawned(10, 123);
+            crate::entity_live::on_deleted(10, 122);
+            assert_eq!(LEASES.with(|l| l.borrow().len()), 1, "no-op notifications retain retry");
+            match event {
+                "create" => { crate::entity_live::on_created(10, 123); }
+                "spawn" => crate::entity_live::on_spawned(10, 124),
+                "delete" => { crate::entity_live::on_deleted(10, 123); }
+                _ => crate::entity_live::repair_reconcile(&[(10, 124)]),
+            }
+            assert!(LEASES.with(|l| l.borrow().is_empty()), "{event}: stale retry retires synchronously");
+            FAIL.with(|f| f.set(false));
+            retry_pending();
+            assert_eq!(calls(), [true, false], "{event}: never disable the successor");
+            done();
+        }
     }
 
     #[test]
