@@ -21,9 +21,12 @@ thread_local! {
 /// OnEntityCreated: mint a fresh host id (upsert — a same-index create replaces a
 /// stale entry, which is itself an invalidation of any holder of the old id).
 pub fn on_created(index: i32, engine_serial: i32) -> u64 {
-    let id = LIVE.with(|t| t.borrow_mut().insert(index, engine_serial));
-    crate::surface_leases::prune_dead();
-    crate::shared_entity_switch::prune_dead();
+    let (id, retired) = LIVE.with(|t| {
+        let mut t = t.borrow_mut();
+        let retired = t.get(&index).map(|(id, _)| id);
+        (t.insert(index, engine_serial), retired)
+    });
+    retire_lifecycle(index, retired);
     id
 }
 
@@ -31,15 +34,18 @@ pub fn on_created(index: i32, engine_serial: i32) -> u64 {
 /// (refs minted at create stay valid); absent or serial-mismatched mints fresh —
 /// a create this table provably missed.
 pub fn on_spawned(index: i32, engine_serial: i32) {
-    LIVE.with(|t| {
+    let retired = LIVE.with(|t| {
         let mut t = t.borrow_mut();
         match t.get(&index) {
-            Some((_, s)) if *s == engine_serial => {}
-            _ => { t.insert(index, engine_serial); }
+            Some((_, s)) if *s == engine_serial => None,
+            previous => {
+                let retired = previous.map(|(id, _)| id);
+                t.insert(index, engine_serial);
+                retired
+            }
         }
     });
-    crate::surface_leases::prune_dead();
-    crate::shared_entity_switch::prune_dead();
+    retire_lifecycle(index, retired);
 }
 
 /// OnEntityDeleted: remove ONLY when the stored serial matches — a stale delete must
@@ -55,9 +61,16 @@ pub fn on_deleted(index: i32, engine_serial: i32) -> Option<u64> {
             None
         }
     });
-    crate::surface_leases::prune_dead();
-    crate::shared_entity_switch::prune_dead();
+    retire_lifecycle(index, removed);
     removed
+}
+
+fn retire_lifecycle(index: i32, retired: Option<u64>) {
+    // Only the displaced identity can have become stale. New entities, matching
+    // spawn notifications and stale deletes do not require registry-wide sweeps.
+    if let Some(id) = retired { crate::surface_leases::retire_entity(index, id); }
+    // Even no-op lifecycle notifications still supersede an in-flight switch claim.
+    crate::shared_entity_switch::on_entity_lifecycle(index, retired);
 }
 
 pub fn lookup(index: i32) -> Option<(u64, i32)> {

@@ -142,7 +142,8 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   readonly activeWeapon: Weapon | null;
   /** This pawn's held weapons (m_hMyWeapons, a CUtlVector<CHandle>). Empty if stale/unresolved/none. */
   readonly weapons: Weapon[];
-  /** Remove ONE weapon (unequip via RemovePlayerItem + destroy via UTIL_Remove). false if absent/stale. */
+  /** Remove ONE weapon through its owner's weapon services, including inventory/deploy transitions.
+   *  False if absent/stale or the owned weapon's native service is unavailable. */
   removeWeapon(weapon: Weapon): boolean;
   /** Remove ALL held weapons (folds over Weapon.remove). true iff every one removed. */
   stripWeapons(): boolean;

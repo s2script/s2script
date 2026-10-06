@@ -3961,7 +3961,25 @@ static int Shim_EntityFireInput(int index, int serial, const char* input, const 
 // (self-contained), mirroring natives_cvariant.cpp's per-type union-member access pattern.
 // Unsupported types (Color/Vector2D/Vector4D/EHANDLE/…) degrade to "" — MVP, per the spec's
 // documented non-goal (full typed CVariant marshalling deferred).
-static void CVariantToString(const CVariant* v, char* buf, size_t bufSize) {
+// Pulse conversion produces an owning variant allocated by the engine. Its destructor
+// explicitly uses that heap, independently of the SDK malloc/free macro configuration.
+class OutputVariantAllocator {
+public:
+    static void* Allocate(int size) { return MemAlloc_Alloc(size); }
+    static void Free(void* memory) { MemAlloc_Free(memory); }
+};
+using OutputCapturedVariant = CVariantBase<OutputVariantAllocator>;
+static_assert(sizeof(OutputCapturedVariant) == 16 && alignof(OutputCapturedVariant) == 8,
+              "Pulse conversion requires the verified native variant layout");
+static_assert(offsetof(OutputCapturedVariant, m_pData) == 0 &&
+              offsetof(OutputCapturedVariant, m_type) == 8 &&
+              offsetof(OutputCapturedVariant, m_flags) == 10,
+              "Pulse conversion requires the verified native union/type/ownership offsets");
+using PulseFirstArgumentToVariantFn = void (*)(OutputCapturedVariant*, CPulseArgumentPack*);
+static PulseFirstArgumentToVariantFn s_pPulseFirstArgumentToVariant = nullptr;
+
+template <typename Allocator>
+static void CVariantToString(const CVariantBase<Allocator>* v, char* buf, size_t bufSize) {
     if (bufSize == 0) return;
     buf[0] = '\0';
     if (!v) return;
@@ -3995,15 +4013,27 @@ static void CVariantToString(const CVariant* v, char* buf, size_t bufSize) {
 // path), the value crosses as a string. Any resolve failure (null pThis/m_pDesc/m_pName) falls
 // straight through to the original — never suppress on a shim-side miss.
 static int S2NamedOutputOp(CEntityIOOutput* pThis, CEntityInstance* act, CEntityInstance* caller,
-                           const CVariant* value, float delay, void*, char*) {
+                           CPulseArgumentPack* arguments, float delay,
+                           CPulseInputParamMap*, const CVariant* value) {
     int result = 0;   // Continue
     if (pThis && pThis->m_pDesc && pThis->m_pDesc->m_pName) {
         const char* outputName = pThis->m_pDesc->m_pName;
         const char* cls = caller ? caller->GetClassname() : "";
         int actH    = act    ? act->GetRefEHandle().ToInt()    : -1;
         int callerH = caller ? caller->GetRefEHandle().ToInt() : -1;
-        char valbuf[256];
-        CVariantToString(value, valbuf, sizeof valbuf);
+        char valbuf[256] = {};
+        if (value) {
+            CVariantToString(value, valbuf, sizeof valbuf);
+        } else if (arguments) {
+            if (!s_pPulseFirstArgumentToVariant) return 0;
+            // The engine wrapper checks count, extracts argument zero, converts it,
+            // and destroys its opaque temporary. Empty packs leave the initialized
+            // FIELD_VOID destination untouched. Never interpret the pack as a variant.
+            OutputCapturedVariant captured;
+            s_pPulseFirstArgumentToVariant(&captured, arguments);
+            CVariantToString(&captured, valbuf, sizeof valbuf);
+        } // Captured engine storage is released before entering reentrant plugin code.
+        // This is the source output value; per-connection overrides occur later.
         result = s2script_core_dispatch_output(cls, outputName, actH, callerH, valbuf, delay);
     }
     return result;
@@ -4022,6 +4052,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     m_coreDispatchReady = false;
     S2KHookLogInterfaceVtables();
     s_gdOk = 0; s_gdFail = 0;   // reset the gamedata validation report for this Load
+    s_pPulseFirstArgumentToVariant = nullptr;
 
     S2NamedHookOps namedOps;
     namedOps.chat=&S2NamedChatOp;
@@ -4706,6 +4737,19 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pAddEntityIOEvent));
                 }   // aioOff == kFail: ResolveSigValidated already recorded the reason
             }
+            // A complete engine wrapper owns Pulse's temporary conversion internally.
+            // Resolve it before enabling output interception; opaque Pulse layouts stay private.
+            auto pulseit = sigs.find("PulseFirstArgumentToVariant");
+            if (pulseit == sigs.end()) {
+                GamedataResult("PulseFirstArgumentToVariant", false, "signature absent from gamedata");
+            } else {
+                int64_t pulseOff = ResolveSigValidated("PulseFirstArgumentToVariant", pulseit->second);
+                ModText pulsemt = FindModuleText(pulseit->second.module.c_str());
+                if (pulseOff != s2sig::kFail && pulsemt.text) {
+                    s_pPulseFirstArgumentToVariant = reinterpret_cast<PulseFirstArgumentToVariantFn>(
+                        const_cast<uint8_t*>(pulsemt.text) + pulseOff);
+                }
+            }
             // Entity-I/O slice (Task 2): resolve + detour CEntityIOOutput::FireOutputInternal (the
             // output-hook entry) — same direct-prologue + inline-detour pattern as
             // HostSay. Degrade-never-crash: unresolved leaves outputs unhooked
@@ -4713,6 +4757,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             auto foiit = sigs.find("FireOutputInternal");
             if (foiit == sigs.end()) {
                 GamedataResult("FireOutputInternal", false, "signature absent from gamedata");
+            } else if (!s_pPulseFirstArgumentToVariant) {
+                GamedataResult("FireOutputInternal", false,
+                               "PulseFirstArgumentToVariant unavailable — Entity.onOutput off");
             } else {
                 int64_t foiOff = ResolveSigValidated("FireOutputInternal", foiit->second);
                 ModText foimt = FindModuleText(foiit->second.module.c_str());

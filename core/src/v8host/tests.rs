@@ -2181,6 +2181,69 @@
         shutdown();
     }
 
+    #[path = "tests/allocations.rs"]
+    mod allocations;
+
+    // Unselected metadata must not make a constant-size crossing allocate in proportion
+    // to the interface. Reintroducing Contract::clone at a crossing fails these tests.
+    fn protocol2_metadata_allocation_sample(large: bool, forward: bool, selected: bool) -> (usize, usize) {
+        protocol2_setup();
+        if large {
+            let mut contract = published_contract("@x/counter").unwrap().as_ref().clone();
+            let fields = (0..40).map(|i| (format!("field{i:02}"), crate::interop::Field {
+                schema: crate::interop::Schema::Literal { value: serde_json::Value::String("x".repeat(512)) },
+                optional: true,
+            })).collect();
+            let shape = crate::interop::Schema::Object { fields };
+            if selected {
+                contract.metadata.methods.get_mut("getCount").unwrap().args.push(crate::interop::Field { schema: shape, optional: true });
+            } else {
+                for i in 0..80 {
+                    contract.metadata.forwards.insert(format!("Unused{i:02}"), crate::interop::Forward {
+                        kind: "notification".into(), payload: shape.clone(), writable: None,
+                    });
+                }
+            }
+            final_review_install_contract(contract);
+        }
+        let (owner, source) = if forward {
+            eval_in_context("cons", "globalThis.hits=0;__s2_iface_on('@x/counter','OnCountChanged',()=>{hits++})").unwrap();
+            ("prod", "__s2_iface_emit('@x/counter','OnCountChanged',{count:1})")
+        } else {
+            eval_in_context("cons", "globalThis.total=0").unwrap();
+            ("cons", "total+=__s2_iface_call('@x/counter','getCount',[])")
+        };
+        for _ in 0..4 { eval_in_context(owner, source).unwrap(); }
+        let sampled = allocations::measure(|| {
+            for _ in 0..12 { eval_in_context(owner, source).unwrap(); }
+        });
+        assert_eq!(eval_in_context_string("cons", if forward { "String(hits)" } else { "String(total)" }), "16");
+        shutdown();
+        sampled
+    }
+
+    fn assert_crossing_allocations_do_not_scale(forward: bool, selected: bool) {
+        let small = protocol2_metadata_allocation_sample(false, forward, selected);
+        let large = protocol2_metadata_allocation_sample(true, forward, selected);
+        println!("protocol2 forward={forward} selected={selected}: small={small:?}, large={large:?}");
+        // Allow fixed bookkeeping variation; even one copy of the padded schema exceeds
+        // this budget by >20 KB, whereas the selected payload remains a single number.
+        assert!(large.0 <= small.0 + 64 && large.1 <= small.1 + 8192,
+            "constant-size crossing copied unrelated/unused metadata: small={small:?}, large={large:?}");
+    }
+    #[test]
+    fn protocol2_method_allocations_do_not_scale_with_unrelated_contract_metadata() {
+        assert_crossing_allocations_do_not_scale(false, false);
+    }
+    #[test]
+    fn protocol2_forward_allocations_do_not_scale_with_unrelated_contract_metadata() {
+        assert_crossing_allocations_do_not_scale(true, false);
+    }
+    #[test]
+    fn protocol2_method_does_not_copy_unused_optional_argument_schema() {
+        assert_crossing_allocations_do_not_scale(false, true);
+    }
+
     fn protocol2_setup() {
         let _ = init(dummy_logger());
         let metadata = serde_json::json!({"version":1,"methods":{"getCount":{"args":[],"result":{"kind":"number"}}},"forwards":{"OnCountChanged":{"kind":"notification","payload":{"kind":"object","fields":{"count":{"schema":{"kind":"number"},"optional":false}}}}}});
@@ -2256,7 +2319,7 @@
     #[test]
     fn named_forward_bindings_isolate_same_name_providers_and_dispose_whole_maps() {
         protocol2_setup();
-        let mut parkour_value = serde_json::to_value(published_contract("@x/counter").unwrap()).unwrap();
+        let mut parkour_value = serde_json::to_value(published_contract("@x/counter").unwrap().as_ref()).unwrap();
         parkour_value["metadata"]["forwards"]["OnCountChanged"]["payload"]["fields"] =
             serde_json::json!({"checkpoints":{"schema":{"kind":"number"},"optional":false}});
         parkour_value["metadata"]["methods"] = serde_json::json!({});
@@ -2282,7 +2345,7 @@
             crate::interfaces::ImportSpec { name: "@x/parkour".into(), range: "^1.0.0".into(), kind: crate::interfaces::Kind::Hard, compiled_types_sha256: Some("p".repeat(64)) },
         ]);
         set_plugin_interop("cons", [
-            ("@x/counter".into(), published_contract("@x/counter").unwrap()),
+            ("@x/counter".into(), published_contract("@x/counter").unwrap().as_ref().clone()),
             ("@x/parkour".into(), parkour_contract),
         ].into_iter().collect());
         dispose_plugin_context("cons");
@@ -2327,7 +2390,7 @@
             name: "@x/counter".into(), range: "^1.0.0".into(), kind: crate::interfaces::Kind::Hard,
             compiled_types_sha256: Some("a".repeat(64)),
         }]);
-        set_plugin_interop("cons", [("@x/counter".into(), published_contract("@x/counter").unwrap())].into_iter().collect());
+        set_plugin_interop("cons", [("@x/counter".into(), published_contract("@x/counter").unwrap().as_ref().clone())].into_iter().collect());
         load_body("cons", r#"
           let cancelled=()=>{}, armed=()=>{};
           globalThis.cancelledRef=new WeakRef(cancelled);globalThis.armedRef=new WeakRef(armed);
@@ -2379,6 +2442,16 @@
         shutdown();
     }
 
+    fn test_owned_publish_decl(owner: &str, name: &str) -> crate::loader::PublishDecl {
+        PLUGIN_PUBLISHES.with(|p| {
+            let p = p.borrow();
+            let decl = &p[owner][name];
+            crate::loader::PublishDecl {
+                version: decl.version.clone(), types_sha256: decl.types_sha256.clone(),
+                contract: decl.contract.as_ref().map(|c| c.as_ref().clone()),
+            }
+        })
+    }
     fn owned_interop_load_provider(decl: crate::loader::PublishDecl, body: &str) {
         set_plugin_publishes("prod", [("@x/counter".into(),decl)].into_iter().collect());
         load_body("prod", body, "{}");
@@ -2391,7 +2464,7 @@
     #[test]
     fn owned_interop_watch_churn_1000_cycles_has_one_delivery_and_returns_all_counts_to_baseline() {
         optional_interop_setup();
-        let decl=PLUGIN_PUBLISHES.with(|p|p.borrow()["prod"]["@x/counter"].clone());
+        let decl=test_owned_publish_decl("prod", "@x/counter");
         unload_plugin("prod"); // consumer-before-provider with a verified but absent optional dep
         dispose_plugin_context("cons");
         load_body("cons",r#"
@@ -2462,7 +2535,7 @@
         // A second consumer watch is torn down by the ledger even when user cleanup is absent.
         unload_plugin("cons");
         set_plugin_imports("cons",vec![crate::interfaces::ImportSpec{name:"@x/counter".into(),range:"*".into(),kind:crate::interfaces::Kind::Optional,compiled_types_sha256:Some("a".repeat(64))}]);
-        set_plugin_interop("cons",[("@x/counter".into(),published_contract("@x/counter").unwrap())].into_iter().collect());
+        set_plugin_interop("cons",[("@x/counter".into(),published_contract("@x/counter").unwrap().as_ref().clone())].into_iter().collect());
         load_body("cons","ctx.watchOptional('@x/counter',(service,scope)=>{scope.own(service.on('OnCountChanged',()=>{}));});","{}");
         assert_eq!(interop_lifetime::counts(),(1,1,1,1,0));
         unload_plugin("cons");
@@ -2506,7 +2579,7 @@
     #[test]
     fn owned_interop_incompatible_and_duplicate_providers_never_attach_or_retry_same_generation() {
         optional_interop_setup();
-        let mut decl=PLUGIN_PUBLISHES.with(|p|p.borrow()["prod"]["@x/counter"].clone());
+        let mut decl=test_owned_publish_decl("prod", "@x/counter");
         unload_plugin("prod");
         dispose_plugin_context("cons");
         load_body("cons","globalThis.attached=0;ctx.watchOptional('@x/counter',()=>{attached++;});","{}");
@@ -2606,7 +2679,7 @@
 
     fn protocol2_decisions_setup() {
         protocol2_setup();
-        let mut value = serde_json::to_value(published_contract("@x/counter").unwrap()).unwrap();
+        let mut value = serde_json::to_value(published_contract("@x/counter").unwrap().as_ref()).unwrap();
         let payload = serde_json::json!({"kind":"object","fields":{
             "identity":{"schema":{"kind":"string"},"optional":false},
             "text":{"schema":{"kind":"string"},"optional":false}}});
@@ -2628,7 +2701,7 @@
                 .unwrap()
                 .get_mut("@x/counter")
                 .unwrap()
-                .contract = Some(contract.clone())
+                .contract = Some(std::rc::Rc::new(contract.clone()))
         });
         for consumer in ["cons", "cons2"] {
             set_plugin_interop(
@@ -2661,7 +2734,7 @@
     fn final_review_method_liveness(action: &str, void: bool) {
         protocol2_setup();
         if void {
-            let mut contract = published_contract("@x/counter").unwrap();
+            let mut contract = published_contract("@x/counter").unwrap().as_ref().clone();
             contract.metadata.methods.get_mut("getCount").unwrap().result = crate::interop::Schema::Void;
             final_review_install_contract(contract);
         }
@@ -2682,9 +2755,46 @@
         use sha2::{Digest, Sha256};
         contract.sha256 = format!("{:x}", Sha256::digest(serde_json_canonicalizer::to_vec(&contract.metadata).unwrap()));
         assert_eq!(contract.validate(), Ok(()));
-        PLUGIN_PUBLISHES.with(|p| p.borrow_mut().get_mut("prod").unwrap().get_mut("@x/counter").unwrap().contract = Some(contract.clone()));
+        PLUGIN_PUBLISHES.with(|p| p.borrow_mut().get_mut("prod").unwrap().get_mut("@x/counter").unwrap().contract = Some(std::rc::Rc::new(contract.clone())));
         for consumer in ["cons", "cons2"] {
             set_plugin_interop(consumer, [("@x/counter".into(), contract.clone())].into_iter().collect());
+        }
+    }
+    #[test]
+    fn protocol2_metadata_replacement_during_call_preserves_snapshot_and_rechecks_next_call() {
+        for consumer_only in [false, true] {
+            protocol2_setup();
+            let g_ctx = PLUGINS.with(|p| p.borrow().get("cons").unwrap().context.clone());
+            HOST.with(|h| {
+                let mut borrow = h.borrow_mut();
+                let host = borrow.as_mut().unwrap();
+                let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+                let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+                let ctx = v8::Local::new(&hs, &g_ctx);
+                let scope = &mut v8::ContextScope::new(&mut hs, ctx);
+                fn replace_metadata(_: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
+                    let mut contract = published_contract("@x/counter").unwrap().as_ref().clone();
+                    contract.metadata.methods.get_mut("getCount").unwrap().result = crate::interop::Schema::String;
+                    use sha2::{Digest, Sha256};
+                    contract.sha256 = format!("{:x}", Sha256::digest(serde_json_canonicalizer::to_vec(&contract.metadata).unwrap()));
+                    if args.get(0).is_true() {
+                        set_plugin_interop("cons", [("@x/counter".into(), contract)].into_iter().collect());
+                    } else {
+                        final_review_install_contract(contract);
+                    }
+                }
+                let global = ctx.global(scope);
+                set_native(scope, global, "__test_replace_metadata", replace_metadata);
+            });
+            eval_in_context("prod", "__s2_iface_publish('@x/counter',{getCount:()=>{__s2_iface_emit('@x/counter','OnCountChanged',{count:1});return 1}})").unwrap();
+            eval_in_context("cons", &format!("globalThis.sub=__s2_iface_on('@x/counter','OnCountChanged',()=>{{__test_replace_metadata({consumer_only});__s2_iface_dispose(sub)}})" )).unwrap();
+            // Reentry replaces both admission maps without retiring the participants. The
+            // already-running call validates its return against its immutable original schema.
+            assert_eq!(eval_in_context_string("cons", "String(__s2_iface_call('@x/counter','getCount',[]))"), "1");
+            let error = eval_in_context_string("cons", "(()=>{try{__s2_iface_call('@x/counter','getCount',[]);return 'accepted'}catch(e){return e.message}})()");
+            assert!(error.contains(if consumer_only { "InterfaceTypesMismatch" } else { "InterfaceValueNotSerializable" }), "{error}");
+            assert!(IFACE_SUBS.with(|m| m.borrow().is_empty()));
+            shutdown();
         }
     }
     #[test]
@@ -2704,7 +2814,7 @@
     #[test]
     fn final_review_unicode_property_names_and_method_values_are_strict() {
         protocol2_setup();
-        let mut value = serde_json::to_value(published_contract("@x/counter").unwrap()).unwrap();
+        let mut value = serde_json::to_value(published_contract("@x/counter").unwrap().as_ref()).unwrap();
         let shape = serde_json::json!({"kind":"object","fields":{
             "é漢😀":{"schema":{"kind":"string"},"optional":false},
             "�":{"schema":{"kind":"string"},"optional":true}
@@ -2925,7 +3035,7 @@
     #[test]
     fn protocol2_decisions_nested_patch_is_copied_and_replaces_whole_field() {
         protocol2_decisions_setup();
-        let mut value = serde_json::to_value(published_contract("@x/counter").unwrap()).unwrap();
+        let mut value = serde_json::to_value(published_contract("@x/counter").unwrap().as_ref()).unwrap();
         value["metadata"]["forwards"]["OnFormat"]["payload"]["fields"]["detail"] = serde_json::json!({"optional":true,"schema":{"kind":"object","fields":{
             "label":{"optional":false,"schema":{"kind":"string"}},"other":{"optional":true,"schema":{"kind":"string"}}}}});
         value["metadata"]["forwards"]["OnFormat"]["writable"] =
@@ -2944,7 +3054,7 @@
                 .unwrap()
                 .get_mut("@x/counter")
                 .unwrap()
-                .contract = Some(contract.clone())
+                .contract = Some(std::rc::Rc::new(contract.clone()))
         });
         set_plugin_interop(
             "cons",
@@ -3195,7 +3305,7 @@
                 eval_in_context("cons", r#"__s2_iface_call("@x/counter","getCount",[])"#).is_err()
             );
         }
-        let contract = published_contract("@x/counter").unwrap();
+        let contract = published_contract("@x/counter").unwrap().as_ref().clone();
         set_plugin_imports(
             "prod",
             vec![crate::interfaces::ImportSpec {
@@ -3314,7 +3424,7 @@
 
     fn protocol2_ref_setup() {
         protocol2_setup();
-        let mut contract = published_contract("@x/counter").unwrap();
+        let mut contract = published_contract("@x/counter").unwrap().as_ref().clone();
         contract
             .metadata
             .forwards
@@ -9799,3 +9909,9 @@
 
 #[path = "tests/shutdown_lifetime.rs"]
 mod shutdown_lifetime;
+
+#[path = "tests/value_copy.rs"]
+mod value_copy;
+
+#[path = "tests/immutable_contract.rs"]
+mod immutable_contract;

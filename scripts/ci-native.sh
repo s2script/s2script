@@ -114,6 +114,9 @@ bash scripts/test-engine-hook-invocation.sh
 echo "== test-named-hook-invocation.sh (production named KHook callbacks) =="
 bash scripts/test-named-hook-invocation.sh
 
+echo "== test-named-output-value.sh (production output value and allocator lifetime) =="
+bash scripts/test-named-output-value.sh
+
 echo "== test-engine-function-copy.sh (native storage and actual Linux reader) =="
 bash scripts/test-engine-function-copy.sh
 

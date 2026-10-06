@@ -41,27 +41,27 @@
     return true;
   };
 
-  // weapon.remove() — the complete "take this weapon away" atom: unequip from the owner (RemovePlayerItem)
-  // then destroy the entity (UTIL_Remove via EntityRef.remove). Unowned -> just destroy. Serial-gated: a
-  // stale weapon is a no-op false. Returns true iff the entity was removed.
-  //
-  // BOTH refs must resolve or there is NO unequip call at all. That was a `!pawn || !w` guard in the
-  // shim op; here it has to be explicit, because a declared `entity` argument that fails to resolve
-  // does NOT abort the call — it marshals to nullptr and the engine still runs, which would be
-  // RemovePlayerItem(pawn, nullptr). The engine's bool return is available now (the descriptor
-  // declares it) but stays ignored: this function's boolean has always meant "the entity was
-  // removed", which is the destroy step below, not the unequip.
-  //
-  // The descriptor is resolved by pawn.js, which is concatenated AFTER this file — hence the lazy
-  // read at call time rather than a capture at evaluation time.
+  // weapon.remove() — owned weapons go through the owner's WeaponServices removal method.
+  // That method handles active/last-weapon transitions, removes inventory membership, and calls
+  // UTIL_Remove itself. A second EntityRef.remove is unnecessary. Unowned weapons use UTIL_Remove
+  // directly. The native void-call receipt is undefined on success and null on failure; this
+  // wrapper reports whether removal was scheduled, not whether deferred deletion has completed.
+  // An owned weapon must remain intact if its service cannot be reached: destroying it without
+  // the inventory transition leaves the active weapon and client prediction inconsistent.
+  // The descriptor is resolved by pawn.js after this file, so read it lazily here.
   Weapon.prototype.remove = function () {
     if (!this.ref.isValid()) return false;
     var owner = this.owner;
     var calls = globalThis.__s2pkg_cs2_calls;
     var call = calls && calls.removePlayerItem;
-    // Receiver = the owning pawn (the callable unwraps `.ref` for you); the `entity` ARG must be the
-    // EntityRef itself — that asymmetry is deliberate and documented at engineCall() in pawn.js.
-    if (call && owner && owner.ref.isValid()) call(owner, this.ref);
+    // The descriptor's receiver.via follows pawn.m_pWeaponServices. The weapon ARG must remain
+    // the EntityRef itself (receiver wrappers alone are unwrapped by engineCall).
+    if (owner) {
+      // Owner resolution/validation can run plugin code. Recheck the weapon last: a stale
+      // entity argument otherwise marshals to nullptr without aborting the native invocation.
+      if (!call || !owner.ref.isValid() || !this.ref.isValid()) return false;
+      return call(owner, this.ref) === undefined;
+    }
     return this.ref.remove();
   };
 

@@ -157,7 +157,9 @@
           var receipt = null;
           try {
             if (status !== "available") throw new Error(status);
-            receipt = natives.subscribe(FUNCTION, ID, post ? "post" : "pre", wrapper(id, callback, post, warn, type));
+            // New hosts omit nonmatching receivers before entering a subscriber context. Older
+            // four-argument hosts ignore this optional pair; the wrapper's victim guard stays.
+            receipt = natives.subscribe(FUNCTION, ID, post ? "post" : "pre", wrapper(id, callback, post, warn, type), index, id);
           } catch (e) {
             if (!warned) {
               warned = true;

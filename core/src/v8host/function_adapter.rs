@@ -150,8 +150,64 @@ struct Subscription {
     generic: bool,
     builtin: Option<&'static dyn DispatchAdapter>,
     phase: i32,
+    receiver: Option<ReceiverConstraint>,
     binding: Rc<Binding>,
     wrapper: v8::Global<v8::Function>,
+}
+#[derive(Clone, Copy)]
+struct ReceiverConstraint {
+    reference: projection::EntityReference,
+    map_epoch: u64,
+}
+impl ReceiverConstraint {
+    fn is_live(&self) -> bool {
+        self.map_epoch != 0
+            && self.map_epoch == crate::entity_live::map_epoch()
+            && crate::entity_live::engine_serial_for(self.reference.index, self.reference.id).is_some()
+    }
+    fn matches(&self, dispatch: &Dispatch, binding: &Binding) -> bool {
+        if !self.is_live() { return false; }
+        let Ok((native, projection)) = field_type(binding, -1) else { return false; };
+        // Match at the listener's original cursor position, after all previously accepted edits.
+        // Use the same binding-local projection/revalidation as the frame receiver getter.
+        let staged = dispatch.edits.borrow().get(&-1).map(|(value, _)| value.clone());
+        let current = match staged {
+            Some(ProjectedValue::Entity { reference, .. }) =>
+                EntityProjection::parse(projection).ok_or_else(|| "entity projection mismatch".to_string())
+                    .and_then(|entity| entity.value(reference)),
+            Some(value) => Ok(value),
+            None if binding.function.trusted() => dispatch.frame.read_instance(binding, -1)
+                .and_then(|value| projection::decode(value, native, projection)),
+            None => dispatch.frame.read_projected(-1, native, projection),
+        };
+        self.is_live() && matches!(current, Ok(ProjectedValue::Entity {
+            reference: Some(reference), ..
+        }) if reference == self.reference)
+    }
+}
+fn receiver_constraint(
+    scope: &mut v8::PinScope,
+    args: &v8::FunctionCallbackArguments,
+    binding: &Binding,
+) -> Result<Option<ReceiverConstraint>, String> {
+    let index = args.get(4);
+    let id = args.get(5);
+    if index.is_undefined() && id.is_undefined() { return Ok(None); }
+    let (_, projection) = field_type(binding, -1)?;
+    if EntityProjection::parse(projection).is_none() || !index.is_int32() || !id.is_number() {
+        return Err("live entity receiver constraint required".into());
+    }
+    let index = index.int32_value(scope).ok_or("receiver index required")?;
+    let id = id.number_value(scope).ok_or("receiver id required")?;
+    if index < 0 || !id.is_finite() || id < 1.0 || id > 9_007_199_254_740_991.0 || id.fract() != 0.0 {
+        return Err("live entity receiver constraint required".into());
+    }
+    let receiver = ReceiverConstraint {
+        reference: projection::EntityReference { index, id: id as u64 },
+        map_epoch: crate::entity_live::map_epoch(),
+    };
+    if !receiver.is_live() { return Err("receiver constraint is stale".into()); }
+    Ok(Some(receiver))
 }
 impl Drop for Subscription {
     fn drop(&mut self) {
@@ -738,6 +794,7 @@ fn js_subscribe(
             return Err("adapter phase unimplemented".into());
         }
         let wrapper = sync_function(scope, args.get(3))?.ok_or("wrapper required")?;
+        let receiver = receiver_constraint(scope, &args, &binding)?;
         let mode = SubscriptionMode::for_phase(phase, false)?;
         let contract = AdapterContract {
             id: adapter.clone(),
@@ -754,6 +811,7 @@ fn js_subscribe(
             false,
             None,
             phase,
+            receiver,
             wrapper,
         )?;
         receipt(scope, id, true, Some(args.data()))
@@ -773,6 +831,7 @@ fn insert_subscription(
     generic: bool,
     builtin: Option<&'static dyn DispatchAdapter>,
     phase: i32,
+    receiver: Option<ReceiverConstraint>,
     wrapper: v8::Global<v8::Function>,
 ) -> Result<u64, String> {
     let target = binding.target.ok_or("binding unavailable")?;
@@ -797,6 +856,7 @@ fn insert_subscription(
         generic,
         builtin,
         phase,
+        receiver,
         wrapper,
     });
     if !record_resource(
@@ -886,6 +946,7 @@ fn subscribe_generic_binding(
         true,
         Some(implementation),
         phase,
+        None,
         wrapper,
     )
 }
@@ -2176,6 +2237,9 @@ fn js_cursor(
             if sub.owner != l.owner
                 && crate::dispatch::parent_busy(&sub.owner.id, sub.owner.generation, l.dispatch.frame.target)
             {
+                continue;
+            }
+            if sub.receiver.is_some_and(|receiver| !receiver.matches(&l.dispatch, &sub.binding)) {
                 continue;
             }
             let value = match invoke_wrapper(scope, &l.dispatch, &sub) {
@@ -6975,6 +7039,10 @@ pub(super) mod borrowed_proof {
         drop(source);assert!(host.is_retired());set_engine_ops(None);shutdown();
     }
 }
+
+#[cfg(test)]
+#[path = "function_adapter/receiver_constraint_tests.rs"]
+mod receiver_constraint_tests;
 
 /// Portable proofs for the trusted (host-verified package) facilities: artifact
 /// activation, per-dispatch scratch slots and PRE proposals carried to POST.
