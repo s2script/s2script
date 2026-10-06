@@ -154,6 +154,7 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
                     context: g_ctx,
                     config_decls: std::collections::HashMap::new(),
                     phase: crate::plugin::Phase::Loading,
+                    pending_all_plugins_loaded: false,
                 },
             )
         });
@@ -225,6 +226,10 @@ pub(crate) fn eval_in_context(id: &str, src: &str) -> Result<(), String> {
             }
         };
 
+        #[cfg(test)]
+        if src == "globalThis.__s2_fire_all_plugins_loaded && globalThis.__s2_fire_all_plugins_loaded();" {
+            all_loaded_gate_tests::SCRIPT_ENTRIES.with(|n| n.set(n.get() + 1));
+        }
         match script.run(tc) {
             Some(_) => Ok(()),
             None => Err(tc
@@ -1015,6 +1020,7 @@ pub(crate) fn finalize_loading_plugins() {
                 PLUGINS.with(|p| {
                     if let Some(pi) = p.borrow_mut().get_mut(&id) {
                         pi.phase = crate::plugin::Phase::Active;
+                        pi.pending_all_plugins_loaded = true;
                     }
                 });
                 LOADING.with(|l| { l.borrow_mut().remove(&id); });
@@ -1045,8 +1051,8 @@ pub(crate) fn finalize_loading_plugins() {
 }
 
 /// Fire each Active plugin's pending `OnAllPluginsLoaded` once the load set is quiet
-/// (no in-flight factories, no WAITING hard-dep parkers). Idempotent per plugin: the
-/// prelude clears `__s2_on_all_plugins_loaded` after one call.
+/// (no in-flight factories or queued hard-dep loads). The native pending bit avoids
+/// compiling/running the prelude's already-consumed check on every later frame.
 fn fire_all_plugins_loaded_if_quiet() {
     if LOADING.with(|l| !l.borrow().is_empty()) {
         return;
@@ -1054,18 +1060,174 @@ fn fire_all_plugins_loaded_if_quiet() {
     if crate::loader::has_waiting() {
         return;
     }
-    let ids: Vec<String> = PLUGINS.with(|p| {
+    let pending: Vec<(String, u64)> = PLUGINS.with(|p| {
         p.borrow()
             .iter()
-            .filter(|(_, pi)| pi.phase == crate::plugin::Phase::Active)
-            .map(|(id, _)| id.clone())
+            .filter(|(_, pi)| pi.phase == crate::plugin::Phase::Active && pi.pending_all_plugins_loaded)
+            .map(|(id, _)| (id.clone(), plugin_generation(id)))
             .collect()
     });
-    for id in ids {
+    for (id, generation) in pending {
+        if !owner_is_live(&id, generation) { continue; }
+        let deliver = PLUGINS.with(|p| {
+            let mut plugins = p.borrow_mut();
+            let Some(pi) = plugins.get_mut(&id).filter(|pi| pi.phase == crate::plugin::Phase::Active) else { return false; };
+            // Consume before entering JS; earlier callbacks may retire later snapshot rows.
+            std::mem::replace(&mut pi.pending_all_plugins_loaded, false)
+        });
+        if !deliver { continue; }
         let _ = eval_in_context(
             &id,
             "globalThis.__s2_fire_all_plugins_loaded && globalThis.__s2_fire_all_plugins_loaded();",
         );
+    }
+}
+
+#[cfg(test)]
+mod all_loaded_gate_tests {
+    use super::*;
+    use crate::v8host::frame_tests::{dummy_logger, eval_in_context_string};
+    thread_local! {
+        pub(super) static SCRIPT_ENTRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        static REENTERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static PENDING_DURING_CALLBACK: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    }
+    struct Host;
+    impl Drop for Host { fn drop(&mut self) { shutdown(); } }
+    fn start() -> Host {
+        init(dummy_logger()).unwrap();
+        SCRIPT_ENTRIES.with(|n| n.set(0));
+        REENTERED.with(|v| v.set(false));
+        PENDING_DURING_CALLBACK.with(|v| v.set(None));
+        Host
+    }
+    fn load(id: &str, deferred: bool, callback: &str) {
+        let startup = if deferred { "return new Promise(resolve => { globalThis.releaseStartup = resolve; });" } else { "" };
+        load_plugin_js(id, &format!(r#"
+            globalThis.allLoadedCalls = 0;
+            module.exports.OnPluginStart = function () {{ {startup} }};
+            module.exports.OnAllPluginsLoaded = function () {{ allLoadedCalls++; {callback} }};
+        "#), "{}");
+    }
+    fn calls(id: &str) -> usize {
+        eval_in_context_string(id, "String(allLoadedCalls)").parse().unwrap()
+    }
+    fn entries() -> usize { SCRIPT_ENTRIES.with(|n| n.replace(0)) }
+    fn settle(id: &str) {
+        eval_in_context(id, "releaseStartup();").unwrap();
+        frame_async_drain();
+    }
+
+    #[test]
+    fn all_loaded_gate_enters_25_scripts_at_first_quiet_point_and_zero_on_later_frames() {
+        let _host = start();
+        load("quiet-0", true, "");
+        for i in 1..25 { load(&format!("quiet-{i}"), false, ""); }
+        frame_async_drain();
+        assert_eq!(entries(), 0, "a pending startup keeps the whole set nonquiet");
+        settle("quiet-0");
+        assert_eq!(entries(), 25, "each newly Active generation gets its first quiet callback");
+        for i in 0..25 { assert_eq!(calls(&format!("quiet-{i}")), 1); }
+        frame_async_drain();
+        frame_async_drain();
+        assert_eq!(entries(), 0, "consumed generations must not compile/run empty checks per frame");
+    }
+
+    #[test]
+    fn all_loaded_gate_new_and_reloaded_generations_enter_only_their_own_script() {
+        let _host = start();
+        load("stable", false, "");
+        assert_eq!(entries(), 1);
+        load("later", false, "");
+        assert_eq!(entries(), 1, "a new plugin must not poll the already consumed owner");
+        let old = plugin_generation("later");
+        load("later", false, "");
+        assert_ne!(plugin_generation("later"), old);
+        assert_eq!(entries(), 1, "the replacement generation gets one fresh delivery");
+        assert_eq!(calls("stable"), 1);
+        assert_eq!(calls("later"), 1);
+        frame_async_drain();
+        assert_eq!(entries(), 0);
+    }
+
+    #[test]
+    fn all_loaded_gate_throw_is_consumed_and_unloaded_pending_owner_never_enters() {
+        let _host = start();
+        load("blocker", true, "");
+        load("departed", false, "");
+        load("thrower", false, "throw Error('fixture');");
+        unload_plugin("departed");
+        settle("blocker");
+        assert_eq!(entries(), 2);
+        assert_eq!(calls("thrower"), 1);
+        frame_async_drain();
+        assert_eq!(entries(), 0, "a throwing callback cannot keep its startup poll alive");
+        load("departed", false, "");
+        assert_eq!(entries(), 1);
+        assert_eq!(calls("departed"), 1);
+    }
+
+    fn reenter(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
+        if REENTERED.with(|v| v.replace(true)) { return; }
+        let retire = args.get(0).boolean_value(scope);
+        let current = current_plugin(scope).unwrap();
+        let pending = PLUGINS.with(|p| p.borrow()[&current].pending_all_plugins_loaded);
+        PENDING_DURING_CALLBACK.with(|v| v.set(Some(pending)));
+        // Retire only host identities/phases while a snapshot is in flight. Actual
+        // context teardown stays outside the callback, as in the host lifecycle.
+        let others = PLUGINS.with(|p| p.borrow().keys().filter(|id| **id != current).cloned().collect::<Vec<_>>());
+        for id in others {
+            if retire { REGISTRY.with(|r| { r.borrow_mut().remove(&id); }); }
+            else { PLUGINS.with(|p| p.borrow_mut().get_mut(&id).unwrap().phase = plugin::Phase::Unloading); }
+        }
+    }
+    fn install_reentry(id: &str) {
+        with_host_isolate(|isolate| {
+            let mut storage = v8::HandleScope::new(isolate);
+            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+            let context = clone_plugin_context(id).unwrap();
+            let context = v8::Local::new(&mut hs, &context);
+            let scope = &mut v8::ContextScope::new(&mut hs, context);
+            let key = v8::String::new(scope, "reenterQuiet").unwrap();
+            let function = v8::Function::new(scope, reenter).unwrap();
+            context.global(scope).set(scope, key.into(), function.into());
+        }).unwrap();
+    }
+
+    #[test]
+    fn all_loaded_gate_rechecks_snapshot_generation_and_phase_after_callback() {
+        for retire in [false, true] {
+            let _host = start();
+            let callback = format!("reenterQuiet({retire});");
+            for i in 0..3 {
+                let id = format!("reenter-{i}");
+                load(&id, i == 0, &callback);
+                install_reentry(&id);
+            }
+            settle("reenter-0");
+            assert_eq!(PENDING_DURING_CALLBACK.with(std::cell::Cell::get), Some(false),
+                "delivery is consumed before any callback-side lifecycle changes");
+            assert_eq!(entries(), 1, "old snapshot rows cannot target retired identities or phases");
+            assert_eq!((0..3).map(|i| calls(&format!("reenter-{i}"))).sum::<usize>(), 1);
+        }
+    }
+
+    #[test]
+    fn all_loaded_gate_failed_deferred_startup_does_not_block_surviving_pending_owner() {
+        let _host = start();
+        load_plugin_js("failed", r#"
+            module.exports.OnPluginStart = () => new Promise((_, reject) => { globalThis.rejectStartup = reject; });
+            module.exports.OnAllPluginsLoaded = () => { throw Error('must not deliver'); };
+        "#, "{}");
+        load("survivor", false, "");
+        assert_eq!(entries(), 0);
+        eval_in_context("failed", "rejectStartup(Error('fixture')); ").unwrap();
+        frame_async_drain();
+        assert_eq!(entries(), 1);
+        assert_eq!(calls("survivor"), 1);
+        assert!(clone_plugin_context("failed").is_none());
+        frame_async_drain();
+        assert_eq!(entries(), 0);
     }
 }
 
