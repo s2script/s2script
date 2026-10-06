@@ -171,6 +171,8 @@ struct PluginInstance {
     /// `Active` in `finalize_loading_plugins` once the factory settled + the ctx armed; `Unloading`
     /// during teardown.
     phase: crate::plugin::Phase,
+    /// Armed at Active; consumed at this context's first quiet startup boundary.
+    pending_all_plugins_loaded: bool,
 }
 
 /// One in-flight factory load (design spec §5). Tracks the frame the load started (for the timeout),
