@@ -21,7 +21,8 @@ export interface Weapon extends CCSWeaponBase {
   readonly owner: Pawn | null;
   /** Set the magazine (clip1). `reserve` is accepted but deferred (m_pReserveAmmo layout). false if stale. */
   setAmmo(clip: number, reserve?: number): boolean;
-  /** Unequip from the owner (RemovePlayerItem) + destroy the entity (UTIL_Remove). true iff removed. */
+  /** Unequip and schedule destruction through the owner's weapon services; directly remove an unowned
+   *  weapon. False if stale or an owned weapon's native service is unavailable. */
   remove(): boolean;
 }
 
