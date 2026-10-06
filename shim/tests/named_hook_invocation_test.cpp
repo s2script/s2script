@@ -14,6 +14,11 @@ typedef CVariantBase<CVariantDefaultAllocator> CVariant;
 #include <type_traits>
 #include <vector>
 
+using ExpectedOutputOp = int (*)(CEntityIOOutput*, CEntityInstance*, CEntityInstance*,
+                                CPulseArgumentPack*, float, CPulseInputParamMap*, const CVariant*);
+static_assert(std::is_same_v<decltype(S2NamedHookOps::output), ExpectedOutputOp>,
+              "output operation must distinguish Pulse arguments, parameter map and optional value");
+
 static int failures = 0;
 #define CHECK(c, why) do { if (!(c)) { std::cerr << "FAIL: " << why << "\n"; ++failures; } } while (0)
 namespace KHook { IKHook* __exported__khook = nullptr; }
@@ -156,8 +161,14 @@ extern void* inner_manifest;
 extern std::array<unsigned char,0xa0> nested_cmd;
 int chat_originals=0, output_originals=0, usercmd_originals=0, precache_originals=0;
 void ChatTarget(void*,void*,bool,int,const char*) { ++chat_originals; }
-void OutputTarget(CEntityIOOutput*,CEntityInstance*,CEntityInstance*,const CVariant*,float,void*,char*) {
+void OutputTarget(CEntityIOOutput* out,CEntityInstance* act,CEntityInstance* caller,
+                  CPulseArgumentPack* arguments,float delay,CPulseInputParamMap* parameters,const CVariant* value) {
     ++output_originals;
+    CHECK(reinterpret_cast<uintptr_t>(out)==0x1111 && reinterpret_cast<uintptr_t>(act)==0x2222 &&
+          reinterpret_cast<uintptr_t>(caller)==0x3333 && reinterpret_cast<uintptr_t>(arguments)==0x4444 &&
+          delay==1.25f && reinterpret_cast<uintptr_t>(parameters)==0x5555 &&
+          reinterpret_cast<uintptr_t>(value)==0x6666,
+          "output original preserves Pulse arguments, parameter map, optional value and delay");
 }
 int UsercmdTarget(void*,void* commands,int,bool paused,float margin) {
     ++usercmd_originals;
@@ -194,10 +205,13 @@ int ChatOp(void* controller,void* command,bool team,int number,const char* text)
 }
 int output_result=0,output_calls=0;
 int OutputOp(CEntityIOOutput* out,CEntityInstance* act,CEntityInstance* caller,
-             const CVariant* value,float delay,void* u1,char* u2) {
+             CPulseArgumentPack* arguments,float delay,CPulseInputParamMap* parameters,const CVariant* value) {
     ++output_calls;
-    CHECK(out && act && caller && value && delay==1.25f && u1 && u2,
-          "output callback preserves exact ABI arguments");
+    CHECK(reinterpret_cast<uintptr_t>(out)==0x1111 && reinterpret_cast<uintptr_t>(act)==0x2222 &&
+          reinterpret_cast<uintptr_t>(caller)==0x3333 && reinterpret_cast<uintptr_t>(arguments)==0x4444 &&
+          delay==1.25f && reinterpret_cast<uintptr_t>(parameters)==0x5555 &&
+          reinterpret_cast<uintptr_t>(value)==0x6666,
+          "output callback preserves Pulse arguments, parameter map, optional value and delay");
     return output_result;
 }
 
@@ -323,11 +337,12 @@ void ConfigureAndInvoke() {
     auto* out=reinterpret_cast<CEntityIOOutput*>(uintptr_t{0x1111});
     auto* act=reinterpret_cast<CEntityInstance*>(uintptr_t{0x2222});
     auto* caller=reinterpret_cast<CEntityInstance*>(uintptr_t{0x3333});
-    auto* value=reinterpret_cast<const CVariant*>(uintptr_t{0x4444});
-    char marker='x';
+    auto* arguments=reinterpret_cast<CPulseArgumentPack*>(uintptr_t{0x4444});
+    auto* parameters=reinterpret_cast<CPulseInputParamMap*>(uintptr_t{0x5555});
+    auto* value=reinterpret_cast<const CVariant*>(uintptr_t{0x6666});
     for (int result : {0,1,2,3}) {
         output_result=result;
-        provider.Invoke(&OutputTarget,out,act,caller,value,1.25f,outer_victim,&marker);
+        provider.Invoke(&OutputTarget,out,act,caller,arguments,1.25f,parameters,value);
     }
     CHECK(output_calls==4 && output_originals==2,"output suppresses at >=2 and runs original once below threshold");
 
