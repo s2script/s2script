@@ -14,6 +14,7 @@ const Continue = 0, Changed = 1, Handled = 2, Stop = 3;
 // Entities are plain {index, id}; `dead` is the set of host ids the books no longer hold.
 function setup(contexts = ["a"], options = {}) {
   const host = createHost({ name: "takeDamageOld", returns: "void", suppression: "generic", scratch: [], pre: true, post: true,
+    receiver: "victim", receiverConstraints: options.receiverConstraints,
     unavailable: options.unavailable });
   const dead = new Set();
   const mounted = {};
@@ -155,6 +156,55 @@ test("per-entity filtering and exact subscription order across plugin contexts",
   ran.length = 0;
   mountDamage(t, { victim: null }).fire();
   assert.deepEqual(ran, [], "an unadoptable victim runs nobody");
+});
+
+test("eight pawn subscriptions enter only the matching wrapper on a receiver-filtering host", () => {
+  for (const names of [["a"], ["a", "b", "c", "d", "e", "f", "g", "h"]]) {
+    const t = setup(names);
+    let entered = 0, handled = 0;
+    for (let i = 0; i < 8; i++) {
+      const pawn = { index: 100 + i, id: 1000 + i };
+      t.pre(names[i % names.length], pawn, () => { handled++; });
+    }
+    for (const sub of t.host.subscriptions) {
+      const original = sub.wrapper;
+      sub.wrapper = frame => { entered++; return original(frame); };
+    }
+    mountDamage(t, { victim: { index: 103, id: 1003 } }).fire();
+    assert.equal(handled, 1);
+    assert.equal(entered, 1, `${names.length} context(s): irrelevant wrappers must not be entered`);
+    assert.equal(t.host.logs.length, 0);
+  }
+});
+
+test("older four-argument hosts keep the JS victim guard and exactly one matching damage handler", () => {
+  const t = setup(["a", "b"], { receiverConstraints: false });
+  let entered = 0, handled = 0;
+  for (let i = 0; i < 8; i++) t.pre(i % 2 ? "a" : "b", { index: 100 + i, id: 1000 + i }, () => { handled++; });
+  for (const sub of t.host.subscriptions) {
+    const original = sub.wrapper;
+    sub.wrapper = frame => { entered++; return original(frame); };
+  }
+  mountDamage(t, { victim: { index: 103, id: 1003 } }).fire();
+  assert.equal(handled, 1);
+  assert.equal(entered, 8);
+});
+
+test("receiver filtering follows native receiver changes between ordered callbacks and unreadable receivers match nobody", () => {
+  const t = setup(["a", "b"]),ran=[];
+  let current = VICTIM;
+  t.pre("a", VICTIM, () => { ran.push("first");current=OTHER; });
+  t.pre("b", VICTIM, () => { ran.push("old"); });
+  t.pre("b", OTHER, () => { ran.push("new"); });
+  const damage=mountDamage(t);
+  damage.native.fields.victim=()=>current;
+  damage.fire();
+  assert.deepEqual(ran,["first","new"]);
+  ran.length=0;
+  damage.native.fields.victim=()=>{throw Error("unreadable receiver");};
+  damage.fire();
+  assert.deepEqual(ran,[]);
+  assert.equal(t.host.trace.filter(x=>x==='original').length,2);
 });
 
 test("later handlers see earlier accepted writes; a throwing handler is Continue and keeps its write", () => {

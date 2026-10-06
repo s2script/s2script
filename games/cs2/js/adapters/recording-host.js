@@ -40,13 +40,21 @@ function createHost(binding) {
         adapters.push({ context, id, hash, pre: callbacks.pre || null, post: callbacks.post || null });
         return {};
       },
-      subscribe(functionName, id, phase, wrapper) {
+      subscribe(functionName, id, phase, wrapper, receiverIndex, receiverId) {
         if (functionName !== binding.name) throw new Error("undeclared engine function");
         if (binding.unavailable) throw new Error("binding unavailable");
         if (!binding[phase]) throw new Error("undeclared subscription surface");
         const row = adapters.find(a => a.context === context && a.id === id);
         if (!row) throw new Error("current package adapter unavailable");
-        const sub = { context, phase, wrapper, id, disposed: false };
+        let receiver = null;
+        if (binding.receiverConstraints !== false && (receiverIndex !== undefined || receiverId !== undefined)) {
+          if (typeof binding.receiver !== "string" || !isI32(receiverIndex) || receiverIndex < 0 ||
+              !Number.isSafeInteger(receiverId) || receiverId <= 0 ||
+              (typeof sandbox.__s2_ent_ref_valid === "function" && !sandbox.__s2_ent_ref_valid(receiverIndex, receiverId)))
+            throw new Error("invalid live receiver constraint");
+          receiver = { index: receiverIndex, id: receiverId };
+        }
+        const sub = { context, phase, wrapper, id, receiver, disposed: false };
         subscriptions.push(sub);
         return { dispose() { sub.disposed = true; }, get status() { return sub.disposed ? "disposed" : "active"; } };
       },
@@ -190,6 +198,13 @@ function createHost(binding) {
           const sub = subscribers[index++];
           // The adapter's own context is busy by construction and still delivered (S2 js_cursor).
           if (sub.disposed || (sub.context !== adapter.context && busy.has(sub.context))) continue;
+          if (sub.receiver) {
+            // This model reads the same current receiver field the subscriber view reads.
+            // Native Rust tests separately exercise projection, accepted edits and map lifetime.
+            let current = null;
+            try { current = state.fields[binding.receiver](); } catch (_) { /* unreadable receiver matches nobody */ }
+            if (!current || current.index !== sub.receiver.index || current.id !== sub.receiver.id) continue;
+          }
           const d = runSubscriber(state, phase, sub);
           if (d.action === 3) index = subscribers.length;
           revision += 1;
