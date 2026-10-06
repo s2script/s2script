@@ -320,11 +320,13 @@
         "resolve": "direct"
       }
     },
-    // Item slice (Task 2): CBasePlayerPawn::RemovePlayerItem(CBasePlayerWeapon* weapon) -> bool —
-    // a proper unequip (used by pawn.removeWeapon). A DIRECT prologue pattern. Validated UNIQUE @
-    // 2026-07-09 in the pinned libserver.so (@0x1580110); ABI re-confirmed by disasm (spike, Task
-    // 2): `this`(rdi)->r12, weapon(rsi)->rbx, then a call whose result is compared against rbx
-    // (the weapon) — consistent with (pawn, weapon) -> bool.
+    // Legacy signature KEY; the target is a WEAPON-SERVICES method, not a pawn method.
+    // Re-verified on libserver SHA256 acfb37875451ce309028313ea79f3687eee9a87dbde54bfda79bf1e5384ba329:
+    // unique entry 0x15dbf10 calls active-weapon lookup at this+0x60 and inventory removal at
+    // this+0x48; its virtual slots 32/33 are the WeaponServices last-weapon getter/setter.
+    // Passing a pawn instead calls its unrelated slot 32, which writes a byte at pawn+0x318.
+    // The method tail-calls UTIL_Remove(weapon) at 0x171a960: it already schedules destruction
+    // and returns VOID. Keep the old key so existing operator signature overrides still apply.
     "CBasePlayerPawn_RemovePlayerItem": {
       "linuxsteamrt64": {
         "module": "libserver.so",
@@ -591,15 +593,15 @@
       "returns": "entity"
     },
 
-    // weapon.remove() / pawn.removeWeapon(). BOTH the pawn (receiver) and the weapon (arg) must
-    // resolve or there must be NO call: a stale `entity` arg marshals to nullptr and the call still
-    // runs, which would be RemovePlayerItem(pawn, nullptr). weapon.js guards for that explicitly.
+    // weapon.remove() / pawn.removeWeapon(). The pawn is only the serial-gated ROOT of the
+    // receiver hop: the engine method needs its live WeaponServices sub-object. It unequips AND
+    // schedules weapon destruction. Both entity refs must resolve before calling (weapon.js).
     "removePlayerItem": {
-      "receiver": { "kind": "entity" },
+      "receiver": { "kind": "entity", "via": { "class": "CBasePlayerPawn", "field": "m_pWeaponServices" } },
       "target": { "kind": "signature", "name": "CBasePlayerPawn_RemovePlayerItem" },
       "args": ["entity"],
       "argNames": ["weapon"],
-      "returns": "bool"
+      "returns": "void"
     },
 
     // ctx.ui — custom_hud_layout per-player class / dialog-variable / input-capture setters.

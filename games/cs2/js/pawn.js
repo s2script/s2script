@@ -480,8 +480,8 @@
     enumerable: true, configurable: true,
   });
 
-  // pawn.removeWeapon(weapon) — remove ONE Weapon (delegates to the Weapon.remove atom: unequip via
-  // RemovePlayerItem + destroy via UTIL_Remove). false if the weapon is absent/stale.
+  // pawn.removeWeapon(weapon) — remove ONE Weapon through its owner's WeaponServices, including
+  // inventory/deploy transitions and scheduled destruction. false if unavailable/stale.
   Pawn.prototype.removeWeapon = function (weapon) {
     return weapon ? weapon.remove() : false;
   };

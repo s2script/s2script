@@ -21,6 +21,8 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import vm from "node:vm";
+import { readFileSync } from "node:fs";
+import { stripJsonComments } from "../src/gamedata/jsonc.ts";
 import { installClientHost } from "./client-host.mjs";
 import { cs2AddonBundle } from "./cs2-addon.mjs";
 
@@ -394,7 +396,14 @@ test("giveNamedItem: a null name calls nothing; a failed call yields null", () =
   assert.equal(h.pkg.Pawn.forSlot(0).giveNamedItem("weapon_ak47"), null, "no handle -> null");
 });
 
-test("weapon.remove: the unequip carries (owner receiver, weapon EntityRef arg)", () => {
+test("weapon.remove: the shipped descriptor resolves the pawn's weapon services and a void return", () => {
+  const gamedata = JSON.parse(stripJsonComments(readFileSync(new URL("../../../games/cs2/gamedata/game.cs2.jsonc", import.meta.url), "utf8")));
+  const call = gamedata.calls.removePlayerItem;
+  assert.deepEqual(call.receiver, { kind: "entity", via: { class: "CBasePlayerPawn", field: "m_pWeaponServices" } });
+  assert.equal(call.returns, "void", "the native function tail-calls UTIL_Remove, which has no return value");
+});
+
+test("weapon.remove: the owner roots the service hop and native removal destroys exactly once", () => {
   const h = makeHost();
   const wref = new h.EntityRef(50, 4);
   wref.pawnOwner = true;
@@ -405,7 +414,7 @@ test("weapon.remove: the unequip carries (owner receiver, weapon EntityRef arg)"
   assert.deepEqual(h.names(), ["removePlayerItem"]);
   assert.equal(h.invokes[0].index, 7, "receiver = the owning pawn");
   assert.equal(h.invokes[0].args[0], wref, "the `entity` ARG is the EntityRef itself, not the wrapper");
-  assert.equal(wref.removed, true, "and the entity is still destroyed");
+  assert.equal(wref.removed, undefined, "the native service method already schedules UTIL_Remove");
 });
 
 test("weapon.remove: BOTH refs must resolve or there is NO unequip call at all", () => {
@@ -417,8 +426,9 @@ test("weapon.remove: BOTH refs must resolve or there is NO unequip call at all",
   const dead = new h.EntityRef(7, 2);
   dead.live = false;
   Object.defineProperty(w, "owner", { value: new h.pkg.Pawn(dead) });
-  assert.equal(w.remove(), true, "the destroy still happens");
+  assert.equal(w.remove(), false, "a stale owner cannot safely unequip the weapon");
   assert.equal(h.invokes.length, 0, "the unequip does not");
+  assert.equal(wref.removed, undefined, "do not destroy a held weapon without its service transition");
 });
 
 test("weapon.remove: an unowned weapon is destroyed with no unequip", () => {
@@ -430,14 +440,52 @@ test("weapon.remove: an unowned weapon is destroyed with no unequip", () => {
   assert.equal(h.invokes.length, 0);
 });
 
-test("weapon.remove: a degraded removePlayerItem still destroys the entity", () => {
+test("weapon.remove: a degraded removePlayerItem leaves an owned weapon intact", () => {
   const h = makeHost({ ready: ALL_CALLS.filter((n) => n !== "removePlayerItem") });
   const wref = new h.EntityRef(50, 4);
   const w = new h.pkg.Weapon(wref);
   Object.defineProperty(w, "owner", { value: new h.pkg.Pawn(new h.EntityRef(7, 2)) });
-  assert.equal(w.remove(), true);
+  assert.equal(w.remove(), false);
   assert.equal(h.invokes.length, 0);
-  assert.equal(wref.removed, true);
+  assert.equal(wref.removed, undefined);
+});
+
+test("weapon.remove: a missing live service or failed native call leaves the weapon intact", () => {
+  const h = makeHost({ onInvoke: () => null });
+  const wref = new h.EntityRef(50, 4);
+  const w = new h.pkg.Weapon(wref);
+  Object.defineProperty(w, "owner", { value: new h.pkg.Pawn(new h.EntityRef(7, 2)) });
+  assert.equal(w.remove(), false);
+  assert.deepEqual(h.names(), ["removePlayerItem"]);
+  assert.equal(wref.removed, undefined);
+});
+
+test("weapon.remove: a stale weapon never reaches its owner's service", () => {
+  const h = makeHost();
+  const wref = new h.EntityRef(50, 4);
+  wref.live = false;
+  const w = new h.pkg.Weapon(wref);
+  Object.defineProperty(w, "owner", { get() { throw new Error("stale weapon owner must not be read"); } });
+  assert.equal(w.remove(), false);
+  assert.equal(h.invokes.length, 0);
+  assert.equal(wref.removed, undefined);
+});
+
+test("weapon.remove: owner resolution or validation retiring the weapon refuses the native call", () => {
+  for (const during of ["owner getter", "owner validation"]) {
+    const h = makeHost();
+    const wref = new h.EntityRef(50, 4);
+    const w = new h.pkg.Weapon(wref);
+    const owner = new h.EntityRef(7, 2);
+    if (during === "owner validation") owner.isValid = () => { wref.live = false; return true; };
+    Object.defineProperty(w, "owner", { get() {
+      if (during === "owner getter") wref.live = false;
+      return new h.pkg.Pawn(owner);
+    } });
+    assert.equal(w.remove(), false, during);
+    assert.equal(h.invokes.length, 0, "a stale weapon argument would marshal to nullptr");
+    assert.equal(wref.removed, undefined);
+  }
 });
 
 // -------------------------------------------------------------------------------------------
