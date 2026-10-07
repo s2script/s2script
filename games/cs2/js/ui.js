@@ -542,6 +542,34 @@
         if (panel === root || panel.indexOf(root + "_") === 0) delete lastValue[key];
       }
     };
+    // Internal component seam: would this primitive be suppressed by the diff cache? Components
+    // ask before paying a write's per-call binding guards, which cost several native lifetime
+    // checks even when the cache then drops the write. Read-only: it never writes, coerces a
+    // non-primitive, or publishes cache state. Only an identity-current cache answers true; a
+    // caller still revalidates its binding before treating the paint as committed.
+    api._painted = function (binding, op, panelId, a, b) {
+      if (!binding || binding.fallback || typeof panelId !== "string") return false;
+      var slot = binding.slot;
+      if (binding.entityEpoch !== entityEpoch || boundEntityId === null ||
+          binding.slotEpoch !== (componentSlotEpochs[slot] || 0)) return false;
+      var ent = ctxState.findEntity(layout);
+      if (!ent || ent.id !== boundEntityId) return false;
+      if (op === "text") {
+        if (typeof a !== "string" && typeof a !== "number" && typeof a !== "boolean") return false;
+        return lastValue[cacheKey(slot, "v", panelId, layout.text[panelId] || panelId)] === String(a);
+      }
+      if (op === "class") {
+        if (typeof a !== "string") return false;
+        return lastValue[cacheKey(slot, "c", panelId, a)] === (b ? "1" : "0");
+      }
+      // A plain show is one hide-class clear plus visibility tracking. Hide also releases input
+      // capture, and a show with options may acquire it, so neither is ever reported as painted.
+      if (op === "show") {
+        return a == null && lastValue[cacheKey(slot, "c", panelId, layout.hideClass)] === "0" &&
+          visiblePanels[slotPrefix(slot) + panelId] === true;
+      }
+      return false;
+    };
     api.setMeter = function (slot, meterName, percent) {
       return legacyResult(api._drive.setMeter(slot, meterName, percent));
     };

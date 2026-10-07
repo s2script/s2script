@@ -112,3 +112,40 @@ test('a valid Client from another slot cannot authorize a mutated binding', () =
   const { hud, binding } = world();
   assert.equal(hud._bindingIsValid({ ...binding, slot: 2 }), false);
 });
+
+function shopSheet() {
+  const ctx = world(), { p, calls, w } = ctx;
+  const rows = Array.from({ length: 8 }, (_, i) => ({ id: 'item' + i, a: 'Item ' + i, b: i + 'c', c: '', tone: i % 2 ? 'good' : undefined }));
+  const modal = p.base.kit.modal({
+    title: 'Shop', subtitle: () => '10 credits', rows: () => rows,
+    detail: (slot, row) => row ? [row.a, 'Costs ' + row.b] : [],
+    buttons: [{ text: 'Buy', variant: 'good', onClick() {} }, { text: 'Close', onClick() {} }],
+  });
+  modal.open(1);
+  calls.length = 0;
+  const before = w.writes.length;
+  return { ...ctx, modal, rows, writes: () => w.writes.slice(before) };
+}
+test('a row pick sends only the changed primitives and skips guards for cached ones', () => {
+  const { p, modal, calls, writes } = shopSheet();
+  p.click(1, 's2_m0_r3');
+  assert.equal(modal.cursor(1), 3);
+  const sent = writes().filter(row => !row.host);
+  // Cursor class off row 0 and on row 3, plus the two detail lines that changed.
+  assert.equal(sent.length, 4, JSON.stringify(sent.map(row => row.args.slice(2))));
+  // Every unchanged primitive used to pay its full guard chain before the diff cache dropped it:
+  // 2581 Client lifetime checks for this one pick. The cache probe leaves 241.
+  assert.ok(calls.length <= 300, `native lifetime checks per selection: ${calls.length}`);
+});
+test('a pick after the layout entity is replaced repaints every primitive', () => {
+  const { p, w, writes } = shopSheet();
+  w.replaceLayoutEntity();
+  p.click(1, 's2_m0_r3');
+  assert.equal(writes().filter(row => !row.host).length, 0, 'the stale sheet is not interactive');
+});
+test('an unchanged repaint after a panel-tree invalidation re-sends its values', () => {
+  const { hud, modal, writes } = shopSheet();
+  hud.invalidatePanelTree('s2_m0');
+  modal.refresh(1);
+  assert.ok(writes().filter(row => !row.host).length > 40);
+});

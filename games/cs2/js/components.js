@@ -1984,18 +1984,28 @@
           return uiFail("InvalidArgument", errorMessage(err, "hudkit: invalid modal data"));
         }
         if (!current()) return SUPERSEDED;
-        var error = null;
-        function drive(fn) {
+        var error = null, skipped = false;
+        // A row pick repaints the whole sheet, but usually only the cursor class and the detail
+        // box change. Every primitive pays several native lifetime checks before the SDK diff
+        // cache drops an unchanged value, so ask the cache first. A skipped primitive sends
+        // nothing; the commit below revalidates the binding and focus once for all of them.
+        var probe = typeof hud._painted === "function" ? hud._painted : null;
+        function drive(fn, op) {
           var driveBound = resultBoundDriver(st.binding, fn, function () { return current() && focusPaintable(st); });
           return function () {
-            if (error !== null || !current()) return;
+            if (error !== null) return;
+            if (op && probe && probe(st.binding, op, arguments[1], arguments[2], arguments[3])) {
+              skipped = true;
+              return;
+            }
+            if (!current()) return;
             if (!focusPaintable(st)) { error = uiFail("PaintFailed", "focus changed during paint"); return; }
             var result = driveBound.apply(null, arguments);
             if (!result.ok) error = result;
           };
         }
-        var paintText = drive(driveSetText), paintClass = drive(driveSetClass);
-        var paintShow = drive(driveShow), paintHide = drive(driveHide);
+        var paintText = drive(driveSetText, "text"), paintClass = drive(driveSetClass, "class");
+        var paintShow = drive(driveShow, "show"), paintHide = drive(driveHide);
 
         if (rootOpts) {
           for (var wk in SHEET_WIDTH) {
@@ -2060,6 +2070,7 @@
         }
         if (!current()) return SUPERSEDED;
         if (error) return error;
+        if (skipped && !focusPaintable(st)) return uiFail("PaintFailed", "focus changed during paint");
         if (!commitFocus(st)) { releaseFocus(st); return uiFail("PaintFailed", "focus activation failed"); }
         delete st.pendingRootOpts; delete st.focusRequest;
         st.page = snapshot.pageNumber;
