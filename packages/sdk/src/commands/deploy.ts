@@ -32,7 +32,11 @@ import {
   formatPlan,
   formatUnpublishableLibraries,
   uploadPlan,
+  planBundle,
+  formatBundlePlan,
+  uploadBundle,
 } from "../workspace/deploy-all.ts";
+import { readBundle } from "../workspace/bundle.ts";
 
 export async function run(argv: string[]): Promise<void> {
   const yes = hasFlag(argv, "--yes") || hasFlag(argv, "-y");
@@ -182,8 +186,13 @@ async function runWorkspaceDeploy(opts: {
   const { ordered, built, unpublishableLibraries } = builtPluginsFromOutcomes(ws, build.outcomes);
 
   const plan = await computePlan(ordered, (name, version) => isAlreadyPublished(client, name, version));
+  // A bundle root publishes last, after its members — and is refused up front (before any upload)
+  // when its version is already published with different member pins.
+  const bundle = readBundle(ws);
+  const bundleEntry = bundle ? await planBundle(bundle, client) : null;
   label("plan:");
   console.log(formatPlan(plan));
+  if (bundleEntry) console.log(formatBundlePlan(bundleEntry));
   if (unpublishableLibraries.length > 0) {
     // A ws.libs-only library built above (its own "Building @foo/mylib" step already printed)
     // but has no place in `plan` — computePlan/uploadPlan only ever see ws.plugins. Naming it here,
@@ -192,7 +201,9 @@ async function runWorkspaceDeploy(opts: {
     console.log(formatUnpublishableLibraries(unpublishableLibraries));
   }
 
-  const toPublish = publishCount(plan);
+  const bundlePublishes = bundleEntry?.reason === "PUBLISH" ? 1 : 0;
+  const toPublish = publishCount(plan) + bundlePublishes;
+  const noun = (n: number) => `${n} package${n === 1 ? "" : "s"}`;
   if (toPublish === 0) {
     // §9.1: the plan comes back all-skip and the command is a named no-op, not a surprise —
     // exactly what deploying this repo's own (all-private) plugins/ workspace looks like.
@@ -201,7 +212,7 @@ async function runWorkspaceDeploy(opts: {
   }
 
   if (dryRun) {
-    label(`dry run — ${toPublish} plugin${toPublish === 1 ? "" : "s"} would publish, uploading nothing`);
+    label(`dry run — ${noun(toPublish)} would publish, uploading nothing`);
     return;
   }
 
@@ -222,7 +233,7 @@ async function runWorkspaceDeploy(opts: {
       );
     }
     const proceed = await ui.confirm({
-      message: `Publish ${toPublish} plugin${toPublish === 1 ? "" : "s"} to ${client.baseUrl}?`,
+      message: `Publish ${noun(toPublish)} to ${client.baseUrl}?`,
       initialValue: false,
     });
     if (!proceed) {
@@ -231,7 +242,7 @@ async function runWorkspaceDeploy(opts: {
     }
   }
 
-  const results = await uploadPlan(plan, built, client);
+  const results = await uploadPlan(plan, built, client, { bundle: bundle?.name });
   let failures = 0;
   for (const r of results) {
     if (r.status === "failed") failures++;
@@ -242,7 +253,17 @@ async function runWorkspaceDeploy(opts: {
       console.log(line);
     }
   }
+  if (bundleEntry) {
+    const r = await uploadBundle(bundleEntry, results, client);
+    if (r.status === "failed") failures++;
+    const line = `${r.bundle.name}@${r.bundle.version} (bundle): ${r.status}${r.detail ? ` (${r.detail})` : ""}`;
+    if (interactive) {
+      (r.status === "failed" ? ui.log.error : r.status === "published" ? ui.log.success : ui.log.info)(line);
+    } else {
+      console.log(line);
+    }
+  }
   if (failures > 0) {
-    throw new Error(`${failures} plugin${failures === 1 ? "" : "s"} failed to publish`);
+    throw new Error(`${noun(failures)} failed to publish`);
   }
 }

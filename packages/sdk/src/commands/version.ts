@@ -37,6 +37,10 @@ export async function run(argv: string[]): Promise<void> {
     for (const r of result.releases) {
       lines.push(`${r.name} ${r.oldVersion} -> ${r.newVersion} (${r.type})`);
     }
+    if (result.bundleBump) {
+      const b = result.bundleBump;
+      lines.push(`${b.name} ${b.from} -> ${b.to} (${b.type}, bundle — follows ${b.because.join(", ")})`);
+    }
     for (const rw of result.rewrites) {
       lines.push(`${rw.consumer} pluginDependencies[${rw.iface}] ${rw.from} -> ${rw.to}`);
     }

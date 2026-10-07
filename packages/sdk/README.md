@@ -115,6 +115,41 @@ what lets a workspace hold a large first-party or in-house plugin suite that mus
 public registry — build it, drop the `.s2sp`s into your own server, never `s2s deploy` it. (`s2s
 deploy <dir>` on a single private plugin outside a workspace refuses the same way.)
 
+### Bundles
+
+A workspace whose plugins only make sense together (a game mode split into several plugins) can
+publish as one **bundle**: the registry lists it as a single entry, installs it with one command,
+and records which member versions each release pinned. Make the workspace root the bundle:
+
+```json
+{
+  "name": "@edge/jailbreak",
+  "version": "1.0.0",
+  "workspaces": ["plugins/*"],
+  "s2script": {
+    "kind": "bundle",
+    "workspace": { "plugins": ["plugins/*"] },
+    "bundle": { "optional": ["@edge/jailbreak-gangperks"] }
+  }
+}
+```
+
+- **Members** are the workspace's non-private plugins, and must share the bundle's scope. A bundle
+  has no code of its own, so the root has no `main` and must not be `private`.
+- **`s2s deploy`** at the root publishes the members first, each claiming the bundle, then the
+  bundle itself, pinning every member to the version just built. The plan shows it as the last row.
+  A bundle version already published with different member versions is refused before anything
+  uploads — bump it.
+- **`s2s version`** bumps the bundle whenever a member is released, by the largest member bump.
+- **`s2s install @edge/jailbreak`** installs the required members (and whatever they depend on);
+  `--with @edge/jailbreak-gangperks` adds an optional one. `s2s add` refuses a bundle: depend on a
+  member's interface instead.
+- A plugin already published **before** it joined a bundle must be republished at a new version
+  from the bundle's workspace, so that its registry entry carries the claim.
+
+The membership claim travels in the registry upload only — the `.s2sp` manifest the runtime loads
+is unchanged, and the runtime has no notion of bundles.
+
 ## Docs
 
 **[s2script.com/docs](https://s2script.com/docs)** — getting started, guides, and the full API

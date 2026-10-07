@@ -120,6 +120,18 @@ A manifest (`s2script-plugins.json`) pins what the server should have:
 { "plugins": { "rtv": "^1.0.0", "@edge/foo": "2.1.0" } }
 ```
 
+A **bundle** (several plugins published as one, like `@edge/jailbreak`) installs the same way:
+its required plugins land in the plugins directory individually, each at the version that bundle
+release pins. Add optional plugins with `--with`, or with the object form in the manifest:
+
+```bash
+s2s install @edge/jailbreak --with @edge/jailbreak-gangperks --dir /path/to/csgo/addons/s2script/plugins
+```
+
+```json
+{ "plugins": { "@edge/jailbreak": { "range": "^1.0.0", "with": ["@edge/jailbreak-gangperks"] } } }
+```
+
 Base `@s2script/*` plugins are skipped (already in the runtime). Unreviewed
 community plugins install with a warning; pass `--reviewed-only` to block them,
 or `--dry-run` to preview the resolved set.

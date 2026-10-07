@@ -435,3 +435,16 @@ damage observe/scale/block with Post on every hit, before and after a map change
 **S3 is not complete:** the HUD click needs a human client. The vote fold, ammo write, stale
 views and in-callback unload have unit or Linux-proof evidence only. `tools/dmgprobe` is the damage
 fixture; its teleport-drop does not cause fall damage on this build, so it uses `point_hurt`.
+
+## 2026-10-07 — Bundle packages: SDK side
+
+A workspace root with `s2script.kind: "bundle"` now publishes its plugins as one registry entry,
+so a multi-plugin project (EdgeGamers' Jailbreak port, TTT) is listed and installed as one instead
+of cluttering the plugin list. `s2s deploy` publishes members carrying the bundle claim in their
+registry manifest (never the `.s2sp`), then a manifest-only bundle version pinning each member,
+refusing an already-published version with different pins. `s2s version` bumps the bundle by the
+largest member bump; `s2s install --with` adds optional members; `s2s add` refuses a bundle.
+The registry half (kind, claim validation, plan expansion, catalog folding, bundle page) is
+s2script-website PR #70, which ships first. Design: the website's
+`docs/superpowers/specs/2026-10-07-bundle-packages-design.md`. No runtime change; no live gate
+needed. Not yet published to the live registry.

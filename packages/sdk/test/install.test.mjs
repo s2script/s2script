@@ -171,3 +171,51 @@ test("resolveMerged surfaces a cross-root version conflict as an error", async (
   const { errors } = await (await import("../src/registry/install.ts")).resolveMerged(client, { a: "*", b: "*" });
   assert.ok(errors.some((e) => /conflict/i.test(e)));
 });
+
+test("parseManifest: a bundle entry may name optional members to install with it", () => {
+  assert.deepEqual(
+    parseManifest({
+      plugins: {
+        rtv: "^1.0.0",
+        "@edge/jb": { range: "^1.0.0", with: ["@edge/jb-perks"] },
+        "@edge/zones": { range: "^2.0.0" },
+      },
+    }),
+    {
+      plugins: { rtv: "^1.0.0", "@edge/jb": "^1.0.0", "@edge/zones": "^2.0.0" },
+      with: { "@edge/jb": ["@edge/jb-perks"] },
+    },
+  );
+  assert.deepEqual(parseManifest({ plugins: { "@edge/jb": {} } }), { plugins: { "@edge/jb": "*" } });
+  assert.throws(() => parseManifest({ plugins: { "@edge/jb": { with: "@edge/jb-perks" } } }), /must be an array/);
+  assert.throws(() => parseManifest({ plugins: { "@edge/jb": { range: 1 } } }), /must be a string/);
+  assert.throws(() => parseManifest({ plugins: { "@edge/jb": 1 } }), /range string or/);
+});
+
+test("installPlan forwards `with` to the plan for its bundle root only", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "s2s-inst-"));
+  const core = new Uint8Array([1]);
+  const perks = new Uint8Array([2]);
+  const seen = [];
+  const client = {
+    async plan(name, _range, withMembers) {
+      seen.push([name, withMembers]);
+      // The registry names a scoped package's file with both `@` and `/` replaced.
+      const entry = (n, bytes) => ({ ...planEntry(n, "1.0.0", bytes), filename: n.replace(/[@/]/g, "_") + ".s2sp" });
+      const install = [entry("@edge/jb-core", core)];
+      if (withMembers?.includes("@edge/jb-perks")) install.push(entry("@edge/jb-perks", perks));
+      return { root: { name, version: "1.0.0" }, install, skipped: [], warnings: [], errors: [] };
+    },
+    async downloadS2sp(name) {
+      return Buffer.from(name === "@edge/jb-core" ? core : perks);
+    },
+  };
+  const res = await installPlan({
+    client,
+    specs: { "@edge/jb": "*" },
+    with: { "@edge/jb": ["@edge/jb-perks"] },
+    dir,
+  });
+  assert.deepEqual(seen, [["@edge/jb", ["@edge/jb-perks"]]]);
+  assert.deepEqual(res.written.sort(), ["_edge_jb-core.s2sp", "_edge_jb-perks.s2sp"]);
+});

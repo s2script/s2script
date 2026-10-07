@@ -82,7 +82,7 @@ function shouldUpdate(release: ComprehensiveRelease, range: string, config: Chan
 }
 
 /** Read a package.json back off disk, keeping enough of its formatting to rewrite it in place. */
-function readJsonFile(path: string): { json: Record<string, unknown>; indent: string; eol: string } {
+export function readJsonFile(path: string): { json: Record<string, unknown>; indent: string; eol: string } {
   const raw = readFileSync(path, "utf8");
   const match = /^[ \t]*[{[]\s*\n([ \t]+)/.exec(raw);
   return {
