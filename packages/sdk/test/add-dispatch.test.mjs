@@ -146,3 +146,19 @@ test("plugin dispatch is unaffected by the library branch: types tarball, plugin
   assert.equal(existsSync(join(dir, ".s2script", "libs")), false, "the plugin path must never touch libs/");
   assert.equal(typeof result.npmrcLine, "string");
 });
+
+test("bundle: s2s add refuses a bundle by name and writes nothing", async () => {
+  const dir = consumerDir();
+  const before = readFileSync(join(dir, "package.json"), "utf8");
+  const fetchStub = async (url) => {
+    if (String(url).includes("/api/v1/resolve")) {
+      return jsonResponse({ name: "@edge/jb", kind: "bundle", version: "1.0.0", reviewState: "unreviewed", hasTypes: false });
+    }
+    throw new Error(`unexpected request ${url}`);
+  };
+  await assert.rejects(
+    addPackage({ pluginDir: dir, spec: "@edge/jb", registryUrl: "https://www.example.com", fetch: fetchStub }),
+    /@edge\/jb is a bundle.*s2s install @edge\/jb/s,
+  );
+  assert.equal(readFileSync(join(dir, "package.json"), "utf8"), before);
+});

@@ -16,6 +16,7 @@
 import { checkSiblingRanges, formatRangeViolations } from "./graph.ts";
 import type { RangeViolation } from "./graph.ts";
 import { indexInterfaces } from "./interfaces.ts";
+import { bundleProblems } from "./bundle.ts";
 import type { Workspace } from "./workspace.ts";
 
 /** Every preflight problem in `ws`, as report-ready text. Empty when the workspace is coherent. */
@@ -27,6 +28,9 @@ export function preflightProblems(ws: Workspace): string[] {
   const problems = [...indexInterfaces(ws.plugins).problems];
   const violations: RangeViolation[] = checkSiblingRanges(ws.plugins);
   if (violations.length > 0) problems.push(formatRangeViolations(violations));
+  // A bundle root that cannot be published is a property of the plugin set too: refuse it before
+  // anything builds, not after every member has been uploaded.
+  problems.push(...bundleProblems(ws));
   return problems;
 }
 

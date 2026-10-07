@@ -11,4 +11,5 @@ declare module "semver" {
     range: string,
     options?: { includePrerelease?: boolean; loose?: boolean },
   ): boolean;
+  export function inc(version: string, release: "major" | "minor" | "patch"): string | null;
 }

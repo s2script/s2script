@@ -611,6 +611,12 @@ live probes; authenticated client acceptance remains a separate recorded gate.
 
 A plugin is already a versioned `package.json` package with deps and a published interface — the registry falls out. Three services: **(1) package registry + resolver** (`s2script install @edge/admin-core` resolves the dependency closure into `/plugins` — `npm install` for servers; `s2script update`/lockfile for reproducibility); **(2) type/interface distribution** (`s2script add` pulls a plugin's published `.d.ts` into the dev environment — build against another dev's interface type-safely without their source; the load-time gate verifies the same contract); **(3) discovery/community** (browse, search, versioned downloads, publisher pages).
 
+**Bundles** group one publisher's plugins into a single registry entry: a package of kind
+`bundle` with no artifact, whose versions pin each member plugin's exact version. The workspace
+root declares it (`s2script.kind: "bundle"`); `s2s deploy` publishes members then the bundle,
+`s2s install` expands it to its members. Membership is a registry fact only — it rides in the
+deploy manifest, never in the `.s2sp`, so the loader and its flat plugins directory are untouched.
+
 **Hosting boundary:** the registry and developer platform is developed and operated separately from this repository. Its hosting, storage, and database design are not part of the framework and are not documented here.
 
 **Scope taxonomy (npm's model, one reserved official scope):**

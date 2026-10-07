@@ -198,7 +198,7 @@ export class RegistryClient {
     version: string;
     reviewState: string;
     hasTypes: boolean;
-    kind: "plugin" | "library";
+    kind: "plugin" | "library" | "bundle";
     publishes?: unknown;
   }> {
     const u = new URL(`${this.baseUrl}/api/v1/resolve`);
@@ -232,10 +232,12 @@ export class RegistryClient {
     return this.json(res, "meta");
   }
 
-  async plan(name: string, range = "*"): Promise<InstallPlan> {
+  /** `withMembers`: optional members of a bundle root to install too (ignored for a plugin root). */
+  async plan(name: string, range = "*", withMembers?: string[]): Promise<InstallPlan> {
     const u = new URL(`${this.baseUrl}/api/v1/plan`);
     u.searchParams.set("name", name);
     u.searchParams.set("range", range);
+    if (withMembers && withMembers.length > 0) u.searchParams.set("with", withMembers.join(","));
     const res = await this.request("plan", u);
     return this.json(res, "plan");
   }

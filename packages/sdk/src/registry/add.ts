@@ -117,6 +117,15 @@ export async function addPackage(opts: {
 
   const resolved = await client.resolve(name, range);
 
+  if (resolved.kind === "bundle") {
+    // A bundle has no code or types of its own — only a list of member plugins. What a plugin
+    // depends on is one of those members' interfaces.
+    throw new Error(
+      `${name} is a bundle — it groups plugins for install and has nothing to add to a plugin. ` +
+        `Install it on a server with \`s2s install ${name}\`, or \`s2s add\` the member plugin whose interface you use.`,
+    );
+  }
+
   if (resolved.kind === "library") {
     // A library's types live INSIDE the .s2lib (build-library.ts), never in the
     // separate types tarball, so `hasTypes` (which describes that tarball) is not

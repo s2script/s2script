@@ -209,3 +209,18 @@ test("downloadS2sp() reports server errors instead of returning a bogus buffer",
   assert.match(err.message, /no s2sp for rtv@1\.0\.0/);
   assert.match(err.message, /s2sp download/);
 });
+
+test("plan: optional bundle members travel as one comma-separated `with`", async () => {
+  let seen;
+  const c = new RegistryClient({
+    baseUrl: "https://www.example.com",
+    fetch: async (url) => {
+      seen = new URL(String(url));
+      return new Response(JSON.stringify({ root: null, install: [], skipped: [], warnings: [], errors: [] }), { status: 200 });
+    },
+  });
+  await c.plan("@edge/jb", "^1", ["@edge/a", "@edge/b"]);
+  assert.equal(seen.searchParams.get("with"), "@edge/a,@edge/b");
+  await c.plan("@edge/jb");
+  assert.equal(seen.searchParams.has("with"), false);
+});

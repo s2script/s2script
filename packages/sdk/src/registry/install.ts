@@ -11,8 +11,17 @@ import type { InstallPlan, PlanEntry } from "./client.ts";
 
 export interface InstallInput {
   plugins: Record<string, string>;
+  /**
+   * Bundle entries only: the optional members to install alongside the required ones. Present
+   * only when some entry uses the object form, so a plain manifest reads back unchanged.
+   */
+  with?: Record<string, string[]>;
 }
 
+/**
+ * Each `plugins` entry is a range string, or — for a bundle that should also install some of its
+ * optional members — `{ "range": "^1.0.0", "with": ["@scope/member"] }`.
+ */
 export function parseManifest(input: unknown): InstallInput {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("manifest must be a JSON object");
@@ -22,11 +31,26 @@ export function parseManifest(input: unknown): InstallInput {
     throw new Error('manifest must have a "plugins" object (name -> version range)');
   }
   const out: Record<string, string> = {};
-  for (const [name, range] of Object.entries(plugins as Record<string, unknown>)) {
-    if (typeof range !== "string") throw new Error(`range for ${name} must be a string`);
-    out[name] = range;
+  const withMembers: Record<string, string[]> = {};
+  for (const [name, entry] of Object.entries(plugins as Record<string, unknown>)) {
+    if (typeof entry === "string") {
+      out[name] = entry;
+      continue;
+    }
+    const obj = entry as { range?: unknown; with?: unknown } | null;
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+      throw new Error(`entry for ${name} must be a range string or { "range", "with" }`);
+    }
+    if (obj.range !== undefined && typeof obj.range !== "string") {
+      throw new Error(`range for ${name} must be a string`);
+    }
+    if (obj.with !== undefined && (!Array.isArray(obj.with) || obj.with.some((w) => typeof w !== "string"))) {
+      throw new Error(`"with" for ${name} must be an array of optional member names`);
+    }
+    out[name] = (obj.range as string | undefined) ?? "*";
+    if (Array.isArray(obj.with) && obj.with.length > 0) withMembers[name] = obj.with as string[];
   }
-  return { plugins: out };
+  return Object.keys(withMembers).length > 0 ? { plugins: out, with: withMembers } : { plugins: out };
 }
 
 /** Split "name@range" (scoped-safe: only the LAST @ separates). Bare name -> "*". */
@@ -74,15 +98,17 @@ function safeFilename(e: PlanEntry): string {
 }
 
 export async function resolveMerged(
-  client: { plan(name: string, range?: string): Promise<InstallPlan> },
-  specs: Record<string, string>
+  client: { plan(name: string, range?: string, withMembers?: string[]): Promise<InstallPlan> },
+  specs: Record<string, string>,
+  /** Bundle root name -> optional members to add (forwarded as the plan's `with`). */
+  withMembers: Record<string, string[]> = {}
 ): Promise<{ install: PlanEntry[]; warnings: string[]; errors: string[] }> {
   const chosen = new Map<string, PlanEntry>();
   const warnings: string[] = [];
   const errors: string[] = [];
 
   for (const [name, range] of Object.entries(specs)) {
-    const plan = await client.plan(name, range);
+    const plan = await client.plan(name, range, withMembers[name]);
     if (plan.errors.length) {
       errors.push(...plan.errors);
       continue;
@@ -109,17 +135,19 @@ export async function resolveMerged(
 
 export async function installPlan(opts: {
   client: {
-    plan(name: string, range?: string): Promise<InstallPlan>;
+    plan(name: string, range?: string, withMembers?: string[]): Promise<InstallPlan>;
     downloadS2sp(name: string, version: string): Promise<Buffer>;
   };
   specs: Record<string, string>;
+  /** Bundle root name -> optional members to install too. */
+  with?: Record<string, string[]>;
   dir: string;
   reviewedOnly?: boolean;
   dryRun?: boolean;
   log?: (m: string) => void;
 }): Promise<{ written: string[]; skipped: string[]; warnings: string[] }> {
   const log = opts.log ?? (() => {});
-  const { install, warnings, errors } = await resolveMerged(opts.client, opts.specs);
+  const { install, warnings, errors } = await resolveMerged(opts.client, opts.specs, opts.with);
 
   if (errors.length) throw new Error(`cannot resolve plugins:\n  - ${errors.join("\n  - ")}`);
 

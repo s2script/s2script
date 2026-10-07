@@ -1,0 +1,10 @@
+{
+  "name": "@fixture/jb",
+  "version": "1.0.0",
+  "workspaces": ["plugins/*"],
+  "s2script": {
+    "kind": "bundle",
+    "workspace": { "plugins": ["plugins/*"] },
+    "bundle": { "optional": ["@fixture/jb-perks"] }
+  }
+}

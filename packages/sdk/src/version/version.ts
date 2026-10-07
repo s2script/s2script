@@ -12,6 +12,8 @@
  *      It finds no sibling edges in the real dependency fields, so it correctly no-ops there.
  *   5. One additional pass rewrites `s2script.pluginDependencies` ranges (`ranges.ts`), governed
  *      by the same `updateInternalDependencies` config changesets uses for step 4.
+ *   6. In a bundle workspace, the root (which changesets never versions) is bumped by the largest
+ *      member bump, because a bundle release pins its members' exact versions (`bundle-bump.ts`).
  *
  * The `.changeset/` directory, the config and the pre-release state are all read from the
  * workspace root with the workspace's OWN changesets (`changesets.ts`), so `s2s version` and a
@@ -24,6 +26,8 @@ import { join } from "node:path";
 import { loadChangesets } from "./changesets.ts";
 import { mirrorPackages, realPackages } from "./mirror.ts";
 import { rewriteSiblingRanges } from "./ranges.ts";
+import { bumpBundle } from "./bundle-bump.ts";
+import type { BundleBump } from "./bundle-bump.ts";
 import type { ComprehensiveRelease } from "./changesets.ts";
 import type { RangeRewrite, RangeSkip } from "./ranges.ts";
 import { findWorkspaceRoot, loadWorkspace } from "../workspace/workspace.ts";
@@ -44,7 +48,9 @@ export interface VersionResult {
   rewrites: RangeRewrite[];
   /** Sibling ranges step 5 deliberately left alone, each with a named reason. */
   skips: RangeSkip[];
-  /** Every file written, by changesets (step 4) and by step 5. */
+  /** In a bundle workspace, the root bump step 6 made because a member was released. */
+  bundleBump: BundleBump | null;
+  /** Every file written, by changesets (step 4), step 5 and step 6. */
   touchedFiles: string[];
   /** The `@changesets/*` versions the gate accepted — worth showing when a plan looks wrong. */
   changesetsVersions: Record<string, string>;
@@ -79,6 +85,7 @@ export async function versionWorkspace(root: string, opts: VersionOptions = {}):
   const plan = cs.assembleReleasePlan(changesets, mirror, config, preState); // step 3
   const touchedFiles = await cs.applyReleasePlan(plan, real, config); // step 4
   const ranges = rewriteSiblingRanges(ws, plan.releases, config); // step 5
+  const bundle = bumpBundle(ws, plan.releases); // step 6 — a bundle root follows its members
 
   return {
     root: ws.root,
@@ -86,7 +93,8 @@ export async function versionWorkspace(root: string, opts: VersionOptions = {}):
     releases: plan.releases,
     rewrites: ranges.rewrites,
     skips: ranges.skips,
-    touchedFiles: [...touchedFiles, ...ranges.touchedFiles],
+    bundleBump: bundle.bump,
+    touchedFiles: [...touchedFiles, ...ranges.touchedFiles, ...bundle.touchedFiles],
     changesetsVersions: cs.versions,
   };
 }

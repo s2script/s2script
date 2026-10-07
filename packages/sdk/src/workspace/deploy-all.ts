@@ -12,6 +12,7 @@ import { assembleDeployArchive } from "../registry/deploy.ts";
 import type { DeployablePkgJson } from "../registry/deploy.ts";
 import type { PluginBuildOutcome } from "./build-all.ts";
 import type { Workspace, WorkspacePlugin } from "./workspace.ts";
+import { bundleManifest, bundleMembers, sameMembers, type Bundle, type BundleMembers } from "./bundle.ts";
 
 // ---------------------------------------------------------------------------
 // Recovering plugin objects from a build-all.ts result
@@ -200,6 +201,13 @@ export async function uploadPlan(
   plan: readonly PlanEntry[],
   built: ReadonlyMap<string, BuiltPlugin>,
   client: RegistryClient,
+  opts: {
+    /**
+     * In a bundle workspace, the bundle every uploaded plugin is a member of. It is written into
+     * the REGISTRY deploy manifest only — the .s2sp keeps the minimal manifest the runtime reads.
+     */
+    bundle?: string;
+  } = {},
 ): Promise<DeployResult[]> {
   const results: DeployResult[] = [];
   for (const entry of plan) {
@@ -216,6 +224,7 @@ export async function uploadPlan(
     }
     try {
       const archive = assembleDeployArchive(b.plugin.dir, b.plugin.pkg as DeployablePkgJson, b.outPath);
+      if (opts.bundle !== undefined) archive.manifest = { ...archive.manifest, bundle: opts.bundle };
       const res = await client.deploy(archive);
       results.push({ plugin: entry.plugin, status: "published", detail: res.reviewState });
     } catch (e) {
@@ -236,4 +245,94 @@ export async function uploadPlan(
     }
   }
   return results;
+}
+
+// ---------------------------------------------------------------------------
+// Bundle (published last, after its members)
+// ---------------------------------------------------------------------------
+
+export interface BundlePlanEntry {
+  bundle: Bundle;
+  reason: "skip (already published)" | "PUBLISH";
+  manifest: Record<string, unknown>;
+}
+
+/** The member pins of `name@version` as the registry recorded them, or null when not published. */
+async function publishedMembers(
+  client: RegistryClient,
+  name: string,
+  version: string,
+): Promise<BundleMembers | null> {
+  let meta: unknown;
+  try {
+    meta = await client.meta(name);
+  } catch {
+    // Same courtesy-check rule as `isAlreadyPublished`: "not found" and "could not ask" both read
+    // as unpublished. The registry still refuses a duplicate version at upload (see uploadBundle).
+    return null;
+  }
+  const versions = (meta as { versions?: { version?: string; members?: BundleMembers }[] }).versions ?? [];
+  const hit = versions.find((v) => v.version === version);
+  return hit ? (hit.members ?? {}) : null;
+}
+
+/**
+ * Plan the bundle row. An already-published bundle version is a skip only when it pins exactly
+ * the members just built — a version is a release, so the same version with different member
+ * versions is refused before anything uploads, naming the fix.
+ */
+export async function planBundle(bundle: Bundle, client: RegistryClient): Promise<BundlePlanEntry> {
+  const manifest = bundleManifest(bundle);
+  const published = await publishedMembers(client, bundle.name, bundle.version);
+  if (published === null) return { bundle, reason: "PUBLISH", manifest };
+  if (!sameMembers(published, bundleMembers(bundle))) {
+    throw new Error(
+      `bundle ${bundle.name}@${bundle.version} is already published with different members — ` +
+        `bump the bundle's version (\`s2s version\` does this when a member changes) and deploy again`,
+    );
+  }
+  return { bundle, reason: "skip (already published)", manifest };
+}
+
+/** The plan line for the bundle, in `formatPlan`'s register. */
+export function formatBundlePlan(entry: BundlePlanEntry): string {
+  const count = entry.bundle.members.length;
+  return `    ${entry.bundle.name} ${entry.bundle.version}   ${entry.reason} (bundle of ${count} plugin${count === 1 ? "" : "s"})`;
+}
+
+export interface BundleDeployResult {
+  bundle: Bundle;
+  status: "published" | "skipped" | "failed";
+  detail: string;
+}
+
+/**
+ * Upload the bundle after its members. Any member failure leaves the bundle unpublished: it would
+ * pin a version the registry does not have, and the server would refuse it anyway.
+ */
+export async function uploadBundle(
+  entry: BundlePlanEntry,
+  memberResults: readonly DeployResult[],
+  client: RegistryClient,
+): Promise<BundleDeployResult> {
+  if (entry.reason !== "PUBLISH") return { bundle: entry.bundle, status: "skipped", detail: entry.reason };
+  if (memberResults.some((r) => r.status === "failed")) {
+    return { bundle: entry.bundle, status: "skipped", detail: "a member failed to publish" };
+  }
+  try {
+    const res = await client.deploy({ manifest: entry.manifest });
+    return { bundle: entry.bundle, status: "published", detail: res.reviewState };
+  } catch (e) {
+    if (isDuplicateVersionRejection(e)) {
+      // Only reachable when planBundle could not read the published version (registry unreachable
+      // at plan time, or a race), so its member pins went unchecked — say so rather than imply
+      // they match.
+      return {
+        bundle: entry.bundle,
+        status: "skipped",
+        detail: "skip (already published; its members were not verified)",
+      };
+    }
+    return { bundle: entry.bundle, status: "failed", detail: e instanceof Error ? e.message : String(e) };
+  }
 }
