@@ -1,5 +1,16 @@
 # @s2script/cli
 
+## 0.28.0
+
+### Minor Changes
+
+- 445fbe4: Bundles: a workspace root with `s2script.kind: "bundle"` publishes its plugins as one registry entry. `s2s deploy` publishes the members (each claiming the bundle) and then the bundle, pinning every member's exact version, and refuses an already-published bundle version whose pins differ. `s2s version` bumps the bundle by the largest member bump. `s2s install` takes `--with <member>` (and `{ "range", "with" }` manifest entries) to add a bundle's optional members, and `s2s add` refuses a bundle.
+- f2b8e2b: `s2s deploy` sends the package's README and source link to the registry. A `README.md` beside
+  `package.json` (found the way npm finds one) rides in the deploy as its own entry, and package.json's
+  `repository` field goes into the deploy manifest. Both fill in the package's page on s2script.com
+  and never enter the `.s2sp`/`.s2lib` manifest the runtime reads. A README over the registry's
+  100,000-character cap is refused before anything uploads.
+
 ## 0.27.1
 
 ### Patch Changes
