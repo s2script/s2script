@@ -16,7 +16,13 @@ import { unzipSync } from "fflate";
 import { buildPlugin } from "../src/build.ts";
 import { buildLibrary } from "../src/build-library.ts";
 import { RegistryClient, RegistryError } from "../src/registry/client.ts";
-import { assertDeployable, assembleDeployArchive, deployPlugin } from "../src/registry/deploy.ts";
+import {
+  MAX_README_CHARS,
+  assertDeployable,
+  assembleDeployArchive,
+  deployPlugin,
+  readPackageReadme,
+} from "../src/registry/deploy.ts";
 import { buildWorkspace } from "../src/workspace/build-all.ts";
 import { loadWorkspace } from "../src/workspace/workspace.ts";
 import {
@@ -487,4 +493,51 @@ test("RegistryError 409 is recognized regardless of message wording (status-base
   const e = new RegistryError("anything", 409);
   assert.ok(e instanceof RegistryError);
   assert.equal(e.status, 409);
+});
+
+// ---------------------------------------------------------------------------
+// README + repository — registry-page facts that ride with the deploy, never in the runtime manifest
+// ---------------------------------------------------------------------------
+
+test("assembleDeployArchive sends the README and package.json repository to the registry only", async () => {
+  const dir = libDir();
+  const pkgPath = join(dir, "package.json");
+  const repository = { type: "git", url: "git+https://github.com/edge/libs.git", directory: "base64" };
+  writeFileSync(pkgPath, JSON.stringify({ ...JSON.parse(readFileSync(pkgPath, "utf8")), repository }));
+  writeFileSync(join(dir, "README.md"), "\n# base64\n\nEncodes things.\n\n");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+  const outPath = await buildLibrary(dir);
+  const archive = assembleDeployArchive(dir, pkg, outPath);
+  assert.deepEqual(archive.manifest.repository, repository);
+  assert.equal(archive.readme, "# base64\n\nEncodes things.");
+  // The built artifact's own manifest stays the runtime's minimal one.
+  const builtManifest = JSON.parse(Buffer.from(unzipSync(new Uint8Array(archive.lib))["manifest.json"]).toString("utf8"));
+  assert.equal(builtManifest.repository, undefined);
+});
+
+test("assembleDeployArchive leaves both out when package.json and the directory have none", async () => {
+  const dir = libDir();
+  const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+  const archive = assembleDeployArchive(dir, pkg, await buildLibrary(dir));
+  assert.equal("repository" in archive.manifest, false);
+  assert.equal(archive.readme, null);
+});
+
+test("readPackageReadme finds README the way npm does", () => {
+  const mk = (files) => {
+    const dir = mkdtempSync(join(tmpdir(), "s2s-readme-"));
+    for (const [n, t] of Object.entries(files)) writeFileSync(join(dir, n), t);
+    return dir;
+  };
+  assert.equal(readPackageReadme(mk({ "readme.markdown": "lower" })), "lower");
+  assert.equal(readPackageReadme(mk({ README: "bare" })), "bare");
+  assert.equal(readPackageReadme(mk({ "README.md": "md", "readme.markdown": "other" })), "md");
+  assert.equal(readPackageReadme(mk({ "README.md": "  \n" })), null, "blank is none");
+  assert.equal(readPackageReadme(mk({ "README.txt": "no", "NOTREADME.md": "no" })), null);
+});
+
+test("readPackageReadme refuses a README over the registry cap before anything uploads", () => {
+  const dir = mkdtempSync(join(tmpdir(), "s2s-readme-"));
+  writeFileSync(join(dir, "README.md"), "x".repeat(MAX_README_CHARS + 1));
+  assert.throws(() => readPackageReadme(dir), /README\.md is 100,001 characters; the registry accepts at most 100,000/);
 });

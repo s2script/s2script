@@ -50,6 +50,20 @@ test("deploy omits types.tgz when types is null", async () => {
   assert.equal(entries["types.tgz"], undefined);
 });
 
+test("deploy adds README.md when a readme is given, and leaves it out when blank", async () => {
+  const bodies = [];
+  const client = clientWith(async (_url, init) => {
+    bodies.push(unzipSync(new Uint8Array(init.body)));
+    return jsonResponse(200, { name: "rtv", version: "1.0.0", reviewState: "unreviewed" });
+  });
+  await client.deploy({ manifest: { id: "rtv" }, s2sp: Buffer.from([1]), readme: "# RTV ✓" });
+  await client.deploy({ manifest: { id: "rtv" }, s2sp: Buffer.from([1]), readme: "  " });
+  await client.deploy({ manifest: { id: "rtv" }, s2sp: Buffer.from([1]) });
+  assert.equal(strFromU8(bodies[0]["README.md"]), "# RTV ✓");
+  assert.equal(bodies[1]["README.md"], undefined);
+  assert.equal(bodies[2]["README.md"], undefined);
+});
+
 test("deploy posts library.s2lib and no plugin.s2sp for a library", async () => {
   let posted = null;
   const client = clientWith(async (_url, init) => {

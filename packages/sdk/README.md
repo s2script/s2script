@@ -150,6 +150,22 @@ and records which member versions each release pinned. Make the workspace root t
 The membership claim travels in the registry upload only — the `.s2sp` manifest the runtime loads
 is unchanged, and the runtime has no notion of bundles.
 
+## Publishing
+
+`s2s deploy` builds the package and publishes it to the registry. Its page on s2script.com
+is filled in from what you already keep beside your code:
+
+- **README:** `README.md` next to `package.json` (found the way npm finds one, up to 100,000
+  characters). Each deploy that carries one replaces the page's README.
+- **Source link:** package.json's standard `repository` field, in any npm form.
+  `{ "url": …, "directory": … }` links straight into a monorepo directory.
+- **Config:** the `s2script.config` block, shown as a table of options with their defaults.
+  Options marked `"sensitive": true` keep their default off the page.
+
+The README and `repository` travel with the deploy, not inside the `.s2sp`: the runtime never sees
+them. A deploy without them leaves what the page already shows, so a README or link set on the
+site stays until a deploy replaces it.
+
 ## Docs
 
 **[s2script.com/docs](https://s2script.com/docs)** — getting started, guides, and the full API

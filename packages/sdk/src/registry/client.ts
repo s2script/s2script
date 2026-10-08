@@ -169,6 +169,8 @@ export class RegistryClient {
     s2sp?: Buffer | null;
     lib?: Buffer | null;
     types?: Buffer | null;
+    /** Shown on the package's registry page; replaces the README there. Omitted keeps it. */
+    readme?: string | null;
   }): Promise<{ name: string; version: string; reviewState: string; disclaimer?: string }> {
     const entries: Record<string, Uint8Array> = {
       "manifest.json": new TextEncoder().encode(JSON.stringify(opts.manifest)),
@@ -179,6 +181,9 @@ export class RegistryClient {
     if (opts.lib && opts.lib.length) entries["library.s2lib"] = new Uint8Array(opts.lib);
     if (opts.types && opts.types.length) {
       entries["types.tgz"] = new Uint8Array(opts.types);
+    }
+    if (opts.readme && opts.readme.trim()) {
+      entries["README.md"] = new TextEncoder().encode(opts.readme);
     }
     // level 0: the artifact is already deflated; recompressing wastes CPU for ~0 gain.
     const body = zipSync(entries, { level: 0 });
