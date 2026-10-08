@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { unzipSync } from "fflate";
 import { buildPlugin } from "../build.ts";
@@ -20,6 +20,8 @@ export interface DeployablePkgJson {
   types?: string;
   typings?: string;
   private?: boolean;
+  /** npm's `repository` (string or `{ url, directory }`), forwarded to the registry as-is. */
+  repository?: unknown;
   s2script?: {
     kind?: string;
     publishes?: Record<string, unknown> | string | null;
@@ -52,6 +54,42 @@ export interface DeployArchive {
   s2sp: Buffer | null;
   lib: Buffer | null;
   types: Buffer | null;
+  /** The package's README, shown on its registry page. Null when it has none. */
+  readme: string | null;
+}
+
+/** The registry's README cap, in characters. Refusing locally beats a build-then-413. */
+export const MAX_README_CHARS = 100_000;
+
+/**
+ * The package's README, found the way npm finds one: a `README`, `README.md` or `README.markdown`
+ * beside package.json, any case, `README.md` preferred. Null when there is none or it is blank.
+ */
+export function readPackageReadme(pluginDir: string): string | null {
+  const names = readdirSync(pluginDir).filter((n: string) => /^readme(\.(md|markdown))?$/i.test(n));
+  if (names.length === 0) return null;
+  const name = names.find((n: string) => n === "README.md") ?? names.sort()[0]!;
+  const text = readFileSync(resolve(pluginDir, name), "utf8").trim();
+  if (!text) return null;
+  if (text.length > MAX_README_CHARS) {
+    throw new Error(
+      `${name} is ${text.length.toLocaleString("en-US")} characters; the registry accepts at most ` +
+        `${MAX_README_CHARS.toLocaleString("en-US")}. Shorten it, or link to longer docs from it.`,
+    );
+  }
+  return text;
+}
+
+/**
+ * The deploy manifest is the built archive's manifest plus registry-only facts the runtime never
+ * reads. package.json's `repository` is one: it rides in the deploy manifest (the registry turns
+ * it into the package page's source link), never in the .s2sp/.s2lib manifest.
+ */
+function withRegistryFields(
+  manifest: Record<string, unknown>,
+  pkg: DeployablePkgJson,
+): Record<string, unknown> {
+  return pkg.repository === undefined ? manifest : { ...manifest, repository: pkg.repository };
 }
 
 /**
@@ -82,7 +120,13 @@ export function assembleDeployArchive(
       throw new Error(`built archive missing manifest.json: ${outPath}`);
     }
     const manifest = JSON.parse(Buffer.from(manifestEntry).toString("utf8")) as Record<string, unknown>;
-    return { manifest, s2sp: null, lib, types: null };
+    return {
+      manifest: withRegistryFields(manifest, pkg),
+      s2sp: null,
+      lib,
+      types: null,
+      readme: readPackageReadme(absDir),
+    };
   }
 
   const gate = assertPublishesTypes(pkg, absDir);
@@ -114,7 +158,13 @@ export function assembleDeployArchive(
     });
   }
 
-  return { manifest, s2sp, lib: null, types };
+  return {
+    manifest: withRegistryFields(manifest, pkg),
+    s2sp,
+    lib: null,
+    types,
+    readme: readPackageReadme(absDir),
+  };
 }
 
 export async function deployPlugin(opts: {
@@ -149,7 +199,7 @@ export async function deployPlugin(opts: {
     packageKind(pkg) === "library"
       ? await buildLibrary(absDir, opts.packagesDir)
       : await buildPlugin(absDir, opts.packagesDir);
-  const { manifest, s2sp, lib, types } = assembleDeployArchive(absDir, pkg, outPath);
+  const archive = assembleDeployArchive(absDir, pkg, outPath);
 
   const client = new RegistryClient({
     baseUrl: opts.registryUrl || creds.registryUrl || defaultRegistryUrl(),
@@ -157,5 +207,5 @@ export async function deployPlugin(opts: {
     fetch: opts.fetch,
   });
 
-  return client.deploy({ manifest, s2sp, lib, types });
+  return client.deploy(archive);
 }
