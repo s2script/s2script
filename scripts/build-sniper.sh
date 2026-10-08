@@ -26,6 +26,10 @@ curl -fsSL https://github.com/Kitware/CMake/releases/download/v3.28.6/cmake-3.28
 export PATH="/opt/cmake-3.28.6-linux-x86_64/bin:$PATH"
 
 cd /repo
+# The container runs as root but the bind-mounted checkout belongs to the host user
+# (uid 1001 on GitHub Actions), so git refuses it as "dubious ownership" — which kills
+# shim/cmake/Libffi.cmake's `git rev-parse` pin check. The container is throwaway.
+git config --global --add safe.directory '*'
 echo "=== install verified build-only Node 22.14 (Linux x86_64) ==="
 NODE_BIN=$(bash scripts/lib/setup-sniper-node.sh /opt/s2script-node-v22.14.0)
 export PATH="$NODE_BIN:$PATH"
