@@ -500,3 +500,11 @@ loader's file watch loads, hot-reloads or unloads the changed files. The native 
 `@s2script/basecommands` alone. Verified: core unit tests, a V8-level refusal test for an
 unpermitted plugin, and an opt-in live test installing through the native from a local registry.
 Not yet live-gated in CS2.
+
+## 2026-10-16 — `[S2S]` chat/console tag
+
+Every message the runtime and the base plugins print now carries `[S2S]` instead of SourceMod's
+`[SM]`: all `translations/*.phrases.json`, the prelude's built-in access/console-only replies, the
+SDK/cs2 doc examples, and the live-soak harness that matches `[S2S] Reloading`. Command names keep
+the `sm_` prefix and the `sm` console command for SourceMod familiarity; whether to move them to
+`s2s_` is an open question. Historical specs, plans and captured logs keep `[SM]` as written.

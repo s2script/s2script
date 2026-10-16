@@ -7227,7 +7227,7 @@
     /// root-file read comes back null. With no ENGINE_OPS installed (as above), every root read is
     /// null, so this isolates the branch on `hasSeed` alone: a SEEDLESS load with the file "missing"
     /// must warn (every key in that set would silently render as its own key text — e.g. a missing
-    /// translations/common.phrases.json degrading "No matching players" to that literal, no [SM],
+    /// translations/common.phrases.json degrading "No matching players" to that literal, no [S2S],
     /// no colour, nothing in the console); a load WITH a seed and the identical missing-file read is
     /// the normal, correct in-code-English-default degrade path and must stay silent.
     #[test]

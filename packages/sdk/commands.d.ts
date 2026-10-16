@@ -57,7 +57,7 @@ export interface CommandInvocation {
    *
    * @example
    * // `!help` answers in chat; `sm_help` typed at a console answers in that console.
-   * command("sm_help", (cmd) => { cmd.reply("[SM] Commands: …"); return HookResult.Handled; });
+   * command("sm_help", (cmd) => { cmd.reply("[S2S] Commands: …"); return HookResult.Handled; });
    */
   reply(message: string): void;
   /**

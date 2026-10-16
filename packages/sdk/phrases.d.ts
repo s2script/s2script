@@ -23,7 +23,7 @@
  * unresolved key renders as the key itself, so it should still read as a sentence.
  *
  * ```json
- * { "Gagged Player": "{green}[SM]{default} Gagged {1} player." }
+ * { "Gagged Player": "{green}[S2S]{default} Gagged {1} player." }
  * ```
  *
  * A translator adds `translations/<code>/<your-plugin>.phrases.json` — no code change, no rebuild.

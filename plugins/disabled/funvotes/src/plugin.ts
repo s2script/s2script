@@ -74,7 +74,7 @@ export function OnPluginStart(): void {
 
   command.admin("sm_voteslay", ADMFLAG.VOTE, cmd => {
     const targets = Player.target(cmd.arg(0), cmd.callerSlot, true);
-    // Both replies below are LOCAL keys (colour-free, no "[SM] " prefix) — see phrases.ts.
+    // Both replies below are LOCAL keys (colour-free, no "[S2S] " prefix) — see phrases.ts.
     if (targets.length === 0) { cmd.replyT("Voteslay No Matching Players"); return HookResult.Handled; }
     if (targets.length > 1) { cmd.replyT("Voteslay Ambiguous Target"); return HookResult.Handled; }
     const uid = targets[0].userId;

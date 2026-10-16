@@ -257,7 +257,7 @@ class FakeRun:
                 self.applied_generation = config_generation
         if any(command.startswith("sm plugins reload ") for command in commands):
             self.pending_active += 1
-            return 0, "[SM] Reloading '@s2script/clientprefs'\n"
+            return 0, "[S2S] Reloading '@s2script/clientprefs'\n"
         for command in commands:
             if command.startswith("sm_mixed_start "):
                 self.current_cycle = int(command.split()[-1])

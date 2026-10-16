@@ -698,7 +698,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         // in-code English default) and must stay silent. A SEEDLESS load (the "common" convention —
         // no second argument) has nothing to degrade TO: if translations/<name>.phrases.json is also
         // missing, this set is now empty, and every key resolved against it falls all the way through
-        // to translate's ultimate fallback — the bare key text, rendered to players with no [SM]
+        // to translate's ultimate fallback — the bare key text, rendered to players with no [S2S]
         // prefix, no colour, and nothing in the console to explain why.
         console.log("[s2script] WARN: translations set \"" + name + "\" has no seed and translations/"
           + name + ".phrases.json is missing — every key in it will render as its own key text");
@@ -1121,7 +1121,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       __s2cmd_add(name, function (slot, a, src) {
         var ctx = __s2cmd_ctx(slot, a, src);
         if (ctx.callerSlot < 0) { return handler(ctx); }
-        ctx.reply("[SM] This command can only be run from the server console.");
+        ctx.reply("[S2S] This command can only be run from the server console.");
       }, -1);   // -1 = console/server-only sentinel
     },
     registerAdmin: function (name, flags, handler) {
@@ -1132,10 +1132,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         if (typeof check !== "function") {
           if (!globalThis.__s2cmd_warnedNoAdmin) { globalThis.__s2cmd_warnedNoAdmin = true;
             console.log("[s2script] WARN: registerAdmin('" + name + "') used without @s2script/admin — denying non-server callers"); }
-          ctx.reply("[SM] You do not have access to this command."); return;
+          ctx.reply("[S2S] You do not have access to this command."); return;
         }
         if (check(ctx.callerSlot, flags | 0, name)) { return handler(ctx); }
-        ctx.reply("[SM] You do not have access to this command.");
+        ctx.reply("[S2S] You do not have access to this command.");
       }, flags | 0);   // the ADMFLAG mask this command requires
     },
     // Slice 6.11: invoke a registered command by name (same context, synchronous — the wrapper applies

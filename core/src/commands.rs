@@ -879,7 +879,7 @@ mod tests {
         eval_in_context("t", "globalThis.__con = [];").unwrap();   // isolate from the registerServer denial above
         dispatch_client_command(3, "sm_adm", "");
         assert_eq!(eval_in_context_string("t", "String(globalThis.__adm)"), "none"); // denied
-        assert_eq!(eval_in_context_string("t", "globalThis.__con.join(';')"), "3|[SM] You do not have access to this command.\n",
+        assert_eq!(eval_in_context_string("t", "globalThis.__con.join(';')"), "3|[S2S] You do not have access to this command.\n",
                    "the console-sourced denial lands in the caller's console");
         assert_eq!(eval_in_context_string("t", "String(globalThis.__cht.length)"), "0",
                    "the console-sourced denial must not land in chat");

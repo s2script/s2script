@@ -948,7 +948,7 @@ def main(argv: list[str] | None = None, *, run_fn=None, clock=None, utc_fn=None)
         if code:
             errors.append(f"cycle {cycle} reload RCON failed ({code})")
             complete = False
-        ack = output.count("[SM] Reloading")
+        ack = output.count("[S2S] Reloading")
         reload_acks += ack
         if ack != 1:
             errors.append(f"cycle {cycle} reload expected 1 ACK, got {ack}")

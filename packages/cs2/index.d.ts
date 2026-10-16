@@ -327,7 +327,7 @@ export declare const Activity: {
 /**
  * CS2 chat color control bytes (values from CounterStrikeSharp's ChatColors enum). Prepend one to a chat
  * message to color it — CS2 requires a leading control byte for the message to render at all. The plugin
- * owns color (SourceMod-parity): e.g. `Chat.toAll(ChatColors.Green + "[SM] hello")`.
+ * owns color (SourceMod-parity): e.g. `Chat.toAll(ChatColors.Green + "[S2S] hello")`.
  */
 export declare const ChatColors: {
   /** Reset to the client's default chat color. */ readonly Default: string;
