@@ -79,7 +79,7 @@ const SAFE_FILENAME_RE = /^[A-Za-z0-9._-]+$/;
 
 /** entry.filename comes straight from the (possibly compromised) registry response — never trust
  *  it as a path. Derive a plain basename and refuse anything that isn't already exactly that. */
-function safeFilename(e: PlanEntry): string {
+export function safeFilename(e: { name: string; version: string; filename: string }): string {
   const raw = e.filename;
   const base = basename(raw);
   if (

@@ -726,6 +726,8 @@ fn resolve_config_path(id: &str) -> Result<PathBuf, String> {
 }
 
 pub(crate) fn set_plugins_dir(path: &str) {
+    // Before the first scan can be scheduled: package.json may update plugins/ (server_update.rs).
+    crate::server_update::start(Path::new(path));
     PLUGINS_DIR.with(|d| *d.borrow_mut() = Some(PathBuf::from(path)));
     let started = WORKER.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -1379,6 +1381,8 @@ fn schedule_scan() {
 }
 
 fn schedule_periodic() {
+    // The startup update from package.json owns plugins/ until it finishes or times out.
+    if crate::server_update::holds_first_scan() { return; }
     if SCAN_IN_FLIGHT.with(Cell::get)
         || ACTIVE_BATCH.with(|b| b.borrow().is_some())
         || READY_APPLY.with(|queue| !queue.borrow().is_empty())

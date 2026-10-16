@@ -101,6 +101,74 @@ addons/s2script/plugins/<name>.s2sp
 
 The runtime watches that directory (top-level only, ~1s poll): drop → load, replace → hot-reload, delete → unload. No server restart required for plugin changes.
 
+### Manage plugins with s2script.json (auto-update on startup)
+
+A server can keep its plugins the way an npm project keeps its dependencies: an `s2script.json`
+listing each plugin with a version range, and an `s2script-lock.json` recording exactly what is
+installed. Both live in `addons/s2script/`, next to `plugins/`. They use npm's shapes but not its
+file names, so npm never mistakes the folder for a Node project. (`npm install` in a folder with a
+`package.json` would fetch same-named packages from npmjs.com instead.) Generate them from the
+plugins you already have:
+
+```bash
+cd /path/to/csgo            # or addons/s2script itself
+s2s server init             # writes addons/s2script/s2script.json + s2script-lock.json
+```
+
+Every installed plugin that the registry publishes, byte for byte, becomes a dependency at
+`^<its version>`. Anything else (a local build, a plugin not in the registry, the base plugins)
+is listed as unmanaged and never touched. The result:
+
+```json
+{
+  "name": "my-server",
+  "dependencies": { "@edge/rtv": "^1.2.0", "@edge/jailbreak": "^2.0.0" },
+  "with": { "@edge/jailbreak": ["@edge/jailbreak-gangperks"] },
+  "autoUpdate": true
+}
+```
+
+**On every startup the runtime updates the plugins within these ranges**, as `npm update` would:
+`^1.2.0` picks up 1.2.x and 1.x fixes, never 2.0.0. It runs before the first plugin loads:
+
+- Every download is checked against the registry's sha256 and staged first. Files are swapped in
+  only once all of them verified, then `s2script-lock.json` is rewritten.
+- If the registry is unreachable, a download is bad, or it takes longer than
+  `updateTimeoutSeconds` (default 60), nothing changes and the server loads the plugins it has.
+- Only files the lock lists are replaced or removed. A plugin you removed from `dependencies` is
+  deleted on the next start, unless you edited the file by hand, in which case it is left alone.
+  Plugins you drop into `plugins/` yourself are never touched.
+
+The console shows what happened (`[update] installed @edge/rtv@1.2.4 -> _edge_rtv.s2sp`). Settings:
+
+| Key                    | Default                    | Meaning                                                 |
+| ---------------------- | -------------------------- | ------------------------------------------------------- |
+| `autoUpdate`           | `true`                     | Update at startup. `false` loads the lock as installed. |
+| `reviewedOnly`         | `false`                    | Refuse any plugin s2script has not reviewed.            |
+| `updateTimeoutSeconds` | `60`                       | How long plugin loading may wait (5–600).               |
+| `registry`             | `https://www.s2script.com` | Registry URL (`S2SCRIPT_REGISTRY_URL` overrides).       |
+| `with`                 | none                       | Optional members of a bundle to install too.            |
+
+Restricted (org-only) plugins need a read-only token from s2script.com → Deploy tokens, given as
+`S2SCRIPT_TOKEN` in the server's environment, or in `addons/s2script/configs/registry.json`:
+
+```json
+{ "token": "s2s_…" }
+```
+
+From a shell, the same files work like npm:
+
+```bash
+s2s install                      # install exactly what s2script-lock.json says
+s2s install @edge/admin          # add a plugin (records ^<latest>)
+s2s install @edge/admin@^3.1.0   # add one at a range
+s2s update                       # newest within every range, now, instead of at the next start
+s2s update @edge/rtv --dry-run   # preview one
+```
+
+Commit both files with the rest of your server config, and every server built from it gets the
+same plugins.
+
 ### Or install from the registry
 
 `s2s install` downloads a plugin and its dependencies straight into the plugins

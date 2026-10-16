@@ -1,0 +1,31 @@
+{
+  "name": "my-server",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "my-server",
+      "dependencies": {
+        "@edge/jailbreak": "^2.0.0",
+        "@edge/rtv": "^1.2.0"
+      },
+      "with": {
+        "@edge/jailbreak": [
+          "@edge/jailbreak-gangperks"
+        ]
+      }
+    },
+    "plugins/_edge_jailbreak-core.s2sp": {
+      "name": "@edge/jailbreak-core",
+      "version": "2.1.0",
+      "resolved": "https://www.s2script.com/api/v1/download/s2sp?name=%40edge%2Fjailbreak-core&version=2.1.0",
+      "integrity": "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
+    },
+    "plugins/_edge_rtv.s2sp": {
+      "name": "@edge/rtv",
+      "version": "1.2.3",
+      "resolved": "https://www.s2script.com/api/v1/download/s2sp?name=%40edge%2Frtv&version=1.2.3",
+      "integrity": "sha256-LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564="
+    }
+  }
+}

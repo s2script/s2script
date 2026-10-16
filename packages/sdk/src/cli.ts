@@ -22,6 +22,9 @@ function usage(): void {
       "  s2s version [dir] [--since <ref>]\n" +
       "  s2s add <pkg>[@range] [--dir <plugin>] [--registry <url>]\n" +
       "  s2s install [name[@range]...] [--file <path>] [--dir <plugins dir>] [--registry <url>]\n" +
+      "  s2s install [name[@range]...] [--server <addons/s2script>] [--dry-run]   (server s2script.json)\n" +
+      "  s2s update [name...] [--server <addons/s2script>] [--dry-run]\n" +
+      "  s2s server init [addons/s2script] [--name <server>] [--force]\n" +
       "  s2s config gen <plugin.s2sp...> --out <dir>\n" +
       "  s2s gen-schema [--check]\n" +
       "  s2s gen-events [--check]\n" +

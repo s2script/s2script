@@ -99,6 +99,20 @@ where
     }
 }
 
+/// Like `spawn`, but says whether the engine was there to run it.
+pub(crate) fn try_spawn<F>(future: F) -> bool
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    match ENGINE.get() {
+        Some(e) => {
+            e.runtime.spawn(future);
+            true
+        }
+        None => false,
+    }
+}
+
 /// Enter the shared runtime's context (an RAII guard) so runtime-requiring constructors (e.g. a sqlx
 /// `connect_lazy_with`) can be called from the main thread without blocking. None if uninitialized.
 pub fn enter() -> Option<tokio::runtime::EnterGuard<'static>> {
