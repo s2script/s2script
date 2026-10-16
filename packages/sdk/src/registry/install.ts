@@ -1,76 +1,17 @@
 /**
- * s2s install — resolve a manifest/args to a transitive plan (server-side),
- * download each .s2sp, verify its sha256, and write version-less filenames
- * into a plugins directory. No credentials required (registry reads are public).
+ * Registry install-plan helpers shared by the server commands (server/sync.ts, server/commands.ts):
+ * spec parsing, merging several roots' plans into one install set, and the filename guard that
+ * keeps a registry response from writing outside plugins/.
  */
 
-import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
-import { basename, join, resolve, sep } from "node:path";
+import { basename } from "node:path";
 import type { InstallPlan, PlanEntry } from "./client.ts";
-
-export interface InstallInput {
-  plugins: Record<string, string>;
-  /**
-   * Bundle entries only: the optional members to install alongside the required ones. Present
-   * only when some entry uses the object form, so a plain manifest reads back unchanged.
-   */
-  with?: Record<string, string[]>;
-}
-
-/**
- * Each `plugins` entry is a range string, or — for a bundle that should also install some of its
- * optional members — `{ "range": "^1.0.0", "with": ["@scope/member"] }`.
- */
-export function parseManifest(input: unknown): InstallInput {
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
-    throw new Error("manifest must be a JSON object");
-  }
-  const plugins = (input as { plugins?: unknown }).plugins;
-  if (!plugins || typeof plugins !== "object" || Array.isArray(plugins)) {
-    throw new Error('manifest must have a "plugins" object (name -> version range)');
-  }
-  const out: Record<string, string> = {};
-  const withMembers: Record<string, string[]> = {};
-  for (const [name, entry] of Object.entries(plugins as Record<string, unknown>)) {
-    if (typeof entry === "string") {
-      out[name] = entry;
-      continue;
-    }
-    const obj = entry as { range?: unknown; with?: unknown } | null;
-    if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
-      throw new Error(`entry for ${name} must be a range string or { "range", "with" }`);
-    }
-    if (obj.range !== undefined && typeof obj.range !== "string") {
-      throw new Error(`range for ${name} must be a string`);
-    }
-    if (obj.with !== undefined && (!Array.isArray(obj.with) || obj.with.some((w) => typeof w !== "string"))) {
-      throw new Error(`"with" for ${name} must be an array of optional member names`);
-    }
-    out[name] = (obj.range as string | undefined) ?? "*";
-    if (Array.isArray(obj.with) && obj.with.length > 0) withMembers[name] = obj.with as string[];
-  }
-  return Object.keys(withMembers).length > 0 ? { plugins: out, with: withMembers } : { plugins: out };
-}
 
 /** Split "name@range" (scoped-safe: only the LAST @ separates). Bare name -> "*". */
 export function parseSpec(spec: string): { name: string; range: string } {
   const at = spec.lastIndexOf("@");
   if (at > 0) return { name: spec.slice(0, at), range: spec.slice(at + 1) || "*" };
   return { name: spec, range: "*" };
-}
-
-export function mergeSpecs(manifest: InstallInput, args: string[]): Record<string, string> {
-  const merged: Record<string, string> = { ...manifest.plugins };
-  for (const a of args) {
-    const { name, range } = parseSpec(a);
-    merged[name] = range;
-  }
-  return merged;
-}
-
-export function sha256Hex(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
 }
 
 /** Only bare filenames matching this shape are trusted — mirrors the sanitization in
@@ -131,88 +72,4 @@ export async function resolveMerged(
     warnings: [...new Set(warnings)],
     errors: [...new Set(errors)],
   };
-}
-
-export async function installPlan(opts: {
-  client: {
-    plan(name: string, range?: string, withMembers?: string[]): Promise<InstallPlan>;
-    downloadS2sp(name: string, version: string): Promise<Buffer>;
-  };
-  specs: Record<string, string>;
-  /** Bundle root name -> optional members to install too. */
-  with?: Record<string, string[]>;
-  dir: string;
-  reviewedOnly?: boolean;
-  dryRun?: boolean;
-  log?: (m: string) => void;
-}): Promise<{ written: string[]; skipped: string[]; warnings: string[] }> {
-  const log = opts.log ?? (() => {});
-  const { install, warnings, errors } = await resolveMerged(opts.client, opts.specs, opts.with);
-
-  if (errors.length) throw new Error(`cannot resolve plugins:\n  - ${errors.join("\n  - ")}`);
-
-  if (opts.reviewedOnly) {
-    const unreviewed = install.filter((e) => e.reviewState !== "reviewed");
-    if (unreviewed.length) {
-      throw new Error(
-        `--reviewed-only: refusing unreviewed plugins: ${unreviewed.map((e) => `${e.name}@${e.version}`).join(", ")}`
-      );
-    }
-  }
-
-  // Pre-write validation pass: every entry must have a verifiable sha256 and a filename we can
-  // safely write inside opts.dir. This runs — and can throw — before any download or write, same
-  // as the resolution-error check above, so a single bad entry aborts the whole install cleanly.
-  const dirResolved = resolve(opts.dir);
-  const targets = install.map((e) => {
-    if (!e.sha256) {
-      throw new Error(`refusing ${e.name}@${e.version}: registry did not provide a sha256 to verify against`);
-    }
-    const filename = safeFilename(e);
-    const dest = resolve(join(opts.dir, filename));
-    if (dest !== dirResolved && !dest.startsWith(dirResolved + sep)) {
-      throw new Error(`refusing ${e.name}@${e.version}: destination "${dest}" escapes plugins dir "${dirResolved}"`);
-    }
-    return { entry: e, filename, dest };
-  });
-
-  for (const w of warnings) log(`warning: ${w}`);
-
-  if (opts.dryRun) {
-    for (const e of install) log(`would install ${e.name}@${e.version} -> ${e.filename}`);
-    return { written: [], skipped: [], warnings };
-  }
-
-  mkdirSync(opts.dir, { recursive: true });
-  const written: string[] = [];
-  const skipped: string[] = [];
-
-  for (const { entry: e, filename, dest } of targets) {
-    if (existsSync(dest)) {
-      const have = sha256Hex(readFileSync(dest));
-      if (have === e.sha256) {
-        skipped.push(filename);
-        log(`up to date ${filename}`);
-        continue;
-      }
-    }
-    const bytes = await opts.client.downloadS2sp(e.name, e.version);
-    const got = sha256Hex(bytes);
-    if (got !== e.sha256) {
-      throw new Error(`sha256 mismatch for ${e.name}@${e.version}: expected ${e.sha256}, got ${got}`);
-    }
-    const tmp = `${dest}.${process.pid}.tmp`;
-    writeFileSync(tmp, bytes);
-    renameSync(tmp, dest);
-    written.push(filename);
-    log(`installed ${e.name}@${e.version} -> ${filename}`);
-  }
-
-  return { written, skipped, warnings };
-}
-
-/** Read + parse a manifest file, or return an empty input if the path is absent. */
-export function loadManifestFile(path: string): InstallInput {
-  if (!existsSync(path)) return { plugins: {} };
-  return parseManifest(JSON.parse(readFileSync(path, "utf8")));
 }

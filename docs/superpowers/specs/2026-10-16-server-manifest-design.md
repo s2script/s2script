@@ -28,6 +28,15 @@ one command that generates the files, and have the runtime keep the plugins curr
 same bytes. Both test suites round-trip `packages/sdk/test/fixtures/server-lock/plugins-lock.json`.
 A live run had the runtime and the CLI each accept the lock the other wrote, unchanged.
 
+## Replaces s2script-plugins.json
+
+The earlier `s2s install --dir <plugins> [--file s2script-plugins.json]` flow is removed. It read
+`{ "plugins": { name: range } }` from wherever the command ran, kept no lock, overwrote files by
+name and never updated on its own. Nobody depended on it, so `plugins.json` replaces it outright
+rather than running beside it. `s2s install` creates `plugins.json` on first use, as `npm install`
+creates `package.json`. `--with` records bundle members under `"with"`, and `--reviewed-only`
+becomes `"reviewedOnly": true` in the file.
+
 ## Not in this slice
 
 - Updating while the server runs (only at startup).

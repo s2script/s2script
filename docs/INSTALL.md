@@ -101,23 +101,27 @@ addons/s2script/plugins/<name>.s2sp
 
 The runtime watches that directory (top-level only, ~1s poll): drop → load, replace → hot-reload, delete → unload. No server restart required for plugin changes.
 
-### Manage plugins with plugins.json (auto-update on startup)
+### Install from the registry with plugins.json (auto-update on startup)
 
-A server can keep its plugins the way an npm project keeps its dependencies: a `plugins.json`
+A server keeps its registry plugins the way an npm project keeps its dependencies: a `plugins.json`
 listing each plugin with a version range, and a `plugins-lock.json` recording exactly what is
 installed. Both live in `addons/s2script/`, next to `plugins/`. They use npm's shapes but not its
 file names, so npm never mistakes the folder for a Node project. (`npm install` in a folder with a
-`package.json` would fetch same-named packages from npmjs.com instead.) Generate them from the
-plugins you already have:
+`package.json` would fetch same-named packages from npmjs.com instead.)
+
+Add plugins from your game directory (or from `addons/s2script` itself). Like `npm install`, the
+first one creates `plugins.json`:
 
 ```bash
-cd /path/to/csgo            # or addons/s2script itself
-s2s server init             # writes addons/s2script/plugins.json + plugins-lock.json
+cd /path/to/csgo
+s2s install @edge/rtv            # records "^<latest>" and installs it with its dependencies
+s2s install @edge/admin@^3.1.0   # or at a range you choose
 ```
 
-Every installed plugin that the registry publishes, byte for byte, becomes a dependency at
-`^<its version>`. Anything else (a local build, a plugin not in the registry, the base plugins)
-is listed as unmanaged and never touched. The result:
+Already have plugins in `plugins/`? `s2s server init` writes both files from them instead. Every
+installed plugin that the registry publishes, byte for byte, becomes a dependency at
+`^<its version>`. Anything else (a local build, a plugin not in the registry, the base plugins) is
+listed as unmanaged and never touched. Either way you end up with:
 
 ```json
 {
@@ -159,50 +163,23 @@ Restricted (org-only) plugins need a read-only token from s2script.com → Deplo
 From a shell, the same files work like npm:
 
 ```bash
-s2s install                      # install exactly what plugins-lock.json says
-s2s install @edge/admin          # add a plugin (records ^<latest>)
-s2s install @edge/admin@^3.1.0   # add one at a range
+s2s install                      # install exactly what plugins-lock.json says (no login needed)
 s2s update                       # newest within every range, now, instead of at the next start
 s2s update @edge/rtv --dry-run   # preview one
 ```
 
-Commit both files with the rest of your server config, and every server built from it gets the
-same plugins.
-
-### Or install from the registry
-
-`s2s install` downloads a plugin and its dependencies straight into the plugins
-directory — handy in a Dockerfile or provisioning script, and it needs no login:
+A **bundle** (several plugins published as one, like `@edge/jailbreak`) installs the same way: its
+required plugins land in `plugins/` individually, each at the version that bundle release pins. Add
+optional members with `--with`, which records them under `"with"`:
 
 ```bash
-# from a manifest checked in next to your server config
-s2s install --dir /path/to/csgo/addons/s2script/plugins
-
-# or by name
-s2s install rtv@^1.0.0 --dir /path/to/csgo/addons/s2script/plugins
+s2s install @edge/jailbreak --with @edge/jailbreak-gangperks
 ```
 
-A manifest (`s2script-plugins.json`) pins what the server should have:
-
-```json
-{ "plugins": { "rtv": "^1.0.0", "@edge/foo": "2.1.0" } }
-```
-
-A **bundle** (several plugins published as one, like `@edge/jailbreak`) installs the same way:
-its required plugins land in the plugins directory individually, each at the version that bundle
-release pins. Add optional plugins with `--with`, or with the object form in the manifest:
-
-```bash
-s2s install @edge/jailbreak --with @edge/jailbreak-gangperks --dir /path/to/csgo/addons/s2script/plugins
-```
-
-```json
-{ "plugins": { "@edge/jailbreak": { "range": "^1.0.0", "with": ["@edge/jailbreak-gangperks"] } } }
-```
-
-Base `@s2script/*` plugins are skipped (already in the runtime). Unreviewed
-community plugins install with a warning; pass `--reviewed-only` to block them,
-or `--dry-run` to preview the resolved set.
+Base `@s2script/*` plugins are skipped (already in the runtime). Unreviewed community plugins
+install with a warning; set `"reviewedOnly": true` to refuse them. Commit both files with the rest
+of your server config, and every server built from it, a Docker image for example, gets the same
+plugins with one `s2s install`.
 
 Plugins declare `s2script.apiVersion` (today `"1.x"`). The host refuses a mismatched **major** at load time.
 

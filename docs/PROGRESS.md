@@ -474,7 +474,9 @@ needed.
 A server can now list its plugins as npm-style `dependencies` in `addons/s2script/plugins.json`,
 with an npm-v3-shaped `plugins-lock.json` beside it. Not `package.json`, so
 `npm install` can never resolve those names against npmjs.com. `s2s server init` generates both
-from the installed plugins, and `s2s install` / `s2s update` work like npm's. At every startup the
+from the installed plugins, and `s2s install` / `s2s update` work like npm's (the first
+`s2s install <name>` creates `plugins.json`). The old `s2script-plugins.json` / `--dir` installer is
+removed. At every startup the
 runtime (`core/src/server_update.rs`, started from `loader::set_plugins_dir`) resolves each range
 through the registry's `/plan`, stages and sha256-verifies every changed `.s2sp`, then commits the
 files and the lock together. The loader holds its first scan until that finishes, or until

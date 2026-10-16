@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { strToU8, zipSync } from "fflate";
 
 import { parseLock, serializeLock, integrityFromSha256Hex, sha256Hex, sha256HexFromIntegrity } from "../src/server/lock.ts";
-import { findServerRoot, readServerManifest } from "../src/server/manifest.ts";
+import { findAddonRoot, findServerRoot, readServerManifest } from "../src/server/manifest.ts";
 import { serverInit, serverInstall, serverUpdate } from "../src/server/commands.ts";
 import { RegistryError } from "../src/registry/client.ts";
 
@@ -214,4 +214,82 @@ test("server init manages published plugins and leaves the rest alone", async ()
 test("plugins.json rejects ranges npm would reject", async () => {
   const root = serverDir({ "@edge/rtv": "not a range" });
   assert.throws(() => readServerManifest(root), /invalid range "not a range"/);
+});
+
+// ---------------------------------------------------------------------------
+// Registry-response safety (carried over from the retired s2script-plugins.json installer)
+// ---------------------------------------------------------------------------
+
+/** Wrap a fake registry so every plan entry for `name` is rewritten by `patch`. */
+function tamper(reg, name, patch) {
+  const plan = reg.plan;
+  reg.plan = async (...a) => {
+    const p = await plan(...a);
+    p.install = p.install.map((e) => (e.name === name ? { ...e, ...patch } : e));
+    return p;
+  };
+  return reg;
+}
+
+test("a path-traversal filename from the registry is refused before anything is written", async () => {
+  const reg = tamper(await fakeRegistry({ "@edge/rtv": ["1.0.0"] }), "@edge/rtv", { filename: "../../evil.s2sp" });
+  const root = serverDir({ "@edge/rtv": "^1.0.0" });
+  await assert.rejects(() => serverInstall({ root, client: reg }), /unsafe filename "\.\.\/\.\.\/evil\.s2sp"/);
+  assert.deepEqual(reg.calls.download, []);
+  assert.equal(existsSync(join(root, "plugins-lock.json")), false);
+});
+
+test("an entry the registry gives no sha256 for is refused", async () => {
+  const reg = tamper(await fakeRegistry({ "@edge/rtv": ["1.0.0"] }), "@edge/rtv", { sha256: null });
+  const root = serverDir({ "@edge/rtv": "^1.0.0" });
+  await assert.rejects(() => serverInstall({ root, client: reg }), /did not provide a sha256/);
+});
+
+test("one unresolvable plugin fails the whole install and writes nothing", async () => {
+  const reg = await fakeRegistry({ "@edge/rtv": ["1.0.0"] });
+  const root = serverDir({ "@edge/rtv": "^1.0.0", "@edge/missing": "^1.0.0" });
+  await assert.rejects(() => serverInstall({ root, client: reg }), /package not found/);
+  assert.deepEqual(readdirSync(join(root, "plugins")), []);
+});
+
+test("two plugins needing different versions of a dependency is a conflict", async () => {
+  const reg = await fakeRegistry({ "@edge/a": ["1.0.0"], "@edge/b": ["1.0.0"], "@edge/core": ["1.0.0", "2.0.0"] });
+  const plan = reg.plan;
+  reg.plan = async (name, range) => {
+    const p = await plan(name, range);
+    const core = { ...p.install[0], name: "@edge/core", filename: "_edge_core.s2sp" };
+    p.install.push({ ...core, version: name === "@edge/a" ? "1.0.0" : "2.0.0" });
+    return p;
+  };
+  const root = serverDir({ "@edge/a": "^1.0.0", "@edge/b": "^1.0.0" });
+  await assert.rejects(() => serverInstall({ root, client: reg }), /version conflict for @edge\/core: 1\.0\.0 vs 2\.0\.0/);
+});
+
+test("install --with records the bundle's optional members and forwards them to the plan", async () => {
+  const reg = await fakeRegistry({ "@edge/jb": ["1.0.0"] });
+  const seen = [];
+  const plan = reg.plan;
+  reg.plan = async (name, range, withMembers) => {
+    seen.push([name, withMembers]);
+    return plan(name, range);
+  };
+  const root = serverDir();
+  await serverInstall({ root, client: reg, specs: ["@edge/jb"], with: ["@edge/jb-perks"] });
+  assert.deepEqual(seen, [["@edge/jb", ["@edge/jb-perks"]]]);
+  const m = readServerManifest(root);
+  assert.deepEqual(m.with, { "@edge/jb": ["@edge/jb-perks"] });
+  assert.deepEqual(m.dependencies, { "@edge/jb": "^1.0.0" });
+  assert.deepEqual(lockOf(root).root.with, { "@edge/jb": ["@edge/jb-perks"] });
+  await assert.rejects(
+    () => serverInstall({ root, client: reg, specs: ["@edge/a", "@edge/b"], with: ["x"] }),
+    /--with applies to exactly one bundle/,
+  );
+});
+
+test("findAddonRoot finds where a first plugins.json belongs", () => {
+  const game = mkdtempSync(join(tmpdir(), "s2s-game-"));
+  mkdirSync(join(game, "addons", "s2script", "plugins"), { recursive: true });
+  assert.equal(findAddonRoot(game), join(game, "addons", "s2script"));
+  assert.equal(findAddonRoot(join(game, "addons", "s2script")), join(game, "addons", "s2script"));
+  assert.equal(findAddonRoot(mkdtempSync(join(tmpdir(), "s2s-empty-"))), null);
 });

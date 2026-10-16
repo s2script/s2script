@@ -54,6 +54,18 @@ export function findServerRoot(start: string): string | null {
   return null;
 }
 
+/**
+ * Where a server's plugins.json belongs when it has none yet: `start` when it holds plugins/,
+ * else `start/addons/s2script` when that exists (run from the game directory). Null otherwise.
+ */
+export function findAddonRoot(start: string): string | null {
+  const found = findServerRoot(start);
+  if (found) return found;
+  if (existsSync(resolve(start, PLUGINS_SUBDIR))) return resolve(start);
+  const nested = resolve(start, "addons", "s2script");
+  return existsSync(nested) ? nested : null;
+}
+
 export function parseServerManifest(root: string, raw: Record<string, unknown>): ServerManifest {
   const label = join(root, SERVER_MANIFEST);
   const depsRaw = raw.dependencies ?? {};
@@ -99,16 +111,18 @@ export function readServerManifest(root: string): ServerManifest {
   return parseServerManifest(root, readJson(path)!);
 }
 
-/** A fresh plugins.json for `s2s server init`. */
+/** A fresh plugins.json, for `s2s server init` or the first `s2s install`. */
 export function newServerManifestJson(name: string, dependencies: Record<string, string>): Record<string, unknown> {
   return { name, dependencies, autoUpdate: true };
 }
 
-/** Write plugins.json back with `dependencies` replaced, every other field kept. */
-export function writeServerManifest(m: ServerManifest, dependencies: Record<string, string>): void {
+/** Write plugins.json back with `dependencies` and `with` from `m`, every other field kept. */
+export function writeServerManifest(m: ServerManifest): void {
   const sorted: Record<string, string> = {};
-  for (const k of Object.keys(dependencies).sort()) sorted[k] = dependencies[k]!;
-  const out = { ...m.raw, dependencies: sorted };
+  for (const k of Object.keys(m.dependencies).sort()) sorted[k] = m.dependencies[k]!;
+  const out: Record<string, unknown> = { ...m.raw, dependencies: sorted };
+  if (Object.keys(m.with).length > 0) out.with = m.with;
+  else delete out.with;
   const path = join(m.root, SERVER_MANIFEST);
   const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(out, null, 2) + "\n");

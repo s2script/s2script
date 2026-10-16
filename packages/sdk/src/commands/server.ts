@@ -8,12 +8,9 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { hasFlag, parseFlag, positionals } from "../cli/args.ts";
 import { serverInit } from "../server/commands.ts";
+import { findAddonRoot } from "../server/manifest.ts";
 import { serverClient } from "./install.ts";
 
-function defaultRoot(): string {
-  if (existsSync(resolve("plugins"))) return resolve(".");
-  return resolve("addons", "s2script");
-}
 
 export async function run(argv: string[]): Promise<void> {
   const [sub, dir] = positionals(argv, ["--registry", "--name"]);
@@ -21,7 +18,7 @@ export async function run(argv: string[]): Promise<void> {
     console.error("Usage: s2s server init [addons/s2script] [--name <server>] [--force] [--registry <url>]");
     process.exit(1);
   }
-  const root = dir ? resolve(dir) : defaultRoot();
+  const root = dir ? resolve(dir) : (findAddonRoot(".") ?? resolve("addons", "s2script"));
   try {
     if (!existsSync(join(root, "plugins"))) {
       throw new Error(`${root} has no plugins/ directory — pass your addons/s2script directory`);

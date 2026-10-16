@@ -1,13 +1,22 @@
-import { resolve } from "node:path";
-import { existsSync } from "node:fs";
+/**
+ * `s2s install [name[@range]...]` — npm install for a server's plugins.json (addons/s2script/).
+ * Without names it installs exactly what plugins-lock.json records (re-resolving only when
+ * plugins.json changed); with names it adds them, recording ^latest for a bare name. Like npm, a
+ * server with no plugins.json yet gets one.
+ */
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { RegistryClient } from "../registry/client.ts";
 import { loadCredentials, defaultRegistryUrl } from "../registry/credentials.ts";
-import { loadManifestFile, mergeSpecs, installPlan, parseSpec } from "../registry/install.ts";
 import { parseFlag, hasFlag, positionals } from "../cli/args.ts";
-import { findServerRoot } from "../server/manifest.ts";
+import { SERVER_MANIFEST, findAddonRoot, newServerManifestJson } from "../server/manifest.ts";
 import { serverInstall } from "../server/commands.ts";
 
-/** A registry client for server commands: --registry, else the login's, with the login's token. */
+/**
+ * A registry client for server commands: --registry, else the login's. The login's token rides
+ * along, so org members can install restricted packages (and a server can use a read-only
+ * S2SCRIPT_TOKEN); public downloads redirect to the CDN, where fetch drops the header.
+ */
 export function serverClient(argv: string[]): RegistryClient {
   const creds = loadCredentials();
   return new RegistryClient({
@@ -26,8 +35,6 @@ export async function runServer(fn: () => Promise<string>, dryRun: boolean): Pro
     process.exit(1);
   }
 }
-
-const AUTODETECT = "addons/s2script/plugins";
 
 /** Every `--with <member>` / `--with=<member>` (repeatable). */
 function collectWith(argv: readonly string[]): string[] {
@@ -48,92 +55,38 @@ function collectWith(argv: readonly string[]): string[] {
   return out;
 }
 
+/** Flags of the retired s2script-plugins.json installer, and what replaced each. */
+const REMOVED_FLAGS: Record<string, string> = {
+  "--dir": "run from your game directory, or pass --server <addons/s2script>",
+  "--file": "list plugins in addons/s2script/plugins.json (`s2s install <name>` adds them)",
+  "--reviewed-only": 'set "reviewedOnly": true in addons/s2script/plugins.json',
+};
+
 export async function run(argv: string[]): Promise<void> {
-  const args = positionals(argv, ["--dir", "--file", "--registry", "--with", "--server"]);
-  const file = parseFlag(argv, "--file") ?? "s2script-plugins.json";
-  const registry =
-    parseFlag(argv, "--registry") || loadCredentials()?.registryUrl || defaultRegistryUrl();
+  for (const [flag, instead] of Object.entries(REMOVED_FLAGS)) {
+    if (argv.some((a) => a === flag || a.startsWith(`${flag}=`))) {
+      console.error(`s2s install ${flag} was removed with s2script-plugins.json — ${instead}`);
+      process.exit(1);
+    }
+  }
+  const names = positionals(argv, ["--registry", "--with", "--server"]);
   const dryRun = hasFlag(argv, "--dry-run");
-  const reviewedOnly = hasFlag(argv, "--reviewed-only");
-
-  // A server with a plugins.json installs from it and keeps plugins-lock.json —
-  // unless the caller asked for the older --dir / --file manifest flow explicitly.
-  if (parseFlag(argv, "--dir") === undefined && parseFlag(argv, "--file") === undefined) {
-    const root = findServerRoot(parseFlag(argv, "--server") ?? ".");
-    if (root) {
-      await runServer(() => {
-        if (collectWith(argv).length > 0) {
-          throw new Error(`--with: add the member to "with" in ${root}/plugins.json instead`);
-        }
-        if (reviewedOnly) {
-          throw new Error(`--reviewed-only: set "reviewedOnly": true in ${root}/plugins.json instead`);
-        }
-        return serverInstall({ root, client: serverClient(argv), specs: args, dryRun, log: console.log });
-      }, dryRun);
-      return;
-    }
-    if (parseFlag(argv, "--server") !== undefined) {
-      console.error(`no plugins.json found — run \`s2s server init\` there first`);
-      process.exit(1);
-    }
-  }
-
-  let dir = parseFlag(argv, "--dir");
-  if (!dir) {
-    if (existsSync(resolve(AUTODETECT))) dir = resolve(AUTODETECT);
-    else {
-      console.error(
-        `Usage: s2s install [name[@range]...] --dir <plugins dir>\n` +
-          `  No --dir given and ./${AUTODETECT} not found. Point --dir at your addons/s2script/plugins directory.`
-      );
-      process.exit(1);
-    }
-  }
-
-  // Your login rides along, so org members can install restricted packages (and a server can use
-  // a read-only S2SCRIPT_TOKEN). Public downloads redirect to the CDN, where fetch drops the header.
-  const client = new RegistryClient({ baseUrl: registry, token: loadCredentials()?.token });
-  try {
-    const withArgs = collectWith(argv);
-    const manifest = loadManifestFile(resolve(file));
-    const specs = mergeSpecs(manifest, args);
-    const withMembers = { ...(manifest.with ?? {}) };
-    if (withArgs.length > 0) {
-      // --with names optional members of ONE bundle on the command line; with several roots it
-      // would be a guess which bundle each member belongs to.
-      if (args.length !== 1) {
-        throw new Error(
-          `--with applies to exactly one bundle named on the command line (got ${args.length}) — ` +
-            `for several bundles, use { "range", "with" } entries in ${file}`,
-        );
-      }
-      withMembers[parseSpec(args[0]!).name] = withArgs;
-    }
-    if (Object.keys(specs).length === 0) {
-      console.error(
-        `Nothing to install. Add plugins to ${file} or pass names: s2s install rtv@^1.0.0`
-      );
-      process.exit(1);
-    }
-
-    const res = await installPlan({
-      client,
-      specs,
-      with: withMembers,
-      dir,
-      dryRun,
-      reviewedOnly,
-      log: (m) => console.log(m),
-    });
-    if (dryRun) {
-      console.log("dry run — nothing written");
-    } else {
-      console.log(
-        `done: ${res.written.length} installed, ${res.skipped.length} up to date, in ${dir}`
-      );
-    }
-  } catch (e) {
-    console.error(String(e instanceof Error ? e.message : e));
+  const root = findAddonRoot(parseFlag(argv, "--server") ?? ".");
+  if (!root) {
+    console.error(
+      "Usage: s2s install [name[@range]...] [--with <member>] [--server <addons/s2script>] [--dry-run]\n" +
+        "  Run it from your game directory (csgo/) or addons/s2script, or pass --server.",
+    );
     process.exit(1);
   }
+  await runServer(async () => {
+    const withMembers = collectWith(argv);
+    if (!existsSync(join(root, SERVER_MANIFEST))) {
+      if (dryRun) throw new Error(`no ${SERVER_MANIFEST} in ${root} yet — run without --dry-run to create one`);
+      const fresh = newServerManifestJson("s2script-server", {});
+      writeFileSync(join(root, SERVER_MANIFEST), JSON.stringify(fresh, null, 2) + "\n");
+      console.log(`created ${join(root, SERVER_MANIFEST)}`);
+    }
+    return serverInstall({ root, client: serverClient(argv), specs: names, with: withMembers, dryRun, log: console.log });
+  }, dryRun);
 }

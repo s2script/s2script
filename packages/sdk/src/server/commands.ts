@@ -54,14 +54,28 @@ export async function serverInstall(opts: {
   root: string;
   client: ServerClient;
   specs?: string[];
+  /** Optional bundle members to install with the ONE bundle named in `specs` (`--with`). */
+  with?: string[];
   dryRun?: boolean;
   log?: (m: string) => void;
 }): Promise<string> {
   const log = opts.log ?? (() => {});
   let manifest = readServerManifest(opts.root);
+  if (opts.with && opts.with.length > 0) {
+    // --with names optional members of one bundle; with several names it would be a guess
+    // which bundle each member belongs to.
+    if (opts.specs?.length !== 1) {
+      throw new Error(
+        `--with applies to exactly one bundle named on the command line (got ${opts.specs?.length ?? 0}) — ` +
+          `for several bundles, edit "with" in ${SERVER_MANIFEST}`,
+      );
+    }
+    manifest = { ...manifest, with: { ...manifest.with, [parseSpec(opts.specs[0]!).name]: opts.with } };
+  }
   const lockPath = join(opts.root, SERVER_LOCK);
   const lock = readLock(lockPath);
 
+  const withChanged = !!opts.with?.length;
   const added = new Set<string>();
   if (opts.specs && opts.specs.length > 0) {
     const deps = { ...manifest.dependencies };
@@ -75,7 +89,7 @@ export async function serverInstall(opts: {
   }
 
   let targets;
-  if (added.size === 0 && lock && lockMatchesManifest(lock, manifest)) {
+  if (added.size === 0 && !withChanged && lock && lockMatchesManifest(lock, manifest)) {
     targets = targetsFromLock(lock);
   } else {
     const specs = pinnedSpecs(manifest, lock, sat, added);
@@ -96,7 +110,7 @@ export async function serverInstall(opts: {
 
   const res = await syncPlugins({ root: opts.root, targets, oldLock: lock, client: opts.client, dryRun: opts.dryRun, log });
   if (!opts.dryRun) {
-    if (added.size > 0) writeServerManifest(manifest, manifest.dependencies);
+    if (added.size > 0 || withChanged) writeServerManifest(manifest);
     writeLock(lockPath, lockFor(manifest, res.plugins));
   }
   return summary(res);
