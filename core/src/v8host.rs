@@ -2972,8 +2972,8 @@ fn s2_plugins_list(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArgument
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let items: Vec<serde_json::Value> = crate::loader::plugin_list().into_iter()
             .map(|(id, state)| {
-                let from_disabled = crate::loader::is_session_loaded(&id);
-                serde_json::json!({ "id": id, "loaded": state == "running", "state": state, "fromDisabled": from_disabled })
+                let folder = crate::loader::session_folder(&id);
+                serde_json::json!({ "id": id, "loaded": state == "running", "state": state, "folder": folder })
             })
             .collect();
         let json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string());

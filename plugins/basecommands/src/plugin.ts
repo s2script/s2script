@@ -218,11 +218,10 @@ function sm(cmd: Command): HookResultValue {
     if (!action || action === "list") {
       const list = Plugins.list();
       cmd.replyT("Plugins Header", list.length);
-      list.forEach((p, i) => cmd.replyT(
-        p.fromDisabled ? "Plugin List Row Running Disabled" : p.loaded ? "Plugin List Row Running" : "Plugin List Row Unloaded",
-        i + 1,
-        p.id,
-      ));
+      list.forEach((p, i) => {
+        if (p.folder) cmd.replyT("Plugin List Row Running From Folder", i + 1, p.id, p.folder);
+        else cmd.replyT(p.loaded ? "Plugin List Row Running" : "Plugin List Row Unloaded", i + 1, p.id);
+      });
       return HookResult.Handled;
     }
     if (

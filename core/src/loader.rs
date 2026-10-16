@@ -435,6 +435,10 @@ fn path_of_loaded(id: &str) -> Option<PathBuf> {
 
 /// Enqueue an unload of a currently-loaded plugin. Returns false if no such plugin is loaded.
 pub(crate) fn request_unload(id: &str) -> bool {
+    // `fun/@edge/rtv` names the same plugin as `@edge/rtv`: ids are unique, so the folder is just
+    // how the operator remembers where it came from.
+    let id = split_folder_spec(id).map(|(_, plugin)| plugin).unwrap_or_else(|| id.to_string());
+    let id = id.as_str();
     if path_of_loaded(id).is_none() { return false; }
     enqueue_intent(id, PendingOp::Unload)
 }
@@ -475,22 +479,32 @@ pub(crate) fn request_load(id: &str) -> bool {
     if suppressed {
         return enqueue_intent(id, PendingOp::Load);
     }
-    // `disabled/<plugin id>` — and only that spelling — loads a plugin kept in plugins/disabled/
-    // for this run; the next scan picks it up like any other file.
-    let Some(plugin_id) = id.strip_prefix(DISABLED_LOAD_PREFIX) else { return false };
-    let Some(path) = find_disabled(plugin_id) else { return false };
+    // `<folder>/<plugin id>` — and only that spelling — loads a plugin kept in a folder under
+    // plugins/ (disabled/, fun/, …) for this run; the next scan picks it up like any other file.
+    let Some((folder, plugin_id)) = split_folder_spec(id) else { return false };
+    let Some(path) = find_in_folder(&folder, &plugin_id) else { return false };
     let added = SESSION_LOADS.with(|s| s.borrow_mut().insert(path.clone()));
     if added {
         crate::v8host::log_warn(&format!(
-            "[plugins] loading '{plugin_id}' from plugins/disabled/ for this run (it stays disabled on disk)"
+            "[plugins] loading '{plugin_id}' from plugins/{folder}/ for this run (it stays there on disk)"
         ));
     }
     added
 }
 
-/// `sm plugins load disabled/@edgegamers/jailbreak`: the explicit prefix that reaches into
-/// plugins/disabled/. A bare id never does, so nothing there loads by accident.
-pub(crate) const DISABLED_LOAD_PREFIX: &str = "disabled/";
+/// `fun/@edgegamers/jailbreak` → (`fun`, `@edgegamers/jailbreak`); `a/b/rtv` → (`a/b`, `rtv`). The
+/// plugin id is the last segment, or the last two when they form a scope (`@scope/name`); what is
+/// left is the folder under plugins/. None for a bare id (`@edge/rtv`, `rtv`), which never names a
+/// folder — so nothing in one loads by accident.
+pub(crate) fn split_folder_spec(spec: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = spec.split('/').collect();
+    let id_len = if parts.len() >= 2 && parts[parts.len() - 2].starts_with('@') { 2 } else { 1 };
+    if parts.len() <= id_len || parts.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+    let folder = parts[..parts.len() - id_len].join("/");
+    Some((folder, parts[parts.len() - id_len..].join("/")))
+}
 
 /// The registry's file name for a plugin id (`@edgegamers/jailbreak` → `_edgegamers_jailbreak.s2sp`),
 /// the same rule as the registry's install plan.
@@ -498,11 +512,19 @@ fn registry_filename(plugin_id: &str) -> String {
     format!("{}.s2sp", plugin_id.replace(['@', '/'], "_"))
 }
 
-/// The file in plugins/disabled/ holding `plugin_id`: the registry's file name for it, else (a
+/// The file in plugins/<folder>/ holding `plugin_id`: the registry's file name for it, else (a
 /// hand-dropped or renamed file) whichever archive's manifest carries that id. The operator types
-/// the id; the escaping is ours.
-fn find_disabled(plugin_id: &str) -> Option<PathBuf> {
-    let dir = PLUGINS_DIR.with(|d| d.borrow().clone())?.join("disabled");
+/// the id; the escaping is ours. The folder must resolve inside plugins/ (no `..`, no absolute
+/// path, no symlink out).
+fn find_in_folder(folder: &str, plugin_id: &str) -> Option<PathBuf> {
+    let plugins = PLUGINS_DIR.with(|d| d.borrow().clone())?;
+    if folder.split('/').any(|p| p == ".." || p == ".") || Path::new(folder).is_absolute() {
+        return None;
+    }
+    let dir = plugins.join(folder).canonicalize().ok()?;
+    if dir == plugins.canonicalize().ok()? || !dir.starts_with(plugins.canonicalize().ok()?) {
+        return None;
+    }
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).ok()?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "s2sp") && p.is_file())
@@ -517,9 +539,17 @@ fn find_disabled(plugin_id: &str) -> Option<PathBuf> {
     })
 }
 
-/// True when `id` is running from plugins/disabled/ for this run only (`sm plugins list`).
-pub(crate) fn is_session_loaded(id: &str) -> bool {
-    path_of_loaded(id).is_some_and(|p| SESSION_LOADS.with(|s| s.borrow().contains(&p)))
+/// The folder under plugins/ that `id` runs from for this run only (`sm plugins list`), if any.
+pub(crate) fn session_folder(id: &str) -> Option<String> {
+    let path = path_of_loaded(id)?;
+    if !SESSION_LOADS.with(|s| s.borrow().contains(&path)) {
+        return None;
+    }
+    // Session paths come from find_in_folder, which canonicalizes them.
+    let plugins = PLUGINS_DIR.with(|d| d.borrow().clone())?;
+    let base = plugins.canonicalize().unwrap_or(plugins);
+    let rel = path.parent()?.strip_prefix(&base).ok()?;
+    Some(rel.to_string_lossy().replace('\\', "/"))
 }
 
 /// Number of Post-drain calls between each real directory scan.
@@ -2655,21 +2685,49 @@ mod tests {
         assert_eq!(after_unload["main"]["applying"], 0);
     }
 
-    /// A hand-dropped or renamed archive in plugins/disabled/ is still found by the id in its
-    /// manifest, and the registry's escaping covers scoped ids.
     #[test]
-    fn disabled_load_maps_ids_to_files() {
+    fn folder_specs_split_the_plugin_id_from_its_folder() {
+        let split = |s: &str| split_folder_spec(s).map(|(f, i)| (f, i));
+        assert_eq!(split("fun/@edgegamers/jailbreak"), Some(("fun".into(), "@edgegamers/jailbreak".into())));
+        assert_eq!(split("disabled/rtv"), Some(("disabled".into(), "rtv".into())));
+        assert_eq!(split("events/2026/@edge/rtv"), Some(("events/2026".into(), "@edge/rtv".into())));
+        // A bare id never names a folder.
+        assert_eq!(split("@edgegamers/jailbreak"), None);
+        assert_eq!(split("rtv"), None);
+        assert_eq!(split("fun//rtv"), None);
+        assert_eq!(split("/rtv"), None);
+    }
+
+    /// Any folder under plugins/ works; a hand-dropped or renamed archive is still found by the id
+    /// in its manifest; nothing outside plugins/ is reachable.
+    #[test]
+    fn folder_loads_map_ids_to_files_inside_plugins_only() {
         assert_eq!(registry_filename("@edgegamers/jailbreak"), "_edgegamers_jailbreak.s2sp");
         assert_eq!(registry_filename("rtv"), "rtv.s2sp");
-        let dir = std::env::temp_dir().join(format!("s2s-session-find-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("disabled")).unwrap();
-        std::fs::write(dir.join("disabled").join("renamed-by-hand.s2sp"),
-            make_test_s2sp(r#"{"id":"@edgegamers/jailbreak","version":"1.0.0","apiVersion":"1.x"}"#, "module.exports={};")).unwrap();
-        PLUGINS_DIR.with(|d| *d.borrow_mut() = Some(dir.clone()));
-        assert_eq!(find_disabled("@edgegamers/jailbreak"), Some(dir.join("disabled").join("renamed-by-hand.s2sp")));
-        assert_eq!(find_disabled("@edgegamers/other"), None);
+        let base = std::env::temp_dir().join(format!("s2s-folders-{}", std::process::id()));
+        let plugins = base.join("plugins");
+        std::fs::create_dir_all(plugins.join("fun").join("events")).unwrap();
+        std::fs::create_dir_all(base.join("outside")).unwrap();
+        let archive = |id: &str| make_test_s2sp(&format!(r#"{{"id":"{id}","version":"1.0.0","apiVersion":"1.x"}}"#), "module.exports={};");
+        std::fs::write(plugins.join("fun").join("_edgegamers_jailbreak.s2sp"), archive("@edgegamers/jailbreak")).unwrap();
+        std::fs::write(plugins.join("fun").join("events").join("renamed-by-hand.s2sp"), archive("@edge/rtv")).unwrap();
+        std::fs::write(base.join("outside").join("_edge_evil.s2sp"), archive("@edge/evil")).unwrap();
+        std::os::unix::fs::symlink(base.join("outside"), plugins.join("escape")).unwrap();
+        PLUGINS_DIR.with(|d| *d.borrow_mut() = Some(plugins.clone()));
+        let canon = |p: PathBuf| p.canonicalize().unwrap();
+
+        assert_eq!(find_in_folder("fun", "@edgegamers/jailbreak"), Some(canon(plugins.join("fun").join("_edgegamers_jailbreak.s2sp"))));
+        assert_eq!(find_in_folder("fun/events", "@edge/rtv"), Some(canon(plugins.join("fun").join("events").join("renamed-by-hand.s2sp"))));
+        assert_eq!(find_in_folder("fun", "@edge/missing"), None);
+        assert_eq!(find_in_folder("nope", "@edgegamers/jailbreak"), None);
+        // Never outside plugins/: `..`, absolute paths, a symlink that leads out.
+        assert_eq!(find_in_folder("../outside", "@edge/evil"), None);
+        assert_eq!(find_in_folder(base.join("outside").to_str().unwrap(), "@edge/evil"), None);
+        assert_eq!(find_in_folder("escape", "@edge/evil"), None);
+        assert_eq!(find_in_folder(".", "@edgegamers/jailbreak"), None);
+
         PLUGINS_DIR.with(|d| { d.borrow_mut().take(); });
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Unloading a plugin that runs from plugins/disabled/ for this run drops it from the session
@@ -2686,9 +2744,10 @@ mod tests {
         let stamp = crate::loader_worker::FileStamp::from_metadata(&std::fs::metadata(&path).unwrap());
         commit_path(&path, stamp, "session-off");
         SESSION_LOADS.with(|s| { s.borrow_mut().insert(path.clone()); });
-        assert!(is_session_loaded("session-off"));
+        PLUGINS_DIR.with(|d| *d.borrow_mut() = Some(dir.canonicalize().unwrap()));
+        assert_eq!(session_folder("session-off").as_deref(), Some("disabled"));
 
-        assert!(request_unload("session-off"));
+        assert!(request_unload("disabled/session-off"), "the folder form names the same plugin");
         drain_command_intents();
         assert!(crate::v8host::plugin_phase("session-off").is_none(), "unloaded");
         assert!(SESSION_LOADS.with(|s| s.borrow().is_empty()), "the run-only load ended");
@@ -2837,9 +2896,9 @@ mod tests {
         let _ = std::fs::remove_dir(&dir);
     }
 
-    /// `sm plugins load <id|file>` reaches into plugins/disabled/ for this run only: the file joins
-    /// the scan (here: an old-API plugin, refused at load, which proves the scan saw it), the
-    /// disabled folder is otherwise never scanned, and a file that moves away leaves the session.
+    /// `sm plugins load <folder>/<id>` reaches into a folder under plugins/ for this run only: the
+    /// file joins the scan (here: an old-API plugin, refused at load, which proves the scan saw it),
+    /// the folder is otherwise never scanned, and a file that moves away leaves the session.
     #[test]
     fn load_reaches_a_disabled_plugin_for_this_run_only() {
         let dir = std::env::temp_dir().join(format!("s2s-session-{}", std::process::id()));
@@ -2858,7 +2917,7 @@ mod tests {
         scan();
         assert!(!WATCH_STATE.with(|ws| ws.borrow().contains_key(&p)), "plugins/disabled/ is never scanned on its own");
 
-        assert!(!request_load("@old/off"), "a bare id never reaches into plugins/disabled/");
+        assert!(!request_load("@old/off"), "a bare id never reaches into a folder");
         assert!(!request_load("disabled/@nobody/here"), "no such disabled plugin");
         assert!(request_load("disabled/@old/off"), "disabled/<id> maps the id to its file");
         assert!(!request_load("disabled/@old/off"), "already loaded for this run");

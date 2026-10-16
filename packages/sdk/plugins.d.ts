@@ -16,9 +16,10 @@ export interface PluginInfo {
    * - `"unloaded"` — on disk but manually unloaded via `unload` (not auto-reloaded until `load`/`reload`).
    */
   readonly state: "running" | "loading" | "waiting" | "failed" | "unloaded";
-  /** Loaded from `plugins/disabled/` by {@link Plugins.load} for this run only: it stays disabled on
-   * disk and in plugins.json, so a restart leaves it off. */
-  readonly fromDisabled: boolean;
+  /** The folder under `plugins/` (e.g. `"disabled"`, `"fun"`) this plugin was loaded from by
+   * {@link Plugins.load} for this run only — it stays there on disk, so a restart leaves it off.
+   * null for a plugin loaded from `plugins/` itself. */
+  readonly folder: string | null;
 }
 /**
  * Enumerate and drive the plugin set at runtime (list / load / unload / reload).
@@ -37,10 +38,11 @@ export declare const Plugins: {
   reload(id: string): boolean;
   /**
    * Load a plugin that isn't running (deferred): one unloaded earlier this run, by id — or, as
-   * `"disabled/<plugin id>"` (e.g. `"disabled/@edgegamers/jailbreak"`), one kept in
-   * `plugins/disabled/`, for THIS RUN ONLY. Only that prefix reaches into the folder, and the id is
-   * mapped to its file for you. A disabled plugin stays disabled on disk and in plugins.json (a
-   * restart leaves it off; `enable` makes it permanent). false if there is no such plugin.
+   * `"<folder>/<plugin id>"` (e.g. `"fun/@edgegamers/jailbreak"`, `"disabled/@edge/rtv"`), one kept
+   * in any folder under `plugins/`, for THIS RUN ONLY. Only a folder prefix reaches into a folder;
+   * the id is mapped to its file for you; nothing outside `plugins/` is reachable. The file stays
+   * where it is (a restart leaves it off; for disabled/ plugins, `enable` makes it permanent).
+   * false if there is no such plugin. `unload` accepts the same `<folder>/<plugin id>` form.
    */
   load(id: string): boolean;
   /**

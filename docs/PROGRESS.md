@@ -520,17 +520,22 @@ then the loader's file watch loads or unloads it. The CLI and the runtime agree 
 the lock with disabled entries (shared fixture updated), and a live run through the native
 installed into `disabled/` and then enabled with no download. Not yet live-gated in CS2.
 
-## 2026-10-16 — Load a disabled plugin for this run only
+## 2026-10-16 — Load a plugin from any folder under plugins/ for this run only
 
 `enable` / `disable` are permanent (they move the file and edit `plugins.json`). `sm plugins load` /
-`unload` now cover the temporary case too: `loader::request_load("disabled/<plugin id>")` (only
-that explicit prefix reaches into the folder) maps the id to its file with the registry's naming
-rule (`@`/`/` → `_`), else finds the archive whose manifest carries the id, and adds it to a run-only
-`SESSION_LOADS` set that every scan appends to its result, so the ordinary diff loads it. Unloading
-such a plugin drops it from the set rather than suppressing it, so a later `load` finds it again.
-A file that moves away (enable, remove, delete) leaves the set and unloads like any vanished file.
-The set is cleared when the loader stops, so a restart leaves the plugin off. `Plugins.list()`
-reports `fromDisabled`, and basecommands' `sm plugins list` marks it. Loader tests cover
-the explicit prefix (a bare id never reaches in), id-to-file mapping including a renamed file, the
-scan join, the move-away exit, and unload without suppression. Not yet live-gated
-in CS2.
+`unload` now cover the temporary case too. `loader::request_load("<folder>/<plugin id>")` handles
+any folder under `plugins/` (`disabled/`, `fun/`, nested ones). The plugin id is the last segment,
+or the last two when they form an `@scope/name`. Only a folder prefix reaches into a folder; a bare
+id never does. The folder must resolve inside `plugins/` (no `..`, no absolute path, no symlink
+out). The id maps to its file by the registry's naming rule (`@`/`/` → `_`), else by the manifest id
+of a hand-dropped file.
+
+The file joins a run-only `SESSION_LOADS` set that every scan appends to its result, so the
+ordinary diff loads it. The set is cleared when the loader stops. Unloading such a plugin (by id or
+`<folder>/<id>`) drops it from the set rather than suppressing it. A file that moves away leaves
+the set.
+
+`Plugins.list()` reports `folder`, and `sm plugins list` marks the plugin. Loader tests cover spec
+splitting, id-to-file mapping in nested folders and for a renamed file, refusal of `..`, absolute
+paths, a symlink out and `plugins/` itself, the scan join, the move-away exit, and unload by folder
+form without suppression. Not yet live-gated in CS2.
