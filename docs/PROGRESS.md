@@ -484,3 +484,19 @@ files and the lock together. The loader holds its first scan until that finishes
 use `S2SCRIPT_TOKEN` or `configs/registry.json`. The CLI and the runtime write byte-identical
 locks, pinned by a shared fixture and checked live against a local registry. Not yet live-gated in
 CS2. Design: `docs/superpowers/specs/2026-10-16-server-manifest-design.md`.
+
+## 2026-10-16 — `sm plugins install|update|remove|outdated` from the server console
+
+Operators on hosted servers often have a web console but no shell and no Node.js, so `plugins.json`
+is now manageable from the server console or RCON. basecommands' `sm plugins` gains `install`
+(bare name → `^latest`, `--with` for bundle members, creates `plugins.json` on first use),
+`update`, `remove` and `outdated`. Players can't run them, admins included. They call the new
+`Plugins.install/update/remove/outdated` (`@s2script/sdk/plugins`), backed by one native
+(`__s2_plugins_registry`) that runs `server_update::run_op` on the threadpool using the same
+resolve/stage/commit path as the startup update. Other plugins stay pinned to their locked
+versions on install/remove. One operation runs at a time, never during the startup update. The
+loader's file watch loads, hot-reloads or unloads the changed files. The native is gated by a new
+`plugins:manage` permission whose default (when `permissions.json` doesn't mention it) is
+`@s2script/basecommands` alone. Verified: core unit tests, a V8-level refusal test for an
+unpermitted plugin, and an opt-in live test installing through the native from a local registry.
+Not yet live-gated in CS2.

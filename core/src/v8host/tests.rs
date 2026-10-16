@@ -707,6 +707,66 @@
         shutdown();
     }
 
+    /// `sm plugins install` puts new code on the server, so the native refuses any plugin the
+    /// `plugins:manage` permission does not cover — by default everyone but basecommands.
+    #[test]
+    fn plugins_registry_refuses_a_plugin_without_plugins_manage() {
+        init(dummy_logger()).unwrap();
+        eval_std(
+            "@community/sneaky",
+            r#"globalThis.__err = "";
+            const { Plugins } = __s2require("@s2script/plugins");
+            Plugins.install(["@evil/backdoor"]).then(
+              () => { globalThis.__err = "resolved"; },
+              (e) => { globalThis.__err = String(e && e.message || e); });"#,
+        );
+        let mut err = String::new();
+        for _ in 0..ASYNC_POLL_TICKS {
+            frame_async_drain();
+            err = eval_in_context_string("@community/sneaky", "globalThis.__err");
+            if !err.is_empty() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(err.contains("may not manage plugins"), "got {err:?}");
+        shutdown();
+    }
+
+    /// Live, through the native: `S2S_E2E_REGISTRY=<url> cargo test -p s2script-core
+    /// plugins_registry_live -- --ignored`. basecommands installs a plugin into a temp server.
+    #[test]
+    #[ignore]
+    fn plugins_registry_live_install() {
+        let registry = std::env::var("S2S_E2E_REGISTRY").expect("S2S_E2E_REGISTRY");
+        let name = std::env::var("S2S_E2E_PLUGIN").unwrap_or_else(|_| "@edge/pubplug".into());
+        std::env::set_var("S2SCRIPT_REGISTRY_URL", &registry);
+        let root = std::env::temp_dir().join(format!("s2s-native-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("plugins")).unwrap();
+        init(dummy_logger()).unwrap();
+        crate::loader::set_plugins_dir(root.join("plugins").to_str().unwrap());
+        eval_std(
+            "@s2script/basecommands",
+            &format!(
+                r#"globalThis.__out = "";
+                const {{ Plugins }} = __s2require("@s2script/plugins");
+                Plugins.install([{name:?}]).then(
+                  (lines) => {{ globalThis.__out = "ok:" + lines.join("|"); }},
+                  (e) => {{ globalThis.__out = "err:" + String(e && e.message || e); }});"#
+            ),
+        );
+        let mut out = String::new();
+        for _ in 0..2000 {
+            frame_async_drain();
+            out = eval_in_context_string("@s2script/basecommands", "globalThis.__out");
+            if !out.is_empty() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        println!("{out}");
+        assert!(out.starts_with("ok:"), "{out}");
+        println!("{}", std::fs::read_to_string(root.join("plugins.json")).unwrap());
+        assert!(std::fs::read_dir(root.join("plugins")).unwrap().count() >= 1);
+        shutdown();
+    }
+
     #[test]
     fn thread_sleep_runs_off_thread_and_resolves_on_a_drain() {
         init(dummy_logger()).unwrap();

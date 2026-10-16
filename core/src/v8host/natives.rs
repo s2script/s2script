@@ -180,6 +180,8 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_plugin_unload", s2_plugin_unload);
     set_native(scope, global_obj, "__s2_plugin_reload", s2_plugin_reload);
     set_native(scope, global_obj, "__s2_plugin_load", s2_plugin_load);
+    set_native(scope, global_obj, "__s2_plugins_registry", s2_plugins_registry);
+    set_native(scope, global_obj, "__s2_plugins_registry_result", s2_plugins_registry_result);
     set_native(scope, global_obj, "__s2_server_command", s2_server_command);
     set_native(
         scope,

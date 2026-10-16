@@ -982,7 +982,19 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     unload: function (id) { return __s2_plugin_unload(String(id)); },   // false if not loaded
     reload: function (id) { return __s2_plugin_reload(String(id)); },   // false if id unknown
     load: function (id) { return __s2_plugin_load(String(id)); },       // false if not currently unloaded
+    // Registry management through plugins.json (sm plugins install/update/remove/outdated). One
+    // operation at a time; each resolves with its report lines or rejects with the reason.
+    install: function (names, opts) { return __s2_plugins_op("install", names, opts && opts.with); },
+    update: function (names) { return __s2_plugins_op("update", names); },
+    remove: function (names) { return __s2_plugins_op("remove", names); },
+    outdated: function () { return __s2_plugins_op("outdated"); },
   };
+  function __s2_plugins_op(op, names, withMembers) {
+    var req = JSON.stringify({ op: op, names: (names || []).map(String), with: (withMembers || []).map(String) });
+    return __s2_plugins_registry(req).then(function () {
+      try { return JSON.parse(__s2_plugins_registry_result()); } catch (e) { return []; }
+    });
+  }
   globalThis.__s2pkg_plugins = { Plugins: __s2_plugins };
   // --- @s2script/sdk/unsafe — plugin-declared engine calls. A THIN shim by design: core registered
   //     every descriptor at plugin load from the packed gamedata.json and owns all marshalling, so

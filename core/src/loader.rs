@@ -68,6 +68,22 @@ pub fn permission_allowed(plugin_id: &str, permission: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// `permission_allowed`, except that a permission the allow-list does not mention at all (no file,
+/// or no key for it) falls back to `defaults` — for first-party capabilities that should work out
+/// of the box but stay revocable. A key that IS present, even `[]`, is the operator's decision.
+pub fn permission_allowed_or(plugin_id: &str, permission: &str, defaults: &[&str]) -> bool {
+    let listed = PERMISSIONS
+        .read()
+        .ok()
+        .and_then(|g| g.as_ref().and_then(|m| m.get(permission).map(|v| v.iter().any(|p| p == plugin_id))));
+    listed.unwrap_or_else(|| defaults.contains(&plugin_id))
+}
+
+/// The plugins directory the loader watches, when it is running.
+pub(crate) fn plugins_dir() -> Option<PathBuf> {
+    PLUGINS_DIR.with(|d| d.borrow().clone())
+}
+
 /// The current host API major. Archive loading also supports the explicit API 2 legacy path;
 /// other majors are refused (WARN + skip). Breaking host changes bump this constant.
 pub(crate) const HOST_API_VERSION_MAJOR: u32 = 3;
@@ -2773,6 +2789,16 @@ mod tests {
         assert!(permission_allowed("@demo/gd", "engine:calls"));
         assert!(!permission_allowed("@other/x", "engine:calls"));
         assert!(!permission_allowed("@demo/gd", "engine:other"));
+        // A permission the allow-list never mentions falls back to the given defaults; a listed one,
+        // even an empty list, is the operator's answer.
+        assert!(permission_allowed_or("@s2script/basecommands", "plugins:manage", &["@s2script/basecommands"]));
+        assert!(!permission_allowed_or("@other/x", "plugins:manage", &["@s2script/basecommands"]));
+        assert!(!permission_allowed_or("@demo/gd", "engine:other", &[]));
+        load_permissions_from_str(r#"{"plugins:manage":[]}"#).expect("parses");
+        assert!(
+            !permission_allowed_or("@s2script/basecommands", "plugins:manage", &["@s2script/basecommands"]),
+            "an explicit empty list revokes the default"
+        );
     }
     thread_local! { static FUNCTION_SNAPSHOT: std::cell::RefCell<std::ffi::CString> = std::cell::RefCell::new(std::ffi::CString::new(r#"{"records":[],"error":null}"#).unwrap()); }
     extern "C" fn function_snapshot_test_op(_: *const c_char) -> *const c_char {

@@ -3871,6 +3871,62 @@ fn s2_plugin_load(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
     }));
 }
 
+/// Who may install registry code onto the server when `configs/permissions.json` does not say:
+/// the first-party basecommands plugin, which only does it for the server console / RCON.
+const PLUGINS_MANAGE_DEFAULT: &[&str] = &["@s2script/basecommands"];
+
+/// Native `__s2_plugins_registry(requestJson) -> Promise<void>` — `sm plugins install|update|remove|
+/// outdated` (server_update.rs `Op`). The registry work runs on the threadpool; the promise
+/// resolves when it finishes (read its lines with `__s2_plugins_registry_result`) or rejects with
+/// the reason. Gated by the `plugins:manage` permission, since it puts new code on the server.
+fn s2_plugins_registry(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let resolver = v8::PromiseResolver::new(scope).unwrap();
+        let promise = resolver.get_promise(scope);
+        let request = args.get(0).to_rust_string_lossy(scope);
+        let caller = current_plugin(scope).unwrap_or_default();
+        let result = (|| -> Result<(), String> {
+            if !crate::loader::permission_allowed_or(&caller, "plugins:manage", PLUGINS_MANAGE_DEFAULT) {
+                return Err(format!(
+                    "{caller} may not manage plugins (add it under \"plugins:manage\" in configs/permissions.json)"
+                ));
+            }
+            let op = crate::server_update::parse_op(&request)?;
+            let root = crate::loader::plugins_dir()
+                .and_then(|d| d.parent().map(std::path::Path::to_path_buf))
+                .ok_or("the plugin loader is not running")?;
+            let token = crate::server_update::console_token();
+            let lease = crate::jobs::reserve(scope, 0).map_err(|e| e.to_string())?;
+            crate::jobs::check_live(&lease)?;
+            crate::server_update::try_begin_op()?;
+            let id = crate::jobs::next_id();
+            let cancel = lease.cancel.clone();
+            let job: crate::async_rt::Job = Box::new(move || crate::server_update::run_op_blocking(root, op, token));
+            if let Err(e) = pool().try_submit(id, job, lease) {
+                crate::server_update::abort_op();
+                return Err(e);
+            }
+            crate::jobs::commit_reserved(scope, id, resolver, cancel);
+            Ok(())
+        })();
+        if let Err(e) = result {
+            crate::jobs::reject(scope, resolver, &e);
+        }
+        rv.set(promise.into());
+    }));
+}
+
+/// Native `__s2_plugins_registry_result() -> string` — JSON array of the lines the last finished
+/// `__s2_plugins_registry` operation produced (taken once).
+fn s2_plugins_registry_result(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let json = serde_json::to_string(&crate::server_update::take_op_result()).unwrap_or_else(|_| "[]".into());
+        if let Some(s) = v8::String::new(scope, &json) {
+            rv.set(s.into());
+        }
+    }));
+}
+
 
 
 

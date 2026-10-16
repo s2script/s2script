@@ -99,6 +99,12 @@ where
     }
 }
 
+/// Run `future` to completion on the shared runtime from a thread that is NOT one of its workers
+/// (a threadpool job). None when the engine is not initialized.
+pub(crate) fn block_on<F: std::future::Future>(future: F) -> Option<F::Output> {
+    ENGINE.get().map(|e| e.runtime.block_on(future))
+}
+
 /// Like `spawn`, but says whether the engine was there to run it.
 pub(crate) fn try_spawn<F>(future: F) -> bool
 where

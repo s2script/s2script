@@ -168,6 +168,38 @@ function cvar(cmd: Command): HookResultValue {
   return HookResult.Handled;
 }
 
+/**
+ * `sm plugins install|update|remove|outdated` — manage addons/s2script/plugins.json from the server
+ * console or RCON. Never from a player, admin or not: these put new code on the server. The work
+ * runs in the background; its report prints to the console when it finishes, and the loader picks
+ * up the changed files on its own (install/update → load or hot-reload, remove → unload).
+ */
+function registryOp(cmd: Command, action: "install" | "update" | "remove" | "outdated"): HookResultValue {
+  if (cmd.callerSlot >= 0) { cmd.replyT("Plugins Console Only"); return HookResult.Handled; }
+  const names: string[] = [];
+  const withMembers: string[] = [];
+  for (let i = 2; i < cmd.argCount; i++) {
+    const a = cmd.arg(i);
+    if (a === "--with" && i + 1 < cmd.argCount) withMembers.push(cmd.arg(++i));
+    else if (a) names.push(a);
+  }
+  if ((action === "install" || action === "remove") && names.length === 0) {
+    cmd.replyT("Usage Sm Plugins");
+    return HookResult.Handled;
+  }
+  const run =
+    action === "install" ? Plugins.install(names, { with: withMembers }) :
+    action === "update" ? Plugins.update(names) :
+    action === "remove" ? Plugins.remove(names) :
+    Plugins.outdated();
+  cmd.replyT("Plugins Working", action);
+  run.then(
+    (lines) => { for (const line of lines) cmd.reply(line); },
+    (e: unknown) => cmd.replyT("Plugins Op Failed", action, e instanceof Error ? e.message : String(e)),
+  );
+  return HookResult.Handled;
+}
+
 function sm(cmd: Command): HookResultValue {
   const sub = cmd.arg(0).toLowerCase();
   if (!sub || sub === "version" || sub === "credits") {
@@ -182,6 +214,9 @@ function sm(cmd: Command): HookResultValue {
       cmd.replyT("Plugins Header", list.length);
       list.forEach((p, i) => cmd.replyT(p.loaded ? "Plugin List Row Running" : "Plugin List Row Unloaded", i + 1, p.id));
       return HookResult.Handled;
+    }
+    if (action === "install" || action === "update" || action === "remove" || action === "outdated") {
+      return registryOp(cmd, action);
     }
     const isRoot = cmd.callerSlot < 0 || (() => {
       const a = Admin.forSlot(cmd.callerSlot);

@@ -634,6 +634,254 @@ pub(crate) fn holds_first_scan() -> bool {
     false
 }
 
+// ---------------------------------------------------------------------------------------------
+// Console operations (`sm plugins install|update|remove|outdated`)
+// ---------------------------------------------------------------------------------------------
+
+/// One console request, as basecommands sends it: `{"op":"install","names":[...],"with":[...]}`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Op {
+    /// Add (or re-range) `names` (`name` or `name@range`); `with` = optional bundle members.
+    Install { names: Vec<String>, with: Vec<String> },
+    /// Move `names` (all when empty) to the newest version their range allows.
+    Update { names: Vec<String> },
+    /// Drop `names` from plugins.json; their files are pruned.
+    Remove { names: Vec<String> },
+    /// Report current / wanted / latest for every dependency.
+    Outdated,
+}
+
+pub(crate) fn parse_op(json: &str) -> Result<Op, String> {
+    let j: Value = serde_json::from_str(json).map_err(|e| format!("bad request: {e}"))?;
+    let list = |k: &str| -> Vec<String> {
+        j.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default()
+    };
+    match j.get("op").and_then(Value::as_str) {
+        Some("install") => Ok(Op::Install { names: list("names"), with: list("with") }),
+        Some("update") => Ok(Op::Update { names: list("names") }),
+        Some("remove") => Ok(Op::Remove { names: list("names") }),
+        Some("outdated") => Ok(Op::Outdated),
+        other => Err(format!("unknown plugins operation {other:?}")),
+    }
+}
+
+/// `name@range` → (name, Some(range)); a scoped name's leading @ is not a separator.
+fn split_spec(spec: &str) -> (String, Option<String>) {
+    match spec.rfind('@') {
+        Some(at) if at > 0 => (spec[..at].to_string(), Some(spec[at + 1..].to_string()).filter(|r| !r.is_empty())),
+        _ => (spec.to_string(), None),
+    }
+}
+
+/// A plain `x.y.z` (optionally with a prerelease) gets npm's caret; anything else is kept as is.
+fn caret(version: &str) -> String {
+    let core = version.split(['-', '+']).next().unwrap_or("");
+    if core.split('.').count() == 3 && core.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) {
+        format!("^{version}")
+    } else {
+        version.to_string()
+    }
+}
+
+/// The ranges to resolve: names in `unpinned` at their range, every other dependency pinned to the
+/// version the lock has for it — as long as its range has not changed since that lock was written.
+fn pinned(manifest: &ServerManifest, lock: Option<&Lock>, unpinned: &dyn Fn(&str) -> bool) -> ServerManifest {
+    let mut m = manifest.clone();
+    for (name, range) in m.dependencies.iter_mut() {
+        if unpinned(name) {
+            continue;
+        }
+        let Some(lock) = lock else { continue };
+        if lock.dependencies.get(name) != Some(range) {
+            continue;
+        }
+        if let Some(p) = lock.plugins.values().find(|p| &p.name == name) {
+            *range = p.version.clone();
+        }
+    }
+    m
+}
+
+/// Rewrite plugins.json with `manifest`'s dependencies and `with`, keeping every other field.
+fn write_manifest(root: &Path, manifest: &ServerManifest) -> Result<(), String> {
+    let path = root.join(MANIFEST_FILE);
+    let mut raw: serde_json::Map<String, Value> = match std::fs::read_to_string(&path) {
+        Ok(t) => serde_json::from_str(&t).map_err(|e| format!("{MANIFEST_FILE}: {e}"))?,
+        Err(_) => serde_json::Map::new(),
+    };
+    raw.insert("name".into(), Value::String(manifest.name.clone()));
+    raw.insert("dependencies".into(), serde_json::to_value(&manifest.dependencies).unwrap());
+    if manifest.with.is_empty() {
+        raw.remove("with");
+    } else {
+        raw.insert("with".into(), serde_json::to_value(&manifest.with).unwrap());
+    }
+    raw.entry("autoUpdate").or_insert(Value::Bool(true));
+    // Known keys first, in the order the docs show them; anything else after, as found.
+    let order = ["name", "dependencies", "with", "autoUpdate", "reviewedOnly", "updateTimeoutSeconds", "registry"];
+    let mut out = String::from("{\n");
+    let mut entries: Vec<(&String, &Value)> = order.iter().filter_map(|k| raw.get_key_value(*k)).collect();
+    entries.extend(raw.iter().filter(|(k, _)| !order.contains(&k.as_str())));
+    for (i, (k, v)) in entries.iter().enumerate() {
+        let value = serde_json::to_string_pretty(v).unwrap().replace('\n', "\n  ");
+        out.push_str(&format!("  {}: {}{}\n", serde_json::to_string(k).unwrap(), value, if i + 1 < entries.len() { "," } else { "" }));
+    }
+    out.push_str("}\n");
+    let tmp = root.join(format!("{MANIFEST_FILE}{STAGE_SUFFIX}"));
+    std::fs::write(&tmp, out).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| format!("{MANIFEST_FILE}: {e}"))
+}
+
+async fn resolve_version(registry: &str, name: &str, range: &str, get: &Get) -> Result<String, String> {
+    let url = plan_url(registry, name, range, None).replace("/api/v1/plan?", "/api/v1/resolve?");
+    let (status, body) = get(url, true).await?;
+    if status != 200 {
+        return Err(error_detail(&body));
+    }
+    let v: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+    v.get("version").and_then(Value::as_str).map(str::to_string).ok_or_else(|| "no version".into())
+}
+
+/// Run one console operation against the server at `root`, returning the lines to print.
+pub(crate) async fn run_op(root: &Path, op: Op, env_registry: Option<String>, get: &Get) -> Result<Vec<String>, String> {
+    let manifest_path = root.join(MANIFEST_FILE);
+    let fallback = root.file_name().and_then(|n| n.to_str()).unwrap_or("server");
+    let mut manifest = match std::fs::read_to_string(&manifest_path) {
+        Ok(text) => parse_manifest(&text, fallback)?,
+        // Like `npm install`, the first install creates the manifest.
+        Err(_) if matches!(op, Op::Install { .. }) => parse_manifest("{}", "s2script-server")?,
+        Err(_) => return Err(format!("no {MANIFEST_FILE} in {} — add a plugin with `sm plugins install <name>` first", root.display())),
+    };
+    let lock = match std::fs::read_to_string(root.join(LOCK_FILE)) {
+        Ok(t) => Some(parse_lock(&t)?),
+        Err(_) => None,
+    };
+    let registry = env_registry.or_else(|| manifest.registry.clone()).unwrap_or_else(|| DEFAULT_REGISTRY.to_string());
+
+    if op == Op::Outdated {
+        let mut lines = vec![format!("{:<32} {:<12} {:<12} {}", "Plugin", "Current", "Wanted", "Latest")];
+        for (name, range) in &manifest.dependencies {
+            let current = lock.as_ref().and_then(|l| l.plugins.values().find(|p| &p.name == name)).map(|p| p.version.clone()).unwrap_or_else(|| "missing".into());
+            let wanted = resolve_version(&registry, name, range, get).await.unwrap_or_else(|e| format!("({e})"));
+            let latest = resolve_version(&registry, name, "*", get).await.unwrap_or_else(|_| "-".into());
+            let mark = if current != wanted || wanted != latest { "" } else { "  (up to date)" };
+            lines.push(format!("{name:<32} {current:<12} {wanted:<12} {latest}{mark}"));
+        }
+        if manifest.dependencies.is_empty() {
+            lines.push(format!("no plugins in {MANIFEST_FILE}"));
+        }
+        return Ok(lines);
+    }
+
+    let mut bare = Vec::new();
+    let changed: Vec<String> = match &op {
+        Op::Install { names, with } => {
+            if names.is_empty() {
+                return Err("usage: sm plugins install <name>[@range] [...]".into());
+            }
+            if !with.is_empty() && names.len() != 1 {
+                return Err("--with applies to exactly one bundle".into());
+            }
+            let mut out = Vec::new();
+            for spec in names {
+                let (name, range) = split_spec(spec);
+                if range.is_none() {
+                    bare.push(name.clone());
+                }
+                manifest.dependencies.insert(name.clone(), range.unwrap_or_else(|| "*".into()));
+                if !with.is_empty() {
+                    manifest.with.insert(name.clone(), with.clone());
+                }
+                out.push(name);
+            }
+            out
+        }
+        Op::Update { names } => {
+            for n in names {
+                if !manifest.dependencies.contains_key(n) {
+                    return Err(format!("{n} is not in {MANIFEST_FILE}"));
+                }
+            }
+            if names.is_empty() { manifest.dependencies.keys().cloned().collect() } else { names.clone() }
+        }
+        Op::Remove { names } => {
+            if names.is_empty() {
+                return Err("usage: sm plugins remove <name> [...]".into());
+            }
+            for n in names {
+                if manifest.dependencies.remove(n).is_none() {
+                    return Err(format!("{n} is not in {MANIFEST_FILE}"));
+                }
+                manifest.with.remove(n);
+            }
+            Vec::new()
+        }
+        Op::Outdated => unreachable!(),
+    };
+
+    let resolve_with = pinned(&manifest, lock.as_ref(), &|n| changed.iter().any(|c| c == n));
+    let targets = resolve_targets(&resolve_with, &registry, get).await?;
+    // A bare `install name` records ^<the version it got>, as npm does — before staging, so the
+    // lock's root `dependencies` carries the same range plugins.json will.
+    for name in &bare {
+        if let Some(t) = targets.iter().find(|t| &t.name == name) {
+            manifest.dependencies.insert(name.clone(), caret(&t.version));
+        }
+    }
+    let host = url_host(&registry);
+    let staged = stage(root, &manifest, &targets, get, host.as_deref()).await?;
+    let mut log = commit(staged, lock.as_ref());
+    if !matches!(op, Op::Update { .. }) {
+        write_manifest(root, &manifest)?;
+    }
+    for l in log.iter_mut() {
+        *l = l.trim_start_matches("WARN: ").trim_start_matches("[update] ").to_string();
+    }
+    Ok(log)
+}
+
+static OP_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static OP_RESULT: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+/// Claim the single console-operation slot. Two at once would race on plugins/ and the lock, and
+/// the startup update owns them until it is done.
+pub(crate) fn try_begin_op() -> Result<(), String> {
+    if GATE.lock().unwrap().is_some() {
+        return Err("the startup plugin update is still running — try again in a moment".into());
+    }
+    if OP_BUSY.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return Err("another `sm plugins` registry operation is still running".into());
+    }
+    *OP_RESULT.lock().unwrap() = None;
+    Ok(())
+}
+
+/// The blocking body of a console operation, for a threadpool job. Releases the slot when done.
+pub(crate) fn run_op_blocking(root: PathBuf, op: Op, token: Option<String>) -> Result<(), String> {
+    let env_registry = std::env::var("S2SCRIPT_REGISTRY_URL").ok().filter(|s| !s.is_empty());
+    let get = http_get(token);
+    let out = crate::http::block_on(async move { run_op(&root, op, env_registry, &get).await })
+        .unwrap_or_else(|| Err("HTTP engine unavailable".into()));
+    OP_BUSY.store(false, std::sync::atomic::Ordering::Release);
+    let lines = out?;
+    *OP_RESULT.lock().unwrap() = Some(lines);
+    Ok(())
+}
+
+/// Release the slot for an operation that never started (the threadpool refused the job).
+pub(crate) fn abort_op() {
+    OP_BUSY.store(false, std::sync::atomic::Ordering::Release);
+}
+
+/// The lines the last finished operation produced (taken once).
+pub(crate) fn take_op_result() -> Vec<String> {
+    OP_RESULT.lock().unwrap().take().unwrap_or_default()
+}
+
+/// The registry token for a console operation (main thread: reads configs/registry.json).
+pub(crate) fn console_token() -> Option<String> {
+    registry_token()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -671,7 +919,7 @@ mod tests {
             let fake = fake.clone();
             Box::pin(async move {
                 let q = |k: &str| {
-                    url.split(['?', '&']).find_map(|p| p.strip_prefix(&format!("{k}="))).map(|v| v.replace("%40", "@").replace("%2F", "/").replace("%5E", "^"))
+                    url.split(['?', '&']).find_map(|p| p.strip_prefix(&format!("{k}="))).map(|v| v.replace("%40", "@").replace("%2F", "/").replace("%5E", "^").replace("%2A", "*"))
                 };
                 if url.contains("/api/v1/plan") {
                     let name = q("name").unwrap();
@@ -679,9 +927,16 @@ mod tests {
                     let Some(vs) = fake.published.get(name.as_str()) else {
                         return Ok((404, br#"{"message":"package not found"}"#.to_vec()));
                     };
-                    // Only the shapes the tests use: ^X.Y.Z means "same major".
+                    // Only the shapes the tests use: `*` is the newest, ^X.Y.Z means "same major", and
+                    // a bare X.Y.Z is that exact version.
                     let major = range.trim_start_matches('^').split('.').next().unwrap().to_string();
-                    let v = vs.iter().rev().find(|v| v.split('.').next().unwrap() == major);
+                    let v = if range == "*" {
+                        vs.last()
+                    } else if !range.starts_with('^') {
+                        vs.iter().find(|v| **v == range)
+                    } else {
+                        vs.iter().rev().find(|v| v.split('.').next().unwrap() == major)
+                    };
                     let Some(v) = v else {
                         return Ok((200, serde_json::to_vec(&serde_json::json!({"install":[],"errors":[format!("no version of {name} satisfies {range}")]})).unwrap()));
                     };
@@ -888,6 +1143,101 @@ mod tests {
         for line in log {
             println!("{line}");
         }
+    }
+
+    fn fake_with_resolve(published: HashMap<&'static str, Vec<&'static str>>) -> Get {
+        let plan = fake_get(Fake { published: published.clone(), bad_download: None }, Arc::new(Mutex::new(Vec::new())));
+        Arc::new(move |url: String, auth: bool| {
+            if !url.contains("/api/v1/resolve") {
+                return plan(url, auth);
+            }
+            let published = published.clone();
+            Box::pin(async move {
+                let q = |k: &str| url.split(['?', '&']).find_map(|p| p.strip_prefix(&format!("{k}="))).map(|v| v.replace("%40", "@").replace("%2F", "/").replace("%5E", "^").replace("%2A", "*"));
+                let (name, range) = (q("name").unwrap(), q("range").unwrap());
+                let vs = &published[name.as_str()];
+                let v = if range == "*" {
+                    vs.last()
+                } else {
+                    let major = range.trim_start_matches('^').split('.').next().unwrap().to_string();
+                    vs.iter().rev().find(|v| v.split('.').next().unwrap() == major)
+                };
+                Ok((200, serde_json::to_vec(&serde_json::json!({ "version": v })).unwrap()))
+            })
+        })
+    }
+
+    fn op(root: &Path, op: Op, get: &Get) -> Result<Vec<String>, String> {
+        rt().block_on(run_op(root, op, Some("https://reg.test".into()), get))
+    }
+
+    fn deps(root: &Path) -> BTreeMap<String, String> {
+        parse_manifest(&std::fs::read_to_string(root.join(MANIFEST_FILE)).unwrap(), "x").unwrap().dependencies
+    }
+
+    #[test]
+    fn console_install_creates_plugins_json_and_records_a_caret_range() {
+        let root = tmpdir("c-install");
+        let get = fake_with_resolve(HashMap::from([("@edge/rtv", vec!["1.0.0", "1.2.0"])]));
+        let lines = op(&root, Op::Install { names: vec!["@edge/rtv".into()], with: vec![] }, &get).unwrap();
+        assert!(lines.iter().any(|l| l == "installed @edge/rtv@1.2.0 -> _edge_rtv.s2sp"), "{lines:?}");
+        assert_eq!(deps(&root), BTreeMap::from([("@edge/rtv".into(), "^1.2.0".into())]));
+        let lock = parse_lock(&std::fs::read_to_string(root.join(LOCK_FILE)).unwrap()).unwrap();
+        assert_eq!(lock.dependencies, deps(&root), "the lock records the same range plugins.json does");
+        assert_eq!(std::fs::read(root.join("plugins/_edge_rtv.s2sp")).unwrap(), body("@edge/rtv", "1.2.0"));
+        let text = std::fs::read_to_string(root.join(MANIFEST_FILE)).unwrap();
+        assert!(text.starts_with("{\n  \"name\": "), "name first, two-space indent:\n{text}");
+        serde_json::from_str::<Value>(&text).expect("valid JSON");
+    }
+
+    #[test]
+    fn console_install_keeps_the_other_plugins_at_their_locked_versions() {
+        let root = tmpdir("c-pin");
+        op(&root, Op::Install { names: vec!["@edge/rtv@^1.0.0".into()], with: vec![] }, &fake_with_resolve(HashMap::from([("@edge/rtv", vec!["1.0.0"])]))).unwrap();
+        let later = fake_with_resolve(HashMap::from([("@edge/rtv", vec!["1.0.0", "1.5.0"]), ("@edge/admin", vec!["3.0.0"])]));
+        op(&root, Op::Install { names: vec!["@edge/admin".into()], with: vec![] }, &later).unwrap();
+        assert_eq!(locked_versions(&root), BTreeMap::from([("@edge/admin".into(), "3.0.0".into()), ("@edge/rtv".into(), "1.0.0".into())]));
+        // update then moves rtv within its range.
+        let lines = op(&root, Op::Update { names: vec![] }, &later).unwrap();
+        assert!(lines.iter().any(|l| l.contains("installed @edge/rtv@1.5.0")), "{lines:?}");
+        assert_eq!(deps(&root)["@edge/rtv"], "^1.0.0", "update never edits plugins.json");
+    }
+
+    #[test]
+    fn console_remove_drops_the_dependency_and_prunes_its_file() {
+        let root = tmpdir("c-remove");
+        let get = fake_with_resolve(HashMap::from([("@edge/rtv", vec!["1.0.0"]), ("@edge/admin", vec!["1.0.0"])]));
+        op(&root, Op::Install { names: vec!["@edge/rtv".into(), "@edge/admin".into()], with: vec![] }, &get).unwrap();
+        let lines = op(&root, Op::Remove { names: vec!["@edge/admin".into()] }, &get).unwrap();
+        assert!(lines.iter().any(|l| l.starts_with("removed @edge/admin@1.0.0")), "{lines:?}");
+        assert!(!root.join("plugins/_edge_admin.s2sp").exists());
+        assert_eq!(deps(&root).keys().collect::<Vec<_>>(), ["@edge/rtv"]);
+        assert!(op(&root, Op::Remove { names: vec!["@edge/nope".into()] }, &get).unwrap_err().contains("not in plugins.json"));
+    }
+
+    #[test]
+    fn console_outdated_reports_current_wanted_latest() {
+        let root = tmpdir("c-outdated");
+        op(&root, Op::Install { names: vec!["@edge/rtv@^1.0.0".into()], with: vec![] }, &fake_with_resolve(HashMap::from([("@edge/rtv", vec!["1.0.0"])]))).unwrap();
+        let lines = op(&root, Op::Outdated, &fake_with_resolve(HashMap::from([("@edge/rtv", vec!["1.0.0", "1.3.0", "2.0.0"])]))).unwrap();
+        assert!(lines[1].split_whitespace().eq(["@edge/rtv", "1.0.0", "1.3.0", "2.0.0"]), "{lines:?}");
+        assert!(op(&tmpdir("c-none"), Op::Outdated, &fake_with_resolve(HashMap::new())).unwrap_err().contains("no plugins.json"));
+    }
+
+    #[test]
+    fn console_ops_parse_and_run_one_at_a_time() {
+        assert_eq!(parse_op(r#"{"op":"update","names":["a"]}"#).unwrap(), Op::Update { names: vec!["a".into()] });
+        assert!(parse_op(r#"{"op":"format-c"}"#).is_err());
+        assert_eq!(split_spec("@edge/rtv@^1.2.0"), ("@edge/rtv".into(), Some("^1.2.0".into())));
+        assert_eq!(split_spec("@edge/rtv"), ("@edge/rtv".into(), None));
+        assert_eq!(caret("1.2.3"), "^1.2.3");
+        assert_eq!(caret("1.2.3-beta.1"), "^1.2.3-beta.1");
+        *GATE.lock().unwrap() = None;
+        try_begin_op().unwrap();
+        assert!(try_begin_op().unwrap_err().contains("still running"));
+        abort_op();
+        try_begin_op().unwrap();
+        abort_op();
     }
 
     #[test]

@@ -160,6 +160,25 @@ Restricted (org-only) plugins need a read-only token from s2script.com → Deplo
 { "token": "s2s_…" }
 ```
 
+From the **server console or RCON**, no Node.js or shell needed (hosted servers included):
+
+```
+sm plugins install @edge/rtv            // add to plugins.json and install it now
+sm plugins install @edge/admin@^3.1.0   // at a range
+sm plugins install @edge/jailbreak --with @edge/jailbreak-gangperks
+sm plugins update                       // newest within every range, now
+sm plugins update @edge/rtv
+sm plugins remove @edge/rtv             // drop it from plugins.json; its file is removed and unloaded
+sm plugins outdated                     // current / wanted / latest for each plugin
+```
+
+They run in the background and print their report when done. The loader picks up the changed
+files on its own: a new plugin loads, an updated one hot-reloads, a removed one unloads. No restart.
+Players cannot run them, admins included; they only answer the console and RCON. Only
+`@s2script/basecommands` may call them (the `plugins:manage` permission). List other plugin ids
+under `"plugins:manage"` in `configs/permissions.json` to change that, or set it to `[]` to turn
+the commands off.
+
 From a shell, the same files work like npm:
 
 ```bash
