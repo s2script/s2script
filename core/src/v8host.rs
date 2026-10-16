@@ -2971,7 +2971,10 @@ fn s2_voice_audible_stats(scope: &mut v8::PinScope, _args: v8::FunctionCallbackA
 fn s2_plugins_list(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let items: Vec<serde_json::Value> = crate::loader::plugin_list().into_iter()
-            .map(|(id, state)| serde_json::json!({ "id": id, "loaded": state == "running", "state": state }))
+            .map(|(id, state)| {
+                let from_disabled = crate::loader::is_session_loaded(&id);
+                serde_json::json!({ "id": id, "loaded": state == "running", "state": state, "fromDisabled": from_disabled })
+            })
             .collect();
         let json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string());
         if let Some(js) = v8::String::new(scope, &json) { rv.set(js.into()); }

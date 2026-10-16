@@ -227,7 +227,7 @@ pub(crate) struct FileStamp {
 }
 
 impl FileStamp {
-    fn from_metadata(meta: &std::fs::Metadata) -> Self {
+    pub(crate) fn from_metadata(meta: &std::fs::Metadata) -> Self {
         let modified_ns = meta
             .modified()
             .ok()

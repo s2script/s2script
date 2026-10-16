@@ -162,6 +162,14 @@ it; the loader then loads or unloads it. A dependency goes to `disabled/` only w
 that needs it is disabled. Use these rather than moving a managed file by hand, since the
 startup update puts managed files back where `plugins.json` says they belong.
 
+**Enable/disable versus load/unload.** `enable` / `disable` are permanent: they move the file and
+edit `plugins.json`, so they survive restarts. `sm plugins load` / `unload` only change what runs
+right now. `sm plugins load <name>` also reaches into `plugins/disabled/` (by id or file name) and
+runs a disabled plugin **for this run only**. It stays disabled on disk and in `plugins.json`, so
+the next restart, or `sm plugins unload`, turns it off again, and `sm plugins list` marks it
+"running from plugins/disabled/, this run only". Use this for servers that keep a plugin around
+but only switch it on for an event.
+
 Restricted (org-only) plugins need a read-only token from s2script.com → Deploy tokens, given as
 `S2SCRIPT_TOKEN` in the server's environment, or in `addons/s2script/configs/registry.json`:
 
@@ -180,6 +188,7 @@ sm plugins update @edge/rtv
 sm plugins install @edge/rtv --disabled // install into plugins/disabled/: kept current, not loaded
 sm plugins enable @edge/rtv             // move it into plugins/ so it loads (no download)
 sm plugins disable @edge/rtv            // move it back to plugins/disabled/ so it unloads
+sm plugins load @edge/rtv               // run a disabled plugin for this run only (a restart leaves it off)
 sm plugins remove @edge/rtv             // drop it from plugins.json; its file is removed and unloaded
 sm plugins outdated                     // current / wanted / latest for each plugin
 ```

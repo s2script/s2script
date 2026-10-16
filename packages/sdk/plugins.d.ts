@@ -16,6 +16,9 @@ export interface PluginInfo {
    * - `"unloaded"` — on disk but manually unloaded via `unload` (not auto-reloaded until `load`/`reload`).
    */
   readonly state: "running" | "loading" | "waiting" | "failed" | "unloaded";
+  /** Loaded from `plugins/disabled/` by {@link Plugins.load} for this run only: it stays disabled on
+   * disk and in plugins.json, so a restart leaves it off. */
+  readonly fromDisabled: boolean;
 }
 /**
  * Enumerate and drive the plugin set at runtime (list / load / unload / reload).
@@ -32,7 +35,12 @@ export declare const Plugins: {
   unload(id: string): boolean;
   /** Reload a plugin (unload + load from disk, deferred). false if the id is unknown. */
   reload(id: string): boolean;
-  /** Load a previously-unloaded plugin (deferred). false if it isn't currently unloaded. */
+  /**
+   * Load a plugin that isn't running (deferred): one unloaded earlier this run, or one kept in
+   * `plugins/disabled/` — named by its id or file name — for THIS RUN ONLY. A disabled plugin stays
+   * disabled on disk and in plugins.json (a restart leaves it off; `enable` makes it permanent).
+   * false if there is no such plugin.
+   */
   load(id: string): boolean;
   /**
    * Add registry plugins to the server's `addons/s2script/plugins.json` and install them with their
