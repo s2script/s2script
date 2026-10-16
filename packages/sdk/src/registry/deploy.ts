@@ -5,6 +5,7 @@ import { buildPlugin } from "../build.ts";
 import { packageKind, buildLibrary } from "../build-library.ts";
 import { assertPublishesTypes, hasPublishes } from "../publish-gate.ts";
 import { packTypesTarball } from "../types-pack.ts";
+import { assertSourceSize, packSourceTarball } from "../source-pack.ts";
 import { loadCredentials, defaultRegistryUrl } from "./credentials.ts";
 import { RegistryClient } from "./client.ts";
 
@@ -56,6 +57,8 @@ export interface DeployArchive {
   types: Buffer | null;
   /** The package's README, shown on its registry page. Null when it has none. */
   readme: string | null;
+  /** The package's source, packed as `npm pack` would (source-pack.ts). */
+  source: Buffer;
 }
 
 /** The registry's README cap, in characters. Refusing locally beats a build-then-413. */
@@ -78,6 +81,13 @@ export function readPackageReadme(pluginDir: string): string | null {
     );
   }
   return text;
+}
+
+/** The package's source tarball, refused locally when the registry would 413 it. */
+function packSource(absDir: string, pkg: DeployablePkgJson): Buffer {
+  const pack = packSourceTarball(absDir, pkg);
+  assertSourceSize(pack, pkg.name ?? absDir);
+  return pack.tarball;
 }
 
 /**
@@ -126,6 +136,7 @@ export function assembleDeployArchive(
       lib,
       types: null,
       readme: readPackageReadme(absDir),
+      source: packSource(absDir, pkg),
     };
   }
 
@@ -164,6 +175,7 @@ export function assembleDeployArchive(
     lib: null,
     types,
     readme: readPackageReadme(absDir),
+    source: packSource(absDir, pkg),
   };
 }
 

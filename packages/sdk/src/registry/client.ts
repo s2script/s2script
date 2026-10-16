@@ -26,7 +26,7 @@ export class RegistryError extends Error {
 }
 
 const TIMEOUTS_MS = {
-  deploy: 300_000, // up to ~40 MiB on a slow uplink
+  deploy: 300_000, // up to ~57 MiB on a slow uplink
   resolve: 30_000,
   meta: 30_000,
   plan: 30_000,
@@ -51,7 +51,7 @@ function hintFor(status: number, raw: string): string {
     return "the request was rejected before it reached the registry API — this s2s CLI and the server are incompatible; run: npm i -g @s2script/sdk@latest";
   }
   if (status === 403) return "the token may lack permission for this package, or belong to another account — check `s2s login`";
-  if (status === 413) return "the plugin or its types exceed the registry size limits — trim the archive and retry";
+  if (status === 413) return "the plugin, its types or its source exceed the registry size limits — check `s2s pack --dry-run` and retry";
   if (status === 415) return "the server rejected this CLI's request format; run: npm i -g @s2script/sdk@latest";
   if (status === 429) return "rate limited — wait a minute and retry";
   if (status >= 500) return "server-side failure — retry in a moment; if it persists, report it with the message above";
@@ -171,6 +171,8 @@ export class RegistryClient {
     types?: Buffer | null;
     /** Shown on the package's registry page; replaces the README there. Omitted keeps it. */
     readme?: string | null;
+    /** The npm-pack-shaped source tarball, served from the package page. */
+    source?: Buffer | null;
   }): Promise<{ name: string; version: string; reviewState: string; disclaimer?: string }> {
     const entries: Record<string, Uint8Array> = {
       "manifest.json": new TextEncoder().encode(JSON.stringify(opts.manifest)),
@@ -185,6 +187,7 @@ export class RegistryClient {
     if (opts.readme && opts.readme.trim()) {
       entries["README.md"] = new TextEncoder().encode(opts.readme);
     }
+    if (opts.source && opts.source.length) entries["source.tgz"] = new Uint8Array(opts.source);
     // level 0: the artifact is already deflated; recompressing wastes CPU for ~0 gain.
     const body = zipSync(entries, { level: 0 });
     const res = await this.request("deploy", `${this.baseUrl}/api/v1/deploy`, {

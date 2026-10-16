@@ -166,6 +166,15 @@ The README and `repository` travel with the deploy, not inside the `.s2sp`: the 
 them. A deploy without them leaves what the page already shows, so a README or link set on the
 site stays until a deploy replaces it.
 
+**Source.** Like `npm publish`, every deploy also uploads the package's source as an npm-shaped
+tarball (every file under `package/`), downloadable from the package page. Files are chosen with
+npm's own rules: package.json `files` if present, otherwise everything minus `.npmignore` (or
+`.gitignore` where there is no `.npmignore`); package.json, README and LICENSE are always in;
+`node_modules`, `.git`, `.npmrc` and lockfiles never are. One deliberate difference: `.env` files
+are never packed. `s2s pack --dry-run` lists exactly what a deploy would send, and `s2s pack`
+writes the tarball (`<scope>-<name>-<version>.tgz`). The source of a public package is public, so
+check that list before the first deploy.
+
 ## Docs
 
 **[s2script.com/docs](https://s2script.com/docs)** — getting started, guides, and the full API

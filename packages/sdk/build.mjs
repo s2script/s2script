@@ -1,9 +1,10 @@
 // build.mjs — esbuild driver for @s2script/sdk (the s2s CLI)
 // Bundles src/cli.ts → dist/cli.js (ESM, node platform).
 // esbuild itself is marked external (it has a native component that cannot be bundled).
-// fflate (zip read/write) and semver (the workspace sibling-range gate) are small and
-// bundle-friendly, so they are devDependencies inlined into dist/cli.js rather than shipped
-// as runtime dependencies — the SDK's zero-runtime-dependency posture.
+// fflate (zip read/write), semver (the workspace sibling-range gate), and ignore + minimatch
+// (npm's file selection for the source tarball) are small and bundle-friendly, so they are
+// devDependencies inlined into dist/cli.js rather than shipped as runtime dependencies — the
+// SDK's zero-runtime-dependency posture.
 
 import * as esbuild from "esbuild";
 import { mkdirSync, chmodSync } from "fs";

@@ -164,7 +164,7 @@ test("deployPlugin: a kind:library package builds via buildLibrary and posts lib
       },
     });
     assert.equal(result.name, "@edge/base64");
-    assert.deepEqual(Object.keys(posted).sort(), ["library.s2lib", "manifest.json"]);
+    assert.deepEqual(Object.keys(posted).sort(), ["library.s2lib", "manifest.json", "source.tgz"]);
   } finally {
     if (prevToken === undefined) delete process.env.S2SCRIPT_TOKEN;
     else process.env.S2SCRIPT_TOKEN = prevToken;
@@ -198,7 +198,7 @@ test("workspace deploy: a ws.plugins member declaring kind:library uploads libra
   });
   const results = await uploadPlan(plan, built, client);
   assert.equal(results[0].status, "published");
-  assert.deepEqual(Object.keys(posted).sort(), ["library.s2lib", "manifest.json"]);
+  assert.deepEqual(Object.keys(posted).sort(), ["library.s2lib", "manifest.json", "source.tgz"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -540,4 +540,19 @@ test("readPackageReadme refuses a README over the registry cap before anything u
   const dir = mkdtempSync(join(tmpdir(), "s2s-readme-"));
   writeFileSync(join(dir, "README.md"), "x".repeat(MAX_README_CHARS + 1));
   assert.throws(() => readPackageReadme(dir), /README\.md is 100,001 characters; the registry accepts at most 100,000/);
+});
+
+// ---------------------------------------------------------------------------
+// Source tarball — packed with npm's rules and uploaded beside the build
+// ---------------------------------------------------------------------------
+
+test("assembleDeployArchive packs the package source, leaving built output out", async () => {
+  const dir = libDir();
+  writeFileSync(join(dir, ".gitignore"), "dist/\n");
+  const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+  const archive = assembleDeployArchive(dir, pkg, await buildLibrary(dir));
+  const { gunzipSync } = await import("node:zlib");
+  const tar = gunzipSync(archive.source).toString("latin1");
+  assert.match(tar, /package\/package\.json/);
+  assert.doesNotMatch(tar, /package\/dist\//, "gitignored build output is not source");
 });

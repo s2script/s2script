@@ -238,3 +238,15 @@ test("plan: optional bundle members travel as one comma-separated `with`", async
   await c.plan("@edge/jb");
   assert.equal(seen.searchParams.has("with"), false);
 });
+
+test("deploy adds source.tgz when the source tarball is given", async () => {
+  const bodies = [];
+  const client = clientWith(async (_url, init) => {
+    bodies.push(unzipSync(new Uint8Array(init.body)));
+    return jsonResponse(200, { name: "rtv", version: "1.0.0", reviewState: "unreviewed" });
+  });
+  await client.deploy({ manifest: { id: "rtv" }, s2sp: Buffer.from([1]), source: Buffer.from([0x1f, 0x8b, 7]) });
+  await client.deploy({ manifest: { id: "rtv" }, s2sp: Buffer.from([1]) });
+  assert.deepEqual([...bodies[0]["source.tgz"]], [0x1f, 0x8b, 7]);
+  assert.equal(bodies[1]["source.tgz"], undefined);
+});
