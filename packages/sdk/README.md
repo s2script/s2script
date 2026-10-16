@@ -113,7 +113,8 @@ field: `s2s build` builds every plugin in a workspace regardless of `private`, b
 prints a per-plugin plan that skips a `private: true` package by name instead of shipping it. That's
 what lets a workspace hold a large first-party or in-house plugin suite that must never reach the
 public registry — build it, drop the `.s2sp`s into your own server, never `s2s deploy` it. (`s2s
-deploy <dir>` on a single private plugin outside a workspace refuses the same way.)
+deploy <dir>` on a single private plugin outside a workspace refuses the same way.) To publish a
+package that only your org can see, use npm's other mechanism, `access`, instead (see Publishing).
 
 ### Bundles
 
@@ -174,6 +175,15 @@ npm's own rules: package.json `files` if present, otherwise everything minus `.n
 are never packed. `s2s pack --dry-run` lists exactly what a deploy would send, and `s2s pack`
 writes the tarball (`<scope>-<name>-<version>.tgz`). The source of a public package is public, so
 check that list before the first deploy.
+
+**Restricted packages.** As on npm, a scoped package can be published **restricted**: only the
+members of its org can see or install it, and everyone else gets a 404. Use
+`s2s deploy --access restricted`, or `"publishConfig": { "access": "restricted" }` in package.json
+(the flag wins). Access is fixed when the package is first published. A deploy that names none
+keeps the current one. Before uploading, the CLI checks that the registry can keep the package
+restricted, and refuses otherwise, so it never goes out public by accident. `s2s install` and
+`s2s add` send your login, so members install restricted packages as usual. A server that only
+installs should use a read-only token (s2script.com → Deploy tokens) as `S2SCRIPT_TOKEN`.
 
 ## Docs
 

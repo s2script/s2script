@@ -18,7 +18,7 @@ function usage(): void {
       "  s2s login [--token s2s_…] [--registry <url>]\n" +
       "  s2s pack [dir] [--dry-run] [--json] [--pack-destination <dir>]\n" +
       "  s2s deploy [dir|workspace root] [--filter <pattern>]... [--dry-run] [--yes|--ci]\n" +
-      "             [--registry <url>] [--packages-dir <path>]\n" +
+      "             [--access public|restricted] [--registry <url>] [--packages-dir <path>]\n" +
       "  s2s version [dir] [--since <ref>]\n" +
       "  s2s add <pkg>[@range] [--dir <plugin>] [--registry <url>]\n" +
       "  s2s install [name[@range]...] [--file <path>] [--dir <plugins dir>] [--registry <url>]\n" +

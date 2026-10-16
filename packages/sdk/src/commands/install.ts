@@ -46,7 +46,9 @@ export async function run(argv: string[]): Promise<void> {
     }
   }
 
-  const client = new RegistryClient({ baseUrl: registry });
+  // Your login rides along, so org members can install restricted packages (and a server can use
+  // a read-only S2SCRIPT_TOKEN). Public downloads redirect to the CDN, where fetch drops the header.
+  const client = new RegistryClient({ baseUrl: registry, token: loadCredentials()?.token });
   try {
     const withArgs = collectWith(argv);
     const manifest = loadManifestFile(resolve(file));

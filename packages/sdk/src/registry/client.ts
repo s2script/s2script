@@ -30,6 +30,7 @@ const TIMEOUTS_MS = {
   resolve: 30_000,
   meta: 30_000,
   plan: 30_000,
+  capabilities: 30_000,
   "types download": 120_000,
   "s2sp download": 120_000,
   "library download": 120_000,
@@ -45,8 +46,12 @@ function rootCause(err: unknown): string {
 }
 
 /** What the user should do next, per status. Empty when there is nothing useful to say. */
-function hintFor(status: number, raw: string): string {
+function hintFor(status: number, raw: string, op: Op): string {
   if (status === 401) return "run `s2s login` (or set S2SCRIPT_TOKEN)";
+  // A restricted package the caller cannot read answers exactly like a missing one, on every read.
+  if (status === 404 && op !== "deploy" && op !== "capabilities") {
+    return "if the package is restricted, log in as one of its org's members (`s2s login`) or set S2SCRIPT_TOKEN to a token that can read it";
+  }
   if (status === 403 && /cross-site/i.test(raw)) {
     return "the request was rejected before it reached the registry API — this s2s CLI and the server are incompatible; run: npm i -g @s2script/sdk@latest";
   }
@@ -76,7 +81,7 @@ async function errorFromResponse(res: Response, op: Op): Promise<RegistryError> 
     else detail = res.statusText || "no response body";
   }
   let msg = `${op} failed (HTTP ${res.status}): ${detail}`;
-  const hint = hintFor(res.status, raw);
+  const hint = hintFor(res.status, raw, op);
   if (hint) msg += `\n  hint: ${hint}`;
   return new RegistryError(msg, res.status, body ?? raw);
 }
@@ -173,7 +178,14 @@ export class RegistryClient {
     readme?: string | null;
     /** The npm-pack-shaped source tarball, served from the package page. */
     source?: Buffer | null;
-  }): Promise<{ name: string; version: string; reviewState: string; disclaimer?: string }> {
+  }): Promise<{
+    name: string;
+    version: string;
+    reviewState: string;
+    /** The package's access as the registry recorded it; absent from registries that predate it. */
+    access?: "public" | "restricted";
+    disclaimer?: string;
+  }> {
     const entries: Record<string, Uint8Array> = {
       "manifest.json": new TextEncoder().encode(JSON.stringify(opts.manifest)),
     };
@@ -196,6 +208,22 @@ export class RegistryClient {
       contentType: "application/octet-stream",
     });
     return this.json(res, "deploy");
+  }
+
+  /**
+   * The access levels this registry can keep a package at. A registry without the capabilities
+   * endpoint predates restricted packages, so it reads as public-only.
+   */
+  async supportedAccess(): Promise<string[]> {
+    let res: Response;
+    try {
+      res = await this.request("capabilities", `${this.baseUrl}/api/v1/capabilities`);
+    } catch (e) {
+      if (e instanceof RegistryError && e.status === 404) return ["public"];
+      throw e;
+    }
+    const body = await this.json<{ access?: unknown }>(res, "capabilities");
+    return Array.isArray(body.access) ? body.access.filter((a): a is string => typeof a === "string") : ["public"];
   }
 
   async resolve(

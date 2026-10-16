@@ -471,6 +471,31 @@ test("uploadPlan: the SERVER's 409 duplicate-version rejection is a SKIP, not a 
   assert.match(results[0].detail, /already published/);
 });
 
+test("uploadPlan: a 409 that is NOT a duplicate version (access/kind mismatch) is a failure", async () => {
+  const { plugin, outPath } = await builtHello();
+  const plan = [{ plugin, reason: "PUBLISH" }];
+  const built = new Map([[plugin.name, { plugin, outPath }]]);
+  const client = clientWith(async () =>
+    jsonResponse(409, { error: `${plugin.name} is public; a deploy cannot change it to restricted`, code: "access_mismatch" }),
+  );
+  const results = await uploadPlan(plan, built, client);
+  assert.equal(results[0].status, "failed");
+  assert.match(results[0].detail, /cannot change it to restricted/);
+});
+
+test("uploadPlan: --access reaches every uploaded package's deploy manifest", async () => {
+  const { plugin, outPath } = await builtHello();
+  const plan = [{ plugin, reason: "PUBLISH" }];
+  const built = new Map([[plugin.name, { plugin, outPath }]]);
+  let manifest;
+  const client = clientWith(async (_url, init) => {
+    manifest = JSON.parse(Buffer.from(unzipSync(new Uint8Array(init.body))["manifest.json"]).toString("utf8"));
+    return jsonResponse(200, { name: plugin.name, version: plugin.version, reviewState: "unreviewed" });
+  });
+  await uploadPlan(plan, built, client, { access: "restricted" });
+  assert.equal(manifest.access, "restricted");
+});
+
 test("uploadPlan: any OTHER server rejection is reported as failed, not swallowed", async () => {
   const { plugin, outPath } = await builtHello();
   const plan = [{ plugin, reason: "PUBLISH" }];
@@ -555,4 +580,57 @@ test("assembleDeployArchive packs the package source, leaving built output out",
   const tar = gunzipSync(archive.source).toString("latin1");
   assert.match(tar, /package\/package\.json/);
   assert.doesNotMatch(tar, /package\/dist\//, "gitignored build output is not source");
+});
+
+// ---------------------------------------------------------------------------
+// Access — npm's --access / publishConfig.access, in the deploy manifest only
+// ---------------------------------------------------------------------------
+
+test("assembleDeployArchive sends publishConfig.access, and --access overrides it", async () => {
+  const dir = libDir();
+  const pkgPath = join(dir, "package.json");
+  writeFileSync(pkgPath, JSON.stringify({ ...JSON.parse(readFileSync(pkgPath, "utf8")), publishConfig: { access: "restricted" } }));
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+  const outPath = await buildLibrary(dir);
+  assert.equal(assembleDeployArchive(dir, pkg, outPath).manifest.access, "restricted");
+  assert.equal(assembleDeployArchive(dir, pkg, outPath, { access: "public" }).manifest.access, "public");
+  const builtManifest = JSON.parse(Buffer.from(unzipSync(readFileSync(outPath))["manifest.json"]).toString("utf8"));
+  assert.equal(builtManifest.access, undefined, "the runtime manifest never carries it");
+});
+
+test("assembleDeployArchive leaves access out when nothing asks for one", async () => {
+  const dir = libDir();
+  const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+  assert.equal("access" in assembleDeployArchive(dir, pkg, await buildLibrary(dir)).manifest, false);
+});
+
+test("deployPlugin --access restricted against a registry without it uploads nothing", async () => {
+  const dir = libDir();
+  const prevToken = process.env.S2SCRIPT_TOKEN;
+  process.env.S2SCRIPT_TOKEN = "s2s_test_token";
+  const requests = [];
+  try {
+    await assert.rejects(
+      () =>
+        deployPlugin({
+          dir,
+          access: "restricted",
+          registryUrl: "https://example.invalid",
+          fetch: async (url) => {
+            requests.push(String(url));
+            return new Response("Not Found", { status: 404 });
+          },
+        }),
+      /does not support restricted packages yet, so nothing was published/,
+    );
+    assert.deepEqual(requests, ["https://example.invalid/api/v1/capabilities"]);
+  } finally {
+    if (prevToken === undefined) delete process.env.S2SCRIPT_TOKEN;
+    else process.env.S2SCRIPT_TOKEN = prevToken;
+  }
+});
+
+test("deployPlugin refuses to restrict an unscoped package before building", async () => {
+  const dir = libDir({ name: "base64" });
+  await assert.rejects(() => deployPlugin({ dir, access: "restricted" }), /base64 is unscoped/);
 });

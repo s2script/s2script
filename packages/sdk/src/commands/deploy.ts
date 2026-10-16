@@ -37,6 +37,7 @@ import {
   uploadBundle,
 } from "../workspace/deploy-all.ts";
 import { readBundle } from "../workspace/bundle.ts";
+import { assertAccessAllowed, assertRegistrySupportsAccess, resolveAccess } from "../registry/access.ts";
 
 export async function run(argv: string[]): Promise<void> {
   const yes = hasFlag(argv, "--yes") || hasFlag(argv, "-y");
@@ -49,7 +50,9 @@ export async function run(argv: string[]): Promise<void> {
   // "1.5.0") is left in argv and mistaken for the positional `dir`, and `s2s deploy --stamp-version
   // 1.5.0` dies on an unrelated ENOENT for a directory literally named "1.5.0" (compare
   // commands/build.ts's own VALUE_FLAGS, which lists it for the same reason).
-  const pos = positionals(argv, ["--packages-dir", "--registry", "--filter", "--stamp-version"]);
+  const pos = positionals(argv, ["--packages-dir", "--registry", "--filter", "--stamp-version", "--access"]);
+  // npm's `--access public|restricted`; validated (with the package's publishConfig) per package.
+  const access = parseFlag(argv, "--access");
   const dir = pos[0] ?? ".";
 
   try {
@@ -66,7 +69,7 @@ export async function run(argv: string[]): Promise<void> {
     const absDir = resolve(dir);
     const root = findWorkspaceRoot(absDir);
     if (root !== null && resolve(root) === absDir) {
-      await runWorkspaceDeploy({ root: absDir, argv, interactive, filters, dryRun, yes, ci });
+      await runWorkspaceDeploy({ root: absDir, argv, interactive, filters, dryRun, yes, ci, access });
       return;
     }
 
@@ -96,15 +99,16 @@ export async function run(argv: string[]): Promise<void> {
           packagesDir,
           registryUrl: parseFlag(argv, "--registry"),
           ci,
+          access,
         }),
-      { interactive, done: (r) => `Deployed ${r.name}@${r.version} (${r.reviewState})` },
+      { interactive, done: (r) => `Deployed ${r.name}@${r.version} (${describe(r)})` },
     );
     if (interactive) {
       if (result.reviewState === "unreviewed") {
         ui.log.warn("Not reviewed by s2script — listed with a disclaimer until approved.");
       }
     } else {
-      console.log(`deployed ${result.name}@${result.version} (${result.reviewState})`);
+      console.log(`deployed ${result.name}@${result.version} (${describe(result)})`);
       if (result.reviewState === "unreviewed") {
         console.log("note: Not reviewed by s2script — listed with a disclaimer until approved.");
       }
@@ -113,6 +117,11 @@ export async function run(argv: string[]): Promise<void> {
     console.error(String(e instanceof Error ? e.message : e));
     process.exit(1);
   }
+}
+
+/** The result's review state, plus its access when the registry recorded it restricted. */
+function describe(r: { reviewState: string; access?: string }): string {
+  return r.access === "restricted" ? `${r.reviewState}, restricted` : r.reviewState;
 }
 
 /**
@@ -129,8 +138,11 @@ async function runWorkspaceDeploy(opts: {
   dryRun: boolean;
   yes: boolean;
   ci: boolean;
+  access?: string;
 }): Promise<void> {
   const { root, argv, interactive, filters, dryRun, yes, ci } = opts;
+  // `--access` applies to every package this run publishes, as npm's does with --workspaces.
+  const accessFlag = opts.access === undefined ? undefined : resolveAccess({}, opts.access);
   const label = (msg: string): void => (interactive ? ui.log.step(msg) : console.log(msg));
 
   const ws = loadWorkspace(root);
@@ -201,6 +213,23 @@ async function runWorkspaceDeploy(opts: {
     console.log(formatUnpublishableLibraries(unpublishableLibraries));
   }
 
+  // Each publishing package's access, checked now so a bad value or an unscoped restricted name
+  // stops the run before anything uploads.
+  const publishing = plan.filter((e) => e.reason === "PUBLISH");
+  const restricted: string[] = [];
+  for (const e of publishing) {
+    const a = accessFlag ?? resolveAccess(e.plugin.pkg);
+    assertAccessAllowed(e.plugin.name, a);
+    if (a === "restricted") restricted.push(e.plugin.name);
+  }
+  if (bundleEntry?.reason === "PUBLISH") {
+    const a = accessFlag ?? resolveAccess(ws.pkg);
+    assertAccessAllowed(bundleEntry.bundle.name, a);
+    if (a !== undefined) bundleEntry.manifest = { ...bundleEntry.manifest, access: a };
+    if (a === "restricted") restricted.push(bundleEntry.bundle.name);
+  }
+  if (restricted.length > 0) console.log(`    restricted: ${restricted.join(", ")}`);
+
   const bundlePublishes = bundleEntry?.reason === "PUBLISH" ? 1 : 0;
   const toPublish = publishCount(plan) + bundlePublishes;
   const noun = (n: number) => `${n} package${n === 1 ? "" : "s"}`;
@@ -224,6 +253,8 @@ async function runWorkspaceDeploy(opts: {
     );
   }
 
+  if (restricted.length > 0) await assertRegistrySupportsAccess(client, "restricted");
+
   if (!(yes || ci)) {
     if (!interactive) {
       // Confirming needs a TTY; without one, and without an explicit --yes/--ci, the safe
@@ -242,7 +273,7 @@ async function runWorkspaceDeploy(opts: {
     }
   }
 
-  const results = await uploadPlan(plan, built, client, { bundle: bundle?.name });
+  const results = await uploadPlan(plan, built, client, { bundle: bundle?.name, access: accessFlag });
   let failures = 0;
   for (const r of results) {
     if (r.status === "failed") failures++;

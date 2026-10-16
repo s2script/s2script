@@ -8,6 +8,12 @@ import { packTypesTarball } from "../types-pack.ts";
 import { assertSourceSize, packSourceTarball } from "../source-pack.ts";
 import { loadCredentials, defaultRegistryUrl } from "./credentials.ts";
 import { RegistryClient } from "./client.ts";
+import {
+  assertAccessAllowed,
+  assertRegistrySupportsAccess,
+  resolveAccess,
+  type PackageAccess,
+} from "./access.ts";
 
 /**
  * The package.json fields deploy cares about. Everything else passes through untouched — this is
@@ -23,6 +29,8 @@ export interface DeployablePkgJson {
   private?: boolean;
   /** npm's `repository` (string or `{ url, directory }`), forwarded to the registry as-is. */
   repository?: unknown;
+  /** npm's `publishConfig`; `access` is the one field deploy reads (registry/access.ts). */
+  publishConfig?: unknown;
   s2script?: {
     kind?: string;
     publishes?: Record<string, unknown> | string | null;
@@ -92,14 +100,18 @@ function packSource(absDir: string, pkg: DeployablePkgJson): Buffer {
 
 /**
  * The deploy manifest is the built archive's manifest plus registry-only facts the runtime never
- * reads. package.json's `repository` is one: it rides in the deploy manifest (the registry turns
- * it into the package page's source link), never in the .s2sp/.s2lib manifest.
+ * reads: package.json's `repository` (the package page's source link) and the requested `access`.
+ * They ride in the deploy manifest, never in the .s2sp/.s2lib manifest.
  */
 function withRegistryFields(
   manifest: Record<string, unknown>,
   pkg: DeployablePkgJson,
+  access: PackageAccess | undefined,
 ): Record<string, unknown> {
-  return pkg.repository === undefined ? manifest : { ...manifest, repository: pkg.repository };
+  const out = { ...manifest };
+  if (pkg.repository !== undefined) out.repository = pkg.repository;
+  if (access !== undefined) out.access = access;
+  return out;
 }
 
 /**
@@ -116,8 +128,11 @@ export function assembleDeployArchive(
   pluginDir: string,
   pkg: DeployablePkgJson,
   outPath: string,
+  opts: { access?: PackageAccess } = {},
 ): DeployArchive {
   const absDir = resolve(pluginDir);
+  // The flag's value when the caller has one; otherwise package.json publishConfig.access.
+  const access = opts.access ?? resolveAccess(pkg);
 
   if (packageKind(pkg) === "library") {
     // A library's types ride INSIDE the .s2lib (build-library.ts requires `types` to build one at
@@ -131,7 +146,7 @@ export function assembleDeployArchive(
     }
     const manifest = JSON.parse(Buffer.from(manifestEntry).toString("utf8")) as Record<string, unknown>;
     return {
-      manifest: withRegistryFields(manifest, pkg),
+      manifest: withRegistryFields(manifest, pkg, access),
       s2sp: null,
       lib,
       types: null,
@@ -170,7 +185,7 @@ export function assembleDeployArchive(
   }
 
   return {
-    manifest: withRegistryFields(manifest, pkg),
+    manifest: withRegistryFields(manifest, pkg, access),
     s2sp,
     lib: null,
     types,
@@ -184,15 +199,25 @@ export async function deployPlugin(opts: {
   packagesDir?: string;
   registryUrl?: string;
   ci?: boolean;
+  /** `--access`; overrides package.json publishConfig.access. */
+  access?: string;
   /** Injectable for tests — mirrors RegistryClientOpts.fetch / addPackage's own opts.fetch. */
   fetch?: typeof fetch;
-}): Promise<{ name: string; version: string; reviewState: string; disclaimer?: string }> {
+}): Promise<{
+  name: string;
+  version: string;
+  reviewState: string;
+  access?: PackageAccess;
+  disclaimer?: string;
+}> {
   const absDir = resolve(opts.dir);
   const pkg = JSON.parse(readFileSync(resolve(absDir, "package.json"), "utf8")) as DeployablePkgJson;
 
   // §6.3: checked before anything is built or a token is even required — a private package is
   // refused as fast as a malformed one, library or plugin alike.
   assertDeployable(pkg, absDir);
+  const access = resolveAccess(pkg, opts.access);
+  assertAccessAllowed(pkg.name ?? absDir, access);
 
   const creds = loadCredentials();
   if (!creds?.token) {
@@ -203,6 +228,14 @@ export async function deployPlugin(opts: {
     );
   }
 
+  const client = new RegistryClient({
+    baseUrl: opts.registryUrl || creds.registryUrl || defaultRegistryUrl(),
+    token: creds.token,
+    fetch: opts.fetch,
+  });
+  // Before the build: a registry that cannot keep the package restricted refuses it in seconds.
+  await assertRegistrySupportsAccess(client, access);
+
   // buildPlugin/buildLibrary derives the authoritative manifest (stamped apiVersion, derived
   // publishes, compiledAgainst). Deploy that — do not reconstruct from package.json. Which one to
   // call is `packageKind`'s call, not a flag: `assembleDeployArchive` below reads the SAME `pkg`
@@ -211,13 +244,7 @@ export async function deployPlugin(opts: {
     packageKind(pkg) === "library"
       ? await buildLibrary(absDir, opts.packagesDir)
       : await buildPlugin(absDir, opts.packagesDir);
-  const archive = assembleDeployArchive(absDir, pkg, outPath);
-
-  const client = new RegistryClient({
-    baseUrl: opts.registryUrl || creds.registryUrl || defaultRegistryUrl(),
-    token: creds.token,
-    fetch: opts.fetch,
-  });
+  const archive = assembleDeployArchive(absDir, pkg, outPath, { access });
 
   return client.deploy(archive);
 }

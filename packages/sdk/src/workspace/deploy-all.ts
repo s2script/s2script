@@ -13,6 +13,7 @@ import type { DeployablePkgJson } from "../registry/deploy.ts";
 import type { PluginBuildOutcome } from "./build-all.ts";
 import type { Workspace, WorkspacePlugin } from "./workspace.ts";
 import { bundleManifest, bundleMembers, sameMembers, type Bundle, type BundleMembers } from "./bundle.ts";
+import type { PackageAccess } from "../registry/access.ts";
 
 // ---------------------------------------------------------------------------
 // Recovering plugin objects from a build-all.ts result
@@ -186,7 +187,11 @@ export interface DeployResult {
  * partial failure has to stay safe by construction.
  */
 function isDuplicateVersionRejection(e: unknown): boolean {
-  return e instanceof RegistryError && e.status === 409;
+  if (!(e instanceof RegistryError) || e.status !== 409) return false;
+  // Other 409s carry a code (kind_mismatch, access_mismatch, bundle_member_invalid) and are real
+  // refusals: treating them as "already published" would report a skip for a deploy that failed.
+  const code = (e.body as { code?: unknown } | null | undefined)?.code;
+  return code === undefined || code === null || code === "version_exists";
 }
 
 /**
@@ -207,6 +212,8 @@ export async function uploadPlan(
      * the REGISTRY deploy manifest only — the .s2sp keeps the minimal manifest the runtime reads.
      */
     bundle?: string;
+    /** `--access`, applied to every upload; otherwise each package's publishConfig.access. */
+    access?: PackageAccess;
   } = {},
 ): Promise<DeployResult[]> {
   const results: DeployResult[] = [];
@@ -223,7 +230,9 @@ export async function uploadPlan(
       );
     }
     try {
-      const archive = assembleDeployArchive(b.plugin.dir, b.plugin.pkg as DeployablePkgJson, b.outPath);
+      const archive = assembleDeployArchive(b.plugin.dir, b.plugin.pkg as DeployablePkgJson, b.outPath, {
+        access: opts.access,
+      });
       if (opts.bundle !== undefined) archive.manifest = { ...archive.manifest, bundle: opts.bundle };
       const res = await client.deploy(archive);
       results.push({ plugin: entry.plugin, status: "published", detail: res.reviewState });
