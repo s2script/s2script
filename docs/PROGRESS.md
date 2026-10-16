@@ -523,12 +523,14 @@ installed into `disabled/` and then enabled with no download. Not yet live-gated
 ## 2026-10-16 — Load a disabled plugin for this run only
 
 `enable` / `disable` are permanent (they move the file and edit `plugins.json`). `sm plugins load` /
-`unload` now cover the temporary case too. `loader::request_load` falls back to finding the plugin
-in `plugins/disabled/`, by file name or manifest id, and adds the file to a run-only
+`unload` now cover the temporary case too: `loader::request_load("disabled/<plugin id>")` (only
+that explicit prefix reaches into the folder) maps the id to its file with the registry's naming
+rule (`@`/`/` → `_`), else finds the archive whose manifest carries the id, and adds it to a run-only
 `SESSION_LOADS` set that every scan appends to its result, so the ordinary diff loads it. Unloading
 such a plugin drops it from the set rather than suppressing it, so a later `load` finds it again.
 A file that moves away (enable, remove, delete) leaves the set and unloads like any vanished file.
 The set is cleared when the loader stops, so a restart leaves the plugin off. `Plugins.list()`
 reports `fromDisabled`, and basecommands' `sm plugins list` marks it. Loader tests cover
-discovery, the scan join, the move-away exit, and unload without suppression. Not yet live-gated
+the explicit prefix (a bare id never reaches in), id-to-file mapping including a renamed file, the
+scan join, the move-away exit, and unload without suppression. Not yet live-gated
 in CS2.

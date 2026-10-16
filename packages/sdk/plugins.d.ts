@@ -36,10 +36,11 @@ export declare const Plugins: {
   /** Reload a plugin (unload + load from disk, deferred). false if the id is unknown. */
   reload(id: string): boolean;
   /**
-   * Load a plugin that isn't running (deferred): one unloaded earlier this run, or one kept in
-   * `plugins/disabled/` — named by its id or file name — for THIS RUN ONLY. A disabled plugin stays
-   * disabled on disk and in plugins.json (a restart leaves it off; `enable` makes it permanent).
-   * false if there is no such plugin.
+   * Load a plugin that isn't running (deferred): one unloaded earlier this run, by id — or, as
+   * `"disabled/<plugin id>"` (e.g. `"disabled/@edgegamers/jailbreak"`), one kept in
+   * `plugins/disabled/`, for THIS RUN ONLY. Only that prefix reaches into the folder, and the id is
+   * mapped to its file for you. A disabled plugin stays disabled on disk and in plugins.json (a
+   * restart leaves it off; `enable` makes it permanent). false if there is no such plugin.
    */
   load(id: string): boolean;
   /**
