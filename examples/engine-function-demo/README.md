@@ -12,8 +12,7 @@ entry prologue are in the descriptor, along with base-class vtable membership. R
 declaration against each installed game binary after an update. The separate `staleEntryProbe`
 has a deliberately wrong entry validator; its failure should leave `commitSuicide` available.
 
-Build with `npm run build` here. Install `dist/_demo_engine-function.s2sp` on a test server and
-grant this plugin `engine:calls` and `engine:hooks` in the operator permission configuration.
+Build with `npm run build` here and install `dist/_demo_engine-function.s2sp` on a test server.
 `sm_ef_status` prints each binding's immutable structured status, including its canonical id,
 reason, hook observation state, and provenance hashes/override receipts. At load, the example
 registers a PRE handler that sets `force`, disposes that subscription, registers a replacement,

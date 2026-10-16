@@ -18,67 +18,6 @@ use std::time::{Duration, Instant, SystemTime};
 pub use crate::loader_worker::{Manifest, PublishDecl};
 use crate::loader_worker::{ConfigSnapshot, FileStamp, LoaderPolicy, LoaderWorker, PreparedPlugin, Submit, WatchDelta, WorkerResult};
 
-// ---------------------------------------------------------------------------
-// Operator permission allow-list (spec §6)
-// ---------------------------------------------------------------------------
-
-/// The operator allow-list: permission name → the EXACT plugin ids allowed to use it.
-/// `None` = never loaded ⇒ default-DENY (mirrors the admin system's fail-safe posture).
-/// Host-global (not thread_local) like the admin/ban caches: V8 contexts are per-plugin, the
-/// authorization decision is not.
-static PERMISSIONS: std::sync::RwLock<Option<HashMap<String, Vec<String>>>> =
-    std::sync::RwLock::new(None);
-
-/// Config id of the operator allow-list file (`addons/s2script/configs/permissions.json`).
-const PERMISSIONS_CONFIG_ID: &str = "permissions";
-
-/// One-shot so a malformed `permissions.json` WARNs once, not once per descriptor check.
-static PERMISSIONS_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Parse an operator allow-list: `{"engine:calls":["@me/burn"]}`. Exact-match ids, no globs (v1).
-///
-/// Tolerant of non-array values: the shipped template carries a `_help` string like every other
-/// framework config template, and an entry whose value is not a string array is SKIPPED rather than
-/// failing the whole file — a strict parse would leave the allow-list unloaded, i.e. deny everything,
-/// which is exactly the invisible failure the named-reason doctrine exists to avoid.
-pub fn load_permissions_from_str(s: &str) -> Result<(), String> {
-    let raw: HashMap<String, serde_json::Value> =
-        serde_json::from_str(s).map_err(|e| format!("permissions.json: {}", e))?;
-    let mut map: HashMap<String, Vec<String>> = HashMap::new();
-    for (name, value) in raw {
-        let Some(arr) = value.as_array() else { continue };   // `_help` and friends
-        map.insert(
-            name,
-            arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect(),
-        );
-    }
-    *PERMISSIONS.write().map_err(|_| "permissions lock poisoned".to_string())? = Some(map);
-    Ok(())
-}
-
-/// The periodic loader reads `configs/permissions.json` on its worker. Fail-safe: a missing or
-/// malformed file leaves the allow-list unloaded (or retains the last valid snapshot), so gated
-/// capabilities stay denied until a later worker snapshot parses successfully.
-/// Default-DENY: unloaded or absent allow-list permits nothing.
-pub fn permission_allowed(plugin_id: &str, permission: &str) -> bool {
-    PERMISSIONS
-        .read()
-        .ok()
-        .and_then(|g| g.as_ref().map(|m| m.get(permission).is_some_and(|v| v.iter().any(|p| p == plugin_id))))
-        .unwrap_or(false)
-}
-
-/// `permission_allowed`, except that a permission the allow-list does not mention at all (no file,
-/// or no key for it) falls back to `defaults` — for first-party capabilities that should work out
-/// of the box but stay revocable. A key that IS present, even `[]`, is the operator's decision.
-pub fn permission_allowed_or(plugin_id: &str, permission: &str, defaults: &[&str]) -> bool {
-    let listed = PERMISSIONS
-        .read()
-        .ok()
-        .and_then(|g| g.as_ref().and_then(|m| m.get(permission).map(|v| v.iter().any(|p| p == plugin_id))));
-    listed.unwrap_or_else(|| defaults.contains(&plugin_id))
-}
-
 /// The plugins directory the loader watches, when it is running.
 pub(crate) fn plugins_dir() -> Option<PathBuf> {
     PLUGINS_DIR.with(|d| d.borrow().clone())
@@ -585,7 +524,6 @@ pub(crate) type ConfigPathResolver = extern "C" fn(*const c_char) -> *const c_ch
 enum ConfigConsumer {
     Plugin { path: PathBuf, revision: u64 },
     Watch { id: String, generation: u64 },
-    Permissions,
 }
 
 struct PendingConfig { revision: u64, consumers: Vec<ConfigConsumer>, bytes: usize }
@@ -790,7 +728,6 @@ thread_local! {
     static CONFIG_WATCH_GENERATIONS: std::cell::RefCell<HashMap<PathBuf, u64>> = std::cell::RefCell::new(HashMap::new());
     static NEXT_CONFIG_WATCH_GENERATION: Cell<u64> = const { Cell::new(0) };
     static CONFIG_SEEDED: std::cell::RefCell<std::collections::HashSet<String>> = std::cell::RefCell::new(std::collections::HashSet::new());
-    static PERMISSIONS_SCAN_PENDING: Cell<bool> = const { Cell::new(false) };
     static CONFIG_RESOLVER: Cell<Option<ConfigPathResolver>> = const { Cell::new(None) };
     static RETAINED_LEDGER: std::cell::RefCell<RetainedLedger> = {
         let policy = crate::async_limits::policy().loader.clone();
@@ -952,7 +889,6 @@ fn next_path_revision() -> u64 {
 fn queue_config(path: PathBuf, consumer: ConfigConsumer) -> bool {
     fn same_consumer(a: &ConfigConsumer, b: &ConfigConsumer) -> bool {
         match (a, b) {
-            (ConfigConsumer::Permissions, ConfigConsumer::Permissions) => true,
             (ConfigConsumer::Watch { id: a, .. }, ConfigConsumer::Watch { id: b, .. }) => a == b,
             (ConfigConsumer::Plugin { path: a, .. }, ConfigConsumer::Plugin { path: b, .. }) => a == b,
             _ => false,
@@ -960,7 +896,6 @@ fn queue_config(path: PathBuf, consumer: ConfigConsumer) -> bool {
     }
     fn consumer_bytes(consumer: &ConfigConsumer) -> usize {
         match consumer {
-            ConfigConsumer::Permissions => 64,
             ConfigConsumer::Watch { id, .. } => id.len().saturating_add(72),
             ConfigConsumer::Plugin { path, .. } => path.as_os_str().to_string_lossy().len().saturating_add(64),
         }
@@ -987,7 +922,7 @@ fn queue_config(path: PathBuf, consumer: ConfigConsumer) -> bool {
         crate::v8host::log_warn(&format!("WARN: loader config consumer {:?} deferred by bounded coalescing table", path));
         return false;
     }
-    // Pending consumers can outlive final unwatch. A new load/permissions consumer sharing the
+    // Pending consumers can outlive final unwatch. A new load consumer sharing the
     // path must not turn that stale delivery intent back into a persistent worker registration.
     let current_watch_generation = |consumer: &ConfigConsumer| match consumer {
         ConfigConsumer::Watch { id, generation }
@@ -1202,7 +1137,6 @@ fn handle_config(
     if let Ok(snapshot) = &result {
         debug_assert_eq!(snapshot.content.is_some(), snapshot.stamp.is_some());
     }
-    let mut permissions_resolved = false;
     let mut current_watchers = 0usize;
     for consumer in pending.consumers {
         match consumer {
@@ -1253,20 +1187,6 @@ fn handle_config(
                     crate::v8host::re_materialize_config_snapshot(&id, snapshot.content.as_deref());
                 }
             },
-            ConfigConsumer::Permissions => {
-                permissions_resolved = true;
-                match &result {
-                    Ok(snapshot) => if let Some(content) = snapshot.content.as_deref() {
-                        match load_permissions_from_str(content) {
-                            Ok(()) => PERMISSIONS_WARNED.store(false, std::sync::atomic::Ordering::Relaxed),
-                            Err(reason) if !PERMISSIONS_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) => crate::v8host::log_warn(&format!(
-                                "WARN: {reason} - ignoring the operator allow-list (every gated capability stays denied)")),
-                            Err(_) => {}
-                        }
-                    },
-                    Err(reason) => crate::v8host::log_warn(&format!("WARN: permissions config read failed: {reason}; keeping prior allow-list")),
-                }
-            }
         }
     }
     let watch_handled = current_watchers > 0 && result.as_ref().is_ok_and(|snapshot| {
@@ -1280,10 +1200,6 @@ fn handle_config(
         });
     }
     finish_batch_if_ready();
-    if permissions_resolved {
-        PERMISSIONS_SCAN_PENDING.with(|pending| pending.set(false));
-        schedule_scan();
-    }
 }
 
 fn finish_batch_if_ready() {
@@ -1429,8 +1345,7 @@ fn apply_prepared_budgeted(item: ApplyItem, mut drain_budget: Option<&mut Loader
             defer_prepared(&row, "engine function preparation retained-byte pressure");
             return;
         }
-        match crate::engine_functions::registry::prepare_owner_with_grants(&id, candidate,
-            permission_allowed(&id, "engine:calls"), permission_allowed(&id, "engine:hooks")) {
+        match crate::engine_functions::registry::prepare_owner(&id, candidate) {
             Ok(receipt) => {
                 if receipt.retained_bytes() > weight {
                     refuse_prepared(&row.path, &row.prepared, "engine function prepared receipt exceeded reservation", row.old_id.as_deref());
@@ -1493,16 +1408,7 @@ fn schedule_periodic() {
     if SCAN_IN_FLIGHT.with(Cell::get)
         || ACTIVE_BATCH.with(|b| b.borrow().is_some())
         || READY_APPLY.with(|queue| !queue.borrow().is_empty())
-        || PERMISSIONS_SCAN_PENDING.with(Cell::get)
     { return; }
-    if let Ok(path) = resolve_config_path(PERMISSIONS_CONFIG_ID) {
-        // Do not merely enqueue this read ahead of the scan: a coalesced in-flight read can put its
-        // rerun behind a later scan. Admit the scan only after this exact result was applied.
-        if queue_config(path, ConfigConsumer::Permissions) {
-            PERMISSIONS_SCAN_PENDING.with(|pending| pending.set(true));
-        }
-        return;
-    }
     schedule_scan();
 }
 
@@ -1623,7 +1529,6 @@ pub(crate) fn shutdown_worker() {
     CONFIG_WATCH_GENERATIONS.with(|generations| generations.borrow_mut().clear());
     NEXT_CONFIG_WATCH_GENERATION.with(|next| next.set(0));
     CONFIG_SEEDED.with(|s| s.borrow_mut().clear());
-    PERMISSIONS_SCAN_PENDING.with(|pending| pending.set(false));
     FILE_STAMPS.with(|s| s.borrow_mut().clear());
     WATCH_STATE.with(|w| w.borrow_mut().clear());
     SUPPRESSED.with(|s| s.borrow_mut().clear());
@@ -1631,8 +1536,6 @@ pub(crate) fn shutdown_worker() {
     WAITING.with(|w| w.borrow_mut().clear());
     SCAN_REVISION.with(|r| r.set(0));
     DRAIN_COUNT.with(|c| c.set(0));
-    if let Ok(mut permissions) = PERMISSIONS.write() { *permissions = None; }
-    PERMISSIONS_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
     let policy = &crate::async_limits::policy().loader;
     RETAINED_LEDGER.with(|ledger| {
         *ledger.borrow_mut() = RetainedLedger::new(policy.prepared_items, policy.prepared_bytes);
@@ -2398,7 +2301,7 @@ mod tests {
         shutdown_worker();
         let policy = crate::async_limits::policy().loader.clone();
         WORKER.with(|slot| *slot.borrow_mut() = Some(LoaderWorker::start(policy.clone()).unwrap()));
-        assert!(queue_config(PathBuf::from("metrics-pending.json"), ConfigConsumer::Permissions));
+        assert!(queue_config(PathBuf::from("metrics-pending.json"), ConfigConsumer::Watch { id: "pending".into(), generation: 0 }));
         let admitted = metrics();
         assert_eq!(admitted["main"]["pending"]["items"], 1);
         assert_eq!(admitted["highWater"]["pendingItems"], 1);
@@ -2407,11 +2310,11 @@ mod tests {
             pending.clear();
             pending.insert(PathBuf::from("held.json"), PendingConfig {
                 revision: 1,
-                consumers: vec![ConfigConsumer::Permissions; policy.request_items],
+                consumers: vec![ConfigConsumer::Watch { id: "held".into(), generation: 0 }; policy.request_items],
                 bytes: policy.request_bytes,
             });
         });
-        assert!(!queue_config(PathBuf::from("metrics-rejected.json"), ConfigConsumer::Permissions));
+        assert!(!queue_config(PathBuf::from("metrics-rejected.json"), ConfigConsumer::Watch { id: "rejected".into(), generation: 0 }));
         let rejected = metrics();
         assert_eq!(rejected["rejected"]["pendingItems"], 1);
         assert_eq!(rejected["rejected"]["pendingBytes"], 1);
@@ -2786,7 +2689,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_pending_watch_does_not_reregister_for_a_permissions_consumer() {
+    fn retired_pending_watch_does_not_reregister_for_a_load_consumer() {
         shutdown_worker();
         let root = std::env::temp_dir().join(format!("s2-loader-retired-pending-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
@@ -2810,7 +2713,7 @@ mod tests {
         // The old watch consumer is still pending when a load sharing this config path arrives.
         let _undelivered = next_result();
         unwatch_config_for("old");
-        assert!(queue_config(path.clone(), ConfigConsumer::Permissions));
+        assert!(queue_config(path.clone(), ConfigConsumer::Plugin { path: root.join("load.s2sp"), revision: 1 }));
         let next = next_result();
         let WorkerResult::Config { revision, watch_generation, snapshot, .. } = next else {
             panic!("expected config result");
@@ -2819,7 +2722,6 @@ mod tests {
         let admission = WORKER.with(|slot| slot.borrow().as_ref().unwrap()
             .try_read_config(current_epoch(), 1, root.join("second.json"), Some(2)));
         shutdown_worker();
-        *PERMISSIONS.write().unwrap() = None;
         std::fs::remove_dir_all(root).unwrap();
         assert_eq!(watch_generation, None, "stale pending consumer revived retired watch intent");
         assert_eq!(admission, Submit::Accepted, "consumerless control reservation leaked capacity");
@@ -2940,7 +2842,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // Plugin gamedata: manifest fields + the operator allow-list (spec §6/§7)
+    // Plugin gamedata: manifest fields (spec §6/§7)
     // -------------------------------------------------------------------
 
     #[test]
@@ -2980,34 +2882,6 @@ mod tests {
         assert!(m.permissions.is_empty());
     }
 
-    #[test]
-    fn permission_is_default_deny() {
-        // PERMISSIONS is host-global and libtest orders tests by NAME, so
-        // `permission_allowed_after_allow_list_load` (and any other module's test that loads an
-        // allow-list) runs BEFORE this one on the single test thread. Reset at entry — the same
-        // shared-global discipline the frame tests' capture buffers use (see .cargo/config.toml).
-        *PERMISSIONS.write().expect("permissions lock") = None;
-        // With no allow-list loaded, nothing is permitted.
-        assert!(!permission_allowed("@demo/gd", "engine:calls"));
-    }
-
-    #[test]
-    fn permission_allowed_after_allow_list_load() {
-        load_permissions_from_str(r#"{"engine:calls":["@demo/gd"]}"#).expect("parses");
-        assert!(permission_allowed("@demo/gd", "engine:calls"));
-        assert!(!permission_allowed("@other/x", "engine:calls"));
-        assert!(!permission_allowed("@demo/gd", "engine:other"));
-        // A permission the allow-list never mentions falls back to the given defaults; a listed one,
-        // even an empty list, is the operator's answer.
-        assert!(permission_allowed_or("@s2script/basecommands", "plugins:manage", &["@s2script/basecommands"]));
-        assert!(!permission_allowed_or("@other/x", "plugins:manage", &["@s2script/basecommands"]));
-        assert!(!permission_allowed_or("@demo/gd", "engine:other", &[]));
-        load_permissions_from_str(r#"{"plugins:manage":[]}"#).expect("parses");
-        assert!(
-            !permission_allowed_or("@s2script/basecommands", "plugins:manage", &["@s2script/basecommands"]),
-            "an explicit empty list revokes the default"
-        );
-    }
     thread_local! { static FUNCTION_SNAPSHOT: std::cell::RefCell<std::ffi::CString> = std::cell::RefCell::new(std::ffi::CString::new(r#"{"records":[],"error":null}"#).unwrap()); }
     extern "C" fn function_snapshot_test_op(_: *const c_char) -> *const c_char {
         FUNCTION_SNAPSHOT.with(|s| s.borrow().as_ptr())
@@ -3116,7 +2990,6 @@ mod tests {
         FUNCTION_TARGET_REFS.with(|r|r.borrow_mut().clear());
         FUNCTION_HOOK_REFS.with(|n|n.set(0)); FUNCTION_CALLS.with(|n|n.set(0)); EXPECT_RUNNING.with(|n|n.set(0));
         FUNCTION_SNAPSHOT.with(|s| *s.borrow_mut()=CString::new(r#"{"records":[],"error":null}"#).unwrap());
-        load_permissions_from_str(r#"{"engine:calls":["@demo/fire"],"engine:hooks":["@demo/fire"]}"#).unwrap();
         crate::v8host::set_engine_ops(Some(crate::v8host::S2EngineOps {
             plugin_function_overrides:Some(function_snapshot_test_op), function_prepare:Some(prepared_target),
             function_target_release:Some(release_prepared_target), function_call:Some(prepared_call),
@@ -3148,7 +3021,7 @@ mod tests {
         WATCH_STATE.with(|w|w.borrow_mut().clear()); FILE_STAMPS.with(|w|w.borrow_mut().clear());
     }
     #[test]
-    fn engine_function_required_resolution_grant_and_budget_failures_preserve_running_owner() {
+    fn engine_function_required_resolution_and_budget_failures_preserve_running_owner() {
         start_function_loader();
         let ledger=RetainedLedger::new(4,1024*1024);
         apply_function(function_row(&ledger,false, |_|{}, FUNCTION_JS));
@@ -3159,11 +3032,6 @@ mod tests {
         apply_function(function_row(&ledger,true, |b| {let mut later=b["functions"][0].clone();later["localName"]="later".into();later["canonicalId"]="@demo/fire::later".into();later["target"]["pattern"]="FF".into();b["functions"].as_array_mut().unwrap().push(later);}, FUNCTION_JS));
         assert_eq!(ledger.usage(),baseline);
         assert_eq!(FUNCTION_TARGET_REFS.with(|r|r.borrow().clone()),HashMap::from([(55,1)]));
-        for permissions in [r#"{"engine:hooks":["@demo/fire"]}"#,r#"{"engine:calls":["@demo/fire"]}"#] {
-            load_permissions_from_str(permissions).unwrap();
-            apply_function(function_row(&ledger,true, |_|{},FUNCTION_JS));
-            assert_eq!(ledger.usage(),baseline);
-        }
         // Required override rejection also leaves the actual public callable/subscriber intact.
         let invalid=serde_json::json!({"schemaVersion":2,"ownerId":"@demo/fire","functions":{"fire":{"contractHash":"stale","target":{"module":"server","pattern":"66","validate":{"prologue":"66"}}}}}).to_string();
         let snapshot=serde_json::json!({"records":[{"relative_path":"gamedata/plugins/id-QGRlbW8vZmlyZQ/custom/stale.jsonc","sha256":crate::engine_functions::contract::hash_bytes(invalid.as_bytes()),"content":invalid}],"error":null}).to_string();
@@ -3180,10 +3048,9 @@ mod tests {
         end_function_loader(&ledger);
     }
     #[test]
-    fn engine_function_optional_denial_and_resolution_failure_activate_unavailable() {
-        for denied in [true,false] {
+    fn engine_function_optional_resolution_failure_activates_unavailable() {
+        {
             start_function_loader(); let ledger=RetainedLedger::new(2,1024*1024);
-            if denied {load_permissions_from_str("{}").unwrap();}
             let script="const f=require('@s2script/sdk/unsafe').Engine.function('fire');if(f.available || !f.status.reason || 'call' in f)throw Error('optional');module.exports.OnPluginStart=()=>{};";
             apply_function(function_row(&ledger,false,|b|{b["functions"][0]["requirement"]="optional".into();b["functions"][0]["target"]["pattern"]="FF".into();},script));
             assert_eq!(crate::v8host::plugin_phase("@demo/fire"),Some(crate::plugin::Phase::Active));
@@ -3272,7 +3139,6 @@ mod tests {
     fn admission_fixture(tag: &str, max_items: usize, max_bytes: usize) -> (PathBuf, RetainedLedger) {
         shutdown_worker();
         start_function_loader();
-        load_permissions_from_str(r#"{"engine:calls":["@demo/fire","@demo/second"],"engine:hooks":["@demo/fire","@demo/second"]}"#).unwrap();
         let root=std::env::temp_dir().join(format!("s2-function-admission-{tag}-{}",std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let ledger=RetainedLedger::new(max_items,max_bytes);

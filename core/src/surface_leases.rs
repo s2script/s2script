@@ -1307,7 +1307,6 @@ mod tests {
     #[test]
     fn suspension_resolves_only_host_game_descriptors_and_revalidates_argument_shapes() {
         let id = setup_engine();
-        crate::loader::load_permissions_from_str(r#"{"engine:calls":["surface_a"]}"#).unwrap();
         crate::gamedata_calls::register_plugin("surface_a", r#"{
             "signatures":{"Action":{"linuxsteamrt64":{"module":"server","pattern":"55 48","resolve":"direct"}}},
             "calls":{"privateAction":{"receiver":{"kind":"entity"},"target":{"kind":"signature","name":"Action"},

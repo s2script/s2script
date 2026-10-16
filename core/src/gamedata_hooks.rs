@@ -2,22 +2,19 @@
 //! (spec `docs/superpowers/specs/2026-08-02-declarative-inbound-hooks-design.md`).
 //!
 //! This is the INBOUND sibling of `gamedata_calls`, and is deliberately shaped like it: one
-//! per-owner descriptor registry, one authorization gate, a NAMED degrade per descriptor, and a
+//! per-owner descriptor registry, a NAMED degrade per descriptor, and a
 //! `status()` an operator can read. Resolution goes through `gamedata_calls::resolve_target` — the
 //! same entry, the same validators, the same `.text` range check (spec §6: "No second resolver").
 //!
-//! FOUR RULES AN OUTBOUND CALL DOES NOT HAVE, each of them because a hook patches BYTES:
+//! THREE RULES AN OUTBOUND CALL DOES NOT HAVE, each of them because a hook patches BYTES:
 //!
 //! 1. **A validator is MANDATORY** (spec §5). A `calls` entry may rely on signature uniqueness
 //!    alone; a `hooks` entry may not. A wrong call address misbehaves — a wrong DETOUR address
 //!    overwrites the prologue of whatever is actually there. `s2detour::Install` refuses an
 //!    unrelocatable prologue, but that is a decode check, not an identity check.
-//! 2. **`engine:hooks` is a SEPARATE permission** from `engine:calls` (spec §7). An operator who
-//!    granted a plugin the ability to call engine functions has not thereby granted it the ability
-//!    to detour them, or to suppress engine behaviour.
-//! 3. **Install is LAZY and idempotent** (spec §6). No subscribers means no patched bytes and no
+//! 2. **Install is LAZY and idempotent** (spec §6). No subscribers means no patched bytes and no
 //!    treadmill surface. Every subscribe calls `subscribe()`, and only the first one patches.
-//! 4. **A hook slot is never re-pointed once installed.** There is no uninstall: removing a live
+//! 3. **A hook slot is never re-pointed once installed.** There is no uninstall: removing a live
 //!    detour races the engine calling through it, and SourceMod does not do it either. So the slot
 //!    table below OUTLIVES `drop_owner` — a reload re-uses the same slot for the same address, and a
 //!    descriptor that moved gets a NEW slot rather than silently re-pointing an installed one.
@@ -29,14 +26,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::os::raw::c_char;
-
-/// The capability the DECLARING owner must have in its manifest AND be operator-allow-listed for
-/// (spec §7). Separate from `gamedata_calls::PERMISSION` on purpose — see rule 2 above.
-///
-/// Gates DECLARING a hook. The game package is exempt as first-party runtime. A plugin must
-/// declare this permission in its manifest AND be operator-allow-listed; `s2s build` now accepts
-/// both the `hooks` section and this permission, so the non-exempt branch is the shipping path.
-pub(crate) const PERMISSION: &str = "engine:hooks";
 
 /// The shim's hook-slot budget (`S2_HOOK_MAX` in `shim/src/hook_dispatch.h`). MUST match it: the
 /// shim's latch array and thunk tables are sized by it, and an id past the end is refused there by
@@ -257,8 +246,7 @@ fn reason_string(buf: &[u8]) -> String {
 /// validated against the same tree's `calls` section, so the two never have to agree about order.
 ///
 /// Refuses a reserved owner id for the same reason `gamedata_calls::register_plugin` does: that
-/// identity is permission-EXEMPT and belongs to the runtime, and a hook is the more dangerous of the
-/// two capabilities it would grant.
+/// identity belongs to the runtime, and a plugin holding it would tear the runtime's hooks down.
 pub(crate) fn register_plugin(plugin_id: &str, gamedata_json: &str) {
     if crate::gamedata_calls::is_reserved_owner(plugin_id) {
         crate::v8host::log_warn(&format!(
@@ -272,8 +260,7 @@ pub(crate) fn register_plugin(plugin_id: &str, gamedata_json: &str) {
 }
 
 /// Register the GAME PACKAGE's declared hooks from the merged gamedata the shim produced for that
-/// owner. Lands under `gamedata_calls::reserved_owner_id(package)`, which no `.s2sp` can hold, and
-/// is permission-exempt: first-party runtime shipped in the same zip as core and the shim.
+/// owner. Lands under `gamedata_calls::reserved_owner_id(package)`, which no `.s2sp` can hold.
 #[cfg(test)]
 pub(crate) fn register_game_package(package: &str, gamedata_json: &str) {
     let owner = crate::gamedata_calls::reserved_owner_id(package);
@@ -284,20 +271,15 @@ pub(crate) fn register_game_package(package: &str, gamedata_json: &str) {
     if gamedata_json.trim().is_empty() {
         return;
     }
-    register_owner_inner(&owner, gamedata_json, /*permission_exempt=*/ true);
+    register_owner(&owner, gamedata_json);
 }
 
-/// The registration entry the tests drive, and the plugin path's body. Non-exempt: the operator
-/// allow-list decides, exactly as it does for a plugin's `calls`.
-pub(crate) fn register_owner(owner_id: &str, gamedata_json: &str) {
-    register_owner_inner(owner_id, gamedata_json, /*permission_exempt=*/ false);
-}
-
-/// Parse, flatten and register each named `hooks` entry.
+/// Parse, flatten and register each named `hooks` entry — the registration entry the tests drive,
+/// and the plugin path's body.
 ///
 /// Degrade-never-crash: unreadable gamedata WARNs once and registers nothing (every hook then
 /// reports "not declared"); a gamedata with no `hooks` section is the normal case and does nothing.
-fn register_owner_inner(owner_id: &str, gamedata_json: &str, permission_exempt: bool) {
+pub(crate) fn register_owner(owner_id: &str, gamedata_json: &str) {
     let gd: serde_json::Value = match serde_json::from_str(gamedata_json) {
         Ok(v) => v,
         Err(e) => {
@@ -308,13 +290,12 @@ fn register_owner_inner(owner_id: &str, gamedata_json: &str, permission_exempt: 
             return;
         }
     };
-    REGISTRY.with(|r| fill_owner(&mut r.borrow_mut(), owner_id, &gd, permission_exempt));
+    REGISTRY.with(|r| fill_owner(&mut r.borrow_mut(), owner_id, &gd));
 }
 fn fill_owner(
     registry: &mut HookRegistry,
     owner_id: &str,
     gd: &serde_json::Value,
-    permission_exempt: bool,
 ) {
     let Some(hooks) = gd.get("hooks").and_then(|v| v.as_object()) else {
         return;
@@ -339,7 +320,7 @@ fn fill_owner(
                 continue;
             }
         };
-        match prepare(owner_id, name, &decl, &call_names, permission_exempt) {
+        match prepare(owner_id, name, &decl, &call_names) {
             Ok((plan, addr, bypass_with)) => {
                 // A descriptor that is now one subscribe away from patching engine bytes is worth
                 // one audit line, exactly as an armed `calls` descriptor is.
@@ -388,7 +369,7 @@ pub(crate) fn prepare_game_package(owner: &str, gd: &serde_json::Value) -> Prepa
         registry: HookRegistry::new(),
         committed: false,
     };
-    fill_owner(&mut staged.registry, owner, gd, true);
+    fill_owner(&mut staged.registry, owner, gd);
     staged
 }
 pub(crate) fn commit_game_package(mut staged: PreparedGameHooks) {
@@ -418,25 +399,14 @@ fn is_plain_ident(s: &str) -> bool {
 /// Validate + resolve one flattened hook descriptor. Returns `(plan, address, bypassWith)`, or the
 /// named degrade reason.
 ///
-/// Check order matches `gamedata_calls::prepare`: authorization first (an unauthorized owner learns
-/// nothing about whether its descriptor would have resolved), then the descriptor's own shape, then
-/// the live resolve — which is the only expensive step and the only one that touches the binary.
+/// Check order matches `gamedata_calls::prepare`: the descriptor's own shape first, then the live
+/// resolve — which is the only expensive step and the only one that touches the binary.
 fn prepare(
     owner_id: &str,
     hook_name: &str,
     decl_json: &str,
     call_names: &[String],
-    permission_exempt: bool,
 ) -> Result<(HookPlan, i64, Option<String>), String> {
-    // (1) Authorization (spec §7). Declaring `engine:hooks` in the manifest is necessary but NOT
-    // sufficient: the operator's allow-list decides, and an absent allow-list denies everything.
-    if !permission_exempt && !crate::loader::permission_allowed(owner_id, PERMISSION) {
-        return Err(format!(
-            "not permitted by the operator allow-list (add \"{}\" under \"{}\" in configs/permissions.json)",
-            owner_id, PERMISSION
-        ));
-    }
-
     let decl: serde_json::Value =
         serde_json::from_str(decl_json).map_err(|e| format!("malformed descriptor: {}", e))?;
 
@@ -846,15 +816,10 @@ mod tests {
         Err("detour install refused this prologue (relative/rip-relative or undecodable)".to_string())
     }
 
-    /// Put the module in a known state: permission granted for `owner`, both engine hops stubbed,
+    /// Put the module in a known state: both engine hops stubbed,
     /// both tables empty, the install counter zeroed. The whole crate's tests share one process
     /// (single-threaded), so every test starts from here rather than from whatever ran before it.
-    fn harness(owner: &str) {
-        crate::loader::load_permissions_from_str(&format!(
-            r#"{{"engine:hooks":["{}"]}}"#,
-            owner
-        ))
-        .expect("parses");
+    fn harness() {
         reset_all();
         INSTALLS.with(|c| c.set(0));
         RESOLVE.with(|r| r.set(fake_resolve));
@@ -863,7 +828,7 @@ mod tests {
 
     /// Subscribe twice to the same hook and report how many times the engine install ran.
     fn install_call_count_with_two_subscribes() -> usize {
-        harness("@t/x");
+        harness();
         register_owner("@t/x", VALID_GD);
         subscribe("@t/x", "onX").expect("first subscribe installs");
         subscribe("@t/x", "onX").expect("second subscribe is a no-op");
@@ -882,7 +847,7 @@ mod tests {
     fn a_hook_without_a_validator_is_rejected_by_name() {
         // Mandatory-validator rule (spec §5): a wrong CALL misbehaves, a wrong DETOUR overwrites the
         // prologue of whatever is actually there. Uniqueness alone is not enough.
-        harness("@t/x");
+        harness();
         let gd = r#"{"hooks":{"onX":{"target":{"kind":"signature","name":"Sig","pattern":"55"},
                                      "shape":"this_void","expose":{"ctx":"g"}}}}"#;
         register_owner("@t/x", gd);
@@ -896,7 +861,7 @@ mod tests {
     /// An EMPTY validator object is the same hole with a lid on it, and must fail the same way.
     #[test]
     fn an_empty_validator_object_is_rejected_too() {
-        harness("@t/x");
+        harness();
         let gd = r#"{"hooks":{"onX":{"target":{"kind":"signature","name":"Sig","pattern":"55","validate":{}},
                                      "shape":"this_void","expose":{"ctx":"g"}}}}"#;
         register_owner("@t/x", gd);
@@ -905,7 +870,7 @@ mod tests {
 
     #[test]
     fn an_unknown_shape_is_rejected_by_name() {
-        harness("@t/x");
+        harness();
         let gd = r#"{"hooks":{"onX":{"target":{"kind":"signature","name":"Sig","pattern":"55",
                                                "validate":{"prologue":"55"}},
                                      "shape":"this_i32","expose":{"ctx":"g"}}}}"#;
@@ -918,7 +883,7 @@ mod tests {
 
     #[test]
     fn an_unknown_bypass_target_is_rejected_by_name() {
-        harness("@t/x");
+        harness();
         let gd = r#"{"hooks":{"onX":{"target":{"kind":"signature","name":"Sig","pattern":"55",
                                                "validate":{"prologue":"55"}},
                                      "shape":"this_void","bypassWith":"nope","expose":{"ctx":"g"}}}}"#;
@@ -930,7 +895,7 @@ mod tests {
     /// invoke path can find the latch to arm.
     #[test]
     fn a_known_bypass_target_arms_that_calls_latch() {
-        harness("@t/x");
+        harness();
         let gd = r#"{"signatures":{"Sig":{"linuxsteamrt64":{"module":"m.so","pattern":"55 48",
                                           "resolve":"direct","validate":{"prologue":"55"}}}},
                      "calls":{"doThing":{"receiver":{"kind":"entity"},
@@ -959,7 +924,7 @@ mod tests {
     /// The other half of "lazy": REGISTERING a hook patches nothing at all.
     #[test]
     fn registration_alone_installs_nothing() {
-        harness("@t/x");
+        harness();
         register_owner("@t/x", VALID_GD);
         assert_eq!(INSTALLS.with(|c| c.get()), 0, "no subscribers means no patched bytes");
         assert!(!detour_still_installed("@t/x", "onX"));
@@ -968,7 +933,7 @@ mod tests {
     #[test]
     fn dropping_an_owner_leaves_the_detour_installed() {
         // §6: uninstalling a live detour races the engine calling through it. SM does not do it either.
-        harness("@t/x");
+        harness();
         register_owner("@t/x", VALID_GD);
         subscribe("@t/x", "onX").unwrap();
         drop_owner("@t/x");
@@ -980,7 +945,7 @@ mod tests {
     /// its idempotent path) rather than burning a second one out of the 64.
     #[test]
     fn a_reload_reuses_the_same_slot_and_does_not_reinstall() {
-        harness("@t/x");
+        harness();
         register_owner("@t/x", VALID_GD);
         subscribe("@t/x", "onX").unwrap();
         let first = plan("@t/x", "onX").expect("ready").hook_id;
@@ -996,7 +961,7 @@ mod tests {
     /// subscribe retries rather than leaving it dead for the process.
     #[test]
     fn a_refused_install_is_named_and_retried() {
-        harness("@t/x");
+        harness();
         INSTALL.with(|i| i.set(refusing_install));
         register_owner("@t/x", VALID_GD);
         let err = subscribe("@t/x", "onX").unwrap_err();
@@ -1009,37 +974,13 @@ mod tests {
         assert_eq!(status("@t/x", "onX"), "available", "the reason clears on success");
     }
 
+    /// The game package's hooks register under the A5b reserved owner id.
     #[test]
-    fn registry_degrades_when_permission_denied() {
-        // The allow-list is HOST-GLOBAL and shared by the whole crate's tests. An allow-list that
-        // does not NAME this owner is the same DENY the never-loaded (default-deny) posture gives.
-        harness("@t/other");
-        register_owner("@t/x", VALID_GD);
-        assert!(status("@t/x", "onX").contains("not permitted"), "{}", status("@t/x", "onX"));
-        assert_eq!(SLOTS.with(|s| s.borrow().len()), 0, "an unauthorized hook takes no slot");
-    }
-
-    /// `engine:calls` is NOT `engine:hooks` (spec §7): granting the ability to CALL an engine
-    /// function must not grant the ability to DETOUR it.
-    #[test]
-    fn the_engine_calls_permission_does_not_grant_hooks() {
-        reset_all();
-        crate::loader::load_permissions_from_str(r#"{"engine:calls":["@t/x"]}"#).expect("parses");
-        RESOLVE.with(|r| r.set(fake_resolve));
-        INSTALL.with(|i| i.set(counting_install));
-        register_owner("@t/x", VALID_GD);
-        assert!(status("@t/x", "onX").contains("not permitted"), "{}", status("@t/x", "onX"));
-    }
-
-    /// The game package's hooks register without an allow-list entry — the A5b reserved-owner
-    /// exemption, which travels with the ENTRY POINT and not with the id.
-    #[test]
-    fn game_package_hooks_bypass_the_allow_list() {
-        harness("@t/nobody");
+    fn game_package_hooks_register_under_the_reserved_owner() {
+        harness();
         register_game_package("@demo/gp", VALID_GD);
         let owner = crate::gamedata_calls::reserved_owner_id("@demo/gp");
         let st = status(&owner, "onX");
-        assert!(!st.contains("not permitted"), "the runtime is not allow-listed: {st}");
         assert_eq!(st, "available", "{st}");
         drop_owner(&owner);
     }
@@ -1048,7 +989,7 @@ mod tests {
     /// `loader::read_s2sp`'s refusal, and it matters MORE here than for calls (a hook patches bytes).
     #[test]
     fn a_plugin_cannot_register_under_the_reserved_owner_id() {
-        harness("@t/x");
+        harness();
         let spoofed = crate::gamedata_calls::reserved_owner_id("@demo/spoof");
         register_plugin(&spoofed, VALID_GD);
         assert!(
@@ -1059,13 +1000,13 @@ mod tests {
 
     #[test]
     fn status_of_an_unknown_hook_is_named() {
-        harness("@t/x");
+        harness();
         assert!(status("@t/x", "nope").contains("not declared"));
     }
 
     #[test]
     fn subscribing_to_an_unknown_hook_reports_the_named_reason() {
-        harness("@t/x");
+        harness();
         let err = subscribe("@t/x", "nope").unwrap_err();
         assert!(err.contains("not declared"), "{}", err);
         assert_eq!(INSTALLS.with(|c| c.get()), 0, "nothing is patched for a hook that does not exist");
@@ -1074,7 +1015,7 @@ mod tests {
     /// `expose.ctx` is mandatory and must be emittable as a TypeScript property name.
     #[test]
     fn a_hook_with_no_or_bad_ctx_namespace_is_rejected_by_name() {
-        harness("@t/x");
+        harness();
         let missing = r#"{"hooks":{"onX":{"target":{"kind":"signature","name":"S","pattern":"55",
                                           "validate":{"prologue":"55"}},"shape":"this_void"}}}"#;
         register_owner("@t/x", missing);
@@ -1090,7 +1031,7 @@ mod tests {
     /// `params` are positional and become property names; `mutable` must be a subset of them.
     #[test]
     fn param_and_mutable_grammar_is_enforced_by_name() {
-        harness("@t/x");
+        harness();
         let dup = r#"{"hooks":{"onDup":{"target":{"kind":"signature","name":"S","pattern":"55",
                                         "validate":{"prologue":"55"}},"shape":"this_f32_i32_i32_i32",
                                         "params":["a","a","c","d"],"expose":{"ctx":"g"}}}}"#;
@@ -1115,7 +1056,7 @@ mod tests {
     /// so a regression that transposed it would silently make a read-only param writable.
     #[test]
     fn mutable_is_recorded_per_param_index() {
-        harness("@t/x");
+        harness();
         let gd = r#"{"hooks":{"onX":{"target":{"kind":"signature","name":"S","pattern":"55",
                                      "validate":{"prologue":"55"}},"shape":"this_f32_i32_i32_i32",
                                      "params":["delay","reason","u3","u4"],"mutable":["delay","reason"],
@@ -1130,7 +1071,7 @@ mod tests {
     /// The receiver is opt-in and tagged, and its name may not collide with a param's.
     #[test]
     fn receiver_grammar_is_enforced_by_name() {
-        harness("@t/x");
+        harness();
         let no_as = r#"{"hooks":{"onA":{"target":{"kind":"signature","name":"S","pattern":"55",
                                         "validate":{"prologue":"55"}},"shape":"this_void",
                                         "receiver":{"kind":"entity"},"expose":{"ctx":"g"}}}}"#;
@@ -1163,7 +1104,7 @@ mod tests {
     /// A resolve failure is the shim's own reason, verbatim — core never re-words it.
     #[test]
     fn a_resolve_failure_carries_the_shims_reason() {
-        harness("@t/x");
+        harness();
         fn failing(_t: &serde_json::Value) -> Result<i64, String> {
             Err("signature is ambiguous (>1 match — tighten it)".to_string())
         }
@@ -1175,7 +1116,7 @@ mod tests {
     /// A resolved-but-address-less descriptor must degrade, never install at 0.
     #[test]
     fn a_zero_address_is_refused() {
-        harness("@t/x");
+        harness();
         fn zero(_t: &serde_json::Value) -> Result<i64, String> {
             Err("resolved descriptor has no address".to_string())
         }
@@ -1188,7 +1129,7 @@ mod tests {
     /// Gamedata with no `hooks` section is the normal case for almost every plugin.
     #[test]
     fn gamedata_without_hooks_registers_nothing_and_warns_nothing() {
-        harness("@t/x");
+        harness();
         register_owner("@t/x", r#"{"calls":{"doThing":{"target":{"kind":"signature","pattern":"55"}}}}"#);
         assert!(status("@t/x", "anything").contains("not declared"));
     }
@@ -1196,7 +1137,7 @@ mod tests {
     /// Malformed gamedata degrades the OWNER's hooks, not the load.
     #[test]
     fn malformed_gamedata_registers_nothing() {
-        harness("@t/x");
+        harness();
         register_owner("@t/x", "{not json");
         assert!(status("@t/x", "onX").contains("not declared"));
     }
@@ -1205,7 +1146,7 @@ mod tests {
     /// not an out-of-range install (which the shim would refuse anyway, one hook too late).
     #[test]
     fn slot_exhaustion_is_a_named_degrade() {
-        harness("@t/x");
+        harness();
         // Fill the pool with distinct addresses so no two share a slot.
         SLOTS.with(|s| {
             let mut slots = s.borrow_mut();
@@ -1225,7 +1166,7 @@ mod tests {
     /// Continue instead of dispatching into some other hook's subscribers.
     #[test]
     fn hook_for_id_only_answers_for_installed_slots() {
-        harness("@t/x");
+        harness();
         register_owner("@t/x", VALID_GD);
         let id = plan("@t/x", "onX").expect("ready").hook_id;
         assert_eq!(hook_for_id(id), None, "an uninstalled slot cannot be dispatched to");
@@ -1255,7 +1196,7 @@ mod tests {
     /// `S2_HookResetAll()` forgets its half at the same moment.
     #[test]
     fn reset_all_clears_the_slot_table_too() {
-        harness("@t/x");
+        harness();
         register_owner("@t/x", VALID_GD);
         subscribe("@t/x", "onX").unwrap();
         assert!(detour_still_installed("@t/x", "onX"));
@@ -1266,7 +1207,7 @@ mod tests {
     #[test]
     fn selected_package_staging_is_private_and_aborted_hook_slots_are_released() {
         let owner = crate::gamedata_calls::reserved_owner_id("@fixture/staging");
-        harness(&owner);
+        harness();
         let gd = serde_json::from_str(VALID_GD).unwrap();
         let staged = prepare_game_package(&owner, &gd);
         assert!(status(&owner, "onX").contains("not declared"));

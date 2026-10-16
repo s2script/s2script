@@ -12,9 +12,8 @@ test("a valid signature-backed call passes", () => {
   assert.deepEqual(validatePluginGamedata(sigCall, { permissions: PERMS }), []);
 });
 
-test("calls section without engine:calls permission is rejected", () => {
-  const errs = validatePluginGamedata(sigCall, { permissions: [] });
-  assert.ok(errs.some((e) => e.includes("engine:calls")));
+test("a calls section needs no authored engine:calls permission", () => {
+  assert.deepEqual(validatePluginGamedata(sigCall, { permissions: [] }), []);
 });
 
 test("vtable target without validate.prologue is rejected", () => {
@@ -203,9 +202,8 @@ test("a valid hook descriptor passes", () => {
   assert.deepEqual(validatePluginGamedata(hookGd, { permissions: HOOK_PERMS }), []);
 });
 
-test("hooks section without engine:hooks permission is rejected", () => {
-  const errs = validatePluginGamedata(hookGd, { permissions: ["engine:calls"] });
-  assert.ok(errs.some((e) => e.includes("engine:hooks")));
+test("a hooks section needs no authored engine:hooks permission", () => {
+  assert.deepEqual(validatePluginGamedata(hookGd, { permissions: [] }), []);
 });
 
 test("engine:hooks is a known permission", () => {

@@ -51,7 +51,7 @@ export declare const Plugins: {
    * range. `with` names optional members of the ONE bundle given. The files land in `plugins/`,
    * where the loader picks them up — or, with `disabled`, in `plugins/disabled/`, where it never
    * looks (kept current at startup, loaded once enabled). Resolves with report lines; rejects with
-   * the reason. Requires the `plugins:manage` permission (default: `@s2script/basecommands` only).
+   * the reason.
    */
   install(names: string[], opts?: { with?: string[]; disabled?: boolean }): Promise<string[]>;
   /** Move the named plugins (all when omitted) to the newest version their plugins.json range allows. */

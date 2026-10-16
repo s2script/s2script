@@ -65,11 +65,6 @@ test("writes .s2script/hooks.d.ts and typechecks Engine.hook", async () => {
   assert.ok(existsSync(join(dir, ".s2script", "hooks.d.ts")));
 });
 
-test("a hooks section without the permission fails the build", async () => {
-  const dir = scaffold(HOOK_GD, undefined, HOOK_BODY);
-  await assert.rejects(() => buildPlugin(dir), /engine:hooks/);
-});
-
 test("Engine.hook on an undeclared name fails the typecheck gate", async () => {
   const body = `import { Engine } from "@s2script/sdk/unsafe";
 export function OnPluginStart(): void { Engine.hook("nope"); }`;
@@ -81,11 +76,6 @@ test("writes .s2script/gamedata.d.ts", async () => {
   const dir = scaffold(GD, ["engine:calls"], OK_BODY);
   await buildPlugin(dir);
   assert.ok(existsSync(join(dir, ".s2script", "gamedata.d.ts")));
-});
-
-test("a calls section without the permission fails the build", async () => {
-  const dir = scaffold(GD, undefined, OK_BODY);
-  await assert.rejects(() => buildPlugin(dir), /engine:calls/);
 });
 
 test("a wrong arg count fails the typecheck gate", async () => {
@@ -217,7 +207,15 @@ for (const [kind, data, permissions, body] of [
     assert.equal(typecheckPlugin(dir).ok, false);
   });
 }
-test("standalone custom-gamedata typecheck validates permissions before generating types", () => {
-  const dir = scaffold(HOOK_GD, [], HOOK_BODY);
-  assert.throws(() => typecheckPlugin(dir), /engine:hooks/);
+test("standalone custom-gamedata typecheck rejects an unknown authored permission", () => {
+  const dir = scaffold(HOOK_GD, ["engine:bogus"], HOOK_BODY);
+  assert.throws(() => typecheckPlugin(dir), /unknown permission/);
+});
+
+test("the manifest derives engine:calls / engine:hooks from the gamedata without authoring", async () => {
+  for (const [data, body, want] of [[GD, OK_BODY, ["engine:calls"]], [HOOK_GD, HOOK_BODY, ["engine:hooks"]]]) {
+    const dir = scaffold(data, undefined, body);
+    const zip = unzipSync(readFileSync(await buildPlugin(dir)));
+    assert.deepEqual(JSON.parse(Buffer.from(zip["manifest.json"]).toString("utf8")).permissions, want);
+  }
 });

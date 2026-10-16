@@ -28,9 +28,8 @@ const IGNITE_FLAGS = 4;
 export function OnPluginStart(): void {
   // ── Resolve ONCE, at load ────────────────────────────────────────────────────────────────────
   // `Engine.call` returns a plain callable, or null if the descriptor failed a load-time gate:
-  // the signature did not match this build, a `prologue` validator rejected the target, there is no
-  // entry for this platform, or an operator has not allow-listed this plugin. Guard here, not at
-  // every call site.
+  // the signature did not match this build, a `prologue` validator rejected the target, or there is
+  // no entry for this platform. Guard here, not at every call site.
   //
   // `ignite` is typed: `s2s build` generated its signature from the gamedata, so the argument list
   // below is checked by the same tsc gate that checks the rest of the plugin. Rename the call in the
@@ -52,12 +51,6 @@ export function OnPluginStart(): void {
   command.admin("sm_ec_status", ADMFLAG.GENERIC, (cmd) => {
     cmd.reply(`[engine-call-demo] ignite: ${Engine.status("ignite")}`);
     cmd.reply(`[engine-call-demo] dropActiveWeaponRejected (expected to fail): ${Engine.status("dropActiveWeaponRejected")}`);
-    if (!ignite) {
-      cmd.reply(
-        '[engine-call-demo] to enable: add "@demo/engine-call" under "engine:calls" in ' +
-          "addons/s2script/configs/permissions.json, then reload."
-      );
-    }
     return HookResult.Handled;
   });
 

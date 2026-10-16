@@ -201,10 +201,7 @@ sm plugins outdated                     // current / wanted / latest for each pl
 
 They run in the background and print their report when done. The loader picks up the changed
 files on its own: a new plugin loads, an updated one hot-reloads, a removed one unloads. No restart.
-Players cannot run them, admins included; they only answer the console and RCON. Only
-`@s2script/basecommands` may call them (the `plugins:manage` permission). List other plugin ids
-under `"plugins:manage"` in `configs/permissions.json` to change that, or set it to `[]` to turn
-the commands off.
+Players cannot run them, admins included; they only answer the console and RCON.
 
 From a shell, the same files work like npm:
 

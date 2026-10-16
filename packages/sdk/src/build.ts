@@ -50,7 +50,7 @@ interface PluginPackageJson {
     config?: Record<string, unknown>;
     /** Path (relative to the plugin dir) of this plugin's own gamedata (JSONC). */
     gamedata?: string;
-    /** Declared capabilities, e.g. ["engine:calls"]. Auditable; the operator allow-list decides. */
+    /** Optional: the build derives `engine:calls` / `engine:hooks` from the gamedata. Informational. */
     permissions?: string[];
     /** Build-time packages bundled INTO this plugin's .s2sp — see libraries.ts. */
     libraries?: Record<string, string>;
@@ -344,9 +344,15 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     manifest.interfaceContracts = imports;
   }
   if (config !== undefined) manifest.config = config;
-  // Declared capabilities travel with the package so `s2s install` can surface them and the loader
-  // can gate the gamedata calls against the operator allow-list (default-deny).
-  const effectivePermissions = [...new Set([...permissions, ...(derivedFunctions?.permissions ?? [])])];
+  // What the package reaches into the engine with travels with it, derived from the gamedata, so
+  // `s2s inspect` and the registry can show it. Informational: nothing on the server gates on it.
+  const gamedataPermissions = [
+    ...(gamedata?.calls && Object.keys(gamedata.calls).length ? ['engine:calls'] : []),
+    ...(gamedata?.hooks && Object.keys(gamedata.hooks).length ? ['engine:hooks'] : []),
+  ];
+  const effectivePermissions = [
+    ...new Set([...permissions, ...gamedataPermissions, ...(derivedFunctions?.permissions ?? [])]),
+  ].sort();
   if (effectivePermissions.length > 0) manifest.permissions = effectivePermissions;
   if (derivedFunctions) manifest.engineFunctions = derivedFunctions.summary;
 

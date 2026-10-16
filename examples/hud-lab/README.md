@@ -224,10 +224,6 @@ node packages/sdk/dist/cli.js build examples/hud-lab
 cp examples/hud-lab/dist/_demo_hud-lab.s2sp dist/addons/s2script/plugins/
 ```
 
-Tier B additionally needs the operator allow-list — add `"@demo/hud-lab"` under `"engine:calls"` in
-`addons/s2script/configs/permissions.json`. Without it the four calls report as unavailable for that
-reason instead of the signature one, and `sm_hud_status` says so.
-
 ## Suggested first run
 
 ```

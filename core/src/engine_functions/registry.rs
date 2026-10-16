@@ -132,17 +132,9 @@ pub(crate) fn prepare_owner(
     intended_id: &str,
     candidate: PreparedCandidate,
 ) -> Result<PreparedOwnerReceipt, String> {
-    prepare_owner_with_grants(intended_id, candidate, true, true)
+    prepare_owner_authorized(intended_id, candidate, None)
 }
-pub(crate) fn prepare_owner_with_grants(
-    intended_id: &str,
-    candidate: PreparedCandidate,
-    calls_allowed: bool,
-    hooks_allowed: bool,
-) -> Result<PreparedOwnerReceipt, String> {
-    prepare_owner_authorized(intended_id,candidate,calls_allowed,hooks_allowed,None)
-}
-fn prepare_owner_authorized(intended_id:&str,candidate:PreparedCandidate,calls_allowed:bool,hooks_allowed:bool,host:Option<&HostPackageOwner>) -> Result<PreparedOwnerReceipt,String> {
+fn prepare_owner_authorized(intended_id:&str,candidate:PreparedCandidate,host:Option<&HostPackageOwner>) -> Result<PreparedOwnerReceipt,String> {
     if candidate.owner_id() != intended_id {
         return Err("prepared candidate owner mismatch".into());
     }
@@ -156,19 +148,8 @@ fn prepare_owner_authorized(intended_id:&str,candidate:PreparedCandidate,calls_a
             if host.is_none_or(|h|h.is_retired() || h.key()!=owner) {return Err("trusted instance requires exact verified package owner".into());}
         }
         let binding_id = next_id()?;
-        let denied = f
-            .policy
-            .surfaces
-            .iter()
-            .find_map(|surface| match surface.as_str() {
-                "call" if !calls_allowed => Some("operator permission denied: engine:calls"),
-                "pre" | "post" if !hooks_allowed => {
-                    Some("operator permission denied: engine:hooks")
-                }
-                _ => None,
-            });
-        let resolved = denied
-            .or(prepared.unavailable())
+        let resolved = prepared
+            .unavailable()
             .map_or_else(|| runtime::prepare_binding(f,binding_id), |e| Err(e.into()));
         let (target, capability, unavailable) = match resolved {
             Ok((id,capability)) => (Some(id), capability, None),
@@ -472,7 +453,7 @@ pub(crate) fn prepare_package_owner(
     }
     Ok(PreparedPackageFunctionReceipt {
         owner: owner.clone(),
-        prepared: prepare_owner_authorized(&owner.key().id, candidate, true, true, Some(owner))?,
+        prepared: prepare_owner_authorized(&owner.key().id, candidate, Some(owner))?,
     })
 }
 pub(crate) fn activate_package_owner(

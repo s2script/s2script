@@ -3554,11 +3554,10 @@ fn pack_entity_arg(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> u64 {
 }
 
 // The plugin id these four natives key on is ALWAYS the calling context's own
-// (`current_plugin`), never a caller-supplied string. `gamedata_calls::prepare` gates the
-// `engine:calls` permission once, at registration, so a descriptor's presence in the registry IS
-// its authorization — and these raw natives sit on every plugin's global object. Taking the id as
-// an argument would let any plugin drive the engine calls the operator allow-listed for a
-// DIFFERENT plugin. A context with no plugin identity (the shared HOST context) fails closed.
+// (`current_plugin`), never a caller-supplied string. A descriptor is registered per owner, and
+// these raw natives sit on every plugin's global object. Taking the id as an argument would let any
+// plugin drive the engine calls a DIFFERENT plugin declared (and tear down through its ledger).
+// A context with no plugin identity (the shared HOST context) fails closed.
 
 /// The GAME PACKAGE's descriptor owner, for the `__s2_game_call_*` natives (A5b, spec §9.1b).
 ///
@@ -3576,7 +3575,7 @@ fn game_call_owner() -> Option<String> {
 const NO_GAME_PACKAGE: &str = "no game package has registered gamedata with this host";
 
 /// Native `__s2_engine_call_ready(callName) -> boolean`. True iff the descriptor passed
-/// every LOAD-time gate (allow-list + op + resolve/validate). This is what `Engine.call()` keys
+/// every LOAD-time gate (op + resolve/validate). This is what `Engine.call()` keys
 /// callable-or-null on, so it deliberately ignores a pending `via` hop (spec §11).
 fn s2_engine_call_ready(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, rv: v8::ReturnValue) {
     let owner = current_plugin(scope);
@@ -3874,26 +3873,16 @@ fn s2_plugin_load(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
     }));
 }
 
-/// Who may install registry code onto the server when `configs/permissions.json` does not say:
-/// the first-party basecommands plugin, which only does it for the server console / RCON.
-const PLUGINS_MANAGE_DEFAULT: &[&str] = &["@s2script/basecommands"];
-
 /// Native `__s2_plugins_registry(requestJson) -> Promise<void>` — `sm plugins install|update|remove|
 /// outdated` (server_update.rs `Op`). The registry work runs on the threadpool; the promise
 /// resolves when it finishes (read its lines with `__s2_plugins_registry_result`) or rejects with
-/// the reason. Gated by the `plugins:manage` permission, since it puts new code on the server.
+/// the reason.
 fn s2_plugins_registry(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let resolver = v8::PromiseResolver::new(scope).unwrap();
         let promise = resolver.get_promise(scope);
         let request = args.get(0).to_rust_string_lossy(scope);
-        let caller = current_plugin(scope).unwrap_or_default();
         let result = (|| -> Result<(), String> {
-            if !crate::loader::permission_allowed_or(&caller, "plugins:manage", PLUGINS_MANAGE_DEFAULT) {
-                return Err(format!(
-                    "{caller} may not manage plugins (add it under \"plugins:manage\" in configs/permissions.json)"
-                ));
-            }
             let op = crate::server_update::parse_op(&request)?;
             let root = crate::loader::plugins_dir()
                 .and_then(|d| d.parent().map(std::path::Path::to_path_buf))

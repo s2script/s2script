@@ -115,7 +115,7 @@ cannot express: the engine calling *into* a plugin, not a plugin calling *into* 
 **A hook is declared by a game package or by a plugin.** Game-package hooks hang off generated
 `ctx` namespaces (`ctx.gameRules.onTerminateRound`). Plugin-declared hooks live on
 `Engine.hook(name)` from `@s2script/sdk/unsafe` — the inbound sibling of `Engine.call`. `s2s build`
-accepts a `hooks` gamedata section and the `engine:hooks` permission; types are generated into
+accepts a `hooks` gamedata section (recorded as `engine:hooks` in the manifest); types are generated into
 `.s2script/hooks.d.ts` as an `EngineHooks` augmentation. The owner is always the calling plugin:
 JS cannot name another plugin's detour through `Engine.hook`. Game-package subscribe stays
 `__s2_hook_on` (the first argument is remapped to the reserved owner id). The thunk vocabulary is
@@ -225,14 +225,13 @@ relocator tests remain). Mutation is a block-scoped view over the thunk's stack 
 like an OnTakeDamage `DamageInfo` — no pointer crosses into JS, and the view cannot outlive the dispatch
 (`s2script_core_dispatch_hook` in `core/src/ffi.rs`).
 
-**`engine:hooks` is a separate permission from `engine:calls`.** A hook is strictly more dangerous
-than a call — it patches bytes and can suppress engine behaviour — so an operator who granted a
-plugin the ability to *call* engine functions has not thereby granted it the ability to *detour*
-them. It gates **declaring** a hook, never subscribing to one: subscribing to a hook someone else
-declared is the intended path for game-package hooks (that is what the generated `ctx` namespaces
-are), and matches SourceMod, where any plugin subscribing to `CS_OnTerminateRound` installs the
-detour. A plugin declaring its own hook also needs the operator allow-list entry, exactly as
-`engine:calls` does. The game package is exempt as first-party runtime.
+**No operator allow-list.** Like SourceMod and CounterStrikeSharp, a plugin the operator installed
+may declare calls and hooks; there is no `configs/permissions.json` to edit first. The build still
+records `engine:calls` / `engine:hooks` in the manifest from the gamedata, as a label `s2s inspect`
+and the registry show (a hook patches bytes and can suppress engine behaviour, which is worth
+knowing before installing). Subscribing to a hook someone else declared is the intended path for
+game-package hooks (that is what the generated `ctx` namespaces are), and matches SourceMod, where
+any plugin subscribing to `CS_OnTerminateRound` installs the detour.
 
 Two hooks ship today, both declared in `gamedata/cs2/game.cs2.jsonc` — nothing named in `shim/src`
 or `core/src`: `ctx.gameRules.onTerminateRound` (shape `this_f32_i32_i32_i32`, mutable
@@ -438,7 +437,6 @@ are the one thing the host fully controls, so they are the one thing trusted to 
     },
     "optionalPluginDependencies": { "@edge/admin-menu": "^3.0.0" },
     "requiresGamedata": ["CBaseEntity::TakeDamage"],
-    "permissions": ["chat", "commands", "db"],
     "config": { "name": "admin", "defaults": { "max_bans": 50 } }
   }
 }
@@ -446,7 +444,7 @@ are the one thing the host fully controls, so they are the one thing trusted to 
 
 **Hard rules:** standard fields for what npm models (tooling/semver/muscle-memory just work); **`dependencies` = npm build-deps only** (bundled by swc); **inter-plugin deps under `s2script.pluginDependencies`/`optionalPluginDependencies`** (host-resolved as proxies — different mechanism, different field); **`publishes`, not npm's `exports`** (don't overload bundler semantics). A CS2-targeting plugin lists `@s2script/cs2` among its plugin-deps; a pure-generic plugin lists only `@s2script/std` and runs on any Source 2 game.
 
-**Build artifact = `.s2sp` (zip), produced by `s2script build`** from the `package.json`-rooted source: reads `package.json`, bundles `dependencies` + source into one `plugin.js`, runs the typecheck, and **bakes a derived minimal runtime manifest** into the archive (id, version, apiVersion, plugin-deps, requiresGamedata, permissions, publishes, config). The runtime **never parses the dev's full `package.json`** — devDependencies/scripts/cruft never reach the server.
+**Build artifact = `.s2sp` (zip), produced by `s2script build`** from the `package.json`-rooted source: reads `package.json`, bundles `dependencies` + source into one `plugin.js`, runs the typecheck, and **bakes a derived minimal runtime manifest** into the archive (id, version, apiVersion, plugin-deps, requiresGamedata, the derived `engine:calls`/`engine:hooks` labels, publishes, config). The runtime **never parses the dev's full `package.json`** — devDependencies/scripts/cruft never reach the server.
 
 ```
 my-plugin.s2sp (zip)

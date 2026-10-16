@@ -707,30 +707,6 @@
         shutdown();
     }
 
-    /// `sm plugins install` puts new code on the server, so the native refuses any plugin the
-    /// `plugins:manage` permission does not cover — by default everyone but basecommands.
-    #[test]
-    fn plugins_registry_refuses_a_plugin_without_plugins_manage() {
-        init(dummy_logger()).unwrap();
-        eval_std(
-            "@community/sneaky",
-            r#"globalThis.__err = "";
-            const { Plugins } = __s2require("@s2script/plugins");
-            Plugins.install(["@evil/backdoor"]).then(
-              () => { globalThis.__err = "resolved"; },
-              (e) => { globalThis.__err = String(e && e.message || e); });"#,
-        );
-        let mut err = String::new();
-        for _ in 0..ASYNC_POLL_TICKS {
-            frame_async_drain();
-            err = eval_in_context_string("@community/sneaky", "globalThis.__err");
-            if !err.is_empty() { break; }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        assert!(err.contains("may not manage plugins"), "got {err:?}");
-        shutdown();
-    }
-
     /// Live, through the native: `S2S_E2E_REGISTRY=<url> cargo test -p s2script-core
     /// plugins_registry_live -- --ignored`. basecommands installs a plugin into a temp server.
     #[test]
@@ -1995,16 +1971,13 @@
         shutdown();
     }
 
-    /// A plugin must never be able to act AS another plugin. `gamedata_calls` gates the
-    /// `engine:calls` permission once, at registration (`prepare`), so a descriptor's mere
-    /// existence in the registry IS its authorization — which means the plugin id these natives
-    /// key on decides who may drive an operator-allow-listed engine call. It must therefore come
+    /// A plugin must never be able to act AS another plugin. Descriptors are registered per owner,
+    /// so the plugin id these natives key on decides whose declared engine call runs. It must come
     /// from the CALLING CONTEXT (`current_plugin`), never from a string the caller chose: the raw
     /// `__s2_engine_call_*` natives sit on every plugin's global object.
     #[test]
     fn engine_call_natives_ignore_a_caller_supplied_plugin_id() {
         let _ = init(dummy_logger());
-        crate::loader::load_permissions_from_str(r#"{"engine:calls":["gd_victim"]}"#).unwrap();
         create_plugin_context("gd_victim");
         create_plugin_context("gd_attacker");
         // The victim declares a call. With no engine ops under test it registers Degraded — still a
@@ -2073,7 +2046,6 @@
     #[test]
     fn engine_call_still_invokes_for_the_owning_plugin() {
         let _ = init(dummy_logger());
-        crate::loader::load_permissions_from_str(r#"{"engine:calls":["gd_owner"]}"#).unwrap();
         set_engine_ops(Some(S2EngineOps {
             engine_call_resolve: Some(fake_call_resolve),
             engine_call_invoke: Some(fake_call_invoke),
@@ -2110,14 +2082,11 @@
     /// The shim hands core the merged gamedata for the `cs2` owner (here: the same JSON text
     /// `GameConfig::mergedJson` produces, in the shape `gamedata/cs2/game.cs2.jsonc` will carry);
     /// core registers it under the reserved owner id; and every plugin context's
-    /// `__s2_game_call_*` natives report `ready` / `status` for it — WITHOUT the calling plugin
-    /// appearing in the `engine:calls` allow-list, and without the plugin's own registry being
-    /// touched.
+    /// `__s2_game_call_*` natives report `ready` / `status` for it — without the plugin's own
+    /// registry being touched.
     #[test]
     fn game_package_declared_calls_are_ready_through_the_game_scoped_natives() {
         let _ = init(dummy_logger());
-        // Nobody is allow-listed. The game package is runtime, not a plugin — it must not need one.
-        crate::loader::load_permissions_from_str(r#"{"engine:calls":[]}"#).unwrap();
         set_engine_ops(Some(S2EngineOps {
             engine_call_resolve: Some(fake_call_resolve),
             engine_call_invoke: Some(fake_call_invoke),
@@ -5558,9 +5527,6 @@
     }
 
     fn hook_test_setup(plugin: &str) -> i32 {
-        crate::loader::load_permissions_from_str(&format!(
-            r#"{{"engine:calls":["{p}"],"engine:hooks":["{p}"]}}"#, p = plugin
-        )).expect("parses");
         HOOK_ARMED.lock().unwrap().clear();
         HOOK_DISARMED.lock().unwrap().clear();
         *HOOK_F32.lock().unwrap() = [1.5];
@@ -5704,7 +5670,6 @@
     fn a_view_stashed_from_one_dispatch_cannot_touch_another() {
         let _ = init(dummy_logger());
         set_engine_ops(Some(hook_test_ops()));
-        crate::loader::load_permissions_from_str(r#"{"engine:hooks":["hk4"]}"#).expect("parses");
         *HOOK_F32.lock().unwrap() = [1.5];
         *HOOK_I32.lock().unwrap() = [7, 8, 9];
         crate::gamedata_hooks::register_plugin("hk4", two_hook_gamedata());
@@ -5764,7 +5729,6 @@
         crate::entity_live::reset_for_tests();
         let _ = init(dummy_logger());
         set_engine_ops(Some(hook_test_ops()));
-        crate::loader::load_permissions_from_str(r#"{"engine:hooks":["hk6"]}"#).expect("parses");
         // Seed the host's books, then hand back the handle that decodes to exactly that entity.
         let id = crate::entity_live::on_created(42, 7);
         let _receiver_reset = ResetOnDrop(&HOOK_RECEIVER, -1);
@@ -5980,8 +5944,6 @@
             engine_call_invoke: Some(mock_call_invoke_reenters_a_hook),
             ..hook_test_ops()
         }));
-        crate::loader::load_permissions_from_str(
-            r#"{"engine:calls":["hk10"],"engine:hooks":["hk10"]}"#).expect("parses");
         *HOOK_F32.lock().unwrap() = [1.5];
         *HOOK_I32.lock().unwrap() = [7, 8, 9];
         crate::gamedata_calls::register_plugin("hk10", unlatched_reentrancy_gamedata());
@@ -6013,8 +5975,6 @@
             engine_call_invoke: Some(mock_call_invoke_reenters_a_hook),
             ..hook_test_ops()
         }));
-        crate::loader::load_permissions_from_str(
-            r#"{"engine:calls":["hk11"],"engine:hooks":["hk11"]}"#).expect("parses");
         *HOOK_F32.lock().unwrap() = [1.5];
         *HOOK_I32.lock().unwrap() = [7, 8, 9];
         crate::gamedata_calls::register_plugin("hk11", unlatched_reentrancy_gamedata());

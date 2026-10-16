@@ -539,3 +539,30 @@ the set.
 splitting, id-to-file mapping in nested folders and for a renamed file, refusal of `..`, absolute
 paths, a symlink out and `plugins/` itself, the scan join, the move-away exit, and unload by folder
 form without suppression. Not yet live-gated in CS2.
+
+## 2026-10-16 — Remove the operator permission allow-list
+
+`configs/permissions.json` is gone. It gated `engine:calls` / `engine:hooks` (default-deny) and,
+on this stack, `plugins:manage`. No other Source 2 or Source 1 framework has one (SourceMod and
+CounterStrikeSharp trust the plugins an operator installed), and in practice it only meant a plugin
+silently degraded until someone found the file. A plugin already runs arbitrary JS with `fetch`,
+sockets and the DB, so the list did not contain a malicious one either.
+
+Removed from core:
+- the `PERMISSIONS` allow-list, `permission_allowed` / `permission_allowed_or`, and the
+  loader's config read of `permissions.json` before each scan;
+- the gate in `gamedata_calls::prepare`, `gamedata_hooks::prepare` and the engine-functions
+  registry (`prepare_owner_with_grants`);
+- the `permission_exempt` plumbing for the game package;
+- the `plugins:manage` check on `__s2_plugins_registry`.
+
+The reserved `game-package:` owner id stays, because a plugin holding it would tear the runtime's
+descriptors down through the ledger. The template leaves the release zip.
+
+The manifest `permissions` field stays as an informational label. `s2s build` now derives
+`engine:calls` / `engine:hooks` from a plugin's legacy gamedata `calls` / `hooks` sections, as it
+already did for `gamedata/functions.jsonc`. The build no longer fails when a gamedata file has calls
+or hooks but no authored `s2script.permissions`. An unknown authored value is still a typo error.
+
+Core 1089 tests and the SDK 902 tests pass. The 7 removed core tests asserted the allow-list
+itself.

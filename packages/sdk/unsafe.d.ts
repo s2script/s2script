@@ -5,9 +5,9 @@
  * UNSAFE by design. A declared call reaches a real engine function; a declared hook patches
  * that function's prologue. The framework validates every descriptor at load and degrades a
  * failure to `null`, but it cannot prove your signature or vtable index names the function you
- * meant. Calls require manifest `permissions: ["engine:calls"]`; hooks require the separate
- * `"engine:hooks"` permission. Both also need an operator allow-list entry
- * (see docs/superpowers/specs/2026-07-24-plugin-gamedata-design.md §6 and ARCHITECTURE.md §2.0.7).
+ * meant. `s2s build` records `engine:calls` / `engine:hooks` in the manifest from your gamedata so
+ * `s2s inspect` and the registry can show what the plugin reaches into; nothing to declare by hand
+ * (see docs/superpowers/specs/2026-07-24-plugin-gamedata-design.md and ARCHITECTURE.md §2.0.7).
  */
 
 /**

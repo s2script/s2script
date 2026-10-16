@@ -9,15 +9,13 @@ import { Player } from "@s2script/cs2";
  * The three things this recipe demonstrates, in order of importance:
  *
  * 1. **Guard once, at load.** `Engine.call(name)` returns a plain callable, or `null` when the
- *    descriptor failed a load-time gate (signature miss on this build, `prologue` rejection, no entry
- *    for this platform, or the plugin is not in the operator allow-list). Resolve it in
+ *    descriptor failed a load-time gate (signature miss on this build, `prologue` rejection, or no
+ *    entry for this platform). Resolve it in
  *    OnPluginStart and null-check there — never per invocation.
  * 2. **A degraded call is a NAMED reason, not a mystery.** `Engine.status(name)` says why, so a
  *    plugin can tell the operator "this build moved the signature" instead of silently doing nothing.
- * 3. **Default-deny is real.** Declaring `permissions: ["engine:calls"]` in package.json is
- *    necessary but NOT sufficient — until an operator adds this plugin's id to
- *    `addons/s2script/configs/permissions.json`, every declared call resolves to `null`. Running
- *    `cb_unsafe` on a fresh server is expected to report unavailable; that IS the demo.
+ * 3. **A stale signature is expected.** The demo descriptor targets an old build, so running
+ *    `cb_unsafe` on a current server is expected to report unavailable; that IS the demo.
  *
  *   cb_unsafe          report the descriptor's status (available, or why not)
  *   cb_unsafe_burn     set the caller (or <target>) on fire for 10s via the declared call
@@ -36,8 +34,7 @@ export function OnPluginStart(): void {
     cmd.reply(
       ignite
         ? `[cookbook] unsafe: ignite is ${status} — try cb_unsafe_burn`
-        : `[cookbook] unsafe: ignite unavailable (${status}). If this says "not permitted", add ` +
-          `"@example/cookbook" under "engine:calls" in addons/s2script/configs/permissions.json.`
+        : `[cookbook] unsafe: ignite unavailable (${status}).`
     );
     return HookResult.Handled;
   });

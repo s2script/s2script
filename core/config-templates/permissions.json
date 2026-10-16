@@ -1,5 +1,0 @@
-{
-  "_help": "permission name -> the EXACT plugin ids allowed to use it (no globs). Default-DENY: a plugin that declares a permission but is not listed here still loads, with every capability that permission gates degraded. e.g. \"engine:calls\": [\"@me/burn\"]. One exception: plugins:manage (sm plugins install/update/remove/outdated) defaults to [\"@s2script/basecommands\"] when this file does not list it; set it to [] to turn those commands off.",
-  "engine:calls": [],
-  "plugins:manage": ["@s2script/basecommands"]
-}

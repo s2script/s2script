@@ -20,16 +20,12 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::os::raw::c_char;
 
-/// The capability a plugin must declare in its manifest AND be operator-allow-listed for (spec §6).
-pub(crate) const PERMISSION: &str = "engine:calls";
-
 /// Sentinel prefix for the RESERVED owner ids the runtime registers under (A5b, spec §9.1b).
 ///
 /// The game package's descriptors are first-party runtime, shipped in the same zip as core and the
-/// shim, and are consequently exempt from the `engine:calls` allow-list — the natives they replace
-/// are unconditionally callable from any plugin today, so gating them on an operator's list would
-/// be a new restriction, not a preserved one. That exemption is only safe if the identity carrying
-/// it cannot be CLAIMED, so two independent things hold it shut:
+/// shim, and are keyed in the registry and the ledger under this id. A plugin holding it would tear
+/// the runtime's descriptors down on its own unload, so the identity must not be CLAIMABLE, and two
+/// independent things hold it shut:
 ///
 ///   1. this prefix contains `:`, which no npm package name may contain, so no legitimate plugin id
 ///      collides with it; and
@@ -37,9 +33,6 @@ pub(crate) const PERMISSION: &str = "engine:calls";
 ///      `register_plugin` below refuses to register one — because a manifest id is an arbitrary
 ///      JSON string that nothing validates against the npm grammar, so (1) alone is a naming
 ///      convention, not a gate.
-///
-/// The exemption itself is never derived from the id string: it is a parameter passed by the
-/// registration entry point (`register_game_package`), so even a spoofed id would not carry it.
 pub(crate) const RESERVED_OWNER_PREFIX: &str = "game-package:";
 
 /// The reserved owner id for a game package (`@s2script/cs2` → `game-package:@s2script/cs2`).
@@ -188,27 +181,21 @@ impl CallRegistry {
     }
 
     /// Register one declared call. Order of checks (each failure is a named degrade, never a load
-    /// failure — spec §6/§12):
-    ///   1. the operator allow-list (default-deny),
-    ///   2. the engine op's presence,
-    ///   3. the descriptor's own shape + the resolve op against the live binary.
+    /// failure — spec §12):
+    ///   1. the engine op's presence,
+    ///   2. the descriptor's own shape + the resolve op against the live binary.
     ///
     /// `decl_json` is a FLATTENED descriptor: the platform-nested details (`signatures[name][platform]`
     /// / `target[platform]`) have already been lifted into `target` by `flatten_decl`.
     ///
-    /// `permission_exempt` skips check (1) for FIRST-PARTY RUNTIME descriptors (the game package —
-    /// see `RESERVED_OWNER_PREFIX`). It is a parameter rather than something derived from
-    /// `plugin_id`, so the exemption travels with the CALL SITE that is entitled to it and a
-    /// spoofed id can never pick it up.
     pub(crate) fn register(
         &mut self,
         plugin_id: &str,
         call_name: &str,
         decl_json: &str,
         ops_available: bool,
-        permission_exempt: bool,
     ) {
-        match prepare(plugin_id, decl_json, ops_available, permission_exempt) {
+        match prepare(decl_json, ops_available) {
             Ok(plan) => {
                 // An `unsafe`-capability call reaching a real engine function is worth one audit line.
                 crate::v8host::log_warn(&format!(
@@ -292,27 +279,13 @@ impl CallRegistry {
 }
 
 /// Validate + resolve one flattened descriptor. Returns the plan, or the named degrade reason.
-fn prepare(
-    plugin_id: &str,
-    decl_json: &str,
-    ops_available: bool,
-    permission_exempt: bool,
-) -> Result<InvokePlan, String> {
-    // (1) Authorization (spec §6). Declaration in the manifest is necessary but NOT sufficient: the
-    // operator's allow-list decides, and an unloaded/absent allow-list denies everything.
-    // First-party runtime descriptors (the game package) are exempt — see `RESERVED_OWNER_PREFIX`.
-    if !permission_exempt && !crate::loader::permission_allowed(plugin_id, PERMISSION) {
-        return Err(format!(
-            "not permitted by the operator allow-list (add \"{}\" under \"{}\" in configs/permissions.json)",
-            plugin_id, PERMISSION
-        ));
-    }
-    // (2) The engine op itself (no shim / an older shim → every descriptor degrades, plugin loads).
+fn prepare(decl_json: &str, ops_available: bool) -> Result<InvokePlan, String> {
+    // (1) The engine op itself (no shim / an older shim → every descriptor degrades, plugin loads).
     if !ops_available {
         return Err("engine op unavailable".to_string());
     }
 
-    // (3) Shape, then the live resolve.
+    // (2) Shape, then the live resolve.
     let decl: serde_json::Value =
         serde_json::from_str(decl_json).map_err(|e| format!("malformed descriptor: {}", e))?;
 
@@ -531,8 +504,8 @@ thread_local! {
 /// Degrade-never-crash: a malformed member WARNs once and registers nothing (every call then reports
 /// "not declared"); a gamedata with no `calls` section is the normal case and does nothing.
 pub(crate) fn register_plugin(plugin_id: &str, gamedata_json: &str) {
-    // A `.s2sp` may never register under a reserved owner id: that identity is permission-exempt,
-    // and its descriptors are the game package's. `loader::read_s2sp` refuses such a manifest
+    // A `.s2sp` may never register under a reserved owner id: that identity and its descriptors
+    // are the game package's. `loader::read_s2sp` refuses such a manifest
     // outright, so reaching here means either a new load path that skipped that door or a direct
     // caller — both worth a loud line and a refusal rather than a silent privilege grant.
     if is_reserved_owner(plugin_id) {
@@ -543,7 +516,7 @@ pub(crate) fn register_plugin(plugin_id: &str, gamedata_json: &str) {
         ));
         return;
     }
-    register_owner(plugin_id, gamedata_json, /*permission_exempt=*/ false);
+    register_owner(plugin_id, gamedata_json);
 }
 
 /// Compatibility registration for internal descriptor tests. Production stages both namespaces
@@ -563,7 +536,7 @@ pub(crate) fn register_game_package(package: &str, gamedata_json: &str) {
     if gamedata_json.trim().is_empty() {
         return;
     }
-    register_owner(&owner, gamedata_json, /*permission_exempt=*/ true);
+    register_owner(&owner, gamedata_json);
 }
 
 /// The reserved owner id the game-package-scoped natives key on, or `None` if no game package has
@@ -573,7 +546,7 @@ pub(crate) fn game_package_owner() -> Option<String> {
 }
 
 /// The shared body of both registration entry points: parse, flatten, register each named entry.
-fn register_owner(owner_id: &str, gamedata_json: &str, permission_exempt: bool) {
+fn register_owner(owner_id: &str, gamedata_json: &str) {
     let gd: serde_json::Value = match serde_json::from_str(gamedata_json) {
         Ok(v) => v,
         Err(e) => {
@@ -584,13 +557,12 @@ fn register_owner(owner_id: &str, gamedata_json: &str, permission_exempt: bool) 
             return;
         }
     };
-    REGISTRY.with(|r| fill_owner(&mut r.borrow_mut(), owner_id, &gd, permission_exempt));
+    REGISTRY.with(|r| fill_owner(&mut r.borrow_mut(), owner_id, &gd));
 }
 fn fill_owner(
     registry: &mut CallRegistry,
     owner_id: &str,
     gd: &serde_json::Value,
-    permission_exempt: bool,
 ) {
     let Some(calls) = gd.get("calls").and_then(|v| v.as_object()) else {
         return;
@@ -605,7 +577,7 @@ fn fill_owner(
     names.sort();
     for name in names {
         match flatten_decl(&calls[name], signatures) {
-            Ok(decl) => registry.register(owner_id, name, &decl, ops_available, permission_exempt),
+            Ok(decl) => registry.register(owner_id, name, &decl, ops_available),
             Err(reason) => registry.degrade(owner_id, name, &reason),
         }
     }
@@ -613,7 +585,7 @@ fn fill_owner(
 
 pub(crate) fn prepare_game_package(owner: &str, gd: &serde_json::Value) -> CallRegistry {
     let mut staged = CallRegistry::new();
-    fill_owner(&mut staged, owner, gd, true);
+    fill_owner(&mut staged, owner, gd);
     staged
 }
 pub(crate) fn commit_game_package(owner: &str, staged: CallRegistry) {
@@ -669,24 +641,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_degrades_when_permission_denied() {
-        // The allow-list is HOST-GLOBAL and the whole crate's tests share one process (single-
-        // threaded, name-ordered), so a sibling test may already have loaded one. An allow-list that
-        // does not NAME this plugin is the same DENY the never-loaded (default-deny) posture
-        // produces, and is order-independent; `loader::permission_is_default_deny` covers the
-        // never-loaded case itself.
-        crate::loader::load_permissions_from_str(r#"{"engine:calls":[]}"#).unwrap();
-        let mut reg = CallRegistry::new();
-        reg.register("@demo/gd", "ignite", &decl_json(), /*ops_available=*/ true, /*exempt=*/ false);
-        assert!(reg.call_id("@demo/gd", "ignite").is_none());
-        assert!(reg.status("@demo/gd", "ignite").contains("not permitted"));
-    }
-
-    #[test]
     fn registry_degrades_when_ops_absent() {
-        crate::loader::load_permissions_from_str(r#"{"engine:calls":["@demo/gd"]}"#).unwrap();
         let mut reg = CallRegistry::new();
-        reg.register("@demo/gd", "ignite", &decl_json(), /*ops_available=*/ false, /*exempt=*/ false);
+        reg.register("@demo/gd", "ignite", &decl_json(), /*ops_available=*/ false);
         assert!(reg.call_id("@demo/gd", "ignite").is_none());
         assert_eq!(reg.status("@demo/gd", "ignite"), "engine op unavailable");
     }
@@ -699,9 +656,8 @@ mod tests {
 
     #[test]
     fn unload_drops_a_plugins_descriptors() {
-        crate::loader::load_permissions_from_str(r#"{"engine:calls":["@demo/gd"]}"#).unwrap();
         let mut reg = CallRegistry::new();
-        reg.register("@demo/gd", "ignite", &decl_json(), true, false);
+        reg.register("@demo/gd", "ignite", &decl_json(), true);
         reg.drop_plugin("@demo/gd");
         assert!(reg.status("@demo/gd", "ignite").contains("not declared"));
     }
@@ -814,17 +770,16 @@ mod tests {
     /// SDK already fails the build on them (an older or hand-rolled `.s2sp` must not slip through).
     #[test]
     fn out_of_vocabulary_and_over_budget_descriptors_are_named() {
-        crate::loader::load_permissions_from_str(r#"{"engine:calls":["@demo/gd"]}"#).unwrap();
         let mut reg = CallRegistry::new();
 
         let bad_arg = r#"{"receiver":{"kind":"entity"},"target":{"kind":"signature","pattern":"55"},
                           "args":["double"],"returns":"void"}"#;
-        reg.register("@demo/gd", "badArg", bad_arg, true, false);
+        reg.register("@demo/gd", "badArg", bad_arg, true);
         assert!(reg.status("@demo/gd", "badArg").contains("unknown arg kind"));
 
         let bad_ret = r#"{"receiver":{"kind":"entity"},"target":{"kind":"signature","pattern":"55"},
                           "args":[],"returns":"string"}"#;
-        reg.register("@demo/gd", "badRet", bad_ret, true, false);
+        reg.register("@demo/gd", "badRet", bad_ret, true);
         assert!(reg.status("@demo/gd", "badRet").contains("unknown return kind"));
 
         // Ten integer-class args: one past the 9-arg budget. Six used to be over-budget, back when
@@ -832,34 +787,33 @@ mod tests {
         let too_many = r#"{"receiver":{"kind":"entity"},"target":{"kind":"signature","pattern":"55"},
                            "args":["int","int","int","int","int","int","int","int","int","int"],
                            "returns":"void"}"#;
-        reg.register("@demo/gd", "tooMany", too_many, true, false);
+        reg.register("@demo/gd", "tooMany", too_many, true);
         assert!(reg.status("@demo/gd", "tooMany").contains("too many integer-class args"));
 
         // `none` is a SUPPORTED kind now — a static/free function with no receiver.
         let static_via = r#"{"receiver":{"kind":"none","via":{"class":"C","field":"m_f"}},
                              "target":{"kind":"signature","pattern":"55"},"args":[],"returns":"void"}"#;
-        reg.register("@demo/gd", "staticVia", static_via, true, false);
+        reg.register("@demo/gd", "staticVia", static_via, true);
         assert!(reg.status("@demo/gd", "staticVia").contains("cannot carry a 'via'"));
 
         let bad_receiver = r#"{"receiver":{"kind":"interface"},"target":{"kind":"signature","pattern":"55"},
                                "args":[],"returns":"void"}"#;
-        reg.register("@demo/gd", "badRecv", bad_receiver, true, false);
+        reg.register("@demo/gd", "badRecv", bad_receiver, true);
         assert!(reg.status("@demo/gd", "badRecv").contains("unsupported receiver kind"));
 
-        reg.register("@demo/gd", "malformed", "{not json", true, false);
+        reg.register("@demo/gd", "malformed", "{not json", true);
         assert!(reg.status("@demo/gd", "malformed").contains("malformed descriptor"));
     }
 
     /// `drop_plugin` drops ONLY the named plugin's descriptors.
     #[test]
     fn drop_plugin_leaves_other_plugins_alone() {
-        crate::loader::load_permissions_from_str(r#"{"engine:calls":[]}"#).unwrap();
         let mut reg = CallRegistry::new();
-        reg.register("@demo/a", "x", &decl_json(), true, false);
-        reg.register("@demo/b", "x", &decl_json(), true, false);
+        reg.register("@demo/a", "x", &decl_json(), true);
+        reg.register("@demo/b", "x", &decl_json(), true);
         reg.drop_plugin("@demo/a");
         assert!(reg.status("@demo/a", "x").contains("not declared"));
-        assert!(reg.status("@demo/b", "x").contains("not permitted"));
+        assert!(!reg.status("@demo/b", "x").contains("not declared"));
     }
 
     fn decl_json() -> String {
@@ -884,41 +838,21 @@ mod tests {
         )
     }
 
-    /// THE point of the reserved owner: the game package's descriptors register without any
-    /// `engine:calls` allow-list entry. Asserted through the GATE ORDER rather than a fake engine
-    /// op — permission is check (1) and the op is check (2), so "engine op unavailable" can only
-    /// be reached by a descriptor that already passed the allow-list.
+    /// The game package's descriptors register under the reserved owner id.
     #[test]
-    fn game_package_descriptors_bypass_the_engine_calls_allow_list() {
-        // An allow-list that names nobody: the same DENY a never-loaded (default-deny) one gives.
-        crate::loader::load_permissions_from_str(r#"{"engine:calls":[]}"#).unwrap();
+    fn game_package_descriptors_register_under_the_reserved_owner() {
         register_game_package("@demo/bypass", &merged_owner_gamedata("doThing"));
         let owner = reserved_owner_id("@demo/bypass");
         let st = status(&owner, "doThing");
-        assert!(!st.contains("not permitted"), "the allow-list must not gate the runtime: {st}");
         assert!(!st.contains("not declared"), "the descriptor must be registered: {st}");
         assert_eq!(game_package_owner().as_deref(), Some(owner.as_str()));
         drop_plugin(&owner);
     }
 
-    /// The same descriptor set arriving as a PLUGIN's is still gated — the exemption belongs to the
-    /// registration entry point, not to the descriptor shape.
-    #[test]
-    fn the_same_descriptors_from_a_plugin_are_still_allow_listed() {
-        crate::loader::load_permissions_from_str(r#"{"engine:calls":[]}"#).unwrap();
-        register_plugin("@demo/plain", &merged_owner_gamedata("doThing"));
-        assert!(
-            status("@demo/plain", "doThing").contains("not permitted"),
-            "a plugin's declared call must still need the operator allow-list"
-        );
-        drop_plugin("@demo/plain");
-    }
-
-    /// A `.s2sp` must never hold the permission-exempt identity. `loader::read_s2sp` refuses such a
+    /// A `.s2sp` must never hold the game package's identity. `loader::read_s2sp` refuses such a
     /// manifest at the door; this is the second, independent latch on the registration itself.
     #[test]
     fn a_plugin_cannot_register_under_the_reserved_owner_id() {
-        crate::loader::load_permissions_from_str(r#"{"engine:calls":[]}"#).unwrap();
         let spoofed = reserved_owner_id("@demo/spoof");
         register_plugin(&spoofed, &merged_owner_gamedata("doThing"));
         assert_eq!(
@@ -943,7 +877,6 @@ mod tests {
     /// survive as a live callable from the previous load.
     #[test]
     fn re_registering_the_game_package_replaces_the_previous_view() {
-        crate::loader::load_permissions_from_str(r#"{"engine:calls":[]}"#).unwrap();
         register_game_package("@demo/replace", &merged_owner_gamedata("first"));
         register_game_package("@demo/replace", &merged_owner_gamedata("second"));
         let owner = reserved_owner_id("@demo/replace");

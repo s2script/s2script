@@ -27,11 +27,8 @@ const RESERVED_CALL_NAMES = new Set(["constructor", "prototype", "__proto__"]);
 const RESOLVE_KINDS = ["direct", "ctor-body-xref", "lea-disp", "validated-call"] as const;
 
 /**
- * Permissions the runtime understands. Closed for the same reason as RESOLVE_KINDS.
- *
- * `engine:hooks` is separate from `engine:calls`: an operator who granted outbound calls has not
- * granted inbound detours. Core already enforces this; the build list must match so a typo is a
- * build error rather than a permission the runtime silently ignores.
+ * The capability labels a manifest may carry. The build derives them from the gamedata, so an
+ * author never has to write one; an authored value is still checked so a typo fails the build.
  */
 const KNOWN_PERMISSIONS = ["engine:calls", "engine:hooks"] as const;
 
@@ -66,7 +63,7 @@ export function validatePluginGamedata(gd: unknown, opts: { permissions: string[
     }
   }
 
-  // Declared permissions are part of the manifest contract, so a typo here silently grants nothing.
+  // An authored label that is not one of these is a typo.
   for (const perm of opts.permissions) {
     if (!(KNOWN_PERMISSIONS as readonly string[]).includes(perm)) {
       errs.push(`unknown permission ${JSON.stringify(perm)} (allowed: ${KNOWN_PERMISSIONS.join(", ")})`);
@@ -75,9 +72,6 @@ export function validatePluginGamedata(gd: unknown, opts: { permissions: string[
 
   const calls = (g.calls ?? {}) as Record<string, unknown>;
   const callNames = Object.keys(calls);
-  if (callNames.length && !opts.permissions.includes("engine:calls")) {
-    errs.push('gamedata declares a `calls` section but the manifest does not declare permission "engine:calls"');
-  }
 
   for (const [name, rawDecl] of Object.entries(calls)) {
     const where = `call '${name}'`;
@@ -200,7 +194,7 @@ export function validatePluginGamedata(gd: unknown, opts: { permissions: string[
     }
   }
 
-  validateHooks(g, sigs, callNames, opts.permissions, errs);
+  validateHooks(g, sigs, callNames, errs);
   return errs;
 }
 
@@ -213,7 +207,6 @@ function validateHooks(
   g: Record<string, unknown>,
   sigs: Record<string, Record<string, unknown>>,
   callNames: string[],
-  permissions: string[],
   errs: string[],
 ): void {
   if (g.hooks === undefined) return;
@@ -222,11 +215,6 @@ function validateHooks(
     return;
   }
   const hooks = g.hooks as Record<string, unknown>;
-  const hookNames = Object.keys(hooks);
-  if (hookNames.length && !permissions.includes("engine:hooks")) {
-    errs.push('gamedata declares a `hooks` section but the manifest does not declare permission "engine:hooks"');
-  }
-
   for (const [name, rawDecl] of Object.entries(hooks)) {
     const where = `hook '${name}'`;
 
