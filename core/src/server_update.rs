@@ -13,7 +13,7 @@
 //! was and the server loads what it has. Only files the lock owns are ever pruned, and only when
 //! they still hold the bytes the lock recorded.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -33,6 +33,8 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const LOCKFILE_VERSION: u64 = 3;
 const PLUGINS_SUBDIR: &str = "plugins";
 const STAGE_SUFFIX: &str = ".s2s-tmp";
+/// Where a disabled plugin's file lives: the loader's scan is non-recursive, so it never loads it.
+const DISABLED_SUBDIR: &str = "disabled";
 /// Not `package.json`: npm must never treat the addon folder as a Node project.
 const MANIFEST_FILE: &str = "plugins.json";
 const LOCK_FILE: &str = "plugins-lock.json";
@@ -46,6 +48,8 @@ pub(crate) struct ServerManifest {
     pub name: String,
     pub dependencies: BTreeMap<String, String>,
     pub with: BTreeMap<String, Vec<String>>,
+    /// Dependencies kept in plugins/disabled/: installed and updated, never loaded.
+    pub disabled: BTreeSet<String>,
     pub auto_update: bool,
     pub reviewed_only: bool,
     pub registry: Option<String>,
@@ -82,6 +86,16 @@ pub(crate) fn parse_manifest(text: &str, fallback_name: &str) -> Result<ServerMa
             with.insert(bundle.clone(), names);
         }
     }
+    let mut disabled = BTreeSet::new();
+    if let Some(d) = s2.get("disabled") {
+        for v in d.as_array().ok_or("plugins.json: \"disabled\" must be an array of plugin names")? {
+            let name = v.as_str().ok_or("plugins.json: \"disabled\" must hold names")?;
+            if !dependencies.contains_key(name) {
+                return Err(format!("plugins.json: \"disabled\" names {name}, which is not in dependencies"));
+            }
+            disabled.insert(name.to_string());
+        }
+    }
     let timeout_secs = s2
         .get("updateTimeoutSeconds")
         .and_then(Value::as_u64)
@@ -91,6 +105,7 @@ pub(crate) fn parse_manifest(text: &str, fallback_name: &str) -> Result<ServerMa
         name: j.get("name").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or(fallback_name).to_string(),
         dependencies,
         with,
+        disabled,
         auto_update: s2.get("autoUpdate").and_then(Value::as_bool) != Some(false),
         reviewed_only: s2.get("reviewedOnly").and_then(Value::as_bool) == Some(true),
         registry: s2.get("registry").and_then(Value::as_str).map(str::to_string),
@@ -116,7 +131,8 @@ pub(crate) struct Lock {
     pub root_name: String,
     pub dependencies: BTreeMap<String, String>,
     pub with: BTreeMap<String, Vec<String>>,
-    /// Install path (`plugins/<file>`) → plugin.
+    pub disabled: BTreeSet<String>,
+    /// Install path (`plugins/<file>` or `plugins/disabled/<file>`) → plugin.
     pub plugins: BTreeMap<String, LockedPlugin>,
 }
 
@@ -141,10 +157,14 @@ pub(crate) fn parse_lock(text: &str) -> Result<Lock, String> {
                     lock.with.insert(k.clone(), names);
                 }
             }
+            if let Some(d) = raw.get("disabled").and_then(Value::as_array) {
+                lock.disabled = d.iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
+            }
             continue;
         }
         let field = |f: &str| raw.get(f).and_then(Value::as_str).map(str::to_string);
-        match (key.strip_prefix("plugins/"), field("name"), field("version"), field("resolved"), field("integrity")) {
+        let file = key.strip_prefix("plugins/").map(|f| f.strip_prefix("disabled/").unwrap_or(f));
+        match (file, field("name"), field("version"), field("resolved"), field("integrity")) {
             (Some(file), Some(name), Some(version), Some(resolved), Some(integrity)) if safe_filename(file) => {
                 lock.plugins.insert(key.clone(), LockedPlugin { name, version, resolved, integrity });
             }
@@ -164,6 +184,8 @@ impl Serialize for Packages<'_> {
             dependencies: &'a BTreeMap<String, String>,
             #[serde(skip_serializing_if = "Option::is_none")]
             with: Option<&'a BTreeMap<String, Vec<String>>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            disabled: Option<&'a BTreeSet<String>>,
         }
         let lock = self.0;
         let mut m = s.serialize_map(Some(lock.plugins.len() + 1))?;
@@ -173,6 +195,7 @@ impl Serialize for Packages<'_> {
                 name: &lock.root_name,
                 dependencies: &lock.dependencies,
                 with: (!lock.with.is_empty()).then_some(&lock.with),
+                disabled: (!lock.disabled.is_empty()).then_some(&lock.disabled),
             },
         )?;
         for (k, v) in &lock.plugins {
@@ -272,6 +295,15 @@ pub(crate) struct Target {
     pub filename: String,
     pub url: String,
     pub sha256: String,
+    /// Every dependency that pulls this plugin in is disabled, so its file goes to disabled/.
+    pub disabled: bool,
+}
+
+impl Target {
+    /// The file's path under plugins/.
+    fn rel(&self) -> String {
+        if self.disabled { format!("{DISABLED_SUBDIR}/{}", self.filename) } else { self.filename.clone() }
+    }
 }
 
 /// GET `url` (with the registry token when `auth`) → (status, body). Injectable for tests.
@@ -305,6 +337,7 @@ fn error_detail(body: &[u8]) -> String {
 pub(crate) async fn resolve_targets(manifest: &ServerManifest, registry: &str, get: &Get) -> Result<Vec<Target>, String> {
     let mut chosen: BTreeMap<String, (Target, String)> = BTreeMap::new();
     for (name, range) in &manifest.dependencies {
+        let root_disabled = manifest.disabled.contains(name);
         let (status, body) = get(plan_url(registry, name, range, manifest.with.get(name)), true).await?;
         if status != 200 {
             return Err(format!("plan {name}@{range}: HTTP {status}: {}", error_detail(&body)));
@@ -327,13 +360,15 @@ pub(crate) async fn resolve_targets(manifest: &ServerManifest, registry: &str, g
             if manifest.reviewed_only && review != "reviewed" {
                 return Err(format!("reviewedOnly: refusing unreviewed plugin {n}@{version}"));
             }
-            if let Some((prior, _)) = chosen.get(&n) {
+            if let Some((prior, _)) = chosen.get_mut(&n) {
                 if prior.version != version {
                     return Err(format!("version conflict for {n}: {} vs {version}", prior.version));
                 }
+                // A plugin is enabled when ANY dependency that needs it is.
+                prior.disabled &= root_disabled;
                 continue;
             }
-            chosen.insert(n.clone(), (Target { name: n, version, filename, url, sha256 }, review));
+            chosen.insert(n.clone(), (Target { name: n, version, filename, url, sha256, disabled: root_disabled }, review));
         }
     }
     let mut out: Vec<Target> = chosen.into_values().map(|(t, _)| t).collect();
@@ -350,18 +385,28 @@ pub(crate) async fn resolve_targets(manifest: &ServerManifest, registry: &str, g
 // Stage / commit
 // ---------------------------------------------------------------------------------------------
 
+/// One rename the commit performs: a verified download into place, or an installed file moved
+/// between plugins/ and plugins/disabled/ (enable / disable — no download).
+struct Rename {
+    from: PathBuf,
+    to: PathBuf,
+    /// "installed …" / "enabled …" / "disabled …"
+    what: String,
+    /// `from` is a staged temp file (removed on discard), not an installed plugin.
+    staged: bool,
+}
+
 pub(crate) struct Staged {
     root: PathBuf,
-    /// (tmp, dest, "name@version → file")
-    renames: Vec<(PathBuf, PathBuf, String)>,
+    renames: Vec<Rename>,
     pub lock: Lock,
     pub kept: usize,
 }
 
 impl Staged {
     fn discard(&self) {
-        for (tmp, _, _) in &self.renames {
-            let _ = std::fs::remove_file(tmp);
+        for r in self.renames.iter().filter(|r| r.staged) {
+            let _ = std::fs::remove_file(&r.from);
         }
     }
 }
@@ -377,6 +422,7 @@ pub(crate) async fn stage(
     targets: &[Target],
     get: &Get,
     registry_host: Option<&str>,
+    old: Option<&Lock>,
 ) -> Result<Staged, String> {
     let dir = root.join(PLUGINS_SUBDIR);
     let mut staged = Staged {
@@ -387,6 +433,7 @@ pub(crate) async fn stage(
             root_name: manifest.name.clone(),
             dependencies: manifest.dependencies.clone(),
             with: manifest.with.clone(),
+            disabled: manifest.disabled.clone(),
             plugins: BTreeMap::new(),
         },
         kept: 0,
@@ -394,13 +441,24 @@ pub(crate) async fn stage(
     let result: Result<(), String> = async {
         for t in targets {
             let integrity = integrity_from_hex(&t.sha256).ok_or_else(|| format!("{}: bad sha256 {}", t.name, t.sha256))?;
+            let key = format!("{PLUGINS_SUBDIR}/{}", t.rel());
             staged.lock.plugins.insert(
-                format!("{PLUGINS_SUBDIR}/{}", t.filename),
+                key.clone(),
                 LockedPlugin { name: t.name.clone(), version: t.version.clone(), resolved: t.url.clone(), integrity },
             );
-            let dest = dir.join(&t.filename);
+            let dest = dir.join(t.rel());
             if file_sha(&dest).as_deref() == Some(t.sha256.as_str()) {
                 staged.kept += 1;
+                continue;
+            }
+            // Enabled or disabled since the last lock: move the installed file, no download.
+            let moved_from = old.into_iter().flat_map(|l| &l.plugins).find_map(|(k, p)| {
+                let from = root.join(k);
+                (k != &key && p.name == t.name && file_sha(&from).as_deref() == Some(t.sha256.as_str())).then_some(from)
+            });
+            if let Some(from) = moved_from {
+                let verb = if t.disabled { "disabled" } else { "enabled" };
+                staged.renames.push(Rename { from, to: dest, what: format!("{verb} {}@{}", t.name, t.version), staged: false });
                 continue;
             }
             // The token goes only to the registry's own host; a redirect to the CDN drops it.
@@ -416,10 +474,16 @@ pub(crate) async fn stage(
             if got != t.sha256 {
                 return Err(format!("sha256 mismatch for {}@{}: expected {}, got {got}", t.name, t.version, t.sha256));
             }
-            std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-            let tmp = dir.join(format!("{}{STAGE_SUFFIX}", t.filename));
+            let parent = dest.parent().unwrap_or(&dir).to_path_buf();
+            std::fs::create_dir_all(&parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+            let tmp = parent.join(format!("{}{STAGE_SUFFIX}", t.filename));
             std::fs::write(&tmp, &bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
-            staged.renames.push((tmp, dest, format!("{}@{} -> {}", t.name, t.version, t.filename)));
+            staged.renames.push(Rename {
+                from: tmp,
+                to: dest,
+                what: format!("installed {}@{} -> {}", t.name, t.version, t.rel()),
+                staged: true,
+            });
         }
         Ok(())
     }
@@ -437,13 +501,21 @@ pub(crate) async fn stage(
 pub(crate) fn commit(staged: Staged, old: Option<&Lock>) -> Vec<String> {
     let mut log = Vec::new();
     let mut installed = 0;
-    for (tmp, dest, what) in &staged.renames {
-        match std::fs::rename(tmp, dest) {
+    let mut moved = 0;
+    for r in &staged.renames {
+        if let Some(parent) = r.to.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match std::fs::rename(&r.from, &r.to) {
             Ok(()) => {
-                installed += 1;
-                log.push(format!("[update] installed {what}"));
+                if r.staged {
+                    installed += 1;
+                } else {
+                    moved += 1;
+                }
+                log.push(format!("[update] {}", r.what));
             }
-            Err(e) => log.push(format!("WARN: [update] could not install {what}: {e}")),
+            Err(e) => log.push(format!("WARN: [update] could not finish \"{}\": {e}", r.what)),
         }
     }
     let mut removed = 0;
@@ -470,7 +542,8 @@ pub(crate) fn commit(staged: Staged, old: Option<&Lock>) -> Vec<String> {
             log.push(format!("WARN: [update] could not write {LOCK_FILE}: {e}"));
         }
     }
-    log.push(format!("[update] plugins: {installed} installed, {} up to date, {removed} removed", staged.kept));
+    let moved = if moved > 0 { format!(", {moved} enabled/disabled") } else { String::new() };
+    log.push(format!("[update] plugins: {installed} installed, {} up to date, {removed} removed{moved}", staged.kept));
     log
 }
 
@@ -555,7 +628,7 @@ async fn run(cfg: UpdateConfig, get: Get, phase: Arc<Mutex<Phase>>) {
     let host = url_host(&cfg.registry);
     let outcome = async {
         let targets = resolve_targets(&cfg.manifest, &cfg.registry, &get).await?;
-        stage(&cfg.root, &cfg.manifest, &targets, &get, host.as_deref()).await
+        stage(&cfg.root, &cfg.manifest, &targets, &get, host.as_deref(), cfg.lock.as_ref()).await
     }
     .await;
     let staged = match outcome {
@@ -641,8 +714,12 @@ pub(crate) fn holds_first_scan() -> bool {
 /// One console request, as basecommands sends it: `{"op":"install","names":[...],"with":[...]}`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Op {
-    /// Add (or re-range) `names` (`name` or `name@range`); `with` = optional bundle members.
-    Install { names: Vec<String>, with: Vec<String> },
+    /// Add (or re-range) `names` (`name` or `name@range`); `with` = optional bundle members;
+    /// `disabled` = install into plugins/disabled/ so they never load until enabled.
+    Install { names: Vec<String>, with: Vec<String>, disabled: bool },
+    /// Move installed plugins out of / into plugins/disabled/ (and record it in plugins.json).
+    Enable { names: Vec<String> },
+    Disable { names: Vec<String> },
     /// Move `names` (all when empty) to the newest version their range allows.
     Update { names: Vec<String> },
     /// Drop `names` from plugins.json; their files are pruned.
@@ -657,7 +734,13 @@ pub(crate) fn parse_op(json: &str) -> Result<Op, String> {
         j.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default()
     };
     match j.get("op").and_then(Value::as_str) {
-        Some("install") => Ok(Op::Install { names: list("names"), with: list("with") }),
+        Some("install") => Ok(Op::Install {
+            names: list("names"),
+            with: list("with"),
+            disabled: j.get("disabled").and_then(Value::as_bool) == Some(true),
+        }),
+        Some("enable") => Ok(Op::Enable { names: list("names") }),
+        Some("disable") => Ok(Op::Disable { names: list("names") }),
         Some("update") => Ok(Op::Update { names: list("names") }),
         Some("remove") => Ok(Op::Remove { names: list("names") }),
         Some("outdated") => Ok(Op::Outdated),
@@ -716,9 +799,14 @@ fn write_manifest(root: &Path, manifest: &ServerManifest) -> Result<(), String> 
     } else {
         raw.insert("with".into(), serde_json::to_value(&manifest.with).unwrap());
     }
+    if manifest.disabled.is_empty() {
+        raw.remove("disabled");
+    } else {
+        raw.insert("disabled".into(), serde_json::to_value(&manifest.disabled).unwrap());
+    }
     raw.entry("autoUpdate").or_insert(Value::Bool(true));
     // Known keys first, in the order the docs show them; anything else after, as found.
-    let order = ["name", "dependencies", "with", "autoUpdate", "reviewedOnly", "updateTimeoutSeconds", "registry"];
+    let order = ["name", "dependencies", "with", "disabled", "autoUpdate", "reviewedOnly", "updateTimeoutSeconds", "registry"];
     let mut out = String::from("{\n");
     let mut entries: Vec<(&String, &Value)> = order.iter().filter_map(|k| raw.get_key_value(*k)).collect();
     entries.extend(raw.iter().filter(|(k, _)| !order.contains(&k.as_str())));
@@ -774,7 +862,7 @@ pub(crate) async fn run_op(root: &Path, op: Op, env_registry: Option<String>, ge
 
     let mut bare = Vec::new();
     let changed: Vec<String> = match &op {
-        Op::Install { names, with } => {
+        Op::Install { names, with, disabled } => {
             if names.is_empty() {
                 return Err("usage: sm plugins install <name>[@range] [...]".into());
             }
@@ -791,6 +879,10 @@ pub(crate) async fn run_op(root: &Path, op: Op, env_registry: Option<String>, ge
                 if !with.is_empty() {
                     manifest.with.insert(name.clone(), with.clone());
                 }
+                // --disabled puts it in plugins/disabled/; a plain install keeps whatever it was.
+                if *disabled {
+                    manifest.disabled.insert(name.clone());
+                }
                 out.push(name);
             }
             out
@@ -803,6 +895,23 @@ pub(crate) async fn run_op(root: &Path, op: Op, env_registry: Option<String>, ge
             }
             if names.is_empty() { manifest.dependencies.keys().cloned().collect() } else { names.clone() }
         }
+        Op::Enable { names } | Op::Disable { names } => {
+            if names.is_empty() {
+                return Err(format!("usage: sm plugins {} <name> [...]", if matches!(op, Op::Enable { .. }) { "enable" } else { "disable" }));
+            }
+            for n in names {
+                if !manifest.dependencies.contains_key(n) {
+                    return Err(format!("{n} is not in {MANIFEST_FILE}"));
+                }
+                if matches!(op, Op::Enable { .. }) {
+                    manifest.disabled.remove(n);
+                } else {
+                    manifest.disabled.insert(n.clone());
+                }
+            }
+            // Everything stays at its locked version; only the folders change.
+            Vec::new()
+        }
         Op::Remove { names } => {
             if names.is_empty() {
                 return Err("usage: sm plugins remove <name> [...]".into());
@@ -812,6 +921,7 @@ pub(crate) async fn run_op(root: &Path, op: Op, env_registry: Option<String>, ge
                     return Err(format!("{n} is not in {MANIFEST_FILE}"));
                 }
                 manifest.with.remove(n);
+                manifest.disabled.remove(n);
             }
             Vec::new()
         }
@@ -828,7 +938,7 @@ pub(crate) async fn run_op(root: &Path, op: Op, env_registry: Option<String>, ge
         }
     }
     let host = url_host(&registry);
-    let staged = stage(root, &manifest, &targets, get, host.as_deref()).await?;
+    let staged = stage(root, &manifest, &targets, get, host.as_deref(), lock.as_ref()).await?;
     let mut log = commit(staged, lock.as_ref());
     if !matches!(op, Op::Update { .. }) {
         write_manifest(root, &manifest)?;
@@ -962,6 +1072,7 @@ mod tests {
             name: "test-server".into(),
             dependencies: deps.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect(),
             with: BTreeMap::new(),
+            disabled: BTreeSet::new(),
             auto_update: true,
             reviewed_only: false,
             registry: None,
@@ -1078,8 +1189,9 @@ mod tests {
             filename: "_edge_x.s2sp".into(),
             url: "https://cdn.other.test/x.s2sp".into(),
             sha256: sha256_hex(&body("@edge/x", "1.0.0")),
+            disabled: false,
         };
-        let staged = rt().block_on(stage(&root, &m, &[t], &get, Some("reg.test"))).unwrap();
+        let staged = rt().block_on(stage(&root, &m, &[t], &get, Some("reg.test"), None)).unwrap();
         staged.discard();
     }
 
@@ -1179,7 +1291,7 @@ mod tests {
     fn console_install_creates_plugins_json_and_records_a_caret_range() {
         let root = tmpdir("c-install");
         let get = fake_with_resolve(HashMap::from([("@edge/rtv", vec!["1.0.0", "1.2.0"])]));
-        let lines = op(&root, Op::Install { names: vec!["@edge/rtv".into()], with: vec![] }, &get).unwrap();
+        let lines = op(&root, Op::Install { names: vec!["@edge/rtv".into()], with: vec![], disabled: false }, &get).unwrap();
         assert!(lines.iter().any(|l| l == "installed @edge/rtv@1.2.0 -> _edge_rtv.s2sp"), "{lines:?}");
         assert_eq!(deps(&root), BTreeMap::from([("@edge/rtv".into(), "^1.2.0".into())]));
         let lock = parse_lock(&std::fs::read_to_string(root.join(LOCK_FILE)).unwrap()).unwrap();
@@ -1193,9 +1305,9 @@ mod tests {
     #[test]
     fn console_install_keeps_the_other_plugins_at_their_locked_versions() {
         let root = tmpdir("c-pin");
-        op(&root, Op::Install { names: vec!["@edge/rtv@^1.0.0".into()], with: vec![] }, &fake_with_resolve(HashMap::from([("@edge/rtv", vec!["1.0.0"])]))).unwrap();
+        op(&root, Op::Install { names: vec!["@edge/rtv@^1.0.0".into()], with: vec![], disabled: false }, &fake_with_resolve(HashMap::from([("@edge/rtv", vec!["1.0.0"])]))).unwrap();
         let later = fake_with_resolve(HashMap::from([("@edge/rtv", vec!["1.0.0", "1.5.0"]), ("@edge/admin", vec!["3.0.0"])]));
-        op(&root, Op::Install { names: vec!["@edge/admin".into()], with: vec![] }, &later).unwrap();
+        op(&root, Op::Install { names: vec!["@edge/admin".into()], with: vec![], disabled: false }, &later).unwrap();
         assert_eq!(locked_versions(&root), BTreeMap::from([("@edge/admin".into(), "3.0.0".into()), ("@edge/rtv".into(), "1.0.0".into())]));
         // update then moves rtv within its range.
         let lines = op(&root, Op::Update { names: vec![] }, &later).unwrap();
@@ -1207,7 +1319,7 @@ mod tests {
     fn console_remove_drops_the_dependency_and_prunes_its_file() {
         let root = tmpdir("c-remove");
         let get = fake_with_resolve(HashMap::from([("@edge/rtv", vec!["1.0.0"]), ("@edge/admin", vec!["1.0.0"])]));
-        op(&root, Op::Install { names: vec!["@edge/rtv".into(), "@edge/admin".into()], with: vec![] }, &get).unwrap();
+        op(&root, Op::Install { names: vec!["@edge/rtv".into(), "@edge/admin".into()], with: vec![], disabled: false }, &get).unwrap();
         let lines = op(&root, Op::Remove { names: vec!["@edge/admin".into()] }, &get).unwrap();
         assert!(lines.iter().any(|l| l.starts_with("removed @edge/admin@1.0.0")), "{lines:?}");
         assert!(!root.join("plugins/_edge_admin.s2sp").exists());
@@ -1218,10 +1330,87 @@ mod tests {
     #[test]
     fn console_outdated_reports_current_wanted_latest() {
         let root = tmpdir("c-outdated");
-        op(&root, Op::Install { names: vec!["@edge/rtv@^1.0.0".into()], with: vec![] }, &fake_with_resolve(HashMap::from([("@edge/rtv", vec!["1.0.0"])]))).unwrap();
+        op(&root, Op::Install { names: vec!["@edge/rtv@^1.0.0".into()], with: vec![], disabled: false }, &fake_with_resolve(HashMap::from([("@edge/rtv", vec!["1.0.0"])]))).unwrap();
         let lines = op(&root, Op::Outdated, &fake_with_resolve(HashMap::from([("@edge/rtv", vec!["1.0.0", "1.3.0", "2.0.0"])]))).unwrap();
         assert!(lines[1].split_whitespace().eq(["@edge/rtv", "1.0.0", "1.3.0", "2.0.0"]), "{lines:?}");
         assert!(op(&tmpdir("c-none"), Op::Outdated, &fake_with_resolve(HashMap::new())).unwrap_err().contains("no plugins.json"));
+    }
+
+    fn ls(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir).map(|r| r.map(|e| e.unwrap().file_name().into_string().unwrap()).collect()).unwrap_or_default();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn install_disabled_lands_in_the_disabled_folder_and_enable_moves_it_without_downloading() {
+        let root = tmpdir("c-disabled");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let plain = fake_get(Fake { published: HashMap::from([("@edge/rtv", vec!["1.0.0"])]), bad_download: None }, calls.clone());
+        let get: Get = {
+            let resolve = fake_with_resolve(HashMap::from([("@edge/rtv", vec!["1.0.0"])]));
+            Arc::new(move |url: String, auth: bool| if url.contains("/resolve") { resolve(url, auth) } else { plain(url, auth) })
+        };
+        let lines = op(&root, Op::Install { names: vec!["@edge/rtv".into()], with: vec![], disabled: true }, &get).unwrap();
+        assert!(lines.iter().any(|l| l == "installed @edge/rtv@1.0.0 -> disabled/_edge_rtv.s2sp"), "{lines:?}");
+        assert_eq!(ls(&root.join("plugins")), ["disabled"]);
+        assert_eq!(ls(&root.join("plugins/disabled")), ["_edge_rtv.s2sp"]);
+        let m = parse_manifest(&std::fs::read_to_string(root.join(MANIFEST_FILE)).unwrap(), "x").unwrap();
+        assert!(m.disabled.contains("@edge/rtv"));
+        let lock = parse_lock(&std::fs::read_to_string(root.join(LOCK_FILE)).unwrap()).unwrap();
+        assert!(lock.plugins.contains_key("plugins/disabled/_edge_rtv.s2sp"));
+        assert!(lock.disabled.contains("@edge/rtv"));
+
+        let downloads = |c: &Arc<Mutex<Vec<(String, bool)>>>| c.lock().unwrap().iter().filter(|(u, _)| u.contains("/download/")).count();
+        let before = downloads(&calls);
+        let lines = op(&root, Op::Enable { names: vec!["@edge/rtv".into()] }, &get).unwrap();
+        assert!(lines.iter().any(|l| l == "enabled @edge/rtv@1.0.0"), "{lines:?}");
+        assert_eq!(downloads(&calls), before, "enable moves the installed file; it never downloads");
+        assert_eq!(ls(&root.join("plugins")), ["_edge_rtv.s2sp", "disabled"]);
+        assert!(ls(&root.join("plugins/disabled")).is_empty());
+
+        let lines = op(&root, Op::Disable { names: vec!["@edge/rtv".into()] }, &get).unwrap();
+        assert!(lines.iter().any(|l| l == "disabled @edge/rtv@1.0.0"), "{lines:?}");
+        assert_eq!(ls(&root.join("plugins/disabled")), ["_edge_rtv.s2sp"]);
+        assert!(op(&root, Op::Enable { names: vec!["@edge/nope".into()] }, &get).unwrap_err().contains("not in plugins.json"));
+    }
+
+    #[test]
+    fn a_dependency_stays_enabled_while_any_enabled_plugin_needs_it() {
+        let mut m = manifest(&[("@edge/a", "^1.0.0"), ("@edge/b", "^1.0.0")]);
+        m.disabled.insert("@edge/a".into());
+        // Both pull in @edge/core; only @edge/a is disabled.
+        let get: Get = Arc::new(|url: String, _| {
+            Box::pin(async move {
+                let root = if url.contains("name=%40edge%2Fa") { "@edge/a" } else { "@edge/b" };
+                let entry = |n: &str| serde_json::json!({"name": n, "version": "1.0.0", "filename": file_of(n), "url": "u", "sha256": sha256_hex(&body(n, "1.0.0")), "reviewState": "reviewed"});
+                Ok((200, serde_json::to_vec(&serde_json::json!({"install": [entry(root), entry("@edge/core")], "errors": []})).unwrap()))
+            })
+        });
+        let targets = rt().block_on(resolve_targets(&m, "https://reg.test", &get)).unwrap();
+        let rel: Vec<_> = targets.iter().map(|t| t.rel()).collect();
+        assert_eq!(rel, ["disabled/_edge_a.s2sp", "_edge_b.s2sp", "_edge_core.s2sp"]);
+        m.disabled.insert("@edge/b".into());
+        let targets = rt().block_on(resolve_targets(&m, "https://reg.test", &get)).unwrap();
+        assert!(targets.iter().all(|t| t.disabled), "core follows once every plugin needing it is disabled");
+    }
+
+    #[test]
+    fn the_startup_update_keeps_a_disabled_plugin_current_in_place() {
+        let root = tmpdir("c-disabled-update");
+        let get = fake_with_resolve(HashMap::from([("@edge/rtv", vec!["1.0.0"])]));
+        op(&root, Op::Install { names: vec!["@edge/rtv@^1.0.0".into()], with: vec![], disabled: true }, &get).unwrap();
+        let mut m = parse_manifest(&std::fs::read_to_string(root.join(MANIFEST_FILE)).unwrap(), "x").unwrap();
+        m.timeout = Duration::from_secs(60);
+        update(&root, &m, Fake { published: HashMap::from([("@edge/rtv", vec!["1.0.0", "1.1.0"])]), bad_download: None });
+        assert_eq!(ls(&root.join("plugins")), ["disabled"]);
+        assert_eq!(std::fs::read(root.join("plugins/disabled/_edge_rtv.s2sp")).unwrap(), body("@edge/rtv", "1.1.0"));
+    }
+
+    #[test]
+    fn disabled_must_name_a_dependency() {
+        let err = parse_manifest(r#"{"dependencies":{"a":"^1"},"disabled":["b"]}"#, "x").unwrap_err();
+        assert!(err.contains("\"disabled\" names b"), "{err}");
     }
 
     #[test]

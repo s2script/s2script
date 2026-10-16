@@ -31,6 +31,8 @@ export interface LockRoot {
   dependencies: Record<string, string>;
   /** plugins.json `with` as last resolved (bundle optional members). */
   with?: Record<string, string[]>;
+  /** plugins.json `disabled` as last resolved. */
+  disabled?: string[];
 }
 
 export interface ServerLock {
@@ -71,6 +73,9 @@ export function serializeLock(lock: ServerLock): string {
   if (lock.root.with && Object.keys(lock.root.with).length > 0) {
     root.with = sortedRecord(lock.root.with);
   }
+  if (lock.root.disabled && lock.root.disabled.length > 0) {
+    root.disabled = [...lock.root.disabled].sort();
+  }
   const packages: Record<string, unknown> = { "": root };
   for (const key of Object.keys(lock.plugins).sort()) {
     const p = lock.plugins[key]!;
@@ -101,6 +106,7 @@ export function parseLock(text: string, label = "plugins-lock.json"): ServerLock
     name?: unknown;
     dependencies?: unknown;
     with?: unknown;
+    disabled?: unknown;
   };
   const plugins: Record<string, LockedPlugin> = {};
   for (const [key, raw] of Object.entries(j.packages)) {
@@ -119,12 +125,14 @@ export function parseLock(text: string, label = "plugins-lock.json"): ServerLock
   }
   const deps = rootRaw.dependencies && typeof rootRaw.dependencies === "object" ? rootRaw.dependencies : {};
   const withRaw = rootRaw.with;
+  const disabledRaw = Array.isArray(rootRaw.disabled) ? (rootRaw.disabled as unknown[]).filter((d): d is string => typeof d === "string") : [];
   return {
     name: typeof j.name === "string" ? j.name : "",
     root: {
       name: typeof rootRaw.name === "string" ? rootRaw.name : "",
       dependencies: deps as Record<string, string>,
       ...(withRaw && typeof withRaw === "object" ? { with: withRaw as Record<string, string[]> } : {}),
+      ...(disabledRaw.length > 0 ? { disabled: disabledRaw } : {}),
     },
     plugins,
   };

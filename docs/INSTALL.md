@@ -152,6 +152,15 @@ The console shows what happened (`[update] installed @edge/rtv@1.2.4 -> _edge_rt
 | `updateTimeoutSeconds` | `60`                       | How long plugin loading may wait (5–600).               |
 | `registry`             | `https://www.s2script.com` | Registry URL (`S2SCRIPT_REGISTRY_URL` overrides).       |
 | `with`                 | none                       | Optional members of a bundle to install too.            |
+| `disabled`             | none                       | Plugins kept in `plugins/disabled/`: installed and updated, never loaded. |
+
+**Installed but off.** `s2s install <name> --disabled` (or `sm plugins install <name> --disabled`)
+puts the plugin in `plugins/disabled/`, which the loader never scans, and lists it under
+`"disabled"`. It's still kept current at every startup, so it's ready the moment you turn it on.
+`enable` and `disable` move an installed plugin between the two folders without re-downloading
+it; the loader then loads or unloads it. A dependency goes to `disabled/` only when every plugin
+that needs it is disabled. Use these rather than moving a managed file by hand, since the
+startup update puts managed files back where `plugins.json` says they belong.
 
 Restricted (org-only) plugins need a read-only token from s2script.com → Deploy tokens, given as
 `S2SCRIPT_TOKEN` in the server's environment, or in `addons/s2script/configs/registry.json`:
@@ -168,6 +177,9 @@ sm plugins install @edge/admin@^3.1.0   // at a range
 sm plugins install @edge/jailbreak --with @edge/jailbreak-gangperks
 sm plugins update                       // newest within every range, now
 sm plugins update @edge/rtv
+sm plugins install @edge/rtv --disabled // install into plugins/disabled/: kept current, not loaded
+sm plugins enable @edge/rtv             // move it into plugins/ so it loads (no download)
+sm plugins disable @edge/rtv            // move it back to plugins/disabled/ so it unloads
 sm plugins remove @edge/rtv             // drop it from plugins.json; its file is removed and unloaded
 sm plugins outdated                     // current / wanted / latest for each plugin
 ```
@@ -185,6 +197,8 @@ From a shell, the same files work like npm:
 s2s install                      # install exactly what plugins-lock.json says (no login needed)
 s2s update                       # newest within every range, now, instead of at the next start
 s2s update @edge/rtv --dry-run   # preview one
+s2s install @edge/rtv --disabled # install without loading it
+s2s enable @edge/rtv             # turn it on / s2s disable @edge/rtv to turn it off
 ```
 
 A **bundle** (several plugins published as one, like `@edge/jailbreak`) installs the same way: its

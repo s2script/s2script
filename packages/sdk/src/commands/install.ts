@@ -74,7 +74,7 @@ export async function run(argv: string[]): Promise<void> {
   const root = findAddonRoot(parseFlag(argv, "--server") ?? ".");
   if (!root) {
     console.error(
-      "Usage: s2s install [name[@range]...] [--with <member>] [--server <addons/s2script>] [--dry-run]\n" +
+      "Usage: s2s install [name[@range]...] [--with <member>] [--disabled] [--server <addons/s2script>] [--dry-run]\n" +
         "  Run it from your game directory (csgo/) or addons/s2script, or pass --server.",
     );
     process.exit(1);
@@ -87,6 +87,14 @@ export async function run(argv: string[]): Promise<void> {
       writeFileSync(join(root, SERVER_MANIFEST), JSON.stringify(fresh, null, 2) + "\n");
       console.log(`created ${join(root, SERVER_MANIFEST)}`);
     }
-    return serverInstall({ root, client: serverClient(argv), specs: names, with: withMembers, dryRun, log: console.log });
+    return serverInstall({
+      root,
+      client: serverClient(argv),
+      specs: names,
+      with: withMembers,
+      disabled: hasFlag(argv, "--disabled"),
+      dryRun,
+      log: console.log,
+    });
   }, dryRun);
 }

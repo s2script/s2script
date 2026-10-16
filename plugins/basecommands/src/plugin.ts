@@ -169,28 +169,34 @@ function cvar(cmd: Command): HookResultValue {
 }
 
 /**
- * `sm plugins install|update|remove|outdated` — manage addons/s2script/plugins.json from the server
+ * `sm plugins install|update|remove|outdated|enable|disable` — manage addons/s2script/plugins.json from the server
  * console or RCON. Never from a player, admin or not: these put new code on the server. The work
  * runs in the background; its report prints to the console when it finishes, and the loader picks
  * up the changed files on its own (install/update → load or hot-reload, remove → unload).
  */
-function registryOp(cmd: Command, action: "install" | "update" | "remove" | "outdated"): HookResultValue {
+type RegistryAction = "install" | "update" | "remove" | "outdated" | "enable" | "disable";
+
+function registryOp(cmd: Command, action: RegistryAction): HookResultValue {
   if (cmd.callerSlot >= 0) { cmd.replyT("Plugins Console Only"); return HookResult.Handled; }
   const names: string[] = [];
   const withMembers: string[] = [];
+  let disabled = false;
   for (let i = 2; i < cmd.argCount; i++) {
     const a = cmd.arg(i);
     if (a === "--with" && i + 1 < cmd.argCount) withMembers.push(cmd.arg(++i));
+    else if (a === "--disabled") disabled = true;
     else if (a) names.push(a);
   }
-  if ((action === "install" || action === "remove") && names.length === 0) {
+  if (action !== "update" && action !== "outdated" && names.length === 0) {
     cmd.replyT("Usage Sm Plugins");
     return HookResult.Handled;
   }
   const run =
-    action === "install" ? Plugins.install(names, { with: withMembers }) :
+    action === "install" ? Plugins.install(names, { with: withMembers, disabled }) :
     action === "update" ? Plugins.update(names) :
     action === "remove" ? Plugins.remove(names) :
+    action === "enable" ? Plugins.enable(names) :
+    action === "disable" ? Plugins.disable(names) :
     Plugins.outdated();
   cmd.replyT("Plugins Working", action);
   run.then(
@@ -215,7 +221,10 @@ function sm(cmd: Command): HookResultValue {
       list.forEach((p, i) => cmd.replyT(p.loaded ? "Plugin List Row Running" : "Plugin List Row Unloaded", i + 1, p.id));
       return HookResult.Handled;
     }
-    if (action === "install" || action === "update" || action === "remove" || action === "outdated") {
+    if (
+      action === "install" || action === "update" || action === "remove" || action === "outdated" ||
+      action === "enable" || action === "disable"
+    ) {
       return registryOp(cmd, action);
     }
     const isRoot = cmd.callerSlot < 0 || (() => {

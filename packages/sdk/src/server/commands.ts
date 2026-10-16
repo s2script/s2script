@@ -36,8 +36,9 @@ export type ServerClient = Planner & Downloader;
 
 const sat = (v: string, r: string) => satisfies(v, r, { includePrerelease: true });
 
-function summary(r: { installed: string[]; kept: string[]; removed: string[] }): string {
-  return `${r.installed.length} installed, ${r.kept.length} up to date, ${r.removed.length} removed`;
+function summary(r: { installed: string[]; kept: string[]; removed: string[]; moved?: string[] }): string {
+  const moved = r.moved?.length ? `, ${r.moved.length} enabled/disabled` : "";
+  return `${r.installed.length} installed, ${r.kept.length} up to date, ${r.removed.length} removed${moved}`;
 }
 
 /** The caret range npm writes for a newly added dependency. */
@@ -56,6 +57,8 @@ export async function serverInstall(opts: {
   specs?: string[];
   /** Optional bundle members to install with the ONE bundle named in `specs` (`--with`). */
   with?: string[];
+  /** Install the named plugins into plugins/disabled/ (`--disabled`): kept current, never loaded. */
+  disabled?: boolean;
   dryRun?: boolean;
   log?: (m: string) => void;
 }): Promise<string> {
@@ -75,7 +78,12 @@ export async function serverInstall(opts: {
   const lockPath = join(opts.root, SERVER_LOCK);
   const lock = readLock(lockPath);
 
-  const withChanged = !!opts.with?.length;
+  if (opts.disabled) {
+    if (!opts.specs?.length) throw new Error("--disabled needs the plugins to install: s2s install <name> --disabled");
+    const names = opts.specs.map((s) => parseSpec(s).name);
+    manifest = { ...manifest, disabled: [...new Set([...manifest.disabled, ...names])].sort() };
+  }
+  const withChanged = !!opts.with?.length || !!opts.disabled;
   const added = new Set<string>();
   if (opts.specs && opts.specs.length > 0) {
     const deps = { ...manifest.dependencies };
@@ -93,7 +101,10 @@ export async function serverInstall(opts: {
     targets = targetsFromLock(lock);
   } else {
     const specs = pinnedSpecs(manifest, lock, sat, added);
-    const resolved = await resolveTargets(opts.client, specs, manifest.with, { reviewedOnly: manifest.reviewedOnly });
+    const resolved = await resolveTargets(opts.client, specs, manifest.with, {
+      reviewedOnly: manifest.reviewedOnly,
+      disabled: manifest.disabled,
+    });
     for (const w of resolved.warnings) log(`warning: ${w}`);
     targets = resolved.targets;
     // A bare `s2s install name` records ^<resolved version>, like npm.
@@ -138,6 +149,7 @@ export async function serverUpdate(opts: {
   const specs = pinnedSpecs(manifest, lock, sat, new Set(names));
   const { targets, warnings } = await resolveTargets(opts.client, specs, manifest.with, {
     reviewedOnly: manifest.reviewedOnly,
+    disabled: manifest.disabled,
   });
   for (const w of warnings) log(`warning: ${w}`);
   const res = await syncPlugins({ root: opts.root, targets, oldLock: lock, client: opts.client, dryRun: opts.dryRun, log });
@@ -237,4 +249,44 @@ export async function serverInit(opts: {
   const manifest: ServerManifest = parseServerManifest(root, raw);
   writeLock(join(root, SERVER_LOCK), lockFor(manifest, plugins));
   return report;
+}
+
+/**
+ * `s2s enable` / `s2s disable`: move installed plugins out of / into plugins/disabled/ and record it
+ * in plugins.json. Everything stays at its locked version; only the folders change (no download).
+ */
+export async function serverSetEnabled(opts: {
+  root: string;
+  client: ServerClient;
+  names: string[];
+  enabled: boolean;
+  dryRun?: boolean;
+  log?: (m: string) => void;
+}): Promise<string> {
+  const log = opts.log ?? (() => {});
+  const verb = opts.enabled ? "enable" : "disable";
+  if (opts.names.length === 0) throw new Error(`usage: s2s ${verb} <name> [...]`);
+  let manifest = readServerManifest(opts.root);
+  for (const n of opts.names) {
+    if (!(n in manifest.dependencies)) throw new Error(`${n} is not in ${SERVER_MANIFEST} dependencies`);
+  }
+  const set = new Set(manifest.disabled);
+  for (const n of opts.names) {
+    if (opts.enabled) set.delete(n);
+    else set.add(n);
+  }
+  manifest = { ...manifest, disabled: [...set].sort() };
+  const lockPath = join(opts.root, SERVER_LOCK);
+  const lock = readLock(lockPath);
+  const specs = pinnedSpecs(manifest, lock, sat);
+  const { targets } = await resolveTargets(opts.client, specs, manifest.with, {
+    reviewedOnly: manifest.reviewedOnly,
+    disabled: manifest.disabled,
+  });
+  const res = await syncPlugins({ root: opts.root, targets, oldLock: lock, client: opts.client, dryRun: opts.dryRun, log });
+  if (!opts.dryRun) {
+    writeServerManifest(manifest);
+    writeLock(lockPath, lockFor(manifest, res.plugins));
+  }
+  return summary(res);
 }

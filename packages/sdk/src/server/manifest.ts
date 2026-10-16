@@ -8,6 +8,7 @@
  *     "name": "my-server",
  *     "dependencies": { "@edge/rtv": "^1.2.0" },
  *     "with": { "@edge/jailbreak": ["@edge/jailbreak-gangperks"] },  // optional bundle members
+ *     "disabled": ["@edge/rtv"],   // kept in plugins/disabled/: installed and updated, never loaded
  *     "autoUpdate": true,          // the runtime updates within these ranges at startup (default)
  *     "reviewedOnly": false,       // refuse plugins s2script has not reviewed
  *     "updateTimeoutSeconds": 60,  // how long plugin loading may wait for that update
@@ -24,6 +25,8 @@ import { validRange } from "semver";
 export const SERVER_MANIFEST = "plugins.json";
 export const SERVER_LOCK = "plugins-lock.json";
 export const PLUGINS_SUBDIR = "plugins";
+/** Under plugins/: the loader's scan is non-recursive, so files here never load. */
+export const DISABLED_SUBDIR = "disabled";
 
 export interface ServerManifest {
   /** Absolute addon root (the directory holding plugins.json and plugins/). */
@@ -33,6 +36,8 @@ export interface ServerManifest {
   name: string;
   dependencies: Record<string, string>;
   with: Record<string, string[]>;
+  /** Dependencies kept in plugins/disabled/, where the loader never looks. */
+  disabled: string[];
   autoUpdate: boolean;
   reviewedOnly: boolean;
 }
@@ -94,12 +99,23 @@ export function parseServerManifest(root: string, raw: Record<string, unknown>):
       withMembers[bundle] = members as string[];
     }
   }
+  const disabled: string[] = [];
+  if (raw.disabled !== undefined) {
+    if (!Array.isArray(raw.disabled) || raw.disabled.some((d) => typeof d !== "string")) {
+      throw new Error(`${label}: "disabled" must be an array of plugin names`);
+    }
+    for (const d of raw.disabled as string[]) {
+      if (!(d in dependencies)) throw new Error(`${label}: "disabled" names ${d}, which is not in dependencies`);
+      if (!disabled.includes(d)) disabled.push(d);
+    }
+  }
   return {
     root,
     raw,
     name: typeof raw.name === "string" && raw.name ? raw.name : basename(root),
     dependencies,
     with: withMembers,
+    disabled: disabled.sort(),
     autoUpdate: raw.autoUpdate !== false,
     reviewedOnly: raw.reviewedOnly === true,
   };
@@ -123,6 +139,8 @@ export function writeServerManifest(m: ServerManifest): void {
   const out: Record<string, unknown> = { ...m.raw, dependencies: sorted };
   if (Object.keys(m.with).length > 0) out.with = m.with;
   else delete out.with;
+  if (m.disabled.length > 0) out.disabled = [...m.disabled].sort();
+  else delete out.disabled;
   const path = join(m.root, SERVER_MANIFEST);
   const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(out, null, 2) + "\n");

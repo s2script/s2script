@@ -15,7 +15,7 @@ import { strToU8, zipSync } from "fflate";
 
 import { parseLock, serializeLock, integrityFromSha256Hex, sha256Hex, sha256HexFromIntegrity } from "../src/server/lock.ts";
 import { findAddonRoot, findServerRoot, readServerManifest } from "../src/server/manifest.ts";
-import { serverInit, serverInstall, serverUpdate } from "../src/server/commands.ts";
+import { serverInit, serverInstall, serverSetEnabled, serverUpdate } from "../src/server/commands.ts";
 import { RegistryError } from "../src/registry/client.ts";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "server-lock");
@@ -292,4 +292,68 @@ test("findAddonRoot finds where a first plugins.json belongs", () => {
   assert.equal(findAddonRoot(game), join(game, "addons", "s2script"));
   assert.equal(findAddonRoot(join(game, "addons", "s2script")), join(game, "addons", "s2script"));
   assert.equal(findAddonRoot(mkdtempSync(join(tmpdir(), "s2s-empty-"))), null);
+});
+
+// ---------------------------------------------------------------------------
+// Disabled plugins: installed into plugins/disabled/, kept current, never loaded
+// ---------------------------------------------------------------------------
+
+test("install --disabled puts the plugin in plugins/disabled/ and records it", async () => {
+  const reg = await fakeRegistry({ "@edge/rtv": ["1.0.0"] });
+  const root = serverDir();
+  await serverInstall({ root, client: reg, specs: ["@edge/rtv"], disabled: true });
+  assert.deepEqual(readdirSync(join(root, "plugins")), ["disabled"]);
+  assert.deepEqual(readdirSync(join(root, "plugins", "disabled")), ["_edge_rtv.s2sp"]);
+  assert.deepEqual(readServerManifest(root).disabled, ["@edge/rtv"]);
+  const lock = lockOf(root);
+  assert.deepEqual(Object.keys(lock.plugins), ["plugins/disabled/_edge_rtv.s2sp"]);
+  assert.deepEqual(lock.root.disabled, ["@edge/rtv"]);
+  // The pair is consistent: a plain install changes nothing and asks the registry nothing.
+  reg.calls.plan.length = 0;
+  assert.equal(await serverInstall({ root, client: reg }), "0 installed, 1 up to date, 0 removed");
+  assert.deepEqual(reg.calls.plan, []);
+});
+
+test("enable and disable move the installed file without downloading it", async () => {
+  const reg = await fakeRegistry({ "@edge/rtv": ["1.0.0"] });
+  const root = serverDir();
+  await serverInstall({ root, client: reg, specs: ["@edge/rtv"], disabled: true });
+  reg.calls.download.length = 0;
+  const logs = [];
+  await serverSetEnabled({ root, client: reg, names: ["@edge/rtv"], enabled: true, log: (m) => logs.push(m) });
+  assert.deepEqual(reg.calls.download, [], "no download");
+  assert.ok(logs.includes("enabled @edge/rtv@1.0.0"), logs.join("\n"));
+  assert.deepEqual(readdirSync(join(root, "plugins")).sort(), ["_edge_rtv.s2sp", "disabled"]);
+  assert.deepEqual(readdirSync(join(root, "plugins", "disabled")), []);
+  assert.deepEqual(readServerManifest(root).disabled, []);
+  assert.equal("disabled" in JSON.parse(readFileSync(join(root, "plugins.json"), "utf8")), false);
+
+  await serverSetEnabled({ root, client: reg, names: ["@edge/rtv"], enabled: false });
+  assert.deepEqual(readdirSync(join(root, "plugins", "disabled")), ["_edge_rtv.s2sp"]);
+  await assert.rejects(() => serverSetEnabled({ root, client: reg, names: ["@edge/nope"], enabled: true }), /not in plugins\.json/);
+});
+
+test("a dependency shared with an enabled plugin stays enabled", async () => {
+  const reg = await fakeRegistry(
+    { "@edge/a": ["1.0.0"], "@edge/b": ["1.0.0"], "@edge/core": ["1.0.0"] },
+    { "@edge/a": ["@edge/core"], "@edge/b": ["@edge/core"] },
+  );
+  const root = serverDir({ "@edge/a": "^1.0.0", "@edge/b": "^1.0.0" }, { disabled: ["@edge/a"] });
+  await serverInstall({ root, client: reg });
+  assert.deepEqual(readdirSync(join(root, "plugins")).sort(), ["_edge_b.s2sp", "_edge_core.s2sp", "disabled"]);
+  assert.deepEqual(readdirSync(join(root, "plugins", "disabled")), ["_edge_a.s2sp"]);
+});
+
+test("update keeps a disabled plugin current, in place", async () => {
+  const reg = await fakeRegistry({ "@edge/rtv": ["1.0.0"] });
+  const root = serverDir({ "@edge/rtv": "^1.0.0" }, { disabled: ["@edge/rtv"] });
+  await serverInstall({ root, client: reg });
+  await serverUpdate({ root, client: await fakeRegistry({ "@edge/rtv": ["1.0.0", "1.1.0"] }) });
+  assert.deepEqual(readFileSync(join(root, "plugins", "disabled", "_edge_rtv.s2sp")), s2sp("@edge/rtv", "1.1.0"));
+  assert.deepEqual(readdirSync(join(root, "plugins")), ["disabled"]);
+});
+
+test("plugins.json rejects a disabled name that is not a dependency", () => {
+  const root = serverDir({ "@edge/rtv": "^1.0.0" }, { disabled: ["@edge/other"] });
+  assert.throws(() => readServerManifest(root), /"disabled" names @edge\/other/);
 });

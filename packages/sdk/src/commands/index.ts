@@ -12,6 +12,7 @@ import * as migrate from './migrate.ts';
 import * as pack from "./pack.ts";
 import * as server from "./server.ts";
 import * as update from "./update.ts";
+import { enable, disable } from "./enable.ts";
 
 export interface Command {
   name: string;
@@ -31,6 +32,8 @@ export const COMMANDS: Command[] = [
   { name: "add", summary: "Add a registry package's types", run: add.run },
   { name: "install", summary: "Download plugins + their deps into a server", run: install.run },
   { name: "update", summary: "Update a server's plugins within their plugins.json ranges", run: update.run },
+  { name: "enable", summary: "Move a server plugin out of plugins/disabled/ so it loads", run: enable },
+  { name: "disable", summary: "Move a server plugin into plugins/disabled/ so it stops loading", run: disable },
   { name: "server", summary: "Set up a server's plugins.json + lock (s2s server init)", run: server.run },
   { name: "login", summary: "Save a registry deploy token", run: login.run },
   { name: "config", summary: "Emit a plugin's default config file(s)", run: config.run },

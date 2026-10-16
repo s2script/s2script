@@ -13,7 +13,10 @@
         "@edge/jailbreak": [
           "@edge/jailbreak-gangperks"
         ]
-      }
+      },
+      "disabled": [
+        "@edge/rtv"
+      ]
     },
     "plugins/_edge_jailbreak-core.s2sp": {
       "name": "@edge/jailbreak-core",
@@ -21,7 +24,7 @@
       "resolved": "https://www.s2script.com/api/v1/download/s2sp?name=%40edge%2Fjailbreak-core&version=2.1.0",
       "integrity": "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
     },
-    "plugins/_edge_rtv.s2sp": {
+    "plugins/disabled/_edge_rtv.s2sp": {
       "name": "@edge/rtv",
       "version": "1.2.3",
       "resolved": "https://www.s2script.com/api/v1/download/s2sp?name=%40edge%2Frtv&version=1.2.3",

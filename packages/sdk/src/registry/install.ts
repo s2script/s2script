@@ -43,8 +43,15 @@ export async function resolveMerged(
   specs: Record<string, string>,
   /** Bundle root name -> optional members to add (forwarded as the plan's `with`). */
   withMembers: Record<string, string[]> = {}
-): Promise<{ install: PlanEntry[]; warnings: string[]; errors: string[] }> {
+): Promise<{
+  install: PlanEntry[];
+  warnings: string[];
+  errors: string[];
+  /** plugin name → the requested roots whose plan includes it. */
+  pulledBy: Record<string, string[]>;
+}> {
   const chosen = new Map<string, PlanEntry>();
+  const pulledBy: Record<string, string[]> = {};
   const warnings: string[] = [];
   const errors: string[] = [];
 
@@ -56,6 +63,7 @@ export async function resolveMerged(
     }
     warnings.push(...plan.warnings);
     for (const entry of plan.install) {
+      (pulledBy[entry.name] ??= []).push(name);
       const prior = chosen.get(entry.name);
       if (prior && prior.version !== entry.version) {
         errors.push(
@@ -71,5 +79,6 @@ export async function resolveMerged(
     install: [...chosen.values()].sort((a, b) => a.name.localeCompare(b.name)),
     warnings: [...new Set(warnings)],
     errors: [...new Set(errors)],
+    pulledBy,
   };
 }

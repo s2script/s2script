@@ -767,6 +767,43 @@
         shutdown();
     }
 
+    /// Live, through the native: install into plugins/disabled/, then enable (a move, no download).
+    #[test]
+    #[ignore]
+    fn plugins_registry_live_disabled_then_enable() {
+        let registry = std::env::var("S2S_E2E_REGISTRY").expect("S2S_E2E_REGISTRY");
+        let name = std::env::var("S2S_E2E_PLUGIN").unwrap_or_else(|_| "@edge/pubplug".into());
+        std::env::set_var("S2SCRIPT_REGISTRY_URL", &registry);
+        let root = std::env::temp_dir().join(format!("s2s-native-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("plugins")).unwrap();
+        init(dummy_logger()).unwrap();
+        crate::loader::set_plugins_dir(root.join("plugins").to_str().unwrap());
+        let run = |js: String| -> String {
+            eval_std("@s2script/basecommands", &format!(
+                r#"globalThis.__out = "";
+                const {{ Plugins }} = __s2require("@s2script/plugins");
+                ({js}).then((l) => {{ globalThis.__out = "ok:" + l.join("|"); }},
+                            (e) => {{ globalThis.__out = "err:" + String(e && e.message || e); }});"#));
+            for _ in 0..2000 {
+                frame_async_drain();
+                let out = eval_in_context_string("@s2script/basecommands", "globalThis.__out");
+                if !out.is_empty() { return out; }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            "timeout".into()
+        };
+        let out = run(format!("Plugins.install([{name:?}], {{ disabled: true }})"));
+        println!("{out}");
+        assert!(out.contains("-> disabled/"), "{out}");
+        assert_eq!(std::fs::read_dir(root.join("plugins/disabled")).unwrap().count(), 1);
+        let out = run(format!("Plugins.enable([{name:?}])"));
+        println!("{out}");
+        assert!(out.contains("ok:enabled "), "{out}");
+        assert_eq!(std::fs::read_dir(root.join("plugins/disabled")).unwrap().count(), 0);
+        println!("{}", std::fs::read_to_string(root.join("plugins.json")).unwrap());
+        shutdown();
+    }
+
     #[test]
     fn thread_sleep_runs_off_thread_and_resolves_on_a_drain() {
         init(dummy_logger()).unwrap();

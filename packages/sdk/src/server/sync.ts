@@ -14,7 +14,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import type { PlanEntry } from "../registry/client.ts";
 import { resolveMerged, safeFilename } from "../registry/install.ts";
 import {
@@ -24,16 +24,23 @@ import {
   type LockedPlugin,
   type ServerLock,
 } from "./lock.ts";
-import { PLUGINS_SUBDIR, type ServerManifest } from "./manifest.ts";
+import { DISABLED_SUBDIR, PLUGINS_SUBDIR, type ServerManifest } from "./manifest.ts";
 
 export interface Target {
   name: string;
   version: string;
-  /** Bare filename inside plugins/. */
+  /** Bare filename inside plugins/ (or plugins/disabled/). */
   filename: string;
   url: string;
   sha256: string;
   reviewState?: string;
+  /** Every dependency that pulls this plugin in is disabled, so its file goes to plugins/disabled/. */
+  disabled?: boolean;
+}
+
+/** The target's path under plugins/. */
+export function relPath(t: Pick<Target, "filename" | "disabled">): string {
+  return t.disabled ? `${DISABLED_SUBDIR}/${t.filename}` : t.filename;
 }
 
 export interface Downloader {
@@ -59,9 +66,10 @@ export async function resolveTargets(
   client: Planner,
   specs: Record<string, string>,
   withMembers: Record<string, string[]>,
-  opts: { reviewedOnly?: boolean } = {},
+  opts: { reviewedOnly?: boolean; disabled?: readonly string[] } = {},
 ): Promise<{ targets: Target[]; warnings: string[] }> {
-  const { install, warnings, errors } = await resolveMerged(client, specs, withMembers);
+  const { install, warnings, errors, pulledBy } = await resolveMerged(client, specs, withMembers);
+  const disabledRoots = new Set(opts.disabled ?? []);
   if (errors.length) throw new Error(`cannot resolve plugins:\n  - ${errors.join("\n  - ")}`);
   if (opts.reviewedOnly) {
     const unreviewed = install.filter((e) => e.reviewState !== "reviewed");
@@ -82,6 +90,8 @@ export async function resolveTargets(
       url: e.url,
       sha256: e.sha256,
       reviewState: e.reviewState,
+      // Enabled while ANY dependency that needs it is enabled.
+      disabled: (pulledBy[e.name] ?? []).every((root) => disabledRoots.has(root)),
     };
   });
   return { targets, warnings };
@@ -92,8 +102,17 @@ export function targetsFromLock(lock: ServerLock): Target[] {
   return Object.entries(lock.plugins).map(([key, p]) => {
     const sha = sha256HexFromIntegrity(p.integrity);
     if (!sha) throw new Error(`plugins-lock.json: ${key} has an unsupported integrity ${p.integrity}`);
-    const filename = key.slice(PLUGINS_SUBDIR.length + 1);
-    return { name: p.name, version: p.version, filename: safeFilename({ ...p, filename }), url: p.resolved, sha256: sha };
+    const rel = key.slice(PLUGINS_SUBDIR.length + 1);
+    const disabled = rel.startsWith(`${DISABLED_SUBDIR}/`);
+    const filename = disabled ? rel.slice(DISABLED_SUBDIR.length + 1) : rel;
+    return {
+      name: p.name,
+      version: p.version,
+      filename: safeFilename({ ...p, filename }),
+      url: p.resolved,
+      sha256: sha,
+      disabled,
+    };
   });
 }
 
@@ -124,6 +143,8 @@ export interface SyncResult {
   removed: string[];
   /** Files the old lock owned and no target wants, left because they were changed on disk. */
   leftAlone: string[];
+  /** Plugins moved between plugins/ and plugins/disabled/ (enable / disable). */
+  moved: string[];
 }
 
 export async function syncPlugins(opts: {
@@ -136,22 +157,25 @@ export async function syncPlugins(opts: {
 }): Promise<SyncResult> {
   const log = opts.log ?? (() => {});
   const dir = resolve(opts.root, PLUGINS_SUBDIR);
-  const result: SyncResult = { plugins: {}, installed: [], kept: [], removed: [], leftAlone: [] };
+  const result: SyncResult = { plugins: {}, installed: [], kept: [], removed: [], leftAlone: [], moved: [] };
 
   const seen = new Set<string>();
   for (const t of opts.targets) {
     if (seen.has(t.filename)) throw new Error(`two plugins resolve to the same file ${t.filename}`);
     seen.add(t.filename);
-    const dest = resolve(dir, t.filename);
+    const dest = resolve(dir, relPath(t));
     if (!dest.startsWith(dir + sep)) throw new Error(`refusing ${t.name}: ${t.filename} escapes ${dir}`);
   }
 
   // 1. Stage.
   const staged: { tmp: string; dest: string; t: Target }[] = [];
+  /** Installed files moving between plugins/ and plugins/disabled/ (enable / disable): no download. */
+  const moves: { from: string; dest: string; t: Target }[] = [];
   try {
     for (const t of opts.targets) {
-      const dest = join(dir, t.filename);
-      result.plugins[lockKey(t.filename)] = {
+      const key = lockKey(relPath(t));
+      const dest = join(dir, relPath(t));
+      result.plugins[key] = {
         name: t.name,
         version: t.version,
         resolved: t.url,
@@ -161,9 +185,19 @@ export async function syncPlugins(opts: {
         result.kept.push(t.filename);
         continue;
       }
+      const movedFrom = Object.entries(opts.oldLock?.plugins ?? {})
+        .filter(([k, p]) => k !== key && p.name === t.name)
+        .map(([k]) => join(opts.root, k))
+        .find((f) => existsSync(f) && sha256Hex(readFileSync(f)) === t.sha256);
+      if (movedFrom) {
+        result.moved.push(t.filename);
+        if (opts.dryRun) log(`would ${t.disabled ? "disable" : "enable"} ${t.name}@${t.version}`);
+        else moves.push({ from: movedFrom, dest, t });
+        continue;
+      }
       result.installed.push(t.filename);
       if (opts.dryRun) {
-        log(`would install ${t.name}@${t.version} -> ${t.filename}`);
+        log(`would install ${t.name}@${t.version} -> ${relPath(t)}`);
         continue;
       }
       const bytes = await opts.client.downloadS2sp(t.name, t.version);
@@ -171,7 +205,7 @@ export async function syncPlugins(opts: {
       if (got !== t.sha256) {
         throw new Error(`sha256 mismatch for ${t.name}@${t.version}: expected ${t.sha256}, got ${got}`);
       }
-      mkdirSync(dir, { recursive: true });
+      mkdirSync(dirname(dest), { recursive: true });
       const tmp = `${dest}.s2s-tmp`;
       writeFileSync(tmp, bytes);
       staged.push({ tmp, dest, t });
@@ -184,7 +218,12 @@ export async function syncPlugins(opts: {
   // 2. Commit.
   for (const s of staged) {
     renameSync(s.tmp, s.dest);
-    log(`installed ${s.t.name}@${s.t.version} -> ${s.t.filename}`);
+    log(`installed ${s.t.name}@${s.t.version} -> ${relPath(s.t)}`);
+  }
+  for (const m of moves) {
+    mkdirSync(dirname(m.dest), { recursive: true });
+    renameSync(m.from, m.dest);
+    log(`${m.t.disabled ? "disabled" : "enabled"} ${m.t.name}@${m.t.version}`);
   }
 
   // 3. Prune what the old lock owned and nothing wants now.
@@ -215,6 +254,7 @@ export function lockFor(manifest: ServerManifest, plugins: Record<string, Locked
       name: manifest.name,
       dependencies: { ...manifest.dependencies },
       ...(Object.keys(manifest.with).length ? { with: manifest.with } : {}),
+      ...(manifest.disabled.length ? { disabled: [...manifest.disabled] } : {}),
     },
     plugins,
   };
@@ -224,5 +264,9 @@ export function lockFor(manifest: ServerManifest, plugins: Record<string, Locked
 export function lockMatchesManifest(lock: ServerLock, manifest: ServerManifest): boolean {
   const same = (a: Record<string, unknown>, b: Record<string, unknown>) =>
     JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
-  return same(lock.root.dependencies, manifest.dependencies) && same(lock.root.with ?? {}, manifest.with);
+  return (
+    same(lock.root.dependencies, manifest.dependencies) &&
+    same(lock.root.with ?? {}, manifest.with) &&
+    JSON.stringify([...(lock.root.disabled ?? [])].sort()) === JSON.stringify([...manifest.disabled].sort())
+  );
 }

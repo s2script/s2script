@@ -38,14 +38,19 @@ export declare const Plugins: {
    * Add registry plugins to the server's `addons/s2script/plugins.json` and install them with their
    * dependencies (`sm plugins install`). A bare name records `^<latest>`; `name@range` records the
    * range. `with` names optional members of the ONE bundle given. The files land in `plugins/`,
-   * where the loader picks them up. Resolves with report lines; rejects with the reason.
-   * Requires the `plugins:manage` permission (default: `@s2script/basecommands` only).
+   * where the loader picks them up — or, with `disabled`, in `plugins/disabled/`, where it never
+   * looks (kept current at startup, loaded once enabled). Resolves with report lines; rejects with
+   * the reason. Requires the `plugins:manage` permission (default: `@s2script/basecommands` only).
    */
-  install(names: string[], opts?: { with?: string[] }): Promise<string[]>;
+  install(names: string[], opts?: { with?: string[]; disabled?: boolean }): Promise<string[]>;
   /** Move the named plugins (all when omitted) to the newest version their plugins.json range allows. */
   update(names?: string[]): Promise<string[]>;
   /** Drop plugins from plugins.json; their files are removed (unless edited by hand) and unloaded. */
   remove(names: string[]): Promise<string[]>;
   /** One line per plugins.json dependency: current, wanted (newest in range) and latest version. */
   outdated(): Promise<string[]>;
+  /** Move installed plugins out of plugins/disabled/ (they load) and record it in plugins.json. */
+  enable(names: string[]): Promise<string[]>;
+  /** Move installed plugins into plugins/disabled/ (they unload, and stay off across restarts). */
+  disable(names: string[]): Promise<string[]>;
 };

@@ -508,3 +508,14 @@ Every message the runtime and the base plugins print now carries `[S2S]` instead
 SDK/cs2 doc examples, and the live-soak harness that matches `[S2S] Reloading`. Command names keep
 the `sm_` prefix and the `sm` console command for SourceMod familiarity; whether to move them to
 `s2s_` is an open question. Historical specs, plans and captured logs keep `[SM]` as written.
+
+## 2026-10-16 — Installed-but-disabled plugins
+
+`plugins.json` gains a `"disabled"` list. A disabled plugin's file lives in `plugins/disabled/`
+(the loader's non-recursive scan never sees it), is still updated at every startup, and its lock
+key is `plugins/disabled/<file>`. A dependency is disabled only when every root that pulls it in
+is disabled. `install --disabled` and `enable` / `disable` exist in all three places (`s2s`, the
+`Plugins` API, `sm plugins`). Enable/disable move the installed file rather than re-downloading,
+then the loader's file watch loads or unloads it. The CLI and the runtime agree byte for byte on
+the lock with disabled entries (shared fixture updated), and a live run through the native
+installed into `disabled/` and then enabled with no download. Not yet live-gated in CS2.
