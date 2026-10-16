@@ -101,10 +101,10 @@ addons/s2script/plugins/<name>.s2sp
 
 The runtime watches that directory (top-level only, ~1s poll): drop → load, replace → hot-reload, delete → unload. No server restart required for plugin changes.
 
-### Manage plugins with s2script.json (auto-update on startup)
+### Manage plugins with plugins.json (auto-update on startup)
 
-A server can keep its plugins the way an npm project keeps its dependencies: an `s2script.json`
-listing each plugin with a version range, and an `s2script-lock.json` recording exactly what is
+A server can keep its plugins the way an npm project keeps its dependencies: a `plugins.json`
+listing each plugin with a version range, and a `plugins-lock.json` recording exactly what is
 installed. Both live in `addons/s2script/`, next to `plugins/`. They use npm's shapes but not its
 file names, so npm never mistakes the folder for a Node project. (`npm install` in a folder with a
 `package.json` would fetch same-named packages from npmjs.com instead.) Generate them from the
@@ -112,7 +112,7 @@ plugins you already have:
 
 ```bash
 cd /path/to/csgo            # or addons/s2script itself
-s2s server init             # writes addons/s2script/s2script.json + s2script-lock.json
+s2s server init             # writes addons/s2script/plugins.json + plugins-lock.json
 ```
 
 Every installed plugin that the registry publishes, byte for byte, becomes a dependency at
@@ -132,7 +132,7 @@ is listed as unmanaged and never touched. The result:
 `^1.2.0` picks up 1.2.x and 1.x fixes, never 2.0.0. It runs before the first plugin loads:
 
 - Every download is checked against the registry's sha256 and staged first. Files are swapped in
-  only once all of them verified, then `s2script-lock.json` is rewritten.
+  only once all of them verified, then `plugins-lock.json` is rewritten.
 - If the registry is unreachable, a download is bad, or it takes longer than
   `updateTimeoutSeconds` (default 60), nothing changes and the server loads the plugins it has.
 - Only files the lock lists are replaced or removed. A plugin you removed from `dependencies` is
@@ -159,7 +159,7 @@ Restricted (org-only) plugins need a read-only token from s2script.com → Deplo
 From a shell, the same files work like npm:
 
 ```bash
-s2s install                      # install exactly what s2script-lock.json says
+s2s install                      # install exactly what plugins-lock.json says
 s2s install @edge/admin          # add a plugin (records ^<latest>)
 s2s install @edge/admin@^3.1.0   # add one at a range
 s2s update                       # newest within every range, now, instead of at the next start

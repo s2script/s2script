@@ -56,24 +56,24 @@ export async function run(argv: string[]): Promise<void> {
   const dryRun = hasFlag(argv, "--dry-run");
   const reviewedOnly = hasFlag(argv, "--reviewed-only");
 
-  // A server with an s2script.json installs from it and keeps s2script-lock.json —
+  // A server with a plugins.json installs from it and keeps plugins-lock.json —
   // unless the caller asked for the older --dir / --file manifest flow explicitly.
   if (parseFlag(argv, "--dir") === undefined && parseFlag(argv, "--file") === undefined) {
     const root = findServerRoot(parseFlag(argv, "--server") ?? ".");
     if (root) {
       await runServer(() => {
         if (collectWith(argv).length > 0) {
-          throw new Error(`--with: add the member to "with" in ${root}/s2script.json instead`);
+          throw new Error(`--with: add the member to "with" in ${root}/plugins.json instead`);
         }
         if (reviewedOnly) {
-          throw new Error(`--reviewed-only: set "reviewedOnly": true in ${root}/s2script.json instead`);
+          throw new Error(`--reviewed-only: set "reviewedOnly": true in ${root}/plugins.json instead`);
         }
         return serverInstall({ root, client: serverClient(argv), specs: args, dryRun, log: console.log });
       }, dryRun);
       return;
     }
     if (parseFlag(argv, "--server") !== undefined) {
-      console.error(`no s2script.json found — run \`s2s server init\` there first`);
+      console.error(`no plugins.json found — run \`s2s server init\` there first`);
       process.exit(1);
     }
   }

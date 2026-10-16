@@ -1,5 +1,5 @@
 /**
- * A server's `s2script-lock.json`: npm's lockfile v3 shape, describing which registry plugin files
+ * A server's `plugins-lock.json`: npm's lockfile v3 shape, describing which registry plugin files
  * sit in `plugins/`. Keys of `packages` are install paths relative to the lock, as in npm
  * (`plugins/_edge_rtv.s2sp` where npm would say `node_modules/rtv`); `""` is the server itself.
  *
@@ -27,9 +27,9 @@ export interface LockedPlugin {
 
 export interface LockRoot {
   name: string;
-  /** s2script.json `dependencies` as last resolved; a change means the lock is stale. */
+  /** plugins.json `dependencies` as last resolved; a change means the lock is stale. */
   dependencies: Record<string, string>;
-  /** s2script.json `with` as last resolved (bundle optional members). */
+  /** plugins.json `with` as last resolved (bundle optional members). */
   with?: Record<string, string[]>;
 }
 
@@ -85,7 +85,7 @@ export function serializeLock(lock: ServerLock): string {
   );
 }
 
-export function parseLock(text: string, label = "s2script-lock.json"): ServerLock {
+export function parseLock(text: string, label = "plugins-lock.json"): ServerLock {
   const j = JSON.parse(text) as {
     name?: unknown;
     lockfileVersion?: unknown;

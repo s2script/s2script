@@ -1,5 +1,5 @@
 /**
- * `s2s server init [dir]` — write a server's s2script.json + s2script-lock.json from the plugins it
+ * `s2s server init [dir]` — write a server's plugins.json + plugins-lock.json from the plugins it
  * already has, so `s2s install` / `s2s update` and the runtime's startup update can manage them.
  *
  * [dir] is the addon root (addons/s2script); run from the game directory it is found for you.
@@ -35,7 +35,7 @@ export async function run(argv: string[]): Promise<void> {
     for (const m of report.managed) console.log(`managed   ${m.name}@${m.version} (${m.filename})`);
     for (const u of report.unmanaged) console.log(`unmanaged ${u.filename}: ${u.reason}`);
     console.log(
-      `wrote ${join(root, "s2script.json")} and s2script-lock.json — ${report.managed.length} managed, ` +
+      `wrote ${join(root, "plugins.json")} and plugins-lock.json — ${report.managed.length} managed, ` +
         `${report.unmanaged.length} left as they are`,
     );
   } catch (e) {

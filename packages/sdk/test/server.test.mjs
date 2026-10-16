@@ -1,5 +1,5 @@
 /**
- * A server's s2script.json + s2script-lock.json: s2s server init / install / update against a fake
+ * A server's plugins.json + plugins-lock.json: s2s server init / install / update against a fake
  * registry, and the lockfile's byte format (shared with core/src/server_update.rs).
  *
  * Run via: node --experimental-strip-types --no-warnings --test test/server.test.mjs
@@ -73,16 +73,16 @@ async function fakeRegistry(published, deps = {}) {
 function serverDir(deps = {}, extra = {}) {
   const root = mkdtempSync(join(tmpdir(), "s2s-server-"));
   mkdirSync(join(root, "plugins"));
-  writeFileSync(join(root, "s2script.json"), JSON.stringify({ name: "test-server", dependencies: deps, ...extra }, null, 2));
+  writeFileSync(join(root, "plugins.json"), JSON.stringify({ name: "test-server", dependencies: deps, ...extra }, null, 2));
   return root;
 }
 
-const lockOf = (root) => parseLock(readFileSync(join(root, "s2script-lock.json"), "utf8"));
+const lockOf = (root) => parseLock(readFileSync(join(root, "plugins-lock.json"), "utf8"));
 const versionsOf = (root) =>
   Object.fromEntries(Object.values(lockOf(root).plugins).map((p) => [p.name, p.version]));
 
 test("lock serialization is the shared fixture byte for byte", () => {
-  const text = readFileSync(join(FIXTURES, "s2script-lock.json"), "utf8");
+  const text = readFileSync(join(FIXTURES, "plugins-lock.json"), "utf8");
   assert.equal(serializeLock(parseLock(text)), text);
 });
 
@@ -104,7 +104,7 @@ test("findServerRoot accepts the addon root or the game dir above it", () => {
   assert.equal(findServerRoot(mkdtempSync(join(tmpdir(), "s2s-none-"))), null);
 });
 
-test("install resolves s2script.json, downloads, and writes the lock", async () => {
+test("install resolves plugins.json, downloads, and writes the lock", async () => {
   const reg = await fakeRegistry({ "@edge/rtv": ["1.0.0", "1.1.0", "2.0.0"], "@edge/core": ["1.0.0"] }, { "@edge/rtv": ["@edge/core"] });
   const root = serverDir({ "@edge/rtv": "^1.0.0" });
   const summary = await serverInstall({ root, client: reg });
@@ -128,7 +128,7 @@ test("install with a current lock installs exactly the lock, asking the registry
   assert.deepEqual(versionsOf(root), { "@edge/rtv": "1.0.0" });
 });
 
-test("install <name> adds ^latest to s2script.json, keeping the others at their locked versions", async () => {
+test("install <name> adds ^latest to plugins.json, keeping the others at their locked versions", async () => {
   const reg = await fakeRegistry({ "@edge/rtv": ["1.0.0"], "@edge/admin": ["3.2.1"] });
   const root = serverDir({ "@edge/rtv": "^1.0.0" });
   await serverInstall({ root, client: reg });
@@ -144,9 +144,9 @@ test("update moves within the range, never past it, and prunes what the lock own
   const root = serverDir({ "@edge/rtv": "^1.0.0", "@edge/old": "^1.0.0" });
   await serverInstall({ root, client: reg });
   writeFileSync(join(root, "plugins", "handmade.s2sp"), "operator's own");
-  const pj = JSON.parse(readFileSync(join(root, "s2script.json"), "utf8"));
+  const pj = JSON.parse(readFileSync(join(root, "plugins.json"), "utf8"));
   delete pj.dependencies["@edge/old"];
-  writeFileSync(join(root, "s2script.json"), JSON.stringify(pj));
+  writeFileSync(join(root, "plugins.json"), JSON.stringify(pj));
   const later = await fakeRegistry({ "@edge/rtv": ["1.0.0", "1.4.0", "2.0.0"], "@edge/old": ["1.0.0"] });
   const summary = await serverUpdate({ root, client: later });
   assert.equal(summary, "1 installed, 0 up to date, 1 removed");
@@ -159,7 +159,7 @@ test("a plugin changed by hand is left in place, not pruned", async () => {
   const root = serverDir({ "@edge/old": "^1.0.0" });
   await serverInstall({ root, client: reg });
   writeFileSync(join(root, "plugins", "_edge_old.s2sp"), "patched locally");
-  writeFileSync(join(root, "s2script.json"), JSON.stringify({ name: "t", dependencies: {} }));
+  writeFileSync(join(root, "plugins.json"), JSON.stringify({ name: "t", dependencies: {} }));
   const logs = [];
   await serverUpdate({ root, client: reg, log: (m) => logs.push(m) });
   assert.ok(existsSync(join(root, "plugins", "_edge_old.s2sp")));
@@ -170,11 +170,11 @@ test("a bad download changes nothing on disk", async () => {
   const reg = await fakeRegistry({ "@edge/a": ["1.0.0"], "@edge/b": ["1.0.0"] });
   const root = serverDir({ "@edge/a": "^1.0.0", "@edge/b": "^1.0.0" });
   await serverInstall({ root, client: reg });
-  const before = readFileSync(join(root, "s2script-lock.json"), "utf8");
+  const before = readFileSync(join(root, "plugins-lock.json"), "utf8");
   const later = await fakeRegistry({ "@edge/a": ["1.0.0", "1.1.0"], "@edge/b": ["1.0.0", "1.1.0"] });
   later.downloadS2sp = async (name, version) => (name === "@edge/b" ? Buffer.from("tampered") : s2sp(name, version));
   await assert.rejects(() => serverUpdate({ root, client: later }), /sha256 mismatch for @edge\/b@1\.1\.0/);
-  assert.equal(readFileSync(join(root, "s2script-lock.json"), "utf8"), before);
+  assert.equal(readFileSync(join(root, "plugins-lock.json"), "utf8"), before);
   assert.deepEqual(readdirSync(join(root, "plugins")).sort(), ["_edge_a.s2sp", "_edge_b.s2sp"], "no staged leftovers");
   assert.deepEqual(readFileSync(join(root, "plugins", "_edge_a.s2sp")), s2sp("@edge/a", "1.0.0"));
 });
@@ -202,7 +202,7 @@ test("server init manages published plugins and leaves the rest alone", async ()
   const report = await serverInit({ root, client: reg, name: "my-server" });
   assert.deepEqual(report.managed, [{ filename: "_edge_rtv.s2sp", name: "@edge/rtv", version: "1.2.0" }]);
   assert.deepEqual(report.unmanaged.map((u) => u.filename).sort(), ["_edge_local.s2sp", "broken.s2sp", "custom.s2sp"]);
-  const pj = JSON.parse(readFileSync(join(root, "s2script.json"), "utf8"));
+  const pj = JSON.parse(readFileSync(join(root, "plugins.json"), "utf8"));
   assert.deepEqual(pj, { name: "my-server", dependencies: { "@edge/rtv": "^1.2.0" }, autoUpdate: true });
   assert.equal(existsSync(join(root, "package.json")), false, "never a package.json npm would pick up");
   assert.deepEqual(versionsOf(root), { "@edge/rtv": "1.2.0" });
@@ -211,7 +211,7 @@ test("server init manages published plugins and leaves the rest alone", async ()
   assert.equal(await serverInstall({ root, client: reg }), "0 installed, 1 up to date, 0 removed");
 });
 
-test("s2script.json rejects ranges npm would reject", async () => {
+test("plugins.json rejects ranges npm would reject", async () => {
   const root = serverDir({ "@edge/rtv": "not a range" });
   assert.throws(() => readServerManifest(root), /invalid range "not a range"/);
 });

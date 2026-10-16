@@ -469,10 +469,10 @@ read-only server tokens can install restricted plugins. The registry half (acces
 bucket, gated reads, read-only tokens) is s2script-website PR #80. No runtime change; no live gate
 needed.
 
-## 2026-10-16 — Server s2script.json + s2script-lock.json, updated at startup
+## 2026-10-16 — Server plugins.json + plugins-lock.json, updated at startup
 
-A server can now list its plugins as npm-style `dependencies` in `addons/s2script/s2script.json`,
-with an npm-v3-shaped `s2script-lock.json` beside it. Its own names, not `package.json`, so
+A server can now list its plugins as npm-style `dependencies` in `addons/s2script/plugins.json`,
+with an npm-v3-shaped `plugins-lock.json` beside it. Not `package.json`, so
 `npm install` can never resolve those names against npmjs.com. `s2s server init` generates both
 from the installed plugins, and `s2s install` / `s2s update` work like npm's. At every startup the
 runtime (`core/src/server_update.rs`, started from `loader::set_plugins_dir`) resolves each range

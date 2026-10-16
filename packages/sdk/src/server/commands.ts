@@ -47,7 +47,7 @@ function caret(version: string): string {
 
 /**
  * `s2s install` in a server: with names, add them to dependencies (a bare name gets ^latest, as
- * npm does); without, install the lock exactly when it still matches s2script.json, else resolve,
+ * npm does); without, install the lock exactly when it still matches plugins.json, else resolve,
  * keeping every plugin the lock already has wherever its range still allows.
  */
 export async function serverInstall(opts: {
@@ -167,7 +167,7 @@ export interface InitReport {
 }
 
 /**
- * `s2s server init`: write s2script.json + s2script-lock.json for the plugins already installed.
+ * `s2s server init`: write plugins.json + plugins-lock.json for the plugins already installed.
  * A plugin becomes a dependency (^its version) when the registry publishes that exact version with
  * the same bytes; anything else (not published, or a local build) stays unmanaged and untouched.
  */

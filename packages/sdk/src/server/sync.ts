@@ -91,7 +91,7 @@ export async function resolveTargets(
 export function targetsFromLock(lock: ServerLock): Target[] {
   return Object.entries(lock.plugins).map(([key, p]) => {
     const sha = sha256HexFromIntegrity(p.integrity);
-    if (!sha) throw new Error(`s2script-lock.json: ${key} has an unsupported integrity ${p.integrity}`);
+    if (!sha) throw new Error(`plugins-lock.json: ${key} has an unsupported integrity ${p.integrity}`);
     const filename = key.slice(PLUGINS_SUBDIR.length + 1);
     return { name: p.name, version: p.version, filename: safeFilename({ ...p, filename }), url: p.resolved, sha256: sha };
   });

@@ -187,8 +187,8 @@ installs should use a read-only token (s2script.com → Deploy tokens) as `S2SCR
 
 ## Servers
 
-A game server can list its plugins as npm-style `dependencies` in `addons/s2script/s2script.json`,
-with an `s2script-lock.json` beside it. These are npm's shapes under s2script's own names, so npm
+A game server can list its plugins as npm-style `dependencies` in `addons/s2script/plugins.json`,
+with a `plugins-lock.json` beside it. These are npm's shapes under their own names, so npm
 never treats the folder as a Node project. `s2s server init` writes both from the plugins already
 installed. After that, `s2s install` installs exactly the lock, `s2s install <name>[@range]` adds a
 plugin, and `s2s update` moves each one to the newest version its range allows. The runtime runs

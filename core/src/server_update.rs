@@ -1,6 +1,6 @@
-//! Startup plugin update from the server's `s2script.json` + `s2script-lock.json`.
+//! Startup plugin update from the server's `plugins.json` + `plugins-lock.json`.
 //!
-//! When `addons/s2script/s2script.json` exists with `autoUpdate` on (the default), the runtime does what `s2s update` does before the first
+//! When `addons/s2script/plugins.json` exists with `autoUpdate` on (the default), the runtime does what `s2s update` does before the first
 //! plugin scan: resolve each `dependencies` range through the registry's install plan, download
 //! what changed, verify every sha256, swap the files into `plugins/`, and rewrite the lock. The
 //! steps and the lockfile bytes are the SDK's (packages/sdk/src/server/{sync,lock}.ts); both are
@@ -34,11 +34,11 @@ const LOCKFILE_VERSION: u64 = 3;
 const PLUGINS_SUBDIR: &str = "plugins";
 const STAGE_SUFFIX: &str = ".s2s-tmp";
 /// Not `package.json`: npm must never treat the addon folder as a Node project.
-const MANIFEST_FILE: &str = "s2script.json";
-const LOCK_FILE: &str = "s2script-lock.json";
+const MANIFEST_FILE: &str = "plugins.json";
+const LOCK_FILE: &str = "plugins-lock.json";
 
 // ---------------------------------------------------------------------------------------------
-// s2script.json
+// plugins.json
 // ---------------------------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,11 +52,11 @@ pub(crate) struct ServerManifest {
     pub timeout: Duration,
 }
 
-/// The server manifest in `text` (`s2script.json`: npm-style `dependencies` plus settings).
+/// The server manifest in `text` (`plugins.json`: npm-style `dependencies` plus settings).
 pub(crate) fn parse_manifest(text: &str, fallback_name: &str) -> Result<ServerManifest, String> {
-    let j: Value = serde_json::from_str(text).map_err(|e| format!("s2script.json: {e}"))?;
+    let j: Value = serde_json::from_str(text).map_err(|e| format!("plugins.json: {e}"))?;
     if !j.is_object() {
-        return Err("s2script.json: must be a JSON object".into());
+        return Err("plugins.json: must be a JSON object".into());
     }
     let s2 = &j;
     let mut dependencies = BTreeMap::new();
@@ -64,20 +64,20 @@ pub(crate) fn parse_manifest(text: &str, fallback_name: &str) -> Result<ServerMa
         None => {}
         Some(Value::Object(m)) => {
             for (name, range) in m {
-                let r = range.as_str().ok_or_else(|| format!("s2script.json: dependency {name} must be a range string"))?;
+                let r = range.as_str().ok_or_else(|| format!("plugins.json: dependency {name} must be a range string"))?;
                 dependencies.insert(name.clone(), r.to_string());
             }
         }
-        Some(_) => return Err("s2script.json: \"dependencies\" must be an object".into()),
+        Some(_) => return Err("plugins.json: \"dependencies\" must be an object".into()),
     }
     let mut with = BTreeMap::new();
     if let Some(w) = s2.get("with") {
-        let m = w.as_object().ok_or("s2script.json: \"with\" must be an object")?;
+        let m = w.as_object().ok_or("plugins.json: \"with\" must be an object")?;
         for (bundle, members) in m {
-            let arr = members.as_array().ok_or_else(|| format!("s2script.json: with[{bundle}] must be an array"))?;
+            let arr = members.as_array().ok_or_else(|| format!("plugins.json: with[{bundle}] must be an array"))?;
             let names = arr
                 .iter()
-                .map(|v| v.as_str().map(str::to_string).ok_or_else(|| format!("s2script.json: with[{bundle}] must hold names")))
+                .map(|v| v.as_str().map(str::to_string).ok_or_else(|| format!("plugins.json: with[{bundle}] must hold names")))
                 .collect::<Result<Vec<_>, _>>()?;
             with.insert(bundle.clone(), names);
         }
@@ -99,7 +99,7 @@ pub(crate) fn parse_manifest(text: &str, fallback_name: &str) -> Result<ServerMa
 }
 
 // ---------------------------------------------------------------------------------------------
-// s2script-lock.json
+// plugins-lock.json
 // ---------------------------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -121,11 +121,11 @@ pub(crate) struct Lock {
 }
 
 pub(crate) fn parse_lock(text: &str) -> Result<Lock, String> {
-    let j: Value = serde_json::from_str(text).map_err(|e| format!("s2script-lock.json: {e}"))?;
+    let j: Value = serde_json::from_str(text).map_err(|e| format!("plugins-lock.json: {e}"))?;
     if j.get("lockfileVersion").and_then(Value::as_u64) != Some(LOCKFILE_VERSION) {
-        return Err(format!("s2script-lock.json: lockfileVersion must be {LOCKFILE_VERSION}"));
+        return Err(format!("plugins-lock.json: lockfileVersion must be {LOCKFILE_VERSION}"));
     }
-    let packages = j.get("packages").and_then(Value::as_object).ok_or("s2script-lock.json: no \"packages\"")?;
+    let packages = j.get("packages").and_then(Value::as_object).ok_or("plugins-lock.json: no \"packages\"")?;
     let mut lock = Lock { name: j.get("name").and_then(Value::as_str).unwrap_or("").to_string(), ..Lock::default() };
     for (key, raw) in packages {
         if key.is_empty() {
@@ -148,7 +148,7 @@ pub(crate) fn parse_lock(text: &str) -> Result<Lock, String> {
             (Some(file), Some(name), Some(version), Some(resolved), Some(integrity)) if safe_filename(file) => {
                 lock.plugins.insert(key.clone(), LockedPlugin { name, version, resolved, integrity });
             }
-            _ => return Err(format!("s2script-lock.json: malformed entry {key:?}")),
+            _ => return Err(format!("plugins-lock.json: malformed entry {key:?}")),
         }
     }
     Ok(lock)
@@ -639,7 +639,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    const FIXTURE: &str = include_str!("../../packages/sdk/test/fixtures/server-lock/s2script-lock.json");
+    const FIXTURE: &str = include_str!("../../packages/sdk/test/fixtures/server-lock/plugins-lock.json");
 
     fn rt() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
@@ -880,7 +880,7 @@ mod tests {
     #[ignore]
     fn live_update_against_a_registry() {
         let root = PathBuf::from(std::env::var("S2S_E2E_ROOT").expect("S2S_E2E_ROOT"));
-        let cfg = load_config(&root, std::env::var("S2S_E2E_REGISTRY").ok()).unwrap().expect("an s2script.json with dependencies");
+        let cfg = load_config(&root, std::env::var("S2S_E2E_REGISTRY").ok()).unwrap().expect("a plugins.json with dependencies");
         let phase = Arc::new(Mutex::new(Phase::Running));
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         rt.block_on(run(cfg, http_get(std::env::var("S2SCRIPT_TOKEN").ok()), phase.clone()));
