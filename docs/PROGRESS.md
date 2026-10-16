@@ -448,3 +448,13 @@ The registry half (kind, claim validation, plan expansion, catalog folding, bund
 s2script-website PR #70, which ships first. Design: the website's
 `docs/superpowers/specs/2026-10-07-bundle-packages-design.md`. No runtime change; no live gate
 needed. Not yet published to the live registry.
+
+## 2026-10-16 — Source tarballs: `s2s deploy` uploads source, `s2s pack`
+
+Mirroring `npm publish`, every deploy now also uploads the package's source as `source.tgz`: an
+npm-shaped tarball (gzip+ustar, `package/` prefix, npm's fixed mtime and modes) whose files are
+chosen by npm-packlist's rules, verified identical to `npm pack --dry-run --json` across the
+monorepo's packages and a fixture per rule. The one deliberate difference is that `.env` files are
+never packed. `s2s pack [--dry-run] [--json]` lists or writes the same tarball. The registry half
+(storage, `GET /api/v1/download/source`, package-page link) is s2script-website PR #79. No runtime
+change; no live gate needed.
