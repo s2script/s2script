@@ -458,3 +458,13 @@ monorepo's packages and a fixture per rule. The one deliberate difference is tha
 never packed. `s2s pack [--dry-run] [--json]` lists or writes the same tarball. The registry half
 (storage, `GET /api/v1/download/source`, package-page link) is s2script-website PR #79. No runtime
 change; no live gate needed.
+
+## 2026-10-16 — Restricted packages: `s2s deploy --access`
+
+npm's access model: `s2s deploy --access restricted` (or `publishConfig.access`) publishes a scoped
+package that only its org's members can see or install. The CLI refuses an unscoped restricted
+package locally, and checks the registry's `/api/v1/capabilities` before uploading so an older
+registry can never publish it publicly. `s2s install` now sends the login/`S2SCRIPT_TOKEN`, so
+read-only server tokens can install restricted plugins. The registry half (access column, private
+bucket, gated reads, read-only tokens) is s2script-website PR #80. No runtime change; no live gate
+needed.
