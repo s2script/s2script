@@ -1,5 +1,53 @@
 # @s2script/cli
 
+## 0.29.0
+
+### Minor Changes
+
+- c42acca: `Plugins.install(names, { with })`, `Plugins.update(names?)`, `Plugins.remove(names)` and
+  `Plugins.outdated()` in `@s2script/sdk/plugins` manage the server's `plugins.json` from inside the
+  runtime (no Node.js needed). They back the new `sm plugins install|update|remove|outdated` console
+  commands in basecommands.
+- 3eb68cb: `s2s deploy --access public|restricted` and package.json `publishConfig.access`, as in npm: a
+  restricted package is visible only to its org's members. Only a scoped package can be restricted.
+  The CLI checks the registry's `/api/v1/capabilities` first and refuses a restricted deploy that
+  would go out public. `s2s install` now sends your login (or `S2SCRIPT_TOKEN`), so it can fetch
+  restricted packages. A workspace deploy no longer reports a 409 that is not a duplicate version
+  (for example `access_mismatch` or `kind_mismatch`) as "already published".
+- f452e36: `s2s deploy` now uploads the package's source alongside the build, as `npm publish` does: an
+  npm-shaped tarball (every file under `package/`) chosen with npm's own rules — package.json
+  `files`, `.npmignore`/`.gitignore`, and npm's always-in/never-in lists, plus `.env` files kept
+  out. The registry serves it from the package page. New `s2s pack [dir] [--dry-run] [--json]
+[--pack-destination <dir>]` lists or writes the same tarball, like `npm pack`.
+- a33fc98: A server can install a plugin without loading it: `s2s install <name> --disabled` (and
+  `Plugins.install(names, { disabled: true })`, behind `sm plugins install --disabled`) puts it in
+  `plugins/disabled/` and lists it under `"disabled"` in `plugins.json`, where the startup update
+  still keeps it current. New `s2s enable` / `s2s disable` (and `Plugins.enable/disable`, behind
+  `sm plugins enable|disable`) move an installed plugin between the folders without re-downloading.
+- adcf3c8: `Plugins.load("<folder>/<plugin id>")`, behind `sm plugins load fun/@edgegamers/jailbreak`, loads a
+  plugin kept in any folder under `plugins/` (`disabled/`, `fun/`, nested ones) for the current run
+  only. Only a folder prefix reaches into a folder, the id is mapped to its file for you, and
+  nothing outside `plugins/` is reachable. The file stays where it is, so a restart or `unload`
+  (which takes the same form) turns it off again. `PluginInfo.folder` names the folder in
+  `Plugins.list()`.
+- 773bfb6: Plugins no longer need an operator allow-list entry to use engine calls or hooks: the runtime's
+  `configs/permissions.json` is gone. `s2s build` now records `engine:calls` / `engine:hooks` in the
+  manifest from the plugin's gamedata on its own, so `s2script.permissions` no longer has to be
+  written in `package.json` (an authored value is still accepted).
+- 1f5e99a: Servers manage their registry plugins with `plugins.json` + `plugins-lock.json` in
+  `addons/s2script/`: npm's `dependencies` and lockfile shapes, under names npm never picks up.
+  `s2s install name[@range]` adds a plugin (creating `plugins.json` on first use, like npm), plain
+  `s2s install` installs exactly the lock, and the new `s2s update [names]` moves to the newest
+  version each range allows. `s2s server init` writes both files from plugins already installed. The
+  runtime does the same update at every startup.
+
+  **Breaking:** the `s2script-plugins.json` manifest and `s2s install --dir` / `--file` /
+  `--reviewed-only` are removed; `plugins.json` replaces them (`"reviewedOnly": true` in the file).
+
+### Patch Changes
+
+- 2d07988: Doc examples use the `[S2S]` chat tag instead of SourceMod's `[SM]`, matching the base plugins.
+
 ## 0.28.0
 
 ### Minor Changes

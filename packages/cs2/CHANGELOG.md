@@ -1,5 +1,20 @@
 # @s2script/cs2
 
+## 0.19.4
+
+### Patch Changes
+
+- 2d07988: Doc examples use the `[S2S]` chat tag instead of SourceMod's `[SM]`, matching the base plugins.
+- Updated dependencies [c42acca]
+- Updated dependencies [3eb68cb]
+- Updated dependencies [f452e36]
+- Updated dependencies [a33fc98]
+- Updated dependencies [adcf3c8]
+- Updated dependencies [773bfb6]
+- Updated dependencies [2d07988]
+- Updated dependencies [1f5e99a]
+  - @s2script/sdk@0.29.0
+
 ## 0.19.3
 
 ### Patch Changes
