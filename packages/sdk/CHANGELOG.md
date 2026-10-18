@@ -1,5 +1,12 @@
 # @s2script/cli
 
+## 0.29.2
+
+### Patch Changes
+
+- 4f343cb: A player's `sm` now answers as SourceMod's does: `sm plugins` lists the running plugins, `sm credits`
+  the credits, anything else the version banner. Nothing that changes the server.
+
 ## 0.29.1
 
 ### Patch Changes
