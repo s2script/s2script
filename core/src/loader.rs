@@ -762,6 +762,7 @@ fn resolve_config_path(id: &str) -> Result<PathBuf, String> {
 pub(crate) fn set_plugins_dir(path: &str) {
     // Before the first scan can be scheduled: package.json may update plugins/ (server_update.rs).
     crate::server_update::start(Path::new(path));
+    crate::sm_command::register();
     PLUGINS_DIR.with(|d| *d.borrow_mut() = Some(PathBuf::from(path)));
     let started = WORKER.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -1413,6 +1414,7 @@ fn schedule_periodic() {
 }
 
 pub(crate) fn poll_plugins() {
+    crate::sm_command::drain_reports();
     drain_command_intents();
     let (max_items, max_bytes, max_time) = POLICY.with(|p| (p.drain_items, p.drain_bytes, Duration::from_micros(p.drain_micros)));
     let mut budget = LoaderDrainBudget::new(max_items, max_bytes, max_time);

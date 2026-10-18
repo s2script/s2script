@@ -92,6 +92,10 @@ fn s2_concommand(
             return;
         }
         let name = args.get(0).to_rust_string_lossy(scope);
+        if name == crate::sm_command::NAME {
+            log_warn("WARN: a plugin tried to register `sm`, which belongs to the runtime — ignored");
+            return;
+        }
         let func_local = match v8::Local::<v8::Function>::try_from(args.get(1)) {
             Ok(f) => f,
             Err(_) => return,
@@ -181,6 +185,11 @@ pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
 /// isolate stay inside the host: snapshot the one handler, then the shared preamble owns
 /// re-entrancy, liveness, TryCatch, and the crash breadcrumb.
 pub(crate) fn dispatch_concommand(name: &str, slot: i32, args: &str, src: ReplySource) {
+    // `sm` is the runtime's own command (sm_command.rs), never a plugin's.
+    if name == crate::sm_command::NAME {
+        crate::sm_command::handle(slot, args);
+        return;
+    }
     let snap = CONCOMMANDS.with(|m| {
         m.borrow()
             .get(name)
@@ -392,6 +401,26 @@ mod tests {
         assert_eq!(eval_in_context_string("cl_test", "String(globalThis.__cl)"), "2|0|6");
         // Native still returns valid JSON directly.
         assert_eq!(eval_in_context_string("cl_test", "typeof __s2_commands_list()"), "string");
+        shutdown();
+    }
+
+    /// `sm` belongs to the runtime (sm_command.rs): a plugin cannot register it, and the server
+    /// console's `sm` prints the runtime's credits, never a plugin handler.
+    #[test]
+    fn sm_is_the_runtimes_command_not_a_plugins() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        load_body("smgrab", r#"
+            globalThis.__grabbed = "no";
+            __s2pkg_commands.Commands.register("sm", function () { globalThis.__grabbed = "yes"; });
+        "#, "{}");
+        dispatch_concommand("sm", -1, "", ReplySource::from_slot(-1));
+        dispatch_concommand("sm", 3, "plugins list", ReplySource::from_slot(3));
+        assert_eq!(eval_in_context_string("smgrab", "String(globalThis.__grabbed)"), "no");
+        let log = LOG.lock().unwrap().clone();
+        assert!(log.iter().any(|m| m.contains("belongs to the runtime")), "{log:?}");
+        assert!(log.iter().any(|m| m.contains("[S2S] s2script ")), "server console got the credits: {log:?}");
+        assert!(!log.iter().any(|m| m.contains("Plugins (")), "a player never gets the plugin list: {log:?}");
         shutdown();
     }
 

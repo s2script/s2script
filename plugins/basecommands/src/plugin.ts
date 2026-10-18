@@ -5,7 +5,6 @@ import {
   Admin,
   ADMFLAG,
   Server,
-  Plugins,
   Menu,
   MenuStyle,
   Translations,
@@ -26,7 +25,6 @@ export function OnPluginStart(): void {
   command.admin("sm_rcon", ADMFLAG.RCON, rcon);
   command.admin("sm_exec", ADMFLAG.CONFIG, execCfg);
   command.admin("sm_cvar", ADMFLAG.CONVARS, cvar);
-  command("sm", sm);
 
   topmenu.addTab({ id: "basecommands", title: "Server" });
   topmenu.addItem("basecommands", {
@@ -165,84 +163,5 @@ function cvar(cmd: Command): HookResultValue {
   if (/[\r\n{}]/.test(value)) { cmd.replyT("Invalid Cvar Value"); return HookResult.Handled; }
   if (!Server.setCvar(name, value)) { cmd.replyT("Invalid Cvar Value"); return HookResult.Handled; }
   cmd.replyT("Cvar Set", name, Server.getCvar(name) || value);
-  return HookResult.Handled;
-}
-
-/**
- * `sm plugins install|update|remove|outdated|enable|disable` — manage addons/s2script/plugins.json from the server
- * console or RCON. Never from a player, admin or not: these put new code on the server. The work
- * runs in the background; its report prints to the console when it finishes, and the loader picks
- * up the changed files on its own (install/update → load or hot-reload, remove → unload).
- */
-type RegistryAction = "install" | "update" | "remove" | "outdated" | "enable" | "disable";
-
-function registryOp(cmd: Command, action: RegistryAction): HookResultValue {
-  if (cmd.callerSlot >= 0) { cmd.replyT("Plugins Console Only"); return HookResult.Handled; }
-  const names: string[] = [];
-  const withMembers: string[] = [];
-  let disabled = false;
-  for (let i = 2; i < cmd.argCount; i++) {
-    const a = cmd.arg(i);
-    if (a === "--with" && i + 1 < cmd.argCount) withMembers.push(cmd.arg(++i));
-    else if (a === "--disabled") disabled = true;
-    else if (a) names.push(a);
-  }
-  if (action !== "update" && action !== "outdated" && names.length === 0) {
-    cmd.replyT("Usage Sm Plugins");
-    return HookResult.Handled;
-  }
-  const run =
-    action === "install" ? Plugins.install(names, { with: withMembers, disabled }) :
-    action === "update" ? Plugins.update(names) :
-    action === "remove" ? Plugins.remove(names) :
-    action === "enable" ? Plugins.enable(names) :
-    action === "disable" ? Plugins.disable(names) :
-    Plugins.outdated();
-  cmd.replyT("Plugins Working", action);
-  run.then(
-    (lines) => { for (const line of lines) cmd.reply(line); },
-    (e: unknown) => cmd.replyT("Plugins Op Failed", action, e instanceof Error ? e.message : String(e)),
-  );
-  return HookResult.Handled;
-}
-
-function sm(cmd: Command): HookResultValue {
-  const sub = cmd.arg(0).toLowerCase();
-  if (!sub || sub === "version" || sub === "credits") {
-    cmd.replyT("Sm Version");
-    cmd.replyT("Sm Repo");
-    return HookResult.Handled;
-  }
-  if (sub === "plugins") {
-    const action = cmd.arg(1).toLowerCase();
-    if (!action || action === "list") {
-      const list = Plugins.list();
-      cmd.replyT("Plugins Header", list.length);
-      list.forEach((p, i) => {
-        if (p.folder) cmd.replyT("Plugin List Row Running From Folder", i + 1, p.id, p.folder);
-        else cmd.replyT(p.loaded ? "Plugin List Row Running" : "Plugin List Row Unloaded", i + 1, p.id);
-      });
-      return HookResult.Handled;
-    }
-    if (
-      action === "install" || action === "update" || action === "remove" || action === "outdated" ||
-      action === "enable" || action === "disable"
-    ) {
-      return registryOp(cmd, action);
-    }
-    const isRoot = cmd.callerSlot < 0 || (() => {
-      const a = Admin.forSlot(cmd.callerSlot);
-      return !!a && a.hasFlags(ADMFLAG.ROOT);
-    })();
-    if (!isRoot) { cmd.replyT("No access"); return HookResult.Handled; }
-    const id = cmd.arg(2);
-    if (!id) { cmd.replyT("Usage Sm Plugins"); return HookResult.Handled; }
-    if (action === "unload") { cmd.replyT(Plugins.unload(id) ? "Unloading Plugin" : "Plugin Not Loaded", id); return HookResult.Handled; }
-    if (action === "reload") { cmd.replyT(Plugins.reload(id) ? "Reloading Plugin" : "Plugin Not Found", id); return HookResult.Handled; }
-    if (action === "load")   { cmd.replyT(Plugins.load(id)   ? "Loading Plugin"   : "Plugin Not Unloaded", id); return HookResult.Handled; }
-    cmd.replyT("Usage Sm Plugins");
-    return HookResult.Handled;
-  }
-  cmd.replyT("Sm Unknown Subcommand", sub);
   return HookResult.Handled;
 }

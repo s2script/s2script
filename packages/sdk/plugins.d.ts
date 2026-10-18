@@ -25,7 +25,6 @@ export interface PluginInfo {
  * Enumerate and drive the plugin set at runtime (list / load / unload / reload).
  * @example
  * import { Plugins } from "@s2script/sdk/plugins";
- * // plugins/basecommands/src/plugin.ts:126 — sm plugins list
  * for (const p of Plugins.list()) cmd.reply(p.id + " — " + p.state);
  */
 export declare const Plugins: {

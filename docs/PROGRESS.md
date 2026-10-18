@@ -566,3 +566,22 @@ or hooks but no authored `s2script.permissions`. An unknown authored value is st
 
 Core 1089 tests and the SDK 902 tests pass. The 7 removed core tests asserted the allow-list
 itself.
+
+## 2026-10-18 — `sm` is the runtime's own console command
+
+`sm` moved from basecommands into the core (`core/src/sm_command.rs`), as in SourceMod. The
+runtime registers it when the loader starts, so it works with no plugin loaded. `dispatch_concommand`
+intercepts it before the plugin command table, and `__s2_concommand` refuses the name, so no plugin
+can shadow it.
+
+It is a server console command:
+- the server console and RCON get `sm version`, `sm plugins list|load|unload|reload` and the
+  registry operations `install|update|remove|outdated|enable|disable`;
+- a player who types `sm` in their own console gets the version and credits only, admins included.
+  Anything else prints one line pointing at `sm_rcon sm …`.
+
+The command stays registered client-executable, because that is the only way a player's `sm`
+reaches the core to get the credits. The split is by caller slot. Registry operations run on their
+own thread (`server_update::spawn_console_op`); their report is queued and printed from the
+loader's poll on the main thread. basecommands loses its `sm` handler and the phrases only it used.
+The `Plugins` API is unchanged.

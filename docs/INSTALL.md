@@ -199,9 +199,14 @@ sm plugins remove @edge/rtv             // drop it from plugins.json; its file i
 sm plugins outdated                     // current / wanted / latest for each plugin
 ```
 
-They run in the background and print their report when done. The loader picks up the changed
-files on its own: a new plugin loads, an updated one hot-reloads, a removed one unloads. No restart.
-Players cannot run them, admins included; they only answer the console and RCON.
+The registry operations (install, update, remove, enable, disable, outdated) run in the background
+and print their report when done. The loader picks up the changed files on its own: a new plugin
+loads, an updated one hot-reloads, a removed one unloads. No restart.
+
+`sm` is built into the runtime, as in SourceMod, so it works with no plugin loaded. It is a server
+console command: everything above answers only the server console and RCON. A player who types `sm`
+in their own console gets the version and credits, nothing more, admins included. In game, an
+admin runs the rest through RCON: `sm_rcon sm plugins list`.
 
 From a shell, the same files work like npm:
 

@@ -63,6 +63,7 @@ mod schema_catalog;
 mod sdkhooks;
 mod sdkhooks_transmit;
 mod server_update;
+mod sm_command;
 mod sqldb;
 mod ui_pool;
 mod usermsg;

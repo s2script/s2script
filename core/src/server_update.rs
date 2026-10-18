@@ -992,6 +992,38 @@ pub(crate) fn console_token() -> Option<String> {
     registry_token()
 }
 
+/// Lines a background `sm plugins …` operation produced, waiting for the main thread to print
+/// them (the console logger is only reachable there). Drained by `take_console_report`.
+static CONSOLE_REPORT: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Run a registry operation for the `sm` console command on its own thread. Its report (or the
+/// reason it failed) is queued for `take_console_report`; the slot is released when it ends.
+pub(crate) fn spawn_console_op(root: PathBuf, op: Op, token: Option<String>, label: &str) -> Result<(), String> {
+    try_begin_op()?;
+    let label = label.to_string();
+    let spawned = std::thread::Builder::new()
+        .name("s2s-sm-plugins".into())
+        .spawn(move || {
+            let lines = match run_op_blocking(root, op, token) {
+                Ok(()) => take_op_result(),
+                Err(e) => vec![format!("sm plugins {label} failed: {e}")],
+            };
+            let mut report = CONSOLE_REPORT.lock().unwrap();
+            report.extend(lines);
+            report.push(format!("sm plugins {label}: done"));
+        });
+    if let Err(e) = spawned {
+        abort_op();
+        return Err(format!("could not start the operation: {e}"));
+    }
+    Ok(())
+}
+
+/// The queued report lines of finished `sm` console operations (taken once, main thread).
+pub(crate) fn take_console_report() -> Vec<String> {
+    std::mem::take(&mut *CONSOLE_REPORT.lock().unwrap())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
