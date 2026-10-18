@@ -585,3 +585,11 @@ reaches the core to get the credits. The split is by caller slot. Registry opera
 own thread (`server_update::spawn_console_op`); their report is queued and printed from the
 loader's poll on the main thread. basecommands loses its `sm` handler and the phrases only it used.
 The `Plugins` API is unchanged.
+
+## 2026-10-18 — A player's `sm` matches SourceMod's
+
+A player's `sm` now answers exactly as SourceMod's `PlayerManager::OnClientCommand` does:
+`sm plugins` lists the running plugins, `sm credits` the credits, and anything else the version
+banner (version, "To see running plugins, type "sm plugins"", "To see credits, type "sm credits"",
+the website). The extra line that pointed players at `sm_rcon` is gone; SourceMod has none. The
+server console gains `sm credits`, split from `sm version`.

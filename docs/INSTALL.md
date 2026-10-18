@@ -205,8 +205,9 @@ loads, an updated one hot-reloads, a removed one unloads. No restart.
 
 `sm` is built into the runtime, as in SourceMod, so it works with no plugin loaded. It is a server
 console command: everything above answers only the server console and RCON. A player who types `sm`
-in their own console gets the version and credits, nothing more, admins included. In game, an
-admin runs the rest through RCON: `sm_rcon sm plugins list`.
+in their own console gets what SourceMod gives one: `sm plugins` lists the running plugins,
+`sm credits` shows the credits, and anything else shows the version. Nothing that changes the
+server, admins included; in game, an admin uses `sm_rcon sm …`.
 
 From a shell, the same files work like npm:
 

@@ -6,8 +6,10 @@
 //! - the server console and RCON get everything: `sm version`, `sm plugins list|load|unload|
 //!   reload`, and the registry operations `sm plugins install|update|remove|outdated|enable|
 //!   disable`;
-//! - a player who types `sm` in their own console gets the credits only, admins included. An
-//!   in-game admin runs the rest through `sm_rcon sm …`.
+//! - a player who types `sm` in their own console gets what SourceMod gives one (its
+//!   `PlayerManager::OnClientCommand`): `sm plugins` lists the running plugins, `sm credits` the
+//!   credits, anything else the version banner. Nothing that changes the server, admins included;
+//!   an in-game admin runs the rest through `sm_rcon sm …`.
 //!
 //! The command is registered client-executable so a player's `sm` reaches here at all; the split
 //! between the two is decided by the caller slot, not by hiding the command.
@@ -32,13 +34,25 @@ pub(crate) fn register() {
     }
 }
 
-fn credits() -> [String; 2] {
-    [
-        format!(
-            "[S2S] s2script {} — a TypeScript plugin framework for Source 2, by Gabriel Hirakawa.",
-            env!("CARGO_PKG_VERSION")
-        ),
-        "[S2S] github.com/s2script/s2script".to_string(),
+fn version_line() -> String {
+    format!("s2script {}, by Gabriel Hirakawa", env!("CARGO_PKG_VERSION"))
+}
+
+/// What a bare `sm` prints, as SourceMod's does.
+fn banner() -> Vec<String> {
+    vec![
+        version_line(),
+        "To see running plugins, type \"sm plugins\"".to_string(),
+        "To see credits, type \"sm credits\"".to_string(),
+        "Visit https://www.s2script.com/".to_string(),
+    ]
+}
+
+fn credits() -> Vec<String> {
+    vec![
+        "s2script would not be possible without:".to_string(),
+        " Gabriel Hirakawa".to_string(),
+        "s2script is open source under the MIT or Apache-2.0 license.".to_string(),
     ]
 }
 
@@ -71,14 +85,23 @@ pub(crate) fn handle(slot: i32, args: &str) {
     }
 }
 
-/// A player's `sm`, admin or not: the credits, and a pointer to `sm_rcon` for anything else.
+/// A player's `sm`, admin or not, as SourceMod answers one: the running plugins, the credits, or
+/// the version banner. Read-only; nothing here changes the server.
 fn client_lines(args: &str) -> Vec<String> {
-    let mut lines = credits().to_vec();
-    let sub = args.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
-    if !sub.is_empty() && sub != "version" && sub != "credits" {
-        lines.push("[S2S] The rest of sm runs from the server console. In game, admins use: sm_rcon sm …".to_string());
+    match args.split_whitespace().next().unwrap_or("").to_ascii_lowercase().as_str() {
+        "plugins" => {
+            let running: Vec<String> = crate::loader::plugin_list()
+                .into_iter()
+                .filter(|(_, state)| state == "running")
+                .map(|(id, _)| id)
+                .collect();
+            let mut lines = vec![format!("Listing {} plugin(s):", running.len())];
+            lines.extend(running.iter().enumerate().map(|(i, id)| format!("  {} \"{id}\"", i + 1)));
+            lines
+        }
+        "credits" => credits(),
+        _ => banner(),
     }
-    lines
 }
 
 /// The server console's `sm`: the lines to print for `args`.
@@ -86,13 +109,13 @@ fn run(args: &str) -> Vec<String> {
     let argv: Vec<&str> = args.split_whitespace().collect();
     let sub = argv.first().map(|s| s.to_ascii_lowercase()).unwrap_or_default();
     match sub.as_str() {
-        "" | "version" | "credits" => {
-            let mut lines = credits().to_vec();
-            if sub.is_empty() {
-                lines.push("[S2S] Commands: sm version | sm plugins …".to_string());
-            }
+        "" => {
+            let mut lines = vec![version_line()];
+            lines.push("Commands: sm version | sm credits | sm plugins …".to_string());
             lines
         }
+        "version" => vec![version_line(), "Visit https://www.s2script.com/".to_string()],
+        "credits" => credits(),
         "plugins" => plugins(&argv[1..]),
         other => vec![format!("[S2S] Unknown sub-command '{other}'. Try: sm plugins list")],
     }
@@ -186,13 +209,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bare_sm_shows_credits_and_commands() {
+    fn server_sm_shows_version_commands_and_credits() {
         let lines = run("");
-        assert!(lines[0].starts_with("[S2S] s2script "), "{lines:?}");
-        assert_eq!(lines[1], "[S2S] github.com/s2script/s2script");
-        assert!(lines[2].contains("sm plugins"));
-        assert_eq!(run("version").len(), 2);
-        assert_eq!(run("CREDITS").len(), 2);
+        assert_eq!(lines[0], version_line());
+        assert!(lines[1].contains("sm plugins"), "{lines:?}");
+        assert_eq!(run("version")[0], version_line());
+        assert_eq!(run("CREDITS"), credits());
     }
 
     #[test]
@@ -227,15 +249,22 @@ mod tests {
         assert_eq!(registry_request("enable", &[]), Err(USAGE.to_string()));
     }
 
+    /// SourceMod's client `sm`: `plugins` lists, `credits` credits, anything else the banner.
+    /// Nothing a player types reaches an action, admin or not.
     #[test]
-    fn a_player_only_ever_gets_the_credits() {
-        assert_eq!(client_lines(""), credits().to_vec());
-        assert_eq!(client_lines("version"), credits().to_vec());
-        for args in ["plugins list", "plugins install @evil/x", "plugins unload @s2script/basecommands"] {
+    fn a_player_gets_what_sourcemod_gives_one() {
+        assert_eq!(client_lines(""), banner());
+        assert_eq!(client_lines("version"), banner());
+        assert_eq!(client_lines("CREDITS"), credits());
+        for args in ["plugins install @evil/x", "plugins unload @s2script/basecommands", "plugins reload x"] {
             let lines = client_lines(args);
-            assert_eq!(lines[..2], credits(), "{args}");
-            assert_eq!(lines.len(), 3, "{args}");
-            assert!(lines[2].contains("sm_rcon"), "{args}");
+            assert!(lines[0].starts_with("Listing "), "{args}: {lines:?}");
         }
+        for args in ["frobnicate", "exts", "plugins_install"] {
+            assert_eq!(client_lines(args), banner(), "{args}");
+        }
+        let banner = banner();
+        assert!(banner.iter().any(|l| l == "To see running plugins, type \"sm plugins\""));
+        assert!(!banner.iter().chain(credits().iter()).any(|l| l.contains("rcon")), "no admin call-out");
     }
 }

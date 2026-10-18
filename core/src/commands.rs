@@ -415,12 +415,11 @@ mod tests {
             __s2pkg_commands.Commands.register("sm", function () { globalThis.__grabbed = "yes"; });
         "#, "{}");
         dispatch_concommand("sm", -1, "", ReplySource::from_slot(-1));
-        dispatch_concommand("sm", 3, "plugins list", ReplySource::from_slot(3));
+        dispatch_concommand("sm", 3, "plugins unload smgrab", ReplySource::from_slot(3));
         assert_eq!(eval_in_context_string("smgrab", "String(globalThis.__grabbed)"), "no");
         let log = LOG.lock().unwrap().clone();
         assert!(log.iter().any(|m| m.contains("belongs to the runtime")), "{log:?}");
-        assert!(log.iter().any(|m| m.contains("[S2S] s2script ")), "server console got the credits: {log:?}");
-        assert!(!log.iter().any(|m| m.contains("Plugins (")), "a player never gets the plugin list: {log:?}");
+        assert!(log.iter().any(|m| m.starts_with("s2script ")), "server console got the version: {log:?}");
         shutdown();
     }
 
