@@ -3,7 +3,8 @@
 (function () {
   var UserCmd = globalThis.__s2pkg_usercmd && globalThis.__s2pkg_usercmd.UserCmd;
   var Clients = globalThis.__s2pkg_clients && globalThis.__s2pkg_clients.Clients;
-  var IN_SCORE = 1n << 16n;
+  // InputBitMask_t.IN_SCORE (schema-enums.json): bit 33. Bit 16 is IN_SPEED, the walk key.
+  var IN_SCORE = 1n << 33n;
   var states = {};
   var hooked = false;
 
