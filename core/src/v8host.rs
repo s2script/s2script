@@ -670,6 +670,85 @@ pub(crate) fn jobs_clone_plugin_context(owner: &str) -> Option<v8::Global<v8::Co
     PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
 }
 
+// ---------------------------------------------------------------------------
+// Profiler hooks (`sm prof`): installed only while a session records.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    // rusty_v8's `set_promise_hook` takes a non-null hook, so it can install one but never remove
+    // it again; V8's own `SetPromiseHook(nullptr)` removes it. Same symbol, nullable signature
+    // (`Option<fn>` is ABI-identical to a nullable function pointer).
+    fn v8__Isolate__SetPromiseHook(isolate: v8::UnsafeRawIsolatePtr, hook: Option<v8::PromiseHook>);
+}
+
+unsafe extern "C" fn profiler_gc_prologue(
+    _isolate: v8::UnsafeRawIsolatePtr,
+    ty: v8::GCType,
+    _flags: v8::GCCallbackFlags,
+    _data: *mut std::ffi::c_void,
+) {
+    let kind = match ty {
+        v8::GCType::kGCTypeScavenge => "GC: scavenge (young generation)",
+        v8::GCType::kGCTypeMinorMarkSweep => "GC: minor mark-sweep",
+        v8::GCType::kGCTypeMarkSweepCompact => "GC: mark-sweep-compact (full)",
+        v8::GCType::kGCTypeIncrementalMarking => "GC: incremental marking step",
+        v8::GCType::kGCTypeProcessWeakCallbacks => "GC: weak callbacks",
+        _ => "GC",
+    };
+    let _ = std::panic::catch_unwind(|| crate::profiler::gc_begin(kind));
+}
+
+unsafe extern "C" fn profiler_gc_epilogue(
+    _isolate: v8::UnsafeRawIsolatePtr,
+    _ty: v8::GCType,
+    _flags: v8::GCCallbackFlags,
+    _data: *mut std::ffi::c_void,
+) {
+    let _ = std::panic::catch_unwind(crate::profiler::gc_end);
+}
+
+/// Charge each async continuation to the plugin whose context created its promise. Every
+/// continuation runs inside the one shared microtask checkpoint, so without this the profile could
+/// only say "async code ran".
+unsafe extern "C" fn profiler_promise_hook(
+    ty: v8::PromiseHookType,
+    promise: v8::Local<v8::Promise>,
+    _parent: v8::Local<v8::Value>,
+) {
+    match ty {
+        v8::PromiseHookType::Before => {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut storage = unsafe { v8::CallbackScope::new(promise) };
+                let scope = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
+                let ctx = promise.get_creation_context(&scope);
+                let owner = ctx.as_ref().and_then(|c| c.get_slot::<PluginId>()).map(|p| p.0.clone());
+                crate::profiler::async_begin(owner.as_deref().unwrap_or(crate::profiler::FRAMEWORK));
+            }));
+        }
+        v8::PromiseHookType::After => {
+            let _ = std::panic::catch_unwind(crate::profiler::async_end);
+        }
+        _ => {}
+    }
+}
+
+/// Install (`on`) or remove the profiler's V8 hooks. A no-op when V8 is busy or absent: the
+/// profiler then records spans without GC/async detail rather than failing.
+pub(crate) fn profiler_hooks(on: bool) {
+    let _ = with_host_isolate(|isolate| {
+        let data = std::ptr::null_mut();
+        if on {
+            isolate.add_gc_prologue_callback(profiler_gc_prologue, data, v8::GCType::kGCTypeAll);
+            isolate.add_gc_epilogue_callback(profiler_gc_epilogue, data, v8::GCType::kGCTypeAll);
+        } else {
+            isolate.remove_gc_prologue_callback(profiler_gc_prologue, data);
+            isolate.remove_gc_epilogue_callback(profiler_gc_epilogue, data);
+        }
+        let hook: Option<v8::PromiseHook> = if on { Some(profiler_promise_hook) } else { None };
+        unsafe { v8__Isolate__SetPromiseHook(isolate.as_raw_isolate_ptr(), hook) };
+    });
+}
+
 /// Combined lazy-detour reconciler.  Desired = any onGameFrame subscriber OR any pending async
 /// OR the plugin watcher is active (once a plugins dir is set, the `GameFrame` Post hook must fire
 /// every frame so `loader::poll_plugins` runs — otherwise, with no plugin loaded there is no
@@ -679,7 +758,8 @@ pub(crate) fn jobs_clone_plugin_context(owner: &str) -> Option<v8::Global<v8::Co
 pub(crate) fn refresh_detour() {
     let desired = FRAME.with(|f| f.borrow().enabled_count() > 0)
         || async_pending() > 0
-        || crate::loader::is_watching();
+        || crate::loader::is_watching()
+        || crate::profiler::wants_frames();
     let installed = DETOUR_INSTALLED.with(|c| c.get());
     if desired == installed {
         return;
@@ -2205,6 +2285,7 @@ fn s2_iface_call(
                 Some(argv) => {
                     let f = v8::Local::new(tc, &method_g);
                     let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+                    let _prof = crate::profiler::span_lazy(&producer_id, || format!("interface {name}.{method}()"));
                     match f.call(tc, recv, &argv) {
                         None => {
                             // Producer method threw — capture its message (absorbed when tc drops).
@@ -2539,6 +2620,7 @@ fn s2_iface_forward(
             if let Some(payload) = iface_from_json(tc, &payload_json) {
                 let f = v8::Local::new(tc, &handler_g);
                 let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+                let _prof = crate::profiler::span_lazy(&consumer, || format!("interface event {name}.{event}"));
                 let result = f.call(tc, recv, &[payload]);
                 if let Some(result) = result {
                     if contract.is_some() && observe_thenable(tc, result) {
@@ -3115,6 +3197,7 @@ pub(crate) fn dispatch_pending_topmenu_select() {
             let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
             let slot_val: v8::Local<v8::Value> = v8::Number::new(tc, slot as f64).into();
             let func = v8::Local::new(tc, &global);
+            let _prof = crate::profiler::span(&owner, "TopMenu select");
             if func.call(tc, recv, &[slot_val]).is_none() {
                 let msg = tc.exception().map(|e| e.to_rust_string_lossy(&*tc)).unwrap_or_else(|| "handler threw".into());
                 log_warn(&format!("WARN: dispatch_pending_topmenu_select('{}'): {}", id, msg));
@@ -5610,6 +5693,10 @@ pub(crate) fn dispatch_onframe(
                 owner,
                 if phase == Phase::Pre { "OnGameFrame:pre" } else { "OnGameFrame:post" },
             );
+            let _prof = crate::profiler::span(
+                owner,
+                if phase == Phase::Pre { "OnGameFrame (pre)" } else { "OnGameFrame (post)" },
+            );
 
             // Fresh HandleScope + ContextScope on the OWNER's context.
             let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
@@ -5763,6 +5850,17 @@ struct TimerCallback {
     interval_ms: Option<u64>,
 }
 
+/// The profiler's name for a callback timer: its function and where it is defined.
+fn timer_label(scope: &mut v8::PinScope, f: v8::Local<v8::Function>, interval_ms: Option<u64>) -> String {
+    let name = f.get_name(scope).to_rust_string_lossy(scope);
+    let name = if name.is_empty() { "(anonymous)".to_string() } else { name };
+    let line = f.get_script_line_number().map(|l| l + 1).unwrap_or(0);
+    match interval_ms {
+        Some(ms) => format!("timer every {ms}ms: {name} (line {line})"),
+        None => format!("timer: {name} (line {line})"),
+    }
+}
+
 /// Fire a callback timer in its OWNER's context. Mirrors `resolve_or_drop`'s liveness guard exactly
 /// — never call into a disposed/replaced context. Returns false when the owner is gone, which tells
 /// the drain to drop the timer instead of re-arming it (a repeating timer whose plugin unloaded must
@@ -5788,6 +5886,8 @@ fn fire_timer_cb(host: &mut Host, entry: &TimerCallback) -> bool {
     let tc = &mut tc;
     let f = v8::Local::new(tc, &entry.cb);
     let recv: v8::Local<v8::Value> = v8::undefined(tc).into();
+    let owner = entry.owner.as_ref().map_or(crate::profiler::FRAMEWORK, |(id, _)| id.as_str());
+    let _prof = crate::profiler::span_lazy(owner, || timer_label(tc, f, entry.interval_ms));
     if f.call(tc, recv, &[]).is_none() {
         // A throwing timer callback must not kill the timer system or the frame. Report and carry
         // on — the same per-handler containment posture the multiplexer uses.
@@ -6067,6 +6167,7 @@ pub(crate) fn frame_async_drain() {
         let ctx_local = v8::Local::new(hs, &host.context);
         let scope = &mut v8::ContextScope::new(hs, ctx_local);
         MICROTASK_DRAIN_NEEDED.with(|v| v.set(false));
+        let _prof = crate::profiler::framework("microtask checkpoint");
         scope.perform_microtask_checkpoint();
 
         // NOW deregister the conns whose terminal signal arrived above. Every continuation queued by
@@ -6450,6 +6551,8 @@ pub(crate) fn register_process_singletons() {
     reg("DETOUR_INSTALLED", BeforeIsolateDrop, || {
         DETOUR_INSTALLED.with(|c| c.set(false))
     });
+    // A running profile holds a V8 inspector session: drop it while the isolate is alive.
+    reg("PROFILER", BeforeIsolateDrop, crate::profiler::shutdown);
 
     // ---- AfterIsolateDrop: pure Rust, no V8 handles. ----
 

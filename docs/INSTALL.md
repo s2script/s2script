@@ -234,6 +234,13 @@ plugins with one `s2s install`.
 
 Plugins declare `s2script.apiVersion` (today `"1.x"`). The host refuses a mismatched **major** at load time.
 
+## Finding what slows the server
+
+If the server logs `UNEXPECTED LONG FRAME` or players feel hitches, run `sm prof start 300` from the
+server console, wait for the hitch, then `sm prof stop`. The report says whether s2script caused the
+longest frame and, if it did, which plugin and callback. Add `js` (`sm prof start 60 js`) to see the
+slow function and line. See [PROFILING.md](PROFILING.md).
+
 ## After a CS2 update
 
 - Re-check `gameinfo.gi` — a full game re-download often removes the Metamod SearchPath; re-apply the patch above.

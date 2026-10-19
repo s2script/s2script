@@ -593,3 +593,29 @@ A player's `sm` now answers exactly as SourceMod's `PlayerManager::OnClientComma
 banner (version, "To see running plugins, type "sm plugins"", "To see credits, type "sm credits"",
 the website). The extra line that pointed players at `sm_rcon` is gone; SourceMod has none. The
 server console gains `sm credits`, split from `sm version`.
+
+## 2026-10-19 — `sm prof`: the runtime profiler
+
+An idle server logged `UNEXPECTED LONG FRAME DETECTED: 70.53ms elapsed, 0.10ms sim time`, and
+nothing could say whether s2script caused it. `sm prof` (as in SourceMod) now can.
+
+`sm prof start [seconds] [js] | stop | status | dump [rows] | clear`, server console / RCON only.
+Every dispatch entry, every per-plugin JS entry (fan-outs, frame handlers, SDKHooks, timers,
+interface calls and forwards, TopMenu, Engine.function hooks, load / config reload / unload) and the
+frame's own phases open a span charged to a plugin, the framework or V8's GC. Self time excludes
+nested owners. While recording, GC callbacks and a promise hook are installed; the hook charges each
+async continuation to the plugin whose context created the promise (all continuations otherwise run
+in one shared microtask checkpoint). The `GameFrame` hook stays on, and time is cut into frame
+windows at each PRE, so the report gives each frame's interval and s2script's share of it, with a
+verdict on the longest frame.
+
+`js` adds V8's sampling profiler through the inspector protocol (rusty_v8 binds the inspector, not
+`CpuProfiler`), at 250 µs. Plugin bundles are now compiled as `s2s://<id>/plugin.js`, so samples and
+stack traces name the plugin instead of `<anonymous>`.
+
+On stop, a separate thread writes `data/profiles/prof-<utc>.txt`, `.trace.json` (Perfetto /
+chrome://tracing) and, with `js`, `.cpuprofile` (DevTools / speedscope). Off, a span is one
+thread-local bool load. The timeline is capped at 1,000,000 spans; totals and the ten worst frames
+are not. Operator guide: `docs/PROFILING.md`. Spec and plan: `docs/superpowers/{specs,plans}/2026-10-19-profiler*`.
+
+Core tests: 1116 pass, 9 ignored (21 new: 19 profiler, 2 `sm prof`). Live gate pending.

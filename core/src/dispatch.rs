@@ -273,6 +273,7 @@ where
         let _crash_guard = instrument
             .breadcrumb
             .map(|tag| crate::crash::breadcrumb::enter_dispatch(owner, tag));
+        let _prof = crate::profiler::span(owner, label);
 
         let ctx_local = v8::Local::new(parent, &g_ctx);
         let scope = &mut v8::ContextScope::new(parent, ctx_local);
@@ -393,6 +394,7 @@ where
             let _crash_guard = instrument
                 .breadcrumb
                 .map(|tag| crate::crash::breadcrumb::enter_dispatch(owner, tag));
+            let _prof = crate::profiler::span(owner, label);
 
             let mut hs_storage = v8::HandleScope::new(isolate);
             let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();

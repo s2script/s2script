@@ -82,6 +82,7 @@ pub(super) fn s2_handoff_take(
 ///
 /// Panics only if called before `init` (no isolate yet) — an internal invariant, not an FFI path.
 pub(crate) fn create_plugin_context(id: &str) -> u64 {
+    let _prof = crate::profiler::span(id, "load: create context + preludes");
     HOST.with(|h| {
         let mut borrow = h.borrow_mut();
         let host = borrow
@@ -379,6 +380,7 @@ pub(super) fn config_values_match(id: &str, values_json: &str) -> bool {
 }
 
 pub(super) fn apply_config_snapshot(id: &str, override_json: Option<&str>, initial: bool) {
+    let _prof = crate::profiler::span(id, "config reload (config.onChange)");
     // (1) Get this plugin's stored config decls (empty → nothing to re-materialize, but still fire).
     let decls = PLUGINS.with(|p| p.borrow().get(id).map(|pi| pi.config_decls.clone()));
     let Some(decls) = decls else { return };
@@ -485,11 +487,17 @@ enum LoadStart {
 ///
 /// Degrade-never-crash: a compile/run error logs a named WARN and tears down; no exception propagates
 /// (the whole JS run is under a `TryCatch`).
+/// The script name a plugin's bundle is compiled under.
+pub(crate) fn plugin_script_url(id: &str) -> String {
+    format!("s2s://{id}/plugin.js")
+}
+
 pub(crate) fn load_plugin_js(id: &str, plugin_js: &str, config_values_json: &str) {
     load_plugin_js_prepared(id, plugin_js, config_values_json, None);
 }
 pub(crate) fn load_plugin_js_prepared(id: &str, plugin_js: &str, config_values_json: &str,
     receipt: Option<crate::engine_functions::registry::PreparedOwnerReceipt>) {
+    let _prof = crate::profiler::span(id, "load: evaluate + OnPluginStart");
     // Defensive guard: if the plugin is already loaded (e.g. the caller is performing a
     // reload but did not call unload_plugin first), tear it down now so the old handler
     // Global/context can never leak into the new instance.  The loader's explicit
@@ -560,7 +568,11 @@ pub(crate) fn load_plugin_js_prepared(id: &str, plugin_js: &str, config_values_j
             let Some(code) = v8::String::new(tc, &wrapper) else {
                 break 'blk LoadStart::Refused("failed to intern source".into());
             };
-            let ret = match v8::Script::compile(tc, code, None).and_then(|s| s.run(tc)) {
+            // Name the bundle after its plugin: stack traces and JS profiles (`sm prof start js`) then
+            // say which plugin a function belongs to instead of `<anonymous>`.
+            let origin = v8::String::new(tc, &plugin_script_url(id))
+                .map(|name| v8::ScriptOrigin::new(tc, name.into(), 0, 0, false, 0, None, false, false, false, None));
+            let ret = match v8::Script::compile(tc, code, origin.as_ref()).and_then(|s| s.run(tc)) {
                 Some(r) => r,
                 None => {
                     let msg = tc
@@ -702,6 +714,7 @@ pub fn unload_all() {
 }
 
 pub(crate) fn unload_plugin(id: &str) {
+    let _prof = crate::profiler::span(id, "unload: OnPluginEnd + teardown");
     crate::crash::breadcrumb::plugin_unloaded(id);
 
     // Phase-aware entry (design spec §5.4): a plugin still LOADING never reached Active — it has no

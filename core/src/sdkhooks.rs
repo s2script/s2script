@@ -626,6 +626,7 @@ where
                 continue;
             };
             let _crash_guard = crate::crash::breadcrumb::enter_dispatch(owner, label);
+            let _prof = crate::profiler::span(owner, label);
             let mut hs_storage = v8::HandleScope::new(isolate);
             let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
             let hs = &mut hs;

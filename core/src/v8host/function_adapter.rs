@@ -2306,6 +2306,7 @@ fn invoke_wrapper(
         sub.mode,
     )?;
     let view = view(&mut tc, dispatch, &sub.binding, id)?;
+    let _prof = crate::profiler::span(&sub.owner.id, "Engine.function hook");
     let function = v8::Local::new(&mut tc, &sub.wrapper);
     let recv = v8::undefined(&mut tc);
     let value = function.call(&mut tc, recv.into(), &[view.into()]);

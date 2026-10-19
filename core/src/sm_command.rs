@@ -111,12 +111,13 @@ fn run(args: &str) -> Vec<String> {
     match sub.as_str() {
         "" => {
             let mut lines = vec![version_line()];
-            lines.push("Commands: sm version | sm credits | sm plugins …".to_string());
+            lines.push("Commands: sm version | sm credits | sm plugins … | sm prof …".to_string());
             lines
         }
         "version" => vec![version_line(), "Visit https://www.s2script.com/".to_string()],
         "credits" => credits(),
         "plugins" => plugins(&argv[1..]),
+        "prof" => prof(&argv[1..]),
         other => vec![format!("[S2S] Unknown sub-command '{other}'. Try: sm plugins list")],
     }
 }
@@ -142,6 +143,45 @@ fn plugins(argv: &[&str]) -> Vec<String> {
         }
         _ => vec![USAGE.to_string()],
     }
+}
+
+const PROF_USAGE: &str = "Usage: sm prof start [seconds] [js] | stop | status | dump [rows] | clear";
+
+/// `sm prof …`: the runtime's profiler (see `profiler`). Server console / RCON only.
+fn prof(argv: &[&str]) -> Vec<String> {
+    let action = argv.first().map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+    match action.as_str() {
+        "start" => match prof_options(&argv[1..]) {
+            Ok(options) => crate::profiler::request(crate::profiler::Request::Start(options)),
+            Err(e) => vec![e],
+        },
+        "stop" => crate::profiler::request(crate::profiler::Request::Stop),
+        "status" => crate::profiler::status(),
+        "dump" => match argv.get(1).map(|n| n.parse::<usize>()) {
+            None => crate::profiler::dump(crate::profiler::Summary::DEFAULT_ROWS),
+            Some(Ok(n)) if n > 0 => crate::profiler::dump(n),
+            Some(_) => vec![PROF_USAGE.to_string()],
+        },
+        "clear" => crate::profiler::clear(),
+        _ => vec![PROF_USAGE.to_string()],
+    }
+}
+
+/// `start`'s arguments, in any order: a duration in seconds, and `js` for JS sampling.
+fn prof_options(argv: &[&str]) -> Result<crate::profiler::Options, String> {
+    let mut options = crate::profiler::Options::default();
+    for arg in argv {
+        match arg.to_ascii_lowercase().as_str() {
+            "js" | "--js" => options.js = true,
+            n => match n.parse::<f64>() {
+                Ok(secs) if secs > 0.0 && secs <= 24.0 * 3600.0 => {
+                    options.duration = Some(std::time::Duration::from_secs_f64(secs))
+                }
+                _ => return Err(PROF_USAGE.to_string()),
+            },
+        }
+    }
+    Ok(options)
 }
 
 fn list() -> Vec<String> {
@@ -247,6 +287,27 @@ mod tests {
         );
         assert_eq!(registry_request("remove", &[]), Err(USAGE.to_string()));
         assert_eq!(registry_request("enable", &[]), Err(USAGE.to_string()));
+    }
+
+    #[test]
+    fn prof_arguments_parse_in_any_order() {
+        let o = prof_options(&["60", "js"]).unwrap();
+        assert_eq!((o.duration, o.js), (Some(std::time::Duration::from_secs(60)), true));
+        let o = prof_options(&["--JS", "0.5"]).unwrap();
+        assert_eq!((o.duration, o.js), (Some(std::time::Duration::from_millis(500)), true));
+        assert_eq!(prof_options(&[]).unwrap(), crate::profiler::Options::default());
+        for bad in [&["0"][..], &["-5"], &["forever"], &["90000"]] {
+            assert_eq!(prof_options(bad), Err(PROF_USAGE.to_string()), "{bad:?}");
+        }
+        assert_eq!(prof(&["bogus"]), vec![PROF_USAGE.to_string()]);
+        assert_eq!(prof(&["dump", "x"]), vec![PROF_USAGE.to_string()]);
+        assert_eq!(run("prof"), vec![PROF_USAGE.to_string()]);
+    }
+
+    /// A player can never start the profiler: their `sm prof` is the version banner.
+    #[test]
+    fn a_player_cannot_profile() {
+        assert_eq!(client_lines("prof start"), banner());
     }
 
     /// SourceMod's client `sm`: `plugins` lists, `credits` credits, anything else the banner.

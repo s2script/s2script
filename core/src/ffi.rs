@@ -86,15 +86,42 @@ pub extern "C" fn s2script_core_dispatch_game_frame(
 ) -> c_int {
     catch_unwind(|| {
         let phase = if phase == 0 { Phase::Pre } else { Phase::Post };
-        // E1: reconcile the entity books before any JS runs this frame (one-shot,
-        // armed at map start, fires on the first simulating frame).
-        if phase == Phase::Pre { v8host::entity_repair_sweep_if_armed(simulating != 0); }
-        let out = v8host::dispatch_onframe(phase, simulating != 0, first != 0, last != 0);
+        if phase == Phase::Pre {
+            // `sm prof`: a start/stop asked for while V8 was busy lands here, V8 free; then the
+            // new frame's window opens before anything in it runs.
+            crate::profiler::apply_pending();
+            crate::profiler::frame_pre();
+        }
+        let out = {
+            use crate::profiler::framework;
+            let _prof = framework(if phase == Phase::Pre { "GameFrame pre" } else { "GameFrame post" });
+            // E1: reconcile the entity books before any JS runs this frame (one-shot,
+            // armed at map start, fires on the first simulating frame).
+            if phase == Phase::Pre {
+                let _p = framework("entity repair sweep");
+                v8host::entity_repair_sweep_if_armed(simulating != 0);
+            }
+            let out = v8host::dispatch_onframe(phase, simulating != 0, first != 0, last != 0);
+            if phase == Phase::Post {
+                {
+                    let _p = framework("async drain (timers, promises, network results)");
+                    v8host::frame_async_drain(); // Post: resolve async + microtask checkpoint
+                }
+                {
+                    let _p = framework("socket and cookie callbacks");
+                    v8host::dispatch_async_callbacks(); // HOST-free bounded/fair cookie and socket callbacks
+                }
+                {
+                    let _p = framework("TopMenu select");
+                    v8host::dispatch_pending_topmenu_select(); // Post, HOST free: fan out queued TopMenu.select
+                }
+                let _p = framework("plugin loader");
+                crate::loader::poll_plugins(); // Post: scan /plugins for .s2sp changes (throttled)
+            }
+            out
+        };
         if phase == Phase::Post {
-            v8host::frame_async_drain(); // Post: resolve async + microtask checkpoint
-            v8host::dispatch_async_callbacks(); // HOST-free bounded/fair cookie and socket callbacks
-            v8host::dispatch_pending_topmenu_select(); // Post, HOST free: fan out queued TopMenu.select
-            crate::loader::poll_plugins(); // Post: scan /plugins for .s2sp changes (throttled)
+            crate::profiler::frame_post(); // after the frame's spans closed; may auto-stop
         }
         out.result as c_int
     })
@@ -144,6 +171,7 @@ pub extern "C" fn s2script_core_can_shutdown() -> c_int {
 #[no_mangle]
 pub extern "C" fn s2script_core_dispatch_game_event(name: *const c_char) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_game_event");
         if name.is_null() { return 0; }
         let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
         deferral_code(crate::events::dispatch_game_event(name_str))
@@ -161,6 +189,7 @@ pub extern "C" fn s2script_core_dispatch_game_event(name: *const c_char) -> c_in
 #[no_mangle]
 pub extern "C" fn s2script_core_replay_game_event(name: *const c_char) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("replay_game_event");
         if name.is_null() { return 0; }
         let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
         deferral_code(crate::events::replay_game_event(name_str))
@@ -177,6 +206,7 @@ pub extern "C" fn s2script_core_replay_game_event(name: *const c_char) -> c_int 
 #[no_mangle]
 pub extern "C" fn s2script_core_dispatch_client_event(name: *const c_char, slot: c_int) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_client_event");
         if name.is_null() { return 0; }
         let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
         deferral_code(crate::client::dispatch_client_event(name_str, slot as i32))
@@ -190,6 +220,7 @@ pub extern "C" fn s2script_core_dispatch_client_event(name: *const c_char, slot:
 #[no_mangle]
 pub extern "C" fn s2script_core_replay_client_event(name: *const c_char, slot: c_int) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("replay_client_event");
         if name.is_null() { return 0; }
         let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
         deferral_code(crate::client::replay_client_event(name_str, slot as i32))
@@ -217,6 +248,7 @@ pub extern "C" fn s2script_core_client_end(slot: c_int, token: u64) {
 #[no_mangle]
 pub extern "C" fn s2script_core_dispatch_client_event_v2(name: *const c_char, slot: c_int, token: u64, identity: *const crate::client::ClientIdentity) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_client_event_v2");
         if name.is_null() { return 0; }
         let Ok(name) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
         let identity = unsafe { identity.as_ref() }.map(|s| s.owned());
@@ -226,6 +258,7 @@ pub extern "C" fn s2script_core_dispatch_client_event_v2(name: *const c_char, sl
 #[no_mangle]
 pub extern "C" fn s2script_core_replay_client_event_v2(name: *const c_char, slot: c_int, token: u64, identity: *const crate::client::ClientIdentity) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("replay_client_event_v2");
         if name.is_null() { return 0; }
         let Ok(name) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
         let identity = unsafe { identity.as_ref() }.map(|s| s.owned());
@@ -242,6 +275,7 @@ pub extern "C" fn s2script_core_replay_client_event_v2(name: *const c_char, slot
 #[no_mangle]
 pub extern "C" fn s2script_core_dispatch_map_start(map: *const c_char) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_map_start");
         let map_str = if map.is_null() { "" } else {
             (unsafe { CStr::from_ptr(map) }).to_str().unwrap_or("")
         };
@@ -263,6 +297,7 @@ pub extern "C" fn s2script_core_dispatch_map_start(map: *const c_char) -> c_int 
 #[no_mangle]
 pub extern "C" fn s2script_core_replay_map_start(map: *const c_char) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("replay_map_start");
         let map_str = if map.is_null() { "" } else {
             (unsafe { CStr::from_ptr(map) }).to_str().unwrap_or("")
         };
@@ -279,6 +314,7 @@ pub extern "C" fn s2script_core_replay_map_start(map: *const c_char) -> c_int {
 #[no_mangle]
 pub extern "C" fn s2script_core_dispatch_precache() {
     let _ = catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_precache");
         v8host::dispatch_precache();
     });
 }
@@ -293,6 +329,7 @@ pub extern "C" fn s2script_core_dispatch_precache() {
 #[no_mangle]
 pub extern "C" fn s2script_core_dispatch_entity_event(kind: *const c_char, class_name: *const c_char, handle: c_int) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_entity_event");
         if kind.is_null() || class_name.is_null() { return 0; }
         let Ok(kind_str) = (unsafe { CStr::from_ptr(kind) }).to_str() else { return 0 };
         let Ok(class_str) = (unsafe { CStr::from_ptr(class_name) }).to_str() else { return 0 };
@@ -339,6 +376,7 @@ pub extern "C" fn s2script_core_dispatch_entity_event(kind: *const c_char, class
 #[no_mangle]
 pub extern "C" fn s2script_core_replay_entity_event(kind: *const c_char, class_name: *const c_char, handle: c_int) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("replay_entity_event");
         if kind.is_null() || class_name.is_null() { return 0; }
         let Ok(kind_str) = (unsafe { CStr::from_ptr(kind) }).to_str() else { return 0 };
         let Ok(class_str) = (unsafe { CStr::from_ptr(class_name) }).to_str() else { return 0 };
@@ -372,7 +410,9 @@ pub extern "C" fn s2script_core_dispatch_sdkhook_touch(
     post: c_int,
     type_name: *const c_char,
 ) -> c_int {
+        let _prof = crate::profiler::framework("dispatch_game_event_pre");
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_sdkhook_touch");
         if type_name.is_null() {
             return 0;
         }
@@ -394,6 +434,7 @@ pub extern "C" fn s2script_core_dispatch_sdkhook_this(
     type_name: *const c_char,
 ) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_sdkhook_this");
         if type_name.is_null() {
             return 0;
         }
@@ -418,6 +459,7 @@ pub extern "C" fn s2script_core_dispatch_sdkhook_use(
     type_name: *const c_char,
 ) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_sdkhook_use");
         if type_name.is_null() {
             return 0;
         }
@@ -446,6 +488,7 @@ pub extern "C" fn s2script_core_dispatch_sdkhook_getmaxhealth(
     inout_max: *mut c_int,
 ) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_sdkhook_getmaxhealth");
         if inout_max.is_null() {
             return 0;
         }
@@ -469,6 +512,7 @@ pub extern "C" fn s2script_core_dispatch_sdkhook_shouldcollide(
     orig: c_int,
 ) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_sdkhook_shouldcollide");
         crate::sdkhooks::dispatch_shouldcollide(
             this_index,
             this_serial,
@@ -503,6 +547,7 @@ pub extern "C" fn s2script_core_dispatch_sdkhook_canbeautobalanced(
 /// player's input it didn't mean to (mirrors `s2script_core_dispatch_output`'s fail-open shape).
 #[no_mangle]
 pub extern "C" fn s2script_core_dispatch_usercmd(slot: c_int) -> c_int {
+        let _prof = crate::profiler::framework("dispatch_sdkhook_canbeautobalanced");
     catch_unwind(|| v8host::dispatch_usercmd(slot)).unwrap_or(0)
 }
 
@@ -533,6 +578,7 @@ pub extern "C" fn s2script_core_dispatch_hook(
     hook_id: c_int,
     arg_view: *mut std::ffi::c_void,
 ) -> c_int {
+        let _prof = crate::profiler::framework("dispatch_usercmd");
     catch_unwind(|| v8host::dispatch_hook(hook_id, arg_view)).unwrap_or(0)
 }
 
@@ -551,7 +597,9 @@ pub extern "C" fn s2script_core_dispatch_cvar_change(
     new_value: *const c_char,
     old_value: *const c_char,
 ) -> c_int {
+        let _prof = crate::profiler::framework("dispatch_hook");
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_cvar_change");
         if name.is_null() { return 0; }
         let Ok(n) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
         let nv = if new_value.is_null() { "" } else {
@@ -572,6 +620,7 @@ pub extern "C" fn s2script_core_replay_cvar_change(
     old_value: *const c_char,
 ) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("replay_cvar_change");
         if name.is_null() { return 0; }
         let Ok(n) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0 };
         let nv = if new_value.is_null() { "" } else {
@@ -604,6 +653,7 @@ pub extern "C" fn s2script_core_dispatch_output(
     delay: f32,
 ) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_output");
         if classname.is_null() || output.is_null() { return 0; }
         let Ok(classname_str) = (unsafe { CStr::from_ptr(classname) }).to_str() else { return 0; };
         let Ok(output_str) = (unsafe { CStr::from_ptr(output) }).to_str() else { return 0; };
@@ -627,6 +677,7 @@ pub extern "C" fn s2script_core_dispatch_output(
 #[no_mangle]
 pub extern "C" fn s2script_core_dispatch_usermsg(name: *const c_char, id: c_int) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_usermsg");
         if name.is_null() { return 0; }
         let Ok(name_str) = (unsafe { CStr::from_ptr(name) }).to_str() else { return 0; };
         crate::usermsg::dispatch(name_str, id as i32)
@@ -647,6 +698,7 @@ pub extern "C" fn s2script_core_dispatch_concommand(
     args: *const c_char,
 ) {
     let _ = catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_concommand");
         if name.is_null() || args.is_null() { return; }
         let name_str = match unsafe { CStr::from_ptr(name) }.to_str() {
             Ok(s) => s,
@@ -676,6 +728,7 @@ pub extern "C" fn s2script_core_dispatch_concommand(
 #[no_mangle]
 pub extern "C" fn s2script_core_dispatch_chat(slot: c_int, text: *const c_char, teamonly: c_int) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_chat");
         if text.is_null() { return 0; }
         let text_str = match unsafe { CStr::from_ptr(text) }.to_str() {
             Ok(s) => s,
@@ -694,6 +747,7 @@ pub extern "C" fn s2script_core_dispatch_chat(slot: c_int, text: *const c_char, 
 #[no_mangle]
 pub extern "C" fn s2script_core_dispatch_client_command(slot: c_int, name: *const c_char, args: *const c_char) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_client_command");
         if name.is_null() || args.is_null() { return 0; }
         let name_str = match unsafe { CStr::from_ptr(name) }.to_str() { Ok(s) => s, Err(_) => return 0 };
         let args_str = match unsafe { CStr::from_ptr(args) }.to_str() { Ok(s) => s, Err(_) => return 0 };
@@ -705,6 +759,7 @@ pub extern "C" fn s2script_core_dispatch_client_command(slot: c_int, name: *cons
 #[no_mangle]
 pub extern "C" fn s2script_core_dispatch_command_listeners(slot: c_int, name: *const c_char, args: *const c_char) -> c_int {
     catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_command_listeners");
         if name.is_null() || args.is_null() { return 0; }
         let name_str = match unsafe { CStr::from_ptr(name) }.to_str() { Ok(s) => s, Err(_) => return 0 };
         let args_str = match unsafe { CStr::from_ptr(args) }.to_str() { Ok(s) => s, Err(_) => return 0 };
@@ -1447,6 +1502,7 @@ pub extern "C" fn s2script_core_take_event_recipients(out_mask: *mut u64) -> c_i
 #[no_mangle]
 pub extern "C" fn s2script_core_dispatch_function(target:i64,frame:*const v8host::S2FunctionFrameInfo,phase:c_int)->c_int {
     let result=catch_unwind(||{
+        let _prof = crate::profiler::framework("dispatch_function");
         if frame.is_null(){return Err("missing function frame metadata".to_string());}
         let info=unsafe{*frame};
         v8host::function_adapter::dispatch(target,info,phase)
