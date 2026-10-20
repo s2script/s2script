@@ -276,6 +276,8 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
     /// Counts how many times `poll_plugins` has been called (throttle counter).
     static DRAIN_COUNT: Cell<u64> = Cell::new(0);
+    /// The last completed scan of plugins/: `Some(true)` when it found nothing left to load.
+    static LAST_SCAN_CLEAN: Cell<Option<bool>> = const { Cell::new(None) };
     /// Slice 6.12 (`sm plugins`): pending load/unload/reload requested from a command. Drained at the
     /// start of `poll_plugins` (the frame drain, OUTSIDE any command's isolate borrow) so the loader
     /// never runs re-entrantly. The natives only enqueue.
@@ -1017,6 +1019,7 @@ fn handle_scan(revision: u64, entries: Result<Vec<(PathBuf, FileStamp)>, String>
         FILE_STAMPS.with(|s| { s.borrow_mut().remove(&path); });
     }
     let mut batch = ActiveBatch { pending: HashMap::new(), prepared: HashMap::new() };
+    let mut deferred = 0usize;
     for (path, stamp) in current {
         if SUPPRESSED.with(|s| s.borrow().contains_key(&path)) { continue; }
         if FILE_STAMPS.with(|s| s.borrow().get(&path).copied()) == Some(stamp) { continue; }
@@ -1028,9 +1031,18 @@ fn handle_scan(revision: u64, entries: Result<Vec<(PathBuf, FileStamp)>, String>
         if matches!(submit, Submit::Accepted | Submit::Coalesced) {
             batch.pending.insert(path, revision);
         } else {
-            crate::v8host::log_warn(&format!("WARN: poll_plugins: {:?} deferred by bounded loader queue ({submit:?})", path));
+            deferred += 1;
         }
     }
+    // Back-pressure, not a fault: the worker queue is bounded and a server with many plugins fills
+    // it. The rest are picked up by the next scan. One line per scan, not one per file per scan.
+    if deferred > 0 {
+        crate::v8host::log_warn(&format!(
+            "[plugins] {} loading now, {deferred} more queued behind the bounded loader queue",
+            batch.pending.len()
+        ));
+    }
+    LAST_SCAN_CLEAN.with(|c| c.set(Some(batch.pending.is_empty() && deferred == 0)));
     if !batch.pending.is_empty() { ACTIVE_BATCH.with(|b| *b.borrow_mut() = Some(batch)); }
 }
 
@@ -1413,6 +1425,75 @@ fn schedule_periodic() {
     schedule_scan();
 }
 
+/// How long the startup load may run once the plugins.json update (if any) has finished.
+/// Generous: an `async OnPluginStart` may await a database or HTTP call, bounded by the
+/// lifecycle's own ~30 s load timeout.
+const BOOT_LOAD_BUDGET: Duration = Duration::from_secs(45);
+/// The startup load drives the loader at frame pace, so frame-counted windows (the load timeout,
+/// dependency waits) keep their meaning.
+const BOOT_PACE: Duration = Duration::from_millis(15);
+
+/// Load the plugins in plugins/ now, during startup, without waiting for a server frame.
+///
+/// The loader is driven by the `GameFrame` hook, and an empty server hibernates as soon as its map
+/// loads and stops calling `GameFrame`. So a server nobody had joined yet ran no plugin at all:
+/// `sm plugins list` was empty and every plugin command was unknown until the first player woke
+/// it. SourceMod and CounterStrikeSharp load their plugins at startup; so does this.
+///
+/// It runs what a frame's POST runs, minus the `OnGameFrame` handlers (there is no frame): the
+/// async drain (so an awaited `OnPluginStart` settles), socket/cookie callbacks, TopMenu, and the
+/// loader poll. It waits out the startup plugins.json update (bounded by its own timeout), then
+/// pumps at frame pace until a scan finds nothing left to load and nothing is in flight, or the
+/// budget runs out. Everything after that (hot reload, `sm plugins load`, timers) stays
+/// frame-driven as before.
+pub(crate) fn boot_load() {
+    if !is_watching() {
+        return;
+    }
+    let started = std::time::Instant::now();
+    let budget = BOOT_LOAD_BUDGET + crate::server_update::first_scan_wait().unwrap_or_default();
+    crate::v8host::log_warn("[plugins] loading plugins/ at startup");
+    while started.elapsed() < budget {
+        boot_tick();
+        if boot_settled() {
+            let running = plugin_list().iter().filter(|(_, state)| state == "running").count();
+            crate::v8host::log_warn(&format!(
+                "[plugins] startup load done: {running} plugin(s) running ({:.1}s)",
+                started.elapsed().as_secs_f64()
+            ));
+            return;
+        }
+        std::thread::sleep(BOOT_PACE);
+    }
+    crate::v8host::log_warn(&format!(
+        "WARN: [plugins] startup load stopped after {}s with plugins still loading; the rest load once the server runs frames",
+        budget.as_secs()
+    ));
+}
+
+/// One startup step: a frame's POST work without a frame.
+fn boot_tick() {
+    crate::v8host::frame_async_drain();
+    crate::v8host::dispatch_async_callbacks();
+    crate::v8host::dispatch_pending_topmenu_select();
+    poll_plugins();
+    // While the last scan still found work, start the next one as soon as the previous batch is
+    // done instead of every 64th poll: the bounded queue makes a large plugins/ load in rounds.
+    if LAST_SCAN_CLEAN.with(Cell::get) != Some(true) {
+        schedule_periodic();
+    }
+}
+
+/// Nothing left to load: the last completed scan found no new or changed file, and no batch,
+/// apply, dependency wait or in-flight `OnPluginStart` remains. (A later scan may already be in
+/// flight; it is the ordinary periodic watch, not startup work.)
+fn boot_settled() -> bool {
+    LAST_SCAN_CLEAN.with(Cell::get) == Some(true)
+        && !has_waiting()
+        && APPLYING.with(Cell::get) == 0
+        && !crate::v8host::any_loading()
+}
+
 pub(crate) fn poll_plugins() {
     crate::sm_command::drain_reports();
     drain_command_intents();
@@ -1538,6 +1619,7 @@ pub(crate) fn shutdown_worker() {
     WAITING.with(|w| w.borrow_mut().clear());
     SCAN_REVISION.with(|r| r.set(0));
     DRAIN_COUNT.with(|c| c.set(0));
+    LAST_SCAN_CLEAN.with(|c| c.set(None));
     let policy = &crate::async_limits::policy().loader;
     RETAINED_LEDGER.with(|ledger| {
         *ledger.borrow_mut() = RetainedLedger::new(policy.prepared_items, policy.prepared_bytes);
@@ -2798,6 +2880,94 @@ mod tests {
         shutdown_worker();
         let _ = std::fs::remove_file(&p);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    static BOOT_LOG: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    extern "C" fn boot_logger(_: std::os::raw::c_int, m: *const std::os::raw::c_char) {
+        let line = unsafe { std::ffi::CStr::from_ptr(m) }.to_string_lossy().into_owned();
+        BOOT_LOG.lock().unwrap().push(line);
+    }
+
+    /// The server hibernates while empty and calls no `GameFrame`, so the startup load must finish
+    /// with no frame at all: more plugins than the bounded queue admits at once (several rounds),
+    /// and an `OnPluginStart` that awaits a timer.
+    #[test]
+    fn boot_load_runs_every_plugin_without_a_frame() {
+        BOOT_LOG.lock().unwrap().clear();
+        crate::v8host::init(boot_logger).unwrap();
+        let dir = std::env::temp_dir().join(format!("s2s-boot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..30 {
+            let manifest = format!(r#"{{"id":"@boot/p{i:02}","version":"1.0.0","apiVersion":"3.x"}}"#);
+            let js = "module.exports.OnPluginStart = () => {};";
+            std::fs::write(dir.join(format!("_boot_p{i:02}.s2sp")), make_test_s2sp(&manifest, js)).unwrap();
+        }
+        let awaited = r#"const { delay } = require("@s2script/timers");
+            module.exports.OnPluginStart = async () => { await delay(100); globalThis.__booted = true; };"#;
+        std::fs::write(
+            dir.join("_boot_async.s2sp"),
+            make_test_s2sp(r#"{"id":"@boot/async","version":"1.0.0","apiVersion":"3.x"}"#, awaited),
+        ).unwrap();
+
+        let frames_before = crate::v8host::current_frame();
+        let started = std::time::Instant::now();
+        // The entry the shim calls at the end of Load: it must return with everything loaded.
+        let path = std::ffi::CString::new(dir.to_str().unwrap()).unwrap();
+        crate::ffi::s2script_core_set_plugins_dir(path.as_ptr());
+        let elapsed = started.elapsed();
+
+        let list = plugin_list();
+        let log = BOOT_LOG.lock().unwrap().clone();
+        assert_eq!(list.len(), 31, "{list:?}\n{log:#?}");
+        assert!(list.iter().all(|(_, state)| state == "running"), "{list:?}\n{log:#?}");
+        assert!(!crate::v8host::any_loading());
+        assert!(log.iter().any(|l| l.starts_with("[plugins] startup load done: 31 plugin(s) running")), "{log:#?}");
+        assert!(!log.iter().any(|l| l.contains("deferred by bounded loader queue")), "no per-file WARN spam");
+        assert!(elapsed < BOOT_LOAD_BUDGET, "settled before the budget: {elapsed:?}");
+        // The async drain advanced the frame counter without any engine frame.
+        assert!(crate::v8host::current_frame() > frames_before);
+
+        for i in 0..30 { crate::v8host::unload_plugin(&format!("@boot/p{i:02}")); }
+        crate::v8host::unload_plugin("@boot/async");
+        shutdown_worker();
+        crate::v8host::shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The startup plugins.json update owns plugins/ until it ends: the startup load waits it out
+    /// (here: the update never finishes, so its timeout releases the hold), then loads.
+    #[test]
+    fn boot_load_waits_for_the_startup_update_then_loads() {
+        BOOT_LOG.lock().unwrap().clear();
+        crate::v8host::init(boot_logger).unwrap();
+        let dir = std::env::temp_dir().join(format!("s2s-boot-gate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("_boot_gated.s2sp"),
+            make_test_s2sp(r#"{"id":"@boot/gated","version":"1.0.0","apiVersion":"3.x"}"#, "module.exports.OnPluginStart = () => {};"),
+        ).unwrap();
+        set_plugins_dir(dir.to_str().unwrap());
+        crate::server_update::hold_first_scan_for_test(Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        boot_load();
+        let log = BOOT_LOG.lock().unwrap().clone();
+        assert!(started.elapsed() >= Duration::from_millis(300), "{log:#?}");
+        assert!(log.iter().any(|l| l.contains("[update] timed out")), "{log:#?}");
+        assert_eq!(plugin_list(), vec![("@boot/gated".to_string(), "running".to_string())], "{log:#?}");
+        crate::v8host::unload_plugin("@boot/gated");
+        shutdown_worker();
+        crate::v8host::shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn boot_load_without_a_plugins_dir_returns_at_once() {
+        shutdown_worker();
+        let started = std::time::Instant::now();
+        boot_load();
+        assert!(started.elapsed() < Duration::from_millis(50));
     }
 
     /// `sm plugins load <folder>/<id>` reaches into a folder under plugins/ for this run only: the

@@ -91,6 +91,17 @@ The release ships the SourceMod-parity suite from `plugins/` (demos live under `
 
 Opt-in plugins (nominations, rockthevote, nextmap, funvotes) ship in the zip under `addons/s2script/plugins/disabled/` but are **not** loaded — the runtime's `plugins/` scan is non-recursive, so it skips the `disabled/` subdir. To enable one, move its `.s2sp` up one level into `addons/s2script/plugins/`.
 
+## When plugins load
+
+s2script loads every plugin in `plugins/` while the server starts, before the first map, as
+SourceMod does. It does not wait for a player to join. With a `plugins.json`, startup first waits
+for the plugin update to finish (at most `updateTimeoutSeconds`), so a slow registry delays the
+server's start by that long. The log shows `[plugins] startup load done: N plugin(s) running`.
+
+After startup, timers, async results and hot reload run on the server's frames. An empty server
+with `sv_hibernate_when_empty 1` (the default) runs no frames, so those pause until someone joins;
+set it to `0` to keep them running on an empty server.
+
 ## Add more plugins
 
 Build a plugin to a `.s2sp` (see the [authoring docs](https://s2script.com/docs)), then copy it into:

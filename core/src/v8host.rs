@@ -36,7 +36,7 @@ pub use lifecycle::unload_all;
 pub(crate) use lifecycle::{
     clear_failed, clear_pending_handoff, config_file_content, create_plugin_context, current_frame,
     dispose_plugin_context, eval_in_context, failed_plugin_ids, finalize_loading_plugins,
-    iface_published, iface_published_types_sha256, is_failed, is_loading, load_plugin_js, load_plugin_js_prepared,
+    iface_published, iface_published_types_sha256, is_failed, is_loading, any_loading, load_plugin_js, load_plugin_js_prepared,
     materialize_for_load, materialize_for_load_snapshot, plugin_phase, queue_pending_reload,
     read_engine_config, re_materialize_config, re_materialize_config_snapshot, reconcile_initial_config_snapshot, set_failed,
     set_plugin_version, store_config_decls, unload_plugin,
@@ -1845,6 +1845,25 @@ fn s2_hrtime_ns(
         static BASE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
         let base = BASE.get_or_init(std::time::Instant::now);
         rv.set_double(base.elapsed().as_nanos() as f64);
+    }));
+}
+
+/// Keys `__s2_once` has seen in this process. Cleared at shutdown.
+static ONCE_KEYS: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// `__s2_once(key)` -> true the first time `key` is seen in this process, false after. Package and
+/// prelude code runs once per plugin context, so a "print this once" flag kept in a JS variable
+/// prints once per plugin; this is the process-wide version. Degrades to `true` on panic.
+fn s2_once(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    rv.set_bool(true);
+    let key = args.get(0).to_rust_string_lossy(scope);
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut keys = match ONCE_KEYS.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        rv.set_bool(keys.insert(key));
     }));
 }
 
@@ -6453,7 +6472,13 @@ pub(crate) fn register_process_singletons() {
 
     // ---- AfterIsolateDrop: pure Rust, no V8 handles. ----
 
-    reg("FRAME_COUNTER", AfterIsolateDrop, || {
+    reg("ONCE_KEYS", AfterIsolateDrop, || {
+        match ONCE_KEYS.lock() {
+            Ok(mut g) => g.clear(),
+            Err(p) => p.into_inner().clear(),
+        }
+    });
+        reg("FRAME_COUNTER", AfterIsolateDrop, || {
         FRAME_COUNTER.with(|c| c.set(0))
     });
     // Pending queues drained by the muxes' post-frame dispatch — sidecars, not subscriber stores.

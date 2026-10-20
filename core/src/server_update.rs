@@ -682,6 +682,28 @@ pub(crate) fn start(plugins_dir: &Path) {
     *GATE.lock().unwrap() = Some(Gate { phase, deadline });
 }
 
+/// How much longer the startup update may hold the loader's first scan, if it still does (zero
+/// while it swaps files in). Read-only: `holds_first_scan` is what ends the hold.
+pub(crate) fn first_scan_wait() -> Option<Duration> {
+    let gate = GATE.lock().unwrap();
+    let g = gate.as_ref()?;
+    let phase = g.phase.lock().unwrap();
+    match &*phase {
+        Phase::Running => Some(g.deadline.saturating_duration_since(Instant::now())),
+        Phase::Committing => Some(Duration::ZERO),
+        Phase::Done(_) | Phase::Abandoned => None,
+    }
+}
+
+/// An update that never finishes, holding the first scan until `timeout` runs out.
+#[cfg(test)]
+pub(crate) fn hold_first_scan_for_test(timeout: Duration) {
+    *GATE.lock().unwrap() = Some(Gate {
+        phase: Arc::new(Mutex::new(Phase::Running)),
+        deadline: Instant::now() + timeout,
+    });
+}
+
 /// True while the loader must hold its first scan. Logs the update's outcome when it ends.
 pub(crate) fn holds_first_scan() -> bool {
     let mut gate = GATE.lock().unwrap();

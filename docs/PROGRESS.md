@@ -593,3 +593,31 @@ A player's `sm` now answers exactly as SourceMod's `PlayerManager::OnClientComma
 banner (version, "To see running plugins, type "sm plugins"", "To see credits, type "sm credits"",
 the website). The extra line that pointed players at `sm_rcon` is gone; SourceMod has none. The
 server console gains `sm credits`, split from `sm version`.
+
+## 2026-10-20 — Plugins load at startup, not when the first player joins
+
+On a Pelican server `sm plugins list` stayed empty and every plugin command was "Unknown command"
+until a player connected; then everything loaded. The loader is driven by the `GameFrame` hook, and
+an empty server hibernates as soon as its map loads and calls no `GameFrame`. Evidence: the crash
+breadcrumb of a never-joined server read `uptime 0` with an empty dispatch ring (the core never got
+a frame), and the server's log showed every plugin going Active within seconds of the first join.
+
+`s2script_core_set_plugins_dir` (the last step of the shim's `Load`) now calls
+`loader::boot_load`: it runs a frame's POST work without a frame — the async drain, socket/cookie
+callbacks, TopMenu, the loader poll — at frame pace, until a completed scan finds nothing left to
+load and no batch, apply, dependency wait or `OnPluginStart` is in flight (45 s budget, plus the
+plugins.json update's own timeout, which it waits out first). Plugins therefore start before the
+first map, as in SourceMod; `onMapStart` already fires for boot-loaded plugins (prelude contract).
+Everything after startup stays frame-driven.
+
+Also from that server's log:
+- `deferred by bounded loader queue (Full)` printed once per file per poll while 25 plugins
+  loaded — the worker reserves worst-case result bytes per prepare, so only a few fit at once.
+  It is back-pressure, not a fault: now one `[plugins] N loading now, M more queued …` line per scan.
+- The cs2 game package's MultiAddonManager banner printed once per plugin (its "shown" flag lived in
+  each plugin's context). New engine-generic native `__s2_once(key)` (process-wide, cleared at
+  shutdown) makes it once per server.
+
+Tests: 31 plugins (several queue rounds) plus an awaited `OnPluginStart` all running when the FFI
+entry returns, with no frame; the startup load waiting out a held plugins.json update; `__s2_once`
+across contexts and shutdown. Core: 1099 pass, 9 ignored. Live gate pending.
