@@ -1,5 +1,12 @@
 # @s2script/cli
 
+## 0.30.1
+
+### Patch Changes
+
+- 3b9d7e3: A plugin suppressing a game event no longer crashes a server that also runs MultiAddonManager 1.6.2.
+  s2script fired the suppressed event itself, which frees it, before other addons' FireEvent hooks ran.
+
 ## 0.30.0
 
 ### Minor Changes
