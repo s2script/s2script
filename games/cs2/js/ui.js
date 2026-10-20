@@ -1095,6 +1095,8 @@
       function maybePrintMamBanner(desc) {
         if (mamBannerShown) return;
         mamBannerShown = true;
+        // This code runs in every plugin's context; print the banner once per server, not per plugin.
+        if (typeof __s2_once === "function" && !__s2_once("cs2/ui:mam-banner")) return;
         var req = desc.addons.join(", ");
         warn("[cs2/ui] required workshop addons: " + req);
         warn("[cs2/ui] set mm_extra_addons to that list in game/csgo/cfg/multiaddonmanager/multiaddonmanager.cfg");

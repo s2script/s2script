@@ -873,7 +873,11 @@ pub extern "C" fn s2script_core_set_plugins_dir(path: *const c_char) {
             return;
         }
         match unsafe { CStr::from_ptr(path) }.to_str() {
-            Ok(s) => crate::loader::set_plugins_dir(s),
+            Ok(s) => {
+                crate::loader::set_plugins_dir(s);
+                // Load now: an empty server hibernates and runs no frame until someone joins.
+                crate::loader::boot_load();
+            }
             Err(_) => {}
         }
     });

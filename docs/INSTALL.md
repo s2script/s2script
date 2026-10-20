@@ -91,6 +91,17 @@ The release ships the SourceMod-parity suite from `plugins/` (demos live under `
 
 Opt-in plugins (nominations, rockthevote, nextmap, funvotes) ship in the zip under `addons/s2script/plugins/disabled/` but are **not** loaded — the runtime's `plugins/` scan is non-recursive, so it skips the `disabled/` subdir. To enable one, move its `.s2sp` up one level into `addons/s2script/plugins/`.
 
+## When plugins load
+
+s2script loads every plugin in `plugins/` while the server starts, before the first map, as
+SourceMod does. It does not wait for a player to join. With a `plugins.json`, startup first waits
+for the plugin update to finish (at most `updateTimeoutSeconds`), so a slow registry delays the
+server's start by that long. The log shows `[plugins] startup load done: N plugin(s) running`.
+
+After startup, timers, async results and hot reload run on the server's frames. An empty server
+with `sv_hibernate_when_empty 1` (the default) runs no frames, so those pause until someone joins;
+set it to `0` to keep them running on an empty server.
+
 ## Add more plugins
 
 Build a plugin to a `.s2sp` (see the [authoring docs](https://s2script.com/docs)), then copy it into:
@@ -237,15 +248,18 @@ Plugins declare `s2script.apiVersion` (today `"1.x"`). The host refuses a mismat
 ## No plugins load
 
 If `sm plugins list` shows no plugins and plugin commands (`sm_who`, `sm_help`) are "Unknown
-command", the list's second line says why. The usual cause is that the server's frame never reaches
-s2script: the plugin loader, timers and async results all run from the `GameFrame` hook. Check the
-startup log:
+command", the list's second line says why: the loader is not running, the plugins.json update still
+holds the first scan, `plugins/` has not been scanned, or it is empty. Plugins load at startup (see
+"When plugins load"); after that, timers, async results and hot reload run from the `GameFrame`
+hook. Check the startup log:
 
-- `GameFrame hook installed` and, once the map runs, `first GameFrame reached s2script` — all is well.
+- `[plugins] startup load done: N plugin(s) running` — the startup load finished.
+- `GameFrame hook installed`, then `first GameFrame reached s2script` once the server runs frames —
+  per-frame work is live. On an empty, hibernating server that second line waits for the first player.
 - `ERROR: GameFrame hook NOT installed (<reason>)` — the hook was refused; the reason says why.
-- `GameFrame hook installed` but never `first GameFrame reached s2script` — another Metamod addon
-  replaced or bypassed the `GameFrame` virtual after s2script. Run `meta list` and try without the
-  other addons.
+- `GameFrame hook installed` but never `first GameFrame reached s2script` while players are on —
+  another Metamod addon replaced or bypassed the `GameFrame` virtual after s2script. Run `meta list`
+  and try without the other addons.
 
 ## After a CS2 update
 

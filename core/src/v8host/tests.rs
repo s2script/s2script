@@ -9964,6 +9964,24 @@
         shutdown();
     }
 
+    /// Package and prelude code runs once per plugin context; `__s2_once` is the process-wide
+    /// "first time?" so a banner prints once per server, and again after a restart.
+    #[test]
+    fn s2_once_is_process_wide_and_resets_at_shutdown() {
+        init(dummy_logger()).unwrap();
+        create_plugin_context("once-a");
+        create_plugin_context("once-b");
+        eval_in_context("once-a", "globalThis.r = [__s2_once('banner'), __s2_once('banner'), __s2_once('other')];").unwrap();
+        eval_in_context("once-b", "globalThis.r = [__s2_once('banner')];").unwrap();
+        eval_in_context("once-a", "if (JSON.stringify(r) !== '[true,false,true]') throw Error(JSON.stringify(r));").unwrap();
+        eval_in_context("once-b", "if (JSON.stringify(r) !== '[false]') throw Error(JSON.stringify(r));").unwrap();
+        shutdown();
+        init(dummy_logger()).unwrap();
+        create_plugin_context("once-c");
+        eval_in_context("once-c", "if (__s2_once('banner') !== true) throw Error('not reset');").unwrap();
+        shutdown();
+    }
+
 #[path = "tests/shutdown_lifetime.rs"]
 mod shutdown_lifetime;
 

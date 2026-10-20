@@ -695,6 +695,15 @@ pub(crate) fn first_scan_wait() -> Option<Duration> {
     }
 }
 
+/// An update that never finishes, holding the first scan until `timeout` runs out.
+#[cfg(test)]
+pub(crate) fn hold_first_scan_for_test(timeout: Duration) {
+    *GATE.lock().unwrap() = Some(Gate {
+        phase: Arc::new(Mutex::new(Phase::Running)),
+        deadline: Instant::now() + timeout,
+    });
+}
+
 /// True while the loader must hold its first scan. Logs the update's outcome when it ends.
 pub(crate) fn holds_first_scan() -> bool {
     let mut gate = GATE.lock().unwrap();

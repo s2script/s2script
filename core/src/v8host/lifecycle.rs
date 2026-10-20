@@ -1282,6 +1282,11 @@ pub(crate) fn is_loading(id: &str) -> bool {
     LOADING.with(|l| l.borrow().contains_key(id))
 }
 
+/// True while any plugin's `OnPluginStart` has not settled (the startup load waits for these).
+pub(crate) fn any_loading() -> bool {
+    LOADING.with(|l| !l.borrow().is_empty())
+}
+
 /// Queue a reload for a plugin that is still Loading: the reload fires from `continue_or_reload` once
 /// the in-flight load reaches its transition, instead of tearing down a half-loaded context.
 pub(crate) fn queue_pending_reload(id: &str) {

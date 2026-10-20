@@ -32,6 +32,8 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_v8_heap_used", s2_v8_heap_used);
     set_native(scope, global_obj, "__s2_v8_gc", s2_v8_gc);
     set_native(scope, global_obj, "__s2_hrtime_ns", s2_hrtime_ns);
+    // Process-wide "first time?" for code that runs once per plugin context (a package banner).
+    set_native(scope, global_obj, "__s2_once", s2_once);
     // Slice 5A: (index, serial) entity natives — serial-gated read/write/valid/decode.
     // The five Slice-3 raw-pointer natives (entity-by-index, deref-handle, ent-read/write-i32,
     // ent-state-changed) were retired in Task 4; callers now use the __s2_ent_ref_* path.

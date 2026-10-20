@@ -36,9 +36,29 @@ struct PendingPackage {
     retention: Rc<RefCell<crate::loader::RetainedLease>>,
     preparation_bytes: usize,
 }
+/// A thread-local slot whose own destructor releases nothing.
+///
+/// When the server quits, the shim refuses a native unload while the server runs, so the core's
+/// `shutdown()` never happens and process exit runs the thread-local destructors in an unspecified
+/// order. A package's receipt releases itself through other thread-locals (the function adapter's
+/// tables) that may already be gone, and a panic in a thread-local destructor aborts the process.
+/// Releasing a package is `clear()`'s job; at exit the process is ending, so the slot forgets it.
+struct LeakOnExit<T>(RefCell<Option<T>>);
+impl<T> std::ops::Deref for LeakOnExit<T> {
+    type Target = RefCell<Option<T>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl<T> Drop for LeakOnExit<T> {
+    fn drop(&mut self) {
+        std::mem::forget(self.0.get_mut().take());
+    }
+}
+
 thread_local! {
-    static PENDING: RefCell<Option<PendingPackage>> = const { RefCell::new(None) };
-    static REGISTERED: RefCell<Option<RegisteredPackage>> = const { RefCell::new(None) };
+    static PENDING: LeakOnExit<PendingPackage> = const { LeakOnExit(RefCell::new(None)) };
+    static REGISTERED: LeakOnExit<RegisteredPackage> = const { LeakOnExit(RefCell::new(None)) };
     static STATUS: RefCell<Vec<u8>> = RefCell::new(b"{\"code\":\"unselected\"}".to_vec());
 }
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
