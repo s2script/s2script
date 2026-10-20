@@ -1183,7 +1183,7 @@ static int g_tx_b_clear = 0;
 static bool g_mask_subset_posts = false;
 static bool g_mask_excluded_posts = false;
 static bool g_mask_all_suppressed = false;
-static bool g_mask_call_orig_super = false;
+static bool g_mask_recalled = false;
 static uint64_t g_mask_seen = 0;
 static int g_mask_post_count = 0;
 static int g_mask_fire_stage = 0;
@@ -1449,7 +1449,7 @@ static void R6ResetCounters() {
     ProbeSetCvarInt("s2_khook_accept_tx_a", -1);
     ProbeSetCvarInt("s2_khook_accept_tx_b", -1);
     g_mask_subset_posts = g_mask_excluded_posts = g_mask_all_suppressed = false;
-    g_mask_call_orig_super = false;
+    g_mask_recalled = false;
     g_mask_seen = 0;
     g_mask_post_count = 0;
     g_mask_fire_stage = 0;
@@ -1598,8 +1598,12 @@ static void R6FireMaskEvent() {
         g_fe_mask_obs = scope.Copy();
     }
     listener.Stop();
-    if (g_fe_mask_obs.automatic_skip_count >= 1 && g_fe_mask_obs.listener_count >= 1) {
-        g_mask_call_orig_super = true;
+    // s2script Recalls the chain with bDontBroadcast rewritten: this probe's PRE and POST run inside
+    // it and the original runs once, not skipped. A skipped original here would be the old
+    // CallOriginal+Supersede, which ran every later PRE on an event the original had already freed.
+    if (g_fe_mask_obs.automatic_skip_count == 0 && g_fe_mask_obs.automatic_original_count == 1 &&
+        g_fe_mask_obs.listener_count >= 1) {
+        g_mask_recalled = true;
     }
 }
 
@@ -2227,13 +2231,13 @@ static void CollectR6() {
         PushPending("check_transmit", "native_per_recipient_filter", "native", filt_exp, kNeedPvs);
     }
 
-    const std::string ho_exp = "{\"orig\":1,\"automatic_skipped\":true,\"listener\":1}";
+    const std::string ho_exp = "{\"orig\":1,\"automatic_skipped\":false,\"listener\":1}";
     const bool handled_ok = g_fe_mask_obs.listener_count == 1 && g_fe_mask_obs.pre_count == 1 &&
-                            g_fe_mask_obs.post_count == 1 && g_fe_mask_obs.automatic_skip_count == 1 &&
-                            g_mask_call_orig_super;
+                            g_fe_mask_obs.post_count == 1 && g_fe_mask_obs.automatic_skip_count == 0 &&
+                            g_mask_recalled;
     if (handled_ok) {
         PushRec("fire_event_handled_recipient_mask", "native_handled_original_once", "native", "pass", ho_exp,
-                ho_exp, "CallOriginal+Supersede: original/listener once, automatic skip true");
+                ho_exp, "Recall: original/listener once inside the chain, automatic skip false");
     } else if (g_mask_fire_stage == 0) {
         PushPending("fire_event_handled_recipient_mask", "native_handled_original_once", "native", ho_exp,
                     kNeedMask);
@@ -2242,13 +2246,13 @@ static void CollectR6() {
                                 ",\"automatic_skipped\":" + JsonBool(g_fe_mask_obs.automatic_skip_count >= 1) +
                                 ",\"listener\":" + std::to_string(g_fe_mask_obs.listener_count) + "}";
         PushRec("fire_event_handled_recipient_mask", "native_handled_original_once", "native", "fail", ho_exp, act,
-                "Handled must CallOriginal+Supersede (listener 1, skip true); not a zero-engine-call");
+                "Handled must Recall (listener 1, skip false); not a zero-engine-call");
     }
     const std::string out_exp =
-        "{\"subset\":true,\"excluded\":true,\"all_suppressed\":true,\"call_original_supersede\":true}";
+        "{\"subset\":true,\"excluded\":true,\"all_suppressed\":true,\"recall\":true}";
     const bool out_ok = g_mask_subset_posts && !g_mask_excluded_posts &&
                         (g_mask_all_suppressed || (g_mask_fire_stage >= 2 && g_mask_post_count == 0)) &&
-                        g_mask_call_orig_super;
+                        g_mask_recalled;
     if (out_ok) {
         PushRec("fire_event_handled_recipient_mask", "native_outgoing_recipient_decisions", "native", "pass",
                 out_exp, out_exp, "PostEventAbstract CMsgSource1LegacyGameEvent subset then all-suppressed");
@@ -2284,10 +2288,10 @@ static void PushPending(const char* cse, const char* sub, const char* producer, 
 
 static void PushR6Pending() {
     PushPending("fire_event_handled_recipient_mask", "native_handled_original_once", "native",
-                "{\"orig\":1,\"automatic_skipped\":true,\"listener\":1}",
+                "{\"orig\":1,\"automatic_skipped\":false,\"listener\":1}",
                 "report before collect");
     PushPending("fire_event_handled_recipient_mask", "native_outgoing_recipient_decisions", "native",
-                "{\"subset\":true,\"excluded\":true,\"all_suppressed\":true,\"call_original_supersede\":true}",
+                "{\"subset\":true,\"excluded\":true,\"all_suppressed\":true,\"recall\":true}",
                 "report before collect");
     PushPending("voice_recall", "native_voice_listen_bits", "native", "{\"allowed\":true,\"denied\":false}",
                 "report before collect");

@@ -5403,7 +5403,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_GameFramePost(ISource2Server* server, b
 }
 
 // FireEvent Pre hook: run pre-subscribers (they may getX/setX + return a HookResult); if they collapse
-// to "suppress broadcast", re-call the original with a rewritten bDontBroadcast and S2_Supersede.
+// to "suppress broadcast", Recall the chain with a rewritten bDontBroadcast.
 KHook::Return<bool> S2ScriptPlugin::Hook_FireEventPre(IGameEventManager2* mgr, IGameEvent* ev,
                                                      [[maybe_unused]] bool bDontBroadcast) {
     auto obs = g_hk.fireEvent.Observe(mgr);
@@ -5435,7 +5435,18 @@ KHook::Return<bool> S2ScriptPlugin::Hook_FireEventPre(IGameEventManager2* mgr, I
         // all-or-nothing behaviour, which is what `Handled` has always meant for events nobody scoped.
         s_legacyFilterActive = haveMask;
         s_legacyAllowMask = allow;
-        bool ret = KHook::CallOriginal(&IGameEventManager2::FireEvent, mgr, ev, haveMask ? false : true);
+        // Recall, never CallOriginal-then-Supersede. FireEvent CONSUMES the event (the SDK frees it;
+        // FreeEvent is only for one never fired), and KHook still runs every later PRE callback on
+        // this FireEvent after a Supersede, with the same pointer. A PRE-only hook added later runs
+        // earlier, and ours is added when the first plugin subscribes to an event, so it runs before
+        // the hooks of every addon loaded before s2script. Calling the original here freed the event
+        // before those ran: MultiAddonManager 1.6.2's FireEvent PRE then called GetName() through the
+        // freed event's vtable and the server segfaulted at address 0, on every suppressed event.
+        // Recall continues the chain with the new bDontBroadcast; the original runs once, after every
+        // hook saw a live event, and before Recall returns, so the filter flags above are still armed
+        // while it posts.
+        KHook::Recall(&IGameEventManager2::FireEvent, KHook::Return<bool>{ KHook::Action::Ignore, true },
+                      mgr, ev, haveMask ? false : true);
         s_legacyFilterActive = false;
         s_legacyAllowMask = 0;
         // The flag is deliberately LEFT ARMED here and cleared at end of frame instead.
@@ -5445,7 +5456,7 @@ KHook::Return<bool> S2ScriptPlugin::Hook_FireEventPre(IGameEventManager2* mgr, I
         // messages are batched and flushed later in the frame — so by the time the post arrived the flag
         // had already been cleared. Hook_GameFramePost clears it, which bounds the window to the frame
         // that suppressed the event without depending on when the engine chooses to flush.
-        return S2_Supersede(ret);                // we fired it ourselves with broadcast off
+        return S2_Ignore(true);                  // the recalled chain fired it, with broadcast off
     }
     return S2_Ignore(true);                     // original runs; any set* mods already applied
 }

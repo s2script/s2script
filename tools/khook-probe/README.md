@@ -349,7 +349,7 @@ Command route sequence above, before preparing the JS fixture.
 
 No client. Probe collect fires `player_activate` inside a caller-owned
 `FireEventInvocationScope`. JS must not Handled-hook that name. Distinct from
-Handled+CallOriginal+Supersede (case 12).
+Handled+Recall (case 12).
 
 ### 7. `sdkhooks_one_of_two_entities` (R6 native+JS)
 
@@ -460,8 +460,8 @@ Need **two** real clients. Probe GameFrame fires `player_changename` in a **sepa
 `FireEventInvocationScope` token `fire_event_handled_recipient_mask` (not the R5
 `player_activate` no-suppression scope). JS `hook.onPre` returns Handled +
 `Events.setRecipients([slotA])`, then empty recipients (all-suppressed). Native:
-`orig:1, automatic_skipped:true, listener:1` (CallOriginal+Supersede, not zero engine
-calls) and PostEventAbstract outgoing bits. Sending to every human is not a mask test.
+`orig:1, automatic_skipped:false, listener:1` (Recall with `bDontBroadcast` rewritten, not
+zero engine calls) and PostEventAbstract outgoing bits. Sending to every human is not a mask test.
 
 | phase | client action | human subcheck | capture |
 | --- | --- | --- | --- |

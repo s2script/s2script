@@ -681,3 +681,30 @@ could not say so. The server also ran Game Fixes and MultiAddonManager.
 
 On that server the cause turned out to be hibernation: an empty server runs no `GameFrame` (see
 "Plugins load at startup" above, which fixes it). These lines still name a refused or bypassed hook.
+
+## 2026-10-20 — No crash when a plugin suppresses an event next to MultiAddonManager
+
+A CS2 server running TTT and MultiAddonManager 1.6.2 segfaulted at address 0 soon after players
+joined. The minidump: `libserver → KHook detour → multiaddonmanager.so (Hook_FireEvent) → call 0`,
+with the event argument pointing at a freed object (its vtable slot held heap memory). The breadcrumb
+of that run recorded 0 gamedata failures on CS2 build 2000933.
+
+When a plugin suppresses a game event (`HookResult.Handled` in an event pre-hook; TTT 2.0.0 does so
+for `player_death`, refused `player_team`, `round_end` during a round and blocked `item_purchase`),
+`Hook_FireEventPre` called the original `FireEvent` itself and returned `Supersede`. `FireEvent`
+frees the event, and KHook runs every later PRE callback after a `Supersede`, with the same pointer.
+KHook runs a PRE-only hook added later before one added earlier, and s2script adds its FireEvent hook
+when the first plugin subscribes to an event, so it runs before the hook of any addon loaded before
+s2script (MultiAddonManager, on that server).
+MultiAddonManager added a FireEvent PRE hook in 1.6.2 (commit 7b9d9cf, 2026-09-28; 1.6.1 and earlier
+have none); it calls `GetName()` on the event and read the freed one.
+
+The hook now uses `KHook::Recall` with the rewritten `bDontBroadcast` and returns `Ignore`, as the
+voice hook already does for `SetClientListening`: the chain continues, every hook sees a live event,
+and the original runs once, before `Recall` returns, so the legacy-event recipient filter is still
+armed while the event posts.
+
+Reproduced with the vendored KHook built as a library (two PRE-only hooks on a consuming
+`FireEvent`, peer added first) under AddressSanitizer: the old code reports heap-use-after-free in
+the peer's callback; with `Recall` the peer sees the event, the original runs once with
+`bDontBroadcast=1`. Live gate pending.

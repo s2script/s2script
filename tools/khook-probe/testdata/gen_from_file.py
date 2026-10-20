@@ -289,14 +289,14 @@ R6_NATIVE_JS_EXPECTED = {
     ("check_transmit", "js_visibility_policy"): {"a": True, "b": False},
     ("fire_event_handled_recipient_mask", "native_handled_original_once"): {
         "orig": 1,
-        "automatic_skipped": True,
+        "automatic_skipped": False,
         "listener": 1,
     },
     ("fire_event_handled_recipient_mask", "native_outgoing_recipient_decisions"): {
         "subset": True,
         "excluded": True,
         "all_suppressed": True,
-        "call_original_supersede": True,
+        "recall": True,
     },
     ("fire_event_handled_recipient_mask", "js_handled_set_recipients"): {
         "handled": True,
