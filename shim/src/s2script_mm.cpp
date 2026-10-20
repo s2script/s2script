@@ -4184,8 +4184,19 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 META_CONPRINTF("[s2script] interface OK: Source2Server (%s)\n", verStr);
                 // This always-on filter is also the post-loader bootstrap for terminal lifecycle
                 // hooks. Core frame dispatch remains independently subscription-gated.
-                m_frameHookInstalled = S2KHookAdd(g_hk.gameFrame, m_server,
-                    &ISource2Server::GameFrame, "GameFrame lifecycle bootstrap");
+                // Everything per-frame in the core hangs off this hook: the plugin loader, timers,
+                // async results, the startup plugins.json update. Say whether it took, and why not.
+                const S2HookReceipt frameHook = KHook::GetVtableIndex(&ISource2Server::GameFrame) == -1
+                    ? S2HookReceipt{KHook::INVALID_HOOK, S2HookState::Failed, "GetVtableIndex=-1"}
+                    : g_hk.gameFrame.Add(m_server);
+                m_frameHookInstalled = frameHook.Accepted();
+                if (m_frameHookInstalled) {
+                    META_CONPRINTF("[s2script] GameFrame hook installed (plugin loader, timers, async)\n");
+                } else {
+                    META_CONPRINTF("[s2script] ERROR: GameFrame hook NOT installed (%s) — no plugin will load, "
+                                   "and timers and async will not run\n",
+                                   frameHook.reason.empty() ? "refused" : frameHook.reason.c_str());
+                }
             } else {
                 META_CONPRINTF("[s2script] WARN: interface MISSING: Source2Server (%s)\n", verStr);
             }
@@ -5244,6 +5255,9 @@ static bool S2_FinishUnloadCleanup() {
 static void S2InstallLifecycleHooks() {
     if (g_lifecycleInstallAttempted) return;
     g_lifecycleInstallAttempted = true;
+    // Once per Load. "GameFrame hook installed" at load without this line means another addon
+    // replaced or bypassed the GameFrame virtual after us: nothing per-frame will run.
+    META_CONPRINTF("[s2script] first GameFrame reached s2script — per-frame dispatch is live\n");
     if (!g_S2ScriptPlugin.m_serverConfig) return;
     // Load/AllPluginsLoaded are too early: KHook restores this shared vtable page RX while the
     // stock loader still has a pending Disconnect-slot write. First accepted GameFrame proves

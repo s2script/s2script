@@ -276,6 +276,8 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
     /// Counts how many times `poll_plugins` has been called (throttle counter).
     static DRAIN_COUNT: Cell<u64> = Cell::new(0);
+    /// A scan of plugins/ has completed since the loader started (for `sm plugins list`).
+    static SCANNED: Cell<bool> = const { Cell::new(false) };
     /// Slice 6.12 (`sm plugins`): pending load/unload/reload requested from a command. Drained at the
     /// start of `poll_plugins` (the frame drain, OUTSIDE any command's isolate borrow) so the loader
     /// never runs re-entrantly. The natives only enqueue.
@@ -365,6 +367,86 @@ pub(crate) fn plugin_list() -> Vec<(String, String)> {
     });
 
     out.into_iter().collect()
+}
+
+/// What the loader has done so far, as `sm plugins list` explains an empty list.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LoaderProgress {
+    pub watching: bool,
+    /// Loader polls so far: one per `GameFrame` that reached the core.
+    pub polls: u64,
+    /// The startup plugins.json update still holds the first scan, for at most this much longer.
+    pub update_wait: Option<std::time::Duration>,
+    pub scanned: bool,
+    pub dir: Option<PathBuf>,
+}
+
+pub(crate) fn progress() -> LoaderProgress {
+    LoaderProgress {
+        watching: is_watching(),
+        polls: DRAIN_COUNT.with(Cell::get),
+        update_wait: crate::server_update::first_scan_wait(),
+        scanned: SCANNED.with(Cell::get),
+        dir: plugins_dir(),
+    }
+}
+
+/// Why no plugin is listed. An empty list was indistinguishable from "plugins/ is empty" when the
+/// real cause was that no frame ever reached the core.
+pub(crate) fn empty_reason(p: &LoaderProgress) -> String {
+    if !p.watching {
+        return "The plugin loader is not running; see the plugin loader WARN in the startup log.".to_string();
+    }
+    if p.polls == 0 {
+        return "No GameFrame has reached s2script since it loaded, so the loader has not run and no plugin \
+                can load. Check the startup log for \"GameFrame hook NOT installed\", and \"meta list\" for \
+                another addon that hooks GameFrame."
+            .to_string();
+    }
+    if let Some(wait) = p.update_wait {
+        return format!(
+            "Waiting for the plugins.json update to finish before scanning plugins/ (gives up in {}s).",
+            wait.as_secs()
+        );
+    }
+    if !p.scanned {
+        return "plugins/ has not been scanned yet.".to_string();
+    }
+    match &p.dir {
+        Some(dir) => format!("No plugin files in {}.", dir.display()),
+        None => "No plugin files in plugins/.".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod empty_reason_tests {
+    use super::{empty_reason, LoaderProgress};
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    fn running() -> LoaderProgress {
+        LoaderProgress {
+            watching: true,
+            polls: 500,
+            update_wait: None,
+            scanned: true,
+            dir: Some(PathBuf::from("/srv/addons/s2script/plugins")),
+        }
+    }
+
+    #[test]
+    fn each_stall_is_named() {
+        let off = LoaderProgress { watching: false, ..running() };
+        assert!(empty_reason(&off).contains("plugin loader is not running"));
+        let no_frames = LoaderProgress { polls: 0, update_wait: Some(Duration::from_secs(60)), scanned: false, ..running() };
+        let r = empty_reason(&no_frames);
+        assert!(r.contains("No GameFrame has reached s2script") && r.contains("meta list"), "{r}");
+        let updating = LoaderProgress { update_wait: Some(Duration::from_secs(42)), scanned: false, ..running() };
+        assert!(empty_reason(&updating).contains("plugins.json update") && empty_reason(&updating).contains("42s"));
+        let unscanned = LoaderProgress { scanned: false, ..running() };
+        assert_eq!(empty_reason(&unscanned), "plugins/ has not been scanned yet.");
+        assert_eq!(empty_reason(&running()), "No plugin files in /srv/addons/s2script/plugins.");
+    }
 }
 
 /// Find the path of a currently-loaded plugin by id.
@@ -993,6 +1075,7 @@ fn handle_scan(revision: u64, entries: Result<Vec<(PathBuf, FileStamp)>, String>
         Ok(entries) => entries,
         Err(reason) => { crate::v8host::log_warn(&format!("WARN: poll_plugins: {reason}; keeping prior state")); return; }
     };
+    SCANNED.with(|s| s.set(true));
     let mut current: HashMap<PathBuf, FileStamp> = entries.into_iter().collect();
     // plugins/disabled/ files loaded for this run join the scan; one that moved or vanished
     // (enabled, removed, deleted) leaves the session set and unloads like any vanished file.
@@ -1538,6 +1621,7 @@ pub(crate) fn shutdown_worker() {
     WAITING.with(|w| w.borrow_mut().clear());
     SCAN_REVISION.with(|r| r.set(0));
     DRAIN_COUNT.with(|c| c.set(0));
+    SCANNED.with(|s| s.set(false));
     let policy = &crate::async_limits::policy().loader;
     RETAINED_LEDGER.with(|ledger| {
         *ledger.borrow_mut() = RetainedLedger::new(policy.prepared_items, policy.prepared_bytes);

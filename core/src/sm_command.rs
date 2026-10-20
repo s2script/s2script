@@ -147,6 +147,9 @@ fn plugins(argv: &[&str]) -> Vec<String> {
 fn list() -> Vec<String> {
     let plugins = crate::loader::plugin_list();
     let mut lines = vec![format!("[S2S] Plugins ({}):", plugins.len())];
+    if plugins.is_empty() {
+        lines.push(format!("[S2S] {}", crate::loader::empty_reason(&crate::loader::progress())));
+    }
     for (i, (id, state)) in plugins.iter().enumerate() {
         let n = i + 1;
         lines.push(match crate::loader::session_folder(id) {
@@ -220,6 +223,15 @@ mod tests {
     #[test]
     fn unknown_subcommand_is_named() {
         assert_eq!(run("frobnicate"), vec!["[S2S] Unknown sub-command 'frobnicate'. Try: sm plugins list"]);
+    }
+
+    /// An empty list says why instead of a bare "Plugins (0)".
+    #[test]
+    fn an_empty_list_says_why() {
+        crate::loader::shutdown_worker();
+        let lines = list();
+        assert_eq!(lines[0], "[S2S] Plugins (0):");
+        assert!(lines[1].contains("plugin loader is not running"), "{lines:?}");
     }
 
     #[test]

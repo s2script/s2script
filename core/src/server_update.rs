@@ -682,6 +682,19 @@ pub(crate) fn start(plugins_dir: &Path) {
     *GATE.lock().unwrap() = Some(Gate { phase, deadline });
 }
 
+/// How much longer the startup update may hold the loader's first scan, if it still does (zero
+/// while it swaps files in). Read-only: `holds_first_scan` is what ends the hold.
+pub(crate) fn first_scan_wait() -> Option<Duration> {
+    let gate = GATE.lock().unwrap();
+    let g = gate.as_ref()?;
+    let phase = g.phase.lock().unwrap();
+    match &*phase {
+        Phase::Running => Some(g.deadline.saturating_duration_since(Instant::now())),
+        Phase::Committing => Some(Duration::ZERO),
+        Phase::Done(_) | Phase::Abandoned => None,
+    }
+}
+
 /// True while the loader must hold its first scan. Logs the update's outcome when it ends.
 pub(crate) fn holds_first_scan() -> bool {
     let mut gate = GATE.lock().unwrap();
@@ -1242,6 +1255,22 @@ mod tests {
         });
         let err = rt().block_on(resolve_targets(&m, "https://reg.test", &get)).unwrap_err();
         assert!(err.contains("reviewedOnly: refusing unreviewed plugin @edge/rtv@1.0.0"), "{err}");
+    }
+
+    #[test]
+    fn first_scan_wait_reports_the_hold_without_ending_it() {
+        *GATE.lock().unwrap() = None;
+        assert_eq!(first_scan_wait(), None);
+        let phase = Arc::new(Mutex::new(Phase::Running));
+        *GATE.lock().unwrap() = Some(Gate { phase: phase.clone(), deadline: Instant::now() + Duration::from_secs(60) });
+        let wait = first_scan_wait().unwrap();
+        assert!(wait > Duration::from_secs(55) && wait <= Duration::from_secs(60), "{wait:?}");
+        *phase.lock().unwrap() = Phase::Committing;
+        assert_eq!(first_scan_wait(), Some(Duration::ZERO));
+        *phase.lock().unwrap() = Phase::Done(Vec::new());
+        assert_eq!(first_scan_wait(), None);
+        assert!(GATE.lock().unwrap().is_some(), "reading the wait must not end the hold");
+        *GATE.lock().unwrap() = None;
     }
 
     #[test]
