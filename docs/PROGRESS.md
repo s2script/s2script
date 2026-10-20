@@ -619,3 +619,65 @@ thread-local bool load. The timeline is capped at 1,000,000 spans; totals and th
 are not. Operator guide: `docs/PROFILING.md`. Spec and plan: `docs/superpowers/{specs,plans}/2026-10-19-profiler*`.
 
 Core tests: 1116 pass, 9 ignored (21 new: 19 profiler, 2 `sm prof`). Live gate pending.
+
+## 2026-10-20 — No abort when the server quits
+
+A Pelican force restart aborted the server on exit: `cannot access a Thread Local Storage value
+during or after destruction`, from `function_adapter::drop_package` inside the thread-local
+destructor of the selected game package. When the server quits, the shim refuses a native unload
+while the server runs, so the core's `shutdown()` never happens; process exit then runs the
+thread-local destructors in an unspecified order, and the package receipt released itself through
+function-adapter tables already destroyed. A panic in a thread-local destructor aborts.
+
+The game-package slots (`REGISTERED`, `PENDING`) now forget their contents in their own destructor
+(`LeakOnExit`). Releasing a package stays `clear()`'s job during terminal retirement; at exit the
+process is ending. A test exits a thread holding a selected package and a plugin with a frame
+subscription and a pending timer, without `shutdown()` — it aborted with SIGABRT before the fix.
+
+## 2026-10-20 — Plugins load at startup, not when the first player joins
+
+On a Pelican server `sm plugins list` stayed empty and every plugin command was "Unknown command"
+until a player connected; then everything loaded. The loader is driven by the `GameFrame` hook, and
+an empty server hibernates as soon as its map loads and calls no `GameFrame`. Evidence: the crash
+breadcrumb of a never-joined server read `uptime 0` with an empty dispatch ring (the core never got
+a frame), and the server's log showed every plugin going Active within seconds of the first join.
+
+`s2script_core_set_plugins_dir` (the last step of the shim's `Load`) now calls
+`loader::boot_load`: it runs a frame's POST work without a frame — the async drain, socket/cookie
+callbacks, TopMenu, the loader poll — at frame pace, until a completed scan finds nothing left to
+load and no batch, apply, dependency wait or `OnPluginStart` is in flight (45 s budget, plus the
+plugins.json update's own timeout, which it waits out first). Plugins therefore start before the
+first map, as in SourceMod; `onMapStart` already fires for boot-loaded plugins (prelude contract).
+Everything after startup stays frame-driven.
+
+Also from that server's log:
+- `deferred by bounded loader queue (Full)` printed once per file per poll while 25 plugins
+  loaded — the worker reserves worst-case result bytes per prepare, so only a few fit at once.
+  It is back-pressure, not a fault: now one `[plugins] N loading now, M more queued …` line per scan.
+- The cs2 game package's MultiAddonManager banner printed once per plugin (its "shown" flag lived in
+  each plugin's context). New engine-generic native `__s2_once(key)` (process-wide, cleared at
+  shutdown) makes it once per server.
+
+Tests: 31 plugins (several queue rounds) plus an awaited `OnPluginStart` all running when the FFI
+entry returns, with no frame; the startup load waiting out a held plugins.json update; `__s2_once`
+across contexts and shutdown. Core: 1099 pass, 9 ignored. Live gate pending.
+
+## 2026-10-20 — Say why no plugin loads
+
+A server ran `sm` but no plugin: `sm plugins list` printed `Plugins (0)` and every plugin command
+was "Unknown command". The plugin loader, timers, async results and the startup plugins.json update
+all run from the `GameFrame` hook, and the evidence (`[update] checking …` never resolved; `Unload()`
+at quit in phase `Running`, so the first-frame lifecycle hooks were never installed) says no frame
+reached s2script. The `GameFrame` install dropped its result and refusal reason silently, so the log
+could not say so. The server also ran Game Fixes and MultiAddonManager.
+
+- The shim logs `GameFrame hook installed …` or `ERROR: GameFrame hook NOT installed (<reason>)`, and
+  once per load `first GameFrame reached s2script — per-frame dispatch is live`. Installed but never
+  reached means another addon replaced or bypassed the virtual.
+- `sm plugins list`, when empty, adds why: the loader is not running; no `GameFrame` has reached
+  s2script; the plugins.json update still holds the first scan (and for how long); `plugins/` not
+  scanned yet; or `plugins/` is empty (`loader::empty_reason`, `server_update::first_scan_wait`).
+- INSTALL: a "No plugins load" section.
+
+On that server the cause turned out to be hibernation: an empty server runs no `GameFrame` (see
+"Plugins load at startup" above, which fixes it). These lines still name a refused or bypassed hook.
