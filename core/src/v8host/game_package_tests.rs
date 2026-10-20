@@ -898,3 +898,28 @@ fn shipped_sdkhook_damage_routes_through_the_trusted_damage_adapter() {
     set_engine_ops(None);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// The server quits with the core still up: the shim refuses a native unload while the server
+/// runs, so `shutdown()` never happens and the process exit tears thread-local storage down in an
+/// unspecified order. A thread that exits without `shutdown()` runs the same destructors.
+#[test]
+fn exiting_without_shutdown_does_not_panic_in_thread_local_destructors() {
+    let outcome = std::thread::spawn(|| {
+        init(logger).unwrap();
+        install("({'.':{value:1}})");
+        load_plugin_js(
+            "exit-probe",
+            r#"const { OnGameFrame } = require("@s2script/frame");
+            const { delay } = require("@s2script/timers");
+            exports.OnPluginStart = () => {
+                OnGameFrame.subscribe(() => {});
+                delay(60000).then(() => {});
+            };"#,
+            "{}",
+        );
+        assert!(!is_failed("exit-probe"));
+        // No shutdown(): the thread's TLS destructors run as the thread exits.
+    })
+    .join();
+    assert!(outcome.is_ok());
+}

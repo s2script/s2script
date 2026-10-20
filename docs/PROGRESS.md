@@ -593,3 +593,17 @@ A player's `sm` now answers exactly as SourceMod's `PlayerManager::OnClientComma
 banner (version, "To see running plugins, type "sm plugins"", "To see credits, type "sm credits"",
 the website). The extra line that pointed players at `sm_rcon` is gone; SourceMod has none. The
 server console gains `sm credits`, split from `sm version`.
+
+## 2026-10-20 — No abort when the server quits
+
+A Pelican force restart aborted the server on exit: `cannot access a Thread Local Storage value
+during or after destruction`, from `function_adapter::drop_package` inside the thread-local
+destructor of the selected game package. When the server quits, the shim refuses a native unload
+while the server runs, so the core's `shutdown()` never happens; process exit then runs the
+thread-local destructors in an unspecified order, and the package receipt released itself through
+function-adapter tables already destroyed. A panic in a thread-local destructor aborts.
+
+The game-package slots (`REGISTERED`, `PENDING`) now forget their contents in their own destructor
+(`LeakOnExit`). Releasing a package stays `clear()`'s job during terminal retirement; at exit the
+process is ending. A test exits a thread holding a selected package and a plugin with a frame
+subscription and a pending timer, without `shutdown()` — it aborted with SIGABRT before the fix.
