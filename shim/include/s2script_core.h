@@ -213,6 +213,11 @@ int s2script_core_dispatch_usercmd(int slot);
  * the caller MRES_SUPERCEDEs the send when >= Handled (2). catch_unwind -> 0 (fail-open: a core bug
  * must never suppress a message it didn't mean to). */
 int s2script_core_dispatch_usermsg(const char* name, int id);
+/* Shim -> core: called at StartupServer POST and on the first frame after it. Re-resolves every
+ * UserMessages.onPre subscription whose usermsg_hook_sub returned -2 (the message was not registered
+ * yet — plugins load before the game registers its network messages), moving its subscribers onto the
+ * canonical name. Returns how many names are still pending. Touches no V8 state. catch_unwind -> 0. */
+int s2script_core_usermsg_retry_pending(void);
 /* Shim -> core: an installed DECLARATIVE INBOUND HOOK fired. Called from the hook's compiled thunk
  * (shim/src/engine_hooks.cpp) with the hook id the thunk carries as a compile-time constant and an
  * OPAQUE pointer to the thunk's own stack-frame arg view — core reads and writes it only through the

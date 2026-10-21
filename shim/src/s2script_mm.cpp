@@ -657,15 +657,28 @@ static int s2_trace_shape(const float* start, const float* end, const float* min
 // s_currentEvent: set by FireGameEvent before calling core dispatch and restored after
 //   (re-entrancy: a nested FireGameEvent during dispatch sees the inner event, then the
 //   outer is restored when the inner call returns).
-// s_subscribedNames: tracks which event names the JS layer has subscribed to so that
-//   AddListener is only called once per unique name (AddListener is idempotent on some
-//   versions of the SDK but we track it explicitly to be safe).  RemoveListener removes
-//   the listener from all events at once (it's an all-names call per the SDK), so we
-//   don't need to iterate names on teardown.
+// s_subscribedNames: the event names AddListener ACCEPTED, so AddListener is only called
+//   once per unique name (AddListener is idempotent on some versions of the SDK but we track
+//   it explicitly to be safe).  RemoveListener removes the listener from all events at once
+//   (it's an all-names call per the SDK), so we don't need to iterate names on teardown.
+// s_pendingEventNames: names AddListener REFUSED. Plugins load at Metamod Load (#268), before
+//   CS2 has read its game-event definitions, and AddListener returns false for an event the
+//   manager doesn't know yet. Such a name is NOT marked subscribed — it is retried by
+//   S2_RetryPendingSubscriptions at StartupServer POST and on the first frame after it, by
+//   which time the definitions are loaded. A name that still fails then is a genuinely
+//   unknown event: it is logged and stays pending (retried each map, never fires).
 // ---------------------------------------------------------------------------
 static IGameEventManager2* s_pGameEventManager = nullptr;
 static IGameEvent*         s_currentEvent      = nullptr;
 static std::set<std::string> s_subscribedNames;
+static std::set<std::string> s_pendingEventNames;
+// True once the server has started and run its first frame (or the plugin late-loaded onto a
+// running server): the engine's event and network-message registries are complete, so a lookup
+// miss is final rather than pending.
+static bool s_registriesComplete = false;
+// Armed by StartupServer POST; the next GameFrame makes the final retry of pending subscriptions,
+// covering any registration the engine performs after StartupServer returns.
+static bool s_retrySubsOnFrame = false;
 
 // ---------------------------------------------------------------------------
 // The DEFERRED-DISPATCH QUEUE (deferred-dispatch-queue slice).
@@ -854,12 +867,29 @@ static S2ScriptEventListener s_eventListener;
 // → safe default.
 // ---------------------------------------------------------------------------
 
+// AddListener for `name`, recording the outcome: subscribed on success, pending on refusal.
+// Returns true iff the engine accepted the listener.
+static bool S2_TryAddEventListener(const std::string& name) {
+    if (s_pGameEventManager->AddListener(&s_eventListener, name.c_str(), /*bServerSide=*/true)) {
+        s_subscribedNames.insert(name);
+        s_pendingEventNames.erase(name);
+        return true;
+    }
+    s_pendingEventNames.insert(name);
+    return false;
+}
+
 static int s2_event_subscribe(const char* name) {
     if (!s_pGameEventManager || !name) return -1;
-    // Track per-name: AddListener only the first time JS subscribes to this event name.
-    if (s_subscribedNames.insert(name).second) {
-        s_pGameEventManager->AddListener(&s_eventListener, name, /*bServerSide=*/true);
-    }
+    // Track per-name: AddListener only until the engine has accepted this event name once.
+    if (s_subscribedNames.count(name)) return 0;
+    if (S2_TryAddEventListener(name)) return 0;
+    if (s_registriesComplete)
+        META_CONPRINTF("[s2script] EVENT sub FAILED: the engine has no game event '%s' "
+                       "(retried at each map start)\n", name);
+    else
+        META_CONPRINTF("[s2script] EVENT sub deferred: '%s' is not registered yet "
+                       "(retrying when the server starts)\n", name);
     return 0;
 }
 
@@ -1570,6 +1600,7 @@ static int s2_user_message_send(const int* slots, int slotCount) {
 // so a handler that builds+sends a NEW user message mid-hook cannot retarget the intercepted view.
 // ---------------------------------------------------------------------------
 static constexpr int kUserMsgMaxId = 2048;
+static constexpr int kUserMsgSubPending = -2;   // usermsg_hook_sub: not registered YET (pre-startup) — core retries
 static uint64_t s_userMsgSubBits[kUserMsgMaxId / 64] = {0};
 static bool     s_userMsgHookInstalled = false;   // lazy PostEventAbstract Add on first-ever sub
 static bool     s_userMsgFirstFireDone = false;   // observe-only validation ran on the first subscribed fire
@@ -1609,12 +1640,24 @@ static const google::protobuf::Message* s2_usermsg_walk(const google::protobuf::
 
 // Subscribe-time validation (spec §2.1): resolve via the live-proven SayText2 path, then require a
 // non-null NetMessageInfo, an id in [0,2048), and the requested name a substring of the canonical
-// unscoped name. Any failure -> named USERMSG reason logged + return -1 (onPre throws plugin-side).
+// unscoped name. Any failure -> named USERMSG reason logged + return -1 (onPre throws plugin-side),
+// except a name miss before the server has started, which returns kUserMsgSubPending (-2).
 // On the first-ever OK sub, lazily Add PostEventAbstract on the already-held s_pGameEventSystem.
 static int s2_usermsg_hook_sub(const char* name, char* canonicalOut, int canonicalLen) {
     if (!name || !s_pNetworkMessages || !s_pGameEventSystem) return -1;
     INetworkMessageInternal* info = s_pNetworkMessages->FindNetworkMessagePartial(name);
-    if (!info) { META_CONPRINTF("[s2script] USERMSG sub FAILED: no message matches '%s'\n", name); return -1; }
+    if (!info) {
+        // Before the server starts, the game has not registered its network messages yet (plugins
+        // load at Metamod Load, #268): report PENDING, and core retries via
+        // s2script_core_usermsg_retry_pending once StartupServer has run. After that a miss is final.
+        if (!s_registriesComplete) {
+            META_CONPRINTF("[s2script] USERMSG sub deferred: '%s' is not registered yet "
+                           "(retrying when the server starts)\n", name);
+            return kUserMsgSubPending;
+        }
+        META_CONPRINTF("[s2script] USERMSG sub FAILED: no message matches '%s'\n", name);
+        return -1;
+    }
     const NetMessageInfo_t* mi = info->GetNetMessageInfo();
     if (!mi) { META_CONPRINTF("[s2script] USERMSG descriptor 'message-id-extract' FAILED: "
                               "GetNetMessageInfo null for '%s'\n", name); return -1; }
@@ -1640,6 +1683,33 @@ static int s2_usermsg_hook_unsub(int id) {
     if (id < 0 || id >= kUserMsgMaxId) return 0;
     s_userMsgSubBits[id >> 6] &= ~(1ull << (id & 63));
     return 1;
+}
+
+// Retry the subscriptions the engine refused because its registries were not populated yet: game
+// events AddListener rejected, and (through core, which owns the canonical-name bookkeeping) user
+// messages usermsg_hook_sub reported pending. Called at StartupServer POST and again (`final`) on
+// the first frame after it; from the final pass on, a miss is reported as a failure instead of
+// staying pending. Retrying an event name that is already subscribed cannot happen — success moves
+// it out of the pending set — so no (listener, name) pair is ever added twice.
+static void S2_RetryPendingSubscriptions(bool coreReady, const char* when, bool final) {
+    if (final) s_registriesComplete = true;
+    if (s_pGameEventManager && !s_pendingEventNames.empty()) {
+        const std::vector<std::string> names(s_pendingEventNames.begin(), s_pendingEventNames.end());
+        int ok = 0;
+        for (const std::string& n : names) {
+            if (S2_TryAddEventListener(n)) ++ok;
+        }
+        META_CONPRINTF("[s2script] events: %d/%d deferred subscription(s) registered at %s\n",
+                       ok, (int)names.size(), when);
+        if (final) for (const std::string& n : s_pendingEventNames)
+            META_CONPRINTF("[s2script] EVENT sub FAILED: the engine has no game event '%s' "
+                           "(retried at each map start)\n", n.c_str());
+    }
+    if (coreReady) {
+        const int left = s2script_core_usermsg_retry_pending();
+        if (left > 0 && !final)
+            META_CONPRINTF("[s2script] usermsg: %d subscription(s) not registered yet at %s\n", left, when);
+    }
 }
 
 // Read ops — Get* reflection mirrors of the shipping s2_user_message_set_* setters, each null-guarded on
@@ -4945,6 +5015,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         std::snprintf(error, maxlen, "engine-function service still owns prior records");
         return false;
     }
+    // Late load onto a running server: its event and network-message registries are already
+    // complete, so a subscribe miss during this boot is final rather than pending.
+    if (S2_GameServer()) s_registriesComplete = true;
     if (s2script_core_init(&s2_logger, &s2_request_hook, &ops) != 0) {
         META_CONPRINTF("[s2script] ERROR: V8 core init failed (plugin stays loaded for diagnosis)\n");
         return true; // degrade, do not fail the load (spec §7)
@@ -5234,6 +5307,9 @@ static bool S2_FinishUnloadCleanup() {
         s_pGameEventManager = nullptr;
     }
     s_subscribedNames.clear();
+    s_pendingEventNames.clear();
+    s_registriesComplete = false;
+    s_retrySubsOnFrame = false;
 
     if (s_pCvar) {
         for (auto& kv : s_concommandRefs) {
@@ -5373,6 +5449,10 @@ KHook::Return<void> S2ScriptPlugin::Hook_GameFramePre(ISource2Server* server, bo
     // the no-core-subscribers path. This is target-local collection, not quiescence.
     struct FunctionMaintenance { ~FunctionMaintenance() { s2bridge::Global().Collect(); } } function_maintenance;
     if (obs) S2InstallLifecycleHooks();
+    if (obs && s_retrySubsOnFrame) {
+        s_retrySubsOnFrame = false;
+        S2_RetryPendingSubscriptions(m_coreDispatchReady, "first frame", /*final=*/true);
+    }
     if (!m_coreDispatchReady || !m_frameDispatchRequested) return S2_Ignore();
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     // The frame counter first, so every line printed from here on — including the drain's — names
@@ -5774,6 +5854,11 @@ KHook::Return<void> S2ScriptPlugin::Hook_StartupServer(INetworkServerService* ns
                 s2script_core_client_end(slot, token);
             });
     }
+    // By now the engine has read its game-event definitions and registered its network messages:
+    // anything a plugin subscribed to during boot (#268 loads plugins at Metamod Load) resolves here,
+    // and the first frame makes the final pass for anything registered later still.
+    S2_RetryPendingSubscriptions(m_coreDispatchReady, "map start", /*final=*/s_registriesComplete);
+    s_retrySubsOnFrame = !s_registriesComplete;
     INetworkGameServer* gs = S2_GameServer();
     const char* map = gs ? gs->GetMapName() : nullptr;
     META_CONPRINTF("[s2script] map start: %s (maxClients=%d)\n",

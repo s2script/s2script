@@ -685,6 +685,15 @@ pub extern "C" fn s2script_core_dispatch_usermsg(name: *const c_char, id: c_int)
     .unwrap_or(0)
 }
 
+/// UserMessage-interception: shim → core once the server has started. Re-resolves every
+/// `UserMessages.onPre` subscription made before the engine registered its network messages
+/// (`usermsg_hook_sub` returned -2), moving the held subscribers onto the canonical name. Returns how
+/// many names are still pending. `catch_unwind` → 0. Touches no V8 state, so it is safe outside a frame.
+#[no_mangle]
+pub extern "C" fn s2script_core_usermsg_retry_pending() -> c_int {
+    catch_unwind(crate::usermsg::retry_pending).unwrap_or(0)
+}
+
 /// C-ABI entry point the shim's ConCommand trampoline calls when a registered command fires.
 /// `name` = command name (Arg(0)), `slot` = CPlayerSlot::Get() (-1 for server console),
 /// `args` = CCommand::ArgS() (everything after the name).

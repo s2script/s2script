@@ -56,6 +56,31 @@ thread_local! {
     /// leak on a no-op `off()`). A name we never subscribed simply misses this map and `off` no-ops.
     static USERMSG_RESOLVE: std::cell::RefCell<std::collections::HashMap<String, String>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
+
+    /// Names a plugin subscribed before the engine registered them (`usermsg_hook_sub` returned
+    /// `SUB_PENDING`: plugins load at Metamod Load, ahead of the game's network-message
+    /// registration). Their subscribers wait in `USERMSG_MUX` under the requested name until
+    /// `retry_pending` — driven by the shim once the server has started — resolves the canonical
+    /// name and moves them onto it.
+    static USERMSG_PENDING: std::cell::RefCell<std::collections::HashSet<String>>
+        = std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// `usermsg_hook_sub`'s "not registered yet" return: the name may still resolve once the server
+/// starts, so the subscription is held rather than refused.
+const SUB_PENDING: c_int = -2;
+
+/// Record a resolved subscription: `requested` (the caller's possibly partial name) now maps to
+/// `canonical` with engine id `id`. If `requested` was pending, its waiting subscribers move onto
+/// the canonical channel, where dispatch looks them up.
+fn promote(requested: &str, canonical: &str, id: i32) {
+    USERMSG_IDS.with(|m| { m.borrow_mut().insert(canonical.to_string(), id); });
+    if USERMSG_PENDING.with(|p| p.borrow_mut().remove(requested)) {
+        USERMSG_MUX.with(|m| m.borrow_mut().rename(requested, canonical));
+    }
+    USERMSG_RESOLVE.with(|m| { let mut b = m.borrow_mut();
+        b.insert(requested.to_string(), canonical.to_string());
+        b.insert(canonical.to_string(), canonical.to_string()); });
 }
 
 // ---------------------------------------------------------------------------
@@ -67,7 +92,10 @@ thread_local! {
 /// and sets the id's bitmap bit on the first-ever subscribe), records the canonical name → engine id in
 /// `USERMSG_IDS`, and subscribes the wrapped handler in `USERMSG_MUX` keyed by the CANONICAL name.
 /// Returns the canonical name on success; `null` on a missing op, an unresolvable name, or a degraded
-/// intercept descriptor (the op returned -1) — the prelude then throws at subscribe time.
+/// intercept descriptor (the op returned -1) — the prelude then throws at subscribe time. A name the
+/// engine has not registered YET (the op returned `SUB_PENDING`, only possible before the server
+/// starts) is held: the handler subscribes under the requested name, which is returned, and
+/// `retry_pending` moves it to the canonical name once the server is up.
 fn s2_usermsg_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_null();
@@ -80,11 +108,18 @@ fn s2_usermsg_on(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, 
         let Some(sub) = engine_ops().and_then(|o| o.usermsg_hook_sub) else { return };
         let mut buf = [0i8; 256];
         let id = sub(nc.as_ptr(), buf.as_mut_ptr(), buf.len() as c_int);
-        if id < 0 { return; }   // unresolvable name / null NetMessageInfo — prelude throws
-        let canonical = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned();
-        USERMSG_IDS.with(|m| { m.borrow_mut().insert(canonical.clone(), id); });
-        USERMSG_RESOLVE.with(|m| { let mut b = m.borrow_mut();
-            b.insert(name, canonical.clone()); b.insert(canonical.clone(), canonical.clone()); });
+        let canonical = if id == SUB_PENDING {
+            // Not registered yet: wait under the requested name (it is its own lookup key until
+            // `retry_pending` resolves it).
+            USERMSG_PENDING.with(|p| { p.borrow_mut().insert(name.clone()); });
+            USERMSG_RESOLVE.with(|m| { m.borrow_mut().insert(name.clone(), name.clone()); });
+            name
+        } else {
+            if id < 0 { return; }   // unresolvable name / null NetMessageInfo — prelude throws
+            let canonical = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned();
+            promote(&name, &canonical, id);
+            canonical
+        };
         // Subscribes under the CANONICAL name — the alias the caller used is only a lookup key.
         if subscribe_into(scope, &args, &USERMSG_MUX, &canonical, 1).is_none() { return; }
         if let Some(js) = v8::String::new(scope, &canonical) { rv.set(js.into()); }
@@ -106,6 +141,7 @@ fn s2_usermsg_off(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments,
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         let now_empty = USERMSG_MUX.with(|m| m.borrow_mut().remove_by_owner_on(&canonical, &owner));
         if now_empty {
+            USERMSG_PENDING.with(|p| { p.borrow_mut().remove(&canonical); });
             if let Some(hook_id) = USERMSG_IDS.with(|m| m.borrow_mut().remove(&canonical)) {
                 if let Some(unsub) = engine_ops().and_then(|o| o.usermsg_hook_unsub) {
                     let _ = unsub(hook_id);
@@ -255,6 +291,35 @@ pub(crate) fn dispatch(name: &str, id: i32) -> i32 {
     result as i32
 }
 
+/// Re-resolve every pending subscription (`s2script_core_usermsg_retry_pending`, called by the shim
+/// at server start and on the first frame after it). A name that now resolves has its subscribers
+/// moved onto the canonical channel and its bitmap bit set; one still `SUB_PENDING` stays held; one
+/// that now fails outright (the shim logged why) is dropped from the pending set, leaving its
+/// subscribers inert until their plugin unloads. A name nobody is subscribed to any more is simply
+/// forgotten. Returns how many names are still pending. Touches no V8 state.
+pub(crate) fn retry_pending() -> i32 {
+    let names: Vec<String> = USERMSG_PENDING.with(|p| p.borrow().iter().cloned().collect());
+    if names.is_empty() { return 0; }
+    let Some(sub) = engine_ops().and_then(|o| o.usermsg_hook_sub) else { return names.len() as i32 };
+    for name in names {
+        let live = USERMSG_MUX.with(|m| m.borrow().has_subscribers(&name));
+        let nc = match std::ffi::CString::new(name.clone()) { Ok(c) if live => c, _ => {
+            USERMSG_PENDING.with(|p| { p.borrow_mut().remove(&name); });
+            continue;
+        } };
+        let mut buf = [0i8; 256];
+        let id = sub(nc.as_ptr(), buf.as_mut_ptr(), buf.len() as c_int);
+        if id == SUB_PENDING { continue; }
+        if id < 0 {
+            USERMSG_PENDING.with(|p| { p.borrow_mut().remove(&name); });
+            continue;
+        }
+        let canonical = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned();
+        promote(&name, &canonical, id);
+    }
+    USERMSG_PENDING.with(|p| p.borrow().len() as i32)
+}
+
 // ---------------------------------------------------------------------------
 // Teardown
 // ---------------------------------------------------------------------------
@@ -263,6 +328,8 @@ pub(crate) fn dispatch(name: &str, id: i32) -> i32 {
 /// shim's bitmap bit via `usermsg_hook_unsub`.
 fn unhook_emptied(emptied: &[String]) {
     for canonical in emptied {
+        // A still-pending name has no id and no bitmap bit; it just stops waiting.
+        USERMSG_PENDING.with(|p| { p.borrow_mut().remove(canonical); });
         if let Some(hook_id) = USERMSG_IDS.with(|m| m.borrow_mut().remove(canonical)) {
             if let Some(func) = engine_ops().and_then(|o| o.usermsg_hook_unsub) {
                 let _ = func(hook_id);
@@ -303,6 +370,10 @@ pub(crate) fn register_singletons() {
         "USERMSG_RESOLVE", AfterIsolateDrop,
         Box::new(|| USERMSG_RESOLVE.with(|m| m.borrow_mut().clear())),
     );
+    crate::process_singletons::register(
+        "USERMSG_PENDING", AfterIsolateDrop,
+        Box::new(|| USERMSG_PENDING.with(|m| m.borrow_mut().clear())),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +397,8 @@ mod tests {
     use std::os::raw::c_char;
 
     thread_local! {
+        /// Whether the mock engine has "registered" the `Late*` messages yet (the server-start edge).
+        static LATE_REGISTERED: std::cell::Cell<bool> = std::cell::Cell::new(false);
         static USERMSG_SUB_CAPTURE:   std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
         static USERMSG_UNSUB_CAPTURE: std::cell::RefCell<Vec<i32>>    = std::cell::RefCell::new(Vec::new());
     }
@@ -335,14 +408,19 @@ mod tests {
         let n = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().to_string();
         USERMSG_SUB_CAPTURE.with(|v| v.borrow_mut().push(n.clone()));
         if n == "SubFail" { return -1; }
-        let canonical = if n.contains("FireBullets") { "TE_FireBullets_Canonical" } else { return -1 };
+        // `Late*` is registered only once the mock server starts: pending (-2) before that. After it,
+        // "LateMsg" resolves and "LateGone" is a name the engine never registers (-1).
+        if n.starts_with("Late") && !LATE_REGISTERED.with(|c| c.get()) { return SUB_PENDING; }
+        if n == "LateGone" { return -1; }
+        let (canonical, id) = if n.contains("FireBullets") { ("TE_FireBullets_Canonical", 452) }
+            else if n.contains("LateMsg") { ("CMsgLateMsg_Canonical", 77) } else { return -1 };
         let bytes = canonical.as_bytes();
         assert!((bytes.len() as c_int) < len);
         unsafe {
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, bytes.len());
             *out.add(bytes.len()) = 0;
         }
-        452
+        id
     }
     extern "C" fn mock_usermsg_unsub(id: c_int) -> c_int {
         USERMSG_UNSUB_CAPTURE.with(|v| v.borrow_mut().push(id)); 1
@@ -491,5 +569,61 @@ mod tests {
         assert_eq!(USERMSG_UNSUB_CAPTURE.with(|v| v.borrow().clone()), vec![452],
             "last subscriber gone -> usermsg_hook_unsub(452)");
         shutdown();
+    }
+
+    /// A subscription made before the engine registered the message (plugins load before the server
+    /// starts) is held, not refused: onPre does not throw, nothing is delivered yet, and
+    /// `retry_pending` after server start moves the subscriber onto the canonical name — after which
+    /// dispatch delivers it and unload unhooks the resolved id.
+    #[test]
+    fn usermsg_subscribed_before_registration_resolves_on_retry() {
+        LATE_REGISTERED.with(|c| c.set(false));
+        USERMSG_UNSUB_CAPTURE.with(|v| v.borrow_mut().clear());
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(usermsg_test_ops()));
+        create_plugin_context("pl");
+        eval_in_context("pl", r#"
+            __s2pkg_usermessages.UserMessages.onPre("LateMsg", function (m) {
+                globalThis.__late_ran = (globalThis.__late_ran || 0) + 1;
+                globalThis.__late_name = m.name;
+            });
+            __s2pkg_usermessages.UserMessages.onPre("LateGone", function () {});
+        "#).unwrap();
+        assert_eq!(dispatch("CMsgLateMsg_Canonical", 77), 0);
+        assert_eq!(read_i32_global_in("pl", "__late_ran"), 0, "nothing is delivered while pending");
+        assert_eq!(retry_pending(), 2, "still unregistered -> both stay pending");
+
+        LATE_REGISTERED.with(|c| c.set(true));
+        assert_eq!(retry_pending(), 0, "LateMsg resolves; LateGone fails outright and stops waiting");
+        assert_eq!(dispatch("CMsgLateMsg_Canonical", 77), 0);
+        assert_eq!(read_i32_global_in("pl", "__late_ran"), 1, "the held subscriber now fires");
+        assert_eq!(read_global_string("pl", "__late_name"), "CMsgLateMsg_Canonical");
+
+        unload_plugin("pl");
+        assert_eq!(USERMSG_UNSUB_CAPTURE.with(|v| v.borrow().clone()), vec![77],
+            "unload unhooks the id resolved at retry");
+        shutdown();
+        LATE_REGISTERED.with(|c| c.set(false));
+    }
+
+    /// `off()` on a still-pending name drops it from the pending set, so a later retry never
+    /// re-resolves (and sets a bitmap bit for) a name nobody listens to.
+    #[test]
+    fn usermsg_off_while_pending_stops_waiting() {
+        LATE_REGISTERED.with(|c| c.set(false));
+        USERMSG_SUB_CAPTURE.with(|v| v.borrow_mut().clear());
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(usermsg_test_ops()));
+        create_plugin_context("po");
+        eval_in_context("po", r#"
+            __s2pkg_usermessages.UserMessages.onPre("LateMsg", function () {});
+            __s2pkg_usermessages.UserMessages.off("LateMsg");
+        "#).unwrap();
+        LATE_REGISTERED.with(|c| c.set(true));
+        let before = USERMSG_SUB_CAPTURE.with(|v| v.borrow().len());
+        assert_eq!(retry_pending(), 0);
+        assert_eq!(USERMSG_SUB_CAPTURE.with(|v| v.borrow().len()), before, "no re-resolve after off()");
+        shutdown();
+        LATE_REGISTERED.with(|c| c.set(false));
     }
 }

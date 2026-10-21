@@ -124,6 +124,34 @@ impl<H: Clone> Channels<H> {
         self.ids.retain(|_, (n, _, _)| n != name);
     }
 
+    /// Move every subscriber on `from` onto `to`, appended after `to`'s own (registration order is
+    /// kept within each), re-keying their caller-allocated ids so `Scope` disposal and owner
+    /// teardown still find them. Used when a channel subscribed under a provisional name resolves
+    /// to its canonical one (a user message subscribed before the engine registered it).
+    pub fn rename(&mut self, from: &str, to: &str) {
+        if from == to { return; }
+        let Some(src) = self.by_name.remove(from) else { return };
+        let dest = self.by_name.entry(to.to_string()).or_insert_with(|| Descriptor::new(to));
+        let mut remap: Vec<(SubId, SubId)> = Vec::new();
+        for (old_id, priority, owner, handler) in src.snapshot(Phase::Pre) {
+            let (new_id, _) = dest.subscribe(priority, Phase::Pre, owner, handler);
+            remap.push((old_id, new_id));
+        }
+        for (name, sub_id, _) in self.ids.values_mut() {
+            if name != from { continue; }
+            if let Some((_, new_id)) = remap.iter().find(|(old, _)| old == sub_id) {
+                *name = to.to_string();
+                *sub_id = *new_id;
+            }
+        }
+        self.ids.retain(|_, (name, _, _)| name != from);
+    }
+
+    /// True iff `name` has at least one subscriber.
+    pub fn has_subscribers(&self, name: &str) -> bool {
+        self.by_name.get(name).is_some_and(|d| d.enabled_count() > 0)
+    }
+
     /// True iff no channel has any subscriber — used by the "is the last hook gone?" detour
     /// reconciliation.
     pub fn is_empty(&self) -> bool {
@@ -211,6 +239,35 @@ mod tests {
         assert!(!c.is_empty());
         c.remove_by_owner("p1");
         assert!(c.is_empty());
+    }
+
+    #[test]
+    fn rename_moves_subscribers_and_rekeys_their_ids() {
+        let mut c = ch();
+        c.subscribe("canon", 1, "p0".into(), 1, "h0");
+        c.subscribe("alias", 2, "p1".into(), 5, "h1");
+        c.subscribe("alias", 3, "p2".into(), 6, "h2");
+        c.rename("alias", "canon");
+        assert!(c.snapshot("alias").is_empty(), "the provisional channel is gone");
+        assert_eq!(
+            c.snapshot("canon"),
+            vec![("p0".to_string(), 1, "h0"), ("p1".to_string(), 5, "h1"), ("p2".to_string(), 6, "h2")],
+            "moved subscribers append after the existing ones, generations intact"
+        );
+        // Scope disposal by the ORIGINAL caller ids still reaches the moved subscriptions.
+        assert!(c.remove_by_ids(&[2]).is_empty());
+        assert_eq!(c.snapshot("canon").len(), 2);
+        assert!(!c.remove_by_owner_on("canon", "p0"), "p2 still holds the channel");
+        assert_eq!(c.remove_by_ids(&[3]), vec!["canon".to_string()], "last moved sub empties it");
+    }
+
+    #[test]
+    fn rename_of_a_missing_channel_is_a_no_op() {
+        let mut c = ch();
+        c.subscribe("a", 1, "p1".into(), 1, "h1");
+        c.rename("nope", "a");
+        c.rename("a", "a");
+        assert_eq!(c.snapshot("a"), vec![("p1".to_string(), 1, "h1")]);
     }
 
     #[test]

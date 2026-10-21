@@ -59,7 +59,9 @@ export declare const UserMessages: {
   /** Pre-hook an outbound user message by unscoped name (partial match, SayText2-style; the view
    *  carries the canonical name). Runs SYNCHRONOUSLY before delivery. Return >= HookResult.Handled
    *  to SUPPRESS the send for every recipient; Continue/undefined passes it through. THROWS at
-   *  subscribe time on an unresolvable name or a degraded intercept descriptor. */
+   *  subscribe time on an unresolvable name or a degraded intercept descriptor — except while the
+   *  server is still starting (before the game has registered its messages): then the handler is
+   *  held and attached once the server starts, and a name that still doesn't resolve is logged. */
   onPre(name: string, handler: (msg: UserMessageView) => HookResultValue | void): void;
   /** Removes ALL of the calling plugin's handlers for this name (mux off semantics — handler
    *  identity not compared, matching Events.off). */
