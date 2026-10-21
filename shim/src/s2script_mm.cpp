@@ -1685,7 +1685,8 @@ static int s2_usermsg_hook_unsub(int id) {
     return 1;
 }
 
-// Retry the subscriptions the engine refused because its registries were not populated yet: game
+// Retry the subscriptions the engine refused because its registries were not populated yet, and
+// re-register any accepted event listener the engine has since dropped: game
 // events AddListener rejected, and (through core, which owns the canonical-name bookkeeping) user
 // messages usermsg_hook_sub reported pending. Called at StartupServer POST and again (`final`) on
 // the first frame after it; from the final pass on, a miss is reported as a failure instead of
@@ -1693,6 +1694,25 @@ static int s2_usermsg_hook_unsub(int id) {
 // it out of the pending set — so no (listener, name) pair is ever added twice.
 static void S2_RetryPendingSubscriptions(bool coreReady, const char* when, bool final) {
     if (final) s_registriesComplete = true;
+    // An ACCEPTED subscription can still have been dropped. CS2's event manager accepts
+    // AddListener at Metamod Load, then its own Init calls Reset() ("removes all and anything")
+    // before loading the event files — so every listener a plugin added during boot (#268) is
+    // gone, while s_subscribedNames still says subscribed and nothing above ever retried it.
+    // FindListener asks the engine directly; only a missing (listener, name) pair is re-added,
+    // so a live subscription is never added twice.
+    if (s_pGameEventManager && !s_subscribedNames.empty()) {
+        int dropped = 0, restored = 0;
+        const std::vector<std::string> names(s_subscribedNames.begin(), s_subscribedNames.end());
+        for (const std::string& n : names) {
+            if (s_pGameEventManager->FindListener(&s_eventListener, n.c_str())) continue;
+            ++dropped;
+            s_subscribedNames.erase(n);
+            if (S2_TryAddEventListener(n)) ++restored;
+        }
+        if (dropped > 0)
+            META_CONPRINTF("[s2script] events: %d/%d subscription(s) the engine had dropped re-registered at %s\n",
+                           restored, dropped, when);
+    }
     if (s_pGameEventManager && !s_pendingEventNames.empty()) {
         const std::vector<std::string> names(s_pendingEventNames.begin(), s_pendingEventNames.end());
         int ok = 0;
