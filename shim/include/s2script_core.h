@@ -250,6 +250,11 @@ int s2script_core_fail_game_package(uint64_t handle, const uint8_t* reason, size
  * load time with the resolved addons/s2script/plugins/ path (dladdr-derived).
  * path must be null-terminated UTF-8.  A null pointer degrades to a no-op. */
 void s2script_core_set_plugins_dir(const char* path);
+/* Load the plugins in plugins/ now, once per core lifetime (later calls are no-ops). Called at the
+ * first StartupServer POST, before the map-start dispatch — where SourceMod loads, after the game has
+ * registered its events, user messages and entity system — or right after set_plugins_dir on a late
+ * load onto a running server. Pumps the loader until it settles; must run outside any dispatch. */
+void s2script_core_boot_load(void);
 /* Versioned, narrow path-only adapter used by the loader worker. The callback is invoked on the
  * game thread only; core copies the returned string before submitting owned work. Passing null
  * clears the resolver. Returns 1 for a supported ABI, 0 for an unsupported version. */

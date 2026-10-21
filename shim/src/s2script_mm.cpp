@@ -661,9 +661,11 @@ static int s2_trace_shape(const float* start, const float* end, const float* min
 //   once per unique name (AddListener is idempotent on some versions of the SDK but we track
 //   it explicitly to be safe).  RemoveListener removes the listener from all events at once
 //   (it's an all-names call per the SDK), so we don't need to iterate names on teardown.
-// s_pendingEventNames: names AddListener REFUSED. Plugins load at Metamod Load (#268), before
-//   CS2 has read its game-event definitions, and AddListener returns false for an event the
-//   manager doesn't know yet. Such a name is NOT marked subscribed — it is retried by
+// s_pendingEventNames: names AddListener REFUSED. AddListener returns false for an event the
+//   manager doesn't know (yet) — a subscription made before CS2 has read its game-event
+//   definitions, or a misspelled name. Plugins load at the first map start, after that read, so
+//   this is normally only the latter; it was every boot-time subscription when plugins loaded at
+//   Metamod Load (#268, reverted to map start). Such a name is NOT marked subscribed — it is retried by
 //   S2_RetryPendingSubscriptions at StartupServer POST and on the first frame after it, by
 //   which time the definitions are loaded. A name that still fails then is a genuinely
 //   unknown event: it is logged and stays pending (retried each map, never fires).
@@ -1647,8 +1649,8 @@ static int s2_usermsg_hook_sub(const char* name, char* canonicalOut, int canonic
     if (!name || !s_pNetworkMessages || !s_pGameEventSystem) return -1;
     INetworkMessageInternal* info = s_pNetworkMessages->FindNetworkMessagePartial(name);
     if (!info) {
-        // Before the server starts, the game has not registered its network messages yet (plugins
-        // load at Metamod Load, #268): report PENDING, and core retries via
+        // Before the server starts, the game has not registered its network messages yet (a
+        // subscription that runs that early, e.g. from a late-registering message): report PENDING, and core retries via
         // s2script_core_usermsg_retry_pending once StartupServer has run. After that a miss is final.
         if (!s_registriesComplete) {
             META_CONPRINTF("[s2script] USERMSG sub deferred: '%s' is not registered yet "
@@ -5197,6 +5199,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     // Real plugins are loaded from .s2sp archives placed under addons/s2script/plugins/.
     s2script_core_set_plugins_dir(PluginsDir().c_str());
     META_CONPRINTF("[s2script] plugins dir: %s\n", PluginsDir().c_str());
+    // Plugins load at the first map start (Hook_StartupServer). A late load onto a running server
+    // has already passed it, so load now.
+    if (S2_GameServer()) s2script_core_boot_load();
 
     return true;
 }
@@ -5854,9 +5859,15 @@ KHook::Return<void> S2ScriptPlugin::Hook_StartupServer(INetworkServerService* ns
                 s2script_core_client_end(slot, token);
             });
     }
+    // The startup load: the first map start is where SourceMod loads its plugins. The game has
+    // registered its events, user messages and entity system by now, an empty (hibernating) server
+    // still gets here, and loading BEFORE the map-start dispatch below gives plugins OnMapStart for
+    // this first map. A no-op on every later map (core loads once). Clients are reconciled above,
+    // so OnPluginStart sees the current occupancy.
+    if (m_coreDispatchReady) s2script_core_boot_load();
     // By now the engine has read its game-event definitions and registered its network messages:
-    // anything a plugin subscribed to during boot (#268 loads plugins at Metamod Load) resolves here,
-    // and the first frame makes the final pass for anything registered later still.
+    // anything still pending resolves here, and the first frame makes the final pass for anything
+    // registered later still.
     S2_RetryPendingSubscriptions(m_coreDispatchReady, "map start", /*final=*/s_registriesComplete);
     s_retrySubsOnFrame = !s_registriesComplete;
     INetworkGameServer* gs = S2_GameServer();

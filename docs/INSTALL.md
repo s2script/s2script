@@ -93,10 +93,13 @@ Opt-in plugins (nominations, rockthevote, nextmap, funvotes) ship in the zip und
 
 ## When plugins load
 
-s2script loads every plugin in `plugins/` while the server starts, before the first map, as
-SourceMod does. It does not wait for a player to join. With a `plugins.json`, startup first waits
-for the plugin update to finish (at most `updateTimeoutSeconds`), so a slow registry delays the
-server's start by that long. The log shows `[plugins] startup load done: N plugin(s) running`.
+s2script loads every plugin in `plugins/` when the first map starts, as SourceMod does: by then CS2
+has registered its game events, user messages and entities, and an empty server reaches it without
+waiting for a player to join. Plugins still get `OnMapStart` for that first map. Installing s2script
+onto a server that is already running (`meta load`) loads them straight away. With a `plugins.json`,
+the update starts with the server and the load waits for whatever is left of it (at most
+`updateTimeoutSeconds`), so a slow registry delays the first map by up to that long. The log shows
+`[plugins] startup load done: N plugin(s) running`.
 
 After startup, timers, async results and hot reload run on the server's frames. An empty server
 with `sv_hibernate_when_empty 1` (the default) runs no frames, so those pause until someone joins;
@@ -256,7 +259,7 @@ slow function and line. See [PROFILING.md](PROFILING.md).
 
 If `sm plugins list` shows no plugins and plugin commands (`sm_who`, `sm_help`) are "Unknown
 command", the list's second line says why: the loader is not running, the plugins.json update still
-holds the first scan, `plugins/` has not been scanned, or it is empty. Plugins load at startup (see
+holds the first scan, `plugins/` has not been scanned, or it is empty. Plugins load at the first map start (see
 "When plugins load"); after that, timers, async results and hot reload run from the `GameFrame`
 hook. Check the startup log:
 

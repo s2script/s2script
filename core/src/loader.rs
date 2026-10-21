@@ -280,6 +280,8 @@ thread_local! {
     static SCANNED: Cell<bool> = const { Cell::new(false) };
     /// The last completed scan of plugins/: `Some(true)` when it found nothing left to load.
     static LAST_SCAN_CLEAN: Cell<Option<bool>> = const { Cell::new(None) };
+    /// `boot_load_once` has run its startup load for this plugins dir.
+    static BOOTED: Cell<bool> = const { Cell::new(false) };
     /// Slice 6.12 (`sm plugins`): pending load/unload/reload requested from a command. Drained at the
     /// start of `poll_plugins` (the frame drain, OUTSIDE any command's isolate borrow) so the loader
     /// never runs re-entrantly. The natives only enqueue.
@@ -400,9 +402,10 @@ pub(crate) fn empty_reason(p: &LoaderProgress) -> String {
         return "The plugin loader is not running; see the plugin loader WARN in the startup log.".to_string();
     }
     if p.polls == 0 {
-        return "The plugin loader has not run: neither the startup load nor a GameFrame has reached it, so \
-                no plugin can load. Check the startup log for \"[plugins] loading plugins/ at startup\" and \
-                \"GameFrame hook NOT installed\", and \"meta list\" for another addon that hooks GameFrame."
+        return "The plugin loader has not run: plugins load when the first map starts, and neither that \
+                load nor a GameFrame has reached it. If a map is running, check the log for \"[plugins] \
+                loading plugins/ at map start\" and \"GameFrame hook NOT installed\", and \"meta list\" for \
+                another addon that hooks GameFrame."
             .to_string();
     }
     if let Some(wait) = p.update_wait {
@@ -1516,12 +1519,24 @@ const BOOT_LOAD_BUDGET: Duration = Duration::from_secs(45);
 /// dependency waits) keep their meaning.
 const BOOT_PACE: Duration = Duration::from_millis(15);
 
-/// Load the plugins in plugins/ now, during startup, without waiting for a server frame.
+/// The startup load, once: the first call (the shim's `s2script_core_boot_load`, at the first map
+/// start or on a late load) loads plugins/; later map starts are no-ops. Only counts once a plugins
+/// dir is set, so a call that arrives first cannot use up the startup load.
+pub(crate) fn boot_load_once() {
+    if !is_watching() || BOOTED.with(|b| b.replace(true)) {
+        return;
+    }
+    boot_load();
+}
+
+/// Load the plugins in plugins/ now, at the first map start, without waiting for a server frame.
 ///
 /// The loader is driven by the `GameFrame` hook, and an empty server hibernates as soon as its map
 /// loads and stops calling `GameFrame`. So a server nobody had joined yet ran no plugin at all:
 /// `sm plugins list` was empty and every plugin command was unknown until the first player woke
-/// it. SourceMod and CounterStrikeSharp load their plugins at startup; so does this.
+/// it. The first map start (StartupServer POST) runs on an empty server too, and by then the game
+/// has registered its events, user messages and entity system — which a load at Metamod Load
+/// (before any of that) did not have. It is also where SourceMod loads its plugins.
 ///
 /// It runs what a frame's POST runs, minus the `OnGameFrame` handlers (there is no frame): the
 /// async drain (so an awaited `OnPluginStart` settles), socket/cookie callbacks, TopMenu, and the
@@ -1535,7 +1550,7 @@ pub(crate) fn boot_load() {
     }
     let started = std::time::Instant::now();
     let budget = BOOT_LOAD_BUDGET + crate::server_update::first_scan_wait().unwrap_or_default();
-    crate::v8host::log_warn("[plugins] loading plugins/ at startup");
+    crate::v8host::log_warn("[plugins] loading plugins/ at map start");
     while started.elapsed() < budget {
         boot_tick();
         if boot_settled() {
@@ -1704,6 +1719,7 @@ pub(crate) fn shutdown_worker() {
     DRAIN_COUNT.with(|c| c.set(0));
     SCANNED.with(|s| s.set(false));
     LAST_SCAN_CLEAN.with(|c| c.set(None));
+    BOOTED.with(|b| b.set(false));
     let policy = &crate::async_limits::policy().loader;
     RETAINED_LEDGER.with(|ledger| {
         *ledger.borrow_mut() = RetainedLedger::new(policy.prepared_items, policy.prepared_bytes);
@@ -2996,9 +3012,12 @@ mod tests {
 
         let frames_before = crate::v8host::current_frame();
         let started = std::time::Instant::now();
-        // The entry the shim calls at the end of Load: it must return with everything loaded.
+        // The entries the shim calls: the plugins dir at Load (which loads nothing yet), then the
+        // startup load at the first map start, which must return with everything loaded.
         let path = std::ffi::CString::new(dir.to_str().unwrap()).unwrap();
         crate::ffi::s2script_core_set_plugins_dir(path.as_ptr());
+        assert!(plugin_list().is_empty(), "setting the plugins dir loads nothing on its own");
+        crate::ffi::s2script_core_boot_load();
         let elapsed = started.elapsed();
 
         let list = plugin_list();
@@ -3041,6 +3060,34 @@ mod tests {
         assert!(log.iter().any(|l| l.contains("[update] timed out")), "{log:#?}");
         assert_eq!(plugin_list(), vec![("@boot/gated".to_string(), "running".to_string())], "{log:#?}");
         crate::v8host::unload_plugin("@boot/gated");
+        shutdown_worker();
+        crate::v8host::shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The startup load runs once: StartupServer repeats on every map, and a later map start must
+    /// not re-run it (the frame-driven watcher owns plugins/ from then on). A call before the
+    /// plugins dir is set does not use it up.
+    #[test]
+    fn boot_load_once_runs_only_the_first_time() {
+        BOOT_LOG.lock().unwrap().clear();
+        shutdown_worker();
+        boot_load_once();   // no plugins dir yet: nothing, and not counted
+        crate::v8host::init(boot_logger).unwrap();
+        let dir = std::env::temp_dir().join(format!("s2s-boot-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("_boot_once.s2sp"),
+            make_test_s2sp(r#"{"id":"@boot/once","version":"1.0.0","apiVersion":"3.x"}"#, "module.exports.OnPluginStart = () => {};"),
+        ).unwrap();
+        set_plugins_dir(dir.to_str().unwrap());
+        boot_load_once();
+        boot_load_once();
+        let log = BOOT_LOG.lock().unwrap().clone();
+        assert_eq!(plugin_list(), vec![("@boot/once".to_string(), "running".to_string())], "{log:#?}");
+        assert_eq!(log.iter().filter(|l| l.contains("[plugins] loading plugins/")).count(), 1, "{log:#?}");
+        crate::v8host::unload_plugin("@boot/once");
         shutdown_worker();
         crate::v8host::shutdown();
         let _ = std::fs::remove_dir_all(&dir);

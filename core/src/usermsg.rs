@@ -58,8 +58,8 @@ thread_local! {
         = std::cell::RefCell::new(std::collections::HashMap::new());
 
     /// Names a plugin subscribed before the engine registered them (`usermsg_hook_sub` returned
-    /// `SUB_PENDING`: plugins load at Metamod Load, ahead of the game's network-message
-    /// registration). Their subscribers wait in `USERMSG_MUX` under the requested name until
+    /// `SUB_PENDING`: the subscription ran before the server finished starting, ahead of the
+    /// game's network-message registration). Their subscribers wait in `USERMSG_MUX` under the requested name until
     /// `retry_pending` — driven by the shim once the server has started — resolves the canonical
     /// name and moves them onto it.
     static USERMSG_PENDING: std::cell::RefCell<std::collections::HashSet<String>>

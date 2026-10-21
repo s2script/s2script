@@ -937,14 +937,20 @@ pub extern "C" fn s2script_core_set_plugins_dir(path: *const c_char) {
             return;
         }
         match unsafe { CStr::from_ptr(path) }.to_str() {
-            Ok(s) => {
-                crate::loader::set_plugins_dir(s);
-                // Load now: an empty server hibernates and runs no frame until someone joins.
-                crate::loader::boot_load();
-            }
+            Ok(s) => crate::loader::set_plugins_dir(s),
             Err(_) => {}
         }
     });
+}
+
+/// Load the plugins in `plugins/` now, once per core lifetime (`loader::boot_load_once`). The shim
+/// calls it at the first map start (StartupServer POST, before the map-start dispatch), or straight
+/// after `s2script_core_set_plugins_dir` when it late-loads onto a server that is already running.
+/// That is where SourceMod loads its plugins: the game has registered its events, user messages and
+/// entity system, and an empty server reaches it without a player joining. `catch_unwind` → no-op.
+#[no_mangle]
+pub extern "C" fn s2script_core_boot_load() {
+    let _ = catch_unwind(crate::loader::boot_load_once);
 }
 
 /// Register the shim's main-thread-only config path resolver without extending the unversioned
