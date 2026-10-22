@@ -341,12 +341,25 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // --- Slice 5D.1: GameEvent constructor (dispatch_game_event constructs new GameEvent(name)
   //     per-plugin from globalThis.__s2pkg_events.GameEvent). ---
   function GameEvent(name) { this.name = name; }
-  GameEvent.prototype.getInt        = function (k) { return __s2_event_get_int(k); };
-  GameEvent.prototype.getFloat      = function (k) { return __s2_event_get_float(k); };
-  GameEvent.prototype.getBool       = function (k) { return __s2_event_get_bool(k); };
+  // Numeric getters take the fast-API natives by interned key: one Map lookup here instead of a
+  // string conversion and allocation per read. A key the core will not intern (-1) is not cached
+  // and reads through the string-keyed native.
+  var __s2_evkeys = new Map();
+  function __s2_evkey(k) {
+    var s = typeof k === "string" ? k : String(k);
+    var id = __s2_evkeys.get(s);
+    if (id === undefined) {
+      id = __s2_event_key(s);
+      if (id >= 0) __s2_evkeys.set(s, id);
+    }
+    return id;
+  }
+  GameEvent.prototype.getInt        = function (k) { var id = __s2_evkey(k); return id < 0 ? __s2_event_get_int(k) : __s2_event_get_int_k(id); };
+  GameEvent.prototype.getFloat      = function (k) { var id = __s2_evkey(k); return id < 0 ? __s2_event_get_float(k) : __s2_event_get_float_k(id); };
+  GameEvent.prototype.getBool       = function (k) { var id = __s2_evkey(k); return id < 0 ? __s2_event_get_bool(k) : __s2_event_get_bool_k(id); };
   GameEvent.prototype.getString     = function (k) { return __s2_event_get_string(k); };
   GameEvent.prototype.getUint64     = function (k) { return __s2_event_get_uint64(k); };   // decimal string
-  GameEvent.prototype.getPlayerSlot = function (k) { return __s2_event_get_player_slot(k); };
+  GameEvent.prototype.getPlayerSlot = function (k) { var id = __s2_evkey(k); return id < 0 ? __s2_event_get_player_slot(k) : __s2_event_get_player_slot_k(id); };
   GameEvent.prototype.setInt    = function (k, v) { __s2_event_set_int(k, v | 0); };
   GameEvent.prototype.setFloat  = function (k, v) { __s2_event_set_float(k, v); };
   GameEvent.prototype.setBool   = function (k, v) { __s2_event_set_bool(k, !!v); };

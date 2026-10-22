@@ -27,6 +27,9 @@ const readonlyGlobals = (names) =>
 
 // 1. Every native registered onto the context's global object.
 const natives = [...coreSrc.matchAll(/set_(?:fast_)?native\(\s*scope\s*,\s*global_obj\s*,\s*"([^"]+)"/g)].map((m) => m[1]);
+// ... and every native defined with core/src/native.rs's `native!` macro, whose fn name IS the
+// native's JS name (only `native!` bodies define Rust fns named `__s2_*`).
+natives.push(...[...coreSrc.matchAll(/^\s*(?:fast\s+)?fn\s+(__s2_\w+)\s*\(/gm)].map((m) => m[1]));
 
 // 2. Globals core installs by a path other than `set_native` (each needs a citation, so that a
 //    stale entry is findable). `console` is built in Rust and set directly on the global object.

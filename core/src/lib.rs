@@ -55,6 +55,7 @@ mod multiplexer;
 mod nest;
 mod dispatch;
 mod jsmux;
+mod native;
 mod net;
 pub mod owner_stores;
 pub mod process_singletons;

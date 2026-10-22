@@ -245,6 +245,16 @@ books-gated `EntityRef`).
 - **Async on a single thread:** the engine calls you synchronously each tick (~15.6ms @ 64-tick). You own the microtask checkpoint: every `OnGameFrame`, after frame logic, drain the microtask queue (`PerformMicrotaskCheckpoint`). `await` resolves at controlled frame boundaries, never preempting mid-tick. Primitives: `NextTick()`, `NextFrame()`, `Delay(ms)`.
 - **Genuinely blocking work** (SQL, HTTP, file I/O) goes to a **threadpool** off the main thread; the result marshals back as a resolved Promise on the next tick drain. The one place you cross threads. `const rows = await db.query(...)` runs off-thread, resumes on-main-thread. No callback hell, no manual thread-hops.
 
+### 2.1.1 The native boundary — generated bindings, one failure convention
+
+Natives are written once, as typed Rust functions inside `native!` (`core/src/native.rs`). The macro generates the V8 callback (arity check, argument decoding, `catch_unwind`, result encoding), the V8 **fast-API** entry when the author marks it `fast` (the compiler refuses unless every argument and the result are fast-eligible numbers/booleans), and the metadata that `core/js/natives.generated.d.ts` is rendered from; a test fails when that file drifts.
+
+**One failure convention, carried by the result type:** `T` cannot fail; `Option<T>` is `T | null`; `Result<T, S2Error>` throws an `S2Error` (`name: "S2Error"`, a `code`, a message). Too few arguments throw code `arity`; a panic throws code `panic` rather than vanishing. Natives defined the old way (`set_native` with hand-written decoding and per-native degrade values) migrate onto `native!` feature by feature; the prelude, not the native, owns any public-API default such as "`0` when the event has no such field".
+
+Hot natives take numbers so they can be fast. A string-keyed engine read is interned once (`__s2_event_key`) and then read by id through a fast native: an event field read costs about 10 ns instead of about 70.
+
+**Dispatch crosses once per event.** The multi-subscriber paths (game events, chat, client-command listeners, `OnGameFrame`) run their subscriber loop in a dedicated JS context (`core/js/mux.js`, `core/src/jsmux.rs`); Rust's subscriber stores stay the source of truth and re-push an array only when their version moves. Re-entrancy, liveness, the crash breadcrumb and each path's collapse rules are unchanged; the Rust fan-out remains as the profiler's fallback.
+
 ### 2.2 The multiplexer + `HookResult` contract
 
 The heart of the system. **One descriptor and one detour per engine touchpoint** (the *machinery* is core; CS2's specific descriptor instances live in `@s2script/cs2`), installed lazily on first subscription, removed when the last subscriber leaves.
