@@ -15,18 +15,23 @@
   // kind -> (name -> subscriber array). Core replaces a whole array whenever its channel changed,
   // so a dispatch walks the array it started with: subscribing or unsubscribing from inside a
   // handler cannot change who this event reaches. That is today's snapshot-before-invoke.
-  var kinds = [new Map(), new Map()];
+  var kinds = [];
+  function channels(kind) {
+    var m = kinds[kind];
+    if (m === undefined) kinds[kind] = m = new Map();
+    return m;
+  }
 
   function set(kind, name, slots, generations, handlers, ctors) {
     var subs = new Array(handlers.length);
     for (var i = 0; i < handlers.length; i++) {
       subs[i] = { slot: slots[i], generation: generations[i], handler: handlers[i], ctor: ctors[i] };
     }
-    kinds[kind].set(name, subs);
+    channels(kind).set(name, subs);
   }
 
   function drop(kind, names) {
-    for (var i = 0; i < names.length; i++) kinds[kind].delete(names[i]);
+    for (var i = 0; i < names.length; i++) channels(kind).delete(names[i]);
   }
 
   function describe(e) {
@@ -48,8 +53,10 @@
 
   // stopAt: 0 = never (notify: return values are not read), 1 = truncate after a Stop (3),
   // 2 = truncate after Handled (2) or more. Results collapse to their maximum, as run_chain does.
-  function dispatch(kind, name, stopAt) {
-    var subs = kinds[kind].get(name);
+  // A channel with payload classes (game events) hands each subscriber `new ctor(name)`; any other
+  // channel hands every subscriber the same `argc` arguments, exactly that many.
+  function dispatch(kind, name, stopAt, argc, a0, a1, a2) {
+    var subs = channels(kind).get(name);
     if (subs === undefined) return 0;
     var result = 0;
     for (var i = 0; i < subs.length; i++) {
@@ -58,19 +65,27 @@
       if (enter(s.slot, s.generation) === 0) continue;
       var ret;
       try {
-        // The payload is built in the subscriber's own realm, fresh for each subscriber, exactly as
-        // the Rust fan-out built it. A constructor that throws still delivers, with `undefined`.
-        var ev = undefined;
+        // Called through a local so the receiver is `undefined`, never the subscriber record.
+        var handler = s.handler;
         if (s.ctor !== null) {
+          // A game event is built in the subscriber's own realm, fresh for each subscriber, as the
+          // Rust fan-out built it. A constructor that throws still delivers, with `undefined`.
+          var ev = undefined;
           try {
             ev = new s.ctor(name);
           } catch (_) {
             ev = undefined;
           }
+          ret = handler(ev);
+        } else if (argc === 2) {
+          ret = handler(a0, a1);
+        } else if (argc === 3) {
+          ret = handler(a0, a1, a2);
+        } else if (argc === 1) {
+          ret = handler(a0);
+        } else {
+          ret = handler();
         }
-        // Called through a local so the receiver is `undefined`, never the subscriber record.
-        var handler = s.handler;
-        ret = handler(ev);
       } catch (e) {
         thrown(s.slot, s.generation, describe(e), stackOf(e));
         continue;

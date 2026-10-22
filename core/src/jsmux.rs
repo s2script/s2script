@@ -43,22 +43,32 @@ pub(crate) enum Kind {
     Event = 0,
     /// Pre game events (the FireEvent hook): collapsing, WARN only.
     EventPre = 1,
+    /// `Chat.onMessage` / `onSay` lines (one channel, `""`): consumed once, WARN only.
+    ChatMessage = 2,
+    /// `Commands.onClientCommand(name, …)` listeners: collapsing, WARN only.
+    ClientCommand = 3,
 }
-const KINDS: usize = 2;
+const KINDS: usize = 4;
 
 impl Kind {
     fn label(self, name: &str) -> String {
         match self {
             Kind::Event => format!("dispatch_game_event('{}')", name),
             Kind::EventPre => format!("dispatch_game_event_pre('{}')", name),
+            Kind::ChatMessage => "dispatch_chat: onSay".to_string(),
+            Kind::ClientCommand => format!("dispatch_client_command on '{}'", name),
         }
     }
     /// The breadcrumb and crash-report tag (`Instrument::full`), or `None` (`Instrument::none`).
     fn tag(self, name: &str) -> Option<String> {
         match self {
             Kind::Event => Some(format!("event:{}", name)),
-            Kind::EventPre => None,
+            Kind::EventPre | Kind::ChatMessage | Kind::ClientCommand => None,
         }
+    }
+    /// Does each subscriber get `new GameEvent(name)` from its own realm, rather than shared args?
+    fn builds_game_event(self) -> bool {
+        matches!(self, Kind::Event | Kind::EventPre)
     }
 }
 
@@ -81,7 +91,7 @@ thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
     /// Per kind: the `Channels::version` each channel's JS array was built at, and whether that
     /// array was complete (every live subscriber's payload class was found).
-    static PUSHED: RefCell<[HashMap<String, (u64, bool)>; KINDS]> = RefCell::new([HashMap::new(), HashMap::new()]);
+    static PUSHED: RefCell<[HashMap<String, (u64, bool)>; KINDS]> = RefCell::new([HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new()]);
     /// Per kind: the version at which stale arrays were last dropped from JS.
     static PRUNED: RefCell<[u64; KINDS]> = const { RefCell::new([0; KINDS]) };
     static FRAMES: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
@@ -126,15 +136,20 @@ pub(crate) fn is_mux_context(ctx: v8::Local<v8::Context>) -> bool {
     STATE.with(|s| s.try_borrow().ok().and_then(|s| s.as_ref().map(|st| st.context == ctx)).unwrap_or(false))
 }
 
-/// Dispatch `name` on `store` through the multiplexer. `fallback` is the Rust fan-out for the same
-/// dispatch, taken while the profiler records.
-pub(crate) fn dispatch(
+/// Dispatch `name` on `store` through the multiplexer. `args` builds the arguments every
+/// subscriber receives (at most three; unused for game events, whose payload is per subscriber).
+/// `fallback` is the Rust fan-out for the same dispatch, taken while the profiler records.
+pub(crate) fn dispatch<A>(
     store: &'static LocalKey<RefCell<Channels<v8::Global<v8::Function>>>>,
     kind: Kind,
     name: &str,
     stop_at: StopAt,
+    args: A,
     fallback: impl FnOnce() -> (HookResult, Delivery),
-) -> (HookResult, Delivery) {
+) -> (HookResult, Delivery)
+where
+    A: for<'s> Fn(&mut v8::PinScope<'s, '_>) -> Vec<v8::Local<'s, v8::Value>>,
+{
     if crate::profiler::active() {
         return fallback();
     }
@@ -143,7 +158,7 @@ pub(crate) fn dispatch(
         let m = m.borrow();
         (m.has_subscribers(name), m.version())
     });
-    let job = Job { store, kind, name, version, stop_at };
+    let job = Job { store, kind, name, version, stop_at, args };
     if !any {
         // Nobody subscribed → nothing to replay (see `fan_out_inner`). If the store moved since the
         // last prune, still drop stale arrays: once a store empties no dispatch would reach `sync`,
@@ -188,12 +203,13 @@ fn cross<R>(f: impl FnOnce(&mut v8::PinScope<'_, '_, ()>) -> R) -> Result<R, Hos
     })
 }
 
-struct Job<'a> {
+struct Job<'a, A> {
     store: &'static LocalKey<RefCell<Channels<v8::Global<v8::Function>>>>,
     kind: Kind,
     name: &'a str,
     version: u64,
     stop_at: StopAt,
+    args: A,
 }
 
 struct FrameGuard;
@@ -205,7 +221,10 @@ impl Drop for FrameGuard {
     }
 }
 
-impl Job<'_> {
+impl<A> Job<'_, A>
+where
+    A: for<'s> Fn(&mut v8::PinScope<'s, '_>) -> Vec<v8::Local<'s, v8::Value>>,
+{
     fn run<'s>(&self, hs: &mut v8::PinScope<'s, '_, ()>) -> HookResult {
         let Some(context) = ensure_state(hs) else { return HookResult::Continue };
         let cs = &mut v8::ContextScope::new(hs, context);
@@ -237,11 +256,15 @@ impl Job<'_> {
             StopAt::Stop => 1,
             StopAt::Handled => 2,
         };
-        let args = [
+        let payload = if self.kind.builds_game_event() { Vec::new() } else { (self.args)(tc) };
+        debug_assert!(payload.len() <= 3, "the multiplexer passes at most three shared arguments");
+        let mut args: Vec<v8::Local<v8::Value>> = vec![
             v8::Integer::new(tc, self.kind as i32).into(),
             name.into(),
             v8::Integer::new(tc, stop).into(),
+            v8::Integer::new(tc, payload.len().min(3) as i32).into(),
         ];
+        args.extend(payload.into_iter().take(3));
         match dispatch.call(tc, recv, &args).and_then(|r| r.int32_value(tc)) {
             Some(1) => HookResult::Changed,
             Some(2) => HookResult::Handled,
@@ -275,8 +298,8 @@ impl Job<'_> {
                 slots.push(v8::Number::new(cs, slot).into());
                 generations.push(v8::Number::new(cs, *generation as f64).into());
                 handlers.push(v8::Local::new(cs, handler).into());
-                let ctor = game_event_ctor(cs, owner);
-                if ctor.is_none() && owner_is_live(owner, *generation) {
+                let ctor = if self.kind.builds_game_event() { game_event_ctor(cs, owner) } else { None };
+                if self.kind.builds_game_event() && ctor.is_none() && owner_is_live(owner, *generation) {
                     // The prelude has not published the payload class yet: deliver `undefined`
                     // as the Rust fan-out did, and look again next dispatch.
                     complete = false;

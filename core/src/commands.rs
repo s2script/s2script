@@ -17,7 +17,7 @@
 //! Outbound `Chat.toSlot`/`toAll` (client print). `Server.command`. TopMenu. Plugin list/load.
 //! `Chat.color`. `S2EngineOps` stays whole in `v8host.rs`.
 
-use crate::dispatch::{fan_out, fan_out_collapsing, Instrument, StopAt};
+use crate::dispatch::{fan_out, fan_out_inner, Instrument, StopAt};
 use crate::multiplexer::HookResult;
 use crate::v8host::{
     current_plugin, engine_ops, log_warn, plugin_generation, set_native, subscribe_into,
@@ -248,24 +248,32 @@ pub(crate) fn dispatch_chat(slot: i32, text: &str, teamonly: bool) -> bool {
 /// exception to the standard collapse: a chat line is consumed ONCE (a shop menu, a nominate menu
 /// and a live vote must not all see the same "2").
 fn dispatch_chat_message(slot: i32, text: &str, teamonly: bool) -> bool {
-    let snap = CHAT_MSG_SUBS.with(|m| m.borrow().snapshot(""));
-    let result = fan_out_collapsing(
-        &snap,
-        "dispatch_chat: onSay",
-        Instrument::none(),
+    // Through the JS multiplexer (`jsmux`); the Rust fan-out runs while the profiler records.
+    let (result, _) = crate::jsmux::dispatch(
+        &CHAT_MSG_SUBS,
+        crate::jsmux::Kind::ChatMessage,
+        "",
         StopAt::Handled,
-        |tc| {
-            Some(vec![
-                v8::Integer::new(tc, slot).into(),
-                match v8::String::new(tc, text) {
-                    Some(s) => s.into(),
-                    None => v8::undefined(tc).into(),
-                },
-                v8::Boolean::new(tc, teamonly).into(),
-            ])
+        |tc| chat_args(tc, slot, text, teamonly),
+        || {
+            let snap = CHAT_MSG_SUBS.with(|m| m.borrow().snapshot(""));
+            fan_out_inner(&snap, "dispatch_chat: onSay", Instrument::none(), StopAt::Handled, |tc| {
+                Some(chat_args(tc, slot, text, teamonly))
+            })
         },
     );
     result >= HookResult::Handled
+}
+
+fn chat_args<'s>(tc: &mut v8::PinScope<'s, '_>, slot: i32, text: &str, teamonly: bool) -> Vec<v8::Local<'s, v8::Value>> {
+    vec![
+        v8::Integer::new(tc, slot).into(),
+        match v8::String::new(tc, text) {
+            Some(s) => s.into(),
+            None => v8::undefined(tc).into(),
+        },
+        v8::Boolean::new(tc, teamonly).into(),
+    ]
 }
 
 /// Dispatch a player's CONSOLE command (from the ClientCommand hook). Match the EXACT registered
@@ -284,23 +292,29 @@ pub(crate) fn dispatch_client_command(slot: i32, name: &str, args: &str) -> bool
 /// Deliver a client command to the `Commands.onClientCommand(name, …)` listeners.
 /// StopAt::Stop: listeners all run and their results OR together.
 pub(crate) fn dispatch_command_listeners(slot: i32, name: &str, args: &str) -> bool {
-    let snap = CLIENT_CMD_SUBS.with(|m| m.borrow().snapshot(name));
-    let result = fan_out_collapsing(
-        &snap,
-        &format!("dispatch_client_command on '{}'", name),
-        Instrument::none(),
+    let (result, _) = crate::jsmux::dispatch(
+        &CLIENT_CMD_SUBS,
+        crate::jsmux::Kind::ClientCommand,
+        name,
         StopAt::Stop,
-        |tc| {
-            Some(vec![
-                v8::Integer::new(tc, slot).into(),
-                match v8::String::new(tc, args) {
-                    Some(s) => s.into(),
-                    None => v8::undefined(tc).into(),
-                },
-            ])
+        |tc| listener_args(tc, slot, args),
+        || {
+            let snap = CLIENT_CMD_SUBS.with(|m| m.borrow().snapshot(name));
+            let label = format!("dispatch_client_command on '{}'", name);
+            fan_out_inner(&snap, &label, Instrument::none(), StopAt::Stop, |tc| Some(listener_args(tc, slot, args)))
         },
     );
     result >= HookResult::Handled
+}
+
+fn listener_args<'s>(tc: &mut v8::PinScope<'s, '_>, slot: i32, args: &str) -> Vec<v8::Local<'s, v8::Value>> {
+    vec![
+        v8::Integer::new(tc, slot).into(),
+        match v8::String::new(tc, args) {
+            Some(s) => s.into(),
+            None => v8::undefined(tc).into(),
+        },
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -861,6 +875,34 @@ mod tests {
         eval_in_context("cm", "globalThis.__got = 'x';").unwrap();
         assert_eq!(dispatch_chat(5, "!nope", false), true, "unmatched trigger reaches subscribers (blocking)");
         assert_eq!(eval_in_context_string("cm", "globalThis.__got"), "5|!nope|false", "unmatched trigger delivered raw to subscriber");
+        shutdown();
+    }
+
+    /// Stage 1b (JS multiplexer): a chat line is consumed ONCE — the first `Handled` hides it from
+    /// every later subscriber, across plugins — and each handler receives exactly its arguments.
+    #[test]
+    fn jsmux_chat_is_consumed_once_and_args_are_exact() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("menu");
+        create_plugin_context("vote");
+        eval_in_context("menu", r#"
+            globalThis.__claim = false; globalThis.__argc = -1;
+            __s2_chat_on_message(function () { __argc = arguments.length; return __claim ? 2 : 0; });
+        "#).unwrap();
+        eval_in_context("vote", r#"
+            globalThis.__seen = 0;
+            __s2_chat_on_message(function (slot, text) { __seen++; });
+            __s2_client_command_listen("drop", function () { globalThis.__largc = arguments.length; return 0; });
+        "#).unwrap();
+        assert!(!dispatch_chat(1, "2", false));
+        assert_eq!(eval_in_context_string("menu", "String(__argc)"), "3", "(slot, text, teamonly)");
+        assert_eq!(eval_in_context_string("vote", "String(__seen)"), "1");
+        eval_in_context("menu", "__claim = true;").unwrap();
+        assert!(dispatch_chat(1, "2", false), "claimed");
+        assert_eq!(eval_in_context_string("vote", "String(__seen)"), "1", "a claimed line reaches nobody after");
+        assert!(!dispatch_command_listeners(1, "drop", "x"));
+        assert_eq!(eval_in_context_string("vote", "String(globalThis.__largc)"), "2", "(slot, args)");
         shutdown();
     }
 
