@@ -255,6 +255,14 @@ Hot natives take numbers so they can be fast. A string-keyed engine read is inte
 
 **Dispatch crosses once per event.** The multi-subscriber paths (game events, chat, client-command listeners, `OnGameFrame`) run their subscriber loop in a dedicated JS context (`core/js/mux.js`, `core/src/jsmux.rs`); Rust's subscriber stores stay the source of truth and re-push an array only when their version moves. Re-entrancy, liveness, the crash breadcrumb and each path's collapse rules are unchanged; the Rust fan-out remains as the profiler's fallback.
 
+### 2.1.2 Raw memory — `Ptr` and struct views
+
+The unsafe tier (`@s2script/sdk/unsafe`) has one pointer type. A `Ptr` is a small object around an address held as a JS number (every user-space address is below 2^47, so it is exact), branded in TypeScript so a plain number cannot pass for one. It comes from an engine call declared with a `ptr` return, from `Ptr.from(entity)` (the entity's address, resolved through the books like every entity read), or from following a pointer field with `deref`. The reads and writes are fast natives in `core/src/memory.rs`; the only addresses they refuse are ones that can never be valid (the null page, anything outside the user half), with an `S2Error` code `bad_address`. Anything else is the plugin's responsibility, exactly as in a Metamod plugin, and a wrong address faults with the crash reporter naming the plugin.
+
+A `Ptr` answers the same read/write methods as an `EntityRef`, including the `*Via` chain reads, so **one generator serves both kinds of view**: a schema class over an entity handle is checked on every access, and the same class over a `Ptr` (`ptr.as(structView("CCSPlayerPawn"))` from the game package) is unchecked. Generated views share one prototype per class, built on first use, so wrapping or reading an embedded struct allocates one small object instead of redefining every accessor.
+
+Not yet: struct views for classes outside the entity catalog (`CTakeDamageInfo`, user commands), engine functions declared inline by signature, and hooks with pointer arguments. Those follow, and the older doors (`DamageInfo`, `UserCmdView`, nav paths) go in the breaking API pass.
+
 ### 2.2 The multiplexer + `HookResult` contract
 
 The heart of the system. **One descriptor and one detour per engine touchpoint** (the *machinery* is core; CS2's specific descriptor instances live in `@s2script/cs2`), installed lazily on first subscription, removed when the last subscriber leaves.

@@ -67,6 +67,8 @@ pub(crate) const RET_BOOL: i32 = 1;
 pub(crate) const RET_INT: i32 = 2;
 pub(crate) const RET_FLOAT: i32 = 3;
 pub(crate) const RET_ENTITY: i32 = 4;
+/// A raw address, all 64 bits (`kRetPtr`). Core hands it to JS as an `@s2script/sdk/unsafe` `Ptr`.
+pub(crate) const RET_PTR: i32 = 5;
 
 /// The shim's "no entity" marker for `RET_ENTITY` (`kInvalidEntityHandle` in `engine_calls.cpp`).
 /// MUST stay in sync with it, and MUST NOT be 0 — zero decodes to the legal (index 0, serial 0), so
@@ -95,6 +97,7 @@ pub(crate) fn ret_code(returns: &str) -> Option<i32> {
         "int" => RET_INT,
         "float" => RET_FLOAT,
         "entity" => RET_ENTITY,
+        "ptr" => RET_PTR,
         _ => return None,
     })
 }
@@ -106,7 +109,8 @@ pub(crate) fn ret_code(returns: &str) -> Option<i32> {
 pub(crate) fn gp_kind_of(arg: &str) -> Option<u8> {
     Some(match arg {
         // `bool` is widened to a 0/1 integer by the caller; both are plain scalars to the callee.
-        "bool" | "int" => GP_SCALAR,
+        // `ptr` is an address the core took from a `Ptr`'s `address`: one more plain scalar.
+        "bool" | "int" | "ptr" => GP_SCALAR,
         "entity" => GP_ENTITY,
         "string" => GP_STRING,
         "utlstring" => GP_UTLSTRING,

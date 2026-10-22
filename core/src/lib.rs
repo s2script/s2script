@@ -51,6 +51,7 @@ mod http;
 mod jobs;
 mod loader;
 mod loader_worker;
+mod memory;
 mod multiplexer;
 mod nest;
 mod dispatch;

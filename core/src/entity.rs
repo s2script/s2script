@@ -479,21 +479,6 @@ thread_local! {
         = std::cell::RefCell::new(crate::channels::Channels::new());
 }
 
-/// Native `__s2_ent_ref_valid(index, id) -> boolean`.
-/// True iff the books say (index, id) is live (and the slot re-validates in the identity chunk).
-fn s2_ent_ref_valid(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_bool(false);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let id = js_ent_id(scope, args.get(1));
-        rv.set_bool(!entity_resolve_ptr(index, id).is_null());
-    }));
-}
-
 /// Native `__s2_ent_ref_read(index, serial, offset, kind) -> number|boolean|null`. Serial-gated typed read.
 fn s2_ent_ref_read(
     scope: &mut v8::PinScope,
@@ -1262,43 +1247,45 @@ fn fast_ent_id(n: f64) -> u64 {
     n as u64
 }
 
-fn fast_ent_ref_valid(_recv: v8::Local<v8::Object>, index: f64, id: f64) -> bool {
-    !entity_resolve_ptr(fast_int(index) as i32, fast_ent_id(id)).is_null()
+/// `entity_resolve_ptr` for number arguments, as the raw tier's `__s2_ent_address` takes them.
+pub(crate) fn resolve_for_address(index: f64, id: f64) -> *mut u8 {
+    entity_resolve_ptr(fast_int(index) as i32, fast_ent_id(id))
 }
 
-/// The scalar read kinds as an f64. NaN means "stale, or not a scalar kind" and tells the JS
-/// caller to ask `__s2_ent_ref_read`, which owns the null/BigInt answers. A float field that
-/// really holds NaN takes that slow path too and still reads NaN.
-fn fast_ent_ref_readf(_recv: v8::Local<v8::Object>, index: f64, id: f64, off: f64, kind: f64) -> f64 {
-    crate::crash::breadcrumb::note_engine_op("ent_ref_read");
-    let ent = entity_resolve_ptr(fast_int(index) as i32, fast_ent_id(id));
-    if ent.is_null() { return f64::NAN; }
-    let p = ent as *const u8;
-    let off = fast_int(off) as i32;
-    match fast_int(kind) {
-        KIND_I32  => crate::entity::read_i32(p, off) as f64,
-        KIND_F32  => crate::entity::read_f32(p, off) as f64,
-        KIND_BOOL => if crate::entity::read_bool(p, off) { 1.0 } else { 0.0 },
-        KIND_I8   => crate::entity::read_i8(p, off) as f64,
-        KIND_I16  => crate::entity::read_i16(p, off) as f64,
-        KIND_U8   => crate::entity::read_u8(p, off) as f64,
-        KIND_U16  => crate::entity::read_u16(p, off) as f64,
-        KIND_U32  => crate::entity::read_u32(p, off) as f64,
-        KIND_F64  => crate::entity::read_f64(p, off),
-        _         => f64::NAN,
+crate::native::native! {
+    /// Whether `(index, id)` still names a live entity: the books, then the shim's slot check.
+    fast fn __s2_ent_ref_valid(index: f64, id: f64) -> bool {
+        !entity_resolve_ptr(fast_int(index) as i32, fast_ent_id(id)).is_null()
     }
 }
 
-/// Slow path of `__s2_ent_ref_readf` (a non-number argument, or unoptimized code).
-fn s2_ent_ref_readf(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
-    rv.set_double(f64::NAN);
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let num = |i: i32| args.get(i).number_value(scope).unwrap_or(f64::NAN);
-        let (index, id, off, kind) = (num(0), num(1), num(2), num(3));
-        let recv = v8::Object::new(scope);
-        rv.set_double(fast_ent_ref_readf(recv, index, id, off, kind));
-    }));
+crate::native::native! {
+    /// The scalar read kinds as a number. NaN means "stale, or not a scalar kind" and tells the
+    /// caller to ask `__s2_ent_ref_read`, which owns the null and BigInt answers. A float field
+    /// that really holds NaN takes that slow path too and still reads NaN.
+    fast fn __s2_ent_ref_readf(index: f64, id: f64, off: f64, kind: f64) -> f64 {
+        crate::crash::breadcrumb::note_engine_op("ent_ref_read");
+        let ent = entity_resolve_ptr(fast_int(index) as i32, fast_ent_id(id));
+        if ent.is_null() { return f64::NAN; }
+        let p = ent as *const u8;
+        let off = fast_int(off) as i32;
+        match fast_int(kind) {
+            KIND_I32  => crate::entity::read_i32(p, off) as f64,
+            KIND_F32  => crate::entity::read_f32(p, off) as f64,
+            KIND_BOOL => if crate::entity::read_bool(p, off) { 1.0 } else { 0.0 },
+            KIND_I8   => crate::entity::read_i8(p, off) as f64,
+            KIND_I16  => crate::entity::read_i16(p, off) as f64,
+            KIND_U8   => crate::entity::read_u8(p, off) as f64,
+            KIND_U16  => crate::entity::read_u16(p, off) as f64,
+            KIND_U32  => crate::entity::read_u32(p, off) as f64,
+            KIND_F64  => crate::entity::read_f64(p, off),
+            _         => f64::NAN,
+        }
+    }
 }
+
+/// The entity natives defined with `native!`. The rest are still hand-written callbacks.
+pub(crate) const NATIVES: &[&crate::native::Meta] = &[&__s2_ent_ref_valid::META, &__s2_ent_ref_readf::META];
 
 /// Same writes as `s2_ent_ref_write`, for a number `value`.
 fn fast_ent_ref_write(_recv: v8::Local<v8::Object>, index: f64, id: f64, off: f64, kind: f64, value: f64) -> bool {
@@ -1323,23 +1310,6 @@ fn fast_ent_ref_write(_recv: v8::Local<v8::Object>, index: f64, id: f64, off: f6
 
 use v8::fast_api::{CFunction, CFunctionInfo, Int64Representation, Type as FastType};
 
-const FAST_ENT_REF_VALID: CFunction = CFunction::new(
-    fast_ent_ref_valid as *const c_void,
-    &CFunctionInfo::new(
-        FastType::Bool.as_info(),
-        &[FastType::V8Value.as_info(), FastType::Float64.as_info(), FastType::Float64.as_info()],
-        Int64Representation::Number,
-    ),
-);
-const FAST_ENT_REF_READF: CFunction = CFunction::new(
-    fast_ent_ref_readf as *const c_void,
-    &CFunctionInfo::new(
-        FastType::Float64.as_info(),
-        &[FastType::V8Value.as_info(), FastType::Float64.as_info(), FastType::Float64.as_info(),
-          FastType::Float64.as_info(), FastType::Float64.as_info()],
-        Int64Representation::Number,
-    ),
-);
 const FAST_ENT_REF_WRITE: CFunction = CFunction::new(
     fast_ent_ref_write as *const c_void,
     &CFunctionInfo::new(
@@ -1352,9 +1322,8 @@ const FAST_ENT_REF_WRITE: CFunction = CFunction::new(
 
 /// Publish this feature's natives. Called from `v8host`'s `install_natives`.
 pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) {
-    set_fast_native(scope, global_obj, "__s2_ent_ref_valid", s2_ent_ref_valid, &FAST_ENT_REF_VALID);
+    crate::native::install(scope, global_obj, NATIVES);
     set_native(scope, global_obj, "__s2_ent_ref_read", s2_ent_ref_read);
-    set_fast_native(scope, global_obj, "__s2_ent_ref_readf", s2_ent_ref_readf, &FAST_ENT_REF_READF);
     set_fast_native(scope, global_obj, "__s2_ent_ref_write", s2_ent_ref_write, &FAST_ENT_REF_WRITE);
     set_native(scope, global_obj, "__s2_ent_ref_read_string", s2_ent_ref_read_string);
     set_native(scope, global_obj, "__s2_ent_ref_write_string", s2_ent_ref_write_string);

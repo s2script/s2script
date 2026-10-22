@@ -82,7 +82,7 @@ constexpr size_t kMaxCalls = 1024;
 enum : unsigned char { kArgScalar = 0, kArgEntity = 1, kArgString = 2, kArgVector = 3,
                        kArgUtlString = 4 };
 // retKind values — must match the core's return vocabulary.
-enum { kRetVoid = 0, kRetBool = 1, kRetInt = 2, kRetFloat = 3, kRetEntity = 4 };
+enum { kRetVoid = 0, kRetBool = 1, kRetInt = 2, kRetFloat = 3, kRetEntity = 4, kRetPtr = 5 };
 
 s2consumer::CallRecords g_calls(kMaxCalls); // ids and retained verified images live for the process
 
@@ -303,7 +303,7 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
     if (retOut) *retOut = 0;
     const uintptr_t address = g_calls.Address(callId);
     if (!address) return 0;
-    if (retKind < kRetVoid || retKind > kRetEntity) return 0;     // validated BEFORE any call
+    if (retKind < kRetVoid || retKind > kRetPtr) return 0;     // validated BEFORE any call
     if (gpCount < 0 || gpCount > kMaxGpArgs) return 0;
     if (fpCount < 0 || fpCount > kMaxFpArgs) return 0;
     if (gpCount > 0 && (!gp || !gpKind)) return 0;
@@ -416,6 +416,7 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
             case kRetBool:   *retOut = (r & 0xff) ? 1 : 0; break;           // al
             case kRetInt:    *retOut = static_cast<uint32_t>(r); break;      // eax; core reads as i32
             case kRetEntity: *retOut = EntityHandleFromPtr(reinterpret_cast<void*>(r)); break;
+            case kRetPtr:    *retOut = r; break;                             // rax, all 64 bits
             default:         break;
         }
     }

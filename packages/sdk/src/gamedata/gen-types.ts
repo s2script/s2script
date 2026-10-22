@@ -13,11 +13,11 @@ const VECTOR_TS = "{ readonly x: number; readonly y: number; readonly z: number 
 const ARG_TS: Record<ArgKind, string> = {
   bool: "boolean", int: "number", float: "number",
   string: "string", utlstring: "string", vector: VECTOR_TS,
-  entity: "EntityRef | null",
+  entity: "EntityRef | null", ptr: "Ptr | null",
 };
 const RET_TS: Record<RetKind, string> = {
   void: "void", bool: "boolean | null", int: "number | null",
-  float: "number | null", entity: "EntityRef | null",
+  float: "number | null", entity: "EntityRef | null", ptr: "Ptr | null",
 };
 
 /** Emit `.s2script/gamedata.d.ts`. Deterministic: calls are sorted by name. */
@@ -47,6 +47,7 @@ export function generateGamedataTypes(gd: PluginGamedata): string {
     "// The EntityRef import is REQUIRED: a `declare module` augmentation resolves type names in its",
     "// own file scope, so an un-imported EntityRef degrades to an error skipLibCheck can swallow.",
     'import type { EntityRef } from "@s2script/sdk/entity";',
+    'import type { Ptr } from "@s2script/sdk/unsafe";',
     "",
     'declare module "@s2script/sdk/unsafe" {',
     `  interface EngineCalls {${body}}`,

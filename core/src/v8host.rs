@@ -3673,6 +3673,16 @@ fn s2_output_unsubscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 
 /// Read a named property off a JS object. `None` when the value is not an object or the property is
 /// absent — a missing property is a degrade input, never an error.
+/// `__s2pkg_unsafe.Ptr.from(address)` in the current context: the one way core mints a `Ptr`.
+fn make_ptr<'s>(scope: &mut v8::PinScope<'s, '_>, address: f64) -> Option<v8::Local<'s, v8::Value>> {
+    let global = scope.get_current_context().global(scope);
+    let pkg = obj_prop(scope, global.into(), "__s2pkg_unsafe")?;
+    let ptr = obj_prop(scope, pkg, "Ptr")?;
+    let from = v8::Local::<v8::Function>::try_from(obj_prop(scope, ptr, "from")?).ok()?;
+    let arg = v8::Number::new(scope, address).into();
+    from.call(scope, ptr, &[arg])
+}
+
 fn obj_prop<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     v: v8::Local<v8::Value>,
@@ -3886,6 +3896,19 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
                     gp.push(pack_entity_arg(scope, v));
                     gp_kind.push(crate::gamedata_calls::GP_ENTITY);
                 }
+                // A `Ptr` (or null for a null pointer). Anything else is a no-op call, never a
+                // number reinterpreted as an address.
+                "ptr" => {
+                    let addr = if v.is_null_or_undefined() {
+                        0.0
+                    } else {
+                        let Some(a) = obj_prop(scope, v, "address").and_then(|a| a.number_value(scope)) else { return };
+                        a
+                    };
+                    if addr != 0.0 && crate::memory::checked(addr, 0).is_none() { return; }
+                    gp.push(addr as u64);
+                    gp_kind.push(crate::gamedata_calls::GP_SCALAR);
+                }
                 // `string` and `utlstring` build the SAME buffer and differ only in the kind byte:
                 // the shim passes the char* directly for one, and the address of a call-scoped
                 // `{ char* }` temporary (a CUtlString) for the other.
@@ -3985,6 +4008,12 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
                     if let Some(id) = crate::entity_live::adopt(i, s) {
                         rv.set(build_entity_ref(scope, i, id));
                     }
+                }
+            }
+            crate::gamedata_calls::RET_PTR => {
+                // Null comes back as `Ptr.NULL`, an address outside user space as null.
+                if ret == 0 || crate::memory::checked(ret as f64, 0).is_some() {
+                    if let Some(p) = make_ptr(scope, ret as f64) { rv.set(p); }
                 }
             }
             _ => {}

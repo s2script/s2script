@@ -5,6 +5,31 @@
 // "none", and anything else that fails throws an `S2Error` with a `code`.
 
 /**
+ * The live address of the entity `(index, id)`, resolved through the books like every entity
+ * read; 0 when the reference is stale. The address is only good until the entity is deleted,
+ * and nothing tracks that for you: this is the unsafe tier.
+ *
+ * Fast-API native: optimised callers skip the V8 callback.
+ */
+declare function __s2_ent_address(index: number, id: number): number;
+
+/**
+ * The scalar read kinds as a number. NaN means "stale, or not a scalar kind" and tells the
+ * caller to ask `__s2_ent_ref_read`, which owns the null and BigInt answers. A float field
+ * that really holds NaN takes that slow path too and still reads NaN.
+ *
+ * Fast-API native: optimised callers skip the V8 callback.
+ */
+declare function __s2_ent_ref_readf(index: number, id: number, off: number, kind: number): number;
+
+/**
+ * Whether `(index, id)` still names a live entity: the books, then the shim's slot check.
+ *
+ * Fast-API native: optimised callers skip the V8 callback.
+ */
+declare function __s2_ent_ref_valid(index: number, id: number): boolean;
+
+/**
  * The current event's bool field. `false` when there is no event, field or engine op.
  */
 declare function __s2_event_get_bool(key: string): boolean;
@@ -94,3 +119,55 @@ declare function __s2_event_set_string(key: string, value: string): void;
  * Write the current event's uint64 field from a decimal string (as `getUint64` returns it).
  */
 declare function __s2_event_set_uint64(key: string, value: string): void;
+
+/**
+ * The scalar of `kind` at `addr`, or NaN when `addr` can never be valid or `kind` is not a
+ * scalar kind. A float that really holds NaN also reads NaN.
+ *
+ * Fast-API native: optimised callers skip the V8 callback.
+ */
+declare function __s2_mem_read(addr: number, kind: number): number;
+
+/**
+ * `count` consecutive f32s at `addr` (a vector, an angle, a colour as floats).
+ */
+declare function __s2_mem_read_floats(addr: number, count: number): number[];
+
+/**
+ * The pointer stored at `addr`, as an address. 0 when it holds null; NaN when `addr` can never
+ * be valid or the stored value is not a user-space address (so cannot be dereferenced).
+ *
+ * Fast-API native: optimised callers skip the V8 callback.
+ */
+declare function __s2_mem_read_ptr(addr: number): number;
+
+/**
+ * The NUL-terminated string at `addr`, reading at most `max_len` bytes. Invalid UTF-8 is
+ * replaced, not refused.
+ */
+declare function __s2_mem_read_string(addr: number, max_len: number): string;
+
+/**
+ * The 64-bit integer at `addr` as a decimal string (signed when `signed`). A JS number cannot
+ * hold every 64-bit value, so this never answers a number.
+ */
+declare function __s2_mem_read_wide(addr: number, signed: boolean): string;
+
+/**
+ * Write `value` as `kind` at `addr`. False when `addr` can never be valid or `kind` is not a
+ * scalar kind.
+ *
+ * Fast-API native: optimised callers skip the V8 callback.
+ */
+declare function __s2_mem_write(addr: number, kind: number, value: number): boolean;
+
+/**
+ * Store `target` (an address, or 0 for null) as a pointer at `addr`.
+ */
+declare function __s2_mem_write_ptr(addr: number, target: number): void;
+
+/**
+ * Write `s` NUL-terminated into the `max_len`-byte buffer at `addr`, truncating on a UTF-8
+ * boundary so the buffer always ends in a NUL. False when nothing fits (`max_len` < 1).
+ */
+declare function __s2_mem_write_string(addr: number, max_len: number, s: string): boolean;

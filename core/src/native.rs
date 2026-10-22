@@ -142,6 +142,13 @@ impl IntoJs for String {
         Ok(())
     }
 }
+impl IntoJs for Vec<f64> {
+    fn into_js(self, scope: &mut v8::PinScope, rv: &mut v8::ReturnValue) -> Result<(), S2Error> {
+        let items: Vec<v8::Local<v8::Value>> = self.into_iter().map(|n| v8::Number::new(scope, n).into()).collect();
+        rv.set(v8::Array::new_with_elements(scope, &items).into());
+        Ok(())
+    }
+}
 impl<T: IntoJs> IntoJs for Option<T> {
     fn into_js(self, scope: &mut v8::PinScope, rv: &mut v8::ReturnValue) -> Result<(), S2Error> {
         match self {
@@ -167,7 +174,7 @@ macro_rules! js_type {
     ($($t:ty => $ts:literal),* $(,)?) => { $(impl JsType for $t { fn ts() -> String { $ts.into() } })* };
 }
 js_type!(() => "void", i32 => "number", u32 => "number", f64 => "number", f32 => "number",
-         bool => "boolean", String => "string");
+         bool => "boolean", String => "string", Vec<f64> => "number[]");
 impl<T: JsType> JsType for Option<T> {
     fn ts() -> String {
         format!("{} | null", T::ts())
@@ -329,6 +336,8 @@ pub(crate) use native;
 pub(crate) fn all() -> Vec<&'static Meta> {
     let mut v: Vec<&'static Meta> = Vec::new();
     v.extend_from_slice(crate::events::NATIVES);
+    v.extend_from_slice(crate::entity::NATIVES);
+    v.extend_from_slice(crate::memory::NATIVES);
     v
 }
 

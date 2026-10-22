@@ -123,5 +123,41 @@ test("emits a typed wrapEntity keyed on entity classes only", () => {
   assert.match(dts, /export declare function wrapEntity<K extends keyof SchemaClasses>/);
 
   // And it has to actually exist at runtime, on the package object plugins import from.
-  assert.match(emitJs(m), /globalThis\.__s2pkg_cs2 = Object\.assign\(\{\}, globalThis\.__s2pkg_cs2, \{ wrapEntity: wrap \}\)/);
+  assert.match(emitJs(m), /globalThis\.__s2pkg_cs2 = Object\.assign\(\{\}, globalThis\.__s2pkg_cs2, \{ wrapEntity: wrap, structView: structView \}\)/);
+  assert.match(dts, /export declare function structView<K extends keyof SchemaClasses>\(className: K\): \(ptr: Ptr\) => SchemaClasses\[K\];/);
+  assert.match(dts, /import type \{ Ptr \} from "@s2script\/sdk\/unsafe";/);
+});
+
+// Stage 3: views share one prototype per class (accessors are no longer redefined on every wrap or
+// every embedded read), and structView hands the same accessors any ref-shaped object, such as a
+// raw Ptr, so one generator serves checked entity views and unchecked raw views.
+test("views share a per-class prototype; structView wraps any ref", async () => {
+  const vm = await import("node:vm");
+  const catalog = {
+    Base: { parent: null, fields: [
+      { name: "m_iHealth", offset: 8, type: { kind: "atomic", name: "int32" } },
+      { name: "m_Glow", offset: 64, type: { kind: "class", name: "CGlowProperty" } },
+    ] },
+    CGlowProperty: { parent: null, fields: [{ name: "m_bGlowing", offset: 81, type: { kind: "atomic", name: "bool" } }] },
+  };
+  const m = buildModel(catalog, ["Base"], ["CGlowProperty"]);
+  const reads = [];
+  const ref = { readInt32: (o) => (reads.push(["i32", o]), 42), readBool: (o) => (reads.push(["bool", o]), true) };
+  const ctx = {
+    __s2_schema_offset: (cls, f) => catalog[cls].fields.find((x) => x.name === f).offset,
+    __s2require: () => ({ Vector: function () {}, QAngle: function () {} }),
+  };
+  ctx.globalThis = ctx;
+  vm.createContext(ctx);
+  vm.runInContext(emitJs(m), ctx);
+  const { wrapEntity, structView } = ctx.__s2pkg_cs2;
+  const a = wrapEntity("Base", ref), b = wrapEntity("Base", ref);
+  assert.strictEqual(Object.getPrototypeOf(a), Object.getPrototypeOf(b), "one prototype per class");
+  assert.deepStrictEqual(Object.keys(a), ["ref"], "accessors live on the prototype, not on each view");
+  assert.strictEqual(a.health, 42);
+  assert.strictEqual(Object.getPrototypeOf(a.glow), Object.getPrototypeOf(b.glow), "embedded views share one too");
+  assert.strictEqual(a.glow.glowing, true);
+  assert.strictEqual(structView("Base"), structView("Base"), "one factory per class");
+  assert.strictEqual(structView("Base")(ref).health, 42);
+  assert.deepStrictEqual(reads, [["i32", 8], ["bool", 145], ["i32", 8]]);
 });

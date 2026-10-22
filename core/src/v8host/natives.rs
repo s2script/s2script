@@ -39,6 +39,7 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     // ent-state-changed) were retired in Task 4; callers now use the __s2_ent_ref_* path.
     // __s2_ent_ref_read_i32/__s2_ent_ref_write_i32 (introduced in Slice 5A) were retired in 5B.2 → generic __s2_ent_ref_read/write.
     crate::entity::install_natives(scope, global_obj);
+    crate::memory::install_natives(scope, global_obj);
     set_native(scope, global_obj, "__s2_handle_decode", s2_handle_decode);
     set_native(scope, global_obj, "__s2_handle_adopt", s2_handle_adopt);
     crate::commands::install_natives(scope, global_obj);

@@ -1,8 +1,8 @@
 /** Plugin-shippable gamedata. v1 accepts `signatures` + `calls` + `hooks`. */
 export const PLATFORM = "linuxsteamrt64" as const;
 
-export type ArgKind = "bool" | "int" | "float" | "string" | "utlstring" | "vector" | "entity";
-export type RetKind = "void" | "bool" | "int" | "float" | "entity";
+export type ArgKind = "bool" | "int" | "float" | "string" | "utlstring" | "vector" | "entity" | "ptr";
+export type RetKind = "void" | "bool" | "int" | "float" | "entity" | "ptr";
 
 /**
  * `utlstring` is `string`'s sibling for callees that take `CUtlString`, not `const char*`.
@@ -16,12 +16,15 @@ export type RetKind = "void" | "bool" | "int" | "float" | "entity";
  *
  * Marshalling is identical to `string` up to the last step: the same NUL-terminated buffer is
  * built, then the shim wraps its pointer in a call-scoped temporary and passes THAT address.
+ *
+ * `ptr` is a raw address, typed as `Ptr` from `@s2script/sdk/unsafe` (null passes a null
+ * pointer). As a return kind the whole 64-bit register comes back as a `Ptr`.
  */
-export const ARG_KINDS: readonly ArgKind[] = ["bool", "int", "float", "string", "utlstring", "vector", "entity"];
-export const RET_KINDS: readonly RetKind[] = ["void", "bool", "int", "float", "entity"];
+export const ARG_KINDS: readonly ArgKind[] = ["bool", "int", "float", "string", "utlstring", "vector", "entity", "ptr"];
+export const RET_KINDS: readonly RetKind[] = ["void", "bool", "int", "float", "entity", "ptr"];
 
 /** Everything except `float` occupies an integer register under SysV. */
-export const INT_CLASS_ARGS: ReadonlySet<ArgKind> = new Set<ArgKind>(["bool", "int", "string", "utlstring", "vector", "entity"]);
+export const INT_CLASS_ARGS: ReadonlySet<ArgKind> = new Set<ArgKind>(["bool", "int", "string", "utlstring", "vector", "entity", "ptr"]);
 /** `this` consumes rdi, leaving 5 GP argument registers. */
 /**
  * Declared integer-class args. Mirrors `kMaxGpArgs` (shim) and `MAX_GP_ARGS` (core) — an ABI.

@@ -157,6 +157,130 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     identityFlags: function () { return __s2_ent_identity_flags(this.index, this.id); },
     clearIdentityFlags: function (mask) { return __s2_ent_identity_flags_clear(this.index, this.id, mask >>> 0); },
   };
+  // --- Stage 3: Ptr, the raw tier of @s2script/sdk/unsafe (core/src/memory.rs). A Ptr is a small
+  //     object around an address held as a number: V8 inlines the wrapper, and TypeScript brands it
+  //     so a plain number cannot be passed by mistake. It answers the same read/write methods as an
+  //     EntityRef, so every generated struct view (schema classes, embedded structs, nav paths)
+  //     works over a Ptr unchanged: checked over an entity handle, unchecked over a Ptr. Unlike an
+  //     EntityRef, nothing proves a Ptr is still valid; an address the core can refuse throws. ---
+  var PTR_TOP = 140737488355328;            // 2^47, the top of the x86-64 user half
+  function ptrBad(a) {
+    var e = new Error(String(a) + " is not a user-space address");
+    e.name = "S2Error"; e.code = "bad_address";
+    return e;
+  }
+  function ptrOk(a) { return typeof a === "number" && a >= 65536 && a < PTR_TOP && a === Math.floor(a); }
+  function Ptr(address) { this.address = address; }
+  function ptrAt(a) {
+    if (a === 0) return Ptr.NULL;
+    if (!ptrOk(a)) throw ptrBad(a);
+    return new Ptr(a);
+  }
+  function ptrRead(p, o, kind) {
+    var v = __s2_mem_read(p.address + o, kind);
+    if (v !== v && !ptrOk(p.address + o)) throw ptrBad(p.address + o);
+    return v;
+  }
+  function ptrWrite(p, o, kind, v) {
+    if (!__s2_mem_write(p.address + o, kind, +v)) throw ptrBad(p.address + o);
+    return true;
+  }
+  // Follow a chain of pointer fields (each offset read as a pointer), as the EntityRef *Via reads
+  // do. A null hop ends the walk with null.
+  function ptrWalk(p, chain) {
+    for (var i = 0; i < chain.length; i++) {
+      p = p.readPtr(chain[i]);
+      if (p.address === 0) return null;
+    }
+    return p;
+  }
+  function ptrVia(read) {
+    return function (chain, o) { var p = ptrWalk(this, chain); return p === null ? null : read.call(p, o); };
+  }
+  function ptrViaWrite(write) {
+    return function (chain, o, v) { var p = ptrWalk(this, chain); return p === null ? false : write.call(p, o, v); };
+  }
+  Ptr.prototype = {
+    isNull:  function () { return this.address === 0; },
+    add:     function (n) { return ptrAt(this.address + n); },
+    equals:  function (other) { return other instanceof Ptr && other.address === this.address; },
+    toString: function () { return "0x" + this.address.toString(16); },
+    as:      function (view) {
+      if (typeof view !== "function") throw new TypeError("Ptr.as expects a view factory");
+      return view(this);
+    },
+    readInt32:   function (o) { return ptrRead(this, o, K.I32); },
+    readUInt32:  function (o) { return ptrRead(this, o, K.U32); },
+    readInt16:   function (o) { return ptrRead(this, o, K.I16); },
+    readUInt16:  function (o) { return ptrRead(this, o, K.U16); },
+    readInt8:    function (o) { return ptrRead(this, o, K.I8); },
+    readUInt8:   function (o) { return ptrRead(this, o, K.U8); },
+    readFloat32: function (o) { return ptrRead(this, o, K.F32); },
+    readFloat64: function (o) { return ptrRead(this, o, K.F64); },
+    readBool:    function (o) { return ptrRead(this, o, K.BOOL) !== 0; },
+    writeInt32:   function (o, v) { return ptrWrite(this, o, K.I32, v); },
+    writeUInt32:  function (o, v) { return ptrWrite(this, o, K.U32, v); },
+    writeInt16:   function (o, v) { return ptrWrite(this, o, K.I16, v); },
+    writeUInt16:  function (o, v) { return ptrWrite(this, o, K.U16, v); },
+    writeInt8:    function (o, v) { return ptrWrite(this, o, K.I8, v); },
+    writeUInt8:   function (o, v) { return ptrWrite(this, o, K.U8, v); },
+    writeFloat32: function (o, v) { return ptrWrite(this, o, K.F32, v); },
+    writeFloat64: function (o, v) { return ptrWrite(this, o, K.F64, v); },
+    writeBool:    function (o, v) { return ptrWrite(this, o, K.BOOL, v ? 1 : 0); },
+    // 64-bit integers come back as decimal strings, as the entity reads' callers expect.
+    readUInt64: function (o) { return __s2_mem_read_wide(this.address + o, false); },
+    readInt64:  function (o) { return __s2_mem_read_wide(this.address + o, true); },
+    readString:  function (o, maxLen) { return __s2_mem_read_string(this.address + o, maxLen); },
+    writeString: function (o, maxLen, s) { return __s2_mem_write_string(this.address + o, maxLen, String(s)); },
+    readFloats:  function (o, count) { return __s2_mem_read_floats(this.address + o, count); },
+    readFloatsChain: function (chain, o, count) { var p = ptrWalk(this, chain); return p === null ? null : p.readFloats(o, count); },
+    readPtr: function (o) {
+      var a = __s2_mem_read_ptr(this.address + o);
+      if (a !== a) {
+        if (!ptrOk(this.address + o)) throw ptrBad(this.address + o);
+        throw ptrBad("the pointer stored at 0x" + (this.address + o).toString(16));
+      }
+      return a === 0 ? Ptr.NULL : new Ptr(a);
+    },
+    writePtr: function (o, p) {
+      if (!(p instanceof Ptr)) throw new TypeError("writePtr expects a Ptr");
+      __s2_mem_write_ptr(this.address + o, p.address);
+      return true;
+    },
+    deref: function (o) { return this.readPtr(o || 0); },
+    // A CEntityHandle field: books-adopted exactly as EntityRef.readHandle, so a dangling handle
+    // still mints null rather than a live reference.
+    readHandle: function (o) {
+      var d = __s2_handle_adopt(ptrRead(this, o, K.U32) >>> 0);
+      return d ? new EntityRef(d[0], d[1]) : null;
+    },
+    // Raw memory has no network state to mark; a view that writes through a Ptr owns that.
+    notifyStateChanged: function () {},
+  };
+  Ptr.prototype.readInt32Via   = ptrVia(Ptr.prototype.readInt32);
+  Ptr.prototype.readUInt32Via  = ptrVia(Ptr.prototype.readUInt32);
+  Ptr.prototype.readInt16Via   = ptrVia(Ptr.prototype.readInt16);
+  Ptr.prototype.readUInt16Via  = ptrVia(Ptr.prototype.readUInt16);
+  Ptr.prototype.readInt8Via    = ptrVia(Ptr.prototype.readInt8);
+  Ptr.prototype.readUInt8Via   = ptrVia(Ptr.prototype.readUInt8);
+  Ptr.prototype.readFloat32Via = ptrVia(Ptr.prototype.readFloat32);
+  Ptr.prototype.readBoolVia    = ptrVia(Ptr.prototype.readBool);
+  Ptr.prototype.readUInt64Via  = ptrVia(Ptr.prototype.readUInt64);
+  Ptr.prototype.readInt64Via   = ptrVia(Ptr.prototype.readInt64);
+  Ptr.prototype.readHandleVia  = ptrVia(Ptr.prototype.readHandle);
+  Ptr.prototype.writeInt32Via   = ptrViaWrite(Ptr.prototype.writeInt32);
+  Ptr.prototype.writeFloat32Via = ptrViaWrite(Ptr.prototype.writeFloat32);
+  Ptr.prototype.writeBoolVia    = ptrViaWrite(Ptr.prototype.writeBool);
+  Ptr.NULL = Object.freeze(new Ptr(0));
+  // A Ptr from an address number, or the live address of an entity (null once it is stale).
+  Ptr.from = function (x) {
+    if (x instanceof Ptr) return x;
+    if (x instanceof EntityRef) { var a = __s2_ent_address(x.index, x.id); return a === 0 ? null : new Ptr(a); }
+    if (typeof x === "number") return ptrAt(x);
+    throw new TypeError("Ptr.from expects an address, a Ptr or an EntityRef");
+  };
+  Object.freeze(Ptr);
+  Object.freeze(Ptr.prototype);
   // --- Entity-creation lifecycle slice: spawn/teleport/remove over the entity_* engine ops. Kept as
   //     separate prototype assignments (not folded into the object literal above) to minimize the diff. ---
   // EKV marshal: {key: string|number|boolean} -> parallel {keys, types, values} arrays.
@@ -1047,6 +1171,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   //     invoke time rather than factory time, which is the same context either way — a function
   //     cannot cross the plugin boundary (inter-plugin payloads are JSON structured copies). ---
   globalThis.__s2pkg_unsafe = {
+    Ptr: Ptr,
     Engine: {
       function: function (name) { return __s2_engine_function(name); },
       call: function (name) {
