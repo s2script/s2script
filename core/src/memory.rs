@@ -127,7 +127,8 @@ native! {
 
 native! {
     /// The pointer stored at `addr`, as an address. 0 when it holds null; NaN when `addr` can never
-    /// be valid or the stored value is not a user-space address (so cannot be dereferenced).
+    /// be valid or the stored value can't be an address either (in the null page, or outside user
+    /// space), so the bad hop fails here rather than at a later read.
     fast fn __s2_mem_read_ptr(addr: f64) -> f64 {
         crate::crash::breadcrumb::note_engine_op("mem_read");
         let Some(p) = checked(addr, 8) else { return f64::NAN };
@@ -135,7 +136,7 @@ native! {
         let v = unsafe { std::ptr::read_unaligned(p as *const u64) };
         if v == 0 {
             0.0
-        } else if (v as f64) < USER_TOP {
+        } else if (v as f64) >= NULL_PAGE && (v as f64) < USER_TOP {
             v as f64
         } else {
             f64::NAN
@@ -302,7 +303,8 @@ mod tests {
         for (i, f) in [1.0f32, 2.0, 3.0].iter().enumerate() {
             buf[40 + i * 4..44 + i * 4].copy_from_slice(&f.to_ne_bytes());
         }
-        // offset 56: zero (a null pointer field)
+        // offset 56: zero (a null pointer field); offset 88: a value in the null page
+        buf[88..96].copy_from_slice(&0x1000u64.to_ne_bytes());
         let addr = buf.as_ptr() as usize;
         let out = eval_in_context_string("raw", &format!(r#"
             (function () {{
@@ -317,7 +319,7 @@ mod tests {
               p.writeInt32(64, 123456); p.writeFloat32(68, -1.5); p.writeString(72, 4, "abcdef");
               r.push(p.readInt32(64), p.readFloat32(68), p.readString(72, 8));
               p.writePtr(80, p.add(64)); r.push(p.deref(80).readInt32(0), p.deref(56).isNull());
-              r.push(code(() => Ptr.NULL.readInt32(0)), code(() => Ptr.from(123)), code(() => p.deref(24)));
+              r.push(code(() => Ptr.NULL.readInt32(0)), code(() => Ptr.from(123)), code(() => p.deref(24)), code(() => p.deref(88)));
               r.push(p.add(4).equals(Ptr.from({addr} + 4)), String(Ptr.from(0) === Ptr.NULL));
               r.push(code(() => {{ Ptr.prototype.readInt32 = null; }}), typeof p.readInt32);
               return r.join(",");
@@ -326,7 +328,7 @@ mod tests {
         assert_eq!(
             out,
             "-5,2.5,true,77,77,null,18446744073709551615,-1,hello,1/2/3,123456,-1.5,abc,123456,true,\
-             bad_address,bad_address,bad_address,true,true,ok,function"
+             bad_address,bad_address,bad_address,bad_address,true,true,ok,function"
         );
         assert_eq!(i32::from_ne_bytes(buf[64..68].try_into().unwrap()), 123456, "writes land in real memory");
         assert_eq!(&buf[72..76], b"abc\0");

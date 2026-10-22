@@ -135,7 +135,8 @@ declare function __s2_mem_read_floats(addr: number, count: number): number[];
 
 /**
  * The pointer stored at `addr`, as an address. 0 when it holds null; NaN when `addr` can never
- * be valid or the stored value is not a user-space address (so cannot be dereferenced).
+ * be valid or the stored value can't be an address either (in the null page, or outside user
+ * space), so the bad hop fails here rather than at a later read.
  *
  * Fast-API native: optimised callers skip the V8 callback.
  */
