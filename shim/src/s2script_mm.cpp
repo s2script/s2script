@@ -2,6 +2,7 @@
 // be resolved before eiface.h tries to include it. CMakeLists.txt lists sdk_stubs
 // ahead of ${HL2SDK}/public, so the search succeeds without running protoc.
 #include "s2script_mm.h"
+#include "entity_ptr_hint.h"
 #include "s2script_core.h"
 #include "engine_function_bridge.h"
 #include "khook_shutdown.h"
@@ -477,6 +478,23 @@ static void* s2_ent_resolve(int index, int serial) {
 static bool s2_function_identify_entity(const void* candidate, s2bridge::EntityIdentity& out) {
     if (!candidate) return false;
     auto* es=GetEntitySystem();if(!es) return false;
+    // One slot first, from the listener's hint (entity_ptr_hint.h), with the walk's own slot-side
+    // checks. The engine gives an instance one identity, so a validated hit is the unique match the
+    // walk below would find; any miss falls through to the walk.
+    const int hint=S2EntityPtrHint(candidate);
+    if(hint>=0&&hint<MAX_TOTAL_ENTITIES) {
+        auto* chunk=es->m_EntityList.m_pIdentityChunks[hint/MAX_ENTITIES_IN_LIST];
+        if(chunk) {
+            auto* slot=&chunk[hint%MAX_ENTITIES_IN_LIST];
+            if(!(slot->m_flags & EF_IS_INVALID_EHANDLE) && slot->m_pInstance==candidate) {
+                const auto handle=slot->GetRefEHandle();
+                if(handle.GetEntryIndex()==hint) {
+                    out={static_cast<uint32_t>(hint),static_cast<uint32_t>(handle.GetSerialNumber())};
+                    return true;
+                }
+            }
+        }
+    }
     bool found=false;s2bridge::EntityIdentity identity;
     for(int idx=0;idx<MAX_TOTAL_ENTITIES;++idx) {
         auto* chunk=es->m_EntityList.m_pIdentityChunks[idx/MAX_ENTITIES_IN_LIST];

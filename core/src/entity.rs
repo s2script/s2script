@@ -446,8 +446,8 @@ mod tests {
 
 use crate::dispatch::{fan_out, Delivery, Instrument};
 use crate::v8host::{
-    build_entity_ref, current_plugin, engine_ops, ent_op_serial, js_ent_id,
-    schema_offset_cached, set_native, subscribe_into,
+    build_entity_ref, current_plugin, engine_ops, engine_ops_ref, ent_op_serial, js_ent_id,
+    schema_offset_cached, set_fast_native, set_native, subscribe_into,
 };
 use std::os::raw::{c_int, c_void};
 
@@ -1244,11 +1244,118 @@ fn s2_ent_identity_flags_clear(scope: &mut v8::PinScope, args: v8::FunctionCallb
     }));
 }
 
+// --- V8 fast-API paths for the per-field natives ---
+//
+// A generated accessor (`pawn.health`) is one of these calls, so their fixed cost is the floor
+// for every schema read and write. A fast-API call skips the `FunctionCallbackInfo`, the handle
+// scope and the per-argument conversions; V8 takes it from optimized code when every argument
+// is a number and falls back to the slow callback otherwise. Both paths validate the same way:
+// books first, then the shim's identity-slot check (`entity_resolve_ptr`). The fast bodies
+// allocate nothing and cannot panic, which is why they need no `catch_unwind`.
+
+/// `Value::IntegerValue` for a number: truncate, saturate at the i64 range, NaN → 0.
+fn fast_int(v: f64) -> i64 { v as i64 }
+
+/// `js_ent_id` for a number argument.
+fn fast_ent_id(n: f64) -> u64 {
+    if !n.is_finite() || n < 1.0 || n > 9_007_199_254_740_992.0 || n.fract() != 0.0 { return 0; }
+    n as u64
+}
+
+fn fast_ent_ref_valid(_recv: v8::Local<v8::Object>, index: f64, id: f64) -> bool {
+    !entity_resolve_ptr(fast_int(index) as i32, fast_ent_id(id)).is_null()
+}
+
+/// The scalar read kinds as an f64. NaN means "stale, or not a scalar kind" and tells the JS
+/// caller to ask `__s2_ent_ref_read`, which owns the null/BigInt answers. A float field that
+/// really holds NaN takes that slow path too and still reads NaN.
+fn fast_ent_ref_readf(_recv: v8::Local<v8::Object>, index: f64, id: f64, off: f64, kind: f64) -> f64 {
+    crate::crash::breadcrumb::note_engine_op("ent_ref_read");
+    let ent = entity_resolve_ptr(fast_int(index) as i32, fast_ent_id(id));
+    if ent.is_null() { return f64::NAN; }
+    let p = ent as *const u8;
+    let off = fast_int(off) as i32;
+    match fast_int(kind) {
+        KIND_I32  => crate::entity::read_i32(p, off) as f64,
+        KIND_F32  => crate::entity::read_f32(p, off) as f64,
+        KIND_BOOL => if crate::entity::read_bool(p, off) { 1.0 } else { 0.0 },
+        KIND_I8   => crate::entity::read_i8(p, off) as f64,
+        KIND_I16  => crate::entity::read_i16(p, off) as f64,
+        KIND_U8   => crate::entity::read_u8(p, off) as f64,
+        KIND_U16  => crate::entity::read_u16(p, off) as f64,
+        KIND_U32  => crate::entity::read_u32(p, off) as f64,
+        KIND_F64  => crate::entity::read_f64(p, off),
+        _         => f64::NAN,
+    }
+}
+
+/// Slow path of `__s2_ent_ref_readf` (a non-number argument, or unoptimized code).
+fn s2_ent_ref_readf(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    rv.set_double(f64::NAN);
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let num = |i: i32| args.get(i).number_value(scope).unwrap_or(f64::NAN);
+        let (index, id, off, kind) = (num(0), num(1), num(2), num(3));
+        let recv = v8::Object::new(scope);
+        rv.set_double(fast_ent_ref_readf(recv, index, id, off, kind));
+    }));
+}
+
+/// Same writes as `s2_ent_ref_write`, for a number `value`.
+fn fast_ent_ref_write(_recv: v8::Local<v8::Object>, index: f64, id: f64, off: f64, kind: f64, value: f64) -> bool {
+    crate::crash::breadcrumb::note_engine_op("ent_ref_write");
+    let ent = entity_resolve_ptr(fast_int(index) as i32, fast_ent_id(id));
+    if ent.is_null() { return false; }
+    let off = fast_int(off) as i32;
+    let int = fast_int(value);
+    match fast_int(kind) {
+        KIND_I32  => crate::entity::write_i32(ent, off, int as i32),
+        KIND_F32  => crate::entity::write_f32(ent, off, value as f32),
+        KIND_BOOL => crate::entity::write_bool(ent, off, value != 0.0 && !value.is_nan()),
+        KIND_I8   => crate::entity::write_i8(ent, off, int as i32),
+        KIND_I16  => crate::entity::write_i16(ent, off, int as i32),
+        KIND_U8   => crate::entity::write_u8(ent, off, int as i32),
+        KIND_U16  => crate::entity::write_u16(ent, off, int as i32),
+        KIND_U32  => crate::entity::write_u32(ent, off, int as u32),
+        _         => return false,
+    }
+    true
+}
+
+use v8::fast_api::{CFunction, CFunctionInfo, Int64Representation, Type as FastType};
+
+const FAST_ENT_REF_VALID: CFunction = CFunction::new(
+    fast_ent_ref_valid as *const c_void,
+    &CFunctionInfo::new(
+        FastType::Bool.as_info(),
+        &[FastType::V8Value.as_info(), FastType::Float64.as_info(), FastType::Float64.as_info()],
+        Int64Representation::Number,
+    ),
+);
+const FAST_ENT_REF_READF: CFunction = CFunction::new(
+    fast_ent_ref_readf as *const c_void,
+    &CFunctionInfo::new(
+        FastType::Float64.as_info(),
+        &[FastType::V8Value.as_info(), FastType::Float64.as_info(), FastType::Float64.as_info(),
+          FastType::Float64.as_info(), FastType::Float64.as_info()],
+        Int64Representation::Number,
+    ),
+);
+const FAST_ENT_REF_WRITE: CFunction = CFunction::new(
+    fast_ent_ref_write as *const c_void,
+    &CFunctionInfo::new(
+        FastType::Bool.as_info(),
+        &[FastType::V8Value.as_info(), FastType::Float64.as_info(), FastType::Float64.as_info(),
+          FastType::Float64.as_info(), FastType::Float64.as_info(), FastType::Float64.as_info()],
+        Int64Representation::Number,
+    ),
+);
+
 /// Publish this feature's natives. Called from `v8host`'s `install_natives`.
 pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) {
-    set_native(scope, global_obj, "__s2_ent_ref_valid", s2_ent_ref_valid);
+    set_fast_native(scope, global_obj, "__s2_ent_ref_valid", s2_ent_ref_valid, &FAST_ENT_REF_VALID);
     set_native(scope, global_obj, "__s2_ent_ref_read", s2_ent_ref_read);
-    set_native(scope, global_obj, "__s2_ent_ref_write", s2_ent_ref_write);
+    set_fast_native(scope, global_obj, "__s2_ent_ref_readf", s2_ent_ref_readf, &FAST_ENT_REF_READF);
+    set_fast_native(scope, global_obj, "__s2_ent_ref_write", s2_ent_ref_write, &FAST_ENT_REF_WRITE);
     set_native(scope, global_obj, "__s2_ent_ref_read_string", s2_ent_ref_read_string);
     set_native(scope, global_obj, "__s2_ent_ref_write_string", s2_ent_ref_write_string);
     set_native(scope, global_obj, "__s2_ent_ref_read_floats", s2_ent_ref_read_floats);
@@ -1305,7 +1412,7 @@ fn entity_resolve_ptr(index: i32, id: u64) -> *mut u8 {
     let Some(engine_serial) = crate::entity_live::engine_serial_for(index, id) else {
         return std::ptr::null_mut();
     };
-    let Some(ops) = engine_ops() else { return std::ptr::null_mut() };
+    let Some(ops) = engine_ops_ref() else { return std::ptr::null_mut() };
     let Some(resolve) = ops.ent_resolve else { return std::ptr::null_mut() };
     resolve(index, engine_serial) as *mut u8
 }
@@ -1463,6 +1570,47 @@ mod native_tests {
         assert_eq!(eval_in_context_string("cl", "String(__ref.isValid())"), "false");
         assert_eq!(eval_in_context_string("cl", "String(__ref.readInt32(8))"), "null");
         assert_eq!(eval_in_context_string("cl", "String(__ref.writeInt32(8, 5))"), "false");
+        shutdown();
+    }
+
+    /// The fast-API natives give the same answers as the slow ones. The loops run long enough for
+    /// V8 to optimize them, which is when it switches to the fast bodies, so both paths run here.
+    #[test]
+    fn fast_field_paths_match_slow_paths_once_optimized() {
+        crate::entity_live::reset_for_tests();
+        let _ = init(dummy_logger());
+        let _id = arm_fake_entity(42, 7);
+        let base = FAKE_RESOLVE_PTR.with(|c| c.get()) as *mut u8;
+        unsafe {
+            *(base.add(8) as *mut i32) = -123_456;
+            *(base.add(16) as *mut f32) = 1.5;
+            *base.add(20) = 1;
+            *(base.add(24) as *mut u32) = 0xFFFF_FFF0;
+            *(base.add(32) as *mut f32) = f32::NAN;
+        }
+        set_engine_ops(Some(S2EngineOps { ent_resolve: Some(fake_ent_resolve), ..mock_event_ops() }));
+        create_plugin_context("fast");
+        let looped = eval_in_context_string("fast", r#"
+            var E = __s2require("@s2script/sdk/entity").EntityRef;
+            var r = new E(42, __s2_ent_id_for_index(42)), out = "";
+            function sample() {
+              return [r.readInt32(8), r.readFloat32(16), r.readBool(20), r.readUInt32(24),
+                      r.readFloat32(32), r.isValid()].join(",");
+            }
+            var first = sample(), last = "";
+            for (var i = 0; i < 200000; i++) last = sample();
+            for (var j = 0; j < 200000; j++) r.writeInt32(40, j);
+            first + "|" + last + "|" + r.readInt32(40)
+        "#);
+        assert_eq!(looped,
+            "-123456,1.5,true,4294967280,NaN,true|-123456,1.5,true,4294967280,NaN,true|199999");
+        crate::entity_live::clear_for_map_transition();
+        let stale = eval_in_context_string("fast", r#"
+            var s = "";
+            for (var k = 0; k < 200000; k++) s = [r.readInt32(8), r.readBool(20), r.isValid(), r.writeInt32(8, 1)].map(String).join(",");
+            s
+        "#);
+        assert_eq!(stale, "null,null,false,false", "a stale ref stays null on the fast path");
         shutdown();
     }
 

@@ -30,11 +30,11 @@ test("buildNavModel builds a wrapper's readable fields (scalars+vector; skips pt
 test("emitNavJs: wrapper getters read via the chain; nav accessor resolves the path", () => {
   const js = emitNavJs(buildNavModel(CONFIG, CAT));
   assert.match(js, /function SceneNode\(root, path, base\)/);
-  assert.match(js, /this\.root\.readFloat32Via\(this\.path, off\("CGameSceneNode","m_flScale"\) \+ this\.base\)/);
-  assert.match(js, /var a = this\.root\.readFloatsChain\(this\.path, off\("CGameSceneNode","m_vecOrigin"\) \+ this\.base, 3\); return a === null \? null : new Vector/);
+  assert.match(js, /this\.root\.readFloat32Via\(this\.path, \(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("CGameSceneNode","m_flScale"\)\)\) \+ this\.base\)/);
+  assert.match(js, /var a = this\.root\.readFloatsChain\(this\.path, \(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("CGameSceneNode","m_vecOrigin"\)\)\) \+ this\.base, 3\); return a === null \? null : new Vector/);
   // the nav accessor + per-access hop resolution (boot-window-safe, no baked NAV table):
-  assert.match(js, /var o0 = off\("CBaseEntity","m_CBodyComponent"\); if \(o0 < 0\) return null; _p\.push\(o0\);/);
-  assert.match(js, /var o1 = off\("CBodyComponent","m_pSceneNode"\); if \(o1 < 0\) return null; _p\.push\(o1\);/);
+  assert.match(js, /var o0 = \(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("CBaseEntity","m_CBodyComponent"\)\)\); if \(o0 < 0\) return null; _p\.push\(o0\);/);
+  assert.match(js, /var o1 = \(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("CBodyComponent","m_pSceneNode"\)\)\); if \(o1 < 0\) return null; _p\.push\(o1\);/);
   assert.match(js, /globalThis\.__s2pkg_cs2_nav = \{ applyNav/);
 });
 
@@ -129,7 +129,7 @@ test("writable allowlist: only listed fields get a setter; the rest stay read-on
     "an unlisted field must stay read-only even though its KIND is writable");
 
   const js = emitNavJs(m);
-  assert.match(js, /"maxspeed": \{ get: [^}]*\}, set: function \(v\) \{ this\.root\.writeFloat32Via\(this\.path, off\("CMoveServices","m_flMaxspeed"\) \+ this\.base, v\); \}/);
+  assert.match(js, /"maxspeed": \{ get: [^}]*\}, set: function \(v\) \{ this\.root\.writeFloat32Via\(this\.path, \(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("CMoveServices","m_flMaxspeed"\)\)\) \+ this\.base, v\); \}/);
   assert.match(js, /"ducked": \{ get: [^}]*\}, set: function \(v\) \{ this\.root\.writeBoolVia\(/);
   assert.doesNotMatch(js, /"traceCount": \{ get: [^}]*\}, set:/, "unlisted field must emit no setter");
 
@@ -175,9 +175,9 @@ test("a base hop is SUMMED into the field offset, never dereferenced", () => {
   const js = emitNavJs(buildNavModel(BASE_CFG, BASE_CAT));
   // The pointer hop goes on the path; the embedded hop goes on the offset. Getting this backwards
   // would dereference the middle of the services object as if it were a pointer.
-  assert.match(js, /var o0 = off\("Owner","m_pSvc"\); if \(o0 < 0\) return null; _p\.push\(o0\);/);
-  assert.match(js, /var b0 = off\("Svc","m_stats"\); if \(b0 < 0\) return null; _b \+= b0;/);
-  assert.match(js, /off\("Stats","m_iKills"\) \+ this\.base/);
+  assert.match(js, /var o0 = \(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("Owner","m_pSvc"\)\)\); if \(o0 < 0\) return null; _p\.push\(o0\);/);
+  assert.match(js, /var b0 = \(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("Svc","m_stats"\)\)\); if \(b0 < 0\) return null; _b \+= b0;/);
+  assert.match(js, /\(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("Stats","m_iKills"\)\)\) \+ this\.base/);
 });
 
 test("a base lookup that fails yields null rather than reading offset 0", () => {

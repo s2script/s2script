@@ -143,8 +143,16 @@ test("pawn.origin / pawn.angles: pointer-chain accessors read a value, degrade t
   assert.ok(p.angles instanceof QAngle, "angles is a QAngle");
   chainRet = null;                                      // stale/broken chain → readFloatsChain null
   assert.equal(p.origin, null, "a null readFloatsChain → the accessor returns null");
-  chainRet = [1, 2, 3]; offRet = -1;                    // a field-offset miss → readFloatsChain returns null
-  assert.equal(p.origin, null, "a missing field offset → the accessor returns null");
+  // A field-offset miss → readFloatsChain returns null. Offsets are fixed for a process and the
+  // accessors keep a hit, so the miss is tested on a context that never resolved the field.
+  chainRet = [1, 2, 3]; offRet = -1;
+  const ctx2 = { ...ctx, __s2pkg_cs2: undefined };
+  ctx2.globalThis = ctx2;
+  installClientHost(ctx2);
+  vm.createContext(ctx2);
+  vm.runInContext(cs2AddonBundle, ctx2);
+  const p2 = new ctx2.__s2pkg_cs2.Pawn(new EntityRef(5, 9));
+  assert.equal(p2.origin, null, "a missing field offset → the accessor returns null");
 });
 
 test("generated Vector/QAngle accessor: reads a value object, degrades to null (offline vm)", () => {

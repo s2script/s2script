@@ -44,6 +44,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "entity_ptr_hint.h"
 
 // The shim's existing non-static bridge to GetEntitySystem() (defined in s2script_mm.cpp, where the
 // IGameResourceService pointer + its gamedata offset live). Declared locally exactly as ekv.cpp
@@ -110,12 +111,22 @@ CEntityInstance* ResolveEntity(int index, int serial) {
 // return type is not a CBaseEntity* (a wrong declaration, or a call that misbehaved) would otherwise
 // have its vtable/identity read through a wild pointer and SEGV. Membership first, deref second.
 //
-// Cost: at most MAX_TOTAL_ENTITIES pointer compares, and only on an entity-returning invoke. That is
+// Cost: one slot check when the listener has a hint for `p` (entity_ptr_hint.h); otherwise at most
+// MAX_TOTAL_ENTITIES pointer compares, and only on an entity-returning invoke. That is
 // the right trade against a wild read, and it is the same books-first rule the rest of the entity
 // system already follows.
 bool PointerIsLiveEntity(const void* p) {
     CGameEntitySystem* es = S2_EntitySystemBridge();
     if (!es || !p) return false;
+    // One slot first, from the listener's hint; same slot-side checks as the walk below.
+    const int hint = S2EntityPtrHint(p);
+    if (hint >= 0 && hint < MAX_TOTAL_ENTITIES) {
+        CEntityIdentity* chunk = es->m_EntityList.m_pIdentityChunks[hint / MAX_ENTITIES_IN_LIST];
+        if (chunk) {
+            CEntityIdentity* id = &chunk[hint % MAX_ENTITIES_IN_LIST];
+            if (!(id->m_flags & EF_IS_INVALID_EHANDLE) && id->m_pInstance == p) return true;
+        }
+    }
     for (int i = 0; i < MAX_TOTAL_ENTITIES; i++) {
         CEntityIdentity* chunk = es->m_EntityList.m_pIdentityChunks[i / MAX_ENTITIES_IN_LIST];
         if (!chunk) {                                  // sparse chunk — skip the whole block

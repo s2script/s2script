@@ -111,7 +111,9 @@ pub fn snapshot() -> CrashBreadcrumb {
 pub(crate) fn copy_cstr(dst: &mut [u8], src: &str) {
     let n = src.len().min(dst.len() - 1);
     dst[..n].copy_from_slice(&src.as_bytes()[..n]);
-    dst[n..].iter_mut().for_each(|b| *b = 0);
+    // Readers stop at the first NUL, so the terminator is enough; bytes after it may hold an older,
+    // longer value. This runs on every entity read, so it does not zero the whole buffer.
+    dst[n] = 0;
 }
 
 /// Read a NUL-terminated fixed buffer back into a String (lossy).

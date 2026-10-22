@@ -13,6 +13,9 @@
 #include <cstdlib>                    // getenv
 #include "s2script_core.h"              // s2script_core_dispatch_entity_event (Task 1 core export)
 #include "khook_binding.h"              // S2HookDispatchGuard — skip JS while Retiring
+#include "entity_ptr_hint.h"
+#include <mutex>
+#include <unordered_map>
 
 // deferred-dispatch-queue slice: the queue itself lives in s2script_mm.cpp (it owns the payload and
 // the drain). This TU sees exactly one function of it — the same opaque-boundary discipline as
@@ -20,6 +23,18 @@
 extern "C" void S2_DeferEntityEvent(const char* kind, const char* className, int handle);
 
 namespace {
+// Pointer -> index hints (entity_ptr_hint.h). A mutex because hook dispatch is not guaranteed to
+// be on the game thread; it is uncontended in practice.
+std::mutex g_hintMutex;
+std::unordered_map<const void*, int> g_hints;
+
+void NoteHint(const char* kind, CEntityInstance* pEntity, int handle) {
+    std::lock_guard<std::mutex> lock(g_hintMutex);
+    if (kind[0] == 'd') { g_hints.erase(pEntity); return; }       // "delete"
+    if (g_hints.size() > 65536) g_hints.clear();                  // missed deletes cannot grow it forever
+    g_hints[pEntity] = handle & 0x7fff;                           // entry index (NUM_ENT_ENTRY_BITS)
+}
+
 class S2EntityListener : public IEntityListener {
 public:
     void OnEntityCreated(CEntityInstance* pEntity) override { fire("create", pEntity); }
@@ -31,6 +46,7 @@ private:
         if (!pEntity) return;
         const char* cls = pEntity->GetClassname();          // designer name; valid at create/spawn/delete
         int handle = pEntity->GetRefEHandle().ToInt();       // packed CEntityHandle — the shim's handle idiom
+        NoteHint(kind, pEntity, handle);
         // OPT-IN LIFECYCLE TRACE (S2_ENTITY_TRACE), for attributing a client fatal to a real entity.
         //
         // `CopyExistingEntity: missing client entity N` names an entity INDEX, and a plugin-side trace
@@ -69,3 +85,9 @@ S2EntityListener g_entityListener;   // static; lives for the process — its ad
 // Opaque accessor for s2script_mm.cpp (which never includes entitysystem.h): the IEntityListener* to
 // pass to the sig-resolved AddListenerEntity/RemoveListenerEntity.
 extern "C" void* S2_GetEntityListener() { return &g_entityListener; }
+
+int S2EntityPtrHint(const void* p) {
+    std::lock_guard<std::mutex> lock(g_hintMutex);
+    auto it = g_hints.find(p);
+    return it == g_hints.end() ? -1 : it->second;
+}

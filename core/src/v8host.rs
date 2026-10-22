@@ -79,6 +79,11 @@ pub(crate) fn hook_request() -> Option<HookRequestFn> {
 }
 
 pub(crate) fn engine_ops() -> Option<S2EngineOps> {
+    ENGINE_OPS.with(|o| o.get().copied())
+}
+
+/// `engine_ops` without the copy: the table is ~1 KB, so per-field natives take this instead.
+pub(crate) fn engine_ops_ref() -> Option<&'static S2EngineOps> {
     ENGINE_OPS.with(|o| o.get())
 }
 
@@ -239,7 +244,8 @@ thread_local! {
     /// Engine-ops table (copied by value at init from the shim's stack-local struct — the shim's
     /// pointer must NOT be retained past init).  `None` until `set_engine_ops` runs; while `None`
     /// (or a given field is null) the matching native degrades to a safe miss.
-    static ENGINE_OPS: std::cell::Cell<Option<S2EngineOps>> = std::cell::Cell::new(None);
+    /// Held by reference so `engine_ops_ref` can hand it out without copying the ~1 KB table.
+    static ENGINE_OPS: std::cell::Cell<Option<&'static S2EngineOps>> = std::cell::Cell::new(None);
     /// `(class, field) → offset` cache backing `__s2_schema_offset`; keys are opaque JS strings
     /// (NO game names in core).  Reset on `shutdown` so a re-init can re-resolve (avoids a stale
     /// `-1` miss cached before the schema was loaded).
@@ -599,6 +605,9 @@ fn transmit_remove_owner(owner: &str) {
 
 /// Install the shim's engine-ops table (copied by value; see `ENGINE_OPS`).  Wired by `ffi.rs`.
 pub fn set_engine_ops(ops: Option<S2EngineOps>) {
+    // Leaked on purpose: one table per init (a handful per process), and a `'static` reference is
+    // what lets `engine_ops()` hand it out without copying.
+    let ops: Option<&'static S2EngineOps> = ops.map(|o| &*Box::leak(Box::new(o)));
     ENGINE_OPS.with(|c| c.set(ops));
 }
 
@@ -1955,6 +1964,24 @@ pub(crate) fn set_native(
 ) {
     let key = v8::String::new(scope, name).unwrap();
     let func = v8::Function::new(scope, cb).unwrap();
+    global_obj.set(scope, key.into(), func.into());
+}
+
+/// `set_native` with a V8 fast-API body beside the slow callback. Optimized JS calls `fast`
+/// directly when every argument matches its declared types; anything else runs `cb`, so the two
+/// must agree on every answer. A fast body must not allocate on the JS heap, call into V8 or panic.
+pub(crate) fn set_fast_native(
+    scope: &mut v8::PinScope,
+    global_obj: v8::Local<v8::Object>,
+    name: &str,
+    cb: impl v8::MapFnTo<v8::FunctionCallback>,
+    fast: &v8::fast_api::CFunction,
+) {
+    let key = v8::String::new(scope, name).unwrap();
+    let func = v8::FunctionTemplate::builder(cb)
+        .build_fast(scope, std::slice::from_ref(fast))
+        .get_function(scope)
+        .unwrap();
     global_obj.set(scope, key.into(), func.into());
 }
 

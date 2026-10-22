@@ -20,9 +20,9 @@ const CATALOG = {
 test("emitJs: flattened getters/setters, live off() resolve, notifyStateChanged on write", () => {
   const js = emitJs(buildModel(CATALOG, ["Leaf"]));
   // getter reads via the declaring class + raw name, resolved live:
-  assert.match(js, /readInt32\(off\("Base","m_iHealth"\)\)/);
-  assert.match(js, /readFloat32\(off\("Base","m_flFriction"\)\)/);
-  assert.match(js, /readHandle\(off\("Leaf","m_hController"\)\)/);
+  assert.match(js, /readInt32\(\(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("Base","m_iHealth"\)\)\)\)/);
+  assert.match(js, /readFloat32\(\(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("Base","m_flFriction"\)\)\)\)/);
+  assert.match(js, /readHandle\(\(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("Leaf","m_hController"\)\)\)\)/);
   assert.doesNotMatch(js, /m_vecOrigin/);   // skipped field absent
   // NO baked offset numbers (layout-is-data): the reference offsets 8/12/24/28 must not appear as read args
   assert.doesNotMatch(js, /readInt32\(\s*8\s*\)/);
@@ -78,9 +78,9 @@ test("emitJs: char[N] emits readString(len); 64-bit int emits a null-safe readUI
   ] } };
   const model = buildModel(CATALOG, ["Base"]);
   const js = emitJs(model);
-  assert.match(js, /readString\(off\("Base","m_iszName"\), 64\)/);
+  assert.match(js, /readString\(\(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("Base","m_iszName"\)\)\), 64\)/);
   // 64-bit int -> decimal string: reads the bigint primitive, null-guards, stringifies.
-  assert.match(js, /var v = this\.ref\.readUInt64\(off\("Base","m_steamID"\)\); return v === null \? null : v\.toString\(\);/);
+  assert.match(js, /var v = this\.ref\.readUInt64\(\(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("Base","m_steamID"\)\)\)\); return v === null \? null : v\.toString\(\);/);
   // and the .d.ts types the 64-bit int as string (SM-parity), NOT bigint:
   const dts = emitDts(model);
   assert.match(dts, /steamID[^;\n]*: string \| null/);
@@ -93,7 +93,7 @@ test("emitJs: a Vector field emits readFloats(off,3)+new Vector; the @s2script/s
   ] } };
   const js = emitJs(buildModel(CATALOG, ["Base"]));
   assert.match(js, /var QAngle = __s2require\("@s2script\/sdk\/math"\)\.QAngle;/);
-  assert.match(js, /var a = this\.ref\.readFloats\(off\("Base","m_angEyeAngles"\), 3\); return a === null \? null : new QAngle\(a\[0\], a\[1\], a\[2\]\);/);
+  assert.match(js, /var a = this\.ref\.readFloats\(\(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("Base","m_angEyeAngles"\)\)\), 3\); return a === null \? null : new QAngle\(a\[0\], a\[1\], a\[2\]\);/);
 });
 
 test("emitDts: a Vector/QAngle field adds the @s2script/sdk/math import + the field type", () => {

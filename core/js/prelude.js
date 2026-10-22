@@ -1,3 +1,19 @@
+// Schema offsets never change while the process runs (they come from the loaded binary), so hits
+// are memoized here, in front of the native. The native converts both strings and hashes them on
+// every call; a JS Map hit avoids that crossing. Misses are not kept: the schema may not be ready.
+(function () {
+  var raw = globalThis.__s2_schema_offset;
+  if (typeof raw !== "function") return;
+  var memo = new Map();
+  globalThis.__s2_schema_offset = function (cls, field) {
+    var key = cls + "\0" + field;
+    var hit = memo.get(key);
+    if (hit !== undefined) return hit;
+    var off = raw(cls, field);
+    if (off >= 0) memo.set(key, off);
+    return off;
+  };
+})();
 globalThis.HookResult = { Continue:0, Changed:1, Handled:2, Stop:3 };
 globalThis.Priority   = { High:"high", Normal:"normal", Low:"low", Monitor:"monitor" };
 globalThis.Phase      = { Pre:"pre", Post:"post" };
@@ -75,20 +91,31 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   // --- Slice 5A/5B.2: serial-gated EntityRef (wraps the __s2_ent_ref_* natives; no raw pointer crosses JS) ---
   var K = { I32: 1, F32: 2, BOOL: 3, I8: 4, I16: 5, U8: 6, U16: 7, U32: 8, U64: 9, I64: 10, F64: 11 }; // mirrors core KIND_*
+  // Scalar reads go through the fast-API `__s2_ent_ref_readf`, which answers NaN for anything it
+  // cannot express as a number (a stale ref, a NaN float); the slow native then gives the exact
+  // answer, so results are identical to calling `__s2_ent_ref_read` directly.
+  function readNum(ref, o, kind) {
+    var v = __s2_ent_ref_readf(ref.index, ref.id, o, kind);
+    return v === v ? v : __s2_ent_ref_read(ref.index, ref.id, o, kind);
+  }
+  function readBool(ref, o) {
+    var v = __s2_ent_ref_readf(ref.index, ref.id, o, K.BOOL);
+    return v === v ? v !== 0 : __s2_ent_ref_read(ref.index, ref.id, o, K.BOOL);
+  }
   function EntityRef(index, id) { this.index = index; this.id = id; }
   EntityRef.prototype = {
     isValid:          function ()      { return __s2_ent_ref_valid(this.index, this.id); },
-    readInt32:        function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.I32); },
+    readInt32:        function (o)     { return readNum(this, o, K.I32); },
     writeInt32:       function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.I32, v); },
-    readFloat32:      function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.F32); },
+    readFloat32:      function (o)     { return readNum(this, o, K.F32); },
     writeFloat32:     function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.F32, v); },
-    readBool:         function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.BOOL); },
+    readBool:         function (o)     { return readBool(this, o); },
     writeBool:        function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.BOOL, v); },
-    readInt8:         function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.I8); },
-    readInt16:        function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.I16); },
-    readUInt8:        function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.U8); },
-    readUInt16:       function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.U16); },
-    readUInt32:       function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.U32); },
+    readInt8:         function (o)     { return readNum(this, o, K.I8); },
+    readInt16:        function (o)     { return readNum(this, o, K.I16); },
+    readUInt8:        function (o)     { return readNum(this, o, K.U8); },
+    readUInt16:       function (o)     { return readNum(this, o, K.U16); },
+    readUInt32:       function (o)     { return readNum(this, o, K.U32); },
     writeInt8:        function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.I8, v); },
     writeInt16:       function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.I16, v); },
     writeUInt8:       function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.U8, v); },
@@ -96,7 +123,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     writeUInt32:      function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.U32, v); },
     readUInt64:       function (o)         { return __s2_ent_ref_read(this.index, this.id, o, K.U64); },
     readInt64:        function (o)         { return __s2_ent_ref_read(this.index, this.id, o, K.I64); },
-    readFloat64:      function (o)         { return __s2_ent_ref_read(this.index, this.id, o, K.F64); },
+    readFloat64:      function (o)         { return readNum(this, o, K.F64); },
     readString:       function (o, maxLen) { return __s2_ent_ref_read_string(this.index, this.id, o, maxLen); },
     writeString:      function (o, maxLen, s) { return __s2_ent_ref_write_string(this.index, this.id, o, maxLen, String(s)); },
     readFloats:       function (o, count)  { return __s2_ent_ref_read_floats(this.index, this.id, o, count); },

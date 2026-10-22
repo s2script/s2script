@@ -16,6 +16,35 @@ thread_local! {
     /// repair sweep (north-star §7 / E0-V4 contingency: entities created before
     /// StartupServer POST or before the listener attached).
     static REPAIR_ARMED: Cell<bool> = Cell::new(false);
+    /// A flat mirror of `LIVE` for in-range indices: `(host id, engine serial)` per index, id 0 =
+    /// absent. Every entity field access asks the books, and indexing a slice is cheaper than a
+    /// hashed lookup. Written only next to a `LIVE` write (`mirror`), so the two never disagree.
+    static FLAT: RefCell<Box<[(u64, i32)]>> = RefCell::new(vec![(0, 0); FLAT_LEN].into_boxed_slice());
+}
+
+/// Every index a `CEntityHandle` can carry. Indices outside it stay in `LIVE` only.
+const FLAT_LEN: usize = 1 << crate::entity::HANDLE_ENTRY_BITS;
+
+fn flat_slot(index: i32) -> Option<usize> {
+    usize::try_from(index).ok().filter(|&i| i < FLAT_LEN)
+}
+
+/// Copy `LIVE`'s entry for `index` (or its absence) into `FLAT`.
+fn mirror(t: &LiveTable<i32, i32>, index: i32) {
+    let Some(i) = flat_slot(index) else { return };
+    let entry = t.get(&index).map_or((0, 0), |(id, s)| (id, *s));
+    FLAT.with(|f| f.borrow_mut()[i] = entry);
+}
+
+/// Rebuild all of `FLAT` from `LIVE` (map clear, repair sweep).
+fn mirror_all(t: &LiveTable<i32, i32>) {
+    FLAT.with(|f| {
+        let mut f = f.borrow_mut();
+        f.fill((0, 0));
+        for index in t.keys() {
+            if let (Some(i), Some((id, s))) = (flat_slot(index), t.get(&index)) { f[i] = (id, *s); }
+        }
+    });
 }
 
 /// OnEntityCreated: mint a fresh host id (upsert — a same-index create replaces a
@@ -24,7 +53,9 @@ pub fn on_created(index: i32, engine_serial: i32) -> u64 {
     let (id, retired) = LIVE.with(|t| {
         let mut t = t.borrow_mut();
         let retired = t.get(&index).map(|(id, _)| id);
-        (t.insert(index, engine_serial), retired)
+        let id = t.insert(index, engine_serial);
+        mirror(&t, index);
+        (id, retired)
     });
     retire_lifecycle(index, retired);
     id
@@ -41,6 +72,7 @@ pub fn on_spawned(index: i32, engine_serial: i32) {
             previous => {
                 let retired = previous.map(|(id, _)| id);
                 t.insert(index, engine_serial);
+                mirror(&t, index);
                 retired
             }
         }
@@ -56,7 +88,9 @@ pub fn on_deleted(index: i32, engine_serial: i32) -> Option<u64> {
         let mut t = t.borrow_mut();
         let matches = t.get(&index).map_or(false, |(_, s)| *s == engine_serial);
         if matches {
-            t.remove(&index).map(|(id, _)| id)
+            let removed = t.remove(&index).map(|(id, _)| id);
+            mirror(&t, index);
+            removed
         } else {
             None
         }
@@ -88,6 +122,12 @@ pub fn adopt(index: i32, engine_serial: i32) -> Option<u64> {
 /// books say not-live (fail-closed: the engine is never asked).
 pub fn engine_serial_for(index: i32, id: u64) -> Option<i32> {
     if id == 0 { return None; }
+    if let Some(i) = flat_slot(index) {
+        return FLAT.with(|f| {
+            let (cur, s) = *f.try_borrow().ok()?.get(i)?;
+            if cur == id { Some(s) } else { None }
+        });
+    }
     LIVE.with(|t| t.borrow().get(&index)
         .and_then(|(cur, s)| if cur == id { Some(*s) } else { None }))
 }
@@ -95,7 +135,7 @@ pub fn engine_serial_for(index: i32, id: u64) -> Option<i32> {
 /// Map transition: advance record invalidation epoch, clear entity books, and arm the sweep.
 pub fn clear_for_map_transition() {
     MAP_EPOCH.with(|epoch| epoch.set(if epoch.get()==0 {0} else {epoch.get().checked_add(1).unwrap_or(0)}));
-    LIVE.with(|t| t.borrow_mut().clear());
+    LIVE.with(|t| { let mut t = t.borrow_mut(); t.clear(); mirror_all(&t); });
     crate::surface_leases::reset();
     crate::shared_entity_switch::reset();
     REPAIR_ARMED.with(|c| c.set(true));
@@ -121,6 +161,7 @@ pub fn repair_reconcile(live_slots: &[(i32, i32)]) {
         for k in t.keys() {
             if !seen.contains(&k) { t.remove(&k); }
         }
+        mirror_all(&t);
     });
     crate::surface_leases::prune_dead();
     crate::shared_entity_switch::prune_dead();
@@ -130,7 +171,7 @@ pub fn len() -> usize { LIVE.with(|t| t.borrow().len()) }
 
 #[cfg(test)]
 pub fn reset_for_tests() {
-    LIVE.with(|t| t.borrow_mut().clear());
+    LIVE.with(|t| { let mut t = t.borrow_mut(); t.clear(); mirror_all(&t); });
     crate::surface_leases::reset();
     crate::shared_entity_switch::reset();
     REPAIR_ARMED.with(|c| c.set(false));
@@ -154,6 +195,29 @@ mod tests {
         assert_eq!(engine_serial_for(42, id), Some(7));
         assert_eq!(engine_serial_for(42, id + 1), None);
         assert_eq!(engine_serial_for(42, 0), None, "id 0 is never live");
+    }
+
+    #[test]
+    fn flat_books_track_every_write_and_out_of_range_indices_still_work() {
+        fresh();
+        let a = on_created(1, 10);
+        let far = on_created(FLAT_LEN as i32 + 5, 3);           // outside the flat mirror
+        assert_eq!(engine_serial_for(1, a), Some(10));
+        assert_eq!(engine_serial_for(FLAT_LEN as i32 + 5, far), Some(3));
+        on_spawned(1, 11);                                       // slot reused unseen: fresh id
+        assert_eq!(engine_serial_for(1, a), None);
+        let (b, _) = lookup(1).unwrap();
+        assert_eq!(engine_serial_for(1, b), Some(11));
+        on_deleted(1, 11);
+        assert_eq!(engine_serial_for(1, b), None);
+        let c = on_created(2, 5);
+        repair_reconcile(&[(3, 9)]);                             // 2 evicted, 3 minted
+        assert_eq!(engine_serial_for(2, c), None);
+        let (d, _) = lookup(3).unwrap();
+        assert_eq!(engine_serial_for(3, d), Some(9));
+        clear_for_map_transition();
+        assert_eq!(engine_serial_for(3, d), None);
+        assert_eq!(engine_serial_for(-1, 1), None);
     }
 
     #[test]
