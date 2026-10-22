@@ -250,7 +250,7 @@ pub(crate) fn dispatch_chat(slot: i32, text: &str, teamonly: bool) -> bool {
 fn dispatch_chat_message(slot: i32, text: &str, teamonly: bool) -> bool {
     // Through the JS multiplexer (`jsmux`); the Rust fan-out runs while the profiler records.
     let (result, _) = crate::jsmux::dispatch(
-        &CHAT_MSG_SUBS,
+        &crate::jsmux::ChannelStore(&CHAT_MSG_SUBS),
         crate::jsmux::Kind::ChatMessage,
         "",
         StopAt::Handled,
@@ -293,7 +293,7 @@ pub(crate) fn dispatch_client_command(slot: i32, name: &str, args: &str) -> bool
 /// StopAt::Stop: listeners all run and their results OR together.
 pub(crate) fn dispatch_command_listeners(slot: i32, name: &str, args: &str) -> bool {
     let (result, _) = crate::jsmux::dispatch(
-        &CLIENT_CMD_SUBS,
+        &crate::jsmux::ChannelStore(&CLIENT_CMD_SUBS),
         crate::jsmux::Kind::ClientCommand,
         name,
         StopAt::Stop,

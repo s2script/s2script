@@ -5726,121 +5726,128 @@ pub(crate) fn dispatch_onframe(
         );
     }
 
-    // Phase 1 — brief &FRAME borrow: clone the ordered enabled handlers (KEEPING the owner tag so we
-    // can enter each handler's own context), then release.
-    let snap4 = FRAME.with(|f| f.borrow().snapshot(phase));
-    if snap4.is_empty() {
+    if !FRAME.with(|f| f.borrow().has_enabled(phase)) {
+        crate::jsmux::release_idle_frame(&FrameSource(phase), phase == Phase::Pre);
         return DispatchOutcome {
             result: HookResult::Continue,
             detour: DetourChange::None,
         };
     }
-    // run_chain wants (SubId, Priority, H); carry H = (owner, handler) so invoke can route context.
-    let snap: Vec<(multiplexer::SubId, Priority, (String, JsHandler))> =
-        snap4.into_iter().map(|(id, prio, owner, h)| (id, prio, (owner, h))).collect();
 
-    // Phase 2 — invoke under EACH handler's OWN plugin context.  HOST is borrowed for the isolate;
-    // FRAME/PLUGINS are NOT held across a handler call.
-    let outcome = HOST.with(|h| {
-        let mut borrow = h.borrow_mut();
-        let host = borrow.as_mut().expect("dispatch_onframe before init");
+    // Phases 1+2 run in the JS multiplexer (`jsmux::dispatch_frame`): one crossing per frame phase,
+    // with this chain's rules (priority + Monitor, errored ids, the out-of-range WARN). The Rust
+    // chain below is its fallback while the profiler records, so a session's attribution is exact.
+    let outcome = crate::jsmux::dispatch_frame(&FrameSource(phase), phase == Phase::Pre, simulating, first, last, || {
+        // Phase 1 — brief &FRAME borrow: clone the ordered enabled handlers (KEEPING the owner tag so we
+        // can enter each handler's own context), then release.
+        let snap4 = FRAME.with(|f| f.borrow().snapshot(phase));
+        // run_chain wants (SubId, Priority, H); carry H = (owner, handler) so invoke can route context.
+        let snap: Vec<(multiplexer::SubId, Priority, (String, JsHandler))> =
+            snap4.into_iter().map(|(id, prio, owner, h)| (id, prio, (owner, h))).collect();
 
-        run_chain(&snap, |(owner, jh): &(String, JsHandler)| {
-            // Route to the owner's context; SKIP (never enter a disposed context) if it is gone.
-            // Cloning the Global<Context> releases the PLUGINS borrow before the JS call, so the
-            // handler may re-enter PLUGINS (subscribe/delay) without a double borrow.
-            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
-            else {
-                return Ok(HookResult::Continue); // owner's context disposed → skip, not an error
-            };
+        // Phase 2 — invoke under EACH handler's OWN plugin context.  HOST is borrowed for the isolate;
+        // FRAME/PLUGINS are NOT held across a handler call.
+        HOST.with(|h| {
+            let mut borrow = h.borrow_mut();
+            let host = borrow.as_mut().expect("dispatch_onframe before init");
 
-            let _crash_guard = crate::crash::breadcrumb::enter_dispatch(
-                owner,
-                if phase == Phase::Pre { "OnGameFrame:pre" } else { "OnGameFrame:post" },
-            );
-            let _prof = crate::profiler::span(
-                owner,
-                if phase == Phase::Pre { "OnGameFrame (pre)" } else { "OnGameFrame (post)" },
-            );
+            run_chain(&snap, |(owner, jh): &(String, JsHandler)| {
+                // Route to the owner's context; SKIP (never enter a disposed context) if it is gone.
+                // Cloning the Global<Context> releases the PLUGINS borrow before the JS call, so the
+                // handler may re-enter PLUGINS (subscribe/delay) without a double borrow.
+                let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
+                else {
+                    return Ok(HookResult::Continue); // owner's context disposed → skip, not an error
+                };
 
-            // Fresh HandleScope + ContextScope on the OWNER's context.
-            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-            let hs = &mut hs;
-            let ctx_local = v8::Local::new(hs, &g_ctx);
-            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+                let _crash_guard = crate::crash::breadcrumb::enter_dispatch(
+                    owner,
+                    if phase == Phase::Pre { "OnGameFrame:pre" } else { "OnGameFrame:post" },
+                );
+                let _prof = crate::profiler::span(
+                    owner,
+                    if phase == Phase::Pre { "OnGameFrame (pre)" } else { "OnGameFrame (post)" },
+                );
 
-            // Build the per-frame `ctx` object IN THIS CONTEXT: { simulating, firstTick, lastTick, phase }.
-            let ctx_obj = v8::Object::new(scope);
-            let k = v8::String::new(scope, "simulating").unwrap();
-            let v = v8::Boolean::new(scope, simulating);
-            ctx_obj.set(scope, k.into(), v.into());
-            let k = v8::String::new(scope, "firstTick").unwrap();
-            let v = v8::Boolean::new(scope, first);
-            ctx_obj.set(scope, k.into(), v.into());
-            let k = v8::String::new(scope, "lastTick").unwrap();
-            let v = v8::Boolean::new(scope, last);
-            ctx_obj.set(scope, k.into(), v.into());
-            let k = v8::String::new(scope, "phase").unwrap();
-            let v = v8::String::new(scope, if phase == Phase::Pre { "pre" } else { "post" }).unwrap();
-            ctx_obj.set(scope, k.into(), v.into());
+                // Fresh HandleScope + ContextScope on the OWNER's context.
+                let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+                let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+                let hs = &mut hs;
+                let ctx_local = v8::Local::new(hs, &g_ctx);
+                let scope = &mut v8::ContextScope::new(hs, ctx_local);
 
-            let recv: v8::Local<v8::Value> = v8::undefined(scope).into();
-            let ctx_val: v8::Local<v8::Value> = ctx_obj.into();
+                // Build the per-frame `ctx` object IN THIS CONTEXT: { simulating, firstTick, lastTick, phase }.
+                let ctx_obj = v8::Object::new(scope);
+                let k = v8::String::new(scope, "simulating").unwrap();
+                let v = v8::Boolean::new(scope, simulating);
+                ctx_obj.set(scope, k.into(), v.into());
+                let k = v8::String::new(scope, "firstTick").unwrap();
+                let v = v8::Boolean::new(scope, first);
+                ctx_obj.set(scope, k.into(), v.into());
+                let k = v8::String::new(scope, "lastTick").unwrap();
+                let v = v8::Boolean::new(scope, last);
+                ctx_obj.set(scope, k.into(), v.into());
+                let k = v8::String::new(scope, "phase").unwrap();
+                let v = v8::String::new(scope, if phase == Phase::Pre { "pre" } else { "post" }).unwrap();
+                ctx_obj.set(scope, k.into(), v.into());
 
-            // Per-handler TryCatch isolates a throwing handler from the rest of the chain.
-            let mut tc_storage = v8::TryCatch::new(scope);
-            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-            let tc = &mut tc;
+                let recv: v8::Local<v8::Value> = v8::undefined(scope).into();
+                let ctx_val: v8::Local<v8::Value> = ctx_obj.into();
 
-            crate::crash::breadcrumb::note_js_location(
-                owner,
-                v8::Local::new(tc, &jh.func).get_script_line_number().map(|l| l + 1).unwrap_or(0),
-            );
+                // Per-handler TryCatch isolates a throwing handler from the rest of the chain.
+                let mut tc_storage = v8::TryCatch::new(scope);
+                let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+                let tc = &mut tc;
 
-            let generation=ctx_local.get_slot::<InteropGeneration>().map_or(0,|g|g.0);
-            let _busy=crate::dispatch::ParentBusy::enter(owner,generation);
-            let func = v8::Local::new(tc, &jh.func);
-            match func.call(tc, recv, &[ctx_val]) {
-                // Exception thrown (or otherwise empty): report (kind=js) then count the error.
-                None => {
-                    let msg = tc.exception()
-                        .map(|e| e.to_rust_string_lossy(&*tc))
-                        .unwrap_or_else(|| "uncaught exception".into());
-                    let stack = tc.stack_trace()
-                        .map(|s| s.to_rust_string_lossy(&*tc))
-                        .unwrap_or_default();
-                    crate::crash::report_js_error(
-                        owner,
-                        if phase == Phase::Pre { "OnGameFrame:pre" } else { "OnGameFrame:post" },
-                        &msg,
-                        &stack,
-                    );
-                    Err(())
-                }
-                Some(ret) => {
-                    if ret.is_undefined() {
-                        Ok(HookResult::Continue)
-                    } else {
-                        Ok(match ret.uint32_value(tc).unwrap_or(0) {
-                            0 => HookResult::Continue,
-                            1 => HookResult::Changed,
-                            2 => HookResult::Handled,
-                            3 => HookResult::Stop,
-                            n => {
-                                if let Some(f) = LOGGER.with(|l| l.get()) {
-                                    if let Ok(c) = CString::new(format!(
-                                        "WARN: onGameFrame handler returned out-of-range HookResult {n}; treating as Continue"
-                                    )) {
-                                        f(0, c.as_ptr());
+                crate::crash::breadcrumb::note_js_location(
+                    owner,
+                    v8::Local::new(tc, &jh.func).get_script_line_number().map(|l| l + 1).unwrap_or(0),
+                );
+
+                let generation=ctx_local.get_slot::<InteropGeneration>().map_or(0,|g|g.0);
+                let _busy=crate::dispatch::ParentBusy::enter(owner,generation);
+                let func = v8::Local::new(tc, &jh.func);
+                match func.call(tc, recv, &[ctx_val]) {
+                    // Exception thrown (or otherwise empty): report (kind=js) then count the error.
+                    None => {
+                        let msg = tc.exception()
+                            .map(|e| e.to_rust_string_lossy(&*tc))
+                            .unwrap_or_else(|| "uncaught exception".into());
+                        let stack = tc.stack_trace()
+                            .map(|s| s.to_rust_string_lossy(&*tc))
+                            .unwrap_or_default();
+                        crate::crash::report_js_error(
+                            owner,
+                            if phase == Phase::Pre { "OnGameFrame:pre" } else { "OnGameFrame:post" },
+                            &msg,
+                            &stack,
+                        );
+                        Err(())
+                    }
+                    Some(ret) => {
+                        if ret.is_undefined() {
+                            Ok(HookResult::Continue)
+                        } else {
+                            Ok(match ret.uint32_value(tc).unwrap_or(0) {
+                                0 => HookResult::Continue,
+                                1 => HookResult::Changed,
+                                2 => HookResult::Handled,
+                                3 => HookResult::Stop,
+                                n => {
+                                    if let Some(f) = LOGGER.with(|l| l.get()) {
+                                        if let Ok(c) = CString::new(format!(
+                                            "WARN: onGameFrame handler returned out-of-range HookResult {n}; treating as Continue"
+                                        )) {
+                                            f(0, c.as_ptr());
+                                        }
                                     }
+                                    HookResult::Continue
                                 }
-                                HookResult::Continue
-                            }
-                        })
+                            })
+                        }
                     }
                 }
-            }
+            })
         })
     });
 
@@ -5852,6 +5859,31 @@ pub(crate) fn dispatch_onframe(
     DispatchOutcome {
         result: outcome.result,
         detour,
+    }
+}
+
+/// `FRAME` as a multiplexer store: one channel per phase (`"pre"` / `"post"`). A row's generation
+/// is its owner's current one — `FRAME` keeps none, and owner teardown removes a plugin's rows.
+struct FrameSource(Phase);
+
+impl crate::jsmux::Source for FrameSource {
+    fn probe(&self, _name: &str) -> (bool, u64) {
+        FRAME.with(|f| {
+            let f = f.borrow();
+            (f.has_enabled(self.0), f.version())
+        })
+    }
+    fn rows(&self, _name: &str) -> Vec<crate::jsmux::Row> {
+        FRAME.with(|f| f.borrow().snapshot(self.0))
+            .into_iter()
+            .map(|(id, priority, owner, h)| crate::jsmux::Row {
+                id,
+                generation: REGISTRY.with(|r| r.borrow().generation_of(&owner)).unwrap_or(0),
+                owner,
+                monitor: priority == Priority::Monitor,
+                handler: h.func,
+            })
+            .collect()
     }
 }
 

@@ -376,6 +376,99 @@
         shutdown();
     }
 
+    /// Stage 1c (JS multiplexer): OnGameFrame keeps run_chain's rules — a Monitor runs after a
+    /// Stop and its return is ignored; each handler gets its own `ctx` object built in its own
+    /// realm with the same keys; and the breadcrumb names the plugin and handler line.
+    #[test]
+    fn jsmux_frame_keeps_monitor_ctx_and_breadcrumb_rules() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        eval_std("p", r#"
+            globalThis.__keys = ""; globalThis.__own = false; globalThis.__mon = 0; globalThis.__low = 0;
+            OnGameFrame.subscribe((f) => {
+                __keys = Object.keys(f).join(",") + "|" + f.phase + "|" + f.simulating;
+                __own = f instanceof Object;
+                f.scribble = 1;
+                return HookResult.Stop;
+            }, { priority: "high" });
+            OnGameFrame.subscribe(() => { __low++; }, { priority: "low" });
+            OnGameFrame.subscribe((f) => { __mon++; globalThis.__fresh = f.scribble === undefined;
+                globalThis.__crumb = __s2_test_entered_owner(); return HookResult.Handled; }, { priority: "monitor" });
+        "#);
+        let out = dispatch_onframe(Phase::Pre, true, false, false);
+        assert_eq!(out.result, HookResult::Stop, "the Monitor's Handled is ignored");
+        assert_eq!(read_string_global_in("p", "__keys"), "simulating,firstTick,lastTick,phase|pre|true");
+        assert!(read_bool_global_in("p", "__own"), "ctx is an object of the handler's own realm");
+        assert_eq!(eval_in_context_string("p", "String(__low)"), "0", "Stop skips the low handler");
+        assert_eq!(eval_in_context_string("p", "String(__mon)"), "1", "but a Monitor still runs");
+        assert!(read_bool_global_in("p", "__fresh"), "every handler gets its own ctx");
+        assert_eq!(read_string_global_in("p", "__crumb"), "p|p|OnGameFrame:pre");
+        assert!(
+            crate::crash::breadcrumb::read_cstr(&crate::crash::breadcrumb::snapshot().js_location).starts_with("p:"),
+            "the handler's location was noted"
+        );
+        shutdown();
+    }
+
+    /// When the last OnGameFrame subscriber goes, the phase skips dispatch, but the arrays its
+    /// handlers left in the multiplexer are still dropped (they pin the unloaded plugin's context).
+    #[test]
+    fn jsmux_frame_releases_arrays_once_the_last_subscriber_unloads() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        eval_std("p", r#"OnGameFrame.subscribe(() => {});"#);
+        let _ = dispatch_onframe(Phase::Pre, true, false, false);
+        assert_eq!(crate::jsmux::test_pushed(crate::jsmux::Kind::Frame), 1);
+        unload_plugin("p");
+        let _ = dispatch_onframe(Phase::Pre, true, false, false);
+        assert_eq!(crate::jsmux::test_pushed(crate::jsmux::Kind::Frame), 0, "pruned with nobody subscribed");
+        shutdown();
+    }
+
+    /// A handler that keeps throwing is auto-disabled after MAX_HANDLER_ERRORS frames, exactly as
+    /// through run_chain + apply_errors, and the others keep running.
+    #[test]
+    fn jsmux_frame_auto_disables_a_handler_that_keeps_throwing() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        eval_std("p", r#"
+            globalThis.__bad = 0; globalThis.__good = 0;
+            OnGameFrame.subscribe(() => { __bad++; throw new Error("boom"); });
+            OnGameFrame.subscribe(() => { __good++; });
+        "#);
+        let frames = crate::multiplexer::MAX_HANDLER_ERRORS + 3;
+        for _ in 0..frames {
+            dispatch_onframe(Phase::Pre, true, false, false);
+        }
+        assert_eq!(eval_in_context_string("p", "String(__bad)"), crate::multiplexer::MAX_HANDLER_ERRORS.to_string());
+        assert_eq!(eval_in_context_string("p", "String(__good)"), frames.to_string());
+        shutdown();
+    }
+
+    /// Stage 1c measurement: one OnGameFrame phase with 10 plugins subscribed, JS multiplexer vs
+    /// the Rust chain. `cargo test --release -p s2script-core jsmux_bench -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn jsmux_bench_frame_ten_plugins() {
+        init(dummy_logger()).unwrap();
+        for i in 0..10 {
+            eval_std(&format!("f{}", i), "let n = 0; OnGameFrame.subscribe((f) => { if (f.simulating) n++; });");
+        }
+        let run = |n: u32| {
+            let t = std::time::Instant::now();
+            for _ in 0..n { dispatch_onframe(Phase::Pre, true, false, false); }
+            t.elapsed().as_nanos() as f64 / n as f64
+        };
+        crate::jsmux::FORCE_FALLBACK.with(|f| f.set(true));
+        run(2_000);
+        let rust = run(50_000);
+        crate::jsmux::FORCE_FALLBACK.with(|f| f.set(false));
+        run(2_000);
+        let js = run(50_000);
+        println!("OnGameFrame, 10 plugins: Rust chain {:.0} ns, JS multiplexer {:.0} ns ({:.1}x)", rust, js, rust / js);
+        shutdown();
+    }
+
     #[test]
     fn onframe_handler_out_of_range_result_warns_and_continues() {
         LOG.lock().unwrap().clear();

@@ -4,12 +4,14 @@
 // One Rust->JS crossing per event replaces a crossing per subscriber. Every guarantee of the Rust
 // fan-out (core/src/dispatch.rs) still holds, and each has its home stated beside the code below.
 //
-//   enter(slot, generation) -> 1 | 0   Liveness by registry slot. On 1 it also names the plugin in
-//                                      the crash breadcrumb and records it as the dispatch owner.
-//   thrown(slot, generation, message, stack)
-//                                      A handler threw: WARN and, where the dispatch reports, file
+//   enter(slot, generation, line) -> 1 | 0
+//                                      Liveness by registry slot. On 1 it also names the plugin in
+//                                      the crash breadcrumb (with the handler's source line when
+//                                      `line` > 0) and records it as the dispatch owner.
+//   thrown(slot, message, stack)       A handler threw: WARN and, where the dispatch reports, file
 //                                      it with the crash reporter.
-(function (enter, thrown) {
+//   range(n)                           An OnGameFrame handler returned a number outside 0..3.
+(function (enter, thrown, range) {
   "use strict";
 
   // kind -> (name -> subscriber array). Core replaces a whole array whenever its channel changed,
@@ -22,10 +24,14 @@
     return m;
   }
 
-  function set(kind, name, slots, generations, handlers, ctors) {
-    var subs = new Array(handlers.length);
-    for (var i = 0; i < handlers.length; i++) {
-      subs[i] = { slot: slots[i], generation: generations[i], handler: handlers[i], ctor: ctors[i] };
+  // rows: [slot, generation, handler, make, id, monitor, line] per subscriber, in dispatch order.
+  // `make` builds the subscriber's payload in its own realm (a GameEvent class, or the frame ctx
+  // factory), or is null for channels whose subscribers share plain arguments.
+  function set(kind, name, rows) {
+    var subs = new Array(rows.length);
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      subs[i] = { slot: r[0], generation: r[1], handler: r[2], ctor: r[3], id: r[4], monitor: r[5], line: r[6] };
     }
     channels(kind).set(name, subs);
   }
@@ -62,7 +68,7 @@
     for (var i = 0; i < subs.length; i++) {
       if (stopAt === 1 ? result === 3 : stopAt === 2 && result >= 2) break;
       var s = subs[i];
-      if (enter(s.slot, s.generation) === 0) continue;
+      if (enter(s.slot, s.generation, 0) === 0) continue;
       var ret;
       try {
         // Called through a local so the receiver is `undefined`, never the subscriber record.
@@ -87,7 +93,7 @@
           ret = handler();
         }
       } catch (e) {
-        thrown(s.slot, s.generation, describe(e), stackOf(e));
+        thrown(s.slot, describe(e), stackOf(e));
         continue;
       }
       if (stopAt !== 0 && typeof ret === "number") {
@@ -100,5 +106,46 @@
     return result;
   }
 
-  return { set: set, drop: drop, dispatch: dispatch };
+  // OnGameFrame's chain (multiplexer::run_chain): priority order with Monitor last; after a Stop
+  // only Monitor handlers run; a Monitor's return is ignored; `undefined` is Continue; any other
+  // return is ToUint32'd and a value above 3 WARNs and counts as Continue. Returns the collapsed
+  // result, or `[result, ...ids]` naming the handlers that threw, for auto-disable.
+  function frame(kind, name, simulating, firstTick, lastTick) {
+    var subs = channels(kind).get(name);
+    if (subs === undefined) return 0;
+    var result = 0, stopped = false, errored = null;
+    for (var i = 0; i < subs.length; i++) {
+      var s = subs[i];
+      if (stopped && !s.monitor) continue;
+      if (enter(s.slot, s.generation, s.line) === 0) continue;
+      var ret;
+      try {
+        var make = s.ctor, handler = s.handler;
+        ret = handler(make(simulating, firstTick, lastTick, name));
+      } catch (e) {
+        thrown(s.slot, describe(e), stackOf(e));
+        if (errored === null) errored = [];
+        errored.push(s.id);
+        continue;
+      }
+      var r = 0;
+      if (ret !== undefined) {
+        try {
+          r = ret >>> 0;
+        } catch (_) {
+          r = 0;
+        }
+        if (r > 3) {
+          range(r);
+          r = 0;
+        }
+      }
+      if (s.monitor) continue;
+      if (r > result) result = r;
+      if (r === 3) stopped = true;
+    }
+    return errored === null ? result : [result].concat(errored);
+  }
+
+  return { set: set, drop: drop, dispatch: dispatch, frame: frame };
 });

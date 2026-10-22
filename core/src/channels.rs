@@ -40,14 +40,14 @@ pub struct Channels<H: Clone> {
 
 impl<H: Clone> Channels<H> {
     pub fn new() -> Self {
-        Channels { by_name: HashMap::new(), ids: HashMap::new(), version: 0 }
+        Channels { by_name: HashMap::new(), ids: HashMap::new(), version: crate::multiplexer::next_version() }
     }
 
     /// Returns true iff this is the FIRST subscriber for `name` — the caller then performs its
     /// engine-op follow-up (`event_subscribe`, installing a detour, …). Same contract as
     /// `EventMux::subscribe`.
     pub fn subscribe(&mut self, name: &str, id: u64, owner: String, generation: u64, handler: H) -> bool {
-        self.version += 1;
+        self.version = crate::multiplexer::next_version();
         let indexed_owner = owner.clone();
         let desc = self
             .by_name
@@ -75,7 +75,7 @@ impl<H: Clone> Channels<H> {
     /// Drop every subscription owned by `owner`; returns the channel names that became empty, which
     /// the caller uses to issue its engine-op unsubscribe.
     pub fn remove_by_owner(&mut self, owner: &str) -> Vec<String> {
-        self.version += 1;
+        self.version = crate::multiplexer::next_version();
         let mut emptied = Vec::new();
         for (name, desc) in self.by_name.iter_mut() {
             let before = desc.enabled_count();
@@ -94,7 +94,7 @@ impl<H: Clone> Channels<H> {
     /// Drop the subscriptions with these caller-allocated ids (the `Scope` disposal path); returns
     /// the channel names that became empty.
     pub fn remove_by_ids(&mut self, ids: &[u64]) -> Vec<String> {
-        self.version += 1;
+        self.version = crate::multiplexer::next_version();
         let mut emptied = Vec::new();
         for id in ids {
             let Some((name, sub_id, _owner)) = self.ids.remove(id) else { continue };
@@ -113,7 +113,7 @@ impl<H: Clone> Channels<H> {
 
     /// Drop `owner`'s subscriptions on ONE channel; true iff that channel became empty.
     pub fn remove_by_owner_on(&mut self, name: &str, owner: &str) -> bool {
-        self.version += 1;
+        self.version = crate::multiplexer::next_version();
         let Some(desc) = self.by_name.get_mut(name) else { return false };
         let before = desc.enabled_count();
         desc.remove_by_owner(owner);
@@ -127,7 +127,7 @@ impl<H: Clone> Channels<H> {
 
     /// Drop a whole channel.
     pub fn remove_by_name(&mut self, name: &str) {
-        self.version += 1;
+        self.version = crate::multiplexer::next_version();
         self.by_name.remove(name);
         self.ids.retain(|_, (n, _, _)| n != name);
     }
@@ -137,7 +137,7 @@ impl<H: Clone> Channels<H> {
     /// teardown still find them. Used when a channel subscribed under a provisional name resolves
     /// to its canonical one (a user message subscribed before the engine registered it).
     pub fn rename(&mut self, from: &str, to: &str) {
-        self.version += 1;
+        self.version = crate::multiplexer::next_version();
         if from == to { return; }
         let Some(src) = self.by_name.remove(from) else { return };
         let dest = self.by_name.entry(to.to_string()).or_insert_with(|| Descriptor::new(to));

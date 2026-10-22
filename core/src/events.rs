@@ -398,7 +398,7 @@ pub(crate) fn replay_game_event(name: &str) -> Delivery {
     // subscriber list is a snapshot, each handler gets a fresh `GameEvent` built in its own realm,
     // and a nested `Events.fire()` publishes a nest token and runs other plugins now; `#63`
     // no-handle inbound still reports `Deferred`.
-    crate::jsmux::dispatch(&EVENT_MUX, crate::jsmux::Kind::Event, name, StopAt::Never, event_args, || replay_game_event_fan_out(name)).1
+    crate::jsmux::dispatch(&crate::jsmux::ChannelStore(&EVENT_MUX), crate::jsmux::Kind::Event, name, StopAt::Never, event_args, || replay_game_event_fan_out(name)).1
 }
 
 /// A game event's one argument as the multiplexer sees it: `undefined`, which a subscriber gets only
@@ -439,7 +439,7 @@ fn new_game_event<'s>(tc: &mut v8::PinScope<'s, '_>, name: &str) -> v8::Local<'s
 /// >= Handled) or 0 to allow. The shim has set `s_currentEvent` (mutable) before calling this.
 pub(crate) fn dispatch_game_event_pre(name: &str) -> i32 {
     // A pre-hook's answer is consumed synchronously, so its `Delivery` is discarded (spec §2).
-    let (result, _) = crate::jsmux::dispatch(&EVENT_MUX_PRE, crate::jsmux::Kind::EventPre, name, StopAt::Stop, event_args, || {
+    let (result, _) = crate::jsmux::dispatch(&crate::jsmux::ChannelStore(&EVENT_MUX_PRE), crate::jsmux::Kind::EventPre, name, StopAt::Stop, event_args, || {
         let snap = EVENT_MUX_PRE.with(|m| m.borrow().snapshot(name));
         fan_out_inner(&snap, &format!("dispatch_game_event_pre('{}')", name), Instrument::none(), StopAt::Stop, |tc| {
             Some(vec![new_game_event(tc, name)])

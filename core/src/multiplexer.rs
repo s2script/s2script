@@ -36,6 +36,19 @@ pub struct Descriptor<H: Clone> {
     subs: Vec<Subscription<H>>,
     next_id: SubId,
     enabled_count: usize,
+    /// Moves whenever `snapshot` could answer differently. The JS multiplexer re-pushes a cached
+    /// subscriber array only when this has moved. Drawn from [`next_version`], so a replacement
+    /// descriptor never repeats a version its predecessor used.
+    version: u64,
+}
+
+thread_local! {
+    static VERSIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A fresh subscriber-set version, unique on this thread (shared by `Descriptor` and `Channels`).
+pub fn next_version() -> u64 {
+    VERSIONS.with(|v| { let n = v.get() + 1; v.set(n); n })
 }
 
 #[derive(Debug)]
@@ -67,14 +80,23 @@ pub fn run_chain<H>(
 
 impl<H: Clone> Descriptor<H> {
     pub fn new(name: &str) -> Self {
-        Descriptor { name: name.to_string(), subs: Vec::new(), next_id: 1, enabled_count: 0 }
+        Descriptor { name: name.to_string(), subs: Vec::new(), next_id: 1, enabled_count: 0, version: next_version() }
     }
 
     /// Number of currently-enabled subscriptions (accessor for the private field; used by the
     /// v8host combined lazy-detour predicate).
     pub fn enabled_count(&self) -> usize { self.enabled_count }
 
+    /// Is any enabled subscription in `phase`? (`!snapshot(phase).is_empty()` without the clones.)
+    pub fn has_enabled(&self, phase: Phase) -> bool {
+        self.subs.iter().any(|s| s.enabled && s.phase == phase)
+    }
+
+    /// See the `version` field.
+    pub fn version(&self) -> u64 { self.version }
+
     pub fn subscribe(&mut self, priority: Priority, phase: Phase, owner: String, handler: H) -> (SubId, DetourChange) {
+        self.version = next_version();
         let id = self.next_id;
         self.next_id += 1;
         // Insert keeping (priority, then registration order). Stable: find first sub with a
@@ -89,6 +111,7 @@ impl<H: Clone> Descriptor<H> {
     /// Unsubscribe ALL subscriptions whose `owner` matches, recompute `enabled_count`, and
     /// return the `DetourChange` (Remove when the last enabled sub goes away, else None).
     pub fn remove_by_owner(&mut self, owner: &str) -> DetourChange {
+        self.version = next_version();
         let before_enabled: usize = self.subs.iter().filter(|s| s.enabled && s.owner == owner).count();
         self.subs.retain(|s| s.owner != owner);
         // Recompute enabled_count from scratch to stay consistent.
@@ -103,6 +126,7 @@ impl<H: Clone> Descriptor<H> {
     }
 
     pub fn unsubscribe(&mut self, id: SubId) -> DetourChange {
+        self.version = next_version();
         if let Some(pos) = self.subs.iter().position(|s| s.id == id) {
             let was_enabled = self.subs[pos].enabled;
             self.subs.remove(pos);
@@ -126,6 +150,9 @@ impl<H: Clone> Descriptor<H> {
                 s.error_count += 1;
                 if s.error_count >= MAX_HANDLER_ERRORS { s.enabled = false; disabled += 1; }
             }
+        }
+        if disabled > 0 {
+            self.version = next_version();
         }
         let mut detour = DetourChange::None;
         for _ in 0..disabled {
@@ -164,6 +191,26 @@ mod tests {
 
     fn run(d: &mut Descriptor<Mock>, phase: Phase, log: &std::cell::RefCell<Vec<&'static str>>) -> HookResult {
         d.dispatch(phase, |h| { log.borrow_mut().push(h.tag); Ok(h.ret) }).result
+    }
+
+    #[test]
+    fn version_moves_exactly_when_the_snapshot_can_change() {
+        let mut d = Descriptor::new("OnGameFrame");
+        let v0 = d.version();
+        let (a, _) = d.subscribe(Priority::Normal, Phase::Pre, "p".into(), Mock { tag: "a", ret: HookResult::Continue });
+        let v1 = d.version();
+        assert_ne!(v0, v1);
+        d.apply_errors(&[a]);
+        assert_eq!(d.version(), v1, "an error that disables nothing leaves the snapshot alone");
+        for _ in 1..MAX_HANDLER_ERRORS { d.apply_errors(&[a]); }
+        let v2 = d.version();
+        assert_ne!(v1, v2, "auto-disable changes the snapshot");
+        d.unsubscribe(a);
+        assert_ne!(d.version(), v2);
+        let v3 = d.version();
+        d.remove_by_owner("p");
+        assert_ne!(d.version(), v3);
+        assert_ne!(Descriptor::<Mock>::new("x").version(), d.version(), "a replacement never repeats a version");
     }
 
     #[test]
