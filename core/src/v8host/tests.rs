@@ -10086,3 +10086,9 @@ mod immutable_contract;
 
 #[path = "tests/profiler.rs"]
 mod profiler;
+
+#[path = "tests/realm_bench.rs"]
+mod realm_bench;
+
+#[path = "tests/realm.rs"]
+mod realm_tests;

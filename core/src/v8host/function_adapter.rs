@@ -571,8 +571,8 @@ pub(crate) fn bootstrap(
             set(scope, global, "__s2_package_function", lookup.into())?;
             let mut storage = v8::TryCatch::new(scope);
             let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
-            let source = v8::String::new(&mut tc, &package.source).ok_or("source allocation")?;
-            let evaluated = v8::Script::compile(&mut tc, source, None)
+            // Compiled once per package generation and bound to each plugin's context.
+            let evaluated = super::realm::compiled(&mut tc, &package.source, package.owner.key().generation)
                 .and_then(|s| s.run(&mut tc))
                 .ok_or_else(|| {
                     tc.exception()
@@ -611,7 +611,7 @@ pub(crate) fn bootstrap(
 /// Engine-generic prelude registrars that only the selected game package's bootstrap may call
 /// (see core/js/prelude.js). The context creator removes them after `bootstrap` returns — with or
 /// without a package, success or failure — so plugin code never reaches them.
-const BOOTSTRAP_ONLY_PRELUDE_GLOBALS: [&str; 1] = ["__s2_sdkhook_provider_register"];
+const BOOTSTRAP_ONLY_PRELUDE_GLOBALS: [&str; 2] = ["__s2_sdkhook_provider_register", "__s2_shared_module"];
 pub(crate) fn close_bootstrap_globals(scope: &mut v8::PinScope) {
     let global = scope.get_current_context().global(scope);
     for name in BOOTSTRAP_ONLY_PRELUDE_GLOBALS {
@@ -1270,6 +1270,7 @@ pub(crate) fn drop_package(owner: &OwnerKey) {
     });
     if let Some(package) = &removed {
         package.owner.retire_source();
+        super::realm::forget_generation(owner.generation);
     }
     let mut instances = ADAPTERS.with(|a| {
         a.borrow()

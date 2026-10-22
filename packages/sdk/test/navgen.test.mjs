@@ -31,11 +31,14 @@ test("emitNavJs: wrapper getters read via the chain; nav accessor resolves the p
   const js = emitNavJs(buildNavModel(CONFIG, CAT));
   assert.match(js, /function SceneNode\(root, path, base\)/);
   assert.match(js, /this\.root\.readFloat32Via\(this\.path, \(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("CGameSceneNode","m_flScale"\)\)\) \+ this\.base\)/);
-  assert.match(js, /var a = this\.root\.readFloatsChain\(this\.path, \(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("CGameSceneNode","m_vecOrigin"\)\)\) \+ this\.base, 3\); return a === null \? null : new Vector/);
+  // The value is built by the receiver, in the plugin's own realm (the module is shared).
+  assert.match(js, /return this\.root\.readVectorChain\(this\.path, \(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("CGameSceneNode","m_vecOrigin"\)\)\) \+ this\.base\);/);
+  assert.doesNotMatch(js, /__s2require/);
+  assert.match(js, /var M = shared\("@s2script\/cs2\/nav:[0-9a-f]{16}", function \(\) \{/);
   // the nav accessor + per-access hop resolution (boot-window-safe, no baked NAV table):
   assert.match(js, /var o0 = \(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("CBaseEntity","m_CBodyComponent"\)\)\); if \(o0 < 0\) return null; _p\.push\(o0\);/);
   assert.match(js, /var o1 = \(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("CBodyComponent","m_pSceneNode"\)\)\); if \(o1 < 0\) return null; _p\.push\(o1\);/);
-  assert.match(js, /globalThis\.__s2pkg_cs2_nav = \{ applyNav/);
+  assert.match(js, /globalThis\.__s2pkg_cs2_nav = \{ applyNav: M\.applyNav \}/);
 });
 
 test("emitNavDts: a wrapper interface + the nav prop type", () => {

@@ -263,6 +263,14 @@ A `Ptr` answers the same read/write methods as an `EntityRef`, including the `*V
 
 Not yet: struct views for classes outside the entity catalog (`CTakeDamageInfo`, user commands), engine functions declared inline by signature, and hooks with pointer arguments. Those follow, and the older doors (`DamageInfo`, `UserCmdView`, nav paths) go in the breaking API pass.
 
+### 2.1.3 The shared framework realm
+
+Plugins keep a context each, for their own globals and module graph, but the parts of a game package that hold no per-plugin state live **once**, in a frozen framework context (`core/src/v8host/realm.rs`). A package marks such a module by wrapping it in `__s2_shared_module(key, factory)`, a native that exists only while the package bootstraps. The first call compiles the factory's source in the framework realm and runs it there; every later plugin gets the same frozen object and calls its functions directly (contexts on one isolate share objects freely). The generated schema and nav accessors are built this way, and since an accessor reads through the receiver it is given, the value it returns, such as a `Vector`, is built by the plugin's own `EntityRef`/`Ptr` in the plugin's realm. The key carries the generator's content hash, so a regenerated module never reuses an older instance.
+
+The rules for a shared module: no plugin identity (`current_plugin` is `None` there), no subscriptions or ledgered resources, and exactly one native, `__s2_schema_offset`. Before any module loads, the realm deep-freezes its builtins, and generated modules freeze their own prototypes, so a plugin cannot patch a shared object, or a builtin reached through one, under another plugin. One consequence: an object a shared module creates (a view, a nav wrapper) inherits from the framework's `Object.prototype`, so `view instanceof Object` is `false` in plugin code. Test types with the framework's own classes, never global constructors.
+
+Every context also evaluates the same engine prelude and package bootstrap, so they're compiled once per isolate (`realm::compiled`) and bound to each new context instead of being copied and parsed again. With the CS2 package, a new plugin context costs about 3.7 ms and 0.65 MB of V8 heap, down from about 16 ms and 2.1 MB. The price is about 4.6 ns per accessor read, because V8 won't inline a getter from another context (13.7 ns against 9.1 ns for a `Ptr` field).
+
 ### 2.2 The multiplexer + `HookResult` contract
 
 The heart of the system. **One descriptor and one detour per engine touchpoint** (the *machinery* is core; CS2's specific descriptor instances live in `@s2script/cs2`), installed lazily on first subscription, removed when the last subscriber leaves.

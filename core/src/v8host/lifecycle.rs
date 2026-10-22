@@ -129,12 +129,12 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
             // Framework config templates (__s2_TEMPLATES) must exist before the engine prelude, whose
             // admin/db loaders read them to write the operator's file on first boot.
             run_prelude(scope, "config-templates", &config_templates_prelude());
-            run_prelude(scope, "engine-prelude", INJECTED_STD_PRELUDE);
+            run_static_prelude(scope, "engine-prelude", INJECTED_STD_PRELUDE);
             capture_entity_ref_prototype(scope);
             // Compatibility test fixtures seed configuration before the actual receipt bootstrap.
             #[cfg(test)]
-            for (name, source) in INJECTED_PACKAGES.with(|p| p.borrow().clone()) {
-                run_prelude(scope, &name, &source);
+            for (name, (source, serial)) in INJECTED_PACKAGES.with(|p| p.borrow().clone()) {
+                run_test_package(scope, &name, &source, serial);
             }
             let package_exports = match function_adapter::bootstrap(scope, id, generation) {
                 Ok(exports) => exports,

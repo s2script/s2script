@@ -3,7 +3,7 @@
  * NO runtime code: the engine injects the implementation at load time.
  */
 
-import type { Vector } from "./math";
+import type { Vector, QAngle } from "./math";
 
 /**
  * A host-liveness-gated handle to a live entity. `id` is a HOST-MINTED monotonic liveness
@@ -88,6 +88,14 @@ export declare class EntityRef {
    *  at `finalOff` into a number[]. All in-core (raw pointers never cross); null if the root is stale or any hop
    *  is null. */
   readFloatsChain(ptrOffs: number[], finalOff: number, count: number): number[] | null;
+  /** The `Vector` at `offset`, or null if the ref is stale. */
+  readVector(offset: number): Vector | null;
+  /** The `QAngle` at `offset`, or null if the ref is stale. */
+  readQAngle(offset: number): QAngle | null;
+  /** The `Vector` at the end of a pointer chain, or null on a stale ref or a null hop. */
+  readVectorChain(ptrOffs: number[], finalOff: number): Vector | null;
+  /** The `QAngle` at the end of a pointer chain, or null on a stale ref or a null hop. */
+  readQAngleChain(ptrOffs: number[], finalOff: number): QAngle | null;
   /** Follow a pointer chain (each an offset), then read a scalar at `finalOff`. null if the root is stale or any
    *  hop is null. `readHandleVia` decodes a handle field → a liveness-gated EntityRef; vectors use readFloatsChain. */
   readInt32Via(pathOffs: number[], finalOff: number): number | null;

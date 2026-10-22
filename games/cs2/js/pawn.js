@@ -98,10 +98,10 @@
   function refIdentity(value) { return value ? { index: Number(value.index), id: Number(value.id) } : null; }
   function refPlan(names, normalize) { names.split(" ").forEach(function (name) { playerRefArgs[name] = normalize; }); }
   refPlan("isValid identityFlags remove activateCollision", function () { return []; });
-  refPlan("readInt32 readFloat32 readBool readInt8 readInt16 readUInt8 readUInt16 readUInt32 readUInt64 readInt64 readFloat64 readHandle readString readFloats writeInt32 writeFloat32 writeInt8 writeInt16 writeUInt8 writeUInt16 writeUInt32 notifyStateChanged clearIdentityFlags setGravityScale setModelScale", refNumbers);
+  refPlan("readInt32 readFloat32 readBool readInt8 readInt16 readUInt8 readUInt16 readUInt32 readUInt64 readInt64 readFloat64 readHandle readString readFloats readVector readQAngle writeInt32 writeFloat32 writeInt8 writeInt16 writeUInt8 writeUInt16 writeUInt32 notifyStateChanged clearIdentityFlags setGravityScale setModelScale", refNumbers);
   refPlan("writeBool", function (a) { return [Number(a[0]), !!a[1]]; });
   refPlan("writeString", function (a) { return [Number(a[0]), Number(a[1]), String(a[2])]; });
-  refPlan("readInt32Via readInt8Via readInt16Via readUInt8Via readUInt16Via readUInt32Via readFloat32Via readBoolVia readUInt64Via readInt64Via readHandleVia", function (a) { return [refPath(a[0]), Number(a[1])]; });
+  refPlan("readInt32Via readInt8Via readInt16Via readUInt8Via readUInt16Via readUInt32Via readFloat32Via readBoolVia readUInt64Via readInt64Via readHandleVia readVectorChain readQAngleChain", function (a) { return [refPath(a[0]), Number(a[1])]; });
   refPlan("writeInt32Via writeFloat32Via readFloatsChain", function (a) { return [refPath(a[0]), Number(a[1]), Number(a[2])]; });
   refPlan("writeBoolVia", function (a) { return [refPath(a[0]), Number(a[1]), !!a[2]]; });
   refPlan("readHandleVector", function (a) { return [refPath(a[0]), Number(a[1]), a[2] == null ? 64 : Number(a[2])]; });

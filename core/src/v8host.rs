@@ -28,6 +28,7 @@ mod interop_wire;
 mod interop_lifetime;
 use interop_wire::*;
 mod timers;
+mod realm;
 pub(crate) mod function_adapter;
 mod engine_functions;
 
@@ -284,7 +285,7 @@ thread_local! {
         = std::cell::RefCell::new(plugin::Registry::new());
     /// Test-only compatibility prelude/configuration seeds; production uses verified receipts.
     #[cfg(test)]
-    static INJECTED_PACKAGES: std::cell::RefCell<std::collections::HashMap<String, String>>
+    static INJECTED_PACKAGES: std::cell::RefCell<std::collections::HashMap<String, (std::rc::Rc<str>, u64)>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Inter-plugin interface bookkeeping (Slice 4.5). Pure state lives here; the V8 handles are in
     /// IFACE_METHODS / IFACE_SUBS. Cleared on shutdown (BEFORE the isolate drops).
@@ -640,7 +641,11 @@ pub fn set_hook_request(f: Option<HookRequestFn>) {
 /// Internal test prelude/configuration helper. It grants no package adapter authority.
 #[cfg(test)]
 pub fn register_injected_package(name: &str, js: &str) {
-    INJECTED_PACKAGES.with(|p| p.borrow_mut().insert(name.to_string(), js.to_string()));
+    // Each registration gets its own compile-cache generation, in a range package generations
+    // never reach, so a re-registered source can't hit a stale compiled script.
+    thread_local! { static SERIAL: std::cell::Cell<u64> = const { std::cell::Cell::new(1 << 62) }; }
+    let serial = SERIAL.with(|s| { s.set(s.get() + 1); s.get() });
+    INJECTED_PACKAGES.with(|p| p.borrow_mut().insert(name.to_string(), (std::rc::Rc::from(js), serial)));
 }
 
 // Pending work includes producer leases and post-checkpoint callback obligations.
@@ -4855,14 +4860,34 @@ fn s2_defer_selftest(
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
 /// prelude compile/run error logs a named WARN and returns rather than propagating an exception).
 fn run_prelude(scope: &mut v8::PinScope, what: &str, src: &str) {
+    run_prelude_with(scope, what, src, None)
+}
+
+/// `run_prelude` for a `'static` source, compiled once per isolate (`realm::compiled`).
+fn run_static_prelude(scope: &mut v8::PinScope, what: &str, src: &'static str) {
+    run_prelude_with(scope, what, src, Some(0))
+}
+
+/// A test-injected package: compiled once per registration, as a real package is per generation.
+#[cfg(test)]
+fn run_test_package(scope: &mut v8::PinScope, what: &str, src: &std::rc::Rc<str>, serial: u64) {
+    run_prelude_with(scope, what, src, Some(serial))
+}
+
+fn run_prelude_with(scope: &mut v8::PinScope, what: &str, src: &str, cached: Option<u64>) {
     let mut tc_storage = v8::TryCatch::new(scope);
     let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
     let tc = &mut tc;
-    let Some(code) = v8::String::new(tc, src) else {
-        log_warn(&format!("WARN: {} prelude: failed to intern source", what));
-        return;
+    let script = if let Some(generation) = cached {
+        realm::compiled(tc, src, generation)
+    } else {
+        let Some(code) = v8::String::new(tc, src) else {
+            log_warn(&format!("WARN: {} prelude: failed to intern source", what));
+            return;
+        };
+        v8::Script::compile(tc, code, None)
     };
-    match v8::Script::compile(tc, code, None).and_then(|s| s.run(tc)) {
+    match script.and_then(|s| s.run(tc)) {
         Some(_) => {}
         None => {
             let msg = tc
@@ -6610,6 +6635,8 @@ pub(crate) fn register_process_singletons() {
     reg("RESOLVERS", BeforeIsolateDrop, crate::jobs::reset_resolvers);
     // The JS multiplexer's context and every cached subscriber array.
     reg("JSMUX", BeforeIsolateDrop, crate::jsmux::reset);
+    // The shared framework realm and its modules.
+    reg("FRAMEWORK_REALM", BeforeIsolateDrop, realm::reset);
     reg("TIMER_CBS", BeforeIsolateDrop, || {
         TIMER_CBS.with(|m| m.borrow_mut().clear())
     });

@@ -87,13 +87,15 @@ test("emitJs: char[N] emits readString(len); 64-bit int emits a null-safe readUI
   assert.doesNotMatch(dts, /steamID[^;\n]*: bigint/);
 });
 
-test("emitJs: a Vector field emits readFloats(off,3)+new Vector; the @s2script/sdk/math require appears", () => {
+// The module is shared across plugins from the framework realm, so a vector is built by the
+// receiver (in the reading plugin's realm), never by a `new QAngle` inside the module.
+test("emitJs: a Vector/QAngle field reads through the receiver's readQAngle; no math require", () => {
   const CATALOG = { Base: { parent: null, fields: [
     { name: "m_angEyeAngles", offset: 8, type: { kind: "atomic", name: "QAngle" } },
   ] } };
   const js = emitJs(buildModel(CATALOG, ["Base"]));
-  assert.match(js, /var QAngle = __s2require\("@s2script\/sdk\/math"\)\.QAngle;/);
-  assert.match(js, /var a = this\.ref\.readFloats\(\(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("Base","m_angEyeAngles"\)\)\), 3\); return a === null \? null : new QAngle\(a\[0\], a\[1\], a\[2\]\);/);
+  assert.doesNotMatch(js, /__s2require/);
+  assert.match(js, /get: function \(\) \{ return this\.ref\.readQAngle\(\(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("Base","m_angEyeAngles"\)\)\)\); \}/);
 });
 
 test("emitDts: a Vector/QAngle field adds the @s2script/sdk/math import + the field type", () => {
@@ -123,7 +125,7 @@ test("emits a typed wrapEntity keyed on entity classes only", () => {
   assert.match(dts, /export declare function wrapEntity<K extends keyof SchemaClasses>/);
 
   // And it has to actually exist at runtime, on the package object plugins import from.
-  assert.match(emitJs(m), /globalThis\.__s2pkg_cs2 = Object\.assign\(\{\}, globalThis\.__s2pkg_cs2, \{ wrapEntity: wrap, structView: structView \}\)/);
+  assert.match(emitJs(m), /globalThis\.__s2pkg_cs2 = Object\.assign\(\{\}, globalThis\.__s2pkg_cs2, \{ wrapEntity: M\.wrap, structView: M\.structView \}, M\.enums\)/);
   assert.match(dts, /export declare function structView<K extends keyof SchemaClasses>\(className: K\): \(ptr: Ptr\) => SchemaClasses\[K\];/);
   assert.match(dts, /import type \{ Ptr \} from "@s2script\/sdk\/unsafe";/);
 });

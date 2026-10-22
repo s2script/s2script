@@ -271,6 +271,16 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   Ptr.prototype.writeInt32Via   = ptrViaWrite(Ptr.prototype.writeInt32);
   Ptr.prototype.writeFloat32Via = ptrViaWrite(Ptr.prototype.writeFloat32);
   Ptr.prototype.writeBoolVia    = ptrViaWrite(Ptr.prototype.writeBool);
+  // Vector and QAngle reads build their value here, in the reading plugin's realm. Generated
+  // accessors are shared across plugins from the framework realm (core/src/v8host/realm.rs), so a
+  // `new Vector` there would hand every plugin the framework's Vector instead of its own.
+  function vec3(Ctor, a) { return a === null ? null : new Ctor(a[0], a[1], a[2]); }
+  [EntityRef.prototype, Ptr.prototype].forEach(function (p) {
+    p.readVector = function (o) { return vec3(Vector, this.readFloats(o, 3)); };
+    p.readQAngle = function (o) { return vec3(QAngle, this.readFloats(o, 3)); };
+    p.readVectorChain = function (c, o) { return vec3(Vector, this.readFloatsChain(c, o, 3)); };
+    p.readQAngleChain = function (c, o) { return vec3(QAngle, this.readFloatsChain(c, o, 3)); };
+  });
   Ptr.NULL = Object.freeze(new Ptr(0));
   // A Ptr from an address number, or the live address of an entity (null once it is stale).
   Ptr.from = function (x) {

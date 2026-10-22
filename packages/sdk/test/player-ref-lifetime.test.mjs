@@ -25,6 +25,8 @@ function fixture() {
   ctx.__s2_ent_ref_valid = (_index, id) => id === 7;
   ctx.__s2_ent_id_for_index = () => 7;
   ctx.__s2_schema_offset = () => 8;
+  // The math classes live outside the sliced entity section; readVector/readQAngle build them.
+  ctx.Vector = ctx.QAngle = function (x, y, z) { this.x = x; this.y = y; this.z = z; };
   const host = installClientHost(ctx, [3]);
   vm.createContext(ctx);
   vm.runInContext(entitySource + '; globalThis.__s2pkg_entity = { EntityRef };', ctx);

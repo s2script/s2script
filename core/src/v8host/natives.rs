@@ -28,6 +28,8 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_thread_sleep", s2_thread_sleep);
     // Schema + entity system.
     set_native(scope, global_obj, "__s2_schema_offset", s2_schema_offset);
+    // Shared package modules, held once in the framework realm (bootstrap only).
+    set_native(scope, global_obj, "__s2_shared_module", realm::s2_shared_module);
     // Perf instrumentation: monotonic ns clock + isolate heap size + force-GC (dev/benchmark).
     set_native(scope, global_obj, "__s2_v8_heap_used", s2_v8_heap_used);
     set_native(scope, global_obj, "__s2_v8_gc", s2_v8_gc);

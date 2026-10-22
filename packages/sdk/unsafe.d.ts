@@ -11,6 +11,7 @@
  */
 
 import type { EntityRef } from "./entity";
+import type { Vector, QAngle } from "./math";
 
 declare const ptrBrand: unique symbol;
 
@@ -83,6 +84,14 @@ export declare class Ptr {
   writeString(offset: number, maxLen: number, value: string): boolean;
   /** `count` consecutive 32-bit floats (a vector, an angle). */
   readFloats(offset: number, count: number): number[];
+  /** The `Vector` at `offset`. */
+  readVector(offset: number): Vector;
+  /** The `QAngle` at `offset`. */
+  readQAngle(offset: number): QAngle;
+  /** The `Vector` at the end of a pointer chain, or null on a null hop. */
+  readVectorChain(ptrOffs: number[], finalOff: number): Vector | null;
+  /** The `QAngle` at the end of a pointer chain, or null on a null hop. */
+  readQAngleChain(ptrOffs: number[], finalOff: number): QAngle | null;
   /** A `CEntityHandle` field, resolved through the entity books: null when it names no live entity. */
   readHandle(offset: number): EntityRef | null;
 }
