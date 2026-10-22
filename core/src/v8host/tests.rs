@@ -2403,6 +2403,12 @@
         assert_crossing_allocations_do_not_scale(false, true);
     }
 
+    /// Whether this run sends consumer-side `__s2_iface_call`s through interface facades
+    /// (`S2_TEST_FACADE=1`; see `FACADE_SHIM` in lifecycle.rs).
+    pub(crate) fn via_facade() -> bool {
+        std::env::var_os("S2_TEST_FACADE").is_some()
+    }
+
     fn protocol2_setup() {
         let _ = init(dummy_logger());
         let metadata = serde_json::json!({"version":1,"methods":{"getCount":{"args":[],"result":{"kind":"number"}}},"forwards":{"OnCountChanged":{"kind":"notification","payload":{"kind":"object","fields":{"count":{"schema":{"kind":"number"},"optional":false}}}}}});
@@ -2951,7 +2957,9 @@
             // already-running call validates its return against its immutable original schema.
             assert_eq!(eval_in_context_string("cons", "String(__s2_iface_call('@x/counter','getCount',[]))"), "1");
             let error = eval_in_context_string("cons", "(()=>{try{__s2_iface_call('@x/counter','getCount',[]);return 'accepted'}catch(e){return e.message}})()");
-            assert!(error.contains(if consumer_only { "InterfaceTypesMismatch" } else { "InterfaceValueNotSerializable" }), "{error}");
+            // A facade was compiled from the consumer's original contract, so it refuses the new one.
+            let expected = if consumer_only || via_facade() { "InterfaceTypesMismatch" } else { "InterfaceValueNotSerializable" };
+            assert!(error.contains(expected), "{error}");
             assert!(IFACE_SUBS.with(|m| m.borrow().is_empty()));
             shutdown();
         }
@@ -10089,6 +10097,9 @@ mod profiler;
 
 #[path = "tests/realm_bench.rs"]
 mod realm_bench;
+
+#[path = "tests/facade.rs"]
+mod facade;
 
 #[path = "tests/realm.rs"]
 mod realm_tests;

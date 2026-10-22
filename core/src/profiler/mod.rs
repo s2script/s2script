@@ -480,6 +480,7 @@ fn begin(options: Options) -> u32 {
     });
     REC.with(|r| *r.borrow_mut() = Some(Recorder::new(session, options)));
     ACTIVE.with(|a| a.set(true));
+    crate::v8host::interop_facade::set_profiling(true);
     session
 }
 
@@ -493,6 +494,7 @@ pub(crate) struct Finished {
 /// that asked to stop is one) are discarded; their guards are inert from here on.
 fn end() -> Option<Finished> {
     ACTIVE.with(|a| a.set(false));
+    crate::v8host::interop_facade::set_profiling(false);
     let mut rec = REC.with(|r| r.borrow_mut().take())?;
     let now = now_ns(rec.base);
     rec.stack.clear();
@@ -650,6 +652,7 @@ pub(crate) fn clear() -> Vec<String> {
 pub(crate) fn shutdown() {
     js::abandon();
     ACTIVE.with(|a| a.set(false));
+    crate::v8host::interop_facade::set_profiling(false);
     REC.with(|r| *r.borrow_mut() = None);
     PENDING.with(|p| *p.borrow_mut() = None);
 }

@@ -33,6 +33,7 @@ mod cookies;
 mod db;
 pub mod interfaces;
 mod interop;
+pub(crate) mod interop_slots;
 pub mod plugin;
 pub(crate) mod entity;
 pub(crate) mod liveness;

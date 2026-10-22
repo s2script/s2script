@@ -202,6 +202,10 @@ cargo build
 # scripts/test-interop.sh native runs that focused subset when iterating on acceptance.
 echo "== cargo test -p s2script-core =="
 cargo test -p s2script-core
+# The V8-host suite again, with consumer-side __s2_iface_call routed through protocol 2 interface
+# facades (FACADE_SHIM in core/src/v8host/lifecycle.rs): a facade must keep every strict-copy rule.
+echo "== cargo test -p s2script-core frame_tests (interface calls through facades) =="
+S2_TEST_FACADE=1 cargo test -p s2script-core frame_tests
 echo "== game-package portability (same native test executable, absent/present artifacts) =="
 bash scripts/test-game-package-portability.sh
 bash scripts/test-async-pressure.sh

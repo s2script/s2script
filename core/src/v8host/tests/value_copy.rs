@@ -91,7 +91,10 @@ fn protocol2_ref_directions_keep_json_revival_and_context_bound_writable_refs() 
         eval_in_context(owner,"globalThis.parseCalls=0;const originalParse=JSON.parse;JSON.parse=function(...args){parseCalls++;return originalParse.apply(JSON,args)}").unwrap();
     }
     assert!(eval_in_context_bool("cons",r#"(()=>{const p=new __s2pkg_entity.EntityRef(7,17);const out=__s2_iface_call('@x/counter','getCount',[p]);return out!==p&&out instanceof __s2pkg_entity.EntityRef&&out.index===7&&out.id===17&&Object.getOwnPropertyDescriptor(out,'index').writable&&Object.getOwnPropertyDescriptor(out,'id').writable})()"#));
-    for owner in ["prod","cons"] {assert_eq!(eval_in_context_string(owner,"String(parseCalls)"),"1");}
+    // The native path revives references through the SDK's JSON reviver; a facade builds them
+    // directly from its own captured constructor.
+    let parses = if via_facade() { "0" } else { "1" };
+    for owner in ["prod","cons"] {assert_eq!(eval_in_context_string(owner,"String(parseCalls)"),parses);}
     shutdown();
 }
 #[test]

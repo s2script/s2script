@@ -108,6 +108,7 @@ impl InterfaceRegistry {
         producer_gen: u64,
         method_names: Vec<String>,
     ) -> Result<(), String> {
+        crate::interop_slots::bump_epoch(); // bindings depend on this; see `interop_slots`
         if let Some(existing) = self.ifaces.get(name) {
             if existing.producer_id != producer_id {
                 return Err(format!(
@@ -139,6 +140,7 @@ impl InterfaceRegistry {
     /// Remove every interface owned by `producer_id`, returning each name and its subscribers so
     /// the V8 adapter can drop callback Globals and generation-release consumer ledger entries.
     pub fn remove_by_producer(&mut self, producer_id: &str) -> Vec<(String, Vec<Subscriber>)> {
+        crate::interop_slots::bump_epoch(); // bindings depend on this; see `interop_slots`
         let names: Vec<String> = self.ifaces.iter()
             .filter(|(_, e)| e.producer_id == producer_id)
             .map(|(n, _)| n.clone())
@@ -150,6 +152,7 @@ impl InterfaceRegistry {
 
     /// Replace one plugin's import declarations and return the prior active names.
     pub fn set_imports(&mut self, plugin_id: &str, decls: Vec<ImportSpec>) -> Vec<String> {
+        crate::interop_slots::bump_epoch(); // bindings depend on this; see `interop_slots`
         let order = decls.iter().map(|decl| decl.name.clone()).collect();
         let map = decls.into_iter()
             .map(|s| (s.name, ImportDecl {
@@ -165,6 +168,7 @@ impl InterfaceRegistry {
     }
 
     pub fn clear_imports(&mut self, plugin_id: &str) {
+        crate::interop_slots::bump_epoch(); // bindings depend on this; see `interop_slots`
         self.imports.remove(plugin_id);
         self.import_order.remove(plugin_id);
     }
@@ -179,6 +183,11 @@ impl InterfaceRegistry {
 
     pub fn call_target(&self, plugin_id: &str, name: &str, method: &str) -> CallTarget {
         self.call_target_inner(plugin_id, name, Some(method))
+    }
+
+    /// `call_target` for the interface as a whole, before any method is chosen.
+    pub fn bind_target(&self, plugin_id: &str, name: &str) -> CallTarget {
+        self.call_target_inner(plugin_id, name, None)
     }
 
     fn call_target_inner(&self, plugin_id: &str, name: &str, method: Option<&str>) -> CallTarget {
@@ -324,6 +333,7 @@ impl InterfaceRegistry {
     }
 
     pub fn clear(&mut self) {
+        crate::interop_slots::bump_epoch(); // bindings depend on this; see `interop_slots`
         self.watches.clear();
         self.ifaces.clear();
         self.imports.clear();

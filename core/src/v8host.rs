@@ -26,6 +26,7 @@ mod lifecycle;
 mod natives;
 mod interop_wire;
 mod interop_lifetime;
+pub(crate) mod interop_facade;
 use interop_wire::*;
 mod timers;
 mod realm;
@@ -1716,6 +1717,7 @@ pub fn set_plugin_publishes(
         })
     }).collect();
     PLUGIN_PUBLISHES.with(|p| { p.borrow_mut().insert(plugin_id.to_string(), publishes); });
+    interop_facade::revoke();
 }
 
 thread_local! {
@@ -1730,11 +1732,13 @@ pub fn set_plugin_interop(
             .map(|(name, contract)| (name, std::rc::Rc::new(contract)))
             .collect();
         m.borrow_mut().insert(id.into(), contracts);
+        interop_facade::revoke();
     });
 }
 
 /// Drop a plugin's publishes map (teardown).
 pub fn clear_plugin_publishes(plugin_id: &str) {
+    interop_facade::revoke();
     PLUGIN_PUBLISHES.with(|p| { p.borrow_mut().remove(plugin_id); });
     PLUGIN_INTEROP.with(|p| { p.borrow_mut().remove(plugin_id); });
     UNDECLARED_PUBLISHES.with(|p| { p.borrow_mut().remove(plugin_id); });
@@ -6647,6 +6651,7 @@ pub(crate) fn register_process_singletons() {
     reg("JSMUX", BeforeIsolateDrop, crate::jsmux::reset);
     // The shared framework realm and its modules.
     reg("FRAMEWORK_REALM", BeforeIsolateDrop, realm::reset);
+    reg("INTEROP_FACADES", BeforeIsolateDrop, interop_facade::reset);
     reg("TIMER_CBS", BeforeIsolateDrop, || {
         TIMER_CBS.with(|m| m.borrow_mut().clear())
     });

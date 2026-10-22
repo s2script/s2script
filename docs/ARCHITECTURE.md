@@ -614,6 +614,32 @@ a copied final payload. Throwing/invalid/thenable handlers fail open as Continue
 synchronous, snapshot-ordered, free of registry borrows during JS, and bounded to 32 active
 interop crossings. Security-sensitive producers must account for the fail-open policy.
 
+**Method calls go through facades.** A consumer's protocol 2 handle (`use`, `tryUse`, the
+`watchOptional` service, or a direct method import) is a frozen facade the prelude compiles
+from the consumer's own contract: one function per method that checks and copies each argument,
+calls the producer's function directly (every context shares one isolate), and checks and copies
+the result. Nothing passes through JSON or Rust on the way.
+- **The same rules.** The copy enforces the strict-copy rules of PLUGIN_INTEROP.md: own data
+  properties only, no proxies, accessors, symbols, unknown fields, nonfinite numbers or lone
+  surrogates, the 64-level depth bound, and the 32-call limit. The code uses only intrinsics it
+  captured before any plugin code ran, and its state lives in objects whose prototype chain no
+  plugin can reach. Each realm builds what it receives: the producer's own copier builds
+  arguments, from its own copy of the (hash-identical) contract, and the consumer's builds results.
+- **Binding.** The facade holds the producer's functions in a private cell that only
+  `__s2_iface_bind` fills, after the checks a native call makes (dependency, version, contract
+  hash, liveness). The binding natives are deleted before plugin code runs.
+- **Revocation.** The plugin and interface registries bump an epoch, in memory shared with every
+  context (`interop_slots.rs`), on every change that could affect a binding. A facade bound at an
+  older epoch rebinds before it calls, so it never reaches a retired producer, and teardown sweeps
+  stale cells so they don't keep its context alive. If anything changed during a call, the
+  facade rechecks both participants before returning, as the native path does.
+- **Cost.** A call that takes and returns numbers costs about 26 ns instead of 3.4 µs; one that
+  returns a three-field object about 300 ns instead of 5.4 µs (`facade_bench_call_cost`). While
+  the profiler records, facades take the native path, which records spans.
+
+Protocol 1 handles and forwards keep the native path. The protocol 2 suite runs a second time in
+CI with every consumer-side call routed through facades (`S2_TEST_FACADE=1`).
+
 Hard dependencies use `s2script.pluginDependencies`; absent/stale providers throw
 `InterfaceUnavailable`. `tryUse` returns a one-time optional proxy or null, never a variable
 that automatically changes to null. `watchOptional` declares a synchronous attachment callback

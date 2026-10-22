@@ -14,10 +14,301 @@
     return off;
   };
 })();
+// --- Stage 4b: protocol-2 interface facades ---
+// A consumer's typed interface handle is a facade compiled from the consumer's own contract: one
+// function per method that checks and copies its arguments, calls the producer's function directly,
+// and checks and copies the result (see core/src/v8host/interop_facade.rs). The strict-copy rules of
+// docs/PLUGIN_INTEROP.md hold because this code captures every intrinsic it uses here, before any
+// plugin code runs, and keeps its state in objects whose prototype chain no plugin can reach.
+globalThis.__s2_interop_facade = (function () {
+  "use strict";
+  var g = globalThis;
+  var bindNative = g.__s2_iface_bind, planNative = g.__s2_iface_plan, checkNative = g.__s2_iface_check,
+      observeNative = g.__s2_iface_observe, isProxy = g.__s2_is_proxy, slowCall = g.__s2_iface_call,
+      kitNative = g.__s2_interop_kit, slotsNative = g.__s2_interop_slots;
+  if (typeof bindNative !== "function") return null;
+  // Only this closure may bind a cell; the host deletes these again after bootstrap.
+  ["__s2_iface_bind", "__s2_iface_plan", "__s2_iface_check", "__s2_iface_observe", "__s2_is_proxy",
+   "__s2_interop_kit", "__s2_interop_slots"].forEach(function (name) { delete g[name]; });
+  var slots = slotsNative();
+  var DEPTH = 0, EPOCH = 1, PROFILING = 2;
+  var call = Function.prototype.call;
+  var ownKeys = Reflect.ownKeys, apply = Reflect.apply, getDesc = Object.getOwnPropertyDescriptor,
+      getNames = Object.getOwnPropertyNames, getSymbols = Object.getOwnPropertySymbols,
+      quote = JSON.stringify, MakeFunction = Function,
+      getProto = Object.getPrototypeOf, hasOwn = Object.hasOwn, isArray = Array.isArray,
+      create = Object.create, freeze = Object.freeze, defineProperty = Object.defineProperty,
+      arrayFrom = Array.from, parse = JSON.parse, ErrorCtor = Error, StringCtor = String,
+      wellFormed = call.bind(String.prototype.isWellFormed), slice = call.bind(Array.prototype.slice);
+  var NULL = 0, BOOL = 1, NUM = 2, STR = 3, VOID = 4, ENTITY = 5, LIT = 6, ARR = 7, OBJ = 8, UNION = 9;
+  // State lives in Bare objects: fast-mode like any object, but with a frozen null-prototype parent,
+  // so no lookup or assignment can reach a prototype a plugin changed.
+  function Bare() {}
+  Bare.prototype = freeze(create(null));
+  var FAIL = freeze(new Bare());
+  var EntityRefCtor = null;
+  // This realm's identities, which the other realm's copier checks a value's prototype against.
+  var SRC = new Bare();
+
+  function define(o, key, value) {
+    var d = create(null); d.value = value; d.enumerable = true;
+    defineProperty(o, key, d);
+  }
+  function named(name, detail) { return new ErrorCtor(name + ": " + detail); }
+  // A Bare list, so no plugin-defined index setter or getter can reach it.
+  function list(n) { var l = new Bare(); l.n = n; return l; }
+
+  // A plan node per schema position: null-prototype, frozen, built only with captured intrinsics.
+  // The kinds with no parameters (null, boolean, number, string, void, entity) are shared nodes.
+  var SIMPLE = list(6);
+  for (var k = 0; k <= ENTITY; k++) { var node = new Bare(); node.k = k; node.prim = k !== ENTITY; SIMPLE[k] = freeze(node); }
+  function compileSchema(p) {
+    if (typeof p === "number") return SIMPLE[p];
+    var node = new Bare(), kind = p[0], i, n;
+    node.k = kind; node.prim = false;
+    if (kind === LIT) { node.v = p[1]; node.prim = true; }
+    else if (kind === ARR) node.item = compileSchema(p[1]);
+    else if (kind === OBJ) {
+      n = p[1].length;
+      node.keys = list(n); node.plans = list(n); node.optional = list(n);
+      // Per-node scratch: only the realm that compiled a node ever copies into it, and a copy
+      // never re-enters a node it is filling.
+      node.values = new Bare();
+      for (i = 0; i < n; i++) {
+        node.keys[i] = p[1][i][0]; node.plans[i] = compileSchema(p[1][i][1]); node.optional[i] = p[1][i][2] === true;
+      }
+      node.build = builder(node.keys, node.optional);
+      freeze(node.keys); freeze(node.plans); freeze(node.optional);
+    } else if (kind === UNION) {
+      n = p[1].length; node.variants = list(n); node.prim = true;
+      for (i = 0; i < n; i++) { node.variants[i] = compileSchema(p[1][i]); if (!node.variants[i].prim) node.prim = false; }
+      freeze(node.variants);
+    }
+    return freeze(node);
+  }
+  function compileContract(json) {
+    var parsed = parse(json), methods = parsed[1], out = list(methods.length);
+    for (var i = 0; i < methods.length; i++) {
+      var m = new Bare(), args = methods[i][1];
+      m.name = methods[i][0]; m.args = list(args.length); m.result = compileSchema(methods[i][2]); m.required = 0;
+      for (var j = 0; j < args.length; j++) {
+        m.args[j] = compileSchema(args[j][0]);
+        if (args[j][1] !== true) m.required = j + 1;
+      }
+      freeze(m.args); out[i] = freeze(m);
+    }
+    out.sha = parsed[0];
+    return freeze(out);
+  }
+
+  // Realm-independent: a primitive needs no copy, only the check.
+  function check(p, v) {
+    switch (p.k) {
+      case NULL: return v === null;
+      case BOOL: return typeof v === "boolean";
+      case NUM: return typeof v === "number" && v - v === 0;
+      case STR: return typeof v === "string" && wellFormed(v);
+      case LIT: return v === p.v;
+      case UNION:
+        for (var i = 0; i < p.variants.n; i++) if (check(p.variants[i], v)) return true;
+        return false;
+      default: return false;
+    }
+  }
+  // `v` copied into THIS realm, or FAIL. `src` names the realm `v` came from. Only own data
+  // properties are read, so no getter, proxy trap, toJSON or setter runs.
+  function copy(p, v, src, depth) {
+    if (depth > 64) return FAIL;
+    if (p.prim) return check(p, v) ? v : FAIL;
+    var i, d, x, tmp;
+    switch (p.k) {
+      case ENTITY: {
+        if (v === null || typeof v !== "object" || isProxy(v) || getProto(v) !== src.entity) return FAIL;
+        if (getNames(v).length !== 2 || getSymbols(v).length !== 0) return FAIL;
+        var di = getDesc(v, "index"), dd = getDesc(v, "id");
+        if (di === undefined || dd === undefined || !hasOwn(di, "value") || !hasOwn(dd, "value")) return FAIL;
+        var index = di.value, id = dd.value;
+        if (typeof index !== "number" || typeof id !== "number" || index - index !== 0 || id - id !== 0 ||
+            index < 0 || index > 2147483647 || id < 0 || id > 9007199254740991 ||
+            index % 1 !== 0 || id % 1 !== 0) return FAIL;
+        return new EntityRefCtor(index, id);
+      }
+      case ARR: {
+        if (v === null || typeof v !== "object" || isProxy(v) || !isArray(v)) return FAIL;
+        var n = v.length;
+        if (getNames(v).length !== n + 1 || getSymbols(v).length !== 0) return FAIL;
+        tmp = new Bare(); tmp.length = n;
+        for (i = 0; i < n; i++) {
+          d = getDesc(v, i);
+          if (d === undefined || !hasOwn(d, "value")) return FAIL;
+          x = copy(p.item, d.value, src, depth + 1);
+          if (x === FAIL) return FAIL;
+          tmp[i] = x;
+        }
+        return arrayFrom(tmp);
+      }
+      case OBJ: {
+        if (v === null || typeof v !== "object" || isProxy(v) || isArray(v)) return FAIL;
+        var proto = getProto(v);
+        if (proto !== null && proto !== src.object) return FAIL;
+        // Which fields are present: a bit mask, or a string of 0s and 1s past 30 fields.
+        var present = 0, big = p.keys.n > 30, mask = big ? "" : 0, values = p.values;
+        for (i = 0; i < p.keys.n; i++) {
+          d = getDesc(v, p.keys[i]);
+          if (d === undefined) {
+            if (!p.optional[i]) return FAIL;
+            if (big) mask += "0";
+            continue;
+          }
+          if (!hasOwn(d, "value")) return FAIL;
+          x = copy(p.plans[i], d.value, src, depth + 1);
+          if (x === FAIL) return FAIL;
+          values[i] = x;
+          if (big) mask += "1"; else mask |= 1 << i;
+          present++;
+        }
+        if (getNames(v).length !== present || getSymbols(v).length !== 0) return FAIL;
+        return p.build(values, mask);
+      }
+      case UNION:
+        for (i = 0; i < p.variants.n; i++) {
+          x = copy(p.variants[i], v, src, depth);
+          if (x !== FAIL) return x;
+        }
+        return FAIL;
+      default: return FAIL;
+    }
+  }
+
+  // `(values, mask) => object`: an object literal over the fields, so the copy is a plain fast
+  // object built without assignments (no inherited setter can run). An optional field is spread
+  // in only when `mask` says it is present: a bit, or a "1" in a string past 30 fields. Generated
+  // here, at compile time, because the realm's Function constructor refuses calls made from
+  // another plugin's context.
+  function builder(keys, optional) {
+    var body = "", big = keys.n > 30;
+    for (var i = 0; i < keys.n; i++) {
+      var key = keys[i], prop = (key === "__proto__" ? '["__proto__"]' : quote(key)) + ":s[" + i + "]";
+      if (optional[i]) prop = "...(" + (big ? "m[" + i + ']==="1"' : "m&" + (1 << i)) + "?{" + prop + "}:null)";
+      body += (i === 0 ? "" : ",") + prop;
+    }
+    return MakeFunction("s", "m", "\"use strict\";return {" + body + "};");
+  }
+
+  // What a producer's realm hands a binding: a copier for arguments, from its own contract.
+  var kit = new Bare();
+  kit.compile = function (json) {
+    var plans = compileContract(json), out = new Bare();
+    // Depth 1: an argument sits inside the argument list, as it does on the native path.
+    out.copy = function (mi, ai, v, src) { return copy(plans[mi].args[ai], v, src, 1); };
+    out.fail = FAIL;
+    out.src = SRC;
+    return freeze(out);
+  };
+  freeze(kit);
+
+  function describe(e) { try { return StringCtor(e); } catch (_) { return "producer method threw"; } }
+
+  function makeMethod(iface, cell, plans, mi, before) {
+    var m = plans[mi], label = iface + "." + m.name, argc = m.args.n, required = m.required, result = m.result;
+    var NOTSER_ARGS = label + " args", NOTSER_RETURN = label + " return";
+    function arg(ai, v) {
+      var p = m.args[ai];
+      if (p.prim) { if (check(p, v)) return v; }
+      else { var x = cell.copy(mi, ai, v, SRC); if (x !== cell.fail) return x; }
+      throw named("InterfaceValueNotSerializable", NOTSER_ARGS);
+    }
+    function finish(r, threw, err, epoch, producer, generation) {
+      if (slots[EPOCH] !== epoch && !checkNative(iface, producer, generation)) throw named("InterfaceUnavailable", iface);
+      if (threw) throw named("InterfaceCallError", label + ": " + describe(err));
+      if (r === undefined) {
+        if (result.k === VOID) return undefined;
+        throw named("InterfaceValueNotSerializable", NOTSER_RETURN);
+      }
+      if (r !== null && (typeof r === "object" || typeof r === "function")) {
+        var then;
+        try { then = r.then; } catch (_) { throw named("InterfaceValueNotSerializable", NOTSER_RETURN); }
+        if (typeof then === "function") { observeNative(r); throw named("InterfaceValueNotSerializable", NOTSER_RETURN); }
+      }
+      var out = copy(result, r, cell.src, 0);
+      if (out === FAIL) throw named("InterfaceValueNotSerializable", NOTSER_RETURN);
+      return out;
+    }
+    return function (a0, a1, a2, a3) {
+      var n = arguments.length;
+      if (before !== null) before();
+      if (slots[PROFILING] !== 0) return slowCall(iface, m.name, slice(arguments));
+      if (cell.epoch !== slots[EPOCH]) bindNative(iface, plans.sha, cell, new Bare());
+      var f = cell.fns[mi];
+      if (f === undefined) throw named("InterfaceUnavailable", iface);
+      if (slots[DEPTH] >= 32) throw named("InterfaceRecursionLimit", "maximum 32 active calls");
+      if (n > argc || n < required) throw named("InterfaceValueNotSerializable", NOTSER_ARGS);
+      var x0, x1, x2, x3, rest = null;
+      if (n > 0) x0 = arg(0, a0);
+      if (n > 1) x1 = arg(1, a1);
+      if (n > 2) x2 = arg(2, a2);
+      if (n > 3) x3 = arg(3, a3);
+      if (n > 4) {
+        rest = new Bare(); rest.length = n; rest[0] = x0; rest[1] = x1; rest[2] = x2; rest[3] = x3;
+        for (var i = 4; i < n; i++) rest[i] = arg(i, arguments[i]);
+        rest = arrayFrom(rest);
+      }
+      var epoch = cell.epoch, producer = cell.producer, generation = cell.generation;
+      var r, threw = false, err;
+      slots[DEPTH]++;
+      try {
+        if (n === 0) r = f();
+        else if (n === 1) r = f(x0);
+        else if (n === 2) r = f(x0, x1);
+        else if (n === 3) r = f(x0, x1, x2);
+        else if (n === 4) r = f(x0, x1, x2, x3);
+        else r = apply(f, undefined, rest);
+      } catch (e) { threw = true; err = e; }
+      slots[DEPTH]--;
+      return finish(r, threw, err, epoch, producer, generation);
+    };
+  }
+
+  // The facade for `iface`, or null when the plugin imports it without a protocol-2 contract.
+  // `extra` adds members (`on`, `off`) that take precedence over same-named methods, as the proxy
+  // handles always did; `before` runs ahead of every call.
+  function facade(iface, extra, before) {
+    var json = planNative(iface);
+    if (json === null) return null;
+    var plans = compileContract(json);
+    var cell = new Bare();
+    cell.epoch = slots[EPOCH] - 1 | 0; cell.fns = null; cell.copy = null; cell.fail = null; cell.src = null;
+    cell.producer = ""; cell.generation = 0; cell.tracked = false;
+    var out = {};
+    for (var i = 0; i < plans.n; i++) {
+      define(out, plans[i].name, makeMethod(iface, cell, plans, i, before || null));
+    }
+    if (extra) {
+      var names = ownKeys(extra);
+      for (var j = 0; j < names.length; j++) define(out, names[j], extra[names[j]]);
+    }
+    return freeze(out);
+  }
+
+  return freeze({
+    facade: facade,
+    // Called once the SDK's EntityRef exists; registers this realm's kit with the host.
+    init: function (EntityRef) {
+      if (EntityRefCtor !== null) return;
+      EntityRefCtor = EntityRef;
+      SRC.object = Object.prototype;
+      SRC.entity = EntityRef.prototype;
+      freeze(SRC);
+      kitNative(kit);
+    },
+  });
+})();
 globalThis.HookResult = { Continue:0, Changed:1, Handled:2, Stop:3 };
 globalThis.Priority   = { High:"high", Normal:"normal", Low:"low", Monitor:"monitor" };
 globalThis.Phase      = { Pre:"pre", Post:"post" };
 (function () {
+  var interopFacade = globalThis.__s2_interop_facade;
+  delete globalThis.__s2_interop_facade;
   const OnGameFrame = {
     subscribe: (fn, opts) => {
       const id = __s2_subscribe("OnGameFrame", fn, opts || {});
@@ -50,17 +341,22 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   // --- Slice 4.5: inter-plugin interfaces ---
   function makeIfaceProxy(name) {
+    function on(ev, h) {
+      if (!__s2_iface_verified_import(name)) return __s2_iface_on(name, ev, h);
+      // Direct imports share the typed handle's load buffering and exact-ID disposal.
+      var ctx = __s2_load_ctx_or_throw("interface.on()");
+      var service = __s2_iface_dep_kind(name) === "hard" ? ctx.use(name) : ctx.tryUse(name);
+      if (!service) throw new Error("InterfaceUnavailable: " + name);
+      return service.on(ev, h);
+    }
+    function off(ev, h) { return __s2_iface_off(name, ev, h); }
+    // A protocol-2 import gets a facade compiled from its contract; protocol 1 keeps the proxy.
+    var typed = interopFacade && interopFacade.facade(name, { on: on, off: off });
+    if (typed) return typed;
     return new Proxy({}, {
       get: function (_t, prop) {
-        if (prop === "on") return function (ev, h) {
-          if (!__s2_iface_verified_import(name)) return __s2_iface_on(name, ev, h);
-          // Direct imports share the typed handle's load buffering and exact-ID disposal.
-          var ctx = __s2_load_ctx_or_throw("interface.on()");
-          var service = __s2_iface_dep_kind(name) === "hard" ? ctx.use(name) : ctx.tryUse(name);
-          if (!service) throw new Error("InterfaceUnavailable: " + name);
-          return service.on(ev, h);
-        };
-        if (prop === "off") return function (ev, h) { return __s2_iface_off(name, ev, h); };
+        if (prop === "on") return on;
+        if (prop === "off") return off;
         if (typeof prop !== "string") return undefined;
         return function () {
           var args = Array.prototype.slice.call(arguments);
@@ -808,6 +1104,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle, forwardVector: forwardVector };
   globalThis.__s2pkg_entity     = { EntityRef: EntityRef, createEntity: createEntity, Entity: Entity };
+  // After EntityRef.prototype is final: interop copies check references against it.
+  if (interopFacade) interopFacade.init(EntityRef);
   globalThis.__s2pkg_transmit  = { Transmit: Transmit };
   globalThis.__s2pkg_voice      = { Voice: Voice };
   globalThis.__s2pkg_usermessages = { UserMessage: UserMessage, UserMessages: UserMessages };
@@ -2167,10 +2465,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       return { dispose: function () { if (disposed) return; disposed = true; register = null; if (id) remove(id); } };
     }
     function handleFor(name) {
+      function on(ev, h) {
+        return ownedRegistration(function () { return __s2_iface_on(name, ev, h); }, __s2_iface_dispose);
+      }
+      var typed = interopFacade && interopFacade.facade(name, { on: on });
+      if (typed) return typed;
       return new Proxy({}, { get: function (_t, prop) {
-        if (prop === "on") return function (ev, h) {
-          return ownedRegistration(function () { return __s2_iface_on(name, ev, h); }, __s2_iface_dispose);
-        };
+        if (prop === "on") return on;
         if (typeof prop !== "string") return undefined;
         return function () { return __s2_iface_call(name, prop, Array.prototype.slice.call(arguments)); };
       }});
@@ -2198,11 +2499,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
             __s2_iface_attachment_own(token, function () { dispose.call(resource); });
             return resource;
           }};
-          var service = new Proxy({}, { get: function (_target, prop) {
-            if (prop === "on") return function (event, handler) {
-              var id = __s2_iface_on(name, event, handler, token);
-              return { dispose: function () { if (id) { __s2_iface_dispose(id); id = 0; } } };
-            };
+          function on(event, handler) {
+            var id = __s2_iface_on(name, event, handler, token);
+            return { dispose: function () { if (id) { __s2_iface_dispose(id); id = 0; } } };
+          }
+          var service = (interopFacade && interopFacade.facade(name, { on: on },
+            function () { __s2_iface_attachment_live(token); })) || new Proxy({}, { get: function (_target, prop) {
+            if (prop === "on") return on;
             if (typeof prop !== "string") return undefined;
             return function () {
               __s2_iface_attachment_live(token);

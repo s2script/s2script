@@ -614,7 +614,7 @@ pub(crate) fn bootstrap(
 const BOOTSTRAP_ONLY_PRELUDE_GLOBALS: [&str; 2] = ["__s2_sdkhook_provider_register", "__s2_shared_module"];
 pub(crate) fn close_bootstrap_globals(scope: &mut v8::PinScope) {
     let global = scope.get_current_context().global(scope);
-    for name in BOOTSTRAP_ONLY_PRELUDE_GLOBALS {
+    for name in BOOTSTRAP_ONLY_PRELUDE_GLOBALS.iter().chain(super::interop_facade::BOOTSTRAP_ONLY.iter()) {
         if let Some(key) = v8::String::new(scope, name) {
             global.delete(scope, key.into());
         }

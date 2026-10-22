@@ -81,6 +81,24 @@ pub(super) fn s2_handoff_take(
 /// generation.
 ///
 /// Panics only if called before `init` (no isolate yet) — an internal invariant, not an FFI path.
+#[cfg(test)]
+const FACADE_SHIM: &str = r#"(function(){
+  var orig = __s2_iface_call, inside = false, cache = new Map(), isArray = Array.isArray,
+      isFrozen = Object.isFrozen, apply = Reflect.apply, req = __s2_require;
+  globalThis.__s2_iface_call = function (n, m, a) {
+    if (inside || !isArray(a)) return apply(orig, this, arguments);
+    var h = cache.get(n);
+    if (h === undefined) {
+      inside = true;
+      try { h = req(n); } catch (e) { h = null; } finally { inside = false; }
+      if (!h || !isFrozen(h)) h = null;
+      cache.set(n, h);
+    }
+    if (h === null || typeof h[m] !== "function") return apply(orig, this, arguments);
+    return apply(h[m], undefined, a);
+  };
+})();"#;
+
 pub(crate) fn create_plugin_context(id: &str) -> u64 {
     let _prof = crate::profiler::span(id, "load: create context + preludes");
     HOST.with(|h| {
@@ -146,6 +164,10 @@ pub(crate) fn create_plugin_context(id: &str) -> u64 {
                 }
             };
             function_adapter::close_bootstrap_globals(scope);
+            #[cfg(test)]
+            if std::env::var_os("S2_TEST_FACADE").is_some() {
+                run_prelude(scope, "facade-shim", FACADE_SHIM);
+            }
             (v8::Global::new(scope.as_ref(), ctx_local), package_exports)
             // scope, hs, hs_storage drop here — the isolate borrow is released.
         };
@@ -848,6 +870,8 @@ fn capture_state_and_run_onunload(id: &str) {
 /// and `unload_partial` (never-Active). `REGISTRY.remove` yields the entry (also making `is_live` false
 /// for any lingering resolver of this generation).
 fn teardown_ledger_and_dispose(id: &str) {
+    // No facade may call into, or on behalf of, a plugin that is going away.
+    interop_facade::revoke();
     interop_lifetime::teardown_plugin(id);
     function_adapter::drop_owner(&crate::engine_functions::contract::OwnerKey::plugin(id,plugin_generation(id)));
     // (c) Ledger reverse-walk: the teardown authority.  REGISTRY.remove yields the entry (also makes
@@ -988,6 +1012,7 @@ fn teardown_ledger_and_dispose(id: &str) {
     // (e) NOW drop the Global<Context> (all inner Globals were released in a–d).  dispose_plugin_context
     // removes the PLUGINS entry (dropping the context Global) and the REGISTRY entry (already gone → no-op).
     dispose_plugin_context(id);
+    interop_lifetime::sweep_facades();
 }
 
 /// A snapshot of a `LOADING` entry's settle state (owned — `SettleState::Failed(String)` is not

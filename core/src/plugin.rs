@@ -208,6 +208,8 @@ impl Registry {
     /// A re-insert of an existing id mints a fresh generation — that IS reload.
     pub fn insert(&mut self, id: impl Into<String>) -> u64 {
         let id = id.into();
+        // A plugin's liveness decides interface bindings; see `interop_slots`.
+        crate::interop_slots::bump_epoch();
         let generation = self.table.insert(id.clone(), PluginLedger::new());
         let slot = match self.slot_index.get(&id) {
             Some(&slot) => slot,
@@ -225,6 +227,7 @@ impl Registry {
     /// Remove a plugin. Returns the `PluginEntry` so the caller can walk the
     /// ledger for teardown. Returns `None` if not present.
     pub fn remove(&mut self, id: &str) -> Option<PluginEntry> {
+        crate::interop_slots::bump_epoch();
         if let Some(&slot) = self.slot_index.get(id) {
             self.slots[slot as usize].1 = 0;
         }
