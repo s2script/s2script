@@ -261,7 +261,11 @@ The unsafe tier (`@s2script/sdk/unsafe`) has one pointer type. A `Ptr` is a smal
 
 A `Ptr` answers the same read/write methods as an `EntityRef`, including the `*Via` chain reads, so **one generator serves both kinds of view**: a schema class over an entity handle is checked on every access, and the same class over a `Ptr` (`ptr.as(structView("CCSPlayerPawn"))` from the game package) is unchecked. Generated views share one prototype per class, built on first use, so wrapping or reading an embedded struct allocates one small object instead of redefining every accessor.
 
-Not yet: struct views for classes outside the entity catalog (`CTakeDamageInfo`, user commands), engine functions declared inline by signature, and hooks with pointer arguments. Those follow, and the older doors (`DamageInfo`, `UserCmdView`, nav paths) go in the breaking API pass.
+**Engine functions take and return pointers.** `ptr` is a parameter and return type in `gamedata/functions.jsonc` (the v2 engine functions), for calls and for PRE/POST hooks alike: the shim carries it as an opaque pointer value (flag 3 beside the entity identities), range-checked on both sides, and JavaScript sees a `Ptr` or null. A bare number is refused, as for gamedata calls. So a hook on a function that takes a `CTakeDamageInfo*` hands the handler a `Ptr`, and a struct view reads it.
+
+**Inline declarations.** `Engine.fromSignature(name, declaration)` and `Engine.fromVirtual(name, declaration)` take the same declaration as an entry of `functions.jsonc`. `s2s build` (`packages/sdk/src/engine-functions/inline.ts`) reads them from the plugin's sources and adds them to the plugin's function bundle, so they are validated, listed in the manifest with derived permissions, and checked on update day like any other; at run time the call returns `Engine.function(name)`. The declaration must therefore be a literal: a computed one, an uncalled reference, or a name declared twice fails the build at its source line.
+
+Not yet: struct views for classes outside the entity catalog (`CTakeDamageInfo`, user commands). That follows, and the older doors (`DamageInfo`, `UserCmdView`, nav paths) go in the breaking API pass.
 
 ### 2.1.3 The shared framework realm
 

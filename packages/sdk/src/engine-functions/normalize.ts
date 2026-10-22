@@ -6,7 +6,7 @@ const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const FORBIDDEN_NAMES = new Set(['self', 'returnValue', 'constructor', 'prototype', '__proto__']);
 const SURFACES = ['call', 'pre', 'post'] as const;
 const RESOLVERS = ['direct', 'ctor-body-xref', 'lea-disp', 'validated-call'] as const;
-const TYPES = ['bool', 'i32', 'u32', 'i64', 'u64', 'f32', 'f64', 'entity', 'entity?', 'string', 'vector'] as const;
+const TYPES = ['bool', 'i32', 'u32', 'i64', 'u64', 'f32', 'f64', 'entity', 'entity?', 'string', 'vector', 'ptr'] as const;
 const PARAMETER_OWNERSHIP = ['callee-borrowed', 'callee-retained', 'native-observed'] as const;
 const RETURN_OWNERSHIP = ['caller-borrowed', 'native-observed'] as const;
 const copied = (type: unknown): boolean => type === 'string' || type === 'vector';
@@ -86,7 +86,7 @@ function projection(type: AuthorType | 'void', where: string): { native: NativeA
   if (type === 'void') return { native: 'void', projection: { id: 'void', version: 1 } };
   if (!(TYPES as readonly string[]).includes(type)) throw new Error(`${where}: unsupported author type ${JSON.stringify(type)}`);
   if (type === 'bool') return { native: 'u8', projection: { id: 'bool', version: 1 } };
-  if (type === 'entity' || type === 'entity?' || type === 'string' || type === 'vector') {
+  if (type === 'entity' || type === 'entity?' || type === 'string' || type === 'vector' || type === 'ptr') {
     return { native: 'ptr', projection: { id: type, version: 1 } };
   }
   return { native: type, projection: { id: type, version: 1 } };

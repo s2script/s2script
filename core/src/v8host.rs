@@ -3688,6 +3688,16 @@ fn make_ptr<'s>(scope: &mut v8::PinScope<'s, '_>, address: f64) -> Option<v8::Lo
     from.call(scope, ptr, &[arg])
 }
 
+/// Whether `value` is a `Ptr` of the current context's `@s2script/sdk/unsafe`.
+fn is_ptr(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> bool {
+    let global = scope.get_current_context().global(scope);
+    let Some(ctor) = obj_prop(scope, global.into(), "__s2pkg_unsafe").and_then(|pkg| obj_prop(scope, pkg, "Ptr")) else {
+        return false;
+    };
+    let Ok(ctor) = v8::Local::<v8::Object>::try_from(ctor) else { return false };
+    value.instance_of(scope, ctor).unwrap_or(false)
+}
+
 fn obj_prop<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     v: v8::Local<v8::Value>,

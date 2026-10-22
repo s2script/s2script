@@ -621,6 +621,23 @@ static void entity_codec() {
     live=true;serial=72;identity.flags=1;assert(!codec.Decode(identity,storage));identity.bits=72;assert(codec.Decode(identity,storage));
     assert(codec.Encode(decoded.value,strict).value.bits==72);
     std::cout<<"PASS entity codec canonical identity, unknown-address non-dereference, null/stale/reuse and pre-contact owner-thread refusal\n";
+    // The `ptr` projection (flag 3): a raw address both ways, never through the entity books.
+    const int books=contacts;
+    S2FunctionValue opaque{};opaque.kind=8;opaque.flags=3;
+    auto address=opaque;address.bits=reinterpret_cast<uintptr_t>(&object);
+    auto raw=codec.Decode(address,storage);assert(raw && raw.value.Get<void*>()==&object);
+    auto back=codec.Encode(raw.value,opaque);assert(back && back.value.flags==3 && back.value.bits==address.bits && !back.value.aux);
+    assert(codec.Decode(opaque,storage) && codec.Decode(opaque,storage).value.Get<void*>()==nullptr);
+    auto none=codec.Encode(s2fn::NativeValue::From(static_cast<void*>(nullptr)),opaque);assert(none && none.value.bits==0);
+    for(int field=0;field<4;++field) {
+        auto bad=address;
+        if(field==0)bad.aux=1;if(field==1)bad.reserved=1;if(field==2)bad.bits=0x1000;if(field==3)bad.bits=1ull<<47;
+        assert(!codec.Decode(bad,storage));
+    }
+    auto dirty=opaque;dirty.bits=8;assert(!codec.Encode(raw.value,dirty));
+    assert(!codec.Encode(s2fn::NativeValue::From(reinterpret_cast<void*>(uintptr_t(0x1000))),opaque));
+    assert(contacts==books);
+    std::cout<<"PASS pointer projection: raw address both ways, null, refused ranges, no entity-book contact\n";
 }
 static bool entity_second_live=true;
 static int entity_mode=0,entity_contacts=0;

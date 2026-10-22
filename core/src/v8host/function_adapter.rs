@@ -1714,6 +1714,9 @@ pub(super) fn projected_to_js<'s>(
             }
         }
         ProjectedValue::Scalar(value) => scalar_to_js(scope, value),
+        ProjectedValue::Pointer(0) => Ok(v8::null(scope).into()),
+        ProjectedValue::Pointer(bits) => super::make_ptr(scope, bits as f64)
+            .ok_or("Ptr unavailable in this context".into()),
         ProjectedValue::Entity {
             reference: None, ..
         } => Ok(v8::null(scope).into()),
@@ -1852,6 +1855,23 @@ fn callback_projected_from_js(
     }
     projected_from_js(scope, value, native, projection)
 }
+/// A `Ptr` (or null) to its address. Anything else, a bare number included, is refused: a number
+/// is never reinterpreted as an address.
+fn pointer_from_js(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> Result<u64, String> {
+    if value.is_null() {
+        return Ok(0);
+    }
+    if !super::is_ptr(scope, value) {
+        return Err("Ptr or null required".into());
+    }
+    let address = super::obj_prop(scope, value, "address")
+        .and_then(|a| a.number_value(scope))
+        .ok_or("Ptr address unavailable")?;
+    if address.fract() != 0.0 || !projection::pointer_ok(address as u64) {
+        return Err("Ptr address outside the user address range".into());
+    }
+    Ok(address as u64)
+}
 pub(super) fn projected_from_js(
     scope: &mut v8::PinScope,
     value: v8::Local<v8::Value>,
@@ -1864,6 +1884,12 @@ pub(super) fn projected_from_js(
         }
         let producer = copied::Producer::owner(&current_owner(scope)?);
         return copied_from_js(scope, value, flag, producer).map(ProjectedValue::Copied);
+    }
+    if projection == "ptr" {
+        if native != "ptr" {
+            return Err("pointer projection requires pointer ABI".into());
+        }
+        return pointer_from_js(scope, value).map(ProjectedValue::Pointer);
     }
     if let Some(entity) = EntityProjection::parse(projection) {
         let reference = if value.is_null() {
@@ -5915,6 +5941,9 @@ pub(crate) mod scalar_transport_tests {
     }
 }
 
+#[cfg(test)]
+#[path = "function_adapter/pointer_transport_tests.rs"]
+mod pointer_transport_tests;
 #[cfg(test)]
 pub(super) mod entity_transport_tests {
     use super::*;

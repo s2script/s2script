@@ -243,7 +243,7 @@ pub(crate) fn projection(native: &str, p: &Projection, ret: bool) -> Result<(), 
     let valid = match p.id.as_str() {
         "void" => ret && native == "void",
         "bool" => native == "u8",
-        "entity" | "entity?" | "string" | "vector" => native == "ptr",
+        "entity" | "entity?" | "string" | "vector" | "ptr" => native == "ptr",
         "i32" | "u32" | "i64" | "u64" | "f32" | "f64" => native == p.id,
         _ => false,
     };

@@ -5,7 +5,7 @@ export type NativeReturn = NativeAtom | 'void';
 export type Receiver = (typeof RECEIVERS)[number];
 export type Platform = typeof PLATFORM;
 export type Surface = 'call' | 'pre' | 'post';
-export type AuthorType = 'bool' | 'i32' | 'u32' | 'i64' | 'u64' | 'f32' | 'f64' | 'entity' | 'entity?' | 'string' | 'vector';
+export type AuthorType = 'bool' | 'i32' | 'u32' | 'i64' | 'u64' | 'f32' | 'f64' | 'entity' | 'entity?' | 'string' | 'vector' | 'ptr';
 export type ParameterCopyOwnership = 'callee-borrowed' | 'callee-retained' | 'native-observed';
 export type ReturnCopyOwnership = 'caller-borrowed' | 'native-observed';
 

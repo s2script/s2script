@@ -1184,6 +1184,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     Ptr: Ptr,
     Engine: {
       function: function (name) { return __s2_engine_function(name); },
+      // Inline declarations: `s2s build` lifts the literal declaration into the plugin's function
+      // bundle, so at run time the binding is the bundled function of that name.
+      fromSignature: function (name) { return __s2_engine_function(name); },
+      fromVirtual: function (name) { return __s2_engine_function(name); },
       call: function (name) {
         if (!__s2_engine_call_ready(name)) return null;
         // A receiverless call (`receiver.kind: "none"` — a static engine function) takes NO leading

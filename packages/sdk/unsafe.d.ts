@@ -145,8 +145,64 @@ export interface FunctionSubscription extends Disposable {
  * const onFoo = Engine.hook("onFoo");
  * if (onFoo) onFoo((view) => { view.reason = 0; });
  */
+/** A target validator, as in `gamedata/functions.jsonc`. */
+export interface FunctionValidator {
+  prologue?: string;
+  'string-xref'?: { at: number; dispOff: number; instrLen: number; expect: string };
+  'vtable-member'?: string;
+}
+/** A function located by byte signature. */
+export interface SignatureTarget {
+  kind?: 'signature';
+  module: string;
+  pattern: string;
+  validate: FunctionValidator;
+  targetValidate?: FunctionValidator;
+}
+/** A function located by vtable slot. */
+export interface VirtualTarget {
+  kind?: 'virtual';
+  module: string;
+  class: string;
+  index: number;
+  validate: FunctionValidator;
+}
+/** A parameter or return type. `ptr` is a raw address, a {@link Ptr} (or null) in JavaScript. */
+export type FunctionValueType = 'bool' | 'i32' | 'u32' | 'i64' | 'u64' | 'f32' | 'f64' | 'entity' | 'entity?' | 'string' | 'vector' | 'ptr';
+/** One engine function, written exactly as an entry of `gamedata/functions.jsonc`. */
+export interface FunctionDeclaration<T> {
+  target: T | { ref: string };
+  receiver?: { type: 'none' | 'entity' };
+  parameters?: readonly { name: string; type: FunctionValueType; ownership?: 'callee-borrowed' | 'callee-retained' | 'native-observed'; mutable?: 'pre' }[];
+  returns?: FunctionValueType | 'void' | { type: 'string' | 'vector'; ownership: 'caller-borrowed' | 'native-observed' };
+  surfaces?: readonly ('call' | 'pre' | 'post')[];
+  suppression?: 'generic' | 'none';
+  requirement?: 'optional' | 'required';
+  resolve?: 'direct' | 'ctor-body-xref' | 'lea-disp' | 'validated-call';
+}
+
 export declare const Engine: {
   function<K extends keyof EngineFunctions>(name: K): EngineFunctions[K];
+  /**
+   * Declare an engine function inline, by byte signature, and get its binding: the same as
+   * writing the declaration in `gamedata/functions.jsonc` and calling {@link Engine.function}.
+   *
+   * `s2s build` copies the declaration into the plugin's manifest, so it is validated, listed and
+   * checked after game updates like any other. That is why both arguments must be literals; a
+   * computed declaration fails the build. The binding's types come from the build, so run it once
+   * after adding a declaration.
+   *
+   * @example
+   * const ignite = Engine.fromSignature("ignite", {
+   *   target: { module: "libserver.so", pattern: "55 48 89 E5 ...", validate: { prologue: "55 48 89 E5" } },
+   *   receiver: { type: "entity" },
+   *   parameters: [{ name: "seconds", type: "f32" }],
+   *   surfaces: ["call"],
+   * });
+   */
+  fromSignature<K extends keyof EngineFunctions>(name: K, declaration: FunctionDeclaration<SignatureTarget>): EngineFunctions[K];
+  /** {@link Engine.fromSignature} for a function located by vtable slot. */
+  fromVirtual<K extends keyof EngineFunctions>(name: K, declaration: FunctionDeclaration<VirtualTarget>): EngineFunctions[K];
   /**
    * The declared call, or `null` when its descriptor failed a load-time gate (signature miss,
    * validator rejection, slot outside `.text`, missing platform entry, or the plugin is not
