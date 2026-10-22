@@ -661,6 +661,32 @@ host requirement by declaring API 2. Migrate producer and consumers together. Th
 [acceptance fixtures](../tools/interop-acceptance/README.md) document offline gates and exact
 live probes; authenticated client acceptance remains a separate recorded gate.
 
+### 2.9b Native extensions — third-party natives through a versioned C ABI
+
+Native code that a plugin needs (a regex engine, geo-IP, a custom database driver) arrives as a
+**native extension**: a shared library in `addons/s2script/extensions/`, against the C contract
+in `packages/sdk/ext/s2ext.h`. This is SourceMod's extension model, without a core change per
+capability.
+
+- **One ABI, boot-time only.** The host reads `s2ext_info` (struct size, ABI version, npm-style
+  name, semver) and calls `s2ext_init`, where the extension registers natives with declared
+  signatures. A refusal names its reason and disables only that extension (degrade
+  per-descriptor). Nothing is ever unloaded.
+- **Same binding as core natives.** A native over numbers and booleans is bound with V8's fast
+  API pointing straight at the extension's function (8 ns per call). Everything else (strings,
+  entities, natives that can fail) goes through one generic slow callback that places arguments
+  by the System V rules, so no per-signature code exists. Failures are `S2Error`s, as for core
+  natives (`native.rs`).
+- **Declared imports.** A plugin lists extensions under `s2script.extensions`; the loader
+  refuses a plugin whose extension is missing or at the wrong major version, and `__s2require`
+  resolves only declared names. The build makes the import external and typechecks it against
+  real types (`.s2script/extensions/<name>/index.d.ts`, or the extension's npm package).
+- **The core still owns the engine.** Extensions reach it only through host services
+  (`schema_offset` in ABI 1); an entity argument is resolved through the host's books and is
+  valid only during the call. The raw pointer never crosses to JavaScript.
+
+Operator, author and extension-author detail: [EXTENSIONS.md](EXTENSIONS.md).
+
 ### 2.10 The registry & developer platform (`s2script.com`)
 
 A plugin is already a versioned `package.json` package with deps and a published interface — the registry falls out. Three services: **(1) package registry + resolver** (`s2script install @edge/admin-core` resolves the dependency closure into `/plugins` — `npm install` for servers; `s2script update`/lockfile for reproducibility); **(2) type/interface distribution** (`s2script add` pulls a plugin's published `.d.ts` into the dev environment — build against another dev's interface type-safely without their source; the load-time gate verifies the same contract); **(3) discovery/community** (browse, search, versioned downloads, publisher pages).

@@ -10103,3 +10103,6 @@ mod facade;
 
 #[path = "tests/realm.rs"]
 mod realm_tests;
+
+#[path = "tests/extensions.rs"]
+mod extensions_tests;

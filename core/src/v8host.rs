@@ -30,6 +30,7 @@ pub(crate) mod interop_facade;
 use interop_wire::*;
 mod timers;
 mod realm;
+mod extensions_v8;
 pub(crate) mod function_adapter;
 mod engine_functions;
 
@@ -1576,6 +1577,20 @@ fn s2require(
                 }
                 // Selected identity is reserved even while bootstrap is provisional or failed.
                 return;
+            }
+        }
+        // A native extension the plugin declared resolves to its module, or null when it is not
+        // loaded at a satisfying version. An undeclared name never reaches an extension.
+        if let Some(plugin) = current_plugin(scope) {
+            match crate::extensions::resolve(&plugin, &name) {
+                crate::extensions::Resolution::Undeclared => {}
+                crate::extensions::Resolution::Unavailable => return,
+                crate::extensions::Resolution::Module(ext) => {
+                    if let Some(module) = extensions_v8::module(scope, ext) {
+                        rv.set(module.into());
+                    }
+                    return;
+                }
             }
         }
         let Some(rest) = name

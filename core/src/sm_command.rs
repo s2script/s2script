@@ -111,13 +111,14 @@ fn run(args: &str) -> Vec<String> {
     match sub.as_str() {
         "" => {
             let mut lines = vec![version_line()];
-            lines.push("Commands: sm version | sm credits | sm plugins … | sm prof …".to_string());
+            lines.push("Commands: sm version | sm credits | sm plugins … | sm ext … | sm prof …".to_string());
             lines
         }
         "version" => vec![version_line(), "Visit https://www.s2script.com/".to_string()],
         "credits" => credits(),
         "plugins" => plugins(&argv[1..]),
         "prof" => prof(&argv[1..]),
+        "ext" | "exts" | "extensions" => ext(&argv[1..]),
         other => vec![format!("[S2S] Unknown sub-command '{other}'. Try: sm plugins list")],
     }
 }
@@ -142,6 +143,23 @@ fn plugins(argv: &[&str]) -> Vec<String> {
             }]
         }
         _ => vec![USAGE.to_string()],
+    }
+}
+
+const EXT_USAGE: &str = "Usage: sm ext list | types <name>";
+
+/// `sm ext …`: native extensions (see `extensions`). Server console / RCON only.
+fn ext(argv: &[&str]) -> Vec<String> {
+    match argv.first().map(|s| s.to_ascii_lowercase()).unwrap_or_default().as_str() {
+        "" | "list" => crate::extensions::list_lines(),
+        "types" => match argv.get(1) {
+            Some(name) => match crate::extensions::types(name) {
+                Some(dts) => dts.lines().map(str::to_string).collect(),
+                None => vec![format!("[S2S] No loaded extension named {name}")],
+            },
+            None => vec![EXT_USAGE.to_string()],
+        },
+        _ => vec![EXT_USAGE.to_string()],
     }
 }
 

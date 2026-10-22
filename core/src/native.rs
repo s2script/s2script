@@ -43,7 +43,12 @@ impl S2Error {
 
 /// Throw `err` as `Error { name: "S2Error", code, message }`.
 pub(crate) fn throw(scope: &mut v8::PinScope, err: S2Error) {
-    let Some(msg) = v8::String::new(scope, &err.message) else { return };
+    throw_code(scope, err.code, &err.message);
+}
+
+/// `throw` with a code known only at run time (a native extension's failure code).
+pub(crate) fn throw_code(scope: &mut v8::PinScope, code: &str, message: &str) {
+    let Some(msg) = v8::String::new(scope, message) else { return };
     let exc = v8::Exception::error(scope, msg);
     if let Ok(obj) = v8::Local::<v8::Object>::try_from(exc) {
         let set = |scope: &mut v8::PinScope, k: &str, v: &str| {
@@ -52,7 +57,7 @@ pub(crate) fn throw(scope: &mut v8::PinScope, err: S2Error) {
             }
         };
         set(scope, "name", "S2Error");
-        set(scope, "code", err.code);
+        set(scope, "code", code);
     }
     scope.throw_exception(exc);
 }

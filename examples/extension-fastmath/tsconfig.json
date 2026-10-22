@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "include": ["src", "../../packages/sdk/globals.d.ts"],
+  "compilerOptions": {
+    "paths": {
+      "@s2script/sdk": ["sdk/index.d.ts"],
+      "@s2script/sdk/*": ["sdk/*.d.ts"],
+      "@s2script/*": ["*/index.d.ts"],
+      "@community/fastmath": ["../examples/extension-fastmath/.s2script/extensions/@community/fastmath/index.d.ts"]
+    }
+  }
+}

@@ -57,6 +57,7 @@ cp -a "$DIST_ADDONS/s2script" "$STAGE/addons/s2script"
 # Ensure operator dirs exist even if package-addon was an older run.
 mkdir -p \
     "$STAGE/addons/s2script/plugins" \
+    "$STAGE/addons/s2script/extensions" \
     "$STAGE/addons/s2script/configs" \
     "$STAGE/addons/s2script/data" \
     "$STAGE/addons/s2script/translations"

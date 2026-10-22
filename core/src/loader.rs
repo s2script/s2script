@@ -53,6 +53,7 @@ fn api_version_compatible(api_version: &str) -> bool {
 /// Degrade per-descriptor: only THIS plugin is refused; the framework keeps running.
 fn start_load(manifest: &Manifest, js: &str, cfg: &str, receipt: Option<crate::engine_functions::registry::PreparedOwnerReceipt>) {
     crate::v8host::set_plugin_version(&manifest.id, &manifest.version);
+    crate::extensions::register_plugin(&manifest.id, &manifest.extensions);
     crate::v8host::load_plugin_js_prepared(&manifest.id, js, cfg, receipt);
 }
 
@@ -850,6 +851,10 @@ pub(crate) fn set_plugins_dir(path: &str) {
     // Before the first scan can be scheduled: package.json may update plugins/ (server_update.rs).
     crate::server_update::start(Path::new(path));
     crate::sm_command::register();
+    // Native extensions load once, before any plugin can import one: addons/s2script/extensions/.
+    if let Some(addon) = Path::new(path).parent() {
+        crate::extensions::load_dir(&addon.join("extensions"));
+    }
     PLUGINS_DIR.with(|d| *d.borrow_mut() = Some(PathBuf::from(path)));
     let started = WORKER.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -1168,7 +1173,7 @@ fn handle_plugin(revision: u64, path: PathBuf, result: Result<PreparedPlugin, St
     };
     let validation = if !api_version_compatible(&prepared.manifest.api_version) {
         Err(format!("apiVersion {:?} incompatible with host major {} (rebuild with a matching @s2script/sdk)", prepared.manifest.api_version, HOST_API_VERSION_MAJOR))
-    } else { Ok(()) };
+    } else { crate::extensions::check_manifest(&prepared.manifest.extensions) };
     if let Err(reason) = validation {
         refuse_prepared(&path, &prepared, &reason, old_id.as_deref());
         ACTIVE_BATCH.with(|b| { if let Some(b) = b.borrow_mut().as_mut() { b.pending.remove(&path); } });
@@ -1386,6 +1391,10 @@ fn apply_prepared_budgeted(item: ApplyItem, mut drain_budget: Option<&mut Loader
     let id = row.prepared.manifest.id.clone();
     if !api_version_compatible(&row.prepared.manifest.api_version) {
         let reason = format!("apiVersion {:?} incompatible with host major {} (rebuild with a matching @s2script/sdk)", row.prepared.manifest.api_version, HOST_API_VERSION_MAJOR);
+        refuse_prepared(&row.path, &row.prepared, &reason, row.old_id.as_deref());
+        return;
+    }
+    if let Err(reason) = crate::extensions::check_manifest(&row.prepared.manifest.extensions) {
         refuse_prepared(&row.path, &row.prepared, &reason, row.old_id.as_deref());
         return;
     }
@@ -2770,6 +2779,27 @@ mod tests {
         assert_eq!(main["applying"], 1);
         assert_eq!(after_unload["main"]["retained"], serde_json::json!({ "items": 0, "bytes": 0 }));
         assert_eq!(after_unload["main"]["applying"], 0);
+    }
+
+    /// A plugin that declares a native extension the server does not have is refused at load,
+    /// with the reason named.
+    #[test]
+    fn a_plugin_needing_a_missing_extension_is_refused() {
+        shutdown_worker();
+        crate::extensions::reset_for_tests();
+        crate::v8host::frame_tests::LOG.lock().unwrap().clear();
+        crate::v8host::init(crate::v8host::frame_tests::logger).unwrap();
+        let manifest: Manifest = serde_json::from_str(
+            r#"{"id":"needs-ext","version":"1","apiVersion":"3.x","extensions":{"@community/missing":"^1.0.0"}}"#,
+        ).unwrap();
+        let ledger = RetainedLedger::new(1, 4096);
+        let row = prepared_row(manifest, None, 64, &ledger);
+        apply_prepared(ApplyItem { row, allow_unmet_dependencies: false });
+        assert!(crate::v8host::plugin_phase("needs-ext").is_none());
+        assert_eq!(ledger.usage(), (0, 0));
+        let logs = crate::v8host::frame_tests::LOG.lock().unwrap().join("\n");
+        assert!(logs.contains("extension @community/missing is not installed"), "{logs}");
+        crate::v8host::shutdown();
     }
 
     #[test]

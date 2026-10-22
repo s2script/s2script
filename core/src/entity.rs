@@ -1377,7 +1377,7 @@ pub(crate) fn register_store() {
 ///   3. Only the CALLER derefs the instance, block-scoped within one native.
 /// The raw pointer stays in Rust — it never crosses to JS. Errors fall toward null,
 /// never toward a deref.
-fn entity_resolve_ptr(index: i32, id: u64) -> *mut u8 {
+pub(crate) fn entity_resolve_ptr(index: i32, id: u64) -> *mut u8 {
     let Some(engine_serial) = crate::entity_live::engine_serial_for(index, id) else {
         return std::ptr::null_mut();
     };

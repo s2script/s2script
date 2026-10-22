@@ -56,6 +56,7 @@ Linux x86-64 only. Windows is not supported yet.
      game-packages/cs2/gamedata.json
      game-packages/cs2/trusted-functions.json  # package-owned engine functions (live-schema offsets)
      plugins/          # base .s2sp plugins + drop more here
+     extensions/       # native extensions (.so), loaded at startup; see EXTENSIONS.md
      configs/          # auto-generated on first load
      data/             # SQLite DBs
    ```

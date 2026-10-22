@@ -45,6 +45,7 @@ mod channels;
 mod client;
 mod commands;
 mod events;
+pub(crate) mod extensions;
 mod ffi;
 mod gamedata_calls;
 mod gamedata_hooks;

@@ -34,7 +34,8 @@
     "README.md",
     "LICENSE-MIT",
     "LICENSE-APACHE",
-    "contracts"
+    "contracts",
+    "ext"
   ],
   "exports": {
     ".": {
