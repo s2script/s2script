@@ -218,7 +218,9 @@ globalThis.__s2_interop_facade = (function () {
       else { var x = cell.copy(mi, ai, v, SRC); if (x !== cell.fail) return x; }
       throw named("InterfaceValueNotSerializable", NOTSER_ARGS);
     }
-    function finish(r, threw, err, epoch, producer, generation) {
+    // `src` is the producer realm captured before the call: a teardown during the call may sweep
+    // the cell, and an unrelated one leaves the participants live.
+    function finish(r, threw, err, epoch, producer, generation, src) {
       if (slots[EPOCH] !== epoch && !checkNative(iface, producer, generation)) throw named("InterfaceUnavailable", iface);
       if (threw) throw named("InterfaceCallError", label + ": " + describe(err));
       if (r === undefined) {
@@ -230,7 +232,7 @@ globalThis.__s2_interop_facade = (function () {
         try { then = r.then; } catch (_) { throw named("InterfaceValueNotSerializable", NOTSER_RETURN); }
         if (typeof then === "function") { observeNative(r); throw named("InterfaceValueNotSerializable", NOTSER_RETURN); }
       }
-      var out = copy(result, r, cell.src, 0);
+      var out = copy(result, r, src, 0);
       if (out === FAIL) throw named("InterfaceValueNotSerializable", NOTSER_RETURN);
       return out;
     }
@@ -253,7 +255,7 @@ globalThis.__s2_interop_facade = (function () {
         for (var i = 4; i < n; i++) rest[i] = arg(i, arguments[i]);
         rest = arrayFrom(rest);
       }
-      var epoch = cell.epoch, producer = cell.producer, generation = cell.generation;
+      var epoch = cell.epoch, producer = cell.producer, generation = cell.generation, src = cell.src;
       var r, threw = false, err;
       slots[DEPTH]++;
       try {
@@ -265,7 +267,7 @@ globalThis.__s2_interop_facade = (function () {
         else r = apply(f, undefined, rest);
       } catch (e) { threw = true; err = e; }
       slots[DEPTH]--;
-      return finish(r, threw, err, epoch, producer, generation);
+      return finish(r, threw, err, epoch, producer, generation, src);
     };
   }
 

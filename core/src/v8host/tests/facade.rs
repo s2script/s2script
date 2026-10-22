@@ -206,3 +206,21 @@ fn facade_cells_are_tracked_once_across_rebinds() {
     assert_eq!(interop_facade::tracked_cells(), 1);
     shutdown();
 }
+
+/// A teardown elsewhere during a call (an unrelated plugin unloading) bumps the epoch and sweeps
+/// the in-flight cell. The participants are still live, so the call completes, and the result is
+/// copied with the producer realm captured before the call.
+#[test]
+fn facade_call_survives_a_sweep_during_the_call() {
+    let shape: crate::interop::Schema = serde_json::from_value(serde_json::json!({"kind":"object","fields":{
+        "n":{"schema":{"kind":"number"},"optional":false}
+    }})).unwrap();
+    protocol2_setup();
+    let mut contract = published_contract("@x/counter").unwrap().as_ref().clone();
+    contract.metadata.methods.insert("getCount".into(), crate::interop::Method { args: vec![], result: shape });
+    final_review_install_contract(contract);
+    eval_in_context("prod", "__s2_iface_publish('@x/counter',{getCount:function(){__s2_test_sweep();return {n:5};}})").unwrap();
+    eval_in_context("cons", "globalThis.__c = __s2_require('@x/counter')").unwrap();
+    assert_eq!(eval_in_context_string("cons", "JSON.stringify([__c.getCount(), __c.getCount()])"), r#"[{"n":5},{"n":5}]"#);
+    shutdown();
+}

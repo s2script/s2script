@@ -395,6 +395,11 @@ pub(super) fn install(scope: &mut v8::PinScope, global: v8::Local<v8::Object>) {
     set_native(scope, global, "__s2_iface_check", s2_iface_check);
     set_native(scope, global, "__s2_iface_observe", s2_iface_observe);
     set_fast_native(scope, global, "__s2_is_proxy", s2_is_proxy, &IS_PROXY);
+    #[cfg(test)]
+    set_native(scope, global, "__s2_test_sweep", |s: &mut v8::PinScope, _a: v8::FunctionCallbackArguments, _r: v8::ReturnValue| {
+        crate::interop_slots::bump_epoch();
+        sweep(s);
+    });
 }
 
 /// How many cells `sweep` is tracking.
