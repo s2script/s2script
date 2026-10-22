@@ -398,7 +398,13 @@ pub(crate) fn replay_game_event(name: &str) -> Delivery {
     // subscriber list is a snapshot, each handler gets a fresh `GameEvent` built in its own realm,
     // and a nested `Events.fire()` publishes a nest token and runs other plugins now; `#63`
     // no-handle inbound still reports `Deferred`.
-    crate::jsmux::dispatch(&EVENT_MUX, crate::jsmux::Kind::Event, name, StopAt::Never, |_| Vec::new(), || replay_game_event_fan_out(name)).1
+    crate::jsmux::dispatch(&EVENT_MUX, crate::jsmux::Kind::Event, name, StopAt::Never, event_args, || replay_game_event_fan_out(name)).1
+}
+
+/// A game event's one argument as the multiplexer sees it: `undefined`, which a subscriber gets only
+/// when its realm has no `GameEvent` class to build the payload from (as the Rust fan-out did).
+fn event_args<'s>(tc: &mut v8::PinScope<'s, '_>) -> Vec<v8::Local<'s, v8::Value>> {
+    vec![v8::undefined(tc).into()]
 }
 
 /// The Rust fan-out for a post game event — what `replay_game_event` runs while the profiler
@@ -433,7 +439,7 @@ fn new_game_event<'s>(tc: &mut v8::PinScope<'s, '_>, name: &str) -> v8::Local<'s
 /// >= Handled) or 0 to allow. The shim has set `s_currentEvent` (mutable) before calling this.
 pub(crate) fn dispatch_game_event_pre(name: &str) -> i32 {
     // A pre-hook's answer is consumed synchronously, so its `Delivery` is discarded (spec §2).
-    let (result, _) = crate::jsmux::dispatch(&EVENT_MUX_PRE, crate::jsmux::Kind::EventPre, name, StopAt::Stop, |_| Vec::new(), || {
+    let (result, _) = crate::jsmux::dispatch(&EVENT_MUX_PRE, crate::jsmux::Kind::EventPre, name, StopAt::Stop, event_args, || {
         let snap = EVENT_MUX_PRE.with(|m| m.borrow().snapshot(name));
         fan_out_inner(&snap, &format!("dispatch_game_event_pre('{}')", name), Instrument::none(), StopAt::Stop, |tc| {
             Some(vec![new_game_event(tc, name)])
@@ -950,16 +956,16 @@ mod tests {
         assert_eq!(read_i32_global_in("a", "__a"), 1);
         eval_in_context("b", r#"
             globalThis.__log = [];
-            __s2_event_subscribe("round_start", function (ev) { __log.push(ev === undefined ? "u" : "e"); });
+            __s2_event_subscribe("round_start", function (ev) { __log.push((ev === undefined ? "u" : "e") + arguments.length); });
         "#).unwrap();
         crate::jsmux::test_hide_ctor(Some("b"));
         let _ = dispatch_game_event("round_start");
         crate::jsmux::test_hide_ctor(None);
         assert_eq!(read_i32_global_in("a", "__a"), 2, "the incomplete push still reaches every subscriber");
-        assert_eq!(eval_in_context_string("b", "__log.join(',')"), "u");
+        assert_eq!(eval_in_context_string("b", "__log.join(',')"), "u1", "one undefined argument, as the Rust fan-out gave");
         let _ = dispatch_game_event("round_start");
         assert_eq!(read_i32_global_in("a", "__a"), 3);
-        assert_eq!(eval_in_context_string("b", "__log.join(',')"), "u,e", "the class is found once it exists");
+        assert_eq!(eval_in_context_string("b", "__log.join(',')"), "u1,e1", "the class is found once it exists");
         shutdown();
     }
 

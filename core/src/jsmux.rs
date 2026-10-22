@@ -256,7 +256,7 @@ where
             StopAt::Stop => 1,
             StopAt::Handled => 2,
         };
-        let payload = if self.kind.builds_game_event() { Vec::new() } else { (self.args)(tc) };
+        let payload = (self.args)(tc);
         debug_assert!(payload.len() <= 3, "the multiplexer passes at most three shared arguments");
         let mut args: Vec<v8::Local<v8::Value>> = vec![
             v8::Integer::new(tc, self.kind as i32).into(),
