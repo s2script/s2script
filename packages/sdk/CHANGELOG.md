@@ -1,5 +1,30 @@
 # @s2script/cli
 
+## 0.31.0
+
+### Minor Changes
+
+- ccf33b2: Engine functions (`gamedata/functions.jsonc`) accept a `ptr` parameter and return type, seen in
+  JavaScript as a `Ptr` or null, for calls and PRE/POST hooks. `Engine.fromSignature(name, declaration)`
+  and `Engine.fromVirtual(name, declaration)` declare an engine function inline: `s2s build` lifts the
+  literal declaration into the plugin's function bundle and manifest, exactly as if it were in
+  `functions.jsonc`, and a non-literal declaration fails the build.
+- 08c95e0: Native extensions: the SDK ships the extension ABI header (`ext/s2ext.h`), and `s2s build` accepts `s2script.extensions` (`name → range`), keeps those imports external, writes them into the manifest, and typechecks them against `.s2script/extensions/<name>/index.d.ts` or the extension's npm package.
+- 26e2c41: Add `Ptr` to `@s2script/sdk/unsafe`: a branded raw address with typed reads and writes, pointer-field
+  `deref`, and `Ptr.from(entity)`. Gamedata calls accept `ptr` arguments and a `ptr` return.
+  `@s2script/cs2` adds `structView(className)`, which applies a schema class's accessors to a `Ptr`;
+  generated views now share one prototype per class, so their fields are inherited rather than own
+  properties.
+- b9ac706: `EntityRef` and `Ptr` gain `readVector`, `readQAngle`, `readVectorChain` and `readQAngleChain`. The
+  generated schema and nav accessors are now built once, in the host's shared framework realm, and
+  used by every plugin; they read vectors through these methods so each plugin still gets its own
+  `Vector`. Objects those modules create are frozen and inherit from the framework realm, so
+  `view instanceof Object` is `false` in plugin code.
+
+### Patch Changes
+
+- 6516bfb: Generated schema and nav accessors keep each field's resolved offset in a per-field slot instead of calling the offset native on every read and write. Offsets cannot change while the server runs, so a hit is kept for good and a miss is retried, as before. Regenerate with `s2s gen-schema` / `gen-nav` to pick it up.
+
 ## 0.30.3
 
 ### Patch Changes

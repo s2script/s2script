@@ -1,5 +1,29 @@
 # @s2script/cs2
 
+## 0.20.0
+
+### Minor Changes
+
+- 26e2c41: Add `Ptr` to `@s2script/sdk/unsafe`: a branded raw address with typed reads and writes, pointer-field
+  `deref`, and `Ptr.from(entity)`. Gamedata calls accept `ptr` arguments and a `ptr` return.
+  `@s2script/cs2` adds `structView(className)`, which applies a schema class's accessors to a `Ptr`;
+  generated views now share one prototype per class, so their fields are inherited rather than own
+  properties.
+- b9ac706: `EntityRef` and `Ptr` gain `readVector`, `readQAngle`, `readVectorChain` and `readQAngleChain`. The
+  generated schema and nav accessors are now built once, in the host's shared framework realm, and
+  used by every plugin; they read vectors through these methods so each plugin still gets its own
+  `Vector`. Objects those modules create are frozen and inherit from the framework realm, so
+  `view instanceof Object` is `false` in plugin code.
+
+### Patch Changes
+
+- Updated dependencies [ccf33b2]
+- Updated dependencies [08c95e0]
+- Updated dependencies [26e2c41]
+- Updated dependencies [6516bfb]
+- Updated dependencies [b9ac706]
+  - @s2script/sdk@0.31.0
+
 ## 0.19.5
 
 ### Patch Changes
