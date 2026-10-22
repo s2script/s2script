@@ -117,6 +117,8 @@
     for (var i = 0; i < subs.length; i++) {
       var s = subs[i];
       if (stopped && !s.monitor) continue;
+      // No ctx factory means the owner has no context: skip it as Continue, as run_chain did.
+      if (s.ctor === null) continue;
       if (enter(s.slot, s.generation, s.line) === 0) continue;
       var ret;
       try {
