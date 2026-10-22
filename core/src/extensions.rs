@@ -428,9 +428,9 @@ pub(crate) fn load_dir(dir: &Path) {
     let Ok(read) = std::fs::read_dir(dir) else { return };
     let mut files: Vec<PathBuf> = read
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "so"))
+        // `is_file` follows symlinks: an extension installed as a link loads like a copy.
+        .filter(|p| p.extension().is_some_and(|x| x == "so") && p.is_file())
         .collect();
     files.sort();
     for file in files {

@@ -243,6 +243,9 @@ fn broken_extensions_are_refused_and_the_rest_load() {
         return api->native(reg, &d);"#));
     compile(&dir, "h_nosym", "int unrelated(void) { return 0; }");
     std::fs::write(dir.join("i_garbage.so"), b"not an elf").unwrap();
+    // An extension installed as a symlink loads like a copy (here, a link to the good one, which
+    // is then refused only as a duplicate name).
+    std::os::unix::fs::symlink(dir.join("a_good.so"), dir.join("j_link.so")).unwrap();
     extensions::load_dir(&dir);
     assert_eq!(extensions::state_of("@community/fastmath"), Some(State::Loaded));
     let reason = |n: &str| match extensions::state_of(n) {
@@ -257,12 +260,13 @@ fn broken_extensions_are_refused_and_the_rest_load() {
     assert!(reason("@t/ident").contains("must be a JavaScript identifier"));
     assert_eq!(reason("h_nosym.so"), "does not export s2ext_info and s2ext_init");
     assert!(reason("i_garbage.so").starts_with("dlopen:"));
+    assert_eq!(reason("j_link.so"), "another file already loaded @community/fastmath");
     let list = extensions::list_lines().join("\n");
-    assert!(list.contains("[S2S] Extensions (9):") && list.contains("@community/fastmath@0.1.0 (8 natives"), "{list}");
+    assert!(list.contains("[S2S] Extensions (10):") && list.contains("@community/fastmath@0.1.0 (8 natives"), "{list}");
     assert!(list.contains("@t/abi@1.0.0 (refused: built for extension ABI 2"), "{list}");
     // A second scan is a no-op: extensions load once per process.
     extensions::load_dir(&dir);
-    assert!(extensions::list_lines()[0].contains("(9)"));
+    assert!(extensions::list_lines()[0].contains("(10)"));
     shutdown();
 }
 
