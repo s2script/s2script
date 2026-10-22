@@ -283,6 +283,33 @@ fn validate_subscription_domain(
     }
     Ok(())
 }
+/// The plugin that entered V8 for the code now running: the entered context's plugin, or, while
+/// the JS multiplexer (`jsmux`) is the entered context, the subscriber whose handler it is running.
+fn entered_owner(scope: &mut v8::PinScope) -> Option<(String, u64)> {
+    let entered = scope.get_entered_or_microtask_context();
+    if crate::jsmux::is_mux_context(entered) {
+        return crate::jsmux::dispatch_owner();
+    }
+    let id = entered.get_slot::<PluginId>()?.0.clone();
+    let generation = entered.get_slot::<InteropGeneration>()?.0;
+    Some((id, generation))
+}
+
+#[cfg(test)]
+pub(super) fn test_entered_owner(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let owner = entered_owner(scope).map_or_else(|| "-".to_string(), |(id, _)| id);
+    let crumb = crate::crash::breadcrumb::snapshot();
+    let text = format!(
+        "{}|{}|{}",
+        owner,
+        crate::crash::breadcrumb::read_cstr(&crumb.plugin),
+        crate::crash::breadcrumb::read_cstr(&crumb.dispatch)
+    );
+    if let Some(s) = v8::String::new(scope, &text) {
+        rv.set(s.into());
+    }
+}
+
 pub(super) fn current_owner(scope: &mut v8::PinScope) -> Result<OwnerKey, String> {
     let ctx = scope.get_current_context();
     let id = ctx
@@ -608,12 +635,7 @@ pub(super) fn instance(
             .ok_or("missing parent generation")?,
     )?;
     let parent = current_owner(scope)?;
-    let entered = scope.get_entered_or_microtask_context();
-    if !entered
-        .get_slot::<PluginId>()
-        .is_some_and(|p| p.0 == parent.id)
-        || entered.get_slot::<InteropGeneration>().map(|g| g.0) != Some(parent.generation)
-    {
+    if entered_owner(scope).as_ref().map(|(id, g)| (id.as_str(), *g)) != Some((parent.id.as_str(), parent.generation)) {
         return Err("package token used from another context".into());
     }
     let expected_id = data
@@ -1911,9 +1933,8 @@ fn record_accessor(scope:&mut v8::PinScope,args:&v8::FunctionCallbackArguments) 
     let field=data.get_index(scope,2).and_then(|v|v.uint32_value(scope)).ok_or("missing record field")?;
     // A callback's current context is its creation context, so a view moved into
     // another context would still name its owner; require the caller to be that owner.
-    let owner=current_owner(scope)?;let entered=scope.get_entered_or_microtask_context();
-    if !entered.get_slot::<PluginId>().is_some_and(|p|p.0==owner.id)
-        || entered.get_slot::<InteropGeneration>().map(|g|g.0)!=Some(owner.generation) {
+    let owner=current_owner(scope)?;
+    if entered_owner(scope).as_ref().map(|(id,g)|(id.as_str(),*g))!=Some((owner.id.as_str(),owner.generation)) {
         return Err("record view used from another context".into());
     }
     Ok((lease(scope,id)?,selector,field))

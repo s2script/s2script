@@ -13,7 +13,7 @@
 //! Extracted from `v8host.rs` under the core-stabilization program — see `crate::usermsg` for the
 //! shape (a feature owns its state, natives, dispatch and teardown together).
 
-use crate::dispatch::{fan_out, fan_out_collapsing, Delivery, Instrument, StopAt};
+use crate::dispatch::{fan_out_inner, Delivery, Instrument, StopAt};
 use crate::multiplexer::HookResult;
 use crate::v8host::{
     current_plugin, engine_ops, hook_request, set_native, subscribe_into,
@@ -394,48 +394,50 @@ pub(crate) fn dispatch_game_event(name: &str) -> Delivery {
 /// `s_currentEvent` at the copy for this call, and `FreeEvent`s it after. Nothing about an
 /// `IGameEvent` is ever represented in Rust — no raw pointer is queued on this side.
 pub(crate) fn replay_game_event(name: &str) -> Delivery {
-    // Snapshot — releases the EVENT_MUX borrow before any JS runs, so `Events.fire()` from inside a
-    // handler cannot mutate the list being walked. Nested fire publishes a nest token and runs
-    // other plugins now; `#63` no-handle inbound still reports `Deferred`.
+    // One crossing into the JS multiplexer (`jsmux`), which keeps every `fan_out` guarantee: the
+    // subscriber list is a snapshot, each handler gets a fresh `GameEvent` built in its own realm,
+    // and a nested `Events.fire()` publishes a nest token and runs other plugins now; `#63`
+    // no-handle inbound still reports `Deferred`.
+    crate::jsmux::dispatch(&EVENT_MUX, crate::jsmux::Kind::Event, name, StopAt::Never, || replay_game_event_fan_out(name)).1
+}
+
+/// The Rust fan-out for a post game event — what `replay_game_event` runs while the profiler
+/// records, so a session attributes each handler exactly as before.
+fn replay_game_event_fan_out(name: &str) -> (HookResult, Delivery) {
     let snap = EVENT_MUX.with(|m| m.borrow().snapshot(name));
     let tag = format!("event:{}", name);
-    fan_out(&snap, &format!("dispatch_game_event('{}')", name), Instrument::full(&tag), |tc| {
-        // Construct new GameEvent(name) from globalThis.__s2pkg_events.GameEvent. A failure here
-        // yields `undefined` rather than skipping the subscriber, matching the pre-fan_out behaviour.
-        let event_val: Option<v8::Local<v8::Value>> = (|| {
-            let global = tc.get_current_context().global(tc);
-            let pkg_key = v8::String::new(tc, "__s2pkg_events")?;
-            let pkg = global.get(tc, pkg_key.into())?;
-            let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
-            let ctor_key = v8::String::new(tc, "GameEvent")?;
-            let ctor_val = pkg.get(tc, ctor_key.into())?;
-            let ctor = v8::Local::<v8::Function>::try_from(ctor_val).ok()?;
-            let name_str = v8::String::new(tc, name)?;
-            ctor.new_instance(tc, &[name_str.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
-        })();
-        Some(vec![event_val.unwrap_or_else(|| v8::undefined(tc).into())])
+    fan_out_inner(&snap, &format!("dispatch_game_event('{}')", name), Instrument::full(&tag), StopAt::Never, |tc| {
+        Some(vec![new_game_event(tc, name)])
     })
+}
+
+/// `new globalThis.__s2pkg_events.GameEvent(name)` in the current (plugin) context. A failure
+/// yields `undefined` rather than skipping the subscriber, matching the pre-fan_out behaviour.
+fn new_game_event<'s>(tc: &mut v8::PinScope<'s, '_>, name: &str) -> v8::Local<'s, v8::Value> {
+    let event_val: Option<v8::Local<v8::Value>> = (|| {
+        let global = tc.get_current_context().global(tc);
+        let pkg_key = v8::String::new(tc, "__s2pkg_events")?;
+        let pkg = global.get(tc, pkg_key.into())?;
+        let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
+        let ctor_key = v8::String::new(tc, "GameEvent")?;
+        let ctor_val = pkg.get(tc, ctor_key.into())?;
+        let ctor = v8::Local::<v8::Function>::try_from(ctor_val).ok()?;
+        let name_str = v8::String::new(tc, name)?;
+        ctor.new_instance(tc, &[name_str.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
+    })();
+    event_val.unwrap_or_else(|| v8::undefined(tc).into())
 }
 
 /// Pre-dispatch for the FireEvent hook (Slice 5D.3). Runs the PRE subscribers for `name`, collapses
 /// their HookResults via `run_chain`, and returns 1 to suppress client broadcast (collapsed result
 /// >= Handled) or 0 to allow. The shim has set `s_currentEvent` (mutable) before calling this.
 pub(crate) fn dispatch_game_event_pre(name: &str) -> i32 {
-    let snap = EVENT_MUX_PRE.with(|m| m.borrow().snapshot(name));
-    let result = fan_out_collapsing(&snap, &format!("dispatch_game_event_pre('{}')", name), Instrument::none(), StopAt::Stop, |tc| {
-        // Construct new GameEvent(name) from globalThis.__s2pkg_events.GameEvent (as in dispatch_game_event).
-        let event_arg: Option<v8::Local<v8::Value>> = (|| {
-            let global = tc.get_current_context().global(tc);
-            let pkg_key = v8::String::new(tc, "__s2pkg_events")?;
-            let pkg = global.get(tc, pkg_key.into())?;
-            let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
-            let ctor_key = v8::String::new(tc, "GameEvent")?;
-            let ctor = v8::Local::<v8::Function>::try_from(pkg.get(tc, ctor_key.into())?).ok()?;
-            let name_str = v8::String::new(tc, name)?;
-            ctor.new_instance(tc, &[name_str.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
-        })();
-        let event_val: v8::Local<v8::Value> = event_arg.unwrap_or_else(|| v8::undefined(tc).into());
-        Some(vec![event_val])
+    // A pre-hook's answer is consumed synchronously, so its `Delivery` is discarded (spec §2).
+    let (result, _) = crate::jsmux::dispatch(&EVENT_MUX_PRE, crate::jsmux::Kind::EventPre, name, StopAt::Stop, || {
+        let snap = EVENT_MUX_PRE.with(|m| m.borrow().snapshot(name));
+        fan_out_inner(&snap, &format!("dispatch_game_event_pre('{}')", name), Instrument::none(), StopAt::Stop, |tc| {
+            Some(vec![new_game_event(tc, name)])
+        })
     });
     if result >= HookResult::Handled { 1 } else { 0 }
 }
@@ -818,6 +820,165 @@ mod tests {
             "After Events.off, dispatch must not invoke the handler"
         );
 
+        shutdown();
+    }
+
+    /// Stage 1 (JS multiplexer): every subscriber gets its OWN fresh `GameEvent`, built in its own
+    /// realm, in subscription order, with the handler's receiver left `undefined`.
+    #[test]
+    fn jsmux_delivers_a_fresh_own_realm_event_to_each_subscriber_in_order() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("a");
+        create_plugin_context("b");
+        eval_in_context("a", r#"
+            globalThis.__log = [];
+            __s2_event_subscribe("round_start", function (ev) {
+                __log.push("a1:" + (ev instanceof __s2pkg_events.GameEvent) + ":" + ev.name + ":" + (ev.mark === undefined));
+                ev.mark = 1;
+            });
+            __s2_event_subscribe("round_start", function (ev) {
+                "use strict";
+                __log.push("a2:" + (ev.mark === undefined) + ":" + (this === undefined));
+            });
+        "#).unwrap();
+        eval_in_context("b", r#"
+            globalThis.__log = [];
+            __s2_event_subscribe("round_start", function (ev) { __log.push("b:" + (ev instanceof __s2pkg_events.GameEvent)); });
+        "#).unwrap();
+        assert_eq!(dispatch_game_event("round_start"), Delivery::Delivered);
+        assert_eq!(eval_in_context_string("a", "__log.join(',')"), "a1:true:round_start:true,a2:true:true");
+        assert_eq!(eval_in_context_string("b", "__log.join(',')"), "b:true");
+        shutdown();
+    }
+
+    /// A subscription made, or a plugin unloaded, from inside a handler changes the NEXT dispatch,
+    /// never the one in flight — except that an unloaded plugin is never called again.
+    #[test]
+    fn jsmux_mid_dispatch_changes_apply_from_the_next_event_and_unload_is_immediate() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("a");
+        create_plugin_context("b");
+        eval_in_context("a", r#"
+            globalThis.__n = 0; globalThis.__late = 0;
+            __s2_event_subscribe("round_start", function () {
+                if (__n++ === 0) __s2_event_subscribe("round_start", function () { __late++; });
+            });
+        "#).unwrap();
+        eval_in_context("b", r#"globalThis.__hits = 0; __s2_event_subscribe("round_start", function () { __hits++; });"#).unwrap();
+        let _ = dispatch_game_event("round_start");
+        assert_eq!(read_i32_global_in("a", "__late"), 0, "subscribed mid-dispatch: not this event");
+        assert_eq!(read_i32_global_in("b", "__hits"), 1);
+        let _ = dispatch_game_event("round_start");
+        assert_eq!(read_i32_global_in("a", "__late"), 1, "but the next one");
+        unload_plugin("b");
+        let _ = dispatch_game_event("round_start");
+        assert_eq!(read_i32_global_in("a", "__n"), 3, "the survivor still runs");
+        shutdown();
+    }
+
+    /// While a handler runs, the crash breadcrumb names its plugin under `event:<name>`, and the
+    /// entered-owner check (interop record views, package tokens) sees the subscriber — not the
+    /// multiplexer's own context. Outside dispatch the breadcrumb is restored.
+    #[test]
+    fn jsmux_handlers_see_their_own_owner_and_breadcrumb() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("first");
+        create_plugin_context("second");
+        for id in ["first", "second"] {
+            eval_in_context(id, r#"
+                globalThis.__seen = "";
+                __s2_event_subscribe("player_death", function () { __seen = __s2_test_entered_owner(); });
+            "#).unwrap();
+        }
+        let before = crate::crash::breadcrumb::read_cstr(&crate::crash::breadcrumb::snapshot().dispatch);
+        let _ = dispatch_game_event("player_death");
+        assert_eq!(read_global_string("first", "__seen"), "first|first|event:player_death");
+        assert_eq!(read_global_string("second", "__seen"), "second|second|event:player_death");
+        assert_eq!(
+            crate::crash::breadcrumb::read_cstr(&crate::crash::breadcrumb::snapshot().dispatch),
+            before,
+            "the dispatch tag is restored after the event"
+        );
+        shutdown();
+    }
+
+    /// A throwing handler is isolated: later subscribers still run, and a pre-hook chain still
+    /// collapses. `Stop` truncates the rest of a pre chain; `Handled` does not.
+    #[test]
+    fn jsmux_throws_are_isolated_and_pre_hooks_collapse_with_stop() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("a");
+        create_plugin_context("b");
+        eval_in_context("a", r#"
+            __s2_event_subscribe("round_end", function () { throw new Error("boom"); });
+            __s2_event_subscribe_pre("player_hurt", function () { return HookResult.Handled; });
+            __s2_event_subscribe_pre("bomb_planted", function () { return HookResult.Stop; });
+            __s2_event_subscribe_pre("bomb_defused", function () { throw new Error("pre boom"); });
+        "#).unwrap();
+        eval_in_context("b", r#"
+            globalThis.__after = 0; globalThis.__hurt = 0; globalThis.__planted = 0;
+            __s2_event_subscribe("round_end", function () { __after++; });
+            __s2_event_subscribe_pre("player_hurt", function () { __hurt++; return 7; });
+            __s2_event_subscribe_pre("bomb_planted", function () { __planted++; });
+            __s2_event_subscribe_pre("bomb_defused", function () { return HookResult.Handled; });
+        "#).unwrap();
+        let _ = dispatch_game_event("round_end");
+        assert_eq!(read_i32_global_in("b", "__after"), 1, "a throw does not deny later subscribers");
+        assert_eq!(dispatch_game_event_pre("player_hurt"), 1, "Handled suppresses; a stray 7 is Continue");
+        assert_eq!(read_i32_global_in("b", "__hurt"), 1, "Handled does not truncate");
+        assert_eq!(dispatch_game_event_pre("bomb_planted"), 1);
+        assert_eq!(read_i32_global_in("b", "__planted"), 0, "Stop truncates the rest of the chain");
+        assert_eq!(dispatch_game_event_pre("bomb_defused"), 1, "a throwing pre-hook is Continue, not a veto");
+        shutdown();
+    }
+
+    /// While the profiler records, dispatch takes the Rust fan-out, with the same results.
+    #[test]
+    fn jsmux_falls_back_to_the_rust_fan_out_while_profiling() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("a");
+        eval_in_context("a", r#"
+            globalThis.__saw = "";
+            __s2_event_subscribe("round_start", function (ev) { __saw = ev.name + "|" + __s2_test_entered_owner(); });
+            __s2_event_subscribe_pre("player_hurt", function () { return HookResult.Handled; });
+        "#).unwrap();
+        crate::profiler::test_set_active(true);
+        let _ = dispatch_game_event("round_start");
+        let pre = dispatch_game_event_pre("player_hurt");
+        crate::profiler::test_set_active(false);
+        assert_eq!(read_global_string("a", "__saw"), "round_start|a|a|event:round_start");
+        assert_eq!(pre, 1);
+        shutdown();
+    }
+
+    /// Stage 1 measurement: a game event to 10 plugins, each reading one field, through the JS
+    /// multiplexer and through the Rust fan-out it replaces. `cargo test --release -p s2script-core
+    /// jsmux_bench -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn jsmux_bench_game_event_to_ten_plugins() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(mock_event_ops()));
+        for i in 0..10 {
+            let id = format!("p{}", i);
+            create_plugin_context(&id);
+            eval_in_context(&id, r#"globalThis.__k = 0;
+                __s2_event_subscribe("player_death", function (ev) { if (ev.getInt("userid")) __k++; });"#).unwrap();
+        }
+        let n = 50_000;
+        for _ in 0..2_000 { let _ = dispatch_game_event("player_death"); let _ = replay_game_event_fan_out("player_death"); }
+        let t = std::time::Instant::now();
+        for _ in 0..n { let _ = replay_game_event_fan_out("player_death"); }
+        let rust = t.elapsed().as_nanos() as f64 / n as f64;
+        let t = std::time::Instant::now();
+        for _ in 0..n { let _ = dispatch_game_event("player_death"); }
+        let js = t.elapsed().as_nanos() as f64 / n as f64;
+        println!("game event to 10 plugins: Rust fan-out {:.0} ns, JS multiplexer {:.0} ns ({:.1}x)", rust, js, rust / js);
         shutdown();
     }
 

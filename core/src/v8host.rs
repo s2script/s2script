@@ -121,6 +121,25 @@ pub(crate) fn owner_is_live(owner: &str, generation: u64) -> bool {
     REGISTRY.with(|r| r.borrow().is_live(owner, generation))
 }
 
+/// The owner's registry slot (see `plugin::Registry::slot_of`). Does not expose `REGISTRY`.
+pub(crate) fn owner_slot(owner: &str) -> Option<u32> {
+    REGISTRY.with(|r| r.borrow().slot_of(owner))
+}
+
+/// `owner_is_live` by slot: runs `f` with the owner's id iff `slot` is loaded at `generation`.
+/// Never panics on a held borrow (it answers "not live"), because a V8 fast call reaches it.
+pub(crate) fn with_live_slot<R>(slot: u32, generation: u64, f: impl FnOnce(&str) -> R) -> Option<R> {
+    REGISTRY.with(|r| {
+        let r = r.try_borrow().ok()?;
+        r.live_at(slot, generation).map(f)
+    })
+}
+
+/// The id holding `slot`, loaded or not (a handler that unloaded its own plugin is still named).
+pub(crate) fn slot_owner(slot: u32) -> Option<String> {
+    REGISTRY.with(|r| r.try_borrow().ok()?.slot_id(slot).map(str::to_string))
+}
+
 /// Clone a plugin context out of the table so the handler may re-enter `PLUGINS`.
 /// Does not expose `PLUGINS`.
 pub(crate) fn clone_plugin_context(owner: &str) -> Option<v8::Global<v8::Context>> {
@@ -6528,6 +6547,8 @@ pub(crate) fn register_process_singletons() {
         TIMERS.with(|t| *t.borrow_mut() = TimerQueue::new())
     });
     reg("RESOLVERS", BeforeIsolateDrop, crate::jobs::reset_resolvers);
+    // The JS multiplexer's context and every cached subscriber array.
+    reg("JSMUX", BeforeIsolateDrop, crate::jsmux::reset);
     reg("TIMER_CBS", BeforeIsolateDrop, || {
         TIMER_CBS.with(|m| m.borrow_mut().clear())
     });

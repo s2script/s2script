@@ -670,5 +670,15 @@ pub(crate) fn format_duration(d: Duration) -> String {
     }
 }
 
+/// Start or end a bare recording session (no V8 hooks), for tests outside this module.
+#[cfg(test)]
+pub(crate) fn test_set_active(on: bool) {
+    if on {
+        begin(Options::default());
+    } else {
+        let _ = end();
+    }
+}
+
 #[cfg(test)]
 mod tests;

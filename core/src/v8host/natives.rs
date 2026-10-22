@@ -86,6 +86,9 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_iface_dispatch", s2_iface_dispatch);
     // Game-event system (Slice 5D.1): subscribe/unsubscribe + accessor natives.
     crate::events::install_natives(scope, global_obj);
+    // Test-only probe: who entered V8, and what the crash breadcrumb names, as seen by a handler.
+    #[cfg(test)]
+    set_native(scope, global_obj, "__s2_test_entered_owner", function_adapter::test_entered_owner);
     set_native(scope, global_obj, "__s2_engine_function", engine_functions::lookup);
     // Engine-identity client-list natives (Slice 5D.2).
     crate::client::install_natives(scope, global_obj);

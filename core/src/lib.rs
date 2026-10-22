@@ -54,6 +54,7 @@ mod loader_worker;
 mod multiplexer;
 mod nest;
 mod dispatch;
+mod jsmux;
 mod net;
 pub mod owner_stores;
 pub mod process_singletons;

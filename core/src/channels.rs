@@ -33,17 +33,21 @@ pub struct Channels<H: Clone> {
     /// The owner is repeated here so owner teardown can prune only the reverse mappings for the
     /// subscriptions it removed. Channel liveness alone is insufficient when another owner remains.
     ids: HashMap<u64, (String, SubId, String)>,
+    /// Bumped by every mutation. The JS multiplexer (`jsmux`) caches each channel's subscriber
+    /// array and re-pushes it only when this has moved, so Rust stays the one source of truth.
+    version: u64,
 }
 
 impl<H: Clone> Channels<H> {
     pub fn new() -> Self {
-        Channels { by_name: HashMap::new(), ids: HashMap::new() }
+        Channels { by_name: HashMap::new(), ids: HashMap::new(), version: 0 }
     }
 
     /// Returns true iff this is the FIRST subscriber for `name` — the caller then performs its
     /// engine-op follow-up (`event_subscribe`, installing a detour, …). Same contract as
     /// `EventMux::subscribe`.
     pub fn subscribe(&mut self, name: &str, id: u64, owner: String, generation: u64, handler: H) -> bool {
+        self.version += 1;
         let indexed_owner = owner.clone();
         let desc = self
             .by_name
@@ -71,6 +75,7 @@ impl<H: Clone> Channels<H> {
     /// Drop every subscription owned by `owner`; returns the channel names that became empty, which
     /// the caller uses to issue its engine-op unsubscribe.
     pub fn remove_by_owner(&mut self, owner: &str) -> Vec<String> {
+        self.version += 1;
         let mut emptied = Vec::new();
         for (name, desc) in self.by_name.iter_mut() {
             let before = desc.enabled_count();
@@ -89,6 +94,7 @@ impl<H: Clone> Channels<H> {
     /// Drop the subscriptions with these caller-allocated ids (the `Scope` disposal path); returns
     /// the channel names that became empty.
     pub fn remove_by_ids(&mut self, ids: &[u64]) -> Vec<String> {
+        self.version += 1;
         let mut emptied = Vec::new();
         for id in ids {
             let Some((name, sub_id, _owner)) = self.ids.remove(id) else { continue };
@@ -107,6 +113,7 @@ impl<H: Clone> Channels<H> {
 
     /// Drop `owner`'s subscriptions on ONE channel; true iff that channel became empty.
     pub fn remove_by_owner_on(&mut self, name: &str, owner: &str) -> bool {
+        self.version += 1;
         let Some(desc) = self.by_name.get_mut(name) else { return false };
         let before = desc.enabled_count();
         desc.remove_by_owner(owner);
@@ -120,6 +127,7 @@ impl<H: Clone> Channels<H> {
 
     /// Drop a whole channel.
     pub fn remove_by_name(&mut self, name: &str) {
+        self.version += 1;
         self.by_name.remove(name);
         self.ids.retain(|_, (n, _, _)| n != name);
     }
@@ -129,6 +137,7 @@ impl<H: Clone> Channels<H> {
     /// teardown still find them. Used when a channel subscribed under a provisional name resolves
     /// to its canonical one (a user message subscribed before the engine registered it).
     pub fn rename(&mut self, from: &str, to: &str) {
+        self.version += 1;
         if from == to { return; }
         let Some(src) = self.by_name.remove(from) else { return };
         let dest = self.by_name.entry(to.to_string()).or_insert_with(|| Descriptor::new(to));
@@ -145,6 +154,11 @@ impl<H: Clone> Channels<H> {
             }
         }
         self.ids.retain(|_, (name, _, _)| name != from);
+    }
+
+    /// The mutation counter (see the `version` field).
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     /// True iff `name` has at least one subscriber.
@@ -165,6 +179,21 @@ mod tests {
 
     fn ch() -> Channels<&'static str> {
         Channels::new()
+    }
+
+    #[test]
+    fn every_mutation_moves_the_version() {
+        let mut c = ch();
+        let mut last = c.version();
+        let mut moved = |c: &Channels<&'static str>| { let v = c.version(); assert_ne!(v, last); last = v; };
+        c.subscribe("a", 1, "p1".into(), 1, "h1"); moved(&c);
+        c.subscribe("b", 2, "p1".into(), 1, "h2"); moved(&c);
+        c.rename("b", "a"); moved(&c);
+        c.remove_by_ids(&[2]); moved(&c);
+        c.remove_by_owner_on("a", "p1"); moved(&c);
+        c.subscribe("a", 3, "p1".into(), 1, "h3"); moved(&c);
+        c.remove_by_owner("p1"); moved(&c);
+        c.remove_by_name("a"); moved(&c);
     }
 
     #[test]

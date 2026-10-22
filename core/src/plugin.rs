@@ -185,6 +185,12 @@ pub struct PluginEntry {
 /// separate table, separate axis (a map change must never invalidate plugins).
 pub struct Registry {
     table: crate::liveness::LiveTable<String, PluginLedger>,
+    /// A small integer per plugin id, stable across reloads, with the id's live generation
+    /// (0 = not loaded). The JS multiplexer carries slots instead of id strings so its per-call
+    /// liveness check is an index and a compare. Kept inside `Registry`, never beside it, so it
+    /// cannot drift from `table`: `insert` and `remove` are the only writers of both.
+    slots: Vec<(String, u64)>,
+    slot_index: std::collections::HashMap<String, u32>,
 }
 
 impl Registry {
@@ -195,18 +201,33 @@ impl Registry {
         // pre-registration subscriptions accidentally fired while every other plugin's were
         // silently dropped (the P0-1 defect). With 1 as the first real generation, a 0-stamped
         // row can never match any plugin.
-        Self { table: crate::liveness::LiveTable::new(1) }
+        Self { table: crate::liveness::LiveTable::new(1), slots: Vec::new(), slot_index: std::collections::HashMap::new() }
     }
 
     /// Insert (or re-insert on reload) a plugin. Returns the assigned generation.
     /// A re-insert of an existing id mints a fresh generation — that IS reload.
     pub fn insert(&mut self, id: impl Into<String>) -> u64 {
-        self.table.insert(id.into(), PluginLedger::new())
+        let id = id.into();
+        let generation = self.table.insert(id.clone(), PluginLedger::new());
+        let slot = match self.slot_index.get(&id) {
+            Some(&slot) => slot,
+            None => {
+                let slot = self.slots.len() as u32;
+                self.slots.push((id.clone(), 0));
+                self.slot_index.insert(id, slot);
+                slot
+            }
+        };
+        self.slots[slot as usize].1 = generation;
+        generation
     }
 
     /// Remove a plugin. Returns the `PluginEntry` so the caller can walk the
     /// ledger for teardown. Returns `None` if not present.
     pub fn remove(&mut self, id: &str) -> Option<PluginEntry> {
+        if let Some(&slot) = self.slot_index.get(id) {
+            self.slots[slot as usize].1 = 0;
+        }
         self.table
             .remove(&id.to_string())
             .map(|(generation, ledger)| PluginEntry { generation, ledger })
@@ -246,6 +267,22 @@ impl Registry {
         self.table.keys()
     }
 
+    /// The id's slot, assigned on its first `insert` and kept for the life of the registry.
+    pub fn slot_of(&self, id: &str) -> Option<u32> {
+        self.slot_index.get(id).copied()
+    }
+
+    /// The id that holds `slot`, loaded or not.
+    pub fn slot_id(&self, slot: u32) -> Option<&str> {
+        self.slots.get(slot as usize).map(|(id, _)| id.as_str())
+    }
+
+    /// The id at `slot` iff it is loaded at exactly `generation` — `is_live` by slot.
+    pub fn live_at(&self, slot: u32, generation: u64) -> Option<&str> {
+        let (id, live) = self.slots.get(slot as usize)?;
+        (generation != 0 && *live == generation).then_some(id.as_str())
+    }
+
     /// The current generation for `id`, if present.
     pub fn generation_of(&self, id: &str) -> Option<u64> {
         self.table.get(&id.to_string()).map(|(g, _)| g)
@@ -283,6 +320,26 @@ mod tests {
         // reverse of [Hook(1),Timer(2),Job(3),Hook(4)]:
         assert_eq!(l.teardown_order(),
             vec![Resource::Hook(4), Resource::Job(3), Resource::Timer(2), Resource::Hook(1)]);
+    }
+
+    #[test]
+    fn slots_agree_with_is_live_across_reload_and_remove() {
+        let mut r = Registry::new();
+        let a1 = r.insert("a");
+        let b1 = r.insert("b");
+        let (sa, sb) = (r.slot_of("a").unwrap(), r.slot_of("b").unwrap());
+        assert_ne!(sa, sb);
+        assert_eq!(r.live_at(sa, a1), Some("a"));
+        assert_eq!(r.live_at(sa, b1), None, "another plugin's generation never matches");
+        let a2 = r.insert("a");
+        assert_eq!(r.slot_of("a"), Some(sa), "reload keeps the slot");
+        assert_eq!(r.live_at(sa, a1), None, "the old generation is stale");
+        assert_eq!(r.live_at(sa, a2), Some("a"));
+        r.remove("a");
+        assert_eq!(r.live_at(sa, a2), None, "removed");
+        assert_eq!(r.live_at(sa, 0), None, "0 is never live");
+        assert_eq!(r.live_at(99, a2), None, "out of range");
+        assert_eq!(r.live_at(sb, b1), Some("b"));
     }
 
     #[test]
