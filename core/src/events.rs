@@ -936,6 +936,49 @@ mod tests {
         shutdown();
     }
 
+    /// A subscriber whose payload class is missing makes the pushed array incomplete. The array
+    /// must still be the one dispatched (and the prune must not drop it), and once the class
+    /// appears the next dispatch rebuilds it with real events.
+    #[test]
+    fn jsmux_an_incomplete_channel_still_delivers_and_heals() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("a");
+        create_plugin_context("b");
+        eval_in_context("a", r#"globalThis.__a = 0; __s2_event_subscribe("round_start", function () { __a++; });"#).unwrap();
+        let _ = dispatch_game_event("round_start");
+        assert_eq!(read_i32_global_in("a", "__a"), 1);
+        eval_in_context("b", r#"
+            globalThis.__log = [];
+            __s2_event_subscribe("round_start", function (ev) { __log.push(ev === undefined ? "u" : "e"); });
+        "#).unwrap();
+        crate::jsmux::test_hide_ctor(Some("b"));
+        let _ = dispatch_game_event("round_start");
+        crate::jsmux::test_hide_ctor(None);
+        assert_eq!(read_i32_global_in("a", "__a"), 2, "the incomplete push still reaches every subscriber");
+        assert_eq!(eval_in_context_string("b", "__log.join(',')"), "u");
+        let _ = dispatch_game_event("round_start");
+        assert_eq!(read_i32_global_in("a", "__a"), 3);
+        assert_eq!(eval_in_context_string("b", "__log.join(',')"), "u,e", "the class is found once it exists");
+        shutdown();
+    }
+
+    /// When the last subscriber goes, the JS arrays still get dropped (they pin the unloaded
+    /// plugin's context), even though no dispatch on that store has anyone to deliver to.
+    #[test]
+    fn jsmux_an_emptied_store_still_releases_its_arrays() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("a");
+        eval_in_context("a", r#"__s2_event_subscribe("round_start", function () {});"#).unwrap();
+        let _ = dispatch_game_event("round_start");
+        assert_eq!(crate::jsmux::test_pushed(crate::jsmux::Kind::Event), 1);
+        unload_plugin("a");
+        let _ = dispatch_game_event("round_start");
+        assert_eq!(crate::jsmux::test_pushed(crate::jsmux::Kind::Event), 0, "pruned with nobody subscribed");
+        shutdown();
+    }
+
     /// While the profiler records, dispatch takes the Rust fan-out, with the same results.
     #[test]
     fn jsmux_falls_back_to_the_rust_fan_out_while_profiling() {

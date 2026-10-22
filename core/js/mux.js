@@ -60,7 +60,7 @@
       try {
         // The payload is built in the subscriber's own realm, fresh for each subscriber, exactly as
         // the Rust fan-out built it. A constructor that throws still delivers, with `undefined`.
-        var ev;
+        var ev = undefined;
         if (s.ctor !== null) {
           try {
             ev = new s.ctor(name);

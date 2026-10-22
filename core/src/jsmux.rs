@@ -79,8 +79,9 @@ struct Frame {
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
-    /// Per kind: the `Channels::version` each channel's JS array was built at.
-    static PUSHED: RefCell<[HashMap<String, u64>; KINDS]> = RefCell::new([HashMap::new(), HashMap::new()]);
+    /// Per kind: the `Channels::version` each channel's JS array was built at, and whether that
+    /// array was complete (every live subscriber's payload class was found).
+    static PUSHED: RefCell<[HashMap<String, (u64, bool)>; KINDS]> = RefCell::new([HashMap::new(), HashMap::new()]);
     /// Per kind: the version at which stale arrays were last dropped from JS.
     static PRUNED: RefCell<[u64; KINDS]> = const { RefCell::new([0; KINDS]) };
     static FRAMES: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
@@ -92,6 +93,23 @@ pub(crate) fn reset() {
     PUSHED.with(|p| p.borrow_mut().iter_mut().for_each(HashMap::clear));
     PRUNED.with(|p| *p.borrow_mut() = [0; KINDS]);
     FRAMES.with(|f| f.borrow_mut().clear());
+}
+
+#[cfg(test)]
+thread_local! {
+    static HIDDEN_CTOR: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Act as if `owner`'s prelude had not published its payload class yet.
+#[cfg(test)]
+pub(crate) fn test_hide_ctor(owner: Option<&str>) {
+    HIDDEN_CTOR.with(|h| *h.borrow_mut() = owner.map(str::to_string));
+}
+
+/// How many channels of `kind` have an array in JS.
+#[cfg(test)]
+pub(crate) fn test_pushed(kind: Kind) -> usize {
+    PUSHED.with(|p| p.borrow()[kind as usize].len())
 }
 
 /// The plugin a handler is running for, when the entered context is the multiplexer's.
@@ -125,14 +143,34 @@ pub(crate) fn dispatch(
         let m = m.borrow();
         (m.has_subscribers(name), m.version())
     });
+    let job = Job { store, kind, name, version, stop_at };
     if !any {
-        // Nobody subscribed → nothing to replay (see `fan_out_inner`).
+        // Nobody subscribed → nothing to replay (see `fan_out_inner`). If the store moved since the
+        // last prune, still drop stale arrays: once a store empties no dispatch would reach `sync`,
+        // and those arrays pin the unloaded plugins' contexts. Best effort; a busy host retries.
+        if job.prune_due() && !callbacks_deferred() {
+            let _ = cross(|hs| {
+                if let Some(context) = ensure_state(hs) {
+                    let cs = &mut v8::ContextScope::new(hs, context);
+                    job.prune(cs);
+                }
+            });
+        }
         return (HookResult::Continue, Delivery::Delivered);
     }
     if callbacks_deferred() {
         return (HookResult::Continue, Delivery::Deferred);
     }
-    let job = Job { store, kind, name, version, stop_at };
+    match cross(|hs| job.run(hs)) {
+        Ok(result) => (result, Delivery::Delivered),
+        Err(HostAccess::Busy) => (HookResult::Continue, Delivery::Deferred),
+        Err(HostAccess::Absent) => (HookResult::Continue, Delivery::Delivered),
+    }
+}
+
+/// Enter V8 for a dispatch: nested under the paused native's callback info when the dispatch is
+/// plugin-originated, else through `HOST`.
+fn cross<R>(f: impl FnOnce(&mut v8::PinScope<'_, '_, ()>) -> R) -> Result<R, HostAccess> {
     if let Some(info) = crate::nest::top().filter(|p| !p.is_null()) {
         // Plugin-originated: a native is paused in engine FFI. Nest under its callback info,
         // never `HOST`.
@@ -141,17 +179,13 @@ pub(crate) fn dispatch(
         let mut cs = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
         let mut hs_storage = v8::HandleScope::new(&mut cs);
         let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-        return (job.run(&mut hs), Delivery::Delivered);
+        return Ok(f(&mut hs));
     }
-    match with_host_isolate(|isolate| {
+    with_host_isolate(|isolate| {
         let mut hs_storage = v8::HandleScope::new(isolate);
         let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-        job.run(&mut hs)
-    }) {
-        Ok(result) => (result, Delivery::Delivered),
-        Err(HostAccess::Busy) => (HookResult::Continue, Delivery::Deferred),
-        Err(HostAccess::Absent) => (HookResult::Continue, Delivery::Delivered),
-    }
+        f(&mut hs)
+    })
 }
 
 struct Job<'a> {
@@ -227,7 +261,8 @@ impl Job<'_> {
     /// its context) are not kept alive by a channel that rarely fires.
     fn sync(&self, cs: &mut v8::PinScope, name: v8::Local<v8::String>) {
         let k = self.kind as usize;
-        let current = PUSHED.with(|p| p.borrow()[k].get(self.name) == Some(&self.version));
+        // An incomplete array is re-pushed every dispatch until the payload classes appear.
+        let current = PUSHED.with(|p| p.borrow()[k].get(self.name) == Some(&(self.version, true)));
         if !current {
             let snap = self.store.with(|m| m.borrow().snapshot(self.name));
             let mut slots = Vec::with_capacity(snap.len());
@@ -260,18 +295,30 @@ impl Job<'_> {
                     v8::Array::new_with_elements(cs, &ctors).into(),
                 ];
                 let recv = v8::undefined(cs).into();
-                if set.call(cs, recv, &args).is_some() && complete {
-                    PUSHED.with(|p| p.borrow_mut()[k].insert(self.name.to_string(), self.version));
+                if set.call(cs, recv, &args).is_some() {
+                    // Recorded even when incomplete, so the prune below keeps the array just set.
+                    PUSHED.with(|p| p.borrow_mut()[k].insert(self.name.to_string(), (self.version, complete)));
                 }
             }
         }
+        self.prune(cs);
+    }
 
+    /// Is there a JS array that may be stale and has not been checked at this version?
+    fn prune_due(&self) -> bool {
+        let k = self.kind as usize;
+        PRUNED.with(|p| p.borrow()[k]) != self.version && PUSHED.with(|p| !p.borrow()[k].is_empty())
+    }
+
+    /// Drop the JS arrays of every channel that changed since it was pushed.
+    fn prune(&self, cs: &mut v8::PinScope) {
+        let k = self.kind as usize;
         if PRUNED.with(|p| p.borrow()[k]) == self.version {
             return;
         }
         let stale: Vec<String> = PUSHED.with(|p| {
             let mut p = p.borrow_mut();
-            let stale = p[k].iter().filter(|(_, v)| **v != self.version).map(|(n, _)| n.clone()).collect::<Vec<_>>();
+            let stale = p[k].iter().filter(|(_, v)| v.0 != self.version).map(|(n, _)| n.clone()).collect::<Vec<_>>();
             for n in &stale {
                 p[k].remove(n);
             }
@@ -295,6 +342,10 @@ impl Job<'_> {
 /// The owner's `__s2pkg_events.GameEvent`, read in its own context — the class the Rust fan-out
 /// constructed per subscriber.
 fn game_event_ctor<'s>(cs: &mut v8::PinScope<'s, '_>, owner: &str) -> Option<v8::Local<'s, v8::Value>> {
+    #[cfg(test)]
+    if HIDDEN_CTOR.with(|h| h.borrow().as_deref() == Some(owner)) {
+        return None;
+    }
     let g_ctx = clone_plugin_context(owner)?;
     let ctx = v8::Local::new(cs, &g_ctx);
     let scope = &mut v8::ContextScope::new(cs, ctx);
