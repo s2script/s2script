@@ -22,7 +22,6 @@
 #include "../src/call_validate.h"
 
 #include <cstdint>
-#include <initializer_list>
 #include <cstring>
 #include <iostream>
 #include <string>
@@ -749,110 +748,7 @@ static void test_original_code_and_separate_live_reads() {
           "argument-width validator reads original spill after peer patch");
 }
 
-// ---------------------------------------------------------------------------
-// call-shape (s2validate::CallShape) — the OUTBOUND engine-slot check.
-//
-// Every fixture below is the REAL prologue of a libengine2.so CEngineServer virtual on the Oct 22
-// 2026 CS2 build (BuildID fef8f668…), cut at its first call. That build inserted one virtual at
-// IVEngineServer2 slot 65, so each function sat one slot later than the compiled-in eiface.h index.
-// The cases are the exact wrong-slot calls that build caused or would have caused.
-// ---------------------------------------------------------------------------
-
-// Slot 81: GetPlayerInfo(slot, message&) — `mov %rdx,%r12` saves the output reference. The shim
-// called this as GetClientXUID(slot) and it wrote through an rdx we never set: THE join crash.
-static const uint8_t kEngGetPlayerInfo[] = {
-    0x48,0x8D,0x05,0xE9,0x63,0x56,0x00, 0x55, 0x48,0x89,0xE5, 0x41,0x54, 0x49,0x89,0xD4, 0x53,
-    0x89,0xF3, 0x48,0x8B,0x38, 0xE8,0x05,0x9B,0xED,0xFF };
-// Slot 82: the real GetClientXUID(slot) — `movsxd %esi,%rbx` and nothing else.
-static const uint8_t kEngGetClientXUID[] = {
-    0x48,0x8D,0x05,0x49,0x64,0x56,0x00, 0x55, 0x48,0x89,0xE5, 0x41,0x54, 0x53, 0x48,0x63,0xDE,
-    0x48,0x8B,0x38, 0xE8,0x67,0x9B,0xED,0xFF };
-// Slot 97: KickClient(slot, const char*, reason) — esi 32-bit, rdx 64-bit, ecx 32-bit.
-static const uint8_t kEngKickClient[] = {
-    0x55, 0x48,0x89,0xE5, 0x41,0x55, 0x41,0x89,0xCD, 0x41,0x54, 0x49,0x89,0xD4, 0x53, 0x89,0xF3,
-    0x48,0x83,0xEC,0x08, 0x48,0x8D,0x05,0x34,0x66,0x56,0x00, 0x48,0x8B,0x38, 0xE8,0x5C,0x9D,0xED,0xFF };
-// Slot 98: BanClient(slot, float, bool), KickClient's next-door neighbour — an off-by-one in a
-// hand-edited index lands here. A bool in edx (32-bit) and a float in xmm0 (`movss %xmm0,-0x44(%rbp)`).
-static const uint8_t kEngBanClient[] = {
-    0x55, 0x48,0x89,0xE5, 0x41,0x57, 0x41,0x56, 0x41,0x55, 0x41,0x89,0xD5, 0x41,0x54, 0x53,
-    0x48,0x63,0xDE, 0x48,0x83,0xEC,0x28, 0x48,0x8D,0x05,0x02,0x4F,0x56,0x00,
-    0xF3,0x0F,0x11,0x45,0xBC, 0x48,0x8B,0x38, 0xE8,0x25,0x86,0xED,0xFF };
-// Slot 90: the function now in the compiled-in GetClientListening slot — saves rsi AND rdx 64-bit.
-static const uint8_t kEngSlot90[] = {
-    0x48,0x8D,0x05,0xE9,0x65,0x56,0x00, 0x55, 0x48,0x89,0xE5, 0x41,0x54, 0x49,0x89,0xD4, 0x53,
-    0x48,0x89,0xF3, 0x48,0x8B,0x38, 0xE8,0x04,0x9D,0xED,0xFF };
-// Slot 92: SetClientListening(receiver, sender, bool) — esi, edx, ecx, all 32-bit.
-static const uint8_t kEngSetClientListening[] = {
-    0x55, 0x48,0x89,0xE5, 0x41,0x57, 0x41,0x56, 0x41,0x55, 0x41,0x89,0xCD, 0x41,0x54, 0x4C,0x63,0xE2,
-    0x53, 0x89,0xF3, 0x48,0x83,0xEC,0x08, 0x4C,0x8D,0x35,0x80,0x4C,0x56,0x00, 0x49,0x8B,0x3E,
-    0xE8,0xA8,0x83,0xED,0xFF };
-// Slot 46: ClientCommand(slot, fmt, ...) — the variadic save area spills rcx/r8/r9 whole.
-static const uint8_t kEngClientCommand[] = {
-    0x55, 0x48,0x89,0xE5, 0x41,0x57, 0x41,0x56, 0x41,0x55, 0x41,0x54, 0x49,0x89,0xD4, 0x53,
-    0x48,0x63,0xDE, 0x48,0x81,0xEC,0x48,0x01,0x00,0x00, 0x48,0x89,0x8D,0x38,0xFF,0xFF,0xFF,
-    0x4C,0x89,0x85,0x40,0xFF,0xFF,0xFF, 0x4C,0x89,0x8D,0x48,0xFF,0xFF,0xFF, 0x84,0xC0, 0x74,0x29 };
-
-using s2validate::kArgInt32;
-using s2validate::kArgPtr;
-using s2validate::kArgAny;
-
-static int Shape(const uint8_t* code, std::size_t n, std::initializer_list<uint8_t> kinds,
-                 int floats, char* r, int cap) {
-    std::vector<uint8_t> k(kinds);
-    auto mv = ViewOver(code, n);
-    return s2validate::CallShape(k.data(), static_cast<int>(k.size()), floats, mv, code, r, cap);
-}
-
-static void test_call_shape_refuses_the_join_crash() {
-    char r[320];
-    CHECK(Shape(kEngGetPlayerInfo, sizeof kEngGetPlayerInfo, { kArgPtr, kArgInt32 }, 0, r, sizeof r) == -1,
-          "call-shape: GetPlayerInfo is REFUSED as GetClientXUID(this, int) — the Oct 22 join crash");
-    CHECK(std::strstr(r, "argument 2") != nullptr, "and the reason names the argument we never pass");
-    CHECK(Shape(kEngGetClientXUID, sizeof kEngGetClientXUID, { kArgPtr, kArgInt32 }, 0, r, sizeof r) == 0,
-          "call-shape: the real GetClientXUID one slot later is accepted");
-}
-
-static void test_call_shape_refuses_ban_for_kick() {
-    char r[320];
-    const std::initializer_list<uint8_t> kick = { kArgPtr, kArgInt32, kArgPtr, kArgInt32 };
-    CHECK(Shape(kEngKickClient, sizeof kEngKickClient, kick, 0, r, sizeof r) == 0,
-          "call-shape: KickClient fits (this, int, const char*, int)");
-    CHECK(Shape(kEngBanClient, sizeof kEngBanClient, kick, 0, r, sizeof r) == -1,
-          "call-shape: BanClient is REFUSED as KickClient (it reads a bool where we pass a pointer)");
-    CHECK(Shape(kEngBanClient, sizeof kEngBanClient, { kArgPtr, kArgInt32, kArgInt32 }, 0, r, sizeof r) == -1,
-          "call-shape: and even with a matching integer shape, its float argument in xmm0 refuses it");
-    CHECK(std::strstr(r, "xmm0") != nullptr, "and that reason names xmm0");
-    CHECK(Shape(kEngBanClient, sizeof kEngBanClient, { kArgPtr, kArgInt32, kArgInt32 }, 1, r, sizeof r) == 0,
-          "call-shape: BanClient's own shape (this, int, float, bool) is accepted");
-}
-
-static void test_call_shape_listening_and_variadic() {
-    char r[320];
-    CHECK(Shape(kEngSlot90, sizeof kEngSlot90, { kArgPtr, kArgInt32, kArgInt32 }, 0, r, sizeof r) == -1,
-          "call-shape: the function in GetClientListening's old slot reads its args 64-bit — refused");
-    CHECK(Shape(kEngSetClientListening, sizeof kEngSetClientListening,
-                { kArgPtr, kArgInt32, kArgInt32, kArgInt32 }, 0, r, sizeof r) == 0,
-          "call-shape: SetClientListening fits (this, int, int, bool)");
-    CHECK(Shape(kEngClientCommand, sizeof kEngClientCommand,
-                { kArgPtr, kArgInt32, kArgPtr, kArgAny, kArgAny, kArgAny }, -1, r, sizeof r) == 0,
-          "call-shape: variadic ClientCommand fits once its register save area is declared kArgAny");
-    CHECK(Shape(kEngClientCommand, sizeof kEngClientCommand, { kArgPtr, kArgInt32, kArgPtr }, 0, r, sizeof r) == -1,
-          "call-shape: and a non-variadic shape for it is refused (it reads rcx/r8/r9)");
-}
-
-static void test_call_shape_absence_passes() {
-    static const uint8_t ret[] = { 0xC3 };
-    char r[320];
-    CHECK(Shape(ret, sizeof ret, { kArgPtr, kArgInt32 }, 0, r, sizeof r) == 0,
-          "call-shape: a function that reads nothing contradicts nothing (not proof)");
-    CHECK(std::strstr(r, "not proof") != nullptr, "and says so");
-}
-
 int main() {
-    test_call_shape_refuses_the_join_crash();
-    test_call_shape_refuses_ban_for_kick();
-    test_call_shape_listening_and_variadic();
-    test_call_shape_absence_passes();
     test_original_code_and_separate_live_reads();
     test_validated_call();
     std::cout << std::unitbuf;

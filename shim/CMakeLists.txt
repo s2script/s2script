@@ -21,6 +21,16 @@ set(HL2SDK ${CMAKE_SOURCE_DIR}/../third_party/hl2sdk)
 set(MMS    ${CMAKE_SOURCE_DIR}/../third_party/metamod-source)
 set(AMTL   ${MMS}/third_party/amtl)
 
+# Carried hl2sdk fixes (patches/hl2sdk/, see docs/BUILDING.md "Patching hl2sdk"): applied to the
+# vendored checkout before anything compiles against it. Idempotent, and fatal if a patch no
+# longer fits the pinned commit — building against an unpatched header is the bug they fix.
+execute_process(
+    COMMAND bash ${CMAKE_SOURCE_DIR}/../scripts/apply-hl2sdk-patches.sh
+    RESULT_VARIABLE S2_HL2SDK_PATCH_RC)
+if(NOT S2_HL2SDK_PATCH_RC EQUAL 0)
+    message(FATAL_ERROR "patches/hl2sdk did not apply to third_party/hl2sdk (see above)")
+endif()
+
 # Cargo profile directory the resident core (libs2script_core.so) was built into. `make shim` and
 # scripts/build-sniper.sh always build core as --release, so this defaults to "release" and is
 # unaffected. CI's cheap PR build compiles core in debug (no --release, much faster) and passes
@@ -300,6 +310,12 @@ execute_process(
     OUTPUT_VARIABLE S2_HL2SDK_SHA OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 if(NOT S2_HL2SDK_SHA)
     set(S2_HL2SDK_SHA "unknown")
+endif()
+# A crash envelope must say the headers were patched, and by how many carried fixes.
+file(GLOB S2_HL2SDK_PATCHES ${CMAKE_SOURCE_DIR}/../patches/hl2sdk/*.patch)
+list(LENGTH S2_HL2SDK_PATCHES S2_HL2SDK_PATCH_COUNT)
+if(S2_HL2SDK_PATCH_COUNT GREATER 0)
+    set(S2_HL2SDK_SHA "${S2_HL2SDK_SHA}+${S2_HL2SDK_PATCH_COUNT}p")
 endif()
 target_compile_definitions(s2script PRIVATE S2_HL2SDK_BUILD="${S2_HL2SDK_SHA}")
 

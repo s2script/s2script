@@ -327,7 +327,12 @@ git commit -m "chore: bump hl2sdk to <newsha>"
 - Make the change directly in `third_party/hl2sdk`.
 - Export it: `git -C third_party/hl2sdk diff HEAD > patches/hl2sdk/NNNN-description.patch`
   (use `diff HEAD` — plain `diff` silently drops staged hunks).
-- Patches in `patches/hl2sdk/` are re-applied in order on a fresh checkout.
+- Patches in `patches/hl2sdk/` are re-applied in order on a fresh checkout by
+  `scripts/apply-hl2sdk-patches.sh`, which the shim's cmake configure runs (idempotent; it fails
+  the configure if a patch no longer fits the pinned commit). The crash identity's hl2sdk stamp
+  gets a `+Np` suffix while patches are carried.
+- Carried now: `0001-ivengineserver2-slot-65.patch` (the Oct 22 2026 `IVEngineServer2` insertion,
+  s2sdk #116). Drop it when the submodule moves to a commit that has it.
 - Every patch is reviewed and tracked in the update-day fire drill.
 
 **Interface version strings live in the `gamedata/` tree** (owner-scoped: `gamedata/core/` for
