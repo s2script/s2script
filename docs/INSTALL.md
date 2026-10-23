@@ -277,20 +277,33 @@ hook. Check the startup log:
 - Re-check `gameinfo.gi` — a full game re-download often removes the Metamod SearchPath; re-apply the patch above.
 - If signatures/offsets moved, install a newer s2script release (updated `gamedata/` tree and/or binaries). Prefer replacing the whole zip contents rather than mixing versions.
 
-### Hot-fixing a moved engine slot (IVEngineServer2)
+### Hot-fixing a moved engine slot or hook
 
-Every engine call s2script makes on `IVEngineServer2` (kick, chat/console print, client convars,
-user ids, server commands, voice listening) goes through a vtable **index from gamedata**
-(`gamedata/core/game.cs2.jsonc`, entries `IVEngineServer2_*`), checked at boot before anything calls
-it. When a CS2 update inserts or removes an engine virtual, boot says so instead of crashing:
+Every engine virtual s2script calls or hooks goes through a vtable **index from gamedata**
+(`gamedata/core/game.cs2.jsonc`), checked at boot before anything calls or hooks it:
+
+- the calls on `IVEngineServer2` (kick, chat/console print, client convars, user ids, server
+  commands, voice listening), entries `IVEngineServer2_*`;
+- the interface hooks (GameFrame, the client lifecycle and command hooks, CheckTransmit, FireEvent,
+  PostEventAbstract, StartupServer, DispatchConCommand, the shutdown markers), entries
+  `ISource2Server_*`, `ISource2GameClients_*`, `ICvar_*` and so on.
+
+Each interface also has a `<Interface>_vtableSize` entry: the slot count of the live vtable the
+indices were verified against. When a CS2 update inserts or removes a virtual, boot says so
+instead of crashing:
 
 ```
-[s2script] IVEngineServer2: live vtable 124 slots, gamedata pin 123 — MISMATCH: engine slots disabled until gamedata is re-verified
+[s2script] IVEngineServer2: live vtable 124 slots, gamedata pin 123 — MISMATCH: its slots are disabled until gamedata is re-verified
 [s2script]   gamedata FAIL  IVEngineServer2_KickClient — IVEngineServer2 has 124 slots but gamedata was verified against 123 — the layout moved; slot disabled. Re-verify IVEngineServer2_KickClient (gamedata index 97, verified for the OLD layout; shape-compatible nearby: 96, 97) ...
 ```
 
-Those ops then do nothing (a kick is not delivered, a print is skipped) until the indices are
-fixed; nothing else is affected, and the server keeps running. The fix is a `custom/` file with the
+A mismatch is strict on purpose: it disables every slot of that interface, even when Valve only
+appended a function and the old index still happens to be right, because a wrong index calls or
+hooks some other function. For `ISource2Server` that includes GameFrame, so **s2script idles
+(no plugin loads) until the gamedata is fixed**; the server itself keeps running.
+
+Disabled engine calls do nothing (a kick is not delivered, a print is skipped), and a disabled
+hook is not installed and names the feature that is off. The fix is a `custom/` file with the
 re-verified indices **and** the new slot count — no new binary:
 
 ```jsonc

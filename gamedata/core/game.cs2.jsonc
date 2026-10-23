@@ -105,7 +105,52 @@
     "IVEngineServer2_GetClientConVarValue": { "linuxsteamrt64": 53 },
     "IVEngineServer2_GetClientListening":   { "linuxsteamrt64": 91 },
     "IVEngineServer2_SetClientListening":   { "linuxsteamrt64": 92 },
-    "IVEngineServer2_KickClient":           { "linuxsteamrt64": 97 }
+    "IVEngineServer2_KickClient":           { "linuxsteamrt64": 97 },
+
+    // Interface HOOK slots: the vtable index each KHook installs on, and the live slot count of
+    // the object it hooks. Same check as the engine slots above (S2_ResolveHookSlots runs it as
+    // each interface is acquired): a pin mismatch disables every hook on that interface, a failed
+    // entry disables that one hook, and the boot log names the shape-compatible candidates.
+    //
+    // Verified against the Oct 22 2026 build: libserver.so BuildID
+    // 2603388aa1b1fb9afd7ac31b1c878b98f253c668, libengine2.so fef8f668d215535dbc7fcfc00c073887abeffe72,
+    // libtier0.so 4a3d259a2690e035fef691d038050f08eec3b6ca. Each vtable was found through RTTI and
+    // each target's argument use checked with CallShape; all match the hl2sdk header indices and
+    // Swiftly's post-update gamedata. The pinned size is the IMPLEMENTING class's vtable, which is
+    // what the interface pointer points at, so it is larger than the header when the class adds
+    // virtuals of its own:
+    //   ISource2Server        CSource2Server            libserver.so
+    //   ISource2ServerConfig  CCSGameConfiguration      libserver.so (secondary vtable, offset 8)
+    //   ISource2GameClients   CSource2GameClients       libserver.so
+    //   ISource2GameEntities  CSource2GameEntities      libserver.so
+    //   IGameEventManager2    CGameEventManager         libserver.so
+    //   IGameEventSystem      CGameEventSystem          libengine2.so
+    //   INetworkServerService CNetworkServerService     libengine2.so
+    //   ICvar                 CCvar                     libtier0.so
+    "ISource2Server_vtableSize":                  { "linuxsteamrt64": 104 },
+    "ISource2Server_GameFrame":                   { "linuxsteamrt64": 19 },
+    "ISource2ServerConfig_vtableSize":            { "linuxsteamrt64": 29 },
+    "ISource2ServerConfig_Shutdown":              { "linuxsteamrt64": 4 },
+    "ISource2ServerConfig_PreShutdown":           { "linuxsteamrt64": 5 },
+    "ISource2GameClients_vtableSize":             { "linuxsteamrt64": 46 },
+    "ISource2GameClients_OnClientConnected":      { "linuxsteamrt64": 11 },
+    "ISource2GameClients_ClientPutInServer":      { "linuxsteamrt64": 13 },
+    "ISource2GameClients_ClientActive":           { "linuxsteamrt64": 14 },
+    "ISource2GameClients_ClientFullyConnect":     { "linuxsteamrt64": 15 },
+    "ISource2GameClients_ClientDisconnect":       { "linuxsteamrt64": 16 },
+    "ISource2GameClients_ClientCommand":          { "linuxsteamrt64": 17 },
+    "ISource2GameClients_ClientSettingsChanged":  { "linuxsteamrt64": 19 },
+    "ISource2GameClients_ClientVoice":            { "linuxsteamrt64": 27 },
+    "ISource2GameEntities_vtableSize":            { "linuxsteamrt64": 21 },
+    "ISource2GameEntities_CheckTransmit":         { "linuxsteamrt64": 13 },
+    "IGameEventManager2_vtableSize":              { "linuxsteamrt64": 17 },
+    "IGameEventManager2_FireEvent":               { "linuxsteamrt64": 8 },
+    "IGameEventSystem_vtableSize":                { "linuxsteamrt64": 21 },
+    "IGameEventSystem_PostEventAbstract":         { "linuxsteamrt64": 15 },
+    "INetworkServerService_vtableSize":           { "linuxsteamrt64": 53 },
+    "INetworkServerService_StartupServer":        { "linuxsteamrt64": 27 },
+    "ICvar_vtableSize":                           { "linuxsteamrt64": 46 },
+    "ICvar_DispatchConCommand":                   { "linuxsteamrt64": 20 }
   },
   // Byte signatures for un-exported engine globals (Slice 5D.2). Layout-is-data: the pattern +
   // module are regenerable per CS2 patch from the documented RTTI->vtable->xref anchors (see
