@@ -9795,7 +9795,7 @@
             globalThis.__s2pkg_votes.Vote.start({ question:"Kick Rex?", options:["Yes","No"], duration:2, onEnd:function(){} });
             JSON.stringify(sent);
         "#);
-        assert_eq!(out, r#"["[Vote] Kick Rex? — Tab, or type 1–2"]"#);
+        assert_eq!(out, r#"["[Vote] Kick Rex? — hold Tab to click, or type 1–2"]"#);
         shutdown();
     }
 

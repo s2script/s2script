@@ -2385,7 +2385,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       __s2_vote_state = st;
       // ONE LINE. Options live on the CS2 right-side rail (or are typed as 1–N). Printing the
       // list here doubled the ballot and wrapped badly once a vote carried several map names.
-      globalThis.__s2pkg_chat.Chat.toAll("[Vote] " + st.question + " — Tab, or type 1–" + st.options.length);
+      globalThis.__s2pkg_chat.Chat.toAll("[Vote] " + st.question + " — hold Tab to click, or type 1–" + st.options.length);
       __s2_vote_showTally(st);
       __s2_vote_tick(st);                                         // starts the countdown + end
       return true;
