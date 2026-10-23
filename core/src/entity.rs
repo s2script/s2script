@@ -648,6 +648,103 @@ fn s2_ent_ref_read_floats_chain(scope: &mut v8::PinScope, args: v8::FunctionCall
     }));
 }
 
+/// Element width in bytes for the scalar kinds `__s2_ent_ref_gather` accepts (64-bit integers are
+/// refused: a Float64Array cannot carry them losslessly).
+fn gather_width(kind: i64) -> Option<i32> {
+    match kind {
+        KIND_I32 | KIND_F32 | KIND_U32 => Some(4),
+        KIND_BOOL | KIND_I8 | KIND_U8 => Some(1),
+        KIND_I16 | KIND_U16 => Some(2),
+        KIND_F64 => Some(8),
+        _ => None,
+    }
+}
+
+/// Native `__s2_ent_ref_gather(index, serial, plan: Int32Array, out: Float64Array, outIndex) -> number`.
+///
+/// The zero-allocation bulk read for per-tick hot paths (a run timer recording every player every
+/// tick): one liveness resolve, then every field the plan names, written as numbers into the
+/// caller's preallocated `out` from `outIndex`. No JS array, Vector or per-field native call.
+///
+/// `plan` is a flat run of entries, each `[hops, hop0..hopN-1, finalOff, kind, count]`: follow
+/// `hops` pointer derefs (null-checked, raw pointers stay in core), then read `count` (1..=16)
+/// contiguous elements of `kind` at `finalOff`. An entry whose chain hits a null hop writes NaN for
+/// its `count` slots and the rest of the plan still runs. Returns the number of slots written, or
+/// -1 when the root is stale. A malformed plan (bad kind/count/offset, or `out` too short for the
+/// whole plan) writes nothing and returns -2, so a partial snapshot can never look complete.
+fn s2_ent_ref_gather(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(-2);
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let id = js_ent_id(scope, args.get(1));
+        let Ok(plan) = v8::Local::<v8::Int32Array>::try_from(args.get(2)) else { return; };
+        let Ok(out) = v8::Local::<v8::Float64Array>::try_from(args.get(3)) else { return; };
+        let out_index = args.get(4).integer_value(scope).unwrap_or(0);
+        if out_index < 0 { return; }
+        // Copy the (small) plan out first: validating it fully before touching `out` is what
+        // makes a malformed plan all-or-nothing.
+        let plan_len = plan.byte_length() / 4;
+        let mut words = vec![0i32; plan_len];
+        {
+            let bytes = unsafe { std::slice::from_raw_parts_mut(words.as_mut_ptr() as *mut u8, plan_len * 4) };
+            plan.copy_contents(bytes);
+        }
+        let mut need = 0usize;
+        let mut i = 0usize;
+        while i < words.len() {
+            let hops = words[i];
+            if hops < 0 || hops > 8 { return; }
+            let end = i + 1 + hops as usize + 3;
+            if end > words.len() { return; }
+            if words[i + 1..i + 1 + hops as usize].iter().any(|&o| o < 0) { return; }
+            let final_off = words[end - 3];
+            let kind = words[end - 2] as i64;
+            let count = words[end - 1];
+            if final_off < 0 || gather_width(kind).is_none() || !(1..=16).contains(&count) { return; }
+            need += count as usize;
+            i = end;
+        }
+        let out_len = out.byte_length() / 8;
+        if out_index as usize + need > out_len { return; }
+        let ent = entity_resolve_ptr(index, id);
+        if ent.is_null() { rv.set_int32(-1); return; }
+        let dst = unsafe { (out.data() as *mut f64).add(out_index as usize) };
+        let mut w = 0usize;
+        let mut i = 0usize;
+        while i < words.len() {
+            let hops = words[i] as usize;
+            let mut p = ent as *const u8;
+            for h in 0..hops {
+                if p.is_null() { break; }
+                p = crate::entity::read_ptr(p, words[i + 1 + h]);
+            }
+            let base = i + 1 + hops;
+            let (final_off, kind, count) = (words[base], words[base + 1] as i64, words[base + 2]);
+            let width = gather_width(kind).unwrap_or(4);
+            for k in 0..count {
+                let off = final_off + k * width;
+                let v = if p.is_null() { f64::NAN } else {
+                    match kind {
+                        KIND_I32  => crate::entity::read_i32(p, off) as f64,
+                        KIND_F32  => crate::entity::read_f32(p, off) as f64,
+                        KIND_U32  => crate::entity::read_u32(p, off) as f64,
+                        KIND_BOOL => if crate::entity::read_bool(p, off) { 1.0 } else { 0.0 },
+                        KIND_I8   => crate::entity::read_i8(p, off) as f64,
+                        KIND_U8   => crate::entity::read_u8(p, off) as f64,
+                        KIND_I16  => crate::entity::read_i16(p, off) as f64,
+                        KIND_U16  => crate::entity::read_u16(p, off) as f64,
+                        _         => crate::entity::read_f64(p, off),
+                    }
+                };
+                unsafe { dst.add(w).write_unaligned(v); }
+                w += 1;
+            }
+            i = base + 3;
+        }
+        rv.set_int32(w as i32);
+    }));
+}
+
 /// Native `__s2_ent_ref_read_chain(index, serial, pathOffs, finalOff, kind) -> value | null`. Follows a chain
 /// of pointer derefs (each i32 offset in `pathOffs`), then reads a SCALAR of `kind` at `finalOff`. Serial-gated
 /// at the root; each hop null-checked; the raw intermediate pointers never cross to JS. Vectors use
@@ -1330,6 +1427,7 @@ pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_ent_ref_read_floats", s2_ent_ref_read_floats);
     set_native(scope, global_obj, "__s2_ent_ref_read_floats_chain", s2_ent_ref_read_floats_chain);
     set_native(scope, global_obj, "__s2_ent_ref_read_chain", s2_ent_ref_read_chain);
+    set_native(scope, global_obj, "__s2_ent_ref_gather", s2_ent_ref_gather);
     set_native(scope, global_obj, "__s2_ent_ref_write_chain", s2_ent_ref_write_chain);
     set_native(scope, global_obj, "__s2_ent_ref_state_changed", s2_ent_ref_state_changed);
     set_native(scope, global_obj, "__s2_ent_id_for_index", s2_ent_id_for_index);

@@ -80,6 +80,9 @@
     "./http": {
       "types": "./http.d.ts"
     },
+    "./files": {
+      "types": "./files.d.ts"
+    },
     "./interfaces": {
       "types": "./interfaces.d.ts"
     },

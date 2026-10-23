@@ -217,6 +217,8 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
         "__s2_server_game_time",
         s2_server_game_time,
     );
+    set_native(scope, global_obj, "__s2_server_tick_count", s2_server_tick_count);
+    set_native(scope, global_obj, "__s2_server_tick_interval", s2_server_tick_interval);
     // Slice 6.2 Task 2: config-bridge natives for the admin module (file load/write).
     set_native(
         scope,
@@ -275,6 +277,7 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     );
     // Slice HTTP Task 2: async fetch over the process-global tokio+reqwest engine (core/src/http.rs).
     crate::http::install_natives(scope, global_obj);
+    crate::files::install_natives(scope, global_obj);
     // WebSocket Task 2: client ws over the process-global tokio+tungstenite engine (core/src/ws.rs).
     set_native(scope, global_obj, "__s2_ws_connect", s2_ws_connect);
     crate::ws::install_natives(scope, global_obj);

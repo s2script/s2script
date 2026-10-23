@@ -1057,6 +1057,7 @@ thread_local! {
     static CALLBACK_CURSOR:std::cell::Cell<usize>=const {std::cell::Cell::new(0)};
     static PARKED_HTTP:std::cell::RefCell<Option<crate::http::FetchCompletion>>=const {std::cell::RefCell::new(None)};
     static PARKED_DB:std::cell::RefCell<Option<crate::db::DbCompletion>>=const {std::cell::RefCell::new(None)};
+    static PARKED_FILES:std::cell::RefCell<Option<crate::files::FileCompletion>>=const {std::cell::RefCell::new(None)};
 }
 // ---------------------------------------------------------------------------
 // WebSocket (client) Task 2: __s2_ws_* natives + signal routing + teardown.
@@ -5134,6 +5135,22 @@ fn s2_server_game_time(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArgu
     }));
 }
 
+/// `__s2_server_tick_count() -> number` — the simulation tick (GetGlobals()->tickcount). 0 without the op.
+fn s2_server_tick_count(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let t = ENGINE_OPS.with(|o| o.get()).and_then(|ops| ops.server_tick_count).map(|f| f()).unwrap_or(0);
+        rv.set_int32(t);
+    }));
+}
+
+/// `__s2_server_tick_interval() -> number` — seconds per simulation tick (shim-derived). 0 without the op.
+fn s2_server_tick_interval(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let t = ENGINE_OPS.with(|o| o.get()).and_then(|ops| ops.server_tick_interval).map(|f| f()).unwrap_or(0.0);
+        rv.set_double(t as f64);
+    }));
+}
+
 /// `__s2_config_read_raw(id) -> string | null` — read a config file by id; null if no op / file absent.
 /// Bridge for the @s2script/admin JS module so it can read admins.json via the config_read op.
 fn s2_config_read_raw(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
@@ -5293,6 +5310,11 @@ fn db_data_dir() -> Option<String> {
     ENGINE_OPS.with(|o| o.get())
         .and_then(|ops| ops.db_data_dir)
         .map(|f| unsafe { std::ffi::CStr::from_ptr(f()) }.to_string_lossy().into_owned())
+}
+
+/// The s2script data directory for `@s2script/sdk/files` (the same root SQLite databases use).
+pub(crate) fn files_data_dir() -> Option<String> {
+    db_data_dir()
 }
 
 /// Native `__s2_sqlite_open(name: string) -> Promise<number>`. Opens (or creates)
@@ -6017,6 +6039,7 @@ pub fn shutdown() {
         while pool().try_recv_completed().is_some() {}
         while crate::http::try_recv_completed().is_some() {}
         while crate::db::try_recv_completed().is_some() {}
+        while crate::files::try_recv_completed().is_some() {}
         while crate::ws::try_recv_signal().is_some() {}
         while crate::net::try_recv_signal().is_some() {}
     });
@@ -6142,6 +6165,22 @@ fn resolve_fetch(
     );
 }
 
+/// Resolve (or drop, on the async-liveness guard) a completed `__s2_files_op` job in its owning
+/// plugin's context: the operation's value on success, an `Error` on failure.
+fn resolve_files(
+    host: &mut Host,
+    entry: &crate::jobs::ResolverEntry,
+    result: Result<crate::files::FileOutput, String>,
+) {
+    crate::jobs::settle_if_live(&mut host.isolate, &host.context, entry, |scope, resolver| match result {
+        Ok(out) => {
+            let v = crate::files::output_to_js(scope, out);
+            resolver.resolve(scope, v);
+        }
+        Err(e) => crate::jobs::reject(scope, resolver, &e),
+    });
+}
+
 /// Per-frame async drain: resolve every due timer + completed job IN ITS OWNING PLUGIN CONTEXT
 /// (dropping any whose plugin is gone/reloaded — the async-liveness guard), advance the frame
 /// counter, then run the single V8 microtask checkpoint for this frame.  Called once per Post-phase
@@ -6223,11 +6262,11 @@ pub(crate) fn frame_async_drain() {
             let source = *frame_cursor.get_or_insert_with(|| {
                 POLL_CURSOR.with(|v| {
                     let first = v.get();
-                    v.set((first + 1) % 6);
+                    v.set((first + 1) % 7);
                     first
                 })
             });
-            frame_cursor = Some((source + 1) % 6);
+            frame_cursor = Some((source + 1) % 7);
             let mut progress = false;
             match source {
                 0 => {
@@ -6307,7 +6346,7 @@ pub(crate) fn frame_async_drain() {
                         ws_drops.extend(poll.drops);
                     }
                 }
-                _ => {
+                5 => {
                     if crate::async_limits::can_deliver(
                         crate::async_limits::policy().failure_bytes,
                         true,
@@ -6325,12 +6364,28 @@ pub(crate) fn frame_async_drain() {
                         net_drops.extend(poll.drops);
                     }
                 }
+                _ => {
+                    let c = PARKED_FILES
+                        .with(|v| v.borrow_mut().take())
+                        .or_else(crate::files::try_recv_completed);
+                    if let Some(c) = c {
+                        if crate::async_limits::can_deliver(c.lease.bytes(), true) {
+                            crate::async_limits::deliver(c.lease.bytes());
+                            progress = true;
+                            if let Some(entry) = crate::jobs::complete_job(c.id) {
+                                resolve_files(host, &entry, c.result);
+                            }
+                        } else {
+                            PARKED_FILES.with(|v| *v.borrow_mut() = Some(c));
+                        }
+                    }
+                }
             }
             if progress {
                 empty = 0;
             } else {
                 empty += 1;
-                if empty >= 6 {
+                if empty >= 7 {
                     break;
                 }
             }

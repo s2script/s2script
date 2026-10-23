@@ -88,6 +88,25 @@ export declare class EntityRef {
    *  at `finalOff` into a number[]. All in-core (raw pointers never cross); null if the root is stale or any hop
    *  is null. */
   readFloatsChain(ptrOffs: number[], finalOff: number, count: number): number[] | null;
+  /**
+   * Zero-allocation bulk read for per-tick hot paths: one liveness check, then every field `plan`
+   * names, written as numbers into your preallocated `out` starting at `outIndex` (default 0).
+   *
+   * `plan` is a flat run of entries `[hops, hop0..hopN-1, finalOff, kind, count]`: follow `hops`
+   * (0..8) pointer offsets, then read `count` (1..16) contiguous {@link GatherKind} elements at
+   * `finalOff`. An entry whose chain hits a null pointer writes `NaN` into its slots; the rest of
+   * the plan still runs. Build the plan once and reuse both arrays every tick.
+   *
+   * Returns the slot count written, `-1` when the ref is stale, or `-2` for a malformed plan or an
+   * `out` too short for the whole plan (nothing is written in either failure case).
+   * @example
+   * import { GatherKind } from "@s2script/sdk/entity";
+   * // two floats at +0x10, then one u8 behind the pointer at +0x30
+   * const plan = new Int32Array([0, 0x10, GatherKind.Float32, 2, 1, 0x30, 0x8, GatherKind.UInt8, 1]);
+   * const out = new Float64Array(3);
+   * if (ref.gather(plan, out) === 3) console.log(out[0], out[1], out[2]);
+   */
+  gather(plan: Int32Array, out: Float64Array, outIndex?: number): number;
   /** The `Vector` at `offset`, or null if the ref is stale. */
   readVector(offset: number): Vector | null;
   /** The `QAngle` at `offset`, or null if the ref is stale. */
@@ -211,6 +230,19 @@ export declare class EntityRef {
    *  this same tick — NOT synchronous-within-the-call). Returns false with no op / a stale ref. */
   acceptInput(input: string, value?: string, activator?: EntityRef, caller?: EntityRef, delay?: number): boolean;
 }
+
+/** Element kinds for {@link EntityRef.gather} plans — the scalar kinds a `Float64Array` holds exactly. */
+export declare const GatherKind: {
+  readonly Int32: number;
+  readonly Float32: number;
+  readonly Bool: number;
+  readonly Int8: number;
+  readonly Int16: number;
+  readonly UInt8: number;
+  readonly UInt16: number;
+  readonly UInt32: number;
+  readonly Float64: number;
+};
 
 /** Keyvalues for a CEntityKeyValues-configured spawn. Inference: string -> SetString,
  *  boolean -> SetBool, integer (int32) -> SetInt, other finite number -> SetFloat.

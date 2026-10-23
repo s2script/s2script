@@ -258,6 +258,8 @@ pub type FunctionFrameReadInstanceFn = extern "C" fn(*const S2FunctionInstanceAc
 pub type FunctionFrameFieldReadFn = extern "C" fn(*const S2FunctionInstanceAccess, c_int, u32, *mut S2FunctionValue, *mut c_char, c_int) -> c_int;
 pub type FunctionFrameFieldWriteFn = extern "C" fn(*const S2FunctionInstanceAccess, c_int, u32, *const S2FunctionValue, *mut c_char, c_int) -> c_int;
 pub type FunctionFrameHiddenReferencedByFn = extern "C" fn(*const S2FunctionInstanceAccess, c_int, *const S2FunctionValue, u32, *mut c_int, *mut c_char, c_int) -> c_int;
+pub type ServerTickCountFn = extern "C" fn() -> c_int;
+pub type ServerTickIntervalFn = extern "C" fn() -> f32;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -452,6 +454,9 @@ pub struct S2EngineOps {
     pub function_frame_field_read: Option<FunctionFrameFieldReadFn>,
     pub function_frame_field_write: Option<FunctionFrameFieldWriteFn>,
     pub function_frame_hidden_referenced_by: Option<FunctionFrameHiddenReferencedByFn>,
+    // --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick ---
+    pub server_tick_count: Option<ServerTickCountFn>,
+    pub server_tick_interval: Option<ServerTickIntervalFn>,
 }
 
 impl S2EngineOps {

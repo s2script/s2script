@@ -47,6 +47,7 @@ mod commands;
 mod events;
 pub(crate) mod extensions;
 mod ffi;
+mod files;
 mod gamedata_calls;
 mod gamedata_hooks;
 mod http;

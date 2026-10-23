@@ -234,6 +234,8 @@ typedef int (*s2_function_frame_read_instance_fn)(const S2FunctionInstanceAccess
 typedef int (*s2_function_frame_field_read_fn)(const S2FunctionInstanceAccess* access, int selector, unsigned int field, S2FunctionValue* out, char* reason, int cap);
 typedef int (*s2_function_frame_field_write_fn)(const S2FunctionInstanceAccess* access, int selector, unsigned int field, const S2FunctionValue* value, char* reason, int cap);
 typedef int (*s2_function_frame_hidden_referenced_by_fn)(const S2FunctionInstanceAccess* access, int selector, const S2FunctionValue* entity, unsigned int offset, int* out, char* reason, int cap);
+typedef int (*s2_server_tick_count_fn)(void);
+typedef float (*s2_server_tick_interval_fn)(void);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -423,4 +425,7 @@ typedef struct {
     s2_function_frame_field_read_fn function_frame_field_read;
     s2_function_frame_field_write_fn function_frame_field_write;
     s2_function_frame_hidden_referenced_by_fn function_frame_hidden_referenced_by;
+    /* --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick --- */
+    s2_server_tick_count_fn server_tick_count;
+    s2_server_tick_interval_fn server_tick_interval;
 } S2EngineOps;

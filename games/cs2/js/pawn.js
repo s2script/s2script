@@ -105,6 +105,12 @@
   refPlan("writeInt32Via writeFloat32Via readFloatsChain", function (a) { return [refPath(a[0]), Number(a[1]), Number(a[2])]; });
   refPlan("writeBoolVia", function (a) { return [refPath(a[0]), Number(a[1]), !!a[2]]; });
   refPlan("readHandleVector", function (a) { return [refPath(a[0]), Number(a[1]), a[2] == null ? 64 : Number(a[2])]; });
+  // gather writes INTO `out`, so the caller's typed arrays pass through by identity (a typed array
+  // has no user getters to run); anything else becomes an empty array the native rejects (-2).
+  refPlan("gather", function (a) {
+    return [a[0] instanceof Int32Array ? a[0] : new Int32Array(0),
+      a[1] instanceof Float64Array ? a[1] : new Float64Array(0), a[2] == null ? 0 : Number(a[2])];
+  });
   refPlan("setModel stopSound", function (a) { return [String(a[0])]; });
   refPlan("setBodyGroupByName", function (a) { return [String(a[0]), Number(a[1])]; });
   refPlan("teleport", function (a) { return [refVector(a[0]), refVector(a[1]), refVector(a[2])]; });
@@ -120,6 +126,7 @@
   function staleRefResult(method) {
     if (method === "notifyStateChanged") return undefined;
     if (method === "readHandleVector") return [];
+    if (method === "gather") return -1;
     return method.indexOf("read") === 0 || method === "identityFlags" || method === "clearIdentityFlags" ? null : false;
   }
   var playerRefClients = new WeakMap();
@@ -158,6 +165,34 @@
   // slot is 0-based (CPlayerSlot); the controller entity index is slot+1.
   Object.defineProperty(Player.prototype, "slot", {
     get: function () { return this.ref.index - 1; }, enumerable: true, configurable: true,
+  });
+
+  // player.observerTarget / observerMode — who a dead or spectating player is watching, through the
+  // controller's m_hObserverPawn -> m_pObserverServices -> m_hObserverTarget (books-gated adopt at
+  // both handle hops). null/-1 for a living player (no observer pawn) or when nothing resolves.
+  function observerPawnRef(player) {
+    var off = __s2_schema_offset("CCSPlayerController", "m_hObserverPawn");
+    return off < 0 ? null : player.ref.readHandle(off);
+  }
+  Object.defineProperty(Player.prototype, "observerTarget", {
+    get: function () {
+      var obs = observerPawnRef(this);
+      var svc = __s2_schema_offset("CBasePlayerPawn", "m_pObserverServices");
+      var tgt = __s2_schema_offset("CPlayer_ObserverServices", "m_hObserverTarget");
+      if (!obs || svc < 0 || tgt < 0) return null;
+      var t = obs.readHandleVia([svc], tgt);
+      return t ? new Pawn(t) : null;
+    }, enumerable: true, configurable: true,
+  });
+  Object.defineProperty(Player.prototype, "observerMode", {
+    get: function () {
+      var obs = observerPawnRef(this);
+      var svc = __s2_schema_offset("CBasePlayerPawn", "m_pObserverServices");
+      var mode = __s2_schema_offset("CPlayer_ObserverServices", "m_iObserverMode");
+      if (!obs || svc < 0 || mode < 0) return -1;
+      var v = obs.readUInt8Via([svc], mode);
+      return v === null ? -1 : v;
+    }, enumerable: true, configurable: true,
   });
 
   // player.pawn -> the typed body via m_hPlayerPawn (shadows the raw generated `pawn` = m_hPawn).
@@ -394,6 +429,44 @@
     var ok = this.ref.writeFloat32(off, +x) && this.ref.writeFloat32(off + 4, +y) && this.ref.writeFloat32(off + 8, +z);
     if (ok) this.ref.notifyStateChanged(off);
     return !!ok;
+  };
+
+  // pawn.readKinematics(out, i) — the per-tick movement snapshot, allocation-free: ONE gather native
+  // call fills 13 slots of a caller-owned Float64Array (origin xyz, eye angles pitch/yaw/roll, abs
+  // velocity xyz, m_fFlags, m_MoveType, duck amount, held buttons low 32 bits). Built for run timers / replay recorders that
+  // sample every player every tick, where the generated getters would allocate a Vector per field.
+  // The plan is compiled once from live schema offsets; any unresolved offset disables it (false).
+  var KINEMATICS_SLOTS = 13;
+  var kinematicsPlan;   // undefined = not built yet; null = an offset did not resolve
+  function buildKinematicsPlan() {
+    var GK = globalThis.__s2pkg_entity && globalThis.__s2pkg_entity.GatherKind;
+    var body = __s2_schema_offset("CBaseEntity", "m_CBodyComponent");
+    var node = __s2_schema_offset("CBodyComponent", "m_pSceneNode");
+    var abs = __s2_schema_offset("CGameSceneNode", "m_vecAbsOrigin");
+    var eye = __s2_schema_offset("CCSPlayerPawn", "m_angEyeAngles");
+    var vel = __s2_schema_offset("CBaseEntity", "m_vecAbsVelocity");
+    var flg = __s2_schema_offset("CBaseEntity", "m_fFlags");
+    var mt = __s2_schema_offset("CBaseEntity", "m_MoveType");
+    var ms = __s2_schema_offset("CBasePlayerPawn", "m_pMovementServices");
+    var duck = __s2_schema_offset("CCSPlayer_MovementServices", "m_flDuckAmount");
+    var btn = __s2_schema_offset("CPlayer_MovementServices", "m_nButtons");
+    var btnState = __s2_schema_offset("CInButtonState", "m_pButtonStates");
+    if (!GK || body < 0 || node < 0 || abs < 0 || eye < 0 || vel < 0 || flg < 0 || mt < 0 || ms < 0 || duck < 0 || btn < 0 || btnState < 0) return null;
+    return new Int32Array([
+      2, body, node, abs, GK.Float32, 3,
+      0, eye, GK.Float32, 3,
+      0, vel, GK.Float32, 3,
+      0, flg, GK.UInt32, 1,
+      0, mt, GK.UInt8, 1,
+      1, ms, duck, GK.Float32, 1,
+      1, ms, btn + btnState, GK.UInt32, 1,   // m_pButtonStates[0] low word == pawn.buttons
+    ]);
+  }
+  Pawn.KINEMATICS_SLOTS = KINEMATICS_SLOTS;
+  Pawn.prototype.readKinematics = function (out, outIndex) {
+    if (kinematicsPlan === undefined) kinematicsPlan = buildKinematicsPlan();
+    if (kinematicsPlan === null) return false;
+    return this.ref.gather(kinematicsPlan, out, outIndex === undefined ? 0 : outIndex) === KINEMATICS_SLOTS;
   };
 
   // --- Item / weapon manipulation slice (Task 4): pawn.giveNamedItem/weapons/stripWeapons/

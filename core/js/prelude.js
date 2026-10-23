@@ -426,6 +426,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     writeString:      function (o, maxLen, s) { return __s2_ent_ref_write_string(this.index, this.id, o, maxLen, String(s)); },
     readFloats:       function (o, count)  { return __s2_ent_ref_read_floats(this.index, this.id, o, count); },
     readFloatsChain: function (chain, finalOff, count) { return __s2_ent_ref_read_floats_chain(this.index, this.id, chain, finalOff, count); },
+    gather:          function (plan, out, outIndex) { return __s2_ent_ref_gather(this.index, this.id, plan, out, outIndex === undefined ? 0 : outIndex); },
     readInt32Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.id, c, o, K.I32); },
     writeInt32Via: function (c, o, v) { return __s2_ent_ref_write_chain(this.index, this.id, c, o, K.I32, v); },
     readInt8Via:   function (c, o) { return __s2_ent_ref_read_chain(this.index, this.id, c, o, K.I8); },
@@ -1105,7 +1106,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     stats: function () { return __s2_voice_audible_stats(); }
   };
   globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle, forwardVector: forwardVector };
-  globalThis.__s2pkg_entity     = { EntityRef: EntityRef, createEntity: createEntity, Entity: Entity };
+  // Element kinds for EntityRef.gather plans (the scalar KIND_* subset a Float64Array carries exactly).
+  var GatherKind = Object.freeze({ Int32: K.I32, Float32: K.F32, Bool: K.BOOL, Int8: K.I8, Int16: K.I16,
+    UInt8: K.U8, UInt16: K.U16, UInt32: K.U32, Float64: K.F64 });
+  globalThis.__s2pkg_entity     = { EntityRef: EntityRef, createEntity: createEntity, Entity: Entity, GatherKind: GatherKind };
   // After EntityRef.prototype is final: interop copies check references against it.
   if (interopFacade) interopFacade.init(EntityRef);
   globalThis.__s2pkg_transmit  = { Transmit: Transmit };
@@ -1285,6 +1289,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     get maxPlayers() { return __s2_server_max_clients(); },   // GetMaxClients(); 0 if unavailable
     get mapName() { return __s2_server_map_name(); },         // GetMapName(); "" if unavailable
     get gameTime() { return __s2_server_game_time(); },       // GetGlobals()->curtime; 0 if unavailable
+    get tickCount() { return __s2_server_tick_count(); },     // GetGlobals()->tickcount; 0 if unavailable
+    get tickInterval() { return __s2_server_tick_interval(); }, // seconds per tick (derived); 0 until the first tick
   };
   globalThis.__s2pkg_server = { Server: __s2_server };   // named export `Server`
   // @s2script/sdk/damage is TYPE-ONLY: the DamageInfo view belongs to the selected game package (its
@@ -2212,6 +2218,24 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       });
     },
   };
+  // --- @s2script/files: off-thread sandboxed file IO over __s2_files_op (kind, path, data, flags) ---
+  function filesFlags(o, extra) {
+    return (o && o.gzip ? 1 : 0) | (o && o.append ? 2 : 0) | (extra || 0);
+  }
+  globalThis.__s2pkg_files = {
+    Files: Object.freeze({
+      read: function (path, opts) { return __s2_files_op(0, String(path), null, filesFlags(opts)); },
+      readText: function (path, opts) { return __s2_files_op(0, String(path), null, filesFlags(opts, 4)); },
+      write: function (path, data, opts) {
+        if (typeof data !== "string" && !ArrayBuffer.isView(data)) {
+          return Promise.reject(new TypeError("Files.write: data must be a string or a Uint8Array"));
+        }
+        return __s2_files_op(1, String(path), data, filesFlags(opts));
+      },
+      remove: function (path) { return __s2_files_op(2, String(path), null, 0); },
+      list: function (dir) { return __s2_files_op(3, dir === undefined ? "" : String(dir), null, 0); },
+    }),
+  };
   // --- @s2script/ws: client WebSocket over __s2_ws_* (connect resolver + per-conn event subs) ---
   globalThis.__s2pkg_ws = {
     WebSocket: {
@@ -2714,7 +2738,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       "__s2pkg_plugins", "__s2pkg_menu", "__s2pkg_events", "__s2pkg_clients",
       "__s2pkg_damage", "__s2pkg_sdkhooks", "__s2pkg_chat", "__s2pkg_config", "__s2pkg_topmenu",
       "__s2pkg_translations", "__s2pkg_entity", "__s2pkg_math", "__s2pkg_timers",
-      "__s2pkg_bans", "__s2pkg_db", "__s2pkg_cookies", "__s2pkg_http",
+      "__s2pkg_bans", "__s2pkg_db", "__s2pkg_cookies", "__s2pkg_http", "__s2pkg_files",
       "__s2pkg_ws", "__s2pkg_net", "__s2pkg_votes", "__s2pkg_sound",
       "__s2pkg_trace", "__s2pkg_transmit", "__s2pkg_voice", "__s2pkg_usermessages",
       "__s2pkg_usercmd", "__s2pkg_interfaces",

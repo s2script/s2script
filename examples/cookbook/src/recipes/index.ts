@@ -8,6 +8,7 @@ import * as cookies from "./cookies.ts";
 import * as damage from "./damage.ts";
 import * as db from "./db.ts";
 import * as events from "./events.ts";
+import * as files from "./files.ts";
 import * as gamerules from "./gamerules.ts";
 import * as http from "./http.ts";
 import * as items from "./items.ts";
@@ -40,6 +41,7 @@ export const RECIPES: readonly Recipe[] = [
   damage,
   db,
   events,
+  files,
   gamerules,
   http,
   items,

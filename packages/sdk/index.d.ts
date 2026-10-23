@@ -24,6 +24,7 @@ export * from "./damage";
 export * from "./db";
 export * from "./entity";
 export * from "./events";
+export * from "./files";
 export * from "./http";
 export * from "./interfaces";
 export * from "./math";

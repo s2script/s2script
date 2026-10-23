@@ -1803,6 +1803,24 @@
       "c_ret": "int",
       "c_params": "const S2FunctionInstanceAccess* access, int selector, const S2FunctionValue* entity, unsigned int offset, int* out, char* reason, int cap",
       "shim": "S2_FunctionFrameHiddenReferencedBy"
+    },
+    {
+      "name": "server_tick_count",
+      "alias": "ServerTickCountFn",
+      "rust": "extern \"C\" fn() -> c_int",
+      "group": "timer-grade server clock: GetGlobals()->tickcount / interval_per_tick",
+      "c_ret": "int",
+      "c_params": "void",
+      "shim": "s2_server_tick_count"
+    },
+    {
+      "name": "server_tick_interval",
+      "alias": "ServerTickIntervalFn",
+      "rust": "extern \"C\" fn() -> f32",
+      "group": "timer-grade server clock: GetGlobals()->tickcount / interval_per_tick",
+      "c_ret": "float",
+      "c_params": "void",
+      "shim": "s2_server_tick_interval"
     }
   ]
 }

@@ -2093,6 +2093,27 @@ static float s2_server_game_time() {
     CGlobalVars* g = gs->GetGlobals();
     return g ? g->curtime : 0.0f;
 }
+// Timer-grade clock: the integer simulation tick and its fixed length. A run timer counts ticks
+// (exact, monotonic within a map) rather than differencing float curtime. Degrade: 0 / 0.0f.
+static int s2_server_tick_count() {
+    INetworkGameServer* gs = S2_GameServer();
+    if (!gs) return 0;
+    CGlobalVars* g = gs->GetGlobals();
+    return g ? g->tickcount : 0;
+}
+// Source 2's CGlobalVars carries no interval_per_tick, and the rate is an engine fact we must not
+// borrow as a constant (re-strategy.md). Derive it from our own clock: curtime == tickcount *
+// interval at tick boundaries, so curtime/tickcount snapped to the nearest whole tick RATE is exact
+// (a subtick curtime offset is far below the snap). Until the first tick: 0.0f (degrade).
+static float s2_server_tick_interval() {
+    INetworkGameServer* gs = S2_GameServer();
+    if (!gs) return 0.0f;
+    CGlobalVars* g = gs->GetGlobals();
+    if (!g || g->tickcount <= 0 || !(g->curtime > 0.0f)) return 0.0f;
+    double rate = (double)g->tickcount / (double)g->curtime;
+    long whole = (long)(rate + 0.5);
+    return whole > 0 ? (float)(1.0 / (double)whole) : 0.0f;
+}
 
 // Crash-reporter slice: the engine build number (IVEngineServer2::GetBuildVersion — a typed SDK
 // virtual on the already-acquired s_pEngine; engine-generic). 0 = interface unavailable (degrade).

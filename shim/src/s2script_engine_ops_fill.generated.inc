@@ -186,3 +186,6 @@
     ops.function_frame_field_read = &S2_FunctionFrameFieldRead;
     ops.function_frame_field_write = &S2_FunctionFrameFieldWrite;
     ops.function_frame_hidden_referenced_by = &S2_FunctionFrameHiddenReferencedBy;
+    // --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick ---
+    ops.server_tick_count = &s2_server_tick_count;
+    ops.server_tick_interval = &s2_server_tick_interval;

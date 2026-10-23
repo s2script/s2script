@@ -7838,6 +7838,87 @@
         shutdown();
     }
 
+    /// `@s2script/sdk/files` end to end through the public module: a gzip binary write, its read
+    /// back as a fresh Uint8Array, a text append + readText, list, remove, a missing file as null,
+    /// and a sandbox escape rejected before any IO. Every operation runs off-thread and settles on
+    /// a frame drain in the owning plugin's context.
+    #[test]
+    fn files_module_round_trip_through_the_frame_drain() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(db_ops()));
+        let id = format!("filesp{}", std::process::id());
+        load_body(&id, r#"
+            var { Files } = require("@s2script/sdk/files");
+            globalThis.__out = "pending";
+            var bytes = new Uint8Array(4096);
+            for (var i = 0; i < bytes.length; i++) bytes[i] = i % 13;
+            Files.remove("log.txt").then(function () {
+                return Files.write("replays/m/0.bin", bytes, { gzip: true });
+            }).then(function () {
+                return Files.read("replays/m/0.bin", { gzip: true });
+            }).then(function (back) {
+                var same = back instanceof Uint8Array && back.length === 4096;
+                for (var i = 0; same && i < back.length; i++) same = back[i] === i % 13;
+                return Files.write("log.txt", "a\n", { append: true }).then(function () {
+                    return Files.write("log.txt", "b\n", { append: true });
+                }).then(function () { return Files.readText("log.txt"); }).then(function (t) {
+                    return Files.list().then(function (names) {
+                        return Files.read("missing.bin").then(function (m) {
+                            return Files.read("../escape").then(function () { return "escaped"; }, function (e) { return "rejected"; }).then(function (esc) {
+                                return Files.remove("log.txt").then(function (removed) {
+                                    globalThis.__out = same + "|" + JSON.stringify(t) + "|" + names.join(",") + "|" + m + "|" + esc + "|" + removed;
+                                });
+                            });
+                        });
+                    });
+                });
+            }).catch(function (e) { globalThis.__out = "ERROR:" + String(e); });
+        "#, "{}");
+        let mut out = "pending".to_string();
+        for _ in 0..ASYNC_POLL_TICKS {
+            frame_async_drain();
+            out = read_global_string(&id, "__out");
+            if out != "pending" { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(out, "true|\"a\\nb\\n\"|log.txt,replays/|null|rejected|true");
+        shutdown();
+    }
+
+    /// `EntityRef.gather` validates the whole plan before touching `out`: a malformed plan (bad
+    /// kind) or an undersized `out` reports -2 and leaves every slot as it was, and a well-formed
+    /// plan against an unresolvable entity reports -1. Without an entity op table there is no live
+    /// entity, so the -1 path is the observable one here.
+    #[test]
+    fn entity_gather_rejects_malformed_plans_before_writing() {
+        init(dummy_logger()).unwrap();
+        load_body("gather", r#"
+            var E = require("@s2script/sdk/entity");
+            var K = E.GatherKind;
+            var out = new Float64Array([7, 7, 7]);
+            var bad = __s2_ent_ref_gather(5, 1, new Int32Array([0, 16, 99, 1]), out, 0);
+            var short = __s2_ent_ref_gather(5, 1, new Int32Array([0, 16, K.Float32, 4]), out, 0);
+            var hops = __s2_ent_ref_gather(5, 1, new Int32Array([9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16, K.Float32, 1]), out, 0);
+            var stale = __s2_ent_ref_gather(5, 1, new Int32Array([0, 16, K.Float32, 3]), out, 0);
+            globalThis.__out = [bad, short, hops, stale, out[0], out[1], out[2], typeof E.EntityRef.prototype.gather].join(",");
+        "#, "{}");
+        assert_eq!(read_global_string("gather", "__out"), "-2,-2,-2,-1,7,7,7,function");
+        shutdown();
+    }
+
+    /// The tick clock reads 0 without the engine op (degrade, never throw), through the public
+    /// `Server` getters.
+    #[test]
+    fn server_tick_clock_degrades_to_zero_without_the_op() {
+        init(dummy_logger()).unwrap();
+        load_body("tick", r#"
+            var { Server } = require("@s2script/sdk/server");
+            globalThis.__out = Server.tickCount + "," + Server.tickInterval;
+        "#, "{}");
+        assert_eq!(read_global_string("tick", "__out"), "0,0");
+        shutdown();
+    }
+
     #[test]
     fn sqlite_materialization_retains_bytes_through_reentrant_then_lookup() {
         init(dummy_logger()).unwrap();
