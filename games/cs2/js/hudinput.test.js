@@ -114,6 +114,45 @@ test("held Tab from before arm: swallow until release, then next press activates
   assert.equal(activated, true);
 });
 
+test("hold mode: Tab down activates, Tab up releases, and nothing is swallowed", () => {
+  const mounted = mount();
+  const seen = [];
+  mounted.HudInput.arm(1, { hold: true, onActivate() { seen.push("on"); }, onRelease() { seen.push("off"); } });
+
+  assert.equal(mounted.run(1, IN_SCORE).buttons, IN_SCORE);
+  assert.equal(mounted.HudInput.isActive(1), true);
+  assert.equal(mounted.run(1, IN_SCORE).buttons, IN_SCORE);
+  assert.deepEqual(seen, ["on"]);
+
+  assert.equal(mounted.run(1, 0n).buttons, 0n);
+  assert.equal(mounted.HudInput.isActive(1), false);
+  mounted.run(1, IN_SCORE);
+  assert.deepEqual(seen, ["on", "off", "on"]);
+});
+
+test("hold mode: a Tab already held when the arm lands activates on the next cmd", () => {
+  const mounted = mount();
+  mounted.HudInput.arm(9, { onActivate() {} });
+  mounted.run(1, IN_SCORE);
+  let activated = false;
+  mounted.HudInput.arm(1, { hold: true, onActivate() { activated = true; } });
+
+  mounted.run(1, IN_SCORE);
+  assert.equal(activated, true);
+  assert.equal(mounted.HudInput.isActive(1), true);
+});
+
+test("hold mode: an unarmed slot never fires, and the walk key does nothing", () => {
+  const mounted = mount();
+  const seen = [];
+  mounted.HudInput.arm(1, { hold: true, onActivate() { seen.push("on"); }, onRelease() { seen.push("off"); } });
+  mounted.run(1, IN_SPEED);
+  mounted.HudInput.disarm(1);
+  mounted.run(1, IN_SCORE);
+  mounted.run(1, 0n);
+  assert.deepEqual(seen, []);
+});
+
 test("disarm clears state and leaves Tab untouched", () => {
   const mounted = mount();
   mounted.HudInput.arm(1, { onActivate() {} });

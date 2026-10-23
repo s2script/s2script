@@ -65,12 +65,16 @@ export { CustomHudLayout, DEFAULT_HUD_DESCRIPTOR, hudkit, PROBE_LAYOUT, ui } fro
 export { AcquireMethod, AcquireResult, items } from "./items";
 export type { CanAcquireView, CtxItems, ItemsApi } from "./items";
 export declare const HudInput: {
-  /** Arm Tab-to-activate for `slot`. Replaces any previous arm on that slot. */
-  arm(slot: number, opts: { onActivate: () => void }): void;
+  /**
+   * Arm Tab-to-activate for `slot`. Replaces any previous arm on that slot.
+   * With `hold: true`, `onActivate` fires while Tab goes down (including a Tab already held when
+   * armed) and `onRelease` when it comes up; Tab is never swallowed in that mode.
+   */
+  arm(slot: number, opts: { onActivate: () => void; hold?: boolean; onRelease?: () => void }): void;
   /** Drop the arm. Safe if nothing is armed. Does not close the HUD. */
   disarm(slot: number): void;
   isArmed(slot: number): boolean;
-  /** True after Tab (or an immediate activate) until disarm. */
+  /** True after Tab (or an immediate activate) until disarm; in hold mode, only while Tab is down. */
   isActive(slot: number): boolean;
 };
 import type { CCSPlayerPawn, CCSPlayerController } from "./schema.generated";
