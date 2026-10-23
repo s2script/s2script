@@ -286,7 +286,7 @@ it. When a CS2 update inserts or removes an engine virtual, boot says so instead
 
 ```
 [s2script] IVEngineServer2: live vtable 124 slots, gamedata pin 123 — MISMATCH: engine slots disabled until gamedata is re-verified
-[s2script]   gamedata FAIL  IVEngineServer2_KickClient — IVEngineServer2 has 124 slots but gamedata was verified against 123 — the layout moved; slot disabled. Re-verify IVEngineServer2_KickClient (now 97; shape-compatible nearby: 96, 97) ...
+[s2script]   gamedata FAIL  IVEngineServer2_KickClient — IVEngineServer2 has 124 slots but gamedata was verified against 123 — the layout moved; slot disabled. Re-verify IVEngineServer2_KickClient (gamedata index 97, verified for the OLD layout; shape-compatible nearby: 96, 97) ...
 ```
 
 Those ops then do nothing (a kick is not delivered, a print is skipped) until the indices are

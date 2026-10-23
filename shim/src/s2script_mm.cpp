@@ -1926,7 +1926,7 @@ static int s2_usermsg_hook_debug(char* buf, int buflen) {
 // that is the call that crashed every player join on the Oct 22 2026 CS2 build (the slot became
 // GetPlayerInfo). The engine already HANDS us the xuid: OnClientConnected, ClientPutInServer,
 // ClientActive and ClientDisconnect all carry it as an argument, and we hook all four. So it is
-// recorded there (S2_RecordClientXuid), before the core dispatch, which is the moment basebans asks.
+// recorded there (S2_BeginClientXuid / S2_RecordClientXuid), before the core dispatch, which is the moment basebans asks.
 //
 // After a late load nothing re-fires for clients already in the server, so the fallback is the
 // player controller's m_steamID schema field (CBasePlayerController, the Source 2 base class):
@@ -1934,10 +1934,18 @@ static int s2_usermsg_hook_debug(char* buf, int buflen) {
 // A field move is self-healing; a missing class/field degrades to "0".
 // ---------------------------------------------------------------------------
 static uint64 s_clientXuid[kMaxClientSlots] = {0};
-static void S2_RecordClientXuid(int slot, uint64 xuid, bool fake) {
+static bool   s_clientFake[kMaxClientSlots] = {false};
+// OnClientConnected fires for EVERY new occupant, so it overwrites unconditionally: a slot can never
+// inherit the previous player's id, even when map teardown dropped that player without a
+// ClientDisconnect. The later hooks only fill in a non-zero xuid for a human.
+static void S2_BeginClientXuid(int slot, uint64 xuid, bool fake) {
     if (slot < 0 || slot >= kMaxClientSlots) return;
-    if (fake) xuid = 0;                          // bots report 0, as GetClientXUID did
-    if (xuid != 0 || fake) s_clientXuid[slot] = xuid;
+    s_clientFake[slot] = fake;
+    s_clientXuid[slot] = fake ? 0 : xuid;        // bots report 0, as GetClientXUID did
+}
+static void S2_RecordClientXuid(int slot, uint64 xuid) {
+    if (slot < 0 || slot >= kMaxClientSlots || s_clientFake[slot] || xuid == 0) return;
+    s_clientXuid[slot] = xuid;
 }
 static uint64 S2_ControllerSteamId(int slot) {
     static int s_off = -1;
@@ -1954,7 +1962,7 @@ static std::string s_steamidBuf;
 static const char* s2_client_steamid(int slot) {
     if (slot < 0 || slot >= kMaxClientSlots) { s_steamidBuf = "0"; return s_steamidBuf.c_str(); }
     uint64 xuid = s_clientXuid[slot];
-    if (xuid == 0) xuid = S2_ControllerSteamId(slot);
+    if (xuid == 0 && !s_clientFake[slot]) xuid = S2_ControllerSteamId(slot);
     s_steamidBuf = std::to_string(xuid);
     return s_steamidBuf.c_str();
 }
@@ -3328,7 +3336,8 @@ static void S2_ResolveEngineSlots() {
             }
             snprintf(reason, sizeof reason,
                      "IVEngineServer2 has %d slots but gamedata was verified against %d — the layout moved; "
-                     "slot disabled. Re-verify %s (now %d; shape-compatible nearby: %s) and set "
+                     "slot disabled. Re-verify %s (gamedata index %d, verified for the OLD layout; shape-compatible "
+                     "nearby: %s) and set "
                      "IVEngineServer2_vtableSize in gamedata/core/custom/",
                      live, pinned, spec.key, idx, hint.empty() ? "none" : hint.c_str());
             GamedataResult(spec.key, false, reason);
@@ -6001,6 +6010,7 @@ static void S2_ClearClientSlotState(int slot) {
     if (slot < 0 || slot >= kMaxClientSlots) return;
     s_trackedSignon[slot] = kSignonNone;
     s_clientXuid[slot] = 0;
+    s_clientFake[slot] = false;
     s_voiceMuted[slot] = 0;
     s_voiceLastNotify[slot] = 0;
     s_voiceAudible[slot] = 0;
@@ -6012,7 +6022,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_OnClientConnected(ISource2GameClients* 
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonConnected;
-    S2_RecordClientXuid(s, xuid, fakePlayer);   // before dispatch: basebans reads it in "connect"
+    S2_BeginClientXuid(s, xuid, fakePlayer);   // before dispatch: basebans reads it in "connect"
     S2_DispatchClientEvent("connect", s, s2script_core_client_begin(s));
     return S2_Ignore();
 }
@@ -6021,7 +6031,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_ClientPutInServer(ISource2GameClients* 
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonSpawn;
-    S2_RecordClientXuid(s, xuid, false);
+    S2_RecordClientXuid(s, xuid);
     S2_DispatchClientEvent("putinserver", s, s2script_core_client_ensure(s));
     return S2_Ignore();
 }
@@ -6030,7 +6040,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_ClientActive(ISource2GameClients* clien
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     int s = slot.Get();
     if (s >= 0 && s < kMaxClientSlots) s_trackedSignon[s] = kSignonFull;
-    S2_RecordClientXuid(s, xuid, false);
+    S2_RecordClientXuid(s, xuid);
     MaybeValidateVoiceListening();   // one-shot Get/Set round-trip once two clients are active
     S2_DispatchClientEvent("active", s, s2script_core_client_ensure(s));
     return S2_Ignore();
@@ -6047,7 +6057,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_ClientDisconnect(ISource2GameClients* c
     auto obs = g_hk.clientDisconnect.Observe(clients);
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     int s = slot.Get();
-    S2_RecordClientXuid(s, xuid, false);   // the departing identity snapshot below reads it
+    S2_RecordClientXuid(s, xuid);   // the departing identity snapshot below reads it
     // Copy every string now: callbacks may re-enter engine code or replace the occupant.
     const uint64_t token = s2script_core_client_generation(s);
     auto copy = [](const char* p) { return std::string(p ? p : ""); };
