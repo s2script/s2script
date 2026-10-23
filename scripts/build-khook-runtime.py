@@ -53,7 +53,25 @@ def _source_state(root: Path) -> tuple[str, str]:
     if not REVISION_RE.fullmatch(revision):
         raise BuildError(f"source revision is not a full 40-hex commit: {revision!r}")
     status = _git(root, "status", "--porcelain=v1", "--untracked-files=all")
-    return revision, status
+    return revision, _drop_carried_sdk_patches(root, status)
+
+
+def _drop_carried_sdk_patches(root: Path, status: str) -> str:
+    # shim/CMakeLists.txt applies patches/hl2sdk/ to the submodule at configure time, so a built
+    # tree shows third_party/hl2sdk as modified. That edit is fixed by the commit, so it is accepted
+    # when the submodule is exactly its pin plus those patches, and treated as dirty otherwise.
+    lines = status.splitlines()
+    # _git strips the output, so the first line may have lost its leading status column.
+    sdk = [line for line in lines if line.split(None, 1)[-1] == "third_party/hl2sdk"]
+    if not sdk:
+        return status
+    verify = subprocess.run(
+        ["bash", str(root / "scripts/apply-hl2sdk-patches.sh"), "--verify"],
+        cwd=root, capture_output=True, text=True,
+    )
+    if verify.returncode != 0:
+        return status
+    return "\n".join(line for line in lines if line not in sdk)
 
 
 def _require_clean_source(root: Path) -> str:
