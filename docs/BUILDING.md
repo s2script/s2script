@@ -186,7 +186,7 @@ Install a compatible **stock official Metamod release** into `docker/metamod/` u
 Metamod locally. The installer records schema 2 provenance and artifact hashes, rejects stale
 or malformed artifacts, and retains a full previous tree for rollback.
 
-For reproducible development tests, an optional build copies the pinned upstream sources
+For reproducible development tests, an optional build (not part of CI) copies the pinned upstream sources
 without modifying them. It derives PLAPI from checked headers and emits an
 `unmodified-source` manifest after successful binary validation:
 
@@ -223,7 +223,7 @@ must be positive integers and are validated before expensive work. Explicit
 existing Docker/image and compiler defaults. Record the selected image digest and
 limits alongside artifact hashes; an argv-capture test is not a native build.
 
-`bash scripts/test-khook-sniper-build.sh` builds the unmodified reference host, shim/core and
+`bash scripts/test-khook-sniper-build.sh` builds shim/core and the
 optimized probe in the compatibility environment and validates their ELF/GLIBC requirements.
 These builds do not establish live `.s2sp` reload, process shutdown or human-assisted acceptance.
 The disposable build container uses Debian's signed snapshot from

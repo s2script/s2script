@@ -257,7 +257,7 @@ echo "== check-shim-symbols.sh (core entry points defined; no unresolvable engin
 bash scripts/check-shim-symbols.sh
 
 # The acceptance bundle includes a freshly built .s2sp with its own identity.
-echo "== build-khook-runtime.py (stock host, native consumers and stamped fixture) =="
+echo "== build-khook-runtime.py (native consumers and stamped fixture) =="
 python3 scripts/build-khook-runtime.py
 
 echo "ci-native: all native gates passed"

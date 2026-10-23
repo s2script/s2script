@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the unmodified stock host and both consumers against GLIBC <= 2.31.
+# Build shim/core and the KHook probe against GLIBC <= 2.31.
 # This is part of ci-native, not a separately maintained workflow gate.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -40,19 +40,8 @@ Acquire::Retries "3";
 APT::Update::Error-Mode "any";
 APT_CONFIG
 apt-get update -qq
-apt-get install -y -qq build-essential binutils clang curl git python3 python3-pip >/dev/null
+apt-get install -y -qq build-essential binutils clang curl git python3 >/dev/null
 git config --global --add safe.directory '*'
-# AMBuild is a build tool, pinned independently from the runtime source gitlinks.
-python3 -m pip install --disable-pip-version-check --quiet \
-  'git+https://github.com/alliedmodders/ambuild.git@01212cb57c96561f664b6dfb2ee10e66de6f81e4'
-
-echo '== optional pinned stock Metamod AMBuild (sniper) =='
-CC=clang CXX=clang++ bash scripts/build-metamod-pinned.sh || {
-  tail -100 build/metamod-pinned/build.log
-  exit 1
-}
-python3 scripts/verify-metamod-artifact.py --tree build/metamod-pinned/tree \
-  --manifest build/metamod-pinned/metamod-build.json
 
 echo '== shim/core sniper build =='
 bash scripts/build-sniper.sh
@@ -89,4 +78,4 @@ for filename in ("build/shim/s2script.so", "target/release/libs2script_core.so",
     verifier.check_elf(Path(filename), filename)
     print(f"verified sniper ELF: {filename}")
 PY
-echo 'KHook sniper build: stock host, shim/core, and probe verified'
+echo 'KHook sniper build: shim/core and probe verified'
