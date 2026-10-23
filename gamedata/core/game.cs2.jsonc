@@ -79,7 +79,33 @@
     // slot interception and original chaining. No s2script-owned slot write or private patch.
     // The actual receiver and second-argument manifest are borrowed only during callbacks.
     // This historical index is a hint and must pass current-build structural validation.
-    "CGameRulesGameSystem_OnPrecacheResource": { "linuxsteamrt64": 7 }
+    "CGameRulesGameSystem_OnPrecacheResource": { "linuxsteamrt64": 7 },
+    // IVEngineServer2 (libengine2.so CEngineServer) vtable INDEXES — every engine call the shim
+    // makes on Source2EngineToServer001. These used to be compiled in from the pinned hl2sdk
+    // eiface.h, so when the Oct 22 2026 CS2 update inserted a virtual at slot 65 the shim kept
+    // calling the old numbers: slot 81 (GetClientXUID) had become GetPlayerInfo(slot, message&)
+    // and crashed every player join. Now a shift is an edit here (or in custom/), not a rebuild.
+    //
+    // S2_ResolveEngineSlots checks them at boot, before any call: the live vtable must have
+    // exactly IVEngineServer2_vtableSize slots (any mismatch disables ALL of them, and the boot
+    // log prints the live count and the shape-compatible candidates per entry), and each target's
+    // prologue must fit the call shape the shim uses. A failed entry disables that one op.
+    //
+    // Verified against libengine2.so BuildID fef8f668d215535dbc7fcfc00c073887abeffe72 (the Oct 22
+    // 2026 build): CEngineServer vtable via RTTI, 123 slots; each target disassembled and its
+    // argument use matched by hand. Slots 0-64 are unchanged from the hl2sdk headers; 65 is new;
+    // everything from 66 on is header + 1.
+    "IVEngineServer2_vtableSize":           { "linuxsteamrt64": 123 },
+    "IVEngineServer2_IsMapValid":           { "linuxsteamrt64": 33 },
+    "IVEngineServer2_GetPlayerUserId":      { "linuxsteamrt64": 39 },
+    "IVEngineServer2_GetPlayerNetInfo":     { "linuxsteamrt64": 41 },
+    "IVEngineServer2_ServerCommand":        { "linuxsteamrt64": 45 },
+    "IVEngineServer2_ClientCommand":        { "linuxsteamrt64": 46 },
+    "IVEngineServer2_ClientPrintf":         { "linuxsteamrt64": 47 },
+    "IVEngineServer2_GetClientConVarValue": { "linuxsteamrt64": 53 },
+    "IVEngineServer2_GetClientListening":   { "linuxsteamrt64": 91 },
+    "IVEngineServer2_SetClientListening":   { "linuxsteamrt64": 92 },
+    "IVEngineServer2_KickClient":           { "linuxsteamrt64": 97 }
   },
   // Byte signatures for un-exported engine globals (Slice 5D.2). Layout-is-data: the pattern +
   // module are regenerable per CS2 patch from the documented RTTI->vtable->xref anchors (see

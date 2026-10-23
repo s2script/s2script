@@ -162,6 +162,44 @@ ArgUse DecodeArgUse(const uint8_t* p, std::size_t avail);
 int ArgWidths(const uint8_t* wide, int count, const ModuleView& mv, const void* fn,
               char* reasonOut, int reasonCap);
 
+// ---------------------------------------------------------------------------
+// CALL-SHAPE — is a vtable slot we are about to CALL the function we think it is?
+//
+// The OUTBOUND sibling of ArgWidths, and stricter, because the failure it guards is worse. ArgWidths
+// protects a hook from relaying an argument too narrowly; this protects a direct call into an engine
+// interface whose virtuals moved. On the Oct 22 2026 CS2 build one virtual was inserted at
+// IVEngineServer2 slot 65, so slot 81 — GetClientXUID(slot) in our headers — became
+// GetPlayerInfo(slot, message&). We called it with no second argument and it wrote through
+// whatever rdx held: a segfault on every player join. Its first instructions say so plainly:
+//     mov %rdx,%r12        reads integer argument slot 2, 64-bit
+// and GetClientXUID's shape (this, int) has no slot 2. That is the whole check.
+//
+// What the callee READS before it redefines or calls out (a `call` clobbers every argument
+// register, so anything it needs afterwards it must have saved first — which is a read) is compared
+// with the declared shape:
+//   - an integer argument slot the shape does not declare is read      -> wrong function;
+//   - a slot declared as a 32-bit int is read 64-bit (or as an address) -> wrong function;
+//   - a slot declared as a pointer is read only 32/16/8-bit             -> wrong function;
+//   - an xmm argument register beyond the declared float count is read  -> wrong function
+//     (KickClient's old slot became BanClient(slot, float, bool) — it reads xmm0).
+//
+// SAME SMOKE-DETECTOR CAVEAT AS ArgWidths. Absence of evidence passes: two functions with the same
+// shape (GetPlayerUserId and GetClientXUID both take one int) are indistinguishable here, which is
+// why the caller pairs this with a pinned vtable size. A pass is "nothing contradicts the shape",
+// never "this is the function".
+// ---------------------------------------------------------------------------
+enum ArgKind : uint8_t {
+    kArgInt32 = 0,   ///< int / enum / bool / CPlayerSlot — read 32-bit or narrower
+    kArgPtr   = 1,   ///< pointer / reference / 64-bit integer — read 64-bit
+    kArgAny   = 2,   ///< no claim (a variadic register save area spills these whole)
+};
+
+/// `kinds[i]` is SysV INTEGER ARGUMENT SLOT i (slot 0 = `this`). `floatArgs` is how many xmm
+/// argument registers the shape passes; -1 = any (variadic). Returns 0 on pass (the reason says
+/// how much was observed), -1 on a contradiction with a named reason.
+int CallShape(const uint8_t* kinds, int count, int floatArgs, const ModuleView& mv, const void* fn,
+              char* reasonOut, int reasonCap);
+
 }  // namespace s2validate
 
 #endif  // S2SCRIPT_CALL_VALIDATE_H

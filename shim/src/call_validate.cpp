@@ -571,4 +571,172 @@ int ArgWidths(const uint8_t* wide, int count, const ModuleView& mv, const void* 
     return 0;
 }
 
+// call-shape. See call_validate.h.
+// ---------------------------------------------------------------------------
+namespace {
+
+// What one instruction reads from the argument registers, before anything it writes.
+struct ArgReads {
+    int  slot[4]  = { -1, -1, -1, -1 };  ///< SysV integer argument slots read
+    bool wide[4]  = { false, false, false, false };
+    int  n        = 0;
+    int  xmmRead[2] = { -1, -1 };        ///< xmm0..7 read as a source, else -1
+    int  xmmWrite = -1;                  ///< xmm0..7 fully (re)defined, else -1
+    void add(int reg, bool w) {
+        const int a = ArgOfReg(reg);
+        if (a >= 0 && n < 4) { slot[n] = a; wide[n] = w; n++; }
+    }
+    // xmm8+ are never argument registers, so a REX-extended operand is simply not recorded.
+    void xmm(int which, uint8_t field, uint8_t rex) { if (!rex) xmmRead[which] = field; }
+};
+
+ArgReads DecodeArgReads(const uint8_t* p, std::size_t avail) {
+    ArgReads r;
+    uint8_t win[kWindow] = {};
+    const std::size_t n = avail < kMaxInsn ? avail : kMaxInsn;
+    std::memcpy(win, p, n);
+    hde64s hs;
+    const unsigned len = hde64_disasm(win, &hs);
+    if (len == 0 || (hs.flags & F_ERROR) || len > n) return r;
+
+    const bool modrm = (hs.flags & F_MODRM) != 0;
+    const int  mod   = hs.modrm_mod;
+    const int  reg   = hs.modrm_reg | (hs.rex_r ? 8 : 0);
+    const int  rm    = hs.modrm_rm  | (hs.rex_b ? 8 : 0);
+    const bool w     = hs.rex_w != 0 && !hs.p_66;   // 64-bit operand; 16-bit counts as narrow
+
+    // An address computed from an argument register reads it as a pointer, whatever the opcode.
+    if (modrm && mod != 3) {
+        if ((hs.modrm_rm & 7) == 4 && (hs.flags & F_SIB)) {
+            const int base = hs.sib_base | (hs.rex_b ? 8 : 0);
+            const int idx  = hs.sib_index | (hs.rex_x ? 8 : 0);
+            if (!(mod == 0 && (hs.sib_base & 7) == 5)) r.add(base, true);
+            if (idx != 4) r.add(idx, true);
+        } else if (!(mod == 0 && (hs.modrm_rm & 7) == 5)) {   // not rip-relative / disp32
+            r.add(rm, true);
+        }
+    }
+
+    const uint8_t op = hs.opcode;
+    if (op == 0x0F) {
+        const uint8_t op2 = hs.opcode2;
+        if (op2 == 0xB6 || op2 == 0xB7 || op2 == 0xBE || op2 == 0xBF) {   // movzx/movsx r, r/m
+            if (mod == 3) r.add(rm, false);
+        } else if (op2 == 0x11 || op2 == 0x29 || op2 == 0xD6 ||           // xmm stores: reg is source
+                   (op2 == 0x7E && hs.p_66)) {
+            r.xmm(0, hs.modrm_reg, hs.rex_r);
+        } else if (op2 == 0x2E || op2 == 0x2F ||                           // ucomis/comis
+                   op2 == 0x58 || op2 == 0x59 || op2 == 0x5C || op2 == 0x5E) { // add/mul/sub/div
+            r.xmm(0, hs.modrm_reg, hs.rex_r);                              // both operands read
+            if (mod == 3) r.xmm(1, hs.modrm_rm, hs.rex_b);
+        } else if (op2 == 0x5A || op2 == 0x51) {                           // cvtss2sd / sqrt: rm -> reg
+            if (mod == 3) r.xmm(1, hs.modrm_rm, hs.rex_b);
+            if (!hs.rex_r) r.xmmWrite = hs.modrm_reg;
+        } else if (op2 == 0x10 || op2 == 0x28) {                           // xmm loads / reg moves
+            if (mod == 3) r.xmm(1, hs.modrm_rm, hs.rex_b);
+            if (!hs.rex_r) r.xmmWrite = hs.modrm_reg;
+        } else if (op2 == 0x57 || op2 == 0xEF) {                           // xorps / pxor
+            if (mod == 3 && hs.modrm_reg == hs.modrm_rm && hs.rex_r == hs.rex_b) {
+                if (!hs.rex_r) r.xmmWrite = hs.modrm_reg;                  // zeroing idiom: no read
+            }
+        } else if (op2 == 0x6E && hs.p_66) {                               // movd/movq xmm, r/m
+            if (mod == 3) r.add(rm, w);
+            if (!hs.rex_r) r.xmmWrite = hs.modrm_reg;
+        }
+        return r;
+    }
+    switch (op) {
+        case 0x89: case 0x88:                         // mov r/m, r — the source is reg
+            r.add(reg, op == 0x89 && w);
+            break;
+        case 0x8B: case 0x8A:                         // mov r, r/m
+            if (mod == 3) r.add(rm, op == 0x8B && w);
+            break;
+        case 0x63:                                    // movsxd r64, r/m32
+            if (mod == 3) r.add(rm, false);
+            break;
+        case 0x85: case 0x84: case 0x39: case 0x38:   // test/cmp r/m, r — both read
+        case 0x3B: case 0x3A:
+        case 0x01: case 0x09: case 0x21: case 0x29:   // op r/m, r
+        case 0x03: case 0x0B: case 0x23: case 0x2B:   // op r, r/m
+            r.add(reg, (op & 1) && w);                // even opcodes are the 8-bit forms
+            if (mod == 3) r.add(rm, (op & 1) && w);
+            break;
+        case 0x31: case 0x33:                         // xor — reg==rm is the zeroing idiom, no read
+            if (!(mod == 3 && reg == rm)) { r.add(reg, w); if (mod == 3) r.add(rm, w); }
+            break;
+        case 0x80: case 0x81: case 0x83:              // group-1 op r/m, imm
+            if (mod == 3) r.add(rm, op != 0x80 && w);
+            break;
+        case 0xF6: case 0xF7:                         // test/not/neg/mul r/m — all read r/m
+            if (mod == 3) r.add(rm, op == 0xF7 && w);
+            break;
+        default:
+            break;
+    }
+    return r;
+}
+
+}  // namespace
+
+int CallShape(const uint8_t* kinds, int count, int floatArgs, const ModuleView& mv, const void* fn,
+              char* reasonOut, int reasonCap) {
+    if (reasonOut && reasonCap > 0) reasonOut[0] = '\0';
+    if (!kinds || count <= 0 || !fn) { Fail(reasonOut, reasonCap, "call-shape: nothing to check"); return 0; }
+    if (!InText(mv, fn)) { Fail(reasonOut, reasonCap, "call-shape: address outside .text (not checked)"); return 0; }
+
+    const uintptr_t code = reinterpret_cast<uintptr_t>(fn);
+    bool redefined[8] = { false };
+    bool xmmRedefined[8] = { false };
+    int  observed = 0;
+    std::size_t off = 0;
+    static const char* const kKind[] = { "a 32-bit int", "a pointer", "anything" };
+
+    for (int i = 0; i < kScanInsns && off < static_cast<std::size_t>(kScanBytes); i++) {
+        uint8_t bytes[kMaxInsn] = {};
+        std::size_t avail = kMaxInsn;
+        if (off > UINTPTR_MAX - code) break;
+        while (avail && !ReadCode(mv, code + off, bytes, avail)) --avail;
+        if (!avail) break;
+        const ArgUse u = DecodeArgUse(bytes, avail);
+        if (u.length == 0 || u.terminator) break;
+        const ArgReads r = DecodeArgReads(bytes, avail);
+
+        for (int k = 0; k < r.n; k++) {
+            const int s = r.slot[k];
+            if (s < 0 || s >= 8 || redefined[s]) continue;
+            observed++;
+            if (s >= count) {
+                Fail(reasonOut, reasonCap, "call-shape: the slot reads integer argument %d at +0x%zx, but the declared "
+                    "shape passes only %d — this is a different function (it would read a register "
+                    "we never set)", s, off, count);
+                return -1;
+            }
+            const uint8_t kind = kinds[s];
+            if (kind == kArgAny) continue;
+            if (r.wide[k] != (kind == kArgPtr)) {
+                Fail(reasonOut, reasonCap, "call-shape: the slot reads integer argument %d %s at +0x%zx, but the declared "
+                    "shape passes %s there — this is a different function", s,
+                    r.wide[k] ? "as 64-bit" : "as 32-bit or narrower", off, kKind[kind]);
+                return -1;
+            }
+        }
+        for (const int x : r.xmmRead) {
+            if (x < 0 || x >= 8 || xmmRedefined[x]) continue;
+            observed++;
+            if (floatArgs >= 0 && x >= floatArgs) {
+                Fail(reasonOut, reasonCap, "call-shape: the slot reads xmm%d at +0x%zx, but the declared shape passes %d "
+                    "float argument(s) — this is a different function", x, off, floatArgs);
+                return -1;
+            }
+        }
+        if (u.redefines >= 0 && u.redefines < 8) redefined[u.redefines] = true;
+        if (r.xmmWrite >= 0 && r.xmmWrite < 8) xmmRedefined[r.xmmWrite] = true;
+        off += u.length;
+    }
+    Fail(reasonOut, reasonCap, observed ? "call-shape: %d argument read(s) consistent with the shape"
+                 : "call-shape: no argument reads in the prologue window (not proof)", observed);
+    return 0;
+}
+
 }  // namespace s2validate
