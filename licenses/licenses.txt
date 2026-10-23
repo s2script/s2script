@@ -14,7 +14,7 @@ s2script itself is licensed MIT OR Apache-2.0; see ../LICENSE. Nothing below
 changes that. These are the notices s2script owes to others.
 
 Pinned at generation time:
-    s2sdk             7591bf4d63f0   (branch s2script-cs2)
+    s2sdk             cecdd5967906   (branch s2script-cs2)
     metamod-source    fa6f80e4662e   (PLAPI 18/KHook; unmodified upstream source)
     libffi            5c1c43091ed6   (3.7.1; full revision 5c1c43091ed611fdea774374355eb938c73a9157)
     breakpad          9aebd3d8ef5a

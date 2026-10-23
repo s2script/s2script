@@ -333,8 +333,8 @@ git commit -m "chore: bump hl2sdk to <newsha>"
   one), push it, and bump the submodule to that commit.
 - To take upstream changes, merge upstream `cs2` into `s2script-cs2`. Never rebase or
   force-push it: older s2script commits pin its SHAs, and a rewritten branch orphans them.
-- Carried now: alliedmodders/s2sdk#116 (`IVEngineServer2::IsSpawnGroupLoadedForClient`, the
-  Oct 22 2026 slot-65 insertion).
+- Carried now: nothing. alliedmodders/s2sdk#116 (the Oct 22 2026 `IVEngineServer2` slot-65
+  insertion) was carried until upstream merged it; `s2script-cs2` now equals upstream `cs2`.
 - Every carried fix is reviewed and tracked in the update-day fire drill.
 
 **Interface version strings live in the `gamedata/` tree** (owner-scoped: `gamedata/core/` for
