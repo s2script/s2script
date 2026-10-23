@@ -2203,26 +2203,25 @@ static int s2_server_tick_count() {
     CGlobalVars* g = gs->GetGlobals();
     return g ? g->tickcount : 0;
 }
-// The tick length comes from the game's own ISource2ServerConfig::GetTickInterval (a typed SDK
-// virtual on the interface we already hold; fixed at server start), validated to a sane range.
-// Only if that interface is missing do we derive it from our clock: curtime ~= tickcount * interval,
-// so tickcount/curtime snapped to a whole rate. That snap is trusted only after 256 ticks, where a
-// subtick or start-offset error of up to a tick moves the ratio by well under 0.5. Degrade: 0.0f.
+// The tick length is derived from our clock. Source 2 here has no interval getter to read:
+// ISource2ServerConfig has no GetTickInterval and CGlobalVars no m_flIntervalPerTick (s2sdk notes
+// both; the old hl2sdk header's GetTickInterval slot is GetPlayerLimits in the live binary).
+// curtime ~= tickcount * interval, so tickcount/curtime snapped to a whole rate. That snap is
+// trusted only after 256 ticks, where a subtick or start-offset error of up to a tick moves the
+// ratio by well under 0.5; the interval is fixed at server start, so the first trusted value is
+// cached. Degrade: 0.0f.
 static float s2_server_tick_interval() {
     static float cached = 0.0f;
     if (cached > 0.0f) return cached;
-    ISource2ServerConfig* cfg = g_S2ScriptPlugin.m_serverConfig;
-    if (cfg) {
-        float iv = cfg->GetTickInterval();
-        if (iv > 0.0f && iv < 1.0f) { cached = iv; return cached; }
-    }
     INetworkGameServer* gs = S2_GameServer();
     if (!gs) return 0.0f;
     CGlobalVars* g = gs->GetGlobals();
     if (!g || g->tickcount < 256 || !(g->curtime > 0.0f)) return 0.0f;
     double rate = (double)g->tickcount / (double)g->curtime;
     long whole = (long)(rate + 0.5);
-    return whole > 0 ? (float)(1.0 / (double)whole) : 0.0f;
+    if (whole <= 0) return 0.0f;
+    cached = (float)(1.0 / (double)whole);
+    return cached;
 }
 
 // Crash-reporter slice: the engine build number, read from the mod directory's steam.inf
