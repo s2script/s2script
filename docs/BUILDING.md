@@ -191,8 +191,9 @@ without modifying them. It derives PLAPI from checked headers and emits an
 `unmodified-source` manifest after successful binary validation:
 
 ```bash
-# Requires AMBuild 2.2+, an alliedmodders/hl2sdk cs2 checkout (HL2SDKCS2=<path>; the pinned
-# Metamod predates s2sdk), Steam Runtime 3 / Debian bullseye.
+# Requires AMBuild 2.2+ and Steam Runtime 3 / Debian bullseye. The pinned Metamod predates s2sdk,
+# so the script fetches the pinned alliedmodders/hl2sdk cs2 commit into build/metamod-pinned/hl2sdk
+# (or set HL2SDKCS2=<path> to an existing checkout).
 docker run --rm -v "$PWD:/repo" -w /repo \
   -v s2script-cargo:/usr/local/cargo/registry \
   rust:bullseye bash -lc 'export S2_SNIPER_ENV=1; bash /repo/scripts/build-metamod-pinned.sh'

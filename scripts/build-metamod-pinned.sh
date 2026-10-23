@@ -21,6 +21,10 @@ S2_REPO="${S2_REPO:-$REPO}"
 
 MMS_PIN="fa6f80e4662e5b96cc2e97722d812f374581dfd8"
 KHOOK_PIN="40d233d160b5bf60cc3e732939142b222fbd8ece"
+# This Metamod predates s2sdk and includes eiface.h, so it builds against the
+# alliedmodders/hl2sdk cs2 commit s2script pinned before the s2sdk move.
+MMS_HL2SDK_URL="https://github.com/alliedmodders/hl2sdk"
+MMS_HL2SDK_PIN="5f891c9026230cce0fc0a3fc4b5fef1c467a1385"
 EXPECTED_PLAPI=18
 TARGET="linux-x86_64"
 GLIBC_MAX="2.31"
@@ -102,13 +106,27 @@ fi
 if [[ "$AMBUILD_OK" -ne 1 ]]; then
   missing+=("AMBuild not found (need AMBuild 2.2+; pip install ambuild2)")
 fi
-HL2SDK_PATH="${HL2SDKCS2:-$S2_REPO/third_party/hl2sdk}"
-if [[ ! -d "$HL2SDK_PATH/public" ]]; then
-  missing+=("hl2sdk missing at $HL2SDK_PATH (HL2SDKCS2 or third_party/hl2sdk with public/ headers)")
-fi
 if [[ ${#missing[@]} -gt 0 ]]; then
   fail "$(printf '%s; ' "${missing[@]}")isolated unmodified source is at $ISOLATED"
 fi
+# third_party/hl2sdk is s2sdk, which this Metamod can't build against. Without an
+# explicit HL2SDKCS2, fetch the pinned hl2sdk commit into the build output.
+if [[ -n "${HL2SDKCS2:-}" ]]; then
+  HL2SDK_PATH="$HL2SDKCS2"
+else
+  HL2SDK_PATH="$OUT_ROOT/hl2sdk"
+  if [[ "$(git -C "$HL2SDK_PATH" rev-parse HEAD 2>/dev/null || true)" != "$MMS_HL2SDK_PIN" ]]; then
+    rm -rf "$HL2SDK_PATH"
+    git init -q "$HL2SDK_PATH"
+    git -C "$HL2SDK_PATH" fetch -q --depth 1 "$MMS_HL2SDK_URL" "$MMS_HL2SDK_PIN" ||
+      fail "could not fetch hl2sdk $MMS_HL2SDK_PIN from $MMS_HL2SDK_URL (or set HL2SDKCS2)"
+    git -C "$HL2SDK_PATH" checkout -q --detach FETCH_HEAD
+  fi
+  [[ "$(git -C "$HL2SDK_PATH" rev-parse HEAD)" == "$MMS_HL2SDK_PIN" ]] ||
+    fail "hl2sdk pin drift at $HL2SDK_PATH: expected $MMS_HL2SDK_PIN"
+fi
+[[ -f "$HL2SDK_PATH/public/eiface.h" ]] ||
+  fail "hl2sdk at $HL2SDK_PATH has no public/eiface.h (HL2SDKCS2 must be an alliedmodders/hl2sdk cs2 checkout)"
 log "hl2sdk=$HL2SDK_PATH"
 
 # Sniper: Steam Runtime 3 / Debian bullseye, GLIBC <= 2.31.
