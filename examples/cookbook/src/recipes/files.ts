@@ -44,7 +44,7 @@ export function OnPluginStart(): void {
     const slot = cmd.callerSlot;
     const pawn = slot >= 0 ? Pawn.forSlot(slot) : null;
     if (!pawn) { cmd.reply("in-game only"); return HookResult.Handled; }
-    const max = Math.max(1, Math.min(64 * 60, Number(cmd.arg(1)) || 128));
+    const max = Math.max(1, Math.min(64 * 60, Number(cmd.arg(0)) || 128));
     recording = { slot, pawn, buf: new Float64Array(max * SLOTS), n: 0, max };
     cmd.reply(`recording ${max} ticks…`);
     return HookResult.Handled;
