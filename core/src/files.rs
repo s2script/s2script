@@ -162,9 +162,13 @@ pub(crate) fn run(op: FileOp, limit: usize, lease: &mut crate::async_limits::Job
                     .map_err(|e| format!("write failed: {e}"))?;
                 f.write_all(&encoded).map_err(|e| format!("write failed: {e}"))?;
             } else {
-                // Atomic replace: a crash or a concurrent reader never observes a torn file.
+                // Atomic replace: a crash or a concurrent reader never observes a torn file. Each
+                // write gets its own temp name, so overlapping writes to one path cannot share (and
+                // splice) a temp file; the last rename wins whole.
+                static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let mut tmp = path.clone().into_os_string();
-                tmp.push(".s2tmp");
+                tmp.push(format!(".{}-{seq}.s2tmp", std::process::id()));
                 let tmp = PathBuf::from(tmp);
                 {
                     let mut f = std::fs::File::create(&tmp).map_err(|e| format!("write failed: {e}"))?;
@@ -417,6 +421,31 @@ mod tests {
         }
         assert!(matches!(run(FileOp::Remove { path: t.clone() }, 10, &mut l), Ok(FileOutput::Removed(true))));
         assert!(matches!(run(FileOp::Remove { path: t }, 10, &mut l), Ok(FileOutput::Removed(false))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn overlapping_replacing_writes_never_splice() {
+        let dir = std::env::temp_dir().join(format!("s2files-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let p = dir.join("same.bin");
+        let writers: Vec<_> = (0..8u8)
+            .map(|k| {
+                let p = p.clone();
+                std::thread::spawn(move || {
+                    let mut l = lease();
+                    for _ in 0..20 {
+                        run(FileOp::Write { path: p.clone(), data: vec![k; 64 * 1024], gzip: false, append: false }, 1 << 20, &mut l).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for w in writers { w.join().unwrap(); }
+        let bytes = std::fs::read(&p).unwrap();
+        assert_eq!(bytes.len(), 64 * 1024);
+        assert!(bytes.iter().all(|&b| b == bytes[0]), "the final file is exactly one writer's payload");
+        let leftovers = std::fs::read_dir(&dir).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".s2tmp")).count();
+        assert_eq!(leftovers, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

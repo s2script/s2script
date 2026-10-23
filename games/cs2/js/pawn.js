@@ -437,7 +437,8 @@
   // sample every player every tick, where the generated getters would allocate a Vector per field.
   // The plan is compiled once from live schema offsets; any unresolved offset disables it (false).
   var KINEMATICS_SLOTS = 13;
-  var kinematicsPlan;   // undefined = not built yet; null = an offset did not resolve
+  var kinematicsPlan = null;   // null = not built, or an offset did not resolve yet
+  var kinematicsMisses = 0;    // a failed build retries every 64th call (schema may warm up later)
   function buildKinematicsPlan() {
     var GK = globalThis.__s2pkg_entity && globalThis.__s2pkg_entity.GatherKind;
     var body = __s2_schema_offset("CBaseEntity", "m_CBodyComponent");
@@ -464,8 +465,11 @@
   }
   Pawn.KINEMATICS_SLOTS = KINEMATICS_SLOTS;
   Pawn.prototype.readKinematics = function (out, outIndex) {
-    if (kinematicsPlan === undefined) kinematicsPlan = buildKinematicsPlan();
-    if (kinematicsPlan === null) return false;
+    if (kinematicsPlan === null) {
+      if ((kinematicsMisses++ & 63) !== 0) return false;
+      kinematicsPlan = buildKinematicsPlan();
+      if (kinematicsPlan === null) return false;
+    }
     return this.ref.gather(kinematicsPlan, out, outIndex === undefined ? 0 : outIndex) === KINEMATICS_SLOTS;
   };
 

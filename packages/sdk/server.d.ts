@@ -70,8 +70,8 @@ export declare const Server: {
    */
   readonly tickCount: number;
   /**
-   * Seconds per simulation tick, derived from the engine's own clock (curtime / tickcount snapped
-   * to a whole tick rate — `0.015625` on a 64-tick server). `0` before the first tick of a map.
+   * Seconds per simulation tick, from the game's own server config (`0.015625` on a 64-tick
+   * server). Fixed for the server's lifetime. `0` only when the engine cannot report it.
    */
   readonly tickInterval: number;
 };
