@@ -210,6 +210,19 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
  * const pawn = Pawn.forSlot(0);
  * if (pawn) console.log(pawn.activeWeapon?.clip1);
  */
+/**
+ * The world transform (`absOrigin`, `absRotation`, …) of any entity, through the same
+ * CBodyComponent → CGameSceneNode chain as `pawn.sceneNode`. Null for a stale ref.
+ * @example
+ * import { Entity } from "@s2script/sdk";
+ * import { sceneNodeOf } from "@s2script/cs2";
+ * for (const dest of Entity.findByClass("info_teleport_destination")) {
+ *   const node = sceneNodeOf(dest);
+ *   console.log(dest.name, node?.absOrigin, node?.absRotation);
+ * }
+ */
+export declare function sceneNodeOf(ref: EntityRef): SceneNode | null;
+
 export declare const Pawn: {
   /** The Pawn for a player slot, or null if unoccupied / invalidated. */
   forSlot(slot: number): Pawn | null;

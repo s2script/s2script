@@ -1,6 +1,6 @@
 import { Files } from "@s2script/sdk/files";
-import { command, HookResult, Server } from "@s2script/sdk";
-import { Pawn } from "@s2script/cs2";
+import { command, Entity, HookResult, Server } from "@s2script/sdk";
+import { Pawn, sceneNodeOf } from "@s2script/cs2";
 
 /**
  * Files runs every read/write on the async runtime's worker threads: the game thread copies the
@@ -10,9 +10,10 @@ import { Pawn } from "@s2script/cs2";
  * ticks advanced while the IO was in flight.
  *
  *   sm_files_record [ticks]  — default 128 ticks (2 s at 64 tick)
+ *   sm_files_spawns          — dump every info_teleport_destination (origin + rotation) as JSON text
  */
 export const name = "files";
-export const describe = "record movement to a gzip file off-thread and read it back (sm_files_record [ticks])";
+export const describe = "record movement to a gzip file off-thread and read it back (sm_files_record [ticks], sm_files_spawns)";
 
 const SLOTS = Pawn.KINEMATICS_SLOTS;
 let recording: { slot: number; pawn: Pawn; buf: Float64Array; n: number; max: number } | null = null;
@@ -46,6 +47,20 @@ export function OnPluginStart(): void {
     const max = Math.max(1, Math.min(64 * 60, Number(cmd.arg(1)) || 128));
     recording = { slot, pawn, buf: new Float64Array(max * SLOTS), n: 0, max };
     cmd.reply(`recording ${max} ticks…`);
+    return HookResult.Handled;
+  });
+
+  command("sm_files_spawns", (cmd) => {
+    const rows = Entity.findByClass("info_teleport_destination").map((ref) => {
+      const node = sceneNodeOf(ref);
+      const o = node?.absOrigin, a = node?.absRotation;
+      return { name: ref.name, origin: o ? [o.x, o.y, o.z] : null, angles: a ? [a.x, a.y, a.z] : null };
+    });
+    const path = `spawns/${Server.mapName}.json`;
+    Files.write(path, JSON.stringify(rows))
+      .then(() => Files.list("spawns"))
+      .then((names) => cmd.reply(`wrote ${rows.length} destination(s) to ${path}; spawns/ has ${names.length} file(s)`))
+      .catch((e) => cmd.reply(`write failed: ${String(e)}`));
     return HookResult.Handled;
   });
 }

@@ -1082,7 +1082,16 @@
 
   // Merge (not overwrite) — csitem.generated.js (and any other prelude concatenated
   // ahead of this IIFE) may have already populated globalThis.__s2pkg_cs2 (e.g. CsItem).
-  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Teams: Teams, RoundEndReason: RoundEndReason, WinPanelFinalEvent: WinPanelFinalEvent, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone, Sounds: Sounds });
+  // sceneNodeOf(ref) — the world transform of ANY entity (every CBaseEntity has the
+  // m_CBodyComponent -> m_pSceneNode chain), reusing the generated SceneNode wrapper the pawn nav
+  // installs. Lets a plugin read e.g. an info_teleport_destination's absRotation without offsets.
+  var sceneNodeGetter = (Object.getOwnPropertyDescriptor(Pawn.prototype, "sceneNode") || {}).get;
+  function sceneNodeOf(ref) {
+    if (!ref || !sceneNodeGetter || !ref.isValid()) return null;
+    return sceneNodeGetter.call({ ref: ref });
+  }
+
+  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, sceneNodeOf: sceneNodeOf, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Teams: Teams, RoundEndReason: RoundEndReason, WinPanelFinalEvent: WinPanelFinalEvent, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone, Sounds: Sounds });
 
   // The ctx namespaces this game package contributes (core's generic extension point in
   // prelude.js merges these into every plugin's ctx). Each factory gets the prelude's ledger

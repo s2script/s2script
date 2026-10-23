@@ -16,3 +16,5 @@ Timer-grade engine surface for movement plugins (surf/bhop timers, replay record
   duck amount and buttons in one allocation-free call.
 - `Player.observerTarget` / `Player.observerMode` (`@s2script/cs2`): who a spectator is watching,
   for spectator-aware HUDs.
+- `sceneNodeOf(ref)` (`@s2script/cs2`): the world transform of any entity (e.g. a teleport
+  destination's rotation) through the generated `SceneNode` wrapper.
