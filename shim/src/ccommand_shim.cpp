@@ -1,6 +1,6 @@
 // Self-contained definitions of the CCommand members CS2 does not export.
 //
-// WHY THIS FILE EXISTS. `tier1/convar.h` declares CCommand's constructor, Tokenize, Reset and
+// WHY THIS FILE EXISTS. `tier0/convar.h` declares CCommand's constructor, Tokenize, Reset and
 // EnsureBuffers out-of-line, but NO shipped CS2 binary defines them:
 //
 //   $ nm -D --defined-only <every game .so> | grep -E 'CCommand::(CCommand|Tokenize|Reset)'
@@ -13,8 +13,8 @@
 //
 // The fix is NOT reverse engineering. CCommand's data members are CUtlVectorFixedGrowable
 // templates declared in the header, so the LAYOUT is already ours — the header is the definition.
-// Only the out-of-line METHOD BODIES are missing, and hl2sdk vendors them at
-// third_party/hl2sdk/tier1/convar.cpp. Compiling that file wholesale would drag in the whole
+// Only the out-of-line METHOD BODIES are missing, and s2sdk vendors them at
+// third_party/hl2sdk/tier0_perproject/convar.cpp. Compiling that file wholesale would drag in the whole
 // ConVar system plus the CUtlString/UtlVectorMemory/tier0 cascade that `tier1_shims.cpp` exists to
 // avoid (see its header comment). So, exactly as that file does for MurmurHash2LowerCase, we
 // define here the few members we actually need. Defining them as member functions (rather than
@@ -31,10 +31,12 @@
 //   * ArgS() is everything after argv0, taken from the ORIGINAL string (so inner quoting and
 //     spacing survive verbatim) — that is what m_nArgv0Size indexes
 //   * over-long input is refused (false) rather than truncated
-// Re-check against hl2sdk/tier1/convar.cpp on any submodule bump.
+// Re-check against s2sdk tier0_perproject/convar.cpp on any submodule bump.
 
-#include "tier1/convar.h"
-#include "tier1/utlstring.h"
+#include "tier0/convar.h"
+#include "tier0/utlstring.h"
+
+#include <cmath>
 
 #include <cstring>
 
@@ -49,10 +51,14 @@ void CCommand::Reset() {
     m_nArgv0Size = 0;
     m_ArgSBuffer.Base()[0] = '\0';
     m_Args.RemoveAll();
+    m_unk101 = false;
+    m_flInputTime = NAN;   // "not from an input event", as Valve's Reset sets it
+    m_unk201 = 0;
 }
 
 CCommand::CCommand() {
-    EnsureBuffers();
+    m_ArgSBuffer.SetCount(COMMAND_MAX_LENGTH);
+    m_ArgvBuffer.SetCount(COMMAND_MAX_LENGTH);
     Reset();
 }
 

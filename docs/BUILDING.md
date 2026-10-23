@@ -191,7 +191,8 @@ without modifying them. It derives PLAPI from checked headers and emits an
 `unmodified-source` manifest after successful binary validation:
 
 ```bash
-# Requires AMBuild 2.2+, hl2sdk, Steam Runtime 3 / Debian bullseye.
+# Requires AMBuild 2.2+, an alliedmodders/hl2sdk cs2 checkout (HL2SDKCS2=<path>; the pinned
+# Metamod predates s2sdk), Steam Runtime 3 / Debian bullseye.
 docker run --rm -v "$PWD:/repo" -w /repo \
   -v s2script-cargo:/usr/local/cargo/registry \
   rust:bullseye bash -lc 'export S2_SNIPER_ENV=1; bash /repo/scripts/build-metamod-pinned.sh'
@@ -302,15 +303,18 @@ Three upstream trees are pinned git submodules under `third_party/`:
 
 | Submodule | Remote | Branch |
 |---|---|---|
-| `third_party/hl2sdk` | https://github.com/alliedmodders/hl2sdk | `cs2` |
+| `third_party/hl2sdk` | https://github.com/s2script/s2sdk | `s2script-cs2` |
 | `third_party/metamod-source` | https://github.com/alliedmodders/metamod-source | `master` |
 | `third_party/breakpad` | https://github.com/google/breakpad | — (SHA pin; no tracking branch) |
 
-(metamod-source has no `dev` branch; `master` is where development happens. Breakpad is a
+`third_party/hl2sdk` holds s2sdk, AlliedModders' successor to hl2sdk for Source 2 (hl2sdk's
+`cs2` branch stopped updating in October 2026). It is our fork: `s2script-cs2` is upstream `cs2`
+plus any fix we need before upstream merges it. The path keeps its old name so scripts and docs
+don't churn. (metamod-source has no `dev` branch; `master` is where development happens. Breakpad is a
 GitHub mirror of the Chromium-hosted project; we pin a commit, not a branch.) The pinned SHAs are
 whatever the submodule pointers say — `git submodule status` is the source of truth.
 
-hl2sdk is a **patch-capable** dependency, not a trusted one: it lags Valve, so own your
+The SDK is a **patch-capable** dependency, not a trusted one: it lags Valve, so own your
 schema/offset layer rather than believing the SDK's game-class fields.
 
 ### Bumping a submodule
@@ -322,18 +326,15 @@ git add third_party/hl2sdk
 git commit -m "chore: bump hl2sdk to <newsha>"
 ```
 
-### Patching hl2sdk
+### Patching the SDK
 
-- Make the change directly in `third_party/hl2sdk`.
-- Export it: `git -C third_party/hl2sdk diff HEAD > patches/hl2sdk/NNNN-description.patch`
-  (use `diff HEAD` — plain `diff` silently drops staged hunks).
-- Patches in `patches/hl2sdk/` are re-applied in order on a fresh checkout by
-  `scripts/apply-hl2sdk-patches.sh`, which the shim's cmake configure runs (idempotent; it fails
-  the configure if a patch no longer fits the pinned commit). The crash identity's hl2sdk stamp
-  gets a `+Np` suffix while patches are carried.
-- Carried now: `0001-ivengineserver2-slot-65.patch` (the Oct 22 2026 `IVEngineServer2` insertion,
-  s2sdk #116). Drop it when the submodule moves to a commit that has it.
-- Every patch is reviewed and tracked in the update-day fire drill.
+- Commit the fix on the fork's `s2script-cs2` branch (cherry-pick the upstream PR when there is
+  one), push it, and bump the submodule to that commit.
+- To take upstream changes, merge upstream `cs2` into `s2script-cs2`. Never rebase or
+  force-push it: older s2script commits pin its SHAs, and a rewritten branch orphans them.
+- Carried now: alliedmodders/s2sdk#116 (`IVEngineServer2::IsSpawnGroupLoadedForClient`, the
+  Oct 22 2026 slot-65 insertion).
+- Every carried fix is reviewed and tracked in the update-day fire drill.
 
 **Interface version strings live in the `gamedata/` tree** (owner-scoped: `gamedata/core/` for
 what shim+core name in source, `games/cs2/gamedata/` for the CS2 game package's own facts), never

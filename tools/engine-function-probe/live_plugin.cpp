@@ -13,9 +13,10 @@
 #include <fstream>
 #include <filesystem>
 #include <dlfcn.h>
-#include <eiface.h>
+#include <engine2/ivengineserver2.h>
 #include <schemasystem/schemasystem.h>
 #include <entity2/entitysystem.h>
+#include <gameentitysystem.h>
 #include <entity2/entityinstance.h>
 #include "gamedata.h"
 #include "engine_resolver.h"

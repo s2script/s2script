@@ -21,16 +21,6 @@ set(HL2SDK ${CMAKE_SOURCE_DIR}/../third_party/hl2sdk)
 set(MMS    ${CMAKE_SOURCE_DIR}/../third_party/metamod-source)
 set(AMTL   ${MMS}/third_party/amtl)
 
-# Carried hl2sdk fixes (patches/hl2sdk/, see docs/BUILDING.md "Patching hl2sdk"): applied to the
-# vendored checkout before anything compiles against it. Idempotent, and fatal if a patch no
-# longer fits the pinned commit — building against an unpatched header is the bug they fix.
-execute_process(
-    COMMAND bash ${CMAKE_SOURCE_DIR}/../scripts/apply-hl2sdk-patches.sh
-    RESULT_VARIABLE S2_HL2SDK_PATCH_RC)
-if(NOT S2_HL2SDK_PATCH_RC EQUAL 0)
-    message(FATAL_ERROR "patches/hl2sdk did not apply to third_party/hl2sdk (see above)")
-endif()
-
 # Cargo profile directory the resident core (libs2script_core.so) was built into. `make shim` and
 # scripts/build-sniper.sh always build core as --release, so this defaults to "release" and is
 # unaffected. CI's cheap PR build compiles core in debug (no --release, much faster) and passes
@@ -57,7 +47,7 @@ add_library(s2script SHARED
     # Slice 5D.1: a self-contained MurmurHash2LowerCase (the ONE tier1 symbol CKV3MemberName(const char*)
     # needs to key IGameEvent field reads) — avoids linking all of tier1 (CUtlString/UtlVectorMemory cascade).
     src/tier1_shims.cpp
-    # CCommand's ctor/Tokenize/Reset/EnsureBuffers are DECLARED in tier1/convar.h but exported by no
+    # CCommand's ctor/Tokenize/Reset/EnsureBuffers are DECLARED in tier0/convar.h but exported by no
     # shipped CS2 binary — using them links and then fails at dlopen, taking the whole addon down.
     # Same doctrine as tier1_shims.cpp: define the few members we need rather than link all of tier1.
     src/ccommand_shim.cpp
@@ -101,7 +91,7 @@ add_library(s2script SHARED
     # does not grow another resolution loop; reads gamedata/sdkhooks, never s_gdCore.
     src/sdkhooks_vp.cpp
     ${HL2SDK}/entity2/entitykeyvalues.cpp
-    ${HL2SDK}/tier1/keyvalues3.cpp
+    ${HL2SDK}/tier0_perproject/keyvalues3.cpp
     ${HL2SDK}/public/tier0/memoverride.cpp   # CSSharp compiles this — routes operator new/delete
                                              # through the engine allocator (g_pMemAlloc) so our
                                              # compiled KV3 code + the engine share ONE heap. Do NOT
@@ -249,13 +239,15 @@ target_include_directories(s2script PRIVATE
     ${MMS}/core
     ${MMS}/third_party/khook/include
     ${AMTL}
+    # The cs2 include paths from Metamod's hl2sdk-manifests (manifests/cs2.json).
     ${HL2SDK}/public
-    ${HL2SDK}/public/tier0
-    ${HL2SDK}/public/tier1
+    ${HL2SDK}/public/engine2
     ${HL2SDK}/public/mathlib
-    ${HL2SDK}/public/appframework
+    ${HL2SDK}/public/tier0
+    ${HL2SDK}/public/entity2
     # model precache: igamesystem.h / igamesystemfactory.h live under game/shared, not public/
     ${HL2SDK}/game/shared
+    ${HL2SDK}/common
     # protobuf 3.21.8 runtime headers (Slice 6.1c) — reflection over the game's usermessage
     # protobuf objects (CUserMessageSayText2). Matches the vendored libprotobuf.a below.
     ${HL2SDK}/thirdparty/protobuf-3.21.8/src
@@ -311,12 +303,6 @@ execute_process(
 if(NOT S2_HL2SDK_SHA)
     set(S2_HL2SDK_SHA "unknown")
 endif()
-# A crash envelope must say the headers were patched, and by how many carried fixes.
-file(GLOB S2_HL2SDK_PATCHES ${CMAKE_SOURCE_DIR}/../patches/hl2sdk/*.patch)
-list(LENGTH S2_HL2SDK_PATCHES S2_HL2SDK_PATCH_COUNT)
-if(S2_HL2SDK_PATCH_COUNT GREATER 0)
-    set(S2_HL2SDK_SHA "${S2_HL2SDK_SHA}+${S2_HL2SDK_PATCH_COUNT}p")
-endif()
 target_compile_definitions(s2script PRIVATE S2_HL2SDK_BUILD="${S2_HL2SDK_SHA}")
 
 # EKV slice: split the SDK TUs into per-function sections and GC unreachable ones at link time,
@@ -325,7 +311,7 @@ target_compile_definitions(s2script PRIVATE S2_HL2SDK_BUILD="${S2_HL2SDK_SHA}")
 set_source_files_properties(
     src/ekv.cpp
     ${HL2SDK}/entity2/entitykeyvalues.cpp
-    ${HL2SDK}/tier1/keyvalues3.cpp
+    ${HL2SDK}/tier0_perproject/keyvalues3.cpp
     # NOTE: memoverride.cpp is deliberately EXCLUDED here — its global operator new/delete must
     # NOT be gc-sectioned away (they're the whole point). It compiles WITHOUT these flags.
     PROPERTIES COMPILE_OPTIONS "-ffunction-sections;-fdata-sections"

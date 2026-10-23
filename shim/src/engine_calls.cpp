@@ -36,6 +36,7 @@
 // MAX_TOTAL_ENTITIES / EF_IS_INVALID_EHANDLE — the receiver + entity-arg resolution walk below reads
 // ONLY system-owned identity-chunk memory (never the instance) to decide liveness.
 #include <entity2/entitysystem.h>
+#include <gameentitysystem.h>      // CGameEntitySystem (game/shared in s2sdk)
 #include <entity2/entityinstance.h>   // CEntityInstance::GetRefEHandle (inline; identity-backed)
 
 #include <link.h>     // dl_iterate_phdr, ElfW

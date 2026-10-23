@@ -25,10 +25,10 @@
     // Interface string from igameeventsystem.h GAMEEVENTSYSTEM_INTERFACE_VERSION macro.
     "GameEventSystem": "GameEventSystemServerV001",
     // ISource2GameClients — backs the ClientCommand hook for player console commands (Slice 6.11c).
-    // Interface string from eiface.h INTERFACEVERSION_SERVERGAMECLIENTS.
+    // Interface string from engine2/isource2server.h INTERFACEVERSION_SERVERGAMECLIENTS.
     "Source2GameClients": "Source2GameClients001",
     // ISource2GameEntities — backs the CheckTransmit POST hook (checktransmit slice: per-client
-    // entity visibility). Interface string from eiface.h INTERFACEVERSION_SERVERGAMEENTS.
+    // entity visibility). Interface string from engine2/isource2server.h INTERFACEVERSION_SERVERGAMEENTS.
     "Source2GameEntities": "Source2GameEntities001"
   },
   // Byte offsets into engine interface objects — keyed by platform string.
@@ -41,9 +41,8 @@
     // entity-system pointer). This is the one entity value that isn't resolved dynamically — a wrong
     // offset reads garbage, so it must be re-confirmed on the update treadmill if entity access breaks.
     "GameEntitySystem": { "linuxsteamrt64": 80 },
-    // CCheckTransmitInfo: byte offset of the which-client int32. hl2sdk's CCheckTransmitInfo is
-    // explicitly incomplete ("TODO" at iservernetworkable.h:44), so this is a borrowed constant —
-    // CSSharp calls it m_nPlayerSlot, Swiftly m_nClientEntityIndex (they DISAGREE on semantics:
+    // CCheckTransmitInfo: byte offset of the which-client int32. s2sdk's CCheckTransmitInfo puts
+    // m_nPlayerSlot at 576 too, but the shim reads it through this offset — CSSharp calls it m_nPlayerSlot, Swiftly m_nClientEntityIndex (they DISAGREE on semantics:
     // slot vs entindex=slot+1). Both the offset AND the semantics are validated at FIRST
     // CheckTransmit fire (fail-closed: no transmit bits are touched until validation passes; a
     // persistent mismatch prints a named gamedata FAIL and disables the descriptor). Re-derive on
@@ -86,7 +85,7 @@
     // that one hook. A moved slot is an edit here (or in custom/), not a rebuild.
     //
     // IVEngineServer2_vtableSize does double duty: it also gates the shim's COMPILED engine calls
-    // (kick, print, userid, client convars). Those come from the vendored hl2sdk eiface.h, so on a
+    // (kick, print, userid, client convars). Those come from the vendored s2sdk ivengineserver2.h, so on a
     // mismatch they are disabled until a build with the updated header ships — the Oct 22 2026
     // update inserted a virtual at slot 65 and the stale header's GetClientXUID call crashed every
     // player join. Raise the pin in custom/ only once the header in use is known to match.

@@ -1,10 +1,10 @@
-// Entity lifecycle listeners slice — the ONLY TU that includes entity2/entitysystem.h (for
-// IEntityListener). Mirrors ekv.cpp's isolation discipline: everything else in the shim treats the
+// Entity lifecycle listeners slice — the ONLY TU that includes gameentitysystem.h for
+// IEntityListener. Mirrors ekv.cpp's isolation discipline: everything else in the shim treats the
 // listener as an opaque void* (via S2_GetEntityListener()). We DERIVE the real IEntityListener so the
 // vtable layout matches the SDK exactly (create/spawn/delete/parentChanged in that order); we do NOT
 // call m_entityListeners.AddToTail here — registration is a sig-resolved AddListenerEntity call in
 // s2script_mm.cpp, so this TU instantiates no heavy CUtlVector template.
-#include <entity2/entitysystem.h>       // IEntityListener
+#include <gameentitysystem.h>          // IEntityListener (game/shared in s2sdk)
 // entitysystem.h only forward-declares CEntityInstance (via entityidentity.h); GetClassname()/
 // GetRefEHandle() need the full definition — mirrors s2script_mm.cpp, which includes both headers
 // explicitly for the same reason.

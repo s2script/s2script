@@ -1,6 +1,3 @@
-// sdk_stubs/network_connection.pb.h (our stub, found first via CMake include path) must
-// be resolved before eiface.h tries to include it. CMakeLists.txt lists sdk_stubs
-// ahead of ${HL2SDK}/public, so the search succeeds without running protoc.
 #include "s2script_mm.h"
 #include "entity_ptr_hint.h"
 #include "s2script_core.h"
@@ -9,16 +6,15 @@
 #include "gamedata.h"
 #include "../third_party/json.hpp"
 
-// Pull in ISource2Server (and the typedef IServerGameDLL = ISource2Server)
-// from the HL2SDK.  The stub sdk_stubs/network_connection.pb.h satisfies the
-// one missing generated include that eiface.h unconditionally pulls in.
-#include <eiface.h>
-#include <iservernetworkable.h>  // CCheckTransmitInfo (m_pTransmitEntity @0) — checktransmit slice
+// The engine interfaces we hook and call: ISource2Server / ISource2GameClients /
+// ISource2GameEntities (+ CCheckTransmitInfo), IVEngineServer2, ISource2ServerConfig.
+#include <engine2/isource2server.h>
+#include <engine2/ivengineserver2.h>
+#include <engine2/isource2serverconfig.h>
 #include <playerslot.h>   // CPlayerSlot — IVEngineServer2::ClientPrintf target (Slice 6.1b)
-#include <inetchannel.h>  // NetChannelBufType_t / BUF_RELIABLE (Slice 6.1c PostEventAbstract)
+#include <networksystem/inetchannel.h>  // NetChannelBufType_t / BUF_RELIABLE (Slice 6.1c PostEventAbstract)
 #include <irecipientfilter.h>   // Sound slice: the modern 4-method IRecipientFilter + CPlayerBitVec
 #include <inetchannelinfo.h>  // INetChannelInfo::GetAddress — client_address (ban-reason sub-project 2)
-#include <networksystem/netmessage.h>            // CNetMessage::AsProto (Slice 6.1c)
 #include <google/protobuf/message.h>             // Message/Reflection (Slice 6.1c SayText2 reflection)
 #include <google/protobuf/descriptor.h>          // Descriptor::FindFieldByName (Slice 6.1c)
 #include <tier0/memalloc.h>                      // engine-owned CUtlString storage
@@ -31,6 +27,7 @@
 // CEntityHandle, CEntityIndex, MAX_ENTITIES_IN_LIST, MAX_ENTITY_LISTS (recon Q3/Q4).
 // Requires sdk_stubs/entitydatainstantiator.h (see shim/src/sdk_stubs/ stub — recon gap).
 #include <entity2/entitysystem.h>
+#include <gameentitysystem.h>   // CGameEntitySystem + IEntityListener (game/shared in s2sdk)
 // CEntityInstance, NetworkStateChangedData (recon Q6).
 #include <entity2/entityinstance.h>
 
@@ -46,13 +43,15 @@
 #include <icvar.h>
 
 // IGameEventSystem + INetworkMessages — needed for client_print chat plumbing (Slice 6.1).
-#include <engine/igameeventsystem.h>
-#include <networksystem/inetworkmessages.h>
+#include <engine2/igameeventsystem.h>
+#include <networksystem/inetworkmessages.h>   // + CNetMessage::AsProto (Slice 6.1c)
 
 // INetworkGameServer + CGlobalVars (via edict.h) — the held game-server pointer is cast to
 // INetworkGameServer* for the server-info ops (reservedslots+basetriggers): GetMaxClients /
 // GetMapName / GetGlobals()->curtime (typed vtable calls; the compiler derives the index).
-#include <iserver.h>
+#include <engine2/inetworkgameserver.h>
+#include <engine2/inetworkserverservice.h>
+#include <engine2/networkgameserverbase.h>   // CNetworkGameServerBase IS-A INetworkGameServer
 
 #include <dlfcn.h>    // dladdr
 #include <libgen.h>   // dirname
@@ -332,13 +331,13 @@ static int schema_find_field(CSchemaClassInfo* info, const char* field, int dept
     // Depth cap: C++ inheritance graphs are acyclic + shallow, but a corrupt schema table could
     // cycle; bound the recursion so a bad pointer degrades to a miss instead of overflowing the stack.
     if (!info || depth > 32) return -1;
-    for (int i = 0; i < info->m_nFieldCount; ++i) {
+    for (int i = 0; i < info->m_nNumFields; ++i) {
         const SchemaClassFieldData_t& f = info->m_pFields[i];
-        if (f.m_pszName && strcmp(f.m_pszName, field) == 0) {
+        if (f.m_pName && strcmp(f.m_pName, field) == 0) {
             return f.m_nSingleInheritanceOffset;  // THE offset getter (recon Q1)
         }
     }
-    for (int b = 0; b < info->m_nBaseClassCount; ++b) {
+    for (int b = 0; b < info->m_nNumBaseClasses; ++b) {
         const SchemaBaseClassInfoData_t& base = info->m_pBaseClasses[b];
         int sub = schema_find_field(base.m_pClass, field, depth + 1);
         if (sub >= 0) return static_cast<int>(base.m_nOffset) + sub;
@@ -1140,7 +1139,7 @@ static GetLegacyListener_t s_pGetLegacyListener = nullptr;
 //   s_pCvar->UnregisterConCommandCallbacks(ref) per entry.
 // ---------------------------------------------------------------------------
 static void s2_cvar_change_cb(ConVarRefAbstract* ref, CSplitScreenSlot slot,
-                              const char* newValue, const char* oldValue, void* unk);
+                              const char* newValue, const char* oldValue, ConVarUserInfoSet_t* userinfo);
 static ICvar* s_pCvar = nullptr;
 /** Whether the DispatchConCommand listener hook is installed (removed in Unload). */
 static bool s_conCmdDispatchHookInstalled = false;
@@ -2157,7 +2156,7 @@ static int s2_client_fake_command(int slot, const char* cmd) {
 // ConVarRefAbstract::GetName() -> m_ConVarData->GetName() -> m_pszName is inline all the way down,
 // so this needs no tier1 symbol (see tier1_shims.cpp for why that matters).
 static void s2_cvar_change_cb(ConVarRefAbstract* ref, CSplitScreenSlot /*slot*/,
-                              const char* newValue, const char* oldValue, void* /*unk*/) {
+                              const char* newValue, const char* oldValue, ConVarUserInfoSet_t* /*userinfo*/) {
     S2HookDispatchGuard guard;
     if (!guard) return;
     if (!ref) return;
@@ -2770,8 +2769,8 @@ static int S2NamedChatOp(void* pController, void* pCmd, bool teamonly, int, cons
 //
 // Spike-confirmed recipe (2026-07-01-slice-5b1-spike-findings.md):
 //   • Iterate scope->m_ClassBindings (public CUtlTSHash) via Count/GetElements/Element.
-//   • Per class: name=m_pszName; parent=m_pBaseClasses[0].m_pClass->m_pszName (guard bases/null).
-//   • Per field: name=m_pszName, offset=m_nSingleInheritanceOffset, type=m_pType (NOT m_pSchemaType).
+//   • Per class: name=m_pName; parent=m_pBaseClasses[0].m_pClass->m_pName (guard bases/null).
+//   • Per field: name=m_pName, offset=m_nSingleInheritanceOffset, type=m_pType (NOT m_pSchemaType).
 //   • CHandle detection: SCHEMA_TYPE_ATOMIC + SCHEMA_ATOMIC_T + m_sTypeName starts with "CHandle";
 //     m_pAtomicInfo is NULL live — do NOT rely on it.  Inner class from m_pTemplateType.
 // ---------------------------------------------------------------------------
@@ -2790,11 +2789,11 @@ static void schema_type_to_kind(CSchemaType* t, const char** kind,
             *kind = "class";  *type_name = t->m_sTypeName.Get(); break;
         case SCHEMA_TYPE_DECLARED_ENUM: {
             *kind = "enum";   *type_name = t->m_sTypeName.Get();
-            // The width comes off the enum's own binding (SchemaEnumInfoData_t::m_nSize, 1/2/4/8).
+            // The width comes off the enum's own binding (SchemaEnumInfoData_t::m_nSizeOf, 1/2/4/8).
             // Null-guarded: an enum whose binding has not been installed yet reports 0, and the
             // codegen then skips it exactly as before rather than guessing a width.
             auto* e = static_cast<CSchemaType_DeclaredEnum*>(t);
-            if (e->m_pEnumInfo) *size = (int)e->m_pEnumInfo->m_nSize;
+            if (e->m_pEnumInfo) *size = (int)e->m_pEnumInfo->m_nSizeOf;
             break;
         }
         case SCHEMA_TYPE_POINTER: {
@@ -2834,19 +2833,19 @@ static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_fiel
 
     // Helper: emit one class (parent-guarded) and its own fields.
     auto emit_one = [&](CSchemaClassInfo* ci) {
-        if (!ci || !ci->m_pszName) return;
-        const char* parent = (ci->m_nBaseClassCount > 0 && ci->m_pBaseClasses
+        if (!ci || !ci->m_pName) return;
+        const char* parent = (ci->m_nNumBaseClasses > 0 && ci->m_pBaseClasses
                               && ci->m_pBaseClasses[0].m_pClass)
-                             ? ci->m_pBaseClasses[0].m_pClass->m_pszName : nullptr;
-        emit_class(ctx, ci->m_pszName, parent);
-        if (ci->m_nFieldCount > 0 && !ci->m_pFields) return;   // degrade: skip a class with a null field array
-        for (int j = 0; j < ci->m_nFieldCount; ++j) {
+                             ? ci->m_pBaseClasses[0].m_pClass->m_pName : nullptr;
+        emit_class(ctx, ci->m_pName, parent);
+        if (ci->m_nNumFields > 0 && !ci->m_pFields) return;   // degrade: skip a class with a null field array
+        for (int j = 0; j < ci->m_nNumFields; ++j) {
             const SchemaClassFieldData_t& f = ci->m_pFields[j];
-            if (!f.m_pszName) continue;
+            if (!f.m_pName) continue;
             const char* kind = "unknown"; const char* type_name = nullptr; const char* inner = nullptr;
             int size = 0;
             schema_type_to_kind(f.m_pType, &kind, &type_name, &inner, &size);
-            emit_field(ctx, ci->m_pszName, f.m_pszName, f.m_nSingleInheritanceOffset,
+            emit_field(ctx, ci->m_pName, f.m_pName, f.m_nSingleInheritanceOffset,
                        kind, type_name, inner, size);
         }
     };
@@ -2858,9 +2857,9 @@ static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_fiel
     int got = scope->m_ClassBindings.GetElements(0, n, handles.data());
     for (int i = 0; i < got; ++i) {
         CSchemaClassInfo* ci = scope->m_ClassBindings.Element(handles[i]);
-        if (!ci || !ci->m_pszName) continue;
+        if (!ci || !ci->m_pName) continue;
         emit_one(ci);
-        emitted.insert(ci->m_pszName);
+        emitted.insert(ci->m_pName);
     }
 
     // Enums, from the same scope pair as the classes. The class walk gives a field's enum TYPE NAME
@@ -2878,12 +2877,12 @@ static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_fiel
         int egot = sc->m_EnumBindings.GetElements(0, en, eh.data());
         for (int i = 0; i < egot; ++i) {
             CSchemaEnumInfo* ei = sc->m_EnumBindings.Element(eh[i]);
-            if (!ei || !ei->m_pszName) continue;
-            if (ei->m_nEnumeratorCount > 0 && !ei->m_pEnumerators) continue;  // degrade, never deref null
-            for (uint16 j = 0; j < ei->m_nEnumeratorCount; ++j) {
+            if (!ei || !ei->m_pName) continue;
+            if (ei->m_nNumEnumerators > 0 && !ei->m_pEnumerators) continue;  // degrade, never deref null
+            for (uint16 j = 0; j < ei->m_nNumEnumerators; ++j) {
                 const SchemaEnumeratorInfoData_t& ev = ei->m_pEnumerators[j];
-                if (!ev.m_pszName) continue;
-                emit_enum(ctx, ei->m_pszName, (int)ei->m_nSize, ev.m_pszName, (long long)ev.m_nValue);
+                if (!ev.m_pName) continue;
+                emit_enum(ctx, ei->m_pName, (int)ei->m_nSizeOf, ev.m_pName, (long long)ev.m_nValue);
             }
         }
     };
@@ -2899,8 +2898,8 @@ static int schema_enumerate(void* ctx, s2_emit_class_fn emit_class, s2_emit_fiel
         int ggot = gScope->m_ClassBindings.GetElements(0, gn, ghandles.data());
         for (int i = 0; i < ggot; ++i) {
             CSchemaClassInfo* ci = gScope->m_ClassBindings.Element(ghandles[i]);
-            if (!ci || !ci->m_pszName) continue;
-            if (emitted.count(ci->m_pszName)) continue;  // already emitted from server scope
+            if (!ci || !ci->m_pName) continue;
+            if (emitted.count(ci->m_pName)) continue;  // already emitted from server scope
             emit_one(ci);
         }
     }
@@ -3948,23 +3947,9 @@ static bool IsAddressInAnyModuleText(void* fn) {
 // inside IGameSystem::InitAllSystems) and, until that resolves, NOTHING is registered: a null
 // sm_pFirst would have CBaseGameSystemFactory's constructor dereference null on the very first insert.
 // ---------------------------------------------------------------------------
-// The SDK only FORWARD-DECLARES IEntityResourceManifest, so the vtable has to be spelled out here to
-// call through it. Layout taken from CounterStrikeSharp's `core/game_system.h`, which is the
-// implementation that demonstrably precaches models on this game build: AddResource occupies the
-// first three slots as overloads, so the single-argument form is slot 0.
-class IEntityResourceManifest {
-public:
-    virtual void AddResource(const char*) = 0;
-    virtual void AddResource(const char*, void*) = 0;
-    virtual void AddResource(const char*, void*, void*, void*) = 0;
-    virtual void unk_04() = 0;
-    virtual void unk_05() = 0;
-    virtual void unk_06() = 0;
-    virtual void unk_07() = 0;
-    virtual void unk_08() = 0;
-    virtual void unk_09() = 0;
-    virtual void unk_10() = 0;
-};
+// IEntityResourceManifest comes from entity2/entitysystem.h. AddResource occupies the first three
+// slots as overloads, so the single-argument form is slot 0, matching CounterStrikeSharp's
+// `core/game_system.h`, which demonstrably precaches models on this game build.
 
 CBaseGameSystemFactory** CBaseGameSystemFactory::sm_pFirst = nullptr;
 
@@ -4303,8 +4288,8 @@ static int Shim_EntityReadHandleVector(int index, int serial, const int* ptrOffs
 // Entity-I/O slice (Task 2): fire inputs via AddEntityIOEvent (the game's own input-firing path)
 // + hook outputs by detouring FireOutputInternal (the 6.6 damage-hook detour engine).
 //
-// CEntityIOOutput / EntityIOOutputDesc_t: layouts NOT in the vendored SDK (recon gap — CS2's
-// public headers don't expose entity-I/O internals). Cross-confirmed via CounterStrikeSharp's
+// CEntityIOOutput comes from entity2/ientity2_entityio.h; the SDK only forward-declares its
+// descriptor (EntOutput_t), so EntityIOOutputDesc_t spells out the one field we read. Cross-confirmed via CounterStrikeSharp's
 // entity_manager.h (CEntityIOOutput { vtable; EntityIOConnection_t* m_pConnections;
 // EntityIOOutputDesc_t* m_pDesc; }, EntityIOOutputDesc_t { const char* m_pName; ...}) AND
 // independently disasm-verified at our OWN resolved FireOutputInternal address (spike, Task 2):
@@ -4316,12 +4301,6 @@ struct EntityIOOutputDesc_t {
     const char* m_pName;
     uint32 m_nFlags;
     uint32 m_nOutputOffset;
-};
-class CEntityIOOutput {
-public:
-    void* vtable;
-    void* m_pConnections;          // opaque linked-list head; not walked here
-    EntityIOOutputDesc_t* m_pDesc;
 };
 
 // AddEntityIOEvent(entitySystem, target, input, activator, caller, value, delay, outputID,
@@ -4359,16 +4338,15 @@ static int Shim_EntityFireInput(int index, int serial, const char* input, const 
 // explicitly uses that heap, independently of the SDK malloc/free macro configuration.
 class OutputVariantAllocator {
 public:
+    enum { ALWAYS_COPY = 0 };   // borrow by default, as CVariantDefaultAllocator does
     static void* Allocate(int size) { return MemAlloc_Alloc(size); }
     static void Free(void* memory) { MemAlloc_Free(memory); }
 };
 using OutputCapturedVariant = CVariantBase<OutputVariantAllocator>;
 static_assert(sizeof(OutputCapturedVariant) == 16 && alignof(OutputCapturedVariant) == 8,
               "Pulse conversion requires the verified native variant layout");
-static_assert(offsetof(OutputCapturedVariant, m_pData) == 0 &&
-              offsetof(OutputCapturedVariant, m_type) == 8 &&
-              offsetof(OutputCapturedVariant, m_flags) == 10,
-              "Pulse conversion requires the verified native union/type/ownership offsets");
+// The union/type/ownership offsets (0/8/10) can't be asserted here: s2sdk made those members
+// private. Its variant.h is the verified layout, and the size and alignment above still pin it.
 using PulseFirstArgumentToVariantFn = void (*)(OutputCapturedVariant*, CPulseArgumentPack*);
 static PulseFirstArgumentToVariantFn s_pPulseFirstArgumentToVariant = nullptr;
 
@@ -4377,24 +4355,30 @@ static void CVariantToString(const CVariantBase<Allocator>* v, char* buf, size_t
     if (bufSize == 0) return;
     buf[0] = '\0';
     if (!v) return;
-    switch (v->m_type) {
+    // s2sdk keeps the union private; the typed conversion operators read it (a null vector or
+    // angle reads as zero).
+    switch (v->GetType()) {
         case FIELD_VOID:      break;
-        case FIELD_FLOAT32:   snprintf(buf, bufSize, "%g", v->m_float32); break;
-        case FIELD_FLOAT64:   snprintf(buf, bufSize, "%g", v->m_float64); break;
-        case FIELD_INT32:     snprintf(buf, bufSize, "%d", v->m_int32); break;
-        case FIELD_UINT32:    snprintf(buf, bufSize, "%u", v->m_uint32); break;
-        case FIELD_INT64:     snprintf(buf, bufSize, "%lld", static_cast<long long>(v->m_int64)); break;
-        case FIELD_UINT64:    snprintf(buf, bufSize, "%llu", static_cast<unsigned long long>(v->m_uint64)); break;
-        case FIELD_BOOLEAN:   snprintf(buf, bufSize, "%s", v->m_bool ? "true" : "false"); break;
-        case FIELD_CHARACTER: snprintf(buf, bufSize, "%c", v->m_char); break;
-        case FIELD_STRING:    snprintf(buf, bufSize, "%s", v->m_stringt.ToCStr()); break;
-        case FIELD_CSTRING:   snprintf(buf, bufSize, "%s", v->m_pszString ? v->m_pszString : ""); break;
-        case FIELD_VECTOR:
-            if (v->m_pVector) snprintf(buf, bufSize, "%g %g %g", v->m_pVector->x, v->m_pVector->y, v->m_pVector->z);
+        case FIELD_FLOAT32:   snprintf(buf, bufSize, "%g", static_cast<float32>(*v)); break;
+        case FIELD_FLOAT64:   snprintf(buf, bufSize, "%g", static_cast<float64>(*v)); break;
+        case FIELD_INT32:     snprintf(buf, bufSize, "%d", static_cast<int32>(*v)); break;
+        case FIELD_UINT32:    snprintf(buf, bufSize, "%u", static_cast<uint32>(*v)); break;
+        case FIELD_INT64:     snprintf(buf, bufSize, "%lld", static_cast<long long>(static_cast<int64>(*v))); break;
+        case FIELD_UINT64:    snprintf(buf, bufSize, "%llu", static_cast<unsigned long long>(static_cast<uint64>(*v))); break;
+        case FIELD_BOOLEAN:   snprintf(buf, bufSize, "%s", static_cast<bool>(*v) ? "true" : "false"); break;
+        case FIELD_CHARACTER: snprintf(buf, bufSize, "%c", static_cast<char>(*v)); break;
+        case FIELD_STRING:    snprintf(buf, bufSize, "%s", static_cast<const string_t>(*v).ToCStr()); break;
+        case FIELD_CSTRING:   snprintf(buf, bufSize, "%s", static_cast<const char*>(*v)); break;
+        case FIELD_VECTOR: {
+            const Vector& vec = *v;
+            snprintf(buf, bufSize, "%g %g %g", vec.x, vec.y, vec.z);
             break;
-        case FIELD_QANGLE:
-            if (v->m_pQAngle) snprintf(buf, bufSize, "%g %g %g", v->m_pQAngle->x, v->m_pQAngle->y, v->m_pQAngle->z);
+        }
+        case FIELD_QANGLE: {
+            const QAngle& ang = *v;
+            snprintf(buf, bufSize, "%g %g %g", ang.x, ang.y, ang.z);
             break;
+        }
         default: break;   // unsupported -> "" (already set above)
     }
 }
@@ -4410,8 +4394,9 @@ static int S2NamedOutputOp(CEntityIOOutput* pThis, CEntityInstance* act, CEntity
                            CPulseArgumentPack* arguments, float delay,
                            CPulseInputParamMap*, const CVariant* value) {
     int result = 0;   // Continue
-    if (pThis && pThis->m_pDesc && pThis->m_pDesc->m_pName) {
-        const char* outputName = pThis->m_pDesc->m_pName;
+    const auto* desc = pThis ? reinterpret_cast<const EntityIOOutputDesc_t*>(pThis->m_pDesc) : nullptr;
+    if (desc && desc->m_pName) {
+        const char* outputName = desc->m_pName;
         const char* cls = caller ? caller->GetClassname() : "";
         int actH    = act    ? act->GetRefEHandle().ToInt()    : -1;
         int callerH = caller ? caller->GetRefEHandle().ToInt() : -1;

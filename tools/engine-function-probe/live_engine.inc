@@ -62,11 +62,11 @@ ScopedMarker SetScope(int value) {
 }
 int Field(CSchemaClassInfo* info,const char* name,int depth=0) {
     if(!info || depth>32) return -1;
-    for(int i=0;i<info->m_nFieldCount;++i) {
+    for(int i=0;i<info->m_nNumFields;++i) {
         const auto& f=info->m_pFields[i];
-        if(f.m_pszName && std::strcmp(f.m_pszName,name)==0) return f.m_nSingleInheritanceOffset;
+        if(f.m_pName && std::strcmp(f.m_pName,name)==0) return f.m_nSingleInheritanceOffset;
     }
-    for(int b=0;b<info->m_nBaseClassCount;++b) {
+    for(int b=0;b<info->m_nNumBaseClasses;++b) {
         const auto& base=info->m_pBaseClasses[b];
         const int offset=Field(base.m_pClass,name,depth+1);
         if(offset>=0) return base.m_nOffset+offset;

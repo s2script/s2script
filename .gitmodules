@@ -1,7 +1,7 @@
 [submodule "third_party/hl2sdk"]
 	path = third_party/hl2sdk
-	url = https://github.com/alliedmodders/hl2sdk
-	branch = cs2
+	url = https://github.com/s2script/s2sdk
+	branch = s2script-cs2
 [submodule "third_party/metamod-source"]
 	path = third_party/metamod-source
 	url = https://github.com/alliedmodders/metamod-source

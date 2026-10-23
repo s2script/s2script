@@ -5,7 +5,12 @@
 #include <cstring>
 #include <cstddef>
 #include <cstdint>
+// The fixtures below build variants the way the engine hands them over, field by field, including
+// null vector/angle pointers the public constructors can't express. s2sdk made those members
+// private, so this test (only) opens them up.
+#define private public
 #include "variant.h"
+#undef private
 #include "tier0/memalloc.h"
 #include <string>
 #include <vector>
@@ -16,6 +21,8 @@
 // The SDK contains unused default allocator branches referring to this symbol.
 // Owned capture in this fixture uses the explicit TestAlloc/TestFree services below.
 IMemAlloc* g_pMemAlloc=nullptr;
+// s2sdk's string CopyData measures with tier0's export; libtier0 supplies it in the game.
+int V_tier0_strlen(const char* str) { return static_cast<int>(std::strlen(str)); }
 
 struct CPulseArgumentPack;
 struct CPulseInputParamMap;
@@ -105,9 +112,9 @@ static void BorrowedFormatting() {
     value.m_type=FIELD_CSTRING; value.m_pszString="cstring"; check("cstring");
     value.m_pszString=nullptr; check("");
     Vector vector(1,2,3); value.m_type=FIELD_VECTOR; value.m_pVector=&vector; check("1 2 3");
-    value.m_pVector=nullptr; check("");
+    value.m_pVector=nullptr; check("0 0 0");   // the SDK reads a null vector as zero
     QAngle angle(4,5,6); value.m_type=FIELD_QANGLE; value.m_pQAngle=&angle; check("4 5 6");
-    value.m_pQAngle=nullptr; check("");
+    value.m_pQAngle=nullptr; check("0 0 0");
     value.m_type=FIELD_COLOR32; value.m_pData=nullptr; check("");
     std::string long_text(300,'z');
     value.m_type=FIELD_CSTRING; value.m_pszString=long_text.c_str();
