@@ -68,13 +68,33 @@ npm run changeset && npm run version-packages && npm run release    # @s2script/
 
 ## Ship one PR per slice
 
-**A slice is one branch and one PR.** Plain `git` + `gh pr create`, squash-merged. The PR is as
-big as the slice is — don't split a slice into a chain of dependent PRs, and don't batch two
-slices into one. **Graphite is retired; there is no `gt`.** GitHub's own stacking is fine and is
-the way to ship several INDEPENDENT slices at once: rebase each branch onto the one below and set
-each PR's base to its parent, so every diff shows only its own slice. Merge bottom-up, retargeting
-upward as each lands. That is not the same thing as splitting one slice into a chain — each entry
-in a stack must still be atomic and pass `make ci` on its own.
+**A slice is one branch and one PR.** Squash-merged. The PR is as big as the slice is — don't
+split a slice into a chain of dependent PRs, and don't batch two slices into one.
+
+**Graphite is retired; there is no `gt`.** Independent slices that must land in order ship as a
+[GitHub stacked PR](https://github.github.com/gh-stack/) via `gh stack`
+(`gh extension install github/gh-stack`). Each entry must still be atomic and pass `make ci` on
+its own. Merge bottom-up (`gh stack merge <pr-or-stack> --yes`, or the stack map on github.com) —
+never `gh pr merge`, and never merge unless asked.
+
+New stack (non-interactive; a TTY opens a TUI that hangs — always pass these flags):
+
+```bash
+gh stack init --base main <bottom-branch>   # never bare init
+# commit on that branch
+gh stack add <next-branch>                  # never bare add
+gh stack submit --auto                      # never bare submit; --open only when ready for review
+gh stack view --json                        # never bare view
+```
+
+Existing chained PRs (child `base` already the parent branch) become a GitHub stack object with:
+
+```bash
+gh stack link --base main 123 124 125       # bottom → top; do not pass --open
+```
+
+`gh stack modify` is TUI-only; restructure with `unstack` then `init`. PR titles/bodies from
+`--auto` are placeholders — edit with `gh pr edit` / the PR tool afterwards.
 
 Branch naming: `<area>/<terse-change>` — e.g. `ci/consolidation`, `docs/readme-front-door`.
 
