@@ -841,17 +841,15 @@
       opts = opts || {};
       if (typeof effect !== "string" || !effect) throw new TypeError("Particles.create: effect must be a non-empty string");
       var o = particleVec(origin, "origin");
-      var kv = { effect_name: effect, start_active: opts.start === false ? 0 : 1,
-                 origin: o[0] + " " + o[1] + " " + o[2] };
-      if (opts.angles !== undefined) {
-        var a = particleVec(opts.angles, "angles");
-        kv.angles = a[0] + " " + a[1] + " " + a[2];
-      }
+      var a = opts.angles !== undefined ? particleVec(opts.angles, "angles") : null;
+      var kv = { effect_name: effect, start_active: opts.start === false ? 0 : 1 };
       var extra = opts.keyvalues || {};
       for (var k in extra) if (Object.prototype.hasOwnProperty.call(extra, k)) kv[k] = extra[k];
       var ent = globalThis.__s2pkg_entity;
       var ref = ent.createEntity("info_particle_system", kv);
       if (!ref) return null;
+      // Placed with teleport, as every other created entity is; EKV has no vector setter.
+      ref.teleport(o, a);
       if (opts.visibleTo !== undefined) globalThis.__s2pkg_transmit.Transmit.setVisibleTo(ref, particleSlots(opts.visibleTo));
       if (opts.parent) ref.acceptInput("SetParent", "!activator", opts.parent);
       if (typeof opts.lifetime === "number" && opts.lifetime > 0) {

@@ -19,6 +19,7 @@ function makeHost({ createFails = false } = {}) {
     return true;
   };
   EntityRef.prototype.remove = function () { this.removed = true; return true; };
+  EntityRef.prototype.teleport = function (origin, angles) { this.placed = [origin, angles]; return true; };
   const ctx = {
     __s2require: (n) => n === "@s2script/sdk/entity" ? { EntityRef }
       : n === "@s2script/sdk/math" ? { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; } }
@@ -44,21 +45,22 @@ function makeHost({ createFails = false } = {}) {
   return { Particles: ctx.__s2pkg_cs2.Particles, created, transmit, timers, EntityRef };
 }
 
-test("create spawns an active info_particle_system at the origin, visible to everyone", () => {
+test("create spawns an active info_particle_system and teleports it to the origin", () => {
   const h = makeHost();
   const p = h.Particles.create("particles/x.vpcf", { x: 1, y: 2.5, z: -3 });
   assert.equal(h.created.length, 1);
   assert.equal(h.created[0].cls, "info_particle_system");
-  assert.deepEqual({ ...h.created[0].kv }, { effect_name: "particles/x.vpcf", start_active: 1, origin: "1 2.5 -3" });
+  assert.deepEqual({ ...h.created[0].kv }, { effect_name: "particles/x.vpcf", start_active: 1 });
+  assert.deepEqual(JSON.parse(JSON.stringify(p.ref.placed)), [[1, 2.5, -3], null]);
   assert.equal(h.transmit.length, 0, "no visibleTo -> no transmit rule");
   assert.equal(p.ref, h.created[0].ref);
 });
 
-test("angles, start:false and extra keyvalues reach the spawn", () => {
+test("angles go to the teleport; start:false and extra keyvalues reach the spawn", () => {
   const h = makeHost();
-  h.Particles.create("e.vpcf", [0, 0, 0], { angles: [10, 20, 30], start: false, keyvalues: { cpoint1: "a" } });
-  assert.deepEqual({ ...h.created[0].kv },
-    { effect_name: "e.vpcf", start_active: 0, origin: "0 0 0", angles: "10 20 30", cpoint1: "a" });
+  const p = h.Particles.create("e.vpcf", [0, 0, 0], { angles: [10, 20, 30], start: false, keyvalues: { cpoint1: "a" } });
+  assert.deepEqual({ ...h.created[0].kv }, { effect_name: "e.vpcf", start_active: 0, cpoint1: "a" });
+  assert.deepEqual(JSON.parse(JSON.stringify(p.ref.placed)), [[0, 0, 0], [10, 20, 30]]);
 });
 
 test("visibleTo takes slots or players, drops out-of-range and duplicates", () => {
