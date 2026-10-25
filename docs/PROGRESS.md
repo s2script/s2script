@@ -712,3 +712,19 @@ Reproduced with the vendored KHook built as a library (two PRE-only hooks on a c
 `FireEvent`, peer added first) under AddressSanitizer: the old code reports heap-use-after-free in
 the peer's callback; with `Recall` the peer sees the event, the original runs once with
 `bDontBroadcast=1`. Live gate pending.
+
+## 2026-10-25 — SDKHook Use, Spawn, PreThink and GetMaxHealth on CS2
+
+The shim already had per-entity dispatchers for these types, but `gamedata/sdkhooks` had no
+signature for them, so `SDKHook` returned `false`. They are now self-resolved on the Oct 22 2026
+build by walking the RTTI vtables of the binaries in `/mnt/project-files/binaries/2026-10-22/`:
+`Spawn` slot 10 (CPhysicsProp override), `Use` slot 146 (CBaseDoor override), `GetMaxHealth` slot
+184 (the shared `m_iMaxHealth` getter), `PreThink` slot 355 and `PostThink` slot 356 on
+CCSPlayerPawn. The old `PostThink` pattern no longer matched on that build. ModSharp's vtable table
+and Deadworks' Deadlock table were the hints; no slot is shipped.
+
+Two dispatchers had Source 1 prototypes that would have corrupted the call once a signature
+landed. Source 2's `CEntityInstance::Spawn` takes `const CEntityKeyValues*`, and `Use` takes one
+`const EntityUseInput_t*` (activator, caller, type, value) instead of four arguments. Both hooks
+now take and forward the real argument. The JavaScript callback shapes are unchanged. `Think` has no
+Source 2 virtual and stays unsupported. Live gate pending.
