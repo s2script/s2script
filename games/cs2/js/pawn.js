@@ -67,6 +67,7 @@
   var callSetPawn          = engineCall("setPawn");
   var callGiveNamedItem    = engineCall("giveNamedItem");
   var callRemovePlayerItem = engineCall("removePlayerItem");
+  var callDropWeapon       = engineCall("dropWeapon");
   var callGetPlayerMaxSpeed = engineCall("getPlayerMaxSpeed");
 
   // Internal namespace, same idiom as __s2pkg_cs2_schema / __s2pkg_cs2_nav: NOT part of the
@@ -574,14 +575,26 @@
   };
   Pawn.prototype.disarm = function () { return this.stripWeapons(); };   // destroy-all alias
 
-  // pawn.dropActiveWeapon() — still DEFERRED (always false). A true DROP spawns the weapon as a world
-  // pickup, which CANNOT be composed from removeWeapon/remove (those DESTROY the weapon); it needs the
-  // real CCSPlayer_ItemServices::DropActivePlayerWeapon function. Task 2's live disasm spike found the
-  // borrowed vtable index 24 resolves, on this pinned libserver.so, to a GiveNamedItem-overload THUNK
-  // (not DropActivePlayerWeapon) — calling through would pass an entity ptr as GiveNamedItem's
-  // `const char* name` (an unsafe read, violating degrade-never-crash). Stays UNWIRED until the correct
-  // function is self-resolved by SIGNATURE (a follow-up RE spike — NOT a borrowed vtable index).
-  Pawn.prototype.dropActiveWeapon = function () { return false; };
+  // pawn.dropWeapon(weapon) — drop ONE held weapon as a world pickup (SourceMod's CS_DropWeapon),
+  // over the `dropWeapon` descriptor. Unlike removeWeapon, the weapon entity survives. The weapon
+  // must be held by THIS pawn: the engine is not asked to drop someone else's weapon. false if the
+  // descriptor is degraded, either ref is stale, or the weapon is not this pawn's.
+  Pawn.prototype.dropWeapon = function (weapon) {
+    if (!callDropWeapon || !weapon || !this.ref.isValid() || !weapon.ref.isValid()) return false;
+    var owner = weapon.owner;
+    if (!owner || owner.ref.index !== this.ref.index || owner.ref.id !== this.ref.id) return false;
+    // Owner resolution can run plugin code; recheck both refs last (a stale entity argument
+    // marshals to nullptr, which the engine treats as a no-op, but say false rather than pretend).
+    if (!this.ref.isValid() || !weapon.ref.isValid()) return false;
+    return callDropWeapon(this, weapon.ref, 0, 0) === undefined;
+  };
+
+  // pawn.dropActiveWeapon() — drop the deployed weapon as a world pickup. false when there is no
+  // active weapon or dropWeapon would return false.
+  Pawn.prototype.dropActiveWeapon = function () {
+    var w = this.activeWeapon;
+    return w ? this.dropWeapon(w) : false;
+  };
 
   // --- Player fire control: the effective "can't fire" gate is m_flNextAttack (a GameTime_t, seconds) on
   // the CCSPlayer_WeaponServices SUB-OBJECT, reached via the m_pWeaponServices pointer. Written through the
