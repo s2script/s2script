@@ -107,6 +107,9 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   readonly controller: Player | null;
   /** World-space position (via the CGameSceneNode pointer chain), or null if stale. */
   readonly origin: Vector | null;
+  /** Where the camera sits: `origin` + the networked view offset (SourceMod `GetClientEyePosition`).
+   *  Follows crouching. Null if stale, or if this build's view-offset layout fails its schema check. */
+  readonly eyePosition: Vector | null;
   /** Body world rotation (via the CGameSceneNode pointer chain); distinct from the view/aim `eyeAngles`. */
   readonly angles: QAngle | null;
   /** The pawn's scene node (world transform) — absOrigin/absRotation/scale/…, via the CBodyComponent→CGameSceneNode chain. */
@@ -178,7 +181,7 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   allowFiring(): boolean;
   /**
    * Ray-trace from this pawn's eyes along its view angles — "what is this player looking at".
-   * Eye = the body world origin + a standing view-offset (~64u); direction = `eyeAngles`. Ignores
+   * Eye = `eyePosition` (falling back to origin + 64u if it is unavailable); direction = `eyeAngles`. Ignores
    * this pawn's own entity unless `ignoreEntity` is given. Returns null if the transform/angles are
    * unreadable (stale ref). `distance` defaults to 8192.
    */

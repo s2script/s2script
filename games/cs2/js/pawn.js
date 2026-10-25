@@ -661,18 +661,52 @@
     configurable: true
   });
 
+  // pawn.eyePosition — where the camera sits: the body world origin + m_vecViewOffset (SourceMod's
+  // GetClientEyePosition; Deadworks and Swiftly compute it the same way). m_vecViewOffset is a
+  // CNetworkViewOffsetVector of three CNetworkedQuantizedFloat members whose float value is their
+  // first 4 bytes. That type is opaque to the schema, so its 8-byte stride is checked from the
+  // reflected member offsets (m_vecY - m_vecX == m_vecZ - m_vecY == 8) and a mismatch reads null
+  // rather than a guessed layout. It tracks crouching (~64u standing, ~46u ducked).
+  var viewOffsetLayout = null;   // [viewOffset, x, y, z] once resolved; false when the layout check fails
+  function eyeOffsets() {
+    if (viewOffsetLayout !== null) return viewOffsetLayout;
+    var vo = __s2_schema_offset("CBaseModelEntity", "m_vecViewOffset");
+    var x = __s2_schema_offset("CNetworkViewOffsetVector", "m_vecX");
+    var y = __s2_schema_offset("CNetworkViewOffsetVector", "m_vecY");
+    var z = __s2_schema_offset("CNetworkViewOffsetVector", "m_vecZ");
+    if (vo < 0 || x < 0 || y < 0 || z < 0) return false;            // not cached: retried next read
+    viewOffsetLayout = (y - x === 8 && z - y === 8) ? [vo, x, y, z] : false;
+    return viewOffsetLayout;
+  }
+  Object.defineProperty(Pawn.prototype, "eyePosition", {
+    get: function () {
+      var l = eyeOffsets();
+      var s = this.sceneNode; var o = s ? s.absOrigin : null;
+      if (!l || !o) return null;
+      var dx = this.ref.readFloat32(l[0] + l[1]);
+      var dy = this.ref.readFloat32(l[0] + l[2]);
+      var dz = this.ref.readFloat32(l[0] + l[3]);
+      if (dx === null || dy === null || dz === null) return null;
+      var Vector = __s2require("@s2script/sdk/math").Vector;
+      return new Vector(o.x + dx, o.y + dy, o.z + dz);
+    },
+    configurable: true
+  });
+
   // pawn.aimTrace(opts?) — trace from the pawn's eyes along its view angles: "what is this player
   // looking at". The engine-generic ray-trace (CNavPhysicsInterface::TraceShape) lives in
-  // @s2script/trace; this composes the CS2 eye position + eyeAngles. Eye = the body world origin +
-  // the standing view-offset (~64u; m_vecViewOffset isn't a generated accessor, so a constant — a
-  // crouched eye (~46u) is close enough since the aim DIRECTION from eyeAngles dominates the trace).
+  // @s2script/trace; this composes the CS2 eye position + eyeAngles. The eye is `eyePosition`; on a
+  // build whose view-offset layout check fails it falls back to the origin + a standing 64u.
   // Ignores the pawn's own entity by default (don't self-hit). Returns a TraceHit, or null if the
   // body transform / eye angles are unreadable (stale ref). CS2 field names stay in this game layer.
   Pawn.prototype.aimTrace = function (opts) {
-    var s = this.sceneNode; var o = s ? s.absOrigin : null;
     var a = this.eyeAngles;
-    if (!o || !a) return null;
-    var eye = { x: o.x, y: o.y, z: o.z + 64 };   // Trace.ray reads .x/.y/.z (plain object is fine)
+    var eye = this.eyePosition;
+    if (!eye) {
+      var s = this.sceneNode; var o = s ? s.absOrigin : null;
+      eye = o ? { x: o.x, y: o.y, z: o.z + 64 } : null;   // Trace.ray reads .x/.y/.z
+    }
+    if (!eye || !a) return null;
     return globalThis.__s2pkg_trace.Trace.ray(eye, a, (opts && opts.distance) || 8192, {
       mask: opts && opts.mask,
       ignoreEntity: (opts && opts.ignoreEntity !== undefined) ? opts.ignoreEntity : this.ref

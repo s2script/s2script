@@ -712,3 +712,13 @@ Reproduced with the vendored KHook built as a library (two PRE-only hooks on a c
 `FireEvent`, peer added first) under AddressSanitizer: the old code reports heap-use-after-free in
 the peer's callback; with `Recall` the peer sees the event, the original runs once with
 `bDontBroadcast=1`. Live gate pending.
+
+## 2026-10-25 — Exact eye position in @s2script/cs2
+
+`pawn.aimTrace` guessed the eye height as 64 units above the origin. That is wrong while crouched
+(about 46 units), and TTT's gap doc flags it. `pawn.eyePosition` is the origin plus
+`CBaseModelEntity::m_vecViewOffset`, which is how Deadworks and Swiftly compute it. That field is a
+`CNetworkViewOffsetVector` of three `CNetworkedQuantizedFloat`s whose value is their first float.
+The quantized type is opaque to the schema, so the accessor checks its 8-byte stride from the
+reflected member offsets and reads null on any other layout. `aimTrace` uses it and keeps the old
+64u guess only as a fallback. Live gate pending.
