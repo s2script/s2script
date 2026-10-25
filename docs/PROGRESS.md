@@ -712,3 +712,15 @@ Reproduced with the vendored KHook built as a library (two PRE-only hooks on a c
 `FireEvent`, peer added first) under AddressSanitizer: the old code reports heap-use-after-free in
 the peer's callback; with `Recall` the peer sees the event, the original runs once with
 `bDontBroadcast=1`. Live gate pending.
+
+## 2026-10-25 — Particle effects in @s2script/cs2
+
+Swiftly and ModSharp dispatch particles with a recipient filter (`DispatchParticleEffect`,
+`UTIL_DispatchParticleEffectFilter_Position`). On Linux that function takes the origin and angles
+by value, split across xmm registers as packed float pairs, which the declared-call vocabulary
+cannot express, and it would need a recipient-filter argument kind. An info_particle_system entity
+gives the same result with what already exists: `createEntity` with the effect's keyvalues, and
+the viewer list as an `@s2script/sdk/transmit` rule, which the CheckTransmit hook enforces every
+snapshot. `Particles.create` does that, adds parenting and a timed removal, and needs no new
+gamedata. A filtered dispatch can come later if transient effects without an entity matter.
+Tested over the real bundle in packages/sdk/test/cs2-particles.test.mjs. Live gate pending.

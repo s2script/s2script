@@ -7,7 +7,7 @@
  * are GENERATED (hooks.generated.d.ts) from gamedata/cs2/game.cs2.jsonc's `hooks` by
  * `s2script gen-hooks`; this file adds the hand-written entry points on top.
  */
-import type { EntityRef } from "@s2script/sdk/entity";
+import type { EntityRef, EntityKeyValueMap } from "@s2script/sdk/entity";
 import type { Vector, QAngle } from "@s2script/sdk/math";
 import type { TraceHit } from "@s2script/sdk/trace";
 export * from "./schema.generated";
@@ -410,6 +410,54 @@ export interface BeamHandle {
 export declare const Beam: {
   /** Draw a point-to-point beam from `start` to `end`. `opts.color` is RGBA, `opts.width` in units. Returns a {@link BeamHandle}, or null if the entity couldn't be created. */
   draw(start: Vector, end: Vector, opts?: { color?: [number, number, number, number]; width?: number }): BeamHandle | null;
+};
+
+/** A live info_particle_system handle from {@link Particles.create}. */
+export interface ParticleHandle {
+  /** The backing info_particle_system entity ref. */
+  readonly ref: EntityRef;
+  /** Start (or restart) the effect. False if the ref is stale. */
+  start(): boolean;
+  /** Stop emitting; live particles finish their lifetime. False if the ref is stale. */
+  stop(): boolean;
+  /** Replace who sees the effect (slots or players); an empty list hides it from everyone. */
+  setVisibleTo(viewers: readonly (number | Player)[]): boolean;
+  /** Destroy the entity; false if it's already gone. */
+  remove(): boolean;
+}
+/** Options for {@link Particles.create}. */
+export interface ParticleOptions {
+  /** Orientation (pitch yaw roll). Default 0 0 0. */
+  angles?: Vector | { x: number; y: number; z: number } | [number, number, number];
+  /** Only these players (slots or {@link Player}s) see it — the recipient filter of SourceMod's
+   *  `TE_SendToClient`. Omitted = everyone. Enforced every snapshot through `@s2script/sdk/transmit`. */
+  visibleTo?: readonly (number | Player)[];
+  /** Follow this entity (the `SetParent` input). */
+  parent?: EntityRef;
+  /** Remove the entity after this many seconds. Runs on the calling plugin's timer, so an unload
+   *  before it fires leaves the entity in the world. */
+  lifetime?: number;
+  /** false = create stopped; call {@link ParticleHandle.start}. Default true. */
+  start?: boolean;
+  /** Extra info_particle_system keyvalues, e.g. control points (`cpoint1`). */
+  keyvalues?: EntityKeyValueMap;
+}
+/**
+ * Particle effects (SourceMod `TE_SetupParticle` / ModSharp `DispatchParticleEffect`), as an
+ * info_particle_system entity. The effect must be precached: built-in effects are, a custom `.vpcf`
+ * is added in `ctx.server.onPrecache`. The entity is game-world-owned; call `remove()` or pass
+ * `lifetime`.
+ * @example
+ * import { Particles } from "@s2script/cs2";
+ * Particles.create("particles/explosions_fx/explosion_basic.vpcf", pawn.origin!, { lifetime: 3, visibleTo: [player] });
+ */
+export declare const Particles: {
+  /** Place `effect` at `origin`. Returns a handle, or null if the entity couldn't be created. */
+  create(
+    effect: string,
+    origin: Vector | { x: number; y: number; z: number } | [number, number, number],
+    opts?: ParticleOptions
+  ): ParticleHandle | null;
 };
 
 /** A live read view over CCSGameRules (via the cs_gamerules proxy). Every field is liveness-gated at the
