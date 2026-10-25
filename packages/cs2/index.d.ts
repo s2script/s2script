@@ -466,6 +466,10 @@ export interface GameRulesView {
    *  to `onTerminateRound`. delay (default 5s) is the engine's pre-restart delay. Returns false
    *  when degraded (unresolved signature, stale proxy, or reason outside 0..22). */
   terminateRound(reason: number, delay?: number): boolean;
+  /** End the match now and go to the scoreboard and map vote (CGameRules::GoToIntermission); the
+   *  engine changes level after `mp_match_restart_delay`. `abortedMatch` marks the match as abandoned
+   *  rather than finished. Returns false when degraded (unresolved slot or stale proxy). */
+  goToIntermission(abortedMatch?: boolean): boolean;
 }
 /** Read + drive CCSGameRules state. get() re-finds the cs_gamerules proxy each call (liveness-gated
  *  cache); returns null when no proxy exists (e.g. pre-map-load). */
@@ -474,6 +478,14 @@ export declare const GameRules: {
   get(): GameRulesView | null;
   /** Convenience over get()?.terminateRound(reason, delay) — false when no proxy. */
   terminateRound(reason: number, delay?: number): boolean;
+  /** Convenience over get()?.goToIntermission(abortedMatch) — false when no proxy. */
+  goToIntermission(abortedMatch?: boolean): boolean;
+  /** Run `handler` at the start of every round (and on `mp_restartgame`), before the engine resets
+   *  the round (CCSGameRules::RestartRound). Every handler runs and the round always restarts.
+   *  Subscribe during OnPluginStart; unsubscribed at unload. */
+  onRoundRestart(handler: () => void): void;
+  /** As {@link onRoundRestart}, after the engine has reset the round and respawned players. */
+  onRoundRestartPost(handler: () => void): void;
 };
 
 /** Team scoreboard scores (cs_team_manager entities, CTeam.m_iScore + notifyStateChanged). team is

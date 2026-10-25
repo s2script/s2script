@@ -342,6 +342,21 @@
         }
       }
     },
+    // CCSGameRules::RestartRound(CCSGameRules* this) -> void @0x13fb280 on the Oct 22 build. Runs at
+    // the start of every round and on mp_restartgame; round_prestart fires from inside it. rdi only
+    // (rsi/edx are loaded for the telemetry scope at once). Not virtual: no data-segment refs.
+    // Anchor: lea rsi,"RestartRound" at +1. ModSharp's pattern, verified unique.
+    "CCSGameRules_RestartRound": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 8D 35 ? ? ? ? BA ? ? ? ? 48 89 E5",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "55 48 8D 35",
+          "string-xref": { "at": 1, "dispOff": 3, "instrLen": 7, "expect": "RestartRound" }
+        }
+      }
+    },
     // CCSPlayer_MovementServices::ProcessMove(MovementServices* this, CMoveData* mv) -> void
     // @0x15eb4a0 (slot 29), mov r13,rsi in the prologue. Runs once per player per usercmd tick,
     // between SetupMove and FinishMove. Anchor: lea rsi,"pa start %f" at +0x2b4. ModSharp's pattern.
@@ -651,6 +666,28 @@
       "target": { "kind": "signature", "name": "CCSGameRules_TerminateRound" },
       "args": ["float", "int", "int", "int"],
       "argNames": ["delay", "reason", "unk3", "unk4"],
+      "returns": "void"
+    },
+
+    // GameRules.goToIntermission(abortedMatch). CGameRules::GoToIntermission(bool abortedMatch), the
+    // LAST slot (130) of the primary CCSGameRules vtable on the Oct 22 build @0x13f6ff0: stores esi,
+    // then logs "Going to intermission...\n". Ends the match into the scoreboard and map vote; the
+    // engine changes level after mp_match_restart_delay. Swiftly calls the same slot.
+    "goToIntermission": {
+      "receiver": { "kind": "entity", "via": { "class": "CCSGameRulesProxy", "field": "m_pGameRules" } },
+      "target": {
+        "kind": "vtable",
+        "class": "CCSGameRules",
+        "linuxsteamrt64": {
+          "index": 130,
+          "validate": {
+            "prologue": "55 31 C0 48 89 E5 41 57 41 56 41 55 41 54 53 48 89 FB 48 8D 3D ? ? ? ?",
+            "string-xref": { "at": 18, "dispOff": 3, "instrLen": 7, "expect": "Going to intermission...\n" }
+          }
+        }
+      },
+      "args": ["bool"],
+      "argNames": ["abortedMatch"],
       "returns": "void"
     },
 

@@ -768,3 +768,23 @@ the gamedata comment names the instruction that proves each one, and ModSharp ag
 Adapter conformance tests cover reads, PRE writes, POST, refusal and expiry; a core test covers the
 gamedata offset source, and the real-package test activates all eight trusted functions. The live
 gate is pending.
+
+## 2026-10-25 — Round restart and intermission
+
+ModSharp forwards CCSGameRules::RestartRound (`OnRoundRestart`/`OnRoundRestarted`) and Swiftly calls
+CGameRules::GoToIntermission; mapchooser, nextmap, warmup and round-control plugins use both. This
+slice adds them to `GameRules` in `@s2script/cs2`:
+
+- `GameRules.onRoundRestart` and `GameRules.onRoundRestartPost` run before and after the engine
+  resets the round, over a new trusted engine function `roundRestart` and the
+  `cs2.round-restart.v1` package adapter. Every subscriber runs, returns are ignored and the round
+  always restarts. RestartRound is @0x13fb280 on the Oct 22 build and is not virtual; ModSharp's
+  pattern is unique and anchored on the `lea rsi,"RestartRound"` at +1. round_prestart fires from
+  inside it, so the PRE hook runs before that event and the POST hook after round_poststart.
+- `GameRules.goToIntermission(abortedMatch?)` is a `vtable` call descriptor: slot 130, the last slot
+  of the primary CCSGameRules vtable on the Oct 22 build, @0x13f6ff0. The prologue stores esi (the
+  bool) and the string-xref at +18 names "Going to intermission...\n". The engine changes level on
+  its own after `mp_match_restart_delay`.
+
+Adapter conformance tests, engine-call wrapper tests and the real-package activation test (nine
+trusted functions) cover it. The live gate is pending.

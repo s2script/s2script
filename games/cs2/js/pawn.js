@@ -68,6 +68,7 @@
   var callGiveNamedItem    = engineCall("giveNamedItem");
   var callRemovePlayerItem = engineCall("removePlayerItem");
   var callGetPlayerMaxSpeed = engineCall("getPlayerMaxSpeed");
+  var callGoToIntermission = engineCall("goToIntermission");
 
   // Internal namespace, same idiom as __s2pkg_cs2_schema / __s2pkg_cs2_nav: NOT part of the
   // @s2script/cs2 public surface. `status` is here so an operator can ask a live server WHY a game
@@ -951,6 +952,30 @@
     callTerminateRound(this, d, r, 0, 0);
     return true;
   };
+  // End the match into the scoreboard and map vote (CGameRules::GoToIntermission). The engine
+  // changes level on its own after mp_match_restart_delay.
+  GameRulesView.prototype.goToIntermission = function (abortedMatch) {
+    if (!callGoToIntermission) return false;
+    if (!grPath()) return false;
+    if (!this.ref.isValid()) return false;
+    callGoToIntermission(this, !!abortedMatch);
+    return true;
+  };
+  // GameRules.onRoundRestart / onRoundRestartPost — the start of every round on the trusted
+  // `roundRestart` engine function, delivered by the cs2.round-restart.v1 package adapter
+  // (js/adapters/round-restart.js). Load-window only, ledgered like `items`.
+  function roundRestartSubscriber(phase, api) {
+    return function (handler) {
+      if (!globalThis.__s2_load_ctx) throw new Error("s2script: " + api + " outside the load window");
+      if (typeof handler !== "function") throw new TypeError("s2script: " + api + " requires a handler function");
+      var gate = (globalThis.__s2pkg_cs2_adapters || {}).roundRestart;
+      if (!gate) {
+        console.log("[s2script] WARN: " + api + ": the round-restart adapter is not packaged, so this handler will not fire");
+        return;
+      }
+      gate.subscribe(phase, handler);
+    };
+  }
   var GameRules = (function () {
     // Cache the resolved cs_gamerules proxy (ModSharp/Swiftly cache the gamerules pointer likewise).
     // Serial-gated: on a map change the proxy dies -> isValid() false -> re-scan. Turns get() from an
@@ -970,7 +995,13 @@
       terminateRound: function (reason, delay) {
         var v = this.get();
         return v ? v.terminateRound(reason, delay) : false;
-      }
+      },
+      goToIntermission: function (abortedMatch) {
+        var v = this.get();
+        return v ? v.goToIntermission(abortedMatch) : false;
+      },
+      onRoundRestart: roundRestartSubscriber("pre", "GameRules.onRoundRestart()"),
+      onRoundRestartPost: roundRestartSubscriber("post", "GameRules.onRoundRestartPost()")
     };
   })();
 

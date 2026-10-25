@@ -249,6 +249,29 @@
       "policy": { "surfaces": ["pre", "post"], "suppression": "none" },
       "adapter": { "id": "cs2.process-move.v1", "postOverride": false }
     },
+    // CCSGameRules::RestartRound(CCSGameRules* this) -> void (gamedata CCSGameRules_RestartRound).
+    // The rules object is opaque pass-through; plugins read round state through GameRules.get().
+    // The round always restarts: suppression "none".
+    {
+      "localName": "roundRestart",
+      "requirement": "optional",
+      "signatureName": "CCSGameRules_RestartRound",
+      "signature": {
+        "platform": "linux-x86_64-sysv",
+        "memberReceiver": false,
+        "receiver": null,
+        "parameters": [
+          { "name": "gameRules", "native": "ptr", "projection": { "id": "native-only", "version": 1 },
+            "ownership": "invocation-passthrough", "mutable": [], "nullable": false }
+        ],
+        "returns": { "name": "", "native": "void", "projection": { "id": "void", "version": 1 },
+          "mutable": [], "nullable": false },
+        "instances": [],
+        "scratch": []
+      },
+      "policy": { "surfaces": ["pre", "post"], "suppression": "none" },
+      "adapter": { "id": "cs2.round-restart.v1", "postOverride": false }
+    },
     // CBaseEntity::TakeDamageOld(victim* this, CTakeDamageInfo* info, optional result*) -> void,
     // audited rdi/rsi/rdx (gamedata CBaseEntity_TakeDamageOld). The victim is the entity receiver
     // (books-adopted, null when unadoptable). The info is a borrowed record exposing only the four

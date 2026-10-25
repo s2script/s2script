@@ -28,7 +28,7 @@ import { cs2AddonBundle } from "./cs2-addon.mjs";
 
 /** Every descriptor games/cs2/gamedata/game.cs2.jsonc declares — the default "all eight resolved" host. */
 const ALL_CALLS = ["commitSuicide", "changeTeam", "switchTeam", "terminateRound",
-                   "respawn", "setPawn", "giveNamedItem", "removePlayerItem"];
+                   "respawn", "setPawn", "giveNamedItem", "removePlayerItem", "goToIntermission"];
 
 /**
  * Build a CS2 game-package context.
@@ -340,6 +340,19 @@ test("terminateRound: the reason bound is the engine's own 0..22", () => {
   assert.ok(h.logs.some((l) => /out of range 0\.\.22/.test(l)));
   // The in-range legacy holes pass through deliberately — the engine's own switch handles them.
   for (const r of [0, 2, 3, 15, 22]) assert.equal(h.pkg.GameRules.terminateRound(r), true, `reason ${r}`);
+});
+
+test("goToIntermission: passes abortedMatch as a bool, false by default", () => {
+  const h = makeHost();
+  assert.equal(h.pkg.GameRules.goToIntermission(), true);
+  assert.equal(h.pkg.GameRules.goToIntermission(1), true);
+  assert.deepEqual(h.invokes.map((i) => [i.name, i.args]), [["goToIntermission", [false]], ["goToIntermission", [true]]]);
+});
+
+test("goToIntermission: false and no invoke when the descriptor is degraded", () => {
+  const h = makeHost({ ready: ALL_CALLS.filter((n) => n !== "goToIntermission") });
+  assert.equal(h.pkg.GameRules.goToIntermission(), false);
+  assert.equal(h.invokes.length, 0);
 });
 
 test("terminateRound: two calls in one context both run (no latest-wins slot)", () => {

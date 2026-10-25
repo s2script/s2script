@@ -23,6 +23,7 @@ const CONTRACTS = {
   "cs2.weapon-can-switch.v1": "8757676e8da492a7a72b01a0de51f19362308359659ca6e2787019feaade6d81",
   "cs2.weapon-drop.v1": "87c643d538fff80ef21afb062f787f51dbcb28927275e013dfdfdd0a24158aeb",
   "cs2.process-move.v1": "d2deb6e024f6bdc9bb0ba8a172fb742c673a9d25e35705ebc7294b31aaa82182",
+  "cs2.round-restart.v1": "3bb734628feb2626e1e62041fb14eda8444134beb832037931243a1793306648",
 };
 
 function isI32(v) { return typeof v === "number" && Number.isInteger(v) && v >= -2147483648 && v <= 2147483647; }
