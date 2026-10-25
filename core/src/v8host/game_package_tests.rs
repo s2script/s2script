@@ -164,7 +164,8 @@ fn seed_fixture_schema(root: &std::path::Path) {
     let trusted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     FIXTURE_SCHEMA.with(|m| {
         let mut m = m.borrow_mut();
-        for entry in trusted["offsets"].as_object().into_iter().flat_map(|o| o.values()) {
+        // Gamedata-sourced offsets (no schema class) come from the merged gamedata instead.
+        for entry in trusted["offsets"].as_object().into_iter().flat_map(|o| o.values()).filter(|e| e.get("class").is_some()) {
             m.insert((entry["class"].as_str().unwrap().into(), entry["field"].as_str().unwrap().into()),
                 entry["catalog"].as_i64().unwrap() as i32);
         }
@@ -180,13 +181,17 @@ extern "C" fn fixture_schema_offset(class: *const std::os::raw::c_char, field: *
 fn merged_signatures(root: &std::path::Path) -> String {
     let bundle: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("game-packages/cs2/gamedata.json")).unwrap()).unwrap();
-    let mut signatures = serde_json::Map::new();
+    let (mut signatures, mut offsets) = (serde_json::Map::new(), serde_json::Map::new());
     for file in bundle["files"].as_array().unwrap() {
         if let Some(entries) = file["document"]["signatures"].as_object() {
             signatures.extend(entries.clone());
         }
+        // The shim sends offsets platform-selected.
+        for (key, entry) in file["document"]["offsets"].as_object().into_iter().flatten() {
+            offsets.insert(key.clone(), entry["linuxsteamrt64"].clone());
+        }
     }
-    json!({ "signatures": signatures }).to_string()
+    json!({ "signatures": signatures, "offsets": offsets }).to_string()
 }
 thread_local! {
     static TRUSTED_TARGETS: std::cell::RefCell<std::collections::BTreeMap<String, i64>> =
@@ -248,7 +253,7 @@ fn selected_real_package_activates_trusted_functions_from_merged_gamedata() {
     crate::game_packages::commit(handle, &merged, b"GCR1\0\0\0\0\0\0\0\0").unwrap();
     let status: serde_json::Value = serde_json::from_slice(&crate::game_packages::status()).unwrap();
     let trusted = &status["trustedFunctions"];
-    assert_eq!(trusted["functions"].as_array().unwrap().len(), 7, "{status}");
+    assert_eq!(trusted["functions"].as_array().unwrap().len(), 8, "{status}");
     for f in trusted["functions"].as_array().unwrap() {
         assert!(f.get("unavailable").is_none() && f["targetSha256"].is_string(), "{f}");
         assert_eq!(f["binding"], "available", "{f}");
@@ -266,12 +271,13 @@ fn selected_real_package_activates_trusted_functions_from_merged_gamedata() {
             throw Error('bootstrap natives leaked');
         const a=globalThis.__s2pkg_cs2_adapters;
         let warned='';console.log=m=>{warned+=m;};
-        for(const k of ['acquire','hudClick','chatVisibility','weaponCanUse','weaponCanSwitch','weaponDrop'])
+        for(const k of ['acquire','hudClick','chatVisibility','weaponCanUse','weaponCanSwitch','weaponDrop','processMove'])
             if(a[k].status()!=='available')throw Error('adapter '+k+' '+a[k].status());
         const pawns={maxPlayers:0,forSlot:()=>null};
         for(const r of [a.acquire.subscribe('pre',()=>0,pawns),a.acquire.subscribe('post',()=>{},pawns),a.hudClick.subscribe(()=>{}),
                         a.chatVisibility.subscribe(()=>0,r=>r),a.weaponCanUse.subscribe(()=>0,pawns,r=>r),
-                        a.weaponCanSwitch.subscribe(()=>0,pawns,r=>r),a.weaponDrop.subscribe(()=>0,pawns,r=>r)])
+                        a.weaponCanSwitch.subscribe(()=>0,pawns,r=>r),a.weaponDrop.subscribe(()=>0,pawns,r=>r),
+                        a.processMove.subscribe('pre',()=>{},pawns),a.processMove.subscribe('post',()=>{},pawns)])
             if(!r||r.status!=='active')throw Error('subscription '+(r&&r.status)+' '+warned);
     "#,
     )

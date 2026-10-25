@@ -17,7 +17,8 @@
     "cs2.chat-visibility.v1": { "version": 1, "contract": "adapters/contracts/cs2.chat-visibility.v1.json", "source": "js/adapters/chat-visibility.js" },
     "cs2.weapon-can-use.v1": { "version": 1, "contract": "adapters/contracts/cs2.weapon-can-use.v1.json", "source": "js/adapters/weapon-can-use.js" },
     "cs2.weapon-can-switch.v1": { "version": 1, "contract": "adapters/contracts/cs2.weapon-can-switch.v1.json", "source": "js/adapters/weapon-can-switch.js" },
-    "cs2.weapon-drop.v1": { "version": 1, "contract": "adapters/contracts/cs2.weapon-drop.v1.json", "source": "js/adapters/weapon-drop.js" }
+    "cs2.weapon-drop.v1": { "version": 1, "contract": "adapters/contracts/cs2.weapon-drop.v1.json", "source": "js/adapters/weapon-drop.js" },
+    "cs2.process-move.v1": { "version": 1, "contract": "adapters/contracts/cs2.process-move.v1.json", "source": "js/adapters/process-move.js" }
   },
   "gamedataRoot": "gamedata",
   // Host-verified trusted function declarations (see the file's header).

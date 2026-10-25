@@ -1188,6 +1188,26 @@
     onDrop: weaponGate(weaponAdapters.weaponDrop, "weapons.onDrop()"),
   });
 
+  // import { movement } from "@s2script/cs2" — each player's movement tick on the trusted
+  // `processMove` engine function, delivered by the cs2.process-move.v1 package adapter
+  // (js/adapters/process-move.js). Same load-window and ledger contract as `items`.
+  var moveGate = weaponAdapters.processMove;
+  function moveSubscriber(phase, api) {
+    return function (handler) {
+      if (!globalThis.__s2_load_ctx) throw new Error("s2script: " + api + " outside the load window");
+      if (typeof handler !== "function") throw new TypeError("s2script: " + api + " requires a handler function");
+      if (!moveGate) {
+        console.log("[s2script] WARN: " + api + ": the movement adapter is not packaged, so this handler will not fire");
+        return;
+      }
+      moveGate.subscribe(phase, handler, acquirePawns);
+    };
+  }
+  globalThis.__s2pkg_cs2.movement = Object.freeze({
+    onProcessMove: moveSubscriber("pre", "movement.onProcessMove()"),
+    onProcessMovePost: moveSubscriber("post", "movement.onProcessMovePost()"),
+  });
+
   // Crash reporter: push the game identity into the engine-generic breadcrumb (spec §5 — the
   // game package supplies the value IN; core never knows the game). Best-effort: absent natives
   // (an older core) degrade silently.

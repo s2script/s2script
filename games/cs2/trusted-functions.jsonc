@@ -16,7 +16,20 @@
     "CTakeDamageInfo::m_hInflictor": { "class": "CTakeDamageInfo", "field": "m_hInflictor" },
     "CTakeDamageInfo::m_hAttacker": { "class": "CTakeDamageInfo", "field": "m_hAttacker" },
     "CTakeDamageInfo::m_flDamage": { "class": "CTakeDamageInfo", "field": "m_flDamage" },
-    "CTakeDamageInfo::m_bitsDamageType": { "class": "CTakeDamageInfo", "field": "m_bitsDamageType" }
+    "CTakeDamageInfo::m_bitsDamageType": { "class": "CTakeDamageInfo", "field": "m_bitsDamageType" },
+    // CMoveData is not a schema class: these name the package gamedata offsets, plus a byte delta
+    // for each vector component.
+    "CMoveData::m_vecViewAngles.x": { "gamedata": "CMoveData_m_vecViewAngles" },
+    "CMoveData::m_vecViewAngles.y": { "gamedata": "CMoveData_m_vecViewAngles", "delta": 4 },
+    "CMoveData::m_vecViewAngles.z": { "gamedata": "CMoveData_m_vecViewAngles", "delta": 8 },
+    "CMoveData::m_flForwardMove": { "gamedata": "CMoveData_m_flForwardMove" },
+    "CMoveData::m_flSideMove": { "gamedata": "CMoveData_m_flSideMove" },
+    "CMoveData::m_vecVelocity.x": { "gamedata": "CMoveData_m_vecVelocity" },
+    "CMoveData::m_vecVelocity.y": { "gamedata": "CMoveData_m_vecVelocity", "delta": 4 },
+    "CMoveData::m_vecVelocity.z": { "gamedata": "CMoveData_m_vecVelocity", "delta": 8 },
+    "CMoveData::m_vecAbsOrigin.x": { "gamedata": "CMoveData_m_vecAbsOrigin" },
+    "CMoveData::m_vecAbsOrigin.y": { "gamedata": "CMoveData_m_vecAbsOrigin", "delta": 4 },
+    "CMoveData::m_vecAbsOrigin.z": { "gamedata": "CMoveData_m_vecAbsOrigin", "delta": 8 }
   },
   "functions": [
     // CCSPlayer_ItemServices::CanAcquire(ItemServices* this, CEconItemView* item, int method,
@@ -194,6 +207,47 @@
       },
       "policy": { "surfaces": ["pre"], "suppression": "generic" },
       "adapter": { "id": "cs2.weapon-drop.v1", "postOverride": false }
+    },
+    // CCSPlayer_MovementServices::ProcessMove(MovementServices*, CMoveData* mv) -> void, audited
+    // rdi/rsi. The services pointer is native-only; the adapter hops it to a player with
+    // hiddenReferencedBy. The move data is a borrowed record whose velocity is the one PRE-writable
+    // field. Movement always runs: suppression "none".
+    {
+      "localName": "processMove",
+      "requirement": "optional",
+      "signatureName": "CCSPlayer_MovementServices_ProcessMove",
+      "signature": {
+        "platform": "linux-x86_64-sysv",
+        "memberReceiver": false,
+        "receiver": null,
+        "parameters": [
+          { "name": "movementServices", "native": "ptr", "projection": { "id": "native-only", "version": 1 },
+            "ownership": "invocation-passthrough", "mutable": [], "nullable": false },
+          { "name": "move", "native": "ptr", "projection": { "id": "borrowed-record", "version": 1 },
+            "ownership": "synchronous-record", "mutable": [], "instance": 0, "nullable": true }
+        ],
+        "returns": { "name": "", "native": "void", "projection": { "id": "void", "version": 1 },
+          "mutable": [], "nullable": false },
+        "instances": [
+          { "codecId": "borrowed-record", "codecVersion": 1, "kind": null,
+            "record": { "fields": [
+              { "name": "pitch", "offsetKey": "CMoveData::m_vecViewAngles.x", "storage": "f32", "nullable": false, "read": ["pre", "post"], "write": [] },
+              { "name": "yaw", "offsetKey": "CMoveData::m_vecViewAngles.y", "storage": "f32", "nullable": false, "read": ["pre", "post"], "write": [] },
+              { "name": "roll", "offsetKey": "CMoveData::m_vecViewAngles.z", "storage": "f32", "nullable": false, "read": ["pre", "post"], "write": [] },
+              { "name": "forwardMove", "offsetKey": "CMoveData::m_flForwardMove", "storage": "f32", "nullable": false, "read": ["pre", "post"], "write": [] },
+              { "name": "sideMove", "offsetKey": "CMoveData::m_flSideMove", "storage": "f32", "nullable": false, "read": ["pre", "post"], "write": [] },
+              { "name": "velocityX", "offsetKey": "CMoveData::m_vecVelocity.x", "storage": "f32", "nullable": false, "read": ["pre", "post"], "write": ["pre"] },
+              { "name": "velocityY", "offsetKey": "CMoveData::m_vecVelocity.y", "storage": "f32", "nullable": false, "read": ["pre", "post"], "write": ["pre"] },
+              { "name": "velocityZ", "offsetKey": "CMoveData::m_vecVelocity.z", "storage": "f32", "nullable": false, "read": ["pre", "post"], "write": ["pre"] },
+              { "name": "originX", "offsetKey": "CMoveData::m_vecAbsOrigin.x", "storage": "f32", "nullable": false, "read": ["pre", "post"], "write": [] },
+              { "name": "originY", "offsetKey": "CMoveData::m_vecAbsOrigin.y", "storage": "f32", "nullable": false, "read": ["pre", "post"], "write": [] },
+              { "name": "originZ", "offsetKey": "CMoveData::m_vecAbsOrigin.z", "storage": "f32", "nullable": false, "read": ["pre", "post"], "write": [] }
+            ] } }
+        ],
+        "scratch": []
+      },
+      "policy": { "surfaces": ["pre", "post"], "suppression": "none" },
+      "adapter": { "id": "cs2.process-move.v1", "postOverride": false }
     },
     // CBaseEntity::TakeDamageOld(victim* this, CTakeDamageInfo* info, optional result*) -> void,
     // audited rdi/rsi/rdx (gamedata CBaseEntity_TakeDamageOld). The victim is the entity receiver

@@ -68,6 +68,8 @@ export { chat } from "./chat";
 export type { CanHearChatView, ChatApi } from "./chat";
 export { weapons } from "./weapons";
 export type { WeaponDropView, WeaponGateView, WeaponsApi } from "./weapons";
+export { movement } from "./movement";
+export type { MoveView, MovementApi } from "./movement";
 export declare const HudInput: {
   /** Arm Tab-to-activate for `slot`. Replaces any previous arm on that slot. */
   arm(slot: number, opts: { onActivate: () => void }): void;

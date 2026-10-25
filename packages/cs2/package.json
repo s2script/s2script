@@ -18,6 +18,7 @@
     "hooks.generated.d.ts",
     "index.d.ts",
     "items.d.ts",
+    "movement.d.ts",
     "nav.generated.d.ts",
     "schema.generated.d.ts",
     "ui.d.ts",

@@ -747,3 +747,24 @@ DropWeapon is slot 29 (it null-checks the weapon). Both patterns pin a unique st
 virtual. It is the ModSharp pattern, unique at 0x15f4dd0, and SelectItem (slot 31) calls it.
 Adapter conformance tests and the real-package activation test cover the bindings. The live gate is
 pending.
+
+## 2026-10-25 — Movement hooks
+
+ModSharp has ProcessMove, WalkMove and RunCommand forwards; plugins use them for speed modes,
+trampolines, bhop and anti-cheat. This slice adds the first one to `@s2script/cs2`:
+`movement.onProcessMove` and `movement.onProcessMovePost`, over a new trusted engine function
+`processMove` (CCSPlayer_MovementServices::ProcessMove, @0x15eb4a0 and slot 29 on the Oct 22
+build, anchored on "pa start %f") and the `cs2.process-move.v1` package adapter. Every subscriber
+runs, returns are ignored and movement always runs. `velocity` is writable before the move.
+
+The move data is a CMoveData, which the schema does not describe. Trusted-function record offsets
+could only come from the live schema, so a trusted source may now also name an offset in the
+package's own gamedata plus a byte delta (`{ "gamedata": key, "delta": n }`). The builder seals the
+shipped value as the catalog; the host reads the merged gamedata, so a `custom/` repair applies, and
+a missing entry degrades the functions that name it. The five CMoveData offsets (view angles 0x14,
+forward 0x2c, side 0x30, velocity 0x38, origin 0xc8) were each read off the Oct 22 libserver.so;
+the gamedata comment names the instruction that proves each one, and ModSharp agrees.
+
+Adapter conformance tests cover reads, PRE writes, POST, refusal and expiry; a core test covers the
+gamedata offset source, and the real-package test activates all eight trusted functions. The live
+gate is pending.
