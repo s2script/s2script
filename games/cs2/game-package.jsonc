@@ -14,7 +14,10 @@
     "legacy.acquire.v1": { "version": 1, "contract": "adapters/contracts/legacy.acquire.v1.json", "source": "js/adapters/acquire.js" },
     "legacy.hud-click.v1": { "version": 1, "contract": "adapters/contracts/legacy.hud-click.v1.json", "source": "js/adapters/hud-click.js" },
     "legacy.damage.v1": { "version": 1, "contract": "adapters/contracts/legacy.damage.v1.json", "source": "js/adapters/damage.js" },
-    "cs2.chat-visibility.v1": { "version": 1, "contract": "adapters/contracts/cs2.chat-visibility.v1.json", "source": "js/adapters/chat-visibility.js" }
+    "cs2.chat-visibility.v1": { "version": 1, "contract": "adapters/contracts/cs2.chat-visibility.v1.json", "source": "js/adapters/chat-visibility.js" },
+    "cs2.weapon-can-use.v1": { "version": 1, "contract": "adapters/contracts/cs2.weapon-can-use.v1.json", "source": "js/adapters/weapon-can-use.js" },
+    "cs2.weapon-can-switch.v1": { "version": 1, "contract": "adapters/contracts/cs2.weapon-can-switch.v1.json", "source": "js/adapters/weapon-can-switch.js" },
+    "cs2.weapon-drop.v1": { "version": 1, "contract": "adapters/contracts/cs2.weapon-drop.v1.json", "source": "js/adapters/weapon-drop.js" }
   },
   "gamedataRoot": "gamedata",
   // Host-verified trusted function declarations (see the file's header).

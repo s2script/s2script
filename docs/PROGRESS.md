@@ -728,3 +728,22 @@ matches the ABI. Its only caller is Host_Say's recipient loop, right before the
 CanHearAndReadChatFrom virtual. The recipe is in the gamedata comment. The recording adapter host
 now models `bool` returns. Adapter conformance tests and the real-package activation test cover the
 new binding. The live gate is pending.
+
+## 2026-10-25 — Weapon hooks in @s2script/cs2
+
+Game modes (TTT's role weapons, jailbreak's guard and prisoner loadouts) need to stop a pickup, a
+switch or a drop before it happens. Before this, a plugin could only strip the weapon afterwards.
+Swiftly and ModSharp both hook the three CCSPlayer_WeaponServices functions. `weapons.onCanUse`,
+`weapons.onCanSwitchTo` and `weapons.onDrop` hook them through three new trusted engine functions
+(`weaponCanUse` and `weaponCanSwitch` are `u8(ptr,ptr)`, `weaponDrop` is `void(ptr,ptr,ptr,ptr)`)
+and the `cs2.weapon-can-use.v1`, `cs2.weapon-can-switch.v1` and `cs2.weapon-drop.v1` package
+adapters. The gates vote `allowed` with chat visibility's rules. On a drop, Handled or Stop skips the
+original. The receiver is WeaponServices*, so `view.player` hops through the pawns'
+`m_pWeaponServices` with hiddenReferencedBy, as the pickup gate does for `m_pItemServices`.
+
+All three were self-verified on the Oct 22 build. CanUse is vtable slot 28 (it calls CanAcquire) and
+DropWeapon is slot 29 (it null-checks the weapon). Both patterns pin a unique string xref
+(`weapon_taser` and the StateChanged format string) and a vtable-member check. CanSwitch is not
+virtual. It is the ModSharp pattern, unique at 0x15f4dd0, and SelectItem (slot 31) calls it.
+Adapter conformance tests and the real-package activation test cover the bindings. The live gate is
+pending.

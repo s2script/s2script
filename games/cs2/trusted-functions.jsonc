@@ -117,6 +117,84 @@
       "policy": { "surfaces": ["pre"], "suppression": "generic" },
       "adapter": { "id": "cs2.chat-visibility.v1", "postOverride": false }
     },
+    // CCSPlayer_WeaponServices::CanUse(WeaponServices*, CBasePlayerWeapon*) -> bool (gamedata
+    // CCSPlayer_WeaponServices_CanUse). The receiver is a component, not an entity: native-only, and
+    // the adapter maps it to a player with hiddenReferencedBy, as canAcquire does.
+    {
+      "localName": "weaponCanUse",
+      "requirement": "optional",
+      "signatureName": "CCSPlayer_WeaponServices_CanUse",
+      "signature": {
+        "platform": "linux-x86_64-sysv",
+        "memberReceiver": false,
+        "receiver": null,
+        "parameters": [
+          { "name": "weaponServices", "native": "ptr", "projection": { "id": "native-only", "version": 1 },
+            "ownership": "invocation-passthrough", "mutable": [], "nullable": false },
+          { "name": "weapon", "native": "ptr", "projection": { "id": "entity?", "version": 1 },
+            "mutable": [], "nullable": false }
+        ],
+        "returns": { "name": "", "native": "u8", "projection": { "id": "bool", "version": 1 },
+          "mutable": [], "nullable": false },
+        "instances": [],
+        "scratch": []
+      },
+      "policy": { "surfaces": ["pre"], "suppression": "generic" },
+      "adapter": { "id": "cs2.weapon-can-use.v1", "postOverride": false }
+    },
+    // CCSPlayer_WeaponServices::CanSwitch(WeaponServices*, CBasePlayerWeapon*) -> bool, asked by
+    // SelectItem before it deploys a weapon.
+    {
+      "localName": "weaponCanSwitch",
+      "requirement": "optional",
+      "signatureName": "CCSPlayer_WeaponServices_CanSwitch",
+      "signature": {
+        "platform": "linux-x86_64-sysv",
+        "memberReceiver": false,
+        "receiver": null,
+        "parameters": [
+          { "name": "weaponServices", "native": "ptr", "projection": { "id": "native-only", "version": 1 },
+            "ownership": "invocation-passthrough", "mutable": [], "nullable": false },
+          { "name": "weapon", "native": "ptr", "projection": { "id": "entity?", "version": 1 },
+            "mutable": [], "nullable": false }
+        ],
+        "returns": { "name": "", "native": "u8", "projection": { "id": "bool", "version": 1 },
+          "mutable": [], "nullable": false },
+        "instances": [],
+        "scratch": []
+      },
+      "policy": { "surfaces": ["pre"], "suppression": "generic" },
+      "adapter": { "id": "cs2.weapon-can-switch.v1", "postOverride": false }
+    },
+    // CCSPlayer_WeaponServices::DropWeapon(WeaponServices*, CBasePlayerWeapon*, Vector* target,
+    // Vector* velocity) -> void. Both vectors are optional native-only pass-throughs, forwarded
+    // unchanged whether null or not. Handled/Stop skips the original: the weapon stays held.
+    {
+      "localName": "weaponDrop",
+      "requirement": "optional",
+      "signatureName": "CCSPlayer_WeaponServices_DropWeapon",
+      "signature": {
+        "platform": "linux-x86_64-sysv",
+        "memberReceiver": false,
+        "receiver": null,
+        "parameters": [
+          { "name": "weaponServices", "native": "ptr", "projection": { "id": "native-only", "version": 1 },
+            "ownership": "invocation-passthrough", "mutable": [], "nullable": false },
+          { "name": "weapon", "native": "ptr", "projection": { "id": "entity?", "version": 1 },
+            "mutable": [], "nullable": false },
+          { "name": "target", "native": "ptr", "projection": { "id": "native-only", "version": 1 },
+            "ownership": "invocation-passthrough", "mutable": [], "nullable": false },
+          { "name": "velocity", "native": "ptr", "projection": { "id": "native-only", "version": 1 },
+            "ownership": "invocation-passthrough", "mutable": [], "nullable": false }
+        ],
+        "returns": { "name": "", "native": "void", "projection": { "id": "void", "version": 1 },
+          "mutable": [], "nullable": false },
+        "instances": [],
+        "scratch": []
+      },
+      "policy": { "surfaces": ["pre"], "suppression": "generic" },
+      "adapter": { "id": "cs2.weapon-drop.v1", "postOverride": false }
+    },
     // CBaseEntity::TakeDamageOld(victim* this, CTakeDamageInfo* info, optional result*) -> void,
     // audited rdi/rsi/rdx (gamedata CBaseEntity_TakeDamageOld). The victim is the entity receiver
     // (books-adopted, null when unadoptable). The info is a borrowed record exposing only the four

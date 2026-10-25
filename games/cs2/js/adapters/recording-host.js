@@ -19,6 +19,9 @@ const CONTRACTS = {
   "legacy.hud-click.v1": "28c0c9833d521cadd4eb03254f63ef7dcb1cd8b728f48ebfa8835b82ff03ecdd",
   "legacy.damage.v1": "37e53fb0dfcb8d986cacaa28bba02394f9957e3600411dc5d8785e0e4bd0711e",
   "cs2.chat-visibility.v1": "efaf6f4c3e5739260ec13c7064b5b5825954e09492e025f78d0d8df9b11c9b56",
+  "cs2.weapon-can-use.v1": "486d5b99dee6a6d2887beb887e95d25b80900c703078bb8b3175a219a95e6a49",
+  "cs2.weapon-can-switch.v1": "8757676e8da492a7a72b01a0de51f19362308359659ca6e2787019feaade6d81",
+  "cs2.weapon-drop.v1": "87c643d538fff80ef21afb062f787f51dbcb28927275e013dfdfdd0a24158aeb",
 };
 
 function isI32(v) { return typeof v === "number" && Number.isInteger(v) && v >= -2147483648 && v <= 2147483647; }

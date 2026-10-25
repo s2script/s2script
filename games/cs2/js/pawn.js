@@ -1166,6 +1166,28 @@
     },
   });
 
+  // import { weapons } from "@s2script/cs2" — weapon pickup, switch and drop gates on the trusted
+  // `weaponCanUse`, `weaponCanSwitch` and `weaponDrop` engine functions, folded by the
+  // cs2.weapon-can-use.v1 / cs2.weapon-can-switch.v1 / cs2.weapon-drop.v1 package adapters
+  // (js/adapters/weapon-*.js). Same load-window and ledger contract as `items`.
+  var weaponAdapters = globalThis.__s2pkg_cs2_adapters || {};
+  function weaponGate(gate, api) {
+    return function (handler) {
+      if (!globalThis.__s2_load_ctx) throw new Error("s2script: " + api + " outside the load window");
+      if (typeof handler !== "function") throw new TypeError("s2script: " + api + " requires a handler function");
+      if (!gate) {
+        console.log("[s2script] WARN: " + api + ": the weapon hook adapter is not packaged, so this handler will not fire");
+        return;
+      }
+      gate.subscribe(handler, acquirePawns, Weapon.fromEntity);
+    };
+  }
+  globalThis.__s2pkg_cs2.weapons = Object.freeze({
+    onCanUse: weaponGate(weaponAdapters.weaponCanUse, "weapons.onCanUse()"),
+    onCanSwitchTo: weaponGate(weaponAdapters.weaponCanSwitch, "weapons.onCanSwitchTo()"),
+    onDrop: weaponGate(weaponAdapters.weaponDrop, "weapons.onDrop()"),
+  });
+
   // Crash reporter: push the game identity into the engine-generic breadcrumb (spec §5 — the
   // game package supplies the value IN; core never knows the game). Best-effort: absent natives
   // (an older core) degrade silently.

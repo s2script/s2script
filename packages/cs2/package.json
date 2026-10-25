@@ -21,7 +21,8 @@
     "nav.generated.d.ts",
     "schema.generated.d.ts",
     "ui.d.ts",
-    "weapon.d.ts"
+    "weapon.d.ts",
+    "weapons.d.ts"
   ],
   "dependencies": {
     "@s2script/sdk": "^0.32.0"
