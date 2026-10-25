@@ -846,10 +846,12 @@
       var extra = opts.keyvalues || {};
       for (var k in extra) if (Object.prototype.hasOwnProperty.call(extra, k)) kv[k] = extra[k];
       var ent = globalThis.__s2pkg_entity;
-      var ref = ent.createEntity("info_particle_system", kv);
+      // Create, place, then spawn: a keyvalue spawn would start the effect at the world origin
+      // before a later teleport could move it. EKV has no vector setter, so teleport places it.
+      var ref = ent.createEntity("info_particle_system");
       if (!ref) return null;
-      // Placed with teleport, as every other created entity is; EKV has no vector setter.
       ref.teleport(o, a);
+      if (!ref.spawn(kv)) { ref.remove(); return null; }
       if (opts.visibleTo !== undefined) globalThis.__s2pkg_transmit.Transmit.setVisibleTo(ref, particleSlots(opts.visibleTo));
       if (opts.parent) ref.acceptInput("SetParent", "!activator", opts.parent);
       if (typeof opts.lifetime === "number" && opts.lifetime > 0) {

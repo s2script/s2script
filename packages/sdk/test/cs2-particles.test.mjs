@@ -9,7 +9,7 @@ import vm from "node:vm";
 import { installClientHost } from "./client-host.mjs";
 import { cs2AddonBundle } from "./cs2-addon.mjs";
 
-function makeHost({ createFails = false } = {}) {
+function makeHost({ createFails = false, spawnFails = false } = {}) {
   const created = [];
   const transmit = [];
   const timers = [];
@@ -20,6 +20,12 @@ function makeHost({ createFails = false } = {}) {
   };
   EntityRef.prototype.remove = function () { this.removed = true; return true; };
   EntityRef.prototype.teleport = function (origin, angles) { this.placed = [origin, angles]; return true; };
+  // Records the keyvalues and whether the entity was already placed when it spawned.
+  EntityRef.prototype.spawn = function (kv) {
+    created.find((c) => c.ref === this).kv = kv;
+    this.placedAtSpawn = !!this.placed;
+    return !spawnFails;
+  };
   const ctx = {
     __s2require: (n) => n === "@s2script/sdk/entity" ? { EntityRef }
       : n === "@s2script/sdk/math" ? { Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; } }
@@ -29,8 +35,9 @@ function makeHost({ createFails = false } = {}) {
       Entity: { findByClass: () => [] },
       createEntity: (cls, kv) => {
         if (createFails) return null;
+        assert.equal(kv, undefined, "a keyvalue create would spawn before the teleport");
         const ref = new EntityRef(100 + created.length, 1);
-        created.push({ cls, kv, ref });
+        created.push({ cls, kv: null, ref });
         return ref;
       },
     },
@@ -52,6 +59,7 @@ test("create spawns an active info_particle_system and teleports it to the origi
   assert.equal(h.created[0].cls, "info_particle_system");
   assert.deepEqual({ ...h.created[0].kv }, { effect_name: "particles/x.vpcf", start_active: 1 });
   assert.deepEqual(JSON.parse(JSON.stringify(p.ref.placed)), [[1, 2.5, -3], null]);
+  assert.ok(p.ref.placedAtSpawn, "placed before it spawns, so the effect starts at the origin");
   assert.equal(h.transmit.length, 0, "no visibleTo -> no transmit rule");
   assert.equal(p.ref, h.created[0].ref);
 });
@@ -94,6 +102,9 @@ test("lifetime removes the entity after that many seconds", async () => {
 
 test("a failed create returns null; bad arguments throw", () => {
   assert.equal(makeHost({ createFails: true }).Particles.create("e.vpcf", [0, 0, 0]), null);
+  const failed = makeHost({ spawnFails: true });
+  assert.equal(failed.Particles.create("e.vpcf", [0, 0, 0]), null);
+  assert.ok(failed.created[0].ref.removed, "a failed spawn removes the created entity");
   const h = makeHost();
   assert.throws(() => h.Particles.create("", [0, 0, 0]), /effect must be/);
   assert.throws(() => h.Particles.create("e.vpcf", "0 0 0"), /origin must be/);
