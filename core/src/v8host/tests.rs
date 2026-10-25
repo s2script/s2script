@@ -6992,6 +6992,49 @@
         shutdown();
     }
 
+    /// Parity slice 5: `dispatch_input` matches `(class,input)` with the input compared
+    /// case-insensitively, honours `"*"` on either side, threads the value and keeps the engine's
+    /// spelling in `ev.input`, and collapses to the strongest HookResult. `input_hooked` tracks
+    /// whether any subscriber is left, so the FFI fast path skips work after unload.
+    #[test]
+    fn input_dispatch_matches_case_insensitively_and_collapses_hookresult() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        assert!(!input_hooked(), "no subscribers yet");
+        assert_eq!(dispatch_input("func_door", "Open", -1, -1, -1, ""), 0);
+        create_plugin_context("p");
+        eval_in_context("p", r#"
+            globalThis.__any = 0; globalThis.__exact = 0; globalThis.__cls = 0;
+            __s2pkg_entity.Entity.onInput("*", "*", function () { globalThis.__any++; });
+            __s2pkg_entity.Entity.onInput("func_door", "OPEN", function (ev) {
+                globalThis.__exact++;
+                globalThis.__seen = [ev.input, ev.value, String(ev.entity), String(ev.activator), String(ev.caller)].join("|");
+                return HookResult.Handled;
+            });
+            __s2pkg_entity.Entity.onInput("func_door", "*", function () { globalThis.__cls++; return HookResult.Changed; });
+        "#).unwrap();
+        assert!(input_hooked());
+
+        assert_eq!(dispatch_input("func_door", "Open", -1, -1, -1, "fast"), HookResult::Handled as i32);
+        assert_eq!(read_global_string("p", "__seen"), "Open|fast|null|null|null");
+        assert_eq!(read_i32_global_in("p", "__any"), 1);
+        assert_eq!(read_i32_global_in("p", "__exact"), 1);
+        assert_eq!(read_i32_global_in("p", "__cls"), 1);
+
+        // Another input on the same class reaches the class wildcard, not the exact sub.
+        assert_eq!(dispatch_input("func_door", "Close", -1, -1, -1, ""), HookResult::Changed as i32);
+        assert_eq!(read_i32_global_in("p", "__exact"), 1);
+        // Another class reaches only (*,*).
+        assert_eq!(dispatch_input("logic_relay", "open", -1, -1, -1, ""), HookResult::Continue as i32);
+        assert_eq!(read_i32_global_in("p", "__any"), 3);
+        assert_eq!(read_i32_global_in("p", "__cls"), 2);
+
+        unload_plugin("p");
+        assert!(!input_hooked(), "unload drops every subscription");
+        assert_eq!(dispatch_input("func_door", "Open", -1, -1, -1, ""), HookResult::Continue as i32);
+        shutdown();
+    }
+
     // ---------------------------------------------------------------------------
     // Slice 5D.1: game-event mechanism — subscribe/accessor/dispatch/teardown
     // ---------------------------------------------------------------------------

@@ -667,6 +667,40 @@ pub extern "C" fn s2script_core_dispatch_output(
     .unwrap_or(0)
 }
 
+/// Shim → core: called by the `CEntityIdentity::AcceptInput` detour (parity slice 5) with the
+/// receiving entity's classname, the input name, its packed `CEntityHandle`, packed activator/caller
+/// handles (-1 = none) and the input's value as a string. Runs the matching `Entity.onInput`
+/// subscribers SYNCHRONOUSLY and returns the collapsed `HookResult`; the shim drops the input
+/// (AcceptInput returns false) when it is >= Handled (2). Same fail-open shape as
+/// `s2script_core_dispatch_output`: a panic or invalid UTF-8 → 0 Continue.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_input(
+    classname: *const c_char,
+    input: *const c_char,
+    target_handle: c_int,
+    act_handle: c_int,
+    caller_handle: c_int,
+    value: *const c_char,
+) -> c_int {
+    catch_unwind(|| {
+        if classname.is_null() || input.is_null() { return 0; }
+        // AcceptInput carries every I/O event in the map: with no subscriber, return before any
+        // string conversion or profiler scope.
+        if !v8host::input_hooked() { return 0; }
+        let _prof = crate::profiler::framework("dispatch_input");
+        let Ok(classname_str) = (unsafe { CStr::from_ptr(classname) }).to_str() else { return 0; };
+        let Ok(input_str) = (unsafe { CStr::from_ptr(input) }).to_str() else { return 0; };
+        let value_str = if value.is_null() {
+            ""
+        } else {
+            match (unsafe { CStr::from_ptr(value) }).to_str() { Ok(s) => s, Err(_) => "" }
+        };
+        v8host::dispatch_input(classname_str, input_str, target_handle as i32, act_handle as i32,
+                               caller_handle as i32, value_str)
+    })
+    .unwrap_or(0)
+}
+
 /// UserMessage-interception: shim → core on a bitmap-hit PostEventAbstract. `name` = the intercepted
 /// message's `GetUnscopedName()` (the canonical dispatch key), `id` = its `m_MessageId`. Runs the
 /// matching `UserMessages.onPre` subscribers SYNCHRONOUSLY over the shim's current (block-scoped)

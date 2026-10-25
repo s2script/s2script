@@ -341,6 +341,14 @@ thread_local! {
     static OUTPUT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::channels::Channels::new());
 
+    /// `Entity.onInput(classname, input, handler)` subscribers (parity slice 5), keyed
+    /// `"<classname>\0<lowercased input>"` with `"*"` wildcards — Source input names are
+    /// case-insensitive. Fed by the shim's `CEntityIdentity::AcceptInput` detour, installed
+    /// unconditionally at Load like `OUTPUT_MUX`'s; dispatch is SYNCHRONOUS so a handler can drop
+    /// the input. `remove_by_owner` on unload; reset on shutdown.
+    static INPUT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
+
     /// `Server.onCvarChange(name, handler)` subscribers, keyed by cvar name (`"*"` = every cvar).
     /// Fed by the shim's ONE `ICvar::InstallGlobalChangeCallback`, installed unconditionally at Load —
     /// so there is no per-subscribe engine op. NOTIFY-only: the engine's global change callback runs
@@ -3674,6 +3682,21 @@ fn s2_cvar_off_change(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
     }));
 }
 
+/// Native `__s2_input_subscribe(classname, input, handler) -> subId`. Subscribes a JS fn to
+/// `Entity.onInput` (parity slice 5); owner-tracked in `INPUT_MUX`. The AcceptInput detour is
+/// installed at shim Load, so there is no per-subscribe engine registration.
+fn s2_input_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 3 { return; }
+        let classname = args.get(0).to_rust_string_lossy(scope);
+        let input = args.get(1).to_rust_string_lossy(scope).to_ascii_lowercase();
+        if classname.is_empty() || input.is_empty() { return; }
+        let key = format!("{}\0{}", classname, input);
+        let Some((sub_id, _)) = subscribe_into(scope, &args, &INPUT_MUX, &key, 2) else { return };
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
+    }));
+}
+
 fn s2_output_unsubscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 2 { return; }
@@ -4765,6 +4788,64 @@ pub(crate) fn dispatch_output(classname: &str, output: &str, act_handle: i32, ca
         if let Some(k) = v8::String::new(tc, "delay") {
             let v = v8::Number::new(tc, delay as f64);
             ev_obj.set(tc, k.into(), v.into());
+        }
+        Some(vec![ev_obj.into()])
+    });
+    result as i32
+}
+
+/// Whether any plugin subscribes `Entity.onInput`. The AcceptInput detour runs for every I/O event
+/// in the map, so the FFI entry checks this before converting a single string. A held borrow
+/// (a dispatch in progress) answers true and lets `dispatch_input` decide.
+pub(crate) fn input_hooked() -> bool {
+    INPUT_MUX.with(|m| m.try_borrow().map(|c| !c.is_empty()).unwrap_or(true))
+}
+
+/// Decode a packed `CEntityHandle` int from the shim into a books-gated `EntityRef` (or null).
+/// -1 is the shim's exact "no entity" sentinel; see the note in `dispatch_output`.
+fn handle_entity_value<'s>(tc: &mut v8::PinScope<'s, '_>, handle: i32) -> v8::Local<'s, v8::Value> {
+    if handle == -1 { return v8::null(tc).into(); }
+    let (index, serial) = crate::entity::decode_handle(handle as u32);
+    match crate::entity_live::adopt(index, serial) {
+        Some(id) => build_entity_ref(tc, index, id),
+        None => v8::null(tc).into(),
+    }
+}
+
+/// Synchronous input dispatch (parity slice 5). Called from `ffi.rs`'s
+/// `s2script_core_dispatch_input`, which the shim's `CEntityIdentity::AcceptInput` detour calls for
+/// every input an entity receives. Runs every `Entity.onInput` subscriber whose key matches
+/// `(class,input)`, `(class,"*")`, `("*",input)` or `("*","*")` — input compared lowercased — and
+/// returns the collapsed `HookResult`; the shim drops the input when it is >= Handled. The event
+/// carries `{ input, entity, activator, caller, value }`; `input` keeps the engine's spelling.
+pub(crate) fn dispatch_input(classname: &str, input: &str, target_handle: i32, act_handle: i32, caller_handle: i32, value: &str) -> i32 {
+    let lowered = input.to_ascii_lowercase();
+    let keys = [
+        format!("{}\0{}", classname, lowered),
+        format!("{}\0*", classname),
+        format!("*\0{}", lowered),
+        "*\0*".to_string(),
+    ];
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut snap: Vec<(String, u64, v8::Global<v8::Function>)> = Vec::new();
+    for k in &keys {
+        if !seen.insert(k.as_str()) { continue; }
+        snap.extend(INPUT_MUX.with(|m| m.borrow().snapshot(k)));
+    }
+    if snap.is_empty() { return 0; }
+    let result = fan_out_collapsing(&snap, "dispatch_input", Instrument::none(), StopAt::Stop, |tc| {
+        let entity_val = handle_entity_value(tc, target_handle);
+        let activator_val = handle_entity_value(tc, act_handle);
+        let caller_val = handle_entity_value(tc, caller_handle);
+        let ev_obj = v8::Object::new(tc);
+        if let Some(k) = v8::String::new(tc, "input") {
+            if let Some(v) = v8::String::new(tc, input) { ev_obj.set(tc, k.into(), v.into()); }
+        }
+        if let Some(k) = v8::String::new(tc, "entity") { ev_obj.set(tc, k.into(), entity_val); }
+        if let Some(k) = v8::String::new(tc, "activator") { ev_obj.set(tc, k.into(), activator_val); }
+        if let Some(k) = v8::String::new(tc, "caller") { ev_obj.set(tc, k.into(), caller_val); }
+        if let Some(k) = v8::String::new(tc, "value") {
+            if let Some(v) = v8::String::new(tc, value) { ev_obj.set(tc, k.into(), v.into()); }
         }
         Some(vec![ev_obj.into()])
     });
@@ -6579,6 +6660,16 @@ pub(crate) fn register_builtin_stores() {
         Box::new(|ids| { OUTPUT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| {
             OUTPUT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
+        }),
+    );
+
+    // INPUT_MUX: the AcceptInput detour stays installed for the process lifetime — no follow-up.
+    crate::owner_stores::register(
+        "INPUT_MUX",
+        Box::new(|owner| { INPUT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { INPUT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            INPUT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 

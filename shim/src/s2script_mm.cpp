@@ -4446,6 +4446,27 @@ static int S2NamedOutputOp(CEntityIOOutput* pThis, CEntityInstance* act, CEntity
     return result;
 }
 
+// Entity input pre-hook (parity slice 5): CEntityIdentity::AcceptInput delivers every input an
+// entity receives. Same contract as S2NamedOutputOp: dispatched SYNCHRONOUSLY, superseded
+// (the input is not delivered, AcceptInput returns false) when the collapsed HookResult is
+// >= Handled. The target/activator/caller cross as packed CEntityHandle ints, the input name
+// and value as strings; no pointer reaches core. Only the variant value is formatted: the
+// pulse-argument register is not stringified (its type is unconfirmed on this entry), so a
+// pulse-driven input reports "". Any resolve miss falls straight through to the original.
+static int S2NamedInputOp(CEntityIdentity* identity, void* input, CEntityInstance* act,
+                          CEntityInstance* caller, const CVariant* value) {
+    if (!identity || !input) return 0;
+    CEntityInstance* target = identity->m_pInstance;
+    const char* inputName = static_cast<const CUtlSymbolLarge*>(input)->String();
+    if (!target || !inputName || !inputName[0]) return 0;
+    const char* cls = target->GetClassname();
+    char valbuf[256] = {};
+    if (value) CVariantToString(value, valbuf, sizeof valbuf);
+    return s2script_core_dispatch_input(cls ? cls : "", inputName, target->GetRefEHandle().ToInt(),
+                                        act ? act->GetRefEHandle().ToInt() : -1,
+                                        caller ? caller->GetRefEHandle().ToInt() : -1, valbuf);
+}
+
 // ---------------------------------------------------------------------------
 // Load
 // ---------------------------------------------------------------------------
@@ -4465,6 +4486,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     S2NamedHookOps namedOps;
     namedOps.chat=&S2NamedChatOp;
     namedOps.output=&S2NamedOutputOp;
+    namedOps.input=&S2NamedInputOp;
     namedOps.usercmd_slot=&S2NamedUsercmdSlotOp;
     namedOps.usercmd_dispatch=&S2NamedUsercmdDispatchOp;
     namedOps.usercmd_neutralize=&S2NamedUsercmdNeutralizeOp;
@@ -5206,6 +5228,26 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                        receipt.reason.c_str());
                     }
                 }   // foiOff == kFail: ResolveSigValidated already recorded the reason
+            }
+            // Parity slice 5: resolve + detour CEntityIdentity::AcceptInput (Entity.onInput).
+            // Degrade-never-crash: unresolved leaves inputs unhooked, never a crash.
+            auto aiit = sigs.find("CEntityIdentity_AcceptInput");
+            if (aiit == sigs.end()) {
+                GamedataResult("CEntityIdentity_AcceptInput", false, "signature absent from gamedata");
+            } else {
+                int64_t aiOff = ResolveSigValidated("CEntityIdentity_AcceptInput", aiit->second);
+                ModText aimt = FindModuleText(aiit->second.module.c_str());
+                if (aiOff != s2sig::kFail && aimt.text) {
+                    void* aiAddr = const_cast<uint8_t*>(aimt.text) + aiOff;
+                    const auto receipt=S2NamedConfigureInput(aiAddr);
+                    if (receipt.Accepted()) {
+                        META_CONPRINTF("[s2script] AcceptInput checked hook accepted @%p (Entity.onInput; id=%u)\n",
+                                       aiAddr,receipt.id);
+                    } else {
+                        META_CONPRINTF("[s2script] WARN: AcceptInput checked hook failed (%s) — Entity.onInput off\n",
+                                       receipt.reason.c_str());
+                    }
+                }   // aiOff == kFail: ResolveSigValidated already recorded the reason
             }
             // Entity lifecycle listeners slice: resolve CGameEntitySystem::AddListenerEntity (register an
             // IEntityListener) + RemoveListenerEntity (best-effort Unload cleanup). Both validated UNIQUE +

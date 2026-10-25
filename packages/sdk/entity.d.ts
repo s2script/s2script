@@ -274,6 +274,23 @@ export interface OutputEvent {
   delay: number;
 }
 
+/** The payload delivered to an `onInput` handler. */
+export interface InputEvent {
+  /** The input's name as the engine spelled it (e.g. "Kill", "Open", "SetHealth"). */
+  input: string;
+  /** The entity receiving the input, or null if it is no longer live. */
+  entity: EntityRef | null;
+  /** The entity that activated the chain leading to this input, or null. */
+  activator: EntityRef | null;
+  /** The entity that sent the input (the output's owner, for map I/O), or null. */
+  caller: EntityRef | null;
+  /**
+   * The input's parameter, formatted as a string ("" when it has none). Inputs fired with a Pulse
+   * argument pack instead of a variant also report "".
+   */
+  value: string;
+}
+
 /**
  * Entry point for entity lookup by class name.
  * @example
