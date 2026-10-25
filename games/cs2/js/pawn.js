@@ -1074,6 +1074,75 @@
     }
   };
 
+  // --- Center-screen text: SourceMod PrintCenterText / PrintCenterTextAll, plus CS2's alert line and
+  // the HTML center panel. TextMsg `dest` values are CS2's HUD_PRINT* (Swiftly's MessageType uses the
+  // same numbers: Center 4, Alert 6). `param` is a repeated field; setString appends to it.
+  var HUD_PRINTCENTER = 4, HUD_PRINTALERT = 6;
+  function textMsg(dest, text) {
+    return _um("CUserMessageTextMsg").setInt("dest", dest).setString("param", String(text));
+  }
+  var CenterText = {
+    to: function (slot, text) { return textMsg(HUD_PRINTCENTER, text).send(slot); },
+    toAll: function (text) { return textMsg(HUD_PRINTCENTER, text).sendAll(); },
+  };
+  var AlertText = {
+    to: function (slot, text) { return textMsg(HUD_PRINTALERT, text).send(slot); },
+    toAll: function (text) { return textMsg(HUD_PRINTALERT, text).sendAll(); },
+  };
+
+  // CenterHtml — the `show_survival_respawn_status` panel, whose loc_token renders as HTML. The client
+  // paints it for one frame per event, so a frame handler re-fires it to each slot until its time is up
+  // (the same thing Swiftly's SendCenterHTML and the rockthevote tally do). The handler is subscribed
+  // only while some message is showing, in the context of the plugin that showed it, so the ledger
+  // tears it down at that plugin's unload. One message per slot per plugin: a later call replaces it.
+  var centerHtml = {};          // slot -> { html, until (ms) }
+  var centerHtmlCount = 0;
+  var centerHtmlSub = null;
+  function centerHtmlEvents() { return (__s2require("@s2script/sdk/events") || {}).Events; }
+  function centerHtmlFrame() {
+    var ev = centerHtmlEvents();
+    var now = Date.now();
+    for (var k in centerHtml) {
+      var e = centerHtml[k];
+      var slot = Number(k);
+      var p = Player.fromSlot(slot);
+      if (now >= e.until || !p) { delete centerHtml[k]; centerHtmlCount--; continue; }
+      if (ev) ev.fireToClient(slot, "show_survival_respawn_status", { loc_token: e.html, duration: 1, userid: p.userId });
+    }
+    if (centerHtmlCount <= 0 && centerHtmlSub) { centerHtmlCount = 0; centerHtmlSub.dispose(); centerHtmlSub = null; }
+  }
+  function centerHtmlSet(slot, html, seconds) {
+    if (!Player.fromSlot(slot)) return false;
+    var secs = seconds === undefined ? 5 : Number(seconds);
+    if (!(secs > 0)) return CenterHtml.clear(slot);
+    if (!centerHtml[slot]) centerHtmlCount++;
+    centerHtml[slot] = { html: String(html), until: Date.now() + secs * 1000 };
+    if (!centerHtmlSub) {
+      var frame = globalThis.__s2pkg_frame && globalThis.__s2pkg_frame.OnGameFrame;
+      if (!frame) { delete centerHtml[slot]; centerHtmlCount--; return false; }
+      centerHtmlSub = frame.subscribe(centerHtmlFrame);
+    }
+    return true;
+  }
+  var CenterHtml = {
+    to: function (slot, html, seconds) { return centerHtmlSet(slot, html, seconds); },
+    toAll: function (html, seconds) {
+      var any = false;
+      var all = Player.all();
+      for (var i = 0; i < all.length; i++) {
+        var c = all[i]._client;
+        if (c && c.isBot) continue;                 // bots render nothing; skip the per-frame fire
+        if (centerHtmlSet(all[i].slot, html, seconds)) any = true;
+      }
+      return any;
+    },
+    clear: function (slot) {
+      if (!centerHtml[slot]) return false;
+      delete centerHtml[slot]; centerHtmlCount--;
+      return true;
+    },
+  };
+
   // A small curated set of known-good BUILT-IN CS2 soundevents (convenience + the sound-demo).
   // CS2 soundevent names live exclusively HERE (the game layer), never in core/src. The audible
   // verify is a human-client test (bots have no audio) — tune/extend these names at that gate.
@@ -1095,7 +1164,7 @@
     return sceneNodeGetter.call({ ref: ref });
   }
 
-  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, sceneNodeOf: sceneNodeOf, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Teams: Teams, RoundEndReason: RoundEndReason, WinPanelFinalEvent: WinPanelFinalEvent, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone, Sounds: Sounds });
+  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, sceneNodeOf: sceneNodeOf, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Teams: Teams, RoundEndReason: RoundEndReason, WinPanelFinalEvent: WinPanelFinalEvent, Fade: Fade, Shake: Shake, HintText: HintText, CenterText: CenterText, AlertText: AlertText, CenterHtml: CenterHtml, TriggerZone: TriggerZone, Sounds: Sounds });
 
   // The ctx namespaces this game package contributes (core's generic extension point in
   // prelude.js merges these into every plugin's ctx). Each factory gets the prelude's ledger

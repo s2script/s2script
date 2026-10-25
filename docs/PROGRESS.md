@@ -712,3 +712,13 @@ Reproduced with the vendored KHook built as a library (two PRE-only hooks on a c
 `FireEvent`, peer added first) under AddressSanitizer: the old code reports heap-use-after-free in
 the peer's callback; with `Recall` the peer sees the event, the original runs once with
 `bDontBroadcast=1`. Live gate pending.
+
+## 2026-10-25 — Center, alert and HTML center text in @s2script/cs2
+
+SourceMod plugins print to the center of the screen constantly (`PrintCenterText`), and Swiftly and
+ModSharp both ship center, alert and HTML center helpers. s2script only had `HintText.to`. The cs2
+package now has `CenterText` and `AlertText` (`TextMsg` with dest 4 and 6, the numbers Swiftly
+uses), and `CenterHtml`, which keeps `show_survival_respawn_status` on screen by re-sending it every
+frame until its duration runs out. That is the loop `plugins/disabled/rockthevote` writes by hand.
+The frame handler is subscribed only while a message is showing, from the calling plugin's context,
+so its ledger tears it down at unload. Live gate pending (which dest renders where is a client fact).

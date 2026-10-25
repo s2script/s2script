@@ -531,6 +531,38 @@ export declare const HintText: {
   to(slot: number, text: string): boolean;
 };
 
+/** Center-screen text (SourceMod `PrintCenterText` / `PrintCenterTextAll`), a `TextMsg` with
+ *  `HUD_PRINTCENTER`. false if the message does not resolve or `slot` has no client. */
+export declare const CenterText: {
+  /** Show `text` in the center of `slot`'s screen. */
+  to(slot: number, text: string): boolean;
+  /** Show `text` in the center of every client's screen. */
+  toAll(text: string): boolean;
+};
+/** CS2's alert line above the center text (`TextMsg` with `HUD_PRINTALERT`). Same returns as
+ *  {@link CenterText}. */
+export declare const AlertText: {
+  /** Show `text` as an alert to `slot`. */
+  to(slot: number, text: string): boolean;
+  /** Show `text` as an alert to every client. */
+  toAll(text: string): boolean;
+};
+/**
+ * The HTML center panel (`show_survival_respawn_status`; other frameworks call this
+ * `PrintCenterHtml` / `SendCenterHTML`). The client paints it one frame per event, so the package
+ * re-sends it every frame until `seconds` (default 5) run out. Each slot shows one message per
+ * plugin; a later call replaces it. The re-send stops at the calling plugin's unload.
+ * Escape any player-supplied text before putting it in `html`.
+ */
+export declare const CenterHtml: {
+  /** Show `html` to `slot` for `seconds` (default 5; 0 or less clears it). false if `slot` has no player. */
+  to(slot: number, html: string, seconds?: number): boolean;
+  /** Show `html` to every human player for `seconds`. true if at least one player got it. */
+  toAll(html: string, seconds?: number): boolean;
+  /** Stop showing this plugin's message to `slot`. false if none was showing. */
+  clear(slot: number): boolean;
+};
+
 /** A world-space coordinate triple (a corner or center of a {@link TriggerZoneHandle} box). */
 export interface ZoneBox {
   /** World X. */ x: number;
