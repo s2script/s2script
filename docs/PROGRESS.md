@@ -788,3 +788,22 @@ slice adds them to `GameRules` in `@s2script/cs2`:
 
 Adapter conformance tests, engine-call wrapper tests and the real-package activation test (nine
 trusted functions) cover it. The live gate is pending.
+
+## 2026-10-25 — Spawn live grenades
+
+Swiftly's `EmitGrenade` family spawns an already-thrown projectile; JB grenade days and LRs and TTT
+gadgets need it. `Grenades.emit(kind, opts)` in `@s2script/cs2` wraps five receiverless call
+descriptors, one per projectile factory: `Create(origin*, angles*, velocity*, angularVelocity*,
+owner, itemDefIndex[, team])`, returning the projectile entity.
+
+On the Oct 22 libserver.so each factory is unique and anchored on its projectile class name, which
+appears once in the binary: HE @0xd39350, flashbang @0xd389f0, smoke @0x14710d0, decoy @0x1470300
+and molotov @0x146dbe0. The molotov builds its projectile through the entity spawner, so its anchor is
+at +0x19d and the pattern is padded to reach it. The smoke factory takes the team as a 7th, stack
+argument (`cmp [rbp+0x10],2` picks the T colour). Every body tests the owner for null.
+
+The wrapper, not the caller, supplies the item def index. The owner must be a pawn, because the
+factories read it as a CBaseCombatCharacter; a Player is mapped to its pawn and anything else is
+refused. Incendiary grenades are left out: the molotov factory would take their def index, but
+nothing verifies that it builds an incendiary. Engine-call wrapper tests cover the argument order,
+defaults, owner mapping and refusals. The live gate is pending.

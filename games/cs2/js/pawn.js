@@ -69,6 +69,13 @@
   var callRemovePlayerItem = engineCall("removePlayerItem");
   var callGetPlayerMaxSpeed = engineCall("getPlayerMaxSpeed");
   var callGoToIntermission = engineCall("goToIntermission");
+  var grenadeCalls = {
+    hegrenade: [engineCall("emitHEGrenade"), 44],
+    flashbang: [engineCall("emitFlashbang"), 43],
+    smokegrenade: [engineCall("emitSmokeGrenade"), 45],
+    molotov: [engineCall("emitMolotov"), 46],
+    decoy: [engineCall("emitDecoy"), 47],
+  };
 
   // Internal namespace, same idiom as __s2pkg_cs2_schema / __s2pkg_cs2_nav: NOT part of the
   // @s2script/cs2 public surface. `status` is here so an operator can ask a live server WHY a game
@@ -1120,13 +1127,47 @@
   // sceneNodeOf(ref) — the world transform of ANY entity (every CBaseEntity has the
   // m_CBodyComponent -> m_pSceneNode chain), reusing the generated SceneNode wrapper the pawn nav
   // installs. Lets a plugin read e.g. an info_teleport_destination's absRotation without offsets.
+  // Grenades.emit(kind, opts) — spawn a live, already-thrown grenade projectile (Swiftly
+  // EmitGrenade). The item def index comes from the kind, never the caller. The owner must be a
+  // PAWN: the factories read it as a CBaseCombatCharacter, so a controller would be the wrong
+  // object; a Player is mapped to its pawn and anything else is refused.
+  function grenadeVector(value, fallback) {
+    if (value === undefined || value === null) return fallback ? { x: 0, y: 0, z: 0 } : null;
+    var c = Array.isArray(value) ? [+value[0], +value[1], +value[2]] : [+value.x, +value.y, +value.z];
+    for (var i = 0; i < 3; i++) if (!isFinite(c[i]) || Math.abs(c[i]) > 3.4028234663852886e38) return null;
+    return { x: c[0], y: c[1], z: c[2] };
+  }
+  var Grenades = {
+    emit: function (kind, opts) {
+      var entry = Object.prototype.hasOwnProperty.call(grenadeCalls, kind) ? grenadeCalls[kind] : null;
+      if (!entry) { warn("Grenades.emit: unknown grenade kind '" + kind + "'"); return null; }
+      if (!entry[0]) return null;
+      opts = opts || {};
+      var origin = grenadeVector(opts.origin, false);
+      var angles = grenadeVector(opts.angles, true);
+      var velocity = grenadeVector(opts.velocity, true);
+      var spin = grenadeVector(opts.angularVelocity, true);
+      if (!origin || !angles || !velocity || !spin) { warn("Grenades.emit: origin, angles and velocities must be three finite numbers"); return null; }
+      var owner = opts.owner === undefined ? null : opts.owner;
+      if (owner instanceof Player && !(owner = owner.pawn)) return null;   // no body to throw from
+      if (owner !== null && !(owner instanceof Pawn)) { warn("Grenades.emit: owner must be a Pawn, a Player or null"); return null; }
+      if (owner !== null && !owner.ref.isValid()) return null;
+      var ownerRef = owner ? owner.ref : null;
+      if (kind === "smokegrenade") {
+        var team = opts.team === undefined ? (owner ? owner.teamNum : 0) : opts.team;
+        return entry[0](origin, angles, velocity, spin, ownerRef, entry[1], (team | 0)) || null;
+      }
+      return entry[0](origin, angles, velocity, spin, ownerRef, entry[1]) || null;
+    },
+  };
+
   var sceneNodeGetter = (Object.getOwnPropertyDescriptor(Pawn.prototype, "sceneNode") || {}).get;
   function sceneNodeOf(ref) {
     if (!ref || !sceneNodeGetter || !ref.isValid()) return null;
     return sceneNodeGetter.call({ ref: ref });
   }
 
-  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, sceneNodeOf: sceneNodeOf, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Teams: Teams, RoundEndReason: RoundEndReason, WinPanelFinalEvent: WinPanelFinalEvent, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone, Sounds: Sounds });
+  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, sceneNodeOf: sceneNodeOf, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Teams: Teams, RoundEndReason: RoundEndReason, WinPanelFinalEvent: WinPanelFinalEvent, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone, Sounds: Sounds, Grenades: Grenades });
 
   // The ctx namespaces this game package contributes (core's generic extension point in
   // prelude.js merges these into every plugin's ctx). Each factory gets the prelude's ledger

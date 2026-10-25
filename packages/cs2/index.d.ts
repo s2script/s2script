@@ -488,6 +488,34 @@ export declare const GameRules: {
   onRoundRestartPost(handler: () => void): void;
 };
 
+/** The grenade kinds {@link Grenades.emit} can spawn. */
+export type GrenadeKind = "hegrenade" | "flashbang" | "smokegrenade" | "molotov" | "decoy";
+/** A vector as a `Vector`, any `{x, y, z}`, or an `[x, y, z]` triple. */
+export type GrenadeVector = { x: number; y: number; z: number } | readonly [number, number, number];
+/** Where and how {@link Grenades.emit} throws the projectile. */
+export interface GrenadeOptions {
+  /** World position the projectile starts at. */
+  origin: GrenadeVector;
+  /** Initial velocity in units per second (default zero: it drops). */
+  velocity?: GrenadeVector;
+  /** Initial orientation (default zero). */
+  angles?: GrenadeVector;
+  /** Initial spin in degrees per second (default zero). */
+  angularVelocity?: GrenadeVector;
+  /** Who threw it, for kill credit and flash/smoke team rules. A Player is mapped to its pawn.
+   *  Default: no owner. */
+  owner?: Pawn | Player | null;
+  /** Smoke only: the team whose colour the smoke takes (2 = T, 3 = CT). Default: the owner's team. */
+  team?: number;
+}
+/** Spawn live grenades (Swiftly `EmitGrenade`). */
+export declare const Grenades: {
+  /** Spawn an already-thrown `kind` projectile and return it. Null when the engine function is
+   *  unavailable on this build, the options are not finite numbers, the owner is not a live pawn,
+   *  or the kind is unknown. */
+  emit(kind: GrenadeKind, opts: GrenadeOptions): EntityRef | null;
+};
+
 /** Team scoreboard scores (cs_team_manager entities, CTeam.m_iScore + notifyStateChanged). team is
  *  0..3 (Unassigned/Spectator/T/CT), matched by m_iTeamNum; entities are re-found per call. */
 export declare const Teams: {
