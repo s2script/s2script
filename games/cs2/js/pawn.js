@@ -1149,6 +1149,23 @@
     onCanAcquirePost: acquireSubscriber("post", "items.onCanAcquirePost()"),
   });
 
+  // import { chat } from "@s2script/cs2" — who can read whose chat, on the trusted
+  // `playerCanHearChat` engine function folded by the cs2.chat-visibility.v1 package adapter
+  // (js/adapters/chat-visibility.js). Same load-window and ledger contract as `items`.
+  var chatGate = globalThis.__s2pkg_cs2_adapters && globalThis.__s2pkg_cs2_adapters.chatVisibility;
+  function chatPlayer(ref) { return ref ? new Player(ref) : null; }
+  globalThis.__s2pkg_cs2.chat = Object.freeze({
+    onCanHear: function (handler) {
+      if (!globalThis.__s2_load_ctx) throw new Error("s2script: chat.onCanHear() outside the load window");
+      if (typeof handler !== "function") throw new TypeError("s2script: chat.onCanHear() requires a handler function");
+      if (!chatGate) {
+        console.log("[s2script] WARN: chat.onCanHear(): the chat-visibility adapter is not packaged, so this handler will not fire");
+        return;
+      }
+      chatGate.subscribe(handler, chatPlayer);
+    },
+  });
+
   // Crash reporter: push the game identity into the engine-generic breadcrumb (spec §5 — the
   // game package supplies the value IN; core never knows the game). Best-effort: absent natives
   // (an older core) degrade silently.

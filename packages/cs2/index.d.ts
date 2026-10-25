@@ -64,6 +64,8 @@ export type {
 export { CustomHudLayout, DEFAULT_HUD_DESCRIPTOR, hudkit, PROBE_LAYOUT, ui } from "./ui";
 export { AcquireMethod, AcquireResult, items } from "./items";
 export type { CanAcquireView, CtxItems, ItemsApi } from "./items";
+export { chat } from "./chat";
+export type { CanHearChatView, ChatApi } from "./chat";
 export declare const HudInput: {
   /** Arm Tab-to-activate for `slot`. Replaces any previous arm on that slot. */
   arm(slot: number, opts: { onActivate: () => void }): void;

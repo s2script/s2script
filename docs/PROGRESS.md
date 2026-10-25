@@ -712,3 +712,19 @@ Reproduced with the vendored KHook built as a library (two PRE-only hooks on a c
 `FireEvent`, peer added first) under AddressSanitizer: the old code reports heap-use-after-free in
 the peer's callback; with `Recall` the peer sees the event, the original runs once with
 `bDontBroadcast=1`. Live gate pending.
+
+## 2026-10-25 — Chat visibility in @s2script/cs2
+
+TTT keeps the dead's chat away from the living, and jailbreak and basechat-style plugins change who
+reads team chat. `Chat.onMessage` could only drop a whole message and re-send it. ModSharp calls
+`CCSGameRules::PlayerCanHearChat` for the same per-recipient decision. `chat.onCanHear` hooks it
+through a new trusted engine function (`playerCanHearChat`, `u8(ptr,ptr,ptr,u8)`) and the
+`cs2.chat-visibility.v1` package adapter. Continue does not vote, Handled and Stop vote the written
+`canHear` (false when none), Changed votes only when it wrote, and any false wins. When anyone votes,
+the engine's rule is skipped.
+
+The ModSharp pattern was self-verified on the Oct 22 build. It is unique at 0x140cbe0, and its body
+matches the ABI. Its only caller is Host_Say's recipient loop, right before the
+CanHearAndReadChatFrom virtual. The recipe is in the gamedata comment. The recording adapter host
+now models `bool` returns. Adapter conformance tests and the real-package activation test cover the
+new binding. The live gate is pending.

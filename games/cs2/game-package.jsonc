@@ -13,7 +13,8 @@
   "adapters": {
     "legacy.acquire.v1": { "version": 1, "contract": "adapters/contracts/legacy.acquire.v1.json", "source": "js/adapters/acquire.js" },
     "legacy.hud-click.v1": { "version": 1, "contract": "adapters/contracts/legacy.hud-click.v1.json", "source": "js/adapters/hud-click.js" },
-    "legacy.damage.v1": { "version": 1, "contract": "adapters/contracts/legacy.damage.v1.json", "source": "js/adapters/damage.js" }
+    "legacy.damage.v1": { "version": 1, "contract": "adapters/contracts/legacy.damage.v1.json", "source": "js/adapters/damage.js" },
+    "cs2.chat-visibility.v1": { "version": 1, "contract": "adapters/contracts/cs2.chat-visibility.v1.json", "source": "js/adapters/chat-visibility.js" }
   },
   "gamedataRoot": "gamedata",
   // Host-verified trusted function declarations (see the file's header).

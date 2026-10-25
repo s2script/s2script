@@ -86,6 +86,37 @@
       "policy": { "surfaces": ["pre"], "suppression": "none" },
       "adapter": { "id": "legacy.hud-click.v1", "postOverride": false }
     },
+    // CCSGameRules::PlayerCanHearChat(gameRules*, receiver*, sender*, bool teamOnly) -> bool,
+    // audited rdi/rsi/rdx/ecx (gamedata CCSGameRules_PlayerCanHearChat). The game rules pointer is
+    // never read by the body and stays a native-only pass-through. Both controllers are books-
+    // adopted (null when unadoptable). There is no scratch: each subscriber's vote travels in its
+    // own Handled/Stop decision and the adapter folds them.
+    {
+      "localName": "playerCanHearChat",
+      "requirement": "optional",
+      "signatureName": "CCSGameRules_PlayerCanHearChat",
+      "signature": {
+        "platform": "linux-x86_64-sysv",
+        "memberReceiver": false,
+        "receiver": null,
+        "parameters": [
+          { "name": "gameRules", "native": "ptr", "projection": { "id": "native-only", "version": 1 },
+            "ownership": "invocation-passthrough", "mutable": [], "nullable": false },
+          { "name": "receiver", "native": "ptr", "projection": { "id": "entity?", "version": 1 },
+            "mutable": [], "nullable": false },
+          { "name": "sender", "native": "ptr", "projection": { "id": "entity?", "version": 1 },
+            "mutable": [], "nullable": false },
+          { "name": "teamOnly", "native": "u8", "projection": { "id": "bool", "version": 1 },
+            "mutable": [], "nullable": false }
+        ],
+        "returns": { "name": "", "native": "u8", "projection": { "id": "bool", "version": 1 },
+          "mutable": [], "nullable": false },
+        "instances": [],
+        "scratch": []
+      },
+      "policy": { "surfaces": ["pre"], "suppression": "generic" },
+      "adapter": { "id": "cs2.chat-visibility.v1", "postOverride": false }
+    },
     // CBaseEntity::TakeDamageOld(victim* this, CTakeDamageInfo* info, optional result*) -> void,
     // audited rdi/rsi/rdx (gamedata CBaseEntity_TakeDamageOld). The victim is the entity receiver
     // (books-adopted, null when unadoptable). The info is a borrowed record exposing only the four

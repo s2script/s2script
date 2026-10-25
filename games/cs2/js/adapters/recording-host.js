@@ -18,12 +18,15 @@ const CONTRACTS = {
   "legacy.acquire.v1": "69247dc63a6200f5bb8c8ff651b8dd632e8d6af9ad4a0b8d2933199800bc48c0",
   "legacy.hud-click.v1": "28c0c9833d521cadd4eb03254f63ef7dcb1cd8b728f48ebfa8835b82ff03ecdd",
   "legacy.damage.v1": "37e53fb0dfcb8d986cacaa28bba02394f9957e3600411dc5d8785e0e4bd0711e",
+  "cs2.chat-visibility.v1": "efaf6f4c3e5739260ec13c7064b5b5825954e09492e025f78d0d8df9b11c9b56",
 };
 
 function isI32(v) { return typeof v === "number" && Number.isInteger(v) && v >= -2147483648 && v <= 2147483647; }
 
-// binding: {name, returns: "i32"|"void", suppression: "generic"|"none", scratch: [names], pre: bool, post: bool}
+// binding: {name, returns: "i32"|"bool"|"void", suppression: "generic"|"none", scratch: [names], pre: bool, post: bool}
 function createHost(binding) {
+  // A typed scalar of the binding's return projection.
+  const isReturn = v => (binding.returns === "bool" ? typeof v === "boolean" : isI32(v));
   const adapters = [];      // {context, id, hash, pre, post}
   const subscriptions = []; // {context, phase, wrapper, adapter}
   const busy = new Set();
@@ -91,12 +94,12 @@ function createHost(binding) {
     if (value === null || typeof value !== "object") throw new Error("invalid adapter decision");
     if (!isI32(value.action)) throw new Error("suppression action must be an int32");
     if (forAdapter && value.action === 1) {
-      if (!isI32(value.returnValue)) throw new Error("typed scalar required");
+      if (!isReturn(value.returnValue)) throw new Error("typed scalar required");
       return { action: 1, proposal: value.returnValue };
     }
     if (value.action !== 2 && value.action !== 3) throw new Error("invalid suppression action");
     if (binding.suppression === "none") throw new Error("suppression:none forbids suppression decision objects");
-    if (binding.returns !== "void" && !isI32(value.returnValue)) throw new Error("typed scalar required");
+    if (binding.returns !== "void" && !isReturn(value.returnValue)) throw new Error("typed scalar required");
     return { action: value.action, returnValue: binding.returns === "void" ? undefined : value.returnValue };
   }
 
@@ -123,7 +126,7 @@ function createHost(binding) {
       frame.skipped = state.skipped;
       if (adapterLease) {
         Object.defineProperty(frame, "originalReturnValue", { get() { guard(); return state.original; } });
-        frame.overrideReturn = v => { guard(); if (!isI32(v)) throw new Error("typed scalar required"); state.current = v; trace.push(`override:${v}`); return v; };
+        frame.overrideReturn = v => { guard(); if (!isReturn(v)) throw new Error("typed scalar required"); state.current = v; trace.push(`override:${v}`); return v; };
         if (state.proposal !== undefined) frame.proposedReturn = state.proposal;
       }
     }

@@ -237,7 +237,7 @@ fn install_trusted_ops() {
     set_engine_ops(Some(ops));
 }
 /// The shipped CS2 package: its sealed trusted source is materialized against the MERGED gamedata
-/// signatures at commit, both adapter bindings are prepared, activated and authorized, and a
+/// signatures at commit, every adapter binding is prepared, activated and authorized, and a
 /// plugin context can subscribe through the package adapters (the natives themselves are gone).
 #[test]
 fn selected_real_package_activates_trusted_functions_from_merged_gamedata() {
@@ -248,7 +248,7 @@ fn selected_real_package_activates_trusted_functions_from_merged_gamedata() {
     crate::game_packages::commit(handle, &merged, b"GCR1\0\0\0\0\0\0\0\0").unwrap();
     let status: serde_json::Value = serde_json::from_slice(&crate::game_packages::status()).unwrap();
     let trusted = &status["trustedFunctions"];
-    assert_eq!(trusted["functions"].as_array().unwrap().len(), 3, "{status}");
+    assert_eq!(trusted["functions"].as_array().unwrap().len(), 4, "{status}");
     for f in trusted["functions"].as_array().unwrap() {
         assert!(f.get("unavailable").is_none() && f["targetSha256"].is_string(), "{f}");
         assert_eq!(f["binding"], "available", "{f}");
@@ -266,9 +266,11 @@ fn selected_real_package_activates_trusted_functions_from_merged_gamedata() {
             throw Error('bootstrap natives leaked');
         const a=globalThis.__s2pkg_cs2_adapters;
         let warned='';console.log=m=>{warned+=m;};
-        if(a.acquire.status()!=='available'||a.hudClick.status()!=='available')throw Error('adapters '+a.acquire.status());
+        if(a.acquire.status()!=='available'||a.hudClick.status()!=='available'||a.chatVisibility.status()!=='available')
+            throw Error('adapters '+a.acquire.status()+' '+a.chatVisibility.status());
         const pawns={maxPlayers:0,forSlot:()=>null};
-        for(const r of [a.acquire.subscribe('pre',()=>0,pawns),a.acquire.subscribe('post',()=>{},pawns),a.hudClick.subscribe(()=>{})])
+        for(const r of [a.acquire.subscribe('pre',()=>0,pawns),a.acquire.subscribe('post',()=>{},pawns),a.hudClick.subscribe(()=>{}),
+                        a.chatVisibility.subscribe(()=>0,r=>r)])
             if(!r||r.status!=='active')throw Error('subscription '+(r&&r.status)+' '+warned);
     "#,
     )

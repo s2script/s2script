@@ -283,6 +283,28 @@
         "resolve": "direct"
       }
     },
+    // CCSGameRules::PlayerCanHearChat(gameRules*, receiver CCSPlayerController*, sender
+    // CCSPlayerController*, bool teamOnly) -> bool. Pattern from ModSharp's gamedata (a hint);
+    // self-verified on the 2026-10-22 build: UNIQUE at 0x140cbe0, and the body matches the ABI —
+    // `mov rdi,rsi` before the frame setup (gameRules is never read), r12=rsi receiver, r13=rdx
+    // sender, r14d=ecx teamOnly; both controllers go through the same pawn lookup and a null either
+    // way returns false; the tail compares the sv_chat_proximity float (global ConVar pointer read
+    // at +0x58) against the pawn distance. Its only caller is Host_Say's recipient loop (E8 at
+    // 0x187eb7b, rdi = the game rules, rsi = loop recipient, rdx = speaker, ecx = the team flag),
+    // immediately before the CanHearAndReadChatFrom virtual (controller slot 264, [rax+0x840]).
+    // Treadmill re-resolution recipe: find that recipient loop (two adjacent bool checks, the E8
+    // one first) and take its E8 target. The prologue validator pins the `mov rdi,rsi` opener.
+    // Bound BY NAME by the trusted `playerCanHearChat` engine function (trusted-functions.jsonc).
+    "CCSGameRules_PlayerCanHearChat": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 F7 48 89 E5 41 57 41 56 41 89 CE 41 55 49 89 D5",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "55 48 89 F7 48 89 E5 41 57 41 56 41 89 CE 41 55 49 89 D5"
+        }
+      }
+    },
     // CCSPlayer_ItemServices::CanAcquire(CEconItemView*, AcquireMethod, void*) -> AcquireResult.
     // Audited build 25470087 / 1.41.8.2 ONLY: independently matched callers/outer ABI,
     // rederived exact prologue plus weapon_incgrenade semantic string-xref. This recipe
