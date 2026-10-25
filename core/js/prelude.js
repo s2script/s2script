@@ -1952,6 +1952,21 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   Client.prototype.print = function (message) { __s2_client_console_print(this.slot, String(message) + "\n", __s2_client_token(this)); };
   Client.prototype.command = function (cmd) { return __s2_client_command(this.slot, String(cmd), __s2_client_token(this)); };
   Client.prototype.fakeCommand = function (cmd) { return __s2_client_fake_command(this.slot, String(cmd), __s2_client_token(this)); };
+  // Ask the client for its own value of a cvar. Resolves on a later frame; null when nothing was sent
+  // (bot, stale handle, unsupported build) or the client disconnected first.
+  Client.prototype.queryConVar = function (name) {
+    var slot = this.slot, token = __s2_client_token(this);
+    return new Promise(function (resolve) {
+      var cookie = __s2_client_query_convar(slot, String(name), token, function (status, value) {
+        resolve(status == null ? null : { status: status, value: value });
+      });
+      if (!cookie) resolve(null);
+    });
+  };
+  Client.prototype.replicateConVar = function (name, value) {
+    var text = value === true ? "1" : value === false ? "0" : String(value);
+    return __s2_client_replicate_convar(this.slot, String(name), text, __s2_client_token(this));
+  };
   Object.defineProperty(Client.prototype, "ip", { get: function () {
     var s = __s2_client_snapshots.get(this);
     var a = s ? s.address : __s2_client_address(this.slot, __s2_client_token(this));

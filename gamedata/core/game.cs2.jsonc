@@ -79,6 +79,18 @@
     // The actual receiver and second-argument manifest are borrowed only during callbacks.
     // This historical index is a hint and must pass current-build structural validation.
     "CGameRulesGameSystem_OnPrecacheResource": { "linuxsteamrt64": 7 },
+    // CServerSideClient::ProcessRespondCvarValue vtable INDEX on the RTTI-resolved CServerSideClient
+    // vtable in libengine2.so (the client's answer to a GetCvarValue query). Hooked as a checked
+    // KHook global virtual, like OnPrecacheResource above, and structurally validated at install.
+    // Verified on the Oct 22 2026 libengine2.so (BuildID fef8f668…): the message-handler table
+    // registers member pointer 0x141 (slot 40) for clc_RespondCvarValue (id 25), and slot 40 is the
+    // stock `mov eax,1; ret`. ModSharp hooks the same slot.
+    "CServerSideClient_ProcessRespondCvarValue": { "linuxsteamrt64": 40 },
+    // Byte offset of the client's player slot (int32) in CServerSideClient. Verified on the same
+    // build: slot 22 shifts by [rdi+0x48] into a per-slot bit vector, and slots 37/39 pass
+    // [rdi+0x48] as the CPlayerSlot argument into ISource2GameClients. ModSharp's m_Slot agrees.
+    // The cvar-response hook also requires the slot it reads to be a connected human client.
+    "CServerSideClient_m_nClientSlot": { "linuxsteamrt64": 72 },
     // Interface HOOK slots: the vtable index each KHook installs on, and the live slot count of
     // the object it hooks (the pin). S2_ResolveHookSlots checks them as each interface is
     // acquired: a pin mismatch disables every hook on that interface, and a failed entry disables

@@ -189,3 +189,6 @@
     // --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick ---
     ops.server_tick_count = &s2_server_tick_count;
     ops.server_tick_interval = &s2_server_tick_interval;
+    // --- client convar query + replicate ---
+    ops.client_query_convar = &s2_client_query_convar;
+    ops.client_replicate_convar = &s2_client_replicate_convar;

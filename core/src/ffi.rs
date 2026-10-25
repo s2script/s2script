@@ -319,6 +319,22 @@ pub extern "C" fn s2script_core_dispatch_precache() {
     });
 }
 
+/// Shim → core: a client answered a convar query (CCLCMsg_RespondCvarValue). The shim queues the
+/// copied fields in its hook and drains them at the top of GameFramePre, so this always runs on the
+/// main thread with the isolate free. `slot` is the answering client's own slot. Strings are copied
+/// here; null degrades to "". `catch_unwind`-wrapped.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_convar_response(slot: c_int, cookie: c_int, status: c_int,
+                                                         name: *const c_char, value: *const c_char) {
+    let _ = catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_convar_response");
+        let copy = |p: *const c_char| if p.is_null() { String::new() } else {
+            (unsafe { CStr::from_ptr(p) }).to_string_lossy().into_owned()
+        };
+        crate::client::dispatch_convar_response(slot, cookie, status, &copy(name), &copy(value));
+    });
+}
+
 /// Shim → core: an IEntityListener callback (create/spawn/delete) with the entity's packed
 /// CEntityHandle (ToInt()) + class name. Notify-only: dispatches to the `Entity.on{Create,Spawn,Delete}`
 /// JS subscribers. `catch_unwind`-wrapped; null/invalid-UTF-8 degrade to a no-op.

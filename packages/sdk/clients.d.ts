@@ -73,6 +73,45 @@ export declare class Client {
    * client.fakeCommand("say hello");   // as though the player typed it
    */
   fakeCommand(cmd: string): boolean;
+  /**
+   * Ask this client for its own value of a cvar (SourceMod `QueryClientConVar`). The client
+   * answers over the network, so this resolves on a later frame.
+   *
+   * Resolves `null` when no query was sent (a bot, a disconnected client, a name that is empty or
+   * contains whitespace, or a build where the reply hook is unavailable) or when the client
+   * disconnects before answering. `value` is `""` unless `status` is `"ok"`.
+   *
+   * The value is what the client reports. A modified client can report anything, so treat it as a
+   * hint, not proof.
+   *
+   * @example
+   * const reply = await client.queryConVar("cl_interp_ratio");
+   * if (reply?.status === "ok") console.log(`${client.name}: ${reply.value}`);
+   */
+  queryConVar(name: string): Promise<ConVarQueryResult | null>;
+  /**
+   * Set this client's own copy of a replicated cvar without touching the server's value
+   * (SourceMod `SendConVarValue`). The client applies it only to cvars the server is allowed to
+   * replicate; the next server-side change to that cvar overwrites it. Booleans send `"1"`/`"0"`.
+   *
+   * Returns `false` for a bot, a disconnected client or an empty name.
+   *
+   * @example
+   * client.replicateConVar("sv_cheats", true);   // client-side only, e.g. for a practice HUD
+   */
+  replicateConVar(name: string, value: string | number | boolean): boolean;
+}
+/**
+ * How a client answered {@link Client.queryConVar}: `"ok"` (value is set), `"notFound"` (no such
+ * cvar), `"notValid"` (the name is a command, not a cvar), `"protected"` (the client refused to
+ * reveal it), or `"unknown"` for a status this build does not recognise.
+ */
+export type ConVarQueryStatus = "ok" | "notFound" | "notValid" | "protected" | "unknown";
+/** The client's answer to {@link Client.queryConVar}. */
+export interface ConVarQueryResult {
+  status: ConVarQueryStatus;
+  /** The client's value, or `""` when `status` is not `"ok"`. */
+  value: string;
 }
 /**
  * Look up connected clients by slot or enumerate them all.

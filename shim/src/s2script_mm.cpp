@@ -92,6 +92,7 @@
 #include <string>
 #include <unordered_map>   // the CheckTransmit rule table (checktransmit slice)
 #include <unordered_set>
+#include <mutex>     // the client convar-response queue
 #include <vector>
 #include <iterator>
 #include <stdexcept>
@@ -4085,6 +4086,152 @@ static void InstallPrecacheHook() {
                    reinterpret_cast<void*>(resolved.target.address),receipt.id);
 }
 
+// ---------------------------------------------------------------------------
+// Client convar query + replicate (Swiftly/ModSharp parity).
+//
+// Query: the server sends CSVCMsg_GetCvarValue {cookie, cvar_name} to one client; the client answers
+// with CCLCMsg_RespondCvarValue {cookie, status_code, name, value}, which the engine hands to
+// CServerSideClient::ProcessRespondCvarValue (a stock `return true`). That virtual is hooked as a
+// checked KHook global virtual on the RTTI-resolved CServerSideClient vtable (the precache shape),
+// at the gamedata vtable index — a hint that must pass structural validation.
+//
+// The callback copies the four fields by protobuf reflection and queues them; the queue drains at
+// the top of the next GameFramePre, so the JS callback never runs on whatever thread the engine
+// processes client messages on. The answering client's slot is read at the gamedata
+// `CServerSideClient_m_nClientSlot` offset and must name a connected human slot, so core can refuse
+// a reply whose slot is not the one the query went to.
+//
+// Replicate: CNETMsg_SetConVar {convars {cvars [{name, value}]}} sent to one client changes the
+// client's copy of a replicated cvar without touching the server's value.
+// ---------------------------------------------------------------------------
+static int s_cvarResponseVtblIdx = -1;   // gamedata offsets entry (vtable index; a HINT)
+static int s_clientSlotOffset    = -1;   // gamedata offsets entry (byte offset of the client's slot)
+struct S2CvarResponse { int slot; int cookie; int status; std::string name; std::string value; };
+static std::mutex s_cvarResponseMu;
+static std::vector<S2CvarResponse> s_cvarResponses;
+static constexpr size_t kCvarResponseQueueCap = 256;
+
+static bool ReadProtoInt(const google::protobuf::Message* m, const char* field, int& out) {
+    const auto* f = m->GetDescriptor()->FindFieldByName(field);
+    if (!f || f->is_repeated()) return false;
+    const auto* r = m->GetReflection();
+    using FD = google::protobuf::FieldDescriptor;
+    switch (f->cpp_type()) {
+        case FD::CPPTYPE_INT32:  out = r->GetInt32(*m, f); return true;
+        case FD::CPPTYPE_UINT32: out = static_cast<int>(r->GetUInt32(*m, f)); return true;
+        case FD::CPPTYPE_ENUM:   out = r->GetEnumValue(*m, f); return true;
+        default: return false;
+    }
+}
+static bool ReadProtoString(const google::protobuf::Message* m, const char* field, std::string& out) {
+    const auto* f = m->GetDescriptor()->FindFieldByName(field);
+    if (!f || f->is_repeated() || f->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_STRING) return false;
+    out = m->GetReflection()->GetString(*m, f);
+    return true;
+}
+
+static void S2NamedCvarResponseOp(void* client, const void* message) {
+    if (!client || !message || s_clientSlotOffset < 0) return;
+    int slot = -1;
+    std::memcpy(&slot, static_cast<const unsigned char*>(client) + s_clientSlotOffset, sizeof slot);
+    if (slot < 0 || slot >= 64 || !S2Engine_GetPlayerNetInfo(slot)) return;
+    auto* net = const_cast<CNetMessage*>(static_cast<const CNetMessage*>(message));
+    const auto* m = reinterpret_cast<const google::protobuf::Message*>(net->AsProto());
+    if (!m || m->GetDescriptor()->full_name() != "CCLCMsg_RespondCvarValue") return;
+    S2CvarResponse r{slot, 0, 0, {}, {}};
+    if (!ReadProtoInt(m, "cookie", r.cookie) || r.cookie == 0) return;   // 0 = not one of ours
+    if (!ReadProtoInt(m, "status_code", r.status)) return;
+    ReadProtoString(m, "name", r.name);
+    ReadProtoString(m, "value", r.value);
+    std::lock_guard<std::mutex> lock(s_cvarResponseMu);
+    if (s_cvarResponses.size() < kCvarResponseQueueCap) s_cvarResponses.push_back(std::move(r));
+}
+
+static void S2_DrainCvarResponses() {
+    std::vector<S2CvarResponse> batch;
+    { std::lock_guard<std::mutex> lock(s_cvarResponseMu); batch.swap(s_cvarResponses); }
+    for (const auto& r : batch)
+        s2script_core_dispatch_convar_response(r.slot, r.cookie, r.status, r.name.c_str(), r.value.c_str());
+}
+
+static void InstallCvarResponseHook() {
+    if (S2NamedHookSnapshot(S2NamedHookSite::CvarResponse).Accepted()) return;
+    if (s_cvarResponseVtblIdx < 0 || s_clientSlotOffset < 0) return;   // the offsets block recorded the absent key
+    s2resolve::VirtualSlotResolution resolved;
+    std::string reason;
+    if (!s2resolve::ResolveVirtualSlot("libengine2.so","CServerSideClient",
+                                      s_cvarResponseVtblIdx,resolved,reason)) {
+        META_CONPRINTF("[s2script] WARN: cvar-response structural virtual lookup failed (%s); queryConVar OFF\n",
+                       reason.c_str());
+        return;
+    }
+    const auto receipt=S2NamedConfigureCvarResponse(resolved);
+    if (!receipt.Accepted()) {
+        META_CONPRINTF("[s2script] WARN: cvar-response checked global hook failed (%s); queryConVar OFF\n",
+                       receipt.reason.c_str());
+        return;
+    }
+    META_CONPRINTF("[s2script] cvar-response checked global hook accepted (vtable=%p slot=%d original=%p id=%u)\n",
+                   reinterpret_cast<void*>(resolved.vtable),resolved.vtable_index,
+                   reinterpret_cast<void*>(resolved.target.address),receipt.id);
+}
+
+// Post one allocated net message to a single connected human slot. Bots have no net channel.
+static int S2_PostToSlot(int slot, INetworkMessageInternal* info, CNetMessage* data) {
+    if (!s_pGameEventSystem || slot < 0 || slot >= 64 || !S2Engine_GetPlayerNetInfo(slot)) return 0;
+    uint64 clients = 1ull << (uint64)slot;
+    s_pGameEventSystem->PostEventAbstract(-1, false, 64, &clients, info, data, 0, BUF_RELIABLE);
+    return 1;
+}
+
+// Only answered when the cvar-response hook is installed, so the query op refuses without it.
+static int s2_client_query_convar(int slot, const char* name, int cookie) {
+    if (!name || !*name || cookie == 0 || !s_pNetworkMessages) return 0;
+    if (!S2NamedHookSnapshot(S2NamedHookSite::CvarResponse).Accepted()) return 0;
+    if (slot < 0 || slot >= 64 || !S2Engine_GetPlayerNetInfo(slot)) return 0;
+    INetworkMessageInternal* info = s_pNetworkMessages->FindNetworkMessagePartial("CSVCMsg_GetCvarValue");
+    if (!info) return 0;
+    CNetMessage* data = info->AllocateMessage();
+    if (!data) return 0;
+    auto* m = reinterpret_cast<google::protobuf::Message*>(data->AsProto());
+    if (!m) return 0;
+    const auto* d = m->GetDescriptor();
+    const auto* r = m->GetReflection();
+    const auto* fCookie = d->FindFieldByName("cookie");
+    const auto* fName = d->FindFieldByName("cvar_name");
+    using FD = google::protobuf::FieldDescriptor;
+    if (!fCookie || fCookie->is_repeated() || fCookie->cpp_type() != FD::CPPTYPE_INT32 ||
+        !fName || fName->is_repeated() || fName->cpp_type() != FD::CPPTYPE_STRING) return 0;
+    r->SetInt32(m, fCookie, cookie);
+    r->SetString(m, fName, name);
+    return S2_PostToSlot(slot, info, data);   // LEAK-TODO as s2_user_message_send: pData not freed
+}
+
+static int s2_client_replicate_convar(int slot, const char* name, const char* value) {
+    if (!name || !*name || !value || !s_pNetworkMessages) return 0;
+    if (slot < 0 || slot >= 64 || !S2Engine_GetPlayerNetInfo(slot)) return 0;
+    INetworkMessageInternal* info = s_pNetworkMessages->FindNetworkMessagePartial("CNETMsg_SetConVar");
+    if (!info) return 0;
+    CNetMessage* data = info->AllocateMessage();
+    if (!data) return 0;
+    auto* m = reinterpret_cast<google::protobuf::Message*>(data->AsProto());
+    if (!m) return 0;
+    using FD = google::protobuf::FieldDescriptor;
+    const auto* fConvars = m->GetDescriptor()->FindFieldByName("convars");
+    if (!fConvars || fConvars->is_repeated() || fConvars->cpp_type() != FD::CPPTYPE_MESSAGE) return 0;
+    google::protobuf::Message* convars = m->GetReflection()->MutableMessage(m, fConvars);
+    const auto* fCvars = convars->GetDescriptor()->FindFieldByName("cvars");
+    if (!fCvars || !fCvars->is_repeated() || fCvars->cpp_type() != FD::CPPTYPE_MESSAGE) return 0;
+    google::protobuf::Message* cvar = convars->GetReflection()->AddMessage(convars, fCvars);
+    const auto* fName = cvar->GetDescriptor()->FindFieldByName("name");
+    const auto* fValue = cvar->GetDescriptor()->FindFieldByName("value");
+    if (!fName || fName->is_repeated() || fName->cpp_type() != FD::CPPTYPE_STRING ||
+        !fValue || fValue->is_repeated() || fValue->cpp_type() != FD::CPPTYPE_STRING) return 0;
+    cvar->GetReflection()->SetString(cvar, fName, name);
+    cvar->GetReflection()->SetString(cvar, fValue, value);
+    return S2_PostToSlot(slot, info, data);   // LEAK-TODO as s2_user_message_send: pData not freed
+}
+
 // CBaseEntity::EmitSound — the CSSharp static prototype (entity_manager.h:257), CHOSEN because the
 // Task-2 offline RE step DISPROVED the ModSharp member overload on our binary: that member wrapper
 // (@0x1a48ee0) takes volume as a float BY VALUE in xmm0 (not the plan's `const float*`), reorders its
@@ -4469,6 +4616,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     namedOps.usercmd_dispatch=&S2NamedUsercmdDispatchOp;
     namedOps.usercmd_neutralize=&S2NamedUsercmdNeutralizeOp;
     namedOps.precache=&S2NamedPrecacheOp;
+    namedOps.cvar_response=&S2NamedCvarResponseOp;
     S2NamedHooksSetOps(namedOps);
     S2NamedSetUsercmdTarget(nullptr);
 
@@ -5276,6 +5424,14 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             s_precacheVtblIdx = pick("CGameRulesGameSystem_OnPrecacheResource");
             GamedataResult("CGameRulesGameSystem_OnPrecacheResource", s_precacheVtblIdx >= 0,
                            "offset (vtable index) key absent from gamedata");
+            // Client convar query: the reply virtual (a HINT, structurally validated at install) and
+            // the client's slot field. Either absent -> queryConVar refuses; replicate is unaffected.
+            s_cvarResponseVtblIdx = pick("CServerSideClient_ProcessRespondCvarValue");
+            GamedataResult("CServerSideClient_ProcessRespondCvarValue", s_cvarResponseVtblIdx >= 0,
+                           "offset (vtable index) key absent from gamedata");
+            s_clientSlotOffset = pick("CServerSideClient_m_nClientSlot");
+            GamedataResult("CServerSideClient_m_nClientSlot", s_clientSlotOffset >= 0,
+                           "offset key absent from gamedata");
             // clientlist-fakeconvar-onmapstart slice: the six 5D.2 engine-identity offsets
             // (NetworkServerService.gameServer / NetworkGameServer.clientCount+clientElems /
             // ServerSideClient.name+signon+userId) are RETIRED — the client ops now use typed SDK
@@ -5324,6 +5480,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         // RTTI, like the trace block above). The class vtable is static data present at module load, so
         // this installs ONCE here — no lazy StartupServer retry.
         InstallPrecacheHook();
+        InstallCvarResponseHook();
 
         // EKV self-test (permanent, treadmill): link/ctor/layout integrity of the compiled-in
         // CEntityKeyValues. A failure degrades kv-spawns to false — it disables nothing else.
@@ -5815,6 +5972,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_GameFramePre(ISource2Server* server, bo
     // provably free at this point and a replay cannot re-defer. Delivers everything a re-entrant
     // dispatch could not deliver last frame.
     S2Defer_Drain();
+    S2_DrainCvarResponses();
     s2script_core_dispatch_game_frame(0, static_cast<int>(simulating),
                                       static_cast<int>(first), static_cast<int>(last));
     return S2_Ignore();

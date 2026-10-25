@@ -14,7 +14,7 @@ class CVariantDefaultAllocator;
 template <typename A> class CVariantBase;
 typedef CVariantBase<CVariantDefaultAllocator> CVariant;
 
-enum class S2NamedHookSite { Chat, Output, Usercmd, Precache };
+enum class S2NamedHookSite { Chat, Output, Usercmd, Precache, CvarResponse };
 
 struct S2NamedHookOps {
     int (*chat)(void*, void*, bool, int, const char*) = nullptr;
@@ -24,6 +24,7 @@ struct S2NamedHookOps {
     int (*usercmd_dispatch)(int) = nullptr;
     void (*usercmd_neutralize)() = nullptr;
     void (*precache)() = nullptr;
+    void (*cvar_response)(void* client, const void* message) = nullptr;
     void (*observe_action)(S2NamedHookSite, bool post, KHook::Action) = nullptr;
 };
 
@@ -33,6 +34,7 @@ S2HookReceipt S2NamedConfigureOutput(const void* target);
 void S2NamedSetUsercmdTarget(const void* target);
 S2HookReceipt S2NamedInstallUsercmd();
 S2HookReceipt S2NamedConfigurePrecache(const s2resolve::VirtualSlotResolution& resolved);
+S2HookReceipt S2NamedConfigureCvarResponse(const s2resolve::VirtualSlotResolution& resolved);
 S2HookReceipt S2NamedHookSnapshot(S2NamedHookSite site);
 
 void* S2NamedCurrentUsercmd();

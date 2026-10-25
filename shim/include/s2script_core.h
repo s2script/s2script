@@ -141,6 +141,10 @@ int s2script_core_replay_entity_event(const char* kind, const char* className, i
  * returns (block-scoped — a handler must use its PrecacheContext synchronously). Notify-only:
  * runs the JS Sound.onPrecache subscribers. */
 void s2script_core_dispatch_precache(void);
+/* Shim -> core: a client answered a convar query (CCLCMsg_RespondCvarValue), drained at the top of
+ * GameFramePre. `slot` is the answering client's own slot; core delivers only to the query that
+ * minted `cookie` for that slot and connection. Strings are copied before this returns. */
+void s2script_core_dispatch_convar_response(int slot, int cookie, int status, const char* name, const char* value);
 /* Shim -> core: is `xuid` currently banned? (Slice 6.18). Called by the ClientConnect hook with the
  * connecting player's SteamID64 and the current unix time. Returns 1 iff banned (perm or unexpired); on a
  * hit, the ban reason is bounded-copied (NUL-terminated) into out_reason for the shim's log line. Panic ->
