@@ -712,3 +712,15 @@ Reproduced with the vendored KHook built as a library (two PRE-only hooks on a c
 `FireEvent`, peer added first) under AddressSanitizer: the old code reports heap-use-after-free in
 the peer's callback; with `Recall` the peer sees the event, the original runs once with
 `bDontBroadcast=1`. Live gate pending.
+
+## 2026-10-25 — Weapon VData in @s2script/cs2
+
+Plugins that check a weapon's max clip, price or damage had no way to read it: those values live in
+the weapon's VData (`CCSWeaponBaseVData`), which the entity reaches through `m_pSubclassVData`, a
+pointer the schema does not reflect. ModSharp locates it as the 8 bytes after `m_nSubclassID` and
+checks that `m_flAnimTime` follows 12 bytes later; `weapon.data` does the same from live schema
+offsets, so a CS2 update that moves `CBaseEntity` fields moves the pointer with them, and one that
+changes the gap disables `weapon.data` with a named reason (`Weapon.dataUnavailableReason`) instead
+of reading a guessed address. The VData field offsets are schema lookups too. The accessors are
+read-only because one VData is shared by every weapon of that class. Unit-tested against the
+Oct 22 layout (`m_nSubclassID` 1532, `m_flAnimTime` 1544); live gate pending.

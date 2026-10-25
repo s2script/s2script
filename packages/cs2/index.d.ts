@@ -79,7 +79,7 @@ import type { SceneNode, WeaponServices, MovementServices, AimPunchServices, Mat
 export { GameEvent } from "@s2script/sdk/events";
 export type { GameEvents } from "./events.generated";
 export { CsItem } from "./csitem.generated";
-export { Weapon } from "./weapon";
+export { Weapon, WeaponData } from "./weapon";
 // A re-export (`export { Weapon }`) does NOT create a local binding, so the Pawn interface below
 // referenced an unbound `Weapon` → TS2304, swallowed by the gate's skipLibCheck into `any`. Bind it
 // locally too (the SceneNode pattern on line 14) so activeWeapon/weapons/giveNamedItem stay typed.
