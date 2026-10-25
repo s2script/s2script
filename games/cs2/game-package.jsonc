@@ -19,7 +19,8 @@
     "cs2.weapon-can-switch.v1": { "version": 1, "contract": "adapters/contracts/cs2.weapon-can-switch.v1.json", "source": "js/adapters/weapon-can-switch.js" },
     "cs2.weapon-drop.v1": { "version": 1, "contract": "adapters/contracts/cs2.weapon-drop.v1.json", "source": "js/adapters/weapon-drop.js" },
     "cs2.process-move.v1": { "version": 1, "contract": "adapters/contracts/cs2.process-move.v1.json", "source": "js/adapters/process-move.js" },
-    "cs2.round-restart.v1": { "version": 1, "contract": "adapters/contracts/cs2.round-restart.v1.json", "source": "js/adapters/round-restart.js" }
+    "cs2.round-restart.v1": { "version": 1, "contract": "adapters/contracts/cs2.round-restart.v1.json", "source": "js/adapters/round-restart.js" },
+    "cs2.join-team.v1": { "version": 1, "contract": "adapters/contracts/cs2.join-team.v1.json", "source": "js/adapters/join-team.js" }
   },
   "gamedataRoot": "gamedata",
   // Host-verified trusted function declarations (see the file's header).

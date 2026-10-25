@@ -1043,6 +1043,20 @@
     addScore: function (team, delta) {
       var cur = Teams.getScore(team); if (cur === null) return false;
       return Teams.setScore(team, cur + (delta | 0));
+    },
+    // Teams.onJoinTeam(handler) — a player's team request, on the trusted `joinTeam` engine
+    // function, delivered by the cs2.join-team.v1 package adapter (js/adapters/join-team.js).
+    // Load-window only, ledgered like `items`.
+    onJoinTeam: function (handler) {
+      var api = "Teams.onJoinTeam()";
+      if (!globalThis.__s2_load_ctx) throw new Error("s2script: " + api + " outside the load window");
+      if (typeof handler !== "function") throw new TypeError("s2script: " + api + " requires a handler function");
+      var gate = (globalThis.__s2pkg_cs2_adapters || {}).joinTeam;
+      if (!gate) {
+        console.log("[s2script] WARN: " + api + ": the join-team adapter is not packaged, so this handler will not fire");
+        return;
+      }
+      gate.subscribe(handler, function (ref) { return ref ? new Player(ref) : null; });
     }
   };
 

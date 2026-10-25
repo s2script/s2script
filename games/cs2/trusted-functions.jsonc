@@ -272,6 +272,33 @@
       "policy": { "surfaces": ["pre", "post"], "suppression": "none" },
       "adapter": { "id": "cs2.round-restart.v1", "postOverride": false }
     },
+    // CCSPlayerController::HandleCommandJoinTeam(CCSPlayerController*, int team, bool queue) -> bool
+    // (gamedata CCSPlayerController_HandleCommandJoinTeam). The controller is an entity argument,
+    // not a member receiver, as customHudClicked's player is. A block answers false.
+    {
+      "localName": "joinTeam",
+      "requirement": "optional",
+      "signatureName": "CCSPlayerController_HandleCommandJoinTeam",
+      "signature": {
+        "platform": "linux-x86_64-sysv",
+        "memberReceiver": false,
+        "receiver": null,
+        "parameters": [
+          { "name": "player", "native": "ptr", "projection": { "id": "entity?", "version": 1 },
+            "mutable": [], "nullable": false },
+          { "name": "team", "native": "i32", "projection": { "id": "i32", "version": 1 },
+            "mutable": [], "nullable": false },
+          { "name": "queue", "native": "u8", "projection": { "id": "bool", "version": 1 },
+            "mutable": [], "nullable": false }
+        ],
+        "returns": { "name": "", "native": "u8", "projection": { "id": "bool", "version": 1 },
+          "mutable": [], "nullable": false },
+        "instances": [],
+        "scratch": []
+      },
+      "policy": { "surfaces": ["pre"], "suppression": "generic" },
+      "adapter": { "id": "cs2.join-team.v1", "postOverride": false }
+    },
     // CBaseEntity::TakeDamageOld(victim* this, CTakeDamageInfo* info, optional result*) -> void,
     // audited rdi/rsi/rdx (gamedata CBaseEntity_TakeDamageOld). The victim is the entity receiver
     // (books-adopted, null when unadoptable). The info is a borrowed record exposing only the four

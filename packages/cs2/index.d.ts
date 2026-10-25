@@ -525,7 +525,21 @@ export declare const Teams: {
   setScore(team: number, score: number): boolean;
   /** Add `delta` to `team`'s scoreboard score. false if the entity isn't found. */
   addScore(team: number, delta: number): boolean;
+  /** Decide a player's team request (CCSPlayerController::HandleCommandJoinTeam): the jointeam
+   *  command and the team menu. Return `HookResult.Handled` or `Stop` to refuse it, so the player
+   *  stays on their team; `Stop` also skips later handlers. Plugin `changeTeam`/`switchTeam` calls do
+   *  not come through here. Subscribe during OnPluginStart; unsubscribed at unload. */
+  onJoinTeam(handler: (view: JoinTeamView) => HookResultValue | void): void;
 };
+/** A team request, valid during the {@link Teams.onJoinTeam} handler. */
+export interface JoinTeamView {
+  /** Who asked, or null when the controller could not be adopted. */
+  readonly player: Player | null;
+  /** The team asked for: 0 = auto-select, 1 = spectator, 2 = T, 3 = CT. */
+  readonly team: number;
+  /** The request asked to queue for the team instead of joining now. */
+  readonly queue: boolean;
+}
 
 /** CS2 round-end reasons (CCSGameRules::TerminateRound / round_end.reason). Binary-validated against
  *  our build (reason bound = 22; #SFUI_Notice_* switch). Gaps 2/3/15 are removed legacy VIP reasons. */

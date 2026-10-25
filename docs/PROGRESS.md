@@ -807,3 +807,20 @@ factories read it as a CBaseCombatCharacter; a Player is mapped to its pawn and 
 refused. Incendiary grenades are left out: the molotov factory would take their def index, but
 nothing verifies that it builds an incendiary. Engine-call wrapper tests cover the argument order,
 defaults, owner mapping and refusals. The live gate is pending.
+
+## 2026-10-25 — Join-team control
+
+ModSharp hooks CCSPlayerController::HandleCommandJoinTeam; JB team ratios and team locks use it.
+A `jointeam` command listener already covers the console command, but not the team menu or the
+engine's own auto-assign path through the same function. `Teams.onJoinTeam(handler)` in
+`@s2script/cs2` runs over a new trusted engine function `joinTeam` and the `cs2.join-team.v1`
+adapter: the view has the player, the team asked for and the queue flag, and Handled/Stop refuse
+the request (the original is skipped and answers false).
+
+HandleCommandJoinTeam is @0x158f5d0 on the Oct 22 build and is not virtual. Its arguments are the
+controller, the team in esi and a queue bool in edx; ecx is written before any read, so there is no
+fourth argument (ModSharp declares a coach team). The only xref to "HandleCommand_JoinTeam( %d ) -
+invalid team index.\n" sits at +0x9e0, so ModSharp's prologue pattern is padded to reach it.
+Writing the team is left out: the hook grammar has no tested path for a writable scalar argument.
+Adapter conformance tests and the real-package activation test (ten trusted functions) cover it.
+The live gate is pending.
