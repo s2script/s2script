@@ -1095,26 +1095,33 @@
   // (the same thing Swiftly's SendCenterHTML and the rockthevote tally do). The handler is subscribed
   // only while some message is showing, in the context of the plugin that showed it, so the ledger
   // tears it down at that plugin's unload. One message per slot per plugin: a later call replaces it.
+  // Recipients are connected clients, not Player.fromSlot (which needs a live pawn): dead, spectating
+  // and not-yet-spawned humans see the panel too, and a message survives a respawn.
   var centerHtml = {};          // slot -> { html, until (ms) }
   var centerHtmlCount = 0;
   var centerHtmlSub = null;
   function centerHtmlEvents() { return (__s2require("@s2script/sdk/events") || {}).Events; }
+  function centerHtmlClient(slot) {
+    var clients = globalThis.__s2pkg_clients && globalThis.__s2pkg_clients.Clients;
+    var c = clients ? clients.fromSlot(slot) : null;
+    return c && !c.isBot ? c : null;              // bots render nothing; skip the per-frame fire
+  }
   function centerHtmlFrame() {
     var ev = centerHtmlEvents();
     var now = Date.now();
     for (var k in centerHtml) {
       var e = centerHtml[k];
       var slot = Number(k);
-      var p = Player.fromSlot(slot);
-      if (now >= e.until || !p) { delete centerHtml[k]; centerHtmlCount--; continue; }
-      if (ev) ev.fireToClient(slot, "show_survival_respawn_status", { loc_token: e.html, duration: 1, userid: p.userId });
+      var c = centerHtmlClient(slot);
+      if (now >= e.until || !c) { delete centerHtml[k]; centerHtmlCount--; continue; }
+      if (ev) ev.fireToClient(slot, "show_survival_respawn_status", { loc_token: e.html, duration: 1, userid: c.userId });
     }
     if (centerHtmlCount <= 0 && centerHtmlSub) { centerHtmlCount = 0; centerHtmlSub.dispose(); centerHtmlSub = null; }
   }
   function centerHtmlSet(slot, html, seconds) {
-    if (!Player.fromSlot(slot)) return false;
     var secs = seconds === undefined ? 5 : Number(seconds);
     if (!(secs > 0)) return CenterHtml.clear(slot);
+    if (!centerHtmlClient(slot)) return false;
     if (!centerHtml[slot]) centerHtmlCount++;
     centerHtml[slot] = { html: String(html), until: Date.now() + secs * 1000 };
     if (!centerHtmlSub) {
@@ -1128,10 +1135,10 @@
     to: function (slot, html, seconds) { return centerHtmlSet(slot, html, seconds); },
     toAll: function (html, seconds) {
       var any = false;
-      var all = Player.all();
+      var clients = globalThis.__s2pkg_clients && globalThis.__s2pkg_clients.Clients;
+      var all = clients ? clients.all() : [];
       for (var i = 0; i < all.length; i++) {
-        var c = all[i]._client;
-        if (c && c.isBot) continue;                 // bots render nothing; skip the per-frame fire
+        if (all[i].isBot) continue;
         if (centerHtmlSet(all[i].slot, html, seconds)) any = true;
       }
       return any;

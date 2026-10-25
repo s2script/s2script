@@ -555,9 +555,10 @@ export declare const AlertText: {
  * Escape any player-supplied text before putting it in `html`.
  */
 export declare const CenterHtml: {
-  /** Show `html` to `slot` for `seconds` (default 5; 0 or less clears it). false if `slot` has no player. */
+  /** Show `html` to `slot` for `seconds` (default 5; 0 or less clears it). Dead and spectating players
+   *  see it too. false if `slot` has no connected human client. */
   to(slot: number, html: string, seconds?: number): boolean;
-  /** Show `html` to every human player for `seconds`. true if at least one player got it. */
+  /** Show `html` to every connected human client for `seconds`. true if at least one got it. */
   toAll(html: string, seconds?: number): boolean;
   /** Stop showing this plugin's message to `slot`. false if none was showing. */
   clear(slot: number): boolean;
