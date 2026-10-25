@@ -4109,7 +4109,10 @@ static int s_clientSlotOffset    = -1;   // gamedata offsets entry (byte offset 
 struct S2CvarResponse { int slot; int cookie; int status; std::string name; std::string value; };
 static std::mutex s_cvarResponseMu;
 static std::vector<S2CvarResponse> s_cvarResponses;
-static constexpr size_t kCvarResponseQueueCap = 256;
+static int s_cvarResponseCount[64];      // queued replies per slot, under s_cvarResponseMu
+// Per slot, so a client spamming replies only drops its own; a reply dropped here leaves its query to
+// core's timeout.
+static constexpr int kCvarResponsesPerSlot = 32;
 
 static bool ReadProtoInt(const google::protobuf::Message* m, const char* field, int& out) {
     const auto* f = m->GetDescriptor()->FindFieldByName(field);
@@ -4144,12 +4147,18 @@ static void S2NamedCvarResponseOp(void* client, const void* message) {
     ReadProtoString(m, "name", r.name);
     ReadProtoString(m, "value", r.value);
     std::lock_guard<std::mutex> lock(s_cvarResponseMu);
-    if (s_cvarResponses.size() < kCvarResponseQueueCap) s_cvarResponses.push_back(std::move(r));
+    if (s_cvarResponseCount[slot] >= kCvarResponsesPerSlot) return;
+    ++s_cvarResponseCount[slot];
+    s_cvarResponses.push_back(std::move(r));
 }
 
 static void S2_DrainCvarResponses() {
     std::vector<S2CvarResponse> batch;
-    { std::lock_guard<std::mutex> lock(s_cvarResponseMu); batch.swap(s_cvarResponses); }
+    {
+        std::lock_guard<std::mutex> lock(s_cvarResponseMu);
+        batch.swap(s_cvarResponses);
+        std::memset(s_cvarResponseCount, 0, sizeof s_cvarResponseCount);
+    }
     for (const auto& r : batch)
         s2script_core_dispatch_convar_response(r.slot, r.cookie, r.status, r.name.c_str(), r.value.c_str());
 }

@@ -365,7 +365,16 @@ fn s2_client_fake_command(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
 // client cannot answer someone else's query either. A disconnect resolves its pending queries with
 // null.
 // ---------------------------------------------------------------------------
-struct ConvarQuery { slot: i32, token: u64, name: String, owner: String, sub_id: u64 }
+/// What a query settles with. Kept on the entry when the isolate was busy, so the next frame's sweep
+/// retries the delivery instead of losing it.
+#[derive(Clone)]
+enum ConvarOutcome { Cancelled, Answered { status: i32, value: String } }
+
+struct ConvarQuery {
+    slot: i32, token: u64, name: String, owner: String, sub_id: u64,
+    deadline: std::time::Instant,
+    outcome: Option<ConvarOutcome>,
+}
 
 thread_local! {
     static CONVAR_QUERIES: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
@@ -381,6 +390,9 @@ thread_local! {
 const MAX_PENDING_CONVAR_QUERIES: usize = 1024;
 /// Longer than any real cvar name; the shim sends the name verbatim.
 const MAX_CONVAR_NAME: usize = 255;
+/// A query with no reply by then resolves null: the reply was lost (the shim drops a flooding
+/// client's replies) or the client never sent one.
+const CONVAR_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 fn mint_cookie() -> i32 {
     use std::hash::BuildHasher;
@@ -403,55 +415,75 @@ pub(crate) fn convar_status_name(status: i32) -> &'static str {
     }
 }
 
-fn take_convar_query(cookie: i32) -> Option<(ConvarQuery, Vec<(String, u64, v8::Global<v8::Function>)>)> {
-    let query = CONVAR_PENDING.with(|p| p.borrow_mut().remove(&cookie))?;
+/// Pending queries keep the frame detour requested, so the shim drains replies and the sweep runs.
+pub(crate) fn convar_queries_pending() -> usize {
+    CONVAR_PENDING.with(|p| p.borrow().len())
+}
+
+/// Run the query's callback with `outcome`. The entry and its subscription go only once the callback
+/// actually ran; a busy isolate leaves both, with the outcome recorded for the sweep to retry.
+fn settle_convar_query(cookie: i32, outcome: ConvarOutcome) {
     let key = cookie.to_string();
-    let snap = CONVAR_QUERIES.with(|m| {
-        let mut m = m.borrow_mut();
-        let snap = m.snapshot(&key);
-        m.remove_by_ids(&[query.sub_id]);
-        snap
+    let snap = CONVAR_QUERIES.with(|m| m.borrow().snapshot(&key));
+    let delivery = fan_out(&snap, "convar_query_settle", Instrument::none(), |tc| match &outcome {
+        ConvarOutcome::Cancelled => Some(vec![v8::null(tc).into(), v8::null(tc).into()]),
+        ConvarOutcome::Answered { status, value } => {
+            let label = v8::String::new(tc, convar_status_name(*status))?;
+            let value = v8::String::new(tc, if *status == 0 { value } else { "" })?;
+            Some(vec![label.into(), value.into()])
+        }
     });
-    Some((query, snap))
+    CONVAR_PENDING.with(|p| {
+        let mut p = p.borrow_mut();
+        if delivery == Delivery::Deferred {
+            if let Some(q) = p.get_mut(&cookie) { q.outcome = Some(outcome); }
+            return;
+        }
+        if let Some(q) = p.remove(&cookie) {
+            CONVAR_QUERIES.with(|m| { m.borrow_mut().remove_by_ids(&[q.sub_id]); });
+        }
+    });
 }
 
 /// Resolve every pending query for `slot` with null (the client left, or the slot was reused).
 fn cancel_convar_queries(slot: i32) {
     let cookies: Vec<i32> = CONVAR_PENDING.with(|p| p.borrow().iter()
-        .filter(|(_, q)| q.slot == slot).map(|(c, _)| *c).collect());
-    for cookie in cookies {
-        let Some((_, snap)) = take_convar_query(cookie) else { continue };
-        let delivery = fan_out(&snap, "convar_query_cancel", Instrument::none(), |tc| {
-            Some(vec![v8::null(tc).into(), v8::null(tc).into()])
-        });
-        if delivery == Delivery::Deferred {
-            crate::v8host::log_warn("WARN: queryConVar: a disconnect could not resolve a pending query (isolate busy)");
+        .filter(|(_, q)| q.slot == slot && q.outcome.is_none()).map(|(c, _)| *c).collect());
+    for cookie in cookies { settle_convar_query(cookie, ConvarOutcome::Cancelled); }
+}
+
+/// Per frame, before any JS runs: retry deliveries a busy isolate deferred, and resolve null any query
+/// that outlived its connection or the timeout.
+pub(crate) fn sweep_convar_queries() {
+    let now = std::time::Instant::now();
+    let due: Vec<(i32, ConvarOutcome)> = CONVAR_PENDING.with(|p| p.borrow().iter().filter_map(|(c, q)| {
+        match &q.outcome {
+            Some(o) => Some((*c, o.clone())),
+            None if now >= q.deadline || !matches(q.slot, q.token) => Some((*c, ConvarOutcome::Cancelled)),
+            None => None,
         }
-    }
+    }).collect());
+    for (cookie, outcome) in due { settle_convar_query(cookie, outcome); }
 }
 
 /// Deliver a client's convar answer to the one query that minted `cookie`.
 pub(crate) fn dispatch_convar_response(slot: i32, cookie: i32, status: i32, name: &str, value: &str) {
-    let accepted = CONVAR_PENDING.with(|p| p.borrow().get(&cookie).is_some_and(|q|
-        q.slot == slot && q.name.eq_ignore_ascii_case(name)));
-    if !accepted { return; }   // a stale, forged or misrouted answer leaves the real query pending
-    let Some((query, snap)) = take_convar_query(cookie) else { return };
-    if !matches(query.slot, query.token) { return; }
-    let delivery = fan_out(&snap, "dispatch_convar_response", Instrument::none(), |tc| {
-        let label = v8::String::new(tc, convar_status_name(status))?;
-        let value = v8::String::new(tc, if status == 0 { value } else { "" })?;
-        Some(vec![label.into(), value.into()])
-    });
-    if delivery == Delivery::Deferred {
-        crate::v8host::log_warn("WARN: queryConVar: dropped a reply (isolate busy)");
-    }
+    let Some(token) = CONVAR_PENDING.with(|p| p.borrow().get(&cookie).and_then(|q|
+        (q.outcome.is_none() && q.slot == slot && q.name.eq_ignore_ascii_case(name)).then_some(q.token)))
+    else { return };   // a stale, forged or misrouted answer leaves the real query pending
+    let outcome = if matches(slot, token) {
+        ConvarOutcome::Answered { status, value: value.to_string() }
+    } else {
+        ConvarOutcome::Cancelled   // the connection the query went to is gone
+    };
+    settle_convar_query(cookie, outcome);
 }
 
 /// Native `__s2_client_query_convar(slot, name, token, callback) -> number` — ask the client in
 /// `slot` for its value of `name`. Returns the query's cookie, or 0 when nothing was sent (bad slot,
 /// stale connection, bot, empty or oversized name, too many pending queries, or the reply hook is
 /// unavailable on this build). `callback(status, value)` runs once, on the frame after the reply;
-/// `(null, null)` when the client disconnects first.
+/// `(null, null)` when the client disconnects first or no reply arrives within 15 seconds.
 fn s2_client_query_convar(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_int32(0);
@@ -472,7 +504,10 @@ fn s2_client_query_convar(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         if crate::nest::with_outbound(&args, || f(slot, cname.as_ptr(), cookie)) == 0 { return; }
         let Some((sub_id, _)) = subscribe_into(scope, &args, &CONVAR_QUERIES, &cookie.to_string(), 3) else { return };
         let owner = crate::v8host::current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
-        CONVAR_PENDING.with(|p| p.borrow_mut().insert(cookie, ConvarQuery { slot, token, name, owner, sub_id }));
+        let deadline = std::time::Instant::now() + CONVAR_QUERY_TIMEOUT;
+        CONVAR_PENDING.with(|p| p.borrow_mut().insert(cookie,
+            ConvarQuery { slot, token, name, owner, sub_id, deadline, outcome: None }));
+        crate::v8host::refresh_detour();
         rv.set_int32(cookie);
     }));
 }
@@ -858,10 +893,6 @@ mod tests {
         shutdown();
     }
 
-    /// Clients sub-project Task 1: a subscribed `onConnect` handler receives a `Client` whose `.slot`
-    /// equals the dispatched slot (the `CLIENT_MUX` reuse + the JS wrapper's `new Client(slot)`);
-    /// a different event name (`"active"`) is independent (does NOT run the connect handler); and after
-    /// `unload_plugin` (remove_by_owner teardown) further dispatches are a safe no-op.
     thread_local! { static QUERIES: std::cell::RefCell<Vec<(i32, String, i32)>> = std::cell::RefCell::new(Vec::new()); }
     extern "C" fn mock_query(slot: i32, name: *const c_char, cookie: i32) -> i32 {
         let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
@@ -947,6 +978,44 @@ mod tests {
         shutdown();
     }
 
+    /// A reply that arrives while the isolate is busy is kept and delivered by the next frame's
+    /// sweep; a query nobody answers resolves null at the timeout; a token mismatch resolves null.
+    #[test]
+    fn query_convar_retries_deferred_and_times_out() {
+        init(dummy_logger()).unwrap();
+        QUERIES.with(|q| q.borrow_mut().clear());
+        set_engine_ops(Some(convar_ops()));
+        begin(7);
+        create_plugin_context("cq4");
+        eval_in_context_string("cq4", r#"globalThis.out = []; globalThis.c7 = new __s2pkg_clients.Client(7);
+            c7.queryConVar("cl_interp").then(function (v) { out.push(JSON.stringify(v)); }); """#);
+        let cookie = last_cookie();
+        // A reply that lands while the host is borrowed (and not inside an outbound call) defers.
+        crate::v8host::with_host_isolate(|_| dispatch_convar_response(7, cookie, 0, "cl_interp", "late")).unwrap();
+        assert_eq!(js("cq4", "out.join()"), "", "nothing ran inside the busy isolate");
+        assert_eq!(CONVAR_PENDING.with(|p| p.borrow().len()), 1, "the reply is kept");
+        dispatch_convar_response(7, cookie, 0, "cl_interp", "dup");          // already settled
+        sweep_convar_queries();
+        assert_eq!(js("cq4", "out.join()"), r#"{"status":"ok","value":"late"}"#);
+        assert_eq!(convar_queries_pending(), 0);
+
+        eval_in_context_string("cq4", r#"c7.queryConVar("cl_interp").then(function (v) { out.push(String(v)); }); """#);
+        sweep_convar_queries();
+        assert_eq!(js("cq4", "out.length"), "1", "not yet due");
+        CONVAR_PENDING.with(|p| p.borrow_mut().values_mut().for_each(|q| q.deadline = std::time::Instant::now()));
+        sweep_convar_queries();
+        assert_eq!(js("cq4", "out[1]"), "null", "timed out");
+        assert_eq!(convar_queries_pending(), 0);
+
+        eval_in_context_string("cq4", r#"c7.queryConVar("cl_interp").then(function (v) { out.push(String(v)); }); """#);
+        let cookie = last_cookie();
+        CONVAR_PENDING.with(|p| p.borrow_mut().get_mut(&cookie).unwrap().token ^= 1);
+        dispatch_convar_response(7, cookie, 0, "cl_interp", "1");
+        assert_eq!(js("cq4", "out[2]"), "null", "the queried connection is gone");
+        assert_eq!(convar_queries_pending(), 0);
+        shutdown();
+    }
+
     #[test]
     fn replicate_convar_sends_text_and_refuses_stale() {
         init(dummy_logger()).unwrap();
@@ -963,6 +1032,10 @@ mod tests {
         shutdown();
     }
 
+    /// Clients sub-project Task 1: a subscribed `onConnect` handler receives a `Client` whose `.slot`
+    /// equals the dispatched slot (the `CLIENT_MUX` reuse + the JS wrapper's `new Client(slot)`);
+    /// a different event name (`"active"`) is independent (does NOT run the connect handler); and after
+    /// `unload_plugin` (remove_by_owner teardown) further dispatches are a safe no-op.
     #[test]
     fn client_dispatch_delivers_client_with_slot() {
         let _ = init(dummy_logger());

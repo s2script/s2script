@@ -661,6 +661,7 @@ fn async_pending() -> usize {
         + DUE_TIMERS.with(|q| q.borrow().len())
         + crate::jobs::pending()
         + crate::async_limits::obligations()
+        + crate::client::convar_queries_pending()
         + usize::from(MICROTASK_DRAIN_NEEDED.with(|v| v.get()))
         + usize::from(
             crate::cookies::pending_cached()
@@ -6238,6 +6239,7 @@ fn deliver_timer(host: &mut Host, id: u64) {
 pub(crate) fn frame_async_drain() {
     crate::surface_leases::advance_frame();
     crate::shared_entity_switch::retry_pending();
+    crate::client::sweep_convar_queries();
     HOST.with(|h| {
         let mut borrow = h.borrow_mut();
         let Some(host) = borrow.as_mut() else { return };

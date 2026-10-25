@@ -79,7 +79,7 @@ export declare class Client {
    *
    * Resolves `null` when no query was sent (a bot, a disconnected client, a name that is empty or
    * contains whitespace, or a build where the reply hook is unavailable) or when the client
-   * disconnects before answering. `value` is `""` unless `status` is `"ok"`.
+   * disconnects or has not answered within 15 seconds. `value` is `""` unless `status` is `"ok"`.
    *
    * The value is what the client reports. A modified client can report anything, so treat it as a
    * hint, not proof.
