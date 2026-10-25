@@ -712,3 +712,15 @@ Reproduced with the vendored KHook built as a library (two PRE-only hooks on a c
 `FireEvent`, peer added first) under AddressSanitizer: the old code reports heap-use-after-free in
 the peer's callback; with `Recall` the peer sees the event, the original runs once with
 `bDontBroadcast=1`. Live gate pending.
+
+## 2026-10-25 — Find entities by targetname or radius
+
+Jailbreak maps name their cell doors and buttons, and TTT's map tester and many SourceMod ports look
+entities up by targetname or around a point. Only `Entity.findByClass` existed. ModSharp and
+Swiftly ship signatures for `CGameEntitySystem::FindByName` and `FindInSphere`. We need neither,
+because the shim already has the two engine-generic ops this takes. `Entity.findByName` walks the
+identity snapshot (`ent_snapshot`, the books repair sweep's chunk walk) and compares each slot's
+`m_name` through the serial-gated `entity_name` op that `EntityRef.name` uses. Only books-live slots
+mint refs. `Entity.findInSphere` filters `EntityRef.origin` inclusively, over `findByClass` when a
+class is given and over a new unfiltered `__s2_entity_find_all` otherwise. No engine op, shim or
+gamedata change. In-isolate test: `entity_finders_by_name_and_sphere`.
