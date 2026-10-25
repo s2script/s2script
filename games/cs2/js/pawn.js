@@ -116,6 +116,16 @@
   refPlan("teleport", function (a) { return [refVector(a[0]), refVector(a[1]), refVector(a[2])]; });
   refPlan("applyAbsVelocityImpulse", function (a) { return [refVector(a[0])]; });
   refPlan("acceptInput", function (a) { return [String(a[0]), a[1] == null ? "" : String(a[1]), refIdentity(a[2]), refIdentity(a[3]), Number(a[4] || 0)]; });
+  refPlan("takeDamage", function (a) {
+    var o = a[1];
+    if (o == null || typeof o !== "object") return [Number(a[0])];
+    return [Number(a[0]), {
+      attacker: refIdentity(o.attacker && o.attacker.ref ? o.attacker.ref : o.attacker),
+      inflictor: refIdentity(o.inflictor && o.inflictor.ref ? o.inflictor.ref : o.inflictor),
+      ability: refIdentity(o.ability && o.ability.ref ? o.ability.ref : o.ability),
+      damageType: Number(o.damageType || 0), force: refVector(o.force), position: refVector(o.position),
+    }];
+  });
   refPlan("spawn", function (a) {
     var kv = a[0];
     if (kv == null || typeof kv !== "object") return [kv];
@@ -404,6 +414,23 @@
   Pawn.prototype.slay = function () {
     if (!callCommitSuicide) return;
     callCommitSuicide(this, /*bExplode=*/false, /*bForce=*/true);
+  };
+
+  // pawn.heal(amount, opts) — add `amount` health, capped at m_iMaxHealth (or opts.max for
+  // overheal). Never lowers health that is already above the cap, and never revives: a dead or
+  // stale pawn returns null. Returns the new health. Damage goes the other way through the core's
+  // EntityRef.takeDamage, which runs the game's damage rules; healing has no such rules to run.
+  Pawn.prototype.heal = function (amount, opts) {
+    if (typeof amount !== "number" || !isFinite(amount) || amount < 0)
+      throw new TypeError("s2script: pawn.heal() requires a finite amount >= 0");
+    var health = this.health;
+    if (health === null || health <= 0) return null;
+    var cap = opts && opts.max !== undefined ? opts.max : this.maxHealth;
+    if (typeof cap !== "number" || !isFinite(cap)) return null;
+    var next = Math.min(Math.floor(cap), health + Math.floor(amount));
+    if (next <= health) return health;
+    this.health = next;
+    return this.health;
   };
 
   // pawn.maxSpeed — the pawn's CURRENT movement speed cap, via CCSPlayerPawn::GetPlayerMaxSpeed (the

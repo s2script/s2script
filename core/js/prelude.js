@@ -728,6 +728,28 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       caller ? caller.index : -1, caller ? caller.id : -1,
       delay || 0);
   };
+  // Damage slice: deal `damage` to this entity through the game's own damage path (the game
+  // package's damage-info constructor + TakeDamage), so OnTakeDamage hooks and the engine's rules
+  // (god mode, friendly fire, armor) all apply. opts: attacker/inflictor/ability (EntityRef, or a
+  // wrapper with `.ref`), damageType bits, force and position ([x, y, z]). An optional entity
+  // that is no longer live refuses the call. Returns false when nothing was dealt.
+  function damageEntity(e) {
+    if (e === undefined || e === null) return null;
+    if (!(e instanceof EntityRef) && e.ref && typeof e.ref === "object") e = e.ref;
+    if (typeof e.index !== "number") throw new TypeError("s2script: takeDamage(): an entity option must be an EntityRef or wrap one");
+    return e;
+  }
+  function damageVec(v) { return v ? [v[0], v[1], v[2]] : null; }
+  EntityRef.prototype.takeDamage = function (damage, opts) {
+    if (typeof damage !== "number" || !isFinite(damage)) throw new TypeError("s2script: takeDamage() requires a finite damage");
+    opts = opts || {};
+    var inflictor = damageEntity(opts.inflictor), attacker = damageEntity(opts.attacker), ability = damageEntity(opts.ability);
+    return __s2_entity_take_damage(this.index, this.id,
+      inflictor ? inflictor.index : -1, inflictor ? inflictor.id : -1,
+      attacker ? attacker.index : -1, attacker ? attacker.id : -1,
+      ability ? ability.index : -1, ability ? ability.id : -1,
+      damage, opts.damageType | 0, damageVec(opts.force), damageVec(opts.position));
+  };
   // Entity-I/O slice: hook an entity output (e.g. "OnTrigger"/"OnPressed"/"OnStartTouch"). classname/
   // output accept "*" wildcards. handler(ev) may return a HookResult >= Handled to suppress the output
   // (the FireOutputInternal detour supersedes the original call). Dispatch is SYNCHRONOUS.
@@ -1370,7 +1392,18 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     return __s2_sdkunhook(entity.index, entity.id, type, callback);
   }
   var UseType = { Off: 0, On: 1, Set: 2, Toggle: 3 };
-  globalThis.__s2pkg_sdkhooks = { SDKHook: SDKHook, SDKUnhook: SDKUnhook, SDKHookType: SDKHookType, UseType: UseType };
+  // SourceMod's SDKHooks_TakeDamage(entity, inflictor, attacker, damage, damagetype, weapon, force,
+  // position), over EntityRef.takeDamage. `weapon` is the damage info's ability. SourceMod's
+  // bypassHooks has no equivalent: plugin damage always runs OnTakeDamage hooks.
+  function SDKHooks_TakeDamage(entity, inflictor, attacker, damage, damageType, weapon, force, position) {
+    var victim = damageEntity(entity);
+    if (!victim) return false;
+    return victim.takeDamage(damage, {
+      inflictor: inflictor, attacker: attacker, ability: weapon,
+      damageType: damageType, force: force, position: position,
+    });
+  }
+  globalThis.__s2pkg_sdkhooks = { SDKHook: SDKHook, SDKUnhook: SDKUnhook, SDKHooks_TakeDamage: SDKHooks_TakeDamage, SDKHookType: SDKHookType, UseType: UseType };
   // --- Usercmd primitive Task 4: @s2script/usercmd (UserCmd.onRun + the SINGLETON block-scoped Cmd).
   //     The per-tick input fields are Source2-shared (usercmd.proto) -> engine-generic, lives in core.
   //     Field enum (0 forwardMove/1 sideMove/2 upMove/3 pitch/4 yaw/5 roll/6 impulse)

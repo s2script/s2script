@@ -236,6 +236,7 @@ typedef int (*s2_function_frame_field_write_fn)(const S2FunctionInstanceAccess* 
 typedef int (*s2_function_frame_hidden_referenced_by_fn)(const S2FunctionInstanceAccess* access, int selector, const S2FunctionValue* entity, unsigned int offset, int* out, char* reason, int cap);
 typedef int (*s2_server_tick_count_fn)(void);
 typedef float (*s2_server_tick_interval_fn)(void);
+typedef int (*s2_entity_take_damage_fn)(int index, int serial, int inflictorIdx, int inflictorSerial, int attackerIdx, int attackerSerial, int abilityIdx, int abilitySerial, float damage, int damageType, const float* force, const float* position);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -428,4 +429,6 @@ typedef struct {
     /* --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick --- */
     s2_server_tick_count_fn server_tick_count;
     s2_server_tick_interval_fn server_tick_interval;
+    /* --- Damage slice: CTakeDamageInfo ctor + CBaseEntity::TakeDamage + dtor --- */
+    s2_entity_take_damage_fn entity_take_damage;
 } S2EngineOps;

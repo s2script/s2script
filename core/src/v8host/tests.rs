@@ -6940,6 +6940,58 @@
         shutdown();
     }
 
+    thread_local! {
+        static TAKE_DAMAGE_CALLS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    extern "C" fn record_take_damage(index: c_int, serial: c_int, ii: c_int, is: c_int, ai: c_int, as_: c_int,
+                                     bi: c_int, bs: c_int, damage: f32, ty: c_int,
+                                     force: *const f32, position: *const f32) -> c_int {
+        let vec = |p: *const f32| if p.is_null() { "-".to_string() } else {
+            let v = unsafe { std::slice::from_raw_parts(p, 3) };
+            format!("{},{},{}", v[0], v[1], v[2])
+        };
+        TAKE_DAMAGE_CALLS.with(|c| c.borrow_mut().push(format!(
+            "{index}/{serial} {ii}/{is} {ai}/{as_} {bi}/{bs} {damage} {ty} {} {}", vec(force), vec(position))));
+        1
+    }
+
+    /// Damage slice: `takeDamage` and `SDKHooks_TakeDamage` hand the op serial-gated entities (a
+    /// wrapper's `.ref` included), the damage, type and vectors; an absent option is -1, a stale one
+    /// or a non-finite damage refuses the call before the op, and no op degrades to false.
+    #[test]
+    fn take_damage_marshals_entities_and_refuses_stale_options() {
+        let _ = init(dummy_logger());
+        crate::entity_live::reset_for_tests();
+        let victim = crate::entity_live::on_created(5, 1);
+        let attacker = crate::entity_live::on_created(6, 2);
+        let weapon = crate::entity_live::on_created(7, 3);
+        TAKE_DAMAGE_CALLS.with(|c| c.borrow_mut().clear());
+        set_engine_ops(Some(S2EngineOps { entity_take_damage: Some(record_take_damage), ..mock_event_ops() }));
+        create_plugin_context("p");
+        let out = eval_in_context_string("p", &format!(r#"
+            const E = __s2pkg_entity.EntityRef;
+            const v = new E(5, {victim}), a = new E(6, {attacker}), w = new E(7, {weapon});
+            const r = [
+              v.takeDamage(25, {{ attacker: {{ ref: a }}, damageType: 2, force: [1, 2, 3] }}),
+              __s2pkg_sdkhooks.SDKHooks_TakeDamage(v, null, a, 10.5, 64, w, null, [4, 5, 6]),
+              v.takeDamage(1, {{ attacker: new E(6, {attacker} + 99) }}),
+              new E(5, {victim} + 99).takeDamage(1),
+              __s2pkg_sdkhooks.SDKHooks_TakeDamage(null, null, a, 1),
+            ];
+            let threw = false;
+            try {{ v.takeDamage(NaN); }} catch (e) {{ threw = e instanceof TypeError; }}
+            r.concat([threw]).join("|")
+        "#));
+        assert_eq!(out, "true|true|false|false|false|true");
+        assert_eq!(TAKE_DAMAGE_CALLS.with(|c| c.borrow().clone()), vec![
+            "5/1 -1/-1 6/2 -1/-1 25 2 1,2,3 -".to_string(),
+            "5/1 -1/-1 6/2 7/3 10.5 64 - 4,5,6".to_string(),
+        ]);
+        set_engine_ops(None);
+        assert_eq!(eval_in_context_string("p", &format!("String(new (__s2pkg_entity.EntityRef)(5, {victim}).takeDamage(1))")), "false");
+        shutdown();
+    }
+
     /// Entity-I/O slice: `dispatch_output` runs every subscriber whose key matches `(class,output)`,
     /// `(class,"*")`, `("*",output)`, `("*","*")` — a wildcard-class sub and an exact-key sub both fire
     /// for one dispatch, but a DIFFERENT (class,output) pair does not. `activator`/`caller` are `null`

@@ -189,3 +189,5 @@
     // --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick ---
     ops.server_tick_count = &s2_server_tick_count;
     ops.server_tick_interval = &s2_server_tick_interval;
+    // --- Damage slice: CTakeDamageInfo ctor + CBaseEntity::TakeDamage + dtor ---
+    ops.entity_take_damage = &Shim_EntityTakeDamage;

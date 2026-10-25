@@ -144,6 +144,15 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   readonly buttons: number;
   /** Kill this pawn via the sig-resolved CommitSuicide engine op (liveness-gated; no-op if stale). */
   slay(): void;
+  /**
+   * Add `amount` health (rounded down), capped at `maxHealth`, or at `opts.max` to overheal. Never
+   * lowers health already above the cap and never revives. Returns the new health, or null when the
+   * pawn is dead or stale. To deal damage, use `pawn.ref.takeDamage`, which runs the game's rules.
+   * @example
+   * pawn.heal(25);                 // up to maxHealth
+   * pawn.heal(50, { max: 150 });   // overheal to at most 150
+   */
+  heal(amount: number, opts?: { max?: number }): number | null;
   /** The pawn's current movement speed cap (`CCSPlayerPawn::GetPlayerMaxSpeed`).
    *
    *  A getter rather than a field because the engine computes it — there is no `m_flMaxSpeed` on

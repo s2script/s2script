@@ -273,6 +273,50 @@
         "resolve": "direct"
       }
     },
+    // Damage slice (entity.takeDamage / SDKHooks_TakeDamage). The engine's own recipe for dealing
+    // damage, copied from a caller on the Oct 22 build (@0x1bf75f0): build a CTakeDamageInfo on the
+    // stack with its constructor, hand it to CBaseEntity::TakeDamage, then run its destructor. The
+    // shim reads the buffer size from the live schema, never a constant.
+    //
+    // CTakeDamageInfo::CTakeDamageInfo(this, inflictor, attacker, ability, const Vector* force,
+    // const Vector* position, float damage, int bitsDamageType, int customDamage,
+    // const Vector* reportedPosition). Force and position are read unconditionally, so the shim
+    // always passes both; a null reported position defaults to vec3_invalid. The trailing
+    // `mov rax, [rbp+0x20]` pins the three stack arguments. Unique @0x1bf74f0 on the Oct 22 build
+    // (the Swiftly prologue, extended). Its vtable LEA (at +0x12) must name the same vtable as the
+    // destructor's (at +0x10): the shim checks that, so a wrong match degrades instead of running.
+    "CTakeDamageInfo_Ctor": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "49 BB 00 00 00 00 00 00 80 3F 55 48 89 E5 48 83 EC 10 4C 8D 15 ? ? ? ? 4C 89 5F ? 48 8B 45 20",
+        "resolve": "direct",
+        "validate": { "prologue": "49 BB 00 00 00 00 00 00 80 3F 55 48 89 E5" }
+      }
+    },
+    // CTakeDamageInfo::~CTakeDamageInfo(this): restores the vtable, frees the
+    // destructible-hit-group request vector and releases the script handle. Not virtual. Unique
+    // @0x1bd08b0 on the Oct 22 build; field offsets in the body are wildcarded.
+    "CTakeDamageInfo_Dtor": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 55 49 89 FD 41 54 53 48 83 EC 08 48 8D 05 ? ? ? ? 48 83 C0 10 48 89 07 8B 87 ? ? ? ? A9 FF FF FF 7F",
+        "resolve": "direct",
+        "validate": { "prologue": "55 48 89 E5 41 55 49 89 FD 41 54 53" }
+      }
+    },
+    // CBaseEntity::TakeDamage(this, CTakeDamageInfo*, CTakeDamageResult* /* may be null */): the
+    // canonical entry. It refuses an entity whose m_takedamage is off, then tail-calls
+    // TakeDamageOld, so SDKHook OnTakeDamage still fires for damage a plugin deals. The whole body
+    // is pinned through that tail JMP, with field offsets wildcarded. Unique @0xd6e6e0 on the Oct 22
+    // build.
+    "CBaseEntity_TakeDamage": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 55 49 89 F5 41 54 49 89 D4 53 48 89 FB 48 83 EC 08 E8 ? ? ? ? 84 C0 75 ? 41 F6 45 ? 02 74 ? 48 8B 43 ? F6 40 ? 02 75 ? 48 8D 05 ? ? ? ? 48 83 38 00 74 ? 80 BB ? ? ? ? 00 74 ? 48 83 C4 08 4C 89 E2 4C 89 EE 48 89 DF 5B 41 5C 41 5D 5D E9",
+        "resolve": "direct",
+        "validate": { "prologue": "55 48 89 E5 41 55 49 89 F5 41 54 49 89 D4 53 48 89 FB" }
+      }
+    },
     // Entity-I/O slice: CEntityIOOutput::FireOutputInternal(CEntityIOOutput* this,
     // CEntityInstance* activator, CEntityInstance* caller, CPulseArgumentPack* arguments, float delay,
     // CPulseInputParamMap* parameters, const CVariant* optionalValue) — every entity output (func_button OnPressed, logic_relay

@@ -1821,6 +1821,15 @@
       "c_ret": "float",
       "c_params": "void",
       "shim": "s2_server_tick_interval"
+    },
+    {
+      "name": "entity_take_damage",
+      "alias": "EntityTakeDamageFn",
+      "rust": "extern \"C\" fn(c_int, c_int, c_int, c_int, c_int, c_int, c_int, c_int, f32, c_int, *const f32, *const f32) -> c_int",
+      "group": "Damage slice: CTakeDamageInfo ctor + CBaseEntity::TakeDamage + dtor",
+      "c_ret": "int",
+      "c_params": "int index, int serial, int inflictorIdx, int inflictorSerial, int attackerIdx, int attackerSerial, int abilityIdx, int abilitySerial, float damage, int damageType, const float* force, const float* position",
+      "shim": "Shim_EntityTakeDamage"
     }
   ]
 }

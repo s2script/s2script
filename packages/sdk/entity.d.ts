@@ -229,6 +229,35 @@ export declare class EntityRef {
    *  output the input triggers. `delay` queues the event on the engine's same-tick I/O pump (0 = fires
    *  this same tick — NOT synchronous-within-the-call). Returns false with no op / a stale ref. */
   acceptInput(input: string, value?: string, activator?: EntityRef, caller?: EntityRef, delay?: number): boolean;
+  /**
+   * Deal `damage` to this entity through the game's own damage path, so `OnTakeDamage` hooks and
+   * the game's rules (god mode, friendly fire, armor) still apply. The engine may still refuse it,
+   * for example when the entity doesn't take damage at all. Returns false when the call was refused:
+   * a stale victim or option entity, a non-finite `damage`, or an unavailable game function.
+   * @example
+   * // 25 damage from `attacker`'s pawn, as a bullet (CS2's DMG_BULLET is 2).
+   * victim.takeDamage(25, { attacker: attackerPawn.ref, damageType: 2 });
+   */
+  takeDamage(damage: number, opts?: TakeDamageOptions): boolean;
+}
+
+/** An entity option of {@link EntityRef.takeDamage}: an EntityRef, or a wrapper that holds one. */
+export type DamageEntity = EntityRef | { readonly ref: EntityRef };
+
+/** Options for {@link EntityRef.takeDamage}. Every field is optional. */
+export interface TakeDamageOptions {
+  /** Who gets credit for the damage (the damage info's attacker). */
+  attacker?: DamageEntity | null;
+  /** What dealt it, such as a grenade or the attacker's weapon. Defaults to the attacker. */
+  inflictor?: DamageEntity | null;
+  /** The weapon or ability it came from (SourceMod's `weapon`). */
+  ability?: DamageEntity | null;
+  /** Damage-type bit flags; the values are game facts (CS2: `DamageTypes_t`). Defaults to 0 (generic). */
+  damageType?: number;
+  /** Damage force, `[x, y, z]`. Defaults to zero. */
+  force?: ArrayLike<number> | null;
+  /** Where the damage lands, `[x, y, z]`. Defaults to zero. */
+  position?: ArrayLike<number> | null;
 }
 
 /** Element kinds for {@link EntityRef.gather} plans — the scalar kinds a `Float64Array` holds exactly. */

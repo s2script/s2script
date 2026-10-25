@@ -1119,6 +1119,39 @@ fn s2_entity_fire_input(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
     }));
 }
 
+/// Native `__s2_entity_take_damage(index, id, inflIdx, inflId, attIdx, attId, abilityIdx, abilityId,
+/// damage, damageType, force, position) -> boolean`. Over the `entity_take_damage` op (the game's
+/// damage-info constructor + TakeDamage + destructor, sig-resolved shim-side). An optional entity
+/// passed as index < 0 is "none"; one passed but no longer live refuses the call, so a plugin never
+/// deals anonymous damage by accident. `force`/`position` are `[x, y, z]` or null (zero).
+fn s2_entity_take_damage(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
+        let mut optional = [(-1, -1); 3];
+        for (slot, out) in optional.iter_mut().enumerate() {
+            let idx_arg = args.get(2 + 2 * slot as i32);
+            if idx_arg.integer_value(scope).unwrap_or(-1) < 0 { continue }
+            let Some(pair) = ent_op_serial(scope, idx_arg, args.get(3 + 2 * slot as i32)) else { return };
+            *out = pair;
+        }
+        let damage = args.get(8).number_value(scope).unwrap_or(f64::NAN);
+        if !damage.is_finite() { return }
+        let damage_type = args.get(9).integer_value(scope).unwrap_or(0) as i32;
+        let force = read_vec3_opt(scope, args.get(10));
+        let position = read_vec3_opt(scope, args.get(11));
+        let ops = engine_ops();
+        if let Some(func) = ops.and_then(|o| o.entity_take_damage) {
+            let fp = force.as_ref().map_or(std::ptr::null(), |v| v.as_ptr());
+            let pp = position.as_ref().map_or(std::ptr::null(), |v| v.as_ptr());
+            let [(ii, is), (ai, as_), (bi, bs)] = optional;
+            rv.set_bool(crate::nest::with_outbound(&args, || func(
+                index, serial, ii, is, ai, as_, bi, bs, damage as f32, damage_type, fp, pp,
+            )) != 0);
+        }
+    }));
+}
+
 /// Native `__s2_entity_spawn_kv(index, serial, keys[], types[], values[]) -> boolean`. Over the
 /// `entity_spawn_kv` op (DispatchSpawn with a shim-built CEntityKeyValues). All three arrays must be
 /// same-length; keys/values are strings (interior NUL -> false), types are ints. Degrades to false
@@ -1444,6 +1477,7 @@ pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_entity_teleport", s2_entity_teleport);
     set_native(scope, global_obj, "__s2_entity_remove", s2_entity_remove);
     set_native(scope, global_obj, "__s2_entity_fire_input", s2_entity_fire_input);
+    set_native(scope, global_obj, "__s2_entity_take_damage", s2_entity_take_damage);
     set_native(scope, global_obj, "__s2_entity_spawn_kv", s2_entity_spawn_kv);
     set_native(scope, global_obj, "__s2_entity_listener_on", s2_entity_listener_on);
     set_native(scope, global_obj, "__s2_entity_listener_off", s2_entity_listener_off);

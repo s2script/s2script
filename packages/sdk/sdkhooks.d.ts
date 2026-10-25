@@ -2,7 +2,7 @@
  * @s2script/sdkhooks — per-entity SDKHooks (SourceMod `SDKHook` / `SDKUnhook`).
  * NO runtime code: the engine injects the implementation at load time.
  */
-import type { EntityRef } from "./entity";
+import type { DamageEntity, EntityRef } from "./entity";
 import type { DamageInfo } from "./damage";
 import type { HookResultValue } from "./events";
 import type { Client } from "./clients";
@@ -545,4 +545,21 @@ export declare function SDKUnhook(
   entity: EntityRef | null,
   type: "ReloadPost",
   callback: ReloadPostCallback,
+): boolean;
+
+/**
+ * SourceMod's `SDKHooks_TakeDamage`: deal damage to `entity` through the game's own damage path.
+ * The same call as {@link EntityRef.takeDamage}; `weapon` is its `ability`. Unlike SourceMod there
+ * is no `bypassHooks`: `OnTakeDamage` hooks always see damage a plugin deals. Returns false when
+ * the call was refused (a null or stale entity, a non-finite `damage`, an unavailable game function).
+ */
+export declare function SDKHooks_TakeDamage(
+  entity: DamageEntity | null,
+  inflictor: DamageEntity | null,
+  attacker: DamageEntity | null,
+  damage: number,
+  damageType?: number,
+  weapon?: DamageEntity | null,
+  force?: ArrayLike<number> | null,
+  position?: ArrayLike<number> | null,
 ): boolean;
