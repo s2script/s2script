@@ -260,6 +260,10 @@ pub type FunctionFrameFieldWriteFn = extern "C" fn(*const S2FunctionInstanceAcce
 pub type FunctionFrameHiddenReferencedByFn = extern "C" fn(*const S2FunctionInstanceAccess, c_int, *const S2FunctionValue, u32, *mut c_int, *mut c_char, c_int) -> c_int;
 pub type ServerTickCountFn = extern "C" fn() -> c_int;
 pub type ServerTickIntervalFn = extern "C" fn() -> f32;
+pub type EntityTakeDamageFn = extern "C" fn(c_int, c_int, c_int, c_int, c_int, c_int, c_int, c_int, f32, c_int, *const f32, *const f32) -> c_int;
+pub type ClientQueryConvarFn = extern "C" fn(slot: c_int, name: *const c_char, cookie: c_int) -> c_int;
+pub type ClientReplicateConvarFn = extern "C" fn(slot: c_int, name: *const c_char, value: *const c_char) -> c_int;
+pub type ClientNetStatsFn = extern "C" fn(slot: c_int, out: *mut f64, n: c_int) -> c_int;
 pub type EngineCallBindInterfaceFn = extern "C" fn(call_id: c_int, name: *const c_char, slot: c_int, reason_out: *mut c_char, reason_cap: c_int) -> c_int;
 pub type EngineCallTakeStringsFn = extern "C" fn(out: *mut c_char, cap: c_int) -> c_int;
 
@@ -459,6 +463,13 @@ pub struct S2EngineOps {
     // --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick ---
     pub server_tick_count: Option<ServerTickCountFn>,
     pub server_tick_interval: Option<ServerTickIntervalFn>,
+    // --- Damage slice: CTakeDamageInfo ctor + CBaseEntity::TakeDamage + dtor ---
+    pub entity_take_damage: Option<EntityTakeDamageFn>,
+    // --- client convar query + replicate ---
+    pub client_query_convar: Option<ClientQueryConvarFn>,
+    pub client_replicate_convar: Option<ClientReplicateConvarFn>,
+    // --- client net stats (INetChannelInfo) ---
+    pub client_net_stats: Option<ClientNetStatsFn>,
     // --- Plugin-declared engine calls ---
     pub engine_call_bind_interface: Option<EngineCallBindInterfaceFn>,
     pub engine_call_take_strings: Option<EngineCallTakeStringsFn>,

@@ -319,6 +319,22 @@ pub extern "C" fn s2script_core_dispatch_precache() {
     });
 }
 
+/// Shim → core: a client answered a convar query (CCLCMsg_RespondCvarValue). The shim queues the
+/// copied fields in its hook and drains them at the top of GameFramePre, so this always runs on the
+/// main thread with the isolate free. `slot` is the answering client's own slot. Strings are copied
+/// here; null degrades to "". `catch_unwind`-wrapped.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_convar_response(slot: c_int, cookie: c_int, status: c_int,
+                                                         name: *const c_char, value: *const c_char) {
+    let _ = catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_convar_response");
+        let copy = |p: *const c_char| if p.is_null() { String::new() } else {
+            (unsafe { CStr::from_ptr(p) }).to_string_lossy().into_owned()
+        };
+        crate::client::dispatch_convar_response(slot, cookie, status, &copy(name), &copy(value));
+    });
+}
+
 /// Shim → core: an IEntityListener callback (create/spawn/delete) with the entity's packed
 /// CEntityHandle (ToInt()) + class name. Notify-only: dispatches to the `Entity.on{Create,Spawn,Delete}`
 /// JS subscribers. `catch_unwind`-wrapped; null/invalid-UTF-8 degrade to a no-op.
@@ -663,6 +679,40 @@ pub extern "C" fn s2script_core_dispatch_output(
             match (unsafe { CStr::from_ptr(value) }).to_str() { Ok(s) => s, Err(_) => "" }
         };
         v8host::dispatch_output(classname_str, output_str, act_handle as i32, caller_handle as i32, value_str, delay)
+    })
+    .unwrap_or(0)
+}
+
+/// Shim → core: called by the `CEntityIdentity::AcceptInput` detour (parity slice 5) with the
+/// receiving entity's classname, the input name, its packed `CEntityHandle`, packed activator/caller
+/// handles (-1 = none) and the input's value as a string. Runs the matching `Entity.onInput`
+/// subscribers SYNCHRONOUSLY and returns the collapsed `HookResult`; the shim drops the input
+/// (AcceptInput returns false) when it is >= Handled (2). Same fail-open shape as
+/// `s2script_core_dispatch_output`: a panic or invalid UTF-8 → 0 Continue.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_input(
+    classname: *const c_char,
+    input: *const c_char,
+    target_handle: c_int,
+    act_handle: c_int,
+    caller_handle: c_int,
+    value: *const c_char,
+) -> c_int {
+    catch_unwind(|| {
+        if classname.is_null() || input.is_null() { return 0; }
+        // AcceptInput carries every I/O event in the map: with no subscriber, return before any
+        // string conversion or profiler scope.
+        if !v8host::input_hooked() { return 0; }
+        let _prof = crate::profiler::framework("dispatch_input");
+        let Ok(classname_str) = (unsafe { CStr::from_ptr(classname) }).to_str() else { return 0; };
+        let Ok(input_str) = (unsafe { CStr::from_ptr(input) }).to_str() else { return 0; };
+        let value_str = if value.is_null() {
+            ""
+        } else {
+            match (unsafe { CStr::from_ptr(value) }).to_str() { Ok(s) => s, Err(_) => "" }
+        };
+        v8host::dispatch_input(classname_str, input_str, target_handle as i32, act_handle as i32,
+                               caller_handle as i32, value_str)
     })
     .unwrap_or(0)
 }

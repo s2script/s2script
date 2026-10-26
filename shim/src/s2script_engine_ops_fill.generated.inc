@@ -189,6 +189,13 @@
     // --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick ---
     ops.server_tick_count = &s2_server_tick_count;
     ops.server_tick_interval = &s2_server_tick_interval;
+    // --- Damage slice: CTakeDamageInfo ctor + CBaseEntity::TakeDamage + dtor ---
+    ops.entity_take_damage = &Shim_EntityTakeDamage;
+    // --- client convar query + replicate ---
+    ops.client_query_convar = &s2_client_query_convar;
+    ops.client_replicate_convar = &s2_client_replicate_convar;
+    // --- client net stats (INetChannelInfo) ---
+    ops.client_net_stats = &s2_client_net_stats;
     // --- Plugin-declared engine calls ---
     ops.engine_call_bind_interface = &S2_EngineCallBindInterface;
     ops.engine_call_take_strings = &S2_EngineCallTakeStrings;
