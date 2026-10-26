@@ -189,3 +189,6 @@
     // --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick ---
     ops.server_tick_count = &s2_server_tick_count;
     ops.server_tick_interval = &s2_server_tick_interval;
+    // --- Plugin-declared engine calls ---
+    ops.engine_call_bind_interface = &S2_EngineCallBindInterface;
+    ops.engine_call_take_strings = &S2_EngineCallTakeStrings;

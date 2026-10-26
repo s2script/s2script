@@ -299,6 +299,21 @@ static CGameEntitySystem* GetEntitySystem() {
 // without itself needing s_pGameResourceService/s_gameEntitySystemOffset (file-scope statics here).
 CGameEntitySystem* S2_EntitySystemBridge() { return GetEntitySystem(); }
 
+// Declared-call interface receivers (engine_calls.cpp): an interface by version string, through
+// the same two Metamod factories Load acquires its interfaces from. Engine-generic: the name is
+// the descriptor's, never a constant here.
+void* S2_FindEngineInterface(const char* name) {
+    if (!g_SMAPI || !name || !name[0]) return nullptr;
+    int ret = 0;
+    if (CreateInterfaceFn f = g_SMAPI->GetEngineFactory(false)) {
+        if (void* p = f(name, &ret)) return p;
+    }
+    if (CreateInterfaceFn f = g_SMAPI->GetServerFactory(false)) {
+        if (void* p = f(name, &ret)) return p;
+    }
+    return nullptr;
+}
+
 // Entity lifecycle listeners slice: the isolated entity_listener.cpp TU owns the IEntityListener; we
 // register/unregister it here via the sig-resolved (this, IEntityListener*) member fns. void* keeps
 // entitysystem.h out of this TU.

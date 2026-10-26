@@ -732,3 +732,24 @@ miss on any hop degrades that invocation with the hop named in `Engine.status`.
 
 Core tests cover the three shapes, an unresolved hop and the rejected forms. The live gate is
 pending; the first consumer is econ attributes.
+
+## 2026-10-26 — Interface receivers and string-list returns for declared calls
+
+Map-group lists (a Swiftly/ModSharp parity gap) come from `IGameTypes::GetMapGroupMapList`, a
+virtual on an engine interface that returns a `CUtlStringList*`. The declared-call grammar could
+reach neither: its receivers were an entity or nothing, and it had no way to return a list.
+
+- **`receiver.kind: "interface"`** with `name` (the interface version string). Core asks the shim to
+  bind it once at registration (`engine_call_bind_interface`); the shim finds the object through
+  the Metamod engine factory, then the server factory, and keeps the pointer in its own table, so
+  only an id crosses to core. For a vtable target the shim also reads the object's own vtable at
+  the declared slot and requires it to be the resolved function, which proves the object is an
+  instance of the class the target was resolved against. The invoke passes `RECEIVER_INTERFACE`
+  (-2) and the id in the entity pair. `via` is rejected on an interface receiver.
+- **`returns: "utlstringlist"`**. The shim reads the `CUtlVector<char*>` (size at 0, elements at 8)
+  and each string through the fault-free `process_vm_readv` reader, bounded at 4096 strings of up
+  to 1024 bytes, so a wrong declaration fails the call instead of crashing. Core copies the
+  NUL-separated blob out with `engine_call_take_strings`. A null list comes back as `null`.
+
+The SDK validator, the generated `.d.ts` (no `self`, `string[] | null`) and
+`check-call-descriptors.sh` know both. Live gate pending.

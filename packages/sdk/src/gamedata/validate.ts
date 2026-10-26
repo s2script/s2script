@@ -95,13 +95,17 @@ export function validatePluginGamedata(gd: unknown, opts: { permissions: string[
 
     // receiver
     const recv = decl.receiver as Record<string, unknown> | undefined;
-    if (!recv || (recv.kind !== "entity" && recv.kind !== "none")) {
-      errs.push(`${where}: receiver.kind must be "entity" or "none"`);
-    } else if (recv.kind === "none") {
-      // A static/free function has no `this` to hop from, so `via` is contradictory rather than
-      // merely redundant — reject it instead of ignoring it.
+    if (!recv || (recv.kind !== "entity" && recv.kind !== "none" && recv.kind !== "interface")) {
+      errs.push(`${where}: receiver.kind must be "entity", "none" or "interface"`);
+    } else if (recv.kind === "none" || recv.kind === "interface") {
+      // A static/free function has no `this` to hop from, and an interface receiver is the
+      // engine's object itself, so `via` is contradictory rather than merely redundant — reject it
+      // instead of ignoring it.
       if (recv.via !== undefined) {
-        errs.push(`${where}: receiver.kind "none" cannot carry a 'via' sub-object hop`);
+        errs.push(`${where}: receiver.kind "${recv.kind}" cannot carry a 'via' sub-object hop`);
+      }
+      if (recv.kind === "interface" && (typeof recv.name !== "string" || !recv.name.length)) {
+        errs.push(`${where}: receiver.kind "interface" needs a 'name' (the interface version string)`);
       }
     } else if (recv.via !== undefined) {
       const via = recv.via as Record<string, unknown>;

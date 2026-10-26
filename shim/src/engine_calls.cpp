@@ -46,6 +46,7 @@
 #include <utility>
 #include <vector>
 #include "entity_ptr_hint.h"
+#include "engine_function_copy.h"   // s2fn::copy::SystemReader — fault-free reads of a returned list
 
 // The shim's existing non-static bridge to GetEntitySystem() (defined in s2script_mm.cpp, where the
 // IGameResourceService pointer + its gamedata offset live). Declared locally exactly as ekv.cpp
@@ -53,6 +54,10 @@
 // live and can never go stale across a changelevel.
 class CGameEntitySystem;
 CGameEntitySystem* S2_EntitySystemBridge();
+
+// Interface lookup by version string through the Metamod engine factory, then the server factory
+// (defined in s2script_mm.cpp, which holds ISmmAPI). Null when neither factory knows the name.
+void* S2_FindEngineInterface(const char* name);
 
 namespace {
 
@@ -83,7 +88,68 @@ constexpr size_t kMaxCalls = 1024;
 enum : unsigned char { kArgScalar = 0, kArgEntity = 1, kArgString = 2, kArgVector = 3,
                        kArgUtlString = 4 };
 // retKind values — must match the core's return vocabulary.
-enum { kRetVoid = 0, kRetBool = 1, kRetInt = 2, kRetFloat = 3, kRetEntity = 4, kRetPtr = 5 };
+enum { kRetVoid = 0, kRetBool = 1, kRetInt = 2, kRetFloat = 3, kRetEntity = 4, kRetPtr = 5,
+       kRetUtlStringList = 6 };
+
+// Bound interface receivers. Process-lifetime like the call records: an engine interface lives as
+// long as the process, and a rebind of the same object reuses its id.
+constexpr size_t kMaxInterfaces = 64;
+std::vector<void*> g_interfaces;
+
+// `returns: "utlstringlist"` reads a CUtlVector<char*> the engine owns: { int m_Size; char**
+// m_pMemory @8; ... } (libserver's own print_mapgroup_sv walks it exactly so). Every read goes
+// through the fault-free process_vm_readv reader, so a wrong declaration yields an empty or short
+// list instead of a crash. These bound the copy: more than kMaxListStrings strings, or one longer
+// than kMaxListString bytes, is treated as a wrong declaration and fails the invoke.
+constexpr int kMaxListStrings = 4096;
+constexpr size_t kMaxListString = 1024;
+thread_local std::string g_lastStrings;   // the last list, NUL-separated (S2_EngineCallTakeStrings)
+
+bool ReadExact(uintptr_t at, void* out, size_t n) {
+    static const s2fn::copy::Reader reader = s2fn::copy::SystemReader();
+    if (!reader.available || !reader.read || !at) return false;
+    return reader.read(reader.context, at, out, n) == n;
+}
+
+// A C string at `at`, read in small chunks so a string near the end of a mapping still reads.
+bool ReadCString(uintptr_t at, std::string& out) {
+    out.clear();
+    char chunk[64];
+    while (out.size() < kMaxListString) {
+        // Never cross a page in one read: a short string at the end of the last mapped page would
+        // otherwise fail as a whole.
+        size_t room = 4096 - (at & 4095);
+        size_t n = room < sizeof chunk ? room : sizeof chunk;
+        if (!ReadExact(at, chunk, n)) return false;
+        for (size_t i = 0; i < n; i++) {
+            if (chunk[i] == '\0') { out.append(chunk, i); return true; }
+        }
+        out.append(chunk, n);
+        at += n;
+    }
+    return false;
+}
+
+// Fill g_lastStrings from a CUtlVector<char*>* and return the count, or -1 when it does not read
+// as one.
+int CollectStringList(uintptr_t list) {
+    g_lastStrings.clear();
+    if (!list) return -1;
+    int32_t size = 0;
+    uint64_t memory = 0;
+    if (!ReadExact(list, &size, sizeof size) || !ReadExact(list + 8, &memory, sizeof memory)) return -1;
+    if (size < 0 || size > kMaxListStrings || (size > 0 && !memory)) return -1;
+    std::string one;
+    for (int i = 0; i < size; i++) {
+        uint64_t str = 0;
+        if (!ReadExact(memory + 8u * static_cast<uint64_t>(i), &str, sizeof str)) return -1;
+        if (!str) { g_lastStrings.push_back('\0'); continue; }   // a null entry reads as ""
+        if (!ReadCString(str, one)) return -1;
+        g_lastStrings.append(one);
+        g_lastStrings.push_back('\0');
+    }
+    return size;
+}
 
 s2consumer::CallRecords g_calls(kMaxCalls); // ids and retained verified images live for the process
 
@@ -304,7 +370,7 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff, 
     if (retOut) *retOut = 0;
     const uintptr_t address = g_calls.Address(callId);
     if (!address) return 0;
-    if (retKind < kRetVoid || retKind > kRetPtr) return 0;     // validated BEFORE any call
+    if (retKind < kRetVoid || retKind > kRetUtlStringList) return 0;   // validated BEFORE any call
     if (gpCount < 0 || gpCount > kMaxGpArgs) return 0;
     if (fpCount < 0 || fpCount > kMaxFpArgs) return 0;
     if (gpCount > 0 && (!gp || !gpKind)) return 0;
@@ -320,9 +386,19 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff, 
     // function, which has no `this` at all). Nothing is resolved and no slot is consumed: the first
     // declared arg takes rdi. Kept as a sentinel on the existing parameter rather than a new ABI
     // field so the op signature is unchanged.
-    const bool hasReceiver = entIndex >= 0;
+    //
+    // entIndex == S2_RECEIVER_INTERFACE is an interface receiver: entSerial is the id
+    // S2_EngineCallBindInterface returned. A sub-object hop from an interface is never declared
+    // (the core rejects it), so one arriving here fails the call.
+    const bool isInterface = entIndex == S2_RECEIVER_INTERFACE;
+    const bool hasReceiver = entIndex >= 0 || isInterface;
     void* thisPtr = nullptr;
-    if (hasReceiver) {
+    if (isInterface) {
+        if (subObjOff >= 0) return 0;
+        if (entSerial < 0 || static_cast<size_t>(entSerial) >= g_interfaces.size()) return 0;
+        thisPtr = g_interfaces[static_cast<size_t>(entSerial)];
+        if (!thisPtr) return 0;
+    } else if (hasReceiver) {
         CEntityInstance* self = ResolveEntity(entIndex, entSerial);
         if (!self) return 0;
         thisPtr = self;
@@ -420,8 +496,62 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff, 
             case kRetInt:    *retOut = static_cast<uint32_t>(r); break;      // eax; core reads as i32
             case kRetEntity: *retOut = EntityHandleFromPtr(reinterpret_cast<void*>(r)); break;
             case kRetPtr:    *retOut = r; break;                             // rax, all 64 bits
+            case kRetUtlStringList: {
+                // A null list is the callee's "none" (an unknown map group): ~0 tells the core to
+                // return null rather than an empty list.
+                if (!r) { g_lastStrings.clear(); *retOut = ~uint64_t(0); break; }
+                const int n = CollectStringList(static_cast<uintptr_t>(r));
+                if (n < 0) return 0;          // not a readable list: degrade, never a partial list
+                *retOut = static_cast<uint64_t>(n);
+                break;
+            }
             default:         break;
         }
     }
     return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Interface receivers. See the header. The slot check reads the object's vtable pointer and the
+// one entry through the fault-free reader: an interface pointer is the engine's own, but the
+// descriptor that names it is plugin data.
+// ---------------------------------------------------------------------------
+int S2_EngineCallBindInterface(int callId, const char* name, int slot, char* reasonOut, int reasonCap) {
+    if (reasonOut && reasonCap > 0) reasonOut[0] = '\0';
+    const uintptr_t address = g_calls.Address(callId);
+    if (!address) return Fail(reasonOut, reasonCap, "interface receiver: unknown call id");
+    if (!name || !name[0]) return Fail(reasonOut, reasonCap, "interface receiver has no name");
+    void* iface = S2_FindEngineInterface(name);
+    if (!iface) {
+        char why[192];
+        std::snprintf(why, sizeof why, "interface '%s' not found in the engine or server factory", name);
+        return Fail(reasonOut, reasonCap, why);
+    }
+    if (slot >= 0) {
+        uint64_t vtable = 0, entry = 0;
+        if (!ReadExact(reinterpret_cast<uintptr_t>(iface), &vtable, sizeof vtable) ||
+            !ReadExact(static_cast<uintptr_t>(vtable) + 8u * static_cast<uint64_t>(slot), &entry, sizeof entry)) {
+            return Fail(reasonOut, reasonCap, "interface receiver: its vtable is unreadable");
+        }
+        if (entry != address) {
+            char why[224];
+            std::snprintf(why, sizeof why,
+                          "interface '%s' vtable slot %d is not the resolved target "
+                          "(the object is not an instance of the target's class)", name, slot);
+            return Fail(reasonOut, reasonCap, why);
+        }
+    }
+    for (size_t i = 0; i < g_interfaces.size(); i++) {
+        if (g_interfaces[i] == iface) return static_cast<int>(i);
+    }
+    if (g_interfaces.size() >= kMaxInterfaces) return Fail(reasonOut, reasonCap, "interface receiver table full");
+    g_interfaces.push_back(iface);
+    return static_cast<int>(g_interfaces.size() - 1);
+}
+
+int S2_EngineCallTakeStrings(char* out, int cap) {
+    const size_t need = g_lastStrings.size();
+    if (need > static_cast<size_t>(INT32_MAX)) return -1;
+    if (out && cap >= 0 && need <= static_cast<size_t>(cap)) std::memcpy(out, g_lastStrings.data(), need);
+    return static_cast<int>(need);
 }

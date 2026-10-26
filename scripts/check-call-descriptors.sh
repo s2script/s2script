@@ -279,10 +279,15 @@ for scope, sc in sorted(scopes.items()):
         if rkind not in RECEIVER_KINDS:
             bad.append(f'{where}: unsupported receiver kind "{rkind}" — expected one of '
                        f'{", ".join(sorted(RECEIVER_KINDS))}')
+        if rkind == 'interface':
+            iname = (recv or {}).get('name')
+            if not isinstance(iname, str) or not iname or '\0' in iname:
+                bad.append(f'{where}: receiver.kind "interface" needs a non-empty `name` '
+                           f'(the interface version string)')
         via = (recv or {}).get('via')
         if via is not None:
-            if rkind == 'none':
-                bad.append(f'{where}: receiver.kind "none" cannot carry a `via` sub-object hop')
+            if rkind != 'entity':
+                bad.append(f'{where}: receiver.kind "{rkind}" cannot carry a `via` sub-object hop')
             # One {class, field} pointer hop, or an array of {class, field, embedded?} hops in
             # which only the last may be a pointer hop (core sums the embedded offsets; the shim
             # loads at most one pointer, after them).

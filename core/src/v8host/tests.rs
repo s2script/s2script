@@ -2192,6 +2192,100 @@
         shutdown();
     }
 
+    thread_local! {
+        /// (ent_index, ent_serial, ret_kind) recorded by `iface_call_invoke`.
+        static LAST_IFACE: std::cell::Cell<(c_int, c_int, c_int)> = const { std::cell::Cell::new((0, 0, -1)) };
+        /// (call id, name, slot) of the last bind.
+        static LAST_BIND: std::cell::RefCell<(c_int, String, c_int)> = std::cell::RefCell::new((0, String::new(), 0));
+        /// What the fake shim "returned" for a string list: None = a null list.
+        static FAKE_LIST: std::cell::RefCell<Option<Vec<&'static str>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    extern "C" fn iface_bind(call_id: c_int, name: *const c_char, slot: c_int, reason: *mut c_char, cap: c_int) -> c_int {
+        let n = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        LAST_BIND.with(|b| *b.borrow_mut() = (call_id, n.clone(), slot));
+        if n == "Missing001" {
+            let msg = b"interface 'Missing001' not found\0";
+            let len = msg.len().min(cap as usize);
+            unsafe { std::ptr::copy_nonoverlapping(msg.as_ptr(), reason as *mut u8, len) };
+            return -1;
+        }
+        3
+    }
+
+    extern "C" fn iface_call_invoke(
+        _call_id: c_int, ent_index: c_int, ent_serial: c_int, _subobj_off: c_int, _subobj_deref: c_int,
+        _gp: *const u64, _gp_kind: *const u8, _gp_count: c_int,
+        _fp: *const f64, _fp_count: c_int,
+        _strs: *const *const c_char, _vecs: *const f32,
+        ret_kind: c_int, ret_out: *mut u64,
+    ) -> c_int {
+        LAST_IFACE.with(|c| c.set((ent_index, ent_serial, ret_kind)));
+        let n = FAKE_LIST.with(|l| l.borrow().as_ref().map(|v| v.len() as u64));
+        unsafe { *ret_out = n.unwrap_or(u64::MAX) };
+        1
+    }
+
+    extern "C" fn iface_take_strings(out: *mut c_char, cap: c_int) -> c_int {
+        let blob: Vec<u8> = FAKE_LIST.with(|l| {
+            l.borrow().as_ref().map(|v| v.iter().flat_map(|s| s.bytes().chain(std::iter::once(0))).collect()).unwrap_or_default()
+        });
+        if !out.is_null() && blob.len() <= cap as usize {
+            unsafe { std::ptr::copy_nonoverlapping(blob.as_ptr(), out as *mut u8, blob.len()) };
+        }
+        blob.len() as c_int
+    }
+
+    /// An interface receiver binds by name (passing the vtable slot for a vtable target), takes no
+    /// `self`, reaches the shim as (RECEIVER_INTERFACE, interface id), and a `utlstringlist`
+    /// return arrives as a string array, or null for a null list. A failed bind degrades the
+    /// descriptor with the shim's reason, and `via` on an interface receiver is rejected.
+    #[test]
+    fn interface_receivers_bind_by_name_and_return_string_lists() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps {
+            engine_call_resolve: Some(fake_call_resolve),
+            engine_call_invoke: Some(iface_call_invoke),
+            engine_call_bind_interface: Some(iface_bind),
+            engine_call_take_strings: Some(iface_take_strings),
+            ..mock_event_ops()
+        }));
+        crate::gamedata_calls::register_plugin("ifc", r#"{"calls":{
+            "maps":{"receiver":{"kind":"interface","name":"GameTypes001"},
+                    "target":{"kind":"vtable","class":"GameTypes","module":"libmatchmaking.so",
+                              "linuxsteamrt64":{"index":64,"validate":{"prologue":"48 85 F6"}}},
+                    "args":["string"],"returns":"utlstringlist"},
+            "gone":{"receiver":{"kind":"interface","name":"Missing001"},
+                    "target":{"kind":"signature","name":"T","module":"libserver.so","pattern":"55","resolve":"direct"},
+                    "args":[],"returns":"void"},
+            "hop":{"receiver":{"kind":"interface","name":"GameTypes001","via":{"class":"C","field":"m_f"}},
+                    "target":{"kind":"signature","name":"T","module":"libserver.so","pattern":"55","resolve":"direct"},
+                    "args":[],"returns":"void"}
+        }}"#);
+        assert_eq!(crate::gamedata_calls::status("ifc", "maps"), "available");
+        // Registration runs in name order, so 'maps' binds last: a vtable target passes its slot.
+        assert_eq!(LAST_BIND.with(|b| b.borrow().clone()), (7, "GameTypes001".to_string(), 64));
+        assert!(crate::gamedata_calls::status("ifc", "gone").contains("Missing001"));
+        assert!(crate::gamedata_calls::status("ifc", "hop").contains("cannot carry a 'via'"));
+        create_plugin_context("ifc");
+        assert!(eval_in_context_bool("ifc", r#"__s2_engine_call_receiverless("maps") === true"#));
+
+        FAKE_LIST.with(|l| *l.borrow_mut() = Some(vec!["de_dust2", "", "de_inferno"]));
+        assert_eq!(eval_in_context_string("ifc",
+            r#"JSON.stringify(__s2_engine_call_invoke("maps", 0, 0, ["mg_active"]))"#),
+            r#"["de_dust2","","de_inferno"]"#);
+        assert_eq!(LAST_IFACE.with(|c| c.get()),
+                   (crate::gamedata_calls::RECEIVER_INTERFACE, 3, crate::gamedata_calls::RET_UTLSTRINGLIST));
+        FAKE_LIST.with(|l| *l.borrow_mut() = Some(vec![]));
+        assert_eq!(eval_in_context_string("ifc",
+            r#"JSON.stringify(__s2_engine_call_invoke("maps", 0, 0, ["x"]))"#), "[]");
+        FAKE_LIST.with(|l| *l.borrow_mut() = None);
+        assert_eq!(eval_in_context_string("ifc",
+            r#"String(__s2_engine_call_invoke("maps", 0, 0, ["x"]))"#), "null");
+        set_engine_ops(None);
+        shutdown();
+    }
+
     /// The legitimate path, which dropping the leading `pluginId` argument could have broken
     /// silently: an AUTHORIZED plugin asking for its OWN descriptor still gets a working callable,
     /// and the receiver/arg slots still land where the shim expects after every following argument

@@ -3873,7 +3873,12 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         // A receiverless descriptor (`receiver.kind: "none"`) has no entity to gate: it passes the
         // shim's receiverless sentinel (index < 0) so no resolve is attempted and the first declared
         // arg takes the slot `this` would have occupied.
-        let (index, serial) = if plan.receiverless {
+        //
+        // An interface receiver passes the interface sentinel with the bound id; it is
+        // receiverless to JS (no `self`), so this check comes first.
+        let (index, serial) = if let Some(iface) = plan.interface {
+            (crate::gamedata_calls::RECEIVER_INTERFACE, iface)
+        } else if plan.receiverless {
             (-1, 0)
         } else {
             match ent_op_serial(scope, args.get(1), args.get(2)) {
@@ -4060,6 +4065,28 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
                 if ret == 0 || crate::memory::checked(ret as f64, 0).is_some() {
                     if let Some(p) = make_ptr(scope, ret as f64) { rv.set(p); }
                 }
+            }
+            crate::gamedata_calls::RET_UTLSTRINGLIST => {
+                // `ret` is the string count (or the null-list marker); the strings themselves are
+                // copied out of the shim's per-thread buffer, NUL-separated.
+                if ret == crate::gamedata_calls::STRINGLIST_NULL { return; }
+                let Some(take) = engine_ops().and_then(|o| o.engine_call_take_strings) else { return };
+                let need = take(std::ptr::null_mut(), 0);
+                if need < 0 { return; }
+                let mut buf = vec![0u8; need as usize];
+                if need > 0 && take(buf.as_mut_ptr() as *mut c_char, need) != need { return; }
+                let parts: Vec<&[u8]> = if buf.is_empty() {
+                    Vec::new()
+                } else {
+                    buf[..buf.len() - 1].split(|b| *b == 0).collect()
+                };
+                if parts.len() as u64 != ret { return; }
+                let items: Vec<v8::Local<v8::Value>> = parts
+                    .iter()
+                    .filter_map(|p| v8::String::new(scope, &String::from_utf8_lossy(p)).map(|s| s.into()))
+                    .collect();
+                if items.len() != parts.len() { return; }
+                rv.set(v8::Array::new_with_elements(scope, &items).into());
             }
             _ => {}
         }

@@ -70,6 +70,15 @@ pub(crate) const RET_FLOAT: i32 = 3;
 pub(crate) const RET_ENTITY: i32 = 4;
 /// A raw address, all 64 bits (`kRetPtr`). Core hands it to JS as an `@s2script/sdk/unsafe` `Ptr`.
 pub(crate) const RET_PTR: i32 = 5;
+/// A `CUtlVector<char*>*` (the engine's CUtlStringList), copied out as `string[]` (`kRetUtlStringList`).
+/// The invoke's return value is the string count; the strings come from `engine_call_take_strings`.
+pub(crate) const RET_UTLSTRINGLIST: i32 = 6;
+/// The shim's "the list pointer was null" count for `RET_UTLSTRINGLIST` (JS gets null, not []).
+pub(crate) const STRINGLIST_NULL: u64 = u64::MAX;
+
+/// The invoke's `ent_index` for an interface receiver; `ent_serial` then carries the interface id
+/// the bind op returned. Mirrors `S2_RECEIVER_INTERFACE` in engine_calls.h — an ABI.
+pub(crate) const RECEIVER_INTERFACE: i32 = -2;
 
 /// The shim's "no entity" marker for `RET_ENTITY` (`kInvalidEntityHandle` in `engine_calls.cpp`).
 /// MUST stay in sync with it, and MUST NOT be 0 — zero decodes to the legal (index 0, serial 0), so
@@ -99,6 +108,7 @@ pub(crate) fn ret_code(returns: &str) -> Option<i32> {
         "float" => RET_FLOAT,
         "entity" => RET_ENTITY,
         "ptr" => RET_PTR,
+        "utlstringlist" => RET_UTLSTRINGLIST,
         _ => return None,
     })
 }
@@ -162,6 +172,9 @@ pub(crate) struct InvokePlan {
     /// `receiver.kind: "none"` — a static/free function. The callable takes no `self`, and the
     /// invoke passes the receiverless sentinel instead of an entity pair.
     pub receiverless: bool,
+    /// `receiver.kind: "interface"` — the shim's id for the bound engine interface. The callable
+    /// takes no `self` (the receiver is fixed by the descriptor), so `receiverless` is also true.
+    pub interface: Option<i32>,
 }
 
 /// One `receiver.via` hop. `embedded` means the field IS the sub-object (an embedded struct such as
@@ -353,15 +366,28 @@ fn prepare(decl_json: &str, ops_available: bool) -> Result<InvokePlan, String> {
     //
     // A receiverless descriptor must not also carry `via`: a sub-object hop is a hop FROM a
     // receiver, so the pair is contradictory and is rejected rather than silently ignored.
+    //   "interface" — an engine interface named by its version string (`receiver.name`, e.g.
+    //              "GameTypes001"), looked up shim-side through the engine/server factories. The
+    //              callable takes no `self`; the pointer never leaves the shim. For a vtable target
+    //              the shim also checks the object's own vtable slot is the resolved address.
     let receiver = decl.get("receiver");
     let rkind = receiver.and_then(|r| r.get("kind")).and_then(|v| v.as_str()).unwrap_or("entity");
-    if rkind != "entity" && rkind != "none" {
+    if rkind != "entity" && rkind != "none" && rkind != "interface" {
         return Err(format!("unsupported receiver kind '{}'", rkind));
     }
-    let receiverless = rkind == "none";
-    if receiverless && receiver.and_then(|r| r.get("via")).is_some() {
-        return Err("receiver.kind 'none' cannot carry a 'via' sub-object hop".to_string());
+    if rkind != "entity" && receiver.and_then(|r| r.get("via")).is_some() {
+        return Err(format!("receiver.kind '{}' cannot carry a 'via' sub-object hop", rkind));
     }
+    let interface_name = if rkind == "interface" {
+        let n = receiver.and_then(|r| r.get("name")).and_then(|v| v.as_str()).unwrap_or("");
+        if n.is_empty() {
+            return Err("receiver.kind 'interface' needs a 'name' (the interface version string)".to_string());
+        }
+        Some(CString::new(n).map_err(|_| "descriptor string contains an interior NUL".to_string())?)
+    } else {
+        None
+    };
+    let receiverless = rkind != "entity";
     let via = match receiver.and_then(|r| r.get("via")) {
         Some(v) => parse_via(v)?,
         None => Vec::new(),
@@ -394,8 +420,32 @@ fn prepare(decl_json: &str, ops_available: bool) -> Result<InvokePlan, String> {
 
     let target = decl.get("target").ok_or_else(|| "descriptor has no target".to_string())?;
     let call_id = resolve_target(target)?;
+    let interface = match interface_name {
+        Some(name) => Some(bind_interface(call_id, &name, target)?),
+        None => None,
+    };
 
-    Ok(InvokePlan { call_id, args, ret_code: ret, via, receiverless })
+    Ok(InvokePlan { call_id, args, ret_code: ret, via, receiverless, interface })
+}
+
+/// Bind an interface receiver to a resolved call. A vtable target passes its slot so the shim can
+/// check the interface object really is an instance of the target's class.
+fn bind_interface(call_id: i32, name: &CString, target: &serde_json::Value) -> Result<i32, String> {
+    let Some(func) = crate::v8host::engine_ops().and_then(|o| o.engine_call_bind_interface) else {
+        return Err("engine op unavailable (interface receivers)".to_string());
+    };
+    let slot = if target.get("kind").and_then(|v| v.as_str()) == Some("vtable") {
+        target.get("index").and_then(|v| v.as_i64()).and_then(|n| i32::try_from(n).ok()).unwrap_or(-1)
+    } else {
+        -1
+    };
+    let mut reason = vec![0u8; REASON_CAP];
+    let id = func(call_id, name.as_ptr(), slot, reason.as_mut_ptr() as *mut c_char, REASON_CAP as i32);
+    if id < 0 {
+        let text = reason_string(&reason);
+        return Err(if text.is_empty() { "interface receiver did not bind".to_string() } else { text });
+    }
+    Ok(id)
 }
 
 /// Call the shim's resolve op with the descriptor's opaque strings. Returns the call id, or the
@@ -867,10 +917,15 @@ mod tests {
         reg.register("@demo/gd", "longVia", long, true);
         assert!(reg.status("@demo/gd", "longVia").contains("at most 4"));
 
-        let bad_receiver = r#"{"receiver":{"kind":"interface"},"target":{"kind":"signature","pattern":"55"},
+        let bad_receiver = r#"{"receiver":{"kind":"global"},"target":{"kind":"signature","pattern":"55"},
                                "args":[],"returns":"void"}"#;
         reg.register("@demo/gd", "badRecv", bad_receiver, true);
         assert!(reg.status("@demo/gd", "badRecv").contains("unsupported receiver kind"));
+        // An interface receiver must name its interface.
+        let nameless = r#"{"receiver":{"kind":"interface"},"target":{"kind":"signature","pattern":"55"},
+                           "args":[],"returns":"void"}"#;
+        reg.register("@demo/gd", "nameless", nameless, true);
+        assert!(reg.status("@demo/gd", "nameless").contains("needs a 'name'"));
 
         reg.register("@demo/gd", "malformed", "{not json", true);
         assert!(reg.status("@demo/gd", "malformed").contains("malformed descriptor"));

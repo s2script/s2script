@@ -1821,6 +1821,24 @@
       "c_ret": "float",
       "c_params": "void",
       "shim": "s2_server_tick_interval"
+    },
+    {
+      "name": "engine_call_bind_interface",
+      "alias": "EngineCallBindInterfaceFn",
+      "rust": "extern \"C\" fn(call_id: c_int, name: *const c_char, slot: c_int, reason_out: *mut c_char, reason_cap: c_int) -> c_int",
+      "group": "Plugin-declared engine calls",
+      "c_ret": "int",
+      "c_params": "int callId, const char* name, int slot, char* reasonOut, int reasonCap",
+      "shim": "S2_EngineCallBindInterface"
+    },
+    {
+      "name": "engine_call_take_strings",
+      "alias": "EngineCallTakeStringsFn",
+      "rust": "extern \"C\" fn(out: *mut c_char, cap: c_int) -> c_int",
+      "group": "Plugin-declared engine calls",
+      "c_ret": "int",
+      "c_params": "char* out, int cap",
+      "shim": "S2_EngineCallTakeStrings"
     }
   ]
 }

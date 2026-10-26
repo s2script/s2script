@@ -10,6 +10,11 @@
 // books-first rule must not have two copies of the constant that states its answer.
 #define S2_ENTITY_HANDLE_NONE 0xFFFFFFFFu
 
+// S2_EngineCallInvoke's entIndex for an interface receiver; entSerial then carries the interface id
+// from S2_EngineCallBindInterface. Any other negative entIndex is receiverless. Mirrors
+// RECEIVER_INTERFACE in core/src/gamedata_calls.rs — an ABI.
+#define S2_RECEIVER_INTERFACE (-2)
+
 // Plugin-declared engine calls (plugin-gamedata slice, Task 6) — the SHIM half of the feature:
 // descriptor RESOLUTION (byte signature or RTTI vtable slot, `prologue`-validated and .text-range
 // checked) and the INVOKE itself. Both are plain C-ABI so the Rust core can reach them through two
@@ -44,7 +49,8 @@ int S2_EngineCallResolve(const char* kind, const char* module, const char* patte
 // Invoke a resolved descriptor on a serial-gated entity receiver.
 // gpKind[i]: 0=scalar, 1=entity((uint64)index<<32|serial), 2=string(index into strs),
 //            3=vector(index into vecs, 3 floats each)
-// retKind: 0=void 1=bool 2=int 3=float 4=entity
+// retKind: 0=void 1=bool 2=int 3=float 4=entity 5=ptr 6=utlstringlist (retOut = the string
+//          count, the strings via S2_EngineCallTakeStrings)
 // Returns 1 on success (retOut written), 0 on degrade (stale receiver, unresolved `via` sub-object,
 // bad arg budget, unknown kind) — never a crash.
 int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff, int subObjDeref,
@@ -52,6 +58,20 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff, 
                         const double* fp, int fpCount,
                         const char* const* strs, const float* vecs,
                         int retKind, uint64_t* retOut);
+
+// Bind an INTERFACE receiver (`receiver.kind: "interface"`) to a resolved call. `name` is the
+// interface version string from the descriptor (e.g. "GameTypes001"), looked up through the engine
+// factory, then the server factory. When `slot` >= 0 (a vtable target) the interface object's own
+// vtable entry at that slot must be the resolved address, which proves the object is an instance
+// of the class the target was resolved against. Returns an interface id >= 0 for
+// S2_EngineCallInvoke (entIndex = S2_RECEIVER_INTERFACE, entSerial = the id), or -1 with a reason.
+// The pointer itself never leaves the shim.
+int S2_EngineCallBindInterface(int callId, const char* name, int slot, char* reasonOut, int reasonCap);
+
+// Copy out the strings of the last `returns: "utlstringlist"` invoke on this thread: each string
+// NUL-terminated, back to back. Returns the byte count the whole blob needs; copies only when it
+// fits in `cap` (so a caller retries with a bigger buffer when the return exceeds `cap`).
+int S2_EngineCallTakeStrings(char* out, int cap);
 
 // Pack a raw engine pointer into a CEntityHandle, BOOKS-FIRST: membership in the entity system's own
 // identity chunks is decided without reading a single byte of `p`, so a pointer that is not an entity
