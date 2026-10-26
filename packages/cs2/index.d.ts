@@ -85,7 +85,7 @@ import type { SceneNode, WeaponServices, MovementServices, AimPunchServices, Mat
 export { GameEvent } from "@s2script/sdk/events";
 export type { GameEvents } from "./events.generated";
 export { CsItem } from "./csitem.generated";
-export { Weapon } from "./weapon";
+export { Weapon, WeaponData } from "./weapon";
 // A re-export (`export { Weapon }`) does NOT create a local binding, so the Pawn interface below
 // referenced an unbound `Weapon` → TS2304, swallowed by the gate's skipLibCheck into `any`. Bind it
 // locally too (the SceneNode pattern on line 14) so activeWeapon/weapons/giveNamedItem stay typed.
@@ -171,9 +171,14 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   stripWeapons(): boolean;
   /** Alias of stripWeapons — destroy all held weapons. */
   disarm(): boolean;
-  /** DEFERRED (always false): a true drop spawns a world pickup, not composable from remove(); needs the
-   *  DropActivePlayerWeapon signature-resolve. */
+  /** Drop the deployed weapon as a world pickup (SourceMod `CS_DropWeapon` on the active weapon). The
+   *  engine picks the throw velocity. false if there is no active weapon, the binding is degraded, or
+   *  the pawn is stale. */
   dropActiveWeapon(): boolean;
+  /** Drop one weapon this pawn holds as a world pickup (SourceMod `CS_DropWeapon`). Unlike
+   *  {@link removeWeapon}, the weapon entity survives. false if the weapon is not this pawn's, either
+   *  handle is stale, or the binding is degraded. */
+  dropWeapon(weapon: Weapon): boolean;
   /** The current fire gate (m_flNextAttack, seconds), or null if unresolved/stale. Read companion to blockFiring. */
   readonly nextAttack: number | null;
   /** Block ALL weapon fire for `seconds` (default effectively-indefinite) by writing m_flNextAttack. The
@@ -535,6 +540,39 @@ export declare const Shake: {
 export declare const HintText: {
   /** Show `text` as hint text to `slot`. false if the message/fields don't resolve. */
   to(slot: number, text: string): boolean;
+};
+
+/** Center-screen text (SourceMod `PrintCenterText` / `PrintCenterTextAll`), a `TextMsg` with
+ *  `HUD_PRINTCENTER`. false if the message does not resolve or `slot` has no client. */
+export declare const CenterText: {
+  /** Show `text` in the center of `slot`'s screen. */
+  to(slot: number, text: string): boolean;
+  /** Show `text` in the center of every client's screen. */
+  toAll(text: string): boolean;
+};
+/** CS2's alert line above the center text (`TextMsg` with `HUD_PRINTALERT`). Same returns as
+ *  {@link CenterText}. */
+export declare const AlertText: {
+  /** Show `text` as an alert to `slot`. */
+  to(slot: number, text: string): boolean;
+  /** Show `text` as an alert to every client. */
+  toAll(text: string): boolean;
+};
+/**
+ * The HTML center panel (`show_survival_respawn_status`; other frameworks call this
+ * `PrintCenterHtml` / `SendCenterHTML`). The client paints it one frame per event, so the package
+ * re-sends it every frame until `seconds` (default 5) run out. Each slot shows one message per
+ * plugin; a later call replaces it. The re-send stops at the calling plugin's unload.
+ * Escape any player-supplied text before putting it in `html`.
+ */
+export declare const CenterHtml: {
+  /** Show `html` to `slot` for `seconds` (default 5; 0 or less clears it). Dead and spectating players
+   *  see it too. false if `slot` has no connected human client. */
+  to(slot: number, html: string, seconds?: number): boolean;
+  /** Show `html` to every connected human client for `seconds`. true if at least one got it. */
+  toAll(html: string, seconds?: number): boolean;
+  /** Stop showing this plugin's message to `slot`. false if none was showing. */
+  clear(slot: number): boolean;
 };
 
 /** A world-space coordinate triple (a corner or center of a {@link TriggerZoneHandle} box). */
