@@ -728,11 +728,37 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       caller ? caller.index : -1, caller ? caller.id : -1,
       delay || 0);
   };
+  // Damage slice: deal `damage` to this entity through the game's own damage path (the game
+  // package's damage-info constructor + TakeDamage), so OnTakeDamage hooks and the engine's rules
+  // (god mode, friendly fire, armor) all apply. opts: attacker/inflictor/ability (EntityRef, or a
+  // wrapper with `.ref`), damageType bits, force and position ([x, y, z]). An optional entity
+  // that is no longer live refuses the call. Returns false when nothing was dealt.
+  function damageEntity(e) {
+    if (e === undefined || e === null) return null;
+    if (!(e instanceof EntityRef) && e.ref && typeof e.ref === "object") e = e.ref;
+    if (typeof e.index !== "number") throw new TypeError("s2script: takeDamage(): an entity option must be an EntityRef or wrap one");
+    return e;
+  }
+  function damageVec(v) { return v ? [v[0], v[1], v[2]] : null; }
+  EntityRef.prototype.takeDamage = function (damage, opts) {
+    if (typeof damage !== "number" || !isFinite(damage)) throw new TypeError("s2script: takeDamage() requires a finite damage");
+    opts = opts || {};
+    var inflictor = damageEntity(opts.inflictor), attacker = damageEntity(opts.attacker), ability = damageEntity(opts.ability);
+    return __s2_entity_take_damage(this.index, this.id,
+      inflictor ? inflictor.index : -1, inflictor ? inflictor.id : -1,
+      attacker ? attacker.index : -1, attacker ? attacker.id : -1,
+      ability ? ability.index : -1, ability ? ability.id : -1,
+      damage, opts.damageType | 0, damageVec(opts.force), damageVec(opts.position));
+  };
   // Entity-I/O slice: hook an entity output (e.g. "OnTrigger"/"OnPressed"/"OnStartTouch"). classname/
   // output accept "*" wildcards. handler(ev) may return a HookResult >= Handled to suppress the output
   // (the FireOutputInternal detour supersedes the original call). Dispatch is SYNCHRONOUS.
   var Entity = {
     onOutput: function (classname, output, handler) { return __s2_output_subscribe(String(classname), String(output), handler); },
+    // Parity slice 5: hook an input an entity receives (e.g. "Kill"/"Open"/"SetHealth"), before it
+    // runs. Input names match case-insensitively; "*" wildcards either side. handler(ev) may return
+    // a HookResult >= Handled to drop the input (the AcceptInput detour supersedes it).
+    onInput: function (classname, input, handler) { return __s2_input_subscribe(String(classname), String(input), handler); },
     // Entity lifecycle listeners: fire when the engine creates/spawns/deletes an entity of `className`
     // ("*" = all). The handler gets (entity, className): `entity` is a serial-gated EntityRef (may be
     // null for a barely-constructed onCreate / a dying onDelete); `className` is always valid.
@@ -743,6 +769,30 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     // EntityRefs (empty array on no-op/degrade). Broadly reusable (gamerules proxy, props, triggers...).
     findByClass: function (className) {
       return __s2_entity_find_by_class(String(className));
+    },
+    // Find every entity whose targetname exactly matches name (SourceMod's FindEntityByTargetname
+    // loop). An empty name matches nothing.
+    findByName: function (name) {
+      return __s2_entity_find_by_name(String(name));
+    },
+    // Every entity whose world origin lies within radius of center (inclusive), optionally only of
+    // className. center is a Vector, {x,y,z} or [x,y,z]. Entities with no readable origin are skipped.
+    // Returns [] for a non-finite center or a negative/non-finite radius.
+    findInSphere: function (center, radius, className) {
+      var c = Array.isArray(center) ? { x: center[0], y: center[1], z: center[2] } : center;
+      var r = Number(radius);
+      if (!c || !isFinite(c.x) || !isFinite(c.y) || !isFinite(c.z) || !(r >= 0) || !isFinite(r)) return [];
+      var refs = className === undefined || className === null
+        ? __s2_entity_find_all()
+        : __s2_entity_find_by_class(String(className));
+      var r2 = r * r, out = [];
+      for (var i = 0; i < refs.length; i++) {
+        var o = refs[i].origin;
+        if (!o) continue;
+        var dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
+        if (dx * dx + dy * dy + dz * dz <= r2) out.push(refs[i]);
+      }
+      return out;
     },
   };
   // Inter-plugin wire tagging: an EntityRef crosses the structured-copy (JSON) boundary as a tagged
@@ -1370,7 +1420,18 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     return __s2_sdkunhook(entity.index, entity.id, type, callback);
   }
   var UseType = { Off: 0, On: 1, Set: 2, Toggle: 3 };
-  globalThis.__s2pkg_sdkhooks = { SDKHook: SDKHook, SDKUnhook: SDKUnhook, SDKHookType: SDKHookType, UseType: UseType };
+  // SourceMod's SDKHooks_TakeDamage(entity, inflictor, attacker, damage, damagetype, weapon, force,
+  // position), over EntityRef.takeDamage. `weapon` is the damage info's ability. SourceMod's
+  // bypassHooks has no equivalent: plugin damage always runs OnTakeDamage hooks.
+  function SDKHooks_TakeDamage(entity, inflictor, attacker, damage, damageType, weapon, force, position) {
+    var victim = damageEntity(entity);
+    if (!victim) return false;
+    return victim.takeDamage(damage, {
+      inflictor: inflictor, attacker: attacker, ability: weapon,
+      damageType: damageType, force: force, position: position,
+    });
+  }
+  globalThis.__s2pkg_sdkhooks = { SDKHook: SDKHook, SDKUnhook: SDKUnhook, SDKHooks_TakeDamage: SDKHooks_TakeDamage, SDKHookType: SDKHookType, UseType: UseType };
   // --- Usercmd primitive Task 4: @s2script/usercmd (UserCmd.onRun + the SINGLETON block-scoped Cmd).
   //     The per-tick input fields are Source2-shared (usercmd.proto) -> engine-generic, lives in core.
   //     Field enum (0 forwardMove/1 sideMove/2 upMove/3 pitch/4 yaw/5 roll/6 impulse)
@@ -1952,6 +2013,21 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   Client.prototype.print = function (message) { __s2_client_console_print(this.slot, String(message) + "\n", __s2_client_token(this)); };
   Client.prototype.command = function (cmd) { return __s2_client_command(this.slot, String(cmd), __s2_client_token(this)); };
   Client.prototype.fakeCommand = function (cmd) { return __s2_client_fake_command(this.slot, String(cmd), __s2_client_token(this)); };
+  // Ask the client for its own value of a cvar. Resolves on a later frame; null when nothing was sent
+  // (bot, stale handle, unsupported build) or the client disconnected first.
+  Client.prototype.queryConVar = function (name) {
+    var slot = this.slot, token = __s2_client_token(this);
+    return new Promise(function (resolve) {
+      var cookie = __s2_client_query_convar(slot, String(name), token, function (status, value) {
+        resolve(status == null ? null : { status: status, value: value });
+      });
+      if (!cookie) resolve(null);
+    });
+  };
+  Client.prototype.replicateConVar = function (name, value) {
+    var text = value === true ? "1" : value === false ? "0" : String(value);
+    return __s2_client_replicate_convar(this.slot, String(name), text, __s2_client_token(this));
+  };
   // One snapshot of the net channel's counters; null for a bot or a stale handle. The indices match
   // NET_STATS_LEN in core/src/client.rs; pairs are [outgoing, incoming].
   Client.prototype.netStats = function () {
@@ -2465,6 +2541,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
           onSpawn:  function (c, h) { regFn(viaId(function () { return En.onSpawn(c, h); })); },
           onDelete: function (c, h) { regFn(viaId(function () { return En.onDelete(c, h); })); },
           onOutput: function (c, o, h) { regFn(viaId(function () { return En.onOutput(c, o, h); })); },
+          onInput:  function (c, i, h) { regFn(viaId(function () { return En.onInput(c, i, h); })); },
         },
         server: {
           onGameFrame: function (fn, opts) { regFn(function () { var d = Fr.subscribe(fn, opts || {}); if (d && d.dispose) t.disposer(d.dispose); }); },
@@ -2692,6 +2769,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   function onOutput(classname, output, handler) {
     __s2_load_ctx_or_throw("onOutput()").entities.onOutput(classname, output, handler);
   }
+  function onInput(classname, input, handler) {
+    __s2_load_ctx_or_throw("onInput()").entities.onInput(classname, input, handler);
+  }
   function previous() { return __s2_load_ctx_or_throw("previous()").previous; }
   function pluginId() { return __s2_load_ctx_or_throw("pluginId()").id; }
   // Game-package ctx namespaces (ui / gameRules / players / items) as load-window
@@ -2730,6 +2810,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_commands.command = command;
   globalThis.__s2pkg_plugin.hook = hook;
   globalThis.__s2pkg_plugin.onOutput = onOutput;
+  globalThis.__s2pkg_plugin.onInput = onInput;
   globalThis.__s2pkg_plugin.publish = publish;
   globalThis.__s2pkg_plugin.use = use;
   globalThis.__s2pkg_plugin.tryUse = tryUse;

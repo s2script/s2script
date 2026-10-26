@@ -1823,6 +1823,33 @@
       "shim": "s2_server_tick_interval"
     },
     {
+      "name": "entity_take_damage",
+      "alias": "EntityTakeDamageFn",
+      "rust": "extern \"C\" fn(c_int, c_int, c_int, c_int, c_int, c_int, c_int, c_int, f32, c_int, *const f32, *const f32) -> c_int",
+      "group": "Damage slice: CTakeDamageInfo ctor + CBaseEntity::TakeDamage + dtor",
+      "c_ret": "int",
+      "c_params": "int index, int serial, int inflictorIdx, int inflictorSerial, int attackerIdx, int attackerSerial, int abilityIdx, int abilitySerial, float damage, int damageType, const float* force, const float* position",
+      "shim": "Shim_EntityTakeDamage"
+    },
+    {
+      "name": "client_query_convar",
+      "alias": "ClientQueryConvarFn",
+      "rust": "extern \"C\" fn(slot: c_int, name: *const c_char, cookie: c_int) -> c_int",
+      "group": "client convar query + replicate",
+      "c_ret": "int",
+      "c_params": "int slot, const char* name, int cookie",
+      "shim": "s2_client_query_convar"
+    },
+    {
+      "name": "client_replicate_convar",
+      "alias": "ClientReplicateConvarFn",
+      "rust": "extern \"C\" fn(slot: c_int, name: *const c_char, value: *const c_char) -> c_int",
+      "group": "client convar query + replicate",
+      "c_ret": "int",
+      "c_params": "int slot, const char* name, const char* value",
+      "shim": "s2_client_replicate_convar"
+    },
+    {
       "name": "client_net_stats",
       "alias": "ClientNetStatsFn",
       "rust": "extern \"C\" fn(slot: c_int, out: *mut f64, n: c_int) -> c_int",
