@@ -87,7 +87,10 @@ export declare const SDKHookType: {
   readonly Spawn: "Spawn";
   /** `Spawn` post. Return is ignored. */
   readonly SpawnPost: "SpawnPost";
-  /** `CBaseEntity::Think` pre. `Handled` / `Stop` skip the original virtual. */
+  /**
+   * `CBaseEntity::Think` pre. Source 2 has no Think virtual (thinks are `SetThink` function
+   * pointers), so on CS2 {@link SDKHook} returns `false` for this type.
+   */
   readonly Think: "Think";
   /** `Think` post. Return is ignored. */
   readonly ThinkPost: "ThinkPost";
@@ -99,7 +102,10 @@ export declare const SDKHookType: {
   readonly PostThink: "PostThink";
   /** `PostThink` post. Return is ignored. */
   readonly PostThinkPost: "PostThinkPost";
-  /** `CBaseEntity::Use` pre. `Handled` / `Stop` skip the original virtual. */
+  /**
+   * `CBaseEntity::Use` pre (`+use` on a door, button or prop). `Handled` / `Stop` skip the
+   * original virtual.
+   */
   readonly Use: "Use";
   /** `Use` post. Return is ignored. */
   readonly UsePost: "UsePost";
