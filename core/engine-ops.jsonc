@@ -1389,10 +1389,10 @@
     {
       "name": "engine_call_invoke",
       "alias": "EngineCallInvokeFn",
-      "rust": "extern \"C\" fn(call_id: c_int, ent_index: c_int, ent_serial: c_int, subobj_off: c_int, gp: *const u64, gp_kind: *const u8, gp_count: c_int, fp: *const f64, fp_count: c_int, strs: *const *const c_char, vecs: *const f32, ret_kind: c_int, ret_out: *mut u64) -> c_int",
+      "rust": "extern \"C\" fn(call_id: c_int, ent_index: c_int, ent_serial: c_int, subobj_off: c_int, subobj_deref: c_int, gp: *const u64, gp_kind: *const u8, gp_count: c_int, fp: *const f64, fp_count: c_int, strs: *const *const c_char, vecs: *const f32, ret_kind: c_int, ret_out: *mut u64) -> c_int",
       "group": "Plugin-declared engine calls",
       "c_ret": "int",
-      "c_params": "int callId, int entIndex, int entSerial, int subObjOff, const uint64_t* gp, const unsigned char* gpKind, int gpCount, const double* fp, int fpCount, const char* const* strs, const float* vecs, int retKind, uint64_t* retOut",
+      "c_params": "int callId, int entIndex, int entSerial, int subObjOff, int subObjDeref, const uint64_t* gp, const unsigned char* gpKind, int gpCount, const double* fp, int fpCount, const char* const* strs, const float* vecs, int retKind, uint64_t* retOut",
       "shim": "S2_EngineCallInvoke"
     },
     {
@@ -1821,6 +1821,96 @@
       "c_ret": "float",
       "c_params": "void",
       "shim": "s2_server_tick_interval"
+    },
+    {
+      "name": "entity_take_damage",
+      "alias": "EntityTakeDamageFn",
+      "rust": "extern \"C\" fn(c_int, c_int, c_int, c_int, c_int, c_int, c_int, c_int, f32, c_int, *const f32, *const f32) -> c_int",
+      "group": "Damage slice: CTakeDamageInfo ctor + CBaseEntity::TakeDamage + dtor",
+      "c_ret": "int",
+      "c_params": "int index, int serial, int inflictorIdx, int inflictorSerial, int attackerIdx, int attackerSerial, int abilityIdx, int abilitySerial, float damage, int damageType, const float* force, const float* position",
+      "shim": "Shim_EntityTakeDamage"
+    },
+    {
+      "name": "client_query_convar",
+      "alias": "ClientQueryConvarFn",
+      "rust": "extern \"C\" fn(slot: c_int, name: *const c_char, cookie: c_int) -> c_int",
+      "group": "client convar query + replicate",
+      "c_ret": "int",
+      "c_params": "int slot, const char* name, int cookie",
+      "shim": "s2_client_query_convar"
+    },
+    {
+      "name": "client_replicate_convar",
+      "alias": "ClientReplicateConvarFn",
+      "rust": "extern \"C\" fn(slot: c_int, name: *const c_char, value: *const c_char) -> c_int",
+      "group": "client convar query + replicate",
+      "c_ret": "int",
+      "c_params": "int slot, const char* name, const char* value",
+      "shim": "s2_client_replicate_convar"
+    },
+    {
+      "name": "client_net_stats",
+      "alias": "ClientNetStatsFn",
+      "rust": "extern \"C\" fn(slot: c_int, out: *mut f64, n: c_int) -> c_int",
+      "group": "client net stats (INetChannelInfo)",
+      "c_ret": "int",
+      "c_params": "int slot, double* out, int n",
+      "shim": "s2_client_net_stats"
+    },
+    {
+      "name": "engine_call_bind_interface",
+      "alias": "EngineCallBindInterfaceFn",
+      "rust": "extern \"C\" fn(call_id: c_int, name: *const c_char, slot: c_int, reason_out: *mut c_char, reason_cap: c_int) -> c_int",
+      "group": "Plugin-declared engine calls",
+      "c_ret": "int",
+      "c_params": "int callId, const char* name, int slot, char* reasonOut, int reasonCap",
+      "shim": "S2_EngineCallBindInterface"
+    },
+    {
+      "name": "engine_call_take_strings",
+      "alias": "EngineCallTakeStringsFn",
+      "rust": "extern \"C\" fn(out: *mut c_char, cap: c_int) -> c_int",
+      "group": "Plugin-declared engine calls",
+      "c_ret": "int",
+      "c_params": "char* out, int cap",
+      "shim": "S2_EngineCallTakeStrings"
+    },
+    {
+      "name": "entity_lookup_bone",
+      "alias": "EntityLookupBoneFn",
+      "rust": "extern \"C\" fn(index: c_int, serial: c_int, name: *const c_char) -> c_int",
+      "group": "bones and attachments",
+      "c_ret": "int",
+      "c_params": "int index, int serial, const char* name",
+      "shim": "Shim_EntityLookupBone"
+    },
+    {
+      "name": "entity_get_bone_transform",
+      "alias": "EntityGetBoneTransformFn",
+      "rust": "extern \"C\" fn(index: c_int, serial: c_int, bone: c_int, out: *mut f32) -> c_int",
+      "group": "bones and attachments",
+      "c_ret": "int",
+      "c_params": "int index, int serial, int bone, float* out",
+      "shim": "Shim_EntityGetBoneTransform"
+    },
+    {
+      "name": "entity_lookup_attachment",
+      "alias": "EntityLookupAttachmentFn",
+      "rust": "extern \"C\" fn(index: c_int, serial: c_int, name: *const c_char) -> c_int",
+      "group": "bones and attachments",
+      "c_ret": "int",
+      "c_params": "int index, int serial, const char* name",
+      "shim": "Shim_EntityLookupAttachment"
+    },
+    {
+      "name": "entity_get_attachment",
+      "alias": "EntityGetAttachmentFn",
+      "rust": "extern \"C\" fn(index: c_int, serial: c_int, attachment: c_int, out: *mut f32) -> c_int",
+      "group": "bones and attachments",
+      "c_ret": "int",
+      "c_params": "int index, int serial, int attachment, float* out",
+      "shim": "Shim_EntityGetAttachment"
     },
     {
       "name": "sound_set_param",

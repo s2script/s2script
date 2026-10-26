@@ -185,7 +185,7 @@ typedef void* (*s2_ent_resolve_fn)(int index, int serial);
 typedef long long (*s2_ent_identity_flags_fn)(int index, int serial);
 typedef int (*s2_ent_snapshot_fn)(int* out_indices, int* out_serials, int cap);
 typedef int (*s2_engine_call_resolve_fn)(const char* kind, const char* module, const char* pattern, const char* resolve, const char* className, int vtableIndex, const char* prologue, char* reasonOut, int reasonCap);
-typedef int (*s2_engine_call_invoke_fn)(int callId, int entIndex, int entSerial, int subObjOff, const uint64_t* gp, const unsigned char* gpKind, int gpCount, const double* fp, int fpCount, const char* const* strs, const float* vecs, int retKind, uint64_t* retOut);
+typedef int (*s2_engine_call_invoke_fn)(int callId, int entIndex, int entSerial, int subObjOff, int subObjDeref, const uint64_t* gp, const unsigned char* gpKind, int gpCount, const double* fp, int fpCount, const char* const* strs, const float* vecs, int retKind, uint64_t* retOut);
 typedef int (*s2_voice_audible_set_fn)(int sender, uint64_t mask);
 typedef int (*s2_voice_audible_clear_fn)(int sender);
 typedef int (*s2_voice_audible_stats_fn)(uint64_t* out);
@@ -236,6 +236,16 @@ typedef int (*s2_function_frame_field_write_fn)(const S2FunctionInstanceAccess* 
 typedef int (*s2_function_frame_hidden_referenced_by_fn)(const S2FunctionInstanceAccess* access, int selector, const S2FunctionValue* entity, unsigned int offset, int* out, char* reason, int cap);
 typedef int (*s2_server_tick_count_fn)(void);
 typedef float (*s2_server_tick_interval_fn)(void);
+typedef int (*s2_entity_take_damage_fn)(int index, int serial, int inflictorIdx, int inflictorSerial, int attackerIdx, int attackerSerial, int abilityIdx, int abilitySerial, float damage, int damageType, const float* force, const float* position);
+typedef int (*s2_client_query_convar_fn)(int slot, const char* name, int cookie);
+typedef int (*s2_client_replicate_convar_fn)(int slot, const char* name, const char* value);
+typedef int (*s2_client_net_stats_fn)(int slot, double* out, int n);
+typedef int (*s2_engine_call_bind_interface_fn)(int callId, const char* name, int slot, char* reasonOut, int reasonCap);
+typedef int (*s2_engine_call_take_strings_fn)(char* out, int cap);
+typedef int (*s2_entity_lookup_bone_fn)(int index, int serial, const char* name);
+typedef int (*s2_entity_get_bone_transform_fn)(int index, int serial, int bone, float* out);
+typedef int (*s2_entity_lookup_attachment_fn)(int index, int serial, const char* name);
+typedef int (*s2_entity_get_attachment_fn)(int index, int serial, int attachment, float* out);
 typedef int (*s2_sound_set_param_fn)(int guid, int stackHash, const char* param, const float* values, int valueCount, const int* slots, int slotCount);
 typedef int (*s2_sound_stop_event_fn)(int guid, const int* slots, int slotCount);
 typedef float (*s2_sound_event_duration_fn)(const char* soundEvent);
@@ -432,6 +442,21 @@ typedef struct {
     /* --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick --- */
     s2_server_tick_count_fn server_tick_count;
     s2_server_tick_interval_fn server_tick_interval;
+    /* --- Damage slice: CTakeDamageInfo ctor + CBaseEntity::TakeDamage + dtor --- */
+    s2_entity_take_damage_fn entity_take_damage;
+    /* --- client convar query + replicate --- */
+    s2_client_query_convar_fn client_query_convar;
+    s2_client_replicate_convar_fn client_replicate_convar;
+    /* --- client net stats (INetChannelInfo) --- */
+    s2_client_net_stats_fn client_net_stats;
+    /* --- Plugin-declared engine calls --- */
+    s2_engine_call_bind_interface_fn engine_call_bind_interface;
+    s2_engine_call_take_strings_fn engine_call_take_strings;
+    /* --- bones and attachments --- */
+    s2_entity_lookup_bone_fn entity_lookup_bone;
+    s2_entity_get_bone_transform_fn entity_get_bone_transform;
+    s2_entity_lookup_attachment_fn entity_lookup_attachment;
+    s2_entity_get_attachment_fn entity_get_attachment;
     /* --- sound event parameters: SoundOpGameSystem::SetSoundEventParam / StopSoundEvent --- */
     s2_sound_set_param_fn sound_set_param;
     s2_sound_stop_event_fn sound_stop_event;

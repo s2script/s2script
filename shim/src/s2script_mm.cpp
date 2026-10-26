@@ -93,6 +93,7 @@
 #include <string>
 #include <unordered_map>   // the CheckTransmit rule table (checktransmit slice)
 #include <unordered_set>
+#include <mutex>     // the client convar-response queue
 #include <vector>
 #include <iterator>
 #include <stdexcept>
@@ -300,6 +301,21 @@ static CGameEntitySystem* GetEntitySystem() {
 // without itself needing s_pGameResourceService/s_gameEntitySystemOffset (file-scope statics here).
 CGameEntitySystem* S2_EntitySystemBridge() { return GetEntitySystem(); }
 
+// Declared-call interface receivers (engine_calls.cpp): an interface by version string, through
+// the same two Metamod factories Load acquires its interfaces from. Engine-generic: the name is
+// the descriptor's, never a constant here.
+void* S2_FindEngineInterface(const char* name) {
+    if (!g_SMAPI || !name || !name[0]) return nullptr;
+    int ret = 0;
+    if (CreateInterfaceFn f = g_SMAPI->GetEngineFactory(false)) {
+        if (void* p = f(name, &ret)) return p;
+    }
+    if (CreateInterfaceFn f = g_SMAPI->GetServerFactory(false)) {
+        if (void* p = f(name, &ret)) return p;
+    }
+    return nullptr;
+}
+
 // Entity lifecycle listeners slice: the isolated entity_listener.cpp TU owns the IEntityListener; we
 // register/unregister it here via the sig-resolved (this, IEntityListener*) member fns. void* keeps
 // entitysystem.h out of this TU.
@@ -346,18 +362,23 @@ static int schema_find_field(CSchemaClassInfo* info, const char* field, int dept
     return -1;
 }
 
-static int s2_schema_offset(const char* cls, const char* field) {
-    if (!s_pSchemaSystem || !cls || !field) return -1;
-
-    // Resolve the class in the server-module scope, then the global scope (a class may be in either).
-    // "libserver.so" is the CS2 Linux server module SONAME (recon Q1 [LC]; confirmed live in the T7 gate).
-    // TODO: gamedata key if the module name ever varies across games/platforms.
+// Resolve a class binding in the server-module scope, then the global scope (a class may be in either).
+// "libserver.so" is the CS2 Linux server module SONAME (recon Q1 [LC]; confirmed live in the T7 gate).
+// TODO: gamedata key if the module name ever varies across games/platforms.
+static CSchemaClassInfo* schema_find_class(const char* cls) {
+    if (!s_pSchemaSystem || !cls) return nullptr;
     CSchemaSystemTypeScope* srvScope = s_pSchemaSystem->FindTypeScopeForModule("libserver.so");
     CSchemaClassInfo* info = srvScope ? srvScope->FindRawClassBinding(cls) : nullptr;
     if (!info) {
         CSchemaSystemTypeScope* gScope = s_pSchemaSystem->GlobalTypeScope();
         if (gScope) info = gScope->FindRawClassBinding(cls);
     }
+    return info;
+}
+
+static int s2_schema_offset(const char* cls, const char* field) {
+    if (!s_pSchemaSystem || !cls || !field) return -1;
+    CSchemaClassInfo* info = schema_find_class(cls);
     if (!info) return -1;  // class not found → degrade (core emits a named WARN once per key)
 
     // Walk base classes: m_iHealth (and most fields) are inherited, not on the leaf class directly.
@@ -3415,6 +3436,53 @@ static void S2_CheckEngineLayout() {
                        "DISABLED until a build with the updated SDK header ships\n");
 }
 
+// ---------------------------------------------------------------------------
+// client_net_stats — INetChannelInfo counters, compiled calls against the vendored s2sdk
+// inetchannelinfo.h and gated on the live CNetChan layout, the same way S2EngineCalls gates the
+// engine calls. The first net channel seen is checked against INetChannelInfo_vtableSize (there is
+// no net channel at Load to check earlier); on a mismatch every stat read degrades to "no net
+// channel" until a build with the updated header ships.
+// ---------------------------------------------------------------------------
+static int s_netChanLayout = 0;   // 0 unchecked, 1 matches the pin, -1 mismatch (stats disabled)
+
+static INetChannelInfo* S2NetChanCalls(int slot) {
+    INetChannelInfo* nci = S2Engine_GetPlayerNetInfo(slot);
+    if (!nci) return nullptr;
+    if (s_netChanLayout == 0) {
+        static const S2VtableLayout kLayout = { "INetChannelInfo", "libnetworksystem.so",
+                                                "INetChannelInfo_vtableSize" };
+        s_netChanLayout = S2_VerifyVtableSlots(kLayout, nci, nullptr, 0, nullptr) ? 1 : -1;
+        if (s_netChanLayout < 0)
+            META_CONPRINTF("[s2script] ERROR: CNetChan layout differs from the one this build was "
+                           "compiled against — client net stats are DISABLED until a build with the "
+                           "updated SDK header ships\n");
+    }
+    return s_netChanLayout > 0 ? nci : nullptr;
+}
+
+// Writes NET_STATS_LEN (core/src/client.rs) values in its order and returns that count, or 0 for a
+// bot / no net channel / a failed layout check. Flow pairs are (FLOW_OUTGOING, FLOW_INCOMING).
+static constexpr int kNetStatsLen = 18;
+static int s2_client_net_stats(int slot, double* out, int n) {
+    if (!out || n < kNetStatsLen || slot < 0 || slot >= 64) return 0;
+    INetChannelInfo* nci = S2NetChanCalls(slot);
+    if (!nci) return 0;
+    int i = 0;
+    out[i++] = nci->GetAvgLatency();
+    out[i++] = nci->GetEngineLatency();
+    for (int flow : { FLOW_OUTGOING, FLOW_INCOMING }) out[i++] = nci->GetAvgLoss(flow);
+    for (int flow : { FLOW_OUTGOING, FLOW_INCOMING }) out[i++] = nci->GetAvgChoke(flow);
+    for (int flow : { FLOW_OUTGOING, FLOW_INCOMING }) out[i++] = nci->GetAvgData(flow);
+    for (int flow : { FLOW_OUTGOING, FLOW_INCOMING }) out[i++] = nci->GetAvgPackets(flow);
+    for (int flow : { FLOW_OUTGOING, FLOW_INCOMING }) out[i++] = static_cast<double>(nci->GetTotalData(flow));
+    for (int flow : { FLOW_OUTGOING, FLOW_INCOMING }) out[i++] = nci->GetTotalPackets(flow);
+    out[i++] = nci->GetTimeConnected();
+    out[i++] = nci->GetTimeSinceLastReceived();
+    out[i++] = nci->IsTimingOut() ? 1.0 : 0.0;
+    out[i++] = nci->GetDataRate();
+    return i;
+}
+
 // Resolve a "direct"/"ctor-body-xref"/"lea-disp" signature AND verify it matches UNIQUELY (Rule 2): 0 = the
 // pattern moved (stale), >1 = ambiguous. Records the result and returns the resolved module offset, or kFail.
 static int64_t ResolveSigValidated(const char* name, const SigSpec& sig) {
@@ -3856,6 +3924,122 @@ static int Shim_EntitySetModelScale(int index, int serial, float scale) {
 }
 
 // ---------------------------------------------------------------------------
+// Bones and attachments slice — CBaseModelEntity::LookupBone / LookupAttachment / GetBoneTransform
+// and StudioModel::GetAttachment. Evidence beside each signature in gamedata/core/game.cs2.jsonc.
+//
+// All three members get the entity's model the same way: load a sub-object at a fixed offset,
+// call one of its virtuals. LookupBone then uses the model without a null check, so the shim
+// fetches the model itself first and refuses when it is null. The offset and the virtual's slot
+// are read out of the three matched bodies (S2_ResolveModelSource) rather than carried as
+// constants, so a moved field stays a gamedata-free fix as long as the patterns still match.
+// ---------------------------------------------------------------------------
+using ModelLookupFn = int (*)(CEntityInstance* self, const char* name);
+using ModelLookupU8Fn = uint8_t (*)(CEntityInstance* self, const char* name);
+using GetBoneTransformFn = void* (*)(void* sret, CEntityInstance* self, int bone);
+using StudioGetAttachmentFn = bool (*)(void* model, uint8_t attachment, float* origin, float* angles);
+static ModelLookupFn s_pLookupBone = nullptr;
+static ModelLookupU8Fn s_pLookupAttachment = nullptr;
+static GetBoneTransformFn s_pGetBoneTransform = nullptr;
+static StudioGetAttachmentFn s_pStudioGetAttachment = nullptr;
+static int s_modelSrcOff = -1;    // byte offset of the model-source sub-object pointer in the entity
+static int s_modelSrcSlot = -1;   // vtable slot on it that returns the model
+
+// Reads `48 8B /r disp32` at `movAt` and `FF 50 disp8` at `callAt` in a matched body. The patterns
+// pin both opcodes, so a mismatch here means the gamedata pattern changed under us.
+static bool S2_ReadModelSource(const void* fn, int movAt, int callAt, int& off, int& slot) {
+    const uint8_t* b = static_cast<const uint8_t*>(fn);
+    if (!b || b[movAt] != 0x48 || b[movAt + 1] != 0x8B || b[callAt] != 0xFF || b[callAt + 1] != 0x50)
+        return false;
+    int32_t disp = 0;
+    std::memcpy(&disp, b + movAt + 3, sizeof disp);
+    const int vdisp = b[callAt + 2];
+    if (disp <= 0 || disp >= 0x10000 || vdisp % 8 != 0) return false;
+    off = disp;
+    slot = vdisp / 8;
+    return true;
+}
+
+static void S2_ResolveModelSource() {
+    struct Body { const void* fn; int movAt, callAt; };
+    const Body bodies[] = {
+        { reinterpret_cast<const void*>(s_pLookupBone),       0x0C, 0x16 },
+        { reinterpret_cast<const void*>(s_pLookupAttachment), 0x0D, 0x17 },
+        { reinterpret_cast<const void*>(s_pGetBoneTransform), 0x14, 0x1E },
+    };
+    int off = -1, slot = -1;
+    for (const Body& b : bodies) {
+        int o = -1, sl = -1;
+        if (!b.fn || !S2_ReadModelSource(b.fn, b.movAt, b.callAt, o, sl)) {
+            GamedataResult("CBaseModelEntity_ModelSource", false,
+                           "a model member is unresolved or its body no longer reads the model "
+                           "source the way the pattern pins — bones/attachments disabled");
+            return;
+        }
+        if (off >= 0 && (o != off || sl != slot)) {
+            GamedataResult("CBaseModelEntity_ModelSource", false,
+                           "the three model members disagree on the model source — bones/attachments disabled");
+            return;
+        }
+        off = o;
+        slot = sl;
+    }
+    s_modelSrcOff = off;
+    s_modelSrcSlot = slot;
+    GamedataResult("CBaseModelEntity_ModelSource", true, nullptr);
+    META_CONPRINTF("[s2script] model source: [entity+0x%x]->vtable[%d] (bones/attachments)\n", off, slot);
+}
+
+// The entity's model, or null when the source sub-object or the model is absent.
+static void* S2_EntityModel(CEntityInstance* ent) {
+    if (s_modelSrcOff < 0 || !ent) return nullptr;
+    void* src = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(ent) + s_modelSrcOff);
+    if (!src) return nullptr;
+    using GetModelFn = void* (*)(void*);
+    return (*reinterpret_cast<GetModelFn**>(src))[s_modelSrcSlot](src);
+}
+
+// -1 when unresolved, stale, modelless, or the model has no such bone.
+static int Shim_EntityLookupBone(int index, int serial, const char* name) {
+    if (!s_pLookupBone || !name) return -1;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent || !S2_EntityModel(ent)) return -1;
+    return s_pLookupBone(ent, name);
+}
+
+// out[0..2] position, out[3..6] orientation quaternion (x, y, z, w). 1 on success.
+static int Shim_EntityGetBoneTransform(int index, int serial, int bone, float* out) {
+    if (!s_pGetBoneTransform || !out || bone < 0) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent || !S2_EntityModel(ent)) return 0;
+    alignas(16) float t[8] = {};   // CTransform: VectorAligned m_vPosition, Quaternion m_orientation
+    s_pGetBoneTransform(t, ent, bone);
+    out[0] = t[0]; out[1] = t[1]; out[2] = t[2];
+    out[3] = t[4]; out[4] = t[5]; out[5] = t[6]; out[6] = t[7];
+    return 1;
+}
+
+// 0 when unresolved, stale, modelless, or the model has no such attachment.
+static int Shim_EntityLookupAttachment(int index, int serial, const char* name) {
+    if (!s_pLookupAttachment || !name || s_modelSrcOff < 0) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    return s_pLookupAttachment(ent, name);   // null-checks the model itself
+}
+
+// out[0..2] world origin, out[3..5] world angles. 1 when the engine found the attachment.
+static int Shim_EntityGetAttachment(int index, int serial, int attachment, float* out) {
+    if (!s_pStudioGetAttachment || !out || attachment <= 0 || attachment > 255) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    void* model = S2_EntityModel(ent);
+    if (!model) return 0;
+    float origin[3] = {}, angles[3] = {};
+    if (!s_pStudioGetAttachment(model, static_cast<uint8_t>(attachment), origin, angles)) return 0;
+    for (int i = 0; i < 3; i++) { out[i] = origin[i]; out[3 + i] = angles[i]; }
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // Sound slice — emit (see docs/superpowers/specs/2026-07-13-sound-emitsound-precache-design.md).
 // A minimal modern recipient filter over the SDK's 4-method IRecipientFilter
 // (public/irecipientfilter.h), ported from CSSharp's recipientfilters.h: a slot-indexed
@@ -4084,6 +4268,161 @@ static void InstallPrecacheHook() {
     META_CONPRINTF("[s2script] precache checked global hook accepted (vtable=%p slot=%d original=%p id=%u)\n",
                    reinterpret_cast<void*>(resolved.vtable),resolved.vtable_index,
                    reinterpret_cast<void*>(resolved.target.address),receipt.id);
+}
+
+// ---------------------------------------------------------------------------
+// Client convar query + replicate (Swiftly/ModSharp parity).
+//
+// Query: the server sends CSVCMsg_GetCvarValue {cookie, cvar_name} to one client; the client answers
+// with CCLCMsg_RespondCvarValue {cookie, status_code, name, value}, which the engine hands to
+// CServerSideClient::ProcessRespondCvarValue (a stock `return true`). That virtual is hooked as a
+// checked KHook global virtual on the RTTI-resolved CServerSideClient vtable (the precache shape),
+// at the gamedata vtable index — a hint that must pass structural validation.
+//
+// The callback copies the four fields by protobuf reflection and queues them; the queue drains at
+// the top of the next GameFramePre, so the JS callback never runs on whatever thread the engine
+// processes client messages on. The answering client's slot is read at the gamedata
+// `CServerSideClient_m_nClientSlot` offset and must name a connected human slot, so core can refuse
+// a reply whose slot is not the one the query went to.
+//
+// Replicate: CNETMsg_SetConVar {convars {cvars [{name, value}]}} sent to one client changes the
+// client's copy of a replicated cvar without touching the server's value.
+// ---------------------------------------------------------------------------
+static int s_cvarResponseVtblIdx = -1;   // gamedata offsets entry (vtable index; a HINT)
+static int s_clientSlotOffset    = -1;   // gamedata offsets entry (byte offset of the client's slot)
+struct S2CvarResponse { int slot; int cookie; int status; std::string name; std::string value; };
+static std::mutex s_cvarResponseMu;
+static std::vector<S2CvarResponse> s_cvarResponses;
+static int s_cvarResponseCount[64];      // queued replies per slot, under s_cvarResponseMu
+// Per slot, so a client spamming replies only drops its own; a reply dropped here leaves its query to
+// core's timeout.
+static constexpr int kCvarResponsesPerSlot = 32;
+
+static bool ReadProtoInt(const google::protobuf::Message* m, const char* field, int& out) {
+    const auto* f = m->GetDescriptor()->FindFieldByName(field);
+    if (!f || f->is_repeated()) return false;
+    const auto* r = m->GetReflection();
+    using FD = google::protobuf::FieldDescriptor;
+    switch (f->cpp_type()) {
+        case FD::CPPTYPE_INT32:  out = r->GetInt32(*m, f); return true;
+        case FD::CPPTYPE_UINT32: out = static_cast<int>(r->GetUInt32(*m, f)); return true;
+        case FD::CPPTYPE_ENUM:   out = r->GetEnumValue(*m, f); return true;
+        default: return false;
+    }
+}
+static bool ReadProtoString(const google::protobuf::Message* m, const char* field, std::string& out) {
+    const auto* f = m->GetDescriptor()->FindFieldByName(field);
+    if (!f || f->is_repeated() || f->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_STRING) return false;
+    out = m->GetReflection()->GetString(*m, f);
+    return true;
+}
+
+static void S2NamedCvarResponseOp(void* client, const void* message) {
+    if (!client || !message || s_clientSlotOffset < 0) return;
+    int slot = -1;
+    std::memcpy(&slot, static_cast<const unsigned char*>(client) + s_clientSlotOffset, sizeof slot);
+    if (slot < 0 || slot >= 64 || !S2Engine_GetPlayerNetInfo(slot)) return;
+    auto* net = const_cast<CNetMessage*>(static_cast<const CNetMessage*>(message));
+    const auto* m = reinterpret_cast<const google::protobuf::Message*>(net->AsProto());
+    if (!m || m->GetDescriptor()->full_name() != "CCLCMsg_RespondCvarValue") return;
+    S2CvarResponse r{slot, 0, 0, {}, {}};
+    if (!ReadProtoInt(m, "cookie", r.cookie) || r.cookie == 0) return;   // 0 = not one of ours
+    if (!ReadProtoInt(m, "status_code", r.status)) return;
+    ReadProtoString(m, "name", r.name);
+    ReadProtoString(m, "value", r.value);
+    std::lock_guard<std::mutex> lock(s_cvarResponseMu);
+    if (s_cvarResponseCount[slot] >= kCvarResponsesPerSlot) return;
+    ++s_cvarResponseCount[slot];
+    s_cvarResponses.push_back(std::move(r));
+}
+
+static void S2_DrainCvarResponses() {
+    std::vector<S2CvarResponse> batch;
+    {
+        std::lock_guard<std::mutex> lock(s_cvarResponseMu);
+        batch.swap(s_cvarResponses);
+        std::memset(s_cvarResponseCount, 0, sizeof s_cvarResponseCount);
+    }
+    for (const auto& r : batch)
+        s2script_core_dispatch_convar_response(r.slot, r.cookie, r.status, r.name.c_str(), r.value.c_str());
+}
+
+static void InstallCvarResponseHook() {
+    if (S2NamedHookSnapshot(S2NamedHookSite::CvarResponse).Accepted()) return;
+    if (s_cvarResponseVtblIdx < 0 || s_clientSlotOffset < 0) return;   // the offsets block recorded the absent key
+    s2resolve::VirtualSlotResolution resolved;
+    std::string reason;
+    if (!s2resolve::ResolveVirtualSlot("libengine2.so","CServerSideClient",
+                                      s_cvarResponseVtblIdx,resolved,reason)) {
+        META_CONPRINTF("[s2script] WARN: cvar-response structural virtual lookup failed (%s); queryConVar OFF\n",
+                       reason.c_str());
+        return;
+    }
+    const auto receipt=S2NamedConfigureCvarResponse(resolved);
+    if (!receipt.Accepted()) {
+        META_CONPRINTF("[s2script] WARN: cvar-response checked global hook failed (%s); queryConVar OFF\n",
+                       receipt.reason.c_str());
+        return;
+    }
+    META_CONPRINTF("[s2script] cvar-response checked global hook accepted (vtable=%p slot=%d original=%p id=%u)\n",
+                   reinterpret_cast<void*>(resolved.vtable),resolved.vtable_index,
+                   reinterpret_cast<void*>(resolved.target.address),receipt.id);
+}
+
+// Post one allocated net message to a single connected human slot. Bots have no net channel.
+static int S2_PostToSlot(int slot, INetworkMessageInternal* info, CNetMessage* data) {
+    if (!s_pGameEventSystem || slot < 0 || slot >= 64 || !S2Engine_GetPlayerNetInfo(slot)) return 0;
+    uint64 clients = 1ull << (uint64)slot;
+    s_pGameEventSystem->PostEventAbstract(-1, false, 64, &clients, info, data, 0, BUF_RELIABLE);
+    return 1;
+}
+
+// Only answered when the cvar-response hook is installed, so the query op refuses without it.
+static int s2_client_query_convar(int slot, const char* name, int cookie) {
+    if (!name || !*name || cookie == 0 || !s_pNetworkMessages) return 0;
+    if (!S2NamedHookSnapshot(S2NamedHookSite::CvarResponse).Accepted()) return 0;
+    if (slot < 0 || slot >= 64 || !S2Engine_GetPlayerNetInfo(slot)) return 0;
+    INetworkMessageInternal* info = s_pNetworkMessages->FindNetworkMessagePartial("CSVCMsg_GetCvarValue");
+    if (!info) return 0;
+    CNetMessage* data = info->AllocateMessage();
+    if (!data) return 0;
+    auto* m = reinterpret_cast<google::protobuf::Message*>(data->AsProto());
+    if (!m) return 0;
+    const auto* d = m->GetDescriptor();
+    const auto* r = m->GetReflection();
+    const auto* fCookie = d->FindFieldByName("cookie");
+    const auto* fName = d->FindFieldByName("cvar_name");
+    using FD = google::protobuf::FieldDescriptor;
+    if (!fCookie || fCookie->is_repeated() || fCookie->cpp_type() != FD::CPPTYPE_INT32 ||
+        !fName || fName->is_repeated() || fName->cpp_type() != FD::CPPTYPE_STRING) return 0;
+    r->SetInt32(m, fCookie, cookie);
+    r->SetString(m, fName, name);
+    return S2_PostToSlot(slot, info, data);   // LEAK-TODO as s2_user_message_send: pData not freed
+}
+
+static int s2_client_replicate_convar(int slot, const char* name, const char* value) {
+    if (!name || !*name || !value || !s_pNetworkMessages) return 0;
+    if (slot < 0 || slot >= 64 || !S2Engine_GetPlayerNetInfo(slot)) return 0;
+    INetworkMessageInternal* info = s_pNetworkMessages->FindNetworkMessagePartial("CNETMsg_SetConVar");
+    if (!info) return 0;
+    CNetMessage* data = info->AllocateMessage();
+    if (!data) return 0;
+    auto* m = reinterpret_cast<google::protobuf::Message*>(data->AsProto());
+    if (!m) return 0;
+    using FD = google::protobuf::FieldDescriptor;
+    const auto* fConvars = m->GetDescriptor()->FindFieldByName("convars");
+    if (!fConvars || fConvars->is_repeated() || fConvars->cpp_type() != FD::CPPTYPE_MESSAGE) return 0;
+    google::protobuf::Message* convars = m->GetReflection()->MutableMessage(m, fConvars);
+    const auto* fCvars = convars->GetDescriptor()->FindFieldByName("cvars");
+    if (!fCvars || !fCvars->is_repeated() || fCvars->cpp_type() != FD::CPPTYPE_MESSAGE) return 0;
+    google::protobuf::Message* cvar = convars->GetReflection()->AddMessage(convars, fCvars);
+    const auto* fName = cvar->GetDescriptor()->FindFieldByName("name");
+    const auto* fValue = cvar->GetDescriptor()->FindFieldByName("value");
+    if (!fName || fName->is_repeated() || fName->cpp_type() != FD::CPPTYPE_STRING ||
+        !fValue || fValue->is_repeated() || fValue->cpp_type() != FD::CPPTYPE_STRING) return 0;
+    cvar->GetReflection()->SetString(cvar, fName, name);
+    cvar->GetReflection()->SetString(cvar, fValue, value);
+    return S2_PostToSlot(slot, info, data);   // LEAK-TODO as s2_user_message_send: pData not freed
 }
 
 // CBaseEntity::EmitSound — the CSSharp static prototype (entity_manager.h:257), CHOSEN because the
@@ -4559,6 +4898,67 @@ static int Shim_EntityFireInput(int index, int serial, const char* input, const 
     return 1;
 }
 
+// Damage slice: deal damage the way the engine's own callers do (gamedata CTakeDamageInfo_Ctor /
+// CTakeDamageInfo_Dtor / CBaseEntity_TakeDamage): construct a CTakeDamageInfo in a stack buffer,
+// hand it to CBaseEntity::TakeDamage (which still runs TakeDamageOld, so OnTakeDamage hooks see
+// it), then destroy it. The ABIs are the audited Oct 22 shapes in the gamedata comments.
+using TakeDamageInfoCtorFn = void (*)(void* info, CEntityInstance* inflictor, CEntityInstance* attacker,
+                                      CEntityInstance* ability, const Vector* force, const Vector* position,
+                                      float damage, int bitsDamageType, int customDamage,
+                                      const Vector* reportedPosition);
+using TakeDamageInfoDtorFn = void (*)(void* info);
+using EntityTakeDamageFn = void (*)(CEntityInstance* victim, void* info, void* result);
+static TakeDamageInfoCtorFn s_pTakeDamageInfoCtor = nullptr;
+static TakeDamageInfoDtorFn s_pTakeDamageInfoDtor = nullptr;
+static EntityTakeDamageFn s_pEntityTakeDamage = nullptr;
+// The stack buffer. The live schema size must fit, or the op refuses (it never under-allocates).
+constexpr int kTakeDamageInfoCap = 0x400;
+
+// The CTakeDamageInfo size from the live schema, read once. 0 = unknown or too big: the op refuses.
+static int TakeDamageInfoSize() {
+    static int size = -1;
+    if (size < 0) {
+        CSchemaClassInfo* info = schema_find_class("CTakeDamageInfo");
+        int n = info ? info->m_nSizeOf : 0;
+        size = (n > 0 && n <= kTakeDamageInfoCap) ? n : 0;
+        if (!size)
+            META_CONPRINTF("[s2script] WARN: entity.takeDamage unavailable: CTakeDamageInfo schema size %d "
+                           "(cap %d)\n", n, kTakeDamageInfoCap);
+    }
+    return size;
+}
+
+// take damage: (index,serial) serial-gates the victim; inflictor/attacker/ability are optional
+// serial-gated entities (<0 index = null). force/position are 3 floats each, or null for zero.
+// Returns 1 when TakeDamage ran (the engine may still refuse the damage, e.g. m_takedamage off), 0
+// when an entity was stale or the op is unavailable.
+static int Shim_EntityTakeDamage(int index, int serial, int inflictorIdx, int inflictorSerial,
+                                 int attackerIdx, int attackerSerial, int abilityIdx, int abilitySerial,
+                                 float damage, int damageType, const float* force, const float* position) {
+    if (!s_pTakeDamageInfoCtor || !s_pTakeDamageInfoDtor || !s_pEntityTakeDamage) return 0;
+    CEntityInstance* victim = ResolveEntityBySerial(index, serial);
+    if (!victim) return 0;
+    CEntityInstance* inflictor = nullptr;
+    CEntityInstance* attacker = nullptr;
+    CEntityInstance* ability = nullptr;
+    // A stale optional entity refuses the whole call rather than dealing anonymous damage.
+    if (inflictorIdx >= 0 && !(inflictor = ResolveEntityBySerial(inflictorIdx, inflictorSerial))) return 0;
+    if (attackerIdx >= 0 && !(attacker = ResolveEntityBySerial(attackerIdx, attackerSerial))) return 0;
+    if (abilityIdx >= 0 && !(ability = ResolveEntityBySerial(abilityIdx, abilitySerial))) return 0;
+    int size = TakeDamageInfoSize();
+    if (!size) return 0;
+    Vector f = force ? Vector(force[0], force[1], force[2]) : Vector(0.0f, 0.0f, 0.0f);
+    Vector p = position ? Vector(position[0], position[1], position[2]) : Vector(0.0f, 0.0f, 0.0f);
+    alignas(16) unsigned char info[kTakeDamageInfoCap];
+    memset(info, 0, size);
+    // The engine's callers pass the attacker as the inflictor when there is no separate one.
+    s_pTakeDamageInfoCtor(info, inflictor ? inflictor : attacker, attacker, ability, &f, &p, damage,
+                          damageType, 0, nullptr);
+    s_pEntityTakeDamage(victim, info, nullptr);
+    s_pTakeDamageInfoDtor(info);
+    return 1;
+}
+
 // Format a CVariant's value as a string WITHOUT calling any tier1 CBufferString method
 // (CVariant::ToString()/AssignTo(CBufferString&) call DLL_CLASS_IMPORT tier1 symbols — the exact
 // dlopen-cascade blocker from 5D.1/6.1c). Hand-rolled via snprintf on the union fields directly
@@ -4649,6 +5049,27 @@ static int S2NamedOutputOp(CEntityIOOutput* pThis, CEntityInstance* act, CEntity
     return result;
 }
 
+// Entity input pre-hook (parity slice 5): CEntityIdentity::AcceptInput delivers every input an
+// entity receives. Same contract as S2NamedOutputOp: dispatched SYNCHRONOUSLY, superseded
+// (the input is not delivered, AcceptInput returns false) when the collapsed HookResult is
+// >= Handled. The target/activator/caller cross as packed CEntityHandle ints, the input name
+// and value as strings; no pointer reaches core. Only the variant value is formatted: the
+// pulse-argument register is not stringified (its type is unconfirmed on this entry), so a
+// pulse-driven input reports "". Any resolve miss falls straight through to the original.
+static int S2NamedInputOp(CEntityIdentity* identity, void* input, CEntityInstance* act,
+                          CEntityInstance* caller, const CVariant* value) {
+    if (!identity || !input) return 0;
+    CEntityInstance* target = identity->m_pInstance;
+    const char* inputName = static_cast<const CUtlSymbolLarge*>(input)->String();
+    if (!target || !inputName || !inputName[0]) return 0;
+    const char* cls = target->GetClassname();
+    char valbuf[256] = {};
+    if (value) CVariantToString(value, valbuf, sizeof valbuf);
+    return s2script_core_dispatch_input(cls ? cls : "", inputName, target->GetRefEHandle().ToInt(),
+                                        act ? act->GetRefEHandle().ToInt() : -1,
+                                        caller ? caller->GetRefEHandle().ToInt() : -1, valbuf);
+}
+
 // ---------------------------------------------------------------------------
 // Load
 // ---------------------------------------------------------------------------
@@ -4668,10 +5089,12 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     S2NamedHookOps namedOps;
     namedOps.chat=&S2NamedChatOp;
     namedOps.output=&S2NamedOutputOp;
+    namedOps.input=&S2NamedInputOp;
     namedOps.usercmd_slot=&S2NamedUsercmdSlotOp;
     namedOps.usercmd_dispatch=&S2NamedUsercmdDispatchOp;
     namedOps.usercmd_neutralize=&S2NamedUsercmdNeutralizeOp;
     namedOps.precache=&S2NamedPrecacheOp;
+    namedOps.cvar_response=&S2NamedCvarResponseOp;
     S2NamedHooksSetOps(namedOps);
     S2NamedSetUsercmdTarget(nullptr);
 
@@ -5237,6 +5660,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     { "StopSound",               reinterpret_cast<void**>(&s_pEntityStopSound),         "EntityRef.stopSound" },
                     { "SetBodyGroupByName",      reinterpret_cast<void**>(&s_pSetBodyGroupByName),      "EntityRef.setBodyGroupByName" },
                     { "SetModelScale",           reinterpret_cast<void**>(&s_pSetModelScale),           "EntityRef.setModelScale" },
+                    { "CBaseModelEntity_LookupBone",       reinterpret_cast<void**>(&s_pLookupBone),          "EntityRef.lookupBone" },
+                    { "CBaseModelEntity_LookupAttachment", reinterpret_cast<void**>(&s_pLookupAttachment),    "EntityRef.lookupAttachment" },
+                    { "CBaseModelEntity_GetBoneTransform", reinterpret_cast<void**>(&s_pGetBoneTransform),    "EntityRef.getBoneTransform" },
+                    { "StudioModel_GetAttachment",         reinterpret_cast<void**>(&s_pStudioGetAttachment), "EntityRef.getAttachment" },
                 };
                 for (const EntityPropSig& ep : kEntityProps) {
                     auto it = sigs.find(ep.name);
@@ -5251,6 +5678,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                         META_CONPRINTF("[s2script] %s resolved @%p (%s)\n", ep.name, *ep.slot, ep.api);
                     }   // off == kFail: ResolveSigValidated already recorded the reason
                 }
+                S2_ResolveModelSource();
             }
             // Sound slice: resolve CBaseEntity::EmitSound (soundevent emit; Sound.emit /
             // pawn.emitSound). A DIRECT prologue signature self-validated UNIQUE on OUR libserver.so
@@ -5401,6 +5829,37 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pAddEntityIOEvent));
                 }   // aioOff == kFail: ResolveSigValidated already recorded the reason
             }
+            // Damage slice: CTakeDamageInfo ctor/dtor + CBaseEntity::TakeDamage, all-or-nothing. The
+            // ctor's and dtor's vtable LEAs must name the same vtable, so a pattern that matched the
+            // wrong function degrades entity_take_damage instead of running it.
+            {
+                void* fns[3] = {nullptr, nullptr, nullptr};
+                const char* names[3] = {"CTakeDamageInfo_Ctor", "CTakeDamageInfo_Dtor", "CBaseEntity_TakeDamage"};
+                for (int i = 0; i < 3; ++i) {
+                    auto it = sigs.find(names[i]);
+                    if (it == sigs.end()) { GamedataResult(names[i], false, "signature absent from gamedata"); continue; }
+                    int64_t off = ResolveSigValidated(names[i], it->second);
+                    ModText mt = FindModuleText(it->second.module.c_str());
+                    if (off != s2sig::kFail && mt.text) fns[i] = const_cast<uint8_t*>(mt.text) + off;
+                }
+                if (fns[0] && fns[1] && fns[2]) {
+                    auto leaTarget = [](const void* fn, int at) {
+                        const uint8_t* insn = static_cast<const uint8_t*>(fn) + at;
+                        int32_t disp;
+                        memcpy(&disp, insn + 3, sizeof(disp));
+                        return reinterpret_cast<uintptr_t>(insn + 7) + static_cast<intptr_t>(disp);
+                    };
+                    if (leaTarget(fns[0], 0x12) == leaTarget(fns[1], 0x10)) {
+                        s_pTakeDamageInfoCtor = reinterpret_cast<TakeDamageInfoCtorFn>(fns[0]);
+                        s_pTakeDamageInfoDtor = reinterpret_cast<TakeDamageInfoDtorFn>(fns[1]);
+                        s_pEntityTakeDamage = reinterpret_cast<EntityTakeDamageFn>(fns[2]);
+                        META_CONPRINTF("[s2script] TakeDamage resolved @%p (entity.takeDamage)\n", fns[2]);
+                    } else {
+                        GamedataResult("CTakeDamageInfo_Dtor", false,
+                                       "constructor and destructor name different vtables");
+                    }
+                }
+            }
             // A complete engine wrapper owns Pulse's temporary conversion internally.
             // Resolve it before enabling output interception; opaque Pulse layouts stay private.
             auto pulseit = sigs.find("PulseFirstArgumentToVariant");
@@ -5438,6 +5897,26 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                        receipt.reason.c_str());
                     }
                 }   // foiOff == kFail: ResolveSigValidated already recorded the reason
+            }
+            // Parity slice 5: resolve + detour CEntityIdentity::AcceptInput (Entity.onInput).
+            // Degrade-never-crash: unresolved leaves inputs unhooked, never a crash.
+            auto aiit = sigs.find("CEntityIdentity_AcceptInput");
+            if (aiit == sigs.end()) {
+                GamedataResult("CEntityIdentity_AcceptInput", false, "signature absent from gamedata");
+            } else {
+                int64_t aiOff = ResolveSigValidated("CEntityIdentity_AcceptInput", aiit->second);
+                ModText aimt = FindModuleText(aiit->second.module.c_str());
+                if (aiOff != s2sig::kFail && aimt.text) {
+                    void* aiAddr = const_cast<uint8_t*>(aimt.text) + aiOff;
+                    const auto receipt=S2NamedConfigureInput(aiAddr);
+                    if (receipt.Accepted()) {
+                        META_CONPRINTF("[s2script] AcceptInput checked hook accepted @%p (Entity.onInput; id=%u)\n",
+                                       aiAddr,receipt.id);
+                    } else {
+                        META_CONPRINTF("[s2script] WARN: AcceptInput checked hook failed (%s) — Entity.onInput off\n",
+                                       receipt.reason.c_str());
+                    }
+                }   // aiOff == kFail: ResolveSigValidated already recorded the reason
             }
             // Entity lifecycle listeners slice: resolve CGameEntitySystem::AddListenerEntity (register an
             // IEntityListener) + RemoveListenerEntity (best-effort Unload cleanup). Both validated UNIQUE +
@@ -5508,6 +5987,14 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             s_precacheVtblIdx = pick("CGameRulesGameSystem_OnPrecacheResource");
             GamedataResult("CGameRulesGameSystem_OnPrecacheResource", s_precacheVtblIdx >= 0,
                            "offset (vtable index) key absent from gamedata");
+            // Client convar query: the reply virtual (a HINT, structurally validated at install) and
+            // the client's slot field. Either absent -> queryConVar refuses; replicate is unaffected.
+            s_cvarResponseVtblIdx = pick("CServerSideClient_ProcessRespondCvarValue");
+            GamedataResult("CServerSideClient_ProcessRespondCvarValue", s_cvarResponseVtblIdx >= 0,
+                           "offset (vtable index) key absent from gamedata");
+            s_clientSlotOffset = pick("CServerSideClient_m_nClientSlot");
+            GamedataResult("CServerSideClient_m_nClientSlot", s_clientSlotOffset >= 0,
+                           "offset key absent from gamedata");
             // clientlist-fakeconvar-onmapstart slice: the six 5D.2 engine-identity offsets
             // (NetworkServerService.gameServer / NetworkGameServer.clientCount+clientElems /
             // ServerSideClient.name+signon+userId) are RETIRED — the client ops now use typed SDK
@@ -5556,6 +6043,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         // RTTI, like the trace block above). The class vtable is static data present at module load, so
         // this installs ONCE here — no lazy StartupServer retry.
         InstallPrecacheHook();
+        InstallCvarResponseHook();
 
         // EKV self-test (permanent, treadmill): link/ctor/layout integrity of the compiled-in
         // CEntityKeyValues. A failure degrades kv-spawns to false — it disables nothing else.
@@ -6047,6 +6535,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_GameFramePre(ISource2Server* server, bo
     // provably free at this point and a replay cannot re-defer. Delivers everything a re-entrant
     // dispatch could not deliver last frame.
     S2Defer_Drain();
+    S2_DrainCvarResponses();
     s2script_core_dispatch_game_frame(0, static_cast<int>(simulating),
                                       static_cast<int>(first), static_cast<int>(last));
     return S2_Ignore();

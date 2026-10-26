@@ -189,6 +189,21 @@
     // --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick ---
     ops.server_tick_count = &s2_server_tick_count;
     ops.server_tick_interval = &s2_server_tick_interval;
+    // --- Damage slice: CTakeDamageInfo ctor + CBaseEntity::TakeDamage + dtor ---
+    ops.entity_take_damage = &Shim_EntityTakeDamage;
+    // --- client convar query + replicate ---
+    ops.client_query_convar = &s2_client_query_convar;
+    ops.client_replicate_convar = &s2_client_replicate_convar;
+    // --- client net stats (INetChannelInfo) ---
+    ops.client_net_stats = &s2_client_net_stats;
+    // --- Plugin-declared engine calls ---
+    ops.engine_call_bind_interface = &S2_EngineCallBindInterface;
+    ops.engine_call_take_strings = &S2_EngineCallTakeStrings;
+    // --- bones and attachments ---
+    ops.entity_lookup_bone = &Shim_EntityLookupBone;
+    ops.entity_get_bone_transform = &Shim_EntityGetBoneTransform;
+    ops.entity_lookup_attachment = &Shim_EntityLookupAttachment;
+    ops.entity_get_attachment = &Shim_EntityGetAttachment;
     // --- sound event parameters: SoundOpGameSystem::SetSoundEventParam / StopSoundEvent ---
     ops.sound_set_param = &s2_sound_set_param;
     ops.sound_stop_event = &s2_sound_stop_event;

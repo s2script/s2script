@@ -79,6 +79,18 @@
     // The actual receiver and second-argument manifest are borrowed only during callbacks.
     // This historical index is a hint and must pass current-build structural validation.
     "CGameRulesGameSystem_OnPrecacheResource": { "linuxsteamrt64": 7 },
+    // CServerSideClient::ProcessRespondCvarValue vtable INDEX on the RTTI-resolved CServerSideClient
+    // vtable in libengine2.so (the client's answer to a GetCvarValue query). Hooked as a checked
+    // KHook global virtual, like OnPrecacheResource above, and structurally validated at install.
+    // Verified on the Oct 22 2026 libengine2.so (BuildID fef8f668…): the message-handler table
+    // registers member pointer 0x141 (slot 40) for clc_RespondCvarValue (id 25), and slot 40 is the
+    // stock `mov eax,1; ret`. ModSharp hooks the same slot.
+    "CServerSideClient_ProcessRespondCvarValue": { "linuxsteamrt64": 40 },
+    // Byte offset of the client's player slot (int32) in CServerSideClient. Verified on the same
+    // build: slot 22 shifts by [rdi+0x48] into a per-slot bit vector, and slots 37/39 pass
+    // [rdi+0x48] as the CPlayerSlot argument into ISource2GameClients. ModSharp's m_Slot agrees.
+    // The cvar-response hook also requires the slot it reads to be a connected human client.
+    "CServerSideClient_m_nClientSlot": { "linuxsteamrt64": 72 },
     // Interface HOOK slots: the vtable index each KHook installs on, and the live slot count of
     // the object it hooks (the pin). S2_ResolveHookSlots checks them as each interface is
     // acquired: a pin mismatch disables every hook on that interface, and a failed entry disables
@@ -132,6 +144,12 @@
     "ICvar_DispatchConCommand":                   { "linuxsteamrt64": 20 },
     "IVEngineServer2_vtableSize":                 { "linuxsteamrt64": 123 },
     "IVEngineServer2_SetClientListening":         { "linuxsteamrt64": 92 },
+    // Gates the compiled INetChannelInfo calls behind Client.netStats, checked on the first client
+    // net channel. The pin is CNetChan's vtable in libnetworksystem.so (BuildID
+    // db675abb166a35d38011b53f85427b5cae65210e, Oct 22 2026 build). Slots 0-24 were checked against
+    // the s2sdk inetchannelinfo.h order: GetAvgData (15) and GetAvgPackets (16) read the Steam
+    // real-time status bytes/s and packets/s fields, so slot 14 is GetPeakJitter as the header says.
+    "INetChannelInfo_vtableSize":                 { "linuxsteamrt64": 89 },
     // Sound event lookups (Sound.duration / Sound.isValid). The object behind SoundOpSystem001 is a
     // CSoundOpSystem (libsoundsystem.so BuildID cc784b92…, Oct 22 2026) whose ISoundEventManager
     // base sits at +8: that vtable (@0x73c7b8) has offset-to-top -8 and the primary's type_info, and
@@ -287,6 +305,50 @@
         "resolve": "direct"
       }
     },
+    // Damage slice (entity.takeDamage / SDKHooks_TakeDamage). The engine's own recipe for dealing
+    // damage, copied from a caller on the Oct 22 build (@0x1bf75f0): build a CTakeDamageInfo on the
+    // stack with its constructor, hand it to CBaseEntity::TakeDamage, then run its destructor. The
+    // shim reads the buffer size from the live schema, never a constant.
+    //
+    // CTakeDamageInfo::CTakeDamageInfo(this, inflictor, attacker, ability, const Vector* force,
+    // const Vector* position, float damage, int bitsDamageType, int customDamage,
+    // const Vector* reportedPosition). Force and position are read unconditionally, so the shim
+    // always passes both; a null reported position defaults to vec3_invalid. The trailing
+    // `mov rax, [rbp+0x20]` pins the three stack arguments. Unique @0x1bf74f0 on the Oct 22 build
+    // (the Swiftly prologue, extended). Its vtable LEA (at +0x12) must name the same vtable as the
+    // destructor's (at +0x10): the shim checks that, so a wrong match degrades instead of running.
+    "CTakeDamageInfo_Ctor": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "49 BB 00 00 00 00 00 00 80 3F 55 48 89 E5 48 83 EC 10 4C 8D 15 ? ? ? ? 4C 89 5F ? 48 8B 45 20",
+        "resolve": "direct",
+        "validate": { "prologue": "49 BB 00 00 00 00 00 00 80 3F 55 48 89 E5" }
+      }
+    },
+    // CTakeDamageInfo::~CTakeDamageInfo(this): restores the vtable, frees the
+    // destructible-hit-group request vector and releases the script handle. Not virtual. Unique
+    // @0x1bd08b0 on the Oct 22 build; field offsets in the body are wildcarded.
+    "CTakeDamageInfo_Dtor": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 55 49 89 FD 41 54 53 48 83 EC 08 48 8D 05 ? ? ? ? 48 83 C0 10 48 89 07 8B 87 ? ? ? ? A9 FF FF FF 7F",
+        "resolve": "direct",
+        "validate": { "prologue": "55 48 89 E5 41 55 49 89 FD 41 54 53" }
+      }
+    },
+    // CBaseEntity::TakeDamage(this, CTakeDamageInfo*, CTakeDamageResult* /* may be null */): the
+    // canonical entry. It refuses an entity whose m_takedamage is off, then tail-calls
+    // TakeDamageOld, so SDKHook OnTakeDamage still fires for damage a plugin deals. The whole body
+    // is pinned through that tail JMP, with field offsets wildcarded. Unique @0xd6e6e0 on the Oct 22
+    // build.
+    "CBaseEntity_TakeDamage": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 55 49 89 F5 41 54 49 89 D4 53 48 89 FB 48 83 EC 08 E8 ? ? ? ? 84 C0 75 ? 41 F6 45 ? 02 74 ? 48 8B 43 ? F6 40 ? 02 75 ? 48 8D 05 ? ? ? ? 48 83 38 00 74 ? 80 BB ? ? ? ? 00 74 ? 48 83 C4 08 4C 89 E2 4C 89 EE 48 89 DF 5B 41 5C 41 5D 5D E9",
+        "resolve": "direct",
+        "validate": { "prologue": "55 48 89 E5 41 55 49 89 F5 41 54 49 89 D4 53 48 89 FB" }
+      }
+    },
     // Entity-I/O slice: CEntityIOOutput::FireOutputInternal(CEntityIOOutput* this,
     // CEntityInstance* activator, CEntityInstance* caller, CPulseArgumentPack* arguments, float delay,
     // CPulseInputParamMap* parameters, const CVariant* optionalValue) — every entity output (func_button OnPressed, logic_relay
@@ -302,6 +364,27 @@
         "module": "libserver.so",
         "pattern": "55 48 89 E5 41 57 49 89 FF 41 56 41 55 41 54 49 89 D4 53 48 89 F3 48 81 EC ? ? ? ? 48 8D 05 ? ? ? ?",
         "resolve": "direct"
+      }
+    },
+    // Entity input pre-hook (parity slice 5): CEntityIdentity::AcceptInput(CEntityIdentity* this,
+    // CUtlSymbolLarge* input, CEntityInstance* activator, CEntityInstance* caller, variant_t* value,
+    // void* pulseArgs, KeyValues3* [stack]) -> bool. Every input an entity receives (map I/O, the
+    // event queue, EntityRef.acceptInput) is delivered here; detoured to hook Entity.onInput.
+    // A DIRECT prologue pattern (ModSharp's CEntityIdentity::AcceptInput). Validated UNIQUE on the
+    // 2026-10-22 libserver.so (@0x2293bb0). Disasm-confirmed: rdi is the identity (`[rdi]` instance,
+    // `[rdi+8]` class), `[rsi]` the input's const char* (null -> ""), and the bool result is r11b.
+    // The string-xref pins the body: `lea rdx,"activator"` at +0x153 (the debug-print key list).
+    // As with CanAcquire, the pattern is ModSharp's 18-byte prologue, a masked body, then the xref's
+    // opcode bytes, so the validator reads a pinned instruction without baking in the body.
+    "CEntityIdentity_AcceptInput": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 56 4C 8D BD ? ? ? ? 4D 89 CE ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? 48 8D 15 ? ? ? ?",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "55 48 89 E5 41 57 41 56",
+          "string-xref": { "at": 339, "dispOff": 3, "instrLen": 7, "expect": "activator" }
+        }
       }
     },
     // Pulse's complete first-argument conversion wrapper (destination variant, argument pack).
@@ -580,6 +663,61 @@
         "module": "libserver.so",
         "pattern": "48 8B 07 48 8D 15 ? ? ? ? 48 8B 80 ? ? ? ? 48 39 D0 75 2A 55",
         "resolve": "direct"
+      }
+    },
+    // Bones and attachments slice (EntityRef.lookupBone / getBoneTransform / lookupAttachment /
+    // getAttachment). Every entry is unique on the Oct 22 2026 build (libserver.so BuildID
+    // 2603388a…). The three CBaseModelEntity members all start the same way: load the sub-object
+    // at [this+0x528], call its vtable slot 0x70 to get the model. The shim reads that offset and
+    // slot out of all three matched bodies (the patterns pin the opcodes and wildcard only the
+    // operands) and refuses the slice when they disagree, so it can null-check the model before
+    // calling LookupBone, which does not check it itself.
+    //
+    // CBaseModelEntity::LookupBone(this, const char*) -> int, @0x164a890. Gets the model, then
+    // tail-calls the model's bone lookup with the name. ModSharp's pattern (it runs into the next
+    // function's prologue to stay unique).
+    "CBaseModelEntity_LookupBone": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 53 48 89 F3 48 83 EC ? 48 8B BF ? ? ? ? 48 8B 07 FF 50 ? 48 89 DE 48 8B 5D ? C9 48 89 C7 E9 ? ? ? ? CC CC CC CC CC CC CC 55 48 89 E5 53 89 F3",
+        "resolve": "direct",
+        "validate": { "prologue": "55 48 89 E5 53 48 89 F3" }
+      }
+    },
+    // CBaseModelEntity::LookupAttachment(this, const char*) -> uint8 (0 = none), @0x164abb0.
+    // Gets the model, returns 0 when it is null, otherwise gets it again and tail-calls the
+    // model's attachment lookup.
+    "CBaseModelEntity_LookupAttachment": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 54 49 89 F4 53 48 89 FB 48 8B BF ? ? ? ? 48 8B 07 FF 50 ? 48 85 C0 74 ? 48 8B BB ? ? ? ? 48 8B 07 FF 50 ? 5B 4C 89 E6 41 5C 48 89 C7 5D E9",
+        "resolve": "direct",
+        "validate": { "prologue": "55 48 89 E5 41 54 49 89 F4 53 48 89 FB" }
+      }
+    },
+    // CTransform CBaseModelEntity::GetBoneTransform(this, int bone), @0x164aac0. Returns the
+    // 32-byte CTransform (VectorAligned position, Quaternion orientation) through a hidden sret
+    // pointer in rdi, so `this` is rsi and the bone is edx. It null-checks the model and the bone
+    // range; an out-of-range bone returns the entity's own transform. ModSharp's pattern.
+    "CBaseModelEntity_GetBoneTransform": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 56 49 89 F6 41 55 41 54 41 89 D4 53 48 89 FB 48 8B BE",
+        "resolve": "direct",
+        "validate": { "prologue": "55 48 89 E5 41 56 49 89 F6" }
+      }
+    },
+    // StudioModel::GetAttachment(model, uint8 attachment, Vector* origin, QAngle* angles) -> bool,
+    // @0x181da10. Writes the world-space origin through rdx and the angles (converted from the
+    // attachment's quaternion) through rcx. The engine's own ScriptGetAttachmentOrigin and
+    // ScriptGetAttachmentAngles wrappers call it with the model from the same getter. ModSharp's
+    // pattern.
+    "StudioModel_GetAttachment": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 55 41 54 49 89 D4 53 48 8D 55 ? 48 89 CB",
+        "resolve": "direct",
+        "validate": { "prologue": "55 48 89 E5 41 55 41 54 49 89 D4" }
       }
     }
     // (Sound slice precache: there is NO factory-list signature. The abandoned "GameSystemFactoryList"
