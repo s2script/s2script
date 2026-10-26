@@ -1,5 +1,60 @@
 # @s2script/cli
 
+## 0.33.0
+
+### Minor Changes
+
+- d4f4dda: Read bones and attachments. `EntityRef` in `@s2script/sdk/entity` gains `lookupBone(name)`,
+  `getBoneTransform(bone)` (world position and orientation quaternion), `lookupAttachment(name)` and
+  `getAttachment(attachment)` (world origin and angles), like ModSharp's and Swiftly's bone and
+  attachment APIs. Useful for head positions, muzzle points and attaching effects.
+- 8c038ee: Query and replicate client cvars. `client.queryConVar(name)` in `@s2script/sdk/clients` asks the client
+  for its own value of a cvar and resolves `{ status, value }` (SourceMod `QueryClientConVar`), or `null`
+  for a bot or a client that leaves first. `client.replicateConVar(name, value)` sets the client's copy
+  of a replicated cvar without changing the server's value (SourceMod `SendConVarValue`).
+- f4408de: Read client network stats. `client.netStats()` in `@s2script/sdk/clients` returns one snapshot of the
+  client's net channel: latency, loss, choke, data and packet rates per direction, totals, connection
+  time and timeout state (SourceMod `GetClientLatency`, `GetClientAvgLoss`, `GetClientAvgChoke`,
+  `GetClientAvgData`, `GetClientAvgPackets`, `GetClientTime`, `IsClientTimingOut`, `GetClientDataRate`).
+  It returns `null` for a bot.
+- 83dca0c: `Entity.findByName(name)` and `Entity.findInSphere(center, radius, className?)` in
+  `@s2script/sdk/entity`: find entities by targetname (SourceMod's `FindEntityByTargetname` loop) or by
+  distance from a point. Both return liveness-gated `EntityRef`s like `findByClass`.
+- 49e2c12: `onInput(classname, input, handler)` (and `ctx.entities.onInput`): hook an input an entity receives
+  before it runs, the counterpart of `onOutput`. Input names match case-insensitively, `"*"` matches
+  any class or input, and returning `HookResult.Handled` drops the input. The event carries the
+  receiving entity, the activator, the caller and the value as a string.
+- dd1d376: Declared calls can target engine interfaces. A `calls` entry in plugin gamedata may now use
+  `"receiver": { "kind": "interface", "name": "<interface version string>" }`, which calls the
+  function on that engine interface (found through the engine and server factories) instead of on an
+  entity. The generated callable takes no `self`. A new return kind, `utlstringlist`, copies an
+  engine `CUtlStringList` out as `string[]` (or null).
+- 0cd1991: Look up sound events by name. `Sound.duration(name)` in `@s2script/sdk/sound` returns an event's
+  length in seconds, or null when the engine has no such event, and `Sound.isValid(name)` says whether
+  a loaded soundevents file defines it. This matches ModSharp's GetSoundDuration / IsSoundEventValid.
+- ae6c9ed: Change a sound while it plays. `Sound.start(name, opts)` in `@s2script/sdk/sound` emits like
+  `Sound.emit` and returns a `SoundEvent` handle (or null). `event.setParam(name, value)` sets a
+  soundevent parameter such as `volume`, `pitch`, `position` or a `public.*` field (a number or a
+  Vector), and `event.stop()` stops that one instance. Both take optional `recipients`. This matches
+  ModSharp's StartSoundEvent / SetSoundEventParam / StopSoundEvent.
+- c2acf2b: Read and write the engine's network string tables. `@s2script/sdk/stringtables` adds
+  `StringTables.find(name)` / `get(id)` / `count()` / `all()`, returning a `StringTable` handle with
+  `count()`, `findString()`, `getString()`, `getData()`, `setData()` and `addString()`. A handle is
+  plain data and is looked up again on every call, so one kept across a map change answers
+  -1 / null / false. This matches SourceMod's string table natives and ModSharp's
+  `INetworkingStringTable`.
+- d92165d: Deal damage and heal. `entity.takeDamage(damage, { attacker, inflictor, ability, damageType, force, position })`
+  in `@s2script/sdk/entity`, and SourceMod's `SDKHooks_TakeDamage` in `@s2script/sdk/sdkhooks`, deal damage
+  through the game's own damage path, so `OnTakeDamage` hooks and the game's rules (god mode, friendly
+  fire, armor) still apply. `pawn.heal(amount, { max })` in `@s2script/cs2` adds health up to the pawn's max
+  health, or past it to `max`.
+
+### Patch Changes
+
+- 9e982ab: `SDKHook` now works for `Use`, `Spawn`, `PreThink` and `GetMaxHealth` (and their `Post` twins) on
+  CS2, and `PostThink` works again on the Oct 22 2026 build. The `Think` doc now says Source 2 has no
+  Think virtual, so `SDKHook` returns `false` for it.
+
 ## 0.32.0
 
 ### Minor Changes
