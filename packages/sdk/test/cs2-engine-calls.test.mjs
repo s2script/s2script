@@ -28,7 +28,8 @@ import { cs2AddonBundle } from "./cs2-addon.mjs";
 
 /** Every descriptor games/cs2/gamedata/game.cs2.jsonc declares — the default "all eight resolved" host. */
 const ALL_CALLS = ["commitSuicide", "changeTeam", "switchTeam", "terminateRound",
-                   "respawn", "setPawn", "giveNamedItem", "removePlayerItem", "setItemAttribute"];
+                   "respawn", "setPawn", "giveNamedItem", "removePlayerItem", "goToIntermission",
+                   "emitHEGrenade", "emitFlashbang", "emitSmokeGrenade", "emitMolotov", "emitDecoy", "setItemAttribute"];
 
 /**
  * Build a CS2 game-package context.
@@ -108,7 +109,7 @@ function makeHost({ ready = ALL_CALLS, onInvoke } = {}) {
     // The four game-package call natives (core/src/v8host.rs). Absent natives are a DIFFERENT case
     // — an older host — and are covered by the "no natives at all" test below.
     __s2_game_call_ready: (name) => readySet.has(name),
-    __s2_game_call_receiverless: () => false,
+    __s2_game_call_receiverless: (name) => name.startsWith("emit"),
     __s2_game_call_status: (name) => readySet.has(name) ? "available" : "degraded in this test",
     __s2_game_call_invoke: (name, index, id, args) => {
       invokes.push({ name, index, id, args });
@@ -340,6 +341,58 @@ test("terminateRound: the reason bound is the engine's own 0..22", () => {
   assert.ok(h.logs.some((l) => /out of range 0\.\.22/.test(l)));
   // The in-range legacy holes pass through deliberately — the engine's own switch handles them.
   for (const r of [0, 2, 3, 15, 22]) assert.equal(h.pkg.GameRules.terminateRound(r), true, `reason ${r}`);
+});
+
+test("goToIntermission: passes abortedMatch as a bool, false by default", () => {
+  const h = makeHost();
+  assert.equal(h.pkg.GameRules.goToIntermission(), true);
+  assert.equal(h.pkg.GameRules.goToIntermission(1), true);
+  assert.deepEqual(h.invokes.map((i) => [i.name, i.args]), [["goToIntermission", [false]], ["goToIntermission", [true]]]);
+});
+
+test("goToIntermission: false and no invoke when the descriptor is degraded", () => {
+  const h = makeHost({ ready: ALL_CALLS.filter((n) => n !== "goToIntermission") });
+  assert.equal(h.pkg.GameRules.goToIntermission(), false);
+  assert.equal(h.invokes.length, 0);
+});
+
+test("Grenades.emit: static call with the kind's item def index and zero defaults", () => {
+  const h = makeHost();
+  const pawn = new h.pkg.Pawn(new h.EntityRef(70, 9));
+  const proj = new h.EntityRef(200, 4);
+  const h2 = makeHost({ onInvoke: () => proj });
+  assert.equal(h2.pkg.Grenades.emit("hegrenade", { origin: [1, 2, 3], velocity: { x: 0, y: 0, z: 400 } }), proj);
+  assert.deepEqual(h2.invokes[0], { name: "emitHEGrenade", index: 0, id: 0, args: [
+    { x: 1, y: 2, z: 3 }, { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 400 }, { x: 0, y: 0, z: 0 }, null, 44] });
+  h.pkg.Grenades.emit("flashbang", { origin: [0, 0, 0], owner: pawn });
+  assert.equal(h.invokes[0].name, "emitFlashbang");
+  assert.equal(h.invokes[0].args[4], pawn.ref, "the owner crosses as its EntityRef");
+  assert.equal(h.invokes[0].args[5], 43);
+});
+
+test("Grenades.emit: smoke takes a team, defaulting to the owner's", () => {
+  const h = makeHost();
+  const pawn = new h.pkg.Pawn(new h.EntityRef(70, 9));
+  h.pkg.Grenades.emit("smokegrenade", { origin: [0, 0, 0], owner: pawn });
+  h.pkg.Grenades.emit("smokegrenade", { origin: [0, 0, 0], team: 3 });
+  assert.deepEqual(h.invokes.map((i) => i.args.slice(5)), [[45, pawn.teamNum | 0], [45, 3]]);
+});
+
+test("Grenades.emit: a Player owner becomes its pawn; bad input is refused", () => {
+  const h = makeHost();
+  const player = h.player(0);
+  h.pkg.Grenades.emit("decoy", { origin: [0, 0, 0], owner: player });
+  assert.equal(h.invokes[0].args[4].index, player.ref.index + 64, "the controller's m_hPlayerPawn");
+  assert.equal(h.pkg.Grenades.emit("decoy", { origin: [NaN, 0, 0] }), null);
+  assert.equal(h.pkg.Grenades.emit("decoy", { origin: [0, 0, 0], owner: new h.EntityRef(3, 3) }), null);
+  assert.equal(h.pkg.Grenades.emit("tactical_nuke", { origin: [0, 0, 0] }), null);
+  assert.equal(h.invokes.length, 1);
+});
+
+test("Grenades.emit: null when the descriptor is degraded", () => {
+  const h = makeHost({ ready: ALL_CALLS.filter((n) => n !== "emitMolotov") });
+  assert.equal(h.pkg.Grenades.emit("molotov", { origin: [0, 0, 0] }), null);
+  assert.equal(h.invokes.length, 0);
 });
 
 test("terminateRound: two calls in one context both run (no latest-wins slot)", () => {
