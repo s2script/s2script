@@ -65,6 +65,112 @@
     return this.ref.remove();
   };
 
+  // weapon.data — the weapon's static VData (CCSWeaponBaseVData: max clip, reserve max, price, damage, ...),
+  // shared by every weapon of the same class. The entity's m_pSubclassVData pointer is NOT reflected, so its
+  // offset is derived from the reflected neighbours instead of a borrowed constant: CBaseEntity lays out
+  // m_nSubclassID (a 4-byte CUtlStringToken), then the 8-byte VData pointer, then m_flAnimTime. The derivation
+  // only holds while m_flAnimTime - m_nSubclassID == 12 and the pointer slot is 8-aligned; on any other layout
+  // the accessor degrades to null (named reason in `Weapon.dataUnavailableReason`) instead of reading a guess.
+  // Field offsets inside the VData are live schema lookups (they walk into CBasePlayerWeaponVData).
+  // Read-only: the VData is shared by every weapon of that class, so a write would be a global mutation.
+  var vdataOff = null;             // null = not yet derived; -1 = layout check failed
+  var vdataReason = null;
+  function subclassVDataOffset() {
+    if (vdataOff !== null) return vdataOff;
+    var sub = __s2_schema_offset("CBaseEntity", "m_nSubclassID");
+    var anim = __s2_schema_offset("CBaseEntity", "m_flAnimTime");
+    if (sub < 0 || anim < 0) {
+      // Not cached: like the generated accessors, a miss is retried on the next read.
+      vdataReason = "CBaseEntity.m_nSubclassID or m_flAnimTime is not in the schema";
+      return -1;
+    }
+    vdataReason = (anim - sub !== 12 || (sub + 4) % 8 !== 0)
+      ? "CBaseEntity layout changed: m_flAnimTime - m_nSubclassID = " + (anim - sub) + ", expected 12"
+      : null;
+    vdataOff = vdataReason ? -1 : sub + 4;
+    return vdataOff;
+  }
+
+  var vdataFieldOffs = {};
+  function vdataField(field) {
+    var o = vdataFieldOffs[field];
+    if (o === undefined) {
+      o = __s2_schema_offset("CCSWeaponBaseVData", field);
+      if (o >= 0) vdataFieldOffs[field] = o;
+    }
+    return o;
+  }
+
+  // [property, schema field, reader, firing mode?]. A CFiringModeFloat wraps m_flValues, a
+  // float32[2] (primary mode, then the alt mode: scoped / silencer-on / burst), so its two halves are
+  // separate properties; the 4th entry picks the element.
+  var VDATA_FIELDS = [
+    ["maxClip1", "m_iMaxClip1", "readInt32Via"],
+    ["maxClip2", "m_iMaxClip2", "readInt32Via"],
+    ["defaultClip1", "m_iDefaultClip1", "readInt32Via"],
+    ["slot", "m_iSlot", "readInt32Via"],
+    ["weaponType", "m_WeaponType", "readInt32Via"],
+    ["gearSlot", "m_GearSlot", "readInt32Via"],
+    ["price", "m_nPrice", "readInt32Via"],
+    ["killAward", "m_nKillAward", "readInt32Via"],
+    ["primaryReserveAmmoMax", "m_nPrimaryReserveAmmoMax", "readInt32Via"],
+    ["secondaryReserveAmmoMax", "m_nSecondaryReserveAmmoMax", "readInt32Via"],
+    ["isFullAuto", "m_bIsFullAuto", "readBoolVia"],
+    ["isMelee", "m_bMeleeWeapon", "readBoolVia"],
+    ["numBullets", "m_nNumBullets", "readInt32Via"],
+    ["cycleTime", "m_flCycleTime", "readFloat32Via", 0],
+    ["cycleTimeAlt", "m_flCycleTime", "readFloat32Via", 1],
+    ["maxSpeed", "m_flMaxSpeed", "readFloat32Via", 0],
+    ["maxSpeedAlt", "m_flMaxSpeed", "readFloat32Via", 1],
+    ["damage", "m_nDamage", "readInt32Via"],
+    ["headshotMultiplier", "m_flHeadshotMultiplier", "readFloat32Via"],
+    ["armorRatio", "m_flArmorRatio", "readFloat32Via"],
+    ["range", "m_flRange", "readFloat32Via"],
+  ];
+
+  var firingValuesOff = null;
+  function firingModeValuesOffset() {
+    if (firingValuesOff === null) {
+      var o = __s2_schema_offset("CFiringModeFloat", "m_flValues");
+      if (o < 0) return o;
+      firingValuesOff = o;
+    }
+    return firingValuesOff;
+  }
+
+  function WeaponData(ref) { this.ref = ref; }
+  VDATA_FIELDS.forEach(function (f) {
+    var prop = f[0], field = f[1], reader = f[2], mode = f[3];
+    Object.defineProperty(WeaponData.prototype, prop, {
+      get: function () {
+        var p = subclassVDataOffset(), o = vdataField(field);
+        if (mode !== undefined) {
+          var values = firingModeValuesOffset();
+          o = (o < 0 || values < 0) ? -1 : o + values + 4 * mode;
+        }
+        if (p < 0 || o < 0) return null;
+        return this.ref[reader]([p], o);   // null on a stale ref or a null VData pointer
+      },
+      enumerable: true, configurable: true,
+    });
+  });
+
+  // weapon.data — null when the layout check failed or the weapon is stale. A live weapon whose VData
+  // pointer is null still returns an object; its fields then read null.
+  Object.defineProperty(Weapon.prototype, "data", {
+    get: function () {
+      if (subclassVDataOffset() < 0 || !this.ref.isValid()) return null;
+      return new WeaponData(this.ref);
+    },
+    enumerable: true, configurable: true,
+  });
+
+  // Weapon.dataUnavailableReason — why weapon.data is null on this build, or null when the layout check passed.
+  Object.defineProperty(Weapon, "dataUnavailableReason", {
+    get: function () { subclassVDataOffset(); return vdataReason; },
+    enumerable: true, configurable: true,
+  });
+
   // Weapon.fromEntity(ref) — wrap a raw weapon EntityRef; null if ref is null.
   Weapon.fromEntity = function (ref) { return ref ? new Weapon(ref) : null; };
 

@@ -1,0 +1,1 @@
+{"frame":{"pre":["player:entity?","weapon:entity?"]},"id":"cs2.weapon-drop.v1","preDecision":"s2.pre-decision.v1","semantics":{"changed":"continue","continue":"no-vote","handledStop":"skips-original","original":"skipped-when-any-handled","stop":"truncates-delivery","throw":"continue"},"subscriberDelivery":"s2.subscriber-delivery.v1","timing":{"pre":"before-original"},"version":1}

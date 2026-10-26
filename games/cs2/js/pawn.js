@@ -67,7 +67,16 @@
   var callSetPawn          = engineCall("setPawn");
   var callGiveNamedItem    = engineCall("giveNamedItem");
   var callRemovePlayerItem = engineCall("removePlayerItem");
+  var callDropWeapon       = engineCall("dropWeapon");
   var callGetPlayerMaxSpeed = engineCall("getPlayerMaxSpeed");
+  var callGoToIntermission = engineCall("goToIntermission");
+  var grenadeCalls = {
+    hegrenade: [engineCall("emitHEGrenade"), 44],
+    flashbang: [engineCall("emitFlashbang"), 43],
+    smokegrenade: [engineCall("emitSmokeGrenade"), 45],
+    molotov: [engineCall("emitMolotov"), 46],
+    decoy: [engineCall("emitDecoy"), 47],
+  };
 
   // Internal namespace, same idiom as __s2pkg_cs2_schema / __s2pkg_cs2_nav: NOT part of the
   // @s2script/cs2 public surface. `status` is here so an operator can ask a live server WHY a game
@@ -574,14 +583,26 @@
   };
   Pawn.prototype.disarm = function () { return this.stripWeapons(); };   // destroy-all alias
 
-  // pawn.dropActiveWeapon() — still DEFERRED (always false). A true DROP spawns the weapon as a world
-  // pickup, which CANNOT be composed from removeWeapon/remove (those DESTROY the weapon); it needs the
-  // real CCSPlayer_ItemServices::DropActivePlayerWeapon function. Task 2's live disasm spike found the
-  // borrowed vtable index 24 resolves, on this pinned libserver.so, to a GiveNamedItem-overload THUNK
-  // (not DropActivePlayerWeapon) — calling through would pass an entity ptr as GiveNamedItem's
-  // `const char* name` (an unsafe read, violating degrade-never-crash). Stays UNWIRED until the correct
-  // function is self-resolved by SIGNATURE (a follow-up RE spike — NOT a borrowed vtable index).
-  Pawn.prototype.dropActiveWeapon = function () { return false; };
+  // pawn.dropWeapon(weapon) — drop ONE held weapon as a world pickup (SourceMod's CS_DropWeapon),
+  // over the `dropWeapon` descriptor. Unlike removeWeapon, the weapon entity survives. The weapon
+  // must be held by THIS pawn: the engine is not asked to drop someone else's weapon. false if the
+  // descriptor is degraded, either ref is stale, or the weapon is not this pawn's.
+  Pawn.prototype.dropWeapon = function (weapon) {
+    if (!callDropWeapon || !weapon || !this.ref.isValid() || !weapon.ref.isValid()) return false;
+    var owner = weapon.owner;
+    if (!owner || owner.ref.index !== this.ref.index || owner.ref.id !== this.ref.id) return false;
+    // Owner resolution can run plugin code; recheck both refs last (a stale entity argument
+    // marshals to nullptr, which the engine treats as a no-op, but say false rather than pretend).
+    if (!this.ref.isValid() || !weapon.ref.isValid()) return false;
+    return callDropWeapon(this, weapon.ref, 0, 0) === undefined;
+  };
+
+  // pawn.dropActiveWeapon() — drop the deployed weapon as a world pickup. false when there is no
+  // active weapon or dropWeapon would return false.
+  Pawn.prototype.dropActiveWeapon = function () {
+    var w = this.activeWeapon;
+    return w ? this.dropWeapon(w) : false;
+  };
 
   // --- Player fire control: the effective "can't fire" gate is m_flNextAttack (a GameTime_t, seconds) on
   // the CCSPlayer_WeaponServices SUB-OBJECT, reached via the m_pWeaponServices pointer. Written through the
@@ -951,6 +972,30 @@
     callTerminateRound(this, d, r, 0, 0);
     return true;
   };
+  // End the match into the scoreboard and map vote (CGameRules::GoToIntermission). The engine
+  // changes level on its own after mp_match_restart_delay.
+  GameRulesView.prototype.goToIntermission = function (abortedMatch) {
+    if (!callGoToIntermission) return false;
+    if (!grPath()) return false;
+    if (!this.ref.isValid()) return false;
+    callGoToIntermission(this, !!abortedMatch);
+    return true;
+  };
+  // GameRules.onRoundRestart / onRoundRestartPost — the start of every round on the trusted
+  // `roundRestart` engine function, delivered by the cs2.round-restart.v1 package adapter
+  // (js/adapters/round-restart.js). Load-window only, ledgered like `items`.
+  function roundRestartSubscriber(phase, api) {
+    return function (handler) {
+      if (!globalThis.__s2_load_ctx) throw new Error("s2script: " + api + " outside the load window");
+      if (typeof handler !== "function") throw new TypeError("s2script: " + api + " requires a handler function");
+      var gate = (globalThis.__s2pkg_cs2_adapters || {}).roundRestart;
+      if (!gate) {
+        console.log("[s2script] WARN: " + api + ": the round-restart adapter is not packaged, so this handler will not fire");
+        return;
+      }
+      gate.subscribe(phase, handler);
+    };
+  }
   var GameRules = (function () {
     // Cache the resolved cs_gamerules proxy (ModSharp/Swiftly cache the gamerules pointer likewise).
     // Serial-gated: on a map change the proxy dies -> isValid() false -> re-scan. Turns get() from an
@@ -970,7 +1015,13 @@
       terminateRound: function (reason, delay) {
         var v = this.get();
         return v ? v.terminateRound(reason, delay) : false;
-      }
+      },
+      goToIntermission: function (abortedMatch) {
+        var v = this.get();
+        return v ? v.goToIntermission(abortedMatch) : false;
+      },
+      onRoundRestart: roundRestartSubscriber("pre", "GameRules.onRoundRestart()"),
+      onRoundRestartPost: roundRestartSubscriber("post", "GameRules.onRoundRestartPost()")
     };
   })();
 
@@ -1005,6 +1056,20 @@
     addScore: function (team, delta) {
       var cur = Teams.getScore(team); if (cur === null) return false;
       return Teams.setScore(team, cur + (delta | 0));
+    },
+    // Teams.onJoinTeam(handler) — a player's team request, on the trusted `joinTeam` engine
+    // function, delivered by the cs2.join-team.v1 package adapter (js/adapters/join-team.js).
+    // Load-window only, ledgered like `items`.
+    onJoinTeam: function (handler) {
+      var api = "Teams.onJoinTeam()";
+      if (!globalThis.__s2_load_ctx) throw new Error("s2script: " + api + " outside the load window");
+      if (typeof handler !== "function") throw new TypeError("s2script: " + api + " requires a handler function");
+      var gate = (globalThis.__s2pkg_cs2_adapters || {}).joinTeam;
+      if (!gate) {
+        console.log("[s2script] WARN: " + api + ": the join-team adapter is not packaged, so this handler will not fire");
+        return;
+      }
+      gate.subscribe(handler, function (ref) { return ref ? new Player(ref) : null; });
     }
   };
 
@@ -1074,6 +1139,82 @@
     }
   };
 
+  // --- Center-screen text: SourceMod PrintCenterText / PrintCenterTextAll, plus CS2's alert line and
+  // the HTML center panel. TextMsg `dest` values are CS2's HUD_PRINT* (Swiftly's MessageType uses the
+  // same numbers: Center 4, Alert 6). `param` is a repeated field; setString appends to it.
+  var HUD_PRINTCENTER = 4, HUD_PRINTALERT = 6;
+  function textMsg(dest, text) {
+    return _um("CUserMessageTextMsg").setInt("dest", dest).setString("param", String(text));
+  }
+  var CenterText = {
+    to: function (slot, text) { return textMsg(HUD_PRINTCENTER, text).send(slot); },
+    toAll: function (text) { return textMsg(HUD_PRINTCENTER, text).sendAll(); },
+  };
+  var AlertText = {
+    to: function (slot, text) { return textMsg(HUD_PRINTALERT, text).send(slot); },
+    toAll: function (text) { return textMsg(HUD_PRINTALERT, text).sendAll(); },
+  };
+
+  // CenterHtml — the `show_survival_respawn_status` panel, whose loc_token renders as HTML. The client
+  // paints it for one frame per event, so a frame handler re-fires it to each slot until its time is up
+  // (the same thing Swiftly's SendCenterHTML and the rockthevote tally do). The handler is subscribed
+  // only while some message is showing, in the context of the plugin that showed it, so the ledger
+  // tears it down at that plugin's unload. One message per slot per plugin: a later call replaces it.
+  // Recipients are connected clients, not Player.fromSlot (which needs a live pawn): dead, spectating
+  // and not-yet-spawned humans see the panel too, and a message survives a respawn.
+  var centerHtml = {};          // slot -> { html, until (ms) }
+  var centerHtmlCount = 0;
+  var centerHtmlSub = null;
+  function centerHtmlEvents() { return (__s2require("@s2script/sdk/events") || {}).Events; }
+  function centerHtmlClient(slot) {
+    var clients = globalThis.__s2pkg_clients && globalThis.__s2pkg_clients.Clients;
+    var c = clients ? clients.fromSlot(slot) : null;
+    return c && !c.isBot ? c : null;              // bots render nothing; skip the per-frame fire
+  }
+  function centerHtmlFrame() {
+    var ev = centerHtmlEvents();
+    var now = Date.now();
+    for (var k in centerHtml) {
+      var e = centerHtml[k];
+      var slot = Number(k);
+      var c = centerHtmlClient(slot);
+      if (now >= e.until || !c) { delete centerHtml[k]; centerHtmlCount--; continue; }
+      if (ev) ev.fireToClient(slot, "show_survival_respawn_status", { loc_token: e.html, duration: 1, userid: c.userId });
+    }
+    if (centerHtmlCount <= 0 && centerHtmlSub) { centerHtmlCount = 0; centerHtmlSub.dispose(); centerHtmlSub = null; }
+  }
+  function centerHtmlSet(slot, html, seconds) {
+    var secs = seconds === undefined ? 5 : Number(seconds);
+    if (!(secs > 0)) return CenterHtml.clear(slot);
+    if (!centerHtmlClient(slot)) return false;
+    if (!centerHtml[slot]) centerHtmlCount++;
+    centerHtml[slot] = { html: String(html), until: Date.now() + secs * 1000 };
+    if (!centerHtmlSub) {
+      var frame = globalThis.__s2pkg_frame && globalThis.__s2pkg_frame.OnGameFrame;
+      if (!frame) { delete centerHtml[slot]; centerHtmlCount--; return false; }
+      centerHtmlSub = frame.subscribe(centerHtmlFrame);
+    }
+    return true;
+  }
+  var CenterHtml = {
+    to: function (slot, html, seconds) { return centerHtmlSet(slot, html, seconds); },
+    toAll: function (html, seconds) {
+      var any = false;
+      var clients = globalThis.__s2pkg_clients && globalThis.__s2pkg_clients.Clients;
+      var all = clients ? clients.all() : [];
+      for (var i = 0; i < all.length; i++) {
+        if (all[i].isBot) continue;
+        if (centerHtmlSet(all[i].slot, html, seconds)) any = true;
+      }
+      return any;
+    },
+    clear: function (slot) {
+      if (!centerHtml[slot]) return false;
+      delete centerHtml[slot]; centerHtmlCount--;
+      return true;
+    },
+  };
+
   // A small curated set of known-good BUILT-IN CS2 soundevents (convenience + the sound-demo).
   // CS2 soundevent names live exclusively HERE (the game layer), never in core/src. The audible
   // verify is a human-client test (bots have no audio) — tune/extend these names at that gate.
@@ -1089,13 +1230,47 @@
   // sceneNodeOf(ref) — the world transform of ANY entity (every CBaseEntity has the
   // m_CBodyComponent -> m_pSceneNode chain), reusing the generated SceneNode wrapper the pawn nav
   // installs. Lets a plugin read e.g. an info_teleport_destination's absRotation without offsets.
+  // Grenades.emit(kind, opts) — spawn a live, already-thrown grenade projectile (Swiftly
+  // EmitGrenade). The item def index comes from the kind, never the caller. The owner must be a
+  // PAWN: the factories read it as a CBaseCombatCharacter, so a controller would be the wrong
+  // object; a Player is mapped to its pawn and anything else is refused.
+  function grenadeVector(value, fallback) {
+    if (value === undefined || value === null) return fallback ? { x: 0, y: 0, z: 0 } : null;
+    var c = Array.isArray(value) ? [+value[0], +value[1], +value[2]] : [+value.x, +value.y, +value.z];
+    for (var i = 0; i < 3; i++) if (!isFinite(c[i]) || Math.abs(c[i]) > 3.4028234663852886e38) return null;
+    return { x: c[0], y: c[1], z: c[2] };
+  }
+  var Grenades = {
+    emit: function (kind, opts) {
+      var entry = Object.prototype.hasOwnProperty.call(grenadeCalls, kind) ? grenadeCalls[kind] : null;
+      if (!entry) { warn("Grenades.emit: unknown grenade kind '" + kind + "'"); return null; }
+      if (!entry[0]) return null;
+      opts = opts || {};
+      var origin = grenadeVector(opts.origin, false);
+      var angles = grenadeVector(opts.angles, true);
+      var velocity = grenadeVector(opts.velocity, true);
+      var spin = grenadeVector(opts.angularVelocity, true);
+      if (!origin || !angles || !velocity || !spin) { warn("Grenades.emit: origin, angles and velocities must be three finite numbers"); return null; }
+      var owner = opts.owner === undefined ? null : opts.owner;
+      if (owner instanceof Player && !(owner = owner.pawn)) return null;   // no body to throw from
+      if (owner !== null && !(owner instanceof Pawn)) { warn("Grenades.emit: owner must be a Pawn, a Player or null"); return null; }
+      if (owner !== null && !owner.ref.isValid()) return null;
+      var ownerRef = owner ? owner.ref : null;
+      if (kind === "smokegrenade") {
+        var team = opts.team === undefined ? (owner ? owner.teamNum : 0) : opts.team;
+        return entry[0](origin, angles, velocity, spin, ownerRef, entry[1], (team | 0)) || null;
+      }
+      return entry[0](origin, angles, velocity, spin, ownerRef, entry[1]) || null;
+    },
+  };
+
   var sceneNodeGetter = (Object.getOwnPropertyDescriptor(Pawn.prototype, "sceneNode") || {}).get;
   function sceneNodeOf(ref) {
     if (!ref || !sceneNodeGetter || !ref.isValid()) return null;
     return sceneNodeGetter.call({ ref: ref });
   }
 
-  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, sceneNodeOf: sceneNodeOf, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Teams: Teams, RoundEndReason: RoundEndReason, WinPanelFinalEvent: WinPanelFinalEvent, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone, Sounds: Sounds });
+  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, sceneNodeOf: sceneNodeOf, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Teams: Teams, RoundEndReason: RoundEndReason, WinPanelFinalEvent: WinPanelFinalEvent, Fade: Fade, Shake: Shake, HintText: HintText, CenterText: CenterText, AlertText: AlertText, CenterHtml: CenterHtml, TriggerZone: TriggerZone, Sounds: Sounds, Grenades: Grenades });
 
   // The ctx namespaces this game package contributes (core's generic extension point in
   // prelude.js merges these into every plugin's ctx). Each factory gets the prelude's ledger
@@ -1147,6 +1322,65 @@
   globalThis.__s2pkg_cs2.items = Object.freeze({
     onCanAcquire: acquireSubscriber("pre", "items.onCanAcquire()"),
     onCanAcquirePost: acquireSubscriber("post", "items.onCanAcquirePost()"),
+  });
+
+  // import { chat } from "@s2script/cs2" — who can read whose chat, on the trusted
+  // `playerCanHearChat` engine function folded by the cs2.chat-visibility.v1 package adapter
+  // (js/adapters/chat-visibility.js). Same load-window and ledger contract as `items`.
+  var chatGate = globalThis.__s2pkg_cs2_adapters && globalThis.__s2pkg_cs2_adapters.chatVisibility;
+  function chatPlayer(ref) { return ref ? new Player(ref) : null; }
+  globalThis.__s2pkg_cs2.chat = Object.freeze({
+    onCanHear: function (handler) {
+      if (!globalThis.__s2_load_ctx) throw new Error("s2script: chat.onCanHear() outside the load window");
+      if (typeof handler !== "function") throw new TypeError("s2script: chat.onCanHear() requires a handler function");
+      if (!chatGate) {
+        console.log("[s2script] WARN: chat.onCanHear(): the chat-visibility adapter is not packaged, so this handler will not fire");
+        return;
+      }
+      chatGate.subscribe(handler, chatPlayer);
+    },
+  });
+
+  // import { weapons } from "@s2script/cs2" — weapon pickup, switch and drop gates on the trusted
+  // `weaponCanUse`, `weaponCanSwitch` and `weaponDrop` engine functions, folded by the
+  // cs2.weapon-can-use.v1 / cs2.weapon-can-switch.v1 / cs2.weapon-drop.v1 package adapters
+  // (js/adapters/weapon-*.js). Same load-window and ledger contract as `items`.
+  var weaponAdapters = globalThis.__s2pkg_cs2_adapters || {};
+  function weaponGate(gate, api) {
+    return function (handler) {
+      if (!globalThis.__s2_load_ctx) throw new Error("s2script: " + api + " outside the load window");
+      if (typeof handler !== "function") throw new TypeError("s2script: " + api + " requires a handler function");
+      if (!gate) {
+        console.log("[s2script] WARN: " + api + ": the weapon hook adapter is not packaged, so this handler will not fire");
+        return;
+      }
+      gate.subscribe(handler, acquirePawns, Weapon.fromEntity);
+    };
+  }
+  globalThis.__s2pkg_cs2.weapons = Object.freeze({
+    onCanUse: weaponGate(weaponAdapters.weaponCanUse, "weapons.onCanUse()"),
+    onCanSwitchTo: weaponGate(weaponAdapters.weaponCanSwitch, "weapons.onCanSwitchTo()"),
+    onDrop: weaponGate(weaponAdapters.weaponDrop, "weapons.onDrop()"),
+  });
+
+  // import { movement } from "@s2script/cs2" — each player's movement tick on the trusted
+  // `processMove` engine function, delivered by the cs2.process-move.v1 package adapter
+  // (js/adapters/process-move.js). Same load-window and ledger contract as `items`.
+  var moveGate = weaponAdapters.processMove;
+  function moveSubscriber(phase, api) {
+    return function (handler) {
+      if (!globalThis.__s2_load_ctx) throw new Error("s2script: " + api + " outside the load window");
+      if (typeof handler !== "function") throw new TypeError("s2script: " + api + " requires a handler function");
+      if (!moveGate) {
+        console.log("[s2script] WARN: " + api + ": the movement adapter is not packaged, so this handler will not fire");
+        return;
+      }
+      moveGate.subscribe(phase, handler, acquirePawns);
+    };
+  }
+  globalThis.__s2pkg_cs2.movement = Object.freeze({
+    onProcessMove: moveSubscriber("pre", "movement.onProcessMove()"),
+    onProcessMovePost: moveSubscriber("post", "movement.onProcessMovePost()"),
   });
 
   // Crash reporter: push the game identity into the engine-generic breadcrumb (spec §5 — the
