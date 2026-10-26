@@ -12,15 +12,18 @@
     "LICENSE-APACHE",
     "csitem.generated.d.ts",
     "camera.d.ts",
+    "chat.d.ts",
     "econ.d.ts",
     "events.generated.d.ts",
     "hooks.generated.d.ts",
     "index.d.ts",
     "items.d.ts",
+    "movement.d.ts",
     "nav.generated.d.ts",
     "schema.generated.d.ts",
     "ui.d.ts",
-    "weapon.d.ts"
+    "weapon.d.ts",
+    "weapons.d.ts"
   ],
   "dependencies": {
     "@s2script/sdk": "^0.32.0"

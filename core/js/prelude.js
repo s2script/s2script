@@ -744,6 +744,30 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     findByClass: function (className) {
       return __s2_entity_find_by_class(String(className));
     },
+    // Find every entity whose targetname exactly matches name (SourceMod's FindEntityByTargetname
+    // loop). An empty name matches nothing.
+    findByName: function (name) {
+      return __s2_entity_find_by_name(String(name));
+    },
+    // Every entity whose world origin lies within radius of center (inclusive), optionally only of
+    // className. center is a Vector, {x,y,z} or [x,y,z]. Entities with no readable origin are skipped.
+    // Returns [] for a non-finite center or a negative/non-finite radius.
+    findInSphere: function (center, radius, className) {
+      var c = Array.isArray(center) ? { x: center[0], y: center[1], z: center[2] } : center;
+      var r = Number(radius);
+      if (!c || !isFinite(c.x) || !isFinite(c.y) || !isFinite(c.z) || !(r >= 0) || !isFinite(r)) return [];
+      var refs = className === undefined || className === null
+        ? __s2_entity_find_all()
+        : __s2_entity_find_by_class(String(className));
+      var r2 = r * r, out = [];
+      for (var i = 0; i < refs.length; i++) {
+        var o = refs[i].origin;
+        if (!o) continue;
+        var dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
+        if (dx * dx + dy * dy + dz * dz <= r2) out.push(refs[i]);
+      }
+      return out;
+    },
   };
   // Inter-plugin wire tagging: an EntityRef crosses the structured-copy (JSON) boundary as a tagged
   // envelope so the target context rehydrates it into a LIVE EntityRef (bound to ITS natives), not
