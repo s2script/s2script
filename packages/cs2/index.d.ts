@@ -165,9 +165,14 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   stripWeapons(): boolean;
   /** Alias of stripWeapons — destroy all held weapons. */
   disarm(): boolean;
-  /** DEFERRED (always false): a true drop spawns a world pickup, not composable from remove(); needs the
-   *  DropActivePlayerWeapon signature-resolve. */
+  /** Drop the deployed weapon as a world pickup (SourceMod `CS_DropWeapon` on the active weapon). The
+   *  engine picks the throw velocity. false if there is no active weapon, the binding is degraded, or
+   *  the pawn is stale. */
   dropActiveWeapon(): boolean;
+  /** Drop one weapon this pawn holds as a world pickup (SourceMod `CS_DropWeapon`). Unlike
+   *  {@link removeWeapon}, the weapon entity survives. false if the weapon is not this pawn's, either
+   *  handle is stale, or the binding is degraded. */
+  dropWeapon(weapon: Weapon): boolean;
   /** The current fire gate (m_flNextAttack, seconds), or null if unresolved/stale. Read companion to blockFiring. */
   readonly nextAttack: number | null;
   /** Block ALL weapon fire for `seconds` (default effectively-indefinite) by writing m_flNextAttack. The
