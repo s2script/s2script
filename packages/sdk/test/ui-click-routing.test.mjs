@@ -75,7 +75,7 @@ test('25 actual SDK context routes resolve only the supplied occupied controller
  const {peers}=clickCase({contexts:25});
  assert.equal(peers.reduce((n,x)=>n+x.p.lifecycle.click.length,0),25);
  console.log(JSON.stringify({schema:1,contexts:25,occupied:8,totals:peers.reduce((a,{r})=>{const s=r.summary();for(const k of ['factoryCalls','players','guardProperties','nativeCalls'])a[k]+=s[k];return a;},{factoryCalls:0,players:0,guardProperties:0,nativeCalls:0}),limits:'Actual SDK fixture counts, not native timing. All context subscriptions intentionally unchanged.'}));
- for(const {r,events} of peers){assert.deepEqual(events,[0]);assert.equal(r.summary().factoryCalls,1);assert.equal(r.summary().players,1);assert.equal(r.summary().guardProperties,59);}
+ for(const {r,events} of peers){assert.deepEqual(events,[0]);assert.equal(r.summary().factoryCalls,1);assert.equal(r.summary().players,1);assert.equal(r.summary().guardProperties,60);}
 });
 for(const [name,configure,index,id,slot] of [
  ['same occupied live controller',()=>{},1,1001,0],

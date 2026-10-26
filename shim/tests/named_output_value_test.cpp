@@ -68,6 +68,15 @@ static int s2script_core_dispatch_output(const char* cls,const char* name,int ac
     return 2;
 }
 
+static std::string input_seen;
+static int input_result=0;
+static int s2script_core_dispatch_input(const char* cls,const char* input,int target,int act,int caller,
+                                        const char* value) {
+    input_seen=std::string(cls)+"|"+input+"|"+std::to_string(target)+"|"+std::to_string(act)+"|"+
+               std::to_string(caller)+"|"+value;
+    return input_result;
+}
+
 #include "named_output_adapter.inc"
 
 // Invoke its real declared function type: no mismatched function pointer ABI cast.
@@ -175,6 +184,32 @@ static void OptionalValueRegression() {
     CHECK(observed=="copied-final-value","argument seven supplies the output value, never argument four");
 }
 
+// The AcceptInput adapter: identity -> instance, the symbol's string, handles, formatted value.
+static void InputAdapter() {
+    CEntityInstance target{5},act{17};
+    // The SDK's identity is not aggregate-constructible; the adapter reads only m_pInstance.
+    alignas(CEntityIdentity) unsigned char storage[sizeof(CEntityIdentity)]{};
+    auto& identity=*reinterpret_cast<CEntityIdentity*>(storage);
+    identity.m_pInstance=&target;
+    CUtlSymbolLarge name("Kill");
+    CVariant value(42);
+    input_result=2;
+    CHECK(S2NamedInputOp(&identity,&name,&act,nullptr,&value)==2,"input verdict preserved");
+    CHECK(input_seen=="logic_relay|Kill|5|17|-1|42","input identity, handles and value preserved");
+    input_seen.clear(); input_result=0;
+    CHECK(S2NamedInputOp(&identity,&name,nullptr,nullptr,nullptr)==0 &&
+          input_seen=="logic_relay|Kill|5|-1|-1|","valueless input reports an empty value");
+    input_seen.clear();
+    alignas(CEntityIdentity) unsigned char orphan_storage[sizeof(CEntityIdentity)]{};
+    auto& orphan=*reinterpret_cast<CEntityIdentity*>(orphan_storage);
+    CUtlSymbolLarge empty("");
+    CHECK(S2NamedInputOp(&orphan,&name,nullptr,nullptr,nullptr)==0 &&
+          S2NamedInputOp(&identity,&empty,nullptr,nullptr,nullptr)==0 &&
+          S2NamedInputOp(nullptr,&name,nullptr,nullptr,nullptr)==0 &&
+          S2NamedInputOp(&identity,nullptr,nullptr,nullptr,nullptr)==0 && input_seen.empty(),
+          "unresolvable input falls through without dispatch");
+}
+
 int main() {
     const pid_t child=fork();
     if(child==0) { OptionalValueRegression(); _exit(failures ? 1 : 0); }
@@ -182,8 +217,8 @@ int main() {
     CHECK(WIFEXITED(status) && WEXITSTATUS(status)==0,
           "optional value regression completed without reading the opaque argument pack as a variant");
     if(failures) return 1;
-    BorrowedFormatting(); PackCaptureAndLifetime();
+    BorrowedFormatting(); PackCaptureAndLifetime(); InputAdapter();
     if(failures) return 1;
-    std::puts("named_output_value: production argument/value, formatting, ownership and nesting regressions passed");
+    std::puts("named_output_value: production argument/value, formatting, ownership, nesting and input-adapter regressions passed");
     return 0;
 }
