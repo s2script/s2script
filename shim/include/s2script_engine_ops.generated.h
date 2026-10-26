@@ -248,6 +248,8 @@ typedef int (*s2_entity_lookup_attachment_fn)(int index, int serial, const char*
 typedef int (*s2_entity_get_attachment_fn)(int index, int serial, int attachment, float* out);
 typedef int (*s2_sound_set_param_fn)(int guid, int stackHash, const char* param, const float* values, int valueCount, const int* slots, int slotCount);
 typedef int (*s2_sound_stop_event_fn)(int guid, const int* slots, int slotCount);
+typedef float (*s2_sound_event_duration_fn)(const char* soundEvent);
+typedef int (*s2_sound_event_valid_fn)(const char* soundEvent);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -458,4 +460,7 @@ typedef struct {
     /* --- sound event parameters: SoundOpGameSystem::SetSoundEventParam / StopSoundEvent --- */
     s2_sound_set_param_fn sound_set_param;
     s2_sound_stop_event_fn sound_stop_event;
+    /* --- sound event lookups: the sound system's event manager (GetSoundEventDuration / IsValidSoundEventHash) --- */
+    s2_sound_event_duration_fn sound_event_duration;
+    s2_sound_event_valid_fn sound_event_valid;
 } S2EngineOps;

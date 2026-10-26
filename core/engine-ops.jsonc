@@ -1931,8 +1931,6 @@
       "shim": "s2_sound_stop_event"
     },
     {
-    },
-    {
       "name": "sound_event_duration",
       "alias": "SoundEventDurationFn",
       "rust": "extern \"C\" fn(*const c_char) -> f32",
