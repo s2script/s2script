@@ -712,3 +712,23 @@ Reproduced with the vendored KHook built as a library (two PRE-only hooks on a c
 `FireEvent`, peer added first) under AddressSanitizer: the old code reports heap-use-after-free in
 the peer's callback; with `Recall` the peer sees the event, the original runs once with
 `bDontBroadcast=1`. Live gate pending.
+
+## 2026-10-26 — Embedded `receiver.via` hops
+
+A declared call's `receiver.via` could only follow a POINTER field (`m_pItemServices`). Many
+engine receivers are structs embedded in the entity instead. CAttributeList, the receiver of
+`SetOrAddAttributeValueByName`, sits at `CEconEntity::m_AttributeManager` →
+`CAttributeContainer::m_Item` → `CEconItemView::m_NetworkedDynamicAttributes`, all embedded, so
+reaching it needs address arithmetic, not a load.
+
+`via` now also takes an array of `{class, field, embedded?}` hops (at most 4). Every hop but the
+last must be `embedded: true`; the last may be either. Core resolves each hop through the cached
+schema-offset resolver, sums the offsets, and passes the shim the sum plus whether the last hop is
+a pointer. `engine_call_invoke` gains that `subObjDeref` argument: the shim adds the offset to the
+entity and loads a pointer there only when it is set. The original single-object form is still one
+pointer hop, so every shipped descriptor means what it did. A pointer in the middle of a path is
+rejected at load (and by check-call-descriptors), because the shim loads at most one pointer; a
+miss on any hop degrades that invocation with the hop named in `Engine.status`.
+
+Core tests cover the three shapes, an unresolved hop and the rejected forms. The live gate is
+pending; the first consumer is econ attributes.

@@ -283,10 +283,23 @@ for scope, sc in sorted(scopes.items()):
         if via is not None:
             if rkind == 'none':
                 bad.append(f'{where}: receiver.kind "none" cannot carry a `via` sub-object hop')
-            if not isinstance(via, dict) or not isinstance(via.get('class'), str) \
-                    or not isinstance(via.get('field'), str) or not via['class'] or not via['field']:
-                bad.append(f'{where}: receiver.via must be {{class, field}} with two non-empty '
-                           f'strings — a partial `via` is silently ignored by core')
+            # One {class, field} pointer hop, or an array of {class, field, embedded?} hops in
+            # which only the last may be a pointer hop (core sums the embedded offsets; the shim
+            # loads at most one pointer, after them).
+            hops = via if isinstance(via, list) else [via]
+            if not hops or len(hops) > 4:
+                bad.append(f'{where}: receiver.via must name 1 to 4 hops')
+            for j, h in enumerate(hops):
+                if not isinstance(h, dict) or not isinstance(h.get('class'), str) \
+                        or not isinstance(h.get('field'), str) or not h['class'] or not h['field']:
+                    bad.append(f'{where}: receiver.via hop {j} must be {{class, field}} with two '
+                               f'non-empty strings')
+                    continue
+                if 'embedded' in h and not isinstance(h['embedded'], bool):
+                    bad.append(f'{where}: receiver.via hop {j} `embedded` must be a boolean')
+                if j < len(hops) - 1 and h.get('embedded') is not True:
+                    bad.append(f'{where}: receiver.via hop {j} is a pointer hop but is not the '
+                               f'last; mark it "embedded": true or move it to the end')
 
         # --- args / arity -----------------------------------------------------------------
         args = decl.get('args', [])

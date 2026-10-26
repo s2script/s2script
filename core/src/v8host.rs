@@ -3886,21 +3886,31 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         // uses — schema resolves at map-live, not at Load (spec §11). A miss no-ops THIS invocation
         // and flips `Engine.status(name)` to a named reason; it clears on the first success, so the
         // descriptor recovers once the map is live instead of being permanently dead.
-        let subobj_off = match &plan.via {
-            None => -1,
-            Some((class, field)) => {
-                let off = schema_offset_cached(class, field);
+        //
+        // Every hop but the last is embedded, so the path is one summed offset; the last hop says
+        // whether the shim then loads a pointer from there (`subobj_deref`).
+        let (subobj_off, subobj_deref) = if plan.via.is_empty() {
+            (-1, 0)
+        } else {
+            let mut total: i64 = 0;
+            for hop in &plan.via {
+                let off = schema_offset_cached(&hop.class, &hop.field);
                 if off < 0 {
                     crate::gamedata_calls::set_via_miss(
                         &pid,
                         &name,
-                        Some("receiver sub-object offset unresolved (schema resolves at map-live)".to_string()),
+                        Some(format!(
+                            "receiver sub-object offset {}::{} unresolved (schema resolves at map-live)",
+                            hop.class, hop.field
+                        )),
                     );
                     return;
                 }
-                crate::gamedata_calls::set_via_miss(&pid, &name, None);
-                off
+                total += off as i64;
             }
+            let Ok(total) = i32::try_from(total) else { return };
+            crate::gamedata_calls::set_via_miss(&pid, &name, None);
+            (total, if plan.via.last().is_some_and(|h| h.embedded) { 0 } else { 1 })
         };
 
         // Marshal the args into the two SysV register sequences, preserving order within each class.
@@ -4012,7 +4022,7 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         let mut ret: u64 = 0;
         let ok = crate::nest::with_outbound(&args, || {
             func(
-                plan.call_id, index, serial, subobj_off,
+                plan.call_id, index, serial, subobj_off, subobj_deref,
                 gp.as_ptr(), gp_kind.as_ptr(), gp.len() as i32,
                 fp.as_ptr(), fp.len() as i32,
                 strs.as_ptr(), vecs.as_ptr(),

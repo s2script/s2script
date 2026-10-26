@@ -30,7 +30,7 @@ fn invoke(key: &Key, on: bool) -> Result<(), String> {
     let plan = crate::gamedata_calls::plan(&key.game, &key.call)
         .ok_or_else(|| format!("unavailable: {}: {}", key.call,
             crate::gamedata_calls::status(&key.game, &key.call)))?;
-    if plan.receiverless || plan.via.is_some() || plan.ret_code != crate::gamedata_calls::RET_VOID
+    if plan.receiverless || !plan.via.is_empty() || plan.ret_code != crate::gamedata_calls::RET_VOID
         || plan.args != ["int", "bool"] {
         return Err(format!("unavailable: {} must be an entity void(int,bool) binding without via", key.call));
     }
@@ -46,7 +46,7 @@ fn invoke(key: &Key, on: bool) -> Result<(), String> {
         _ => None,
     };
     if let Some((arm, _)) = bypass { for id in &bypass_ids { arm(*id); } }
-    let ok = func(plan.call_id, key.index, serial, -1, gp.as_ptr(), kinds.as_ptr(), 2,
+    let ok = func(plan.call_id, key.index, serial, -1, 0, gp.as_ptr(), kinds.as_ptr(), 2,
         std::ptr::null(), 0, std::ptr::null(), std::ptr::null(), plan.ret_code, &mut ret);
     if let Some((_, disarm)) = bypass { for id in &bypass_ids { disarm(*id); } }
     if ok == 0 { Err(format!("unavailable: {} invocation failed", key.call)) } else { Ok(()) }
@@ -204,7 +204,7 @@ mod tests {
     }
     extern "C" fn resolve(_: *const c_char, _: *const c_char, _: *const c_char,
         _: *const c_char, _: *const c_char, _: c_int, _: *const c_char, _: *mut c_char, _: c_int) -> c_int { 7 }
-    extern "C" fn invoke_fake(_: c_int, index: c_int, serial: c_int, _: c_int,
+    extern "C" fn invoke_fake(_: c_int, index: c_int, serial: c_int, _: c_int, _: c_int,
         gp: *const u64, _: *const u8, _: c_int, _: *const f64, _: c_int,
         _: *const *const c_char, _: *const f32, _: c_int, _: *mut u64) -> c_int {
         let (slot, on) = unsafe { (*gp as i32, *gp.add(1) != 0) };

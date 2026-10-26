@@ -47,7 +47,7 @@ int S2_EngineCallResolve(const char* kind, const char* module, const char* patte
 // retKind: 0=void 1=bool 2=int 3=float 4=entity
 // Returns 1 on success (retOut written), 0 on degrade (stale receiver, unresolved `via` sub-object,
 // bad arg budget, unknown kind) — never a crash.
-int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
+int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff, int subObjDeref,
                         const uint64_t* gp, const unsigned char* gpKind, int gpCount,
                         const double* fp, int fpCount,
                         const char* const* strs, const float* vecs,

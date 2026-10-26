@@ -296,7 +296,7 @@ int S2_EngineCallResolve(const char* kind, const char* module, const char* patte
 // row) — a stale receiver, an unresolved `via` sub-object, or an out-of-budget arg list is a no-op,
 // never a wild call.
 // ---------------------------------------------------------------------------
-int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
+int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff, int subObjDeref,
                         const uint64_t* gp, const unsigned char* gpKind, int gpCount,
                         const double* fp, int fpCount,
                         const char* const* strs, const float* vecs,
@@ -311,9 +311,10 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
     if (fpCount > 0 && !fp) return 0;
     void* fn = reinterpret_cast<void*>(address);
 
-    // Receiver: a books-gated (index, serial) pair, optionally hopping through ONE schema-named
-    // sub-object pointer (`receiver.via`, whose offset the core live-resolves via the cached
-    // __s2_schema_offset and passes here; < 0 means "no hop").
+    // Receiver: a books-gated (index, serial) pair, optionally moved to a schema-named sub-object
+    // (`receiver.via`). The core live-resolves the hop offsets via the cached __s2_schema_offset and
+    // passes their sum; < 0 means "no hop". Every hop but the last is an embedded struct, so the
+    // path is that one offset, then — when the last hop is a pointer field (subObjDeref) — one load.
     //
     // entIndex < 0 is the RECEIVERLESS marker (`receiver.kind: "none"` — a static/free engine
     // function, which has no `this` at all). Nothing is resolved and no slot is consumed: the first
@@ -326,7 +327,8 @@ int S2_EngineCallInvoke(int callId, int entIndex, int entSerial, int subObjOff,
         if (!self) return 0;
         thisPtr = self;
         if (subObjOff >= 0) {
-            thisPtr = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(self) + subObjOff);
+            uint8_t* at = reinterpret_cast<uint8_t*>(self) + subObjOff;
+            thisPtr = subObjDeref ? *reinterpret_cast<void**>(at) : at;
             if (!thisPtr) return 0;  // sub-object absent on this entity — degrade this invocation
         }
     }

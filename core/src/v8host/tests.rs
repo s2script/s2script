@@ -2117,7 +2117,7 @@
     ) -> c_int { 7 }
 
     extern "C" fn fake_call_invoke(
-        call_id: c_int, _ent_index: c_int, _ent_serial: c_int, _subobj_off: c_int,
+        call_id: c_int, _ent_index: c_int, _ent_serial: c_int, _subobj_off: c_int, _subobj_deref: c_int,
         _gp: *const u64, _gp_kind: *const u8, _gp_count: c_int,
         fp: *const f64, fp_count: c_int,
         _strs: *const *const c_char, _vecs: *const f32,
@@ -2126,6 +2126,70 @@
         let f0 = if fp_count > 0 && !fp.is_null() { unsafe { *fp } } else { 0.0 };
         LAST_ENGINE_CALL.with(|c| c.set((call_id, f0)));
         1
+    }
+
+    thread_local! {
+        /// (subobj_off, subobj_deref) recorded by `via_call_invoke`.
+        static LAST_VIA: std::cell::Cell<(c_int, c_int)> = const { std::cell::Cell::new((-9, -9)) };
+    }
+
+    extern "C" fn via_call_invoke(
+        _call_id: c_int, _ent_index: c_int, _ent_serial: c_int, subobj_off: c_int, subobj_deref: c_int,
+        _gp: *const u64, _gp_kind: *const u8, _gp_count: c_int,
+        _fp: *const f64, _fp_count: c_int,
+        _strs: *const *const c_char, _vecs: *const f32,
+        _ret_kind: c_int, _ret_out: *mut u64,
+    ) -> c_int {
+        LAST_VIA.with(|c| c.set((subobj_off, subobj_deref)));
+        1
+    }
+
+    extern "C" fn via_schema_offset(class: *const c_char, field: *const c_char) -> c_int {
+        let (c, f) = unsafe { (std::ffi::CStr::from_ptr(class), std::ffi::CStr::from_ptr(field)) };
+        match (c.to_bytes(), f.to_bytes()) {
+            (b"CViaOuter", b"m_inner") => 0x100,
+            (b"CViaInner", b"m_list") => 0x20,
+            (b"CViaList", b"m_pTarget") => 0x8,
+            _ => -1,
+        }
+    }
+
+    /// `receiver.via` paths reach the shim as ONE summed offset plus whether to load a pointer
+    /// there: the original `{class, field}` form is one pointer hop, an array of embedded hops is
+    /// pure address arithmetic, and an embedded run may end in a pointer hop.
+    #[test]
+    fn via_paths_sum_embedded_offsets_and_deref_only_a_final_pointer_hop() {
+        crate::entity_live::reset_for_tests();
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps {
+            engine_call_resolve: Some(fake_call_resolve),
+            engine_call_invoke: Some(via_call_invoke),
+            schema_offset: Some(via_schema_offset),
+            ..mock_event_ops()
+        }));
+        let id = crate::entity_live::on_created(9, 3);
+        let target = r#""target":{"kind":"signature","name":"T","module":"libserver.so","pattern":"55 48","resolve":"direct"},"args":[],"returns":"void""#;
+        crate::gamedata_calls::register_plugin("via1", &format!(r#"{{"calls":{{
+            "ptr":{{"receiver":{{"kind":"entity","via":{{"class":"CViaList","field":"m_pTarget"}}}},{target}}},
+            "emb":{{"receiver":{{"kind":"entity","via":[{{"class":"CViaOuter","field":"m_inner","embedded":true}},
+                                                     {{"class":"CViaInner","field":"m_list","embedded":true}}]}},{target}}},
+            "mixed":{{"receiver":{{"kind":"entity","via":[{{"class":"CViaOuter","field":"m_inner","embedded":true}},
+                                                       {{"class":"CViaList","field":"m_pTarget"}}]}},{target}}},
+            "miss":{{"receiver":{{"kind":"entity","via":[{{"class":"CViaOuter","field":"m_inner","embedded":true}},
+                                                      {{"class":"CViaInner","field":"m_gone","embedded":true}}]}},{target}}}
+        }}}}"#));
+        create_plugin_context("via1");
+        for (name, want) in [("ptr", (0x8, 1)), ("emb", (0x120, 0)), ("mixed", (0x108, 1))] {
+            LAST_VIA.with(|c| c.set((-9, -9)));
+            eval_in_context("via1", &format!(r#"__s2_engine_call_invoke("{name}", 9, "{id}", []);"#)).unwrap();
+            assert_eq!(LAST_VIA.with(|c| c.get()), want, "{name}");
+        }
+        LAST_VIA.with(|c| c.set((-9, -9)));
+        eval_in_context("via1", &format!(r#"__s2_engine_call_invoke("miss", 9, "{id}", []);"#)).unwrap();
+        assert_eq!(LAST_VIA.with(|c| c.get()), (-9, -9), "an unresolved hop must not reach the engine");
+        assert!(crate::gamedata_calls::status("via1", "miss").contains("CViaInner::m_gone"));
+        set_engine_ops(None);
+        shutdown();
     }
 
     /// The legitimate path, which dropping the leading `pluginId` argument could have broken
@@ -5589,7 +5653,7 @@
     /// function is never reached, and therefore the case the latch would leak on.
     #[allow(clippy::too_many_arguments)]
     extern "C" fn mock_call_invoke_degrades(
-        _id: c_int, _ei: c_int, _es: c_int, _so: c_int,
+        _id: c_int, _ei: c_int, _es: c_int, _so: c_int, _sd: c_int,
         _gp: *const u64, _gk: *const u8, _gc: c_int,
         _fp: *const f64, _fc: c_int,
         _s: *const *const c_char, _v: *const f32,
@@ -6023,7 +6087,7 @@
     /// returns without calling anything.
     #[allow(clippy::too_many_arguments)]
     extern "C" fn mock_call_invoke_reenters_a_hook(
-        _id: c_int, _ei: c_int, _es: c_int, _so: c_int,
+        _id: c_int, _ei: c_int, _es: c_int, _so: c_int, _sd: c_int,
         _gp: *const u64, _gk: *const u8, _gc: c_int,
         _fp: *const f64, _fc: c_int,
         _s: *const *const c_char, _v: *const f32,

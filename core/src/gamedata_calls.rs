@@ -19,6 +19,7 @@
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::os::raw::c_char;
+use serde_json::Value;
 
 /// Sentinel prefix for the RESERVED owner ids the runtime registers under (A5b, spec §9.1b).
 ///
@@ -152,12 +153,62 @@ pub(crate) struct InvokePlan {
     pub args: Vec<String>,
     /// `RET_*`.
     pub ret_code: i32,
-    /// `receiver.via` — an opaque (class, field) pair resolved LAZILY at first invoke through the
-    /// cached schema-offset resolver (spec §11: schema resolves at map-live, not at Load).
-    pub via: Option<(String, String)>,
+    /// `receiver.via` — the hops from the entity to the receiver, each an opaque (class, field)
+    /// pair resolved LAZILY at first invoke through the cached schema-offset resolver (spec §11:
+    /// schema resolves at map-live, not at Load). Empty means the entity itself is the receiver.
+    /// Every hop but the last is embedded (see [`ViaHop`]), so the hops collapse to one offset plus
+    /// "load a pointer there or not".
+    pub via: Vec<ViaHop>,
     /// `receiver.kind: "none"` — a static/free function. The callable takes no `self`, and the
     /// invoke passes the receiverless sentinel instead of an entity pair.
     pub receiverless: bool,
+}
+
+/// One `receiver.via` hop. `embedded` means the field IS the sub-object (an embedded struct such as
+/// `CEconEntity::m_AttributeManager`), so the hop adds its offset; otherwise the field holds a
+/// POINTER to the sub-object (`CBasePlayerPawn::m_pItemServices`), so the hop loads it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ViaHop {
+    pub class: String,
+    pub field: String,
+    pub embedded: bool,
+}
+
+/// The most hops one `via` may name. Each is one schema lookup per invoke (cached), and no engine
+/// receiver sits deeper than a few embedded structs.
+pub(crate) const MAX_VIA_HOPS: usize = 4;
+
+/// Parse `receiver.via`: either one `{class, field}` pointer hop (the original form) or an array of
+/// `{class, field, embedded?}` hops. Only the LAST hop may be a pointer hop: the shim does one load
+/// at most, after the summed embedded offsets, so a pointer in the middle could not be followed.
+fn parse_via(v: &Value) -> Result<Vec<ViaHop>, String> {
+    let hop = |h: &Value| -> Result<ViaHop, String> {
+        let class = h.get("class").and_then(|x| x.as_str()).filter(|x| !x.is_empty());
+        let field = h.get("field").and_then(|x| x.as_str()).filter(|x| !x.is_empty());
+        let embedded = match h.get("embedded") {
+            None => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => return Err("receiver.via hop 'embedded' must be a boolean".to_string()),
+        };
+        match (class, field) {
+            (Some(c), Some(f)) => Ok(ViaHop { class: c.to_string(), field: f.to_string(), embedded }),
+            _ => Err("receiver.via hop must be {class, field} with two non-empty strings".to_string()),
+        }
+    };
+    let hops = match v {
+        Value::Array(a) => a.iter().map(hop).collect::<Result<Vec<_>, _>>()?,
+        _ => vec![hop(v)?],
+    };
+    if hops.is_empty() {
+        return Err("receiver.via must name at least one hop".to_string());
+    }
+    if hops.len() > MAX_VIA_HOPS {
+        return Err(format!("receiver.via has {} hops (at most {})", hops.len(), MAX_VIA_HOPS));
+    }
+    if hops[..hops.len() - 1].iter().any(|h| !h.embedded) {
+        return Err("receiver.via: only the last hop may be a pointer hop; mark the others \"embedded\": true".to_string());
+    }
+    Ok(hops)
 }
 
 /// One registered descriptor. `Ready` carries the resolved plan; `Degraded` carries the named reason
@@ -311,11 +362,10 @@ fn prepare(decl_json: &str, ops_available: bool) -> Result<InvokePlan, String> {
     if receiverless && receiver.and_then(|r| r.get("via")).is_some() {
         return Err("receiver.kind 'none' cannot carry a 'via' sub-object hop".to_string());
     }
-    let via = receiver.and_then(|r| r.get("via")).and_then(|v| {
-        let class = v.get("class").and_then(|x| x.as_str())?;
-        let field = v.get("field").and_then(|x| x.as_str())?;
-        Some((class.to_string(), field.to_string()))
-    });
+    let via = match receiver.and_then(|r| r.get("via")) {
+        Some(v) => parse_via(v)?,
+        None => Vec::new(),
+    };
 
     let args: Vec<String> = decl
         .get("args")
@@ -799,6 +849,23 @@ mod tests {
                              "target":{"kind":"signature","pattern":"55"},"args":[],"returns":"void"}"#;
         reg.register("@demo/gd", "staticVia", static_via, true);
         assert!(reg.status("@demo/gd", "staticVia").contains("cannot carry a 'via'"));
+
+        // A pointer hop may only END a via path: the shim loads at most one pointer.
+        let mid_ptr = r#"{"receiver":{"kind":"entity","via":[{"class":"A","field":"m_p"},
+                             {"class":"B","field":"m_x","embedded":true}]},
+                          "target":{"kind":"signature","pattern":"55"},"args":[],"returns":"void"}"#;
+        reg.register("@demo/gd", "midPtr", mid_ptr, true);
+        assert!(reg.status("@demo/gd", "midPtr").contains("only the last hop may be a pointer hop"));
+        let partial = r#"{"receiver":{"kind":"entity","via":{"class":"A"}},
+                          "target":{"kind":"signature","pattern":"55"},"args":[],"returns":"void"}"#;
+        reg.register("@demo/gd", "partialVia", partial, true);
+        assert!(reg.status("@demo/gd", "partialVia").contains("two non-empty strings"));
+        let long = r#"{"receiver":{"kind":"entity","via":[{"class":"A","field":"a","embedded":true},
+                         {"class":"A","field":"a","embedded":true},{"class":"A","field":"a","embedded":true},
+                         {"class":"A","field":"a","embedded":true},{"class":"A","field":"a","embedded":true}]},
+                       "target":{"kind":"signature","pattern":"55"},"args":[],"returns":"void"}"#;
+        reg.register("@demo/gd", "longVia", long, true);
+        assert!(reg.status("@demo/gd", "longVia").contains("at most 4"));
 
         let bad_receiver = r#"{"receiver":{"kind":"interface"},"target":{"kind":"signature","pattern":"55"},
                                "args":[],"returns":"void"}"#;
