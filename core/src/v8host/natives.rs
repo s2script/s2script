@@ -382,6 +382,8 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
         "__s2_output_subscribe",
         s2_output_subscribe,
     );
+    // Parity slice 5: Entity.onInput (CEntityIdentity::AcceptInput detour dispatch).
+    set_native(scope, global_obj, "__s2_input_subscribe", s2_input_subscribe);
     set_native(scope, global_obj, "__s2_cvar_on_change", s2_cvar_on_change);
     set_native(
         scope,
