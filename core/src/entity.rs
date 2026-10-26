@@ -931,6 +931,64 @@ fn s2_entity_find_by_class(scope: &mut v8::PinScope, args: v8::FunctionCallbackA
     }));
 }
 
+/// Every live identity slot as (index, engine serial), over the shim's `ent_snapshot` op (the books
+/// repair sweep's chunk walk: system-owned identity memory only). Empty with no op.
+fn entity_snapshot_pairs() -> Vec<(i32, i32)> {
+    let Some(snapshot) = engine_ops().and_then(|o| o.ent_snapshot) else { return Vec::new() };
+    const CAP: usize = 32768;   // MAX_TOTAL_ENTITIES ceiling, same as the repair sweep
+    let mut idxs = vec![0i32; CAP];
+    let mut sers = vec![0i32; CAP];
+    let n = snapshot(idxs.as_mut_ptr(), sers.as_mut_ptr(), CAP as i32);
+    let n = (n.max(0) as usize).min(CAP);
+    (0..n).map(|i| (idxs[i], sers[i])).collect()
+}
+
+/// Books-adopt each (index, serial) and mint the refs that pass, in slot order.
+fn entity_ref_array<'s>(scope: &mut v8::PinScope<'s, '_>, pairs: &[(i32, i32)]) -> v8::Local<'s, v8::Array> {
+    let arr = v8::Array::new(scope, 0);
+    let mut w: u32 = 0;
+    for &(index, serial) in pairs {
+        if let Some(id) = crate::entity_live::adopt(index, serial) {
+            let r = build_entity_ref(scope, index, id);
+            arr.set_index(scope, w, r);
+            w += 1;
+        }
+    }
+    arr
+}
+
+/// Native `__s2_entity_find_all() -> EntityRef[]`. Every live entity, books-gated like
+/// `__s2_entity_find_by_class`. Backs `Entity.findInSphere`'s unfiltered search. Empty with no op.
+fn s2_entity_find_all(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let empty = v8::Array::new(scope, 0);
+        rv.set(empty.into());
+        let pairs = entity_snapshot_pairs();
+        let arr = entity_ref_array(scope, &pairs);
+        rv.set(arr.into());
+    }));
+}
+
+/// Native `__s2_entity_find_by_name(name) -> EntityRef[]`. Every live entity whose targetname
+/// (`CEntityIdentity::m_name`) exactly matches `name`: the snapshot walk, each slot's name read
+/// through the same serial-gated `entity_name` op `EntityRef.name` uses. An empty `name` matches
+/// nothing (unnamed entities are not "named ''"). Empty with no op / a NUL in the name.
+fn s2_entity_find_by_name(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let empty = v8::Array::new(scope, 0);
+        rv.set(empty.into());
+        let wanted = args.get(0).to_rust_string_lossy(scope);
+        if wanted.is_empty() || wanted.contains('\0') { return; }
+        let Some(name_of) = engine_ops().and_then(|o| o.entity_name) else { return };
+        let pairs: Vec<(i32, i32)> = entity_snapshot_pairs().into_iter().filter(|&(index, serial)| {
+            let ptr = name_of(index, serial);
+            !ptr.is_null() && unsafe { std::ffi::CStr::from_ptr(ptr) }.to_bytes() == wanted.as_bytes()
+        }).collect();
+        let arr = entity_ref_array(scope, &pairs);
+        rv.set(arr.into());
+    }));
+}
+
 /// Native `__s2_entity_spawn(index, serial) -> boolean`. Serial-gated `DispatchSpawn`. Degrades to
 /// `false` with no op / a stale ref.
 fn s2_entity_spawn(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
@@ -1433,6 +1491,8 @@ pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_ent_id_for_index", s2_ent_id_for_index);
     set_native(scope, global_obj, "__s2_entity_create", s2_entity_create);
     set_native(scope, global_obj, "__s2_entity_find_by_class", s2_entity_find_by_class);
+    set_native(scope, global_obj, "__s2_entity_find_by_name", s2_entity_find_by_name);
+    set_native(scope, global_obj, "__s2_entity_find_all", s2_entity_find_all);
     set_native(scope, global_obj, "__s2_entity_spawn", s2_entity_spawn);
     set_native(scope, global_obj, "__s2_ent_set_model", s2_ent_set_model);
     // Entity-property slice: five engine setters with no usable schema-write equivalent.

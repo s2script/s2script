@@ -3,12 +3,13 @@
 //!
 //! Engine-generic: nothing here knows a game. The package names each function's target by its
 //! gamedata signature NAME and each record field by an opaque offset key bound to a schema
-//! (class, field) pair. The host chooses the layout: the target comes from the MERGED shipped +
+//! (class, field) pair, or, for a struct the schema does not describe, to a named gamedata offset
+//! plus a byte delta. The host chooses the layout: the target comes from the MERGED shipped +
 //! operator-custom gamedata (so an owner `custom/` signature repair applies, and is recorded as
-//! provenance), and each offset comes from the live schema only; the schema-catalog value is kept
-//! in status for diagnosis, never used. A function whose signature is missing or malformed, or
-//! whose record layout names a field the live schema cannot resolve, in the
-//! merged view degrades by name (optional) instead of failing the package.
+//! provenance); a schema offset comes from the live schema only, and a gamedata offset from the
+//! same merged gamedata. The catalog value is kept in status for diagnosis, never used. A function
+//! whose signature is missing or malformed, or whose record layout names an offset that does not
+//! resolve, degrades by name (optional) instead of failing the package.
 use super::repair_snapshot;
 use crate::engine_functions::contract::{self, NormalizedTarget};
 use crate::engine_functions::instance::{RecordField, RecordLayout};
@@ -26,11 +27,26 @@ struct Source {
     offsets: BTreeMap<String, OffsetSource>,
     functions: Vec<FunctionSource>,
 }
+/// A record field's offset: a schema (class, field) the live schema resolves, or, for a struct the
+/// schema does not describe, a named offset in the package's own merged gamedata plus a byte delta.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OffsetSource {
+    Schema(SchemaOffset),
+    Gamedata(GamedataOffset),
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct OffsetSource {
+struct SchemaOffset {
     class: String,
     field: String,
+    catalog: u32,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GamedataOffset {
+    gamedata: String,
+    delta: u32,
     catalog: u32,
 }
 #[derive(Deserialize)]
@@ -157,17 +173,40 @@ pub(super) fn materialize(
     }
     let mut selected = BTreeMap::new();
     let mut offset_status = Vec::new();
+    let gamedata_offsets = merged.get("offsets").and_then(Value::as_object);
     for (key, entry) in &source.offsets {
-        // Only the running binary's schema is authoritative. The catalog value is from the build the
-        // package was authored against; using it after a field moves would read the wrong bytes, so
-        // an unresolved field disables the functions that name it instead (degrade per descriptor).
-        let live = live_offset(&entry.class, &entry.field);
-        if live >= 0 {
-            selected.insert(key.clone(), live as u32);
+        match entry {
+            OffsetSource::Schema(entry) => {
+                // Only the running binary's schema is authoritative. The catalog value is from the build the
+                // package was authored against; using it after a field moves would read the wrong bytes, so
+                // an unresolved field disables the functions that name it instead (degrade per descriptor).
+                let live = live_offset(&entry.class, &entry.field);
+                if live >= 0 {
+                    selected.insert(key.clone(), live as u32);
+                }
+                offset_status.push(json!({"key":key,"class":entry.class,"field":entry.field,
+                    "offset":(live >= 0).then_some(live),"source":if live >= 0 {"live-schema"} else {"unresolved"},
+                    "catalog":entry.catalog}));
+            }
+            OffsetSource::Gamedata(entry) => {
+                // No schema describes this struct, so the merged gamedata (shipped + operator custom/) is
+                // the layout authority, as for signatures. A missing or malformed entry degrades the
+                // functions that name it.
+                // The shim hands over the platform-selected value; an unselected {platform: n} entry
+                // is read for that platform.
+                let offset = gamedata_offsets
+                    .and_then(|o| o.get(&entry.gamedata))
+                    .and_then(|o| o.as_u64().or_else(|| o.get(GAMEDATA_PLATFORM).and_then(Value::as_u64)))
+                    .and_then(|o| u32::try_from(o).ok())
+                    .and_then(|o| o.checked_add(entry.delta));
+                if let Some(offset) = offset {
+                    selected.insert(key.clone(), offset);
+                }
+                offset_status.push(json!({"key":key,"gamedata":entry.gamedata,"delta":entry.delta,
+                    "offset":offset,"source":if offset.is_some() {"gamedata"} else {"unresolved"},
+                    "catalog":entry.catalog}));
+            }
         }
-        offset_status.push(json!({"key":key,"class":entry.class,"field":entry.field,
-            "offset":(live >= 0).then_some(live),"source":if live >= 0 {"live-schema"} else {"unresolved"},
-            "catalog":entry.catalog}));
     }
     let selected_text = serde_json::to_string(&selected).map_err(fail)?;
     let signatures = merged.get("signatures").and_then(Value::as_object);
@@ -181,7 +220,7 @@ pub(super) fn materialize(
         let resolved = entry
             .ok_or_else(|| format!("gamedata signature '{}' has no {GAMEDATA_PLATFORM} entry", f.signature_name))
             .and_then(|entry| if unresolved.is_empty() { Ok(entry) } else {
-                Err(format!("live schema has no offset for {}", unresolved.join(", ")))
+                Err(format!("no live offset for {}", unresolved.join(", ")))
             })
             .and_then(|entry| target(entry).map_err(|e| format!("gamedata signature '{}': {e}", f.signature_name)));
         let mut status = json!({"localName":f.local_name,"signature":f.signature_name,
@@ -312,7 +351,7 @@ mod tests {
         assert!(trusted::decode(&out.bytes, "@proof/game").unwrap().inputs.is_empty());
         assert_eq!(out.status["offsets"][0]["source"], "unresolved");
         assert_eq!(out.status["offsets"][0]["offset"], Value::Null);
-        assert!(out.status["functions"][0]["unavailable"].as_str().unwrap().contains("live schema has no offset for Item::m_def"));
+        assert!(out.status["functions"][0]["unavailable"].as_str().unwrap().contains("no live offset for Item::m_def"));
         let live = |_: &str, _: &str| 56;
         let out = materialize(bytes.as_bytes(), "@proof/game", &merged("55"), &repairs(&[]), &live).unwrap();
         assert_eq!(out.status["functions"][0]["customRepairs"], json!([]));
@@ -336,5 +375,27 @@ mod tests {
         declared["functions"][0]["signature"]["instances"][0]["record"]["fields"][0]["offset"] = 8.into();
         assert!(materialize(declared.to_string().as_bytes(), "@proof/game", &merged("55"), &repairs(&[]), &live)
             .err().unwrap().contains("host-selected"));
+    }
+
+    /// A struct the schema does not describe takes its offset from the merged gamedata plus the
+    /// declared delta, never from the schema or the sealed catalog; a missing entry degrades by name.
+    #[test]
+    fn gamedata_offsets_come_from_merged_gamedata_plus_delta() {
+        let mut src = source();
+        src["offsets"] = json!({"Item::m_def":{"gamedata":"Item_m_base","delta":4,"catalog":60}});
+        let bytes = src.to_string();
+        let mut gd = merged("55 48 89 E5");
+        gd["offsets"] = json!({"Item_m_base":0x40});   // platform-selected, as the shim sends it
+        let schema = |_: &str, _: &str| -> i32 { panic!("a gamedata offset must not consult the schema") };
+        let out = materialize(bytes.as_bytes(), "@proof/game", &gd, &repairs(&[]), &schema).unwrap();
+        let decoded = trusted::decode(&out.bytes, "@proof/game").unwrap();
+        assert_eq!(decoded.inputs[0].signature.instances[0].record.fields[0].offset, 0x44);
+        assert_eq!(out.status["offsets"][0]["source"], "gamedata");
+        assert_eq!(out.status["offsets"][0]["gamedata"], "Item_m_base");
+
+        let out = materialize(bytes.as_bytes(), "@proof/game", &merged("55 48 89 E5"), &repairs(&[]), &schema).unwrap();
+        assert!(trusted::decode(&out.bytes, "@proof/game").unwrap().inputs.is_empty());
+        assert_eq!(out.status["offsets"][0]["source"], "unresolved");
+        assert!(out.status["functions"][0]["unavailable"].as_str().unwrap().contains("no live offset for Item::m_def"));
     }
 }
