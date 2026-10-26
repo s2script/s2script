@@ -3414,6 +3414,53 @@ static void S2_CheckEngineLayout() {
                        "DISABLED until a build with the updated SDK header ships\n");
 }
 
+// ---------------------------------------------------------------------------
+// client_net_stats — INetChannelInfo counters, compiled calls against the vendored s2sdk
+// inetchannelinfo.h and gated on the live CNetChan layout, the same way S2EngineCalls gates the
+// engine calls. The first net channel seen is checked against INetChannelInfo_vtableSize (there is
+// no net channel at Load to check earlier); on a mismatch every stat read degrades to "no net
+// channel" until a build with the updated header ships.
+// ---------------------------------------------------------------------------
+static int s_netChanLayout = 0;   // 0 unchecked, 1 matches the pin, -1 mismatch (stats disabled)
+
+static INetChannelInfo* S2NetChanCalls(int slot) {
+    INetChannelInfo* nci = S2Engine_GetPlayerNetInfo(slot);
+    if (!nci) return nullptr;
+    if (s_netChanLayout == 0) {
+        static const S2VtableLayout kLayout = { "INetChannelInfo", "libnetworksystem.so",
+                                                "INetChannelInfo_vtableSize" };
+        s_netChanLayout = S2_VerifyVtableSlots(kLayout, nci, nullptr, 0, nullptr) ? 1 : -1;
+        if (s_netChanLayout < 0)
+            META_CONPRINTF("[s2script] ERROR: CNetChan layout differs from the one this build was "
+                           "compiled against — client net stats are DISABLED until a build with the "
+                           "updated SDK header ships\n");
+    }
+    return s_netChanLayout > 0 ? nci : nullptr;
+}
+
+// Writes NET_STATS_LEN (core/src/client.rs) values in its order and returns that count, or 0 for a
+// bot / no net channel / a failed layout check. Flow pairs are (FLOW_OUTGOING, FLOW_INCOMING).
+static constexpr int kNetStatsLen = 18;
+static int s2_client_net_stats(int slot, double* out, int n) {
+    if (!out || n < kNetStatsLen || slot < 0 || slot >= 64) return 0;
+    INetChannelInfo* nci = S2NetChanCalls(slot);
+    if (!nci) return 0;
+    int i = 0;
+    out[i++] = nci->GetAvgLatency();
+    out[i++] = nci->GetEngineLatency();
+    for (int flow : { FLOW_OUTGOING, FLOW_INCOMING }) out[i++] = nci->GetAvgLoss(flow);
+    for (int flow : { FLOW_OUTGOING, FLOW_INCOMING }) out[i++] = nci->GetAvgChoke(flow);
+    for (int flow : { FLOW_OUTGOING, FLOW_INCOMING }) out[i++] = nci->GetAvgData(flow);
+    for (int flow : { FLOW_OUTGOING, FLOW_INCOMING }) out[i++] = nci->GetAvgPackets(flow);
+    for (int flow : { FLOW_OUTGOING, FLOW_INCOMING }) out[i++] = static_cast<double>(nci->GetTotalData(flow));
+    for (int flow : { FLOW_OUTGOING, FLOW_INCOMING }) out[i++] = nci->GetTotalPackets(flow);
+    out[i++] = nci->GetTimeConnected();
+    out[i++] = nci->GetTimeSinceLastReceived();
+    out[i++] = nci->IsTimingOut() ? 1.0 : 0.0;
+    out[i++] = nci->GetDataRate();
+    return i;
+}
+
 // Resolve a "direct"/"ctor-body-xref"/"lea-disp" signature AND verify it matches UNIQUELY (Rule 2): 0 = the
 // pattern moved (stale), >1 = ambiguous. Records the result and returns the resolved module offset, or kFail.
 static int64_t ResolveSigValidated(const char* name, const SigSpec& sig) {

@@ -73,6 +73,55 @@ export declare class Client {
    * client.fakeCommand("say hello");   // as though the player typed it
    */
   fakeCommand(cmd: string): boolean;
+  /**
+   * One snapshot of this client's network counters, read from the engine's net channel
+   * (SourceMod `GetClientLatency`, `GetClientAvgLoss`, `GetClientAvgChoke`, `GetClientAvgData`,
+   * `GetClientAvgPackets`, `GetClientTime`, `IsClientTimingOut` and `GetClientDataRate` in one
+   * call). Read it again for fresh values; nothing in it updates on its own.
+   *
+   * Returns `null` for a bot (bots have no net channel), a disconnected client, or a server build
+   * whose net-channel layout this build has not been verified against.
+   *
+   * @example
+   * const stats = client.netStats();
+   * if (stats) console.log(`${client.name}: ${Math.round(stats.avgLatency * 1000)} ms, ` +
+   *   `${(stats.avgLoss.incoming * 100).toFixed(1)}% loss`);
+   */
+  netStats(): ClientNetStats | null;
+}
+/** A value measured separately for each direction, as seen from the server. */
+export interface NetFlowPair {
+  /** Server to client. */
+  outgoing: number;
+  /** Client to server. */
+  incoming: number;
+}
+/** What {@link Client.netStats} returns. Times are in seconds. */
+export interface ClientNetStats {
+  /** Average packet latency. */
+  avgLatency: number;
+  /** The engine's current round-trip estimate: more accurate than `avgLatency`, but jittery. */
+  engineLatency: number;
+  /** Average packet loss, from 0 to 1. */
+  avgLoss: NetFlowPair;
+  /** Average choke, from 0 to 1. */
+  avgChoke: NetFlowPair;
+  /** Average data rate in bytes per second. */
+  avgData: NetFlowPair;
+  /** Average packets per second. */
+  avgPackets: NetFlowPair;
+  /** Bytes sent or received since the client connected. */
+  totalData: NetFlowPair;
+  /** Packets sent or received since the client connected. */
+  totalPackets: NetFlowPair;
+  /** How long the client has been connected. */
+  timeConnected: number;
+  /** Time since the last packet from the client arrived. */
+  timeSinceLastReceived: number;
+  /** Whether the channel is about to time out. */
+  isTimingOut: boolean;
+  /** The send data rate the channel is allowed, in bytes per second. */
+  dataRate: number;
 }
 /**
  * Look up connected clients by slot or enumerate them all.

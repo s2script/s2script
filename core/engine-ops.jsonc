@@ -1821,6 +1821,15 @@
       "c_ret": "float",
       "c_params": "void",
       "shim": "s2_server_tick_interval"
+    },
+    {
+      "name": "client_net_stats",
+      "alias": "ClientNetStatsFn",
+      "rust": "extern \"C\" fn(slot: c_int, out: *mut f64, n: c_int) -> c_int",
+      "group": "client net stats (INetChannelInfo)",
+      "c_ret": "int",
+      "c_params": "int slot, double* out, int n",
+      "shim": "s2_client_net_stats"
     }
   ]
 }

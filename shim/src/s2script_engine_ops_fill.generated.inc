@@ -189,3 +189,5 @@
     // --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick ---
     ops.server_tick_count = &s2_server_tick_count;
     ops.server_tick_interval = &s2_server_tick_interval;
+    // --- client net stats (INetChannelInfo) ---
+    ops.client_net_stats = &s2_client_net_stats;

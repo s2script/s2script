@@ -712,3 +712,27 @@ Reproduced with the vendored KHook built as a library (two PRE-only hooks on a c
 `FireEvent`, peer added first) under AddressSanitizer: the old code reports heap-use-after-free in
 the peer's callback; with `Recall` the peer sees the event, the original runs once with
 `bDontBroadcast=1`. Live gate pending.
+
+## 2026-10-26 — Client net stats
+
+SourceMod has `GetClientLatency`, `GetClientAvgLoss`, `GetClientAvgChoke`, `GetClientAvgData`,
+`GetClientAvgPackets`, `GetClientTime` and friends; Swiftly and ModSharp expose the same
+INetChannelInfo counters. Every Source 2 game has a net channel per client, so this is core:
+`Client.netStats()` returns one snapshot over a new engine op, `client_net_stats`, which fills a
+fixed-order array of 18 numbers (flow pairs are outgoing, incoming).
+
+The shim makes compiled calls against the s2sdk `inetchannelinfo.h`, like the engine calls. They are
+gated on the live CNetChan layout: the first net channel seen is checked against a new pin,
+`INetChannelInfo_vtableSize` (89 on the Oct 22 build), and a mismatch turns every read into "no net
+channel" with one ERROR line. The check runs lazily because there is no net channel at Load.
+
+Slots were verified against the Oct 22 libnetworksystem.so (BuildID
+db675abb166a35d38011b53f85427b5cae65210e, now in the shared binaries folder). The header and
+Swiftly's gamedata disagree from slot 14: the header has GetPeakJitter, GetAvgData, GetAvgPackets at
+14–16, Swiftly has GetAvgData, GetAvgPacketBytes, GetAvgPackets. Slots 15 and 16 read the
+SteamNetConnectionRealTimeStatus_t bytes/s and packets/s fields (incoming at +0x1c/+0x18 of the
+status, outgoing at +0x14/+0x10), so the header is right. Slots 17–24 (GetTotalData returning a
+64-bit value, GetTotalPackets, GetSequenceNr, GetTimeSinceLastReceived, GetRemoteFramerate's three
+out-pointers, the two timeout getters and GetLateFrameJitterThreshold) match the header too.
+
+Core tests cover the mapping, a bot, an out-of-range slot and a missing op. The live gate is pending.

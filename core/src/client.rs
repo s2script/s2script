@@ -314,6 +314,29 @@ fn s2_client_address(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
     }));
 }
 
+/// Values `client_net_stats` writes, in this order. Flow pairs are (outgoing, incoming), the
+/// engine's FLOW_OUTGOING = 0 / FLOW_INCOMING = 1. The prelude's `Client.netStats` reads them by
+/// these indices, so the two lists change together.
+pub(crate) const NET_STATS_LEN: usize = 18;
+
+/// `__s2_client_net_stats(slot, token) -> number[] | null` — one snapshot of the client's
+/// INetChannelInfo counters ([`NET_STATS_LEN`] numbers). `null` without the op, for a stale handle,
+/// for a bot (no net channel), or when the shim's net-channel layout check failed.
+fn s2_client_net_stats(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        if !(0..64).contains(&slot) { return; }
+        if !guarded(scope, &args, slot, 1) { return; }
+        let Some(ops) = engine_ops() else { return };
+        let Some(f) = ops.client_net_stats else { return };
+        let mut out = [0f64; NET_STATS_LEN];
+        if f(slot, out.as_mut_ptr(), NET_STATS_LEN as i32) != NET_STATS_LEN as i32 { return; }
+        let elems: Vec<v8::Local<v8::Value>> = out.iter().map(|v| v8::Number::new(scope, *v).into()).collect();
+        rv.set(v8::Array::new_with_elements(scope, &elems).into());
+    }));
+}
+
 /// `__s2_server_command(cmd)` — run `cmd` at the server console. No-op without the op / null.
 /// Native `__s2_client_command(slot, cmd) -> boolean` — tell the CLIENT to run `cmd`.
 /// False when the op is unassigned, the slot is out of range, or `cmd` is empty; the shim also
@@ -371,6 +394,7 @@ pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_client_command", s2_client_command);
     set_native(scope, global_obj, "__s2_client_fake_command", s2_client_fake_command);
     set_native(scope, global_obj, "__s2_client_address", s2_client_address);
+    set_native(scope, global_obj, "__s2_client_net_stats", s2_client_net_stats);
 }
 
 /// The owner-scoped store: the six lifecycle hooks stay installed for the process lifetime — no
@@ -401,7 +425,7 @@ mod tests {
         FAKE_CMD_CALLS, LOG};
     use crate::v8host::{create_plugin_context, eval_in_context, init, set_engine_ops, shutdown,
         unload_plugin, S2EngineOps};
-    use std::os::raw::c_char;
+    use std::os::raw::{c_char, c_int};
     thread_local! { static EFFECTS: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new()); }
     extern "C" fn effect(slot: i32, value: *const c_char) {
         let value = unsafe { std::ffi::CStr::from_ptr(value) }.to_string_lossy().into_owned();
@@ -835,6 +859,44 @@ mod tests {
         create_plugin_context("cc4");
         assert_eq!(eval_in_context_string("cc4",
             r#"var c = new __s2pkg_clients.Client(0); String(c.command("sm_help"))"#), "false");
+        shutdown();
+    }
+
+    extern "C" fn mock_client_net_stats(slot: c_int, out: *mut f64, n: c_int) -> c_int {
+        if slot != 3 || n < NET_STATS_LEN as c_int { return 0; }   // slot 3 is the only human
+        let out = unsafe { std::slice::from_raw_parts_mut(out, NET_STATS_LEN) };
+        for (i, v) in out.iter_mut().enumerate() { *v = i as f64 + 0.5; }
+        out[16] = 1.0;   // isTimingOut
+        NET_STATS_LEN as c_int
+    }
+
+    /// `netStats()` maps the op's values by index into the documented shape, flow pairs as
+    /// (outgoing, incoming), and is null for a slot the op has no net channel for.
+    #[test]
+    fn net_stats_maps_values_and_is_null_for_a_bot() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps { client_net_stats: Some(mock_client_net_stats), ..mock_event_ops() }));
+        begin(3);
+        begin(4);
+        create_plugin_context("ns1");
+        let out = eval_in_context_string("ns1", r#"var s = new __s2pkg_clients.Client(3).netStats();
+            JSON.stringify([s.avgLatency, s.engineLatency, s.avgLoss, s.avgChoke.incoming, s.avgData.outgoing,
+                s.avgPackets.incoming, s.totalData, s.totalPackets.outgoing, s.timeConnected,
+                s.timeSinceLastReceived, s.isTimingOut, s.dataRate])"#);
+        assert_eq!(out, r#"[0.5,1.5,{"outgoing":2.5,"incoming":3.5},5.5,6.5,9.5,{"outgoing":10.5,"incoming":11.5},12.5,14.5,15.5,true,17.5]"#);
+        assert_eq!(eval_in_context_string("ns1", "String(new __s2pkg_clients.Client(4).netStats())"), "null");
+        assert_eq!(eval_in_context_string("ns1", "String(new __s2pkg_clients.Client(64).netStats())"), "null");
+        shutdown();
+    }
+
+    /// Without the op (an older shim) `netStats()` is null rather than a zeroed snapshot.
+    #[test]
+    fn net_stats_is_null_without_the_op() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(mock_event_ops()));
+        begin(3);
+        create_plugin_context("ns2");
+        assert_eq!(eval_in_context_string("ns2", "String(new __s2pkg_clients.Client(3).netStats())"), "null");
         shutdown();
     }
 

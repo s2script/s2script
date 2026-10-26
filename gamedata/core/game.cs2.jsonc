@@ -131,7 +131,13 @@
     "ICvar_vtableSize":                           { "linuxsteamrt64": 46 },
     "ICvar_DispatchConCommand":                   { "linuxsteamrt64": 20 },
     "IVEngineServer2_vtableSize":                 { "linuxsteamrt64": 123 },
-    "IVEngineServer2_SetClientListening":         { "linuxsteamrt64": 92 }
+    "IVEngineServer2_SetClientListening":         { "linuxsteamrt64": 92 },
+    // Gates the compiled INetChannelInfo calls behind Client.netStats, checked on the first client
+    // net channel. The pin is CNetChan's vtable in libnetworksystem.so (BuildID
+    // db675abb166a35d38011b53f85427b5cae65210e, Oct 22 2026 build). Slots 0-24 were checked against
+    // the s2sdk inetchannelinfo.h order: GetAvgData (15) and GetAvgPackets (16) read the Steam
+    // real-time status bytes/s and packets/s fields, so slot 14 is GetPeakJitter as the header says.
+    "INetChannelInfo_vtableSize":                 { "linuxsteamrt64": 89 }
   },
   // Byte signatures for un-exported engine globals (Slice 5D.2). Layout-is-data: the pattern +
   // module are regenerable per CS2 patch from the documented RTTI->vtable->xref anchors (see

@@ -1952,6 +1952,19 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   Client.prototype.print = function (message) { __s2_client_console_print(this.slot, String(message) + "\n", __s2_client_token(this)); };
   Client.prototype.command = function (cmd) { return __s2_client_command(this.slot, String(cmd), __s2_client_token(this)); };
   Client.prototype.fakeCommand = function (cmd) { return __s2_client_fake_command(this.slot, String(cmd), __s2_client_token(this)); };
+  // One snapshot of the net channel's counters; null for a bot or a stale handle. The indices match
+  // NET_STATS_LEN in core/src/client.rs; pairs are [outgoing, incoming].
+  Client.prototype.netStats = function () {
+    var v = __s2_client_net_stats(this.slot, __s2_client_token(this));
+    if (!v) return null;
+    function flow(i) { return { outgoing: v[i], incoming: v[i + 1] }; }
+    return {
+      avgLatency: v[0], engineLatency: v[1],
+      avgLoss: flow(2), avgChoke: flow(4), avgData: flow(6), avgPackets: flow(8),
+      totalData: flow(10), totalPackets: flow(12),
+      timeConnected: v[14], timeSinceLastReceived: v[15], isTimingOut: v[16] !== 0, dataRate: v[17]
+    };
+  };
   Object.defineProperty(Client.prototype, "ip", { get: function () {
     var s = __s2_client_snapshots.get(this);
     var a = s ? s.address : __s2_client_address(this.slot, __s2_client_token(this));
