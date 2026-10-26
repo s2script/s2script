@@ -111,7 +111,8 @@
     return [a[0] instanceof Int32Array ? a[0] : new Int32Array(0),
       a[1] instanceof Float64Array ? a[1] : new Float64Array(0), a[2] == null ? 0 : Number(a[2])];
   });
-  refPlan("setModel stopSound", function (a) { return [String(a[0])]; });
+  refPlan("setModel stopSound lookupBone lookupAttachment", function (a) { return [String(a[0])]; });
+  refPlan("getBoneTransform getAttachment", refNumbers);
   refPlan("setBodyGroupByName", function (a) { return [String(a[0]), Number(a[1])]; });
   refPlan("teleport", function (a) { return [refVector(a[0]), refVector(a[1]), refVector(a[2])]; });
   refPlan("applyAbsVelocityImpulse", function (a) { return [refVector(a[0])]; });
@@ -126,7 +127,9 @@
   function staleRefResult(method) {
     if (method === "notifyStateChanged") return undefined;
     if (method === "readHandleVector") return [];
-    if (method === "gather") return -1;
+    if (method === "gather" || method === "lookupBone") return -1;
+    if (method === "lookupAttachment") return 0;
+    if (method === "getBoneTransform" || method === "getAttachment") return null;
     return method.indexOf("read") === 0 || method === "identityFlags" || method === "clearIdentityFlags" ? null : false;
   }
   var playerRefClients = new WeakMap();

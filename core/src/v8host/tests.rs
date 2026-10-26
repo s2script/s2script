@@ -6213,6 +6213,65 @@
         1
     }
 
+    extern "C" fn fake_lookup_bone(_i: c_int, _s: c_int, name: *const c_char) -> c_int {
+        if unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes() == b"head_0" { 6 } else { -1 }
+    }
+    extern "C" fn fake_lookup_attachment(_i: c_int, _s: c_int, name: *const c_char) -> c_int {
+        if unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes() == b"muzzle_flash" { 2 } else { 0 }
+    }
+    extern "C" fn fake_bone_transform(_i: c_int, _s: c_int, bone: c_int, out: *mut f32) -> c_int {
+        if bone != 6 { return 0; }
+        let out = unsafe { std::slice::from_raw_parts_mut(out, 7) };
+        out.copy_from_slice(&[1.0, 2.0, 3.0, 0.0, 0.0, 0.5, 0.5]);
+        1
+    }
+    extern "C" fn fake_attachment(_i: c_int, _s: c_int, attachment: c_int, out: *mut f32) -> c_int {
+        if attachment != 2 { return 0; }
+        let out = unsafe { std::slice::from_raw_parts_mut(out, 6) };
+        out.copy_from_slice(&[10.0, 20.0, 30.0, -5.0, 90.0, 0.0]);
+        1
+    }
+
+    /// Bones and attachments: the four EntityRef methods map the ops' values into Vector/QAngle
+    /// shapes, report the engine's "none" values on a miss, and degrade on a stale ref or a missing op.
+    #[test]
+    fn bones_and_attachments_map_values_and_degrade() {
+        crate::entity_live::reset_for_tests();
+        let _ = init(dummy_logger());
+        crate::entity_live::on_created(1, 7);
+        set_engine_ops(Some(S2EngineOps {
+            entity_lookup_bone: Some(fake_lookup_bone),
+            entity_lookup_attachment: Some(fake_lookup_attachment),
+            entity_get_bone_transform: Some(fake_bone_transform),
+            entity_get_attachment: Some(fake_attachment),
+            ..mock_event_ops()
+        }));
+        create_plugin_context("bones");
+        let out = eval_in_context_string("bones", r#"
+            const r = new (__s2pkg_entity.EntityRef)(1, __s2_ent_id_for_index(1));
+            const t = r.getBoneTransform(r.lookupBone("head_0"));
+            const a = r.getAttachment(r.lookupAttachment("muzzle_flash"));
+            JSON.stringify([r.lookupBone("nope"), r.lookupAttachment("nope"), t, a,
+                t.position instanceof __s2pkg_math.Vector, a.angles instanceof __s2pkg_math.QAngle,
+                r.getBoneTransform(-1), r.getAttachment(0)])
+        "#);
+        assert_eq!(out, r#"[-1,0,{"position":{"x":1,"y":2,"z":3},"rotation":{"x":0,"y":0,"z":0.5,"w":0.5}},{"origin":{"x":10,"y":20,"z":30},"angles":{"x":-5,"y":90,"z":0}},true,true,null,null]"#);
+        // A stale ref never reaches the ops.
+        let stale = eval_in_context_string("bones", r#"
+            const s = new (__s2pkg_entity.EntityRef)(1, "999999");
+            JSON.stringify([s.lookupBone("head_0"), s.lookupAttachment("muzzle_flash"), s.getBoneTransform(6), s.getAttachment(2)])
+        "#);
+        assert_eq!(stale, "[-1,0,null,null]");
+        // No ops (an older shim): the same "none" values.
+        set_engine_ops(Some(mock_event_ops()));
+        let none = eval_in_context_string("bones", r#"
+            const n = new (__s2pkg_entity.EntityRef)(1, __s2_ent_id_for_index(1));
+            JSON.stringify([n.lookupBone("head_0"), n.lookupAttachment("muzzle_flash"), n.getBoneTransform(6), n.getAttachment(2)])
+        "#);
+        assert_eq!(none, "[-1,0,null,null]");
+        shutdown();
+    }
+
     /// EKV slice: `{name:"bob", health:42, scale:1.5, enabled:true, big:3000000000}` crosses as types
     /// `[string,int,float,bool,float]` with values `["bob","42","1.5","1","3000000000"]` (int32
     /// overflow -> float tag), and the native returns `true` (fake op returns 1). Key ORDER is

@@ -1821,6 +1821,42 @@
       "c_ret": "float",
       "c_params": "void",
       "shim": "s2_server_tick_interval"
+    },
+    {
+      "name": "entity_lookup_bone",
+      "alias": "EntityLookupBoneFn",
+      "rust": "extern \"C\" fn(index: c_int, serial: c_int, name: *const c_char) -> c_int",
+      "group": "bones and attachments",
+      "c_ret": "int",
+      "c_params": "int index, int serial, const char* name",
+      "shim": "Shim_EntityLookupBone"
+    },
+    {
+      "name": "entity_get_bone_transform",
+      "alias": "EntityGetBoneTransformFn",
+      "rust": "extern \"C\" fn(index: c_int, serial: c_int, bone: c_int, out: *mut f32) -> c_int",
+      "group": "bones and attachments",
+      "c_ret": "int",
+      "c_params": "int index, int serial, int bone, float* out",
+      "shim": "Shim_EntityGetBoneTransform"
+    },
+    {
+      "name": "entity_lookup_attachment",
+      "alias": "EntityLookupAttachmentFn",
+      "rust": "extern \"C\" fn(index: c_int, serial: c_int, name: *const c_char) -> c_int",
+      "group": "bones and attachments",
+      "c_ret": "int",
+      "c_params": "int index, int serial, const char* name",
+      "shim": "Shim_EntityLookupAttachment"
+    },
+    {
+      "name": "entity_get_attachment",
+      "alias": "EntityGetAttachmentFn",
+      "rust": "extern \"C\" fn(index: c_int, serial: c_int, attachment: c_int, out: *mut f32) -> c_int",
+      "group": "bones and attachments",
+      "c_ret": "int",
+      "c_params": "int index, int serial, int attachment, float* out",
+      "shim": "Shim_EntityGetAttachment"
     }
   ]
 }

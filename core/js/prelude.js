@@ -649,6 +649,18 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // Zones real-trigger slice: give this entity a model (and its collision) via CBaseEntity::SetModel.
   // A runtime trigger_multiple needs a model to build the physics volume that fires touch.
   EntityRef.prototype.setModel = function (name) { return __s2_ent_set_model(this.index, this.id, String(name)); };
+  // --- Bones and attachments: lookups and world-space reads on the entity's model. ---
+  EntityRef.prototype.lookupBone = function (name) { return __s2_ent_lookup_bone(this.index, this.id, String(name)); };
+  EntityRef.prototype.getBoneTransform = function (bone) {
+    var t = __s2_ent_get_bone_transform(this.index, this.id, bone | 0);
+    return t === null ? null
+      : { position: new Vector(t[0], t[1], t[2]), rotation: { x: t[3], y: t[4], z: t[5], w: t[6] } };
+  };
+  EntityRef.prototype.lookupAttachment = function (name) { return __s2_ent_lookup_attachment(this.index, this.id, String(name)); };
+  EntityRef.prototype.getAttachment = function (attachment) {
+    var a = __s2_ent_get_attachment(this.index, this.id, attachment | 0);
+    return a === null ? null : { origin: new Vector(a[0], a[1], a[2]), angles: new QAngle(a[3], a[4], a[5]) };
+  };
   // --- Entity-property slice: five engine setters with no usable schema-write equivalent. ---
   // Gravity multiplier. NOT the same as writing m_flGravityScale: the engine setter early-returns on
   // an unchanged value and maintains m_flActualGravityScale, so a raw field write appears to do nothing.

@@ -712,3 +712,27 @@ Reproduced with the vendored KHook built as a library (two PRE-only hooks on a c
 `FireEvent`, peer added first) under AddressSanitizer: the old code reports heap-use-after-free in
 the peer's callback; with `Recall` the peer sees the event, the original runs once with
 `bDontBroadcast=1`. Live gate pending.
+
+## 2026-10-26 — Bones and attachments
+
+ModSharp and Swiftly expose LookupBone/GetBoneTransform and LookupAttachment/GetAttachment;
+plugins use them for head positions (hitbox ESP checks, headshot tools), muzzle points and
+attaching effects. Every Source 2 model entity has bones and attachments, so this is core:
+four `EntityRef` methods over four engine ops.
+
+The plan was a "Vector out-parameter" extension to the declared-call grammar. It turned out not
+to be needed: the core-op route (like `takeDamage`) keeps the out-buffers inside the shim. The
+shim resolves `CBaseModelEntity::LookupBone`, `CBaseModelEntity::LookupAttachment`,
+`CBaseModelEntity::GetBoneTransform` (a 32-byte CTransform returned through sret, so `this` is rsi)
+and `StudioModel::GetAttachment` from gamedata/core, all unique on the Oct 22 libserver.so.
+
+The three members fetch the model as `[this+0x528]->vtable[14]()`. LookupBone does not null-check
+the result and the engine's own callers do, so the shim fetches the model itself first. The
+offset and slot are read out of all three matched bodies (the patterns pin those opcodes) and
+must agree, or the slice is disabled with a named gamedata failure; nothing is carried as a
+constant. GetAttachment is called with that model directly, the way the engine's
+ScriptGetAttachmentOrigin/Angles wrappers do. Attachment indices are 1–255 (the engine passes a
+uint8; 0 means none).
+
+A core test covers the value mapping, misses, a stale ref and missing ops. The live gate is
+pending.

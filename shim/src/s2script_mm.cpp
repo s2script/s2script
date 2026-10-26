@@ -3855,6 +3855,122 @@ static int Shim_EntitySetModelScale(int index, int serial, float scale) {
 }
 
 // ---------------------------------------------------------------------------
+// Bones and attachments slice — CBaseModelEntity::LookupBone / LookupAttachment / GetBoneTransform
+// and StudioModel::GetAttachment. Evidence beside each signature in gamedata/core/game.cs2.jsonc.
+//
+// All three members get the entity's model the same way: load a sub-object at a fixed offset,
+// call one of its virtuals. LookupBone then uses the model without a null check, so the shim
+// fetches the model itself first and refuses when it is null. The offset and the virtual's slot
+// are read out of the three matched bodies (S2_ResolveModelSource) rather than carried as
+// constants, so a moved field stays a gamedata-free fix as long as the patterns still match.
+// ---------------------------------------------------------------------------
+using ModelLookupFn = int (*)(CEntityInstance* self, const char* name);
+using ModelLookupU8Fn = uint8_t (*)(CEntityInstance* self, const char* name);
+using GetBoneTransformFn = void* (*)(void* sret, CEntityInstance* self, int bone);
+using StudioGetAttachmentFn = bool (*)(void* model, uint8_t attachment, float* origin, float* angles);
+static ModelLookupFn s_pLookupBone = nullptr;
+static ModelLookupU8Fn s_pLookupAttachment = nullptr;
+static GetBoneTransformFn s_pGetBoneTransform = nullptr;
+static StudioGetAttachmentFn s_pStudioGetAttachment = nullptr;
+static int s_modelSrcOff = -1;    // byte offset of the model-source sub-object pointer in the entity
+static int s_modelSrcSlot = -1;   // vtable slot on it that returns the model
+
+// Reads `48 8B /r disp32` at `movAt` and `FF 50 disp8` at `callAt` in a matched body. The patterns
+// pin both opcodes, so a mismatch here means the gamedata pattern changed under us.
+static bool S2_ReadModelSource(const void* fn, int movAt, int callAt, int& off, int& slot) {
+    const uint8_t* b = static_cast<const uint8_t*>(fn);
+    if (!b || b[movAt] != 0x48 || b[movAt + 1] != 0x8B || b[callAt] != 0xFF || b[callAt + 1] != 0x50)
+        return false;
+    int32_t disp = 0;
+    std::memcpy(&disp, b + movAt + 3, sizeof disp);
+    const int vdisp = b[callAt + 2];
+    if (disp <= 0 || disp >= 0x10000 || vdisp % 8 != 0) return false;
+    off = disp;
+    slot = vdisp / 8;
+    return true;
+}
+
+static void S2_ResolveModelSource() {
+    struct Body { const void* fn; int movAt, callAt; };
+    const Body bodies[] = {
+        { reinterpret_cast<const void*>(s_pLookupBone),       0x0C, 0x16 },
+        { reinterpret_cast<const void*>(s_pLookupAttachment), 0x0D, 0x17 },
+        { reinterpret_cast<const void*>(s_pGetBoneTransform), 0x14, 0x1E },
+    };
+    int off = -1, slot = -1;
+    for (const Body& b : bodies) {
+        int o = -1, sl = -1;
+        if (!b.fn || !S2_ReadModelSource(b.fn, b.movAt, b.callAt, o, sl)) {
+            GamedataResult("CBaseModelEntity_ModelSource", false,
+                           "a model member is unresolved or its body no longer reads the model "
+                           "source the way the pattern pins — bones/attachments disabled");
+            return;
+        }
+        if (off >= 0 && (o != off || sl != slot)) {
+            GamedataResult("CBaseModelEntity_ModelSource", false,
+                           "the three model members disagree on the model source — bones/attachments disabled");
+            return;
+        }
+        off = o;
+        slot = sl;
+    }
+    s_modelSrcOff = off;
+    s_modelSrcSlot = slot;
+    GamedataResult("CBaseModelEntity_ModelSource", true, nullptr);
+    META_CONPRINTF("[s2script] model source: [entity+0x%x]->vtable[%d] (bones/attachments)\n", off, slot);
+}
+
+// The entity's model, or null when the source sub-object or the model is absent.
+static void* S2_EntityModel(CEntityInstance* ent) {
+    if (s_modelSrcOff < 0 || !ent) return nullptr;
+    void* src = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(ent) + s_modelSrcOff);
+    if (!src) return nullptr;
+    using GetModelFn = void* (*)(void*);
+    return (*reinterpret_cast<GetModelFn**>(src))[s_modelSrcSlot](src);
+}
+
+// -1 when unresolved, stale, modelless, or the model has no such bone.
+static int Shim_EntityLookupBone(int index, int serial, const char* name) {
+    if (!s_pLookupBone || !name) return -1;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent || !S2_EntityModel(ent)) return -1;
+    return s_pLookupBone(ent, name);
+}
+
+// out[0..2] position, out[3..6] orientation quaternion (x, y, z, w). 1 on success.
+static int Shim_EntityGetBoneTransform(int index, int serial, int bone, float* out) {
+    if (!s_pGetBoneTransform || !out || bone < 0) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent || !S2_EntityModel(ent)) return 0;
+    alignas(16) float t[8] = {};   // CTransform: VectorAligned m_vPosition, Quaternion m_orientation
+    s_pGetBoneTransform(t, ent, bone);
+    out[0] = t[0]; out[1] = t[1]; out[2] = t[2];
+    out[3] = t[4]; out[4] = t[5]; out[5] = t[6]; out[6] = t[7];
+    return 1;
+}
+
+// 0 when unresolved, stale, modelless, or the model has no such attachment.
+static int Shim_EntityLookupAttachment(int index, int serial, const char* name) {
+    if (!s_pLookupAttachment || !name || s_modelSrcOff < 0) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    return s_pLookupAttachment(ent, name);   // null-checks the model itself
+}
+
+// out[0..2] world origin, out[3..5] world angles. 1 when the engine found the attachment.
+static int Shim_EntityGetAttachment(int index, int serial, int attachment, float* out) {
+    if (!s_pStudioGetAttachment || !out || attachment <= 0 || attachment > 255) return 0;
+    CEntityInstance* ent = ResolveEntityBySerial(index, serial);
+    if (!ent) return 0;
+    void* model = S2_EntityModel(ent);
+    if (!model) return 0;
+    float origin[3] = {}, angles[3] = {};
+    if (!s_pStudioGetAttachment(model, static_cast<uint8_t>(attachment), origin, angles)) return 0;
+    for (int i = 0; i < 3; i++) { out[i] = origin[i]; out[3 + i] = angles[i]; }
+    return 1;
+}
+
+// ---------------------------------------------------------------------------
 // Sound slice — emit (see docs/superpowers/specs/2026-07-13-sound-emitsound-precache-design.md).
 // A minimal modern recipient filter over the SDK's 4-method IRecipientFilter
 // (public/irecipientfilter.h), ported from CSSharp's recipientfilters.h: a slot-indexed
@@ -5020,6 +5136,10 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     { "StopSound",               reinterpret_cast<void**>(&s_pEntityStopSound),         "EntityRef.stopSound" },
                     { "SetBodyGroupByName",      reinterpret_cast<void**>(&s_pSetBodyGroupByName),      "EntityRef.setBodyGroupByName" },
                     { "SetModelScale",           reinterpret_cast<void**>(&s_pSetModelScale),           "EntityRef.setModelScale" },
+                    { "CBaseModelEntity_LookupBone",       reinterpret_cast<void**>(&s_pLookupBone),          "EntityRef.lookupBone" },
+                    { "CBaseModelEntity_LookupAttachment", reinterpret_cast<void**>(&s_pLookupAttachment),    "EntityRef.lookupAttachment" },
+                    { "CBaseModelEntity_GetBoneTransform", reinterpret_cast<void**>(&s_pGetBoneTransform),    "EntityRef.getBoneTransform" },
+                    { "StudioModel_GetAttachment",         reinterpret_cast<void**>(&s_pStudioGetAttachment), "EntityRef.getAttachment" },
                 };
                 for (const EntityPropSig& ep : kEntityProps) {
                     auto it = sigs.find(ep.name);
@@ -5034,6 +5154,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                         META_CONPRINTF("[s2script] %s resolved @%p (%s)\n", ep.name, *ep.slot, ep.api);
                     }   // off == kFail: ResolveSigValidated already recorded the reason
                 }
+                S2_ResolveModelSource();
             }
             // Sound slice: resolve CBaseEntity::EmitSound (soundevent emit; Sound.emit /
             // pawn.emitSound). A DIRECT prologue signature self-validated UNIQUE on OUR libserver.so

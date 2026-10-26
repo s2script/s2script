@@ -260,6 +260,10 @@ pub type FunctionFrameFieldWriteFn = extern "C" fn(*const S2FunctionInstanceAcce
 pub type FunctionFrameHiddenReferencedByFn = extern "C" fn(*const S2FunctionInstanceAccess, c_int, *const S2FunctionValue, u32, *mut c_int, *mut c_char, c_int) -> c_int;
 pub type ServerTickCountFn = extern "C" fn() -> c_int;
 pub type ServerTickIntervalFn = extern "C" fn() -> f32;
+pub type EntityLookupBoneFn = extern "C" fn(index: c_int, serial: c_int, name: *const c_char) -> c_int;
+pub type EntityGetBoneTransformFn = extern "C" fn(index: c_int, serial: c_int, bone: c_int, out: *mut f32) -> c_int;
+pub type EntityLookupAttachmentFn = extern "C" fn(index: c_int, serial: c_int, name: *const c_char) -> c_int;
+pub type EntityGetAttachmentFn = extern "C" fn(index: c_int, serial: c_int, attachment: c_int, out: *mut f32) -> c_int;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -457,6 +461,11 @@ pub struct S2EngineOps {
     // --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick ---
     pub server_tick_count: Option<ServerTickCountFn>,
     pub server_tick_interval: Option<ServerTickIntervalFn>,
+    // --- bones and attachments ---
+    pub entity_lookup_bone: Option<EntityLookupBoneFn>,
+    pub entity_get_bone_transform: Option<EntityGetBoneTransformFn>,
+    pub entity_lookup_attachment: Option<EntityLookupAttachmentFn>,
+    pub entity_get_attachment: Option<EntityGetAttachmentFn>,
 }
 
 impl S2EngineOps {

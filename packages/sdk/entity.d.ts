@@ -185,6 +185,38 @@ export declare class EntityRef {
    *  `trigger_multiple` needs a model to build the physics volume that fires touch. Returns false
    *  if the op is unavailable or the ref is stale. */
   setModel(name: string): boolean;
+  /**
+   * The index of the bone called `name` on this entity's model, for {@link getBoneTransform}.
+   * `-1` when the model has no such bone, the entity has no model, or the ref is stale.
+   *
+   * @example
+   * const head = pawn.ref.lookupBone("head_0");
+   * const t = head >= 0 ? pawn.ref.getBoneTransform(head) : null;
+   * if (t) console.log(`head at ${t.position}`);
+   */
+  lookupBone(name: string): number;
+  /**
+   * Where bone `bone` is right now, in world space: its position and its orientation as a
+   * quaternion. `null` for a stale ref, an entity with no model, or a negative index. An index past
+   * the model's last bone gives the entity's own transform, as the engine does.
+   */
+  getBoneTransform(bone: number): BoneTransform | null;
+  /**
+   * The index of the attachment called `name` on this entity's model (`"muzzle_flash"`,
+   * `"eyes"`), for {@link getAttachment}. `0` when there is no such attachment, the entity has no
+   * model, or the ref is stale; real attachments start at 1.
+   */
+  lookupAttachment(name: string): number;
+  /**
+   * Where attachment `attachment` is right now, in world space. `null` for a stale ref, an entity
+   * with no model, an index outside 1–255, or an attachment the engine did not find.
+   *
+   * @example
+   * const muzzle = weapon.ref.lookupAttachment("muzzle_flash");
+   * const at = weapon.ref.getAttachment(muzzle);
+   * if (at) console.log(`muzzle at ${at.origin}, facing ${at.angles}`);
+   */
+  getAttachment(attachment: number): AttachmentTransform | null;
   /** Set this entity's gravity multiplier (`CBaseEntity::SetGravityScale`). 1 is normal, 0 is
    *  weightless.
    *
@@ -285,3 +317,19 @@ export declare const Entity: {
   /** Find every entity whose designer-name (class) exactly matches `className`. Returns liveness-gated refs. */
   findByClass(className: string): EntityRef[];
 };
+
+/** What {@link EntityRef.getBoneTransform} returns. */
+export interface BoneTransform {
+  /** The bone's world position. */
+  position: Vector;
+  /** The bone's world orientation, as a unit quaternion. */
+  rotation: { x: number; y: number; z: number; w: number };
+}
+
+/** What {@link EntityRef.getAttachment} returns. */
+export interface AttachmentTransform {
+  /** The attachment's world position. */
+  origin: Vector;
+  /** The attachment's world angles. */
+  angles: QAngle;
+}

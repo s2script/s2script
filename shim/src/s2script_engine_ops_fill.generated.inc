@@ -189,3 +189,8 @@
     // --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick ---
     ops.server_tick_count = &s2_server_tick_count;
     ops.server_tick_interval = &s2_server_tick_interval;
+    // --- bones and attachments ---
+    ops.entity_lookup_bone = &Shim_EntityLookupBone;
+    ops.entity_get_bone_transform = &Shim_EntityGetBoneTransform;
+    ops.entity_lookup_attachment = &Shim_EntityLookupAttachment;
+    ops.entity_get_attachment = &Shim_EntityGetAttachment;

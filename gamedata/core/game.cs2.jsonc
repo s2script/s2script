@@ -537,6 +537,61 @@
         "pattern": "48 8B 07 48 8D 15 ? ? ? ? 48 8B 80 ? ? ? ? 48 39 D0 75 2A 55",
         "resolve": "direct"
       }
+    },
+    // Bones and attachments slice (EntityRef.lookupBone / getBoneTransform / lookupAttachment /
+    // getAttachment). Every entry is unique on the Oct 22 2026 build (libserver.so BuildID
+    // 2603388a…). The three CBaseModelEntity members all start the same way: load the sub-object
+    // at [this+0x528], call its vtable slot 0x70 to get the model. The shim reads that offset and
+    // slot out of all three matched bodies (the patterns pin the opcodes and wildcard only the
+    // operands) and refuses the slice when they disagree, so it can null-check the model before
+    // calling LookupBone, which does not check it itself.
+    //
+    // CBaseModelEntity::LookupBone(this, const char*) -> int, @0x164a890. Gets the model, then
+    // tail-calls the model's bone lookup with the name. ModSharp's pattern (it runs into the next
+    // function's prologue to stay unique).
+    "CBaseModelEntity_LookupBone": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 53 48 89 F3 48 83 EC ? 48 8B BF ? ? ? ? 48 8B 07 FF 50 ? 48 89 DE 48 8B 5D ? C9 48 89 C7 E9 ? ? ? ? CC CC CC CC CC CC CC 55 48 89 E5 53 89 F3",
+        "resolve": "direct",
+        "validate": { "prologue": "55 48 89 E5 53 48 89 F3" }
+      }
+    },
+    // CBaseModelEntity::LookupAttachment(this, const char*) -> uint8 (0 = none), @0x164abb0.
+    // Gets the model, returns 0 when it is null, otherwise gets it again and tail-calls the
+    // model's attachment lookup.
+    "CBaseModelEntity_LookupAttachment": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 54 49 89 F4 53 48 89 FB 48 8B BF ? ? ? ? 48 8B 07 FF 50 ? 48 85 C0 74 ? 48 8B BB ? ? ? ? 48 8B 07 FF 50 ? 5B 4C 89 E6 41 5C 48 89 C7 5D E9",
+        "resolve": "direct",
+        "validate": { "prologue": "55 48 89 E5 41 54 49 89 F4 53 48 89 FB" }
+      }
+    },
+    // CTransform CBaseModelEntity::GetBoneTransform(this, int bone), @0x164aac0. Returns the
+    // 32-byte CTransform (VectorAligned position, Quaternion orientation) through a hidden sret
+    // pointer in rdi, so `this` is rsi and the bone is edx. It null-checks the model and the bone
+    // range; an out-of-range bone returns the entity's own transform. ModSharp's pattern.
+    "CBaseModelEntity_GetBoneTransform": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 56 49 89 F6 41 55 41 54 41 89 D4 53 48 89 FB 48 8B BE",
+        "resolve": "direct",
+        "validate": { "prologue": "55 48 89 E5 41 56 49 89 F6" }
+      }
+    },
+    // StudioModel::GetAttachment(model, uint8 attachment, Vector* origin, QAngle* angles) -> bool,
+    // @0x181da10. Writes the world-space origin through rdx and the angles (converted from the
+    // attachment's quaternion) through rcx. The engine's own ScriptGetAttachmentOrigin and
+    // ScriptGetAttachmentAngles wrappers call it with the model from the same getter. ModSharp's
+    // pattern.
+    "StudioModel_GetAttachment": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 55 41 54 49 89 D4 53 48 8D 55 ? 48 89 CB",
+        "resolve": "direct",
+        "validate": { "prologue": "55 48 89 E5 41 55 41 54 49 89 D4" }
+      }
     }
     // (Sound slice precache: there is NO factory-list signature. The abandoned "GameSystemFactoryList"
     // sig-scan + walk-the-factory-node-for-the-instance premise was DISPROVEN offline on the pinned

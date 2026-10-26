@@ -236,6 +236,10 @@ typedef int (*s2_function_frame_field_write_fn)(const S2FunctionInstanceAccess* 
 typedef int (*s2_function_frame_hidden_referenced_by_fn)(const S2FunctionInstanceAccess* access, int selector, const S2FunctionValue* entity, unsigned int offset, int* out, char* reason, int cap);
 typedef int (*s2_server_tick_count_fn)(void);
 typedef float (*s2_server_tick_interval_fn)(void);
+typedef int (*s2_entity_lookup_bone_fn)(int index, int serial, const char* name);
+typedef int (*s2_entity_get_bone_transform_fn)(int index, int serial, int bone, float* out);
+typedef int (*s2_entity_lookup_attachment_fn)(int index, int serial, const char* name);
+typedef int (*s2_entity_get_attachment_fn)(int index, int serial, int attachment, float* out);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -428,4 +432,9 @@ typedef struct {
     /* --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick --- */
     s2_server_tick_count_fn server_tick_count;
     s2_server_tick_interval_fn server_tick_interval;
+    /* --- bones and attachments --- */
+    s2_entity_lookup_bone_fn entity_lookup_bone;
+    s2_entity_get_bone_transform_fn entity_get_bone_transform;
+    s2_entity_lookup_attachment_fn entity_lookup_attachment;
+    s2_entity_get_attachment_fn entity_get_attachment;
 } S2EngineOps;
