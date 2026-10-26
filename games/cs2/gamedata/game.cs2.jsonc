@@ -630,6 +630,31 @@
       "args": ["int", "bool"],
       "argNames": ["playerSlot", "enabled"],
       "returns": "void"
+    },
+
+    // MapGroups.maps(name) — IGameTypes::GetMapGroupMapList on the GameTypes001 interface
+    // (libmatchmaking.so). Re-derived on the Oct 22 2026 build (libmatchmaking.so BuildID
+    // d89dde4c…): the interface is registered for class GameTypes (RTTI 9GameTypes, 95 slots), and
+    // slot 64 null-checks the name, looks the group up and returns &group->m_mapList, a
+    // CUtlStringList, or null for an unknown group. libserver's own print_mapgroup_sv
+    // (@0x1354ac0 in libserver.so) calls [g_pGameTypes]->vtable[0x200/8] and walks the result as
+    // { int size; char** elements @8 }, which is the layout `utlstringlist` reads. The prologue is
+    // the null checks, the `mov edx, 1` and the call into the group lookup; the shim also checks the
+    // interface object's own slot 64 is this function.
+    "getMapGroupMapList": {
+      "receiver": { "kind": "interface", "name": "GameTypes001" },
+      "target": {
+        "kind": "vtable",
+        "class": "GameTypes",
+        "module": "libmatchmaking.so",
+        "linuxsteamrt64": {
+          "index": 64,
+          "validate": { "prologue": "48 85 F6 74 ? 80 3E 00 74 ? 55 BA 01 00 00 00 48 89 E5 E8" }
+        }
+      },
+      "args": ["string"],
+      "argNames": ["mapGroup"],
+      "returns": "utlstringlist"
     }
   },
 

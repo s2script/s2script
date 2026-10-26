@@ -481,6 +481,21 @@ export declare const Teams: {
   addScore(team: number, delta: number): boolean;
 };
 
+/** The server's map groups, the named map lists from gamemodes that the `mapgroup` command
+ *  selects (`mg_active`, `mg_casualsigma`, `workshop`, …). */
+export declare const MapGroups: {
+  /**
+   * The maps in a map group, in the engine's order.
+   *
+   * @example
+   * import { MapGroups } from "@s2script/cs2";
+   * const maps = MapGroups.maps("mg_active") ?? [];
+   *
+   * Returns null for an unknown group, or when the engine function did not resolve on this build.
+   */
+  maps(name: string): string[] | null;
+};
+
 /** CS2 round-end reasons (CCSGameRules::TerminateRound / round_end.reason). Binary-validated against
  *  our build (reason bound = 22; #SFUI_Notice_* switch). Gaps 2/3/15 are removed legacy VIP reasons. */
 export declare const RoundEndReason: {

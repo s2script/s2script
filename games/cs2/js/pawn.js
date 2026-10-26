@@ -68,6 +68,7 @@
   var callGiveNamedItem    = engineCall("giveNamedItem");
   var callRemovePlayerItem = engineCall("removePlayerItem");
   var callGetPlayerMaxSpeed = engineCall("getPlayerMaxSpeed");
+  var callGetMapGroupMapList = engineCall("getMapGroupMapList");
 
   // Internal namespace, same idiom as __s2pkg_cs2_schema / __s2pkg_cs2_nav: NOT part of the
   // @s2script/cs2 public surface. `status` is here so an operator can ask a live server WHY a game
@@ -1008,6 +1009,16 @@
     }
   };
 
+  // Map groups — the gamemodes map groups ("mg_active", "workshop", …) a server's `mapgroup`
+  // command selects. One IGameTypes call; the engine owns the list, so it is copied out each time.
+  var MapGroups = {
+    maps: function (name) {
+      if (!callGetMapGroupMapList || typeof name !== "string" || !name) return null;
+      var list = callGetMapGroupMapList(name);
+      return Array.isArray(list) ? list : null;
+    }
+  };
+
   // CS2 round-end reasons ("layout is data, semantics are code" — a name<->number mapping is reviewed
   // code). Values HINTed by the CSSharp enum and BINARY-VALIDATED against our build: the engine's
   // `cmp $0x16` bound (max 22 = SurvivalDraw) + every #SFUI_Notice_* switch string present. Gaps
@@ -1095,7 +1106,7 @@
     return sceneNodeGetter.call({ ref: ref });
   }
 
-  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, sceneNodeOf: sceneNodeOf, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Teams: Teams, RoundEndReason: RoundEndReason, WinPanelFinalEvent: WinPanelFinalEvent, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone, Sounds: Sounds });
+  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, sceneNodeOf: sceneNodeOf, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Teams: Teams, MapGroups: MapGroups, RoundEndReason: RoundEndReason, WinPanelFinalEvent: WinPanelFinalEvent, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone, Sounds: Sounds });
 
   // The ctx namespaces this game package contributes (core's generic extension point in
   // prelude.js merges these into every plugin's ctx). Each factory gets the prelude's ledger

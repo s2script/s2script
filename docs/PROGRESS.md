@@ -753,3 +753,15 @@ reach neither: its receivers were an entity or nothing, and it had no way to ret
 
 The SDK validator, the generated `.d.ts` (no `self`, `string[] | null`) and
 `check-call-descriptors.sh` know both. Live gate pending.
+
+## 2026-10-26 — Map groups
+
+`MapGroups.maps(name)` in `@s2script/cs2` (ModSharp's GetMapGroupMapList). Map groups are a CS2
+gamemodes concept, so this is a game-package descriptor, not core: `getMapGroupMapList` in
+games/cs2/gamedata uses the interface receiver and `utlstringlist` return added just before it.
+The target is `GameTypes` vtable slot 64 in libmatchmaking.so with a prologue validator, and the
+shim checks the GameTypes001 object's own slot 64 is that function. Verified on the Oct 22 build
+from both sides: libmatchmaking's slot 64 body, and libserver's `print_mapgroup_sv`, which makes the
+same call and walks the same list layout. The workshop map list (ModSharp's ListWorkshopMaps) walks
+a private CUtlOrderedMap inside the workshop manager and is not part of this slice. Live gate
+pending.
