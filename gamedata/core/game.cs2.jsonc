@@ -131,7 +131,21 @@
     "ICvar_vtableSize":                           { "linuxsteamrt64": 46 },
     "ICvar_DispatchConCommand":                   { "linuxsteamrt64": 20 },
     "IVEngineServer2_vtableSize":                 { "linuxsteamrt64": 123 },
-    "IVEngineServer2_SetClientListening":         { "linuxsteamrt64": 92 }
+    "IVEngineServer2_SetClientListening":         { "linuxsteamrt64": 92 },
+    // Sound event lookups (Sound.duration / Sound.isValid). The object behind SoundOpSystem001 is a
+    // CSoundOpSystem (libsoundsystem.so BuildID cc784b92…, Oct 22 2026) whose ISoundEventManager
+    // base sits at +8: that vtable (@0x73c7b8) has offset-to-top -8 and the primary's type_info, and
+    // the shim checks both live before reading a slot. The 63 slots are the pin; the three indices
+    // are the bodies read on that build, and match ModSharp's Linux indices:
+    //   0  GetSoundEventHash(const char*, bool) — returns 0xffffffff for a null or empty name
+    //   1  IsValidSoundEventHash(uint32) — the hash table lookup != -1
+    //   30 GetSoundEventDuration(const char*, …) — the event's float at +0x118, or -1.0 when unknown
+    // (31 is the uint32-hash overload of the same.)
+    "SoundOpSystem_SoundEventManager":            { "linuxsteamrt64": 8 },
+    "ISoundEventManager_vtableSize":              { "linuxsteamrt64": 63 },
+    "ISoundEventManager_GetSoundEventHash":       { "linuxsteamrt64": 0 },
+    "ISoundEventManager_IsValidSoundEventHash":   { "linuxsteamrt64": 1 },
+    "ISoundEventManager_GetSoundEventDuration":   { "linuxsteamrt64": 30 }
   },
   // Byte signatures for un-exported engine globals (Slice 5D.2). Layout-is-data: the pattern +
   // module are regenerable per CS2 patch from the documented RTTI->vtable->xref anchors (see

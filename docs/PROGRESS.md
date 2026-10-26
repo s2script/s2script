@@ -732,3 +732,20 @@ builds the same header for the position it sets inside EmitSound and frees that 
 the shim keeps the value on its stack. The engine reports nothing back; an unknown parameter name
 is dropped silently. `GetSoundDuration` and `IsSoundEventValid` need CSoundEventManager from
 libsoundsystem.so and are left for a later slice. Live gate pending.
+
+## 2026-10-26 — Sound event lookups
+
+`Sound.duration(name)` and `Sound.isValid(name)` close the rest of ModSharp's sound surface
+(GetSoundDuration / IsSoundEventValid). A plugin that plays round music needs the length to schedule
+what follows, and a map-config plugin needs to know a name exists before it emits it.
+
+Both go to the sound system's event manager, which is not an interface of its own: the object
+behind `SoundOpSystem001` is a CSoundOpSystem whose ISoundEventManager base sits at +8. Read from
+the Oct 22 libsoundsystem.so (BuildID cc784b92…): that secondary vtable has offset-to-top -8 and
+the same type_info as the primary, 63 slots, and slots 0 (hash a name, 0xffffffff for null or
+empty), 1 (is that hash a known event) and 30 (the event's float at +0x118, -1.0 when unknown).
+These match ModSharp's Linux indices. The +8, the pin and the three indices are gamedata/core
+offsets. At load the shim reads the vtable header through the fault-free reader and requires the
+offset-to-top and type_info to agree with the gamedata offset, then runs the slots through the same
+pin and range check as the interface hooks. Any mismatch is a named gamedata FAIL and both
+functions answer "unknown" (null / false). Live gate pending.

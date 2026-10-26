@@ -65,6 +65,7 @@
 #include <sys/syscall.h>
 #include "sigscan.h"
 #include "vtable.h"   // Ray-trace slice: RTTI vtable-by-name resolution
+#include "engine_function_copy.h"   // sound event manager: fault-free reads of a vtable header
 #include "trace.h"    // Ray-trace slice: Ray_t/CTraceFilterEx/CGameTrace + the TraceShape call
 #include "ekv.h"      // EKV slice: S2EKV_Build/AddRef/ReleaseIfSafe/SelfTest (the void*-only surface)
 #include "crash_handler.h"  // Crash-reporter slice: S2CrashArm/S2CrashDisarm (Breakpad native fault path)
@@ -4281,6 +4282,91 @@ static int s2_sound_stop_event(int guid, const int* slots, int slotCount) {
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// Sound event lookups (Sound.duration / Sound.isValid). The sound system's event manager is a
+// second base of the SoundOpSystem001 object: on the Oct 22 build CSoundOpSystem keeps its
+// ISoundEventManager vtable at +8 (offset-to-top -8, same type_info as the primary vtable), and
+// ModSharp reaches it the same way. The +8 is gamedata (SoundOpSystem_SoundEventManager) and is
+// checked here against the object's own RTTI before any slot is read; the slots go through the
+// same pin + range check as the interface hooks. Anything off leaves both ops returning "unknown".
+// ---------------------------------------------------------------------------
+enum S2SoundEventSlot { kSES_GetHash, kSES_IsValidHash, kSES_Duration, kSES_Count };
+static const char* const kSoundEventSlotKeys[kSES_Count] = {
+    "ISoundEventManager_GetSoundEventHash",
+    "ISoundEventManager_IsValidSoundEventHash",
+    "ISoundEventManager_GetSoundEventDuration",
+};
+static void* s_pSoundEventManager = nullptr;   // the verified sub-object, or null
+static int   s_soundEventSlot[kSES_Count] = { -1, -1, -1 };
+
+typedef uint32 (*SoundEventHashFn_t)(void* mgr, const char* name, bool unknown);
+typedef bool   (*SoundEventValidHashFn_t)(void* mgr, uint32 hash);
+typedef float  (*SoundEventDurationFn_t)(void* mgr, const char* name, uintptr_t unknown, float fallback);
+
+static void* SoundEventSlot(S2SoundEventSlot s) {
+    if (!s_pSoundEventManager || s_soundEventSlot[s] < 0) return nullptr;
+    void** vt = *reinterpret_cast<void***>(s_pSoundEventManager);
+    return vt[s_soundEventSlot[s]];
+}
+
+// Returns the duration in seconds, or -1 when the event is unknown or the lookup is unavailable.
+// The engine itself answers -1.0 for a name it has no event for.
+static float s2_sound_event_duration(const char* name) {
+    auto fn = reinterpret_cast<SoundEventDurationFn_t>(SoundEventSlot(kSES_Duration));
+    if (!fn || !name || !name[0]) return -1.0f;
+    return fn(s_pSoundEventManager, name, 0, -1.0f);
+}
+
+// Locate and verify the event manager sub-object of a SoundOpSystem001 object. The header words are
+// read through the fault-free reader, so a wrong offset in gamedata is a named failure, not a crash.
+static void S2_ResolveSoundEventManager(void* soundOpSystem) {
+    const char* key = "SoundOpSystem_SoundEventManager";
+    if (!soundOpSystem) { GamedataResult(key, false, "SoundOpSystem interface missing — Sound.duration/isValid disabled"); return; }
+    auto it = s_gdCore.offsets.find(key);
+    if (it == s_gdCore.offsets.end() || it->second <= 0 || (it->second % 8) != 0) {
+        GamedataResult(key, false, "sub-object offset absent or not a positive multiple of 8 — Sound.duration/isValid disabled");
+        return;
+    }
+    const intptr_t off = it->second;
+    const s2fn::copy::Reader rd = s2fn::copy::SystemReader();
+    auto read = [&](uintptr_t at, void* out, size_t n) {
+        return rd.available && rd.read && rd.read(rd.context, at, out, n) == n;
+    };
+    const auto base = reinterpret_cast<uintptr_t>(soundOpSystem);
+    uintptr_t primary = 0, secondary = 0, primaryTi = 0, secondaryHdr[2] = {};
+    const bool ok = read(base, &primary, sizeof primary) && read(base + off, &secondary, sizeof secondary)
+                 && primary && secondary
+                 && read(primary - sizeof(uintptr_t), &primaryTi, sizeof primaryTi)
+                 && read(secondary - 2 * sizeof(uintptr_t), secondaryHdr, sizeof secondaryHdr);
+    // A secondary base's vtable says how far it sits from the object's top, and shares the
+    // complete object's type_info. Both must agree with the gamedata offset.
+    if (!ok || primaryTi == 0 || static_cast<intptr_t>(secondaryHdr[0]) != -off || secondaryHdr[1] != primaryTi) {
+        char reason[256];
+        snprintf(reason, sizeof reason,
+                 "no secondary vtable at +%ld of SoundOpSystem (offset-to-top %ld, type_info %s) — "
+                 "Sound.duration/isValid disabled; re-derive the offset",
+                 static_cast<long>(off), ok ? static_cast<long>(secondaryHdr[0]) : 0L,
+                 ok && secondaryHdr[1] == primaryTi ? "matches" : "differs");
+        GamedataResult(key, false, reason);
+        return;
+    }
+    GamedataResult(key, true, nullptr);
+    void* mgr = reinterpret_cast<void*>(base + off);
+    const S2VtableLayout layout = { "ISoundEventManager", "libsoundsystem.so", "ISoundEventManager_vtableSize" };
+    if (S2_VerifyVtableSlots(layout, mgr, kSoundEventSlotKeys, kSES_Count, s_soundEventSlot))
+        s_pSoundEventManager = mgr;
+}
+
+// 1 when the engine has an event by that name, 0 otherwise (unavailable included).
+static int s2_sound_event_valid(const char* name) {
+    auto hash  = reinterpret_cast<SoundEventHashFn_t>(SoundEventSlot(kSES_GetHash));
+    auto valid = reinterpret_cast<SoundEventValidHashFn_t>(SoundEventSlot(kSES_IsValidHash));
+    if (!hash || !valid || !name || !name[0]) return 0;
+    const uint32 h = hash(s_pSoundEventManager, name, false);
+    if (h == 0xffffffffu) return 0;
+    return valid(s_pSoundEventManager, h) ? 1 : 0;
+}
+
 // entity_listener_install: called by core on the first-ever JS entity-lifecycle subscribe. Set the
 // want-flag + register now (if the entity system exists); the StartupServer POST hook re-asserts each
 // map. Returns 1 if the AddListenerEntity signature resolved, else 0 (degrade — subscribe delivers nothing).
@@ -4915,6 +5001,20 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                 s_pNetworkMessages = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: NetworkMessages (%s) — client_print chat degrades\n", verStr);
             }
+        }
+        // Sound event lookups: the event manager behind SoundOpSystem001 (Sound.duration/isValid).
+        {
+            auto it = versions.find("SoundOpSystem");
+            const char* verStr = (it != versions.end()) ? it->second.c_str() : "SoundOpSystem001";
+            int ret = 0;
+            void* soundOpSystem = engineFactory ? engineFactory(verStr, &ret) : nullptr;
+            if (!soundOpSystem || ret != 0) {
+                soundOpSystem = nullptr;
+                META_CONPRINTF("[s2script] WARN: interface MISSING: SoundOpSystem (%s) — Sound.duration/isValid degrade\n", verStr);
+            } else {
+                META_CONPRINTF("[s2script] interface OK: SoundOpSystem (%s)\n", verStr);
+            }
+            S2_ResolveSoundEventManager(soundOpSystem);
         }
         // Acquire + STORE INetworkServerService* (Slice 5D.2 engine identity; was log-only).
         {

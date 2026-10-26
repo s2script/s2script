@@ -1839,6 +1839,24 @@
       "c_ret": "int",
       "c_params": "int guid, const int* slots, int slotCount",
       "shim": "s2_sound_stop_event"
+    },
+    {
+      "name": "sound_event_duration",
+      "alias": "SoundEventDurationFn",
+      "rust": "extern \"C\" fn(*const c_char) -> f32",
+      "group": "sound event lookups: the sound system's event manager (GetSoundEventDuration / IsValidSoundEventHash)",
+      "c_ret": "float",
+      "c_params": "const char* soundEvent",
+      "shim": "s2_sound_event_duration"
+    },
+    {
+      "name": "sound_event_valid",
+      "alias": "SoundEventValidFn",
+      "rust": "extern \"C\" fn(*const c_char) -> c_int",
+      "group": "sound event lookups: the sound system's event manager (GetSoundEventDuration / IsValidSoundEventHash)",
+      "c_ret": "int",
+      "c_params": "const char* soundEvent",
+      "shim": "s2_sound_event_valid"
     }
   ]
 }

@@ -262,6 +262,8 @@ pub type ServerTickCountFn = extern "C" fn() -> c_int;
 pub type ServerTickIntervalFn = extern "C" fn() -> f32;
 pub type SoundSetParamFn = extern "C" fn(c_int, c_int, *const c_char, *const f32, c_int, *const c_int, c_int) -> c_int;
 pub type SoundStopEventFn = extern "C" fn(c_int, *const c_int, c_int) -> c_int;
+pub type SoundEventDurationFn = extern "C" fn(*const c_char) -> f32;
+pub type SoundEventValidFn = extern "C" fn(*const c_char) -> c_int;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -462,6 +464,9 @@ pub struct S2EngineOps {
     // --- sound event parameters: SoundOpGameSystem::SetSoundEventParam / StopSoundEvent ---
     pub sound_set_param: Option<SoundSetParamFn>,
     pub sound_stop_event: Option<SoundStopEventFn>,
+    // --- sound event lookups: the sound system's event manager (GetSoundEventDuration / IsValidSoundEventHash) ---
+    pub sound_event_duration: Option<SoundEventDurationFn>,
+    pub sound_event_valid: Option<SoundEventValidFn>,
 }
 
 impl S2EngineOps {

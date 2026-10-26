@@ -3682,6 +3682,36 @@ fn s2_sound_stop_event(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgum
     }));
 }
 
+/// Native `__s2_sound_duration(name) -> number | null`. Over the `sound_event_duration` op: the
+/// event's length in seconds. `null` when the op is missing, the name has a NUL, or the engine has
+/// no such event (it answers -1 for that). Never throws.
+fn s2_sound_duration(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.sound_event_duration) else { return };
+        let Ok(name) = std::ffi::CString::new(args.get(0).to_rust_string_lossy(scope)) else { return };
+        if name.as_bytes().is_empty() { return; }
+        let d = f(name.as_ptr());
+        if d.is_finite() && d >= 0.0 {
+            rv.set_double(d as f64);
+        }
+    }));
+}
+
+/// Native `__s2_sound_is_valid(name) -> boolean`. Over the `sound_event_valid` op: whether the
+/// engine knows a sound event by that name. `false` when the op is missing. Never throws.
+fn s2_sound_is_valid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.sound_event_valid) else { return };
+        let Ok(name) = std::ffi::CString::new(args.get(0).to_rust_string_lossy(scope)) else { return };
+        if name.as_bytes().is_empty() { return; }
+        rv.set_bool(f(name.as_ptr()) == 1);
+    }));
+}
+
 /// Native `__s2_sound_precache_add(path) -> boolean`. Over the `sound_precache_add` op — valid only
 /// during a precache-hook dispatch (block-scoped; the shim's manifest stash is null otherwise).
 /// Degrades to `false` with no op / no active manifest / a NUL in the path. Never throws.

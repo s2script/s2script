@@ -2067,6 +2067,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       var r = __s2_sound_start.apply(null, __s2_sound_args(name, opts));
       return r ? new SoundEvent(r[0], r[1]) : null;
     },
+    // duration(name) — the event's length in seconds, null when the engine has no such event.
+    duration: function (name) { return __s2_sound_duration(String(name)); },
+    // isValid(name) — whether the engine knows a sound event by that name.
+    isValid: function (name) { return __s2_sound_is_valid(String(name)); },
     // stop(name, opts) — the counterpart to emit. UNLIKE emit, an entity is REQUIRED: the engine
     // call behind this is an instance method on the entity, reached through the books-gated entity
     // resolve, so there is no global/2D form to default to the way emit falls back to worldspawn.

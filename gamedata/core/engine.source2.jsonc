@@ -17,6 +17,8 @@
     "NetworkServerService": "NetworkServerService_001",
     // INetworkMessages — used by client_print to FindNetworkMessage + AllocateMessage (Slice 6.1).
     // Interface string from inetworkmessages.h NETWORKMESSAGES_INTERFACE_VERSION macro.
-    "NetworkMessages": "NetworkMessagesVersion001"
+    "NetworkMessages": "NetworkMessagesVersion001",
+    // ISoundOpSystem — its sound event manager base backs Sound.duration / Sound.isValid.
+    "SoundOpSystem": "SoundOpSystem001"
   }
 }

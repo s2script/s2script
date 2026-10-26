@@ -6355,6 +6355,49 @@
         shutdown();
     }
 
+    static SOUND_LOOKUPS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    extern "C" fn mock_sound_event_duration(name: *const c_char) -> f32 {
+        let n = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        let d = if n == "MyPack.Siren" { 2.5 } else { -1.0 };
+        SOUND_LOOKUPS.lock().unwrap().push(n);
+        d
+    }
+    extern "C" fn mock_sound_event_valid(name: *const c_char) -> c_int {
+        let n = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        let v = (n == "MyPack.Siren") as c_int;
+        SOUND_LOOKUPS.lock().unwrap().push(n);
+        v
+    }
+
+    /// Sound.duration maps the engine's -1 for an unknown event to null; isValid passes the name
+    /// through; an empty name never reaches the op.
+    #[test]
+    fn sound_duration_and_is_valid() {
+        let _ = init(dummy_logger());
+        SOUND_LOOKUPS.lock().unwrap().clear();
+        set_engine_ops(Some(S2EngineOps {
+            sound_event_duration: Some(mock_sound_event_duration),
+            sound_event_valid: Some(mock_sound_event_valid),
+            ..mock_event_ops()
+        }));
+        load_body("psd", r#"
+            const { Sound } = require("@s2script/sound");
+            globalThis.__g = [
+                Sound.duration("MyPack.Siren"), Sound.duration("Nope"), Sound.duration(""),
+                Sound.isValid("MyPack.Siren"), Sound.isValid("Nope"), Sound.isValid(""),
+            ].map(String).join(",");
+        "#, "{}");
+        assert_eq!(eval_in_context_string("psd", "String(globalThis.__g)"),
+                   "2.5,null,null,true,false,false");
+        assert_eq!(*SOUND_LOOKUPS.lock().unwrap(),
+                   vec!["MyPack.Siren", "Nope", "MyPack.Siren", "Nope"]);
+        set_engine_ops(None);
+        assert_eq!(eval_in_context_string("psd",
+            "String(__s2pkg_sound.Sound.duration('MyPack.Siren')) + ',' + __s2pkg_sound.Sound.isValid('MyPack.Siren')"),
+            "null,false");
+        shutdown();
+    }
+
     /// __s2_sound_emit marshals (name, entIndex, entSerial, slots[], volume) into the op and
     /// returns its guid (struct-update over mock_event_ops, the entity_spawn_kv capture precedent).
     #[test]

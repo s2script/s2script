@@ -93,6 +93,20 @@ export declare const Sound: {
    *  or stop that one instance. Returns null where `emit` would return 0. */
   start(name: string, opts?: SoundEmitOptions): SoundEvent | null;
   /**
+   * The length of a sound event in seconds, as the engine's sound event manager reports it.
+   *
+   * @example
+   * const len = Sound.duration("MyPack.RoundMusic");
+   * if (len !== null) delay(len * 1000).then(() => Sound.emit("MyPack.RoundMusicEnd"));
+   *
+   * Returns null when the engine has no event by that name (check with {@link Sound.isValid}), or
+   * when the engine function did not resolve.
+   */
+  duration(name: string): number | null;
+  /** Whether the engine knows a sound event by that name: a loaded soundevents file defines it.
+   *  Returns false when the engine function did not resolve. */
+  isValid(name: string): boolean;
+  /**
    * Stop a named SoundEvent playing on an entity — the counterpart to {@link Sound.emit}.
    *
    * **`opts.entity` is required**, unlike `emit`. The engine call behind this is an instance method
