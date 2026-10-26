@@ -91,5 +91,21 @@
       "m_iDamage",
       "m_iUtilityDamage"
     ]
+  },
+  {
+    "prop": "actionTrackingServices",
+    "wrapper": "ActionTrackingServices",
+    "source": "CCSPlayerController",
+    "target": "CCSPlayerController_ActionTrackingServices",
+    "path": [
+      {
+        "cls": "CCSPlayerController",
+        "field": "m_pActionTrackingServices"
+      }
+    ],
+    "writable": [
+      "m_iNumRoundKills",
+      "m_iNumRoundKillsHeadshots"
+    ]
   }
 ]

@@ -74,8 +74,8 @@ export declare const HudInput: {
   isActive(slot: number): boolean;
 };
 import type { CCSPlayerPawn, CCSPlayerController } from "./schema.generated";
-export type { SceneNode, WeaponServices, MovementServices, AimPunchServices, MatchStats } from "./nav.generated";
-import type { SceneNode, WeaponServices, MovementServices, AimPunchServices, MatchStats } from "./nav.generated";
+export type { SceneNode, WeaponServices, MovementServices, AimPunchServices, MatchStats, ActionTrackingServices } from "./nav.generated";
+import type { SceneNode, WeaponServices, MovementServices, AimPunchServices, MatchStats, ActionTrackingServices } from "./nav.generated";
 export { GameEvent } from "@s2script/sdk/events";
 export type { GameEvents } from "./events.generated";
 export { CsItem } from "./csitem.generated";
@@ -263,6 +263,13 @@ export interface Player extends Omit<CCSPlayerController, "pawn"> {
    * engine bookkeeping and stays read-only. See nav-targets.json.
    */
   readonly matchStats: MatchStats | null;
+  /**
+   * The controller's `m_pActionTrackingServices` object itself — this round's kill counters
+   * (`m_iNumRoundKills` / `m_iNumRoundKillsHeadshots`, the icons under each avatar in the top bar)
+   * and round damage. `null` when the services pointer is not resolvable. Call `notifyChanged()`
+   * after writing so clients redraw. See nav-targets.json.
+   */
+  readonly actionTrackingServices: ActionTrackingServices | null;
   /** The engine user-id (session-stable; NOT a schema field). `-1` if unassigned/absent. */
   readonly userId: number;
   /**
