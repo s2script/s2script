@@ -442,6 +442,7 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     // read natives (route through the usermsg_hook_* ops; the shim's PostEventAbstract hook installs
     // lazily on the first subscribe).
     crate::usermsg::install_natives(scope, global_obj);
+    crate::stringtables::install_natives(scope, global_obj);
     // Plugin-declared engine calls (`@s2script/sdk/unsafe`): ask-by-name only — there is deliberately
     // NO registration native (core registers descriptors itself from the packed gamedata.json).
     set_native(

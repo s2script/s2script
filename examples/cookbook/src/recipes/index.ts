@@ -18,6 +18,7 @@ import * as net from "./net.ts";
 import * as playerState from "./player-state.ts";
 import * as server from "./server.ts";
 import * as sound from "./sound.ts";
+import * as stringtables from "./stringtables.ts";
 import * as team from "./team.ts";
 import * as timers from "./timers.ts";
 import * as trace from "./trace.ts";
@@ -51,6 +52,7 @@ export const RECIPES: readonly Recipe[] = [
   playerState,
   server,
   sound,
+  stringtables,
   team,
   timers,
   trace,

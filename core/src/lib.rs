@@ -72,6 +72,7 @@ mod server_update;
 mod sm_command;
 mod profiler;
 mod sqldb;
+mod stringtables;
 mod ui_pool;
 mod usermsg;
 mod v8host;

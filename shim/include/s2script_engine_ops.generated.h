@@ -236,6 +236,15 @@ typedef int (*s2_function_frame_field_write_fn)(const S2FunctionInstanceAccess* 
 typedef int (*s2_function_frame_hidden_referenced_by_fn)(const S2FunctionInstanceAccess* access, int selector, const S2FunctionValue* entity, unsigned int offset, int* out, char* reason, int cap);
 typedef int (*s2_server_tick_count_fn)(void);
 typedef float (*s2_server_tick_interval_fn)(void);
+typedef int (*s2_stringtable_count_fn)(void);
+typedef int (*s2_stringtable_find_fn)(const char* tableName);
+typedef int (*s2_stringtable_name_fn)(int tableId, char* out, int cap);
+typedef int (*s2_stringtable_num_strings_fn)(int tableId, const char* tableName);
+typedef int (*s2_stringtable_find_string_fn)(int tableId, const char* tableName, const char* value);
+typedef int (*s2_stringtable_get_string_fn)(int tableId, const char* tableName, int index, char* out, int cap);
+typedef int (*s2_stringtable_get_data_fn)(int tableId, const char* tableName, int index, unsigned char* out, int cap);
+typedef int (*s2_stringtable_set_data_fn)(int tableId, const char* tableName, int index, const unsigned char* data, int len);
+typedef int (*s2_stringtable_add_string_fn)(int tableId, const char* tableName, const char* value, const unsigned char* data, int len);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -428,4 +437,14 @@ typedef struct {
     /* --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick --- */
     s2_server_tick_count_fn server_tick_count;
     s2_server_tick_interval_fn server_tick_interval;
+    /* --- string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable --- */
+    s2_stringtable_count_fn stringtable_count;
+    s2_stringtable_find_fn stringtable_find;
+    s2_stringtable_name_fn stringtable_name;
+    s2_stringtable_num_strings_fn stringtable_num_strings;
+    s2_stringtable_find_string_fn stringtable_find_string;
+    s2_stringtable_get_string_fn stringtable_get_string;
+    s2_stringtable_get_data_fn stringtable_get_data;
+    s2_stringtable_set_data_fn stringtable_set_data;
+    s2_stringtable_add_string_fn stringtable_add_string;
 } S2EngineOps;

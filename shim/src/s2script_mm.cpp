@@ -4164,6 +4164,176 @@ static int s2_sound_emit(const char* soundName, int entIndex, int entSerial,
     return static_cast<int>(guid.m_nGuid);
 }
 
+// ---------------------------------------------------------------------------
+// Network string tables (@s2script/sdk/stringtables). The container is the
+// Source2EngineToServerStringTable001 interface; its tables are CNetworkStringTable objects that
+// the engine rebuilds on every map change, so no table pointer is kept: each op takes the table id
+// and the name the plugin's handle was made with, re-finds the table with GetTable(id) and requires
+// GetTableName to still match. Every vtable index is a gamedata/core offset run through the same
+// pin + range check as the interface hooks (the container once at Load, the table class on the
+// first table seen), and a table whose vtable is not the verified one is refused.
+// ---------------------------------------------------------------------------
+enum S2StringTableContainerSlot { kSTC_FindTable, kSTC_GetTable, kSTC_GetNumTables, kSTC_Count };
+static const char* const kStringTableContainerKeys[kSTC_Count] = {
+    "INetworkStringTableContainer_FindTable",
+    "INetworkStringTableContainer_GetTable",
+    "INetworkStringTableContainer_GetNumTables",
+};
+enum S2StringTableSlot {
+    kST_GetTableName, kST_GetNumStrings, kST_AddString, kST_GetString, kST_SetStringUserData,
+    kST_GetStringUserData, kST_FindStringIndex, kST_Count
+};
+static const char* const kStringTableKeys[kST_Count] = {
+    "INetworkStringTable_GetTableName",
+    "INetworkStringTable_GetNumStrings",
+    "INetworkStringTable_AddString",
+    "INetworkStringTable_GetString",
+    "INetworkStringTable_SetStringUserData",
+    "INetworkStringTable_GetStringUserData",
+    "INetworkStringTable_FindStringIndex",
+};
+static void* s_pStringTableContainer = nullptr;   // set only when its slots verified
+static int   s_stringTableContainerSlot[kSTC_Count] = { -1, -1, -1 };
+static void* s_stringTableVtable = nullptr;       // the verified CNetworkStringTable vtable
+static bool  s_stringTableVerifyTried = false;
+static int   s_stringTableSlot[kST_Count] = { -1, -1, -1, -1, -1, -1, -1 };
+
+// The engine's user-data request and stored blob (s2sdk networkstringtabledefs.h).
+struct S2StringUserDataRequest { void* m_pRawData; unsigned int m_cbDataSize; };
+struct S2StringUserData { unsigned int m_cbDataSize; void* m_pRawData; };
+static_assert(offsetof(S2StringUserData, m_pRawData) == 8, "StringUserData_t data pointer offset");
+
+template <typename Fn>
+static Fn StringTableSlot(void* obj, int slot) {
+    return reinterpret_cast<Fn>((*reinterpret_cast<void***>(obj))[slot]);
+}
+
+static void* StringTableContainerCall(S2StringTableContainerSlot s) {
+    return s_pStringTableContainer ? (*reinterpret_cast<void***>(s_pStringTableContainer))[s_stringTableContainerSlot[s]]
+                                   : nullptr;
+}
+
+static int StringTableCount() {
+    auto fn = reinterpret_cast<int (*)(void*)>(StringTableContainerCall(kSTC_GetNumTables));
+    return fn ? fn(s_pStringTableContainer) : -1;
+}
+
+static void* StringTableById(int id) {
+    auto fn = reinterpret_cast<void* (*)(void*, int)>(StringTableContainerCall(kSTC_GetTable));
+    if (!fn || id < 0 || id >= StringTableCount()) return nullptr;
+    void* t = fn(s_pStringTableContainer, id);
+    if (!t) return nullptr;
+    void* vt = *reinterpret_cast<void**>(t);
+    if (!s_stringTableVerifyTried) {
+        s_stringTableVerifyTried = true;
+        const S2VtableLayout layout = { "INetworkStringTable", "libengine2.so", "INetworkStringTable_vtableSize" };
+        if (S2_VerifyVtableSlots(layout, t, kStringTableKeys, kST_Count, s_stringTableSlot)) {
+            bool all = true;
+            for (int i = 0; i < kST_Count; i++) all = all && s_stringTableSlot[i] >= 0;
+            if (all) s_stringTableVtable = vt;
+        }
+    }
+    return (s_stringTableVtable && vt == s_stringTableVtable) ? t : nullptr;
+}
+
+static const char* StringTableName(void* t) {
+    return StringTableSlot<const char* (*)(void*)>(t, s_stringTableSlot[kST_GetTableName])(t);
+}
+
+// The table with this id, only while it still has the name the handle was made with.
+static void* StringTableChecked(int id, const char* name) {
+    if (!name || !name[0]) return nullptr;
+    void* t = StringTableById(id);
+    if (!t) return nullptr;
+    const char* live = StringTableName(t);
+    return (live && strcmp(live, name) == 0) ? t : nullptr;
+}
+
+static int StringTableNumStrings(void* t) {
+    return StringTableSlot<int (*)(void*)>(t, s_stringTableSlot[kST_GetNumStrings])(t);
+}
+
+static bool StringTableIndexOk(void* t, int index) {
+    return index >= 0 && index < StringTableNumStrings(t);
+}
+
+// Copy `n` bytes out when they fit; always return the full length so core can grow and retry.
+static int CopyOut(const void* src, int n, void* out, int cap) {
+    if (n < 0) return -1;
+    if (out && n <= cap && n > 0) memcpy(out, src, static_cast<size_t>(n));
+    return n;
+}
+
+static int s2_stringtable_count() {
+    return StringTableCount();
+}
+
+static int s2_stringtable_find(const char* tableName) {
+    auto find = reinterpret_cast<void* (*)(void*, const char*)>(StringTableContainerCall(kSTC_FindTable));
+    if (!find || !tableName || !tableName[0]) return -1;
+    void* t = find(s_pStringTableContainer, tableName);
+    if (!t) return -1;
+    // The id is where GetTable finds it: walk the (at most 32-entry) list rather than trusting a
+    // field read off the table.
+    for (int i = 0, n = StringTableCount(); i < n; i++)
+        if (StringTableById(i) == t) return i;
+    return -1;
+}
+
+static int s2_stringtable_name(int tableId, char* out, int cap) {
+    void* t = StringTableById(tableId);
+    if (!t) return -1;
+    const char* name = StringTableName(t);
+    return name ? CopyOut(name, static_cast<int>(strlen(name)), out, cap) : -1;
+}
+
+static int s2_stringtable_num_strings(int tableId, const char* tableName) {
+    void* t = StringTableChecked(tableId, tableName);
+    return t ? StringTableNumStrings(t) : -1;
+}
+
+static int s2_stringtable_find_string(int tableId, const char* tableName, const char* value) {
+    void* t = StringTableChecked(tableId, tableName);
+    if (!t || !value) return -1;
+    const int i = StringTableSlot<int (*)(void*, const char*)>(t, s_stringTableSlot[kST_FindStringIndex])(t, value);
+    return i < 0 ? -1 : i;   // INVALID_STRING_INDEX is (unsigned)-1
+}
+
+static int s2_stringtable_get_string(int tableId, const char* tableName, int index, char* out, int cap) {
+    void* t = StringTableChecked(tableId, tableName);
+    if (!t || !StringTableIndexOk(t, index)) return -1;
+    const char* v = StringTableSlot<const char* (*)(void*, int, bool)>(t, s_stringTableSlot[kST_GetString])(t, index, true);
+    return v ? CopyOut(v, static_cast<int>(strlen(v)), out, cap) : -1;
+}
+
+static int s2_stringtable_get_data(int tableId, const char* tableName, int index, unsigned char* out, int cap) {
+    void* t = StringTableChecked(tableId, tableName);
+    if (!t || !StringTableIndexOk(t, index)) return -1;
+    auto* ud = StringTableSlot<const S2StringUserData* (*)(void*, int)>(t, s_stringTableSlot[kST_GetStringUserData])(t, index);
+    if (!ud || !ud->m_pRawData || ud->m_cbDataSize == 0) return 0;
+    if (ud->m_cbDataSize > (1u << 20)) return -1;
+    return CopyOut(ud->m_pRawData, static_cast<int>(ud->m_cbDataSize), out, cap);
+}
+
+static int s2_stringtable_set_data(int tableId, const char* tableName, int index, const unsigned char* data, int len) {
+    void* t = StringTableChecked(tableId, tableName);
+    if (!t || !StringTableIndexOk(t, index) || len < 0) return 0;
+    S2StringUserDataRequest req = { const_cast<unsigned char*>(data), static_cast<unsigned int>(len) };
+    StringTableSlot<bool (*)(void*, int, const S2StringUserDataRequest*, bool)>(
+        t, s_stringTableSlot[kST_SetStringUserData])(t, index, &req, false);   // ModSharp passes false too
+    return 1;
+}
+
+static int s2_stringtable_add_string(int tableId, const char* tableName, const char* value,
+                                     const unsigned char* data, int len) {
+    void* t = StringTableChecked(tableId, tableName);
+    if (!t || !value || !value[0]) return -1;
+    S2StringUserDataRequest req = { const_cast<unsigned char*>(data), static_cast<unsigned int>(len < 0 ? 0 : len) };
+    const int i = StringTableSlot<int (*)(void*, bool, const char*, const S2StringUserDataRequest*)>(
+        t, s_stringTableSlot[kST_AddString])(t, true, value, len < 0 ? nullptr : &req);
+    return i < 0 ? -1 : i;
+}
+
 // entity_listener_install: called by core on the first-ever JS entity-lifecycle subscribe. Set the
 // want-flag + register now (if the entity system exists); the StartupServer POST hook re-asserts each
 // map. Returns 1 if the AddListenerEntity signature resolved, else 0 (degrade — subscribe delivers nothing).
@@ -4797,6 +4967,27 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
             } else {
                 s_pNetworkMessages = nullptr;
                 META_CONPRINTF("[s2script] WARN: interface MISSING: NetworkMessages (%s) — client_print chat degrades\n", verStr);
+            }
+        }
+        // Network string tables: the container interface, its slots verified before it is stored.
+        {
+            auto it = versions.find("NetworkStringTableServer");
+            const char* verStr = (it != versions.end()) ? it->second.c_str()
+                                                        : "Source2EngineToServerStringTable001";
+            int ret = 0;
+            void* container = engineFactory ? engineFactory(verStr, &ret) : nullptr;
+            if (container && ret == 0) {
+                META_CONPRINTF("[s2script] interface OK: NetworkStringTableServer (%s)\n", verStr);
+                const S2VtableLayout layout = { "INetworkStringTableContainer", "libengine2.so",
+                                                "INetworkStringTableContainer_vtableSize" };
+                if (S2_VerifyVtableSlots(layout, container, kStringTableContainerKeys, kSTC_Count,
+                                         s_stringTableContainerSlot)
+                    && s_stringTableContainerSlot[kSTC_FindTable] >= 0
+                    && s_stringTableContainerSlot[kSTC_GetTable] >= 0
+                    && s_stringTableContainerSlot[kSTC_GetNumTables] >= 0)
+                    s_pStringTableContainer = container;
+            } else {
+                META_CONPRINTF("[s2script] WARN: interface MISSING: NetworkStringTableServer (%s) — StringTables degrade\n", verStr);
             }
         }
         // Acquire + STORE INetworkServerService* (Slice 5D.2 engine identity; was log-only).

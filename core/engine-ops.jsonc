@@ -1821,6 +1821,87 @@
       "c_ret": "float",
       "c_params": "void",
       "shim": "s2_server_tick_interval"
+    },
+    {
+      "name": "stringtable_count",
+      "alias": "StringTableCountFn",
+      "rust": "extern \"C\" fn() -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "void",
+      "shim": "s2_stringtable_count"
+    },
+    {
+      "name": "stringtable_find",
+      "alias": "StringTableFindFn",
+      "rust": "extern \"C\" fn(*const c_char) -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "const char* tableName",
+      "shim": "s2_stringtable_find"
+    },
+    {
+      "name": "stringtable_name",
+      "alias": "StringTableNameFn",
+      "rust": "extern \"C\" fn(c_int, *mut c_char, c_int) -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "int tableId, char* out, int cap",
+      "shim": "s2_stringtable_name"
+    },
+    {
+      "name": "stringtable_num_strings",
+      "alias": "StringTableNumStringsFn",
+      "rust": "extern \"C\" fn(c_int, *const c_char) -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "int tableId, const char* tableName",
+      "shim": "s2_stringtable_num_strings"
+    },
+    {
+      "name": "stringtable_find_string",
+      "alias": "StringTableFindStringFn",
+      "rust": "extern \"C\" fn(c_int, *const c_char, *const c_char) -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "int tableId, const char* tableName, const char* value",
+      "shim": "s2_stringtable_find_string"
+    },
+    {
+      "name": "stringtable_get_string",
+      "alias": "StringTableGetStringFn",
+      "rust": "extern \"C\" fn(c_int, *const c_char, c_int, *mut c_char, c_int) -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "int tableId, const char* tableName, int index, char* out, int cap",
+      "shim": "s2_stringtable_get_string"
+    },
+    {
+      "name": "stringtable_get_data",
+      "alias": "StringTableGetDataFn",
+      "rust": "extern \"C\" fn(c_int, *const c_char, c_int, *mut u8, c_int) -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "int tableId, const char* tableName, int index, unsigned char* out, int cap",
+      "shim": "s2_stringtable_get_data"
+    },
+    {
+      "name": "stringtable_set_data",
+      "alias": "StringTableSetDataFn",
+      "rust": "extern \"C\" fn(c_int, *const c_char, c_int, *const u8, c_int) -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "int tableId, const char* tableName, int index, const unsigned char* data, int len",
+      "shim": "s2_stringtable_set_data"
+    },
+    {
+      "name": "stringtable_add_string",
+      "alias": "StringTableAddStringFn",
+      "rust": "extern \"C\" fn(c_int, *const c_char, *const c_char, *const u8, c_int) -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "int tableId, const char* tableName, const char* value, const unsigned char* data, int len",
+      "shim": "s2_stringtable_add_string"
     }
   ]
 }

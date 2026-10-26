@@ -131,7 +131,29 @@
     "ICvar_vtableSize":                           { "linuxsteamrt64": 46 },
     "ICvar_DispatchConCommand":                   { "linuxsteamrt64": 20 },
     "IVEngineServer2_vtableSize":                 { "linuxsteamrt64": 123 },
-    "IVEngineServer2_SetClientListening":         { "linuxsteamrt64": 92 }
+    "IVEngineServer2_SetClientListening":         { "linuxsteamrt64": 92 },
+    // Network string tables (@s2script/sdk/stringtables). Indices are s2sdk
+    // networkstringtabledefs.h's (two destructor slots first) and were read on the Oct 22 2026
+    // libengine2.so (BuildID fef8f668…). Pins are the implementing classes' slot counts:
+    //   CNetworkStringTableContainer @0xa79c58, 22 slots: 15 FindTable, 16 GetTable (bounds-checked
+    //     against the count at +0x38), 17 GetNumTables (returns [this+0x38]).
+    //   CNetworkStringTable @0xa79bb8, 18 slots: 2 GetTableName ([this+0x10]), 3 GetTableId, 4
+    //     GetNumStrings, 8 AddString, 9 GetString, 10 SetStringUserData, 11 GetStringUserData,
+    //     12 FindStringIndex. ModSharp's INetworkStringTable uses the same indices.
+    // The table class is verified on the first table the shim sees; any table whose vtable is not
+    // that one is refused.
+    "INetworkStringTableContainer_vtableSize":    { "linuxsteamrt64": 22 },
+    "INetworkStringTableContainer_FindTable":     { "linuxsteamrt64": 15 },
+    "INetworkStringTableContainer_GetTable":      { "linuxsteamrt64": 16 },
+    "INetworkStringTableContainer_GetNumTables":  { "linuxsteamrt64": 17 },
+    "INetworkStringTable_vtableSize":             { "linuxsteamrt64": 18 },
+    "INetworkStringTable_GetTableName":           { "linuxsteamrt64": 2 },
+    "INetworkStringTable_GetNumStrings":          { "linuxsteamrt64": 4 },
+    "INetworkStringTable_AddString":              { "linuxsteamrt64": 8 },
+    "INetworkStringTable_GetString":              { "linuxsteamrt64": 9 },
+    "INetworkStringTable_SetStringUserData":      { "linuxsteamrt64": 10 },
+    "INetworkStringTable_GetStringUserData":      { "linuxsteamrt64": 11 },
+    "INetworkStringTable_FindStringIndex":        { "linuxsteamrt64": 12 }
   },
   // Byte signatures for un-exported engine globals (Slice 5D.2). Layout-is-data: the pattern +
   // module are regenerable per CS2 patch from the documented RTTI->vtable->xref anchors (see

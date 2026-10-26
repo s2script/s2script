@@ -1114,6 +1114,43 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   if (interopFacade) interopFacade.init(EntityRef);
   globalThis.__s2pkg_transmit  = { Transmit: Transmit };
   globalThis.__s2pkg_voice      = { Voice: Voice };
+  // @s2script/sdk/stringtables — network string tables. A handle is plain { id, name }: the engine
+  // rebuilds its tables on a map change, so every call re-finds the table by id and requires the
+  // name to match. A stale handle answers -1 / null / false, never a freed table.
+  function StringTable(id, name) {
+    Object.defineProperty(this, "id", { value: id, enumerable: true });
+    Object.defineProperty(this, "name", { value: name, enumerable: true });
+  }
+  StringTable.prototype.count = function () { return __s2_st_num_strings(this.id, this.name); };
+  StringTable.prototype.findString = function (value) {
+    return __s2_st_find_string(this.id, this.name, String(value));
+  };
+  StringTable.prototype.getString = function (index) { return __s2_st_get_string(this.id, this.name, index); };
+  StringTable.prototype.getData = function (index) { return __s2_st_get_data(this.id, this.name, index); };
+  StringTable.prototype.setData = function (index, data) {
+    if (typeof data !== "string" && !ArrayBuffer.isView(data)) return false;
+    return __s2_st_set_data(this.id, this.name, index, data);
+  };
+  StringTable.prototype.addString = function (value, data) {
+    if (data != null && typeof data !== "string" && !ArrayBuffer.isView(data)) return -1;
+    return __s2_st_add_string(this.id, this.name, String(value), data);
+  };
+  function __s2_st_handle(id) {
+    if (id < 0) return null;
+    var name = __s2_st_name(id);
+    return name == null ? null : new StringTable(id, name);
+  }
+  var StringTables = {
+    find: function (name) { return __s2_st_handle(__s2_st_find(String(name))); },
+    get: function (id) { return typeof id === "number" ? __s2_st_handle(id) : null; },
+    count: function () { return __s2_st_count(); },
+    all: function () {
+      var out = [];
+      for (var i = 0, n = __s2_st_count(); i < n; i++) { var t = __s2_st_handle(i); if (t) out.push(t); }
+      return out;
+    }
+  };
+  globalThis.__s2pkg_stringtables = { StringTables: StringTables };
   globalThis.__s2pkg_usermessages = { UserMessage: UserMessage, UserMessages: UserMessages };
   globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
   globalThis.__s2pkg_timers     = timers;
@@ -2740,7 +2777,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       "__s2pkg_translations", "__s2pkg_entity", "__s2pkg_math", "__s2pkg_timers",
       "__s2pkg_bans", "__s2pkg_db", "__s2pkg_cookies", "__s2pkg_http", "__s2pkg_files",
       "__s2pkg_ws", "__s2pkg_net", "__s2pkg_votes", "__s2pkg_sound",
-      "__s2pkg_trace", "__s2pkg_transmit", "__s2pkg_voice", "__s2pkg_usermessages",
+      "__s2pkg_trace", "__s2pkg_transmit", "__s2pkg_voice", "__s2pkg_stringtables", "__s2pkg_usermessages",
       "__s2pkg_usercmd", "__s2pkg_interfaces",
     ];
     for (var i = 0; i < names.length; i++) {

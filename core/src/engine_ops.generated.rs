@@ -260,6 +260,15 @@ pub type FunctionFrameFieldWriteFn = extern "C" fn(*const S2FunctionInstanceAcce
 pub type FunctionFrameHiddenReferencedByFn = extern "C" fn(*const S2FunctionInstanceAccess, c_int, *const S2FunctionValue, u32, *mut c_int, *mut c_char, c_int) -> c_int;
 pub type ServerTickCountFn = extern "C" fn() -> c_int;
 pub type ServerTickIntervalFn = extern "C" fn() -> f32;
+pub type StringTableCountFn = extern "C" fn() -> c_int;
+pub type StringTableFindFn = extern "C" fn(*const c_char) -> c_int;
+pub type StringTableNameFn = extern "C" fn(c_int, *mut c_char, c_int) -> c_int;
+pub type StringTableNumStringsFn = extern "C" fn(c_int, *const c_char) -> c_int;
+pub type StringTableFindStringFn = extern "C" fn(c_int, *const c_char, *const c_char) -> c_int;
+pub type StringTableGetStringFn = extern "C" fn(c_int, *const c_char, c_int, *mut c_char, c_int) -> c_int;
+pub type StringTableGetDataFn = extern "C" fn(c_int, *const c_char, c_int, *mut u8, c_int) -> c_int;
+pub type StringTableSetDataFn = extern "C" fn(c_int, *const c_char, c_int, *const u8, c_int) -> c_int;
+pub type StringTableAddStringFn = extern "C" fn(c_int, *const c_char, *const c_char, *const u8, c_int) -> c_int;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -457,6 +466,16 @@ pub struct S2EngineOps {
     // --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick ---
     pub server_tick_count: Option<ServerTickCountFn>,
     pub server_tick_interval: Option<ServerTickIntervalFn>,
+    // --- string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable ---
+    pub stringtable_count: Option<StringTableCountFn>,
+    pub stringtable_find: Option<StringTableFindFn>,
+    pub stringtable_name: Option<StringTableNameFn>,
+    pub stringtable_num_strings: Option<StringTableNumStringsFn>,
+    pub stringtable_find_string: Option<StringTableFindStringFn>,
+    pub stringtable_get_string: Option<StringTableGetStringFn>,
+    pub stringtable_get_data: Option<StringTableGetDataFn>,
+    pub stringtable_set_data: Option<StringTableSetDataFn>,
+    pub stringtable_add_string: Option<StringTableAddStringFn>,
 }
 
 impl S2EngineOps {

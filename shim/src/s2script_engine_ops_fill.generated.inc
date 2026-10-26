@@ -189,3 +189,13 @@
     // --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick ---
     ops.server_tick_count = &s2_server_tick_count;
     ops.server_tick_interval = &s2_server_tick_interval;
+    // --- string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable ---
+    ops.stringtable_count = &s2_stringtable_count;
+    ops.stringtable_find = &s2_stringtable_find;
+    ops.stringtable_name = &s2_stringtable_name;
+    ops.stringtable_num_strings = &s2_stringtable_num_strings;
+    ops.stringtable_find_string = &s2_stringtable_find_string;
+    ops.stringtable_get_string = &s2_stringtable_get_string;
+    ops.stringtable_get_data = &s2_stringtable_get_data;
+    ops.stringtable_set_data = &s2_stringtable_set_data;
+    ops.stringtable_add_string = &s2_stringtable_add_string;
