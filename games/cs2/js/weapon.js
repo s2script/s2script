@@ -65,6 +65,19 @@
     return this.ref.remove();
   };
 
+  // weapon.setAttribute(name, value) — set or add an econ attribute by its definition name ("set item
+  // texture prefab", "kill eater") on the item's networked dynamic attribute list. The descriptor's
+  // receiver.via walks the embedded m_AttributeManager -> m_Item -> m_NetworkedDynamicAttributes.
+  // False on a stale ref, an empty name, a non-finite value, or a degraded descriptor. The engine
+  // ignores a name it has no definition for, so true means "called", not "the name exists".
+  Weapon.prototype.setAttribute = function (name, value) {
+    var calls = globalThis.__s2pkg_cs2_calls;
+    var call = calls && calls.setItemAttribute;
+    if (!call || typeof name !== "string" || name === "" || typeof value !== "number" || !isFinite(value)) return false;
+    if (!this.ref.isValid()) return false;
+    return call(this, name, value) === undefined;
+  };
+
   // Weapon.fromEntity(ref) — wrap a raw weapon EntityRef; null if ref is null.
   Weapon.fromEntity = function (ref) { return ref ? new Weapon(ref) : null; };
 

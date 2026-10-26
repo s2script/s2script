@@ -24,6 +24,24 @@ export interface Weapon extends CCSWeaponBase {
   /** Unequip and schedule destruction through the owner's weapon services; directly remove an unowned
    *  weapon. False if stale or an owned weapon's native service is unavailable. */
   remove(): boolean;
+  /**
+   * Set or add an econ attribute on this weapon by its definition name, the way skin plugins set
+   * paint kit, wear, seed, StatTrak and stickers. The value goes on the item's networked dynamic
+   * attribute list (`CAttributeList::SetOrAddAttributeValueByName`).
+   *
+   * Values are floats. Integer-valued attributes such as `"kill eater"` store the integer's bit
+   * pattern in some cases; pass what the attribute definition expects.
+   *
+   * Returns `false` for a stale weapon, an empty name, a non-finite value, or a server build where
+   * the function did not resolve. `true` means the engine was called: it ignores a name it has no
+   * definition for. Clients usually see skin changes only after the weapon is re-given or redrawn.
+   *
+   * @example
+   * weapon.setAttribute("set item texture prefab", 44);   // paint kit
+   * weapon.setAttribute("set item texture wear", 0.01);
+   * weapon.setAttribute("set item texture seed", 661);
+   */
+  setAttribute(name: string, value: number): boolean;
 }
 
 /**

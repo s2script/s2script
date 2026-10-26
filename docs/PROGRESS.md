@@ -732,3 +732,21 @@ miss on any hop degrades that invocation with the hop named in `Engine.status`.
 
 Core tests cover the three shapes, an unresolved hop and the rejected forms. The live gate is
 pending; the first consumer is econ attributes.
+
+## 2026-10-26 — Econ attributes
+
+Skin, sticker and StatTrak plugins set item attributes by name; ModSharp and Swiftly both call
+`CAttributeList::SetOrAddAttributeValueByName`. Econ items are CS2 classes, so this is
+`@s2script/cs2`: `weapon.setAttribute(name, value)` over a new `setItemAttribute` descriptor.
+
+The receiver is the item's networked dynamic attribute list, which the new embedded `via` form
+reaches as three embedded hops: `CEconEntity::m_AttributeManager` (3160 on the Oct 22 schema) →
+`CAttributeContainer::m_Item` (80) → `CEconItemView::m_NetworkedDynamicAttributes` (232). The
+schema types all three as embedded classes. The signature is ModSharp's and Swiftly's pattern,
+unique on the Oct 22 libserver.so at 0x1cb4c00, with a prologue validator. The body matches the
+(CAttributeList*, const char*, float) shape: it keeps the list in r13 and the name in rbx, spills
+xmm0, looks the definition up by name, walks `m_Attributes` (count at +8, 0x48-byte elements) and
+marks the list changed.
+
+Package tests pin the descriptor's hops and cover the receiver, argument pass-through, bad input,
+a stale weapon and a degraded descriptor. The live gate is pending.

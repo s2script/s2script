@@ -28,7 +28,7 @@ import { cs2AddonBundle } from "./cs2-addon.mjs";
 
 /** Every descriptor games/cs2/gamedata/game.cs2.jsonc declares — the default "all eight resolved" host. */
 const ALL_CALLS = ["commitSuicide", "changeTeam", "switchTeam", "terminateRound",
-                   "respawn", "setPawn", "giveNamedItem", "removePlayerItem"];
+                   "respawn", "setPawn", "giveNamedItem", "removePlayerItem", "setItemAttribute"];
 
 /**
  * Build a CS2 game-package context.
@@ -566,4 +566,48 @@ test("setBodyGroupByName is deliberately NOT on the pawn surface", () => {
   // A model concern, not a player one. If someone adds it to Pawn later, that is a decision to make
   // on purpose — this asserts it is not there by accident.
   assert.equal(typeof pawn.setBodyGroupByName, "undefined");
+});
+
+// setItemAttribute
+
+test("weapon.setAttribute: the shipped descriptor reaches the attribute list through three embedded hops", () => {
+  const gamedata = JSON.parse(stripJsonComments(readFileSync(new URL("../../../games/cs2/gamedata/game.cs2.jsonc", import.meta.url), "utf8")));
+  const call = gamedata.calls.setItemAttribute;
+  assert.deepEqual(call.receiver.via.map((h) => [h.class, h.field, h.embedded]), [
+    ["CEconEntity", "m_AttributeManager", true],
+    ["CAttributeContainer", "m_Item", true],
+    ["CEconItemView", "m_NetworkedDynamicAttributes", true],
+  ], "every hop is an embedded struct; a pointer hop here would load garbage");
+  assert.deepEqual(call.args, ["string", "float"]);
+  assert.equal(call.returns, "void");
+});
+
+test("weapon.setAttribute: the weapon is the receiver and name/value pass through", () => {
+  const h = makeHost();
+  const w = new h.pkg.Weapon(new h.EntityRef(50, 4));
+  assert.equal(w.setAttribute("set item texture wear", 0.01), true);
+  assert.deepEqual(h.names(), ["setItemAttribute"]);
+  assert.equal(h.invokes[0].index, 50, "receiver = the weapon entity");
+  assert.deepEqual(h.invokes[0].args, ["set item texture wear", 0.01]);
+});
+
+test("weapon.setAttribute: bad input, a stale weapon or a degraded descriptor never calls", () => {
+  const h = makeHost();
+  const w = new h.pkg.Weapon(new h.EntityRef(50, 4));
+  for (const [name, value] of [["", 1], [5, 1], ["kill eater", NaN], ["kill eater", "1"], ["kill eater", Infinity]]) {
+    assert.equal(w.setAttribute(name, value), false, `${String(name)} / ${String(value)}`);
+  }
+  const dead = new h.EntityRef(51, 4);
+  dead.live = false;
+  assert.equal(new h.pkg.Weapon(dead).setAttribute("kill eater", 1), false);
+  assert.equal(h.invokes.length, 0);
+
+  const degraded = makeHost({ ready: ALL_CALLS.filter((n) => n !== "setItemAttribute") });
+  assert.equal(new degraded.pkg.Weapon(new degraded.EntityRef(50, 4)).setAttribute("kill eater", 1), false);
+  assert.equal(degraded.invokes.length, 0);
+});
+
+test("weapon.setAttribute: a failed invocation (unresolved via hop) reports false", () => {
+  const h = makeHost({ onInvoke: () => null });
+  assert.equal(new h.pkg.Weapon(new h.EntityRef(50, 4)).setAttribute("kill eater", 1), false);
 });

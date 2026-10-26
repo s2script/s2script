@@ -327,6 +327,21 @@
     // Passing a pawn instead calls its unrelated slot 32, which writes a byte at pawn+0x318.
     // The method tail-calls UTIL_Remove(weapon) at 0x171a960: it already schedules destruction
     // and returns VOID. Keep the old key so existing operator signature overrides still apply.
+    // weapon.setAttribute(). ModSharp's and Swiftly's pattern; unique on the Oct 22 2026 build
+    // (libserver.so BuildID 2603388a…) at 0x1cb4c00. (CAttributeList*, const char*, float): it
+    // keeps rdi in r13, rsi in rbx, spills xmm0, looks the definition up by name, then walks
+    // m_Attributes (count at +8, 0x48-byte elements) and marks the list changed.
+    "CAttributeList_SetOrAddAttributeValueByName": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 49 89 FD 41 54 53 48 89 F3 48 83 EC ? F3 0F 11 85",
+        "resolve": "direct",
+        "validate": {
+          "prologue": "55 48 89 E5 41 57 41 56 41 55 49 89 FD"
+        }
+      }
+    },
+
     "CBasePlayerPawn_RemovePlayerItem": {
       "linuxsteamrt64": {
         "module": "libserver.so",
@@ -605,6 +620,21 @@
       "target": { "kind": "signature", "name": "CBasePlayerPawn_RemovePlayerItem" },
       "args": ["entity"],
       "argNames": ["weapon"],
+      "returns": "void"
+    },
+
+    // weapon.setAttribute(). The receiver is the item's networked dynamic attribute list, three
+    // embedded structs into the weapon (none of the hops is a pointer). That list is what clients
+    // read for skins, stickers and StatTrak.
+    "setItemAttribute": {
+      "receiver": { "kind": "entity", "via": [
+        { "class": "CEconEntity", "field": "m_AttributeManager", "embedded": true },
+        { "class": "CAttributeContainer", "field": "m_Item", "embedded": true },
+        { "class": "CEconItemView", "field": "m_NetworkedDynamicAttributes", "embedded": true }
+      ] },
+      "target": { "kind": "signature", "name": "CAttributeList_SetOrAddAttributeValueByName" },
+      "args": ["string", "float"],
+      "argNames": ["name", "value"],
       "returns": "void"
     },
 
