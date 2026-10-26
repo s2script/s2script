@@ -2117,7 +2117,7 @@
     ) -> c_int { 7 }
 
     extern "C" fn fake_call_invoke(
-        call_id: c_int, _ent_index: c_int, _ent_serial: c_int, _subobj_off: c_int,
+        call_id: c_int, _ent_index: c_int, _ent_serial: c_int, _subobj_off: c_int, _subobj_deref: c_int,
         _gp: *const u64, _gp_kind: *const u8, _gp_count: c_int,
         fp: *const f64, fp_count: c_int,
         _strs: *const *const c_char, _vecs: *const f32,
@@ -2126,6 +2126,164 @@
         let f0 = if fp_count > 0 && !fp.is_null() { unsafe { *fp } } else { 0.0 };
         LAST_ENGINE_CALL.with(|c| c.set((call_id, f0)));
         1
+    }
+
+    thread_local! {
+        /// (subobj_off, subobj_deref) recorded by `via_call_invoke`.
+        static LAST_VIA: std::cell::Cell<(c_int, c_int)> = const { std::cell::Cell::new((-9, -9)) };
+    }
+
+    extern "C" fn via_call_invoke(
+        _call_id: c_int, _ent_index: c_int, _ent_serial: c_int, subobj_off: c_int, subobj_deref: c_int,
+        _gp: *const u64, _gp_kind: *const u8, _gp_count: c_int,
+        _fp: *const f64, _fp_count: c_int,
+        _strs: *const *const c_char, _vecs: *const f32,
+        _ret_kind: c_int, _ret_out: *mut u64,
+    ) -> c_int {
+        LAST_VIA.with(|c| c.set((subobj_off, subobj_deref)));
+        1
+    }
+
+    extern "C" fn via_schema_offset(class: *const c_char, field: *const c_char) -> c_int {
+        let (c, f) = unsafe { (std::ffi::CStr::from_ptr(class), std::ffi::CStr::from_ptr(field)) };
+        match (c.to_bytes(), f.to_bytes()) {
+            (b"CViaOuter", b"m_inner") => 0x100,
+            (b"CViaInner", b"m_list") => 0x20,
+            (b"CViaList", b"m_pTarget") => 0x8,
+            _ => -1,
+        }
+    }
+
+    /// `receiver.via` paths reach the shim as ONE summed offset plus whether to load a pointer
+    /// there: the original `{class, field}` form is one pointer hop, an array of embedded hops is
+    /// pure address arithmetic, and an embedded run may end in a pointer hop.
+    #[test]
+    fn via_paths_sum_embedded_offsets_and_deref_only_a_final_pointer_hop() {
+        crate::entity_live::reset_for_tests();
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps {
+            engine_call_resolve: Some(fake_call_resolve),
+            engine_call_invoke: Some(via_call_invoke),
+            schema_offset: Some(via_schema_offset),
+            ..mock_event_ops()
+        }));
+        let id = crate::entity_live::on_created(9, 3);
+        let target = r#""target":{"kind":"signature","name":"T","module":"libserver.so","pattern":"55 48","resolve":"direct"},"args":[],"returns":"void""#;
+        crate::gamedata_calls::register_plugin("via1", &format!(r#"{{"calls":{{
+            "ptr":{{"receiver":{{"kind":"entity","via":{{"class":"CViaList","field":"m_pTarget"}}}},{target}}},
+            "emb":{{"receiver":{{"kind":"entity","via":[{{"class":"CViaOuter","field":"m_inner","embedded":true}},
+                                                     {{"class":"CViaInner","field":"m_list","embedded":true}}]}},{target}}},
+            "mixed":{{"receiver":{{"kind":"entity","via":[{{"class":"CViaOuter","field":"m_inner","embedded":true}},
+                                                       {{"class":"CViaList","field":"m_pTarget"}}]}},{target}}},
+            "miss":{{"receiver":{{"kind":"entity","via":[{{"class":"CViaOuter","field":"m_inner","embedded":true}},
+                                                      {{"class":"CViaInner","field":"m_gone","embedded":true}}]}},{target}}}
+        }}}}"#));
+        create_plugin_context("via1");
+        for (name, want) in [("ptr", (0x8, 1)), ("emb", (0x120, 0)), ("mixed", (0x108, 1))] {
+            LAST_VIA.with(|c| c.set((-9, -9)));
+            eval_in_context("via1", &format!(r#"__s2_engine_call_invoke("{name}", 9, "{id}", []);"#)).unwrap();
+            assert_eq!(LAST_VIA.with(|c| c.get()), want, "{name}");
+        }
+        LAST_VIA.with(|c| c.set((-9, -9)));
+        eval_in_context("via1", &format!(r#"__s2_engine_call_invoke("miss", 9, "{id}", []);"#)).unwrap();
+        assert_eq!(LAST_VIA.with(|c| c.get()), (-9, -9), "an unresolved hop must not reach the engine");
+        assert!(crate::gamedata_calls::status("via1", "miss").contains("CViaInner::m_gone"));
+        set_engine_ops(None);
+        shutdown();
+    }
+
+    thread_local! {
+        /// (ent_index, ent_serial, ret_kind) recorded by `iface_call_invoke`.
+        static LAST_IFACE: std::cell::Cell<(c_int, c_int, c_int)> = const { std::cell::Cell::new((0, 0, -1)) };
+        /// (call id, name, slot) of the last bind.
+        static LAST_BIND: std::cell::RefCell<(c_int, String, c_int)> = std::cell::RefCell::new((0, String::new(), 0));
+        /// What the fake shim "returned" for a string list: None = a null list.
+        static FAKE_LIST: std::cell::RefCell<Option<Vec<&'static str>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    extern "C" fn iface_bind(call_id: c_int, name: *const c_char, slot: c_int, reason: *mut c_char, cap: c_int) -> c_int {
+        let n = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        LAST_BIND.with(|b| *b.borrow_mut() = (call_id, n.clone(), slot));
+        if n == "Missing001" {
+            let msg = b"interface 'Missing001' not found\0";
+            let len = msg.len().min(cap as usize);
+            unsafe { std::ptr::copy_nonoverlapping(msg.as_ptr(), reason as *mut u8, len) };
+            return -1;
+        }
+        3
+    }
+
+    extern "C" fn iface_call_invoke(
+        _call_id: c_int, ent_index: c_int, ent_serial: c_int, _subobj_off: c_int, _subobj_deref: c_int,
+        _gp: *const u64, _gp_kind: *const u8, _gp_count: c_int,
+        _fp: *const f64, _fp_count: c_int,
+        _strs: *const *const c_char, _vecs: *const f32,
+        ret_kind: c_int, ret_out: *mut u64,
+    ) -> c_int {
+        LAST_IFACE.with(|c| c.set((ent_index, ent_serial, ret_kind)));
+        let n = FAKE_LIST.with(|l| l.borrow().as_ref().map(|v| v.len() as u64));
+        unsafe { *ret_out = n.unwrap_or(u64::MAX) };
+        1
+    }
+
+    extern "C" fn iface_take_strings(out: *mut c_char, cap: c_int) -> c_int {
+        let blob: Vec<u8> = FAKE_LIST.with(|l| {
+            l.borrow().as_ref().map(|v| v.iter().flat_map(|s| s.bytes().chain(std::iter::once(0))).collect()).unwrap_or_default()
+        });
+        if !out.is_null() && blob.len() <= cap as usize {
+            unsafe { std::ptr::copy_nonoverlapping(blob.as_ptr(), out as *mut u8, blob.len()) };
+        }
+        blob.len() as c_int
+    }
+
+    /// An interface receiver binds by name (passing the vtable slot for a vtable target), takes no
+    /// `self`, reaches the shim as (RECEIVER_INTERFACE, interface id), and a `utlstringlist`
+    /// return arrives as a string array, or null for a null list. A failed bind degrades the
+    /// descriptor with the shim's reason, and `via` on an interface receiver is rejected.
+    #[test]
+    fn interface_receivers_bind_by_name_and_return_string_lists() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps {
+            engine_call_resolve: Some(fake_call_resolve),
+            engine_call_invoke: Some(iface_call_invoke),
+            engine_call_bind_interface: Some(iface_bind),
+            engine_call_take_strings: Some(iface_take_strings),
+            ..mock_event_ops()
+        }));
+        crate::gamedata_calls::register_plugin("ifc", r#"{"calls":{
+            "maps":{"receiver":{"kind":"interface","name":"GameTypes001"},
+                    "target":{"kind":"vtable","class":"GameTypes","module":"libmatchmaking.so",
+                              "linuxsteamrt64":{"index":64,"validate":{"prologue":"48 85 F6"}}},
+                    "args":["string"],"returns":"utlstringlist"},
+            "gone":{"receiver":{"kind":"interface","name":"Missing001"},
+                    "target":{"kind":"signature","name":"T","module":"libserver.so","pattern":"55","resolve":"direct"},
+                    "args":[],"returns":"void"},
+            "hop":{"receiver":{"kind":"interface","name":"GameTypes001","via":{"class":"C","field":"m_f"}},
+                    "target":{"kind":"signature","name":"T","module":"libserver.so","pattern":"55","resolve":"direct"},
+                    "args":[],"returns":"void"}
+        }}"#);
+        assert_eq!(crate::gamedata_calls::status("ifc", "maps"), "available");
+        // Registration runs in name order, so 'maps' binds last: a vtable target passes its slot.
+        assert_eq!(LAST_BIND.with(|b| b.borrow().clone()), (7, "GameTypes001".to_string(), 64));
+        assert!(crate::gamedata_calls::status("ifc", "gone").contains("Missing001"));
+        assert!(crate::gamedata_calls::status("ifc", "hop").contains("cannot carry a 'via'"));
+        create_plugin_context("ifc");
+        assert!(eval_in_context_bool("ifc", r#"__s2_engine_call_receiverless("maps") === true"#));
+
+        FAKE_LIST.with(|l| *l.borrow_mut() = Some(vec!["de_dust2", "", "de_inferno"]));
+        assert_eq!(eval_in_context_string("ifc",
+            r#"JSON.stringify(__s2_engine_call_invoke("maps", 0, 0, ["mg_active"]))"#),
+            r#"["de_dust2","","de_inferno"]"#);
+        assert_eq!(LAST_IFACE.with(|c| c.get()),
+                   (crate::gamedata_calls::RECEIVER_INTERFACE, 3, crate::gamedata_calls::RET_UTLSTRINGLIST));
+        FAKE_LIST.with(|l| *l.borrow_mut() = Some(vec![]));
+        assert_eq!(eval_in_context_string("ifc",
+            r#"JSON.stringify(__s2_engine_call_invoke("maps", 0, 0, ["x"]))"#), "[]");
+        FAKE_LIST.with(|l| *l.borrow_mut() = None);
+        assert_eq!(eval_in_context_string("ifc",
+            r#"String(__s2_engine_call_invoke("maps", 0, 0, ["x"]))"#), "null");
+        set_engine_ops(None);
+        shutdown();
     }
 
     /// The legitimate path, which dropping the leading `pluginId` argument could have broken
@@ -5470,6 +5628,47 @@
 
 
 
+    extern "C" fn fake_entity_name(index: c_int, serial: c_int) -> *const std::os::raw::c_char {
+        match (index, serial) {
+            (1, 11) | (70, 4) => c"cell_doors".as_ptr(),
+            (64, 3) => c"cell_doors_2".as_ptr(),
+            (90, 9) => c"".as_ptr(),
+            _ => std::ptr::null(),
+        }
+    }
+
+    /// Entity finders: `findByName` walks the identity snapshot and compares each slot's targetname
+    /// through the `entity_name` op; only books-live slots mint refs; an empty name matches nothing.
+    /// `findInSphere` filters origins inclusively and degrades on bad input.
+    #[test]
+    fn entity_finders_by_name_and_sphere() {
+        crate::entity_live::reset_for_tests();
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps {
+            ent_snapshot: Some(fake_ent_snapshot), entity_name: Some(fake_entity_name), ..mock_event_ops()
+        }));
+        // (70, 4) is in the snapshot but not in the books: it must not mint a ref.
+        crate::entity_live::repair_reconcile(&[(1, 11), (64, 3), (90, 9)]);
+        SNAPSHOT_PAIRS.with(|p| *p.borrow_mut() = vec![(1, 11), (64, 3), (70, 4), (90, 9)]);
+        create_plugin_context("p");
+        let out = eval_in_context_string("p", r#"
+            const E = __s2pkg_entity.Entity;
+            const named = E.findByName("cell_doors").map(r => r.index).join("|");
+            const none = E.findByName("").length + "," + E.findByName("nope").length;
+            const all = E.findAll ? "leak" : __s2_entity_find_all().map(r => r.index).join("|");
+            const origin = { 1: [0, 0, 0], 64: [3, 4, 0], 90: [100, 0, 0] };
+            globalThis.__s2_entity_find_all = () => [1, 64, 90, 5].map(i => ({ index: i,
+                origin: origin[i] ? { x: origin[i][0], y: origin[i][1], z: origin[i][2] } : null }));
+            const near = E.findInSphere([0, 0, 0], 5).map(r => r.index).join("|");
+            const bad = [E.findInSphere(null, 5), E.findInSphere({ x: NaN, y: 0, z: 0 }, 5),
+                         E.findInSphere([0, 0, 0], -1), E.findInSphere([0, 0, 0], Infinity)].map(a => a.length).join("");
+            [named, none, all, near, bad].join(";")
+        "#);
+        assert_eq!(out, "1;0,0;1|64|90;1|64;0000");
+        SNAPSHOT_PAIRS.with(|p| p.borrow_mut().clear());
+        shutdown();
+    }
+
     /// entity_origin slice: `EntityRef.origin` (`CGameSceneNode::m_vecAbsOrigin`, reached via the
     /// `CBaseEntity::m_CBodyComponent` -> `CBodyComponent::m_pSceneNode` chain) degrades to `null` with
     /// no ops (e.g. every in-isolate test) — never a crash. Unlike `target`, there's no dedicated
@@ -5589,7 +5788,7 @@
     /// function is never reached, and therefore the case the latch would leak on.
     #[allow(clippy::too_many_arguments)]
     extern "C" fn mock_call_invoke_degrades(
-        _id: c_int, _ei: c_int, _es: c_int, _so: c_int,
+        _id: c_int, _ei: c_int, _es: c_int, _so: c_int, _sd: c_int,
         _gp: *const u64, _gk: *const u8, _gc: c_int,
         _fp: *const f64, _fc: c_int,
         _s: *const *const c_char, _v: *const f32,
@@ -6023,7 +6222,7 @@
     /// returns without calling anything.
     #[allow(clippy::too_many_arguments)]
     extern "C" fn mock_call_invoke_reenters_a_hook(
-        _id: c_int, _ei: c_int, _es: c_int, _so: c_int,
+        _id: c_int, _ei: c_int, _es: c_int, _so: c_int, _sd: c_int,
         _gp: *const u64, _gk: *const u8, _gc: c_int,
         _fp: *const f64, _fc: c_int,
         _s: *const *const c_char, _v: *const f32,
@@ -6999,6 +7198,58 @@
         shutdown();
     }
 
+    thread_local! {
+        static TAKE_DAMAGE_CALLS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    extern "C" fn record_take_damage(index: c_int, serial: c_int, ii: c_int, is: c_int, ai: c_int, as_: c_int,
+                                     bi: c_int, bs: c_int, damage: f32, ty: c_int,
+                                     force: *const f32, position: *const f32) -> c_int {
+        let vec = |p: *const f32| if p.is_null() { "-".to_string() } else {
+            let v = unsafe { std::slice::from_raw_parts(p, 3) };
+            format!("{},{},{}", v[0], v[1], v[2])
+        };
+        TAKE_DAMAGE_CALLS.with(|c| c.borrow_mut().push(format!(
+            "{index}/{serial} {ii}/{is} {ai}/{as_} {bi}/{bs} {damage} {ty} {} {}", vec(force), vec(position))));
+        1
+    }
+
+    /// Damage slice: `takeDamage` and `SDKHooks_TakeDamage` hand the op serial-gated entities (a
+    /// wrapper's `.ref` included), the damage, type and vectors; an absent option is -1, a stale one
+    /// or a non-finite damage refuses the call before the op, and no op degrades to false.
+    #[test]
+    fn take_damage_marshals_entities_and_refuses_stale_options() {
+        let _ = init(dummy_logger());
+        crate::entity_live::reset_for_tests();
+        let victim = crate::entity_live::on_created(5, 1);
+        let attacker = crate::entity_live::on_created(6, 2);
+        let weapon = crate::entity_live::on_created(7, 3);
+        TAKE_DAMAGE_CALLS.with(|c| c.borrow_mut().clear());
+        set_engine_ops(Some(S2EngineOps { entity_take_damage: Some(record_take_damage), ..mock_event_ops() }));
+        create_plugin_context("p");
+        let out = eval_in_context_string("p", &format!(r#"
+            const E = __s2pkg_entity.EntityRef;
+            const v = new E(5, {victim}), a = new E(6, {attacker}), w = new E(7, {weapon});
+            const r = [
+              v.takeDamage(25, {{ attacker: {{ ref: a }}, damageType: 2, force: [1, 2, 3] }}),
+              __s2pkg_sdkhooks.SDKHooks_TakeDamage(v, null, a, 10.5, 64, w, null, [4, 5, 6]),
+              v.takeDamage(1, {{ attacker: new E(6, {attacker} + 99) }}),
+              new E(5, {victim} + 99).takeDamage(1),
+              __s2pkg_sdkhooks.SDKHooks_TakeDamage(null, null, a, 1),
+            ];
+            let threw = false;
+            try {{ v.takeDamage(NaN); }} catch (e) {{ threw = e instanceof TypeError; }}
+            r.concat([threw]).join("|")
+        "#));
+        assert_eq!(out, "true|true|false|false|false|true");
+        assert_eq!(TAKE_DAMAGE_CALLS.with(|c| c.borrow().clone()), vec![
+            "5/1 -1/-1 6/2 -1/-1 25 2 1,2,3 -".to_string(),
+            "5/1 -1/-1 6/2 7/3 10.5 64 - 4,5,6".to_string(),
+        ]);
+        set_engine_ops(None);
+        assert_eq!(eval_in_context_string("p", &format!("String(new (__s2pkg_entity.EntityRef)(5, {victim}).takeDamage(1))")), "false");
+        shutdown();
+    }
+
     /// Entity-I/O slice: `dispatch_output` runs every subscriber whose key matches `(class,output)`,
     /// `(class,"*")`, `("*",output)`, `("*","*")` — a wildcard-class sub and an exact-key sub both fire
     /// for one dispatch, but a DIFFERENT (class,output) pair does not. `activator`/`caller` are `null`
@@ -7048,6 +7299,49 @@
         let result3 = dispatch_output("logic_relay", "OnTrigger", -1, -1, "", 0.0);
         assert_eq!(result3, HookResult::Continue as i32, "no subscribers left after unload -> Continue, no panic");
 
+        shutdown();
+    }
+
+    /// Parity slice 5: `dispatch_input` matches `(class,input)` with the input compared
+    /// case-insensitively, honours `"*"` on either side, threads the value and keeps the engine's
+    /// spelling in `ev.input`, and collapses to the strongest HookResult. `input_hooked` tracks
+    /// whether any subscriber is left, so the FFI fast path skips work after unload.
+    #[test]
+    fn input_dispatch_matches_case_insensitively_and_collapses_hookresult() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        assert!(!input_hooked(), "no subscribers yet");
+        assert_eq!(dispatch_input("func_door", "Open", -1, -1, -1, ""), 0);
+        create_plugin_context("p");
+        eval_in_context("p", r#"
+            globalThis.__any = 0; globalThis.__exact = 0; globalThis.__cls = 0;
+            __s2pkg_entity.Entity.onInput("*", "*", function () { globalThis.__any++; });
+            __s2pkg_entity.Entity.onInput("func_door", "OPEN", function (ev) {
+                globalThis.__exact++;
+                globalThis.__seen = [ev.input, ev.value, String(ev.entity), String(ev.activator), String(ev.caller)].join("|");
+                return HookResult.Handled;
+            });
+            __s2pkg_entity.Entity.onInput("func_door", "*", function () { globalThis.__cls++; return HookResult.Changed; });
+        "#).unwrap();
+        assert!(input_hooked());
+
+        assert_eq!(dispatch_input("func_door", "Open", -1, -1, -1, "fast"), HookResult::Handled as i32);
+        assert_eq!(read_global_string("p", "__seen"), "Open|fast|null|null|null");
+        assert_eq!(read_i32_global_in("p", "__any"), 1);
+        assert_eq!(read_i32_global_in("p", "__exact"), 1);
+        assert_eq!(read_i32_global_in("p", "__cls"), 1);
+
+        // Another input on the same class reaches the class wildcard, not the exact sub.
+        assert_eq!(dispatch_input("func_door", "Close", -1, -1, -1, ""), HookResult::Changed as i32);
+        assert_eq!(read_i32_global_in("p", "__exact"), 1);
+        // Another class reaches only (*,*).
+        assert_eq!(dispatch_input("logic_relay", "open", -1, -1, -1, ""), HookResult::Continue as i32);
+        assert_eq!(read_i32_global_in("p", "__any"), 3);
+        assert_eq!(read_i32_global_in("p", "__cls"), 2);
+
+        unload_plugin("p");
+        assert!(!input_hooked(), "unload drops every subscription");
+        assert_eq!(dispatch_input("func_door", "Open", -1, -1, -1, ""), HookResult::Continue as i32);
         shutdown();
     }
 

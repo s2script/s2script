@@ -386,7 +386,7 @@ mod tests {
     ) -> c_int { 3 }
 
     extern "C" fn fake_invoke(
-        _call_id: c_int, _ent_index: c_int, _ent_serial: c_int, _subobj_off: c_int,
+        _call_id: c_int, _ent_index: c_int, _ent_serial: c_int, _subobj_off: c_int, _subobj_deref: c_int,
         gp: *const u64, _gp_kind: *const u8, gp_count: c_int,
         _fp: *const f64, _fp_count: c_int,
         _strs: *const *const c_char, _vecs: *const f32,
