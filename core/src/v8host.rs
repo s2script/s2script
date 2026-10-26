@@ -341,6 +341,14 @@ thread_local! {
     static OUTPUT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::channels::Channels::new());
 
+    /// `Entity.onInput(classname, input, handler)` subscribers (parity slice 5), keyed
+    /// `"<classname>\0<lowercased input>"` with `"*"` wildcards — Source input names are
+    /// case-insensitive. Fed by the shim's `CEntityIdentity::AcceptInput` detour, installed
+    /// unconditionally at Load like `OUTPUT_MUX`'s; dispatch is SYNCHRONOUS so a handler can drop
+    /// the input. `remove_by_owner` on unload; reset on shutdown.
+    static INPUT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
+
     /// `Server.onCvarChange(name, handler)` subscribers, keyed by cvar name (`"*"` = every cvar).
     /// Fed by the shim's ONE `ICvar::InstallGlobalChangeCallback`, installed unconditionally at Load —
     /// so there is no per-subscribe engine op. NOTIFY-only: the engine's global change callback runs
@@ -661,6 +669,7 @@ fn async_pending() -> usize {
         + DUE_TIMERS.with(|q| q.borrow().len())
         + crate::jobs::pending()
         + crate::async_limits::obligations()
+        + crate::client::convar_queries_pending()
         + usize::from(MICROTASK_DRAIN_NEEDED.with(|v| v.get()))
         + usize::from(
             crate::cookies::pending_cached()
@@ -3568,6 +3577,48 @@ fn s2_collision_activate(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 }
 
 
+/// Reads a JS slot array into a `Vec<i32>`; a non-array is an empty set (the ops treat that as "no
+/// recipients"). An unreadable element becomes -1, which the shim skips.
+fn sound_slots(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> Vec<i32> {
+    let mut slots: Vec<i32> = Vec::new();
+    if let Ok(arr) = v8::Local::<v8::Array>::try_from(v) {
+        let n = arr.length();
+        slots.reserve(n as usize);
+        for i in 0..n {
+            let s = match arr.get_index(scope, i) {
+                Some(v) => v.integer_value(scope).unwrap_or(-1) as i32,
+                None => -1,
+            };
+            slots.push(s);
+        }
+    }
+    slots
+}
+
+/// The shared body of `__s2_sound_emit` / `__s2_sound_start`: (soundName, entIndex, entId, slots,
+/// volume) -> (guid, stackHash), guid 0 = failed. `None` when there is no op or the source entity
+/// is dead.
+fn sound_emit_call(scope: &mut v8::PinScope, args: &v8::FunctionCallbackArguments) -> Option<(u32, i32)> {
+    let ops = ENGINE_OPS.with(|o| o.get());
+    let f = ops.and_then(|o| o.sound_emit)?;
+    let name = args.get(0).to_rust_string_lossy(scope);
+    let c_name = std::ffi::CString::new(name).ok()?;
+    let ent_index = args.get(1).integer_value(scope).unwrap_or(0) as i32;
+    // E1: arg 2 = the source entity's host-id. id 0 = worldspawn / no-entity sentinel → engine
+    // serial -1 ("no serial gate", entIndex used directly shim-side). An id present but not live
+    // is a dead entity → fail closed (no emit).
+    let ent_id = js_ent_id(scope, args.get(2));
+    let ent_serial = if ent_id == 0 { -1 } else {
+        crate::entity_live::engine_serial_for(ent_index, ent_id)?
+    };
+    let slots = sound_slots(scope, args.get(3));
+    let volume = args.get(4).number_value(scope).unwrap_or(1.0) as f32;
+    let mut stack_hash: c_int = -1;
+    let guid = f(c_name.as_ptr(), ent_index, ent_serial, slots.as_ptr(), slots.len() as i32, volume,
+                 &mut stack_hash);
+    Some((guid as u32, stack_hash))
+}
+
 /// Native `__s2_sound_emit(soundName, entIndex, entSerial, slotsArray, volume) -> number`. Over the
 /// `sound_emit` op. Reads the JS slot array into a `Vec<i32>` (mirrors `__s2_user_message_send`); a
 /// non-array slots arg -> an empty set (the op returns 0 — caller requested no recipients). An
@@ -3576,33 +3627,97 @@ fn s2_collision_activate(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 fn s2_sound_emit(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_uint32(0);
+        if let Some((guid, _)) = sound_emit_call(scope, &args) { rv.set_uint32(guid); }
+    }));
+}
+
+/// Native `__s2_sound_start(...same args as __s2_sound_emit) -> [guid, stackHash] | null`. The
+/// stack hash is what `__s2_sound_set_param` needs alongside the guid. `null` for a failed emit.
+fn s2_sound_start(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let Some((guid, hash)) = sound_emit_call(scope, &args) else { return };
+        if guid == 0 { return; }
+        let g = v8::Number::new(scope, guid as f64).into();
+        let h = v8::Integer::new(scope, hash).into();
+        rv.set(v8::Array::new_with_elements(scope, &[g, h]).into());
+    }));
+}
+
+/// Native `__s2_sound_set_param(guid, stackHash, param, value, slotsArray) -> boolean`. `value` is a
+/// number (a float field) or a 3-element number array (a float3 field, e.g. a position). False on
+/// any other value shape, a NUL in the name, or no op. True means the engine was called; it does
+/// not report whether the event has that parameter.
+fn s2_sound_set_param(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
         let ops = ENGINE_OPS.with(|o| o.get());
-        let Some(f) = ops.and_then(|o| o.sound_emit) else { return };
-        let name = args.get(0).to_rust_string_lossy(scope);
+        let Some(f) = ops.and_then(|o| o.sound_set_param) else { return };
+        let guid = args.get(0).number_value(scope).unwrap_or(0.0) as u32 as c_int;
+        let hash = args.get(1).int32_value(scope).unwrap_or(-1);
+        let name = args.get(2).to_rust_string_lossy(scope);
         let Ok(c_name) = std::ffi::CString::new(name) else { return };
-        let ent_index = args.get(1).integer_value(scope).unwrap_or(0) as i32;
-        // E1: arg 2 = the source entity's host-id. id 0 = worldspawn / no-entity sentinel → engine
-        // serial -1 ("no serial gate", entIndex used directly shim-side). An id present but not live
-        // is a dead entity → fail closed (rv stays 0, no emit).
-        let ent_id = js_ent_id(scope, args.get(2));
-        let ent_serial = if ent_id == 0 { -1 } else {
-            match crate::entity_live::engine_serial_for(ent_index, ent_id) { Some(s) => s, None => return }
-        };
-        let mut slots: Vec<i32> = Vec::new();
-        if let Ok(arr) = v8::Local::<v8::Array>::try_from(args.get(3)) {
-            let n = arr.length();
-            slots.reserve(n as usize);
-            for i in 0..n {
-                let s = match arr.get_index(scope, i) {
-                    Some(v) => v.integer_value(scope).unwrap_or(-1) as i32,
-                    None => -1,
-                };
-                slots.push(s);
+        let v = args.get(3);
+        let values: Vec<f32> = if v.is_number() {
+            vec![v.number_value(scope).unwrap_or(0.0) as f32]
+        } else if let Ok(arr) = v8::Local::<v8::Array>::try_from(v) {
+            if arr.length() != 3 { return; }
+            let mut out = Vec::with_capacity(3);
+            for i in 0..3 {
+                let Some(e) = arr.get_index(scope, i) else { return };
+                if !e.is_number() { return; }
+                out.push(e.number_value(scope).unwrap_or(0.0) as f32);
             }
+            out
+        } else {
+            return;
+        };
+        if values.iter().any(|x| !x.is_finite()) { return; }
+        let slots = sound_slots(scope, args.get(4));
+        rv.set_bool(f(guid, hash, c_name.as_ptr(), values.as_ptr(), values.len() as c_int,
+                      slots.as_ptr(), slots.len() as c_int) != 0);
+    }));
+}
+
+/// Native `__s2_sound_stop_event(guid, slotsArray) -> boolean`. Over the `sound_stop_event` op.
+fn s2_sound_stop_event(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.sound_stop_event) else { return };
+        let guid = args.get(0).number_value(scope).unwrap_or(0.0) as u32 as c_int;
+        let slots = sound_slots(scope, args.get(1));
+        rv.set_bool(f(guid, slots.as_ptr(), slots.len() as c_int) != 0);
+    }));
+}
+
+/// Native `__s2_sound_duration(name) -> number | null`. Over the `sound_event_duration` op: the
+/// event's length in seconds. `null` when the op is missing, the name has a NUL, or the engine has
+/// no such event (it answers -1 for that). Never throws.
+fn s2_sound_duration(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.sound_event_duration) else { return };
+        let Ok(name) = std::ffi::CString::new(args.get(0).to_rust_string_lossy(scope)) else { return };
+        if name.as_bytes().is_empty() { return; }
+        let d = f(name.as_ptr());
+        if d.is_finite() && d >= 0.0 {
+            rv.set_double(d as f64);
         }
-        let volume = args.get(4).number_value(scope).unwrap_or(1.0) as f32;
-        let guid = f(c_name.as_ptr(), ent_index, ent_serial, slots.as_ptr(), slots.len() as i32, volume);
-        rv.set_uint32(guid as u32);
+    }));
+}
+
+/// Native `__s2_sound_is_valid(name) -> boolean`. Over the `sound_event_valid` op: whether the
+/// engine knows a sound event by that name. `false` when the op is missing. Never throws.
+fn s2_sound_is_valid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.sound_event_valid) else { return };
+        let Ok(name) = std::ffi::CString::new(args.get(0).to_rust_string_lossy(scope)) else { return };
+        if name.as_bytes().is_empty() { return; }
+        rv.set_bool(f(name.as_ptr()) == 1);
     }));
 }
 
@@ -3671,6 +3786,21 @@ fn s2_cvar_off_change(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
         let name = args.get(0).to_rust_string_lossy(scope);
         let owner = current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
         CVAR_MUX.with(|m| { m.borrow_mut().remove_by_owner_on(&name, &owner); });
+    }));
+}
+
+/// Native `__s2_input_subscribe(classname, input, handler) -> subId`. Subscribes a JS fn to
+/// `Entity.onInput` (parity slice 5); owner-tracked in `INPUT_MUX`. The AcceptInput detour is
+/// installed at shim Load, so there is no per-subscribe engine registration.
+fn s2_input_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 3 { return; }
+        let classname = args.get(0).to_rust_string_lossy(scope);
+        let input = args.get(1).to_rust_string_lossy(scope).to_ascii_lowercase();
+        if classname.is_empty() || input.is_empty() { return; }
+        let key = format!("{}\0{}", classname, input);
+        let Some((sub_id, _)) = subscribe_into(scope, &args, &INPUT_MUX, &key, 2) else { return };
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
     }));
 }
 
@@ -3873,7 +4003,12 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         // A receiverless descriptor (`receiver.kind: "none"`) has no entity to gate: it passes the
         // shim's receiverless sentinel (index < 0) so no resolve is attempted and the first declared
         // arg takes the slot `this` would have occupied.
-        let (index, serial) = if plan.receiverless {
+        //
+        // An interface receiver passes the interface sentinel with the bound id; it is
+        // receiverless to JS (no `self`), so this check comes first.
+        let (index, serial) = if let Some(iface) = plan.interface {
+            (crate::gamedata_calls::RECEIVER_INTERFACE, iface)
+        } else if plan.receiverless {
             (-1, 0)
         } else {
             match ent_op_serial(scope, args.get(1), args.get(2)) {
@@ -3886,21 +4021,31 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         // uses — schema resolves at map-live, not at Load (spec §11). A miss no-ops THIS invocation
         // and flips `Engine.status(name)` to a named reason; it clears on the first success, so the
         // descriptor recovers once the map is live instead of being permanently dead.
-        let subobj_off = match &plan.via {
-            None => -1,
-            Some((class, field)) => {
-                let off = schema_offset_cached(class, field);
+        //
+        // Every hop but the last is embedded, so the path is one summed offset; the last hop says
+        // whether the shim then loads a pointer from there (`subobj_deref`).
+        let (subobj_off, subobj_deref) = if plan.via.is_empty() {
+            (-1, 0)
+        } else {
+            let mut total: i64 = 0;
+            for hop in &plan.via {
+                let off = schema_offset_cached(&hop.class, &hop.field);
                 if off < 0 {
                     crate::gamedata_calls::set_via_miss(
                         &pid,
                         &name,
-                        Some("receiver sub-object offset unresolved (schema resolves at map-live)".to_string()),
+                        Some(format!(
+                            "receiver sub-object offset {}::{} unresolved (schema resolves at map-live)",
+                            hop.class, hop.field
+                        )),
                     );
                     return;
                 }
-                crate::gamedata_calls::set_via_miss(&pid, &name, None);
-                off
+                total += off as i64;
             }
+            let Ok(total) = i32::try_from(total) else { return };
+            crate::gamedata_calls::set_via_miss(&pid, &name, None);
+            (total, if plan.via.last().is_some_and(|h| h.embedded) { 0 } else { 1 })
         };
 
         // Marshal the args into the two SysV register sequences, preserving order within each class.
@@ -4012,7 +4157,7 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         let mut ret: u64 = 0;
         let ok = crate::nest::with_outbound(&args, || {
             func(
-                plan.call_id, index, serial, subobj_off,
+                plan.call_id, index, serial, subobj_off, subobj_deref,
                 gp.as_ptr(), gp_kind.as_ptr(), gp.len() as i32,
                 fp.as_ptr(), fp.len() as i32,
                 strs.as_ptr(), vecs.as_ptr(),
@@ -4050,6 +4195,28 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
                 if ret == 0 || crate::memory::checked(ret as f64, 0).is_some() {
                     if let Some(p) = make_ptr(scope, ret as f64) { rv.set(p); }
                 }
+            }
+            crate::gamedata_calls::RET_UTLSTRINGLIST => {
+                // `ret` is the string count (or the null-list marker); the strings themselves are
+                // copied out of the shim's per-thread buffer, NUL-separated.
+                if ret == crate::gamedata_calls::STRINGLIST_NULL { return; }
+                let Some(take) = engine_ops().and_then(|o| o.engine_call_take_strings) else { return };
+                let need = take(std::ptr::null_mut(), 0);
+                if need < 0 { return; }
+                let mut buf = vec![0u8; need as usize];
+                if need > 0 && take(buf.as_mut_ptr() as *mut c_char, need) != need { return; }
+                let parts: Vec<&[u8]> = if buf.is_empty() {
+                    Vec::new()
+                } else {
+                    buf[..buf.len() - 1].split(|b| *b == 0).collect()
+                };
+                if parts.len() as u64 != ret { return; }
+                let items: Vec<v8::Local<v8::Value>> = parts
+                    .iter()
+                    .filter_map(|p| v8::String::new(scope, &String::from_utf8_lossy(p)).map(|s| s.into()))
+                    .collect();
+                if items.len() != parts.len() { return; }
+                rv.set(v8::Array::new_with_elements(scope, &items).into());
             }
             _ => {}
         }
@@ -4765,6 +4932,64 @@ pub(crate) fn dispatch_output(classname: &str, output: &str, act_handle: i32, ca
         if let Some(k) = v8::String::new(tc, "delay") {
             let v = v8::Number::new(tc, delay as f64);
             ev_obj.set(tc, k.into(), v.into());
+        }
+        Some(vec![ev_obj.into()])
+    });
+    result as i32
+}
+
+/// Whether any plugin subscribes `Entity.onInput`. The AcceptInput detour runs for every I/O event
+/// in the map, so the FFI entry checks this before converting a single string. A held borrow
+/// (a dispatch in progress) answers true and lets `dispatch_input` decide.
+pub(crate) fn input_hooked() -> bool {
+    INPUT_MUX.with(|m| m.try_borrow().map(|c| !c.is_empty()).unwrap_or(true))
+}
+
+/// Decode a packed `CEntityHandle` int from the shim into a books-gated `EntityRef` (or null).
+/// -1 is the shim's exact "no entity" sentinel; see the note in `dispatch_output`.
+fn handle_entity_value<'s>(tc: &mut v8::PinScope<'s, '_>, handle: i32) -> v8::Local<'s, v8::Value> {
+    if handle == -1 { return v8::null(tc).into(); }
+    let (index, serial) = crate::entity::decode_handle(handle as u32);
+    match crate::entity_live::adopt(index, serial) {
+        Some(id) => build_entity_ref(tc, index, id),
+        None => v8::null(tc).into(),
+    }
+}
+
+/// Synchronous input dispatch (parity slice 5). Called from `ffi.rs`'s
+/// `s2script_core_dispatch_input`, which the shim's `CEntityIdentity::AcceptInput` detour calls for
+/// every input an entity receives. Runs every `Entity.onInput` subscriber whose key matches
+/// `(class,input)`, `(class,"*")`, `("*",input)` or `("*","*")` — input compared lowercased — and
+/// returns the collapsed `HookResult`; the shim drops the input when it is >= Handled. The event
+/// carries `{ input, entity, activator, caller, value }`; `input` keeps the engine's spelling.
+pub(crate) fn dispatch_input(classname: &str, input: &str, target_handle: i32, act_handle: i32, caller_handle: i32, value: &str) -> i32 {
+    let lowered = input.to_ascii_lowercase();
+    let keys = [
+        format!("{}\0{}", classname, lowered),
+        format!("{}\0*", classname),
+        format!("*\0{}", lowered),
+        "*\0*".to_string(),
+    ];
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut snap: Vec<(String, u64, v8::Global<v8::Function>)> = Vec::new();
+    for k in &keys {
+        if !seen.insert(k.as_str()) { continue; }
+        snap.extend(INPUT_MUX.with(|m| m.borrow().snapshot(k)));
+    }
+    if snap.is_empty() { return 0; }
+    let result = fan_out_collapsing(&snap, "dispatch_input", Instrument::none(), StopAt::Stop, |tc| {
+        let entity_val = handle_entity_value(tc, target_handle);
+        let activator_val = handle_entity_value(tc, act_handle);
+        let caller_val = handle_entity_value(tc, caller_handle);
+        let ev_obj = v8::Object::new(tc);
+        if let Some(k) = v8::String::new(tc, "input") {
+            if let Some(v) = v8::String::new(tc, input) { ev_obj.set(tc, k.into(), v.into()); }
+        }
+        if let Some(k) = v8::String::new(tc, "entity") { ev_obj.set(tc, k.into(), entity_val); }
+        if let Some(k) = v8::String::new(tc, "activator") { ev_obj.set(tc, k.into(), activator_val); }
+        if let Some(k) = v8::String::new(tc, "caller") { ev_obj.set(tc, k.into(), caller_val); }
+        if let Some(k) = v8::String::new(tc, "value") {
+            if let Some(v) = v8::String::new(tc, value) { ev_obj.set(tc, k.into(), v.into()); }
         }
         Some(vec![ev_obj.into()])
     });
@@ -6238,6 +6463,7 @@ fn deliver_timer(host: &mut Host, id: u64) {
 pub(crate) fn frame_async_drain() {
     crate::surface_leases::advance_frame();
     crate::shared_entity_switch::retry_pending();
+    crate::client::sweep_convar_queries();
     HOST.with(|h| {
         let mut borrow = h.borrow_mut();
         let Some(host) = borrow.as_mut() else { return };
@@ -6579,6 +6805,16 @@ pub(crate) fn register_builtin_stores() {
         Box::new(|ids| { OUTPUT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| {
             OUTPUT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
+        }),
+    );
+
+    // INPUT_MUX: the AcceptInput detour stays installed for the process lifetime — no follow-up.
+    crate::owner_stores::register(
+        "INPUT_MUX",
+        Box::new(|owner| { INPUT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { INPUT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            INPUT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
         }),
     );
 

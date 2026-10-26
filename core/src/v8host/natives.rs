@@ -365,6 +365,11 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
         s2_collision_activate,
     );
     set_native(scope, global_obj, "__s2_sound_emit", s2_sound_emit);
+    set_native(scope, global_obj, "__s2_sound_start", s2_sound_start);
+    set_native(scope, global_obj, "__s2_sound_set_param", s2_sound_set_param);
+    set_native(scope, global_obj, "__s2_sound_stop_event", s2_sound_stop_event);
+    set_native(scope, global_obj, "__s2_sound_duration", s2_sound_duration);
+    set_native(scope, global_obj, "__s2_sound_is_valid", s2_sound_is_valid);
     set_native(
         scope,
         global_obj,
@@ -382,6 +387,8 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
         "__s2_output_subscribe",
         s2_output_subscribe,
     );
+    // Parity slice 5: Entity.onInput (CEntityIdentity::AcceptInput detour dispatch).
+    set_native(scope, global_obj, "__s2_input_subscribe", s2_input_subscribe);
     set_native(scope, global_obj, "__s2_cvar_on_change", s2_cvar_on_change);
     set_native(
         scope,

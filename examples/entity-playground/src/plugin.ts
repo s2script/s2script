@@ -10,7 +10,7 @@
 // Everything an entity API hands you is an EntityRef — a serial-gated handle,
 // never a raw pointer. Reads return `T | null`: if the entity died, you get
 // null, not garbage and not a crash. Hold refs across time freely.
-import { createEntity, Entity, Server, Vector, delay, onOutput, command, HookResult } from "@s2script/sdk";
+import { createEntity, Entity, Server, Vector, delay, onInput, onOutput, command, HookResult } from "@s2script/sdk";
 import type { EntityRef } from "@s2script/sdk";
 import { Beam } from "@s2script/cs2";
 
@@ -55,6 +55,12 @@ export function OnPluginStart(): void {
   });
   onOutput("math_counter", "OnHitMax", () => {
     console.log("[ent] OnHitMax — the counter reached the max its keyvalues set");
+  });
+
+  // Hook an input before the entity runs it ("*" = any class; names match
+  // case-insensitively). Returning HookResult.Handled would drop the input.
+  onInput("*", "kill", (ev) => {
+    console.log(`[ent] Kill sent to ${ev.entity ? `#${ev.entity.index}` : "a dead entity"}`);
   });
 
   // --- Create, read back, remove -------------------------------------------

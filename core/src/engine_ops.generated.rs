@@ -182,7 +182,7 @@ pub type CollisionActivateFn = extern "C" fn(c_int, c_int) -> c_int;
 pub type EntitySetModelFn = extern "C" fn(c_int, c_int, *const std::os::raw::c_char) -> c_int;
 pub type EntityListenerInstallFn = extern "C" fn() -> c_int;
 pub type EntityNameFn = extern "C" fn(c_int, c_int) -> *const c_char;
-pub type SoundEmitFn = extern "C" fn(*const c_char, c_int, c_int, *const c_int, c_int, f32) -> c_int;
+pub type SoundEmitFn = extern "C" fn(*const c_char, c_int, c_int, *const c_int, c_int, f32, *mut c_int) -> c_int;
 pub type SoundPrecacheAddFn = extern "C" fn(*const c_char) -> c_int;
 pub type UsercmdHookInstallFn = extern "C" fn() -> c_int;
 pub type UsercmdReadFn = extern "C" fn(c_int) -> f64;
@@ -209,7 +209,7 @@ pub type EntResolveFn = extern "C" fn(c_int, c_int) -> *mut c_void;
 pub type EntIdentityFlagsFn = extern "C" fn(c_int, c_int) -> i64;
 pub type EntSnapshotFn = extern "C" fn(*mut c_int, *mut c_int, c_int) -> c_int;
 pub type EngineCallResolveFn = extern "C" fn(kind: *const c_char, module: *const c_char, pattern: *const c_char, resolve: *const c_char, class_name: *const c_char, vtable_index: c_int, validate_json: *const c_char, reason_out: *mut c_char, reason_cap: c_int) -> c_int;
-pub type EngineCallInvokeFn = extern "C" fn(call_id: c_int, ent_index: c_int, ent_serial: c_int, subobj_off: c_int, gp: *const u64, gp_kind: *const u8, gp_count: c_int, fp: *const f64, fp_count: c_int, strs: *const *const c_char, vecs: *const f32, ret_kind: c_int, ret_out: *mut u64) -> c_int;
+pub type EngineCallInvokeFn = extern "C" fn(call_id: c_int, ent_index: c_int, ent_serial: c_int, subobj_off: c_int, subobj_deref: c_int, gp: *const u64, gp_kind: *const u8, gp_count: c_int, fp: *const f64, fp_count: c_int, strs: *const *const c_char, vecs: *const f32, ret_kind: c_int, ret_out: *mut u64) -> c_int;
 pub type VoiceAudibleSetFn = extern "C" fn(c_int, u64) -> c_int;
 pub type VoiceAudibleClearFn = extern "C" fn(c_int) -> c_int;
 pub type VoiceAudibleStatsFn = extern "C" fn(*mut u64) -> c_int;
@@ -260,6 +260,20 @@ pub type FunctionFrameFieldWriteFn = extern "C" fn(*const S2FunctionInstanceAcce
 pub type FunctionFrameHiddenReferencedByFn = extern "C" fn(*const S2FunctionInstanceAccess, c_int, *const S2FunctionValue, u32, *mut c_int, *mut c_char, c_int) -> c_int;
 pub type ServerTickCountFn = extern "C" fn() -> c_int;
 pub type ServerTickIntervalFn = extern "C" fn() -> f32;
+pub type EntityTakeDamageFn = extern "C" fn(c_int, c_int, c_int, c_int, c_int, c_int, c_int, c_int, f32, c_int, *const f32, *const f32) -> c_int;
+pub type ClientQueryConvarFn = extern "C" fn(slot: c_int, name: *const c_char, cookie: c_int) -> c_int;
+pub type ClientReplicateConvarFn = extern "C" fn(slot: c_int, name: *const c_char, value: *const c_char) -> c_int;
+pub type ClientNetStatsFn = extern "C" fn(slot: c_int, out: *mut f64, n: c_int) -> c_int;
+pub type EngineCallBindInterfaceFn = extern "C" fn(call_id: c_int, name: *const c_char, slot: c_int, reason_out: *mut c_char, reason_cap: c_int) -> c_int;
+pub type EngineCallTakeStringsFn = extern "C" fn(out: *mut c_char, cap: c_int) -> c_int;
+pub type EntityLookupBoneFn = extern "C" fn(index: c_int, serial: c_int, name: *const c_char) -> c_int;
+pub type EntityGetBoneTransformFn = extern "C" fn(index: c_int, serial: c_int, bone: c_int, out: *mut f32) -> c_int;
+pub type EntityLookupAttachmentFn = extern "C" fn(index: c_int, serial: c_int, name: *const c_char) -> c_int;
+pub type EntityGetAttachmentFn = extern "C" fn(index: c_int, serial: c_int, attachment: c_int, out: *mut f32) -> c_int;
+pub type SoundSetParamFn = extern "C" fn(c_int, c_int, *const c_char, *const f32, c_int, *const c_int, c_int) -> c_int;
+pub type SoundStopEventFn = extern "C" fn(c_int, *const c_int, c_int) -> c_int;
+pub type SoundEventDurationFn = extern "C" fn(*const c_char) -> f32;
+pub type SoundEventValidFn = extern "C" fn(*const c_char) -> c_int;
 pub type StringTableCountFn = extern "C" fn() -> c_int;
 pub type StringTableFindFn = extern "C" fn(*const c_char) -> c_int;
 pub type StringTableNameFn = extern "C" fn(c_int, *mut c_char, c_int) -> c_int;
@@ -466,6 +480,27 @@ pub struct S2EngineOps {
     // --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick ---
     pub server_tick_count: Option<ServerTickCountFn>,
     pub server_tick_interval: Option<ServerTickIntervalFn>,
+    // --- Damage slice: CTakeDamageInfo ctor + CBaseEntity::TakeDamage + dtor ---
+    pub entity_take_damage: Option<EntityTakeDamageFn>,
+    // --- client convar query + replicate ---
+    pub client_query_convar: Option<ClientQueryConvarFn>,
+    pub client_replicate_convar: Option<ClientReplicateConvarFn>,
+    // --- client net stats (INetChannelInfo) ---
+    pub client_net_stats: Option<ClientNetStatsFn>,
+    // --- Plugin-declared engine calls ---
+    pub engine_call_bind_interface: Option<EngineCallBindInterfaceFn>,
+    pub engine_call_take_strings: Option<EngineCallTakeStringsFn>,
+    // --- bones and attachments ---
+    pub entity_lookup_bone: Option<EntityLookupBoneFn>,
+    pub entity_get_bone_transform: Option<EntityGetBoneTransformFn>,
+    pub entity_lookup_attachment: Option<EntityLookupAttachmentFn>,
+    pub entity_get_attachment: Option<EntityGetAttachmentFn>,
+    // --- sound event parameters: SoundOpGameSystem::SetSoundEventParam / StopSoundEvent ---
+    pub sound_set_param: Option<SoundSetParamFn>,
+    pub sound_stop_event: Option<SoundStopEventFn>,
+    // --- sound event lookups: the sound system's event manager (GetSoundEventDuration / IsValidSoundEventHash) ---
+    pub sound_event_duration: Option<SoundEventDurationFn>,
+    pub sound_event_valid: Option<SoundEventValidFn>,
     // --- string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable ---
     pub stringtable_count: Option<StringTableCountFn>,
     pub stringtable_find: Option<StringTableFindFn>,
