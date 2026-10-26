@@ -207,3 +207,6 @@
     // --- sound event parameters: SoundOpGameSystem::SetSoundEventParam / StopSoundEvent ---
     ops.sound_set_param = &s2_sound_set_param;
     ops.sound_stop_event = &s2_sound_stop_event;
+    // --- sound event lookups: the sound system's event manager (GetSoundEventDuration / IsValidSoundEventHash) ---
+    ops.sound_event_duration = &s2_sound_event_duration;
+    ops.sound_event_valid = &s2_sound_event_valid;
