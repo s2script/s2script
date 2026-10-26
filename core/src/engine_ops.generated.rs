@@ -272,17 +272,6 @@ pub type EntityLookupAttachmentFn = extern "C" fn(index: c_int, serial: c_int, n
 pub type EntityGetAttachmentFn = extern "C" fn(index: c_int, serial: c_int, attachment: c_int, out: *mut f32) -> c_int;
 pub type SoundSetParamFn = extern "C" fn(c_int, c_int, *const c_char, *const f32, c_int, *const c_int, c_int) -> c_int;
 pub type SoundStopEventFn = extern "C" fn(c_int, *const c_int, c_int) -> c_int;
-pub type SoundEventDurationFn = extern "C" fn(*const c_char) -> f32;
-pub type SoundEventValidFn = extern "C" fn(*const c_char) -> c_int;
-pub type StringTableCountFn = extern "C" fn() -> c_int;
-pub type StringTableFindFn = extern "C" fn(*const c_char) -> c_int;
-pub type StringTableNameFn = extern "C" fn(c_int, *mut c_char, c_int) -> c_int;
-pub type StringTableNumStringsFn = extern "C" fn(c_int, *const c_char) -> c_int;
-pub type StringTableFindStringFn = extern "C" fn(c_int, *const c_char, *const c_char) -> c_int;
-pub type StringTableGetStringFn = extern "C" fn(c_int, *const c_char, c_int, *mut c_char, c_int) -> c_int;
-pub type StringTableGetDataFn = extern "C" fn(c_int, *const c_char, c_int, *mut u8, c_int) -> c_int;
-pub type StringTableSetDataFn = extern "C" fn(c_int, *const c_char, c_int, *const u8, c_int) -> c_int;
-pub type StringTableAddStringFn = extern "C" fn(c_int, *const c_char, *const c_char, *const u8, c_int) -> c_int;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -498,19 +487,6 @@ pub struct S2EngineOps {
     // --- sound event parameters: SoundOpGameSystem::SetSoundEventParam / StopSoundEvent ---
     pub sound_set_param: Option<SoundSetParamFn>,
     pub sound_stop_event: Option<SoundStopEventFn>,
-    // --- sound event lookups: the sound system's event manager (GetSoundEventDuration / IsValidSoundEventHash) ---
-    pub sound_event_duration: Option<SoundEventDurationFn>,
-    pub sound_event_valid: Option<SoundEventValidFn>,
-    // --- string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable ---
-    pub stringtable_count: Option<StringTableCountFn>,
-    pub stringtable_find: Option<StringTableFindFn>,
-    pub stringtable_name: Option<StringTableNameFn>,
-    pub stringtable_num_strings: Option<StringTableNumStringsFn>,
-    pub stringtable_find_string: Option<StringTableFindStringFn>,
-    pub stringtable_get_string: Option<StringTableGetStringFn>,
-    pub stringtable_get_data: Option<StringTableGetDataFn>,
-    pub stringtable_set_data: Option<StringTableSetDataFn>,
-    pub stringtable_add_string: Option<StringTableAddStringFn>,
 }
 
 impl S2EngineOps {

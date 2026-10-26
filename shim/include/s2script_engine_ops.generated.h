@@ -248,17 +248,6 @@ typedef int (*s2_entity_lookup_attachment_fn)(int index, int serial, const char*
 typedef int (*s2_entity_get_attachment_fn)(int index, int serial, int attachment, float* out);
 typedef int (*s2_sound_set_param_fn)(int guid, int stackHash, const char* param, const float* values, int valueCount, const int* slots, int slotCount);
 typedef int (*s2_sound_stop_event_fn)(int guid, const int* slots, int slotCount);
-typedef float (*s2_sound_event_duration_fn)(const char* soundEvent);
-typedef int (*s2_sound_event_valid_fn)(const char* soundEvent);
-typedef int (*s2_stringtable_count_fn)(void);
-typedef int (*s2_stringtable_find_fn)(const char* tableName);
-typedef int (*s2_stringtable_name_fn)(int tableId, char* out, int cap);
-typedef int (*s2_stringtable_num_strings_fn)(int tableId, const char* tableName);
-typedef int (*s2_stringtable_find_string_fn)(int tableId, const char* tableName, const char* value);
-typedef int (*s2_stringtable_get_string_fn)(int tableId, const char* tableName, int index, char* out, int cap);
-typedef int (*s2_stringtable_get_data_fn)(int tableId, const char* tableName, int index, unsigned char* out, int cap);
-typedef int (*s2_stringtable_set_data_fn)(int tableId, const char* tableName, int index, const unsigned char* data, int len);
-typedef int (*s2_stringtable_add_string_fn)(int tableId, const char* tableName, const char* value, const unsigned char* data, int len);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -469,17 +458,4 @@ typedef struct {
     /* --- sound event parameters: SoundOpGameSystem::SetSoundEventParam / StopSoundEvent --- */
     s2_sound_set_param_fn sound_set_param;
     s2_sound_stop_event_fn sound_stop_event;
-    /* --- sound event lookups: the sound system's event manager (GetSoundEventDuration / IsValidSoundEventHash) --- */
-    s2_sound_event_duration_fn sound_event_duration;
-    s2_sound_event_valid_fn sound_event_valid;
-    /* --- string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable --- */
-    s2_stringtable_count_fn stringtable_count;
-    s2_stringtable_find_fn stringtable_find;
-    s2_stringtable_name_fn stringtable_name;
-    s2_stringtable_num_strings_fn stringtable_num_strings;
-    s2_stringtable_find_string_fn stringtable_find_string;
-    s2_stringtable_get_string_fn stringtable_get_string;
-    s2_stringtable_get_data_fn stringtable_get_data;
-    s2_stringtable_set_data_fn stringtable_set_data;
-    s2_stringtable_add_string_fn stringtable_add_string;
 } S2EngineOps;
