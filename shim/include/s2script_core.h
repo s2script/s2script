@@ -192,6 +192,14 @@ int s2script_core_dispatch_sdkhook_canbeautobalanced(int thisIndex, int thisSeri
  * 3 Stop). catch_unwind -> 0 (fail-open: a core bug must never suppress an output it didn't mean to). */
 int s2script_core_dispatch_output(const char* classname, const char* output, int actHandle, int callerHandle,
                                   const char* value, float delay);
+/* Shim -> core: called by the CEntityIdentity::AcceptInput detour (parity slice 5) with the
+ * receiving entity's classname, the input name, its packed CEntityHandle, packed activator/caller
+ * handles (-1 = none) and the input's value as a string. Runs the matching Entity.onInput
+ * subscribers SYNCHRONOUSLY (input names match case-insensitively; "*" wildcards either side) and
+ * returns the collapsed HookResult; the caller supersedes AcceptInput (drops the input) when it is
+ * >= Handled (2). catch_unwind -> 0 (fail-open). */
+int s2script_core_dispatch_input(const char* classname, const char* input, int targetHandle,
+                                 int actHandle, int callerHandle, const char* value);
 /* Shim -> core: called by the FireEvent Pre hook (Slice 5D.3). Runs the PRE subscribers for `name`
  * (s_currentEvent is set + mutable during the call). Returns 1 to suppress the client broadcast
  * (a pre-hook returned Handled/Stop), else 0. */

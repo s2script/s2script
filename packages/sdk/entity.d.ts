@@ -303,14 +303,42 @@ export interface OutputEvent {
   delay: number;
 }
 
+/** The payload delivered to an `onInput` handler. */
+export interface InputEvent {
+  /** The input's name as the engine spelled it (e.g. "Kill", "Open", "SetHealth"). */
+  input: string;
+  /** The entity receiving the input, or null if it is no longer live. */
+  entity: EntityRef | null;
+  /** The entity that activated the chain leading to this input, or null. */
+  activator: EntityRef | null;
+  /** The entity that sent the input (the output's owner, for map I/O), or null. */
+  caller: EntityRef | null;
+  /**
+   * The input's parameter, formatted as a string ("" when it has none). Inputs fired with a Pulse
+   * argument pack instead of a variant also report "".
+   */
+  value: string;
+}
+
 /**
- * Entry point for entity lookup by class name.
+ * Entry point for entity lookup by class name, targetname or position.
  * @example
  * import { Entity } from "@s2script/sdk/entity";
  * const triggers = Entity.findByClass("trigger_multiple");
  * for (const t of triggers) console.log(t.index, t.name);
+ * const doors = Entity.findByName("cell_doors");
+ * const nearby = Entity.findInSphere([0, 0, 64], 256, "prop_physics");
  */
 export declare const Entity: {
   /** Find every entity whose designer-name (class) exactly matches `className`. Returns liveness-gated refs. */
   findByClass(className: string): EntityRef[];
+  /** Find every entity whose targetname (`name`, the map's `targetname`) exactly matches `name`.
+   *  An empty `name` matches nothing. Returns liveness-gated refs. */
+  findByName(name: string): EntityRef[];
+  /** Every entity whose world origin is within `radius` units of `center` (inclusive), optionally only
+   *  those of `className`. Entities without a readable origin are skipped. Returns `[]` for a
+   *  non-finite center or a negative radius. Without `className` this walks every entity, so prefer
+   *  passing one in hot paths. */
+  findInSphere(center: Vector | { x: number; y: number; z: number } | [number, number, number],
+               radius: number, className?: string): EntityRef[];
 };

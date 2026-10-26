@@ -5470,6 +5470,47 @@
 
 
 
+    extern "C" fn fake_entity_name(index: c_int, serial: c_int) -> *const std::os::raw::c_char {
+        match (index, serial) {
+            (1, 11) | (70, 4) => c"cell_doors".as_ptr(),
+            (64, 3) => c"cell_doors_2".as_ptr(),
+            (90, 9) => c"".as_ptr(),
+            _ => std::ptr::null(),
+        }
+    }
+
+    /// Entity finders: `findByName` walks the identity snapshot and compares each slot's targetname
+    /// through the `entity_name` op; only books-live slots mint refs; an empty name matches nothing.
+    /// `findInSphere` filters origins inclusively and degrades on bad input.
+    #[test]
+    fn entity_finders_by_name_and_sphere() {
+        crate::entity_live::reset_for_tests();
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps {
+            ent_snapshot: Some(fake_ent_snapshot), entity_name: Some(fake_entity_name), ..mock_event_ops()
+        }));
+        // (70, 4) is in the snapshot but not in the books: it must not mint a ref.
+        crate::entity_live::repair_reconcile(&[(1, 11), (64, 3), (90, 9)]);
+        SNAPSHOT_PAIRS.with(|p| *p.borrow_mut() = vec![(1, 11), (64, 3), (70, 4), (90, 9)]);
+        create_plugin_context("p");
+        let out = eval_in_context_string("p", r#"
+            const E = __s2pkg_entity.Entity;
+            const named = E.findByName("cell_doors").map(r => r.index).join("|");
+            const none = E.findByName("").length + "," + E.findByName("nope").length;
+            const all = E.findAll ? "leak" : __s2_entity_find_all().map(r => r.index).join("|");
+            const origin = { 1: [0, 0, 0], 64: [3, 4, 0], 90: [100, 0, 0] };
+            globalThis.__s2_entity_find_all = () => [1, 64, 90, 5].map(i => ({ index: i,
+                origin: origin[i] ? { x: origin[i][0], y: origin[i][1], z: origin[i][2] } : null }));
+            const near = E.findInSphere([0, 0, 0], 5).map(r => r.index).join("|");
+            const bad = [E.findInSphere(null, 5), E.findInSphere({ x: NaN, y: 0, z: 0 }, 5),
+                         E.findInSphere([0, 0, 0], -1), E.findInSphere([0, 0, 0], Infinity)].map(a => a.length).join("");
+            [named, none, all, near, bad].join(";")
+        "#);
+        assert_eq!(out, "1;0,0;1|64|90;1|64;0000");
+        SNAPSHOT_PAIRS.with(|p| p.borrow_mut().clear());
+        shutdown();
+    }
+
     /// entity_origin slice: `EntityRef.origin` (`CGameSceneNode::m_vecAbsOrigin`, reached via the
     /// `CBaseEntity::m_CBodyComponent` -> `CBodyComponent::m_pSceneNode` chain) degrades to `null` with
     /// no ops (e.g. every in-isolate test) — never a crash. Unlike `target`, there's no dedicated
@@ -7041,6 +7082,49 @@
         let result3 = dispatch_output("logic_relay", "OnTrigger", -1, -1, "", 0.0);
         assert_eq!(result3, HookResult::Continue as i32, "no subscribers left after unload -> Continue, no panic");
 
+        shutdown();
+    }
+
+    /// Parity slice 5: `dispatch_input` matches `(class,input)` with the input compared
+    /// case-insensitively, honours `"*"` on either side, threads the value and keeps the engine's
+    /// spelling in `ev.input`, and collapses to the strongest HookResult. `input_hooked` tracks
+    /// whether any subscriber is left, so the FFI fast path skips work after unload.
+    #[test]
+    fn input_dispatch_matches_case_insensitively_and_collapses_hookresult() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        assert!(!input_hooked(), "no subscribers yet");
+        assert_eq!(dispatch_input("func_door", "Open", -1, -1, -1, ""), 0);
+        create_plugin_context("p");
+        eval_in_context("p", r#"
+            globalThis.__any = 0; globalThis.__exact = 0; globalThis.__cls = 0;
+            __s2pkg_entity.Entity.onInput("*", "*", function () { globalThis.__any++; });
+            __s2pkg_entity.Entity.onInput("func_door", "OPEN", function (ev) {
+                globalThis.__exact++;
+                globalThis.__seen = [ev.input, ev.value, String(ev.entity), String(ev.activator), String(ev.caller)].join("|");
+                return HookResult.Handled;
+            });
+            __s2pkg_entity.Entity.onInput("func_door", "*", function () { globalThis.__cls++; return HookResult.Changed; });
+        "#).unwrap();
+        assert!(input_hooked());
+
+        assert_eq!(dispatch_input("func_door", "Open", -1, -1, -1, "fast"), HookResult::Handled as i32);
+        assert_eq!(read_global_string("p", "__seen"), "Open|fast|null|null|null");
+        assert_eq!(read_i32_global_in("p", "__any"), 1);
+        assert_eq!(read_i32_global_in("p", "__exact"), 1);
+        assert_eq!(read_i32_global_in("p", "__cls"), 1);
+
+        // Another input on the same class reaches the class wildcard, not the exact sub.
+        assert_eq!(dispatch_input("func_door", "Close", -1, -1, -1, ""), HookResult::Changed as i32);
+        assert_eq!(read_i32_global_in("p", "__exact"), 1);
+        // Another class reaches only (*,*).
+        assert_eq!(dispatch_input("logic_relay", "open", -1, -1, -1, ""), HookResult::Continue as i32);
+        assert_eq!(read_i32_global_in("p", "__any"), 3);
+        assert_eq!(read_i32_global_in("p", "__cls"), 2);
+
+        unload_plugin("p");
+        assert!(!input_hooked(), "unload drops every subscription");
+        assert_eq!(dispatch_input("func_door", "Open", -1, -1, -1, ""), HookResult::Continue as i32);
         shutdown();
     }
 

@@ -755,6 +755,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // (the FireOutputInternal detour supersedes the original call). Dispatch is SYNCHRONOUS.
   var Entity = {
     onOutput: function (classname, output, handler) { return __s2_output_subscribe(String(classname), String(output), handler); },
+    // Parity slice 5: hook an input an entity receives (e.g. "Kill"/"Open"/"SetHealth"), before it
+    // runs. Input names match case-insensitively; "*" wildcards either side. handler(ev) may return
+    // a HookResult >= Handled to drop the input (the AcceptInput detour supersedes it).
+    onInput: function (classname, input, handler) { return __s2_input_subscribe(String(classname), String(input), handler); },
     // Entity lifecycle listeners: fire when the engine creates/spawns/deletes an entity of `className`
     // ("*" = all). The handler gets (entity, className): `entity` is a serial-gated EntityRef (may be
     // null for a barely-constructed onCreate / a dying onDelete); `className` is always valid.
@@ -765,6 +769,30 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     // EntityRefs (empty array on no-op/degrade). Broadly reusable (gamerules proxy, props, triggers...).
     findByClass: function (className) {
       return __s2_entity_find_by_class(String(className));
+    },
+    // Find every entity whose targetname exactly matches name (SourceMod's FindEntityByTargetname
+    // loop). An empty name matches nothing.
+    findByName: function (name) {
+      return __s2_entity_find_by_name(String(name));
+    },
+    // Every entity whose world origin lies within radius of center (inclusive), optionally only of
+    // className. center is a Vector, {x,y,z} or [x,y,z]. Entities with no readable origin are skipped.
+    // Returns [] for a non-finite center or a negative/non-finite radius.
+    findInSphere: function (center, radius, className) {
+      var c = Array.isArray(center) ? { x: center[0], y: center[1], z: center[2] } : center;
+      var r = Number(radius);
+      if (!c || !isFinite(c.x) || !isFinite(c.y) || !isFinite(c.z) || !(r >= 0) || !isFinite(r)) return [];
+      var refs = className === undefined || className === null
+        ? __s2_entity_find_all()
+        : __s2_entity_find_by_class(String(className));
+      var r2 = r * r, out = [];
+      for (var i = 0; i < refs.length; i++) {
+        var o = refs[i].origin;
+        if (!o) continue;
+        var dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
+        if (dx * dx + dy * dy + dz * dz <= r2) out.push(refs[i]);
+      }
+      return out;
     },
   };
   // Inter-plugin wire tagging: an EntityRef crosses the structured-copy (JSON) boundary as a tagged
@@ -2485,6 +2513,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
           onSpawn:  function (c, h) { regFn(viaId(function () { return En.onSpawn(c, h); })); },
           onDelete: function (c, h) { regFn(viaId(function () { return En.onDelete(c, h); })); },
           onOutput: function (c, o, h) { regFn(viaId(function () { return En.onOutput(c, o, h); })); },
+          onInput:  function (c, i, h) { regFn(viaId(function () { return En.onInput(c, i, h); })); },
         },
         server: {
           onGameFrame: function (fn, opts) { regFn(function () { var d = Fr.subscribe(fn, opts || {}); if (d && d.dispose) t.disposer(d.dispose); }); },
@@ -2712,6 +2741,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   function onOutput(classname, output, handler) {
     __s2_load_ctx_or_throw("onOutput()").entities.onOutput(classname, output, handler);
   }
+  function onInput(classname, input, handler) {
+    __s2_load_ctx_or_throw("onInput()").entities.onInput(classname, input, handler);
+  }
   function previous() { return __s2_load_ctx_or_throw("previous()").previous; }
   function pluginId() { return __s2_load_ctx_or_throw("pluginId()").id; }
   // Game-package ctx namespaces (ui / gameRules / players / items) as load-window
@@ -2750,6 +2782,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_commands.command = command;
   globalThis.__s2pkg_plugin.hook = hook;
   globalThis.__s2pkg_plugin.onOutput = onOutput;
+  globalThis.__s2pkg_plugin.onInput = onInput;
   globalThis.__s2pkg_plugin.publish = publish;
   globalThis.__s2pkg_plugin.use = use;
   globalThis.__s2pkg_plugin.tryUse = tryUse;
