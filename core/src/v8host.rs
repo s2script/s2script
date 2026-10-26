@@ -3568,6 +3568,48 @@ fn s2_collision_activate(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 }
 
 
+/// Reads a JS slot array into a `Vec<i32>`; a non-array is an empty set (the ops treat that as "no
+/// recipients"). An unreadable element becomes -1, which the shim skips.
+fn sound_slots(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> Vec<i32> {
+    let mut slots: Vec<i32> = Vec::new();
+    if let Ok(arr) = v8::Local::<v8::Array>::try_from(v) {
+        let n = arr.length();
+        slots.reserve(n as usize);
+        for i in 0..n {
+            let s = match arr.get_index(scope, i) {
+                Some(v) => v.integer_value(scope).unwrap_or(-1) as i32,
+                None => -1,
+            };
+            slots.push(s);
+        }
+    }
+    slots
+}
+
+/// The shared body of `__s2_sound_emit` / `__s2_sound_start`: (soundName, entIndex, entId, slots,
+/// volume) -> (guid, stackHash), guid 0 = failed. `None` when there is no op or the source entity
+/// is dead.
+fn sound_emit_call(scope: &mut v8::PinScope, args: &v8::FunctionCallbackArguments) -> Option<(u32, i32)> {
+    let ops = ENGINE_OPS.with(|o| o.get());
+    let f = ops.and_then(|o| o.sound_emit)?;
+    let name = args.get(0).to_rust_string_lossy(scope);
+    let c_name = std::ffi::CString::new(name).ok()?;
+    let ent_index = args.get(1).integer_value(scope).unwrap_or(0) as i32;
+    // E1: arg 2 = the source entity's host-id. id 0 = worldspawn / no-entity sentinel → engine
+    // serial -1 ("no serial gate", entIndex used directly shim-side). An id present but not live
+    // is a dead entity → fail closed (no emit).
+    let ent_id = js_ent_id(scope, args.get(2));
+    let ent_serial = if ent_id == 0 { -1 } else {
+        crate::entity_live::engine_serial_for(ent_index, ent_id)?
+    };
+    let slots = sound_slots(scope, args.get(3));
+    let volume = args.get(4).number_value(scope).unwrap_or(1.0) as f32;
+    let mut stack_hash: c_int = -1;
+    let guid = f(c_name.as_ptr(), ent_index, ent_serial, slots.as_ptr(), slots.len() as i32, volume,
+                 &mut stack_hash);
+    Some((guid as u32, stack_hash))
+}
+
 /// Native `__s2_sound_emit(soundName, entIndex, entSerial, slotsArray, volume) -> number`. Over the
 /// `sound_emit` op. Reads the JS slot array into a `Vec<i32>` (mirrors `__s2_user_message_send`); a
 /// non-array slots arg -> an empty set (the op returns 0 — caller requested no recipients). An
@@ -3576,33 +3618,67 @@ fn s2_collision_activate(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 fn s2_sound_emit(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_uint32(0);
+        if let Some((guid, _)) = sound_emit_call(scope, &args) { rv.set_uint32(guid); }
+    }));
+}
+
+/// Native `__s2_sound_start(...same args as __s2_sound_emit) -> [guid, stackHash] | null`. The
+/// stack hash is what `__s2_sound_set_param` needs alongside the guid. `null` for a failed emit.
+fn s2_sound_start(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let Some((guid, hash)) = sound_emit_call(scope, &args) else { return };
+        if guid == 0 { return; }
+        let g = v8::Number::new(scope, guid as f64).into();
+        let h = v8::Integer::new(scope, hash).into();
+        rv.set(v8::Array::new_with_elements(scope, &[g, h]).into());
+    }));
+}
+
+/// Native `__s2_sound_set_param(guid, stackHash, param, value, slotsArray) -> boolean`. `value` is a
+/// number (a float field) or a 3-element number array (a float3 field, e.g. a position). False on
+/// any other value shape, a NUL in the name, or no op. True means the engine was called; it does
+/// not report whether the event has that parameter.
+fn s2_sound_set_param(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
         let ops = ENGINE_OPS.with(|o| o.get());
-        let Some(f) = ops.and_then(|o| o.sound_emit) else { return };
-        let name = args.get(0).to_rust_string_lossy(scope);
+        let Some(f) = ops.and_then(|o| o.sound_set_param) else { return };
+        let guid = args.get(0).number_value(scope).unwrap_or(0.0) as u32 as c_int;
+        let hash = args.get(1).int32_value(scope).unwrap_or(-1);
+        let name = args.get(2).to_rust_string_lossy(scope);
         let Ok(c_name) = std::ffi::CString::new(name) else { return };
-        let ent_index = args.get(1).integer_value(scope).unwrap_or(0) as i32;
-        // E1: arg 2 = the source entity's host-id. id 0 = worldspawn / no-entity sentinel → engine
-        // serial -1 ("no serial gate", entIndex used directly shim-side). An id present but not live
-        // is a dead entity → fail closed (rv stays 0, no emit).
-        let ent_id = js_ent_id(scope, args.get(2));
-        let ent_serial = if ent_id == 0 { -1 } else {
-            match crate::entity_live::engine_serial_for(ent_index, ent_id) { Some(s) => s, None => return }
-        };
-        let mut slots: Vec<i32> = Vec::new();
-        if let Ok(arr) = v8::Local::<v8::Array>::try_from(args.get(3)) {
-            let n = arr.length();
-            slots.reserve(n as usize);
-            for i in 0..n {
-                let s = match arr.get_index(scope, i) {
-                    Some(v) => v.integer_value(scope).unwrap_or(-1) as i32,
-                    None => -1,
-                };
-                slots.push(s);
+        let v = args.get(3);
+        let values: Vec<f32> = if v.is_number() {
+            vec![v.number_value(scope).unwrap_or(0.0) as f32]
+        } else if let Ok(arr) = v8::Local::<v8::Array>::try_from(v) {
+            if arr.length() != 3 { return; }
+            let mut out = Vec::with_capacity(3);
+            for i in 0..3 {
+                let Some(e) = arr.get_index(scope, i) else { return };
+                if !e.is_number() { return; }
+                out.push(e.number_value(scope).unwrap_or(0.0) as f32);
             }
-        }
-        let volume = args.get(4).number_value(scope).unwrap_or(1.0) as f32;
-        let guid = f(c_name.as_ptr(), ent_index, ent_serial, slots.as_ptr(), slots.len() as i32, volume);
-        rv.set_uint32(guid as u32);
+            out
+        } else {
+            return;
+        };
+        if values.iter().any(|x| !x.is_finite()) { return; }
+        let slots = sound_slots(scope, args.get(4));
+        rv.set_bool(f(guid, hash, c_name.as_ptr(), values.as_ptr(), values.len() as c_int,
+                      slots.as_ptr(), slots.len() as c_int) != 0);
+    }));
+}
+
+/// Native `__s2_sound_stop_event(guid, slotsArray) -> boolean`. Over the `sound_stop_event` op.
+fn s2_sound_stop_event(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.sound_stop_event) else { return };
+        let guid = args.get(0).number_value(scope).unwrap_or(0.0) as u32 as c_int;
+        let slots = sound_slots(scope, args.get(1));
+        rv.set_bool(f(guid, slots.as_ptr(), slots.len() as c_int) != 0);
     }));
 }
 

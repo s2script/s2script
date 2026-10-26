@@ -6273,12 +6273,86 @@
     static SOUND_EMIT_CALLS: std::sync::Mutex<Vec<(String, i32, i32, Vec<i32>, f32)>> =
         std::sync::Mutex::new(Vec::new());
     extern "C" fn mock_sound_emit(name: *const c_char, ent_index: c_int, ent_serial: c_int,
-                                  slots: *const c_int, slot_count: c_int, volume: f32) -> c_int {
+                                  slots: *const c_int, slot_count: c_int, volume: f32,
+                                  out_stack_hash: *mut c_int) -> c_int {
         let n = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
         let s = if slots.is_null() || slot_count <= 0 { Vec::new() }
                 else { unsafe { std::slice::from_raw_parts(slots, slot_count as usize) }.to_vec() };
         SOUND_EMIT_CALLS.lock().unwrap().push((n, ent_index, ent_serial, s, volume));
+        if !out_stack_hash.is_null() { unsafe { *out_stack_hash = -12345 }; }
         7   // a fake nonzero guid
+    }
+
+    static SOUND_PARAM_CALLS: std::sync::Mutex<Vec<(i32, i32, String, Vec<f32>, Vec<i32>)>> =
+        std::sync::Mutex::new(Vec::new());
+    extern "C" fn mock_sound_set_param(guid: c_int, hash: c_int, name: *const c_char, values: *const f32,
+                                       n: c_int, slots: *const c_int, slot_count: c_int) -> c_int {
+        let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        let v = unsafe { std::slice::from_raw_parts(values, n as usize) }.to_vec();
+        let s = if slots.is_null() || slot_count <= 0 { Vec::new() }
+                else { unsafe { std::slice::from_raw_parts(slots, slot_count as usize) }.to_vec() };
+        SOUND_PARAM_CALLS.lock().unwrap().push((guid, hash, name, v, s));
+        1
+    }
+    static SOUND_STOP_CALLS: std::sync::Mutex<Vec<(i32, Vec<i32>)>> = std::sync::Mutex::new(Vec::new());
+    extern "C" fn mock_sound_stop_event(guid: c_int, slots: *const c_int, slot_count: c_int) -> c_int {
+        let s = if slots.is_null() || slot_count <= 0 { Vec::new() }
+                else { unsafe { std::slice::from_raw_parts(slots, slot_count as usize) }.to_vec() };
+        SOUND_STOP_CALLS.lock().unwrap().push((guid, s));
+        1
+    }
+
+    /// Sound.start returns a SoundEvent carrying the guid and the stack hash the emit op wrote;
+    /// setParam maps a number to one float and a Vector to three, rejects anything else before the
+    /// op, and stop passes the guid and recipients through.
+    #[test]
+    fn sound_start_set_param_and_stop_event() {
+        let _ = init(dummy_logger());
+        SOUND_PARAM_CALLS.lock().unwrap().clear();
+        SOUND_STOP_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(S2EngineOps {
+            sound_emit: Some(mock_sound_emit),
+            sound_set_param: Some(mock_sound_set_param),
+            sound_stop_event: Some(mock_sound_stop_event),
+            ..mock_event_ops()
+        }));
+        load_body("pse", r#"
+            const { Sound } = require("@s2script/sound");
+            const { Vector } = require("@s2script/math");
+            const ev = Sound.start("MyPack.Siren", { recipients: [2] });
+            globalThis.__g = [
+                ev.guid, ev.stackHash,
+                ev.setParam("volume", 0.25, { recipients: [4] }),
+                ev.setParam("position", new Vector(1, 2, 3)),
+                ev.setParam("bad", "loud"),
+                ev.setParam("nan", NaN),
+                ev.stop({ recipients: [1, 2] }),
+            ].join(",");
+        "#, "{}");
+        assert_eq!(eval_in_context_string("pse", "String(globalThis.__g)"),
+                   "7,-12345,true,true,false,false,true");
+        let p = SOUND_PARAM_CALLS.lock().unwrap();
+        assert_eq!(p.len(), 2);
+        assert_eq!((p[0].0, p[0].1, p[0].2.as_str(), p[0].3.clone(), p[0].4.clone()),
+                   (7, -12345, "volume", vec![0.25], vec![4]));
+        assert_eq!((p[1].2.as_str(), p[1].3.clone()), ("position", vec![1.0, 2.0, 3.0]));
+        assert_eq!(*SOUND_STOP_CALLS.lock().unwrap(), vec![(7, vec![1, 2])]);
+        shutdown();
+    }
+
+    /// With no ops table Sound.start is null and the event natives return false.
+    #[test]
+    fn sound_event_natives_degrade_without_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("psf");
+        assert_eq!(eval_in_context_string("psf",
+            "String(__s2pkg_sound.Sound.start('X'))"), "null");
+        assert_eq!(eval_in_context_string("psf",
+            "String(__s2_sound_set_param(7, 1, 'volume', 1, []))"), "false");
+        assert_eq!(eval_in_context_string("psf",
+            "String(__s2_sound_stop_event(7, []))"), "false");
+        shutdown();
     }
 
     /// __s2_sound_emit marshals (name, entIndex, entSerial, slots[], volume) into the op and

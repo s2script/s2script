@@ -158,7 +158,7 @@ typedef int (*s2_collision_activate_fn)(int index, int serial);
 typedef int (*s2_entity_set_model_fn)(int index, int serial, const char* modelName);
 typedef int (*s2_entity_listener_install_fn)(void);
 typedef const char* (*s2_entity_name_fn)(int index, int serial);
-typedef int (*s2_sound_emit_fn)(const char* soundName, int entIndex, int entSerial, const int* slots, int slotCount, float volume);
+typedef int (*s2_sound_emit_fn)(const char* soundName, int entIndex, int entSerial, const int* slots, int slotCount, float volume, int* outStackHash);
 typedef int (*s2_sound_precache_add_fn)(const char* path);
 typedef int (*s2_usercmd_hook_install_fn)(void);
 typedef double (*s2_usercmd_read_fn)(int field);
@@ -236,6 +236,8 @@ typedef int (*s2_function_frame_field_write_fn)(const S2FunctionInstanceAccess* 
 typedef int (*s2_function_frame_hidden_referenced_by_fn)(const S2FunctionInstanceAccess* access, int selector, const S2FunctionValue* entity, unsigned int offset, int* out, char* reason, int cap);
 typedef int (*s2_server_tick_count_fn)(void);
 typedef float (*s2_server_tick_interval_fn)(void);
+typedef int (*s2_sound_set_param_fn)(int guid, int stackHash, const char* param, const float* values, int valueCount, const int* slots, int slotCount);
+typedef int (*s2_sound_stop_event_fn)(int guid, const int* slots, int slotCount);
 
 /* The C-ABI engine-ops table. Field ORDER is the ABI. Generated from
  * core/engine-ops.jsonc — must stay index-for-index with the Rust mirror. */
@@ -428,4 +430,7 @@ typedef struct {
     /* --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick --- */
     s2_server_tick_count_fn server_tick_count;
     s2_server_tick_interval_fn server_tick_interval;
+    /* --- sound event parameters: SoundOpGameSystem::SetSoundEventParam / StopSoundEvent --- */
+    s2_sound_set_param_fn sound_set_param;
+    s2_sound_stop_event_fn sound_stop_event;
 } S2EngineOps;

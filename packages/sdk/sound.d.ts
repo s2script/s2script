@@ -1,5 +1,6 @@
 /** @s2script/sound — engine-generic sound: emit a named SoundEvent + register custom precache paths. */
 import type { EntityRef } from "./entity";
+import type { Vector } from "./math";
 
 /** Options for {@link Sound.emit} — the source entity, recipient slots, and volume. */
 export interface SoundEmitOptions {
@@ -12,6 +13,42 @@ export interface SoundEmitOptions {
   recipients?: number[];
   /** Volume in [0, 1]. Default 1.0 (out-of-range/NaN clamps to 1.0). */
   volume?: number;
+}
+
+/** Recipients for {@link SoundEvent.setParam} and {@link SoundEvent.stop}. */
+export interface SoundEventRecipients {
+  /** Player slots the change goes to. Omitted -> every valid client. Bots are skipped. */
+  recipients?: number[];
+}
+
+/**
+ * A sound started with {@link Sound.start}: the engine's event guid and stack hash. It is plain
+ * data, so it is safe to keep. Once the sound has finished, `setParam` and `stop` still return true
+ * but the engine ignores them.
+ */
+export interface SoundEvent {
+  /** The engine sound event guid, the same number {@link Sound.emit} returns. */
+  readonly guid: number;
+  /** The event's stack hash, which the engine needs alongside the guid to set a parameter. */
+  readonly stackHash: number;
+  /**
+   * Set a soundevent parameter on the playing sound, for example `"volume"`, `"pitch"` or
+   * `"position"`, or one of the event's own `public.*` fields. A number sets a float field and a
+   * Vector sets a three-float field.
+   *
+   * @example
+   * const ev = Sound.start("MyPack.Siren", { entity: pawn.ref });
+   * ev?.setParam("volume", 0.4);
+   * ev?.setParam("position", pawn.origin);
+   *
+   * Returns true when the engine was called. The engine does not report whether the event has a
+   * parameter by that name, and it drops a write to one that doesn't exist. Returns false for any
+   * other value type, a non-finite number, or when the engine function did not resolve.
+   */
+  setParam(name: string, value: number | Vector, opts?: SoundEventRecipients): boolean;
+  /** Stop this sound for the recipients. Returns false only when the engine function did not
+   *  resolve. */
+  stop(opts?: SoundEventRecipients): boolean;
 }
 
 /** Block-scoped precache context — valid ONLY during the onPrecache dispatch. Synchronous use
@@ -52,6 +89,9 @@ export declare const Sound: {
    *  function / stale source entity / an empty `recipients` array). An all-bot-skipped recipient
    *  set still emits to nobody (a real engine call, may return a nonzero GUID). */
   emit(name: string, opts?: SoundEmitOptions): number;
+  /** {@link Sound.emit}, keeping a handle so you can change the sound's parameters while it plays
+   *  or stop that one instance. Returns null where `emit` would return 0. */
+  start(name: string, opts?: SoundEmitOptions): SoundEvent | null;
   /**
    * Stop a named SoundEvent playing on an entity — the counterpart to {@link Sound.emit}.
    *

@@ -1146,10 +1146,10 @@
     {
       "name": "sound_emit",
       "alias": "SoundEmitFn",
-      "rust": "extern \"C\" fn(*const c_char, c_int, c_int, *const c_int, c_int, f32) -> c_int",
+      "rust": "extern \"C\" fn(*const c_char, c_int, c_int, *const c_int, c_int, f32, *mut c_int) -> c_int",
       "group": "Sound slice",
       "c_ret": "int",
-      "c_params": "const char* soundName, int entIndex, int entSerial, const int* slots, int slotCount, float volume",
+      "c_params": "const char* soundName, int entIndex, int entSerial, const int* slots, int slotCount, float volume, int* outStackHash",
       "shim": "s2_sound_emit"
     },
     {
@@ -1821,6 +1821,24 @@
       "c_ret": "float",
       "c_params": "void",
       "shim": "s2_server_tick_interval"
+    },
+    {
+      "name": "sound_set_param",
+      "alias": "SoundSetParamFn",
+      "rust": "extern \"C\" fn(c_int, c_int, *const c_char, *const f32, c_int, *const c_int, c_int) -> c_int",
+      "group": "sound event parameters: SoundOpGameSystem::SetSoundEventParam / StopSoundEvent",
+      "c_ret": "int",
+      "c_params": "int guid, int stackHash, const char* param, const float* values, int valueCount, const int* slots, int slotCount",
+      "shim": "s2_sound_set_param"
+    },
+    {
+      "name": "sound_stop_event",
+      "alias": "SoundStopEventFn",
+      "rust": "extern \"C\" fn(c_int, *const c_int, c_int) -> c_int",
+      "group": "sound event parameters: SoundOpGameSystem::SetSoundEventParam / StopSoundEvent",
+      "c_ret": "int",
+      "c_params": "int guid, const int* slots, int slotCount",
+      "shim": "s2_sound_stop_event"
     }
   ]
 }

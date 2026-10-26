@@ -411,6 +411,36 @@
         "resolve": "direct"
       }
     },
+    // Sound event parameters slice (SoundEvent.setParam / SoundEvent.stop). Both are members of the
+    // SoundOpGameSystem game system, reached at call time by name through the game-system factory
+    // list (CBaseGameSystemFactory::GetGlobalPtrByName, sm_pFirst from
+    // IGameSystem_InitAllSystems_pFirst). Unique on the Oct 22 2026 build (libserver.so BuildID
+    // 2603388a…). Patterns are ModSharp's.
+    //
+    // void SoundOpGameSystem::SetSoundEventParam(this, IRecipientFilter*, const char* param,
+    //     CSosFieldData* value, int16 seed, bool, StartSoundEventInfo_t info), @0xf96860. The 20-byte
+    // packed info (guid, stack hash, flags, u64 recipient mask) is passed by value on the stack: the
+    // body reads the guid at [rbp+0x10] and the stack hash at [rbp+0x14]. Returns nothing; when the
+    // event's stack has no such field the engine silently drops the write. To re-locate it, the body
+    // references "CSoundOpGameSystem::SetSoundEventParam: Failed soundevent param message to: %s\n".
+    "SoundOpGameSystem_SetSoundEventParam": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 57 45 89 CF 41 56 49 89 CE",
+        "resolve": "direct",
+        "validate": { "prologue": "55 48 89 E5 41 57 45 89 CF 41 56 49 89 CE" }
+      }
+    },
+    // void SoundOpGameSystem::StopSoundEvent(this, IRecipientFilter*, uint32 guid), @0xf96d30.
+    // Returns at once for guid 0 (the leading test edx, edx).
+    "SoundOpGameSystem_StopSoundEvent": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "85 D2 74 ? 55 48 89 E5 41 57 41 56 4C 8D B7",
+        "resolve": "direct",
+        "validate": { "prologue": "85 D2 74 ? 55 48 89 E5 41 57 41 56 4C 8D B7" }
+      }
+    },
     // CBaseEntity precache — "add one resource string to the current precache manifest" helper
     // (Sound slice, review C1). RE FINDING (offline disasm of the pinned build-2000873 libserver.so,
     // VALIDATED against OUR binary — the borrowed ModSharp "manifest->vtable[0](manifest, path)" fact

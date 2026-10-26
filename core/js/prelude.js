@@ -2023,21 +2023,49 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   //     onPrecache: handler(ctx) gets a BLOCK-SCOPED PrecacheContext — ctx.add(path) is valid only
   //     during the dispatch (the shim's manifest stash is live only then; a stashed ctx used after
   //     the handler returns is a no-op false). Fires at map load / mapchange. ---
+  function __s2_sound_slots(recipients) {
+    if (Array.isArray(recipients)) return recipients;
+    var slots = [];
+    for (var s = 0; s < __s2_MAX_CLIENTS; s++) if (__s2_client_valid(s)) slots.push(s);
+    return slots;
+  }
+  function __s2_sound_args(name, opts) {
+    opts = opts || {};
+    var idx = 0, id = 0;                          // worldspawn / global-2D default (id 0 = no serial gate)
+    var e = opts.entity;
+    if (e && typeof e.index === "number" && typeof e.id === "number") {
+      idx = e.index | 0; id = e.id;              // raw number (no | 0 — a host-id can exceed 2^31)
+    }
+    var vol = (opts.volume == null) ? 1.0 : +opts.volume;
+    return [String(name), idx, id, __s2_sound_slots(opts.recipients), vol];
+  }
+  // SoundEvent — what Sound.start returns: the engine's event guid plus its stack hash, which
+  // SetSoundEventParam needs too. Plain numbers, no pointer, so a handle kept past the sound's end
+  // is harmless: the engine ignores a guid that is no longer playing.
+  function SoundEvent(guid, stackHash) {
+    Object.defineProperty(this, "guid", { value: guid, enumerable: true });
+    Object.defineProperty(this, "stackHash", { value: stackHash, enumerable: true });
+  }
+  SoundEvent.prototype.setParam = function (param, value, opts) {
+    var v;
+    if (typeof value === "number") v = value;
+    else if (value && typeof value === "object" && typeof value.x === "number" &&
+             typeof value.y === "number" && typeof value.z === "number") v = [value.x, value.y, value.z];
+    else return false;
+    return __s2_sound_set_param(this.guid, this.stackHash, String(param), v,
+                                __s2_sound_slots((opts || {}).recipients));
+  };
+  SoundEvent.prototype.stop = function (opts) {
+    return __s2_sound_stop_event(this.guid, __s2_sound_slots((opts || {}).recipients));
+  };
   var __s2_sound = {
     emit: function (name, opts) {
-      opts = opts || {};
-      var idx = 0, id = 0;                          // worldspawn / global-2D default (id 0 = no serial gate)
-      var e = opts.entity;
-      if (e && typeof e.index === "number" && typeof e.id === "number") {
-        idx = e.index | 0; id = e.id;              // raw number (no | 0 — a host-id can exceed 2^31)
-      }
-      var slots = opts.recipients;
-      if (!Array.isArray(slots)) {
-        slots = [];
-        for (var s = 0; s < __s2_MAX_CLIENTS; s++) if (__s2_client_valid(s)) slots.push(s);
-      }
-      var vol = (opts.volume == null) ? 1.0 : +opts.volume;
-      return __s2_sound_emit(String(name), idx, id, slots, vol);
+      return __s2_sound_emit.apply(null, __s2_sound_args(name, opts));
+    },
+    // start(name, opts) — emit, keeping a handle for setParam / stop. null when nothing played.
+    start: function (name, opts) {
+      var r = __s2_sound_start.apply(null, __s2_sound_args(name, opts));
+      return r ? new SoundEvent(r[0], r[1]) : null;
     },
     // stop(name, opts) — the counterpart to emit. UNLIKE emit, an entity is REQUIRED: the engine
     // call behind this is an instance method on the entity, reached through the books-gated entity

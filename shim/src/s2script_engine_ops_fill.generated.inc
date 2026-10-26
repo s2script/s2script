@@ -189,3 +189,6 @@
     // --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick ---
     ops.server_tick_count = &s2_server_tick_count;
     ops.server_tick_interval = &s2_server_tick_interval;
+    // --- sound event parameters: SoundOpGameSystem::SetSoundEventParam / StopSoundEvent ---
+    ops.sound_set_param = &s2_sound_set_param;
+    ops.sound_stop_event = &s2_sound_stop_event;

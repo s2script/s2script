@@ -365,6 +365,9 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
         s2_collision_activate,
     );
     set_native(scope, global_obj, "__s2_sound_emit", s2_sound_emit);
+    set_native(scope, global_obj, "__s2_sound_start", s2_sound_start);
+    set_native(scope, global_obj, "__s2_sound_set_param", s2_sound_set_param);
+    set_native(scope, global_obj, "__s2_sound_stop_event", s2_sound_stop_event);
     set_native(
         scope,
         global_obj,

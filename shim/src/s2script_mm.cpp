@@ -4109,11 +4109,20 @@ struct EmitSound_t {
     uint16           m_nPitch            = 100;   // PITCH_NORM; dead in the engine (CSSharp comment)
     uint8            m_nFlags            = 0;      // 0 = attach to the entity index
 };
+// The engine's StartSoundEventInfo_t: 20 packed bytes, guid @0, stack hash @4, flags @8, u64
+// recipient mask @12. The core EmitSound fn (@0x1b89b10 on the Oct 22 build) initializes exactly
+// that span of its sret ([rdi] = 0xffffffff00000000, [rdi+8] = 0, [rdi+0xc] = 0) and the
+// SoundOpGameSystem members take it by value. This return type stays 24 bytes (CSSharp's size), so
+// it still comes back through a hidden sret and the engine writes into the first 20.
 struct SndOpEventGuid_t {
     uint32 m_nGuid;
-    uint64 m_hStackHash;
-    uint64 pad;   // CSSharp: "size might be incorrect" — harmless for an out-value we only read m_nGuid from
+    int32  m_nStackHash;
+    int32  m_nFlags;
+    uint32 m_nRecipientsLo;
+    uint32 m_nRecipientsHi;
+    uint32 pad;
 };
+static_assert(sizeof(SndOpEventGuid_t) == 24, "EmitSound sret buffer");
 typedef SndOpEventGuid_t (*EmitSoundFn_t)(S2RecipientFilter& filter, CEntityIndex ent,
                                           const EmitSound_t& params);
 static EmitSoundFn_t s_pEmitSound = nullptr;   // sig-resolved in Load(); null -> op no-ops
@@ -4132,8 +4141,11 @@ static EmitSoundFn_t s_pEmitSound = nullptr;   // sig-resolved in Load(); null -
 // (NaN/out-of-range -> 1.0). NOTE (Variant B): the engine call takes the ENTITY INDEX, not the
 // pointer; the serial-gate is kept anyway (resolve `ent`, return 0 if stale) so a dead EntityRef
 // still degrades to 0 — the resolved pointer is simply unused past the gate.
+//
+// outStackHash (nullable) receives the event's stack hash, which SetSoundEventParam needs alongside
+// the guid. It is written only when the engine was called.
 static int s2_sound_emit(const char* soundName, int entIndex, int entSerial,
-                         const int* slots, int slotCount, float volume) {
+                         const int* slots, int slotCount, float volume, int* outStackHash) {
     if (!s_pEmitSound || !soundName || !soundName[0]) return 0;
     if (!IsAddressInServerText(reinterpret_cast<void*>(s_pEmitSound))) return 0;
     if (!slots || slotCount <= 0) return 0;                    // CALLER requested no recipients -> no-op
@@ -4161,7 +4173,112 @@ static int s2_sound_emit(const char* soundName, int entIndex, int entSerial,
     SndOpEventGuid_t guid = s_pEmitSound(filter, CEntityIndex(entIndex), params);
     META_CONPRINTF("[s2script] EmitSound '%s' recipients=%d -> guid=%u\n",
                    soundName, filter.Count(), guid.m_nGuid);
+    if (outStackHash) *outStackHash = guid.m_nStackHash;
     return static_cast<int>(guid.m_nGuid);
+}
+
+// ---------------------------------------------------------------------------
+// Sound event parameters (SoundEvent.setParam / SoundEvent.stop). Both engine functions are
+// members of the SoundOpGameSystem game system. The instance is looked up by name through the
+// engine's game-system factory list at call time, never cached: on the Oct 22 build its factory is
+// a static one (IsReallocating returns 0, GetStaticGameSystem returns [factory+0x18]), but nothing
+// here depends on that beyond the SDK's own GetGlobalPtrByName.
+// ---------------------------------------------------------------------------
+#pragma pack(push, 1)
+struct S2StartSoundEventInfo {
+    uint32 m_nGuid;
+    int32  m_nStackHash;
+    int32  m_nFlags;
+    uint64 m_nRecipients;
+};
+#pragma pack(pop)
+static_assert(sizeof(S2StartSoundEventInfo) == 20, "StartSoundEventInfo_t is 20 packed bytes");
+
+// CSosFieldData: { int32 atomic type; int8 field type; int32 data size; int32 alloc size } then the
+// value. The engine builds the same header for a position (atomic 1, field 10, 12, 12, then a
+// pointer to the floats) in the core EmitSound fn and frees that pointer itself afterwards, so a
+// write never takes ownership of the value.
+enum : int32 { kSosAtomicNumeric = 1 };
+enum : int8  { kSosFieldFloat = 8, kSosFieldFloat3 = 10 };
+struct S2SosFieldHeader {
+    int32 m_nAtomicType;
+    int8  m_nFieldType;
+    int32 m_nDataSize;
+    int32 m_nAllocSize;
+};
+struct S2SosFieldFloat : S2SosFieldHeader { float m_flValue; };
+struct S2SosFieldFloat3 : S2SosFieldHeader { const float* m_pValue; };
+static_assert(offsetof(S2SosFieldFloat, m_flValue) == 16, "CSosFieldDataFloat value offset");
+static_assert(offsetof(S2SosFieldFloat3, m_pValue) == 16, "CSosFieldDataFloat3 value offset");
+
+typedef void (*SoundSetParamFn_t)(void* system, IRecipientFilter* filter, const char* param,
+                                  void* value, int16 seed, bool unknown, S2StartSoundEventInfo info);
+typedef void (*SoundStopEventFn_t)(void* system, IRecipientFilter* filter, uint32 guid);
+static SoundSetParamFn_t  s_pSoundSetParam  = nullptr;   // sig-resolved in Load(); null -> op no-ops
+static SoundStopEventFn_t s_pSoundStopEvent = nullptr;
+
+static void* SoundOpGameSystem() {
+    if (!CBaseGameSystemFactory::sm_pFirst || !*CBaseGameSystemFactory::sm_pFirst) return nullptr;
+    return CBaseGameSystemFactory::GetGlobalPtrByName("SoundOpGameSystem");
+}
+
+// Recipients as for sound_emit: bots are skipped, an empty request means nobody. Returns the mask.
+static uint64 FillSoundFilter(S2RecipientFilter& filter, const int* slots, int slotCount) {
+    uint64 mask = 0;
+    for (int i = 0; slots && i < slotCount; i++) {
+        int slot = slots[i];
+        if (slot < 0 || slot >= 64) continue;
+        if (!S2Engine_GetPlayerNetInfo(slot)) continue;
+        filter.AddRecipient(slot);
+        mask |= uint64(1) << slot;
+    }
+    return mask;
+}
+
+// sound_set_param: 1 value -> a float field, 3 values -> a float3 (a position). Returns 1 when the
+// engine was called. The engine reports nothing back, so an unknown parameter name also returns 1.
+static int s2_sound_set_param(int guid, int stackHash, const char* param, const float* values,
+                              int valueCount, const int* slots, int slotCount) {
+    if (!s_pSoundSetParam || !param || !param[0] || !values) return 0;
+    if (guid == 0 || guid == -1 || stackHash == -1) return 0;
+    if (valueCount != 1 && valueCount != 3) return 0;
+    if (!IsAddressInServerText(reinterpret_cast<void*>(s_pSoundSetParam))) return 0;
+    void* system = SoundOpGameSystem();
+    if (!system) return 0;
+    S2RecipientFilter filter;
+    S2StartSoundEventInfo info;
+    info.m_nGuid       = static_cast<uint32>(guid);
+    info.m_nStackHash  = stackHash;
+    info.m_nFlags      = 0;
+    info.m_nRecipients = FillSoundFilter(filter, slots, slotCount);
+    if (valueCount == 1) {
+        S2SosFieldFloat v;
+        v.m_nAtomicType = kSosAtomicNumeric;
+        v.m_nFieldType  = kSosFieldFloat;
+        v.m_nDataSize   = v.m_nAllocSize = sizeof(float);
+        v.m_flValue     = values[0];
+        s_pSoundSetParam(system, &filter, param, &v, 0, false, info);
+    } else {
+        float xyz[3] = { values[0], values[1], values[2] };
+        S2SosFieldFloat3 v;
+        v.m_nAtomicType = kSosAtomicNumeric;
+        v.m_nFieldType  = kSosFieldFloat3;
+        v.m_nDataSize   = v.m_nAllocSize = sizeof xyz;
+        v.m_pValue      = xyz;
+        s_pSoundSetParam(system, &filter, param, &v, 0, false, info);
+    }
+    return 1;
+}
+
+static int s2_sound_stop_event(int guid, const int* slots, int slotCount) {
+    if (!s_pSoundStopEvent || guid == 0 || guid == -1) return 0;
+    if (!IsAddressInServerText(reinterpret_cast<void*>(s_pSoundStopEvent))) return 0;
+    void* system = SoundOpGameSystem();
+    if (!system) return 0;
+    S2RecipientFilter filter;
+    FillSoundFilter(filter, slots, slotCount);
+    s_pSoundStopEvent(system, &filter, static_cast<uint32>(guid));
+    return 1;
 }
 
 // entity_listener_install: called by core on the first-ever JS entity-lifecycle subscribe. Set the
@@ -5053,6 +5170,21 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                     META_CONPRINTF("[s2script] EmitSound resolved @%p (Sound.emit)\n",
                                    reinterpret_cast<void*>(s_pEmitSound));
                 }   // esOff == kFail: ResolveSigValidated already recorded the reason
+            }
+            // Sound event parameters: SoundOpGameSystem::SetSoundEventParam / StopSoundEvent, both
+            // DIRECT prologue signatures with validators. Unresolved -> the op returns 0.
+            for (const char* name : { "SoundOpGameSystem_SetSoundEventParam",
+                                      "SoundOpGameSystem_StopSoundEvent" }) {
+                auto it = sigs.find(name);
+                if (it == sigs.end()) { GamedataResult(name, false, "signature absent from gamedata"); continue; }
+                int64_t off = ResolveSigValidated(name, it->second);
+                ModText mt = FindModuleText(it->second.module.c_str());
+                if (off == s2sig::kFail || !mt.text) continue;
+                void* fn = const_cast<uint8_t*>(mt.text) + off;
+                if (strcmp(name, "SoundOpGameSystem_SetSoundEventParam") == 0)
+                    s_pSoundSetParam = reinterpret_cast<SoundSetParamFn_t>(fn);
+                else
+                    s_pSoundStopEvent = reinterpret_cast<SoundStopEventFn_t>(fn);
             }
             // Sound slice (precache ADD — review C1): resolve the engine's own "add one resource string
             // to the current precache manifest" helper (@0x19eca40 on build 2000873). The precache HOOK
