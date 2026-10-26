@@ -55,8 +55,9 @@
     // MUST NOT be wired to these until independently re-confirmed (candidate worth investigating:
     // this build's vtable slot 27, which reads a Vector* arg and computes a throw velocity —
     // unconfirmed, not wired). Values kept as given for now; Task 4/5 own the go/no-go call.
-    "CCSPlayer_ItemServices_RemoveWeapons":          { "linuxsteamrt64": 25 },
-    "CCSPlayer_ItemServices_DropActivePlayerWeapon": { "linuxsteamrt64": 24 }
+    // DropActivePlayerWeapon's borrowed index 24 was removed on 2026-10-25: dropping is now the
+    // CCSPlayer_WeaponServices_DropWeapon signature below, so nothing reads it.
+    "CCSPlayer_ItemServices_RemoveWeapons":          { "linuxsteamrt64": 25 }
   },
   "signatures": {
     // Camera bindings: self-resolved on build 2000908; see docs/CS2-UI-UPDATE.md.
@@ -230,6 +231,19 @@
     // re-derive the mask from the new slot's prologue; CSSharp's slot number is a hint, never a number.
     // NOTE: CSSharp additionally calls CBasePlayerController::SetPawn first — its sig has 0 hits on
     // 2000875 (stale); Respawn-alone is Plan A, measured at the live gate (spec §2.3).
+    // CCSPlayer_WeaponServices::DropWeapon(weapon, unused, const Vector* velocity), the virtual at
+    // slot 29 of CCSPlayer_WeaponServices' primary vtable on the Oct 22 2026 build (ModSharp's slot
+    // number was the hint; Swiftly calls the same slot with (this, weapon, 0, momentum)). Body:
+    // `test rsi,rsi; je ret` (a null weapon is a no-op), rdx is never read, and a null rcx selects
+    // the engine's default throw velocity. Masks: the je rel32. `sub rsp, 0x168` is the frame size.
+    "CCSPlayer_WeaponServices_DropWeapon": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "48 85 F6 0F 84 ? ? ? ? 55 48 89 E5 41 57 41 56 41 55 41 54 53 48 89 F3 48 81 EC 68 01 00 00",
+        "resolve": "direct",
+        "validate": { "vtable-member": "CCSPlayer_WeaponServices" }
+      }
+    },
     "CCSPlayerController_Respawn": {
       "linuxsteamrt64": {
         "module": "libserver.so",
@@ -605,6 +619,18 @@
       "target": { "kind": "signature", "name": "CBasePlayerPawn_RemovePlayerItem" },
       "args": ["entity"],
       "argNames": ["weapon"],
+      "returns": "void"
+    },
+
+    // pawn.dropWeapon(weapon) / pawn.dropActiveWeapon(). Same receiver hop as removePlayerItem.
+    // `unused` and `velocity` are always 0 from pawn.js: a null velocity pointer makes the engine
+    // pick its own throw velocity, which is what a player's own drop does. The weapon stays a live
+    // world entity (a pickup), unlike removePlayerItem, which destroys it.
+    "dropWeapon": {
+      "receiver": { "kind": "entity", "via": { "class": "CBasePlayerPawn", "field": "m_pWeaponServices" } },
+      "target": { "kind": "signature", "name": "CCSPlayer_WeaponServices_DropWeapon" },
+      "args": ["entity", "int", "int"],
+      "argNames": ["weapon", "unused", "velocity"],
       "returns": "void"
     },
 

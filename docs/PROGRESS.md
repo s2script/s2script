@@ -713,6 +713,40 @@ Reproduced with the vendored KHook built as a library (two PRE-only hooks on a c
 the peer's callback; with `Recall` the peer sees the event, the original runs once with
 `bDontBroadcast=1`. Live gate pending.
 
+## 2026-10-25 — SDKHook Use, Spawn, PreThink and GetMaxHealth on CS2
+
+The shim already had per-entity dispatchers for these types, but `gamedata/sdkhooks` had no
+signature for them, so `SDKHook` returned `false`. They are now self-resolved on the Oct 22 2026
+build by walking the RTTI vtables of the binaries in `/mnt/project-files/binaries/2026-10-22/`:
+`Spawn` slot 10 (CPhysicsProp override), `Use` slot 146 (CBaseDoor override), `GetMaxHealth` slot
+184 (the shared `m_iMaxHealth` getter), `PreThink` slot 355 and `PostThink` slot 356 on
+CCSPlayerPawn. The old `PostThink` pattern no longer matched on that build. ModSharp's vtable table
+and Deadworks' Deadlock table were the hints; no slot is shipped.
+
+Two dispatchers had Source 1 prototypes that would have corrupted the call once a signature
+landed. Source 2's `CEntityInstance::Spawn` takes `const CEntityKeyValues*`, and `Use` takes one
+`const EntityUseInput_t*` (activator, caller, type, value) instead of four arguments. Both hooks
+now take and forward the real argument. The JavaScript callback shapes are unchanged. `Think` has no
+Source 2 virtual and stays unsupported. Live gate pending.
+## 2026-10-25 — Drop weapons as world pickups
+
+`pawn.dropActiveWeapon()` was a stub that always returned `false`, because the borrowed
+`DropActivePlayerWeapon` vtable index 24 turned out to be a GiveNamedItem thunk. Dropping now goes
+through `CCSPlayer_WeaponServices::DropWeapon`, the virtual at slot 29 of that class's vtable on the
+Oct 22 2026 build, found by signature and gated by `vtable-member`. ModSharp's slot number and
+Swiftly's call shape `(this, weapon, 0, momentum)` were the hints. The new `pawn.dropWeapon(weapon)`
+drops one held weapon; both refuse a weapon the pawn does not hold. The engine picks the throw
+velocity (a null velocity pointer). The unused index 24 is gone from `games/cs2/gamedata`. TTT's
+framework-gap doc listed this as a missing binding. Live gate pending.
+## 2026-10-25 — Center, alert and HTML center text in @s2script/cs2
+
+SourceMod plugins print to the center of the screen constantly (`PrintCenterText`), and Swiftly and
+ModSharp both ship center, alert and HTML center helpers. s2script only had `HintText.to`. The cs2
+package now has `CenterText` and `AlertText` (`TextMsg` with dest 4 and 6, the numbers Swiftly
+uses), and `CenterHtml`, which keeps `show_survival_respawn_status` on screen by re-sending it every
+frame until its duration runs out. That is the loop `plugins/disabled/rockthevote` writes by hand.
+The frame handler is subscribed only while a message is showing, from the calling plugin's context,
+so its ledger tears it down at unload. Live gate pending (which dest renders where is a client fact).
 ## 2026-10-25 — Weapon VData in @s2script/cs2
 
 Plugins that check a weapon's max clip, price or damage had no way to read it: those values live in
