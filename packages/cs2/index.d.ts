@@ -7,7 +7,7 @@
  * are GENERATED (hooks.generated.d.ts) from gamedata/cs2/game.cs2.jsonc's `hooks` by
  * `s2script gen-hooks`; this file adds the hand-written entry points on top.
  */
-import type { EntityRef } from "@s2script/sdk/entity";
+import type { EntityRef, EntityKeyValueMap } from "@s2script/sdk/entity";
 import type { Vector, QAngle } from "@s2script/sdk/math";
 import type { TraceHit } from "@s2script/sdk/trace";
 export * from "./schema.generated";
@@ -64,6 +64,12 @@ export type {
 export { CustomHudLayout, DEFAULT_HUD_DESCRIPTOR, hudkit, PROBE_LAYOUT, ui } from "./ui";
 export { AcquireMethod, AcquireResult, items } from "./items";
 export type { CanAcquireView, CtxItems, ItemsApi } from "./items";
+export { chat } from "./chat";
+export type { CanHearChatView, ChatApi } from "./chat";
+export { weapons } from "./weapons";
+export type { WeaponDropView, WeaponGateView, WeaponsApi } from "./weapons";
+export { movement } from "./movement";
+export type { MoveView, MovementApi } from "./movement";
 export declare const HudInput: {
   /** Arm Tab-to-activate for `slot`. Replaces any previous arm on that slot. */
   arm(slot: number, opts: { onActivate: () => void }): void;
@@ -79,7 +85,7 @@ import type { SceneNode, WeaponServices, MovementServices, AimPunchServices, Mat
 export { GameEvent } from "@s2script/sdk/events";
 export type { GameEvents } from "./events.generated";
 export { CsItem } from "./csitem.generated";
-export { Weapon } from "./weapon";
+export { Weapon, WeaponData } from "./weapon";
 // A re-export (`export { Weapon }`) does NOT create a local binding, so the Pawn interface below
 // referenced an unbound `Weapon` → TS2304, swallowed by the gate's skipLibCheck into `any`. Bind it
 // locally too (the SceneNode pattern on line 14) so activeWeapon/weapons/giveNamedItem stay typed.
@@ -107,6 +113,9 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   readonly controller: Player | null;
   /** World-space position (via the CGameSceneNode pointer chain), or null if stale. */
   readonly origin: Vector | null;
+  /** Where the camera sits: `origin` + the networked view offset (SourceMod `GetClientEyePosition`).
+   *  Follows crouching. Null if stale, or if this build's view-offset layout fails its schema check. */
+  readonly eyePosition: Vector | null;
   /** Body world rotation (via the CGameSceneNode pointer chain); distinct from the view/aim `eyeAngles`. */
   readonly angles: QAngle | null;
   /** The pawn's scene node (world transform) — absOrigin/absRotation/scale/…, via the CBodyComponent→CGameSceneNode chain. */
@@ -165,9 +174,14 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   stripWeapons(): boolean;
   /** Alias of stripWeapons — destroy all held weapons. */
   disarm(): boolean;
-  /** DEFERRED (always false): a true drop spawns a world pickup, not composable from remove(); needs the
-   *  DropActivePlayerWeapon signature-resolve. */
+  /** Drop the deployed weapon as a world pickup (SourceMod `CS_DropWeapon` on the active weapon). The
+   *  engine picks the throw velocity. false if there is no active weapon, the binding is degraded, or
+   *  the pawn is stale. */
   dropActiveWeapon(): boolean;
+  /** Drop one weapon this pawn holds as a world pickup (SourceMod `CS_DropWeapon`). Unlike
+   *  {@link removeWeapon}, the weapon entity survives. false if the weapon is not this pawn's, either
+   *  handle is stale, or the binding is degraded. */
+  dropWeapon(weapon: Weapon): boolean;
   /** The current fire gate (m_flNextAttack, seconds), or null if unresolved/stale. Read companion to blockFiring. */
   readonly nextAttack: number | null;
   /** Block ALL weapon fire for `seconds` (default effectively-indefinite) by writing m_flNextAttack. The
@@ -178,7 +192,7 @@ export interface Pawn extends Omit<CCSPlayerPawn, "controller"> {
   allowFiring(): boolean;
   /**
    * Ray-trace from this pawn's eyes along its view angles — "what is this player looking at".
-   * Eye = the body world origin + a standing view-offset (~64u); direction = `eyeAngles`. Ignores
+   * Eye = `eyePosition` (falling back to origin + 64u if it is unavailable); direction = `eyeAngles`. Ignores
    * this pawn's own entity unless `ignoreEntity` is given. Returns null if the transform/angles are
    * unreadable (stale ref). `distance` defaults to 8192.
    */
@@ -412,6 +426,54 @@ export declare const Beam: {
   draw(start: Vector, end: Vector, opts?: { color?: [number, number, number, number]; width?: number }): BeamHandle | null;
 };
 
+/** A live info_particle_system handle from {@link Particles.create}. */
+export interface ParticleHandle {
+  /** The backing info_particle_system entity ref. */
+  readonly ref: EntityRef;
+  /** Start (or restart) the effect. False if the ref is stale. */
+  start(): boolean;
+  /** Stop emitting; live particles finish their lifetime. False if the ref is stale. */
+  stop(): boolean;
+  /** Replace who sees the effect (slots or players); an empty list hides it from everyone. */
+  setVisibleTo(viewers: readonly (number | Player)[]): boolean;
+  /** Destroy the entity; false if it's already gone. */
+  remove(): boolean;
+}
+/** Options for {@link Particles.create}. */
+export interface ParticleOptions {
+  /** Orientation (pitch yaw roll). Default 0 0 0. */
+  angles?: Vector | { x: number; y: number; z: number } | [number, number, number];
+  /** Only these players (slots or {@link Player}s) see it — the recipient filter of SourceMod's
+   *  `TE_SendToClient`. Omitted = everyone. Enforced every snapshot through `@s2script/sdk/transmit`. */
+  visibleTo?: readonly (number | Player)[];
+  /** Follow this entity (the `SetParent` input). */
+  parent?: EntityRef;
+  /** Remove the entity after this many seconds. Runs on the calling plugin's timer, so an unload
+   *  before it fires leaves the entity in the world. */
+  lifetime?: number;
+  /** false = create stopped; call {@link ParticleHandle.start}. Default true. */
+  start?: boolean;
+  /** Extra info_particle_system keyvalues, e.g. control points (`cpoint1`). */
+  keyvalues?: EntityKeyValueMap;
+}
+/**
+ * Particle effects (SourceMod `TE_SetupParticle` / ModSharp `DispatchParticleEffect`), as an
+ * info_particle_system entity. The effect must be precached: built-in effects are, a custom `.vpcf`
+ * is added in `ctx.server.onPrecache`. The entity is game-world-owned; call `remove()` or pass
+ * `lifetime`.
+ * @example
+ * import { Particles } from "@s2script/cs2";
+ * Particles.create("particles/explosions_fx/explosion_basic.vpcf", pawn.origin!, { lifetime: 3, visibleTo: [player] });
+ */
+export declare const Particles: {
+  /** Place `effect` at `origin`. Returns a handle, or null if the entity couldn't be created. */
+  create(
+    effect: string,
+    origin: Vector | { x: number; y: number; z: number } | [number, number, number],
+    opts?: ParticleOptions
+  ): ParticleHandle | null;
+};
+
 /** A live read view over CCSGameRules (via the cs_gamerules proxy). Every field is liveness-gated at the
  *  proxy root and reads null if the proxy is gone (e.g. between maps). */
 export interface GameRulesView {
@@ -460,6 +522,10 @@ export interface GameRulesView {
    *  to `onTerminateRound`. delay (default 5s) is the engine's pre-restart delay. Returns false
    *  when degraded (unresolved signature, stale proxy, or reason outside 0..22). */
   terminateRound(reason: number, delay?: number): boolean;
+  /** End the match now and go to the scoreboard and map vote (CGameRules::GoToIntermission); the
+   *  engine changes level after `mp_match_restart_delay`. `abortedMatch` marks the match as abandoned
+   *  rather than finished. Returns false when degraded (unresolved slot or stale proxy). */
+  goToIntermission(abortedMatch?: boolean): boolean;
 }
 /** Read + drive CCSGameRules state. get() re-finds the cs_gamerules proxy each call (liveness-gated
  *  cache); returns null when no proxy exists (e.g. pre-map-load). */
@@ -468,6 +534,42 @@ export declare const GameRules: {
   get(): GameRulesView | null;
   /** Convenience over get()?.terminateRound(reason, delay) — false when no proxy. */
   terminateRound(reason: number, delay?: number): boolean;
+  /** Convenience over get()?.goToIntermission(abortedMatch) — false when no proxy. */
+  goToIntermission(abortedMatch?: boolean): boolean;
+  /** Run `handler` at the start of every round (and on `mp_restartgame`), before the engine resets
+   *  the round (CCSGameRules::RestartRound). Every handler runs and the round always restarts.
+   *  Subscribe during OnPluginStart; unsubscribed at unload. */
+  onRoundRestart(handler: () => void): void;
+  /** As {@link onRoundRestart}, after the engine has reset the round and respawned players. */
+  onRoundRestartPost(handler: () => void): void;
+};
+
+/** The grenade kinds {@link Grenades.emit} can spawn. */
+export type GrenadeKind = "hegrenade" | "flashbang" | "smokegrenade" | "molotov" | "decoy";
+/** A vector as a `Vector`, any `{x, y, z}`, or an `[x, y, z]` triple. */
+export type GrenadeVector = { x: number; y: number; z: number } | readonly [number, number, number];
+/** Where and how {@link Grenades.emit} throws the projectile. */
+export interface GrenadeOptions {
+  /** World position the projectile starts at. */
+  origin: GrenadeVector;
+  /** Initial velocity in units per second (default zero: it drops). */
+  velocity?: GrenadeVector;
+  /** Initial orientation (default zero). */
+  angles?: GrenadeVector;
+  /** Initial spin in degrees per second (default zero). */
+  angularVelocity?: GrenadeVector;
+  /** Who threw it, for kill credit and flash/smoke team rules. A Player is mapped to its pawn.
+   *  Default: no owner. */
+  owner?: Pawn | Player | null;
+  /** Smoke only: the team whose colour the smoke takes (2 = T, 3 = CT). Default: the owner's team. */
+  team?: number;
+}
+/** Spawn live grenades (Swiftly `EmitGrenade`). */
+export declare const Grenades: {
+  /** Spawn an already-thrown `kind` projectile and return it. Null when the engine function is
+   *  unavailable on this build, the options are not finite numbers, the owner is not a live pawn,
+   *  or the kind is unknown. */
+  emit(kind: GrenadeKind, opts: GrenadeOptions): EntityRef | null;
 };
 
 /** Team scoreboard scores (cs_team_manager entities, CTeam.m_iScore + notifyStateChanged). team is
@@ -479,7 +581,21 @@ export declare const Teams: {
   setScore(team: number, score: number): boolean;
   /** Add `delta` to `team`'s scoreboard score. false if the entity isn't found. */
   addScore(team: number, delta: number): boolean;
+  /** Decide a player's team request (CCSPlayerController::HandleCommandJoinTeam): the jointeam
+   *  command and the team menu. Return `HookResult.Handled` or `Stop` to refuse it, so the player
+   *  stays on their team; `Stop` also skips later handlers. Plugin `changeTeam`/`switchTeam` calls do
+   *  not come through here. Subscribe during OnPluginStart; unsubscribed at unload. */
+  onJoinTeam(handler: (view: JoinTeamView) => HookResultValue | void): void;
 };
+/** A team request, valid during the {@link Teams.onJoinTeam} handler. */
+export interface JoinTeamView {
+  /** Who asked, or null when the controller could not be adopted. */
+  readonly player: Player | null;
+  /** The team asked for: 0 = auto-select, 1 = spectator, 2 = T, 3 = CT. */
+  readonly team: number;
+  /** The request asked to queue for the team instead of joining now. */
+  readonly queue: boolean;
+}
 
 /** CS2 round-end reasons (CCSGameRules::TerminateRound / round_end.reason). Binary-validated against
  *  our build (reason bound = 22; #SFUI_Notice_* switch). Gaps 2/3/15 are removed legacy VIP reasons. */
@@ -529,6 +645,39 @@ export declare const Shake: {
 export declare const HintText: {
   /** Show `text` as hint text to `slot`. false if the message/fields don't resolve. */
   to(slot: number, text: string): boolean;
+};
+
+/** Center-screen text (SourceMod `PrintCenterText` / `PrintCenterTextAll`), a `TextMsg` with
+ *  `HUD_PRINTCENTER`. false if the message does not resolve or `slot` has no client. */
+export declare const CenterText: {
+  /** Show `text` in the center of `slot`'s screen. */
+  to(slot: number, text: string): boolean;
+  /** Show `text` in the center of every client's screen. */
+  toAll(text: string): boolean;
+};
+/** CS2's alert line above the center text (`TextMsg` with `HUD_PRINTALERT`). Same returns as
+ *  {@link CenterText}. */
+export declare const AlertText: {
+  /** Show `text` as an alert to `slot`. */
+  to(slot: number, text: string): boolean;
+  /** Show `text` as an alert to every client. */
+  toAll(text: string): boolean;
+};
+/**
+ * The HTML center panel (`show_survival_respawn_status`; other frameworks call this
+ * `PrintCenterHtml` / `SendCenterHTML`). The client paints it one frame per event, so the package
+ * re-sends it every frame until `seconds` (default 5) run out. Each slot shows one message per
+ * plugin; a later call replaces it. The re-send stops at the calling plugin's unload.
+ * Escape any player-supplied text before putting it in `html`.
+ */
+export declare const CenterHtml: {
+  /** Show `html` to `slot` for `seconds` (default 5; 0 or less clears it). Dead and spectating players
+   *  see it too. false if `slot` has no connected human client. */
+  to(slot: number, html: string, seconds?: number): boolean;
+  /** Show `html` to every connected human client for `seconds`. true if at least one got it. */
+  toAll(html: string, seconds?: number): boolean;
+  /** Stop showing this plugin's message to `slot`. false if none was showing. */
+  clear(slot: number): boolean;
 };
 
 /** A world-space coordinate triple (a corner or center of a {@link TriggerZoneHandle} box). */

@@ -713,6 +713,193 @@ Reproduced with the vendored KHook built as a library (two PRE-only hooks on a c
 the peer's callback; with `Recall` the peer sees the event, the original runs once with
 `bDontBroadcast=1`. Live gate pending.
 
+## 2026-10-25 — SDKHook Use, Spawn, PreThink and GetMaxHealth on CS2
+
+The shim already had per-entity dispatchers for these types, but `gamedata/sdkhooks` had no
+signature for them, so `SDKHook` returned `false`. They are now self-resolved on the Oct 22 2026
+build by walking the RTTI vtables of the binaries in `/mnt/project-files/binaries/2026-10-22/`:
+`Spawn` slot 10 (CPhysicsProp override), `Use` slot 146 (CBaseDoor override), `GetMaxHealth` slot
+184 (the shared `m_iMaxHealth` getter), `PreThink` slot 355 and `PostThink` slot 356 on
+CCSPlayerPawn. The old `PostThink` pattern no longer matched on that build. ModSharp's vtable table
+and Deadworks' Deadlock table were the hints; no slot is shipped.
+
+Two dispatchers had Source 1 prototypes that would have corrupted the call once a signature
+landed. Source 2's `CEntityInstance::Spawn` takes `const CEntityKeyValues*`, and `Use` takes one
+`const EntityUseInput_t*` (activator, caller, type, value) instead of four arguments. Both hooks
+now take and forward the real argument. The JavaScript callback shapes are unchanged. `Think` has no
+Source 2 virtual and stays unsupported. Live gate pending.
+## 2026-10-25 — Drop weapons as world pickups
+
+`pawn.dropActiveWeapon()` was a stub that always returned `false`, because the borrowed
+`DropActivePlayerWeapon` vtable index 24 turned out to be a GiveNamedItem thunk. Dropping now goes
+through `CCSPlayer_WeaponServices::DropWeapon`, the virtual at slot 29 of that class's vtable on the
+Oct 22 2026 build, found by signature and gated by `vtable-member`. ModSharp's slot number and
+Swiftly's call shape `(this, weapon, 0, momentum)` were the hints. The new `pawn.dropWeapon(weapon)`
+drops one held weapon; both refuse a weapon the pawn does not hold. The engine picks the throw
+velocity (a null velocity pointer). The unused index 24 is gone from `games/cs2/gamedata`. TTT's
+framework-gap doc listed this as a missing binding. Live gate pending.
+## 2026-10-25 — Center, alert and HTML center text in @s2script/cs2
+
+SourceMod plugins print to the center of the screen constantly (`PrintCenterText`), and Swiftly and
+ModSharp both ship center, alert and HTML center helpers. s2script only had `HintText.to`. The cs2
+package now has `CenterText` and `AlertText` (`TextMsg` with dest 4 and 6, the numbers Swiftly
+uses), and `CenterHtml`, which keeps `show_survival_respawn_status` on screen by re-sending it every
+frame until its duration runs out. That is the loop `plugins/disabled/rockthevote` writes by hand.
+The frame handler is subscribed only while a message is showing, from the calling plugin's context,
+so its ledger tears it down at unload. Live gate pending (which dest renders where is a client fact).
+## 2026-10-25 — Weapon VData in @s2script/cs2
+
+Plugins that check a weapon's max clip, price or damage had no way to read it: those values live in
+the weapon's VData (`CCSWeaponBaseVData`), which the entity reaches through `m_pSubclassVData`, a
+pointer the schema does not reflect. ModSharp locates it as the 8 bytes after `m_nSubclassID` and
+checks that `m_flAnimTime` follows 12 bytes later; `weapon.data` does the same from live schema
+offsets, so a CS2 update that moves `CBaseEntity` fields moves the pointer with them, and one that
+changes the gap disables `weapon.data` with a named reason (`Weapon.dataUnavailableReason`) instead
+of reading a guessed address. The VData field offsets are schema lookups too. The accessors are
+read-only because one VData is shared by every weapon of that class. Unit-tested against the
+Oct 22 layout (`m_nSubclassID` 1532, `m_flAnimTime` 1544); live gate pending.
+## 2026-10-25 — Chat visibility in @s2script/cs2
+
+TTT keeps the dead's chat away from the living, and jailbreak and basechat-style plugins change who
+reads team chat. `Chat.onMessage` could only drop a whole message and re-send it. ModSharp calls
+`CCSGameRules::PlayerCanHearChat` for the same per-recipient decision. `chat.onCanHear` hooks it
+through a new trusted engine function (`playerCanHearChat`, `u8(ptr,ptr,ptr,u8)`) and the
+`cs2.chat-visibility.v1` package adapter. Continue does not vote, Handled and Stop vote the written
+`canHear` (false when none), Changed votes only when it wrote, and any false wins. When anyone votes,
+the engine's rule is skipped.
+
+The ModSharp pattern was self-verified on the Oct 22 build. It is unique at 0x140cbe0, and its body
+matches the ABI. Its only caller is Host_Say's recipient loop, right before the
+CanHearAndReadChatFrom virtual. The recipe is in the gamedata comment. The recording adapter host
+now models `bool` returns. Adapter conformance tests and the real-package activation test cover the
+new binding. The live gate is pending.
+
+## 2026-10-25 — Weapon hooks in @s2script/cs2
+
+Game modes (TTT's role weapons, jailbreak's guard and prisoner loadouts) need to stop a pickup, a
+switch or a drop before it happens. Before this, a plugin could only strip the weapon afterwards.
+Swiftly and ModSharp both hook the three CCSPlayer_WeaponServices functions. `weapons.onCanUse`,
+`weapons.onCanSwitchTo` and `weapons.onDrop` hook them through three new trusted engine functions
+(`weaponCanUse` and `weaponCanSwitch` are `u8(ptr,ptr)`, `weaponDrop` is `void(ptr,ptr,ptr,ptr)`)
+and the `cs2.weapon-can-use.v1`, `cs2.weapon-can-switch.v1` and `cs2.weapon-drop.v1` package
+adapters. The gates vote `allowed` with chat visibility's rules. On a drop, Handled or Stop skips the
+original. The receiver is WeaponServices*, so `view.player` hops through the pawns'
+`m_pWeaponServices` with hiddenReferencedBy, as the pickup gate does for `m_pItemServices`.
+
+All three were self-verified on the Oct 22 build. CanUse is vtable slot 28 (it calls CanAcquire) and
+DropWeapon is slot 29 (it null-checks the weapon). Both patterns pin a unique string xref
+(`weapon_taser` and the StateChanged format string) and a vtable-member check. CanSwitch is not
+virtual. It is the ModSharp pattern, unique at 0x15f4dd0, and SelectItem (slot 31) calls it.
+Adapter conformance tests and the real-package activation test cover the bindings. The live gate is
+pending.
+
+## 2026-10-25 — Movement hooks
+
+ModSharp has ProcessMove, WalkMove and RunCommand forwards; plugins use them for speed modes,
+trampolines, bhop and anti-cheat. This slice adds the first one to `@s2script/cs2`:
+`movement.onProcessMove` and `movement.onProcessMovePost`, over a new trusted engine function
+`processMove` (CCSPlayer_MovementServices::ProcessMove, @0x15eb4a0 and slot 29 on the Oct 22
+build, anchored on "pa start %f") and the `cs2.process-move.v1` package adapter. Every subscriber
+runs, returns are ignored and movement always runs. `velocity` is writable before the move.
+
+The move data is a CMoveData, which the schema does not describe. Trusted-function record offsets
+could only come from the live schema, so a trusted source may now also name an offset in the
+package's own gamedata plus a byte delta (`{ "gamedata": key, "delta": n }`). The builder seals the
+shipped value as the catalog; the host reads the merged gamedata, so a `custom/` repair applies, and
+a missing entry degrades the functions that name it. The five CMoveData offsets (view angles 0x14,
+forward 0x2c, side 0x30, velocity 0x38, origin 0xc8) were each read off the Oct 22 libserver.so;
+the gamedata comment names the instruction that proves each one, and ModSharp agrees.
+
+Adapter conformance tests cover reads, PRE writes, POST, refusal and expiry; a core test covers the
+gamedata offset source, and the real-package test activates all eight trusted functions. The live
+gate is pending.
+
+## 2026-10-25 — Round restart and intermission
+
+ModSharp forwards CCSGameRules::RestartRound (`OnRoundRestart`/`OnRoundRestarted`) and Swiftly calls
+CGameRules::GoToIntermission; mapchooser, nextmap, warmup and round-control plugins use both. This
+slice adds them to `GameRules` in `@s2script/cs2`:
+
+- `GameRules.onRoundRestart` and `GameRules.onRoundRestartPost` run before and after the engine
+  resets the round, over a new trusted engine function `roundRestart` and the
+  `cs2.round-restart.v1` package adapter. Every subscriber runs, returns are ignored and the round
+  always restarts. RestartRound is @0x13fb280 on the Oct 22 build and is not virtual; ModSharp's
+  pattern is unique and anchored on the `lea rsi,"RestartRound"` at +1. round_prestart fires from
+  inside it, so the PRE hook runs before that event and the POST hook after round_poststart.
+- `GameRules.goToIntermission(abortedMatch?)` is a `vtable` call descriptor: slot 130, the last slot
+  of the primary CCSGameRules vtable on the Oct 22 build, @0x13f6ff0. The prologue stores esi (the
+  bool) and the string-xref at +18 names "Going to intermission...\n". The engine changes level on
+  its own after `mp_match_restart_delay`.
+
+Adapter conformance tests, engine-call wrapper tests and the real-package activation test (nine
+trusted functions) cover it. The live gate is pending.
+
+## 2026-10-25 — Spawn live grenades
+
+Swiftly's `EmitGrenade` family spawns an already-thrown projectile; JB grenade days and LRs and TTT
+gadgets need it. `Grenades.emit(kind, opts)` in `@s2script/cs2` wraps five receiverless call
+descriptors, one per projectile factory: `Create(origin*, angles*, velocity*, angularVelocity*,
+owner, itemDefIndex[, team])`, returning the projectile entity.
+
+On the Oct 22 libserver.so each factory is unique and anchored on its projectile class name, which
+appears once in the binary: HE @0xd39350, flashbang @0xd389f0, smoke @0x14710d0, decoy @0x1470300
+and molotov @0x146dbe0. The molotov builds its projectile through the entity spawner, so its anchor is
+at +0x19d and the pattern is padded to reach it. The smoke factory takes the team as a 7th, stack
+argument (`cmp [rbp+0x10],2` picks the T colour). Every body tests the owner for null.
+
+The wrapper, not the caller, supplies the item def index. The owner must be a pawn, because the
+factories read it as a CBaseCombatCharacter; a Player is mapped to its pawn and anything else is
+refused. Incendiary grenades are left out: the molotov factory would take their def index, but
+nothing verifies that it builds an incendiary. Engine-call wrapper tests cover the argument order,
+defaults, owner mapping and refusals. The live gate is pending.
+
+## 2026-10-25 — Join-team control
+
+ModSharp hooks CCSPlayerController::HandleCommandJoinTeam; JB team ratios and team locks use it.
+A `jointeam` command listener already covers the console command, but not the team menu or the
+engine's own auto-assign path through the same function. `Teams.onJoinTeam(handler)` in
+`@s2script/cs2` runs over a new trusted engine function `joinTeam` and the `cs2.join-team.v1`
+adapter: the view has the player, the team asked for and the queue flag, and Handled/Stop refuse
+the request (the original is skipped and answers false).
+
+HandleCommandJoinTeam is @0x158f5d0 on the Oct 22 build and is not virtual. Its arguments are the
+controller, the team in esi and a queue bool in edx; ecx is written before any read, so there is no
+fourth argument (ModSharp declares a coach team). The only xref to "HandleCommand_JoinTeam( %d ) -
+invalid team index.\n" sits at +0x9e0, so ModSharp's prologue pattern is padded to reach it.
+Writing the team is left out: the hook grammar has no tested path for a writable scalar argument.
+Adapter conformance tests and the real-package activation test (ten trusted functions) cover it.
+The live gate is pending.
+## 2026-10-25 — Find entities by targetname or radius
+
+Jailbreak maps name their cell doors and buttons, and TTT's map tester and many SourceMod ports look
+entities up by targetname or around a point. Only `Entity.findByClass` existed. ModSharp and
+Swiftly ship signatures for `CGameEntitySystem::FindByName` and `FindInSphere`. We need neither,
+because the shim already has the two engine-generic ops this takes. `Entity.findByName` walks the
+identity snapshot (`ent_snapshot`, the books repair sweep's chunk walk) and compares each slot's
+`m_name` through the serial-gated `entity_name` op that `EntityRef.name` uses. Only books-live slots
+mint refs. `Entity.findInSphere` filters `EntityRef.origin` inclusively, over `findByClass` when a
+class is given and over a new unfiltered `__s2_entity_find_all` otherwise. No engine op, shim or
+gamedata change. In-isolate test: `entity_finders_by_name_and_sphere`.
+## 2026-10-25 — Exact eye position in @s2script/cs2
+
+`pawn.aimTrace` guessed the eye height as 64 units above the origin. That is wrong while crouched
+(about 46 units), and TTT's gap doc flags it. `pawn.eyePosition` is the origin plus
+`CBaseModelEntity::m_vecViewOffset`, which is how Deadworks and Swiftly compute it. That field is a
+`CNetworkViewOffsetVector` of three `CNetworkedQuantizedFloat`s whose value is their first float.
+The quantized type is opaque to the schema, so the accessor checks its 8-byte stride from the
+reflected member offsets and reads null on any other layout. `aimTrace` uses it and keeps the old
+64u guess only as a fallback. Live gate pending.
+## 2026-10-25 — Particle effects in @s2script/cs2
+
+Swiftly and ModSharp dispatch particles with a recipient filter (`DispatchParticleEffect`,
+`UTIL_DispatchParticleEffectFilter_Position`). On Linux that function takes the origin and angles
+by value, split across xmm registers as packed float pairs, which the declared-call vocabulary
+cannot express, and it would need a recipient-filter argument kind. An info_particle_system entity
+gives the same result with what already exists: `createEntity` with the effect's keyvalues, and
+the viewer list as an `@s2script/sdk/transmit` rule, which the CheckTransmit hook enforces every
+snapshot. `Particles.create` does that, adds parenting and a timed removal, and needs no new
+gamedata. A filtered dispatch can come later if transient effects without an entity matter.
+Tested over the real bundle in packages/sdk/test/cs2-particles.test.mjs. Live gate pending.
 ## 2026-10-25 — Entity input pre-hook (`onInput`)
 
 Swiftly and ModSharp both hook `CEntityIdentity::AcceptInput`; s2script could fire inputs and hook

@@ -5470,6 +5470,47 @@
 
 
 
+    extern "C" fn fake_entity_name(index: c_int, serial: c_int) -> *const std::os::raw::c_char {
+        match (index, serial) {
+            (1, 11) | (70, 4) => c"cell_doors".as_ptr(),
+            (64, 3) => c"cell_doors_2".as_ptr(),
+            (90, 9) => c"".as_ptr(),
+            _ => std::ptr::null(),
+        }
+    }
+
+    /// Entity finders: `findByName` walks the identity snapshot and compares each slot's targetname
+    /// through the `entity_name` op; only books-live slots mint refs; an empty name matches nothing.
+    /// `findInSphere` filters origins inclusively and degrades on bad input.
+    #[test]
+    fn entity_finders_by_name_and_sphere() {
+        crate::entity_live::reset_for_tests();
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps {
+            ent_snapshot: Some(fake_ent_snapshot), entity_name: Some(fake_entity_name), ..mock_event_ops()
+        }));
+        // (70, 4) is in the snapshot but not in the books: it must not mint a ref.
+        crate::entity_live::repair_reconcile(&[(1, 11), (64, 3), (90, 9)]);
+        SNAPSHOT_PAIRS.with(|p| *p.borrow_mut() = vec![(1, 11), (64, 3), (70, 4), (90, 9)]);
+        create_plugin_context("p");
+        let out = eval_in_context_string("p", r#"
+            const E = __s2pkg_entity.Entity;
+            const named = E.findByName("cell_doors").map(r => r.index).join("|");
+            const none = E.findByName("").length + "," + E.findByName("nope").length;
+            const all = E.findAll ? "leak" : __s2_entity_find_all().map(r => r.index).join("|");
+            const origin = { 1: [0, 0, 0], 64: [3, 4, 0], 90: [100, 0, 0] };
+            globalThis.__s2_entity_find_all = () => [1, 64, 90, 5].map(i => ({ index: i,
+                origin: origin[i] ? { x: origin[i][0], y: origin[i][1], z: origin[i][2] } : null }));
+            const near = E.findInSphere([0, 0, 0], 5).map(r => r.index).join("|");
+            const bad = [E.findInSphere(null, 5), E.findInSphere({ x: NaN, y: 0, z: 0 }, 5),
+                         E.findInSphere([0, 0, 0], -1), E.findInSphere([0, 0, 0], Infinity)].map(a => a.length).join("");
+            [named, none, all, near, bad].join(";")
+        "#);
+        assert_eq!(out, "1;0,0;1|64|90;1|64;0000");
+        SNAPSHOT_PAIRS.with(|p| p.borrow_mut().clear());
+        shutdown();
+    }
+
     /// entity_origin slice: `EntityRef.origin` (`CGameSceneNode::m_vecAbsOrigin`, reached via the
     /// `CBaseEntity::m_CBodyComponent` -> `CBodyComponent::m_pSceneNode` chain) degrades to `null` with
     /// no ops (e.g. every in-isolate test) — never a crash. Unlike `target`, there's no dedicated
