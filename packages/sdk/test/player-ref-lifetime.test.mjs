@@ -43,7 +43,8 @@ test('the Player facade covers every real EntityRef method and all retained meth
   const special = {
     spawn: [{ targetname: 'controller' }], teleport: [[1, 2, 3]], applyAbsVelocityImpulse: [[1, 2, 3]],
     writeString: [8, 16, 'value'], setModel: ['model'], stopSound: ['sound'],
-    setBodyGroupByName: ['group', 1], acceptInput: ['Use', '', null, null, 0],
+    setBodyGroupByName: ['group', 1], acceptInput: ['Use', '', null, null, 0], takeDamage: [5, {}],
+    lookupBone: ['head_0'], lookupAttachment: ['muzzle_flash'],
   };
   const methods = Object.getOwnPropertyNames(f.ctx.EntityRef.prototype)
     .filter(name => name !== 'constructor' && typeof Object.getOwnPropertyDescriptor(f.ctx.EntityRef.prototype, name).value === 'function');
@@ -67,11 +68,14 @@ for (const [method, args] of [
   ['stopSound', trip => [{ toString() { trip(); return 'sound'; } }]],
   ['setBodyGroupByName', trip => ['group', { valueOf() { trip(); return 1; } }]],
   ['setModelScale', trip => [{ valueOf() { trip(); return 1; } }]],
+  ['lookupBone', trip => [{ toString() { trip(); return 'head_0'; } }]],
+  ['getAttachment', trip => [{ valueOf() { trip(); return 1; } }]],
   ['writeBool', trip => [{ valueOf() { trip(); return 8; } }, true]],
   ['writeBoolVia', trip => [[{ valueOf() { trip(); return 8; } }], 8, true]],
   ['notifyStateChanged', trip => [{ valueOf() { trip(); return 8; } }]],
   ['clearIdentityFlags', trip => [{ valueOf() { trip(); return 1; } }]],
   ['spawn', trip => [{ get name() { trip(); return 'A'; } }]],
+  ['takeDamage', trip => [5, { get attacker() { trip(); return { index: 9, id: 7 }; } }]],
 ]) {
   test(`Player.ref.${method} finishes input access before the connection check`, () => {
     const f = fixture();

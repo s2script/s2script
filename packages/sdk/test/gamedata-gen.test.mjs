@@ -91,3 +91,11 @@ test("omitting argNames still yields positional aN", () => {
   });
   assert.match(out, /f: \(self: EntityRef, a0: number\) => void;/);
 });
+
+test("an interface receiver takes no self and a utlstringlist return is string[] | null", () => {
+  const out = generateGamedataTypes({
+    calls: { maps: { receiver: { kind: "interface", name: "GameTypes001" }, target: { kind: "signature", name: "S" },
+                     args: ["string"], argNames: ["group"], returns: "utlstringlist" } },
+  });
+  assert.match(out, /maps: \(group: string\) => string\[\] \| null;/);
+});

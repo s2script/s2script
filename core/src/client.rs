@@ -56,6 +56,7 @@ pub(crate) fn ensure(slot: i32) -> u64 {
 pub(crate) fn end(slot: i32, token: u64) {
     if !matches(slot, token) { return; }
     CONNECTIONS.with(|b| { b.borrow_mut().remove(&slot); });
+    cancel_convar_queries(slot);
     voice_clear_slot(slot);
     crate::surface_leases::clear_client(slot, token);
     crate::shared_entity_switch::clear_slot(slot);
@@ -314,6 +315,29 @@ fn s2_client_address(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgumen
     }));
 }
 
+/// Values `client_net_stats` writes, in this order. Flow pairs are (outgoing, incoming), the
+/// engine's FLOW_OUTGOING = 0 / FLOW_INCOMING = 1. The prelude's `Client.netStats` reads them by
+/// these indices, so the two lists change together.
+pub(crate) const NET_STATS_LEN: usize = 18;
+
+/// `__s2_client_net_stats(slot, token) -> number[] | null` — one snapshot of the client's
+/// INetChannelInfo counters ([`NET_STATS_LEN`] numbers). `null` without the op, for a stale handle,
+/// for a bot (no net channel), or when the shim's net-channel layout check failed.
+fn s2_client_net_stats(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        if !(0..64).contains(&slot) { return; }
+        if !guarded(scope, &args, slot, 1) { return; }
+        let Some(ops) = engine_ops() else { return };
+        let Some(f) = ops.client_net_stats else { return };
+        let mut out = [0f64; NET_STATS_LEN];
+        if f(slot, out.as_mut_ptr(), NET_STATS_LEN as i32) != NET_STATS_LEN as i32 { return; }
+        let elems: Vec<v8::Local<v8::Value>> = out.iter().map(|v| v8::Number::new(scope, *v).into()).collect();
+        rv.set(v8::Array::new_with_elements(scope, &elems).into());
+    }));
+}
+
 /// `__s2_server_command(cmd)` — run `cmd` at the server console. No-op without the op / null.
 /// Native `__s2_client_command(slot, cmd) -> boolean` — tell the CLIENT to run `cmd`.
 /// False when the op is unassigned, the slot is out of range, or `cmd` is empty; the shim also
@@ -353,6 +377,184 @@ fn s2_client_fake_command(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
     }));
 }
 
+// ---------------------------------------------------------------------------
+// Client convar queries. `queryConVar` sends CSVCMsg_GetCvarValue with a host-minted cookie; the
+// client's answer comes back through the shim's cvar-response hook, queued and drained at the top of
+// the next frame. Each pending query is one subscription on CONVAR_QUERIES, keyed by its cookie, so
+// owner teardown (plugin unload, scope dispose) drops it like any other subscription.
+//
+// A reply is delivered only when the slot that answered is the slot the query went to, that slot is
+// still the same connection, and the echoed name matches. Cookies are unpredictable, so another
+// client cannot answer someone else's query either. A disconnect resolves its pending queries with
+// null.
+// ---------------------------------------------------------------------------
+/// What a query settles with. Kept on the entry when the isolate was busy, so the next frame's sweep
+/// retries the delivery instead of losing it.
+#[derive(Clone)]
+enum ConvarOutcome { Cancelled, Answered { status: i32, value: String } }
+
+struct ConvarQuery {
+    slot: i32, token: u64, name: String, owner: String, sub_id: u64,
+    deadline: std::time::Instant,
+    outcome: Option<ConvarOutcome>,
+}
+
+thread_local! {
+    static CONVAR_QUERIES: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
+    static CONVAR_PENDING: std::cell::RefCell<std::collections::HashMap<i32, ConvarQuery>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+    static COOKIE_SEED: (std::collections::hash_map::RandomState, std::cell::Cell<u64>)
+        = (std::collections::hash_map::RandomState::new(), std::cell::Cell::new(0));
+}
+
+/// Pending queries across every plugin. A client always answers, so this only fills when queries
+/// are issued far faster than clients reply.
+const MAX_PENDING_CONVAR_QUERIES: usize = 1024;
+/// Longer than any real cvar name; the shim sends the name verbatim.
+const MAX_CONVAR_NAME: usize = 255;
+/// A query with no reply by then resolves null: the reply was lost (the shim drops a flooding
+/// client's replies) or the client never sent one.
+const CONVAR_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn mint_cookie() -> i32 {
+    use std::hash::BuildHasher;
+    COOKIE_SEED.with(|(state, counter)| loop {
+        let n = counter.get().wrapping_add(1);
+        counter.set(n);
+        // Positive and nonzero: the shim treats cookie 0 as "not one of ours".
+        let cookie = (state.hash_one(n) & 0x7fff_ffff) as i32;
+        if cookie != 0 && !CONVAR_PENDING.with(|p| p.borrow().contains_key(&cookie)) { return cookie; }
+    })
+}
+
+pub(crate) fn convar_status_name(status: i32) -> &'static str {
+    match status {
+        0 => "ok",
+        1 => "notFound",
+        2 => "notValid",
+        3 => "protected",
+        _ => "unknown",
+    }
+}
+
+/// Pending queries keep the frame detour requested, so the shim drains replies and the sweep runs.
+pub(crate) fn convar_queries_pending() -> usize {
+    CONVAR_PENDING.with(|p| p.borrow().len())
+}
+
+/// Run the query's callback with `outcome`. The entry and its subscription go only once the callback
+/// actually ran; a busy isolate leaves both, with the outcome recorded for the sweep to retry.
+fn settle_convar_query(cookie: i32, outcome: ConvarOutcome) {
+    let key = cookie.to_string();
+    let snap = CONVAR_QUERIES.with(|m| m.borrow().snapshot(&key));
+    let delivery = fan_out(&snap, "convar_query_settle", Instrument::none(), |tc| match &outcome {
+        ConvarOutcome::Cancelled => Some(vec![v8::null(tc).into(), v8::null(tc).into()]),
+        ConvarOutcome::Answered { status, value } => {
+            let label = v8::String::new(tc, convar_status_name(*status))?;
+            let value = v8::String::new(tc, if *status == 0 { value } else { "" })?;
+            Some(vec![label.into(), value.into()])
+        }
+    });
+    CONVAR_PENDING.with(|p| {
+        let mut p = p.borrow_mut();
+        if delivery == Delivery::Deferred {
+            if let Some(q) = p.get_mut(&cookie) { q.outcome = Some(outcome); }
+            return;
+        }
+        if let Some(q) = p.remove(&cookie) {
+            CONVAR_QUERIES.with(|m| { m.borrow_mut().remove_by_ids(&[q.sub_id]); });
+        }
+    });
+}
+
+/// Resolve every pending query for `slot` with null (the client left, or the slot was reused).
+fn cancel_convar_queries(slot: i32) {
+    let cookies: Vec<i32> = CONVAR_PENDING.with(|p| p.borrow().iter()
+        .filter(|(_, q)| q.slot == slot && q.outcome.is_none()).map(|(c, _)| *c).collect());
+    for cookie in cookies { settle_convar_query(cookie, ConvarOutcome::Cancelled); }
+}
+
+/// Per frame, before any JS runs: retry deliveries a busy isolate deferred, and resolve null any query
+/// that outlived its connection or the timeout.
+pub(crate) fn sweep_convar_queries() {
+    let now = std::time::Instant::now();
+    let due: Vec<(i32, ConvarOutcome)> = CONVAR_PENDING.with(|p| p.borrow().iter().filter_map(|(c, q)| {
+        match &q.outcome {
+            Some(o) => Some((*c, o.clone())),
+            None if now >= q.deadline || !matches(q.slot, q.token) => Some((*c, ConvarOutcome::Cancelled)),
+            None => None,
+        }
+    }).collect());
+    for (cookie, outcome) in due { settle_convar_query(cookie, outcome); }
+}
+
+/// Deliver a client's convar answer to the one query that minted `cookie`.
+pub(crate) fn dispatch_convar_response(slot: i32, cookie: i32, status: i32, name: &str, value: &str) {
+    let Some(token) = CONVAR_PENDING.with(|p| p.borrow().get(&cookie).and_then(|q|
+        (q.outcome.is_none() && q.slot == slot && q.name.eq_ignore_ascii_case(name)).then_some(q.token)))
+    else { return };   // a stale, forged or misrouted answer leaves the real query pending
+    let outcome = if matches(slot, token) {
+        ConvarOutcome::Answered { status, value: value.to_string() }
+    } else {
+        ConvarOutcome::Cancelled   // the connection the query went to is gone
+    };
+    settle_convar_query(cookie, outcome);
+}
+
+/// Native `__s2_client_query_convar(slot, name, token, callback) -> number` — ask the client in
+/// `slot` for its value of `name`. Returns the query's cookie, or 0 when nothing was sent (bad slot,
+/// stale connection, bot, empty or oversized name, too many pending queries, or the reply hook is
+/// unavailable on this build). `callback(status, value)` runs once, on the frame after the reply;
+/// `(null, null)` when the client disconnects first or no reply arrives within 15 seconds.
+fn s2_client_query_convar(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(0);
+        if args.length() < 4 || !args.get(3).is_function() { return; }
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        if !(0..64).contains(&slot) { return; }
+        let name = args.get(1).to_rust_string_lossy(scope);
+        if name.is_empty() || name.len() > MAX_CONVAR_NAME || name.bytes().any(|b| b.is_ascii_whitespace()) { return; }
+        let token: u64 = args.get(2).to_rust_string_lossy(scope).parse().unwrap_or(0);
+        if !matches(slot, token) { return; }
+        if CONVAR_PENDING.with(|p| p.borrow().len()) >= MAX_PENDING_CONVAR_QUERIES {
+            crate::v8host::log_warn("WARN: queryConVar: too many pending queries; refused");
+            return;
+        }
+        let Some(f) = engine_ops().and_then(|o| o.client_query_convar) else { return };
+        let Ok(cname) = CString::new(name.clone()) else { return };
+        let cookie = mint_cookie();
+        if crate::nest::with_outbound(&args, || f(slot, cname.as_ptr(), cookie)) == 0 { return; }
+        let Some((sub_id, _)) = subscribe_into(scope, &args, &CONVAR_QUERIES, &cookie.to_string(), 3) else { return };
+        let owner = crate::v8host::current_plugin(scope).unwrap_or_else(|| "legacy".to_string());
+        let deadline = std::time::Instant::now() + CONVAR_QUERY_TIMEOUT;
+        CONVAR_PENDING.with(|p| p.borrow_mut().insert(cookie,
+            ConvarQuery { slot, token, name, owner, sub_id, deadline, outcome: None }));
+        crate::v8host::refresh_detour();
+        rv.set_int32(cookie);
+    }));
+}
+
+/// Native `__s2_client_replicate_convar(slot, name, value, token) -> boolean` — send the client in
+/// `slot` a new value for its copy of a replicated cvar (CNETMsg_SetConVar). The server's own value
+/// is untouched. False for a bad slot, stale connection, bot, or empty name.
+fn s2_client_replicate_convar(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if args.length() < 4 { return; }
+        let slot = args.get(0).int32_value(scope).unwrap_or(-1);
+        if !(0..64).contains(&slot) { return; }
+        let name = args.get(1).to_rust_string_lossy(scope);
+        if name.is_empty() || name.len() > MAX_CONVAR_NAME || name.bytes().any(|b| b.is_ascii_whitespace()) { return; }
+        let value = args.get(2).to_rust_string_lossy(scope);
+        let token: u64 = args.get(3).to_rust_string_lossy(scope).parse().unwrap_or(0);
+        if !matches(slot, token) { return; }
+        let Some(f) = engine_ops().and_then(|o| o.client_replicate_convar) else { return };
+        let (Ok(cname), Ok(cvalue)) = (CString::new(name), CString::new(value)) else { return };
+        rv.set_bool(crate::nest::with_outbound(&args, || f(slot, cname.as_ptr(), cvalue.as_ptr())) != 0);
+    }));
+}
+
 /// Publish this feature's natives. Called from `v8host`'s `install_natives`.
 pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) {
     set_native(scope, global_obj, "__s2_client_generation", s2_client_generation);
@@ -371,6 +573,9 @@ pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_client_command", s2_client_command);
     set_native(scope, global_obj, "__s2_client_fake_command", s2_client_fake_command);
     set_native(scope, global_obj, "__s2_client_address", s2_client_address);
+    set_native(scope, global_obj, "__s2_client_query_convar", s2_client_query_convar);
+    set_native(scope, global_obj, "__s2_client_replicate_convar", s2_client_replicate_convar);
+    set_native(scope, global_obj, "__s2_client_net_stats", s2_client_net_stats);
 }
 
 /// The owner-scoped store: the six lifecycle hooks stay installed for the process lifetime — no
@@ -381,6 +586,21 @@ pub(crate) fn register_store() {
         Box::new(|owner| { CLIENT_MUX.with(|m| { m.borrow_mut().remove_by_owner(owner); }); }),
         Box::new(|ids| { CLIENT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
         Box::new(|| { CLIENT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new()); }),
+    );
+    crate::owner_stores::register(
+        "CONVAR_QUERIES",
+        Box::new(|owner| {
+            CONVAR_QUERIES.with(|m| { m.borrow_mut().remove_by_owner(owner); });
+            CONVAR_PENDING.with(|p| p.borrow_mut().retain(|_, q| q.owner != owner));
+        }),
+        Box::new(|ids| {
+            CONVAR_QUERIES.with(|m| { m.borrow_mut().remove_by_ids(ids); });
+            CONVAR_PENDING.with(|p| p.borrow_mut().retain(|_, q| !ids.contains(&q.sub_id)));
+        }),
+        Box::new(|| {
+            CONVAR_QUERIES.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
+            CONVAR_PENDING.with(|p| p.borrow_mut().clear());
+        }),
     );
 }
 
@@ -401,7 +621,7 @@ mod tests {
         FAKE_CMD_CALLS, LOG};
     use crate::v8host::{create_plugin_context, eval_in_context, init, set_engine_ops, shutdown,
         unload_plugin, S2EngineOps};
-    use std::os::raw::c_char;
+    use std::os::raw::{c_char, c_int};
     thread_local! { static EFFECTS: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new()); }
     extern "C" fn effect(slot: i32, value: *const c_char) {
         let value = unsafe { std::ffi::CStr::from_ptr(value) }.to_string_lossy().into_owned();
@@ -697,6 +917,145 @@ mod tests {
         shutdown();
     }
 
+    thread_local! { static QUERIES: std::cell::RefCell<Vec<(i32, String, i32)>> = std::cell::RefCell::new(Vec::new()); }
+    extern "C" fn mock_query(slot: i32, name: *const c_char, cookie: i32) -> i32 {
+        let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        QUERIES.with(|q| q.borrow_mut().push((slot, name, cookie)));
+        1
+    }
+    extern "C" fn mock_replicate(slot: i32, name: *const c_char, value: *const c_char) -> i32 {
+        let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        let value = unsafe { std::ffi::CStr::from_ptr(value) }.to_string_lossy().into_owned();
+        EFFECTS.with(|e| e.borrow_mut().push(format!("{slot}:{name}={value}")));
+        1
+    }
+    fn convar_ops() -> S2EngineOps {
+        S2EngineOps { client_query_convar: Some(mock_query), client_replicate_convar: Some(mock_replicate), ..S2EngineOps::none() }
+    }
+    /// Promises settle at the frame's explicit microtask checkpoint; run one before reading.
+    fn js(plugin: &str, expr: &str) -> String {
+        crate::v8host::with_host_isolate(|isolate| isolate.perform_microtask_checkpoint()).unwrap();
+        eval_in_context_string(plugin, expr)
+    }
+    fn last_cookie() -> i32 { QUERIES.with(|q| q.borrow().last().map(|q| q.2).unwrap_or(0)) }
+
+    /// A reply reaches the query only from the queried slot, with the queried name, on the same
+    /// connection; anything else leaves it pending.
+    #[test]
+    fn query_convar_delivers_only_the_matching_reply() {
+        init(dummy_logger()).unwrap();
+        QUERIES.with(|q| q.borrow_mut().clear());
+        set_engine_ops(Some(convar_ops()));
+        begin(4);
+        create_plugin_context("cq1");
+        eval_in_context_string("cq1", r#"globalThis.r = "pending";
+            new __s2pkg_clients.Client(4).queryConVar("cl_interp").then(function (v) { globalThis.r = JSON.stringify(v); }); """#);
+        let cookie = last_cookie();
+        assert!(cookie > 0);
+        assert_eq!(QUERIES.with(|q| q.borrow()[0].clone()), (4, "cl_interp".to_string(), cookie));
+        dispatch_convar_response(5, cookie, 0, "cl_interp", "1");          // wrong slot
+        dispatch_convar_response(4, cookie, 0, "cl_cmdrate", "1");         // wrong name
+        dispatch_convar_response(4, cookie ^ 1, 0, "cl_interp", "1");      // wrong cookie
+        assert_eq!(js("cq1", "r"), "pending");
+        dispatch_convar_response(4, cookie, 0, "CL_INTERP", "0.03");
+        assert_eq!(js("cq1", "r"), r#"{"status":"ok","value":"0.03"}"#);
+        dispatch_convar_response(4, cookie, 0, "cl_interp", "again");      // answered once only
+        assert_eq!(js("cq1", "r"), r#"{"status":"ok","value":"0.03"}"#);
+
+        eval_in_context_string("cq1", r#"new __s2pkg_clients.Client(4).queryConVar("bind").then(function (v) { globalThis.r = JSON.stringify(v); }); """#);
+        dispatch_convar_response(4, last_cookie(), 2, "bind", "ignored");
+        assert_eq!(js("cq1", "r"), r#"{"status":"notValid","value":""}"#);
+        shutdown();
+    }
+
+    /// Nothing is sent for a stale handle, a bot-like refusal, or a bad name, and the promise
+    /// resolves null; a disconnect resolves a pending query null; unload drops it silently.
+    #[test]
+    fn query_convar_refuses_and_cancels() {
+        init(dummy_logger()).unwrap();
+        QUERIES.with(|q| q.borrow_mut().clear());
+        set_engine_ops(Some(convar_ops()));
+        let token = begin(6);
+        create_plugin_context("cq2");
+        eval_in_context_string("cq2", r#"globalThis.out = [];
+            var c = new __s2pkg_clients.Client(6);
+            ["", "has space", "x".repeat(300)].forEach(function (n) { c.queryConVar(n).then(function (v) { out.push(String(v)); }); }); """#);
+        assert_eq!(js("cq2", "out.join()"), "null,null,null");
+        assert!(QUERIES.with(|q| q.borrow().is_empty()));
+        eval_in_context_string("cq2", r#"globalThis.c6 = new __s2pkg_clients.Client(6);
+            c6.queryConVar("cl_interp").then(function (v) { out.push(String(v)); }); """#);
+        let cookie = last_cookie();
+        end(6, token);
+        assert_eq!(js("cq2", "out.join()"), "null,null,null,null");
+        dispatch_convar_response(6, cookie, 0, "cl_interp", "1");          // late reply: nobody left
+        assert_eq!(js("cq2", "out.join()"), "null,null,null,null");
+        begin(6);
+        eval_in_context_string("cq2", r#"c6.queryConVar("cl_interp").then(function (v) { out.push(String(v)); }); """#);
+        assert_eq!(js("cq2", "out.join()"), "null,null,null,null,null", "stale handle");
+
+        create_plugin_context("cq3");
+        eval_in_context_string("cq3", r#"globalThis.r = "pending";
+            new __s2pkg_clients.Client(6).queryConVar("cl_interp").then(function (v) { globalThis.r = String(v); }); """#);
+        assert_eq!(CONVAR_PENDING.with(|p| p.borrow().len()), 1);
+        unload_plugin("cq3");
+        assert_eq!(CONVAR_PENDING.with(|p| p.borrow().len()), 0, "unload drops the owner's queries");
+        shutdown();
+    }
+
+    /// A reply that arrives while the isolate is busy is kept and delivered by the next frame's
+    /// sweep; a query nobody answers resolves null at the timeout; a token mismatch resolves null.
+    #[test]
+    fn query_convar_retries_deferred_and_times_out() {
+        init(dummy_logger()).unwrap();
+        QUERIES.with(|q| q.borrow_mut().clear());
+        set_engine_ops(Some(convar_ops()));
+        begin(7);
+        create_plugin_context("cq4");
+        eval_in_context_string("cq4", r#"globalThis.out = []; globalThis.c7 = new __s2pkg_clients.Client(7);
+            c7.queryConVar("cl_interp").then(function (v) { out.push(JSON.stringify(v)); }); """#);
+        let cookie = last_cookie();
+        // A reply that lands while the host is borrowed (and not inside an outbound call) defers.
+        crate::v8host::with_host_isolate(|_| dispatch_convar_response(7, cookie, 0, "cl_interp", "late")).unwrap();
+        assert_eq!(js("cq4", "out.join()"), "", "nothing ran inside the busy isolate");
+        assert_eq!(CONVAR_PENDING.with(|p| p.borrow().len()), 1, "the reply is kept");
+        dispatch_convar_response(7, cookie, 0, "cl_interp", "dup");          // already settled
+        sweep_convar_queries();
+        assert_eq!(js("cq4", "out.join()"), r#"{"status":"ok","value":"late"}"#);
+        assert_eq!(convar_queries_pending(), 0);
+
+        eval_in_context_string("cq4", r#"c7.queryConVar("cl_interp").then(function (v) { out.push(String(v)); }); """#);
+        sweep_convar_queries();
+        assert_eq!(js("cq4", "out.length"), "1", "not yet due");
+        CONVAR_PENDING.with(|p| p.borrow_mut().values_mut().for_each(|q| q.deadline = std::time::Instant::now()));
+        sweep_convar_queries();
+        assert_eq!(js("cq4", "out[1]"), "null", "timed out");
+        assert_eq!(convar_queries_pending(), 0);
+
+        eval_in_context_string("cq4", r#"c7.queryConVar("cl_interp").then(function (v) { out.push(String(v)); }); """#);
+        let cookie = last_cookie();
+        CONVAR_PENDING.with(|p| p.borrow_mut().get_mut(&cookie).unwrap().token ^= 1);
+        dispatch_convar_response(7, cookie, 0, "cl_interp", "1");
+        assert_eq!(js("cq4", "out[2]"), "null", "the queried connection is gone");
+        assert_eq!(convar_queries_pending(), 0);
+        shutdown();
+    }
+
+    #[test]
+    fn replicate_convar_sends_text_and_refuses_stale() {
+        init(dummy_logger()).unwrap();
+        EFFECTS.with(|e| e.borrow_mut().clear());
+        set_engine_ops(Some(convar_ops()));
+        begin(2);
+        create_plugin_context("cr1");
+        let out = eval_in_context_string("cr1", r#"var c = new __s2pkg_clients.Client(2);
+            [c.replicateConVar("sv_cheats", true), c.replicateConVar("fov_desired", 90), c.replicateConVar("", "x")].join()"#);
+        assert_eq!(out, "true,true,false");
+        assert_eq!(EFFECTS.with(|e| e.borrow().clone()), vec!["2:sv_cheats=1".to_string(), "2:fov_desired=90".to_string()]);
+        begin(2);
+        assert_eq!(eval_in_context_string("cr1", r#"String(c.replicateConVar("sv_cheats", 0))"#), "false");
+        shutdown();
+    }
+
     /// Clients sub-project Task 1: a subscribed `onConnect` handler receives a `Client` whose `.slot`
     /// equals the dispatched slot (the `CLIENT_MUX` reuse + the JS wrapper's `new Client(slot)`);
     /// a different event name (`"active"`) is independent (does NOT run the connect handler); and after
@@ -835,6 +1194,44 @@ mod tests {
         create_plugin_context("cc4");
         assert_eq!(eval_in_context_string("cc4",
             r#"var c = new __s2pkg_clients.Client(0); String(c.command("sm_help"))"#), "false");
+        shutdown();
+    }
+
+    extern "C" fn mock_client_net_stats(slot: c_int, out: *mut f64, n: c_int) -> c_int {
+        if slot != 3 || n < NET_STATS_LEN as c_int { return 0; }   // slot 3 is the only human
+        let out = unsafe { std::slice::from_raw_parts_mut(out, NET_STATS_LEN) };
+        for (i, v) in out.iter_mut().enumerate() { *v = i as f64 + 0.5; }
+        out[16] = 1.0;   // isTimingOut
+        NET_STATS_LEN as c_int
+    }
+
+    /// `netStats()` maps the op's values by index into the documented shape, flow pairs as
+    /// (outgoing, incoming), and is null for a slot the op has no net channel for.
+    #[test]
+    fn net_stats_maps_values_and_is_null_for_a_bot() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps { client_net_stats: Some(mock_client_net_stats), ..mock_event_ops() }));
+        begin(3);
+        begin(4);
+        create_plugin_context("ns1");
+        let out = eval_in_context_string("ns1", r#"var s = new __s2pkg_clients.Client(3).netStats();
+            JSON.stringify([s.avgLatency, s.engineLatency, s.avgLoss, s.avgChoke.incoming, s.avgData.outgoing,
+                s.avgPackets.incoming, s.totalData, s.totalPackets.outgoing, s.timeConnected,
+                s.timeSinceLastReceived, s.isTimingOut, s.dataRate])"#);
+        assert_eq!(out, r#"[0.5,1.5,{"outgoing":2.5,"incoming":3.5},5.5,6.5,9.5,{"outgoing":10.5,"incoming":11.5},12.5,14.5,15.5,true,17.5]"#);
+        assert_eq!(eval_in_context_string("ns1", "String(new __s2pkg_clients.Client(4).netStats())"), "null");
+        assert_eq!(eval_in_context_string("ns1", "String(new __s2pkg_clients.Client(64).netStats())"), "null");
+        shutdown();
+    }
+
+    /// Without the op (an older shim) `netStats()` is null rather than a zeroed snapshot.
+    #[test]
+    fn net_stats_is_null_without_the_op() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(mock_event_ops()));
+        begin(3);
+        create_plugin_context("ns2");
+        assert_eq!(eval_in_context_string("ns2", "String(new __s2pkg_clients.Client(3).netStats())"), "null");
         shutdown();
     }
 
