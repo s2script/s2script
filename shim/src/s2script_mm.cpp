@@ -346,18 +346,23 @@ static int schema_find_field(CSchemaClassInfo* info, const char* field, int dept
     return -1;
 }
 
-static int s2_schema_offset(const char* cls, const char* field) {
-    if (!s_pSchemaSystem || !cls || !field) return -1;
-
-    // Resolve the class in the server-module scope, then the global scope (a class may be in either).
-    // "libserver.so" is the CS2 Linux server module SONAME (recon Q1 [LC]; confirmed live in the T7 gate).
-    // TODO: gamedata key if the module name ever varies across games/platforms.
+// Resolve a class binding in the server-module scope, then the global scope (a class may be in either).
+// "libserver.so" is the CS2 Linux server module SONAME (recon Q1 [LC]; confirmed live in the T7 gate).
+// TODO: gamedata key if the module name ever varies across games/platforms.
+static CSchemaClassInfo* schema_find_class(const char* cls) {
+    if (!s_pSchemaSystem || !cls) return nullptr;
     CSchemaSystemTypeScope* srvScope = s_pSchemaSystem->FindTypeScopeForModule("libserver.so");
     CSchemaClassInfo* info = srvScope ? srvScope->FindRawClassBinding(cls) : nullptr;
     if (!info) {
         CSchemaSystemTypeScope* gScope = s_pSchemaSystem->GlobalTypeScope();
         if (gScope) info = gScope->FindRawClassBinding(cls);
     }
+    return info;
+}
+
+static int s2_schema_offset(const char* cls, const char* field) {
+    if (!s_pSchemaSystem || !cls || !field) return -1;
+    CSchemaClassInfo* info = schema_find_class(cls);
     if (!info) return -1;  // class not found → degrade (core emits a named WARN once per key)
 
     // Walk base classes: m_iHealth (and most fields) are inherited, not on the leaf class directly.
@@ -4512,6 +4517,67 @@ static int Shim_EntityFireInput(int index, int serial, const char* input, const 
     return 1;
 }
 
+// Damage slice: deal damage the way the engine's own callers do (gamedata CTakeDamageInfo_Ctor /
+// CTakeDamageInfo_Dtor / CBaseEntity_TakeDamage): construct a CTakeDamageInfo in a stack buffer,
+// hand it to CBaseEntity::TakeDamage (which still runs TakeDamageOld, so OnTakeDamage hooks see
+// it), then destroy it. The ABIs are the audited Oct 22 shapes in the gamedata comments.
+using TakeDamageInfoCtorFn = void (*)(void* info, CEntityInstance* inflictor, CEntityInstance* attacker,
+                                      CEntityInstance* ability, const Vector* force, const Vector* position,
+                                      float damage, int bitsDamageType, int customDamage,
+                                      const Vector* reportedPosition);
+using TakeDamageInfoDtorFn = void (*)(void* info);
+using EntityTakeDamageFn = void (*)(CEntityInstance* victim, void* info, void* result);
+static TakeDamageInfoCtorFn s_pTakeDamageInfoCtor = nullptr;
+static TakeDamageInfoDtorFn s_pTakeDamageInfoDtor = nullptr;
+static EntityTakeDamageFn s_pEntityTakeDamage = nullptr;
+// The stack buffer. The live schema size must fit, or the op refuses (it never under-allocates).
+constexpr int kTakeDamageInfoCap = 0x400;
+
+// The CTakeDamageInfo size from the live schema, read once. 0 = unknown or too big: the op refuses.
+static int TakeDamageInfoSize() {
+    static int size = -1;
+    if (size < 0) {
+        CSchemaClassInfo* info = schema_find_class("CTakeDamageInfo");
+        int n = info ? info->m_nSizeOf : 0;
+        size = (n > 0 && n <= kTakeDamageInfoCap) ? n : 0;
+        if (!size)
+            META_CONPRINTF("[s2script] WARN: entity.takeDamage unavailable: CTakeDamageInfo schema size %d "
+                           "(cap %d)\n", n, kTakeDamageInfoCap);
+    }
+    return size;
+}
+
+// take damage: (index,serial) serial-gates the victim; inflictor/attacker/ability are optional
+// serial-gated entities (<0 index = null). force/position are 3 floats each, or null for zero.
+// Returns 1 when TakeDamage ran (the engine may still refuse the damage, e.g. m_takedamage off), 0
+// when an entity was stale or the op is unavailable.
+static int Shim_EntityTakeDamage(int index, int serial, int inflictorIdx, int inflictorSerial,
+                                 int attackerIdx, int attackerSerial, int abilityIdx, int abilitySerial,
+                                 float damage, int damageType, const float* force, const float* position) {
+    if (!s_pTakeDamageInfoCtor || !s_pTakeDamageInfoDtor || !s_pEntityTakeDamage) return 0;
+    CEntityInstance* victim = ResolveEntityBySerial(index, serial);
+    if (!victim) return 0;
+    CEntityInstance* inflictor = nullptr;
+    CEntityInstance* attacker = nullptr;
+    CEntityInstance* ability = nullptr;
+    // A stale optional entity refuses the whole call rather than dealing anonymous damage.
+    if (inflictorIdx >= 0 && !(inflictor = ResolveEntityBySerial(inflictorIdx, inflictorSerial))) return 0;
+    if (attackerIdx >= 0 && !(attacker = ResolveEntityBySerial(attackerIdx, attackerSerial))) return 0;
+    if (abilityIdx >= 0 && !(ability = ResolveEntityBySerial(abilityIdx, abilitySerial))) return 0;
+    int size = TakeDamageInfoSize();
+    if (!size) return 0;
+    Vector f = force ? Vector(force[0], force[1], force[2]) : Vector(0.0f, 0.0f, 0.0f);
+    Vector p = position ? Vector(position[0], position[1], position[2]) : Vector(0.0f, 0.0f, 0.0f);
+    alignas(16) unsigned char info[kTakeDamageInfoCap];
+    memset(info, 0, size);
+    // The engine's callers pass the attacker as the inflictor when there is no separate one.
+    s_pTakeDamageInfoCtor(info, inflictor ? inflictor : attacker, attacker, ability, &f, &p, damage,
+                          damageType, 0, nullptr);
+    s_pEntityTakeDamage(victim, info, nullptr);
+    s_pTakeDamageInfoDtor(info);
+    return 1;
+}
+
 // Format a CVariant's value as a string WITHOUT calling any tier1 CBufferString method
 // (CVariant::ToString()/AssignTo(CBufferString&) call DLL_CLASS_IMPORT tier1 symbols — the exact
 // dlopen-cascade blocker from 5D.1/6.1c). Hand-rolled via snprintf on the union fields directly
@@ -4602,6 +4668,27 @@ static int S2NamedOutputOp(CEntityIOOutput* pThis, CEntityInstance* act, CEntity
     return result;
 }
 
+// Entity input pre-hook (parity slice 5): CEntityIdentity::AcceptInput delivers every input an
+// entity receives. Same contract as S2NamedOutputOp: dispatched SYNCHRONOUSLY, superseded
+// (the input is not delivered, AcceptInput returns false) when the collapsed HookResult is
+// >= Handled. The target/activator/caller cross as packed CEntityHandle ints, the input name
+// and value as strings; no pointer reaches core. Only the variant value is formatted: the
+// pulse-argument register is not stringified (its type is unconfirmed on this entry), so a
+// pulse-driven input reports "". Any resolve miss falls straight through to the original.
+static int S2NamedInputOp(CEntityIdentity* identity, void* input, CEntityInstance* act,
+                          CEntityInstance* caller, const CVariant* value) {
+    if (!identity || !input) return 0;
+    CEntityInstance* target = identity->m_pInstance;
+    const char* inputName = static_cast<const CUtlSymbolLarge*>(input)->String();
+    if (!target || !inputName || !inputName[0]) return 0;
+    const char* cls = target->GetClassname();
+    char valbuf[256] = {};
+    if (value) CVariantToString(value, valbuf, sizeof valbuf);
+    return s2script_core_dispatch_input(cls ? cls : "", inputName, target->GetRefEHandle().ToInt(),
+                                        act ? act->GetRefEHandle().ToInt() : -1,
+                                        caller ? caller->GetRefEHandle().ToInt() : -1, valbuf);
+}
+
 // ---------------------------------------------------------------------------
 // Load
 // ---------------------------------------------------------------------------
@@ -4621,6 +4708,7 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
     S2NamedHookOps namedOps;
     namedOps.chat=&S2NamedChatOp;
     namedOps.output=&S2NamedOutputOp;
+    namedOps.input=&S2NamedInputOp;
     namedOps.usercmd_slot=&S2NamedUsercmdSlotOp;
     namedOps.usercmd_dispatch=&S2NamedUsercmdDispatchOp;
     namedOps.usercmd_neutralize=&S2NamedUsercmdNeutralizeOp;
@@ -5326,6 +5414,37 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                    reinterpret_cast<void*>(s_pAddEntityIOEvent));
                 }   // aioOff == kFail: ResolveSigValidated already recorded the reason
             }
+            // Damage slice: CTakeDamageInfo ctor/dtor + CBaseEntity::TakeDamage, all-or-nothing. The
+            // ctor's and dtor's vtable LEAs must name the same vtable, so a pattern that matched the
+            // wrong function degrades entity_take_damage instead of running it.
+            {
+                void* fns[3] = {nullptr, nullptr, nullptr};
+                const char* names[3] = {"CTakeDamageInfo_Ctor", "CTakeDamageInfo_Dtor", "CBaseEntity_TakeDamage"};
+                for (int i = 0; i < 3; ++i) {
+                    auto it = sigs.find(names[i]);
+                    if (it == sigs.end()) { GamedataResult(names[i], false, "signature absent from gamedata"); continue; }
+                    int64_t off = ResolveSigValidated(names[i], it->second);
+                    ModText mt = FindModuleText(it->second.module.c_str());
+                    if (off != s2sig::kFail && mt.text) fns[i] = const_cast<uint8_t*>(mt.text) + off;
+                }
+                if (fns[0] && fns[1] && fns[2]) {
+                    auto leaTarget = [](const void* fn, int at) {
+                        const uint8_t* insn = static_cast<const uint8_t*>(fn) + at;
+                        int32_t disp;
+                        memcpy(&disp, insn + 3, sizeof(disp));
+                        return reinterpret_cast<uintptr_t>(insn + 7) + static_cast<intptr_t>(disp);
+                    };
+                    if (leaTarget(fns[0], 0x12) == leaTarget(fns[1], 0x10)) {
+                        s_pTakeDamageInfoCtor = reinterpret_cast<TakeDamageInfoCtorFn>(fns[0]);
+                        s_pTakeDamageInfoDtor = reinterpret_cast<TakeDamageInfoDtorFn>(fns[1]);
+                        s_pEntityTakeDamage = reinterpret_cast<EntityTakeDamageFn>(fns[2]);
+                        META_CONPRINTF("[s2script] TakeDamage resolved @%p (entity.takeDamage)\n", fns[2]);
+                    } else {
+                        GamedataResult("CTakeDamageInfo_Dtor", false,
+                                       "constructor and destructor name different vtables");
+                    }
+                }
+            }
             // A complete engine wrapper owns Pulse's temporary conversion internally.
             // Resolve it before enabling output interception; opaque Pulse layouts stay private.
             auto pulseit = sigs.find("PulseFirstArgumentToVariant");
@@ -5363,6 +5482,26 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
                                        receipt.reason.c_str());
                     }
                 }   // foiOff == kFail: ResolveSigValidated already recorded the reason
+            }
+            // Parity slice 5: resolve + detour CEntityIdentity::AcceptInput (Entity.onInput).
+            // Degrade-never-crash: unresolved leaves inputs unhooked, never a crash.
+            auto aiit = sigs.find("CEntityIdentity_AcceptInput");
+            if (aiit == sigs.end()) {
+                GamedataResult("CEntityIdentity_AcceptInput", false, "signature absent from gamedata");
+            } else {
+                int64_t aiOff = ResolveSigValidated("CEntityIdentity_AcceptInput", aiit->second);
+                ModText aimt = FindModuleText(aiit->second.module.c_str());
+                if (aiOff != s2sig::kFail && aimt.text) {
+                    void* aiAddr = const_cast<uint8_t*>(aimt.text) + aiOff;
+                    const auto receipt=S2NamedConfigureInput(aiAddr);
+                    if (receipt.Accepted()) {
+                        META_CONPRINTF("[s2script] AcceptInput checked hook accepted @%p (Entity.onInput; id=%u)\n",
+                                       aiAddr,receipt.id);
+                    } else {
+                        META_CONPRINTF("[s2script] WARN: AcceptInput checked hook failed (%s) — Entity.onInput off\n",
+                                       receipt.reason.c_str());
+                    }
+                }   // aiOff == kFail: ResolveSigValidated already recorded the reason
             }
             // Entity lifecycle listeners slice: resolve CGameEntitySystem::AddListenerEntity (register an
             // IEntityListener) + RemoveListenerEntity (best-effort Unload cleanup). Both validated UNIQUE +

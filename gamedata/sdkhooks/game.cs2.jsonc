@@ -26,9 +26,14 @@
 // VScript is dead in CS2. Rosetta's `CBaseEntity::DispatchTraceAttack` `name-contradicted`
 // (VScript registry → ScriptTrigger) is not an identity check. DTA stays in gamedata/core/.
 //
-// Still empty (no ABI-matching unique linux prologue in that dump): Spawn, Think, PreThink,
-// Use, GetMaxHealth, ShouldCollide, VPhysicsUpdate, GroundEntChangedPost, CanBeAutobalanced,
-// Reload, WeaponCanUse, WeaponCanSwitchTo, WeaponDrop, WeaponEquip, WeaponSwitch.
+// Spawn, Use, PreThink and PostThink were self-resolved on the Oct 22 2026 build (libserver
+// BuildID 2603388a…) by walking the RTTI vtables in /mnt/project-files/binaries/2026-10-22/.
+// ModSharp's vfunc table (CBaseEntity::Use 146, Spawn 10) and Deadworks' Deadlock table
+// (GetMaxHealth 181, one below CS2 like its Touch rows) were HINTS, never shipped.
+// Still empty: Think (not a CEntityInstance virtual in Source 2; thinks are SetThink function
+// pointers), ShouldCollide, VPhysicsUpdate, GroundEntChangedPost,
+// CanBeAutobalanced, Reload. The Weapon* family is not an entity virtual at all (it lives on
+// CCSPlayer_WeaponServices) and has no dispatcher here.
 // OnTakeDamageAlive / TraceAttack / FireBulletsPost have no distinct CS2 function yet (OnTakeDamage
 // + OnTakeDamagePost are the @s2script/cs2 package's trusted takeDamageOld function).
 // Do not substitute CBaseEntity::SetGroundEntity for GroundEntChangedPost (that is the setter).
@@ -84,16 +89,63 @@
         "validate": { "vtable-member": "CFuncPlat" }
       }
     },
-    // CCSPlayerPawn::PostThink. Not wiki PlayerPostThink (that name is offset-low-conf).
-    // Anchor in the dump: enter_rescue_zone. Pattern includes `cmp byte [rbx+0x15b4], 0`
-    // (a pawn field) — uniqueness helper; a schema-offset drift degrades this type.
-    // Re-derived on build 25515854 (2026-09-25) from the build-25218825 body; see docs/superpowers/plans/2026-09-25-gamedata-25515854.md.
+    // CCSPlayerPawn::PostThink, slot 356 of CCSPlayerPawn's primary vtable on the Oct 22 2026
+    // build. Identity: the body references enter_buyzone / exit_buyzone / enter_bombzone /
+    // SpottedLooseBomb / #Cstrike_TitlesTXT_Game_afk_bomb_drop (the same string set ModSharp
+    // anchors PlayerPostThink on). this-only. The previous pattern stopped matching on that build.
+    // `cmp byte [rbx+0x17ec], 0` is a pawn field: a schema-offset drift degrades this type.
     "PostThink": {
       "linuxsteamrt64": {
         "module": "libserver.so",
-        "pattern": "55 48 89 E5 41 56 41 55 41 54 53 48 89 FB 48 83 EC ? E8 ? ? ? ? 80 BB ? ? ? ? 00",
+        "pattern": "55 48 89 E5 41 57 41 56 41 55 41 54 53 48 89 FB 48 83 EC 18 E8 ? ? ? ? 80 BB EC 17 00 00 00",
         "resolve": "direct",
         "validate": { "vtable-member": "CCSPlayerPawn" }
+      }
+    },
+    // CCSPlayerPawn::PreThink, slot 355 (the slot before PostThink). The slot holds a guard
+    // thunk: `mov eax,[rdi+0x12b8]; test eax,eax; je impl; ret` then `jmp impl`, and the impl
+    // only reads rdi (this-only). Same thunk ModSharp detours as CCSPlayerPawn::PlayerPreThink.
+    // 0x12b8 is a pawn field: a schema-offset drift degrades this type.
+    "PreThink": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "8B 87 B8 12 00 00 85 C0 74 06 C3 0F 1F 44 00 00",
+        "resolve": "direct",
+        "validate": { "vtable-member": "CCSPlayerPawn" }
+      }
+    },
+    // CPhysicsProp::Spawn override, CEntityInstance slot 10 (count the hl2sdk entityinstance.h
+    // virtuals: GetNetworkSerializerInfo 0 … AddedToEntityDatabase 9, Spawn 10; two Itanium
+    // destructor entries). Prototype `void Spawn(const CEntityKeyValues*)`: the body saves rsi
+    // (`mov r12, rsi`). No field offsets in the pattern.
+    "Spawn": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 56 41 55 4C 8D 6D D0 41 54 49 89 F4",
+        "resolve": "direct",
+        "validate": { "vtable-member": "CPhysicsProp" }
+      }
+    },
+    // CBaseEntity::GetMaxHealth, slot 184: the whole body is `mov eax,[rdi+0x5b4]; ret`, where
+    // 0x5b4 is CBaseEntity::m_iMaxHealth in the schema. Every entity class inherits this one body.
+    // A schema move of m_iMaxHealth breaks the match and degrades this type by name.
+    "GetMaxHealth": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "8B 87 B4 05 00 00 C3",
+        "resolve": "direct",
+        "validate": { "vtable-member": "CBaseEntity" }
+      }
+    },
+    // CBaseDoor::Use override, slot 146. Source 2 prototype `void Use(const EntityUseInput_t*)`
+    // (hl2sdk entityclass.h): the body reads the activator from [rsi], and the base
+    // CBaseEntity::Use forwards rsi unchanged to m_pfnUse. The pattern's 0x90 is the frame size.
+    "Use": {
+      "linuxsteamrt64": {
+        "module": "libserver.so",
+        "pattern": "55 48 89 E5 41 56 41 55 41 54 49 89 F4 53 48 89 FB 48 81 EC 90 00 00 00 48 8B 06",
+        "resolve": "direct",
+        "validate": { "vtable-member": "CBaseDoor" }
       }
     }
   }
