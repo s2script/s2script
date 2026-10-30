@@ -200,13 +200,20 @@ async function runWorkspaceDeploy(opts: {
 
   const plan = await computePlan(ordered, (name, version) => isAlreadyPublished(client, name, version));
   // Bundles publish last, after their members — and each is refused up front (before any upload)
-  // when its version is already published with different member pins.
+  // when its version is already published with different member pins. Only a bundle whose every
+  // member is in this run is planned: under --filter, a sibling bundle's members were never
+  // uploaded, so publishing it would pin versions this run did not ship.
+  const inRun = new Set(ordered.map((p) => p.name));
   const bundles = readBundles(ws);
+  const planned = bundles.filter((b) => b.members.every((m) => inRun.has(m.name)));
   const bundleEntries: BundlePlanEntry[] = [];
-  for (const b of bundles) bundleEntries.push(await planBundle(b, client));
+  for (const b of planned) bundleEntries.push(await planBundle(b, client));
   label("plan:");
   console.log(formatPlan(plan));
   for (const entry of bundleEntries) console.log(formatBundlePlan(entry));
+  for (const b of bundles) {
+    if (!planned.includes(b)) console.log(`    ${b.name} ${b.version}   skip (not every member is in --filter)`);
+  }
   if (unpublishableLibraries.length > 0) {
     // A ws.libs-only library built above (its own "Building @foo/mylib" step already printed)
     // but has no place in `plan` — computePlan/uploadPlan only ever see ws.plugins. Naming it here,

@@ -270,3 +270,18 @@ test("bundle dirs deploy: a member failure blocks only its own bundle", async ()
   }
   assert.deepEqual(status, { "@fixture/jb": "skipped", "@fixture/ttt": "published" });
 });
+
+test("s2s deploy --filter: a bundle with members outside the filter is skipped, not published", async () => {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  // An unreachable registry: every "already published?" check degrades to unpublished.
+  const env = { ...process.env, CI: "1", S2SCRIPT_REGISTRY_URL: "http://127.0.0.1:9" };
+  const r = await promisify(execFile)(
+    process.execPath,
+    ["--experimental-strip-types", "--no-warnings", "src/cli.ts", "deploy", fixture, "--dry-run", "--filter", "@fixture/ttt-*"],
+    { cwd: join(here, ".."), env },
+  );
+  assert.match(r.stdout, /@fixture\/ttt 2\.0\.0 {3}PUBLISH \(bundle of 2 plugins\)/);
+  assert.match(r.stdout, /@fixture\/jb 1\.0\.0 {3}skip \(not every member is in --filter\)/);
+  assert.doesNotMatch(r.stdout, /@fixture\/jb 1\.0\.0 {3}PUBLISH/);
+});
