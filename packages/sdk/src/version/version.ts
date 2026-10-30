@@ -12,8 +12,9 @@
  *      It finds no sibling edges in the real dependency fields, so it correctly no-ops there.
  *   5. One additional pass rewrites `s2script.pluginDependencies` ranges (`ranges.ts`), governed
  *      by the same `updateInternalDependencies` config changesets uses for step 4.
- *   6. In a bundle workspace, the root (which changesets never versions) is bumped by the largest
- *      member bump, because a bundle release pins its members' exact versions (`bundle-bump.ts`).
+ *   6. Each bundle (the root, or each `s2script.workspace.bundles` directory — changesets versions
+ *      neither) is bumped by the largest bump among its own members, because a bundle release pins
+ *      its members' exact versions (`bundle-bump.ts`).
  *
  * The `.changeset/` directory, the config and the pre-release state are all read from the
  * workspace root with the workspace's OWN changesets (`changesets.ts`), so `s2s version` and a
@@ -26,7 +27,7 @@ import { join } from "node:path";
 import { loadChangesets } from "./changesets.ts";
 import { mirrorPackages, realPackages } from "./mirror.ts";
 import { rewriteSiblingRanges } from "./ranges.ts";
-import { bumpBundle } from "./bundle-bump.ts";
+import { bumpBundles } from "./bundle-bump.ts";
 import type { BundleBump } from "./bundle-bump.ts";
 import type { ComprehensiveRelease } from "./changesets.ts";
 import type { RangeRewrite, RangeSkip } from "./ranges.ts";
@@ -48,8 +49,8 @@ export interface VersionResult {
   rewrites: RangeRewrite[];
   /** Sibling ranges step 5 deliberately left alone, each with a named reason. */
   skips: RangeSkip[];
-  /** In a bundle workspace, the root bump step 6 made because a member was released. */
-  bundleBump: BundleBump | null;
+  /** The bundle bumps step 6 made because one of each bundle's members was released. */
+  bundleBumps: BundleBump[];
   /** Every file written, by changesets (step 4), step 5 and step 6. */
   touchedFiles: string[];
   /** The `@changesets/*` versions the gate accepted — worth showing when a plan looks wrong. */
@@ -85,7 +86,7 @@ export async function versionWorkspace(root: string, opts: VersionOptions = {}):
   const plan = cs.assembleReleasePlan(changesets, mirror, config, preState); // step 3
   const touchedFiles = await cs.applyReleasePlan(plan, real, config); // step 4
   const ranges = rewriteSiblingRanges(ws, plan.releases, config); // step 5
-  const bundle = bumpBundle(ws, plan.releases); // step 6 — a bundle root follows its members
+  const bundles = bumpBundles(ws, plan.releases); // step 6 — each bundle follows its own members
 
   return {
     root: ws.root,
@@ -93,8 +94,8 @@ export async function versionWorkspace(root: string, opts: VersionOptions = {}):
     releases: plan.releases,
     rewrites: ranges.rewrites,
     skips: ranges.skips,
-    bundleBump: bundle.bump,
-    touchedFiles: [...touchedFiles, ...ranges.touchedFiles, ...bundle.touchedFiles],
+    bundleBumps: bundles.bumps,
+    touchedFiles: [...touchedFiles, ...ranges.touchedFiles, ...bundles.touchedFiles],
     changesetsVersions: cs.versions,
   };
 }

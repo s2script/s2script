@@ -148,6 +148,43 @@ and records which member versions each release pinned. Make the workspace root t
 - A plugin already published **before** it joined a bundle must be republished at a new version
   from the bundle's workspace, so that its registry entry carries the claim.
 
+#### Several bundles in one workspace
+
+To combine several bundled monorepos (say a TTT and a Jailbreak, each its own bundle) into one
+parent repo with one `.changeset/` and one release, make the parent the only workspace and list
+each bundle's directory under `s2script.workspace.bundles`:
+
+```json
+{
+  "name": "@edge/servers",
+  "private": true,
+  "workspaces": ["ttt/plugins/*", "ttt/packages/*", "jb/plugins/*", "jb/packages/*"],
+  "s2script": {
+    "workspace": { "plugins": ["ttt/plugins/*", "jb/plugins/*"], "bundles": ["ttt", "jb"] }
+  }
+}
+```
+
+Each listed directory keeps a package.json that describes its bundle and nothing else:
+
+```json
+{
+  "name": "@edge/jailbreak",
+  "version": "1.0.0",
+  "s2script": { "kind": "bundle", "bundle": { "optional": ["@edge/jailbreak-gangperks"] } }
+}
+```
+
+- A bundle's **members** are the non-private plugins under its directory. A plugin under no listed
+  directory is published on its own, in no bundle.
+- The descriptor must **not** keep `s2script.workspace` (s2s would stop there and treat it as a
+  separate workspace) and must not itself be a workspace package. Drop the child's own
+  `workspaces`, lockfile and `.changeset/` too: npm and changesets only read the parent's.
+- **`s2s version`** at the parent bumps each bundle by the largest bump among its own members, and
+  `s2s deploy` publishes every bundle after its members. A member that fails to publish holds back
+  only its own bundle.
+- The root and a listed directory cannot both be bundles, and bundle directories cannot nest.
+
 The membership claim travels in the registry upload only — the `.s2sp` manifest the runtime loads
 is unchanged, and the runtime has no notion of bundles.
 

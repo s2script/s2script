@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { loadWorkspace } from "../src/workspace/workspace.ts";
-import { plannedBundleBump } from "../src/version/bundle-bump.ts";
+import { plannedBundleBumps } from "../src/version/bundle-bump.ts";
 import { versionWorkspace } from "../src/version/version.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -44,24 +44,25 @@ const release = (name, type, newVersion = "9.9.9") => ({ name, type, oldVersion:
 test("bundle bump: follows the largest member bump", () => {
   const ws = loadWorkspace(fixture);
   assert.deepEqual(
-    plannedBundleBump(ws, [release("@fixture/jb-core", "patch", "1.2.1"), release("@fixture/jb-perks", "minor", "0.4.0")]),
-    {
+    plannedBundleBumps(ws, [release("@fixture/jb-core", "patch", "1.2.1"), release("@fixture/jb-perks", "minor", "0.4.0")]),
+    [{
       name: "@fixture/jb",
       from: "1.0.0",
       to: "1.1.0",
       type: "minor",
       because: ["@fixture/jb-core@1.2.1", "@fixture/jb-perks@0.4.0"],
-    },
+      path: join(fixture, "package.json"),
+    }],
   );
-  assert.equal(plannedBundleBump(ws, [release("@fixture/jb-core", "major")]).to, "2.0.0");
+  assert.equal(plannedBundleBumps(ws, [release("@fixture/jb-core", "major")])[0].to, "2.0.0");
 });
 
 test("bundle bump: ignores private plugins, none-type releases and non-bundle workspaces", () => {
   const ws = loadWorkspace(fixture);
-  assert.equal(plannedBundleBump(ws, [release("@fixture/jb-devtools", "major")]), null);
-  assert.equal(plannedBundleBump(ws, [release("@fixture/jb-core", "none")]), null);
+  assert.deepEqual(plannedBundleBumps(ws, [release("@fixture/jb-devtools", "major")]), []);
+  assert.deepEqual(plannedBundleBumps(ws, [release("@fixture/jb-core", "none")]), []);
   const plain = { ...ws, pkg: { ...ws.pkg, s2script: { workspace: ws.pkg.s2script.workspace } } };
-  assert.equal(plannedBundleBump(plain, [release("@fixture/jb-core", "major")]), null);
+  assert.deepEqual(plannedBundleBumps(plain, [release("@fixture/jb-core", "major")]), []);
 });
 
 test("s2s version: a member changeset bumps the member and the bundle root on disk", { skip: nodeModules === null }, async (t) => {
@@ -69,7 +70,7 @@ test("s2s version: a member changeset bumps the member and the bundle root on di
     "perks-feature": `---\n"@fixture/jb-perks": minor\n---\n\nA feature.\n`,
   });
   const result = await versionWorkspace(dir);
-  assert.equal(result.bundleBump?.to, "1.1.0");
+  assert.equal(result.bundleBumps[0]?.to, "1.1.0");
   const root = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
   assert.equal(root.version, "1.1.0");
   assert.equal(root.s2script.kind, "bundle", "the rest of the root is preserved");
@@ -81,6 +82,6 @@ test("s2s version: a member changeset bumps the member and the bundle root on di
 test("s2s version: no changesets leaves the bundle root alone", { skip: nodeModules === null }, async (t) => {
   const dir = scratch(t, {});
   const result = await versionWorkspace(dir);
-  assert.equal(result.bundleBump, null);
+  assert.deepEqual(result.bundleBumps, []);
   assert.equal(JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).version, "1.0.0");
 });

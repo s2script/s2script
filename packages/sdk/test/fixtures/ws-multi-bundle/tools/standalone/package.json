@@ -1,0 +1,5 @@
+{
+  "name": "@fixture/standalone",
+  "version": "0.1.0",
+  "main": "src/plugin.ts"
+}

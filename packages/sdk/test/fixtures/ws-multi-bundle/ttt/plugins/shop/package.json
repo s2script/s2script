@@ -1,0 +1,5 @@
+{
+  "name": "@fixture/ttt-shop",
+  "version": "2.0.0",
+  "main": "src/plugin.ts"
+}

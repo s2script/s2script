@@ -1,0 +1,5 @@
+{
+  "name": "@fixture/jb",
+  "version": "1.0.0",
+  "s2script": { "kind": "bundle", "bundle": { "optional": ["@fixture/jb-perks"] } }
+}

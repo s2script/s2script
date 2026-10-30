@@ -1,0 +1,5 @@
+{
+  "name": "@fixture/ttt",
+  "version": "2.0.0",
+  "s2script": { "kind": "bundle" }
+}
