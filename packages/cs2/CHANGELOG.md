@@ -1,5 +1,20 @@
 # @s2script/cs2
 
+## 0.23.0
+
+### Minor Changes
+
+- 6d95d6c: `player.actionTrackingServices` exposes the controller's action-tracking services: this round's
+  kill counters (`numRoundKills` / `numRoundKillsHeadshots`, the icons under each avatar in the top
+  bar) are writable, with `notifyChanged()` to re-network them, and `totalRoundDamageDealt` is
+  readable. Gamemodes that hide who killed whom (TTT) need the round-kill counter to stop the top bar
+  giving it away.
+
+### Patch Changes
+
+- Updated dependencies [5d2a178]
+  - @s2script/sdk@0.34.0
+
 ## 0.22.0
 
 ### Minor Changes
