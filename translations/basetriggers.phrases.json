@@ -1,5 +1,7 @@
 {
   "Current Map": "Current map: {1}",
+  "Kill Requires Player": "{green}[S2S]{default} This command can only be used by a player.",
+  "Killed Yourself": "{green}[S2S]{default} You killed yourself.",
   "Next Map": "Next map: {1}",
   "The Time": "Current time: {1}",
   "Time Left": "Time left: {1}",

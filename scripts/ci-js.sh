@@ -98,6 +98,9 @@ node --test plugins/basecomm/src/plugin.test.mjs
 echo "== basebans service operation tests =="
 node --test plugins/basebans/src/plugin.test.mjs
 
+echo "== player administration, fun effects, and self-kill commands =="
+node --test plugins/playercommands/src/plugin.test.mjs plugins/funcommands/src/plugin.test.mjs plugins/basetriggers/src/plugin.test.mjs
+
 echo "== test-release-notes.sh (GitHub generates notes; CI only uploads the zip) =="
 bash scripts/test-release-notes.sh
 
