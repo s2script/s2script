@@ -1,5 +1,11 @@
 # @s2script/cli
 
+## 0.35.0
+
+### Minor Changes
+
+- b0dcb9d: Add UserMessageView.readStrings and setInt for selective system-message filtering and gunshot sound edits. Requires the matching runtime with these usermessage engine operations.
+
 ## 0.34.0
 
 ### Minor Changes

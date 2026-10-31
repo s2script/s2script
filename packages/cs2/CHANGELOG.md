@@ -1,5 +1,12 @@
 # @s2script/cs2
 
+## 0.23.1
+
+### Patch Changes
+
+- Updated dependencies [b0dcb9d]
+  - @s2script/sdk@0.35.0
+
 ## 0.23.0
 
 ### Minor Changes
