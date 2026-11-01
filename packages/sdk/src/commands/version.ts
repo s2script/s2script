@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { parseFlag, positionals } from "../cli/args.ts";
 import { resolveVersionRoot, versionWorkspace } from "../version/version.ts";
+import { snapshotWorkspace } from "../version/snapshot.ts";
 import * as ui from "../ui/ui.ts";
 
 /**
@@ -13,10 +14,24 @@ import * as ui from "../ui/ui.ts";
  */
 export async function run(argv: string[]): Promise<void> {
   const interactive = ui.isInteractive();
-  const [dirArg] = positionals(argv, ["--since"]);
+  const flags = ["--since", "--snapshot", "--snapshot-state", "--output"];
+  const [dirArg] = positionals(argv, flags);
   const from = resolve(dirArg ?? ".");
 
   try {
+    const snapshotMode = argv.some((a) => ["--snapshot", "--snapshot-state", "--output"].includes(a.split("=")[0]));
+    if (snapshotMode) {
+      for (const flag of flags) {
+        if (argv.some((a) => a.split("=")[0] === flag) && !parseFlag(argv, flag)) throw new Error(`${flag} requires a value`);
+      }
+      const id = parseFlag(argv, "--snapshot");
+      if (!id) throw new Error("--snapshot-state and --output require --snapshot <id>");
+      const root = resolveVersionRoot(from);
+      const result = snapshotWorkspace(root, { id, sinceRef: parseFlag(argv, "--since"), statePath: parseFlag(argv, "--snapshot-state"), outputPath: parseFlag(argv, "--output") });
+      for (const p of result.packages) console.log(`${p.name} ${p.version} (${p.kind}${p.private ? ", private" : ""})`);
+      console.log(`Snapshot ${result.id}: ${result.packages.length} package(s), source ${result.source}`);
+      return;
+    }
     const root = resolveVersionRoot(from);
     const result = await ui.task(
       `Versioning ${root}`,
