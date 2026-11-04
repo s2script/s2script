@@ -1,16 +1,22 @@
 // @s2script/cs2 — Tab-to-activate. One arm per slot; swallow IN_SCORE until the first
 // rising edge fires onActivate, then Tab is the scoreboard again.
+//
+// `hold: true` is Tab-to-hold instead: while the slot is armed, Tab DOWN fires onActivate (even
+// a Tab already held when the arm landed, so a player watching the scoreboard as a vote opens
+// gets the cursor at once) and Tab UP fires onRelease. Nothing is swallowed, so the scoreboard
+// still works, and an unarmed slot is never touched.
 (function () {
   var UserCmd = globalThis.__s2pkg_usercmd && globalThis.__s2pkg_usercmd.UserCmd;
   var Clients = globalThis.__s2pkg_clients && globalThis.__s2pkg_clients.Clients;
-  var IN_SCORE = 1n << 16n;
+  // InputBitMask_t.IN_SCORE (schema-enums.json): bit 33. Bit 16 is IN_SPEED, the walk key.
+  var IN_SCORE = 1n << 33n;
   var states = {};
   var hooked = false;
 
   function state(slot) {
     var s = states[slot];
     if (!s || (s.client && !s.client.isValid())) {
-      s = { client: Clients && Clients.fromSlot(slot), armed: false, active: false, held: false, swallowHold: false, onActivate: null };
+      s = { client: Clients && Clients.fromSlot(slot), armed: false, active: false, held: false, swallowHold: false, hold: false, onActivate: null, onRelease: null };
       states[slot] = s;
     }
     return s;
@@ -26,6 +32,18 @@
       var down = (cmd.buttons & IN_SCORE) !== 0n;
       if (!s.armed) {
         s.held = down;
+        return;
+      }
+      if (s.hold) {
+        s.held = down;
+        if (down !== s.active) {
+          s.active = down;
+          var fn = down ? s.onActivate : s.onRelease;
+          if (typeof fn === "function") {
+            try { fn(); }
+            catch (e) { globalThis.console && console.log("[s2script/hudinput] " + (down ? "onActivate" : "onRelease") + " threw: " + e); }
+          }
+        }
         return;
       }
       if (down) {
@@ -56,7 +74,9 @@
       s.armed = true;
       s.active = false;
       s.swallowHold = false;
+      s.hold = !!(opts && opts.hold);
       s.onActivate = opts && typeof opts.onActivate === "function" ? opts.onActivate : null;
+      s.onRelease = opts && typeof opts.onRelease === "function" ? opts.onRelease : null;
       ensureHook();
     },
     disarm: function (slot) {
@@ -64,7 +84,9 @@
       s.armed = false;
       s.active = false;
       s.swallowHold = false;
+      s.hold = false;
       s.onActivate = null;
+      s.onRelease = null;
     },
     isActive: function (slot) { return !!state(slot).active; },
     isArmed: function (slot) { return !!state(slot).armed; }

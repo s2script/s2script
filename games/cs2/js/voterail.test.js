@@ -132,11 +132,16 @@ test("waiting hides counts, arms Tab once, and routes an option click to cast", 
   assert.deepEqual(mounted.cast, [{ slot: 2, index: 1 }]);
 });
 
-test("Tab activation enables cursor on the rail", () => {
+test("holding Tab gives the rail a cursor and releasing Tab takes it away", () => {
   const mounted = mount();
   mounted.renderer.show(2, tally());
+  assert.equal(mounted.armed[0].opts.hold, true);
   mounted.armed[0].opts.onActivate();
-  assert.deepEqual(mounted.calls.filter((call) => call.op === "cursor"), [{ op: "cursor", on: true }]);
+  mounted.armed[0].opts.onRelease();
+  assert.deepEqual(mounted.calls.filter((call) => call.op === "cursor"), [
+    { op: "cursor", on: true },
+    { op: "cursor", on: false },
+  ]);
 });
 
 test("voted state reveals counts, highlights the choice, disarms, and ignores clicks", () => {

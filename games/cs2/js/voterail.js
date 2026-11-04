@@ -48,8 +48,12 @@
     if (waiting[slot]) return;
     waiting[slot] = true;
     if (HudInput && typeof HudInput.arm === "function") {
+      // Hold Tab to click: the cursor is on only while Tab is down, so the player can still aim and
+      // move between looks at the rail. Armed only while the rail is up and unvoted.
       HudInput.arm(slot, {
-        onActivate: function () { cursor(slot, true); }
+        hold: true,
+        onActivate: function () { cursor(slot, true); },
+        onRelease: function () { cursor(slot, false); }
       });
     }
   }
@@ -68,7 +72,7 @@
 
     view.setText("s2_vote_q", tally.question == null ? "" : String(tally.question));
     view.setText("s2_vote_sub", choice === null
-      ? "Tab, or type 1–N"
+      ? "Hold Tab to click, or type 1–N"
       : ((tally.secondsLeft == null ? "" : tally.secondsLeft + "s") +
          (tally.total == null ? "" : " · " + tally.total + " voted")));
 
