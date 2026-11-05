@@ -4288,6 +4288,42 @@ static int s2_sound_precache_add(const char* path) {
     return added;
 }
 
+// Entity precache (PrecacheContext.addEntity). The entity system builds the resource manifest of
+// one entity class the way the engine does for every entity a map spawns: it creates a throwaway
+// instance from {classname} keyvalues, runs that class's Precache(CEntityPrecacheContext*) against
+// the manifest, and deletes it. That pulls in the class's models, particles, soundevents and any
+// classes it precaches in turn. It is IEntityResourceManifestBuilder::BuildResourceManifestForEntity
+// (entity2/entityinterfaces.h), the primary base of CGameEntitySystem, so the slot comes from
+// gamedata/core with the class's slot count as the pin, verified on first use (the entity system
+// does not exist at Load). Config and arena are null, as the engine passes them for its own
+// resource manifests (entity2/entitystructs.h); the function allocates its keyvalues itself when
+// the arena is null. Session manifest only: it is the one that decides what is resident.
+enum S2ManifestBuilderSlot { kMB_BuildResourceManifestForEntity, kMB_Count };
+static const char* const kManifestBuilderKeys[kMB_Count] = {
+    "IEntityResourceManifestBuilder_BuildResourceManifestForEntity",
+};
+static int  s_manifestBuilderSlot[kMB_Count] = { -1 };
+static bool s_manifestBuilderVerifyTried = false;
+
+static int s2_precache_entity_add(const char* classname) {
+    if (!s_sessionManifest || !classname || !classname[0]) return 0;   // outside the session window
+    CGameEntitySystem* es = GetEntitySystem();
+    if (!es) return 0;
+    if (!s_manifestBuilderVerifyTried) {
+        s_manifestBuilderVerifyTried = true;
+        const S2VtableLayout layout = { "IEntityResourceManifestBuilder", "libserver.so",
+                                        "IEntityResourceManifestBuilder_vtableSize" };
+        S2_VerifyVtableSlots(layout, es, kManifestBuilderKeys, kMB_Count, s_manifestBuilderSlot);
+    }
+    const int slot = s_manifestBuilderSlot[kMB_BuildResourceManifestForEntity];
+    if (slot < 0) return 0;
+    using Fn = void (*)(void*, const char*, void* /*IEntityPrecacheConfiguration*/,
+                        IEntityResourceManifest*, void* /*CKV3Arena*/);
+    auto fn = reinterpret_cast<Fn>((*reinterpret_cast<void***>(es))[slot]);
+    fn(es, classname, nullptr, s_sessionManifest, nullptr);
+    return 1;
+}
+
 static void S2NamedPrecacheOp() { s2script_core_dispatch_precache(); }
 
 // Install the OnPrecacheResource class-vtable hook (called ONCE from Load; see the block comment for

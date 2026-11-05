@@ -285,6 +285,7 @@ pub type StringTableSetDataFn = extern "C" fn(c_int, *const c_char, c_int, *cons
 pub type StringTableAddStringFn = extern "C" fn(c_int, *const c_char, *const c_char, *const u8, c_int) -> c_int;
 pub type UsermsgHookReadStringsFn = extern "C" fn(*const c_char, *mut c_char, c_int) -> c_int;
 pub type UsermsgHookSetIntFn = extern "C" fn(*const c_char, i64) -> c_int;
+pub type PrecacheEntityAddFn = extern "C" fn(*const c_char) -> c_int;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -516,6 +517,8 @@ pub struct S2EngineOps {
     // --- UserMessage repeated strings and scalar edits ---
     pub usermsg_hook_read_strings: Option<UsermsgHookReadStringsFn>,
     pub usermsg_hook_set_int: Option<UsermsgHookSetIntFn>,
+    // --- Entity precache: IEntityResourceManifestBuilder::BuildResourceManifestForEntity ---
+    pub precache_entity_add: Option<PrecacheEntityAddFn>,
 }
 
 impl S2EngineOps {

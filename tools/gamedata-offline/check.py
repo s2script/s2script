@@ -297,6 +297,7 @@ PINS = [
     ('ISoundEventManager_vtableSize', 'libsoundsystem.so', 'CSoundOpSystem', -8),
     ('INetworkStringTableContainer_vtableSize', 'libengine2.so', 'CNetworkStringTableContainer', 0),
     ('INetworkStringTable_vtableSize', 'libengine2.so', 'CNetworkStringTable', 0),
+    ('IEntityResourceManifestBuilder_vtableSize', 'libserver.so', 'CGameEntitySystem', 0),
 ]
 PIN_CLASS = {k.removesuffix('_vtableSize'): (m, c, o) for k, m, c, o in PINS}
 # Bare vtable indices that are not behind an interface pin.

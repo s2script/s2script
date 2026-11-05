@@ -2226,7 +2226,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
     onPrecache: function (h) {
       return __s2_precache_subscribe(function () {
-        h({ add: function (p) { return __s2_sound_precache_add(String(p)); } });
+        h({
+          add: function (p) { return __s2_sound_precache_add(String(p)); },
+          addEntity: function (c) { return __s2_precache_entity_add(String(c)); },
+        });
       });
     },
   };

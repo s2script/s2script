@@ -73,6 +73,19 @@ export interface PrecacheContext {
    * precache, and its resources stay unusable until the next map change.
    */
   add(path: string): boolean;
+  /**
+   * Precache an entity class: everything that class needs to spawn (its models, particles and
+   * soundevents, and the classes it precaches in turn), the same precache the engine runs for each
+   * entity a map spawns. Use it for a class the map doesn't already contain, before you create one.
+   *
+   * @example
+   * pc.addEntity("chicken");
+   * pc.addEntity("prop_physics_multiplayer");
+   *
+   * Returns true when the engine ran the class's precache. It does not check the class name: an
+   * unknown class precaches nothing and still returns true. Same TIMING rule as {@link add}.
+   */
+  addEntity(classname: string): boolean;
 }
 
 /**
