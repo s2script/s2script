@@ -228,6 +228,7 @@
       "BBOX_DIMENSIONS": 1,
       "BBOX_MINS_MAXS": 2,
       "BBOX_RADIUS": 3,
+      "BBOX_SURFACE_AREA": 4,
       "BBOX_VOLUME": 0
     }
   },
@@ -458,6 +459,14 @@
       "TEXT": 1
     }
   },
+  "CFuncMover::FindFollowMoverStrategy_t": {
+    "size": 4,
+    "values": {
+      "FIND_FOLLOW_MOVER_BIDIRECTIONAL_CLOSEST": 2,
+      "FIND_FOLLOW_MOVER_FORWARD_CLOSEST": 0,
+      "FIND_FOLLOW_MOVER_REVERSE_CLOSEST": 1
+    }
+  },
   "CFuncMover::FollowConstraint_t": {
     "size": 4,
     "values": {
@@ -573,6 +582,13 @@
       "LOGIC_BRANCH_LISTENER_NOT_INIT": 0
     }
   },
+  "CNmClothEvent::Type_t": {
+    "size": 4,
+    "values": {
+      "Effect": 1,
+      "Stiffen": 0
+    }
+  },
   "CNmCurrentSyncEventNode::InfoType_t": {
     "size": 1,
     "values": {
@@ -639,6 +655,13 @@
     "values": {
       "DoesntMatch": 1,
       "Matches": 0
+    }
+  },
+  "CNmOrientationWarpNode::AlignmentMode_t": {
+    "size": 1,
+    "values": {
+      "AnimationEndFacing": 1,
+      "MovementDirection": 0
     }
   },
   "CNmParticleEvent::Type_t": {
@@ -752,6 +775,14 @@
       "X": 0,
       "Y": 1,
       "Z": 2
+    }
+  },
+  "CPathMoverEntitySpawner::TemplateChoiceStrategy_t": {
+    "size": 4,
+    "values": {
+      "TEMPLATE_CHOICE_COUNT_RANDOM": 2,
+      "TEMPLATE_CHOICE_COUNT_SEQUENTIAL": 0,
+      "TEMPLATE_CHOICE_WEIGHTED_RANDOM": 1
     }
   },
   "CPhysicsProp::CrateType_t": {
@@ -965,14 +996,24 @@
   "ChoreoExternalAnimgraphControlState_t": {
     "size": 4,
     "values": {
-      "eCount": 7,
+      "eCount": 9,
       "eExit": 1,
+      "eFallbackExit": 2,
+      "eLooping": 8,
       "eNone": 0,
-      "eState01": 2,
-      "eState02": 3,
-      "eState03": 4,
-      "eState04": 5,
-      "eState05": 6
+      "eState01": 3,
+      "eState02": 4,
+      "eState03": 5,
+      "eState04": 6,
+      "eState05": 7
+    }
+  },
+  "ChoreoLookAtConditions_t": {
+    "size": 4,
+    "values": {
+      "DURING_OUTRO": 4,
+      "WHILE_ANIMATING": 2,
+      "WHILE_MOVING": 1
     }
   },
   "ChoreoLookAtMode_t": {
@@ -991,6 +1032,15 @@
       "eInvalid": -1,
       "eMedium": 1,
       "eSlow": 0
+    }
+  },
+  "ChoreoScriptedMoveTo_t": {
+    "size": 4,
+    "values": {
+      "eMoveWithGait": 1,
+      "eTeleport": 2,
+      "eWait": 0,
+      "eWaitFacing": 3
     }
   },
   "ChoreoStrafeMode_t": {
@@ -1026,6 +1076,15 @@
       "PARTICLE_CLOSEST_TYPE_BOX": 0,
       "PARTICLE_CLOSEST_TYPE_CAPSULE": 1,
       "PARTICLE_CLOSEST_TYPE_HYBRID": 2
+    }
+  },
+  "CustomCameraMode_t": {
+    "size": 1,
+    "values": {
+      "CUSTOM_CAMERA_MODE_CONTROLLED": 1,
+      "CUSTOM_CAMERA_MODE_CONTROLLED_POSITION": 2,
+      "CUSTOM_CAMERA_MODE_DISABLED": 0,
+      "CUSTOM_CAMERA_MODE_FOLLOW_POSITION": 3
     }
   },
   "DIALOG_TYPE": {
@@ -1173,6 +1232,14 @@
       "DETAIL_COMBO_OFF": 0
     }
   },
+  "DirectionAlongSimplePath_t": {
+    "size": 4,
+    "values": {
+      "None": 0,
+      "TGoesDown": 2,
+      "TGoesUp": 1
+    }
+  },
   "DisableShadows_t": {
     "size": 1,
     "values": {
@@ -1297,6 +1364,8 @@
       "UM_NotifyResponseFound": 165,
       "UM_ParticleManager": 145,
       "UM_PlayResponseConditional": 166,
+      "UM_RemoteServerCommand": 169,
+      "UM_RemoteServerResponse": 170,
       "UM_RequestDiagnostic": 162,
       "UM_RequestDllStatus": 156,
       "UM_RequestInventory": 160,
@@ -1339,12 +1408,18 @@
   "EChickenActivity": {
     "size": 4,
     "values": {
+      "Feed": 9,
       "Glide": 4,
       "Idle": 0,
       "Land": 5,
+      "LowOnFood": 12,
       "Panic": 6,
       "Run": 3,
+      "Shoulder": 11,
+      "Sleep": 10,
       "Squat": 1,
+      "Trick": 7,
+      "TurnInPlace": 8,
       "Walk": 2
     }
   },
@@ -1451,11 +1526,7 @@
       "k_EMsgGCCStrike15_v2_FantasyRequestClientData": 9175,
       "k_EMsgGCCStrike15_v2_FantasyUpdateClientData": 9176,
       "k_EMsgGCCStrike15_v2_GC2ClientGlobalStats": 9173,
-      "k_EMsgGCCStrike15_v2_GC2ClientInitSystem": 9212,
-      "k_EMsgGCCStrike15_v2_GC2ClientInitSystem_Response": 9213,
       "k_EMsgGCCStrike15_v2_GC2ClientNotifyXPShop": 9221,
-      "k_EMsgGCCStrike15_v2_GC2ClientRefuseSecureMode": 9206,
-      "k_EMsgGCCStrike15_v2_GC2ClientRequestValidation": 9207,
       "k_EMsgGCCStrike15_v2_GC2ClientTextMsg": 9134,
       "k_EMsgGCCStrike15_v2_GC2ClientTournamentInfo": 9167,
       "k_EMsgGCCStrike15_v2_GC2ServerReservationUpdate": 9142,
@@ -1548,6 +1619,7 @@
       "CS_UM_CounterStrafe": 385,
       "CS_UM_CurrentRoundOdds": 380,
       "CS_UM_CurrentTimescale": 332,
+      "CS_UM_CustomHudClicked": 390,
       "CS_UM_Damage": 321,
       "CS_UM_DamagePrediction": 386,
       "CS_UM_DeepStats": 381,
@@ -1585,8 +1657,8 @@
       "CS_UM_RoundEndReportData": 379,
       "CS_UM_Rumble": 314,
       "CS_UM_SSUI": 372,
-      "CS_UM_SayText": 305,
-      "CS_UM_SayText2": 306,
+      "CS_UM_SayText2_CSGOLegacy": 306,
+      "CS_UM_SayText_CSGOLegacy": 305,
       "CS_UM_ScoreLeaderboardData": 367,
       "CS_UM_SendAudio": 317,
       "CS_UM_SendLastKillerDamageToClient": 351,
@@ -1600,10 +1672,10 @@
       "CS_UM_ShowMenu": 354,
       "CS_UM_StopSpectatorMode": 329,
       "CS_UM_SurvivalStats": 373,
-      "CS_UM_TextMsg": 307,
+      "CS_UM_TextMsg_CSGOLegacy": 307,
       "CS_UM_Train": 303,
       "CS_UM_UpdateScreenHealthBar": 370,
-      "CS_UM_UpdateTeamMoney": 328,
+      "CS_UM_UpdateTeamMoney_CSGOLegacy": 328,
       "CS_UM_VGUIMenu": 301,
       "CS_UM_VoiceMask": 319,
       "CS_UM_VoteFailed": 348,
@@ -1768,11 +1840,11 @@
       "k_EMsgGCAddSocketToItem_DEPRECATED": 1017,
       "k_EMsgGCAdjustEquipSlotsManual": 2531,
       "k_EMsgGCAdjustEquipSlotsShuffle": 2532,
-      "k_EMsgGCApplyConsumableEffects": 1069,
-      "k_EMsgGCApplyEggEssence": 1078,
-      "k_EMsgGCApplyPennantUpgrade": 1076,
+      "k_EMsgGCApplyConsumableEffects_DEPRECATED": 1069,
+      "k_EMsgGCApplyEggEssence_DEPRECATED": 1078,
+      "k_EMsgGCApplyPennantUpgrade_DEPRECATED": 1076,
       "k_EMsgGCApplySticker": 1086,
-      "k_EMsgGCApplyStrangePart": 1073,
+      "k_EMsgGCApplyStrangePart_DEPRECATED": 1073,
       "k_EMsgGCBackpackSortFinished": 1058,
       "k_EMsgGCBannedWordListRequest": 2512,
       "k_EMsgGCBannedWordListResponse": 2513,
@@ -1780,77 +1852,77 @@
       "k_EMsgGCCasketItemAdd": 1092,
       "k_EMsgGCCasketItemExtract": 1093,
       "k_EMsgGCCasketItemLoadContents": 1094,
-      "k_EMsgGCClientDisplayNotification": 1072,
+      "k_EMsgGCClientDisplayNotification_DEPRECATED": 1072,
       "k_EMsgGCClientVersionUpdated": 2528,
-      "k_EMsgGCCollectItem": 1061,
+      "k_EMsgGCCollectItem_DEPRECATED": 1061,
       "k_EMsgGCConsumableExhausted": 1070,
       "k_EMsgGCCraft": 1002,
       "k_EMsgGCCraftResponse": 1003,
-      "k_EMsgGCCustomizeItemTexture": 1023,
-      "k_EMsgGCCustomizeItemTextureResponse": 1024,
+      "k_EMsgGCCustomizeItemTextureResponse_DEPRECATED": 1024,
+      "k_EMsgGCCustomizeItemTexture_DEPRECATED": 1023,
       "k_EMsgGCDelete": 1004,
-      "k_EMsgGCDeliverGift": 1034,
-      "k_EMsgGCDeliverGiftResponseGiver": 1035,
-      "k_EMsgGCDeliverGiftResponseReceiver": 1036,
+      "k_EMsgGCDeliverGiftResponseGiver_DEPRECATED": 1035,
+      "k_EMsgGCDeliverGiftResponseReceiver_DEPRECATED": 1036,
+      "k_EMsgGCDeliverGift_DEPRECATED": 1034,
       "k_EMsgGCDev_NewItemRequest": 2001,
       "k_EMsgGCDev_NewItemRequestResponse": 2002,
-      "k_EMsgGCDev_PaintKitDropItem": 2003,
+      "k_EMsgGCDev_PaintKitDropItem_DEPRECATED": 2003,
       "k_EMsgGCDev_SchemaReservationRequest": 2004,
-      "k_EMsgGCGiftWrapItem": 1032,
-      "k_EMsgGCGiftWrapItemResponse": 1033,
+      "k_EMsgGCGiftWrapItemResponse_DEPRECATED": 1033,
+      "k_EMsgGCGiftWrapItem_DEPRECATED": 1032,
       "k_EMsgGCGiftedItems": 1083,
       "k_EMsgGCGiftedItems_DEPRECATED": 1027,
-      "k_EMsgGCGoldenWrenchBroadcast": 1011,
+      "k_EMsgGCGoldenWrenchBroadcast_DEPRECATED": 1011,
       "k_EMsgGCItemAcknowledged": 1087,
       "k_EMsgGCItemAcknowledged__DEPRECATED": 1062,
       "k_EMsgGCItemCustomizationNotification": 1090,
-      "k_EMsgGCItemPreviewCheckStatus": 1701,
-      "k_EMsgGCItemPreviewExpire": 1705,
-      "k_EMsgGCItemPreviewExpireNotification": 1706,
-      "k_EMsgGCItemPreviewItemBoughtNotification": 1707,
-      "k_EMsgGCItemPreviewRequest": 1703,
-      "k_EMsgGCItemPreviewRequestResponse": 1704,
-      "k_EMsgGCItemPreviewStatusResponse": 1702,
-      "k_EMsgGCLookupAccount": 1043,
-      "k_EMsgGCLookupAccountName": 1045,
-      "k_EMsgGCLookupAccountNameResponse": 1046,
-      "k_EMsgGCLookupAccountResponse": 1044,
-      "k_EMsgGCMOTDRequest": 1012,
-      "k_EMsgGCMOTDRequestResponse": 1013,
+      "k_EMsgGCItemPreviewCheckStatus_DEPRECATED": 1701,
+      "k_EMsgGCItemPreviewExpireNotification_DEPRECATED": 1706,
+      "k_EMsgGCItemPreviewExpire_DEPRECATED": 1705,
+      "k_EMsgGCItemPreviewItemBoughtNotification_DEPRECATED": 1707,
+      "k_EMsgGCItemPreviewRequestResponse_DEPRECATED": 1704,
+      "k_EMsgGCItemPreviewRequest_DEPRECATED": 1703,
+      "k_EMsgGCItemPreviewStatusResponse_DEPRECATED": 1702,
+      "k_EMsgGCLookupAccountNameResponse_DEPRECATED": 1046,
+      "k_EMsgGCLookupAccountName_DEPRECATED": 1045,
+      "k_EMsgGCLookupAccountResponse_DEPRECATED": 1044,
+      "k_EMsgGCLookupAccount_DEPRECATED": 1043,
+      "k_EMsgGCMOTDRequestResponse_DEPRECATED": 1013,
+      "k_EMsgGCMOTDRequest_DEPRECATED": 1012,
       "k_EMsgGCModifyItemAttribute": 1091,
       "k_EMsgGCNameBaseItem": 1019,
       "k_EMsgGCNameBaseItemResponse": 1020,
-      "k_EMsgGCNameEggEssenceResponse": 1079,
+      "k_EMsgGCNameEggEssenceResponse_DEPRECATED": 1079,
       "k_EMsgGCNameItem": 1006,
       "k_EMsgGCNameItemNotification": 1068,
       "k_EMsgGCOpenCrate": 2534,
-      "k_EMsgGCPaintItem": 1009,
-      "k_EMsgGCPaintItemResponse": 1010,
-      "k_EMsgGCPaintKitBaseItem": 1081,
-      "k_EMsgGCPaintKitItem": 1080,
-      "k_EMsgGCPaintKitItemResponse": 1082,
+      "k_EMsgGCPaintItemResponse_DEPRECATED": 1010,
+      "k_EMsgGCPaintItem_DEPRECATED": 1009,
+      "k_EMsgGCPaintKitBaseItem_DEPRECATED": 1081,
+      "k_EMsgGCPaintKitItemResponse_DEPRECATED": 1082,
+      "k_EMsgGCPaintKitItem_DEPRECATED": 1080,
       "k_EMsgGCRecurringSubscriptionStatus": 2530,
-      "k_EMsgGCRemoveCustomTexture": 1051,
-      "k_EMsgGCRemoveCustomTextureResponse": 1052,
+      "k_EMsgGCRemoveCustomTextureResponse_DEPRECATED": 1052,
+      "k_EMsgGCRemoveCustomTexture_DEPRECATED": 1051,
       "k_EMsgGCRemoveItemName": 1030,
-      "k_EMsgGCRemoveItemPaint": 1031,
-      "k_EMsgGCRemoveMakersMark": 1053,
-      "k_EMsgGCRemoveMakersMarkResponse": 1054,
+      "k_EMsgGCRemoveItemPaint_DEPRECATED": 1031,
+      "k_EMsgGCRemoveMakersMarkResponse_DEPRECATED": 1054,
+      "k_EMsgGCRemoveMakersMark_DEPRECATED": 1053,
       "k_EMsgGCRemoveSocketItemResponse_DEPRECATED": 1022,
       "k_EMsgGCRemoveSocketItem_DEPRECATED": 1021,
-      "k_EMsgGCRemoveUniqueCraftIndex": 1055,
-      "k_EMsgGCRemoveUniqueCraftIndexResponse": 1056,
+      "k_EMsgGCRemoveUniqueCraftIndexResponse_DEPRECATED": 1056,
+      "k_EMsgGCRemoveUniqueCraftIndex_DEPRECATED": 1055,
       "k_EMsgGCRequestAnnouncements": 2525,
       "k_EMsgGCRequestAnnouncementsResponse": 2526,
       "k_EMsgGCRequestPassportItemGrant": 2527,
       "k_EMsgGCSaxxyBroadcast": 1057,
-      "k_EMsgGCServerBrowser_BlacklistServer": 1602,
-      "k_EMsgGCServerBrowser_FavoriteServer": 1601,
-      "k_EMsgGCServerRentalsBase": 1700,
+      "k_EMsgGCServerBrowser_BlacklistServer_DEPRECATED": 1602,
+      "k_EMsgGCServerBrowser_FavoriteServer_DEPRECATED": 1601,
+      "k_EMsgGCServerRentalsBase_DEPRECATED": 1700,
       "k_EMsgGCServerVersionUpdated": 2522,
       "k_EMsgGCSetItemPosition": 1001,
       "k_EMsgGCSetItemPositions": 1077,
-      "k_EMsgGCSetItemStyle": 1039,
+      "k_EMsgGCSetItemStyle_DEPRECATED": 1039,
       "k_EMsgGCShowItemsPickedUp": 1071,
       "k_EMsgGCSortItems": 1041,
       "k_EMsgGCStatTrakSwap": 1088,
@@ -1864,8 +1936,8 @@
       "k_EMsgGCStorePurchaseInitResponse": 2511,
       "k_EMsgGCStorePurchaseInitResponse_DEPRECATED": 2503,
       "k_EMsgGCStorePurchaseInit_DEPRECATED": 2502,
-      "k_EMsgGCStorePurchaseQueryTxn": 2508,
-      "k_EMsgGCStorePurchaseQueryTxnResponse": 2509,
+      "k_EMsgGCStorePurchaseQueryTxnResponse_DEPRECATED": 2509,
+      "k_EMsgGCStorePurchaseQueryTxn_DEPRECATED": 2508,
       "k_EMsgGCToGCBannedWordListBroadcast": 2514,
       "k_EMsgGCToGCBannedWordListUpdated": 2515,
       "k_EMsgGCToGCBroadcastConsoleCommand": 2521,
@@ -1875,32 +1947,18 @@
       "k_EMsgGCToGCIsTrustedServerResponse": 2520,
       "k_EMsgGCToGCUpdateSQLKeyValue": 2518,
       "k_EMsgGCToGCWebAPIAccountChanged": 2524,
-      "k_EMsgGCTradingBase": 1500,
-      "k_EMsgGCTrading_CancelSession": 1510,
-      "k_EMsgGCTrading_ConfirmOffer": 1512,
-      "k_EMsgGCTrading_InitiateTradeRequest": 1501,
-      "k_EMsgGCTrading_InitiateTradeResponse": 1502,
-      "k_EMsgGCTrading_ReadinessResponse": 1508,
-      "k_EMsgGCTrading_RemoveItem": 1505,
-      "k_EMsgGCTrading_SessionClosed": 1509,
-      "k_EMsgGCTrading_SetItem": 1504,
-      "k_EMsgGCTrading_SetReadiness": 1507,
-      "k_EMsgGCTrading_StartSession": 1503,
-      "k_EMsgGCTrading_TradeChatMsg": 1511,
-      "k_EMsgGCTrading_TradeTypingChatMsg": 1513,
-      "k_EMsgGCTrading_UpdateTradeInfo": 1506,
       "k_EMsgGCUnlockCrateResponse": 1008,
       "k_EMsgGCUnlockCrate_DEPRECATED": 1007,
-      "k_EMsgGCUnlockItemStyle": 1084,
-      "k_EMsgGCUnlockItemStyleResponse": 1085,
-      "k_EMsgGCUnwrapGiftRequest": 1037,
-      "k_EMsgGCUnwrapGiftResponse": 1038,
+      "k_EMsgGCUnlockItemStyleResponse_DEPRECATED": 1085,
+      "k_EMsgGCUnlockItemStyle_DEPRECATED": 1084,
+      "k_EMsgGCUnwrapGiftRequest_DEPRECATED": 1037,
+      "k_EMsgGCUnwrapGiftResponse_DEPRECATED": 1038,
       "k_EMsgGCUpdateItemSchema": 1049,
       "k_EMsgGCUseItemRequest": 1025,
       "k_EMsgGCUseItemResponse": 1026,
-      "k_EMsgGCUsedClaimCodeItem": 1040,
+      "k_EMsgGCUsedClaimCodeItem_DEPRECATED": 1040,
       "k_EMsgGCUserTrackTimePlayedConsecutively": 1089,
-      "k_EMsgGCVerifyCacheSubscription": 1005,
+      "k_EMsgGCVerifyCacheSubscription_DEPRECATED": 1005,
       "k_EMsgGCVolatileItemLoadContents": 2536,
       "k_EMsgGC_IncrementKillCountAttribute": 1074,
       "k_EMsgGC_IncrementKillCountResponse": 1075,
@@ -1925,6 +1983,12 @@
       "k_EGCMsgResponseUnknownError": 6
     }
   },
+  "EGCPetMsg": {
+    "size": 4,
+    "values": {
+      "k_EMsgGCAckPetEvent": 2538
+    }
+  },
   "EGCSystemMsg": {
     "size": 4,
     "values": {
@@ -1932,6 +1996,9 @@
       "k_EGCMsgAchievementAwarded": 51,
       "k_EGCMsgAddFreeLicense": 80,
       "k_EGCMsgAddFreeLicenseResponse": 81,
+      "k_EGCMsgAppCheersGetAllowedTypes": 534,
+      "k_EGCMsgAppCheersGetAllowedTypesResponse": 535,
+      "k_EGCMsgAppCheersReceived": 533,
       "k_EGCMsgAppInfoUpdated": 63,
       "k_EGCMsgCheckFriendship": 505,
       "k_EGCMsgCheckFriendshipResponse": 506,
@@ -1946,6 +2013,8 @@
       "k_EGCMsgGetAccountDetails": 93,
       "k_EGCMsgGetAccountDetailsResponse": 94,
       "k_EGCMsgGetAccountDetails_DEPRECATED": 71,
+      "k_EGCMsgGetClanDetails": 538,
+      "k_EGCMsgGetClanDetailsResponse": 539,
       "k_EGCMsgGetCommands": 78,
       "k_EGCMsgGetCommandsResponse": 79,
       "k_EGCMsgGetEmailTemplate": 89,
@@ -1991,10 +2060,12 @@
       "k_EGCMsgMultiplexMsg": 97,
       "k_EGCMsgMultiplexMsgResponse": 98,
       "k_EGCMsgPostAlert": 75,
-      "k_EGCMsgPreTestSetup": 69,
+      "k_EGCMsgPreTestSetup_DEPRECATED": 69,
       "k_EGCMsgReceiveInterAppMessage": 73,
       "k_EGCMsgRecordSupportAction": 70,
       "k_EGCMsgRecurringSubscriptionStatusChange": 530,
+      "k_EGCMsgReportMetrics": 536,
+      "k_EGCMsgReportMetricsResponse": 537,
       "k_EGCMsgSendEmail": 87,
       "k_EGCMsgSendEmailResponse": 88,
       "k_EGCMsgSendHTTPRequest": 67,
@@ -2058,6 +2129,14 @@
       "EHG_Stomach": 3
     }
   },
+  "EHudPanelClassStatus_t": {
+    "size": 4,
+    "values": {
+      "k_eHudPanelClassStatus_DoesNotHaveClass": 0,
+      "k_eHudPanelClassStatus_HasClass": 1,
+      "k_eHudPanelClassStatus_Undefined": -1
+    }
+  },
   "EIKEndEffectorRotationFixUpMode": {
     "size": 4,
     "values": {
@@ -2080,20 +2159,6 @@
       "IN_BUTTON_UP_DOWN": 3,
       "IN_BUTTON_UP_DOWN_UP": 4,
       "IN_BUTTON_UP_DOWN_UP_DOWN": 7
-    }
-  },
-  "EInitSystemResult": {
-    "size": 4,
-    "values": {
-      "k_EInitSystemResult_Existing": 4,
-      "k_EInitSystemResult_FailedInit": 7,
-      "k_EInitSystemResult_FailedOpen": 5,
-      "k_EInitSystemResult_Invalid": 0,
-      "k_EInitSystemResult_Max": 8,
-      "k_EInitSystemResult_Mismatch": 6,
-      "k_EInitSystemResult_None": 2,
-      "k_EInitSystemResult_NotFound": 3,
-      "k_EInitSystemResult_Success": 1
     }
   },
   "EKillTypes_t": {
@@ -2288,12 +2353,15 @@
   "EPulseGraphExecutionHistoryFlag": {
     "size": 4,
     "values": {
+      "CALL_TO_PULSE": 64,
       "CURSOR_ADD_TAG": 1,
+      "CURSOR_CREATE_CHILD": 8,
       "CURSOR_REMOVE_TAG": 2,
       "CURSOR_RETIRED": 4,
       "NO_FLAGS": 0,
-      "REQUIREMENT_FAIL": 16,
-      "REQUIREMENT_PASS": 8
+      "REQUIREMENT_FAIL": 32,
+      "REQUIREMENT_PASS": 16,
+      "RETURN": 128
     }
   },
   "EQueryCvarValueStatus": {
@@ -2425,17 +2493,6 @@
       "ET_Unknown": 0
     }
   },
-  "EUnlockStyle": {
-    "size": 4,
-    "values": {
-      "k_UnlockStyle_Failed_CantAfford": 2,
-      "k_UnlockStyle_Failed_CantAffordAttrib": 5,
-      "k_UnlockStyle_Failed_CantCommit": 3,
-      "k_UnlockStyle_Failed_CantLockCache": 4,
-      "k_UnlockStyle_Failed_PreReq": 1,
-      "k_UnlockStyle_Succeeded": 0
-    }
-  },
   "EVsndPlaybackMode": {
     "size": 4,
     "values": {
@@ -2491,7 +2548,8 @@
       "eAbsOrigin": 0,
       "eAttachment": 3,
       "eCenter": 1,
-      "eEyes": 2
+      "eEyes": 2,
+      "eLocalOffset": 4
     }
   },
   "EntityDissolveType_t": {
@@ -2563,6 +2621,7 @@
     "values": {
       "PARTICLE_EVENT_TYPE_MASK_COLLISION": 4,
       "PARTICLE_EVENT_TYPE_MASK_COLLISION_STOPPED": 16,
+      "PARTICLE_EVENT_TYPE_MASK_CULLED_ON_SPAWN": 2048,
       "PARTICLE_EVENT_TYPE_MASK_FIRST_COLLISION": 8,
       "PARTICLE_EVENT_TYPE_MASK_KILLED": 2,
       "PARTICLE_EVENT_TYPE_MASK_KILLED_ON_COLLISION": 32,
@@ -2747,6 +2806,7 @@
       "eReversing": 8,
       "eStopBegin": 2,
       "eStopComplete": 4,
+      "eStoppedDuringTransition": 256,
       "eTransitionComplete": 128
     }
   },
@@ -2839,17 +2899,15 @@
   "GameAnimEventIndex_t": {
     "size": 4,
     "values": {
-      "AE_BODYGROUP_SET_VALUE": 16,
-      "AE_CL_CLOTH_ATTR": 19,
-      "AE_CL_CLOTH_EFFECT": 22,
-      "AE_CL_CLOTH_GROUND_OFFSET": 20,
-      "AE_CL_CLOTH_STIFFEN": 21,
-      "AE_CL_CREATE_ANIM_SCOPE_PROP": 23,
+      "AE_BODYGROUP_SET_VALUE": 14,
+      "AE_CL_CLOTH_ATTR": 17,
+      "AE_CL_CLOTH_EFFECT": 20,
+      "AE_CL_CLOTH_GROUND_OFFSET": 18,
+      "AE_CL_CLOTH_STIFFEN": 19,
+      "AE_CL_CREATE_ANIM_SCOPE_PROP": 21,
       "AE_CL_CREATE_PARTICLE_EFFECT": 7,
       "AE_CL_CREATE_PARTICLE_EFFECT_CFG": 9,
-      "AE_CL_DISABLE_BODYGROUP": 15,
-      "AE_CL_EJECT_MAG": 45,
-      "AE_CL_ENABLE_BODYGROUP": 14,
+      "AE_CL_EJECT_MAG": 43,
       "AE_CL_PLAYSOUND": 1,
       "AE_CL_PLAYSOUND_ATTACHMENT": 2,
       "AE_CL_PLAYSOUND_LOOPING": 6,
@@ -2857,38 +2915,38 @@
       "AE_CL_STOPSOUND": 5,
       "AE_CL_STOP_PARTICLE_EFFECT": 8,
       "AE_CL_STOP_RAGDOLL_CONTROL": 13,
-      "AE_CL_WEAPON_TRANSITION_INTO_HAND": 42,
-      "AE_COUNT": 49,
-      "AE_DESTRUCTIBLE_PART_DESTROY": 29,
-      "AE_DISABLE_PLATFORM": 26,
+      "AE_CL_WEAPON_TRANSITION_INTO_HAND": 40,
+      "AE_COUNT": 47,
+      "AE_DESTRUCTIBLE_PART_DESTROY": 27,
+      "AE_DISABLE_PLATFORM": 24,
       "AE_EMPTY": 0,
-      "AE_ENABLE_PLATFORM_PLAYER_FOLLOWS_YAW": 27,
-      "AE_ENABLE_PLATFORM_PLAYER_IGNORES_YAW": 28,
-      "AE_FIRE_INPUT": 18,
+      "AE_ENABLE_PLATFORM_PLAYER_FOLLOWS_YAW": 25,
+      "AE_ENABLE_PLATFORM_PLAYER_IGNORES_YAW": 26,
+      "AE_FIRE_INPUT": 16,
       "AE_FOOTSTEP": 12,
-      "AE_GRENADE_THROW_COMPLETE": 48,
-      "AE_PULSE_GRAPH": 25,
-      "AE_SCRIPT_FIRE_EVENT_01": 32,
-      "AE_SCRIPT_FIRE_EVENT_02": 33,
-      "AE_SCRIPT_FIRE_EVENT_03": 34,
-      "AE_SCRIPT_FIRE_EVENT_04": 35,
-      "AE_SCRIPT_FIRE_EVENT_05": 36,
-      "AE_SCRIPT_FIRE_EVENT_06": 37,
-      "AE_SCRIPT_FIRE_EVENT_07": 38,
-      "AE_SCRIPT_FIRE_EVENT_08": 39,
-      "AE_SCRIPT_FIRE_EVENT_09": 40,
-      "AE_SCRIPT_FIRE_EVENT_10": 41,
-      "AE_SV_ATTACH_SILENCER_COMPLETE": 43,
+      "AE_GRENADE_THROW_COMPLETE": 46,
+      "AE_PULSE_GRAPH": 23,
+      "AE_SCRIPT_FIRE_EVENT_01": 30,
+      "AE_SCRIPT_FIRE_EVENT_02": 31,
+      "AE_SCRIPT_FIRE_EVENT_03": 32,
+      "AE_SCRIPT_FIRE_EVENT_04": 33,
+      "AE_SCRIPT_FIRE_EVENT_05": 34,
+      "AE_SCRIPT_FIRE_EVENT_06": 35,
+      "AE_SCRIPT_FIRE_EVENT_07": 36,
+      "AE_SCRIPT_FIRE_EVENT_08": 37,
+      "AE_SCRIPT_FIRE_EVENT_09": 38,
+      "AE_SCRIPT_FIRE_EVENT_10": 39,
+      "AE_SV_ATTACH_SILENCER_COMPLETE": 41,
       "AE_SV_CREATE_PARTICLE_EFFECT_CFG": 10,
-      "AE_SV_DETACH_SILENCER_COMPLETE": 44,
-      "AE_SV_IKLOCK": 24,
+      "AE_SV_DETACH_SILENCER_COMPLETE": 42,
+      "AE_SV_IKLOCK": 22,
       "AE_SV_PLAYSOUND": 4,
       "AE_SV_STOP_PARTICLE_EFFECT": 11,
-      "AE_VEHICLE_ENTER_FINISHED": 30,
-      "AE_VEHICLE_EXIT_FINISHED": 31,
-      "AE_WEAPON_PERFORM_ATTACK": 17,
-      "AE_WPN_COMPLETE_RELOAD": 46,
-      "AE_WPN_HEALTHSHOT_INJECT": 47
+      "AE_VEHICLE_ENTER_FINISHED": 28,
+      "AE_VEHICLE_EXIT_FINISHED": 29,
+      "AE_WEAPON_PERFORM_ATTACK": 15,
+      "AE_WPN_COMPLETE_RELOAD": 44,
+      "AE_WPN_HEALTHSHOT_INJECT": 45
     }
   },
   "GrenadeType_t": {
@@ -3055,7 +3113,8 @@
       "NAV_OBSTACLE_TYPE_BLOCK": 3,
       "NAV_OBSTACLE_TYPE_CONN": 2,
       "NAV_OBSTACLE_TYPE_INVALID": -1,
-      "NAV_OBSTACLE_TYPE_NONE": 0
+      "NAV_OBSTACLE_TYPE_NONE": 0,
+      "NAV_OBSTACLE_TYPE_PERMANENT_BLOCK": 4
     }
   },
   "IkEndEffectorType": {
@@ -3301,10 +3360,12 @@
     }
   },
   "ModelMeshBufferUsage_t": {
-    "size": 1,
+    "size": 2,
     "values": {
       "MESH_BUFFER_USAGE_ADJACENCY": 4,
+      "MESH_BUFFER_USAGE_ALIAS_TABLE": 256,
       "MESH_BUFFER_USAGE_IB": 2,
+      "MESH_BUFFER_USAGE_MESHLETS": 128,
       "MESH_BUFFER_USAGE_MESHLET_TRIS": 8,
       "MESH_BUFFER_USAGE_NONE": 0,
       "MESH_BUFFER_USAGE_RT_PROXY": 16,
@@ -3422,7 +3483,8 @@
   "MovementCapability_t": {
     "size": 4,
     "values": {
-      "eCount": 9,
+      "eCount": 10,
+      "eForwardStartOnly": 9,
       "eIdleTurn": 1,
       "eInstantStop": 4,
       "eLean": 8,
@@ -3747,6 +3809,36 @@
       "ConditionallyAllowTransition": 1
     }
   },
+  "NoiseStreamModifier_t": {
+    "size": 4,
+    "values": {
+      "NOISE_STREAM_MODIFIER_CLUMPS": 2,
+      "NOISE_STREAM_MODIFIER_LINES": 1,
+      "NOISE_STREAM_MODIFIER_NONE": 0,
+      "NOISE_STREAM_MODIFIER_RINGS": 3
+    }
+  },
+  "NoiseStreamTurbulence_t": {
+    "size": 4,
+    "values": {
+      "NOISE_STREAM_TURB_ALTERNATE": 5,
+      "NOISE_STREAM_TURB_CONTRAST": 4,
+      "NOISE_STREAM_TURB_FEEDBACK": 2,
+      "NOISE_STREAM_TURB_HIGHLIGHT": 1,
+      "NOISE_STREAM_TURB_LOOPY": 3,
+      "NOISE_STREAM_TURB_NONE": 0
+    }
+  },
+  "NoiseStreamType_t": {
+    "size": 4,
+    "values": {
+      "NOISE_STREAM_TYPE_CURL": 3,
+      "NOISE_STREAM_TYPE_NONE": 4,
+      "NOISE_STREAM_TYPE_PERLIN": 0,
+      "NOISE_STREAM_TYPE_SIMPLEX": 1,
+      "NOISE_STREAM_TYPE_WORLEY": 2
+    }
+  },
   "ObjectTypeFlags_t": {
     "size": 4,
     "values": {
@@ -3755,6 +3847,7 @@
       "OBJECT_TYPE_DISABLED_IN_LOW_QUALITY": 128,
       "OBJECT_TYPE_DISABLE_VIS_CULLING": 65536,
       "OBJECT_TYPE_HAS_AGGREGATE_RTPROXY": 524288,
+      "OBJECT_TYPE_HAS_EMISSIVE_GI": 1048576,
       "OBJECT_TYPE_MODEL": 8,
       "OBJECT_TYPE_MODEL_HAS_LODS": 2048,
       "OBJECT_TYPE_NEEDS_DYNAMIC_SHADOWS": 262144,
@@ -4113,10 +4206,13 @@
   "ParticleFloatMapType_t": {
     "size": 4,
     "values": {
-      "PF_MAP_TYPE_COUNT": 7,
+      "PF_MAP_TYPE_COUNT": 10,
       "PF_MAP_TYPE_CURVE": 4,
       "PF_MAP_TYPE_DIRECT": 0,
       "PF_MAP_TYPE_INVALID": -1,
+      "PF_MAP_TYPE_MAX": 8,
+      "PF_MAP_TYPE_MIN": 7,
+      "PF_MAP_TYPE_MOD": 9,
       "PF_MAP_TYPE_MULT": 1,
       "PF_MAP_TYPE_NOTCHED": 5,
       "PF_MAP_TYPE_REMAP": 2,
@@ -4146,39 +4242,40 @@
   "ParticleFloatType_t": {
     "size": 4,
     "values": {
-      "PF_TYPE_CLOSEST_CAMERA_DISTANCE": 11,
+      "PF_TYPE_CLOSEST_CAMERA_DISTANCE": 12,
       "PF_TYPE_COLLECTION_AGE": 4,
-      "PF_TYPE_CONCURRENT_DEF_COUNT": 10,
+      "PF_TYPE_CONCURRENT_DEF_COUNT": 11,
       "PF_TYPE_CONTROL_POINT_CHANGE_AGE": 7,
       "PF_TYPE_CONTROL_POINT_COMPONENT": 6,
-      "PF_TYPE_CONTROL_POINT_IS_SET": 14,
+      "PF_TYPE_CONTROL_POINT_DISTANCE": 9,
+      "PF_TYPE_CONTROL_POINT_IS_SET": 15,
       "PF_TYPE_CONTROL_POINT_SPEED": 8,
-      "PF_TYPE_COUNT": 31,
+      "PF_TYPE_COUNT": 32,
       "PF_TYPE_ENDCAP_AGE": 5,
       "PF_TYPE_INVALID": -1,
       "PF_TYPE_LITERAL": 0,
       "PF_TYPE_NAMED_VALUE": 1,
-      "PF_TYPE_PARTICLE_AGE": 18,
-      "PF_TYPE_PARTICLE_AGE_NORMALIZED": 19,
-      "PF_TYPE_PARTICLE_DETAIL_LEVEL": 9,
-      "PF_TYPE_PARTICLE_FLOAT": 20,
-      "PF_TYPE_PARTICLE_INITIAL_FLOAT": 21,
-      "PF_TYPE_PARTICLE_INITIAL_VECTOR_COMPONENT": 23,
-      "PF_TYPE_PARTICLE_NOISE": 17,
-      "PF_TYPE_PARTICLE_NUMBER": 25,
-      "PF_TYPE_PARTICLE_NUMBER_NORMALIZED": 26,
-      "PF_TYPE_PARTICLE_ROPE_SEGMENT": 27,
-      "PF_TYPE_PARTICLE_ROPE_SEGMENT_NORMALIZED": 28,
-      "PF_TYPE_PARTICLE_SCREENSPACE_CAMERA_DISTANCE": 29,
-      "PF_TYPE_PARTICLE_SCREENSPACE_CAMERA_DOT_PRODUCT": 30,
-      "PF_TYPE_PARTICLE_SPEED": 24,
-      "PF_TYPE_PARTICLE_VECTOR_COMPONENT": 22,
+      "PF_TYPE_PARTICLE_AGE": 19,
+      "PF_TYPE_PARTICLE_AGE_NORMALIZED": 20,
+      "PF_TYPE_PARTICLE_DETAIL_LEVEL": 10,
+      "PF_TYPE_PARTICLE_FLOAT": 21,
+      "PF_TYPE_PARTICLE_INITIAL_FLOAT": 22,
+      "PF_TYPE_PARTICLE_INITIAL_VECTOR_COMPONENT": 24,
+      "PF_TYPE_PARTICLE_NOISE": 18,
+      "PF_TYPE_PARTICLE_NUMBER": 26,
+      "PF_TYPE_PARTICLE_NUMBER_NORMALIZED": 27,
+      "PF_TYPE_PARTICLE_ROPE_SEGMENT": 28,
+      "PF_TYPE_PARTICLE_ROPE_SEGMENT_NORMALIZED": 29,
+      "PF_TYPE_PARTICLE_SCREENSPACE_CAMERA_DISTANCE": 30,
+      "PF_TYPE_PARTICLE_SCREENSPACE_CAMERA_DOT_PRODUCT": 31,
+      "PF_TYPE_PARTICLE_SPEED": 25,
+      "PF_TYPE_PARTICLE_VECTOR_COMPONENT": 23,
       "PF_TYPE_RANDOM_BIASED": 3,
       "PF_TYPE_RANDOM_UNIFORM": 2,
-      "PF_TYPE_RENDERER_CAMERA_DISTANCE": 15,
-      "PF_TYPE_RENDERER_CAMERA_DOT_PRODUCT": 16,
-      "PF_TYPE_SNAPSHOT_CHANGED": 13,
-      "PF_TYPE_SNAPSHOT_COUNT": 12
+      "PF_TYPE_RENDERER_CAMERA_DISTANCE": 16,
+      "PF_TYPE_RENDERER_CAMERA_DOT_PRODUCT": 17,
+      "PF_TYPE_SNAPSHOT_CHANGED": 14,
+      "PF_TYPE_SNAPSHOT_COUNT": 13
     }
   },
   "ParticleFogType_t": {
@@ -4313,9 +4410,20 @@
       "PARTICLE_MULTISEGMENT_SPECIAL_NONE": -1
     }
   },
+  "ParticleOmni2LighOrientationChoiceList_t": {
+    "size": 4,
+    "values": {
+      "PARTICLE_OMNI2_LIGHT_ORIENTATION_NORMAL": 1,
+      "PARTICLE_OMNI2_LIGHT_ORIENTATION_NORMAL_ROLL": 2,
+      "PARTICLE_OMNI2_LIGHT_ORIENTATION_ROTATIONS": 0,
+      "PARTICLE_OMNI2_LIGHT_ORIENTATION_TARGET": 3,
+      "PARTICLE_OMNI2_LIGHT_ORIENTATION_TARGET_ROLL": 4
+    }
+  },
   "ParticleOmni2LightTypeChoiceList_t": {
     "size": 4,
     "values": {
+      "PARTICLE_OMNI2_LIGHT_TYPE_BARN": 2,
       "PARTICLE_OMNI2_LIGHT_TYPE_POINT": 0,
       "PARTICLE_OMNI2_LIGHT_TYPE_SPHERE": 1
     }
@@ -4395,13 +4503,6 @@
       "PARTICLE_POST_PROCESS_PRIORITY_GLOBAL_UI": 5,
       "PARTICLE_POST_PROCESS_PRIORITY_LEVEL_OVERRIDE": 1,
       "PARTICLE_POST_PROCESS_PRIORITY_LEVEL_VOLUME": 0
-    }
-  },
-  "ParticleReplicationMode_t": {
-    "size": 4,
-    "values": {
-      "PARTICLE_REPLICATIONMODE_NONE": 0,
-      "PARTICLE_REPLICATIONMODE_REPLICATE_FOR_EACH_PARENT_PARTICLE": 1
     }
   },
   "ParticleRotationLockType_t": {
@@ -4741,13 +4842,16 @@
   "PreviewCharacterMode": {
     "size": 4,
     "values": {
-      "BANNER": 9,
+      "BANNER": 10,
       "BUY_MENU": 2,
+      "CHICK_SNAPSHOT": 11,
+      "CHICK_VIEWMODEL": 12,
       "DIORAMA": 0,
       "END_OF_MATCH": 4,
       "INVALID": -1,
       "INVENTORY_INSPECT": 5,
       "MAIN_MENU": 1,
+      "RUSH_INTRO": 9,
       "TEAM_INTRO": 7,
       "TEAM_SELECT": 3,
       "WALKING": 6,
@@ -4869,132 +4973,136 @@
   "PulseInstructionCode_t": {
     "size": 2,
     "values": {
-      "ADD": 26,
-      "ADD_FLOAT": 51,
-      "ADD_FLOAT_GAMETIME": 59,
-      "ADD_GAMETIME_FLOAT": 58,
-      "ADD_INT": 50,
-      "ADD_STRING": 52,
-      "ADD_VEC2": 53,
-      "ADD_VEC3": 54,
-      "ADD_VEC3WS_VEC3": 55,
-      "ADD_VEC3_VEC3WS": 56,
-      "ADD_VEC4": 57,
-      "AND": 35,
-      "CELL_INVOKE": 12,
-      "CHUNK_LEAP": 7,
-      "CHUNK_LEAP_COND": 8,
-      "CONVERT_VALUE": 40,
-      "COPY": 23,
-      "CREATE_CHILD_CURSOR_OUTFLOW": 11,
-      "DETACH_REGISTER": 17,
-      "DIV": 29,
-      "DIV_FLOAT": 71,
-      "ELEMENT_ACCESS": 39,
-      "ELEMENT_ACCESS_COLOR_RGB": 124,
-      "ELEMENT_ACCESS_VEC2": 120,
-      "ELEMENT_ACCESS_VEC3": 121,
-      "ELEMENT_ACCESS_VEC3WS": 122,
-      "ELEMENT_ACCESS_VEC4": 123,
-      "EQ": 33,
-      "EQ_ARRAY": 95,
-      "EQ_BOOL": 80,
-      "EQ_COLOR_RGB": 94,
-      "EQ_EHANDLE": 90,
-      "EQ_ENTITY_NAME": 88,
-      "EQ_FLOAT": 82,
-      "EQ_GAMETIME": 96,
-      "EQ_INT": 81,
-      "EQ_OPAQUE_HANDLE": 92,
-      "EQ_PANEL_HANDLE": 91,
-      "EQ_SCHEMA_ENUM": 89,
-      "EQ_STRING": 87,
-      "EQ_TEST_HANDLE": 93,
-      "EQ_VEC2": 83,
-      "EQ_VEC3": 84,
-      "EQ_VEC3WS": 85,
-      "EQ_VEC4": 86,
-      "GET_ARRAY_ELEMENT": 21,
-      "GET_BLACKBOARD_REFERENCE": 42,
-      "GET_CONST": 20,
-      "GET_CONST_INLINE_STORAGE": 125,
-      "GET_DOMAIN_VALUE": 22,
-      "GET_VAR": 15,
-      "GET_VAR_DETACH": 16,
+      "ADD": 27,
+      "ADD_FLOAT": 55,
+      "ADD_FLOAT_GAMETIME": 63,
+      "ADD_GAMETIME_FLOAT": 62,
+      "ADD_INT": 54,
+      "ADD_STRING": 56,
+      "ADD_VEC2": 57,
+      "ADD_VEC3": 58,
+      "ADD_VEC3WS_VEC3": 59,
+      "ADD_VEC3_VEC3WS": 60,
+      "ADD_VEC4": 61,
+      "AND": 36,
+      "CELL_INVOKE": 13,
+      "CHUNK_LEAP": 8,
+      "CHUNK_LEAP_COND": 9,
+      "CONVERT_VALUE": 41,
+      "COPY": 24,
+      "CREATE_CHILD_CURSOR_OUTFLOW": 12,
+      "DETACH_REGISTER": 18,
+      "DIV": 30,
+      "DIV_FLOAT": 75,
+      "ELEMENT_ACCESS": 40,
+      "ELEMENT_ACCESS_COLOR_RGB": 128,
+      "ELEMENT_ACCESS_VEC2": 124,
+      "ELEMENT_ACCESS_VEC3": 125,
+      "ELEMENT_ACCESS_VEC3WS": 126,
+      "ELEMENT_ACCESS_VEC4": 127,
+      "EQ": 34,
+      "EQ_ARRAY": 99,
+      "EQ_BOOL": 84,
+      "EQ_COLOR_RGB": 98,
+      "EQ_EHANDLE": 94,
+      "EQ_ENTITY_NAME": 92,
+      "EQ_FLOAT": 86,
+      "EQ_GAMETIME": 100,
+      "EQ_INT": 85,
+      "EQ_OPAQUE_HANDLE": 96,
+      "EQ_PANEL_HANDLE": 95,
+      "EQ_SCHEMA_ENUM": 93,
+      "EQ_STRING": 91,
+      "EQ_TEST_HANDLE": 97,
+      "EQ_VEC2": 87,
+      "EQ_VEC3": 88,
+      "EQ_VEC3WS": 89,
+      "EQ_VEC4": 90,
+      "GET_ARRAY_ELEMENT": 22,
+      "GET_BLACKBOARD_REFERENCE": 43,
+      "GET_CONST": 21,
+      "GET_CONST_INLINE_STORAGE": 129,
+      "GET_DOMAIN_VALUE": 23,
+      "GET_TEMPVAR": 45,
+      "GET_VAR": 16,
+      "GET_VAR_DETACH": 17,
       "IMMEDIATE_HALT": 1,
       "INVALID": 0,
-      "JUMP": 5,
-      "JUMP_COND": 6,
-      "LAST_SERIALIZED_CODE": 44,
-      "LIBRARY_INVOKE": 13,
-      "LT": 31,
-      "LTE": 32,
-      "LTE_FLOAT": 78,
-      "LTE_GAMETIME": 79,
-      "LTE_INT": 77,
-      "LT_FLOAT": 75,
-      "LT_GAMETIME": 76,
-      "LT_INT": 74,
-      "MOD": 30,
-      "MOD_FLOAT": 73,
-      "MOD_INT": 72,
-      "MUL": 28,
-      "MUL_FLOAT": 70,
-      "MUL_INT": 69,
-      "NE": 34,
-      "NEGATE": 25,
-      "NEGATE_FLOAT": 46,
-      "NEGATE_INT": 45,
-      "NEGATE_VEC2": 47,
-      "NEGATE_VEC3": 48,
-      "NEGATE_VEC4": 49,
-      "NE_ARRAY": 112,
-      "NE_BOOL": 97,
-      "NE_COLOR_RGB": 111,
-      "NE_EHANDLE": 107,
-      "NE_ENTITY_NAME": 105,
-      "NE_FLOAT": 99,
-      "NE_GAMETIME": 113,
-      "NE_INT": 98,
-      "NE_OPAQUE_HANDLE": 109,
-      "NE_PANEL_HANDLE": 108,
-      "NE_SCHEMA_ENUM": 106,
-      "NE_STRING": 104,
-      "NE_TEST_HANDLE": 110,
-      "NE_VEC2": 100,
-      "NE_VEC3": 101,
-      "NE_VEC3WS": 102,
-      "NE_VEC4": 103,
-      "NOP": 4,
-      "NOT": 24,
-      "OR": 36,
-      "PULSE_CALL_ASYNC_FIRE": 10,
-      "PULSE_CALL_SYNC": 9,
-      "REINTERPRET_INSTANCE": 41,
+      "JUMP": 6,
+      "JUMP_COND": 7,
+      "LAST_SERIALIZED_CODE": 48,
+      "LIBRARY_INVOKE": 14,
+      "LOOP_BREAK": 4,
+      "LT": 32,
+      "LTE": 33,
+      "LTE_FLOAT": 82,
+      "LTE_GAMETIME": 83,
+      "LTE_INT": 81,
+      "LT_FLOAT": 79,
+      "LT_GAMETIME": 80,
+      "LT_INT": 78,
+      "MOD": 31,
+      "MOD_FLOAT": 77,
+      "MOD_INT": 76,
+      "MUL": 29,
+      "MUL_FLOAT": 74,
+      "MUL_INT": 73,
+      "NE": 35,
+      "NEGATE": 26,
+      "NEGATE_FLOAT": 50,
+      "NEGATE_INT": 49,
+      "NEGATE_VEC2": 51,
+      "NEGATE_VEC3": 52,
+      "NEGATE_VEC4": 53,
+      "NE_ARRAY": 116,
+      "NE_BOOL": 101,
+      "NE_COLOR_RGB": 115,
+      "NE_EHANDLE": 111,
+      "NE_ENTITY_NAME": 109,
+      "NE_FLOAT": 103,
+      "NE_GAMETIME": 117,
+      "NE_INT": 102,
+      "NE_OPAQUE_HANDLE": 113,
+      "NE_PANEL_HANDLE": 112,
+      "NE_SCHEMA_ENUM": 110,
+      "NE_STRING": 108,
+      "NE_TEST_HANDLE": 114,
+      "NE_VEC2": 104,
+      "NE_VEC3": 105,
+      "NE_VEC3WS": 106,
+      "NE_VEC4": 107,
+      "NOP": 5,
+      "NOT": 25,
+      "OR": 37,
+      "PULSE_CALL_ASYNC_FIRE": 11,
+      "PULSE_CALL_SYNC": 10,
+      "REINTERPRET_INSTANCE": 42,
       "RETURN_VALUE": 3,
       "RETURN_VOID": 2,
-      "SCALE": 37,
-      "SCALE_INV": 38,
-      "SCALE_INV_VEC2": 118,
-      "SCALE_INV_VEC3": 117,
-      "SCALE_INV_VEC4": 119,
-      "SCALE_VEC2": 115,
-      "SCALE_VEC3": 114,
-      "SCALE_VEC4": 116,
-      "SET_BLACKBOARD_REFERENCE": 43,
-      "SET_VAR": 14,
-      "SET_VAR_ARRAY_ELEMENT_1D": 18,
-      "SET_VAR_OBSERVABLE": 19,
-      "SUB": 27,
-      "SUB_FLOAT": 61,
-      "SUB_GAMETIME": 68,
-      "SUB_GAMETIME_FLOAT": 67,
-      "SUB_INT": 60,
-      "SUB_VEC2": 62,
-      "SUB_VEC3": 63,
-      "SUB_VEC3WS_VEC3": 64,
-      "SUB_VEC3WS_VEC3WS": 65,
-      "SUB_VEC4": 66
+      "SCALE": 38,
+      "SCALE_INV": 39,
+      "SCALE_INV_VEC2": 122,
+      "SCALE_INV_VEC3": 121,
+      "SCALE_INV_VEC4": 123,
+      "SCALE_VEC2": 119,
+      "SCALE_VEC3": 118,
+      "SCALE_VEC4": 120,
+      "SET_BLACKBOARD_REFERENCE": 44,
+      "SET_TEMPVAR": 46,
+      "SET_TEMPVAR_OBSERVABLE": 47,
+      "SET_VAR": 15,
+      "SET_VAR_ARRAY_ELEMENT_1D": 19,
+      "SET_VAR_OBSERVABLE": 20,
+      "SUB": 28,
+      "SUB_FLOAT": 65,
+      "SUB_GAMETIME": 72,
+      "SUB_GAMETIME_FLOAT": 71,
+      "SUB_INT": 64,
+      "SUB_VEC2": 66,
+      "SUB_VEC3": 67,
+      "SUB_VEC3WS_VEC3": 68,
+      "SUB_VEC3WS_VEC3WS": 69,
+      "SUB_VEC4": 70
     }
   },
   "PulseMethodCallMode_t": {
@@ -5012,6 +5120,40 @@
       "COND_NO_PRIMARY_AMMO": 5,
       "COND_PLAYER_PUSHING": 4,
       "COND_SEE_PLAYER": 1
+    }
+  },
+  "PulseTestEnumColor_t": {
+    "size": 4,
+    "values": {
+      "BLACK": 0,
+      "BLUE": 4,
+      "GREEN": 3,
+      "RED": 2,
+      "WHITE": 1
+    }
+  },
+  "PulseTestEnumFlagsAlt_t": {
+    "size": 4,
+    "values": {
+      "FIRST": 1,
+      "NONE": 0
+    }
+  },
+  "PulseTestEnumFlags_t": {
+    "size": 4,
+    "values": {
+      "FIRST": 1,
+      "NONE": 0,
+      "SECOND": 2,
+      "THIRD": 4
+    }
+  },
+  "PulseTestEnumShape_t": {
+    "size": 4,
+    "values": {
+      "CIRCLE": 100,
+      "SQUARE": 200,
+      "TRIANGLE": 300
     }
   },
   "PulseTraceContents_t": {
@@ -5103,6 +5245,14 @@
     "values": {
       "RTPROXY_INSTANCE_FLAG_NONE": 0,
       "RTPROXY_INSTANCE_UNIQUE_MESH": 1
+    }
+  },
+  "RadiusDmgOverride_t": {
+    "size": 4,
+    "values": {
+      "RADIUS_DMG_OVERRIDE_NONE": 0,
+      "RADIUS_DMG_OVERRIDE_POSITION_ONLY": 1,
+      "RADIUS_DMG_OVERRIDE_POSITION_SKIP_TRACES": 2
     }
   },
   "RagdollPoseControl": {
@@ -5256,13 +5406,6 @@
       "SameTimeAsSource": 4
     }
   },
-  "RotatorTargetSpace_t": {
-    "size": 4,
-    "values": {
-      "ROTATOR_TARGET_LOCALSPACE": 1,
-      "ROTATOR_TARGET_WORLDSPACE": 0
-    }
-  },
   "RsComparison_t": {
     "size": 1,
     "values": {
@@ -5338,6 +5481,7 @@
       "svc_ClearAllStringTables": 51,
       "svc_CmdKeyValues": 52,
       "svc_CreateStringTable": 44,
+      "svc_EncryptedData": 78,
       "svc_FlattenedSerializer": 41,
       "svc_FullFrameSplit": 70,
       "svc_GetCvarValue": 58,
@@ -5420,6 +5564,22 @@
     "values": {
       "SCENE_ONPLAYERDEATH_CANCEL": 1,
       "SCENE_ONPLAYERDEATH_DO_NOTHING": 0
+    }
+  },
+  "SceneStatsSections_t": {
+    "size": 4,
+    "values": {
+      "SCENE_STATS_ALL": 255,
+      "SCENE_STATS_CULLING": 4,
+      "SCENE_STATS_DEFAULT": 127,
+      "SCENE_STATS_FRAME": 1,
+      "SCENE_STATS_GEOMETRY": 2,
+      "SCENE_STATS_INTERNALS": 64,
+      "SCENE_STATS_LIGHTING": 16,
+      "SCENE_STATS_MATERIALS": 8,
+      "SCENE_STATS_NONE": 0,
+      "SCENE_STATS_RAYTRACING": 32,
+      "SCENE_STATS_RENDERDEVICE": 128
     }
   },
   "ScriptedConflictResponse_t": {
@@ -5623,15 +5783,6 @@
       "eSndBeatPatternTypeNone": 0
     }
   },
-  "SndBeatLaunchSyncType_t": {
-    "size": 4,
-    "values": {
-      "eSndBeatLaunchSyncTypeInvalid": 0,
-      "eSndBeatLaunchSyncTypeQueue": 1,
-      "eSndBeatLaunchSyncTypeReset": 3,
-      "eSndBeatLaunchSyncTypeSeek": 2
-    }
-  },
   "SndBeatMidiStatusType_t": {
     "size": 4,
     "values": {
@@ -5642,6 +5793,22 @@
       "SndSeqMidiStatusNoteOn": 9,
       "SndSeqMidiStatusPitchBend": 14,
       "SndSeqMidiStatusProgramChange": 12
+    }
+  },
+  "SndBeatSyncStartType_t": {
+    "size": 4,
+    "values": {
+      "eSndBeatSyncStartTypeImmediate": 1,
+      "eSndBeatSyncStartTypeInvalid": 0,
+      "eSndBeatSyncStartTypeQueue": 2
+    }
+  },
+  "SndBeatSyncType_t": {
+    "size": 4,
+    "values": {
+      "eSndBeatSyncTypeInvalid": 0,
+      "eSndBeatSyncTypeReset": 1,
+      "eSndBeatSyncTypeSeekImmediate": 2
     }
   },
   "SndBeatTrackPlaybackType_t": {
@@ -6045,6 +6212,25 @@
       "UPSCALER_NVIDIA_DLSS": 3
     }
   },
+  "VMixAutoControlType_t": {
+    "size": 1,
+    "values": {
+      "VMIX_AUTO_DISTANCE": 3,
+      "VMIX_AUTO_LISTENER_PITCH_COS": 11,
+      "VMIX_AUTO_LISTENER_PITCH_SIN": 10,
+      "VMIX_AUTO_LISTENER_ROLL_COS": 13,
+      "VMIX_AUTO_LISTENER_ROLL_SIN": 12,
+      "VMIX_AUTO_LISTENER_YAW_COS": 9,
+      "VMIX_AUTO_LISTENER_YAW_SIN": 8,
+      "VMIX_AUTO_PLAYTIME": 2,
+      "VMIX_AUTO_POSITION_VECTOR": 7,
+      "VMIX_AUTO_POSITION_X": 4,
+      "VMIX_AUTO_POSITION_Y": 5,
+      "VMIX_AUTO_POSITION_Z": 6,
+      "VMIX_AUTO_SEND_LEVEL": 0,
+      "VMIX_AUTO_STACK_VAR": 1
+    }
+  },
   "VMixChannelOperation_t": {
     "size": 4,
     "values": {
@@ -6054,6 +6240,17 @@
       "VMIX_CHAN_RIGHT": 2,
       "VMIX_CHAN_STEREO": 0,
       "VMIX_CHAN_SWAP": 3
+    }
+  },
+  "VMixFilterChannelSet_t": {
+    "size": 1,
+    "values": {
+      "FILTER_ALL_CHANNELS": 0,
+      "FILTER_CHANNEL_SET_MAX": 5,
+      "FILTER_LEFT_ONLY": 1,
+      "FILTER_MID_ONLY": 3,
+      "FILTER_RIGHT_ONLY": 2,
+      "FILTER_SIDE_ONLY": 4
     }
   },
   "VMixFilterSlope_t": {
@@ -6071,7 +6268,7 @@
     }
   },
   "VMixFilterType_t": {
-    "size": 2,
+    "size": 1,
     "values": {
       "FILTER_ALLPASS": 7,
       "FILTER_BANDPASS": 2,
@@ -6088,46 +6285,40 @@
   "VMixGraphCommandID_t": {
     "size": 4,
     "values": {
-      "CMD_BLEND_VSNDS_TO_IMPULSERESPONSE": 38,
-      "CMD_CONTROL_COND_COPY_IF_NEGATIVE": 8,
-      "CMD_CONTROL_COPY": 7,
-      "CMD_CONTROL_EVALUATE_CURVE": 6,
-      "CMD_CONTROL_EVAL_ENVELOPE": 15,
-      "CMD_CONTROL_INCREMENT_TIMER": 14,
-      "CMD_CONTROL_INPUT_STORE": 1,
-      "CMD_CONTROL_INPUT_STORE_DB": 2,
-      "CMD_CONTROL_MAX": 12,
-      "CMD_CONTROL_OUTPUT_STORE": 5,
-      "CMD_CONTROL_REMAP_LINEAR": 9,
-      "CMD_CONTROL_REMAP_LOGLINEAR": 11,
-      "CMD_CONTROL_REMAP_SINE": 10,
-      "CMD_CONTROL_RESET_TIMER": 13,
-      "CMD_CONTROL_SINE_BLEND": 16,
-      "CMD_CONTROL_TRANSIENT_INPUT_RESET": 4,
-      "CMD_CONTROL_TRANSIENT_INPUT_STORE": 3,
-      "CMD_IMPULSERESPONSE_DELAY": 39,
-      "CMD_IMPULSERESPONSE_INPUT_STORE": 34,
-      "CMD_IMPULSERESPONSE_RESET": 37,
+      "CMD_BLEND_VSNDS_TO_IMPULSERESPONSE": 32,
+      "CMD_CONTROL_COND_COPY_IF_NEGATIVE": 7,
+      "CMD_CONTROL_CONVERT_DB_TO_GAIN": 1,
+      "CMD_CONTROL_COPY": 6,
+      "CMD_CONTROL_EVALUATE_CURVE": 5,
+      "CMD_CONTROL_EVAL_ENVELOPE": 14,
+      "CMD_CONTROL_INCREMENT_TIMER": 13,
+      "CMD_CONTROL_MAX": 11,
+      "CMD_CONTROL_OUTPUT_STORE": 4,
+      "CMD_CONTROL_REMAP_LINEAR": 8,
+      "CMD_CONTROL_REMAP_LOGLINEAR": 10,
+      "CMD_CONTROL_REMAP_SINE": 9,
+      "CMD_CONTROL_RESET_TIMER": 12,
+      "CMD_CONTROL_SINE_BLEND": 15,
+      "CMD_CONTROL_TRANSIENT_INPUT_RESET": 3,
+      "CMD_CONTROL_TRANSIENT_INPUT_STORE": 2,
+      "CMD_IMPULSERESPONSE_DELAY": 33,
+      "CMD_IMPULSERESPONSE_INPUT_STORE": 28,
+      "CMD_IMPULSERESPONSE_RESET": 31,
       "CMD_INVALID": -1,
-      "CMD_PROCESSOR_SET_CONTROL_ARRAYVALUE": 19,
-      "CMD_PROCESSOR_SET_CONTROL_VALUE": 17,
-      "CMD_PROCESSOR_SET_IMPULSERESPONSE_VALUE": 35,
-      "CMD_PROCESSOR_SET_NAME_INPUT": 18,
-      "CMD_PROCESSOR_SET_VSND_VALUE": 21,
-      "CMD_PROCESSOR_STORE_CONTROL_VALUE": 20,
-      "CMD_REMAP_VSND_TO_IMPULSERESPONSE": 36,
-      "CMD_SUBMIX_ACCUMULATE": 31,
-      "CMD_SUBMIX_COPY": 30,
-      "CMD_SUBMIX_DEBUG": 26,
-      "CMD_SUBMIX_EXTRACTCONTAINER": 25,
-      "CMD_SUBMIX_GENERATE": 23,
-      "CMD_SUBMIX_GENERATE_SIDECHAIN": 24,
-      "CMD_SUBMIX_METER": 32,
-      "CMD_SUBMIX_METER_SPECTRUM": 33,
-      "CMD_SUBMIX_MIX2x1": 27,
-      "CMD_SUBMIX_OUTPUT": 28,
-      "CMD_SUBMIX_OUTPUTx2": 29,
-      "CMD_SUBMIX_PROCESS": 22
+      "CMD_PROCESSOR_SET_IMPULSERESPONSE_VALUE": 29,
+      "CMD_REMAP_VSND_TO_IMPULSERESPONSE": 30,
+      "CMD_SUBMIX_ACCUMULATE": 25,
+      "CMD_SUBMIX_COPY": 24,
+      "CMD_SUBMIX_DEBUG": 20,
+      "CMD_SUBMIX_EXTRACTCONTAINER": 19,
+      "CMD_SUBMIX_GENERATE": 17,
+      "CMD_SUBMIX_GENERATE_SIDECHAIN": 18,
+      "CMD_SUBMIX_METER": 26,
+      "CMD_SUBMIX_METER_SPECTRUM": 27,
+      "CMD_SUBMIX_MIX2x1": 21,
+      "CMD_SUBMIX_OUTPUT": 22,
+      "CMD_SUBMIX_OUTPUTx2": 23,
+      "CMD_SUBMIX_PROCESS": 16
     }
   },
   "VMixLFOShape_t": {
@@ -6140,11 +6331,63 @@
       "LFO_SHAPE_TRI": 2
     }
   },
+  "VMixMixDownRule_t": {
+    "size": 1,
+    "values": {
+      "LEFT": 1,
+      "MID": 3,
+      "RIGHT": 2,
+      "SIDE": 4,
+      "SUM": 0
+    }
+  },
+  "VMixOffsetCategory_t": {
+    "size": 4,
+    "values": {
+      "HEAP_OFFSET": 1,
+      "INPUT_INDEX": 2,
+      "NULL_POINTER": 0,
+      "SUBMIX_INDEX": 3
+    }
+  },
+  "VMixOffsetType_t": {
+    "size": 4,
+    "values": {
+      "VO_ARRAY": 1,
+      "VO_BOOL": 2,
+      "VO_CHAR": 0,
+      "VO_CUBIC_SPLINE": 8,
+      "VO_FLOAT": 3,
+      "VO_FLOAT_UTLVECTOR": 10,
+      "VO_INT32": 5,
+      "VO_QUATERNION": 7,
+      "VO_SHAREDPTR_IR": 11,
+      "VO_TYPE_COUNT": 12,
+      "VO_UINT32": 4,
+      "VO_VECTOR": 6,
+      "VO_VSND_INPUT": 9
+    }
+  },
   "VMixPannerType_t": {
     "size": 4,
     "values": {
       "PANNER_TYPE_EQUAL_POWER": 1,
       "PANNER_TYPE_LINEAR": 0
+    }
+  },
+  "VMixSendOperator_t": {
+    "size": 2,
+    "values": {
+      "ALL_MAX_SEND": 7,
+      "ALL_VOICES": 0,
+      "FACING_VOICES": 2,
+      "INVERSE_NAMED_SENDS": 5,
+      "INVERSE_TOTAL_SEND": 6,
+      "MIXGROUP_VOICES": 3,
+      "NAMED_SEND": 4,
+      "NO_VOICES": -1,
+      "ROOM_VOICES": 1,
+      "TRACK": 8
     }
   },
   "VMixSubgraphSwitchInterpolationType_t": {
@@ -6153,6 +6396,13 @@
       "SUBGRAPH_INTERPOLATION_KEEP_LAST_SUBGRAPH_RUNNING": 2,
       "SUBGRAPH_INTERPOLATION_TEMPORAL_CROSSFADE": 0,
       "SUBGRAPH_INTERPOLATION_TEMPORAL_FADE_OUT": 1
+    }
+  },
+  "VMixUpMixRule_t": {
+    "size": 1,
+    "values": {
+      "BROADCAST": 1,
+      "DIVIDE": 0
     }
   },
   "VPhysXAggregateData_t::VPhysXFlagEnum_t": {
@@ -6282,6 +6532,35 @@
       "VERTEX_ALBEDO_NONE": 0
     }
   },
+  "VfxComboType_t": {
+    "size": 1,
+    "values": {
+      "VFX_COMBO_ALIAS": 3,
+      "VFX_COMBO_DYNAMIC": 2,
+      "VFX_COMBO_STATIC": 1,
+      "VFX_COMBO_UNKNOWN": 0
+    }
+  },
+  "VfxRuleType_t": {
+    "size": 4,
+    "values": {
+      "VFX_RULE_TYPE_DYNAMIC": 3,
+      "VFX_RULE_TYPE_FEATURE": 1,
+      "VFX_RULE_TYPE_MAX": 4,
+      "VFX_RULE_TYPE_STATIC": 2,
+      "VFX_RULE_TYPE_UNKNOWN": 0
+    }
+  },
+  "VfxRule_t": {
+    "size": 4,
+    "values": {
+      "VFX_RULE_ALLOW_NUM": 3,
+      "VFX_RULE_CHILD_OF": 1,
+      "VFX_RULE_REQUIRES": 2,
+      "VFX_RULE_SUPPRESS": 4,
+      "VFX_RULE_UNKNOWN": 0
+    }
+  },
   "ViewFadeMode_t": {
     "size": 4,
     "values": {
@@ -6345,6 +6624,8 @@
       "WPN_ANIMSTATE_KNIFE_SECONDARY_STAB": 505,
       "WPN_ANIMSTATE_RELOAD": 800,
       "WPN_ANIMSTATE_RELOAD_OUTRO": 801,
+      "WPN_ANIMSTATE_RELOAD_OUTRO_SILENT": 803,
+      "WPN_ANIMSTATE_RELOAD_SILENT": 802,
       "WPN_ANIMSTATE_SHOOT_DRYFIRE": 102,
       "WPN_ANIMSTATE_SHOOT_PRIMARY": 100,
       "WPN_ANIMSTATE_SHOOT_SECONDARY": 101,
@@ -6581,7 +6862,7 @@
       "LOADOUT_SLOT_CLOTHING_HAT": 43,
       "LOADOUT_SLOT_CLOTHING_LOWERBODY": 44,
       "LOADOUT_SLOT_CLOTHING_TORSO": 45,
-      "LOADOUT_SLOT_COUNT": 57,
+      "LOADOUT_SLOT_COUNT": 58,
       "LOADOUT_SLOT_EQUIPMENT0": 32,
       "LOADOUT_SLOT_EQUIPMENT1": 33,
       "LOADOUT_SLOT_EQUIPMENT2": 34,
@@ -6609,7 +6890,7 @@
       "LOADOUT_SLOT_HEAVY4": 24,
       "LOADOUT_SLOT_HEAVY5": 25,
       "LOADOUT_SLOT_INVALID": -1,
-      "LOADOUT_SLOT_LAST_ALL_CHARACTER": 56,
+      "LOADOUT_SLOT_LAST_ALL_CHARACTER": 57,
       "LOADOUT_SLOT_LAST_AUTO_BUY_WEAPON": 1,
       "LOADOUT_SLOT_LAST_COSMETIC": 41,
       "LOADOUT_SLOT_LAST_PRIMARY_WEAPON": 25,
@@ -6625,6 +6906,7 @@
       "LOADOUT_SLOT_MISC5": 52,
       "LOADOUT_SLOT_MISC6": 53,
       "LOADOUT_SLOT_MUSICKIT": 54,
+      "LOADOUT_SLOT_PET": 57,
       "LOADOUT_SLOT_PROMOTED": -2,
       "LOADOUT_SLOT_RIFLE0": 14,
       "LOADOUT_SLOT_RIFLE1": 15,
