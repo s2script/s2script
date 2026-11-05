@@ -8,8 +8,9 @@
 //   timeleft uses mp_timelimit (cvar) + Server.gameTime (map time / curtime), which includes warmup/freeze
 //   so it can differ from the HUD by the warmup — approximate, fine for an info trigger.
 
-import { translations, Chat, Server, HookResult, nextFrame, Translations } from "@s2script/sdk";
+import { command, translations, Chat, Server, HookResult, nextFrame, Translations } from "@s2script/sdk";
 import type { HookResultValue } from "@s2script/sdk";
+import { Player } from "@s2script/cs2";
 
 // Every trigger answer is broadcast (Chat.toAll) to the whole server, not replied to just the
 // asker — there's no single "recipient" slot to translate for, so these resolve at the server
@@ -44,6 +45,22 @@ function nextMap(): string {
 
 export function OnPluginStart(): void {
   translations.load("basetriggers", "common");
+
+  // A public self action, separate from playercommands' admin-targeted sm_slay.
+  command("sm_kill", cmd => {
+    if (cmd.callerSlot < 0) {
+      cmd.replyT("Kill Requires Player");
+      return HookResult.Handled;
+    }
+    const pawn = Player.fromSlot(cmd.callerSlot)?.pawn;
+    if (!pawn?.isValid || pawn.health === null || pawn.health <= 0) {
+      cmd.replyT("Player no longer available");
+      return HookResult.Handled;
+    }
+    pawn.slay();
+    cmd.replyT("Killed Yourself");
+    return HookResult.Handled;
+  });
 }
 
 export function OnClientSayCommand(_slot: number, text: string, _teamonly: boolean): HookResultValue {

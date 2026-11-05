@@ -1,5 +1,7 @@
 import { command, topmenu, translations, ADMFLAG, Translations, HookResult } from "@s2script/sdk";
 import { Player, Events, pickPlayer } from "@s2script/cs2";
+import { registerAdminCommands } from "./admincommands";
+export { OnMapStart, OnMapEnd, OnClientDisconnect, OnPluginEnd } from "./teleport";
 
 // Shared player actions — ONE implementation each, driven by both the text command and the adminmenu
 // item (two UIs over one action, never a re-implementation). Each returns whether it applied (a null
@@ -34,6 +36,7 @@ function pickLoop(adminSlot: number, action: (t: Player) => void): void {
 
 export function OnPluginStart(): void {
   translations.load("playercommands", "common");
+  registerAdminCommands();
 
   command.admin("sm_slap", ADMFLAG.SLAY, (cmd) => {
     const targetStr = cmd.arg(0);
