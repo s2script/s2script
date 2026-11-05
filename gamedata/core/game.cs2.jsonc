@@ -185,7 +185,16 @@
     "INetworkStringTable_GetString":              { "linuxsteamrt64": 9 },
     "INetworkStringTable_SetStringUserData":      { "linuxsteamrt64": 10 },
     "INetworkStringTable_GetStringUserData":      { "linuxsteamrt64": 11 },
-    "INetworkStringTable_FindStringIndex":        { "linuxsteamrt64": 12 }
+    "INetworkStringTable_FindStringIndex":        { "linuxsteamrt64": 12 },
+    // Entity precache (PrecacheContext.addEntity). IEntityResourceManifestBuilder is
+    // CGameEntitySystem's primary base; slot 5 is BuildResourceManifestForEntity(designerName,
+    // config, manifest, arena) in s2sdk entity2/entityinterfaces.h. Read on the Nov 5 2026
+    // libserver.so (BuildID 5ea0e482…): CGameEntitySystem @0x26592e8 has 25 slots, and slot 5
+    // (0x170c350) forwards its four arguments to the builder at 0x22f2720, which allocates the
+    // {classname} keyvalues, creates the class (CEntitySystem::PrecacheEntity's path), calls its
+    // Precache vfunc and deletes it. Same count and slot shape on the Oct 22 build.
+    "IEntityResourceManifestBuilder_vtableSize":  { "linuxsteamrt64": 25 },
+    "IEntityResourceManifestBuilder_BuildResourceManifestForEntity": { "linuxsteamrt64": 5 }
   },
   // Byte signatures for un-exported engine globals (Slice 5D.2). Layout-is-data: the pattern +
   // module are regenerable per CS2 patch from the documented RTTI->vtable->xref anchors (see

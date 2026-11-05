@@ -376,6 +376,7 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
         "__s2_sound_precache_add",
         s2_sound_precache_add,
     );
+    set_native(scope, global_obj, "__s2_precache_entity_add", s2_precache_entity_add);
     // Item slice: the sub-object vcall native + the readHandleVector native (wrapped as an
     // EntityRef prototype method in the prelude, below). A5b retired give/remove-item to
     // gamedata/cs2 `calls` descriptors.

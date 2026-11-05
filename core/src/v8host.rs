@@ -3746,6 +3746,23 @@ fn s2_sound_precache_add(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 
 
 
+/// Native `__s2_precache_entity_add(classname) -> boolean`. Over the `precache_entity_add` op: the
+/// entity system builds the resource manifest for one entity class (its models, particles and
+/// sounds, and any classes it precaches in turn) into the game-session manifest. Valid only during
+/// the session-manifest precache dispatch; `false` outside it, with no op, or for an empty name or
+/// one with a NUL. Never throws.
+fn s2_precache_entity_add(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.precache_entity_add) else { return };
+        let name = args.get(0).to_rust_string_lossy(scope);
+        if name.is_empty() { return; }
+        let Ok(c_name) = std::ffi::CString::new(name) else { return };
+        rv.set_bool(f(c_name.as_ptr()) == 1);
+    }));
+}
+
 /// Native `__s2_output_subscribe(classname, output, handler)`. Subscribes a JS fn to `Entity.onOutput`
 /// (entity-I/O slice); owner-tracked in `OUTPUT_MUX` keyed `"<classname>\0<output>"`. The
 /// `FireOutputInternal` detour is installed unconditionally at shim Load, so no per-subscribe engine

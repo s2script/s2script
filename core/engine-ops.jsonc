@@ -2046,6 +2046,15 @@
       "c_ret": "int",
       "c_params": "const char* path, long long value",
       "shim": "s2_usermsg_hook_set_int"
+    },
+    {
+      "name": "precache_entity_add",
+      "alias": "PrecacheEntityAddFn",
+      "rust": "extern \"C\" fn(*const c_char) -> c_int",
+      "group": "Entity precache: IEntityResourceManifestBuilder::BuildResourceManifestForEntity",
+      "c_ret": "int",
+      "c_params": "const char* classname",
+      "shim": "s2_precache_entity_add"
     }
   ]
 }

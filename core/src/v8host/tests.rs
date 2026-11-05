@@ -6656,6 +6656,37 @@
         shutdown();
     }
 
+    static PRECACHE_ENTITIES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    extern "C" fn mock_precache_entity_add(name: *const c_char) -> c_int {
+        let n = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        let ok = (n != "not_a_class") as c_int;
+        PRECACHE_ENTITIES.lock().unwrap().push(n);
+        ok
+    }
+
+    /// PrecacheContext.addEntity passes the classname to the op and maps its result to a boolean;
+    /// an empty name never reaches the op.
+    #[test]
+    fn precache_context_add_entity() {
+        let _ = init(dummy_logger());
+        PRECACHE_ENTITIES.lock().unwrap().clear();
+        set_engine_ops(Some(S2EngineOps {
+            precache_entity_add: Some(mock_precache_entity_add),
+            ..mock_event_ops()
+        }));
+        load_body("ppe", r#"
+            const { Sound } = require("@s2script/sound");
+            Sound.onPrecache((pc) => {
+                globalThis.__g = [pc.addEntity("chicken"), pc.addEntity("not_a_class"), pc.addEntity("")]
+                    .map(String).join(",");
+            });
+        "#, "{}");
+        dispatch_precache();
+        assert_eq!(eval_in_context_string("ppe", "String(globalThis.__g)"), "true,false,false");
+        assert_eq!(*PRECACHE_ENTITIES.lock().unwrap(), vec!["chicken", "not_a_class"]);
+        shutdown();
+    }
+
     /// __s2_sound_emit marshals (name, entIndex, entSerial, slots[], volume) into the op and
     /// returns its guid (struct-update over mock_event_ops, the entity_spawn_kv capture precedent).
     #[test]
@@ -8093,6 +8124,8 @@
             "String(__s2_sound_emit('Weapon_AK47.Single', 0, -1, [0, 1], 1.0))"), "0");
         assert_eq!(eval_in_context_string("psnd",
             "String(__s2_sound_precache_add('soundevents/test.vsndevts'))"), "false");
+        assert_eq!(eval_in_context_string("psnd",
+            "String(__s2_precache_entity_add('prop_physics'))"), "false");
         shutdown();
     }
 
