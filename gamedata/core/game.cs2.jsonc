@@ -167,14 +167,14 @@
     // Network string tables (@s2script/sdk/stringtables). Indices are s2sdk
     // networkstringtabledefs.h's (two destructor slots first) and were read on the Oct 22 2026
     // libengine2.so (BuildID fef8f668…). Pins are the implementing classes' slot counts:
-    //   CNetworkStringTableContainer @0xa79c58, 22 slots: 15 FindTable, 16 GetTable (bounds-checked
+    //   CNetworkStringTableContainer @0xa79c58, 19 slots: 15 FindTable, 16 GetTable (bounds-checked
     //     against the count at +0x38), 17 GetNumTables (returns [this+0x38]).
     //   CNetworkStringTable @0xa79bb8, 18 slots: 2 GetTableName ([this+0x10]), 3 GetTableId, 4
     //     GetNumStrings, 8 AddString, 9 GetString, 10 SetStringUserData, 11 GetStringUserData,
     //     12 FindStringIndex. ModSharp's INetworkStringTable uses the same indices.
     // The table class is verified on the first table the shim sees; any table whose vtable is not
     // that one is refused.
-    "INetworkStringTableContainer_vtableSize":    { "linuxsteamrt64": 22 },
+    "INetworkStringTableContainer_vtableSize":    { "linuxsteamrt64": 19 },
     "INetworkStringTableContainer_FindTable":     { "linuxsteamrt64": 15 },
     "INetworkStringTableContainer_GetTable":      { "linuxsteamrt64": 16 },
     "INetworkStringTableContainer_GetNumTables":  { "linuxsteamrt64": 17 },
