@@ -77,17 +77,24 @@
   "signatures": {
     // Camera bindings: self-resolved on build 2000908; see docs/CS2-UI-UPDATE.md.
     // Re-derived on build 25515854 (2026-09-25) from the build-25218825 body; see docs/superpowers/plans/2026-09-25-gamedata-25515854.md.
+    // Re-derived again on build 26445667 (Nov 5 2026): the old form also pinned the wrapper's
+    // epilogue and the "GetCustomCamera" error-path lea at call+91, and both moved (Oct 22 popped one
+    // register fewer; Nov 5 put another error block first). The validator now reads the
+    // "CustomPlayerCamera" class-name lea inside the matched bytes (call+17), and the receiver
+    // reload is wildcarded (4D 8B 24 24 on Oct 22, 4D 8B 65 00 on Nov 5). Unique on both builds:
+    // call 0xb8ee9e -> 0x132d9c0 (Oct 22, BuildID 2603388a…), call 0xb15aa1 -> 0x1337040 (Nov 5,
+    // BuildID 5ea0e482…); the two callees have the same body.
     "CCSPlayerPawn_GetCustomCamera": {
         "linuxsteamrt64": {
             "module": "libserver.so",
-            "pattern": "E8 ? ? ? ? 48 89 C3 48 85 C0 0F 84 ? ? ? ? 48 8D 3D ? ? ? ? 4D 8B 24 24 E8 ? ? ? ? 48 8D 7D ? 48 89 DE 48 89 45 ? E8 ? ? ? ? 48 85 C0 0F 84 ? ? ? ? 48 8B 00 49 89 44 24 ? 4C 89 EF E8 ? ? ? ? 48 83 C4 ? 5B 41 5C 41 5D 41 5E 5D C3 ? ? ? ? 48 8D 0D ? ? ? ?",
+            "pattern": "E8 ? ? ? ? 48 89 C3 48 85 C0 0F 84 ? ? ? ? 48 8D 3D ? ? ? ? 4D 8B ? ? E8 ? ? ? ? 48 8D 7D ? 48 89 DE 48 89 45 ? E8 ? ? ? ? 48 85 C0 0F 84 ? ? ? ? 48 8B 00 49 89 44 24 ?",
             "resolve": "validated-call",
             "validate": {
                 "string-xref": {
-                    "at": 91,
+                    "at": 17,
                     "dispOff": 3,
                     "instrLen": 7,
-                    "expect": "GetCustomCamera"
+                    "expect": "CustomPlayerCamera"
                 }
             }
         }
@@ -599,21 +606,22 @@
     // CCSCustomHudLayout click receiver — Pulse binding fan-out for CS_UM_CustomHudClicked.
     // Whole-function pattern (71 bytes). Fan-out: rdi unused (global accessor), rsi = slot
     // entity/controller, rdx = CCSCustomHudLayout*, rcx = CUtlString* (first word = char*), each
-    // forwarded to listener vfunc +0x150. The vcall displacement is the ONLY tie-breaker: a
-    // byte-identical twin fan-out (listener slot +0x120) sits 0x1f0 bytes earlier, so it must
-    // stay literal — wildcarding it matches twice. Both slots moved +0x28 in the Oct 22 2026
-    // update (five listener vfuncs inserted) and +8 in Sept 2026. On a miss, wildcard the
+    // forwarded to listener vfunc +0x160. The vcall displacement is the ONLY tie-breaker: a
+    // byte-identical twin fan-out (listener slot +0x130) sits 0x1f0 bytes earlier, so it must
+    // stay literal — wildcarding it matches twice. Both slots moved +0x10 in the Nov 5 2026
+    // update (two listener vfuncs inserted), +0x28 in Oct 22 2026 (five) and +8 in Sept 2026. On a miss, wildcard the
     // displacement and take the candidate whose sole direct caller dynamic_casts to
     // CCSCustomHudLayout just before the call; the twin's caller is far away.
-    // Verified UNIQUE across PF_X @ va 0xb20080 in libserver.so SHA-256 ac63a151…eae7 (Oct 22
-    // 2026, BuildID 2603388a…; sole caller va 0xac3976, after a dynamic_cast CBaseEntity ->
-    // CCSCustomHudLayout). Previous +0x128 form: 0xb26020 (23373cfd…e87f, 1.41.8.2; caller
+    // Verified UNIQUE across PF_X @ va 0xb377a0 in libserver.so SHA-256 ee0cc32a… (Nov 5 2026,
+    // build 26445667, BuildID 5ea0e482…; sole caller va 0xac4806, after a dynamic_cast
+    // CBaseEntity -> CCSCustomHudLayout; twin @0xb375b0). Previous +0x150 form: 0xb20080 in
+    // ac63a151…eae7 (Oct 22 2026, BuildID 2603388a…; caller 0xac3976). Previous +0x128 form: 0xb26020 (23373cfd…e87f, 1.41.8.2; caller
     // 0xac2c36). +0x120 form: 0xb2bcb0 (24916958), 0xb2e370 (a4c54f83…).
     // Bound BY NAME by the trusted `customHudClicked` engine function (trusted-functions.jsonc).
     "CCSCustomHudLayout_CustomHudClickedReceiver": {
       "linuxsteamrt64": {
         "module": "libserver.so",
-        "pattern": "55 48 89 E5 41 56 41 55 41 54 53 48 8B 1D ? ? ? ? 48 85 DB 74 27 49 89 F6 49 89 D5 49 89 CC 48 8B 03 48 89 DF 4C 89 E1 4C 89 EA 4C 89 F6 FF 90 50 01 00 00 48 8B 5B 18 48 85 DB 75 E2 5B 41 5C 41 5D 41 5E 5D C3",
+        "pattern": "55 48 89 E5 41 56 41 55 41 54 53 48 8B 1D ? ? ? ? 48 85 DB 74 27 49 89 F6 49 89 D5 49 89 CC 48 8B 03 48 89 DF 4C 89 E1 4C 89 EA 4C 89 F6 FF 90 60 01 00 00 48 8B 5B 18 48 85 DB 75 E2 5B 41 5C 41 5D 41 5E 5D C3",
         "resolve": "direct",
         "validate": { "prologue": "55 48 89 E5 41 56 41 55 41 54 53 48 8B 1D" }
       }
