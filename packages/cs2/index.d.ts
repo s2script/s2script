@@ -278,6 +278,17 @@ export interface Player extends Omit<CCSPlayerController, "pawn"> {
   /** The engine observer mode (`ObserverMode_t`: 0 none, 2 in-eye, 3 chase, 4 roaming…), `-1` while alive/unresolved. */
   readonly observerMode: number;
   /**
+   * Whether this player has taken over a bot (CS2's bot takeover, `bot_takeover` event). Valve's
+   * `CSPlayerController.IsControllingBot`. `false` when unresolved.
+   */
+  readonly isControllingBot: boolean;
+  /**
+   * The bot pawn this player is controlling, or `null` when they aren't controlling one. Valve's
+   * `CSPlayerController.GetControlledBotPawn`. During a takeover `pawn` stays the player's own
+   * (dead) pawn; this is the body they are playing.
+   */
+  readonly controlledBotPawn: Pawn | null;
+  /**
    * Per-match scoreboard counters — kills/deaths/assists/damage — via the
    * `m_pActionTrackingServices` pointer hop plus the embedded `m_matchStats` block.
    *
