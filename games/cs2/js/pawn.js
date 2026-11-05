@@ -230,6 +230,23 @@
     }, enumerable: true, configurable: true,
   });
 
+  // player.isControllingBot / controlledBotPawn — Valve's CSPlayerController.IsControllingBot and
+  // GetControlledBotPawn (Nov 5 2026 map scripting). Both bindings read schema fields only: the
+  // controller's m_bControllingBot, and its current pawn m_hPawn, which is the bot's body for as long
+  // as the takeover lasts (m_hPlayerPawn, and so player.pawn, stays the player's own pawn).
+  Object.defineProperty(Player.prototype, "isControllingBot", {
+    get: function () { return this.controllingBot === true; }, enumerable: true, configurable: true,
+  });
+  Object.defineProperty(Player.prototype, "controlledBotPawn", {
+    get: function () {
+      if (this.controllingBot !== true) return null;
+      var off = __s2_schema_offset("CBasePlayerController", "m_hPawn");
+      if (off < 0) return null;
+      var h = this.ref.readHandle(off);
+      return h ? new Pawn(h) : null;
+    }, enumerable: true, configurable: true,
+  });
+
   var MAX_PLAYERS = 64;
   // CS2 pre-allocates all 64 controller entities, so isValid() (entity-exists) does NOT distinguish an
   // occupied slot from an empty one (m_iConnected reads 0 for both; verified live). The clean, schema-readable
