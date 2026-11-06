@@ -42,6 +42,9 @@ pub struct Manifest {
     pub plugin_dependencies: HashMap<String, String>,
     #[serde(rename = "optionalPluginDependencies", default)]
     pub optional_plugin_dependencies: HashMap<String, String>,
+    /// Native extensions this plugin needs (`name → range`); see `crate::extensions`.
+    #[serde(default)]
+    pub extensions: HashMap<String, String>,
     #[serde(default)]
     pub publishes: HashMap<String, PublishDecl>,
     #[serde(rename = "compiledAgainst", default)]

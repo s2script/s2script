@@ -1,7 +1,316 @@
+// Schema offsets never change while the process runs (they come from the loaded binary), so hits
+// are memoized here, in front of the native. The native converts both strings and hashes them on
+// every call; a JS Map hit avoids that crossing. Misses are not kept: the schema may not be ready.
+(function () {
+  var raw = globalThis.__s2_schema_offset;
+  if (typeof raw !== "function") return;
+  var memo = new Map();
+  globalThis.__s2_schema_offset = function (cls, field) {
+    var key = cls + "\0" + field;
+    var hit = memo.get(key);
+    if (hit !== undefined) return hit;
+    var off = raw(cls, field);
+    if (off >= 0) memo.set(key, off);
+    return off;
+  };
+})();
+// --- Stage 4b: protocol-2 interface facades ---
+// A consumer's typed interface handle is a facade compiled from the consumer's own contract: one
+// function per method that checks and copies its arguments, calls the producer's function directly,
+// and checks and copies the result (see core/src/v8host/interop_facade.rs). The strict-copy rules of
+// docs/PLUGIN_INTEROP.md hold because this code captures every intrinsic it uses here, before any
+// plugin code runs, and keeps its state in objects whose prototype chain no plugin can reach.
+globalThis.__s2_interop_facade = (function () {
+  "use strict";
+  var g = globalThis;
+  var bindNative = g.__s2_iface_bind, planNative = g.__s2_iface_plan, checkNative = g.__s2_iface_check,
+      observeNative = g.__s2_iface_observe, isProxy = g.__s2_is_proxy, slowCall = g.__s2_iface_call,
+      kitNative = g.__s2_interop_kit, slotsNative = g.__s2_interop_slots;
+  if (typeof bindNative !== "function") return null;
+  // Only this closure may bind a cell; the host deletes these again after bootstrap.
+  ["__s2_iface_bind", "__s2_iface_plan", "__s2_iface_check", "__s2_iface_observe", "__s2_is_proxy",
+   "__s2_interop_kit", "__s2_interop_slots"].forEach(function (name) { delete g[name]; });
+  var slots = slotsNative();
+  var DEPTH = 0, EPOCH = 1, PROFILING = 2;
+  var call = Function.prototype.call;
+  var ownKeys = Reflect.ownKeys, apply = Reflect.apply, getDesc = Object.getOwnPropertyDescriptor,
+      getNames = Object.getOwnPropertyNames, getSymbols = Object.getOwnPropertySymbols,
+      quote = JSON.stringify, MakeFunction = Function,
+      getProto = Object.getPrototypeOf, hasOwn = Object.hasOwn, isArray = Array.isArray,
+      create = Object.create, freeze = Object.freeze, defineProperty = Object.defineProperty,
+      arrayFrom = Array.from, parse = JSON.parse, ErrorCtor = Error, StringCtor = String,
+      wellFormed = call.bind(String.prototype.isWellFormed), slice = call.bind(Array.prototype.slice);
+  var NULL = 0, BOOL = 1, NUM = 2, STR = 3, VOID = 4, ENTITY = 5, LIT = 6, ARR = 7, OBJ = 8, UNION = 9;
+  // State lives in Bare objects: fast-mode like any object, but with a frozen null-prototype parent,
+  // so no lookup or assignment can reach a prototype a plugin changed.
+  function Bare() {}
+  Bare.prototype = freeze(create(null));
+  var FAIL = freeze(new Bare());
+  var EntityRefCtor = null;
+  // This realm's identities, which the other realm's copier checks a value's prototype against.
+  var SRC = new Bare();
+
+  function define(o, key, value) {
+    var d = create(null); d.value = value; d.enumerable = true;
+    defineProperty(o, key, d);
+  }
+  function named(name, detail) { return new ErrorCtor(name + ": " + detail); }
+  // A Bare list, so no plugin-defined index setter or getter can reach it.
+  function list(n) { var l = new Bare(); l.n = n; return l; }
+
+  // A plan node per schema position: null-prototype, frozen, built only with captured intrinsics.
+  // The kinds with no parameters (null, boolean, number, string, void, entity) are shared nodes.
+  var SIMPLE = list(6);
+  for (var k = 0; k <= ENTITY; k++) { var node = new Bare(); node.k = k; node.prim = k !== ENTITY; SIMPLE[k] = freeze(node); }
+  function compileSchema(p) {
+    if (typeof p === "number") return SIMPLE[p];
+    var node = new Bare(), kind = p[0], i, n;
+    node.k = kind; node.prim = false;
+    if (kind === LIT) { node.v = p[1]; node.prim = true; }
+    else if (kind === ARR) node.item = compileSchema(p[1]);
+    else if (kind === OBJ) {
+      n = p[1].length;
+      node.keys = list(n); node.plans = list(n); node.optional = list(n);
+      // Per-node scratch: only the realm that compiled a node ever copies into it, and a copy
+      // never re-enters a node it is filling.
+      node.values = new Bare();
+      for (i = 0; i < n; i++) {
+        node.keys[i] = p[1][i][0]; node.plans[i] = compileSchema(p[1][i][1]); node.optional[i] = p[1][i][2] === true;
+      }
+      node.build = builder(node.keys, node.optional);
+      freeze(node.keys); freeze(node.plans); freeze(node.optional);
+    } else if (kind === UNION) {
+      n = p[1].length; node.variants = list(n); node.prim = true;
+      for (i = 0; i < n; i++) { node.variants[i] = compileSchema(p[1][i]); if (!node.variants[i].prim) node.prim = false; }
+      freeze(node.variants);
+    }
+    return freeze(node);
+  }
+  function compileContract(json) {
+    var parsed = parse(json), methods = parsed[1], out = list(methods.length);
+    for (var i = 0; i < methods.length; i++) {
+      var m = new Bare(), args = methods[i][1];
+      m.name = methods[i][0]; m.args = list(args.length); m.result = compileSchema(methods[i][2]); m.required = 0;
+      for (var j = 0; j < args.length; j++) {
+        m.args[j] = compileSchema(args[j][0]);
+        if (args[j][1] !== true) m.required = j + 1;
+      }
+      freeze(m.args); out[i] = freeze(m);
+    }
+    out.sha = parsed[0];
+    return freeze(out);
+  }
+
+  // Realm-independent: a primitive needs no copy, only the check.
+  function check(p, v) {
+    switch (p.k) {
+      case NULL: return v === null;
+      case BOOL: return typeof v === "boolean";
+      case NUM: return typeof v === "number" && v - v === 0;
+      case STR: return typeof v === "string" && wellFormed(v);
+      case LIT: return v === p.v;
+      case UNION:
+        for (var i = 0; i < p.variants.n; i++) if (check(p.variants[i], v)) return true;
+        return false;
+      default: return false;
+    }
+  }
+  // `v` copied into THIS realm, or FAIL. `src` names the realm `v` came from. Only own data
+  // properties are read, so no getter, proxy trap, toJSON or setter runs.
+  function copy(p, v, src, depth) {
+    if (depth > 64) return FAIL;
+    if (p.prim) return check(p, v) ? v : FAIL;
+    var i, d, x, tmp;
+    switch (p.k) {
+      case ENTITY: {
+        if (v === null || typeof v !== "object" || isProxy(v) || getProto(v) !== src.entity) return FAIL;
+        if (getNames(v).length !== 2 || getSymbols(v).length !== 0) return FAIL;
+        var di = getDesc(v, "index"), dd = getDesc(v, "id");
+        if (di === undefined || dd === undefined || !hasOwn(di, "value") || !hasOwn(dd, "value")) return FAIL;
+        var index = di.value, id = dd.value;
+        if (typeof index !== "number" || typeof id !== "number" || index - index !== 0 || id - id !== 0 ||
+            index < 0 || index > 2147483647 || id < 0 || id > 9007199254740991 ||
+            index % 1 !== 0 || id % 1 !== 0) return FAIL;
+        return new EntityRefCtor(index, id);
+      }
+      case ARR: {
+        if (v === null || typeof v !== "object" || isProxy(v) || !isArray(v)) return FAIL;
+        var n = v.length;
+        if (getNames(v).length !== n + 1 || getSymbols(v).length !== 0) return FAIL;
+        tmp = new Bare(); tmp.length = n;
+        for (i = 0; i < n; i++) {
+          d = getDesc(v, i);
+          if (d === undefined || !hasOwn(d, "value")) return FAIL;
+          x = copy(p.item, d.value, src, depth + 1);
+          if (x === FAIL) return FAIL;
+          tmp[i] = x;
+        }
+        return arrayFrom(tmp);
+      }
+      case OBJ: {
+        if (v === null || typeof v !== "object" || isProxy(v) || isArray(v)) return FAIL;
+        var proto = getProto(v);
+        if (proto !== null && proto !== src.object) return FAIL;
+        // Which fields are present: a bit mask, or a string of 0s and 1s past 30 fields.
+        var present = 0, big = p.keys.n > 30, mask = big ? "" : 0, values = p.values;
+        for (i = 0; i < p.keys.n; i++) {
+          d = getDesc(v, p.keys[i]);
+          if (d === undefined) {
+            if (!p.optional[i]) return FAIL;
+            if (big) mask += "0";
+            continue;
+          }
+          if (!hasOwn(d, "value")) return FAIL;
+          x = copy(p.plans[i], d.value, src, depth + 1);
+          if (x === FAIL) return FAIL;
+          values[i] = x;
+          if (big) mask += "1"; else mask |= 1 << i;
+          present++;
+        }
+        if (getNames(v).length !== present || getSymbols(v).length !== 0) return FAIL;
+        return p.build(values, mask);
+      }
+      case UNION:
+        for (i = 0; i < p.variants.n; i++) {
+          x = copy(p.variants[i], v, src, depth);
+          if (x !== FAIL) return x;
+        }
+        return FAIL;
+      default: return FAIL;
+    }
+  }
+
+  // `(values, mask) => object`: an object literal over the fields, so the copy is a plain fast
+  // object built without assignments (no inherited setter can run). An optional field is spread
+  // in only when `mask` says it is present: a bit, or a "1" in a string past 30 fields. Generated
+  // here, at compile time, because the realm's Function constructor refuses calls made from
+  // another plugin's context.
+  function builder(keys, optional) {
+    var body = "", big = keys.n > 30;
+    for (var i = 0; i < keys.n; i++) {
+      var key = keys[i], prop = (key === "__proto__" ? '["__proto__"]' : quote(key)) + ":s[" + i + "]";
+      if (optional[i]) prop = "...(" + (big ? "m[" + i + ']==="1"' : "m&" + (1 << i)) + "?{" + prop + "}:null)";
+      body += (i === 0 ? "" : ",") + prop;
+    }
+    return MakeFunction("s", "m", "\"use strict\";return {" + body + "};");
+  }
+
+  // What a producer's realm hands a binding: a copier for arguments, from its own contract.
+  var kit = new Bare();
+  kit.compile = function (json) {
+    var plans = compileContract(json), out = new Bare();
+    // Depth 1: an argument sits inside the argument list, as it does on the native path.
+    out.copy = function (mi, ai, v, src) { return copy(plans[mi].args[ai], v, src, 1); };
+    out.fail = FAIL;
+    out.src = SRC;
+    return freeze(out);
+  };
+  freeze(kit);
+
+  function describe(e) { try { return StringCtor(e); } catch (_) { return "producer method threw"; } }
+
+  function makeMethod(iface, cell, plans, mi, before) {
+    var m = plans[mi], label = iface + "." + m.name, argc = m.args.n, required = m.required, result = m.result;
+    var NOTSER_ARGS = label + " args", NOTSER_RETURN = label + " return";
+    function arg(ai, v) {
+      var p = m.args[ai];
+      if (p.prim) { if (check(p, v)) return v; }
+      else { var x = cell.copy(mi, ai, v, SRC); if (x !== cell.fail) return x; }
+      throw named("InterfaceValueNotSerializable", NOTSER_ARGS);
+    }
+    // `src` is the producer realm captured before the call: a teardown during the call may sweep
+    // the cell, and an unrelated one leaves the participants live.
+    function finish(r, threw, err, epoch, producer, generation, src) {
+      if (slots[EPOCH] !== epoch && !checkNative(iface, producer, generation)) throw named("InterfaceUnavailable", iface);
+      if (threw) throw named("InterfaceCallError", label + ": " + describe(err));
+      if (r === undefined) {
+        if (result.k === VOID) return undefined;
+        throw named("InterfaceValueNotSerializable", NOTSER_RETURN);
+      }
+      if (r !== null && (typeof r === "object" || typeof r === "function")) {
+        var then;
+        try { then = r.then; } catch (_) { throw named("InterfaceValueNotSerializable", NOTSER_RETURN); }
+        if (typeof then === "function") { observeNative(r); throw named("InterfaceValueNotSerializable", NOTSER_RETURN); }
+      }
+      var out = copy(result, r, src, 0);
+      if (out === FAIL) throw named("InterfaceValueNotSerializable", NOTSER_RETURN);
+      return out;
+    }
+    return function (a0, a1, a2, a3) {
+      var n = arguments.length;
+      if (before !== null) before();
+      if (slots[PROFILING] !== 0) return slowCall(iface, m.name, slice(arguments));
+      if (cell.epoch !== slots[EPOCH]) bindNative(iface, plans.sha, cell, new Bare());
+      var f = cell.fns[mi];
+      if (f === undefined) throw named("InterfaceUnavailable", iface);
+      if (slots[DEPTH] >= 32) throw named("InterfaceRecursionLimit", "maximum 32 active calls");
+      if (n > argc || n < required) throw named("InterfaceValueNotSerializable", NOTSER_ARGS);
+      var x0, x1, x2, x3, rest = null;
+      if (n > 0) x0 = arg(0, a0);
+      if (n > 1) x1 = arg(1, a1);
+      if (n > 2) x2 = arg(2, a2);
+      if (n > 3) x3 = arg(3, a3);
+      if (n > 4) {
+        rest = new Bare(); rest.length = n; rest[0] = x0; rest[1] = x1; rest[2] = x2; rest[3] = x3;
+        for (var i = 4; i < n; i++) rest[i] = arg(i, arguments[i]);
+        rest = arrayFrom(rest);
+      }
+      var epoch = cell.epoch, producer = cell.producer, generation = cell.generation, src = cell.src;
+      var r, threw = false, err;
+      slots[DEPTH]++;
+      try {
+        if (n === 0) r = f();
+        else if (n === 1) r = f(x0);
+        else if (n === 2) r = f(x0, x1);
+        else if (n === 3) r = f(x0, x1, x2);
+        else if (n === 4) r = f(x0, x1, x2, x3);
+        else r = apply(f, undefined, rest);
+      } catch (e) { threw = true; err = e; }
+      slots[DEPTH]--;
+      return finish(r, threw, err, epoch, producer, generation, src);
+    };
+  }
+
+  // The facade for `iface`, or null when the plugin imports it without a protocol-2 contract.
+  // `extra` adds members (`on`, `off`) that take precedence over same-named methods, as the proxy
+  // handles always did; `before` runs ahead of every call.
+  function facade(iface, extra, before) {
+    var json = planNative(iface);
+    if (json === null) return null;
+    var plans = compileContract(json);
+    var cell = new Bare();
+    cell.epoch = slots[EPOCH] - 1 | 0; cell.fns = null; cell.copy = null; cell.fail = null; cell.src = null;
+    cell.producer = ""; cell.generation = 0; cell.tracked = false;
+    var out = {};
+    for (var i = 0; i < plans.n; i++) {
+      define(out, plans[i].name, makeMethod(iface, cell, plans, i, before || null));
+    }
+    if (extra) {
+      var names = ownKeys(extra);
+      for (var j = 0; j < names.length; j++) define(out, names[j], extra[names[j]]);
+    }
+    return freeze(out);
+  }
+
+  return freeze({
+    facade: facade,
+    // Called once the SDK's EntityRef exists; registers this realm's kit with the host.
+    init: function (EntityRef) {
+      if (EntityRefCtor !== null) return;
+      EntityRefCtor = EntityRef;
+      SRC.object = Object.prototype;
+      SRC.entity = EntityRef.prototype;
+      freeze(SRC);
+      kitNative(kit);
+    },
+  });
+})();
 globalThis.HookResult = { Continue:0, Changed:1, Handled:2, Stop:3 };
 globalThis.Priority   = { High:"high", Normal:"normal", Low:"low", Monitor:"monitor" };
 globalThis.Phase      = { Pre:"pre", Post:"post" };
 (function () {
+  var interopFacade = globalThis.__s2_interop_facade;
+  delete globalThis.__s2_interop_facade;
   const OnGameFrame = {
     subscribe: (fn, opts) => {
       const id = __s2_subscribe("OnGameFrame", fn, opts || {});
@@ -34,17 +343,22 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   // --- Slice 4.5: inter-plugin interfaces ---
   function makeIfaceProxy(name) {
+    function on(ev, h) {
+      if (!__s2_iface_verified_import(name)) return __s2_iface_on(name, ev, h);
+      // Direct imports share the typed handle's load buffering and exact-ID disposal.
+      var ctx = __s2_load_ctx_or_throw("interface.on()");
+      var service = __s2_iface_dep_kind(name) === "hard" ? ctx.use(name) : ctx.tryUse(name);
+      if (!service) throw new Error("InterfaceUnavailable: " + name);
+      return service.on(ev, h);
+    }
+    function off(ev, h) { return __s2_iface_off(name, ev, h); }
+    // A protocol-2 import gets a facade compiled from its contract; protocol 1 keeps the proxy.
+    var typed = interopFacade && interopFacade.facade(name, { on: on, off: off });
+    if (typed) return typed;
     return new Proxy({}, {
       get: function (_t, prop) {
-        if (prop === "on") return function (ev, h) {
-          if (!__s2_iface_verified_import(name)) return __s2_iface_on(name, ev, h);
-          // Direct imports share the typed handle's load buffering and exact-ID disposal.
-          var ctx = __s2_load_ctx_or_throw("interface.on()");
-          var service = __s2_iface_dep_kind(name) === "hard" ? ctx.use(name) : ctx.tryUse(name);
-          if (!service) throw new Error("InterfaceUnavailable: " + name);
-          return service.on(ev, h);
-        };
-        if (prop === "off") return function (ev, h) { return __s2_iface_off(name, ev, h); };
+        if (prop === "on") return on;
+        if (prop === "off") return off;
         if (typeof prop !== "string") return undefined;
         return function () {
           var args = Array.prototype.slice.call(arguments);
@@ -75,20 +389,31 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   };
   // --- Slice 5A/5B.2: serial-gated EntityRef (wraps the __s2_ent_ref_* natives; no raw pointer crosses JS) ---
   var K = { I32: 1, F32: 2, BOOL: 3, I8: 4, I16: 5, U8: 6, U16: 7, U32: 8, U64: 9, I64: 10, F64: 11 }; // mirrors core KIND_*
+  // Scalar reads go through the fast-API `__s2_ent_ref_readf`, which answers NaN for anything it
+  // cannot express as a number (a stale ref, a NaN float); the slow native then gives the exact
+  // answer, so results are identical to calling `__s2_ent_ref_read` directly.
+  function readNum(ref, o, kind) {
+    var v = __s2_ent_ref_readf(ref.index, ref.id, o, kind);
+    return v === v ? v : __s2_ent_ref_read(ref.index, ref.id, o, kind);
+  }
+  function readBool(ref, o) {
+    var v = __s2_ent_ref_readf(ref.index, ref.id, o, K.BOOL);
+    return v === v ? v !== 0 : __s2_ent_ref_read(ref.index, ref.id, o, K.BOOL);
+  }
   function EntityRef(index, id) { this.index = index; this.id = id; }
   EntityRef.prototype = {
     isValid:          function ()      { return __s2_ent_ref_valid(this.index, this.id); },
-    readInt32:        function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.I32); },
+    readInt32:        function (o)     { return readNum(this, o, K.I32); },
     writeInt32:       function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.I32, v); },
-    readFloat32:      function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.F32); },
+    readFloat32:      function (o)     { return readNum(this, o, K.F32); },
     writeFloat32:     function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.F32, v); },
-    readBool:         function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.BOOL); },
+    readBool:         function (o)     { return readBool(this, o); },
     writeBool:        function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.BOOL, v); },
-    readInt8:         function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.I8); },
-    readInt16:        function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.I16); },
-    readUInt8:        function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.U8); },
-    readUInt16:       function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.U16); },
-    readUInt32:       function (o)     { return __s2_ent_ref_read(this.index, this.id, o, K.U32); },
+    readInt8:         function (o)     { return readNum(this, o, K.I8); },
+    readInt16:        function (o)     { return readNum(this, o, K.I16); },
+    readUInt8:        function (o)     { return readNum(this, o, K.U8); },
+    readUInt16:       function (o)     { return readNum(this, o, K.U16); },
+    readUInt32:       function (o)     { return readNum(this, o, K.U32); },
     writeInt8:        function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.I8, v); },
     writeInt16:       function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.I16, v); },
     writeUInt8:       function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.U8, v); },
@@ -96,11 +421,12 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     writeUInt32:      function (o, v)  { return __s2_ent_ref_write(this.index, this.id, o, K.U32, v); },
     readUInt64:       function (o)         { return __s2_ent_ref_read(this.index, this.id, o, K.U64); },
     readInt64:        function (o)         { return __s2_ent_ref_read(this.index, this.id, o, K.I64); },
-    readFloat64:      function (o)         { return __s2_ent_ref_read(this.index, this.id, o, K.F64); },
+    readFloat64:      function (o)         { return readNum(this, o, K.F64); },
     readString:       function (o, maxLen) { return __s2_ent_ref_read_string(this.index, this.id, o, maxLen); },
     writeString:      function (o, maxLen, s) { return __s2_ent_ref_write_string(this.index, this.id, o, maxLen, String(s)); },
     readFloats:       function (o, count)  { return __s2_ent_ref_read_floats(this.index, this.id, o, count); },
     readFloatsChain: function (chain, finalOff, count) { return __s2_ent_ref_read_floats_chain(this.index, this.id, chain, finalOff, count); },
+    gather:          function (plan, out, outIndex) { return __s2_ent_ref_gather(this.index, this.id, plan, out, outIndex === undefined ? 0 : outIndex); },
     readInt32Via:  function (c, o) { return __s2_ent_ref_read_chain(this.index, this.id, c, o, K.I32); },
     writeInt32Via: function (c, o, v) { return __s2_ent_ref_write_chain(this.index, this.id, c, o, K.I32, v); },
     readInt8Via:   function (c, o) { return __s2_ent_ref_read_chain(this.index, this.id, c, o, K.I8); },
@@ -130,6 +456,140 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     identityFlags: function () { return __s2_ent_identity_flags(this.index, this.id); },
     clearIdentityFlags: function (mask) { return __s2_ent_identity_flags_clear(this.index, this.id, mask >>> 0); },
   };
+  // --- Stage 3: Ptr, the raw tier of @s2script/sdk/unsafe (core/src/memory.rs). A Ptr is a small
+  //     object around an address held as a number: V8 inlines the wrapper, and TypeScript brands it
+  //     so a plain number cannot be passed by mistake. It answers the same read/write methods as an
+  //     EntityRef, so every generated struct view (schema classes, embedded structs, nav paths)
+  //     works over a Ptr unchanged: checked over an entity handle, unchecked over a Ptr. Unlike an
+  //     EntityRef, nothing proves a Ptr is still valid; an address the core can refuse throws. ---
+  var PTR_TOP = 140737488355328;            // 2^47, the top of the x86-64 user half
+  function ptrBad(a) {
+    var e = new Error(String(a) + " is not a user-space address");
+    e.name = "S2Error"; e.code = "bad_address";
+    return e;
+  }
+  function ptrOk(a) { return typeof a === "number" && a >= 65536 && a < PTR_TOP && a === Math.floor(a); }
+  function Ptr(address) { this.address = address; }
+  function ptrAt(a) {
+    if (a === 0) return Ptr.NULL;
+    if (!ptrOk(a)) throw ptrBad(a);
+    return new Ptr(a);
+  }
+  function ptrRead(p, o, kind) {
+    var v = __s2_mem_read(p.address + o, kind);
+    if (v !== v && !ptrOk(p.address + o)) throw ptrBad(p.address + o);
+    return v;
+  }
+  function ptrWrite(p, o, kind, v) {
+    if (!__s2_mem_write(p.address + o, kind, +v)) throw ptrBad(p.address + o);
+    return true;
+  }
+  // Follow a chain of pointer fields (each offset read as a pointer), as the EntityRef *Via reads
+  // do. A null hop ends the walk with null.
+  function ptrWalk(p, chain) {
+    for (var i = 0; i < chain.length; i++) {
+      p = p.readPtr(chain[i]);
+      if (p.address === 0) return null;
+    }
+    return p;
+  }
+  function ptrVia(read) {
+    return function (chain, o) { var p = ptrWalk(this, chain); return p === null ? null : read.call(p, o); };
+  }
+  function ptrViaWrite(write) {
+    return function (chain, o, v) { var p = ptrWalk(this, chain); return p === null ? false : write.call(p, o, v); };
+  }
+  Ptr.prototype = {
+    isNull:  function () { return this.address === 0; },
+    add:     function (n) { return ptrAt(this.address + n); },
+    equals:  function (other) { return other instanceof Ptr && other.address === this.address; },
+    toString: function () { return "0x" + this.address.toString(16); },
+    as:      function (view) {
+      if (typeof view !== "function") throw new TypeError("Ptr.as expects a view factory");
+      return view(this);
+    },
+    readInt32:   function (o) { return ptrRead(this, o, K.I32); },
+    readUInt32:  function (o) { return ptrRead(this, o, K.U32); },
+    readInt16:   function (o) { return ptrRead(this, o, K.I16); },
+    readUInt16:  function (o) { return ptrRead(this, o, K.U16); },
+    readInt8:    function (o) { return ptrRead(this, o, K.I8); },
+    readUInt8:   function (o) { return ptrRead(this, o, K.U8); },
+    readFloat32: function (o) { return ptrRead(this, o, K.F32); },
+    readFloat64: function (o) { return ptrRead(this, o, K.F64); },
+    readBool:    function (o) { return ptrRead(this, o, K.BOOL) !== 0; },
+    writeInt32:   function (o, v) { return ptrWrite(this, o, K.I32, v); },
+    writeUInt32:  function (o, v) { return ptrWrite(this, o, K.U32, v); },
+    writeInt16:   function (o, v) { return ptrWrite(this, o, K.I16, v); },
+    writeUInt16:  function (o, v) { return ptrWrite(this, o, K.U16, v); },
+    writeInt8:    function (o, v) { return ptrWrite(this, o, K.I8, v); },
+    writeUInt8:   function (o, v) { return ptrWrite(this, o, K.U8, v); },
+    writeFloat32: function (o, v) { return ptrWrite(this, o, K.F32, v); },
+    writeFloat64: function (o, v) { return ptrWrite(this, o, K.F64, v); },
+    writeBool:    function (o, v) { return ptrWrite(this, o, K.BOOL, v ? 1 : 0); },
+    // 64-bit integers come back as decimal strings, as the entity reads' callers expect.
+    readUInt64: function (o) { return __s2_mem_read_wide(this.address + o, false); },
+    readInt64:  function (o) { return __s2_mem_read_wide(this.address + o, true); },
+    readString:  function (o, maxLen) { return __s2_mem_read_string(this.address + o, maxLen); },
+    writeString: function (o, maxLen, s) { return __s2_mem_write_string(this.address + o, maxLen, String(s)); },
+    readFloats:  function (o, count) { return __s2_mem_read_floats(this.address + o, count); },
+    readFloatsChain: function (chain, o, count) { var p = ptrWalk(this, chain); return p === null ? null : p.readFloats(o, count); },
+    readPtr: function (o) {
+      var a = __s2_mem_read_ptr(this.address + o);
+      if (a !== a) {
+        if (!ptrOk(this.address + o)) throw ptrBad(this.address + o);
+        throw ptrBad("the pointer stored at 0x" + (this.address + o).toString(16));
+      }
+      return a === 0 ? Ptr.NULL : new Ptr(a);
+    },
+    writePtr: function (o, p) {
+      if (!(p instanceof Ptr)) throw new TypeError("writePtr expects a Ptr");
+      __s2_mem_write_ptr(this.address + o, p.address);
+      return true;
+    },
+    deref: function (o) { return this.readPtr(o || 0); },
+    // A CEntityHandle field: books-adopted exactly as EntityRef.readHandle, so a dangling handle
+    // still mints null rather than a live reference.
+    readHandle: function (o) {
+      var d = __s2_handle_adopt(ptrRead(this, o, K.U32) >>> 0);
+      return d ? new EntityRef(d[0], d[1]) : null;
+    },
+    // Raw memory has no network state to mark; a view that writes through a Ptr owns that.
+    notifyStateChanged: function () {},
+  };
+  Ptr.prototype.readInt32Via   = ptrVia(Ptr.prototype.readInt32);
+  Ptr.prototype.readUInt32Via  = ptrVia(Ptr.prototype.readUInt32);
+  Ptr.prototype.readInt16Via   = ptrVia(Ptr.prototype.readInt16);
+  Ptr.prototype.readUInt16Via  = ptrVia(Ptr.prototype.readUInt16);
+  Ptr.prototype.readInt8Via    = ptrVia(Ptr.prototype.readInt8);
+  Ptr.prototype.readUInt8Via   = ptrVia(Ptr.prototype.readUInt8);
+  Ptr.prototype.readFloat32Via = ptrVia(Ptr.prototype.readFloat32);
+  Ptr.prototype.readBoolVia    = ptrVia(Ptr.prototype.readBool);
+  Ptr.prototype.readUInt64Via  = ptrVia(Ptr.prototype.readUInt64);
+  Ptr.prototype.readInt64Via   = ptrVia(Ptr.prototype.readInt64);
+  Ptr.prototype.readHandleVia  = ptrVia(Ptr.prototype.readHandle);
+  Ptr.prototype.writeInt32Via   = ptrViaWrite(Ptr.prototype.writeInt32);
+  Ptr.prototype.writeFloat32Via = ptrViaWrite(Ptr.prototype.writeFloat32);
+  Ptr.prototype.writeBoolVia    = ptrViaWrite(Ptr.prototype.writeBool);
+  // Vector and QAngle reads build their value here, in the reading plugin's realm. Generated
+  // accessors are shared across plugins from the framework realm (core/src/v8host/realm.rs), so a
+  // `new Vector` there would hand every plugin the framework's Vector instead of its own.
+  function vec3(Ctor, a) { return a === null ? null : new Ctor(a[0], a[1], a[2]); }
+  [EntityRef.prototype, Ptr.prototype].forEach(function (p) {
+    p.readVector = function (o) { return vec3(Vector, this.readFloats(o, 3)); };
+    p.readQAngle = function (o) { return vec3(QAngle, this.readFloats(o, 3)); };
+    p.readVectorChain = function (c, o) { return vec3(Vector, this.readFloatsChain(c, o, 3)); };
+    p.readQAngleChain = function (c, o) { return vec3(QAngle, this.readFloatsChain(c, o, 3)); };
+  });
+  Ptr.NULL = Object.freeze(new Ptr(0));
+  // A Ptr from an address number, or the live address of an entity (null once it is stale).
+  Ptr.from = function (x) {
+    if (x instanceof Ptr) return x;
+    if (x instanceof EntityRef) { var a = __s2_ent_address(x.index, x.id); return a === 0 ? null : new Ptr(a); }
+    if (typeof x === "number") return ptrAt(x);
+    throw new TypeError("Ptr.from expects an address, a Ptr or an EntityRef");
+  };
+  Object.freeze(Ptr);
+  Object.freeze(Ptr.prototype);
   // --- Entity-creation lifecycle slice: spawn/teleport/remove over the entity_* engine ops. Kept as
   //     separate prototype assignments (not folded into the object literal above) to minimize the diff. ---
   // EKV marshal: {key: string|number|boolean} -> parallel {keys, types, values} arrays.
@@ -189,6 +649,18 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // Zones real-trigger slice: give this entity a model (and its collision) via CBaseEntity::SetModel.
   // A runtime trigger_multiple needs a model to build the physics volume that fires touch.
   EntityRef.prototype.setModel = function (name) { return __s2_ent_set_model(this.index, this.id, String(name)); };
+  // --- Bones and attachments: lookups and world-space reads on the entity's model. ---
+  EntityRef.prototype.lookupBone = function (name) { return __s2_ent_lookup_bone(this.index, this.id, String(name)); };
+  EntityRef.prototype.getBoneTransform = function (bone) {
+    var t = __s2_ent_get_bone_transform(this.index, this.id, bone | 0);
+    return t === null ? null
+      : { position: new Vector(t[0], t[1], t[2]), rotation: { x: t[3], y: t[4], z: t[5], w: t[6] } };
+  };
+  EntityRef.prototype.lookupAttachment = function (name) { return __s2_ent_lookup_attachment(this.index, this.id, String(name)); };
+  EntityRef.prototype.getAttachment = function (attachment) {
+    var a = __s2_ent_get_attachment(this.index, this.id, attachment | 0);
+    return a === null ? null : { origin: new Vector(a[0], a[1], a[2]), angles: new QAngle(a[3], a[4], a[5]) };
+  };
   // --- Entity-property slice: five engine setters with no usable schema-write equivalent. ---
   // Gravity multiplier. NOT the same as writing m_flGravityScale: the engine setter early-returns on
   // an unchanged value and maintains m_flActualGravityScale, so a raw field write appears to do nothing.
@@ -268,11 +740,37 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       caller ? caller.index : -1, caller ? caller.id : -1,
       delay || 0);
   };
+  // Damage slice: deal `damage` to this entity through the game's own damage path (the game
+  // package's damage-info constructor + TakeDamage), so OnTakeDamage hooks and the engine's rules
+  // (god mode, friendly fire, armor) all apply. opts: attacker/inflictor/ability (EntityRef, or a
+  // wrapper with `.ref`), damageType bits, force and position ([x, y, z]). An optional entity
+  // that is no longer live refuses the call. Returns false when nothing was dealt.
+  function damageEntity(e) {
+    if (e === undefined || e === null) return null;
+    if (!(e instanceof EntityRef) && e.ref && typeof e.ref === "object") e = e.ref;
+    if (typeof e.index !== "number") throw new TypeError("s2script: takeDamage(): an entity option must be an EntityRef or wrap one");
+    return e;
+  }
+  function damageVec(v) { return v ? [v[0], v[1], v[2]] : null; }
+  EntityRef.prototype.takeDamage = function (damage, opts) {
+    if (typeof damage !== "number" || !isFinite(damage)) throw new TypeError("s2script: takeDamage() requires a finite damage");
+    opts = opts || {};
+    var inflictor = damageEntity(opts.inflictor), attacker = damageEntity(opts.attacker), ability = damageEntity(opts.ability);
+    return __s2_entity_take_damage(this.index, this.id,
+      inflictor ? inflictor.index : -1, inflictor ? inflictor.id : -1,
+      attacker ? attacker.index : -1, attacker ? attacker.id : -1,
+      ability ? ability.index : -1, ability ? ability.id : -1,
+      damage, opts.damageType | 0, damageVec(opts.force), damageVec(opts.position));
+  };
   // Entity-I/O slice: hook an entity output (e.g. "OnTrigger"/"OnPressed"/"OnStartTouch"). classname/
   // output accept "*" wildcards. handler(ev) may return a HookResult >= Handled to suppress the output
   // (the FireOutputInternal detour supersedes the original call). Dispatch is SYNCHRONOUS.
   var Entity = {
     onOutput: function (classname, output, handler) { return __s2_output_subscribe(String(classname), String(output), handler); },
+    // Parity slice 5: hook an input an entity receives (e.g. "Kill"/"Open"/"SetHealth"), before it
+    // runs. Input names match case-insensitively; "*" wildcards either side. handler(ev) may return
+    // a HookResult >= Handled to drop the input (the AcceptInput detour supersedes it).
+    onInput: function (classname, input, handler) { return __s2_input_subscribe(String(classname), String(input), handler); },
     // Entity lifecycle listeners: fire when the engine creates/spawns/deletes an entity of `className`
     // ("*" = all). The handler gets (entity, className): `entity` is a serial-gated EntityRef (may be
     // null for a barely-constructed onCreate / a dying onDelete); `className` is always valid.
@@ -283,6 +781,30 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     // EntityRefs (empty array on no-op/degrade). Broadly reusable (gamerules proxy, props, triggers...).
     findByClass: function (className) {
       return __s2_entity_find_by_class(String(className));
+    },
+    // Find every entity whose targetname exactly matches name (SourceMod's FindEntityByTargetname
+    // loop). An empty name matches nothing.
+    findByName: function (name) {
+      return __s2_entity_find_by_name(String(name));
+    },
+    // Every entity whose world origin lies within radius of center (inclusive), optionally only of
+    // className. center is a Vector, {x,y,z} or [x,y,z]. Entities with no readable origin are skipped.
+    // Returns [] for a non-finite center or a negative/non-finite radius.
+    findInSphere: function (center, radius, className) {
+      var c = Array.isArray(center) ? { x: center[0], y: center[1], z: center[2] } : center;
+      var r = Number(radius);
+      if (!c || !isFinite(c.x) || !isFinite(c.y) || !isFinite(c.z) || !(r >= 0) || !isFinite(r)) return [];
+      var refs = className === undefined || className === null
+        ? __s2_entity_find_all()
+        : __s2_entity_find_by_class(String(className));
+      var r2 = r * r, out = [];
+      for (var i = 0; i < refs.length; i++) {
+        var o = refs[i].origin;
+        if (!o) continue;
+        var dx = o.x - c.x, dy = o.y - c.y, dz = o.z - c.z;
+        if (dx * dx + dy * dy + dz * dz <= r2) out.push(refs[i]);
+      }
+      return out;
     },
   };
   // Inter-plugin wire tagging: an EntityRef crosses the structured-copy (JSON) boundary as a tagged
@@ -314,12 +836,25 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // --- Slice 5D.1: GameEvent constructor (dispatch_game_event constructs new GameEvent(name)
   //     per-plugin from globalThis.__s2pkg_events.GameEvent). ---
   function GameEvent(name) { this.name = name; }
-  GameEvent.prototype.getInt        = function (k) { return __s2_event_get_int(k); };
-  GameEvent.prototype.getFloat      = function (k) { return __s2_event_get_float(k); };
-  GameEvent.prototype.getBool       = function (k) { return __s2_event_get_bool(k); };
+  // Numeric getters take the fast-API natives by interned key: one Map lookup here instead of a
+  // string conversion and allocation per read. A key the core will not intern (-1) is not cached
+  // and reads through the string-keyed native.
+  var __s2_evkeys = new Map();
+  function __s2_evkey(k) {
+    var s = typeof k === "string" ? k : String(k);
+    var id = __s2_evkeys.get(s);
+    if (id === undefined) {
+      id = __s2_event_key(s);
+      if (id >= 0) __s2_evkeys.set(s, id);
+    }
+    return id;
+  }
+  GameEvent.prototype.getInt        = function (k) { var id = __s2_evkey(k); return id < 0 ? __s2_event_get_int(k) : __s2_event_get_int_k(id); };
+  GameEvent.prototype.getFloat      = function (k) { var id = __s2_evkey(k); return id < 0 ? __s2_event_get_float(k) : __s2_event_get_float_k(id); };
+  GameEvent.prototype.getBool       = function (k) { var id = __s2_evkey(k); return id < 0 ? __s2_event_get_bool(k) : __s2_event_get_bool_k(id); };
   GameEvent.prototype.getString     = function (k) { return __s2_event_get_string(k); };
   GameEvent.prototype.getUint64     = function (k) { return __s2_event_get_uint64(k); };   // decimal string
-  GameEvent.prototype.getPlayerSlot = function (k) { return __s2_event_get_player_slot(k); };
+  GameEvent.prototype.getPlayerSlot = function (k) { var id = __s2_evkey(k); return id < 0 ? __s2_event_get_player_slot(k) : __s2_event_get_player_slot_k(id); };
   GameEvent.prototype.setInt    = function (k, v) { __s2_event_set_int(k, v | 0); };
   GameEvent.prototype.setFloat  = function (k, v) { __s2_event_set_float(k, v); };
   GameEvent.prototype.setBool   = function (k, v) { __s2_event_set_bool(k, !!v); };
@@ -579,21 +1114,27 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   // stashed view) return null/[]/"" — never a dangling pointer. Suppression is the HookResult return
   // (>= Handled supersedes the send for EVERY recipient). Plugin-originated sends from inside any JS
   // dispatch do NOT re-trigger these hooks (recursion guard; documented v1 limitation).
-  function __s2_umView(name, id) {
+  function __s2_umView(name, id, active) {
     return {
       name: name, id: id,
-      get recipients() { return __s2_usermsg_recipients(); },
-      get debugString() { return __s2_usermsg_debug(); },
-      hasField:   function (p) { return __s2_usermsg_has_field(String(p)) === 1; },
-      readInt:    function (p) { return __s2_usermsg_read_int(String(p)); },
-      readFloat:  function (p) { return __s2_usermsg_read_float(String(p)); },
-      readBool:   function (p) { var v = __s2_usermsg_read_int(String(p)); return v === null ? null : v !== 0; },
-      readString: function (p) { return __s2_usermsg_read_string(String(p)); }
+      get recipients() { return active() ? __s2_usermsg_recipients() : []; },
+      get debugString() { return active() ? __s2_usermsg_debug() : ""; },
+      hasField:   function (p) { return active() && __s2_usermsg_has_field(String(p)) === 1; },
+      readInt:    function (p) { return active() ? __s2_usermsg_read_int(String(p)) : null; },
+      readFloat:  function (p) { return active() ? __s2_usermsg_read_float(String(p)) : null; },
+      readBool:   function (p) { var v = active() ? __s2_usermsg_read_int(String(p)) : null; return v === null ? null : v !== 0; },
+      readString: function (p) { return active() ? __s2_usermsg_read_string(String(p)) : null; },
+      readStrings:function (p) { return active() ? __s2_usermsg_read_strings(String(p)) : null; },
+      setInt:     function (p, v) { return active() && __s2_usermsg_set_int(String(p), v); }
     };
   }
   var UserMessages = {
     onPre: function (name, handler) {
-      var canonical = __s2_usermsg_on(String(name), function (n, id) { return handler(__s2_umView(n, id)); });
+      var canonical = __s2_usermsg_on(String(name), function (n, id) {
+        var active = true;
+        try { return handler(__s2_umView(n, id, function () { return active; })); }
+        finally { active = false; }
+      });
       if (!canonical)
         throw new Error("UserMessages.onPre: cannot resolve message '" + name +
                         "' (unknown name, or the intercept descriptor is degraded — see server log)");
@@ -633,9 +1174,51 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     stats: function () { return __s2_voice_audible_stats(); }
   };
   globalThis.__s2pkg_math       = { Vector: Vector, QAngle: QAngle, forwardVector: forwardVector };
-  globalThis.__s2pkg_entity     = { EntityRef: EntityRef, createEntity: createEntity, Entity: Entity };
+  // Element kinds for EntityRef.gather plans (the scalar KIND_* subset a Float64Array carries exactly).
+  var GatherKind = Object.freeze({ Int32: K.I32, Float32: K.F32, Bool: K.BOOL, Int8: K.I8, Int16: K.I16,
+    UInt8: K.U8, UInt16: K.U16, UInt32: K.U32, Float64: K.F64 });
+  globalThis.__s2pkg_entity     = { EntityRef: EntityRef, createEntity: createEntity, Entity: Entity, GatherKind: GatherKind };
+  // After EntityRef.prototype is final: interop copies check references against it.
+  if (interopFacade) interopFacade.init(EntityRef);
   globalThis.__s2pkg_transmit  = { Transmit: Transmit };
   globalThis.__s2pkg_voice      = { Voice: Voice };
+  // @s2script/sdk/stringtables — network string tables. A handle is plain { id, name }: the engine
+  // rebuilds its tables on a map change, so every call re-finds the table by id and requires the
+  // name to match. A stale handle answers -1 / null / false, never a freed table.
+  function StringTable(id, name) {
+    Object.defineProperty(this, "id", { value: id, enumerable: true });
+    Object.defineProperty(this, "name", { value: name, enumerable: true });
+  }
+  StringTable.prototype.count = function () { return __s2_st_num_strings(this.id, this.name); };
+  StringTable.prototype.findString = function (value) {
+    return __s2_st_find_string(this.id, this.name, String(value));
+  };
+  StringTable.prototype.getString = function (index) { return __s2_st_get_string(this.id, this.name, index); };
+  StringTable.prototype.getData = function (index) { return __s2_st_get_data(this.id, this.name, index); };
+  StringTable.prototype.setData = function (index, data) {
+    if (typeof data !== "string" && !ArrayBuffer.isView(data)) return false;
+    return __s2_st_set_data(this.id, this.name, index, data);
+  };
+  StringTable.prototype.addString = function (value, data) {
+    if (data != null && typeof data !== "string" && !ArrayBuffer.isView(data)) return -1;
+    return __s2_st_add_string(this.id, this.name, String(value), data);
+  };
+  function __s2_st_handle(id) {
+    if (id < 0) return null;
+    var name = __s2_st_name(id);
+    return name == null ? null : new StringTable(id, name);
+  }
+  var StringTables = {
+    find: function (name) { return __s2_st_handle(__s2_st_find(String(name))); },
+    get: function (id) { return typeof id === "number" ? __s2_st_handle(id) : null; },
+    count: function () { return __s2_st_count(); },
+    all: function () {
+      var out = [];
+      for (var i = 0, n = __s2_st_count(); i < n; i++) { var t = __s2_st_handle(i); if (t) out.push(t); }
+      return out;
+    }
+  };
+  globalThis.__s2pkg_stringtables = { StringTables: StringTables };
   globalThis.__s2pkg_usermessages = { UserMessage: UserMessage, UserMessages: UserMessages };
   globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
   globalThis.__s2pkg_timers     = timers;
@@ -811,6 +1394,8 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     get maxPlayers() { return __s2_server_max_clients(); },   // GetMaxClients(); 0 if unavailable
     get mapName() { return __s2_server_map_name(); },         // GetMapName(); "" if unavailable
     get gameTime() { return __s2_server_game_time(); },       // GetGlobals()->curtime; 0 if unavailable
+    get tickCount() { return __s2_server_tick_count(); },     // GetGlobals()->tickcount; 0 if unavailable
+    get tickInterval() { return __s2_server_tick_interval(); }, // seconds per tick (derived); 0 until the first tick
   };
   globalThis.__s2pkg_server = { Server: __s2_server };   // named export `Server`
   // @s2script/sdk/damage is TYPE-ONLY: the DamageInfo view belongs to the selected game package (its
@@ -890,7 +1475,18 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     return __s2_sdkunhook(entity.index, entity.id, type, callback);
   }
   var UseType = { Off: 0, On: 1, Set: 2, Toggle: 3 };
-  globalThis.__s2pkg_sdkhooks = { SDKHook: SDKHook, SDKUnhook: SDKUnhook, SDKHookType: SDKHookType, UseType: UseType };
+  // SourceMod's SDKHooks_TakeDamage(entity, inflictor, attacker, damage, damagetype, weapon, force,
+  // position), over EntityRef.takeDamage. `weapon` is the damage info's ability. SourceMod's
+  // bypassHooks has no equivalent: plugin damage always runs OnTakeDamage hooks.
+  function SDKHooks_TakeDamage(entity, inflictor, attacker, damage, damageType, weapon, force, position) {
+    var victim = damageEntity(entity);
+    if (!victim) return false;
+    return victim.takeDamage(damage, {
+      inflictor: inflictor, attacker: attacker, ability: weapon,
+      damageType: damageType, force: force, position: position,
+    });
+  }
+  globalThis.__s2pkg_sdkhooks = { SDKHook: SDKHook, SDKUnhook: SDKUnhook, SDKHooks_TakeDamage: SDKHooks_TakeDamage, SDKHookType: SDKHookType, UseType: UseType };
   // --- Usercmd primitive Task 4: @s2script/usercmd (UserCmd.onRun + the SINGLETON block-scoped Cmd).
   //     The per-tick input fields are Source2-shared (usercmd.proto) -> engine-generic, lives in core.
   //     Field enum (0 forwardMove/1 sideMove/2 upMove/3 pitch/4 yaw/5 roll/6 impulse)
@@ -1007,8 +1603,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   //     invoke time rather than factory time, which is the same context either way — a function
   //     cannot cross the plugin boundary (inter-plugin payloads are JSON structured copies). ---
   globalThis.__s2pkg_unsafe = {
+    Ptr: Ptr,
     Engine: {
       function: function (name) { return __s2_engine_function(name); },
+      // Inline declarations: `s2s build` lifts the literal declaration into the plugin's function
+      // bundle, so at run time the binding is the bundled function of that name.
+      fromSignature: function (name) { return __s2_engine_function(name); },
+      fromVirtual: function (name) { return __s2_engine_function(name); },
       call: function (name) {
         if (!__s2_engine_call_ready(name)) return null;
         // A receiverless call (`receiver.kind: "none"` — a static engine function) takes NO leading
@@ -1467,6 +2068,34 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   Client.prototype.print = function (message) { __s2_client_console_print(this.slot, String(message) + "\n", __s2_client_token(this)); };
   Client.prototype.command = function (cmd) { return __s2_client_command(this.slot, String(cmd), __s2_client_token(this)); };
   Client.prototype.fakeCommand = function (cmd) { return __s2_client_fake_command(this.slot, String(cmd), __s2_client_token(this)); };
+  // Ask the client for its own value of a cvar. Resolves on a later frame; null when nothing was sent
+  // (bot, stale handle, unsupported build) or the client disconnected first.
+  Client.prototype.queryConVar = function (name) {
+    var slot = this.slot, token = __s2_client_token(this);
+    return new Promise(function (resolve) {
+      var cookie = __s2_client_query_convar(slot, String(name), token, function (status, value) {
+        resolve(status == null ? null : { status: status, value: value });
+      });
+      if (!cookie) resolve(null);
+    });
+  };
+  Client.prototype.replicateConVar = function (name, value) {
+    var text = value === true ? "1" : value === false ? "0" : String(value);
+    return __s2_client_replicate_convar(this.slot, String(name), text, __s2_client_token(this));
+  };
+  // One snapshot of the net channel's counters; null for a bot or a stale handle. The indices match
+  // NET_STATS_LEN in core/src/client.rs; pairs are [outgoing, incoming].
+  Client.prototype.netStats = function () {
+    var v = __s2_client_net_stats(this.slot, __s2_client_token(this));
+    if (!v) return null;
+    function flow(i) { return { outgoing: v[i], incoming: v[i + 1] }; }
+    return {
+      avgLatency: v[0], engineLatency: v[1],
+      avgLoss: flow(2), avgChoke: flow(4), avgData: flow(6), avgPackets: flow(8),
+      totalData: flow(10), totalPackets: flow(12),
+      timeConnected: v[14], timeSinceLastReceived: v[15], isTimingOut: v[16] !== 0, dataRate: v[17]
+    };
+  };
   Object.defineProperty(Client.prototype, "ip", { get: function () {
     var s = __s2_client_snapshots.get(this);
     var a = s ? s.address : __s2_client_address(this.slot, __s2_client_token(this));
@@ -1538,22 +2167,54 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   //     onPrecache: handler(ctx) gets a BLOCK-SCOPED PrecacheContext — ctx.add(path) is valid only
   //     during the dispatch (the shim's manifest stash is live only then; a stashed ctx used after
   //     the handler returns is a no-op false). Fires at map load / mapchange. ---
+  function __s2_sound_slots(recipients) {
+    if (Array.isArray(recipients)) return recipients;
+    var slots = [];
+    for (var s = 0; s < __s2_MAX_CLIENTS; s++) if (__s2_client_valid(s)) slots.push(s);
+    return slots;
+  }
+  function __s2_sound_args(name, opts) {
+    opts = opts || {};
+    var idx = 0, id = 0;                          // worldspawn / global-2D default (id 0 = no serial gate)
+    var e = opts.entity;
+    if (e && typeof e.index === "number" && typeof e.id === "number") {
+      idx = e.index | 0; id = e.id;              // raw number (no | 0 — a host-id can exceed 2^31)
+    }
+    var vol = (opts.volume == null) ? 1.0 : +opts.volume;
+    return [String(name), idx, id, __s2_sound_slots(opts.recipients), vol];
+  }
+  // SoundEvent — what Sound.start returns: the engine's event guid plus its stack hash, which
+  // SetSoundEventParam needs too. Plain numbers, no pointer, so a handle kept past the sound's end
+  // is harmless: the engine ignores a guid that is no longer playing.
+  function SoundEvent(guid, stackHash) {
+    Object.defineProperty(this, "guid", { value: guid, enumerable: true });
+    Object.defineProperty(this, "stackHash", { value: stackHash, enumerable: true });
+  }
+  SoundEvent.prototype.setParam = function (param, value, opts) {
+    var v;
+    if (typeof value === "number") v = value;
+    else if (value && typeof value === "object" && typeof value.x === "number" &&
+             typeof value.y === "number" && typeof value.z === "number") v = [value.x, value.y, value.z];
+    else return false;
+    return __s2_sound_set_param(this.guid, this.stackHash, String(param), v,
+                                __s2_sound_slots((opts || {}).recipients));
+  };
+  SoundEvent.prototype.stop = function (opts) {
+    return __s2_sound_stop_event(this.guid, __s2_sound_slots((opts || {}).recipients));
+  };
   var __s2_sound = {
     emit: function (name, opts) {
-      opts = opts || {};
-      var idx = 0, id = 0;                          // worldspawn / global-2D default (id 0 = no serial gate)
-      var e = opts.entity;
-      if (e && typeof e.index === "number" && typeof e.id === "number") {
-        idx = e.index | 0; id = e.id;              // raw number (no | 0 — a host-id can exceed 2^31)
-      }
-      var slots = opts.recipients;
-      if (!Array.isArray(slots)) {
-        slots = [];
-        for (var s = 0; s < __s2_MAX_CLIENTS; s++) if (__s2_client_valid(s)) slots.push(s);
-      }
-      var vol = (opts.volume == null) ? 1.0 : +opts.volume;
-      return __s2_sound_emit(String(name), idx, id, slots, vol);
+      return __s2_sound_emit.apply(null, __s2_sound_args(name, opts));
     },
+    // start(name, opts) — emit, keeping a handle for setParam / stop. null when nothing played.
+    start: function (name, opts) {
+      var r = __s2_sound_start.apply(null, __s2_sound_args(name, opts));
+      return r ? new SoundEvent(r[0], r[1]) : null;
+    },
+    // duration(name) — the event's length in seconds, null when the engine has no such event.
+    duration: function (name) { return __s2_sound_duration(String(name)); },
+    // isValid(name) — whether the engine knows a sound event by that name.
+    isValid: function (name) { return __s2_sound_is_valid(String(name)); },
     // stop(name, opts) — the counterpart to emit. UNLIKE emit, an entity is REQUIRED: the engine
     // call behind this is an instance method on the entity, reached through the books-gated entity
     // resolve, so there is no global/2D form to default to the way emit falls back to worldspawn.
@@ -1565,7 +2226,10 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     },
     onPrecache: function (h) {
       return __s2_precache_subscribe(function () {
-        h({ add: function (p) { return __s2_sound_precache_add(String(p)); } });
+        h({
+          add: function (p) { return __s2_sound_precache_add(String(p)); },
+          addEntity: function (c) { return __s2_precache_entity_add(String(c)); },
+        });
       });
     },
   };
@@ -1732,6 +2396,24 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
         };
       });
     },
+  };
+  // --- @s2script/files: off-thread sandboxed file IO over __s2_files_op (kind, path, data, flags) ---
+  function filesFlags(o, extra) {
+    return (o && o.gzip ? 1 : 0) | (o && o.append ? 2 : 0) | (extra || 0);
+  }
+  globalThis.__s2pkg_files = {
+    Files: Object.freeze({
+      read: function (path, opts) { return __s2_files_op(0, String(path), null, filesFlags(opts)); },
+      readText: function (path, opts) { return __s2_files_op(0, String(path), null, filesFlags(opts, 4)); },
+      write: function (path, data, opts) {
+        if (typeof data !== "string" && !ArrayBuffer.isView(data)) {
+          return Promise.reject(new TypeError("Files.write: data must be a string or a Uint8Array"));
+        }
+        return __s2_files_op(1, String(path), data, filesFlags(opts));
+      },
+      remove: function (path) { return __s2_files_op(2, String(path), null, 0); },
+      list: function (dir) { return __s2_files_op(3, dir === undefined ? "" : String(dir), null, 0); },
+    }),
   };
   // --- @s2script/ws: client WebSocket over __s2_ws_* (connect resolver + per-conn event subs) ---
   globalThis.__s2pkg_ws = {
@@ -1949,6 +2631,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
           onSpawn:  function (c, h) { regFn(viaId(function () { return En.onSpawn(c, h); })); },
           onDelete: function (c, h) { regFn(viaId(function () { return En.onDelete(c, h); })); },
           onOutput: function (c, o, h) { regFn(viaId(function () { return En.onOutput(c, o, h); })); },
+          onInput:  function (c, i, h) { regFn(viaId(function () { return En.onInput(c, i, h); })); },
         },
         server: {
           onGameFrame: function (fn, opts) { regFn(function () { var d = Fr.subscribe(fn, opts || {}); if (d && d.dispose) t.disposer(d.dispose); }); },
@@ -1988,10 +2671,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       return { dispose: function () { if (disposed) return; disposed = true; register = null; if (id) remove(id); } };
     }
     function handleFor(name) {
+      function on(ev, h) {
+        return ownedRegistration(function () { return __s2_iface_on(name, ev, h); }, __s2_iface_dispose);
+      }
+      var typed = interopFacade && interopFacade.facade(name, { on: on });
+      if (typed) return typed;
       return new Proxy({}, { get: function (_t, prop) {
-        if (prop === "on") return function (ev, h) {
-          return ownedRegistration(function () { return __s2_iface_on(name, ev, h); }, __s2_iface_dispose);
-        };
+        if (prop === "on") return on;
         if (typeof prop !== "string") return undefined;
         return function () { return __s2_iface_call(name, prop, Array.prototype.slice.call(arguments)); };
       }});
@@ -2019,11 +2705,13 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
             __s2_iface_attachment_own(token, function () { dispose.call(resource); });
             return resource;
           }};
-          var service = new Proxy({}, { get: function (_target, prop) {
-            if (prop === "on") return function (event, handler) {
-              var id = __s2_iface_on(name, event, handler, token);
-              return { dispose: function () { if (id) { __s2_iface_dispose(id); id = 0; } } };
-            };
+          function on(event, handler) {
+            var id = __s2_iface_on(name, event, handler, token);
+            return { dispose: function () { if (id) { __s2_iface_dispose(id); id = 0; } } };
+          }
+          var service = (interopFacade && interopFacade.facade(name, { on: on },
+            function () { __s2_iface_attachment_live(token); })) || new Proxy({}, { get: function (_target, prop) {
+            if (prop === "on") return on;
             if (typeof prop !== "string") return undefined;
             return function () {
               __s2_iface_attachment_live(token);
@@ -2171,6 +2859,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   function onOutput(classname, output, handler) {
     __s2_load_ctx_or_throw("onOutput()").entities.onOutput(classname, output, handler);
   }
+  function onInput(classname, input, handler) {
+    __s2_load_ctx_or_throw("onInput()").entities.onInput(classname, input, handler);
+  }
   function previous() { return __s2_load_ctx_or_throw("previous()").previous; }
   function pluginId() { return __s2_load_ctx_or_throw("pluginId()").id; }
   // Game-package ctx namespaces (ui / gameRules / players / items) as load-window
@@ -2209,6 +2900,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
   globalThis.__s2pkg_commands.command = command;
   globalThis.__s2pkg_plugin.hook = hook;
   globalThis.__s2pkg_plugin.onOutput = onOutput;
+  globalThis.__s2pkg_plugin.onInput = onInput;
   globalThis.__s2pkg_plugin.publish = publish;
   globalThis.__s2pkg_plugin.use = use;
   globalThis.__s2pkg_plugin.tryUse = tryUse;
@@ -2230,9 +2922,9 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       "__s2pkg_plugins", "__s2pkg_menu", "__s2pkg_events", "__s2pkg_clients",
       "__s2pkg_damage", "__s2pkg_sdkhooks", "__s2pkg_chat", "__s2pkg_config", "__s2pkg_topmenu",
       "__s2pkg_translations", "__s2pkg_entity", "__s2pkg_math", "__s2pkg_timers",
-      "__s2pkg_bans", "__s2pkg_db", "__s2pkg_cookies", "__s2pkg_http",
+      "__s2pkg_bans", "__s2pkg_db", "__s2pkg_cookies", "__s2pkg_http", "__s2pkg_files",
       "__s2pkg_ws", "__s2pkg_net", "__s2pkg_votes", "__s2pkg_sound",
-      "__s2pkg_trace", "__s2pkg_transmit", "__s2pkg_voice", "__s2pkg_usermessages",
+      "__s2pkg_trace", "__s2pkg_transmit", "__s2pkg_voice", "__s2pkg_stringtables", "__s2pkg_usermessages",
       "__s2pkg_usercmd", "__s2pkg_interfaces",
     ];
     for (var i = 0; i < names.length; i++) {

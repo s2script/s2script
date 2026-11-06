@@ -459,7 +459,10 @@ pub(crate) fn override_return(
             (out.kind, &value),
             (8, super::projection::ProjectedValue::Scalar(_))
                 | (1..=7, super::projection::ProjectedValue::Entity { .. })
-        ) {
+                | (1..=7, super::projection::ProjectedValue::Pointer(_))
+        ) || matches!(value, super::projection::ProjectedValue::Pointer(_))
+            != (out.flags == super::projection::POINTER_FLAG)
+        {
             return Err("binding return value category mismatch".into());
         }
         if let ProjectedValue::Copied(copy) = &value {

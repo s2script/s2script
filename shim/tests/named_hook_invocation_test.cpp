@@ -191,6 +191,19 @@ void PrecacheTarget(Receiver* receiver,void* manifest) {
               "precache frame does not span its own original execution");
 }
 
+int cvar_originals=0,cvar_calls=0,cvar_ignore=0;
+const void* cvar_message=reinterpret_cast<const void*>(uintptr_t{0x7777});
+Receiver* cvar_expected=nullptr;
+bool CvarTarget(Receiver* receiver,const void* message) {
+    ++cvar_originals;
+    CHECK(receiver==cvar_expected && message==cvar_message,"cvar original receives client and message");
+    return true;
+}
+void CvarOp(void* client,const void* message) {
+    ++cvar_calls;
+    CHECK(client==cvar_expected && message==cvar_message,"cvar op receives client and message");
+}
+
 void* outer_victim=reinterpret_cast<void*>(uintptr_t{0x1111222233334444});
 void* outer_info=reinterpret_cast<void*>(uintptr_t{0x5555666677778888});
 int chat_result=0,chat_calls=0;
@@ -280,6 +293,7 @@ void ObserveAction(S2NamedHookSite site,bool /*post*/,KHook::Action action) {
     if (site==S2NamedHookSite::Output && action==KHook::Action::Supersede) ++output_supersede;
     if (site==S2NamedHookSite::Usercmd && action==KHook::Action::Ignore) ++usercmd_ignore;
     if (site==S2NamedHookSite::Precache && action==KHook::Action::Ignore) ++precache_ignore;
+    if (site==S2NamedHookSite::CvarResponse && action==KHook::Action::Ignore) ++cvar_ignore;
 }
 
 S2CheckedFunction<void,void*>* terminal_binding=nullptr;
@@ -299,6 +313,7 @@ void ConfigureAndInvoke() {
     ops.chat=&ChatOp; ops.output=&OutputOp;
     ops.usercmd_slot=&UsercmdSlot; ops.usercmd_dispatch=&UsercmdDispatch;
     ops.usercmd_neutralize=&UsercmdNeutralize; ops.precache=&PrecacheOp;
+    ops.cvar_response=&CvarOp;
     ops.observe_action=&ObserveAction;
     S2NamedHooksSetOps(ops);
 
@@ -379,6 +394,23 @@ void ConfigureAndInvoke() {
               output_ignore==2 && output_supersede==2 && usercmd_ignore==3 && precache_ignore==2,
           "production callbacks publish their actual accepted action");
 
+    static void* cvar_vtable[1]={reinterpret_cast<void*>(&CvarTarget)};
+    s2resolve::VirtualSlotResolution cvar_resolved;
+    cvar_resolved.target.address=reinterpret_cast<uintptr_t>(&CvarTarget);
+    cvar_resolved.target.recipe="fixture"; cvar_resolved.target.validation_receipt="structural";
+    cvar_resolved.vtable=cvar_vtable; cvar_resolved.vtable_index=0;
+    CHECK(S2NamedConfigureCvarResponse(cvar_resolved).Accepted(),"checked cvar-response global binding is accepted");
+    Receiver client{cvar_vtable,3}; cvar_expected=&client;
+    auto* cvar_entry=provider.FindVirtual(cvar_vtable,0);
+    CHECK((provider.InvokeEntry<bool,Receiver*,const void*>(cvar_entry,&client,cvar_message)),
+          "cvar response keeps the original's true return");
+    CHECK(cvar_calls==1 && cvar_originals==1 && cvar_ignore==1,
+          "cvar response observes once and always runs the original");
+    void* other_cvar_vtable[1]={reinterpret_cast<void*>(&CvarTarget)};
+    Receiver other_client{other_cvar_vtable,4}; cvar_expected=&other_client;
+    provider.InvokeEntry<bool,Receiver*,const void*>(cvar_entry,&other_client,cvar_message);
+    CHECK(cvar_calls==1 && cvar_originals==2,"different-vtable client is filtered while its original runs");
+
     S2CheckedFunction<void,void*> terminal(&TerminalPre,nullptr);
     terminal_binding=&terminal;
     CHECK(terminal.Configure(&TerminalTarget).Accepted(),"terminal fixture binding is accepted");
@@ -390,6 +422,7 @@ void ConfigureAndInvoke() {
     CHECK(terminal_can && terminal_removed && terminal_complete,
           "foreign terminal capsule preflights, removes, and completes named inventory");
     CHECK(provider.FindVirtual(vtable,0)==nullptr,"precache retirement removes the retained vtable hook");
+    CHECK(provider.FindVirtual(cvar_vtable,0)==nullptr,"cvar-response retirement removes the retained vtable hook");
     S2Hook_SetLifecycle(S2HookLifecycle::Ready);
 }
 }

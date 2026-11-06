@@ -43,6 +43,14 @@ export interface UserMessageView {
   readBool(path: string): boolean | null;
   /** Scalar string/bytes read. Dotted nested paths supported. null if absent/repeated/no message. */
   readString(path: string): string | null;
+  /** Repeated UTF-8 strings in order; [] when empty, null on wrong type/missing/invalid UTF-8/expired view.
+   * Dotted paths through singular sub-messages are supported. Requires matching runtime support. */
+  readStrings(path: string): string[] | null;
+  /** Edit a scalar int32/uint32/fixed32 field on the current message, preserving all other fields.
+   * Returns false for invalid type/range/path, a missing parent, or an expired view.
+   * Later handlers see edits; Continue/Changed delivers them, Handled/Stop suppresses the send.
+   * Requires matching runtime support. */
+  setInt(path: string, value: number): boolean;
 }
 
 /**

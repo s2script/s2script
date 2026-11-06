@@ -10,6 +10,8 @@ function typeOf(projection: ProjectionSpec): string {
     case 'entity?': return 'EntityRef | null';
     case 'string': return 'string';
     case 'vector': return '{ readonly x: number; readonly y: number; readonly z: number }';
+    // A raw address: a `Ptr` from this module (in scope inside the augmentation), null for 0.
+    case 'ptr': return 'Ptr | null';
     default: throw new Error(`no public TypeScript projection for ${projection.id}`);
   }
 }

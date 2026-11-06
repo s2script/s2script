@@ -54,6 +54,8 @@ interface PluginPackageJson {
     permissions?: string[];
     /** Build-time packages bundled INTO this plugin's .s2sp — see libraries.ts. */
     libraries?: Record<string, string>;
+    /** Native extensions this plugin imports (`name → range`), resolved by the host at load. */
+    extensions?: Record<string, string>;
   };
   /** npm build-deps only (per CLAUDE.md); gated by npm-deps-gate.ts before the libraries check. */
   dependencies?: Record<string, string>;
@@ -120,6 +122,22 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
           `bundled into this .s2sp, an inter-plugin dependency is a runtime proxy resolved by the ` +
           `host at load; the two cannot share a name`,
       );
+    }
+  }
+
+  // A native extension is a third kind of name: a module the host builds from a shared library in
+  // addons/s2script/extensions/. It cannot also be a library or an inter-plugin dependency.
+  const extensions = s2.extensions ?? {};
+  for (const name of Object.keys(extensions)) {
+    if (pluginDepNames.has(name) || Object.hasOwn(libraries, name)) {
+      throw new Error(
+        `${JSON.stringify(name)} is declared in s2script.extensions and also as a library or plugin ` +
+          `dependency — a native extension is resolved by the host from addons/s2script/extensions/, ` +
+          `so it cannot share a name with either`,
+      );
+    }
+    if (name.startsWith("@s2script/sdk")) {
+      throw new Error(`${JSON.stringify(name)}: s2script.extensions cannot name an @s2script/sdk module`);
     }
   }
 
@@ -266,6 +284,14 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
       );
     }
   }
+  for (const ext of Object.keys(extensions)) {
+    if (!scan.importNames.includes(ext)) {
+      console.warn(
+        `WARN: extension ${JSON.stringify(ext)} is declared but never imported — the plugin still ` +
+          `refuses to load on a server without it`,
+      );
+    }
+  }
 
   const { name, version } = pkg;
   // --- apiVersion is DERIVED at build (north-star §5.2, locked decision #6). The SDK stamps the
@@ -285,6 +311,7 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     "@s2script/*",
     ...Object.keys(pluginDependencies),
     ...Object.keys(optionalPluginDependencies),
+    ...Object.keys(extensions),
   ]));
 
   // Entry point: s2script.main takes precedence, then package.main.
@@ -344,6 +371,7 @@ export async function buildPlugin(dir: string, packagesDir?: string): Promise<st
     manifest.interfaceContracts = imports;
   }
   if (config !== undefined) manifest.config = config;
+  if (Object.keys(extensions).length > 0) manifest.extensions = extensions;
   // What the package reaches into the engine with travels with it, derived from the gamedata, so
   // `s2s inspect` and the registry can show it. Informational: nothing on the server gates on it.
   const gamedataPermissions = [

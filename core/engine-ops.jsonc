@@ -1146,10 +1146,10 @@
     {
       "name": "sound_emit",
       "alias": "SoundEmitFn",
-      "rust": "extern \"C\" fn(*const c_char, c_int, c_int, *const c_int, c_int, f32) -> c_int",
+      "rust": "extern \"C\" fn(*const c_char, c_int, c_int, *const c_int, c_int, f32, *mut c_int) -> c_int",
       "group": "Sound slice",
       "c_ret": "int",
-      "c_params": "const char* soundName, int entIndex, int entSerial, const int* slots, int slotCount, float volume",
+      "c_params": "const char* soundName, int entIndex, int entSerial, const int* slots, int slotCount, float volume, int* outStackHash",
       "shim": "s2_sound_emit"
     },
     {
@@ -1389,10 +1389,10 @@
     {
       "name": "engine_call_invoke",
       "alias": "EngineCallInvokeFn",
-      "rust": "extern \"C\" fn(call_id: c_int, ent_index: c_int, ent_serial: c_int, subobj_off: c_int, gp: *const u64, gp_kind: *const u8, gp_count: c_int, fp: *const f64, fp_count: c_int, strs: *const *const c_char, vecs: *const f32, ret_kind: c_int, ret_out: *mut u64) -> c_int",
+      "rust": "extern \"C\" fn(call_id: c_int, ent_index: c_int, ent_serial: c_int, subobj_off: c_int, subobj_deref: c_int, gp: *const u64, gp_kind: *const u8, gp_count: c_int, fp: *const f64, fp_count: c_int, strs: *const *const c_char, vecs: *const f32, ret_kind: c_int, ret_out: *mut u64) -> c_int",
       "group": "Plugin-declared engine calls",
       "c_ret": "int",
-      "c_params": "int callId, int entIndex, int entSerial, int subObjOff, const uint64_t* gp, const unsigned char* gpKind, int gpCount, const double* fp, int fpCount, const char* const* strs, const float* vecs, int retKind, uint64_t* retOut",
+      "c_params": "int callId, int entIndex, int entSerial, int subObjOff, int subObjDeref, const uint64_t* gp, const unsigned char* gpKind, int gpCount, const double* fp, int fpCount, const char* const* strs, const float* vecs, int retKind, uint64_t* retOut",
       "shim": "S2_EngineCallInvoke"
     },
     {
@@ -1803,6 +1803,258 @@
       "c_ret": "int",
       "c_params": "const S2FunctionInstanceAccess* access, int selector, const S2FunctionValue* entity, unsigned int offset, int* out, char* reason, int cap",
       "shim": "S2_FunctionFrameHiddenReferencedBy"
+    },
+    {
+      "name": "server_tick_count",
+      "alias": "ServerTickCountFn",
+      "rust": "extern \"C\" fn() -> c_int",
+      "group": "timer-grade server clock: GetGlobals()->tickcount / interval_per_tick",
+      "c_ret": "int",
+      "c_params": "void",
+      "shim": "s2_server_tick_count"
+    },
+    {
+      "name": "server_tick_interval",
+      "alias": "ServerTickIntervalFn",
+      "rust": "extern \"C\" fn() -> f32",
+      "group": "timer-grade server clock: GetGlobals()->tickcount / interval_per_tick",
+      "c_ret": "float",
+      "c_params": "void",
+      "shim": "s2_server_tick_interval"
+    },
+    {
+      "name": "entity_take_damage",
+      "alias": "EntityTakeDamageFn",
+      "rust": "extern \"C\" fn(c_int, c_int, c_int, c_int, c_int, c_int, c_int, c_int, f32, c_int, *const f32, *const f32) -> c_int",
+      "group": "Damage slice: CTakeDamageInfo ctor + CBaseEntity::TakeDamage + dtor",
+      "c_ret": "int",
+      "c_params": "int index, int serial, int inflictorIdx, int inflictorSerial, int attackerIdx, int attackerSerial, int abilityIdx, int abilitySerial, float damage, int damageType, const float* force, const float* position",
+      "shim": "Shim_EntityTakeDamage"
+    },
+    {
+      "name": "client_query_convar",
+      "alias": "ClientQueryConvarFn",
+      "rust": "extern \"C\" fn(slot: c_int, name: *const c_char, cookie: c_int) -> c_int",
+      "group": "client convar query + replicate",
+      "c_ret": "int",
+      "c_params": "int slot, const char* name, int cookie",
+      "shim": "s2_client_query_convar"
+    },
+    {
+      "name": "client_replicate_convar",
+      "alias": "ClientReplicateConvarFn",
+      "rust": "extern \"C\" fn(slot: c_int, name: *const c_char, value: *const c_char) -> c_int",
+      "group": "client convar query + replicate",
+      "c_ret": "int",
+      "c_params": "int slot, const char* name, const char* value",
+      "shim": "s2_client_replicate_convar"
+    },
+    {
+      "name": "client_net_stats",
+      "alias": "ClientNetStatsFn",
+      "rust": "extern \"C\" fn(slot: c_int, out: *mut f64, n: c_int) -> c_int",
+      "group": "client net stats (INetChannelInfo)",
+      "c_ret": "int",
+      "c_params": "int slot, double* out, int n",
+      "shim": "s2_client_net_stats"
+    },
+    {
+      "name": "engine_call_bind_interface",
+      "alias": "EngineCallBindInterfaceFn",
+      "rust": "extern \"C\" fn(call_id: c_int, name: *const c_char, slot: c_int, reason_out: *mut c_char, reason_cap: c_int) -> c_int",
+      "group": "Plugin-declared engine calls",
+      "c_ret": "int",
+      "c_params": "int callId, const char* name, int slot, char* reasonOut, int reasonCap",
+      "shim": "S2_EngineCallBindInterface"
+    },
+    {
+      "name": "engine_call_take_strings",
+      "alias": "EngineCallTakeStringsFn",
+      "rust": "extern \"C\" fn(out: *mut c_char, cap: c_int) -> c_int",
+      "group": "Plugin-declared engine calls",
+      "c_ret": "int",
+      "c_params": "char* out, int cap",
+      "shim": "S2_EngineCallTakeStrings"
+    },
+    {
+      "name": "entity_lookup_bone",
+      "alias": "EntityLookupBoneFn",
+      "rust": "extern \"C\" fn(index: c_int, serial: c_int, name: *const c_char) -> c_int",
+      "group": "bones and attachments",
+      "c_ret": "int",
+      "c_params": "int index, int serial, const char* name",
+      "shim": "Shim_EntityLookupBone"
+    },
+    {
+      "name": "entity_get_bone_transform",
+      "alias": "EntityGetBoneTransformFn",
+      "rust": "extern \"C\" fn(index: c_int, serial: c_int, bone: c_int, out: *mut f32) -> c_int",
+      "group": "bones and attachments",
+      "c_ret": "int",
+      "c_params": "int index, int serial, int bone, float* out",
+      "shim": "Shim_EntityGetBoneTransform"
+    },
+    {
+      "name": "entity_lookup_attachment",
+      "alias": "EntityLookupAttachmentFn",
+      "rust": "extern \"C\" fn(index: c_int, serial: c_int, name: *const c_char) -> c_int",
+      "group": "bones and attachments",
+      "c_ret": "int",
+      "c_params": "int index, int serial, const char* name",
+      "shim": "Shim_EntityLookupAttachment"
+    },
+    {
+      "name": "entity_get_attachment",
+      "alias": "EntityGetAttachmentFn",
+      "rust": "extern \"C\" fn(index: c_int, serial: c_int, attachment: c_int, out: *mut f32) -> c_int",
+      "group": "bones and attachments",
+      "c_ret": "int",
+      "c_params": "int index, int serial, int attachment, float* out",
+      "shim": "Shim_EntityGetAttachment"
+    },
+    {
+      "name": "sound_set_param",
+      "alias": "SoundSetParamFn",
+      "rust": "extern \"C\" fn(c_int, c_int, *const c_char, *const f32, c_int, *const c_int, c_int) -> c_int",
+      "group": "sound event parameters: SoundOpGameSystem::SetSoundEventParam / StopSoundEvent",
+      "c_ret": "int",
+      "c_params": "int guid, int stackHash, const char* param, const float* values, int valueCount, const int* slots, int slotCount",
+      "shim": "s2_sound_set_param"
+    },
+    {
+      "name": "sound_stop_event",
+      "alias": "SoundStopEventFn",
+      "rust": "extern \"C\" fn(c_int, *const c_int, c_int) -> c_int",
+      "group": "sound event parameters: SoundOpGameSystem::SetSoundEventParam / StopSoundEvent",
+      "c_ret": "int",
+      "c_params": "int guid, const int* slots, int slotCount",
+      "shim": "s2_sound_stop_event"
+    },
+    {
+      "name": "sound_event_duration",
+      "alias": "SoundEventDurationFn",
+      "rust": "extern \"C\" fn(*const c_char) -> f32",
+      "group": "sound event lookups: the sound system's event manager (GetSoundEventDuration / IsValidSoundEventHash)",
+      "c_ret": "float",
+      "c_params": "const char* soundEvent",
+      "shim": "s2_sound_event_duration"
+    },
+    {
+      "name": "sound_event_valid",
+      "alias": "SoundEventValidFn",
+      "rust": "extern \"C\" fn(*const c_char) -> c_int",
+      "group": "sound event lookups: the sound system's event manager (GetSoundEventDuration / IsValidSoundEventHash)",
+      "c_ret": "int",
+      "c_params": "const char* soundEvent",
+      "shim": "s2_sound_event_valid"
+    },
+    {
+      "name": "stringtable_count",
+      "alias": "StringTableCountFn",
+      "rust": "extern \"C\" fn() -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "void",
+      "shim": "s2_stringtable_count"
+    },
+    {
+      "name": "stringtable_find",
+      "alias": "StringTableFindFn",
+      "rust": "extern \"C\" fn(*const c_char) -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "const char* tableName",
+      "shim": "s2_stringtable_find"
+    },
+    {
+      "name": "stringtable_name",
+      "alias": "StringTableNameFn",
+      "rust": "extern \"C\" fn(c_int, *mut c_char, c_int) -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "int tableId, char* out, int cap",
+      "shim": "s2_stringtable_name"
+    },
+    {
+      "name": "stringtable_num_strings",
+      "alias": "StringTableNumStringsFn",
+      "rust": "extern \"C\" fn(c_int, *const c_char) -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "int tableId, const char* tableName",
+      "shim": "s2_stringtable_num_strings"
+    },
+    {
+      "name": "stringtable_find_string",
+      "alias": "StringTableFindStringFn",
+      "rust": "extern \"C\" fn(c_int, *const c_char, *const c_char) -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "int tableId, const char* tableName, const char* value",
+      "shim": "s2_stringtable_find_string"
+    },
+    {
+      "name": "stringtable_get_string",
+      "alias": "StringTableGetStringFn",
+      "rust": "extern \"C\" fn(c_int, *const c_char, c_int, *mut c_char, c_int) -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "int tableId, const char* tableName, int index, char* out, int cap",
+      "shim": "s2_stringtable_get_string"
+    },
+    {
+      "name": "stringtable_get_data",
+      "alias": "StringTableGetDataFn",
+      "rust": "extern \"C\" fn(c_int, *const c_char, c_int, *mut u8, c_int) -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "int tableId, const char* tableName, int index, unsigned char* out, int cap",
+      "shim": "s2_stringtable_get_data"
+    },
+    {
+      "name": "stringtable_set_data",
+      "alias": "StringTableSetDataFn",
+      "rust": "extern \"C\" fn(c_int, *const c_char, c_int, *const u8, c_int) -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "int tableId, const char* tableName, int index, const unsigned char* data, int len",
+      "shim": "s2_stringtable_set_data"
+    },
+    {
+      "name": "stringtable_add_string",
+      "alias": "StringTableAddStringFn",
+      "rust": "extern \"C\" fn(c_int, *const c_char, *const c_char, *const u8, c_int) -> c_int",
+      "group": "string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable",
+      "c_ret": "int",
+      "c_params": "int tableId, const char* tableName, const char* value, const unsigned char* data, int len",
+      "shim": "s2_stringtable_add_string"
+    },
+    {
+      "name": "usermsg_hook_read_strings",
+      "alias": "UsermsgHookReadStringsFn",
+      "rust": "extern \"C\" fn(*const c_char, *mut c_char, c_int) -> c_int",
+      "group": "UserMessage repeated strings and scalar edits",
+      "c_ret": "int",
+      "c_params": "const char* path, char* buf, int buflen",
+      "shim": "s2_usermsg_hook_read_strings"
+    },
+    {
+      "name": "usermsg_hook_set_int",
+      "alias": "UsermsgHookSetIntFn",
+      "rust": "extern \"C\" fn(*const c_char, i64) -> c_int",
+      "group": "UserMessage repeated strings and scalar edits",
+      "c_ret": "int",
+      "c_params": "const char* path, long long value",
+      "shim": "s2_usermsg_hook_set_int"
+    },
+    {
+      "name": "precache_entity_add",
+      "alias": "PrecacheEntityAddFn",
+      "rust": "extern \"C\" fn(*const c_char) -> c_int",
+      "group": "Entity precache: IEntityResourceManifestBuilder::BuildResourceManifestForEntity",
+      "c_ret": "int",
+      "c_params": "const char* classname",
+      "shim": "s2_precache_entity_add"
     }
   ]
 }

@@ -376,6 +376,99 @@
         shutdown();
     }
 
+    /// Stage 1c (JS multiplexer): OnGameFrame keeps run_chain's rules — a Monitor runs after a
+    /// Stop and its return is ignored; each handler gets its own `ctx` object built in its own
+    /// realm with the same keys; and the breadcrumb names the plugin and handler line.
+    #[test]
+    fn jsmux_frame_keeps_monitor_ctx_and_breadcrumb_rules() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        eval_std("p", r#"
+            globalThis.__keys = ""; globalThis.__own = false; globalThis.__mon = 0; globalThis.__low = 0;
+            OnGameFrame.subscribe((f) => {
+                __keys = Object.keys(f).join(",") + "|" + f.phase + "|" + f.simulating;
+                __own = f instanceof Object;
+                f.scribble = 1;
+                return HookResult.Stop;
+            }, { priority: "high" });
+            OnGameFrame.subscribe(() => { __low++; }, { priority: "low" });
+            OnGameFrame.subscribe((f) => { __mon++; globalThis.__fresh = f.scribble === undefined;
+                globalThis.__crumb = __s2_test_entered_owner(); return HookResult.Handled; }, { priority: "monitor" });
+        "#);
+        let out = dispatch_onframe(Phase::Pre, true, false, false);
+        assert_eq!(out.result, HookResult::Stop, "the Monitor's Handled is ignored");
+        assert_eq!(read_string_global_in("p", "__keys"), "simulating,firstTick,lastTick,phase|pre|true");
+        assert!(read_bool_global_in("p", "__own"), "ctx is an object of the handler's own realm");
+        assert_eq!(eval_in_context_string("p", "String(__low)"), "0", "Stop skips the low handler");
+        assert_eq!(eval_in_context_string("p", "String(__mon)"), "1", "but a Monitor still runs");
+        assert!(read_bool_global_in("p", "__fresh"), "every handler gets its own ctx");
+        assert_eq!(read_string_global_in("p", "__crumb"), "p|p|OnGameFrame:pre");
+        assert!(
+            crate::crash::breadcrumb::read_cstr(&crate::crash::breadcrumb::snapshot().js_location).starts_with("p:"),
+            "the handler's location was noted"
+        );
+        shutdown();
+    }
+
+    /// When the last OnGameFrame subscriber goes, the phase skips dispatch, but the arrays its
+    /// handlers left in the multiplexer are still dropped (they pin the unloaded plugin's context).
+    #[test]
+    fn jsmux_frame_releases_arrays_once_the_last_subscriber_unloads() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        eval_std("p", r#"OnGameFrame.subscribe(() => {});"#);
+        let _ = dispatch_onframe(Phase::Pre, true, false, false);
+        assert_eq!(crate::jsmux::test_pushed(crate::jsmux::Kind::Frame), 1);
+        unload_plugin("p");
+        let _ = dispatch_onframe(Phase::Pre, true, false, false);
+        assert_eq!(crate::jsmux::test_pushed(crate::jsmux::Kind::Frame), 0, "pruned with nobody subscribed");
+        shutdown();
+    }
+
+    /// A handler that keeps throwing is auto-disabled after MAX_HANDLER_ERRORS frames, exactly as
+    /// through run_chain + apply_errors, and the others keep running.
+    #[test]
+    fn jsmux_frame_auto_disables_a_handler_that_keeps_throwing() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        eval_std("p", r#"
+            globalThis.__bad = 0; globalThis.__good = 0;
+            OnGameFrame.subscribe(() => { __bad++; throw new Error("boom"); });
+            OnGameFrame.subscribe(() => { __good++; });
+        "#);
+        let frames = crate::multiplexer::MAX_HANDLER_ERRORS + 3;
+        for _ in 0..frames {
+            dispatch_onframe(Phase::Pre, true, false, false);
+        }
+        assert_eq!(eval_in_context_string("p", "String(__bad)"), crate::multiplexer::MAX_HANDLER_ERRORS.to_string());
+        assert_eq!(eval_in_context_string("p", "String(__good)"), frames.to_string());
+        shutdown();
+    }
+
+    /// Stage 1c measurement: one OnGameFrame phase with 10 plugins subscribed, JS multiplexer vs
+    /// the Rust chain. `cargo test --release -p s2script-core jsmux_bench -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn jsmux_bench_frame_ten_plugins() {
+        init(dummy_logger()).unwrap();
+        for i in 0..10 {
+            eval_std(&format!("f{}", i), "let n = 0; OnGameFrame.subscribe((f) => { if (f.simulating) n++; });");
+        }
+        let run = |n: u32| {
+            let t = std::time::Instant::now();
+            for _ in 0..n { dispatch_onframe(Phase::Pre, true, false, false); }
+            t.elapsed().as_nanos() as f64 / n as f64
+        };
+        crate::jsmux::FORCE_FALLBACK.with(|f| f.set(true));
+        run(2_000);
+        let rust = run(50_000);
+        crate::jsmux::FORCE_FALLBACK.with(|f| f.set(false));
+        run(2_000);
+        let js = run(50_000);
+        println!("OnGameFrame, 10 plugins: Rust chain {:.0} ns, JS multiplexer {:.0} ns ({:.1}x)", rust, js, rust / js);
+        shutdown();
+    }
+
     #[test]
     fn onframe_handler_out_of_range_result_warns_and_continues() {
         LOG.lock().unwrap().clear();
@@ -2024,7 +2117,7 @@
     ) -> c_int { 7 }
 
     extern "C" fn fake_call_invoke(
-        call_id: c_int, _ent_index: c_int, _ent_serial: c_int, _subobj_off: c_int,
+        call_id: c_int, _ent_index: c_int, _ent_serial: c_int, _subobj_off: c_int, _subobj_deref: c_int,
         _gp: *const u64, _gp_kind: *const u8, _gp_count: c_int,
         fp: *const f64, fp_count: c_int,
         _strs: *const *const c_char, _vecs: *const f32,
@@ -2033,6 +2126,164 @@
         let f0 = if fp_count > 0 && !fp.is_null() { unsafe { *fp } } else { 0.0 };
         LAST_ENGINE_CALL.with(|c| c.set((call_id, f0)));
         1
+    }
+
+    thread_local! {
+        /// (subobj_off, subobj_deref) recorded by `via_call_invoke`.
+        static LAST_VIA: std::cell::Cell<(c_int, c_int)> = const { std::cell::Cell::new((-9, -9)) };
+    }
+
+    extern "C" fn via_call_invoke(
+        _call_id: c_int, _ent_index: c_int, _ent_serial: c_int, subobj_off: c_int, subobj_deref: c_int,
+        _gp: *const u64, _gp_kind: *const u8, _gp_count: c_int,
+        _fp: *const f64, _fp_count: c_int,
+        _strs: *const *const c_char, _vecs: *const f32,
+        _ret_kind: c_int, _ret_out: *mut u64,
+    ) -> c_int {
+        LAST_VIA.with(|c| c.set((subobj_off, subobj_deref)));
+        1
+    }
+
+    extern "C" fn via_schema_offset(class: *const c_char, field: *const c_char) -> c_int {
+        let (c, f) = unsafe { (std::ffi::CStr::from_ptr(class), std::ffi::CStr::from_ptr(field)) };
+        match (c.to_bytes(), f.to_bytes()) {
+            (b"CViaOuter", b"m_inner") => 0x100,
+            (b"CViaInner", b"m_list") => 0x20,
+            (b"CViaList", b"m_pTarget") => 0x8,
+            _ => -1,
+        }
+    }
+
+    /// `receiver.via` paths reach the shim as ONE summed offset plus whether to load a pointer
+    /// there: the original `{class, field}` form is one pointer hop, an array of embedded hops is
+    /// pure address arithmetic, and an embedded run may end in a pointer hop.
+    #[test]
+    fn via_paths_sum_embedded_offsets_and_deref_only_a_final_pointer_hop() {
+        crate::entity_live::reset_for_tests();
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps {
+            engine_call_resolve: Some(fake_call_resolve),
+            engine_call_invoke: Some(via_call_invoke),
+            schema_offset: Some(via_schema_offset),
+            ..mock_event_ops()
+        }));
+        let id = crate::entity_live::on_created(9, 3);
+        let target = r#""target":{"kind":"signature","name":"T","module":"libserver.so","pattern":"55 48","resolve":"direct"},"args":[],"returns":"void""#;
+        crate::gamedata_calls::register_plugin("via1", &format!(r#"{{"calls":{{
+            "ptr":{{"receiver":{{"kind":"entity","via":{{"class":"CViaList","field":"m_pTarget"}}}},{target}}},
+            "emb":{{"receiver":{{"kind":"entity","via":[{{"class":"CViaOuter","field":"m_inner","embedded":true}},
+                                                     {{"class":"CViaInner","field":"m_list","embedded":true}}]}},{target}}},
+            "mixed":{{"receiver":{{"kind":"entity","via":[{{"class":"CViaOuter","field":"m_inner","embedded":true}},
+                                                       {{"class":"CViaList","field":"m_pTarget"}}]}},{target}}},
+            "miss":{{"receiver":{{"kind":"entity","via":[{{"class":"CViaOuter","field":"m_inner","embedded":true}},
+                                                      {{"class":"CViaInner","field":"m_gone","embedded":true}}]}},{target}}}
+        }}}}"#));
+        create_plugin_context("via1");
+        for (name, want) in [("ptr", (0x8, 1)), ("emb", (0x120, 0)), ("mixed", (0x108, 1))] {
+            LAST_VIA.with(|c| c.set((-9, -9)));
+            eval_in_context("via1", &format!(r#"__s2_engine_call_invoke("{name}", 9, "{id}", []);"#)).unwrap();
+            assert_eq!(LAST_VIA.with(|c| c.get()), want, "{name}");
+        }
+        LAST_VIA.with(|c| c.set((-9, -9)));
+        eval_in_context("via1", &format!(r#"__s2_engine_call_invoke("miss", 9, "{id}", []);"#)).unwrap();
+        assert_eq!(LAST_VIA.with(|c| c.get()), (-9, -9), "an unresolved hop must not reach the engine");
+        assert!(crate::gamedata_calls::status("via1", "miss").contains("CViaInner::m_gone"));
+        set_engine_ops(None);
+        shutdown();
+    }
+
+    thread_local! {
+        /// (ent_index, ent_serial, ret_kind) recorded by `iface_call_invoke`.
+        static LAST_IFACE: std::cell::Cell<(c_int, c_int, c_int)> = const { std::cell::Cell::new((0, 0, -1)) };
+        /// (call id, name, slot) of the last bind.
+        static LAST_BIND: std::cell::RefCell<(c_int, String, c_int)> = std::cell::RefCell::new((0, String::new(), 0));
+        /// What the fake shim "returned" for a string list: None = a null list.
+        static FAKE_LIST: std::cell::RefCell<Option<Vec<&'static str>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    extern "C" fn iface_bind(call_id: c_int, name: *const c_char, slot: c_int, reason: *mut c_char, cap: c_int) -> c_int {
+        let n = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        LAST_BIND.with(|b| *b.borrow_mut() = (call_id, n.clone(), slot));
+        if n == "Missing001" {
+            let msg = b"interface 'Missing001' not found\0";
+            let len = msg.len().min(cap as usize);
+            unsafe { std::ptr::copy_nonoverlapping(msg.as_ptr(), reason as *mut u8, len) };
+            return -1;
+        }
+        3
+    }
+
+    extern "C" fn iface_call_invoke(
+        _call_id: c_int, ent_index: c_int, ent_serial: c_int, _subobj_off: c_int, _subobj_deref: c_int,
+        _gp: *const u64, _gp_kind: *const u8, _gp_count: c_int,
+        _fp: *const f64, _fp_count: c_int,
+        _strs: *const *const c_char, _vecs: *const f32,
+        ret_kind: c_int, ret_out: *mut u64,
+    ) -> c_int {
+        LAST_IFACE.with(|c| c.set((ent_index, ent_serial, ret_kind)));
+        let n = FAKE_LIST.with(|l| l.borrow().as_ref().map(|v| v.len() as u64));
+        unsafe { *ret_out = n.unwrap_or(u64::MAX) };
+        1
+    }
+
+    extern "C" fn iface_take_strings(out: *mut c_char, cap: c_int) -> c_int {
+        let blob: Vec<u8> = FAKE_LIST.with(|l| {
+            l.borrow().as_ref().map(|v| v.iter().flat_map(|s| s.bytes().chain(std::iter::once(0))).collect()).unwrap_or_default()
+        });
+        if !out.is_null() && blob.len() <= cap as usize {
+            unsafe { std::ptr::copy_nonoverlapping(blob.as_ptr(), out as *mut u8, blob.len()) };
+        }
+        blob.len() as c_int
+    }
+
+    /// An interface receiver binds by name (passing the vtable slot for a vtable target), takes no
+    /// `self`, reaches the shim as (RECEIVER_INTERFACE, interface id), and a `utlstringlist`
+    /// return arrives as a string array, or null for a null list. A failed bind degrades the
+    /// descriptor with the shim's reason, and `via` on an interface receiver is rejected.
+    #[test]
+    fn interface_receivers_bind_by_name_and_return_string_lists() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps {
+            engine_call_resolve: Some(fake_call_resolve),
+            engine_call_invoke: Some(iface_call_invoke),
+            engine_call_bind_interface: Some(iface_bind),
+            engine_call_take_strings: Some(iface_take_strings),
+            ..mock_event_ops()
+        }));
+        crate::gamedata_calls::register_plugin("ifc", r#"{"calls":{
+            "maps":{"receiver":{"kind":"interface","name":"GameTypes001"},
+                    "target":{"kind":"vtable","class":"GameTypes","module":"libmatchmaking.so",
+                              "linuxsteamrt64":{"index":64,"validate":{"prologue":"48 85 F6"}}},
+                    "args":["string"],"returns":"utlstringlist"},
+            "gone":{"receiver":{"kind":"interface","name":"Missing001"},
+                    "target":{"kind":"signature","name":"T","module":"libserver.so","pattern":"55","resolve":"direct"},
+                    "args":[],"returns":"void"},
+            "hop":{"receiver":{"kind":"interface","name":"GameTypes001","via":{"class":"C","field":"m_f"}},
+                    "target":{"kind":"signature","name":"T","module":"libserver.so","pattern":"55","resolve":"direct"},
+                    "args":[],"returns":"void"}
+        }}"#);
+        assert_eq!(crate::gamedata_calls::status("ifc", "maps"), "available");
+        // Registration runs in name order, so 'maps' binds last: a vtable target passes its slot.
+        assert_eq!(LAST_BIND.with(|b| b.borrow().clone()), (7, "GameTypes001".to_string(), 64));
+        assert!(crate::gamedata_calls::status("ifc", "gone").contains("Missing001"));
+        assert!(crate::gamedata_calls::status("ifc", "hop").contains("cannot carry a 'via'"));
+        create_plugin_context("ifc");
+        assert!(eval_in_context_bool("ifc", r#"__s2_engine_call_receiverless("maps") === true"#));
+
+        FAKE_LIST.with(|l| *l.borrow_mut() = Some(vec!["de_dust2", "", "de_inferno"]));
+        assert_eq!(eval_in_context_string("ifc",
+            r#"JSON.stringify(__s2_engine_call_invoke("maps", 0, 0, ["mg_active"]))"#),
+            r#"["de_dust2","","de_inferno"]"#);
+        assert_eq!(LAST_IFACE.with(|c| c.get()),
+                   (crate::gamedata_calls::RECEIVER_INTERFACE, 3, crate::gamedata_calls::RET_UTLSTRINGLIST));
+        FAKE_LIST.with(|l| *l.borrow_mut() = Some(vec![]));
+        assert_eq!(eval_in_context_string("ifc",
+            r#"JSON.stringify(__s2_engine_call_invoke("maps", 0, 0, ["x"]))"#), "[]");
+        FAKE_LIST.with(|l| *l.borrow_mut() = None);
+        assert_eq!(eval_in_context_string("ifc",
+            r#"String(__s2_engine_call_invoke("maps", 0, 0, ["x"]))"#), "null");
+        set_engine_ops(None);
+        shutdown();
     }
 
     /// The legitimate path, which dropping the leading `pluginId` argument could have broken
@@ -2308,6 +2559,12 @@
     #[test]
     fn protocol2_method_does_not_copy_unused_optional_argument_schema() {
         assert_crossing_allocations_do_not_scale(false, true);
+    }
+
+    /// Whether this run sends consumer-side `__s2_iface_call`s through interface facades
+    /// (`S2_TEST_FACADE=1`; see `FACADE_SHIM` in lifecycle.rs).
+    pub(crate) fn via_facade() -> bool {
+        std::env::var_os("S2_TEST_FACADE").is_some()
     }
 
     fn protocol2_setup() {
@@ -2858,7 +3115,9 @@
             // already-running call validates its return against its immutable original schema.
             assert_eq!(eval_in_context_string("cons", "String(__s2_iface_call('@x/counter','getCount',[]))"), "1");
             let error = eval_in_context_string("cons", "(()=>{try{__s2_iface_call('@x/counter','getCount',[]);return 'accepted'}catch(e){return e.message}})()");
-            assert!(error.contains(if consumer_only { "InterfaceTypesMismatch" } else { "InterfaceValueNotSerializable" }), "{error}");
+            // A facade was compiled from the consumer's original contract, so it refuses the new one.
+            let expected = if consumer_only || via_facade() { "InterfaceTypesMismatch" } else { "InterfaceValueNotSerializable" };
+            assert!(error.contains(expected), "{error}");
             assert!(IFACE_SUBS.with(|m| m.borrow().is_empty()));
             shutdown();
         }
@@ -5369,6 +5628,47 @@
 
 
 
+    extern "C" fn fake_entity_name(index: c_int, serial: c_int) -> *const std::os::raw::c_char {
+        match (index, serial) {
+            (1, 11) | (70, 4) => c"cell_doors".as_ptr(),
+            (64, 3) => c"cell_doors_2".as_ptr(),
+            (90, 9) => c"".as_ptr(),
+            _ => std::ptr::null(),
+        }
+    }
+
+    /// Entity finders: `findByName` walks the identity snapshot and compares each slot's targetname
+    /// through the `entity_name` op; only books-live slots mint refs; an empty name matches nothing.
+    /// `findInSphere` filters origins inclusively and degrades on bad input.
+    #[test]
+    fn entity_finders_by_name_and_sphere() {
+        crate::entity_live::reset_for_tests();
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(S2EngineOps {
+            ent_snapshot: Some(fake_ent_snapshot), entity_name: Some(fake_entity_name), ..mock_event_ops()
+        }));
+        // (70, 4) is in the snapshot but not in the books: it must not mint a ref.
+        crate::entity_live::repair_reconcile(&[(1, 11), (64, 3), (90, 9)]);
+        SNAPSHOT_PAIRS.with(|p| *p.borrow_mut() = vec![(1, 11), (64, 3), (70, 4), (90, 9)]);
+        create_plugin_context("p");
+        let out = eval_in_context_string("p", r#"
+            const E = __s2pkg_entity.Entity;
+            const named = E.findByName("cell_doors").map(r => r.index).join("|");
+            const none = E.findByName("").length + "," + E.findByName("nope").length;
+            const all = E.findAll ? "leak" : __s2_entity_find_all().map(r => r.index).join("|");
+            const origin = { 1: [0, 0, 0], 64: [3, 4, 0], 90: [100, 0, 0] };
+            globalThis.__s2_entity_find_all = () => [1, 64, 90, 5].map(i => ({ index: i,
+                origin: origin[i] ? { x: origin[i][0], y: origin[i][1], z: origin[i][2] } : null }));
+            const near = E.findInSphere([0, 0, 0], 5).map(r => r.index).join("|");
+            const bad = [E.findInSphere(null, 5), E.findInSphere({ x: NaN, y: 0, z: 0 }, 5),
+                         E.findInSphere([0, 0, 0], -1), E.findInSphere([0, 0, 0], Infinity)].map(a => a.length).join("");
+            [named, none, all, near, bad].join(";")
+        "#);
+        assert_eq!(out, "1;0,0;1|64|90;1|64;0000");
+        SNAPSHOT_PAIRS.with(|p| p.borrow_mut().clear());
+        shutdown();
+    }
+
     /// entity_origin slice: `EntityRef.origin` (`CGameSceneNode::m_vecAbsOrigin`, reached via the
     /// `CBaseEntity::m_CBodyComponent` -> `CBodyComponent::m_pSceneNode` chain) degrades to `null` with
     /// no ops (e.g. every in-isolate test) — never a crash. Unlike `target`, there's no dedicated
@@ -5488,7 +5788,7 @@
     /// function is never reached, and therefore the case the latch would leak on.
     #[allow(clippy::too_many_arguments)]
     extern "C" fn mock_call_invoke_degrades(
-        _id: c_int, _ei: c_int, _es: c_int, _so: c_int,
+        _id: c_int, _ei: c_int, _es: c_int, _so: c_int, _sd: c_int,
         _gp: *const u64, _gk: *const u8, _gc: c_int,
         _fp: *const f64, _fc: c_int,
         _s: *const *const c_char, _v: *const f32,
@@ -5922,7 +6222,7 @@
     /// returns without calling anything.
     #[allow(clippy::too_many_arguments)]
     extern "C" fn mock_call_invoke_reenters_a_hook(
-        _id: c_int, _ei: c_int, _es: c_int, _so: c_int,
+        _id: c_int, _ei: c_int, _es: c_int, _so: c_int, _sd: c_int,
         _gp: *const u64, _gk: *const u8, _gc: c_int,
         _fp: *const f64, _fc: c_int,
         _s: *const *const c_char, _v: *const f32,
@@ -6112,6 +6412,65 @@
         1
     }
 
+    extern "C" fn fake_lookup_bone(_i: c_int, _s: c_int, name: *const c_char) -> c_int {
+        if unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes() == b"head_0" { 6 } else { -1 }
+    }
+    extern "C" fn fake_lookup_attachment(_i: c_int, _s: c_int, name: *const c_char) -> c_int {
+        if unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes() == b"muzzle_flash" { 2 } else { 0 }
+    }
+    extern "C" fn fake_bone_transform(_i: c_int, _s: c_int, bone: c_int, out: *mut f32) -> c_int {
+        if bone != 6 { return 0; }
+        let out = unsafe { std::slice::from_raw_parts_mut(out, 7) };
+        out.copy_from_slice(&[1.0, 2.0, 3.0, 0.0, 0.0, 0.5, 0.5]);
+        1
+    }
+    extern "C" fn fake_attachment(_i: c_int, _s: c_int, attachment: c_int, out: *mut f32) -> c_int {
+        if attachment != 2 { return 0; }
+        let out = unsafe { std::slice::from_raw_parts_mut(out, 6) };
+        out.copy_from_slice(&[10.0, 20.0, 30.0, -5.0, 90.0, 0.0]);
+        1
+    }
+
+    /// Bones and attachments: the four EntityRef methods map the ops' values into Vector/QAngle
+    /// shapes, report the engine's "none" values on a miss, and degrade on a stale ref or a missing op.
+    #[test]
+    fn bones_and_attachments_map_values_and_degrade() {
+        crate::entity_live::reset_for_tests();
+        let _ = init(dummy_logger());
+        crate::entity_live::on_created(1, 7);
+        set_engine_ops(Some(S2EngineOps {
+            entity_lookup_bone: Some(fake_lookup_bone),
+            entity_lookup_attachment: Some(fake_lookup_attachment),
+            entity_get_bone_transform: Some(fake_bone_transform),
+            entity_get_attachment: Some(fake_attachment),
+            ..mock_event_ops()
+        }));
+        create_plugin_context("bones");
+        let out = eval_in_context_string("bones", r#"
+            const r = new (__s2pkg_entity.EntityRef)(1, __s2_ent_id_for_index(1));
+            const t = r.getBoneTransform(r.lookupBone("head_0"));
+            const a = r.getAttachment(r.lookupAttachment("muzzle_flash"));
+            JSON.stringify([r.lookupBone("nope"), r.lookupAttachment("nope"), t, a,
+                t.position instanceof __s2pkg_math.Vector, a.angles instanceof __s2pkg_math.QAngle,
+                r.getBoneTransform(-1), r.getAttachment(0)])
+        "#);
+        assert_eq!(out, r#"[-1,0,{"position":{"x":1,"y":2,"z":3},"rotation":{"x":0,"y":0,"z":0.5,"w":0.5}},{"origin":{"x":10,"y":20,"z":30},"angles":{"x":-5,"y":90,"z":0}},true,true,null,null]"#);
+        // A stale ref never reaches the ops.
+        let stale = eval_in_context_string("bones", r#"
+            const s = new (__s2pkg_entity.EntityRef)(1, "999999");
+            JSON.stringify([s.lookupBone("head_0"), s.lookupAttachment("muzzle_flash"), s.getBoneTransform(6), s.getAttachment(2)])
+        "#);
+        assert_eq!(stale, "[-1,0,null,null]");
+        // No ops (an older shim): the same "none" values.
+        set_engine_ops(Some(mock_event_ops()));
+        let none = eval_in_context_string("bones", r#"
+            const n = new (__s2pkg_entity.EntityRef)(1, __s2_ent_id_for_index(1));
+            JSON.stringify([n.lookupBone("head_0"), n.lookupAttachment("muzzle_flash"), n.getBoneTransform(6), n.getAttachment(2)])
+        "#);
+        assert_eq!(none, "[-1,0,null,null]");
+        shutdown();
+    }
+
     /// EKV slice: `{name:"bob", health:42, scale:1.5, enabled:true, big:3000000000}` crosses as types
     /// `[string,int,float,bool,float]` with values `["bob","42","1.5","1","3000000000"]` (int32
     /// overflow -> float tag), and the native returns `true` (fake op returns 1). Key ORDER is
@@ -6172,12 +6531,160 @@
     static SOUND_EMIT_CALLS: std::sync::Mutex<Vec<(String, i32, i32, Vec<i32>, f32)>> =
         std::sync::Mutex::new(Vec::new());
     extern "C" fn mock_sound_emit(name: *const c_char, ent_index: c_int, ent_serial: c_int,
-                                  slots: *const c_int, slot_count: c_int, volume: f32) -> c_int {
+                                  slots: *const c_int, slot_count: c_int, volume: f32,
+                                  out_stack_hash: *mut c_int) -> c_int {
         let n = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
         let s = if slots.is_null() || slot_count <= 0 { Vec::new() }
                 else { unsafe { std::slice::from_raw_parts(slots, slot_count as usize) }.to_vec() };
         SOUND_EMIT_CALLS.lock().unwrap().push((n, ent_index, ent_serial, s, volume));
+        if !out_stack_hash.is_null() { unsafe { *out_stack_hash = -12345 }; }
         7   // a fake nonzero guid
+    }
+
+    static SOUND_PARAM_CALLS: std::sync::Mutex<Vec<(i32, i32, String, Vec<f32>, Vec<i32>)>> =
+        std::sync::Mutex::new(Vec::new());
+    extern "C" fn mock_sound_set_param(guid: c_int, hash: c_int, name: *const c_char, values: *const f32,
+                                       n: c_int, slots: *const c_int, slot_count: c_int) -> c_int {
+        let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        let v = unsafe { std::slice::from_raw_parts(values, n as usize) }.to_vec();
+        let s = if slots.is_null() || slot_count <= 0 { Vec::new() }
+                else { unsafe { std::slice::from_raw_parts(slots, slot_count as usize) }.to_vec() };
+        SOUND_PARAM_CALLS.lock().unwrap().push((guid, hash, name, v, s));
+        1
+    }
+    static SOUND_STOP_CALLS: std::sync::Mutex<Vec<(i32, Vec<i32>)>> = std::sync::Mutex::new(Vec::new());
+    extern "C" fn mock_sound_stop_event(guid: c_int, slots: *const c_int, slot_count: c_int) -> c_int {
+        let s = if slots.is_null() || slot_count <= 0 { Vec::new() }
+                else { unsafe { std::slice::from_raw_parts(slots, slot_count as usize) }.to_vec() };
+        SOUND_STOP_CALLS.lock().unwrap().push((guid, s));
+        1
+    }
+
+    /// Sound.start returns a SoundEvent carrying the guid and the stack hash the emit op wrote;
+    /// setParam maps a number to one float and a Vector to three, rejects anything else before the
+    /// op, and stop passes the guid and recipients through.
+    #[test]
+    fn sound_start_set_param_and_stop_event() {
+        let _ = init(dummy_logger());
+        SOUND_PARAM_CALLS.lock().unwrap().clear();
+        SOUND_STOP_CALLS.lock().unwrap().clear();
+        set_engine_ops(Some(S2EngineOps {
+            sound_emit: Some(mock_sound_emit),
+            sound_set_param: Some(mock_sound_set_param),
+            sound_stop_event: Some(mock_sound_stop_event),
+            ..mock_event_ops()
+        }));
+        load_body("pse", r#"
+            const { Sound } = require("@s2script/sound");
+            const { Vector } = require("@s2script/math");
+            const ev = Sound.start("MyPack.Siren", { recipients: [2] });
+            globalThis.__g = [
+                ev.guid, ev.stackHash,
+                ev.setParam("volume", 0.25, { recipients: [4] }),
+                ev.setParam("position", new Vector(1, 2, 3)),
+                ev.setParam("bad", "loud"),
+                ev.setParam("nan", NaN),
+                ev.stop({ recipients: [1, 2] }),
+            ].join(",");
+        "#, "{}");
+        assert_eq!(eval_in_context_string("pse", "String(globalThis.__g)"),
+                   "7,-12345,true,true,false,false,true");
+        let p = SOUND_PARAM_CALLS.lock().unwrap();
+        assert_eq!(p.len(), 2);
+        assert_eq!((p[0].0, p[0].1, p[0].2.as_str(), p[0].3.clone(), p[0].4.clone()),
+                   (7, -12345, "volume", vec![0.25], vec![4]));
+        assert_eq!((p[1].2.as_str(), p[1].3.clone()), ("position", vec![1.0, 2.0, 3.0]));
+        assert_eq!(*SOUND_STOP_CALLS.lock().unwrap(), vec![(7, vec![1, 2])]);
+        shutdown();
+    }
+
+    /// With no ops table Sound.start is null and the event natives return false.
+    #[test]
+    fn sound_event_natives_degrade_without_ops() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("psf");
+        assert_eq!(eval_in_context_string("psf",
+            "String(__s2pkg_sound.Sound.start('X'))"), "null");
+        assert_eq!(eval_in_context_string("psf",
+            "String(__s2_sound_set_param(7, 1, 'volume', 1, []))"), "false");
+        assert_eq!(eval_in_context_string("psf",
+            "String(__s2_sound_stop_event(7, []))"), "false");
+        shutdown();
+    }
+
+    static SOUND_LOOKUPS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    extern "C" fn mock_sound_event_duration(name: *const c_char) -> f32 {
+        let n = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        let d = if n == "MyPack.Siren" { 2.5 } else { -1.0 };
+        SOUND_LOOKUPS.lock().unwrap().push(n);
+        d
+    }
+    extern "C" fn mock_sound_event_valid(name: *const c_char) -> c_int {
+        let n = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        let v = (n == "MyPack.Siren") as c_int;
+        SOUND_LOOKUPS.lock().unwrap().push(n);
+        v
+    }
+
+    /// Sound.duration maps the engine's -1 for an unknown event to null; isValid passes the name
+    /// through; an empty name never reaches the op.
+    #[test]
+    fn sound_duration_and_is_valid() {
+        let _ = init(dummy_logger());
+        SOUND_LOOKUPS.lock().unwrap().clear();
+        set_engine_ops(Some(S2EngineOps {
+            sound_event_duration: Some(mock_sound_event_duration),
+            sound_event_valid: Some(mock_sound_event_valid),
+            ..mock_event_ops()
+        }));
+        load_body("psd", r#"
+            const { Sound } = require("@s2script/sound");
+            globalThis.__g = [
+                Sound.duration("MyPack.Siren"), Sound.duration("Nope"), Sound.duration(""),
+                Sound.isValid("MyPack.Siren"), Sound.isValid("Nope"), Sound.isValid(""),
+            ].map(String).join(",");
+        "#, "{}");
+        assert_eq!(eval_in_context_string("psd", "String(globalThis.__g)"),
+                   "2.5,null,null,true,false,false");
+        assert_eq!(*SOUND_LOOKUPS.lock().unwrap(),
+                   vec!["MyPack.Siren", "Nope", "MyPack.Siren", "Nope"]);
+        set_engine_ops(None);
+        assert_eq!(eval_in_context_string("psd",
+            "String(__s2pkg_sound.Sound.duration('MyPack.Siren')) + ',' + __s2pkg_sound.Sound.isValid('MyPack.Siren')"),
+            "null,false");
+        shutdown();
+    }
+
+    static PRECACHE_ENTITIES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    extern "C" fn mock_precache_entity_add(name: *const c_char) -> c_int {
+        let n = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        let ok = (n != "not_a_class") as c_int;
+        PRECACHE_ENTITIES.lock().unwrap().push(n);
+        ok
+    }
+
+    /// PrecacheContext.addEntity passes the classname to the op and maps its result to a boolean;
+    /// an empty name never reaches the op.
+    #[test]
+    fn precache_context_add_entity() {
+        let _ = init(dummy_logger());
+        PRECACHE_ENTITIES.lock().unwrap().clear();
+        set_engine_ops(Some(S2EngineOps {
+            precache_entity_add: Some(mock_precache_entity_add),
+            ..mock_event_ops()
+        }));
+        load_body("ppe", r#"
+            const { Sound } = require("@s2script/sound");
+            Sound.onPrecache((pc) => {
+                globalThis.__g = [pc.addEntity("chicken"), pc.addEntity("not_a_class"), pc.addEntity("")]
+                    .map(String).join(",");
+            });
+        "#, "{}");
+        dispatch_precache();
+        assert_eq!(eval_in_context_string("ppe", "String(globalThis.__g)"), "true,false,false");
+        assert_eq!(*PRECACHE_ENTITIES.lock().unwrap(), vec!["chicken", "not_a_class"]);
+        shutdown();
     }
 
     /// __s2_sound_emit marshals (name, entIndex, entSerial, slots[], volume) into the op and
@@ -6839,6 +7346,58 @@
         shutdown();
     }
 
+    thread_local! {
+        static TAKE_DAMAGE_CALLS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    extern "C" fn record_take_damage(index: c_int, serial: c_int, ii: c_int, is: c_int, ai: c_int, as_: c_int,
+                                     bi: c_int, bs: c_int, damage: f32, ty: c_int,
+                                     force: *const f32, position: *const f32) -> c_int {
+        let vec = |p: *const f32| if p.is_null() { "-".to_string() } else {
+            let v = unsafe { std::slice::from_raw_parts(p, 3) };
+            format!("{},{},{}", v[0], v[1], v[2])
+        };
+        TAKE_DAMAGE_CALLS.with(|c| c.borrow_mut().push(format!(
+            "{index}/{serial} {ii}/{is} {ai}/{as_} {bi}/{bs} {damage} {ty} {} {}", vec(force), vec(position))));
+        1
+    }
+
+    /// Damage slice: `takeDamage` and `SDKHooks_TakeDamage` hand the op serial-gated entities (a
+    /// wrapper's `.ref` included), the damage, type and vectors; an absent option is -1, a stale one
+    /// or a non-finite damage refuses the call before the op, and no op degrades to false.
+    #[test]
+    fn take_damage_marshals_entities_and_refuses_stale_options() {
+        let _ = init(dummy_logger());
+        crate::entity_live::reset_for_tests();
+        let victim = crate::entity_live::on_created(5, 1);
+        let attacker = crate::entity_live::on_created(6, 2);
+        let weapon = crate::entity_live::on_created(7, 3);
+        TAKE_DAMAGE_CALLS.with(|c| c.borrow_mut().clear());
+        set_engine_ops(Some(S2EngineOps { entity_take_damage: Some(record_take_damage), ..mock_event_ops() }));
+        create_plugin_context("p");
+        let out = eval_in_context_string("p", &format!(r#"
+            const E = __s2pkg_entity.EntityRef;
+            const v = new E(5, {victim}), a = new E(6, {attacker}), w = new E(7, {weapon});
+            const r = [
+              v.takeDamage(25, {{ attacker: {{ ref: a }}, damageType: 2, force: [1, 2, 3] }}),
+              __s2pkg_sdkhooks.SDKHooks_TakeDamage(v, null, a, 10.5, 64, w, null, [4, 5, 6]),
+              v.takeDamage(1, {{ attacker: new E(6, {attacker} + 99) }}),
+              new E(5, {victim} + 99).takeDamage(1),
+              __s2pkg_sdkhooks.SDKHooks_TakeDamage(null, null, a, 1),
+            ];
+            let threw = false;
+            try {{ v.takeDamage(NaN); }} catch (e) {{ threw = e instanceof TypeError; }}
+            r.concat([threw]).join("|")
+        "#));
+        assert_eq!(out, "true|true|false|false|false|true");
+        assert_eq!(TAKE_DAMAGE_CALLS.with(|c| c.borrow().clone()), vec![
+            "5/1 -1/-1 6/2 -1/-1 25 2 1,2,3 -".to_string(),
+            "5/1 -1/-1 6/2 7/3 10.5 64 - 4,5,6".to_string(),
+        ]);
+        set_engine_ops(None);
+        assert_eq!(eval_in_context_string("p", &format!("String(new (__s2pkg_entity.EntityRef)(5, {victim}).takeDamage(1))")), "false");
+        shutdown();
+    }
+
     /// Entity-I/O slice: `dispatch_output` runs every subscriber whose key matches `(class,output)`,
     /// `(class,"*")`, `("*",output)`, `("*","*")` — a wildcard-class sub and an exact-key sub both fire
     /// for one dispatch, but a DIFFERENT (class,output) pair does not. `activator`/`caller` are `null`
@@ -6888,6 +7447,49 @@
         let result3 = dispatch_output("logic_relay", "OnTrigger", -1, -1, "", 0.0);
         assert_eq!(result3, HookResult::Continue as i32, "no subscribers left after unload -> Continue, no panic");
 
+        shutdown();
+    }
+
+    /// Parity slice 5: `dispatch_input` matches `(class,input)` with the input compared
+    /// case-insensitively, honours `"*"` on either side, threads the value and keeps the engine's
+    /// spelling in `ev.input`, and collapses to the strongest HookResult. `input_hooked` tracks
+    /// whether any subscriber is left, so the FFI fast path skips work after unload.
+    #[test]
+    fn input_dispatch_matches_case_insensitively_and_collapses_hookresult() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        assert!(!input_hooked(), "no subscribers yet");
+        assert_eq!(dispatch_input("func_door", "Open", -1, -1, -1, ""), 0);
+        create_plugin_context("p");
+        eval_in_context("p", r#"
+            globalThis.__any = 0; globalThis.__exact = 0; globalThis.__cls = 0;
+            __s2pkg_entity.Entity.onInput("*", "*", function () { globalThis.__any++; });
+            __s2pkg_entity.Entity.onInput("func_door", "OPEN", function (ev) {
+                globalThis.__exact++;
+                globalThis.__seen = [ev.input, ev.value, String(ev.entity), String(ev.activator), String(ev.caller)].join("|");
+                return HookResult.Handled;
+            });
+            __s2pkg_entity.Entity.onInput("func_door", "*", function () { globalThis.__cls++; return HookResult.Changed; });
+        "#).unwrap();
+        assert!(input_hooked());
+
+        assert_eq!(dispatch_input("func_door", "Open", -1, -1, -1, "fast"), HookResult::Handled as i32);
+        assert_eq!(read_global_string("p", "__seen"), "Open|fast|null|null|null");
+        assert_eq!(read_i32_global_in("p", "__any"), 1);
+        assert_eq!(read_i32_global_in("p", "__exact"), 1);
+        assert_eq!(read_i32_global_in("p", "__cls"), 1);
+
+        // Another input on the same class reaches the class wildcard, not the exact sub.
+        assert_eq!(dispatch_input("func_door", "Close", -1, -1, -1, ""), HookResult::Changed as i32);
+        assert_eq!(read_i32_global_in("p", "__exact"), 1);
+        // Another class reaches only (*,*).
+        assert_eq!(dispatch_input("logic_relay", "open", -1, -1, -1, ""), HookResult::Continue as i32);
+        assert_eq!(read_i32_global_in("p", "__any"), 3);
+        assert_eq!(read_i32_global_in("p", "__cls"), 2);
+
+        unload_plugin("p");
+        assert!(!input_hooked(), "unload drops every subscription");
+        assert_eq!(dispatch_input("func_door", "Open", -1, -1, -1, ""), HookResult::Continue as i32);
         shutdown();
     }
 
@@ -7522,6 +8124,8 @@
             "String(__s2_sound_emit('Weapon_AK47.Single', 0, -1, [0, 1], 1.0))"), "0");
         assert_eq!(eval_in_context_string("psnd",
             "String(__s2_sound_precache_add('soundevents/test.vsndevts'))"), "false");
+        assert_eq!(eval_in_context_string("psnd",
+            "String(__s2_precache_entity_add('prop_physics'))"), "false");
         shutdown();
     }
 
@@ -7734,6 +8338,87 @@
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert_eq!(out, "changes=1 id=1 rows=1 v=red k=color");
+        shutdown();
+    }
+
+    /// `@s2script/sdk/files` end to end through the public module: a gzip binary write, its read
+    /// back as a fresh Uint8Array, a text append + readText, list, remove, a missing file as null,
+    /// and a sandbox escape rejected before any IO. Every operation runs off-thread and settles on
+    /// a frame drain in the owning plugin's context.
+    #[test]
+    fn files_module_round_trip_through_the_frame_drain() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(db_ops()));
+        let id = format!("filesp{}", std::process::id());
+        load_body(&id, r#"
+            var { Files } = require("@s2script/sdk/files");
+            globalThis.__out = "pending";
+            var bytes = new Uint8Array(4096);
+            for (var i = 0; i < bytes.length; i++) bytes[i] = i % 13;
+            Files.remove("log.txt").then(function () {
+                return Files.write("replays/m/0.bin", bytes, { gzip: true });
+            }).then(function () {
+                return Files.read("replays/m/0.bin", { gzip: true });
+            }).then(function (back) {
+                var same = back instanceof Uint8Array && back.length === 4096;
+                for (var i = 0; same && i < back.length; i++) same = back[i] === i % 13;
+                return Files.write("log.txt", "a\n", { append: true }).then(function () {
+                    return Files.write("log.txt", "b\n", { append: true });
+                }).then(function () { return Files.readText("log.txt"); }).then(function (t) {
+                    return Files.list().then(function (names) {
+                        return Files.read("missing.bin").then(function (m) {
+                            return Files.read("../escape").then(function () { return "escaped"; }, function (e) { return "rejected"; }).then(function (esc) {
+                                return Files.remove("log.txt").then(function (removed) {
+                                    globalThis.__out = same + "|" + JSON.stringify(t) + "|" + names.join(",") + "|" + m + "|" + esc + "|" + removed;
+                                });
+                            });
+                        });
+                    });
+                });
+            }).catch(function (e) { globalThis.__out = "ERROR:" + String(e); });
+        "#, "{}");
+        let mut out = "pending".to_string();
+        for _ in 0..ASYNC_POLL_TICKS {
+            frame_async_drain();
+            out = read_global_string(&id, "__out");
+            if out != "pending" { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(out, "true|\"a\\nb\\n\"|log.txt,replays/|null|rejected|true");
+        shutdown();
+    }
+
+    /// `EntityRef.gather` validates the whole plan before touching `out`: a malformed plan (bad
+    /// kind) or an undersized `out` reports -2 and leaves every slot as it was, and a well-formed
+    /// plan against an unresolvable entity reports -1. Without an entity op table there is no live
+    /// entity, so the -1 path is the observable one here.
+    #[test]
+    fn entity_gather_rejects_malformed_plans_before_writing() {
+        init(dummy_logger()).unwrap();
+        load_body("gather", r#"
+            var E = require("@s2script/sdk/entity");
+            var K = E.GatherKind;
+            var out = new Float64Array([7, 7, 7]);
+            var bad = __s2_ent_ref_gather(5, 1, new Int32Array([0, 16, 99, 1]), out, 0);
+            var short = __s2_ent_ref_gather(5, 1, new Int32Array([0, 16, K.Float32, 4]), out, 0);
+            var hops = __s2_ent_ref_gather(5, 1, new Int32Array([9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16, K.Float32, 1]), out, 0);
+            var stale = __s2_ent_ref_gather(5, 1, new Int32Array([0, 16, K.Float32, 3]), out, 0);
+            globalThis.__out = [bad, short, hops, stale, out[0], out[1], out[2], typeof E.EntityRef.prototype.gather].join(",");
+        "#, "{}");
+        assert_eq!(read_global_string("gather", "__out"), "-2,-2,-2,-1,7,7,7,function");
+        shutdown();
+    }
+
+    /// The tick clock reads 0 without the engine op (degrade, never throw), through the public
+    /// `Server` getters.
+    #[test]
+    fn server_tick_clock_degrades_to_zero_without_the_op() {
+        init(dummy_logger()).unwrap();
+        load_body("tick", r#"
+            var { Server } = require("@s2script/sdk/server");
+            globalThis.__out = Server.tickCount + "," + Server.tickInterval;
+        "#, "{}");
+        assert_eq!(read_global_string("tick", "__out"), "0,0");
         shutdown();
     }
 
@@ -9993,3 +10678,15 @@ mod immutable_contract;
 
 #[path = "tests/profiler.rs"]
 mod profiler;
+
+#[path = "tests/realm_bench.rs"]
+mod realm_bench;
+
+#[path = "tests/facade.rs"]
+mod facade;
+
+#[path = "tests/realm.rs"]
+mod realm_tests;
+
+#[path = "tests/extensions.rs"]
+mod extensions_tests;

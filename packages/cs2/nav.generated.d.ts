@@ -2,6 +2,29 @@
 import type { Vector, QAngle } from "@s2script/sdk/math";
 import type { EntityRef } from "@s2script/sdk/entity";
 
+/**
+ * Fields NOT marked `readonly` are writable.
+ *
+ * A write takes effect immediately — the server reads these during movement — but it is **not**
+ * flagged for replication, because this object is reached through a pointer chain and the
+ * change-notifier addresses the root entity. A client predicting the old value may therefore
+ * see brief mismatch until the next authoritative correction. SourceMod's `SetEntPropFloat`
+ * on the same fields behaves the same way.
+ */
+export interface ActionTrackingServices {
+  /**
+   * Flag this sub-object for network replication after writing to it.
+   *
+   * Setters do not do this for you. For most targets it does not matter — the server reads the
+   * field every tick — but anything a CLIENT renders (a scoreboard counter, say) will not update
+   * until you call this.
+   */
+  notifyChanged(): void;
+  numRoundKills: number | null;
+  numRoundKillsHeadshots: number | null;
+  readonly totalRoundDamageDealt: number | null;
+}
+
 export interface AimPunchServices {
   /**
    * Flag this sub-object for network replication after writing to it.

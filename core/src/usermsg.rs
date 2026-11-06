@@ -58,8 +58,8 @@ thread_local! {
         = std::cell::RefCell::new(std::collections::HashMap::new());
 
     /// Names a plugin subscribed before the engine registered them (`usermsg_hook_sub` returned
-    /// `SUB_PENDING`: plugins load at Metamod Load, ahead of the game's network-message
-    /// registration). Their subscribers wait in `USERMSG_MUX` under the requested name until
+    /// `SUB_PENDING`: the subscription ran before the server finished starting, ahead of the
+    /// game's network-message registration). Their subscribers wait in `USERMSG_MUX` under the requested name until
     /// `retry_pending` — driven by the shim once the server has started — resolves the canonical
     /// name and moves them onto it.
     static USERMSG_PENDING: std::cell::RefCell<std::collections::HashSet<String>>
@@ -200,6 +200,38 @@ fn s2_usermsg_read_string(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
     }));
 }
 
+/// Read the complete repeated-string JSON payload using the shim's size-query contract.
+fn s2_usermsg_read_strings(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let path = args.get(0).to_rust_string_lossy(scope);
+        let Ok(path) = std::ffi::CString::new(path) else { return };
+        let Some(read) = engine_ops().and_then(|o| o.usermsg_hook_read_strings) else { return };
+        let length = read(path.as_ptr(), std::ptr::null_mut(), 0);
+        if length < 0 || length == c_int::MAX { return; }
+        let mut buf = vec![0u8; length as usize + 1];
+        if read(path.as_ptr(), buf.as_mut_ptr().cast(), length + 1) != length { return; }
+        let Ok(encoded) = std::str::from_utf8(&buf[..length as usize]) else { return };
+        if let Some(text) = v8::String::new(scope, encoded) {
+            if let Some(value) = v8::json::parse(scope, text) { rv.set(value); }
+        }
+    }));
+}
+
+fn s2_usermsg_set_int(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        if !args.get(1).is_number() { return; }
+        let Some(value) = args.get(1).number_value(scope) else { return };
+        if !value.is_finite() || value.fract() != 0.0 || value < i32::MIN as f64 || value > u32::MAX as f64 { return; }
+        let path = args.get(0).to_rust_string_lossy(scope);
+        let Ok(path) = std::ffi::CString::new(path) else { return };
+        if let Some(write) = engine_ops().and_then(|o| o.usermsg_hook_set_int) {
+            rv.set_bool(write(path.as_ptr(), value as i64) == 1);
+        }
+    }));
+}
+
 /// Native `__s2_usermsg_has_field(path) -> i32` (1 present / 0 absent-or-invalid / -1 no current
 /// message). Over `usermsg_hook_has_field`. Degrades to -1 with no op.
 fn s2_usermsg_has_field(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
@@ -260,6 +292,8 @@ pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_usermsg_read_int", s2_usermsg_read_int);
     set_native(scope, global_obj, "__s2_usermsg_read_float", s2_usermsg_read_float);
     set_native(scope, global_obj, "__s2_usermsg_read_string", s2_usermsg_read_string);
+    set_native(scope, global_obj, "__s2_usermsg_read_strings", s2_usermsg_read_strings);
+    set_native(scope, global_obj, "__s2_usermsg_set_int", s2_usermsg_set_int);
     set_native(scope, global_obj, "__s2_usermsg_has_field", s2_usermsg_has_field);
     set_native(scope, global_obj, "__s2_usermsg_recipients", s2_usermsg_recipients);
     set_native(scope, global_obj, "__s2_usermsg_debug", s2_usermsg_debug);
@@ -401,6 +435,7 @@ mod tests {
         static LATE_REGISTERED: std::cell::Cell<bool> = std::cell::Cell::new(false);
         static USERMSG_SUB_CAPTURE:   std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
         static USERMSG_UNSUB_CAPTURE: std::cell::RefCell<Vec<i32>>    = std::cell::RefCell::new(Vec::new());
+        static USERMSG_VALUE: std::cell::Cell<i64> = std::cell::Cell::new(9);
     }
     /// Mock resolver: canonicalizes any name containing "FireBullets" -> "TE_FireBullets_Canonical" id 452
     /// (partial-match shape); "SubFail" (and anything else) -> -1 (degraded/unknown). Records every sub call.
@@ -427,7 +462,7 @@ mod tests {
     }
     extern "C" fn mock_usermsg_read_int(path: *const c_char, out: *mut i64) -> c_int {
         let p = unsafe { std::ffi::CStr::from_ptr(path) }.to_string_lossy().to_string();
-        let v = match p.as_str() { "item_def_index" => 9, "player" => 6390016, "origin.x" => 0, _ => return 0 };
+        let v = match p.as_str() { "item_def_index" => USERMSG_VALUE.with(|v| v.get()), "player" => 6390016, "origin.x" => 0, _ => return 0 };
         unsafe { *out = v; } 1
     }
     extern "C" fn mock_usermsg_read_float(path: *const c_char, out: *mut f64) -> c_int {
@@ -435,6 +470,26 @@ mod tests {
         if p == "origin.x" { unsafe { *out = 128.5; } 1 } else { 0 }
     }
     extern "C" fn mock_usermsg_recipients(out: *mut u64) -> c_int { unsafe { *out = 0b1010; } 1 }
+    extern "C" fn mock_usermsg_read_strings(path: *const c_char, out: *mut c_char, cap: c_int) -> c_int {
+        let path = unsafe { std::ffi::CStr::from_ptr(path) }.to_str().unwrap();
+        let value = match path {
+            "params" => serde_json::json!(["#Notification", "🧹", "x".repeat(5000)]).to_string(),
+            "empty" => "[]".to_string(),
+            _ => return -1,
+        };
+        if !out.is_null() {
+            if cap as usize <= value.len() { return -1; }
+            unsafe {
+                std::ptr::copy_nonoverlapping(value.as_ptr(), out.cast(), value.len());
+                *out.add(value.len()) = 0;
+            }
+        }
+        value.len() as c_int
+    }
+    extern "C" fn mock_usermsg_set_int(path: *const c_char, value: i64) -> c_int {
+        if unsafe { std::ffi::CStr::from_ptr(path) }.to_bytes() != b"item_def_index" { return 0; }
+        USERMSG_VALUE.with(|v| v.set(value)); 1
+    }
 
     fn usermsg_test_ops() -> S2EngineOps {
         S2EngineOps {
@@ -443,8 +498,47 @@ mod tests {
             usermsg_hook_read_int:   Some(mock_usermsg_read_int),
             usermsg_hook_read_float: Some(mock_usermsg_read_float),
             usermsg_hook_recipients: Some(mock_usermsg_recipients),
+            usermsg_hook_read_strings: Some(mock_usermsg_read_strings),
+            usermsg_hook_set_int: Some(mock_usermsg_set_int),
             ..mock_event_ops()
         }
+    }
+
+    #[test]
+    fn usermsg_reads_strings_and_edits_shared_message_only_during_callback() {
+        USERMSG_VALUE.with(|v| v.set(9));
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(usermsg_test_ops()));
+        create_plugin_context("fields");
+        eval_in_context("fields", r#"
+            var previous;
+            __s2pkg_usermessages.UserMessages.onPre("FireBullets", function (m) {
+                globalThis.__old = previous ? [previous.readStrings('params'), previous.setInt('item_def_index', 1)] : [];
+                var values = m.readStrings('params');
+                globalThis.__fields = JSON.stringify([
+                    values[0], values[1], values[2].length, m.readStrings('empty'), m.readStrings('missing'),
+                    m.setInt('item_def_index', 4294967295), m.readInt('item_def_index'),
+                    ...[0.5, NaN, Infinity, '4', -2147483649, 4294967296].map(v => m.setInt('item_def_index', v)),
+                    m.setInt('missing', 1)
+                ]);
+                previous = m;
+                return 1;
+            });
+            __s2pkg_usermessages.UserMessages.onPre("FireBullets", function (m) {
+                globalThis.__later = JSON.stringify([previous.setInt('item_def_index', 0), m.readInt('item_def_index')]);
+            });
+        "#).unwrap();
+        assert_eq!(dispatch("TE_FireBullets_Canonical", 452), 1);
+        assert_eq!(read_global_string("fields", "__fields"),
+            r##"["#Notification","🧹",5000,[],null,true,4294967295,false,false,false,false,false,false,false]"##);
+        assert_eq!(read_global_string("fields", "__later"), "[false,4294967295]");
+        assert_eq!(dispatch("TE_FireBullets_Canonical", 452), 1);
+        assert_eq!(eval_in_context_string("fields", "JSON.stringify(__old)"), "[null,false]");
+        assert_eq!(eval_in_context_string("fields", "JSON.stringify([previous.readStrings('params'),previous.setInt('item_def_index',0)])"), "[null,false]");
+        set_engine_ops(None);
+        assert_eq!(eval_in_context_string("fields", "JSON.stringify([__s2_usermsg_read_strings('params'),__s2_usermsg_set_int('item_def_index',0)])"), "[null,false]");
+        shutdown();
+        USERMSG_VALUE.with(|v| v.set(9));
     }
 
     /// onPre resolves the name through usermsg_hook_sub (canonicalized), and a dispatched message

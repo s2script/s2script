@@ -1,5 +1,149 @@
 # @s2script/cs2
 
+## 0.23.1
+
+### Patch Changes
+
+- Updated dependencies [b0dcb9d]
+  - @s2script/sdk@0.35.0
+
+## 0.23.0
+
+### Minor Changes
+
+- 6d95d6c: `player.actionTrackingServices` exposes the controller's action-tracking services: this round's
+  kill counters (`numRoundKills` / `numRoundKillsHeadshots`, the icons under each avatar in the top
+  bar) are writable, with `notifyChanged()` to re-network them, and `totalRoundDamageDealt` is
+  readable. Gamemodes that hide who killed whom (TTT) need the round-kill counter to stop the top bar
+  giving it away.
+
+### Patch Changes
+
+- Updated dependencies [5d2a178]
+  - @s2script/sdk@0.34.0
+
+## 0.22.0
+
+### Minor Changes
+
+- 653bd15: Center-screen text helpers in `@s2script/cs2`: `CenterText.to/toAll` (SourceMod's `PrintCenterText`),
+  `AlertText.to/toAll` (CS2's alert line) and `CenterHtml.to/toAll/clear`, the HTML center panel. The
+  package re-sends `CenterHtml` every frame until its duration runs out, so plugins no longer hand-roll
+  a `show_survival_respawn_status` frame loop.
+- 9495c61: `chat.onCanHear` in `@s2script/cs2`: decide whether one player sees another's chat message. It hooks
+  `CCSGameRules::PlayerCanHearChat`, which the engine asks once per recipient. A handler writes `canHear`
+  and returns `Handled` to override the engine's rule. Any `false` vote wins, and `Continue` leaves the
+  decision to the engine. This is the hook dead-chat and team-chat rules need. Before it, plugins could
+  only drop a whole message and re-send it.
+- 834f0c8: `pawn.dropActiveWeapon()` now drops the deployed weapon as a world pickup instead of always
+  returning `false`, and the new `pawn.dropWeapon(weapon)` drops one held weapon (SourceMod's
+  `CS_DropWeapon`). Both go through a self-resolved `CCSPlayer_WeaponServices::DropWeapon` binding.
+- 493597b: Set econ attributes on weapons. `weapon.setAttribute(name, value)` sets or adds an attribute by its
+  definition name ("set item texture prefab", "set item texture wear", "kill eater") on the item's
+  networked dynamic attribute list, through `CAttributeList::SetOrAddAttributeValueByName`, the same
+  function ModSharp and Swiftly call.
+- 911f35b: `pawn.eyePosition` in `@s2script/cs2`: where the player's camera sits, the origin plus the networked
+  view offset (SourceMod's `GetClientEyePosition`). It follows crouching. `pawn.aimTrace` now starts
+  from it instead of a fixed 64 units above the origin.
+- 2bea944: Spawn live grenades. `Grenades.emit(kind, { origin, velocity?, angles?, angularVelocity?, owner?, team? })` in
+  `@s2script/cs2` throws an HE grenade, flashbang, smoke grenade, molotov or decoy and returns the projectile.
+- 6e2cc94: `Teams.onJoinTeam(handler)` in `@s2script/cs2` decides a player's team request (jointeam and the team
+  menu, CCSPlayerController::HandleCommandJoinTeam). Return `HookResult.Handled` or `Stop` to refuse it.
+- c88db3e: List the maps in a map group. `MapGroups.maps(name)` in `@s2script/cs2` returns the maps of a
+  gamemodes map group (`mg_active`, `workshop`, …) as `string[]`, or null for an unknown group, like
+  ModSharp's GetMapGroupMapList. Map-vote and nominations plugins can offer the server's own map
+  group instead of a hand-kept list.
+- fd05adb: Movement hooks. `movement.onProcessMove(handler)` and `movement.onProcessMovePost(handler)` in `@s2script/cs2`
+  run on every player's movement tick (CCSPlayer_MovementServices::ProcessMove). The view has the player,
+  view angles, forward and side input, origin and velocity; assigning `velocity` before the move changes
+  how the engine moves the player that tick.
+- 64ca50f: `Particles.create(effect, origin, opts)` in `@s2script/cs2`: place a particle effect as an
+  info_particle_system, optionally shown only to chosen players (`visibleTo`, enforced through
+  `@s2script/sdk/transmit`), parented to an entity, or removed after a `lifetime`. The handle has
+  `start`, `stop`, `setVisibleTo` and `remove`.
+- a4e9bfd: Round restart hooks and intermission. `GameRules.onRoundRestart(handler)` and `GameRules.onRoundRestartPost(handler)`
+  run at the start of every round (CCSGameRules::RestartRound), before and after the engine resets it.
+  `GameRules.goToIntermission(abortedMatch?)` ends the match into the scoreboard and map vote.
+- 6159295: `weapon.data` in `@s2script/cs2`: a weapon's static VData (max clip, reserve max, price, kill award,
+  damage, cycle time, move speed, armor ratio, range, weapon type, gear slot, ...), the same data
+  CounterStrikeSharp exposes as `VData` and ModSharp as `GetWeaponData`. It is read-only and reads null on
+  a stale weapon. `Weapon.dataUnavailableReason` names why it is null when a CS2 update moves the
+  entity layout it is derived from.
+- 3a5fe82: `weapons` in `@s2script/cs2`: `weapons.onCanUse`, `weapons.onCanSwitchTo` and `weapons.onDrop` hook
+  `CCSPlayer_WeaponServices::CanUse`, `CanSwitch` and `DropWeapon`. The pickup and switch gates vote
+  `allowed` like `chat.onCanHear` (any `false` wins, `Continue` leaves it to the engine), and `Handled`
+  on a drop keeps the weapon in the player's hands. These are the hooks game modes need to restrict
+  loadouts, which before could only strip a weapon after the fact.
+- d92165d: Deal damage and heal. `entity.takeDamage(damage, { attacker, inflictor, ability, damageType, force, position })`
+  in `@s2script/sdk/entity`, and SourceMod's `SDKHooks_TakeDamage` in `@s2script/sdk/sdkhooks`, deal damage
+  through the game's own damage path, so `OnTakeDamage` hooks and the game's rules (god mode, friendly
+  fire, armor) still apply. `pawn.heal(amount, { max })` in `@s2script/cs2` adds health up to the pawn's max
+  health, or past it to `max`.
+
+### Patch Changes
+
+- Updated dependencies [d4f4dda]
+- Updated dependencies [8c038ee]
+- Updated dependencies [f4408de]
+- Updated dependencies [83dca0c]
+- Updated dependencies [49e2c12]
+- Updated dependencies [dd1d376]
+- Updated dependencies [0cd1991]
+- Updated dependencies [ae6c9ed]
+- Updated dependencies [c2acf2b]
+- Updated dependencies [d92165d]
+- Updated dependencies [9e982ab]
+  - @s2script/sdk@0.33.0
+
+## 0.21.0
+
+### Minor Changes
+
+- 7adfe9a: Timer-grade engine surface for movement plugins (surf/bhop timers, replay recorders):
+
+  - `@s2script/sdk/files`: sandboxed per-plugin file IO (`read`/`readText`/`write`/`remove`/`list`)
+    that runs on the async runtime's worker threads, with optional off-thread gzip and atomic
+    replacing writes. The game thread only copies the payload.
+  - `Server.tickCount` and `Server.tickInterval`: the integer simulation tick and its length,
+    derived from the engine clock.
+  - `EntityRef.gather(plan, out)` + `GatherKind`: one native call fills a preallocated
+    `Float64Array` with any set of fields and pointer-chained fields, for per-tick hot paths.
+  - `Pawn.readKinematics(out)` (`@s2script/cs2`): origin, eye angles, velocity, flags, move type
+    duck amount and buttons in one allocation-free call.
+  - `Player.observerTarget` / `Player.observerMode` (`@s2script/cs2`): who a spectator is watching,
+    for spectator-aware HUDs.
+  - `sceneNodeOf(ref)` (`@s2script/cs2`): the world transform of any entity (e.g. a teleport
+    destination's rotation) through the generated `SceneNode` wrapper.
+
+### Patch Changes
+
+- Updated dependencies [7adfe9a]
+  - @s2script/sdk@0.32.0
+
+## 0.20.0
+
+### Minor Changes
+
+- 26e2c41: Add `Ptr` to `@s2script/sdk/unsafe`: a branded raw address with typed reads and writes, pointer-field
+  `deref`, and `Ptr.from(entity)`. Gamedata calls accept `ptr` arguments and a `ptr` return.
+  `@s2script/cs2` adds `structView(className)`, which applies a schema class's accessors to a `Ptr`;
+  generated views now share one prototype per class, so their fields are inherited rather than own
+  properties.
+- b9ac706: `EntityRef` and `Ptr` gain `readVector`, `readQAngle`, `readVectorChain` and `readQAngleChain`. The
+  generated schema and nav accessors are now built once, in the host's shared framework realm, and
+  used by every plugin; they read vectors through these methods so each plugin still gets its own
+  `Vector`. Objects those modules create are frozen and inherit from the framework realm, so
+  `view instanceof Object` is `false` in plugin code.
+
+### Patch Changes
+
+- Updated dependencies [ccf33b2]
+- Updated dependencies [08c95e0]
+- Updated dependencies [26e2c41]
+- Updated dependencies [6516bfb]
+- Updated dependencies [b9ac706]
+  - @s2script/sdk@0.31.0
+
 ## 0.19.5
 
 ### Patch Changes

@@ -67,7 +67,18 @@
   var callSetPawn          = engineCall("setPawn");
   var callGiveNamedItem    = engineCall("giveNamedItem");
   var callRemovePlayerItem = engineCall("removePlayerItem");
+  var callDropWeapon       = engineCall("dropWeapon");
   var callGetPlayerMaxSpeed = engineCall("getPlayerMaxSpeed");
+  var callGoToIntermission = engineCall("goToIntermission");
+  var grenadeCalls = {
+    hegrenade: [engineCall("emitHEGrenade"), 44],
+    flashbang: [engineCall("emitFlashbang"), 43],
+    smokegrenade: [engineCall("emitSmokeGrenade"), 45],
+    molotov: [engineCall("emitMolotov"), 46],
+    decoy: [engineCall("emitDecoy"), 47],
+  };
+  var callSetItemAttribute = engineCall("setItemAttribute");
+  var callGetMapGroupMapList = engineCall("getMapGroupMapList");
 
   // Internal namespace, same idiom as __s2pkg_cs2_schema / __s2pkg_cs2_nav: NOT part of the
   // @s2script/cs2 public surface. `status` is here so an operator can ask a live server WHY a game
@@ -78,6 +89,7 @@
     // weapon.js is concatenated BEFORE this file, so it cannot capture a callable at evaluation
     // time. It reads this one at CALL time instead, which is why the descriptor is published here.
     removePlayerItem: callRemovePlayerItem,
+    setItemAttribute: callSetItemAttribute,
   };
 
   function warn(msg) { if (globalThis.console) console.log("[s2script] " + msg); }
@@ -98,18 +110,35 @@
   function refIdentity(value) { return value ? { index: Number(value.index), id: Number(value.id) } : null; }
   function refPlan(names, normalize) { names.split(" ").forEach(function (name) { playerRefArgs[name] = normalize; }); }
   refPlan("isValid identityFlags remove activateCollision", function () { return []; });
-  refPlan("readInt32 readFloat32 readBool readInt8 readInt16 readUInt8 readUInt16 readUInt32 readUInt64 readInt64 readFloat64 readHandle readString readFloats writeInt32 writeFloat32 writeInt8 writeInt16 writeUInt8 writeUInt16 writeUInt32 notifyStateChanged clearIdentityFlags setGravityScale setModelScale", refNumbers);
+  refPlan("readInt32 readFloat32 readBool readInt8 readInt16 readUInt8 readUInt16 readUInt32 readUInt64 readInt64 readFloat64 readHandle readString readFloats readVector readQAngle writeInt32 writeFloat32 writeInt8 writeInt16 writeUInt8 writeUInt16 writeUInt32 notifyStateChanged clearIdentityFlags setGravityScale setModelScale", refNumbers);
   refPlan("writeBool", function (a) { return [Number(a[0]), !!a[1]]; });
   refPlan("writeString", function (a) { return [Number(a[0]), Number(a[1]), String(a[2])]; });
-  refPlan("readInt32Via readInt8Via readInt16Via readUInt8Via readUInt16Via readUInt32Via readFloat32Via readBoolVia readUInt64Via readInt64Via readHandleVia", function (a) { return [refPath(a[0]), Number(a[1])]; });
+  refPlan("readInt32Via readInt8Via readInt16Via readUInt8Via readUInt16Via readUInt32Via readFloat32Via readBoolVia readUInt64Via readInt64Via readHandleVia readVectorChain readQAngleChain", function (a) { return [refPath(a[0]), Number(a[1])]; });
   refPlan("writeInt32Via writeFloat32Via readFloatsChain", function (a) { return [refPath(a[0]), Number(a[1]), Number(a[2])]; });
   refPlan("writeBoolVia", function (a) { return [refPath(a[0]), Number(a[1]), !!a[2]]; });
   refPlan("readHandleVector", function (a) { return [refPath(a[0]), Number(a[1]), a[2] == null ? 64 : Number(a[2])]; });
-  refPlan("setModel stopSound", function (a) { return [String(a[0])]; });
+  // gather writes INTO `out`, so the caller's typed arrays pass through by identity (a typed array
+  // has no user getters to run); anything else becomes an empty array the native rejects (-2).
+  refPlan("gather", function (a) {
+    return [a[0] instanceof Int32Array ? a[0] : new Int32Array(0),
+      a[1] instanceof Float64Array ? a[1] : new Float64Array(0), a[2] == null ? 0 : Number(a[2])];
+  });
+  refPlan("setModel stopSound lookupBone lookupAttachment", function (a) { return [String(a[0])]; });
+  refPlan("getBoneTransform getAttachment", refNumbers);
   refPlan("setBodyGroupByName", function (a) { return [String(a[0]), Number(a[1])]; });
   refPlan("teleport", function (a) { return [refVector(a[0]), refVector(a[1]), refVector(a[2])]; });
   refPlan("applyAbsVelocityImpulse", function (a) { return [refVector(a[0])]; });
   refPlan("acceptInput", function (a) { return [String(a[0]), a[1] == null ? "" : String(a[1]), refIdentity(a[2]), refIdentity(a[3]), Number(a[4] || 0)]; });
+  refPlan("takeDamage", function (a) {
+    var o = a[1];
+    if (o == null || typeof o !== "object") return [Number(a[0])];
+    return [Number(a[0]), {
+      attacker: refIdentity(o.attacker && o.attacker.ref ? o.attacker.ref : o.attacker),
+      inflictor: refIdentity(o.inflictor && o.inflictor.ref ? o.inflictor.ref : o.inflictor),
+      ability: refIdentity(o.ability && o.ability.ref ? o.ability.ref : o.ability),
+      damageType: Number(o.damageType || 0), force: refVector(o.force), position: refVector(o.position),
+    }];
+  });
   refPlan("spawn", function (a) {
     var kv = a[0];
     if (kv == null || typeof kv !== "object") return [kv];
@@ -120,6 +149,9 @@
   function staleRefResult(method) {
     if (method === "notifyStateChanged") return undefined;
     if (method === "readHandleVector") return [];
+    if (method === "gather" || method === "lookupBone") return -1;
+    if (method === "lookupAttachment") return 0;
+    if (method === "getBoneTransform" || method === "getAttachment") return null;
     return method.indexOf("read") === 0 || method === "identityFlags" || method === "clearIdentityFlags" ? null : false;
   }
   var playerRefClients = new WeakMap();
@@ -160,10 +192,55 @@
     get: function () { return this.ref.index - 1; }, enumerable: true, configurable: true,
   });
 
+  // player.observerTarget / observerMode — who a dead or spectating player is watching, through the
+  // controller's m_hObserverPawn -> m_pObserverServices -> m_hObserverTarget (books-gated adopt at
+  // both handle hops). null/-1 for a living player (no observer pawn) or when nothing resolves.
+  function observerPawnRef(player) {
+    var off = __s2_schema_offset("CCSPlayerController", "m_hObserverPawn");
+    return off < 0 ? null : player.ref.readHandle(off);
+  }
+  Object.defineProperty(Player.prototype, "observerTarget", {
+    get: function () {
+      var obs = observerPawnRef(this);
+      var svc = __s2_schema_offset("CBasePlayerPawn", "m_pObserverServices");
+      var tgt = __s2_schema_offset("CPlayer_ObserverServices", "m_hObserverTarget");
+      if (!obs || svc < 0 || tgt < 0) return null;
+      var t = obs.readHandleVia([svc], tgt);
+      return t ? new Pawn(t) : null;
+    }, enumerable: true, configurable: true,
+  });
+  Object.defineProperty(Player.prototype, "observerMode", {
+    get: function () {
+      var obs = observerPawnRef(this);
+      var svc = __s2_schema_offset("CBasePlayerPawn", "m_pObserverServices");
+      var mode = __s2_schema_offset("CPlayer_ObserverServices", "m_iObserverMode");
+      if (!obs || svc < 0 || mode < 0) return -1;
+      var v = obs.readUInt8Via([svc], mode);
+      return v === null ? -1 : v;
+    }, enumerable: true, configurable: true,
+  });
+
   // player.pawn -> the typed body via m_hPlayerPawn (shadows the raw generated `pawn` = m_hPawn).
   Object.defineProperty(Player.prototype, "pawn", {
     get: function () {
       var off = __s2_schema_offset("CCSPlayerController", "m_hPlayerPawn");
+      if (off < 0) return null;
+      var h = this.ref.readHandle(off);
+      return h ? new Pawn(h) : null;
+    }, enumerable: true, configurable: true,
+  });
+
+  // player.isControllingBot / controlledBotPawn — Valve's CSPlayerController.IsControllingBot and
+  // GetControlledBotPawn (Nov 5 2026 map scripting). Both bindings read schema fields only: the
+  // controller's m_bControllingBot, and its current pawn m_hPawn, which is the bot's body for as long
+  // as the takeover lasts (m_hPlayerPawn, and so player.pawn, stays the player's own pawn).
+  Object.defineProperty(Player.prototype, "isControllingBot", {
+    get: function () { return this.controllingBot === true; }, enumerable: true, configurable: true,
+  });
+  Object.defineProperty(Player.prototype, "controlledBotPawn", {
+    get: function () {
+      if (this.controllingBot !== true) return null;
+      var off = __s2_schema_offset("CBasePlayerController", "m_hPawn");
       if (off < 0) return null;
       var h = this.ref.readHandle(off);
       return h ? new Pawn(h) : null;
@@ -371,6 +448,23 @@
     callCommitSuicide(this, /*bExplode=*/false, /*bForce=*/true);
   };
 
+  // pawn.heal(amount, opts) — add `amount` health, capped at m_iMaxHealth (or opts.max for
+  // overheal). Never lowers health that is already above the cap, and never revives: a dead or
+  // stale pawn returns null. Returns the new health. Damage goes the other way through the core's
+  // EntityRef.takeDamage, which runs the game's damage rules; healing has no such rules to run.
+  Pawn.prototype.heal = function (amount, opts) {
+    if (typeof amount !== "number" || !isFinite(amount) || amount < 0)
+      throw new TypeError("s2script: pawn.heal() requires a finite amount >= 0");
+    var health = this.health;
+    if (health === null || health <= 0) return null;
+    var cap = opts && opts.max !== undefined ? opts.max : this.maxHealth;
+    if (typeof cap !== "number" || !isFinite(cap)) return null;
+    var next = Math.min(Math.floor(cap), health + Math.floor(amount));
+    if (next <= health) return health;
+    this.health = next;
+    return this.health;
+  };
+
   // pawn.maxSpeed — the pawn's CURRENT movement speed cap, via CCSPlayerPawn::GetPlayerMaxSpeed (the
   // `getPlayerMaxSpeed` descriptor; the receiver is serial-gated, so a stale pawn reads null).
   //
@@ -394,6 +488,48 @@
     var ok = this.ref.writeFloat32(off, +x) && this.ref.writeFloat32(off + 4, +y) && this.ref.writeFloat32(off + 8, +z);
     if (ok) this.ref.notifyStateChanged(off);
     return !!ok;
+  };
+
+  // pawn.readKinematics(out, i) — the per-tick movement snapshot, allocation-free: ONE gather native
+  // call fills 13 slots of a caller-owned Float64Array (origin xyz, eye angles pitch/yaw/roll, abs
+  // velocity xyz, m_fFlags, m_MoveType, duck amount, held buttons low 32 bits). Built for run timers / replay recorders that
+  // sample every player every tick, where the generated getters would allocate a Vector per field.
+  // The plan is compiled once from live schema offsets; any unresolved offset disables it (false).
+  var KINEMATICS_SLOTS = 13;
+  var kinematicsPlan = null;   // null = not built, or an offset did not resolve yet
+  var kinematicsMisses = 0;    // a failed build retries every 64th call (schema may warm up later)
+  function buildKinematicsPlan() {
+    var GK = globalThis.__s2pkg_entity && globalThis.__s2pkg_entity.GatherKind;
+    var body = __s2_schema_offset("CBaseEntity", "m_CBodyComponent");
+    var node = __s2_schema_offset("CBodyComponent", "m_pSceneNode");
+    var abs = __s2_schema_offset("CGameSceneNode", "m_vecAbsOrigin");
+    var eye = __s2_schema_offset("CCSPlayerPawn", "m_angEyeAngles");
+    var vel = __s2_schema_offset("CBaseEntity", "m_vecAbsVelocity");
+    var flg = __s2_schema_offset("CBaseEntity", "m_fFlags");
+    var mt = __s2_schema_offset("CBaseEntity", "m_MoveType");
+    var ms = __s2_schema_offset("CBasePlayerPawn", "m_pMovementServices");
+    var duck = __s2_schema_offset("CCSPlayer_MovementServices", "m_flDuckAmount");
+    var btn = __s2_schema_offset("CPlayer_MovementServices", "m_nButtons");
+    var btnState = __s2_schema_offset("CInButtonState", "m_pButtonStates");
+    if (!GK || body < 0 || node < 0 || abs < 0 || eye < 0 || vel < 0 || flg < 0 || mt < 0 || ms < 0 || duck < 0 || btn < 0 || btnState < 0) return null;
+    return new Int32Array([
+      2, body, node, abs, GK.Float32, 3,
+      0, eye, GK.Float32, 3,
+      0, vel, GK.Float32, 3,
+      0, flg, GK.UInt32, 1,
+      0, mt, GK.UInt8, 1,
+      1, ms, duck, GK.Float32, 1,
+      1, ms, btn + btnState, GK.UInt32, 1,   // m_pButtonStates[0] low word == pawn.buttons
+    ]);
+  }
+  Pawn.KINEMATICS_SLOTS = KINEMATICS_SLOTS;
+  Pawn.prototype.readKinematics = function (out, outIndex) {
+    if (kinematicsPlan === null) {
+      if ((kinematicsMisses++ & 63) !== 0) return false;
+      kinematicsPlan = buildKinematicsPlan();
+      if (kinematicsPlan === null) return false;
+    }
+    return this.ref.gather(kinematicsPlan, out, outIndex === undefined ? 0 : outIndex) === KINEMATICS_SLOTS;
   };
 
   // --- Item / weapon manipulation slice (Task 4): pawn.giveNamedItem/weapons/stripWeapons/
@@ -497,14 +633,26 @@
   };
   Pawn.prototype.disarm = function () { return this.stripWeapons(); };   // destroy-all alias
 
-  // pawn.dropActiveWeapon() — still DEFERRED (always false). A true DROP spawns the weapon as a world
-  // pickup, which CANNOT be composed from removeWeapon/remove (those DESTROY the weapon); it needs the
-  // real CCSPlayer_ItemServices::DropActivePlayerWeapon function. Task 2's live disasm spike found the
-  // borrowed vtable index 24 resolves, on this pinned libserver.so, to a GiveNamedItem-overload THUNK
-  // (not DropActivePlayerWeapon) — calling through would pass an entity ptr as GiveNamedItem's
-  // `const char* name` (an unsafe read, violating degrade-never-crash). Stays UNWIRED until the correct
-  // function is self-resolved by SIGNATURE (a follow-up RE spike — NOT a borrowed vtable index).
-  Pawn.prototype.dropActiveWeapon = function () { return false; };
+  // pawn.dropWeapon(weapon) — drop ONE held weapon as a world pickup (SourceMod's CS_DropWeapon),
+  // over the `dropWeapon` descriptor. Unlike removeWeapon, the weapon entity survives. The weapon
+  // must be held by THIS pawn: the engine is not asked to drop someone else's weapon. false if the
+  // descriptor is degraded, either ref is stale, or the weapon is not this pawn's.
+  Pawn.prototype.dropWeapon = function (weapon) {
+    if (!callDropWeapon || !weapon || !this.ref.isValid() || !weapon.ref.isValid()) return false;
+    var owner = weapon.owner;
+    if (!owner || owner.ref.index !== this.ref.index || owner.ref.id !== this.ref.id) return false;
+    // Owner resolution can run plugin code; recheck both refs last (a stale entity argument
+    // marshals to nullptr, which the engine treats as a no-op, but say false rather than pretend).
+    if (!this.ref.isValid() || !weapon.ref.isValid()) return false;
+    return callDropWeapon(this, weapon.ref, 0, 0) === undefined;
+  };
+
+  // pawn.dropActiveWeapon() — drop the deployed weapon as a world pickup. false when there is no
+  // active weapon or dropWeapon would return false.
+  Pawn.prototype.dropActiveWeapon = function () {
+    var w = this.activeWeapon;
+    return w ? this.dropWeapon(w) : false;
+  };
 
   // --- Player fire control: the effective "can't fire" gate is m_flNextAttack (a GameTime_t, seconds) on
   // the CCSPlayer_WeaponServices SUB-OBJECT, reached via the m_pWeaponServices pointer. Written through the
@@ -584,18 +732,52 @@
     configurable: true
   });
 
+  // pawn.eyePosition — where the camera sits: the body world origin + m_vecViewOffset (SourceMod's
+  // GetClientEyePosition; Deadworks and Swiftly compute it the same way). m_vecViewOffset is a
+  // CNetworkViewOffsetVector of three CNetworkedQuantizedFloat members whose float value is their
+  // first 4 bytes. That type is opaque to the schema, so its 8-byte stride is checked from the
+  // reflected member offsets (m_vecY - m_vecX == m_vecZ - m_vecY == 8) and a mismatch reads null
+  // rather than a guessed layout. It tracks crouching (~64u standing, ~46u ducked).
+  var viewOffsetLayout = null;   // [viewOffset, x, y, z] once resolved; false when the layout check fails
+  function eyeOffsets() {
+    if (viewOffsetLayout !== null) return viewOffsetLayout;
+    var vo = __s2_schema_offset("CBaseModelEntity", "m_vecViewOffset");
+    var x = __s2_schema_offset("CNetworkViewOffsetVector", "m_vecX");
+    var y = __s2_schema_offset("CNetworkViewOffsetVector", "m_vecY");
+    var z = __s2_schema_offset("CNetworkViewOffsetVector", "m_vecZ");
+    if (vo < 0 || x < 0 || y < 0 || z < 0) return false;            // not cached: retried next read
+    viewOffsetLayout = (y - x === 8 && z - y === 8) ? [vo, x, y, z] : false;
+    return viewOffsetLayout;
+  }
+  Object.defineProperty(Pawn.prototype, "eyePosition", {
+    get: function () {
+      var l = eyeOffsets();
+      var s = this.sceneNode; var o = s ? s.absOrigin : null;
+      if (!l || !o) return null;
+      var dx = this.ref.readFloat32(l[0] + l[1]);
+      var dy = this.ref.readFloat32(l[0] + l[2]);
+      var dz = this.ref.readFloat32(l[0] + l[3]);
+      if (dx === null || dy === null || dz === null) return null;
+      var Vector = __s2require("@s2script/sdk/math").Vector;
+      return new Vector(o.x + dx, o.y + dy, o.z + dz);
+    },
+    configurable: true
+  });
+
   // pawn.aimTrace(opts?) — trace from the pawn's eyes along its view angles: "what is this player
   // looking at". The engine-generic ray-trace (CNavPhysicsInterface::TraceShape) lives in
-  // @s2script/trace; this composes the CS2 eye position + eyeAngles. Eye = the body world origin +
-  // the standing view-offset (~64u; m_vecViewOffset isn't a generated accessor, so a constant — a
-  // crouched eye (~46u) is close enough since the aim DIRECTION from eyeAngles dominates the trace).
+  // @s2script/trace; this composes the CS2 eye position + eyeAngles. The eye is `eyePosition`; on a
+  // build whose view-offset layout check fails it falls back to the origin + a standing 64u.
   // Ignores the pawn's own entity by default (don't self-hit). Returns a TraceHit, or null if the
   // body transform / eye angles are unreadable (stale ref). CS2 field names stay in this game layer.
   Pawn.prototype.aimTrace = function (opts) {
-    var s = this.sceneNode; var o = s ? s.absOrigin : null;
     var a = this.eyeAngles;
-    if (!o || !a) return null;
-    var eye = { x: o.x, y: o.y, z: o.z + 64 };   // Trace.ray reads .x/.y/.z (plain object is fine)
+    var eye = this.eyePosition;
+    if (!eye) {
+      var s = this.sceneNode; var o = s ? s.absOrigin : null;
+      eye = o ? { x: o.x, y: o.y, z: o.z + 64 } : null;   // Trace.ray reads .x/.y/.z
+    }
+    if (!eye || !a) return null;
     return globalThis.__s2pkg_trace.Trace.ray(eye, a, (opts && opts.distance) || 8192, {
       mask: opts && opts.mask,
       ignoreEntity: (opts && opts.ignoreEntity !== undefined) ? opts.ignoreEntity : this.ref
@@ -740,6 +922,56 @@
     }
   };
 
+  // --- Particles: an info_particle_system (CParticleSystem) placed in the world. The recipient filter
+  //     the engine's DispatchParticleEffect takes is the entity's transmit set here: visibleTo hands
+  //     the slots to @s2script/transmit, which hides the entity from everyone else every snapshot.
+  //     The effect must be precached (built-in effects are; a custom .vpcf goes in onPrecache).
+  //     Game-world-owned; a `lifetime` removal is a timer of the calling plugin.
+  function particleSlots(list) {
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var v = list[i];
+      var slot = (typeof v === "number") ? v : (v && typeof v.slot === "number" ? v.slot : -1);
+      if (slot >= 0 && slot < 64 && out.indexOf(slot) < 0) out.push(slot);
+    }
+    return out;
+  }
+  function particleVec(v, name) {
+    if (v && typeof v.x === "number") return [v.x, v.y, v.z];
+    if (Array.isArray(v) && v.length === 3) return [+v[0], +v[1], +v[2]];
+    throw new TypeError("Particles.create: " + name + " must be a Vector, {x,y,z} or [x,y,z]");
+  }
+  var Particles = {
+    create: function (effect, origin, opts) {
+      opts = opts || {};
+      if (typeof effect !== "string" || !effect) throw new TypeError("Particles.create: effect must be a non-empty string");
+      var o = particleVec(origin, "origin");
+      var a = opts.angles !== undefined ? particleVec(opts.angles, "angles") : null;
+      var kv = { effect_name: effect, start_active: opts.start === false ? 0 : 1 };
+      var extra = opts.keyvalues || {};
+      for (var k in extra) if (Object.prototype.hasOwnProperty.call(extra, k)) kv[k] = extra[k];
+      var ent = globalThis.__s2pkg_entity;
+      // Create, place, then spawn: a keyvalue spawn would start the effect at the world origin
+      // before a later teleport could move it. EKV has no vector setter, so teleport places it.
+      var ref = ent.createEntity("info_particle_system");
+      if (!ref) return null;
+      ref.teleport(o, a);
+      if (!ref.spawn(kv)) { ref.remove(); return null; }
+      if (opts.visibleTo !== undefined) globalThis.__s2pkg_transmit.Transmit.setVisibleTo(ref, particleSlots(opts.visibleTo));
+      if (opts.parent) ref.acceptInput("SetParent", "!activator", opts.parent);
+      if (typeof opts.lifetime === "number" && opts.lifetime > 0) {
+        globalThis.__s2pkg_timers.delay(opts.lifetime * 1000).then(function () { ref.remove(); });
+      }
+      return {
+        ref: ref,
+        start: function () { return ref.acceptInput("Start"); },
+        stop: function () { return ref.acceptInput("Stop"); },
+        setVisibleTo: function (list) { return globalThis.__s2pkg_transmit.Transmit.setVisibleTo(ref, particleSlots(list)); },
+        remove: function () { return ref.remove(); }
+      };
+    }
+  };
+
   // TriggerZone — a runtime trigger_multiple with a programmatic AABB (zones real-trigger backend).
   // create -> configure collision schema -> spawn -> teleport -> Enable/activateCollision -> setModel ->
   // Enable/activateCollision (the arbitrary-box recipe: the post-spawn setModel builds the physics
@@ -874,6 +1106,30 @@
     callTerminateRound(this, d, r, 0, 0);
     return true;
   };
+  // End the match into the scoreboard and map vote (CGameRules::GoToIntermission). The engine
+  // changes level on its own after mp_match_restart_delay.
+  GameRulesView.prototype.goToIntermission = function (abortedMatch) {
+    if (!callGoToIntermission) return false;
+    if (!grPath()) return false;
+    if (!this.ref.isValid()) return false;
+    callGoToIntermission(this, !!abortedMatch);
+    return true;
+  };
+  // GameRules.onRoundRestart / onRoundRestartPost — the start of every round on the trusted
+  // `roundRestart` engine function, delivered by the cs2.round-restart.v1 package adapter
+  // (js/adapters/round-restart.js). Load-window only, ledgered like `items`.
+  function roundRestartSubscriber(phase, api) {
+    return function (handler) {
+      if (!globalThis.__s2_load_ctx) throw new Error("s2script: " + api + " outside the load window");
+      if (typeof handler !== "function") throw new TypeError("s2script: " + api + " requires a handler function");
+      var gate = (globalThis.__s2pkg_cs2_adapters || {}).roundRestart;
+      if (!gate) {
+        console.log("[s2script] WARN: " + api + ": the round-restart adapter is not packaged, so this handler will not fire");
+        return;
+      }
+      gate.subscribe(phase, handler);
+    };
+  }
   var GameRules = (function () {
     // Cache the resolved cs_gamerules proxy (ModSharp/Swiftly cache the gamerules pointer likewise).
     // Serial-gated: on a map change the proxy dies -> isValid() false -> re-scan. Turns get() from an
@@ -893,7 +1149,13 @@
       terminateRound: function (reason, delay) {
         var v = this.get();
         return v ? v.terminateRound(reason, delay) : false;
-      }
+      },
+      goToIntermission: function (abortedMatch) {
+        var v = this.get();
+        return v ? v.goToIntermission(abortedMatch) : false;
+      },
+      onRoundRestart: roundRestartSubscriber("pre", "GameRules.onRoundRestart()"),
+      onRoundRestartPost: roundRestartSubscriber("post", "GameRules.onRoundRestartPost()")
     };
   })();
 
@@ -928,6 +1190,30 @@
     addScore: function (team, delta) {
       var cur = Teams.getScore(team); if (cur === null) return false;
       return Teams.setScore(team, cur + (delta | 0));
+    },
+    // Teams.onJoinTeam(handler) — a player's team request, on the trusted `joinTeam` engine
+    // function, delivered by the cs2.join-team.v1 package adapter (js/adapters/join-team.js).
+    // Load-window only, ledgered like `items`.
+    onJoinTeam: function (handler) {
+      var api = "Teams.onJoinTeam()";
+      if (!globalThis.__s2_load_ctx) throw new Error("s2script: " + api + " outside the load window");
+      if (typeof handler !== "function") throw new TypeError("s2script: " + api + " requires a handler function");
+      var gate = (globalThis.__s2pkg_cs2_adapters || {}).joinTeam;
+      if (!gate) {
+        console.log("[s2script] WARN: " + api + ": the join-team adapter is not packaged, so this handler will not fire");
+        return;
+      }
+      gate.subscribe(handler, function (ref) { return ref ? new Player(ref) : null; });
+    }
+  };
+
+  // Map groups — the gamemodes map groups ("mg_active", "workshop", …) a server's `mapgroup`
+  // command selects. One IGameTypes call; the engine owns the list, so it is copied out each time.
+  var MapGroups = {
+    maps: function (name) {
+      if (!callGetMapGroupMapList || typeof name !== "string" || !name) return null;
+      var list = callGetMapGroupMapList(name);
+      return Array.isArray(list) ? list : null;
     }
   };
 
@@ -997,6 +1283,82 @@
     }
   };
 
+  // --- Center-screen text: SourceMod PrintCenterText / PrintCenterTextAll, plus CS2's alert line and
+  // the HTML center panel. TextMsg `dest` values are CS2's HUD_PRINT* (Swiftly's MessageType uses the
+  // same numbers: Center 4, Alert 6). `param` is a repeated field; setString appends to it.
+  var HUD_PRINTCENTER = 4, HUD_PRINTALERT = 6;
+  function textMsg(dest, text) {
+    return _um("CUserMessageTextMsg").setInt("dest", dest).setString("param", String(text));
+  }
+  var CenterText = {
+    to: function (slot, text) { return textMsg(HUD_PRINTCENTER, text).send(slot); },
+    toAll: function (text) { return textMsg(HUD_PRINTCENTER, text).sendAll(); },
+  };
+  var AlertText = {
+    to: function (slot, text) { return textMsg(HUD_PRINTALERT, text).send(slot); },
+    toAll: function (text) { return textMsg(HUD_PRINTALERT, text).sendAll(); },
+  };
+
+  // CenterHtml — the `show_survival_respawn_status` panel, whose loc_token renders as HTML. The client
+  // paints it for one frame per event, so a frame handler re-fires it to each slot until its time is up
+  // (the same thing Swiftly's SendCenterHTML and the rockthevote tally do). The handler is subscribed
+  // only while some message is showing, in the context of the plugin that showed it, so the ledger
+  // tears it down at that plugin's unload. One message per slot per plugin: a later call replaces it.
+  // Recipients are connected clients, not Player.fromSlot (which needs a live pawn): dead, spectating
+  // and not-yet-spawned humans see the panel too, and a message survives a respawn.
+  var centerHtml = {};          // slot -> { html, until (ms) }
+  var centerHtmlCount = 0;
+  var centerHtmlSub = null;
+  function centerHtmlEvents() { return (__s2require("@s2script/sdk/events") || {}).Events; }
+  function centerHtmlClient(slot) {
+    var clients = globalThis.__s2pkg_clients && globalThis.__s2pkg_clients.Clients;
+    var c = clients ? clients.fromSlot(slot) : null;
+    return c && !c.isBot ? c : null;              // bots render nothing; skip the per-frame fire
+  }
+  function centerHtmlFrame() {
+    var ev = centerHtmlEvents();
+    var now = Date.now();
+    for (var k in centerHtml) {
+      var e = centerHtml[k];
+      var slot = Number(k);
+      var c = centerHtmlClient(slot);
+      if (now >= e.until || !c) { delete centerHtml[k]; centerHtmlCount--; continue; }
+      if (ev) ev.fireToClient(slot, "show_survival_respawn_status", { loc_token: e.html, duration: 1, userid: c.userId });
+    }
+    if (centerHtmlCount <= 0 && centerHtmlSub) { centerHtmlCount = 0; centerHtmlSub.dispose(); centerHtmlSub = null; }
+  }
+  function centerHtmlSet(slot, html, seconds) {
+    var secs = seconds === undefined ? 5 : Number(seconds);
+    if (!(secs > 0)) return CenterHtml.clear(slot);
+    if (!centerHtmlClient(slot)) return false;
+    if (!centerHtml[slot]) centerHtmlCount++;
+    centerHtml[slot] = { html: String(html), until: Date.now() + secs * 1000 };
+    if (!centerHtmlSub) {
+      var frame = globalThis.__s2pkg_frame && globalThis.__s2pkg_frame.OnGameFrame;
+      if (!frame) { delete centerHtml[slot]; centerHtmlCount--; return false; }
+      centerHtmlSub = frame.subscribe(centerHtmlFrame);
+    }
+    return true;
+  }
+  var CenterHtml = {
+    to: function (slot, html, seconds) { return centerHtmlSet(slot, html, seconds); },
+    toAll: function (html, seconds) {
+      var any = false;
+      var clients = globalThis.__s2pkg_clients && globalThis.__s2pkg_clients.Clients;
+      var all = clients ? clients.all() : [];
+      for (var i = 0; i < all.length; i++) {
+        if (all[i].isBot) continue;
+        if (centerHtmlSet(all[i].slot, html, seconds)) any = true;
+      }
+      return any;
+    },
+    clear: function (slot) {
+      if (!centerHtml[slot]) return false;
+      delete centerHtml[slot]; centerHtmlCount--;
+      return true;
+    },
+  };
+
   // A small curated set of known-good BUILT-IN CS2 soundevents (convenience + the sound-demo).
   // CS2 soundevent names live exclusively HERE (the game layer), never in core/src. The audible
   // verify is a human-client test (bots have no audio) — tune/extend these names at that gate.
@@ -1009,7 +1371,50 @@
 
   // Merge (not overwrite) — csitem.generated.js (and any other prelude concatenated
   // ahead of this IIFE) may have already populated globalThis.__s2pkg_cs2 (e.g. CsItem).
-  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Teams: Teams, RoundEndReason: RoundEndReason, WinPanelFinalEvent: WinPanelFinalEvent, Fade: Fade, Shake: Shake, HintText: HintText, TriggerZone: TriggerZone, Sounds: Sounds });
+  // sceneNodeOf(ref) — the world transform of ANY entity (every CBaseEntity has the
+  // m_CBodyComponent -> m_pSceneNode chain), reusing the generated SceneNode wrapper the pawn nav
+  // installs. Lets a plugin read e.g. an info_teleport_destination's absRotation without offsets.
+  // Grenades.emit(kind, opts) — spawn a live, already-thrown grenade projectile (Swiftly
+  // EmitGrenade). The item def index comes from the kind, never the caller. The owner must be a
+  // PAWN: the factories read it as a CBaseCombatCharacter, so a controller would be the wrong
+  // object; a Player is mapped to its pawn and anything else is refused.
+  function grenadeVector(value, fallback) {
+    if (value === undefined || value === null) return fallback ? { x: 0, y: 0, z: 0 } : null;
+    var c = Array.isArray(value) ? [+value[0], +value[1], +value[2]] : [+value.x, +value.y, +value.z];
+    for (var i = 0; i < 3; i++) if (!isFinite(c[i]) || Math.abs(c[i]) > 3.4028234663852886e38) return null;
+    return { x: c[0], y: c[1], z: c[2] };
+  }
+  var Grenades = {
+    emit: function (kind, opts) {
+      var entry = Object.prototype.hasOwnProperty.call(grenadeCalls, kind) ? grenadeCalls[kind] : null;
+      if (!entry) { warn("Grenades.emit: unknown grenade kind '" + kind + "'"); return null; }
+      if (!entry[0]) return null;
+      opts = opts || {};
+      var origin = grenadeVector(opts.origin, false);
+      var angles = grenadeVector(opts.angles, true);
+      var velocity = grenadeVector(opts.velocity, true);
+      var spin = grenadeVector(opts.angularVelocity, true);
+      if (!origin || !angles || !velocity || !spin) { warn("Grenades.emit: origin, angles and velocities must be three finite numbers"); return null; }
+      var owner = opts.owner === undefined ? null : opts.owner;
+      if (owner instanceof Player && !(owner = owner.pawn)) return null;   // no body to throw from
+      if (owner !== null && !(owner instanceof Pawn)) { warn("Grenades.emit: owner must be a Pawn, a Player or null"); return null; }
+      if (owner !== null && !owner.ref.isValid()) return null;
+      var ownerRef = owner ? owner.ref : null;
+      if (kind === "smokegrenade") {
+        var team = opts.team === undefined ? (owner ? owner.teamNum : 0) : opts.team;
+        return entry[0](origin, angles, velocity, spin, ownerRef, entry[1], (team | 0)) || null;
+      }
+      return entry[0](origin, angles, velocity, spin, ownerRef, entry[1]) || null;
+    },
+  };
+
+  var sceneNodeGetter = (Object.getOwnPropertyDescriptor(Pawn.prototype, "sceneNode") || {}).get;
+  function sceneNodeOf(ref) {
+    if (!ref || !sceneNodeGetter || !ref.isValid()) return null;
+    return sceneNodeGetter.call({ ref: ref });
+  }
+
+  globalThis.__s2pkg_cs2 = Object.assign({}, globalThis.__s2pkg_cs2, { Pawn: Pawn, sceneNodeOf: sceneNodeOf, Player: Player, Events: (__s2require("@s2script/sdk/events") || {}).Events, ChatColors: ChatColors, Activity: Activity, pickPlayer: pickPlayer, Beam: Beam, GameRules: GameRules, Teams: Teams, RoundEndReason: RoundEndReason, WinPanelFinalEvent: WinPanelFinalEvent, Fade: Fade, Shake: Shake, HintText: HintText, CenterText: CenterText, AlertText: AlertText, CenterHtml: CenterHtml, TriggerZone: TriggerZone, Sounds: Sounds, Grenades: Grenades, Particles: Particles, MapGroups: MapGroups });
 
   // The ctx namespaces this game package contributes (core's generic extension point in
   // prelude.js merges these into every plugin's ctx). Each factory gets the prelude's ledger
@@ -1061,6 +1466,65 @@
   globalThis.__s2pkg_cs2.items = Object.freeze({
     onCanAcquire: acquireSubscriber("pre", "items.onCanAcquire()"),
     onCanAcquirePost: acquireSubscriber("post", "items.onCanAcquirePost()"),
+  });
+
+  // import { chat } from "@s2script/cs2" — who can read whose chat, on the trusted
+  // `playerCanHearChat` engine function folded by the cs2.chat-visibility.v1 package adapter
+  // (js/adapters/chat-visibility.js). Same load-window and ledger contract as `items`.
+  var chatGate = globalThis.__s2pkg_cs2_adapters && globalThis.__s2pkg_cs2_adapters.chatVisibility;
+  function chatPlayer(ref) { return ref ? new Player(ref) : null; }
+  globalThis.__s2pkg_cs2.chat = Object.freeze({
+    onCanHear: function (handler) {
+      if (!globalThis.__s2_load_ctx) throw new Error("s2script: chat.onCanHear() outside the load window");
+      if (typeof handler !== "function") throw new TypeError("s2script: chat.onCanHear() requires a handler function");
+      if (!chatGate) {
+        console.log("[s2script] WARN: chat.onCanHear(): the chat-visibility adapter is not packaged, so this handler will not fire");
+        return;
+      }
+      chatGate.subscribe(handler, chatPlayer);
+    },
+  });
+
+  // import { weapons } from "@s2script/cs2" — weapon pickup, switch and drop gates on the trusted
+  // `weaponCanUse`, `weaponCanSwitch` and `weaponDrop` engine functions, folded by the
+  // cs2.weapon-can-use.v1 / cs2.weapon-can-switch.v1 / cs2.weapon-drop.v1 package adapters
+  // (js/adapters/weapon-*.js). Same load-window and ledger contract as `items`.
+  var weaponAdapters = globalThis.__s2pkg_cs2_adapters || {};
+  function weaponGate(gate, api) {
+    return function (handler) {
+      if (!globalThis.__s2_load_ctx) throw new Error("s2script: " + api + " outside the load window");
+      if (typeof handler !== "function") throw new TypeError("s2script: " + api + " requires a handler function");
+      if (!gate) {
+        console.log("[s2script] WARN: " + api + ": the weapon hook adapter is not packaged, so this handler will not fire");
+        return;
+      }
+      gate.subscribe(handler, acquirePawns, Weapon.fromEntity);
+    };
+  }
+  globalThis.__s2pkg_cs2.weapons = Object.freeze({
+    onCanUse: weaponGate(weaponAdapters.weaponCanUse, "weapons.onCanUse()"),
+    onCanSwitchTo: weaponGate(weaponAdapters.weaponCanSwitch, "weapons.onCanSwitchTo()"),
+    onDrop: weaponGate(weaponAdapters.weaponDrop, "weapons.onDrop()"),
+  });
+
+  // import { movement } from "@s2script/cs2" — each player's movement tick on the trusted
+  // `processMove` engine function, delivered by the cs2.process-move.v1 package adapter
+  // (js/adapters/process-move.js). Same load-window and ledger contract as `items`.
+  var moveGate = weaponAdapters.processMove;
+  function moveSubscriber(phase, api) {
+    return function (handler) {
+      if (!globalThis.__s2_load_ctx) throw new Error("s2script: " + api + " outside the load window");
+      if (typeof handler !== "function") throw new TypeError("s2script: " + api + " requires a handler function");
+      if (!moveGate) {
+        console.log("[s2script] WARN: " + api + ": the movement adapter is not packaged, so this handler will not fire");
+        return;
+      }
+      moveGate.subscribe(phase, handler, acquirePawns);
+    };
+  }
+  globalThis.__s2pkg_cs2.movement = Object.freeze({
+    onProcessMove: moveSubscriber("pre", "movement.onProcessMove()"),
+    onProcessMovePost: moveSubscriber("post", "movement.onProcessMovePost()"),
   });
 
   // Crash reporter: push the game identity into the engine-generic breadcrumb (spec §5 — the

@@ -21,7 +21,7 @@ set(KHOOK  "${MMS}/third_party/khook")
 foreach(req IN ITEMS
         "${MMS}/core/ISmmPlugin.h"
         "${KHOOK}/include/khook.hpp"
-        "${HL2SDK}/public/eiface.h"
+        "${HL2SDK}/public/engine2/ivengineserver2.h"
         "${S2_SOURCE_DIR}/shim/src/khook_binding.h")
     if(NOT EXISTS "${req}")
         message(FATAL_ERROR "missing ${req} — init metamod-source (with khook) and hl2sdk, or pass -DS2_SOURCE_DIR")
@@ -70,15 +70,14 @@ target_include_directories(s2_khook_probe PRIVATE
     "${MMS}/core"
     "${KHOOK}/include"
     "${AMTL}"
+    # The cs2 include paths from Metamod's hl2sdk-manifests (manifests/cs2.json), as in shim/.
     "${HL2SDK}/public"
-    "${HL2SDK}/public/tier0"
-    "${HL2SDK}/public/tier1"
+    "${HL2SDK}/public/engine2"
     "${HL2SDK}/public/mathlib"
-    "${HL2SDK}/public/appframework"
+    "${HL2SDK}/public/tier0"
     "${HL2SDK}/public/entity2"
-    "${HL2SDK}/public/engine"
-    "${HL2SDK}/public/vscript"
     "${HL2SDK}/game/shared"
+    "${HL2SDK}/common"
     "${HL2SDK}/thirdparty/protobuf-3.21.8/src"
 )
 

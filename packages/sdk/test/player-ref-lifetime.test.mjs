@@ -25,6 +25,8 @@ function fixture() {
   ctx.__s2_ent_ref_valid = (_index, id) => id === 7;
   ctx.__s2_ent_id_for_index = () => 7;
   ctx.__s2_schema_offset = () => 8;
+  // The math classes live outside the sliced entity section; readVector/readQAngle build them.
+  ctx.Vector = ctx.QAngle = function (x, y, z) { this.x = x; this.y = y; this.z = z; };
   const host = installClientHost(ctx, [3]);
   vm.createContext(ctx);
   vm.runInContext(entitySource + '; globalThis.__s2pkg_entity = { EntityRef };', ctx);
@@ -41,7 +43,8 @@ test('the Player facade covers every real EntityRef method and all retained meth
   const special = {
     spawn: [{ targetname: 'controller' }], teleport: [[1, 2, 3]], applyAbsVelocityImpulse: [[1, 2, 3]],
     writeString: [8, 16, 'value'], setModel: ['model'], stopSound: ['sound'],
-    setBodyGroupByName: ['group', 1], acceptInput: ['Use', '', null, null, 0],
+    setBodyGroupByName: ['group', 1], acceptInput: ['Use', '', null, null, 0], takeDamage: [5, {}],
+    lookupBone: ['head_0'], lookupAttachment: ['muzzle_flash'],
   };
   const methods = Object.getOwnPropertyNames(f.ctx.EntityRef.prototype)
     .filter(name => name !== 'constructor' && typeof Object.getOwnPropertyDescriptor(f.ctx.EntityRef.prototype, name).value === 'function');
@@ -65,11 +68,14 @@ for (const [method, args] of [
   ['stopSound', trip => [{ toString() { trip(); return 'sound'; } }]],
   ['setBodyGroupByName', trip => ['group', { valueOf() { trip(); return 1; } }]],
   ['setModelScale', trip => [{ valueOf() { trip(); return 1; } }]],
+  ['lookupBone', trip => [{ toString() { trip(); return 'head_0'; } }]],
+  ['getAttachment', trip => [{ valueOf() { trip(); return 1; } }]],
   ['writeBool', trip => [{ valueOf() { trip(); return 8; } }, true]],
   ['writeBoolVia', trip => [[{ valueOf() { trip(); return 8; } }], 8, true]],
   ['notifyStateChanged', trip => [{ valueOf() { trip(); return 8; } }]],
   ['clearIdentityFlags', trip => [{ valueOf() { trip(); return 1; } }]],
   ['spawn', trip => [{ get name() { trip(); return 'A'; } }]],
+  ['takeDamage', trip => [5, { get attacker() { trip(); return { index: 9, id: 7 }; } }]],
 ]) {
   test(`Player.ref.${method} finishes input access before the connection check`, () => {
     const f = fixture();

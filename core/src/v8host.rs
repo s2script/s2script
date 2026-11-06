@@ -26,8 +26,11 @@ mod lifecycle;
 mod natives;
 mod interop_wire;
 mod interop_lifetime;
+pub(crate) mod interop_facade;
 use interop_wire::*;
 mod timers;
+mod realm;
+mod extensions_v8;
 pub(crate) mod function_adapter;
 mod engine_functions;
 
@@ -79,6 +82,11 @@ pub(crate) fn hook_request() -> Option<HookRequestFn> {
 }
 
 pub(crate) fn engine_ops() -> Option<S2EngineOps> {
+    ENGINE_OPS.with(|o| o.get().copied())
+}
+
+/// `engine_ops` without the copy: the table is ~1 KB, so per-field natives take this instead.
+pub(crate) fn engine_ops_ref() -> Option<&'static S2EngineOps> {
     ENGINE_OPS.with(|o| o.get())
 }
 
@@ -114,6 +122,25 @@ pub(crate) fn with_host_isolate<R>(
 /// Generation-gated liveness. Does not expose `REGISTRY`.
 pub(crate) fn owner_is_live(owner: &str, generation: u64) -> bool {
     REGISTRY.with(|r| r.borrow().is_live(owner, generation))
+}
+
+/// The owner's registry slot (see `plugin::Registry::slot_of`). Does not expose `REGISTRY`.
+pub(crate) fn owner_slot(owner: &str) -> Option<u32> {
+    REGISTRY.with(|r| r.borrow().slot_of(owner))
+}
+
+/// `owner_is_live` by slot: runs `f` with the owner's id iff `slot` is loaded at `generation`.
+/// Never panics on a held borrow (it answers "not live"), because a V8 fast call reaches it.
+pub(crate) fn with_live_slot<R>(slot: u32, generation: u64, f: impl FnOnce(&str) -> R) -> Option<R> {
+    REGISTRY.with(|r| {
+        let r = r.try_borrow().ok()?;
+        r.live_at(slot, generation).map(f)
+    })
+}
+
+/// The id holding `slot`, loaded or not (a handler that unloaded its own plugin is still named).
+pub(crate) fn slot_owner(slot: u32) -> Option<String> {
+    REGISTRY.with(|r| r.try_borrow().ok()?.slot_id(slot).map(str::to_string))
 }
 
 /// Clone a plugin context out of the table so the handler may re-enter `PLUGINS`.
@@ -239,7 +266,8 @@ thread_local! {
     /// Engine-ops table (copied by value at init from the shim's stack-local struct — the shim's
     /// pointer must NOT be retained past init).  `None` until `set_engine_ops` runs; while `None`
     /// (or a given field is null) the matching native degrades to a safe miss.
-    static ENGINE_OPS: std::cell::Cell<Option<S2EngineOps>> = std::cell::Cell::new(None);
+    /// Held by reference so `engine_ops_ref` can hand it out without copying the ~1 KB table.
+    static ENGINE_OPS: std::cell::Cell<Option<&'static S2EngineOps>> = std::cell::Cell::new(None);
     /// `(class, field) → offset` cache backing `__s2_schema_offset`; keys are opaque JS strings
     /// (NO game names in core).  Reset on `shutdown` so a re-init can re-resolve (avoids a stale
     /// `-1` miss cached before the schema was loaded).
@@ -259,7 +287,7 @@ thread_local! {
         = std::cell::RefCell::new(plugin::Registry::new());
     /// Test-only compatibility prelude/configuration seeds; production uses verified receipts.
     #[cfg(test)]
-    static INJECTED_PACKAGES: std::cell::RefCell<std::collections::HashMap<String, String>>
+    static INJECTED_PACKAGES: std::cell::RefCell<std::collections::HashMap<String, (std::rc::Rc<str>, u64)>>
         = std::cell::RefCell::new(std::collections::HashMap::new());
     /// Inter-plugin interface bookkeeping (Slice 4.5). Pure state lives here; the V8 handles are in
     /// IFACE_METHODS / IFACE_SUBS. Cleared on shutdown (BEFORE the isolate drops).
@@ -311,6 +339,14 @@ thread_local! {
     /// `*_PENDING` muxes) so a handler's `HookResult` can suppress the output before the original runs.
     /// `remove_by_owner` on unload; reset on shutdown so a re-init starts empty.
     static OUTPUT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
+        = std::cell::RefCell::new(crate::channels::Channels::new());
+
+    /// `Entity.onInput(classname, input, handler)` subscribers (parity slice 5), keyed
+    /// `"<classname>\0<lowercased input>"` with `"*"` wildcards — Source input names are
+    /// case-insensitive. Fed by the shim's `CEntityIdentity::AcceptInput` detour, installed
+    /// unconditionally at Load like `OUTPUT_MUX`'s; dispatch is SYNCHRONOUS so a handler can drop
+    /// the input. `remove_by_owner` on unload; reset on shutdown.
+    static INPUT_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::channels::Channels::new());
 
     /// `Server.onCvarChange(name, handler)` subscribers, keyed by cvar name (`"*"` = every cvar).
@@ -599,6 +635,9 @@ fn transmit_remove_owner(owner: &str) {
 
 /// Install the shim's engine-ops table (copied by value; see `ENGINE_OPS`).  Wired by `ffi.rs`.
 pub fn set_engine_ops(ops: Option<S2EngineOps>) {
+    // Leaked on purpose: one table per init (a handful per process), and a `'static` reference is
+    // what lets `engine_ops()` hand it out without copying.
+    let ops: Option<&'static S2EngineOps> = ops.map(|o| &*Box::leak(Box::new(o)));
     ENGINE_OPS.with(|c| c.set(ops));
 }
 
@@ -612,7 +651,11 @@ pub fn set_hook_request(f: Option<HookRequestFn>) {
 /// Internal test prelude/configuration helper. It grants no package adapter authority.
 #[cfg(test)]
 pub fn register_injected_package(name: &str, js: &str) {
-    INJECTED_PACKAGES.with(|p| p.borrow_mut().insert(name.to_string(), js.to_string()));
+    // Each registration gets its own compile-cache generation, in a range package generations
+    // never reach, so a re-registered source can't hit a stale compiled script.
+    thread_local! { static SERIAL: std::cell::Cell<u64> = const { std::cell::Cell::new(1 << 62) }; }
+    let serial = SERIAL.with(|s| { s.set(s.get() + 1); s.get() });
+    INJECTED_PACKAGES.with(|p| p.borrow_mut().insert(name.to_string(), (std::rc::Rc::from(js), serial)));
 }
 
 // Pending work includes producer leases and post-checkpoint callback obligations.
@@ -626,6 +669,7 @@ fn async_pending() -> usize {
         + DUE_TIMERS.with(|q| q.borrow().len())
         + crate::jobs::pending()
         + crate::async_limits::obligations()
+        + crate::client::convar_queries_pending()
         + usize::from(MICROTASK_DRAIN_NEEDED.with(|v| v.get()))
         + usize::from(
             crate::cookies::pending_cached()
@@ -1022,6 +1066,7 @@ thread_local! {
     static CALLBACK_CURSOR:std::cell::Cell<usize>=const {std::cell::Cell::new(0)};
     static PARKED_HTTP:std::cell::RefCell<Option<crate::http::FetchCompletion>>=const {std::cell::RefCell::new(None)};
     static PARKED_DB:std::cell::RefCell<Option<crate::db::DbCompletion>>=const {std::cell::RefCell::new(None)};
+    static PARKED_FILES:std::cell::RefCell<Option<crate::files::FileCompletion>>=const {std::cell::RefCell::new(None)};
 }
 // ---------------------------------------------------------------------------
 // WebSocket (client) Task 2: __s2_ws_* natives + signal routing + teardown.
@@ -1544,6 +1589,20 @@ fn s2require(
                 return;
             }
         }
+        // A native extension the plugin declared resolves to its module, or null when it is not
+        // loaded at a satisfying version. An undeclared name never reaches an extension.
+        if let Some(plugin) = current_plugin(scope) {
+            match crate::extensions::resolve(&plugin, &name) {
+                crate::extensions::Resolution::Undeclared => {}
+                crate::extensions::Resolution::Unavailable => return,
+                crate::extensions::Resolution::Module(ext) => {
+                    if let Some(module) = extensions_v8::module(scope, ext) {
+                        rv.set(module.into());
+                    }
+                    return;
+                }
+            }
+        }
         let Some(rest) = name
             .strip_prefix("@s2script/sdk/")
             .or_else(|| name.strip_prefix("@s2script/"))
@@ -1683,6 +1742,7 @@ pub fn set_plugin_publishes(
         })
     }).collect();
     PLUGIN_PUBLISHES.with(|p| { p.borrow_mut().insert(plugin_id.to_string(), publishes); });
+    interop_facade::revoke();
 }
 
 thread_local! {
@@ -1697,11 +1757,13 @@ pub fn set_plugin_interop(
             .map(|(name, contract)| (name, std::rc::Rc::new(contract)))
             .collect();
         m.borrow_mut().insert(id.into(), contracts);
+        interop_facade::revoke();
     });
 }
 
 /// Drop a plugin's publishes map (teardown).
 pub fn clear_plugin_publishes(plugin_id: &str) {
+    interop_facade::revoke();
     PLUGIN_PUBLISHES.with(|p| { p.borrow_mut().remove(plugin_id); });
     PLUGIN_INTEROP.with(|p| { p.borrow_mut().remove(plugin_id); });
     UNDECLARED_PUBLISHES.with(|p| { p.borrow_mut().remove(plugin_id); });
@@ -1955,6 +2017,24 @@ pub(crate) fn set_native(
 ) {
     let key = v8::String::new(scope, name).unwrap();
     let func = v8::Function::new(scope, cb).unwrap();
+    global_obj.set(scope, key.into(), func.into());
+}
+
+/// `set_native` with a V8 fast-API body beside the slow callback. Optimized JS calls `fast`
+/// directly when every argument matches its declared types; anything else runs `cb`, so the two
+/// must agree on every answer. A fast body must not allocate on the JS heap, call into V8 or panic.
+pub(crate) fn set_fast_native(
+    scope: &mut v8::PinScope,
+    global_obj: v8::Local<v8::Object>,
+    name: &str,
+    cb: impl v8::MapFnTo<v8::FunctionCallback>,
+    fast: &v8::fast_api::CFunction,
+) {
+    let key = v8::String::new(scope, name).unwrap();
+    let func = v8::FunctionTemplate::builder(cb)
+        .build_fast(scope, std::slice::from_ref(fast))
+        .get_function(scope)
+        .unwrap();
     global_obj.set(scope, key.into(), func.into());
 }
 
@@ -3497,6 +3577,48 @@ fn s2_collision_activate(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 }
 
 
+/// Reads a JS slot array into a `Vec<i32>`; a non-array is an empty set (the ops treat that as "no
+/// recipients"). An unreadable element becomes -1, which the shim skips.
+fn sound_slots(scope: &mut v8::PinScope, v: v8::Local<v8::Value>) -> Vec<i32> {
+    let mut slots: Vec<i32> = Vec::new();
+    if let Ok(arr) = v8::Local::<v8::Array>::try_from(v) {
+        let n = arr.length();
+        slots.reserve(n as usize);
+        for i in 0..n {
+            let s = match arr.get_index(scope, i) {
+                Some(v) => v.integer_value(scope).unwrap_or(-1) as i32,
+                None => -1,
+            };
+            slots.push(s);
+        }
+    }
+    slots
+}
+
+/// The shared body of `__s2_sound_emit` / `__s2_sound_start`: (soundName, entIndex, entId, slots,
+/// volume) -> (guid, stackHash), guid 0 = failed. `None` when there is no op or the source entity
+/// is dead.
+fn sound_emit_call(scope: &mut v8::PinScope, args: &v8::FunctionCallbackArguments) -> Option<(u32, i32)> {
+    let ops = ENGINE_OPS.with(|o| o.get());
+    let f = ops.and_then(|o| o.sound_emit)?;
+    let name = args.get(0).to_rust_string_lossy(scope);
+    let c_name = std::ffi::CString::new(name).ok()?;
+    let ent_index = args.get(1).integer_value(scope).unwrap_or(0) as i32;
+    // E1: arg 2 = the source entity's host-id. id 0 = worldspawn / no-entity sentinel → engine
+    // serial -1 ("no serial gate", entIndex used directly shim-side). An id present but not live
+    // is a dead entity → fail closed (no emit).
+    let ent_id = js_ent_id(scope, args.get(2));
+    let ent_serial = if ent_id == 0 { -1 } else {
+        crate::entity_live::engine_serial_for(ent_index, ent_id)?
+    };
+    let slots = sound_slots(scope, args.get(3));
+    let volume = args.get(4).number_value(scope).unwrap_or(1.0) as f32;
+    let mut stack_hash: c_int = -1;
+    let guid = f(c_name.as_ptr(), ent_index, ent_serial, slots.as_ptr(), slots.len() as i32, volume,
+                 &mut stack_hash);
+    Some((guid as u32, stack_hash))
+}
+
 /// Native `__s2_sound_emit(soundName, entIndex, entSerial, slotsArray, volume) -> number`. Over the
 /// `sound_emit` op. Reads the JS slot array into a `Vec<i32>` (mirrors `__s2_user_message_send`); a
 /// non-array slots arg -> an empty set (the op returns 0 — caller requested no recipients). An
@@ -3505,33 +3627,97 @@ fn s2_collision_activate(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 fn s2_sound_emit(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rv.set_uint32(0);
+        if let Some((guid, _)) = sound_emit_call(scope, &args) { rv.set_uint32(guid); }
+    }));
+}
+
+/// Native `__s2_sound_start(...same args as __s2_sound_emit) -> [guid, stackHash] | null`. The
+/// stack hash is what `__s2_sound_set_param` needs alongside the guid. `null` for a failed emit.
+fn s2_sound_start(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let Some((guid, hash)) = sound_emit_call(scope, &args) else { return };
+        if guid == 0 { return; }
+        let g = v8::Number::new(scope, guid as f64).into();
+        let h = v8::Integer::new(scope, hash).into();
+        rv.set(v8::Array::new_with_elements(scope, &[g, h]).into());
+    }));
+}
+
+/// Native `__s2_sound_set_param(guid, stackHash, param, value, slotsArray) -> boolean`. `value` is a
+/// number (a float field) or a 3-element number array (a float3 field, e.g. a position). False on
+/// any other value shape, a NUL in the name, or no op. True means the engine was called; it does
+/// not report whether the event has that parameter.
+fn s2_sound_set_param(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
         let ops = ENGINE_OPS.with(|o| o.get());
-        let Some(f) = ops.and_then(|o| o.sound_emit) else { return };
-        let name = args.get(0).to_rust_string_lossy(scope);
+        let Some(f) = ops.and_then(|o| o.sound_set_param) else { return };
+        let guid = args.get(0).number_value(scope).unwrap_or(0.0) as u32 as c_int;
+        let hash = args.get(1).int32_value(scope).unwrap_or(-1);
+        let name = args.get(2).to_rust_string_lossy(scope);
         let Ok(c_name) = std::ffi::CString::new(name) else { return };
-        let ent_index = args.get(1).integer_value(scope).unwrap_or(0) as i32;
-        // E1: arg 2 = the source entity's host-id. id 0 = worldspawn / no-entity sentinel → engine
-        // serial -1 ("no serial gate", entIndex used directly shim-side). An id present but not live
-        // is a dead entity → fail closed (rv stays 0, no emit).
-        let ent_id = js_ent_id(scope, args.get(2));
-        let ent_serial = if ent_id == 0 { -1 } else {
-            match crate::entity_live::engine_serial_for(ent_index, ent_id) { Some(s) => s, None => return }
-        };
-        let mut slots: Vec<i32> = Vec::new();
-        if let Ok(arr) = v8::Local::<v8::Array>::try_from(args.get(3)) {
-            let n = arr.length();
-            slots.reserve(n as usize);
-            for i in 0..n {
-                let s = match arr.get_index(scope, i) {
-                    Some(v) => v.integer_value(scope).unwrap_or(-1) as i32,
-                    None => -1,
-                };
-                slots.push(s);
+        let v = args.get(3);
+        let values: Vec<f32> = if v.is_number() {
+            vec![v.number_value(scope).unwrap_or(0.0) as f32]
+        } else if let Ok(arr) = v8::Local::<v8::Array>::try_from(v) {
+            if arr.length() != 3 { return; }
+            let mut out = Vec::with_capacity(3);
+            for i in 0..3 {
+                let Some(e) = arr.get_index(scope, i) else { return };
+                if !e.is_number() { return; }
+                out.push(e.number_value(scope).unwrap_or(0.0) as f32);
             }
+            out
+        } else {
+            return;
+        };
+        if values.iter().any(|x| !x.is_finite()) { return; }
+        let slots = sound_slots(scope, args.get(4));
+        rv.set_bool(f(guid, hash, c_name.as_ptr(), values.as_ptr(), values.len() as c_int,
+                      slots.as_ptr(), slots.len() as c_int) != 0);
+    }));
+}
+
+/// Native `__s2_sound_stop_event(guid, slotsArray) -> boolean`. Over the `sound_stop_event` op.
+fn s2_sound_stop_event(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.sound_stop_event) else { return };
+        let guid = args.get(0).number_value(scope).unwrap_or(0.0) as u32 as c_int;
+        let slots = sound_slots(scope, args.get(1));
+        rv.set_bool(f(guid, slots.as_ptr(), slots.len() as c_int) != 0);
+    }));
+}
+
+/// Native `__s2_sound_duration(name) -> number | null`. Over the `sound_event_duration` op: the
+/// event's length in seconds. `null` when the op is missing, the name has a NUL, or the engine has
+/// no such event (it answers -1 for that). Never throws.
+fn s2_sound_duration(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.sound_event_duration) else { return };
+        let Ok(name) = std::ffi::CString::new(args.get(0).to_rust_string_lossy(scope)) else { return };
+        if name.as_bytes().is_empty() { return; }
+        let d = f(name.as_ptr());
+        if d.is_finite() && d >= 0.0 {
+            rv.set_double(d as f64);
         }
-        let volume = args.get(4).number_value(scope).unwrap_or(1.0) as f32;
-        let guid = f(c_name.as_ptr(), ent_index, ent_serial, slots.as_ptr(), slots.len() as i32, volume);
-        rv.set_uint32(guid as u32);
+    }));
+}
+
+/// Native `__s2_sound_is_valid(name) -> boolean`. Over the `sound_event_valid` op: whether the
+/// engine knows a sound event by that name. `false` when the op is missing. Never throws.
+fn s2_sound_is_valid(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.sound_event_valid) else { return };
+        let Ok(name) = std::ffi::CString::new(args.get(0).to_rust_string_lossy(scope)) else { return };
+        if name.as_bytes().is_empty() { return; }
+        rv.set_bool(f(name.as_ptr()) == 1);
     }));
 }
 
@@ -3559,6 +3745,23 @@ fn s2_sound_precache_add(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 
 
 
+
+/// Native `__s2_precache_entity_add(classname) -> boolean`. Over the `precache_entity_add` op: the
+/// entity system builds the resource manifest for one entity class (its models, particles and
+/// sounds, and any classes it precaches in turn) into the game-session manifest. Valid only during
+/// the session-manifest precache dispatch; `false` outside it, with no op, or for an empty name or
+/// one with a NUL. Never throws.
+fn s2_precache_entity_add(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let ops = ENGINE_OPS.with(|o| o.get());
+        let Some(f) = ops.and_then(|o| o.precache_entity_add) else { return };
+        let name = args.get(0).to_rust_string_lossy(scope);
+        if name.is_empty() { return; }
+        let Ok(c_name) = std::ffi::CString::new(name) else { return };
+        rv.set_bool(f(c_name.as_ptr()) == 1);
+    }));
+}
 
 /// Native `__s2_output_subscribe(classname, output, handler)`. Subscribes a JS fn to `Entity.onOutput`
 /// (entity-I/O slice); owner-tracked in `OUTPUT_MUX` keyed `"<classname>\0<output>"`. The
@@ -3603,6 +3806,21 @@ fn s2_cvar_off_change(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgume
     }));
 }
 
+/// Native `__s2_input_subscribe(classname, input, handler) -> subId`. Subscribes a JS fn to
+/// `Entity.onInput` (parity slice 5); owner-tracked in `INPUT_MUX`. The AcceptInput detour is
+/// installed at shim Load, so there is no per-subscribe engine registration.
+fn s2_input_subscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if args.length() < 3 { return; }
+        let classname = args.get(0).to_rust_string_lossy(scope);
+        let input = args.get(1).to_rust_string_lossy(scope).to_ascii_lowercase();
+        if classname.is_empty() || input.is_empty() { return; }
+        let key = format!("{}\0{}", classname, input);
+        let Some((sub_id, _)) = subscribe_into(scope, &args, &INPUT_MUX, &key, 2) else { return };
+        rv.set(v8::Number::new(scope, sub_id as f64).into());
+    }));
+}
+
 fn s2_output_unsubscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if args.length() < 2 { return; }
@@ -3627,6 +3845,26 @@ fn s2_output_unsubscribe(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
 
 /// Read a named property off a JS object. `None` when the value is not an object or the property is
 /// absent — a missing property is a degrade input, never an error.
+/// `__s2pkg_unsafe.Ptr.from(address)` in the current context: the one way core mints a `Ptr`.
+fn make_ptr<'s>(scope: &mut v8::PinScope<'s, '_>, address: f64) -> Option<v8::Local<'s, v8::Value>> {
+    let global = scope.get_current_context().global(scope);
+    let pkg = obj_prop(scope, global.into(), "__s2pkg_unsafe")?;
+    let ptr = obj_prop(scope, pkg, "Ptr")?;
+    let from = v8::Local::<v8::Function>::try_from(obj_prop(scope, ptr, "from")?).ok()?;
+    let arg = v8::Number::new(scope, address).into();
+    from.call(scope, ptr, &[arg])
+}
+
+/// Whether `value` is a `Ptr` of the current context's `@s2script/sdk/unsafe`.
+fn is_ptr(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> bool {
+    let global = scope.get_current_context().global(scope);
+    let Some(ctor) = obj_prop(scope, global.into(), "__s2pkg_unsafe").and_then(|pkg| obj_prop(scope, pkg, "Ptr")) else {
+        return false;
+    };
+    let Ok(ctor) = v8::Local::<v8::Object>::try_from(ctor) else { return false };
+    value.instance_of(scope, ctor).unwrap_or(false)
+}
+
 fn obj_prop<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     v: v8::Local<v8::Value>,
@@ -3782,7 +4020,12 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         // A receiverless descriptor (`receiver.kind: "none"`) has no entity to gate: it passes the
         // shim's receiverless sentinel (index < 0) so no resolve is attempted and the first declared
         // arg takes the slot `this` would have occupied.
-        let (index, serial) = if plan.receiverless {
+        //
+        // An interface receiver passes the interface sentinel with the bound id; it is
+        // receiverless to JS (no `self`), so this check comes first.
+        let (index, serial) = if let Some(iface) = plan.interface {
+            (crate::gamedata_calls::RECEIVER_INTERFACE, iface)
+        } else if plan.receiverless {
             (-1, 0)
         } else {
             match ent_op_serial(scope, args.get(1), args.get(2)) {
@@ -3795,21 +4038,31 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         // uses — schema resolves at map-live, not at Load (spec §11). A miss no-ops THIS invocation
         // and flips `Engine.status(name)` to a named reason; it clears on the first success, so the
         // descriptor recovers once the map is live instead of being permanently dead.
-        let subobj_off = match &plan.via {
-            None => -1,
-            Some((class, field)) => {
-                let off = schema_offset_cached(class, field);
+        //
+        // Every hop but the last is embedded, so the path is one summed offset; the last hop says
+        // whether the shim then loads a pointer from there (`subobj_deref`).
+        let (subobj_off, subobj_deref) = if plan.via.is_empty() {
+            (-1, 0)
+        } else {
+            let mut total: i64 = 0;
+            for hop in &plan.via {
+                let off = schema_offset_cached(&hop.class, &hop.field);
                 if off < 0 {
                     crate::gamedata_calls::set_via_miss(
                         &pid,
                         &name,
-                        Some("receiver sub-object offset unresolved (schema resolves at map-live)".to_string()),
+                        Some(format!(
+                            "receiver sub-object offset {}::{} unresolved (schema resolves at map-live)",
+                            hop.class, hop.field
+                        )),
                     );
                     return;
                 }
-                crate::gamedata_calls::set_via_miss(&pid, &name, None);
-                off
+                total += off as i64;
             }
+            let Ok(total) = i32::try_from(total) else { return };
+            crate::gamedata_calls::set_via_miss(&pid, &name, None);
+            (total, if plan.via.last().is_some_and(|h| h.embedded) { 0 } else { 1 })
         };
 
         // Marshal the args into the two SysV register sequences, preserving order within each class.
@@ -3839,6 +4092,19 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
                 "entity" => {
                     gp.push(pack_entity_arg(scope, v));
                     gp_kind.push(crate::gamedata_calls::GP_ENTITY);
+                }
+                // A `Ptr` (or null for a null pointer). Anything else is a no-op call, never a
+                // number reinterpreted as an address.
+                "ptr" => {
+                    let addr = if v.is_null_or_undefined() {
+                        0.0
+                    } else {
+                        let Some(a) = obj_prop(scope, v, "address").and_then(|a| a.number_value(scope)) else { return };
+                        a
+                    };
+                    if addr != 0.0 && crate::memory::checked(addr, 0).is_none() { return; }
+                    gp.push(addr as u64);
+                    gp_kind.push(crate::gamedata_calls::GP_SCALAR);
                 }
                 // `string` and `utlstring` build the SAME buffer and differ only in the kind byte:
                 // the shim passes the char* directly for one, and the address of a call-scoped
@@ -3908,7 +4174,7 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
         let mut ret: u64 = 0;
         let ok = crate::nest::with_outbound(&args, || {
             func(
-                plan.call_id, index, serial, subobj_off,
+                plan.call_id, index, serial, subobj_off, subobj_deref,
                 gp.as_ptr(), gp_kind.as_ptr(), gp.len() as i32,
                 fp.as_ptr(), fp.len() as i32,
                 strs.as_ptr(), vecs.as_ptr(),
@@ -3940,6 +4206,34 @@ fn engine_call_invoke_for(scope: &mut v8::PinScope, args: v8::FunctionCallbackAr
                         rv.set(build_entity_ref(scope, i, id));
                     }
                 }
+            }
+            crate::gamedata_calls::RET_PTR => {
+                // Null comes back as `Ptr.NULL`, an address outside user space as null.
+                if ret == 0 || crate::memory::checked(ret as f64, 0).is_some() {
+                    if let Some(p) = make_ptr(scope, ret as f64) { rv.set(p); }
+                }
+            }
+            crate::gamedata_calls::RET_UTLSTRINGLIST => {
+                // `ret` is the string count (or the null-list marker); the strings themselves are
+                // copied out of the shim's per-thread buffer, NUL-separated.
+                if ret == crate::gamedata_calls::STRINGLIST_NULL { return; }
+                let Some(take) = engine_ops().and_then(|o| o.engine_call_take_strings) else { return };
+                let need = take(std::ptr::null_mut(), 0);
+                if need < 0 { return; }
+                let mut buf = vec![0u8; need as usize];
+                if need > 0 && take(buf.as_mut_ptr() as *mut c_char, need) != need { return; }
+                let parts: Vec<&[u8]> = if buf.is_empty() {
+                    Vec::new()
+                } else {
+                    buf[..buf.len() - 1].split(|b| *b == 0).collect()
+                };
+                if parts.len() as u64 != ret { return; }
+                let items: Vec<v8::Local<v8::Value>> = parts
+                    .iter()
+                    .filter_map(|p| v8::String::new(scope, &String::from_utf8_lossy(p)).map(|s| s.into()))
+                    .collect();
+                if items.len() != parts.len() { return; }
+                rv.set(v8::Array::new_with_elements(scope, &items).into());
             }
             _ => {}
         }
@@ -4661,6 +4955,64 @@ pub(crate) fn dispatch_output(classname: &str, output: &str, act_handle: i32, ca
     result as i32
 }
 
+/// Whether any plugin subscribes `Entity.onInput`. The AcceptInput detour runs for every I/O event
+/// in the map, so the FFI entry checks this before converting a single string. A held borrow
+/// (a dispatch in progress) answers true and lets `dispatch_input` decide.
+pub(crate) fn input_hooked() -> bool {
+    INPUT_MUX.with(|m| m.try_borrow().map(|c| !c.is_empty()).unwrap_or(true))
+}
+
+/// Decode a packed `CEntityHandle` int from the shim into a books-gated `EntityRef` (or null).
+/// -1 is the shim's exact "no entity" sentinel; see the note in `dispatch_output`.
+fn handle_entity_value<'s>(tc: &mut v8::PinScope<'s, '_>, handle: i32) -> v8::Local<'s, v8::Value> {
+    if handle == -1 { return v8::null(tc).into(); }
+    let (index, serial) = crate::entity::decode_handle(handle as u32);
+    match crate::entity_live::adopt(index, serial) {
+        Some(id) => build_entity_ref(tc, index, id),
+        None => v8::null(tc).into(),
+    }
+}
+
+/// Synchronous input dispatch (parity slice 5). Called from `ffi.rs`'s
+/// `s2script_core_dispatch_input`, which the shim's `CEntityIdentity::AcceptInput` detour calls for
+/// every input an entity receives. Runs every `Entity.onInput` subscriber whose key matches
+/// `(class,input)`, `(class,"*")`, `("*",input)` or `("*","*")` — input compared lowercased — and
+/// returns the collapsed `HookResult`; the shim drops the input when it is >= Handled. The event
+/// carries `{ input, entity, activator, caller, value }`; `input` keeps the engine's spelling.
+pub(crate) fn dispatch_input(classname: &str, input: &str, target_handle: i32, act_handle: i32, caller_handle: i32, value: &str) -> i32 {
+    let lowered = input.to_ascii_lowercase();
+    let keys = [
+        format!("{}\0{}", classname, lowered),
+        format!("{}\0*", classname),
+        format!("*\0{}", lowered),
+        "*\0*".to_string(),
+    ];
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut snap: Vec<(String, u64, v8::Global<v8::Function>)> = Vec::new();
+    for k in &keys {
+        if !seen.insert(k.as_str()) { continue; }
+        snap.extend(INPUT_MUX.with(|m| m.borrow().snapshot(k)));
+    }
+    if snap.is_empty() { return 0; }
+    let result = fan_out_collapsing(&snap, "dispatch_input", Instrument::none(), StopAt::Stop, |tc| {
+        let entity_val = handle_entity_value(tc, target_handle);
+        let activator_val = handle_entity_value(tc, act_handle);
+        let caller_val = handle_entity_value(tc, caller_handle);
+        let ev_obj = v8::Object::new(tc);
+        if let Some(k) = v8::String::new(tc, "input") {
+            if let Some(v) = v8::String::new(tc, input) { ev_obj.set(tc, k.into(), v.into()); }
+        }
+        if let Some(k) = v8::String::new(tc, "entity") { ev_obj.set(tc, k.into(), entity_val); }
+        if let Some(k) = v8::String::new(tc, "activator") { ev_obj.set(tc, k.into(), activator_val); }
+        if let Some(k) = v8::String::new(tc, "caller") { ev_obj.set(tc, k.into(), caller_val); }
+        if let Some(k) = v8::String::new(tc, "value") {
+            if let Some(v) = v8::String::new(tc, value) { ev_obj.set(tc, k.into(), v.into()); }
+        }
+        Some(vec![ev_obj.into()])
+    });
+    result as i32
+}
+
 /// Native `__s2_crash_set_game(name, build)` — the engine-generic setter the GAME PACKAGE calls to
 /// stamp the game identity into the crash breadcrumb (core never knows which game; spec §5).
 fn s2_crash_set_game(
@@ -4780,14 +5132,34 @@ fn s2_defer_selftest(
 /// Evaluate a host-authored prelude `src` in `scope` under a `TryCatch` (degrade-never-crash: a
 /// prelude compile/run error logs a named WARN and returns rather than propagating an exception).
 fn run_prelude(scope: &mut v8::PinScope, what: &str, src: &str) {
+    run_prelude_with(scope, what, src, None)
+}
+
+/// `run_prelude` for a `'static` source, compiled once per isolate (`realm::compiled`).
+fn run_static_prelude(scope: &mut v8::PinScope, what: &str, src: &'static str) {
+    run_prelude_with(scope, what, src, Some(0))
+}
+
+/// A test-injected package: compiled once per registration, as a real package is per generation.
+#[cfg(test)]
+fn run_test_package(scope: &mut v8::PinScope, what: &str, src: &std::rc::Rc<str>, serial: u64) {
+    run_prelude_with(scope, what, src, Some(serial))
+}
+
+fn run_prelude_with(scope: &mut v8::PinScope, what: &str, src: &str, cached: Option<u64>) {
     let mut tc_storage = v8::TryCatch::new(scope);
     let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
     let tc = &mut tc;
-    let Some(code) = v8::String::new(tc, src) else {
-        log_warn(&format!("WARN: {} prelude: failed to intern source", what));
-        return;
+    let script = if let Some(generation) = cached {
+        realm::compiled(tc, src, generation)
+    } else {
+        let Some(code) = v8::String::new(tc, src) else {
+            log_warn(&format!("WARN: {} prelude: failed to intern source", what));
+            return;
+        };
+        v8::Script::compile(tc, code, None)
     };
-    match v8::Script::compile(tc, code, None).and_then(|s| s.run(tc)) {
+    match script.and_then(|s| s.run(tc)) {
         Some(_) => {}
         None => {
             let msg = tc
@@ -5005,6 +5377,22 @@ fn s2_server_game_time(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArgu
     }));
 }
 
+/// `__s2_server_tick_count() -> number` — the simulation tick (GetGlobals()->tickcount). 0 without the op.
+fn s2_server_tick_count(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let t = ENGINE_OPS.with(|o| o.get()).and_then(|ops| ops.server_tick_count).map(|f| f()).unwrap_or(0);
+        rv.set_int32(t);
+    }));
+}
+
+/// `__s2_server_tick_interval() -> number` — seconds per simulation tick (shim-derived). 0 without the op.
+fn s2_server_tick_interval(_scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let t = ENGINE_OPS.with(|o| o.get()).and_then(|ops| ops.server_tick_interval).map(|f| f()).unwrap_or(0.0);
+        rv.set_double(t as f64);
+    }));
+}
+
 /// `__s2_config_read_raw(id) -> string | null` — read a config file by id; null if no op / file absent.
 /// Bridge for the @s2script/admin JS module so it can read admins.json via the config_read op.
 fn s2_config_read_raw(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
@@ -5164,6 +5552,11 @@ fn db_data_dir() -> Option<String> {
     ENGINE_OPS.with(|o| o.get())
         .and_then(|ops| ops.db_data_dir)
         .map(|f| unsafe { std::ffi::CStr::from_ptr(f()) }.to_string_lossy().into_owned())
+}
+
+/// The s2script data directory for `@s2script/sdk/files` (the same root SQLite databases use).
+pub(crate) fn files_data_dir() -> Option<String> {
+    db_data_dir()
 }
 
 /// Native `__s2_sqlite_open(name: string) -> Promise<number>`. Opens (or creates)
@@ -5680,121 +6073,128 @@ pub(crate) fn dispatch_onframe(
         );
     }
 
-    // Phase 1 — brief &FRAME borrow: clone the ordered enabled handlers (KEEPING the owner tag so we
-    // can enter each handler's own context), then release.
-    let snap4 = FRAME.with(|f| f.borrow().snapshot(phase));
-    if snap4.is_empty() {
+    if !FRAME.with(|f| f.borrow().has_enabled(phase)) {
+        crate::jsmux::release_idle_frame(&FrameSource(phase), phase == Phase::Pre);
         return DispatchOutcome {
             result: HookResult::Continue,
             detour: DetourChange::None,
         };
     }
-    // run_chain wants (SubId, Priority, H); carry H = (owner, handler) so invoke can route context.
-    let snap: Vec<(multiplexer::SubId, Priority, (String, JsHandler))> =
-        snap4.into_iter().map(|(id, prio, owner, h)| (id, prio, (owner, h))).collect();
 
-    // Phase 2 — invoke under EACH handler's OWN plugin context.  HOST is borrowed for the isolate;
-    // FRAME/PLUGINS are NOT held across a handler call.
-    let outcome = HOST.with(|h| {
-        let mut borrow = h.borrow_mut();
-        let host = borrow.as_mut().expect("dispatch_onframe before init");
+    // Phases 1+2 run in the JS multiplexer (`jsmux::dispatch_frame`): one crossing per frame phase,
+    // with this chain's rules (priority + Monitor, errored ids, the out-of-range WARN). The Rust
+    // chain below is its fallback while the profiler records, so a session's attribution is exact.
+    let outcome = crate::jsmux::dispatch_frame(&FrameSource(phase), phase == Phase::Pre, simulating, first, last, || {
+        // Phase 1 — brief &FRAME borrow: clone the ordered enabled handlers (KEEPING the owner tag so we
+        // can enter each handler's own context), then release.
+        let snap4 = FRAME.with(|f| f.borrow().snapshot(phase));
+        // run_chain wants (SubId, Priority, H); carry H = (owner, handler) so invoke can route context.
+        let snap: Vec<(multiplexer::SubId, Priority, (String, JsHandler))> =
+            snap4.into_iter().map(|(id, prio, owner, h)| (id, prio, (owner, h))).collect();
 
-        run_chain(&snap, |(owner, jh): &(String, JsHandler)| {
-            // Route to the owner's context; SKIP (never enter a disposed context) if it is gone.
-            // Cloning the Global<Context> releases the PLUGINS borrow before the JS call, so the
-            // handler may re-enter PLUGINS (subscribe/delay) without a double borrow.
-            let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
-            else {
-                return Ok(HookResult::Continue); // owner's context disposed → skip, not an error
-            };
+        // Phase 2 — invoke under EACH handler's OWN plugin context.  HOST is borrowed for the isolate;
+        // FRAME/PLUGINS are NOT held across a handler call.
+        HOST.with(|h| {
+            let mut borrow = h.borrow_mut();
+            let host = borrow.as_mut().expect("dispatch_onframe before init");
 
-            let _crash_guard = crate::crash::breadcrumb::enter_dispatch(
-                owner,
-                if phase == Phase::Pre { "OnGameFrame:pre" } else { "OnGameFrame:post" },
-            );
-            let _prof = crate::profiler::span(
-                owner,
-                if phase == Phase::Pre { "OnGameFrame (pre)" } else { "OnGameFrame (post)" },
-            );
+            run_chain(&snap, |(owner, jh): &(String, JsHandler)| {
+                // Route to the owner's context; SKIP (never enter a disposed context) if it is gone.
+                // Cloning the Global<Context> releases the PLUGINS borrow before the JS call, so the
+                // handler may re-enter PLUGINS (subscribe/delay) without a double borrow.
+                let Some(g_ctx) = PLUGINS.with(|p| p.borrow().get(owner).map(|pi| pi.context.clone()))
+                else {
+                    return Ok(HookResult::Continue); // owner's context disposed → skip, not an error
+                };
 
-            // Fresh HandleScope + ContextScope on the OWNER's context.
-            let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
-            let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
-            let hs = &mut hs;
-            let ctx_local = v8::Local::new(hs, &g_ctx);
-            let scope = &mut v8::ContextScope::new(hs, ctx_local);
+                let _crash_guard = crate::crash::breadcrumb::enter_dispatch(
+                    owner,
+                    if phase == Phase::Pre { "OnGameFrame:pre" } else { "OnGameFrame:post" },
+                );
+                let _prof = crate::profiler::span(
+                    owner,
+                    if phase == Phase::Pre { "OnGameFrame (pre)" } else { "OnGameFrame (post)" },
+                );
 
-            // Build the per-frame `ctx` object IN THIS CONTEXT: { simulating, firstTick, lastTick, phase }.
-            let ctx_obj = v8::Object::new(scope);
-            let k = v8::String::new(scope, "simulating").unwrap();
-            let v = v8::Boolean::new(scope, simulating);
-            ctx_obj.set(scope, k.into(), v.into());
-            let k = v8::String::new(scope, "firstTick").unwrap();
-            let v = v8::Boolean::new(scope, first);
-            ctx_obj.set(scope, k.into(), v.into());
-            let k = v8::String::new(scope, "lastTick").unwrap();
-            let v = v8::Boolean::new(scope, last);
-            ctx_obj.set(scope, k.into(), v.into());
-            let k = v8::String::new(scope, "phase").unwrap();
-            let v = v8::String::new(scope, if phase == Phase::Pre { "pre" } else { "post" }).unwrap();
-            ctx_obj.set(scope, k.into(), v.into());
+                // Fresh HandleScope + ContextScope on the OWNER's context.
+                let mut hs_storage = v8::HandleScope::new(&mut host.isolate);
+                let mut hs = unsafe { std::pin::Pin::new_unchecked(&mut hs_storage) }.init();
+                let hs = &mut hs;
+                let ctx_local = v8::Local::new(hs, &g_ctx);
+                let scope = &mut v8::ContextScope::new(hs, ctx_local);
 
-            let recv: v8::Local<v8::Value> = v8::undefined(scope).into();
-            let ctx_val: v8::Local<v8::Value> = ctx_obj.into();
+                // Build the per-frame `ctx` object IN THIS CONTEXT: { simulating, firstTick, lastTick, phase }.
+                let ctx_obj = v8::Object::new(scope);
+                let k = v8::String::new(scope, "simulating").unwrap();
+                let v = v8::Boolean::new(scope, simulating);
+                ctx_obj.set(scope, k.into(), v.into());
+                let k = v8::String::new(scope, "firstTick").unwrap();
+                let v = v8::Boolean::new(scope, first);
+                ctx_obj.set(scope, k.into(), v.into());
+                let k = v8::String::new(scope, "lastTick").unwrap();
+                let v = v8::Boolean::new(scope, last);
+                ctx_obj.set(scope, k.into(), v.into());
+                let k = v8::String::new(scope, "phase").unwrap();
+                let v = v8::String::new(scope, if phase == Phase::Pre { "pre" } else { "post" }).unwrap();
+                ctx_obj.set(scope, k.into(), v.into());
 
-            // Per-handler TryCatch isolates a throwing handler from the rest of the chain.
-            let mut tc_storage = v8::TryCatch::new(scope);
-            let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
-            let tc = &mut tc;
+                let recv: v8::Local<v8::Value> = v8::undefined(scope).into();
+                let ctx_val: v8::Local<v8::Value> = ctx_obj.into();
 
-            crate::crash::breadcrumb::note_js_location(
-                owner,
-                v8::Local::new(tc, &jh.func).get_script_line_number().map(|l| l + 1).unwrap_or(0),
-            );
+                // Per-handler TryCatch isolates a throwing handler from the rest of the chain.
+                let mut tc_storage = v8::TryCatch::new(scope);
+                let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut tc_storage) }.init();
+                let tc = &mut tc;
 
-            let generation=ctx_local.get_slot::<InteropGeneration>().map_or(0,|g|g.0);
-            let _busy=crate::dispatch::ParentBusy::enter(owner,generation);
-            let func = v8::Local::new(tc, &jh.func);
-            match func.call(tc, recv, &[ctx_val]) {
-                // Exception thrown (or otherwise empty): report (kind=js) then count the error.
-                None => {
-                    let msg = tc.exception()
-                        .map(|e| e.to_rust_string_lossy(&*tc))
-                        .unwrap_or_else(|| "uncaught exception".into());
-                    let stack = tc.stack_trace()
-                        .map(|s| s.to_rust_string_lossy(&*tc))
-                        .unwrap_or_default();
-                    crate::crash::report_js_error(
-                        owner,
-                        if phase == Phase::Pre { "OnGameFrame:pre" } else { "OnGameFrame:post" },
-                        &msg,
-                        &stack,
-                    );
-                    Err(())
-                }
-                Some(ret) => {
-                    if ret.is_undefined() {
-                        Ok(HookResult::Continue)
-                    } else {
-                        Ok(match ret.uint32_value(tc).unwrap_or(0) {
-                            0 => HookResult::Continue,
-                            1 => HookResult::Changed,
-                            2 => HookResult::Handled,
-                            3 => HookResult::Stop,
-                            n => {
-                                if let Some(f) = LOGGER.with(|l| l.get()) {
-                                    if let Ok(c) = CString::new(format!(
-                                        "WARN: onGameFrame handler returned out-of-range HookResult {n}; treating as Continue"
-                                    )) {
-                                        f(0, c.as_ptr());
+                crate::crash::breadcrumb::note_js_location(
+                    owner,
+                    v8::Local::new(tc, &jh.func).get_script_line_number().map(|l| l + 1).unwrap_or(0),
+                );
+
+                let generation=ctx_local.get_slot::<InteropGeneration>().map_or(0,|g|g.0);
+                let _busy=crate::dispatch::ParentBusy::enter(owner,generation);
+                let func = v8::Local::new(tc, &jh.func);
+                match func.call(tc, recv, &[ctx_val]) {
+                    // Exception thrown (or otherwise empty): report (kind=js) then count the error.
+                    None => {
+                        let msg = tc.exception()
+                            .map(|e| e.to_rust_string_lossy(&*tc))
+                            .unwrap_or_else(|| "uncaught exception".into());
+                        let stack = tc.stack_trace()
+                            .map(|s| s.to_rust_string_lossy(&*tc))
+                            .unwrap_or_default();
+                        crate::crash::report_js_error(
+                            owner,
+                            if phase == Phase::Pre { "OnGameFrame:pre" } else { "OnGameFrame:post" },
+                            &msg,
+                            &stack,
+                        );
+                        Err(())
+                    }
+                    Some(ret) => {
+                        if ret.is_undefined() {
+                            Ok(HookResult::Continue)
+                        } else {
+                            Ok(match ret.uint32_value(tc).unwrap_or(0) {
+                                0 => HookResult::Continue,
+                                1 => HookResult::Changed,
+                                2 => HookResult::Handled,
+                                3 => HookResult::Stop,
+                                n => {
+                                    if let Some(f) = LOGGER.with(|l| l.get()) {
+                                        if let Ok(c) = CString::new(format!(
+                                            "WARN: onGameFrame handler returned out-of-range HookResult {n}; treating as Continue"
+                                        )) {
+                                            f(0, c.as_ptr());
+                                        }
                                     }
+                                    HookResult::Continue
                                 }
-                                HookResult::Continue
-                            }
-                        })
+                            })
+                        }
                     }
                 }
-            }
+            })
         })
     });
 
@@ -5806,6 +6206,31 @@ pub(crate) fn dispatch_onframe(
     DispatchOutcome {
         result: outcome.result,
         detour,
+    }
+}
+
+/// `FRAME` as a multiplexer store: one channel per phase (`"pre"` / `"post"`). A row's generation
+/// is its owner's current one — `FRAME` keeps none, and owner teardown removes a plugin's rows.
+struct FrameSource(Phase);
+
+impl crate::jsmux::Source for FrameSource {
+    fn probe(&self, _name: &str) -> (bool, u64) {
+        FRAME.with(|f| {
+            let f = f.borrow();
+            (f.has_enabled(self.0), f.version())
+        })
+    }
+    fn rows(&self, _name: &str) -> Vec<crate::jsmux::Row> {
+        FRAME.with(|f| f.borrow().snapshot(self.0))
+            .into_iter()
+            .map(|(id, priority, owner, h)| crate::jsmux::Row {
+                id,
+                generation: REGISTRY.with(|r| r.borrow().generation_of(&owner)).unwrap_or(0),
+                owner,
+                monitor: priority == Priority::Monitor,
+                handler: h.func,
+            })
+            .collect()
     }
 }
 
@@ -5856,6 +6281,7 @@ pub fn shutdown() {
         while pool().try_recv_completed().is_some() {}
         while crate::http::try_recv_completed().is_some() {}
         while crate::db::try_recv_completed().is_some() {}
+        while crate::files::try_recv_completed().is_some() {}
         while crate::ws::try_recv_signal().is_some() {}
         while crate::net::try_recv_signal().is_some() {}
     });
@@ -5981,6 +6407,22 @@ fn resolve_fetch(
     );
 }
 
+/// Resolve (or drop, on the async-liveness guard) a completed `__s2_files_op` job in its owning
+/// plugin's context: the operation's value on success, an `Error` on failure.
+fn resolve_files(
+    host: &mut Host,
+    entry: &crate::jobs::ResolverEntry,
+    result: Result<crate::files::FileOutput, String>,
+) {
+    crate::jobs::settle_if_live(&mut host.isolate, &host.context, entry, |scope, resolver| match result {
+        Ok(out) => {
+            let v = crate::files::output_to_js(scope, out);
+            resolver.resolve(scope, v);
+        }
+        Err(e) => crate::jobs::reject(scope, resolver, &e),
+    });
+}
+
 /// Per-frame async drain: resolve every due timer + completed job IN ITS OWNING PLUGIN CONTEXT
 /// (dropping any whose plugin is gone/reloaded — the async-liveness guard), advance the frame
 /// counter, then run the single V8 microtask checkpoint for this frame.  Called once per Post-phase
@@ -6038,6 +6480,7 @@ fn deliver_timer(host: &mut Host, id: u64) {
 pub(crate) fn frame_async_drain() {
     crate::surface_leases::advance_frame();
     crate::shared_entity_switch::retry_pending();
+    crate::client::sweep_convar_queries();
     HOST.with(|h| {
         let mut borrow = h.borrow_mut();
         let Some(host) = borrow.as_mut() else { return };
@@ -6062,11 +6505,11 @@ pub(crate) fn frame_async_drain() {
             let source = *frame_cursor.get_or_insert_with(|| {
                 POLL_CURSOR.with(|v| {
                     let first = v.get();
-                    v.set((first + 1) % 6);
+                    v.set((first + 1) % 7);
                     first
                 })
             });
-            frame_cursor = Some((source + 1) % 6);
+            frame_cursor = Some((source + 1) % 7);
             let mut progress = false;
             match source {
                 0 => {
@@ -6146,7 +6589,7 @@ pub(crate) fn frame_async_drain() {
                         ws_drops.extend(poll.drops);
                     }
                 }
-                _ => {
+                5 => {
                     if crate::async_limits::can_deliver(
                         crate::async_limits::policy().failure_bytes,
                         true,
@@ -6164,12 +6607,28 @@ pub(crate) fn frame_async_drain() {
                         net_drops.extend(poll.drops);
                     }
                 }
+                _ => {
+                    let c = PARKED_FILES
+                        .with(|v| v.borrow_mut().take())
+                        .or_else(crate::files::try_recv_completed);
+                    if let Some(c) = c {
+                        if crate::async_limits::can_deliver(c.lease.bytes(), true) {
+                            crate::async_limits::deliver(c.lease.bytes());
+                            progress = true;
+                            if let Some(entry) = crate::jobs::complete_job(c.id) {
+                                resolve_files(host, &entry, c.result);
+                            }
+                        } else {
+                            PARKED_FILES.with(|v| *v.borrow_mut() = Some(c));
+                        }
+                    }
+                }
             }
             if progress {
                 empty = 0;
             } else {
                 empty += 1;
-                if empty >= 6 {
+                if empty >= 7 {
                     break;
                 }
             }
@@ -6366,6 +6825,16 @@ pub(crate) fn register_builtin_stores() {
         }),
     );
 
+    // INPUT_MUX: the AcceptInput detour stays installed for the process lifetime — no follow-up.
+    crate::owner_stores::register(
+        "INPUT_MUX",
+        Box::new(|owner| { INPUT_MUX.with(|m| m.borrow_mut().remove_by_owner(owner)); }),
+        Box::new(|ids| { INPUT_MUX.with(|m| { m.borrow_mut().remove_by_ids(ids); }); }),
+        Box::new(|| {
+            INPUT_MUX.with(|m| *m.borrow_mut() = crate::channels::Channels::new());
+        }),
+    );
+
     // CVAR_MUX: the global change callback stays installed for the process lifetime — no follow-up.
     crate::owner_stores::register(
         "CVAR_MUX",
@@ -6501,6 +6970,11 @@ pub(crate) fn register_process_singletons() {
         TIMERS.with(|t| *t.borrow_mut() = TimerQueue::new())
     });
     reg("RESOLVERS", BeforeIsolateDrop, crate::jobs::reset_resolvers);
+    // The JS multiplexer's context and every cached subscriber array.
+    reg("JSMUX", BeforeIsolateDrop, crate::jsmux::reset);
+    // The shared framework realm and its modules.
+    reg("FRAMEWORK_REALM", BeforeIsolateDrop, realm::reset);
+    reg("INTEROP_FACADES", BeforeIsolateDrop, interop_facade::reset);
     reg("TIMER_CBS", BeforeIsolateDrop, || {
         TIMER_CBS.with(|m| m.borrow_mut().clear())
     });

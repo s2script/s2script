@@ -47,7 +47,7 @@ add_library(s2script SHARED
     # Slice 5D.1: a self-contained MurmurHash2LowerCase (the ONE tier1 symbol CKV3MemberName(const char*)
     # needs to key IGameEvent field reads) — avoids linking all of tier1 (CUtlString/UtlVectorMemory cascade).
     src/tier1_shims.cpp
-    # CCommand's ctor/Tokenize/Reset/EnsureBuffers are DECLARED in tier1/convar.h but exported by no
+    # CCommand's ctor/Tokenize/Reset/EnsureBuffers are DECLARED in tier0/convar.h but exported by no
     # shipped CS2 binary — using them links and then fails at dlopen, taking the whole addon down.
     # Same doctrine as tier1_shims.cpp: define the few members we need rather than link all of tier1.
     src/ccommand_shim.cpp
@@ -91,7 +91,7 @@ add_library(s2script SHARED
     # does not grow another resolution loop; reads gamedata/sdkhooks, never s_gdCore.
     src/sdkhooks_vp.cpp
     ${HL2SDK}/entity2/entitykeyvalues.cpp
-    ${HL2SDK}/tier1/keyvalues3.cpp
+    ${HL2SDK}/tier0_perproject/keyvalues3.cpp
     ${HL2SDK}/public/tier0/memoverride.cpp   # CSSharp compiles this — routes operator new/delete
                                              # through the engine allocator (g_pMemAlloc) so our
                                              # compiled KV3 code + the engine share ONE heap. Do NOT
@@ -239,13 +239,15 @@ target_include_directories(s2script PRIVATE
     ${MMS}/core
     ${MMS}/third_party/khook/include
     ${AMTL}
+    # The cs2 include paths from Metamod's hl2sdk-manifests (manifests/cs2.json).
     ${HL2SDK}/public
-    ${HL2SDK}/public/tier0
-    ${HL2SDK}/public/tier1
+    ${HL2SDK}/public/engine2
     ${HL2SDK}/public/mathlib
-    ${HL2SDK}/public/appframework
+    ${HL2SDK}/public/tier0
+    ${HL2SDK}/public/entity2
     # model precache: igamesystem.h / igamesystemfactory.h live under game/shared, not public/
     ${HL2SDK}/game/shared
+    ${HL2SDK}/common
     # protobuf 3.21.8 runtime headers (Slice 6.1c) — reflection over the game's usermessage
     # protobuf objects (CUserMessageSayText2). Matches the vendored libprotobuf.a below.
     ${HL2SDK}/thirdparty/protobuf-3.21.8/src
@@ -309,7 +311,7 @@ target_compile_definitions(s2script PRIVATE S2_HL2SDK_BUILD="${S2_HL2SDK_SHA}")
 set_source_files_properties(
     src/ekv.cpp
     ${HL2SDK}/entity2/entitykeyvalues.cpp
-    ${HL2SDK}/tier1/keyvalues3.cpp
+    ${HL2SDK}/tier0_perproject/keyvalues3.cpp
     # NOTE: memoverride.cpp is deliberately EXCLUDED here — its global operator new/delete must
     # NOT be gc-sectioned away (they're the whole point). It compiles WITHOUT these flags.
     PROPERTIES COMPILE_OPTIONS "-ffunction-sections;-fdata-sections"

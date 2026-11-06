@@ -186,3 +186,42 @@
     ops.function_frame_field_read = &S2_FunctionFrameFieldRead;
     ops.function_frame_field_write = &S2_FunctionFrameFieldWrite;
     ops.function_frame_hidden_referenced_by = &S2_FunctionFrameHiddenReferencedBy;
+    // --- timer-grade server clock: GetGlobals()->tickcount / interval_per_tick ---
+    ops.server_tick_count = &s2_server_tick_count;
+    ops.server_tick_interval = &s2_server_tick_interval;
+    // --- Damage slice: CTakeDamageInfo ctor + CBaseEntity::TakeDamage + dtor ---
+    ops.entity_take_damage = &Shim_EntityTakeDamage;
+    // --- client convar query + replicate ---
+    ops.client_query_convar = &s2_client_query_convar;
+    ops.client_replicate_convar = &s2_client_replicate_convar;
+    // --- client net stats (INetChannelInfo) ---
+    ops.client_net_stats = &s2_client_net_stats;
+    // --- Plugin-declared engine calls ---
+    ops.engine_call_bind_interface = &S2_EngineCallBindInterface;
+    ops.engine_call_take_strings = &S2_EngineCallTakeStrings;
+    // --- bones and attachments ---
+    ops.entity_lookup_bone = &Shim_EntityLookupBone;
+    ops.entity_get_bone_transform = &Shim_EntityGetBoneTransform;
+    ops.entity_lookup_attachment = &Shim_EntityLookupAttachment;
+    ops.entity_get_attachment = &Shim_EntityGetAttachment;
+    // --- sound event parameters: SoundOpGameSystem::SetSoundEventParam / StopSoundEvent ---
+    ops.sound_set_param = &s2_sound_set_param;
+    ops.sound_stop_event = &s2_sound_stop_event;
+    // --- sound event lookups: the sound system's event manager (GetSoundEventDuration / IsValidSoundEventHash) ---
+    ops.sound_event_duration = &s2_sound_event_duration;
+    ops.sound_event_valid = &s2_sound_event_valid;
+    // --- string tables: INetworkStringTableContainer (Source2EngineToServerStringTable001) + INetworkStringTable ---
+    ops.stringtable_count = &s2_stringtable_count;
+    ops.stringtable_find = &s2_stringtable_find;
+    ops.stringtable_name = &s2_stringtable_name;
+    ops.stringtable_num_strings = &s2_stringtable_num_strings;
+    ops.stringtable_find_string = &s2_stringtable_find_string;
+    ops.stringtable_get_string = &s2_stringtable_get_string;
+    ops.stringtable_get_data = &s2_stringtable_get_data;
+    ops.stringtable_set_data = &s2_stringtable_set_data;
+    ops.stringtable_add_string = &s2_stringtable_add_string;
+    // --- UserMessage repeated strings and scalar edits ---
+    ops.usermsg_hook_read_strings = &s2_usermsg_hook_read_strings;
+    ops.usermsg_hook_set_int = &s2_usermsg_hook_set_int;
+    // --- Entity precache: IEntityResourceManifestBuilder::BuildResourceManifestForEntity ---
+    ops.precache_entity_add = &s2_precache_entity_add;

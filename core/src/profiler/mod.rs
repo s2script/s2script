@@ -480,6 +480,7 @@ fn begin(options: Options) -> u32 {
     });
     REC.with(|r| *r.borrow_mut() = Some(Recorder::new(session, options)));
     ACTIVE.with(|a| a.set(true));
+    crate::v8host::interop_facade::set_profiling(true);
     session
 }
 
@@ -493,6 +494,7 @@ pub(crate) struct Finished {
 /// that asked to stop is one) are discarded; their guards are inert from here on.
 fn end() -> Option<Finished> {
     ACTIVE.with(|a| a.set(false));
+    crate::v8host::interop_facade::set_profiling(false);
     let mut rec = REC.with(|r| r.borrow_mut().take())?;
     let now = now_ns(rec.base);
     rec.stack.clear();
@@ -650,6 +652,7 @@ pub(crate) fn clear() -> Vec<String> {
 pub(crate) fn shutdown() {
     js::abandon();
     ACTIVE.with(|a| a.set(false));
+    crate::v8host::interop_facade::set_profiling(false);
     REC.with(|r| *r.borrow_mut() = None);
     PENDING.with(|p| *p.borrow_mut() = None);
 }
@@ -667,6 +670,16 @@ pub(crate) fn format_duration(d: Duration) -> String {
         format!("{}m{:02}s", s / 60, s % 60)
     } else {
         format!("{:.1}s", d.as_secs_f64())
+    }
+}
+
+/// Start or end a bare recording session (no V8 hooks), for tests outside this module.
+#[cfg(test)]
+pub(crate) fn test_set_active(on: bool) {
+    if on {
+        begin(Options::default());
+    } else {
+        let _ = end();
     }
 }
 

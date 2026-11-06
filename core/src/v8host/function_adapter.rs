@@ -283,6 +283,33 @@ fn validate_subscription_domain(
     }
     Ok(())
 }
+/// The plugin that entered V8 for the code now running: the entered context's plugin, or, while
+/// the JS multiplexer (`jsmux`) is the entered context, the subscriber whose handler it is running.
+fn entered_owner(scope: &mut v8::PinScope) -> Option<(String, u64)> {
+    let entered = scope.get_entered_or_microtask_context();
+    if crate::jsmux::is_mux_context(entered) {
+        return crate::jsmux::dispatch_owner();
+    }
+    let id = entered.get_slot::<PluginId>()?.0.clone();
+    let generation = entered.get_slot::<InteropGeneration>()?.0;
+    Some((id, generation))
+}
+
+#[cfg(test)]
+pub(super) fn test_entered_owner(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let owner = entered_owner(scope).map_or_else(|| "-".to_string(), |(id, _)| id);
+    let crumb = crate::crash::breadcrumb::snapshot();
+    let text = format!(
+        "{}|{}|{}",
+        owner,
+        crate::crash::breadcrumb::read_cstr(&crumb.plugin),
+        crate::crash::breadcrumb::read_cstr(&crumb.dispatch)
+    );
+    if let Some(s) = v8::String::new(scope, &text) {
+        rv.set(s.into());
+    }
+}
+
 pub(super) fn current_owner(scope: &mut v8::PinScope) -> Result<OwnerKey, String> {
     let ctx = scope.get_current_context();
     let id = ctx
@@ -544,8 +571,8 @@ pub(crate) fn bootstrap(
             set(scope, global, "__s2_package_function", lookup.into())?;
             let mut storage = v8::TryCatch::new(scope);
             let mut tc = unsafe { std::pin::Pin::new_unchecked(&mut storage) }.init();
-            let source = v8::String::new(&mut tc, &package.source).ok_or("source allocation")?;
-            let evaluated = v8::Script::compile(&mut tc, source, None)
+            // Compiled once per package generation and bound to each plugin's context.
+            let evaluated = super::realm::compiled(&mut tc, &package.source, package.owner.key().generation)
                 .and_then(|s| s.run(&mut tc))
                 .ok_or_else(|| {
                     tc.exception()
@@ -584,10 +611,10 @@ pub(crate) fn bootstrap(
 /// Engine-generic prelude registrars that only the selected game package's bootstrap may call
 /// (see core/js/prelude.js). The context creator removes them after `bootstrap` returns — with or
 /// without a package, success or failure — so plugin code never reaches them.
-const BOOTSTRAP_ONLY_PRELUDE_GLOBALS: [&str; 1] = ["__s2_sdkhook_provider_register"];
+const BOOTSTRAP_ONLY_PRELUDE_GLOBALS: [&str; 2] = ["__s2_sdkhook_provider_register", "__s2_shared_module"];
 pub(crate) fn close_bootstrap_globals(scope: &mut v8::PinScope) {
     let global = scope.get_current_context().global(scope);
-    for name in BOOTSTRAP_ONLY_PRELUDE_GLOBALS {
+    for name in BOOTSTRAP_ONLY_PRELUDE_GLOBALS.iter().chain(super::interop_facade::BOOTSTRAP_ONLY.iter()) {
         if let Some(key) = v8::String::new(scope, name) {
             global.delete(scope, key.into());
         }
@@ -608,12 +635,7 @@ pub(super) fn instance(
             .ok_or("missing parent generation")?,
     )?;
     let parent = current_owner(scope)?;
-    let entered = scope.get_entered_or_microtask_context();
-    if !entered
-        .get_slot::<PluginId>()
-        .is_some_and(|p| p.0 == parent.id)
-        || entered.get_slot::<InteropGeneration>().map(|g| g.0) != Some(parent.generation)
-    {
+    if entered_owner(scope).as_ref().map(|(id, g)| (id.as_str(), *g)) != Some((parent.id.as_str(), parent.generation)) {
         return Err("package token used from another context".into());
     }
     let expected_id = data
@@ -1248,6 +1270,7 @@ pub(crate) fn drop_package(owner: &OwnerKey) {
     });
     if let Some(package) = &removed {
         package.owner.retire_source();
+        super::realm::forget_generation(owner.generation);
     }
     let mut instances = ADAPTERS.with(|a| {
         a.borrow()
@@ -1691,6 +1714,9 @@ pub(super) fn projected_to_js<'s>(
             }
         }
         ProjectedValue::Scalar(value) => scalar_to_js(scope, value),
+        ProjectedValue::Pointer(0) => Ok(v8::null(scope).into()),
+        ProjectedValue::Pointer(bits) => super::make_ptr(scope, bits as f64)
+            .ok_or("Ptr unavailable in this context".into()),
         ProjectedValue::Entity {
             reference: None, ..
         } => Ok(v8::null(scope).into()),
@@ -1829,6 +1855,23 @@ fn callback_projected_from_js(
     }
     projected_from_js(scope, value, native, projection)
 }
+/// A `Ptr` (or null) to its address. Anything else, a bare number included, is refused: a number
+/// is never reinterpreted as an address.
+fn pointer_from_js(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> Result<u64, String> {
+    if value.is_null() {
+        return Ok(0);
+    }
+    if !super::is_ptr(scope, value) {
+        return Err("Ptr or null required".into());
+    }
+    let address = super::obj_prop(scope, value, "address")
+        .and_then(|a| a.number_value(scope))
+        .ok_or("Ptr address unavailable")?;
+    if address.fract() != 0.0 || !projection::pointer_ok(address as u64) {
+        return Err("Ptr address outside the user address range".into());
+    }
+    Ok(address as u64)
+}
 pub(super) fn projected_from_js(
     scope: &mut v8::PinScope,
     value: v8::Local<v8::Value>,
@@ -1841,6 +1884,12 @@ pub(super) fn projected_from_js(
         }
         let producer = copied::Producer::owner(&current_owner(scope)?);
         return copied_from_js(scope, value, flag, producer).map(ProjectedValue::Copied);
+    }
+    if projection == "ptr" {
+        if native != "ptr" {
+            return Err("pointer projection requires pointer ABI".into());
+        }
+        return pointer_from_js(scope, value).map(ProjectedValue::Pointer);
     }
     if let Some(entity) = EntityProjection::parse(projection) {
         let reference = if value.is_null() {
@@ -1911,9 +1960,8 @@ fn record_accessor(scope:&mut v8::PinScope,args:&v8::FunctionCallbackArguments) 
     let field=data.get_index(scope,2).and_then(|v|v.uint32_value(scope)).ok_or("missing record field")?;
     // A callback's current context is its creation context, so a view moved into
     // another context would still name its owner; require the caller to be that owner.
-    let owner=current_owner(scope)?;let entered=scope.get_entered_or_microtask_context();
-    if !entered.get_slot::<PluginId>().is_some_and(|p|p.0==owner.id)
-        || entered.get_slot::<InteropGeneration>().map(|g|g.0)!=Some(owner.generation) {
+    let owner=current_owner(scope)?;
+    if entered_owner(scope).as_ref().map(|(id,g)|(id.as_str(),*g))!=Some((owner.id.as_str(),owner.generation)) {
         return Err("record view used from another context".into());
     }
     Ok((lease(scope,id)?,selector,field))
@@ -5893,6 +5941,9 @@ pub(crate) mod scalar_transport_tests {
     }
 }
 
+#[cfg(test)]
+#[path = "function_adapter/pointer_transport_tests.rs"]
+mod pointer_transport_tests;
 #[cfg(test)]
 pub(super) mod entity_transport_tests {
     use super::*;

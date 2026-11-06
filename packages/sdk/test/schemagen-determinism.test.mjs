@@ -22,6 +22,6 @@ test("real catalog: CCSPlayerPawn resolves health via CBaseEntity, friction pres
   const dts = emitDts(buildModel(catalog, list));
   assert.match(dts, /export interface CCSPlayerPawn extends CCSPlayerPawnBase \{/);
   const js = emitJs(buildModel(catalog, list));
-  assert.match(js, /readInt32\(off\("CBaseEntity","m_iHealth"\)\)/);      // health inherited from CBaseEntity
-  assert.match(js, /readFloat32\(off\("CBaseEntity","m_flFriction"\)\)/);
+  assert.match(js, /readInt32\(\(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("CBaseEntity","m_iHealth"\)\)\)\)/);      // health inherited from CBaseEntity
+  assert.match(js, /readFloat32\(\(O\[\d+\] >= 0 \? O\[\d+\] : \(O\[\d+\] = off\("CBaseEntity","m_flFriction"\)\)\)\)/);
 });

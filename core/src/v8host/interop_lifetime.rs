@@ -316,6 +316,11 @@ fn with_scope(f: impl FnOnce(&mut v8::PinScope)) {
     });
 }
 
+/// Drop stale facade cells' references to retired producers (see `interop_facade::sweep`).
+pub(super) fn sweep_facades() {
+    with_scope(super::interop_facade::sweep);
+}
+
 /// Retire watches before dropping their consumer context, and attachments before a provider's
 /// removal can leave a retained proxy usable. The provider is already Unloading (or Loading).
 pub(super) fn teardown_plugin(id: &str) {

@@ -45,7 +45,7 @@ def head(n, title, lic):
 # ---------------------------------------------------------------- native components
 NATIVE = [
     ("libffi 3.7.1", "MIT", "third_party/libffi/LICENSE"),
-    ("Valve Source 2 SDK (hl2sdk)", "NOT open source — see notice below", None),
+    ("Valve Source 2 SDK (s2sdk)", "NOT open source — see notice below", None),
     ("Metamod:Source", "zlib/libpng license", "third_party/metamod-source/LICENSE.txt"),
     ("Google Breakpad", "BSD-3-Clause (plus aggregated sub-licenses)", "third_party/breakpad/LICENSE"),
     ("Protocol Buffers 3.21.8", "BSD-3-Clause", "third_party/hl2sdk/thirdparty/protobuf-3.21.8/LICENSE"),
@@ -56,18 +56,18 @@ NATIVE = [
 
 VALVE_NOTICE = """\
 s2script does NOT redistribute Valve source code. `third_party/hl2sdk` is a git
-submodule (alliedmodders/hl2sdk, branch `cs2`); a clone of the s2script repository
-contains none of it.
+submodule (s2script/s2sdk, a fork of alliedmodders/s2sdk, branch `s2script-cs2`); a
+clone of the s2script repository contains none of it.
 
 The BUILT binary `s2script.so` does, however, embed Valve SDK object code.
 `shim/CMakeLists.txt` compiles the following Valve translation units into it:
 
     entity2/entitykeyvalues.cpp     CEntityKeyValues, for EKV-configured spawns
-    tier1/keyvalues3.cpp            KV3 backing store for the above
+    tier0_perproject/keyvalues3.cpp KV3 backing store for the above
     public/tier0/memoverride.cpp    routes operator new/delete to the game allocator
     lib/linux64/release/libprotobuf.a   protobuf 3.21.8 reflection for SayText2
 
-The alliedmodders/hl2sdk repository ships no LICENSE file. Its sources carry:
+The alliedmodders/s2sdk repository ships no LICENSE file. Its sources carry:
 
     Copyright (c) 1996-2005, Valve Corporation, All rights reserved.
 
@@ -171,7 +171,7 @@ s2script itself is licensed MIT OR Apache-2.0; see ../LICENSE. Nothing below
 changes that. These are the notices s2script owes to others.
 
 Pinned at generation time:""")
-o.append("    hl2sdk            %s   (branch cs2)" % rev("third_party/hl2sdk"))
+o.append("    s2sdk             %s   (branch s2script-cs2)" % rev("third_party/hl2sdk"))
 o.append("    metamod-source    %s   (PLAPI 18/KHook; unmodified upstream source)" % rev("third_party/metamod-source"))
 o.append("    libffi            %s   (3.7.1; full revision 5c1c43091ed611fdea774374355eb938c73a9157)" % rev("third_party/libffi"))
 o.append("    breakpad          %s" % rev("third_party/breakpad"))

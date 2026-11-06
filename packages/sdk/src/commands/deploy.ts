@@ -35,8 +35,9 @@ import {
   planBundle,
   formatBundlePlan,
   uploadBundle,
+  type BundlePlanEntry,
 } from "../workspace/deploy-all.ts";
-import { readBundle } from "../workspace/bundle.ts";
+import { bundleOfPlugin, readBundles } from "../workspace/bundle.ts";
 import { assertAccessAllowed, assertRegistrySupportsAccess, resolveAccess } from "../registry/access.ts";
 
 export async function run(argv: string[]): Promise<void> {
@@ -198,13 +199,21 @@ async function runWorkspaceDeploy(opts: {
   const { ordered, built, unpublishableLibraries } = builtPluginsFromOutcomes(ws, build.outcomes);
 
   const plan = await computePlan(ordered, (name, version) => isAlreadyPublished(client, name, version));
-  // A bundle root publishes last, after its members — and is refused up front (before any upload)
-  // when its version is already published with different member pins.
-  const bundle = readBundle(ws);
-  const bundleEntry = bundle ? await planBundle(bundle, client) : null;
+  // Bundles publish last, after their members — and each is refused up front (before any upload)
+  // when its version is already published with different member pins. Only a bundle whose every
+  // member is in this run is planned: under --filter, a sibling bundle's members were never
+  // uploaded, so publishing it would pin versions this run did not ship.
+  const inRun = new Set(ordered.map((p) => p.name));
+  const bundles = readBundles(ws);
+  const planned = bundles.filter((b) => b.members.every((m) => inRun.has(m.name)));
+  const bundleEntries: BundlePlanEntry[] = [];
+  for (const b of planned) bundleEntries.push(await planBundle(b, client));
   label("plan:");
   console.log(formatPlan(plan));
-  if (bundleEntry) console.log(formatBundlePlan(bundleEntry));
+  for (const entry of bundleEntries) console.log(formatBundlePlan(entry));
+  for (const b of bundles) {
+    if (!planned.includes(b)) console.log(`    ${b.name} ${b.version}   skip (not every member is in --filter)`);
+  }
   if (unpublishableLibraries.length > 0) {
     // A ws.libs-only library built above (its own "Building @foo/mylib" step already printed)
     // but has no place in `plan` — computePlan/uploadPlan only ever see ws.plugins. Naming it here,
@@ -222,15 +231,16 @@ async function runWorkspaceDeploy(opts: {
     assertAccessAllowed(e.plugin.name, a);
     if (a === "restricted") restricted.push(e.plugin.name);
   }
-  if (bundleEntry?.reason === "PUBLISH") {
-    const a = accessFlag ?? resolveAccess(ws.pkg);
-    assertAccessAllowed(bundleEntry.bundle.name, a);
-    if (a !== undefined) bundleEntry.manifest = { ...bundleEntry.manifest, access: a };
-    if (a === "restricted") restricted.push(bundleEntry.bundle.name);
+  for (const entry of bundleEntries) {
+    if (entry.reason !== "PUBLISH") continue;
+    const a = accessFlag ?? resolveAccess(entry.bundle.pkg);
+    assertAccessAllowed(entry.bundle.name, a);
+    if (a !== undefined) entry.manifest = { ...entry.manifest, access: a };
+    if (a === "restricted") restricted.push(entry.bundle.name);
   }
   if (restricted.length > 0) console.log(`    restricted: ${restricted.join(", ")}`);
 
-  const bundlePublishes = bundleEntry?.reason === "PUBLISH" ? 1 : 0;
+  const bundlePublishes = bundleEntries.filter((e) => e.reason === "PUBLISH").length;
   const toPublish = publishCount(plan) + bundlePublishes;
   const noun = (n: number) => `${n} package${n === 1 ? "" : "s"}`;
   if (toPublish === 0) {
@@ -273,7 +283,7 @@ async function runWorkspaceDeploy(opts: {
     }
   }
 
-  const results = await uploadPlan(plan, built, client, { bundle: bundle?.name, access: accessFlag });
+  const results = await uploadPlan(plan, built, client, { bundle: bundleOfPlugin(bundles), access: accessFlag });
   let failures = 0;
   for (const r of results) {
     if (r.status === "failed") failures++;
@@ -284,8 +294,11 @@ async function runWorkspaceDeploy(opts: {
       console.log(line);
     }
   }
-  if (bundleEntry) {
-    const r = await uploadBundle(bundleEntry, results, client);
+  for (const entry of bundleEntries) {
+    // Only this bundle's own members decide it: a failure in a sibling bundle leaves this one
+    // publishable, because none of its pins point at the failed version.
+    const members = new Set(entry.bundle.members.map((m) => m.name));
+    const r = await uploadBundle(entry, results.filter((m) => members.has(m.plugin.name)), client);
     if (r.status === "failed") failures++;
     const line = `${r.bundle.name}@${r.bundle.version} (bundle): ${r.status}${r.detail ? ` (${r.detail})` : ""}`;
     if (interactive) {

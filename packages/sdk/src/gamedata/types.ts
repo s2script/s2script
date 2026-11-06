@@ -1,8 +1,8 @@
 /** Plugin-shippable gamedata. v1 accepts `signatures` + `calls` + `hooks`. */
 export const PLATFORM = "linuxsteamrt64" as const;
 
-export type ArgKind = "bool" | "int" | "float" | "string" | "utlstring" | "vector" | "entity";
-export type RetKind = "void" | "bool" | "int" | "float" | "entity";
+export type ArgKind = "bool" | "int" | "float" | "string" | "utlstring" | "vector" | "entity" | "ptr";
+export type RetKind = "void" | "bool" | "int" | "float" | "entity" | "ptr" | "utlstringlist";
 
 /**
  * `utlstring` is `string`'s sibling for callees that take `CUtlString`, not `const char*`.
@@ -16,12 +16,19 @@ export type RetKind = "void" | "bool" | "int" | "float" | "entity";
  *
  * Marshalling is identical to `string` up to the last step: the same NUL-terminated buffer is
  * built, then the shim wraps its pointer in a call-scoped temporary and passes THAT address.
+ *
+ * `ptr` is a raw address, typed as `Ptr` from `@s2script/sdk/unsafe` (null passes a null
+ * pointer). As a return kind the whole 64-bit register comes back as a `Ptr`.
+ *
+ * `utlstringlist` (return only) is a pointer to the engine's `CUtlStringList`, a
+ * `CUtlVector<char*>`. The shim copies the strings out with fault-free reads and the call returns
+ * `string[]`, or null when the pointer is null.
  */
-export const ARG_KINDS: readonly ArgKind[] = ["bool", "int", "float", "string", "utlstring", "vector", "entity"];
-export const RET_KINDS: readonly RetKind[] = ["void", "bool", "int", "float", "entity"];
+export const ARG_KINDS: readonly ArgKind[] = ["bool", "int", "float", "string", "utlstring", "vector", "entity", "ptr"];
+export const RET_KINDS: readonly RetKind[] = ["void", "bool", "int", "float", "entity", "ptr", "utlstringlist"];
 
 /** Everything except `float` occupies an integer register under SysV. */
-export const INT_CLASS_ARGS: ReadonlySet<ArgKind> = new Set<ArgKind>(["bool", "int", "string", "utlstring", "vector", "entity"]);
+export const INT_CLASS_ARGS: ReadonlySet<ArgKind> = new Set<ArgKind>(["bool", "int", "string", "utlstring", "vector", "entity", "ptr"]);
 /** `this` consumes rdi, leaving 5 GP argument registers. */
 /**
  * Declared integer-class args. Mirrors `kMaxGpArgs` (shim) and `MAX_GP_ARGS` (core) — an ABI.
@@ -42,8 +49,11 @@ export interface ViaSpec { class: string; field: string }
  * schema-named sub-object pointer (`via`).
  * `"none"`   — a STATIC/free engine function with no receiver at all. The generated callable takes
  * no leading `self`, and `via` is rejected: there is no receiver to hop from.
+ * `"interface"` — an engine interface named by its version string (`name`, e.g. "GameTypes001"),
+ * looked up through the engine and server factories. No leading `self` either. For a vtable target
+ * the runtime also checks the interface object's own vtable slot is the resolved function.
  */
-export type Receiver = { kind: "entity"; via?: ViaSpec } | { kind: "none" };
+export type Receiver = { kind: "entity"; via?: ViaSpec } | { kind: "none" } | { kind: "interface"; name: string };
 
 export interface SignatureTarget { kind: "signature"; name: string }
 export interface VtablePlatform { index: number; validate: { prologue: string } }

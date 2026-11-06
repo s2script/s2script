@@ -12,7 +12,7 @@ export function emitDts(model: SchemaModel): string {
     return id ? `${id} | null` : TSTYPE[f.accessorKind];
   };
   const names = new Set(model.classes.map((c) => c.className));
-  const out: string[] = [HEADER, 'import type { EntityRef } from "@s2script/sdk/entity";'];
+  const out: string[] = [HEADER, 'import type { EntityRef } from "@s2script/sdk/entity";', 'import type { Ptr } from "@s2script/sdk/unsafe";'];
   const vecClasses = new Set<string>();
   for (const c of model.classes) for (const f of c.ownFields) {
     const vi = VEC_INFO[f.accessorKind]; if (vi) vecClasses.add(vi.cls);
@@ -82,6 +82,19 @@ export function emitDts(model: SchemaModel): string {
     " * fields.glow.glowing = true;",
     " */",
     "export declare function wrapEntity<K extends keyof SchemaClasses>(className: K, ref: EntityRef): SchemaClasses[K];",
+    "",
+    "/**",
+    " * A view factory for a raw address: the same field accessors as {@link wrapEntity}, over a `Ptr`",
+    " * from `@s2script/sdk/unsafe` instead of a checked entity reference.",
+    " *",
+    " * UNSAFE. Nothing checks that the address still holds this class; a stale one reads garbage or",
+    " * crashes. Use it for memory an engine call handed you, not for entities you can reference safely.",
+    " *",
+    " * @example",
+    " * import { Ptr } from \"@s2script/sdk/unsafe\";",
+    " * const fields = Ptr.from(pawn)?.as(structView(\"CCSPlayerPawn\"));",
+    " */",
+    "export declare function structView<K extends keyof SchemaClasses>(className: K): (ptr: Ptr) => SchemaClasses[K];",
     "",
   );
   return out.join("\n");

@@ -13,11 +13,12 @@ const VECTOR_TS = "{ readonly x: number; readonly y: number; readonly z: number 
 const ARG_TS: Record<ArgKind, string> = {
   bool: "boolean", int: "number", float: "number",
   string: "string", utlstring: "string", vector: VECTOR_TS,
-  entity: "EntityRef | null",
+  entity: "EntityRef | null", ptr: "Ptr | null",
 };
 const RET_TS: Record<RetKind, string> = {
   void: "void", bool: "boolean | null", int: "number | null",
-  float: "number | null", entity: "EntityRef | null",
+  float: "number | null", entity: "EntityRef | null", ptr: "Ptr | null",
+  utlstringlist: "string[] | null",
 };
 
 /** Emit `.s2script/gamedata.d.ts`. Deterministic: calls are sorted by name. */
@@ -33,7 +34,8 @@ export function generateGamedataTypes(gd: PluginGamedata): string {
       // A receiverless call (`receiver.kind: "none"` — a static engine function) takes NO leading
       // `self`. Emitting one would make the generated type disagree with the runtime callable, and
       // every call site would pass its first real argument into a parameter that does not exist.
-      const receiverless = decl.receiver?.kind === "none";
+      // An interface receiver is fixed by the descriptor, so it takes no `self` either.
+      const receiverless = decl.receiver?.kind === "none" || decl.receiver?.kind === "interface";
       const params = [
         ...(receiverless ? [] : ["self: EntityRef"]),
         ...decl.args.map((a, i) => `${names?.[i] ?? `a${i}`}: ${ARG_TS[a]}`),
@@ -47,6 +49,7 @@ export function generateGamedataTypes(gd: PluginGamedata): string {
     "// The EntityRef import is REQUIRED: a `declare module` augmentation resolves type names in its",
     "// own file scope, so an un-imported EntityRef degrades to an error skipLibCheck can swallow.",
     'import type { EntityRef } from "@s2script/sdk/entity";',
+    'import type { Ptr } from "@s2script/sdk/unsafe";',
     "",
     'declare module "@s2script/sdk/unsafe" {',
     `  interface EngineCalls {${body}}`,

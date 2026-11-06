@@ -14,15 +14,17 @@
 #include "engine_hooks.h"
 #include "runtime_witness.h"
 
-#include <eiface.h>
+#include <engine2/isource2server.h>
+#include <engine2/ivengineserver2.h>
+#include <engine2/isource2serverconfig.h>
 #include <icvar.h>
 #include <convar.h>
 #include <playerslot.h>
 #include <igameevents.h>
-#include <iservernetworkable.h>
-#include <inetchannel.h>
-#include <engine/igameeventsystem.h>
+#include <networksystem/inetchannel.h>
+#include <engine2/igameeventsystem.h>
 #include <entity2/entitysystem.h>
+#include <gameentitysystem.h>
 #include <entity2/entityinstance.h>
 #include "vtable.h"
 
@@ -47,7 +49,9 @@
 #endif
 #include <limits.h>
 #include <ctime>
-#include <iserver.h>
+#include <engine2/inetworkgameserver.h>
+#include <engine2/inetworkserverservice.h>
+#include <engine2/networkgameserverbase.h>
 
 PLUGIN_GLOBALVARS();
 

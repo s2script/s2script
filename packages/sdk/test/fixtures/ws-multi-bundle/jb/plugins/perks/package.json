@@ -1,0 +1,5 @@
+{
+  "name": "@fixture/jb-perks",
+  "version": "0.3.0",
+  "main": "src/plugin.ts"
+}

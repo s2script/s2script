@@ -9,8 +9,8 @@ add_library(s2_engine_function_probe SHARED live_plugin.cpp "${ROOT}/shim/src/en
     "${ROOT}/shim/src/gamedata.cpp" "${ROOT}/shim/src/engine_resolver.cpp" "${ROOT}/shim/src/original_module.cpp"
     "${ROOT}/shim/src/call_validate.cpp" "${ROOT}/shim/src/sigscan.cpp" "${ROOT}/shim/src/vtable.cpp" "${ROOT}/third_party/hde/hde64.c")
 target_include_directories(s2_engine_function_probe PRIVATE "${ROOT}/shim/src/sdk_stubs" "${ROOT}/third_party/hde" "${ROOT}/shim/src" "${MMS}/core" "${KHOOK}/include"
-    "${MMS}/third_party/amtl" "${HL2SDK}/public" "${HL2SDK}/public/tier0" "${HL2SDK}/public/tier1"
-    "${HL2SDK}/public/appframework" "${HL2SDK}/public/mathlib" "${HL2SDK}/public/entity2" "${HL2SDK}/public/vscript" "${HL2SDK}/game/shared")
+    "${MMS}/third_party/amtl" "${HL2SDK}/public" "${HL2SDK}/public/engine2"
+    "${HL2SDK}/public/mathlib" "${HL2SDK}/public/tier0" "${HL2SDK}/public/entity2" "${HL2SDK}/game/shared" "${HL2SDK}/common")
 target_compile_definitions(s2_engine_function_probe PRIVATE LINUX _LINUX POSIX COMPILER_GCC PLATFORM_64BITS META_NO_HL2SDK
     _FILE_OFFSET_BITS=64 _GLIBCXX_USE_CXX11_ABI=0 stricmp=strcasecmp strnicmp=strncasecmp _stricmp=strcasecmp _vsnprintf=vsnprintf
     S2FN_SOURCE_REVISION="${S2FN_SOURCE_REVISION}" S2FN_BUILD_TOKEN="${S2FN_BUILD_TOKEN}")

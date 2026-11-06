@@ -5,7 +5,12 @@
 #include <cstring>
 #include <cstddef>
 #include <cstdint>
+// The fixtures below build variants the way the engine hands them over, field by field, including
+// null vector/angle pointers the public constructors can't express. s2sdk made those members
+// private, so this test (only) opens them up.
+#define private public
 #include "variant.h"
+#undef private
 #include "tier0/memalloc.h"
 #include <string>
 #include <vector>
@@ -16,6 +21,8 @@
 // The SDK contains unused default allocator branches referring to this symbol.
 // Owned capture in this fixture uses the explicit TestAlloc/TestFree services below.
 IMemAlloc* g_pMemAlloc=nullptr;
+// s2sdk's string CopyData measures with tier0's export; libtier0 supplies it in the game.
+int V_tier0_strlen(const char* str) { return static_cast<int>(std::strlen(str)); }
 
 struct CPulseArgumentPack;
 struct CPulseInputParamMap;
@@ -59,6 +66,15 @@ static int s2script_core_dispatch_output(const char* cls,const char* name,int ac
         CHECK(std::string(value)==before,"nested output preserves its caller's copied value");
     }
     return 2;
+}
+
+static std::string input_seen;
+static int input_result=0;
+static int s2script_core_dispatch_input(const char* cls,const char* input,int target,int act,int caller,
+                                        const char* value) {
+    input_seen=std::string(cls)+"|"+input+"|"+std::to_string(target)+"|"+std::to_string(act)+"|"+
+               std::to_string(caller)+"|"+value;
+    return input_result;
 }
 
 #include "named_output_adapter.inc"
@@ -105,9 +121,9 @@ static void BorrowedFormatting() {
     value.m_type=FIELD_CSTRING; value.m_pszString="cstring"; check("cstring");
     value.m_pszString=nullptr; check("");
     Vector vector(1,2,3); value.m_type=FIELD_VECTOR; value.m_pVector=&vector; check("1 2 3");
-    value.m_pVector=nullptr; check("");
+    value.m_pVector=nullptr; check("0 0 0");   // the SDK reads a null vector as zero
     QAngle angle(4,5,6); value.m_type=FIELD_QANGLE; value.m_pQAngle=&angle; check("4 5 6");
-    value.m_pQAngle=nullptr; check("");
+    value.m_pQAngle=nullptr; check("0 0 0");
     value.m_type=FIELD_COLOR32; value.m_pData=nullptr; check("");
     std::string long_text(300,'z');
     value.m_type=FIELD_CSTRING; value.m_pszString=long_text.c_str();
@@ -168,6 +184,32 @@ static void OptionalValueRegression() {
     CHECK(observed=="copied-final-value","argument seven supplies the output value, never argument four");
 }
 
+// The AcceptInput adapter: identity -> instance, the symbol's string, handles, formatted value.
+static void InputAdapter() {
+    CEntityInstance target{5},act{17};
+    // The SDK's identity is not aggregate-constructible; the adapter reads only m_pInstance.
+    alignas(CEntityIdentity) unsigned char storage[sizeof(CEntityIdentity)]{};
+    auto& identity=*reinterpret_cast<CEntityIdentity*>(storage);
+    identity.m_pInstance=&target;
+    CUtlSymbolLarge name("Kill");
+    CVariant value(42);
+    input_result=2;
+    CHECK(S2NamedInputOp(&identity,&name,&act,nullptr,&value)==2,"input verdict preserved");
+    CHECK(input_seen=="logic_relay|Kill|5|17|-1|42","input identity, handles and value preserved");
+    input_seen.clear(); input_result=0;
+    CHECK(S2NamedInputOp(&identity,&name,nullptr,nullptr,nullptr)==0 &&
+          input_seen=="logic_relay|Kill|5|-1|-1|","valueless input reports an empty value");
+    input_seen.clear();
+    alignas(CEntityIdentity) unsigned char orphan_storage[sizeof(CEntityIdentity)]{};
+    auto& orphan=*reinterpret_cast<CEntityIdentity*>(orphan_storage);
+    CUtlSymbolLarge empty("");
+    CHECK(S2NamedInputOp(&orphan,&name,nullptr,nullptr,nullptr)==0 &&
+          S2NamedInputOp(&identity,&empty,nullptr,nullptr,nullptr)==0 &&
+          S2NamedInputOp(nullptr,&name,nullptr,nullptr,nullptr)==0 &&
+          S2NamedInputOp(&identity,nullptr,nullptr,nullptr,nullptr)==0 && input_seen.empty(),
+          "unresolvable input falls through without dispatch");
+}
+
 int main() {
     const pid_t child=fork();
     if(child==0) { OptionalValueRegression(); _exit(failures ? 1 : 0); }
@@ -175,8 +217,8 @@ int main() {
     CHECK(WIFEXITED(status) && WEXITSTATUS(status)==0,
           "optional value regression completed without reading the opaque argument pack as a variant");
     if(failures) return 1;
-    BorrowedFormatting(); PackCaptureAndLifetime();
+    BorrowedFormatting(); PackCaptureAndLifetime(); InputAdapter();
     if(failures) return 1;
-    std::puts("named_output_value: production argument/value, formatting, ownership and nesting regressions passed");
+    std::puts("named_output_value: production argument/value, formatting, ownership, nesting and input-adapter regressions passed");
     return 0;
 }

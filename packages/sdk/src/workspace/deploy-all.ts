@@ -208,10 +208,12 @@ export async function uploadPlan(
   client: RegistryClient,
   opts: {
     /**
-     * In a bundle workspace, the bundle every uploaded plugin is a member of. It is written into
-     * the REGISTRY deploy manifest only — the .s2sp keeps the minimal manifest the runtime reads.
+     * The bundle each uploaded plugin is a member of: one name for every plugin (a root bundle),
+     * or plugin name -> bundle name (bundle directories; a plugin absent from the map is in no
+     * bundle). It is written into the REGISTRY deploy manifest only — the .s2sp keeps the minimal
+     * manifest the runtime reads.
      */
-    bundle?: string;
+    bundle?: string | ReadonlyMap<string, string>;
     /** `--access`, applied to every upload; otherwise each package's publishConfig.access. */
     access?: PackageAccess;
   } = {},
@@ -233,7 +235,8 @@ export async function uploadPlan(
       const archive = assembleDeployArchive(b.plugin.dir, b.plugin.pkg as DeployablePkgJson, b.outPath, {
         access: opts.access,
       });
-      if (opts.bundle !== undefined) archive.manifest = { ...archive.manifest, bundle: opts.bundle };
+      const bundle = typeof opts.bundle === "string" ? opts.bundle : opts.bundle?.get(entry.plugin.name);
+      if (bundle !== undefined) archive.manifest = { ...archive.manifest, bundle };
       const res = await client.deploy(archive);
       results.push({ plugin: entry.plugin, status: "published", detail: res.reviewState });
     } catch (e) {

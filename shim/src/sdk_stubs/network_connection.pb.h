@@ -2,7 +2,7 @@
 // The SDK normally generates this from common/network_connection.proto via protoc.
 // We only need ENetworkDisconnectionReason (used in IVEngineServer2) and a
 // forward-declaration of google::protobuf::Message (used in IVEngineServer2::GetPlayerInfo).
-// Both are consumed by eiface.h; ISource2Server itself uses neither.
+// Both are consumed by the engine2 headers (ivengineserver2.h and friends).
 #pragma once
 
 // Forward-declaration satisfies the `google::protobuf::Message &info` parameter

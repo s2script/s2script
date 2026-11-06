@@ -1676,6 +1676,7 @@ checksum = "04d056b875a9d2e6cb9a61d127afee9ac5999b9f87bcb32079d1318e505be714"
 name = "s2script-core"
 version = "0.0.0"
 dependencies = [
+ "flate2",
  "futures-util",
  "libc",
  "reqwest",

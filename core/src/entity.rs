@@ -446,8 +446,8 @@ mod tests {
 
 use crate::dispatch::{fan_out, Delivery, Instrument};
 use crate::v8host::{
-    build_entity_ref, current_plugin, engine_ops, ent_op_serial, js_ent_id,
-    schema_offset_cached, set_native, subscribe_into,
+    build_entity_ref, current_plugin, engine_ops, engine_ops_ref, ent_op_serial, js_ent_id,
+    schema_offset_cached, set_fast_native, set_native, subscribe_into,
 };
 use std::os::raw::{c_int, c_void};
 
@@ -477,21 +477,6 @@ thread_local! {
     /// name. `remove_by_owner` on unload; reset on shutdown so a re-init starts empty.
     static ENTITY_MUX: std::cell::RefCell<crate::channels::Channels<v8::Global<v8::Function>>>
         = std::cell::RefCell::new(crate::channels::Channels::new());
-}
-
-/// Native `__s2_ent_ref_valid(index, id) -> boolean`.
-/// True iff the books say (index, id) is live (and the slot re-validates in the identity chunk).
-fn s2_ent_ref_valid(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_bool(false);
-        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
-        let id = js_ent_id(scope, args.get(1));
-        rv.set_bool(!entity_resolve_ptr(index, id).is_null());
-    }));
 }
 
 /// Native `__s2_ent_ref_read(index, serial, offset, kind) -> number|boolean|null`. Serial-gated typed read.
@@ -660,6 +645,103 @@ fn s2_ent_ref_read_floats_chain(scope: &mut v8::PinScope, args: v8::FunctionCall
             out.set_index(scope, i as u32, num.into());
         }
         rv.set(out.into());
+    }));
+}
+
+/// Element width in bytes for the scalar kinds `__s2_ent_ref_gather` accepts (64-bit integers are
+/// refused: a Float64Array cannot carry them losslessly).
+fn gather_width(kind: i64) -> Option<i32> {
+    match kind {
+        KIND_I32 | KIND_F32 | KIND_U32 => Some(4),
+        KIND_BOOL | KIND_I8 | KIND_U8 => Some(1),
+        KIND_I16 | KIND_U16 => Some(2),
+        KIND_F64 => Some(8),
+        _ => None,
+    }
+}
+
+/// Native `__s2_ent_ref_gather(index, serial, plan: Int32Array, out: Float64Array, outIndex) -> number`.
+///
+/// The zero-allocation bulk read for per-tick hot paths (a run timer recording every player every
+/// tick): one liveness resolve, then every field the plan names, written as numbers into the
+/// caller's preallocated `out` from `outIndex`. No JS array, Vector or per-field native call.
+///
+/// `plan` is a flat run of entries, each `[hops, hop0..hopN-1, finalOff, kind, count]`: follow
+/// `hops` pointer derefs (null-checked, raw pointers stay in core), then read `count` (1..=16)
+/// contiguous elements of `kind` at `finalOff`. An entry whose chain hits a null hop writes NaN for
+/// its `count` slots and the rest of the plan still runs. Returns the number of slots written, or
+/// -1 when the root is stale. A malformed plan (bad kind/count/offset, or `out` too short for the
+/// whole plan) writes nothing and returns -2, so a partial snapshot can never look complete.
+fn s2_ent_ref_gather(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(-2);
+        let index = args.get(0).integer_value(scope).unwrap_or(-1) as i32;
+        let id = js_ent_id(scope, args.get(1));
+        let Ok(plan) = v8::Local::<v8::Int32Array>::try_from(args.get(2)) else { return; };
+        let Ok(out) = v8::Local::<v8::Float64Array>::try_from(args.get(3)) else { return; };
+        let out_index = args.get(4).integer_value(scope).unwrap_or(0);
+        if out_index < 0 { return; }
+        // Copy the (small) plan out first: validating it fully before touching `out` is what
+        // makes a malformed plan all-or-nothing.
+        let plan_len = plan.byte_length() / 4;
+        let mut words = vec![0i32; plan_len];
+        {
+            let bytes = unsafe { std::slice::from_raw_parts_mut(words.as_mut_ptr() as *mut u8, plan_len * 4) };
+            plan.copy_contents(bytes);
+        }
+        let mut need = 0usize;
+        let mut i = 0usize;
+        while i < words.len() {
+            let hops = words[i];
+            if hops < 0 || hops > 8 { return; }
+            let end = i + 1 + hops as usize + 3;
+            if end > words.len() { return; }
+            if words[i + 1..i + 1 + hops as usize].iter().any(|&o| o < 0) { return; }
+            let final_off = words[end - 3];
+            let kind = words[end - 2] as i64;
+            let count = words[end - 1];
+            if final_off < 0 || gather_width(kind).is_none() || !(1..=16).contains(&count) { return; }
+            need += count as usize;
+            i = end;
+        }
+        let out_len = out.byte_length() / 8;
+        if out_index as usize + need > out_len { return; }
+        let ent = entity_resolve_ptr(index, id);
+        if ent.is_null() { rv.set_int32(-1); return; }
+        let dst = unsafe { (out.data() as *mut f64).add(out_index as usize) };
+        let mut w = 0usize;
+        let mut i = 0usize;
+        while i < words.len() {
+            let hops = words[i] as usize;
+            let mut p = ent as *const u8;
+            for h in 0..hops {
+                if p.is_null() { break; }
+                p = crate::entity::read_ptr(p, words[i + 1 + h]);
+            }
+            let base = i + 1 + hops;
+            let (final_off, kind, count) = (words[base], words[base + 1] as i64, words[base + 2]);
+            let width = gather_width(kind).unwrap_or(4);
+            for k in 0..count {
+                let off = final_off + k * width;
+                let v = if p.is_null() { f64::NAN } else {
+                    match kind {
+                        KIND_I32  => crate::entity::read_i32(p, off) as f64,
+                        KIND_F32  => crate::entity::read_f32(p, off) as f64,
+                        KIND_U32  => crate::entity::read_u32(p, off) as f64,
+                        KIND_BOOL => if crate::entity::read_bool(p, off) { 1.0 } else { 0.0 },
+                        KIND_I8   => crate::entity::read_i8(p, off) as f64,
+                        KIND_U8   => crate::entity::read_u8(p, off) as f64,
+                        KIND_I16  => crate::entity::read_i16(p, off) as f64,
+                        KIND_U16  => crate::entity::read_u16(p, off) as f64,
+                        _         => crate::entity::read_f64(p, off),
+                    }
+                };
+                unsafe { dst.add(w).write_unaligned(v); }
+                w += 1;
+            }
+            i = base + 3;
+        }
+        rv.set_int32(w as i32);
     }));
 }
 
@@ -849,6 +931,64 @@ fn s2_entity_find_by_class(scope: &mut v8::PinScope, args: v8::FunctionCallbackA
     }));
 }
 
+/// Every live identity slot as (index, engine serial), over the shim's `ent_snapshot` op (the books
+/// repair sweep's chunk walk: system-owned identity memory only). Empty with no op.
+fn entity_snapshot_pairs() -> Vec<(i32, i32)> {
+    let Some(snapshot) = engine_ops().and_then(|o| o.ent_snapshot) else { return Vec::new() };
+    const CAP: usize = 32768;   // MAX_TOTAL_ENTITIES ceiling, same as the repair sweep
+    let mut idxs = vec![0i32; CAP];
+    let mut sers = vec![0i32; CAP];
+    let n = snapshot(idxs.as_mut_ptr(), sers.as_mut_ptr(), CAP as i32);
+    let n = (n.max(0) as usize).min(CAP);
+    (0..n).map(|i| (idxs[i], sers[i])).collect()
+}
+
+/// Books-adopt each (index, serial) and mint the refs that pass, in slot order.
+fn entity_ref_array<'s>(scope: &mut v8::PinScope<'s, '_>, pairs: &[(i32, i32)]) -> v8::Local<'s, v8::Array> {
+    let arr = v8::Array::new(scope, 0);
+    let mut w: u32 = 0;
+    for &(index, serial) in pairs {
+        if let Some(id) = crate::entity_live::adopt(index, serial) {
+            let r = build_entity_ref(scope, index, id);
+            arr.set_index(scope, w, r);
+            w += 1;
+        }
+    }
+    arr
+}
+
+/// Native `__s2_entity_find_all() -> EntityRef[]`. Every live entity, books-gated like
+/// `__s2_entity_find_by_class`. Backs `Entity.findInSphere`'s unfiltered search. Empty with no op.
+fn s2_entity_find_all(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let empty = v8::Array::new(scope, 0);
+        rv.set(empty.into());
+        let pairs = entity_snapshot_pairs();
+        let arr = entity_ref_array(scope, &pairs);
+        rv.set(arr.into());
+    }));
+}
+
+/// Native `__s2_entity_find_by_name(name) -> EntityRef[]`. Every live entity whose targetname
+/// (`CEntityIdentity::m_name`) exactly matches `name`: the snapshot walk, each slot's name read
+/// through the same serial-gated `entity_name` op `EntityRef.name` uses. An empty `name` matches
+/// nothing (unnamed entities are not "named ''"). Empty with no op / a NUL in the name.
+fn s2_entity_find_by_name(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let empty = v8::Array::new(scope, 0);
+        rv.set(empty.into());
+        let wanted = args.get(0).to_rust_string_lossy(scope);
+        if wanted.is_empty() || wanted.contains('\0') { return; }
+        let Some(name_of) = engine_ops().and_then(|o| o.entity_name) else { return };
+        let pairs: Vec<(i32, i32)> = entity_snapshot_pairs().into_iter().filter(|&(index, serial)| {
+            let ptr = name_of(index, serial);
+            !ptr.is_null() && unsafe { std::ffi::CStr::from_ptr(ptr) }.to_bytes() == wanted.as_bytes()
+        }).collect();
+        let arr = entity_ref_array(scope, &pairs);
+        rv.set(arr.into());
+    }));
+}
+
 /// Native `__s2_entity_spawn(index, serial) -> boolean`. Serial-gated `DispatchSpawn`. Degrades to
 /// `false` with no op / a stale ref.
 fn s2_entity_spawn(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
@@ -916,6 +1056,61 @@ fn s2_ent_apply_abs_velocity_impulse(scope: &mut v8::PinScope, args: v8::Functio
         if let Some(func) = ops.and_then(|o| o.entity_apply_abs_velocity_impulse) {
             rv.set_bool(func(index, serial, v.as_ptr()) != 0);
         }
+    }));
+}
+
+/// Natives `__s2_ent_lookup_bone(index, serial, name) -> int` and
+/// `__s2_ent_lookup_attachment(index, serial, name) -> int`. Serial-gated name lookups on the
+/// entity's model. A miss, a stale ref, a modelless entity, a missing op or a NUL in the name all
+/// return the engine's own "none" value: -1 for a bone, 0 for an attachment. Never throws.
+fn model_lookup(scope: &mut v8::PinScope, args: &v8::FunctionCallbackArguments, miss: i32,
+                op: fn(&crate::v8host::S2EngineOps) -> Option<crate::v8host::EntityLookupBoneFn>) -> i32 {
+    let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return miss };
+    let Ok(name) = std::ffi::CString::new(args.get(2).to_rust_string_lossy(scope)) else { return miss };
+    match engine_ops().as_ref().and_then(op) {
+        Some(func) => func(index, serial, name.as_ptr()),
+        None => miss,
+    }
+}
+fn s2_ent_lookup_bone(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(-1);
+        rv.set_int32(model_lookup(scope, &args, -1, |o| o.entity_lookup_bone).max(-1));
+    }));
+}
+fn s2_ent_lookup_attachment(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_int32(0);
+        rv.set_int32(model_lookup(scope, &args, 0, |o| o.entity_lookup_attachment).max(0));
+    }));
+}
+
+/// Natives `__s2_ent_get_bone_transform(index, serial, bone) -> number[7] | null` (position x, y, z,
+/// then the orientation quaternion x, y, z, w) and `__s2_ent_get_attachment(index, serial,
+/// attachment) -> number[6] | null` (world origin, then world angles). Serial-gated; null on a
+/// stale ref, a missing op, a modelless entity, a negative bone or an attachment the engine did
+/// not find. Never throws.
+fn model_floats(scope: &mut v8::PinScope, args: &v8::FunctionCallbackArguments, rv: &mut v8::ReturnValue, n: usize,
+                op: fn(&crate::v8host::S2EngineOps) -> Option<crate::v8host::EntityGetBoneTransformFn>) {
+    let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
+    let Some(which) = args.get(2).int32_value(scope) else { return };
+    let Some(func) = engine_ops().as_ref().and_then(op) else { return };
+    let mut out = [0f32; 7];
+    if func(index, serial, which, out.as_mut_ptr()) == 0 { return; }
+    if !out[..n].iter().all(|v| v.is_finite()) { return; }
+    let elems: Vec<v8::Local<v8::Value>> = out[..n].iter().map(|v| v8::Number::new(scope, *v as f64).into()).collect();
+    rv.set(v8::Array::new_with_elements(scope, &elems).into());
+}
+fn s2_ent_get_bone_transform(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        model_floats(scope, &args, &mut rv, 7, |o| o.entity_get_bone_transform);
+    }));
+}
+fn s2_ent_get_attachment(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_null();
+        model_floats(scope, &args, &mut rv, 6, |o| o.entity_get_attachment);
     }));
 }
 
@@ -1032,6 +1227,39 @@ fn s2_entity_fire_input(scope: &mut v8::PinScope, args: v8::FunctionCallbackArgu
             rv.set_bool(crate::nest::with_outbound(&args, || func(
                 index, serial, input_c.as_ptr(), value_c.as_ptr(),
                 act_idx, act_serial, caller_idx, caller_serial, delay,
+            )) != 0);
+        }
+    }));
+}
+
+/// Native `__s2_entity_take_damage(index, id, inflIdx, inflId, attIdx, attId, abilityIdx, abilityId,
+/// damage, damageType, force, position) -> boolean`. Over the `entity_take_damage` op (the game's
+/// damage-info constructor + TakeDamage + destructor, sig-resolved shim-side). An optional entity
+/// passed as index < 0 is "none"; one passed but no longer live refuses the call, so a plugin never
+/// deals anonymous damage by accident. `force`/`position` are `[x, y, z]` or null (zero).
+fn s2_entity_take_damage(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rv.set_bool(false);
+        let Some((index, serial)) = ent_op_serial(scope, args.get(0), args.get(1)) else { return };
+        let mut optional = [(-1, -1); 3];
+        for (slot, out) in optional.iter_mut().enumerate() {
+            let idx_arg = args.get(2 + 2 * slot as i32);
+            if idx_arg.integer_value(scope).unwrap_or(-1) < 0 { continue }
+            let Some(pair) = ent_op_serial(scope, idx_arg, args.get(3 + 2 * slot as i32)) else { return };
+            *out = pair;
+        }
+        let damage = args.get(8).number_value(scope).unwrap_or(f64::NAN);
+        if !damage.is_finite() { return }
+        let damage_type = args.get(9).integer_value(scope).unwrap_or(0) as i32;
+        let force = read_vec3_opt(scope, args.get(10));
+        let position = read_vec3_opt(scope, args.get(11));
+        let ops = engine_ops();
+        if let Some(func) = ops.and_then(|o| o.entity_take_damage) {
+            let fp = force.as_ref().map_or(std::ptr::null(), |v| v.as_ptr());
+            let pp = position.as_ref().map_or(std::ptr::null(), |v| v.as_ptr());
+            let [(ii, is), (ai, as_), (bi, bs)] = optional;
+            rv.set_bool(crate::nest::with_outbound(&args, || func(
+                index, serial, ii, is, ai, as_, bi, bs, damage as f32, damage_type, fp, pp,
             )) != 0);
         }
     }));
@@ -1244,23 +1472,121 @@ fn s2_ent_identity_flags_clear(scope: &mut v8::PinScope, args: v8::FunctionCallb
     }));
 }
 
+// --- V8 fast-API paths for the per-field natives ---
+//
+// A generated accessor (`pawn.health`) is one of these calls, so their fixed cost is the floor
+// for every schema read and write. A fast-API call skips the `FunctionCallbackInfo`, the handle
+// scope and the per-argument conversions; V8 takes it from optimized code when every argument
+// is a number and falls back to the slow callback otherwise. Both paths validate the same way:
+// books first, then the shim's identity-slot check (`entity_resolve_ptr`). The fast bodies
+// allocate nothing and cannot panic, which is why they need no `catch_unwind`.
+
+/// `Value::IntegerValue` for a number: truncate, saturate at the i64 range, NaN → 0.
+fn fast_int(v: f64) -> i64 { v as i64 }
+
+/// `js_ent_id` for a number argument.
+fn fast_ent_id(n: f64) -> u64 {
+    if !n.is_finite() || n < 1.0 || n > 9_007_199_254_740_992.0 || n.fract() != 0.0 { return 0; }
+    n as u64
+}
+
+/// `entity_resolve_ptr` for number arguments, as the raw tier's `__s2_ent_address` takes them.
+pub(crate) fn resolve_for_address(index: f64, id: f64) -> *mut u8 {
+    entity_resolve_ptr(fast_int(index) as i32, fast_ent_id(id))
+}
+
+crate::native::native! {
+    /// Whether `(index, id)` still names a live entity: the books, then the shim's slot check.
+    fast fn __s2_ent_ref_valid(index: f64, id: f64) -> bool {
+        !entity_resolve_ptr(fast_int(index) as i32, fast_ent_id(id)).is_null()
+    }
+}
+
+crate::native::native! {
+    /// The scalar read kinds as a number. NaN means "stale, or not a scalar kind" and tells the
+    /// caller to ask `__s2_ent_ref_read`, which owns the null and BigInt answers. A float field
+    /// that really holds NaN takes that slow path too and still reads NaN.
+    fast fn __s2_ent_ref_readf(index: f64, id: f64, off: f64, kind: f64) -> f64 {
+        crate::crash::breadcrumb::note_engine_op("ent_ref_read");
+        let ent = entity_resolve_ptr(fast_int(index) as i32, fast_ent_id(id));
+        if ent.is_null() { return f64::NAN; }
+        let p = ent as *const u8;
+        let off = fast_int(off) as i32;
+        match fast_int(kind) {
+            KIND_I32  => crate::entity::read_i32(p, off) as f64,
+            KIND_F32  => crate::entity::read_f32(p, off) as f64,
+            KIND_BOOL => if crate::entity::read_bool(p, off) { 1.0 } else { 0.0 },
+            KIND_I8   => crate::entity::read_i8(p, off) as f64,
+            KIND_I16  => crate::entity::read_i16(p, off) as f64,
+            KIND_U8   => crate::entity::read_u8(p, off) as f64,
+            KIND_U16  => crate::entity::read_u16(p, off) as f64,
+            KIND_U32  => crate::entity::read_u32(p, off) as f64,
+            KIND_F64  => crate::entity::read_f64(p, off),
+            _         => f64::NAN,
+        }
+    }
+}
+
+/// The entity natives defined with `native!`. The rest are still hand-written callbacks.
+pub(crate) const NATIVES: &[&crate::native::Meta] = &[&__s2_ent_ref_valid::META, &__s2_ent_ref_readf::META];
+
+/// Same writes as `s2_ent_ref_write`, for a number `value`.
+fn fast_ent_ref_write(_recv: v8::Local<v8::Object>, index: f64, id: f64, off: f64, kind: f64, value: f64) -> bool {
+    crate::crash::breadcrumb::note_engine_op("ent_ref_write");
+    let ent = entity_resolve_ptr(fast_int(index) as i32, fast_ent_id(id));
+    if ent.is_null() { return false; }
+    let off = fast_int(off) as i32;
+    let int = fast_int(value);
+    match fast_int(kind) {
+        KIND_I32  => crate::entity::write_i32(ent, off, int as i32),
+        KIND_F32  => crate::entity::write_f32(ent, off, value as f32),
+        KIND_BOOL => crate::entity::write_bool(ent, off, value != 0.0 && !value.is_nan()),
+        KIND_I8   => crate::entity::write_i8(ent, off, int as i32),
+        KIND_I16  => crate::entity::write_i16(ent, off, int as i32),
+        KIND_U8   => crate::entity::write_u8(ent, off, int as i32),
+        KIND_U16  => crate::entity::write_u16(ent, off, int as i32),
+        KIND_U32  => crate::entity::write_u32(ent, off, int as u32),
+        _         => return false,
+    }
+    true
+}
+
+use v8::fast_api::{CFunction, CFunctionInfo, Int64Representation, Type as FastType};
+
+const FAST_ENT_REF_WRITE: CFunction = CFunction::new(
+    fast_ent_ref_write as *const c_void,
+    &CFunctionInfo::new(
+        FastType::Bool.as_info(),
+        &[FastType::V8Value.as_info(), FastType::Float64.as_info(), FastType::Float64.as_info(),
+          FastType::Float64.as_info(), FastType::Float64.as_info(), FastType::Float64.as_info()],
+        Int64Representation::Number,
+    ),
+);
+
 /// Publish this feature's natives. Called from `v8host`'s `install_natives`.
 pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) {
-    set_native(scope, global_obj, "__s2_ent_ref_valid", s2_ent_ref_valid);
+    crate::native::install(scope, global_obj, NATIVES);
     set_native(scope, global_obj, "__s2_ent_ref_read", s2_ent_ref_read);
-    set_native(scope, global_obj, "__s2_ent_ref_write", s2_ent_ref_write);
+    set_fast_native(scope, global_obj, "__s2_ent_ref_write", s2_ent_ref_write, &FAST_ENT_REF_WRITE);
     set_native(scope, global_obj, "__s2_ent_ref_read_string", s2_ent_ref_read_string);
     set_native(scope, global_obj, "__s2_ent_ref_write_string", s2_ent_ref_write_string);
     set_native(scope, global_obj, "__s2_ent_ref_read_floats", s2_ent_ref_read_floats);
     set_native(scope, global_obj, "__s2_ent_ref_read_floats_chain", s2_ent_ref_read_floats_chain);
     set_native(scope, global_obj, "__s2_ent_ref_read_chain", s2_ent_ref_read_chain);
+    set_native(scope, global_obj, "__s2_ent_ref_gather", s2_ent_ref_gather);
     set_native(scope, global_obj, "__s2_ent_ref_write_chain", s2_ent_ref_write_chain);
     set_native(scope, global_obj, "__s2_ent_ref_state_changed", s2_ent_ref_state_changed);
     set_native(scope, global_obj, "__s2_ent_id_for_index", s2_ent_id_for_index);
     set_native(scope, global_obj, "__s2_entity_create", s2_entity_create);
     set_native(scope, global_obj, "__s2_entity_find_by_class", s2_entity_find_by_class);
+    set_native(scope, global_obj, "__s2_entity_find_by_name", s2_entity_find_by_name);
+    set_native(scope, global_obj, "__s2_entity_find_all", s2_entity_find_all);
     set_native(scope, global_obj, "__s2_entity_spawn", s2_entity_spawn);
     set_native(scope, global_obj, "__s2_ent_set_model", s2_ent_set_model);
+    set_native(scope, global_obj, "__s2_ent_lookup_bone", s2_ent_lookup_bone);
+    set_native(scope, global_obj, "__s2_ent_lookup_attachment", s2_ent_lookup_attachment);
+    set_native(scope, global_obj, "__s2_ent_get_bone_transform", s2_ent_get_bone_transform);
+    set_native(scope, global_obj, "__s2_ent_get_attachment", s2_ent_get_attachment);
     // Entity-property slice: five engine setters with no usable schema-write equivalent.
     set_native(scope, global_obj, "__s2_ent_set_gravity_scale", s2_ent_set_gravity_scale);
     set_native(scope, global_obj, "__s2_ent_apply_abs_velocity_impulse", s2_ent_apply_abs_velocity_impulse);
@@ -1270,6 +1596,7 @@ pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_entity_teleport", s2_entity_teleport);
     set_native(scope, global_obj, "__s2_entity_remove", s2_entity_remove);
     set_native(scope, global_obj, "__s2_entity_fire_input", s2_entity_fire_input);
+    set_native(scope, global_obj, "__s2_entity_take_damage", s2_entity_take_damage);
     set_native(scope, global_obj, "__s2_entity_spawn_kv", s2_entity_spawn_kv);
     set_native(scope, global_obj, "__s2_entity_listener_on", s2_entity_listener_on);
     set_native(scope, global_obj, "__s2_entity_listener_off", s2_entity_listener_off);
@@ -1301,11 +1628,11 @@ pub(crate) fn register_store() {
 ///   3. Only the CALLER derefs the instance, block-scoped within one native.
 /// The raw pointer stays in Rust — it never crosses to JS. Errors fall toward null,
 /// never toward a deref.
-fn entity_resolve_ptr(index: i32, id: u64) -> *mut u8 {
+pub(crate) fn entity_resolve_ptr(index: i32, id: u64) -> *mut u8 {
     let Some(engine_serial) = crate::entity_live::engine_serial_for(index, id) else {
         return std::ptr::null_mut();
     };
-    let Some(ops) = engine_ops() else { return std::ptr::null_mut() };
+    let Some(ops) = engine_ops_ref() else { return std::ptr::null_mut() };
     let Some(resolve) = ops.ent_resolve else { return std::ptr::null_mut() };
     resolve(index, engine_serial) as *mut u8
 }
@@ -1463,6 +1790,47 @@ mod native_tests {
         assert_eq!(eval_in_context_string("cl", "String(__ref.isValid())"), "false");
         assert_eq!(eval_in_context_string("cl", "String(__ref.readInt32(8))"), "null");
         assert_eq!(eval_in_context_string("cl", "String(__ref.writeInt32(8, 5))"), "false");
+        shutdown();
+    }
+
+    /// The fast-API natives give the same answers as the slow ones. The loops run long enough for
+    /// V8 to optimize them, which is when it switches to the fast bodies, so both paths run here.
+    #[test]
+    fn fast_field_paths_match_slow_paths_once_optimized() {
+        crate::entity_live::reset_for_tests();
+        let _ = init(dummy_logger());
+        let _id = arm_fake_entity(42, 7);
+        let base = FAKE_RESOLVE_PTR.with(|c| c.get()) as *mut u8;
+        unsafe {
+            *(base.add(8) as *mut i32) = -123_456;
+            *(base.add(16) as *mut f32) = 1.5;
+            *base.add(20) = 1;
+            *(base.add(24) as *mut u32) = 0xFFFF_FFF0;
+            *(base.add(32) as *mut f32) = f32::NAN;
+        }
+        set_engine_ops(Some(S2EngineOps { ent_resolve: Some(fake_ent_resolve), ..mock_event_ops() }));
+        create_plugin_context("fast");
+        let looped = eval_in_context_string("fast", r#"
+            var E = __s2require("@s2script/sdk/entity").EntityRef;
+            var r = new E(42, __s2_ent_id_for_index(42)), out = "";
+            function sample() {
+              return [r.readInt32(8), r.readFloat32(16), r.readBool(20), r.readUInt32(24),
+                      r.readFloat32(32), r.isValid()].join(",");
+            }
+            var first = sample(), last = "";
+            for (var i = 0; i < 200000; i++) last = sample();
+            for (var j = 0; j < 200000; j++) r.writeInt32(40, j);
+            first + "|" + last + "|" + r.readInt32(40)
+        "#);
+        assert_eq!(looped,
+            "-123456,1.5,true,4294967280,NaN,true|-123456,1.5,true,4294967280,NaN,true|199999");
+        crate::entity_live::clear_for_map_transition();
+        let stale = eval_in_context_string("fast", r#"
+            var s = "";
+            for (var k = 0; k < 200000; k++) s = [r.readInt32(8), r.readBool(20), r.isValid(), r.writeInt32(8, 1)].map(String).join(",");
+            s
+        "#);
+        assert_eq!(stale, "null,null,false,false", "a stale ref stays null on the fast path");
         shutdown();
     }
 

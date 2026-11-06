@@ -13,10 +13,11 @@
 //! Extracted from `v8host.rs` under the core-stabilization program — see `crate::usermsg` for the
 //! shape (a feature owns its state, natives, dispatch and teardown together).
 
-use crate::dispatch::{fan_out, fan_out_collapsing, Delivery, Instrument, StopAt};
+use crate::dispatch::{fan_out_inner, Delivery, Instrument, StopAt};
 use crate::multiplexer::HookResult;
+use crate::native::native;
 use crate::v8host::{
-    current_plugin, engine_ops, hook_request, set_native, subscribe_into,
+    current_plugin, engine_ops, engine_ops_ref, hook_request, set_native, subscribe_into,
 };
 use std::ffi::{CStr, CString};
 use std::os::raw::c_int;
@@ -101,40 +102,6 @@ fn s2_event_unsubscribe(
     }));
 }
 
-/// Native `__s2_event_get_int(key) -> i32`. Calls the `event_get_int` engine-op; degrades to 0.
-fn s2_event_get_int(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_int32(0);
-        if args.length() < 1 { return; }
-        let key = args.get(0).to_rust_string_lossy(scope);
-        let Some(ops) = engine_ops() else { return };
-        let Some(func) = ops.event_get_int else { return };
-        let Ok(ck) = CString::new(key.as_str()) else { return };
-        rv.set_int32(func(ck.as_ptr()));
-    }));
-}
-
-/// Native `__s2_event_get_float(key) -> f64`. Calls the `event_get_float` engine-op; degrades to 0.0.
-fn s2_event_get_float(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_double(0.0);
-        if args.length() < 1 { return; }
-        let key = args.get(0).to_rust_string_lossy(scope);
-        let Some(ops) = engine_ops() else { return };
-        let Some(func) = ops.event_get_float else { return };
-        let Ok(ck) = CString::new(key.as_str()) else { return };
-        rv.set_double(func(ck.as_ptr()) as f64);
-    }));
-}
-
 /// `__s2_event_set_recipients(slots)` — restrict the event currently being pre-dispatched to `slots`.
 ///
 /// An empty array means "no client sees it". Slots outside [0, 64) are ignored rather than throwing:
@@ -151,82 +118,6 @@ fn s2_event_set_recipients(scope: &mut v8::PinScope, args: v8::FunctionCallbackA
             }
         }
         EVENT_RECIPIENTS.with(|c| c.set(Some(mask)));
-    }));
-}
-
-/// Native `__s2_event_get_bool(key) -> boolean`. Calls the `event_get_bool` engine-op; degrades to false.
-fn s2_event_get_bool(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_bool(false);
-        if args.length() < 1 { return; }
-        let key = args.get(0).to_rust_string_lossy(scope);
-        let Some(ops) = engine_ops() else { return };
-        let Some(func) = ops.event_get_bool else { return };
-        let Ok(ck) = CString::new(key.as_str()) else { return };
-        rv.set_bool(func(ck.as_ptr()) != 0);
-    }));
-}
-
-/// Native `__s2_event_get_string(key) -> string`. Calls the `event_get_string` engine-op; degrades to "".
-/// The returned C string pointer is ONLY valid during the shim's event dispatch — copy it NOW.
-fn s2_event_get_string(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if let Some(empty) = v8::String::new(scope, "") { rv.set(empty.into()); }
-        if args.length() < 1 { return; }
-        let key = args.get(0).to_rust_string_lossy(scope);
-        let Some(ops) = engine_ops() else { return };
-        let Some(func) = ops.event_get_string else { return };
-        let Ok(ck) = CString::new(key.as_str()) else { return };
-        let ptr = func(ck.as_ptr());
-        if ptr.is_null() { return; }
-        // Copy the C string immediately — the pointer is only valid during the dispatch call.
-        let s = unsafe { CStr::from_ptr(ptr) }.to_string_lossy();
-        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
-    }));
-}
-
-/// Native `__s2_event_get_uint64(key) -> string`. Calls `event_get_uint64`; returns a DECIMAL STRING.
-/// uint64 → decimal string so JS can handle it without BigInt precision loss.
-fn s2_event_get_uint64(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if let Some(zero) = v8::String::new(scope, "0") { rv.set(zero.into()); }
-        if args.length() < 1 { return; }
-        let key = args.get(0).to_rust_string_lossy(scope);
-        let Some(ops) = engine_ops() else { return };
-        let Some(func) = ops.event_get_uint64 else { return };
-        let Ok(ck) = CString::new(key.as_str()) else { return };
-        let val = func(ck.as_ptr());
-        let s = format!("{}", val);
-        if let Some(js) = v8::String::new(scope, &s) { rv.set(js.into()); }
-    }));
-}
-
-/// Native `__s2_event_get_player_slot(key) -> i32`. Calls `event_get_player_slot`; degrades to -1.
-fn s2_event_get_player_slot(
-    scope: &mut v8::PinScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        rv.set_int32(-1);
-        if args.length() < 1 { return; }
-        let key = args.get(0).to_rust_string_lossy(scope);
-        let Some(ops) = engine_ops() else { return };
-        let Some(func) = ops.event_get_player_slot else { return };
-        let Ok(ck) = CString::new(key.as_str()) else { return };
-        rv.set_int32(func(ck.as_ptr()));
     }));
 }
 
@@ -260,74 +151,6 @@ fn s2_event_unsubscribe_pre(scope: &mut v8::PinScope, args: v8::FunctionCallback
                 if let Ok(d) = CString::new("GameEvent") { req(d.as_ptr(), 0); }
             }
         }
-    }));
-}
-
-/// Native `__s2_event_set_int(key, value)` — write the current event's int field (pre-hook / fire builder).
-fn s2_event_set_int(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 { return; }
-        let key = args.get(0).to_rust_string_lossy(scope);
-        let value = args.get(1).int32_value(scope).unwrap_or(0);
-        let Some(ops) = engine_ops() else { return };
-        let Some(func) = ops.event_set_int else { return };
-        let Ok(ck) = CString::new(key.as_str()) else { return };
-        func(ck.as_ptr(), value);
-    }));
-}
-
-/// Native `__s2_event_set_float(key, value)` — write the current event's float field.
-fn s2_event_set_float(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 { return; }
-        let key = args.get(0).to_rust_string_lossy(scope);
-        let value = args.get(1).number_value(scope).unwrap_or(0.0) as f32;
-        let Some(ops) = engine_ops() else { return };
-        let Some(func) = ops.event_set_float else { return };
-        let Ok(ck) = CString::new(key.as_str()) else { return };
-        func(ck.as_ptr(), value);
-    }));
-}
-
-/// Native `__s2_event_set_bool(key, value)` — write the current event's bool field (0/1).
-fn s2_event_set_bool(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 { return; }
-        let key = args.get(0).to_rust_string_lossy(scope);
-        let value = args.get(1).boolean_value(scope) as c_int;
-        let Some(ops) = engine_ops() else { return };
-        let Some(func) = ops.event_set_bool else { return };
-        let Ok(ck) = CString::new(key.as_str()) else { return };
-        func(ck.as_ptr(), value);
-    }));
-}
-
-/// Native `__s2_event_set_string(key, value)` — write the current event's string field.
-fn s2_event_set_string(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 { return; }
-        let key = args.get(0).to_rust_string_lossy(scope);
-        let val_str = args.get(1).to_rust_string_lossy(scope);
-        let Some(ops) = engine_ops() else { return };
-        let Some(func) = ops.event_set_string else { return };
-        let Ok(ck) = CString::new(key.as_str()) else { return };
-        let Ok(cv) = CString::new(val_str.as_str()) else { return };
-        func(ck.as_ptr(), cv.as_ptr());
-    }));
-}
-
-/// Native `__s2_event_set_uint64(key, value)` — write the current event's uint64 field.
-/// `value` is a DECIMAL STRING at the JS boundary (consistent with getUint64/readUInt64).
-fn s2_event_set_uint64(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if args.length() < 2 { return; }
-        let key = args.get(0).to_rust_string_lossy(scope);
-        let val_str = args.get(1).to_rust_string_lossy(scope);
-        let value = val_str.parse::<u64>().unwrap_or(0);
-        let Some(ops) = engine_ops() else { return };
-        let Some(func) = ops.event_set_uint64 else { return };
-        let Ok(ck) = CString::new(key.as_str()) else { return };
-        func(ck.as_ptr(), value);
     }));
 }
 
@@ -394,48 +217,56 @@ pub(crate) fn dispatch_game_event(name: &str) -> Delivery {
 /// `s_currentEvent` at the copy for this call, and `FreeEvent`s it after. Nothing about an
 /// `IGameEvent` is ever represented in Rust — no raw pointer is queued on this side.
 pub(crate) fn replay_game_event(name: &str) -> Delivery {
-    // Snapshot — releases the EVENT_MUX borrow before any JS runs, so `Events.fire()` from inside a
-    // handler cannot mutate the list being walked. Nested fire publishes a nest token and runs
-    // other plugins now; `#63` no-handle inbound still reports `Deferred`.
+    // One crossing into the JS multiplexer (`jsmux`), which keeps every `fan_out` guarantee: the
+    // subscriber list is a snapshot, each handler gets a fresh `GameEvent` built in its own realm,
+    // and a nested `Events.fire()` publishes a nest token and runs other plugins now; `#63`
+    // no-handle inbound still reports `Deferred`.
+    crate::jsmux::dispatch(&crate::jsmux::ChannelStore(&EVENT_MUX), crate::jsmux::Kind::Event, name, StopAt::Never, event_args, || replay_game_event_fan_out(name)).1
+}
+
+/// A game event's one argument as the multiplexer sees it: `undefined`, which a subscriber gets only
+/// when its realm has no `GameEvent` class to build the payload from (as the Rust fan-out did).
+fn event_args<'s>(tc: &mut v8::PinScope<'s, '_>) -> Vec<v8::Local<'s, v8::Value>> {
+    vec![v8::undefined(tc).into()]
+}
+
+/// The Rust fan-out for a post game event — what `replay_game_event` runs while the profiler
+/// records, so a session attributes each handler exactly as before.
+fn replay_game_event_fan_out(name: &str) -> (HookResult, Delivery) {
     let snap = EVENT_MUX.with(|m| m.borrow().snapshot(name));
     let tag = format!("event:{}", name);
-    fan_out(&snap, &format!("dispatch_game_event('{}')", name), Instrument::full(&tag), |tc| {
-        // Construct new GameEvent(name) from globalThis.__s2pkg_events.GameEvent. A failure here
-        // yields `undefined` rather than skipping the subscriber, matching the pre-fan_out behaviour.
-        let event_val: Option<v8::Local<v8::Value>> = (|| {
-            let global = tc.get_current_context().global(tc);
-            let pkg_key = v8::String::new(tc, "__s2pkg_events")?;
-            let pkg = global.get(tc, pkg_key.into())?;
-            let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
-            let ctor_key = v8::String::new(tc, "GameEvent")?;
-            let ctor_val = pkg.get(tc, ctor_key.into())?;
-            let ctor = v8::Local::<v8::Function>::try_from(ctor_val).ok()?;
-            let name_str = v8::String::new(tc, name)?;
-            ctor.new_instance(tc, &[name_str.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
-        })();
-        Some(vec![event_val.unwrap_or_else(|| v8::undefined(tc).into())])
+    fan_out_inner(&snap, &format!("dispatch_game_event('{}')", name), Instrument::full(&tag), StopAt::Never, |tc| {
+        Some(vec![new_game_event(tc, name)])
     })
+}
+
+/// `new globalThis.__s2pkg_events.GameEvent(name)` in the current (plugin) context. A failure
+/// yields `undefined` rather than skipping the subscriber, matching the pre-fan_out behaviour.
+fn new_game_event<'s>(tc: &mut v8::PinScope<'s, '_>, name: &str) -> v8::Local<'s, v8::Value> {
+    let event_val: Option<v8::Local<v8::Value>> = (|| {
+        let global = tc.get_current_context().global(tc);
+        let pkg_key = v8::String::new(tc, "__s2pkg_events")?;
+        let pkg = global.get(tc, pkg_key.into())?;
+        let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
+        let ctor_key = v8::String::new(tc, "GameEvent")?;
+        let ctor_val = pkg.get(tc, ctor_key.into())?;
+        let ctor = v8::Local::<v8::Function>::try_from(ctor_val).ok()?;
+        let name_str = v8::String::new(tc, name)?;
+        ctor.new_instance(tc, &[name_str.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
+    })();
+    event_val.unwrap_or_else(|| v8::undefined(tc).into())
 }
 
 /// Pre-dispatch for the FireEvent hook (Slice 5D.3). Runs the PRE subscribers for `name`, collapses
 /// their HookResults via `run_chain`, and returns 1 to suppress client broadcast (collapsed result
 /// >= Handled) or 0 to allow. The shim has set `s_currentEvent` (mutable) before calling this.
 pub(crate) fn dispatch_game_event_pre(name: &str) -> i32 {
-    let snap = EVENT_MUX_PRE.with(|m| m.borrow().snapshot(name));
-    let result = fan_out_collapsing(&snap, &format!("dispatch_game_event_pre('{}')", name), Instrument::none(), StopAt::Stop, |tc| {
-        // Construct new GameEvent(name) from globalThis.__s2pkg_events.GameEvent (as in dispatch_game_event).
-        let event_arg: Option<v8::Local<v8::Value>> = (|| {
-            let global = tc.get_current_context().global(tc);
-            let pkg_key = v8::String::new(tc, "__s2pkg_events")?;
-            let pkg = global.get(tc, pkg_key.into())?;
-            let pkg = v8::Local::<v8::Object>::try_from(pkg).ok()?;
-            let ctor_key = v8::String::new(tc, "GameEvent")?;
-            let ctor = v8::Local::<v8::Function>::try_from(pkg.get(tc, ctor_key.into())?).ok()?;
-            let name_str = v8::String::new(tc, name)?;
-            ctor.new_instance(tc, &[name_str.into()]).map(|o| -> v8::Local<v8::Value> { o.into() })
-        })();
-        let event_val: v8::Local<v8::Value> = event_arg.unwrap_or_else(|| v8::undefined(tc).into());
-        Some(vec![event_val])
+    // A pre-hook's answer is consumed synchronously, so its `Delivery` is discarded (spec §2).
+    let (result, _) = crate::jsmux::dispatch(&crate::jsmux::ChannelStore(&EVENT_MUX_PRE), crate::jsmux::Kind::EventPre, name, StopAt::Stop, event_args, || {
+        let snap = EVENT_MUX_PRE.with(|m| m.borrow().snapshot(name));
+        fan_out_inner(&snap, &format!("dispatch_game_event_pre('{}')", name), Instrument::none(), StopAt::Stop, |tc| {
+            Some(vec![new_game_event(tc, name)])
+        })
     });
     if result >= HookResult::Handled { 1 } else { 0 }
 }
@@ -462,23 +293,214 @@ fn reconcile_pre_hook() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Field accessors over the shim's current event (`native!` bindings)
+// ---------------------------------------------------------------------------
+
+/// Field keys interned for the fast getters: id → C string, and the reverse. Keys are an event
+/// schema's field names, so the table stays small; past `MAX_EVENT_KEYS` interning refuses and the
+/// prelude uses the string-keyed getter.
+const MAX_EVENT_KEYS: usize = 4096;
+thread_local! {
+    static EVENT_KEYS: std::cell::RefCell<(Vec<CString>, std::collections::HashMap<String, i32>)> =
+        std::cell::RefCell::new((Vec::new(), std::collections::HashMap::new()));
+}
+
+/// Run `f` with interned key `id`'s C string; `None` for an unknown id.
+fn with_event_key<R>(id: i32, f: impl FnOnce(*const std::os::raw::c_char) -> R) -> Option<R> {
+    EVENT_KEYS.with(|k| {
+        let k = k.try_borrow().ok()?;
+        let ck = k.0.get(usize::try_from(id).ok()?)?;
+        Some(f(ck.as_ptr()))
+    })
+}
+
+/// Run `f` with `key` as a C string; `None` if it holds a NUL.
+fn with_key_str<R>(key: &str, f: impl FnOnce(*const std::os::raw::c_char) -> R) -> Option<R> {
+    let ck = CString::new(key).ok()?;
+    Some(f(ck.as_ptr()))
+}
+
+native! {
+    /// Intern an event field key for the fast getters (`__s2_event_get_*_k`). `-1` when the key holds
+    /// a NUL or the table is full; callers then use the string-keyed getter.
+    fn __s2_event_key(key: String) -> i32 {
+        EVENT_KEYS.with(|k| {
+            let mut k = k.borrow_mut();
+            if let Some(&id) = k.1.get(&key) {
+                return id;
+            }
+            if k.0.len() >= MAX_EVENT_KEYS {
+                return -1;
+            }
+            let Ok(ck) = CString::new(key.as_str()) else { return -1 };
+            let id = k.0.len() as i32;
+            k.0.push(ck);
+            k.1.insert(key, id);
+            id
+        })
+    }
+}
+
+native! {
+    /// The current event's int field. `0` when there is no event, field or engine op.
+    fn __s2_event_get_int(key: String) -> i32 {
+        let Some(get) = engine_ops_ref().and_then(|o| o.event_get_int) else { return 0 };
+        with_key_str(&key, |k| get(k)).unwrap_or(0)
+    }
+}
+
+native! {
+    /// `__s2_event_get_int` by interned key.
+    fast fn __s2_event_get_int_k(key: i32) -> i32 {
+        let Some(get) = engine_ops_ref().and_then(|o| o.event_get_int) else { return 0 };
+        with_event_key(key, |k| get(k)).unwrap_or(0)
+    }
+}
+
+native! {
+    /// The current event's float field. `0` when there is no event, field or engine op.
+    fn __s2_event_get_float(key: String) -> f64 {
+        let Some(get) = engine_ops_ref().and_then(|o| o.event_get_float) else { return 0.0 };
+        with_key_str(&key, |k| get(k) as f64).unwrap_or(0.0)
+    }
+}
+
+native! {
+    /// `__s2_event_get_float` by interned key.
+    fast fn __s2_event_get_float_k(key: i32) -> f64 {
+        let Some(get) = engine_ops_ref().and_then(|o| o.event_get_float) else { return 0.0 };
+        with_event_key(key, |k| get(k) as f64).unwrap_or(0.0)
+    }
+}
+
+native! {
+    /// The current event's bool field. `false` when there is no event, field or engine op.
+    fn __s2_event_get_bool(key: String) -> bool {
+        let Some(get) = engine_ops_ref().and_then(|o| o.event_get_bool) else { return false };
+        with_key_str(&key, |k| get(k) != 0).unwrap_or(false)
+    }
+}
+
+native! {
+    /// `__s2_event_get_bool` by interned key.
+    fast fn __s2_event_get_bool_k(key: i32) -> bool {
+        let Some(get) = engine_ops_ref().and_then(|o| o.event_get_bool) else { return false };
+        with_event_key(key, |k| get(k) != 0).unwrap_or(false)
+    }
+}
+
+native! {
+    /// The current event's player-slot field. `-1` when there is no event, field or engine op.
+    fn __s2_event_get_player_slot(key: String) -> i32 {
+        let Some(get) = engine_ops_ref().and_then(|o| o.event_get_player_slot) else { return -1 };
+        with_key_str(&key, |k| get(k)).unwrap_or(-1)
+    }
+}
+
+native! {
+    /// `__s2_event_get_player_slot` by interned key.
+    fast fn __s2_event_get_player_slot_k(key: i32) -> i32 {
+        let Some(get) = engine_ops_ref().and_then(|o| o.event_get_player_slot) else { return -1 };
+        with_event_key(key, |k| get(k)).unwrap_or(-1)
+    }
+}
+
+native! {
+    /// The current event's string field. `""` when there is no event, field or engine op. The engine's
+    /// pointer is only valid during dispatch, so it is copied now.
+    fn __s2_event_get_string(key: String) -> String {
+        let Some(get) = engine_ops_ref().and_then(|o| o.event_get_string) else { return String::new() };
+        with_key_str(&key, |k| {
+            let ptr = get(k);
+            if ptr.is_null() { String::new() } else { unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned() }
+        })
+        .unwrap_or_default()
+    }
+}
+
+native! {
+    /// The current event's uint64 field as a decimal string (no precision loss). `"0"` when there is
+    /// no event, field or engine op.
+    fn __s2_event_get_uint64(key: String) -> String {
+        let Some(get) = engine_ops_ref().and_then(|o| o.event_get_uint64) else { return "0".into() };
+        with_key_str(&key, |k| get(k).to_string()).unwrap_or_else(|| "0".into())
+    }
+}
+
+native! {
+    /// Write the current event's int field (a pre-hook, or an event being built to fire).
+    fn __s2_event_set_int(key: String, value: i32) -> () {
+        if let Some(set) = engine_ops_ref().and_then(|o| o.event_set_int) {
+            with_key_str(&key, |k| set(k, value));
+        }
+    }
+}
+
+native! {
+    /// Write the current event's float field.
+    fn __s2_event_set_float(key: String, value: f64) -> () {
+        if let Some(set) = engine_ops_ref().and_then(|o| o.event_set_float) {
+            with_key_str(&key, |k| set(k, value as f32));
+        }
+    }
+}
+
+native! {
+    /// Write the current event's bool field.
+    fn __s2_event_set_bool(key: String, value: bool) -> () {
+        if let Some(set) = engine_ops_ref().and_then(|o| o.event_set_bool) {
+            with_key_str(&key, |k| set(k, value as c_int));
+        }
+    }
+}
+
+native! {
+    /// Write the current event's string field.
+    fn __s2_event_set_string(key: String, value: String) -> () {
+        let Some(set) = engine_ops_ref().and_then(|o| o.event_set_string) else { return };
+        let Ok(cv) = CString::new(value) else { return };
+        with_key_str(&key, |k| set(k, cv.as_ptr()));
+    }
+}
+
+native! {
+    /// Write the current event's uint64 field from a decimal string (as `getUint64` returns it).
+    fn __s2_event_set_uint64(key: String, value: String) -> () {
+        let Some(set) = engine_ops_ref().and_then(|o| o.event_set_uint64) else { return };
+        let value = value.parse::<u64>().unwrap_or(0);
+        with_key_str(&key, |k| set(k, value));
+    }
+}
+
+/// This feature's `native!` natives (registered by `install_natives`, typed in
+/// `core/js/natives.generated.d.ts`).
+pub(crate) const NATIVES: &[&crate::native::Meta] = &[
+    &__s2_event_key::META,
+    &__s2_event_get_int::META,
+    &__s2_event_get_int_k::META,
+    &__s2_event_get_float::META,
+    &__s2_event_get_float_k::META,
+    &__s2_event_get_bool::META,
+    &__s2_event_get_bool_k::META,
+    &__s2_event_get_player_slot::META,
+    &__s2_event_get_player_slot_k::META,
+    &__s2_event_get_string::META,
+    &__s2_event_get_uint64::META,
+    &__s2_event_set_int::META,
+    &__s2_event_set_float::META,
+    &__s2_event_set_bool::META,
+    &__s2_event_set_string::META,
+    &__s2_event_set_uint64::META,
+];
+
 /// Publish this feature's natives. Called from `v8host`'s `install_natives`.
 pub(crate) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8::Object>) {
+    crate::native::install(scope, global_obj, NATIVES);
     set_native(scope, global_obj, "__s2_event_subscribe", s2_event_subscribe);
     set_native(scope, global_obj, "__s2_event_unsubscribe", s2_event_unsubscribe);
-    set_native(scope, global_obj, "__s2_event_get_int", s2_event_get_int);
-    set_native(scope, global_obj, "__s2_event_get_float", s2_event_get_float);
-    set_native(scope, global_obj, "__s2_event_get_bool", s2_event_get_bool);
-    set_native(scope, global_obj, "__s2_event_get_string", s2_event_get_string);
-    set_native(scope, global_obj, "__s2_event_get_uint64", s2_event_get_uint64);
-    set_native(scope, global_obj, "__s2_event_get_player_slot", s2_event_get_player_slot);
     set_native(scope, global_obj, "__s2_event_subscribe_pre", s2_event_subscribe_pre);
     set_native(scope, global_obj, "__s2_event_unsubscribe_pre", s2_event_unsubscribe_pre);
-    set_native(scope, global_obj, "__s2_event_set_int", s2_event_set_int);
-    set_native(scope, global_obj, "__s2_event_set_float", s2_event_set_float);
-    set_native(scope, global_obj, "__s2_event_set_bool", s2_event_set_bool);
-    set_native(scope, global_obj, "__s2_event_set_string", s2_event_set_string);
-    set_native(scope, global_obj, "__s2_event_set_uint64", s2_event_set_uint64);
     set_native(scope, global_obj, "__s2_event_create", s2_event_create);
     set_native(scope, global_obj, "__s2_event_fire", s2_event_fire);
     set_native(scope, global_obj, "__s2_event_fire_to_client", s2_event_fire_to_client);
@@ -818,6 +840,255 @@ mod tests {
             "After Events.off, dispatch must not invoke the handler"
         );
 
+        shutdown();
+    }
+
+    /// Stage 1 (JS multiplexer): every subscriber gets its OWN fresh `GameEvent`, built in its own
+    /// realm, in subscription order, with the handler's receiver left `undefined`.
+    #[test]
+    fn jsmux_delivers_a_fresh_own_realm_event_to_each_subscriber_in_order() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("a");
+        create_plugin_context("b");
+        eval_in_context("a", r#"
+            globalThis.__log = [];
+            __s2_event_subscribe("round_start", function (ev) {
+                __log.push("a1:" + (ev instanceof __s2pkg_events.GameEvent) + ":" + ev.name + ":" + (ev.mark === undefined));
+                ev.mark = 1;
+            });
+            __s2_event_subscribe("round_start", function (ev) {
+                "use strict";
+                __log.push("a2:" + (ev.mark === undefined) + ":" + (this === undefined));
+            });
+        "#).unwrap();
+        eval_in_context("b", r#"
+            globalThis.__log = [];
+            __s2_event_subscribe("round_start", function (ev) { __log.push("b:" + (ev instanceof __s2pkg_events.GameEvent)); });
+        "#).unwrap();
+        assert_eq!(dispatch_game_event("round_start"), Delivery::Delivered);
+        assert_eq!(eval_in_context_string("a", "__log.join(',')"), "a1:true:round_start:true,a2:true:true");
+        assert_eq!(eval_in_context_string("b", "__log.join(',')"), "b:true");
+        shutdown();
+    }
+
+    /// A subscription made, or a plugin unloaded, from inside a handler changes the NEXT dispatch,
+    /// never the one in flight — except that an unloaded plugin is never called again.
+    #[test]
+    fn jsmux_mid_dispatch_changes_apply_from_the_next_event_and_unload_is_immediate() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("a");
+        create_plugin_context("b");
+        eval_in_context("a", r#"
+            globalThis.__n = 0; globalThis.__late = 0;
+            __s2_event_subscribe("round_start", function () {
+                if (__n++ === 0) __s2_event_subscribe("round_start", function () { __late++; });
+            });
+        "#).unwrap();
+        eval_in_context("b", r#"globalThis.__hits = 0; __s2_event_subscribe("round_start", function () { __hits++; });"#).unwrap();
+        let _ = dispatch_game_event("round_start");
+        assert_eq!(read_i32_global_in("a", "__late"), 0, "subscribed mid-dispatch: not this event");
+        assert_eq!(read_i32_global_in("b", "__hits"), 1);
+        let _ = dispatch_game_event("round_start");
+        assert_eq!(read_i32_global_in("a", "__late"), 1, "but the next one");
+        unload_plugin("b");
+        let _ = dispatch_game_event("round_start");
+        assert_eq!(read_i32_global_in("a", "__n"), 3, "the survivor still runs");
+        shutdown();
+    }
+
+    /// While a handler runs, the crash breadcrumb names its plugin under `event:<name>`, and the
+    /// entered-owner check (interop record views, package tokens) sees the subscriber — not the
+    /// multiplexer's own context. Outside dispatch the breadcrumb is restored.
+    #[test]
+    fn jsmux_handlers_see_their_own_owner_and_breadcrumb() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("first");
+        create_plugin_context("second");
+        for id in ["first", "second"] {
+            eval_in_context(id, r#"
+                globalThis.__seen = "";
+                __s2_event_subscribe("player_death", function () { __seen = __s2_test_entered_owner(); });
+            "#).unwrap();
+        }
+        let before = crate::crash::breadcrumb::read_cstr(&crate::crash::breadcrumb::snapshot().dispatch);
+        let _ = dispatch_game_event("player_death");
+        assert_eq!(read_global_string("first", "__seen"), "first|first|event:player_death");
+        assert_eq!(read_global_string("second", "__seen"), "second|second|event:player_death");
+        assert_eq!(
+            crate::crash::breadcrumb::read_cstr(&crate::crash::breadcrumb::snapshot().dispatch),
+            before,
+            "the dispatch tag is restored after the event"
+        );
+        shutdown();
+    }
+
+    /// A throwing handler is isolated: later subscribers still run, and a pre-hook chain still
+    /// collapses. `Stop` truncates the rest of a pre chain; `Handled` does not.
+    #[test]
+    fn jsmux_throws_are_isolated_and_pre_hooks_collapse_with_stop() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("a");
+        create_plugin_context("b");
+        eval_in_context("a", r#"
+            __s2_event_subscribe("round_end", function () { throw new Error("boom"); });
+            __s2_event_subscribe_pre("player_hurt", function () { return HookResult.Handled; });
+            __s2_event_subscribe_pre("bomb_planted", function () { return HookResult.Stop; });
+            __s2_event_subscribe_pre("bomb_defused", function () { throw new Error("pre boom"); });
+        "#).unwrap();
+        eval_in_context("b", r#"
+            globalThis.__after = 0; globalThis.__hurt = 0; globalThis.__planted = 0;
+            __s2_event_subscribe("round_end", function () { __after++; });
+            __s2_event_subscribe_pre("player_hurt", function () { __hurt++; return 7; });
+            __s2_event_subscribe_pre("bomb_planted", function () { __planted++; });
+            __s2_event_subscribe_pre("bomb_defused", function () { return HookResult.Handled; });
+        "#).unwrap();
+        let _ = dispatch_game_event("round_end");
+        assert_eq!(read_i32_global_in("b", "__after"), 1, "a throw does not deny later subscribers");
+        assert_eq!(dispatch_game_event_pre("player_hurt"), 1, "Handled suppresses; a stray 7 is Continue");
+        assert_eq!(read_i32_global_in("b", "__hurt"), 1, "Handled does not truncate");
+        assert_eq!(dispatch_game_event_pre("bomb_planted"), 1);
+        assert_eq!(read_i32_global_in("b", "__planted"), 0, "Stop truncates the rest of the chain");
+        assert_eq!(dispatch_game_event_pre("bomb_defused"), 1, "a throwing pre-hook is Continue, not a veto");
+        shutdown();
+    }
+
+    /// A subscriber whose payload class is missing makes the pushed array incomplete. The array
+    /// must still be the one dispatched (and the prune must not drop it), and once the class
+    /// appears the next dispatch rebuilds it with real events.
+    #[test]
+    fn jsmux_an_incomplete_channel_still_delivers_and_heals() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("a");
+        create_plugin_context("b");
+        eval_in_context("a", r#"globalThis.__a = 0; __s2_event_subscribe("round_start", function () { __a++; });"#).unwrap();
+        let _ = dispatch_game_event("round_start");
+        assert_eq!(read_i32_global_in("a", "__a"), 1);
+        eval_in_context("b", r#"
+            globalThis.__log = [];
+            __s2_event_subscribe("round_start", function (ev) { __log.push((ev === undefined ? "u" : "e") + arguments.length); });
+        "#).unwrap();
+        crate::jsmux::test_hide_ctor(Some("b"));
+        let _ = dispatch_game_event("round_start");
+        crate::jsmux::test_hide_ctor(None);
+        assert_eq!(read_i32_global_in("a", "__a"), 2, "the incomplete push still reaches every subscriber");
+        assert_eq!(eval_in_context_string("b", "__log.join(',')"), "u1", "one undefined argument, as the Rust fan-out gave");
+        let _ = dispatch_game_event("round_start");
+        assert_eq!(read_i32_global_in("a", "__a"), 3);
+        assert_eq!(eval_in_context_string("b", "__log.join(',')"), "u1,e1", "the class is found once it exists");
+        shutdown();
+    }
+
+    /// When the last subscriber goes, the JS arrays still get dropped (they pin the unloaded
+    /// plugin's context), even though no dispatch on that store has anyone to deliver to.
+    #[test]
+    fn jsmux_an_emptied_store_still_releases_its_arrays() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("a");
+        eval_in_context("a", r#"__s2_event_subscribe("round_start", function () {});"#).unwrap();
+        let _ = dispatch_game_event("round_start");
+        assert_eq!(crate::jsmux::test_pushed(crate::jsmux::Kind::Event), 1);
+        unload_plugin("a");
+        let _ = dispatch_game_event("round_start");
+        assert_eq!(crate::jsmux::test_pushed(crate::jsmux::Kind::Event), 0, "pruned with nobody subscribed");
+        shutdown();
+    }
+
+    /// While the profiler records, dispatch takes the Rust fan-out, with the same results.
+    #[test]
+    fn jsmux_falls_back_to_the_rust_fan_out_while_profiling() {
+        let _ = init(dummy_logger());
+        set_engine_ops(None);
+        create_plugin_context("a");
+        eval_in_context("a", r#"
+            globalThis.__saw = "";
+            __s2_event_subscribe("round_start", function (ev) { __saw = ev.name + "|" + __s2_test_entered_owner(); });
+            __s2_event_subscribe_pre("player_hurt", function () { return HookResult.Handled; });
+        "#).unwrap();
+        crate::profiler::test_set_active(true);
+        let _ = dispatch_game_event("round_start");
+        let pre = dispatch_game_event_pre("player_hurt");
+        crate::profiler::test_set_active(false);
+        assert_eq!(read_global_string("a", "__saw"), "round_start|a|a|event:round_start");
+        assert_eq!(pre, 1);
+        shutdown();
+    }
+
+    /// Stage 1 measurement: a game event to 10 plugins, each reading one field, through the JS
+    /// multiplexer and through the Rust fan-out it replaces. `cargo test --release -p s2script-core
+    /// jsmux_bench -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn jsmux_bench_game_event_to_ten_plugins() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(mock_event_ops()));
+        for i in 0..10 {
+            let id = format!("p{}", i);
+            create_plugin_context(&id);
+            eval_in_context(&id, r#"globalThis.__k = 0;
+                __s2_event_subscribe("player_death", function (ev) { if (ev.getInt("userid")) __k++; });"#).unwrap();
+        }
+        let n = 50_000;
+        for _ in 0..2_000 { let _ = dispatch_game_event("player_death"); let _ = replay_game_event_fan_out("player_death"); }
+        let t = std::time::Instant::now();
+        for _ in 0..n { let _ = replay_game_event_fan_out("player_death"); }
+        let rust = t.elapsed().as_nanos() as f64 / n as f64;
+        let t = std::time::Instant::now();
+        for _ in 0..n { let _ = dispatch_game_event("player_death"); }
+        let js = t.elapsed().as_nanos() as f64 / n as f64;
+        println!("game event to 10 plugins: Rust fan-out {:.0} ns, JS multiplexer {:.0} ns ({:.1}x)", rust, js, rust / js);
+        shutdown();
+    }
+
+    extern "C" fn key_len_int(k: *const std::os::raw::c_char) -> i32 {
+        unsafe { CStr::from_ptr(k) }.to_bytes().len() as i32
+    }
+
+    /// Stage 2: the numeric getters read by interned key on the fast path and still pass the
+    /// right key to the engine; a key the core will not intern reads through the string native.
+    #[test]
+    fn event_getters_by_interned_key_reach_the_engine_with_the_right_key() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(crate::v8host::S2EngineOps { event_get_int: Some(key_len_int), ..crate::v8host::S2EngineOps::none() }));
+        create_plugin_context("k");
+        assert_eq!(eval_in_context_string("k", "String(__s2_event_key('userid') === __s2_event_key('userid'))"), "true");
+        assert_eq!(eval_in_context_string("k", "String(__s2_event_key('a\\0b'))"), "-1", "a NUL key is refused");
+        let sum = eval_in_context_string("k", r#"
+            (function () {
+                var ev = new __s2pkg_events.GameEvent("player_death"), t = 0;
+                for (var i = 0; i < 200000; i++) t += ev.getInt("userid") + ev.getInt("attacker");
+                return t + "|" + ev.getInt("a\0b");
+            })()
+        "#);
+        assert_eq!(sum, format!("{}|0", 200000 * (6 + 8)));
+        shutdown();
+    }
+
+    /// Stage 2 measurement: one event field read, string-keyed slow native vs interned fast native.
+    /// `cargo test --release -p s2script-core event_field_read_bench -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn event_field_read_bench() {
+        let _ = init(dummy_logger());
+        set_engine_ops(Some(mock_event_ops()));
+        create_plugin_context("b");
+        let out = eval_in_context_string("b", r#"
+            (function () {
+                var ev = new __s2pkg_events.GameEvent("player_death"), n = 2000000, t = 0, i, a, b;
+                for (i = 0; i < 100000; i++) t += __s2_event_get_int("userid") + ev.getInt("userid");
+                a = __s2_hrtime_ns(); for (i = 0; i < n; i++) t += __s2_event_get_int("userid");
+                b = __s2_hrtime_ns(); var slow = Number(b - a) / n;
+                a = __s2_hrtime_ns(); for (i = 0; i < n; i++) t += ev.getInt("userid");
+                b = __s2_hrtime_ns(); var fast = Number(b - a) / n;
+                return slow.toFixed(1) + " ns string-keyed, " + fast.toFixed(1) + " ns GameEvent.getInt (" + (t > 0) + ")";
+            })()
+        "#);
+        println!("event field read: {}", out);
         shutdown();
     }
 

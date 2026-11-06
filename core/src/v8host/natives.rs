@@ -28,6 +28,8 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_thread_sleep", s2_thread_sleep);
     // Schema + entity system.
     set_native(scope, global_obj, "__s2_schema_offset", s2_schema_offset);
+    // Shared package modules, held once in the framework realm (bootstrap only).
+    set_native(scope, global_obj, "__s2_shared_module", realm::s2_shared_module);
     // Perf instrumentation: monotonic ns clock + isolate heap size + force-GC (dev/benchmark).
     set_native(scope, global_obj, "__s2_v8_heap_used", s2_v8_heap_used);
     set_native(scope, global_obj, "__s2_v8_gc", s2_v8_gc);
@@ -39,6 +41,7 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     // ent-state-changed) were retired in Task 4; callers now use the __s2_ent_ref_* path.
     // __s2_ent_ref_read_i32/__s2_ent_ref_write_i32 (introduced in Slice 5A) were retired in 5B.2 → generic __s2_ent_ref_read/write.
     crate::entity::install_natives(scope, global_obj);
+    crate::memory::install_natives(scope, global_obj);
     set_native(scope, global_obj, "__s2_handle_decode", s2_handle_decode);
     set_native(scope, global_obj, "__s2_handle_adopt", s2_handle_adopt);
     crate::commands::install_natives(scope, global_obj);
@@ -74,6 +77,7 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
         s2_iface_is_published,
     );
     set_native(scope, global_obj, "__s2_iface_call", s2_iface_call);
+    super::interop_facade::install(scope, global_obj);
     // Event subscription / emission (Slice 4.5 events half).
     set_native(scope, global_obj, "__s2_iface_dispose", interop_lifetime::s2_iface_dispose);
     set_native(scope, global_obj, "__s2_iface_watch", interop_lifetime::s2_iface_watch);
@@ -86,6 +90,9 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     set_native(scope, global_obj, "__s2_iface_dispatch", s2_iface_dispatch);
     // Game-event system (Slice 5D.1): subscribe/unsubscribe + accessor natives.
     crate::events::install_natives(scope, global_obj);
+    // Test-only probe: who entered V8, and what the crash breadcrumb names, as seen by a handler.
+    #[cfg(test)]
+    set_native(scope, global_obj, "__s2_test_entered_owner", function_adapter::test_entered_owner);
     set_native(scope, global_obj, "__s2_engine_function", engine_functions::lookup);
     // Engine-identity client-list natives (Slice 5D.2).
     crate::client::install_natives(scope, global_obj);
@@ -210,6 +217,8 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
         "__s2_server_game_time",
         s2_server_game_time,
     );
+    set_native(scope, global_obj, "__s2_server_tick_count", s2_server_tick_count);
+    set_native(scope, global_obj, "__s2_server_tick_interval", s2_server_tick_interval);
     // Slice 6.2 Task 2: config-bridge natives for the admin module (file load/write).
     set_native(
         scope,
@@ -268,6 +277,7 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     );
     // Slice HTTP Task 2: async fetch over the process-global tokio+reqwest engine (core/src/http.rs).
     crate::http::install_natives(scope, global_obj);
+    crate::files::install_natives(scope, global_obj);
     // WebSocket Task 2: client ws over the process-global tokio+tungstenite engine (core/src/ws.rs).
     set_native(scope, global_obj, "__s2_ws_connect", s2_ws_connect);
     crate::ws::install_natives(scope, global_obj);
@@ -355,12 +365,18 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
         s2_collision_activate,
     );
     set_native(scope, global_obj, "__s2_sound_emit", s2_sound_emit);
+    set_native(scope, global_obj, "__s2_sound_start", s2_sound_start);
+    set_native(scope, global_obj, "__s2_sound_set_param", s2_sound_set_param);
+    set_native(scope, global_obj, "__s2_sound_stop_event", s2_sound_stop_event);
+    set_native(scope, global_obj, "__s2_sound_duration", s2_sound_duration);
+    set_native(scope, global_obj, "__s2_sound_is_valid", s2_sound_is_valid);
     set_native(
         scope,
         global_obj,
         "__s2_sound_precache_add",
         s2_sound_precache_add,
     );
+    set_native(scope, global_obj, "__s2_precache_entity_add", s2_precache_entity_add);
     // Item slice: the sub-object vcall native + the readHandleVector native (wrapped as an
     // EntityRef prototype method in the prelude, below). A5b retired give/remove-item to
     // gamedata/cs2 `calls` descriptors.
@@ -372,6 +388,8 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
         "__s2_output_subscribe",
         s2_output_subscribe,
     );
+    // Parity slice 5: Entity.onInput (CEntityIdentity::AcceptInput detour dispatch).
+    set_native(scope, global_obj, "__s2_input_subscribe", s2_input_subscribe);
     set_native(scope, global_obj, "__s2_cvar_on_change", s2_cvar_on_change);
     set_native(
         scope,
@@ -432,6 +450,7 @@ pub(super) fn install_natives(scope: &mut v8::PinScope, global_obj: v8::Local<v8
     // read natives (route through the usermsg_hook_* ops; the shim's PostEventAbstract hook installs
     // lazily on the first subscribe).
     crate::usermsg::install_natives(scope, global_obj);
+    crate::stringtables::install_natives(scope, global_obj);
     // Plugin-declared engine calls (`@s2script/sdk/unsafe`): ask-by-name only — there is deliberately
     // NO registration native (core registers descriptors itself from the packed gamedata.json).
     set_native(

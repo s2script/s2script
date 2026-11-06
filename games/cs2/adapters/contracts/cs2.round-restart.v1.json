@@ -1,0 +1,1 @@
+{"frame":{"post":[],"pre":[]},"id":"cs2.round-restart.v1","preDecision":"s2.pre-decision.v1","semantics":{"delivery":"every-subscriber","finalAction":"continue","original":"always-runs","returns":"ignored","throw":"continue"},"subscriberDelivery":"s2.subscriber-delivery.v1","timing":{"post":"after-original","pre":"before-original"},"version":1}

@@ -1,0 +1,9 @@
+{
+  "name": "@fixture/servers",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": ["ttt/plugins/*", "jb/plugins/*", "tools/*"],
+  "s2script": {
+    "workspace": { "plugins": ["ttt/plugins/*", "jb/plugins/*", "tools/*"], "bundles": ["ttt", "jb"] }
+  }
+}

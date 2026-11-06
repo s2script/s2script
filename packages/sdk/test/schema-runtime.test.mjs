@@ -115,6 +115,16 @@ test("Player.fromSlot excludes a valid controller with no pawn (occupancy filter
   assert.deepEqual(Player.all(), [], "Player.all() excludes controllers without a pawn");
 });
 
+// The value reads a real EntityRef has (core/js/prelude.js), built over a fake's readFloats and
+// readFloatsChain with the given math classes.
+function addVectorReads(proto, math) {
+  const make = (Ctor, a) => (a === null ? null : new Ctor(a[0], a[1], a[2]));
+  proto.readVector = function (o) { return make(math.Vector, this.readFloats(o, 3)); };
+  proto.readQAngle = function (o) { return make(math.QAngle, this.readFloats(o, 3)); };
+  proto.readVectorChain = function (c, o) { return make(math.Vector, this.readFloatsChain(c, o, 3)); };
+  proto.readQAngleChain = function (c, o) { return make(math.QAngle, this.readFloatsChain(c, o, 3)); };
+}
+
 test("pawn.origin / pawn.angles: pointer-chain accessors read a value, degrade to null (offline vm)", () => {
   // nav.generated.js is now in the concatenation; origin/angles are compat aliases that delegate to sceneNode.
   function EntityRef(i, s) { this.index = i; this.serial = s; }
@@ -126,6 +136,7 @@ test("pawn.origin / pawn.angles: pointer-chain accessors read a value, degrade t
   function Vector(x, y, z) { this.x = x; this.y = y; this.z = z; }
   function QAngle(x, y, z) { this.x = x; this.y = y; this.z = z; }
   const math = { Vector, QAngle };
+  addVectorReads(EntityRef.prototype, math);
   let offRet = 8;                                        // schema-offset stub; toggled to -1 below
   const ctx = {
     __s2require: (n) => (n === "@s2script/sdk/entity" ? { EntityRef } : n === "@s2script/sdk/math" ? math : null),
@@ -143,8 +154,16 @@ test("pawn.origin / pawn.angles: pointer-chain accessors read a value, degrade t
   assert.ok(p.angles instanceof QAngle, "angles is a QAngle");
   chainRet = null;                                      // stale/broken chain → readFloatsChain null
   assert.equal(p.origin, null, "a null readFloatsChain → the accessor returns null");
-  chainRet = [1, 2, 3]; offRet = -1;                    // a field-offset miss → readFloatsChain returns null
-  assert.equal(p.origin, null, "a missing field offset → the accessor returns null");
+  // A field-offset miss → readFloatsChain returns null. Offsets are fixed for a process and the
+  // accessors keep a hit, so the miss is tested on a context that never resolved the field.
+  chainRet = [1, 2, 3]; offRet = -1;
+  const ctx2 = { ...ctx, __s2pkg_cs2: undefined };
+  ctx2.globalThis = ctx2;
+  installClientHost(ctx2);
+  vm.createContext(ctx2);
+  vm.runInContext(cs2AddonBundle, ctx2);
+  const p2 = new ctx2.__s2pkg_cs2.Pawn(new EntityRef(5, 9));
+  assert.equal(p2.origin, null, "a missing field offset → the accessor returns null");
 });
 
 test("generated Vector/QAngle accessor: reads a value object, degrades to null (offline vm)", () => {
@@ -157,6 +176,7 @@ test("generated Vector/QAngle accessor: reads a value object, degrades to null (
   function Vector(x, y, z) { this.x = x; this.y = y; this.z = z; }
   function QAngle(x, y, z) { this.x = x; this.y = y; this.z = z; }
   const math = { Vector, QAngle };
+  addVectorReads(EntityRef.prototype, math);
   const ctx = {
     __s2require: (n) => (n === "@s2script/sdk/entity" ? { EntityRef } : n === "@s2script/sdk/math" ? math : null),
     __s2_schema_offset: () => 8, __s2_ent_id_for_index: (i) => i, __s2_handle_adopt: (h) => [h & 0x7fff, 0],
@@ -197,6 +217,7 @@ test("nav.generated.js + pawn.js compose: sceneNode/weaponServices wrappers, nul
     Vector: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
     QAngle: function (x, y, z) { this.x = x; this.y = y; this.z = z; },
   };
+  addVectorReads(EntityRef.prototype, math);
   const ctx = {
     __s2require: (n) => (n === "@s2script/sdk/entity" ? { EntityRef } : n === "@s2script/sdk/math" ? math : null),
     __s2_schema_offset: () => 8,      // all offsets valid; NAV paths resolve to [8, …]

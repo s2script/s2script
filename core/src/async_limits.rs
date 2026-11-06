@@ -828,8 +828,8 @@ pub(crate) fn stop_delivery(cleanup: impl FnOnce()) {
     cleanup();
 }
 
-static QUEUES: [std::sync::atomic::AtomicUsize; 5] =
-    [const { std::sync::atomic::AtomicUsize::new(0) }; 5];
+static QUEUES: [std::sync::atomic::AtomicUsize; 6] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 6];
 pub(crate) struct QueueTicket(Option<usize>);
 impl QueueTicket {
     pub fn new(source: usize) -> Self {
@@ -848,7 +848,7 @@ impl Drop for QueueTicket {
     }
 }
 pub(crate) fn queued_metrics() -> serde_json::Value {
-    serde_json::json!({"worker":QUEUES[0].load(Ordering::Relaxed),"http":QUEUES[1].load(Ordering::Relaxed),"db":QUEUES[2].load(Ordering::Relaxed),"ws":QUEUES[3].load(Ordering::Relaxed),"net":QUEUES[4].load(Ordering::Relaxed)})
+    serde_json::json!({"worker":QUEUES[0].load(Ordering::Relaxed),"http":QUEUES[1].load(Ordering::Relaxed),"db":QUEUES[2].load(Ordering::Relaxed),"ws":QUEUES[3].load(Ordering::Relaxed),"net":QUEUES[4].load(Ordering::Relaxed),"files":QUEUES[5].load(Ordering::Relaxed)})
 }
 
 #[cfg(test)]

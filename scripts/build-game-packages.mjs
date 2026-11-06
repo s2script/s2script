@@ -136,7 +136,7 @@ function catalogOffset(catalog, className, field, where) {
   return row.offset;
 }
 
-function trustedArtifact({ path, text, id, adapterHashes, signatures, catalog }) {
+function trustedArtifact({ path, text, id, adapterHashes, signatures, gamedataOffsets, catalog }) {
   if (Buffer.byteLength(text) > MAX_TRUSTED_BYTES) throw new Error(`${path}: trusted functions size limit`);
   const stripped = stripJsonComments(text);
   rejectDuplicateKeys(path, stripped);
@@ -150,10 +150,23 @@ function trustedArtifact({ path, text, id, adapterHashes, signatures, catalog })
   for (const [key, entry] of Object.entries(plainObject(source.offsets, `${path}.offsets`))) {
     const where = `${path}.offsets[${JSON.stringify(key)}]`;
     plainObject(entry, where);
+    if (!key || key.length > 256 || key.includes("\0")) throw new Error(`${where}: invalid offset key`);
+    if ("gamedata" in entry) {
+      // A struct the schema does not describe: the package's own gamedata offset (layout is data), plus
+      // an optional byte delta for a member inside it (a vector component).
+      exactKeys(entry, ["gamedata", "delta"], where, ["gamedata"]);
+      const delta = entry.delta ?? 0;
+      const shipped = gamedataOffsets?.[entry.gamedata]?.linuxsteamrt64;
+      if (typeof entry.gamedata !== "string" || !entry.gamedata || !Number.isInteger(delta) || delta < 0 || delta > 0xffff)
+        throw new Error(`${where}: invalid gamedata offset name or delta`);
+      if (!Number.isInteger(shipped) || shipped < 0 || shipped + delta > 0xffffffff)
+        throw new Error(`${where}: gamedata offset ${JSON.stringify(entry.gamedata)} has no linuxsteamrt64 entry`);
+      offsets[key] = { gamedata: entry.gamedata, delta, catalog: shipped + delta };
+      continue;
+    }
     exactKeys(entry, ["class", "field"], where);
-    if (!key || key.length > 256 || key.includes("\0") || typeof entry.class !== "string" || !entry.class ||
-        typeof entry.field !== "string" || !entry.field)
-      throw new Error(`${where}: invalid offset key or schema name`);
+    if (typeof entry.class !== "string" || !entry.class || typeof entry.field !== "string" || !entry.field)
+      throw new Error(`${where}: invalid schema name`);
     offsets[key] = { class: entry.class, field: entry.field, catalog: catalogOffset(catalog, entry.class, entry.field, where) };
   }
   if (!Array.isArray(source.functions) || source.functions.length > 256) throw new Error(`${path}.functions must be an array of at most 256`);
@@ -328,13 +341,16 @@ export function buildGamePackages({ outDir, sourceDirs = [firstParty], allowSynt
     }
     if (trustedFunctionsFile !== undefined) {
       const path = input(trustedFunctionsFile);
-      const signatures = {};
-      for (const file of files) Object.assign(signatures, file.document.signatures ?? {});
+      const signatures = {}, gamedataOffsets = {};
+      for (const file of files) {
+        Object.assign(signatures, file.document.signatures ?? {});
+        Object.assign(gamedataOffsets, file.document.offsets ?? {});
+      }
       const catalogPath = confined(root, `${gamedataRoot}/schema-catalog.json`);
       let catalog;
       try { catalog = JSON.parse(readFileSync(catalogPath, "utf8")); }
       catch (error) { throw new Error(`${catalogPath}: ${error.message}`); }
-      const bytes = trustedArtifact({ path, text: readFileSync(path, "utf8"), id, adapterHashes, signatures, catalog });
+      const bytes = trustedArtifact({ path, text: readFileSync(path, "utf8"), id, adapterHashes, signatures, gamedataOffsets, catalog });
       const trustedPath = `${prefix}/trusted-functions.json`;
       outputs.set(trustedPath, bytes);
       record.trustedFunctions = { path: trustedPath, sha256: sha256(bytes) };

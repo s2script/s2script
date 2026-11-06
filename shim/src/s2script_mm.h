@@ -2,7 +2,7 @@
 #include <ISmmPlugin.h>
 #include "khook_map.h"
 
-// ISource2Server is forward-declared here; full definition (eiface.h) is
+// ISource2Server is forward-declared here; full definition (engine2/isource2server.h) is
 // included only in s2script_mm.cpp where the KHook machinery lives.
 class ISource2Server;
 // IGameEvent is forward-declared here; full definition (igameevents.h) is
@@ -10,7 +10,7 @@ class ISource2Server;
 class IGameEvent;
 class IGameEventManager2;
 // Forward-declared for the ClientCommand hook (Slice 6.11c); full definitions
-// (eiface.h / convar.h / playerslot.h) live in s2script_mm.cpp.
+// (engine2/isource2server.h / convar.h / playerslot.h) live in s2script_mm.cpp.
 class ISource2GameClients;
 class CCommand;
 class CPlayerSlot;
@@ -22,12 +22,11 @@ class ConCommandRef;
 class CCommandContext;
 class IVEngineServer2;
 // Forward-declared for the ClientDisconnect lifecycle hook (@s2script/clients). This header is parsed
-// before eiface.h pulls the full definition, so an opaque enum decl with the SDK's fixed underlying type
+// before the engine2 headers pull the full definition, so an opaque enum decl with the SDK's fixed underlying type
 // (`: int`, per network_connection.pb.h) is required; it is compatible with the later full definition.
 enum ENetworkDisconnectionReason : int;
 // Forward-declared for the StartupServer map-start hook (clientlist-fakeconvar-onmapstart slice); full
-// definitions (iserver.h) live in s2script_mm.cpp. INetworkServerService / ISource2WorldSession are
-// forward-declared classes in iserver.h too (iserver.h:41,43), so `class` here is compatible.
+// definitions (engine2/inetworkserverservice.h) live in s2script_mm.cpp; `class` here matches the SDK.
 // GameSessionConfiguration_t is only ever forward-declared across the whole SDK (its real body is
 // commented out), so it stays INCOMPLETE here — but the SH_DECL_HOOK3_void macro in the .cpp sizeof's
 // the by-ref param type, and `sizeof` needs a COMPLETE type. s2script_mm.cpp therefore promotes it to a
@@ -38,7 +37,7 @@ class INetworkServerService;
 class GameSessionConfiguration_t;
 class ISource2WorldSession;
 // Forward-declared for the CheckTransmit hook (checktransmit slice); full definitions
-// (eiface.h / iservernetworkable.h / bitvec.h) live in s2script_mm.cpp. CBitVec's forward decl
+// (engine2/isource2server.h / bitvec.h) live in s2script_mm.cpp. CBitVec's forward decl
 // matches bitvec.h:414 (`template <int NUM_BITS> class CBitVec`); by-ref params in pure
 // DECLARATIONS don't need the complete type.
 class ISource2GameEntities;
@@ -46,8 +45,8 @@ class CCheckTransmitInfo;
 struct Entity2Networkable_t;
 template <int NUM_BITS> class CBitVec;
 // Forward-declared for the UserMessage-interception PostEventAbstract hook (usermsg-hook slice); full
-// definitions (engine/igameeventsystem.h -> networksystem/inetworkserializer.h, netmessage.h,
-// tier1/convar.h, inetchannel.h) live in s2script_mm.cpp. Pure by-value/by-pointer DECLARATION params
+// definitions (engine2/igameeventsystem.h -> networksystem/inetworkserializer.h, inetworkmessages.h,
+// tier0/convar.h, networksystem/inetchannel.h) live in s2script_mm.cpp. Pure by-value/by-pointer DECLARATION params
 // don't need complete types here. `unsigned long long` == the SDK's uint64 on Linux (the META_NO_HL2SDK
 // convention used by the client-lifecycle hooks); NetChannelBufType_t's underlying type is int8
 // (== signed char, platform.h:273), stated so this forward decl matches the later full definition.

@@ -1,21 +1,23 @@
 //! Strict protocol 2 crossings. Snapshot owned metadata before entering JavaScript.
 use super::*;
-thread_local! { static DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
-pub(super) fn at_interop_boundary() -> bool { DEPTH.with(|d| d.get() == 0) }
+// The depth counter lives in memory shared with every context, so facade calls (in JS) and
+// native calls count against the same limit.
+use super::interop_facade::{depth, set_depth};
+pub(super) fn at_interop_boundary() -> bool { depth() == 0 }
 pub(super) struct InteropGuard;
 impl InteropGuard {
     pub(super) fn enter(scope: &mut v8::PinScope) -> Option<Self> {
-        if DEPTH.with(|d| d.get() >= 32) {
+        if depth() >= 32 {
             throw_named(scope, "InterfaceRecursionLimit", "maximum 32 active calls");
             return None;
         }
-        DEPTH.with(|d| d.set(d.get() + 1));
+        set_depth(depth() + 1);
         Some(Self)
     }
 }
 impl Drop for InteropGuard {
     fn drop(&mut self) {
-        DEPTH.with(|d| d.set(d.get() - 1));
+        set_depth(depth().saturating_sub(1));
     }
 }
 pub(super) fn live_interop_context(scope: &mut v8::PinScope, id: &str) -> bool {

@@ -144,6 +144,15 @@ test('hook permissions and inspectable summary derive from normalized contract',
   assert.equal(s.functions[0].suppresses, true);
 });
 
+// A raw address is a declared `ptr`: a pointer ABI slot with its own projection, never an entity
+// or a copied value.
+test('ptr parameters and returns normalize to the pointer projection', () => {
+  const [f] = norm({ x: fn({ parameters: [{ name: 'info', type: 'ptr', mutable: 'pre' }], returns: 'ptr', surfaces: ['call', 'pre'] }) }).functions;
+  assert.deepEqual(f.abi.parameters[0].native, 'ptr');
+  assert.deepEqual(f.abi.parameters[0].projection, { id: 'ptr', version: 1 });
+  assert.deepEqual(f.abi.returns, { native: 'ptr', projection: { id: 'ptr', version: 1 } });
+});
+
 test('rejects unsafe or unsupported declarations with names', () => {
   const cases = [
     [fn({ parameters: [{ name: 'self', type: 'i32' }] }), /self.*reserved/i],
@@ -157,7 +166,7 @@ test('rejects unsafe or unsupported declarations with names', () => {
     [fn({ parameters: [{ name: 'x', type: 'u8' }] }), /u8/i],
     [fn({ parameters: [{ name: 'x', type: 'struct' }] }), /struct/i],
     [fn({ parameters: [{ name: 'x', type: '...' }] }), /\.\.\./i],
-    [fn({ parameters: [{ name: 'x', type: 'ptr' }] }), /ptr/i],
+    [fn({ parameters: [{ name: 'x', type: 'pointer' }] }), /pointer/i],
     [fn({ projection: 'legacy.acquire.v1' }), /projection/i],
     [fn({ adapter: 'legacy.acquire.v1' }), /adapter/i],
     [fn({ parameters: [{ name: 'x', type: 'i32', mutable: 'post' }] }), /mutable/i],

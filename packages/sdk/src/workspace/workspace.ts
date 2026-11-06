@@ -29,7 +29,7 @@ export interface WorkspacePackageJson {
   s2script?: {
     main?: string;
     /** The root marker. Its presence — not its contents — is what defines a workspace root. */
-    workspace?: { plugins?: string[] };
+    workspace?: { plugins?: string[]; bundles?: string[] };
     pluginDependencies?: Record<string, string>;
     optionalPluginDependencies?: Record<string, string>;
     publishes?: string | Record<string, string>;

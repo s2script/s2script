@@ -406,8 +406,17 @@ bool pointer_request(const S2FunctionValue& v) {
         v.flags<=static_cast<unsigned char>(PointerProjection::Opaque);
 }
 }
+namespace {
+// The `ptr` projection: a raw address, already range-checked by the host; null is 0.
+constexpr unsigned char kOpaque=static_cast<unsigned char>(PointerProjection::Opaque);
+bool opaque_address(uint64_t bits) { return bits==0 || (bits>=0x10000 && bits<(1ull<<47)); }
+}
 s2fn::Result<s2fn::NativeValue> EntityPointerCodec::Decode(const S2FunctionValue& value,CallStorage&) {
     if(std::this_thread::get_id()!=owner_) return {{},"entity codec off host thread"};
+    if(value.kind==8 && value.flags==kOpaque) {
+        if(value.reserved || value.aux || !opaque_address(value.bits)) return {{},"invalid pointer transport"};
+        return {s2fn::NativeValue::From(reinterpret_cast<void*>(static_cast<uintptr_t>(value.bits))),{}};
+    }
     if(value.kind!=8 || (value.flags!=1 && value.flags!=2) || value.reserved || value.bits>UINT32_MAX ||
        (value.aux>INT32_MAX && value.aux!=UINT32_MAX) ||
        (value.aux==UINT32_MAX && (value.flags!=2 || value.bits!=0))) return {{},"invalid entity identity transport"};
@@ -418,6 +427,12 @@ s2fn::Result<s2fn::NativeValue> EntityPointerCodec::Decode(const S2FunctionValue
 }
 s2fn::Result<S2FunctionValue> EntityPointerCodec::Encode(const s2fn::NativeValue& value,const S2FunctionValue& request) {
     if(std::this_thread::get_id()!=owner_) return {{},"entity codec off host thread"};
+    if(request.kind==8 && request.flags==kOpaque) {
+        if(request.reserved || request.aux || request.bits) return {{},"invalid pointer projection request"};
+        const auto bits=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(value.Get<void*>()));
+        if(!opaque_address(bits)) return {{},"native pointer outside the user address range"};
+        auto out=request;out.bits=bits;return {out,{}};
+    }
     if(request.kind!=8 || (request.flags!=1 && request.flags!=2) || request.reserved || request.aux || request.bits)
         return {{},"invalid entity projection request"};
     EntityIdentity identity;const auto pointer=value.Get<void*>();
@@ -1112,13 +1127,14 @@ extern "C" int S2_FunctionFrameRead(long long id,unsigned long long token,unsign
         if(k==ValueKind::Pointer) {
             require(f.codec,"entity codec unavailable");
             // Validate the caller's binding-local request before touching any slot.
-            require(out->kind==8 && (out->flags==1 || out->flags==2) && !out->reserved && !out->aux && !out->bits,
-                "invalid entity projection request");
+            require(out->kind==8 && (out->flags==1 || out->flags==2 || out->flags==kOpaque) && !out->reserved && !out->aux && !out->bits,
+                "invalid pointer projection request");
             auto edit=f.entity_edits.find(selector);
             CallStorage storage;
             if(edit!=f.entity_edits.end()) {
                 // Decode using writer's checked identity, encode using reader's request.
-                auto identity=edit->second;identity.flags=static_cast<unsigned char>(PointerProjection::NullableEntity);
+                auto identity=edit->second;
+                if(identity.flags!=kOpaque) identity.flags=static_cast<unsigned char>(PointerProjection::NullableEntity);
                 auto decoded=f.codec->Decode(identity,storage);require(bool(decoded),decoded.error.c_str());value=decoded.value;
             }
             auto encoded=f.codec->Encode(value,*out);require(bool(encoded),encoded.error.c_str());result=encoded.value;
@@ -1142,8 +1158,9 @@ extern "C" int S2_FunctionFrameOverrideReturn(long long id,unsigned long long to
         CallStorage storage;
         if(k==ValueKind::Pointer) {
             require(f.codec,"entity codec unavailable");
-            require(out->kind==8 && (out->flags==1 || out->flags==2) && !out->reserved && !out->aux && !out->bits,
-                "invalid entity projection request");
+            require(out->kind==8 && (out->flags==1 || out->flags==2 || out->flags==kOpaque) && !out->reserved && !out->aux && !out->bits,
+                "invalid pointer projection request");
+            require((out->flags==kOpaque)==(value->flags==kOpaque),"pointer projection mismatch");
             require(pointer_request(*value),"copied value requires sidecar operation");
             auto decoded=f.codec->Decode(*value,storage);require(bool(decoded),decoded.error.c_str());native=decoded.value;
         } else native=scalar_decode(*value,k);

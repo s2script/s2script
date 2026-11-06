@@ -42,6 +42,18 @@ pub(crate) enum ProjectedValue {
         reference: Option<EntityReference>,
         nullable: bool,
     },
+    /// A raw address (`ptr` projection), 0 for null. Only addresses a `Ptr` can hold cross.
+    Pointer(u64),
+}
+
+/// The `ptr` projection: a raw address carried as an opaque pointer value (shim flag 3).
+pub(crate) const POINTER_FLAG: u8 = 3;
+pub(crate) fn pointer_request() -> S2FunctionValue {
+    S2FunctionValue { kind: 8, flags: POINTER_FLAG, reserved: 0, aux: 0, bits: 0 }
+}
+/// A raw address is null or one a `Ptr` accepts (outside the null page, below 2^47).
+pub(crate) fn pointer_ok(bits: u64) -> bool {
+    bits == 0 || (65536..(1u64 << 47)).contains(&bits)
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EntityProjection {
@@ -81,6 +93,12 @@ impl EntityProjection {
     }
 }
 pub(crate) fn request(native: &str, projection: &str) -> Result<S2FunctionValue, String> {
+    if projection == "ptr" {
+        if native != "ptr" {
+            return Err("pointer projection requires pointer ABI".into());
+        }
+        return Ok(pointer_request());
+    }
     if let Some(entity) = EntityProjection::parse(projection) {
         if native != "ptr" {
             return Err("entity projection requires pointer ABI".into());
@@ -107,6 +125,8 @@ pub(crate) fn encode(value: ProjectedValue) -> Result<S2FunctionValue, String> {
     match value {
         ProjectedValue::Scalar(value) => Ok(value),
         ProjectedValue::Copied(_) => Err("copied value requires sidecar operation".into()),
+        ProjectedValue::Pointer(bits) if pointer_ok(bits) => Ok(S2FunctionValue { bits, ..pointer_request() }),
+        ProjectedValue::Pointer(_) => Err("pointer value outside the user address range".into()),
         ProjectedValue::Entity {
             reference,
             nullable,
@@ -168,6 +188,14 @@ pub(crate) fn decode(
 ) -> Result<ProjectedValue, String> {
     if let Some(entity) = EntityProjection::parse(projection) {
         return adopt(value, entity);
+    }
+    if projection == "ptr" {
+        if native != "ptr" || value.kind != 8 || value.flags != POINTER_FLAG || value.reserved != 0
+            || value.aux != 0 || !pointer_ok(value.bits)
+        {
+            return Err("invalid pointer projection transport".into());
+        }
+        return Ok(ProjectedValue::Pointer(value.bits));
     }
     if value.kind != super::runtime::kind(native)?
         || value.flags != 0

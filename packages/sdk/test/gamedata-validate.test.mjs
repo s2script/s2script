@@ -46,6 +46,21 @@ test('receiver.kind "none" cannot carry a via hop', () => {
   assert.ok(validatePluginGamedata(gd, { permissions: PERMS }).some((e) => e.includes("via")));
 });
 
+test('receiver.kind "interface" with a name and a utlstringlist return is accepted', () => {
+  const gd = structuredClone(sigCall);
+  gd.calls.foo.receiver = { kind: "interface", name: "GameTypes001" };
+  gd.calls.foo.returns = "utlstringlist";
+  assert.deepEqual(validatePluginGamedata(gd, { permissions: PERMS }), []);
+});
+
+test('receiver.kind "interface" needs a name and cannot carry a via hop', () => {
+  const gd = structuredClone(sigCall);
+  gd.calls.foo.receiver = { kind: "interface" };
+  assert.ok(validatePluginGamedata(gd, { permissions: PERMS }).some((e) => e.includes("needs a 'name'")));
+  gd.calls.foo.receiver = { kind: "interface", name: "X001", via: { class: "C", field: "m_f" } };
+  assert.ok(validatePluginGamedata(gd, { permissions: PERMS }).some((e) => e.includes("via")));
+});
+
 test("five integer-class plus eight float args are accepted", () => {
   const gd = structuredClone(sigCall);
   gd.calls.foo.args = ["int", "int", "int", "bool", "entity", ...Array(8).fill("float")];

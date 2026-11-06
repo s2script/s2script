@@ -8,6 +8,7 @@ import * as cookies from "./cookies.ts";
 import * as damage from "./damage.ts";
 import * as db from "./db.ts";
 import * as events from "./events.ts";
+import * as files from "./files.ts";
 import * as gamerules from "./gamerules.ts";
 import * as http from "./http.ts";
 import * as items from "./items.ts";
@@ -17,6 +18,7 @@ import * as net from "./net.ts";
 import * as playerState from "./player-state.ts";
 import * as server from "./server.ts";
 import * as sound from "./sound.ts";
+import * as stringtables from "./stringtables.ts";
 import * as team from "./team.ts";
 import * as timers from "./timers.ts";
 import * as trace from "./trace.ts";
@@ -40,6 +42,7 @@ export const RECIPES: readonly Recipe[] = [
   damage,
   db,
   events,
+  files,
   gamerules,
   http,
   items,
@@ -49,6 +52,7 @@ export const RECIPES: readonly Recipe[] = [
   playerState,
   server,
   sound,
+  stringtables,
   team,
   timers,
   trace,

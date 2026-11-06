@@ -99,6 +99,9 @@ bash scripts/check-deferred-sentinel.sh
 echo "== check-engine-ops-order.sh (S2EngineOps field order: core == shim header) =="
 bash scripts/check-engine-ops-order.sh
 
+echo "== test-usermsg-fields.py (production protobuf reads and edits) =="
+python3 scripts/test-usermsg-fields.py
+
 echo "== test-defer-queue.sh (the deferred-dispatch drain, flush-inside-replay included) =="
 bash scripts/test-defer-queue.sh
 
@@ -202,6 +205,10 @@ cargo build
 # scripts/test-interop.sh native runs that focused subset when iterating on acceptance.
 echo "== cargo test -p s2script-core =="
 cargo test -p s2script-core
+# The V8-host suite again, with consumer-side __s2_iface_call routed through protocol 2 interface
+# facades (FACADE_SHIM in core/src/v8host/lifecycle.rs): a facade must keep every strict-copy rule.
+echo "== cargo test -p s2script-core frame_tests (interface calls through facades) =="
+S2_TEST_FACADE=1 cargo test -p s2script-core frame_tests
 echo "== game-package portability (same native test executable, absent/present artifacts) =="
 bash scripts/test-game-package-portability.sh
 bash scripts/test-async-pressure.sh
@@ -253,7 +260,7 @@ echo "== check-shim-symbols.sh (core entry points defined; no unresolvable engin
 bash scripts/check-shim-symbols.sh
 
 # The acceptance bundle includes a freshly built .s2sp with its own identity.
-echo "== build-khook-runtime.py (stock host, native consumers and stamped fixture) =="
+echo "== build-khook-runtime.py (native consumers and stamped fixture) =="
 python3 scripts/build-khook-runtime.py
 
 echo "ci-native: all native gates passed"

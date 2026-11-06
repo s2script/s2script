@@ -1,8 +1,10 @@
 // Per-entity SDKHooks VP hooks — KHook::Virtual::Add, not process-wide detours.
 //
 // Touch family: `void (CEntityInstance *pOther)`.
-// Lifecycle: this-void (Spawn/Think/PreThink/PostThink/VPhysicsUpdate/GroundEntChangedPost),
-// Use `(CEntityInstance *activator, CEntityInstance *caller, int useType, float value)`,
+// Lifecycle: this-void (Think/PreThink/PostThink/VPhysicsUpdate/GroundEntChangedPost),
+// Spawn `(const CEntityKeyValues *)` (Source 2's CEntityInstance::Spawn takes the key-values),
+// Use `(const EntityUseInput_t *)` (Source 2 packs activator/caller/type/value into one struct;
+// the base CBaseEntity::Use forwards that pointer to m_pfnUse, CBaseDoor::Use reads [rsi]),
 // GetMaxHealth `int()`, ShouldCollide `bool(int,int)`, CanBeAutobalanced `bool()`.
 // Slots are derived at Load from gamedata/sdkhooks signatures + vtable-member, never shipped
 // as borrowed offsets. Missing/failed rows leave the type unconfigured: s2_sdkhook_vp_add
@@ -18,6 +20,9 @@
 #include <ISmmPlugin.h>
 #include <cstdio>
 #include <entity2/entityinstance.h>
+#include <entity2/entityclass.h>
+
+class CEntityKeyValues;
 
 PLUGIN_GLOBALVARS();
 
@@ -56,8 +61,8 @@ static KHook::Return<void> Hook_EndTouch(CEntityInstance* thisPtr, CEntityInstan
 static KHook::Return<void> Hook_EndTouchPost(CEntityInstance* thisPtr, CEntityInstance* pOther);
 static KHook::Return<void> Hook_Blocked(CEntityInstance* thisPtr, CEntityInstance* pOther);
 static KHook::Return<void> Hook_BlockedPost(CEntityInstance* thisPtr, CEntityInstance* pOther);
-static KHook::Return<void> Hook_Spawn(CEntityInstance* thisPtr);
-static KHook::Return<void> Hook_SpawnPost(CEntityInstance* thisPtr);
+static KHook::Return<void> Hook_Spawn(CEntityInstance* thisPtr, const CEntityKeyValues* kv);
+static KHook::Return<void> Hook_SpawnPost(CEntityInstance* thisPtr, const CEntityKeyValues* kv);
 static KHook::Return<void> Hook_Think(CEntityInstance* thisPtr);
 static KHook::Return<void> Hook_ThinkPost(CEntityInstance* thisPtr);
 static KHook::Return<void> Hook_PreThink(CEntityInstance* thisPtr);
@@ -67,10 +72,8 @@ static KHook::Return<void> Hook_PostThinkPost(CEntityInstance* thisPtr);
 static KHook::Return<void> Hook_VPhysicsUpdate(CEntityInstance* thisPtr);
 static KHook::Return<void> Hook_VPhysicsUpdatePost(CEntityInstance* thisPtr);
 static KHook::Return<void> Hook_GroundEntChangedPost(CEntityInstance* thisPtr);
-static KHook::Return<void> Hook_Use(CEntityInstance* thisPtr, CEntityInstance* act,
-                                      CEntityInstance* caller, int useType, float value);
-static KHook::Return<void> Hook_UsePost(CEntityInstance* thisPtr, CEntityInstance* act,
-                                          CEntityInstance* caller, int useType, float value);
+static KHook::Return<void> Hook_Use(CEntityInstance* thisPtr, const EntityUseInput_t* in);
+static KHook::Return<void> Hook_UsePost(CEntityInstance* thisPtr, const EntityUseInput_t* in);
 static KHook::Return<int> Hook_GetMaxHealth(CEntityInstance* thisPtr);
 static KHook::Return<bool> Hook_ShouldCollide(CEntityInstance* thisPtr, int collisionGroup,
                                              int contentsMask);
@@ -84,11 +87,12 @@ S2CheckedVirtual<CEntityInstance, void, CEntityInstance*> g_hkEndTouch(
     &Hook_EndTouch, &Hook_EndTouchPost);
 S2CheckedVirtual<CEntityInstance, void, CEntityInstance*> g_hkBlocked(
     &Hook_Blocked, &Hook_BlockedPost);
-S2CheckedVirtual<CEntityInstance, void> g_hkSpawn(&Hook_Spawn, &Hook_SpawnPost);
+S2CheckedVirtual<CEntityInstance, void, const CEntityKeyValues*> g_hkSpawn(
+    &Hook_Spawn, &Hook_SpawnPost);
 S2CheckedVirtual<CEntityInstance, void> g_hkThink(&Hook_Think, &Hook_ThinkPost);
 S2CheckedVirtual<CEntityInstance, void> g_hkPreThink(&Hook_PreThink, &Hook_PreThinkPost);
 S2CheckedVirtual<CEntityInstance, void> g_hkPostThink(&Hook_PostThink, &Hook_PostThinkPost);
-S2CheckedVirtual<CEntityInstance, void, CEntityInstance*, CEntityInstance*, int, float> g_hkUse(
+S2CheckedVirtual<CEntityInstance, void, const EntityUseInput_t*> g_hkUse(
     &Hook_Use, &Hook_UsePost);
 S2CheckedVirtual<CEntityInstance, int> g_hkGetMaxHealth(&Hook_GetMaxHealth, nullptr);
 S2CheckedVirtual<CEntityInstance, bool, int, int> g_hkShouldCollide(&Hook_ShouldCollide, nullptr);
@@ -294,12 +298,12 @@ static KHook::Return<void> Hook_BlockedPost(CEntityInstance* thisPtr, CEntityIns
     return S2_Ignore();
 }
 
-static KHook::Return<void> Hook_Spawn(CEntityInstance* thisPtr) {
+static KHook::Return<void> Hook_Spawn(CEntityInstance* thisPtr, const CEntityKeyValues*) {
     auto obs = g_hkSpawn.Observe(thisPtr);
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     return S2_FromHookResult(DispatchThis(kSpawn, 0, thisPtr));
 }
-static KHook::Return<void> Hook_SpawnPost(CEntityInstance* thisPtr) {
+static KHook::Return<void> Hook_SpawnPost(CEntityInstance* thisPtr, const CEntityKeyValues*) {
     auto obs = g_hkSpawn.Observe(thisPtr);
     if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
     DispatchThis("SpawnPost", 1, thisPtr);
@@ -359,17 +363,17 @@ static KHook::Return<void> Hook_GroundEntChangedPost(CEntityInstance* thisPtr) {
     return S2_Ignore();
 }
 
-static KHook::Return<void> Hook_Use(CEntityInstance* thisPtr, CEntityInstance* act,
-                                      CEntityInstance* caller, int useType, float value) {
+static KHook::Return<void> Hook_Use(CEntityInstance* thisPtr, const EntityUseInput_t* in) {
     auto obs = g_hkUse.Observe(thisPtr);
-    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
-    return S2_FromHookResult(DispatchUse(kUse, 0, thisPtr, act, caller, useType, value));
+    if (!in || !S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    return S2_FromHookResult(DispatchUse(kUse, 0, thisPtr, in->m_pActivator, in->m_pCaller,
+                                         in->m_nType, in->m_flValue));
 }
-static KHook::Return<void> Hook_UsePost(CEntityInstance* thisPtr, CEntityInstance* act,
-                                          CEntityInstance* caller, int useType, float value) {
+static KHook::Return<void> Hook_UsePost(CEntityInstance* thisPtr, const EntityUseInput_t* in) {
     auto obs = g_hkUse.Observe(thisPtr);
-    if (!S2Hook_EnterDispatch(obs)) return S2_Ignore();
-    DispatchUse("UsePost", 1, thisPtr, act, caller, useType, value);
+    if (!in || !S2Hook_EnterDispatch(obs)) return S2_Ignore();
+    DispatchUse("UsePost", 1, thisPtr, in->m_pActivator, in->m_pCaller, in->m_nType,
+                in->m_flValue);
     return S2_Ignore();
 }
 

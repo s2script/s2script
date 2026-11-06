@@ -1,6 +1,6 @@
 {
   "name": "@s2script/sdk",
-  "version": "0.30.2",
+  "version": "0.35.0",
   "license": "MIT OR Apache-2.0",
   "description": "s2script SDK — the builtin capability types (imported as @s2script/sdk/entity, …) plus the `s2s` CLI for building Source 2 / CS2 plugins.",
   "type": "module",
@@ -34,7 +34,8 @@
     "README.md",
     "LICENSE-MIT",
     "LICENSE-APACHE",
-    "contracts"
+    "contracts",
+    "ext"
   ],
   "exports": {
     ".": {
@@ -78,6 +79,9 @@
     },
     "./http": {
       "types": "./http.d.ts"
+    },
+    "./files": {
+      "types": "./files.d.ts"
     },
     "./interfaces": {
       "types": "./interfaces.d.ts"
@@ -129,6 +133,9 @@
     },
     "./usermessages": {
       "types": "./usermessages.d.ts"
+    },
+    "./stringtables": {
+      "types": "./stringtables.d.ts"
     },
     "./voice": {
       "types": "./voice.d.ts"

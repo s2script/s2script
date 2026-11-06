@@ -15,7 +15,7 @@ PY
 compiler="${CXX:-c++}"
 flags=(-std=c++17 -O1 -g -pthread -DPOSIX -DCOMPILER_GCC -DPLATFORM_64BITS -Dstricmp=strcasecmp
        -I"$tmp" -isystem third_party/hl2sdk/public
-       -isystem third_party/hl2sdk/public/tier0 -isystem third_party/hl2sdk/public/tier1
+       -isystem third_party/hl2sdk/public/tier0 -isystem third_party/hl2sdk/public/entity2
        -isystem third_party/hl2sdk/common -isystem third_party/hl2sdk/public/mathlib)
 if [[ "$(uname -s)" == Linux ]]; then flags+=(-DLINUX -D_LINUX); fi
 if printf 'int main() { return 0; }\n' | "$compiler" -x c++ - -fsanitize=address,undefined -o "$tmp/probe" >/dev/null 2>&1 && "$tmp/probe"; then

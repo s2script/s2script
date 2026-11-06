@@ -10,6 +10,92 @@
  * (see docs/superpowers/specs/2026-07-24-plugin-gamedata-design.md and ARCHITECTURE.md §2.0.7).
  */
 
+import type { EntityRef } from "./entity";
+import type { Vector, QAngle } from "./math";
+
+declare const ptrBrand: unique symbol;
+
+/**
+ * A raw address in the server process: what an engine call with a `ptr` return gives you, what
+ * {@link Ptr.from} makes from an entity, and what a `ptr` argument takes.
+ *
+ * UNSAFE. Nothing tracks what a `Ptr` points at. It answers typed reads and writes at a byte
+ * offset, follows pointer fields with {@link Ptr.deref}, and can be handed to any generated
+ * struct view, but a stale or wrong address reads garbage or crashes the server exactly as it
+ * would in a Metamod plugin. Only addresses that can never be valid (the null page, anything
+ * outside the user half of the address space) are refused, with an `S2Error` whose `code` is
+ * `"bad_address"`. Prefer entity handles and their schema fields, which are checked on every
+ * access; reach for `Ptr` when an engine structure has no other door.
+ *
+ * Do not keep a `Ptr` past the call or event that produced it unless you know the lifetime of the
+ * memory behind it.
+ *
+ * @example
+ * import { Ptr } from "@s2script/sdk/unsafe";
+ * const p = Ptr.from(pawn);              // the entity's address, or null when it is stale
+ * if (p) console.log(p.readInt32(healthOffset));
+ */
+export declare class Ptr {
+  private constructor();
+  private readonly [ptrBrand]: true;
+  /** The null pointer. Reads through it throw. */
+  static readonly NULL: Ptr;
+  /** A `Ptr` for an address, or an entity's current address (null once the entity is gone). */
+  static from(address: number | Ptr): Ptr;
+  static from(entity: EntityRef): Ptr | null;
+  /** The address as a number. Exact: every user-space address is below 2^47. */
+  readonly address: number;
+  isNull(): boolean;
+  /** This address plus `bytes`. */
+  add(bytes: number): Ptr;
+  equals(other: Ptr): boolean;
+  /** `0x…` */
+  toString(): string;
+  /** Hand this address to a view factory, such as a game package's struct view. */
+  as<T>(view: (ptr: Ptr) => T): T;
+  /** The pointer stored at `offset` (a pointer field), as a `Ptr`. `Ptr.NULL` when it holds null. */
+  deref(offset?: number): Ptr;
+  readPtr(offset: number): Ptr;
+  writePtr(offset: number, value: Ptr): true;
+  readInt8(offset: number): number;
+  readUInt8(offset: number): number;
+  readInt16(offset: number): number;
+  readUInt16(offset: number): number;
+  readInt32(offset: number): number;
+  readUInt32(offset: number): number;
+  readFloat32(offset: number): number;
+  readFloat64(offset: number): number;
+  readBool(offset: number): boolean;
+  /** A 64-bit integer, as a decimal string (a JS number cannot hold every value). */
+  readInt64(offset: number): string;
+  readUInt64(offset: number): string;
+  writeInt8(offset: number, value: number): true;
+  writeUInt8(offset: number, value: number): true;
+  writeInt16(offset: number, value: number): true;
+  writeUInt16(offset: number, value: number): true;
+  writeInt32(offset: number, value: number): true;
+  writeUInt32(offset: number, value: number): true;
+  writeFloat32(offset: number, value: number): true;
+  writeFloat64(offset: number, value: number): true;
+  writeBool(offset: number, value: boolean): true;
+  /** The NUL-terminated string at `offset`, reading at most `maxLen` bytes. */
+  readString(offset: number, maxLen: number): string;
+  /** Write `value` into a `maxLen`-byte buffer, truncated so it always ends in a NUL. */
+  writeString(offset: number, maxLen: number, value: string): boolean;
+  /** `count` consecutive 32-bit floats (a vector, an angle). */
+  readFloats(offset: number, count: number): number[];
+  /** The `Vector` at `offset`. */
+  readVector(offset: number): Vector;
+  /** The `QAngle` at `offset`. */
+  readQAngle(offset: number): QAngle;
+  /** The `Vector` at the end of a pointer chain, or null on a null hop. */
+  readVectorChain(ptrOffs: number[], finalOff: number): Vector | null;
+  /** The `QAngle` at the end of a pointer chain, or null on a null hop. */
+  readQAngleChain(ptrOffs: number[], finalOff: number): QAngle | null;
+  /** A `CEntityHandle` field, resolved through the entity books: null when it names no live entity. */
+  readHandle(offset: number): EntityRef | null;
+}
+
 /**
  * The calls this plugin declares. The base interface is EMPTY — `s2s build` generates
  * `.s2script/gamedata.d.ts`, which augments this from your gamedata's `calls` section.
@@ -59,8 +145,64 @@ export interface FunctionSubscription extends Disposable {
  * const onFoo = Engine.hook("onFoo");
  * if (onFoo) onFoo((view) => { view.reason = 0; });
  */
+/** A target validator, as in `gamedata/functions.jsonc`. */
+export interface FunctionValidator {
+  prologue?: string;
+  'string-xref'?: { at: number; dispOff: number; instrLen: number; expect: string };
+  'vtable-member'?: string;
+}
+/** A function located by byte signature. */
+export interface SignatureTarget {
+  kind?: 'signature';
+  module: string;
+  pattern: string;
+  validate: FunctionValidator;
+  targetValidate?: FunctionValidator;
+}
+/** A function located by vtable slot. */
+export interface VirtualTarget {
+  kind?: 'virtual';
+  module: string;
+  class: string;
+  index: number;
+  validate: FunctionValidator;
+}
+/** A parameter or return type. `ptr` is a raw address, a {@link Ptr} (or null) in JavaScript. */
+export type FunctionValueType = 'bool' | 'i32' | 'u32' | 'i64' | 'u64' | 'f32' | 'f64' | 'entity' | 'entity?' | 'string' | 'vector' | 'ptr';
+/** One engine function, written exactly as an entry of `gamedata/functions.jsonc`. */
+export interface FunctionDeclaration<T> {
+  target: T | { ref: string };
+  receiver?: { type: 'none' | 'entity' };
+  parameters?: readonly { name: string; type: FunctionValueType; ownership?: 'callee-borrowed' | 'callee-retained' | 'native-observed'; mutable?: 'pre' }[];
+  returns?: FunctionValueType | 'void' | { type: 'string' | 'vector'; ownership: 'caller-borrowed' | 'native-observed' };
+  surfaces?: readonly ('call' | 'pre' | 'post')[];
+  suppression?: 'generic' | 'none';
+  requirement?: 'optional' | 'required';
+  resolve?: 'direct' | 'ctor-body-xref' | 'lea-disp' | 'validated-call';
+}
+
 export declare const Engine: {
   function<K extends keyof EngineFunctions>(name: K): EngineFunctions[K];
+  /**
+   * Declare an engine function inline, by byte signature, and get its binding: the same as
+   * writing the declaration in `gamedata/functions.jsonc` and calling {@link Engine.function}.
+   *
+   * `s2s build` copies the declaration into the plugin's manifest, so it is validated, listed and
+   * checked after game updates like any other. That is why both arguments must be literals; a
+   * computed declaration fails the build. The binding's types come from the build, so run it once
+   * after adding a declaration.
+   *
+   * @example
+   * const ignite = Engine.fromSignature("ignite", {
+   *   target: { module: "libserver.so", pattern: "55 48 89 E5 ...", validate: { prologue: "55 48 89 E5" } },
+   *   receiver: { type: "entity" },
+   *   parameters: [{ name: "seconds", type: "f32" }],
+   *   surfaces: ["call"],
+   * });
+   */
+  fromSignature<K extends keyof EngineFunctions>(name: K, declaration: FunctionDeclaration<SignatureTarget>): EngineFunctions[K];
+  /** {@link Engine.fromSignature} for a function located by vtable slot. */
+  fromVirtual<K extends keyof EngineFunctions>(name: K, declaration: FunctionDeclaration<VirtualTarget>): EngineFunctions[K];
   /**
    * The declared call, or `null` when its descriptor failed a load-time gate (signature miss,
    * validator rejection, slot outside `.text`, missing platform entry, or the plugin is not

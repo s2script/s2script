@@ -195,6 +195,16 @@ export function typecheckPlugin(
     if (p !== null) contractPaths[d] = [p];
   }
 
+  // Native extensions resolve to REAL types, never an `any` stub: the copy under
+  // `.s2script/extensions/<name>/index.d.ts` (what `sm ext types <name>` prints on a server that
+  // has it) wins; otherwise the extension's own npm package, found through node_modules. Neither
+  // present is TS2307, a real error.
+  const extensionPaths: Record<string, string[]> = Object.create(null);
+  for (const name of Object.keys(s2.extensions ?? {})) {
+    const local = join(absDir, ".s2script", "extensions", name, "index.d.ts");
+    if (existsSync(local)) extensionPaths[name] = [local];
+  }
+
   // Vendored libraries resolve to REAL types by exact `paths` entry, same as contracts.
   // A declared-but-missing one is caught earlier by assertLibrariesResolved (build.ts) —
   // it is deliberately NOT stubbed to `any` here.
@@ -287,6 +297,7 @@ export function typecheckPlugin(
       "@s2script/*": ["*/index.d.ts"],
       ...contractPaths,
       ...libraryPaths,
+      ...extensionPaths,
     },
   };
 

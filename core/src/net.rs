@@ -919,7 +919,7 @@ fn net_owner(scope: &mut v8::PinScope) -> String {
 
 /// Read a native arg as bytes: a TypedArray/DataView (copied) or a string (UTF-8). Never hands a
 /// raw backing store to Rust.
-fn js_bytes_arg(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> Vec<u8> {
+pub(crate) fn js_bytes_arg(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> Vec<u8> {
     if val.is_string() {
         return val.to_rust_string_lossy(scope).into_bytes();
     }
@@ -934,7 +934,7 @@ fn js_bytes_arg(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> Vec<u8> 
 }
 
 /// Build a JS `Uint8Array` from bytes — a fresh copy into a V8-owned ArrayBuffer.
-fn bytes_to_uint8array<'s>(
+pub(crate) fn bytes_to_uint8array<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     bytes: &[u8],
 ) -> v8::Local<'s, v8::Value> {

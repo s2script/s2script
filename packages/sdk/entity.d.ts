@@ -3,7 +3,7 @@
  * NO runtime code: the engine injects the implementation at load time.
  */
 
-import type { Vector } from "./math";
+import type { Vector, QAngle } from "./math";
 
 /**
  * A host-liveness-gated handle to a live entity. `id` is a HOST-MINTED monotonic liveness
@@ -88,6 +88,33 @@ export declare class EntityRef {
    *  at `finalOff` into a number[]. All in-core (raw pointers never cross); null if the root is stale or any hop
    *  is null. */
   readFloatsChain(ptrOffs: number[], finalOff: number, count: number): number[] | null;
+  /**
+   * Zero-allocation bulk read for per-tick hot paths: one liveness check, then every field `plan`
+   * names, written as numbers into your preallocated `out` starting at `outIndex` (default 0).
+   *
+   * `plan` is a flat run of entries `[hops, hop0..hopN-1, finalOff, kind, count]`: follow `hops`
+   * (0..8) pointer offsets, then read `count` (1..16) contiguous {@link GatherKind} elements at
+   * `finalOff`. An entry whose chain hits a null pointer writes `NaN` into its slots; the rest of
+   * the plan still runs. Build the plan once and reuse both arrays every tick.
+   *
+   * Returns the slot count written, `-1` when the ref is stale, or `-2` for a malformed plan or an
+   * `out` too short for the whole plan (nothing is written in either failure case).
+   * @example
+   * import { GatherKind } from "@s2script/sdk/entity";
+   * // two floats at +0x10, then one u8 behind the pointer at +0x30
+   * const plan = new Int32Array([0, 0x10, GatherKind.Float32, 2, 1, 0x30, 0x8, GatherKind.UInt8, 1]);
+   * const out = new Float64Array(3);
+   * if (ref.gather(plan, out) === 3) console.log(out[0], out[1], out[2]);
+   */
+  gather(plan: Int32Array, out: Float64Array, outIndex?: number): number;
+  /** The `Vector` at `offset`, or null if the ref is stale. */
+  readVector(offset: number): Vector | null;
+  /** The `QAngle` at `offset`, or null if the ref is stale. */
+  readQAngle(offset: number): QAngle | null;
+  /** The `Vector` at the end of a pointer chain, or null on a stale ref or a null hop. */
+  readVectorChain(ptrOffs: number[], finalOff: number): Vector | null;
+  /** The `QAngle` at the end of a pointer chain, or null on a stale ref or a null hop. */
+  readQAngleChain(ptrOffs: number[], finalOff: number): QAngle | null;
   /** Follow a pointer chain (each an offset), then read a scalar at `finalOff`. null if the root is stale or any
    *  hop is null. `readHandleVia` decodes a handle field → a liveness-gated EntityRef; vectors use readFloatsChain. */
   readInt32Via(pathOffs: number[], finalOff: number): number | null;
@@ -158,6 +185,38 @@ export declare class EntityRef {
    *  `trigger_multiple` needs a model to build the physics volume that fires touch. Returns false
    *  if the op is unavailable or the ref is stale. */
   setModel(name: string): boolean;
+  /**
+   * The index of the bone called `name` on this entity's model, for {@link getBoneTransform}.
+   * `-1` when the model has no such bone, the entity has no model, or the ref is stale.
+   *
+   * @example
+   * const head = pawn.ref.lookupBone("head_0");
+   * const t = head >= 0 ? pawn.ref.getBoneTransform(head) : null;
+   * if (t) console.log(`head at ${t.position}`);
+   */
+  lookupBone(name: string): number;
+  /**
+   * Where bone `bone` is right now, in world space: its position and its orientation as a
+   * quaternion. `null` for a stale ref, an entity with no model, or a negative index. An index past
+   * the model's last bone gives the entity's own transform, as the engine does.
+   */
+  getBoneTransform(bone: number): BoneTransform | null;
+  /**
+   * The index of the attachment called `name` on this entity's model (`"muzzle_flash"`,
+   * `"eyes"`), for {@link getAttachment}. `0` when there is no such attachment, the entity has no
+   * model, or the ref is stale; real attachments start at 1.
+   */
+  lookupAttachment(name: string): number;
+  /**
+   * Where attachment `attachment` is right now, in world space. `null` for a stale ref, an entity
+   * with no model, an index outside 1–255, or an attachment the engine did not find.
+   *
+   * @example
+   * const muzzle = weapon.ref.lookupAttachment("muzzle_flash");
+   * const at = weapon.ref.getAttachment(muzzle);
+   * if (at) console.log(`muzzle at ${at.origin}, facing ${at.angles}`);
+   */
+  getAttachment(attachment: number): AttachmentTransform | null;
   /** Set this entity's gravity multiplier (`CBaseEntity::SetGravityScale`). 1 is normal, 0 is
    *  weightless.
    *
@@ -202,7 +261,49 @@ export declare class EntityRef {
    *  output the input triggers. `delay` queues the event on the engine's same-tick I/O pump (0 = fires
    *  this same tick — NOT synchronous-within-the-call). Returns false with no op / a stale ref. */
   acceptInput(input: string, value?: string, activator?: EntityRef, caller?: EntityRef, delay?: number): boolean;
+  /**
+   * Deal `damage` to this entity through the game's own damage path, so `OnTakeDamage` hooks and
+   * the game's rules (god mode, friendly fire, armor) still apply. The engine may still refuse it,
+   * for example when the entity doesn't take damage at all. Returns false when the call was refused:
+   * a stale victim or option entity, a non-finite `damage`, or an unavailable game function.
+   * @example
+   * // 25 damage from `attacker`'s pawn, as a bullet (CS2's DMG_BULLET is 2).
+   * victim.takeDamage(25, { attacker: attackerPawn.ref, damageType: 2 });
+   */
+  takeDamage(damage: number, opts?: TakeDamageOptions): boolean;
 }
+
+/** An entity option of {@link EntityRef.takeDamage}: an EntityRef, or a wrapper that holds one. */
+export type DamageEntity = EntityRef | { readonly ref: EntityRef };
+
+/** Options for {@link EntityRef.takeDamage}. Every field is optional. */
+export interface TakeDamageOptions {
+  /** Who gets credit for the damage (the damage info's attacker). */
+  attacker?: DamageEntity | null;
+  /** What dealt it, such as a grenade or the attacker's weapon. Defaults to the attacker. */
+  inflictor?: DamageEntity | null;
+  /** The weapon or ability it came from (SourceMod's `weapon`). */
+  ability?: DamageEntity | null;
+  /** Damage-type bit flags; the values are game facts (CS2: `DamageTypes_t`). Defaults to 0 (generic). */
+  damageType?: number;
+  /** Damage force, `[x, y, z]`. Defaults to zero. */
+  force?: ArrayLike<number> | null;
+  /** Where the damage lands, `[x, y, z]`. Defaults to zero. */
+  position?: ArrayLike<number> | null;
+}
+
+/** Element kinds for {@link EntityRef.gather} plans — the scalar kinds a `Float64Array` holds exactly. */
+export declare const GatherKind: {
+  readonly Int32: number;
+  readonly Float32: number;
+  readonly Bool: number;
+  readonly Int8: number;
+  readonly Int16: number;
+  readonly UInt8: number;
+  readonly UInt16: number;
+  readonly UInt32: number;
+  readonly Float64: number;
+};
 
 /** Keyvalues for a CEntityKeyValues-configured spawn. Inference: string -> SetString,
  *  boolean -> SetBool, integer (int32) -> SetInt, other finite number -> SetFloat.
@@ -234,14 +335,58 @@ export interface OutputEvent {
   delay: number;
 }
 
+/** The payload delivered to an `onInput` handler. */
+export interface InputEvent {
+  /** The input's name as the engine spelled it (e.g. "Kill", "Open", "SetHealth"). */
+  input: string;
+  /** The entity receiving the input, or null if it is no longer live. */
+  entity: EntityRef | null;
+  /** The entity that activated the chain leading to this input, or null. */
+  activator: EntityRef | null;
+  /** The entity that sent the input (the output's owner, for map I/O), or null. */
+  caller: EntityRef | null;
+  /**
+   * The input's parameter, formatted as a string ("" when it has none). Inputs fired with a Pulse
+   * argument pack instead of a variant also report "".
+   */
+  value: string;
+}
+
 /**
- * Entry point for entity lookup by class name.
+ * Entry point for entity lookup by class name, targetname or position.
  * @example
  * import { Entity } from "@s2script/sdk/entity";
  * const triggers = Entity.findByClass("trigger_multiple");
  * for (const t of triggers) console.log(t.index, t.name);
+ * const doors = Entity.findByName("cell_doors");
+ * const nearby = Entity.findInSphere([0, 0, 64], 256, "prop_physics");
  */
 export declare const Entity: {
   /** Find every entity whose designer-name (class) exactly matches `className`. Returns liveness-gated refs. */
   findByClass(className: string): EntityRef[];
+  /** Find every entity whose targetname (`name`, the map's `targetname`) exactly matches `name`.
+   *  An empty `name` matches nothing. Returns liveness-gated refs. */
+  findByName(name: string): EntityRef[];
+  /** Every entity whose world origin is within `radius` units of `center` (inclusive), optionally only
+   *  those of `className`. Entities without a readable origin are skipped. Returns `[]` for a
+   *  non-finite center or a negative radius. Without `className` this walks every entity, so prefer
+   *  passing one in hot paths. */
+  findInSphere(center: Vector | { x: number; y: number; z: number } | [number, number, number],
+               radius: number, className?: string): EntityRef[];
 };
+
+/** What {@link EntityRef.getBoneTransform} returns. */
+export interface BoneTransform {
+  /** The bone's world position. */
+  position: Vector;
+  /** The bone's world orientation, as a unit quaternion. */
+  rotation: { x: number; y: number; z: number; w: number };
+}
+
+/** What {@link EntityRef.getAttachment} returns. */
+export interface AttachmentTransform {
+  /** The attachment's world position. */
+  origin: Vector;
+  /** The attachment's world angles. */
+  angles: QAngle;
+}

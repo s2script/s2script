@@ -1,7 +1,7 @@
 // EKV slice — the ONLY TU in the shim that includes entity2/entitykeyvalues.h. Everything else
 // (s2script_mm.cpp included) sees the CEntityKeyValues* it builds only as a void*, via ekv.h.
 //
-// GameEntitySystem(): entity2/entitysystem.h declares this `extern CGameEntitySystem*
+// GameEntitySystem(): gameentitysystem.h declares this `extern CGameEntitySystem*
 // GameEntitySystem();` and expects the CONSUMER to define it (CSSharp defines its own). We bridge
 // to the shim's existing per-call GetEntitySystem() resolver via a small non-static accessor added
 // to s2script_mm.cpp (S2_EntitySystemBridge) — declared here, defined there. Null-safe: the
@@ -9,6 +9,7 @@
 // a load-time (pre-map) EKV build/self-test works fine with it null.
 #include "ekv.h"
 #include <entity2/entitykeyvalues.h>
+#include <gameentitysystem.h>   // the GameEntitySystem() declaration defined below
 #include <cstdlib>
 #include <cstring>
 

@@ -141,6 +141,10 @@ int s2script_core_replay_entity_event(const char* kind, const char* className, i
  * returns (block-scoped — a handler must use its PrecacheContext synchronously). Notify-only:
  * runs the JS Sound.onPrecache subscribers. */
 void s2script_core_dispatch_precache(void);
+/* Shim -> core: a client answered a convar query (CCLCMsg_RespondCvarValue), drained at the top of
+ * GameFramePre. `slot` is the answering client's own slot; core delivers only to the query that
+ * minted `cookie` for that slot and connection. Strings are copied before this returns. */
+void s2script_core_dispatch_convar_response(int slot, int cookie, int status, const char* name, const char* value);
 /* Shim -> core: is `xuid` currently banned? (Slice 6.18). Called by the ClientConnect hook with the
  * connecting player's SteamID64 and the current unix time. Returns 1 iff banned (perm or unexpired); on a
  * hit, the ban reason is bounded-copied (NUL-terminated) into out_reason for the shim's log line. Panic ->
@@ -192,6 +196,14 @@ int s2script_core_dispatch_sdkhook_canbeautobalanced(int thisIndex, int thisSeri
  * 3 Stop). catch_unwind -> 0 (fail-open: a core bug must never suppress an output it didn't mean to). */
 int s2script_core_dispatch_output(const char* classname, const char* output, int actHandle, int callerHandle,
                                   const char* value, float delay);
+/* Shim -> core: called by the CEntityIdentity::AcceptInput detour (parity slice 5) with the
+ * receiving entity's classname, the input name, its packed CEntityHandle, packed activator/caller
+ * handles (-1 = none) and the input's value as a string. Runs the matching Entity.onInput
+ * subscribers SYNCHRONOUSLY (input names match case-insensitively; "*" wildcards either side) and
+ * returns the collapsed HookResult; the caller supersedes AcceptInput (drops the input) when it is
+ * >= Handled (2). catch_unwind -> 0 (fail-open). */
+int s2script_core_dispatch_input(const char* classname, const char* input, int targetHandle,
+                                 int actHandle, int callerHandle, const char* value);
 /* Shim -> core: called by the FireEvent Pre hook (Slice 5D.3). Runs the PRE subscribers for `name`
  * (s_currentEvent is set + mutable during the call). Returns 1 to suppress the client broadcast
  * (a pre-hook returned Handled/Stop), else 0. */
@@ -250,6 +262,11 @@ int s2script_core_fail_game_package(uint64_t handle, const uint8_t* reason, size
  * load time with the resolved addons/s2script/plugins/ path (dladdr-derived).
  * path must be null-terminated UTF-8.  A null pointer degrades to a no-op. */
 void s2script_core_set_plugins_dir(const char* path);
+/* Load the plugins in plugins/ now, once per core lifetime (later calls are no-ops). Called at the
+ * first StartupServer POST, before the map-start dispatch — where SourceMod loads, after the game has
+ * registered its events, user messages and entity system — or right after set_plugins_dir on a late
+ * load onto a running server. Pumps the loader until it settles; must run outside any dispatch. */
+void s2script_core_boot_load(void);
 /* Versioned, narrow path-only adapter used by the loader worker. The callback is invoked on the
  * game thread only; core copies the returned string before submitting owned work. Passing null
  * clears the resolver. Returns 1 for a supported ABI, 0 for an unsupported version. */

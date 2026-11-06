@@ -63,4 +63,15 @@ export declare const Server: {
   readonly mapName: string;
   /** The current map time in seconds (`GetGlobals()->curtime`). `0` if unavailable. */
   readonly gameTime: number;
+  /**
+   * The integer simulation tick (`GetGlobals()->tickcount`). Monotonic within a map and frozen
+   * while the game is paused — count ticks for anything timer-grade instead of differencing the
+   * float {@link Server.gameTime}. `0` if unavailable.
+   */
+  readonly tickCount: number;
+  /**
+   * Seconds per simulation tick, from the game's own server config (`0.015625` on a 64-tick
+   * server). Fixed for the server's lifetime. `0` only when the engine cannot report it.
+   */
+  readonly tickInterval: number;
 };

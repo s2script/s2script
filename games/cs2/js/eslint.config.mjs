@@ -45,7 +45,10 @@ const sources = shipped
 const readonlyGlobals = (names) =>
   Object.fromEntries([...new Set(names)].sort().map((n) => [n, "readonly"]));
 
-const natives = [...coreSrc.matchAll(/set_native\(\s*scope\s*,\s*global_obj\s*,\s*"([^"]+)"/g)].map((m) => m[1]);
+const natives = [...coreSrc.matchAll(/set_(?:fast_)?native\(\s*scope\s*,\s*global_obj\s*,\s*"([^"]+)"/g)].map((m) => m[1]);
+// ... and every native defined with core/src/native.rs's `native!` macro, whose fn name IS the
+// native's JS name (only `native!` bodies define Rust fns named `__s2_*`).
+natives.push(...[...coreSrc.matchAll(/^\s*(?:fast\s+)?fn\s+(__s2_\w+)\s*\(/gm)].map((m) => m[1]));
 const extraFromRust = ["console"];   // v8host/natives.rs — set directly on the global object
 // The globals these files publish and then read back bare later in the concatenated script.
 //
@@ -71,7 +74,7 @@ export default [
     //
     // components.test.js is here for the same reason, but note that components.js itself is NOT:
     // it is prelude-only, so a `require` creeping into it must still fail this lint.
-    files: ["activity.js", "activity.test.js", "components.test.js", "hudinput.test.js", "menuhud.test.js", "voterail.test.js", "hudkit-prelude.test.js", "ui.test.js", "ui-hotpath.test.js", "adapters/*.test.js", "adapters/recording-host.js"],
+    files: ["activity.js", "activity.test.js", "components.test.js", "hudinput.test.js", "menuhud.test.js", "voterail.test.js", "hudkit-prelude.test.js", "ui.test.js", "ui-hotpath.test.js", "weapon.test.js", "adapters/*.test.js", "adapters/recording-host.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "script",
@@ -84,7 +87,7 @@ export default [
   },
   {
     files: ["**/*.js"],
-    ignores: ["activity.js", "activity.test.js", "components.test.js", "hudinput.test.js", "menuhud.test.js", "voterail.test.js", "hudkit-prelude.test.js", "ui.test.js", "ui-hotpath.test.js", "adapters/*.test.js", "adapters/recording-host.js"],
+    ignores: ["activity.js", "activity.test.js", "components.test.js", "hudinput.test.js", "menuhud.test.js", "voterail.test.js", "hudkit-prelude.test.js", "ui.test.js", "ui-hotpath.test.js", "weapon.test.js", "adapters/*.test.js", "adapters/recording-host.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "script",

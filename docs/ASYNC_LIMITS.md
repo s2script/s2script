@@ -111,7 +111,7 @@ a JSON **string**, without creating a job. Its schema is:
 ```text
 jobs, completion, sockets, sqlite, pools, inbound, outbound, timers:
   { items: number, bytes: number, rejected: number }
-queued: { worker, http, db, ws, net: number }
+queued: { worker, http, db, ws, net, files: number }
 staged: { timers, ws, net, cookies, http, db: number }
 cache: { accounts, entries, bytes: number }
 frame: null | { items, bytes, polls: number }
@@ -206,3 +206,13 @@ starts a fresh test process with tiny limits, barrier-held producers, isolate re
 and a one-item frame budget, followed by a separate six-poll process checking oversized
 HTTP/DB progress beside a continuously due timer; `scripts/ci-native.sh` runs these gates. Do not change policy
 in place while producers from an earlier configuration remain alive.
+
+## Plugin file IO (`@s2script/sdk/files`)
+
+`Files.*` operations are ordinary jobs: each one reserves a `jobs_global`/`jobs_per_owner`
+slot, copies its write payload once on the game thread, and runs on the shared runtime's
+blocking pool (`queued.files`). Reads are capped at `input_item_bytes`; a larger file
+rejects with a size error instead of growing unbounded. Paths are sandboxed to
+`<data>/files/<plugin id>/` (relative segments of `[A-Za-z0-9._-]`, depth ≤ 8, ≤ 256 bytes),
+replacing writes go through a temp file and an atomic rename, and gzip
+compression/decompression happens on the worker, never on the game thread.

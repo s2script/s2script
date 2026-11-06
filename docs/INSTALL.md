@@ -56,6 +56,7 @@ Linux x86-64 only. Windows is not supported yet.
      game-packages/cs2/gamedata.json
      game-packages/cs2/trusted-functions.json  # package-owned engine functions (live-schema offsets)
      plugins/          # base .s2sp plugins + drop more here
+     extensions/       # native extensions (.so), loaded at startup; see EXTENSIONS.md
      configs/          # auto-generated on first load
      data/             # SQLite DBs
    ```
@@ -93,10 +94,13 @@ Opt-in plugins (nominations, rockthevote, nextmap, funvotes) ship in the zip und
 
 ## When plugins load
 
-s2script loads every plugin in `plugins/` while the server starts, before the first map, as
-SourceMod does. It does not wait for a player to join. With a `plugins.json`, startup first waits
-for the plugin update to finish (at most `updateTimeoutSeconds`), so a slow registry delays the
-server's start by that long. The log shows `[plugins] startup load done: N plugin(s) running`.
+s2script loads every plugin in `plugins/` when the first map starts, as SourceMod does: by then CS2
+has registered its game events, user messages and entities, and an empty server reaches it without
+waiting for a player to join. Plugins still get `OnMapStart` for that first map. Installing s2script
+onto a server that is already running (`meta load`) loads them straight away. With a `plugins.json`,
+the update starts with the server and the load waits for whatever is left of it (at most
+`updateTimeoutSeconds`), so a slow registry delays the first map by up to that long. The log shows
+`[plugins] startup load done: N plugin(s) running`.
 
 After startup, timers, async results and hot reload run on the server's frames. An empty server
 with `sv_hibernate_when_empty 1` (the default) runs no frames, so those pause until someone joins;
@@ -256,7 +260,7 @@ slow function and line. See [PROFILING.md](PROFILING.md).
 
 If `sm plugins list` shows no plugins and plugin commands (`sm_who`, `sm_help`) are "Unknown
 command", the list's second line says why: the loader is not running, the plugins.json update still
-holds the first scan, `plugins/` has not been scanned, or it is empty. Plugins load at startup (see
+holds the first scan, `plugins/` has not been scanned, or it is empty. Plugins load at the first map start (see
 "When plugins load"); after that, timers, async results and hot reload run from the `GameFrame`
 hook. Check the startup log:
 
@@ -272,6 +276,51 @@ hook. Check the startup log:
 
 - Re-check `gameinfo.gi` — a full game re-download often removes the Metamod SearchPath; re-apply the patch above.
 - If signatures/offsets moved, install a newer s2script release (updated `gamedata/` tree and/or binaries). Prefer replacing the whole zip contents rather than mixing versions.
+
+### After a CS2 update moves an engine virtual
+
+s2script checks the engine's vtable layouts at boot, so a shifted slot switches features off by
+name instead of crashing the server.
+
+**Interface hooks** (GameFrame, the client lifecycle and command hooks, CheckTransmit, FireEvent,
+PostEventAbstract, StartupServer, DispatchConCommand, SetClientListening, the shutdown markers)
+take their vtable index from gamedata (`gamedata/core/game.cs2.jsonc`, entries such as
+`ISource2GameClients_ClientCommand`). Each interface also has a `<Interface>_vtableSize` entry: the
+slot count of the live vtable the indices were verified against. When an update inserts or removes
+a virtual, boot says so:
+
+```
+[s2script] ISource2GameClients: live vtable 47 slots, gamedata pin 46 — MISMATCH: disabled until gamedata is re-verified
+[s2script]   gamedata FAIL  ISource2GameClients_ClientCommand — ISource2GameClients has 47 slots but gamedata was verified against 46 — the layout moved; slot disabled. ...
+```
+
+A mismatch is strict on purpose: it disables every hook on that interface, even when Valve only
+appended a function and the old index still happens to be right, because a wrong index hooks some
+other function. For `ISource2Server` that includes GameFrame, so **s2script idles (no plugin
+loads) until the gamedata is fixed**; the server itself keeps running. The fix is a `custom/` file
+with the re-verified indices **and** the new slot count — no new binary:
+
+```jsonc
+// addons/s2script/gamedata/core/custom/hook-slots.jsonc
+{
+  "offsets": {
+    "ISource2GameClients_vtableSize":    { "linuxsteamrt64": 47 },
+    "ISource2GameClients_ClientCommand": { "linuxsteamrt64": 18 }
+  }
+}
+```
+
+**Engine calls** on `IVEngineServer2` (kick, chat/console print, client convars, user ids, server
+commands, voice listening) are compiled from the SDK header, as in every Source 2 framework, so a
+moved call slot is fixed by a new s2script build. Until then the build refuses to make them: if
+the live `CEngineServer` vtable no longer has `IVEngineServer2_vtableSize` slots, boot prints
+
+```
+[s2script] ERROR: IVEngineServer2 layout differs from the one this build was compiled against — engine calls (kick, print, userid, client convars, voice) are DISABLED until a build with the updated SDK header ships
+```
+
+and those ops do nothing (a kick is not delivered, a print is skipped). Raise the pin in
+`custom/` only if you know the update appended a function after every slot s2script calls.
 
 ### Hot-fixing a broken signature
 

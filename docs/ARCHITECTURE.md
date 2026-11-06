@@ -245,6 +245,36 @@ books-gated `EntityRef`).
 - **Async on a single thread:** the engine calls you synchronously each tick (~15.6ms @ 64-tick). You own the microtask checkpoint: every `OnGameFrame`, after frame logic, drain the microtask queue (`PerformMicrotaskCheckpoint`). `await` resolves at controlled frame boundaries, never preempting mid-tick. Primitives: `NextTick()`, `NextFrame()`, `Delay(ms)`.
 - **Genuinely blocking work** (SQL, HTTP, file I/O) goes to a **threadpool** off the main thread; the result marshals back as a resolved Promise on the next tick drain. The one place you cross threads. `const rows = await db.query(...)` runs off-thread, resumes on-main-thread. No callback hell, no manual thread-hops.
 
+### 2.1.1 The native boundary — generated bindings, one failure convention
+
+Natives are written once, as typed Rust functions inside `native!` (`core/src/native.rs`). The macro generates the V8 callback (arity check, argument decoding, `catch_unwind`, result encoding), the V8 **fast-API** entry when the author marks it `fast` (the compiler refuses unless every argument and the result are fast-eligible numbers/booleans), and the metadata that `core/js/natives.generated.d.ts` is rendered from; a test fails when that file drifts.
+
+**One failure convention, carried by the result type:** `T` cannot fail; `Option<T>` is `T | null`; `Result<T, S2Error>` throws an `S2Error` (`name: "S2Error"`, a `code`, a message). Too few arguments throw code `arity`; a panic throws code `panic` rather than vanishing. Natives defined the old way (`set_native` with hand-written decoding and per-native degrade values) migrate onto `native!` feature by feature; the prelude, not the native, owns any public-API default such as "`0` when the event has no such field".
+
+Hot natives take numbers so they can be fast. A string-keyed engine read is interned once (`__s2_event_key`) and then read by id through a fast native: an event field read costs about 10 ns instead of about 70.
+
+**Dispatch crosses once per event.** The multi-subscriber paths (game events, chat, client-command listeners, `OnGameFrame`) run their subscriber loop in a dedicated JS context (`core/js/mux.js`, `core/src/jsmux.rs`); Rust's subscriber stores stay the source of truth and re-push an array only when their version moves. Re-entrancy, liveness, the crash breadcrumb and each path's collapse rules are unchanged; the Rust fan-out remains as the profiler's fallback.
+
+### 2.1.2 Raw memory — `Ptr` and struct views
+
+The unsafe tier (`@s2script/sdk/unsafe`) has one pointer type. A `Ptr` is a small object around an address held as a JS number (every user-space address is below 2^47, so it is exact), branded in TypeScript so a plain number cannot pass for one. It comes from an engine call declared with a `ptr` return, from `Ptr.from(entity)` (the entity's address, resolved through the books like every entity read), or from following a pointer field with `deref`. The reads and writes are fast natives in `core/src/memory.rs`; the only addresses they refuse are ones that can never be valid (the null page, anything outside the user half), with an `S2Error` code `bad_address`. Anything else is the plugin's responsibility, exactly as in a Metamod plugin, and a wrong address faults with the crash reporter naming the plugin.
+
+A `Ptr` answers the same read/write methods as an `EntityRef`, including the `*Via` chain reads, so **one generator serves both kinds of view**: a schema class over an entity handle is checked on every access, and the same class over a `Ptr` (`ptr.as(structView("CCSPlayerPawn"))` from the game package) is unchecked. Generated views share one prototype per class, built on first use, so wrapping or reading an embedded struct allocates one small object instead of redefining every accessor.
+
+**Engine functions take and return pointers.** `ptr` is a parameter and return type in `gamedata/functions.jsonc` (the v2 engine functions), for calls and for PRE/POST hooks alike: the shim carries it as an opaque pointer value (flag 3 beside the entity identities), range-checked on both sides, and JavaScript sees a `Ptr` or null. A bare number is refused, as for gamedata calls. So a hook on a function that takes a `CTakeDamageInfo*` hands the handler a `Ptr`, and a struct view reads it.
+
+**Inline declarations.** `Engine.fromSignature(name, declaration)` and `Engine.fromVirtual(name, declaration)` take the same declaration as an entry of `functions.jsonc`. `s2s build` (`packages/sdk/src/engine-functions/inline.ts`) reads them from the plugin's sources and adds them to the plugin's function bundle, so they are validated, listed in the manifest with derived permissions, and checked on update day like any other; at run time the call returns `Engine.function(name)`. The declaration must therefore be a literal: a computed one, an uncalled reference, or a name declared twice fails the build at its source line.
+
+Not yet: struct views for classes outside the entity catalog (`CTakeDamageInfo`, user commands). That follows, and the older doors (`DamageInfo`, `UserCmdView`, nav paths) go in the breaking API pass.
+
+### 2.1.3 The shared framework realm
+
+Plugins keep a context each, for their own globals and module graph, but the parts of a game package that hold no per-plugin state live **once**, in a frozen framework context (`core/src/v8host/realm.rs`). A package marks such a module by wrapping it in `__s2_shared_module(key, factory)`, a native that exists only while the package bootstraps. The first call compiles the factory's source in the framework realm and runs it there; every later plugin gets the same frozen object and calls its functions directly (contexts on one isolate share objects freely). The generated schema and nav accessors are built this way, and since an accessor reads through the receiver it is given, the value it returns, such as a `Vector`, is built by the plugin's own `EntityRef`/`Ptr` in the plugin's realm. The key carries the generator's content hash, so a regenerated module never reuses an older instance.
+
+The rules for a shared module: no plugin identity (`current_plugin` is `None` there), no subscriptions or ledgered resources, and exactly one native, `__s2_schema_offset`. Before any module loads, the realm deep-freezes its builtins, and generated modules freeze their own prototypes, so a plugin cannot patch a shared object, or a builtin reached through one, under another plugin. One consequence: an object a shared module creates (a view, a nav wrapper) inherits from the framework's `Object.prototype`, so `view instanceof Object` is `false` in plugin code. Test types with the framework's own classes, never global constructors.
+
+Every context also evaluates the same engine prelude and package bootstrap, so they're compiled once per isolate (`realm::compiled`) and bound to each new context instead of being copied and parsed again. With the CS2 package, a new plugin context costs about 3.7 ms and 0.65 MB of V8 heap, down from about 16 ms and 2.1 MB. The price is about 4.6 ns per accessor read, because V8 won't inline a getter from another context (13.7 ns against 9.1 ns for a `Ptr` field).
+
 ### 2.2 The multiplexer + `HookResult` contract
 
 The heart of the system. **One descriptor and one detour per engine touchpoint** (the *machinery* is core; CS2's specific descriptor instances live in `@s2script/cs2`), installed lazily on first subscription, removed when the last subscriber leaves.
@@ -584,6 +614,32 @@ a copied final payload. Throwing/invalid/thenable handlers fail open as Continue
 synchronous, snapshot-ordered, free of registry borrows during JS, and bounded to 32 active
 interop crossings. Security-sensitive producers must account for the fail-open policy.
 
+**Method calls go through facades.** A consumer's protocol 2 handle (`use`, `tryUse`, the
+`watchOptional` service, or a direct method import) is a frozen facade the prelude compiles
+from the consumer's own contract: one function per method that checks and copies each argument,
+calls the producer's function directly (every context shares one isolate), and checks and copies
+the result. Nothing passes through JSON or Rust on the way.
+- **The same rules.** The copy enforces the strict-copy rules of PLUGIN_INTEROP.md: own data
+  properties only, no proxies, accessors, symbols, unknown fields, nonfinite numbers or lone
+  surrogates, the 64-level depth bound, and the 32-call limit. The code uses only intrinsics it
+  captured before any plugin code ran, and its state lives in objects whose prototype chain no
+  plugin can reach. Each realm builds what it receives: the producer's own copier builds
+  arguments, from its own copy of the (hash-identical) contract, and the consumer's builds results.
+- **Binding.** The facade holds the producer's functions in a private cell that only
+  `__s2_iface_bind` fills, after the checks a native call makes (dependency, version, contract
+  hash, liveness). The binding natives are deleted before plugin code runs.
+- **Revocation.** The plugin and interface registries bump an epoch, in memory shared with every
+  context (`interop_slots.rs`), on every change that could affect a binding. A facade bound at an
+  older epoch rebinds before it calls, so it never reaches a retired producer, and teardown sweeps
+  stale cells so they don't keep its context alive. If anything changed during a call, the
+  facade rechecks both participants before returning, as the native path does.
+- **Cost.** A call that takes and returns numbers costs about 26 ns instead of 3.4 µs; one that
+  returns a three-field object about 300 ns instead of 5.4 µs (`facade_bench_call_cost`). While
+  the profiler records, facades take the native path, which records spans.
+
+Protocol 1 handles and forwards keep the native path. The protocol 2 suite runs a second time in
+CI with every consumer-side call routed through facades (`S2_TEST_FACADE=1`).
+
 Hard dependencies use `s2script.pluginDependencies`; absent/stale providers throw
 `InterfaceUnavailable`. `tryUse` returns a one-time optional proxy or null, never a variable
 that automatically changes to null. `watchOptional` declares a synchronous attachment callback
@@ -604,6 +660,32 @@ their legacy behavior; protocol 2 requires complete verified metadata and cannot
 host requirement by declaring API 2. Migrate producer and consumers together. The
 [acceptance fixtures](../tools/interop-acceptance/README.md) document offline gates and exact
 live probes; authenticated client acceptance remains a separate recorded gate.
+
+### 2.9b Native extensions — third-party natives through a versioned C ABI
+
+Native code that a plugin needs (a regex engine, geo-IP, a custom database driver) arrives as a
+**native extension**: a shared library in `addons/s2script/extensions/`, against the C contract
+in `packages/sdk/ext/s2ext.h`. This is SourceMod's extension model, without a core change per
+capability.
+
+- **One ABI, boot-time only.** The host reads `s2ext_info` (struct size, ABI version, npm-style
+  name, semver) and calls `s2ext_init`, where the extension registers natives with declared
+  signatures. A refusal names its reason and disables only that extension (degrade
+  per-descriptor). Nothing is ever unloaded.
+- **Same binding as core natives.** A native over numbers and booleans is bound with V8's fast
+  API pointing straight at the extension's function (8 ns per call). Everything else (strings,
+  entities, natives that can fail) goes through one generic slow callback that places arguments
+  by the System V rules, so no per-signature code exists. Failures are `S2Error`s, as for core
+  natives (`native.rs`).
+- **Declared imports.** A plugin lists extensions under `s2script.extensions`; the loader
+  refuses a plugin whose extension is missing or at the wrong major version, and `__s2require`
+  resolves only declared names. The build makes the import external and typechecks it against
+  real types (`.s2script/extensions/<name>/index.d.ts`, or the extension's npm package).
+- **The core still owns the engine.** Extensions reach it only through host services
+  (`schema_offset` in ABI 1); an entity argument is resolved through the host's books and is
+  valid only during the call. The raw pointer never crosses to JavaScript.
+
+Operator, author and extension-author detail: [EXTENSIONS.md](EXTENSIONS.md).
 
 ### 2.10 The registry & developer platform (`s2script.com`)
 

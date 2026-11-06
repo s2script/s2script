@@ -18,7 +18,7 @@ import type {
  */
 import type { GameEvent, HookResultValue } from "./events";
 import type { Client } from "./clients";
-import type { EntityRef, OutputEvent } from "./entity";
+import type { EntityRef, InputEvent, OutputEvent } from "./entity";
 import type { CommandHandler } from "./commands";
 import type { Config } from "./config";
 import type { PublishHandle } from "./interfaces";
@@ -99,6 +99,12 @@ export interface CtxEntities {
     classname: string,
     output: string,
     handler: (ev: OutputEvent) => HookResultValue | void
+  ): void;
+  /** Hook an input an entity receives (`AcceptInput`); return a {@link HookResultValue} to drop it. */
+  onInput(
+    classname: string,
+    input: string,
+    handler: (ev: InputEvent) => HookResultValue | void
   ): void;
 }
 /** Per-frame + map/precache hooks on this plugin's load-scope ({@link PluginContext.server}). */
@@ -298,7 +304,7 @@ export interface PluginHooks {
  *
  * `OnGameFrame` is SourceMod's public (before simulation). Post-simulation paint is
  * {@link Scope}'s `server.onGameFrame(fn, { phase: "post" })` — Metamod's post hook, not a SM public.
- * Filtered entity I/O is {@link onOutput}, not a public — SourceMod `HookEntityOutput`.
+ * Filtered entity I/O is {@link onOutput} / {@link onInput}, not a public — SourceMod `HookEntityOutput`.
  * Per-entity damage is `SDKHook` (`SDKHookType.OnTakeDamage`), not a named public.
  */
 
@@ -326,6 +332,18 @@ export declare function onOutput(
   classname: string,
   output: string,
   handler: (ev: OutputEvent) => HookResultValue | void
+): void;
+
+/**
+ * Load-window entity input hook (SourceMod-style `AcceptEntityInput` pre-hook), called before the
+ * receiving entity runs the input. Keyed by `(classname, input)`; input names match
+ * case-insensitively and `"*"` wildcards either side. Return {@link HookResultValue} `Handled`/`Stop`
+ * to drop the input. Throws after settle.
+ */
+export declare function onInput(
+  classname: string,
+  input: string,
+  handler: (ev: InputEvent) => HookResultValue | void
 ): void;
 
 /**

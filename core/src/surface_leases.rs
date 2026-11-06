@@ -139,7 +139,7 @@ fn bounded(s: &str) -> bool { !s.is_empty() && s.len() <= 256 && !s.contains('\0
 fn suspension_plan(game: &str, action: &Suspend) -> Result<crate::gamedata_calls::InvokePlan, String> {
     let plan = crate::gamedata_calls::plan(game, &action.call)
         .ok_or_else(|| format!("unavailable: {}: {}", action.call, crate::gamedata_calls::status(game, &action.call)))?;
-    if plan.receiverless || plan.via.is_some() || plan.ret_code != crate::gamedata_calls::RET_VOID
+    if plan.receiverless || !plan.via.is_empty() || plan.ret_code != crate::gamedata_calls::RET_VOID
         || plan.args.first().map(String::as_str) != Some("int") || plan.args.len() > 8
         || plan.args.iter().skip(1).any(|kind| !matches!(kind.as_str(), "int" | "bool" | "string" | "utlstring")) {
         return Err("surface suspension needs entity void(int, scalar/string...) binding without via".into());
@@ -167,7 +167,7 @@ fn validate_adapter(adapter: &Adapter, game: Option<&str>) -> Result<(), Failure
     if let Some(c) = &adapter.capture {
         if !bounded(&c.call) || !bounded(&c.token) { return Err(fail("InvalidArgument", "invalid capture binding/token")); }
         let p = crate::gamedata_calls::plan(game, &c.call).ok_or_else(|| fail("Unavailable", "capture binding unavailable"))?;
-        if p.receiverless || p.via.is_some() || p.ret_code != crate::gamedata_calls::RET_VOID || p.args != ["int", "bool"] {
+        if p.receiverless || !p.via.is_empty() || p.ret_code != crate::gamedata_calls::RET_VOID || p.args != ["int", "bool"] {
             return Err(fail("InvalidArgument", "capture needs entity void(int,bool) binding without via"));
         }
     }
@@ -207,7 +207,7 @@ fn invoke_suspend(l: &Lease, action: &Suspend) -> Result<(), String> {
         (Some(arm), Some(disarm)) => Some((arm, disarm)), _ => None,
     };
     if let Some((arm, _)) = bypass { for id in &bypass_ids { arm(*id); } }
-    let ok = crate::dispatch::defer_while(|| invoke(plan.call_id, l.key.index, serial, -1,
+    let ok = crate::dispatch::defer_while(|| invoke(plan.call_id, l.key.index, serial, -1, 0,
         gp.as_ptr(), kinds.as_ptr(), gp.len() as i32, std::ptr::null(), 0,
         ptrs.as_ptr(), std::ptr::null(), plan.ret_code, &mut ret));
     if let Some((_, disarm)) = bypass { for id in &bypass_ids { disarm(*id); } }
@@ -862,7 +862,7 @@ mod tests {
     extern "C" fn resolve(_: *const std::ffi::c_char, _: *const std::ffi::c_char, _: *const std::ffi::c_char,
         _: *const std::ffi::c_char, _: *const std::ffi::c_char, _: i32, _: *const std::ffi::c_char,
         _: *mut std::ffi::c_char, _: i32) -> i32 { 7 }
-    extern "C" fn invoke(_: i32, _: i32, _: i32, _: i32, gp: *const u64, kinds: *const u8,
+    extern "C" fn invoke(_: i32, _: i32, _: i32, _: i32, _: i32, gp: *const u64, kinds: *const u8,
         n: i32, _: *const f64, _: i32, strings: *const *const std::ffi::c_char,
         _: *const f32, _: i32, _: *mut u64) -> i32 {
         let slot = unsafe { *gp as i32 };

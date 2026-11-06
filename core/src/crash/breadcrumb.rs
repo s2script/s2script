@@ -111,7 +111,9 @@ pub fn snapshot() -> CrashBreadcrumb {
 pub(crate) fn copy_cstr(dst: &mut [u8], src: &str) {
     let n = src.len().min(dst.len() - 1);
     dst[..n].copy_from_slice(&src.as_bytes()[..n]);
-    dst[n..].iter_mut().for_each(|b| *b = 0);
+    // Readers stop at the first NUL, so the terminator is enough; bytes after it may hold an older,
+    // longer value. This runs on every entity read, so it does not zero the whole buffer.
+    dst[n] = 0;
 }
 
 /// Read a NUL-terminated fixed buffer back into a String (lossy).
@@ -208,16 +210,30 @@ pub struct DispatchGuard {
 }
 
 pub fn enter_dispatch(plugin: &str, dispatch: &str) -> DispatchGuard {
+    let g = enter_dispatch_tag(dispatch);
+    stamp_plugin(plugin);
+    g
+}
+
+/// The dispatch half of [`enter_dispatch`]: name the dispatch now, and let [`stamp_plugin`] name
+/// each plugin as its handler runs. The JS multiplexer takes this once per event and stamps per
+/// subscriber, so the breadcrumb and ring read exactly as they do for a Rust fan-out.
+pub fn enter_dispatch_tag(dispatch: &str) -> DispatchGuard {
     let b = bc();
     let g = DispatchGuard { prev_plugin: b.plugin, prev_dispatch: b.dispatch };
-    copy_cstr(&mut b.plugin, plugin);
     copy_cstr(&mut b.dispatch, dispatch);
+    g
+}
+
+/// Name the plugin whose handler is about to run under the current dispatch, and log it to the ring.
+pub fn stamp_plugin(plugin: &str) {
+    let b = bc();
+    copy_cstr(&mut b.plugin, plugin);
     let idx = (b.ring_head as usize) % RING_LEN;
     b.ring[idx].tick = b.tick;
     b.ring[idx].plugin = b.plugin;
     b.ring[idx].dispatch = b.dispatch;
     b.ring_head = ((idx + 1) % RING_LEN) as u32;
-    g
 }
 
 impl Drop for DispatchGuard {
