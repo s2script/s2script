@@ -1,5 +1,6 @@
 {
   "Changing To": "[nextmap] Changing to {1} in {2}s",
+  "Changing After Round": "[nextmap] Changing to {1} at a round boundary after at least {2}s",
   "Invalid Map": "'{1}' is not a valid map",
   "Invalid Map Name": "Invalid map name",
   "Next Map Set": "Next map set to {1}",

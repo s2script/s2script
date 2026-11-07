@@ -1,14 +1,14 @@
 // @s2script/rockthevote — SourceMod rockthevote: chat `rtv`/`sm_forcertv` starts a map vote once
 // enough connected non-bot players have asked, at a configurable turnout threshold; the winner
-// changes the map at the end of the round.
+// changes the map at the following round prestart (or match end).
 //
 // Task 1: the plugin scaffold, the chat/command trigger, the turnout threshold, per-map state
 // reset, and disconnect cleanup.
 // Task 2 (this file, current state): the ballot (nominations + random pool-fill − cooldown +
-// "Don't Change"), the @s2script/votes vote, and the round_end map-change apply (workshop/stock).
+// "Don't Change"), the @s2script/votes vote, and the round-boundary map-change apply (workshop/stock).
 
 import {
-  command, hook, translations, ADMFLAG, Chat, HookResult, UserMessages, Vote, Clients,
+  command, hook, translations, watchOptional, ADMFLAG, Chat, HookResult, UserMessages, Vote, Clients,
   Server, config, Database, Events, Translations,
 } from "@s2script/sdk";
 import type { HookResultValue, VoteResult, Client } from "@s2script/sdk";
@@ -35,6 +35,7 @@ function pruneVoters(): void {
 let voteRunning = false;
 let votedThisMap = false;
 let pendingMap: MapEntry | null = null;
+let pendingMapSource = "";
 let currentMap = "";
 let frameCounter = 0; // throttles the map-change poll to ~once/sec
 let mapStartMs = Date.now(); // when the current map began — the rtv_initialdelay window counts from here
@@ -209,7 +210,7 @@ async function buildBallot(): Promise<{ options: string[]; entries: Map<string, 
 }
 
 /** Apply the vote's result: map the winning index back to its display string, then either keep
- *  the map (tie / no votes / "Don't Change") or stage the winner for the round_end apply. */
+ *  the map (tie / no votes / "Don't Change") or stage the winner for the next round boundary. */
 function finishVote(result: VoteResult, options: string[], entries: Map<string, MapEntry>): void {
   voteRunning = false;   // votedThisMap is set only when a map actually wins (below) — a tie /
                          // "Don't Change" / invalid winner leaves RTV open to re-accumulate (SM parity)
@@ -229,8 +230,9 @@ function finishVote(result: VoteResult, options: string[], entries: Map<string, 
   }
 
   pendingMap = entry;
+  pendingMapSource = Server.mapName;
   votedThisMap = true;   // a change is queued for round end — block further RTV until the map changes
-  console.log("[rockthevote] vote won by " + chosen + (entry.workshopId ? " (workshop " + entry.workshopId + ")" : "") + " — queued for round end");
+  console.log("[rockthevote] vote won by " + chosen + (entry.workshopId ? " (workshop " + entry.workshopId + ")" : "") + " — queued for round prestart or match end");
   Chat.toAll(Translations.translate(-1, "Rtv Winner", chosen));
 }
 
@@ -320,6 +322,7 @@ function pollTick(): void {
     voteRunning = false;
     votedThisMap = false;
     pendingMap = null;
+    pendingMapSource = "";
     return;
   }
   if (!voteRunning && !votedThisMap && rtvVoters.size > 0) {
@@ -338,6 +341,13 @@ export async function OnPluginStart(): Promise<void> {
   // absent → every cooldown/ballot query threw → buildBallot could never produce options.
   await db.execute("CREATE TABLE IF NOT EXISTS map_history(id INTEGER PRIMARY KEY AUTOINCREMENT, map TEXT NOT NULL, played_at INTEGER NOT NULL)", []);
   await db.execute("CREATE TABLE IF NOT EXISTS nominations(map TEXT PRIMARY KEY, nominator INTEGER NOT NULL)", []);
+
+  // Keep the claim until the map changes, including after our command was queued in this event.
+  // This makes the vote win over automatic rotation in either boundary-handler order.
+  watchOptional("@s2script/nextmap", (nextmap, scope) => {
+    scope.own(nextmap.on("OnAutoMapChange", ({ currentMap: map }) =>
+      pendingMapSource === map ? HookResult.Handled : HookResult.Continue));
+  });
 
   // Fill the renderer seam @s2script/votes leaves open. `show` is called on every cast and once a
   // second by the vote tick; it only updates the buffer that `paintHud` re-fires each frame.
@@ -373,13 +383,16 @@ export async function OnPluginStart(): Promise<void> {
     },
   });
 
-  hook.on("round_end", () => {
+  const applyPendingMap = () => {
     if (!pendingMap) return;
     const m = pendingMap;
+    pendingMap = null;
+    if (Server.mapName !== pendingMapSource) return;
     // The workshop/stock split is load-bearing — see buildBallot's nomination resolution.
     Server.command(m.workshopId ? "host_workshop_map " + m.workshopId : "changelevel " + m.name);
-    pendingMap = null;
-  });
+  };
+  hook.on("round_prestart", applyPendingMap);
+  hook.on("cs_win_panel_match", applyPendingMap);
 
   command.admin("sm_forcertv", ADMFLAG.CHANGEMAP, (cmd) => {
     cmd.replyT(startVote(true) ? "Rtv Forced" : "Rtv Forced Already Running");

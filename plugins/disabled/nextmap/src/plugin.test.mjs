@@ -26,6 +26,7 @@ function loadPlugin({ maplist = 'de_inferno\nde_nuke\n', mapName = 'de_default',
     },
     command: { admin: (name, _flags, handler) => admins.set(name, handler) },
     hook: { on: (name, handler) => hooks.set(name, handler) },
+    publish: () => ({ dispatch: () => 0 }),
     translations: { load() {} }, Translations: { translate: (_slot, key) => key },
     Chat: { toAll() {} }, ADMFLAG: { CHANGEMAP: 8 }, HookResult: { Handled: 2 },
     delay: ms => { waits.push(ms); return new Promise(resolve => pending.push(resolve)); },
@@ -115,10 +116,13 @@ test('startup runs once, then sequential rotation and admin overrides still work
   assert.equal(host.cvars.get('nextlevel'), 'de_nuke');
   host.cvars.set('mp_maxrounds', '1');
   host.hooks.get('round_end')(); await host.elapse();
+  assert.deepEqual(host.commands, ['changelevel de_inferno']);
+  host.hooks.get('round_prestart')();
   assert.deepEqual(host.commands, ['changelevel de_inferno', 'changelevel de_nuke']);
   host.server.mapName = 'de_nuke'; host.poll();
   host.admins.get('sm_setnextmap')({ arg: () => 'de_mirage', replyT() {} });
   host.hooks.get('round_end')(); await host.elapse();
+  host.hooks.get('round_prestart')();
   assert.deepEqual(host.commands, ['changelevel de_inferno', 'changelevel de_nuke', 'changelevel de_mirage']);
   assert.equal(host.randomCalls, 1);
 });
@@ -139,3 +143,61 @@ test('a missing maplist still generates the template and selects a map from it',
   host.poll(); await host.elapse();
   assert.deepEqual(host.commands, ['changelevel de_dust2']);
 });
+
+test('timelimit expiry during play waits for the following round prestart', async () => {
+  const host = loadPlugin({ mapName: 'de_inferno' });
+  host.poll();
+  host.cvars.set('mp_timelimit', '1'); host.server.gameTime = 61;
+  host.poll(); await host.elapse();
+  assert.deepEqual(host.commands, [], 'the elapsed countdown must not interrupt the round');
+  host.hooks.get('round_end')();
+  assert.deepEqual(host.commands, [], 'the round-end results remain visible');
+  host.hooks.get('round_prestart')();
+  assert.deepEqual(host.commands, ['changelevel de_nuke']);
+  host.hooks.get('round_prestart')();
+  assert.deepEqual(host.commands, ['changelevel de_nuke'], 'apply the queued change once');
+});
+
+test('a round limit leaves the round-end results up until the next prestart', async () => {
+  const host = loadPlugin({ mapName: 'de_inferno' });
+  host.poll(); host.cvars.set('mp_maxrounds', '1');
+  host.hooks.get('round_end')(); await host.elapse();
+  assert.deepEqual(host.commands, []);
+  host.hooks.get('round_prestart')();
+  assert.deepEqual(host.commands, ['changelevel de_nuke']);
+});
+
+test('a countdown that finishes after prestart waits for another prestart', async () => {
+  const host = loadPlugin({ mapName: 'de_inferno' });
+  host.poll(); host.cvars.set('mp_maxrounds', '1');
+  host.hooks.get('round_end')();
+  host.hooks.get('round_prestart')?.();
+  await host.elapse();
+  assert.deepEqual(host.commands, [], 'a long countdown must not switch during a new round');
+  host.hooks.get('round_prestart')();
+  assert.deepEqual(host.commands, ['changelevel de_nuke']);
+});
+
+test('an external map change cancels a ready rotation even before the next map poll', async () => {
+  const host = loadPlugin({ mapName: 'de_inferno' });
+  host.poll(); host.cvars.set('mp_maxrounds', '1');
+  host.hooks.get('round_end')(); await host.elapse();
+  host.server.mapName = 'de_mirage';
+  host.hooks.get('round_prestart')?.();
+  assert.deepEqual(host.commands, []);
+});
+
+for (const matchEndsBeforeDelay of [true, false]) {
+  test(`the final match panel allows rotation without a following round (panel before delay: ${matchEndsBeforeDelay})`, async () => {
+    const host = loadPlugin({ mapName: 'de_inferno' });
+    host.poll(); host.cvars.set('mp_maxrounds', '1');
+    host.hooks.get('round_end')();
+    if (matchEndsBeforeDelay) host.hooks.get('cs_win_panel_match')?.();
+    await host.elapse();
+    if (!matchEndsBeforeDelay) {
+      assert.deepEqual(host.commands, []);
+      host.hooks.get('cs_win_panel_match')();
+    }
+    assert.deepEqual(host.commands, ['changelevel de_nuke']);
+  });
+}

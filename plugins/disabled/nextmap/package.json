@@ -3,12 +3,17 @@
   "version": "0.0.0",
   "private": true,
   "main": "src/plugin.ts",
+  "types": "api.d.ts",
   "s2script": {
+    "publishes": {
+      "@s2script/nextmap": "1.0.0"
+    },
+    "interfaceProtocol": 2,
     "config": {
       "nextmap_change_delay": {
         "type": "int",
         "default": 5,
-        "description": "Seconds to wait after announcing the map change before running changelevel."
+        "description": "Minimum seconds after announcing a map change; rotation then waits for round prestart or match end. Startup switches after this delay."
       },
       "nextmap_use_timelimit": {
         "type": "bool",
