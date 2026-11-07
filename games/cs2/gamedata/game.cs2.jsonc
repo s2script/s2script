@@ -301,16 +301,20 @@
         "resolve": "direct"
       }
     },
-    // CBasePlayerController::SetPawn(pawn, b1, b2) — re-activate a dead player's pawn BEFORE Respawn (a dead
-    // controller's active m_hPawn points at the observer pawn; SetPawn re-points it + tears down observer mode
-    // + sets dirty flags — the setup Respawn-alone can't do, live-gate proven on 2000875: Respawn alone / a raw
-    // m_hPawn write both clear the death screen but never spawn). A 4-ARG function (void*,void*,bool,bool)
-    // called SetPawn(controller, playerPawn, true, false) — verbatim what SwiftlyS2 (player.cpp:345) and CSSharp
-    // both declare; SwiftlyS2's shipped gamedata sig is BYTE-IDENTICAL to ours below. NON-VIRTUAL on 2000875
-    // (direct call, resolved by signature — NOT a vtable member; validated by unique-match + .text guard, no
-    // vtable-member gate). Self-derived masked prologue, validated UNIQUE at va 0x15ef580 (SysV: rdi=this
-    // rsi=pawn edx=b1 ecx=b2; the mask covers the lea rdi+0x7c0 m_hPawn disp). CSSharp's borrowed sig
-    // (…41 57 41 89 CF) has 0 hits — 2000875 inserted a push r14, moved ecx-save to r14d.
+    // CBasePlayerController::SetPawn(pawn, b1, b2, b3, b4) — re-activate a dead player's pawn BEFORE Respawn (a
+    // dead controller's active m_hPawn points at the observer pawn; SetPawn re-points it + tears down observer
+    // mode + sets dirty flags — the setup Respawn-alone can't do, live-gate proven on 2000875: Respawn alone / a
+    // raw m_hPawn write both clear the death screen but never spawn). A 6-ARG function
+    // (void*, void*, bool, bool, bool, bool), called SetPawn(controller, playerPawn, true, false, false, false).
+    // The prologue below itself proves the arity: `41 89 CE` saves ecx (b2) and `45 89 CD` saves r9d (b4); the
+    // body also spills r8d (b3) to [rbp-0x78] and reads it twice. b4 is OR'd with b2 and inverted
+    // (r13 = !(b2|b4)), which picks the observer-teardown path, so leaving b3/b4 out hands the engine whatever
+    // libffi left in r8/r9 (verified on build 26445667 @0x166c960; the engine's own recursive call there passes
+    // (0, 1, 0, 0, 0)). CSSharp fixed the same short-arity bug in roflmuffin/CounterStrikeSharp#1443.
+    // NON-VIRTUAL (direct call, resolved by signature — NOT a vtable member; validated by unique-match + .text
+    // guard, no vtable-member gate). Self-derived masked prologue; the mask covers the lea rdi+0x7c0 m_hPawn
+    // disp. CSSharp's borrowed sig (…41 57 41 89 CF) has 0 hits — 2000875 inserted a push r14, moved
+    // ecx-save to r14d.
     // Treadmill: re-derive the prologue if it moves (register-alloc-sensitive; the .text + unique gates fail LOUD).
     "CBasePlayerController_SetPawn": {
       "linuxsteamrt64": {
@@ -862,16 +866,17 @@
       "returns": "float"
     },
 
-    // player.respawn(), step 1 of 2 — never called on its own. EXACTLY three args after `this`:
-    // (playerPawn, true, false). Passing a fourth feeds the function a different reset flag, so the
-    // arity is a correctness fact, not a convenience. pawn.js re-reads the pawn from m_hPlayerPawn
-    // at drain time and SKIPS this call entirely when it is stale/absent (a `null` entity arg would
-    // otherwise marshal to nullptr and the call would still run).
+    // player.respawn(), step 1 of 2 — never called on its own. FIVE args after `this`:
+    // (playerPawn, true, false, false, false). The engine function reads all four flags (see the
+    // CBasePlayerController_SetPawn signature note), so a shorter arity leaves b3/b4 as register
+    // garbage — the arity is a correctness fact, not a convenience. pawn.js re-reads the pawn from
+    // m_hPlayerPawn at drain time and SKIPS this call entirely when it is stale/absent (a `null`
+    // entity arg would otherwise marshal to nullptr and the call would still run).
     "setPawn": {
       "receiver": { "kind": "entity" },
       "target": { "kind": "signature", "name": "CBasePlayerController_SetPawn" },
-      "args": ["entity", "bool", "bool"],
-      "argNames": ["pawn", "b1", "b2"],
+      "args": ["entity", "bool", "bool", "bool", "bool"],
+      "argNames": ["pawn", "b1", "b2", "b3", "b4"],
       "returns": "void"
     },
 
