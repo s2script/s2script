@@ -1,6 +1,6 @@
 # Random startup map implementation plan
 
-**Goal:** Switch the default startup map to a random usable map from `nextmap`'s maplist once per plugin load.
+**Goal:** Offer opt-in random startup selection from `nextmap`'s maplist and configurable round-boundary rotation.
 
 **Spec:** `docs/superpowers/specs/2026-11-07-random-startup-map-design.md`
 
@@ -22,3 +22,15 @@ Independent read-only review: ready, no actionable findings. Live CS2 command/wo
 - [x] Run the full JS gate, build both archives, and obtain a read-only review before updating the existing PR.
 
 Follow-up validation: 32 focused tests pass, including the combined rotation/RTV regression in both load orders and at prestart/match end. Both plugin archives build with matching producer/consumer contract hashes. The final full `bash scripts/ci-js.sh` passes after the review fix (including 962 SDK tests and all plugin/example typechecks). Live CS2/client acceptance remains pending. The review's competing-command finding is fixed; its preexisting late-vote/intermission and same-name map-reload concerns are outside this slice.
+
+## Review guidelines: operator settings
+
+The [PR review](https://github.com/s2script/s2script/pull/340#issuecomment-6713564447) reverses the initial no-new-setting decision.
+
+- [x] Add bool `nextmap_random_startup=false`; read it at the first live-map observation and consume the startup choice even when disabled.
+- [x] Add bool `nextmap_wait_for_round=true`; false applies normal rotation immediately after the existing delay, with the `Changing To` announcement.
+- [x] Keep the automatic-rotation veto independent of round waiting so RTV retains priority in either mode; describe both delay modes and update the spec.
+- [x] Verify both flag states, default startup behavior, config changes before/after the first live map, both rotation triggers, and both plugin orders. Six behavioral tests failed before the fix; all 44 focused tests pass afterward.
+- [x] Run the full JS gate, build both plugins, and review the changes against the comment before updating PR #340.
+
+Review-guidelines validation: all 44 focused tests pass; the full JS gate passes, including 962 SDK tests and all plugin/example typechecks. Both archives build, and the nextmap archive contains bool defaults `nextmap_random_startup=false` and `nextmap_wait_for_round=true`. Independent review found no actionable issues. Live CS2 acceptance/deployment remains pending.

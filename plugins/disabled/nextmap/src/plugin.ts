@@ -1,6 +1,6 @@
 // @s2script/nextmap — SourceMod nextmap: a maplist.txt rotation with an `sm_setnextmap` admin
 // override, seeding the `nextlevel` cvar (basetriggers' `nextmap` chat trigger reads it) and
-// a random startup map, then auto-changelevel at mp_maxrounds/mp_timelimit.
+// an optional random startup map, then auto-changelevel at mp_maxrounds/mp_timelimit.
 
 import { command, hook, translations, publish, ADMFLAG, Server, config, delay, Chat, Translations, HookResult } from "@s2script/sdk";
 import type { TypedPublishHandle } from "@s2script/sdk";
@@ -69,8 +69,8 @@ function isValidEntry(e: MapEntry): boolean {
   return /^[A-Za-z0-9_]+$/.test(e.name) && (e.workshopId === null || /^[0-9]+$/.test(e.workshopId));
 }
 
-/** Announce and count down, then apply rotation at a round boundary. Startup bypasses that wait. */
-function changeToNext(next: MapEntry | null = override ?? rotationNext(currentMap), waitForRound = true): void {
+/** Announce and count down; rotation optionally waits for a round boundary. Startup bypasses it. */
+function changeToNext(next: MapEntry | null = override ?? rotationNext(currentMap), startup = false): void {
   if (changing) return;
   changing = true;
   if (!next) {
@@ -87,6 +87,7 @@ function changeToNext(next: MapEntry | null = override ?? rotationNext(currentMa
     return;
   }
   failNotified = false; // a valid candidate — clear so a future failure re-logs
+  const waitForRound = !startup && config.getBool("nextmap_wait_for_round");
   const secs = config.getInt("nextmap_change_delay");
   console.log("[nextmap] changing to " + next.name + " after " + secs + "s" + (waitForRound ? " at the next round boundary" : ""));
   const scheduledMap = currentMap; // captured now — if an external actor changes the map before
@@ -99,7 +100,7 @@ function changeToNext(next: MapEntry | null = override ?? rotationNext(currentMa
       return;
     }
     // A vote winner takes priority even if its boundary handler ran first and queued a command.
-    if (waitForRound && mapChanges.dispatch("OnAutoMapChange", { currentMap: scheduledMap, nextMap: next.name }) >= HookResult.Handled) return;
+    if (!startup && mapChanges.dispatch("OnAutoMapChange", { currentMap: scheduledMap, nextMap: next.name }) >= HookResult.Handled) return;
     Server.command(next.workshopId ? "host_workshop_map " + next.workshopId : "changelevel " + next.name);
   };
   delay(secs * 1000).then(() => {
@@ -122,7 +123,7 @@ function changeToStartupMap(): void {
     return;
   }
   const next = list[Math.floor(Math.random() * list.length)];
-  if (next.name.toLowerCase() !== currentMap.toLowerCase()) changeToNext(next, false);
+  if (next.name.toLowerCase() !== currentMap.toLowerCase()) changeToNext(next, true);
 }
 
 // Plugins persist across a changelevel: OnPluginStart fires once per plugin load, not per map.
@@ -138,7 +139,7 @@ function pollTick(): void {
     currentMap = m; roundsPlayed = 0; changing = false; override = null; failNotified = false;
     readyChange = null; matchEnded = false;
     const next = rotationNext(m); if (next && isValidEntry(next)) Server.setCvar("nextlevel", next.name);
-    if (startup) changeToStartupMap();
+    if (startup && config.getBool("nextmap_random_startup")) changeToStartupMap();
     return;
   }
   if (!changing && config.getBool("nextmap_use_timelimit")) {

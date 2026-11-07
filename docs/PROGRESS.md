@@ -1158,3 +1158,9 @@ Normal nextmap rotation now queues a target when its round/time limit is reached
 Independent review reproduced competing rotation and RTV commands on the same boundary. Nextmap now exposes the protocol-2 `OnAutoMapChange` hook (`@s2script/nextmap` contract 1.0.0); RTV optionally vetoes normal rotation while it owns a winner for that source map, including after queuing its own command. Both load orders and identical/different targets issue exactly one command. Both plugins remain standalone.
 
 Verification: 32 focused tests pass, including eight initially failing combined-plugin conflict cases. Both archives build with matching contract hashes. The final full JS gate passes, including 962 SDK tests, plugin/example typechecks, and Docker tooling checks. No core/shim changes or live CS2 acceptance/deployment. The design and plan above include this follow-up.
+
+## 2026-11-07 — Configure nextmap's new behavior
+
+Applied the [PR review guidelines](https://github.com/s2script/s2script/pull/340#issuecomment-6713564447): bool `nextmap_random_startup` defaults to false, preserving SourceMod-style startup unless explicitly enabled; bool `nextmap_wait_for_round` defaults to true, with false restoring a switch as soon as the existing delay expires. The startup opportunity is consumed at the first live map even when disabled. Announcements and the delay description explain the selected timing mode; RTV priority remains independent of round waiting. Spec and plan now describe these operator settings.
+
+Verification: six regression tests failed before the fix, then all 44 focused tests passed. Both plugin archives build and nextmap's archive carries the requested bool defaults. The full JS gate passes, including 962 SDK tests, all plugin/example typechecks, and Docker tooling checks. Independent read-only review found no actionable issues. No core/shim changes or live CS2 acceptance/deployment.

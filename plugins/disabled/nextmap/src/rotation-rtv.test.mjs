@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { transformSync } from 'esbuild';
 
-async function loadBoth(order, winner) {
+async function loadBoth(order, winner, waitForRound = true) {
   const hooks = new Map(), admins = new Map(), pending = [], sent = [], providers = new Map(), watchers = new Map();
   let vote;
   const cvars = new Map();
@@ -17,7 +17,7 @@ async function loadBoth(order, winner) {
     config: {
       readFile: () => 'de_inferno\nde_nuke\nde_mirage',
       getInt: name => name === 'nextmap_change_delay' ? 5 : name === 'rtv_map_count' ? 1 : 0,
-      getBool: () => true,
+      getBool: name => name === 'nextmap_random_startup' ? false : name === 'nextmap_wait_for_round' ? waitForRound : true,
     },
     delay: () => new Promise(resolve => pending.push(resolve)),
     Database: { open: async () => ({ execute: async () => {}, query: async sql => sql.includes('FROM nominations') ? [{ map: winner }] : [] }) },
@@ -56,17 +56,36 @@ async function loadBoth(order, winner) {
   const fire = event => { for (const handler of hooks.get(event) ?? []) handler(); };
   cvars.set('mp_maxrounds', '1');
   fire('round_end');
-  for (const resolve of pending.splice(0)) resolve();
-  await new Promise(setImmediate);
-  if (winner !== null) {
+  const finishVote = async () => {
+    if (winner === null) return;
     admins.get('sm_forcertv')({ replyT() {} });
     await new Promise(setImmediate);
     vote.onEnd({ winner: 0, counts: [1, 0], total: 1 });
-  }
+  };
+  if (!waitForRound) await finishVote();
+  for (const resolve of pending.splice(0)) resolve();
+  await new Promise(setImmediate);
+  if (waitForRound) await finishVote();
   return { fire, sent };
 }
 
 for (const order of [['nextmap', 'rockthevote'], ['rockthevote', 'nextmap']]) {
+  test(`RTV without a winner allows immediate rotation when round waiting is off: ${order.join(' then ')}`, async () => {
+    const host = await loadBoth(order, null, false);
+    assert.deepEqual(host.sent, ['changelevel de_nuke']);
+    host.fire('round_prestart');
+    assert.deepEqual(host.sent, ['changelevel de_nuke']);
+  });
+  for (const winner of ['de_mirage', 'de_nuke']) {
+    test(`RTV keeps priority with round waiting off: ${order.join(' then ')}, ${winner}`, async () => {
+      const host = await loadBoth(order, winner, false);
+      assert.deepEqual(host.sent, [], 'timer expiry must still dispatch the RTV veto');
+      host.fire('round_prestart');
+      assert.deepEqual(host.sent, ['changelevel ' + winner]);
+      host.fire('round_prestart');
+      assert.deepEqual(host.sent, ['changelevel ' + winner]);
+    });
+  }
   test(`RTV without a winner allows normal rotation: ${order.join(' then ')}`, async () => {
     const host = await loadBoth(order, null);
     host.fire('round_prestart');
