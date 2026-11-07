@@ -1143,3 +1143,10 @@ SetStringUserData 10, GetStringUserData 11, FindStringIndex 12) on the first tab
 the interface-hook pin and range check. A table whose vtable is not the verified one is refused.
 User data crosses as a copied `Uint8Array` (a string is written as UTF-8), and reads grow their
 buffer once up to 1 MiB. Cookbook: `sm_st_list` / `sm_st_find` / `sm_st_show`. Live gate pending.
+
+
+## 2026-11-07 — Random startup map from nextmap's maplist
+
+`@s2script/nextmap` now chooses one random usable `maplist.txt` entry when its first live map is observed after plugin load. It reuses `nextmap_change_delay`, the existing announcement and validated stock/workshop switch, and cancellation when another actor changes maps first. A selected map already running is left alone; an empty/unusable list logs once. Later maps keep sequential rotation and admin overrides. Each fresh plugin load gets one startup choice, including manual reloads.
+
+Verification: 11 VM-hosted regression tests failed before the change and passed after; registered in `scripts/ci-js.sh`. The full JS gate passed, including 962 SDK tests, all plugin/example typechecks, and Docker compose/tooling checks. The SDK CLI and nextmap `.s2sp` build passed. No core/shim changes and no live CS2 acceptance or deployment. Design: `docs/superpowers/specs/2026-11-07-random-startup-map-design.md`; plan: `docs/superpowers/plans/2026-11-07-random-startup-map.md`.
