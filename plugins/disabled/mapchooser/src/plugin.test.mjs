@@ -262,3 +262,15 @@ test('the first map poll after load does not cancel a vote already forced', asyn
   await host.end(0, [1, 0, 0, 0, 0]);
   assert.equal(host.iface.hasEndOfMapVoteFinished(), true, 'its result still counts');
 });
+
+test('a vote forced on the new map before the poll notices the change is kept', async () => {
+  const host = loadPlugin();
+  await host.start();
+  host.server.mapName = 'de_nuke';
+  host.admins.get('sm_mapvote')({ replyT() {} });
+  await host.settle();
+  assert.ok(host.vote);
+  host.poll();   // the reset for de_nuke
+  assert.ok(host.vote, 'the new map\'s ballot is not cancelled');
+  assert.equal(host.iface.isVoteInProgress(), true);
+});
