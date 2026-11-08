@@ -1219,6 +1219,64 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
     }
   };
   globalThis.__s2pkg_stringtables = { StringTables: StringTables };
+  // @s2script/sdk/steam — the server's Steam session and Steam Workshop downloads (core/src/steam.rs).
+  // Ids are 64-bit, so they go out as decimal strings; a string, safe integer or BigInt comes in.
+  var WorkshopItemState = Object.freeze({
+    None: 0, Subscribed: 1, LegacyItem: 2, Installed: 4, NeedsUpdate: 8,
+    Downloading: 16, DownloadPending: 32, DisabledLocally: 64
+  });
+  var SteamResult = Object.freeze({
+    OK: 1, Fail: 2, NoConnection: 3, InvalidParam: 8, FileNotFound: 9, Busy: 10,
+    AccessDenied: 15, Timeout: 16, ServiceUnavailable: 20, Expired: 27, DiskFull: 54
+  });
+  function __s2_steam_id(id) { return typeof id === "bigint" ? id.toString() : String(id); }
+  var Steam = {
+    isAvailable: function () { return (__s2_steam_status() & 1) !== 0; },
+    isLoggedOn: function () { return (__s2_steam_status() & 2) !== 0; },
+    isSecure: function () { return (__s2_steam_status() & 4) !== 0; },
+    steamId: function () { return __s2_steam_server_id(); },
+    publicIp: function () { return __s2_steam_public_ip(); },
+    onConnected: function (h) { __s2_steam_subscribe("connected", function () { return h(); }); },
+    onDisconnected: function (h) { __s2_steam_subscribe("disconnected", function (r) { return h(r); }); },
+    onConnectFailure: function (h) {
+      __s2_steam_subscribe("connectfailure", function (r, retrying) { return h(r, retrying); });
+    }
+  };
+  var Workshop = {
+    download: function (id, opts) {
+      var key = __s2_steam_id(id), high = !!(opts && opts.highPriority);
+      return new Promise(function (resolve) {
+        var ok = __s2_steam_download(id, high, function (result) {
+          resolve({ id: key, result: result, ok: result === 1 });
+        });
+        if (!ok) resolve({ id: key, result: 0, ok: false });
+      });
+    },
+    request: function (id, opts) { return __s2_steam_download(id, !!(opts && opts.highPriority)); },
+    state: function (id) { var s = __s2_steam_item_state(id); return s < 0 ? null : s; },
+    isInstalled: function (id) {
+      var s = __s2_steam_item_state(id);
+      return s >= 0 && (s & WorkshopItemState.Installed) !== 0 && (s & WorkshopItemState.NeedsUpdate) === 0;
+    },
+    downloadProgress: function (id) {
+      var v = __s2_steam_download_info(id);
+      return v ? { id: __s2_steam_id(id), bytesDownloaded: v[0], bytesTotal: v[1] } : null;
+    },
+    installInfo: function (id) {
+      var v = __s2_steam_install_info(id);
+      return v ? { id: __s2_steam_id(id), folder: v[0], sizeOnDisk: v[1], timestamp: v[2] } : null;
+    },
+    suspendDownloads: function (suspend) { return __s2_steam_suspend(suspend !== false); },
+    onDownloadResult: function (h) {
+      __s2_steam_subscribe("download", function (id, result, appId) {
+        return h({ id: id, result: result, ok: result === 1, appId: appId });
+      });
+    },
+    onItemInstalled: function (h) {
+      __s2_steam_subscribe("installed", function (id, appId) { return h({ id: id, appId: appId }); });
+    }
+  };
+  globalThis.__s2pkg_steam = { Steam: Steam, Workshop: Workshop, WorkshopItemState: WorkshopItemState, SteamResult: SteamResult };
   globalThis.__s2pkg_usermessages = { UserMessage: UserMessage, UserMessages: UserMessages };
   globalThis.__s2pkg_frame      = { OnGameFrame: OnGameFrame };
   globalThis.__s2pkg_timers     = timers;
@@ -3064,7 +3122,7 @@ globalThis.Phase      = { Pre:"pre", Post:"post" };
       "__s2pkg_translations", "__s2pkg_entity", "__s2pkg_math", "__s2pkg_timers",
       "__s2pkg_bans", "__s2pkg_db", "__s2pkg_cookies", "__s2pkg_http", "__s2pkg_files",
       "__s2pkg_ws", "__s2pkg_net", "__s2pkg_votes", "__s2pkg_sound",
-      "__s2pkg_trace", "__s2pkg_transmit", "__s2pkg_voice", "__s2pkg_stringtables", "__s2pkg_usermessages",
+      "__s2pkg_trace", "__s2pkg_transmit", "__s2pkg_voice", "__s2pkg_stringtables", "__s2pkg_steam", "__s2pkg_usermessages",
       "__s2pkg_usercmd", "__s2pkg_interfaces",
     ];
     for (var i = 0; i < names.length; i++) {

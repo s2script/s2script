@@ -229,3 +229,12 @@
     ops.cvar_flags = &s2_cvar_flags;
     // --- Server console output capture (Server.commandEx): ServerCommand bracketed by marker commands + a tier0 logging listener ---
     ops.server_command_capture = &s2_server_command_capture;
+    // --- Steam game server + workshop (shim/src/steam.cpp, ISteamGameServer + ISteamUGC) ---
+    ops.steam_status = &s2_steam_status;
+    ops.steam_server_id = &s2_steam_server_id;
+    ops.steam_public_ip = &s2_steam_public_ip;
+    ops.steam_ugc_download = &s2_steam_ugc_download;
+    ops.steam_ugc_state = &s2_steam_ugc_state;
+    ops.steam_ugc_download_info = &s2_steam_ugc_download_info;
+    ops.steam_ugc_install_info = &s2_steam_ugc_install_info;
+    ops.steam_ugc_suspend = &s2_steam_ugc_suspend;

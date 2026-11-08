@@ -349,6 +349,18 @@ pub extern "C" fn s2script_core_dispatch_command_output(cookie: c_int, text: *co
     });
 }
 
+/// Shim → core: a Steam game-server callback (`shim/src/steam.h` S2SteamEventKind). Runs on the main
+/// thread, either straight from the engine's SteamGameServer_RunCallbacks or from the shim's
+/// GameFramePre drain. Notify-only; `crate::steam` queues it and delivers it now or next frame.
+/// `catch_unwind`-wrapped.
+#[no_mangle]
+pub extern "C" fn s2script_core_dispatch_steam_event(kind: c_int, id: u64, result: c_int, flag: c_int) {
+    let _ = catch_unwind(|| {
+        let _prof = crate::profiler::framework("dispatch_steam_event");
+        crate::steam::dispatch_event(kind, id, result, flag);
+    });
+}
+
 /// Shim → core: an IEntityListener callback (create/spawn/delete) with the entity's packed
 /// CEntityHandle (ToInt()) + class name. Notify-only: dispatches to the `Entity.on{Create,Spawn,Delete}`
 /// JS subscribers. `catch_unwind`-wrapped; null/invalid-UTF-8 degrade to a no-op.

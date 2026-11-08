@@ -28,6 +28,7 @@ import * as transmit from "./transmit.ts";
 import * as usercmd from "./usercmd.ts";
 import * as usermessages from "./usermessages.ts";
 import * as voice from "./voice.ts";
+import * as workshop from "./workshop.ts";
 import * as ws from "./ws.ts";
 import * as zones from "./zones.ts";
 
@@ -62,6 +63,7 @@ export const RECIPES: readonly Recipe[] = [
   usercmd,
   usermessages,
   voice,
+  workshop,
   ws,
   zones,
 ];
