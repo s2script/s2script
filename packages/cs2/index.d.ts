@@ -393,16 +393,12 @@ export declare const Events: {
 };
 
 /**
- * Show-activity helper: SourceMod's FormatActivitySource per-recipient decision.
- * For each connected recipient, call `formatSource(actorSlot, recipientSlot)` to get
- * `{ show, name }` — whether to display the action to that recipient, and under what name
- * (real name for admins / self, generic label for non-admins, per the SHOW_ACTIVITY flags).
- * `actorSlot < 0` = server console (always real "Console" label).
+ * SourceMod's admin-activity layer (ShowActivity2 / LogAction / `%L`). It is engine-generic and lives
+ * in `@s2script/sdk` — import it from there. Re-exported here (forwarding to the same object) for older plugins.
+ * @deprecated Import `Activity` from `@s2script/sdk`.
  */
-export declare const Activity: {
-  /** SourceMod FormatActivitySource: per-recipient {show, name} for an admin action by actorSlot (actorSlot < 0 = server console). */
-  formatSource(actorSlot: number, recipientSlot: number): { show: boolean; name: string };
-};
+export { Activity } from "@s2script/sdk/commands";
+export type { ActivityActor } from "@s2script/sdk/commands";
 
 /**
  * CS2 chat color control bytes (values from CounterStrikeSharp's ChatColors enum). Prepend one to a chat

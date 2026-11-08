@@ -187,3 +187,54 @@ export declare const Commands: {
    * else the `ADMFLAG` bit mask (map bits→names in your plugin). The `sm_help` backend. */
   list(): { name: string; flags: number }[];
 };
+
+/**
+ * The actor of an admin action: a command invocation (its {@link ReplySource} decides where the actor's
+ * own copy lands), or a bare slot for a menu / plugin-driven action (treated as a chat source, as
+ * SourceMod does for menus). A negative slot is the server console.
+ */
+export type ActivityActor = number | { readonly callerSlot: number; readonly replySource: ReplySource };
+
+/**
+ * SourceMod's admin-activity layer: `ShowActivity2`, `LogAction` and `%L`, governed by the
+ * `sm_show_activity` cvar (bitmask, SourceMod default 13 = 1|4|8).
+ *
+ * The SourceMod pattern for every admin command is: errors and usage go to the caller with
+ * `cmd.replyT`; the action itself is announced with {@link Activity.showT}; and it
+ * is recorded with {@link Activity.log}.
+ *
+ * @example
+ * import { Activity } from "@s2script/sdk";
+ * // sm_slay: "[S2S] gkh: slayed Bob." for admins, "[S2S] ADMIN: slayed Bob." for players.
+ * const name = Activity.targetName(cmd.arg(0), targets);
+ * Activity.showT(cmd, "Slayed target", name);
+ * for (const t of targets) Activity.log(cmd, t.slot, `"${Activity.describe(cmd)}" slayed "${Activity.describe(t.slot)}"`);
+ */
+export declare const Activity: {
+  /** The tag every activity line starts with (colour tags expand in chat, are stripped in a console). Default `"{green}[S2S]{default} "`. */
+  tag: string;
+  /** The `sm_show_activity` bitmask in effect: 1 show to non-admins, 2 non-admins see names, 4 show to admins, 8 admins see names, 16 root sees names. 13 when unset. */
+  readonly flags: number;
+  /** SourceMod FormatActivitySource: per-recipient {show, name} for an admin action by actorSlot (actorSlot < 0 = server console). */
+  formatSource(actorSlot: number, recipientSlot: number): { show: boolean; name: string };
+  /**
+   * SourceMod `ShowActivity2(client, tag, "%s", message)`: announce an admin action as
+   * `<tag><name>: <message>`. Every connected human the `sm_show_activity` flags allow sees it in chat,
+   * under the actor's real name or the generic `ADMIN`/`PLAYER` label. The actor sees it exactly once:
+   * in their console when they ran it from a console (or the server console), else in chat.
+   * Chat lines land next frame, after the actor's own `!command` line.
+   */
+  show(actor: ActivityActor, message: string): void;
+  /** {@link Activity.show}, with the message translated for EACH recipient's language (SourceMod's `%t`). */
+  showT(actor: ActivityActor, key: PhraseKey, ...args: (string | number)[]): void;
+  /**
+   * SourceMod `LogAction(client, target, message)`: write one line to the server log,
+   * `L MM/DD/YYYY - HH:MM:SS: [<plugin>] <message>`. Name the parties in the message with
+   * {@link Activity.describe}, as SourceMod plugins do with `%L`.
+   */
+  log(actor: ActivityActor, target: number | null, message: string): void;
+  /** SourceMod `%L` for a slot or a command's caller: `Name<userid><steamid><>`, or `Console<0><Console><Console>` for the server. */
+  describe(who: ActivityActor): string;
+  /** The target label for an activity line: the one player's name, "all players" for `@all`, else "N players". */
+  targetName(pattern: string, targets: readonly { readonly slot: number }[]): string;
+};

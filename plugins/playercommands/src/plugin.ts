@@ -1,4 +1,5 @@
-import { command, topmenu, translations, ADMFLAG, Translations, HookResult } from "@s2script/sdk";
+import { command, topmenu, translations, ADMFLAG, Translations, HookResult, Activity } from "@s2script/sdk";
+import type { ActivityActor } from "@s2script/sdk";
 import { Player, Events, pickPlayer } from "@s2script/cs2";
 
 // Shared player actions — ONE implementation each, driven by both the text command and the adminmenu
@@ -25,6 +26,26 @@ function slayPlayer(p: Player): boolean {
   return true;
 }
 
+// SourceMod's feedback contract for an admin action: announce it to the server (ShowActivity2, per
+// sm_show_activity) and write one LogAction line per target. `actor` is the command (its reply source
+// decides where the actor's own copy lands) or the admin's slot for a menu pick.
+function slapAndReport(actor: ActivityActor, pattern: string, targets: Player[], damage: number): number {
+  const hit = targets.filter(t => slapPlayer(t, damage));
+  if (hit.length === 0) return 0;
+  Activity.showT(actor, "Slapped target", Activity.targetName(pattern, hit), damage);
+  for (const t of hit)
+    Activity.log(actor, t.slot, `"${Activity.describe(actor)}" slapped "${Activity.describe(t.slot)}" (damage "${damage}")`);
+  return hit.length;
+}
+
+function slayAndReport(actor: ActivityActor, pattern: string, targets: Player[]): number {
+  const hit = targets.filter(t => slayPlayer(t));
+  if (hit.length === 0) return 0;
+  Activity.showT(actor, "Slayed target", Activity.targetName(pattern, hit));
+  for (const t of hit) Activity.log(actor, t.slot, `"${Activity.describe(actor)}" slayed "${Activity.describe(t.slot)}"`);
+  return hit.length;
+}
+
 // adminmenu: run an action on a picked player, then RE-OPEN the picker so the admin stays in the menu
 // (act on multiple players) until they pick Exit — SM admin-menu behavior. Event-driven, not recursive:
 // each pick fires once, re-displays, and waits for the next input; Exit is an onCancel (no re-open).
@@ -41,9 +62,7 @@ export function OnPluginStart(): void {
     const damage = Math.max(0, cmd.argInt(1, 0));
     const targets = Player.target(targetStr, cmd.callerSlot, true);
     if (targets.length === 0) { cmd.replyT("No matching players"); return HookResult.Handled; }
-    let n = 0;
-    for (const p of targets) if (slapPlayer(p, damage)) n++;
-    cmd.replyT(n === 1 ? "Slapped Player" : "Slapped Players", n, damage);
+    if (slapAndReport(cmd, targetStr, targets, damage) === 0) cmd.replyT("Target Not Alive");
     return HookResult.Handled;
   });
 
@@ -52,9 +71,7 @@ export function OnPluginStart(): void {
     if (!targetStr) { cmd.replyT("Usage Slay"); return HookResult.Handled; }
     const targets = Player.target(targetStr, cmd.callerSlot, true);
     if (targets.length === 0) { cmd.replyT("No matching players"); return HookResult.Handled; }
-    let n = 0;
-    for (const p of targets) if (slayPlayer(p)) n++;
-    cmd.replyT(n === 1 ? "Slayed Player" : "Slayed Players", n);
+    if (slayAndReport(cmd, targetStr, targets) === 0) cmd.replyT("Target Not Alive");
     return HookResult.Handled;
   });
 
@@ -79,7 +96,8 @@ export function OnPluginStart(): void {
     const oldname = p.playerName ?? "";
     if (!p.setName(newname)) { cmd.replyT("Rename Failed"); return HookResult.Handled; }
     Events.fire("player_changename", { userid: p.userId, oldname, newname });
-    cmd.replyT("Renamed", oldname, newname);
+    Activity.showT(cmd, "Renamed target", oldname, newname);
+    Activity.log(cmd, p.slot, `"${Activity.describe(cmd)}" renamed "${Activity.describe(p.slot)}" (from "${oldname}" to "${newname}")`);
     return HookResult.Handled;
   });
 
@@ -90,7 +108,7 @@ export function OnPluginStart(): void {
   // per-viewer.
   topmenu.addTab({ id: "playercommands", title: "Players" });
   topmenu.addItem("playercommands", { id: "playercommands:slap", name: Translations.translate(-1, "Slap Item"), flags: ADMFLAG.SLAY,
-    onSelect: adminSlot => pickLoop(adminSlot, t => slapPlayer(t, 5)) });   // menu default: 5 damage + knockback
+    onSelect: adminSlot => pickLoop(adminSlot, t => { slapAndReport(adminSlot, "", [t], 5); }) });   // menu default: 5 damage + knockback
   topmenu.addItem("playercommands", { id: "playercommands:slay", name: Translations.translate(-1, "Slay Item"), flags: ADMFLAG.SLAY,
-    onSelect: adminSlot => pickLoop(adminSlot, t => slayPlayer(t)) });
+    onSelect: adminSlot => pickLoop(adminSlot, t => { slayAndReport(adminSlot, "", [t]); }) });
 }
