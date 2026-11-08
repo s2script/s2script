@@ -1,4 +1,6 @@
 {
+  "Initiated Vote": "initiated a vote: {1}",
+  "Initiated Vote Kick": "initiated a kick vote against {1}.",
   "Kick Vote Failed": "[Vote] Kick {1} failed.",
   "Kick Vote Question": "Kick {1}?",
   "Kick Vote Reason": "Vote kicked",

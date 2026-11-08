@@ -9,14 +9,23 @@ import {
   MenuStyle,
   Translations,
   HookResult,
+  delay,
+  Activity,
 } from "@s2script/sdk";
-import type { Command, HookResultValue } from "@s2script/sdk";
+import type { Command, HookResultValue, ActivityActor } from "@s2script/sdk";
 import { Player } from "@s2script/cs2";
 
 const MAP_CHOICES = ["de_dust2", "de_inferno", "de_mirage", "de_nuke", "de_ancient", "de_anubis"];
 
 export function OnPluginStart(): void {
   translations.load("basecommands", "common");
+
+  // SourceMod core's sm_show_activity: who sees admin actions, and under which name. Registered here
+  // because basecommands ships with every install; Activity reads it at each announcement.
+  Server.registerCvar("sm_show_activity", {
+    type: "int", default: 13, min: 0, max: 31,
+    help: "Show admin activity: 1=non-admins, 2=non-admins see names, 4=admins, 8=admins see names, 16=root sees names",
+  });
 
   command.admin("sm_kick", ADMFLAG.KICK, kick);
   command.admin("sm_map", ADMFLAG.CHANGEMAP, map);
@@ -36,7 +45,7 @@ export function OnPluginStart(): void {
       m.style = MenuStyle.Center;
       m.freezePlayer = true;   // user-requested map picker HUD
       for (const mapName of MAP_CHOICES) if (Server.isMapValid(mapName)) m.addItem(mapName, mapName);
-      m.onSelect((e) => { Server.command("changelevel " + e.info); });
+      m.onSelect((e) => { changeMap(adminSlot, e.info); });
       m.display(adminSlot, 30);
     },
   });
@@ -53,14 +62,23 @@ function kick(cmd: Command): HookResultValue {
     cmd.replyT("Kick Ambiguous Target", targetStr);
     return HookResult.Handled;
   }
-  let n = 0;
+  // Announce and log BEFORE the kick, while every target still has a name and a %L identity.
+  const label = Activity.targetName(targetStr, targets);
+  if (customReason) Activity.showT(cmd, "Kicked target reason", label, customReason);
+  else Activity.showT(cmd, "Kicked target", label);
   for (const p of targets) {
-    const reason = customReason || Translations.translate(p.slot, "Kick Reason Default");
-    p.kick(reason);
-    n++;
+    Activity.log(cmd, p.slot, `"${Activity.describe(cmd)}" kicked "${Activity.describe(p.slot)}" (reason "${customReason}")`);
+    p.kick(customReason || Translations.translate(p.slot, "Kick Reason Default"));
   }
-  cmd.replyT(n === 1 ? "Kicked Player" : "Kicked Players", n);
   return HookResult.Handled;
+}
+
+// SourceMod basecommands: announce the change, log it, and give players 3 seconds to read who did it
+// before the level actually changes.
+function changeMap(actor: ActivityActor, mapName: string): void {
+  Activity.showT(actor, "Changing map", mapName);
+  Activity.log(actor, null, `"${Activity.describe(actor)}" changed map to "${mapName}"`);
+  delay(3000).then(() => Server.command("changelevel " + mapName));
 }
 
 function map(cmd: Command): HookResultValue {
@@ -68,8 +86,7 @@ function map(cmd: Command): HookResultValue {
   if (!mapName) { cmd.replyT("Usage Map"); return HookResult.Handled; }
   if (!/^[A-Za-z0-9_]+$/.test(mapName)) { cmd.replyT("Invalid Map Name"); return HookResult.Handled; }
   if (!Server.isMapValid(mapName)) { cmd.replyT("Map Not Valid", mapName); return HookResult.Handled; }
-  cmd.replyT("Changing Map", mapName);
-  Server.command("changelevel " + mapName);
+  changeMap(cmd, mapName);
   return HookResult.Handled;
 }
 
@@ -131,6 +148,7 @@ function who(cmd: Command): HookResultValue {
 function reloadAdmins(cmd: Command): HookResultValue {
   Admin.reload();
   cmd.replyT("Admin Cache Reloaded");
+  Activity.log(cmd, null, `"${Activity.describe(cmd)}" refreshed the admin cache.`);
   return HookResult.Handled;
 }
 
@@ -149,8 +167,9 @@ function execCfg(cmd: Command): HookResultValue {
     cmd.replyT("Invalid Config Name");
     return HookResult.Handled;
   }
+  Activity.showT(cmd, "Executed config", file);
+  Activity.log(cmd, null, `"${Activity.describe(cmd)}" executed config (file "${file}")`);
   Server.command("exec " + file);
-  cmd.replyT("Executing Config", file);
   return HookResult.Handled;
 }
 
@@ -162,6 +181,10 @@ function cvar(cmd: Command): HookResultValue {
   // setCvar writes through ICvar, so `;` is data. `{`/`}` would collide with translate substitution.
   if (/[\r\n{}]/.test(value)) { cmd.replyT("Invalid Cvar Value"); return HookResult.Handled; }
   if (!Server.setCvar(name, value)) { cmd.replyT("Invalid Cvar Value"); return HookResult.Handled; }
-  cmd.replyT("Cvar Set", name, Server.getCvar(name) || value);
+  // SourceMod shows ***PROTECTED*** for FCVAR_PROTECTED cvars. That flag isn't readable here, so a
+  // secret-shaped name is redacted instead: never broadcast or log an rcon/server password.
+  const now = /password|passwd|token|secret|key$/i.test(name) ? "***PROTECTED***" : (Server.getCvar(name) || value);
+  Activity.showT(cmd, "Cvar changed", name, now);
+  Activity.log(cmd, null, `"${Activity.describe(cmd)}" changed cvar (cvar "${name}") (value "${now}")`);
   return HookResult.Handled;
 }

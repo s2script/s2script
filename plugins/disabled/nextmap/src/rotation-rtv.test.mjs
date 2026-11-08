@@ -9,6 +9,7 @@ async function loadBoth(order, winner, waitForRound = true) {
   let vote;
   const cvars = new Map();
   const sdk = {
+    Activity: { show() {}, showT() {}, log() {}, describe: () => '', targetName: () => '' },
     Server: {
       mapName: 'de_inferno', gameTime: 0, isMapValid: () => true,
       getCvar: name => cvars.get(name) ?? '0', setCvar: (name, value) => cvars.set(name, value),

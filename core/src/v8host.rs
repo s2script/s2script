@@ -853,14 +853,21 @@ fn config_templates_prelude() -> String {
 /// reviewable as JS. It is ONE file because the whole body shares one IIFE scope (`(function () {`
 /// … `})();`) — splitting it per module would make concatenation order silently load-bearing.
 ///
-/// prelude.js's own file line N is no longer V8 line N now that colors.js is concatenated ahead
-/// of it below: V8 line = colors.js's line count + 1 (the joining "\n") + N. Historically file
+/// prelude.js's own file line N is no longer V8 line N now that colors.js and activity.js are
+/// concatenated ahead of it below: V8 line = their line counts + 2 (the joining "\n"s) + N. Historically file
 /// line N WAS V8 line N — the file starts directly at `globalThis.HookResult`, where the old
 /// `r#"` literal opened with a newline and shifted every reported line by one.
 // colors.js FIRST: it sets globalThis.__s2_colors, which prelude.js's chat and console
-// funnels call. Package source ordering belongs to each package manifest.
-const INJECTED_STD_PRELUDE: &str =
-    concat!(include_str!("../js/colors.js"), "\n", include_str!("../js/prelude.js"));
+// funnels call. activity.js next: it sets globalThis.__s2_activity, the pure show-activity
+// decision logic prelude.js's `Activity` (ShowActivity2 / LogAction) runs on. Both are dual-use
+// (unit-tested under node). Package source ordering belongs to each package manifest.
+const INJECTED_STD_PRELUDE: &str = concat!(
+    include_str!("../js/colors.js"),
+    "\n",
+    include_str!("../js/activity.js"),
+    "\n",
+    include_str!("../js/prelude.js")
+);
 
 // Game code is supplied by the selected verified package receipt (see game_packages).
 

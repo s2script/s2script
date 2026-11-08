@@ -818,37 +818,14 @@
     globalThis.__s2_colors.setTable(ChatColors);
   }
 
-  // --- Activity.formatSource: SourceMod FormatActivitySource port ---
-  // activity.js (concatenated ahead of pawn.js) sets globalThis.__s2_activity = { computeActivitySource, SHOW_ACTIVITY_DEFAULT }.
-  var __act = globalThis.__s2_activity;
-  // Resolve @s2script/admin lazily + memoized: at IIFE-init the admin prelude may not be registered
-  // yet, so eager resolution could abort CS2 module init; by formatSource call-time it is always present.
-  var __adminMod = null;
-  function __resolveAdmin() {
-    if (__adminMod === null) __adminMod = __s2require("@s2script/sdk/admin") || {};
-    return __adminMod;
-  }
-
-  var Activity = {
-    formatSource: function (actorSlot, recipientSlot) {
-      var __a = __resolveAdmin();
-      var Admin = __a.Admin, ADMFLAG = __a.ADMFLAG;
-      var flags = __act.SHOW_ACTIVITY_DEFAULT;
-      var actorReal, actorLabel;
-      if (actorSlot < 0) { actorReal = "Console"; actorLabel = "Console"; }
-      else {
-        var ap = Player.fromSlot(actorSlot);
-        // SM FormatActivitySource: unresolvable actor name falls back to "ADMIN", not "".
-        actorReal = (ap && ap.playerName) ? ap.playerName : "ADMIN";
-        var aAdmin = Admin.forSlot(actorSlot);
-        actorLabel = (aAdmin && aAdmin.hasFlags(ADMFLAG.GENERIC)) ? "ADMIN" : "PLAYER";
-      }
-      var recipientIsAdmin = false, recipientIsRoot = false;
-      var rAdmin = Admin.forSlot(recipientSlot);
-      if (rAdmin) { recipientIsAdmin = rAdmin.hasFlags(ADMFLAG.GENERIC); recipientIsRoot = rAdmin.hasFlags(ADMFLAG.ROOT); }
-      return __act.computeActivitySource(flags, actorLabel, actorReal, recipientIsAdmin, recipientIsRoot, actorSlot === recipientSlot);
-    }
-  };
+  // --- Activity: SourceMod's admin-activity layer moved to the engine-generic SDK
+  // (`@s2script/sdk` Activity, core/js/prelude.js). Re-exported here so existing
+  // `import { Activity } from "@s2script/cs2"` keeps working; it forwards to the same object.
+  // Resolved at call time, not init: offline harnesses run this bundle without the core prelude.
+  var Activity = new Proxy({}, {
+    get: function (_t, k) { var a = globalThis.__s2pkg_commands && globalThis.__s2pkg_commands.Activity; return a ? a[k] : undefined; },
+    set: function (_t, k, v) { var a = globalThis.__s2pkg_commands && globalThis.__s2pkg_commands.Activity; if (a) a[k] = v; return true; },
+  });
 
   // --- CS2 Menu renderer ---
   // The WASD / show_survival_respawn_status center HTML renderer used to live here. CS2 now paints

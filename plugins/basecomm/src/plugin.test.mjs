@@ -20,6 +20,8 @@ function fixture() {
   const events = [];
   const replies = [];
   const translated = [];
+  const activity = [];
+  const logs = [];
   const targetCalls = [];
   let service;
   let targets = [];
@@ -37,7 +39,14 @@ function fixture() {
   const Clients = {
     fromSlot: slot => players.get(slot)?.client ?? null,
   };
+  const actorSlot = actor => typeof actor === "number" ? actor : actor.callerSlot;
   const sdk = {
+    Activity: {
+      showT: (actor, key, ...args) => { activity.push([actorSlot(actor), key, ...args]); },
+      log: (actor, target, message) => { logs.push([actorSlot(actor), target, message]); },
+      describe: who => `L${typeof who === "number" ? who : who.callerSlot}`,
+      targetName: (_pattern, list) => list.map(p => p.playerName).join("+"),
+    },
     command: {
       admin(name, flags, handler) {
         commands.set(name, { flags, handler });
@@ -106,6 +115,7 @@ function fixture() {
       callerSlot,
       arg: index => index === 0 ? pattern : "",
       reply: message => replies.push(message),
+      replyT: (key, ...args) => replies.push(sdk.Translations.translate(callerSlot, key, ...args)),
     });
   };
   const on = (event, listener) => {
@@ -122,6 +132,8 @@ function fixture() {
     events,
     replies,
     translated,
+    activity,
+    logs,
     targetCalls,
     addPlayer,
     call,
@@ -209,7 +221,8 @@ test("command, silence, and menu paths converge on policy operations with snapsh
   assert.equal(f.service.isMuted(VALID_B), true);
   assert.equal(f.service.isGagged("76561198000000999"), false);
   assert.equal(f.service.isMuted("0"), false);
-  assert.equal(f.replies.at(-1), "Silenced Player:1", "only identities left in the requested state are counted");
+  assert.deepEqual(f.activity.at(-1), [-1, "Silenced target", "player-2"], "only identities left in the requested state are announced");
+  assert.deepEqual(f.logs.map(l => l[2]), ['"L-1" silenced "L2"'], "one LogAction line per accepted target");
   assert.deepEqual(f.targetCalls.at(-1), { pattern: "@all", callerSlot: -1, filterImmunity: true });
   assert.ok([...f.commands.values()].every(command => command.flags === 32), "all command permission gates stay CHAT");
 
@@ -224,8 +237,11 @@ test("command, silence, and menu paths converge on policy operations with snapsh
   const menu = f.menuItems.get("basecomm:gag");
   assert.ok(menu);
   assert.equal(menu.flags, 32);
+  f.addPlayer("76561198000000007", 7);
   menu.onSelect(7);
   assert.equal(f.service.isGagged(menuTarget.steamId), true);
+  assert.deepEqual(f.activity.at(-1), [7, "Gagged target", "player-4"], "a menu gag is announced as the admin");
+  assert.equal(f.logs.at(-1)[2], '"L7" gagged "L4"');
   assert.ok(f.events.some(([name, payload]) => name === "OnClientGagChanged" && payload.steamId === menuTarget.steamId));
 });
 
@@ -263,6 +279,8 @@ test("command callbacks cannot reply to a disconnected or replaced actor after p
     f.call("sm_gag", "#101", 2);
     assert.equal(f.service.isGagged(VALID_A), true, "policy still changes");
     assert.deepEqual(f.replies, [], "raw command reply must not reach a replacement actor");
+    assert.deepEqual(f.activity, [], "no announcement under a replacement actor's slot");
+    assert.equal(f.logs.length, 1, "the action is still logged under the identity captured before callbacks");
     assert.deepEqual(f.translated, [], "no post-callback translation through the old actor slot");
   }
 });
@@ -274,6 +292,6 @@ for (const timing of ["before-command", "during-callback"]) test(`BaseComm repli
   f.on("OnClientGagChanged", () => { actor.hasPawn = false; });
   f.call("sm_gag", "#101", 2);
   assert.equal(f.service.isGagged(VALID_A), true);
-  assert.deepEqual(f.replies, ["Gagged Player:1"]);
-  assert.deepEqual(f.translated.at(-1), [2, "Gagged Player", 1]);
+  assert.deepEqual(f.replies, []);
+  assert.deepEqual(f.activity, [[2, "Gagged target", "player-1"]]);
 });

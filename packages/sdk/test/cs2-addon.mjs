@@ -1,7 +1,7 @@
 /**
  * The CS2 addon JS bundle for offline-VM tests — the same game-package files, in the same order,
  * that game-package.jsonc names for dist's js/pawn.js at package time
- * (schema.generated.js → nav.generated.js → activity.js → csitem.generated.js → weapon.js → pawn.js).
+ * (schema.generated.js → nav.generated.js → csitem.generated.js → weapon.js → pawn.js).
  *
  * The order is DERIVED from game-package.jsonc's bootstrapInputs rather than
  * hardcoded, so these tests can never drift from the real bundle — that drift (pawn.js gained a

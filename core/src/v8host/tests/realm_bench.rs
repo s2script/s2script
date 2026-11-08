@@ -3,7 +3,7 @@ use super::*;
 /// The concatenated CS2 package bootstrap, in `game-package.jsonc` order.
 fn cs2_bootstrap() -> String {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../games/cs2/js");
-    ["schema.generated.js", "nav.generated.js", "activity.js", "csitem.generated.js", "weapon.js",
+    ["schema.generated.js", "nav.generated.js", "csitem.generated.js", "weapon.js",
      "pawn.js", "camera.js", "ui.js", "components.js", "hudinput.js", "menuhud.js", "voterail.js"]
         .iter()
         .map(|f| std::fs::read_to_string(root.join(f)).unwrap())

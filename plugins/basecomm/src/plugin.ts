@@ -9,8 +9,8 @@
 //    scoreboard indicator only. Keyed by SteamID and re-asserted on putinserver so a mute survives a
 //    reconnect. sm_silence = gag + mute.
 
-import { command, topmenu, translations, publish, ADMFLAG, HookResult, Clients, Translations } from "@s2script/sdk";
-import type { Client, PhraseKey, HookResultValue, TypedPublishHandle } from "@s2script/sdk";
+import { command, topmenu, translations, publish, ADMFLAG, HookResult, Clients, Translations, Activity } from "@s2script/sdk";
+import type { Client, Command, PhraseKey, HookResultValue, TypedPublishHandle } from "@s2script/sdk";
 import { Player, pickPlayer } from "@s2script/cs2";
 import type { Contract } from "../api";
 
@@ -76,37 +76,44 @@ function setSilenced(steamId: string, state: boolean): boolean {
 // Convention: filterImmunity=true for a punitive command (drops targets of higher immunity than the
 // caller); filterImmunity=false for a reversal command (un-gag/un-mute/un-silence — no filter).
 //
-// usageKey/singularKey/pluralKey are phrase KEYS, not raw text: this helper is shared by all six
-// commands below, so the key is a variable here rather than a literal. `PhraseKey` covers this
-// plugin's phrase file plus the shared one, so a key that exists in neither is a typecheck error at
-// each of the six call sites — including the dynamic ones, which no scan of literals could reach.
+// usageKey/activityKey are phrase KEYS, not raw text: this helper is shared by all six commands
+// below, so the key is a variable here rather than a literal. `PhraseKey` covers this plugin's phrase
+// file plus the shared one, so a key that exists in neither is a typecheck error at each call site.
+//
+// SourceMod feedback: errors reply to the caller; the action is announced (ShowActivity2) and each
+// target gets one LogAction line ("%L" gagged "%L").
 function forTargets(
-  pat: string,
-  callerSlot: number,
-  reply: (m: string) => void,
+  cmd: Command,
   usageKey: PhraseKey,
-  singularKey: PhraseKey,
-  pluralKey: PhraseKey,
+  activityKey: PhraseKey,
+  verb: string,
   act: (steamId: string) => boolean,
   filterImmunity: boolean,
 ): void {
-  if (!pat) { reply(Translations.translate(callerSlot, usageKey)); return; }
+  const pat = cmd.arg(0), callerSlot = cmd.callerSlot;
+  if (!pat) { cmd.replyT(usageKey); return; }
   const targets = Player.target(pat, callerSlot, filterImmunity);
-  if (targets.length === 0) { reply(Translations.translate(callerSlot, "No matching players")); return; }
+  if (targets.length === 0) { cmd.replyT("No matching players"); return; }
   // Both command reply and translation use a slot. Snapshot its owner before notifications.
   // Player.fromSlot pawn-gates: dead/spectating admins are still connected actors.
   const actor = callerSlot < 0 ? null : Player.allConnected().find(player => player.slot === callerSlot);
   const actorIdentity = actor ? { userId: actor.userId, steamId: actor.steamId } : null;
+  const actorLog = Activity.describe(cmd);
   // Copy every target identity before the first policy notification invokes arbitrary consumers.
-  const steamIds = targets.map((player) => player.steamId);
-  let accepted = 0;
-  for (const steamId of steamIds) if (act(steamId)) accepted++;
+  const snaps = targets.map((player) => ({ player, steamId: player.steamId, log: Activity.describe(player.slot) }));
+  const accepted: Player[] = [];
+  for (const t of snaps) {
+    if (!act(t.steamId)) continue;
+    accepted.push(t.player);
+    Activity.log(cmd, t.player.slot, `"${actorLog}" ${verb} "${t.log}"`);
+  }
+  if (accepted.length === 0) return;
   if (callerSlot >= 0) {
     const current = Player.allConnected().find(player => player.slot === callerSlot);
     if (!actorIdentity || !current || current.userId !== actorIdentity.userId ||
         current.steamId !== actorIdentity.steamId) return;
   }
-  reply(Translations.translate(callerSlot, accepted === 1 ? singularKey : pluralKey, accepted));
+  Activity.showT(cmd, activityKey, Activity.targetName(pat, accepted));
 }
 
 export function OnPluginStart(): void {
@@ -118,27 +125,27 @@ export function OnPluginStart(): void {
   // the same tier.
 
   command.admin("sm_gag", ADMFLAG.CHAT, (cmd) => {
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Gag", "Gagged Player", "Gagged Players", (steamId) => basecomm.setGagged(steamId, true), true);
+    forTargets(cmd, "Usage Gag", "Gagged target", "gagged", (steamId) => basecomm.setGagged(steamId, true), true);
     return HookResult.Handled;
   });
   command.admin("sm_ungag", ADMFLAG.CHAT, (cmd) => {
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Ungag", "Ungagged Player", "Ungagged Players", (steamId) => basecomm.setGagged(steamId, false), false);
+    forTargets(cmd, "Usage Ungag", "Ungagged target", "ungagged", (steamId) => basecomm.setGagged(steamId, false), false);
     return HookResult.Handled;
   });
   command.admin("sm_mute", ADMFLAG.CHAT, (cmd) => {
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Mute", "Muted Player", "Muted Players", (steamId) => basecomm.setMuted(steamId, true), true);
+    forTargets(cmd, "Usage Mute", "Muted target", "muted", (steamId) => basecomm.setMuted(steamId, true), true);
     return HookResult.Handled;
   });
   command.admin("sm_unmute", ADMFLAG.CHAT, (cmd) => {
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Unmute", "Unmuted Player", "Unmuted Players", (steamId) => basecomm.setMuted(steamId, false), false);
+    forTargets(cmd, "Usage Unmute", "Unmuted target", "unmuted", (steamId) => basecomm.setMuted(steamId, false), false);
     return HookResult.Handled;
   });
   command.admin("sm_silence", ADMFLAG.CHAT, (cmd) => {
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Silence", "Silenced Player", "Silenced Players", (steamId) => setSilenced(steamId, true), true);
+    forTargets(cmd, "Usage Silence", "Silenced target", "silenced", (steamId) => setSilenced(steamId, true), true);
     return HookResult.Handled;
   });
   command.admin("sm_unsilence", ADMFLAG.CHAT, (cmd) => {
-    forTargets(cmd.arg(0), cmd.callerSlot, (m) => cmd.reply(m), "Usage Unsilence", "Unsilenced Player", "Unsilenced Players", (steamId) => setSilenced(steamId, false), false);
+    forTargets(cmd, "Usage Unsilence", "Unsilenced target", "unsilenced", (steamId) => setSilenced(steamId, false), false);
     return HookResult.Handled;
   });
 
@@ -148,7 +155,12 @@ export function OnPluginStart(): void {
   // per-viewer.
   topmenu.addTab({ id: "basecomm", title: "Comm" });
   topmenu.addItem("basecomm", { id: "basecomm:gag", name: Translations.translate(-1, "Gag Item"), flags: ADMFLAG.CHAT,
-    onSelect: adminSlot => pickPlayer(adminSlot, target => { basecomm.setGagged(target.steamId, true); }) });
+    onSelect: adminSlot => pickPlayer(adminSlot, target => {
+      const targetLog = Activity.describe(target.slot), name = target.playerName ?? "";
+      if (!basecomm.setGagged(target.steamId, true)) return;
+      Activity.log(adminSlot, target.slot, `"${Activity.describe(adminSlot)}" gagged "${targetLog}"`);
+      Activity.showT(adminSlot, "Gagged target", name);
+    }) });
 }
 
 // Suppress chat from a gagged speaker (both say and say_team route through Host_Say).

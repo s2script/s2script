@@ -25,7 +25,15 @@ function fixture({ storeMode = "normal" } = {}) {
     }
     return result;
   };
+  const logs = [];
   const sdk = {
+    // Announcements land in `replies` as ["@<key>", actorSlot, ...args] so ordering against real
+    // replies stays visible; LogAction lines land in `logs`.
+    Activity: {
+      showT: (actor, key, ...args) => { replies.push([`@${key}`, typeof actor === "number" ? actor : actor.callerSlot, ...args]); },
+      log: (_actor, _target, message) => { logs.push(message); },
+      describe: who => `L${typeof who === "number" ? who : who.callerSlot}`,
+    },
     command: { admin: (name, flags, handler) => commands.set(name, { flags, handler }) },
     topmenu: { addTab() {}, addItem: (_tab, item) => items.set(item.id, item) },
     translations: { load() {} }, ADMFLAG: { BAN: 8, UNBAN: 16, KICK: 4 },
@@ -71,7 +79,7 @@ function fixture({ storeMode = "normal" } = {}) {
     const p = { hasPawn: true, steamId: sid, slot, userId, playerName: `name-${sid}`, client, kick: client.kickWithReason };
     players.set(slot, p); return p;
   }
-  return { errors, api, service, commands, items, players, cache, events, order, replies, translations, kicks, targetCalls, resolves, on, addPlayer,
+  return { logs, errors, api, service, commands, items, players, cache, events, order, replies, translations, kicks, targetCalls, resolves, on, addPlayer,
     setTargets(p) { targets = p; }, setPicked(p) { picked = p; }, getMenu: () => menu, setNow(value) { now = value; },
     call(name, args, callerSlot = -1) { return commands.get(name).handler({ callerSlot, arg: i => args[i] ?? "", argInt: i => Number(args[i]) | 0, argsFrom: i => args.slice(i).join(" "), replyT: (...args) => replies.push(args) }); },
   };
@@ -138,8 +146,8 @@ for (const boundary of ["OnBanRequested", "OnBanRecorded"]) test(`slot reuse dur
   assert.equal(f.call("sm_ban", ["#101", "5", "test"]), 2);
   assert.equal(f.kicks.length, 0);
   assert.equal(f.events.length, 1);
-  assert.equal(f.replies.at(-1)[0], "Ban Success");
-  assert.equal(f.replies.at(-1)[1], `name-${A}`, "display name copied before callbacks");
+  assert.deepEqual(f.replies.at(-1), ["@Banned player reason", -1, `name-${A}`, 5, "test"], "display name copied before callbacks");
+  assert.deepEqual(f.logs, ['"L-1" banned "L1" (minutes "5") (reason "test")'], "%L identities captured before callbacks");
   assert.ok(!f.translations.some(([slot]) => slot === 1), "no target translation through stale slot");
   assert.ok(f.resolves.includes(101), "kick identity re-resolved");
 });
@@ -224,6 +232,9 @@ test("menu duration selection retains actor ownership and a copied target identi
   assert.equal(f.events[0][1].request.steamId, A);
   assert.equal(f.events[0][1].request.actorSteamId, B);
   assert.equal(f.kicks.length, 0, "offline record uses the copied target, never its replacement");
+  assert.deepEqual(f.replies.at(-1), ["@Banned player", 2, `name-${A}`, 5], "the menu ban is announced as the admin");
+  assert.deepEqual(f.logs, [`"L2" banned "name-${A}<101><${A}><>" (minutes "5") (reason "")`],
+    "a departed target is logged from its copied identity, never its slot's new owner");
 });
 
 for (const result of [2, 3]) test(`menu reports intercepted HookResult ${result} without recording or kicking`, () => {
@@ -265,7 +276,8 @@ for (const timing of ["before-command", "during-callback"]) {
     if (name === "sm_unban") f.cache.set(A, { until: 0, reason: "old" });
     f.on(name === "sm_unban" ? "OnBanRemoved" : "OnBanRequested", () => { actor.hasPawn = false; });
     f.call(name, name === "sm_ban" ? ["#101", "5"] : name === "sm_addban" ? [A, "5"] : [A], 2);
-    assert.equal(f.replies.at(-1)?.[0], name === "sm_ban" ? "Ban Success" : name === "sm_addban" ? "Addban Success" : "Unban Success");
+    assert.equal(f.replies.at(-1)?.[0], name === "sm_ban" ? "@Banned player" : name === "sm_addban" ? "Addban Success" : "@Removed bans matching");
+    assert.equal(f.logs.length, 1, "every successful ban command writes one LogAction line");
     assert.equal(f.events.length, 1);
     if (name !== "sm_unban") assert.equal(f.events[0][1].request.actorSteamId, B, "pawnless authenticated actor is never downgraded to 0 or console");
     assert.equal(f.kicks.length, name === "sm_ban" ? 1 : 0);
