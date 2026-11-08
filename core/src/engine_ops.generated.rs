@@ -288,6 +288,14 @@ pub type UsermsgHookSetIntFn = extern "C" fn(*const c_char, i64) -> c_int;
 pub type PrecacheEntityAddFn = extern "C" fn(*const c_char) -> c_int;
 pub type CvarFlagsFn = extern "C" fn(name: *const c_char) -> i64;
 pub type ServerCommandCaptureFn = extern "C" fn(cmd: *const c_char, cookie: c_int) -> c_int;
+pub type SteamStatusFn = extern "C" fn() -> c_int;
+pub type SteamServerIdFn = extern "C" fn() -> u64;
+pub type SteamPublicIpFn = extern "C" fn() -> u32;
+pub type SteamUgcDownloadFn = extern "C" fn(id: u64, high_priority: c_int) -> c_int;
+pub type SteamUgcStateFn = extern "C" fn(id: u64) -> i64;
+pub type SteamUgcDownloadInfoFn = extern "C" fn(id: u64, downloaded: *mut u64, total: *mut u64) -> c_int;
+pub type SteamUgcInstallInfoFn = extern "C" fn(id: u64, size_on_disk: *mut u64, folder: *mut c_char, cap: c_int, timestamp: *mut u32) -> c_int;
+pub type SteamUgcSuspendFn = extern "C" fn(suspend: c_int) -> c_int;
 
 /// The C-ABI engine-ops table. Field ORDER is the ABI.
 ///
@@ -525,6 +533,15 @@ pub struct S2EngineOps {
     pub cvar_flags: Option<CvarFlagsFn>,
     // --- Server console output capture (Server.commandEx): ServerCommand bracketed by marker commands + a tier0 logging listener ---
     pub server_command_capture: Option<ServerCommandCaptureFn>,
+    // --- Steam game server + workshop (shim/src/steam.cpp, ISteamGameServer + ISteamUGC) ---
+    pub steam_status: Option<SteamStatusFn>,
+    pub steam_server_id: Option<SteamServerIdFn>,
+    pub steam_public_ip: Option<SteamPublicIpFn>,
+    pub steam_ugc_download: Option<SteamUgcDownloadFn>,
+    pub steam_ugc_state: Option<SteamUgcStateFn>,
+    pub steam_ugc_download_info: Option<SteamUgcDownloadInfoFn>,
+    pub steam_ugc_install_info: Option<SteamUgcInstallInfoFn>,
+    pub steam_ugc_suspend: Option<SteamUgcSuspendFn>,
 }
 
 impl S2EngineOps {

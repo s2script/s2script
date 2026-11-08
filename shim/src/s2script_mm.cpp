@@ -80,6 +80,7 @@
 #include "engine_hooks.h"   // declarative inbound hooks: S2_HookInstall/ArmBypass (the two appended ops)
 #include "named_hooks.h"    // checked chat/output/usercmd/precache bindings
 #include "sdkhooks_vp.h"    // SDKHooks per-entity VP hooks (Touch family; reads s_gdSdkhooks)
+#include "steam.h"          // Steam game-server services + workshop (@s2script/sdk/steam)
 #include <cstring>
 #include <cstdio>
 #include <ctime>    // Voice-control slice: time()/time_t for the per-slot ClientVoice notify throttle
@@ -6524,6 +6525,9 @@ bool S2ScriptPlugin::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen
         return true; // degrade, do not fail the load (spec §7)
     }
     m_coreDispatchReady = true;
+    // Steam callbacks enter the core, so they register only once it is up, and unregister in
+    // PreShutdown before it goes away.
+    S2Steam_Init([] { return S2Tid() == g_coreOwnerTid; });
 
     // Late-load bootstrap. CPlayerUserId stores ushort; -1 is represented by 65535.
     // A userid proves occupancy, not exact signon phase: use connected conservatively.
@@ -6796,6 +6800,7 @@ static bool S2_FinishUnloadCleanup() {
     S2_ShutdownCommandCapture();
 
     META_CONPRINTF("[s2script] PreShutdown: shutting down V8 core\n");
+    S2Steam_Shutdown();
 
     S2Defer_Flush("unload");
     s_userMsgFirstFireDone = false;
@@ -6968,6 +6973,7 @@ KHook::Return<void> S2ScriptPlugin::Hook_GameFramePre(ISource2Server* server, bo
     S2Defer_Drain();
     S2_DrainCvarResponses();
     S2_DrainCommandCaptures();
+    S2Steam_Drain();
     s2script_core_dispatch_game_frame(0, static_cast<int>(simulating),
                                       static_cast<int>(first), static_cast<int>(last));
     return S2_Ignore();

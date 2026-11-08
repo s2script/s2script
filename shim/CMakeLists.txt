@@ -94,6 +94,8 @@ add_library(s2script SHARED
     # SDKHooks virtuals: per-entity SH_ADD_MANUALHOOK (Touch family). Isolated so s2script_mm.cpp
     # does not grow another resolution loop; reads gamedata/sdkhooks, never s_gdCore.
     src/sdkhooks_vp.cpp
+    # Steam game-server services (@s2script/sdk/steam): borrows the engine's libsteam_api session.
+    src/steam.cpp
     ${HL2SDK}/entity2/entitykeyvalues.cpp
     ${HL2SDK}/tier0_perproject/keyvalues3.cpp
     ${HL2SDK}/public/tier0/memoverride.cpp   # CSSharp compiles this — routes operator new/delete

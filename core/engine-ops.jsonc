@@ -2073,6 +2073,78 @@
       "c_ret": "int",
       "c_params": "const char* cmd, int cookie",
       "shim": "s2_server_command_capture"
+    },
+    {
+      "name": "steam_status",
+      "alias": "SteamStatusFn",
+      "rust": "extern \"C\" fn() -> c_int",
+      "group": "Steam game server + workshop (shim/src/steam.cpp, ISteamGameServer + ISteamUGC)",
+      "c_ret": "int",
+      "c_params": "void",
+      "shim": "s2_steam_status"
+    },
+    {
+      "name": "steam_server_id",
+      "alias": "SteamServerIdFn",
+      "rust": "extern \"C\" fn() -> u64",
+      "group": "Steam game server + workshop (shim/src/steam.cpp, ISteamGameServer + ISteamUGC)",
+      "c_ret": "uint64_t",
+      "c_params": "void",
+      "shim": "s2_steam_server_id"
+    },
+    {
+      "name": "steam_public_ip",
+      "alias": "SteamPublicIpFn",
+      "rust": "extern \"C\" fn() -> u32",
+      "group": "Steam game server + workshop (shim/src/steam.cpp, ISteamGameServer + ISteamUGC)",
+      "c_ret": "uint32_t",
+      "c_params": "void",
+      "shim": "s2_steam_public_ip"
+    },
+    {
+      "name": "steam_ugc_download",
+      "alias": "SteamUgcDownloadFn",
+      "rust": "extern \"C\" fn(id: u64, high_priority: c_int) -> c_int",
+      "group": "Steam game server + workshop (shim/src/steam.cpp, ISteamGameServer + ISteamUGC)",
+      "c_ret": "int",
+      "c_params": "uint64_t id, int high_priority",
+      "shim": "s2_steam_ugc_download"
+    },
+    {
+      "name": "steam_ugc_state",
+      "alias": "SteamUgcStateFn",
+      "rust": "extern \"C\" fn(id: u64) -> i64",
+      "group": "Steam game server + workshop (shim/src/steam.cpp, ISteamGameServer + ISteamUGC)",
+      "c_ret": "long long",
+      "c_params": "uint64_t id",
+      "shim": "s2_steam_ugc_state"
+    },
+    {
+      "name": "steam_ugc_download_info",
+      "alias": "SteamUgcDownloadInfoFn",
+      "rust": "extern \"C\" fn(id: u64, downloaded: *mut u64, total: *mut u64) -> c_int",
+      "group": "Steam game server + workshop (shim/src/steam.cpp, ISteamGameServer + ISteamUGC)",
+      "c_ret": "int",
+      "c_params": "uint64_t id, uint64_t* downloaded, uint64_t* total",
+      "shim": "s2_steam_ugc_download_info"
+    },
+    {
+      "name": "steam_ugc_install_info",
+      "alias": "SteamUgcInstallInfoFn",
+      "rust": "extern \"C\" fn(id: u64, size_on_disk: *mut u64, folder: *mut c_char, cap: c_int, timestamp: *mut u32) -> c_int",
+      "group": "Steam game server + workshop (shim/src/steam.cpp, ISteamGameServer + ISteamUGC)",
+      "c_ret": "int",
+      "c_params": "uint64_t id, uint64_t* size_on_disk, char* folder, int cap, uint32_t* timestamp",
+      "shim": "s2_steam_ugc_install_info"
+    },
+    {
+      "name": "steam_ugc_suspend",
+      "alias": "SteamUgcSuspendFn",
+      "rust": "extern \"C\" fn(suspend: c_int) -> c_int",
+      "group": "Steam game server + workshop (shim/src/steam.cpp, ISteamGameServer + ISteamUGC)",
+      "c_ret": "int",
+      "c_params": "int suspend",
+      "shim": "s2_steam_ugc_suspend"
     }
   ]
 }
