@@ -9,6 +9,7 @@ const code = transformSync(readFileSync(new URL('./plugin.ts', import.meta.url),
 async function loadRtv({ runoff = true, pollFirst = true } = {}) {
   const hooks = new Map(), admins = new Map(), commands = [], chat = [], votes = [];
   let active = null;
+  const lock = { refuse: false };   // simulates another vote taking the slot mid-build
   const server = { mapName: 'de_inferno', command: line => commands.push(line) };
   const sdk = {
     Clients: { all: () => [] }, Server: server,
@@ -26,7 +27,7 @@ async function loadRtv({ runoff = true, pollFirst = true } = {}) {
     Chat: { toAll: text => chat.push(text) }, HookResult: { Handled: 2, Continue: 0 }, ADMFLAG: { CHANGEMAP: 8 },
     Vote: {
       isActive: () => active !== null, registerTallyRenderer() {},
-      start: options => { if (active) return false; active = options; votes.push(options); return true; },
+      start: options => { if (active || lock.refuse) return false; active = options; votes.push(options); return true; },
       cancel: () => { active = null; },
     },
   };
@@ -48,7 +49,7 @@ async function loadRtv({ runoff = true, pollFirst = true } = {}) {
     v.onEnd({ winner: total === 0 || leaders > 1 ? null : counts.indexOf(best), counts, total });
   };
   const poll = () => { for (let i = 0; i < 64; i++) api.OnGameFrame(); };
-  return { hooks, commands, chat, votes, end, server, poll, get active() { return active; } };
+  return { hooks, commands, chat, votes, end, server, poll, lock, admins, get active() { return active; } };
 }
 
 test('a tie runs a runoff of only the tied options, repeating until one wins', async () => {
@@ -125,4 +126,32 @@ test('the first map poll after load does not cancel a forced RTV', async () => {
   assert.ok(host.active);
   host.poll();
   assert.ok(host.active, 'still open');
+});
+
+test('an RTV forced on the new map before the poll notices the change is kept', async () => {
+  const host = await loadRtv();
+  host.end([0, 0, 0, 3]);   // Don't Change: the first ballot is over
+  host.server.mapName = 'de_mirage';
+  host.admins.get('sm_forcertv')({ replyT() {} });
+  await new Promise(setImmediate);
+  assert.ok(host.active);
+  host.poll();   // the reset for de_mirage
+  assert.ok(host.active, 'the new map\'s ballot is not cancelled');
+});
+
+test('a ballot the vote slot refuses releases the RTV lock', async () => {
+  const host = await loadRtv();
+  host.end([0, 0, 0, 3]);
+  host.server.mapName = 'de_mirage';
+  host.poll();
+  host.lock.refuse = true;
+  let reply;
+  host.admins.get('sm_forcertv')({ replyT: k => { reply = k; } });
+  await new Promise(setImmediate);
+  assert.equal(host.active, null);
+  host.lock.refuse = false;
+  host.admins.get('sm_forcertv')({ replyT: k => { reply = k; } });
+  await new Promise(setImmediate);
+  assert.equal(reply, 'Rtv Forced');
+  assert.ok(host.active, 'a later RTV can start');
 });

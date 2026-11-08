@@ -33,6 +33,7 @@ function pruneVoters(): void {
   for (const [slot, client] of rtvVoters) if (!client.isValid()) rtvVoters.delete(slot);
 }
 let voteRunning = false;
+let voteMap = "";   // the map the running (or building) RTV ballot belongs to
 let votedThisMap = false;
 let pendingMap: MapEntry | null = null;
 let pendingMapSource = "";
@@ -222,6 +223,7 @@ async function buildBallot(): Promise<{ options: string[]; entries: Map<string, 
 /** Open a ballot over `options`. `runoff` is 0 for the first vote, then 1, 2, ... for each runoff. */
 function runBallot(options: string[], entries: Map<string, MapEntry>, runoff: number): boolean {
   const sourceMap = Server.mapName;
+  voteMap = sourceMap;
   // Suppress the core's own announcement for the duration of this start (see `suppressVoteLine`)
   // and print the ballot properly below, one option per line. The runoff question keeps the
   // "RockTheVote" prefix the suppression matches on.
@@ -290,6 +292,7 @@ function startVote(force: boolean): boolean {
   // Also closed once the end-of-map vote has chosen: a forced RTV would veto that winner.
   const endVote = mapchooserState();
   if (voteRunning || Vote.isActive() || endVote.running || endVote.finished) return false;
+  voteMap = Server.mapName;
   voteRunning = true;   // claim synchronously — closes the guard window so a concurrent requestRtv (buildBallot awaits the DB) can't double-start
   buildBallot().then(ballot => {
     if (ballot === null) {
@@ -300,7 +303,8 @@ function startVote(force: boolean): boolean {
     }
     rtvVoters.clear();
     const { options, entries } = ballot;
-    runBallot(options, entries, 0);
+    // Another vote may have taken the slot while the ballot was built: release the lock then.
+    if (!runBallot(options, entries, 0)) voteRunning = false;
     console.log("[rockthevote] startVote force=" + force + " options=" + JSON.stringify(options));
   }).catch(e => { voteRunning = false; logErr(e); });   // release the lock on a build error too
   return true;
@@ -361,13 +365,14 @@ function pollTick(): void {
   frameCounter = 0;
   const m = Server.mapName;
   if (m && m !== currentMap) { // map changed — reset all per-map RTV state
-    // An old map's ballot would keep eating typed numbers. Not on the first observed map:
-    // currentMap starts empty, and an RTV forced right after load is live.
-    if (currentMap !== "" && Vote.isActive()) Vote.cancel();
+    // An old map's ballot would keep eating typed numbers. A ballot already opened on THIS map
+    // (forced right after load, or in the ~1 s before this poll noticed the change) is kept.
+    const keepBallot = voteRunning && voteMap === m;
+    if (!keepBallot && Vote.isActive()) Vote.cancel();
     currentMap = m;
     mapStartMs = Date.now();   // restart the rtv_initialdelay window for the new map
     rtvVoters.clear();
-    voteRunning = false;
+    voteRunning = keepBallot;
     votedThisMap = false;
     pendingMap = null;
     pendingMapSource = "";
