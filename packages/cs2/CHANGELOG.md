@@ -1,5 +1,17 @@
 # @s2script/cs2
 
+## 0.24.0
+
+### Minor Changes
+
+- b9e7ca5: Add Player.isControllingBot and Player.controlledBotPawn, matching Valve's CSPlayerController.IsControllingBot and GetControlledBotPawn.
+- 4e9a359: Regenerate the schema types for the Nov 5 2026 CS2 build (26445667). New classes include CCSCustomHudLayout, CCSCustomPlayerCamera and CGenericLogicPlayerProxy. CBaseMoveBehavior, CEnvWindController, CEnvWindVolume and CLogicPlayerProxy are gone from the game, so their interfaces are removed; logic_playerproxy is now CGenericLogicPlayerProxy (fields on CLogicPlayerProxyBase).
+
+### Patch Changes
+
+- Updated dependencies [51c0af0]
+  - @s2script/sdk@0.36.0
+
 ## 0.23.1
 
 ### Patch Changes
