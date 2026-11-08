@@ -1,7 +1,8 @@
 import {
   command, topmenu, translations, Vote, ADMFLAG, Chat, config, Translations,
-  HookResult,
+  HookResult, Activity,
 } from "@s2script/sdk";
+import type { ActivityActor } from "@s2script/sdk";
 import { Player, pickPlayer } from "@s2script/cs2";
 
 // Parse a command arg string into quoted (or bare) tokens: sm_vote "Kick Rex?" Yes No
@@ -26,13 +27,26 @@ function startKickVote(userId: number, name: string): boolean {
       if (r.winner === 0 && r.counts[0] > r.total / 2) {
         const cur = Player.fromUserId(userId);   // re-resolve at end (pick-time slot may be stale)
         // Player.kick's reason is the engine disconnect UI for the TARGET — translate for them.
-        if (cur) cur.kick(Translations.translate(cur.slot, "Kick Vote Reason"));
+        if (cur) {
+          Activity.log(-1, cur.slot, `Vote kick successful, kicked "${Activity.describe(cur.slot)}"`);
+          cur.kick(Translations.translate(cur.slot, "Kick Vote Reason"));
+        }
         Chat.toAll(Translations.translate(-1, "Kick Vote Success", name));
       } else {
         Chat.toAll(Translations.translate(-1, "Kick Vote Failed", name));
       }
     },
   });
+}
+
+// SourceMod basevotes: a started vote is announced (ShowActivity2) and logged with who started it.
+function kickVote(actor: ActivityActor, target: Player): boolean {
+  const name = target.playerName ?? "player";
+  const targetLog = Activity.describe(target.slot);
+  if (!startKickVote(target.userId, name)) return false;
+  Activity.showT(actor, "Initiated Vote Kick", name);
+  Activity.log(actor, target.slot, `"${Activity.describe(actor)}" initiated a kick vote against "${targetLog}"`);
+  return true;
 }
 
 export function OnPluginStart(): void {
@@ -49,6 +63,9 @@ export function OnPluginStart(): void {
                           : Translations.translate(-1, "Vote Result", options[r.winner]));
                       } })) {
       cmd.replyT("Vote In Progress");
+    } else {
+      Activity.showT(cmd, "Initiated Vote", question);
+      Activity.log(cmd, null, `"${Activity.describe(cmd)}" initiated a generic vote ("${question}").`);
     }
     return HookResult.Handled;
   });
@@ -63,7 +80,7 @@ export function OnPluginStart(): void {
     if (targets.length > 1) { cmd.replyT("More than one client matched", targetStr); return HookResult.Handled; }
     const p = targets[0];
     if (Vote.isActive()) { cmd.replyT("Vote In Progress"); return HookResult.Handled; }
-    startKickVote(p.userId, p.playerName ?? "player");
+    if (!kickVote(cmd, p)) cmd.replyT("Vote In Progress");
     return HookResult.Handled;
   });
 
@@ -73,6 +90,6 @@ export function OnPluginStart(): void {
   topmenu.addTab({ id: "basevotes", title: "Votes" });
   topmenu.addItem("basevotes", { id: "basevotes:votekick", name: Translations.translate(-1, "Vote Kick Item"), flags: ADMFLAG.VOTE,
     onSelect: adminSlot => pickPlayer(adminSlot, t => {
-      if (!startKickVote(t.userId, t.playerName ?? "player")) Chat.toSlot(adminSlot, Translations.translate(adminSlot, "Vote In Progress"));
+      if (!kickVote(adminSlot, t)) Chat.toSlot(adminSlot, Translations.translate(adminSlot, "Vote In Progress"));
     }) });
 }

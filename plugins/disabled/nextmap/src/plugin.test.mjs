@@ -22,6 +22,7 @@ function loadPlugin({ maplist = 'de_inferno\nde_nuke\n', mapName = 'de_default',
     command: line => commands.push(line),
   };
   const sdk = {
+    Activity: { show() {}, showT() {}, log() {}, describe: () => '', targetName: () => '' },
     Server: server,
     config: {
       readFile: name => files.get(name) ?? null,

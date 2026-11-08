@@ -10,6 +10,7 @@ test('deferred A disconnect preserves B RTV request and A request never counts a
   const host = installClientHost(ctx, [3, 4]);
   const messages = [];
   const sdk = {
+    Activity: { show() {}, showT() {}, log() {}, describe: () => '', targetName: () => '' },
     Clients: ctx.__s2pkg_clients.Clients, HookResult: { Handled: 2, Continue: 0 },
     UserMessages: { onPre() {} },
     config: { getInt: () => 0, getFloat: () => 1 },
@@ -37,6 +38,7 @@ async function loadVotingPlugin(maplist = 'de_nuke') {
   const server = { mapName: 'de_inferno', command: line => commands.push(line) };
   const db = { execute: async () => {}, query: async () => [] };
   const sdk = {
+    Activity: { show() {}, showT() {}, log() {}, describe: () => '', targetName: () => '' },
     Clients: { all: () => [] }, Server: server,
     UserMessages: { onPre() {} }, Database: { open: async () => db },
     config: { readFile: () => maplist, getInt: name => name === 'rtv_map_count' ? 1 : 0, getBool: () => false },

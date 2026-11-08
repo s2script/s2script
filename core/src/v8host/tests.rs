@@ -7943,6 +7943,39 @@
         shutdown();
     }
 
+    /// Activity (ShowActivity2 / LogAction / %L) is engine-generic SDK surface on the commands
+    /// module and the root barrel. A server-console actor gets ONE console copy (`<tag>Console: msg`,
+    /// tags expanded then stripped); LogAction writes one stamped line tagged with the plugin id; %L
+    /// for the console is SourceMod's literal; with no sm_show_activity cvar the default 13 applies.
+    #[test]
+    fn activity_show_and_log_from_server_console() {
+        LOG.lock().unwrap().clear();
+        init(logger).unwrap();
+        create_plugin_context("p");
+        eval_in_context("p", "__s2_colors.setTable({ Green: '\\x04', Default: '\\x01' });").unwrap();
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_sdk.Activity === __s2pkg_commands.Activity)"), "true");
+        assert_eq!(eval_in_context_string("p", "String(__s2pkg_commands.Activity.flags)"), "13");
+        assert_eq!(
+            eval_in_context_string("p", "__s2pkg_commands.Activity.describe(-1)"),
+            "Console<0><Console><Console>"
+        );
+        eval_in_context(
+            "p",
+            "__s2pkg_commands.Commands.register('sm_x', function (cmd) { \
+               __s2pkg_commands.Activity.show(cmd, 'slayed Bob.'); \
+               __s2pkg_commands.Activity.log(cmd, null, 'did a thing'); });",
+        )
+        .unwrap();
+        eval_in_context("p", "__s2pkg_commands.Commands.dispatch('sm_x', -1, '');").unwrap();
+        let log = LOG.lock().unwrap().clone();
+        assert!(log.iter().any(|l| l == "[S2S] Console: slayed Bob."), "console copy missing: {log:?}");
+        assert!(
+            log.iter().any(|l| l.starts_with("L ") && l.ends_with(": [p] did a thing")),
+            "LogAction line missing: {log:?}"
+        );
+        shutdown();
+    }
+
     /// Translations slice: the pure formatting/lang-code test hooks (`__s2_tr_format`/`__s2_tr_langCode`).
     #[test]
     fn translations_format_and_langcode() {

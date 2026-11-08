@@ -1164,3 +1164,23 @@ Verification: 32 focused tests pass, including eight initially failing combined-
 Applied the [PR review guidelines](https://github.com/s2script/s2script/pull/340#issuecomment-6713564447): bool `nextmap_random_startup` defaults to false, preserving SourceMod-style startup unless explicitly enabled; bool `nextmap_wait_for_round` defaults to true, with false restoring a switch as soon as the existing delay expires. The startup opportunity is consumed at the first live map even when disabled. Announcements and the delay description explain the selected timing mode; RTV priority remains independent of round waiting. Spec and plan now describe these operator settings.
 
 Verification: six regression tests failed before the fix, then all 44 focused tests passed. Both plugin archives build and nextmap's archive carries the requested bool defaults. The full JS gate passes, including 962 SDK tests, all plugin/example typechecks, and Docker tooling checks. Independent read-only review found no actionable issues. No core/shim changes or live CS2 acceptance/deployment.
+
+## 2026-11-08 — SourceMod command feedback (ShowActivity2 / LogAction)
+
+Audit: `cmd.reply` already routed like `ReplyToCommand` (console vs chat by reply source), but no
+admin action told anyone *who* did it. Slap, kick, ban, gag, map and the rest replied a bare count
+("Slapped 1 player") to the caller only, menu actions were silent, and nothing was logged.
+
+`Activity` is now engine-generic SDK surface (`@s2script/sdk`, core/js/prelude.js; the pure
+decision logic `core/js/activity.js` moved out of the CS2 package): `show`/`showT` port
+`ShowActivity2` (every human sees `[S2S] <name>: <action>` in chat, real name or `ADMIN`/`PLAYER`
+per the new `sm_show_activity` cvar, default 13; the actor gets one copy on their reply channel),
+`log` ports `LogAction` (stamped server-console line tagged with the plugin id) and `describe` is
+`%L`. `@s2script/cs2`'s `Activity` forwards to it. Every base and opt-in admin command and admin-menu
+action now follows SourceMod's pattern: usage/errors via `replyT`, the action via `showT`, one
+`LogAction` line per target, with SourceMod's phrase wording. `sm_map` gives the 3 s warning before
+changelevel; `sm_cvar` shows `***PROTECTED***` for FCVAR_PROTECTED cvars (new `cvar_flags` engine op →
+`Server.getCvarFlags`; unreadable flags count as protected) and the real value otherwise.
+
+Not done here: `sm_rcon` and basechat's `@` triggers (parallel threads own them); LogAction writes
+to the server console only (no `logs/` file sink yet). Live gate pending.
